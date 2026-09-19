@@ -42,7 +42,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { performance } from "node:perf_hooks";
 import type { AppDb } from "./db";
-import type { FeePaymentMethod, ProjectRecord } from "../../shared/src/types";
+import type { FeeChargeBreakdown, FeePaymentMethod, ProjectRecord } from "../../shared/src/types";
 // ONE READER FOR "Revised 12/23/2022", shared with ahj_form_templates' own
 // document_date column. A second parser here would eventually disagree with the
 // column it is meant to explain, and a wrong date makes a stale schedule look
@@ -129,7 +129,72 @@ export interface FeeBracket {
    *  into storage only when saveFeeSchedule was handed the ledger to re-derive
    *  it from — see normalizeBrackets' `trusted` flag. */
   corroboration?: FeeBracketCorroboration;
+  /** THE REST OF THE BILL — every charge the jurisdiction levies on this filing
+   *  BESIDES the permit line this bracket prices. Written ONLY by
+   *  corroborateAncillaryCharges, from bytes this process retrieved, and stripped
+   *  on the untrusted read path exactly as `corroboration` is.
+   *
+   *  It rides the BRACKET rather than the record because that is where the
+   *  surcharges already ride and because brackets_json is the one structured
+   *  column a schedule owns — the same list is attached to every bracket of a
+   *  table, since these charges are levied on the FILING, not on one size tier. */
+  ancillaryCharges?: FeeAncillaryCharge[];
 }
+
+/** ONE MORE CHARGE ON THE SAME FILING — a plan review, a land-use review, a fire
+ *  review, a processing fee, a surcharge.
+ *
+ *  WHY THIS EXISTS. The researcher's ask used to be "find the permit fee line",
+ *  and the researcher answered it faithfully: one line. A real paid City of
+ *  Portland receipt for one 3.5 kW rooftop system is FOUR BILLS FROM THREE
+ *  BUREAUS totalling $762.93, of which the two permit lines are $354. Everything
+ *  else — fire plan review, land use review, building plan review/processing,
+ *  and the 12% state surcharge on each permit — was never asked for, so it was
+ *  never held, so no quote built from this table could reach a real total.
+ *
+ *  A PERCENTAGE IS STORED AS A PERCENTAGE. The receipt's $99.45 is 65% of the
+ *  $153.00 building permit; storing the product would make the charge wrong for
+ *  every other job. `percent` + `percentOf` keeps it a function, exactly as
+ *  `basis` keeps the permit line one. */
+export interface FeeAncillaryCharge {
+  /** The jurisdiction's OWN printed wording — "Bldg Plan Rvw/Processing RS/MI/MP".
+   *  This is the matching key AND what an operator reads beside the amount. */
+  label: string;
+  kind: FeeAncillaryKind;
+  /** Exactly one of these two is populated; the normaliser refuses a charge
+   *  carrying both or neither. */
+  amountUsd?: number;
+  percent?: number;
+  /** What the percentage is taken OF, in the document's own words ("of the
+   *  building permit fee"). "" on a flat charge. */
+  percentOf: string;
+  /** THE HONEST HALF. A charge the schedule applies only in some cases may not
+   *  be silently added to anybody's total — see the evaluator's existing refusal
+   *  to resolve a total when a known plan-review trigger is unpriced. */
+  conditional: boolean;
+  condition: string;
+  /** Which filing it rides. "" = the filing as a whole. Portland's fire and
+   *  land-use reviews ride the BUILDING filing; the electrical pass must not
+   *  fold them into the electrical permit. */
+  appliesTo: FeeDiscipline;
+  /** The sentence the model reported, verbatim. Advisory prose. */
+  quote: string;
+  /** The document actually fetched, as the fetcher finally saw it. */
+  sourceUrl: string;
+  /** THE EVIDENCE, and the reason this type can be stored at all: the printed
+   *  row THIS RUN retrieved where the label and the amount (or the percentage)
+   *  co-occur. Required by the normaliser, so a charge nothing we read supports
+   *  cannot reach storage down any path. */
+  matchedLine: string;
+}
+
+/** What kind of charge, for the operator's eye and for a later evaluator that
+ *  will want to treat a mandatory surcharge differently from an optional review. */
+export const ANCILLARY_KINDS = ["plan_review", "land_use_review", "fire_review", "processing", "surcharge", "other"] as const;
+export type FeeAncillaryKind = (typeof ANCILLARY_KINDS)[number];
+/** One filing does not draw fifty charges. A longer list is a model listing a
+ *  whole fee schedule rather than the charges on THIS filing. */
+const ANCILLARY_CHARGE_CAP = 12;
 
 /** DID THE DOCUMENT ACTUALLY PRINT THIS BRACKET? — a dimension of its own.
  *
@@ -380,6 +445,13 @@ export interface ProjectFeeResolution {
    *  takes the electrical one. feeUsd above is their TOTAL, which is what the
    *  customer pays — read `lines` to show them what it is made of. */
   lines: FeeScheduleLine[];
+  /** EVERY CHARGE ON THIS FILING, PRICED — permits, their surcharges, and the
+   *  reviews and processing charges levied beside them. `feeUsd` above is the
+   *  sum of the charges whose `partOfLineFee` is false PLUS every line's own
+   *  amount; see FeeChargeBreakdown for why the flag is arithmetic and not a
+   *  display hint. A charge carrying `amountUsd: null` is what makes `feeUsd`
+   *  null: a filing missing one of its charges is not a smaller filing. */
+  charges: FeeChargeBreakdown[];
 }
 
 /** One permit, one authority, one number. */
@@ -413,6 +485,11 @@ export interface FeeScheduleLine {
   scheduleId: string;
   /** Populated when feeUsd is null. */
   reason: string;
+  /** THIS LINE'S OWN BILL, ITEMISED — the permit, its surcharges, and every
+   *  ancillary charge this schedule attaches to the filing. The first three
+   *  carry `partOfLineFee: true` and are already inside `feeUsd`; the ancillary
+   *  ones are not, and are added at the resolution above. */
+  charges: FeeChargeBreakdown[];
 }
 
 const NOTE_SEGMENT_CAP = 40;
@@ -525,6 +602,60 @@ function normalizeCorroboration(raw: unknown): FeeBracketCorroboration | undefin
   };
 }
 
+/** THE STORAGE BOUNDARY FOR AN ANCILLARY CHARGE, and it is deliberately STRICTER
+ *  than the one for a bracket.
+ *
+ *  A bracket with no corroboration still saves — it is the thing the caller asked
+ *  for by name, the notes record that it is unchecked, and refusing it would lose
+ *  real findings. An ancillary charge is the opposite case: nobody asked for it
+ *  individually, it arrives as a list the model composed, and a plausible
+ *  "Plan Review — 65% of permit fee" that no document anywhere prints would be
+ *  added to a customer's total and never questioned, because it is exactly what a
+ *  reader expects to see. So `matchedLine` — the printed row THIS RUN retrieved —
+ *  is REQUIRED here. Only corroborateAncillaryCharges can produce one, and only
+ *  the trusted path preserves it, so model output and a replayed findings file
+ *  both lose the list entirely. Same rule as corroboration, one notch harder. */
+function normalizeAncillaryCharges(raw: unknown): FeeAncillaryCharge[] {
+  if (!Array.isArray(raw)) return [];
+  const out: FeeAncillaryCharge[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const c = item as Record<string, unknown>;
+    const label = clean(c.label).slice(0, 200);
+    const matchedLine = clean(c.matchedLine).slice(0, 300);
+    const sourceUrl = clean(c.sourceUrl).slice(0, 500);
+    if (!label || !matchedLine || !sourceUrl) continue;
+    const amountUsd = num(c.amountUsd);
+    const percent = num(c.percent);
+    // EXACTLY ONE OF THE TWO. "$50 and 65%" is not a charge anything can
+    // evaluate, and a charge with neither is a label with no price attached.
+    const hasAmount = amountUsd != null && amountUsd >= 0;
+    const hasPercent = percent != null && percent > 0 && percent <= 100;
+    if (hasAmount === hasPercent) continue;
+    const key = `${label.toLowerCase()}|${hasAmount ? amountUsd : `${percent}%`}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const kind = clean(c.kind).toLowerCase() as FeeAncillaryKind;
+    out.push({
+      label,
+      kind: ANCILLARY_KINDS.includes(kind) ? kind : "other",
+      ...(hasAmount ? { amountUsd: round2(amountUsd as number) } : { percent: round2(percent as number) }),
+      percentOf: hasPercent ? clean(c.percentOf).slice(0, 200) : "",
+      conditional: c.conditional === true,
+      condition: clean(c.condition).slice(0, 300),
+      appliesTo: feeDiscipline(clean(c.appliesTo)),
+      // A charge with no reported sentence still has the row we matched it on;
+      // that is the evidence either way, so it is never stored quote-less.
+      quote: clean(c.quote).slice(0, 400) || matchedLine,
+      sourceUrl,
+      matchedLine,
+    });
+    if (out.length >= ANCILLARY_CHARGE_CAP) break;
+  }
+  return out;
+}
+
 /** Keep only lines with a real fee, and ORDER them, because bracket evaluation
  *  is first-match — an unsorted table silently answers with the wrong tier.
  *
@@ -557,6 +688,9 @@ function normalizeBrackets(raw: unknown[], opts: { trusted?: boolean } = {}): Fe
     const fee = num(b.feeUsd ?? b.fee_usd ?? b.fee);
     if (fee == null || fee < 0) continue;
     const corroboration = opts.trusted ? normalizeCorroboration(b.corroboration) : undefined;
+    // Same rail as corroboration, and for the same reason: untrusted input may
+    // not assert that a charge was printed anywhere.
+    const ancillaryCharges = opts.trusted ? normalizeAncillaryCharges(b.ancillaryCharges) : [];
     out.push({
       minKw: num(b.minKw ?? b.min_kw ?? b.minKva ?? b.min_kva),
       maxKw: num(b.maxKw ?? b.max_kw ?? b.maxKva ?? b.max_kva),
@@ -571,6 +705,7 @@ function normalizeBrackets(raw: unknown[], opts: { trusted?: boolean } = {}): Fe
       ...(opts.trusted && b.communitySurcharge && typeof b.communitySurcharge === "object"
         && (b.communitySurcharge as FeeBracket["communitySurcharge"])?.percent === 5
         ? { communitySurcharge: b.communitySurcharge as NonNullable<FeeBracket["communitySurcharge"]> } : {}),
+      ...(ancillaryCharges.length ? { ancillaryCharges } : {}),
     });
   }
   const sortKey = (b: FeeBracket): number => b.minKw ?? b.minValuationUsd ?? 0;
@@ -1417,6 +1552,215 @@ export function retrievalNotes(finding: FeeScheduleFinding, ledger: FeeDocumentL
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// THE REST OF THE BILL — ancillary charges, gated on retrieved bytes.
+//
+// The ask used to be one sentence long ("find the permit fee schedule line…
+// extract the full bracket table for the solar/renewable-energy line") and the
+// researcher answered it faithfully: one line. A real paid City of Portland
+// receipt for one 3.520 kW rooftop system is FOUR SEPARATE BILLS FROM THREE
+// BUREAUS — fire plan review $50.00; electrical permit $201.00 + $24.12 state
+// surcharge; land use review $217.00 + building plan review/processing $99.45
+// (which is 65% of the building permit); building permit $153.00 + $18.36 state
+// surcharge. $762.93 in total, against $354.00 of permit lines. Plan review,
+// land use review, fire review and processing were never requested, so they were
+// never held, so no quote built from this table could reach a real total.
+//
+// WIDENING THE ASK IS ONLY HALF THE FIX, and the other half is this gate. The
+// moment you ask a model for "every other charge on this filing" you have asked a
+// question it can answer plausibly from priors: nearly every jurisdiction in the
+// country has a plan-review fee, most express it as a percentage, and 65% is a
+// real number in several of them. An unchecked list like that is the most
+// convincing wrong answer this system is capable of producing, and it would land
+// on a customer quote looking exactly like the researched half.
+//
+// So: the SAME standard corroborateBrackets applies, for the same reason —
+// CO-OCCURRENCE ON ONE PRINTED LINE. The charge's own label and its amount (or
+// its percentage) in one coordinate-paired row we actually retrieved. A charge
+// that fails is DROPPED rather than stored uncorroborated, which is the one place
+// this module is stricter about an ancillary charge than about a bracket (see
+// normalizeAncillaryCharges for why), and the DROPS ARE COUNTED IN THE NOTES:
+// "we dropped three" and "there were none" are different facts, and only the
+// second one reads as reassurance.
+// ---------------------------------------------------------------------------
+
+/** Is this percentage printed on this line AS A PERCENTAGE OF ITS OWN? The
+ *  numeric sibling of feeOnLine: without the leading guard, a charge reported as
+ *  "65%" would corroborate off a line printing "165%". */
+function percentOnLine(folded: string, percent: number): boolean {
+  return [String(percent), percent.toFixed(1), percent.toFixed(2)].some((form) => {
+    const esc = form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?:^|[^\\d.])${esc}\\s*%`).test(folded);
+  });
+}
+
+/** Check every ancillary charge the model reported against the bytes THIS RUN
+ *  retrieved, and return the survivors plus a named list of what was refused.
+ *
+ *  `reported` is raw model output — it is never trusted, never stored as it
+ *  arrives, and the only field of it that reaches storage unexamined is prose.
+ *  The survivors come back through normalizeAncillaryCharges, the same function
+ *  the storage boundary uses, so the notes and the stored row cannot drift. */
+export function corroborateAncillaryCharges(
+  reported: unknown,
+  finding: FeeScheduleFinding,
+  ledger: FeeDocumentLedger,
+): { held: FeeAncillaryCharge[]; dropped: string[] } {
+  const items = Array.isArray(reported) ? reported.slice(0, 60) : [];
+  if (!items.length) return { held: [], dropped: [] };
+
+  const lines: Array<{ raw: string; folded: string; doc: number }> = [];
+  ledger.corpus.forEach((body, doc) => {
+    const documentLines = String(body ?? "").split("\n").map((l) => l.trim());
+    for (const [index, raw] of documentLines.entries()) {
+      if (!raw) continue;
+      lines.push({ raw, folded: matchKey(raw), doc });
+      // A WRAPPED ROW IS STILL ONE ROW, and refusing to see that costs real
+      // charges. MEASURED, not imagined: Portland's adopted electrical schedule
+      // prints its plan-review charge across two printed lines —
+      //     p2  Plan Review Fee
+      //     p2  25% of total electrical permit fee - Maximum number of allowable checksheets: 2
+      // — and the live pass reported it, correctly, as one charge with both
+      // halves in its label. Nothing matched, so a published, mandatory 25% plan
+      // review was dropped. That is a false negative, not safety.
+      //
+      // The pairing is deliberately the NARROWEST shape that fixes it, and it is
+      // generic rather than a patch for one document: line N is joined to line
+      // N+1 ONLY when N names no money of its own and N+1 does — a label cell
+      // above its value cell. A priced line never absorbs its neighbour, so the
+      // wind row printed under the solar row can still never lend it a fee, and
+      // the whole-label requirement below is unchanged.
+      const next = documentLines[index + 1] ?? "";
+      if (!next || /[$%]/.test(raw) || !/[$%]/.test(next)) continue;
+      const joined = `${raw.replace(/^p\d+\s+/, "")} — ${next.replace(/^p\d+\s+/, "")}`;
+      lines.push({ raw: joined, folded: matchKey(joined), doc });
+    }
+  });
+  // Prefer the cited final schedule over earlier exploratory copies — the same
+  // ordering rule corroborateBrackets applies, for the same reason.
+  lines.sort((a, b) => Number(clean(ledger.evidence[b.doc]?.url) === clean(finding.sourceUrl))
+    - Number(clean(ledger.evidence[a.doc]?.url) === clean(finding.sourceUrl)));
+
+  const candidates: Record<string, unknown>[] = [];
+  const dropped: string[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const c = item as Record<string, unknown>;
+    const label = clean(c.label).slice(0, 200);
+    const named = label || "(unlabelled charge)";
+    const amountUsd = num(c.amountUsd);
+    const percent = num(c.percent);
+    const hasAmount = amountUsd != null && amountUsd >= 0;
+    const hasPercent = percent != null && percent > 0 && percent <= 100;
+    if (hasAmount === hasPercent) { dropped.push(`${named} — neither a single amount nor a single percentage`); continue; }
+    // Deliberately the WHOLE label (and the label with its inline amount
+    // removed), never small pieces of it: "plan review" is a fragment of half the
+    // rows in a fee schedule, and matching on it is the wind-row mis-attribution
+    // this module already learned once.
+    const fragments = labelFragments(label);
+    if (!fragments.length) { dropped.push(`${named} — label too short to pin one printed row`); continue; }
+    const hit = lines.find((l) => fragments.some((f) => l.folded.includes(f))
+      && (hasAmount ? feeOnLine(l.folded, amountUsd as number) : percentOnLine(l.folded, percent as number)));
+    // NO LEDGER MEANS NO SURVIVORS, and that is intended: a finding resting on
+    // web search alone keeps its permit line (advisory, as everywhere else here)
+    // and loses this list, because a list nothing was read for is the one shape a
+    // fabrication and a reading are indistinguishable in.
+    if (!hit) { dropped.push(named); continue; }
+    candidates.push({
+      ...c,
+      label,
+      matchedLine: hit.raw.slice(0, 300),
+      sourceUrl: clean(ledger.evidence[hit.doc]?.url) || clean(finding.sourceUrl),
+    });
+  }
+  const held = normalizeAncillaryCharges(candidates);
+  // The normaliser can still refuse (the cap, a shape it will not store). A
+  // refusal there is a drop too, and an uncounted drop is a silent loss.
+  const kept = new Set(held.map((c) => c.label.toLowerCase()));
+  for (const c of candidates) {
+    const label = clean(c.label);
+    if (!kept.has(label.toLowerCase())) dropped.push(`${label || "(unlabelled charge)"} — refused at the storage boundary`);
+  }
+  return { held, dropped };
+}
+
+/** Put the surviving charges on the brackets — and REFUSE TO BILL A SURCHARGE
+ *  TWICE while doing it.
+ *
+ *  Every bracket gets the list, because these charges are levied on the FILING
+ *  and nothing here knows which size tier a future job will land in; the
+ *  evaluator reads only the bracket it matched, so one list per bracket yields
+ *  exactly one instance per quoted line.
+ *
+ *  THE DOUBLE-CHARGE. A 12% state surcharge now has two roads onto the same
+ *  bracket: corroborateBrackets can attach `stateSurcharge`, which the evaluator
+ *  folds INTO the line's own fee, and this list can hold the identical 12% as a
+ *  charge added ON TOP of it. A bracket carrying both bills the customer the
+ *  surcharge twice, and the arithmetic would look deliberate. Coos County and
+ *  Tigard print exactly the sentences that fire the bracket-level path, so this
+ *  is reachable today and not a hypothetical. Per BRACKET, because the two
+ *  channels are per bracket: a row whose own surcharge field is empty keeps the
+ *  ancillary one, which is the only way the charge survives at all where the
+ *  narrow bracket-level detector does not fire. */
+export function attachAncillaryCharges(brackets: FeeBracket[], held: FeeAncillaryCharge[]): void {
+  if (!held.length) return;
+  for (const b of brackets) {
+    const alreadyInTheLine = [b.stateSurcharge?.percent, b.communitySurcharge?.percent]
+      .filter((p): p is number => typeof p === "number");
+    const mine = held.filter((c) => !(c.kind === "surcharge" && c.percent != null && alreadyInTheLine.includes(c.percent)));
+    if (mine.length) b.ancillaryCharges = mine.map((c) => ({ ...c }));
+    else delete b.ancillaryCharges;
+  }
+}
+
+/** The notes trail for the rest of the bill. Reads the charges back OFF THE
+ *  BRACKETS — the same grain and the same contract as corroborationNotes — so the
+ *  sentence an operator reads and the row that was stored are one fact, not two
+ *  that can drift. */
+export function ancillaryChargeNotes(brackets: FeeBracket[], dropped: string[]): string[] {
+  const noPipe = (s: string): string => s.replace(/\s*\|\s*/g, " / ");
+  // THE UNION ACROSS BRACKETS, not the first bracket's list: attachAncillaryCharges
+  // drops a surcharge from the rows that already carry it inside their own fee, so
+  // reading one bracket would under-report what the row holds.
+  const held: FeeAncillaryCharge[] = [];
+  const seen = new Set<string>();
+  for (const b of brackets) {
+    for (const c of b.ancillaryCharges ?? []) {
+      const key = `${c.label.toLowerCase()}|${c.amountUsd ?? `${c.percent}%`}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      held.push(c);
+    }
+  }
+  const out: string[] = [];
+  if (held.length) {
+    const itemised = held.map((c) => {
+      const money = c.amountUsd != null ? `$${c.amountUsd.toFixed(2)}` : `${c.percent}%${c.percentOf ? ` ${c.percentOf}` : ""}`;
+      return `${noPipe(c.label)} ${money}`
+        + `${c.appliesTo ? ` [${c.appliesTo} filing]` : ""}`
+        + `${c.conditional ? ` (CONDITIONAL${c.condition ? `: ${noPipe(c.condition)}` : ""})` : ""}`;
+    }).join("; ").slice(0, 900);
+    out.push(
+      `ANCILLARY CHARGES HELD (${held.length}) — this filing draws more than the permit line, and NONE of these is inside the permit fee above: `
+      + `${itemised}. Held as corroborated evidence; NOT yet totalled into any quote.`,
+    );
+  }
+  if (dropped.length) {
+    out.push(
+      `${dropped.length} REPORTED ANCILLARY CHARGE(S) NOT STORED — nothing this run retrieved prints the label and its amount together on one line: `
+      + `${dropped.map(noPipe).join("; ").slice(0, 600)}. The real filing may still owe them; this row does not price them.`,
+    );
+  }
+  if (!held.length && !dropped.length) {
+    out.push(
+      "NO ANCILLARY CHARGES REPORTED — research named no plan-review, land-use, fire-review, processing or surcharge line beyond the permit fee."
+      + " That is an ABSENCE OF REPORT, not a finding that this jurisdiction levies nothing else: a real filing here may still arrive as several"
+      + " separate bills from several bureaus, so this row is a permit line and not a total.",
+    );
+  }
+  return out;
+}
+
 const FEE_RESEARCH_SYSTEM = `You research PUBLISHED FEE SCHEDULES for residential solar work and return them as structured data.
 
 WHAT YOU ARE LOOKING FOR
@@ -1461,6 +1805,23 @@ Set "paymentMethod" to how the money actually moves: "portal" (paid online at th
 "NO FEE" IS AN ANSWER
 Most residential net-metering / interconnection applications carry no utility fee. If the utility's own documentation says so, that is a REAL FINDING: return found:true, basis "flat", one bracket with feeUsd 0, and the sentence that says it. Some utilities do charge — Ameren Illinois, for example, charges a $50 Level 1 interconnection fee paid by mailed check — so check, do not assume. Return found:false ONLY when you genuinely could not determine it.
 
+ONE FILING, SEVERAL BILLS — THE PERMIT LINE IS NOT THE PRICE (permit schedules only)
+Returning only the permit fee line is an INCOMPLETE ANSWER, and it is the single most common way this research goes wrong. A residential solar filing routinely produces SEVERAL SEPARATE BILLS FROM SEVERAL BUREAUS of the same jurisdiction. One real paid receipt — a 3.5 kW rooftop system, one address, one day — came to four bills from three bureaus: a fire plan review charge, an electrical permit plus a state surcharge, a land use review plus a building plan-review/processing charge, and a building permit plus its own state surcharge. The two permit lines were less than half the money. An answer holding only the permit line would have quoted that customer a fraction of what they paid.
+
+So for the filing you were asked about, ALSO collect every OTHER charge the jurisdiction levies on it, in "ancillaryCharges":
+  · PLAN REVIEW / plan check — very often a PERCENTAGE of the permit fee (65% is common), sometimes a flat charge.
+  · LAND USE / zoning / planning review.
+  · FIRE or life-safety review.
+  · PROCESSING, technology, records, or administrative fees.
+  · STATE and LOCAL SURCHARGES — normally a percentage of the permit fee (Oregon's state surcharge is 12%).
+For EACH one give: the label EXACTLY AS PRINTED; either its dollar amount OR its percentage together with what the percentage is taken OF — NEVER pre-multiply a percentage into dollars, report 65%, not the product, because the product is only true for one job; whether it is MANDATORY or CONDITIONAL and on what; which filing it rides (the building permit, the electrical permit, or the filing as a whole); and the verbatim printed line and the URL it came from.
+
+ONLY WHAT THE SCHEDULE PRINTS. Every one of these is checked against the bytes we retrieved, the same way the permit line is: a charge whose label and amount you did not read together on a line of a document you opened is DROPPED. If the jurisdiction genuinely levies nothing beyond the permit fee, return an EMPTY list — an honest absence is a correct answer here. Do not add a plan-review fee because most jurisdictions have one.
+
+THIS DOES NOT WIDEN WHICH PERMIT YOU ARE PRICING. The discipline scoping above still holds exactly as it did: "brackets" is still that one permit's table and nothing else. Charges that ride the OTHER discipline's filing are reported with "appliesTo" naming that filing, never folded into this one.
+
+"appliesTo" IS ARITHMETIC, NOT A LABEL. Leave it empty ONLY for a charge that is genuinely levied on EVERY permit in the filing — a percentage surcharge is the usual case, and the receipt above really does carry the state surcharge twice, once on each permit. A FLAT charge billed ONCE for the whole job (a single fire plan review, a single land use review) must NAME the filing it is billed with, because a flat charge left unattributed is charged again on every permit we price and the customer is quoted it twice.
+
 Return ONLY JSON:
 {
   "found": true|false,
@@ -1468,6 +1829,18 @@ Return ONLY JSON:
   "basis": "system_kw|valuation|flat|other",
   "brackets": [
     { "minKw": 5.01, "maxKw": 15, "feeUsd": 175, "label": "<the schedule's OWN wording for this row, verbatim>" }
+  ],
+  "ancillaryCharges": [
+    { "label": "<the schedule's OWN wording for this charge, verbatim>",
+      "kind": "plan_review|land_use_review|fire_review|processing|surcharge|other",
+      "amountUsd": 50,
+      "percent": null,
+      "percentOf": "<what the percentage is taken of, in the document's words; omit on a flat charge>",
+      "conditional": false,
+      "condition": "<when it applies, if it does not always>",
+      "appliesTo": "structural|electrical|combo|<empty for the filing as a whole>",
+      "quote": "<the verbatim printed line carrying this charge>",
+      "sourceUrl": "<the document it is printed in>" }
   ],
   "notes": "<short segments: what the schedule covers, whether it is combined building+electrical, plan-review percentages, which document and effective date you used and whether a newer one exists, anything a coordinator must know. Say plainly if this is a third-party source.>",
   "paymentMethod": "portal|mailed_check|none|unknown",
@@ -1572,7 +1945,13 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
     "",
     input.track === "nem"
       ? "Find the published APPLICATION / INTERCONNECTION FEE for a residential net-metering (net energy metering) application to this utility. If there is none, say so with the sentence that says so."
-      : "Find the published PERMIT FEE SCHEDULE line for a residential rooftop solar PV installation in this jurisdiction (building and/or electrical permit). Extract the full bracket table for the solar/renewable-energy line.",
+      // ONE PASS, A WIDER ASK — not a second pass. This is the most expensive
+      // operation in the system (up to twelve web-grounded turns and ten document
+      // retrievals), so the fix for "a quote cannot reach a real total" is to
+      // collect the whole filing while the schedule is already open, never to go
+      // back for the rest of it.
+      : "Find the published PERMIT FEE SCHEDULE line for a residential rooftop solar PV installation in this jurisdiction (building and/or electrical permit). Extract the full bracket table for the solar/renewable-energy line.\n"
+        + "THEN, FROM THE SAME SCHEDULE, collect every OTHER mandatory or commonly-applied charge this jurisdiction bills on that same filing — plan review, land use / planning review, fire or life-safety review, processing/technology/records fees, and state or local surcharges — into \"ancillaryCharges\". The permit line alone is NOT this filing's price: one paid residential solar filing here can arrive as several separate bills from several bureaus, and a quote built from the permit line only is short by more than half in jurisdictions that work that way. Report a percentage as a percentage, never pre-multiplied, and return an empty list if the schedule genuinely levies nothing else.",
     disciplineAsk,
   ].filter(Boolean).join("\n");
 
@@ -1595,6 +1974,14 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
     let raw = "";
     let opened = 0;
     let exhausted = "";
+    // WHY THE ANSWER STOPPED, kept beside the answer itself. The ask above is
+    // wider than it was — a permit pass now asks for the whole filing, not one
+    // line — and the failure mode that buys is a reply CUT OFF at max_tokens,
+    // whose truncated JSON parses to nothing and arrives as found:false. That is
+    // the same channel "this jurisdiction publishes no schedule" arrives on, and
+    // the two must never be confusable (the same lesson the timeout wording
+    // below was written for).
+    let lastStop = "";
     // A container is carried forward when the server hands one back. It normally
     // does not here — see WEB_SEARCH_TOOL — but a null id must never be sent.
     let containerId: string | null = null;
@@ -1643,7 +2030,7 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
       containerId = msg.container?.id ?? containerId;
 
       const text = msg.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("\n");
-      if (text.trim()) raw = text;
+      if (text.trim()) { raw = text; lastStop = clean(msg.stop_reason); }
       // The assistant turn goes back VERBATIM — thinking blocks, server-side
       // web_search results and all. Reconstructing it would drop the search
       // results the model is reasoning from.
@@ -1715,21 +2102,42 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
     // notes describe the same corpus the corroboration was drawn from.
     finding.brackets = corroborateBrackets(finding, ledger);
 
+    // THE REST OF THE BILL. Gated against the same corpus, then ATTACHED TO EVERY
+    // BRACKET: these charges are levied on the FILING, not on one size tier, and
+    // brackets_json is the structured column a schedule owns — so a bracket
+    // carries its own list wherever the evaluator later picks it up. A permit
+    // pass with no surviving charges still says so in notes; a NEM pass is left
+    // alone entirely (the ask was never widened there, and an empty list would
+    // print a sentence about bureaus on an interconnection fee).
+    const ancillary = input.track === "nem"
+      ? { held: [] as FeeAncillaryCharge[], dropped: [] as string[] }
+      : corroborateAncillaryCharges(parsed.ancillaryCharges, finding, ledger);
+    attachAncillaryCharges(finding.brackets, ancillary.held);
+
     // The check runs on every finding, saved or not, and its verdict travels in
     // the notes — a row whose quote nothing we read supports must say so where
     // the person reading the fee sheet will see it.
     const support = checkQuoteSupport(finding, ledger);
     finding.quoteVerified = support.quoteVerified;
+    // A REPLY CUT OFF IS NOT A SCHEDULE READ. The wider ask makes a longer answer,
+    // and a truncated one must never pass as a complete one.
+    const truncated = lastStop === "max_tokens";
     if (finding.found) {
       finding.notes = mergeNotes(finding.notes, [
         ...retrievalNotes(finding, ledger, support),
         ...corroborationNotes(finding.brackets),
+        ...(input.track === "nem" ? [] : ancillaryChargeNotes(finding.brackets, ancillary.dropped)),
+        ...(truncated
+          ? ["ANSWER TRUNCATED: the model stopped at its token ceiling (stop_reason max_tokens), so what is stored is as far as it got — charges it had not finished listing are missing, and this row is not a complete reading of the schedule."]
+          : []),
       ]);
     }
     if (!finding.found && !finding.reason) {
-      finding.reason = exhausted
-        ? `Research ran out of room — it hit ${exhausted} before producing an answer. Re-run, or enter the schedule by hand from the jurisdiction's fee page.`
-        : "Research returned no usable fee schedule.";
+      finding.reason = truncated
+        ? "The research reply was CUT OFF at the token ceiling (stop_reason max_tokens) and its JSON could not be parsed — this is a truncated ANSWER, not a finding that this jurisdiction publishes no schedule. Re-run; if it recurs the ask is returning more than one reply can hold."
+        : exhausted
+          ? `Research ran out of room — it hit ${exhausted} before producing an answer. Re-run, or enter the schedule by hand from the jurisdiction's fee page.`
+          : "Research returned no usable fee schedule.";
     }
     return finding;
   } catch (err) {
@@ -2111,7 +2519,10 @@ function resolveLine(
   const hop = followCollectedBy(db, raw);
   const hoppedFrom = hop.collectedBy ? (track === "nem" ? raw.utility : raw.ahj) : "";
   const line = lineFor(db, project, track, hop.record, hoppedFrom, inputs);
-  if (hop.unresolved) return { ...line, feeUsd: null, bracketLabel: "", bracketQuote: "", corroboration: undefined, reason: hop.unresolved };
+  // A DANGLING HOP CLEARS THE ITEMISATION TOO. The charges on the line were read
+  // off a row we have just decided does not answer for this project; leaving them
+  // on it would print somebody else's bill beside a refusal.
+  if (hop.unresolved) return { ...line, feeUsd: null, bracketLabel: "", bracketQuote: "", corroboration: undefined, charges: [], reason: hop.unresolved };
   // The discipline reported is the one that was ASKED FOR — a hopped line is
   // still the electrical permit even though it was read off the county's row,
   // and an undifferentiated row answering a discipline-specific ask answers AS
@@ -2179,7 +2590,7 @@ export function feeLinesForProject(
     const valuationUsd = inputs
       ? inputs.valuationUsd
       : (schedule.basis === "valuation" ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value : null);
-    const evaluated = hop.unresolved
+    const evaluated: ReturnType<typeof evaluateSchedule> = hop.unresolved
       ? { feeUsd: null, bracketLabel: "", bracketQuote: "", corroboration: undefined, reason: hop.unresolved }
       : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot) });
     lines.push({
@@ -2204,6 +2615,7 @@ export function feeLinesForProject(
       notes: schedule.notes,
       scheduleId: schedule.id,
       reason: evaluated.reason,
+      charges: evaluated.charges ?? [],
     });
   }
   return lines;
@@ -2534,13 +2946,187 @@ function pathRefusalReason(schedule: FeeScheduleRecord, path: FeePathInput | und
   return pathUncheckedReason(schedule, blocked);
 }
 
+// ---------------------------------------------------------------------------
+// THE REST OF THE BILL — PRICING THE CHARGES THAT ARE NOT THE PERMIT.
+//
+// Measured on a real paid City of Portland receipt (3915 N Kiska St, IVR 5269491,
+// paid 2026-09-18) for a 3.520 kW DC / 3.072 kW AC prescriptive rooftop system:
+// FOUR BILLS FROM THREE BUREAUS, $762.93, of which $354 is permits —
+//
+//   Fire - Plan Review                  $50.00
+//   Electrical Permit RS               $201.00   + St Sur  $24.12  (12% of 201.00)
+//   Land Use Plan Review Res           $217.00
+//   Bldg Plan Rvw/Processing RS/MI/MP   $99.45   (65% of the building permit)
+//   Building Permit RS                 $153.00   + St Sur  $18.36  (12% of 153.00)
+//
+// — against which this table's answer for the same job was one permit line. That
+// gap is not a rounding error, it is more than half the bill, and it printed as a
+// sourced, citable, confident number.
+//
+// THREE RULES, EACH EARNED BY A LINE OF THAT RECEIPT:
+//
+//  1. THE SURCHARGE IS ON THE PERMIT, NEVER ON THE ANCILLARIES. $24.12 is 12% of
+//     $201.00, not 12% of the bill. Surcharging a plan review invents money the
+//     jurisdiction never charged, and the receipt is the proof.
+//  2. A PERCENTAGE IS EVALUATED, NOT STORED AS A PRODUCT. $99.45 is 65% of the
+//     $153.00 building permit; the same 65% on a bigger job is a different number.
+//     It is taken off the BASE permit fee (`b.feeUsd`), before surcharges, because
+//     that is what "of the building permit fee" names.
+//  3. ROUNDED PER CHARGE, like the surcharges above it — the receipt's own
+//     arithmetic is per line, and summing unrounded then rounding once drifts.
+//
+// AND THE HONEST HALF: A CONDITIONAL CHARGE WHOSE TRIGGER NOBODY ANSWERED IS
+// CARRIED WITH amountUsd:null, NEVER DROPPED. Dropping it produces a smaller total
+// that reads exactly like a complete one — which is the $762.93-as-$298 defect
+// rebuilt one level down, and it would be harder to see because the charge WOULD
+// appear in the itemisation with a plausible neighbour beside it.
+// ---------------------------------------------------------------------------
+
+/** Can the RECORDED PROJECT FACTS say this conditional charge is incurred?
+ *
+ *  THREE-VALUED, AND `false` IS DELIBERATELY UNREACHABLE. knownElectricalReviewRequired
+ *  — the one fact of this kind the parser records — is a `known…` predicate: it returns
+ *  false both for "the plan set says no review" and for "nothing in the plan set
+ *  mentions one". Those are different facts and only one of them is permission to drop
+ *  a charge from somebody's total, so this returns `true` (the facts assert it) or
+ *  `null` (nobody has said), and never the value that would let an absence read as a
+ *  denial. A charge whose trigger genuinely does not apply is answered by an operator
+ *  entering the portal's own figure, not by this function guessing.
+ *
+ *  Scoped to the conditions the recorded facts actually speak to — one, today. A
+ *  condition this cannot read comes back `null`, which is the truth about our
+ *  knowledge and not a claim about the jurisdiction. */
+/** " | " is the note SEGMENT separator (mergeNotes splits on it). Research output
+ *  routinely contains it — a stored charge label is often the whole printed row,
+ *  "Fire - Plan Review | $50.00" — so any of it quoted into a REASON has to lose
+ *  it, or the first writer to file that reason into notes shreds it into
+ *  fragments. Same rule pathMissReason already follows by hand. */
+function noPipe(value: string): string {
+  return String(value ?? "").replace(/\s*\|\s*/g, " — ");
+}
+
+function conditionalChargeApplies(
+  condition: string,
+  inputs: { electricalReviewRequired?: boolean },
+): true | null {
+  if (inputs.electricalReviewRequired === true
+    && /\belectrical\b[^.;]{0,60}\bplan\s+review\b|\bplan\s+review\b[^.;]{0,60}\belectrical\b/i.test(condition)) {
+    return true;
+  }
+  return null;
+}
+
+/** The charge the PERMIT itself is, plus its surcharges — the parts already inside
+ *  the line's own `feeUsd`. Itemised so the screens can show the arithmetic the
+ *  receipt shows, never so anybody re-adds them. */
+function permitCharges(
+  schedule: FeeScheduleRecord,
+  b: FeeBracket,
+  bracketLabel: string,
+  bracketQuote: string,
+  stateSurchargeUsd: number | undefined,
+  communitySurchargeUsd: number | undefined,
+): FeeChargeBreakdown[] {
+  const out: FeeChargeBreakdown[] = [{
+    label: clean(b.label) || bracketLabel,
+    kind: "permit",
+    amountUsd: round2(b.feeUsd),
+    partOfLineFee: true,
+    conditional: false,
+    reason: "",
+    quote: bracketQuote,
+    sourceUrl: clean(b.corroboration?.sourceUrl) || schedule.sourceUrl,
+  }];
+  if (stateSurchargeUsd != null && b.stateSurcharge) {
+    out.push({
+      label: `State surcharge (${b.stateSurcharge.percent}% of the permit fee)`,
+      kind: "state_surcharge",
+      amountUsd: stateSurchargeUsd,
+      partOfLineFee: true,
+      conditional: false,
+      reason: "",
+      quote: clean(b.stateSurcharge.quote),
+      sourceUrl: clean(b.stateSurcharge.sourceUrl),
+    });
+  }
+  if (communitySurchargeUsd != null && b.communitySurcharge) {
+    out.push({
+      label: `Community surcharge (${b.communitySurcharge.percent}% of the permit fee)`,
+      kind: "community_surcharge",
+      amountUsd: communitySurchargeUsd,
+      partOfLineFee: true,
+      conditional: false,
+      reason: "",
+      quote: clean(b.communitySurcharge.quote),
+      sourceUrl: clean(b.communitySurcharge.sourceUrl),
+    });
+  }
+  return out;
+}
+
+/** Every ancillary charge this bracket carries, priced for THIS filing.
+ *
+ *  `appliesTo` IS A FILTER AND NOT A LABEL. Portland's fire and land-use reviews
+ *  ride the BUILDING filing; an electrical pass that folded them into the electrical
+ *  permit would bill them twice the moment both rows are quoted together. A charge
+ *  naming no discipline rides the filing as a whole and is charged wherever it is
+ *  stored — which is why the storage side attaches a filing-level charge to exactly
+ *  one row per jurisdiction. */
+function ancillaryCharges(
+  schedule: FeeScheduleRecord,
+  b: FeeBracket,
+  inputs: { electricalReviewRequired?: boolean },
+): FeeChargeBreakdown[] {
+  const out: FeeChargeBreakdown[] = [];
+  for (const c of b.ancillaryCharges ?? []) {
+    if (c.appliesTo && c.appliesTo !== schedule.discipline) continue;
+    // Rule 2 above: a percentage is a function of the BASE permit fee, evaluated
+    // here and rounded here, never a product somebody stored.
+    const amount = c.percent != null ? round2(b.feeUsd * c.percent / 100) : round2(c.amountUsd ?? 0);
+    const basis = c.percent != null
+      ? `${c.percent}% of ${clean(c.percentOf) || "the permit fee"} ($${b.feeUsd.toFixed(2)})`
+      : "";
+    const known = c.conditional ? conditionalChargeApplies(c.condition, inputs) : true;
+    out.push({
+      label: c.label,
+      kind: c.kind,
+      amountUsd: known === true ? amount : null,
+      partOfLineFee: false,
+      conditional: c.conditional,
+      // ACTIONABLE CLAUSE FIRST, AND SHORT ENOUGH TO SURVIVE THE SLICE.
+      //
+      // submissionFees.normalizeScheduleResult cuts a reason to 400 characters and
+      // resolutionFrom joins several together, so LENGTH IS A CORRECTNESS PROPERTY
+      // here, not a style one: the repair leads, the jurisdiction's own condition is
+      // capped (a research note is not length-bounded), and the sentence fits.
+      //
+      // No FEE_CONFLICT_MARKER — nothing disagrees with anything here, a question has
+      // simply not been put. And no " | ": that is the note SEGMENT separator
+      // mergeNotes splits on, and a reason carrying it would be shredded into
+      // fragments the first time somebody fed this string into a row's notes. The
+      // label and the percentage basis are RESEARCH OUTPUT and routinely carry it
+      // ("Fire - Plan Review | $50.00"), so they are stripped rather than trusted.
+      reason: known === true
+        ? ""
+        : `CONDITIONAL CHARGE UNRESOLVED — confirm whether this filing incurs "${noPipe(c.label)}"`
+          + `${basis ? ` (${noPipe(basis)})` : ` ($${amount.toFixed(2)})`} and enter the portal's own figure. `
+          + `${noPipe(clean(schedule.ahj)) || "This jurisdiction"} levies it only on some filings`
+          + `${clean(c.condition) ? `: ${noPipe(clean(c.condition)).slice(0, 120)}` : ""}. `
+          + `Nothing is quoted for it, and the total stays UNRESOLVED rather than smaller.`,
+      quote: basis ? `${c.quote} — ${basis}` : c.quote,
+      sourceUrl: c.sourceUrl,
+    });
+  }
+  return out;
+}
+
 /** THE ONE EVALUATOR. Both public entry points below route through this, so the
  *  bracket boundary can only ever be decided in one place — two parallel
  *  evaluations would drift, and the boundary is the whole point of the table. */
 function evaluateSchedule(
   schedule: FeeScheduleRecord,
   inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; track?: FeeTrack; permitPath?: FeePathInput; electricalReviewRequired?: boolean },
-): { feeUsd: number | null; baseFeeUsd?: number; stateSurchargeUsd?: number; communitySurchargeUsd?: number; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string } {
+): { feeUsd: number | null; baseFeeUsd?: number; stateSurchargeUsd?: number; communitySurchargeUsd?: number; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string; charges?: FeeChargeBreakdown[] } {
   const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", bracketQuote: "", reason });
   const hit = (b: FeeBracket) => {
     const bracketQuote = bracketEvidence(schedule, b);
@@ -2602,7 +3188,17 @@ function evaluateSchedule(
 
     const stateSurchargeUsd = b.stateSurcharge ? round2(b.feeUsd * b.stateSurcharge.percent / 100) : undefined;
     const communitySurchargeUsd = b.communitySurcharge ? round2(b.feeUsd * b.communitySurcharge.percent / 100) : undefined;
-    return { feeUsd: round2(b.feeUsd + (stateSurchargeUsd ?? 0) + (communitySurchargeUsd ?? 0)), baseFeeUsd: feeIncludesSurcharges(`${b.label ?? ''} ${bracketQuote}`) ? undefined : b.feeUsd, stateSurchargeUsd, communitySurchargeUsd,
+    // THE PERMIT LINE'S OWN AMOUNT IS UNCHANGED, and that is deliberate: the
+    // ancillary charges are levied on the FILING, not on this permit, and a form
+    // field or a portal quantity that asks for "the electrical permit fee" must
+    // keep getting the electrical permit fee. They are added at resolutionFrom,
+    // where the filing's total is made, and they travel on `charges` so the
+    // screens can itemise both halves without either of them moving.
+    const charges = [
+      ...permitCharges(schedule, b, bracketLabel, bracketQuote, stateSurchargeUsd, communitySurchargeUsd),
+      ...ancillaryCharges(schedule, b, inputs),
+    ];
+    return { feeUsd: round2(b.feeUsd + (stateSurchargeUsd ?? 0) + (communitySurchargeUsd ?? 0)), baseFeeUsd: feeIncludesSurcharges(`${b.label ?? ''} ${bracketQuote}`) ? undefined : b.feeUsd, stateSurchargeUsd, communitySurchargeUsd, charges,
       bracketLabel, bracketQuote: stateSurchargeUsd == null ? bracketQuote
         : `${bracketQuote}; ${b.stateSurcharge!.quote} (+$${stateSurchargeUsd.toFixed(2)})${communitySurchargeUsd == null ? '' : `; ${b.communitySurcharge!.quote} (+$${communitySurchargeUsd.toFixed(2)})`}.`, corroboration, reason: "" };
   };
@@ -2764,6 +3360,7 @@ function lineFor(
     notes: schedule.notes,
     scheduleId: schedule.id,
     reason: evaluated.reason,
+    charges: evaluated.charges ?? [],
   };
 }
 
@@ -2777,12 +3374,45 @@ function lineFor(
 function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<ProjectFeeResolution, "lines"> {
   const primary = lines[0];
   const unresolved = lines.filter((l) => l.feeUsd == null);
-  const total = unresolved.length ? null : round2(lines.reduce((sum, l) => sum + (l.feeUsd ?? 0), 0));
-  const label = lines.length === 1
+  // THE FILING'S OTHER CHARGES, GATHERED ONCE.
+  //
+  // DE-DUPLICATED BY (label, source) ACROSS THE LINES, and the guard is cheap
+  // insurance against the one way this arithmetic can go wrong in the customer's
+  // favour of the jurisdiction: a filing-level charge attached to BOTH of a
+  // jurisdiction's rows would otherwise be billed twice. The storage side attaches
+  // a charge naming no discipline to exactly one row per jurisdiction, and
+  // ancillaryCharges() already drops a charge whose `appliesTo` names another
+  // filing — this is the belt to those braces, and it is keyed on the printed
+  // label plus the document so two genuinely different reviews from two bureaus
+  // (Portland's fire and land-use) are never collapsed into one.
+  const seenCharge = new Set<string>();
+  const charges: FeeChargeBreakdown[] = [];
+  for (const line of lines) {
+    for (const c of line.charges ?? []) {
+      const key = `${c.kind}|${c.label.toLowerCase()}|${c.sourceUrl.toLowerCase()}|${c.partOfLineFee ? line.scheduleId : ""}`;
+      if (seenCharge.has(key)) continue;
+      seenCharge.add(key);
+      charges.push(c);
+    }
+  }
+  const extra = charges.filter((c) => !c.partOfLineFee);
+  // AN UNPRICED CHARGE NULLS THE TOTAL EXACTLY AS AN UNPRICED LINE DOES — same
+  // rule, same vocabulary, no fourth state. A conditional review nobody has
+  // answered is the difference between a $762.93 filing and a confident $663.48,
+  // and the smaller number is the dangerous one because it looks finished.
+  const unpricedCharges = extra.filter((c) => c.amountUsd == null);
+  const total = unresolved.length || unpricedCharges.length
+    ? null
+    : round2(lines.reduce((sum, l) => sum + (l.feeUsd ?? 0), 0) + extra.reduce((sum, c) => sum + (c.amountUsd ?? 0), 0));
+  const label = lines.length === 1 && !extra.length
     ? primary.bracketLabel
-    : lines.map((l) => `${l.authority || "?"}${l.discipline ? ` ${l.discipline}` : ""}: ${l.feeUsd == null ? "unresolved" : `$${l.feeUsd.toFixed(2)}`}`).join(" + ");
+    : [
+      ...lines.map((l) => `${l.authority || "?"}${l.discipline ? ` ${l.discipline}` : ""}: ${l.feeUsd == null ? "unresolved" : `$${l.feeUsd.toFixed(2)}`}`),
+      ...extra.map((c) => `${c.label}: ${c.amountUsd == null ? "unresolved" : `$${c.amountUsd.toFixed(2)}`}`),
+    ].join(" + ");
   return {
     feeUsd: total,
+    charges,
     bracketLabel: label,
     // A mixed-basis total is not any one basis. "other" is the existing value
     // for "a human has to read this", which is exactly right for the split.
@@ -2797,8 +3427,11 @@ function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<Project
     // prints $335, so quoting ANY row beside it — which is what propagating
     // lines[0]'s citation did — is a citation for a number its source never
     // mentioned. "" here, and the caller shows each line's own evidence beside
-    // its own amount (`lines[i].bracketQuote`).
-    bracketQuote: lines.length === 1 ? primary.bracketQuote : "",
+    // its own amount (`lines[i].bracketQuote`). The same reasoning covers the
+    // ancillary charges: a single permit line PLUS a fire review is still a sum no
+    // document prints, so `extra.length` disqualifies the citation exactly as a
+    // second permit does.
+    bracketQuote: lines.length === 1 && !extra.length ? primary.bracketQuote : "",
     // Weakest link, like confidence: a total is corroborated only if every line
     // in it was found printed. Still never a promotion — confidence below is
     // decided separately and code never writes 'verified'.
@@ -2808,9 +3441,13 @@ function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<Project
     confidence: lines.some((l) => l.confidence === "seeded") ? "seeded" : "verified",
     matchedName: lines.length === 1 ? primary.authority : lines.map((l) => l.authority).filter(Boolean).join(" + "),
     scheduleId: primary.scheduleId,
-    reason: unresolved.length
-      ? unresolved.map((l) => `${l.authority || "this jurisdiction"}${l.discipline ? ` (${l.discipline})` : ""}: ${l.reason}`).join(" ")
-      : "",
+    // EVERY REASON THE TOTAL IS UNREADABLE, LINES AND CHARGES ALIKE. An unpriced
+    // charge that nulled the total without saying why would be the worst of both:
+    // no number and no repair.
+    reason: [
+      ...unresolved.map((l) => `${l.authority || "this jurisdiction"}${l.discipline ? ` (${l.discipline})` : ""}: ${l.reason}`),
+      ...unpricedCharges.map((c) => c.reason),
+    ].join(" "),
   };
 }
 
@@ -2897,6 +3534,10 @@ export interface PublishedFeeLookupResult {
   /** The schedule's own name for the jurisdiction — may be the legal name where
    *  the project carries an operator short name. */
   jurisdictionName: string;
+  /** The filing's charges, itemised — see shared FeeChargeBreakdown. Carried at
+   *  this seam too so the compatibility shim and feeForProject cannot answer the
+   *  same question two different ways. */
+  charges: FeeChargeBreakdown[];
 }
 
 /** Look up the published schedule for a project and evaluate it. Returns null
@@ -2961,6 +3602,7 @@ export function lookupPublishedFee(db: AppDb, input: PublishedFeeLookupArgs): Pu
         ? rolled.reason
         : `Published fee schedule${lines.length > 1 ? "s" : ""}${jurisdictionName ? ` (${jurisdictionName})` : ""}${rolled.bracketLabel ? `: ${rolled.bracketLabel}` : ""}`,
       jurisdictionName,
+      charges: rolled.charges,
     };
   } catch (err) {
     logger.warn("fees", "lookupPublishedFee failed — falling through the quote ladder", { err: err instanceof Error ? err.message : String(err) });

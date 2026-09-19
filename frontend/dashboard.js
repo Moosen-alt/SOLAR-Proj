@@ -1661,6 +1661,52 @@ const FEE_PAYMENT_METHOD = {
   unknown: "How this is paid is not recorded.",
 };
 
+// ONE FILING IS NOT ONE CHARGE.
+//
+// The operator's own paid City of Portland receipt for a 3.5 kW rooftop system is
+// FOUR BILLS FROM THREE BUREAUS totalling $762.93: a $50 fire plan review, a $217
+// land use review, a $99.45 building plan review/processing charge, and two permits
+// at $201 and $153 each carrying a 12% state surcharge. Two of those seven charges are
+// permits — so a card that draws only the permit is hiding more than half the bill,
+// and it hides it behind a number that looks finished.
+//
+// Drawn ONLY where a jurisdiction charges more than its permits. Every row in the
+// table today publishes a permit line and nothing else, and those cards are
+// unchanged: a breakdown that appeared on every fee would be noise on the ones it
+// cannot help, which is how the case that needs it stops being read.
+//
+// AN UNPRICED CHARGE KEEPS ITS ROW AND SAYS SO. It is the reason the total above it
+// is UNKNOWN; dropping it would leave a blank total with nothing explaining it, and
+// listing it with a plausible number beside its neighbours would be worse still.
+// esc() on every field — labels, quotes and reasons are all research output.
+function renderFeeCharges(line) {
+  const charges = Array.isArray(line.charges) ? line.charges : [];
+  if (!charges.some((c) => c && !c.partOfLineFee)) return "";
+  const priced = charges.filter((c) => c.amountUsd != null);
+  const complete = priced.length === charges.length;
+  const rows = charges.map((c) => `
+    <tr${c.amountUsd == null ? ` class="is-warn"` : ""}>
+      <td style="padding:1px 12px 1px 0">${esc(c.label || "(unlabelled charge)")}${c.conditional ? ` <span class="badge badge-warning">conditional</span>` : ""}</td>
+      <td style="text-align:right;white-space:nowrap">${c.amountUsd == null ? `<span class="badge badge-warning">UNRESOLVED</span>` : feeMoney(c.amountUsd)}</td>
+    </tr>
+    ${c.amountUsd == null && c.reason ? `<tr><td colspan="2" style="padding:0 0 4px;font-size:11px">${esc(c.reason)}</td></tr>` : ""}`).join("");
+  return `
+    <details class="provenance" open>
+      <summary>${esc(String(charges.length))} charges on this filing${complete ? "" : " — incomplete"}</summary>
+      <div class="provenance-body">
+        <table style="font-size:12px;border-collapse:collapse;width:100%">
+          ${rows}
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:3px 12px 1px 0"><strong>${complete ? "Sum of every charge" : "No total — a charge above is unpriced"}</strong></td>
+            <td style="text-align:right"><strong>${complete
+              ? feeMoney(priced.reduce((sum, c) => sum + Number(c.amountUsd), 0))
+              : `<span class="badge badge-warning">INCOMPLETE</span>`}</strong></td>
+          </tr>
+        </table>
+      </div>
+    </details>`;
+}
+
 function renderFeeSheetLine(line) {
   const conf = FEE_CONFIDENCE[line.confidence] || FEE_CONFIDENCE.unknown;
   // Provisional and unknown fees carry the warning tone, so the card LOOKS unfinished.
@@ -1678,6 +1724,7 @@ function renderFeeSheetLine(line) {
       </div>
       <p style="margin:2px 0;font-size:19px;font-weight:700">${feeMoney(line.feeUsd)}</p>
       <p style="margin:2px 0;font-size:12px">${esc(FEE_PAYMENT_METHOD[line.paymentMethod] || line.paymentMethod || "")}</p>
+      ${renderFeeCharges(line)}
       <!-- The amount and how it is paid drive action, so they stay loud. Where
            the number came from is the product's core claim and is kept in full —
            one click away, not competing with the number itself. -->

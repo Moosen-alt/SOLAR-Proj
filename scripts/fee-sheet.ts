@@ -258,6 +258,43 @@ export function renderFeeLine(
         ? "— the schedule is on file but no bracket matched this project"
         : "— no schedule on file, so no bracket was resolved",
   ));
+  // ONE FILING IS NOT ONE CHARGE, AND THE OPERATOR'S OWN RECEIPT IS THE PROOF.
+  //
+  // City of Portland, 3915 N Kiska St, paid 2026-09-18: FOUR BILLS FROM THREE
+  // BUREAUS, $762.93, for a 3.5 kW rooftop system — a $50 fire plan review, a $217
+  // land use review, a $99.45 building plan review/processing charge, and two
+  // permits at $201 and $153 each carrying a 12% state surcharge. Two of those seven
+  // charges are permits. Printed as one number, the other five are invisible, and
+  // the invisible ones are more than half the bill.
+  //
+  // So where a jurisdiction charges more than its permits, the whole bill is
+  // itemised and it adds up on screen. Where it charges a permit and nothing else
+  // — which is most of them, and every row in the table today — this prints
+  // nothing at all and the output is unchanged: a report that grew a new section
+  // for every jurisdiction would bury the one case that needs it.
+  const charges = Array.isArray(line.charges) ? line.charges : [];
+  const extras = charges.filter((c) => !c.partOfLineFee);
+  const allPriced = charges.every((c) => c.amountUsd != null);
+  if (extras.length) {
+    // "the fee above is their total" is only TRUE while every charge is priced. With
+    // one unpriced the schedule refuses a total, the quote falls to the labelled
+    // estimate above, and saying the estimate is the sum of this list would be the
+    // reassurance this whole round exists to remove.
+    out.push(row("Charges", `${charges.length} charges on this filing${allPriced ? " — the fee above is their total" : " — the fee above is NOT their sum; one of them is unpriced"}`));
+    for (const charge of charges) {
+      const amount = charge.amountUsd == null ? "UNRESOLVED" : money(charge.amountUsd);
+      out.push(row("", `${amount.padEnd(12)} ${charge.label}${charge.conditional ? "   (conditional)" : ""}`));
+      if (charge.amountUsd == null && charge.reason) {
+        out.push(row("", `${" ".repeat(13)}${wrap(charge.reason, 50, cont + " ".repeat(13))}`));
+      }
+    }
+    // The arithmetic, restated, because a list of numbers beside a total is a
+    // claim the reader should be able to check in one glance.
+    const priced = charges.filter((c) => c.amountUsd != null);
+    out.push(row("", allPriced
+      ? `${money(priced.reduce((sum, c) => sum + (c.amountUsd ?? 0), 0))}  = the sum of every charge above`
+      : `INCOMPLETE — ${charges.length - priced.length} of ${charges.length} charge(s) unpriced, so there is no total to check.`));
+  }
   // ONE JOB CAN DRAW MORE THAN ONE PERMIT, AND THE TOTAL MUST SHOW ITS WORKING.
   //
   // A Coos Bay rooftop owes the city $200 for the structural permit and the COUNTY $160 for
@@ -267,7 +304,7 @@ export function renderFeeLine(
   // since "Coos County" appearing under a City of Coos Bay project is otherwise the exact
   // shape of a wrong-jurisdiction bug.
   if (schedule && schedule.lines.length > 1) {
-    out.push(row("Permits", `${schedule.lines.length} separate permits — the fee above is their total`));
+    out.push(row("Permits", `${schedule.lines.length} separate permits${extras.length ? "" : " — the fee above is their total"}`));
     for (const part of schedule.lines) {
       const who = part.hoppedFrom ? `${part.authority} (filed via ${part.hoppedFrom})` : part.authority || "(unnamed authority)";
       out.push(row("", `${(part.discipline || "permit").padEnd(11)} ${(part.feeUsd == null ? "UNRESOLVED" : money(part.feeUsd)).padEnd(11)} ${who}`));

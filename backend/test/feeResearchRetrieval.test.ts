@@ -36,6 +36,7 @@ async function main(): Promise<void> {
     openFeeDocument, newFeeDocumentLedger, checkQuoteSupport, retrievalNotes,
     normalizeFeePaymentMethod, saveFeeSchedule, getFeeSchedule, feeScheduleProfileKey,
     lookupPublishedFee, markFeeScheduleVerified,
+    corroborateAncillaryCharges, ancillaryChargeNotes, attachAncillaryCharges,
   } = await import("../src/feeSchedules");
   type Finding = import("../src/feeSchedules").FeeScheduleFinding;
   const { extractPdfTextItems } = await import("../src/pdfTables");
@@ -68,6 +69,44 @@ async function main(): Promise<void> {
   draw(REVIEW_DESC, 72, 580);
   draw(KVA_DESC, 72, 560);
   const pdfBytes = await pdfDoc.save();
+
+  // A SECOND FIXTURE: ONE FILING, SEVERAL CHARGES.
+  //
+  // Portland bills one 3.5 kW rooftop as four separate bills from three bureaus —
+  // fire plan review, electrical permit + 12% state surcharge, land use review +
+  // a building plan review computed as 65% of the building permit, and the
+  // building permit itself. The permit lines were under half the $762.93 total.
+  // This schedule prints the same shape: a permit line, a PERCENTAGE plan review,
+  // a flat fire review, and a percentage surcharge. What it does NOT print is any
+  // technology fee, and that absence is what the gate has to survive.
+  const ANC_PERMIT = "Photovoltaic solar panel system permit - prescriptive path";
+  const ANC_REVIEW = "Solar plan review and processing fee";
+  const ANC_FIRE = "Fire and life safety plan review - residential";
+  const ANC_SURCHARGE = "State of Oregon surcharge on all permit fees";
+  const ancDoc = await PDFDocument.create();
+  const ancPage = ancDoc.addPage([612, 792]);
+  const ancFont = await ancDoc.embedFont(StandardFonts.Helvetica);
+  const ancDraw = (s: string, x: number, y: number): void => { ancPage.drawText(s, { x, y, size: 9, font: ancFont }); };
+  for (const [desc, value, y] of [
+    [ANC_PERMIT, "$200.00", 700],
+    [ANC_REVIEW, "65% of the permit fee", 680],
+    [ANC_FIRE, "$50.00", 660],
+    [ANC_SURCHARGE, "12% of the permit fee", 640],
+  ] as Array<[string, string, number]>) {
+    ancDraw(desc, 72, y);
+    ancDraw(value, 400, y);
+  }
+  // A WRAPPED ROW, copied from the real thing. Portland's adopted electrical
+  // schedule really does print its plan-review charge as two consecutive printed
+  // lines, the label cell above the value cell — measured by retrieving the PDF,
+  // page 2:
+  //     p2  Plan Review Fee
+  //     p2  25% of total electrical permit fee - Maximum number of allowable checksheets: 2
+  const ANC_WRAP_HEAD = "Plan Review Fee";
+  const ANC_WRAP_TAIL = "25% of total electrical permit fee - Maximum number of allowable checksheets: 2";
+  ancDraw(ANC_WRAP_HEAD, 72, 620);
+  ancDraw(ANC_WRAP_TAIL, 72, 600);
+  const ancPdfBytes = await ancDoc.save();
 
   // The fixture must actually be a trap: in STREAM order, the item that follows
   // "$200.00" is the NEXT ROW's value, and the descriptions arrive only after
@@ -110,6 +149,11 @@ async function main(): Promise<void> {
         + "<a href=\"/forms/adopted-fee-schedule.pdf\">Community Development Fee Schedule effective 7-1-25</a>"
         + "</body></html>",
       );
+      return;
+    }
+    if (url.startsWith("/anc-fees.pdf")) {
+      res.writeHead(200, { "content-type": "application/pdf" });
+      res.end(Buffer.from(ancPdfBytes));
       return;
     }
     if (url.startsWith("/forms/adopted-fee-schedule.pdf")) {
@@ -432,6 +476,234 @@ async function main(): Promise<void> {
   );
   check("a corroborating harvest still refuses a human-verified row", secondPass.fee.action === "refused_verified", `${secondPass.fee.action}: ${secondPass.fee.reason}`);
   check("…and the row is still the human's", getFeeSchedule(db, harvestKey, "permit")?.confidence === "verified");
+
+  // -------------------------------------------------------------------------
+  // 6. THE REST OF THE BILL — ancillary charges, and the gate that keeps the
+  //    plausible ones out.
+  //
+  // The researcher's ask was one sentence long ("extract the full bracket table
+  // for the solar/renewable-energy line") and the researcher answered it
+  // faithfully: one line. The operator's own paid City of Portland receipt for a
+  // 3.520 kW rooftop is FOUR BILLS FROM THREE BUREAUS — $762.93, of which the two
+  // permit lines are $354.00. Plan review, land use review, fire review and
+  // processing were never requested, never held, and so no quote built from this
+  // table could reach a real total.
+  //
+  // Widening the ask creates the danger this section is really about. Ask a model
+  // for "every other charge on this filing" and it can answer plausibly from
+  // priors: almost every jurisdiction has a plan-review fee, most express it as a
+  // percentage, and 65% is a real number in several of them. So every charge is
+  // checked the way a bracket is — label and amount CO-OCCURRING ON ONE PRINTED
+  // ROW we retrieved — and the ones that fail are dropped and COUNTED, never
+  // stored uncorroborated.
+  // -------------------------------------------------------------------------
+  const ancLedger = newFeeDocumentLedger();
+  const ancOut = await openFeeDocument({ url: `${base}/anc-fees.pdf`, pages: [1] }, ancLedger, { timeoutMs: 5_000 });
+  const ancRowWith = (s: string): string => ancOut.split("\n").find((l) => l.includes(s)) || "";
+  check("fixture: the plan review is its OWN printed row, priced as a percentage", ancRowWith(ANC_REVIEW).includes("65%"), ancRowWith(ANC_REVIEW));
+  check("fixture: the fire review is a separate flat row", ancRowWith(ANC_FIRE).includes("$50.00"), ancRowWith(ANC_FIRE));
+  check("fixture: no technology fee is printed anywhere in this schedule", !/technology/i.test(ancOut));
+
+  const ancFinding = base_finding({
+    basis: "flat",
+    discipline: "structural",
+    brackets: [{ feeUsd: 200, label: ANC_PERMIT }],
+    sourceUrl: `${base}/anc-fees.pdf`,
+    sourceQuote: `${ANC_PERMIT} | $200.00`,
+  });
+
+  // Model-shaped output, exactly as the widened ask asks for it — three charges
+  // this schedule really prints, and three that it does not.
+  const CLAIMED_URL = "https://example.gov/the-url-the-model-typed";
+  const INVENTED = "Technology and records processing fee";
+  const reported = [
+    { label: ANC_REVIEW, kind: "plan_review", percent: 65, percentOf: "of the permit fee", conditional: false, appliesTo: "structural", quote: `${ANC_REVIEW} | 65% of the permit fee`, sourceUrl: CLAIMED_URL },
+    { label: ANC_FIRE, kind: "fire_review", amountUsd: 50, conditional: false, appliesTo: "structural", quote: `${ANC_FIRE} | $50.00`, sourceUrl: CLAIMED_URL },
+    { label: ANC_SURCHARGE, kind: "surcharge", percent: 12, percentOf: "of the permit fee", conditional: false, appliesTo: "", quote: `${ANC_SURCHARGE} | 12% of the permit fee`, sourceUrl: CLAIMED_URL },
+    // INVENTED OUTRIGHT: the label appears nowhere in anything we read.
+    { label: INVENTED, kind: "processing", amountUsd: 35, conditional: false, appliesTo: "structural", quote: `${INVENTED} | $35.00`, sourceUrl: CLAIMED_URL },
+    // THE DANGEROUS ONE: a REAL label carrying a WRONG number. "Does the label
+    // appear?" says yes; only co-occurrence on one row says no.
+    { label: ANC_REVIEW, kind: "plan_review", percent: 80, percentOf: "of the permit fee", conditional: false, appliesTo: "structural", quote: `${ANC_REVIEW} | 80% of the permit fee`, sourceUrl: CLAIMED_URL },
+    // Neither one amount nor one percentage — nothing can evaluate it.
+    { label: ANC_FIRE, kind: "fire_review", amountUsd: 50, percent: 10, conditional: false, appliesTo: "structural", quote: ANC_FIRE, sourceUrl: CLAIMED_URL },
+  ];
+  const gated = corroborateAncillaryCharges(reported, ancFinding, ancLedger);
+  const heldLabels = gated.held.map((c) => c.label);
+  check("THE WHOLE FILING IS HELD, not just the permit line: 3 charges survived", gated.held.length === 3, JSON.stringify(heldLabels));
+  check("…the percentage plan review", heldLabels.includes(ANC_REVIEW), JSON.stringify(heldLabels));
+  check("…the flat fire review", heldLabels.includes(ANC_FIRE), JSON.stringify(heldLabels));
+  check("…and the surcharge", heldLabels.includes(ANC_SURCHARGE), JSON.stringify(heldLabels));
+
+  const heldReview = gated.held.find((c) => c.label === ANC_REVIEW);
+  check(
+    "A PERCENTAGE IS STORED AS A PERCENTAGE — 65% of the permit fee, never pre-multiplied into dollars",
+    heldReview?.percent === 65 && heldReview?.amountUsd === undefined && /permit fee/i.test(heldReview?.percentOf || ""),
+    JSON.stringify(heldReview),
+  );
+  check(
+    "each held charge quotes the PRINTED ROW it was matched on",
+    (heldReview?.matchedLine || "").includes(ANC_REVIEW) && (heldReview?.matchedLine || "").includes("65%"),
+    heldReview?.matchedLine,
+  );
+  check(
+    "…and names the document WE FETCHED, not the URL the model typed",
+    heldReview?.sourceUrl === `${base}/anc-fees.pdf` && heldReview?.sourceUrl !== CLAIMED_URL,
+    heldReview?.sourceUrl,
+  );
+
+  check(
+    "AN INVENTED CHARGE IS NOT STORED — nothing we read prints it",
+    !heldLabels.includes(INVENTED) && gated.dropped.some((d) => d.includes(INVENTED)),
+    JSON.stringify(gated.dropped),
+  );
+  check(
+    "A REAL LABEL WITH A WRONG NUMBER IS NOT STORED EITHER — 80% is nowhere on that row",
+    !gated.held.some((c) => c.percent === 80) && gated.dropped.filter((d) => d.startsWith(ANC_REVIEW)).length === 1,
+    JSON.stringify(gated.dropped),
+  );
+  check(
+    "a charge that is both an amount and a percentage is refused, and says which rule",
+    gated.dropped.some((d) => d.startsWith(ANC_FIRE) && /neither a single amount nor a single percentage/.test(d)),
+    JSON.stringify(gated.dropped),
+  );
+  check("every refusal is COUNTED, not silently swallowed", gated.dropped.length === 3, JSON.stringify(gated.dropped));
+
+  // A WRAPPED ROW IS STILL ONE ROW. This is the live Portland failure, reproduced:
+  // the schedule prints "Plan Review Fee" on one line and "25% of total electrical
+  // permit fee…" on the next, the model reports them stapled into one label (which
+  // is what they are), and before the pairing NOTHING matched — so a published,
+  // mandatory 25% plan review was dropped as if it did not exist.
+  const wrapReported = [{
+    label: `${ANC_WRAP_HEAD} — ${ANC_WRAP_TAIL}`,
+    kind: "plan_review", percent: 25, percentOf: "of total electrical permit fee",
+    conditional: false, appliesTo: "electrical",
+    quote: `${ANC_WRAP_HEAD} — ${ANC_WRAP_TAIL}`, sourceUrl: CLAIMED_URL,
+  }];
+  const wrapped = corroborateAncillaryCharges(wrapReported, ancFinding, ancLedger);
+  check(
+    "A CHARGE PRINTED ACROSS TWO LINES IS HELD — the label cell above its value cell is one row",
+    wrapped.held.length === 1 && wrapped.held[0].percent === 25,
+    JSON.stringify(wrapped),
+  );
+  check(
+    "…and its matched line shows BOTH printed lines, so the join is visible, not hidden",
+    (wrapped.held[0]?.matchedLine || "").includes(ANC_WRAP_HEAD) && (wrapped.held[0]?.matchedLine || "").includes("25%"),
+    wrapped.held[0]?.matchedLine,
+  );
+  // THE GUARD ON THE PAIRING. A line that already names money never absorbs its
+  // neighbour — that is the wind-row mis-attribution, and it must stay refused.
+  // Here the fire review ($50.00) is printed directly above the 12% surcharge row.
+  const straddle = corroborateAncillaryCharges([{
+    label: `${ANC_FIRE} — ${ANC_SURCHARGE}`, kind: "surcharge", percent: 12,
+    percentOf: "of the permit fee", conditional: false, appliesTo: "structural",
+    quote: "stapled across a priced row", sourceUrl: CLAIMED_URL,
+  }], ancFinding, ancLedger);
+  check(
+    "A PRICED LINE STILL NEVER ABSORBS THE ROW BELOW IT — the pairing did not reopen the wind-row bug",
+    straddle.held.length === 0 && straddle.dropped.length === 1,
+    JSON.stringify(straddle),
+  );
+
+  // THE SURCHARGE HAS TWO ROADS ONTO ONE BRACKET, AND ONLY ONE MAY BE TAKEN.
+  // corroborateBrackets can fold a 12% state surcharge INTO the line's own fee;
+  // this list can hold the identical 12% to be added ON TOP of it. A bracket
+  // carrying both bills the customer twice, and the arithmetic looks deliberate.
+  const twoRoads: Array<import("../src/feeSchedules").FeeBracket> = [
+    { feeUsd: 200, label: "already carries its own surcharge", stateSurcharge: { percent: 12, quote: "12% surcharge fee as mandated by the State Building Codes Division is applied to all permit fees", sourceUrl: `${base}/anc-fees.pdf` } },
+    { feeUsd: 200, label: "carries no surcharge of its own" },
+  ];
+  attachAncillaryCharges(twoRoads, gated.held);
+  check(
+    "A BRACKET THAT ALREADY FOLDS THE 12% IN DOES NOT ALSO GET IT AS AN EXTRA CHARGE",
+    !(twoRoads[0].ancillaryCharges || []).some((c) => c.kind === "surcharge" && c.percent === 12),
+    JSON.stringify(twoRoads[0].ancillaryCharges?.map((c) => c.label)),
+  );
+  check(
+    "…while it keeps every charge that is NOT already inside its fee",
+    (twoRoads[0].ancillaryCharges || []).length === 2,
+    JSON.stringify(twoRoads[0].ancillaryCharges?.map((c) => c.label)),
+  );
+  check(
+    "…and a bracket with no surcharge of its own STILL GETS the 12% — the dedupe must not lose it",
+    (twoRoads[1].ancillaryCharges || []).some((c) => c.kind === "surcharge" && c.percent === 12),
+    JSON.stringify(twoRoads[1].ancillaryCharges?.map((c) => c.label)),
+  );
+  check(
+    "the notes read the UNION across brackets, so the dedupe cannot under-report the row",
+    /ANCILLARY CHARGES HELD \(3\)/.test(ancillaryChargeNotes(twoRoads, []).join(" | ")),
+    ancillaryChargeNotes(twoRoads, []).join(" | "),
+  );
+
+  // Production attaches the survivors to every bracket — these charges are levied
+  // on the FILING, not on one size tier.
+  attachAncillaryCharges(ancFinding.brackets, gated.held);
+  const ancNotes = ancillaryChargeNotes(ancFinding.brackets, gated.dropped).join(" | ");
+  check("notes itemise what is held, with its count", /ANCILLARY CHARGES HELD \(3\)/.test(ancNotes), ancNotes);
+  check("…and print the percentage AS a percentage", /65% of the permit fee/.test(ancNotes), ancNotes);
+  check(
+    "…and refuse to imply a total that nothing has computed",
+    /NOT yet totalled/.test(ancNotes) && !/total(?:s|led)? \$/i.test(ancNotes),
+    ancNotes,
+  );
+  check("THE DROPS ARE VISIBLE, by count and by name", /3 REPORTED ANCILLARY CHARGE\(S\) NOT STORED/.test(ancNotes) && ancNotes.includes(INVENTED), ancNotes);
+  check("no note segment carries the ' | ' that would shred it into two", !/HELD \(3\)[^|]*\| /.test(ancNotes.split(" | ")[0] || ""), ancNotes.split(" | ")[0]);
+
+  // AN UNKNOWN MUST NEVER READ AS REASSURANCE. A pass that reported nothing must
+  // not leave a row implying the permit line is the whole bill.
+  const silentNotes = ancillaryChargeNotes([{ feeUsd: 200, label: ANC_PERMIT }], []).join(" | ");
+  check(
+    "reporting NOTHING reads as an absence of report, never as 'there is nothing else'",
+    /ABSENCE OF REPORT/.test(silentNotes) && /several separate bills/.test(silentNotes),
+    silentNotes,
+  );
+
+  // NOTHING RETRIEVED, NOTHING HELD. A finding resting on web search alone keeps
+  // its permit line (advisory, as everywhere else in this module) and loses this
+  // list entirely — it is the one shape in which a fabrication and a reading look
+  // identical.
+  const blind = corroborateAncillaryCharges(reported, ancFinding, newFeeDocumentLedger());
+  check("with no document retrieved, NO charge is held", blind.held.length === 0, JSON.stringify(blind.held));
+  check("…and all six reported charges are counted as dropped", blind.dropped.length === 6, JSON.stringify(blind.dropped));
+
+  // -------------------------------------------------------------------------
+  // 6b. THE REAL WRITE PATH. A field that survives only in memory is not stored.
+  // -------------------------------------------------------------------------
+  const ancTarget = { state: "OR", ahj: "City of Several Bureaus", track: "permit" as const, discipline: "structural" };
+  const ancSave = saveFeeSchedule(db, ancTarget, ancFinding, { corroborateAgainst: ancLedger });
+  check("the schedule saved", ancSave.saved, ancSave.reason);
+  const ancKey = feeScheduleProfileKey(ancTarget, "permit");
+  const ancRow = getFeeSchedule(db, ancKey, "permit", "structural");
+  const storedCharges = (ancRow?.brackets || [])[0]?.ancillaryCharges || [];
+  check(
+    "THE CHARGES SURVIVE THE ROUND TRIP THROUGH SQLITE — read back off the stored row",
+    storedCharges.length === 3,
+    JSON.stringify((ancRow?.brackets || [])[0] ?? null),
+  );
+  check(
+    "…the percentage is still a percentage after the round trip",
+    storedCharges.find((c) => c.label === ANC_REVIEW)?.percent === 65
+      && storedCharges.find((c) => c.label === ANC_REVIEW)?.amountUsd === undefined,
+    JSON.stringify(storedCharges.find((c) => c.label === ANC_REVIEW) ?? null),
+  );
+  check(
+    "…and its printed row came back with it, so the number can be checked",
+    (storedCharges.find((c) => c.label === ANC_FIRE)?.matchedLine || "").includes("$50.00"),
+    storedCharges.find((c) => c.label === ANC_FIRE)?.matchedLine,
+  );
+  check("…on a row that is SEEDED, never verified — rule 3 is a human's signature", ancRow?.confidence === "seeded", ancRow?.confidence);
+
+  // A CALLER THAT CANNOT SHOW WHAT IT READ MAY NOT ASSERT IT. Same finding, same
+  // brackets, no ledger — the path scripts/apply-fee-findings.ts takes.
+  const ancBlindTarget = { state: "OR", ahj: "City of No Ledger", track: "permit" as const, discipline: "structural" };
+  const blindSave = saveFeeSchedule(db, ancBlindTarget, ancFinding);
+  check("the unledgered save still stores the fee itself", blindSave.saved, blindSave.reason);
+  const blindRow = getFeeSchedule(db, feeScheduleProfileKey(ancBlindTarget, "permit"), "permit", "structural");
+  check(
+    "…but its ancillary charges are STRIPPED — untrusted input may not assert a printed row",
+    !((blindRow?.brackets || [])[0]?.ancillaryCharges?.length),
+    JSON.stringify((blindRow?.brackets || [])[0] ?? null),
+  );
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
   db.close();

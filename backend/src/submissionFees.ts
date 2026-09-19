@@ -26,6 +26,7 @@
 import { createRequire } from "node:module";
 import type { AppDb } from "./db";
 import type {
+  FeeChargeBreakdown,
   FeeConfidence,
   FeePaymentMethod,
   PermitFeeSource,
@@ -209,9 +210,17 @@ interface ScheduleFee {
   paymentMethod: FeePaymentMethod | null;
   matchedName: string;
   reason: string;
+  /** The jurisdiction's bill for this filing, itemised. See the whitelist in
+   *  normalizeScheduleResult — this list is drawn on an operator's screen and
+   *  summed nowhere here, so it is read defensively like every other field the
+   *  producer hands over. */
+  charges: FeeChargeBreakdown[];
 }
 
 const PAYMENT_METHODS: FeePaymentMethod[] = ["portal", "mailed_check", "none", "unknown"];
+/** One filing does not draw fifty charges — the same ceiling the storage side
+ *  applies, restated here because this module must not trust that one held. */
+const CHARGE_CAP = 16;
 
 /** Trust order for FeeConfidence, weakest last — buildProjectFeeSheet grades a
  *  TOTAL by the weakest line summed into it. Same vocabulary as the lines. */
@@ -251,6 +260,39 @@ const MAILED_CHECK_RE = /\b(?:mail(?:ed)?\s+(?:a\s+|the\s+)?check|check\s+(?:pay
 // submissionFees.test.ts asserts the two still agree so the copies cannot drift.
 const FEE_CONFLICT_RE = /\bUNRESOLVED FEE CONFLICT\b/;
 
+/** Read the itemised bill through the same whitelist discipline as the amount.
+ *
+ *  An unpriced charge KEEPS ITS PLACE IN THE LIST. `amountUsd: null` is the whole
+ *  point of the shape — a conditional review nobody has answered is why the total
+ *  above it is null, and a normaliser that dropped the charge for having no number
+ *  would leave a null total with nothing on screen to explain it. Unknowns are
+ *  carried, never tidied away. */
+function normalizeCharges(raw: unknown): FeeChargeBreakdown[] {
+  if (!Array.isArray(raw)) return [];
+  const out: FeeChargeBreakdown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const c = item as Record<string, unknown>;
+    const label = text(c.label).trim().slice(0, 200);
+    if (!label) continue;
+    const amount = Number(c.amountUsd);
+    const priced = c.amountUsd != null && c.amountUsd !== "" && Number.isFinite(amount) && amount >= 0;
+    const url = text(c.sourceUrl).trim();
+    out.push({
+      label,
+      kind: text(c.kind).trim().toLowerCase().slice(0, 40) || "other",
+      amountUsd: priced ? round2(amount) : null,
+      partOfLineFee: c.partOfLineFee === true,
+      conditional: c.conditional === true,
+      reason: text(c.reason).trim().slice(0, 400),
+      quote: text(c.quote).trim().slice(0, 400),
+      sourceUrl: /^https?:\/\//i.test(url) ? url.slice(0, 500) : "",
+    });
+    if (out.length >= CHARGE_CAP) break;
+  }
+  return out;
+}
+
 /** Read the producer's result through a whitelist. A module owned elsewhere must
  *  not be able to put a negative fee, a novel enum or a junk URL on a quote. */
 function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
@@ -281,6 +323,7 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
     paymentMethod,
     matchedName: text(r.matchedName).trim().slice(0, 200),
     reason: text(r.reason).trim().slice(0, 400),
+    charges: normalizeCharges(r.charges),
   };
 }
 
@@ -498,6 +541,17 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
     serviceFeeUsd,
     totalUsd,
     payment: getSubmissionPayment(db, project.id, track),
+    // RESOLVED FOR EVERY QUOTE, WHICHEVER TIER WON THE AMOUNT — deliberately not
+    // gated on `permitFeeSource === "published_schedule"`.
+    //
+    // What a City of Portland filing is MADE OF (four bills, three bureaus) is a
+    // fact about the jurisdiction, exactly like `paymentMethod` and
+    // `permitFeeSourceUrl` above it. Gating it on the published tier would hide the
+    // itemisation in precisely the state that needs it most: a conditional charge
+    // nobody has answered nulls the schedule's total, the ladder drops to the
+    // valuation heuristic, and the operator would then be shown a rough $450 with
+    // no sign that the real bill has seven charges on it and which one is missing.
+    permitFeeCharges: schedule?.charges ?? [],
   };
 }
 
@@ -678,6 +732,7 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     // (feeUsd + confidence "estimated" — the operator quoting a customer needs
     // it); the claim of knowledge goes, and `unknowns` below names the gap.
     known: quote.permitFeeUsd != null && quote.permitFeeConfidence !== "estimated",
+    charges: quote.permitFeeCharges,
   }));
 
   const unknowns: string[] = [];
@@ -698,6 +753,17 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
         `${label} for ${who} is an ESTIMATE, not a known fee — no published fee schedule resolved for ${who} (${discipline}), `
         + `no portal figure recorded, no observed history. The $${line.feeUsd.toFixed(2)} shown is a valuation heuristic. ${line.basis}`,
       );
+    }
+    // A CHARGE ON THIS FILING THAT NOBODY HAS PRICED IS ITS OWN UNKNOWN, and it is
+    // named separately from the line's. "Permit fee for the City of Portland is
+    // unknown" sends an operator looking for a permit fee that is sitting right
+    // there at $153; what is actually missing is one review, by name, with the
+    // question that would settle it. Listed whichever tier won the amount — a
+    // learned median or an operator-entered actual is a better answer than the
+    // schedule's and still does not answer whether the fire bureau billed this job.
+    for (const charge of line.charges ?? []) {
+      if (charge.amountUsd != null || charge.partOfLineFee) continue;
+      unknowns.push(`${who} also charges "${charge.label}" on this filing, and it is not priced. ${charge.reason}`);
     }
     if (line.paymentMethod === "mailed_check") {
       outOfPortalPayments.push(

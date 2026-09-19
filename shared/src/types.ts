@@ -196,6 +196,12 @@ export interface SubmissionPaymentQuote {
   serviceFeeUsd: number;
   totalUsd: number | null;
   payment: SubmissionPaymentRecord | null;
+  /** The jurisdiction's bill for this track, itemised — see FeeChargeBreakdown.
+   *  Resolved for EVERY quote, like `paymentMethod` and `permitFeeSourceUrl`:
+   *  what a City of Portland filing is MADE OF does not change because an
+   *  operator typed the portal's total in. Empty where the schedule holds one
+   *  permit line and nothing else. */
+  permitFeeCharges: FeeChargeBreakdown[];
 }
 
 // --- Published fee schedules ----------------------------------------------
@@ -245,6 +251,53 @@ export interface PublishedFeeResult {
   matchedName?: string;
   /** Populated when feeUsd is null: why the schedule did not evaluate. */
   reason?: string;
+  /** THE BILL, ITEMISED. See FeeChargeBreakdown. Absent/empty on a jurisdiction
+   *  that publishes one permit line and nothing else, which is most of them. */
+  charges?: FeeChargeBreakdown[];
+}
+
+/** ONE CHARGE ON THIS FILING, PRICED — the presentation grain, not the storage one.
+ *
+ *  A FILING IS NOT A PERMIT. The operator's own paid City of Portland receipt for a
+ *  3.52 kW rooftop system is FOUR BILLS FROM THREE BUREAUS totalling $762.93:
+ *
+ *    Fire - Plan Review                 $50.00
+ *    Electrical Permit RS              $201.00  + St Sur $24.12  (12% of the permit)
+ *    Land Use Plan Review Res          $217.00
+ *    Bldg Plan Rvw/Processing RS/MI/MP  $99.45  (65% of the building permit)
+ *    Building Permit RS                $153.00  + St Sur $18.36  (12% of the permit)
+ *
+ *  Two of those seven charges are permits. Quoting only the permits is how a $762.93
+ *  filing printed as $298, sourced and confident. So the evaluated answer carries
+ *  every charge it is made of, and the screens draw the list rather than a lump.
+ *
+ *  `partOfLineFee` IS LOAD-BEARING ARITHMETIC, not a display hint: the permit and its
+ *  surcharges are ALREADY inside the line's own `feeUsd`, and a consumer that sums
+ *  this list without reading it double-counts the permit. Charges with
+ *  `partOfLineFee:false` are the ones added on top of the lines to reach the total.
+ *
+ *  `amountUsd: null` is the whole point of the type. A charge the jurisdiction levies
+ *  only sometimes, whose trigger the recorded project facts do not answer, is carried
+ *  HERE with its reason — never dropped. Dropping it is what makes a partial total
+ *  read as a complete one, and a total containing one of these is null, not smaller. */
+export interface FeeChargeBreakdown {
+  /** The jurisdiction's own printed wording for this charge. */
+  label: string;
+  /** 'permit' | 'state_surcharge' | 'community_surcharge' for the parts of the
+   *  permit line itself, else the stored ancillary kind ('plan_review',
+   *  'land_use_review', 'fire_review', 'processing', 'surcharge', 'other'). */
+  kind: string;
+  /** Null when this charge could not be priced for this project — see `reason`. */
+  amountUsd: number | null;
+  /** True when the permit line's own amount already contains this charge. */
+  partOfLineFee: boolean;
+  /** True when the schedule says only some filings incur it. */
+  conditional: boolean;
+  /** Populated when amountUsd is null: why, and what would resolve it. */
+  reason: string;
+  /** The printed row this charge was matched on, verbatim. "" when there is none. */
+  quote: string;
+  sourceUrl: string;
 }
 
 // --- Project fee sheet -----------------------------------------------------
@@ -268,6 +321,11 @@ export interface ProjectFeeSheetLine {
    *  and the sheet's `unknowns` names the gap. known:true beside an estimate
    *  was the machine-readable claim that nothing here is unknown. */
   known: boolean;
+  /** WHAT THIS FEE IS MADE OF, when the jurisdiction charges more than a permit.
+   *  Carried whichever tier won the amount — like `paymentMethod`, the shape of
+   *  the bill is a fact about the jurisdiction, not about where the number came
+   *  from. Empty on the jurisdictions that publish one line, which is most. */
+  charges: FeeChargeBreakdown[];
 }
 
 /** One answer to "what will this project cost": both tracks, what is known,
