@@ -71,8 +71,44 @@ export type StageDetail =
   | "under_review"
   // A correction has been received and triaged; the bucket says whose move it is.
   | "correction_open"
-  // The correction's items are closed (whether the filing stayed on file or not).
+  // The correction's items are closed AND THE FILING IS STILL ON FILE — the utility/AHJ
+  // reopened the original application, the operator corrected it in the portal, and it
+  // never stopped existing. The project goes back to `submitted`; nothing is re-staged.
   | "correction_resolved"
+  // The correction's items are closed and NOTHING IS ON FILE — no submitted submission row
+  // for this project. The corrected package has to be re-staged and re-filed, so the project
+  // goes to `ready_to_resubmit` and re-enters the pipeline at the Submit stage. Distinct
+  // from `correction_resolved` because the operator's next move is opposite: there, wait for
+  // the agency; here, drive 3 · Prepare Submittal. Round A wrote `correction_resolved` on
+  // BOTH legs as a placeholder while the status write was still the `parsed` rewind; this is
+  // the value that leg was waiting for.
+  | "correction_resolved_restage"
+  // reopenCorrectionOnPortal: the SUSPENDED filing's own correction form was reopened on the
+  // portal and the revised documents were staged through the attach gate — and then automation
+  // STOPPED. The project sits at `awaiting_human_resubmit` waiting for a person to review the
+  // reopened application and click the portal's own resubmit (hard rule 1). Distinct from
+  // `staged_for_review`, which is a NEW filing waiting on its first submit: here an application
+  // already exists on the account and is being amended in place.
+  | "correction_reopened"
+  // markCorrectionResubmitted: a human confirmed the reopened application was actually
+  // resubmitted. The corrections it answers are closed (resubmitted=1) and the project returns
+  // to `submitted`. Distinct from `submitted_all` — that is a first filing captured through
+  // captureConfirmation, which writes submission rows; this amends a filing that never stopped
+  // existing and writes none.
+  | "correction_resubmitted"
+  // applyCorrectionProposals on a `B_designer_fix` correction: the triage was approved and the
+  // ball is in the DESIGNER's court — the plan set / calcs have to come back revised before
+  // anything can be re-filed. The one sub-stage whose exit is a human's word (the operator's
+  // "Revisions received" action). Never inferred from a document landing on the project: an
+  // upload is not evidence the revisions are complete, and a designer attaching one partial
+  // sheet must not advance the job.
+  | "awaiting_design_revision"
+  // recordDesignRevisionsReceived: the operator said the revised design is in hand. The project
+  // leaves the designer wait for `ready_to_resubmit` (the Submit stage) and faces the full
+  // re-QC and every staging gate from there. Distinct from `correction_resolved_restage`, which
+  // is the same destination reached by CLOSING the correction; this one ends the designer wait
+  // with the correction still open, because the package has not gone back out yet.
+  | "design_revisions_received"
   // Permit monitor outcomes, each a real milestone rather than a shade of "in review".
   | "permit_approved"
   | "ready_for_issue"

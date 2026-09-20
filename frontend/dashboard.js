@@ -4640,9 +4640,75 @@ function correctionSlaBadge(correction) {
   return `<span class="badge badge-info">Due ${esc(correction.dueAt)} (${daysLeft}d left)</span>`;
 }
 
+// THE TRIAGE OUTPUT FOR ONE CORRECTION, found where the agent actually stores it.
+//
+// correctionAgent writes its proposals + checklist into the LINKED human-review item's notes as
+// `agent-triage:{…}` (repository.applyCorrectionProposals reads them back the same way), so the
+// correction row itself carries none of it. That is why the operator's only view of what the
+// agent proposed lived in the human-review panel, two stages away from the corrections panel
+// where they are actually working the correction. Same stored payload, read-only, rendered on
+// the card the work happens on — no second copy and no second apply path.
+//
+// Returns null when nothing is linked: an ordinary state (triage runs as a background job and
+// stub mode never writes proposals), and it renders as NOTHING rather than as an empty table
+// implying the agent looked and found no changes.
+function correctionTriage(correctionId) {
+  for (const item of state.detail.humanReviewItems || []) {
+    const notes = String(item.notes || "");
+    if (!notes.startsWith("agent-triage:")) continue;
+    let parsed = null;
+    try { parsed = JSON.parse(notes.slice(13)); } catch { continue; }
+    if (!parsed || parsed.correctionId !== correctionId) continue;
+    return {
+      itemStatus: item.status,
+      proposals: Array.isArray(parsed.proposals) ? parsed.proposals.filter((p) => p && typeof p.field === "string") : [],
+      actions: Array.isArray(parsed.actions) ? parsed.actions.filter((a) => typeof a === "string") : [],
+    };
+  }
+  return null;
+}
+
+// EVERY VALUE BELOW CAME OUT OF AN LLM and goes into innerHTML — field, currentValue,
+// proposedValue, basis and each checklist line are esc()'d individually.
+function correctionTriageHtml(correction, triage) {
+  if (!triage) return "";
+  const isDesign = correction.correctionBucket === "B_designer_fix";
+  const rows = triage.proposals.map((p) => `<tr>
+      <td>${esc(p.field)}</td>
+      <td>${esc(p.currentValue || "Missing")}</td>
+      <td>${esc(p.proposedValue)}</td>
+      <td>${esc(p.basis)}</td>
+    </tr>`).join("");
+  // A design correction usually proposes no field change at all — its fix is a revised plan
+  // set. Applying it there is not a data edit: it records the triage and parks the project on
+  // the designer, which is the one thing this card could never say before.
+  const canApply = triage.itemStatus === "pending" && (triage.proposals.length > 0 || isDesign);
+  const applyLabel = triage.proposals.length ? "Apply these data updates" : "Record triage and wait on the designer";
+  return `
+      ${triage.proposals.length ? `<table style="font-size:12px;margin-top:6px">
+        <thead><tr><th>Field</th><th>Current</th><th>Proposed</th><th>Evidence</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>` : ""}
+      ${triage.actions.length ? `<ol style="font-size:12px;margin:6px 0 0 18px">${triage.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ol>` : ""}
+      ${canApply ? `<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="primary" style="font-size:12px" data-apply-correction="${esc(correction.id)}">${esc(applyLabel)}</button>
+        <span class="muted" style="font-size:11px">Applies the proposed project data only. It does not submit anything and does not close this correction — the correction closes when the resubmission actually goes out.</span>
+      </div>` : ""}
+      ${triage.itemStatus && triage.itemStatus !== "pending" ? `<p class="muted" style="font-size:11px;margin-top:6px">Triage already ${esc(triage.itemStatus)} — re-triage the correction to propose new changes.</p>` : ""}`;
+}
+
 function renderCorrections() {
   const corrections = state.detail.corrections || [];
-  $("corrections").innerHTML = corrections.length ? corrections.map((correction) => `
+  const projectStatus = (state.detail.project || {}).status || "";
+  $("corrections").innerHTML = corrections.length ? corrections.map((correction) => {
+    const triage = correctionTriage(correction.id);
+    // THE DESIGNER WAIT ENDS BY A PERSON SAYING SO. Offered only while the PROJECT is actually
+    // parked at waiting_on_designer (not merely because the bucket is a design one), and never
+    // driven by a document upload — an attached file is not evidence the revisions are done.
+    // Deliberately not gated on closedAt: an operator who closed the correction by hand while
+    // the project still waits would otherwise have no exit but the audited status override.
+    const awaitingDesigner = projectStatus === "waiting_on_designer" && correction.correctionBucket === "B_designer_fix";
+    return `
     <article class="item ${correction.isOverdue ? "fail" : correction.closedAt ? "pass" : "info"}">
       <div class="item-title">
         <span>${esc(humanize(correction.correctionBucket))}</span>
@@ -4651,13 +4717,56 @@ function renderCorrections() {
       </div>
       <p>${esc(correction.requiredAction)}</p>
       <p class="muted">${esc(correction.correctionText)}</p>
+      ${correctionTriageHtml(correction, triage)}
+      ${awaitingDesigner ? `
+      <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="primary" data-revisions-received="${esc(correction.id)}" style="font-size:12px">Revisions received</button>
+        <span class="muted" style="font-size:11px">Click this only when the revised plan set / calcs are actually in hand — uploading a file does not move the project. It goes to <strong>Ready to resubmit</strong>, where QC and every staging gate run again.</span>
+      </div>` : ""}
       ${!correction.closedAt ? `
       <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="secondary" data-reopen-correction="${esc(correction.id)}" style="font-size:12px">Reopen correction form in portal</button>
         <span class="muted" style="font-size:11px">Opens the SUSPENDED filing's own correction form (never a new application, never a cancel/withdraw) and stages revised docs — you review and click the portal's resubmit yourself.</span>
       </div>` : ""}
-    </article>
-  `).join("") : `<p class="muted">No corrections recorded.</p>`;
+    </article>`;
+  }).join("") : `<p class="muted">No corrections recorded.</p>`;
+
+  // Same endpoint the human-review panel posts to — one apply path, two places it can be
+  // reached from. Handlers are bound per container, so neither double-fires.
+  $("corrections").querySelectorAll("button[data-apply-correction]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        // The message reports WHAT THE SERVER DID, read off the returned detail — not what the
+        // bucket predicts. A design apply only parks the project on the designer when it was
+        // still in the correction flow; announcing a designer wait that did not happen (a job
+        // already moved on to `submitted`, say) would be a reassuring lie on the one screen the
+        // operator uses to decide their next move.
+        const applied = await api(`/api/corrections/${encodeURIComponent(button.dataset.applyCorrection)}/apply`, { method: "POST", body: "{}" });
+        await selectProject(state.selectedProjectId);
+        showMessage(applied?.project?.status === "waiting_on_designer"
+          ? "Triage applied. The project is now WAITING ON THE DESIGNER — click “Revisions received” once the revised design is actually in hand. Nothing was submitted and the correction is still open."
+          : "Proposed data updates applied. Nothing was submitted and the correction is still open — review the revised documents and the correction response before resubmitting.");
+      } catch (err) { showMessage(err.message, "error"); button.disabled = false; }
+    });
+  });
+
+  $("corrections").querySelectorAll("button[data-revisions-received]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      const originalLabel = button.textContent;
+      button.textContent = "Recording…";
+      try {
+        await api(`/api/corrections/${encodeURIComponent(button.dataset.revisionsReceived)}/revisions-received`, { method: "POST", body: "{}" });
+        await selectProject(state.selectedProjectId);
+        showMessage("Revised design recorded. The project is READY TO RESUBMIT — click 3 · Prepare Submittal to re-stage it; QC and every staging gate run again. The correction stays open until the resubmission goes out.");
+      } catch (err) {
+        showMessage(err.message, "error");
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    });
+  });
 
   $("corrections").querySelectorAll("button[data-reopen-correction]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -4688,13 +4797,30 @@ function renderCorrections() {
 function renderPortalRuns() {
   const runs = state.detail.portalRuns || [];
   const awaiting = runs.find((run) => run.status === "awaiting_human_submit");
-  const paused = runs.find((run) => run.status === "paused_for_human");
+  // A CORRECTION REOPEN IS NOT A FIRST FILING. The paused finder used to match ANY paused run,
+  // reopen runs included, and offered them the Capture Confirmation form — which stamps a
+  // submissions row and would have picked the newest FAILED staging row for a filing that is
+  // already on file. The backend now refuses that run type with a 409; this stops offering it.
+  const paused = runs.find((run) => run.status === "paused_for_human" && run.runType !== "correction_reopen");
   $("portalRuns").innerHTML = runs.length ? runs.map((run) => {
     const isMfa = run.pauseReason === "mfa_captcha";
     const cardClass = run.status === "failed" ? "fail" : isMfa ? "warning" : "info";
     const confirmLine = run.confirmationNumber ? `<p class="muted">Confirmation: <strong>${esc(run.confirmationNumber)}</strong></p>` : "";
     const mfaBanner = isMfa
       ? `<p class="submit-gate-check warning" style="margin-top:6px">Portal requires your attention — MFA or CAPTCHA detected. Complete it in the browser window, then click Retry to continue.</p>`
+      : "";
+    // THE REOPEN RUN'S OWN ACTION. Automation reopened the suspended filing's correction form,
+    // staged the revised documents and STOPPED (hard rule 1 — the portal's resubmit is the
+    // operator's click). This button is how that click gets recorded: it closes the
+    // corrections the resubmission answers, returns the project to `submitted`, and pulls the
+    // filing's tracking check forward. It is deliberately NOT a submit button — pressing it
+    // before resubmitting in the portal records something that did not happen, which is why
+    // the line beside it says so plainly.
+    const resubmitAction = run.runType === "correction_reopen" && run.status === "awaiting_human_resubmit"
+      ? `<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="secondary" data-mark-resubmitted="${esc(run.id)}" style="font-size:12px">Mark resubmitted</button>
+          <span class="muted" style="font-size:11px">Press this only AFTER you have clicked the portal's own resubmit. It records your click — it never submits anything — and closes the corrections this resubmission answers.</span>
+        </div>`
       : "";
     return `
     <article class="item ${cardClass}">
@@ -4703,8 +4829,29 @@ function renderPortalRuns() {
       ${mfaBanner}
       ${confirmLine}
       <p class="muted">${esc(run.errorMessage || run.startedAt)}</p>
+      ${resubmitAction}
     </article>`;
   }).join("") : `<p class="muted">No portal runs yet.</p>`;
+
+  $("portalRuns").querySelectorAll("button[data-mark-resubmitted]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm("Record that YOU clicked the portal's resubmit on this reopened application?\n\nThis closes the open corrections it answers. It does not submit anything.")) return;
+      button.disabled = true;
+      const originalLabel = button.textContent;
+      button.textContent = "Recording…";
+      try {
+        const result = await api(`/api/portal-runs/${encodeURIComponent(button.dataset.markResubmitted)}/mark-resubmitted`, { method: "POST", body: "{}" });
+        await selectProject(state.selectedProjectId);
+        // An unknown must never read as reassurance: a resubmission the monitor cannot poll,
+        // or corrections that did not close, is a WARNING even though the record was written.
+        showMessage(result.message, result.checkTargetRefreshed && !result.correctionsStillOpen ? "info" : "warning");
+      } catch (err) {
+        showMessage(err.message, "error");
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    });
+  });
 
   const form = $("confirmationForm");
   form.hidden = !awaiting && !paused;

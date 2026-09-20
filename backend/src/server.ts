@@ -94,6 +94,7 @@ import {
   addManualCorrection,
   draftLatestCorrectionResponse,
   applyCorrectionProposals,
+  recordDesignRevisionsReceived,
   reopenCorrectionOnPortal,
   resolveCorrection,
   listOverdueCorrections,
@@ -101,6 +102,7 @@ import {
   addProjectNote,
   assignProjectClient,
   captureConfirmation,
+  markCorrectionResubmitted,
   createPermitCheckTarget,
   createProject,
   updateProject,
@@ -1390,6 +1392,28 @@ app.post("/api/corrections/:id/apply", (req, res) => {
   res.json(applyCorrectionProposals(db, String(req.params.id), fields));
 });
 
+// THE DESIGNER WAIT ENDS HERE, AND ONLY BY A PERSON SAYING SO. A `B_designer_fix` triage
+// applied above parks the project at `waiting_on_designer`; this is its only exit (short of the
+// audited status override), and it deliberately has no automatic trigger — a revised document
+// landing on the project is NOT evidence the revisions are complete, so nothing in the upload
+// path may call it. Moves the project to `ready_to_resubmit`, where the full re-QC and every
+// staging gate still apply.
+//
+// Nothing here submits, closes the correction, or enqueues a run: the ready_to_resubmit banner
+// tells the operator to click 3 · Prepare Submittal themselves.
+//
+// Scope: a subroute of /api/corrections/:id, so it inherits the child scope guard (another
+// tenant's correction 404s before the handler runs) and the deny-by-default entitlement gate —
+// no new top-level path, so routeScope.test.ts accounts for it without an exemption. The
+// refusals live in the repository function with the write, not here; this route names the actor.
+app.post("/api/corrections/:id/revisions-received", (req, res) => {
+  res.json(recordDesignRevisionsReceived(
+    db,
+    String(req.params.id),
+    currentUser(db, req)?.email || "operator",
+  ));
+});
+
 // Reopen the SUSPENDED filing's correction form on the live portal (the portal half of
 // the correction flow). Binds the ORIGINAL application from the project's tracking
 // target; the chooser refuses cancellation/withdraw forms and ambiguity; revised docs
@@ -2661,6 +2685,21 @@ app.post("/api/projects/:id/autofill-specs", asyncHandler(async (req, res) => {
 
 app.post("/api/portal-runs/:id/capture-confirmation", (req, res) => {
   res.json(captureConfirmation(db, req.params.id, req.body || {}));
+});
+
+// The HUMAN's record that a reopened correction form was actually resubmitted in the portal.
+// Closes the corrections it answers (the single closer, resolveOpenCorrectionsOnResubmit),
+// returns the project to `submitted`, and pulls the filing's tracking check forward.
+//
+// Rule 1: automation NEVER clicks the portal's resubmit and never asserts that a person did —
+// the reopen stops at the review screen and this route exists because only the operator can
+// say what happened next. Nothing but the dashboard button calls it.
+//
+// Scope: /api/portal-runs/:id, so it inherits the child scope guard registered at :372 (a
+// foreign tenant's run 404s, never 403s) and sits behind the same deny-by-default
+// entitlementGate as its capture-confirmation sibling — no new top-level path.
+app.post("/api/portal-runs/:id/mark-resubmitted", (req, res) => {
+  res.json(markCorrectionResubmitted(db, String(req.params.id), req.body || {}));
 });
 
 // Save a public AHJ portal tracking URL (no login required) for a portal run or

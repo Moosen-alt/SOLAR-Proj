@@ -4629,6 +4629,12 @@ const CORRECTION_FIELD_TO_PAYLOAD: Record<string, string> = {
 // Apply the agent's approved data-update proposals for a correction. Operator-gated:
 // only call after a human approves. Reuses updateProject (merges snapshot + reruns
 // QC), marks the correction human_approved, and closes the linked review item.
+//
+// It APPLIES DATA AND NOTHING ELSE: no portal is touched, nothing is filed, and the
+// correction stays OPEN (closing it is the resubmit event, where a human confirms the
+// package actually went back out). The one status move it makes is the designer wait at
+// the tail — a `B_designer_fix` triage parks the project at `waiting_on_designer`,
+// because from that point the next move belongs to the design team.
 export function applyCorrectionProposals(
   db: AppDb,
   correctionId: string,
@@ -4646,8 +4652,25 @@ export function applyCorrectionProposals(
   const item = linked[0];
   const parsed = item ? parseCorrectionProposals(text(item.notes)) : null;
   const proposals = (parsed?.proposals ?? []).filter((p) => !approvedFields || approvedFields.includes(p.field));
-  if (!proposals.some(p => p.proposedValue.trim())) throw new HttpError(409, "This correction has no selected data updates to apply. Review its action checklist instead.");
+  // THE BUCKET IS READ OFF THE CORRECTION ROW, never off the triage blob. The row is what the
+  // deterministic classifier writes at intake (addManualCorrection) and what the agent upgrades
+  // (correctionAgent persistTriage), so it is the same value the board, the lanes and the
+  // timeline already read; the blob is a payload that may predate the agent's re-classification.
+  const isDesignRevision = text(correction.correction_bucket) === ("B_designer_fix" satisfies CorrectionRecord["correctionBucket"]);
+  // A DESIGN correction usually proposes NO data update at all — the fix is a revised plan set,
+  // not a field — so refusing an empty proposal set here would make the designer-wait transition
+  // below unreachable for exactly the corrections it exists for, and leave that card with no
+  // action on it. Every OTHER bucket keeps the refusal: an A/C apply with nothing selected marks
+  // a correction human_approved while changing nothing, which is the silent no-op this endpoint
+  // already learned to refuse.
+  if (!proposals.some(p => p.proposedValue.trim()) && !isDesignRevision) throw new HttpError(409, "This correction has no selected data updates to apply. Review its action checklist instead.");
   if (correction.closed_at) throw new HttpError(409, "This correction is already closed.");
+  // READ THE STATUS BEFORE updateProject RUNS — this is the only place the question can be
+  // asked. updateProject re-runs QC, and runQcForProject rewrites status AND stage_detail to
+  // its own verdict unconditionally (qc.ts): measured on a scratch DB, a project sitting at
+  // `correction_triaged` comes back from an apply reading `qc_failed`. Asking afterwards would
+  // always answer "not in a correction state" and the transition below would never fire.
+  const statusBefore = text(db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId])?.status);
 
   const payload: ParserPayload = {};
   for (const p of proposals) {
@@ -4661,6 +4684,84 @@ export function applyCorrectionProposals(
   db.run("UPDATE corrections SET human_approved = 1 WHERE id = ?", [correctionId]);
   if (item) db.run("UPDATE human_review_items SET status = 'approved', updated_at = ? WHERE id = ?", [ts, text(item.id)]);
   addAuditLog(db, projectId, "human", "correction", "correction.proposals_applied", { correctionId, applied: proposals.length });
+
+  // THE DESIGNER WAIT — the real writer for `waiting_on_designer`, which until now was labeled,
+  // bannered, client-worded and filterable with nothing anywhere able to write it.
+  //
+  // A `B_designer_fix` correction says the package cannot be re-filed until the design team
+  // sends back a revised plan set / calc, and that wait is the operator's whole day: the board
+  // has to say "waiting on the designer", not "QC failed" (which is what the re-QC inside
+  // updateProject just wrote) and not "correction triaged" (which says nothing about whose move
+  // it is). Only applied triage moves the project — reading a correction does not.
+  //
+  // GUARDED ON THE PRE-APPLY STATUS so this can only ever move a project that was genuinely in
+  // the correction flow. A filing sitting at `submitted`, `issued` or `handoff_ready` is never
+  // dragged back to a designer wait by an apply.
+  //
+  // WHAT IT DOES NOT DO: close the correction, touch a portal, or file anything. The exit from
+  // here is a human's word — recordDesignRevisionsReceived below — and never an inference from
+  // a document appearing on the project.
+  if (isDesignRevision && ["correction_received", "correction_triaged", "waiting_on_designer"].includes(statusBefore)) {
+    db.run("UPDATE projects SET status = 'waiting_on_designer', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
+      "Correction triage applied — waiting on revised design.",
+      "awaiting_design_revision" satisfies StageDetail,
+      ts,
+      projectId,
+    ]);
+    addAuditLog(db, projectId, "human", "correction", "correction.waiting_on_designer", { correctionId, from: statusBefore });
+  }
+
+  touchProjectMetrics(db, projectId);
+  return getProjectDetail(db, projectId);
+}
+
+/**
+ * "REVISIONS RECEIVED" — the operator's explicit end to a designer wait, and the ONLY way out
+ * of `waiting_on_designer`.
+ *
+ * THE RULE THIS FUNCTION EXISTS TO HOLD: a correction state must never exit without a human
+ * action. The tempting automation — move the project when a revised document is attached — is
+ * exactly wrong: an upload is not evidence the revisions are complete. Designers attach a
+ * partial sheet, a preview, the wrong file, or the stamped page ahead of the calcs, and any of
+ * those would silently advance the job to a re-file the design does not support. So nothing in
+ * the document path calls this; the operator says the words.
+ *
+ * WHERE IT GOES: `ready_to_resubmit` — B1's Submit-stage state, which is in PRE_STAGE_STATUSES,
+ * so the corrected job re-enters at 3 · Prepare Submittal and faces the FULL re-QC plus every
+ * staging gate (payment, documents, reviewer, permit path, client). Nothing is skipped by
+ * having waited on a designer.
+ *
+ * WHAT IT DOES NOT DO: close the correction (that is the resubmit event — the package has not
+ * gone back out yet), touch a portal, or enqueue an autopilot run. The ready_to_resubmit banner
+ * already tells the operator to click 3 · Prepare Submittal; a wait that ends by itself into a
+ * background run is the opposite of the human-paced gate this is.
+ *
+ * GUARDED ON THE PROJECT'S STATUS, NOT THE CORRECTION'S closed_at, on purpose: an operator who
+ * resolves the correction by hand while the project waits on the designer leaves the project at
+ * `waiting_on_designer` (resolveCorrection releases only `correction_received`/
+ * `correction_triaged`), and refusing here because the correction row is closed would strand
+ * that project with the audited override as its only exit.
+ */
+export function recordDesignRevisionsReceived(
+  db: AppDb,
+  correctionId: string,
+  actorName = "operator",
+): ProjectDetail {
+  const correction = db.get<Row>("SELECT * FROM corrections WHERE id = ?", [correctionId]);
+  if (!correction) throw new HttpError(404, "Correction not found.");
+  const projectId = text(correction.project_id);
+  const statusBefore = text(db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId])?.status);
+  if (statusBefore !== "waiting_on_designer") {
+    throw new HttpError(409, `This project is not waiting on a designer (it is "${statusBefore}"). "Revisions received" ends a designer wait; it cannot start one.`);
+  }
+  const ts = nowIso();
+  db.run("UPDATE projects SET status = 'ready_to_resubmit', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
+    "Revised design received — ready to re-stage.",
+    "design_revisions_received" satisfies StageDetail,
+    ts,
+    projectId,
+  ]);
+  addAuditLog(db, projectId, "human", actorName, "correction.design_revisions_received", { correctionId, from: statusBefore });
   touchProjectMetrics(db, projectId);
   return getProjectDetail(db, projectId);
 }
@@ -4689,10 +4790,12 @@ export function resolveCorrection(
   }
   addAuditLog(db, projectId, "human", "correction", "correction.resolved", { correctionId, resubmitted: !!opts.resubmitted });
   // Closing the LAST open correction un-strands the project: correction_received /
-  // correction_triaged are not pre-stage statuses, so autopilot (and its execution-time
-  // guard) refuses to re-stage from them — without this transition the project would sit
-  // in the correction state forever with no path back to staging. Move it back to
-  // "parsed"; Segment A re-runs QC and every gate from there.
+  // correction_triaged are not in PRE_STAGE_STATUSES, so the auto-resume the resolve route
+  // fires (maybeResumeAutopilot, "a correction was resolved") refuses to re-drive from them
+  // — without this transition the project would sit in the correction state forever with no
+  // path back to staging. (The old wording here also credited an "execution-time guard" with
+  // the same refusal; that guard is now per-TRACK on portal_runs and reads no project status
+  // at all — autopilot.ts trackAlreadyStaged.)
   const projRow = db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId]);
   const inCorrectionState = projRow && ["correction_received", "correction_triaged"].includes(text(projRow.status));
   const stillOpen = db.get<Row>(
@@ -4719,11 +4822,28 @@ export function resolveCorrection(
       ]);
       addAuditLog(db, projectId, "system", "correction", "correction.project_still_filed", { correctionId });
     } else {
-      // The `parsed` rewind on this leg is a known defect owned by Round B1 (it visually
-      // rewinds a corrected project to QC). Only the column write is added here — the status
-      // and the prose are left exactly as they are so B1 lands one change, not a merge.
-      db.run("UPDATE projects SET status = 'parsed', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
-        "Correction resolved — ready to re-stage.", "correction_resolved" satisfies StageDetail, ts, projectId,
+      // NOTHING IS ON FILE — the corrected package has to be staged and filed again.
+      //
+      // This leg used to write `parsed`, which visually REWOUND a corrected project all the
+      // way back to QC / Verify (stage 0): the board showed a job that had already been
+      // filed, bounced and fixed as if its plan set had just been read. `ready_to_resubmit`
+      // is where it belongs — it maps to the Submit stage (projectStage.ts STATUS_TO_STAGE)
+      // and already carries its board label, banner and client-facing text; it simply had no
+      // writer until now.
+      //
+      // `parsed` was chosen originally partly BECAUSE it is a pre-stage status, so the
+      // automatic run would re-do QC and every gate rather than jumping the project ahead.
+      // That property is preserved, not traded away: `ready_to_resubmit` is now a member of
+      // PRE_STAGE_STATUSES (autopilot.ts — an untyped Set that typecheck cannot defend, so it
+      // is maintained by name), and Segment A's gate path reads no project status whatsoever
+      // — it re-runs QC and then calls prepareSubmission, which gates on payment, an already-
+      // filed submission, QC/human-review/reviewer/historical, document presence, permit path
+      // and client. A correction resolved this way faces the identical wall it faced from
+      // `parsed`; only the stage the operator sees is now the truth.
+      //
+      // The PROSE IS A MATCHING KEY and stays byte-identical.
+      db.run("UPDATE projects SET status = 'ready_to_resubmit', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
+        "Correction resolved — ready to re-stage.", "correction_resolved_restage" satisfies StageDetail, ts, projectId,
       ]);
       addAuditLog(db, projectId, "system", "correction", "correction.project_restageable", { correctionId });
     }
@@ -5014,6 +5134,42 @@ export async function reopenCorrectionOnPortal(
     attachedDocs: Number(result.attachedDocs ?? 0),
     finalSubmitClickedByAutomation: false,
   });
+
+  // THE PROJECT MOVES TOO. Until now this function recorded a portal_runs row and nothing
+  // else, so a successful reopen left the board showing `correction_triaged` — the same red
+  // "an outside party stopped this filing" chip it showed before anyone did anything. The
+  // operator's next move (go to the portal, review the reopened application, click ITS
+  // resubmit) had no state to hang off, and the one status that says exactly that —
+  // `awaiting_human_resubmit` — existed in the union with a label and a banner and zero
+  // writers. This is that writer.
+  //
+  // KEYED ON runStatus, NOT `ok`: runStatus already folds in the pause (`pauseReason ?
+  // "paused_for_human" : ok ? ... : "failed"`), so an adapter that ever returns ok together
+  // with a pause reason cannot announce a staged resubmission that walled at an MFA screen.
+  //
+  // ONLY FROM A CORRECTION STATE, and the status is re-read HERE rather than reused from the
+  // `detail` loaded before the await — the portal run takes minutes, and a monitor sweep or an
+  // operator override may have moved the project meanwhile. A reopen is not evidence about any
+  // status other than the one it was started from, so anything else is left exactly as it is
+  // and the skip is AUDITED: a status that refused to move must never be invisible.
+  if (runStatus === "awaiting_human_resubmit") {
+    const current = text(db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId])?.status);
+    if (current === "correction_received" || current === "correction_triaged") {
+      db.run("UPDATE projects SET status = 'awaiting_human_resubmit', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
+        "Correction form reopened on the portal — a person must review the application and click its resubmit.",
+        "correction_reopened" satisfies StageDetail,
+        nowIso(), projectId,
+      ]);
+      addAuditLog(db, projectId, "system", "correction reopen", "correction.project_awaiting_resubmit", {
+        correctionId, runId, applicationNumber, from: current,
+      });
+    } else {
+      addAuditLog(db, projectId, "system", "correction reopen", "correction.reopen_status_unchanged", {
+        correctionId, runId, applicationNumber, from: current,
+        why: "the project is no longer in a correction state — a reopen never overwrites an unrelated status",
+      });
+    }
+  }
 
   if (!ok && needsHuman) {
     return surfaceNeedsHuman(message || `Correction reopen for ${applicationNumber} needs a human.`, { offeredForms, runId });
@@ -6862,6 +7018,25 @@ export function captureConfirmation(
 ): ProjectDetail {
   const run = db.get<Row>("SELECT * FROM portal_runs WHERE id = ?", [portalRunId]);
   if (!run) throw new HttpError(404, "Portal run not found.");
+  // A CORRECTION REOPEN IS NOT A FIRST FILING, AND THIS DOOR MIS-STAMPS IT.
+  //
+  // Nothing about this function filters on run_type, and a reopen run is reachable from the
+  // dashboard's confirmation form today (renderPortalRuns offers it for any `paused_for_human`
+  // run, reopen runs included). Run it against one and three things go wrong: (1) a reopened
+  // filing has no `awaiting_human_submit` submission — the original is already 'submitted' —
+  // so the fallback below stamps the newest FAILED/paused staging row 'submitted' and blanks
+  // its application/permit numbers with `input.x || ""`, minting a second submitted row that
+  // resolveCorrection's own still-filed check then reads; (2) it writes `submitted_all` and
+  // "Human submitted. Confirmation captured.", first-filing language for an amendment; (3) it
+  // feeds learnFromSubmissionConfirmation a resubmit as if it were an original submission.
+  //
+  // markCorrectionResubmitted is the door for that run type. Refusing here closes the
+  // mis-stamp from both sides rather than relying on the UI to offer the right button.
+  if (text(run.run_type) === "correction_reopen") {
+    throw new HttpError(409,
+      "This is a correction-reopen run, not a new filing. Record its resubmission with Mark Resubmitted — capturing it here would stamp an older staging row as the filing.",
+      { runId: portalRunId, runType: "correction_reopen" });
+  }
   const projectId = text(run.project_id);
   const runPermitType = text(run.permit_type);
   const ts = nowIso();
@@ -6970,4 +7145,202 @@ export function captureConfirmation(
   const detail = getProjectDetail(db, projectId);
   learnFromSubmissionConfirmation(db, detail.project, input);
   return getProjectDetail(db, projectId);
+}
+
+export interface CorrectionResubmitResult {
+  /** How many corrections this action closed (resubmitted=1 + closed_at). */
+  closedCorrections: number;
+  /** Corrections STILL open afterwards — the honest read, counted from the database. */
+  correctionsStillOpen: number;
+  /** Did a tracking target get its next_check_at pulled forward? False is a real answer. */
+  checkTargetRefreshed: boolean;
+  /** Other tracks still awaiting a human submit; >0 keeps the project at awaiting_human_submit. */
+  remainingTracks: number;
+  /** The project's status after the action — unchanged if it had moved somewhere unrelated. */
+  projectStatus: string;
+  message: string;
+  detail: ProjectDetail;
+}
+
+/**
+ * "MARK RESUBMITTED" — the human's own record that a reopened correction form was actually
+ * resubmitted in the portal. THE SIBLING OF captureConfirmation, NOT AN EXTENSION OF IT.
+ *
+ * WHY A SIBLING (the spot-check that was mandated before writing this). captureConfirmation
+ * filters on nothing but the run id, so it WOULD have accepted a `correction_reopen` run, and
+ * three of its steps are wrong for one: it stamps a submissions row (falling back to the newest
+ * FAILED/paused staging row when nothing is awaiting, and blanking that row's numbers with
+ * `input.x || ""`) — a reopened filing has no awaiting row because the original is already
+ * 'submitted'; it writes `submitted_all` + first-filing prose for what is an amendment; and it
+ * calls learnFromSubmissionConfirmation, teaching the KB from a resubmit as if it were an
+ * original submission. captureConfirmation now REFUSES this run type with a 409 pointing here.
+ *
+ * THIS FUNCTION WRITES NO submissions ROWS AT ALL, and that is why "thin" is safe: the
+ * application never stopped existing — the utility/AHJ reopened it, the operator amended it in
+ * place, and its submissions row has said 'submitted' the whole time. The record of the
+ * resubmission is the corrections themselves (closed_at + resubmitted=1, which is what the
+ * cycle-time KPI and every "open correction" surface read) plus the audit row.
+ *
+ * HARD RULE 1: this is a HUMAN ACTION and nothing else calls it. Automation never clicks the
+ * portal's resubmit and never asserts that a person did — the reopen stops at the review screen
+ * and this route exists because only the operator can say what happened next.
+ *
+ * Closing is deliberately attached to the RESUBMIT event, never to the reopen: opening a form
+ * is not evidence anything was filed.
+ */
+export function markCorrectionResubmitted(
+  db: AppDb,
+  portalRunId: string,
+  input: { submittedBy?: string; confirmationNumber?: string; notes?: string } = {},
+): CorrectionResubmitResult {
+  const run = db.get<Row>("SELECT * FROM portal_runs WHERE id = ?", [portalRunId]);
+  if (!run) throw new HttpError(404, "Portal run not found.");
+  if (text(run.run_type) !== "correction_reopen") {
+    throw new HttpError(409,
+      "That portal run is not a correction reopen. A new filing's submission is recorded with Capture Confirmation.",
+      { runId: portalRunId, runType: text(run.run_type) });
+  }
+  const runStatus = text(run.status);
+  if (runStatus !== "awaiting_human_resubmit") {
+    // A reopen that PAUSED (MFA/CAPTCHA) or FAILED staged nothing, so there is no reopened
+    // application for the operator to have resubmitted. If they finished it by hand anyway,
+    // the manual door is still open: POST /api/corrections/:id/resolve with resubmitted:true.
+    throw new HttpError(409,
+      runStatus === "submitted"
+        ? "This reopened correction has already been recorded as resubmitted."
+        : `This reopen run is "${runStatus}", not awaiting a human resubmit — nothing was staged for you to resubmit. If you corrected and resubmitted the filing by hand, resolve the correction directly (marking it resubmitted).`,
+      { runId: portalRunId, runStatus });
+  }
+  const projectId = text(run.project_id);
+  const ts = nowIso();
+
+  // The tracking target this reopen was bound to, recorded on the run itself at reopen time.
+  let boundTargetId = "";
+  try {
+    const parsed = JSON.parse(text(run.result_json) || "{}") as Record<string, unknown>;
+    boundTargetId = typeof parsed.targetId === "string" ? parsed.targetId : "";
+  } catch { boundTargetId = ""; }
+
+  let remainingTracks = 0;
+  let checkTargetRefreshed = false;
+  let statusMoved = false;
+  let statusBefore = "";
+
+  db.transaction(() => {
+    db.run("UPDATE portal_runs SET status = ?, finished_at = ?, human_action_required = 0, confirmation_number = ? WHERE id = ?", [
+      "submitted", ts, input.confirmationNumber || text(run.confirmation_number), portalRunId,
+    ]);
+
+    // Same remaining-tracks rule captureConfirmation applies, for the same reason (:6973):
+    // corrections carry no track (project_id only), so closing them while ANOTHER staged
+    // filing still awaits a human submit could close one that belongs to that filing. When a
+    // track is still out, this writes NO project status at all — the project keeps the state
+    // the reopen left it in (awaiting_human_resubmit) because the other filing genuinely has
+    // not gone out — and the close waits; it converges when captureConfirmation confirms that
+    // track and runs the same closer.
+    const stillAwaiting = db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM submissions WHERE project_id = ? AND status = 'awaiting_human_submit'", [projectId],
+    );
+    remainingTracks = Number(stillAwaiting?.n ?? 0);
+
+    statusBefore = text(db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId])?.status);
+    // NEVER CLOBBER AN UNRELATED STATUS. The normal path arrives here from
+    // `awaiting_human_resubmit` (what the reopen wrote); the two correction states are
+    // included because a fresh correction can land between the reopen and the operator's
+    // click. A project the monitor has since moved to `issued` is NOT rewound to `submitted`
+    // by a bookkeeping action — the corrections still close, and the skip is audited.
+    if (remainingTracks === 0 && ["awaiting_human_resubmit", "correction_received", "correction_triaged"].includes(statusBefore)) {
+      db.run("UPDATE projects SET status = 'submitted', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
+        "Resubmitted by a person in the portal. Awaiting review.",
+        "correction_resubmitted" satisfies StageDetail,
+        ts, projectId,
+      ]);
+      statusMoved = true;
+    }
+
+    // REFRESH THE EXISTING TARGET — never create one. Pull next_check_at forward to now so the
+    // next monitor sweep reads the resubmitted filing instead of waiting out the remainder of
+    // its check_frequency_days window. last_checked_at and latest_outcome are deliberately NOT
+    // touched: nothing was checked, and claiming otherwise would age a reading that never
+    // happened.
+    //
+    // ROUND C SEAM: target CREATION is Round C's (extract ensureCheckTarget from
+    // submittalTracks.ts:480 and call it from captureConfirmation). This site reuses whatever
+    // exists and reports `checkTargetRefreshed:false` when nothing does — when C lands, a
+    // filing confirmed normally will already have a target here and this stays a refresh.
+    const boundTarget = boundTargetId
+      ? db.get<Row>("SELECT id FROM permit_check_targets WHERE id = ? AND project_id = ? AND active = 1", [boundTargetId, projectId])
+      : undefined;
+    const fallbacks = boundTarget ? [] : db.query<Row>(
+      "SELECT id FROM permit_check_targets WHERE project_id = ? AND active = 1 AND application_number != ''", [projectId],
+    );
+    // Exactly one, or none: with two tracked filings and no recorded binding, refreshing the
+    // wrong one would poll a filing that did not change and leave the one that did.
+    const targetId = boundTarget ? text(boundTarget.id) : fallbacks.length === 1 ? text(fallbacks[0].id) : "";
+    if (targetId) {
+      db.run("UPDATE permit_check_targets SET next_check_at = ?, updated_at = ? WHERE id = ?", [ts, ts, targetId]);
+      checkTargetRefreshed = true;
+    }
+
+    addAuditLog(db, projectId, "human", input.submittedBy || "dashboard", "correction.resubmit_recorded", {
+      portalRunId,
+      confirmationNumber: input.confirmationNumber || "",
+      notes: (input.notes || "").slice(0, 300),
+      checkTargetRefreshed,
+      targetId,
+      remainingTracks,
+      statusFrom: statusBefore,
+      statusMoved,
+      finalSubmitClickedByAutomation: false,
+    });
+  });
+
+  // THE RESUBMISSION HAS GONE OUT — close the corrections it answers, through the ONE closer.
+  // Outside the transaction for captureConfirmation's reason (:6968): the human's own record
+  // is the more precious fact and a throw in here must not roll it back. It also runs after
+  // the status write, so resolveCorrection sees a project that is no longer in a correction
+  // state and leaves the status alone.
+  let closedCorrections = 0;
+  if (remainingTracks === 0) {
+    try {
+      closedCorrections = resolveOpenCorrectionsOnResubmit(db, projectId);
+      if (closedCorrections > 0) {
+        addAuditLog(db, projectId, "system", "correction", "correction.closed_on_resubmit", { portalRunId, closed: closedCorrections });
+      }
+    } catch (err) {
+      logger.warn("correction", "recorded resubmission could not close its open corrections", {
+        projectId, portalRunId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  // COUNTED FROM THE DATABASE, NOT INFERRED from the closer's return: a close that threw
+  // half-way has to surface as a number the operator can see, not a swallowed warning. Same
+  // filter every "open correction" surface uses (openCorrectionCount, both lanes, the action
+  // queue) so this answer and theirs cannot disagree.
+  const correctionsStillOpen = Number(db.get<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM corrections WHERE project_id = ? AND closed_at IS NULL AND resubmitted = 0", [projectId],
+  )?.n ?? 0);
+
+  const detail = getProjectDetail(db, projectId);
+  const parts = [
+    closedCorrections > 0
+      ? `Recorded the resubmission and closed ${closedCorrections} correction${closedCorrections === 1 ? "" : "s"}.`
+      : "Recorded the resubmission.",
+  ];
+  if (remainingTracks > 0) parts.push(`${remainingTracks} other filing(s) still await a human submit, so the open corrections stay open until those are confirmed.`);
+  if (correctionsStillOpen > 0 && remainingTracks === 0) parts.push(`${correctionsStillOpen} correction(s) are still open — resolve them from the corrections panel.`);
+  if (!statusMoved) parts.push(`The project status stayed "${statusBefore}" — this action never overwrites a status it did not set.`);
+  parts.push(checkTargetRefreshed
+    ? "The filing's tracking check was pulled forward to the next monitor sweep."
+    : "No tracked filing could be refreshed, so the monitor will NOT pick this resubmission up — add the filing (with its application number) under Permit/NEM Checks.");
+
+  return {
+    closedCorrections,
+    correctionsStillOpen,
+    checkTargetRefreshed,
+    remainingTracks,
+    projectStatus: detail.project.status,
+    message: parts.join(" "),
+    detail,
+  };
 }

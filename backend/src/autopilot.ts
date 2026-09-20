@@ -81,11 +81,27 @@ export interface AutopilotState {
 // `submit_staging` were dropped here alongside their removal from the union (2026-09-19);
 // leaving them would have been harmless-but-dead, and the next reader would have taken
 // them for live vocabulary.
+//
+// READ BY EXACTLY ONE CALLER: maybeResumeAutopilot (below). It is NOT a staging permission
+// list — prepareSubmission has no project-status gate at all (its gates are payment, an
+// already-filed submission, QC/human-review/reviewer/historical, document presence, permit
+// path and client), and Segment A's execution-time guard is per-TRACK on portal_runs, not on
+// project status. So "pre-stage" here means only: a status from which a blocker-clearing
+// event may re-drive the automatic run.
+//
+// `ready_to_resubmit` is a member for that reason. Resolving the last correction on a project
+// with NOTHING on file lands there, and it is reached from a route that immediately calls
+// maybeResumeAutopilot ("a correction was resolved", server.ts). Leaving it out would strand
+// the corrected project exactly the way correction_received/correction_triaged strand one:
+// the resume fires, the Set says no, and nothing moves. Being in this Set does not skip a
+// single gate — Segment A still re-runs QC first and prepareSubmission still throws every
+// 409 it throws from `parsed`.
 const PRE_STAGE_STATUSES = new Set([
   "parsed",
   "qc_failed",
   "qc_passed",
   "ready_to_stage",
+  "ready_to_resubmit",
 ]);
 
 // A track counts as STAGED once it has a portal run that reached the portal (awaiting a
