@@ -5732,6 +5732,15 @@ function updateProjectForPermitOutcome(
     db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [status, stage, detail, ts, projectId]);
   };
 
+/** Statuses a "still in review" reading may advance to "submitted".
+ *
+ *  "issued", "nem_approved" and "handoff_ready" are deliberately ABSENT: this branch carries no
+ *  track guard, so including them let one track's "waiting" read rewrite a headline the OTHER
+ *  track had already earned — an issued permit re-described as still in review, by the utility.
+ *  "awaiting_human_submit" IS present by operator ruling (2026-09-20): the portal showing an
+ *  application in review is evidence a person filed it, so a filing sent by hand is not stranded. */
+const MONITOR_WAITING_MAY_ADVANCE = new Set(["awaiting_human_submit", "submitted", "approved", "ready_for_issue"]);
+
   // Track-aware guard: a NEM (utility) target must NEVER drive the project to a PERMIT
   // status (issued / ready_for_issue / reviewed-by-AHJ) — those are AHJ-permit outcomes.
   // Likewise a PERMIT target must not set nem_approved. This prevents a utility approval
@@ -5745,8 +5754,27 @@ function updateProjectForPermitOutcome(
   else if (outcome === "ready_for_issue" && !isNem) update("ready_for_issue", message, "ready_for_issue");
   else if (outcome === "issued" && !isNem) update("issued", message, "permit_issued");
   else if (outcome === "reviewed_by_ahj" && !isNem) update("approved", message, "permit_approved");
-  else if (outcome === "waiting" && ["awaiting_human_submit", "submitted", "approved", "ready_for_issue", "issued", "nem_approved", "handoff_ready"].includes(currentStatus)) {
+  else if (outcome === "waiting" && MONITOR_WAITING_MAY_ADVANCE.has(currentStatus)) {
+    // THE PORTAL IS TRUTH ABOUT WHETHER A FILING EXISTS (operator ruling, 2026-09-20).
+    //
+    // An application the portal shows in review WAS filed by a person, whether or not they
+    // came back and clicked Capture Confirmation — so `awaiting_human_submit` is deliberately
+    // in the advance list. Without it a filing sent by hand sits at "awaiting your submit"
+    // forever and the operator has to correct the board by hand.
+    //
+    // BUT A LESSER OUTCOME MAY NOT OVERWRITE A GREATER ONE. This branch has no track guard
+    // (unlike every branch above it), so a NEM target reading "waiting" used to drag a project
+    // back from `issued`, `nem_approved` or `handoff_ready` to `submitted` — a permit that IS
+    // issued being re-described as still in review, by the other track. Those outcomes are
+    // therefore NOT in the set: once a track has reached them, "somebody else is still
+    // reviewing" is not news that should rewrite the project's headline.
     update("submitted", "Permit monitor checked: AHJ/utility review is still in progress.", "under_review");
+    if (currentStatus === "awaiting_human_submit") {
+      // The one advance a human did not gesture for. Audited so it is never invisible.
+      addAuditLog(db, projectId, "system", "permit monitor", "project.submitted_on_portal_evidence", {
+        from: currentStatus, targetType, message,
+      });
+    }
   } else if (outcome === "needs_human_review") {
     // THE STOMP STAYS A STOMP, AND DELIBERATELY DOES NOT WRITE stage_detail.
     //
