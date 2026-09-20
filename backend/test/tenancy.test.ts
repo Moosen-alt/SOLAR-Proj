@@ -159,15 +159,36 @@ try {
     return JSON.parse(text);
   };
 
-  let projA = "", projB = "", clientA = "";
+  let projA = "", projB = "", clientA = "", clientB = "";
   await run("each tenant creates its own project and client", async () => {
-    const ra = await jsonOk(await a("/api/projects", { method: "POST", body: JSON.stringify(projectPayload("Alice A", "1 Acme Way")) }));
-    projA = ((ra.project as { id: string }).id);
-    const rb = await jsonOk(await b("/api/projects", { method: "POST", body: JSON.stringify(projectPayload("Bob B", "2 Beta Blvd")) }));
-    projB = ((rb.project as { id: string }).id);
+    // CLIENTS FIRST: POST /api/projects now requires a clientId that exists IN THE
+    // CALLER'S OWN ORG (every filing carries that client's CCB licence), so a tenant
+    // cannot create a project before it has a client.
     const rc = await jsonOk(await a("/api/clients", { method: "POST", body: JSON.stringify({ companyName: "Acme Installers" }) }));
     clientA = String(rc.id);
-    assert.ok(projA && projB && clientA, `projA=${projA} projB=${projB} clientA=${clientA}`);
+    const rcb = await jsonOk(await b("/api/clients", { method: "POST", body: JSON.stringify({ companyName: "Beta Installers" }) }));
+    clientB = String(rcb.id);
+    const ra = await jsonOk(await a("/api/projects", { method: "POST", body: JSON.stringify({ ...projectPayload("Alice A", "1 Acme Way"), clientId: clientA }) }));
+    projA = ((ra.project as { id: string }).id);
+    const rb = await jsonOk(await b("/api/projects", { method: "POST", body: JSON.stringify({ ...projectPayload("Bob B", "2 Beta Blvd"), clientId: clientB }) }));
+    projB = ((rb.project as { id: string }).id);
+    assert.ok(projA && projB && clientA && clientB, `projA=${projA} projB=${projB} clientA=${clientA} clientB=${clientB}`);
+  });
+
+  await run("a tenant cannot create a project against ANOTHER tenant's client", async () => {
+    // Out of scope must read as "there is no such client here", never as a 403 that
+    // confirms one exists (hard rule 6). 400 is the create route's own vocabulary.
+    const res = await b("/api/projects", { method: "POST", body: JSON.stringify({ ...projectPayload("Bob Borrow", "3 Borrow Rd"), clientId: clientA }) });
+    const body = await res.text();
+    assert.equal(res.status, 400, `expected 400, got ${res.status}: ${body.slice(0, 300)}`);
+    assert.ok(/No client/i.test(body), `expected a "no such client" message, got: ${body.slice(0, 300)}`);
+  });
+
+  await run("a project cannot be created with NO client at all", async () => {
+    const res = await a("/api/projects", { method: "POST", body: JSON.stringify(projectPayload("Nobody N", "4 Nowhere Ln")) });
+    const body = await res.text();
+    assert.equal(res.status, 400, `expected 400, got ${res.status}: ${body.slice(0, 300)}`);
+    assert.ok(/Pick the client/i.test(body), `expected a message naming what to do, got: ${body.slice(0, 300)}`);
   });
 
   await run("the project LIST shows only your own rows", async () => {
@@ -255,8 +276,13 @@ try {
   });
 
   await run("the client list is scoped — no route to another tenant's portal credentials", async () => {
+    // B now has a client of its OWN (POST /api/projects requires one), so the claim is
+    // no longer "B sees nothing" — it is "B sees exactly its own and never A's", which is
+    // the stronger statement anyway: an empty list also passes a query that is simply broken.
     const listB = await (await b("/api/clients")).json();
-    assert.equal(listB.clients.length, 0, `B saw ${listB.clients.length} clients`);
+    const idsB = (listB.clients || []).map((c: { id: string }) => c.id);
+    assert.deepEqual(idsB, [clientB], `B saw ${JSON.stringify(idsB)}, expected only its own ${clientB}`);
+    assert.ok(!idsB.includes(clientA), `B saw A's client ${clientA}`);
     assert.equal((await b(`/api/clients/${clientA}`)).status, 404);
     assert.equal((await b(`/api/clients/${clientA}/portal-credentials`)).status, 404);
   });

@@ -1925,7 +1925,100 @@ export function knowledgeResearchHint(
 export function seedInitialKnowledgeBase(db: AppDb): void {
   seedOfficialKnowledge(db);
   seedSanitizedAhjProfiles(db);
+  seedOperatorRulings(db);
   backfillExistingProjectLearning(db);
+}
+
+// ---------------------------------------------------------------------------
+// OPERATOR RULINGS — decisions a human made about a jurisdiction, recorded as
+// knowledge with their provenance and their date.
+//
+// An operator stating a rule IS a human gesture, so these land human-verified
+// ("mixed") rather than "seeded" — that is the rule-3 exception, not a breach of
+// it: rule 3 protects human-verified knowledge from being overwritten by imports
+// and research, and this IS the human. What makes it legitimate is the
+// provenance: every ruling carries an `official` source whose label names the
+// operator ruling and whose observedAt is the DATE THEY RULED, not the date the
+// server happened to boot — so a later reader can tell a human decision from an
+// import, and can see how old the decision is.
+//
+// Runs AFTER seedSanitizedAhjProfiles on purpose: the workbook import lands
+// first, then the ruling is layered over it. Idempotent by construction —
+// upsertKnowledge merges note SEGMENTS and dedupes sources on
+// (sourceType|label|url), so booting twice produces the identical row.
+// ---------------------------------------------------------------------------
+
+interface OperatorRuling {
+  /** ISO date the operator made the call. Becomes the source's observedAt. */
+  ruledOn: string;
+  state: string;
+  /** Every AHJ SPELLING this ruling must be findable under. permit_utility_knowledge
+   *  keys on the normalized name, so "Salem" and "City of Salem" are DIFFERENT rows
+   *  and a ruling recorded on one is invisible from the other. */
+  ahjSpellings: string[];
+  /** The ruling itself, as one note segment. */
+  note: string;
+  /** Rows superseded by this ruling — stamped with a pointer segment so a reader who
+   *  lands on the old row is told where the answer moved. Not deleted: a stored row is
+   *  a matching key, and deleting one silently changes what an old lookup resolves to. */
+  supersedes?: Array<{ ahj: string; note: string }>;
+}
+
+const OPERATOR_RULINGS: OperatorRuling[] = [
+  {
+    // 2026-09-19: the operator ruled on Salem's stamp rule after two reference rows
+    // were found disagreeing about it. The FUNCTIONAL fix is in
+    // backend/data/reference-ahj-processes.json (Salem is now its own row with
+    // requiresStructuralStamp:false, and is no longer listed on the combined Marion
+    // County row) because resolveStampRequirement reads THAT, not this table. This
+    // record is the provenance and the operator-visible statement of the same rule.
+    ruledOn: "2026-09-19",
+    state: "OR",
+    ahjSpellings: ["Salem", "City of Salem"],
+    note:
+      "OPERATOR RULING 2026-09-19: Salem does NOT require a PE stamp on the PRESCRIPTIVE path; "
+      + "a PE stamp and sealed structural letter ARE required on the ENGINEERED (non-prescriptive) path — "
+      + "the same strict split as Coos Bay. Recorded human-verified with operator provenance. "
+      + "Before this ruling the answer depended on how the AHJ was spelled: the reference workbook's bare "
+      + "\"Salem\" row said a structural stamp was always required while its combined "
+      + "\"Marion Co/Hubbard/Keizer/Mount Angel/Salem/Gervais\" row said the opposite, and the two tied on "
+      + "match score so file order decided which one answered.",
+    supersedes: [
+      {
+        ahj: "Marion Co/Hubbard OR/Keizer OR / Mount Angel / Salem / Gervais",
+        note:
+          "SALEM SPLIT OUT 2026-09-19 (operator ruling): this combined Marion County row no longer covers Salem. "
+          + "Salem is its own jurisdiction row — see the Salem profile for its stamp rule. Hubbard, Keizer, "
+          + "Mount Angel and Gervais still resolve here.",
+      },
+    ],
+  },
+];
+
+function seedOperatorRulings(db: AppDb): void {
+  for (const ruling of OPERATOR_RULINGS) {
+    const source: KnowledgeSource = {
+      label: `Operator ruling ${ruling.ruledOn}`,
+      url: "",
+      sourceType: "official",
+      // The DATE OF THE DECISION, not of this boot — an operator reading the row needs to
+      // know how old the call is, and nowIso() here would silently refresh it every restart.
+      observedAt: `${ruling.ruledOn}T00:00:00.000Z`,
+    };
+    for (const ahj of ruling.ahjSpellings) {
+      upsertKnowledge(
+        db,
+        { state: ruling.state, ahj, utility: "", notes: ruling.note, sources: [source], confidence: "mixed" },
+        { eventType: "ahj.operator_ruling", details: { ahj, state: ruling.state, ruledOn: ruling.ruledOn } },
+      );
+    }
+    for (const superseded of ruling.supersedes || []) {
+      // Only stamp a row that actually exists — creating one would invent a jurisdiction.
+      const key = profileKey({ state: ruling.state, ahj: superseded.ahj, utility: "" });
+      if (!db.get<Row>("SELECT profile_key FROM permit_utility_knowledge WHERE profile_key = ?", [key])) continue;
+      upsertKnowledge(db, { state: ruling.state, ahj: superseded.ahj, utility: "", notes: superseded.note, sources: [source] });
+    }
+  }
 }
 
 function seedOfficialKnowledge(db: AppDb): void {

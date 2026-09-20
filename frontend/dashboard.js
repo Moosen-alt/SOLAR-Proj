@@ -1941,15 +1941,71 @@ function nextStepFor(status) {
   return NEXT_STEPS[status] || { tone: "info", step: "Stage 1", text: "Click <strong>1 · Run QC</strong> to check the parsed data for missing or wrong info." };
 }
 
+// WHICH PORTAL THE OPERATOR HAS TO GO AND FILE IN.
+//
+// Named from the run's own track, not from its result_json: only the RecipeAdapter writes a
+// portalName in there (59 of the live database's runs are AutoLearnAdapter rows that carry
+// none), so reading it would name the portal on some filings and go silent on others. A `nem`
+// run is the UTILITY's application; every other track is the AHJ's permit.
+function filingPortalLabel(project, run) {
+  const isNem = run && run.permitType === "nem";
+  const name = isNem ? project.utility : project.ahj;
+  if (name && String(name).trim()) return String(name).trim();
+  return isNem ? "the utility's portal" : "the AHJ's portal";
+}
+
+// THE HALF-DONE FILING HAS TO BE UNMISSABLE.
+//
+// Approve & Submit on a real portal records the operator's authorization and STOPS — hard rule
+// 1: automation never clicks a final submit. Until now that left no visible state at all: the
+// project stayed `awaiting_human_submit`, the banner went on saying "Staged and ready", and the
+// operator's actual filing click and Capture Confirmation were two disconnected manual steps
+// with nothing between them. Nobody could tell an approved-but-unfiled job from one that had
+// never been touched, and nothing anywhere noticed a filing was half-done.
+//
+// `approved_awaiting_filing` (written at the approve seam, status deliberately unchanged) is
+// what makes it visible. This banner is deliberately loud, says WHICH portal, and spells out
+// the three physical steps in order — and its button only scrolls to the Capture Confirmation
+// form. It cannot submit anything; there is nothing in this file that can.
+function approvedAwaitingFilingGuide(project) {
+  const runs = state.detail.portalRuns || [];
+  const awaiting = runs.find((run) => run.status === "awaiting_human_submit");
+  const portal = filingPortalLabel(project, awaiting);
+  return {
+    tone: "warn",
+    step: "Stage 3 · Your move",
+    text: `<strong>Approval recorded — this filing is NOT submitted yet.</strong> Automation stops here.
+      Go to <strong>${esc(portal)}</strong>, check the staged application, and <strong>click its submit yourself</strong>.
+      Then come back and record the number with <strong>Capture Confirmation</strong> — until you do, nothing is tracking this filing.
+      <button type="button" class="secondary" data-go-capture="1" style="margin-left:8px;font-size:12px">Go to Capture Confirmation</button>`,
+  };
+}
+
 function renderNextStep() {
   const banner = $("nextStepBanner");
   if (!banner) return;
   const { project } = state.detail;
   if (!project) { banner.hidden = true; return; }
-  const guide = nextStepFor(project.status);
+  // The status alone cannot answer this one: an approved-but-unfiled project and a freshly
+  // staged one are BOTH `awaiting_human_submit` (correctly — nothing is filed in either case).
+  // stage_detail is what separates them.
+  const guide = project.status === "awaiting_human_submit" && project.stageDetail === "approved_awaiting_filing"
+    ? approvedAwaitingFilingGuide(project)
+    : nextStepFor(project.status);
   banner.hidden = false;
   banner.className = `next-step-banner${guide.tone === "done" ? " is-done" : guide.tone === "warn" ? " is-warn" : ""}`;
   banner.innerHTML = `<span class="next-step-step">${esc(guide.step)}</span><span class="next-step-text">${guide.text}</span>`;
+  const goCapture = banner.querySelector("button[data-go-capture]");
+  if (goCapture) {
+    goCapture.addEventListener("click", () => {
+      // Open the Submit accordion (data-stage-index 2) and scroll the capture form into view.
+      // renderPortalRuns un-hides #confirmationForm whenever a staged run is awaiting a human
+      // submit, which is true by construction for any project in this state.
+      document.querySelector(".stage-accordion[data-stage-index='2']")?.setAttribute("open", "");
+      const form = $("confirmationForm");
+      if (form) form.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }
 }
 
 // ----- Operator status override -----
@@ -3150,9 +3206,11 @@ async function approveAndSubmit() {
     applyAutopilotState(s);
     if (state.detail) state.detail = await api(`/api/projects/${state.selectedProjectId}`);
     renderDetail();
+    // A toast disappears; the banner renderDetail just drew does not. Say the same thing both
+    // places and point at the banner, so an operator who blinks still has the instruction.
     showMessage(s.phase === "submitted"
       ? "Approved & submitted — confirmation captured."
-      : "Approval recorded. Complete the final submit in the portal, then capture the number here.", "info");
+      : "Approval recorded — NOT submitted. Open the portal, click its submit yourself, then use Capture Confirmation. The banner at the top of this project keeps the instruction.", "warning");
   } catch (err) {
     showMessage(err.message || "Could not approve.", "error");
     btn.disabled = false;
@@ -4298,6 +4356,84 @@ function documentVerdictHtml(pkg, formMissingFields = []) {
   return `<div class="stack">${fieldRow}${docRow}</div>`;
 }
 
+// THE PERMIT PATH, ITS EVIDENCE, AND THE OVERRIDE — on the project screen.
+//
+// Prescriptive and engineered are mutually exclusive: the AHJ takes exactly one
+// application, and this one call decides which one is built, which fee schedule applies
+// and whether a PE stamp is required. It used to be visible only as a sentence inside the
+// generated cover document, so an operator could read the conclusion but never the
+// evidence — and a wrong read (a coastal wind speed misparsed, a stamp recommendation
+// misread) travelled all the way into the filing before anyone could see it.
+//
+// This panel shows WHAT was decided, WHO decided it (source), and the evidence sentences
+// verbatim, and it points at the override that already exists. It changes NO path logic:
+// the strict split stays exactly as resolvePermitPath computes it.
+function renderPermitPathPanel(pkg) {
+  const res = pkg && pkg.permitPath;
+  if (!res) {
+    // An older/cached package that predates this field. Say so — never draw a blank that
+    // reads as "no path concerns".
+    return `
+      <div class="kx-band">
+        ${bandHead("PERMIT PATH", "Which application this AHJ receives.")}
+        <p class="muted">This packet was built before the path was reported here — rebuild the AHJ docs to see the resolved path and its evidence.</p>
+      </div>`;
+  }
+  const PATH_COPY = {
+    prescriptive: { label: "Prescriptive", tag: "Prescriptive", detail: "Meets prescriptive code — no plan review, reduced permit fee, no PE stamp. Only the prescriptive application is filed." },
+    engineered: { label: "Engineered (non-prescriptive)", tag: "Engineered", detail: "Plan review, full structural fees, and a PE-stamped plan set + sealed structural letter. Only the structural application is filed." },
+    unknown: { label: "Not yet confirmed", tag: "Undecided", detail: "The two applications are mutually exclusive and we cannot tell which one this AHJ should receive. Staging the permit is blocked until this is set." },
+  };
+  const SOURCE_COPY = {
+    operator: "An operator chose this explicitly — it overrides every automatic signal.",
+    parser: "Read from the plan set (the parser stated the path, or the stamp recommendation called for engineering).",
+    "structural-screen": "Decided by the structural prescriptive screen (snow, dead load, rafter spacing, wind exposure and speed).",
+    default: "No signal forced a path — this is the default for the shape of system that was parsed.",
+  };
+  const copy = PATH_COPY[res.path] || PATH_COPY.unknown;
+  const basis = (res.basis || []).filter(Boolean);
+  return `
+    <div class="kx-band">
+      ${bandHead("PERMIT PATH", "Which application this AHJ receives — and why.")}
+      <div class="kx-preflight">
+        <div class="kx-preflight-head">
+          <div>
+            <span class="kx-preflight-eyebrow">Resolved path</span>
+            <span class="kx-preflight-subject">${esc(copy.label)}</span>
+          </div>
+          <span class="kx-preflight-tag">${esc(copy.tag)}</span>
+        </div>
+        <div class="kx-preflight-col">
+          <div class="kx-issue-field"><span class="kx-issue-field-label">What this means</span><span class="kx-issue-field-value">${esc(copy.detail)}</span></div>
+          <div class="kx-issue-field"><span class="kx-issue-field-label">Decided by</span><span class="kx-issue-field-value">${esc(res.source)} &mdash; ${esc(SOURCE_COPY[res.source] || "")}</span></div>
+          <div class="kx-issue-field">
+            <span class="kx-issue-field-label">Evidence</span>
+            <span class="kx-issue-field-value">${basis.length ? basis.map((line) => esc(line)).join("<br>") : "No evidence sentence was recorded for this decision &mdash; treat the path as unconfirmed and set it explicitly."}</span>
+          </div>
+          <div class="kx-issue-field">
+            <span class="kx-issue-field-label">Wrong?</span>
+            <span class="kx-issue-field-value">
+              ${res.source === "operator" ? "This is an operator override. Clearing it in Manual entry hands the decision back to the plan set." : "If this reads the plan set wrong, set the path yourself &mdash; an operator choice wins over every automatic signal."}
+              <button type="button" class="secondary" style="font-size:12px;margin-top:6px" data-goto-permit-path="1">Set the permit path &rarr;</button>
+            </span>
+          </div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:6px">Changing the path rebuilds the application set &mdash; the other application is never filed.</p>
+    </div>`;
+}
+
+// Open the Manual entry accordion and focus the existing permit-path override. Same
+// jump pattern the form-mapping check uses; no second override control is introduced.
+function gotoPermitPathOverride() {
+  document.querySelector(".stage-accordion[data-stage-index='2']")?.setAttribute("open", "");
+  const sel = $("manualPermitPath");
+  if (sel) {
+    sel.scrollIntoView({ behavior: "smooth", block: "center" });
+    sel.focus();
+  }
+}
+
 function renderApplicationDocs() {
   ensureKeelixDetailStyles();
   const pkg = state.applicationDocs;
@@ -4312,6 +4448,7 @@ function renderApplicationDocs() {
   const docsRequired = profile.requiresAhjApplication || profile.requiresPortalEntryOnly;
   const profileNotes = (profile.notes || []).filter(Boolean);
   $("applicationDocs").innerHTML = `
+    ${renderPermitPathPanel(pkg)}
     ${renderFilledForms(pid)}
     <div id="submittalEmailCard"></div>
     <div class="kx-band">
@@ -4345,6 +4482,7 @@ function renderApplicationDocs() {
     `).join("")}
   `;
   bindFilledFormControls();
+  document.querySelectorAll("[data-goto-permit-path]").forEach((b) => b.addEventListener("click", gotoPermitPathOverride));
   renderSubmittalEmail();
   if (window.lucide) window.lucide.createIcons();
 }

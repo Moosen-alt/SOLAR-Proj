@@ -618,6 +618,13 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
     missingFields,
     html: packageHtml(project, profile, docs, missingFields, client),
     permitType: `${describePermitType(profile, { permitStructure: structure }).callout} ${permitPathCallout(permitPath)}`,
+    // THE RESOLVED PATH, STRUCTURALLY — not only folded into permitType's prose.
+    // The prescriptive and structural applications are mutually exclusive, so this one
+    // decision picks which application the AHJ receives; until now it was only legible
+    // inside the generated cover/manifest markdown, which meant an operator could not
+    // see WHY it was decided or correct a wrong read without opening a document. The
+    // screen renders path + source + basis and points at the existing override.
+    permitPath: { path: permitPath.path, source: permitPath.source, basis: [...permitPath.basis] },
   };
 }
 

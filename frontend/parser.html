@@ -670,16 +670,22 @@
       <div class="ps-grid cols3">
         <div class="ps-field">
           <label for="existingProjectSelect">Link to existing project</label>
-          <select id="existingProjectSelect"><option value="">— New Project —</option></select>
+          <select id="existingProjectSelect" onchange="refreshClientGate()"><option value="">— New Project —</option></select>
         </div>
         <div class="ps-field">
-          <label for="clientSelect">Client / Contractor</label>
-          <select id="clientSelect" onchange="loadContractorInfo(this.value)"><option value="">— Select Client —</option></select>
+          <!-- REQUIRED at intake, not discovered four stages later. The client decides the
+               CCB/licence on the permit application and the portal login that files it, so a
+               NEW project cannot be saved without one (the backend refuses with 400 too —
+               this select is the affordance, not the enforcement). Linking to an EXISTING
+               project takes the PUT path and keeps its already-bound client. -->
+          <label for="clientSelect">Client / Contractor <span aria-hidden="true" style="color:#c0392b">*</span></label>
+          <select id="clientSelect" required aria-required="true" onchange="loadContractorInfo(this.value);refreshClientGate()"><option value="">— Select Client —</option></select>
         </div>
         <div class="ps-field" style="justify-content:flex-end">
-          <button onclick="saveToSystem()" class="primary" style="width:100%;justify-content:center">Save to project</button>
+          <button id="saveToSystemBtn" onclick="saveToSystem()" class="primary" style="width:100%;justify-content:center">Save to project</button>
         </div>
       </div>
+      <div id="clientGateHint" class="ps-note" style="display:none">Choose the <strong>Client / Contractor</strong> above before saving a new project &mdash; the permit application carries that client&rsquo;s CCB licence and the portal logs in as them, so a project cannot be created without one.</div>
       <div id="saveStatus" class="ps-status"></div>
       <!-- Portal questions: the questions THIS project's portal will ask that the plan set
            cannot answer (ownership/financing, community solar, disconnect distance...).
@@ -4062,6 +4068,7 @@ function resetAll(){
     else el.value = '';
   });
   if ($('clientSelect')) $('clientSelect').value = '';
+  refreshClientGate(); // a cleared client re-blocks Save, same as a never-chosen one
   document.querySelectorAll('input[type=file]').forEach(el => el.value = '');
   state.planDoc = state.ubDoc = state.meterDoc = state.structuralDoc = null;
   state.reviewFlags = [];
@@ -4763,8 +4770,28 @@ async function loadSystemSelects() {
   } catch (e) {
     console.warn('Could not load system selects:', e);
     const s = $('saveStatus');
-    if (s) s.textContent = '⚠ Could not load the projects/clients list — check your connection. You can still parse and save as a new project.';
+    // WAS: "You can still parse and save as a new project." That stopped being true the
+    // moment a new project required a client — without the clients list there is nothing
+    // to pick, so saying "you can still save" would send the operator into a 400.
+    if (s) s.textContent = '⚠ Could not load the projects/clients list — check your connection. Parsing still works, but a NEW project cannot be saved until the client list loads (every filing carries a client’s CCB licence). Reload once the connection is back.';
   }
+  refreshClientGate();
+}
+
+// A NEW project needs a client; linking to an EXISTING one does not (that takes the PUT
+// path and keeps the client already bound to it). Disabling the button is the affordance —
+// the backend refuses a client-less create with 400 regardless, so this can only ever be
+// ahead of the server, never instead of it.
+function refreshClientGate() {
+  const btn = $('saveToSystemBtn');
+  if (!btn) return;
+  const existingId = getVal('existingProjectSelect');
+  const clientId = getVal('clientSelect');
+  const blocked = !existingId && !clientId;
+  btn.disabled = blocked;
+  btn.title = blocked ? 'Choose the Client / Contractor this project is filed for — a new project cannot be created without one.' : '';
+  const hint = $('clientGateHint');
+  if (hint) hint.style.display = blocked ? '' : 'none';
 }
 
 function buildSystemPayload() {
@@ -4883,6 +4910,15 @@ async function saveToSystem() {
   const clientId = getVal('clientSelect');
   if (clientId) payload.clientId = clientId;
   const existingId = getVal('existingProjectSelect');
+  // A NEW project without a client is refused here as well as by the button state and by
+  // the backend: the button can be re-enabled from a console, and saveToSystem is called
+  // by name elsewhere on this page.
+  if (!existingId && !clientId) {
+    if (statusEl) statusEl.textContent = '⚠ Choose the Client / Contractor this project is filed for — the permit application carries that client’s CCB licence and the portal logs in as them, so a new project cannot be created without one.';
+    refreshClientGate();
+    $('clientSelect')?.focus();
+    return;
+  }
   if (statusEl) statusEl.textContent = 'Saving…';
   try {
     let res;

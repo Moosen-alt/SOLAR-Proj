@@ -72,11 +72,21 @@ const check = (name: string, ok: boolean, detail = "") => {
 async function main(): Promise<void> {
   await waitForServer();
 
+  // A CLIENT FIRST: POST /api/projects refuses a client-less create (every filing carries
+  // the client's CCB licence and its portal login), so the project below needs one.
+  const client = await (await fetch(`${BASE}/api/clients`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ companyName: "Testburg Solar LLC" }),
+  })).json();
+  const clientId: string = client?.id || client?.client?.id;
+  check("client created", Boolean(clientId), JSON.stringify(client).slice(0, 200));
+
   // Project whose AHJ matches the stored template below.
   const created = await (await fetch(`${BASE}/api/projects`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ parserPayload: { owner: "DL Test Owner", ahj: "City of Testburg", state: "OR", utility: "PGE", dcKw: 8 } }),
+    body: JSON.stringify({ parserPayload: { clientId, owner: "DL Test Owner", ahj: "City of Testburg", state: "OR", utility: "PGE", dcKw: 8 } }),
   })).json();
   const pid: string = created?.project?.id || created?.id;
   check("project created", Boolean(pid), JSON.stringify(created).slice(0, 200));

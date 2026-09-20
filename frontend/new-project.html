@@ -107,6 +107,12 @@
         <h2>Homeowner &amp; property</h2>
         <div class="sec-hint">Who owns the system and where it's installed (permit applicant + site address).</div>
         <div class="np-grid">
+          <!-- REQUIRED. The client is the solar company the work is FOR: their CCB/contractor
+               licence goes on the permit application and their credentials log into the portal.
+               A project created without one cannot be staged, so it is asked here rather than
+               discovered as a blocker four stages later. The backend refuses a client-less
+               create with 400; this picker is how an operator complies. -->
+          <div class="np-field wide"><label for="clientId">Client / contractor <span class="req">*</span></label><select id="clientId" name="clientId" required><option value="">— Select client —</option></select></div>
           <div class="np-field wide"><label for="owner">Homeowner name <span class="req">*</span></label><input id="owner" name="owner" required autocomplete="off" /></div>
           <div class="np-field"><label for="homeownerEmail">Email <span class="opt">(optional)</span></label><input id="homeownerEmail" name="homeownerEmail" type="email" /></div>
           <div class="np-field"><label for="homeownerPhone">Phone <span class="opt">(optional)</span></label><input id="homeownerPhone" name="homeownerPhone" type="tel" /></div>
@@ -184,6 +190,32 @@
     const submitBtn = document.getElementById("npSubmit");
     const setMsg = (t, k) => { msg.textContent = t; msg.className = k || ""; };
 
+    // Fill the required client picker. Built with DOM nodes (textContent, never innerHTML)
+    // so a company name can never be interpreted as markup. An empty or unreachable list is
+    // said out loud rather than left as a silently empty select that reads as "no clients".
+    (async () => {
+      const sel = document.getElementById("clientId");
+      if (!sel) return;
+      try {
+        const res = await fetch("/api/clients");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        const clients = data.clients || data.items || data || [];
+        for (const c of clients) {
+          if (!c || !c.id) continue;
+          const opt = document.createElement("option");
+          opt.value = c.id;
+          opt.textContent = c.companyName || c.contactName || c.name || c.id;
+          sel.appendChild(opt);
+        }
+        if (!clients.length) {
+          setMsg("No clients exist yet. Create the solar company this work is for under Clients first — a project cannot be created without one.", "error");
+        }
+      } catch (err) {
+        setMsg("Could not load the client list (" + err.message + "). A new project cannot be created until it loads — reload once the connection is back.", "error");
+      }
+    })();
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       setMsg("");
@@ -196,6 +228,10 @@
       }
       if (!payload.owner || !payload.street) {
         setMsg("Homeowner name and install address are required.", "error");
+        return;
+      }
+      if (!payload.clientId) {
+        setMsg("Choose the client / contractor this project is filed for — the permit application carries their CCB licence and the portal logs in as them.", "error");
         return;
       }
       submitBtn.disabled = true;

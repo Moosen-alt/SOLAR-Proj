@@ -67,6 +67,16 @@ export type StageDetail =
   | "submitted_partial"
   // captureConfirmation / submittalTracks: every track this project files is now filed.
   | "submitted_all"
+  // captureConfirmation: a human confirmed the filing, and it carried NO application or permit
+  // number — so nothing can be looked up and NO permit_check_target was invented for it. This
+  // filing is not being checked by anyone, and it is the operator's move to add the number
+  // under Permit/NEM Checks.
+  //
+  // It OUTRANKS submitted_partial/submitted_all deliberately. Those two read as reassurance
+  // ("it's in, we're watching"), and on a filing with no number that is false. How many tracks
+  // are still out stays answerable from the tracks panel; whether anything is watching THIS
+  // filing was answerable nowhere. Retired by the next capture that carries a number.
+  | "submitted_untracked"
   // Permit monitor: the jurisdiction/utility is still reviewing.
   | "under_review"
   // A correction has been received and triaged; the bucket says whose move it is.
@@ -118,7 +128,28 @@ export type StageDetail =
   | "handoff_ready"
   // An operator moved the status by hand through the audited override. Deliberately says only
   // that a human did it: the reason they typed is on the audit row, which is the record.
-  | "operator_override";
+  | "operator_override"
+  // getReviewerReport / getReviewerReportWithVision on a PRE-STAGE project whose reviewer gate
+  // came back with ZERO blockers. The reviewer gate has no approve button — its "approval" IS
+  // the report returning clean — so this is the machine record of that verdict. Deliberately a
+  // stage_detail and NOT a status: passing the gate does not move the job along the pipeline,
+  // it only says the packet is defensible; `ready_to_stage` (written when the docs are built)
+  // stays the status either way. Never written once a project has staged: re-running the report
+  // on a filed job must not relabel where that job is.
+  | "reviewer_gate_approved"
+  // runAutopilotApproval on a REAL (non-mock) portal: the operator's regulatory approval is
+  // recorded and the automation STOPS. The filing itself has not happened — a person must open
+  // the portal, click its own submit, and then capture the confirmation here.
+  //
+  // THE STATUS DELIBERATELY STAYS `awaiting_human_submit`. That is what the approval gate keys
+  // on (autopilot.ts), what the staged portal run still says, and what is TRUE: nothing has been
+  // filed. Without this value the approval left no trace a renderer could see — the autopilot
+  // panel went straight back to "Click Approve & Submit to file", so a half-done filing looked
+  // exactly like one nobody had touched. This is the half the screen can act on.
+  //
+  // It is cleared by the next real event: captureConfirmation writes submitted_partial/
+  // submitted_all, so capturing the number retires the banner by itself.
+  | "approved_awaiting_filing";
 
 export type QcStatus = "pass" | "fail" | "warning";
 export type Severity = "info" | "warning" | "error" | "blocker";
@@ -654,6 +685,13 @@ export interface PortalRun {
   // Public AHJ portal URL — no login needed; paste into browser to check status.
   // e.g. Accela CapDetail.aspx links, DevelopmentDirect record pages.
   trackingUrl?: string;
+  // WHICH TRACK this run staged — the `permit_type` column ("nem", "building", "electrical",
+  // "combo", "permit", "mpu"). Mapped through so the project screen can NAME the portal an
+  // operator still has to go and file in: a `nem` run points at the UTILITY, everything else at
+  // the AHJ. The run's result_json is not an option for that — only the RecipeAdapter writes a
+  // `portalName` into it (measured on the live DB: 59 AutoLearnAdapter rows carry none), so a
+  // renderer reading it would name the portal on some filings and go silent on others.
+  permitType?: string;
 }
 
 export interface SubmissionRecord {
@@ -869,6 +907,26 @@ export interface ApplicationDocumentPackage {
   };
   /** Human callout of the permit TYPE: combo vs separate BLD/ELE + submission method. */
   permitType?: string;
+  /**
+   * THE RESOLVED PERMIT PATH AND WHAT DECIDED IT (permitPath.resolvePermitPath).
+   *
+   * Prescriptive and engineered are mutually exclusive — the AHJ takes exactly one
+   * application — so this single call decides which application is built, which fee
+   * schedule applies and whether a PE stamp is required. It was previously legible only
+   * as prose inside the generated cover/manifest documents, so an operator could see the
+   * conclusion but not the evidence, and could not tell a confident read from a default.
+   *
+   * `source` says WHO decided (an explicit operator override always wins) and `basis`
+   * carries the evidence sentences verbatim, so a wrong read is visible and correctable
+   * rather than silently carried into the filing. Deliberately mirrors PermitPathResolution
+   * rather than importing it: shared/ is the type surface both sides read, and backend-only
+   * fields (needsEngineeredDocs, requiredEngineeredDocs) are derivable from `path`.
+   */
+  permitPath?: {
+    path: "prescriptive" | "engineered" | "unknown";
+    source: "operator" | "parser" | "structural-screen" | "default";
+    basis: string[];
+  };
 }
 
 export interface AhjProcessProfile {

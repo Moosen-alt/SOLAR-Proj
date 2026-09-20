@@ -33,7 +33,7 @@ import { nowIso } from "./time";
 import { getProjectDetail, rerunQc, captureConfirmation } from "./repository";
 import { parseJson } from "./json";
 import { buildReviewerReportFor } from "./repository";
-import type { ProjectRecord, SubmittalTrackType } from "../../shared/src/types";
+import type { ProjectRecord, StageDetail, SubmittalTrackType } from "../../shared/src/types";
 import { requiredTracks } from "./submittalTracks";
 
 type Row = Record<string, SqlParam>;
@@ -276,11 +276,21 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
     const gapAdvisory = reviewInfo.gapFillMissing.length
       ? ` ${reviewInfo.gapFillMissing.length} required portal field(s) had no project data and were left blank — add them to the project and re-stage before submitting: ${reviewInfo.gapFillMissing.join(", ")}.`
       : "";
+    // AN APPROVAL ALREADY ON RECORD MUST NOT BE INVITED AGAIN AS IF IT NEVER HAPPENED.
+    // runAutopilotApproval on a real portal writes stage_detail `approved_awaiting_filing` and
+    // leaves the status alone (nothing is filed). Reading only the status, this branch then
+    // answered "Click Approve & Submit to file" — actively contradicting the approval the
+    // operator had just given and hiding the fact that a filing was half-done. The button stays
+    // enabled on purpose (a second track staged later needs it, and re-approving only writes
+    // another audit row); what changes is what the panel SAYS.
+    const approvedAwaitingFiling = project.stageDetail === "approved_awaiting_filing";
     const baseMsg = blockers.length
       ? "Staged, but reviewer blockers must be cleared before approval."
-      : "Staged to portal review. Click Approve & Submit to file.";
+      : approvedAwaitingFiling
+        ? "Approval recorded. Automation stops here — open the portal, click its submit yourself, then capture the confirmation number below."
+        : "Staged to portal review. Click Approve & Submit to file.";
     return {
-      projectId, phase: "awaiting_approval", stage: "Awaiting approval",
+      projectId, phase: "awaiting_approval", stage: approvedAwaitingFiling ? "Approved — awaiting your filing" : "Awaiting approval",
       message: baseMsg + gapAdvisory,
       blockers, canApprove: blockers.length === 0, pauseReason: null, portalRunId: run ? String(run.id) : null, updatedAt: ts,
       ...reviewInfo,
@@ -528,6 +538,32 @@ export async function runAutopilotApproval(
     portalRunId: runId,
     note: "Approval authorized. Adapter has no audited autonomous submit; human completes the final submit in the portal.",
   });
+
+  // THE APPROVAL HAS TO SURVIVE THE PAGE RELOAD, OR IT IS NOT A STATE.
+  //
+  // Until this line the audit row above was the ONLY trace of an approval on a real portal, and
+  // no renderer reads the audit trail to decide what a project needs next. So the operator
+  // clicked Approve & Submit, the panel recomputed from `projects.status` — still
+  // `awaiting_human_submit` — and told them "Staged to portal review. Click Approve & Submit to
+  // file." The product had no way to say "approved; now go and file it", and no way to notice
+  // that a filing was half-done. Every live portal run in the database is a real one (95 rows:
+  // AutoLearnAdapter, RecipeAdapter, NoAdapter — zero mock), so this is the branch every real
+  // approval takes.
+  //
+  // WHAT IS NOT WRITTEN HERE MATTERS AS MUCH AS WHAT IS:
+  //  * `status` stays `awaiting_human_submit`. It is the truth (nothing is filed), it is what
+  //    this function's own approval gate keys on, and it is what the staged portal_run still
+  //    says. Moving it would be the automation claiming a filing that no human has made —
+  //    hard rule 1, and the whole point of this round.
+  //  * `current_stage` is untouched. A recorded label is a matching key; the prose already on
+  //    the row ("PGE staged. Human must verify and submit manually.") keeps saying what it said.
+  // stage_detail is the machine field, and this is an additive value in it.
+  db.run("UPDATE projects SET stage_detail = ?, updated_at = ? WHERE id = ?", [
+    "approved_awaiting_filing" satisfies StageDetail,
+    nowIso(),
+    projectId,
+  ]);
+
   logger.info("autopilot", "Segment B — approval recorded; real portal has no autonomous submit, human completes final click", { project: projectId, portalRun: runId });
   return getAutopilotState(db, projectId);
 }

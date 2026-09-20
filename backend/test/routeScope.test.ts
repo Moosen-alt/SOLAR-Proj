@@ -195,11 +195,34 @@ run(
   /getProjectList\(db,\s*\{[^}]*orgId:\s*reqOrgFilter/.test(source),
   "expected getProjectList(db, { ..., orgId: reqOrgFilter(db, req) })",
 );
-run(
-  "POST /api/projects stamps the caller's org",
-  /createProject\(db,\s*payload,\s*requestScope\(db,\s*req\)\.orgId\)/.test(source),
-  "expected createProject(db, payload, requestScope(db, req).orgId)",
-);
+// The org must come from the REQUEST, never from a default. Checked against the handler
+// body rather than the whole file so a matching call elsewhere cannot satisfy it, and
+// written to accept the scope being hoisted into a local — the create route now also needs
+// it for the client gate (POST /api/projects requires a clientId that exists in the
+// CALLER'S OWN org), and demanding one exact spelling would have forced the route to
+// resolve the same cached scope twice just to keep a regex happy.
+{
+  const start = source.indexOf('app.post("/api/projects"');
+  const handler = start < 0 ? "" : source.slice(start, source.indexOf('app.put("/api/projects/:id"', start));
+  const inlineOrg = /createProject\(db,\s*payload,\s*requestScope\(db,\s*req\)\.orgId\)/.test(handler);
+  const hoistedOrg = /const\s+scope\s*=\s*requestScope\(db,\s*req\)\s*;/.test(handler)
+    && /createProject\(db,\s*payload,\s*scope\.orgId\)/.test(handler);
+  run(
+    "POST /api/projects stamps the caller's org",
+    Boolean(handler) && (inlineOrg || hoistedOrg),
+    "expected createProject(db, payload, <the request's own org>) — either requestScope(db, req).orgId inline, or a `const scope = requestScope(db, req)` hoisted in the same handler",
+  );
+  run(
+    "POST /api/projects refuses a client-less create",
+    /if \(!clientId\)[\s\S]{0,400}HttpError\(400/.test(handler),
+    "the create route no longer refuses a project with no clientId — every filing carries the client's CCB licence, and a client-less project cannot be staged",
+  );
+  run(
+    "POST /api/projects resolves the client WITHIN the caller's org",
+    /orgClause\(orgFilter\(scope\)[\s\S]{0,300}FROM clients WHERE id = \?\$\{clause\}/.test(handler),
+    "the create route looks up the client unscoped — a tenant could bind its project to another tenant's client",
+  );
+}
 
 // THE ONE ROUTE THAT WRITES `projects.status` BY HAND, named explicitly.
 //

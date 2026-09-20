@@ -11,6 +11,15 @@ import { runDuePermitChecks, runEmailTracker } from "./repository";
 // coordinator hitting endpoints. Mirrors startBackupScheduler/startJobWorker (setInterval
 // + unref). Tunable via MONITOR_INTERVAL_MINUTES (default 15); 0 disables it.
 export function startMonitorScheduler(db: AppDb): void {
+  // THE SAME GATE server.ts ALREADY APPLIES (it returns before calling this when workers are
+  // off), restated here so the refusal is a property of the scheduler rather than of one call
+  // site. It cannot change production behavior — that early return still fires first — and it
+  // is what makes "BACKGROUND_WORKERS=off means nothing sweeps, not even at boot" provable
+  // without booting an HTTP server.
+  if (process.env.BACKGROUND_WORKERS === "off") {
+    logger.info("monitor", "Monitor scheduler disabled (BACKGROUND_WORKERS=off).");
+    return;
+  }
   const minutes = Number(process.env.MONITOR_INTERVAL_MINUTES ?? 15);
   if (!Number.isFinite(minutes) || minutes <= 0) {
     logger.info("monitor", "Monitor scheduler disabled (MONITOR_INTERVAL_MINUTES <= 0).");
@@ -103,7 +112,26 @@ export function startMonitorScheduler(db: AppDb): void {
     }
   };
 
-  logger.info("monitor", `Monitor scheduler started — permit/NEM checks + email tracker every ${minutes} min.`);
-  // Defer the first run so it doesn't pile onto cold-start work.
+  // THE LEADING TICK. setInterval alone fires FIRST at +interval, so every restart bought
+  // MONITOR_INTERVAL_MINUTES (15 by default) of nothing being checked — and a process that
+  // restarts more often than its interval would never sweep at all. A filing whose status
+  // changed while the server was down stayed unread until a full window had also elapsed.
+  //
+  // Short delay, not zero: cold start is already doing the orphan-browser reap, the job
+  // worker's first claim and the CEC cache prime, and a status sweep opens browsers. This
+  // is late enough to stay out of that and far earlier than the interval.
+  //
+  // It shares the `tick` closure above, so the running-overlap guard covers it BY
+  // CONSTRUCTION: if the boot sweep is still going when the first interval fires, the
+  // interval's call returns immediately rather than running a second sweep alongside it.
+  // .unref() for the reason every other timer here has it — a one-shot script must not be
+  // held open by a sweep it never asked for.
+  // An unreadable override falls back to the default rather than to NaN — Math.max(0, NaN)
+  // is NaN, and setTimeout(fn, NaN) fires on the next tick, which would put a portal sweep
+  // right in the middle of cold start.
+  const bootDelayRaw = Number(process.env.MONITOR_BOOT_DELAY_MS ?? 30_000);
+  const bootDelayMs = Number.isFinite(bootDelayRaw) ? Math.max(0, bootDelayRaw) : 30_000;
+  logger.info("monitor", `Monitor scheduler started — permit/NEM checks + email tracker every ${minutes} min, first sweep in ${Math.round(bootDelayMs / 1000)}s.`);
+  setTimeout(() => void tick(), bootDelayMs).unref();
   setInterval(() => void tick(), minutes * 60 * 1000).unref();
 }

@@ -52,7 +52,7 @@ import { startCecSyncScheduler, primeCecCache, syncCecEquipment } from "./cecEqu
 import { extractZipToWorkdir } from "./batchZip";
 import { AUTH_ENABLED, currentUser, login, logout, me, requireAuth, seedAdminUser, entitlementGate, requestOrg, createApiKey, ADMIN_ROLES } from "./auth";
 import { PRODUCTS, PRODUCT_KEYS, grantProduct, revokeProduct, orgEntitlements, productsForEdition } from "./entitlements";
-import { requestScope, orgFilter, reqOrgFilter, assertInScope, auditCrossOrgAccess } from "./scope";
+import { requestScope, orgFilter, orgClause, reqOrgFilter, assertInScope, auditCrossOrgAccess } from "./scope";
 import type { RequestScope } from "./scope";
 import { DEFAULT_ORG_ID } from "./db";
 import { ensureStatusShareToken, statusShareUrl } from "./clientNotifier";
@@ -424,7 +424,31 @@ app.post("/api/projects", (req, res) => {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new HttpError(400, "Project payload must be an object.");
   }
-  res.status(201).json(createProject(db, payload, requestScope(db, req).orgId));
+  // A PROJECT MAY NOT BE BORN WITHOUT A CLIENT.
+  //
+  // Every downstream decision keys off the client: which CCB/licence goes on the
+  // permit application, which portal credentials log in, which business address the
+  // AHJ sees. Created client-less, none of that is answerable — and the operator does
+  // not find out at intake, they find out four stages later as the `needs_client`
+  // staging blocker (autopilot.ts) after QC, the reviewer gate and doc-building have
+  // all run against a project that could never have been filed.
+  //
+  // ENFORCED AT THE ROUTE EDGE ONLY, deliberately. createProject() itself stays
+  // permissive so the smoke run, the fixtures and any import that legitimately builds
+  // a project before its client is known keep working, and so the existing
+  // `needs_client` path still catches stored rows that predate this gate. Nothing
+  // retro-fixes an existing client-less row.
+  const scope = requestScope(db, req);
+  const clientId = String(payload.clientId ?? "").trim();
+  if (!clientId) {
+    throw new HttpError(400, "Pick the client this project is filed for before saving. Every filing carries that client's CCB/contractor licence and portal login, so a project cannot be created without one — choose one in the Client / Contractor picker, or create the client first under Clients.", { needsClient: true });
+  }
+  const { clause, params } = orgClause(orgFilter(scope), "org_id");
+  const client = db.get<{ id: string }>(`SELECT id FROM clients WHERE id = ?${clause}`, [clientId, ...params]);
+  if (!client) {
+    throw new HttpError(400, `No client "${clientId}" exists here. Pick the client this project is filed for from the Client / Contractor list, or create it first under Clients.`, { needsClient: true });
+  }
+  res.status(201).json(createProject(db, payload, scope.orgId));
 });
 
 app.put("/api/projects/:id", (req, res) => {

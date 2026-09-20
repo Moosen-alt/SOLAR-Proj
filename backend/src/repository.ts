@@ -68,7 +68,8 @@ import { checkStatusWithAdapter, runCorrectionReopen, stageWithAccela, stageWith
 import { resolveHeadless } from "../../portal-bot/src/browser";
 import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, getPortalRecipe, savePortalRecipeSteps } from "./portalRecipes";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
-import { detectPlatform, publicPermitStatusCheck } from "./publicPermitStatus";
+// detectPlatform moved with the target INSERT into submittalTracks.ts's ensureCheckTarget.
+import { publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR } from "./projectDocuments";
 import { findAhjProcessProfile } from "./processProfiles";
 import { documentInventory, type DocumentInventory, type DocPresence } from "./requiredDocuments";
@@ -80,6 +81,10 @@ import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCreden
 import { logger } from "./logger";
 import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isUtilityPlatformUrl, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack } from "./portalChannel";
 import { isPortalPaused } from "./portalPause";
+// The ONE creator of permit_check_targets rows (extracted from markTrackSubmitted).
+// Direction matters: submittalTracks must never import repository — jobQueue statically
+// imports repository, and the circular-import guard in CLAUDE.md is about that edge.
+import { ensureCheckTarget, SUBMITTAL_TRACK_TYPES } from "./submittalTracks";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
@@ -431,6 +436,10 @@ function mapPortalRun(row: Row): PortalRun {
     pauseReason: row.pause_reason ? text(row.pause_reason) : undefined,
     confirmationNumber: row.confirmation_number ? text(row.confirmation_number) : undefined,
     trackingUrl: row.tracking_url ? text(row.tracking_url) : undefined,
+    // The track this run staged. Carried so the project screen can name the portal the operator
+    // still has to file in — `nem` points at the utility, anything else at the AHJ. See the
+    // field's note in shared/src/types.ts for why result_json is not a usable source.
+    permitType: row.permit_type ? text(row.permit_type) : undefined,
   };
 }
 
@@ -2650,7 +2659,9 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
   const permitEmails = detail.emailProjectMatches.filter(hasPermitSignal);
   const nemEmails = detail.emailProjectMatches.filter(hasNemSignal);
   const permitCorrections = detail.corrections.filter((correction) => correction.source !== "email" || /permit|ahj|city|county|building|electrical|plan|site|revision/i.test(correction.correctionText));
-  const nemCorrections = detail.corrections.filter((correction) => /nem|net.?meter|interconnection|pto|utility|meter|account|powerclerk|inverter|1741/i.test(`${correction.correctionText} ${correction.rootCause} ${correction.requiredAction}`));
+  // Strong signals only — see classifyCorrectionTrack. An unclassified correction shows on
+  // this lane AND the permit lane; a permit-record scrape shows on neither this one.
+  const nemCorrections = detail.corrections.filter((correction) => correctionOnTrack("nem", correction.correctionText, correction.rootCause, correction.requiredAction));
   const openPermitCorrections = permitCorrections.filter((correction) => !correction.closedAt && !correction.resubmitted);
   const openNemCorrections = nemCorrections.filter((correction) => !correction.closedAt && !correction.resubmitted);
   const hasPortalStaging = detail.portalRuns.some((run) => run.status === "awaiting_human_submit" || run.status === "submitted");
@@ -3221,7 +3232,9 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
     return Boolean(cause && cause.count > 0 && cause.severity === "blocker");
   });
   const openCorrections = detail.corrections.filter((correction) => !correction.closedAt && !correction.resubmitted);
-  const openNemCorrections = openCorrections.filter((correction) => /nem|net.?meter|interconnection|pto|utility|meter|account|powerclerk|inverter|1741/i.test(`${correction.correctionText} ${correction.rootCause} ${correction.requiredAction}`));
+  // Strong signals only — see classifyCorrectionTrack. Unclassified still warns here (an
+  // unknown is not an all-clear); a permit-record scrape no longer warns on the NEM lane.
+  const openNemCorrections = openCorrections.filter((correction) => correctionOnTrack("nem", correction.correctionText, correction.rootCause, correction.requiredAction));
   const criticalFields: Array<[string, unknown]> = [
     ["Homeowner", project.homeownerName],
     ["Service address", project.projectAddress],
@@ -4447,7 +4460,71 @@ export function getApplicationDocumentPackage(db: AppDb, projectId: string): App
     ...(pkg.missingDocumentsError ? { missingDocumentsError: pkg.missingDocumentsError } : {}),
     learnedProfile: learned ? `${learned.state}:${learned.ahj}:${learned.utility}` : null,
   });
+
+  // `ready_to_stage` GETS ITS WRITER — this is it.
+  //
+  // The status was labelled ("Ready to stage"), bannered with an instruction ("Docs built. Click
+  // 2 · Reviewer Gate, then 3 · Prepare Submittal."), offered as a board filter and mapped into
+  // the Build & Validate stage — and NOTHING anywhere could write it. A project that had just
+  // had its AHJ/NEM documents built still read `qc_passed`, so the board could not tell "QC is
+  // done" from "the packet exists", and the banner the operator needed was unreachable copy.
+  //
+  // THE GATE IS ONE ONE-WAY EDGE, AND IT IS NARROW ON PURPOSE:
+  //  * only from `qc_passed` — the single status that means "verified, nothing built yet". From
+  //    any other status (staged, submitted, in corrections, issued) this function stays exactly
+  //    what it has always been: a pure read that writes nothing but its own audit row. That
+  //    matters because the packet is fetched on the project screen and by the /research-ahj
+  //    route, not only by the Build Docs button.
+  //  * only when documents were actually produced (`pkg.docs.length > 0`). An empty package is
+  //    a failure to build, and a failure must never read as progress.
+  //
+  // WHAT IT DOES NOT TOUCH: `stage_detail`. QC's verdict is still the most recent thing any
+  // writer has actually established about this project, and overwriting it with a "docs built"
+  // shade would invent a sub-stage nobody measured. The reviewer gate speaks next (below), and
+  // that is the event that replaces it.
+  if (detail.project.status === "qc_passed" && pkg.docs.length > 0) {
+    db.run("UPDATE projects SET status = 'ready_to_stage', current_stage = ?, updated_at = ? WHERE id = ?", [
+      `AHJ/NEM documents built (${pkg.profile.name}) — ready to stage.`,
+      nowIso(),
+      projectId,
+    ]);
+    addAuditLog(db, projectId, "system", "application doc builder", "project.ready_to_stage", {
+      from: "qc_passed", profile: pkg.profile.id, docCount: pkg.docs.length,
+    });
+  }
   return pkg;
+}
+
+// THE REVIEWER GATE'S VERDICT, RECORDED.
+//
+// There is no "approve" button on the reviewer gate: its approval IS the report coming back
+// with zero blockers when the operator clicks 2 · Reviewer Gate. That verdict was rendered and
+// then forgotten — re-open the project tomorrow and nothing on the row says the packet was ever
+// checked. This records it in the machine field.
+//
+// stage_detail ONLY — never a status. Passing the gate does not move the job down the pipeline
+// (the docs builder's `ready_to_stage` is the status, and it stays), it only says the packet is
+// defensible. And only on a PRE-STAGE project: re-running the report on a staged or filed job
+// must never relabel where that job actually is, least of all overwrite
+// `approved_awaiting_filing` on a filing that is waiting for a person to go and submit it.
+// A CLEAN VERDICT CAN GO STALE, SO THIS RECORD IS TWO-WAY. getReviewerReportWithVision runs the
+// text report FIRST (which lands here clean) and only then looks at the plan sheets, and vision
+// can confirm a blocker the text pass only suspected. A write-only recorder would leave
+// "reviewer gate approved" standing on a packet the gate had just rejected — an unknown reading
+// as reassurance, which is the exact failure mode this codebase keeps paying for. So blockers
+// RETRACT the value, and retract nothing else: only the string this function itself wrote is
+// ever cleared, so `qc_passed`, `approved_awaiting_filing` and every other writer's value are
+// untouchable from here. "" is the honest unknown and renders as nothing.
+const REVIEWER_GATE_RECORDABLE_STATUSES = new Set(["qc_passed", "ready_to_stage"]);
+function recordReviewerGateVerdict(db: AppDb, projectId: string, report: ReviewerReport): void {
+  const row = db.get<Row>("SELECT status, stage_detail FROM projects WHERE id = ?", [projectId]);
+  if (!row || !REVIEWER_GATE_RECORDABLE_STATUSES.has(text(row.status))) return;
+  const clean = !report.findings.some((finding) => finding.severity === "blocker");
+  const stored = text(row.stage_detail);
+  const next: StageDetail = clean ? "reviewer_gate_approved" : "";
+  if (!clean && stored !== "reviewer_gate_approved") return; // nothing of ours to retract
+  if (stored === next) return; // already says this; don't churn updated_at
+  db.run("UPDATE projects SET stage_detail = ?, updated_at = ? WHERE id = ?", [next, nowIso(), projectId]);
 }
 
 export function getReviewerReport(db: AppDb, projectId: string): ReviewerReport {
@@ -4459,6 +4536,7 @@ export function getReviewerReport(db: AppDb, projectId: string): ReviewerReport 
     installerCalloutCount: report.installerCallouts.length,
     matchedProfile: report.matchedProcessProfile ? `${report.matchedProcessProfile.state}:${report.matchedProcessProfile.ahj}` : null,
   });
+  recordReviewerGateVerdict(db, projectId, report);
   return report;
 }
 
@@ -4477,6 +4555,9 @@ export async function getReviewerReportWithVision(db: AppDb, projectId: string):
     blockerCount: enriched.findings.filter((item) => item.severity === "blocker").length,
     warningCount: enriched.findings.filter((item) => item.severity === "warning").length,
   });
+  // The inner getReviewerReport already recorded the TEXT verdict. Vision runs after it and can
+  // change the blocker count, so the enriched report gets the last word.
+  recordReviewerGateVerdict(db, projectId, enriched);
   return enriched;
 }
 
@@ -4961,8 +5042,66 @@ export interface CorrectionReopenResult {
   runId?: string;
 }
 
-// Same discriminator the corrections board uses to split NEM from permit corrections.
-const NEM_CORRECTION_RE = /nem|net.?meter|interconnection|pto|utility|meter|account|powerclerk|inverter|1741/i;
+// ---------------------------------------------------------------------------
+// WHICH FILING DOES THIS CORRECTION BELONG TO?
+//
+// The predecessor of this function was one regex,
+//   /nem|net.?meter|interconnection|pto|utility|meter|account|powerclerk|inverter|1741/i
+// pasted at three sites, and it was wrong in a way that only live data showed.
+// `utility`, `meter`, `account`, `inverter`, `interconnection` and `1741` are not
+// track signals — they are the vocabulary EVERY residential solar record uses to
+// describe the system. Christopher Ivy's only open correction (cb3cf605) is a scrape
+// of the Accela PERMIT record 187-26-000305-STR whose sole item is a parcel-level
+// "Sewer Recovery" notice; it matched as NEM on the words "load-side breaker
+// INTERCONNECTION", "within 10 ft of the UTILITY METER" and "microINVERTERs" — every
+// one of them the plan-set description, none of them about a utility filing.
+//
+// MISATTRIBUTING A CORRECTION IS WORSE THAN NOT CLASSIFYING IT: the reopen flow binds
+// the correction to a tracked filing and drives a browser at it, so a permit notice
+// read as NEM points the operator (and the automation) at the wrong portal — the exact
+// shape hard rule 5 exists to prevent.
+//
+// So: STRONG SIGNALS ONLY, and three answers rather than two.
+//   - "nem"          — the text names a utility FILING (NEM, net metering, PowerClerk,
+//                      PTO, an interconnection application/agreement) and nothing names
+//                      a permit record.
+//   - "permit"       — the text names a permit/building record (Accela, ePermitting, a
+//                      plan review, a permit record number, a parcel, an AHJ permit
+//                      application) and nothing names a utility filing.
+//   - "unclassified" — both kinds of signal, or neither. A human decides.
+// Ambient system vocabulary decides NOTHING on its own. UL 1741 in particular is an
+// inverter listing printed on spec sheets, not evidence of an interconnection filing.
+// ---------------------------------------------------------------------------
+
+export type CorrectionTrack = "permit" | "nem" | "unclassified";
+
+/** Names a UTILITY FILING (not merely utility equipment). */
+const NEM_FILING_RE = /\bnem\b|\bnems\b|net[\s-]?meter(ing)?|power\s?clerk|\bpto\b|permission to operate|interconnection (application|agreement|request|review|submittal|packet|approval)|customer generation|utility (application|interconnection|submittal)|generator interconnection/i;
+
+/** Names a PERMIT RECORD (not merely a building). `\d{3}-\d{2}-\d{6}` is the Accela
+ *  record number shape the live scrape carries ("187-26-000305-STR"). */
+const PERMIT_FILING_RE = /accela|e-?permitting|\bplan (review|check|examiner)\b|building permit|structural permit|electrical permit|permit (record|application|number)|\brecord\s+\d{3}-\d{2}-\d{6}|\b\d{3}-\d{2}-\d{6}(-[a-z]{2,4})?\b|\bparcel\b|\bahj\b|\bccb\b|certificate of occupancy|zoning|setback/i;
+
+/** Classify a correction's own words into the filing it belongs to.
+ *  Never guesses: an unclear correction comes back "unclassified" so the caller asks. */
+export function classifyCorrectionTrack(...parts: Array<string | null | undefined>): CorrectionTrack {
+  const blob = parts.filter(Boolean).join(" ");
+  const nem = NEM_FILING_RE.test(blob);
+  const permit = PERMIT_FILING_RE.test(blob);
+  if (nem && !permit) return "nem";
+  if (permit && !nem) return "permit";
+  return "unclassified";
+}
+
+/** Should a correction appear on THIS track's board/lane?
+ *
+ *  AN UNKNOWN MUST NEVER READ AS REASSURANCE: an unclassified correction shows on BOTH
+ *  lanes, never on neither. Dropping it from both would turn "we cannot tell which
+ *  filing this belongs to" into a silent all-clear on the one it actually belongs to. */
+export function correctionOnTrack(want: "permit" | "nem", ...parts: Array<string | null | undefined>): boolean {
+  const track = classifyCorrectionTrack(...parts);
+  return track === want || track === "unclassified";
+}
 
 export async function reopenCorrectionOnPortal(
   db: AppDb,
@@ -5028,13 +5167,39 @@ export async function reopenCorrectionOnPortal(
     // wording says which system suspended it; if that still leaves more than one filing
     // (two permit disciplines), refuse and let the operator pick — guessing files the
     // correction against the wrong application.
+    //
+    // AND IF THE WORDING DOES NOT SAY, WE DO NOT PICK. classifyCorrectionTrack returns
+    // "unclassified" rather than defaulting to permit, and that lands in the same
+    // needs-a-human surface below with every candidate listed. The old two-valued regex
+    // had no way to say "I cannot tell", so every correction it did not read as NEM was
+    // asserted to be a permit correction — and every correction it DID read as NEM was
+    // usually just a plan set describing its own microinverters.
     const blob = `${text(correction.correction_text)} ${text(correction.root_cause)} ${text(correction.required_action)}`;
-    const wantType = NEM_CORRECTION_RE.test(blob) ? "nem" : "permit";
-    const scoped = targets.filter((t) => text(t.target_type) === wantType || (wantType === "permit" && text(t.target_type) !== "nem"));
+    // EVIDENCE BEATS CLASSIFICATION. A portal-scraped correction usually quotes the record
+    // it came off ("Record 187-26-000305-STR: …"), and one of this project's own tracked
+    // application numbers appearing verbatim in the text is not a signal to weigh — it names
+    // the filing. Only when EXACTLY ONE tracked number appears: two would be a cross-reference
+    // and a guess again. Live: Ivy 720b05f3 tracks three filings (two Accela permits, one
+    // PowerClerk NEM); his correction quotes 187-26-000305-STR, so this binds it to that
+    // permit instead of asking, and the old regex bound it to the NEM portal.
+    const quotedTargets = targets.filter((t) => {
+      const app = text(t.application_number);
+      return app.length >= 6 && blob.includes(app);
+    });
+    const wantType = classifyCorrectionTrack(
+      text(correction.correction_text), text(correction.root_cause), text(correction.required_action),
+    );
+    const scoped = quotedTargets.length === 1
+      ? quotedTargets
+      : wantType === "unclassified"
+        ? []
+        : targets.filter((t) => text(t.target_type) === wantType || (wantType === "permit" && text(t.target_type) !== "nem"));
     if (scoped.length === 1) target = scoped[0];
     else {
       return surfaceNeedsHuman(
-        `Correction reopen needs a human: ${scoped.length || targets.length} tracked filings could carry this correction — pick the one to reopen.`,
+        wantType === "unclassified"
+          ? `Correction reopen needs a human: this correction's wording does not say which filing it belongs to, and ${targets.length} filings are tracked — pick the one to reopen. Reopening the wrong one files the correction against the wrong application.`
+          : `Correction reopen needs a human: ${scoped.length || targets.length} tracked filings could carry this correction — pick the one to reopen.`,
         { candidates: (scoped.length ? scoped : targets).map(describe) },
       );
     }
@@ -5252,47 +5417,37 @@ export function createPermitCheckTarget(
   },
 ): ProjectDetail {
   const detail = getProjectDetail(db, projectId);
-  const targetId = id();
-  const ts = nowIso();
   const frequency = Math.max(1, Math.floor(Number(input.checkFrequencyDays || 7)));
   const targetType = input.targetType === "nem" ? "nem" : "permit";
-  // Auto-detect the portal platform from the URL so the status-check strategy is
-  // selected automatically without the operator having to choose a platform.
-  const portalPlatform = input.portalUrl ? detectPlatform(input.portalUrl) : "unknown";
   db.transaction(() => {
-    db.run(
-      `INSERT INTO permit_check_targets
-        (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number,
-         check_frequency_days, active, last_checked_at, next_check_at, latest_outcome, latest_status_label,
-         notes, target_type, portal_platform, permit_type, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        targetId,
-        projectId,
-        input.jurisdiction || "",
-        input.portalName || "",
-        input.portalUrl || "",
-        input.applicationNumber || "",
-        input.permitNumber || "",
-        frequency,
-        1,
-        null,
-        nextCheckIso(frequency),
-        null,
-        "",
-        input.notes || "",
-        targetType,
-        portalPlatform,
-        // THE COLUMN WAS NEVER IN THIS INSERT. It has existed since the per-permit tracks landed
-        // and silently defaulted to '', so four of seven live targets had no discipline and the
-        // client portal labelled a structural permit "Building/electrical". Migration v28
-        // backfills the existing rows from submissions; this stops new ones being born blank.
-        input.permitType || (targetType === "nem" ? "nem" : ""),
-        ts,
-        ts,
-      ],
+    // THROUGH THE ONE CREATOR (submittalTracks.ts). This used to be its own unconditional
+    // INSERT, so adding the same filing twice — which is what an operator does after a page
+    // refresh loses the first attempt — left two rows polling one application. The row shape
+    // is unchanged: portal_platform is still auto-detected from the URL, permit_type still
+    // defaults from target_type (migration v28's reason), and next_check_at is still
+    // nextCheckIso(frequency) rather than "now", because THIS door records a filing that may
+    // have gone in weeks ago; only a just-captured confirmation is due on the next sweep.
+    const ensured = ensureCheckTarget(db, detail.project, {
+      targetType,
+      permitType: input.permitType || (targetType === "nem" ? "nem" : ""),
+      applicationNumber: input.applicationNumber,
+      permitNumber: input.permitNumber,
+      jurisdiction: input.jurisdiction || "",
+      portalName: input.portalName || "",
+      portalUrl: input.portalUrl || "",
+      notes: input.notes || "",
+      checkFrequencyDays: frequency,
+      nextCheckAt: nextCheckIso(frequency),
+    });
+    // AUDITING "created" FOR AN UPDATE IS A LIE. The two actions are separate strings so an
+    // operator reading the audit panel (it renders the action name) can tell which happened.
+    addAuditLog(
+      db, projectId, "system", "permit monitor",
+      ensured.created ? "permit_target.created" : "permit_target.updated",
+      { targetId: ensured.targetId, targetType, matchedOn: ensured.matchedOn },
     );
-    addAuditLog(db, projectId, "system", "permit monitor", "permit_target.created", { targetId, targetType });
+    // Unchanged on purpose: the portal this target names is the same fact to learn whether the
+    // row was inserted or updated, so the knowledge event keeps its original type.
     learnFromPermitTarget(db, detail.project, input);
   });
   return getProjectDetail(db, projectId);
@@ -7074,6 +7229,19 @@ export function captureConfirmation(
   const projectId = text(run.project_id);
   const runPermitType = text(run.permit_type);
   const ts = nowIso();
+  // The project record ensureCheckTarget needs for a new target's jurisdiction and portal
+  // name. Read before the transaction — nothing inside changes these columns.
+  const projectRowForTarget = db.get<ProjectRow>("SELECT * FROM projects WHERE id = ?", [projectId]);
+  if (!projectRowForTarget) throw new HttpError(404, "Project not found.");
+  const projectForTarget = mapProject(projectRowForTarget);
+  // THE NUMBER THAT MAKES A FILING FOLLOWABLE. The poller looks a filing up by its
+  // application or permit number (runDuePermitChecks builds `applicationNumbers` from
+  // exactly these two columns), so a confirmation carrying neither cannot be tracked and
+  // MUST NOT have a target invented for it: an active target with no number is polled
+  // forever, reads nothing, and its "no status available" is classified needs_human_review.
+  // The confirmation number is deliberately NOT accepted here — a portal's receipt number
+  // is not a record the status page can be searched by.
+  const filingNumber = (input.applicationNumber || "").trim() || (input.permitNumber || "").trim();
   // Hoisted so the post-transaction correction close can read it — see below.
   let remainingTracks = 0;
 
@@ -7090,11 +7258,11 @@ export function captureConfirmation(
     // failed, and the confirmation then stamped an OLDER staging row instead. When nothing
     // is awaiting, the newest failed/paused row of the track is the filing being confirmed.
     const awaiting = db.query<Row>(
-      `SELECT id FROM submissions WHERE project_id = ? AND status = 'awaiting_human_submit'${scopeByType ? " AND permit_type = ?" : ""}`,
+      `SELECT id, permit_type, submission_type FROM submissions WHERE project_id = ? AND status = 'awaiting_human_submit'${scopeByType ? " AND permit_type = ?" : ""}`,
       [projectId, ...(scopeByType ? [runPermitType] : [])],
     );
     const fallback = awaiting.length ? [] : db.query<Row>(
-      `SELECT id FROM submissions WHERE project_id = ? AND status IN ('failed', 'paused_for_human')${scopeByType ? " AND permit_type = ?" : ""}
+      `SELECT id, permit_type, submission_type FROM submissions WHERE project_id = ? AND status IN ('failed', 'paused_for_human')${scopeByType ? " AND permit_type = ?" : ""}
        ORDER BY created_at DESC LIMIT 1`,
       [projectId, ...(scopeByType ? [runPermitType] : [])],
     );
@@ -7133,12 +7301,59 @@ export function captureConfirmation(
     );
     const remaining = Number(stillAwaiting?.n ?? 0);
     remainingTracks = remaining;
+
+    // SCHEDULE THE FILING FOR CHECKING — the step this function never took.
+    //
+    // captureConfirmation created no permit_check_targets row, so a filing confirmed
+    // through the normal panel was never polled again. On the live database the operator
+    // closed that gap by hand every time: Ann's building confirmation at 16:42:00 is
+    // followed by an operator-typed permit_target.created at 16:43:05, the electrical one
+    // at 19:10:07 by another at 19:10:16, and the NEM one at 23:02:11 by another at
+    // 23:03:47. Three filings, three manual re-entries of a number the confirmation form
+    // had already collected.
+    //
+    // Inside the transaction on purpose: this is plain SQL (no LLM, no network), and
+    // whether a target exists decides the stage_detail written two statements below —
+    // the two facts must not be able to disagree.
+    const stamped = [...awaiting, ...fallback][0];
+    // Which track this filing belongs to. The run's own permit_type is authoritative;
+    // legacy runs carry none, so fall back to the submission row this confirmation just
+    // stamped (its submission_type distinguishes an interconnection from a permit).
+    const trackKey = runPermitType
+      || text(stamped?.permit_type)
+      || (text(stamped?.submission_type) === "interconnection" ? "nem" : "");
+    const ensured = filingNumber
+      ? ensureCheckTarget(db, projectForTarget, {
+          track: SUBMITTAL_TRACK_TYPES.includes(trackKey as SubmittalTrackType) ? (trackKey as SubmittalTrackType) : undefined,
+          targetType: trackKey === "nem" ? "nem" : "permit",
+          permitType: trackKey,
+          applicationNumber: input.applicationNumber,
+          permitNumber: input.permitNumber,
+          notes: "Tracking a filing a human confirmed from the dashboard.",
+          // Due on the very next sweep. A filing was just made; waiting out a full
+          // check_frequency_days window before the first read is a week of silence.
+          nextCheckAt: ts,
+        })
+      : undefined;
+
     db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
       remaining > 0 ? "awaiting_human_submit" : "submitted",
-      remaining > 0 ? `One filing submitted; ${remaining} track(s) still awaiting human submit.` : "Human submitted. Confirmation captured.",
+      // AN UNKNOWN MUST NOT READ AS REASSURANCE. The untracked wording is deliberately the
+      // operator's next action, not an apology.
+      ensured
+        ? (remaining > 0 ? `One filing submitted; ${remaining} track(s) still awaiting human submit.` : "Human submitted. Confirmation captured.")
+        : (remaining > 0
+            ? `One filing submitted with no application number, so it is NOT being tracked; ${remaining} track(s) still awaiting human submit.`
+            : "Human submitted, but the confirmation carried no application or permit number — this filing is NOT being tracked. Add it under Permit/NEM Checks."),
       // A part-filed project sits in awaiting_human_submit exactly like one that has filed
       // nothing at all — the status cannot say "one of two is in". This can.
-      (remaining > 0 ? "submitted_partial" : "submitted_all") satisfies StageDetail,
+      //
+      // `submitted_untracked` OUTRANKS partial/all, and that ordering is the point: the chip
+      // answers "what is waiting on you", and an unpolled filing is the actionable unknown.
+      // How many tracks remain is still answerable from the tracks panel, which reads the
+      // submissions rows directly; whether anything is watching this filing was answerable
+      // NOWHERE before this value existed.
+      (!ensured ? "submitted_untracked" : remaining > 0 ? "submitted_partial" : "submitted_all") satisfies StageDetail,
       ts,
       projectId,
     ]);
@@ -7148,6 +7363,22 @@ export function captureConfirmation(
       permitNumber: input.permitNumber || "",
       confirmationNumber: input.confirmationNumber || "",
     });
+    // A SECOND ROW, because the audit panel renders the ACTION NAME and nothing else. The
+    // stage_detail chip is overwritten by the next thing that happens to this project; this
+    // row is permanent, so "nobody is watching filing X" survives in the record.
+    addAuditLog(
+      db, projectId, "system", "permit monitor",
+      ensured
+        ? (ensured.created ? "permit_target.created" : "permit_target.updated")
+        : "submission.confirmed_untracked",
+      ensured
+        ? { targetId: ensured.targetId, matchedOn: ensured.matchedOn, via: "capture_confirmation", portalRunId, permitType: trackKey }
+        : {
+            portalRunId,
+            permitType: trackKey,
+            why: "the confirmation carried no application or permit number, so there is nothing for the monitor to look up — this filing is not being checked",
+          },
+    );
   });
 
   // THE RESUBMISSION HAS NOW ACTUALLY GONE OUT — close the corrections it answers.

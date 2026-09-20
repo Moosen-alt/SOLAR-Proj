@@ -2065,7 +2065,7 @@
     },
     {
       "state": "OR",
-      "ahj": "Marion Co/Hubbard OR/Keizer OR / Mount Angel / Salem / Gervais",
+      "ahj": "Marion Co/Hubbard OR/Keizer OR / Mount Angel / Gervais",
       "submissionMethod": "OR E-permitting",
       "timeline": "1-2 days for prescriptive",
       "requiresElectricianSign": false,
@@ -2586,11 +2586,11 @@
     {
       "state": "OR",
       "ahj": "Salem",
-      "submissionMethod": "",
+      "submissionMethod": "OR E-permitting",
       "timeline": "2 -5 days",
       "requiresElectricianSign": false,
       "requiresElectricalStamp": false,
-      "requiresStructuralStamp": true,
+      "requiresStructuralStamp": false,
       "requiresElectricalPermitApplication": true,
       "requiresBuildingPermitApplication": true,
       "requiresSolarChecklist": true,
@@ -2600,7 +2600,7 @@
       "requiresFloodplainCheck": false,
       "requiresJurisdictionCheck": false,
       "otherRequirements": "",
-      "reviewerNotes": "https://form.cityofsalem.net/s3/BAS-Permit-Extension-Request-Form",
+      "reviewerNotes": "OPERATOR RULING 2026-09-19 (human-verified, supersedes the workbook import): City of Salem does NOT require a PE stamp on the PRESCRIPTIVE path; a stamp IS required on the ENGINEERED (non-prescriptive) path. requiresStructuralStamp is therefore false here — the engineered case is already covered by resolveStampRequirement step 1 (permit path), and a true here would have demanded a sealed structural letter on every prescriptive Salem job. The workbook row imported it as true; the same workbook's combined Marion County row said the opposite (\"City Approved Stamped Plans? No (prescriptive) -- Yes for Non-prescriptive\"), and which of the two answered depended on how the operator spelled the AHJ. Salem is now its own jurisdiction here and no longer listed on the Marion County row. Permit extension request form: https://form.cityofsalem.net/s3/BAS-Permit-Extension-Request-Form",
       "sourceSheet": "OR PROCESS"
     },
     {

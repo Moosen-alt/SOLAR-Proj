@@ -26,6 +26,7 @@ import type {
 import { findApplicationProfile, describePermitType, permitStructureForProject } from "./applicationDocs";
 import { findAhjProcessProfile } from "./processProfiles";
 import { recipeProfileKey } from "./portalRecipes";
+import { detectPlatform } from "./publicPermitStatus";
 import { HttpError } from "./httpError";
 import { nowIso } from "./time";
 import { randomUUID } from "node:crypto";
@@ -41,6 +42,12 @@ const TRACK_LABELS: Record<SubmittalTrackType, string> = {
   permit: "AHJ permit",
   mpu: "Main panel / service upgrade permit (MPU)",
 };
+
+/** Every submittal track, derived from the label Record so it cannot go stale: adding a
+ *  member to SubmittalTrackType fails the compile until TRACK_LABELS names it, and this
+ *  list picks it up for free. Callers holding a track as a loose string (a portal run's
+ *  permit_type column) narrow through this. */
+export const SUBMITTAL_TRACK_TYPES = Object.keys(TRACK_LABELS) as SubmittalTrackType[];
 
 // Main-panel / service-upgrade scope detection — mirrors the reviewer's MPU callout.
 // Keyed on upgrade language (not "derate", a 705.12 remedy that isn't itself an MPU).
@@ -465,49 +472,167 @@ export function markTrackSubmitted(
       ]);
     }
 
-    // Ensure a tracking target so the poller follows this track. Reuse an existing
-    // active target of the same permit_type; otherwise create one.
-    const existing = db.get<Row>(
-      `SELECT id FROM permit_check_targets
-        WHERE project_id = ? AND permit_type = ? AND active = 1 LIMIT 1`,
-      [project.id, type],
-    );
-    if (existing) {
-      db.run(
-        `UPDATE permit_check_targets
-           SET application_number = COALESCE(NULLIF(?, ''), application_number),
-               permit_number = COALESCE(NULLIF(?, ''), permit_number),
-               tracking_url = COALESCE(NULLIF(?, ''), tracking_url),
-               updated_at = ?
-         WHERE id = ?`,
-        [applicationNumber, permitNumber, trackingUrl, ts, s(existing.id)],
-      );
-    } else {
-      const frequency = 7;
-      db.run(
-        `INSERT INTO permit_check_targets
-          (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number,
-           check_frequency_days, active, last_checked_at, next_check_at, latest_outcome, latest_status_label,
-           notes, target_type, permit_type, portal_platform, tracking_url, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, NULL, '', ?, ?, ?, '', ?, ?, ?)`,
-        [
-          randomUUID(),
-          project.id,
-          type === "nem" ? project.utility || "" : project.ahj || "",
-          channelFor(type, project),
-          trackingUrl,
-          applicationNumber,
-          permitNumber,
-          frequency,
-          ts, // next_check_at — check on the next poll tick
-          `${TRACK_LABELS[type]} tracking`,
-          targetTypeFor(type),
-          type,
-          trackingUrl,
-          ts,
-          ts,
-        ],
-      );
-    }
+    // Ensure a tracking target so the poller follows this track. THE ONE CREATOR —
+    // see ensureCheckTarget below; this door and captureConfirmation's and the
+    // operator's "add target" all go through it so a re-run supersedes, never appends.
+    ensureCheckTarget(db, project, {
+      track: type,
+      applicationNumber,
+      permitNumber,
+      portalUrl: trackingUrl,
+      trackingUrl,
+      notes: `${TRACK_LABELS[type]} tracking`,
+      nextCheckAt: ts, // check on the next poll tick
+    });
   });
+}
+
+// ---------------------------------------------------------------------------
+// ensureCheckTarget — THE ONE PLACE A permit_check_targets ROW IS BORN.
+//
+// Three doors record that a filing went out, and until this function existed two
+// of them wrote their own INSERT and the third wrote nothing at all:
+//
+//   1. markTrackSubmitted (above)          — the operator's "mark this track submitted".
+//   2. createPermitCheckTarget (repository)— the operator's "add target" form.
+//   3. captureConfirmation (repository)    — the human's confirmation after they clicked
+//                                            the portal's final submit. CREATED NO TARGET,
+//                                            so a filing confirmed through the normal panel
+//                                            was never polled again. On the live database
+//                                            every target was hand-added by the operator
+//                                            60-90 seconds AFTER each confirmation
+//                                            (audit: submission.confirmation_captured at
+//                                            16:42:00 → permit_target.created at 16:43:05).
+//
+// DEDUPE, because re-running an action must SUPERSEDE, not append. The live database
+// records the same portal run (b364128a, project ec5c36d3) captured TWICE, five minutes
+// apart. A second confirmation must not mint a second target: two rows for one filing
+// poll the same application twice, and the poller would report a filing as both "issued"
+// and "waiting" depending on which row was read.
+//
+// MATCH ORDER (active rows only — a deactivated target is deliberately retired):
+//   (a) FILING IDENTITY — same target_type, and any non-empty identifier we carry
+//       (application OR permit number) equals any non-empty identifier the row carries.
+//       The cross-match matters on real rows: Accela writes the same string into BOTH
+//       columns (187-26-000309-STR) while PowerClerk leaves permit_number empty.
+//   (b) TRACK IDENTITY — same non-empty permit_type. A project files ONE live building
+//       permit at a time; a new number for that track is a correction or a refiling, and
+//       the right answer is to update the row rather than leave a sibling polling a dead
+//       application forever. (This is exactly what markTrackSubmitted did before the
+//       extraction, preserved deliberately.)
+//
+// What a reuse NEVER touches: last_checked_at, latest_outcome, latest_status_label.
+// Nothing was checked, and aging a reading that never happened is the lie
+// markCorrectionResubmitted already refuses to tell.
+// ---------------------------------------------------------------------------
+
+export interface EnsureCheckTargetInput {
+  /** The submittal track, when the caller knows it. Supplies permit_type, target_type
+   *  and the portal_name default. Omit it and the caller must say targetType itself. */
+  track?: SubmittalTrackType;
+  /** Override when there is no track (the operator's add-target form). */
+  targetType?: "permit" | "nem";
+  /** Override when there is no track. '' is honest — it means "discipline unknown". */
+  permitType?: string;
+  applicationNumber?: string;
+  permitNumber?: string;
+  jurisdiction?: string;
+  portalName?: string;
+  portalUrl?: string;
+  trackingUrl?: string;
+  notes?: string;
+  checkFrequencyDays?: number;
+  /** When the poller should first look. Defaults to NOW — a filing just confirmed is due
+   *  on the next sweep, not in check_frequency_days' time. The operator's add-target form
+   *  passes its own value so that path stays byte-identical to what it did before. */
+  nextCheckAt?: string;
+}
+
+export interface EnsureCheckTargetResult {
+  targetId: string;
+  /** False means an existing active target was reused — the caller must not audit a create. */
+  created: boolean;
+  /** WHICH rule matched, so an operator reading an audit row can tell a filing-number hit
+   *  from a track-level one. "none" accompanies created:true. */
+  matchedOn: "application_number" | "permit_type" | "none";
+}
+
+export function ensureCheckTarget(
+  db: AppDb,
+  project: ProjectRecord,
+  input: EnsureCheckTargetInput,
+): EnsureCheckTargetResult {
+  const ts = nowIso();
+  const track = input.track;
+  const targetType: "permit" | "nem" = input.targetType ?? (track ? targetTypeFor(track) : "permit");
+  const permitType = (input.permitType ?? (track ?? (targetType === "nem" ? "nem" : ""))).trim();
+  const applicationNumber = (input.applicationNumber || "").trim();
+  const permitNumber = (input.permitNumber || "").trim();
+  const trackingUrl = (input.trackingUrl || "").trim();
+  const portalUrl = (input.portalUrl || "").trim();
+
+  const candidates = db.query<Row>(
+    "SELECT * FROM permit_check_targets WHERE project_id = ? AND active = 1 ORDER BY created_at ASC",
+    [project.id],
+  );
+  const mine = [applicationNumber, permitNumber].filter(Boolean);
+  let matchedOn: EnsureCheckTargetResult["matchedOn"] = "none";
+  let existing: Row | undefined;
+  if (mine.length) {
+    existing = candidates.find((row) => {
+      if (s(row.target_type) !== targetType) return false;
+      const theirs = [s(row.application_number).trim(), s(row.permit_number).trim()].filter(Boolean);
+      return theirs.some((t) => mine.includes(t));
+    });
+    if (existing) matchedOn = "application_number";
+  }
+  if (!existing && permitType) {
+    existing = candidates.find((row) => s(row.permit_type).trim() === permitType);
+    if (existing) matchedOn = "permit_type";
+  }
+
+  if (existing) {
+    db.run(
+      `UPDATE permit_check_targets
+         SET application_number = COALESCE(NULLIF(?, ''), application_number),
+             permit_number = COALESCE(NULLIF(?, ''), permit_number),
+             tracking_url = COALESCE(NULLIF(?, ''), tracking_url),
+             portal_url = COALESCE(NULLIF(?, ''), portal_url),
+             updated_at = ?
+       WHERE id = ?`,
+      [applicationNumber, permitNumber, trackingUrl, portalUrl, ts, s(existing.id)],
+    );
+    return { targetId: s(existing.id), created: false, matchedOn };
+  }
+
+  const frequency = Math.max(1, Math.floor(Number(input.checkFrequencyDays || 7)));
+  const targetId = randomUUID();
+  db.run(
+    `INSERT INTO permit_check_targets
+      (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number,
+       check_frequency_days, active, last_checked_at, next_check_at, latest_outcome, latest_status_label,
+       notes, target_type, permit_type, portal_platform, tracking_url, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, NULL, '', ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      targetId,
+      project.id,
+      input.jurisdiction ?? (targetType === "nem" ? project.utility || "" : project.ahj || ""),
+      input.portalName ?? (track ? channelFor(track, project) : ""),
+      portalUrl,
+      applicationNumber,
+      permitNumber,
+      frequency,
+      input.nextCheckAt ?? ts,
+      input.notes ?? "",
+      targetType,
+      permitType,
+      // Auto-detected from the URL, the way the operator's add-target form has always done
+      // it, so the status-check strategy is chosen without anyone picking a platform.
+      portalUrl ? detectPlatform(portalUrl) : "unknown",
+      trackingUrl,
+      ts,
+      ts,
+    ],
+  );
+  return { targetId, created: true, matchedOn: "none" };
 }
