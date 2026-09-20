@@ -7122,7 +7122,13 @@ export function captureConfirmation(
     // the autopilot approval gate keys on that status, so a pre-stage value would hide
     // the remaining filings' Approve & Submit gate from the panel.
     const stillAwaiting = db.get<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM submissions WHERE project_id = ? AND status = 'awaiting_human_submit'",
+      // COUNT TRACKS, NOT ROWS. Re-staging a track APPENDS another awaiting_human_submit
+      // row rather than superseding the last one, so one filing that was staged four times
+      // counts as four outstanding filings. Measured live: Ivy 720b05f3 shows 5 rows for 2
+      // real tracks (4x interconnection/nem + 1x permit/building); Daly cf1c56aa shows 9 rows
+      // for 1 track. A row-count here made "are all tracks in?" unanswerable and left the
+      // correction closer permanently waiting on filings that do not exist.
+      "SELECT COUNT(*) AS n FROM (SELECT status, ROW_NUMBER() OVER (PARTITION BY submission_type, COALESCE(permit_type, '') ORDER BY created_at DESC, id DESC) AS rn FROM submissions WHERE project_id = ?) WHERE rn = 1 AND status = 'awaiting_human_submit'",
       [projectId],
     );
     const remaining = Number(stillAwaiting?.n ?? 0);
@@ -7273,7 +7279,8 @@ export function markCorrectionResubmitted(
     // not gone out — and the close waits; it converges when captureConfirmation confirms that
     // track and runs the same closer.
     const stillAwaiting = db.get<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM submissions WHERE project_id = ? AND status = 'awaiting_human_submit'", [projectId],
+      // Same track-not-row rule as captureConfirmation above, for the same reason.
+      "SELECT COUNT(*) AS n FROM (SELECT status, ROW_NUMBER() OVER (PARTITION BY submission_type, COALESCE(permit_type, '') ORDER BY created_at DESC, id DESC) AS rn FROM submissions WHERE project_id = ?) WHERE rn = 1 AND status = 'awaiting_human_submit'", [projectId],
     );
     remainingTracks = Number(stillAwaiting?.n ?? 0);
 
