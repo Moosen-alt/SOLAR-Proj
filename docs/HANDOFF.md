@@ -3,6 +3,118 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## ROUND C.5 — THE PLAN SET NAMES THE COMPANY, AND BACKUPS HAD BEEN EATING BACKUPS (2026-09-20)
+
+**Commit `183b4aa`. Pre-D verification: typecheck clean, backend chain 143/143 (last banner
+`backupRotation: all checks passed`), `npm run smoke` green.**
+
+### The company now comes off the plan set
+
+Round C3 made `clientId` required on project create. Without this round that would have meant a
+coordinator picking the company by hand on every parse — the opposite of the operator's note
+*"Need to make company locked parse — don't have them select it themselves."* The parser prompt
+has read the title-block contractor since long before this (`llm.ts`, the CLIENT ONBOARDING block,
+nine `contractor*` keys) and dropped it on the floor. `backend/src/clientMatch.ts` turns that
+reading into a client binding, returned on the existing `/api/parser/llm-extract` response as
+`clientResolution` — no new route, additive, try/catch-wrapped so a resolution failure can never
+take down a parse that otherwise worked.
+
+**The premise this round was planned on was WRONG, and the corpus is what says so.** The plan said
+*match on the CCB licence number first, name second — Oregon plan sets print the contractor's CCB
+in the title block.* Measured across ten plan sets from `L:/INFINITY SOLAR DOCS/01 - CUSTOMERS`
+plus all 23 pages of Bren Trask's set, every one prints
+
+    INFINITY HOME SOLUTIONS / 6405 E MILL PLAIN / VANCOUVER WA 98661 / PHONE: 1-800-818-0598
+
+and **not one prints a CCB**. The printed name scores **0** against both stored names on the only
+client on file (`TML INTERNATIONAL LLC`, dba `Infinity Solar USA`) — one shared token out of three
+clears no band in `knowledgeNameMatchScore`. A CCB-first/name-second resolver would have matched
+nothing on 100% of the real corpus: a shipped no-op.
+
+So the phone became an exact leg, and the decision ladder is now:
+
+| Signal | Decision |
+|---|---|
+| exact CCB on exactly one client | `auto_assign` — binds with no prompt |
+| exact phone, or a strong name (>= 78) | `preselect` — fills the picker, **a human must confirm** |
+| weak, or two plausible companies | `candidates` — shows them, assigns nothing |
+| nothing | `none` — offers to onboard the extracted company, prefilled |
+
+**A phone number never binds on its own, by design.** A CCB identifies a contractor in a state
+registry; a phone number identifies whoever answers it this year. Auto-assigning on a guess files
+the job under the wrong contractor's LICENCE, which is worse than asking. **This rule is the
+agent's design decision, not an operator ruling — it is live and tested, and it is the thing to
+change first if the operator wants it stricter or looser.**
+
+Two further rules worth knowing before touching this file:
+
+- **A contradicted CCB disqualifies a client outright.** Plan-set CCB present, client CCB present,
+  and different -> that client is dropped before any scoring, however well the names read. This is
+  the second-solar-company-with-a-similar-name case, settled by rule instead of by score.
+- **The three licence columns are never interchangeable.** `clients` carries a CCB (223690), a
+  company electrical licence (C1556) and a metro/city licence (14838); only plan-set CCB is ever
+  compared against `ccb_license_number`. The supervising electrician's personal licence (5787S) is
+  a PERSON and is not a matching key at all.
+
+Verified on the LIVE clients table through the production read path (read-only, no migration
+applied): the real plan-set identity resolves `preselect` -> `tml-international-llc`,
+`requiresConfirmation: true`, on the phone leg (`1-800-818-0598` vs the stored `(800) 818-0598`).
+Control: `SUNRUN INC` resolves `none` and binds nothing.
+
+### Backups had been eating backups
+
+An agent starting a throwaway test server set `BACKUP_INTERVAL_HOURS=0` meaning "off".
+`Number("0" || 24)` is **0** — `"0"` is a truthy STRING, so the `||` default never fires — and
+`setInterval(tick, 0)` then wrote a snapshot roughly every two seconds. `BACKUP_KEEP=14`, so within
+a minute the fourteen junk snapshots it had just written **had rotated every real restore point off
+the operator's backup drive**. Four survived only because copies happened to exist in a scratch
+directory; they are now pinned under `E:/SOLAR-Proj-Backups/restore-points/`.
+
+Two fixes, each proven by reverting it:
+
+1. `backupIntervalMs()` — non-positive or unparseable means **OFF**, as it already did in every
+   other scheduler here (`MONITOR_INTERVAL_MINUTES`, `AHJ_FORM_REFRESH_DAYS`, `KB_LINK_CHECK_DAYS`,
+   `CEC_SYNC_DAYS`). The startup snapshot still runs, so disabling backups keeps the state you
+   disabled at. Reverted, the test writes **six** snapshots in 400ms.
+2. `isAutomaticSnapshot()` — rotation retires the automatic series only. `runBackup` is the only
+   writer and always names files `autopilot-<ISO stamp>.sqlite`, so an automatic snapshot always
+   has a digit right after the prefix; anything else (`autopilot-manual-…`, `autopilot-pre-connie`,
+   `autopilot-BEFORE-round2`) was named by a human ahead of something risky and is not rotation
+   fodder. Reverted, **0 of 3 pins survive**.
+
+`backend/test/backupRotation.test.ts` covers both, with MUST-PASS controls so that turning either
+fix into "always off" / "never prune" fails too.
+
+**Live `.env` confirmed for this phase:** `SEED_TEST_INSTALLER=false`, `CLIENT_NOTIFICATIONS=false`,
+`BACKUP_DIR=E:/SOLAR-Proj-Backups`, `BACKUP_INTERVAL_HOURS=24`. Note the fix changed what `0` means
+in that last one: it used to mean "every two seconds", it now means backups OFF.
+
+### What the pre-D gate measured on the live data (copy, never written)
+
+Rounds A/B/C all CONFIRMED on real projects — five stages with no dead statuses, the corrections
+legs writing `ready_to_resubmit`/`awaiting_human_resubmit` and never `parsed`, the approve seam
+writing `approved_awaiting_filing` with the banner rendering in real Chromium, capture creating and
+deduping check targets, Salem's six name spellings resolving to one `requiresStructuralStamp=false`
+profile, and project-create refusing a client-less payload at 400. Track counting by track and not
+by row still bites where it matters (Ivy 5 rows -> 0 outstanding, Daly 9 -> 1).
+
+Two measured numbers corrected an earlier claim in this file and in the plan:
+
+- **Daly `8f4ca8dd` is TRACKS=1, not 0.** Its newest interconnection row genuinely is
+  `awaiting_human_submit` and so is the project — 1 is the truthful answer; the expectation was stale.
+- **Bren Trask's null building fee is NOT a missing job valuation.** His parse carries
+  `jobValue "30000"` and the $25,001–$50,000 valuation bracket resolves fine. The engine refuses
+  because that bracket is a **FORMULA** (`bracketDescribesFormula`) and the stored $540.78 is only
+  one part of it. **Round D's planned "enter a job valuation" affordance would not clear this null** —
+  the real work is either evaluating formula brackets or an operator affordance that records the
+  portal's own figure with provenance.
+
+**Fee coverage for the active six, as of this gate:** Coos Bay / Coos County, Portland and Tigard
+have permit rows; **Salem has a NEM row only**; **Happy Valley and Lincoln City have no
+`fee_schedules` row at all**. All 12 rows are `seeded`; none is `verified`. That is Round D2's real
+scope.
+
+
 ## LOCKOUT, SUPERVISED LEARN, INVOICING, AND 26 ROWS POINTING AT THE WRONG PORTAL (2026-09-13)
 
 Operator direction for this stretch: single tenant (their own company), so cross-tenant safety is
