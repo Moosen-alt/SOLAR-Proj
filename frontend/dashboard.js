@@ -1679,29 +1679,57 @@ const FEE_PAYMENT_METHOD = {
 // is UNKNOWN; dropping it would leave a blank total with nothing explaining it, and
 // listing it with a plausible number beside its neighbours would be worse still.
 // esc() on every field — labels, quotes and reasons are all research output.
+//
+// AND WHICH TIER PUT THE NUMBER ABOVE DECIDES WHAT THIS LIST MAY CLAIM.
+//
+// The charges are resolved from the published schedule for EVERY quote, on purpose
+// — what a Portland filing is made of is a fact about the jurisdiction, not about
+// where the amount came from. But the quote ladder prefers an operator-entered
+// portal actual first, then a learned median, and only then the schedule. So on a
+// filing where the operator typed the portal's $812.40 and the schedule's charges
+// sum to $762.93, this card printed "Sum of every charge — $762.93" directly under
+// $812.40: a false claim, and a $49.47 gap that reads as an arithmetic slip in the
+// itemisation rather than as two measurements of the same filing.
+//
+// The list stays. The CLAIM is withdrawn, keyed on `line.source` — the field the
+// engine already sets beside the amount. The withdrawn wording points at the
+// provenance block below rather than naming the source itself, because this
+// function may reference NOTHING beyond esc(), feeMoney() and its own argument:
+// backend/test/feeFilingCharges.test.ts lifts this exact source out of the shipped
+// file and runs it with only those two in scope, which is what makes that a test of
+// the renderer instead of a copy of it. A module-level lookup here would throw.
 function renderFeeCharges(line) {
   const charges = Array.isArray(line.charges) ? line.charges : [];
   if (!charges.some((c) => c && !c.partOfLineFee)) return "";
   const priced = charges.filter((c) => c.amountUsd != null);
   const complete = priced.length === charges.length;
+  const feeIsTheSchedule = line.source === "published_schedule";
   const rows = charges.map((c) => `
     <tr${c.amountUsd == null ? ` class="is-warn"` : ""}>
       <td style="padding:1px 12px 1px 0">${esc(c.label || "(unlabelled charge)")}${c.conditional ? ` <span class="badge badge-warning">conditional</span>` : ""}</td>
       <td style="text-align:right;white-space:nowrap">${c.amountUsd == null ? `<span class="badge badge-warning">UNRESOLVED</span>` : feeMoney(c.amountUsd)}</td>
     </tr>
     ${c.amountUsd == null && c.reason ? `<tr><td colspan="2" style="padding:0 0 4px;font-size:11px">${esc(c.reason)}</td></tr>` : ""}`).join("");
+  // Incomplete is decided FIRST and outranks the tier question: an unpriced charge
+  // claims no sum under any source, and nothing below may turn it into a confident one.
+  const totalLabel = !complete
+    ? "No total — a charge above is unpriced"
+    : feeIsTheSchedule ? "Sum of every charge" : "What the published schedule holds";
   return `
     <details class="provenance" open>
-      <summary>${esc(String(charges.length))} charges on this filing${complete ? "" : " — incomplete"}</summary>
+      <summary>${esc(String(charges.length))} charges on this filing${complete
+        ? (feeIsTheSchedule ? "" : " — the published schedule's, not the fee above")
+        : " — incomplete"}</summary>
       <div class="provenance-body">
         <table style="font-size:12px;border-collapse:collapse;width:100%">
           ${rows}
           <tr style="border-top:1px solid var(--border)">
-            <td style="padding:3px 12px 1px 0"><strong>${complete ? "Sum of every charge" : "No total — a charge above is unpriced"}</strong></td>
+            <td style="padding:3px 12px 1px 0"><strong>${esc(totalLabel)}</strong></td>
             <td style="text-align:right"><strong>${complete
               ? feeMoney(priced.reduce((sum, c) => sum + Number(c.amountUsd), 0))
               : `<span class="badge badge-warning">INCOMPLETE</span>`}</strong></td>
           </tr>
+          ${complete && !feeIsTheSchedule ? `<tr><td colspan="2" style="padding:4px 0 0;font-size:11px">The fee above did NOT come from the published schedule — see “Where this number came from”. This list is the schedule's own breakdown of the filing, so a difference between the two is expected and is not an error in either.</td></tr>` : ""}
         </table>
       </div>
     </details>`;

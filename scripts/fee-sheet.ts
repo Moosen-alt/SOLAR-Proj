@@ -216,6 +216,15 @@ const PAYMENT_METHOD_NOTE: Record<string, string> = {
 
 const TRACK_LABEL: Record<FeeTrack, string> = { permit: "PERMIT (AHJ)", nem: "NEM (utility)" };
 
+/** The tiers the quote ladder ranks ABOVE the published schedule: an operator's
+ *  portal actual, and the median of real fees read off real portal screens. When
+ *  one of those produced the amount, the schedule's own total is not WRONG — it is
+ *  a different, weaker measurement of the same filing, and the gap between them is
+ *  the expected result of preferring the better one. Anything else that displaces
+ *  the schedule (the valuation heuristic, or nothing at all) got there because the
+ *  schedule produced no total, which is a different sentence. */
+const OUTRANKS_SCHEDULE = new Set<string>(["actual", "learned_history"]);
+
 const BASIS_NOTE: Record<string, string> = {
   flat: "a flat fee — no bracket to fall in",
   system_kw: "matched on the system's kW rating",
@@ -275,12 +284,35 @@ export function renderFeeLine(
   const charges = Array.isArray(line.charges) ? line.charges : [];
   const extras = charges.filter((c) => !c.partOfLineFee);
   const allPriced = charges.every((c) => c.amountUsd != null);
+  // WHICH TIER PUT THE NUMBER ON THE "Fee" ROW DECIDES WHAT THIS LIST MAY CLAIM.
+  //
+  // The itemisation is resolved from the published schedule FOR EVERY QUOTE, on
+  // purpose: what a City of Portland filing is MADE OF is a fact about the
+  // jurisdiction, not about where the amount came from (submissionFees.ts says so
+  // beside `permitFeeCharges`). But the ladder above it prefers an operator-entered
+  // portal ACTUAL first, then a learned median, and only then the schedule. So on a
+  // filing where the operator typed the portal's $812.40 and the schedule's charges
+  // sum to $762.93, this block printed
+  //     Charges  7 charges on this filing — the fee above is their total
+  //              $762.93  = the sum of every charge above
+  // directly under "Fee  $812.40". Both sentences are false, and the $49.47 gap
+  // reads as an arithmetic error in the itemisation rather than as two different
+  // measurements of the same filing.
+  //
+  // The list stays — it is the only place the seven charges appear, and it is just
+  // as useful under a portal actual as under the schedule. The CLAIM is what is
+  // withdrawn, keyed on `line.source`, the field the engine already sets beside the
+  // amount, so the wording cannot drift from the tier it describes.
+  const feeIsTheSchedule = line.source === "published_schedule";
   if (extras.length) {
-    // "the fee above is their total" is only TRUE while every charge is priced. With
-    // one unpriced the schedule refuses a total, the quote falls to the labelled
-    // estimate above, and saying the estimate is the sum of this list would be the
-    // reassurance this whole round exists to remove.
-    out.push(row("Charges", `${charges.length} charges on this filing${allPriced ? " — the fee above is their total" : " — the fee above is NOT their sum; one of them is unpriced"}`));
+    // "the fee above is their total" is only TRUE while every charge is priced AND
+    // the schedule is what produced the fee. With one unpriced the schedule refuses
+    // a total, the quote falls to the labelled estimate above, and saying the
+    // estimate is the sum of this list would be the reassurance this whole round
+    // exists to remove.
+    out.push(row("Charges", feeIsTheSchedule
+      ? `${charges.length} charges on this filing${allPriced ? " — the fee above is their total" : " — the fee above is NOT their sum; one of them is unpriced"}`
+      : wrap(`${charges.length} charges on this filing, as the PUBLISHED SCHEDULE holds them — NOT a breakdown of the fee above, which came from somewhere else (see "From").`, 62, cont)));
     for (const charge of charges) {
       const amount = charge.amountUsd == null ? "UNRESOLVED" : money(charge.amountUsd);
       out.push(row("", `${amount.padEnd(12)} ${charge.label}${charge.conditional ? "   (conditional)" : ""}`));
@@ -289,11 +321,26 @@ export function renderFeeLine(
       }
     }
     // The arithmetic, restated, because a list of numbers beside a total is a
-    // claim the reader should be able to check in one glance.
+    // claim the reader should be able to check in one glance. Unpriced first: an
+    // incomplete set claims nothing under ANY tier, and this branch must stay ahead
+    // of the tier question so that nothing below can turn it into a confident sum.
     const priced = charges.filter((c) => c.amountUsd != null);
-    out.push(row("", allPriced
-      ? `${money(priced.reduce((sum, c) => sum + (c.amountUsd ?? 0), 0))}  = the sum of every charge above`
-      : `INCOMPLETE — ${charges.length - priced.length} of ${charges.length} charge(s) unpriced, so there is no total to check.`));
+    const sum = money(priced.reduce((s2, c) => s2 + (c.amountUsd ?? 0), 0));
+    if (!allPriced) {
+      out.push(row("", `INCOMPLETE — ${charges.length - priced.length} of ${charges.length} charge(s) unpriced, so there is no total to check.`));
+    } else if (feeIsTheSchedule) {
+      out.push(row("", `${sum}  = the sum of every charge above`));
+    } else {
+      // The figure is still printed — it is the schedule's answer for this filing and
+      // an operator comparing a portal total against it is exactly the right use of
+      // this report. It just may not be labelled as the total of the fee above it.
+      out.push(row("", line.feeUsd == null
+        ? `${sum}  = what the published schedule holds for this filing. There is no fee above to check it against.`
+        : `${sum}  = what the published schedule holds for this filing — NOT the ${money(line.feeUsd)} above.`));
+      out.push(row("", wrap(OUTRANKS_SCHEDULE.has(line.source)
+        ? `The fee above came from ${SOURCE_NOTE[line.source] || line.source}, which outranks the published schedule, so the two differing is expected — it is not an error in either.`
+        : `The published schedule did not produce the fee above, so these are two separate measurements of the same filing and the difference is not an error in either.`, 62, cont)));
+    }
   }
   // ONE JOB CAN DRAW MORE THAN ONE PERMIT, AND THE TOTAL MUST SHOW ITS WORKING.
   //
@@ -303,8 +350,13 @@ export function renderFeeLine(
   // line, its own authority and its own document. The hop is named out loud ("filed via"),
   // since "Coos County" appearing under a City of Coos Bay project is otherwise the exact
   // shape of a wrong-jurisdiction bug.
+  //
+  // SAME CLAIM, SAME CONDITION: "the fee above is their total" is the permits'
+  // version of the sentence above, and it is false in exactly the same state — an
+  // operator's portal actual over a two-permit schedule prints a sum that is not
+  // the number it sits under. It is gated on the same tier for the same reason.
   if (schedule && schedule.lines.length > 1) {
-    out.push(row("Permits", `${schedule.lines.length} separate permits${extras.length ? "" : " — the fee above is their total"}`));
+    out.push(row("Permits", `${schedule.lines.length} separate permits${extras.length || !feeIsTheSchedule ? "" : " — the fee above is their total"}`));
     for (const part of schedule.lines) {
       const who = part.hoppedFrom ? `${part.authority} (filed via ${part.hoppedFrom})` : part.authority || "(unnamed authority)";
       out.push(row("", `${(part.discipline || "permit").padEnd(11)} ${(part.feeUsd == null ? "UNRESOLVED" : money(part.feeUsd)).padEnd(11)} ${who}`));

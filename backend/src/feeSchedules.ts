@@ -651,9 +651,37 @@ function normalizeAncillaryCharges(raw: unknown): FeeAncillaryCharge[] {
       sourceUrl,
       matchedLine,
     });
-    if (out.length >= ANCILLARY_CHARGE_CAP) break;
+    // A HARD BOUND ON THE WORK, not on what is kept: the cap below decides that.
+    if (out.length >= ANCILLARY_CHARGE_CAP * 5) break;
   }
-  return out;
+  if (out.length <= ANCILLARY_CHARGE_CAP) return out;
+
+  // WHEN THE CAP BITES, A CONDITIONAL CHARGE MAY NOT CROWD OUT A MANDATORY ONE.
+  //
+  // The two are not interchangeable and the asymmetry is not a matter of taste.
+  // An unconditional charge is money the filing owes and the evaluator prices it.
+  // A conditional one the recorded project facts cannot speak to comes back
+  // `null` from conditionalChargeApplies — deliberately, because an absence of
+  // facts is not permission to drop a charge — and a null NULLS THE WHOLE TOTAL.
+  // So a conditional charge that arrives 13th and evicts a mandatory 12th does
+  // not merely reorder a list: it trades a fee the customer certainly owes for a
+  // fee they usually do not, and leaves every quote for that jurisdiction
+  // unresolved into the bargain. Measured on the live City of Portland electrical
+  // row: one held conditional charge ("Additional checksheet fee", $324, charged
+  // only past the second checksheet) was enough to make every Portland electrical
+  // quote unresolved.
+  //
+  // It bites ONLY at the cap, and the survivors come back in the order they
+  // arrived — the notes, the screens and the stored row read the same as before
+  // for every schedule small enough not to be cut, which is all of them today.
+  const keep = new Set<FeeAncillaryCharge>();
+  for (const pass of [false, true]) {
+    for (const c of out) {
+      if (keep.size >= ANCILLARY_CHARGE_CAP) break;
+      if (c.conditional === pass) keep.add(c);
+    }
+  }
+  return out.filter((c) => keep.has(c));
 }
 
 /** Keep only lines with a real fee, and ORDER them, because bracket evaluation
@@ -1094,7 +1122,28 @@ export function saveFeeSchedule(
 /** The retrieval trail for one research pass: what came back, and the text of it. */
 export interface FeeDocumentLedger {
   evidence: FeeResearchEvidence[];
-  /** Exactly the strings handed to the model, for the quote check. */
+  /** THE DOCUMENT WE RETRIEVED — not the window the model was shown.
+   *
+   *  This used to read "exactly the strings handed to the model", and that made
+   *  corroboration a function of the model's own search terms. MEASURED, against
+   *  the real City of Portland electrical schedule and one fixed set of reported
+   *  charges: `find:"324"` + `find:"renewable"` holds ONE charge (a conditional
+   *  $324 checksheet fee) and drops three; `pages:[1,2,3]` on the SAME pdf, with
+   *  the SAME reported charges, holds three — the published 25% plan review and
+   *  the reinspection fee among them. Nothing about the document or the model's
+   *  answer differed. Only which rows `selectRows` had trimmed out of the body,
+   *  to keep the model's context small, before it reached the corroborator.
+   *
+   *  Trimming for context is right; trimming the EVIDENCE is not. The question
+   *  corroboration asks is "is this label printed beside this amount in the
+   *  document we fetched", and the answer must not depend on which `find` the
+   *  model happened to type. So `corpus[i]` is now every row / every text line of
+   *  the document `evidence[i]` names, and `evidence[i].handed` stays the count
+   *  the MODEL was shown, so the two facts remain separable.
+   *
+   *  It cannot launder anything: these are still only bytes this process
+   *  retrieved, and every rule downstream (whole label, amount on the same
+   *  printed line) is untouched. */
   corpus: string[];
 }
 
@@ -1142,6 +1191,15 @@ const DOC_MAX_LINKS = 70;
 const DOC_MAX_TEXT_CHARS = 3500;
 const DOC_MAX_PDF_PAGES = 80;
 
+/** The LEDGER's own ceilings, and they are NOT the ones above. The caps above
+ *  exist to protect the model's context window and the token bill; these exist
+ *  only to stop one pathological document eating this process's memory. Nothing
+ *  under them is ever sent to an LLM (grep `.corpus`: corroboration, the quote
+ *  check and the notes are its only readers), so they can afford to be the whole
+ *  document — which is the point. */
+const LEDGER_MAX_ROWS = 4000;
+const LEDGER_MAX_TEXT_CHARS = 400_000;
+
 const looksLikePdf = (doc: { contentType: string; bytes?: Uint8Array }): boolean => {
   if (/pdf/i.test(doc.contentType)) return true;
   const b = doc.bytes;
@@ -1176,7 +1234,7 @@ function selectRows(rows: PdfTextRow[], pages: number[], find: string): { picked
   };
 }
 
-function renderHtml(html: string, base: string, find: string): { body: string; handed: number } {
+function renderHtml(html: string, base: string, find: string, textBudget = DOC_MAX_TEXT_CHARS): { body: string; handed: number } {
   const lines: string[] = [];
   let text = html;
   let links: Array<{ text: string; href: string }> = [];
@@ -1212,7 +1270,7 @@ function renderHtml(html: string, base: string, find: string): { body: string; h
   for (const l of uniq) lines.push(`  ${l.text}  ->  ${l.href}`);
   lines.push("");
   lines.push("TEXT:");
-  let budget = DOC_MAX_TEXT_CHARS;
+  let budget = textBudget;
   for (const l of picked) {
     if (budget <= 0) { lines.push("  … (truncated)"); break; }
     lines.push(`  ${l.slice(0, budget)}`);
@@ -1252,9 +1310,13 @@ export async function openFeeDocument(
   const head = `${url}\nHTTP ${doc.status} via ${doc.via}${doc.via === "browser" ? " (a real window — the plain HTTP client was refused)" : ""}`
     + ` — ${doc.bytes.length} bytes of ${doc.contentType || "unknown type"}${doc.finalUrl && doc.finalUrl !== url ? `\nfinal URL: ${doc.finalUrl}` : ""}`;
 
-  const record = (kind: FeeResearchEvidence["kind"], handed: number, body: string): string => {
+  /** `body` is what the MODEL reads (filtered, capped for context). `read` is what
+   *  WE read (the whole document), and it is what lands in the ledger — see the
+   *  `corpus` comment on FeeDocumentLedger for the measurement that forced the
+   *  split. They are the same string only for a retrieval with nothing to filter. */
+  const record = (kind: FeeResearchEvidence["kind"], handed: number, body: string, read?: string): string => {
     ledger.evidence.push({ url: doc.finalUrl || url, via: doc.via, status: doc.status, kind, bytes: doc.bytes?.length ?? 0, handed });
-    ledger.corpus.push(body);
+    ledger.corpus.push(read ?? body);
     return `${head}\n\n${body}`;
   };
 
@@ -1275,12 +1337,22 @@ export async function openFeeDocument(
       picked.length ? "" : "Nothing matched. Try a different `find`, or ask for a page in full with `pages`.",
       ...shown.map(rowText),
     ].filter((l) => l !== undefined).join("\n");
-    return record("pdf", shown.length, body);
+    // Same coordinate pairing, same row rendering — every row of the document, in
+    // printed order, for the corroborator. The model still gets `body`.
+    const everyRow = [...rows]
+      .sort((a, b) => a.page - b.page || b.y - a.y)
+      .slice(0, LEDGER_MAX_ROWS)
+      .map(rowText)
+      .join("\n");
+    return record("pdf", shown.length, body, everyRow);
   }
 
   if (doc.text != null) {
     const { body, handed } = renderHtml(doc.text, doc.finalUrl || url, find);
-    return record("html", handed, body);
+    // Unfiltered and on the ledger's own budget: a charge printed below a fee
+    // page's 3,500th character is still printed on that page.
+    const { body: whole } = renderHtml(doc.text, doc.finalUrl || url, "", LEDGER_MAX_TEXT_CHARS);
+    return record("html", handed, body, whole);
   }
 
   return record("other", 0, "Retrieved, but it is neither HTML nor a PDF, so there is nothing to read here.");
@@ -1817,6 +1889,10 @@ So for the filing you were asked about, ALSO collect every OTHER charge the juri
 For EACH one give: the label EXACTLY AS PRINTED; either its dollar amount OR its percentage together with what the percentage is taken OF — NEVER pre-multiply a percentage into dollars, report 65%, not the product, because the product is only true for one job; whether it is MANDATORY or CONDITIONAL and on what; which filing it rides (the building permit, the electrical permit, or the filing as a whole); and the verbatim printed line and the URL it came from.
 
 ONLY WHAT THE SCHEDULE PRINTS. Every one of these is checked against the bytes we retrieved, the same way the permit line is: a charge whose label and amount you did not read together on a line of a document you opened is DROPPED. If the jurisdiction genuinely levies nothing beyond the permit fee, return an EMPTY list — an honest absence is a correct answer here. Do not add a plan-review fee because most jurisdictions have one.
+
+THE LABEL IS THE PRINTED ROW, NOT A SENTENCE ABOUT IT — this is where real charges are lost. One measured case: Oregon's state surcharge came back as "Surcharge. For all building, plumbing, electrical, and mechanical permits, a 12% surcharge is applied by the State of Oregon." That sentence is TRUE and it is printed on no document the pass opened, so the charge was dropped — while the permit application opened in the same pass printed the row "State surcharge (12% of permit fee)", which would have been held. If a document you opened prints the charge, the label MUST BE THAT PRINTED LINE, copied (both halves, joined, when the label cell sits above its value cell). Anything you want to explain goes in "condition" or in "notes".
+
+MANDATORY CHARGES FIRST, and mark "conditional" honestly. List the ones this jurisdiction levies on EVERY filing of this kind before the ones that apply only sometimes. The distinction is arithmetic, not emphasis: a charge marked conditional cannot be priced until a person confirms it applies, so a mandatory charge mis-marked conditional leaves every quote for this jurisdiction UNRESOLVED, and a conditional one mis-marked mandatory over-charges a real customer.
 
 THIS DOES NOT WIDEN WHICH PERMIT YOU ARE PRICING. The discipline scoping above still holds exactly as it did: "brackets" is still that one permit's table and nothing else. Charges that ride the OTHER discipline's filing are reported with "appliesTo" naming that filing, never folded into this one.
 

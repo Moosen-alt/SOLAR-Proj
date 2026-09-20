@@ -108,6 +108,24 @@ async function main(): Promise<void> {
   ancDraw(ANC_WRAP_TAIL, 72, 600);
   const ancPdfBytes = await ancDoc.save();
 
+  // A THIRD FIXTURE: MORE CHARGES THAN THE STORAGE BOUNDARY WILL KEEP.
+  //
+  // Thirteen printed, priced rows against a cap of twelve. What the cap drops is
+  // the whole question: twelve conditional charges arriving first and one
+  // MANDATORY charge arriving last is the shape in which a first-come cap trades
+  // the money the filing certainly owes for money it usually does not.
+  const CAP_MANDATORY = "State of Oregon surcharge levied on every permit issued";
+  const capConditional = Array.from({ length: 12 }, (_v, i) => `Extra inspection beyond the allowance - visit number ${i + 1}`);
+  const capDoc = await PDFDocument.create();
+  const capPage = capDoc.addPage([612, 792]);
+  const capFont = await capDoc.embedFont(StandardFonts.Helvetica);
+  [...capConditional, CAP_MANDATORY].forEach((desc, i) => {
+    const y = 740 - i * 20;
+    capPage.drawText(desc, { x: 40, y, size: 8, font: capFont });
+    capPage.drawText(desc === CAP_MANDATORY ? "12% of the permit fee" : `$${100 + i}.00`, { x: 430, y, size: 8, font: capFont });
+  });
+  const capPdfBytes = await capDoc.save();
+
   // The fixture must actually be a trap: in STREAM order, the item that follows
   // "$200.00" is the NEXT ROW's value, and the descriptions arrive only after
   // every value. A reader that walked the stream would pair them wrongly.
@@ -154,6 +172,11 @@ async function main(): Promise<void> {
     if (url.startsWith("/anc-fees.pdf")) {
       res.writeHead(200, { "content-type": "application/pdf" });
       res.end(Buffer.from(ancPdfBytes));
+      return;
+    }
+    if (url.startsWith("/cap-fees.pdf")) {
+      res.writeHead(200, { "content-type": "application/pdf" });
+      res.end(Buffer.from(capPdfBytes));
       return;
     }
     if (url.startsWith("/forms/adopted-fee-schedule.pdf")) {
@@ -603,6 +626,135 @@ async function main(): Promise<void> {
     "A PRICED LINE STILL NEVER ABSORBS THE ROW BELOW IT — the pairing did not reopen the wind-row bug",
     straddle.held.length === 0 && straddle.dropped.length === 1,
     JSON.stringify(straddle),
+  );
+
+  // -------------------------------------------------------------------------
+  // 6a. THE EVIDENCE IS THE DOCUMENT, NOT THE WINDOW THE MODEL ASKED FOR.
+  //
+  // `selectRows` trims a PDF to the rows matching the model's `find` plus one
+  // line of context, so the model's context window stays small and the token bill
+  // stays down. That body used to be what landed in the ledger too — which made
+  // corroboration a function of the model's own search terms.
+  //
+  // MEASURED, on the real City of Portland electrical schedule with ONE fixed set
+  // of reported charges: read with find:"renewable"+find:"324" the pass held ONE
+  // charge — a conditional $324 checksheet fee — and dropped three, including the
+  // published 25% plan review. Read as pages:[1,2,3], same document, same
+  // charges, it held three. Nothing about the document or the answer differed.
+  // The live City of Portland row was saved in the first of those two shapes.
+  //
+  // So the ledger now records the whole retrieved document while the model still
+  // reads only its window, and the question "is this label printed beside this
+  // amount" stops depending on which `find` was typed. The fixture below is the
+  // same trap in miniature: a `find` that excludes the wrapped plan-review rows
+  // from the model's body entirely.
+  // -------------------------------------------------------------------------
+  const narrowLedger = newFeeDocumentLedger();
+  const narrowOut = await openFeeDocument({ url: `${base}/anc-fees.pdf`, find: ANC_FIRE }, narrowLedger, { timeoutMs: 5_000 });
+  check(
+    "FIXTURE IS A TRAP: the narrow `find` hides the wrapped plan-review rows from the MODEL",
+    !narrowOut.includes(ANC_WRAP_HEAD) && !narrowOut.includes("25% of total electrical"),
+    narrowOut,
+  );
+  check("FIXTURE IS A TRAP: it hides the permit line from the model too", !narrowOut.includes(ANC_PERMIT), narrowOut);
+  check(
+    "the model's window is still SMALL — `find` did not quietly start handing back the whole table",
+    narrowOut.split("\n").filter((l) => /\|/.test(l) && !/Rows are read BY COORDINATE/.test(l)).length === 3,
+    narrowOut,
+  );
+  check(
+    "…and the evidence still counts what the MODEL was handed, not what we read",
+    narrowLedger.evidence[0]?.handed === 3,
+    String(narrowLedger.evidence[0]?.handed),
+  );
+  const narrowWrapped = corroborateAncillaryCharges(wrapReported, ancFinding, narrowLedger);
+  check(
+    "A CHARGE THE MODEL'S `find` TRIMMED AWAY IS STILL CORROBORATED — the corpus is the DOCUMENT",
+    narrowWrapped.held.length === 1 && narrowWrapped.held[0].percent === 25,
+    JSON.stringify(narrowWrapped),
+  );
+  check(
+    "…matched on the printed row, joined out of the same two printed lines as before",
+    (narrowWrapped.held[0]?.matchedLine || "").includes(ANC_WRAP_HEAD) && (narrowWrapped.held[0]?.matchedLine || "").includes("25%"),
+    narrowWrapped.held[0]?.matchedLine,
+  );
+  // THE GATE DID NOT MOVE. A wider corpus is more of the same document, never a
+  // licence to store what the document does not print.
+  const narrowInvented = corroborateAncillaryCharges(
+    [{ label: INVENTED, kind: "processing", amountUsd: 35, conditional: false, appliesTo: "structural", quote: `${INVENTED} | $35.00`, sourceUrl: CLAIMED_URL }],
+    ancFinding,
+    narrowLedger,
+  );
+  check(
+    "…while a charge printed NOWHERE in that document is still refused",
+    narrowInvented.held.length === 0 && narrowInvented.dropped.length === 1,
+    JSON.stringify(narrowInvented),
+  );
+  const narrowWrongNumber = corroborateAncillaryCharges(
+    [{ label: ANC_REVIEW, kind: "plan_review", percent: 80, percentOf: "of the permit fee", conditional: false, appliesTo: "structural", quote: `${ANC_REVIEW} | 80%`, sourceUrl: CLAIMED_URL }],
+    ancFinding,
+    narrowLedger,
+  );
+  check(
+    "…and a REAL label carrying a WRONG number is still refused off the wider corpus",
+    narrowWrongNumber.held.length === 0,
+    JSON.stringify(narrowWrongNumber),
+  );
+
+  // -------------------------------------------------------------------------
+  // 6c. WHEN THE CAP BITES, A CONDITIONAL CHARGE MAY NOT CROWD OUT A MANDATORY ONE.
+  //
+  // The storage boundary keeps twelve charges. It used to keep the FIRST twelve,
+  // and first-come is the wrong rule here because the two kinds are not
+  // interchangeable: an unconditional charge is money the filing owes and the
+  // evaluator prices it, while a conditional one the recorded facts cannot speak
+  // to comes back `null` and NULLS THE WHOLE TOTAL. Measured on the live City of
+  // Portland electrical row: one held conditional charge ($324, charged only past
+  // the second checksheet) was enough to leave every Portland electrical quote
+  // unresolved. Thirteen charges with the mandatory one arriving LAST is the
+  // shape in which the old rule threw away the one that mattered.
+  // -------------------------------------------------------------------------
+  const capLedger = newFeeDocumentLedger();
+  await openFeeDocument({ url: `${base}/cap-fees.pdf`, pages: [1] }, capLedger, { timeoutMs: 5_000 });
+  const capReported = [
+    ...capConditional.map((label, i) => ({
+      label, kind: "other", amountUsd: 100 + i, conditional: true,
+      condition: "only when an extra inspection is called", appliesTo: "structural",
+      quote: `${label} | $${100 + i}.00`, sourceUrl: CLAIMED_URL,
+    })),
+    {
+      label: CAP_MANDATORY, kind: "surcharge", percent: 12, percentOf: "of the permit fee",
+      conditional: false, appliesTo: "", quote: `${CAP_MANDATORY} | 12% of the permit fee`, sourceUrl: CLAIMED_URL,
+    },
+  ];
+  const capped = corroborateAncillaryCharges(capReported, ancFinding, capLedger);
+  check(
+    "fixture: all thirteen charges really are printed on their own rows — this is the CAP, not the gate",
+    capped.held.length + capped.dropped.length === 13 && capped.dropped.every((d) => /refused at the storage boundary/.test(d)),
+    JSON.stringify(capped.dropped),
+  );
+  check("the cap still holds at twelve", capped.held.length === 12, String(capped.held.length));
+  check(
+    "THE MANDATORY CHARGE SURVIVES THE CAP EVEN THOUGH IT ARRIVED THIRTEENTH",
+    capped.held.some((c) => c.label === CAP_MANDATORY && c.conditional === false),
+    JSON.stringify(capped.held.map((c) => c.label)),
+  );
+  check(
+    "…and what it displaced is a CONDITIONAL charge, named in the drops",
+    capped.dropped.length === 1 && capped.dropped[0].startsWith(capConditional[11]),
+    JSON.stringify(capped.dropped),
+  );
+  check(
+    "…and the survivors come back in the order they arrived — the cap reorders nothing",
+    capped.held.map((c) => c.label).join("\n") === [...capConditional.slice(0, 11), CAP_MANDATORY].join("\n"),
+    JSON.stringify(capped.held.map((c) => c.label)),
+  );
+  // The ordinary case must be untouched: nothing is reordered when nothing is cut.
+  const uncapped = corroborateAncillaryCharges(capReported.slice(0, 5), ancFinding, capLedger);
+  check(
+    "a schedule under the cap keeps every charge in its original order",
+    uncapped.held.map((c) => c.label).join("\n") === capConditional.slice(0, 5).join("\n"),
+    JSON.stringify(uncapped.held.map((c) => c.label)),
   );
 
   // THE SURCHARGE HAS TWO ROADS ONTO ONE BRACKET, AND ONLY ONE MAY BE TAKEN.
