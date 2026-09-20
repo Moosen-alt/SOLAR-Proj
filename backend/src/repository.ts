@@ -50,10 +50,12 @@ import type {
   ProjectTimelineEvent,
   ProjectTimelineReport,
   ProjectRecord,
+  ProjectStatus,
   ProjectWorkflow,
   QcResult,
   ReviewerFinding,
   ReviewerReport,
+  StageDetail,
   SubmissionRecord,
   SubmitGateCheck,
   SubmitGateReport,
@@ -204,6 +206,14 @@ function mapProject(row: ProjectRow): ProjectRecord {
     interconnectionMethod: row.interconnection_method,
     status: row.status,
     currentStage: row.current_stage,
+    // THE SUB-STAGE, SHIPPED FROM ONE PLACE. getProjectList and getProjectDetail both build
+    // their project through mapProject, so mapping it here puts stage_detail on the board
+    // payload and the detail payload at once — there is no second site to forget. Read via the
+    // ownership_model cast precedent rather than a new required ProjectRow field, so row
+    // literals elsewhere keep compiling. Always a string: "" is the honest unknown that
+    // renderers must draw as nothing, and `undefined` on the wire would mean the same thing
+    // twice.
+    stageDetail: ((row as Record<string, unknown>).stage_detail as StageDetail) || "",
     parserConfidenceSummary: row.parser_confidence_summary,
     parserSnapshot,
     existingSystem: existingSystemFromSnapshot(parserSnapshot),
@@ -485,9 +495,9 @@ export function createProject(db: AppDb, payload: ParserPayload, orgId: string =
       `INSERT INTO projects (
         id, client_id, homeowner_name, project_address, city, state, zip, ahj, utility,
         account_number, meter_number, system_size_dc_kw, system_size_ac_kw, total_export_kw,
-        interconnection_method, status, current_stage, parser_confidence_summary, parser_json,
+        interconnection_method, status, current_stage, stage_detail, parser_confidence_summary, parser_json,
         created_at, updated_at, org_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         project.id,
         project.clientId,
@@ -506,6 +516,10 @@ export function createProject(db: AppDb, payload: ParserPayload, orgId: string =
         project.interconnectionMethod,
         project.status,
         project.currentStage,
+        // A project is born parsed with QC still to run — which is literally the next statement
+        // in this function, so this value usually lives for milliseconds. Written anyway: if QC
+        // throws, the row says what is true rather than nothing at all.
+        "awaiting_qc" satisfies StageDetail,
         project.parserConfidenceSummary,
         asJson(project.parserSnapshot),
         project.createdAt,
@@ -659,6 +673,118 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
   });
   runQcForProject(db, projectId);
   learnFromProject(db, getProjectDetail(db, projectId).project, "project.updated");
+  return getProjectDetail(db, projectId);
+}
+
+// ---------------------------------------------------------------------------
+// THE OPERATOR STATUS OVERRIDE — the only door out of a drifted status.
+//
+// updateProject above deliberately does NOT touch `status`: it re-derives every column from
+// the parser snapshot, so letting a re-parse move the lifecycle would mean an edit to an
+// address could silently un-submit a filing. That was the right call and it stays. What it
+// left behind was a project with no way back: when a status drifted — the live PacifiCorp
+// APP-111681 case, corrected and resubmitted inside PowerClerk while our row still said
+// `correction_received` — the only fix was hand-written SQL against the production database.
+//
+// So this is a SEPARATE, NARROW, AUDITED path, and the audit row is the point. An operator
+// moving a project by hand is a real event in the project's history; a status that changed
+// with no record of who or why is how the drift becomes unexplainable six weeks later.
+//
+// It is also the writer for `blocked` and the way back out of it — `blocked` has no automatic
+// writer anywhere by design, because what blocks a job is a human's judgement.
+//
+// Rule 1 is not weakened here: nothing in this function touches a portal, and moving a row to
+// `submitted` records a belief about the world, it does not file anything. The automation
+// still never clicks submit.
+// ---------------------------------------------------------------------------
+
+// EXHAUSTIVE BY CONSTRUCTION — a Record keyed on ProjectStatus, so adding or removing a status
+// upstream is a COMPILE error here rather than a silently widened (or narrowed) override
+// surface. Deny-by-default for the same reason the route table is: an unrecognised string must
+// never reach `projects.status`, which is precisely the free-text disease this round cures.
+const OVERRIDABLE_STATUS: Record<ProjectStatus, "operator" | "computed"> = {
+  parsed: "operator",
+  qc_failed: "operator",
+  qc_passed: "operator",
+  ready_to_stage: "operator",
+  awaiting_human_submit: "operator",
+  correction_received: "operator",
+  correction_triaged: "operator",
+  waiting_on_designer: "operator",
+  ready_to_resubmit: "operator",
+  awaiting_human_resubmit: "operator",
+  submitted: "operator",
+  ready_for_issue: "operator",
+  issued: "operator",
+  approved: "operator",
+  nem_approved: "operator",
+  // COMPUTED, NEVER TYPED. triggerHandoffIfReady sets this — and only when a permit is issued
+  // AND the NEM is approved. An operator forcing it would produce a project that says the
+  // submission scope is complete, publishes an installer handoff checklist, and drops off the
+  // board, for a job whose permit may not exist. The way to reach handoff_ready is to record
+  // the two approvals; then it sets itself.
+  handoff_ready: "computed",
+  blocked: "operator",
+};
+
+/**
+ * Move a project's status by hand. Requires a reason (it goes on the audit row, which is the
+ * only lasting record of why the pipeline was overruled). Returns the refreshed detail so the
+ * caller can re-render without a second read.
+ */
+export function setProjectStatusByOperator(
+  db: AppDb,
+  projectId: string,
+  nextStatus: string,
+  reason: string,
+  actor: string,
+): ProjectDetail {
+  const project = db.get<ProjectRow>("SELECT * FROM projects WHERE id = ?", [projectId]);
+  if (!project) throw new HttpError(404, "Project not found.");
+
+  // A REASON IS NOT PAPERWORK. Without it the audit row says a human changed the status and
+  // nothing else, which is the same dead end the SQL edits left behind.
+  const trimmedReason = String(reason ?? "").trim();
+  if (!trimmedReason) {
+    throw new HttpError(400, "A reason is required to override a project's status — it is recorded on the audit trail as the explanation for overruling the pipeline.");
+  }
+
+  const disposition = Object.prototype.hasOwnProperty.call(OVERRIDABLE_STATUS, nextStatus)
+    ? OVERRIDABLE_STATUS[nextStatus as ProjectStatus]
+    : null;
+  if (!disposition) {
+    throw new HttpError(400, `"${nextStatus}" is not a project status.`, {
+      allowed: Object.keys(OVERRIDABLE_STATUS).filter((s) => OVERRIDABLE_STATUS[s as ProjectStatus] === "operator"),
+    });
+  }
+  if (disposition === "computed") {
+    throw new HttpError(409,
+      `"${nextStatus}" is computed, not chosen: it is set only when the permit is issued AND the NEM is approved. `
+      + "Record those two approvals and the project moves itself — forcing it here would publish an installer handoff for a job that may have no permit.",
+      { status: nextStatus });
+  }
+
+  const fromStatus = String(project.status);
+  const ts = nowIso();
+  db.run("UPDATE projects SET status = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
+    nextStatus,
+    // THE STALE SUB-STAGE MUST NOT SURVIVE THE MOVE. A project overridden out of
+    // `awaiting_human_submit` while stage_detail still read `staged_for_review` would keep
+    // claiming a filing sits on a portal review screen under a status that says otherwise.
+    // This says exactly what is true and no more: a human put it here. WHY is on the audit row.
+    "operator_override" satisfies StageDetail,
+    ts,
+    projectId,
+  ]);
+  // current_stage is left ALONE on purpose. It is prose, it is a matching key, and the last
+  // machine event that wrote it is still the last machine event that happened.
+
+  addAuditLog(db, projectId, "human", actor || "operator", "project.status_overridden", {
+    from: fromStatus,
+    to: nextStatus,
+    reason: trimmedReason,
+  });
+
   return getProjectDetail(db, projectId);
 }
 
@@ -4426,9 +4552,12 @@ export function addManualCorrection(db: AppDb, projectId: string, correctionText
       ],
     );
 
-    db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
+    db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
       "correction_triaged",
       `Correction triaged: ${humanizeBucket(classification.bucket)}`,
+      // WHICH bucket it landed in stays in the prose above; the enum says only that a
+      // correction is open, because that is the part every renderer and filter needs.
+      "correction_open" satisfies StageDetail,
       ts,
       projectId,
     ]);
@@ -4585,13 +4714,16 @@ export function resolveCorrection(
       "SELECT id FROM submissions WHERE project_id = ? AND status = 'submitted' LIMIT 1", [projectId],
     );
     if (filed) {
-      db.run("UPDATE projects SET status = 'submitted', current_stage = ?, updated_at = ? WHERE id = ?", [
-        "Correction resolved — resubmitted, awaiting review.", ts, projectId,
+      db.run("UPDATE projects SET status = 'submitted', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
+        "Correction resolved — resubmitted, awaiting review.", "correction_resolved" satisfies StageDetail, ts, projectId,
       ]);
       addAuditLog(db, projectId, "system", "correction", "correction.project_still_filed", { correctionId });
     } else {
-      db.run("UPDATE projects SET status = 'parsed', current_stage = ?, updated_at = ? WHERE id = ?", [
-        "Correction resolved — ready to re-stage.", ts, projectId,
+      // The `parsed` rewind on this leg is a known defect owned by Round B1 (it visually
+      // rewinds a corrected project to QC). Only the column write is added here — the status
+      // and the prose are left exactly as they are so B1 lands one change, not a merge.
+      db.run("UPDATE projects SET status = 'parsed', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
+        "Correction resolved — ready to re-stage.", "correction_resolved" satisfies StageDetail, ts, projectId,
       ]);
       addAuditLog(db, projectId, "system", "correction", "correction.project_restageable", { correctionId });
     }
@@ -5251,8 +5383,8 @@ function updateProjectForPermitOutcome(
   ts: string,
   targetType?: string,
 ): void {
-  const update = (status: ProjectRecord["status"], stage: string) => {
-    db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [status, stage, ts, projectId]);
+  const update = (status: ProjectRecord["status"], stage: string, detail: StageDetail) => {
+    db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [status, stage, detail, ts, projectId]);
   };
 
   // Track-aware guard: a NEM (utility) target must NEVER drive the project to a PERMIT
@@ -5263,14 +5395,22 @@ function updateProjectForPermitOutcome(
   const isNem = targetType === "nem";
   const isPermit = targetType === "permit";
 
-  if (outcome === "correction_flagged") update("correction_received", "Permit monitor flagged a correction. Review bucket and next action.");
-  else if (outcome === "nem_approved" && !isPermit) update("nem_approved", message);
-  else if (outcome === "ready_for_issue" && !isNem) update("ready_for_issue", message);
-  else if (outcome === "issued" && !isNem) update("issued", message);
-  else if (outcome === "reviewed_by_ahj" && !isNem) update("approved", message);
+  if (outcome === "correction_flagged") update("correction_received", "Permit monitor flagged a correction. Review bucket and next action.", "correction_open");
+  else if (outcome === "nem_approved" && !isPermit) update("nem_approved", message, "nem_approved");
+  else if (outcome === "ready_for_issue" && !isNem) update("ready_for_issue", message, "ready_for_issue");
+  else if (outcome === "issued" && !isNem) update("issued", message, "permit_issued");
+  else if (outcome === "reviewed_by_ahj" && !isNem) update("approved", message, "permit_approved");
   else if (outcome === "waiting" && ["awaiting_human_submit", "submitted", "approved", "ready_for_issue", "issued", "nem_approved", "handoff_ready"].includes(currentStatus)) {
-    update("submitted", "Permit monitor checked: AHJ/utility review is still in progress.");
+    update("submitted", "Permit monitor checked: AHJ/utility review is still in progress.", "under_review");
   } else if (outcome === "needs_human_review") {
+    // THE STOMP STAYS A STOMP, AND DELIBERATELY DOES NOT WRITE stage_detail.
+    //
+    // This branch overwrites current_stage with a raw portal message and changes no status:
+    // a project reading "Record Status: Intake Requirements Needed" in its stage line while
+    // sitting in `submitted` is this line's doing. That is exactly the ambiguity stage_detail
+    // exists to end — so the enum is left untouched here and keeps describing the last thing
+    // that actually HAPPENED, while the prose carries the note about what was read. Writing a
+    // value here would re-import the bug into the column built to escape it.
     db.run("UPDATE projects SET current_stage = ?, updated_at = ? WHERE id = ?", [message, ts, projectId]);
   }
 }
@@ -5328,8 +5468,9 @@ function triggerHandoffIfReady(db: AppDb, projectId: string, ts: string): void {
     "No further action required from this platform unless a correction is received after final inspection.",
   ].join("\n");
 
-  db.run("UPDATE projects SET status = 'handoff_ready', current_stage = ?, updated_at = ? WHERE id = ?", [
+  db.run("UPDATE projects SET status = 'handoff_ready', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
     "Permit issued + NEM approved. Ready for installer handoff.",
+    "handoff_ready" satisfies StageDetail,
     ts,
     projectId,
   ]);
@@ -6540,7 +6681,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       ],
     );
 
-    db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
+    db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
       // On failure OR an MFA/CAPTCHA pause, leave the project in its prior (pre-run) status — never
       // advance a project to "awaiting_human_submit" for a run that staged nothing (a pause means the
       // learner was walled at the challenge and never reached review).
@@ -6552,6 +6693,15 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
           : adapterFailed
             ? `${trackLabelText}${portalLabel} run failed — not staged. ${failureMessage}`
             : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
+      // THE THREE OUTCOMES A PROSE LINE COULD NEVER BE FILTERED ON. A paused run and a failed
+      // run BOTH leave the status untouched at its pre-run value, so status alone cannot tell
+      // an operator that anything happened — before this column, the only difference between
+      // "finish the MFA challenge in the browser that is still open" and "the adapter died,
+      // retry" was a sentence.
+      (autoSubmitted ? "auto_submitted"
+        : pauseReason ? "staging_paused"
+        : adapterFailed ? "staging_failed"
+        : "staged_for_review") satisfies StageDetail,
       nowIso(),
       projectId,
     ]);
@@ -6768,9 +6918,12 @@ export function captureConfirmation(
     );
     const remaining = Number(stillAwaiting?.n ?? 0);
     remainingTracks = remaining;
-    db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
+    db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
       remaining > 0 ? "awaiting_human_submit" : "submitted",
       remaining > 0 ? `One filing submitted; ${remaining} track(s) still awaiting human submit.` : "Human submitted. Confirmation captured.",
+      // A part-filed project sits in awaiting_human_submit exactly like one that has filed
+      // nothing at all — the status cannot say "one of two is in". This can.
+      (remaining > 0 ? "submitted_partial" : "submitted_all") satisfies StageDetail,
       ts,
       projectId,
     ]);

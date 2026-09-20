@@ -46,7 +46,11 @@ const FIXTURE: ProjectRecord = {
   systemSizeAcKw: 4.608,
   totalExportKw: null,
   interconnectionMethod: "Load-side breaker",
-  status: "submit_staging",
+  // `submit_staging` was removed from ProjectStatus (2026-09-19) — it had zero writers.
+  // `ready_to_stage` is the surviving status for "fully staged, not yet in the portal",
+  // which is what this fixture models. currentStage below is free-text PROSE, not a
+  // status, and is deliberately left as-is: a recorded label is a matching key.
+  status: "ready_to_stage",
   currentStage: "submit_staging",
   parserConfidenceSummary: "",
   parserSnapshot: {

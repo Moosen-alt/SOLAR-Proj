@@ -382,8 +382,7 @@
 :root[data-theme="dark"] .rv-finding,
 :root[data-theme="dark"] .modal,
 :root[data-theme="dark"] .shortcuts-overlay { background-color: rgba(0, 0, 0, .6); }
-/* Stage pills in the project table: same hues, mixed into the dark card. */
-:root[data-theme="dark"] .stage-tag.stage-intake  { background: color-mix(in oklab, oklch(70% .13 232) 22%, var(--card)); color: oklch(80% .1 232); }
+/* Stage pills in the project table: same five hues, mixed into the dark card. */
 :root[data-theme="dark"] .stage-tag.stage-qc      { background: color-mix(in oklab, oklch(65% .18 295) 22%, var(--card)); color: oklch(80% .12 295); }
 :root[data-theme="dark"] .stage-tag.stage-build   { background: color-mix(in oklab, var(--warning) 22%, var(--card)); color: var(--warning); }
 :root[data-theme="dark"] .stage-tag.stage-submit  { background: color-mix(in oklab, oklch(70% .15 50) 22%, var(--card)); color: oklch(82% .12 50); }
@@ -682,14 +681,15 @@ p, .muted { color: var(--muted); }
 .autofill-status:empty { display: none; }
 
 /* --- Stage-specific pill colors in board/table --- */
-/* SIX STAGES, SIX HUES — the one place the four-tint status family is NOT the
+/* FIVE STAGES, FIVE HUES — the one place the four-tint status family is NOT the
    right vocabulary. These tags do not mean pass/warn/fail; they mean WHERE in
    the pipeline a project is, and the operator reads the board by their colour.
-   Folding intake+QC into one blue and build+submit into one amber would erase
-   half that distinction, so they keep six distinct hues, written in the same
-   oklch idiom as everything else (and matching the hue angles the dark-mode
-   block above already uses, so a theme flip keeps the same six identities). */
-.stage-tag.stage-intake  { background: color-mix(in oklab, oklch(60% .13 232) 14%, var(--card)); color: oklch(40% .12 232); }
+   Folding QC+build into one tint and submit+track into another would erase half
+   that distinction, so they keep five distinct hues, written in the same oklch
+   idiom as everything else (and matching the hue angles the dark-mode block
+   above already uses, so a theme flip keeps the same five identities).
+   The sixth rule, .stage-intake, was deleted with the Intake stage on
+   2026-09-19 — nothing emits that class any more. */
 .stage-tag.stage-qc      { background: color-mix(in oklab, oklch(55% .18 295) 13%, var(--card)); color: oklch(42% .16 295); }
 .stage-tag.stage-build   { background: var(--tint-warn); color: var(--ink-warn); }
 .stage-tag.stage-submit  { background: color-mix(in oklab, oklch(65% .15 50) 16%, var(--card)); color: oklch(44% .13 50); }
@@ -1208,12 +1208,13 @@ tbody tr:hover, tbody tr.active { background: var(--tint-select); }
 .stage-progress { margin-top: 4px; background: var(--line); border-radius: 99px; height: 4px; overflow: hidden; }
 .stage-progress > span { display: block; height: 100%; background: var(--primary); border-radius: 99px; }
 
-/* Stage board (kanban-lite): six columns, a card per project */
+/* Stage board (kanban-lite): five columns, a card per project */
 /* align-items:start is the whole fix for the empty columns. Grid stretches its
-   children by default, so an empty "Intake" column was drawn as a 500px grey
-   well matching the tallest column beside it — six stages' worth of emptiness
+   children by default, so an empty column was drawn as a 500px grey well
+   matching the tallest column beside it — a board's worth of emptiness
    dominating a board whose actual news is the cards. Each column is now only as
-   tall as what it holds. */
+   tall as what it holds. (The original offender, a permanently-empty "Intake"
+   column, is gone entirely: the pipeline is five stages as of 2026-09-19.) */
 .stage-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(190px, 1fr); align-items: start; gap: 10px; overflow-x: auto; padding-bottom: 8px; }
 .stage-col { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-md); display: flex; flex-direction: column; min-height: 80px; }
 .stage-col-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 12px; font-size: 13px; font-weight: 750; border-bottom: 1px solid var(--line); border-top: 3px solid var(--primary); }
@@ -1633,6 +1634,46 @@ kbd {
 .chip.danger   { background: var(--tint-fail); color: var(--ink-fail); border-color: var(--edge-fail); }
 .chip.neutral  { background: var(--tint-neutral); color: var(--muted-foreground); border-color: var(--line); }
 .chip.outline  { background: transparent; border-color: var(--line); }
+
+/* THE SUB-STAGE CHIP — "where inside this stage", from projects.stage_detail.
+   Deliberately the quietest chip in the set: it sits next to the stage tag and
+   the Status metric and must READ AS A FOOTNOTE to them, never compete. It is
+   also never rendered at all when stage_detail is "" — an unknown sub-stage
+   draws nothing, so this rule only ever paints a fact somebody recorded. */
+.stage-detail-chip {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--muted-foreground);
+  font-weight: 500;
+  margin-left: 6px;
+}
+/* A hidden chip must actually disappear even though .chip sets display:inline-flex.
+   No local [hidden] rule is needed: the global `[hidden] { display: none !important }`
+   at the top of this file (see the note there) already outranks every component
+   display rule, and frontend/stageUiContract.dom.smoke.ts measures the computed
+   display of #metricStageDetail so that guarantee cannot quietly lapse — an empty
+   pill in the Status metric would imply a sub-stage nobody reported. */
+
+/* The operator status override lives in the project's action area and stays shut
+   until asked: correcting a status is a rare, deliberate gesture, not a control
+   to brush past. Borrows the provenance disclosure idiom. */
+.status-override { margin-top: var(--space-1); }
+.status-override > summary {
+  list-style: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  font-size: var(--text-xs); font-weight: 600; color: var(--muted-foreground);
+  border-radius: var(--radius-sm); padding: 1px 2px;
+}
+.status-override > summary::-webkit-details-marker { display: none; }
+.status-override > summary::before { content: "▸"; font-size: 10px; line-height: 1; }
+.status-override[open] > summary::before { content: "▾"; }
+.status-override > summary:hover { color: var(--text); }
+.status-override-body {
+  margin-top: var(--space-1);
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  max-width: 720px;
+}
 
 /* ===========================================================================
    THE AHJ PREFLIGHT CARD

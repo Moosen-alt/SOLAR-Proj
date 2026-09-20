@@ -74,8 +74,16 @@ const MUST_PAINT = [
   "card-hairline", "recommended-action", "band band--dark", "band band--green", "band band--muted",
 ];
 
-/** The six pipeline stages. They are an IDENTITY vocabulary, not a pass/warn/fail one. */
-const STAGE_TAGS = ["stage-intake", "stage-qc", "stage-build", "stage-submit", "stage-track", "stage-closeout"];
+/**
+ * The FIVE pipeline stages. They are an IDENTITY vocabulary, not a pass/warn/fail one.
+ *
+ * Was six until 2026-09-19, when the operator ruled Intake out of the pipeline: upload and
+ * parse happen together in the parser, so a project is born `parsed` and nothing ever sat in
+ * Intake. `.stage-tag.stage-intake` was deleted from styles.css in the same change because
+ * nothing emits that class any more — this list is the five that ship, and the count below
+ * is derived from it, so removing a stage cannot leave a check asserting a phantom.
+ */
+const STAGE_TAGS = ["stage-qc", "stage-build", "stage-submit", "stage-track", "stage-closeout"];
 
 const TRANSPARENT = "rgba(0, 0, 0, 0)";
 
@@ -137,16 +145,24 @@ check(
 );
 
 // =================================================================================================
-// 3) SIX STAGES, SIX COLOURS
+// 3) FIVE STAGES, FIVE COLOURS
 // =================================================================================================
 // A sweep that replaced the old pastel literals with the four-value status family collapsed
-// intake+QC to one blue, build+submit to one amber and track+closeout to one green — halving a
-// distinction the operator reads the board by. Six classes, six distinct fills, pinned.
-console.log("\n[3] the six pipeline stage tags are six DISTINCT colours");
+// adjacent stages onto one blue, one amber and one green — halving a distinction the operator
+// reads the board by. N classes, N distinct fills, pinned; N comes from STAGE_TAGS.
+console.log(`\n[3] the ${STAGE_TAGS.length} pipeline stage tags are ${STAGE_TAGS.length} DISTINCT colours`);
 const stageValues = STAGE_TAGS.map((s) => base.stages[s]);
 check(
-  "stage-intake / qc / build / submit / track / closeout are six different fills",
+  `${STAGE_TAGS.map((s) => s.replace("stage-", "")).join(" / ")} are ${STAGE_TAGS.length} different fills`,
   new Set(stageValues).size === STAGE_TAGS.length,
+  STAGE_TAGS.map((s, i) => `${s}=${stageValues[i]}`).join("  "),
+);
+// ...and every one of them PAINTS. Dropping a stage from the pipeline means deleting its CSS
+// rule; deleting the WRONG rule would leave a live stage transparent, which the distinctness
+// check above cannot see (one transparent fill is still a distinct value).
+check(
+  `all ${STAGE_TAGS.length} shipped stage tags paint a real fill — no stage lost its rule`,
+  stageValues.every((v) => v !== TRANSPARENT),
   STAGE_TAGS.map((s, i) => `${s}=${stageValues[i]}`).join("  "),
 );
 
@@ -155,8 +171,8 @@ check(
 // =================================================================================================
 // Dark is opt-in and not shipped on, which is exactly why it rots unwatched — and a theme must
 // never change HOW MANY THINGS the operator can tell apart. The dark block used to give
-// stage-track and stage-closeout one shared rule, i.e. the same six-into-three collapse check [3]
-// exists to prevent, present in one theme and absent in the other.
+// stage-track and stage-closeout one shared rule, i.e. the same collapse check [3] exists to
+// prevent, present in one theme and absent in the other.
 console.log("\n[3b] the same guarantees hold with data-theme=\"dark\"");
 const darkPage = await ctx.newPage();
 await darkPage.setContent('<html data-theme="dark"><body></body></html>');
@@ -166,8 +182,13 @@ check("all declared custom properties resolve in dark too", dark.empty.length ==
 const darkUnpainted = Object.entries(dark.paints).filter(([, bg]) => bg === TRANSPARENT).map(([c]) => c);
 check("every status / component class paints in dark too", darkUnpainted.length === 0, `transparent: ${darkUnpainted.join(", ")}`);
 check(
-  "the six stage tags are still six distinct fills in dark",
+  `the ${STAGE_TAGS.length} stage tags are still ${STAGE_TAGS.length} distinct fills in dark`,
   new Set(STAGE_TAGS.map((s) => dark.stages[s])).size === STAGE_TAGS.length,
+  STAGE_TAGS.map((s) => `${s}=${dark.stages[s]}`).join("  "),
+);
+check(
+  `all ${STAGE_TAGS.length} stage tags paint in dark too`,
+  STAGE_TAGS.every((s) => dark.stages[s] !== TRANSPARENT),
   STAGE_TAGS.map((s) => `${s}=${dark.stages[s]}`).join("  "),
 );
 await darkPage.close();
@@ -299,13 +320,19 @@ check(
 await killPage.close();
 
 // 7b. Stage tags collapsed onto the shared status tints — the sweep's regression.
-const collapsedCss = `${css}\n.stage-tag.stage-intake, .stage-tag.stage-qc { background: var(--tint-info); }\n.stage-tag.stage-build, .stage-tag.stage-submit { background: var(--tint-warn); }\n.stage-tag.stage-track, .stage-tag.stage-closeout { background: var(--tint-pass); }\n`;
+// Built FROM STAGE_TAGS rather than from stage names typed out by hand: the old literal list
+// named stage-intake, and when that stage was removed the probe would have gone on "killing" a
+// class nothing emits while the five live ones stayed distinct — a kill probe that kills
+// nothing, reporting that check [3] is proven when it is not.
+const collapsedCss = `${css}\n`
+  + `.stage-tag.${STAGE_TAGS[0]}, .stage-tag.${STAGE_TAGS[1]} { background: var(--tint-info); }\n`
+  + `.stage-tag.${STAGE_TAGS[2]}, .stage-tag.${STAGE_TAGS[3]} { background: var(--tint-warn); }\n`;
 const killStage = await ctx.newPage();
 await killStage.setContent("<html><body></body></html>");
 await killStage.addStyleTag({ content: collapsedCss });
 const killedStage = await readAll(killStage);
 check(
-  "with the six stage hues collapsed onto three status tints, check [3] goes red",
+  "with two pairs of stage hues collapsed onto shared status tints, check [3] goes red",
   new Set(STAGE_TAGS.map((s) => killedStage.stages[s])).size < STAGE_TAGS.length,
   "if this is green, check [3] proves nothing",
 );

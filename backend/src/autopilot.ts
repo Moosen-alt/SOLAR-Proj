@@ -76,13 +76,16 @@ export interface AutopilotState {
   gapFillMissing: string[];
 }
 
+// UNTYPED string Set — it does NOT fail typecheck when a status is removed from the
+// ProjectStatus union, so it has to be maintained BY NAME. `intake_uploaded` and
+// `submit_staging` were dropped here alongside their removal from the union (2026-09-19);
+// leaving them would have been harmless-but-dead, and the next reader would have taken
+// them for live vocabulary.
 const PRE_STAGE_STATUSES = new Set([
-  "intake_uploaded",
   "parsed",
   "qc_failed",
   "qc_passed",
   "ready_to_stage",
-  "submit_staging",
 ]);
 
 // A track counts as STAGED once it has a portal run that reached the portal (awaiting a

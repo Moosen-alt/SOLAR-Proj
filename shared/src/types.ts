@@ -1,17 +1,21 @@
+// A project is BORN `parsed`: upload and parse happen together in the parser, so there is
+// no separate pre-parse status to occupy. `intake_uploaded`, `submit_staging` and
+// `resubmit_staging` were removed (2026-09-19) — all three had zero writers anywhere in the
+// codebase yet were labeled, bannered with operator instructions and offered as board
+// filters: dead vocabulary rendered as live UI. Live-DB landing gate: zero rows carrying any
+// of the three, in any column of any of the 54 tables. Portal RUN state (staging in
+// progress) belongs to `portal_runs.status` / the job queue, not to the project's lifecycle.
 export type ProjectStatus =
-  | "intake_uploaded"
   | "parsed"
   | "qc_failed"
   | "qc_passed"
   | "ready_to_stage"
-  | "submit_staging"
   | "awaiting_human_submit"
   | "submitted"
   | "correction_received"
   | "correction_triaged"
   | "waiting_on_designer"
   | "ready_to_resubmit"
-  | "resubmit_staging"
   | "awaiting_human_resubmit"
   | "ready_for_issue"
   | "issued"
@@ -19,6 +23,66 @@ export type ProjectStatus =
   | "nem_approved"
   | "handoff_ready"
   | "blocked";
+
+// WHERE INSIDE THE STAGE THE JOB ACTUALLY IS — the machine-readable half of what
+// `projects.current_stage` has always tried to say in prose.
+//
+// current_stage is free-text in every one of its writers ("PGE staged. Human must verify and
+// submit manually."), which is fine for a human reading one project and useless for anything
+// that has to decide, filter or render. The permit monitor even overwrites it with a raw
+// portal message and no status change, so the column cannot be trusted to describe the
+// pipeline at all. Rather than rewrite those strings — a stored label is a matching key, and
+// rewriting them would break nothing today only by luck — this enum is written ALONGSIDE them
+// into `projects.stage_detail`. The prose stays exactly as it is and becomes a display note;
+// this is the truth.
+//
+// "" IS AN HONEST UNKNOWN AND MUST RENDER AS NOTHING. Every row that existed before the column
+// did carries "", and so does any project whose current state no writer has claimed yet. A
+// placeholder chip there would invent progress that was never reported — so renderers show
+// no chip at all, never a neutral-looking one.
+//
+// MINIMAL BY DESIGN: exactly the values Round A writes, one per writer site. Later rounds add
+// values additively (`approved_awaiting_filing` in C1, the corrections legs in B) — a new
+// value is a new writer, never a relabel of an old one.
+export type StageDetail =
+  // No writer has spoken for this project's current state. Renders as nothing.
+  | ""
+  // Born from the parser, QC not yet run (createProject, superseded seconds later by QC).
+  | "awaiting_qc"
+  // qc.ts: the QC gate's own verdict.
+  | "qc_failed"
+  | "qc_passed"
+  // prepareSubmission tail: the filing sits on the portal's review screen and a human must
+  // verify and click submit. This is the state hard rule 1 exists to protect.
+  | "staged_for_review"
+  // prepareSubmission tail: the run walled at an MFA/CAPTCHA challenge. NOTHING was staged —
+  // distinct from a failure because the operator's next move is different (finish the
+  // challenge in the open browser, then re-stage).
+  | "staging_paused"
+  // prepareSubmission tail: the adapter failed before review. NOTHING was staged.
+  | "staging_failed"
+  // prepareSubmission tail: an operator-approved auto-submit actually clicked final submit.
+  | "auto_submitted"
+  // captureConfirmation / submittalTracks: one track is filed, others still await a human.
+  | "submitted_partial"
+  // captureConfirmation / submittalTracks: every track this project files is now filed.
+  | "submitted_all"
+  // Permit monitor: the jurisdiction/utility is still reviewing.
+  | "under_review"
+  // A correction has been received and triaged; the bucket says whose move it is.
+  | "correction_open"
+  // The correction's items are closed (whether the filing stayed on file or not).
+  | "correction_resolved"
+  // Permit monitor outcomes, each a real milestone rather than a shade of "in review".
+  | "permit_approved"
+  | "ready_for_issue"
+  | "permit_issued"
+  | "nem_approved"
+  // Permit issued AND NEM approved — the installer handoff is ready.
+  | "handoff_ready"
+  // An operator moved the status by hand through the audited override. Deliberately says only
+  // that a human did it: the reason they typed is on the audit row, which is the record.
+  | "operator_override";
 
 export type QcStatus = "pass" | "fail" | "warning";
 export type Severity = "info" | "warning" | "error" | "blocker";
@@ -413,6 +477,12 @@ export interface ProjectRecord {
   interconnectionMethod: string;
   status: ProjectStatus;
   currentStage: string;
+  /** The enum half of `currentStage` (see StageDetail). Ships on the project LIST items and on
+   *  the detail payload's `project`, because both are built by mapProject. Optional only
+   *  because normalizeProject builds an in-memory record before any row exists; every record
+   *  that has been through the database carries it, "" included. Absent and "" mean the same
+   *  thing — unknown — and both must render as nothing. */
+  stageDetail?: StageDetail;
   parserConfidenceSummary: string;
   parserSnapshot: ParserPayload;
   assignedUserId?: string | null;

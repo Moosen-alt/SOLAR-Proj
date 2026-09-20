@@ -1945,6 +1945,32 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       // the honest "Permit" rather than a guess.
     },
   },
+  {
+    version: 29,
+    name: "project_stage_detail",
+    up: (db) => {
+      // THE SUB-STAGE HAD NOWHERE TO LIVE EXCEPT A SENTENCE.
+      //
+      // projects.current_stage is free text in all eleven of its writers — "PGE staged. Human
+      // must verify and submit manually.", "QC passed: ready to stage" — and the permit monitor
+      // overwrites it with a raw portal message and no status change at all. Nothing can filter
+      // on it, nothing can render a chip from it, and nothing can tell "staged, waiting on a
+      // human" from "the adapter died before it staged anything", which are the two states an
+      // operator most needs to tell apart.
+      //
+      // ADDITIVE ON PURPOSE. A stored label is a matching key; rewriting eleven prose strings
+      // to make them parseable would be a migration of things other code might be reading. So
+      // the enum goes in its OWN column and every prose string is left byte-identical. The
+      // monitor's stomp keeps writing prose and deliberately does NOT write here — with the
+      // enum carrying the machine truth, that note becomes a harmless display line instead of
+      // a status change in disguise.
+      //
+      // DEFAULT '' MEANS UNKNOWN, NOT "FINE". Every pre-existing row gets it, and renderers are
+      // required to show nothing for it — a placeholder chip on sixteen live projects would
+      // announce progress no writer ever reported.
+      addColumnIfMissing(db, "projects", "stage_detail", "TEXT NOT NULL DEFAULT ''");
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

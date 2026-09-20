@@ -7,7 +7,7 @@ import { fieldAliases, parserField } from "./normalize";
 import { logger } from "./logger";
 import { documentInventory } from "./requiredDocuments";
 import { nowIso } from "./time";
-import type { ParserPayload, ProjectRecord, QcStatus, Severity } from "../../shared/src/types";
+import type { ParserPayload, ProjectRecord, QcStatus, Severity, StageDetail } from "../../shared/src/types";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { findKnowledgeForLearn } from "./knowledgeBase";
 import { ensureFeeSchedulesResearched } from "./feeSchedules";
@@ -290,9 +290,12 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
 
     const nextStatus = failCount > 0 ? "qc_failed" : "qc_passed";
     const currentStage = failCount > 0 ? "QC failed: human review required" : "QC passed: ready to stage";
-    db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
+    db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
       nextStatus,
       currentStage,
+      // The enum tracks the same verdict as the prose above it and is derived from the same
+      // failCount, so the two can never disagree about what QC decided.
+      (failCount > 0 ? "qc_failed" : "qc_passed") satisfies StageDetail,
       nowIso(),
       projectId,
     ]);

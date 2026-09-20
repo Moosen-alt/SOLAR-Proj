@@ -195,6 +195,65 @@ try {
     assert.equal(write.status, 404, `assign returned ${write.status}`);
   });
 
+  // THE OPERATOR STATUS OVERRIDE, over real HTTP.
+  //
+  // POST /api/projects/:id/status is the audited way to move a project the pipeline got wrong
+  // (updateProject deliberately excludes status, so before it a drifted row was fixable only
+  // with hand-written SQL against production). It is also the only writer for `blocked`.
+  //
+  // ASSERTED AS A PAIR, deliberately. A foreign-tenant 404 on its own proves NOTHING here: a
+  // route that was never registered 404s exactly the same way, so the half of this check that
+  // carries the weight is the SAME request succeeding on the caller's own project. If the route
+  // is deleted, the 200 fails; if the guard is lost, the 404 fails. One of them alone is
+  // indistinguishable from a typo in the path.
+  await run("the operator status override is registered, tenancy-scoped, and refuses what it must", async () => {
+    // Your own project: the route exists, is licensed, and answers.
+    const own = await a(`/api/projects/${projA}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status: "blocked", reason: "Homeowner paused the job pending an HOA decision." }),
+    });
+    const ownText = await own.text();
+    assert.equal(own.status, 200, `override on your OWN project returned ${own.status}: ${ownText.slice(0, 300)}`);
+    assert.equal(JSON.parse(ownText).project.status, "blocked", "the response carries a stale status");
+    // …and it actually landed, read back through a separate request.
+    const reread = await (await a(`/api/projects/${projA}`)).json();
+    assert.equal(reread.project.status, "blocked", `the override did not persist: ${reread.project.status}`);
+    assert.equal(reread.project.stageDetail, "operator_override",
+      `stage_detail after an override is "${reread.project.stageDetail}" — a stale sub-stage under a new status lies`);
+
+    // The other tenant's project: 404, never 403 — an id you don't own must be
+    // indistinguishable from one that doesn't exist.
+    const foreign = await b(`/api/projects/${projA}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status: "issued", reason: "not mine to move" }),
+    });
+    assert.equal(foreign.status, 404, `a foreign project's override returned ${foreign.status}`);
+    const afterForeign = await (await a(`/api/projects/${projA}`)).json();
+    assert.equal(afterForeign.project.status, "blocked", "the foreign override CHANGED another tenant's project");
+
+    // A reason is mandatory — it is the audit row's whole explanation for overruling the pipeline.
+    const noReason = await a(`/api/projects/${projA}/status`, {
+      method: "POST", body: JSON.stringify({ status: "issued", reason: "   " }),
+    });
+    assert.equal(noReason.status, 400, `a reasonless override returned ${noReason.status}`);
+
+    // handoff_ready is computed from permit-issued AND nem-approved. Forcing it would publish an
+    // installer handoff checklist and drop the job off the board for a permit that may not exist.
+    const forced = await a(`/api/projects/${projA}/status`, {
+      method: "POST", body: JSON.stringify({ status: "handoff_ready", reason: "customer says it is done" }),
+    });
+    assert.equal(forced.status, 409, `handoff_ready was accepted over HTTP (${forced.status})`);
+
+    const settled = await (await a(`/api/projects/${projA}`)).json();
+    assert.equal(settled.project.status, "blocked", `a refused override still moved the project to ${settled.project.status}`);
+
+    // Out of blocked again, through the same door — blocked has no other writer anywhere.
+    const unblock = await a(`/api/projects/${projA}/status`, {
+      method: "POST", body: JSON.stringify({ status: "qc_passed", reason: "HOA approved; resuming." }),
+    });
+    assert.equal(unblock.status, 200, `un-blocking returned ${unblock.status}: ${(await unblock.text()).slice(0, 200)}`);
+  });
+
   await run("the client list is scoped — no route to another tenant's portal credentials", async () => {
     const listB = await (await b("/api/clients")).json();
     assert.equal(listB.clients.length, 0, `B saw ${listB.clients.length} clients`);

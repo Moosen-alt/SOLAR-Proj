@@ -16,7 +16,7 @@
        The page used to open on a bare "Plan Review Gate" heading and a stack of
        identical grey cards, which read as its own little tool. It now carries the
        marketing site's structure — eyebrow, sentence-case heading, hairline rules
-       — and, above the form, the same six-stage strip the dashboard uses
+       — and, above the form, the same five-stage strip the dashboard uses
        (PROJECT_STAGES in projectStage.ts), with QC / Verify marked as where this
        page sits. Nothing here calls a different API than it did.
 
@@ -224,20 +224,20 @@
          is filed. A human plans examiner always completes the review.</p>
     </div>
 
-    <!-- The six stages are the product's own, from PROJECT_STAGES in
-         backend/src/projectStage.ts; this page is where stage 2 is worked. -->
+    <!-- The five stages are the product's own, from PROJECT_STAGES in
+         backend/src/projectStage.ts; this page is where stage 1 is worked.
+         There is no Intake stage: a project is born `parsed` in the Parser, so
+         QC / Verify is the first thing anyone does to one. -->
     <div class="rv-pipeline">
-      <span class="rv-stage">1 &middot; Intake</span>
+      <span class="rv-stage is-here">1 &middot; QC / Verify</span>
       <span class="rv-arrow">&#8594;</span>
-      <span class="rv-stage is-here">2 &middot; QC / Verify</span>
+      <span class="rv-stage">2 &middot; Build &amp; Validate</span>
       <span class="rv-arrow">&#8594;</span>
-      <span class="rv-stage">3 &middot; Build &amp; Validate</span>
+      <span class="rv-stage">3 &middot; Submit</span>
       <span class="rv-arrow">&#8594;</span>
-      <span class="rv-stage">4 &middot; Submit</span>
+      <span class="rv-stage">4 &middot; Track Approvals</span>
       <span class="rv-arrow">&#8594;</span>
-      <span class="rv-stage">5 &middot; Track Approvals</span>
-      <span class="rv-arrow">&#8594;</span>
-      <span class="rv-stage">6 &middot; Closeout</span>
+      <span class="rv-stage">5 &middot; Closeout</span>
     </div>
 
     <div class="rv-card">

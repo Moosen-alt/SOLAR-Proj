@@ -113,27 +113,32 @@
   <div id="toastContainer" style="position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none"></div>
 
   <!-- The third of the three competing navigations, kept but demoted. A
-       six-stage pipeline needs a legend, and this is the only place on the
+       five-stage pipeline needs a legend, and this is the only place on the
        dashboard where the human-does-the-final-submit rule is spelled out — so
        it is not deleted, it is a quiet hairline strip that stays shut until
        asked. The hint used to be the single static string "click to collapse",
        which was wrong in the state it spends most of its life in; two spans
-       swapped by [open] in CSS, no JS. -->
+       swapped by [open] in CSS, no JS.
+
+       The list is FIVE steps, not six, and there is no "Intake" step: parsing
+       is how a project comes into existence, not a stage it sits in. That is
+       why the intro sentence carries the Parser instead — a project is already
+       `parsed` the moment it first appears on this board, so an Intake column
+       could only ever have rendered as permanently complete. -->
   <details id="startHereGuide" class="start-here">
     <summary>
       <span class="start-here-title"><i data-lucide="compass"></i> How a project flows</span>
-      <span class="start-here-hint start-here-hint--closed">Show the 6 stages</span>
+      <span class="start-here-hint start-here-hint--closed">Show the 5 stages</span>
       <span class="start-here-hint start-here-hint--open">Hide</span>
     </summary>
     <div class="start-here-body">
-      <p class="start-here-intro">Every project moves left to right through these six stages. Pick a project from the list to see its <strong>Next step</strong> banner, which names the button to click.</p>
+      <p class="start-here-intro">A project is born in the <a href="/parser">Parser</a> — upload the plan set + utility bill, click <em>Parse</em>, then <em>Save to project</em>, and it lands on this board already parsed. From there it moves left to right through these five stages. Pick a project from the list to see its <strong>Next step</strong> banner, which names the button to click.</p>
       <ol class="flow-steps">
-        <li><span class="flow-num">1</span><div><strong>Intake</strong><p>Open the <a href="/parser">Parser</a>, upload the plan set + utility bill, click <em>Parse</em>, then <em>Save to project</em>.</p></div></li>
-        <li><span class="flow-num">2</span><div><strong>QC check</strong><p>Select the project, click <em>Run QC</em>. Fix anything flagged in <em>QC Results</em>, then re-run.</p></div></li>
-        <li><span class="flow-num">3</span><div><strong>Build &amp; validate</strong><p>Click <em>Build AHJ/NEM Docs</em>, then open <em>Reviewer Gate</em> on the project to check the packet before submission.</p></div></li>
-        <li><span class="flow-num">4</span><div><strong>Submit</strong><p>Click <em>Prepare Submittal</em>. <strong>A person does the final submit</strong> in the portal — automation never clicks submit, pays fees, or solves MFA/CAPTCHA.</p></div></li>
-        <li><span class="flow-num">5</span><div><strong>Track</strong><p>Use <em>Permit Checks</em> + <em>NEM Checks</em> to monitor. Paste any correction letter into <em>Corrections</em> for an AI-drafted reply (you review before sending).</p></div></li>
-        <li><span class="flow-num">6</span><div><strong>Handoff</strong><p>When the permit is issued <em>and</em> NEM approved, copy the <em>Handoff Packet</em> to the installer. Our scope ends here — PTO is the installer's job.</p></div></li>
+        <li><span class="flow-num">1</span><div><strong>QC check</strong><p>Select the project, click <em>Run QC</em>. Fix anything flagged in <em>QC Results</em>, then re-run. Missing files are uploaded here too, under <em>Project Documents</em>.</p></div></li>
+        <li><span class="flow-num">2</span><div><strong>Build &amp; validate</strong><p>Click <em>Build AHJ/NEM Docs</em>, then open <em>Reviewer Gate</em> on the project to check the packet before submission.</p></div></li>
+        <li><span class="flow-num">3</span><div><strong>Submit</strong><p>Click <em>Prepare Submittal</em>. <strong>A person does the final submit</strong> in the portal — automation never clicks submit, pays fees, or solves MFA/CAPTCHA.</p></div></li>
+        <li><span class="flow-num">4</span><div><strong>Track</strong><p>Use <em>Permit Checks</em> + <em>NEM Checks</em> to monitor. Paste any correction letter into <em>Corrections</em> for an AI-drafted reply (you review before sending).</p></div></li>
+        <li><span class="flow-num">5</span><div><strong>Handoff</strong><p>When the permit is issued <em>and</em> NEM approved, copy the <em>Handoff Packet</em> to the installer. Our scope ends here — PTO is the installer's job.</p></div></li>
       </ol>
     </div>
   </details>
@@ -190,29 +195,31 @@
       <div class="project-filters" id="listFilters">
         <label class="archive-filter"><input type="checkbox" id="showArchivedProjects" /> Include archived projects</label>
         <input id="projectSearch" type="search" placeholder="Search homeowner, address, AHJ…" />
+        <!-- Group labels are the FIVE-stage numbering (1 QC · 2 Build · 3 Submit ·
+             4 Track · 5 Closeout). `intake_uploaded`, `submit_staging` and
+             `resubmit_staging` are gone: nothing in the system ever wrote them, so
+             filtering by one could only ever return an empty board — a filter that
+             is guaranteed to find nothing is worse than no filter at all. -->
         <select id="projectStatusFilter">
           <option value="">All statuses</option>
-          <optgroup label="1–2 · Intake & QC">
-            <option value="intake_uploaded">Intake uploaded</option>
+          <optgroup label="1 · QC / Verify">
             <option value="parsed">Parsed</option>
             <option value="qc_failed">QC failed</option>
             <option value="qc_passed">QC passed</option>
           </optgroup>
-          <optgroup label="3–4 · Build & Submit">
+          <optgroup label="2–3 · Build &amp; Submit">
             <option value="ready_to_stage">Ready to stage</option>
-            <option value="submit_staging">Submit staging</option>
             <option value="awaiting_human_submit">Awaiting human submit</option>
             <option value="submitted">Submitted</option>
           </optgroup>
-          <optgroup label="4 · Corrections & Resubmit">
+          <optgroup label="3 · Corrections &amp; Resubmit">
             <option value="correction_received">Correction received</option>
             <option value="correction_triaged">Correction triaged</option>
             <option value="waiting_on_designer">Waiting on designer</option>
             <option value="ready_to_resubmit">Ready to resubmit</option>
-            <option value="resubmit_staging">Resubmit staging</option>
             <option value="awaiting_human_resubmit">Awaiting human resubmit</option>
           </optgroup>
-          <optgroup label="5–6 · Approvals & Closeout">
+          <optgroup label="4–5 · Approvals &amp; Closeout">
             <option value="ready_for_issue">Ready for issue</option>
             <option value="issued">Permit issued</option>
             <option value="approved">Approved</option>
@@ -235,7 +242,7 @@
           <option value="overdue">Overdue first</option>
         </select>
       </div>
-      <!-- Stage board: six columns = pipeline stages; a card per project in its
+      <!-- Stage board: five columns = pipeline stages; a card per project in its
            current stage. The "Dashboard" page — the "where is everything" glance. -->
       <div id="projectBoard" class="stage-board"></div>
       <div id="projectTableWrap" class="table-wrap">
@@ -319,19 +326,56 @@
             <strong><i data-lucide="alert-circle" style="width:13px;height:13px;vertical-align:-2px"></i> Required fields left blank</strong> — these portal fields had no project data, so the automation left them blank instead of guessing. Add the data to the project, then re-stage before submitting.<br>
             <span id="gapFillList" class="mono" style="font-size:12px"></span>
           </div>
+          <!-- Button numbers ARE the stage numbers (five-stage scale: 1 QC ·
+               2 Build & Validate · 3 Submit · 4 Track · 5 Closeout). They match
+               the accordion titles below, the Next-step banner, and the board
+               columns. A button numbered off that scale is the "jank". -->
           <div class="actions step-actions">
             <span class="actions-label">Advanced / override:</span>
-            <button id="runQcBtn" class="secondary"><i data-lucide="shield-check"></i><span>2 · Run QC</span></button>
-            <button id="buildAppDocsBtn" class="secondary"><i data-lucide="files"></i><span>3 · Build AHJ/NEM Docs</span></button>
-            <button id="runReviewerGateBtn" class="secondary"><i data-lucide="clipboard-list"></i><span>3 · Reviewer Gate</span></button>
+            <button id="runQcBtn" class="secondary"><i data-lucide="shield-check"></i><span>1 · Run QC</span></button>
+            <button id="buildAppDocsBtn" class="secondary"><i data-lucide="files"></i><span>2 · Build AHJ/NEM Docs</span></button>
+            <button id="runReviewerGateBtn" class="secondary"><i data-lucide="clipboard-list"></i><span>2 · Reviewer Gate</span></button>
             <button id="refreshReviewerGateBtn" class="secondary" style="font-size:11px" title="Clear vision cache and re-check all plan sheets"><i data-lucide="refresh-cw"></i><span>Re-run vision</span></button>
-            <button id="prepareBtn" class="secondary"><i data-lucide="send"></i><span>4 · Prepare Submittal</span></button>
+            <button id="prepareBtn" class="secondary"><i data-lucide="send"></i><span>3 · Prepare Submittal</span></button>
             <span class="actions-divider"></span>
             <span class="actions-label">Tools:</span>
             <button id="runWorkflowBtn" class="secondary"><i data-lucide="list-checks"></i><span>Run Workflow</span></button>
             <button id="runHistoricalBtn" class="secondary"><i data-lucide="history"></i><span>Historical Check</span></button>
             <button id="deleteProjectBtn" class="danger-button"><i data-lucide="trash-2"></i><span>Delete Project</span></button>
           </div>
+
+          <!-- OPERATOR STATUS OVERRIDE.
+               Before this existed, a project whose status had drifted could only
+               be corrected with SQL against the live database, and `blocked` had
+               no writer anywhere in the product. This is that writer, and it is a
+               person's gesture: pick the true status, state why, and the backend
+               records the change WITH the reason. It files nothing and pays
+               nothing — automation still never clicks a portal's final submit.
+               `Ready for handoff` is not in the menu: the backend computes it from
+               permit-issued + NEM-approved and the route refuses it by hand. -->
+          <details class="status-override" id="statusOverrideWrap">
+            <summary><span class="actions-label">Correct this project's status</span></summary>
+            <div class="status-override-body">
+              <p class="muted" style="font-size:12px;margin:6px 0">
+                Use this when the board disagrees with reality — a filing that was really submitted, a project
+                that is really <strong>Blocked</strong>. The change is <strong>recorded with your reason</strong> on
+                this project's audit trail. It does not submit, resubmit or pay anything.
+                <em>Ready for handoff</em> cannot be set by hand: it is reached only when the permit is issued
+                <em>and</em> NEM is approved.
+              </p>
+              <div class="form-row">
+                <label style="flex:1">New status
+                  <select id="statusOverrideSelect"></select>
+                </label>
+                <label style="flex:2">Reason <span class="muted" style="font-weight:400">(required)</span>
+                  <input id="statusOverrideReason" type="text" maxlength="500" placeholder="Why the board was wrong — e.g. 'filed in ePermitting 9/18, confirmation captured late'" />
+                </label>
+              </div>
+              <div class="actions">
+                <button id="applyStatusOverrideBtn" class="secondary"><i data-lucide="pencil-line"></i><span>Set status</span></button>
+              </div>
+            </div>
+          </details>
         </div>
 
         <div id="paymentPanel" hidden></div>
@@ -341,7 +385,11 @@
         <div id="handoffBanner" class="handoff-banner" hidden></div>
 
         <section class="summary-grid">
-          <div class="metric"><span>Status</span><strong id="metricStatus"></strong></div>
+          <!-- The sub-stage chip starts hidden AND empty, and dashboard.js only
+               un-hides it when the project actually carries a stage_detail. A
+               project the system has recorded no sub-stage for shows the status
+               and NOTHING else here — no dash, no placeholder chip. -->
+          <div class="metric"><span>Status</span><strong id="metricStatus"></strong><span id="metricStageDetail" class="chip stage-detail-chip" hidden></span></div>
           <div class="metric"><span>Utility</span><strong id="metricUtility"></strong></div>
           <div class="metric"><span>AHJ</span><strong id="metricAhj"></strong></div>
           <div class="metric"><span>System</span><strong id="metricSystem"></strong></div>
@@ -351,11 +399,22 @@
         <!-- Pipeline stepper: completed stages collapse with a check (✓), the current
              stage is expanded, future stages are locked. The stage is computed
              server-side (backend/src/projectStage.ts) and applied by applyStageState().
-             Panels keep their original element IDs so every render fn is untouched. -->
-        <details class="stage-accordion" id="stage-intake" data-stage-index="0">
+             Panels keep their original element IDs so every render fn is untouched.
+
+             FIVE accordions, data-stage-index 0-4. The leading Intake section is gone
+             (operator ruling, 2026-09-19): upload and parse happen together in the
+             Parser, a project is born `parsed`, and a stage that is complete the
+             instant it appears is not a stage. Its ONE panel — Project Documents —
+             was not deleted with it: it is now the first panel of QC / Verify, which
+             is the stage a freshly parsed project opens on, so the upload affordance
+             is the first thing on screen exactly as it was before. Every id in it
+             (projectDocsList, projectDocsCount, docUploadType, docUploadFile,
+             docUploadBtn, docUploadStatus) is byte-identical, so renderProjectDocs and
+             the upload handler in dashboard.js are untouched by the move. -->
+        <details class="stage-accordion" id="stage-qc" data-stage-index="0">
           <summary class="stage-summary">
             <span class="stage-marker"></span>
-            <span class="stage-name">1 · Intake</span>
+            <span class="stage-name">1 · QC / Verify</span>
             <span class="stage-pill"></span>
           </summary>
           <div class="stage-body">
@@ -393,16 +452,6 @@
               <p class="muted" style="font-size:12px;margin:4px 0 0">Tip: select multiple files at once to attach several checklist docs in one go.</p>
               <p class="muted" style="font-size:12px;margin:4px 0 0">Submittable documents must be PDFs — portals only accept PDFs and we can't read sheets out of a CAD file. Upload a .dwg/.dxf/.rvt as <strong>CAD source drawing</strong> to keep it on the project for reference; it is stored but never submitted and never counts as the plan set.</p>
             </section>
-          </div>
-        </details>
-
-        <details class="stage-accordion" id="stage-qc" data-stage-index="1">
-          <summary class="stage-summary">
-            <span class="stage-marker"></span>
-            <span class="stage-name">2 · QC / Verify</span>
-            <span class="stage-pill"></span>
-          </summary>
-          <div class="stage-body">
             <section class="columns">
               <div class="panel">
                 <div class="section-head">
@@ -438,10 +487,10 @@
           </div>
         </details>
 
-        <details class="stage-accordion" id="stage-build" data-stage-index="2">
+        <details class="stage-accordion" id="stage-build" data-stage-index="1">
           <summary class="stage-summary">
             <span class="stage-marker"></span>
-            <span class="stage-name">3 · Build &amp; Validate</span>
+            <span class="stage-name">2 · Build &amp; Validate</span>
             <span class="stage-pill"></span>
           </summary>
           <div class="stage-body">
@@ -493,10 +542,10 @@
           </div>
         </details>
 
-        <details class="stage-accordion" id="stage-submit" data-stage-index="3">
+        <details class="stage-accordion" id="stage-submit" data-stage-index="2">
           <summary class="stage-summary">
             <span class="stage-marker"></span>
-            <span class="stage-name">4 · Submit</span>
+            <span class="stage-name">3 · Submit</span>
             <span class="stage-pill"></span>
           </summary>
           <div class="stage-body">
@@ -664,10 +713,10 @@
           </div>
         </details>
 
-        <details class="stage-accordion" id="stage-track" data-stage-index="4">
+        <details class="stage-accordion" id="stage-track" data-stage-index="3">
           <summary class="stage-summary">
             <span class="stage-marker"></span>
-            <span class="stage-name">5 · Track Approvals</span>
+            <span class="stage-name">4 · Track Approvals</span>
             <span class="stage-pill"></span>
           </summary>
           <div class="stage-body">
@@ -704,10 +753,10 @@
           </div>
         </details>
 
-        <details class="stage-accordion" id="stage-closeout" data-stage-index="5">
+        <details class="stage-accordion" id="stage-closeout" data-stage-index="4">
           <summary class="stage-summary">
             <span class="stage-marker"></span>
-            <span class="stage-name">6 · Closeout</span>
+            <span class="stage-name">5 · Closeout</span>
             <span class="stage-pill"></span>
           </summary>
           <div class="stage-body">

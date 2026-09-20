@@ -62,9 +62,10 @@ check("it stays a DISPLAY signal — a correction keeps its real stage, it is no
 });
 
 check("the corrections stage is the one the operator is already looking at", () => {
-  // Submit is stage index 3 — rendered as the ACTIVE accordion for these statuses, so the
-  // correction text, bucket and required action are on screen without a click.
-  assert.equal(stageForStatus("correction_triaged").index, 3);
+  // Submit is stage index 2 (index 3 before the 6→5 stage collapse of 2026-09-19 removed
+  // the always-already-complete Intake stage) — rendered as the ACTIVE accordion for these
+  // statuses, so the correction text, bucket and required action are on screen without a click.
+  assert.equal(stageForStatus("correction_triaged").index, 2);
 });
 
 if (failures) { console.error(`\n${failures} correction-visibility check(s) FAILED.`); process.exit(1); }

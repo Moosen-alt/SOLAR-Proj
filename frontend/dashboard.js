@@ -32,6 +32,9 @@ const state = {
   // (e.g. Submit) open and have it persist across re-renders and navigation.
   stageOverrides: {},
   stageActiveSeen: {},
+  // Which project the status-override panel is currently holding an unsent edit for.
+  // Lets a background re-render keep a half-typed reason, and a project switch drop it.
+  statusOverrideFor: null,
   knowledgeProfiles: [],
   ahjForms: [],
   signatures: [],
@@ -44,13 +47,20 @@ const $ = (id) => document.getElementById(id);
 // Pipeline stages (display labels for the board columns + table pill). The
 // canonical stage mapping lives in backend/src/projectStage.ts; rows arrive
 // carrying stageKey/stageIndex/stageLabel/stageCount, so this is display-only.
+//
+// FIVE stages, not six. "Intake" was removed as a pipeline stage (operator
+// ruling, 2026-09-19): upload and parse happen together in the parser, so a
+// project is BORN `parsed` — an Intake column could only ever render as
+// already-complete, which is a stage that says nothing. Parsing is how a
+// project comes into existence; the pipeline starts at the first thing an
+// operator actually does to it. The Project Documents panel that used to live
+// in the Intake accordion now opens inside QC / Verify.
 const PROJECT_STAGES = [
-  { key: "intake", label: "1 · Intake" },
-  { key: "qc", label: "2 · QC / Verify" },
-  { key: "build", label: "3 · Build & Validate" },
-  { key: "submit", label: "4 · Submit" },
-  { key: "track", label: "5 · Track Approvals" },
-  { key: "closeout", label: "6 · Closeout" },
+  { key: "qc", label: "1 · QC / Verify" },
+  { key: "build", label: "2 · Build & Validate" },
+  { key: "submit", label: "3 · Submit" },
+  { key: "track", label: "4 · Track Approvals" },
+  { key: "closeout", label: "5 · Closeout" },
 ];
 
 async function api(path, options = {}) {
@@ -1032,13 +1042,40 @@ function renderEmailTracker() {
   $("emailTrackerStatus").textContent = `${sources.filter((source) => source.active).length} active email watch source(s). Last scan: ${active?.lastCheckedAt ? new Date(active.lastCheckedAt).toLocaleString() : "not run"}; last matched ${active?.lastMatchedCount || 0}/${active?.lastMessageCount || 0}; recent matches ${totalMatches}.${active?.lastError ? ` Error: ${active.lastError}` : ""}`;
 }
 
-// Stage pill + "Stage N of 6" progress for the table view.
+// The sub-stage chip: WHERE INSIDE a stage this project actually sits.
+//
+// `stageDetail` is the enum the backend writes alongside the free-text
+// `current_stage` prose (it never rewrites that prose — a recorded label is a
+// matching key). It is the ONLY structured answer to "the stage says Submit,
+// but submitted to whom, and waiting on what?", which is the jank the operator
+// named.
+//
+// AN UNKNOWN MUST NEVER READ AS REASSURANCE. A project whose backend has not
+// written a stage_detail yet — every row in the live DB today — knows nothing
+// extra about itself, and this returns the EMPTY STRING for it: no chip, no
+// "—", no shell, nothing on screen. A placeholder here would invent progress
+// out of a NULL column. The three empty shapes are all one branch: absent
+// field, null, and a string that is only whitespace.
+//
+// Label: bare humanize() of the slug, deliberately not a hand-written display
+// map. The StageDetail union is defined backend-side; a local map would go
+// stale silently and mislabel a value it had never heard of, which is worse
+// than "approved_awaiting_filing" reading as "Approved awaiting filing".
+function stageDetailChipHtml(project) {
+  const raw = project && project.stageDetail;
+  if (typeof raw !== "string" || !raw.trim()) return "";
+  const detail = raw.trim();
+  return ` <span class="chip stage-detail-chip" title="Sub-stage recorded by the system: ${esc(detail)}">${esc(humanize(detail))}</span>`;
+}
+
+// Stage pill + "Stage N of 5" progress for the table view.
 function stagePillHtml(project) {
   const idx = Number.isInteger(project.stageIndex) ? project.stageIndex : 0;
   const count = project.stageCount || PROJECT_STAGES.length;
   const pct = Math.round(((idx + 1) / count) * 100);
   const blocked = project.isBlocked ? " is-blocked" : "";
-  return `<span class="stage-tag stage-${esc(project.stageKey || "intake")}${blocked}" title="${esc(project.status || "")}">${esc(project.stageLabel || "—")}</span>`
+  return `<span class="stage-tag stage-${esc(project.stageKey || "qc")}${blocked}" title="${esc(project.status || "")}">${esc(project.stageLabel || "—")}</span>`
+    + stageDetailChipHtml(project)
     + `<br><span class="muted">Stage ${idx + 1} of ${count}</span>`
     + `<div class="stage-progress"><span style="width:${pct}%"></span></div>`;
 }
@@ -1089,7 +1126,7 @@ function renderProjectTable() {
   });
 }
 
-// Stage board: six columns; each project as a compact card in its current stage.
+// Stage board: five columns; each project as a compact card in its current stage.
 function boardCardHtml(p, userMap) {
   const assignee = p.assignedUserId ? userMap[p.assignedUserId] : null;
   const permit = p.readyForIssue ? "ready for issue" : (p.latestPermitLabel || (p.latestPermitOutcome ? p.latestPermitOutcome.replaceAll("_", " ") : ""));
@@ -1109,7 +1146,7 @@ function boardCardHtml(p, userMap) {
 }
 
 const STAGE_HELP = {
-  intake: "Upload and extract project details", qc: "Check data and resolve flagged items",
+  qc: "Check the parsed data and resolve flagged items",
   build: "Prepare documents and review the plans", submit: "Review the application, then file",
   track: "Monitor permits and interconnection", closeout: "Deliver the approved project packet",
 };
@@ -1120,7 +1157,9 @@ function renderBoard() {
   const userMap = Object.fromEntries((state.users || []).map((u) => [u.id, u]));
   const groups = new Map(PROJECT_STAGES.map((s) => [s.key, []]));
   for (const p of state.projects) {
-    const key = groups.has(p.stageKey) ? p.stageKey : "intake";
+    // Unknown/absent stageKey falls to the FIRST stage of the five (QC / Verify),
+    // which is also where a legacy row that still says "intake" belongs.
+    const key = groups.has(p.stageKey) ? p.stageKey : "qc";
     groups.get(key).push(p);
   }
   el.innerHTML = PROJECT_STAGES.map((stage) => {
@@ -1561,7 +1600,7 @@ function renderPaymentPanel() {
         <span>💳 Payment — per-submission billing</span>
         ${statusBadge(unpaid.length ? "payment required before staging" : "cleared")}
       </div>
-      ${unpaid.length ? `<p style="margin:0 0 8px;font-size:12px">This client pays per submission: collect the total below, then <strong>Mark paid</strong> to unlock <em>4 · Prepare Submittal</em>. Enter the portal's real fee when you see it on the fee/review screen — it replaces the estimate and is remembered for this AHJ. <span class="muted">The portal's own fee checkout is always completed by a human, never automated.</span></p>` : ""}
+      ${unpaid.length ? `<p style="margin:0 0 8px;font-size:12px">This client pays per submission: collect the total below, then <strong>Mark paid</strong> to unlock <em>3 · Prepare Submittal</em>. Enter the portal's real fee when you see it on the fee/review screen — it replaces the estimate and is remembered for this AHJ. <span class="muted">The portal's own fee checkout is always completed by a human, never automated.</span></p>` : ""}
       ${visible.map(renderPaymentQuoteCard).join("")}
     </section>` : ""}
     ${receipts.length ? `<section class="panel"><h3>Recorded receipt payments</h3>
@@ -1833,20 +1872,27 @@ function renderFeeSheetPanel() {
 }
 
 // Friendly display labels for every canonical ProjectStatus (shared/src/types.ts).
+//
+// `intake_uploaded`, `submit_staging` and `resubmit_staging` are GONE from
+// ProjectStatus (2026-09-19): nothing in the system ever wrote them, yet they
+// were labelled here, bannered with operator instructions, and offered as
+// filters — a vocabulary the product spoke but never used. The other
+// zero-writer statuses stay: each is getting a real writer in a later round.
+//
+// This object is also the single source of the operator status-override menu
+// (renderStatusOverride), so a status removed here disappears from the menu in
+// the same edit — one vocabulary, not two lists to keep in step.
 const STATUS_LABELS = {
-  intake_uploaded: "Intake uploaded",
   parsed: "Parsed",
   qc_failed: "QC failed",
   qc_passed: "QC passed",
   ready_to_stage: "Ready to stage",
-  submit_staging: "Submit staging",
   awaiting_human_submit: "Awaiting human submit",
   submitted: "Submitted",
   correction_received: "Correction received",
   correction_triaged: "Correction triaged",
   waiting_on_designer: "Waiting on designer",
   ready_to_resubmit: "Ready to resubmit",
-  resubmit_staging: "Resubmit staging",
   awaiting_human_resubmit: "Awaiting human resubmit",
   ready_for_issue: "Ready for issue",
   issued: "Permit issued",
@@ -1862,31 +1908,37 @@ function statusLabel(status) {
 
 // Plain-language "what do I do next" guidance for every canonical status.
 // tone: "info" (blue, normal), "warn" (amber, needs attention), "done" (green).
+//
+// Stage numbers and button numbers are the SAME five-stage scale as
+// PROJECT_STAGES and the action bar in dashboard.html. If a banner says
+// "Stage 3" while the accordion above it says "2 · Build & Validate", the
+// operator is reading two pipelines — which is what "jank" meant.
+//
+// The three removed statuses (`intake_uploaded`, `submit_staging`,
+// `resubmit_staging`) had banners here instructing the operator on states
+// nothing could ever put a project into. Gone with them.
 const NEXT_STEPS = {
-  intake_uploaded: { tone: "warn", step: "Stage 1", text: "Files uploaded but not parsed yet. Open the <strong>Parser</strong>, click <strong>Parse</strong>, then <strong>Save to project</strong>." },
-  parsed: { tone: "info", step: "Stage 2", text: "Parsed. Click <strong>2 · Run QC</strong> to check the data for missing or wrong info." },
-  qc_failed: { tone: "warn", step: "Stage 2", text: "QC found problems. Open <strong>QC Results</strong> below, fix the flagged fields, then click <strong>2 · Run QC</strong> again." },
-  qc_passed: { tone: "info", step: "Stage 3", text: "QC passed. Click <strong>3 · Build AHJ/NEM Docs</strong>, then <strong>3 · Reviewer Gate</strong>." },
-  ready_to_stage: { tone: "info", step: "Stage 3", text: "Docs built. Click <strong>3 · Reviewer Gate</strong>, then <strong>4 · Prepare Submittal</strong>." },
-  submit_staging: { tone: "info", step: "Stage 4", text: "Staging for submission. Click <strong>4 · Prepare Submittal</strong> to finish staging." },
-  awaiting_human_submit: { tone: "warn", step: "Stage 4", text: "Staged and ready. <strong>A person must do the final submit</strong> in the portal now — automation stops here." },
-  submitted: { tone: "info", step: "Stage 5", text: "Submitted. Track it with <strong>Permit Checks</strong> / <strong>NEM Checks</strong>. Paste any correction letter into <strong>Corrections</strong>." },
-  correction_received: { tone: "warn", step: "Stage 4", text: "A correction came in. Open <strong>Corrections</strong> to triage it — the AI drafts a reply you review before sending." },
-  correction_triaged: { tone: "warn", step: "Stage 4", text: "Correction triaged. Fix the docs per the reply, then move the project to <strong>Ready to resubmit</strong>." },
-  waiting_on_designer: { tone: "warn", step: "Stage 4", text: "Waiting on the designer to revise stamped plans. Follow up if it has been a while." },
-  ready_to_resubmit: { tone: "info", step: "Stage 4", text: "Revisions done. Click <strong>4 · Prepare Submittal</strong> to re-stage for resubmission." },
-  resubmit_staging: { tone: "info", step: "Stage 4", text: "Staging the resubmission. Click <strong>4 · Prepare Submittal</strong> to finish." },
-  awaiting_human_resubmit: { tone: "warn", step: "Stage 4", text: "Resubmission staged. <strong>A person must do the final resubmit</strong> in the portal — automation stops here." },
-  ready_for_issue: { tone: "info", step: "Stage 5", text: "Approved — issuance/fees pending. Confirm the permit is issued, then keep tracking NEM." },
-  issued: { tone: "info", step: "Stage 5", text: "Permit issued. Waiting on <strong>NEM approval</strong> to finish — keep running NEM Checks." },
-  approved: { tone: "info", step: "Stage 5", text: "Approved. Confirm both permit issued and NEM approved to reach handoff." },
-  nem_approved: { tone: "info", step: "Stage 5", text: "NEM approved. Once the permit is also issued, you will reach handoff." },
+  parsed: { tone: "info", step: "Stage 1", text: "Parsed. Click <strong>1 · Run QC</strong> to check the data for missing or wrong info." },
+  qc_failed: { tone: "warn", step: "Stage 1", text: "QC found problems. Open <strong>QC Results</strong> below, fix the flagged fields, then click <strong>1 · Run QC</strong> again." },
+  qc_passed: { tone: "info", step: "Stage 2", text: "QC passed. Click <strong>2 · Build AHJ/NEM Docs</strong>, then <strong>2 · Reviewer Gate</strong>." },
+  ready_to_stage: { tone: "info", step: "Stage 2", text: "Docs built. Click <strong>2 · Reviewer Gate</strong>, then <strong>3 · Prepare Submittal</strong>." },
+  awaiting_human_submit: { tone: "warn", step: "Stage 3", text: "Staged and ready. <strong>A person must do the final submit</strong> in the portal now — automation stops here." },
+  submitted: { tone: "info", step: "Stage 4", text: "Submitted. Track it with <strong>Permit Checks</strong> / <strong>NEM Checks</strong>. Paste any correction letter into <strong>Corrections</strong>." },
+  correction_received: { tone: "warn", step: "Stage 3", text: "A correction came in. Open <strong>Corrections</strong> to triage it — the AI drafts a reply you review before sending." },
+  correction_triaged: { tone: "warn", step: "Stage 3", text: "Correction triaged. Fix the docs per the reply, then move the project to <strong>Ready to resubmit</strong>." },
+  waiting_on_designer: { tone: "warn", step: "Stage 3", text: "Waiting on the designer to revise stamped plans. Follow up if it has been a while." },
+  ready_to_resubmit: { tone: "info", step: "Stage 3", text: "Revisions done. Click <strong>3 · Prepare Submittal</strong> to re-stage for resubmission." },
+  awaiting_human_resubmit: { tone: "warn", step: "Stage 3", text: "Resubmission staged. <strong>A person must do the final resubmit</strong> in the portal — automation stops here." },
+  ready_for_issue: { tone: "info", step: "Stage 4", text: "Approved — issuance/fees pending. Confirm the permit is issued, then keep tracking NEM." },
+  issued: { tone: "info", step: "Stage 4", text: "Permit issued. Waiting on <strong>NEM approval</strong> to finish — keep running NEM Checks." },
+  approved: { tone: "info", step: "Stage 4", text: "Approved. Confirm both permit issued and NEM approved to reach handoff." },
+  nem_approved: { tone: "info", step: "Stage 4", text: "NEM approved. Once the permit is also issued, you will reach handoff." },
   handoff_ready: { tone: "done", step: "Done", text: "Permit issued + NEM approved. Copy the <strong>Project Handoff Packet</strong> to the installer. PTO is the installer's job — our scope ends here." },
   blocked: { tone: "warn", step: "Blocked", text: "This project is blocked — see the red items below. Clear the blocker, then continue the steps." },
 };
 
 function nextStepFor(status) {
-  return NEXT_STEPS[status] || { tone: "info", step: "Step 2", text: "Click <strong>2 · Run QC</strong> to check the parsed data for missing or wrong info." };
+  return NEXT_STEPS[status] || { tone: "info", step: "Stage 1", text: "Click <strong>1 · Run QC</strong> to check the parsed data for missing or wrong info." };
 }
 
 function renderNextStep() {
@@ -1900,7 +1952,100 @@ function renderNextStep() {
   banner.innerHTML = `<span class="next-step-step">${esc(guide.step)}</span><span class="next-step-text">${guide.text}</span>`;
 }
 
-// Apply the pipeline-stepper state to the six stage accordions: completed stages
+// ----- Operator status override -----
+//
+// Until now a project whose status had drifted (or that needed to be marked
+// `blocked`) could only be corrected with SQL against the live database. This
+// is the operator gesture that replaces that: pick the true status, say why,
+// and the backend records the change with the reason on the audit trail.
+//
+// It is an OPERATOR action, not an automation one — nothing here ever submits a
+// filing, and moving a project to `submitted` by hand does not file anything.
+// The reason is REQUIRED: a status that changed with no stated cause is the
+// same unexplained drift this control exists to fix.
+//
+// `handoff_ready` is deliberately NOT offered. It is computed — the backend
+// reaches it only when the permit is issued AND NEM is approved — and A2's
+// route refuses it, so offering it would be a button whose only outcome is an
+// error. Every other label in STATUS_LABELS is offered, which is why that
+// object is the single vocabulary: the three statuses deleted from it this
+// round cannot reappear here, and `blocked` (whose only writer is this control)
+// cannot fall out of it by omission.
+const STATUS_OVERRIDE_EXCLUDED = ["handoff_ready"];
+
+function renderStatusOverride() {
+  const select = $("statusOverrideSelect");
+  if (!select) return;
+  const { project } = state.detail;
+  const wrap = $("statusOverrideWrap");
+  if (!project) { if (wrap) wrap.hidden = true; state.statusOverrideFor = null; return; }
+  if (wrap) wrap.hidden = false;
+  const reason = $("statusOverrideReason");
+  // AN IN-PROGRESS EDIT SURVIVES A RE-RENDER. renderDetail runs on every background
+  // refresh and after every autopilot poll, so a plain rebuild would erase a half-typed
+  // reason out from under the operator mid-sentence — the same "it wiped what I did"
+  // complaint the pinned-open stage accordions already exist to answer, reappearing
+  // inside the control built to fix drifted statuses. Same idiom as
+  // syncProjectAssignSelect: capture, rebuild, restore. Keyed by project id and kept on
+  // `state`, so opening a DIFFERENT project starts clean rather than inheriting the last
+  // project's half-written reason onto a record it was never about.
+  const sameProject = state.statusOverrideFor === project.id;
+  const pendingStatus = sameProject ? select.value : "";
+  const pendingReason = sameProject && reason ? reason.value : "";
+  state.statusOverrideFor = project.id;
+  const options = Object.keys(STATUS_LABELS).filter((s) => !STATUS_OVERRIDE_EXCLUDED.includes(s));
+  select.innerHTML = options
+    .map((s) => `<option value="${esc(s)}">${esc(STATUS_LABELS[s])}</option>`)
+    .join("");
+  // A status the menu cannot offer (e.g. a project already at handoff_ready)
+  // must not silently preselect a DIFFERENT status the operator did not choose.
+  if (options.includes(project.status)) {
+    select.value = project.status;
+  } else {
+    select.insertAdjacentHTML("afterbegin",
+      `<option value="" selected>— current: ${esc(statusLabel(project.status))} —</option>`);
+    select.value = "";
+  }
+  // Restore only a choice the rebuilt menu can still honour — never leave the select
+  // showing a status it cannot post.
+  if (pendingStatus && Array.from(select.options).some((o) => o.value === pendingStatus)) {
+    select.value = pendingStatus;
+  }
+  if (reason) reason.value = pendingReason;
+}
+
+async function applyStatusOverride() {
+  const projectId = state.selectedProjectId;
+  if (!projectId) return;
+  const status = ($("statusOverrideSelect")?.value || "").trim();
+  const reason = ($("statusOverrideReason")?.value || "").trim();
+  if (!status) { showMessage("Pick the status this project should be in.", "error"); return; }
+  if (!reason) {
+    showMessage("A reason is required — it is what the audit trail records alongside the change.", "error");
+    $("statusOverrideReason")?.focus();
+    return;
+  }
+  const current = state.detail?.project?.status;
+  if (status === current) { showMessage(`This project is already ${statusLabel(status)}.`, "info"); return; }
+  if (!confirm(`Change this project's status to "${statusLabel(status)}"?\n\nYour reason is recorded on the audit trail. This does not file, submit or pay anything — it only corrects what the board says.`)) return;
+  const btn = $("applyStatusOverrideBtn");
+  if (btn) btn.disabled = true;
+  try {
+    await api(`/api/projects/${projectId}/status`, { method: "POST", body: JSON.stringify({ status, reason }) });
+    // The edit is spent: drop the preserved draft so the re-render opens the panel clean
+    // on the NEW status instead of re-offering the change that was just made.
+    state.statusOverrideFor = null;
+    await loadProjects();
+    await selectProject(projectId);
+    showMessage(`Status set to ${statusLabel(status)} — recorded with your reason.`, "info");
+  } catch (err) {
+    showMessage(err.message || "Could not change the status.", "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Apply the pipeline-stepper state to the five stage accordions: completed stages
 // collapse with a check, the current stage opens, future stages lock. Driven by
 // state.detail.stageIndex (computed server-side). A blocked project paints a red
 // overlay on its active stage rather than getting its own stage.
@@ -1949,12 +2094,12 @@ function applyStageState() {
     el.open = overrides[idx] !== undefined ? overrides[idx] : defaultOpen;
   });
 
-  // Pending human-review items block the submit gate but live in Stage 2, which is
+  // Pending human-review items block the submit gate but live in Stage 1, which is
   // usually collapsed "Done" by the time the operator is staging — so it's easy to
   // miss WHY "Prepare Submittal" is greyed out. Surface the count on the QC/Verify
   // stage (even when done) and flag it red so the blocker is discoverable.
   const pendingReview = (d.humanReviewItems || []).filter((it) => it.status === "pending" && it.fieldName !== "correction");
-  const qcStage = document.querySelector('.stage-accordion[data-stage-index="1"]');
+  const qcStage = document.querySelector('.stage-accordion[data-stage-index="0"]');
   if (qcStage) {
     const pill = qcStage.querySelector(".stage-pill");
     const marker = qcStage.querySelector(".stage-marker");
@@ -2423,6 +2568,17 @@ function renderDetail() {
     $("detailTitle").textContent = project.homeownerName || "Unnamed project";
     $("detailSubtitle").textContent = project.projectAddress || "No address captured";
     $("metricStatus").textContent = statusLabel(project.status);
+    // Sub-stage chip on the Status metric. textContent + hidden, so nothing is
+    // interpolated into innerHTML here at all. No stage_detail → the element
+    // stays hidden AND empty: the header shows the status and says nothing more,
+    // which is the truth about a project the system has recorded no sub-stage for.
+    const stageDetailEl = $("metricStageDetail");
+    if (stageDetailEl) {
+      const detail = typeof project.stageDetail === "string" ? project.stageDetail.trim() : "";
+      stageDetailEl.textContent = detail ? humanize(detail) : "";
+      stageDetailEl.title = detail ? `Sub-stage recorded by the system: ${detail}` : "";
+      stageDetailEl.hidden = !detail;
+    }
     $("metricUtility").textContent = project.utility || "Missing";
     $("metricAhj").textContent = project.ahj || "Missing";
     $("metricSystem").textContent = (project.systemSizeDcKw == null && project.systemSizeAcKw == null)
@@ -2438,6 +2594,7 @@ function renderDetail() {
   safeRender("clientSelect", syncProjectClientSelect);
   safeRender("assignSelect", syncProjectAssignSelect);
   safeRender("nextStep", renderNextStep);
+  safeRender("statusOverride", renderStatusOverride);
   safeRender("handoffBanner", renderHandoffBanner);
   safeRender("permitForm", syncPermitForm);
   safeRender("workflow", renderWorkflow);
@@ -2492,18 +2649,20 @@ function submitGateClass(value) {
 // accordion to open and which element to scroll to. Clicking a blocker link in
 // the "can't submit" note jumps the operator straight there.
 const SUBMIT_FIX_TARGETS = {
+  // Indices are the FIVE-stage accordion scale: 0 QC / 1 Build / 2 Submit /
+  // 3 Track / 4 Closeout.
   "submitting-client": { el: "projectClientSelect" },
-  "qc-human-review": { stage: 1, el: "reviewItems" },
-  "ahj-form-mapping-verified": { stage: 2, el: "applicationDocs" },
-  "ahj-nem-docs": { stage: 2, el: "applicationDocs" },
-  "permit-requirements": { stage: 2, el: "reviewerGate" },
-  "installer-design-actions": { stage: 2, el: "reviewerGate" },
-  "nem-preflight": { stage: 3, el: "submitGate" },
-  "document-inventory": { stage: 3, el: "inlineDocSplitWidget" },
+  "qc-human-review": { stage: 0, el: "reviewItems" },
+  "ahj-form-mapping-verified": { stage: 1, el: "applicationDocs" },
+  "ahj-nem-docs": { stage: 1, el: "applicationDocs" },
+  "permit-requirements": { stage: 1, el: "reviewerGate" },
+  "installer-design-actions": { stage: 1, el: "reviewerGate" },
+  "nem-preflight": { stage: 2, el: "submitGate" },
+  "document-inventory": { stage: 2, el: "inlineDocSplitWidget" },
 };
 
 function gotoSubmitFix(checkId) {
-  const t = SUBMIT_FIX_TARGETS[checkId] || { stage: 3, el: "submitGate" };
+  const t = SUBMIT_FIX_TARGETS[checkId] || { stage: 2, el: "submitGate" };
   if (t.stage != null) {
     const acc = document.querySelector(`.stage-accordion[data-stage-index="${t.stage}"]`);
     if (acc) acc.open = true;
@@ -2645,7 +2804,7 @@ function renderSubmitGate() {
               <!-- "Next" is the act-on-it half and stays at full weight. Owner,
                    requirement, evidence and source are provenance. -->
               <p><strong>Next:</strong> ${esc(check.nextAction)}</p>
-              ${check.id === "ahj-form-mapping-verified" && (check.status === "blocker" || check.status === "warning") ? `<button type="button" class="secondary" style="font-size:12px;margin-top:4px" onclick="document.querySelector('.stage-accordion[data-stage-index=\\'2\\']')?.setAttribute('open','');document.getElementById('applicationDocs')?.scrollIntoView({behavior:'smooth'})">Go to App Docs → verify forms</button>` : ""}
+              ${check.id === "ahj-form-mapping-verified" && (check.status === "blocker" || check.status === "warning") ? `<button type="button" class="secondary" style="font-size:12px;margin-top:4px" onclick="document.querySelector('.stage-accordion[data-stage-index=\\'1\\']')?.setAttribute('open','');document.getElementById('applicationDocs')?.scrollIntoView({behavior:'smooth'})">Go to App Docs → verify forms</button>` : ""}
               <details class="provenance">
                 <summary>${esc(check.ownerRole)} · ${esc(check.source)}</summary>
                 <div class="provenance-body">
@@ -5505,6 +5664,7 @@ $("prepareBtn").addEventListener("click", prepareSubmission);
 $("startAutopilotBtn").addEventListener("click", startAutopilot);
 $("approveSubmitBtn").addEventListener("click", approveAndSubmit);
 $("deleteProjectBtn").addEventListener("click", deleteSelectedProject);
+$("applyStatusOverrideBtn")?.addEventListener("click", applyStatusOverride);
 $("addCorrectionBtn").addEventListener("click", addCorrection);
 $("addPermitTargetBtn").addEventListener("click", addPermitTarget);
 $("recordPermitStatusBtn").addEventListener("click", () => recordPermitStatus("manual"));

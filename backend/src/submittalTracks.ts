@@ -18,6 +18,7 @@ import type { AppDb } from "./db";
 import type {
   PermitCheckOutcome,
   ProjectRecord,
+  StageDetail,
   SubmittalTrack,
   SubmittalTrackStatus,
   SubmittalTrackType,
@@ -441,17 +442,24 @@ export function markTrackSubmitted(
     // Advance the project once every staged track is resolved — mirrors
     // captureConfirmation. Only post-staging statuses advance: a manual submit recorded
     // on a project that never staged must not skip the pre-stage pipeline.
-    if (project.status === "awaiting_human_submit" || project.status === "submit_staging") {
+    // A second arm of this test used to also accept the submit-staging status. That status
+    // was removed from ProjectStatus (2026-09-19) because it had zero writers anywhere, so
+    // the arm was unreachable. `awaiting_human_submit` is the only post-staging status a
+    // manual submit can be recorded against.
+    if (project.status === "awaiting_human_submit") {
       const stillAwaiting = db.get<{ n: number }>(
         "SELECT COUNT(*) AS n FROM submissions WHERE project_id = ? AND status = 'awaiting_human_submit'",
         [project.id],
       );
       const remaining = Number(stillAwaiting?.n ?? 0);
-      db.run("UPDATE projects SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?", [
+      db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
         remaining > 0 ? "awaiting_human_submit" : "submitted",
         remaining > 0
           ? `${TRACK_LABELS[type]} submitted; ${remaining} track(s) still awaiting human submit.`
           : `${TRACK_LABELS[type]} submitted manually. Tracking approval.`,
+        // Same two states captureConfirmation records, from the manual-submit door — a project
+        // half-filed here must not read any differently from one half-filed there.
+        (remaining > 0 ? "submitted_partial" : "submitted_all") satisfies StageDetail,
         ts,
         project.id,
       ]);

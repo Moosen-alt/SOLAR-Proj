@@ -104,6 +104,7 @@ import {
   createPermitCheckTarget,
   createProject,
   updateProject,
+  setProjectStatusByOperator,
   researchAndSaveAhj,
   researchAndSaveUtility,
   deleteProject,
@@ -1283,6 +1284,31 @@ app.post("/api/projects/:id/notes", (req, res) => {
 
 app.post("/api/projects/:id/workflow", (req, res) => {
   res.json(runProjectWorkflow(db, req.params.id));
+});
+
+// OPERATOR STATUS OVERRIDE — the audited way to move a project the pipeline got wrong, and
+// the only writer for `blocked` / the only way back out of it.
+//
+// Scope: under /api/projects/:id, so it sits behind requireAuth + entitlementGate and inherits
+// the mounted tenancy guard (CLAUDE.md rule 6) — another tenant's project id resolves 404 here
+// before the handler runs, exactly like every other subroute. No new top-level path, so
+// routeScope.test.ts accounts for it automatically rather than by exemption.
+//
+// The refusals (reason required, unknown status, handoff_ready is computed) live in
+// setProjectStatusByOperator with the write itself, not here, so a second caller cannot reach
+// the UPDATE without passing them. This route only names the actor.
+//
+// Returns the refreshed ProjectDetail rather than {ok:true} — the same shape the other project
+// POSTs return, so the dashboard re-renders the moved project without a follow-up GET.
+app.post("/api/projects/:id/status", (req, res) => {
+  const detail = setProjectStatusByOperator(
+    db,
+    String(req.params.id),
+    String(req.body?.status ?? ""),
+    String(req.body?.reason ?? ""),
+    currentUser(db, req)?.email || "operator",
+  );
+  res.json(detail);
 });
 
 app.get("/api/projects/:id/application-docs", (req, res) => {

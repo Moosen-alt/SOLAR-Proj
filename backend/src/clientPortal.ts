@@ -39,7 +39,7 @@ import { logger } from "./logger";
 /**
  * PLAIN ENGLISH FOR EVERY STATUS, not most of them.
  *
- * status.html covers ten of the twenty and renders the rest as an undifferentiated "In
+ * status.html covers ten of the seventeen and renders the rest as an undifferentiated "In
  * progress", which on a tracker reads as "nothing is happening" for states where quite a lot is.
  * This map is exhaustive by construction — ProjectStatus is a closed union, and the Record type
  * below stops compiling if a status is added without a public wording.
@@ -49,19 +49,16 @@ import { logger } from "./logger";
  * tracker and a progress bar.
  */
 export const PUBLIC_STATUS_TEXT: Record<ProjectStatus, string> = {
-  intake_uploaded: "Received — plan set being read",
   parsed: "Plan set read — running checks",
   qc_failed: "Checks found a problem — our team is on it",
   qc_passed: "Checks passed — preparing the application",
   ready_to_stage: "Ready to file",
-  submit_staging: "Filling out the application",
   awaiting_human_submit: "Prepared — waiting on final submission",
   submitted: "Submitted — awaiting agency review",
   correction_received: "Correction requested — being addressed",
   correction_triaged: "Correction being addressed",
   waiting_on_designer: "Waiting on a revised plan set from your designer",
   ready_to_resubmit: "Revision ready to re-file",
-  resubmit_staging: "Re-filing the corrected application",
   awaiting_human_resubmit: "Revision prepared — waiting on final submission",
   ready_for_issue: "Permit ready for issue — fees or pickup may be due",
   issued: "Permit issued",

@@ -201,6 +201,20 @@ run(
   "expected createProject(db, payload, requestScope(db, req).orgId)",
 );
 
+// THE ONE ROUTE THAT WRITES `projects.status` BY HAND, named explicitly.
+//
+// It is already accounted for above by the /api/projects prefix — which is the rule working as
+// designed, and why it needed no exemption. Named here anyway because of what it does: an
+// operator override moves a project's lifecycle position with no pipeline event behind it, so
+// if it were ever moved to a top-level path of its own (/api/status/:id, say) it would keep
+// working, keep passing its own tests, and quietly lose its tenancy scoping. The generic check
+// would then pass too, by listing it as unaccounted only until someone added an exemption line.
+run(
+  "the operator status override lives under /api/projects/:id, where the tenancy guard is mounted",
+  apiRoutes.some((r) => r.verb === "post" && r.path === "/api/projects/:id/status"),
+  `POST /api/projects/:id/status is not registered at that path: ${JSON.stringify(apiRoutes.filter((r) => r.path.endsWith("/status")))}`,
+);
+
 // The guards must not have been quietly removed.
 for (const expected of ["/api/projects", "/api/clients", "/api/customers"]) {
   run(`${expected}/:id is behind a scope guard`, guardedPrefixes.includes(expected), `guards: ${guardedPrefixes.join(", ")}`);
