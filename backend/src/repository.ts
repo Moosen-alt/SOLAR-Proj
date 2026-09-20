@@ -4755,13 +4755,29 @@ export function recordDesignRevisionsReceived(
     throw new HttpError(409, `This project is not waiting on a designer (it is "${statusBefore}"). "Revisions received" ends a designer wait; it cannot start one.`);
   }
   const ts = nowIso();
-  db.run("UPDATE projects SET status = 'ready_to_resubmit', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
-    "Revised design received — ready to re-stage.",
+  // ASK THE SAME QUESTION resolveCorrection ASKS: is anything still on file?
+  //
+  // resolveCorrection branches carefully on this (a still-filed project returns to
+  // `submitted`, only one with nothing on file goes back to re-stage) because the two
+  // answers are OPPOSITE instructions to the operator — wait for the agency, or drive
+  // Prepare Submittal. This writer used to skip the question and always say re-stage,
+  // which told an operator to re-file an application that was already sitting with the
+  // jurisdiction.
+  const stillFiled = db.get<Row>(
+    "SELECT id FROM submissions WHERE project_id = ? AND status = 'submitted' LIMIT 1", [projectId],
+  );
+  db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
+    stillFiled ? "submitted" : "ready_to_resubmit",
+    stillFiled
+      ? "Revised design received — the application is still on file; update it in the portal."
+      : "Revised design received — ready to re-stage.",
     "design_revisions_received" satisfies StageDetail,
     ts,
     projectId,
   ]);
-  addAuditLog(db, projectId, "human", actorName, "correction.design_revisions_received", { correctionId, from: statusBefore });
+  addAuditLog(db, projectId, "human", actorName, "correction.design_revisions_received", {
+    correctionId, from: statusBefore, stillFiled: Boolean(stillFiled),
+  });
   touchProjectMetrics(db, projectId);
   return getProjectDetail(db, projectId);
 }
@@ -5154,7 +5170,25 @@ export async function reopenCorrectionOnPortal(
   // and the skip is AUDITED: a status that refused to move must never be invisible.
   if (runStatus === "awaiting_human_resubmit") {
     const current = text(db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId])?.status);
-    if (current === "correction_received" || current === "correction_triaged") {
+    // THE EVIDENCE OF A CORRECTION CYCLE IS AN OPEN CORRECTION, NOT A STATUS VALUE.
+    //
+    // Keying purely on `correction_received`/`correction_triaged` made this writer a
+    // measured no-op on the only two live projects it exists for: the permit monitor
+    // rewrites projects.status on EVERY sweep, so a correction open for days sits at
+    // `submitted` (Ivy 720b05f3) or `issued` (Ann 1fb3dc39) long before an operator
+    // clicks reopen. The guard then skipped, the run recorded, and the board showed
+    // nothing — the exact silence this leg was built to end.
+    //
+    // ISSUED IS STILL PROTECTED, and deliberately so. A project-level status cannot say
+    // "permit issued, NEM correction pending", so rewinding an issued permit to
+    // `awaiting_human_resubmit` would DESTROY the more important fact. Terminal states
+    // are therefore excluded and the skip stays audited; everything else that is
+    // genuinely mid-cycle is now admitted.
+    const TERMINAL_KEEPS_ITS_FACT = new Set(["issued", "handoff_ready", "nem_approved", "archived"]);
+    const hasOpenCorrection = Number(
+      db.get<Row>("SELECT COUNT(*) AS n FROM corrections WHERE project_id = ? AND closed_at IS NULL", [projectId])?.n ?? 0,
+    ) > 0;
+    if (hasOpenCorrection && !TERMINAL_KEEPS_ITS_FACT.has(current)) {
       db.run("UPDATE projects SET status = 'awaiting_human_resubmit', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
         "Correction form reopened on the portal — a person must review the application and click its resubmit.",
         "correction_reopened" satisfies StageDetail,
@@ -7249,7 +7283,11 @@ export function markCorrectionResubmitted(
     // included because a fresh correction can land between the reopen and the operator's
     // click. A project the monitor has since moved to `issued` is NOT rewound to `submitted`
     // by a bookkeeping action — the corrections still close, and the skip is audited.
-    if (remainingTracks === 0 && ["awaiting_human_resubmit", "correction_received", "correction_triaged"].includes(statusBefore)) {
+    // `ready_to_resubmit` belongs here too: a project whose correction resolved with
+    // nothing on file lands there (Round B1), and the resubmission an operator then
+    // sends is exactly the event this records. Leaving it out meant the board never
+    // recovered from the state B1 had just introduced.
+    if (remainingTracks === 0 && ["awaiting_human_resubmit", "ready_to_resubmit", "correction_received", "correction_triaged"].includes(statusBefore)) {
       db.run("UPDATE projects SET status = 'submitted', current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
         "Resubmitted by a person in the portal. Awaiting review.",
         "correction_resubmitted" satisfies StageDetail,
