@@ -146,7 +146,7 @@ import {
 } from "./repository";
 import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
 import { ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
-import type { SubmittalTrackType } from "../../shared/src/types";
+import type { ClientResolution, ParserExtractionResponse, SubmittalTrackType } from "../../shared/src/types";
 
 const app = express();
 
@@ -2412,7 +2412,24 @@ app.post("/api/parser/llm-extract", asyncHandler(async (req, res) => {
   try {
     const result = await llm.extractProjectFields({ planText, utilityBillText, meterText, structuralLetterText, defaultState });
     const { supplementStructuralIntake } = await import("./structuralIntake");
-    res.json(supplementStructuralIntake(result, planText));
+    const extraction = supplementStructuralIntake(result, planText);
+    // WHICH COMPANY IS THIS? The prompt has always read the title-block installer and
+    // always dropped it. Resolve it here, on the response the parser page already
+    // waits for, so the (still required) client picker can fill itself instead of
+    // asking the coordinator to pick blind. Tenancy-scoped with the same org filter
+    // every other read uses — suggesting another tenant's company would be exactly
+    // the cross-company error this feature exists to prevent. A resolution failure
+    // must never take down a parse that otherwise worked.
+    let clientResolution: ClientResolution | undefined;
+    try {
+      const { resolveClientForExtraction } = await import("./clientMatch");
+      clientResolution = resolveClientForExtraction(db, extraction.fields, reqOrgFilter(db, req));
+    } catch (err) {
+      logger.warn("parser", "client resolution failed — parse returned without a client suggestion", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    res.json({ ...extraction, clientResolution } satisfies ParserExtractionResponse);
   } catch (err) {
     throw normalizeLlmError(err);
   }

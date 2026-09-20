@@ -88,10 +88,24 @@ export function listBackups(): BackupInfo[] {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-// Keep only the newest KEEP snapshots. Only ever touches autopilot-*.sqlite files,
-// so the documents/ mirror alongside them is untouched by rotation.
+/**
+ * A SNAPSHOT SOMEBODY NAMED ON PURPOSE IS NOT ROTATION FODDER.
+ *
+ * `runBackup` is the only thing that ever writes into the automatic series, and it always names
+ * the file `autopilot-<ISO stamp>.sqlite` — so an automatic snapshot ALWAYS has a digit (the
+ * year) right after the prefix. Anything else under that prefix was named by a human or a
+ * migration: `autopilot-manual-…`, `autopilot-pre-connie`, `autopilot-BEFORE-round2`. Those are
+ * restore points pinned ahead of something risky, and the entire point of pinning one is that a
+ * later routine snapshot cannot quietly retire it — which is exactly what rotation did.
+ */
+export function isAutomaticSnapshot(fileName: string): boolean {
+  return /^autopilot-\d/.test(fileName);
+}
+
+// Keep only the newest KEEP AUTOMATIC snapshots. Only ever touches autopilot-<stamp>.sqlite
+// files, so the documents/ mirror alongside them — and any pinned restore point — is untouched.
 function pruneOldBackups(): void {
-  const files = listBackups();
+  const files = listBackups().filter((f) => isAutomaticSnapshot(f.file));
   for (const old of files.slice(KEEP)) {
     try {
       fs.unlinkSync(path.join(BACKUP_DIR, old.file));
@@ -190,7 +204,27 @@ function countMissingDocumentFiles(db: AppDb): number {
   return missing;
 }
 
-// Run one at startup, then on a fixed interval.
+/**
+ * How long between automatic snapshots — or `null`, meaning THE SCHEDULE IS OFF.
+ *
+ * A NON-POSITIVE INTERVAL DISABLES THE SCHEDULE. It does not mean "as fast as possible".
+ * `Number(process.env.BACKUP_INTERVAL_HOURS || 24)` lets "0" through, because "0" is a TRUTHY
+ * STRING and survives the `||`; that used to reach `setInterval(tick, 0)` and take a snapshot
+ * roughly every two seconds. With BACKUP_KEEP at 14, rotation then rolled every real restore
+ * point off the disk inside a minute — measured, on the operator's backup drive, while someone
+ * was only trying to turn backups OFF for a test server.
+ *
+ * Every other scheduler here already reads <= 0 as "off" (MONITOR_INTERVAL_MINUTES in
+ * scheduler.ts, AHJ_FORM_REFRESH_DAYS, KB_LINK_CHECK_DAYS, CEC_SYNC_DAYS). This was the one
+ * that read it as "continuously", and it owned the data every other one depends on.
+ */
+export function backupIntervalMs(hours: number): number | null {
+  if (!Number.isFinite(hours) || hours <= 0) return null;
+  return hours * 60 * 60 * 1000;
+}
+
+// Run one at startup, then on a fixed interval. The startup snapshot runs even when the
+// schedule is off, so an operator who disables backups still keeps the state they disabled at.
 export function startBackupScheduler(db: AppDb): void {
   const tick = () => {
     try {
@@ -210,5 +244,10 @@ export function startBackupScheduler(db: AppDb): void {
     }
   };
   tick();
-  setInterval(tick, INTERVAL_HOURS * 60 * 60 * 1000).unref();
+  const everyMs = backupIntervalMs(INTERVAL_HOURS);
+  if (everyMs === null) {
+    console.log("[backup] scheduler disabled (BACKUP_INTERVAL_HOURS <= 0); the snapshot above still ran.");
+    return;
+  }
+  setInterval(tick, everyMs).unref();
 }

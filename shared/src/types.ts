@@ -1920,6 +1920,103 @@ export interface ParserLlmExtraction {
   notes: string;
 }
 
+// ===========================================================================
+// PLAN-SET INSTALLER IDENTITY -> CLIENT RESOLUTION
+//
+// The plan set's title block names the company that designed/installs the job.
+// The parser prompt has always read it (llm.ts "CLIENT ONBOARDING" block) and
+// always thrown it away. These types carry it onto the parse response so the
+// client picker can pre-select the company instead of asking a human to.
+//
+// MEASURED ON THE REAL CORPUS (operator drive, 10 plan sets + all 23 pages of
+// Bren Trask's set): the title block prints the COMPANY NAME, ADDRESS, PHONE
+// and website — and NO CCB number at all. So the CCB leg (the only one allowed
+// to bind without a human) is correct but usually silent, and the phone is the
+// only exact identifier these plan sets actually carry. That is why phone is an
+// exact-match leg that PRE-SELECTS and never auto-assigns: a licence number
+// identifies a contractor in a state registry, a phone number does not.
+// ===========================================================================
+
+/** The installer/contractor identity as read off the plan set — never the homeowner. */
+export interface PlanSetInstallerIdentity {
+  companyName?: string;
+  /** Oregon CCB (or equivalent state contractor registry) number, as printed. */
+  ccbLicenseNumber?: string;
+  /** The COMPANY's electrical contractor licence — never compared against a CCB field. */
+  electricalLicenseNumber?: string;
+  /** Metro/city business licence — never compared against a CCB field. */
+  metroCityLicenseNumber?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  supervisorName?: string;
+  /** The supervising electrician's PERSONAL licence — never a company identifier. */
+  electricianLicenseNumber?: string;
+}
+
+/** Which leg of the match fired. Only `ccb` may bind a client without a human. */
+export type ClientMatchKind = "ccb" | "phone" | "name";
+
+/** One reason a client was proposed — what matched, on which field, how well. */
+export interface ClientMatchEvidence {
+  kind: ClientMatchKind;
+  /** The clients-table column compared (named so a reviewer can check the claim). */
+  clientField: "ccb_license_number" | "business_phone" | "phone" | "company_name" | "legal_business_name" | "dba";
+  /** The value read off the plan set. */
+  planSetValue: string;
+  /** The value stored on the client row. */
+  clientValue: string;
+  /** 0-100. 100 = exact identifier match. */
+  score: number;
+}
+
+export interface ClientMatchCandidate {
+  clientId: string;
+  companyName: string;
+  /** Best score across this candidate's evidence. */
+  score: number;
+  /** Strong enough to stand alone (exact CCB, exact phone, or a strong name hit). */
+  strong: boolean;
+  evidence: ClientMatchEvidence[];
+  /** One readable sentence naming exactly what matched. Rendered to the operator. */
+  reason: string;
+}
+
+/**
+ * `auto_assign` — exact CCB on exactly one client. Binds without a prompt.
+ * `preselect`   — one strong non-licence signal. Fills the picker, HUMAN MUST CONFIRM.
+ * `candidates`  — weak, or more than one plausible company. Shows them, assigns NOTHING.
+ * `none`        — nothing matched (or the plan set named no installer). Offer onboarding.
+ */
+export type ClientMatchDecision = "auto_assign" | "preselect" | "candidates" | "none";
+
+export interface ClientResolution {
+  decision: ClientMatchDecision;
+  /** Set ONLY for auto_assign and preselect. Always null for candidates/none. */
+  clientId: string | null;
+  /**
+   * False ONLY for auto_assign. The picker may not bind a preselected client
+   * until a human says so — auto-assigning on a guess files the job under the
+   * wrong contractor's LICENCE, which is worse than asking.
+   */
+  requiresConfirmation: boolean;
+  /** Every client with any signal, best first. Empty when nothing matched. */
+  candidates: ClientMatchCandidate[];
+  /** What the plan set said, echoed so the onboarding form can prefill from it. */
+  installer: PlanSetInstallerIdentity;
+  /** One sentence explaining the decision. Plain text — escape before innerHTML. */
+  explanation: string;
+}
+
+/**
+ * The `/api/parser/llm-extract` response. The extraction is unchanged; the
+ * resolution rides along so the parser page can fill its (still required)
+ * client picker instead of asking the coordinator to pick blind.
+ */
+export interface ParserExtractionResponse extends ParserLlmExtraction {
+  clientResolution?: ClientResolution;
+}
+
 export interface LLMProvider {
   /** LLM-assisted extraction of all project fields from raw document text (plan set, utility bill, meter photo). */
   extractProjectFields(input: {

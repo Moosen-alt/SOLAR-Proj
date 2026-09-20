@@ -679,13 +679,20 @@
                this select is the affordance, not the enforcement). Linking to an EXISTING
                project takes the PUT path and keeps its already-bound client. -->
           <label for="clientSelect">Client / Contractor <span aria-hidden="true" style="color:#c0392b">*</span></label>
-          <select id="clientSelect" required aria-required="true" onchange="loadContractorInfo(this.value);refreshClientGate()"><option value="">— Select Client —</option></select>
+          <select id="clientSelect" required aria-required="true" onchange="onClientPicked(this.value)"><option value="">— Select Client —</option></select>
         </div>
         <div class="ps-field" style="justify-content:flex-end">
           <button id="saveToSystemBtn" onclick="saveToSystem()" class="primary" style="width:100%;justify-content:center">Save to project</button>
         </div>
       </div>
       <div id="clientGateHint" class="ps-note" style="display:none">Choose the <strong>Client / Contractor</strong> above before saving a new project &mdash; the permit application carries that client&rsquo;s CCB licence and the portal logs in as them, so a project cannot be created without one.</div>
+      <!-- WHICH COMPANY IS THIS? Filled from the plan set's title block by the backend
+           resolver (backend/src/clientMatch.ts) on the parse response. An exact CCB match
+           selects the client outright; anything weaker fills the picker but leaves the
+           save gated until a human confirms, and a weak/ambiguous match selects NOTHING.
+           Everything in here is DOM-built with textContent — the text is LLM-read PDF
+           content and never reaches innerHTML. -->
+      <div id="clientMatchPanel" class="ps-note" style="display:none"></div>
       <div id="saveStatus" class="ps-status"></div>
       <!-- Portal questions: the questions THIS project's portal will ask that the plan set
            cannot answer (ownership/financing, community solar, disconnect distance...).
@@ -749,7 +756,12 @@ const state = {
   llmSnapshot:{},
   llmEvidence:[],
   llmAssist:null,
-  electricalScope:null
+  electricalScope:null,
+  // Which company the plan set points at (backend/src/clientMatch.ts), and whether a
+  // human has agreed with it. `clientConfirmed` starts true so an operator who never
+  // runs a parse is never gated by a suggestion that was never made.
+  clientResolution:null,
+  clientConfirmed:true
 };
 
 const $ = id => document.getElementById(id);
@@ -3830,11 +3842,15 @@ function applyExtraction(result, applied, opts = {}){
   });
   (result.lowConfidenceFields || []).forEach(f => state.reviewFlags.push(`Not fully sure on "${f}" — please double-check.`));
   if (result.notes) state.reviewFlags.push(`Notes: ${result.notes}`);
-  // Surface the plan-set contractor as a client-onboarding suggestion.
+  // Record WHAT THE PLAN SET SAID about the installer, verbatim. This is the evidence
+  // trail only — the decision about which client it is belongs to the resolver, whose
+  // answer lands in #clientMatchPanel. Keep this a statement of fact: two different
+  // sentences telling the coordinator what to do about the same company is how a
+  // pre-selected client and an "onboard this one" instruction end up on screen together.
   if (state.suggestedClient && state.suggestedClient.contractorCompany){
     const s = state.suggestedClient;
     const bits = [s.contractorCompany, s.contractorCcb ? `CCB ${s.contractorCcb}` : '', s.contractorElectricalLicense ? `Elec ${s.contractorElectricalLicense}` : '', s.contractorMetroCityLicense ? `Metro/City ${s.contractorMetroCityLicense}` : '', s.contractorSupervisor ? `Supervisor ${s.contractorSupervisor}` : '', s.contractorElectricianLicense ? `Electrician Lic ${s.contractorElectricianLicense}` : '', s.contractorPhone, s.contractorEmail].filter(Boolean).join(' | ');
-    state.reviewFlags.push(`Plan-set installer (onboard as client if new): ${bits}`);
+    state.reviewFlags.push(`Plan-set installer read from the title block: ${bits}`);
   }
 }
 
@@ -3890,7 +3906,14 @@ async function runLlmAssist(){
     try {
       const t = await postJson('/api/parser/llm-extract', { planText, utilityBillText, meterText, structuralLetterText, defaultState: getVal('state') || 'OR' });
       if (t.provider === 'stub'){ authOff = true; }
-      else { applyExtraction(t, applied, { vision: false }); ranAny = true; }
+      else {
+        applyExtraction(t, applied, { vision: false });
+        // WHICH COMPANY IS THIS? The backend read the title-block installer off this same
+        // response and said which client it points at. Only the TEXT pass carries it —
+        // the vision pass sees bill/meter photos, not the plan set.
+        if (t.clientResolution) await applyClientResolution(t.clientResolution);
+        ranAny = true;
+      }
     } catch (e){
       if (e.status === 502) state.reviewFlags.push(`Smart read: ${e.message}`);
       else state.reviewFlags.push(`Smart read unavailable: ${e.message}. Used the basic text scan only.`);
@@ -3933,6 +3956,10 @@ async function runParse(){
   state.llmSnapshot = {};
   state.llmEvidence = [];
   state.suggestedClient = null;
+  state.clientResolution = null;
+  state.clientConfirmed = true;
+  const matchPanel = $('clientMatchPanel');
+  if (matchPanel){ matchPanel.replaceChildren(); matchPanel.style.display = 'none'; }
   state.planFile = $('planFile').files[0] || null;
   state.ubFile = $('ubFile').files[0] || null;
   state.meterFile = $('meterPhotoFile').files[0] || null;
@@ -4068,6 +4095,9 @@ function resetAll(){
     else el.value = '';
   });
   if ($('clientSelect')) $('clientSelect').value = '';
+  state.clientResolution = null;
+  state.clientConfirmed = true;
+  renderClientMatchPanel(); // a stale "set from the plan set" note outlives its plan set otherwise
   refreshClientGate(); // a cleared client re-blocks Save, same as a never-chosen one
   document.querySelectorAll('input[type=file]').forEach(el => el.value = '');
   state.planDoc = state.ubDoc = state.meterDoc = state.structuralDoc = null;
@@ -4782,16 +4812,258 @@ async function loadSystemSelects() {
 // path and keeps the client already bound to it). Disabling the button is the affordance —
 // the backend refuses a client-less create with 400 regardless, so this can only ever be
 // ahead of the server, never instead of it.
+//
+// Round C.5 adds a SECOND reason to block: a client the plan set only SUGGESTED, on
+// anything weaker than an exact CCB licence match, is not bound until a human says so.
+// Round C's requirement is untouched — this fills the field, it never bypasses it.
 function refreshClientGate() {
   const btn = $('saveToSystemBtn');
   if (!btn) return;
   const existingId = getVal('existingProjectSelect');
   const clientId = getVal('clientSelect');
-  const blocked = !existingId && !clientId;
+  const missing = !existingId && !clientId;
+  const unconfirmed = !existingId && !!clientId && pendingClientConfirmation(clientId);
+  const blocked = missing || unconfirmed;
   btn.disabled = blocked;
-  btn.title = blocked ? 'Choose the Client / Contractor this project is filed for — a new project cannot be created without one.' : '';
+  btn.title = missing
+    ? 'Choose the Client / Contractor this project is filed for — a new project cannot be created without one.'
+    : unconfirmed
+      ? 'This client was suggested from the plan set, not matched on a CCB licence number — confirm it before saving.'
+      : '';
   const hint = $('clientGateHint');
-  if (hint) hint.style.display = blocked ? '' : 'none';
+  if (hint) hint.style.display = missing ? '' : 'none';
+}
+
+// True while the picker still holds a client that the RESOLVER put there on weaker
+// evidence than an exact CCB match, and no human has confirmed it.
+function pendingClientConfirmation(clientId) {
+  const r = state.clientResolution;
+  if (!r || state.clientConfirmed) return false;
+  return r.requiresConfirmation === true && !!r.clientId && r.clientId === clientId;
+}
+
+// A human touching the picker IS the confirmation — whether they kept the suggestion or
+// replaced it. Programmatic selection (applyClientResolution) never fires change, so this
+// can only run on a real gesture.
+function onClientPicked(clientId) {
+  state.clientConfirmed = true;
+  loadContractorInfo(clientId);
+  renderClientMatchPanel();
+  refreshClientGate();
+}
+
+// ---------------------------------------------------------------------------
+// THE COMPANY COMES OFF THE PLAN SET.
+//
+// The operator's ask: "Most plansets have the company name on the top of them… Then it
+// auto assigns them to the right company as they come in?" The backend resolver decides;
+// this only renders the decision and applies it to the picker.
+//
+//   auto_assign — exact CCB licence on exactly one client. Selected, no prompt.
+//   preselect   — one strong non-licence signal (phone, or a strong name). Selected, but
+//                 SAVE STAYS BLOCKED until a human confirms.
+//   candidates  — weak or ambiguous. NOTHING is selected; the candidates are shown.
+//   none        — nothing matched. Offer to onboard the company the plan set named.
+//
+// Every string here originates in an LLM reading a PDF. This panel is DOM-built with
+// textContent throughout; no resolution value is ever interpolated into innerHTML.
+// ---------------------------------------------------------------------------
+async function applyClientResolution(resolution) {
+  if (!resolution || typeof resolution !== 'object') return;
+  state.clientResolution = resolution;
+  let sel = $('clientSelect');
+  // A resolution that lands before the client list does would select nothing and say
+  // nothing about why. Load the list first when it is still empty.
+  if (sel && sel.options.length <= 1 && resolution.clientId) {
+    try { await loadSystemSelects(); } catch { /* the panel still explains the match */ }
+    sel = $('clientSelect');
+  }
+  const decision = resolution.decision;
+  if (sel && resolution.clientId && (decision === 'auto_assign' || decision === 'preselect')) {
+    const known = Array.from(sel.options).some(o => o.value === resolution.clientId);
+    if (known) {
+      sel.value = resolution.clientId;
+      // Only an exact CCB match binds without a human. Everything else fills the field
+      // and leaves the save gated — auto-assigning on a guess files the job under the
+      // wrong contractor's LICENCE, which is worse than asking.
+      state.clientConfirmed = resolution.requiresConfirmation === false;
+      loadContractorInfo(resolution.clientId);
+    }
+  }
+  renderClientMatchPanel();
+  refreshClientGate();
+}
+
+function renderClientMatchPanel() {
+  const panel = $('clientMatchPanel');
+  if (!panel) return;
+  const r = state.clientResolution;
+  panel.replaceChildren();
+  if (!r) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+
+  const namedAnInstaller = !!(r.installer && r.installer.companyName);
+  const head = document.createElement('strong');
+  head.textContent =
+    r.decision === 'auto_assign' ? 'Client set from the plan set'
+    : r.decision === 'preselect' ? 'Confirm the client read off the plan set'
+    : r.decision === 'candidates' ? 'More than one company could be this — nothing was assigned'
+    // "No client matches" would be a finding. When the plan set named no installer there
+    // was nothing to match, and an unknown must never read as a result.
+    : namedAnInstaller ? 'No client on file matches this plan set'
+    : 'The plan set does not name an installer';
+  panel.appendChild(head);
+
+  const why = document.createElement('div');
+  why.style.marginTop = '6px';
+  why.textContent = String(r.explanation || '');
+  panel.appendChild(why);
+
+  // The evidence, per candidate: what matched, on which field, and how well. A reviewer
+  // has to be able to disagree with the choice, which means seeing the reason for it.
+  const cands = Array.isArray(r.candidates) ? r.candidates : [];
+  if (cands.length) {
+    const list = document.createElement('ul');
+    list.style.margin = '8px 0 0 18px';
+    for (const c of cands) {
+      const li = document.createElement('li');
+      const name = document.createElement('strong');
+      name.textContent = String(c.companyName || c.clientId || '');
+      li.appendChild(name);
+      const reason = document.createElement('span');
+      reason.textContent = ` — ${String(c.reason || '')}`;
+      li.appendChild(reason);
+      if (c.clientId && c.clientId !== r.clientId) {
+        const pick = document.createElement('button');
+        pick.type = 'button';
+        pick.style.marginLeft = '8px';
+        pick.textContent = 'Use this client';
+        pick.onclick = () => { const sel = $('clientSelect'); if (sel) { sel.value = c.clientId; onClientPicked(c.clientId); } };
+        li.appendChild(pick);
+      }
+      list.appendChild(li);
+    }
+    panel.appendChild(list);
+  }
+
+  if (r.decision === 'preselect' && !state.clientConfirmed) {
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'primary';
+    confirm.style.marginTop = '10px';
+    confirm.textContent = 'Yes — this is the client';
+    confirm.onclick = () => { state.clientConfirmed = true; renderClientMatchPanel(); refreshClientGate(); };
+    panel.appendChild(confirm);
+  }
+
+  // THE NO-MATCH DOOR. Offer the extracted company as a NEW client with its details
+  // prefilled — but creating it stays an explicit human action on an editable form,
+  // because a client row carries the licence numbers every future filing is made under.
+  if (r.decision === 'none' && r.installer && r.installer.companyName) {
+    panel.appendChild(buildOnboardForm(r.installer));
+  }
+}
+
+function buildOnboardForm(installer) {
+  const wrap = document.createElement('div');
+  wrap.style.marginTop = '12px';
+  const title = document.createElement('strong');
+  title.textContent = `Onboard "${String(installer.companyName)}" as a new client?`;
+  wrap.appendChild(title);
+  const note = document.createElement('div');
+  note.style.margin = '4px 0 8px';
+  note.textContent = 'Prefilled from the plan set — check every value, especially the licence numbers, before creating. Anything blank can be completed later under Clients.';
+  wrap.appendChild(note);
+
+  const addr = splitInstallerAddress(installer.address);
+  const fields = [
+    ['companyName', 'Company name', installer.companyName || ''],
+    ['ccbLicenseNumber', 'CCB licence number', installer.ccbLicenseNumber || ''],
+    ['electricalLicenseNumber', 'Electrical contractor licence', installer.electricalLicenseNumber || ''],
+    ['metroCityLicenseNumber', 'Metro/city licence', installer.metroCityLicenseNumber || ''],
+    ['businessPhone', 'Business phone', installer.phone || ''],
+    ['businessEmail', 'Business email', installer.email || ''],
+    ['businessAddress', 'Business address', addr.street],
+    ['businessCity', 'City', addr.city],
+    ['businessState', 'State', addr.state],
+    ['businessZip', 'ZIP', addr.zip],
+    ['electricalSupervisorName', 'Supervising electrician', installer.supervisorName || ''],
+    ['electricianLicenseNumber', 'Electrician licence (personal)', installer.electricianLicenseNumber || ''],
+  ];
+  const grid = document.createElement('div');
+  grid.style.display = 'grid';
+  grid.style.gap = '8px';
+  grid.style.gridTemplateColumns = 'repeat(auto-fit, minmax(180px, 1fr))';
+  const inputs = {};
+  for (const [key, label, value] of fields) {
+    const row = document.createElement('label');
+    row.style.display = 'grid';
+    row.style.gap = '2px';
+    const cap = document.createElement('span');
+    cap.textContent = label;
+    const input = document.createElement('input');
+    input.value = value;
+    inputs[key] = input;
+    row.appendChild(cap);
+    row.appendChild(input);
+    grid.appendChild(row);
+  }
+  wrap.appendChild(grid);
+
+  const status = document.createElement('div');
+  status.className = 'ps-status';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'primary';
+  btn.style.marginTop = '10px';
+  btn.textContent = 'Create this client';
+  btn.onclick = async () => {
+    const payload = {};
+    for (const key of Object.keys(inputs)) { const v = inputs[key].value.trim(); if (v) payload[key] = v; }
+    if (!payload.companyName) { status.textContent = 'A company name is required.'; return; }
+    payload.legalBusinessName = payload.legalBusinessName || payload.companyName;
+    payload.notes = 'Onboarded from a plan-set title block at intake — verify licensing before any real submittal.';
+    btn.disabled = true;
+    status.textContent = 'Creating…';
+    try {
+      const res = await fetch('/api/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error(`create failed: ${res.status}`);
+      const created = await res.json();
+      const client = created.client || created;
+      await loadSystemSelects();
+      const sel = $('clientSelect');
+      if (sel && client && client.id) { sel.value = client.id; onClientPicked(client.id); }
+      state.clientResolution = null;
+      renderClientMatchPanel();
+      status.textContent = '';
+    } catch (e) {
+      btn.disabled = false;
+      status.textContent = `Could not create the client: ${e.message}`;
+    }
+  };
+  wrap.appendChild(btn);
+  wrap.appendChild(status);
+  return wrap;
+}
+
+// "6405 E Mill Plain, Vancouver, WA 98661" -> street/city/state/zip. Best-effort only:
+// every part lands in an editable box the operator sees before anything is created.
+function splitInstallerAddress(value) {
+  const out = { street: '', city: '', state: '', zip: '' };
+  const raw = clean(value);
+  if (!raw) return out;
+  const parts = raw.split(',').map(p => p.trim()).filter(Boolean);
+  const tail = parts.length > 1 ? parts[parts.length - 1] : '';
+  const m = tail.match(/^([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/);
+  if (m && parts.length >= 3) {
+    out.state = m[1].toUpperCase();
+    out.zip = m[2];
+    out.city = parts[parts.length - 2];
+    out.street = parts.slice(0, parts.length - 2).join(', ');
+  } else {
+    out.street = raw;
+  }
+  return out;
 }
 
 function buildSystemPayload() {
@@ -4915,6 +5187,15 @@ async function saveToSystem() {
   // by name elsewhere on this page.
   if (!existingId && !clientId) {
     if (statusEl) statusEl.textContent = '⚠ Choose the Client / Contractor this project is filed for — the permit application carries that client’s CCB licence and the portal logs in as them, so a new project cannot be created without one.';
+    refreshClientGate();
+    $('clientSelect')?.focus();
+    return;
+  }
+  // A client the PLAN SET suggested on anything weaker than an exact CCB licence match is
+  // not bound until a human agrees. Checked here as well as by the button state, for the
+  // same reason the rule above is: the button can be re-enabled from a console.
+  if (!existingId && pendingClientConfirmation(clientId)) {
+    if (statusEl) statusEl.textContent = '⚠ This client was read off the plan set, not matched on a CCB licence number. Confirm it is the right company before saving — a project filed under the wrong contractor’s licence is the costliest mistake here.';
     refreshClientGate();
     $('clientSelect')?.focus();
     return;
