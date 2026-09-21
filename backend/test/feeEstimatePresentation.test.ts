@@ -1,7 +1,7 @@
 // AN ESTIMATE MUST PRESENT AS AN ESTIMATE — the flags, not only the words.
 //
 // Measured on the live database (2026-09-14): Bren Trask's City of Portland
-// permit (88647deb…) is quoted $450.00 — source valuation_estimate, basis
+// permit (88647deb…) was quoted from the valuation heuristic — source valuation_estimate, basis
 // "Rough estimate: 1.5% of contract value … Enter the portal-calculated fee to
 // true it up" — while the fee SHEET said `known: true` and `unknowns: []`. The
 // sentence was honest; the machine-readable flags claimed nothing was unknown,
@@ -109,7 +109,10 @@ async function main(): Promise<void> {
   }
 
   // -------------------------------------------------------------------------
-  // THE PROJECTS — Trask's live shape (jobValue 30000 → 1.5% = $450.00) and
+  // THE PROJECTS — Trask's live shape. OPERATOR VALUATION FORMULA (ruling 2026-09-21):
+  // the permit valuation is 40% of contract + battery adders, so jobValue 30000 → valuation
+  // $12,000 → 1.5% heuristic = $180.00 (clamped $150–900). The contract is what the client
+  // pays; the valuation is what goes on the application. And
   // Ivy's (3.072 kW AC prescriptive microinverter roof mount → $200 + $135).
   // Round-tripped through the projects table and getProjectDetail, the reader
   // production uses — not stipulated as literals.
@@ -134,8 +137,8 @@ async function main(): Promise<void> {
   //    rest of the file is testing something else.
   // -------------------------------------------------------------------------
   const traskQuote = buildPaymentQuote(db, TRASK, "permit");
-  check("premise: Trask quotes $450.00 from the valuation heuristic (no Portland schedule held)",
-    traskQuote.permitFeeUsd === 450 && traskQuote.permitFeeSource === "valuation_estimate" && traskQuote.permitFeeConfidence === "estimated",
+  check("premise: Trask quotes $180.00 — 1.5% of the FORMULA valuation (40% of $30,000), not of the raw contract",
+    traskQuote.permitFeeUsd === 180 && traskQuote.permitFeeSource === "valuation_estimate" && traskQuote.permitFeeConfidence === "estimated",
     `${traskQuote.permitFeeUsd} / ${traskQuote.permitFeeSource} / ${traskQuote.permitFeeConfidence}`);
   const ivyQuote = buildPaymentQuote(db, IVY, "permit");
   check("premise: Ivy quotes $335.00 from the published schedule",
@@ -152,17 +155,17 @@ async function main(): Promise<void> {
   const traskNem = trask.lines.find((l) => l.track === "nem")!;
 
   check("2a. the estimated line is known:false — an estimate is not knowledge",
-    traskPermit.known === false && traskPermit.feeUsd === 450 && traskPermit.confidence === "estimated",
+    traskPermit.known === false && traskPermit.feeUsd === 180 && traskPermit.confidence === "estimated",
     `known=${traskPermit.known} fee=${traskPermit.feeUsd} conf=${traskPermit.confidence}`);
   const namedUnknown = trask.unknowns.find((u) => u.includes("City of Portland"));
   check("2b. unknowns NAMES the gap — no published fee schedule, this AHJ, this discipline",
     !!namedUnknown && /no published fee schedule/i.test(namedUnknown) && /\(permit\)/.test(namedUnknown)
-    && /ESTIMATE/.test(namedUnknown) && namedUnknown.includes("$450.00"),
+    && /ESTIMATE/.test(namedUnknown) && namedUnknown.includes("$180.00"),
     JSON.stringify(trask.unknowns));
   check("  and the honest basis sentence still travels with it",
     !!namedUnknown && /Rough estimate/i.test(namedUnknown), (namedUnknown || "").slice(0, 200));
   check("2c. MUST EXCLUDE: the estimate is KEPT — the total still states the best current answer",
-    trask.totalUsd === 650 && trask.jurisdictionFeesUsd === 450 && trask.serviceFeesUsd === 200,
+    trask.totalUsd === 380 && trask.jurisdictionFeesUsd === 180 && trask.serviceFeesUsd === 200,
     `${trask.totalUsd} / ${trask.jurisdictionFeesUsd} / ${trask.serviceFeesUsd}`);
   check("2d. the TOTAL says what it contains: totalConfidence is 'estimated'",
     trask.totalConfidence === "estimated", String(trask.totalConfidence));
@@ -175,7 +178,7 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
   const traskText = renderFeeSheet(buildFeeSheetPresentation(db, TRASK));
   check("3a. the rendered total is marked an estimate, not flat fact",
-    /PROJECT TOTAL\s+≈ \$650\.00\s+\(ESTIMATE\)/.test(traskText) && traskText.includes("INCLUDES AN ESTIMATE"),
+    /PROJECT TOTAL\s+≈ \$380\.00\s+\(ESTIMATE\)/.test(traskText) && traskText.includes("INCLUDES AN ESTIMATE"),
     traskText.split("\n").filter((l) => /PROJECT TOTAL|INCLUDES/.test(l)).join(" | "));
   check("3b. the estimate banner renders (the house PROVISIONAL pattern)",
     /1 fee\(s\) above are ESTIMATES/.test(traskText) && /STILL UNKNOWN/.test(traskText),

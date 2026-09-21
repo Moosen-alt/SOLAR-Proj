@@ -1990,10 +1990,10 @@ function statusLabel(status) {
 // `resubmit_staging`) had banners here instructing the operator on states
 // nothing could ever put a project into. Gone with them.
 const NEXT_STEPS = {
-  parsed: { tone: "info", step: "Stage 1", text: "Parsed. Click <strong>1 · Run QC</strong> to check the data for missing or wrong info." },
-  qc_failed: { tone: "warn", step: "Stage 1", text: "QC found problems. Open <strong>QC Results</strong> below, fix the flagged fields, then click <strong>1 · Run QC</strong> again." },
-  qc_passed: { tone: "info", step: "Stage 2", text: "QC passed. Click <strong>2 · Build AHJ/NEM Docs</strong>, then <strong>2 · Reviewer Gate</strong>." },
-  ready_to_stage: { tone: "info", step: "Stage 2", text: "Docs built. Click <strong>2 · Reviewer Gate</strong>, then <strong>3 · Prepare Submittal</strong>." },
+  parsed: { tone: "info", step: "Stage 1", text: "Parsed. <strong>QC runs automatically</strong> — results land here in a moment (re-run any step from Advanced if needed)." },
+  qc_failed: { tone: "warn", step: "Stage 1", text: "QC found problems. Open <strong>QC Results</strong> below, fix the flagged fields in the parser and re-save — QC re-runs automatically." },
+  qc_passed: { tone: "info", step: "Stage 2", text: "QC passed. <strong>The AHJ/NEM docs are building automatically</strong>, then the reviewer gate runs." },
+  ready_to_stage: { tone: "info", step: "Stage 2", text: "Docs built; the reviewer gate runs automatically. When it clears, <strong>Stage portals</strong> is your action — automation never files." },
   awaiting_human_submit: { tone: "warn", step: "Stage 3", text: "Staged and ready. <strong>A person must do the final submit</strong> in the portal now — automation stops here." },
   submitted: { tone: "info", step: "Stage 4", text: "Submitted. Track it with <strong>Permit Checks</strong> / <strong>NEM Checks</strong>. Paste any correction letter into <strong>Corrections</strong>." },
   correction_received: { tone: "warn", step: "Stage 3", text: "A correction came in. Open <strong>Corrections</strong> to triage it — the AI drafts a reply you review before sending." },
@@ -3907,7 +3907,7 @@ function renderHistoricalFailures() {
   const report = state.historicalReport;
   if (!report) {
     $("historicalCounts").textContent = "not run";
-    $("historicalFailures").innerHTML = `<p class="muted">Run this before submission to compare the project against prior approved, delayed, and rejected patterns.</p>`;
+    $("historicalFailures").innerHTML = `<p class="muted">Runs automatically when docs are built — compares this project against prior approved, delayed, and rejected patterns.</p>`;
     return;
   }
   const checklist = report.checklist || [];
@@ -4038,7 +4038,7 @@ function renderReviewerGate() {
   const report = state.reviewerReport;
   if (!report) {
     $("reviewerCounts").textContent = "not run";
-    $("reviewerGate").innerHTML = `<p class="muted">Run the reviewer gate to generate city-style correction comments, code anchors, and installer callouts before staging.</p>`;
+    $("reviewerGate").innerHTML = `<p class="muted">Runs automatically when docs are built — city-style correction comments, code anchors, and installer callouts, before staging.</p>`;
     return;
   }
   const findings = report.findings || [];
@@ -4631,7 +4631,7 @@ function renderApplicationDocs() {
   ensureKeelixDetailStyles();
   const pkg = state.applicationDocs;
   if (!pkg) {
-    $("applicationDocs").innerHTML = `<p class="muted">Build the AHJ docs to see required forms for this jurisdiction.</p>`;
+    $("applicationDocs").innerHTML = `<p class="muted">Builds automatically after QC passes — the required forms for this jurisdiction land here.</p>`;
     return;
   }
   const learned = pkg.learnedRequirements;

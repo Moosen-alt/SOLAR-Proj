@@ -387,7 +387,7 @@ function estimatedFee(db: AppDb, project: ProjectRecord, track: "permit" | "nem"
   const fee = round2(Math.min(max, Math.max(min, valuation.value * rate)));
   return {
     fee,
-    basis: `Rough estimate: ${Math.round(rate * 1000) / 10}% of ${valuation.method === "contract" ? "contract value" : "estimated valuation"} $${valuation.value.toLocaleString()} (clamped $${min}–$${max}). Enter the portal-calculated fee to true it up.`,
+    basis: `Rough estimate: ${Math.round(rate * 1000) / 10}% of ${valuation.method === "contract" ? "the permit valuation" : "the ESTIMATED permit valuation"} ${valuation.value.toLocaleString()} (${valuation.basis.replace(/.s*$/, "")}) (clamped $${min}–$${max}). Enter the portal-calculated fee to true it up.`,
   };
 }
 

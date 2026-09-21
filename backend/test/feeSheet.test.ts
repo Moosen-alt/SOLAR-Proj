@@ -106,7 +106,7 @@ async function main(): Promise<void> {
   // valuation_estimate: 25 kW DC x $3/W = $75,000 x 1.5% = $1,125, clamped to $900.
   const qEstimate = buildPaymentQuote(db, p1, "permit");
   check("valuation estimate wins when nothing better exists",
-    qEstimate.permitFeeSource === "valuation_estimate" && qEstimate.permitFeeUsd === 900,
+    qEstimate.permitFeeSource === "valuation_estimate" && qEstimate.permitFeeUsd === 450, // 1.5% of 40%-of-contract (operator formula 2026-09-21); was 900 when contract was conflated with valuation
     `${qEstimate.permitFeeSource} ${qEstimate.permitFeeUsd}`);
   check("estimate is labelled 'estimated', with no bracket and no citation",
     qEstimate.permitFeeConfidence === "estimated" && qEstimate.permitFeeBracketLabel === null && qEstimate.permitFeeSourceUrl === null);
@@ -251,7 +251,7 @@ async function main(): Promise<void> {
   const degradeProj = mkProject({ id: "fee-degrade", clientId: client.id, state: "OR", ahj: "City of Dallas", utility: "Pacific Power", dcKw: 12, acKw: 10 });
   const qThrew = buildPaymentQuote(db, degradeProj, "permit");
   check("a throwing schedule lookup falls back instead of breaking the quote",
-    qThrew.permitFeeSource === "valuation_estimate" && qThrew.permitFeeUsd === 540,
+    qThrew.permitFeeSource === "valuation_estimate" && qThrew.permitFeeUsd === 216, // 1.5% of 40%-of-(12kW×$3/W=$36,000)=$14,400 → $216 (operator formula 2026-09-21)
     `${qThrew.permitFeeSource} ${qThrew.permitFeeUsd}`);
   lookupThrows = false;
 
@@ -295,7 +295,7 @@ async function main(): Promise<void> {
   registerFeeScheduleLookup(null);
   const qNoModule = buildPaymentQuote(db, degradeProj, "permit");
   check("with no stored schedule the ladder is exactly as it was",
-    qNoModule.permitFeeSource === "valuation_estimate" && qNoModule.permitFeeUsd === 540,
+    qNoModule.permitFeeSource === "valuation_estimate" && qNoModule.permitFeeUsd === 216, // same $216 as the throwing-lookup case above — one formula, every degrade path
     `${qNoModule.permitFeeSource} ${qNoModule.permitFeeUsd}`);
 
   // =========================================================================

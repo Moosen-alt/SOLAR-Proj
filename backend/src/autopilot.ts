@@ -411,6 +411,24 @@ export async function runAutopilotSegmentA(
   rerunQc(db, projectId);
   addAuditLog(db, projectId, "system", "autopilot", "autopilot.segment_a_started", { tracks: pendingTracks });
 
+  // BUILD THE PACKET ON THE WAY, not just validate it. The operator's exact words
+  // (2026-09-21): autopilot "opens portals and fills them out, but nothing else gets built
+  // along the way" — segment A checked the document gates and staged, while the AHJ/NEM
+  // package itself only existed if somebody had clicked Build Docs. Same production builder
+  // the button calls; it owns the narrow qc_passed -> ready_to_stage edge and refuses it for
+  // an empty package, so a failed build reads as a gate block below, never as progress.
+  try {
+    const { getApplicationDocumentPackage } = await import("./repository");
+    const pkg = getApplicationDocumentPackage(db, projectId);
+    logger.info("autopilot", "AHJ/NEM document package built en route", { project: projectId, docs: pkg.docs.length });
+  } catch (err) {
+    // A build failure is not a staging failure yet — prepareSubmission's document gates
+    // decide that, with their structured blockers the UI already renders.
+    logger.warn("autopilot", "document package build failed en route; the staging gates will rule", {
+      project: projectId, err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // prepareSubmission is imported lazily to avoid a module cycle (repository imports
   // are heavy and this module is imported by the job worker).
   const { prepareSubmission } = await import("./repository");

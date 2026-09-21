@@ -146,6 +146,7 @@ import {
 } from "./repository";
 import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
 import { ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
+import { enqueueStageSteps } from "./autoStageSteps";
 import type { ClientResolution, ParserExtractionResponse, SubmittalTrackType } from "../../shared/src/types";
 
 const app = express();
@@ -448,7 +449,12 @@ app.post("/api/projects", (req, res) => {
   if (!client) {
     throw new HttpError(400, `No client "${clientId}" exists here. Pick the client this project is filed for from the Client / Contractor list, or create it first under Clients.`, { needsClient: true });
   }
-  res.status(201).json(createProject(db, payload, scope.orgId));
+  const created = createProject(db, payload, scope.orgId);
+  // THE LOCAL PIPELINE RUNS ITSELF from here (operator ruling 2026-09-21): a freshly parsed
+  // project queues QC -> doc package -> reviewer gate automatically, stopping cold at
+  // ready_to_stage. Staging is still a person's action. After the response, never blocking it.
+  try { enqueueStageSteps(db, created.project.id); } catch { /* the chain is a convenience, not the save */ }
+  res.status(201).json(created);
 });
 
 app.put("/api/projects/:id", (req, res) => {
@@ -456,7 +462,12 @@ app.put("/api/projects/:id", (req, res) => {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new HttpError(400, "Project payload must be an object.");
   }
-  res.json(updateProject(db, String(req.params.id), payload));
+  const updated = updateProject(db, String(req.params.id), payload);
+  // A re-save from the parser is the repair door for a qc_failed project — the operator fixed
+  // the intake, so the chain gets a fresh start. Guarded inside: only statuses the chain owns
+  // (parsed/qc_passed/ready_to_stage) do anything; a submitted project no-ops.
+  try { enqueueStageSteps(db, String(req.params.id)); } catch { /* ditto */ }
+  res.json(updated);
 });
 
 app.get("/api/projects", (req, res) => {

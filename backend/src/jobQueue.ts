@@ -22,7 +22,11 @@ export type JobType =
   | "code_research"
   | "fee_research"
   | "run_triage"
-  | "correction_triage";
+  | "correction_triage"
+  // The LOCAL pipeline steps (QC, doc package, reviewer gate, historical check) running
+  // automatically when a project enters their stage. NEVER a portal effect: the chain in
+  // autoStageSteps.ts stops cold at ready_to_stage, and staging stays a human gesture.
+  | "stage_step";
 
 export type JobStatus = "pending" | "running" | "done" | "failed";
 
@@ -617,6 +621,10 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       result = await runMboxImportJob(db, job);
     } else if (job.jobType === "folder_scan") {
       result = await runFolderScanJob(db, job);
+    } else if (job.jobType === "stage_step") {
+      const { processStageStep } = await import("./autoStageSteps");
+      const step = await processStageStep(db, String(job.projectId));
+      result = { ran: step.ran, stoppedAt: step.stoppedAt, message: step.reason };
     } else if (job.jobType === "autopilot") {
       const { runAutopilotSegmentA } = await import("./autopilot");
       const track = (job.payload.track as string | undefined) || undefined;

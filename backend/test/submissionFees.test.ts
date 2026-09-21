@@ -43,12 +43,13 @@ async function main(): Promise<void> {
     systemSizeDcKw: 10.12, parserSnapshot: {},
   }) as never;
 
-  // 1. Quote: valuation estimate (10.12 kW × $3/W = $30,360 × 1.5% = $455.40) + $175 fee.
+  // 1. Quote: valuation estimate — operator formula (2026-09-21): valuation = 40% of the
+  // per-watt contract estimate (10.12 kW × $3/W = $30,360 → $12,144), then 1.5% = $182.16.
   const q1 = buildPaymentQuote(db, project("proj-1"), "permit");
   check("quote required for per-submission client", q1.required === true);
-  check("permit fee from valuation estimate", q1.permitFeeSource === "valuation_estimate" && q1.permitFeeUsd === 455.4, JSON.stringify(q1.permitFeeUsd));
+  check("permit fee from valuation estimate", q1.permitFeeSource === "valuation_estimate" && q1.permitFeeUsd === 182.16, JSON.stringify(q1.permitFeeUsd));
   check("client service fee used over env default", q1.serviceFeeUsd === 175);
-  check("total = permit + service", q1.totalUsd === 630.4, JSON.stringify(q1.totalUsd));
+  check("total = permit + service", q1.totalUsd === 357.16, JSON.stringify(q1.totalUsd));
 
   // 2. Gate blocks unpaid, then clears on mark-paid with the REAL portal fee.
   let blocked = false;

@@ -9,14 +9,37 @@ import type { ParserPayload } from "../../shared/src/types";
 // configurable $/watt) so a submittal always has a usable figure. The estimate
 // is clearly labelled and the client can override it with the true contract value.
 //
-// NOTE: the valuation METHOD (full contract, contract × 0.4 per OAR 918-050-0180,
-// racking + labor, prescriptive flat fee, etc.) varies by installer and AHJ, so it
-// is NOT computed here — the operator decides it and supplies the final number as
-// jobValue. The bot just places that figure on the application unchanged.
+// THE OPERATOR'S OWN FORMULA (ruling 2026-09-21, from their working spreadsheet):
 //
-// Per-watt rate is configurable via PERMIT_VALUATION_PER_WATT (default $3.00/W).
+//     valuation = contract × 0.4  +  battery adder × battery quantity
+//     adder: AP Systems $7,000 · Tesla $8,500 · anything else $0
+//
+// verbatim from the sheet: `=A2*$F$1 + IF(B2="AP Systems", 7000, IF(B2="Tesla", 8500, 0)) * C2`
+// with F1 = 0.4 — which is also the OAR 918-050-0180 fraction this file's old note only
+// gestured at. Checked against their live rows: $25,232.40 × 0.4 = $10,092.96, the sheet's own
+// D2. The contract price is what the CLIENT pays; the valuation is what goes on the permit
+// application, and the two were being conflated — jobValue was placed on applications
+// unchanged, overstating the valuation 2.5× and with it every valuation-laddered fee.
+//
+// Rates are env-tunable, defaults are the operator's sheet:
+//   PERMIT_VALUATION_CONTRACT_FACTOR (default 0.4)  ·  PERMIT_VALUATION_PER_WATT ($3.00/W,
+// used to ESTIMATE the contract when none is on file — the formula then applies on top).
 
 const DEFAULT_PER_WATT_RATE = 3.0;
+const DEFAULT_CONTRACT_FACTOR = 0.4;
+
+/** Battery adders by manufacturer, from the operator's sheet. Matching is lenient on
+ *  spelling ("APSystems", "AP Systems", "Tesla Energy") and strict on everything else:
+ *  an unknown battery make adds $0 rather than a guessed adder. */
+const BATTERY_ADDERS: { pattern: RegExp; adderUsd: number; label: string }[] = [
+  { pattern: /\bap\s*systems?\b|\bapsystems?\b/i, adderUsd: 7000, label: "AP Systems" },
+  { pattern: /\btesla\b/i, adderUsd: 8500, label: "Tesla" },
+];
+
+export function valuationContractFactor(): number {
+  const raw = Number(process.env.PERMIT_VALUATION_CONTRACT_FACTOR);
+  return Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : DEFAULT_CONTRACT_FACTOR;
+}
 
 export type ValuationMethod = "contract" | "per_watt_estimate" | "unavailable";
 
@@ -52,30 +75,46 @@ export function resolveValuation(
   systemSizeDcKw: number | null | undefined,
 ): ValuationResult {
   const rate = valuationPerWattRate();
+  const factor = valuationContractFactor();
   const snap = snapshot || {};
 
-  // 1. Client-provided contract / installed cost — the authoritative number.
+  // The battery half of the formula, shared by both branches. Quantity defaults to 1 when a
+  // battery model is on file with no count — a recorded battery with a zeroed adder would be
+  // the formula quietly disagreeing with the sheet it came from.
+  const batteryMake = String((snap as Record<string, unknown>).batteryManufacturer ?? (snap as Record<string, unknown>).batteryMake ?? "").trim();
+  const batteryModel = String((snap as Record<string, unknown>).batteryModel ?? "").trim();
+  const rawQty = Number(String((snap as Record<string, unknown>).batteryQuantity ?? "").replace(/\D/g, ""));
+  const batteryQty = Number.isFinite(rawQty) && rawQty > 0 ? rawQty : (batteryMake || batteryModel ? 1 : 0);
+  const adder = BATTERY_ADDERS.find((a) => a.pattern.test(`${batteryMake} ${batteryModel}`));
+  const batteryUsd = adder && batteryQty > 0 ? adder.adderUsd * batteryQty : 0;
+  const batteryNote = batteryUsd > 0 ? ` + ${batteryQty} × $${adder!.adderUsd.toLocaleString()} (${adder!.label} battery)` : "";
+
+  // 1. Client-provided contract / installed cost — the authoritative INPUT. The valuation on
+  //    the application is the operator's formula OF it, never the contract itself.
   const contract = parseMoney(snap.jobValue);
   if (contract != null) {
+    const value = Math.round((contract * factor + batteryUsd) * 100) / 100;
     return {
-      value: contract,
+      value,
       method: "contract",
       perWattRate: rate,
-      basis: "Client-provided contract / installed cost.",
+      basis: `${Math.round(factor * 100)}% of contract $${contract.toLocaleString()}${batteryNote} (operator valuation formula).`,
     };
   }
 
-  // 2. Per-watt estimate fallback from DC system size.
+  // 2. Per-watt CONTRACT estimate fallback, with the same formula applied on top — the
+  //    per-watt rate approximates what the client pays, not what the permit is valued at.
   const dcKw = typeof systemSizeDcKw === "number" && Number.isFinite(systemSizeDcKw)
     ? systemSizeDcKw
     : parseMoney(snap.systemSizeDcKw);
   if (dcKw != null && dcKw > 0) {
-    const estimate = Math.round(dcKw * 1000 * rate);
+    const contractEstimate = Math.round(dcKw * 1000 * rate);
+    const value = Math.round((contractEstimate * factor + batteryUsd) * 100) / 100;
     return {
-      value: estimate,
+      value,
       method: "per_watt_estimate",
       perWattRate: rate,
-      basis: `Estimated at $${rate.toFixed(2)}/W × ${dcKw} kW DC. Confirm against the actual contract value before final submit.`,
+      basis: `${Math.round(factor * 100)}% of an ESTIMATED contract ($${rate.toFixed(2)}/W × ${dcKw} kW DC ≈ $${contractEstimate.toLocaleString()})${batteryNote}. Confirm against the actual contract value before final submit.`,
     };
   }
 

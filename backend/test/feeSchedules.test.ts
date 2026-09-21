@@ -229,7 +229,11 @@ async function main(): Promise<void> {
     })) },
   );
   const albany = feeForProject(db, { state: "OR", ahj: "City of Albany", utility: "PGE", systemSizeAcKw: 10, systemSizeDcKw: 10.12, parserSnapshot: {} } as never, "permit");
-  check("valuation schedule resolves from the project's valuation", albany?.feeUsd === 450, JSON.stringify(albany));
+  // OPERATOR FORMULA (2026-09-21): the project's 10.12 kW per-watt contract estimate is
+  // $30,360, and the PERMIT VALUATION is 40% of it = $12,144 — which lands in the $0–25,000
+  // bracket. The old expectation of $450 (the over-25k bracket) was the contract-conflated-
+  // with-valuation bug this formula fixed, proven here on bracket SELECTION, not just a total.
+  check("valuation schedule resolves from the project's FORMULA valuation (40% of contract)", albany?.feeUsd === 200, JSON.stringify(albany?.feeUsd));
   const noSize = feeForProject(db, { state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", systemSizeAcKw: null, systemSizeDcKw: null, parserSnapshot: {} } as never, "permit");
   check("size-bracketed schedule with no system size reports unresolved, not $0", noSize !== null && noSize.feeUsd === null && noSize.reason.includes("system size"), JSON.stringify(noSize));
 
