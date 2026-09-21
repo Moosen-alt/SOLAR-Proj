@@ -3335,41 +3335,34 @@ function evaluateSchedule(
       return {feeUsd:null,bracketLabel,bracketQuote,corroboration,
         reason:'Electrical plan review is required by the recorded project facts. Its additional charge must be resolved before quoting a grand total.'};
     }
+    // A LADDER WE CAN READ IS NOT AN UNKNOWN. Portland's valuation table prints the base, the
+    // step and the per-step rate in the bracket's own wording; when all three are there and the
+    // base agrees with this bracket's own fee, the formula is arithmetic, not a mystery.
+    //
+    // WHAT THIS MUST NOT DO IS RETURN HERE. The first version of this computed the amount and
+    // returned it on the spot, skipping everything below — the evidence/amount conflict check,
+    // the bracket's surcharges, and the FILING's ancillary charges, whose percentages are
+    // functions OF the permit fee. Measured on Trask: Portland's 65% Plan Review/Process Fee is
+    // an UNCONDITIONAL charge on his structural permit, $384.85 of real money, and his sheet
+    // showed no charges block at all and no sign that anything was missing. So the ladder only
+    // replaces the bracket's AMOUNT, and every rule below runs on it unchanged.
+    let ladderFeeUsd: number | null = null;
     if (bracketDescribesFormula(b.label)) {
-      // A LADDER WE CAN READ IS NOT AN UNKNOWN. Portland's valuation table prints the base, the
-      // step and the per-step rate in the bracket's own wording; when all three are there and
-      // the base agrees with this bracket's own fee, the formula is arithmetic, not a mystery.
       const ladder = schedule.basis === "valuation" ? parseValuationLadder(b) : null;
-      if (ladder) {
-        const computed = evaluateValuationLadder(ladder, inputs.valuationUsd);
-        if (computed != null) {
-          const over = Math.max(0, (inputs.valuationUsd ?? 0) - ladder.aboveUsd);
-          const steps = ladder.roundUp ? Math.ceil(over / ladder.stepUsd) : Math.floor(over / ladder.stepUsd);
-          return {
-            feeUsd: computed,
-            baseFeeUsd: computed,
-            fromEstimatedValuation: inputs.valuationIsEstimate === true,
-            bracketLabel,
-            bracketQuote,
-            corroboration,
-            reason: `$${ladder.baseUsd.toFixed(2)} for the first $${ladder.aboveUsd.toLocaleString("en-US")}`
-              + (steps > 0
-                ? `, plus ${steps} x $${ladder.ratePerStepUsd.toFixed(2)} for $${(steps * ladder.stepUsd).toLocaleString("en-US")} of valuation above it`
-                  + `${ladder.roundUp ? " (part steps charged whole, \"or fraction thereof\")" : ""}`
-                : "")
-              + `, on ${inputs.valuationIsEstimate ? "an ESTIMATED valuation" : "a valuation"} of `
-              + `$${Number(inputs.valuationUsd).toLocaleString("en-US")} = $${computed.toFixed(2)}. `
-              + (inputs.valuationIsEstimate
-                // A LADDER IS ONLY AS GOOD AS THE VALUATION UNDER IT. Every step is $10.26 of real
-                // money; walking one on a per-watt guess produces a figure accurate to the cent and
-                // wrong by however far the guess is off. Say which kind of number this is.
-                ? `THE VALUATION IS A PER-WATT ESTIMATE, not a contract figure — so this fee is computed `
-                  + `exactly from a number that was guessed. Record the job valuation to make it real. `
-                : "")
-              + `The schedule itself is SEEDED — check it against the jurisdiction's published table `
-              + `before quoting a customer.`,
-          };
-        }
+      if (!ladder) {
+        return {
+          feeUsd: null,
+          bracketLabel,
+          bracketQuote,
+          corroboration,
+          reason: `This bracket is a FORMULA, not a flat fee — "${String(b.label ?? "").slice(0, 120)}". The stored `
+            + `$${b.feeUsd.toFixed(2)} is one part of it (a base, a floor or a per-unit rate, and schedules differ), `
+            + `so quoting it would under-state the real fee. Read the published schedule and enter the portal's own `
+            + `figure once you have it.`,
+        };
+      }
+      const computed = evaluateValuationLadder(ladder, inputs.valuationUsd);
+      if (computed == null) {
         // The formula is known and the valuation is not. THIS is the case an "enter the job
         // valuation" affordance actually resolves — say so, instead of the generic refusal.
         return {
@@ -3382,16 +3375,7 @@ function evaluateSchedule(
             + `carries NO JOB VALUATION, so there is nothing to walk the ladder with. Record the job valuation and this resolves itself.`,
         };
       }
-      return {
-        feeUsd: null,
-        bracketLabel,
-        bracketQuote,
-        corroboration,
-        reason: `This bracket is a FORMULA, not a flat fee — "${String(b.label ?? "").slice(0, 120)}". The stored `
-          + `$${b.feeUsd.toFixed(2)} is one part of it (a base, a floor or a per-unit rate, and schedules differ), `
-          + `so quoting it would under-state the real fee. Read the published schedule and enter the portal's own `
-          + `figure once you have it.`,
-      };
+      ladderFeeUsd = computed;
     }
 
     // THE EVIDENCE AND THE CHARGE MUST BE THE SAME MONEY.
@@ -3431,8 +3415,16 @@ function evaluateSchedule(
       };
     }
 
-    const stateSurchargeUsd = b.stateSurcharge ? round2(b.feeUsd * b.stateSurcharge.percent / 100) : undefined;
-    const communitySurchargeUsd = b.communitySurcharge ? round2(b.feeUsd * b.communitySurcharge.percent / 100) : undefined;
+    // THE BRACKET, WITH THE LADDER'S ANSWER IN PLACE OF ITS PRINTED BASE. Everything from here
+    // down — surcharges, the permit charge, the filing's percentage charges — is a function of
+    // "the permit fee", and for a ladder bracket the permit fee is what the ladder computed, not
+    // the base rung it started from. The conflict check above deliberately stayed on `b`: the
+    // stored evidence names the BASE ($540.78), and testing the computed $592.08 against it
+    // would manufacture a disagreement where the schedule agrees with itself.
+    const eb: FeeBracket = ladderFeeUsd == null ? b : { ...b, feeUsd: ladderFeeUsd };
+
+    const stateSurchargeUsd = eb.stateSurcharge ? round2(eb.feeUsd * eb.stateSurcharge.percent / 100) : undefined;
+    const communitySurchargeUsd = eb.communitySurcharge ? round2(eb.feeUsd * eb.communitySurcharge.percent / 100) : undefined;
     // THE PERMIT LINE'S OWN AMOUNT IS UNCHANGED, and that is deliberate: the
     // ancillary charges are levied on the FILING, not on this permit, and a form
     // field or a portal quantity that asks for "the electrical permit fee" must
@@ -3440,12 +3432,13 @@ function evaluateSchedule(
     // where the filing's total is made, and they travel on `charges` so the
     // screens can itemise both halves without either of them moving.
     const charges = [
-      ...permitCharges(schedule, b, bracketLabel, bracketQuote, stateSurchargeUsd, communitySurchargeUsd),
-      ...ancillaryCharges(schedule, b, inputs),
+      ...permitCharges(schedule, eb, bracketLabel, bracketQuote, stateSurchargeUsd, communitySurchargeUsd),
+      ...ancillaryCharges(schedule, eb, inputs),
     ];
-    return { feeUsd: round2(b.feeUsd + (stateSurchargeUsd ?? 0) + (communitySurchargeUsd ?? 0)), baseFeeUsd: feeIncludesSurcharges(`${b.label ?? ''} ${bracketQuote}`) ? undefined : b.feeUsd, stateSurchargeUsd, communitySurchargeUsd, charges,
+    return { feeUsd: round2(eb.feeUsd + (stateSurchargeUsd ?? 0) + (communitySurchargeUsd ?? 0)), baseFeeUsd: feeIncludesSurcharges(`${b.label ?? ''} ${bracketQuote}`) ? undefined : eb.feeUsd, stateSurchargeUsd, communitySurchargeUsd, charges,
+      fromEstimatedValuation: ladderFeeUsd != null && inputs.valuationIsEstimate === true,
       bracketLabel, bracketQuote: stateSurchargeUsd == null ? bracketQuote
-        : `${bracketQuote}; ${b.stateSurcharge!.quote} (+$${stateSurchargeUsd.toFixed(2)})${communitySurchargeUsd == null ? '' : `; ${b.communitySurcharge!.quote} (+$${communitySurchargeUsd.toFixed(2)})`}.`, corroboration, reason: "" };
+        : `${bracketQuote}; ${eb.stateSurcharge!.quote} (+$${stateSurchargeUsd.toFixed(2)})${communitySurchargeUsd == null ? '' : `; ${eb.communitySurcharge!.quote} (+$${communitySurchargeUsd.toFixed(2)})`}.`, corroboration, reason: "" };
   };
 
   // A DISPUTED FEE IS REFUSED BY ITS OWN BRANCH, AND IT IS THE FIRST ONE.
