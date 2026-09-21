@@ -2557,6 +2557,10 @@ interface FeeEvalInputs {
   kw: number | null;
   kwSource: string;
   valuationUsd: number | null;
+  /** True when `valuationUsd` is a per-watt ESTIMATE rather than a contract figure. A ladder
+   *  walked on an estimate produces a number to the cent that is only as good as the guess
+   *  underneath it, and a fee that looks computed must not hide a valuation that was not. */
+  valuationIsEstimate?: boolean;
   permitPath: FeePathInput;
 }
 
@@ -2663,12 +2667,12 @@ export function feeLinesForProject(
     const hop = followCollectedBy(db, row);
     const schedule = hop.record;
     const hoppedFrom = hop.collectedBy ? (track === "nem" ? row.utility : row.ahj) : "";
-    const valuationUsd = inputs
-      ? inputs.valuationUsd
-      : (schedule.basis === "valuation" ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value : null);
+    const valuation = inputs || schedule.basis !== "valuation" ? null : resolveValuation(project.parserSnapshot, project.systemSizeDcKw);
+    const valuationUsd = inputs ? inputs.valuationUsd : (valuation ? valuation.value : null);
+    const valuationIsEstimate = inputs ? inputs.valuationIsEstimate === true : valuation?.method !== "contract";
     const evaluated: ReturnType<typeof evaluateSchedule> = hop.unresolved
       ? { feeUsd: null, bracketLabel: "", bracketQuote: "", corroboration: undefined, reason: hop.unresolved }
-      : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot) });
+      : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, valuationIsEstimate, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot) });
     lines.push({
       discipline: row.discipline,
       authority: (track === "nem" ? schedule.utility : schedule.ahj) || (track === "nem" ? row.utility : row.ahj),
@@ -2767,6 +2771,88 @@ const FORMULA_LABEL =
 
 export function bracketDescribesFormula(label: string | undefined): boolean {
   return FORMULA_LABEL.test(String(label ?? "")) || /\bno\s*[-–]?\s*additional charge\b/i.test(String(label ?? ""));
+}
+
+/** A valuation ladder read out of a bracket's own printed wording. */
+export interface ValuationLadder {
+  /** The flat amount that covers everything up to `aboveUsd`. */
+  baseUsd: number;
+  /** Steps are counted on valuation ABOVE this figure. */
+  aboveUsd: number;
+  /** Dollars of valuation in one step — Portland uses $100 low down and $1,000 higher up. */
+  stepUsd: number;
+  /** Dollars added per step. */
+  ratePerStepUsd: number;
+  /** "or fraction thereof": a part step counts as a whole one. */
+  roundUp: boolean;
+  /** The clause this was read from, verbatim. A computed number must name its sentence. */
+  quote: string;
+}
+
+/**
+ * A FORMULA IS STORED AS A FORMULA, THE SAME WAY A PERCENTAGE IS STORED AS A PERCENTAGE.
+ *
+ * Portland's residential structural permit is a valuation LADDER, and the whole ladder is
+ * printed in the bracket's own label:
+ *
+ *   "$25,001 - $50,000 Fee for the first $25,000 | $ 540.78 ... For each additional $1,000
+ *    or fraction thereof up to and including $50,000 | $ | 10.26"
+ *
+ * Until now the evaluator saw "per each additional" and refused outright — correctly, because
+ * quoting the stored $540.78 alone under-states a $30,000 job by $51.30 and a $49,000 job by
+ * $246. But refusing is only right while the rest of the sentence is unread. It is all there.
+ *
+ * Read at evaluation time from the label rather than stored as a new column: the label is a
+ * string the bracket already carries, so deriving from it adds no field to migrate and — more
+ * importantly — no new place for an untrusted writer to put a number. `corroboration` and
+ * `ancillaryCharges` are stripped on the untrusted read path precisely because they must come
+ * from retrieved bytes; a ladder derived from the quote inherits that provenance for free.
+ *
+ * Returns null unless the whole ladder is present AND the base it names is the bracket's own
+ * `feeUsd`. A label that says "for the first $25,000 | $ 540.78" beside a bracket charging
+ * something else is two readings of one schedule that disagree, which is the condition this
+ * file already refuses to quote through (see FEE_CONFLICT_MARKER) — not a licence to guess.
+ */
+export function parseValuationLadder(b: FeeBracket): ValuationLadder | null {
+  const label = String(b.label ?? "");
+  if (!label) return null;
+
+  const num = (s: string): number => Number(s.replace(/,/g, ""));
+
+  // "Fee for the first $25,000 | $ 540.78"  ·  "Fee for the first $500 | $ 167.00"
+  const base = /Fee\s+for\s+the\s+first\s*\$\s*([\d,]+(?:\.\d+)?)\s*\|?\s*\$\s*([\d,]+(?:\.\d+)?)/i.exec(label);
+  if (!base) return null;
+  const aboveUsd = num(base[1]);
+  const baseUsd = num(base[2]);
+
+  // "For each additional $1,000 or fraction thereof up to and including $50,000 | $ | 10.26"
+  const step = /For\s+each\s+additional\s*\$\s*([\d,]+(?:\.\d+)?)([^|]*)\|\s*\$\s*\|\s*([\d,]+(?:\.\d+)?)/i.exec(label);
+  if (!step) return null;
+  const stepUsd = num(step[1]);
+  const ratePerStepUsd = num(step[3]);
+  const roundUp = /fraction\s+thereof/i.test(step[2]);
+
+  if (!Number.isFinite(aboveUsd) || !Number.isFinite(baseUsd) || !Number.isFinite(stepUsd) || !Number.isFinite(ratePerStepUsd)) return null;
+  if (stepUsd <= 0 || ratePerStepUsd < 0 || aboveUsd < 0) return null;
+
+  // THE LADDER AND THE BRACKET MUST BE THE SAME MONEY. Sub-cent tolerance only.
+  if (Math.abs(baseUsd - b.feeUsd) > 0.005) return null;
+
+  return { baseUsd, aboveUsd, stepUsd, ratePerStepUsd, roundUp, quote: label };
+}
+
+/** Walk one ladder for a valuation. Returns null when the valuation is not known. */
+export function evaluateValuationLadder(ladder: ValuationLadder, valuationUsd: number | null): number | null {
+  if (valuationUsd == null || !Number.isFinite(valuationUsd)) return null;
+  const over = valuationUsd - ladder.aboveUsd;
+  if (over <= 0) return round2(ladder.baseUsd);
+  const rawSteps = over / ladder.stepUsd;
+  // "or fraction thereof" is the jurisdiction saying a part step is charged as a whole one.
+  // Without those words a part step is not charged at all. The difference on Trask's $30,000
+  // job is nothing; on a $30,001 job it is one whole $10.26 step, which is why it is read
+  // from the wording and not assumed.
+  const steps = ladder.roundUp ? Math.ceil(rawSteps) : Math.floor(rawSteps);
+  return round2(ladder.baseUsd + steps * ladder.ratePerStepUsd);
 }
 
 function feeIncludesSurcharges(label: string): boolean {
@@ -3201,7 +3287,7 @@ function ancillaryCharges(
  *  evaluations would drift, and the boundary is the whole point of the table. */
 function evaluateSchedule(
   schedule: FeeScheduleRecord,
-  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; track?: FeeTrack; permitPath?: FeePathInput; electricalReviewRequired?: boolean },
+  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; valuationIsEstimate?: boolean; track?: FeeTrack; permitPath?: FeePathInput; electricalReviewRequired?: boolean },
 ): { feeUsd: number | null; baseFeeUsd?: number; stateSurchargeUsd?: number; communitySurchargeUsd?: number; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string; charges?: FeeChargeBreakdown[] } {
   const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", bracketQuote: "", reason });
   const hit = (b: FeeBracket) => {
@@ -3213,6 +3299,51 @@ function evaluateSchedule(
         reason:'Electrical plan review is required by the recorded project facts. Its additional charge must be resolved before quoting a grand total.'};
     }
     if (bracketDescribesFormula(b.label)) {
+      // A LADDER WE CAN READ IS NOT AN UNKNOWN. Portland's valuation table prints the base, the
+      // step and the per-step rate in the bracket's own wording; when all three are there and
+      // the base agrees with this bracket's own fee, the formula is arithmetic, not a mystery.
+      const ladder = schedule.basis === "valuation" ? parseValuationLadder(b) : null;
+      if (ladder) {
+        const computed = evaluateValuationLadder(ladder, inputs.valuationUsd);
+        if (computed != null) {
+          const over = Math.max(0, (inputs.valuationUsd ?? 0) - ladder.aboveUsd);
+          const steps = ladder.roundUp ? Math.ceil(over / ladder.stepUsd) : Math.floor(over / ladder.stepUsd);
+          return {
+            feeUsd: computed,
+            baseFeeUsd: computed,
+            bracketLabel,
+            bracketQuote,
+            corroboration,
+            reason: `$${ladder.baseUsd.toFixed(2)} for the first $${ladder.aboveUsd.toLocaleString("en-US")}`
+              + (steps > 0
+                ? `, plus ${steps} x $${ladder.ratePerStepUsd.toFixed(2)} for $${(steps * ladder.stepUsd).toLocaleString("en-US")} of valuation above it`
+                  + `${ladder.roundUp ? " (part steps charged whole, \"or fraction thereof\")" : ""}`
+                : "")
+              + `, on ${inputs.valuationIsEstimate ? "an ESTIMATED valuation" : "a valuation"} of `
+              + `$${Number(inputs.valuationUsd).toLocaleString("en-US")} = $${computed.toFixed(2)}. `
+              + (inputs.valuationIsEstimate
+                // A LADDER IS ONLY AS GOOD AS THE VALUATION UNDER IT. Every step is $10.26 of real
+                // money; walking one on a per-watt guess produces a figure accurate to the cent and
+                // wrong by however far the guess is off. Say which kind of number this is.
+                ? `THE VALUATION IS A PER-WATT ESTIMATE, not a contract figure — so this fee is computed `
+                  + `exactly from a number that was guessed. Record the job valuation to make it real. `
+                : "")
+              + `The schedule itself is SEEDED — check it against the jurisdiction's published table `
+              + `before quoting a customer.`,
+          };
+        }
+        // The formula is known and the valuation is not. THIS is the case an "enter the job
+        // valuation" affordance actually resolves — say so, instead of the generic refusal.
+        return {
+          feeUsd: null,
+          bracketLabel,
+          bracketQuote,
+          corroboration,
+          reason: `This fee is $${ladder.baseUsd.toFixed(2)} for the first $${ladder.aboveUsd.toLocaleString("en-US")} of valuation `
+            + `plus $${ladder.ratePerStepUsd.toFixed(2)} per $${ladder.stepUsd.toLocaleString("en-US")} above it — but this project `
+            + `carries NO JOB VALUATION, so there is nothing to walk the ladder with. Record the job valuation and this resolves itself.`,
+        };
+      }
       return {
         feeUsd: null,
         bracketLabel,
@@ -3411,12 +3542,12 @@ function lineFor(
 ): FeeScheduleLine {
   const { kw, which } = inputs ? { kw: inputs.kw, which: inputs.kwSource } : systemRatingKw(project);
   // Only pay for the valuation walk when the schedule actually keys on it.
-  const valuationUsd = inputs
-    ? inputs.valuationUsd
-    : (schedule.basis === "valuation" ? resolveValuation(project.parserSnapshot, project.systemSizeDcKw).value : null);
+  const valuation = inputs || schedule.basis !== "valuation" ? null : resolveValuation(project.parserSnapshot, project.systemSizeDcKw);
+  const valuationUsd = inputs ? inputs.valuationUsd : (valuation ? valuation.value : null);
+  const valuationIsEstimate = inputs ? inputs.valuationIsEstimate === true : valuation?.method !== "contract";
   // Same ternary, same reason as feeLinesForProject — see the note there.
   const permitPath: FeePathInput = inputs ? inputs.permitPath : pathForProject(project, track);
-  const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot) });
+  const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, valuationIsEstimate, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot) });
   return {
     discipline: schedule.discipline,
     authority: track === "nem" ? schedule.utility : schedule.ahj,
