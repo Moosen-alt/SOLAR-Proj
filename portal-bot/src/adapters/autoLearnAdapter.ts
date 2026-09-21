@@ -5279,7 +5279,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             // reported, because filling the wrong control is worse than leaving one blank.
             const before = fields.length;
             const keyOf = (f: { label?: string; section?: string; fieldType?: string }): string =>
-              `${String(f.section ?? "").trim()} ${String(f.label ?? "").trim()} ${String(f.fieldType ?? "")}`;
+              `${String(f.section ?? "").trim()}\u0000${String(f.label ?? "").trim()}\u0000${String(f.fieldType ?? "")}`;
             const counts = new Map<string, number>();
             for (const f of refreshed) counts.set(keyOf(f), (counts.get(keyOf(f)) ?? 0) + 1);
             const remapped: Array<{ selectorIndex: number; value: string }> = [];

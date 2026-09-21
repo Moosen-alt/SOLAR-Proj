@@ -5,7 +5,7 @@ for the hard rules; this file is the running state.
 
 ## ROUND C.5 — THE PLAN SET NAMES THE COMPANY, AND BACKUPS HAD BEEN EATING BACKUPS (2026-09-20)
 
-**Commit `183b4aa`. Pre-D verification: typecheck clean, backend chain 143/143 (last banner
+**Commit `183b4aa`. Pre-D verification: typecheck clean, backend chain 142/142 (last banner
 `backupRotation: all checks passed`), `npm run smoke` green.**
 
 ### The company now comes off the plan set

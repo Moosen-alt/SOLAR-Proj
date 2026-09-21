@@ -864,7 +864,7 @@ function stripModuleMakeFromModel(raw=''){
   s = s.replace(/^ZNSHINE\s+/i,'');
   s = s.replace(/^ZN\s*SHINE\s+/i,'');
   s = s.replace(/^QCELLS\s+/i,'');
-  s = s.replace(/\s*-\s*\d{3,4}\s*W(?:ATT)?/i,'');
+  s = s.replace(/\s*-\s*\d{3,4}\s*W(?:ATT)?\b/i,'');
   return normalizeModelHyphens(s).toUpperCase();
 }
 
