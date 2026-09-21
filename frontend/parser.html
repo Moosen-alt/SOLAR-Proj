@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 22.2v-6.6' stroke='%2316a34a' stroke-width='2.3' stroke-linecap='round'/%3E%3Cpath d='M12 15.6s-.5-6.5-6.3-9.5c0 0-.7 6.4 2.7 8.7 2 1.3 3.6.8 3.6.8Z' fill='%2316a34a'/%3E%3Cpath d='M12 15.6s.5-6.5 6.3-9.5c0 0 .7 6.4-2.7 8.7-2 1.3-3.6.8-3.6.8Z' fill='%2316a34a' opacity='.62'/%3E%3C/svg%3E" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Solar Submission Engine | Solar Autopilot</title>
   <link rel="stylesheet" href="/styles.css" />
@@ -48,55 +49,44 @@
     .ps-brand > span { font-size: var(--text-xs); color: var(--muted); }
     .ps-topbar nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
-    .ps-wrap { max-width: 1160px; margin: 0 auto; padding: 0 28px 110px; }
+    .ps-wrap { max-width: 1160px; margin: 0 auto; padding: 0 28px 44px; }
     /* Browser-default link blue is the one colour on this page that belongs to no
        palette; every link here is green and underlined only on the offset. */
     .ps-wrap a { color: var(--primary); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--primary) 35%, transparent); }
     .ps-wrap a:hover { border-bottom-color: var(--primary); }
 
-    /* ---- Hero ------------------------------------------------------------- */
-    .ps-hero { padding: 54px 0 34px; max-width: 760px; }
     .ps-eyebrow {
       display: block;
       font-size: 11px; font-weight: 700; line-height: 1;
       letter-spacing: .16em; text-transform: uppercase;
       color: var(--primary);
     }
-    .ps-hero h1 {
-      margin-top: 18px;
-      font-size: clamp(34px, 4.4vw, 52px); font-weight: 600;
-      letter-spacing: -.028em; line-height: 1.08;
-    }
-    .ps-hero p {
-      margin-top: 18px; max-width: 62ch;
-      font-size: var(--text-base); line-height: 1.65; color: var(--muted);
-    }
 
-    /* ---- 01 / 02 / 03 step rail ------------------------------------------- */
+    /* ---- 01 / 02 / 03 anchor rail -----------------------------------------
+       WAS a 326px hero over a 182px three-column rail whose three paragraphs
+       each restated the section head they linked to — 508px of teaching copy
+       ABOVE THE FIRST CONTROL, on the one screen an operator uses every day. It
+       pushed Parse to y=1196, below the fold. The page title now lives in the
+       topbar (which already read "Project intake") and the rail is reduced to
+       what it actually was: the only navigation on the page. Nothing here stated
+       anything about a packet, so nothing honest was lost. */
     .ps-steps {
-      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-      border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
-      margin-bottom: 40px;
+      display: flex; flex-wrap: wrap; gap: 4px;
+      border-bottom: 1px solid var(--line);
+      margin: 0 0 18px; padding: 10px 0;
     }
-    .ps-step { padding: 26px 30px 28px; border-left: 1px solid var(--line); }
-    .ps-step:first-child { border-left: 0; padding-left: 0; }
-    .ps-step-num { font-size: var(--text-xs); font-weight: 700; letter-spacing: .1em; color: var(--muted); }
-    .ps-step-label {
-      margin-top: 14px;
+    .ps-wrap .ps-step {
+      display: inline-flex; align-items: baseline; gap: 8px;
+      padding: 6px 13px; border-radius: 999px; border-bottom: 0;
       font-size: var(--text-xs); font-weight: 700;
-      letter-spacing: .13em; text-transform: uppercase; color: var(--text);
+      letter-spacing: .11em; text-transform: uppercase; color: var(--muted);
     }
-    .ps-step p { margin-top: 9px; font-size: var(--text-sm); line-height: 1.6; color: var(--muted); }
-    .ps-step.is-here .ps-step-num,
-    .ps-step.is-here .ps-step-label { color: var(--primary); }
-    @media (max-width: 860px) {
-      .ps-steps { grid-template-columns: 1fr; }
-      .ps-step { border-left: 0; border-top: 1px solid var(--line); padding: 20px 0; }
-      .ps-step:first-child { border-top: 0; }
-    }
+    .ps-wrap .ps-step:hover { background: var(--surface-2); color: var(--text); }
+    .ps-step-num { font-variant-numeric: tabular-nums; opacity: .7; }
+    .ps-wrap .ps-step.is-here { color: var(--primary); background: color-mix(in oklab, var(--primary) 12%, transparent); }
 
     /* ---- Sections --------------------------------------------------------- */
-    .ps-section { margin: 0 0 40px; scroll-margin-top: 78px; }
+    .ps-section { margin: 0 0 22px; scroll-margin-top: 66px; }
     /* ONE alternating band, the site's structural move, spent where it earns its
        keep: the handoff out of the parser and into the workflow. clip-path gives
        full bleed without taking the section out of the centred wrap. */
@@ -104,34 +94,35 @@
       background: var(--surface-2);
       box-shadow: 0 0 0 100vmax var(--surface-2);
       clip-path: inset(0 -100vmax);
-      margin-top: 56px; padding: 48px 0 52px;
+      margin-top: 26px; padding: 26px 0 30px;
     }
     .ps-band .ps-card { border-color: var(--border); }
-    .ps-section-head { margin-bottom: 18px; }
+    .ps-section-head { margin-bottom: 12px; }
     .ps-section-head h2 {
-      margin-top: 12px;
-      font-size: clamp(22px, 2.4vw, 30px); font-weight: 600;
-      letter-spacing: -.024em; line-height: 1.18;
+      margin-top: 7px;
+      font-size: clamp(18px, 1.8vw, 22px); font-weight: 600;
+      letter-spacing: -.02em; line-height: 1.2;
     }
-    .ps-section-head p { margin-top: 10px; max-width: 76ch; font-size: var(--text-sm); line-height: 1.65; color: var(--muted); }
+    .ps-section-head p { margin-top: 6px; max-width: 78ch; font-size: var(--text-sm); line-height: 1.55; color: var(--muted); }
 
     .ps-card {
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
-      padding: 24px 26px;
+      padding: 18px 20px;
       box-shadow: var(--shadow-sm);
     }
-    .ps-card + .ps-card { margin-top: 14px; }
+    .ps-card + .ps-card { margin-top: 10px; }
 
     /* Collapsed reference panels keep the same card skin; the disclosure row is
        the whole summary so the hit target matches what the eye reads as a row. */
     details.ps-card { padding: 0; }
     details.ps-card > summary {
       list-style: none; cursor: pointer;
-      display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
-      padding: 18px 26px;
+      display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+      padding: 13px 20px;
     }
+    details.ps-card > summary:hover { background: var(--surface-2); }
     details.ps-card > summary::-webkit-details-marker { display: none; }
     details.ps-card > summary::before {
       content: ""; flex: none; align-self: center;
@@ -142,28 +133,45 @@
     details.ps-card[open] > summary::before { transform: rotate(45deg); }
     details.ps-card > summary strong { font-size: var(--text-base); font-weight: 600; letter-spacing: -.015em; }
     details.ps-card > summary .ps-summary-note { font-size: var(--text-xs); color: var(--muted); font-weight: 400; }
-    details.ps-card > .ps-card-body { padding: 0 26px 24px; }
+    details.ps-card > .ps-card-body { padding: 0 20px 18px; }
+
+    /* THE COUNT IS THE POINT. A fold whose summary says only its title turns
+       sixty blank boxes into a section that looks settled. Every foldable group
+       carries "n of N read · m still blank" INLINE on the closed summary, in the
+       page's own text colour, so the unknown is on screen and only the boxes are
+       one click away. `is-flagged` is set by updateGroupSummaries when the fold
+       holds something the operator must look at; those folds also open
+       themselves. */
+    details.ps-fold > summary .ps-fold-count { color: var(--text); font-weight: 600; }
+    /* inset, not a left border — a 3px border would shift the card's whole width the
+       moment a packet turned up a finding. */
+    details.ps-fold.is-flagged { box-shadow: inset 3px 0 0 var(--warning), var(--shadow-sm); }
+    details.ps-fold.is-flagged > summary .ps-fold-count { color: var(--warning-strong, var(--text)); }
 
     /* ---- Forms ------------------------------------------------------------ */
-    .ps-grid { display: grid; gap: 16px 18px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .ps-grid { display: grid; gap: 12px 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .ps-grid.cols3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .ps-grid.cols4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-    .ps-grid + .ps-grid, .ps-grid + .ps-stack, .ps-stack + .ps-grid { margin-top: 18px; }
-    .ps-stack { display: grid; gap: 16px; }
+    .ps-grid + .ps-grid, .ps-grid + .ps-stack, .ps-stack + .ps-grid { margin-top: 14px; }
+    .ps-stack { display: grid; gap: 12px; }
     .ps-span-all { grid-column: 1 / -1; }
     @media (max-width: 1040px) { .ps-grid.cols4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 860px) { .ps-grid, .ps-grid.cols3, .ps-grid.cols4 { grid-template-columns: 1fr; } }
 
     .ps-field { display: flex; flex-direction: column; min-width: 0; }
     .ps-field > label,
-    .ps-label { font-size: var(--text-xs); font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+    .ps-label { font-size: var(--text-xs); font-weight: 600; color: var(--muted); margin-bottom: 5px; }
     .ps-field > label .opt { font-weight: 400; }
+    /* Per-file hints. The 40-word paragraph that used to sit above all four
+       uploads said one clause about each file; each clause now rides its own
+       label, where it is read at the moment it applies and costs no block. */
+    .ps-file > label .opt { font-weight: 400; color: color-mix(in oklab, var(--muted) 82%, transparent); }
 
     /* Fifty-odd inputs in one card is a wall. A hairline and a small uppercase
        group label every dozen fields is the site's own rhythm, and it turns the
        card into the five things an application actually asks about. */
     .ps-group {
-      display: block; margin: 30px 0 16px; padding-top: 18px;
+      display: block; margin: 18px 0 10px; padding-top: 14px;
       border-top: 1px solid var(--line);
       font-size: 11px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; color: var(--muted);
     }
@@ -172,7 +180,7 @@
 
     .ps-wrap input, .ps-wrap select, .ps-wrap textarea {
       width: 100%;
-      padding: 9px 11px;
+      padding: 7px 10px;
       border: 1px solid var(--input);
       border-radius: var(--radius-sm);
       background: var(--card);
@@ -180,8 +188,8 @@
       font: inherit; font-size: var(--text-sm);
       transition: border-color var(--t-fast, .15s) ease, box-shadow var(--t-fast, .15s) ease;
     }
-    .ps-wrap textarea { min-height: 88px; resize: vertical; line-height: 1.55; }
-    .ps-wrap textarea.tall { min-height: 150px; }
+    .ps-wrap textarea { min-height: 72px; resize: vertical; line-height: 1.5; }
+    .ps-wrap textarea.tall { min-height: 112px; }
     .ps-wrap input:hover, .ps-wrap select:hover, .ps-wrap textarea:hover { border-color: var(--muted); }
     .ps-wrap input:focus, .ps-wrap select:focus, .ps-wrap textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent); }
     /* Read-only surfaces are OUTPUT, not input — they must not look fillable. */
@@ -204,13 +212,13 @@
 
     /* ---- Callouts --------------------------------------------------------- */
     .ps-note {
-      margin-top: 20px; padding: 18px 20px;
+      margin-top: 14px; padding: 13px 15px;
       border: 1px solid color-mix(in oklab, var(--accent) 65%, var(--border));
       border-radius: var(--radius-sm);
       background: color-mix(in oklab, var(--accent) 34%, var(--card));
     }
     .ps-note > .ps-eyebrow { color: var(--primary-strong); }
-    .ps-note p { margin: 8px 0 14px; font-size: var(--text-sm); line-height: 1.6; color: var(--text); max-width: 82ch; }
+    .ps-note p { margin: 6px 0 10px; font-size: var(--text-sm); line-height: 1.5; color: var(--text); max-width: 86ch; }
     .ps-note.plain {
       border-color: var(--border);
       background: var(--surface-2);
@@ -218,7 +226,7 @@
     .ps-note.plain > .ps-eyebrow { color: var(--muted); }
 
     /* ---- Actions, progress, status ---------------------------------------- */
-    .ps-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 22px; }
+    .ps-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
     .ps-actions .ps-actions-note { font-size: var(--text-xs); color: var(--muted); }
 
     .progress-wrap {
@@ -234,7 +242,7 @@
     /* A status line with nothing in it should not draw an empty box — three of
        these start blank and only ever speak after an action. */
     .ps-status {
-      margin-top: 16px; padding: 12px 15px;
+      margin-top: 12px; padding: 10px 13px;
       border: 1px solid var(--border); border-left: 3px solid var(--muted);
       border-radius: var(--radius-sm);
       background: var(--surface-2);
@@ -263,7 +271,7 @@
     .ps-scope-main { margin-top: 8px; font-size: var(--text-lg); font-weight: 600; letter-spacing: -.02em; }
     .ps-scope-sub { margin-top: 6px; font-size: var(--text-sm); color: var(--muted); line-height: 1.5; }
 
-    .ps-footnote { margin-top: 44px; padding-top: 20px; border-top: 1px solid var(--line); font-size: var(--text-xs); color: var(--muted); line-height: 1.7; max-width: 86ch; }
+    .ps-footnote { margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); font-size: var(--text-xs); color: var(--muted); line-height: 1.6; max-width: 92ch; }
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -302,75 +310,51 @@
 
 <div class="ps-wrap">
 
-  <div class="ps-hero">
-    <span class="ps-eyebrow">Project intake</span>
-    <h1>Upload the project. Keelix reads the workflow.</h1>
-    <p>Drop in the plan set, utility bill, and meter photo. The parser extracts the project
-       information, checks it against what the AHJ and the utility will ask for, and hands a
-       structured project to the dashboard workflow.</p>
-  </div>
-
   <!-- The nine pills at the top of this page were static, unclickable labels that
        looked exactly like tabs, and four of them named sections that are
-       display:none. They are now the site's 01/02/03 rail, and every link in it is
-       a real anchor to a section that exists. -->
-  <div class="ps-steps">
-    <div class="ps-step is-here">
-      <div class="ps-step-num">01</div>
-      <div class="ps-step-label">Upload</div>
-      <p>The project's plan set, utility bill, meter photo, and the stamped structural letter
-         when the AHJ requires one. <a href="#psUpload">Start here</a>.</p>
-    </div>
-    <div class="ps-step">
-      <div class="ps-step-num">02</div>
-      <div class="ps-step-label">Analyze + build</div>
-      <p>Every field below is filled by the parser and stays editable. Correct anything it read
-         wrong before you save. <a href="#psExtracted">Extracted data</a>.</p>
-    </div>
-    <div class="ps-step">
-      <div class="ps-step-num">03</div>
-      <div class="ps-step-label">Review + submit</div>
-      <p>Save to a project and the dashboard takes it from QC through the reviewer gate to
-         submission. <a href="#psSave">Save to project</a>.</p>
-    </div>
-  </div>
+       display:none. They became the site's 01/02/03 rail; the rail's three
+       paragraphs have now gone too (each one restated the section head it linked
+       to). The links themselves stay — they are the only navigation on the page. -->
+  <nav class="ps-steps" aria-label="Intake steps">
+    <a class="ps-step is-here" href="#psUpload"><span class="ps-step-num">01</span> Upload</a>
+    <a class="ps-step" href="#psExtracted"><span class="ps-step-num">02</span> Analyze + build</a>
+    <a class="ps-step" href="#psSave"><span class="ps-step-num">03</span> Review + submit</a>
+  </nav>
 
   <!-- ===================== 01 UPLOAD ===================== -->
   <section class="ps-section" id="psUpload">
     <div class="ps-section-head">
       <span class="ps-eyebrow">01 &middot; Upload</span>
-      <h2>Give it the documents. It does the reading.</h2>
-      <p>The plan set is the only file the parser truly needs. The utility bill verifies the
-         account and meter number; the meter photo confirms the meter in the field; the stamped
-         structural letter is required only on the engineered path.</p>
+      <h2>Give it the documents.</h2>
     </div>
 
     <div class="ps-card">
       <div class="ps-grid">
         <div class="ps-file">
-          <label for="planFile">Plan set PDF</label>
+          <label for="planFile">Plan set PDF <span class="opt">&mdash; the only file the parser truly needs</span></label>
           <input id="planFile" type="file" accept=".pdf,application/pdf" />
         </div>
         <div class="ps-file">
-          <label for="ubFile">Utility bill PDF or image</label>
+          <label for="ubFile">Utility bill PDF or image <span class="opt">&mdash; verifies account + meter number</span></label>
           <input id="ubFile" type="file" accept=".pdf,image/*,application/pdf" />
         </div>
         <div class="ps-file">
-          <label for="meterPhotoFile">Meter photo image or PDF</label>
+          <label for="meterPhotoFile">Meter photo image or PDF <span class="opt">&mdash; confirms the meter in the field</span></label>
           <input id="meterPhotoFile" type="file" accept=".pdf,image/*,application/pdf" />
         </div>
         <div class="ps-file">
-          <label for="structuralLetterFile">Stamped structural letter / calcs <span class="opt">(when required)</span></label>
+          <label for="structuralLetterFile">Stamped structural letter / calcs <span class="opt">(when required) &mdash; engineered path only</span></label>
           <input id="structuralLetterFile" type="file" accept=".pdf,image/*,application/pdf" />
         </div>
       </div>
 
       <div class="ps-note">
         <span class="ps-eyebrow">Homeowner contact + contract value</span>
-        <p>Most AHJ and utility applications require the property-owner email and phone, and the
-           permit fee is valued off the contract price. Contracts don't reliably contain these, so
-           enter them here (or send the client intake link from the project page). These save with
-           the project and clear the reviewer callouts.</p>
+        <!-- These three are the only fields on this page that NO document fills, so they stay
+             above the fold with the uploads. The 50-word paragraph that explained the product
+             is gone; the operator-facing fact — contracts don't reliably carry them — is not. -->
+        <p>Contracts don&rsquo;t reliably carry these, and the applications require them (the permit fee
+           is valued off the contract price). Enter them here or send the client intake link.</p>
         <div class="ps-grid cols3">
           <div class="ps-field"><label for="homeownerEmail">Homeowner email</label><input id="homeownerEmail" type="email" placeholder="owner@example.com" /></div>
           <div class="ps-field"><label for="homeownerPhone">Homeowner phone</label><input id="homeownerPhone" type="tel" placeholder="(541) 555-0123" /></div>
@@ -393,11 +377,46 @@
     <div class="ps-section-head">
       <span class="ps-eyebrow">02 &middot; Analyze + build</span>
       <h2>Check what it read before anything is filed.</h2>
-      <p>Everything the parser found, in the order an application asks for it. Blanks are honest —
-         they mean the documents did not say. Fix anything wrong here and it is fixed everywhere
-         downstream.</p>
+      <!-- THIS SENTENCE STAYS INLINE, and it is the reason the folds below carry a blank
+           count. It is the one thing standing between sixty empty boxes and an operator
+           reading them as sixty findings. The two sentences that surrounded it ("Everything
+           the parser found, in the order an application asks for it." / "Fix anything wrong
+           here and it is fixed everywhere downstream.") only taught, and are gone. -->
+      <p>Blanks are honest — they mean the documents did not say. Fixing one here fixes it downstream.</p>
     </div>
 
+    <!-- WHAT THE PARSER COULD NOT SETTLE. This is honesty content, so it moves exactly ONE
+         interaction — and the count of what needs eyes is on the closed summary, inline.
+         It sits FIRST in §02, above the values it describes: flags placed after the fields
+         they warn about are read only after the operator has already accepted those values.
+         updateGroupSummaries() also OPENS this fold whenever it holds anything, so a packet
+         with findings never presents itself collapsed.
+
+         #criticalWarnings is NEW HERE, and it is a bug fix, not a new feature:
+         buildCriticalWarnings() has been computing the priority digest (utility flags,
+         parser flags, meter verification, multi-plane array check) and calling
+         setVal('criticalWarnings', …) against an element that existed nowhere on this page,
+         so every one of those warnings was silently discarded. It has a home now. setVal
+         writes .value, never innerHTML. -->
+    <details class="ps-card ps-fold" id="foldFindings">
+      <summary>
+        <strong>What the parser could not settle</strong>
+        <span class="ps-summary-note ps-fold-count" id="psFindingsCount">No parse run yet — nothing has been read.</span>
+      </summary>
+      <div class="ps-card-body">
+        <div class="ps-grid">
+          <div class="ps-field"><label for="reviewFlags">Parser review flags</label><textarea id="reviewFlags" readonly class="tall"></textarea></div>
+          <div class="ps-field"><label for="criticalWarnings">High-priority warnings</label><textarea id="criticalWarnings" readonly class="tall"></textarea></div>
+        </div>
+        <div class="ps-grid" style="margin-top:14px">
+          <div class="ps-field ps-span-all"><label for="roofPlanesField">Roof planes summary</label><textarea id="roofPlanesField" readonly class="tall"></textarea></div>
+        </div>
+      </div>
+    </details>
+
+    <!-- OPEN, ALWAYS. Identity plus system size is what an operator types and what every
+         downstream screen keys on; five of the six fields the brief calls key live here. The
+         sixty-odd fields that used to render flat underneath are now folds, below. -->
     <div class="ps-card">
       <span class="ps-group">Project, jurisdiction and utility</span>
       <div class="ps-grid">
@@ -419,8 +438,26 @@
         <div class="ps-field"><label for="acKw">System size AC (kW)</label><input id="acKw" /></div>
         <div class="ps-field"><label for="exportKw">Total export (kW)</label><input id="exportKw" /></div>
       </div>
+    </div>
 
-      <span class="ps-group">Modules, inverters and rapid shutdown</span>
+    <!-- ===== FOLDS =========================================================
+         Every input below is the SAME element with the SAME id it had when this
+         was one 2,123px grid. buildSystemPayload() and collectFields() read each
+         one by id through getVal(), and a control inside a closed <details> is
+         still in the DOM with its value intact — so folding changes what is on
+         screen and nothing about what is saved. Deleting an input would silently
+         drop that field from the project; none was deleted.
+
+         The summary of each fold reports BOTH numbers — read and still blank —
+         because a fold that shows only its title turns "the documents did not
+         say" into a section that looks settled. See updateGroupSummaries().
+         ===================================================================== -->
+    <details class="ps-card ps-fold" id="foldEquipment">
+      <summary>
+        <strong>Modules, inverters and rapid shutdown</strong>
+        <span class="ps-summary-note ps-fold-count" data-fold-count></span>
+      </summary>
+      <div class="ps-card-body">
       <div class="ps-grid cols4">
         <div class="ps-field"><label for="moduleMake">Module make</label><input id="moduleMake" /></div>
         <div class="ps-field"><label for="moduleType">Module type</label><input id="moduleType" /></div>
@@ -439,8 +476,15 @@
         <div class="ps-field"><label for="mciModel">Rapid shutdown / MCI model</label><input id="mciModel" /></div>
         <div class="ps-field"><label for="mciQty">Rapid shutdown / MCI quantity</label><input id="mciQty" /></div>
       </div>
+      </div>
+    </details>
 
-      <span class="ps-group">Storage and backup</span>
+    <details class="ps-card ps-fold" id="foldStorage">
+      <summary>
+        <strong>Storage and backup</strong>
+        <span class="ps-summary-note ps-fold-count" data-fold-count></span>
+      </summary>
+      <div class="ps-card-body">
       <div class="ps-grid cols4">
         <div class="ps-field"><label for="batteryMake">Battery make</label><input id="batteryMake" /></div>
         <div class="ps-field"><label for="batteryModel">Battery model</label><input id="batteryModel" /></div>
@@ -451,8 +495,15 @@
         <div class="ps-field"><label for="gatewayModel">Gateway model</label><input id="gatewayModel" /></div>
         <div class="ps-field"><label for="backupPanel">Backup panel / loads</label><input id="backupPanel" /></div>
       </div>
+      </div>
+    </details>
 
-      <span class="ps-group">Electrical service, roof and structural</span>
+    <details class="ps-card ps-fold" id="foldStructural">
+      <summary>
+        <strong>Electrical service, roof and structural</strong>
+        <span class="ps-summary-note ps-fold-count" data-fold-count></span>
+      </summary>
+      <div class="ps-card-body">
       <div class="ps-grid cols4">
         <div class="ps-field"><label for="phase">Phase</label><input id="phase" /></div>
         <div class="ps-field"><label for="voltage">Voltage</label><input id="voltage" /></div>
@@ -482,18 +533,15 @@
         <div class="ps-field"><label for="acDiscReq">AC disconnect required?</label><input id="acDiscReq" /></div>
         <div class="ps-field"><label for="acDiscAmp">AC disconnect amp</label><input id="acDiscAmp" /></div>
       </div>
-
-      <span class="ps-group">What the parser could not settle</span>
-      <div class="ps-grid">
-        <div class="ps-field"><label for="roofPlanesField">Roof planes summary</label><textarea id="roofPlanesField" readonly class="tall"></textarea></div>
-        <div class="ps-field"><label for="reviewFlags">Parser review flags</label><textarea id="reviewFlags" readonly class="tall"></textarea></div>
       </div>
-    </div>
+    </details>
 
     <details class="ps-card">
       <summary>
         <strong>Permit path + stamp</strong>
-        <span class="ps-summary-note">Reference only &mdash; the backend QC and the AHJ reviewer gate are the source of truth. Prescriptive vs engineered is what drives the correct submittal path.</span>
+        <!-- "Reference only" is the honest part and stays. The clause explaining what
+             prescriptive vs engineered means taught, and is gone. -->
+        <span class="ps-summary-note">Reference only &mdash; backend QC and the AHJ reviewer gate are the source of truth.</span>
       </summary>
       <div class="ps-card-body">
         <div class="ps-readout">
@@ -551,11 +599,18 @@
       <textarea id="regressionTestsText"></textarea>
     </div>
 
-    <div class="ps-card">
-      <div class="ps-section-head" style="margin-bottom:0">
-        <span class="ps-eyebrow">Utility bill verification</span>
-      </div>
-      <div class="ps-grid" style="margin-top:18px">
+    <!-- METER VERIFICATION IS A VERDICT, so the verdict itself rides the closed summary
+         (updateGroupSummaries → the psUbVerdict span) and the fold opens itself whenever the
+         digits did NOT match. What is one click away is the six fields and the two text
+         dumps, never the finding. -->
+    <details class="ps-card ps-fold" id="foldUb">
+      <summary>
+        <strong>Utility bill verification</strong>
+        <span class="ps-summary-note ps-fold-count" id="psUbVerdict">No utility bill read yet — account and meter unverified.</span>
+        <span class="ps-summary-note" data-fold-count></span>
+      </summary>
+      <div class="ps-card-body">
+      <div class="ps-grid">
         <div class="ps-field"><label for="ubAccountHolder">UB account holder</label><input id="ubAccountHolder" /></div>
         <div class="ps-field"><label for="ubAccountNumber">UB account number</label><input id="ubAccountNumber" /></div>
         <div class="ps-field"><label for="ubServiceAddress">UB service address</label><input id="ubServiceAddress" /></div>
@@ -564,11 +619,12 @@
         <div class="ps-field"><label for="ubMeterVerification">Meter verification</label><input id="ubMeterVerification" /></div>
       </div>
       <div id="ubVerificationHelp" class="ps-status">Upload a utility bill to verify account info and meter number.</div>
-      <div class="ps-stack" style="margin-top:18px">
+      <div class="ps-stack" style="margin-top:14px">
         <div class="ps-field"><label for="ubParserNotes">UB parser notes</label><textarea id="ubParserNotes" readonly></textarea></div>
         <div class="ps-field"><label for="ubRawTextPreview">UB OCR / text preview</label><textarea id="ubRawTextPreview" readonly class="tall"></textarea></div>
       </div>
-    </div>
+      </div>
+    </details>
 
     <details class="ps-card">
       <summary>
@@ -596,14 +652,18 @@
       </div>
     </details>
 
-    <div class="ps-card">
-      <div class="ps-section-head" style="margin-bottom:0">
-        <span class="ps-eyebrow">Installer / contractor</span>
-      </div>
-      <p class="ps-readout-note" style="margin-top:12px;max-width:82ch">Select the <strong>submitting client</strong> in step 03 &mdash; these fields auto-fill from that
-         client's licensing record, which is the single source of truth. Do not hand-enter another
-         client's info here; onboard a new client in the Clients tab instead.</p>
-      <div class="ps-grid cols3" style="margin-top:18px">
+    <!-- Every one of these thirteen is auto-filled from the step-03 client by
+         loadContractorInfo(); an operator types here essentially never. The "do not
+         hand-enter another client's info" rule is the load-bearing half of the paragraph
+         that used to sit above them, so it rides the closed summary and stays on screen. -->
+    <details class="ps-card ps-fold" id="foldInstaller">
+      <summary>
+        <strong>Installer / contractor</strong>
+        <span class="ps-summary-note ps-fold-count" data-fold-count></span>
+        <span class="ps-summary-note">From the step-03 client&rsquo;s licensing record &mdash; don&rsquo;t hand-enter another client here.</span>
+      </summary>
+      <div class="ps-card-body">
+      <div class="ps-grid cols3">
         <div class="ps-field"><label for="installerCompany">Installer company</label><input id="installerCompany" placeholder="(from selected client)" /></div>
         <div class="ps-field"><label for="installerEmail">Installer email</label><input id="installerEmail" placeholder="(from selected client)" /></div>
         <div class="ps-field"><label for="installerPhone">Installer phone</label><input id="installerPhone" placeholder="(from selected client)" /></div>
@@ -618,7 +678,8 @@
         <div class="ps-field"><label for="electricianLicenseNumber">Electrician license number</label><input id="electricianLicenseNumber" placeholder="(from selected client)" /></div>
         <div class="ps-field ps-span-all"><label for="contractorLicenseNotes">Contractor license notes</label><textarea id="contractorLicenseNotes" placeholder="Auto-filled from the selected client's licensing record."></textarea></div>
       </div>
-    </div>
+      </div>
+    </details>
 
     <details class="ps-card">
       <summary>
@@ -661,9 +722,11 @@
     <div class="ps-section-head">
       <span class="ps-eyebrow">03 &middot; Review + submit</span>
       <h2>Hand it to the workflow.</h2>
-      <p>Saving creates or updates the project in the dashboard, uploads the documents against it,
-         and runs QC. From there the project moves through the reviewer gate and on to the AHJ and
-         utility submissions &mdash; a person always approves the final submit.</p>
+      <!-- The clause after the dash is the Round C safety deliverable and is NON-NEGOTIABLY
+           INLINE — never a tooltip, never a fold. The sentences describing the dashboard's
+           own stages taught, and are gone. -->
+      <p>Saving creates or updates the project, uploads the documents against it, and runs QC
+         &mdash; a person always approves the final submit.</p>
     </div>
 
     <div class="ps-card" id="importCard">
@@ -761,7 +824,11 @@ const state = {
   // human has agreed with it. `clientConfirmed` starts true so an operator who never
   // runs a parse is never gated by a suggestion that was never made.
   clientResolution:null,
-  clientConfirmed:true
+  clientConfirmed:true,
+  // Has a parse ever run in this session? A collapsed group reading "0 of 27 read" before
+  // any parse would be a finding about documents nobody has submitted yet; before a parse
+  // the folds say "nothing read yet" instead. See updateGroupSummaries().
+  parsedOnce:false
 };
 
 const $ = id => document.getElementById(id);
@@ -3949,9 +4016,141 @@ function endProgress(){
   setTimeout(() => { if (wrap) wrap.classList.remove('active'); if (bar) bar.style.width = '0%'; }, 900);
 }
 
+// ===========================================================================
+// PROGRESSIVE DISCLOSURE — a collapsed group must never read as "nothing here".
+//
+// Sixty-six of this page's 101 fillable controls now live in <details> folds
+// (equipment, storage, electrical/roof/structural, utility-bill verification,
+// installer). Every input kept its id and its place in the DOM, so getVal() in
+// buildSystemPayload()/collectFields() reads a folded field exactly as it read a
+// flat one — folding is presentational and the save payload is unchanged.
+//
+// The honesty problem folding creates is the one this function exists to solve.
+// "Blanks are honest — they mean the documents did not say" is only true while
+// the blanks are COUNTED somewhere the operator can see without clicking. So
+// every fold's closed summary carries both numbers, and any fold holding
+// something that needs eyes opens itself and is marked.
+// ===========================================================================
+function foldFieldStats(fold){
+  let filled = 0, total = 0;
+  fold.querySelectorAll('input, select, textarea').forEach(el => {
+    if (el.type === 'file' || el.type === 'button' || el.type === 'hidden') return;
+    total++;
+    if (String(el.value || '').trim()) filled++;
+  });
+  return { filled, total, blank: total - filled };
+}
+
+// Every string written here goes through textContent. Some of it (the meter
+// verification verdict) originates in OCR of a PDF; none of it touches innerHTML.
+function updateGroupSummaries(){
+  document.querySelectorAll('details.ps-fold').forEach(fold => {
+    const note = fold.querySelector('[data-fold-count]');
+    if (!note) return;
+    const { filled, total, blank } = foldFieldStats(fold);
+    note.textContent = state.parsedOnce || filled
+      ? `${filled} of ${total} read · ${blank} still blank`
+      : `${total} fields · nothing read yet`;
+  });
+  updateFindingsSummary();
+  updateStorageSummary();
+  updateUbSummary();
+}
+
+// "Not present" and "not read" are different facts. When a plan set WAS read this
+// run and affirmatively contains no battery (parsePlanData returns hasBattery:false),
+// eight blank boxes are a finding, not an unknown — say so. Without a plan set read
+// this run, "not detected" would manufacture certainty out of an unknown, so the
+// generic nothing-read / still-blank line stands. state.planFile is reassigned from
+// the file input at the top of every runParse, so parsedOnce && planFile guarantees
+// state.planData came from THIS run, not a previous packet's.
+function updateStorageSummary(){
+  const fold = $('foldStorage');
+  const note = fold && fold.querySelector('[data-fold-count]');
+  if (!fold || !note) return;
+  if (!state.parsedOnce || !state.planFile || !state.planData) return;
+  const { filled } = foldFieldStats(fold);
+  if (!state.planData.hasBattery && !filled){
+    note.textContent = 'No battery or ESS detected in the plan set.';
+  }
+}
+
+// Open a fold for the operator ONCE per parse: findings must not present themselves
+// shut, but an operator who then closes the drawer has made a choice — respect it on
+// the next summary refresh (every keystroke fires one) instead of forcing it back
+// open. runParse clears the marker so each NEW parse gets to open it again.
+function autoOpenOnce(fold){
+  if (fold.dataset.autoOpened) return;
+  fold.dataset.autoOpened = '1';
+  fold.open = true;
+}
+
+// The flags fold. Count inline, detail one click away — and when there IS anything,
+// the fold opens itself, because a packet with findings must not present itself shut.
+function updateFindingsSummary(){
+  const fold = $('foldFindings');
+  const note = $('psFindingsCount');
+  if (!fold || !note) return;
+  const flagCount = (getVal('reviewFlags') || '').split('\n').map(s => s.trim()).filter(Boolean).length;
+  const warnText = (getVal('criticalWarnings') || '').trim();
+  const hasWarn = !!warnText && !/^No high-priority/i.test(warnText);
+  if (!state.parsedOnce){
+    note.textContent = 'No parse run yet — nothing has been read.';
+    fold.classList.remove('is-flagged');
+    return;
+  }
+  if (flagCount || hasWarn){
+    note.textContent = [
+      flagCount ? `${flagCount} item${flagCount === 1 ? '' : 's'} need${flagCount === 1 ? 's' : ''} your eyes` : '',
+      hasWarn ? 'high-priority warnings inside' : ''
+    ].filter(Boolean).join(' · ');
+    fold.classList.add('is-flagged');
+    autoOpenOnce(fold);
+  } else {
+    note.textContent = 'Nothing flagged — the parser settled everything it read.';
+    fold.classList.remove('is-flagged');
+    delete fold.dataset.autoOpened;
+  }
+}
+
+// The meter verdict is a finding, so it renders on the CLOSED summary, and a
+// verdict that is not a clean digit match opens the fold on its own.
+function updateUbSummary(){
+  const fold = $('foldUb');
+  const note = $('psUbVerdict');
+  if (!fold || !note) return;
+  const verdict = (getVal('ubMeterVerification') || '').trim();
+  if (!verdict){
+    note.textContent = 'No utility bill read yet — account and meter unverified.';
+    fold.classList.remove('is-flagged');
+    return;
+  }
+  note.textContent = `Meter verification: ${verdict}`;
+  if (/DIGITS MATCH/i.test(verdict)){
+    fold.classList.remove('is-flagged');
+  } else {
+    fold.classList.add('is-flagged');
+    fold.open = true;
+  }
+}
+
+// A hand-edit inside a collapsed group has to move that group's count, or the
+// summary starts lying the moment the operator types. Programmatic setVal() does
+// not fire input, so the fill paths (runParse, loadContractorInfo, resetAll) call
+// updateGroupSummaries() directly as well.
+let foldSummaryQueued = false;
+document.addEventListener('input', () => {
+  if (foldSummaryQueued) return;
+  foldSummaryQueued = true;
+  requestAnimationFrame(() => { foldSummaryQueued = false; updateGroupSummaries(); });
+});
+
 async function runParse(){
   state.reviewFlags = [];
   state.utilityPriorityFlags = [];
+  // A fresh parse is a fresh packet: every fold gets one auto-open again if it
+  // holds findings, even if the operator shut it during the previous run.
+  document.querySelectorAll('details.ps-fold').forEach(f => { delete f.dataset.autoOpened; });
   state.llmAssist = null;
   state.llmSnapshot = {};
   state.llmEvidence = [];
@@ -4046,7 +4245,11 @@ async function runParse(){
   buildPacketReadiness(finalPlan, finalUb);
   setVal('utilityPacketBaseName', getUtilityPacketBaseName());
   updateSplitUi();
-  setVal('reviewFlags', state.reviewFlags.join('\n'));
+  // setVal('reviewFlags', …) USED TO RUN HERE, ~26 lines before planWarning is pushed onto
+  // state.reviewFlags below. The consequence was that "NO PV PLAN SET UPLOADED" — the single
+  // loudest thing this parser can say — never reached the flags box at all and survived only
+  // in parseStatus, which the next parse overwrites. The write now happens after every
+  // push, once, below.
 
   const snapCount = Object.keys(state.llmSnapshot || {}).length;
   const evCount = (state.llmEvidence || []).length;
@@ -4073,6 +4276,9 @@ async function runParse(){
     planWarning = 'The file in the plan-set slot does not look like a PV plan set — no system size or equipment schedule was found in it. Check that you uploaded the full plan set (a structural letter or spec sheet alone is not enough).';
   }
   if (planWarning) state.reviewFlags.push(planWarning);
+  setVal('reviewFlags', state.reviewFlags.join('\n'));
+  state.parsedOnce = true;
+  updateGroupSummaries();
   $('parseStatus').textContent = [
     planWarning ? '⚠ Parsed — but the packet is INCOMPLETE.' : 'All done — your packet is ready to review.',
     `Documents read: ${docsIn.join(', ') || 'none'}.`,
@@ -4103,6 +4309,11 @@ function resetAll(){
   state.planDoc = state.ubDoc = state.meterDoc = state.structuralDoc = null;
   state.reviewFlags = [];
   state.utilityPriorityFlags = [];
+  // A fold left open on the last packet's findings, still marked, over boxes that are now
+  // empty, would be the previous project's verdict shown against this one.
+  state.parsedOnce = false;
+  document.querySelectorAll('details.ps-fold').forEach(f => { f.open = false; f.classList.remove('is-flagged'); });
+  updateGroupSummaries();
   $('parseStatus').textContent = 'Waiting for files.';
   const wrap = $('progressWrap'); const bar = $('progressBar');
   if (bar){ bar.classList.remove('indeterminate'); bar.style.width = '0%'; }
@@ -5353,7 +5564,7 @@ async function uploadIntakeDocs(projectId){
 // info. Auto-fill every contractor field from that client (and clear them when no
 // client is selected) so a project is never staged with another client's data.
 const CONTRACTOR_FIELDS = ['installerCompany','installerEmail','installerPhone','installerLine1','installerCity','installerState','installerZip','electricalLicenseNumber','contractorLicenseNumber','metroCityLicenseNumber','supervisingElectrician','electricianLicenseNumber','contractorLicenseNotes'];
-function clearContractorFields(){ CONTRACTOR_FIELDS.forEach(id => setVal(id, '')); }
+function clearContractorFields(){ CONTRACTOR_FIELDS.forEach(id => setVal(id, '')); updateGroupSummaries(); }
 
 async function loadContractorInfo(clientId) {
   clearContractorFields();
@@ -5387,6 +5598,7 @@ async function loadContractorInfo(clientId) {
       client.businessPhone || client.phone,
     ].filter(Boolean).join(' | ');
     setVal('contractorLicenseNotes', notes);
+    updateGroupSummaries(); // setVal fires no input event; the installer fold's count would go stale
     if (!client.ccbLicenseNumber) {
       const s = $('saveStatus'); if (s) s.textContent = `⚠ ${client.companyName || 'This client'} has no CCB license on file — add it in the Clients tab before submitting.`;
     }
@@ -5396,6 +5608,7 @@ async function loadContractorInfo(clientId) {
 }
 
 loadSystemSelects();
+updateGroupSummaries(); // the folds must state their denominator on first paint, not after the first parse
 </script>
 </body>
 </html>
