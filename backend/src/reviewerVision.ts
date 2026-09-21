@@ -124,7 +124,12 @@ async function verifyOne(
   const candidates = selectTopPagesForTopic(pages, topic, hint, excerpt, 3);
   if (candidates.length === 0) candidates.push(1);
 
-  let lastVerdict: ReviewerVisionVerdict | null = null;
+  // When NO candidate confirms, the verdict we keep decides which sheet the
+  // operator sees as the crop. Candidates are best-scored first, so keep the
+  // FIRST failing verdict — recording the last one showed the WORST-ranked
+  // sheet ("no structural information appears on this sheet" — true, and no
+  // one should have been looking at it).
+  let firstVerdict: ReviewerVisionVerdict | null = null;
   for (const page of candidates) {
     let base64: string;
     try {
@@ -146,10 +151,11 @@ async function verifyOne(
     const note = present
       ? `Vision confirmed on the plan sheet (page ${page}, ${confidence} confidence)\n${observed}`.trim()
       : `Vision could not confirm on the plan sheet (page ${page}, ${confidence} confidence)\n${observed}${missing ? ` Missing: ${missing}` : ""}`.trim();
-    lastVerdict = { checked: true, present, confidence, page, observed, note };
-    if (present) break; // found it — stop retrying
+    const verdict: ReviewerVisionVerdict = { checked: true, present, confidence, page, observed, note };
+    if (present) return verdict; // found it — stop retrying
+    if (!firstVerdict) firstVerdict = verdict;
   }
-  return lastVerdict ?? { checked: false, present: false, confidence: "low", page: candidates[0], observed: "", note: "Could not render any plan-set page for vision." };
+  return firstVerdict ?? { checked: false, present: false, confidence: "low", page: candidates[0], observed: "", note: "Could not render any plan-set page for vision." };
 }
 
 // Apply a verdict to a finding: vision confirmation upgrades the evidence status

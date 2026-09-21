@@ -48,8 +48,8 @@ async function getPdfjs(): Promise<PdfjsRenderModule> {
 }
 
 
-// Find the best plan-set PDF for a project: prefer the SLD, then the permit
-// application, then any stored PDF. Returns the on-disk path or null.
+// Find the best plan-set PDF for a project: the full plan set first, then a
+// standalone SLD, the permit application, then any stored PDF. Path or null.
 export function findPlanSetPdf(db: AppDb, projectId: string): string | null {
   const rows = db.query<Record<string, unknown>>(
     "SELECT doc_type, stored_path, content_type, original_filename FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC",
@@ -65,7 +65,14 @@ export function findPlanSetPdf(db: AppDb, projectId: string): string | null {
     const hit = rows.find((row) => s(row.doc_type) === type && isPdf(row));
     return hit ? s(hit.stored_path) : null;
   };
-  return byType("sld") || byType("plan_set") || byType("permit_application") || byType("issued_permit") || (rows.find(isPdf) ? s(rows.find(isPdf)!.stored_path) : null);
+  // PLAN SET FIRST. The old ladder led with "sld", which was harmless while a
+  // standalone SLD only existed when an operator uploaded one — but the auto-split
+  // chain now guarantees every project a 1-2 page `sld` SPLIT PART, newest row wins,
+  // and every vision crop for every topic (rafter spans included) rendered the
+  // electrical 3-line. The full plan set is a superset of every split; page
+  // selection narrows within it. "sld" stays as the fallback for the project whose
+  // ONLY document is a standalone SLD upload.
+  return byType("plan_set") || byType("sld") || byType("permit_application") || byType("issued_permit") || (rows.find(isPdf) ? s(rows.find(isPdf)!.stored_path) : null);
 }
 
 // Find a stored document by its doc_type (e.g. "meter_photo", "utility_bill").

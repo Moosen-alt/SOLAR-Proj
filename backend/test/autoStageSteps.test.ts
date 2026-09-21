@@ -198,9 +198,41 @@ console.log("\n6. THE CHAIN SPLITS THE PLAN SET, ONCE PER PLAN SET");
   const p2 = mk();
   const out = await processStageStep(db, p2.id);
   check("6d. no plan set on file -> no split step, no error", !out.ran.some((r) => r.startsWith("split(")));
+
+  // THE SPLIT MUST NOT HIJACK THE VISION BASE PDF. Auto-split guarantees every
+  // project a newest-row `sld` split part; findPlanSetPdf used to prefer "sld"
+  // over "plan_set", so every reviewer-gate crop (rafter spans included) rendered
+  // the 1-2 page electrical split — the operator's "its showing the wrong
+  // screenshot". The full set is a superset of every split; it must win.
+  const { findPlanSetPdf } = await import("../src/pageImages");
+  const chosen = String(findPlanSetPdf(db, p.id) || "");
+  const planSetPath = String(db.get<{ stored_path: string }>(
+    "SELECT stored_path FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1", [p.id])?.stored_path ?? "");
+  check("6e. MUST PASS: with splits on file, the vision base PDF is the PLAN SET, not a split part",
+    chosen !== "" && chosen === planSetPath, `chosen=${path.basename(chosen)}`);
+
+  // And the fallback arm must not break: a project whose ONLY document is a
+  // standalone SLD upload still resolves to it (filter lists fail both ways).
+  saveProjectDocument(db, p2.id, {
+    filename: "standalone-sld.pdf", docType: "sld",
+    contentType: "application/pdf", buffer: await mkPlanPdf(), source: "upload",
+  });
+  const sldOnly = String(findPlanSetPdf(db, p2.id) || "");
+  check("6f. no plan set -> the standalone SLD is still found", /standalone-sld/.test(path.basename(sldOnly)), path.basename(sldOnly));
+
+  // saveProjectDocument fires a void text extraction; let it land before db.close()
+  // or the test dies AFTER its own banner with "database connection is not open".
+  for (let i = 0; i < 40; i += 1) {
+    const pending = Number(db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM project_documents WHERE project_id IN (?, ?) AND doc_type IN ('plan_set','sld') AND source = 'upload' AND extracted_text = ''", [p.id, p2.id])?.n ?? 0);
+    if (pending === 0) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 console.log(failures ? `\nautoStageSteps: ${failures} check(s) FAILED` : "\nautoStageSteps: all checks passed");
 db.close();
 fs.rmSync(dir, { recursive: true, force: true });
-if (failures) process.exit(1);
+// pageImages (imported by 6e) holds pdf-render handles that keep the event loop
+// alive past the banner — exit explicitly, the house convention in these tests.
+process.exit(failures ? 1 : 0);
