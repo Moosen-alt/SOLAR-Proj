@@ -17,6 +17,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const env = {
   ...process.env,
   AUTOPILOT_DB_PATH: path.join(tmpDir, "test.sqlite"),
+  BACKUP_DIR: path.join(tmpDir, "backups"),
   DATA_DIR: path.join(tmpDir, "data"),
   PORT: String(PORT),
   SEED_TEST_INSTALLER: "false",

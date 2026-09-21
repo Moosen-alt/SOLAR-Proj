@@ -36,8 +36,12 @@ process.env.SEED_TEST_INSTALLER = "false";
 process.env.AUTOPILOT_AUTO_START = "0";
 
 const { openDatabase } = await import("../src/db");
-const { runBackup, listBackups, startBackupScheduler, backupIntervalMs, isAutomaticSnapshot } =
+const { runBackup, listBackups, startBackupScheduler, backupIntervalMs, isAutomaticSnapshot, claimBackupDirectory } =
   await import("../src/backup");
+
+/** Two spellings of one Windows path are the same file — the comparison the guard itself makes. */
+const sameShape = (a: string, b: string): boolean =>
+  path.resolve(a).replace(/\\/g, "/").toLowerCase() === path.resolve(b).replace(/\\/g, "/").toLowerCase();
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -123,6 +127,64 @@ console.log("\n2. ROTATION RETIRES THE AUTOMATIC SERIES ONLY");
   check("2e. and a pin is still LISTED, so an operator can actually restore from it",
     pins.every((p) => listBackups().some((b) => b.file === p)),
     `listBackups: ${listBackups().map((b) => b.file).join(", ")}`);
+}
+
+// ---------------------------------------------------------------------------
+// 3. ONE BACKUP DIRECTORY BACKS UP ONE DATABASE.
+//
+// Eight tests in this very chain boot the real server and never override BACKUP_DIR, so they
+// inherited the operator's .env and filed 1 MB snapshots of their own throwaway databases onto
+// the real backup drive — three per chain run, measured, sitting between the 30 MB real ones.
+// Rotation does not care which is which. That is the interval bug's twin, through another door.
+// ---------------------------------------------------------------------------
+console.log("\n3. A DIRECTORY THAT BACKS UP ONE DATABASE REFUSES ANOTHER");
+{
+  const claimDir = path.join(root, "claimed");
+  const marker = path.join(claimDir, ".backup-source.json");
+  const LIVE = path.join(root, "live", "autopilot.sqlite");
+  const SCRATCH = path.join(root, "scratch-abc123", "test.sqlite");
+
+  check("3a. the first database to use a directory claims it", claimBackupDirectory(LIVE, claimDir, marker) === null);
+  check("3b. and the claim is written down, not just remembered in this process", fs.existsSync(marker));
+  check("3c. MUST PASS: the same database keeps backing itself up, every time",
+    claimBackupDirectory(LIVE, claimDir, marker) === null && claimBackupDirectory(LIVE, claimDir, marker) === null);
+
+  const conflict = claimBackupDirectory(SCRATCH, claimDir, marker);
+  check("3d. THE LOSS: a DIFFERENT database is refused, and told whose directory this is",
+    conflict !== null && sameShape(conflict, LIVE), `got ${String(conflict)}`);
+
+  // Windows hands back C:\x from one API and c:/x from another for the same file. A guard that
+  // reads those as two databases would lock the live server out of its own backups — the exact
+  // inversion of the bug, and silent.
+  const wobbly = LIVE.replace(/\\/g, "/").toUpperCase();
+  check("3e. MUST PASS: the same path in different Windows spelling is the SAME database",
+    claimBackupDirectory(wobbly, claimDir, marker) === null, `refused its own source spelled ${wobbly}`);
+
+  // Deliberate reconfiguration: delete the marker, and the directory is claimable again.
+  fs.unlinkSync(marker);
+  check("3f. deleting the marker is how you deliberately re-point a backup directory",
+    claimBackupDirectory(SCRATCH, claimDir, marker) === null);
+
+  // And end to end, through runBackup, on the directory this test has been using all along:
+  // that directory was claimed by THIS test's database at section 1, so a stranger is refused.
+  const stranger = path.join(root, "stranger.sqlite");
+  // A stub that RECORDS whether anything tried to read it. The refusal has to come BEFORE the
+  // copy — a guard that throws after writing the file has not prevented anything.
+  let copyAttempted = false;
+  const strangerDb = { sourcePath: stranger, backupTo: () => { copyAttempted = true; } } as never;
+  const beforeCount = snapshotsOnDisk().length;
+  let threw = "";
+  try {
+    runBackup(strangerDb);
+  } catch (err) {
+    threw = err instanceof Error ? err.message : String(err);
+  }
+  check("3g. runBackup itself refuses, naming both databases and the remedy",
+    threw.includes("REFUSED") && threw.includes("stranger.sqlite") && threw.includes(".backup-source.json"),
+    threw || "runBackup did not throw");
+  check("3h. and it refused BEFORE touching the database — no half-written snapshot",
+    copyAttempted === false && snapshotsOnDisk().length === beforeCount,
+    `copyAttempted=${copyAttempted} files ${beforeCount} -> ${snapshotsOnDisk().length}`);
 }
 
 console.log(failures ? `\nbackupRotation: ${failures} check(s) FAILED` : "\nbackupRotation: all checks passed");

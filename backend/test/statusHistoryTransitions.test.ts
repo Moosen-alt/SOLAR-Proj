@@ -76,6 +76,7 @@ import vm from "node:vm";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "status-history-transitions-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
+process.env.BACKUP_DIR = path.join(tmpDir, "backups");
 process.env.SEED_TEST_INSTALLER = "false";
 process.env.AUTOPILOT_AUTO_START = "0";
 delete process.env.SMTP_HOST;
@@ -1529,6 +1530,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const serverEnv = {
   ...process.env,
   AUTOPILOT_DB_PATH: process.env.AUTOPILOT_DB_PATH,
+  BACKUP_DIR: process.env.BACKUP_DIR,
   AUTOPILOT_AUTO_START: "0",
   PORT: String(PORT),
   SEED_TEST_INSTALLER: "false",

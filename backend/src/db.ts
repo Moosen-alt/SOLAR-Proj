@@ -31,6 +31,16 @@ export class AppDb {
 
   constructor(private readonly db: DB) {}
 
+  /** Absolute path of the database file this handle is open on.
+   *
+   *  `runBackup` needs it to answer a question that had no answer before: WHICH database is
+   *  this a snapshot OF. A backup directory that cannot tell is a directory where a throwaway
+   *  test database can quietly file itself alongside the operator's real restore points — which
+   *  is not hypothetical, it is what happened. */
+  get sourcePath(): string {
+    return this.db.name;
+  }
+
   // Close the underlying handle. Needed by tests that delete their scratch DB file:
   // Windows keeps an open handle as a file lock, so the unlink EBUSYs until closed.
   close(): void {

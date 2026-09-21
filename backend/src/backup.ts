@@ -54,8 +54,71 @@ export interface BackupRunInfo extends BackupInfo {
   portalSessionFilesMirrored: number;
 }
 
+/**
+ * ONE BACKUP DIRECTORY BACKS UP ONE DATABASE.
+ *
+ * The directory has no way, on its own, to say which database its snapshots are OF — every file
+ * is `autopilot-<stamp>.sqlite` whatever wrote it. So eight tests in the backend chain, which
+ * boot the real server and never override `BACKUP_DIR`, inherited the operator's `.env` and each
+ * filed a 1 MB snapshot of its own throwaway scratch database onto the real backup drive, in
+ * among the 30 MB real ones. With rotation running, junk written by a test suite is enough to
+ * retire a real restore point — the same loss as the interval bug, by a different door.
+ *
+ * This marker closes the door for good, and generically: it names the source database, and any
+ * OTHER database that points at this directory is refused rather than quietly mixed in. It also
+ * catches the real-world version nobody has hit yet — two app instances sharing one backup
+ * directory, each rotating away the other's history.
+ *
+ * Reconfiguring on purpose (moving the live database, pointing at a new drive) means deleting
+ * this file deliberately. The refusal message says so and names both paths, because a guard that
+ * refuses without saying what to do is just an outage.
+ */
+const SOURCE_MARKER = path.join(BACKUP_DIR, ".backup-source.json");
+
+/** Windows gives back `C:\x` and `c:/x` for the same file; compare them as the same file. */
+function sameFile(a: string, b: string): boolean {
+  const norm = (p: string) => path.resolve(p).replace(/\\/g, "/").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/**
+ * Claim this backup directory for `sourcePath`, or report who already holds it.
+ * Returns the conflicting source when the directory belongs to a DIFFERENT database.
+ */
+export function claimBackupDirectory(sourcePath: string, dir = BACKUP_DIR, marker = SOURCE_MARKER): string | null {
+  let held: string | null = null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(marker, "utf8")) as { source?: unknown };
+    if (typeof raw.source === "string" && raw.source.trim()) held = raw.source;
+  } catch {
+    // No marker, or an unreadable one. An unreadable marker is treated as absent and
+    // rewritten — refusing every backup over a corrupt one-line file would be worse than
+    // the problem it guards.
+  }
+  if (held && !sameFile(held, sourcePath)) return held;
+  if (!held) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(marker, `${JSON.stringify({ source: path.resolve(sourcePath), claimedAt: new Date().toISOString() }, null, 2)}\n`);
+    } catch {
+      // Cannot write the marker (read-only mount, permissions). Do not fail the backup over
+      // bookkeeping — the snapshot itself is the thing that matters.
+    }
+  }
+  return null;
+}
+
 // Write one snapshot now. Returns the created file path.
 export function runBackup(db: AppDb): BackupRunInfo {
+  const conflict = claimBackupDirectory(db.sourcePath);
+  if (conflict) {
+    throw new Error(
+      `[backup] REFUSED: ${BACKUP_DIR} holds snapshots of ${conflict}, not ${db.sourcePath}. ` +
+        `One backup directory backs up one database — mixing them lets rotation retire real restore ` +
+        `points to make room for another database's. Point BACKUP_DIR somewhere else for this process, ` +
+        `or if you have deliberately moved the database, delete ${SOURCE_MARKER} and run again.`,
+    );
+  }
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const file = path.join(BACKUP_DIR, `autopilot-${stamp}.sqlite`);

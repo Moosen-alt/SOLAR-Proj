@@ -74,6 +74,7 @@ import path from "node:path";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "plan-set-client-match-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
+process.env.BACKUP_DIR = path.join(tmpDir, "backups");
 process.env.SEED_TEST_INSTALLER = "false"; // the seeded TML installer would forge section 1's match
 process.env.AUTOPILOT_AUTO_START = "0";
 delete process.env.SMTP_HOST;

@@ -55,6 +55,7 @@ import path from "node:path";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "stage-detail-test-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
+process.env.BACKUP_DIR = path.join(tmpDir, "backups");
 process.env.PROJECT_DOCS_DIR = path.join(tmpDir, "docs");
 process.env.SEED_TEST_INSTALLER = "false";
 // createProject enqueues a self-kicking autopilot job. Left on, that job stages in the
