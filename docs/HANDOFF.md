@@ -3,6 +3,122 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## RESTARTED ON THE NEW CODE, AND PORTLAND PRICES PROPERLY NOW (2026-09-20, later)
+
+Four commits after the C.5 section below: `df7191e` (a collapsed word boundary), `9e8292a`
+(backup-directory ownership), `1505740` (the Portland valuation ladder), plus the restart.
+
+### The live server was restarted, and it moved port
+
+It had been up 5.6 days on code that predates Rounds A/B/C/C.5 — live `schema_meta` was still at
+v28. It is now running detached (`cmd.exe` wrapper, log at `backend/data/server.log`) so it
+survives a session ending.
+
+**It answers on `http://localhost:4173` now, not `:4200`.** The old process had `PORT=4200` in
+the shell that launched it; nothing in the repo or `.env` says 4200, and `PUBLIC_BASE_URL` and
+`.env` both say 4173, so the restart put it where the configuration always pointed.
+
+Post-restart, measured: migration **v29 applied**, `projects.stage_detail` column present, row
+counts identical to the pre-restart pin (16 projects / 1 client / 91 submissions / 182 documents
+/ 2 corrections), `stageCount: 5` on the live API, Ann Marineau rendering `issued` → stage
+`track` (3 of 5), and the boot backup wrote a real 16.8 MB live snapshot to E: with 2,581
+documents mirrored.
+
+### A word boundary had collapsed into a backspace
+
+`frontend/parser.html` carried `/\s*-\s*\d{3,4}\s*W(?:ATT)?<0x08>/i` where the author wrote `\b`.
+Heredoc writing on this machine eats one level of backslash: `\n` collapses loudly into a parse
+error, `\b` collapses silently into a literal backspace byte that is invisible in every editor,
+in grep and in sed. The regex compiled, required a literal 0x08 after the W, and matched nothing
+— so `stripModuleMakeFromModel` stopped stripping wattage suffixes off module models.
+
+**Measured blast radius: zero live rows.** All 16 live parses hold a clean `moduleModel`
+(`ZXM7-UHLD108-440/N`, `Q.TRON BLK M-G2.C1+/AC`) because the identical regex 500 lines below it
+still reads `\b` and handles the path they went through. A disarmed guard, not an active wrong
+answer — which is exactly why it sat there for months.
+
+`backend/test/sourceControlBytes.test.ts` is the durable half: it reads the BYTES of all 529
+tracked source files and fails on any control character that is not tab, CR or LF. It proves its
+own detector can see a collapsed `\b`, `\f`, `\v`, `\e` and `\0` before it reports a clean tree,
+and refuses to report anything until git has listed a plausible number of files including three
+named anchors — a scan of zero files must never read as a clean result.
+
+### One backup directory backs up one database
+
+The test suite had been filing snapshots of its own scratch databases onto the operator's real
+backup drive: six tests boot the real server, the server starts the backup scheduler, the
+scheduler snapshots at startup, and none of them overrode `BACKUP_DIR`. Three 1 MB files per
+chain run, sitting among the 30 MB real ones, with rotation unable to tell them apart.
+
+A backup directory now records which database it is FOR (`.backup-source.json`); a different
+database is refused, told whose directory it is, and told that re-pointing deliberately means
+deleting the marker. Paths compare the Windows way, so `C:\x` vs `c:/x` can never lock the live
+server out of its own backups. **The marker on E: was seeded by hand to name the live database**,
+so a test run can never claim it first. The six tests also got their own temp `BACKUP_DIR`.
+Nine runs afterwards left the drive holding exactly the real pins and nothing else.
+
+### Portland prices properly now — Trask went $450 → $890.08
+
+Bren Trask's real filing was quoted at $450: the 1.5%-of-valuation heuristic, from a method that
+has never read Portland's fee table. His structural bracket is a valuation LADDER and the
+evaluator refused every ladder outright — right while the rest of the sentence went unread, and
+it is all there in the bracket's own label: base, step, per-step rate and the rounding rule.
+
+`parseValuationLadder` / `evaluateValuationLadder` read it out of the quote at evaluation time —
+no new column, and no new place for an untrusted writer to put a number. Trask's structural line
+is now **$592.08** (`540.78 + ceil(5000/1000) × 10.26`) and his filing **$890.08**, from the
+published schedule instead of a guess. `$50,000` on that rung computes to `$797.28`, which is
+exactly the next rung's printed base — the ladder agrees with the published table at the seam.
+
+What it still refuses, on purpose: a label whose stated base contradicts the bracket's own fee;
+the kVA formulas (Tigard stores the rate, Portland electrical a rate with no base, Coos County
+the base — three meanings for one column); and a ladder with no valuation, which now says so
+explicitly. A ladder walked on a per-watt ESTIMATE says that too, because every step is $10.26
+of real money and a figure accurate to the cent can still be wrong by however far the guess is.
+
+### THE REMAINING PORTLAND GAP — the ancillary charges are not on the live row
+
+The operator's complaint was that PDX fees "can get upward of like $1300 sometimes". $890.08 is
+the two PERMIT LINES only. The live `City of Portland` rows carry **zero** `ancillaryCharges` and
+**zero** bracket surcharges — so the 12% state surcharge, the 65% plan-review/processing charge,
+the fire plan review and the land use review that the $762.93 receipt reconciliation proved the
+engine can model are simply absent from the stored schedule. The machinery works
+(`feeFilingCharges.test.ts` reconciles that receipt per charge); the DATA is missing. Populating
+those on the live Portland rows is the next concrete Round D step, and it is what closes the gap
+between $890 and the operator's remembered ~$1300.
+
+### Fee coverage across the active six, priced for real (open projects)
+
+| Project | AHJ | Total |
+|---|---|---|
+| Connie Rhinesmith | City Of Tigard | $313.56 |
+| Christopher Ivy | City of Coos Bay | $335.00 |
+| **Bren Trask** | **City of Portland** | **$890.08** |
+| Abby Johnson | City of Happy Valley | ≈ $450.00 ESTIMATE |
+| Randal Rowland | City of Lincoln City | ≈ $455.40 ESTIMATE |
+| Daniel Daly | City Of Salem | ≈ $336.60 ESTIMATE |
+| David Simmons / Wynema Wright | City of Coos Bay | ≈ $435.99 / ≈ $277.20 ESTIMATE |
+
+Every remaining ESTIMATE is an AHJ with no permit schedule row: Happy Valley and Lincoln City
+have none at all, Salem has a NEM row only. That is Round D2's whole scope.
+
+### The C.5 resolver, measured on every live project
+
+Re-wrapping each stored parse into the shape the `/api/parser/llm-extract` seam actually passes
+(`{value, confidence}` — the flat `parser_json` is the post-normalisation artifact, not the seam):
+
+- **2 auto_assign** — Ivy and Ann, exact CCB 223690 on TML.
+- **2 preselect** — Trask and Abby, the plan set's company + phone, no CCB, confirmation required.
+- **12 none** — older parses that carry no installer fields at all.
+- **0 wrong.** Every suggestion agreed with the client actually bound.
+
+One provenance note, because it reads the other way at first glance: Ivy's and Ann's CCB was
+filled in from the client record by the intake-requirements flow, not read off the title block —
+Ivy's row still carries the literal prompt string "Add the installing contractor's Oregon CCB" in
+a neighbouring field. Trask and Abby are the rows that hold what a plan set actually prints, and
+neither has a CCB. The claim stands: these plan sets do not print one.
+
+
 ## ROUND C.5 — THE PLAN SET NAMES THE COMPANY, AND BACKUPS HAD BEEN EATING BACKUPS (2026-09-20)
 
 **Commit `183b4aa`. Pre-D verification: typecheck clean, backend chain 142/142 (last banner
