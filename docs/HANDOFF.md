@@ -3,6 +3,79 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## THE PIPELINE DRIVES ITSELF, AND THE KB'S COLUMNS TELL THE TRUTH (2026-09-21)
+
+Commits `c4f714f` … `ecf571a` (UI density, auto-chain, valuation formula, bot round, KB sweep).
+Every operator ruling this stretch is quoted in the relevant commit.
+
+### What is now automatic (and what never will be)
+
+`autoStageSteps.ts`: a parser save/update, a document upload, or a plan-set split enqueues ONE
+`stage_step` job that runs QC → form ACQUISITION (the same cooldown-guarded
+prepareOfficialDocuments seam staging uses — a brand-new AHJ pulls its forms on first contact)
+→ AHJ/NEM doc package → reviewer gate (with vision, cached) + historical check, each step
+re-reading live status first. **The chain stops cold at `ready_to_stage`** — zero portal_runs,
+zero submissions, imports asserted browser-free (autoStageSteps.test.ts §3). An empty package
+writes `stage_auto.docs_unbuildable` instead of stalling silently. Kill switch
+`AUTO_STAGE_STEPS=0`. Segment A now also builds the package en route, and the button reads
+"Stage portals · Autopilot" — staging and Approve & Submit remain the only human gestures.
+Proven live on Basson/Douglas County: parse → ready_to_stage/reviewer_gate_approved with no
+clicks once the split supplied the missing sheets.
+
+### The operator's valuation formula (ruling, from their spreadsheet)
+
+valuation = **contract × 0.4 + battery adders** (AP Systems $7,000 / Tesla $8,500 / unknown $0,
+qty default 1 when a battery is on file) — `valuation.ts`, factor env-tunable
+(PERMIT_VALUATION_CONTRACT_FACTOR), >1 refused as a typo. The per-watt fallback estimates the
+CONTRACT then applies the formula, and stays labelled an estimate. jobValue had been placed on
+applications unchanged — overstating every valuation 2.5× and every valuation-laddered fee.
+Trask $30,000 → $12,000; Connie's real contract $56,156.78 (operator-supplied, audited) →
+$22,462.71; Basson $21,917.72 → $8,767.09 with correctly NO adder (DS3-L are microinverters).
+Five tests repinned with the ruling cited; the Albany fixture proves it on bracket SELECTION.
+
+### The KB portal-column sweep (operator: "ensure it doesn't happen again")
+
+94 defective rows, three layers of fix (`ecf571a`, kbPortalColumns.test.ts):
+- **71 rows** (the Permit Processes workbook import, six states) had the portal URL in
+  `portal_name` with `portal_url` empty — the Tigard and Douglas wrong-portal incidents were
+  just the two caught live. WRITE: upsertKnowledge (the one funnel) routes a lone URL-shaped
+  name into portal_url. READ: mapper falls back for legacy rows. DATA: 26 filled.
+- **23 AHJ-side rows** carried the utility's PowerClerk; **Happy Valley was fully inverted**
+  (EnerGov in name, PowerClerk in url). The permit exact-key lookup now reads BOTH columns and
+  takes the first NON-utility http candidate — the inversion self-heals, both-utility yields
+  EMPTY (hard rule 5 at the data seam). Happy Valley swapped, Coos Bay's stray cleared.
+- **Ambiguous, left for the operator:** `or|newberg|unknown` and `or|wilsonville|unknown` carry
+  TWO urls in one name cell — nothing was guessed.
+- Rulings applied same-day: **Tigard → Tyler EnerGov** (tigardor-energovweb.tylerhost.net;
+  recipes reset to v2, EnerGov credential still NOT on file) and **Douglas County → iWorQ**
+  (douglascounty.portal.iworq.net, 2 credentials on file).
+
+### The bot (portal-bot round, `cfba798`)
+
+- Login-reveal invariant: a control is a login reveal because IT is described as one — attached
+  menu text may confirm/veto, never establish (the PowerClerk program-picker popup, killed).
+- Replay speed: the 3s post-fill sleep drops to 300ms when the portal's own autosave indicator
+  says Saved (absence of the signal ≠ saved); the 15s drift budget early-exits on a page that
+  rendered real fields and held them stable across three scans (field-less pages keep the full
+  budget — interstitials redirect late).
+- **Generated docs are attachable**: `generatedDocFiles.ts` renders the application package
+  (transfer sheet, worksheets, prescriptive application) to PDFs at the prepareOfficialDocuments
+  seam; precedence generated < filled official < operator upload, proven by displacement test.
+- Splitter dialects from the Basson set: "ELECTRICAL LINE DIAGRAM" → sld; "EQUIPMENT
+  SPECIFICATION" pages → module_spec + inverter_spec.
+
+### Douglas County / Basson state
+
+Project `3b9ce10c` at ready_to_stage/reviewer_gate_approved; engineered path (PE Pantel
+99490PE, sealed letter + stamped drawing); meter 82 031 149 and account 37824571-0017 verified
+against the operator's bill + photo; fee schedule researched as SEEDED $79/$94/$156 by kVA
+(+$6.25/kVA over 25) — 3.072 kW AC addition prices $79; verify against the county's page before
+quoting. Cover cites 2025 OSSC/NEC 2023 while the letter runs ASCE 7-16 — flag if the county
+comments. UI density round (`c4f714f`/`992fe4f`): detail page 4,467→1,783px on Connie, parser
+5,906→2,359px, readiness collapsed to one line, honesty markers verified inline by an
+adversarial pass; Trask/Ann/Ivy remain above target on purpose (open questions may not hide).
+
+
 ## TIGARD FILES THROUGH ENERGOV, AND TRASK'S $1,310.69 IS DERIVED, NOT REMEMBERED (2026-09-20, night)
 
 Commits `3f2b097` → `69b90f4`, plus a live KB correction under an operator ruling.
