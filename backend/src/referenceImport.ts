@@ -14,7 +14,7 @@
 import type { AppDb } from "./db";
 import type { CodeEdition, FireSetbackRule, JurisdictionCodeAmendment, JurisdictionCodeProfile, JurisdictionDesignCriteria } from "../../shared/src/types";
 import { readXlsx, pick, type SheetData } from "./xlsxRead";
-import { codeProfileKey, getCodeProfile, saveResearchedCodeProfile } from "./codeProfiles";
+import { codeProfileKey, getCodeProfile, listCodeProfiles, saveResearchedCodeProfile } from "./codeProfiles";
 import { importSeededUtilityKnowledge, importSeededAhjKnowledge } from "./knowledgeBase";
 import { logger } from "./logger";
 
@@ -240,6 +240,128 @@ export function importAhjProcessSheet(db: AppDb, sheet: SheetData, opts: { dryRu
   return summary;
 }
 
+// ---- Stamp Requirements by AHJ -------------------------------------------
+
+export interface StampSummaryRow {
+  state: string;
+  ahj: string;
+  structural: "yes" | "no" | "";
+  electrical: "yes" | "no" | "";
+  notes: string;
+}
+
+/** Parse the operator's "Stamp Summary" sheet. The sheet opens with a totals
+ *  block, so the REAL header ("State" / "AHJ / Jurisdiction" / "Structural
+ *  Stamp" ...) is embedded a few rows down and the row keys are meaningless —
+ *  find that row, learn which key carries which column, then read the rest
+ *  positionally. Rows whose State cell is not a 2-letter code (footers,
+ *  spacers) are dropped. Verified against v1.1: 572 rows parse and reconcile
+ *  exactly with the sheet's own totals (331 structural / 148 electrical /
+ *  136 both), zero duplicate state+AHJ keys. */
+export function parseStampSummarySheet(sheet: SheetData): StampSummaryRow[] {
+  let cols: Record<string, string> | null = null;
+  const out: StampSummaryRow[] = [];
+  const flag = (v: string): "yes" | "no" | "" => /^y(es)?$/i.test(v) ? "yes" : /^no?$/i.test(v) ? "no" : "";
+  for (const row of sheet.rows) {
+    if (!cols) {
+      const vals = Object.values(row).map((v) => String(v).trim());
+      if (vals.includes("State") && vals.some((v) => /structural stamp/i.test(v))) {
+        cols = {};
+        for (const [k, v] of Object.entries(row)) {
+          const label = String(v).trim();
+          if (label) cols[label] = k;
+        }
+      }
+      continue;
+    }
+    const get = (label: string) => String(row[cols![label]] ?? "").trim();
+    const state = get("State").toUpperCase();
+    const ahj = get("AHJ / Jurisdiction");
+    if (!/^[A-Z]{2}$/.test(state) || !ahj) continue;
+    out.push({ state, ahj, structural: flag(get("Structural Stamp")), electrical: flag(get("Electrical Stamp")), notes: get("Special Notes") });
+  }
+  return out;
+}
+
+/** Import the stamp-requirements summary. Each row lands in TWO places, both
+ *  seeded and both refusing to touch a human-verified row:
+ *    · jurisdiction_code_profiles amendments — the SAME "Structural stamp
+ *      required: Yes" vocabulary the codes importer writes, so the reviewer
+ *      gate renders them identically. Yes-only on purpose: a "...: No" line
+ *      would hand every text-matching consumer the words "stamp required" to
+ *      misread (a filter list fails both ways).
+ *    · a KB note segment carrying the FULL yes/no pair + the operator's note,
+ *      where prose is read by humans, not matchers.
+ *  Deliberately NOT set: prescriptive.engineerStampOverKwDc — a hard any-size
+ *  stamp block is too strong a claim for a summary sheet whose own notes are
+ *  conditional ("2x4 rafters need engineering"); routing stays with the
+ *  project's resolved path and the AHJ's structured rules. */
+export function importStampSummarySheet(db: AppDb, sheet: SheetData, opts: { dryRun?: boolean } = {}): ImportSummary {
+  const summary: ImportSummary = { dataset: `stamps:${sheet.name}`, imported: 0, skippedVerified: 0, skippedEmpty: 0, dryRun: !!opts.dryRun, samples: [] };
+  for (const row of parseStampSummarySheet(sheet)) {
+    if (!row.structural && !row.electrical && !row.notes) { summary.skippedEmpty++; continue; }
+    if (summary.samples.length < 5) summary.samples.push(`${row.ahj} (${row.state}): structural=${row.structural || "?"} electrical=${row.electrical || "?"}`);
+    if (opts.dryRun) { summary.imported++; continue; }
+
+    // KB note segment FIRST — its verified check is the veto for BOTH lanes. Where
+    // the operator has recorded a human-verified ruling (Salem: no stamp on
+    // prescriptive, stamp on engineered), the workbook's flat Yes must not land
+    // ANYWHERE — a reviewer-visible "Structural stamp required: Yes" amendment
+    // would silently contradict the ruling the KB just protected.
+    const noteBits = [`Stamps (operator reference): structural ${row.structural || "unknown"}, electrical ${row.electrical || "unknown"}`];
+    if (row.notes) noteBits.push(`Stamp notes: ${row.notes.slice(0, 200)}`);
+    const outcome = importSeededAhjKnowledge(db, {
+      state: row.state,
+      ahj: row.ahj,
+      notes: noteBits.join(" | "),
+      sourceLabel: `Operator stamp-requirements list (${sheet.name})`,
+    });
+    if (outcome === "skipped_verified") { summary.skippedVerified++; continue; }
+
+    // Codes profile: Yes flags + the note, merged onto any seeded profile.
+    let landedProfile = false;
+    let refusedVerified = false;
+    const amendments: JurisdictionCodeAmendment[] = [];
+    if (row.structural === "yes") amendments.push({ code: "AHJ", summary: "Structural stamp required: Yes" });
+    if (row.electrical === "yes") amendments.push({ code: "AHJ", summary: "Electrical stamp required: Yes" });
+    if (row.notes) amendments.push({ code: "AHJ", summary: `Stamp notes: ${row.notes.slice(0, 200)}` });
+    if (amendments.length) {
+      // THE EXACT ROW, NOT THE LAYERED VIEW. getCodeProfile folds the STATE default
+      // under every lookup — Oregon's state row is verified, so a layered read would
+      // refuse every new OR jurisdiction and, worse, copy state amendments onto the
+      // new AHJ row. Import decisions are about the AHJ's own row only.
+      const key = codeProfileKey({ state: row.state, ahj: row.ahj });
+      const existing = listCodeProfiles(db).find((p) => p.key === key) ?? null;
+      if (existing && existing.confidence === "verified") {
+        refusedVerified = true;
+      } else {
+        const have = new Set((existing?.amendments ?? []).map((a) => a.summary));
+        saveResearchedCodeProfile(db, {
+          key,
+          state: row.state,
+          ahj: row.ahj,
+          confidence: "seeded",
+          adoptedCodes: existing?.adoptedCodes ?? [],
+          amendments: [...(existing?.amendments ?? []), ...amendments.filter((a) => !have.has(a.summary))],
+          designCriteria: existing?.designCriteria ?? {},
+          prescriptive: existing?.prescriptive ?? {},
+          fireSetbacks: existing?.fireSetbacks ?? [],
+          citations: [...(existing?.citations ?? []), { label: `Operator stamp-requirements list (${sheet.name})`, sourceUrl: "" }],
+          updatedAt: new Date(0).toISOString(),
+        });
+        landedProfile = true;
+      }
+    }
+
+    // ONE verdict per ROW: landed anywhere → imported; refused only for verified →
+    // skippedVerified; nothing anywhere (junk name AND no landing) → skippedEmpty.
+    if (landedProfile || outcome === "imported") summary.imported++;
+    else if (refusedVerified) summary.skippedVerified++;
+    else summary.skippedEmpty++;
+  }
+  return summary;
+}
+
 // ---- workbook dispatch ----------------------------------------------------
 
 /** Auto-detect a workbook's dataset by sheet names and import every matching sheet. */
@@ -254,7 +376,9 @@ export function importReferenceWorkbook(db: AppDb, buffer: Buffer, opts: { dryRu
     // Precedence is by unambiguous sheet name first, then column heuristics.
     // Jurisdiction-codes and utility-list sheets both can carry IFC/IRC/IBC columns,
     // so the sheet name disambiguates them.
-    if (/utilitycompanylist|^utilities$/.test(n)) {
+    if (/^stampsummary$/.test(n) || (hasCol("ahjengineeringstamprequirements") && sheet.rows.length > 3)) {
+      out.push(importStampSummarySheet(db, sheet, opts));
+    } else if (/utilitycompanylist|^utilities$/.test(n)) {
       out.push(importUtilityNemSheet(db, sheet, opts));
     } else if (/jurisdiction|authorityhaving|^codes$/.test(n)) {
       out.push(importAhjCodesSheet(db, sheet, opts));
