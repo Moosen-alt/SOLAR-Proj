@@ -3204,6 +3204,45 @@ function noPipe(value: string): string {
   return String(value ?? "").replace(/\s*\|\s*/g, " — ");
 }
 
+/**
+ * TWO KINDS OF "CONDITIONAL", AND ONLY ONE OF THEM IS AN OPEN QUESTION ABOUT THIS FILING.
+ *
+ * The rule that an unpriced conditional charge nulls the total was written for a review that is
+ * MANDATORY above some threshold — Salem's electrical plan review "when required", Portland's
+ * above-25-kVA review. Nobody has answered whether it applies, the answer changes the bill
+ * today, and a smaller confident number is the dangerous one. That rule stays.
+ *
+ * But every jurisdiction researched for the active six also publishes OVERAGE fees: a
+ * reinspection charged when an inspection fails, a fee for revising plans after submittal, a
+ * charge for checksheets beyond the two the plan review includes. Those are contingent on events
+ * that have not happened, and by construction cannot have happened on a filing not yet made.
+ * The operator's own paid $762.93 City of Portland receipt — four bills from three bureaus —
+ * contains not one of them. Holding a total hostage to them means Portland, Salem and Lincoln
+ * City can never produce a number at all, which is the opposite of the job.
+ *
+ * DEFAULT IS HOLD. This releases only on wording that is unmistakably about extra work beyond
+ * what the permit already covers; anything ambiguous keeps the existing behaviour. Note what is
+ * deliberately NOT here: "additional" on its own. Portland prints "Additional Plan Review Fee:
+ * For changes, additions, or revisions to plans" (overage) three lines from a mandatory review
+ * whose text also says "additional", and Salem's "Electrical Plan Review (when required or
+ * requested)" must keep holding. So the match is on whole phrases, not on one suggestive word.
+ *
+ * A literal, like FORMULA_LABEL above, for the same reason: a regex assembled from pieces is a
+ * regex nobody can check against the strings it is supposed to match.
+ */
+const FUTURE_CONTINGENT_CHARGE =
+  /\bre-?inspection\b|\bre-?review\b|\beach\s+additional\s+inspection\b|\badditional\s+inspections?\b|\bbeyond\s+(?:the\s+)?(?:\d+\s+)?(?:checksheets?|inspections?|reviews?|hours?)\b|\bchanges,?\s*additions,?\s*or\s*revisions\b|\brevisions?\s+to\s+plans\b|\bafter\s+(?:permit\s+)?issuance\b|\bper\s+additional\s+checksheet\b|\badditional\s+checksheet\b|\blate\s+fee\b|\bpenalt(?:y|ies)\b|\bexpired?\s+permit\b|\bwork\s+(?:started|commenced)\s+without\b/i;
+
+/**
+ * Is this conditional charge about something that has not happened yet, rather than about a
+ * property of this filing? Reads the condition AND the label, because jurisdictions split the
+ * information between them ("Reinspection Fee - fee charged per inspection" carries it all in
+ * the label, with an empty condition).
+ */
+export function chargeIsFutureContingent(condition: string | undefined, label: string | undefined): boolean {
+  return FUTURE_CONTINGENT_CHARGE.test(`${String(label ?? "")} ${String(condition ?? "")}`);
+}
+
 function conditionalChargeApplies(
   condition: string,
   inputs: { electricalReviewRequired?: boolean },
@@ -3286,12 +3325,17 @@ function ancillaryCharges(
       ? `${c.percent}% of ${clean(c.percentOf) || "the permit fee"} ($${b.feeUsd.toFixed(2)})`
       : "";
     const known = c.conditional ? conditionalChargeApplies(c.condition, inputs) : true;
+    // An overage fee is not a question about THIS filing — see chargeIsFutureContingent. It is
+    // still listed, with its own wording, so an operator knows what a failed inspection or a
+    // plan revision would cost; it just stops nulling a total it is not part of.
+    const futureContingent = c.conditional && known !== true && chargeIsFutureContingent(c.condition, c.label);
     out.push({
       label: c.label,
       kind: c.kind,
       amountUsd: known === true ? amount : null,
       partOfLineFee: false,
       conditional: c.conditional,
+      ...(futureContingent ? { futureContingent: true } : {}),
       // ACTIONABLE CLAUSE FIRST, AND SHORT ENOUGH TO SURVIVE THE SLICE.
       //
       // submissionFees.normalizeScheduleResult cuts a reason to 400 characters and
@@ -3307,7 +3351,11 @@ function ancillaryCharges(
       // ("Fire - Plan Review | $50.00"), so they are stripped rather than trusted.
       reason: known === true
         ? ""
-        : `CONDITIONAL CHARGE UNRESOLVED — confirm whether this filing incurs "${noPipe(c.label)}"`
+        : futureContingent
+          ? `NOT PART OF THIS QUOTE — "${noPipe(c.label)}"${basis ? ` (${noPipe(basis)})` : ` (${amount.toFixed(2)})`} is charged only if it happens`
+            + `${clean(c.condition) ? `: ${noPipe(clean(c.condition)).slice(0, 120)}` : ""}. A filing that has not been made cannot `
+            + `have failed an inspection or revised its plans, so it is shown here and left out of the total.`
+          : `CONDITIONAL CHARGE UNRESOLVED — confirm whether this filing incurs "${noPipe(c.label)}"`
           + `${basis ? ` (${noPipe(basis)})` : ` ($${amount.toFixed(2)})`} and enter the portal's own figure. `
           + `${noPipe(clean(schedule.ahj)) || "This jurisdiction"} levies it only on some filings`
           + `${clean(c.condition) ? `: ${noPipe(clean(c.condition)).slice(0, 120)}` : ""}. `
@@ -3658,7 +3706,13 @@ function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<Project
   // rule, same vocabulary, no fourth state. A conditional review nobody has
   // answered is the difference between a $762.93 filing and a confident $663.48,
   // and the smaller number is the dangerous one because it looks finished.
-  const unpricedCharges = extra.filter((c) => c.amountUsd == null);
+  // …EXCEPT A CHARGE FOR SOMETHING THAT HAS NOT HAPPENED. A reinspection fee is unpriced for
+  // the same reason it is not owed: nothing has been inspected. Every jurisdiction researched
+  // for the active six publishes one, so counting them here meant none of them could ever
+  // produce a total — and the operator's own paid $762.93 Portland receipt, four bills from
+  // three bureaus, contains not a single overage charge. They stay on the sheet; they stop
+  // holding a number hostage to an event that cannot have occurred yet.
+  const unpricedCharges = extra.filter((c) => c.amountUsd == null && c.futureContingent !== true);
   const total = unresolved.length || unpricedCharges.length
     ? null
     : round2(lines.reduce((sum, l) => sum + (l.feeUsd ?? 0), 0) + extra.reduce((sum, c) => sum + (c.amountUsd ?? 0), 0));

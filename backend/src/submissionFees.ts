@@ -288,6 +288,10 @@ function normalizeCharges(raw: unknown): FeeChargeBreakdown[] {
       amountUsd: priced ? round2(amount) : null,
       partOfLineFee: c.partOfLineFee === true,
       conditional: c.conditional === true,
+      // Explicit true only, like every other flag crossing this seam. The default is HOLD: a
+      // producer that has never heard of this field cannot accidentally release a charge from
+      // nulling the total, which is the direction that costs somebody money.
+      ...(c.futureContingent === true ? { futureContingent: true } : {}),
       reason: text(c.reason).trim().slice(0, 400),
       quote: text(c.quote).trim().slice(0, 400),
       sourceUrl: /^https?:\/\//i.test(url) ? url.slice(0, 500) : "",
@@ -797,6 +801,11 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     // schedule's and still does not answer whether the fire bureau billed this job.
     for (const charge of line.charges ?? []) {
       if (charge.amountUsd != null || charge.partOfLineFee) continue;
+      // A reinspection fee is not an open question, it is a price list for something that has
+      // not happened. Listing it under STILL UNKNOWN sends an operator to "resolve" whether a
+      // filing they have not made yet failed an inspection. It stays visible on the charge
+      // breakdown with its own wording — see FeeChargeBreakdown.futureContingent.
+      if (charge.futureContingent) continue;
       unknowns.push(`${who} also charges "${charge.label}" on this filing, and it is not priced. ${charge.reason}`);
     }
     if (line.paymentMethod === "mailed_check") {

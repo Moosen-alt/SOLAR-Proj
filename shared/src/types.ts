@@ -434,6 +434,13 @@ export interface FeeChargeBreakdown {
   partOfLineFee: boolean;
   /** True when the schedule says only some filings incur it. */
   conditional: boolean;
+  /** THIS CHARGE IS FOR SOMETHING THAT HAS NOT HAPPENED — a reinspection, a plan revision after
+   *  submittal, checksheets beyond the two the review includes. It is LISTED, so an operator can
+   *  see what those would cost, and it never nulls a total or appears as an unknown: a filing
+   *  that has not been made cannot have failed an inspection. Distinct from an ordinary
+   *  `conditional`, which is an open question about THIS filing (is a plan review required at
+   *  this size?) and does still hold the total. */
+  futureContingent?: boolean;
   /** Populated when amountUsd is null: why, and what would resolve it. */
   reason: string;
   /** The printed row this charge was matched on, verbatim. "" when there is none. */

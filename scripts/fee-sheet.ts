@@ -283,7 +283,9 @@ export function renderFeeLine(
   // for every jurisdiction would bury the one case that needs it.
   const charges = Array.isArray(line.charges) ? line.charges : [];
   const extras = charges.filter((c) => !c.partOfLineFee);
-  const allPriced = charges.every((c) => c.amountUsd != null);
+  // An overage fee has no price because it is not owed, not because we failed to find one. It
+  // is not a hole in the arithmetic, so it does not make "the fee above is their total" false.
+  const allPriced = charges.every((c) => c.amountUsd != null || c.futureContingent === true);
   // WHICH TIER PUT THE NUMBER ON THE "Fee" ROW DECIDES WHAT THIS LIST MAY CLAIM.
   //
   // The itemisation is resolved from the published schedule FOR EVERY QUOTE, on
@@ -314,8 +316,14 @@ export function renderFeeLine(
       ? `${charges.length} charges on this filing${allPriced ? " — the fee above is their total" : " — the fee above is NOT their sum; one of them is unpriced"}`
       : wrap(`${charges.length} charges on this filing, as the PUBLISHED SCHEDULE holds them — NOT a breakdown of the fee above, which came from somewhere else (see "From").`, 62, cont)));
     for (const charge of charges) {
-      const amount = charge.amountUsd == null ? "UNRESOLVED" : money(charge.amountUsd);
-      out.push(row("", `${amount.padEnd(12)} ${charge.label}${charge.conditional ? "   (conditional)" : ""}`));
+      // "UNRESOLVED" means somebody has to go and find out. An overage fee needs nobody to find
+      // out anything — it is the price of a thing that has not happened — so it reads as what it
+      // is and is not dressed up as a gap in our knowledge.
+      const amount = charge.amountUsd != null
+        ? money(charge.amountUsd)
+        : charge.futureContingent ? "IF IT HAPPENS" : "UNRESOLVED";
+      const tag = charge.futureContingent ? "   (not in this quote)" : charge.conditional ? "   (conditional)" : "";
+      out.push(row("", `${amount.padEnd(12)} ${charge.label}${tag}`));
       if (charge.amountUsd == null && charge.reason) {
         out.push(row("", `${" ".repeat(13)}${wrap(charge.reason, 50, cont + " ".repeat(13))}`));
       }
@@ -326,9 +334,14 @@ export function renderFeeLine(
     // of the tier question so that nothing below can turn it into a confident sum.
     const priced = charges.filter((c) => c.amountUsd != null);
     const sum = money(priced.reduce((s2, c) => s2 + (c.amountUsd ?? 0), 0));
+    const contingent = charges.filter((c) => c.amountUsd == null && c.futureContingent === true).length;
     if (!allPriced) {
-      out.push(row("", `INCOMPLETE — ${charges.length - priced.length} of ${charges.length} charge(s) unpriced, so there is no total to check.`));
+      const missing = charges.filter((c) => c.amountUsd == null && c.futureContingent !== true).length;
+      out.push(row("", `INCOMPLETE — ${missing} of ${charges.length} charge(s) unpriced, so there is no total to check.`));
     } else if (feeIsTheSchedule) {
+      if (contingent) {
+        out.push(row("", `${sum}  = the sum of every charge above, and ${contingent} more that apply only if something goes wrong.`));
+      } else
       out.push(row("", `${sum}  = the sum of every charge above`));
     } else {
       // The figure is still printed — it is the schedule's answer for this filing and
