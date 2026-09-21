@@ -3,6 +3,89 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## TIGARD FILES THROUGH ENERGOV, AND TRASK'S $1,310.69 IS DERIVED, NOT REMEMBERED (2026-09-20, night)
+
+Commits `3f2b097` → `69b90f4`, plus a live KB correction under an operator ruling.
+
+### OPERATOR RULING: Tigard is Tyler EnerGov, not Accela
+
+The operator, watching a live staging run: *"its trying to submit a tygard permit through
+acella, thats not the right place."*
+
+Root cause, measured: the KB held two human-confidence rows for Tigard that DISAGREED.
+`or|city of tigard|pge` — the exact profile-key match for Connie's project — carried
+**"Oregon ePermitting (Accela)"** written by **AI research whose own notes said "verify against
+the official site before relying on it"**. `or|tigard|unknown` carried the right portal —
+**Tyler EnerGov CSS, `tigardor-energovweb.tylerhost.net`** — sourced from the operator's own
+AHJ process workbook and real historical Tigard filings, but with the URL stored in
+`portal_name`, where no resolver reads it. Exact-key beats fuzzy, so the unverified AI claim
+outranked the operator's ground truth; two Accela recipes (needs_rerecord) then fed the same
+wrong URL into the staging ladder AHEAD of the KB row (`findAnyRecipeForProject` has no status
+filter — a needs_rerecord recipe still supplies its portal URL).
+
+Fixed through the production write paths, never raw SQL: `saveVerifiedAhjProfile` on all three
+Tigard rows (EnerGov URL + the ruling in notes; confidence `mixed`), and `startPortalRecording`
+(the delete-&-re-record path) on both recipes — v2, steps cleared, pointed at EnerGov. Verified
+through the exact lookups staging makes: the bare `ahj = 'City Of Tigard'` KB read and
+`findAnyRecipeForProject` both return EnerGov; zero Tigard rows still name Accela.
+
+**Open items from this:**
+- **No credential exists for `tigardor-energovweb.tylerhost.net`** — the operator must add the
+  EnerGov login before Connie's staging can complete. The recipes are empty; first pass is a
+  fresh auto-learn on the right portal.
+- **The pattern is not a one-off (Round F candidate):** AI research can land a portal claim on
+  an exact-key row and outrank workbook-sourced knowledge. An engine-level guard — research may
+  not contradict a portal whose sources include the operator reference workbook without
+  flagging the conflict — would have caught this before a browser opened.
+
+### The fee round: Trask went $450 → $890.08 → $1,310.69, each step from a published schedule
+
+The operator authorized research spend for the AHJs with no fee rows. What happened, in order:
+
+1. **`3f2b097`** — research calls were dying at a 4,000-token ceiling (3 of 5 truncated:
+   Portland structural, Lincoln City, Salem). Raised to 16,000; all three succeeded on retry.
+2. **New seeded rows on live:** Happy Valley (prescriptive $157 flat + 12% surcharge + 65%
+   conditional plan review), Lincoln City ($250 prescriptive — **row partly garbled**, see
+   below), Salem permit (4 kVA rungs $79–$156 + $5 automation surcharge + conditional plan
+   reviews). Portland structural re-researched WITH its ancillary charges (65% plan
+   review/process unconditional, $114 revision fee, $167 reinspection); Portland electrical
+   re-researched with the 12% state surcharge and its overage fees.
+3. **`bb57180`** — the valuation-ladder branch RETURNED EARLY and skipped the rest of the
+   evaluator: surcharges and ancillary charges (percentages OF the permit fee) were silently
+   dropped. Portland's 65% plan review is $384.85 of Trask's filing and his sheet showed
+   nothing missing. The ladder now replaces only the bracket AMOUNT; every rule below runs on
+   it unchanged. The conflict check deliberately stays on the STORED bracket (its evidence
+   names the base rung, not the computed fee).
+4. **`e13e906`** — **two kinds of "conditional", split (agent design decision, like the phone
+   leg — say the word to change it).** The unpriced-conditional-charge-nulls-the-total rule was
+   written for reviews that are mandatory above a threshold; it also caught OVERAGE fees
+   (reinspection, plan revision, extra checksheets), and every jurisdiction researched today
+   publishes one — so no total could ever resolve. Ground truth: the operator's paid $762.93
+   Portland receipt contains ZERO overage charges. `chargeIsFutureContingent` (a tested literal
+   regex like FORMULA_LABEL, mustExclude proven — a bare "additional" releases nothing)
+   releases only unmistakable overage wording; released charges still render as "IF IT
+   HAPPENS", never in unknowns, never nulling. Default is HOLD.
+5. **`69b90f4`** — a kVA threshold the schedule prints is answered from the project's own
+   size: 7.5 kVA against "Over 25 KVA (Plan Review Required)" resolves NOT-APPLIES by the
+   jurisdiction's own words. Exactly 25 is not over 25; no size on file stays an open
+   question; recorded facts (electricalReviewRequired) outrank the threshold toward charging.
+
+**Live prices after all of it** (all SEEDED — verify against the published page before quoting):
+Trask/Portland **$1,310.69** self-checking ($298 + $35.76 surcharge + $592.08 ladder + $384.85
+plan review, five overage fees listed beside and excluded); Connie/Tigard $313.56; Ivy/Coos Bay
+$335.00; Daly/Salem **$99.00** ($94 + $5 automation); Abby/Happy Valley $116.48–$175.84.
+
+**Verify-with-a-receipt items (D2 residue):**
+- **Lincoln City's row is garbled:** "Renewable energy for electrical systems 15.01–25 kVA |
+  $250" is stored as a conditional ANCILLARY CHARGE — that is a bracket rung, not a charge —
+  and Randal still prices as an ESTIMATE. Delete-and-re-research or hand-fix from the cited
+  PDF (`lincolncityor.gov/home/showdocument?id=1795`).
+- **Salem's $99 rests on an `appliesTo` skip:** the 65% building plan review carries
+  `appliesTo` scoping and Salem's row is discipline `(any)`, so it was skipped rather than
+  answered. Right if Salem prescriptive solar is electrical-only (the brackets are all
+  "Renewable Electrical Energy" rungs, so probably); prove it against a real Salem receipt
+  before trusting the skip.
+
 ## RESTARTED ON THE NEW CODE, AND PORTLAND PRICES PROPERLY NOW (2026-09-20, later)
 
 Four commits after the C.5 section below: `df7191e` (a collapsed word boundary), `9e8292a`
