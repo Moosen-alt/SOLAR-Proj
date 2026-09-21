@@ -1975,6 +1975,29 @@ export const FEE_RESEARCH_MAX_DOCUMENTS = 10;
  *  same ceiling as the one above. */
 const FEE_RESEARCH_MAX_TURNS = 12;
 
+/**
+ * THE ANSWER'S TOKEN CEILING, AND WHY IT IS NOT 4,000 ANY MORE.
+ *
+ * Measured on a real pass over five jurisdictions: THREE of the five came back
+ * `stop_reason: max_tokens` — City of Portland (structural), City of Lincoln City and City of
+ * Salem — and their truncated JSON parsed to nothing. The refusal was honest (the reason string
+ * below says a cut-off answer is not a finding of "no schedule"), but a 60% failure rate is the
+ * ask outgrowing its budget, not bad luck, and the code's own comment already admitted the ask
+ * had widened — "a permit pass now asks for the whole filing, not one line" — without the
+ * ceiling moving with it.
+ *
+ * Two things share this budget: `thinking: {type: "adaptive"}` and the answer. A jurisdiction
+ * like Portland publishes a six-rung valuation ladder, each rung's verbatim label running well
+ * over a hundred characters, plus the filing's surcharges and reviews. Reasoning about which of
+ * several retrieved PDFs is the current one and then emitting all of that does not fit in 4,000
+ * tokens alongside the thinking that chose it.
+ *
+ * A ceiling is not a spend: output tokens are billed as generated, so a pass that only needs
+ * 3,000 still costs 3,000. What the old number bought was not savings — it was a wasted call,
+ * and then a second call to retry it.
+ */
+const FEE_RESEARCH_MAX_ANSWER_TOKENS = 16000;
+
 /** The SDK client's own ceiling, below. The outer AbortController must never be the
  *  tighter of the two, or the client's timeout and its retries are unreachable. */
 export const FEE_RESEARCH_CLIENT_TIMEOUT_MS = 240000;
@@ -2079,7 +2102,7 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
         .stream(
           {
             model,
-            max_tokens: 4000,
+            max_tokens: FEE_RESEARCH_MAX_ANSWER_TOKENS,
             thinking: { type: "adaptive" },
             ...(containerId ? { container: containerId } : {}),
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
