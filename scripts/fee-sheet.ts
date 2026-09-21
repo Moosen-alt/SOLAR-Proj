@@ -407,9 +407,18 @@ export function renderFeeSheet(view: FeeSheetPresentation): string {
     out.push("  The total is UNKNOWN because at least one fee is. It is not a zero and it is not");
     out.push("  a partial sum — do not put a number in front of this customer yet.");
   } else if (totalEstimated) {
-    out.push("  This total INCLUDES AN ESTIMATE: at least one fee is a valuation heuristic, not");
-    out.push("  anything read from the jurisdiction. True it up from the portal's own fee screen");
-    out.push("  before quoting a customer.");
+    // Named for what the estimate actually IS — see the two-kinds note further down. Both roads
+    // end at the same instruction, so the instruction is shared and only the cause differs.
+    const scheduleOnGuess = sheet.lines.some((l) => l.confidence === "estimated" && l.source === "published_schedule");
+    out.push(scheduleOnGuess
+      ? "  This total INCLUDES AN ESTIMATE: at least one fee comes from the jurisdiction's own"
+      : "  This total INCLUDES AN ESTIMATE: at least one fee is a valuation heuristic, not");
+    out.push(scheduleOnGuess
+      ? "  published schedule but was priced against a GUESSED job valuation. True it up from the"
+      : "  anything read from the jurisdiction. True it up from the portal's own fee screen");
+    out.push(scheduleOnGuess
+      ? "  portal's own fee screen, or record the real job valuation, before quoting a customer."
+      : "  before quoting a customer.");
   }
   if (sheet.unknowns.length) {
     out.push("");
@@ -430,12 +439,26 @@ export function renderFeeSheet(view: FeeSheetPresentation): string {
   // The banner keys on the LINES (like the seeded one above), not on the total:
   // an estimated permit beside an unknown NEM makes the total null — and the
   // estimate still needs flagging exactly then.
+  //
+  // AND THERE ARE TWO KINDS OF ESTIMATE NOW. A fee can be estimated because no schedule was
+  // found and we fell back to a percentage of the valuation, or because the schedule WAS found,
+  // prices off valuation, and this project has none — so a real published ladder was walked
+  // with a guessed input. Saying "a method that has never read this jurisdiction's fee table"
+  // about the second kind is simply false, and it sends the operator to fix the wrong thing.
   const estimated = sheet.lines.filter((l) => l.confidence === "estimated");
-  if (estimated.length) {
+  const fromSchedule = estimated.filter((l) => l.source === "published_schedule");
+  const fromHeuristic = estimated.filter((l) => l.source !== "published_schedule");
+  if (fromHeuristic.length) {
     out.push("");
-    out.push(`  ${estimated.length} fee(s) above are ESTIMATES: a percentage of the project valuation, from a`);
+    out.push(`  ${fromHeuristic.length} fee(s) above are ESTIMATES: a percentage of the project valuation, from a`);
     out.push("  method that has never read this jurisdiction's fee table. The STILL UNKNOWN list");
     out.push("  names what would replace each one.");
+  }
+  if (fromSchedule.length) {
+    out.push("");
+    out.push(`  ${fromSchedule.length} fee(s) above came from the jurisdiction's real published schedule but were`);
+    out.push("  computed against an ESTIMATED job valuation, because this project carries none.");
+    out.push("  The table is right; the number under it was guessed. Record the job valuation.");
   }
   if (FEE_TRACKS.some((t) => !view.agreements[t]?.whoPays)) {
     out.push("");

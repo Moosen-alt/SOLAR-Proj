@@ -374,6 +374,16 @@ export interface PublishedFeeResult {
   corroborated?: boolean;
   /** Research lands as "seeded"; only human review promotes it to "verified". */
   confidence?: "verified" | "seeded";
+  /** THE AMOUNT WAS COMPUTED FROM A GUESSED INPUT. A valuation-basis schedule (Portland's
+   *  structural ladder: $540.78 for the first $25,000, $10.26 per $1,000 above it) is walked
+   *  with the project's job valuation — and when the project carries none, with a per-watt
+   *  ESTIMATE instead. The arithmetic is exact either way and the answer is not: the same house
+   *  prices at $592.08 from a contract figure and $602.34 from the estimate, because the guess
+   *  landed one step higher. A third dimension alongside `confidence` and `corroborated` for
+   *  the same reason they are separate — this one grades the INPUT, not the table or the
+   *  citation. The quote seam degrades such a fee to "estimated", which is what makes the sheet
+   *  print ≈ and tell the operator to true it up from the portal's own fee screen. */
+  valuationEstimated?: boolean;
   /** Optional: schedules that state how the fee is paid. Absent means unknown,
    *  and a mailed-check hint may instead be read out of `sourceQuote`. */
   paymentMethod?: FeePaymentMethod;

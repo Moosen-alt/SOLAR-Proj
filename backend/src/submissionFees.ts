@@ -207,6 +207,10 @@ interface ScheduleFee {
    *  person has vouched for the number. */
   corroborated: boolean;
   confidence: "verified" | "seeded";
+  /** The amount was computed from a per-watt ESTIMATED valuation, not a contract figure. A
+   *  different dimension from  again: that one grades the TABLE, this one the
+   *  INPUT, and a perfect table walked on a guess still owes the operator a true-up. */
+  valuationEstimated: boolean;
   paymentMethod: FeePaymentMethod | null;
   matchedName: string;
   reason: string;
@@ -320,6 +324,10 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
     corroborated: r.corroborated === true,
     // Research lands as seeded (safety rule 3); only a human promotes it.
     confidence: text(r.confidence).trim().toLowerCase() === "verified" ? "verified" : "seeded",
+    // Defensive like everything else crossing this seam: anything that is not an explicit true
+    // reads as "not an estimate", so a producer that has never heard of this field cannot make
+    // a real published fee look like a guess.
+    valuationEstimated: r.valuationEstimated === true,
     paymentMethod,
     matchedName: text(r.matchedName).trim().slice(0, 200),
     reason: text(r.reason).trim().slice(0, 400),
@@ -440,7 +448,20 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
     } else if (schedule && schedule.feeUsd != null) {
       permitFeeUsd = schedule.feeUsd;
       permitFeeSource = "published_schedule";
-      permitFeeConfidence = schedule.confidence;
+      // A PUBLISHED TABLE PLUS A GUESSED INPUT IS STILL A GUESS.
+      //
+      // Portland's structural fee is a valuation ladder: $540.78 for the first $25,000 and
+      // $10.26 for every $1,000 above it. Walk it on a real contract figure and the answer is
+      // the jurisdiction's own arithmetic. Walk it on the per-watt estimate we fall back to
+      // when a project carries no job valuation and the answer is computed to the cent off a
+      // number nobody supplied — $602.34 instead of $592.08 on the same house, because the
+      // guess landed one $1,000 step higher. Both print identically without this line.
+      //
+      // "estimated" is what the fee sheet keys on to print ≈, to tag the total (ESTIMATE), and
+      // to tell the operator to true it up from the portal's own fee screen. That is exactly
+      // the right instruction here, and it is the difference between a number a customer can
+      // be quoted and one that only looks like it.
+      permitFeeConfidence = schedule.valuationEstimated ? "estimated" : schedule.confidence;
       const who = schedule.matchedName || (track === "nem" ? project.utility : project.ahj) || "this jurisdiction";
       // THE SENTENCE BESIDE THE NUMBER MUST BE ABOUT THAT NUMBER.
       //
@@ -749,9 +770,22 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
       // refused this project (an engineered job against a prescriptive-only
       // row — the basis carries that refusal's own words either way).
       const discipline = line.track === "nem" ? "interconnection" : "permit";
+      // TWO DIFFERENT ESTIMATES, AND ONLY ONE OF THEM MEANS "WE FOUND NO SCHEDULE".
+      //
+      // The sentence below used to be the only one, and it said "no published fee schedule
+      // resolved" for every estimated line. Since the valuation ladder landed, a line can be
+      // estimated because the SCHEDULE was read perfectly and the VALUATION under it was
+      // guessed — at which point that sentence is false, and it went on to cite the very
+      // schedule it had just denied finding, in the same paragraph. `source` already tells the
+      // two apart, so it decides which gap the operator is actually being sent to close.
       unknowns.push(
-        `${label} for ${who} is an ESTIMATE, not a known fee — no published fee schedule resolved for ${who} (${discipline}), `
-        + `no portal figure recorded, no observed history. The $${line.feeUsd.toFixed(2)} shown is a valuation heuristic. ${line.basis}`,
+        line.source === "published_schedule"
+          ? `${label} for ${who} is an ESTIMATE because this project carries NO JOB VALUATION. `
+            + `${who}'s published schedule prices this filing off the job's valuation, so the $${line.feeUsd.toFixed(2)} `
+            + `shown was computed from a per-watt guess at it rather than from a real figure. Record the job `
+            + `valuation (or enter the portal's own fee) and this becomes a real number. ${line.basis}`
+          : `${label} for ${who} is an ESTIMATE, not a known fee — no published fee schedule resolved for ${who} (${discipline}), `
+            + `no portal figure recorded, no observed history. The $${line.feeUsd.toFixed(2)} shown is a valuation heuristic. ${line.basis}`,
       );
     }
     // A CHARGE ON THIS FILING THAT NOBODY HAS PRICED IS ITS OWN UNKNOWN, and it is

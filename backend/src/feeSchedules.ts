@@ -414,6 +414,11 @@ export interface FeeScheduleResearchOutcome {
 export interface ProjectFeeResolution {
   /** null when a schedule exists but cannot be evaluated for this project. */
   feeUsd: number | null;
+  /** True when any line in this total was computed from a per-watt ESTIMATED valuation. The
+   *  quote seam degrades such a total to "estimated", which is what puts the ≈ and the
+   *  true-it-up banner on it — a computed-to-the-cent figure resting on a guess must not print
+   *  in the same ink as one read off a table. */
+  valuationEstimated?: boolean;
   /** The schedule line's own wording — what the application's fee field wants. */
   bracketLabel: string;
   basis: FeeBasis;
@@ -481,6 +486,9 @@ export interface FeeScheduleLine {
   /** Present only when this bracket was found printed in the cited document. */
   corroboration?: FeeBracketCorroboration;
   confidence: FeeConfidence;
+  /** True when this amount was computed from a per-watt ESTIMATED valuation rather than a
+   *  contract figure. The schedule can be perfect and the answer still a guess. */
+  valuationEstimated?: boolean;
   notes: string;
   scheduleId: string;
   /** Populated when feeUsd is null. */
@@ -2692,6 +2700,12 @@ export function feeLinesForProject(
       // number is theirs. A verified pointer at a seeded table is still a
       // seeded number, and the weaker of the two is the honest one to show.
       confidence: hop.collectedBy && (row.confidence === "seeded" || schedule.confidence === "seeded") ? "seeded" : schedule.confidence,
+      // A LADDER WALKED ON A GUESS IS AN ESTIMATE, whatever the schedule itself is worth. The
+      // table can be verified and the arithmetic exact and the answer still only as good as the
+      // valuation underneath — every $1,000 of that guess is another $10.26 here. It rides
+      // BESIDE the confidence rather than inside it because a schedule's confidence is a fact
+      // about the table (seeded or verified, nothing else) and this is a fact about the INPUT.
+      valuationEstimated: evaluated.fromEstimatedValuation === true,
       notes: schedule.notes,
       scheduleId: schedule.id,
       reason: evaluated.reason,
@@ -3288,7 +3302,7 @@ function ancillaryCharges(
 function evaluateSchedule(
   schedule: FeeScheduleRecord,
   inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; valuationIsEstimate?: boolean; track?: FeeTrack; permitPath?: FeePathInput; electricalReviewRequired?: boolean },
-): { feeUsd: number | null; baseFeeUsd?: number; stateSurchargeUsd?: number; communitySurchargeUsd?: number; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string; charges?: FeeChargeBreakdown[] } {
+): { feeUsd: number | null; baseFeeUsd?: number; stateSurchargeUsd?: number; communitySurchargeUsd?: number; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string; charges?: FeeChargeBreakdown[]; fromEstimatedValuation?: boolean } {
   const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", bracketQuote: "", reason });
   const hit = (b: FeeBracket) => {
     const bracketQuote = bracketEvidence(schedule, b);
@@ -3311,6 +3325,7 @@ function evaluateSchedule(
           return {
             feeUsd: computed,
             baseFeeUsd: computed,
+            fromEstimatedValuation: inputs.valuationIsEstimate === true,
             bracketLabel,
             bracketQuote,
             corroboration,
@@ -3564,6 +3579,9 @@ function lineFor(
     bracketQuote: evaluated.bracketQuote,
     ...(evaluated.corroboration ? { corroboration: evaluated.corroboration } : {}),
     confidence: schedule.confidence,
+    // Same rule as the sibling builder above — both sites, or the two entry points disagree
+    // about the same number depending on which one happened to ask.
+    valuationEstimated: evaluated.fromEstimatedValuation === true,
     notes: schedule.notes,
     scheduleId: schedule.id,
     reason: evaluated.reason,
@@ -3663,6 +3681,9 @@ function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<Project
     // The weakest confidence in the set: a verified line does not vouch for a
     // seeded one standing next to it in the same total.
     confidence: lines.some((l) => l.confidence === "seeded") ? "seeded" : "verified",
+    // Weakest link again: one line computed off a guessed valuation makes the whole total a
+    // number to true up, however solid the rest of it is.
+    valuationEstimated: lines.some((l) => l.valuationEstimated === true),
     matchedName: lines.length === 1 ? primary.authority : lines.map((l) => l.authority).filter(Boolean).join(" + "),
     scheduleId: primary.scheduleId,
     // EVERY REASON THE TOTAL IS UNREADABLE, LINES AND CHARGES ALIKE. An unpriced

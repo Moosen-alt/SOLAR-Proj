@@ -140,5 +140,78 @@ console.log("\n4. WHAT MUST STILL REFUSE");
   }
 }
 
+// ---------------------------------------------------------------------------
+// 5. A PUBLISHED TABLE PLUS A GUESSED INPUT IS STILL A GUESS.
+//
+// The ladder is only as good as the valuation under it: the same house prices at $592.08 from
+// Trask's real $30,000 contract figure and $602.34 from the per-watt estimate we fall back to
+// when a project carries no valuation, because the guess landed one $1,000 step higher. Without
+// this, both print as published-schedule fees in identical ink — a number computed to the cent
+// off a figure nobody supplied, with nothing on screen to say so.
+//
+// Driven through the REAL quote seam (`registerFeeScheduleLookup` is the boot/test seam
+// production itself loads through), because the thing being checked is not the arithmetic — it
+// is whether the honest grade survives the trip to the operator's screen.
+// ---------------------------------------------------------------------------
+console.log("\n5. THE GRADE REACHES THE SCREEN");
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fee-ladder-seam-"));
+  process.env.AUTOPILOT_DB_PATH = path.join(dir, "t.sqlite");
+  process.env.BACKUP_DIR = path.join(dir, "backups");
+  process.env.SEED_TEST_INSTALLER = "false";
+  process.env.AUTOPILOT_AUTO_START = "0";
+
+  const { openDatabase } = await import("../src/db");
+  const { createClient } = await import("../src/clients");
+  const { buildPaymentQuote, registerFeeScheduleLookup } = await import("../src/submissionFees");
+  const db = await openDatabase();
+  const client = createClient(db, { companyName: "Ladder Solar", billingMode: "monthly" });
+  const now = new Date().toISOString();
+  db.run(
+    `INSERT INTO projects (id, client_id, homeowner_name, state, ahj, utility, system_size_dc_kw, system_size_ac_kw, status, parser_json, created_at, updated_at)
+     VALUES ('ladder-1', ?, 'Ladder Owner', 'OR', 'City of Portland', 'PGE', 7.5, 6, 'ready_to_stage', '{}', ?, ?)`,
+    [client.id, now, now],
+  );
+  const project = {
+    id: "ladder-1", clientId: client.id, state: "OR", ahj: "City of Portland", utility: "PGE",
+    systemSizeDcKw: 7.5, systemSizeAcKw: 6, totalExportKw: null, parserSnapshot: {},
+  } as never;
+
+  const published = (valuationEstimated: boolean) => () => ({
+    feeUsd: 592.08,
+    bracketLabel: TRASK_BRACKET.label,
+    bracketQuote: TRASK_BRACKET.label,
+    sourceUrl: "https://www.portland.gov/ppd/documents/building-and-other-permits-fee-schedule",
+    sourceQuote: "Portland Permitting & Development, Building Permit Fee Schedule",
+    confidence: "seeded" as const,
+    corroborated: false,
+    matchedName: "City of Portland",
+    reason: "",
+    valuationEstimated,
+  });
+
+  registerFeeScheduleLookup(published(false) as never);
+  const real = buildPaymentQuote(db, project, "permit");
+  check("5a. MUST PASS: a ladder walked on a CONTRACT figure keeps the schedule's own grade",
+    real.permitFeeConfidence === "seeded" && real.permitFeeSource === "published_schedule" && real.permitFeeUsd === 592.08,
+    `${real.permitFeeConfidence} / ${real.permitFeeSource} / ${String(real.permitFeeUsd)}`);
+
+  registerFeeScheduleLookup(published(true) as never);
+  const guessed = buildPaymentQuote(db, project, "permit");
+  check("5b. THE POINT: the same fee off an ESTIMATED valuation grades as an estimate",
+    guessed.permitFeeConfidence === "estimated", String(guessed.permitFeeConfidence));
+  check("5c. and the AMOUNT is kept — an operator quoting a customer still needs the number",
+    guessed.permitFeeUsd === 592.08, String(guessed.permitFeeUsd));
+  check("5d. and its source is still the published schedule — the TABLE was never the problem",
+    guessed.permitFeeSource === "published_schedule", String(guessed.permitFeeSource));
+
+  registerFeeScheduleLookup(null);
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 console.log(failures ? `\nfeeValuationLadder: ${failures} check(s) FAILED` : "\nfeeValuationLadder: all checks passed");
 if (failures) process.exit(1);
