@@ -1,6 +1,7 @@
 import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { buildFilledFormsForProject } from "./ahjForms";
+import { materializeGeneratedDocs } from "./generatedDocFiles";
 import { ensureAhjFormsForProject } from "./ahjFormAuto";
 import { createLLMProvider } from "./llm";
 import { resolvePermitPath } from "./permitPath";
@@ -26,4 +27,8 @@ export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord
     }
   }
   await buildFilledFormsForProject(db, project);
+  // And the generated application package (transfer sheet, worksheets, prescriptive
+  // application) becomes FILES the upload paths can attach — see generatedDocFiles.ts.
+  // Additive: a render failure logs and staging proceeds on filled forms + uploads as before.
+  await materializeGeneratedDocs(db, project);
 }

@@ -281,7 +281,7 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
   const quote = buildPaymentQuote(db, project(COOS, client.id, "proj-coos"), "permit");
   check("the filing is NOT blocked — the estimate tier still quotes an amount",
-    quote.permitFeeUsd === 455.4 && quote.permitFeeSource === "valuation_estimate",
+    quote.permitFeeUsd === 182.16 /* operator valuation formula 2026-09-21: 1.5% of 40%-of-contract */ && quote.permitFeeSource === "valuation_estimate",
     `${quote.permitFeeUsd} / ${quote.permitFeeSource}`);
   // "Leads" means BEFORE the estimate's own sentence, not literally first: resolutionFrom
   // prefixes the authority ("Coos County: UNRESOLVED FEE CONFLICT: …"), which is the right
@@ -304,7 +304,7 @@ async function main(): Promise<void> {
   mkProject("proj-nowhere", "Nowhere County");
   const blank = buildPaymentQuote(db, project("Nowhere County", client.id, "proj-nowhere"), "permit");
   check("a jurisdiction with NO schedule quotes the same amount…",
-    blank.permitFeeUsd === 455.4 && blank.permitFeeSource === "valuation_estimate",
+    blank.permitFeeUsd === 182.16 && blank.permitFeeSource === "valuation_estimate",
     `${blank.permitFeeUsd} / ${blank.permitFeeSource}`);
   check("…but must NOT read as a conflict — the two facts are now distinguishable",
     !blank.permitFeeBasis.includes(FEE_CONFLICT_MARKER), blank.permitFeeBasis);

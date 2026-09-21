@@ -1381,14 +1381,30 @@ export async function markDescribedLoginControl(page: Page): Promise<string> {
           const prev = parent.previousElementSibling;
           if (prev?.tagName === "LABEL") described.push(prev.textContent || "");
         }
-        // And the menu this control opens: aria-controls, or a dropdown-menu beside it.
-        const controlsId = el.getAttribute("aria-controls");
-        if (controlsId) described.push(document.getElementById(controlsId)?.textContent || "");
-        const menu = parent?.querySelector(".dropdown-menu, [role=menu], ul");
-        if (menu) described.push(menu.textContent || "");
+        // THE MENU THIS CONTROL OPENS IS EVIDENCE ABOUT THE MENU, NOT ABOUT THE CONTROL.
+        //
+        // This pass used to pour the attached menu's whole text into the same haystack as the
+        // control's own describers — and then a PowerClerk NAVIGATION dropdown (the program
+        // picker: "Recently visited / All programs / Register for programs") matched \bregister\b,
+        // got tagged as a login reveal, and every run opened it at start, burned the 3s reveal
+        // wait, and re-entered the settle loop. The operator watched it happen live.
+        //
+        // The general invariant: a control is a login reveal because IT is described as one —
+        // its title, aria-label, labels, or the element its aria points at. A menu's contents
+        // may only CONFIRM a control that already qualifies (and veto a pure session menu);
+        // bulk menu text must never ESTABLISH the match, because any nav menu on any portal can
+        // contain the word "register" three links down.
+        const ownHay = described.join(" ").replace(/\s+/g, " ").trim();
 
-        const hay = described.join(" ").replace(/\s+/g, " ").trim();
-        if (!hay || !LOGIN.test(hay)) continue;
+        const menuTexts: string[] = [];
+        const controlsId = el.getAttribute("aria-controls");
+        if (controlsId) menuTexts.push(document.getElementById(controlsId)?.textContent || "");
+        const menu = parent?.querySelector(".dropdown-menu, [role=menu], ul");
+        if (menu) menuTexts.push(menu.textContent || "");
+        const menuHay = menuTexts.join(" ").replace(/\s+/g, " ").trim();
+
+        if (!ownHay || !LOGIN.test(ownHay)) continue;
+        const hay = `${ownHay} ${menuHay}`.trim();
         // A menu holding BOTH is a session menu; only skip when sign-out is all there is.
         if (LOGOUT.test(hay) && !LOGIN.test(hay.replace(LOGOUT, ""))) continue;
 

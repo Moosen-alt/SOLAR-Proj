@@ -858,8 +858,16 @@ ${body.slice(0, 4000)}`);
           await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
         }
         // Number.isFinite (not ||) so an explicit AUTOLEARN_SAVE_SETTLE_MS=0 disables the wait.
+        //
+        // THE PORTAL'S OWN COMMIT SIGNAL BEATS A GUESSED SLEEP. When the page carries an
+        // autosave indicator (PowerClerk's data-test-role project-save-state), "Saved" IS the
+        // settle — waiting a further fixed 3s after the platform said committed was pure tax,
+        // and this sleep was the single largest fixed cost in a replay (~3s x every advancing
+        // click after a fill ≈ 30s/run, measured). No indicator on the page = the guessed sleep
+        // stands in full, because there is nothing exact to wait on.
+        const indicatorCommitted = await this.autosaveIndicatorCommitted();
         const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS);
-        await sleep(Number.isFinite(settleMs) ? settleMs : 3000);
+        await sleep(Number.isFinite(settleMs) ? settleMs : indicatorCommitted ? 300 : 3000);
         // Now that the recipe's fills have committed (blurred + autosaved), let the LLM gap-fill
         // any REQUIRED field the recipe didn't cover — from real project data only. Run it AFTER
         // the persist-settle so the LLM reads a stable page; the advancing click that follows is
@@ -2327,6 +2335,21 @@ ${body.slice(0, 4000)}`);
       if (saved) return;
       await sleep(400);
     }
+  }
+
+  /** True only when the page CARRIES the autosave indicator AND it reports committed —
+   *  the discriminating answer the persist-settle needs. Never true on a portal without
+   *  the indicator: absence of the signal must not read as "saved" (that is the
+   *  unknown-as-reassurance shape), so those pages keep the full guessed sleep. */
+  private async autosaveIndicatorCommitted(): Promise<boolean> {
+    if (!this.page || typeof this.page.locator !== "function") return false;
+    const state = this.page.locator("[data-test-role='project-save-state']");
+    if (typeof state?.evaluate !== "function") return false;
+    if (!(await state.count?.().catch(() => 0))) return false;
+    await this.waitForAutosaveCommitted();
+    return await state.evaluate((el: Element) =>
+      Boolean(el.querySelector("[data-test-role='save-state-saved']")) || /saved/i.test((el as HTMLElement).innerText || ""),
+    ).catch(() => false);
   }
 
   // data-al-row IS A LEARN-TIME TAG, NOT A SELECTOR. chooseProjectAddressRow stamps it while
@@ -5161,6 +5184,15 @@ ${body.slice(0, 4000)}`);
       let hit = 0;
       let overlap = 0;
       const deadline = Date.now() + DRIFT_SETTLE_MS;
+      // A SETTLED PAGE HAS ANSWERED THE QUESTION. The full budget exists for slow paints and
+      // interstitials that redirect late — but a page that has rendered REAL FIELDS and then
+      // held them identical across three consecutive scans is done painting, and burning the
+      // rest of a 15s budget on it just delays the same drift verdict (the comment below says
+      // it: the full burn "stops the run, which it was going to do anyway"). Stability only
+      // counts when fields exist: a field-LESS page stays on the full budget, because an
+      // interstitial can sit empty for ten seconds and then become the recorded page.
+      let stableScans = 0;
+      let prevSignature = "";
       for (;;) {
         const raws = (await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage)) as Array<{ label?: string }>;
         const live = raws.map((r) => (r.label || "").trim().toLowerCase()).filter(Boolean);
@@ -5171,6 +5203,10 @@ ${body.slice(0, 4000)}`);
         hit = expected.filter(matches).length;
         overlap = hit / expected.length;
         if (overlap >= 0.34) return null;
+        const signature = JSON.stringify(live);
+        stableScans = live.length > 0 && signature === prevSignature ? stableScans + 1 : 0;
+        prevSignature = signature;
+        if (stableScans >= 2) break;
         if (Date.now() >= deadline) break;
         await sleep(750);
       }

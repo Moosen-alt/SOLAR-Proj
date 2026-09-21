@@ -453,6 +453,12 @@ export const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
   // docsByType by the backend (filledFormsByDocType).
   { re: /electrical\s*(renewable\s*energy\s*)?(permit\s*)?application/i, docType: "electrical_application" },
   { re: /(building|structural)\s*(permit\s*)?application/i, docType: "building_application" },
+  // The generated application package renders these as PDFs now (generatedDocFiles.ts,
+  // operator ruling 2026-09-21) — a slot naming a transfer sheet or an interconnection/NEM
+  // application can be satisfied instead of skipped. Ordered before the checklist pattern
+  // because that one's bare "worksheet" would otherwise swallow "transfer sheet" rows.
+  { re: /transfer\s*sheet|application\s*transfer/i, docType: "application_transfer_sheet" },
+  { re: /(interconnection|net\s*meter(ing)?|\bnem\b)\s*(application|agreement|form)/i, docType: "utility_application" },
   { re: /checklist|worksheet|eligibilit/i, docType: "solar_checklist" },
   { re: /(completed|signed|permit|solar)\s*application|application\s*(form|packet)/i, docType: "permit_application" },
   { re: /one[-\s]?line|single[-\s]?line|\bsld\b|electrical\s*(diagram|schematic|one)/i, docType: "sld" },

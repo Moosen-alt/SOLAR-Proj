@@ -1,6 +1,7 @@
 import type { ProjectRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { filledFormsByDocType, formContradictsPath } from "./ahjForms";
+import { generatedDocFilesByType } from "./generatedDocFiles";
 import { resolvePermitPath } from "./permitPath";
 import { projectDocsByType } from "./projectDocuments";
 
@@ -8,7 +9,12 @@ import { projectDocsByType } from "./projectDocuments";
  * takes precedence over a generated form of the same type. Generated forms are
  * filtered against the current project path before merging. */
 export function submissionDocumentsByType(db: AppDb, project: ProjectRecord): Record<string, string> {
+  // Layering is one-directional and load-bearing (operator ruling 2026-09-21, "the bot can
+  // attach them all"): the GENERATED package (transfer sheet, worksheets — rendered by
+  // generatedDocFiles.ts) is the floor, the jurisdiction's own FILLED official forms outrank
+  // it on any shared docType, and anything a person UPLOADED by hand outranks both.
   return {
+    ...generatedDocFilesByType(project.id),
     ...filledFormsByDocType(db, project.id, resolvePermitPath(project).path),
     ...uploadedSubmissionDocuments(db, project),
   };
