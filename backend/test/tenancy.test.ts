@@ -33,10 +33,12 @@ function freePortInBand(start: number, count: number): number {
   for (let i = 0; i < count; i++) {
     const candidate = start + i;
     try {
-      // BIND THE WAY THE SERVER DOES — all interfaces, not 127.0.0.1. On Windows a service
-      // holding 0.0.0.0:5040 does NOT stop a bind to 127.0.0.1:5040, so probing the loopback
-      // reported a held port as free and the test still died on it.
-      execFileSync(process.execPath, ["-e", `require("net").createServer().listen(${candidate},function(){this.close()}).on("error",()=>process.exit(1))`], { stdio: "ignore" });
+      // BIND THE WAY THE SERVER DOES — all IPv4 interfaces, EXPLICITLY. Two prior lies from
+      // this probe, same shape: 127.0.0.1 succeeded while 0.0.0.0 was held, and then a
+      // host-less listen() — which lands on IPv6 [::] on Windows — succeeded while svchost
+      // (Connected Devices Platform) held IPv4 0.0.0.0:5040. Only "0.0.0.0" answers the
+      // question the server will actually ask; proven live on this machine 2026-09-21.
+      execFileSync(process.execPath, ["-e", `require("net").createServer().listen(${candidate},"0.0.0.0",function(){this.close()}).on("error",()=>process.exit(1))`], { stdio: "ignore" });
       return candidate;
     } catch { /* held — try the next */ }
   }
