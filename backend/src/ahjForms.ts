@@ -10,6 +10,7 @@ import { clientStagingOverlay } from "./clients";
 import { HttpError } from "./httpError";
 import { loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
+import { resolveValuation } from "./valuation";
 import { parseJson } from "./json";
 import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
@@ -537,6 +538,16 @@ function computed(name: string, ctx: FillContext): string {
       const value = Number(ctx.snapshot.jobValue);
       return Number.isFinite(value) && value > 0 ? String(Math.round(value)) : "";
     }
+    case "estimatedJobValue": {
+      // The application's "Estimated Job Value" is the OPERATOR'S VALUATION FORMULA
+      // of the contract (40% + battery adders) — the same authority the fee engine
+      // uses (valuation.ts) — never the raw contract, which is what declaredValuation
+      // above returns for the forms that genuinely ask for it. Live gap: Simmons's
+      // Coos Bay building application printed a BLANK job value while his parse
+      // carried a $29,066.02 contract the formula resolves fine.
+      const v = resolveValuation(ctx.snapshot, Number(ctx.project.systemSizeDcKw) || null);
+      return v.value != null && v.value > 0 ? String(Math.round(v.value)) : "";
+    }
     case "feeBracket":
       return feeBracket(ctx);
     case "renewableFee": {
@@ -560,10 +571,15 @@ function computed(name: string, ctx: FillContext): string {
       const plan = feeBracket(ctx) === "over25" ? f * 0.25 : 0;
       return money(f + plan + f * 0.12);
     }
-    case "fullAddress":
-      return [ctx.project.projectAddress, ctx.project.city, ctx.project.state, ctx.project.zip]
+    case "fullAddress": {
+      // projectAddress often ALREADY carries city/state/zip; joining blindly printed
+      // "1095 Michigan Ave, Coos Bay, OR, 97420, Coos Bay, OR, 97420" on the live
+      // Simmons building application. Build on streetAddress, which strips them.
+      const street = computed("streetAddress", ctx) || str(ctx.project.projectAddress);
+      return [street, ctx.project.city, ctx.project.state, ctx.project.zip]
         .filter(Boolean)
         .join(", ");
+    }
     case "systemSize":
       return `${ctx.project.systemSizeDcKw ?? "?"} kW DC / ${ctx.project.systemSizeAcKw ?? "?"} kW AC`;
     case "systemSizeDcKw":

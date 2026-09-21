@@ -95,16 +95,45 @@ async function fetchAccelaStatus(portalUrl: string, applicationNumbers: string[]
     if (capId) {
       const detailUrl = `${base}/Cap/CapDetail.aspx?Module=Building&TabName=Building&capID1=${encodeURIComponent(capId.capID1)}&capID2=${encodeURIComponent(capId.capID2)}&capID3=${encodeURIComponent(capId.capID3)}${agencyCodeParam}`;
       const text = await htmlToText(detailUrl);
-      if (text && text.length > 100) return text;
+      // Same relevance rule as the search strategies below: a guessed capID that
+      // resolves to an error page or someone else's record must not pass as status.
+      if (text && text.length > 100 && text.replace(/[\s-]+/g, "").toUpperCase().includes(num.replace(/[\s-]+/g, "").toUpperCase())) return text;
     }
   }
 
-  // Strategy 3: public record search page (works on some ACA configurations).
+  // A SEARCH PAGE'S OWN CHROME IS NOT A STATUS. CapHome/GlobalSearch responses are
+  // full ACA pages ("Create a New Portfolio... General Search...") that sail past a
+  // bare length check and reach the classifier as if they were status text (live
+  // Simmons check, 2026-09-21). A page that never mentions the number we asked
+  // about answered a different question — reject it and fall through to the honest
+  // "no status text" default.
+  const mentionsAnyNumber = (text: string): boolean => {
+    const flat = text.replace(/[\s-]+/g, "").toUpperCase();
+    return applicationNumbers.some((num) => num && flat.includes(num.replace(/[\s-]+/g, "").toUpperCase()));
+  };
+
+  // Strategy 3: the global search page — server-rendered, works anonymously, and
+  // takes the DISPLAY number verbatim (capID construction needs the internal
+  // triplet, which Oregon's 4-part city numbers like 187-26-000328-STR don't map
+  // to). Proven against aca-oregon: an indexed record comes back as a result row
+  // naming the number; an unindexed one says "returned no results". The no-results
+  // test runs on the RAW HTML — the extracted fragment can omit that sentence while
+  // the search box's echo of the query still satisfies the number check.
+  for (const num of applicationNumbers) {
+    if (!num) continue;
+    const globalUrl = `${base}/Cap/GlobalSearchResults.aspx?QueryText=${encodeURIComponent(num)}`;
+    const html = await fetchHtml(globalUrl);
+    if (!html || /returned no results/i.test(html)) continue;
+    const text = await extractVisibleText(html);
+    if (text && text.length > 100 && mentionsAnyNumber(text)) return text;
+  }
+
+  // Strategy 4: public record search page (works on some ACA configurations).
   for (const num of applicationNumbers) {
     if (!num) continue;
     const searchUrl = `${base}/Cap/CapHome.aspx?module=Building&TabName=Building&capCapId=${encodeURIComponent(num)}`;
     const text = await htmlToText(searchUrl);
-    if (text && text.length > 100) return text;
+    if (text && text.length > 100 && mentionsAnyNumber(text)) return text;
   }
 
   return null;
@@ -158,15 +187,27 @@ async function fetchSolarAppStatus(portalUrl: string, applicationNumbers: string
 // ---------------------------------------------------------------------------
 // Generic public URL — parse HTML and return visible text (cheerio-powered)
 // ---------------------------------------------------------------------------
-export async function htmlToText(url: string): Promise<string | null> {
+export async function fetchHtml(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(12000),
       headers: { "User-Agent": "Mozilla/5.0 (compatible; permit-status-bot/1.0)" },
     });
     if (!res.ok) return null;
-    const html = await res.text();
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
 
+export async function htmlToText(url: string): Promise<string | null> {
+  const html = await fetchHtml(url);
+  if (html == null) return null;
+  return extractVisibleText(html);
+}
+
+export async function extractVisibleText(html: string): Promise<string | null> {
+  try {
     const { load } = await import("cheerio");
     const $ = load(html);
 
