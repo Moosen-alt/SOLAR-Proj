@@ -74,6 +74,34 @@ console.log("\n2. AN OPEN QUESTION ABOUT THIS FILING — STILL HELD");
 }
 
 // ---------------------------------------------------------------------------
+// 2.5 A THRESHOLD THE SCHEDULE PRINTS IS A QUESTION THE ENGINE CAN ANSWER.
+//
+// Portland's electrical plan review names its own trigger — "Over 25 KVA (Plan Review
+// Required)" — and the project's kVA is the very number the bracket was matched on. Holding
+// that charge UNRESOLVED on a 7 kW rooftop asks the operator a question whose answer is
+// printed on the schedule. Below the threshold it does not apply; above it, it does; with no
+// size on file it STAYS an open question, because an unknown must not read as reassurance.
+// ---------------------------------------------------------------------------
+console.log("\n2.5 kVA THRESHOLDS RESOLVE FROM THE PROJECT'S OWN SIZE");
+{
+  const { __testConditionalChargeApplies: applies } = await import("../src/feeSchedules");
+  const COND = "The schedule flags plan review for 'Solar Generation System Over 25 KVA (Plan Review Required)'; a typical residential rooftop system of 25 kVA or less takes the flat bracket fee with no plan review line.";
+  check("2.5a. THE POINT: 7.5 kVA against an over-25-kVA trigger — the charge does NOT apply",
+    applies(COND, { kw: 7.5 }) === false, String(applies(COND, { kw: 7.5 })));
+  check("2.5b. 30 kVA against the same words — it DOES apply",
+    applies(COND, { kw: 30 }) === true, String(applies(COND, { kw: 30 })));
+  check("2.5c. exactly 25 kVA is not OVER 25 — still does not apply",
+    applies(COND, { kw: 25 }) === false, String(applies(COND, { kw: 25 })));
+  check("2.5d. MUST PASS: no size on file keeps it an OPEN QUESTION, never a quiet no",
+    applies(COND, { kw: null }) === null && applies(COND, {}) === null,
+    `${String(applies(COND, { kw: null }))} / ${String(applies(COND, {}))}`);
+  check("2.5e. MUST PASS: recorded project facts outrank the threshold — review required is required",
+    applies("Only when electrical plan review is required", { electricalReviewRequired: true, kw: 7.5 }) === true);
+  check("2.5f. a condition naming no threshold is untouched by a known size",
+    applies("Charged when the fire bureau reviews the filing", { kw: 7.5 }) === null);
+}
+
+// ---------------------------------------------------------------------------
 // 3. AND THE FLAG HAS TO SURVIVE THE TRIP. A classifier nothing downstream reads is decoration.
 //
 // Driven through the quote seam production loads through, so this checks the CONSUMER: an

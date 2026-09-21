@@ -3243,13 +3243,46 @@ export function chargeIsFutureContingent(condition: string | undefined, label: s
   return FUTURE_CONTINGENT_CHARGE.test(`${String(label ?? "")} ${String(condition ?? "")}`);
 }
 
+/**
+ * A THRESHOLD THE CONDITION NAMES, IN kVA. Portland's electrical plan review prints its own
+ * trigger — "Solar Generation System Over 25 KVA (Plan Review Required)" — and the researched
+ * condition repeats it. Matched narrowly on an explicit over/above/exceeding phrase, because
+ * this value is allowed to answer a question a human would otherwise be asked.
+ */
+const KVA_THRESHOLD = /\b(?:over|above|exceed(?:s|ing)?|in\s+excess\s+of|greater\s+than)\s*\$?\s*(\d+(?:\.\d+)?)\s*kva\b/i;
+
+/** Test seam only: conditionalChargeApplies is internal, and its threshold answers are exactly
+ *  the kind of quiet "does not apply" that must be provable in both directions. */
+export function __testConditionalChargeApplies(
+  condition: string,
+  inputs: { electricalReviewRequired?: boolean; kw?: number | null },
+): true | false | null {
+  return conditionalChargeApplies(condition, inputs);
+}
+
 function conditionalChargeApplies(
   condition: string,
-  inputs: { electricalReviewRequired?: boolean },
-): true | null {
+  inputs: { electricalReviewRequired?: boolean; kw?: number | null },
+): true | false | null {
+  // Recorded project facts outrank everything: an operator (or the parser) saying electrical
+  // plan review IS required settles it, whatever size the system is.
   if (inputs.electricalReviewRequired === true
     && /\belectrical\b[^.;]{0,60}\bplan\s+review\b|\bplan\s+review\b[^.;]{0,60}\belectrical\b/i.test(condition)) {
     return true;
+  }
+  // THE SCHEDULE ANSWERED ITS OWN QUESTION. When the condition names a kVA threshold and this
+  // project's rating is known and at-or-below it, the charge does not apply — by the
+  // jurisdiction's own words, evaluated against the same kW the bracket was matched on. This is
+  // a determination, not a guess: without it, every residential quote at every jurisdiction
+  // whose plan review triggers above 25 kVA was held UNRESOLVED for a review that a 7 kW
+  // rooftop can never incur. `false` here, never for an unknown size — a project with no
+  // rating stays an open question (null), because an unknown must not read as reassurance.
+  const threshold = KVA_THRESHOLD.exec(condition);
+  if (threshold && inputs.kw != null && Number.isFinite(inputs.kw)) {
+    const limit = Number(threshold[1]);
+    if (Number.isFinite(limit) && inputs.kw <= limit) return false;
+    // Above the threshold the charge applies — same words, other side of the same line.
+    if (Number.isFinite(limit) && inputs.kw > limit) return true;
   }
   return null;
 }
@@ -3313,7 +3346,7 @@ function permitCharges(
 function ancillaryCharges(
   schedule: FeeScheduleRecord,
   b: FeeBracket,
-  inputs: { electricalReviewRequired?: boolean },
+  inputs: { electricalReviewRequired?: boolean; kw?: number | null },
 ): FeeChargeBreakdown[] {
   const out: FeeChargeBreakdown[] = [];
   for (const c of b.ancillaryCharges ?? []) {
@@ -3325,6 +3358,11 @@ function ancillaryCharges(
       ? `${c.percent}% of ${clean(c.percentOf) || "the permit fee"} ($${b.feeUsd.toFixed(2)})`
       : "";
     const known = c.conditional ? conditionalChargeApplies(c.condition, inputs) : true;
+    // THE SCHEDULE ANSWERED NO. A charge whose printed trigger is a kVA threshold this project
+    // is below does not apply to this filing — the same skip as a charge naming another
+    // discipline, and for the same reason: it is not this filing's charge. Only an explicit
+    // false skips; an unanswered condition (null) stays listed and holds the total.
+    if (known === false) continue;
     // An overage fee is not a question about THIS filing — see chargeIsFutureContingent. It is
     // still listed, with its own wording, so an operator knows what a failed inspection or a
     // plan revision would cost; it just stops nulling a total it is not part of.
