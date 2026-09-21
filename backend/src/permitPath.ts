@@ -373,6 +373,20 @@ export function resolvePermitPath(project: PermitPathInputs): PermitPathResoluti
   if (deadLoad != null && deadLoad > 4.5) screenFailures.push(`PV dead load ${deadLoad} psf > 4.5 psf prescriptive limit`);
   if (spacing != null && spacing > 24) screenFailures.push(`rafter spacing ${spacing} in > 24 in prescriptive limit`);
   if (wind && !/\b(B|C)\b/i.test(wind)) screenFailures.push(`wind exposure "${wind}" outside prescriptive B/C`);
+  // ROOFING MATERIAL IS A SCREEN INPUT, NOT JUST A CHECKLIST ROW. The ORSC prescriptive
+  // path admits only metal, wood shingle/shake, or <=2-layer composition (the BCD 5952
+  // roofing row) — a membrane roof is outside it no matter how clean the numbers are.
+  // Operator ruling (2026-09-21): "In Oregon, a PV solar installation on a TPO roof is
+  // automatically a non-prescriptive project... we had to get stamps for them." Proven on
+  // David Simmons: TPO + ballasted, numerics all inside the limits, screen said
+  // prescriptive — his REAL filing is 187-26-000328-STR, a stamped STRUCTURAL permit.
+  // An UNKNOWN material stays silent (absence is not failure); only a RECOGNIZED
+  // non-qualifying covering fails the screen.
+  const roofMaterial = snap(project, "roofMaterial");
+  const nonPrescriptiveRoof = /\b(tpo|epdm|pvc|membrane|torch|built[-\s]?up|bur|tar|gravel|foam|spf|rolled|mod(ified)?[-\s]?bit(umen)?)\b/i.test(roofMaterial);
+  if (nonPrescriptiveRoof) {
+    screenFailures.push(`roofing material "${roofMaterial}" is not a prescriptive-eligible covering (metal, wood shingle/shake, or <=2-layer composition) — membrane-roof PV is non-prescriptive in Oregon`);
+  }
   // ULTIMATE WIND SPEED, not just exposure. A COASTAL site routinely parses as exposure C —
   // inside the B/C allowance — while its design wind speed sits in the special wind region
   // above the prescriptive tables' cap (120 mph Vult at exposure C, 135 at B: the same

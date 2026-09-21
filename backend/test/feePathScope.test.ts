@@ -255,6 +255,22 @@ async function main(): Promise<void> {
   });
   check("premise: the SAME hedge with a passing prescriptive screen resolves PRESCRIPTIVE — Salem 26-108868-DW made real",
     resolvePermitPath(HEDGED_CLEAN).path === "prescriptive", JSON.stringify(resolvePermitPath(HEDGED_CLEAN)));
+  // THE MEMBRANE ROOF, pinned from the real Simmons/Coos Bay case: TPO with every numeric
+  // inside the limits still routes ENGINEERED — "In Oregon, a PV solar installation on a
+  // TPO roof is automatically a non-prescriptive project... we had to get stamps for them"
+  // (operator, 2026-09-21). His real filing: 187-26-000328-STR, a structural permit.
+  const TPO_CLEAN = mkProject("proj-tpo-clean", "City of Coos Bay", 7.04, 6.08, {
+    mounting: "Roof mount", roofMaterial: "TPO",
+    framingType: "rafter", roofRafterSpacing: "24", roofRafterSpan: "10", snow: "16", wind: "C", windSpeed: "110", deadLoad: "2.64",
+  });
+  check("premise: MUST PASS — a TPO roof with clean numerics is ENGINEERED (Simmons 187-26-000328-STR made real)",
+    resolvePermitPath(TPO_CLEAN).path === "engineered", JSON.stringify(resolvePermitPath(TPO_CLEAN)));
+  const SHINGLE_CLEAN = mkProject("proj-shingle-clean", "City of Coos Bay", 7.04, 6.08, {
+    mounting: "Roof mount", roofMaterial: "Composition Shingle",
+    framingType: "rafter", roofRafterSpacing: "24", roofRafterSpan: "10", snow: "16", wind: "C", windSpeed: "110", deadLoad: "2.64",
+  });
+  check("premise: MUST EXCLUDE — the SAME numerics on composition shingle stay PRESCRIPTIVE (the material rule must not over-fire)",
+    resolvePermitPath(SHINGLE_CLEAN).path === "prescriptive", JSON.stringify(resolvePermitPath(SHINGLE_CLEAN)));
 
   // -------------------------------------------------------------------------
   // 1. THE CLASSIFIER'S ORDERING — tested in BOTH directions, because a filter

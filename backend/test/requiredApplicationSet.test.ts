@@ -213,6 +213,39 @@ await check("MUST DEMAND BOTH: a separate-permit AHJ needs a building-side AND a
   assert.equal(electrical!.blocking, true);
 });
 
+// ---------------------------------------------------------------------------
+// PORTAL-ENTRY-ONLY: no application PDF exists anywhere, so nothing may BLOCK on
+// one — but the rows stay VISIBLE and say where the application actually lives
+// (operator, 2026-09-21: "If no files found needed, call it out"). Salem's own
+// acquisition run says "online-only portal — no PDF template needed" while the
+// doc gate blocked Reavis's staging on the very same nonexistent PDFs.
+// ---------------------------------------------------------------------------
+await check("PORTAL-ONLY MUST NOT BLOCK: the same separate-structure demands stop blocking when the AHJ is portal-entry-only", () => {
+  const set = requiredApplicationDocs(prescriptive as never, { ...ctxFor(prescriptive), requiresPortalEntryOnly: true });
+  const building = set.find((d) => d.docType === "building_application");
+  const electrical = set.find((d) => d.docType === "electrical_application");
+  assert.ok(building, "the row must STAY VISIBLE — dropping it silently hides what the portal run owes");
+  assert.ok(electrical, "the electrical row must stay visible too");
+  assert.equal(building!.blocking, false, "no PDF exists — blocking on it is a demand nobody can satisfy");
+  assert.equal(electrical!.blocking, false);
+  assert.match(building!.why, /online portal.*no application PDF exists/i, "the row must SAY why no file is owed");
+  assert.match(electrical!.why, /online portal.*no application PDF exists/i);
+});
+
+await check("PORTAL-ONLY PREMISE: a City of Salem project resolves requiresPortalEntryOnly from its own profile", () => {
+  const salem = { ...(prescriptive as object), ahj: "City of Salem" };
+  const ctx = ctxFor(salem);
+  assert.equal(ctx.requiresPortalEntryOnly, true, "salem-pac-solar-array carries requiresPortalEntryOnly: true");
+});
+
+await check("PORTAL-ONLY MUST EXCLUDE: a PDF-taking AHJ (Coos Bay) keeps both rows blocking", () => {
+  const ctx = ctxFor(prescriptive);
+  assert.equal(Boolean(ctx.requiresPortalEntryOnly), false, "Coos Bay takes PDFs — the flag must not leak");
+  const set = requiredApplicationDocs(prescriptive as never, ctx);
+  assert.equal(set.find((d) => d.docType === "building_application")!.blocking, true);
+  assert.equal(set.find((d) => d.docType === "electrical_application")!.blocking, true);
+});
+
 await check("...and each says WHY, naming the AHJ whose requirement it is", () => {
   const set = setFor(prescriptive);
   for (const d of set) {

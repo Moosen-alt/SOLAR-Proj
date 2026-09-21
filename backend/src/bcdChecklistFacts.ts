@@ -16,7 +16,15 @@ export function bcdChecklistAnswers(project: ProjectRecord): Record<string, Answ
   const truss = all(frame ? /truss/.test(frame) : null, max("roofRafterSpacing", 24));
   const rafter = all(frame ? /rafter/.test(frame) : null, max("roofRafterSpacing", 24), flag("rafterExceptionCompliant"));
   const roof = str("roofMaterial");
-  const roofing = !roof ? null : /metal/.test(roof) ? true
+  // A RECOGNIZED membrane covering (TPO/EPDM/PVC/built-up...) is a known "No", not an
+  // unknown — the form's roofing row admits only metal / wood shingle-shake / <=2-layer
+  // composition, and Oregon treats membrane-roof PV as non-prescriptive outright
+  // (operator ruling 2026-09-21; Simmons's real permit 187-26-000328-STR went structural).
+  // In practice such a project routes engineered and this form is never built for it —
+  // this keeps the row honest for any copy that does get filled.
+  const membrane = /\b(tpo|epdm|pvc|membrane|torch|built[-\s]?up|bur|tar|gravel|foam|spf|rolled|mod(ified)?[-\s]?bit(umen)?)\b/.test(roof);
+  const roofing = !roof ? null : membrane ? false
+    : /metal/.test(roof) ? true
     : /compos|asphalt/.test(roof) ? max("roofLayers", 2)
     : /wood|shake/.test(roof) ? max("roofLayers", 1) : null;
   const exposure = str("wind").toUpperCase();

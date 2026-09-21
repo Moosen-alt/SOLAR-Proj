@@ -122,6 +122,16 @@ export interface ApplicationDocContext {
    */
   requiresPrescriptiveChecklist?: boolean;
   /**
+   * The jurisdiction takes applications ONLY through its online portal — no standalone
+   * application PDF exists to download, fill, or attach (Salem's E-permitting, Portland's
+   * DevHub). Form acquisition already knows this (ahjFormAuto skips the web search and says
+   * "no PDF template needed"); the doc gate must agree, or it blocks staging on a file
+   * nobody can produce while the staged portal run is what actually carries these answers.
+   * Operator (2026-09-21): "If no files found needed, call it out" — the rows stay VISIBLE
+   * with the portal-entry explanation; they just stop blocking.
+   */
+  requiresPortalEntryOnly?: boolean;
+  /**
    * WHETHER THE ABSENCE OF DEMANDS ABOVE IS AN ANSWER AT ALL — the same distinction
    * Round 3 drew for pkg.missingDocumentsStatus, one layer upstream and in the same
    * two words on purpose.
@@ -362,6 +372,12 @@ export function requiredApplicationDocs(
   const where = (ctx.ahjLabel || project.ahj || "").trim() || "This AHJ";
   const named = (ctx.buildingApplicationName || "").trim();
   const permitWord = combo ? "combined building + electrical permit" : "building permit";
+  // PORTAL-ENTRY-ONLY AHJs HAVE NO APPLICATION PDF TO ATTACH. The application data is
+  // entered in the portal at staging; blocking on a file that does not exist anywhere
+  // is a demand nobody can satisfy. The rows stay listed (the answers are still owed)
+  // but stop blocking, and the `why` says exactly where the application actually lives.
+  const portalOnly = Boolean(ctx.requiresPortalEntryOnly);
+  const portalNote = ` NOTE: ${where} takes applications ONLY through its online portal — no application PDF exists to download or attach. The staged portal run enters these answers; nothing is owed as a file here.`;
   const out: RequiredApplicationDoc[] = [];
 
   if (wantsBuilding) {
@@ -388,13 +404,13 @@ export function requiredApplicationDocs(
       // under the generic key by classifyFormType; accept it here so the row is
       // not demanding a file that already exists under another name.
       altDocTypes: ["permit_application"],
-      label,
-      why,
+      label: portalOnly ? `${label.replace(/, filled$/, "")} — entered in the portal at staging` : label,
+      why: portalOnly ? why + portalNote : why,
       lane: "permit",
       // An unconfirmed path is ALREADY a hard block at repository.ts (staging
       // refuses until the operator picks). Blocking here too would only replace
       // a precise message with a vaguer one.
-      blocking: separate && path !== "unknown",
+      blocking: separate && path !== "unknown" && !portalOnly,
       discipline: combo ? "combo" : "structural",
       ...(kind ? { applicationKind: kind } : {}),
     });
@@ -407,12 +423,14 @@ export function requiredApplicationDocs(
       // DELIBERATELY NO `permit_application` ALIAS. One generic blank must never
       // be able to satisfy both the building-side row and this one — that is the
       // exact shape of the failure this set exists to catch.
-      label: "Electrical (renewable-energy) permit application, filled",
-      why: separate
+      label: portalOnly
+        ? "Electrical (renewable-energy) permit application — entered in the portal at staging"
+        : "Electrical (renewable-energy) permit application, filled",
+      why: (separate
         ? `${where} files SEPARATE building and electrical permits, so the renewable-energy electrical application is required in addition to the building-side one — on either permit path, on every interconnection.${statute}`
-        : `${where}'s process profile records that an electrical permit application is required. Confirm it before filing.`,
+        : `${where}'s process profile records that an electrical permit application is required. Confirm it before filing.`) + (portalOnly ? portalNote : ""),
       lane: "permit",
-      blocking: separate,
+      blocking: separate && !portalOnly,
       discipline: "electrical",
     });
   }
@@ -514,6 +532,7 @@ export function applicationDocContext(project: ProjectRecord): ApplicationDocCon
     // already names the form, so the set cannot demand a checklist for a jurisdiction
     // whose profile we failed to resolve.
     ctx.requiresPrescriptiveChecklist = Boolean(profile.requiresPrescriptiveChecklist);
+    ctx.requiresPortalEntryOnly = Boolean(profile.requiresPortalEntryOnly);
   } catch { /* the AHJ's own name for the form is a nicety, not a requirement */ }
   return ctx;
 }
