@@ -70,6 +70,41 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
 
   if (!autoStageStepsEnabled()) return { ran, stoppedAt: status(), reason: "AUTO_STAGE_STEPS is off." };
 
+  // STEP 0 — SPLIT THE PLAN SET, before anything judges documents. The submit gate names the
+  // sheets it wants BY TYPE (site plan, SLD, structural, specs), and every one of them usually
+  // lives inside the uploaded plan set — Basson sat "Blocked: required documents" over sheets
+  // she had already provided, until a human clicked split. Operator ruling (2026-09-21): "have
+  // it auto split everything… once it splits its good, just have it auto do it then check
+  // again." Deduped on recency: split rows newer than the newest plan set mean this plan set
+  // is already split; a NEWLY uploaded plan set re-splits. Pure-local (pdf-lib page routing,
+  // no browser, no LLM), and a failure is logged and stepped past — the doc gates downstream
+  // still rule honestly on whatever exists.
+  const chainOwned = ["parsed", "qc_failed", "qc_passed", "ready_to_stage"].includes(status());
+  if (chainOwned) {
+    const planSet = db.get<{ uploaded_at: string }>(
+      "SELECT uploaded_at FROM project_documents WHERE project_id = ? AND doc_type = 'plan_set' ORDER BY uploaded_at DESC LIMIT 1",
+      [projectId],
+    );
+    const splitNewer = planSet
+      ? Number(db.get<{ n: number }>(
+          "SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ? AND source = 'split' AND uploaded_at >= ?",
+          [projectId, planSet.uploaded_at],
+        )?.n ?? 0)
+      : 0;
+    if (planSet && splitNewer === 0) {
+      try {
+        const { buildUtilityPackage } = await import("./docSplitter");
+        const pkg = await buildUtilityPackage(db, projectId, "all");
+        ran.push(`split(${(pkg.parts || []).length})`);
+        logger.info("stage-auto", "plan set split automatically", { project: projectId, parts: (pkg.parts || []).length });
+      } catch (err) {
+        logger.warn("stage-auto", "auto-split failed; document gates rule on what exists", {
+          project: projectId, err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
   // STEP 1 — QC, on a fresh parse OR a re-saved qc_failed project. The enqueue only ever
   // happens on a save, and a save means the inputs changed — so re-running QC here is judging
   // new evidence, not spinning on old. If the verdict is still qc_failed, the chain stops

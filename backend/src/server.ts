@@ -1395,7 +1395,12 @@ app.get("/api/projects/:id/evidence-image", asyncHandler(async (req, res) => {
 }));
 
 app.post("/api/projects/:id/qc", (req, res) => {
-  res.json(rerunQc(db, req.params.id));
+  const detail = rerunQc(db, req.params.id);
+  // "For it to auto go anyway" (operator, 2026-09-21): a HAND-RUN QC used to strand the
+  // project at qc_passed under a banner promising automatic motion — the chain only enqueued
+  // on save/upload/split. Whoever runs QC, the chain continues from wherever QC left it.
+  try { enqueueStageSteps(db, String(req.params.id)); } catch { /* convenience, never the QC */ }
+  res.json(detail);
 });
 
 app.get("/api/corrections/overdue", (req, res) => {

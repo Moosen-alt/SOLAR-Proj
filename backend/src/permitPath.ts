@@ -337,13 +337,30 @@ export function resolvePermitPath(project: PermitPathInputs): PermitPathResoluti
   }
 
   // 3. Stamp recommendation calling for a stamp / engineering review.
+  //
+  // A HEDGE IS NOT A MANDATE. Brittany Reavis's parse carried "AHJ *may require* stamped
+  // structural documentation for the 2x4 truss roof" — and this rule's `requires?` matched the
+  // "require" inside "may require", overriding the parser's own permitPath="prescriptive" and
+  // demanding PE-stamped plans the filing never needed. Salem's ISSUED permit for that exact
+  // roof (26-108868-DW, 2026-07-06) reads "Solar Photovoltaic System Prescriptive Install?:
+  // Yes" with no stamp anywhere — the "may" resolved to NO in the real world, consistent with
+  // the standing Salem ruling (stamp not required on prescriptive). The same inversion as the
+  // blank-seal lesson (commit 0a70e58), pointing the other way: uncertain language must fall
+  // through to the prescriptive SCREEN below, which answers from measured facts, not wording.
   const stampText = `${snap(project, "stampRecommendation")} ${snap(project, "reviewFlags")}`.toLowerCase();
   const callsForStamp = /(requires?|needs?|recommend|must).{0,30}(stamp|engineer|pe seal|sealed|calc)/.test(stampText)
     || /engineered path|non.?prescriptive|structural review required/.test(stampText);
+  const hedgedStamp = /\b(may|might|could|can|if|whether|possibly|potentially|in case|consider)\b[^.;]{0,16}\b(requires?|needs?|recommend|must)\b/.test(stampText);
   const explicitlyNoStamp = /(no stamp|stamp not required|prescriptive ok|prescriptive path)/.test(stampText);
-  if (callsForStamp && !explicitlyNoStamp) {
+  if (callsForStamp && !explicitlyNoStamp && !hedgedStamp) {
     basis.push(`Stamp recommendation indicates engineering is required: "${snap(project, "stampRecommendation") || snap(project, "reviewFlags")}".`);
     return finalize("engineered", "parser");
+  }
+  if (callsForStamp && hedgedStamp && !explicitlyNoStamp) {
+    basis.push(
+      `Stamp language is HEDGED ("may/might require") — a question for the AHJ, not a routing fact. `
+      + `The prescriptive screen below decides from the measured limits; verify the stamp question with the jurisdiction.`,
+    );
   }
 
   // 4. Structural prescriptive screen — any breach routes to engineered.

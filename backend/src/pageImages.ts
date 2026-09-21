@@ -105,7 +105,7 @@ const TOPIC_KEYWORDS: Record<EvidenceTopic, string[]> = {
   sld: ["single line", "one line", "3-line", "three line", "sld", "705", "interconnection", "rapid shutdown", "inverter", "msp", "main service panel", "ocpd", "breaker"],
   siteRoofPlan: ["site plan", "roof plan", "plot plan", "array", "layout", "setback"],
   firePathway: ["fire", "pathway", "setback", "ridge", "eave", "access"],
-  roofFraming: ["rafter", "truss", "framing", "span", "structural"],
+  roofFraming: ["rafter", "truss", "framing", "span", "structural", "roof section", "bearing wall", "o.c."],
   rackingAttachment: ["racking", "attachment", "standoff", "lag", "flashing", "rail", "mounting"],
   structuralLoads: ["snow", "dead load", "wind", "psf", "slope"],
   rapidShutdown: ["rapid shutdown", "rsd", "690.12", "initiator"],
@@ -132,6 +132,13 @@ export function selectTopPagesForTopic(pages: string[], topic: EvidenceTopic, hi
   pages.forEach((text, idx) => {
     const lower = text.toLowerCase();
     let score = 0;
+    // THE SHEET-INDEX PAGE MATCHES EVERYTHING. The cover/first sheet lists every sheet NAME,
+    // so it scores for every topic and its sheer token count swallows excerpt overlap — on a
+    // real Salem plan set the ELECTRICAL 3-line (which carries the index block) ranked in the
+    // roofFraming top-3 while the actual ROOF SECTION sheet did not, and the vision pass then
+    // confidently reported "no structural info on this sheet" about a sheet nobody should
+    // have been looking at. Same guard the doc splitter has carried all along.
+    if (/sheet\s*index/.test(lower)) score -= 8;
     for (const kw of keywords) if (lower.includes(kw)) score += 2;
     if (sheetLabel && lower.includes(sheetLabel.toLowerCase())) score += 6;
     if (excerptTokens.size) {

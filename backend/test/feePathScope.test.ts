@@ -216,7 +216,11 @@ async function main(): Promise<void> {
 
   // Ann: the parser's verbatim finding. "No PE stamp/seal shown …" routes engineered.
   const ANN = mkProject("proj-ann", "City of Coos Bay", 7.68, 8.36, {
-    stampRecommendation: "No PE stamp/seal shown (title block 'Signature with Seal' is blank); AHJ may require stamped structural for 2x4 @16\" rafters",
+    // OPERATOR GROUND TRUTH (2026-09-21): Salem's ISSUED permit 26-108868-DW approved the
+    // very roof whose parse said "AHJ *may require* stamped structural" as PRESCRIPTIVE with
+    // no stamp — a hedge is a question, not a routing fact, and it no longer forces
+    // engineered. This fixture keeps the ENGINEERED arm alive with AFFIRMATIVE language.
+    stampRecommendation: "Requires PE-stamped structural plans and a sealed engineering letter — spans exceed the prescriptive tables",
   });
 
   // Ivy: a microinverter roof mount that clears the structural screen — prescriptive.
@@ -230,12 +234,27 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
   // 0. FIXTURE PREMISES. If these drift the rest of the file means nothing.
   // -------------------------------------------------------------------------
-  check("premise: Ann resolves ENGINEERED from the parser's own stamp sentence",
+  check("premise: Ann resolves ENGINEERED from an AFFIRMATIVE stamp sentence (a hedge no longer routes — see the hedged premise below)",
     resolvePermitPath(ANN).path === "engineered", resolvePermitPath(ANN).path);
   check("premise: Ivy resolves PRESCRIPTIVE (microinverter roof mount clearing the screen)",
     resolvePermitPath(IVY).path === "prescriptive", resolvePermitPath(IVY).path);
   check("premise: the no-inputs project resolves UNKNOWN",
     resolvePermitPath(UNKNOWN).path === "unknown", resolvePermitPath(UNKNOWN).path);
+  // THE HEDGE, pinned from the real Reavis/Salem case: "may require" plus no measured facts
+  // leaves the path honestly UNDECIDED; the same hedge with a passing screen (2x4 @ 24" OC,
+  // snow 36, exposure C) resolves PRESCRIPTIVE — the screen answers, never the wording.
+  const HEDGED_BARE = mkProject("proj-hedge-bare", "City of Coos Bay", 5.9, 7.3, {
+    stampRecommendation: "No PE stamp or seal present; AHJ may require stamped structural documentation for the 2x4 truss roof",
+  });
+  check("premise: a HEDGED stamp sentence alone leaves the path UNDECIDED, not engineered",
+    resolvePermitPath(HEDGED_BARE).path === "unknown", resolvePermitPath(HEDGED_BARE).path);
+  const HEDGED_CLEAN = mkProject("proj-hedge-clean", "City of Salem", 5.9, 7.3, {
+    permitPath: "prescriptive", mounting: "Roof mount",
+    stampRecommendation: "No PE stamp or seal present; AHJ may require stamped structural documentation for the 2x4 truss roof",
+    framingType: "truss", roofRafterSpacing: "24", snow: "36", wind: "C", windSpeed: "95", deadLoad: "2.6",
+  });
+  check("premise: the SAME hedge with a passing prescriptive screen resolves PRESCRIPTIVE — Salem 26-108868-DW made real",
+    resolvePermitPath(HEDGED_CLEAN).path === "prescriptive", JSON.stringify(resolvePermitPath(HEDGED_CLEAN)));
 
   // -------------------------------------------------------------------------
   // 1. THE CLASSIFIER'S ORDERING — tested in BOTH directions, because a filter

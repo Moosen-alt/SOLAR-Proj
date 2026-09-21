@@ -148,6 +148,58 @@ console.log("\n5. AUTO_STAGE_STEPS=0 TURNS THE WHOLE THING OFF");
   check("5d. MUST PASS: default is ON — the operator asked for this", autoStageStepsEnabled() === true);
 }
 
+// ---------------------------------------------------------------------------
+// 6. STEP 0 — THE PLAN SET SPLITS ITSELF. The submit gate names sheets BY TYPE and they all
+//    live inside the uploaded plan set; a human had to click split (operator: "have it auto
+//    split everything… then check again"). Crafted two-sheet PDF with recognizable titles.
+// ---------------------------------------------------------------------------
+console.log("\n6. THE CHAIN SPLITS THE PLAN SET, ONCE PER PLAN SET");
+{
+  const { PDFDocument, StandardFonts } = await import("pdf-lib");
+  const mkPlanPdf = async (): Promise<Buffer> => {
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    for (const title of ["SITE PLAN", "ELECTRICAL LINE DIAGRAM"]) {
+      const page = pdf.addPage([612, 792]);
+      page.drawText(title, { x: 60, y: 700, size: 22, font });
+      page.drawText("SCALE: NTS — fixture sheet for the auto-split test", { x: 60, y: 660, size: 10, font });
+    }
+    return Buffer.from(await pdf.save());
+  };
+
+  const p = mk();
+  const { saveProjectDocument } = await import("../src/projectDocuments");
+  saveProjectDocument(db, p.id, {
+    filename: "fixture-plan-set.pdf", docType: "plan_set",
+    contentType: "application/pdf", buffer: await mkPlanPdf(), source: "upload",
+  });
+
+  await processStageStep(db, p.id);
+  const splitRows = (): Array<{ doc_type: string }> => db.query<{ doc_type: string }>(
+    "SELECT doc_type FROM project_documents WHERE project_id = ? AND source = 'split'", [p.id]);
+  const types1 = splitRows().map((r) => r.doc_type).sort();
+  check("6a. THE POINT: the chain split the plan set without a click",
+    types1.includes("site_plan") && types1.includes("sld"), JSON.stringify(types1));
+
+  const before = splitRows().length;
+  await processStageStep(db, p.id);
+  check("6b. MUST PASS: a second chain run does NOT split the same plan set again",
+    splitRows().length === before, `${before} -> ${splitRows().length}`);
+
+  // A NEW plan set re-splits — the dedupe is per plan set, not forever.
+  await new Promise((r) => setTimeout(r, 1100)); // uploaded_at is second-grained
+  saveProjectDocument(db, p.id, {
+    filename: "fixture-plan-set-v2.pdf", docType: "plan_set",
+    contentType: "application/pdf", buffer: await mkPlanPdf(), source: "upload",
+  });
+  await processStageStep(db, p.id);
+  check("6c. a NEWER plan set splits again", splitRows().length > before, `${before} -> ${splitRows().length}`);
+
+  const p2 = mk();
+  const out = await processStageStep(db, p2.id);
+  check("6d. no plan set on file -> no split step, no error", !out.ran.some((r) => r.startsWith("split(")));
+}
+
 console.log(failures ? `\nautoStageSteps: ${failures} check(s) FAILED` : "\nautoStageSteps: all checks passed");
 db.close();
 fs.rmSync(dir, { recursive: true, force: true });
