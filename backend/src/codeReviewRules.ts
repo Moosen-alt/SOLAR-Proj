@@ -344,8 +344,20 @@ export function evaluateDesignCodeFindings(
     }));
   }
 
+  // TRUSSES HAVE NO SPAN-TABLE DEMAND. The state's own prescriptive screen (BCD 5952,
+  // encoded in bcdChecklistFacts) splits framing into two arms: the TRUSS arm asks for
+  // framing type + spacing <= 24" — trusses are pre-engineered components — while clear
+  // span (+ the rafter exception) belongs only to the RAFTER arm. This rule used to
+  // demand span for both, which blocked Brittany Reavis's 2x4 truss @ 24" o.c. roof —
+  // the exact roof Salem issued 26-108868-DW for, prescriptive, no span table anywhere.
+  // Rafters keep the full demand: Portland bounced Trask for precisely that overspan.
+  const trussFraming = /truss/i.test(str(project, "framingType"));
+  const spanEvidenceIncomplete = trussFraming
+    ? rafterSpacing == null
+    : rafterSpacing == null || rafterSpan == null;
+
   // Suppression now requires the DOCUMENT, not a mention of one — see above.
-  if (roofMounted && prescriptiveScreening && !hasStampedEngineering && (rafterSpacing == null || rafterSpan == null)) {
+  if (roofMounted && prescriptiveScreening && !hasStampedEngineering && spanEvidenceIncomplete) {
     out.push(finding({
       id: "city.struct.span-table-incomplete",
       severity: screeningSeverity,

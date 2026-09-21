@@ -127,6 +127,40 @@ check("a prescriptive package with full span evidence raises neither finding", (
   assert.ok(!out.includes("city.struct.span-table-incomplete"), "spacing AND span are both present");
 });
 
+// ---------------------------------------------------------------------------
+// TRUSS ROOFS: the state's truss arm (BCD 5952) asks framing type + spacing —
+// never clear span. Salem issued 26-108868-DW for exactly this shape
+// (2x4 trusses @ 24" o.c., prescriptive, no span table on any sheet).
+// ---------------------------------------------------------------------------
+const TRUSS_PRESCRIPTIVE: Record<string, unknown> = {
+  permitPath: "prescriptive",
+  framingType: "truss",
+  roofRafterSpacing: 24,
+  // no span fields — trusses have none, and the screen must not invent the demand
+  snow: 36,
+  deadLoad: 2.44,
+  wind: "C",
+  windSpeed: 110,
+  planSetExtractedText: "PV roof plan, roof sections with truss size and spacing, attachment detail with flashing, single line diagram",
+};
+
+check("MUST PASS: a truss roof with spacing does NOT owe a rafter span table (the Reavis/Salem shape)", () => {
+  const out = ids(["plan_set", "sld", "site_plan", "structural", "module_spec", "inverter_spec", "labels"], TRUSS_PRESCRIPTIVE);
+  assert.ok(!out.includes("city.struct.span-table-incomplete"), "trusses are pre-engineered; the state's truss arm never asks for span");
+});
+
+check("MUST STILL FIRE: a truss roof with NO spacing evidence keeps the screening finding", () => {
+  const noSpacing = { ...TRUSS_PRESCRIPTIVE, roofRafterSpacing: undefined };
+  const out = ids(["plan_set", "sld", "structural"], noSpacing);
+  assert.ok(out.includes("city.struct.span-table-incomplete"), "the truss arm still needs spacing");
+});
+
+check("MUST STILL FIRE: a RAFTER roof missing span keeps the full demand (the Trask overspan lesson)", () => {
+  const rafterNoSpan = { ...PRESCRIPTIVE, roofRafterSpan: undefined };
+  const out = ids(["plan_set", "sld", "structural"], rafterNoSpan);
+  assert.ok(out.includes("city.struct.span-table-incomplete"), "rafters answer to the span tables");
+});
+
 check("a prescriptive package that MENTIONS an engineer still owes the stamp — but only as a warning", () => {
   const mentions = { ...PRESCRIPTIVE, stampRecommendation: "sealed by a licensed P.E. if required" };
   const f = findingIn(["plan_set", "sld"], "city.struct.stamped-engineering-missing", mentions);
