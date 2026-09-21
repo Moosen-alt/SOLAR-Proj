@@ -19,7 +19,12 @@ import { saveProjectDocument, listProjectDocuments, projectDocsByType } from "./
 // module spec and the inverter spec). The general-notes / sheet-index page lists every sheet
 // name, so it would match everything — it is detected and skipped before classification.
 const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegExp[] }> = [
-  { docType: "sld", label: "SLD / one-line", patterns: [/\b3-?LINE DIAGRAM\b/i, /\bONE-?LINE\b/i, /\bSINGLE-?LINE\b/i, /\bE\s*1\.1\b/i] },
+  // "ELECTRICAL LINE DIAGRAM" is how the Basson-style sets title their SLD (sheet PV-6) —
+  // neither "one-line" nor "3-line" appears anywhere on the sheet, so the whole electrical
+  // diagram went unsplit and the submit gate reported the SLD missing from a plan set that
+  // plainly contains one. Anchored on LINE DIAGRAM with an electrical qualifier; a bare
+  // /LINE DIAGRAM/ is deliberately NOT used ("property line", "setback line" prose risk).
+  { docType: "sld", label: "SLD / one-line", patterns: [/\b3-?LINE DIAGRAM\b/i, /\bONE-?LINE\b/i, /\bSINGLE-?LINE\b/i, /\bELECTRICAL\s+LINE\s+DIAGRAM\b/i, /\bE\s*1\.1\b/i] },
   { docType: "site_plan", label: "Site / plot plan", patterns: [/\bSITE PLAN\b/i, /\bPLOT PLAN\b/i, /\bPV\s*1\.[01]\b/i] },
   { docType: "structural", label: "Structural / roof framing", patterns: [/\bMOUNT DETAIL\b/i, /\bATTACHMENT DETAIL\b/i, /\bROOF SECTION\b/i, /\bRAFTER\b/i, /\bTRUSS\b/i, /\bS\s*1\.\d\b/i, /STRUCTURAL/i] },
   // Match the dedicated SPEC SHEET by its title-block Sheet Name only. Model strings
@@ -27,12 +32,17 @@ const CATEGORY_PATTERNS: Array<{ docType: string; label: string; patterns: RegEx
   // plan, SLD, etc., so they are NOT reliable — only the sheet name "… SPECIFICATION SHEET"
   // identifies the actual cut-sheet page. The combined "MODULE / INV SPECIFICATION SHEET"
   // counts as BOTH module and inverter spec.
-  { docType: "module_spec", label: "Module spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MODULE\s+SPECIFICATION\s+SHEET/i, /PV MODULE SPEC/i] },
+  // "EQUIPMENT SPECIFICATION" pages (Basson PV-11+) are image cut-sheets whose only text is
+  // the title block — no model string survives extraction, so nothing else can classify them.
+  // The section carries BOTH module and inverter cut-sheets; like the combined
+  // "MODULE / INV SPECIFICATION SHEET" above, it counts as both. The 5 MB caution below still
+  // holds: these are the DEDICATED spec pages by sheet name, not UL-number matches.
+  { docType: "module_spec", label: "Module spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MODULE\s+SPECIFICATION\s+SHEET/i, /PV MODULE SPEC/i, /\bEQUIPMENT\s+SPECIFICATIONS?\b/i] },
   // NOTE: do NOT match on the UL listing standard (/UL 1741/) — that number is cited on the
   // SLD, general notes, and most electrical sheets, so it pulled those dense pages into the
   // inverter_spec split and bloated it past PowerClerk's 5 MB upload limit. Match the dedicated
   // SPEC SHEET by its title-block name only, per this file's stated discipline.
-  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i] },
+  { docType: "inverter_spec", label: "Inverter spec", patterns: [/MODULE\s*[\/&]?\s*INV(?:ERTER)?\.?\s*SPEC/i, /MICRO-?INVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bINVERTER\s+SPEC(?:IFICATION)?S?\b/i, /\bEQUIPMENT\s+SPECIFICATIONS?\b/i] },
   { docType: "labels", label: "Labels / placards", patterns: [/\bWARNING LABELS\b/i, /\bLABEL LOCATION\b/i, /\bE\s*1\.3\b/i] },
 ];
 

@@ -307,7 +307,12 @@ function mapKnowledge(row: Row): PermitUtilityKnowledgeProfile {
     ahj: text(row.ahj),
     utility: text(row.utility),
     portalName: text(row.portal_name),
-    portalUrl: text(row.portal_url),
+    // A URL FILED UNDER "NAME" IS STILL THE PORTAL. Reference imports have twice now put the
+    // portal link in portal_name with portal_url empty (Tigard's EnerGov, Douglas County's
+    // iWorQ) — and no resolver reads a URL out of a name, so both AHJs staged to the wrong
+    // portal until an operator caught it live. When the url column is empty and the name IS
+    // an http(s) URL, the name is the url. Never the reverse, and never when a real url exists.
+    portalUrl: text(row.portal_url) || (/^https?:\/\/\S+$/i.test(text(row.portal_name).trim()) ? text(row.portal_name).trim() : ""),
     portalPlatform: text(row.portal_platform),
     submissionMethod: text(row.submission_method),
     requiredDocuments: parseJson<string[]>(text(row.required_documents_json), []),
@@ -353,6 +358,16 @@ function projectFromRow(row: Row): ProjectRecord {
 }
 
 function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEventInput): PermitUtilityKnowledgeProfile {
+  // A URL IS A URL, WHICHEVER FIELD THE SPREADSHEET PUT IT IN. The operator's AHJ process
+  // workbook import filed 71 portal links in portalName with portalUrl empty — and no resolver
+  // reads a URL out of a name, so Tigard and Douglas County both staged toward the wrong
+  // portal before an operator caught each one live (2026-09-20/21). Every importer and the
+  // learn path funnel through THIS function, so this is the one seam that makes the swap
+  // impossible rather than the two callers that happened to be caught doing it. Exactly-one
+  // URL only: a name carrying two links (Newberg) stays ambiguous and is left for a human.
+  if (!clean(facts.portalUrl) && /^https?:\/\/\S+$/i.test(clean(facts.portalName))) {
+    facts = { ...facts, portalUrl: clean(facts.portalName) };
+  }
   const key = profileKey(facts);
   const ts = nowIso();
   const existing = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);

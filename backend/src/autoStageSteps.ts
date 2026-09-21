@@ -84,16 +84,42 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
     return { ran, stoppedAt: "qc_failed", reason: "QC failed — a person fixes the intake; re-saving restarts the chain." };
   }
 
-  // STEP 2 — the AHJ/NEM document package. getApplicationDocumentPackage owns the narrow
-  // qc_passed -> ready_to_stage edge (repository.ts) and refuses it for an empty package, so a
-  // build that produced nothing leaves the status alone and this chain stops honestly below.
+  // STEP 2 — the AHJ/NEM document package, WITH form acquisition first. The banner promised
+  // "the docs are building automatically" and then a brand-new AHJ (Douglas County, first
+  // contact 2026-09-21) sat at qc_passed forever: getApplicationDocumentPackage only ASSEMBLES
+  // from templates on file, and acquisition — the cooldown-guarded fetch/research that staging
+  // runs in prepareOfficialDocuments — never fired because nobody clicked toward staging. The
+  // chain now runs the same acquisition seam, so a new AHJ's first project pulls its forms on
+  // the way to ready_to_stage instead of waiting for a human to wonder why nothing built.
   if (status() === "qc_passed") {
+    try {
+      const { getProjectDetail } = await import("./repository");
+      const { prepareOfficialDocuments } = await import("./prepareOfficialDocuments");
+      await prepareOfficialDocuments(db, getProjectDetail(db, projectId).project);
+      ran.push("acquire_forms");
+    } catch (err) {
+      // Acquisition failing must not stop the assembly attempt — stored templates may suffice.
+      logger.warn("stage-auto", "form acquisition failed; assembling from stored templates", {
+        project: projectId, err: err instanceof Error ? err.message : String(err),
+      });
+    }
     const { getApplicationDocumentPackage } = await import("./repository");
+    const { addAuditLog } = await import("./audit");
     const pkg = getApplicationDocumentPackage(db, projectId);
     ran.push(`build_docs(${pkg.docs.length})`);
     logger.info("stage-auto", "AHJ/NEM document package built automatically", {
       project: projectId, docs: pkg.docs.length, missing: (pkg.missingDocuments || []).length,
     });
+    // AN EMPTY PACKAGE IS A FACT WORTH RECORDING, not a silent stall. The status honestly
+    // stays qc_passed (the builder's narrow edge refuses empty packages, and rightly), but
+    // without this row the operator sees a banner promising motion and an audit trail
+    // showing none — the unknown reading as reassurance, in stage form.
+    if (pkg.docs.length === 0) {
+      addAuditLog(db, projectId, "system", "stage autopilot", "stage_auto.docs_unbuildable", {
+        reason: "No AHJ forms on file for this jurisdiction and acquisition produced none yet.",
+        missingDocuments: (pkg.missingDocuments || []).map((d) => d.docType ?? d),
+      });
+    }
   }
 
   // STEP 3 — the verify pair, once, on entering ready_to_stage. The reviewer gate runs WITH

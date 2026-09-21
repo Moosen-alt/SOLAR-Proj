@@ -1943,6 +1943,10 @@ app.post(
     const contentType = String(req.headers["content-type"] || "application/octet-stream");
     const saved = saveProjectDocument(db, String(req.params.id), { filename, docType, contentType, buffer: req.body, source: "upload" });
     maybeResumeAutopilot(db, String(req.params.id), "a document was uploaded"); // may clear a missing-document blocker
+    // A new document is new evidence for the LOCAL chain too — a project stalled at qc_passed
+    // on a missing form re-checks itself instead of waiting for a click (guarded inside: only
+    // chain-owned statuses do anything).
+    try { enqueueStageSteps(db, String(req.params.id)); } catch { /* convenience, never the upload */ }
     res.status(201).json(saved);
   },
 );
@@ -1963,7 +1967,11 @@ app.delete("/api/projects/:id/documents/:docId", (req, res) => {
 //         all (everything, for debug). Defaults to nem.
 app.post("/api/projects/:id/build-utility-package", asyncHandler(async (req, res) => {
   const target = String(req.query.target || req.body?.target || "nem");
-  res.status(201).json(await buildUtilityPackage(db, String(req.params.id), target));
+  const pkg = await buildUtilityPackage(db, String(req.params.id), target);
+  // New split documents are new evidence — re-drive the local chain so a project stalled on a
+  // missing document (the submit gate names them) re-checks itself without a human click.
+  try { enqueueStageSteps(db, String(req.params.id)); } catch { /* convenience, never the split */ }
+  res.status(201).json(pkg);
 }));
 
 // Backups (manual trigger + list; a scheduled snapshot also runs automatically)

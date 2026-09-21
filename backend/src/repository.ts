@@ -6399,8 +6399,13 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   let utilityPortalUrl = "";
   let ahjPortalUrl = "";
   if (track === "nem" && detail.project.utility) {
+    // "OR the name IS a url": reference imports have twice filed the portal link in
+    // portal_name with portal_url empty (Tigard, Douglas County) — same fallback as the
+    // knowledgeBase mapper, kept in SQL because this exact-key read bypasses the mapper.
     const utilRow = db.get<{ portal_url?: string }>(
-      "SELECT portal_url FROM permit_utility_knowledge WHERE utility = ? AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1",
+      `SELECT CASE WHEN portal_url IS NOT NULL AND portal_url != '' THEN portal_url ELSE portal_name END AS portal_url
+         FROM permit_utility_knowledge
+        WHERE utility = ? AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%') LIMIT 1`,
       [detail.project.utility],
     );
     utilityPortalUrl = utilRow?.portal_url ?? "";
@@ -6408,11 +6413,19 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     // A human-verified AHJ in the KB may carry a portal URL even without a required-documents list,
     // so a permit self-seed can launch from it (mirrors the NEM utility-URL lookup). This is a real
     // portal ENTRY, unlike the applicationDocs sourceUrl (an AHJ info page), so it gates the gate.
-    const ahjRow = db.get<{ portal_url?: string }>(
-      "SELECT portal_url FROM permit_utility_knowledge WHERE ahj = ? AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1",
+    // BOTH columns, chosen in JS — because the KB sweep (2026-09-21) found every shape at once:
+    // the reference import files the AHJ link in portal_NAME (71 rows), the learn path parks the
+    // UTILITY's PowerClerk on AHJ-side rows (23 rows), and Happy Valley had both inverted in one
+    // row (EnerGov in name, PowerClerk in url). The rule: for a PERMIT lookup, take the first
+    // candidate that is an http URL and NOT a utility platform — url column first, then name.
+    // A utility URL here is not merely skipped, it is the signal the row is miswired.
+    const ahjRow = db.get<{ portal_url?: string; portal_name?: string }>(
+      `SELECT portal_url, portal_name FROM permit_utility_knowledge
+        WHERE ahj = ? AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%') LIMIT 1`,
       [detail.project.ahj],
     );
-    ahjPortalUrl = ahjRow?.portal_url ?? "";
+    const ahjCandidates = [String(ahjRow?.portal_url ?? ""), String(ahjRow?.portal_name ?? "")];
+    ahjPortalUrl = ahjCandidates.find((u) => /^https?:\/\/\S+$/i.test(u.trim()) && !isUtilityPlatformUrl(u)) ?? "";
   }
   // Fuzzy fallback: the exact-name lookups above miss imported KB rows keyed by
   // legal names ("Portland General Electric") when the project says "PGE". Same
