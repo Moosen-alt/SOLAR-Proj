@@ -10,6 +10,10 @@
        someone had edited; login.html linked this stylesheet and NO font, so the
        first screen a customer sees rendered in Segoe UI while the rest of the
        app rendered in Manrope. One @font-face fixes every page at once. -->
+  <!-- /favicon.ico was a 404 on every page load. Inlined as a data: URI rather
+       than a new file so it needs no route, no build step and no server change —
+       it is the same brand mark the topbar draws, at 24x24. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 22.2v-6.6' stroke='%2316a34a' stroke-width='2.3' stroke-linecap='round'/%3E%3Cpath d='M12 15.6s-.5-6.5-6.3-9.5c0 0-.7 6.4 2.7 8.7 2 1.3 3.6.8 3.6.8Z' fill='%2316a34a'/%3E%3Cpath d='M12 15.6s.5-6.5 6.3-9.5c0 0 .7 6.4-2.7 8.7-2 1.3-3.6.8-3.6.8Z' fill='%2316a34a' opacity='.62'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/styles.css" />
   <!-- Vendored locally (frontend/vendor) so the dashboard renders icons offline
        and never depends on a CDN being reachable during a demo or in the cloud. -->
@@ -278,7 +282,9 @@
     </section>
 
     <section class="detail" id="pageProject" aria-label="Project detail" hidden>
-      <button id="backToListBtn" class="secondary" style="margin-bottom:12px"><i data-lucide="arrow-left"></i><span>Back to Dashboard</span></button>
+      <!-- A breadcrumb, not a 50px full-size button: the id and handler are
+           unchanged (dashboard.js binds backToListBtn → #/dashboard). -->
+      <button id="backToListBtn" class="linklike breadcrumb-back"><i data-lucide="arrow-left"></i><span>Dashboard</span></button>
       <div id="emptyState" class="empty">
         <h2>No project selected</h2>
         <p>Open the parser, save a parsed project, then it will appear here for QC and staging.</p>
@@ -289,28 +295,45 @@
           <div>
             <h2 id="detailTitle">Project</h2>
             <p id="detailSubtitle"></p>
-            <div class="client-assign">
-              <i data-lucide="building-2"></i>
-              <label for="projectClientSelect">Submitting client:</label>
-              <select id="projectClientSelect"><option value="">— none —</option></select>
-            </div>
-            <div class="client-assign">
-              <i data-lucide="user"></i>
-              <label for="projectAssignSelect">Assigned to:</label>
-              <select id="projectAssignSelect"><option value="">— unassigned —</option></select>
-            </div>
-            <div class="client-assign intake-link-row">
-              <i data-lucide="link"></i>
-              <label>Client intake:</label>
-              <button type="button" class="secondary" id="genIntakeLinkBtn" style="font-size:12px" title="No-login link to collect valuation + homeowner email/phone from the installer"><span>Generate &amp; copy link</span></button>
-              <span id="intakeLinkOut" class="muted" style="word-break:break-all;font-size:12px"></span>
-            </div>
-            <div class="client-assign">
-              <i data-lucide="key-round"></i>
-              <label>Portal logins:</label>
-              <button type="button" class="secondary" id="managePortalLoginsBtn" style="font-size:12px" title="Store the encrypted username/password the bot uses to log into this project's utility NEM and AHJ permit portals"><span>Manage logins</span></button>
-              <span id="portalLoginsSummary" class="muted" style="font-size:12px"></span>
-            </div>
+            <!-- Four permanent rows (two <select>s held open for values that
+                 change once, plus two once-per-project setup buttons) folded
+                 into ONE summary line. What stays visible without a click is
+                 every FACT the rows carried: the assigned client and user
+                 (written by updateHeadMetaSummary via textContent — tenant
+                 names never reach innerHTML) and the portal-logins count,
+                 which has a denominator ("1/2 saved") and is a readiness
+                 claim, so it may not go behind the fold. The edit CONTROLS
+                 are the only thing one interaction away. -->
+            <details class="fold head-meta">
+              <summary>
+                <span id="headMetaSummary" class="muted"></span>
+                <span id="portalLoginsSummary" class="muted" style="font-size:12px"></span>
+                <span class="fold-hint">edit</span>
+              </summary>
+              <div class="fold-body">
+                <div class="client-assign">
+                  <i data-lucide="building-2"></i>
+                  <label for="projectClientSelect">Submitting client:</label>
+                  <select id="projectClientSelect"><option value="">— none —</option></select>
+                </div>
+                <div class="client-assign">
+                  <i data-lucide="user"></i>
+                  <label for="projectAssignSelect">Assigned to:</label>
+                  <select id="projectAssignSelect"><option value="">— unassigned —</option></select>
+                </div>
+                <div class="client-assign intake-link-row">
+                  <i data-lucide="link"></i>
+                  <label>Client intake:</label>
+                  <button type="button" class="secondary" id="genIntakeLinkBtn" style="font-size:12px" title="No-login link to collect valuation + homeowner email/phone from the installer"><span>Generate &amp; copy link</span></button>
+                  <span id="intakeLinkOut" class="muted" style="word-break:break-all;font-size:12px"></span>
+                </div>
+                <div class="client-assign">
+                  <i data-lucide="key-round"></i>
+                  <label>Portal logins:</label>
+                  <button type="button" class="secondary" id="managePortalLoginsBtn" style="font-size:12px" title="Store the encrypted username/password the bot uses to log into this project's utility NEM and AHJ permit portals"><span>Manage logins</span></button>
+                </div>
+              </div>
+            </details>
           </div>
           <div class="actions autopilot-actions">
             <span class="actions-label">Autopilot:</span>
@@ -329,20 +352,37 @@
           <!-- Button numbers ARE the stage numbers (five-stage scale: 1 QC ·
                2 Build & Validate · 3 Submit · 4 Track · 5 Closeout). They match
                the accordion titles below, the Next-step banner, and the board
-               columns. A button numbered off that scale is the "jank". -->
-          <div class="actions step-actions">
-            <span class="actions-label">Advanced / override:</span>
-            <button id="runQcBtn" class="secondary"><i data-lucide="shield-check"></i><span>1 · Run QC</span></button>
-            <button id="buildAppDocsBtn" class="secondary"><i data-lucide="files"></i><span>2 · Build AHJ/NEM Docs</span></button>
-            <button id="runReviewerGateBtn" class="secondary"><i data-lucide="clipboard-list"></i><span>2 · Reviewer Gate</span></button>
-            <button id="refreshReviewerGateBtn" class="secondary" style="font-size:11px" title="Clear vision cache and re-check all plan sheets"><i data-lucide="refresh-cw"></i><span>Re-run vision</span></button>
-            <button id="prepareBtn" class="secondary"><i data-lucide="send"></i><span>3 · Prepare Submittal</span></button>
-            <span class="actions-divider"></span>
-            <span class="actions-label">Tools:</span>
-            <button id="runWorkflowBtn" class="secondary"><i data-lucide="list-checks"></i><span>Run Workflow</span></button>
-            <button id="runHistoricalBtn" class="secondary"><i data-lucide="history"></i><span>Historical Check</span></button>
-            <button id="deleteProjectBtn" class="danger-button"><i data-lucide="trash-2"></i><span>Delete Project</span></button>
-          </div>
+               columns. A button numbered off that scale is the "jank".
+
+               THIS ROW IS AN OVERFLOW MENU NOW, and it used to be a 102px bar
+               stuck under the topbar on every project, forever — nine manual
+               re-run controls permanently outranking the project's own data.
+               Its own label already said "Advanced / override": the stage that
+               a project is actually on names its next button in the Next-step
+               banner, and these are the ways to go AROUND that. Nothing was
+               deleted — every id and handler below is byte-identical, so
+               dashboard.js binds exactly as before.
+
+               NOT <details class="topbar-more">: dashboard.js dismisses that
+               one with querySelector(".topbar-more"), singular, so a second
+               element wearing the class would never close. This is its own
+               class and needs no dismiss handler — it expands in flow. -->
+          <details class="detail-more">
+            <summary><i data-lucide="settings-2"></i><span>Advanced / override &amp; tools</span> <span class="detail-more-count">8</span></summary>
+            <div class="actions step-actions">
+              <span class="actions-label">Advanced / override:</span>
+              <button id="runQcBtn" class="secondary"><i data-lucide="shield-check"></i><span>1 · Run QC</span></button>
+              <button id="buildAppDocsBtn" class="secondary"><i data-lucide="files"></i><span>2 · Build AHJ/NEM Docs</span></button>
+              <button id="runReviewerGateBtn" class="secondary"><i data-lucide="clipboard-list"></i><span>2 · Reviewer Gate</span></button>
+              <button id="refreshReviewerGateBtn" class="secondary" style="font-size:11px" title="Clear vision cache and re-check all plan sheets"><i data-lucide="refresh-cw"></i><span>Re-run vision</span></button>
+              <button id="prepareBtn" class="secondary"><i data-lucide="send"></i><span>3 · Prepare Submittal</span></button>
+              <span class="actions-divider"></span>
+              <span class="actions-label">Tools:</span>
+              <button id="runWorkflowBtn" class="secondary"><i data-lucide="list-checks"></i><span>Run Workflow</span></button>
+              <button id="runHistoricalBtn" class="secondary"><i data-lucide="history"></i><span>Historical Check</span></button>
+              <button id="deleteProjectBtn" class="danger-button"><i data-lucide="trash-2"></i><span>Delete Project</span></button>
+            </div>
+          </details>
 
           <!-- OPERATOR STATUS OVERRIDE.
                Before this existed, a project whose status had drifted could only
@@ -566,7 +606,7 @@
                 <span id="submittalTracksStatus" class="badge">—</span>
               </div>
               <p class="muted" style="font-size:13px;margin:4px 0 8px">
-                Each filing this project needs, tracked independently: the utility net-metering (NEM) interconnection application, and the AHJ permit(s) — one combined permit, or separate building (BLD) and electrical (ELE). Submit each in its own portal, then record its number + status link here so the system can follow it through to issuance.
+                One card per filing — utility NEM and AHJ permit(s). Record each filing's number and status link so the system can follow it to issuance.
               </p>
               <div id="submittalTracks" class="stack"></div>
             </section>
@@ -576,9 +616,17 @@
                 <h3>Record this portal (teach the bot)</h3>
                 <span class="badge">teach once · reused for everyone</span>
               </div>
-              <p class="muted" style="font-size:13px;margin:4px 0 10px">
-                Hit a portal the bot doesn't know yet? Record it once on the machine you submit from. It saves to this server, so the next project that hits this AHJ/utility replays automatically.
-              </p>
+              <!-- 2,033px of SETUP, open on every visit to Stage 3 — on a project
+                   whose portal the bot already knows, which is the normal case.
+                   Its own badge says "teach once". This is the clearest instance
+                   on the screen of teaching shown at full volume every time, so
+                   the whole apparatus (3-step tutorial, scope/URL form, launcher
+                   and its fallbacks) is one click away. It holds no claim about
+                   this project, so nothing here can make an unknown read as
+                   certainty by being closed. -->
+              <details class="fold panel-fold">
+                <summary><span>Record a portal the bot doesn't know yet</span></summary>
+                <div class="fold-body">
               <ol class="record-steps">
                 <li><span class="record-step-num">1</span><div><strong>Pick what you're recording</strong> and paste the portal's login / landing URL below.</div></li>
                 <li><span class="record-step-num">2</span><div><strong>Launch &amp; record</strong> — a browser opens; log in and complete the application up to the final submit, then type <code>save</code>. <span class="muted">For a trusted portal you can record through submit to enable one-click approve-submit.</span></div></li>
@@ -609,7 +657,7 @@
               </div>
               <div id="autoLearnStatus" style="display:none;margin:6px 0;font-size:13px"></div>
               <div id="launchRecordStatus" style="display:none;margin:6px 0;font-size:13px"></div>
-              <details class="kb-accordion" style="margin-top:6px" open>
+              <details class="kb-accordion" style="margin-top:6px">
                 <summary class="kb-summary"><span>Project data (for manual entry / recording reference)</span></summary>
                 <p class="muted" style="font-size:12px;margin:6px 0">Parsed values for this project — copy into the portal as you record or for manual submission.</p>
                 <div id="manualEntryForm" class="manual-entry-form">
@@ -683,6 +731,8 @@
                 <summary class="kb-summary"><span>Record command (advanced)</span></summary>
                 <pre id="recordCmdPreview" class="record-cmd"></pre>
               </details>
+                </div>
+              </details>
             </section>
 
             <section class="columns">
@@ -735,6 +785,13 @@
                 <h3>Permit &amp; NEM Checkup</h3>
                 <button id="addPermitTargetBtn" class="secondary"><i data-lucide="bookmark-plus"></i><span>Track</span></button>
               </div>
+              <!-- Six empty inputs and a paste-box, open above the results they
+                   produce. This is the ENTRY half of the panel; #permitTargets and
+                   #permitChecks below are the ANSWER half, and those stay on screen.
+                   An empty form states nothing, so closing it hides no claim. -->
+              <details class="fold panel-fold">
+                <summary><span>Add / update a tracked permit, or classify pasted status text</span></summary>
+                <div class="fold-body">
               <div class="permit-form">
                 <label>Jurisdiction / AHJ<input id="permitJurisdiction" /></label>
                 <label>Portal name<input id="permitPortalName" placeholder="DevHub, ProjectDox, Oregon ePermitting, PowerClerk" /></label>
@@ -747,6 +804,8 @@
               <div class="actions permit-actions">
                 <button id="recordPermitStatusBtn" class="primary"><i data-lucide="scan-search"></i><span>Classify Status</span></button>
               </div>
+                </div>
+              </details>
               <div id="permitTargets" class="stack"></div>
               <div id="permitChecks" class="stack"></div>
             </section>

@@ -108,3 +108,5 @@ docs/**/*.json
 # (it names live accounts and portal references) but never delete it.
 data/portal-drafts.jsonl
 IRL NOTES/
+# Playwright MCP scratch output (screenshots, snapshots, console logs)
+.playwright-mcp/

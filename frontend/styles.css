@@ -1090,20 +1090,23 @@ tbody tr:hover, tbody tr.active { background: var(--tint-select); }
 .next-step-step { flex: none; font-weight: 800; text-transform: uppercase; font-size: var(--text-xs); letter-spacing: .1em; padding: 3px 8px; border-radius: 999px; background: rgba(255,255,255,.7); }
 .next-step-text strong { font-weight: 800; }
 
-/* Numbered action toolbar — sticky so the primary daily-step buttons stay
-   reachable while the operator scrolls a long project. Sits just under the
-   sticky .topbar, whose height is --topbar-h (see the token block). */
+/* Numbered action toolbar. NO LONGER STICKY: it lives inside <details
+   class="detail-more"> now, and a sticky element inside a disclosure is a 102px
+   bar pinned under the topbar on every project forever — 10% of a 1000px
+   viewport spent on nine manual re-run controls the operator reaches a few
+   times a week. The stage's own Next-step banner names the button to click;
+   this row is the way around it. No backdrop, no shadow.
+
+   `top` stays declared even though the bar no longer sticks: on a
+   non-positioned element it has no layout effect, and it keeps the offset a
+   TOKEN rather than a literal — frontendDesignSystem.dom.smoke.ts [5] asserts
+   computed top === var(--topbar-h) so a future re-stick cannot drift. */
 .step-actions {
   row-gap: 8px;
-  position: sticky;
   top: var(--topbar-h);
-  z-index: 9;
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  backdrop-filter: saturate(140%) blur(6px);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   padding: 8px 10px;
-  box-shadow: var(--shadow-sm);
 }
 /* These read "Autopilot:" / "Tools:" — they were being upper-cased into
    "AUTOPILOT:", which shouts and is harder to scan than the sentence case the
@@ -1360,6 +1363,86 @@ kbd {
 /* "3 earlier checks" / "showing 20 of 84" — the count a truncated list owes
    the reader. A list that silently stops is a list that lies about its size. */
 .disclosure-count { font-size: var(--text-xs); color: var(--muted-foreground); margin-top: var(--space-1); }
+
+/* ===========================================================================
+   THE .fold COMPONENT — a panel-sized disclosure, one tier up from .provenance.
+
+   .provenance hides a paragraph; .fold hides a whole apparatus (the readiness
+   drill-down, the teach-the-bot recorder, the permit-checkup entry form). The
+   summary line is the contract: it must carry every FACT the closed body holds
+   that an operator could mistake for certainty if hidden — counts with
+   denominators, stake statements, lane verdicts. The body holds the apparatus.
+   =========================================================================== */
+.fold { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.fold > summary {
+  list-style: none; cursor: pointer;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; font-size: var(--text-sm);
+}
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::before { content: "▸"; font-size: 10px; line-height: 1; color: var(--muted-foreground); }
+.fold[open] > summary::before { content: "▾"; }
+.fold > summary:hover { background: var(--secondary); }
+.fold[open] > summary { border-bottom: 1px solid var(--line); }
+.fold-body { padding: 8px 12px 12px; }
+.fold-hint { margin-left: auto; font-size: var(--text-xs); color: var(--muted-foreground); }
+
+/* The stake tone must survive the collapse: a blocked readiness panel may not
+   look identical to a passing one while closed. Edge + summary tint carry it,
+   exactly the .check-row vocabulary. */
+.fold.blocker { border-left: 3px solid var(--edge-fail); }
+.fold.blocker > summary { background: var(--tint-fail); }
+.fold.warning { border-left: 3px solid var(--edge-warn); }
+.fold.warning > summary { background: var(--tint-warn); }
+.fold.pass { border-left: 3px solid var(--edge-pass); }
+.fold.pass > summary { background: var(--tint-pass); }
+
+/* "Next: …" on the readiness summary is the act-on-it half — full contrast,
+   its own line inside the wrapped flex summary. */
+.fold-next { flex-basis: 100%; font-size: var(--text-xs); color: var(--text); }
+.readiness-noevidence { font-size: var(--text-xs); }
+.readiness-noevidence .mono { font-family: var(--font-mono); }
+
+/* Head-meta fold sits inside the detail head — hairline-quiet, no card chrome. */
+.head-meta { border: none; background: transparent; margin-top: 4px; }
+.head-meta > summary { padding: 4px 0; font-size: 13px; }
+.head-meta > summary:hover { background: transparent; }
+.head-meta[open] > summary { border-bottom: none; }
+.head-meta .fold-body { padding: 2px 0 6px; }
+.head-meta .fold-hint { color: var(--primary); }
+
+/* The detail page's own overflow menu (Advanced / override & tools). NOT
+   .topbar-more — dashboard.js dismisses that one by singular querySelector, so
+   a second element wearing the class would never close. This one expands in
+   flow and needs no dismiss handler. */
+.detail-more { margin-top: 6px; }
+.detail-more > summary {
+  list-style: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: var(--text-xs); font-weight: 600; color: var(--muted-foreground);
+  border: 1px solid var(--line); border-radius: var(--radius-md); padding: 5px 10px;
+}
+.detail-more > summary::-webkit-details-marker { display: none; }
+.detail-more > summary:hover { color: var(--text); background: var(--secondary); }
+.detail-more > summary i { width: 14px; height: 14px; }
+.detail-more-count { background: var(--surface-2); border-radius: 999px; padding: 0 7px; font-size: 11px; }
+.detail-more[open] > summary { margin-bottom: 6px; }
+
+/* A breadcrumb-weight button: the gesture survives, the 50px card does not. */
+.linklike {
+  background: none; border: none; box-shadow: none; padding: 0;
+  color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 600;
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+}
+.linklike:hover { color: var(--text); text-decoration: underline; background: none; }
+.breadcrumb-back { margin: 0 0 6px; }
+.breadcrumb-back i { width: 13px; height: 13px; }
+
+/* Evidence is CAPPED, never hidden: a tall portal capture or packet text
+   scrolls in place — still on screen, still selectable — instead of costing
+   1,000px+ of column. Click the capture for the full-size original. */
+.record-cmd, .handoff-checklist { max-height: 300px; overflow: auto; }
+.review-shot { max-height: 240px; width: auto; }
 
 /* ===========================================================================
    LAYOUT CLASSES THAT HAD NO RULE AT ALL.

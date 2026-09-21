@@ -1199,6 +1199,12 @@ function showPage(page, opts = {}) {
   // The search/status/assignee/company filter bar applies to board + table only.
   const showFilters = page === "dashboard" || page === "projects";
   if ($("listFilters")) $("listFilters").hidden = !showFilters;
+  // The "How a project flows" legend is a BOARD legend. On the project page it
+  // was a third competing navigation under a stage banner and a stage accordion
+  // that already narrate the same pipeline — and its safety sentence is not
+  // lost here: renderNextStep puts it in the stage banner and the Submit Gate
+  // repeats it on this same screen.
+  if ($("startHereGuide")) $("startHereGuide").hidden = isProject;
   if ($("listPageTitle")) $("listPageTitle").textContent = page === "projects" ? "Projects" : page === "team" ? "Team Workload" : "Dashboard";
   $("projectCount").parentElement.hidden = page === "team";
   // Nav tab active state.
@@ -1590,8 +1596,9 @@ function renderPaymentPanel() {
   // Only per-submission clients see the payment screen (plus anyone with an
   // existing paid/waived row, so history stays visible if the mode changes).
   const visible = list.filter((q) => q.required || (q.payment && q.payment.status !== "quoted"));
-  const receipts = state.feeReceipts || [];
-  if (!visible.length && !receipts.length) { panel.hidden = true; panel.innerHTML = ""; return; }
+  // Recorded receipts render inside the fee panel now (renderFeeSheetPanel) —
+  // they were a second table restating the same money 36px above it.
+  if (!visible.length) { panel.hidden = true; panel.innerHTML = ""; return; }
   const unpaid = visible.filter((q) => q.required && q.payment?.status !== "paid" && q.payment?.status !== "waived");
   panel.hidden = false;
   panel.innerHTML = `
@@ -1602,12 +1609,7 @@ function renderPaymentPanel() {
       </div>
       ${unpaid.length ? `<p style="margin:0 0 8px;font-size:12px">This client pays per submission: collect the total below, then <strong>Mark paid</strong> to unlock <em>3 · Prepare Submittal</em>. Enter the portal's real fee when you see it on the fee/review screen — it replaces the estimate and is remembered for this AHJ. <span class="muted">The portal's own fee checkout is always completed by a human, never automated.</span></p>` : ""}
       ${visible.map(renderPaymentQuoteCard).join("")}
-    </section>` : ""}
-    ${receipts.length ? `<section class="panel"><h3>Recorded receipt payments</h3>
-      <p class="muted">These are paid components. They do not establish the full permit cost or mark the current submission as paid.</p>
-      <table><thead><tr><th>Authority / permit</th><th>Paid to authority</th><th>Processing fee</th><th>Total paid</th></tr></thead><tbody>
-      ${receipts.map(r => `<tr><td>${esc(r.jurisdiction)}<br>${esc(r.permitNumber || "Permit not matched")} · ${esc(r.discipline)}</td><td>${money(r.authorityAmountUsd)}</td><td>${money(r.processingFeeUsd)}</td><td>${money(r.totalPaidUsd)}</td></tr>`).join("")}
-      </tbody></table></section>` : ""}`;
+    </section>` : ""}`;
   panel.querySelectorAll("[data-pay-action]").forEach((btn) => {
     btn.addEventListener("click", () => handlePaymentAction(btn.dataset.payAction, btn.dataset.payTrack, btn));
   });
@@ -1693,8 +1695,12 @@ const FEE_CONFIDENCE = {
   unknown: { badge: "badge-fail", label: "unknown", note: "" },
 };
 
+// `portal` deliberately does NOT restate the human-checkout safety rule — the
+// panel lede directly above every line already carries it, and stating it twice
+// 40px apart was measured noise. `mailed_check` and `unknown` are honesty
+// content and stay verbatim: "not recorded" must never collapse into silence.
 const FEE_PAYMENT_METHOD = {
-  portal: "Paid in the portal — by a person, at the portal's own checkout.",
+  portal: "Paid in the portal.",
   mailed_check: "Paid by MAILED PAPER CHECK. No portal can take it; somebody posts it.",
   none: "No fee is charged, so there is nothing to pay.",
   unknown: "How this is paid is not recorded.",
@@ -1743,10 +1749,15 @@ function renderFeeCharges(line) {
   const priced = charges.filter((c) => c.amountUsd != null);
   const complete = priced.length === charges.length;
   const feeIsTheSchedule = line.source === "published_schedule";
+  // An overage charge (futureContingent) is NOT an unresolved one — the CLI
+  // (scripts/fee-sheet.ts) already splits them: UNRESOLVED means "we could not
+  // price a charge this filing WILL incur"; IF IT HAPPENS means "charged only
+  // if it happens, not in this quote". Blurring them let a reinspection fee
+  // read as a hole in the quote.
   const rows = charges.map((c) => `
     <tr${c.amountUsd == null ? ` class="is-warn"` : ""}>
-      <td style="padding:1px 12px 1px 0">${esc(c.label || "(unlabelled charge)")}${c.conditional ? ` <span class="badge badge-warning">conditional</span>` : ""}</td>
-      <td style="text-align:right;white-space:nowrap">${c.amountUsd == null ? `<span class="badge badge-warning">UNRESOLVED</span>` : feeMoney(c.amountUsd)}</td>
+      <td style="padding:1px 12px 1px 0">${esc(c.label || "(unlabelled charge)")}${c.futureContingent ? ` <span class="badge badge-warning">IF IT HAPPENS</span> <span style="font-size:11px">(not in this quote)</span>` : c.conditional ? ` <span class="badge badge-warning">conditional</span>` : ""}</td>
+      <td style="text-align:right;white-space:nowrap">${c.amountUsd == null ? (c.futureContingent ? `<span class="badge badge-warning">IF IT HAPPENS</span>` : `<span class="badge badge-warning">UNRESOLVED</span>`) : feeMoney(c.amountUsd)}</td>
     </tr>
     ${c.amountUsd == null && c.reason ? `<tr><td colspan="2" style="padding:0 0 4px;font-size:11px">${esc(c.reason)}</td></tr>` : ""}`).join("");
   // Incomplete is decided FIRST and outranks the tier question: an unpriced charge
@@ -1754,9 +1765,21 @@ function renderFeeCharges(line) {
   const totalLabel = !complete
     ? "No total — a charge above is unpriced"
     : feeIsTheSchedule ? "Sum of every charge" : "What the published schedule holds";
+  // The breakdown now ships CLOSED (it was 679px / 406 words on a permit card).
+  // What ships closed may not take an unknown down with it, so the counts of
+  // UNRESOLVED and IF-IT-HAPPENS charges are lifted into the summary, which is
+  // on screen either way: the operator sees "6 charges — 2 UNRESOLVED — 1 IF IT
+  // HAPPENS (not in this quote) — incomplete" without opening anything, and the
+  // claim-withdrawal about WHOSE breakdown this is stays put.
+  const contingent = charges.filter((c) => c && c.futureContingent).length;
+  const unresolved = charges.filter((c) => c && c.amountUsd == null && !c.futureContingent).length;
   return `
-    <details class="provenance" open>
-      <summary>${esc(String(charges.length))} charges on this filing${complete
+    <details class="provenance">
+      <summary>${esc(String(charges.length))} charges on this filing${unresolved
+        ? ` — ${esc(String(unresolved))} UNRESOLVED`
+        : ""}${contingent
+        ? ` — ${esc(String(contingent))} IF IT HAPPENS (not in this quote)`
+        : ""}${complete
         ? (feeIsTheSchedule ? "" : " — the published schedule's, not the fee above")
         : " — incomplete"}</summary>
       <div class="provenance-body">
@@ -1789,16 +1812,26 @@ function renderFeeSheetLine(line) {
         <span>${esc(trackLabel)} — ${esc(line.jurisdiction || "jurisdiction not set")}</span>
         <span class="badge ${conf.badge}">${esc(conf.label)}</span>
       </div>
-      <p style="margin:2px 0;font-size:19px;font-weight:700">${feeMoney(line.feeUsd)}</p>
-      <p style="margin:2px 0;font-size:12px">${esc(FEE_PAYMENT_METHOD[line.paymentMethod] || line.paymentMethod || "")}</p>
+      <p style="margin:2px 0;font-size:19px;font-weight:700">${feeMoney(line.feeUsd)}${line.paymentMethod === "none" && line.feeUsd != null
+        ? `<span style="font-size:12px;font-weight:400"> — no fee charged</span>`
+        : ""}</p>
+      ${line.paymentMethod === "none" && line.feeUsd != null
+        // A zero line folds "nothing to pay" into the amount row above. The other
+        // three methods keep their own sentence INLINE — mailed_check and unknown
+        // are how-this-gets-paid facts an operator must see without a click.
+        ? ""
+        : `<p style="margin:2px 0;font-size:12px">${esc(FEE_PAYMENT_METHOD[line.paymentMethod] || line.paymentMethod || "")}</p>`}
       ${renderFeeCharges(line)}
       <!-- The amount and how it is paid drive action, so they stay loud. Where
            the number came from is the product's core claim and is kept in full —
-           one click away, not competing with the number itself. -->
+           one click away, not competing with the number itself. The confidence
+           SENTENCE moved in here too: the chip beside the amount already says
+           PROVISIONAL — NOT VERIFIED / ESTIMATE inline, and stays. -->
       <details class="provenance">
         <summary>Where this number came from</summary>
         <div class="provenance-body">
           <p>From ${esc(FEE_SOURCE_TEXT[line.source] || line.source)} — ${esc(line.basis || "")}</p>
+          ${conf.note ? `<p><strong>⚠ ${esc(conf.note)}</strong></p>` : ""}
           <p><strong>Bracket:</strong> ${line.bracketLabel
             ? esc(line.bracketLabel)
             : `no schedule bracket resolved — the application's fee-quantity field cannot be computed from a schedule we do not have`}</p>
@@ -1807,8 +1840,6 @@ function renderFeeSheetLine(line) {
             : `no source URL on file`}</p>
         </div>
       </details>
-      ${conf.note ? `<p style="margin:4px 0 2px;font-size:12px"><strong>⚠ ${esc(conf.note)}</strong></p>` : ""}
-      <p class="muted" style="margin:2px 0;font-size:11px">Service fee ${feeMoney(line.serviceFeeUsd)} · track total ${feeMoney(line.totalUsd)}</p>
     </article>`;
 }
 
@@ -1825,7 +1856,38 @@ function renderFeeSheetPanel() {
     anchor.insertAdjacentElement("afterend", panel);
   }
   const sheet = state.feeSheet;
-  if (!sheet || !Array.isArray(sheet.lines)) { panel.hidden = true; panel.innerHTML = ""; return; }
+  const receipts = state.feeReceipts || [];
+  // "Recorded receipt payments" used to be its own table directly ABOVE this
+  // panel, restating the same money in a different frame. It is one row of THIS
+  // panel now. Its caveat is a claim-limiting statement and survives the merge
+  // verbatim and inline; only the per-receipt component table is one click away.
+  // The total is only summed when every component has a recorded total — a sum
+  // over holes would understate while looking finished.
+  const receiptsSummable = receipts.length && receipts.every((r) => r.totalPaidUsd != null);
+  const receiptsBlock = !receipts.length ? "" : `
+      <p style="margin:6px 0 0;font-size:12px"><strong>Paid so far:</strong> ${receiptsSummable
+        ? feeMoney(receipts.reduce((s, r) => s + Number(r.totalPaidUsd), 0))
+        : `no total — a receipt component has no recorded amount`} across ${esc(String(receipts.length))} recorded receipt component${receipts.length === 1 ? "" : "s"}.
+        <span class="muted">These are paid components. They do not establish the full permit cost or mark the current submission as paid.</span></p>
+      <details class="provenance">
+        <summary>Receipt components</summary>
+        <div class="provenance-body">
+          <table style="font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left;padding-right:12px">Authority / permit</th><th style="text-align:right;padding-right:12px">Paid to authority</th><th style="text-align:right;padding-right:12px">Processing fee</th><th style="text-align:right">Total paid</th></tr></thead><tbody>
+          ${receipts.map(r => `<tr><td style="padding-right:12px">${esc(r.jurisdiction)}<br>${esc(r.permitNumber || "Permit not matched")} · ${esc(r.discipline)}</td><td style="text-align:right;padding-right:12px">${money(r.authorityAmountUsd)}</td><td style="text-align:right;padding-right:12px">${money(r.processingFeeUsd)}</td><td style="text-align:right">${money(r.totalPaidUsd)}</td></tr>`).join("")}
+          </tbody></table>
+        </div>
+      </details>`;
+  if (!sheet || !Array.isArray(sheet.lines)) {
+    // No fee sheet, but recorded receipts still render — money paid must not
+    // disappear because the sheet could not be computed.
+    if (!receipts.length) { panel.hidden = true; panel.innerHTML = ""; return; }
+    panel.hidden = false;
+    panel.innerHTML = `<section class="panel kx-callout-panel">
+      <div class="item-title" style="margin-bottom:6px"><span>💵 Fees — permit and NEM</span>${statusBadge("receipts only")}</div>
+      ${receiptsBlock}
+    </section>`;
+    return;
+  }
   const provisional = sheet.lines.filter((l) => l.confidence === "seeded" || l.confidence === "estimated");
   const anyUnknown = sheet.totalUsd == null;
   // Keyed on totalConfidence — computed by the backend BESIDE the sum — so the
@@ -1838,8 +1900,10 @@ function renderFeeSheetPanel() {
         <span>💵 Fees — permit and NEM</span>
         ${statusBadge(anyUnknown ? "incomplete" : provisional.length ? "provisional" : "known")}
       </div>
+      <!-- Sentence one restated the heading directly above it ("Fees — permit and
+           NEM") and was cut. Sentence two is NOT teaching copy: it is the fee half
+           of hard rule 1, and it stays. -->
       <p class="muted" style="margin:0 0 8px;font-size:12px">
-        What the AHJ and the utility charge for this job, with the line of the published schedule each number came from.
         The portal's own fee checkout is always completed by a person — never by automation.
       </p>
       ${sheet.lines.map(renderFeeSheetLine).join("")}
@@ -1850,24 +1914,32 @@ function renderFeeSheetPanel() {
         <tr style="border-top:1px solid var(--border)"><td style="padding:3px 14px 1px 0"><strong>Project total${totalEstimated ? " (estimate)" : ""}</strong></td>
             <td style="text-align:right"><strong>${totalEstimated ? "≈ " : ""}${feeMoney(sheet.totalUsd)}</strong></td></tr>
       </table>
-      ${sheet.billingRequired ? "" : `<p class="muted" style="margin:2px 0;font-size:11px">This client is not billed per submission (billing mode ${esc(sheet.billingMode || "monthly / none")}), so the service fees above are shown for reference and are not collected here.</p>`}
+      ${receiptsBlock}
+      ${sheet.billingRequired ? "" : `
+      <!-- The qualifying FACT ("not collected here") stays visible on the
+           summary — without it the service-fee row reads as a quote — and the
+           billing-mode explanation is the one click away. -->
+      <details class="provenance">
+        <summary>Service fees shown for reference — not collected here</summary>
+        <div class="provenance-body"><p>This client is not billed per submission (billing mode ${esc(sheet.billingMode || "monthly / none")}), so the service fees above are shown for reference and are not collected here.</p></div>
+      </details>`}
       ${anyUnknown ? `<p style="margin:6px 0 2px;font-size:12px"><strong>The total is UNKNOWN because at least one fee is.</strong> It is not a zero and it is not a partial sum — do not put a number in front of this customer yet.</p>` : ""}
       ${totalEstimated ? `<p style="margin:6px 0 2px;font-size:12px"><strong>⚠ This total INCLUDES AN ESTIMATE.</strong> At least one fee is a valuation heuristic, not a published or recorded number — true it up from the portal's fee screen before quoting a customer.</p>` : ""}
+      <!-- These two lists were the largest block of honesty prose on the screen
+           (499 words on one project) and they are the REASON the total above says
+           ESTIMATE / UNKNOWN. So they collapse behind a summary that states the
+           STAKE and the COUNT — never a neutral "Details". Closed, the operator
+           still reads "5 unresolved charges — the total above is not final". -->
       ${(sheet.unknowns || []).length ? `
-        <p style="margin:6px 0 2px;font-size:12px"><strong>Still unknown</strong></p>
-        <ul style="margin:2px 0;padding-left:18px;font-size:12px">${sheet.unknowns.map((u) => `<li>${esc(u)}</li>`).join("")}</ul>` : ""}
+        <details class="provenance fee-unknowns">
+          <summary><strong>${esc(String(sheet.unknowns.length))} still unknown — the total above is not final</strong></summary>
+          <div class="provenance-body"><ul style="margin:2px 0;padding-left:18px">${sheet.unknowns.map((u) => `<li>${esc(u)}</li>`).join("")}</ul></div>
+        </details>` : ""}
       ${(sheet.outOfPortalPayments || []).length ? `
-        <p style="margin:6px 0 2px;font-size:12px"><strong>Not payable in any portal</strong></p>
-        <ul style="margin:2px 0;padding-left:18px;font-size:12px">${sheet.outOfPortalPayments.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
-      <!-- A shell command is not something an operator does on this page; it was
-           printed as body copy under the fee total. Kept, moved out of the way. -->
-      <details class="provenance">
-        <summary>Full sheet from the command line</summary>
-        <div class="provenance-body">
-          <p>Includes who agreed to pay each portal's fees:</p>
-          <p><code>npx tsx scripts/fee-sheet.ts --project ${esc(state.selectedProjectId || "")}</code></p>
-        </div>
-      </details>
+        <details class="provenance fee-unknowns">
+          <summary><strong>${esc(String(sheet.outOfPortalPayments.length))} charge${sheet.outOfPortalPayments.length === 1 ? "" : "s"} NOT PAYABLE in any portal — a person must pay ${sheet.outOfPortalPayments.length === 1 ? "it" : "them"} another way</strong></summary>
+          <div class="provenance-body"><ul style="margin:2px 0;padding-left:18px">${sheet.outOfPortalPayments.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></div>
+        </details>` : ""}
     </section>`;
 }
 
@@ -2823,11 +2895,33 @@ function renderSubmitGate() {
     }
   }
   const warnings = checks.filter((check) => check.status === "warning");
-  const importantChecks = [
-    ...blockers,
-    ...warnings,
-    ...checks.filter((check) => check.status === "pass"),
-  ].slice(0, 10);
+  const passes = checks.filter((check) => check.status === "pass");
+  // Blockers and warnings are the act-on-it rows and stay at full height. The
+  // PASS rows fold behind their count: a pass is a settled claim, not an open
+  // question, so hiding its prose cannot make an unknown read as certainty —
+  // and the count keeps the denominator ("6 passed") on screen. Each folded
+  // row keeps its evidence disclosure, one interaction deeper.
+  const actionChecks = [...blockers, ...warnings];
+  const checkRow = (check) => `
+            <article class="submit-gate-check ${briefClass(check.status)}">
+              <div class="item-title">
+                <span>${esc(check.title)}</span>
+                ${statusBadge(`${check.lane} | ${check.status}`)}
+              </div>
+              <!-- "Next" is the act-on-it half and stays at full weight. Owner,
+                   requirement, evidence and source are provenance. -->
+              <p><strong>Next:</strong> ${esc(check.nextAction)}</p>
+              ${check.id === "ahj-form-mapping-verified" && (check.status === "blocker" || check.status === "warning") ? `<button type="button" class="secondary" style="font-size:12px;margin-top:4px" onclick="document.querySelector('.stage-accordion[data-stage-index=\\'1\\']')?.setAttribute('open','');document.getElementById('applicationDocs')?.scrollIntoView({behavior:'smooth'})">Go to App Docs → verify forms</button>` : ""}
+              <details class="provenance">
+                <summary>${esc(check.ownerRole)} · ${esc(check.source)}</summary>
+                <div class="provenance-body">
+                  <p><strong>Owner:</strong> ${esc(check.ownerRole)}</p>
+                  <p>${esc(check.requirement)}</p>
+                  ${(check.evidence || []).length ? `<ul class="evidence-list">${check.evidence.slice(0, 4).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+                  <p>${esc(check.source)}</p>
+                </div>
+              </details>
+            </article>`;
   $("submitGate").innerHTML = `
     ${bandHead("SUBMIT GATE", "Nothing goes out until a human says so.", "Automation stages the application and stops. The final submit, the fee, and any CAPTCHA or MFA are executed by a person.")}
     <article class="item ${submitGateClass(gate.decision)}">
@@ -2849,29 +2943,16 @@ function renderSubmitGate() {
         </ul>
       </article>
       <article class="submit-gate-focus">
-        <div class="item-title"><span>Focus Checks</span>${statusBadge(importantChecks.length)}</div>
+        <div class="item-title"><span>Focus Checks</span>${statusBadge(`${actionChecks.length} open | ${passes.length} passed`)}</div>
         <div class="submit-gate-checks">
-          ${importantChecks.length ? importantChecks.map((check) => `
-            <article class="submit-gate-check ${briefClass(check.status)}">
-              <div class="item-title">
-                <span>${esc(check.title)}</span>
-                ${statusBadge(`${check.lane} | ${check.status}`)}
-              </div>
-              <!-- "Next" is the act-on-it half and stays at full weight. Owner,
-                   requirement, evidence and source are provenance. -->
-              <p><strong>Next:</strong> ${esc(check.nextAction)}</p>
-              ${check.id === "ahj-form-mapping-verified" && (check.status === "blocker" || check.status === "warning") ? `<button type="button" class="secondary" style="font-size:12px;margin-top:4px" onclick="document.querySelector('.stage-accordion[data-stage-index=\\'1\\']')?.setAttribute('open','');document.getElementById('applicationDocs')?.scrollIntoView({behavior:'smooth'})">Go to App Docs → verify forms</button>` : ""}
-              <details class="provenance">
-                <summary>${esc(check.ownerRole)} · ${esc(check.source)}</summary>
-                <div class="provenance-body">
-                  <p><strong>Owner:</strong> ${esc(check.ownerRole)}</p>
-                  <p>${esc(check.requirement)}</p>
-                  ${(check.evidence || []).length ? `<ul class="evidence-list">${check.evidence.slice(0, 4).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
-                  <p>${esc(check.source)}</p>
-                </div>
-              </details>
-            </article>
-          `).join("") : `<p class="muted">No submit gate checks generated yet.</p>`}
+          ${actionChecks.length || passes.length ? `
+            ${actionChecks.map(checkRow).join("")}
+            ${passes.length ? `
+            <details class="fold pass pass-fold">
+              <summary><strong>${esc(String(passes.length))} passed</strong> — each with its evidence</summary>
+              <div class="fold-body">${passes.map(checkRow).join("")}</div>
+            </details>` : ""}`
+          : `<p class="muted">No submit gate checks generated yet.</p>`}
         </div>
       </article>
     </div>
@@ -2921,6 +3002,33 @@ async function updatePortalLoginsSummary() {
   if (ready < total) summary.style.color = "var(--warn, #b45309)";
   else summary.style.color = "var(--ok, #16a34a)";
 }
+
+// A RUN THAT CAPTURED NO SCREENSHOT MUST BE ASKED ONCE, NOT FOREVER.
+//
+// The review-screenshot <img> is rebuilt on every render of the tracking panel —
+// and the panel re-renders on each SSE event, autopilot poll and detail refetch.
+// A run with no capture on disk therefore 404s again on every one of those, which
+// is the "repeating timer" in the network log (371ms, 912ms, 2698ms, 6354ms,
+// 10649ms — backing off, never stopping). Nothing was retrying: the page was
+// re-asking a question it had already been told the answer to.
+//
+// The <img>'s own onerror is the terminal state. It records the miss here and the
+// next render simply does not emit the tag. Keyed WITH recipeStatus so the one
+// case where the answer legitimately changes — a recording that later completes
+// and writes its capture — gets exactly one fresh ask, not zero.
+const screenshotMisses = new Set();
+const screenshotKey = (projectId, recipeId, recipeStatus) => `${projectId}:${recipeId}:${recipeStatus}`;
+//
+// The key rides in a data- attribute and is read back off the element, NOT
+// interpolated into the handler: esc() escapes & < > " and deliberately not ',
+// so a key pasted into onerror="…('HERE')" would be a way out of the JS string.
+// A double-quoted attribute esc() already covers is the safe carrier.
+window.__noteMissingReviewShot = (img) => {
+  if (img.dataset.shotKey) screenshotMisses.add(img.dataset.shotKey);
+  const wrap = img.closest("[data-shot-wrap]");
+  if (wrap) wrap.style.display = "none";
+  else img.style.display = "none";
+};
 
 const TRACK_STATUS_CLASS = {
   not_started: "warning", staged: "info", submitted: "info",
@@ -2978,7 +3086,9 @@ function trackCardHtml(t) {
     <p class="muted" style="margin:0 0 4px">Channel: ${esc(t.channel)}${t.lastCheckedAt ? ` · last checked ${esc(fmtDate(t.lastCheckedAt))}` : ""}</p>
     <p style="margin:0 0 6px;font-size:12px">→ ${esc(t.nextAction)}</p>
     ${captured ? `<p style="margin:0 0 4px">${captured} ${trackLink ? "&nbsp;·&nbsp; " + trackLink : ""}</p>` : (trackLink ? `<p style="margin:0 0 4px">${trackLink}</p>` : "")}
-    ${t.recipeId && (t.recipeStatus === "complete" || t.recipeStatus === "recording") ? `<div style="margin:6px 0 4px"><img src="/api/projects/${esc(state.selectedProjectId)}/portal-runs/${esc(t.recipeId)}/review-screenshot" alt="Auto-captured portal page" style="max-width:100%;border:1px solid var(--border);border-radius:var(--radius-sm)" onerror="this.style.display='none';this.nextElementSibling.style.display='none'" /><p class="muted" style="font-size:11px;margin:2px 0 0">${t.recipeStatus === "complete" ? "Portal review screen (auto-captured)" : "Last captured page — recording not complete. If this is a login page, add this portal's login under “Manage logins” and re-stage."}</p></div>` : ""}
+    ${t.recipeId && (t.recipeStatus === "complete" || t.recipeStatus === "recording")
+      && !screenshotMisses.has(screenshotKey(state.selectedProjectId, t.recipeId, t.recipeStatus))
+      ? `<div style="margin:6px 0 4px" data-shot-wrap><a href="/api/projects/${esc(state.selectedProjectId)}/portal-runs/${esc(t.recipeId)}/review-screenshot" target="_blank" rel="noopener" title="Open the full-size capture"><img src="/api/projects/${esc(state.selectedProjectId)}/portal-runs/${esc(t.recipeId)}/review-screenshot" alt="Auto-captured portal page" class="review-shot" style="max-width:100%;border:1px solid var(--border);border-radius:var(--radius-sm)" data-shot-key="${esc(screenshotKey(state.selectedProjectId, t.recipeId, t.recipeStatus))}" onerror="window.__noteMissingReviewShot(this)" /></a><p class="muted" style="font-size:11px;margin:2px 0 0">${t.recipeStatus === "complete" ? "Portal review screen (auto-captured) — click for full size" : "Last captured page — recording not complete. If this is a login page, add this portal's login under “Manage logins” and re-stage."}</p></div>` : ""}
     <div class="track-actions">
       <button type="button" class="secondary" data-track-stage="${esc(t.type)}" title="Auto-fill this filing's portal up to the final review screen — you submit manually"><i data-lucide="bot"></i><span>Stage in portal</span></button>
       <button type="button" class="secondary" data-track-approve="${esc(t.type)}" title="Hybrid: replay through the final application submit — only runs if you've trusted this portal for auto-submit, otherwise it stages to review. Never pays fees; stops for CAPTCHA/MFA."><i data-lucide="check-check"></i><span>Approve &amp; auto-submit</span></button>
@@ -3552,22 +3662,43 @@ function renderLiveTestReadiness() {
   }
   const copy = $("copyLiveReadinessBtn");
   if (copy) copy.disabled = !report.reportText;
+  const items = report.items || [];
+  const blocked = items.filter((i) => i.status === "blocked").length;
+  const review = items.filter((i) => i.status !== "done" && i.status !== "blocked").length;
+  // The counts are the whole panel while it is closed, so they must state the STAKE,
+  // not a neutral "Details". A row that is neither done nor blocked is an open
+  // question about this filing, and the summary says how many there are.
+  const stake = [blocked ? `${blocked} blocked` : "", review ? `${review} need review` : ""].filter(Boolean).join(" · ");
   $("liveReadinessCounts").textContent = `${report.doneCount}/${report.totalCount} ready`;
   $("liveReadiness").innerHTML = `
-    <article class="item ${report.status === "blocked" ? "blocker" : report.status === "needs_review" ? "warning" : "pass"}">
-      <div class="item-title"><span>${esc(report.headline)}</span>${statusBadge(report.status.replaceAll("_", " "))}</div>
-      <p><strong>Next action:</strong> ${esc(report.nextAction)}</p>
-      <p>Use this as the live-project test path: parse, resolve blockers, build docs, rehearse mock staging, connect tracking/email, then perform a supervised real portal preview.</p>
-    </article>
-    ${(report.items || []).map((item) => `
-      <div class="check-row ${item.status === "done" ? "present" : item.status === "blocked" ? "missing" : "needs_review"}">
-        <strong>${esc(humanize(item.status).toUpperCase())}: ${esc(item.title)}</strong>
-        <p>${esc(item.detail)}</p>
-        <p><strong>Owner:</strong> ${esc(item.ownerRole)} | <strong>Next:</strong> ${esc(item.nextAction)}</p>
-        ${(item.evidence || []).length ? `<ul class="evidence-list">${item.evidence.slice(0, 3).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : `<p class="muted">No evidence captured yet.</p>`}
-        <span class="muted">${esc(item.source)}</span>
+    <details class="fold readiness-fold ${report.status === "blocked" ? "blocker" : report.status === "needs_review" ? "warning" : "pass"}">
+      <summary>
+        <strong>${esc(`${report.doneCount}/${report.totalCount} ready`)}</strong>${stake ? ` · ${esc(stake)}` : ""}
+        ${statusBadge(report.status.replaceAll("_", " "))}
+        <span class="fold-next">Next: ${esc(report.nextAction)}</span>
+      </summary>
+      <div class="fold-body">
+        ${items.map((item) => {
+          const done = item.status === "done";
+          const evidence = (item.evidence || []).slice(0, 3);
+          return `
+        <div class="check-row ${done ? "present" : item.status === "blocked" ? "missing" : "needs_review"}">
+          <strong>${esc(humanize(item.status).toUpperCase())}: ${esc(item.title)}</strong>
+          <p>${esc(item.detail)}</p>
+          ${done ? "" : `<p class="fold-next-row"><strong>Next:</strong> ${esc(item.nextAction)}</p>`}
+          ${evidence.length
+            // Evidence makes a claim checkable, so it is kept in full — but its
+            // COUNT rides in the always-visible summary, and the absence of any
+            // evidence is never hidden (see the else branch): a DONE row whose
+            // backing is missing must not read as a verified one.
+            ? `<details class="provenance"><summary>${esc(String(evidence.length))} evidence line${evidence.length === 1 ? "" : "s"} · ${esc(item.source)}</summary>
+                 <div class="provenance-body"><ul class="evidence-list">${evidence.map((line) => `<li>${esc(line)}</li>`).join("")}</ul></div>
+               </details>`
+            : `<p class="muted readiness-noevidence">No evidence captured yet — nothing on file backs this row. <span class="mono">${esc(item.source)}</span></p>`}
+        </div>`;
+        }).join("")}
       </div>
-    `).join("")}
+    </details>
   `;
 }
 
@@ -3586,7 +3717,15 @@ function renderProcessMap() {
       <div class="item-title"><span>${esc(map.headline)}</span>${statusBadge(`Permit ${humanize(map.permitStatus)} / NEM ${humanize(map.nemStatus)}`)}</div>
       <p><strong>Next action:</strong> ${esc(map.nextAction)}</p>
     </article>
-    <div class="process-lanes">
+    <!-- The article above keeps BOTH track verdicts and the next action on
+         screen. What collapses is the step-by-step expansion of them — two
+         lanes of ~8 steps, each with its own summary, next action and
+         provenance block, restating a pipeline the stage accordions already
+         draw. The lane count and each lane's status ride in the summary, so a
+         blocked lane is still visible while this is closed. -->
+    <details class="fold process-fold">
+      <summary><span>Step-by-step: ${(map.lanes || []).map((lane) => `${esc(lane.title)} — ${esc(humanize(lane.status))}`).join(" · ")}</span></summary>
+    <div class="process-lanes fold-body">
       ${(map.lanes || []).map((lane) => `
         <article class="process-lane ${opsClass(lane.status)}">
           <div class="process-lane-head">
@@ -3619,6 +3758,7 @@ function renderProcessMap() {
         </article>
       `).join("")}
     </div>
+    </details>
   `;
 }
 
@@ -4182,6 +4322,58 @@ function renderReview() {
 
 // The AHJ's REAL permit PDF(s), filled with project data. This is the "legit"
 // form the operator submits — distinct from the markdown transfer worksheets.
+// WHICH CLAUSE SATISFIED A COMPOUND ROW — Oregon BCD 5952 only.
+//
+// The checklist's compound rows read as a list of alternatives ("roof is metal,
+// OR ≤2 layers composition shingle, OR ≤1 layer wood shake"), and a bare Yes
+// beside one was read as the FIRST alternative — a metal-roof claim on a
+// comp-shingle house. This names the clause that actually fired.
+//
+// Mirrors backend/src/bcdChecklistFacts.ts, which is the authority that fills
+// the PDF. CANNED LABELS ONLY — nothing parser-read is interpolated, so nothing
+// model-read can reach innerHTML here. And it is double-gated against drift: a
+// note renders only when this mirror derives Yes AND the backend's own message
+// does not list that row under "Still needs evidence" — if the two ever
+// disagree, the row gets NO note rather than a wrong one.
+function bcd5952ClauseNotes(form) {
+  if (!/5952/.test(`${form.formId || ""} ${form.formName || ""}`)) return "";
+  const snap = state.detail?.project?.parserSnapshot || {};
+  const str = (k) => String(snap[k] ?? "").trim().toLowerCase();
+  const flag = (k) => /^(yes|true)$/.test(str(k)) ? true : /^(no|false)$/.test(str(k)) ? false : null;
+  const num = (k) => { const m = str(k).match(/^\s*(\d+(?:\.\d+)?)/); return m ? Number(m[1]) : null; };
+  const max = (k, limit) => num(k) == null ? null : num(k) <= limit;
+  const all = (...v) => v.includes(false) ? false : v.includes(null) ? null : true;
+  const any = (...v) => v.includes(true) ? true : v.includes(null) ? null : false;
+  const backendUnsure = String(form.message || "");
+  const notes = [];
+  const note = (needle, text) => { if (!backendUnsure.includes(needle)) notes.push(text); };
+
+  const frame = str("framingType");
+  if (all(frame ? /truss/.test(frame) : null, max("roofRafterSpacing", 24)) === true) {
+    note("framing compliance", "Framing: Yes — via trusses at ≤24″ spacing");
+  } else if (all(frame ? /rafter/.test(frame) : null, max("roofRafterSpacing", 24), flag("rafterExceptionCompliant")) === true) {
+    note("framing compliance", "Framing: Yes — via rafters at ≤24″ spacing meeting the exception");
+  }
+
+  const roof = str("roofMaterial");
+  if (roof) {
+    if (/metal/.test(roof)) note("roof material and layer count", "Roofing: Yes — via the metal-roof clause");
+    else if (/compos|asphalt/.test(roof) && max("roofLayers", 2) === true) note("roof material and layer count", "Roofing: Yes — via ≤2 layers composition shingle (not the metal-roof clause)");
+    else if (/wood|shake/.test(roof) && max("roofLayers", 1) === true) note("roof material and layer count", "Roofing: Yes — via ≤1 layer wood shake (not the metal-roof clause)");
+  }
+
+  const exposure = str("wind").toUpperCase();
+  const spaced = num("attachmentSpacingIn");
+  const method1 = all(flag("attachmentToFraming"), spaced == null ? null : spaced <= 24 ? true :
+    all(spaced <= 48, max("snow", 36),
+      any(flag("attachmentsOutsideEdgeZone"), max("attachmentEdgeSpacingIn", 24)),
+      exposure === "B" ? max("windSpeed", 120) : exposure === "C" ? max("windSpeed", 110) : null));
+  if (method1 === true) note("attachment method compliance", "Attachments: Yes — via Method 1 (lagged to roof framing)");
+  else if (flag("standingSeamMethod2Compliant") === true) note("attachment method compliance", "Attachments: Yes — via Method 2 (standing-seam clamps)");
+
+  return notes.length ? `<p class="muted bcd-clauses">${esc(`Compound rows — the clause each Yes came from: ${notes.join("; ")}.`)}</p>` : "";
+}
+
 function renderFilledForms(projectId) {
   const ff = state.filledForms;
   if (!ff) return "";
@@ -4251,6 +4443,7 @@ function renderFilledForms(projectId) {
       ${ok && !isStored && f.signaturesLocked ? `<p class="muted">✓ Built-in form — signature + date auto-placed on the authorized-signature line. No verification needed.</p>` : ""}
       ${f.documentStale ? `<p class="muted"><strong>This blank dates itself “${esc(f.documentDate)}”</strong> — over two years old. Re-check the AHJ's current forms page before filing${f.sourceUrl ? ` (<a href="${esc(f.sourceUrl)}" target="_blank" rel="noopener noreferrer">source</a>)` : ""}. Check any printed fee rates against the current schedule.</p>` : ""}
       ${extra ? `<p class="muted">${esc(extra)}</p>` : ""}
+      ${ok ? bcd5952ClauseNotes(f) : ""}
     </article>`;
   }).join("");
 }
@@ -6126,6 +6319,24 @@ function syncProjectClientSelect() {
   if (!select) return;
   renderProjectClientOptions();
   select.value = state.detail?.project?.clientId || "";
+  updateHeadMetaSummary();
+}
+
+// The two head <select>s live behind one closed fold now, so the values they
+// hold are written onto the fold's always-visible summary line. textContent on
+// purpose: client and user names are tenant data and never reach innerHTML.
+function updateHeadMetaSummary() {
+  const out = $("headMetaSummary");
+  if (!out) return;
+  const read = (id) => {
+    const sel = $(id);
+    return sel && sel.value && sel.selectedIndex >= 0 && sel.options
+      ? String(sel.options[sel.selectedIndex]?.textContent || "").trim()
+      : "";
+  };
+  const client = read("projectClientSelect");
+  const assignee = read("projectAssignSelect");
+  out.textContent = `Client: ${client || "— none —"} · Assigned: ${assignee || "unassigned"}`;
 }
 
 // Reflect the project's SAVED assignee in the dropdown on every detail render.
@@ -6136,6 +6347,7 @@ function syncProjectAssignSelect() {
   if (!select) return;
   renderProjectUserOptions();
   select.value = state.detail?.project?.assignedUserId || "";
+  updateHeadMetaSummary();
 }
 
 function blankClientForm() {
@@ -6752,6 +6964,7 @@ async function assignProjectUser() {
     await api(`/api/projects/${state.selectedProjectId}/assign`, { method: "POST", body: JSON.stringify({ userId }) });
     await loadProjects();
     await loadTeamWorkload();
+    updateHeadMetaSummary();
     showMessage(userId ? "Project assigned." : "Assignment cleared.", "info");
   } catch (err) {
     showMessage(err.message || "Could not assign project.", "error");
