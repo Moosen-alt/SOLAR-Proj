@@ -5583,6 +5583,15 @@ async function runQc() {
             advanced = ` Unknown AHJ — AI-researched ${state.detail.project.ahj} and saved ${r.research.requiredDocuments.length} required doc(s) to the knowledge base (verify before relying on it).`;
           } else if (r.research?.provider === "stub") {
             advanced = ` Unknown AHJ — set ANTHROPIC_API_KEY to auto-research it.`;
+          } else {
+            // RESEARCH THAT LEARNED NOTHING MUST NOT READ AS "HANDLED". A real provider can
+            // come back with zero required documents (live: Des Moines, IA — the save is
+            // correctly refused so nothing false enters the KB), and with no branch here the
+            // message fell through to "Auto-built AHJ/NEM docs … ran the reviewer gate",
+            // which tells the operator the AHJ was dealt with when nothing was learned. The
+            // knowledge-base panel has always said this plainly; the project path did not.
+            advanced = ` Unknown AHJ — auto-research returned NO requirements for ${esc(state.detail.project.ahj || "this AHJ")}.`
+              + ` Nothing was saved to the knowledge base. Research it by name in Knowledge Base, or add the requirements by hand before filing.`;
           }
         } catch (err) { advanced = ` (AHJ auto-research snag: ${err.message || ""})`; }
       }
