@@ -65,6 +65,37 @@ async function main(): Promise<void> {
   assert.ok(yC !== null && Math.abs(yC - 480) < 3, `label-not-found should fall back to 480, got ${yC}`);
   ok("label-not-found falls back to stored x/y");
 
+  // 4) THE VALUATION DEFAULT (operator ruling 2026-09-21: the formula fills the
+  //    valuation field on EVERY AHJ form, mapped or not). AcroForm with three
+  //    fields: an UNMAPPED job-value field (fills from the formula), a mapped
+  //    field bound to computed.declaredValuation (now the FORMULA, not the raw
+  //    contract), and "Valuation Date" (the tight name match must skip it).
+  const valuationDoc = await PDFDocument.create();
+  valuationDoc.addPage([612, 792]);
+  const acro = valuationDoc.getForm();
+  acro.createTextField("Estimated Job Value including materials and labor").addToPage(valuationDoc.getPage(0), { x: 60, y: 700, width: 120, height: 16 });
+  acro.createTextField("Mapped Valuation").addToPage(valuationDoc.getPage(0), { x: 60, y: 660, width: 120, height: 16 });
+  acro.createTextField("Valuation Date").addToPage(valuationDoc.getPage(0), { x: 60, y: 620, width: 120, height: 16 });
+  const valuationPdf = await valuationDoc.save();
+  const valuationCtx: unknown = { project: { homeownerName: "Jane Doe", systemSizeDcKw: 7.04 }, client: {}, snapshot: { jobValue: "29066.02" } };
+  const valuationDef: AhjFormDefinition = {
+    id: "tmpl-valuation", formName: "Valuation default test", matchJurisdictions: [], sourceUrl: "",
+    version: "stored", status: "verified", fillMode: "acroform", preserveInteractive: true,
+    textFields: { "Mapped Valuation": "computed.declaredValuation" },
+  };
+  const outD = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ahjfill-val-")), "d.pdf");
+  await fillLoadedForm(valuationDef, valuationPdf, valuationCtx as never, outD);
+  const outDoc = await PDFDocument.load(fs.readFileSync(outD));
+  const outForm = outDoc.getForm();
+  const text = (n: string) => outForm.getTextField(n).getText() ?? "";
+  // 40% of $29,066.02 = $11,626 (rounded) — the operator formula, both lanes.
+  assert.equal(text("Estimated Job Value including materials and labor"), "11626", "unmapped valuation field must fill from the formula");
+  ok("MUST PASS: an UNMAPPED job-value field fills from the operator formula by default");
+  assert.equal(text("Mapped Valuation"), "11626", "declaredValuation must now be the formula, not the raw contract");
+  ok("computed.declaredValuation is the FORMULA (11626), never the raw contract (29066)");
+  assert.equal(text("Valuation Date"), "", "'Valuation Date' must never catch the default");
+  ok("MUST EXCLUDE: 'Valuation Date' stays empty — the name match is tight");
+
   fs.rmSync(dir, { recursive: true, force: true });
   console.log(`\nahjFormFill: all ${passed} checks passed`);
 }

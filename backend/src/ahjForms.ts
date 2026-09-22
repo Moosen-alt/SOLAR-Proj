@@ -534,17 +534,15 @@ function computed(name: string, ctx: FillContext): string {
       if (/^other$/i.test(v)) return str(ctx.snapshot.constructionCategoryOther).trim() ? "other" : "";
       return /^(?:single[- ]family(?: dwelling)?|1[- ]and[- ]2[- ]family|one[- ]and[- ]two[- ]family|R-?3)$/i.test(v) ? "residential" : "";
     }
-    case "declaredValuation": {
-      const value = Number(ctx.snapshot.jobValue);
-      return Number.isFinite(value) && value > 0 ? String(Math.round(value)) : "";
-    }
+    case "declaredValuation":
     case "estimatedJobValue": {
-      // The application's "Estimated Job Value" is the OPERATOR'S VALUATION FORMULA
-      // of the contract (40% + battery adders) — the same authority the fee engine
-      // uses (valuation.ts) — never the raw contract, which is what declaredValuation
-      // above returns for the forms that genuinely ask for it. Live gap: Simmons's
-      // Coos Bay building application printed a BLANK job value while his parse
-      // carried a $29,066.02 contract the formula resolves fine.
+      // EVERY valuation field on EVERY AHJ form carries the OPERATOR'S VALUATION
+      // FORMULA (40% of contract + battery adders) — the same authority the fee
+      // engine uses (valuation.ts, whose own note says the application carries the
+      // formula OF the contract, never the contract itself). declaredValuation used
+      // to return the raw contract, quietly contradicting that rule on the curated
+      // Oregon building maps; operator ruling 2026-09-21 made the formula the
+      // default for all AHJs, so both names now answer identically.
       const v = resolveValuation(ctx.snapshot, Number(ctx.project.systemSizeDcKw) || null);
       return v.value != null && v.value > 0 ? String(Math.round(v.value)) : "";
     }
@@ -1120,6 +1118,27 @@ export async function fillLoadedForm(
       filled += 1;
     } catch {
       unmapped.push(fieldName);
+    }
+  }
+
+  // THE VALUATION FIELD DEFAULTS TO THE FORMULA ON EVERY AHJ FORM. Operator ruling
+  // 2026-09-21: "put the valuation as default for the AHJs, not just Coos Bay — the
+  // formula." Any fillable text field that asks for the job value and is NOT already
+  // mapped gets computed.estimatedJobValue — which also spares the human-verified
+  // Coos Bay map from needing an edit (rule 3): its blank "Estimated Job Value"
+  // field fills here without the map changing. The name match is deliberately
+  // tight: "Valuation Date" or "Land Value" must never catch it, and a value the
+  // map already wrote is never overwritten.
+  const valuationDefault = resolveSource("computed.estimatedJobValue", ctx);
+  if (valuationDefault) {
+    const mappedNames = new Set(Object.keys(def.textFields));
+    const valuationName = /((estimated|declared)\s+)?job\s+valu(e|ation)|declared\s+valuation|valuation\s+of\s+(the\s+)?work|estimated\s+value\b|^valuation$/i;
+    for (const name of available) {
+      if (mappedNames.has(name) || !valuationName.test(name)) continue;
+      try {
+        const field = form.getTextField(name);
+        if (!field.getText()) { field.setText(valuationDefault); filled += 1; }
+      } catch { /* not a text field — leave it */ }
     }
   }
 

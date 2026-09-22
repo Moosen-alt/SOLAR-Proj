@@ -48,7 +48,10 @@ try {
       assert.ok(text.includes("Fixture Installer"));
       if (source.formType === 'building_application') {
         const positions=await extractLabels(result);
-        assert.ok(positions.some(l=>l.str==='24000'&&l.page===2&&l.y>599&&l.y<604&&l.x>480),'Declared valuation belongs on the valuation rule, not instruction text');
+        // 9600 = the OPERATOR VALUATION FORMULA of the $24,000 contract (40%, no battery)
+        // — operator ruling 2026-09-21: every AHJ form's valuation field carries the
+        // formula, never the raw contract. Position pin unchanged.
+        assert.ok(positions.some(l=>l.str==='9600'&&l.page===2&&l.y>599&&l.y<604&&l.x>480),'Declared valuation belongs on the valuation rule, not instruction text');
         assert.ok(positions.some(l=>l.str==='TEST-PARCEL'&&l.page===2&&l.y>423&&l.y<428),'Parcel belongs on tax/parcel rule');
       }
       if (source.formType === "electrical_application") assert.ok(text.includes("ELE123"),"Use existing client license keys");
