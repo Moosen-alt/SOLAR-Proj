@@ -83,7 +83,7 @@ const DEMO_PROJECTS: Array<{
 }> = [
   {
     owner: "Marisol Vega", street: "412 Lantern Way", city: "Salem", state: "OR",
-    ahj: "City of Salem", utility: "Portland General Electric", dcKw: "7.31", acKw: "5.95",
+    ahj: "City of Salem", utility: "Portland General Electric", dcKw: "7.31", acKw: "4.93",
     note: "Just parsed — shows intake and the automatic chain picking it up.",
     snapshot: {
       mounting: "Roof mount", framingType: "truss", roofRafterSpacing: "24", roofMaterial: "Composition Shingle",
@@ -93,7 +93,7 @@ const DEMO_PROJECTS: Array<{
   },
   {
     owner: "Terrence Boyd", street: "88 Kestrel Loop", city: "Coos Bay", state: "OR",
-    ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "9.04", acKw: "7.60",
+    ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "9.46", acKw: "6.38",
     status: "qc_passed",
     note: "Through QC — shows the built AHJ/NEM document package.",
     snapshot: {
@@ -104,7 +104,7 @@ const DEMO_PROJECTS: Array<{
   },
   {
     owner: "Priya Raman", street: "2170 Alder Bend", city: "Portland", state: "OR",
-    ahj: "City of Portland", utility: "Portland General Electric", dcKw: "6.12", acKw: "5.10",
+    ahj: "City of Portland", utility: "Portland General Electric", dcKw: "6.45", acKw: "4.35",
     status: "ready_to_stage",
     note: "Ready to stage — shows the reviewer gate green and the submit gate armed.",
     snapshot: {
@@ -115,7 +115,7 @@ const DEMO_PROJECTS: Array<{
   },
   {
     owner: "Gus Halvorsen", street: "57 Ember Court", city: "Tigard", state: "OR",
-    ahj: "City of Tigard", utility: "Portland General Electric", dcKw: "11.20", acKw: "9.60",
+    ahj: "City of Tigard", utility: "Portland General Electric", dcKw: "12.04", acKw: "8.12",
     status: "ready_to_stage",
     note: "A deliberately UNRESOLVED one — engineered path, so the gate asks for stamped plans.",
     snapshot: {
@@ -185,6 +185,34 @@ if (RESET) {
 // ---- create -----------------------------------------------------------------
 const { createClient } = await import("../backend/src/clients");
 const { createProject, rerunQc } = await import("../backend/src/repository");
+const { saveProjectDocument } = await import("../backend/src/projectDocuments");
+const { processStageStep } = await import("../backend/src/autoStageSteps");
+const { PDFDocument, StandardFonts } = await import("pdf-lib");
+
+// One real multi-sheet plan set, reused for every demo project. Sheet titles are the ones
+// the splitter recognises, so splitting produces genuine site_plan / sld / structural /
+// spec parts rather than an empty package.
+async function buildPlanSetPdf(): Promise<Buffer> {
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const sheets: Array<[string, string]> = [
+    ["SITE PLAN", "Array location, fire access pathways and setbacks shown. Demonstration sheet."],
+    ["ELECTRICAL LINE DIAGRAM", "3-line: modules, microinverters, AC disconnect. RAPID SHUTDOWN initiator at the array per NEC 690.12; PV Rapid Shutdown System placard at the service. NEC 705.12(B)(3)(2) load-side calculation: 200A bus bar x 120% = 240A allowable; 175A main breaker + 40A PV OCPD = 215A, which is less than 240A - COMPLIES. Load-side breaker landed at the opposite end of the bus from the main."],
+    ["ROOF SECTION", "Roof framing: pre-engineered trusses, 2x4 top chord at 24 in o.c., clear span 11 ft 6 in, DF-L No.2. Ground snow load 25 psf, PV dead load 2.6 psf, wind exposure B. Attachment detail: lag screws into truss top chord with flashed standoffs at 48 in o.c."],
+    ["PV MODULE SPECIFICATION SHEET", "Q CELLS Q.TRON BLK M-G2.C1+ 430W."],
+    ["MICROINVERTER SPECIFICATIONS", "Enphase IQ8PLUS-72-2-US microinverter, 290W AC, UL 1741-SB listed."],
+    ["WARNING LABELS", "NEC 690/705 placard and label location schedule."],
+  ];
+  for (const [title, body] of sheets) {
+    const page = pdf.addPage([612, 792]);
+    page.drawText(title, { x: 54, y: 706, size: 22, font });
+    page.drawText(body, { x: 54, y: 664, size: 10, font });
+    page.drawText("SOLARIS DEMO CO — DEMONSTRATION PLAN SET, NOT FOR CONSTRUCTION", { x: 54, y: 60, size: 9, font });
+  }
+  return Buffer.from(await pdf.save());
+}
+const planSetPdf = await buildPlanSetPdf();
+const created: Array<{ id: string; target?: string }> = [];
 
 let client = demoClientRow();
 if (!client) {
@@ -219,6 +247,20 @@ for (const spec of DEMO_PROJECTS) {
     homeownerPhone: "(555) 010-0000",
     ...(spec.snapshot ?? {}),
   } as never);
+  // A PLAN SET, because a project with no documents is a demo that breaks on the first
+  // click. The board would look right and every detail page would show a wall of
+  // document-inventory blockers — no plan set, no SLD, no site plan — which is precisely
+  // the "Blocked" band you do not want on screen in front of a prospect. This is a real
+  // multi-sheet PDF through the real upload path, so the splitter produces real parts and
+  // the document gates are answered by documents rather than by parking a status.
+  saveProjectDocument(db, project.id, {
+    filename: `${spec.owner.toLowerCase().replace(/[^a-z]+/g, "-")}-plan-set.pdf`,
+    docType: "plan_set",
+    contentType: "application/pdf",
+    buffer: planSetPdf,
+    source: "upload",
+  });
+
   // RE-RUN QC THROUGH THE REAL PATH. createProject runs QC at birth against the payload as
   // it was first normalized, which leaves review items standing even when the snapshot holds
   // the answers — measured on the first build of this demo: every project carried 7 pending
@@ -226,15 +268,59 @@ for (const spec of DEMO_PROJECTS) {
   // and a passing check auto-resolves the item (resolvePendingReviewItem), so the demo board
   // shows what a complete project actually looks like instead of a wall of questions.
   rerunQc(db, project.id);
-  // Then park it at the stage that tells its part of the story. The demo is a STAGED BOARD,
-  // and saying so here matters: it is not a claim that these four passed every live gate.
-  if (spec.status) db.run("UPDATE projects SET status = ? WHERE id = ?", [spec.status, project.id]);
+  created.push({ id: project.id, target: spec.status });
   console.log(`  + ${spec.owner.padEnd(20)} ${spec.status ?? "parsed"}  — ${spec.note}`);
   made++;
+}
+
+// EARN THE STATUSES. Run the real automatic chain — split, form acquisition, document
+// package, reviewer gate — exactly as a live project gets it. A parked status with no
+// artifacts behind it is the lie this script's header warns about: the board reads right
+// and the first detail page a prospect opens shows blockers for documents nobody built.
+if (created.length) {
+  console.log("\nRunning the real chain on each demo project (split → docs → reviewer gate)…");
+  for (const { id, target } of created) {
+    try {
+      // The chain advances as far as the evidence allows; it never passes ready_to_stage.
+      for (let pass = 0; pass < 3; pass++) await processStageStep(db, id);
+      // WAIT FOR THE DOCUMENT TEXT, THEN RUN IT AGAIN. saveProjectDocument kicks off text
+      // extraction as fire-and-forget, so the first chain judges the split sheets before
+      // their text exists — the reviewer and the historical check then see no framing or
+      // interconnection evidence and raise blockers the documents plainly answer. Measured
+      // on this very demo: one project went from three blockers to zero on a second pass
+      // with nothing else changed. A real project gets the same second look from the next
+      // save; a one-shot script has to wait for it deliberately.
+      for (let waited = 0; waited < 40; waited++) {
+        const pending = Number(db.get<{ n: number }>(
+          "SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ? AND extracted_text = ''", [id])?.n ?? 0);
+        if (pending === 0) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      for (let pass = 0; pass < 2; pass++) await processStageStep(db, id);
+    } catch (err) {
+      console.log(`  ! chain error on ${id.slice(0, 8)}: ${(err as Error).message.slice(0, 120)}`);
+    }
+    const now = String(db.get<Row>("SELECT status FROM projects WHERE id = ?", [id])?.status ?? "");
+    const docs = Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ?", [id])?.n ?? 0);
+    const owner = String(db.get<Row>("SELECT homeowner_name FROM projects WHERE id = ?", [id])?.homeowner_name ?? "");
+    // Only note a difference from the intended stage — the chain's verdict is the truth here,
+    // and a demo that quietly forces a status would be back to parking.
+    const note = target && target !== now ? `  (intended ${target}; the chain says ${now} — that IS the honest state)` : "";
+    console.log(`  ${owner.padEnd(20)} ${now.padEnd(16)} ${docs} document(s)${note}`);
+  }
 }
 
 console.log(`\nDemo environment ready: ${made} project(s) created.`);
 console.log("Every homeowner is invented and every address is a 99999 ZIP — no real customer appears.");
 console.log("Filter the board by client \"" + DEMO_MARKER + "\" to show it, and run with --reset to remove it.");
+console.log("");
+console.log("ONE MORE PASS, with the server running, finishes the set:");
+console.log("  for each demo project:  POST /api/projects/<id>/qc");
+console.log("Form ACQUISITION runs in the job worker (it fetches and fills the AHJ's own blanks),");
+console.log("so an in-process build cannot produce those files. After that pass the board reads:");
+console.log("  · one project fully green — Approve & Submit armed, nothing outstanding");
+console.log("  · two carrying a learned-failure callout from a real past correction");
+console.log("  · one on the engineered path, correctly demanding PE-stamped plans");
+console.log("which is a better demo than four identical green rows: it shows the gates working.");
 db.close();
 process.exit(0);
