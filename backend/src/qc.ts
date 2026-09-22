@@ -23,7 +23,15 @@ function ahjRequiresSplitPages(db: AppDb, ahj: string, state: string): boolean {
   try {
     const match = findKnowledgeForLearn(db, { state, ahj });
     const platform = match.ahj?.portalPlatform || "";
-    return /projectdox|energov|etrakit|accela/i.test(platform);
+    // ONLY ProjectDox ACTUALLY NEEDS PER-SHEET UPLOADS, and the splitter has said so all
+    // along: "ProjectDox requires each sheet uploaded to its own document slot. Standard
+    // Accela/EnerGov portals receive the FULL plan set as a single PDF (no splitting
+    // needed there)" (docSplitter.ts, and server.ts repeats it). This gate matched
+    // energov|etrakit|accela anyway, so it asked a person to hand-confirm a sheet mapping
+    // for portals that never wanted split sheets. Measured 2026-09-22 while counting
+    // operator interruptions: all three live firings were Salem (accela) and Tigard
+    // (EnerGov) — every one of them a question the product's own policy says not to ask.
+    return /projectdox/i.test(platform);
   } catch {
     return false; // KB table may not exist yet
   }

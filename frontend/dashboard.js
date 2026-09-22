@@ -3254,9 +3254,17 @@ function applyAutopilotState(s) {
   const gapBanner = $("gapFillBanner");
   const gapList = $("gapFillList");
   if (gapBanner && gapList) {
+    // TWO LISTS, TWO DIFFERENT JOBS. `gapFillMissing` is data the project genuinely lacks
+    // — the operator adds it and re-stages. `gapEngineUnfilled` is data the project ALREADY
+    // HAS that the engine failed to place; sending someone to "add it to the project" is
+    // sending them to redo finished work, which is what the single list was doing.
     const missing = Array.isArray(s.gapFillMissing) ? s.gapFillMissing : [];
-    if (missing.length > 0 && s.phase === "awaiting_approval") {
-      gapList.textContent = missing.join(" | ");
+    const engineGaps = Array.isArray(s.gapEngineUnfilled) ? s.gapEngineUnfilled : [];
+    if ((missing.length > 0 || engineGaps.length > 0) && s.phase === "awaiting_approval") {
+      const parts = [];
+      if (missing.length) parts.push(`Add to the project, then re-stage: ${missing.join(" | ")}`);
+      if (engineGaps.length) parts.push(`Already on the project — fill these on the review screen, no project edit needed: ${engineGaps.join(" | ")}`);
+      gapList.textContent = parts.join(" — ");
       gapBanner.style.display = "";
     } else {
       gapBanner.style.display = "none";

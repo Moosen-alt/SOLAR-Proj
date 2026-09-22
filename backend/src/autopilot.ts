@@ -74,6 +74,9 @@ export interface AutopilotState {
   // Required portal fields the LLM gap-fill could NOT fill (no backing project data — left
   // blank, never guessed). The operator should add this data to the project and re-stage.
   gapFillMissing: string[];
+  /** Required portal fields left blank though the project HAS the value — an engine gap,
+   *  never the operator's data problem. */
+  gapEngineUnfilled: string[];
 }
 
 // UNTYPED string Set — it does NOT fail typecheck when a status is removed from the
@@ -204,8 +207,17 @@ function gapMissingFrom(data: Record<string, unknown> | undefined): string[] {
   return Array.from(new Set(list)).slice(0, 20);
 }
 
-function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[] } {
-  const empty = { reviewMismatches: [], reviewAccurate: null, gapFillMissing: [] };
+/** Required portal fields left blank even though the PROJECT HOLDS the value. Separate
+ *  from gapMissingFrom on purpose: that list is work only a person can do, this list is
+ *  the engine's own failure and must never be phrased as "add them to the project". */
+function gapUnfilledDespiteDataFrom(data: Record<string, unknown> | undefined): string[] {
+  const gf = data?.gapFill as { unfilledDespiteData?: unknown } | undefined;
+  const list = gf && Array.isArray(gf.unfilledDespiteData) ? gf.unfilledDespiteData.map((x) => String(x)) : [];
+  return Array.from(new Set(list)).slice(0, 20);
+}
+
+function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[]; gapEngineUnfilled: string[] } {
+  const empty = { reviewMismatches: [], reviewAccurate: null, gapFillMissing: [], gapEngineUnfilled: [] };
   if (!run?.result_json) return empty;
   try {
     const result = JSON.parse(String(run.result_json)) as Record<string, unknown>;
@@ -218,6 +230,7 @@ function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[
     let reviewMismatches: ReviewMismatch[] = [];
     let reviewAccurate: boolean | null = null;
     const gapMissing = new Set<string>(gapMissingFrom(result));
+    const gapEngineGaps = new Set<string>(gapUnfilledDespiteDataFrom(result));
     for (const step of steps) {
       const data = step.data as Record<string, unknown> | undefined;
       if (!data) continue;
@@ -226,13 +239,14 @@ function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[
         reviewAccurate = typeof data.reviewAccurate === "boolean" ? data.reviewAccurate : null;
       }
       for (const f of gapMissingFrom(data)) gapMissing.add(f);
+      for (const f of gapUnfilledDespiteDataFrom(data)) gapEngineGaps.add(f);
     }
     // Top-level mismatches (some portal results flatten the step data).
     if (!reviewMismatches.length && Array.isArray(result.reviewMismatches)) {
       reviewMismatches = result.reviewMismatches as ReviewMismatch[];
       reviewAccurate = typeof result.reviewAccurate === "boolean" ? result.reviewAccurate : null;
     }
-    return { reviewMismatches, reviewAccurate, gapFillMissing: Array.from(gapMissing).slice(0, 20) };
+    return { reviewMismatches, reviewAccurate, gapFillMissing: Array.from(gapMissing).slice(0, 20), gapEngineUnfilled: Array.from(gapEngineGaps).slice(0, 20) };
   } catch { /* ignore parse errors */ }
   return empty;
 }
@@ -252,7 +266,7 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
   const projectMovedOn = ["submitted", "ready_for_issue", "issued", "nem_approved", "handoff_ready", "awaiting_human_submit"].includes(project.status);
   const pauseReason = run && String(run.status) === "paused_for_human" && !projectMovedOn
     && typeof run.pause_reason === "string" && run.pause_reason ? String(run.pause_reason) : null;
-  const noReview = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[] };
+  const noReview = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[], gapEngineUnfilled: [] as string[] };
 
   // A run that paused mid-fill for MFA/CAPTCHA needs a human at the browser.
   if (pauseReason) {
@@ -273,8 +287,16 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
     const reviewInfo = reviewInfoFromRun(run);
     // If the gap-fill left required portal fields blank (no project data to fill them from),
     // advise the operator to add the data and re-stage rather than submit an incomplete app.
+    // TWO DIFFERENT FACTS, TWO DIFFERENT SENTENCES. "Add them to the project" is only true
+    // of fields the project genuinely lacks. Fields the project HOLDS that the engine
+    // failed to fill are ours to fix, and telling an operator to go type them in sends
+    // them to redo work already done — measured at ~80 false interruptions per 100
+    // projects (2026-09-22), the only avoidable touch that asks for work that is finished.
     const gapAdvisory = reviewInfo.gapFillMissing.length
       ? ` ${reviewInfo.gapFillMissing.length} required portal field(s) had no project data and were left blank — add them to the project and re-stage before submitting: ${reviewInfo.gapFillMissing.join(", ")}.`
+      : "";
+    const engineAdvisory = reviewInfo.gapEngineUnfilled.length
+      ? ` ${reviewInfo.gapEngineUnfilled.length} required portal field(s) were left blank even though the project HAS the data — fill them on the review screen before submitting; no project edit is needed: ${reviewInfo.gapEngineUnfilled.join(", ")}.`
       : "";
     // AN APPROVAL ALREADY ON RECORD MUST NOT BE INVITED AGAIN AS IF IT NEVER HAPPENED.
     // runAutopilotApproval on a real portal writes stage_detail `approved_awaiting_filing` and
@@ -291,7 +313,7 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
         : "Staged to portal review. Click Approve & Submit to file.";
     return {
       projectId, phase: "awaiting_approval", stage: approvedAwaitingFiling ? "Approved — awaiting your filing" : "Awaiting approval",
-      message: baseMsg + gapAdvisory,
+      message: baseMsg + gapAdvisory + engineAdvisory,
       blockers, canApprove: blockers.length === 0, pauseReason: null, portalRunId: run ? String(run.id) : null, updatedAt: ts,
       ...reviewInfo,
     };

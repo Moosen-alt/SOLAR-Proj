@@ -39,12 +39,17 @@ export interface GapFillOutcome {
   filled: string[];
   /** Planned fills rejected because they weren't grounded in real project data. */
   skippedUngrounded: string[];
-  /** Required, empty fields the LLM had no data to fill — surfaced so the human can act. */
+  /** Required, empty fields the PROJECT GENUINELY LACKS — surfaced so the human can act. */
   reportedMissing: string[];
+  /** Required fields left empty even though the project HOLDS a value for them. That is an
+   *  engine defect (the planner never proposed it, or the fill did not stick), not the
+   *  operator's data problem — kept separate so nobody is sent to re-type data already on
+   *  file, which is what the single undifferentiated list was causing. */
+  unfilledDespiteData: string[];
 }
 
 function emptyOutcome(): GapFillOutcome {
-  return { filled: [], skippedUngrounded: [], reportedMissing: [] };
+  return { filled: [], skippedUngrounded: [], reportedMissing: [], unfilledDespiteData: [] };
 }
 
 function normalize(v: string): string {
@@ -293,12 +298,38 @@ export async function gapFillCurrentPage(
       if (applied) out.filled.push(field.label || field.fieldType);
     }
 
-    // Any REQUIRED field still empty after the grounded fills had no usable project data —
-    // report it (never guessed) so the operator can add the data and re-stage.
+    // A REQUIRED FIELD LEFT EMPTY IS NOT PROOF THE PROJECT LACKS THE DATA.
+    //
+    // This swept every still-empty required field into reportedMissing with no test for
+    // whether the project actually holds a value, and autopilot then told the operator
+    // those fields "had no project data — add them to the project and re-stage". So an
+    // operator was sent to type in data the project already carried, for a field the
+    // planner simply did not propose or whose fill did not stick. Measured 2026-09-22 at
+    // ~80 false interruptions per 100 projects — the third-largest avoidable cost in the
+    // product, and the only one that sends someone to do work that is already done.
+    //
+    // Three outcomes now, and they are different facts:
+    //   · genuinely absent from the project  → reportedMissing (the operator CAN fix it)
+    //   · the project HAS a value            → unfilledDespiteData (the ENGINE's problem;
+    //                                          never ask a person to re-enter it)
+    //   · a value was proposed but refused as ungrounded → skippedUngrounded, as before.
+    const projectHasValueFor = (field: { label?: string; fieldType?: string }): boolean => {
+      const needle = `${field.label || ""} ${field.fieldType || ""}`.toLowerCase().replace(/[^a-z0-9]+/g, "");
+      if (!needle) return false;
+      return Object.entries(projectFields).some(([key, value]) => {
+        if (value == null || String(value).trim() === "") return false;
+        const k = key.toLowerCase().replace(/[^a-z0-9]+/g, "");
+        return k.length > 2 && (needle.includes(k) || k.includes(needle));
+      });
+    };
     for (const { field } of empties) {
       if (!field.required) continue;
       const lbl = field.label || field.fieldType;
       if (out.filled.includes(lbl)) continue;
+      if (projectHasValueFor(field)) {
+        if (!out.unfilledDespiteData.includes(lbl)) out.unfilledDespiteData.push(lbl);
+        continue;
+      }
       if (!out.reportedMissing.includes(lbl)) out.reportedMissing.push(lbl);
     }
     return out;

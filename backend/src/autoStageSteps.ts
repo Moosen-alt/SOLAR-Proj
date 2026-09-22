@@ -105,6 +105,39 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
     }
   }
 
+  // STEP 0.5 — READ THE BILL INSTEAD OF ASKING A PERSON TO READ IT.
+  //
+  // The account number is the single most common QC blocker (5 of 19 live projects, one per
+  // project, ~26 human interruptions per 100 — measured 2026-09-22). QC's own instruction is
+  // right and stays right: "Enter the utility account number EXACTLY as printed on the bill —
+  // never guess it." The point is that OCR of the bill image is READING it, not guessing it,
+  // and the vision extractor that does exactly this already exists and already names these
+  // fields (llm.extractProjectFieldsFromImages: "Account number -> accountNumber, Meter number
+  // -> meterNumber, Password / SSN -> never fill"). It was only ever reachable from a button
+  // in the parser, so when the bill arrived AFTER intake — which is what actually happens,
+  // measured at 8 seconds to 17 minutes after the item was filed — nobody re-ran it and a
+  // person transcribed the number by hand.
+  //
+  // Runs BEFORE QC on purpose: values written here are judged by the QC run below, and a
+  // passing check auto-resolves the review item (resolvePendingReviewItem). Secrets are
+  // untouched — the extractor refuses passwords and SSNs, and nothing here writes over a
+  // value that is already present.
+  if (chainOwned) {
+    try {
+      const { fillAccountFieldsFromDocuments } = await import("./billVision");
+      const { createLLMProvider } = await import("./llm");
+      const filled = await fillAccountFieldsFromDocuments(db, createLLMProvider(), projectId);
+      if (filled.length) {
+        ran.push(`read_bill(${filled.join("+")})`);
+        logger.info("stage-auto", "read utility account fields from the bill image", { project: projectId, fields: filled });
+      }
+    } catch (err) {
+      logger.warn("stage-auto", "bill vision read failed; QC will ask a human as before", {
+        project: projectId, err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // STEP 1 — QC, on a fresh parse OR a re-saved qc_failed project. The enqueue only ever
   // happens on a save, and a save means the inputs changed — so re-running QC here is judging
   // new evidence, not spinning on old. If the verdict is still qc_failed, the chain stops
