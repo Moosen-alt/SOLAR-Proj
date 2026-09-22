@@ -303,6 +303,32 @@ async function main(): Promise<void> {
   check("MUST EXCLUDE: affirmative stamp language still routes engineered in Florida",
     resolvePermitPath(otherState("FL", { stampRecommendation: "Requires PE-stamped structural plans and a sealed engineering letter" })).path === "engineered");
 
+  // ---------------------------------------------------------------------------
+  // AND THE JURISDICTION'S OWN RESEARCHED LIMITS DECIDE IT. "unknown" is a holding
+  // answer, not a destination: touching an un-profiled jurisdiction queues code
+  // research, and once its prescriptive block lands the path resolves from THAT
+  // jurisdiction's published rule.
+  // ---------------------------------------------------------------------------
+  const FL = (snapshot: Record<string, unknown> = {}) => otherState("FL", snapshot);
+  const flLimits = { hasPrescriptivePath: true, maxRafterSpacingIn: 24, allowedWindExposures: ["B", "C", "D"], maxWindSpeedMphExpC: 165 };
+
+  check("a jurisdiction that publishes NO prescriptive path routes ENGINEERED, citing itself",
+    resolvePermitPath(FL(), { limits: { hasPrescriptivePath: false, sourceUrl: "https://floridabuilding.org/" } }).path === "engineered");
+  check("MUST PASS: with the jurisdiction's OWN limits on file, a compliant project resolves PRESCRIPTIVE",
+    resolvePermitPath(FL(), { limits: flLimits }).path === "prescriptive");
+  check("...and a breach of THAT jurisdiction's cap routes engineered, quoting its number not Oregon's",
+    /165 mph/.test(resolvePermitPath(FL({ windSpeed: "175" }), { limits: flLimits }).basis.join(" ")),
+    resolvePermitPath(FL({ windSpeed: "175" }), { limits: flLimits }).basis.join(" ").slice(0, 120));
+  check("MUST EXCLUDE: exposure D is legal under Florida's own limits — Oregon's B/C must not fail it",
+    resolvePermitPath(FL({ wind: "D" }), { limits: flLimits }).path === "prescriptive");
+  check("MUST EXCLUDE: an absent limit is SKIPPED, never borrowed from Oregon (no snow cap on file)",
+    resolvePermitPath(FL({ snow: "90" }), { limits: flLimits }).path === "prescriptive",
+    "90 psf exceeds Oregon's 70 but Florida published no snow limit");
+  check("MUST EXCLUDE: the Oregon membrane-roof rule does not fire outside Oregon",
+    resolvePermitPath(FL({ roofMaterial: "TPO" }), { limits: flLimits }).path === "prescriptive");
+  check("...while a TPO roof in OREGON still routes engineered (the Simmons ruling holds)",
+    resolvePermitPath(otherState("OR", { roofMaterial: "TPO" })).path === "engineered");
+
   // -------------------------------------------------------------------------
   // 1. THE CLASSIFIER'S ORDERING — tested in BOTH directions, because a filter
   //    list fails both ways: one that rejects the target reads as a portal bug,

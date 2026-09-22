@@ -19,7 +19,7 @@
 // (which application to build) and the reviewer (what engineered docs to collect).
 // ---------------------------------------------------------------------------
 
-import type { ProjectRecord } from "../../shared/src/types";
+import type { PrescriptiveLimits, ProjectRecord } from "../../shared/src/types";
 
 export type PermitPath = "prescriptive" | "engineered" | "unknown";
 
@@ -54,7 +54,7 @@ export interface PermitPathResolution {
  *  Required, never an optional trailing field: CLAUDE.md's rule for the org filter
  *  applies with the same force here — an optional state fails open the moment a caller
  *  forgets it, and failing open here means Oregon's rules quietly judging Florida. */
-export type PermitPathInputs = Pick<ProjectRecord, "parserSnapshot" | "state">;
+export type PermitPathInputs = Pick<ProjectRecord, "parserSnapshot" | "state"> & Partial<Pick<ProjectRecord, "ahj">>;
 
 function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
@@ -319,7 +319,14 @@ export function resolveStampRequirement(
  *      screen → prescriptive.
  *   5. Default for a standard residential roof mount → prescriptive.
  */
-export function resolvePermitPath(project: PermitPathInputs): PermitPathResolution {
+export interface PermitPathOptions {
+  /** This jurisdiction's OWN prescriptive limits, from its code profile. Supplied by
+   *  resolvePermitPathForProject (which has the db); absent here means "not researched
+   *  yet", never "no limits apply". */
+  limits?: PrescriptiveLimits;
+}
+
+export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOptions = {}): PermitPathResolution {
   const basis: string[] = [];
   const finalize = (path: PermitPath, source: PermitPathResolution["source"]): PermitPathResolution => ({
     path,
@@ -395,11 +402,28 @@ export function resolvePermitPath(project: PermitPathInputs): PermitPathResoluti
   // `prescriptive`, and evaluatePrescriptiveCriteria already reads them), this gate is
   // where that data gets its say — until then it refuses rather than guesses.
   const stateCode = clean(project.state).toUpperCase();
-  if (stateCode !== "OR") {
+  const jurisdiction = opts.limits ?? {};
+  const hasResearchedLimits = jurisdiction.maxGroundSnowPsf != null
+    || jurisdiction.maxPvDeadLoadPsf != null
+    || jurisdiction.maxRafterSpacingIn != null
+    || (jurisdiction.allowedWindExposures?.length ?? 0) > 0;
+
+  // A jurisdiction that PUBLISHES NO prescriptive PV path has answered the question: every
+  // rooftop project there goes to standard/engineered review. That is a fact researched from
+  // the jurisdiction, not an Oregon inference, so it routes.
+  if (stateCode !== "OR" && jurisdiction.hasPrescriptivePath === false) {
+    basis.push(
+      `${project.ahj || stateCode || "This jurisdiction"} publishes no prescriptive rooftop-PV path`
+      + `${jurisdiction.sourceUrl ? ` (${jurisdiction.sourceUrl})` : ""}, so rooftop PV goes through standard structural review.`,
+    );
+    return finalize("engineered", "structural-screen");
+  }
+
+  if (stateCode !== "OR" && !hasResearchedLimits) {
     basis.push(
       `The prescriptive screen encoded here is Oregon's (ORSC / BCD 440-5952 limits). `
       + `${stateCode ? `This project is in ${stateCode}` : "This project has no state on file"}, so those limits do not apply and no path is inferred from them. `
-      + `Confirm the path (Manual entry → Permit path), or load this jurisdiction's prescriptive limits into its code profile.`,
+      + `Confirm the path (Manual entry → Permit path); the jurisdiction's own limits are researched automatically on first encounter and will answer this once they land.`,
     );
     return finalize("unknown", "default");
   }
@@ -409,11 +433,24 @@ export function resolvePermitPath(project: PermitPathInputs): PermitPathResoluti
   const deadLoad = num(project, "deadLoad");
   const spacing = num(project, "roofRafterSpacing");
   const wind = snap(project, "wind");
+  // WHOSE LIMITS ARE THESE? Oregon's when the project is in Oregon; otherwise the ones
+  // researched from the jurisdiction itself (we only reach this line outside Oregon when
+  // some were found). A limit nobody published stays undefined and its check is SKIPPED —
+  // an absent limit is not a limit of zero, and it must never borrow Oregon's number.
+  const L = {
+    snow: stateCode === "OR" ? OREGON_PRESCRIPTIVE_DEFAULTS.maxGroundSnowPsf : jurisdiction.maxGroundSnowPsf,
+    dead: stateCode === "OR" ? OREGON_PRESCRIPTIVE_DEFAULTS.maxPvDeadLoadPsf : jurisdiction.maxPvDeadLoadPsf,
+    spacing: stateCode === "OR" ? OREGON_PRESCRIPTIVE_DEFAULTS.maxRafterSpacingIn : jurisdiction.maxRafterSpacingIn,
+    exposures: stateCode === "OR" ? OREGON_PRESCRIPTIVE_DEFAULTS.allowedWindExposures : jurisdiction.allowedWindExposures,
+  };
+  const whose = stateCode === "OR" ? "prescriptive" : `${project.ahj || stateCode} prescriptive`;
   const screenFailures: string[] = [];
-  if (snow != null && snow > 70) screenFailures.push(`ground snow load ${snow} psf > 70 psf prescriptive limit`);
-  if (deadLoad != null && deadLoad > 4.5) screenFailures.push(`PV dead load ${deadLoad} psf > 4.5 psf prescriptive limit`);
-  if (spacing != null && spacing > 24) screenFailures.push(`rafter spacing ${spacing} in > 24 in prescriptive limit`);
-  if (wind && !/\b(B|C)\b/i.test(wind)) screenFailures.push(`wind exposure "${wind}" outside prescriptive B/C`);
+  if (snow != null && L.snow != null && snow > L.snow) screenFailures.push(`ground snow load ${snow} psf > ${L.snow} psf ${whose} limit`);
+  if (deadLoad != null && L.dead != null && deadLoad > L.dead) screenFailures.push(`PV dead load ${deadLoad} psf > ${L.dead} psf ${whose} limit`);
+  if (spacing != null && L.spacing != null && spacing > L.spacing) screenFailures.push(`rafter spacing ${spacing} in > ${L.spacing} in ${whose} limit`);
+  if (wind && L.exposures?.length && !L.exposures.some((e: string) => new RegExp(`\\b${e}\\b`, "i").test(wind))) {
+    screenFailures.push(`wind exposure "${wind}" outside ${whose} ${L.exposures.join("/")}`);
+  }
   // ROOFING MATERIAL IS A SCREEN INPUT, NOT JUST A CHECKLIST ROW. The ORSC prescriptive
   // path admits only metal, wood shingle/shake, or <=2-layer composition (the BCD 5952
   // roofing row) — a membrane roof is outside it no matter how clean the numbers are.
@@ -425,7 +462,10 @@ export function resolvePermitPath(project: PermitPathInputs): PermitPathResoluti
   // non-qualifying covering fails the screen.
   const roofMaterial = snap(project, "roofMaterial");
   const nonPrescriptiveRoof = /\b(tpo|epdm|pvc|membrane|torch|built[-\s]?up|bur|tar|gravel|foam|spf|rolled|mod(ified)?[-\s]?bit(umen)?)\b/i.test(roofMaterial);
-  if (nonPrescriptiveRoof) {
+  // The roofing rule is Oregon's ORSC row, so it only speaks for Oregon. Another state's
+  // published path may admit membranes; until its own rule is researched, this stays quiet
+  // rather than asserting Oregon's into a Florida verdict.
+  if (nonPrescriptiveRoof && stateCode === "OR") {
     screenFailures.push(`roofing material "${roofMaterial}" is not a prescriptive-eligible covering (metal, wood shingle/shake, or <=2-layer composition) — membrane-roof PV is non-prescriptive in Oregon`);
   }
   // ULTIMATE WIND SPEED, not just exposure. A COASTAL site routinely parses as exposure C —
@@ -437,9 +477,11 @@ export function resolvePermitPath(project: PermitPathInputs): PermitPathResoluti
   // projects routed engineered only because their title blocks lacked a seal — the screen
   // itself was blind to the coast.
   const windSpeed = num(project, "windSpeed");
-  const speedCap = /\bB\b/i.test(wind) ? OREGON_PRESCRIPTIVE_DEFAULTS.maxWindSpeedMphExpB : OREGON_PRESCRIPTIVE_DEFAULTS.maxWindSpeedMphExpC;
-  if (windSpeed != null && windSpeed > speedCap) {
-    screenFailures.push(`ultimate design wind speed ${windSpeed} mph > ${speedCap} mph prescriptive cap${wind ? ` at exposure ${wind.toUpperCase()}` : ""}`);
+  const speedCap = stateCode === "OR"
+    ? (/\bB\b/i.test(wind) ? OREGON_PRESCRIPTIVE_DEFAULTS.maxWindSpeedMphExpB : OREGON_PRESCRIPTIVE_DEFAULTS.maxWindSpeedMphExpC)
+    : (/\bB\b/i.test(wind) ? jurisdiction.maxWindSpeedMphExpB : jurisdiction.maxWindSpeedMphExpC);
+  if (windSpeed != null && speedCap != null && windSpeed > speedCap) {
+    screenFailures.push(`ultimate design wind speed ${windSpeed} mph > ${speedCap} mph ${whose} cap${wind ? ` at exposure ${wind.toUpperCase()}` : ""}`);
   }
   if (screenFailures.length) {
     basis.push(`Structural prescriptive screen failed: ${screenFailures.join("; ")}.`);

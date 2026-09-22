@@ -46,7 +46,14 @@ function freePortInBand(start: number, count: number): number {
   // waitForServer report it with the port named.
   return start + Math.floor(Math.random() * count);
 }
-const PORT = freePortInBand(5040, 20);
+// BAND MOVED OFF 5040. Probing cannot win this one: Windows' Connected Devices Platform
+// service takes and releases ports around 5040 continuously, so a port that probes free is
+// sometimes taken in the milliseconds between the probe closing its listener and the server
+// binding — a race, not a bad probe, and it killed a chain run again on 2026-09-22 with the
+// explicit-IPv4 probe already in place. The probe below still earns its keep against
+// leftovers from a previous run; moving the band away from the known collider is what makes
+// the race stop happening.
+const PORT = freePortInBand(5140, 20);
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const env = {

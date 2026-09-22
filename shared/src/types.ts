@@ -1013,6 +1013,17 @@ export interface PrescriptiveLimits {
   allowedWindExposures?: string[];
   maxExportKwWithoutStudy?: number;
   engineerStampOverKwDc?: number;
+  maxWindSpeedMphExpB?: number;
+  maxWindSpeedMphExpC?: number;
+  /** DOES THIS JURISDICTION PUBLISH A PRESCRIPTIVE ROOFTOP-PV PATH AT ALL?
+   *  Oregon does (ORSC / BCD 440-5952). Florida does not in the same shape — rooftop PV
+   *  goes through product approval and the FBC, so "no published prescriptive path" is a
+   *  real, useful answer rather than missing data, and it routes every project in that
+   *  jurisdiction to standard/engineered review instead of leaving the path undecided
+   *  forever. Undefined means nobody has established it yet. */
+  hasPrescriptivePath?: boolean;
+  /** Where the limits above were read from, for the reviewer's citation. */
+  sourceUrl?: string;
 }
 
 export interface FireSetbackRule {

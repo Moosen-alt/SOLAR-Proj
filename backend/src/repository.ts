@@ -120,7 +120,7 @@ import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { resolvePermitPath } from "./permitPath";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
-import { resolveEffectiveCodeContext, ensureCodeProfilesResearched } from "./codeProfiles";
+import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, resolvePermitPathForProject } from "./codeProfiles";
 import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
 import { looksBotBlocked } from "./runAbort";
@@ -3271,7 +3271,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   // for forms that are actually filled for this project's permit path. The "other"
   // application (prescriptive vs structural) is skipped, so an unverified off-path
   // template must NOT block the submit.
-  const gatePermitPath = resolvePermitPath(project).path;
+  const gatePermitPath = resolvePermitPathForProject(db, project).path;
   // Read the STORED kind, exactly as buildFilledFormsForProject's fill gate does. With the
   // name alone, a stamped-structural blank whose filename claims neither kind counted as
   // "allowed" on a PRESCRIPTIVE project — so its unverified mapping blocked the submit
@@ -6254,7 +6254,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // isn't confirmed we cannot know which application to file — block staging the permit
   // until the operator sets it (Manual entry → Permit path). NEM staging is unaffected.
   if (lane !== "nem") {
-    const path = resolvePermitPath(detail.project);
+    const path = resolvePermitPathForProject(db, detail.project);
     if (path.path === "unknown") {
       throw new HttpError(409, "Submission staging blocked: confirm the permit path (prescriptive vs engineered) before staging the AHJ permit. The two applications are mutually exclusive — set it on Manual entry → Permit path.", { permitPathUnknown: true });
     }

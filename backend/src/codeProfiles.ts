@@ -24,10 +24,12 @@ import type {
   JurisdictionDesignCriteria,
   PrescriptiveLimits,
   FireSetbackRule,
+  ProjectRecord,
 } from "../../shared/src/types";
 import { knowledgeProfileKey, knowledgeNameMatchScore } from "./knowledgeBase";
 import { addAuditLog } from "./audit";
 import { logger } from "./logger";
+import { resolvePermitPath } from "./permitPath";
 import { nowIso } from "./time";
 
 interface Row { [key: string]: unknown }
@@ -208,6 +210,36 @@ export function resolveEffectiveCodeContext(db: AppDb, state: string, ahj: strin
   let profile: JurisdictionCodeProfile | null = null;
   try { profile = getCodeProfile(db, { state, ahj }); } catch { profile = null; }
   return buildCodeContext(state, ahj, profile);
+}
+
+/**
+ * THE PERMIT PATH, DECIDED WITH THIS JURISDICTION'S OWN RULES.
+ *
+ * resolvePermitPath is pure and has no database, so on its own it can only offer Oregon's
+ * screen (for Oregon) or an honest "unknown". This is the seam that hands it the
+ * jurisdiction's researched prescriptive limits, so a Florida or Ohio project can be
+ * routed by FLORIDA's or OHIO's published rule instead of waiting on a human forever.
+ *
+ * It also closes the loop the operator asked for — "ensuring the LLM can look up as needed
+ * when it encounters a new one": touching an un-profiled jurisdiction queues the research
+ * that fills these limits in, so the second project in Cape Coral is answered even though
+ * the first one had to be confirmed by hand.
+ *
+ * Every db-holding caller should prefer this over the bare resolver.
+ */
+export function resolvePermitPathForProject(
+  db: AppDb,
+  project: ProjectRecord,
+): ReturnType<typeof resolvePermitPath> {
+  let limits: PrescriptiveLimits | undefined;
+  try {
+    const profile = getCodeProfile(db, { state: project.state, ahj: project.ahj });
+    limits = profile?.prescriptive;
+    // No profile at all for a jurisdiction we are actually filing in → go find out.
+    // ensureCodeProfilesResearched owns its own dedupe and 6-hour backoff.
+    if (!profile) ensureCodeProfilesResearched(db, project.state, project.ahj);
+  } catch { /* research is best-effort; never break a path resolution */ }
+  return resolvePermitPath(project, { limits });
 }
 
 /** Pure context builder (also used by tests and the Oregon-constants fallback). */

@@ -1605,6 +1605,7 @@ Return ONLY JSON:
   "adoptedCodes": [{"code": "<IRC|IBC|NEC|IFC|IPC|IMC|IECC|state specialty code abbreviation>", "edition": "<year>", "title": "<full name incl. state amendments note>", "sourceUrl": "<the page confirming this>", "notes": "<effective date / amendment note>"}],
   "amendments": [{"code": "<family>", "section": "<section if known>", "summary": "<what the state/local amendment changes>", "sourceUrl": "<source>"}],
   "designCriteria": {"groundSnowLoadPsf": <number or omit>, "windSpeedMph": <number or omit>, "windExposure": "<B|C|D or omit>", "seismicDesignCategory": "<or omit>", "frostDepthIn": <number or omit>, "sourceUrl": "<the county/city design-criteria page>"},
+  "prescriptive": {"hasPrescriptivePath": <true|false — omit ONLY if you genuinely could not tell>, "maxGroundSnowPsf": <number or omit>, "maxPvDeadLoadPsf": <number or omit>, "maxRafterSpacingIn": <number or omit>, "allowedWindExposures": ["<B>","<C>"] or omit, "maxWindSpeedMphExpB": <number or omit>, "maxWindSpeedMphExpC": <number or omit>, "engineerStampOverKwDc": <number or omit>, "sourceUrl": "<the page publishing the prescriptive path>"},
   "citations": [{"label": "<what this source establishes>", "sourceUrl": "<url>"}],
   "confidenceNotes": "<what you could and could not confirm>"
 }
@@ -1612,11 +1613,19 @@ Return ONLY JSON:
 Rules:
 - STATE-adopted codes apply to the county/city unless it has its own amendments — say which level each value came from in titles/notes.
 - Design criteria (ground snow load, wind, frost depth, seismic) are usually published by the COUNTY/CITY building department; only include numbers you found on such a page.
+- THE PRESCRIPTIVE BLOCK IS ABOUT ROOFTOP SOLAR PV SPECIFICALLY. Some states publish a
+  prescriptive (no-engineering) rooftop-PV path with printed limits — Oregon's ORSC via BCD
+  form 440-5952 is the model: ground snow, PV dead load, rafter/truss spacing, wind exposure
+  and design wind speed caps. Many states publish NO such path, and rooftop PV instead goes
+  through standard structural review or a product-approval regime (Florida is the common
+  example). "hasPrescriptivePath": false is a VALUABLE answer — say it plainly when the
+  jurisdiction has no published prescriptive PV path. Never copy Oregon's numbers into
+  another state: omit any limit you did not find published for THIS jurisdiction.
 - This is ADVISORY and will be human-verified — never invent a sourceUrl.
 - Return valid JSON only.`;
     const userMsg = `Jurisdiction (AHJ): ${input.ahj || "(state-level default)"}\nState: ${input.state}\n\nResearch the adopted building/electrical/fire codes and local design criteria for this jurisdiction.`;
     interface Raw {
-      adoptedCodes?: unknown; amendments?: unknown; designCriteria?: Record<string, unknown>;
+      adoptedCodes?: unknown; amendments?: unknown; designCriteria?: Record<string, unknown>; prescriptive?: Record<string, unknown>;
       citations?: unknown; confidenceNotes?: unknown;
     }
     let parsed: Raw = {};
@@ -1658,7 +1667,26 @@ Rules:
         frostDepthIn: num(d.frostDepthIn),
         sourceUrl: strv(d.sourceUrl),
       },
-      prescriptive: {},
+      // The researched prescriptive block. `hasPrescriptivePath` is read strictly: only a
+      // real boolean lands, so "the model didn't say" stays undefined rather than becoming
+      // a false that would route every project in the jurisdiction to engineered on silence.
+      prescriptive: (() => {
+        const pr = (parsed.prescriptive ?? {}) as Record<string, unknown>;
+        const exposures = Array.isArray(pr.allowedWindExposures)
+          ? pr.allowedWindExposures.map((x) => String(x).trim().toUpperCase()).filter((x) => /^[A-D]$/.test(x))
+          : undefined;
+        return {
+          hasPrescriptivePath: typeof pr.hasPrescriptivePath === "boolean" ? pr.hasPrescriptivePath : undefined,
+          maxGroundSnowPsf: num(pr.maxGroundSnowPsf),
+          maxPvDeadLoadPsf: num(pr.maxPvDeadLoadPsf),
+          maxRafterSpacingIn: num(pr.maxRafterSpacingIn),
+          allowedWindExposures: exposures && exposures.length ? exposures : undefined,
+          maxWindSpeedMphExpB: num(pr.maxWindSpeedMphExpB),
+          maxWindSpeedMphExpC: num(pr.maxWindSpeedMphExpC),
+          engineerStampOverKwDc: num(pr.engineerStampOverKwDc),
+          sourceUrl: strv(pr.sourceUrl),
+        };
+      })(),
       fireSetbacks: [],
       citations: (Array.isArray(parsed.citations) ? parsed.citations : [])
         .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
