@@ -10,6 +10,7 @@ import pLimit from "p-limit";
 import { decryptStorageState } from "./cryptoStorage";
 import { resolveHeadless } from "./browser";
 import { HUMAN_REVIEW_MESSAGE } from "./adapter";
+import { clearReviewOpen, markReviewOpen } from "./reviewSession";
 
 // One shared cap across EVERY browser-launching path — recipe replay, hand-coded staging, AND the
 // auto-learn self-seed. Each Playwright instance is ~200 MB; >2-3 concurrently OOMs/crashes Chromium.
@@ -300,6 +301,10 @@ async function armSubmitCapture(
 
 function trackOpenAdapter(userDataDir: string, adapter: import("./adapter").PortalAdapter): void {
   openStagingAdapters.set(userDataDir, adapter);
+  // ADVERTISE THE REVIEW SESSION ON DISK. In-memory tracking dies with this process; the
+  // window it is tracking does not. The marker is what stops the NEXT process reaping the
+  // operator mid-filing (see reviewSession.ts).
+  markReviewOpen(userDataDir);
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const page = (adapter as any).page;
@@ -307,6 +312,7 @@ function trackOpenAdapter(userDataDir: string, adapter: import("./adapter").Port
     if (ctx && typeof ctx.on === "function") {
       ctx.on("close", () => {
         if (openStagingAdapters.get(userDataDir) === adapter) openStagingAdapters.delete(userDataDir);
+        clearReviewOpen(userDataDir); // they closed it — the profile is reapable again
       });
     }
   } catch { /* tracking only — never fail the run */ }
@@ -316,6 +322,10 @@ async function closePriorStagingBrowser(userDataDir: string | undefined): Promis
   const prior = openStagingAdapters.get(userDataDir);
   if (!prior) return;
   openStagingAdapters.delete(userDataDir);
+  // A new run is taking this profile, so the previous review session is over whatever its
+  // marker says — clear it before closing so a crash mid-close cannot leave the profile
+  // protected by a marker for a window that no longer exists.
+  clearReviewOpen(userDataDir);
   try { await prior.close(); } catch { /* best effort — the human may have closed it already */ }
 }
 

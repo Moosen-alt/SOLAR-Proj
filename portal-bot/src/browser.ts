@@ -76,6 +76,8 @@ async function acquireProfile(dir: string, waitMs: number): Promise<() => void> 
   return release;
 }
 
+import { shouldSpareForReview } from "./reviewSession";
+
 // ── Orphaned-browser reaper ─────────────────────────────────────────────────────────────
 // When a run is killed (deploy, OOM, Ctrl-C, crash) the Node process dies but ITS BROWSER
 // DOES NOT. The orphan keeps holding the profile's OS lock, and every future run for that
@@ -94,6 +96,9 @@ export async function reapOrphanedProfileBrowsers(profilesRoot: string): Promise
   const run = promisify(execFile);
   const needle = profilesRoot.replace(/[\\/]+$/, "");
   if (!needle) return 0;
+  // Counted so a spared review window is visible in the log rather than looking like the
+  // reaper silently found nothing.
+  let spared = 0;
   // NEVER KILL A BROWSER YOUNGER THAN THIS PROCESS. An orphan is by definition something a
   // PREVIOUS run left behind, so it must predate us. Without this the reaper is a live
   // hazard rather than a cleanup: its process scan takes seconds (a PowerShell cold start
@@ -136,6 +141,7 @@ export async function reapOrphanedProfileBrowsers(profilesRoot: string): Promise
         const ageSec = Number(parts[1]);
         if (!/^\d+$/.test(pid)) continue;
         if (Number.isFinite(ageSec) && ageSec * 1000 < Date.now() - ourStartMs) continue; // younger than us
+        if (shouldSpareForReview(line)) { spared++; continue; } // a human's open review window
         pids.push(pid);
       }
     }
@@ -145,6 +151,12 @@ export async function reapOrphanedProfileBrowsers(profilesRoot: string): Promise
   let killed = 0;
   for (const pid of pids) {
     try { process.kill(Number(pid), "SIGKILL"); killed += 1; } catch { /* already gone */ }
+  }
+  if (spared > 0) {
+    // Said out loud, because "reaped 0" and "left the operator's review window alone" are
+    // very different facts and the old log could not tell them apart.
+    // eslint-disable-next-line no-console
+    console.log(`[browser] orphan reaper: left ${spared} open review window(s) alone — a human is expected to submit in them.`);
   }
   return killed;
 }
