@@ -112,6 +112,31 @@ function statusFor(check: Check, ctx: QcContext): QcStatus {
     return "pass";
   }
 
+  // LOCATES ARE DERIVABLE FOR A ROOF MOUNT WITH NOTHING BURIED.
+  //
+  // The check's own instruction tells the operator what to type: "If roof-mount with no
+  // digging, type 'N/A - roof mount, no excavation'." Everything in that sentence is already
+  // on the project — the mounting is a parsed field and the plan set says whether anything
+  // is trenched — so asking a person to transcribe it is asking them to read our own data
+  // back to us. Measured 2026-09-22 across 100 simulated projects drawn at the live book's
+  // field rates: this was the ONLY remaining interruption in the whole local pipeline, 13
+  // of 13.
+  //
+  // IT STILL ASKS WHENEVER DIGGING IS POSSIBLE. A ground or pole mount always asks — those
+  // genuinely trench. So does any project whose plan text mentions trenching, excavation,
+  // boring, or an underground run, even on a roof mount: the design may carry a buried
+  // conduit to a detached structure, and an 811 call missed is a real-world hazard, not a
+  // paperwork nuisance. Silence about mounting also asks, because an unknown must not read
+  // as "nothing is buried".
+  if (check.fieldName === "locates" && !value) {
+    const mounting = clean(payload.mounting).toLowerCase();
+    const roofMounted = /roof/.test(mounting) && !/ground|pole|carport|canopy/.test(mounting);
+    const planText = `${clean(payload.planSetExtractedText)} ${clean(payload.splitPagesText)} ${clean(payload.sitePlanNotesText)}`.toLowerCase();
+    const mightDig = /trench|excavat|boring|directional bore|underground (?:conduit|run|feeder|service)|buried/.test(planText);
+    if (roofMounted && !mightDig) return "pass";
+    return "warning";
+  }
+
   if (check.fieldName === "permitPath") {
     // Microinverter systems are always prescriptive path for residential; auto-pass.
     const hasMicro = Boolean(clean(payload.pvMicroModel) || clean(payload.pvMicroMake));

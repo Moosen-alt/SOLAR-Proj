@@ -170,6 +170,40 @@ check("MUST EXCLUDE: Accela and EnerGov are NOT asked — they take the whole pl
   assert.equal(splitPagesAsked("EnerGov Village", "Tyler EnerGov (CSS Self Service)"), false);
 });
 
+
+// ---------------------------------------------------------------------------
+// LOCATES ARE DERIVABLE FOR A ROOF MOUNT WITH NOTHING BURIED — but only then.
+// Measured across 100 simulated projects at the live book's field rates, this was
+// the ONLY remaining interruption in the local pipeline (13 of 13). An 811 call
+// missed is a real hazard, so anything that might dig still asks.
+// ---------------------------------------------------------------------------
+const locatesAsked = (snapshot: Record<string, unknown>): boolean => {
+  const p = createProject(db, {
+    clientId: client.id, owner: `Locates Owner ${Math.random()}`, street: "9 Dig St", city: "Coos Bay",
+    state: "OR", ahj: "City of Coos Bay", utility: "Pacific Power", dcKw: "8", acKw: "6.4",
+    ...snapshot,
+  } as never).project;
+  runQcForProject(db, p.id);
+  return Number(db.get<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM human_review_items WHERE project_id = ? AND field_name = 'locates'", [p.id])?.n ?? 0) > 0;
+};
+
+check("MUST PASS: a roof mount with nothing buried is not asked about locates", () => {
+  assert.equal(locatesAsked({ mounting: "Roof mount" }), false);
+});
+
+check("MUST EXCLUDE: a GROUND mount still asks — those genuinely trench", () => {
+  assert.equal(locatesAsked({ mounting: "Ground mount" }), true);
+});
+
+check("MUST EXCLUDE: a roof mount whose plan mentions trenching still asks", () => {
+  assert.equal(locatesAsked({ mounting: "Roof mount", planSetExtractedText: "Underground conduit trenched to the detached garage" }), true);
+});
+
+check("MUST EXCLUDE: unknown mounting still asks — silence is not proof nothing is buried", () => {
+  assert.equal(locatesAsked({}), true);
+});
+
 db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
 console.log(failures === 0
