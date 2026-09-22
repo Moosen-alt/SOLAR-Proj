@@ -144,6 +144,32 @@ export function isGrounded(
   return false;
 }
 
+// DOES THE PROJECT ALREADY HOLD A VALUE FOR THIS PORTAL FIELD? Exported for tests.
+//
+// WHICH WAY THIS FAILS MATTERS MORE THAN HOW OFTEN. Answering "yes" when the project does
+// NOT have the data suppresses the add-data prompt, and the operator never learns a required
+// field is empty — worse than the false alarm the two-list split was written to fix. A bare
+// substring test fails exactly that way: the portal label "Account Holder Name" contains the
+// project key "account", so a genuinely missing name would be waved through as the engine's
+// problem and silently dropped.
+//
+// So matching is by whole TOKEN and EVERY word of the key must appear in the label:
+// accountNumber matches "Account Number", not "Account Holder Name". When in doubt this
+// returns false, which routes the field to reportedMissing — the prompt a person can act on.
+export function projectHasValueForLabel(label: string, projectFields: Record<string, string>): boolean {
+  const tokens = (value: string): string[] =>
+    value.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+  const labelTokens = new Set(tokens(label));
+  if (!labelTokens.size) return false;
+  return Object.entries(projectFields).some(([key, value]) => {
+    if (value == null || String(value).trim() === "") return false;
+    // camelCase keys carry their own word boundaries: accountNumber -> account, number.
+    const keyTokens = tokens(key.replace(/([a-z0-9])([A-Z])/g, "$1 $2"));
+    if (!keyTokens.length) return false;
+    return keyTokens.every((t) => labelTokens.has(t));
+  });
+}
+
 /** "Yes"/"true"/"1" and "No"/"false"/"0" agreeing across spellings. */
 function boolAgrees(a: string, b: string): boolean {
   const truth = (s: string): boolean | null => {
@@ -313,15 +339,20 @@ export async function gapFillCurrentPage(
     //   · the project HAS a value            → unfilledDespiteData (the ENGINE's problem;
     //                                          never ask a person to re-enter it)
     //   · a value was proposed but refused as ungrounded → skippedUngrounded, as before.
-    const projectHasValueFor = (field: { label?: string; fieldType?: string }): boolean => {
-      const needle = `${field.label || ""} ${field.fieldType || ""}`.toLowerCase().replace(/[^a-z0-9]+/g, "");
-      if (!needle) return false;
-      return Object.entries(projectFields).some(([key, value]) => {
-        if (value == null || String(value).trim() === "") return false;
-        const k = key.toLowerCase().replace(/[^a-z0-9]+/g, "");
-        return k.length > 2 && (needle.includes(k) || k.includes(needle));
-      });
-    };
+    // WHICH WAY THIS HEURISTIC FAILS MATTERS MORE THAN HOW OFTEN.
+    //
+    // Saying "the project has this" when it does not SUPPRESSES the add-data prompt, and the
+    // operator never learns a required field is empty — worse than the false alarm this
+    // whole change set out to fix. A bare substring test fails exactly that way: the portal
+    // label "Account Holder Name" contains the project key "account", so a genuinely missing
+    // name would be waved through as the engine's problem.
+    //
+    // So the match is by whole TOKEN, not substring, and a one- or two-token key must be a
+    // token of the label rather than merely appear inside one of its words. When in doubt
+    // this returns false, which routes the field to reportedMissing — the prompt an operator
+    // can act on.
+    const projectHasValueFor = (field: { label?: string; fieldType?: string }): boolean =>
+      projectHasValueForLabel(`${field.label || ""} ${field.fieldType || ""}`, projectFields);
     for (const { field } of empties) {
       if (!field.required) continue;
       const lbl = field.label || field.fieldType;

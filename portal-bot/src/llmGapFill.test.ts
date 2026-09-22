@@ -14,7 +14,7 @@
 //
 //   npx tsx portal-bot/src/llmGapFill.test.ts
 import assert from "node:assert/strict";
-import { isGrounded } from "./llmGapFill";
+import { isGrounded, projectHasValueForLabel } from "./llmGapFill";
 
 let failures = 0;
 const check = (label: string, fn: () => void): void => {
@@ -92,6 +92,31 @@ check("MUST STILL PASS: an unbound answer that traces to some project value", ()
 
 check("MUST STILL PASS: a checkbox with no binding is grounded by the control existing", () => {
   assert.equal(isGrounded(radio("I agree"), "Yes", undefined, project), true);
+});
+
+// ---------------------------------------------------------------------------
+// WHOSE PROBLEM IS AN EMPTY REQUIRED FIELD? Data the project lacks is the
+// operator's job; a field the project HOLDS that the engine failed to place is
+// ours. Getting this backwards suppresses the add-data prompt entirely, so the
+// heuristic must fail toward "ask the human".
+// ---------------------------------------------------------------------------
+const FIELDS = { accountNumber: "12345678-002X", meterNumber: "M-9931", homeownerName: "Jane Doe", systemSizeDcKw: "7.6" };
+
+check("MUST PASS: a label naming a field the project holds is the ENGINE's gap", () => {
+  assert.equal(projectHasValueForLabel("Account Number", FIELDS), true);
+  assert.equal(projectHasValueForLabel("Meter Number", FIELDS), true);
+});
+
+check("MUST EXCLUDE: a DIFFERENT field that merely shares a word is NOT held", () => {
+  // The bug this guards: "Account Holder Name" contains "account", and a substring
+  // test would call a genuinely missing name the engine's problem and drop the prompt.
+  assert.equal(projectHasValueForLabel("Account Holder Name", FIELDS), false);
+  assert.equal(projectHasValueForLabel("Meter Socket Type", FIELDS), false);
+});
+
+check("MUST EXCLUDE: an empty project value is not a held value", () => {
+  assert.equal(projectHasValueForLabel("Account Number", { accountNumber: "" }), false);
+  assert.equal(projectHasValueForLabel("", FIELDS), false);
 });
 
 console.log(failures === 0

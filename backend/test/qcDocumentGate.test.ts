@@ -132,6 +132,44 @@ check("MUST AGREE with the staging gate — same inventory, read earlier", () =>
     `QC and the staging gate disagree about what is missing.\n  gate: ${JSON.stringify(gateSays)}\n  qc:   ${JSON.stringify(qcSays)}`);
 });
 
+// ---------------------------------------------------------------------------
+// ONLY ProjectDox NEEDS PER-SHEET UPLOADS. The splitter says so in its own header:
+// "ProjectDox requires each sheet uploaded to its own document slot. Standard
+// Accela/EnerGov portals receive the FULL plan set as a single PDF." The QC gate
+// matched energov|etrakit|accela anyway and asked a person to hand-confirm a sheet
+// mapping for portals that never wanted split sheets — all three live firings were
+// Salem (accela) and Tigard (EnerGov), ~16 interruptions per 100 projects.
+// ---------------------------------------------------------------------------
+const { upsertSeededAhjPlatform } = { upsertSeededAhjPlatform: (state: string, ahj: string, platform: string): void => {
+  const ts = new Date().toISOString();
+  db.run(
+    `INSERT INTO permit_utility_knowledge (id, profile_key, state, ahj, utility, portal_name, portal_url, portal_platform, confidence, first_seen_at, last_learned_at, updated_at)
+     VALUES (?, ?, ?, ?, '', '', '', ?, 'seeded', ?, ?, ?)`,
+    [`plat-${ahj}`, `${state.toLowerCase()}|${ahj.toLowerCase()}|unknown`, state, ahj, platform, ts, ts, ts],
+  );
+} };
+
+const splitPagesAsked = (ahj: string, platform: string): boolean => {
+  upsertSeededAhjPlatform("OR", ahj, platform);
+  const p = createProject(db, {
+    clientId: client.id, owner: `Split Owner ${ahj}`, street: "1 Split St", city: ahj,
+    state: "OR", ahj, utility: "Pacific Power", dcKw: "8", acKw: "6.4",
+  }).project;
+  runQcForProject(db, p.id);
+  const n = Number(db.get<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM human_review_items WHERE project_id = ? AND field_name = 'splitPages'", [p.id])?.n ?? 0);
+  return n > 0;
+};
+
+check("MUST PASS: a ProjectDox AHJ still gets the sheet-mapping question", () => {
+  assert.equal(splitPagesAsked("Dox City", "ProjectDox"), true);
+});
+
+check("MUST EXCLUDE: Accela and EnerGov are NOT asked — they take the whole plan set", () => {
+  assert.equal(splitPagesAsked("Accela Town", "accela"), false);
+  assert.equal(splitPagesAsked("EnerGov Village", "Tyler EnerGov (CSS Self Service)"), false);
+});
+
 db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
 console.log(failures === 0
