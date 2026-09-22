@@ -49,6 +49,33 @@ const DEMO_COMPANY = {
 
 // The story the board tells, left to right. Each project sits at a stage that shows a
 // different part of the product, and every homeowner is invented.
+// THE DEMO MUST SHOW A PIPELINE THAT FLOWS, NOT ONE DROWNING IN QUESTIONS.
+//
+// First run of this script produced four projects carrying 56 pending review items between
+// them, because a sparse fixture makes QC ask for every field it needs — which is QC working
+// correctly and a demo failing completely: the product would look like it interrogates you
+// about fourteen things per project. These are the exact fields QC requires, so three of the
+// four projects are COMPLETE and sail through, and the fourth is short on purpose.
+// THE PAYLOAD KEYS ARE NOT THE CHECK NAMES. QC resolves each check through
+// normalize.fieldAliases, so the account number lives under `account`/`ubAccountNumber`,
+// the inverter under `invModel`/`pvMicroModel`, locates under `locateCalloutText`, and so
+// on. Writing the human-readable check name into the snapshot looks right, satisfies
+// nothing, and produced a demo board with seven standing questions per project even after
+// a real QC re-run. Keys below are the aliases QC actually reads.
+const ELECTRICAL_COMPLETE = {
+  meter: "DEMO-MTR-0001",
+  moduleMake: "Q CELLS",
+  moduleModel: "Q.TRON BLK M-G2.C1+",
+  moduleWattage: "430",
+  invModel: "IQ8PLUS-72-2-US",
+  invOutputW: "290",
+  interco: "Load-side breaker at the main panel",
+  busRating: "200",
+  mainBreaker: "175",
+  pvBreaker: "40",
+  locateCalloutText: "N/A - roof mount, no excavation",
+};
+
 const DEMO_PROJECTS: Array<{
   owner: string; street: string; city: string; state: string; ahj: string; utility: string;
   dcKw: string; acKw: string; status?: string; note: string;
@@ -61,7 +88,7 @@ const DEMO_PROJECTS: Array<{
     snapshot: {
       mounting: "Roof mount", framingType: "truss", roofRafterSpacing: "24", roofMaterial: "Composition Shingle",
       snow: "36", wind: "C", windSpeed: "95", deadLoad: "2.6", jobValue: "31500",
-      moduleQuantity: "17", moduleModel: "Q.TRON BLK M-G2.C1+", pvMicroMake: "Enphase", pvMicroModel: "IQ8PLUS-72-2-US",
+      ...ELECTRICAL_COMPLETE, account: "DEMO-000-0001", moduleQty: "17", invQty: "17", permitPath: "prescriptive",
     },
   },
   {
@@ -72,7 +99,7 @@ const DEMO_PROJECTS: Array<{
     snapshot: {
       mounting: "Roof mount", framingType: "rafter", roofRafterSpacing: "24", roofRafterSpan: "11",
       roofMaterial: "Composition Shingle", snow: "16", wind: "C", windSpeed: "110", deadLoad: "2.8",
-      jobValue: "38200", accountNumber: "DEMO-000-1234", moduleQuantity: "22",
+      jobValue: "38200", account: "DEMO-000-1234", ...ELECTRICAL_COMPLETE, moduleQty: "22", invQty: "22", permitPath: "prescriptive",
     },
   },
   {
@@ -83,7 +110,7 @@ const DEMO_PROJECTS: Array<{
     snapshot: {
       mounting: "Roof mount", framingType: "truss", roofRafterSpacing: "24", roofMaterial: "Composition Shingle",
       snow: "25", wind: "B", windSpeed: "100", deadLoad: "2.4", jobValue: "26400",
-      accountNumber: "DEMO-000-5678", moduleQuantity: "15",
+      account: "DEMO-000-5678", ...ELECTRICAL_COMPLETE, moduleQty: "15", invQty: "15", permitPath: "prescriptive",
     },
   },
   {
@@ -94,7 +121,7 @@ const DEMO_PROJECTS: Array<{
     snapshot: {
       mounting: "Roof mount", permitPath: "engineered", framingType: "rafter", roofRafterSpacing: "24",
       roofMaterial: "Composition Shingle", snow: "25", wind: "B", windSpeed: "100", deadLoad: "3.1",
-      jobValue: "46900", accountNumber: "DEMO-000-9012", moduleQuantity: "28",
+      jobValue: "46900", account: "DEMO-000-9012", ...ELECTRICAL_COMPLETE, moduleQty: "28", invQty: "28",
       stampRecommendation: "Requires PE-stamped structural plans and a sealed engineering letter — spans exceed the prescriptive tables",
     },
   },
@@ -157,7 +184,7 @@ if (RESET) {
 
 // ---- create -----------------------------------------------------------------
 const { createClient } = await import("../backend/src/clients");
-const { createProject } = await import("../backend/src/repository");
+const { createProject, rerunQc } = await import("../backend/src/repository");
 
 let client = demoClientRow();
 if (!client) {
@@ -192,9 +219,15 @@ for (const spec of DEMO_PROJECTS) {
     homeownerPhone: "(555) 010-0000",
     ...(spec.snapshot ?? {}),
   } as never);
-  // Park it at the stage that tells its part of the story. createProject runs QC at birth,
-  // so this is set afterwards and deliberately — the demo is a STAGED BOARD, not a claim
-  // that these projects passed every gate.
+  // RE-RUN QC THROUGH THE REAL PATH. createProject runs QC at birth against the payload as
+  // it was first normalized, which leaves review items standing even when the snapshot holds
+  // the answers — measured on the first build of this demo: every project carried 7 pending
+  // items for fields it demonstrably had. rerunQc is the same function the QC button calls,
+  // and a passing check auto-resolves the item (resolvePendingReviewItem), so the demo board
+  // shows what a complete project actually looks like instead of a wall of questions.
+  rerunQc(db, project.id);
+  // Then park it at the stage that tells its part of the story. The demo is a STAGED BOARD,
+  // and saying so here matters: it is not a claim that these four passed every live gate.
   if (spec.status) db.run("UPDATE projects SET status = ? WHERE id = ?", [spec.status, project.id]);
   console.log(`  + ${spec.owner.padEnd(20)} ${spec.status ?? "parsed"}  — ${spec.note}`);
   made++;
