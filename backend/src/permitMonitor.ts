@@ -27,8 +27,17 @@ const nemApprovalPattern =
 const reviewedPattern =
   /\b(review complete|plan review complete|approved|approved with conditions|reviewed by ahj|reviewed and approved|passed review|application approved)\b/i;
 
+// NAMED REVIEW STAGES ARE STILL "THE AGENCY IS REVIEWING IT". Portals rarely print the
+// tidy phrase "under review" — they print the name of the desk the file is sitting on.
+// PowerClerk says "Engineering Review", AHJs say "Plan Review" / "Plans Examiner" /
+// "Structural Review" / "Electrical Review". Measured 2026-09-22: of ten open "permit
+// monitor status review" items — the single largest category of human interruption in the
+// product — one was the perfectly legible "PP - Engineering Review as of 9/2/2026
+// (APP-111651)", escalated to a person because this list did not contain the words.
+// Every one of these means the same operational thing as "under review": nobody does
+// anything, the next poll is the whole job.
 const waitingPattern =
-  /\b(under review|in review|review in progress|submitted|received|intake|pending review|processing|assigned to reviewer|awaiting review|queued)\b/i;
+  /\b(under review|in review|review in progress|submitted|received|intake|pending review|processing|assigned to reviewer|awaiting review|queued|engineering review|plan(?:s)? review|plans? examiner|structural review|electrical review|technical review|application received|in progress|being reviewed|routed for review)\b/i;
 
 // THE AGENCY IS WAITING ON US. Checked BEFORE waitingPattern, because these wordings contain
 // the very words that pattern matches — Coos Bay's real status is "Intake Requirements Needed",

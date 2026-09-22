@@ -82,6 +82,41 @@ check("empty text is not an auth wall — it is simply nothing", () => {
   assert.equal(isAuthWallText(""), false);
 });
 
+// ---------------------------------------------------------------------------
+// A NAMED REVIEW DESK IS STILL "UNDER REVIEW", AND NOBODY SHOULD BE PAGED FOR IT.
+// The single largest category of open human-review items in the live database was
+// "Permit monitor status review" (10 of 25, measured 2026-09-22) — and one of them
+// was the perfectly legible "PP - Engineering Review as of 9/2/2026", escalated to
+// a person only because the waiting vocabulary lacked the words portals actually use.
+// ---------------------------------------------------------------------------
+for (const text of [
+  "PP - Engineering Review as of 9/2/2026 (APP-111651). Verified logged-in on the PowerClerk Projects grid.",
+  "Plan Review — assigned to plans examiner",
+  "Structural Review in progress",
+  "Electrical Review",
+  "Application Received",
+]) {
+  check(`MUST PASS: "${text.slice(0, 34)}…" reads as WAITING, not a human interruption`, () => {
+    assert.equal(classifyPermitStatusText(text).outcome, "waiting");
+  });
+}
+
+check("MUST EXCLUDE: an ISSUED permit still wins over the broadened review vocabulary", () => {
+  assert.equal(classifyPermitStatusText("Plan Review complete — Permit issued 9/14/2026").outcome, "issued");
+});
+
+check("MUST EXCLUDE: corrections still win over it — that one IS a person's job", () => {
+  assert.equal(classifyPermitStatusText("Plan Review: corrections required, see review comments").outcome, "correction_flagged");
+});
+
+check("MUST EXCLUDE: 'Intake Requirements Needed' still escalates — the city is waiting on US", () => {
+  assert.notEqual(classifyPermitStatusText("Intake Requirements Needed").outcome, "waiting");
+});
+
+check("a portal LOGIN page is an auth wall, never a status", () => {
+  assert.equal(isAuthWallText("‌ PowerClerk Log In Username: Password: Log In Forgot Password? Register a new account"), true);
+});
+
 if (failures) { console.error(`\n${failures} permit-status check(s) FAILED.`); process.exit(1); }
 console.log("\nAll permit-status-line checks passed.");
 process.exit(0);

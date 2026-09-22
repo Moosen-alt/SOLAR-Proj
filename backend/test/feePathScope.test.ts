@@ -324,6 +324,14 @@ async function main(): Promise<void> {
   check("MUST EXCLUDE: an absent limit is SKIPPED, never borrowed from Oregon (no snow cap on file)",
     resolvePermitPath(FL({ snow: "90" }), { limits: flLimits }).path === "prescriptive",
     "90 psf exceeds Oregon's 70 but Florida published no snow limit");
+
+  // A STRAY LIMIT IS NOT A PRESCRIPTIVE PATH. Florida's seeded state profile carries
+  // allowedWindExposures ["B","C","D"] — correct design-criteria data that says nothing
+  // about whether a prescriptive PV path exists. Treating a fragment as one let a project
+  // "clear" a screen of a single check with every other limit absent.
+  check("MUST EXCLUDE: stray limits WITHOUT hasPrescriptivePath do not manufacture a verdict",
+    resolvePermitPath(FL(), { limits: { allowedWindExposures: ["B", "C", "D"] } }).path === "unknown",
+    JSON.stringify(resolvePermitPath(FL(), { limits: { allowedWindExposures: ["B", "C", "D"] } }).path));
   check("MUST EXCLUDE: the Oregon membrane-roof rule does not fire outside Oregon",
     resolvePermitPath(FL({ roofMaterial: "TPO" }), { limits: flLimits }).path === "prescriptive");
   check("...while a TPO roof in OREGON still routes engineered (the Simmons ruling holds)",

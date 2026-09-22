@@ -5664,6 +5664,16 @@ async function resolveStatusText(target: Row | null, rawStatusText: string, sour
     // Accela can construct the direct record-detail URL without login.
     const appNums = [text(target.application_number), text(target.permit_number)].filter(Boolean);
     const publicText = await publicPermitStatusCheck(text(target.portal_url), appNums).catch(() => null);
+    // A LOGIN PAGE IS NOT A PERMIT STATUS. isAuthWallText already guards the authenticated
+    // scrape path three times over; this path never consulted it, so an expired PowerClerk
+    // session returned "PowerClerk Log In Username: Password: Forgot Password?..." and that
+    // string was stored as the filing's status and escalated to a person to read. Measured
+    // 2026-09-22 while counting operator interruptions: of ten open "permit monitor status
+    // review" items, several are this. The same failure honest in one path and silent in
+    // its sibling is the shape that keeps producing these.
+    if (publicText && isAuthWallText(publicText)) {
+      return "The portal returned its LOGIN page, not a status — the stored session or credential for this portal is no longer valid. Refresh the credential, then re-check; nothing about the filing has been read.";
+    }
     if (publicText && publicText.length > 40) return publicText;
   }
 

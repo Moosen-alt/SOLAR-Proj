@@ -403,10 +403,15 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   // where that data gets its say — until then it refuses rather than guesses.
   const stateCode = clean(project.state).toUpperCase();
   const jurisdiction = opts.limits ?? {};
-  const hasResearchedLimits = jurisdiction.maxGroundSnowPsf != null
-    || jurisdiction.maxPvDeadLoadPsf != null
-    || jurisdiction.maxRafterSpacingIn != null
-    || (jurisdiction.allowedWindExposures?.length ?? 0) > 0;
+  // A STRAY LIMIT IS NOT A PRESCRIPTIVE PATH. Only the explicit hasPrescriptivePath flag —
+  // which research sets by asking the question directly — says this jurisdiction publishes
+  // one. Loose limit fragments do not: Florida's seeded state profile carries
+  // allowedWindExposures ["B","C","D"], which is CORRECT Florida design-criteria data and
+  // says nothing about a prescriptive PV path. Counting it as one let a Cape Coral project
+  // "clear" a screen consisting of a single check with every other limit absent — an
+  // unknown reading as reassurance, caught while measuring how often the gate interrupts
+  // an operator (2026-09-22).
+  const hasResearchedLimits = jurisdiction.hasPrescriptivePath === true;
 
   // A jurisdiction that PUBLISHES NO prescriptive PV path has answered the question: every
   // rooftop project there goes to standard/engineered review. That is a fact researched from
