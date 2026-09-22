@@ -1,5 +1,5 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, ReviewerReport } from "../../shared/src/types";
-import { evaluateDesignCodeFindings, mountKindForProject } from "./codeReviewRules";
+import { evaluateDesignCodeFindings, mountKindForProject, isMlpeDesignForProject } from "./codeReviewRules";
 import { findAhjProcessProfile } from "./processProfiles";
 import { evidenceForTopic, evidenceLines, fieldValue, requirementsForTopic, type EvidenceTopic, type ProjectEvidence } from "./projectEvidence";
 import { nowIso } from "./time";
@@ -617,11 +617,24 @@ function addPlanSetFindings(project: ProjectRecord, findings: ReviewerFinding[])
       ? [["rapid-shutdown", evidenceForTopic(project, "rapidShutdown"), "Rapid shutdown evidence not clear", "Show rapid shutdown equipment, initiation/control location, and required labels."] as [string, ReturnType<typeof evidenceForTopic>, string, string]]
       : []),
   ];
+  // MLPE (microinverters / RSD-integrated optimizers) satisfies NEC 690.12 inherently, so a
+  // missing rapid-shutdown callout is a LABELLING gap, not missing equipment. codeReviewRules
+  // has always known that and softened its own finding; this pass did not, so the pair on
+  // topic:rapid-shutdown disagreed — and once dedupe began ranking by severity, the blind
+  // blocker started winning and hard-blocked designs that comply by construction. Import the
+  // predicate rather than restating it.
+  const mlpe = isMlpeDesignForProject(project);
+  const planSeverity = (id: string, present: boolean): ReviewerFinding["severity"] => {
+    if (present) return "warning";
+    if (id === "rapid-shutdown" && mlpe) return "warning";
+    return "blocker";
+  };
+
   for (const [id, check, title, action] of requiredDocs) {
     if (check.confidence === "high") continue;
     findings.push(finding(
       `reviewer.plan.${id}`,
-      check.present ? "warning" : "blocker",
+      planSeverity(id, check.present),
       "plan_set",
       check.present ? `${confidenceVerb(check)} ${title.toLowerCase()}` : title,
       check.present ? `${title}. ${evidenceSummary(check)}` : action,

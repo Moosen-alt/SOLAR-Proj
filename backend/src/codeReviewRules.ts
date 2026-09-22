@@ -237,6 +237,15 @@ export function mountKindForProject(project: ProjectRecord): MountKind {
   return mountKind(project, designText(project));
 }
 
+// Same reasoning, same shape: the engine's plan-set pass raises its own rapid-shutdown finding
+// and had no idea what MLPE is, so a microinverter design collected a BLOCKER there while this
+// module correctly softened its own finding to a warning. The two are paired on
+// topic:rapid-shutdown, and once dedupe started ranking by severity the blocker won — a design
+// that satisfies NEC 690.12 inherently was hard-blocked for a labelling gap.
+export function isMlpeDesignForProject(project: ProjectRecord): boolean {
+  return isMlpeDesign(project, designText(project));
+}
+
 // Module-level power electronics (microinverters / RSD-integrated optimizers) provide
 // inherent module-level rapid shutdown under NEC 690.12. When the design is MLPE-based,
 // a missing RSD plan callout is a labeling/documentation gap — not a missing-equipment
