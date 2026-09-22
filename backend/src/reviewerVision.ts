@@ -76,8 +76,35 @@ function writeCache(db: AppDb, projectId: string, findingId: string, sig: string
 // 705.12 load-side calc) raises a warning regardless of whether the SLD was
 // found, so "verified text" doesn't mean the SPECIFIC required items are on the
 // sheet. Vision confirms the items and can relax the warning. (We never escalate.)
+// VISION ANSWERS "IS IT ON THE SHEET?" — THE WRONG QUESTION FOR A MEASURED FAILURE.
+//
+// Relaxing a finding because vision can see the evidence is sound when the finding says the
+// evidence was not FOUND: that is a parser blind spot, and a look at the page settles it.
+// It is wrong when the finding reports a COMPUTED result. topicForFinding maps
+// city.elec.load-side-over-120 to "sld" — its title contains "load-side" — so a
+// high-confidence "the SLD is on the sheet" verdict downgraded a real NEC 705.12 violation
+// (200A main + 50A PV on a 200A bus = 250A against a 240A allowance) from blocker to a
+// non-blocking callout reading "Vision-verified on the plan set". Vision confirmed the
+// calculation is PRESENT; it never said the calculation PASSES.
+//
+// Skipping these also saves the vision call, since there was never an answer worth buying.
+// The ids are pinned by a test that also asserts each is still produced by the engine — a
+// hardcoded set like this otherwise rots silently the first time a rule is renamed.
+export const MEASURED_FINDING_IDS: ReadonlySet<string> = new Set([
+  "city.elec.load-side-over-120",   // arithmetic on bus/main/PV ratings
+  "city.elec.dc-size-mismatch",     // module count x wattage vs declared DC size
+  "city.elec.interconnection-ambiguous",    // the design names two sides; a photo cannot pick
+  "city.elec.interconnection-unclassified", // seeing an SLD does not classify the method
+]);
+
+/** False when the finding reports a measured result rather than missing evidence. */
+export function visionMayRelax(finding: ReviewerFinding): boolean {
+  return !MEASURED_FINDING_IDS.has(finding.id);
+}
+
 function needsVision(finding: ReviewerFinding): EvidenceTopic | null {
   if (finding.severity !== "warning" && finding.severity !== "blocker") return null;
+  if (!visionMayRelax(finding)) return null;
   const topic = topicForFinding(finding);
   if (!topic || !PLAN_TOPICS.has(topic)) return null;
   return topic;
@@ -170,6 +197,9 @@ function applyVerdict(finding: ReviewerFinding, verdict: ReviewerVisionVerdict):
   // (visionVerification). Do NOT also push it into evidenceFound — that printed
   // the same observation twice in each finding.
   const out: ReviewerFinding = { ...finding, visionVerification: verdict };
+  // Belt and braces: needsVision already withholds these, but a cached verdict written before
+  // that gate existed would otherwise still downgrade a measured violation on read.
+  if (!visionMayRelax(finding)) return out;
   if (verdict.checked && verdict.present && (verdict.confidence === "high" || verdict.confidence === "medium")) {
     out.evidenceStatus = "verified";
     // Relax a purely text-derived warning OR blocker — the data IS on the sheet.
