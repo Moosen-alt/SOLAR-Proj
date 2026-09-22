@@ -64,7 +64,7 @@ import { recipeDisciplineForTrack } from "./portalChannel";
 // prescriptive/engineered vocabulary on the DOCUMENT side (ahjForms.ts) imports
 // THIS file. See pathWordingScope's header for the full argument.
 import { resolvePermitPath, pathWordingScope, pathWordingContradicts } from "./permitPath";
-import type { PermitPath } from "./permitPath";
+import type { PermitPath, PermitPathInputs } from "./permitPath";
 import { resolveValuation } from "./valuation";
 // recordLlmCall, NOT a new accounting log. The fee researcher is the single most
 // expensive model operation in this system — up to twelve Opus turns with web
@@ -2603,7 +2603,7 @@ interface FeeEvalInputs {
  *  Never throws. This runs inside the staging gate and inside every quote; a path
  *  resolver that blew up on a malformed snapshot would take a submission down, and
  *  "unknown" is both the safe answer and the honest one. */
-function pathForProject(project: Pick<ProjectRecord, "parserSnapshot">, track: FeeTrack): PermitPath {
+function pathForProject(project: PermitPathInputs, track: FeeTrack): PermitPath {
   if (track !== "permit") return "unknown";
   try {
     return resolvePermitPath(project).path;
@@ -3651,7 +3651,7 @@ export function feeForProject(
 /** Evaluate one already-resolved schedule into a line. */
 function lineFor(
   db: AppDb,
-  project: Pick<ProjectRecord, "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot">,
+  project: Pick<ProjectRecord, "systemSizeAcKw" | "systemSizeDcKw" | "parserSnapshot" | "state">,
   track: FeeTrack,
   schedule: FeeScheduleRecord,
   hoppedFrom: string,

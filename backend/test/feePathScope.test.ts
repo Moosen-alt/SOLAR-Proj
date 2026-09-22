@@ -272,6 +272,37 @@ async function main(): Promise<void> {
   check("premise: MUST EXCLUDE — the SAME numerics on composition shingle stay PRESCRIPTIVE (the material rule must not over-fire)",
     resolvePermitPath(SHINGLE_CLEAN).path === "prescriptive", JSON.stringify(resolvePermitPath(SHINGLE_CLEAN)));
 
+  // ---------------------------------------------------------------------------
+  // THE SCREEN IS OREGON'S. Every limit below step 3 of the ladder is ORSC / BCD
+  // 440-5952, so it may not judge a project in another state. Audited 2026-09-22:
+  // a Columbus, Ohio roof came back "prescriptive — meets prescriptive code, no
+  // plan review, reduced fee" with no Ohio rule ever consulted.
+  // ---------------------------------------------------------------------------
+  const otherState = (state: string, snapshot: Record<string, unknown> = {}) => ({
+    ...SHINGLE_CLEAN,
+    state,
+    parserSnapshot: { ...(SHINGLE_CLEAN as { parserSnapshot: Record<string, unknown> }).parserSnapshot, ...snapshot },
+  });
+  for (const state of ["FL", "OH", "IA"]) {
+    const out = resolvePermitPath(otherState(state));
+    check(`MUST PASS: numerics that clear OREGON's screen resolve UNKNOWN in ${state}, never "prescriptive"`,
+      out.path === "unknown", JSON.stringify(out.path));
+  }
+  check("...and the basis SAYS the screen was Oregon's rather than going quiet",
+    /Oregon|ORSC|440-5952/i.test(resolvePermitPath(otherState("FL")).basis.join(" ")),
+    resolvePermitPath(otherState("FL")).basis.join(" ").slice(0, 120));
+  check("a project with NO state on file is treated as unknown, not as Oregon",
+    resolvePermitPath(otherState("")).path === "unknown");
+
+  // The jurisdiction-neutral signals above the screen must still rule everywhere —
+  // gating the screen must not deafen the resolver to the plan set's own verdict.
+  check("MUST EXCLUDE: a Florida plan set that says ENGINEERED still routes engineered",
+    resolvePermitPath(otherState("FL", { permitPath: "engineered" })).path === "engineered");
+  check("MUST EXCLUDE: an operator override still wins in Florida",
+    resolvePermitPath(otherState("FL", { permitPathOverride: "prescriptive" })).path === "prescriptive");
+  check("MUST EXCLUDE: affirmative stamp language still routes engineered in Florida",
+    resolvePermitPath(otherState("FL", { stampRecommendation: "Requires PE-stamped structural plans and a sealed engineering letter" })).path === "engineered");
+
   // -------------------------------------------------------------------------
   // 1. THE CLASSIFIER'S ORDERING — tested in BOTH directions, because a filter
   //    list fails both ways: one that rejects the target reads as a portal bug,

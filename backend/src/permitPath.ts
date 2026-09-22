@@ -43,7 +43,18 @@ export interface PermitPathResolution {
  *  this. Widening the parameter is safe for every existing caller (a full
  *  ProjectRecord still satisfies it) and removes the need for the next one to
  *  lie to the compiler. */
-export type PermitPathInputs = Pick<ProjectRecord, "parserSnapshot">;
+/** STATE IS REQUIRED, NOT OPTIONAL. The screen below is Oregon's, and for most of this
+ *  project's life every project was in Oregon, so the resolver never needed to ask. An
+ *  audit of multi-state readiness (2026-09-22) found the consequence: a Columbus, Ohio
+ *  roof measured against Oregon's ORSC limits came back "prescriptive — meets
+ *  prescriptive code, no plan review, reduced fee", and nothing in the chain had ever
+ *  consulted Ohio. The fix has to be a WIDER INPUT rather than a conditional, because
+ *  state was not reachable from inside this function at all.
+ *
+ *  Required, never an optional trailing field: CLAUDE.md's rule for the org filter
+ *  applies with the same force here — an optional state fails open the moment a caller
+ *  forgets it, and failing open here means Oregon's rules quietly judging Florida. */
+export type PermitPathInputs = Pick<ProjectRecord, "parserSnapshot" | "state">;
 
 function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
@@ -361,6 +372,36 @@ export function resolvePermitPath(project: PermitPathInputs): PermitPathResoluti
       `Stamp language is HEDGED ("may/might require") — a question for the AHJ, not a routing fact. `
       + `The prescriptive screen below decides from the measured limits; verify the stamp question with the jurisdiction.`,
     );
+  }
+
+  // 3.5 THE SCREEN BELOW IS OREGON'S, AND ONLY OREGON'S.
+  //
+  // Steps 1-3 above are jurisdiction-neutral and still rule for every state: an operator
+  // override, the plan set's own engineered verdict, and affirmative stamp language all
+  // decide a Florida project exactly as they decide an Oregon one. What cannot cross a
+  // state line is the SCREEN — snow <= 70 psf, dead load <= 4.5, spacing <= 24",
+  // exposure B/C, the 120/135 mph caps, the prescriptive-roofing rule. Those are ORSC /
+  // BCD 440-5952 values, and Florida (FBC, exposure D, 150 mph as a matter of course),
+  // Ohio (RCO) and Iowa answer to their own codes.
+  //
+  // So outside Oregon the honest answer is UNKNOWN, not a verdict from the wrong book.
+  // "unknown" is not a dead end here: staging already refuses to proceed on it until the
+  // operator picks a path (repository.ts), and the project screen has the dropdown for
+  // exactly that. The cost is a decision per non-Oregon project; the alternative is the
+  // product telling an operator a Cape Coral roof "clears the prescriptive screen" when
+  // no Florida rule was ever consulted.
+  //
+  // When a jurisdiction's own limits are loaded (jurisdiction_code_profiles carries
+  // `prescriptive`, and evaluatePrescriptiveCriteria already reads them), this gate is
+  // where that data gets its say — until then it refuses rather than guesses.
+  const stateCode = clean(project.state).toUpperCase();
+  if (stateCode !== "OR") {
+    basis.push(
+      `The prescriptive screen encoded here is Oregon's (ORSC / BCD 440-5952 limits). `
+      + `${stateCode ? `This project is in ${stateCode}` : "This project has no state on file"}, so those limits do not apply and no path is inferred from them. `
+      + `Confirm the path (Manual entry → Permit path), or load this jurisdiction's prescriptive limits into its code profile.`,
+    );
+    return finalize("unknown", "default");
   }
 
   // 4. Structural prescriptive screen — any breach routes to engineered.

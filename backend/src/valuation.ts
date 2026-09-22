@@ -70,6 +70,13 @@ export function parseMoney(input: unknown): number | null {
  * Resolve the valuation to put on a permit application.
  * Prefers a client-provided contract value; otherwise estimates from system size.
  */
+// THE 40% FORMULA IS COMPANY PRACTICE, NOT AN OREGON RULE — and it applies in every
+// state. A multi-state readiness audit (2026-09-22) flagged the fraction as an Oregon
+// ruling leaking into other states' declared-value boxes, and a state gate was written
+// and then removed on the operator's ruling the same day: "the 15200 is the valuation
+// and is treated correctly… it's what we do at our company and it's normal." The
+// operator owns this one — it is their licence on the application and their established
+// method with their AHJs. Recorded here so the next audit does not re-raise it as a bug.
 export function resolveValuation(
   snapshot: ParserPayload | null | undefined,
   systemSizeDcKw: number | null | undefined,
