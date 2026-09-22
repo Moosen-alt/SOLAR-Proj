@@ -30,6 +30,7 @@ import type { AppDb } from "./db";
 import { readXlsx, type SheetData } from "./xlsxRead";
 import { createPortalCredential, updatePortalCredential, listPortalCredentials } from "./portalCredentials";
 import { importSeededAhjKnowledge } from "./knowledgeBase";
+import { inferPlatform, isRecognizedPlatform } from "./portalPlatformRules";
 
 // Sheets that are not portal lists: valuation calculators, contractor-license
 // registries, and anything explicitly retired. Matched case-insensitively.
@@ -77,36 +78,8 @@ function isPortalUrl(url: string): boolean {
   return /^https?:\/\//.test(u);
 }
 
-// Platform, inferred from the URL host. The label is human-facing (KB portal_platform)
-// and also tells the learn engine which known portal family it is walking into.
-const PLATFORM_HOST_RULES: Array<[RegExp, string]> = [
-  [/energov|tylerhost|tylertech/i, "Tyler EnerGov (CSS Self Service)"],
-  [/aca[-.].*accela|accela\.com|citizenaccess/i, "Accela Citizen Access"],
-  [/viewpointcloud|\.viewpoint/i, "ViewPoint Cloud (OpenGov)"],
-  [/opengov\.com|portal\.opengov/i, "OpenGov"],
-  [/momentum\./i, "Momentum"],
-  [/etrakit|aspgov/i, "eTRAKiT"],
-  [/smartgovcommunity|smartgov/i, "SmartGov"],
-  [/citizenserve/i, "Citizenserve"],
-  [/revize|civicplus|\.civicgov/i, "CivicPlus / Revize"],
-  [/bsaonline/i, "BS&A Online"],
-  [/maintstar/i, "MaintStar"],
-  [/rhythm.*infor|infor.*rhythm/i, "Infor Rhythm"],
-  [/permitwizard|dcra\.dc\.gov|access\.dc\.gov/i, "DC Access / PermitWizard"],
-  [/cityofchicago|ipi\./i, "Chicago IPI"],
-  [/mygov\.us/i, "MyGov"],
-  [/permitsonline|clariti|cloudpermit/i, "Cloudpermit / Clariti"],
-  [/portal\.laserfiche|laserfiche/i, "Laserfiche"],
-  [/\.govconnect|govconnect/i, "GovConnect"],
-  [/powerclerk/i, "PowerClerk (utility interconnection)"],
-];
-function inferPlatform(url: string): string {
-  for (const [re, label] of PLATFORM_HOST_RULES) if (re.test(url)) return label;
-  try { return `Unknown (${new URL(url).hostname})`; } catch { return "Unknown"; }
-}
-function isRecognizedPlatform(platform: string): boolean {
-  return Boolean(platform) && !platform.startsWith("Unknown");
-}
+// Platform rules live in portalPlatformRules.ts — shared with the knowledge-base funnel,
+// which cannot import this module (it imports knowledgeBase; that would be a cycle).
 
 const STATE_NAME_TO_CODE: Record<string, string> = {
   al: "AL", ak: "AK", az: "AZ", ar: "AR", ca: "CA", co: "CO", ct: "CT", de: "DE", fl: "FL", ga: "GA",

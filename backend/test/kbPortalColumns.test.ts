@@ -63,6 +63,36 @@ console.log("\n1. THE WRITE FUNNEL ROUTES A URL-SHAPED NAME INTO portal_url");
     "SELECT portal_url, portal_name FROM permit_utility_knowledge WHERE profile_key = 'or|named city|unknown'");
   check("1c. MUST PASS: a real name + real url pass through untouched",
     named?.portal_name === "Tyler EnerGov CSS" && named?.portal_url === "https://namedcity.tylerhost.net/", JSON.stringify(named));
+
+  // THE MIRROR CASE: BOTH fields carry the URL, so the guard above cannot fire. AI research
+  // does this on every row (its prompt asks for a branded name; it answers with the link) —
+  // 77 live rows, overwhelmingly Florida, found while checking multi-state readiness.
+  importSeededAhjKnowledge(db, {
+    state: "FL", ahj: "Cape Example",
+    portalName: "https://energovweb.capeexample.gov/energovprod/selfservice#/dashboard",
+    portalUrl: "https://energovweb.capeexample.gov/energovprod/selfservice#/dashboard",
+    requiredDocuments: [], sourceLabel: "ai research",
+  } as never);
+  const both = db.get<{ portal_url: string; portal_name: string; portal_platform: string }>(
+    "SELECT portal_url, portal_name, portal_platform FROM permit_utility_knowledge WHERE profile_key = 'fl|cape example|unknown'");
+  check("1d. THE FIX: a URL in BOTH fields becomes the platform NAME, url kept",
+    both?.portal_name === "Tyler EnerGov (CSS Self Service)"
+    && both?.portal_url === "https://energovweb.capeexample.gov/energovprod/selfservice#/dashboard", JSON.stringify(both));
+  check("1e. ...and the recognized family fills portal_platform — one adapter, many AHJs",
+    both?.portal_platform === "Tyler EnerGov (CSS Self Service)", JSON.stringify(both));
+
+  // An UNRECOGNIZED host must clear the name rather than keep showing a link where a name
+  // belongs: an unknown must not read as an answer.
+  importSeededAhjKnowledge(db, {
+    state: "FL", ahj: "Obscure Township",
+    portalName: "https://permits.obscure-township.example/apply",
+    portalUrl: "https://permits.obscure-township.example/apply",
+    requiredDocuments: [], sourceLabel: "ai research",
+  } as never);
+  const obscure = db.get<{ portal_url: string; portal_name: string }>(
+    "SELECT portal_url, portal_name FROM permit_utility_knowledge WHERE profile_key = 'fl|obscure township|unknown'");
+  check("1f. MUST EXCLUDE: an unrecognized host clears the NAME and keeps the URL",
+    obscure?.portal_name === "" && obscure?.portal_url === "https://permits.obscure-township.example/apply", JSON.stringify(obscure));
 }
 
 console.log("\n2. THE READ MAPPER RESCUES OLD ROWS THE FUNNEL NEVER SAW");

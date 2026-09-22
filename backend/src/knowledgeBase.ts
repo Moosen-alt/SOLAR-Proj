@@ -24,6 +24,7 @@ import { enrichMboxLearningWithLlm } from "./llm";
 import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles";
 import { nowIso } from "./time";
 import { logger } from "./logger";
+import { inferPlatform, isRecognizedPlatform, looksLikeBareUrl } from "./portalPlatformRules";
 
 type Row = Record<string, unknown>;
 
@@ -365,8 +366,29 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
   // learn path funnel through THIS function, so this is the one seam that makes the swap
   // impossible rather than the two callers that happened to be caught doing it. Exactly-one
   // URL only: a name carrying two links (Newberg) stays ambiguous and is left for a human.
-  if (!clean(facts.portalUrl) && /^https?:\/\/\S+$/i.test(clean(facts.portalName))) {
+  if (!clean(facts.portalUrl) && looksLikeBareUrl(clean(facts.portalName))) {
     facts = { ...facts, portalUrl: clean(facts.portalName) };
+  }
+  // AND A URL IS STILL NOT A NAME WHEN THE URL FIELD IS ALSO SET — the mirror case, which
+  // the guard above could not reach. AI research returns both fields (its own prompt asks
+  // for "the BRANDED portal name" and it answers with the link), so the operator's screen
+  // reads "Portal/process: https://energovweb.capecoral.gov/energovprod/selfservice#/..."
+  // where a name belongs. Counted 2026-09-22 while checking multi-state readiness: 29 real
+  // AHJ rows (OR 11, WA 10, FL 5, ID/TX/CA 1 each) — plus 23 benchmark fixtures, which is
+  // why the first count of "77" was wrong and is written down here as a caution.
+  //
+  // The URL is not discarded: portalUrl already holds it, and the host tells us the portal
+  // FAMILY, which is the more useful fact — half those Florida rows are Tyler EnerGov, the
+  // same platform as Tigard, so one adapter serves them. Name becomes the platform label
+  // when the host is recognized, and is otherwise CLEARED rather than left showing a link:
+  // an unknown must not read as an answer.
+  if (looksLikeBareUrl(clean(facts.portalName))) {
+    const platform = inferPlatform(clean(facts.portalUrl) || clean(facts.portalName));
+    facts = {
+      ...facts,
+      portalName: isRecognizedPlatform(platform) ? platform : "",
+      portalPlatform: clean(facts.portalPlatform) || (isRecognizedPlatform(platform) ? platform : facts.portalPlatform),
+    };
   }
   const key = profileKey(facts);
   const ts = nowIso();
