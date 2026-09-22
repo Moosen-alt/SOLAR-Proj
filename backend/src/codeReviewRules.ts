@@ -145,8 +145,25 @@ function isOregon(project: ProjectRecord, profile: AhjProcessProfile | null): bo
   return project.state.toUpperCase() === "OR" || profile?.state.toUpperCase() === "OR" || /oregon|portland|clackamas|washington county|hillsboro|salem/i.test(project.ahj);
 }
 
+// IS THIS ON A ROOF? Everything downstream hangs on the answer: fire access pathways, roof
+// framing, and racking attachment/flashing are all ROOF rules, and a ground array has none of
+// those things — it has piers, a foundation and a trench.
+//
+// This used to read `project.interconnectionMethod` and the plan-text blob, and never the
+// parser's own `mounting` field — the one place the answer is actually recorded. A ground-mount
+// project therefore collected three roof blockers (fire pathways, roof framing, roof
+// attachment) unless the words "ground mount" happened to appear in its extracted text, which
+// on a freshly uploaded set has not been extracted yet. Found 2026-09-22 while stress-testing
+// the gate. It also did not know "pole mount", which permitPath.ts has always recognised — two
+// modules answering the same question with different vocabularies.
+//
+// The mounting FIELD is authoritative when present; the text stays as the fallback for a parse
+// that did not capture it. Silence still means roof, which is the conservative direction: roof
+// rules are the stricter set, so an unknown mount is over-reviewed rather than under-reviewed.
 function isGroundMount(project: ProjectRecord, allText: string): boolean {
-  return /ground.mount|ground mounted|ground array/i.test(`${project.interconnectionMethod}\n${allText}`);
+  const mounting = str(project, "mounting");
+  if (mounting) return /ground[-\s]?mount|pole[-\s]?mount|ground.?array|carport|canopy/i.test(mounting);
+  return /ground.mount|ground mounted|ground array|pole.mount/i.test(`${project.interconnectionMethod}\n${allText}`);
 }
 
 // Module-level power electronics (microinverters / RSD-integrated optimizers) provide
@@ -448,7 +465,51 @@ export function evaluateDesignCodeFindings(
   const bus = num(project, ["busRating"]);
   const mainBreaker = num(project, ["mainBreaker"]);
   const pvBreaker = num(project, ["pvBreaker"]);
-  if (/load.side|breaker|back.?feed|bus/i.test(intercoText)) {
+
+  // WHICH SIDE OF THE SERVICE IS THIS? The 120% busbar screen is NEC 705.12(B)(3)(2) — a
+  // LOAD-SIDE rule. A SUPPLY-SIDE (line-side) tap is 705.11 and is not governed by it at all:
+  // the question there is whether the tap conductors and their OCPD are sized to the service.
+  //
+  // The old gate matched the bare word "breaker", so Edgar Miner's parsed interconnection
+  // "Supply Breaker" — corroborated by his own plan set, "POINT OF INTERCONNECT, SUPPLY
+  // BREAKER FEED THRU LUG" — was measured against the load-side rule and produced a BLOCKER
+  // that the code it cites does not support. 200A main + 50A PV on a 200A bus exceeds 240A
+  // and would be a real finding on a load-side design; on a supply-side tap it is not the
+  // test. Found 2026-09-22 while stress-testing the gate.
+  //
+  // THREE ANSWERS, NOT TWO, and the third is the honest one. Silence would be worse than the
+  // false blocker: a supply-side design still has to be checked, just against a different
+  // rule. So supply side gets its own callout naming 705.11, an interconnection naming BOTH
+  // is reported as ambiguous rather than guessed, and only a genuine load-side design is
+  // measured against 120%.
+  const saysSupplySide = /supply.?side|supply breaker|line.?side|705\.11|ahead of (?:the )?main|feed.?thr(?:u|ough) lug|service.entrance tap/i.test(intercoText);
+  const saysLoadSide = /load.?side|back.?fed|back.?feed|705\.12/i.test(intercoText);
+
+  if (saysSupplySide && !saysLoadSide) {
+    out.push(finding({
+      id: "city.elec.supply-side-tap",
+      severity: "callout",
+      category: "electrical",
+      title: "Supply-side tap — the 120% busbar screen does not apply",
+      message: `The interconnection is recorded as "${str(project, "interco") || project.interconnectionMethod}", a supply-side (line-side) connection. NEC 705.12(B)(3)(2)'s 120% busbar calculation governs LOAD-side connections and is not the applicable test here.`,
+      cityFeedback: "Show the supply-side tap detail: tap conductor size and ampacity relative to the service, the PV disconnect/OCPD ahead of the service disconnect, and the labelling required at the service equipment.",
+      designTeamAction: "Confirm the tap conductors and overcurrent protection are sized to the service per NEC 705.11, and that the busbar calculation is correctly omitted rather than missing.",
+      evidenceNeeded: ["Supply-side tap detail on the one-line", "Tap conductor size/ampacity vs service rating", "PV disconnect and OCPD location", "Service-equipment labelling"],
+      codeReferences: [loadSideRef],
+    }));
+  } else if (saysSupplySide && saysLoadSide) {
+    out.push(finding({
+      id: "city.elec.interconnection-ambiguous",
+      severity: "warning",
+      category: "electrical",
+      title: "Interconnection method names both supply side and load side",
+      message: `The recorded interconnection ("${str(project, "interco") || project.interconnectionMethod}") carries both supply-side and load-side language, and the two answer to different code sections — 705.11 versus the 705.12(B)(3)(2) busbar screen.`,
+      cityFeedback: "State the interconnection method unambiguously on the one-line, with the calculation that matches it.",
+      designTeamAction: "Settle which connection the design actually makes before filing; the reviewer cannot apply the right screen until it is stated once.",
+      evidenceNeeded: ["Interconnection method stated once on the one-line", "The matching calculation (705.11 tap sizing OR the 705.12 busbar screen)"],
+      codeReferences: [loadSideRef],
+    }));
+  } else if (/load.side|breaker|back.?feed|bus/i.test(intercoText)) {
     if (bus != null && mainBreaker != null && pvBreaker != null && mainBreaker + pvBreaker > bus * 1.2) {
       out.push(finding({
         id: "city.elec.load-side-over-120",

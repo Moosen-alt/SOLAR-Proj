@@ -110,3 +110,4 @@ data/portal-drafts.jsonl
 IRL NOTES/
 # Playwright MCP scratch output (screenshots, snapshots, console logs)
 .playwright-mcp/
+.probe/
