@@ -115,11 +115,16 @@ export function buildReviewerReport(
   // real projects, every account blocker surfaced as the generic one. A `reviewer.core.*`
   // finding is the fallback; anything else on the same topic is the specific one.
   const isGeneric = (f: ReviewerFinding): boolean => f.id.startsWith("reviewer.core.");
+  // SEVERITY OUTRANKS SPECIFICITY. Preferring the specific finding was right for the account
+  // case above, but applied unconditionally it lets a WARNING evict a BLOCKER on the same
+  // topic — so a missing critical field surfaces as "verify this" and the package stages. The
+  // specific finding is better WORDED; it is not automatically a better VERDICT. Rank by what
+  // stops a filing first, and use specificity only to break a tie at equal severity.
   const bestByKey = new Map<string, ReviewerFinding>();
   for (const f of findings) {
     const key = dedupeKey(f);
     const held = bestByKey.get(key);
-    if (!held || (isGeneric(held) && !isGeneric(f))) bestByKey.set(key, f);
+    if (!held || findingOutranks(f, held)) bestByKey.set(key, f);
   }
   const keep = new Set<ReviewerFinding>(bestByKey.values());
   for (let i = 0; i < findings.length; i++) {
@@ -193,6 +198,29 @@ function evidenceStatus(check: ProjectEvidence): ReviewerFinding["evidenceStatus
   if (check.confidence === "high") return "verified";
   if (check.confidence === "medium") return "weak";
   return "missing";
+}
+
+// WHICH OF TWO FINDINGS ON THE SAME TOPIC SURVIVES THE COLLAPSE.
+//
+// Preferring the SPECIFIC finding was right for the case it was written for — the generic
+// "Utility account number missing." was evicting the utility-specific one that names the
+// utility and the evidence needed. But applied unconditionally it also lets a WARNING evict a
+// BLOCKER, which would report a missing critical field as "verify this" and let the package
+// stage. The specific finding is better WORDED; that does not make it a better VERDICT.
+//
+// So: severity first, specificity only as the tie-break at equal severity.
+//
+// HONEST SCOPE: with today's rules this is LATENT, not a live bug. Measured across the
+// account and meter pairs, the generic and specific sides always agree on severity — the
+// generic one fires only when the field is empty, and the specific one is a blocker then too.
+// This pins the ordering so the next pair added cannot quietly drop a blocker.
+const SEVERITY_RANK: Record<string, number> = { blocker: 3, warning: 2, callout: 1 };
+
+export function findingOutranks(candidate: ReviewerFinding, held: ReviewerFinding): boolean {
+  const isGeneric = (f: ReviewerFinding): boolean => f.id.startsWith("reviewer.core.");
+  const delta = (SEVERITY_RANK[candidate.severity] ?? 0) - (SEVERITY_RANK[held.severity] ?? 0);
+  if (delta !== 0) return delta > 0;
+  return isGeneric(held) && !isGeneric(candidate);
 }
 
 export function topicForFinding(finding: ReviewerFinding): EvidenceTopic | null {
@@ -380,9 +408,21 @@ function renderFinding(finding: ReviewerFinding): string {
         return `<li><strong>${esc(item.label)}:</strong> ${esc(item.excerpt)}<br><span>${esc(item.source)}${item.pageHint ? ` | ${esc(item.pageHint)}` : ""} | ${esc(item.confidence)} confidence | ${esc(item.verifier)}</span>${item.note ? `<br><span>${esc(item.note)}</span>` : ""}</li>`;
       }).join("")
     : "<li>No evidence trail attached yet.</li>";
+  // THE BANNER MUST SAY WHAT THE ENGINE ACTUALLY DID. A "present" verdict at LOW confidence is
+  // one the engine refuses to act on — applyVerdict only relaxes at high or medium — yet this
+  // rendered the green "✓ Vision-verified on the plan sheet" for it. The confidence word was
+  // printed, but a green tick reads as a conclusion and the qualifier beside it does not undo
+  // that. Say "saw, not confirmed", and keep the warn styling, when the verdict did not count.
   const v = finding.visionVerification;
+  const visionTrusted = Boolean(v && v.present && (v.confidence === "high" || v.confidence === "medium"));
   const visionHtml = v && v.checked
-    ? `<div class="vision-verdict ${v.present ? "ok" : "warn"}"><strong>${v.present ? "✓ Vision-verified on the plan sheet" : "⚠ Vision could not confirm on the plan sheet"} (page ${esc(String(v.page))}, ${esc(v.confidence)} confidence)</strong><br><span>${esc(v.observed || v.note)}</span></div>`
+    ? `<div class="vision-verdict ${visionTrusted ? "ok" : "warn"}"><strong>${
+        visionTrusted
+          ? "✓ Vision-verified on the plan sheet"
+          : v.present
+            ? "⚠ Vision saw something but could not confirm it — not treated as verified"
+            : "⚠ Vision could not confirm on the plan sheet"
+      } (page ${esc(String(v.page))}, ${esc(v.confidence)} confidence)</strong><br><span>${esc(v.observed || v.note)}</span></div>`
     : "";
   return `
     <article class="finding ${findingClass(finding.severity)}">
