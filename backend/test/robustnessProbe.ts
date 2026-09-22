@@ -189,7 +189,7 @@ const longInterco = `load-side ${"x".repeat(50000)}`;
 const t1 = Date.now();
 show(run("50k-char interconnectionMethod", make({ interconnectionMethod: longInterco }, { interco: longInterco })));
 console.log(`         (elapsed ${Date.now() - t1}ms)`);
-show(run("control chars / newlines in fields", make({ homeownerName: "A B\nC\tD", ahj: "X\r\nY" })));
+show(run("control chars / newlines in fields", make({ homeownerName: "A\u0000B\nC\tD", ahj: "X\r\nY" })));
 
 console.log("\n=== SUMMARY ===");
 const threw = results.filter((r) => r.threw);

@@ -160,10 +160,42 @@ function isOregon(project: ProjectRecord, profile: AhjProcessProfile | null): bo
 // The mounting FIELD is authoritative when present; the text stays as the fallback for a parse
 // that did not capture it. Silence still means roof, which is the conservative direction: roof
 // rules are the stricter set, so an unknown mount is over-reviewed rather than under-reviewed.
-function isGroundMount(project: ProjectRecord, allText: string): boolean {
+// CARPORT IS NOT GROUND, for one rule. A carport/canopy has no dwelling roof, so the fire
+// access pathway, roof framing and flashing rules do not apply to it — but NEC 690.12 rapid
+// shutdown governs PV "on buildings", and whether a carport counts is an AHJ call, not ours.
+// So the predicate answers THREE ways and the RSD rule reads the distinction: ground and pole
+// are exempt, a carport keeps its rapid-shutdown requirement. Decided deliberately 2026-09-22;
+// the reasoning is pinned in groundMountScope.test.ts so a later reader can overturn it on
+// purpose rather than by accident.
+export type MountKind = "roof" | "ground" | "carport" | "unknown";
+
+export function mountKind(project: ProjectRecord, allText: string): MountKind {
   const mounting = str(project, "mounting");
-  if (mounting) return /ground[-\s]?mount|pole[-\s]?mount|ground.?array|carport|canopy/i.test(mounting);
-  return /ground.mount|ground mounted|ground array|pole.mount/i.test(`${project.interconnectionMethod}\n${allText}`);
+  const probe = mounting || `${project.interconnectionMethod}\n${allText}`;
+  if (/carport|canopy|awning|patio cover/i.test(probe)) return "carport";
+  if (/ground[-\s]?mount|ground.?mounted|ground.?array|pole[-\s]?mount/i.test(probe)) return "ground";
+  if (mounting) return "roof";
+  // Silence means roof, which is the conservative direction: the roof rules are the stricter
+  // set, so an unknown mount is over-reviewed rather than under-reviewed.
+  return "unknown";
+}
+
+/** True when the array sits on a roof and the roof rule family applies. */
+export function isRoofMounted(project: ProjectRecord, allText: string): boolean {
+  const kind = mountKind(project, allText);
+  return kind === "roof" || kind === "unknown";
+}
+
+/** NEC 690.12 governs PV on BUILDINGS — a ground/pole array is not on one; a carport may be. */
+export function rapidShutdownApplies(project: ProjectRecord, allText: string): boolean {
+  return mountKind(project, allText) !== "ground";
+}
+
+// The one entry point other modules should use. It derives the design text itself, so a second
+// caller cannot reach a different answer by feeding the predicate a different blob — which is
+// precisely how the reviewer engine and this module came to disagree about the same array.
+export function mountKindForProject(project: ProjectRecord): MountKind {
+  return mountKind(project, designText(project));
 }
 
 // Module-level power electronics (microinverters / RSD-integrated optimizers) provide
@@ -233,7 +265,8 @@ export function evaluateDesignCodeFindings(
   const all = designText(project);
   // A STAMP IS A DOCUMENT, NOT A SENTENCE ABOUT ONE.
   const hasStampedEngineering = uploadedDocTypes.some((t) => STAMPED_ENGINEERING_DOC_TYPES.includes(String(t)));
-  const roofMounted = !isGroundMount(project, all);
+  const roofMounted = isRoofMounted(project, all);
+  const rsdApplies = rapidShutdownApplies(project, all);
   const oregon = isOregon(project, profile);
   const prescriptive = /prescriptive/i.test(str(project, "permitPath"));
 
@@ -421,7 +454,7 @@ export function evaluateDesignCodeFindings(
     }));
   }
 
-  if (roofMounted && !hasAny(all, [/rapid shutdown/i, /\bRSD\b/i, /690\.12/i])) {
+  if (rsdApplies && !hasAny(all, [/rapid shutdown/i, /\bRSD\b/i, /690\.12/i])) {
     const mlpe = isMlpeDesign(project, all);
     out.push(finding({
       id: "city.elec.rapid-shutdown-missing",

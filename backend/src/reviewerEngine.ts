@@ -1,5 +1,5 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, ReviewerReport } from "../../shared/src/types";
-import { evaluateDesignCodeFindings } from "./codeReviewRules";
+import { evaluateDesignCodeFindings, mountKindForProject } from "./codeReviewRules";
 import { findAhjProcessProfile } from "./processProfiles";
 import { evidenceForTopic, evidenceLines, fieldValue, requirementsForTopic, type EvidenceTopic, type ProjectEvidence } from "./projectEvidence";
 import { nowIso } from "./time";
@@ -555,10 +555,27 @@ function addSubmittalDataFindings(project: ProjectRecord, findings: ReviewerFind
 }
 
 function addPlanSetFindings(project: ProjectRecord, findings: ReviewerFinding[]): void {
+  // THE SAME MOUNT QUESTION, ANSWERED IN ONE PLACE. These rules are paired with the
+  // code-rule engine's via DEDUPE_ALIASES (topic:fire, topic:rapid-shutdown), and the
+  // code-rule side wins. So while codeReviewRules was the only mount-aware layer, a ground
+  // array's roof blockers came from THERE and these duplicates stayed masked — teaching
+  // nobody that this layer was mount-blind. Fixing that layer removed the mask and these
+  // surfaced, demanding roof fire pathways and 690.12 of an array standing in a field.
+  // Import the predicate rather than re-deriving it: two vocabularies is what caused this.
+  const kind = mountKindForProject(project);
+  const onARoof = kind === "roof" || kind === "unknown";
+  const rsdApplies = kind !== "ground";
+
   const requiredDocs: Array<[string, ReturnType<typeof evidenceForTopic>, string, string]> = [
     ["sld", evidenceForTopic(project, "sld"), "SLD/one-line sheet not clearly mapped", "Provide or remap the one-line/SLD sheet so interconnection and equipment can be reviewed."],
+    // NOT mount-gated on purpose: a ground array needs a site plan MORE than a roof job —
+    // setbacks, pier layout, trench route and equipment pad all live on it. The code-rule
+    // layer exempts site plans for ground mounts, so this is a ground array's ONLY site-plan
+    // coverage; exempting it here too would replace a false blocker with real silence.
     ["site", evidenceForTopic(project, "siteRoofPlan"), "Site/roof plan not clearly mapped", "Provide or remap the site/roof plan showing array layout and service equipment."],
-    ["rapid-shutdown", evidenceForTopic(project, "rapidShutdown"), "Rapid shutdown evidence not clear", "Show rapid shutdown equipment, initiation/control location, and required labels."],
+    ...(rsdApplies
+      ? [["rapid-shutdown", evidenceForTopic(project, "rapidShutdown"), "Rapid shutdown evidence not clear", "Show rapid shutdown equipment, initiation/control location, and required labels."] as [string, ReturnType<typeof evidenceForTopic>, string, string]]
+      : []),
   ];
   for (const [id, check, title, action] of requiredDocs) {
     if (check.confidence === "high") continue;
@@ -579,8 +596,28 @@ function addPlanSetFindings(project: ProjectRecord, findings: ReviewerFinding[])
     ));
   }
 
+  // A GROUND ARRAY HAS NO ROOF PATHWAYS — but it is not therefore unreviewed. The roof
+  // access/setback question is replaced by the questions a ground array actually raises, so
+  // the operator gets a prompt instead of silence. Six of the eight supply-side projects on
+  // the live book taught that lesson: the finding that never fires reads as approval.
+  if (!onARoof) {
+    findings.push(finding(
+      "reviewer.plan.ground-array-site",
+      "callout",
+      "plan_set",
+      `Ground/${kind === "carport" ? "carport" : "pole"}-mounted array — roof access rules do not apply`,
+      "Roof fire pathway and roof framing review is not applicable to this array. Confirm the checks that ARE: property-line and structure setbacks, foundation/pier or footing detail, underground feeder route and burial depth, equipment pad, and any fencing or signage the AHJ requires.",
+      true,
+      {
+        cityFeedback: "Show setbacks to property lines and structures, the foundation/pier detail, the underground conductor route with burial depth, and array grounding.",
+        designTeamAction: "Confirm the site plan carries setbacks, footing/pier detail, trench section with cover depth, and equipment locations for a non-roof array.",
+        evidenceNeeded: ["Site plan with setbacks", "Foundation/pier detail", "Trench/underground feeder detail"],
+      },
+    ));
+  }
+
   const firePathway = evidenceForTopic(project, "firePathway");
-  if (firePathway.confidence !== "high") {
+  if (onARoof && firePathway.confidence !== "high") {
     findings.push(finding(
       "reviewer.plan.fire-path",
       firePathway.present ? "warning" : "blocker",
