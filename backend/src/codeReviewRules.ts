@@ -1,6 +1,7 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS } from "./projectEvidence";
+import { pathWordingScope } from "./permitPath";
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",
@@ -306,7 +307,19 @@ export function evaluateDesignCodeFindings(
   const roofMounted = isRoofMounted(project, all);
   const rsdApplies = rapidShutdownApplies(project, all);
   const oregon = isOregon(project, profile);
-  const prescriptive = /prescriptive/i.test(str(project, "permitPath"));
+  // "NON-PRESCRIPTIVE" CONTAINS "PRESCRIPTIVE". A bare substring test therefore read an
+  // explicitly engineered project as a prescriptive one and inverted the structural gate:
+  // measured, permitPath "Non-prescriptive" produced the prescriptive blockers (span table,
+  // loads) and — the dangerous half — did NOT raise city.struct.stamped-engineering-missing,
+  // while "Engineered" correctly did. So a project flagged non-prescriptive was never asked
+  // for the stamped engineering it needs.
+  //
+  // That is not a hypothetical wording: the operator's standing ruling is that a PV install on
+  // a TPO roof in Oregon is automatically non-prescriptive, and those are exactly the jobs that
+  // had to get stamps. permitPath.ts already classifies this correctly — it tests the
+  // non-/engineered wording BEFORE the prescriptive substring — so use it rather than keeping a
+  // second, wrong opinion here.
+  const prescriptive = pathWordingScope(str(project, "permitPath")) === "prescriptive";
 
   // JURISDICTION CONTEXT (data-driven rules). With a context, prescriptive structural
   // screening applies wherever the jurisdiction records prescriptive limits — not just
@@ -418,14 +431,21 @@ export function evaluateDesignCodeFindings(
   // Worse, that same reference used to SILENCE the span warning below, because the old
   // suppression matched the word "engineer" anywhere in the design text. A plan set that
   // merely mentioned engineering muted the one check that would have caught the overspan.
-  const claimsEngineered = /engineer/i.test(str(project, "permitPath"))
+  // Same classifier as the prescriptive flag above, so the two cannot disagree about one
+  // project. /engineer/i alone missed "Non-prescriptive" — the operator's own wording for a
+  // TPO-roof job — which is exactly the case that needs a stamp. pathWordingScope reads that
+  // as engineered; the plan-text signals below stay as the independent second route in.
+  const claimsEngineered = pathWordingScope(str(project, "permitPath")) === "engineered"
     || hasAny(all, [/stamped structural/i, /structural letter/i, /sealed by/i, /\bP\.?E\.?\b/, /engineering (calc|letter|review|analysis)/i]);
   if (roofMounted && claimsEngineered && !hasStampedEngineering) {
     out.push(finding({
       id: "city.struct.stamped-engineering-missing",
       // The design DEPENDS on it when it declares the engineered path — that is a blocker,
       // not a note. A passing reference in an otherwise prescriptive package is a warning.
-      severity: /engineer/i.test(str(project, "permitPath")) ? "blocker" : "warning",
+      // Read the PATH through the shared classifier: /engineer/i was a third independent
+      // opinion about the same question and it did not recognise "Non-prescriptive", so the
+      // operator's own wording for a TPO job produced a warning where it owed a blocker.
+      severity: pathWordingScope(str(project, "permitPath")) === "engineered" ? "blocker" : "warning",
       category: "structural",
       title: "Engineered design with no stamped calculation attached",
       message: "The design relies on structural engineering, but no stamped/sealed engineering document is in the package.",
@@ -570,7 +590,9 @@ export function evaluateDesignCodeFindings(
       cityFeedback: "Show the supply-side tap detail: tap conductor size and ampacity relative to the service, the PV disconnect/OCPD ahead of the service disconnect, and the labelling required at the service equipment.",
       designTeamAction: "Confirm the tap conductors and overcurrent protection are sized to the service per NEC 705.11, and that the busbar calculation is correctly omitted rather than missing.",
       evidenceNeeded: ["Supply-side tap detail on the one-line", "Tap conductor size/ampacity vs service rating", "PV disconnect and OCPD location", "Service-equipment labelling"],
-      codeReferences: [loadSideRef],
+      // 705.11, not 705.12. This finding EXISTS to say the load-side busbar screen does not
+      // govern here, so citing the load-side section as its basis contradicted its own text.
+      codeReferences: [supplySideRef],
     }));
   } else if (saysSupplySide && saysLoadSide) {
     out.push(finding({
@@ -582,7 +604,9 @@ export function evaluateDesignCodeFindings(
       cityFeedback: "State the interconnection method unambiguously on the one-line, with the calculation that matches it.",
       designTeamAction: "Settle which connection the design actually makes before filing; the reviewer cannot apply the right screen until it is stated once.",
       evidenceNeeded: ["Interconnection method stated once on the one-line", "The matching calculation (705.11 tap sizing OR the 705.12 busbar screen)"],
-      codeReferences: [loadSideRef],
+      // The whole content of this finding is that the design has not said WHICH of the two
+      // governs, so both are cited — matching the message's own "705.11 versus 705.12".
+      codeReferences: [supplySideRef, loadSideRef],
     }));
   } else if (/load.side|breaker|back.?feed|bus/i.test(intercoText)) {
     if (bus != null && mainBreaker != null && pvBreaker != null && mainBreaker + pvBreaker > bus * 1.2) {
@@ -610,9 +634,51 @@ export function evaluateDesignCodeFindings(
         codeReferences: [loadSideRef, powerSourceDirectoryRef],
       }));
     }
+  } else {
+    // THE MISSING DOOR. This chain had no final else, so an interconnection matching none of
+    // the three vocabularies above fell off the end and produced NOTHING — not a blocker, not
+    // a warning, not a callout. The 120% busbar arithmetic exists in exactly one place (the
+    // branch above) and nothing downstream repeats it: QC checks that the rating FIELDS ARE
+    // PRESENT, never that the math passes. So an unrecognised wording did not merely skip a
+    // label, it skipped the only NEC 705.12 calculation in the product.
+    //
+    // The trigger is not exotic. "Net Metering" is the FIRST example value in the parser's own
+    // prompt (llm.ts), and Daniel Daly's live row carries exactly that string — measured, his
+    // filing has never had its busbar screen run. Six of eight realistic wordings were silent.
+    //
+    // An unknown method is NOT routed into the load-side branch: demanding a 705.12 busbar calc
+    // from what may be a supply-side tap would just trade a silent hole for a false demand.
+    // It gets its own finding that asks the one question that resolves it.
+    out.push(finding({
+      id: "city.elec.interconnection-unclassified",
+      severity: "warning",
+      category: "electrical",
+      title: "Interconnection method not classifiable — the busbar screen did not run",
+      message: `The recorded interconnection ("${str(project, "interco") || project.interconnectionMethod}") does not say whether the connection is supply side or load side, and the two answer to different code sections. No interconnection calculation has been checked for this project.`,
+      cityFeedback: "State the interconnection method explicitly on the one-line — supply-side/line-side tap, or load-side breaker connection — with the calculation that matches it.",
+      designTeamAction: "Record the method as supply side or load side. A load-side connection needs the 705.12 busbar screen (bus rating, main breaker, PV breaker); a supply-side tap needs the 705.11 tap detail and conductor sizing.",
+      evidenceNeeded: ["Interconnection method stated as supply side or load side", "MSP bus rating", "Main breaker rating", "PV breaker/OCPD rating"],
+      codeReferences: [supplySideRef, loadSideRef],
+    }));
   }
 
-  if (/line.side|supply.side|tap/i.test(intercoText) && !hasAny(all, [/705\.11/i, /supply.side/i, /line.side/i, /tap/i, /service conductor/i, /fused disconnect/i])) {
+  // GATED ON THE CLASSIFIER, not on a second, narrower vocabulary of its own. This rule used
+  // to test /line.side|supply.side|tap/ — so the phrasings the supply-side classifier learned
+  // ("Supply Breaker", "ahead of the main", "feed-thru lug") were called supply-side by one
+  // rule and not by this one, and never had to show a tap detail at all.
+  //
+  // The suppression list is tightened at the same time. /tap/i was satisfied by the word
+  // "tape", and /supply.side/i was very nearly circular: a plan set that says "supply side"
+  // once counted as having SHOWN the detail. What a tap detail actually contains is the tap
+  // point, the service conductor sizing, and the disconnect — so ask for those.
+  if (saysSupplySide && !hasAny(all, [
+    /705\.11/i,
+    /tap\s*(?:point|detail|conductor)/i,
+    /service\s*(?:entrance\s*)?conductor/i,
+    /fused\s*disconnect/i,
+    /line.?side\s*(?:tap|connection)\s*detail/i,
+    /supply.?side\s*(?:tap|connection)\s*detail/i,
+  ])) {
     out.push(finding({
       id: "city.elec.supply-side-detail-missing",
       severity: "blocker",
