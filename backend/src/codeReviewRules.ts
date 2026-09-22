@@ -241,22 +241,42 @@ export function mountKindForProject(project: ProjectRecord): MountKind {
 // inherent module-level rapid shutdown under NEC 690.12. When the design is MLPE-based,
 // a missing RSD plan callout is a labeling/documentation gap — not a missing-equipment
 // blocker that should stop staging.
+// A BRAND NAME IS NOT AN INVERTER TOPOLOGY. MLPE satisfies NEC 690.12 inherently, so an MLPE
+// design has its rapid-shutdown finding softened from blocker to warning — which means getting
+// this wrong DOWNGRADES a safety blocker. The old test scanned the whole plan text for brands,
+// and Enphase makes batteries: measured, a SolarEdge string-inverter system carrying an Enphase
+// IQ Battery was reclassified as MLPE and had its blocker softened.
+//
+// So the INVERTER FIELDS decide when they exist — brand names are meaningful there, because
+// that field names the inverter. The plan text is only a fallback for a parse that captured no
+// inverter at all, and the fallback asks for topology words rather than brands, since every one
+// of those brands also sells storage.
+const MLPE_TOPOLOGY = [
+  /micro.?inverter/i,
+  /\bmlpe\b/i,
+  /module.level (power electronics|shutdown|rapid shutdown)/i,
+];
+const MLPE_INVERTER_BRANDS = [
+  /enphase|\biq\s?[678]\b/i,
+  /ap\s?systems|apsystems|\bds3\b|\bqs1\b|\byc600\b/i,
+  /hoymiles/i,
+  /tigo\s?(ts4|rsd)/i,
+];
+
 function isMlpeDesign(project: ProjectRecord, allText: string): boolean {
+  const microModel = str(project, "pvMicroModel");
   const inverterText = [
-    str(project, "pvMicroModel"),
+    microModel,
     str(project, "pvMicroQty") ? "microinverter" : "",
     str(project, "invModel"),
     str(project, "inverterModel"),
-  ].join("\n");
-  return hasAny(`${inverterText}\n${allText}`, [
-    /micro.?inverter/i,
-    /\bmlpe\b/i,
-    /enphase|\biq\s?[678]\b/i,
-    /ap\s?systems|apsystems|\bds3\b|\bqs1\b|\byc600\b/i,
-    /hoymiles/i,
-    /module.level (power electronics|shutdown|rapid shutdown)/i,
-    /tigo\s?(ts4|rsd)/i,
-  ]);
+  ].filter(Boolean).join("\n");
+
+  // An inverter is on file: it answers the question, brands included.
+  if (inverterText.trim()) return hasAny(inverterText, [...MLPE_TOPOLOGY, ...MLPE_INVERTER_BRANDS]);
+
+  // Nothing recorded — fall back to the sheets, but only on topology language.
+  return hasAny(allText, MLPE_TOPOLOGY);
 }
 
 function finding(input: {
@@ -397,7 +417,17 @@ export function evaluateDesignCodeFindings(
     }));
   }
 
-  if (roofMounted && !hasAny(all, [/rafter/i, /truss/i, /framing/i, /structural/i, /engineer/i, /span table/i])) {
+  // /structural/i and /engineer/i cleared this, and title blocks carry both — so "STRUCTURAL
+  // ENGINEER OF RECORD: SMITH PE" was accepted as framing evidence. Worse, the sentence "NO
+  // STRUCTURAL FRAMING INFORMATION WAS AVAILABLE" also contains "structural", so the report
+  // cleared itself on a statement of its own ignorance. Ask for MEMBERS.
+  if (roofMounted && !hasAny(all, [
+    /\brafter/i, /\btruss/i, /\bjoist/i,
+    /span\s*table/i,
+    /\d+\s*x\s*\d+\s*(?:@|at\b|o\.?c\.?)/i,
+    /o\.?c\.?\s*spacing/i,
+    /framing\s*(?:member|type|plan|detail|size)/i,
+  ])) {
     out.push(finding({
       id: "city.struct.framing-missing",
       severity: "blocker",
@@ -463,7 +493,15 @@ export function evaluateDesignCodeFindings(
   // demand span for both, which blocked Brittany Reavis's 2x4 truss @ 24" o.c. roof —
   // the exact roof Salem issued 26-108868-DW for, prescriptive, no span table anywhere.
   // Rafters keep the full demand: Portland bounced Trask for precisely that overspan.
-  const trussFraming = /truss/i.test(str(project, "framingType"));
+  // ONLY AN UNAMBIGUOUS TRUSS EARNS THE EXEMPTION. A bare /truss/i opened it for
+  // "rafter/truss", "truss or rafter (unverified)" and even "not truss" — dropping the very
+  // clear-span demand that caught the overspan Portland bounced Trask for. Ambiguity keeps the
+  // full demand, because the stricter arm is the safe one to land on when the framing is
+  // genuinely unclear.
+  const framingTypeText = str(project, "framingType");
+  const trussFraming = /\btruss(?:es)?\b/i.test(framingTypeText)
+    && !/\brafter/i.test(framingTypeText)
+    && !/\bno[nt]?[-\s]?truss|not\s+a?\s*truss/i.test(framingTypeText);
   const spanEvidenceIncomplete = trussFraming
     ? rafterSpacing == null
     : rafterSpacing == null || rafterSpan == null;
@@ -485,7 +523,18 @@ export function evaluateDesignCodeFindings(
     }));
   }
 
-  if (roofMounted && !hasAny(all, [/attachment/i, /lag/i, /rafter attachment/i, /standoff/i, /flashing/i, /mount/i, /rail/i, /racking/i])) {
+  // /mount/i CLEARED THIS, and every plan set says "roof mount". Measured on the live book:
+  // projects carrying no extracted plan text at all passed this screen, because their
+  // `mounting` FIELD reads "Roof mount". /rail/i was satisfied by a guardrail and /lag/i by
+  // any word containing those three letters. Ask instead for what an attachment detail
+  // actually contains.
+  if (roofMounted && !hasAny(all, [
+    /attachment\s*(?:detail|schedule|spacing|point)/i,
+    /standoff/i, /flashing/i, /flashfoot/i, /l.?foot/i,
+    /lag\s*(?:screw|bolt)/i, /fastener/i, /embedment/i, /pull.?out/i,
+    /racking\s*(?:detail|spec|schedule|plan)/i,
+    /mount(?:ing)?\s*(?:detail|hardware|spacing|schedule)/i,
+  ])) {
     out.push(finding({
       id: "city.struct.attachment-detail-missing",
       severity: "blocker",
@@ -742,7 +791,16 @@ export function evaluateDesignCodeFindings(
   }
 
   const batteryText = `${str(project, "batteryModel")}\n${str(project, "batteryQty")}\n${all}`;
-  if (hasAny(batteryText, [/battery/i, /\bESS\b/i, /powerwall/i, /encharge/i, /backup/i]) && !hasAny(batteryText, [/clearance/i, /working space/i, /ESS/i, /706/i, /R328/i, /1207/i, /fire/i])) {
+  // The suppression list held a bare /fire/i — and since the fire-pathway work every plan set
+  // reliably carries "FIRE ACCESS PATHWAY", so that fix would itself have switched off every
+  // battery review. It also held an unbounded /ESS/i, which matches "addrESS" and "procESS".
+  // Word-boundary the acronym, and take fire SEPARATION/rating rather than the bare word.
+  if (hasAny(batteryText, [/battery/i, /\bESS\b/i, /powerwall/i, /encharge/i, /backup/i])
+    && !hasAny(batteryText, [
+      /clearance/i, /working\s*space/i,
+      /\bESS\b/i, /\b706\b/i, /R\s*328/i, /\b1207\b/i,
+      /fire\s*(?:separation|barrier|rating)|fire.?rated/i,
+    ])) {
     out.push(finding({
       id: "city.ess.details-missing",
       severity: "warning",
