@@ -158,6 +158,44 @@ function hasAny(project: ProjectRecord, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(allProjectEvidenceText(project)));
 }
 
+// FIREFIGHTER ACCESS IS NOT THE SAME WORD AS A ZONING SETBACK.
+//
+// This test used to accept the bare words "setback", "ridge" and "eave" as fire-pathway
+// evidence, and then grant HIGH confidence if any dimension appeared anywhere in the document.
+// Every residential roof plan labels a ridge and an eave; every site plan carries zoning
+// setbacks; solar plan sets are wall-to-wall dimensions. So the topic read present/high for
+// essentially any plan set, both fire rules stayed silent, and a set with NO firefighter access
+// pathway was reviewed identically to one with a dimensioned IFC 1205.2 pathway — measured, the
+// two produced byte-identical reports. A life-safety review that cannot tell them apart is not
+// happening. Found 2026-09-22 by an adversarial pass over the gate.
+//
+// The vocabulary below is HARVESTED from the operator's own corpus, not invented: across 23
+// live projects the real phrases are "FIRE PATHWAY", "FIRE ACCESS" and "36\" FIRE SETBACK".
+// That last one is why proximity matters — "setback" IS fire evidence when it is a fire
+// setback, and is not when it is a lot line. 22 of 23 keep their evidence under this rule; the
+// one that loses it is a test fixture with no fire content at all.
+//
+// Exported because codeReviewRules asks the same question for city.fire.pathways-missing, and
+// two modules with two vocabularies is the exact defect pattern this gate keeps producing.
+export const FIRE_PATHWAY_PATTERNS: RegExp[] = [
+  /fire\s*access/i,
+  /fire\s*pathway/i,
+  /access\s*pathway/i,
+  /smoke\s*vent(?:ilation)?/i,
+  /IFC\s*1205/i,
+  /R\s*324\.6/i,
+  /firefighter/i,
+  // Generic roof/zoning words become evidence only when tied to "fire" in the same breath.
+  /fire[^.\n]{0,60}(?:setback|ridge|eave|pathway|clear)/i,
+  /(?:setback|ridge|eave)[^.\n]{0,60}fire/i,
+];
+
+// HIGH confidence wants the dimension NEXT TO the fire callout, not merely somewhere on a
+// sheet covered in dimensions. "36\" FIRE SETBACK" qualifies; "FRONT SETBACK 20 FT" on the
+// site plan of a set that mentions fire elsewhere does not.
+export const FIRE_PATHWAY_DIMENSIONED =
+  /(?:fire|pathway)[^.\n]{0,80}\d+\s*(?:"|''|in\b|inch|ft\b|feet|')|\d+\s*(?:"|''|in\b|inch|ft\b|feet|')[^.\n]{0,80}(?:fire|pathway)/i;
+
 function evidence(
   project: ProjectRecord,
   topic: EvidenceTopic,
@@ -233,10 +271,9 @@ export function evidenceForTopic(project: ProjectRecord, topic: EvidenceTopic): 
       return evidence(project, topic, present, high ? "high" : present ? "medium" : "low", patterns);
     }
     case "firePathway": {
-      const patterns = [/fire access/i, /access pathway/i, /pathway/i, /setback/i, /ridge/i, /eave/i, /smoke ventilation/i];
-      const present = hasAny(project, patterns);
-      const high = present && /dimension|ft\b|feet|inch|setback|ridge|eave|valley|hip/i.test(all);
-      return evidence(project, topic, present, high ? "high" : present ? "medium" : "low", patterns);
+      const present = FIRE_PATHWAY_PATTERNS.some((p) => p.test(all));
+      const high = present && FIRE_PATHWAY_DIMENSIONED.test(all);
+      return evidence(project, topic, present, high ? "high" : present ? "medium" : "low", FIRE_PATHWAY_PATTERNS);
     }
     case "roofFraming": {
       const patterns = [/rafter/i, /truss/i, /framing/i, /span/i, /structural/i, /engineer/i, /prescriptive/i];

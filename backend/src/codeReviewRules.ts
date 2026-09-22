@@ -1,5 +1,6 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
+import { FIRE_PATHWAY_PATTERNS } from "./projectEvidence";
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",
@@ -105,12 +106,49 @@ function str(project: ProjectRecord, key: string): string {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
 }
 
+// A FIELD WITH TWO NUMBERS IN IT IS NOT A NUMBER.
+//
+// This used to delete every non-digit and parseFloat whatever was left, so a rating that
+// carried a note became the CONCATENATION of its numbers. The live book holds a real example:
+// pvBreaker "50A (fuses in 60A AC disconnect at line-side tap)" read as 5060 amps. It fails in
+// both directions, which is what makes it dangerous rather than merely wrong:
+//   - busRating "200A (Note 3)" -> 2003, so a genuine 200A/200A/60A violation (260A against a
+//     240A allowance) sits far below 120% of 2003 and the blocker goes SILENT;
+//   - mainBreaker "175A (2 of 2)" -> 17522, so a COMPLIANT design is blocked, with the report
+//     printing "17522A main" to the operator.
+//
+// So: one number means one number. Several numbers with exactly one carrying an amp unit means
+// that one — "50A (fuses in 60A AC disconnect)" is unambiguous to a human and should be to us.
+// Anything still ambiguous returns null, which routes to city.elec.load-side-calc-missing
+// ("ratings not readable") instead of a confident calculation on a fabricated figure. An
+// unknown must not read as a number.
+function parseRating(raw: string): number | null {
+  const numbers = raw.match(/-?\d+(?:\.\d+)?/g);
+  if (!numbers || numbers.length === 0) return null;
+  if (numbers.length === 1) {
+    const only = Number.parseFloat(numbers[0]);
+    return Number.isFinite(only) ? only : null;
+  }
+  // Several numbers: let the UNITS disambiguate, but only when they point at exactly one.
+  // "50A (fuses in 60A AC disconnect)" names two currents and stays ambiguous; "200A, 120/240V"
+  // names one current and a voltage, so the current wins. Volts are deliberately absent from
+  // this list — a service voltage is never the rating any of these rules is asking for, and
+  // admitting it would re-ambiguate every field that states one.
+  const united = [...raw.matchAll(/(-?\d+(?:\.\d+)?)\s*(?:A\b|AMPS?\b|PSF\b|PCF\b|MPH\b|FT\b|FEET\b|IN\b|INCH(?:ES)?\b)/gi)].map((m) => m[1]);
+  const distinct = [...new Set(united)];
+  if (distinct.length === 1) {
+    const value = Number.parseFloat(distinct[0]);
+    return Number.isFinite(value) ? value : null;
+  }
+  return null;
+}
+
 function num(project: ProjectRecord, keys: string[]): number | null {
   for (const key of keys) {
-    const cleaned = str(project, key).replace(/[^0-9.-]/g, "");
-    if (!cleaned) continue;
-    const value = Number.parseFloat(cleaned);
-    if (Number.isFinite(value)) return value;
+    const raw = str(project, key);
+    if (!raw) continue;
+    const value = parseRating(raw);
+    if (value != null) return value;
   }
   return null;
 }
@@ -328,7 +366,11 @@ export function evaluateDesignCodeFindings(
     }));
   }
 
-  if (roofMounted && !hasAny(all, [/fire/i, /pathway/i, /setback/i, /ridge/i, /access path/i, /smoke ventilation/i])) {
+  // Same vocabulary as projectEvidence's firePathway topic, imported rather than restated.
+  // The old list here accepted a bare "setback" or "ridge" — ordinary zoning and roof-geometry
+  // words — so this rule cleared on any plan set too, in step with the evidence topic. Letting
+  // the two drift apart is how the gate ends up contradicting itself about the same project.
+  if (roofMounted && !hasAny(all, FIRE_PATHWAY_PATTERNS)) {
     out.push(finding({
       id: "city.fire.pathways-missing",
       severity: "blocker",
