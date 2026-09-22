@@ -3,6 +3,8 @@ import path from "path";
 import type { PortalRecipe, ProjectRecord, RecipeSelector, RecipeStep } from "../../../shared/src/types";
 import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, type PortalStepResult } from "../adapter";
 import { applyFormatHint } from "../formatHint";
+import { extractRecordNumber, pageConfirmsSubmission } from "../recordNumber";
+import { armHumanCaptureOnPage, HUMAN_SUBMIT_OBSERVED_NOTE } from "../humanCapture";
 import { feeBracketCoverage, feeBracketCoverageMessage } from "../feeBracketQuantity";
 
 // A RECORDED ANSWER THAT DESCRIBES A PROJECT OR A PERSON BELONGS TO THAT PROJECT.
@@ -442,24 +444,33 @@ export class RecipeAdapter extends BasePortalAdapter {
   // automatically. Read-only — never clicks anything. (Accela completion page shows
   // "Your application has been successfully submitted." + a record number like
   // 517-26-000274-STR and a record/summary link.)
+  /**
+   * Arm the still-open review page so the operator's own submit click is NOTICED. Hard
+   * rule 1 is untouched — the human still clicks, this only watches — and the detector is
+   * the one the learn path already uses, which distinguishes the FINAL submit from
+   * mid-flow "Submit Documents" buttons.
+   */
+  async armSubmitWatch(onSubmitObserved: () => void): Promise<boolean> {
+    if (!this.page) return false;
+    return armHumanCaptureOnPage(this.page, (step) => {
+      // The detector emits one submitObserved step when the final submit is clicked; every
+      // other captured step belongs to the learn path and is ignored here.
+      if (String(step.note || "").includes(HUMAN_SUBMIT_OBSERVED_NOTE)) onSubmitObserved();
+    }).catch(() => false);
+  }
+
   async captureSubmissionConfirmation(): Promise<PortalStepResult> {
     if (!this.page) return ok("No open page to capture confirmation from.", { permitNumber: "", recordLink: "" });
     try {
       await smartWait(this.page);
       const bodyText = String((await this.page.locator("body").innerText().catch(() => "")) || "");
-      // Accela-style record number: 517-26-000274-STR (digits/dashes + optional type suffix).
-      const accela = bodyText.match(/\b\d{2,4}-\d{2}-\d{4,7}-?[A-Z]{0,4}\b/);
-      // Generic confirmation/record number fallback (avoid pure phone/zip).
-      const generic = bodyText.match(/\b(?:record|permit|application|confirmation)\s*(?:no\.?|number|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{5,})\b/i);
-      // PowerClerk assigns APP-###### and shows it in the View/Edit heading. The operator
-      // navigates by the LandingPage?ProjectId link, so that is what capture must keep.
-      // The word boundaries here were literal BACKSPACE characters, not \b — written through
-      // a heredoc in an earlier session, where \b is a real escape. The file typechecked and
-      // the regex could never match anything, so a PowerClerk filing APP-###### was never read
-      // out of the page and capture fell through to the generic pattern. Found by sweeping
-      // every source file for control characters after making the same mistake three times.
-      const pcApp = bodyText.match(/\bAPP-\d{4,8}\b/);
-      const permitNumber = (accela?.[0] || pcApp?.[0] || generic?.[1] || "").trim();
+      // The Accela / PowerClerk / labelled patterns live in recordNumber.ts now, because the
+      // HUMAN-submit path needs the identical reading and a second copy would drift. That
+      // module also carries the history: these word boundaries were once literal BACKSPACE
+      // characters written through a heredoc, so the regex silently matched nothing and a
+      // PowerClerk APP-###### was never read out of the page.
+      const read = extractRecordNumber(bodyText);
+      const permitNumber = read.value;
       // Accela record suffix encodes the discipline: -STR (structural), -ELE (electrical), etc.
       const discipline = permitNumber.match(/-([A-Z]{2,4})$/)?.[1] ?? null;
       // Keep origin+path only — completion-page URLs can embed session-scoped query tokens
@@ -478,7 +489,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         const q = kept.toString();
         recordLink = u.origin + u.pathname + (q ? `?${q}` : "");
       } catch { /* keep raw */ }
-      const submitted = /successfully submitted|application has been submitted|record (number|#)/i.test(bodyText);
+      const submitted = pageConfirmsSubmission(bodyText);
       if (permitNumber || submitted) {
         return ok(`Captured submission confirmation${permitNumber ? `: ${permitNumber}` : ""}.`, {
           permitNumber,

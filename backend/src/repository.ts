@@ -6640,6 +6640,41 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     // trusted-recipe autoSubmit path above does not cover. Still double-gated: runAdapter
     // also requires PORTAL_ALLOW_FINAL_SUBMIT=1, and the adapter still refuses to pay a fee.
     allowFinalSubmit: allowFinalSubmit === true,
+    // THE OPERATOR JUST SUBMITTED IN THE OPEN WINDOW. Reading the record number off the
+    // completion page is the largest avoidable interruption in the product (~258 per 100
+    // projects — it happens on every single filing, and a person types a number that is
+    // already on the screen in front of a browser we own). Hard rule 1 is untouched: the
+    // human clicked submit, this only reads what came back.
+    //
+    // WRITTEN ONLY WHEN THE READ IS CONFIDENT. Every downstream check keys on this value,
+    // so a low-confidence read is recorded as a NOTE for the operator to confirm rather
+    // than written as fact — the manual capture form keeps working exactly as it does now.
+    onSubmitCaptured: (capture: { recordNumber: string; confidence: string; reason: string; recordLink: string }) => {
+      try {
+        if (capture.confidence === "high" && capture.recordNumber) {
+          // runId is minted above, before staging, and the row exists by the time a human
+          // gets round to clicking submit — this fires from the left-open window, minutes
+          // later. captureConfirmation is the SAME function the manual form calls, so the
+          // filing is recorded through one path whoever supplied the number.
+          captureConfirmation(db, runId, {
+            applicationNumber: capture.recordNumber,
+            submittedBy: "read from the portal's completion page",
+            notes: capture.reason.slice(0, 300),
+          });
+          addAuditLog(db, projectId, "portal_bot", "submit capture", "submission.record_number_read", {
+            track, runId, source: "completion_page", reason: capture.reason.slice(0, 200),
+          });
+          logger.info("submit-capture", "record number read off the completion page — no typing needed", {
+            project: projectId, track,
+          });
+        } else {
+          // Not confident — say so where the operator will see it, and leave the form alone.
+          addAuditLog(db, projectId, "portal_bot", "submit capture", "submission.record_number_unread", {
+            track, reason: capture.reason.slice(0, 200),
+          });
+        }
+      } catch { /* capture is a convenience; it must never disturb the run */ }
+    },
     gapFillPlanner,
     gapFillFields,
     // Track-scoped portal URL so multi-tenant platform adapters (PowerClerk hosts PGE

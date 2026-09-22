@@ -219,6 +219,18 @@ interface StageOptions {
   // missed, from real project data only. Resolved server-side; secrets already stripped.
   gapFillPlanner?: import("./adapters/autoLearnAdapter").LearnPlanner;
   gapFillFields?: Record<string, string>;
+  // THE OPERATOR SUBMITTED IN THE OPEN WINDOW — here is what the completion page said.
+  // Fires only on a guided-manual run left open at review, when the human clicks the final
+  // submit. portal-bot never writes to the database; it reports, and the caller decides
+  // whether the read is good enough to record (a wrong record number is worse than none,
+  // because permit tracking keys on it forever).
+  onSubmitCaptured?: (capture: {
+    recordNumber: string;
+    confidence: "high" | "low";
+    source: string;
+    reason: string;
+    recordLink: string;
+  }) => void;
   // Track-scoped portal login URL (resolved server-side from portal_credentials/recipe/KB).
   // Lets platform adapters that host many tenants (PowerClerk: PGE, PacifiCorp…) land on
   // the right subdomain instead of a hardcoded default.
@@ -235,6 +247,57 @@ const openStagingAdapters = new Map<string, import("./adapter").PortalAdapter>()
 // Track a left-open adapter AND watch for the human closing its window by hand — without
 // the close listener the Map keeps a dead adapter forever (and the UI can't tell the
 // review browser is gone). Best-effort: adapters expose their live Playwright page.
+/**
+ * Arm the left-open review window so the operator's own submit click is noticed, then read
+ * the completion page and report what it said.
+ *
+ * WHY THIS IS NOT A RULE-1 PROBLEM: the human still clicks submit. Nothing here clicks,
+ * pays, or solves a challenge — it watches a page we already own and reads text off it
+ * afterwards. The value is that the record number stops being a typing job.
+ *
+ * WHY IT REPORTS INSTEAD OF WRITING: a wrong record number is worse than none, because
+ * every downstream check keys on it. The read carries its own confidence and the caller
+ * decides; an unconfident read leaves the operator's manual form exactly as it is today.
+ */
+async function armSubmitCapture(
+  adapter: import("./adapter").PortalAdapter,
+  options: StageOptions,
+): Promise<void> {
+  if (typeof options.onSubmitCaptured !== "function") return;
+  try {
+    if (typeof adapter.armSubmitWatch !== "function") return;
+    await adapter.armSubmitWatch(() => {
+      // The click has happened; the portal is now navigating. Read AFTER it settles —
+      // reading immediately catches the review screen the operator just left, which is the
+      // one page guaranteed not to carry a record number.
+      void (async () => {
+        try {
+          await new Promise((r) => setTimeout(r, 4000));
+          const capture = await adapter.captureSubmissionConfirmation();
+          const data = (capture.data ?? {}) as Record<string, unknown>;
+          const recordNumber = String(data.permitNumber ?? data.confirmationNumber ?? "");
+          const read = recordNumber
+            ? { confidence: "high" as const, source: "completion_page", reason: capture.message }
+            : { confidence: "low" as const, source: "none", reason: capture.message };
+          options.onSubmitCaptured?.({
+            recordNumber,
+            confidence: read.confidence,
+            source: read.source,
+            reason: read.reason,
+            recordLink: String(data.recordLink ?? ""),
+          });
+        } catch (err) {
+          options.onSubmitCaptured?.({
+            recordNumber: "", confidence: "low", source: "error",
+            reason: `Could not read the completion page: ${err instanceof Error ? err.message : String(err)}`,
+            recordLink: "",
+          });
+        }
+      })();
+    });
+  } catch { /* watching is best-effort — a run must never fail because of it */ }
+}
+
 function trackOpenAdapter(userDataDir: string, adapter: import("./adapter").PortalAdapter): void {
   openStagingAdapters.set(userDataDir, adapter);
   try {
@@ -449,6 +512,13 @@ async function runAdapter(
     // is released and the next run can launch.
     if (leaveBrowserOpen && options.userDataDir) {
       trackOpenAdapter(options.userDataDir, adapter);
+      // WATCH FOR THE OPERATOR'S SUBMIT. This is the window they file in, and the page that
+      // comes back after their click carries the record number the whole product keys on —
+      // which until now a person read off the screen and typed into a form (~258
+      // interruptions per 100 projects, the largest avoidable cost measured). Hard rule 1
+      // is untouched: the human clicks, we only read what appears afterwards. A failed or
+      // unconfident read changes nothing and the manual form still works exactly as today.
+      void armSubmitCapture(adapter, options);
     } else {
       await adapter.close();
     }
