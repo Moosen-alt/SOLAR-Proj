@@ -256,6 +256,46 @@
       "evidenceStatus": "missing"
     },
     {
+      "id": "city.struct.attachment-detail-missing",
+      "severity": "blocker",
+      "category": "structural",
+      "title": "Racking/attachment detail missing",
+      "message": "The package does not show enough racking attachment and waterproofing detail.",
+      "cityFeedback": "Provide racking manufacturer, attachment type, attachment spacing, fastener embedment, flashing/waterproofing method, uplift/downforce basis, and roof attachment detail tied to the framing members.",
+      "designTeamAction": "Add the racking attachment detail and manufacturer spec sheet or engineering table used for spacing.",
+      "evidenceNeeded": [
+        "Racking/attachment detail",
+        "Attachment spacing table",
+        "Fastener/embedment callout",
+        "Flashing/waterproofing note"
+      ],
+      "codeReferences": [
+        {
+          "code": "IRC / ORSC",
+          "section": "R324.4.1",
+          "title": "Rooftop-mounted photovoltaic systems and roof loads",
+          "adoptionScope": "One- and two-family residential rooftop PV, subject to local amendments.",
+          "sourceUrl": "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning",
+          "note": "Roof structure, dead load, live load, and attachment assumptions must be shown clearly enough for review."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "rackingAttachment absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: Racking/attachment detail, Attachment spacing table, Fastener/embedment and flashing notes.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ],
+      "evidenceStatus": "missing"
+    },
+    {
       "id": "city.elec.labels-missing",
       "severity": "warning",
       "category": "electrical",
@@ -909,6 +949,46 @@
           "label": "roofFraming absence check",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: Rafter/truss type, Member size/spacing/span, Prescriptive worksheet or stamped engineering.",
+          "confidence": "low",
+          "pageHint": "",
+          "screenshotPath": "",
+          "verifier": "rule_engine",
+          "note": "This is a missing-proof callout, not proof of a design defect. Verify the source package before sending to client."
+        }
+      ],
+      "evidenceStatus": "missing"
+    },
+    {
+      "id": "city.struct.attachment-detail-missing",
+      "severity": "blocker",
+      "category": "structural",
+      "title": "Racking/attachment detail missing",
+      "message": "The package does not show enough racking attachment and waterproofing detail.",
+      "cityFeedback": "Provide racking manufacturer, attachment type, attachment spacing, fastener embedment, flashing/waterproofing method, uplift/downforce basis, and roof attachment detail tied to the framing members.",
+      "designTeamAction": "Add the racking attachment detail and manufacturer spec sheet or engineering table used for spacing.",
+      "evidenceNeeded": [
+        "Racking/attachment detail",
+        "Attachment spacing table",
+        "Fastener/embedment callout",
+        "Flashing/waterproofing note"
+      ],
+      "codeReferences": [
+        {
+          "code": "IRC / ORSC",
+          "section": "R324.4.1",
+          "title": "Rooftop-mounted photovoltaic systems and roof loads",
+          "adoptionScope": "One- and two-family residential rooftop PV, subject to local amendments.",
+          "sourceUrl": "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning",
+          "note": "Roof structure, dead load, live load, and attachment assumptions must be shown clearly enough for review."
+        }
+      ],
+      "installerCallout": true,
+      "evidenceFound": [
+        {
+          "kind": "absence_check",
+          "label": "rackingAttachment absence check",
+          "source": "Parsed project package",
+          "excerpt": "No matching evidence found. Checked for: Racking/attachment detail, Attachment spacing table, Fastener/embedment and flashing notes.",
           "confidence": "low",
           "pageHint": "",
           "screenshotPath": "",
