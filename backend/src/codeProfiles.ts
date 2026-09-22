@@ -256,22 +256,48 @@ export function buildCodeContext(state: string, ahj: string, profile: Jurisdicti
     fireSetbacks: profile?.fireSetbacks ?? [],
     citationFor(code: string, section: string, title: string, fallback?: CodeReference): CodeReference {
       const edition = adopted.find((e) => e.code.toUpperCase() === code.toUpperCase());
+      // ONE STATE'S CODE IS NOT ANOTHER'S AUTHORITY.
+      //
+      // The rules pass Oregon fallbacks (ORSC/OSSC sections, oregon.gov/bcd worksheet
+      // links) because they were written for Oregon. Two paths carried those into other
+      // states' documents, both confirmed by audit on 2026-09-22:
+      //   · a family with no adopted edition returns the fallback VERBATIM, so a Cape
+      //     Coral finding cited the Oregon Residential Specialty Code as its authority;
+      //   · a MODEL-CODE default (NEC/IRC/IBC/IFC, which always match, which is why the
+      //     honest "no adopted-code data" branch below was unreachable) carries no URL of
+      //     its own, so `edition.sourceUrl || fallback?.sourceUrl` reached past it and
+      //     hyperlinked Oregon BCD as the source for a Florida NEC citation.
+      // Outside Oregon an Oregon source is dropped rather than shown, and the citation
+      // says it is unconfirmed. Losing a link is a smaller harm than a wrong authority
+      // on a document a Florida plans examiner reads.
+      const foreignOregonSource = (value: string): boolean =>
+        state.trim().toUpperCase() !== "OR" && /oregon|\bor\.gov\b|\bbcd\b|orsc|ossc|oar\s*918/i.test(value || "");
+      const safeUrl = (value: string | undefined): string => (value && !foreignOregonSource(value) ? value : "");
+
       if (!edition) {
-        return fallback ?? {
+        if (fallback && !foreignOregonSource(`${fallback.code} ${fallback.sourceUrl} ${fallback.adoptionScope}`)) return fallback;
+        return {
           code, section, title,
           adoptionScope: `Verify the adopted edition with ${ahj || state || "the jurisdiction"}.`,
           sourceUrl: "",
-          note: "No adopted-code data for this jurisdiction — confirm the local code cycle and amendments.",
+          note: fallback
+            ? `No adopted-code data for ${ahj || state || "this jurisdiction"} — and the reference this rule carries is Oregon's, which is not authority here. Confirm the local code cycle and amendments.`
+            : "No adopted-code data for this jurisdiction — confirm the local code cycle and amendments.",
         };
       }
+      // Did this edition come from the jurisdiction, or is it the model-code default
+      // standing in? The difference is the whole claim being made.
+      const isModelDefault = !profile?.adoptedCodes?.length;
       return {
         code: `${edition.edition} ${edition.code}`.trim(),
         section,
         title,
-        adoptionScope: verified
-          ? `${ahj || state}: adopted ${edition.code} ${edition.edition}${edition.title ? ` (${edition.title})` : ""}.`
-          : `${ahj || state}: ${edition.code} ${edition.edition} (seeded — verify locally before citing as authoritative).`,
-        sourceUrl: edition.sourceUrl || fallback?.sourceUrl || "",
+        adoptionScope: isModelDefault
+          ? `No adopted-code record for ${ahj || state || "this jurisdiction"} — showing the ${edition.code} model cycle as a placeholder. Confirm what is adopted locally before citing it.`
+          : verified
+            ? `${ahj || state}: adopted ${edition.code} ${edition.edition}${edition.title ? ` (${edition.title})` : ""}.`
+            : `${ahj || state}: ${edition.code} ${edition.edition} (seeded — verify locally before citing as authoritative).`,
+        sourceUrl: safeUrl(edition.sourceUrl) || safeUrl(fallback?.sourceUrl) || "",
         note: edition.notes || fallback?.note || "",
       };
     },

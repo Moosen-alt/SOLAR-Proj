@@ -903,8 +903,18 @@ function buildPrescriptiveApplication(project: ProjectRecord, _profile: Applicat
 
 ${commonProjectBlock(project)}
 
-Prescriptive code screen (all must be Yes to remain prescriptive):
-${evaluatePrescriptiveCriteria(project).map((c) => `- ${c.label}: ${c.answer}${c.detail ? ` — ${c.detail}` : ""}`).join("\n")}
+${(project.state || "").trim().toUpperCase() === "OR"
+  ? `Prescriptive code screen (all must be Yes to remain prescriptive):
+${evaluatePrescriptiveCriteria(project).map((c) => `- ${c.label}: ${c.answer}${c.detail ? ` — ${c.detail}` : ""}`).join("\n")}`
+  // WHOSE LIMITS ARE PRINTED HERE? evaluatePrescriptiveCriteria's rows carry Oregon's
+  // ORSC / BCD 440-5952 thresholds unless a jurisdiction's own limits were researched
+  // into its code profile. Printing them under another state's application header states
+  // Oregon's numbers as that AHJ's requirement, to a plans examiner who has never heard
+  // of them (audited 2026-09-22). Outside Oregon the rows are withheld and the document
+  // says plainly that the screen has not been established for this jurisdiction.
+  : `Prescriptive code screen — NOT ESTABLISHED FOR THIS JURISDICTION:
+- The itemized screen this tool carries is Oregon's (ORSC / BCD 440-5952). ${project.ahj || project.state || "This jurisdiction"} has its own rules, and printing Oregon's numbers here would state them as this AHJ's requirement.
+- Confirm ${project.ahj || "the AHJ"}'s prescriptive criteria against its own published checklist before filing, or record them on the jurisdiction's code profile so this screen fills in automatically next time.`}
 - Firefighter access/pathways shown: ${/pathway|fire|access/i.test(`${payload(project, "sitePlanNotesText")} ${payload(project, "splitPagesText")}`) ? "Yes" : "[verify]"}
 - Attachment/racking details included: ${payload(project, "racking") ? "Yes" : "[verify]"}
 

@@ -72,6 +72,54 @@ await run("EffectiveCodeContext: verified vs seeded vs defaults phrasing", () =>
   assert.ok(/verify/i.test(unknown.citationFor("IRC", "R324", "Rooftop PV").adoptionScope + unknown.citationFor("IRC", "R324", "Rooftop PV").note));
 });
 
+// ---------------------------------------------------------------------------
+// ONE STATE'S CODE IS NOT ANOTHER'S AUTHORITY. The rules carry Oregon fallbacks
+// (ORSC sections, oregon.gov/bcd links) because they were written for Oregon.
+// Audited 2026-09-22: Cape Coral was cited the Oregon Residential Specialty Code,
+// and a Florida NEC citation hyperlinked Oregon BCD as its source.
+// ---------------------------------------------------------------------------
+const OREGON_FALLBACK = {
+  code: "ORSC",
+  section: "R324.4.1",
+  title: "Rooftop-mounted photovoltaic systems",
+  adoptionScope: "Oregon residential prescriptive path.",
+  sourceUrl: "https://www.oregon.gov/bcd/Formslibrary/5952.pdf",
+  note: "Oregon worksheet.",
+};
+
+const isOregonSource = (url: string) => /oregon|\bbcd\b|orsc|ossc|oar\s*918/i.test(url);
+
+await run("MUST PASS: an Oregon source URL never becomes a Florida citation's authority", () => {
+  const fl = resolveEffectiveCodeContext(db, "FL", "Cape Coral");
+  const cite = fl.citationFor("NEC", "690.12", "Rapid shutdown", OREGON_FALLBACK);
+  // Florida's OWN source is the right answer when it has one; the invariant is only
+  // that Oregon's never is.
+  assert.ok(!isOregonSource(cite.sourceUrl), `an Oregon link was cited to a Florida project: ${cite.sourceUrl}`);
+});
+
+await run("MUST PASS: an Oregon-only code FAMILY is not returned verbatim outside Oregon", () => {
+  const oh = resolveEffectiveCodeContext(db, "OH", "Columbus");
+  const cite = oh.citationFor("ORSC", "R324.4.1", "Rooftop PV", OREGON_FALLBACK);
+  assert.equal(cite.sourceUrl, "", "Oregon's worksheet URL must not be Columbus's authority");
+  assert.match(cite.note, /Oregon's, which is not authority here|No adopted-code data/i);
+});
+
+await run("MUST EXCLUDE: Oregon projects keep their Oregon citations and links", () => {
+  const or = resolveEffectiveCodeContext(db, "OR", "Salem");
+  const cite = or.citationFor("ORSC", "R324.4.1", "Rooftop PV", OREGON_FALLBACK);
+  // Salem's own adopted-code source outranks the rule's fallback; either way an Oregon
+  // project must still end up with an Oregon authority rather than a stripped citation.
+  assert.ok(cite.sourceUrl && isOregonSource(cite.sourceUrl),
+    `Oregon must still cite Oregon, got "${cite.sourceUrl}"`);
+});
+
+await run("a model-code default says it is a placeholder, not an adoption record", () => {
+  const wy = resolveEffectiveCodeContext(db, "WY", "Cheyenne");
+  const cite = wy.citationFor("NEC", "690.12", "Rapid shutdown");
+  assert.match(cite.adoptionScope, /No adopted-code record|placeholder/i,
+    `a model default claimed to be Cheyenne's adopted code: ${cite.adoptionScope}`);
+});
+
 await run("research NEVER downgrades a verified row; verify upgrades a seeded one", () => {
   const or = getCodeProfile(db, { state: "OR" })!;
   saveResearchedCodeProfile(db, { ...or, prescriptive: { ...or.prescriptive, maxGroundSnowPsf: 999 } });
