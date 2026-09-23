@@ -1746,6 +1746,14 @@ export function tagUploadControls(): UploadSlot[] {
   }
   let n = 0;
 
+  // A KEY IS VALID ONLY FOR THE PASS THAT ASSIGNED IT. Keys are DOM-order indexes, and pass 2
+  // below SKIPS a trigger whose container now holds a file input — so without this, that
+  // trigger kept its key from an earlier pass while the counter handed the same key to a
+  // different control. Two elements then answered to one [data-al-upl] selector, and anything
+  // reading marks by key (the replay sweep's "a recorded step filled this slot") credited the
+  // wrong control: an unrecorded slot read as filled and its document was never attached.
+  for (const stale of deepQueryAll(document, "[data-al-upl]")) stale.removeAttribute("data-al-upl");
+
   // Derive the field label for an upload control: nearest <label>, else the closest
   // form-group/row container's leading label/heading/text, else the trigger's own text.
   function deriveLabel(el: Element): string {

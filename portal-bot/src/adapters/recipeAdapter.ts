@@ -63,7 +63,8 @@ export function looksLikeProjectData(label: string, value: string): boolean {
   return UNAMBIGUOUS_PII_VALUE.test(v) || PHONE_VALUE.test(v);
 }
 import { rankAddressVersions } from "../addressVersion";
-import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
+import { imageToPdfBytes, shouldConvertToPdf } from "../imageToPdf";
+import { removeUploadStaging, uploadPayloadFor, type PreparedUpload } from "./uploadPayload";
 import { exactUploadDocType, fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
 import { reviewComparison, scrapeReviewScreen as scrapeReviewScreenShared, type ReviewMismatch } from "../reviewScreenScraper";
 import { sweepEmptyRequiredControls, type EmptyRequired } from "../requiredControlSweep";
@@ -629,14 +630,21 @@ export class RecipeAdapter extends BasePortalAdapter {
       // and is REPORTED — it never crashes the reopen or silently skips.
       let attachedDocs = 0;
       let attachNote = "";
+      // WHAT THE SWEEP SAID, NOT JUST HOW MANY IT ATTACHED. A refused attach is reported only
+      // as a drift warning; this result used to carry the count alone, so a document the
+      // portal refused read as "0 document(s) staged" with no reason. Kept separate from
+      // attachNote: that one means "the GATE stopped it" (attachGateStopped), this does not.
+      const warningsBefore = this.driftWarnings.length;
       try {
         attachedDocs = await this.sweepUnrecordedUploads();
       } catch (err) {
         attachNote = ` Document staging stopped by the attach-time gate: ${err instanceof Error ? err.message : String(err)} — verify the documents and re-run.`;
       }
+      const stagingWarnings = this.driftWarnings.slice(warningsBefore);
+      const stagingNote = stagingWarnings.length ? ` Document staging notes: ${stagingWarnings.join("; ")}.` : "";
 
       return ok(
-        `Reopened the correction form for ${appNo}: ${choice.why}. ${attachedDocs} document(s) staged through the attach-time gate.${attachNote} AUTOMATION HAS STOPPED — review the reopened application and click the portal's resubmit yourself.`,
+        `Reopened the correction form for ${appNo}: ${choice.why}. ${attachedDocs} document(s) staged through the attach-time gate.${attachNote}${stagingNote} AUTOMATION HAS STOPPED — review the reopened application and click the portal's resubmit yourself.`,
         {
           finalSubmitClicked: false,
           applicationNumber: appNo,
@@ -645,6 +653,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           // Recorded by NAME, never position — the same discipline the chooser documents.
           reopenSelector: correctionFormSelector(choice.row),
           attachedDocs,
+          driftWarnings: stagingWarnings,
           offeredForms: rows.map((r: ProjectFormRow) => r.name),
           ...(attachNote ? { attachGateStopped: true } : {}),
         },
@@ -2225,16 +2234,90 @@ ${body.slice(0, 4000)}`);
   // document we hold, never a substitute, and never a slot that forbids one.
   private readonly sweptUploadLabels = new Set<string>();
 
+  /** A SLOT A RECORDED STEP FILLED IS NOT "A SLOT THE RECIPE HAS NO STEP FOR".
+   *
+   *  The sweep's own bookkeeping (sweptUploadLabels) only knew about the sweep's OWN attaches,
+   *  so a slot the recorded upload step had just filled was attached a SECOND time before the
+   *  next advancing click, with a false "no step for" warning — on a portal where each attach
+   *  adds a row, a duplicate document on a live application. The slot identity the engine
+   *  uses is the tagged element itself (data-al-upl), so the fact lives ON the element: the
+   *  recorded attach marks the control it filled (and, for a chooser widget, the input the
+   *  chooser handed the file to). A fresh page or re-rendered form has fresh elements and no
+   *  marks, so this is scoped to exactly this page and pass — never a run-wide label list,
+   *  which would starve a later page whose slots merely share a label. Best-effort: a mark
+   *  that cannot be written falls back to the old behaviour for that slot, and never fails
+   *  the attach that already happened. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async markRecordedUpload(target: any, chooser: any): Promise<void> {
+    const mark = (el: Element): void => {
+      el.setAttribute("data-al-upl-recorded", "1");
+      // A <label>/wrapper resolved as the target: mark the input it drives as well.
+      const input = el.tagName === "INPUT" ? null
+        : ((el as HTMLLabelElement).control ?? el.querySelector('input[type="file"]'));
+      input?.setAttribute("data-al-upl-recorded", "1");
+    };
+    await target?.evaluate?.(mark).catch(() => null);
+    // FileChooser.element() is SYNCHRONOUS (an ElementHandle, not a promise) — awaiting a
+    // .catch on it short-circuited to undefined and the chooser's input was never marked.
+    try {
+      const handle = chooser?.element?.();
+      await handle?.evaluate?.(mark).catch(() => null);
+    } catch { /* best-effort, as above */ }
+  }
+
+  /** Keys (data-al-upl, as tagUploadControls just assigned them) of slots a recorded attach
+   *  already filled on this page. The locator pierces open shadow roots the way
+   *  tagUploadControls does. */
+  private async satisfiedUploadSlotKeys(): Promise<Set<string>> {
+    try {
+      const keys = await this.page.locator("[data-al-upl][data-al-upl-recorded]")
+        .evaluateAll((els: Element[]) => els.map((e) => e.getAttribute("data-al-upl") || "")) as string[];
+      return new Set((Array.isArray(keys) ? keys : []).filter(Boolean));
+    } catch {
+      return new Set(); // unreadable: behave exactly as before this check existed
+    }
+  }
+
+  /** Staging dirs holding large documents handed to the browser BY PATH (uploadPayload.ts).
+   *  The browser reads such a file when the portal uploads it — possibly at the human's final
+   *  submit — so they live exactly as long as the browser this adapter opened: close()
+   *  removes them after the browser is gone, never earlier. */
+  private readonly uploadStagingDirs: string[] = [];
+
+  private stageUpload(prepared: PreparedUpload): PreparedUpload["file"] {
+    if (prepared.tempDir) this.uploadStagingDirs.push(prepared.tempDir);
+    return prepared.file;
+  }
+
+  override async close(): Promise<void> {
+    try {
+      await super.close();
+    } finally {
+      this.releaseUploadStaging();
+    }
+  }
+
+  /** Remove the staged large-file copies WITHOUT touching the browser. For the one case where
+   *  the browser is already gone but close() was never called: the HUMAN closed the left-open
+   *  review window (index.ts trackOpenAdapter's context "close" handler). Nothing can read
+   *  the copies any more, and waiting for the 7-day prune left them on disk indefinitely on
+   *  a server that stages no further large file. Idempotent. */
+  releaseUploadStaging(): void {
+    for (const dir of this.uploadStagingDirs.splice(0)) removeUploadStaging(dir);
+  }
+
   private async sweepUnrecordedUploads(): Promise<number> {
     if (!this.page || typeof this.page.evaluate !== "function") return 0;
     const slots = await this.page.evaluate(tagUploadControls).catch(() => []) as Array<
       { key: string; label: string; kind: string; required: boolean; accept: string }>;
     if (!Array.isArray(slots) || slots.length === 0) return 0;
+    const satisfied = await this.satisfiedUploadSlotKeys();
     let filled = 0;
     for (const slot of slots) {
       const label = String(slot.label || "");
       const key = label.trim().toLowerCase();
       if (!key || this.sweptUploadLabels.has(key)) continue;
+      if (satisfied.has(slot.key)) continue;
       // An application forbids substitutes, but its exact document is welcome.
       if (uploadForbidsSubstitute(label) && !exactUploadDocType(label)) continue;
       // Only a slot that NAMES its document. A generic "attach files" control at replay is
@@ -2247,12 +2330,16 @@ ${body.slice(0, 4000)}`);
       const allowed = fileTypeAllowed(file, accept);
       const pdf = shouldConvertToPdf(file, accept, allowed) ? await imageToPdfBytes(file).catch(() => null) : null;
       if (!allowed && !pdf) continue;
-      const payload = pdf
-        ? { name: pdfNameFor(path.basename(file).replace(/^[0-9a-f-]{36}-/i, "")), mimeType: "application/pdf", buffer: pdf }
-        : file;
       const loc = await this.resolveLocator({ css: `[data-al-upl="${slot.key}"]` });
       if (!loc) continue;
+      // The SAME payload the recorded upload step presents — never the raw stored path, whose
+      // basename carries the on-disk UUID prefix into what the portal reviewer sees.
+      const payload = this.stageUpload(uploadPayloadFor(file, pdf));
       this.options.beforeUpload?.(hit.docType, file);
+      // A REFUSED ATTACH IS REPORTED, NEVER SWALLOWED. This was `.catch(() => false)` and a
+      // bare continue: a document Playwright refused (a 50MB+ buffer did, every time) was
+      // simply not attached, with no warning — a missing document nobody was told about.
+      let failure = "";
       const ok = slot.kind === "browse"
         ? await Promise.all([
             this.page.waitForEvent("filechooser", { timeout: 8000 }),
@@ -2260,9 +2347,13 @@ ${body.slice(0, 4000)}`);
           ]).then(([chooser]: [{ setFiles: (f: unknown) => Promise<void> }, unknown]) => {
             this.options.beforeUpload?.(hit.docType, file);
             return chooser.setFiles(payload);
-          }).then(() => true).catch(() => false)
-        : await loc.setInputFiles(payload).then(() => true).catch(() => false);
-      if (!ok) continue;
+          }).then(() => true).catch((e: unknown) => { failure = e instanceof Error ? e.message : String(e); return false; })
+        : await loc.setInputFiles(payload).then(() => true)
+          .catch((e: unknown) => { failure = e instanceof Error ? e.message : String(e); return false; });
+      if (!ok) {
+        this.driftWarnings.push(`could not attach ${hit.docType} to "${label.slice(0, 44)}" (a slot the recipe has no step for): ${failure.split("\n")[0].slice(0, 160)} — attach it by hand`);
+        continue;
+      }
       await this.waitForUploadAccepted();
       this.sweptUploadLabels.add(key);
       filled++;
@@ -3108,21 +3199,8 @@ ${body.slice(0, 4000)}`);
         const pdfBuf = shouldConvertToPdf(filePath, liveAccept, fileTypeAllowed(filePath, liveAccept))
           ? await imageToPdfBytes(filePath).catch(() => null)
           : null;
-        const file = pdfBuf ? { name: pdfNameFor(path.basename(filePath).replace(/^[0-9a-f-]{36}-/i, "")), mimeType: "application/pdf", buffer: pdfBuf } : (() => {
-          const base = path.basename(filePath);
-          const clean = base.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i, "");
-          try {
-            const ext = path.extname(clean).toLowerCase();
-            const mimeType = ext === ".pdf" ? "application/pdf"
-              : ext === ".png" ? "image/png"
-              : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg"
-              : ext === ".zip" ? "application/zip"
-              : "application/octet-stream";
-            return { name: clean || base, mimeType, buffer: fs.readFileSync(filePath) };
-          } catch {
-            return filePath; // unreadable — let Playwright read the path itself
-          }
-        })();
+        // The SAME payload builder the unrecorded-upload sweep uses (uploadPayload.ts).
+        const file = this.stageUpload(uploadPayloadFor(filePath, pdfBuf));
         // Custom Browse/Upload widgets tag their controls with data-al-upl at record time;
         // that attribute is gone on a fresh page, so re-tag before resolving the selector.
         //
@@ -3156,11 +3234,13 @@ ${body.slice(0, 4000)}`);
           ]);
           this.options.beforeUpload?.(step.docType!, filePath);
           await chooser.setFiles(file);
+          await this.markRecordedUpload(scoped, chooser);
           await this.waitForUploadAccepted();
           return true;
         }
         this.options.beforeUpload?.(step.docType!, filePath);
         await scoped!.setInputFiles(file);
+        await this.markRecordedUpload(scoped, null);
         await this.waitForUploadAccepted();
         return true;
       }
@@ -4316,7 +4396,13 @@ ${body.slice(0, 4000)}`);
       const bars = document.querySelectorAll('[role="progressbar"], .progress-bar, [class*="progress"], [class*="upload"]');
       for (const el of Array.from(bars) as HTMLElement[]) {
         if (!visible(el)) continue;
-        const now = Number(el.getAttribute("aria-valuenow"));
+        // A MISSING aria-valuenow IS NOT 0%. Number(null) is 0, so every Bootstrap-style
+        // ".progress" wizard nav and "upload-*" container read as a stalled upload: each
+        // attach waited the full UPLOAD_ACCEPT_MS and reported "still taking a document (0%)".
+        // Only an element that states a value — the attribute, or its own "N%" text — is a
+        // progress reading.
+        const raw = el.getAttribute("aria-valuenow");
+        const now = raw !== null && raw.trim() !== "" ? Number(raw) : NaN;
         if (Number.isFinite(now) && now >= 0) { note(now); continue; }
         const m = (el.innerText || "").trim().match(/^(\d{1,3})%$/);
         if (m) note(Number(m[1]));

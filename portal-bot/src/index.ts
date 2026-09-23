@@ -299,7 +299,7 @@ async function armSubmitCapture(
   } catch { /* watching is best-effort — a run must never fail because of it */ }
 }
 
-function trackOpenAdapter(userDataDir: string, adapter: import("./adapter").PortalAdapter): void {
+export function trackOpenAdapter(userDataDir: string, adapter: import("./adapter").PortalAdapter): void {
   openStagingAdapters.set(userDataDir, adapter);
   // ADVERTISE THE REVIEW SESSION ON DISK. In-memory tracking dies with this process; the
   // window it is tracking does not. The marker is what stops the NEXT process reaping the
@@ -313,6 +313,17 @@ function trackOpenAdapter(userDataDir: string, adapter: import("./adapter").Port
       ctx.on("close", () => {
         if (openStagingAdapters.get(userDataDir) === adapter) openStagingAdapters.delete(userDataDir);
         clearReviewOpen(userDataDir); // they closed it — the profile is reapable again
+        // THE HUMAN CLOSING THE WINDOW IS THE END OF THIS ADAPTER'S BROWSER, so the large
+        // documents it staged by path (uploadPayload.ts) can go now. Nothing else would remove
+        // them: close() is never called for a window the human closed, and the 7-day prune
+        // runs only when a later large file is staged. Release ONLY the staging — the context
+        // is already closed, and this handler also fires when our own close() closes it.
+        // Unconditional on the map identity above: a newer run owning this profile does not
+        // make this adapter's copies any more readable.
+        try {
+          const release = (adapter as { releaseUploadStaging?: () => void }).releaseUploadStaging;
+          if (typeof release === "function") release.call(adapter);
+        } catch { /* best-effort — the prune is the backstop */ }
       });
     }
   } catch { /* tracking only — never fail the run */ }
@@ -621,6 +632,8 @@ export async function runCorrectionReopen(
         reopenWhy: String(data.reopenWhy ?? ""),
         attachedDocs: Number(data.attachedDocs ?? 0),
         attachGateStopped: data.attachGateStopped === true,
+        // Why a document did not attach (a refused/failed attach), not just the count.
+        driftWarnings: Array.isArray(data.driftWarnings) ? data.driftWarnings.map((w) => String(w)) : [],
         applicationNumber: String(applicationNumber ?? ""),
         browserLeftOpen: leaveBrowserOpen,
         pauseReason: reopenResult.pauseReason ?? null,

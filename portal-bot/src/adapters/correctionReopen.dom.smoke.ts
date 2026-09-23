@@ -17,6 +17,8 @@
 //      gate that throws STOPS the attach and is reported, never swallowed.
 //   5. finalSubmitClicked is false on every path; the wizard's own Submit control is
 //      never clicked.
+//   6. An attach that FAILS (not a gate refusal) says why on the result — the drift warning
+//      reaches the message and driftWarnings, never a bare "0 document(s) staged".
 //
 // Run: npx tsx portal-bot/src/adapters/correctionReopen.dom.smoke.ts
 import assert from "node:assert/strict";
@@ -50,6 +52,7 @@ const LANDING = `<!doctype html><html><body>${CHROME}
     <tr><td><a href="/app/1116">APP-1116</a></td><td>Suspended - Changes Needed From Customer</td></tr>
     <tr><td><a href="/app/333333">APP-333333</a></td><td>Suspended</td></tr>
     <tr><td><a href="/app/444444">APP-444444</a></td><td>Resubmitted</td></tr>
+    <tr><td><a href="/app/555555">APP-555555</a></td><td>Suspended - Changes Needed From Customer</td></tr>
   </tbody></table>
 </body></html>`;
 
@@ -114,6 +117,18 @@ const REOPENED = `<!doctype html><html><body>${CHROME}
   <a class="btn" href="/submitted" style="display:inline-block;height:26px;width:90px">Submit</a>
 </body></html>`;
 
+// A reopened wizard whose upload widget is BROKEN: its Browse opens no file chooser, so the
+// revised document cannot attach. The result must say WHY nothing was staged.
+const REOPENED_BROKEN = `<!doctype html><html><body>${CHROME}
+  <h1>PP - Suspended - Changes Needed From Customer</h1>
+  <p>Reviewer notes: provide the revised one-line diagram.</p>
+  <div class="form-group">
+    <label for="browseSld">One-Line Diagram</label>
+    <button type="button" id="browseSld">Browse</button>
+  </div>
+  <a class="btn" href="/submitted" style="display:inline-block;height:26px;width:90px">Submit</a>
+</body></html>`;
+
 const server = http.createServer((req, res) => {
   const u = req.url || "";
   hits.push(u);
@@ -122,6 +137,8 @@ const server = http.createServer((req, res) => {
   if (u.startsWith("/app/1116")) return res.end(projectPage("APP-1116", "/form/correction-1116", "/form/cancel"));
   if (u.startsWith("/app/333333")) return res.end(AMBIGUOUS);
   if (u.startsWith("/app/444444")) return res.end(SUBMITTED);
+  if (u.startsWith("/app/555555")) return res.end(projectPage("APP-555555", "/form/correction-broken", "/form/cancel"));
+  if (u.startsWith("/form/correction-broken")) return res.end(REOPENED_BROKEN); // before the generic prefix
   if (u.startsWith("/form/correction")) return res.end(REOPENED);
   if (u.startsWith("/form/")) return res.end(`<!doctype html><html><body>${CHROME}<h1>WRONG FORM OPENED</h1></body></html>`);
   return res.end(LANDING);
@@ -242,6 +259,23 @@ check("a gate refusal stops the attach and is reported on the result", () => {
   assert.equal(Number(r6.attachedDocs), 0, `attachedDocs=${r6.attachedDocs}`);
   assert.equal(r6.attachGateStopped, true, "the gate stop must be surfaced, not swallowed");
   assert.match(String(r6.message), /attach-time gate/i);
+});
+
+// ---------------------------------------------------------------------------
+// 7. The attach itself FAILS (broken upload widget): the reopen stands, and the result says
+//    WHY nothing was staged — never a bare "0 document(s) staged".
+// ---------------------------------------------------------------------------
+hits.length = 0;
+const r7 = await runCorrectionReopen(recipe, "APP-555555", { sld: sldPath }, { headless: true });
+console.log(`   failed attach: ok=${r7.ok} attached=${r7.attachedDocs} warnings=${JSON.stringify(r7.driftWarnings)}`);
+check("a failed attach is explained on the result, not just counted as 0", () => {
+  assert.equal(r7.ok, true, String(r7.message));
+  assert.equal(Number(r7.attachedDocs), 0, `attachedDocs=${r7.attachedDocs}`);
+  assert.notEqual(r7.attachGateStopped, true, "an attach failure is not a gate refusal");
+  assert.match(String(r7.message), /could not attach sld/i, `message: ${r7.message}`);
+  assert.ok((r7.driftWarnings as string[]).some((w) => /could not attach sld/i.test(w) && /one-line/i.test(w)),
+    `driftWarnings: ${JSON.stringify(r7.driftWarnings)}`);
+  assert.ok(!hits.some((h) => h.startsWith("/submitted")), "the wizard's own Submit control was clicked");
 });
 
 await new Promise<void>((r) => server.close(() => r()));
