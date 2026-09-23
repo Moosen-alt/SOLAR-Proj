@@ -83,6 +83,9 @@ async function main(): Promise<void> {
     aborted += 1;
     return route.abort();
   });
+  // tsx/esbuild wraps named inner functions in __name(...), which does not exist in the page:
+  // without this shim the caption script below throws on load and silently shows nothing.
+  await context.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
   // The caption bar: fixed, above everything, never takes a click.
   await context.addInitScript(() => {
     const mount = () => {
@@ -115,7 +118,9 @@ async function main(): Promise<void> {
     await page.screenshot({ path: path.join(SHOTS, `${String(shot).padStart(2, "0")}-${label}.png`) });
   };
   const board = async () => {
-    await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
+    // Not "networkidle": the dashboard holds an SSE connection open (/api/events), so the
+    // network is never idle. The board's own cards are the readiness signal.
+    await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#projectBoard button", { timeout: 15_000 });
   };
   const open = async (p: ListProject) => {
