@@ -25,8 +25,9 @@ them exactly as they judge a live project.
 | Priya Raman | City of Portland | PGE | ready_to_stage | 22 pass / 5 warn |
 | Gus Halvorsen | City of Tigard | PGE | ready_to_stage | 22 pass / 4 warn — **one is an `error`: PE-stamped structural** |
 
-Each carries **8 built documents**: plan_set, sld, site_plan, structural, module_spec,
-inverter_spec, labels, and a `utility_package_zip`.
+Each carries **8 documents**: the uploaded `plan_set`, six sheets split and classified out
+of it (`sld`, `site_plan`, `structural`, `module_spec`, `inverter_spec`, `labels`), and an
+assembled `utility_package_zip`. **No filled permit application** — see Act 3.
 
 The board reads uniformly green. **The story is not in the status column — it is in the QC
 warnings**, and they differ per jurisdiction because the product knows each jurisdiction's
@@ -39,7 +40,7 @@ requirement list. That is the point to make out loud.
 ```bash
 # 1. Demo data exists and is where you expect
 npx tsx scripts/demo-environment.ts --status
-#    -> Demo company: Solaris Demo Co (e7ae6a21-...)
+#    -> Demo company: Solaris Demo Co (<a client id>)
 #    -> 4 projects, all ready_to_stage
 
 # 2. Server boots clean
@@ -69,13 +70,25 @@ npx tsx scripts/demo-environment.ts
 Form acquisition runs in the job worker, so it only happens with the server up. With
 `npm run dev` running:
 
+**Derive the project IDs — never paste them.** A re-seed mints new IDs, and a re-seed is
+the only time you need this pass. Stale IDs 404, `curl` swallows it, and you wait for a
+drain that never starts.
+
 ```bash
-for id in 65eb2880-e378-4cfa-816c-e0997fb6406c \
-          0f7efab9-4b19-4922-97ba-275ae5ed67c1 \
-          ae1b0d4e-c12b-4002-90a1-a7e95d373d57 \
-          c2ff6089-2d0e-47b6-8f31-d70349619031; do
-  curl -s -X POST "http://localhost:4173/api/projects/$id/qc" \
-       -H "Content-Type: application/json" -d '{}' > /dev/null
+BASE=http://localhost:4173
+
+CLIENT=$(curl -s "$BASE/api/clients" \
+  | node -pe "JSON.parse(require('fs').readFileSync(0)).clients.find(c=>/Solaris Demo/i.test(c.companyName||'')).id")
+echo "demo client: $CLIENT"   # must not be empty or 'undefined'
+
+IDS=$(curl -s "$BASE/api/projects?clientId=$CLIENT&limit=50" \
+  | node -pe "JSON.parse(require('fs').readFileSync(0)).projects.map(p=>p.id).join(' ')")
+echo "$IDS" | wc -w          # must print 4
+
+for id in $IDS; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/projects/$id/qc" \
+         -H 'Content-Type: application/json' -d '{}')
+  echo "$id -> $code"        # must be 200, not 404
 done
 ```
 
@@ -139,12 +152,37 @@ is not noisy, it is specific.
 
 ### Act 3 — the artifacts (3 min)
 
-On any project, open the documents list. Eight files, built by the product, including the
-`utility_package_zip` — the thing the installer would otherwise assemble by hand. Open the
-filled permit application PDF. The product fetched the AHJ's own blank form and filled it.
+On any project, open the documents list. **Eight entries: one uploaded plan set, six sheets
+the product split and classified out of it, and one assembled `utility_package_zip`.**
 
-This is the moment the value lands: the output is not a report about the work, it is the
-work.
+```
+plan_set              <name>-plan-set.pdf              (the input)
+site_plan             ... Site / plot plan.pdf          \
+sld                   ... SLD / one-line.pdf             |
+structural            ... Structural / roof framing.pdf  | derived by the splitter
+module_spec           ... Module spec.pdf                |
+inverter_spec         ... Inverter spec.pdf              |
+labels                ... Labels / placards.pdf         /
+utility_package_zip   ... all package.zip                (assembled for the utility)
+```
+
+The point: a single PDF went in, and the product recognised each sheet for what it is and
+filed it under the document type the AHJ and the utility ask for by name. The zip is the
+thing the installer would otherwise assemble by hand.
+
+If you open one sheet, open the **SLD / one-line** — it carries a real load-side
+interconnection calculation (200A bus × 120% = 240A allowable; 175A main + 40A PV = 215A,
+complies) which is exactly what a plan reviewer checks first.
+
+> **Do not promise a filled permit application.** The demo projects do not have one — form
+> acquisition did not attach it, and Act 2's warnings say so out loud ("Permit application
+> (filled) is not attached for City of Portland"). That absence is Act 2's story, not a bug
+> to explain away in Act 3.
+>
+> Also know what these sheets look like: they are **text pages, not CAD drawings**, each
+> footed `SOLARIS DEMO CO — DEMONSTRATION PLAN SET, NOT FOR CONSTRUCTION`. The content is
+> genuine; the draughting is not. Show the documents *list* freely; open a sheet only if you
+> are ready to say "this is a synthetic plan set — a real one is a drawing."
 
 ### Act 4 — the portal (optional, see below)
 
