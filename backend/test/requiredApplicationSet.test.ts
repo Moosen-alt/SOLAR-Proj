@@ -56,6 +56,7 @@
 //                       out of fifteen SCALAR field checks that never look at a document.
 //
 //   npx tsx backend/test/requiredApplicationSet.test.ts
+import { REPO } from "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -328,7 +329,7 @@ await check("...and that is exactly the list prepareSubmission turns into its 40
   const kept = stagingWouldRefuse(missingEle, "electrical");
   assert.match(kept.map((d) => d.label).join("; "), /[Ee]lectrical/,
     "the 409 interpolates these labels and nothing else — it must name the document");
-  const src = fs.readFileSync(path.join(process.cwd(), "backend", "src", "repository.ts"), "utf8");
+  const src = fs.readFileSync(path.join(REPO, "backend", "src", "repository.ts"), "utf8");
   const at = src.indexOf("const inv = documentInventory(db, detail.project);");
   assert.ok(at > -1, "prepareSubmission no longer consults documentInventory at all");
   const window = src.slice(at, at + 900);
@@ -662,7 +663,7 @@ await check("…WITHOUT being folded into missingFields, which four other things
 const ALL_CLEAR = "Every required document is attached";
 
 function loadDocumentVerdictHtml(): (pkg: unknown) => string {
-  const src = fs.readFileSync(path.join(process.cwd(), "frontend", "dashboard.js"), "utf8");
+  const src = fs.readFileSync(path.join(REPO, "frontend", "dashboard.js"), "utf8");
   const cut = (name: string) => {
     const at = src.indexOf(`function ${name}(`);
     assert.ok(at > -1, `${name} is gone from dashboard.js — re-point this check`);
@@ -738,7 +739,7 @@ await check("…and everything interpolated into that card is esc()'d", () => {
 await check("…and the superseded all-clear sentence is gone from the file entirely", () => {
   // Cheap regression pin on the exact sentence that shipped the first lie. It may only
   // survive as prose in the comment explaining the history, never inside a template.
-  const src = fs.readFileSync(path.join(process.cwd(), "frontend", "dashboard.js"), "utf8");
+  const src = fs.readFileSync(path.join(REPO, "frontend", "dashboard.js"), "utf8");
   const live = src.split(/\r?\n/).filter((line) => {
     const t = line.trim();
     return !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*");

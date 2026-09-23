@@ -18,6 +18,7 @@
 //   MUST NOT   — any value unique to the LEARN project reaches the page.
 //
 //   npx tsx portal-bot/src/adapters/crossProjectReplay.test.ts
+import "../../../backend/test/_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import assert from "node:assert/strict";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../../shared/src/types";
 import { RecipeAdapter } from "./recipeAdapter";

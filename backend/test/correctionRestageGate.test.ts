@@ -43,6 +43,7 @@
 // and check 2 asserts THAT, while QC's verdict still reaches staging through qc_results.
 //
 // Browser-free. Run: tsx backend/test/correctionRestageGate.test.ts
+import "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

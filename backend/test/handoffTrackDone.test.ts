@@ -25,6 +25,7 @@
 // dispatch — the same seam autopilotResumeConcurrency.test.ts uses for Segment A.
 //
 //   npx tsx backend/test/handoffTrackDone.test.ts
+import "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

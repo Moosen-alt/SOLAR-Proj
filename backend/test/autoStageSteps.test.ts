@@ -9,6 +9,7 @@
 // ready_to_stage, because staging opens a live browser under the operator's credentials and
 // the final submit is a human's click (hard rule 1). The most important section here is the
 // one proving what the chain must NEVER do.
+import "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

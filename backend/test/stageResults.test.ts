@@ -8,6 +8,7 @@
 //
 // Section 3 is the manifest: a "←" in its copy threw inside pdf-lib's WinAnsi encoder and the
 // renderer's per-doc catch dropped the whole document from every prescriptive package.
+import "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

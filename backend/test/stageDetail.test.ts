@@ -48,6 +48,7 @@
 // the same request succeeding on your own project and 404ing on someone else's.
 //
 //   npx tsx backend/test/stageDetail.test.ts
+import { REPO } from "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -383,14 +384,14 @@ await check("MUST REFUSE: an unknown project id — 404, before anything is writ
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
 await check("the override route sits under the guarded /api/projects/:id prefix", () => {
-  const server = fs.readFileSync(path.resolve(process.cwd(), "backend/src/server.ts"), "utf8");
+  const server = fs.readFileSync(path.resolve(REPO, "backend/src/server.ts"), "utf8");
   assert.match(server, /app\.post\("\/api\/projects\/:id\/status"/,
     "POST /api/projects/:id/status is not registered — the repository function has no production caller");
   assert.match(server, /app\.use\("\/api\/projects\/:id",\s*scopeGuard\(/,
     "the /api/projects/:id scope guard is gone, so the override route no longer inherits tenancy scoping");
   // The refusals must live in the repository function, not the handler: a second caller
   // (a job, a script, a future route) must not be able to reach the UPDATE without them.
-  const repo = fs.readFileSync(path.resolve(process.cwd(), "backend/src/repository.ts"), "utf8");
+  const repo = fs.readFileSync(path.resolve(REPO, "backend/src/repository.ts"), "utf8");
   assert.match(repo, /export function setProjectStatusByOperator/, "the override writer is not exported");
   assert.ok(!/handoff_ready/.test(server.slice(server.indexOf('app.post("/api/projects/:id/status"'), server.indexOf('app.post("/api/projects/:id/status"') + 900)),
     "the handoff_ready refusal has leaked into the route handler — it belongs with the write");

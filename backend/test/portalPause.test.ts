@@ -2,6 +2,7 @@
 // resuming clears it, and the pause key lines up with the recipe routing key. Exercises
 // the v2 migration (portal_pauses table) on a fresh temp DB.
 // Run: tsx backend/test/portalPause.test.ts
+import "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";

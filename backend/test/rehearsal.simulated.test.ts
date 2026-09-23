@@ -4,6 +4,7 @@
 // stage with no registered portal surfaces a blocker rather than silently mocking.
 process.env.PORTAL_AUTOSEED = "0";
 process.env.MOCK_PORTAL = "1"; // explicit simulation opt-in — the mock is no longer implied by seed-off
+import "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import { rehearse } from "./rehearsal.harness";
 
 const result = await rehearse({ live: false });

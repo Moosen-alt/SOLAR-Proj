@@ -4,6 +4,7 @@
 // real server on a temp sqlite (stub LLM), stores a blank AcroForm template via
 // the upload endpoint, builds the filled forms, and downloads one over HTTP.
 // Run: tsx backend/test/filledFormDownload.test.ts
+import { REPO } from "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -37,7 +38,7 @@ delete (env as Record<string, string | undefined>).http_proxy;
 
 // node + the tsx CLI directly: "npx" is not spawnable on Windows (ENOENT), and a
 // shell wrapper would make kill() stop the shell while orphaning the server.
-const server = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "backend/src/server.ts"], { env, stdio: ["ignore", "pipe", "pipe"], detached: false });
+const server = spawn(process.execPath, [path.join(REPO, "node_modules/tsx/dist/cli.mjs"), path.join(REPO, "backend/src/server.ts")], { env, stdio: ["ignore", "pipe", "pipe"], detached: false });
 let serverLog = "";
 server.stdout?.on("data", (d) => { serverLog += String(d); });
 server.stderr?.on("data", (d) => { serverLog += String(d); });

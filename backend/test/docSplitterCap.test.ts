@@ -4,6 +4,7 @@
 // portal-bot upload resolver uses) — the test sets a tiny cap so a small synthetic plan
 // set exercises the trim without generating a real >5MB PDF.
 // Browser-free. Run: tsx backend/test/docSplitterCap.test.ts
+import "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

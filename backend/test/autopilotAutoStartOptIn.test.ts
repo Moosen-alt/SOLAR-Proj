@@ -7,6 +7,7 @@
 // Auto-start is now OPT-IN: only AUTOPILOT_AUTO_START === "1" enqueues it.
 //
 //   npx tsx backend/test/autopilotAutoStartOptIn.test.ts
+import "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

@@ -7,6 +7,7 @@
 //
 // The precedence section is the one that guards real money: a generated WORKSHEET must never
 // shadow the jurisdiction's own FILLED official form, and a human upload outranks both.
+import "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

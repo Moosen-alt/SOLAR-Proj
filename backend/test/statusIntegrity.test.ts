@@ -22,6 +22,7 @@
 //   8a-8d. LNK-8: a passing re-QC never demotes ready_to_stage nor resets its stage_detail.
 //
 //   npx tsx backend/test/statusIntegrity.test.ts
+import "./_isolate"; // FIRST: runs in a temp cwd so filled/ docs/ page-images never land in the repo's backend/data
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
