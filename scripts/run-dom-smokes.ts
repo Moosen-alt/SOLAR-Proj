@@ -80,11 +80,17 @@ const classify = (rel: string): { bucket: Bucket; reason: string } => {
 // ---------------------------------------------------------------------------------------------
 
 const IGNORED_DIRS = new Set([".git", "node_modules", "dist", "data", "portal-profiles"]);
+// Top-level folders that hold COPIES of this tree: .probe/ carries git worktrees and scratch kits,
+// demo-kit/ is the shipped demo install, .claude/ may hold agent worktrees. Walking them ran every
+// smoke several times over against stale code and reported the copies' failures as ours. Matched
+// only at the repo root, so a legitimately nested folder of the same name is still searched.
+const IGNORED_ROOT_DIRS = new Set([".probe", "demo-kit", "demo-kit-data", ".claude", ".playwright-mcp", ".dom-smoke-logs"]);
 
 const discover = (dir: string, found: string[] = []): string[] => {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
       if (IGNORED_DIRS.has(entry.name)) continue;
+      if (dir === REPO_ROOT && IGNORED_ROOT_DIRS.has(entry.name)) continue;
       discover(path.join(dir, entry.name), found);
     } else if (entry.name.endsWith(".smoke.ts")) {
       // `.endsWith(".smoke.ts")` and not `/smoke\.ts$/` on purpose: backend/src/smoke.ts is the
