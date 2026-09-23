@@ -114,4 +114,4 @@ IRL NOTES/
 scratchpad/
 
 # Portable demo kit — contains a database and documents, never commit it
-demo-kit/
+/demo-kit/
