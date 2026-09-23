@@ -3,6 +3,127 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## THE REVIEWER GATE WAS CLEARING WORK IT HAD NEVER CHECKED (2026-09-22)
+
+Commits `da1e40b` … `8c9c3c8` (nine). Session ended cleanly here: tree clean, backend chain
+**153 suites / 0 failures**, `npm run smoke` passed, typecheck clean. Branch
+`claude/busy-hopper-c2at3x`, **190 commits unpushed to origin** (local only — safe on disk,
+but nothing is off this machine).
+
+Trigger: operator asked to "stretch the legs" of the reviewer gate. Twenty distinct defects
+found and fixed — my own probes plus a 27-agent adversarial workflow (22 reported, 20 survived
+independent verification). Every fix was measured against a COPY of the live 23-project book
+before shipping, and every one is revert-proven (disable the fix, watch the named checks fail).
+
+### The five that mattered, all FALSE CLEARS
+
+A false blocker wastes an afternoon; a false clear puts a defective filing in front of an AHJ
+with a green report attached. All five are the latter.
+
+1. **The interconnection screen had no final `else`.** `if / else-if / else-if` with nothing at
+   the end, so a method matching none of the three vocabularies emitted NOTHING. The 120%
+   busbar arithmetic exists in exactly one place and QC only checks the rating FIELDS ARE
+   PRESENT, so an unrecognised wording skipped the only NEC 705.12 calculation in the product.
+   Trigger is the parser prompt's own first example — `"Net Metering"` (`llm.ts:1070`) — and
+   **Daniel Daly's live row carries it verbatim**. Six of eight realistic wordings were silent;
+   now zero. Unknowns get `city.elec.interconnection-unclassified`, deliberately NOT routed
+   into the load-side branch (that would demand a busbar calc from a possible supply-side tap).
+2. **`"Non-prescriptive"` contains `"prescriptive"`.** Bare substring test inverted the
+   structural gate: such a project got the PRESCRIPTIVE blockers and was never asked for
+   stamped engineering, while `"Engineered"` was handled right. That is the operator's TPO
+   ruling exactly — TPO roof ⇒ non-prescriptive ⇒ those are the jobs that needed stamps.
+   THREE expressions answered that question three ways; all now read
+   `permitPath.pathWordingScope`.
+3. **A zoning setback is not a firefighter access pathway.** Fire evidence accepted bare
+   `setback`/`ridge`/`eave` then granted HIGH confidence for any dimension anywhere. A set with
+   no fire content produced a byte-identical report to one with a dimensioned IFC 1205.2
+   pathway. Over-determined, which is why it survived: removing any one word changed nothing.
+   Replacement vocabulary is HARVESTED from the operator's corpus (`FIRE PATHWAY`, `FIRE
+   ACCESS`, `36" FIRE SETBACK`), not invented — generic words count only near the word "fire".
+4. **A field with two numbers was not a number.** `num()` stripped non-digits and parseFloat'd
+   the concatenation. Bren Trask's live `pvBreaker` = `"50A (fuses in 60A AC disconnect at
+   line-side tap)"` read as **5060 A**. Failed both ways: `"200A (Note 3)"`→2003 silenced a real
+   violation; `"175A (2 of 2)"`→17522 blocked a compliant one and printed it to the operator.
+5. **A photograph cannot overturn arithmetic.** `topicForFinding` maps
+   `city.elec.load-side-over-120` to `sld`, so a "the SLD is on the sheet" verdict downgraded a
+   MEASURED 250A-on-240A violation to a green "Vision-verified" callout. Four findings are now
+   withheld from vision (`MEASURED_FINDING_IDS`), guarded in two places — `needsVision` skips
+   the call, `applyVerdict` re-checks on read so a verdict cached before the gate existed
+   cannot still downgrade.
+
+Also: five evidence lists any ordinary drawing could switch off (`/mount/i` cleared the
+attachment blocker; `/structural/i` cleared roof framing — including a sentence SAYING framing
+was absent; bare `/fire/i` and `/ESS/i` (matches "addrESS") silenced the battery review;
+`/truss/i` opened the span exemption for "rafter/truss" and "not truss"); an Enphase BATTERY
+reclassifying a string design as MLPE and downgrading its rapid-shutdown blocker; a
+low-confidence vision verdict rendering as a green ✓; dedupe ranking specificity above severity.
+
+### THE PATTERN — read this before touching the gate again
+
+Six times, two modules answered ONE question with different vocabularies, and **each fix
+unmasked the next**, because the dedupe/precedence layer had been hiding the blind sibling.
+Mount → fire → prescriptive path → interconnection side → MLPE. Budget for the chain; the
+second failure is usually the pre-existing bug becoming visible, not a regression from your fix.
+
+Detection signal: **the gate contradicting itself** — one rule withholding a finding its
+sibling raises. The blind one is the bug.
+
+The MLPE instance was caught ONLY because the full chain re-ran a test that had passed
+standalone two commits earlier. **Run the whole chain after each of these, not just your suite.**
+
+Fix shape: export ONE predicate, import it, and give it an entry point that derives its own
+inputs (`mountKindForProject`, `isMlpeDesignForProject` take only the project) so a second
+caller cannot reach a different answer by feeding it a different text blob. Check import
+direction first — this repo has a circular-import precedent.
+
+### New suites (all in `backend:test:unit`, ~100 discriminating checks)
+
+`interconnectionSide` · `groundMountScope` · `ratingParse` · `firePathwayEvidence` ·
+`permitPathWording` · `evidenceSpecificity` · `visionRelaxScope` · `reportHonesty`.
+
+`reviewerOregonGolden.json` was regenerated ONCE, deliberately: the fixture's entire plan text
+is "one-line diagram rapid shutdown site plan roof plan" — it genuinely has no attachment
+detail and only ever cleared that screen via `/mount/i` matching "Roof-mounted". Exactly one
+finding added, nothing removed (verified by diffing ids+severities); `baselineOregonGolden.json`
+byte-identical, which proves the QC-side engine did not move.
+
+### Live blast radius, measured — ZERO real customer projects gain a false blocker
+
+Book total 15 → 19 blockers. The four additions are the demo rows + `Test Testerson`, all of
+which carry no extracted plan text. `Daniel Daly` gains the unclassified-interconnection
+warning. Trask's `5060` becomes `null`, which costs nothing today (he is a line-side tap, so
+the load-side rule never runs on him) and routes honestly to "ratings not readable".
+
+### WHAT TO DO NEXT, in order
+
+1. **Daniel Daly's interconnection** — his busbar screen has never run. Record the method as
+   supply side or load side before that filing goes out.
+2. **Demo data gap (new, found here):** the four demo projects have NO extracted plan-set text
+   in their snapshots (~451 chars, no plan-text keys) even though `scripts/demo-environment.ts`
+   emits a proper attachment detail on its ROOF SECTION sheet. The text is written and not read
+   back. That is why they flag on attachment — a demo-data bug, not a rule bug.
+3. **Trask's `pvBreaker` field** — the real repair is for the parser to put `50` in the field
+   and the note elsewhere. `null` is what makes that visible instead of silently wrong.
+4. **Vision cache key (left deliberately):** keyed to the plan-set PDF alone (path, mtime,
+   size), so a verdict outlives the project data the finding measured. The dangerous half is now
+   closed from the other side; tightening the key invalidates the cache on every snapshot edit
+   and buys the vision calls back. A cost decision, not a bug fix.
+
+### Probes kept on disk (`.probe/`, gitignored — not in any commit)
+
+17 scripts. Most reusable: `rulecoverage.ts` (3,840-project matrix; all 18 reviewer rules now
+proven reachable, was 16), `liveimpact.ts` / `round2live.ts` / `round3live.ts` (per-project live
+verdicts), `firevocab.ts` (harvest real vocabulary from the corpus BEFORE tightening a list),
+`numimpact.ts`, `evidencelists.ts`, `dtoguard.ts`. `.probe/from-stress/` holds the 8 probes the
+adversarial agents wrote — `__tmp_fireRefute.ts` found the best defect of the session.
+
+Two measurement traps hit here, both worth repeating: a coverage probe that grepped
+`codeReviewRules` AND `baselineRules` together reported 14 dead rules, 11 of which belong to QC
+(a different pipeline stage) — two subsystems conflated, one scare manufactured. And
+`firevocab.ts` printed matched LINES truncated at 160 chars, which made Basson look
+evidence-free; she has `36" at ridge and 18" at edges/eaves`. **Print the match, not the line.**
+
+
 ## THE PIPELINE DRIVES ITSELF, AND THE KB'S COLUMNS TELL THE TRUTH (2026-09-21)
 
 Commits `c4f714f` … `ecf571a` (UI density, auto-chain, valuation formula, bot round, KB sweep).
