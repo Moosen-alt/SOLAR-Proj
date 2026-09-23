@@ -84,7 +84,7 @@ import { isPortalPaused } from "./portalPause";
 // The ONE creator of permit_check_targets rows (extracted from markTrackSubmitted).
 // Direction matters: submittalTracks must never import repository — jobQueue statically
 // imports repository, and the circular-import guard in CLAUDE.md is about that edge.
-import { ensureCheckTarget, SUBMITTAL_TRACK_TYPES } from "./submittalTracks";
+import { ensureCheckTarget, requiredTracks, SUBMITTAL_TRACK_TYPES, trackPermitTypes, unfinishedTracks, unfinishedUnattributedTargets } from "./submittalTracks";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
@@ -547,17 +547,24 @@ export function createProject(db: AppDb, payload: ParserPayload, orgId: string =
   addAuditLog(db, project.id, "system", "qc gate", "project.qc_completed", { ...qc });
   const detail = getProjectDetail(db, project.id);
   learnFromProject(db, detail.project, "project.created");
-  // AUTONOMY: auto-start autopilot Segment A on every new project (disable with
-  // AUTOPILOT_AUTO_START=0). Safe by construction: Segment A re-runs QC, stops
-  // `blocked` on any gate (409/402), stages only to the portal REVIEW screen,
-  // and can never cross the single human approval gate — approval/submit still
-  // requires the explicit auth-gated POST /autopilot/approve. Dynamic import per
-  // the repository<->jobQueue circular-import guard; enqueueJob self-kicks.
-  if (process.env.AUTOPILOT_AUTO_START !== "0") {
+  // LIVE STAGING IS OPT-IN, NOT THE DEFAULT (AUTOPILOT_AUTO_START=1 to enable).
+  //
+  // This used to enqueue autopilot Segment A on every new project unless the env var was "0".
+  // Segment A opens a LIVE portal browser under the operator's credentials — and the operator's
+  // stated contract (autoStageSteps.ts header, 2026-09-21) is the opposite: the local chain
+  // (split, bill read, QC, forms, docs, reviewer gate) runs itself and stops at ready_to_stage,
+  // and staging a portal is a person's action. Production showed unattended live portal runs
+  // on projects nobody clicked Stage on. The stage_step chain the parser route enqueues now does
+  // all the local work, so Segment A adds nothing before a human decides to stage. Opt in only
+  // where unattended staging is actually wanted. Dynamic import per the repository<->jobQueue
+  // circular-import guard; enqueueJob self-kicks.
+  if (process.env.AUTOPILOT_AUTO_START === "1") {
     void import("./jobQueue")
       // maxRetries 0: staging is not idempotent portal-side; failures escalate
       // and the event-driven auto-resume path handles recovery.
-      .then(({ enqueueJob }) => { enqueueJob(db, "autopilot", {}, { projectId: project.id, priority: 6, maxRetries: 0 }); })
+      // origin "auto_start": the chain's root says no person started it (autopilot.ts reads it
+      // before any resume, and refuses an auto-started chain once the opt-in is withdrawn).
+      .then(({ enqueueJob }) => { enqueueJob(db, "autopilot", { origin: "auto_start" }, { projectId: project.id, priority: 6, maxRetries: 0 }); })
       .catch(() => null);
   }
   return getProjectDetail(db, project.id);
@@ -4792,10 +4799,11 @@ export function applyCorrectionProposals(
   if (!proposals.some(p => p.proposedValue.trim()) && !isDesignRevision) throw new HttpError(409, "This correction has no selected data updates to apply. Review its action checklist instead.");
   if (correction.closed_at) throw new HttpError(409, "This correction is already closed.");
   // READ THE STATUS BEFORE updateProject RUNS — this is the only place the question can be
-  // asked. updateProject re-runs QC, and runQcForProject rewrites status AND stage_detail to
-  // its own verdict unconditionally (qc.ts): measured on a scratch DB, a project sitting at
-  // `correction_triaged` comes back from an apply reading `qc_failed`. Asking afterwards would
-  // always answer "not in a correction state" and the transition below would never fire.
+  // asked. updateProject re-runs QC, and runQcForProject used to rewrite status AND stage_detail
+  // to its own verdict unconditionally: a project at `correction_triaged` came back from an apply
+  // reading `qc_failed`. QC now leaves any status at or past the Submit stage alone (qc.ts), so a
+  // correction state survives the re-QC — but the pre-apply read stays, because it is the
+  // question this transition is actually asking.
   const statusBefore = text(db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId])?.status);
 
   const payload: ParserPayload = {};
@@ -5617,7 +5625,7 @@ export async function recordPermitStatusCheck(
       );
     }
 
-    updateProjectForPermitOutcome(db, detail.project.status, projectId, classification.outcome, classification.message, ts, text(target?.target_type));
+    updateProjectForPermitOutcome(db, detail.project.status, projectId, classification.outcome, classification.message, ts, text(target?.target_type), input.targetId || null);
     triggerHandoffIfReady(db, projectId, ts);
     // ONE ROW PER CHECK, ALWAYS — this is the per-check evidence trail, and it is the thing the
     // status-check gate above is allowed to suppress *because* this is not. `checkId` is null when
@@ -5782,6 +5790,7 @@ function updateProjectForPermitOutcome(
   message: string,
   ts: string,
   targetType?: string,
+  targetId?: string | null,
 ): void {
   const update = (status: ProjectRecord["status"], stage: string, detail: StageDetail) => {
     db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [status, stage, detail, ts, projectId]);
@@ -5796,6 +5805,32 @@ function updateProjectForPermitOutcome(
  *  application in review is evidence a person filed it, so a filing sent by hand is not stranded. */
 const MONITOR_WAITING_MAY_ADVANCE = new Set(["awaiting_human_submit", "submitted", "approved", "ready_for_issue"]);
 
+  // `approved` and `ready_for_issue` ARE in the list above, and they are PERMIT-earned: only a
+  // permit target's reading can write them (the !isNem guards below). So a waiting reading may
+  // take the project back from one of them only when it is the PERMIT side speaking AND no other
+  // target still holds the greater outcome. Without this, a NEM "Engineering Review" — or the
+  // ELECTRICAL permit's "plan review in progress" on a separate-permit AHJ — recorded after the
+  // BUILDING permit reached ready_for_issue rewrote the project to submitted/under_review: the
+  // fees-due fact erased by a different filing that is simply slower. Unknown provenance (no
+  // target, or a non-permit target) never rewinds; the same permit filing regressing is the one
+  // reading that still may.
+  //
+  // ONLY A PERMIT TARGET'S PROGRESS MAY HOLD A PERMIT STATUS. The same !isNem rule that stops a
+  // NEM reading from WRITING ready_for_issue applies to what may KEEP it: a NEM target whose own
+  // text classified as "ready to issue" (a utility "approved, fee due") never earned the project
+  // that status, so it must not pin it when the one permit filing that did earn it regresses.
+  const waitingWouldRewindAnotherTrack = (): boolean => {
+    if (currentStatus !== "approved" && currentStatus !== "ready_for_issue") return false;
+    if (!isPermit) return true;
+    return Boolean(db.get<Row>(
+      `SELECT id FROM permit_check_targets
+        WHERE project_id = ? AND active = 1 AND id <> ? AND target_type = 'permit'
+          AND latest_outcome IN ('reviewed_by_ahj', 'ready_for_issue', 'issued')
+        LIMIT 1`,
+      [projectId, targetId || ""],
+    ));
+  };
+
   // Track-aware guard: a NEM (utility) target must NEVER drive the project to a PERMIT
   // status (issued / ready_for_issue / reviewed-by-AHJ) — those are AHJ-permit outcomes.
   // Likewise a PERMIT target must not set nem_approved. This prevents a utility approval
@@ -5804,12 +5839,40 @@ const MONITOR_WAITING_MAY_ADVANCE = new Set(["awaiting_human_submit", "submitted
   const isNem = targetType === "nem";
   const isPermit = targetType === "permit";
 
+  // ONE FILING'S GOOD NEWS DOES NOT CLEAR ANOTHER FILING'S CORRECTION.
+  //
+  // The project has one status and every target's reading writes it, so the ELECTRICAL permit
+  // reading "issued" two minutes after the BUILDING permit's correction was detected rewrote
+  // correction_received to issued — the most urgent state in the system hidden, for weeks, on a
+  // live project, while the client portal said "issued". A positive reading may leave a
+  // correction state only when no OTHER active target of this project still stands at
+  // correction_flagged. The SAME target recovering (its own correction answered, now issued) is
+  // legitimate news and still moves the project; a reading with no target (unknown provenance)
+  // never clears a correction that some target still holds.
+  const anotherTargetInCorrection = (): boolean => {
+    if (currentStatus !== "correction_received" && currentStatus !== "correction_triaged") return false;
+    return Boolean(db.get<Row>(
+      `SELECT id FROM permit_check_targets
+        WHERE project_id = ? AND active = 1 AND id <> ? AND latest_outcome = 'correction_flagged'
+        LIMIT 1`,
+      [projectId, targetId || ""],
+    ));
+  };
+  const positive = outcome === "nem_approved" || outcome === "ready_for_issue" || outcome === "issued" || outcome === "reviewed_by_ahj";
+  if (positive && anotherTargetInCorrection()) return;
+  // HANDOFF IS THE GREATEST OUTCOME; ONLY A CORRECTION MAY LEAVE IT. The monitor keeps polling
+  // a handed-off project's targets, and each repeat "PTO granted" rewrote handoff_ready to
+  // nem_approved — after which triggerHandoffIfReady saw a fresh transition and published the
+  // installer handoff note AGAIN, every poll. A positive reading on a handed-off project is not
+  // news about the project; a correction is, and still falls through to the branch below.
+  if (positive && currentStatus === "handoff_ready") return;
+
   if (outcome === "correction_flagged") update("correction_received", "Permit monitor flagged a correction. Review bucket and next action.", "correction_open");
   else if (outcome === "nem_approved" && !isPermit) update("nem_approved", message, "nem_approved");
   else if (outcome === "ready_for_issue" && !isNem) update("ready_for_issue", message, "ready_for_issue");
   else if (outcome === "issued" && !isNem) update("issued", message, "permit_issued");
   else if (outcome === "reviewed_by_ahj" && !isNem) update("approved", message, "permit_approved");
-  else if (outcome === "waiting" && MONITOR_WAITING_MAY_ADVANCE.has(currentStatus)) {
+  else if (outcome === "waiting" && MONITOR_WAITING_MAY_ADVANCE.has(currentStatus) && !waitingWouldRewindAnotherTrack()) {
     // THE PORTAL IS TRUTH ABOUT WHETHER A FILING EXISTS (operator ruling, 2026-09-20).
     //
     // An application the portal shows in review WAS filed by a person, whether or not they
@@ -5859,31 +5922,47 @@ function buildInstallerHandoffChecklist(project: ProjectRecord): string[] {
   ].filter(Boolean);
 }
 
+/**
+ * IS THE SUBMISSION SCOPE COMPLETE? — the handoff predicate, per track, from the filings'
+ * own tracking targets. Returns what still stands in the way (empty = hand off).
+ *
+ * It used to ask "has ANY check on this project ever read issued" OR "does the project status
+ * read issued / ready_for_issue", and the same for NEM. The project status is only the LAST
+ * reading's writer, so the answer depended on arrival order: `ready_for_issue` (fees still due,
+ * no permit card) counted as issued; the electrical permit's "issued" counted while the building
+ * permit sat in correction; and a NEM approval handed off a project whose permit had only ever
+ * been read ready-for-issue. A false "scope complete" is the costliest error this stage can make:
+ * the installer checklist says to post the permit card, and the job drops off the board.
+ *
+ * Now: every REQUIRED track (requiredTracks — the same list the tracks panel and staging use)
+ * must be done by isTrackDone (submittalTracks.ts — the ONE "is this track done" rule the panel
+ * also reads — ever issued/approved with no correction since, one unattributed target never
+ * finishing two tracks), NEM always included since the handoff certifies a utility approval, no
+ * active permit target attributed to none of those tracks may be unfinished on a multi-permit
+ * project (unfinishedUnattributedTargets), and no correction on the project may be open.
+ */
+export function handoffBlockers(db: AppDb, project: ProjectRecord): string[] {
+  const tracks: SubmittalTrackType[] = requiredTracks(project);
+  if (!tracks.includes("nem")) tracks.unshift("nem");
+  const blockers = unfinishedTracks(db, project.id, tracks).map((t) => `${t} track not done`);
+  const unattributed = unfinishedUnattributedTargets(db, project.id, tracks);
+  if (unattributed > 0) blockers.push(`${unattributed} unattributed permit tracking target(s) not done`);
+  const openCorrections = Number(db.get<Row>(
+    "SELECT COUNT(*) AS n FROM corrections WHERE project_id = ? AND closed_at IS NULL",
+    [project.id],
+  )?.n ?? 0);
+  if (openCorrections > 0) blockers.push(`${openCorrections} open correction(s)`);
+  return blockers;
+}
+
 function triggerHandoffIfReady(db: AppDb, projectId: string, ts: string): void {
   const project = db.get<ProjectRow>("SELECT * FROM projects WHERE id = ?", [projectId]);
   if (!project) return;
-  const currentStatus = project.status as ProjectRecord["status"];
-  if (currentStatus === "handoff_ready") return; // already done
-
-  // Check if at least one permit target shows issued AND one NEM target shows nem_approved
-  const permitIssued = db.get<Row>(
-    `SELECT id FROM permit_status_checks
-     WHERE project_id = ? AND outcome = 'issued'
-     LIMIT 1`,
-    [projectId],
-  );
-  const nemApproved = db.get<Row>(
-    `SELECT id FROM permit_status_checks
-     WHERE project_id = ? AND outcome = 'nem_approved'
-     LIMIT 1`,
-    [projectId],
-  );
-
-  // Also accept project status signals — if NEM approved is now the status and permit was issued before
-  const permitIssuedViaStatus = ["issued", "ready_for_issue", "handoff_ready"].includes(currentStatus) || !!permitIssued;
-  const nemApprovedViaStatus = currentStatus === "nem_approved" || !!nemApproved;
-
-  if (!permitIssuedViaStatus || !nemApprovedViaStatus) return;
+  // Already handed off: nothing to write, and the note/audit are written only on the transition.
+  // (A correction arriving after handoff has already moved the status to correction_received
+  // before this runs, so it is not caught here — and the predicate below refuses it.)
+  if (project.status === "handoff_ready") return;
+  if (handoffBlockers(db, mapProject(project)).length > 0) return;
 
   const mappedProject = mapProject(project);
   const checklist = buildInstallerHandoffChecklist(mappedProject);
@@ -5910,8 +5989,9 @@ function triggerHandoffIfReady(db: AppDb, projectId: string, ts: string): void {
   );
 
   addAuditLog(db, projectId, "system", "handoff trigger", "handoff.ready", {
-    permitIssued: !!permitIssued,
-    nemApproved: !!nemApproved,
+    permitIssued: true,
+    nemApproved: true,
+    fromStatus: project.status,
   });
 }
 
@@ -6201,8 +6281,59 @@ export function stagingMissingDocuments(inventory: DocumentInventory, track?: Su
   });
 }
 
+/**
+ * THE OPERATOR'S HOLD, as the reason a person gave for it — or null when the project is not held.
+ *
+ * `blocked` is the one status no automation writes (setProjectStatusByOperator is its only
+ * writer and the only way out), and it means a human decided this job must not move: a contract
+ * dispute, a cancelled homeowner. Everything that opens a portal must honour it, and the two
+ * staging entry points with no project-status gate — prepareSubmission and Segment A — ask here.
+ * It is REFUSAL-ONLY: it can stop staging and never admits it, so it is not the lifecycle
+ * status gate prepareSubmission deliberately does not have (correctionRestageGate section 3).
+ * The reason comes off the newest audit row that moved the project INTO `blocked`.
+ */
+export function operatorHoldReason(db: AppDb, projectId: string): string | null {
+  const status = text(db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId])?.status);
+  if (status !== "blocked") return null;
+  const rows = db.query<Row>(
+    `SELECT details FROM audit_logs WHERE project_id = ? AND action = 'project.status_overridden'
+      ORDER BY created_at DESC LIMIT 20`,
+    [projectId],
+  );
+  for (const r of rows) {
+    const d = parseJson<Record<string, unknown>>(text(r.details), {});
+    if (d.to === "blocked") return text(d.reason) || "(no reason recorded)";
+  }
+  return "(no reason recorded)";
+}
+
+/**
+ * WHERE A COLD-START PORTAL URL CAME FROM, for its `portal.url_researched` audit row. The row used
+ * to say "researched" whether a web search found the URL or the model recalled it; a URL from
+ * model memory is a guess at a live government login page. Three answers, and an unknown is
+ * never worded as the reassuring one (the research result's webGrounded is optional — results
+ * built by hand do not carry it).
+ */
+export function researchedUrlProvenance(webGrounded: boolean | undefined): { provenance: "web_grounded" | "model_memory" | "unknown"; note: string } {
+  if (webGrounded === true) {
+    return { provenance: "web_grounded", note: "Cold-start: portal URL found by a WEB-GROUNDED search and saved as a seeded KB profile — verify on first use." };
+  }
+  if (webGrounded === false) {
+    return { provenance: "model_memory", note: "Cold-start: portal URL from MODEL MEMORY ONLY (web search did not run) and saved as a seeded KB profile — confirm it is the official portal before trusting it." };
+  }
+  return { provenance: "unknown", note: "Cold-start: portal URL researched, provenance UNKNOWN (not recorded as web-grounded) — saved as a seeded KB profile; confirm it is the official portal before trusting it." };
+}
+
 export async function prepareSubmission(db: AppDb, projectId: string, track?: SubmittalTrackType, autoSubmit?: boolean, allowFinalSubmit?: boolean): Promise<ProjectDetail> {
   const detail = getProjectDetail(db, projectId);
+  // AN OPERATOR'S HOLD STOPS STAGING — first, before anything is billed, built or opened.
+  const hold = operatorHoldReason(db, projectId);
+  if (hold !== null) {
+    throw new HttpError(409,
+      `This project is blocked by an operator: ${hold}. Nothing is staged while it is blocked — `
+      + "lift the block (set the project's status) once the reason no longer applies.",
+      { operatorBlocked: true, reason: hold });
+  }
   // PAYMENT GATE (first — the payment screen sits at the beginning of the flow):
   // a per-submission client must have this track's quote (real permit fees + the
   // operator's service fee) paid or waived before anything is staged. This bills
@@ -6220,21 +6351,108 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // Keyed on a SUBMITTED submission for this track, so retrying a failed or staged run is
   // untouched. Withdrawing the filing (or clearing its submission row) is the deliberate act
   // that re-opens the track.
-  if (track) {
-    const filed = db.get<Row>(
+  //
+  // ONE PREDICATE FOR BOTH SHAPES OF CALL. A trackless call (the dashboard's "Prepare
+  // Submittal" posts {}) is the legacy combined stage — it covers EVERY required track and
+  // records its run as permit_type 'permit'. It used to skip this guard entirely, so on a filed
+  // or closed project it restaged (handoff_ready -> awaiting_human_submit) and opened a new
+  // portal draft: the duplicate application this guard exists to stop, through the one door
+  // nobody thought of as "a track". It now resolves the tracks it would stage and refuses if
+  // any is already filed — or already STAGED, since its single untracked run cannot pick one
+  // track and would open a second draft beside the staged one. The per-track call keeps its
+  // behaviour (a staged track may be re-staged explicitly; only a filed one refuses).
+  //
+  // combo / permit are one track, and building / structural one trade — the SAME fold the
+  // tracks panel and the handoff read (submittalTracks.trackPermitTypes): the legacy trackless
+  // run is recorded as 'permit', and the panel shows it as the combo filing.
+  const trackFamily = (t: string): string[] => trackPermitTypes(t as SubmittalTrackType);
+  const filedOn = (t: string): Row | null => {
+    const family = trackFamily(t);
+    return db.get<Row>(
       `SELECT permit_number, application_number, submitted_at FROM submissions
-        WHERE project_id = ? AND permit_type = ? AND status = 'submitted'
+        WHERE project_id = ? AND permit_type IN (${family.map(() => "?").join(", ")}) AND status = 'submitted'
         ORDER BY submitted_at DESC LIMIT 1`,
-      [projectId, track],
+      [projectId, ...family],
     );
+  };
+  // A STAGED DRAFT THAT A CORRECTION CAME AFTER IS SUPERSEDED, NOT A CONFLICT. A project staged
+  // (never filed) and then corrected — a reviewer or designer caught something before the human
+  // submit — resolves to ready_to_resubmit, "ready to re-stage", and re-staging is the whole
+  // point of that status. Refusing it as "already staged" stranded the corrected project behind
+  // the very draft the correction invalidated. Evidence, not status: only a staged row created
+  // AFTER the project's newest correction still blocks a trackless run. Every stage inserts a
+  // fresh submissions row, so the re-stage itself is again protected against a second click.
+  const stagedOn = (t: string): Row | null => {
+    const family = trackFamily(t);
+    return db.get<Row>(
+      `SELECT id FROM submissions
+        WHERE project_id = ? AND permit_type IN (${family.map(() => "?").join(", ")}) AND status = 'awaiting_human_submit'
+          AND created_at >= COALESCE((SELECT MAX(created_at) FROM corrections WHERE project_id = ?), '')
+        LIMIT 1`,
+      [projectId, ...family, projectId],
+    );
+  };
+  const filedNumber = (row: Row): string => text(row.permit_number) || text(row.application_number) || "(no number captured)";
+  const filedWhen = (row: Row): string => (row.submitted_at ? ` on ${String(row.submitted_at).slice(0, 10)}` : "");
+  // What a trackless call covers: every required track, plus its own 'permit' tag when no
+  // required track already folds it in (a separate building/electrical AHJ) — otherwise a
+  // second trackless stage would not see the first one.
+  const required: string[] = requiredTracks(detail.project);
+  const footprint = required.some((t) => trackFamily(t).includes("permit")) ? required : [...required, "permit"];
+  // THE TRACKS ALREADY ON THE PORTAL WHEN THIS CALL BEGAN — read once, here, so the re-check just
+  // before dispatch (below) can tell "a person re-staging a staged track on purpose" (allowed, as
+  // it always was) from "another run staged it while this one was waiting" (refused). Dynamic
+  // import: autopilot statically imports this module.
+  const { trackAlreadyStaged } = await import("./autopilot");
+  const stageCovers = (track ? [track] : footprint) as SubmittalTrackType[];
+  const stagedAtEntry = new Set(stageCovers.filter((t) => trackAlreadyStaged(db, projectId, t)));
+  if (track) {
+    const filed = filedOn(track);
     if (filed) {
-      const num = text(filed.permit_number) || text(filed.application_number) || "(no number captured)";
+      const num = filedNumber(filed);
       throw new HttpError(409,
-        `The ${track} track is already filed as ${num}`
-        + `${filed.submitted_at ? ` on ${String(filed.submitted_at).slice(0, 10)}` : ""}. `
+        `The ${track} track is already filed as ${num}${filedWhen(filed)}. `
         + "Staging it again would open a duplicate application with the jurisdiction. "
         + "Withdraw the existing filing first if it needs to be replaced.",
         { track, permitNumber: num, submittedAt: filed.submitted_at ?? null });
+    }
+  } else {
+    const found = footprint.map((t) => {
+      const filed = filedOn(t);
+      const staged = filed ? null : stagedOn(t);
+      return { track: t, filed, staged };
+    });
+    const conflicts = found.filter((f) => f.filed || f.staged);
+    if (conflicts.length) {
+      const describe = (f: typeof found[number]): string => (f.filed
+        ? `the ${f.track} track is already filed as ${filedNumber(f.filed)}${filedWhen(f.filed)}`
+        : `the ${f.track} track is already staged and awaiting a human submit`);
+      const remaining = found.filter((f) => required.includes(f.track) && !f.filed && !f.staged).map((f) => f.track);
+      const allFiled = found.filter((f) => required.includes(f.track)).every((f) => f.filed);
+      const first = conflicts[0];
+      const said = conflicts.map(describe).join("; ");
+      throw new HttpError(409,
+        allFiled
+          ? `Every required track is already filed: ${said}. `
+            + "Staging again would open a duplicate application with the jurisdiction. "
+            + "Withdraw the existing filing first if it needs to be replaced."
+          : `${said.charAt(0).toUpperCase()}${said.slice(1)}. `
+            + "Staging again would open a duplicate application with the jurisdiction. "
+            + (remaining.length
+              ? `Stage the remaining track(s) individually from the submittal-tracks panel: ${remaining.join(", ")}.`
+              : "Withdraw the existing filing first if it needs to be replaced."),
+        {
+          track: first.track,
+          permitNumber: first.filed ? filedNumber(first.filed) : null,
+          submittedAt: first.filed ? (first.filed.submitted_at ?? null) : null,
+          tracks: conflicts.map((f) => ({
+            track: f.track,
+            state: f.filed ? "filed" : "staged",
+            permitNumber: f.filed ? filedNumber(f.filed) : null,
+            submittedAt: f.filed ? (f.filed.submitted_at ?? null) : null,
+          })),
+          remaining,
+        });
     }
   }
 
@@ -6587,20 +6805,23 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // disables; stub LLM (no key) returns nothing and the original guidance stands.
   if (!credentialUrl && process.env.ANTHROPIC_API_KEY && process.env.PORTAL_URL_RESEARCH !== "off") {
     try {
+      let webGrounded: boolean | undefined;
       if (track === "nem" && detail.project.utility) {
         const { research } = await researchAndSaveUtility(db, {
           utility: detail.project.utility, state: detail.project.state || "", ahj: detail.project.ahj,
         });
         credentialUrl = String(research.portalUrl || "");
+        webGrounded = research.webGrounded;
       } else if (track !== "nem" && detail.project.ahj) {
         const { research } = await researchAndSaveAhj(db, {
           ahj: detail.project.ahj, state: detail.project.state || "", utility: detail.project.utility,
         });
         credentialUrl = permitSafeUrl(research.portalUrl);
+        webGrounded = research.webGrounded;
       }
       if (credentialUrl) {
         addAuditLog(db, projectId, "system", "submit gate", "portal.url_researched", {
-          track: track ?? "permit", url: credentialUrl, note: "Cold-start: portal URL researched and saved as a seeded KB profile — verify on first use.",
+          track: track ?? "permit", url: credentialUrl, ...researchedUrlProvenance(webGrounded),
         });
         logger.info("prepare-submission", `cold-start research resolved a portal URL for ${detail.project.ahj || detail.project.utility}: ${credentialUrl}`);
       }
@@ -6817,6 +7038,30 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       const d = recipeDisciplineFromSteps(getPortalRecipe(db, recipe.id).steps);
       recipeDisciplineConflict = disciplineConflictsWithTrack(d, track) ? d : null;
     } catch { recipeDisciplineConflict = null; }
+  }
+  // RE-CHECK AT THE LAST POINT BEFORE DISPATCH. Everything above — the package build, the
+  // official-documents pass, cold-start research — takes real time, and another run can put
+  // this track on the portal meanwhile. Staging is not idempotent portal-side, so a track that
+  // was NOT on the portal when this call began and IS now is refused with the already-filed
+  // shape. (A track that was already staged at entry is an explicit re-stage and still goes.)
+  //
+  // The per-(client, portal) profile lock is NOT taken here: it lives in portal-bot's openPortal
+  // (browser.ts acquireProfile), inside the adapter call below. A run that reaches this line
+  // while another run on the same track is still inside its adapter cannot see it — that run's
+  // portal_runs row is written only after its adapter returns — and will then wait on the lock
+  // and stage a second draft. In-process that window is closed by the job claim
+  // (jobQueue PROJECT_BUSY_SQL: one portal-effect job per project at a time, and every
+  // prepareSubmission caller is such a job); it stays open across processes and for a job the
+  // watchdog reclaims mid-run.
+  const stagedMeanwhile = stageCovers.filter((t) => !stagedAtEntry.has(t) && trackAlreadyStaged(db, projectId, t));
+  if (stagedMeanwhile.length) {
+    const first = stagedMeanwhile[0];
+    addAuditLog(db, projectId, "system", "submit gate", "portal.staged_meanwhile", { track: track ?? "permit", tracks: stagedMeanwhile });
+    throw new HttpError(409,
+      `The ${stagedMeanwhile.join(", ")} track${stagedMeanwhile.length > 1 ? "s were" : " was"} staged to the portal by another run while this one was preparing. `
+      + "Staging it again would open a duplicate application with the jurisdiction. "
+      + "Submit (or discard) the staged draft first if it needs to be replaced.",
+      { track: first, permitNumber: null, submittedAt: null, stagedMeanwhile });
   }
   let result: Record<string, unknown>;
   if (channelDecision.blocked) {

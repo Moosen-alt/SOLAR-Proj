@@ -12,6 +12,7 @@ import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { findKnowledgeForLearn } from "./knowledgeBase";
 import { ensureFeeSchedulesResearched } from "./feeSchedules";
 import { requiredTracks } from "./submittalTracks";
+import { qcMayMoveStatus } from "./projectStage";
 
 // Look up whether the AHJ for this project uses a portal platform that requires
 // individual sheets to be split and uploaded separately (e.g. ProjectDox, EnerGov).
@@ -83,6 +84,10 @@ const criticalChecks: Check[] = [
 export interface QcRunResult {
   failCount: number;
   warningCount: number;
+  /** False when QC recorded its results but left the lifecycle columns alone: the status is one
+   *  qcMayMoveStatus refuses (operator `blocked`, or at/after Submit), or the verdict changed
+   *  nothing (see runQcForProject). */
+  statusWritten: boolean;
 }
 
 function clean(value: unknown): string {
@@ -170,6 +175,7 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
   const createdAt = nowIso();
   let failCount = 0;
   let warningCount = 0;
+  let statusWritten = false;
 
   db.transaction(() => {
     db.run("DELETE FROM qc_results WHERE project_id = ?", [projectId]);
@@ -321,7 +327,31 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
       }
     } catch { /* CEC table optional — advisory check must never break QC */ }
 
-    const nextStatus = failCount > 0 ? "qc_failed" : "qc_passed";
+    // QC MAY JUDGE AT ANY STATUS; IT MAY MOVE ONLY WHAT qcMayMoveStatus ALLOWS, AND ONLY WHEN
+    // ITS VERDICT CHANGES SOMETHING.
+    //
+    // This UPDATE used to run unconditionally, and QC is re-run from doors that do not care
+    // where the project is: Run QC, the workflow view, a project edit, humanVerify, a correction
+    // apply and Segment A. So a filed project (ready_for_issue, issued, handoff_ready) was
+    // rewritten to qc_passed and carried on to ready_to_stage while its tracks still read filed,
+    // and an operator's `blocked` hold was silently lifted by the next edit. Which statuses QC
+    // may move is ONE predicate in projectStage.ts — not re-derived here.
+    //
+    // WITHIN that leg, a pass never DEMOTES. `ready_to_stage` means "verified AND the packet is
+    // built"; a re-run that still passes (humanVerify, an edit, Segment A's rerunQc) used to
+    // write it back to qc_passed and reset stage_detail — the reviewer gate's
+    // `reviewer_gate_approved` included — so the chain rebuilt, and a stage run began from a
+    // project that read as un-reviewed. So: a FAIL is written from any movable status (the news
+    // is real); a PASS is written only from parsed / qc_failed; a verdict that matches the
+    // status already held leaves the row — status, stage_detail, prose — exactly as it is.
+    // Everything QC recorded above is kept either way.
+    const currentStatus = String(db.get<{ status?: string }>("SELECT status FROM projects WHERE id = ?", [projectId])?.status ?? "") as ProjectRecord["status"];
+    if (!qcMayMoveStatus(currentStatus)) return;
+    const verdict: "qc_failed" | "qc_passed" = failCount > 0 ? "qc_failed" : "qc_passed";
+    if (verdict === currentStatus) return;
+    if (verdict === "qc_passed" && currentStatus !== "parsed" && currentStatus !== "qc_failed") return;
+    statusWritten = true;
+    const nextStatus = verdict;
     const currentStage = failCount > 0 ? "QC failed: human review required" : "QC passed: ready to stage";
     db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
       nextStatus,
@@ -361,7 +391,7 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
     logger.warn("qc", "fee-research trigger failed", { projectId, err: err instanceof Error ? err.message : String(err) });
   }
 
-  return { failCount, warningCount };
+  return { failCount, warningCount, statusWritten };
 }
 
 // Auto-resolve a still-pending review item for a check that now passes. Only

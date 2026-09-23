@@ -810,7 +810,10 @@ app.get("/api/projects/:id/portal-questions", asyncHandler(async (req, res) => {
 // as the public token path (only open questions, only the portal's own options), written
 // through answerPortalQuestions so the snapshot and the v17 columns stay in step.
 app.post("/api/projects/:id/portal-questions", asyncHandler(async (req, res) => {
-  res.json(await answerPortalQuestions(db, String(req.params.id), (req.body ?? {}).answers ?? {}));
+  const out = await answerPortalQuestions(db, String(req.params.id), (req.body ?? {}).answers ?? {});
+  // Answers re-run QC; like /qc and /human-verify, the chain continues from wherever QC left it.
+  try { enqueueStageSteps(db, String(req.params.id)); } catch { /* convenience, never the answers */ }
+  res.json(out);
 }));
 
 // THE ONE-TIME SECURE CREDENTIAL LINK (onboarding guide §4). The operator mints a link for a
@@ -1321,7 +1324,10 @@ app.post("/api/projects/:id/notes", (req, res) => {
 });
 
 app.post("/api/projects/:id/workflow", (req, res) => {
-  res.json(runProjectWorkflow(db, req.params.id));
+  const out = runProjectWorkflow(db, req.params.id);
+  // runProjectWorkflow re-runs QC; continue the chain the same way the other QC doors do.
+  try { enqueueStageSteps(db, String(req.params.id)); } catch { /* convenience, never the workflow */ }
+  res.json(out);
 });
 
 // OPERATOR STATUS OVERRIDE — the audited way to move a project the pipeline got wrong, and
@@ -2657,7 +2663,9 @@ app.post("/api/projects/:id/autopilot/start", (req, res) => {
   // maxRetries 0: staging drives a live portal and is NOT idempotent portal-side
   // (a timer/orphan re-run could create a duplicate application draft). Failures
   // escalate via job_failed; recovery is the event-driven auto-resume path.
-  const job = enqueueJob(db, "autopilot", { track }, { projectId, priority: 7, maxRetries: 0 });
+  // origin:"operator" is what makes this chain resumable: maybeResumeAutopilot only
+  // relaunches a chain a person started (autopilot.ts autopilotOriginResumable).
+  const job = enqueueJob(db, "autopilot", { track, origin: "operator" }, { projectId, priority: 7, maxRetries: 0 });
   // Kick the worker immediately so Segment A starts without waiting for the poll
   // interval. The claim is atomic, so the background worker can't double-process
   // it. The outcome broadcast happens in the job handler (jobQueue.ts) so every

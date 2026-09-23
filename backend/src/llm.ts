@@ -7,6 +7,7 @@ import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { lookupCecInverter } from "./cecEquipment";
 import { planTextForExtraction } from "./structuralIntake";
+import type { CodeResearchProvenance } from "./codeProfiles";
 
 // Claude Opus 5: drop-in successor to Opus 4.8 at identical pricing with a
 // step-change in agentic/vision capability. Verified safe for this codebase:
@@ -687,6 +688,65 @@ export function isTransientLlmError(err: unknown): boolean {
   // ("max_tokens 500000 exceeds the limit").
   if (/\bapi_?key\b|unauthorized|authentication|invalid_request|permission|not_found/i.test(m)) return false;
   return /overloaded|rate.?limit|\b429\b|\b5\d\d\b|timeout|timed out|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|network|fetch failed|stream (error|ended)/i.test(m);
+}
+
+// ---------------------------------------------------------------------------
+// Web-grounded research: one budget, one "no web" prompt, one URL scrub.
+// ---------------------------------------------------------------------------
+
+/** A GROUNDED SEARCH NEEDS A GROUNDED BUDGET — for every research call, not just the one that
+ *  was caught. researchAhjRequirements / researchUtilityRequirements / researchJurisdictionCodes
+ *  ran on askWithWebSearch's 45s default with 5-6 searches each, timed out, and quietly fell
+ *  back to model memory, which then landed as ordinary shared 'seeded' knowledge. Same budget
+ *  and env override findAhjFormUrl already used (AHJ_FORM_LOOKUP_TIMEOUT_MS, kept for
+ *  compatibility); WEB_RESEARCH_TIMEOUT_MS is the name that says what it covers. */
+export function webResearchBudgetMs(): number {
+  return Math.max(45000, Number(process.env.WEB_RESEARCH_TIMEOUT_MS) || Number(process.env.AHJ_FORM_LOOKUP_TIMEOUT_MS) || 180000);
+}
+
+/** Output budget for the research siblings. Their outputs measured 4.7-5.8k tokens; at the old
+ *  3000 a fixed timeout would only have turned into max_tokens truncation that parses to {} —
+ *  the trap findAhjFormUrl hit (44c9ba5). */
+export const WEB_RESEARCH_MAX_TOKENS = 6000;
+
+/** The fallback's own instructions. The fallback used to resend the web prompt ("FIRST search
+ *  the web … cite it") with no tool attached, so the model spent its budget explaining it could
+ *  not search and then wrote source-looking URLs from memory. */
+export const MODEL_MEMORY_RESEARCH_RULES = `YOU HAVE NO WEB ACCESS IN THIS CALL. Answer ONLY from general knowledge of this jurisdiction and its region, and treat every answer as unverified.
+- Do NOT output any URL, link, web address or domain name anywhere. Every URL / sourceUrl field must be "" and any citations array must be empty.
+- Do NOT say you searched, found, confirmed, verified or cited anything, and do not explain that you cannot browse.
+- Where you are unsure, give the standard requirement for the state/region and say it must be verified.`;
+
+// The `(?<![\w@.-])` lookbehind keeps an EMAIL ADDRESS whole: without it the bare-domain branch
+// matched the domain after the "@" (a `\b` sits between "@" or "-" and a letter), so
+// "permits@cityofx.gov" was stored in shared KB rows as the dangling "permits@", and
+// "building@city-x.gov" as "building@city-". An email is contact info, not a portal link.
+const URL_LIKE = /\bhttps?:\/\/\S+|(?<![\w@.-])www\.\S+|(?<![\w@.-])\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:gov|com|org|net|us|edu|info|io)\b(?:\/\S*)?/gi;
+
+/** Remove every URL / bare domain from a model-memory string. A link recalled from memory
+ *  reads as a source to the operator and, in KB notes, is harvested as a form candidate.
+ *  Email addresses are kept intact (see URL_LIKE). */
+export function stripUrlsFromModelMemory(value: string): string {
+  return String(value || "").replace(URL_LIKE, "").replace(/\(\s*\)/g, "").replace(/\s{2,}/g, " ").replace(/\s+([,.;:])/g, "$1").trim();
+}
+
+/** How much web searching a response did, read from BOTH places the API reports it.
+ *   searches         — max(server_tool_use web_search blocks, usage.server_tool_use.web_search_requests):
+ *                      "a search was attempted", robust to either signal being absent.
+ *   groundedSearches — web_search_tool_result blocks whose content is a NON-EMPTY results array.
+ *                      An error object ({type:"web_search_tool_result_error", error_code:
+ *                      "unavailable" | "too_many_requests" | …}) or an empty array returned
+ *                      nothing, so an answer written after it is model memory. A usage count
+ *                      with no visible result block proves an attempt, not a result.
+ *  Only `groundedSearches > 0` may label an answer web-grounded. */
+export function summarizeWebSearch(msg: { content?: unknown; usage?: unknown }): { searches: number; groundedSearches: number } {
+  const blocks = Array.isArray(msg?.content) ? (msg.content as Array<Record<string, unknown> | null>) : [];
+  const blockCount = blocks.filter((b) => b?.type === "server_tool_use" && b?.name === "web_search").length;
+  const usage = (msg?.usage ?? null) as { server_tool_use?: { web_search_requests?: unknown } | null } | null;
+  const reported = Number(usage?.server_tool_use?.web_search_requests);
+  const usageCount = Number.isFinite(reported) && reported > 0 ? Math.floor(reported) : 0;
+  const groundedSearches = blocks.filter((b) => b?.type === "web_search_tool_result" && Array.isArray(b?.content) && (b.content as unknown[]).length > 0).length;
+  return { searches: Math.max(blockCount, usageCount), groundedSearches };
 }
 
 export class ClaudeLLMProvider implements LLMProvider {
@@ -1529,12 +1589,10 @@ ${input.correctionPatterns.slice(0, 20).join("\n")}`;
     return this.parseJson(raw, { requiredDocuments: [], commonRejectionReasons: [], tips: [], confidence: "low" as const });
   }
 
-  async researchAhjRequirements(input: { ahj: string; state: string; utility?: string; knownContext?: string }): Promise<AhjResearchResult> {
-    const system = `You are a solar permitting onboarding specialist. Given an Authority Having Jurisdiction (AHJ) that the system has never processed, lay out what's needed to permit a residential rooftop solar PV system there.
-
-FIRST search the web — prefer the AHJ's own .gov/.us site and the state's ePermitting/building-department pages — to confirm the real portal, submission method, and document checklist for THIS jurisdiction. Many small/mid Oregon and Washington cities (e.g. City of Hillsboro) do NOT run their own portal — they file building+electrical permits through a shared state system (Oregon ePermitting, which runs on Accela). Identify that correctly rather than inventing a city-specific portal. Ground every field in what you actually find; only fall back to regional norms when the search is inconclusive, and say so in tips.
-
-Return ONLY JSON:
+  async researchAhjRequirements(input: { ahj: string; state: string; utility?: string; knownContext?: string }): Promise<AhjResearchResult & { webGrounded: boolean }> {
+    const intro = `You are a solar permitting onboarding specialist. Given an Authority Having Jurisdiction (AHJ) that the system has never processed, lay out what's needed to permit a residential rooftop solar PV system there.`;
+    const searchStep = `FIRST search the web — prefer the AHJ's own .gov/.us site and the state's ePermitting/building-department pages — to confirm the real portal, submission method, and document checklist for THIS jurisdiction. Many small/mid Oregon and Washington cities (e.g. City of Hillsboro) do NOT run their own portal — they file building+electrical permits through a shared state system (Oregon ePermitting, which runs on Accela). Identify that correctly rather than inventing a city-specific portal. Ground every field in what you actually find; only fall back to regional norms when the search is inconclusive, and say so in tips.`;
+    const body = `Return ONLY JSON:
 {
   "portalName": "<the BRANDED portal name as the AHJ refers to it, e.g. 'Oregon ePermitting', 'Portland DevHub', or 'Email/in-person'>",
   "portalPlatform": "<the UNDERLYING software platform/vendor: one of Accela, ProjectDox, EnerGov, MyGov, OpenGov, CityView, Avolve, Tyler, or 'Other'/'None'. IMPORTANT: many branded portals run on a shared platform — e.g. Oregon ePermitting and most Oregon city/county portals run on ACCELA; ProjectDox is Avolve; EnerGov is Tyler. Identify the platform so existing portal automation can be reused.>",
@@ -1552,15 +1610,17 @@ Rules:
 - This is ADVISORY and must be human-verified — do NOT invent a precise portal URL you are unsure of (use '' instead).
 - Reflect the named utility's interconnection/NEM document needs in requiredDocuments where relevant.
 - Return valid JSON only.`;
+    const system = `${intro}\n\n${searchStep}\n\n${body}`;
     const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}${input.utility ? `\nUtility: ${input.utility}` : ""}${input.knownContext ? `\n\n${input.knownContext}` : ""}\n\nResearch the residential solar permitting + interconnection requirements for this jurisdiction.`;
     // Web-grounded first (accurate for never-seen AHJs); fall back to model
     // knowledge if the search is unreachable so the call never hard-fails.
+    // Grounded means a search RETURNED RESULTS and the answer parsed — see summarizeWebSearch.
     let parsed: Partial<AhjResearchResult> = {};
     let webGrounded = false;
     try {
-      const raw = await this.askWithWebSearch("researchAhjRequirements", system, userMsg, 3000, 5);
-      const p = this.parseJson<Partial<AhjResearchResult>>(raw, {});
-      if (p && (p.portalName || (Array.isArray(p.requiredDocuments) && p.requiredDocuments.length))) {
+      const web = await this.askWithWebSearch("researchAhjRequirements", system, userMsg, WEB_RESEARCH_MAX_TOKENS, 5, webResearchBudgetMs());
+      const p = this.parseJson<Partial<AhjResearchResult>>(web.text, {});
+      if (web.groundedSearches > 0 && p && (p.portalName || (Array.isArray(p.requiredDocuments) && p.requiredDocuments.length))) {
         parsed = p;
         webGrounded = true;
       }
@@ -1568,15 +1628,19 @@ Rules:
       logger.warn("llm", "researchAhjRequirements web search failed — falling back to model knowledge", { err: errMsg(err) });
     }
     if (!webGrounded) {
-      const raw = await this.askLong("researchAhjRequirements.fallback", system, userMsg, 3000);
+      const raw = await this.askLong("researchAhjRequirements.fallback", `${intro}\n\n${MODEL_MEMORY_RESEARCH_RULES}\n\n${body}`, userMsg, WEB_RESEARCH_MAX_TOKENS);
       parsed = this.parseJson<Partial<AhjResearchResult>>(raw, {});
     }
-    const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : []);
+    // Model memory never supplies a link: not the portal URL (prepareSubmission's cold start
+    // and the KB link sweep would navigate to it), and not one buried in a tip or step.
+    const scrub = (s: string): string => (webGrounded ? s : stripUrlsFromModelMemory(s));
+    const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => scrub(String(x))).filter(Boolean) : []);
     return {
       provider: "claude",
-      portalName: String(parsed.portalName || ""),
+      webGrounded,
+      portalName: scrub(String(parsed.portalName || "")),
       portalPlatform: String(parsed.portalPlatform || ""),
-      portalUrl: String(parsed.portalUrl || ""),
+      portalUrl: webGrounded ? String(parsed.portalUrl || "") : "",
       submissionMethod: String(parsed.submissionMethod || ""),
       requiredDocuments: arr(parsed.requiredDocuments),
       commonCorrections: arr(parsed.commonCorrections),
@@ -1596,11 +1660,9 @@ Rules:
   // "seeded" and a human verifies each claim against its citation before the review
   // gate cites it authoritatively.
   async researchJurisdictionCodes(input: { ahj: string; state: string }): Promise<JurisdictionCodeResearchResult> {
-    const system = `You are a building-department code analyst onboarding a jurisdiction into a plan-review tool. Determine what building codes the jurisdiction has ADOPTED and its local design criteria.
-
-FIRST search the web — prefer, in order: (1) the jurisdiction's own building-department page (.gov/.us/.org), (2) the STATE building-codes agency (state building codes division / DOPL / BCD — many states adopt codes statewide and counties/cities inherit them), (3) the state electrical board for the NEC cycle. Ground every value in a page you actually found and cite it. If a value cannot be confirmed, OMIT it rather than guessing.
-
-Return ONLY JSON:
+    const intro = `You are a building-department code analyst onboarding a jurisdiction into a plan-review tool. Determine what building codes the jurisdiction has ADOPTED and its local design criteria.`;
+    const searchStep = `FIRST search the web — prefer, in order: (1) the jurisdiction's own building-department page (.gov/.us/.org), (2) the STATE building-codes agency (state building codes division / DOPL / BCD — many states adopt codes statewide and counties/cities inherit them), (3) the state electrical board for the NEC cycle. Ground every value in a page you actually found and cite it. If a value cannot be confirmed, OMIT it rather than guessing.`;
+    const body = `Return ONLY JSON:
 {
   "adoptedCodes": [{"code": "<IRC|IBC|NEC|IFC|IPC|IMC|IECC|state specialty code abbreviation>", "edition": "<year>", "title": "<full name incl. state amendments note>", "sourceUrl": "<the page confirming this>", "notes": "<effective date / amendment note>"}],
   "amendments": [{"code": "<family>", "section": "<section if known>", "summary": "<what the state/local amendment changes>", "sourceUrl": "<source>"}],
@@ -1623,6 +1685,7 @@ Rules:
   another state: omit any limit you did not find published for THIS jurisdiction.
 - This is ADVISORY and will be human-verified — never invent a sourceUrl.
 - Return valid JSON only.`;
+    const system = `${intro}\n\n${searchStep}\n\n${body}`;
     const userMsg = `Jurisdiction (AHJ): ${input.ahj || "(state-level default)"}\nState: ${input.state}\n\nResearch the adopted building/electrical/fire codes and local design criteria for this jurisdiction.`;
     interface Raw {
       adoptedCodes?: unknown; amendments?: unknown; designCriteria?: Record<string, unknown>; prescriptive?: Record<string, unknown>;
@@ -1631,9 +1694,9 @@ Rules:
     let parsed: Raw = {};
     let webGrounded = false;
     try {
-      const raw = await this.askWithWebSearch("researchJurisdictionCodes", system, userMsg, 3000, 6);
-      const p = this.parseJson<Raw>(raw, {});
-      if (p && Array.isArray(p.adoptedCodes) && p.adoptedCodes.length) {
+      const web = await this.askWithWebSearch("researchJurisdictionCodes", system, userMsg, WEB_RESEARCH_MAX_TOKENS, 6, webResearchBudgetMs());
+      const p = this.parseJson<Raw>(web.text, {});
+      if (web.groundedSearches > 0 && p && Array.isArray(p.adoptedCodes) && p.adoptedCodes.length) {
         parsed = p;
         webGrounded = true;
       }
@@ -1641,22 +1704,31 @@ Rules:
       logger.warn("llm", "researchJurisdictionCodes web search failed — falling back to model knowledge", { err: errMsg(err) });
     }
     if (!webGrounded) {
-      const raw = await this.askLong("researchJurisdictionCodes.fallback", system, userMsg, 3000);
+      const raw = await this.askLong("researchJurisdictionCodes.fallback", `${intro}\n\n${MODEL_MEMORY_RESEARCH_RULES}\n\n${body}`, userMsg, WEB_RESEARCH_MAX_TOKENS);
       parsed = this.parseJson<Raw>(raw, {});
     }
     const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
     const strv = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+    // A sourceUrl is the claim "this value is on that page". Model memory has no page, so it
+    // gets no sourceUrl and no citations — the review gate would otherwise hyperlink a recall
+    // as the authority for a code edition.
+    const src = (v: unknown): string | undefined => (webGrounded ? strv(v) : undefined);
+    // …and no link hidden in its prose either.
+    const prose = (v: unknown): string | undefined => (webGrounded ? strv(v) : strv(typeof v === "string" ? stripUrlsFromModelMemory(v) : v));
     const d = parsed.designCriteria ?? {};
-    const profile: JurisdictionCodeProfile = {
+    const researchNotes = `${webGrounded
+      ? "Researched from official sources via web search."
+      : "Web search unavailable — model knowledge only."} ${prose(parsed.confidenceNotes) || ""}`.trim();
+    const profile: JurisdictionCodeProfile & { researchProvenance: CodeResearchProvenance } = {
       key: "", state: input.state, ahj: input.ahj, confidence: "seeded",
       adoptedCodes: (Array.isArray(parsed.adoptedCodes) ? parsed.adoptedCodes : [])
         .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
-        .map((c) => ({ code: String(c.code || "").slice(0, 24), edition: String(c.edition || "").slice(0, 12), title: strv(c.title), sourceUrl: strv(c.sourceUrl), notes: strv(c.notes) }))
+        .map((c) => ({ code: String(c.code || "").slice(0, 24), edition: String(c.edition || "").slice(0, 12), title: prose(c.title), sourceUrl: src(c.sourceUrl), notes: prose(c.notes) }))
         .filter((c) => c.code && c.edition)
         .slice(0, 12),
       amendments: (Array.isArray(parsed.amendments) ? parsed.amendments : [])
         .filter((a): a is Record<string, unknown> => !!a && typeof a === "object")
-        .map((a) => ({ code: String(a.code || "").slice(0, 24), section: strv(a.section), summary: String(a.summary || "").slice(0, 400), sourceUrl: strv(a.sourceUrl) }))
+        .map((a) => ({ code: String(a.code || "").slice(0, 24), section: strv(a.section), summary: String(prose(a.summary) || "").slice(0, 400), sourceUrl: src(a.sourceUrl) }))
         .filter((a) => a.code && a.summary)
         .slice(0, 20),
       designCriteria: {
@@ -1665,7 +1737,7 @@ Rules:
         windExposure: strv(d.windExposure),
         seismicDesignCategory: strv(d.seismicDesignCategory),
         frostDepthIn: num(d.frostDepthIn),
-        sourceUrl: strv(d.sourceUrl),
+        sourceUrl: src(d.sourceUrl),
       },
       // The researched prescriptive block. `hasPrescriptivePath` is read strictly: only a
       // real boolean lands, so "the model didn't say" stays undefined rather than becoming
@@ -1684,34 +1756,34 @@ Rules:
           maxWindSpeedMphExpB: num(pr.maxWindSpeedMphExpB),
           maxWindSpeedMphExpC: num(pr.maxWindSpeedMphExpC),
           engineerStampOverKwDc: num(pr.engineerStampOverKwDc),
-          sourceUrl: strv(pr.sourceUrl),
+          sourceUrl: src(pr.sourceUrl),
         };
       })(),
       fireSetbacks: [],
-      citations: (Array.isArray(parsed.citations) ? parsed.citations : [])
+      citations: (webGrounded && Array.isArray(parsed.citations) ? parsed.citations : [])
         .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
         .map((c) => ({ label: String(c.label || "").slice(0, 200), sourceUrl: String(c.sourceUrl || "").slice(0, 500) }))
         .filter((c) => c.sourceUrl)
         .slice(0, 20),
       updatedAt: "",
+      // Rides on the profile because the callers that persist it (jobQueue's code_research,
+      // POST /api/code-profiles/research) hand saveResearchedCodeProfile only research.profile;
+      // upsert writes it into payload_json so a stored row says how it was researched.
+      researchProvenance: { webGrounded, method: webGrounded ? "web_search" : "model_memory", notes: researchNotes.slice(0, 1000) },
     };
     return {
       provider: "claude",
       profile,
       webGrounded,
       needsHumanVerification: true,
-      notes: `${webGrounded
-        ? "Researched from official sources via web search."
-        : "Web search unavailable — model knowledge only."} ${String(parsed.confidenceNotes || "")}`.trim(),
+      notes: researchNotes,
     };
   }
 
-  async researchUtilityRequirements(input: { utility: string; state: string; ahj?: string; knownContext?: string }): Promise<UtilityResearchResult> {
-    const system = `You are a solar interconnection onboarding specialist. Given an electric UTILITY the system has never processed, lay out what's needed to file a RESIDENTIAL rooftop solar net-metering (NEM) / interconnection application with that utility.
-
-FIRST search the web — prefer the utility's own customer-generation / interconnection page — to confirm the real application portal (many utilities run PowerClerk), submission method, and document checklist for THIS utility. Ground every field in what you actually find; only fall back to regional norms when the search is inconclusive, and say so in tips.
-
-Return ONLY JSON:
+  async researchUtilityRequirements(input: { utility: string; state: string; ahj?: string; knownContext?: string }): Promise<UtilityResearchResult & { webGrounded: boolean }> {
+    const intro = `You are a solar interconnection onboarding specialist. Given an electric UTILITY the system has never processed, lay out what's needed to file a RESIDENTIAL rooftop solar net-metering (NEM) / interconnection application with that utility.`;
+    const searchStep = `FIRST search the web — prefer the utility's own customer-generation / interconnection page — to confirm the real application portal (many utilities run PowerClerk), submission method, and document checklist for THIS utility. Ground every field in what you actually find; only fall back to regional norms when the search is inconclusive, and say so in tips.`;
+    const body = `Return ONLY JSON:
 {
   "portalName": "<the BRANDED interconnection/NEM portal name the utility uses, e.g. 'PowerClerk', 'Customer Generation online application', or 'Email/PDF application'>",
   "portalPlatform": "<the UNDERLYING software platform/vendor: e.g. 'PowerClerk' (Clean Power Research), 'Tyler', 'Salesforce', 'custom', or 'None'. Many utilities share PowerClerk, so existing automation is reusable — only the entry URL + login differ.>",
@@ -1733,14 +1805,16 @@ Rules:
 - This is ADVISORY and must be human-verified — do NOT invent a precise portal URL you are unsure of (use '' instead).
 - For smartInverterSettings, reflect the REAL portal behavior: it is a Yes/No election to use the utility's recommended smart-inverter settings (answer Yes for UL 1741-SB listed inverters) plus an inverter spec/cut-sheet upload — never describe it as a required grid-profile drawing on the plan set.
 - Return valid JSON only.`;
+    const system = `${intro}\n\n${searchStep}\n\n${body}`;
     const userMsg = `Utility: ${input.utility}\nState: ${input.state}${input.ahj ? `\nAHJ context: ${input.ahj}` : ""}${input.knownContext ? `\n\n${input.knownContext}` : ""}\n\nResearch the residential solar net-metering / interconnection requirements for this utility.`;
     // Web-grounded first; fall back to model knowledge if search is unreachable.
+    // Grounded means a search RETURNED RESULTS and the answer parsed — see summarizeWebSearch.
     let parsed: Partial<UtilityResearchResult> = {};
     let webGrounded = false;
     try {
-      const raw = await this.askWithWebSearch("researchUtilityRequirements", system, userMsg, 3000, 5);
-      const p = this.parseJson<Partial<UtilityResearchResult>>(raw, {});
-      if (p && (p.portalName || (Array.isArray(p.requiredDocuments) && p.requiredDocuments.length))) {
+      const web = await this.askWithWebSearch("researchUtilityRequirements", system, userMsg, WEB_RESEARCH_MAX_TOKENS, 5, webResearchBudgetMs());
+      const p = this.parseJson<Partial<UtilityResearchResult>>(web.text, {});
+      if (web.groundedSearches > 0 && p && (p.portalName || (Array.isArray(p.requiredDocuments) && p.requiredDocuments.length))) {
         parsed = p;
         webGrounded = true;
       }
@@ -1748,21 +1822,25 @@ Rules:
       logger.warn("llm", "researchUtilityRequirements web search failed — falling back to model knowledge", { err: errMsg(err) });
     }
     if (!webGrounded) {
-      const raw = await this.askLong("researchUtilityRequirements.fallback", system, userMsg, 3000);
+      const raw = await this.askLong("researchUtilityRequirements.fallback", `${intro}\n\n${MODEL_MEMORY_RESEARCH_RULES}\n\n${body}`, userMsg, WEB_RESEARCH_MAX_TOKENS);
       parsed = this.parseJson<Partial<UtilityResearchResult>>(raw, {});
     }
-    const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : []);
+    // Same rule as the AHJ research: model memory never supplies a link (ahjFormRefresh's
+    // dead-link sweep writes research.portalUrl straight into the KB row).
+    const scrub = (s: string): string => (webGrounded ? s : stripUrlsFromModelMemory(s));
+    const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => scrub(String(x))).filter(Boolean) : []);
     return {
       provider: "claude",
-      portalName: String(parsed.portalName || ""),
+      webGrounded,
+      portalName: scrub(String(parsed.portalName || "")),
       portalPlatform: String(parsed.portalPlatform || ""),
-      portalUrl: String(parsed.portalUrl || ""),
+      portalUrl: webGrounded ? String(parsed.portalUrl || "") : "",
       submissionMethod: String(parsed.submissionMethod || ""),
       requiredDocuments: arr(parsed.requiredDocuments),
-      smartInverterSettings: String(parsed.smartInverterSettings || ""),
-      meterAggregation: String(parsed.meterAggregation || ""),
-      acDisconnectRule: String(parsed.acDisconnectRule || ""),
-      exportLimitNote: String(parsed.exportLimitNote || ""),
+      smartInverterSettings: scrub(String(parsed.smartInverterSettings || "")),
+      meterAggregation: scrub(String(parsed.meterAggregation || "")),
+      acDisconnectRule: scrub(String(parsed.acDisconnectRule || "")),
+      exportLimitNote: scrub(String(parsed.exportLimitNote || "")),
       commonCorrections: arr(parsed.commonCorrections),
       tips: arr(parsed.tips),
       submissionSteps: arr(parsed.submissionSteps),
@@ -2040,7 +2118,12 @@ Return ONLY JSON:
   }
 
   // Ask with the server-side web search tool enabled (used as the spec-lookup fallback).
-  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000): Promise<string> {
+  //
+  // Returns HOW MANY SEARCHES RAN and HOW MANY RETURNED RESULTS alongside the text, because
+  // "the tool was offered" is not "the answer came from the web". Every caller that labels its
+  // result grounded must decide from `groundedSearches` (see summarizeWebSearch), not from
+  // whether the JSON parsed and not from the bare search count.
+  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000): Promise<{ text: string; searches: number; groundedSearches: number }> {
     // Hard timeout so a stalled web search can never hang the HTTP request (the
     // "Find official form" button would otherwise spin forever). On timeout we
     // abort the stream; callers catch and fall back (no URLs / model knowledge).
@@ -2063,14 +2146,11 @@ Return ONLY JSON:
           )
           .finalMessage(),
       );
-      // Surface how much searching actually happened — server_tool_use blocks of
-      // type web_search are the real round-trips, useful when results look thin.
-      const searches = msg.content.filter(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (b) => (b as any).type === "server_tool_use" && (b as any).name === "web_search",
-      ).length;
-      if (searches) logger.debug("llm", `  ${label} web_search ran`, { queries: searches });
-      return this.textOf(msg);
+      const { searches, groundedSearches } = summarizeWebSearch(msg);
+      if (groundedSearches) logger.debug("llm", `  ${label} web_search ran`, { queries: searches, withResults: groundedSearches });
+      else if (!searches) logger.warn("llm", `  ${label} returned without running a single web search — its answer is model memory`);
+      else logger.warn("llm", `  ${label} ran ${searches} web search(es) but none returned results we can see (errored, empty, or no web_search_tool_result block) — treating its answer as model memory`);
+      return { text: this.textOf(msg), searches, groundedSearches };
     } finally {
       clearTimeout(timer);
     }
@@ -2135,15 +2215,19 @@ Notes:
       // AND the part number, with more uses for an exhaustive look.
       if (parsed.outputCurrentA == null || parsed.confidence === "low") {
         try {
-          const webRaw = await this.askWithWebSearch(
+          const web = await this.askWithWebSearch(
             "lookupInverterSpec.web",
             `${system}\nSearch the web thoroughly for the official manufacturer datasheet for this EXACT model OR part number, then return the JSON. Try the manufacturer's site, distributor spec pages, and the part number itself. Put the datasheet URL in "notes".`,
             `Find the rated continuous AC output current (amps) for inverter model/part number: ${model}`,
             1500,
             6,
           );
-          const webParsed = this.parseJson<typeof parsed>(webRaw, {});
-          if (webParsed.outputCurrentA != null) { parsed = webParsed; source = "web search"; }
+          const webParsed = this.parseJson<typeof parsed>(web.text, {});
+          // "web search" is a claim about where the number came from. With zero searches this
+          // is the same model memory that just answered "low"/unknown, re-asked — adopting it
+          // would promote an unsure recall to a sourced one. Fall through to the nameplate
+          // derivation (resolveInverterOffline) instead, which is correct by construction.
+          if (webParsed.outputCurrentA != null && web.groundedSearches > 0) { parsed = webParsed; source = "web search"; }
         } catch (err) {
           logger.warn("llm", "lookupInverterSpec web fallback failed", { model, err: errMsg(err) });
         }
@@ -2208,13 +2292,13 @@ Rules:
       // about the jurisdiction rather than about us. The fee researcher already uses 240s for
       // the same kind of call (FEE_RESEARCH_CLIENT_TIMEOUT_MS); this matches it and stays
       // env-overridable for a machine on a slower link.
-      const budgetMs = Math.max(45000, Number(process.env.AHJ_FORM_LOOKUP_TIMEOUT_MS) || 180000);
+      const budgetMs = webResearchBudgetMs();
       // 1024 was the signature default and far too small for this call: with the budget fixed it
       // stopped timing out and immediately hit max_tokens instead (outTok 2918, stop=max_tokens),
       // truncating the JSON so it parsed to {} — which the harvest then read as "this AHJ has no
       // forms page". The sibling research calls all use 3000; this one returns several URLs plus
       // notes after three searches, so it gets more.
-      const raw = await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, 3, budgetMs);
+      const raw = (await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, 3, budgetMs)).text;
       parsed = this.parseJson(raw, {});
       // A RESPONSE WE COULD NOT READ IS NOT AN ANSWER OF "NOTHING". parseJson returns {} for
       // truncated or malformed output, which is byte-identical to a genuine empty result. If the

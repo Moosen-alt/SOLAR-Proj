@@ -74,7 +74,7 @@ const seed = (pid: string, blockerCode: string) => {
   db.run("INSERT INTO projects (id, status, parser_json, created_at, updated_at) VALUES (?, 'ready_to_stage', '{}', ?, ?)", [pid, now, now]);
   db.run(
     `INSERT INTO job_queue (id, job_type, payload, status, priority, project_id, created_at, progress, progress_total, retry_count, max_retries, org_id, result)
-     VALUES (?, 'autopilot', '{}', 'done', 5, ?, ?, 0, 0, 0, 0, 'default', ?)`,
+     VALUES (?, 'autopilot', '{"origin":"operator"}', 'done', 5, ?, ?, 0, 0, 0, 0, 'default', ?)`,
     [`job-${pid}`, pid, now, JSON.stringify({ blocked: true, blockers: [{ code: blockerCode, detail: "x" }] })],
   );
 };

@@ -36,6 +36,10 @@ import { buildReviewerReportFor } from "./repository";
 import type { ProjectRecord, StageDetail, SubmittalTrackType } from "../../shared/src/types";
 import { requiredTracks } from "./submittalTracks";
 import { portalAutomationDisabled } from "../../portal-bot/src/browser";
+// STATIC, and the synchrony is load-bearing (see maybeResumeAutopilot). No load-time cycle:
+// jobQueue reaches this module only through the worker's dynamic import() in processNextJob,
+// exactly as it reaches autoStageSteps.ts, which imports enqueueJob the same way.
+import { enqueueJob } from "./jobQueue";
 
 type Row = Record<string, SqlParam>;
 
@@ -122,6 +126,19 @@ export function trackAlreadyStaged(db: AppDb, projectId: string, track: Submitta
     [projectId, track],
   );
   return Boolean(row);
+}
+
+// The operator's explicit block (`projects.status = 'blocked'`) as a Segment A outcome, or
+// null. Compared by its literal status value on purpose — this is the one status a person
+// sets to mean "stop", and the code `operator_blocked` is what maybeResumeAutopilot keys on
+// to never relaunch such a run on its own.
+export function operatorBlockedOutcome(db: AppDb, projectId: string): AutopilotBlocker | null {
+  const status = String(db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId])?.status ?? "");
+  if (status !== "blocked") return null;
+  return {
+    code: "operator_blocked",
+    detail: "The project is blocked by an operator, so autopilot will not run QC, build or stage it. Unblock the project, then start autopilot again.",
+  };
 }
 
 // Which tracks THIS autopilot invocation should stage. An explicit track stages just
@@ -352,54 +369,82 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
 // re-evaluates every gate and simply re-blocks. It can NEVER cross the human
 // approval gate: awaiting_human_submit is not in PRE_STAGE_STATUSES, and
 // approval still requires the explicit POST /autopilot/approve.
+//
+// WHO STARTED THE CHAIN. Every autopilot job carries `payload.origin`: "operator" (POST
+// /autopilot/start) or "auto_start" (createProject, only when AUTOPILOT_AUTO_START=1). A
+// resume copies the origin of the job it resumes, so the ROOT's origin rides the whole chain.
+// A chain with no origin is refused: "it only ever relaunches a run the operator started"
+// used to rest on a timing heuristic, and production had live portal runs nobody clicked.
+//
+// SYNCHRONOUS ON PURPOSE. The in-flight check and the insert used to straddle an async
+// import(), so N clearing events in one tick (one upload burst) each saw "nothing in flight"
+// and each enqueued a Segment A — three parallel live runs on one project, 2026-09-21. The
+// read and the insert now happen in ONE transaction with no await between them.
+export type AutopilotOrigin = "operator" | "auto_start";
+
+export function autopilotOriginResumable(origin: unknown): origin is AutopilotOrigin {
+  if (origin === "operator") return true;
+  // Auto-start is opt-in; a chain it began may only continue while it is still opted in.
+  if (origin === "auto_start") return process.env.AUTOPILOT_AUTO_START === "1";
+  return false;
+}
+
 export function maybeResumeAutopilot(db: AppDb, projectId: string, trigger = "a blocker-clearing change"): void {
   try {
     if (process.env.AUTOPILOT_AUTO_START === "0") return;
-    const project = db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId]);
-    if (!project || !PRE_STAGE_STATUSES.has(String(project.status))) return;
-    const job = db.get<Row>(
-      "SELECT status, result, payload FROM job_queue WHERE project_id = ? AND job_type = 'autopilot' ORDER BY created_at DESC LIMIT 1",
-      [projectId],
-    );
-    if (!job) return; // never started — nothing to resume
-    const status = String(job.status);
-    if (status === "pending" || status === "running") return; // already in flight
-    // Resume ONLY runs that ended blocked on a gate. A FAILED run is an error —
-    // it is escalated to the operator (job_failed SSE + review item) and must
-    // not be silently relaunched by an unrelated clearing event (that would let
-    // e.g. a public intake link repeatedly trigger live browser runs).
-    const result = parseJson<{ blocked?: boolean; blockers?: Array<{ code?: string }> } | null>(job.result == null ? null : String(job.result), null);
-    if (!result?.blocked) return;
-    // PORTAL-RUN OUTCOMES ARE NOT GATES. Segment A also reports blocked:true when the
-    // stage itself failed or paused mid-run (stage_failed / paused_for_human, from the
-    // portal_runs row). No clearing event fixes those — relaunching would drive an
-    // unattended live browser run (and, on a pause, a SECOND browser while the paused
-    // one still sits at its MFA/CAPTCHA challenge). Same no-relaunch invariant as a
-    // failed job: the operator resumes explicitly.
-    if ((result.blockers ?? []).some((b) => b?.code === "stage_failed" || b?.code === "paused_for_human")) return;
-    // Carry the original run's track — a resume of an NEM-track run must not
-    // restage the default track.
-    const payload = parseJson<{ track?: string } | null>((job as { payload?: unknown }).payload == null ? null : String((job as { payload?: unknown }).payload), null);
-    const track = payload?.track;
-    void import("./jobQueue")
-      .then(({ enqueueJob }) => {
-        // maxRetries 0: staging drives a live portal and is not idempotent —
-        // recovery happens through THIS event-driven resume path, never a timer.
-        enqueueJob(db, "autopilot", track ? { track, resumeTrigger: trigger } : { resumeTrigger: trigger }, { projectId, priority: 6, maxRetries: 0 });
-        logger.info("autopilot", `auto-resume enqueued (${trigger})`, { project: projectId });
-        // SAY WHY IT STARTED. This resume is correct — it only ever relaunches a run the
-        // operator started that then blocked on a gate, and it can never cross the approval
-        // gate. But it left no trace an operator could read, so the first time it fired the
-        // report was "I never clicked the autopilot button", and it took a code read to
-        // explain a run that was working as designed. An unexplained autonomous run is
-        // indistinguishable from a bug; the audit trail now names the trigger.
-        addAuditLog(db, projectId, "system", "autopilot", "autopilot.auto_resumed", {
-          trigger,
-          because: "an earlier autopilot run stopped on a gate, and this change may have cleared it",
-          track: track ?? null,
-        });
-      })
-      .catch(() => null);
+    db.transaction(() => {
+      const project = db.get<Row>("SELECT status FROM projects WHERE id = ?", [projectId]);
+      if (!project || !PRE_STAGE_STATUSES.has(String(project.status))) return;
+      // ANY queued or running autopilot job means one is already in flight — not only the
+      // newest row: an older pending job behind a newer finished one is still in flight.
+      const inFlight = db.get<Row>(
+        "SELECT id FROM job_queue WHERE project_id = ? AND job_type = 'autopilot' AND status IN ('pending','running') LIMIT 1",
+        [projectId],
+      );
+      if (inFlight) return;
+      const job = db.get<Row>(
+        "SELECT status, result, payload FROM job_queue WHERE project_id = ? AND job_type = 'autopilot' ORDER BY created_at DESC LIMIT 1",
+        [projectId],
+      );
+      if (!job) return; // never started — nothing to resume
+      // Resume ONLY runs that ended blocked on a gate. A FAILED run is an error —
+      // it is escalated to the operator (job_failed SSE + review item) and must
+      // not be silently relaunched by an unrelated clearing event (that would let
+      // e.g. a public intake link repeatedly trigger live browser runs).
+      const result = parseJson<{ blocked?: boolean; blockers?: Array<{ code?: string }> } | null>(job.result == null ? null : String(job.result), null);
+      if (!result?.blocked) return;
+      // PORTAL-RUN OUTCOMES ARE NOT GATES. Segment A also reports blocked:true when the
+      // stage itself failed or paused mid-run (stage_failed / paused_for_human, from the
+      // portal_runs row). No clearing event fixes those — relaunching would drive an
+      // unattended live browser run (and, on a pause, a SECOND browser while the paused
+      // one still sits at its MFA/CAPTCHA challenge). Same no-relaunch invariant as a
+      // failed job: the operator resumes explicitly. `operator_blocked` likewise: the
+      // operator stopped this project on purpose, and lifting the block is not a request
+      // to have an unrelated upload relaunch a live portal run.
+      if ((result.blockers ?? []).some((b) => b?.code === "stage_failed" || b?.code === "paused_for_human" || b?.code === "operator_blocked")) return;
+      // Carry the original run's track — a resume of an NEM-track run must not
+      // restage the default track — and its ORIGIN, so the root's origin rides the chain.
+      const payload = parseJson<{ track?: string; origin?: unknown } | null>(job.payload == null ? null : String(job.payload), null);
+      const origin = payload?.origin;
+      if (!autopilotOriginResumable(origin)) return;
+      const track = payload?.track;
+      // maxRetries 0: staging drives a live portal and is not idempotent —
+      // recovery happens through THIS event-driven resume path, never a timer.
+      enqueueJob(db, "autopilot", track ? { track, origin, resumeTrigger: trigger } : { origin, resumeTrigger: trigger }, { projectId, priority: 6, maxRetries: 0 });
+      logger.info("autopilot", `auto-resume enqueued (${trigger})`, { project: projectId, origin });
+      // SAY WHY IT STARTED. This resume only ever relaunches a run whose chain an operator
+      // (or the opted-in auto-start) began and that then blocked on a gate, and it can never
+      // cross the approval gate. But it left no trace an operator could read, so the first
+      // time it fired the report was "I never clicked the autopilot button", and it took a
+      // code read to explain. An unexplained autonomous run is indistinguishable from a bug;
+      // the audit trail names the trigger and the chain's origin.
+      addAuditLog(db, projectId, "system", "autopilot", "autopilot.auto_resumed", {
+        trigger,
+        because: "an earlier autopilot run stopped on a gate, and this change may have cleared it",
+        track: track ?? null,
+        origin,
+      });
+    });
   } catch { /* auto-resume is best-effort — never break the clearing action */ }
 }
 
@@ -412,6 +457,16 @@ export async function runAutopilotSegmentA(
   track?: SubmittalTrackType,
 ): Promise<{ blocked: boolean; blockers: AutopilotBlocker[]; message: string; state: AutopilotState }> {
   const t0 = performance.now();
+  // THE OPERATOR'S BLOCK IS A HARD STOP. `blocked` is a status a person sets to say "not
+  // this project, not now". Segment A has no other project-status gate (see
+  // PRE_STAGE_STATUSES), so a queued or explicitly started run would otherwise re-run QC,
+  // build and drive a live portal on a project someone deliberately stopped. Refused before
+  // anything is written — no QC rerun, no build, no audit of a start that did not happen.
+  const operatorBlock = operatorBlockedOutcome(db, projectId);
+  if (operatorBlock) {
+    logger.info("autopilot", "Segment A refused — the project is blocked by an operator", { project: projectId });
+    return { blocked: true, blockers: [operatorBlock], message: operatorBlock.detail, state: getAutopilotState(db, projectId) };
+  }
   // EXECUTION-TIME GUARD, PER TRACK. A queued autopilot job may be stale by the time it
   // runs, and staging is NOT idempotent portal-side — a re-run creates a duplicate live
   // application draft. This used to be a PROJECT-status check, which also meant that once
@@ -459,8 +514,27 @@ export async function runAutopilotSegmentA(
   // a live browser on the same per-client persistent profile, and two Chromium instances
   // on one profile directory collide.
   const staged: SubmittalTrackType[] = [];
+  const skipped: SubmittalTrackType[] = [];
   const trackBlockers: AutopilotBlocker[] = [];
   for (const t of pendingTracks) {
+    // RE-CHECK AT THE MOMENT OF STAGING, not only at the start. pendingTracks was computed
+    // before QC, the package build and every earlier track's live portal run (minutes each),
+    // and a track can reach the portal in that window through another run. Staging is not
+    // idempotent portal-side, so a track that is staged NOW is skipped, and an operator
+    // block set while an earlier track was staging stops the run here.
+    const blockedNow = operatorBlockedOutcome(db, projectId);
+    if (blockedNow) {
+      logger.info("autopilot", "Segment A stopped mid-run — the project was blocked by an operator", { project: projectId, track: t });
+      const blockers = [...trackBlockers, blockedNow];
+      const msg = staged.length ? `Staged ${staged.join(", ")} to portal review, then stopped: ${blockedNow.detail}` : blockedNow.detail;
+      return { blocked: true, blockers, message: msg, state: getAutopilotState(db, projectId) };
+    }
+    if (trackAlreadyStaged(db, projectId, t)) {
+      logger.info("autopilot", "Segment A skipped a track that reached the portal while this run was under way", { project: projectId, track: t });
+      addAuditLog(db, projectId, "system", "autopilot", "autopilot.track_already_staged", { track: t });
+      skipped.push(t);
+      continue;
+    }
     try {
       await prepareSubmission(db, projectId, t, /* autoSubmit */ false);
     } catch (err) {
@@ -506,6 +580,12 @@ export async function runAutopilotSegmentA(
       ? `Staged ${staged.join(", ")} to portal review. ${trackBlockers.length} track(s) did not: ${trackBlockers.map((b) => b.detail).join("; ")}`
       : trackBlockers.map((b) => b.detail).join("; ");
     return { blocked: true, blockers: trackBlockers, message: msg, state: getAutopilotState(db, projectId) };
+  }
+  if (staged.length === 0) {
+    // Every track this run meant to stage was staged by someone else first. Same answer as
+    // the up-front "nothing left to stage" — never "Staged  to portal review".
+    const msg = `The ${skipped.join(", ")} track(s) reached the portal while this run was under way, so autopilot did not re-stage them. Use the explicit Stage action if a re-stage is intended.`;
+    return { blocked: true, blockers: [{ code: "not_pre_stage", detail: msg }], message: msg, state: getAutopilotState(db, projectId) };
   }
   logger.info("autopilot", "Segment A complete — staged to portal review, awaiting human approval", { project: projectId, tracks: staged.join(", "), ms: `${Math.round(performance.now() - t0)}ms` });
   return { blocked: false, blockers: [], message: `Staged ${staged.join(", ")} to portal review; awaiting human approval.`, state: getAutopilotState(db, projectId) };

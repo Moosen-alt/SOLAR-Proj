@@ -109,3 +109,24 @@ export function stageForStatus(status: ProjectStatus): ProjectStage {
 export function isBlockedStatus(status: ProjectStatus): boolean {
   return status === "blocked" || status === "correction_received" || status === "correction_triaged";
 }
+
+/**
+ * MAY A QC RUN MOVE THIS PROJECT'S STATUS? The one answer runQcForProject asks (qc.ts).
+ *
+ * QC may JUDGE at any status — its qc_results rows are what every staging gate reads. It may
+ * MOVE only a project that is still inside the pipeline's local, pre-stage leg, and never:
+ *
+ *  - `blocked`: the operator's hold. It has no automatic writer by design (only
+ *    setProjectStatusByOperator writes it or lifts it), and QC re-runs from five doors that do
+ *    not care where the project is — an edit, a verify, Run QC, the workflow view, Segment A.
+ *    A hold erased by a field edit resumed the pipeline with nothing on the audit trail.
+ *  - anything at or after the Submit stage (awaiting_human_submit, the correction states,
+ *    ready_to_resubmit, submitted … handoff_ready): a filed or filing project rewritten to
+ *    qc_passed dropped back to "ready to stage" while its tracks still read filed.
+ *
+ * "At or after Submit" is the stage model's own answer, not a second status list.
+ */
+export function qcMayMoveStatus(status: ProjectStatus): boolean {
+  if (status === "blocked") return false;
+  return stageForStatus(status).index < stageForStatus("awaiting_human_submit").index;
+}

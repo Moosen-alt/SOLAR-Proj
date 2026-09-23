@@ -35,6 +35,22 @@ import { nowIso } from "./time";
 interface Row { [key: string]: unknown }
 const text = (v: unknown): string => (v == null ? "" : String(v));
 
+/** HOW A SEEDED PROFILE WAS RESEARCHED — stored in payload_json, because "seeded" alone
+ *  cannot tell an operator (or a cleanup) a web-grounded answer from model memory, and both
+ *  are shared with every tenant. researchJurisdictionCodes attaches it to the profile it
+ *  returns; absent means the row came from a path that does not say (imports, seeds). */
+export interface CodeResearchProvenance {
+  webGrounded: boolean;
+  method: "web_search" | "model_memory";
+  notes?: string;
+}
+
+function provenanceOf(value: unknown): CodeResearchProvenance | undefined {
+  const p = (value as { researchProvenance?: unknown } | null)?.researchProvenance as Partial<CodeResearchProvenance> | undefined;
+  if (!p || typeof p !== "object" || typeof p.webGrounded !== "boolean") return undefined;
+  return { webGrounded: p.webGrounded, method: p.webGrounded ? "web_search" : "model_memory", ...(p.notes ? { notes: String(p.notes).slice(0, 1000) } : {}) };
+}
+
 // Model-code fallbacks used when a jurisdiction has no profile: current ICC/NFPA
 // cycles, clearly labeled so findings say "verify the locally adopted edition".
 export const MODEL_CODE_DEFAULTS: CodeEdition[] = [
@@ -141,6 +157,16 @@ export function listCodeProfiles(db: AppDb): JurisdictionCodeProfile[] {
 function upsert(db: AppDb, profile: JurisdictionCodeProfile, opts: { confidence: "seeded" | "verified"; verifiedBy?: string }): JurisdictionCodeProfile {
   const key = codeProfileKey(profile);
   const ts = nowIso();
+  const existing = db.get<Row>("SELECT confidence, researched_at, verified_at, verified_by, payload_json FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
+  // Provenance: the incoming research's own, else — for a seeded re-save that does not carry
+  // one (a reference import merging onto a researched row) — the row's existing one, so a
+  // merge cannot launder model memory into an unmarked row. A human verification drops it:
+  // "verified" is the stronger statement.
+  let priorProvenance: CodeResearchProvenance | undefined;
+  if (existing && opts.confidence === "seeded") {
+    try { priorProvenance = provenanceOf(JSON.parse(text(existing.payload_json) || "{}")); } catch { priorProvenance = undefined; }
+  }
+  const researchProvenance = provenanceOf(profile) ?? priorProvenance;
   const payload = JSON.stringify({
     adoptedCodes: profile.adoptedCodes ?? [],
     amendments: profile.amendments ?? [],
@@ -148,8 +174,8 @@ function upsert(db: AppDb, profile: JurisdictionCodeProfile, opts: { confidence:
     prescriptive: profile.prescriptive ?? {},
     fireSetbacks: profile.fireSetbacks ?? [],
     citations: profile.citations ?? [],
+    ...(researchProvenance && opts.confidence === "seeded" ? { researchProvenance } : {}),
   });
-  const existing = db.get<Row>("SELECT confidence, researched_at, verified_at, verified_by FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
   if (existing) {
     db.run(
       `UPDATE jurisdiction_code_profiles
@@ -327,6 +353,29 @@ export function seedReferenceCodeProfiles(db: AppDb): void {
   }
 }
 
+/** Is this "AHJ" really a hostname / portal address? The learn benchmark created projects
+ *  whose AHJ was the portal host ("Benchmark bsaonline.com"), and each one became a shared
+ *  seeded code profile for a jurisdiction that does not exist. A dot followed by a TLD at a
+ *  word boundary, a scheme or "www.", or a known portal-vendor host token. Deliberately
+ *  narrow on the dot rule so "St. Johns County" / "Ft. Myers" / "Washington D.C." pass. */
+const PORTAL_HOST_TOKEN = /bsaonline|accela\.com|citizenaccess|energov|tylerhost|etrakit|smartgovcommunity|citizenserve|viewpointcloud|projectdox|powerclerk|opengov\.com/i;
+export function ahjLooksLikeHostname(ahj: string): boolean {
+  const s = (ahj || "").trim();
+  if (!s) return false;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || /(^|\s)www\./i.test(s)) return true;
+  if (/[a-z0-9-]\.(?:com|net|org|gov|us|edu|info|io|biz)(?![a-z0-9])/i.test(s)) return true;
+  return PORTAL_HOST_TOKEN.test(s);
+}
+
+/** Research this process has already asked for, keyed by profile key → when. The DB check
+ *  below cannot see an enqueue that has not happened yet: the enqueue sits behind a lazy
+ *  import, so five synchronous callers all passed the check before the first job row landed
+ *  (production: 24 code_research jobs for 8 keys, 4-5 identical rows in the same ms). This is
+ *  set SYNCHRONOUSLY before the import, cleared if the enqueue fails so a retry is possible,
+ *  and expires with the DB window; the DB check stays for dedupe across restarts. */
+const CODE_RESEARCH_WINDOW_MS = 6 * 3600_000;
+const inFlightCodeResearch = new Map<string, number>();
+
 // --- Autonomous onboarding ----------------------------------------------------
 // "Search all the codes needed — city/county AND state — and store them." The
 // moment any review (internal gate or standalone API) touches a jurisdiction
@@ -346,13 +395,17 @@ export function ensureCodeProfilesResearched(db: AppDb, state: string, ahj: stri
   const st = (state || "").trim();
   if (!st) return 0;
   const layers: Array<{ state: string; ahj: string }> = [{ state: st, ahj: "" }];
-  if ((ahj || "").trim()) layers.push({ state: st, ahj: ahj.trim() });
+  // A hostname is not a jurisdiction: skip the AHJ layer, still research the state default.
+  if ((ahj || "").trim() && !ahjLooksLikeHostname(ahj)) layers.push({ state: st, ahj: ahj.trim() });
+  else if ((ahj || "").trim()) logger.info("code-profiles", `auto-research skipped for AHJ "${ahj.trim()}" — it looks like a hostname, not a jurisdiction`);
   let enqueued = 0;
   for (const layer of layers) {
     try {
       const key = codeProfileKey(layer);
       const existing = db.get<Row>("SELECT profile_key FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
       if (existing) continue;
+      const askedAt = inFlightCodeResearch.get(key);
+      if (askedAt != null && Date.now() - askedAt < CODE_RESEARCH_WINDOW_MS) continue;
       // Dedupe: a pending/running job for this layer, OR any attempt in the last
       // 6 hours (a stub/failed research stores no row — without the time window,
       // every review of the jurisdiction would re-queue no-op research forever).
@@ -360,16 +413,17 @@ export function ensureCodeProfilesResearched(db: AppDb, state: string, ahj: stri
         `SELECT id FROM job_queue
           WHERE job_type = 'code_research' AND payload LIKE ?
             AND (status IN ('pending','running') OR created_at > ?)`,
-        [`%${key}%`, new Date(Date.now() - 6 * 3600_000).toISOString()],
+        [`%${key}%`, new Date(Date.now() - CODE_RESEARCH_WINDOW_MS).toISOString()],
       );
       if (recent) continue;
+      inFlightCodeResearch.set(key, Date.now());
       // Lazy import avoids a static cycle (jobQueue -> ... -> codeProfiles).
       void import("./jobQueue").then(({ enqueueJob, processNextJob }) => {
         // maxRetries 2: the worker's retry math (`retryCount+1 < maxRetries`)
         // means 1 yields ZERO retries — 2 gives the intended single retry.
         enqueueJob(db, "code_research", { state: layer.state, ahj: layer.ahj, profileKey: key }, { priority: 3, maxRetries: 2 });
         void processNextJob(db).catch(() => null);
-      }).catch(() => null);
+      }).catch(() => { inFlightCodeResearch.delete(key); });
       enqueued++;
       logger.info("code-profiles", `auto-research queued for ${layer.state}/${layer.ahj || "(state default)"}`);
     } catch { /* autonomy is best-effort — never break a review */ }

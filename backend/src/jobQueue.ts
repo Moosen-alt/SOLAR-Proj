@@ -566,8 +566,28 @@ export async function drainPendingJobs(db: AppDb): Promise<number> {
   return completed;
 }
 
-// Process one pending job. Returns true if a job was found and processed.
-export async function processNextJob(db: AppDb): Promise<boolean> {
+// ONE PROJECT, ONE PORTAL EFFECT AT A TIME. A pending job of a portal-effect type is not
+// claimable while its project already has a RUNNING job of any portal-effect type: two such
+// runs on one project drive two browsers against the same live application on the same
+// per-(client, portal) profile, and staging is not idempotent portal-side. The same holds
+// for two stage_step chains on one project (both build the packet; duplicate generated rows
+// were measured). The job is left PENDING — it runs on a later claim once the project frees.
+// Expressed in SQL so the candidate read and the claim UPDATE enforce the same predicate.
+const PORTAL_EFFECT_TYPES_SQL = [...PORTAL_EFFECT_JOB_TYPES].map((t) => `'${t}'`).join(", ");
+const PROJECT_BUSY_SQL = `NOT (
+     project_id IS NOT NULL AND (
+       (job_type IN (${PORTAL_EFFECT_TYPES_SQL}) AND EXISTS (
+          SELECT 1 FROM job_queue busy WHERE busy.project_id = job_queue.project_id
+             AND busy.status = 'running' AND busy.job_type IN (${PORTAL_EFFECT_TYPES_SQL})))
+       OR (job_type = 'stage_step' AND EXISTS (
+          SELECT 1 FROM job_queue busy WHERE busy.project_id = job_queue.project_id
+             AND busy.status = 'running' AND busy.job_type = 'stage_step'))))`;
+
+// Claim the next runnable job: mark it 'running' and return it, or null when nothing is
+// claimable. FULLY SYNCHRONOUS — no await between the read and the claim — so concurrent
+// drain callers in this process each take a different job and cannot both pass the
+// per-project busy check. Exported so the claim rules are tested without running handlers.
+export function claimNextJob(db: AppDb): JobRecord | null {
   const now = nowIso();
   // Claim a job atomically.
   //
@@ -582,14 +602,17 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
     runningByOrg.set(String(r.org_id || DEFAULT_ORG_ID), Number(r.cnt ?? 0));
   }
   const candidates = db.query<Row>(
+    // The busy filter is applied HERE, before the top priority is picked: filtering after
+    // would let one waiting high-priority job hide every runnable lower-priority one.
     `SELECT * FROM job_queue
      WHERE status = 'pending'
        AND (scheduled_at IS NULL OR scheduled_at <= ?)
+       AND ${PROJECT_BUSY_SQL}
      ORDER BY priority DESC, created_at ASC
      LIMIT 50`,
     [now],
   );
-  if (candidates.length === 0) return false;
+  if (candidates.length === 0) return null;
   const topPriority = Number(candidates[0].priority ?? 5);
   const row = candidates
     .filter((c) => Number(c.priority ?? 5) === topPriority)
@@ -599,14 +622,21 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       if (bx !== by) return bx - by;
       return String(x.created_at).localeCompare(String(y.created_at));
     })[0];
-  if (!row) return false;
+  if (!row) return null;
 
   const job = mapJob(row);
-  db.run("UPDATE job_queue SET status = 'running', started_at = ? WHERE id = ? AND status = 'pending'", [now, job.id]);
+  db.run(`UPDATE job_queue SET status = 'running', started_at = ? WHERE id = ? AND status = 'pending' AND ${PROJECT_BUSY_SQL}`, [now, job.id]);
 
   // Verify we won the claim (optimistic lock)
   const claimed = db.get<Row>("SELECT status FROM job_queue WHERE id = ?", [job.id]);
-  if (!claimed || String(claimed.status) !== "running") return false;
+  if (!claimed || String(claimed.status) !== "running") return null;
+  return { ...job, status: "running", startedAt: now };
+}
+
+// Process one pending job. Returns true if a job was found and processed.
+export async function processNextJob(db: AppDb): Promise<boolean> {
+  const job = claimNextJob(db);
+  if (!job) return false;
 
   // Mark in-flight so the watchdog can't reclaim this run out from under us.
   inFlightJobIds.add(job.id);

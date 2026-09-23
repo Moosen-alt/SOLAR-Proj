@@ -20,7 +20,7 @@ import type { AppDb } from "./db";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text } from "./json";
 import { findApplicationProfile } from "./applicationDocs";
-import { enrichMboxLearningWithLlm } from "./llm";
+import { enrichMboxLearningWithLlm, stripUrlsFromModelMemory } from "./llm";
 import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles";
 import { nowIso } from "./time";
 import { logger } from "./logger";
@@ -1502,6 +1502,29 @@ export function learnFromHistoricalDocument(
   return { profileKey: profile.profileKey, learnedCorrection: Boolean(classification) };
 }
 
+// WHERE DID AN AI-RESEARCHED ROW COME FROM? These rows are shared with every tenant, and until
+// now a web-grounded answer and a 45-second-timeout fallback to model memory were stored
+// identically ("AI AHJ research", seeded, with a portal URL). The research functions return
+// `webGrounded` at runtime; it is optional here only because older callers build a result by
+// hand (ahjFormAuto's form-URL learner) — those keep the unlabeled legacy source.
+//   true      → source label says web-grounded.
+//   false     → source label + a note segment say model memory, and NO link is persisted: not
+//               portalUrl, not a URL-shaped portalName (upsertKnowledge would promote it back
+//               into portalUrl), not one in the notes (form discovery harvests .pdf links there).
+//   undefined → unchanged legacy behavior.
+type ResearchProvenanceFlag = { webGrounded?: boolean };
+function researchProvenance(research: ResearchProvenanceFlag, sourceLabel: string): { modelMemory: boolean; source: KnowledgeSource; note: string } {
+  if (research.webGrounded === true) return { modelMemory: false, source: learnedSource("ai_researched", `${sourceLabel} (web-grounded)`), note: "" };
+  if (research.webGrounded === false) {
+    return {
+      modelMemory: true,
+      source: learnedSource("ai_researched", `${sourceLabel} (model memory — web search did not run)`),
+      note: "Provenance: MODEL MEMORY ONLY — web search did not run, so this research pass stored no portal URL; verify every field against the official site.",
+    };
+  }
+  return { modelMemory: false, source: learnedSource("ai_researched", sourceLabel), note: "" };
+}
+
 // Save an AI-researched AHJ profile to the knowledge base so the jurisdiction is
 // known next time. Marked confidence "seeded" + source "ai_researched" + a
 // human-verification note, because model-researched requirements are advisory
@@ -1509,31 +1532,34 @@ export function learnFromHistoricalDocument(
 export function saveResearchedAhjProfile(
   db: AppDb,
   input: { state: string; ahj: string; utility?: string },
-  research: AhjResearchResult,
+  research: AhjResearchResult & ResearchProvenanceFlag,
 ): PermitUtilityKnowledgeProfile {
+  const provenance = researchProvenance(research, "AI AHJ research");
+  const scrub = (s: string): string => (provenance.modelMemory ? stripUrlsFromModelMemory(s) : s);
   const noteParts = [
     "AI-researched AHJ profile — verify against the official site before relying on it.",
+    provenance.note,
     research.portalPlatform ? `Portal platform: ${research.portalPlatform} (reuse existing ${research.portalPlatform} portal automation; only the entry URL + login differ per AHJ).` : "",
     research.submissionMethod ? `Submission: ${research.submissionMethod}.` : "",
     research.submissionSteps.length ? `Steps: ${research.submissionSteps.join(" → ")}` : "",
     research.tips.length ? `Tips: ${research.tips.join(" | ")}` : "",
-  ].filter(Boolean);
+  ].filter(Boolean).map(scrub).filter(Boolean);
   const facts: KnowledgeFacts = {
     state: input.state,
     ahj: input.ahj,
     utility: input.utility,
-    portalName: research.portalName,
-    portalUrl: research.portalUrl,
+    portalName: scrub(research.portalName),
+    portalUrl: provenance.modelMemory ? "" : research.portalUrl,
     portalPlatform: research.portalPlatform,
     submissionMethod: research.submissionMethod,
-    requiredDocuments: research.requiredDocuments,
-    sources: [learnedSource("ai_researched", "AI AHJ research")],
+    requiredDocuments: research.requiredDocuments.map(scrub).filter(Boolean),
+    sources: [provenance.source],
     confidence: "seeded",
     notes: noteParts.join(" "),
   };
   return upsertKnowledge(db, facts, {
     eventType: "ahj.ai_researched",
-    details: { ahj: input.ahj, state: input.state, utility: input.utility || "", platform: research.portalPlatform, confidence: research.confidence, docCount: research.requiredDocuments.length },
+    details: { ahj: input.ahj, state: input.state, utility: input.utility || "", platform: research.portalPlatform, confidence: research.confidence, docCount: research.requiredDocuments.length, webGrounded: research.webGrounded ?? null },
   });
 }
 
@@ -1587,10 +1613,13 @@ export function saveVerifiedAhjProfile(
 export function saveResearchedUtilityProfile(
   db: AppDb,
   input: { state: string; utility: string; ahj?: string },
-  research: UtilityResearchResult,
+  research: UtilityResearchResult & ResearchProvenanceFlag,
 ): PermitUtilityKnowledgeProfile {
+  const provenance = researchProvenance(research, "AI utility NEM research");
+  const scrub = (s: string): string => (provenance.modelMemory ? stripUrlsFromModelMemory(s) : s);
   const noteParts = [
     "AI-researched utility NEM profile — verify against the utility's official interconnection page before relying on it.",
+    provenance.note,
     research.portalPlatform ? `Portal platform: ${research.portalPlatform} (reuse existing ${research.portalPlatform} automation; only the entry URL + login differ per utility).` : "",
     research.submissionMethod ? `Submission: ${research.submissionMethod}.` : "",
     research.smartInverterSettings ? `Smart inverter settings: ${research.smartInverterSettings}` : "",
@@ -1599,23 +1628,23 @@ export function saveResearchedUtilityProfile(
     research.exportLimitNote ? `Export limit: ${research.exportLimitNote}` : "",
     research.submissionSteps.length ? `Steps: ${research.submissionSteps.join(" → ")}` : "",
     research.tips.length ? `Tips: ${research.tips.join(" | ")}` : "",
-  ].filter(Boolean);
+  ].filter(Boolean).map(scrub).filter(Boolean);
   const facts: KnowledgeFacts = {
     state: input.state,
     ahj: input.ahj || "",
     utility: input.utility,
-    portalName: research.portalName,
-    portalUrl: research.portalUrl,
+    portalName: scrub(research.portalName),
+    portalUrl: provenance.modelMemory ? "" : research.portalUrl,
     portalPlatform: research.portalPlatform,
     submissionMethod: research.submissionMethod,
-    requiredDocuments: research.requiredDocuments,
-    sources: [learnedSource("ai_researched", "AI utility NEM research")],
+    requiredDocuments: research.requiredDocuments.map(scrub).filter(Boolean),
+    sources: [provenance.source],
     confidence: "seeded",
     notes: noteParts.join(" "),
   };
   return upsertKnowledge(db, facts, {
     eventType: "utility.ai_researched",
-    details: { utility: input.utility, state: input.state, platform: research.portalPlatform, confidence: research.confidence, docCount: research.requiredDocuments.length },
+    details: { utility: input.utility, state: input.state, platform: research.portalPlatform, confidence: research.confidence, docCount: research.requiredDocuments.length, webGrounded: research.webGrounded ?? null },
   });
 }
 

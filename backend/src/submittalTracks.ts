@@ -117,13 +117,135 @@ function channelFor(track: SubmittalTrackType, project: ProjectRecord): string {
   return describePermitType(profile).submissionMethod || "AHJ portal";
 }
 
+/**
+ * The permit_type values (on submissions and permit_check_targets) that belong to one track.
+ *
+ *  - combo / permit are one filing: legacy rows created before per-track support carry
+ *    permit_type 'permit', and the trackless stage still records its run that way.
+ *  - building / structural are one trade. The fee layer, the discipline recipes and the
+ *    operator's own target tags say "structural"; the track says "building" (clientPortal's
+ *    trackLabel already names both "Building permit"). Unfolded, a project whose building
+ *    permit was tagged 'structural' read "building: not started" forever and could never hand
+ *    off — and handoff_ready cannot be set by hand.
+ */
+export function trackPermitTypes(track: SubmittalTrackType): string[] {
+  if (track === "combo" || track === "permit") return ["combo", "permit"];
+  if (track === "building") return ["building", "structural"];
+  return [track];
+}
+
+/**
+ * Does this ONE reading finish this track, on this kind of target? The outcome half of
+ * isTrackDone below (which also reads the target's history and the project's other targets).
+ *
+ *  - an AHJ permit track is done at `issued` — NOT `ready_for_issue`, which is "approved, pay
+ *    the issuance fee": a person still owes the jurisdiction money and there is no permit card.
+ *  - the NEM track is done at `nem_approved`.
+ *  - an outcome counts ONLY on a target of its own kind. A utility target whose text happened
+ *    to classify as "issued", or a permit target reading "nem_approved", has not finished that
+ *    track — the same rule updateProjectForPermitOutcome applies before it writes a status.
+ */
+export function outcomeFinishesTrack(track: SubmittalTrackType, outcome: PermitCheckOutcome | string | null, targetType: string): boolean {
+  if (track === "nem") return targetType === "nem" && outcome === "nem_approved";
+  return targetType === "permit" && outcome === "issued";
+}
+
+/**
+ * Has this one tracking target FINISHED the track? Its newest reading is not the whole answer.
+ *
+ * The monitor polls a target forever, and after issuance the jurisdiction's text moves on:
+ * "Record Status: Finaled", "Status: Closed", "Status: Complete" classify needs_human_review,
+ * "Final Approved" reviewed_by_ahj, "Inspections in progress" waiting. Judged on latest_outcome
+ * alone, a FINALED permit read "not done" and the project could never hand off. So: the target
+ * is done when it has EVER read the track's done outcome and no correction was read AFTER that
+ * (a correction after issuance re-opens the filing; the same target reading issued again after
+ * the correction closes it). ready_for_issue is still not done — it never is.
+ *
+ * Only readings that changed something are rows in permit_status_checks (shouldRecordStatusCheck),
+ * and an issued / correction transition always is one. created_at ties (same millisecond) break
+ * on rowid, i.e. insertion order.
+ */
+function targetFinishedTrack(db: AppDb, track: SubmittalTrackType, target: Row): boolean {
+  const done = track === "nem" ? "nem_approved" : "issued";
+  const targetType = s(target.target_type);
+  if (!outcomeFinishesTrack(track, done, targetType)) return false; // wrong kind of target
+  const latest = s(target.latest_outcome);
+  if (latest === "correction_flagged") return false;
+  if (latest === done) return true;
+  const last = db.get<Row>(
+    `SELECT outcome FROM permit_status_checks
+      WHERE target_id = ? AND outcome IN (?, 'correction_flagged')
+      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    [s(target.id), done],
+  );
+  return s(last?.outcome) === done;
+}
+
+/**
+ * Which active tracking targets speak for one track.
+ *
+ *  - `own`: the newest-updated target TAGGED with this track's permit_type family.
+ *  - otherwise the POOL: active targets of this track's kind (permit / nem) that are tagged to
+ *    NO track in `required` — untagged ones (the dashboard's add-target form sends no
+ *    permitType, so they carry ''), and ones tagged to a track this project does not require
+ *    (a 'building' tag on a combo project). `poolDemand` is how many required tracks of this
+ *    kind have no tagged target of their own and so draw on the pool.
+ */
+function trackTargets(db: AppDb, projectId: string, track: SubmittalTrackType, required: readonly SubmittalTrackType[]): { own: Row | null; pool: Row[]; poolDemand: number } {
+  const active = db.query<Row>(
+    "SELECT * FROM permit_check_targets WHERE project_id = ? AND active = 1 ORDER BY updated_at DESC, created_at DESC",
+    [projectId],
+  );
+  const tagged = (t: SubmittalTrackType): Row | null => active.find((r) => trackPermitTypes(t).includes(s(r.permit_type))) ?? null;
+  const own = tagged(track);
+  const kind = targetTypeFor(track);
+  const claimed = new Set([...required, track].flatMap(trackPermitTypes));
+  const pool = active.filter((r) => s(r.target_type) === kind && !claimed.has(s(r.permit_type)));
+  const poolDemand = [...new Set([...required, track])].filter((t) => targetTypeFor(t) === kind && !tagged(t)).length;
+  return { own, pool, poolDemand };
+}
+
+/**
+ * IS THIS TRACK DONE? The ONE answer — read by the tracks panel (getSubmittalTracks) and by the
+ * installer handoff (repository.handoffBlockers → triggerHandoffIfReady). Two readers that
+ * answered it differently let the panel say "1/3 issued" while the project handed off.
+ *
+ *  - A track with its own tagged target is judged by that target (targetFinishedTrack: ever
+ *    issued / approved on its own kind of target, no correction since).
+ *  - A track with none draws on the pool (trackTargets). ONE UNATTRIBUTED TARGET NEVER FINISHES
+ *    TWO TRACKS: the pool finishes the tracks that draw on it only when it holds at least one
+ *    target per such track AND every target in it is finished. Before this, on a multi-permit
+ *    project the '' fallback resolved building AND electrical to the same newest-polled target,
+ *    so the electrical permit's "issued" handed off a project whose building permit was still in
+ *    plan review. We cannot tell which unattributed filing is which, so none may be unfinished.
+ *
+ * `required` is the full list of tracks being judged together (it decides which tags are
+ * claimed and how many tracks draw on the pool).
+ */
+export function isTrackDone(db: AppDb, projectId: string, track: SubmittalTrackType, required: readonly SubmittalTrackType[]): boolean {
+  const { own, pool, poolDemand } = trackTargets(db, projectId, track, required);
+  if (own) return targetFinishedTrack(db, track, own);
+  if (pool.length === 0 || pool.length < poolDemand) return false;
+  return pool.every((r) => targetFinishedTrack(db, track, r));
+}
+
 // PermitCheckOutcome → track status. Issued-family wins; corrections surface next.
+//
+// ready_for_issue is NOT issued. It is the AHJ saying "approved, pay the issuance fee" — the
+// project reads fees-due at the same moment, and folding it into "issued" made this track read
+// "Permit issued / Done", count toward "N/M issued" and drop out of `outstanding` while the
+// permit could not yet be downloaded and a person still had to pay.
+//
+// "issued" is decided by isTrackDone BEFORE this runs (deriveStatus); here an issued-family
+// newest reading that isTrackDone did not accept — the wrong kind of target, or one pooled
+// target that cannot finish two tracks — is a filing still under review, not a finished track.
 function statusFromOutcome(outcome: PermitCheckOutcome | null): SubmittalTrackStatus | null {
   switch (outcome) {
     case "issued":
-    case "ready_for_issue":
     case "nem_approved":
-      return "issued";
+      return "in_review";
+    case "ready_for_issue":
+      return "ready_for_issue";
     case "correction_flagged":
       return "correction";
     case "reviewed_by_ahj":
@@ -144,13 +266,15 @@ interface TrackState {
   outcome: PermitCheckOutcome | null;
   statusLabel: string;
   lastCheckedAt: string | null;
+  /** isTrackDone's verdict for this track (the ONE "is this track done" rule). */
+  done: boolean;
 }
 
 // Read the latest submission + tracking target for one track. Legacy rows created
 // before per-track support carry permit_type='permit'; fold those into the combo/
-// permit track so existing projects still show their submission status.
-function readTrackState(db: AppDb, projectId: string, track: SubmittalTrackType): TrackState {
-  const permitTypes = track === "combo" || track === "permit" ? ["combo", "permit"] : [track];
+// permit track so existing projects still show their submission status (trackPermitTypes).
+function readTrackState(db: AppDb, projectId: string, track: SubmittalTrackType, required: readonly SubmittalTrackType[]): TrackState {
+  const permitTypes = trackPermitTypes(track);
   const placeholders = permitTypes.map(() => "?").join(",");
 
   const submission = db.get<Row>(
@@ -160,21 +284,11 @@ function readTrackState(db: AppDb, projectId: string, track: SubmittalTrackType)
     [projectId, ...permitTypes],
   );
 
-  // Tracking target: prefer one tagged with this permit_type, else fall back to the
-  // matching target_type (so NEM and permit targets created before this feature map in).
-  const target =
-    db.get<Row>(
-      `SELECT * FROM permit_check_targets
-        WHERE project_id = ? AND permit_type IN (${placeholders}) AND active = 1
-        ORDER BY updated_at DESC LIMIT 1`,
-      [projectId, ...permitTypes],
-    ) ||
-    db.get<Row>(
-      `SELECT * FROM permit_check_targets
-        WHERE project_id = ? AND permit_type = '' AND target_type = ? AND active = 1
-        ORDER BY updated_at DESC LIMIT 1`,
-      [projectId, targetTypeFor(track)],
-    );
+  // Tracking target: the one tagged with this track, else the newest of the pool (untagged,
+  // or tagged to a track this project does not require) — the same resolution isTrackDone
+  // judges, so what the panel shows is the target the verdict came from.
+  const { own, pool } = trackTargets(db, projectId, track, required);
+  const target = own ?? pool[0] ?? null;
 
   return {
     submissionStatus: submission ? s(submission.status) : null,
@@ -186,12 +300,42 @@ function readTrackState(db: AppDb, projectId: string, track: SubmittalTrackType)
     outcome: target?.latest_outcome ? (s(target.latest_outcome) as PermitCheckOutcome) : null,
     statusLabel: s(target?.latest_status_label),
     lastCheckedAt: target?.last_checked_at != null ? s(target.last_checked_at) : null,
+    done: isTrackDone(db, projectId, track, required),
   };
 }
 
+/**
+ * The tracks among `tracks` that are NOT done, judged together (they are the `required` list
+ * isTrackDone attributes targets against). Empty means every one is done.
+ */
+export function unfinishedTracks(db: AppDb, projectId: string, tracks: readonly SubmittalTrackType[]): SubmittalTrackType[] {
+  return tracks.filter((t) => !isTrackDone(db, projectId, t, tracks));
+}
+
+/**
+ * On a MULTI-PERMIT project (more than one permit track among `tracks`): active PERMIT targets
+ * attributed to none of them (untagged, or tagged to a track the project does not require) that
+ * have not finished — judged by the same targetFinishedTrack rule. isTrackDone consults that pool
+ * only when a track has no target of its own; this catches the rest: every permit track tagged
+ * and issued, plus an unattributed permit the monitor is still polling in review (an MPU filed
+ * without an MPU track, a dashboard-added target). With several permits in play we cannot say
+ * which filing that is, so the handoff waits for it too.
+ *
+ * Deliberately NOT applied to a single-permit project: there the pool rule already covers the
+ * one permit track, and nothing in the app can deactivate or delete one tracking target, so a
+ * stale stray target would strand the handoff with no remedy but SQL.
+ */
+export function unfinishedUnattributedTargets(db: AppDb, projectId: string, tracks: readonly SubmittalTrackType[]): number {
+  if (tracks.filter((t) => targetTypeFor(t) === "permit").length < 2) return 0;
+  const claimed = new Set(tracks.flatMap(trackPermitTypes));
+  const active = db.query<Row>("SELECT * FROM permit_check_targets WHERE project_id = ? AND active = 1 AND target_type = 'permit'", [projectId]);
+  return active.filter((r) => !claimed.has(s(r.permit_type)) && !targetFinishedTrack(db, "permit", r)).length;
+}
+
 function deriveStatus(state: TrackState): SubmittalTrackStatus {
+  if (state.done) return "issued";
   const fromOutcome = statusFromOutcome(state.outcome);
-  if (fromOutcome === "issued") return "issued";
+  if (fromOutcome === "ready_for_issue") return "ready_for_issue";
   if (fromOutcome === "correction") return "correction";
   // Submitted to the portal already?
   if (state.submissionStatus === "submitted") {
@@ -220,6 +364,7 @@ function statusLabelFor(status: SubmittalTrackStatus, category: "utility" | "per
       submitted: "Submitted to utility",
       in_review: "Under utility review",
       correction: "Utility correction requested",
+      ready_for_issue: "Approved — fee due",
       issued: "Approved — PTO granted",
     };
     return utilityLabels[status];
@@ -230,6 +375,7 @@ function statusLabelFor(status: SubmittalTrackStatus, category: "utility" | "per
     submitted: "Submitted to AHJ",
     in_review: "Under AHJ review",
     correction: "Correction requested",
+    ready_for_issue: "Ready for issue — fee due",
     issued: "Permit issued",
   };
   return permitLabels[status];
@@ -250,6 +396,7 @@ function nextActionFor(status: SubmittalTrackStatus, channel: string, type: Subm
     case "submitted": return `Add the public status URL so the poller can track it to approval.${accelaInstantNote}`;
     case "in_review": return "Tracking — the poller is checking the portal for status changes.";
     case "correction": return "A correction was requested — resolve it and resubmit.";
+    case "ready_for_issue": return "Approved — a person pays the issuance fee in the portal (automation never pays fees); the poller then watches for the issued permit.";
     case "issued": return "Done — issued / approved.";
   }
 }
@@ -275,8 +422,9 @@ function captureFieldsFor(type: SubmittalTrackType): SubmittalTrack["captureFiel
 
 /** Build the full submittal-track view for a project: every required track + status. */
 export function getSubmittalTracks(db: AppDb, project: ProjectRecord): SubmittalTrack[] {
-  return requiredTracks(project).map((type) => {
-    const state = readTrackState(db, project.id, type);
+  const required = requiredTracks(project);
+  return required.map((type) => {
+    const state = readTrackState(db, project.id, type, required);
     const status = deriveStatus(state);
     const category = categoryFor(type);
     const channel = channelFor(type, project);
@@ -315,7 +463,10 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       category,
       channel,
       status,
-      statusLabel: state.statusLabel || statusLabelFor(status, category),
+      // The portal's own words — unless they say "issued" of a track isTrackDone did not accept
+      // (one pooled target cannot finish two tracks), where they would contradict the status.
+      statusLabel: (!state.done && (state.outcome === "issued" || state.outcome === "nem_approved") ? "" : state.statusLabel)
+        || statusLabelFor(status, category),
       nextAction: nextActionFor(status, channel, type),
       captureFields: captureFieldsFor(type),
       applicationNumber: state.applicationNumber,

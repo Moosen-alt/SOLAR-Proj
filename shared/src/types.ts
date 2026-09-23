@@ -761,6 +761,9 @@ export type SubmittalTrackStatus =
   | "submitted"
   | "in_review"
   | "correction"
+  // The AHJ has approved the permit but will not issue it until fees are paid. NOT "issued":
+  // the fee is a human action still outstanding on this track.
+  | "ready_for_issue"
   | "issued";
 
 export interface SubmittalTrack {
@@ -2436,6 +2439,10 @@ export interface AhjResearchResult {
   /** Always true for AI research — a human must verify before trusting it. */
   needsHumanVerification: boolean;
   notes: string;
+  /** True when a web search actually ran and grounded this answer; false when it fell back to
+   *  model memory. Absent on results built by hand (older callers) — provenance unknown, which
+   *  must never read as web-grounded. */
+  webGrounded?: boolean;
 }
 
 /** AI-researched (or human-verified) onboarding profile for a UTILITY's residential
@@ -2474,6 +2481,9 @@ export interface UtilityResearchResult {
   /** Always true for AI research — a human must verify before trusting it. */
   needsHumanVerification: boolean;
   notes: string;
+  /** Same meaning as AhjResearchResult.webGrounded: true = web search ran, false = model
+   *  memory, absent = unknown (never to be read as web-grounded). */
+  webGrounded?: boolean;
 }
 
 // ---------------------------------------------------------------------------

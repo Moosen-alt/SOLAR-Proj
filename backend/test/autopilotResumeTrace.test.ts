@@ -45,7 +45,7 @@ const seedJob = (projectId: string, result: unknown, status = "done"): void => {
   db.run("DELETE FROM job_queue WHERE project_id = ? AND job_type = 'autopilot'", [projectId]);
   db.run(
     `INSERT INTO job_queue (id, project_id, job_type, payload, status, result, created_at)
-     VALUES (?, ?, 'autopilot', '{}', ?, ?, ?)`,
+     VALUES (?, ?, 'autopilot', '{"origin":"operator"}', ?, ?, ?)`,
     // THE ID IS THE PROJECT'S OWN, not a hash of it. This used to be the SUM of the
     // project id's character codes — which is order-insensitive, so any two generated
     // UUIDs that are character-anagrams of each other produced the SAME job id and the
@@ -69,9 +69,9 @@ const blocked = mkProject();
 db.run("UPDATE projects SET status = 'parsed' WHERE id = ?", [blocked]);
 seedJob(blocked, { blocked: true, blockers: [{ code: "missing_document" }] });
 maybeResumeAutopilot(db, blocked, "a document was uploaded");
-// The enqueue and its audit entry happen inside a dynamic import() — repository statically
-// imports jobQueue, so anything reaching back the other way must defer (the circular-import
-// guard). Let that settle before asserting.
+// The enqueue is synchronous now (the async dynamic-import enqueue raced its own dedupe check;
+// see autopilotResumeConcurrency.test.ts). The short wait below is harmless and kept so a
+// future deferred write would still be observed.
 await new Promise((r) => setTimeout(r, 200));
 
 check("THE REGRESSION: the auto-resume writes an audit entry naming its trigger", () => {

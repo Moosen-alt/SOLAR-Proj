@@ -15,14 +15,17 @@
 //      (addManualCorrection) and `ready_to_resubmit` (resolveCorrection with nothing on file).
 //      The 409 payload it hands back must not get LOOSER. A newly reachable status must never
 //      become a gate bypass.
-//   2. THE SAME-DATA A/B. Segment A then re-runs QC, which relabels the project `qc_failed`
-//      without touching any gate input, and prepareSubmission is called once more. Now only
-//      the STATUS differs between two runs, and the payload must be byte-identical.
+//   2. THE SAME-DATA A/B. Segment A then re-runs QC — which must NOT relabel the project
+//      (QC may not move a Submit-stage status: projectStage.qcMayMoveStatus) — and the operator
+//      override (setProjectStatusByOperator, the real door) then moves it to `qc_failed` without
+//      touching any gate input. Only the STATUS differs between the two prepareSubmission calls,
+//      and the payload must be byte-identical.
 //   3. NO STATUS BRANCH EXISTS TO SKIP. prepareSubmission's body is read off disk and asserted
 //      to contain no project-status gate — the structural reason checks 1 and 2 hold for every
 //      rung of the ladder, not just the first one a bare fixture reaches. Its gates key on
 //      payment, a submitted SUBMISSION row, QC/review/reviewer/historical, document presence,
-//      permit path and client — never on projects.status.
+//      permit path and client — never on projects.status. The ONE exception is refusal-only:
+//      an operator's `blocked` hold (operatorHoldReason) can stop staging and can never admit it.
 //   4. QC REALLY RE-RUNS. The qc_results rows are DELETED before Segment A is driven from
 //      `ready_to_resubmit`. They must come back, and the run must still block on the QC gate.
 //   5. THE UNTYPED SET. PRE_STAGE_STATUSES (autopilot.ts) is a plain string Set: typecheck
@@ -33,12 +36,11 @@
 //      `correction_triaged` must not — that control is what proves the Set is consulted rather
 //      than bypassed.
 //
-// RECORDED, NOT ASSERTED AS DESIRABLE: runQcForProject writes projects.status unconditionally
-// (qc.ts — `nextStatus = failCount > 0 ? "qc_failed" : "qc_passed"`), so Segment A's own
-// rerunQc RELABELS the project away from `ready_to_resubmit` the moment it starts. Check 2
-// asserts that overwrite so the next reader meets it here instead of on the board. It is not
-// new — `parsed` was overwritten the same way — but it does mean `ready_to_resubmit` is what
-// the board shows until autopilot next runs, not a status autopilot preserves.
+// NO LONGER RECORDED AS A WART: runQcForProject used to write projects.status unconditionally,
+// so Segment A's own rerunQc relabelled the project away from `ready_to_resubmit` (to
+// `qc_failed`) the moment it started. QC now leaves any status at or past the Submit stage alone
+// (projectStage.qcMayMoveStatus), so the corrected project keeps reading `ready_to_resubmit` —
+// and check 2 asserts THAT, while QC's verdict still reaches staging through qc_results.
 //
 // Browser-free. Run: tsx backend/test/correctionRestageGate.test.ts
 import assert from "node:assert/strict";
@@ -54,7 +56,7 @@ process.env.ANTHROPIC_API_KEY = ""; // regex correction classifier only — no a
 process.env.AUTOPILOT_AUTO_START = "0"; // lifted for section 5, which is ABOUT the auto-resume
 
 const { openDatabase } = await import("../src/db");
-const { createProject, addManualCorrection, resolveCorrection, prepareSubmission } = await import("../src/repository");
+const { createProject, addManualCorrection, resolveCorrection, prepareSubmission, setProjectStatusByOperator } = await import("../src/repository");
 const { runAutopilotSegmentA, maybeResumeAutopilot } = await import("../src/autopilot");
 const db = await openDatabase();
 
@@ -199,19 +201,27 @@ check("Segment A entered from 'ready_to_resubmit' re-runs QC and still blocks on
   }
 });
 
-check("RECORDED: Segment A's rerunQc relabels the project away from 'ready_to_resubmit'", () => {
-  // Not a wish — the behaviour, written down so B2/B3 and the board do not meet it by
-  // surprise. runQcForProject writes status unconditionally; `parsed` was overwritten the
-  // same way, so this is pre-existing, not something B1 introduced.
-  assert.equal(statusOf(projectId), "qc_failed", "QC's own verdict wins once autopilot runs");
+check("Segment A's rerunQc leaves the corrected project at 'ready_to_resubmit' (QC may not move a Submit-stage status)", () => {
+  // It used to relabel it qc_failed — QC's verdict overwrote the lifecycle. The verdict still
+  // reaches staging (the qc_fail blocker above came from the rows this very run wrote); only
+  // the status column is left to the correction flow that owns it.
+  assert.equal(statusOf(projectId), "ready_to_resubmit");
 });
 
-// Same project, same gate inputs, ONLY the status has moved (ready_to_resubmit → qc_failed).
+// THE SAME-DATA A/B, now with a status move that really happens: the operator override (the
+// production door, audited) moves the project to `qc_failed` without touching a gate input.
+// Only the status differs between the two calls. (The old version of this check compared the
+// refusal "across" a relabel QC no longer performs — both calls ran at qc_failed, so it would
+// have passed with any status gate at all.)
+const atRestageNow = await refusal(projectId);
+setProjectStatusByOperator(db, projectId, "qc_failed", "restage-gate test: same data, different status", "test");
+assert.equal(statusOf(projectId), "qc_failed", "fixture precondition: the override moved the status");
 const atQcAfter = await refusal(projectId);
-check("with the data held still, the refusal is byte-identical across the two statuses", () => {
-  assert.equal(atQcAfter.status, atRestage.status);
-  assert.equal(atQcAfter.message, atRestage.message);
-  assert.deepEqual(atQcAfter.details, atRestage.details, "every counter — including the learned-historical one — must match");
+check("with the data held still, the refusal is byte-identical across two different statuses", () => {
+  assert.notEqual("ready_to_resubmit", statusOf(projectId), "the two calls must really run at different statuses");
+  assert.equal(atQcAfter.status, atRestageNow.status);
+  assert.equal(atQcAfter.message, atRestageNow.message);
+  assert.deepEqual(atQcAfter.details, atRestageNow.details, "every counter — including the learned-historical one — must match");
 });
 
 // ── 3: the structural reason — prepareSubmission has no project-status gate ───────────
@@ -240,6 +250,19 @@ check("with the data held still, the refusal is byte-identical across the two st
       assert.ok(body.includes(gate), `prepareSubmission must still apply the \`${gate}\` gate`);
     }
   });
+  // THE ONE STATUS READ, AND IT CAN ONLY SAY NO. An operator's `blocked` hold refuses staging
+  // (LNK-5): it is read through operatorHoldReason, which returns null for every status except
+  // `blocked`, and prepareSubmission only ever THROWS on a non-null answer. Pinned so the
+  // exception cannot quietly grow into an admitting status gate.
+  check("the only project-status read in prepareSubmission is the refusal-only operator hold", () => {
+    assert.ok(body.includes("operatorHoldReason(db, projectId)"), "prepareSubmission must refuse an operator-blocked project");
+    assert.match(body, /const hold = operatorHoldReason\(db, projectId\);\s*if \(hold !== null\) \{\s*throw new HttpError\(409,/,
+      "the hold may only throw");
+    const hs = repoSrc.indexOf("export function operatorHoldReason(");
+    assert.ok(hs > 0, "operatorHoldReason must be findable");
+    const helper = repoSrc.slice(hs, repoSrc.indexOf("\n}\n", hs));
+    assert.match(helper, /if \(status !== "blocked"\) return null;/, "the helper answers null for every status but blocked");
+  });
 }
 
 // ── 5: PRE_STAGE_STATUSES is untyped — the auto-resume is the only thing that notices ──
@@ -248,11 +271,13 @@ check("with the data held still, the refusal is byte-identical across the two st
 delete process.env.AUTOPILOT_AUTO_START;
 
 const now = new Date().toISOString();
+// The seeded run is one an OPERATOR started (payload.origin) — the only kind of chain a
+// clearing event may re-drive now that auto-start is opt-in.
 const seedBlocked = (pid: string, status: string) => {
   db.run("INSERT INTO projects (id, status, parser_json, created_at, updated_at) VALUES (?, ?, '{}', ?, ?)", [pid, status, now, now]);
   db.run(
     `INSERT INTO job_queue (id, job_type, payload, status, priority, project_id, created_at, progress, progress_total, retry_count, max_retries, org_id, result)
-     VALUES (?, 'autopilot', '{}', 'done', 5, ?, ?, 0, 0, 0, 0, 'default', ?)`,
+     VALUES (?, 'autopilot', '{"origin":"operator"}', 'done', 5, ?, ?, 0, 0, 0, 0, 'default', ?)`,
     [`job-${pid}`, pid, now, JSON.stringify({ blocked: true, blockers: [{ code: "missing_document", detail: "x" }] })],
   );
 };
@@ -274,6 +299,18 @@ check("a project still holding an open correction is NOT re-driven (the Set is r
   assert.equal(autopilotJobs("p-triaged"), 1, "correction_triaged is not a pre-stage status");
 });
 
+// Segment A builds the packet en route, and filled forms land under the cwd-relative
+// backend/data/filled/<projectId> (ahjForms FILLED_DIR). Let the resumed run settle, then
+// remove every folder this file's projects produced so nothing is left in the repo.
+{
+  const settleBy = Date.now() + 20_000;
+  while (Date.now() < settleBy && Number(db.get<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM job_queue WHERE job_type = 'autopilot' AND status IN ('pending','running')",
+  )?.n ?? 0) > 0) await new Promise((r) => setTimeout(r, 250));
+  for (const pid of [projectId, "p-restage", "p-triaged"]) {
+    try { fs.rmSync(path.resolve(process.cwd(), "backend/data/filled", pid), { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+}
 try { db.close(); } catch { /* the instant-kicked worker may still hold the handle */ }
 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* leave to the OS */ }
 
