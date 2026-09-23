@@ -4835,7 +4835,15 @@ async function uploadAhjForm(ev) {
     // Re-fill now that the template is stored.
     state.filledForms = await api(`/api/projects/${state.selectedProjectId}/filled-forms`, { method: "POST", body: "{}" });
     renderApplicationDocs();
-    showMessage(out.fillable ? `Uploaded and mapped ${out.fieldCount} field(s). The form is now auto-filled.` : "Uploaded — but this PDF has no fillable fields, so it's stored as the blank for manual completion.", out.fillable ? "success" : "warning");
+    // NOT FILLABLE HAS MORE THAN ONE CAUSE. "This PDF has no fillable fields" was right for a flat
+    // scan and wrong for an AcroForm whose fields mapped to nothing, a form for another
+    // jurisdiction, or a revision that needs re-mapping — so say what the SERVER found (its
+    // message is written per cause). showMessage assigns textContent, so the message is shown as
+    // text, never parsed as markup; esc() here would print "&amp;" literally.
+    showMessage(out.fillable
+      ? `Uploaded and mapped ${out.fieldCount} field(s). The form is now auto-filled.`
+      : `Uploaded — ${String(out.message || "the form could not be mapped, so it's stored as the blank for manual completion.")}`,
+      out.fillable ? "success" : "warning");
   } catch (err) {
     if (status) status.textContent = "";
     showMessage(err.message || "Upload failed.", "error");

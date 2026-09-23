@@ -14,7 +14,9 @@
 //
 // SAFETY, because this writes to the live database:
 //   · Everything it creates is named with a fixed marker (DEMO_MARKER) and can be removed
-//     completely with --reset. It never touches a row it did not create.
+//     with --reset: every project of the demo company (demo-later-stages.ts's included), their
+//     child rows, the company's own rows, and the company — in ONE transaction, so a failure
+//     removes nothing. It keys on the company, so it never touches another client's row.
 //   · Synthetic homeowners only. The addresses are deliberately invalid (999xx) so nobody
 //     can mistake one for a real filing, and no demo project is ever staged to a portal.
 //   · It refuses to run against a database that has no real data ONLY in the sense that it
@@ -137,7 +139,7 @@ const { openDatabase } = await import("../backend/src/db");
 const db = await openDatabase();
 
 interface Row { [k: string]: unknown }
-const demoClientRow = (): Row | undefined =>
+const demoClientRow = (): Row | null =>
   db.get<Row>("SELECT id, company_name FROM clients WHERE company_name = ?", [DEMO_MARKER]);
 
 function demoProjectIds(clientId: string): string[] {
@@ -175,15 +177,55 @@ if (RESET) {
       return db.query<{ name: string }>(`PRAGMA table_info(${table})`).some((c) => String(c.name) === "project_id");
     } catch { return false; }
   });
+  // Rows that hang off the COMPANY rather than a project (customers, portal credentials and
+  // profiles, client-portal identities) — derived the same way, from the foreign keys that
+  // point at `clients`, because the final DELETE FROM clients fails on any one of them.
+  const clientTables = db.query<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+  ).map((r) => String(r.name)).filter((table) => {
+    if (table === "projects") return false;
+    try {
+      return db.query<{ table: string; from: string }>(`PRAGMA foreign_key_list(${table})`)
+        .some((fk) => String(fk.table) === "clients" && String(fk.from) === "client_id");
+    } catch { return false; }
+  });
+  // DEPENDENCY ORDER BY REPETITION, INSIDE ONE TRANSACTION. Child tables reference EACH OTHER
+  // (permit_status_checks.target_id → permit_check_targets, email_project_matches →
+  // permit_status_checks, communications → customers), so one pass in schema order fails a
+  // foreign key the moment a project has a status check. It used to do exactly that: measured on
+  // a copy of a kit seeded by demo-later-stages.ts, --reset crashed with "FOREIGN KEY constraint
+  // failed" after deleting two of the eight projects, leaving the demo half-removed.
+  // So: every statement is attempted each pass, a statement blocked by a row a LATER statement
+  // removes succeeds on the next pass, and N+1 passes settle any acyclic order. Anything still
+  // blocked after that is a reference this script does not know about — it THROWS, and the
+  // transaction rolls the whole reset back: the demo is either fully present or fully gone.
+  const statements: Array<{ label: string; sql: string; params: string[] }> = [];
   for (const id of ids) {
-    for (const table of childTables) {
-      try { db.run(`DELETE FROM ${table} WHERE project_id = ?`, [id]); } catch { /* view or locked — skip */ }
-    }
-    db.run("DELETE FROM projects WHERE id = ?", [id]);
+    for (const table of childTables) statements.push({ label: `${table} (project ${id.slice(0, 8)})`, sql: `DELETE FROM ${table} WHERE project_id = ?`, params: [id] });
+    statements.push({ label: `projects (${id.slice(0, 8)})`, sql: "DELETE FROM projects WHERE id = ?", params: [id] });
   }
-  try { db.run("DELETE FROM portal_credentials WHERE client_id = ?", [clientId]); } catch { /* optional */ }
-  db.run("DELETE FROM clients WHERE id = ?", [clientId]);
+  for (const table of clientTables) statements.push({ label: `${table} (company)`, sql: `DELETE FROM ${table} WHERE client_id = ?`, params: [clientId] });
+  statements.push({ label: "clients (company)", sql: "DELETE FROM clients WHERE id = ?", params: [clientId] });
+  try {
+    db.transaction(() => {
+      let blocked: string[] = [];
+      for (let pass = 0; pass <= statements.length; pass++) {
+        blocked = [];
+        for (const st of statements) {
+          try { db.run(st.sql, st.params); } catch (err) { blocked.push(`${st.label}: ${(err as Error).message}`); }
+        }
+        if (!blocked.length) return;
+      }
+      throw new Error(`still blocked after ${statements.length + 1} passes — ${blocked.slice(0, 5).join("; ")}${blocked.length > 5 ? `; …and ${blocked.length - 5} more` : ""}`);
+    });
+  } catch (err) {
+    console.error(`[demo-environment] --reset REFUSED and rolled back — nothing was removed: ${(err as Error).message}`);
+    db.close();
+    process.exit(1);
+  }
   console.log(`Removed the demo environment: ${ids.length} project(s) and the ${DEMO_MARKER} company.`);
+  console.log("Not removed (no project_id or client_id to find them by): shared knowledge-base rows the demo's");
+  console.log("status checks taught (permit_utility_knowledge 'learned' segments), and document/filled-form files on disk.");
   db.close();
   process.exit(0);
 }
