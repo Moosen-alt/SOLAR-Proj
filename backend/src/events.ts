@@ -34,6 +34,7 @@ export type SseEventType =
   | "intake_submitted"
   | "imap_poll_done"
   | "job_failed"
+  | "stage_steps_done"
   | "ping";
 
 export interface SseEvent {

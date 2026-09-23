@@ -120,6 +120,21 @@ function keyForDocId(id: string): string {
   return "application_worksheet";
 }
 
+// The standard fonts encode WinAnsi only, and drawText THROWS on anything else — so one
+// arrow in the manifest's "← UPLOAD THIS ONE" line dropped the whole manifest from the
+// package. Fold the symbols our own copy uses to ASCII, and anything else the font cannot
+// encode to "?", so a stray character costs one glyph instead of one document.
+const WINANSI_FOLDS: Record<string, string> = {
+  "←": "<-", "→": "->", "↔": "<->", "⇒": "=>", "≥": ">=", "≤": "<=", "≠": "!=",
+  "✓": "[x]", "✔": "[x]", "✗": "[ ]", "✘": "[ ]", "⚠": "(!)", "☐": "[ ]", "☑": "[x]",
+};
+function foldForFont(supported: Set<number>, text: string): string {
+  return Array.from(text, (ch) => {
+    if (supported.has(ch.codePointAt(0)!)) return ch;
+    return WINANSI_FOLDS[ch] ?? (/\s/.test(ch) ? " " : "?");
+  }).join("");
+}
+
 /**
  * Minimal, dependency-free markdown → PDF: headings bold, lists indented, tables kept as
  * monospaced rows, long lines wrapped, multi-page. Content-faithful over pretty.
@@ -129,11 +144,14 @@ async function markdownToPdf(title: string, markdown: string): Promise<Uint8Arra
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const mono = await pdf.embedFont(StandardFonts.Courier);
+  // All three standard fonts share the WinAnsi character set.
+  const charset = new Set(font.getCharacterSet());
   const W = 612, H = 792, M = 54, LH = 13;
   let page = pdf.addPage([W, H]);
   let y = H - M;
   const newPage = (): void => { page = pdf.addPage([W, H]); y = H - M; };
-  const draw = (text: string, f = font, size = 9.5, indent = 0): void => {
+  const draw = (raw: string, f = font, size = 9.5, indent = 0): void => {
+    const text = foldForFont(charset, raw);
     const maxW = W - 2 * M - indent;
     // Greedy wrap on width; Courier rows (tables) wrap too rather than truncate.
     let line = "";

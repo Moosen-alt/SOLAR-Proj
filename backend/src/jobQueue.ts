@@ -625,6 +625,13 @@ export async function processNextJob(db: AppDb): Promise<boolean> {
       const { processStageStep } = await import("./autoStageSteps");
       const step = await processStageStep(db, String(job.projectId));
       result = { ran: step.ran, stoppedAt: step.stoppedAt, message: step.reason };
+      // The chain runs server-side while the operator may be looking at the project. Without
+      // an event the open page keeps showing "not run" until someone reloads it.
+      if (step.ran.length) {
+        void import("./events").then(({ sseBroadcast }) => {
+          sseBroadcast({ type: "stage_steps_done", projectId: job.projectId ?? undefined, message: `Pipeline ran automatically: ${step.ran.join(", ")} — ${step.reason}` });
+        }).catch(() => null);
+      }
     } else if (job.jobType === "autopilot") {
       const { runAutopilotSegmentA } = await import("./autopilot");
       const track = (job.payload.track as string | undefined) || undefined;

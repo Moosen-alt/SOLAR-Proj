@@ -1516,6 +1516,7 @@ async function selectProject(projectId) {
     loadCommunicationDrafts(), loadLiveReadiness(), loadProjectTimeline(),
     loadProcessMap(), loadInstallerPacket(), loadProjectDocuments(),
     loadSubmittalTracks(), loadPaymentQuotes(), loadFeeSheet(), loadPortalQuestions(),
+    loadStageResults(),
     loadStaleReadings(),
   ]);
   renderDetail();
@@ -1639,6 +1640,19 @@ async function handlePaymentAction(action, track, btn) {
     showMessage(`Payment update failed: ${err.message}`, "error");
     btn.disabled = false;
   }
+}
+
+// What the automatic build/verify chain already produced. These three panels used to be
+// filled only by clicking their buttons, so a project the chain had carried to
+// ready_to_stage opened with every one of them reading "not run". A step that never ran
+// comes back null and still reads "not run". A button result from this session wins.
+async function loadStageResults() {
+  const id = state.selectedProjectId;
+  const res = await api(`/api/projects/${id}/stage-results`);
+  if (state.selectedProjectId !== id) return;
+  if (!state.applicationDocs && res.applicationDocs) state.applicationDocs = res.applicationDocs;
+  if (!state.reviewerReport && res.reviewerReport) state.reviewerReport = res.reviewerReport;
+  if (!state.historicalReport && res.historicalReport) state.historicalReport = res.historicalReport;
 }
 
 // --- Fee sheet: what this job costs, and where each number came from ---------
@@ -6299,7 +6313,9 @@ async function loadClients() {
   const data = await api("/api/clients");
   state.clients = data.clients || [];
   renderClientsList();
-  renderProjectClientOptions();
+  // Sync, not just re-render: a project opened before this list arrived had its client id
+  // set on a select with no matching option, so the header read "Client: — none —".
+  if (state.detail) syncProjectClientSelect(); else renderProjectClientOptions();
   renderProjectClientFilterOptions();
 }
 
@@ -7581,6 +7597,8 @@ const SSE_EVENT_KINDS = {
   email_matched: "info",
   intake_submitted: "info",
   imap_poll_done: "info",
+  // The automatic build/verify chain finished a pass — refetches the open project.
+  stage_steps_done: "info",
 };
 
 function connectSse() {

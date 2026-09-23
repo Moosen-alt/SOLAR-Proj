@@ -131,6 +131,7 @@ import {
   getReviewerReport,
   getReviewerReportWithVision,
   getReviewerReportHtml,
+  readStageResults,
   humanVerify,
   suggestReviewValues,
   importKnowledgeFromMbox,
@@ -1357,6 +1358,12 @@ app.get("/api/projects/:id/application-docs", (req, res) => {
   }
   res.json(pkg);
 });
+
+// Page-load read of what the automatic chain already produced (docs, reviewer gate,
+// historical check). Writes nothing — see readStageResults.
+app.get("/api/projects/:id/stage-results", asyncHandler(async (req, res) => {
+  res.json(await readStageResults(db, String(req.params.id)));
+}));
 
 app.get("/api/projects/:id/reviewer-report", asyncHandler(async (req, res) => {
   if (req.query.format === "html") {
@@ -2701,6 +2708,10 @@ app.post("/api/projects/:id/human-verify", (req, res) => {
     notes: req.body?.notes,
   });
   maybeResumeAutopilot(db, String(req.params.id), "a human review item was verified"); // may unblock QC
+  // humanVerify re-runs QC, so a verified item can carry a project to qc_passed. /qc already
+  // continues the chain from wherever QC leaves it; this door did not, so the last verified
+  // item passed QC and then nothing built. Deduped, and a no-op at any status the chain skips.
+  try { enqueueStageSteps(db, String(req.params.id)); } catch { /* convenience, never the verify */ }
   res.json(verifyResult);
 });
 

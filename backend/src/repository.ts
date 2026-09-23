@@ -65,7 +65,7 @@ import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
 import { checkStatusWithAdapter, runCorrectionReopen, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
-import { resolveHeadless } from "../../portal-bot/src/browser";
+import { portalAutomationDisabled, resolveHeadless } from "../../portal-bot/src/browser";
 import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, getPortalRecipe, savePortalRecipeSteps } from "./portalRecipes";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 // detectPlatform moved with the target INSERT into submittalTracks.ts's ensureCheckTarget.
@@ -4375,6 +4375,57 @@ export async function importKnowledgeFromMboxFile(
 }
 
 export function getApplicationDocumentPackage(db: AppDb, projectId: string): ApplicationDocumentPackage {
+  const { detail, pkg, learned } = assembleApplicationDocumentPackage(db, projectId);
+
+  addAuditLog(db, projectId, "system", "application doc builder", "application_docs.generated", {
+    profile: pkg.profile.id,
+    docCount: pkg.docs.length,
+    missingFields: pkg.missingFields,
+    missingDocuments: (pkg.missingDocuments || []).map((d) => d.docType),
+    // Without this the trail records the same empty list for "nothing is missing" and for
+    // "we could not find out" — the distinction the field above exists to keep.
+    missingDocumentsStatus: pkg.missingDocumentsStatus ?? null,
+    ...(pkg.missingDocumentsError ? { missingDocumentsError: pkg.missingDocumentsError } : {}),
+    learnedProfile: learned ? `${learned.state}:${learned.ahj}:${learned.utility}` : null,
+  });
+
+  // `ready_to_stage` GETS ITS WRITER — this is it.
+  //
+  // The status was labelled ("Ready to stage"), bannered with an instruction ("Docs built. Click
+  // 2 · Reviewer Gate, then 3 · Prepare Submittal."), offered as a board filter and mapped into
+  // the Build & Validate stage — and NOTHING anywhere could write it. A project that had just
+  // had its AHJ/NEM documents built still read `qc_passed`, so the board could not tell "QC is
+  // done" from "the packet exists", and the banner the operator needed was unreachable copy.
+  //
+  // THE GATE IS ONE ONE-WAY EDGE, AND IT IS NARROW ON PURPOSE:
+  //  * only from `qc_passed` — the single status that means "verified, nothing built yet". From
+  //    any other status (staged, submitted, in corrections, issued) this function stays exactly
+  //    what it has always been: a pure read that writes nothing but its own audit row. That
+  //    matters because the packet is fetched on the project screen and by the /research-ahj
+  //    route, not only by the Build Docs button.
+  //  * only when documents were actually produced (`pkg.docs.length > 0`). An empty package is
+  //    a failure to build, and a failure must never read as progress.
+  //
+  // WHAT IT DOES NOT TOUCH: `stage_detail`. QC's verdict is still the most recent thing any
+  // writer has actually established about this project, and overwriting it with a "docs built"
+  // shade would invent a sub-stage nobody measured. The reviewer gate speaks next (below), and
+  // that is the event that replaces it.
+  if (detail.project.status === "qc_passed" && pkg.docs.length > 0) {
+    db.run("UPDATE projects SET status = 'ready_to_stage', current_stage = ?, updated_at = ? WHERE id = ?", [
+      `AHJ/NEM documents built (${pkg.profile.name}) — ready to stage.`,
+      nowIso(),
+      projectId,
+    ]);
+    addAuditLog(db, projectId, "system", "application doc builder", "project.ready_to_stage", {
+      from: "qc_passed", profile: pkg.profile.id, docCount: pkg.docs.length,
+    });
+  }
+  return pkg;
+}
+
+// The package itself, with no writes: no audit row, no status edge. The builder and the
+// read-only stage-results view (below) must show the same packet, so both go through here.
+function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
   const detail = getProjectDetail(db, projectId);
   const client = detail.project.clientId ? (() => { try { return getClient(db, detail.project.clientId!); } catch { return null; } })() : null;
   const pkg = buildApplicationDocumentPackage(detail.project, client);
@@ -4449,50 +4500,7 @@ export function getApplicationDocumentPackage(db: AppDb, projectId: string): App
     };
   }
 
-  addAuditLog(db, projectId, "system", "application doc builder", "application_docs.generated", {
-    profile: pkg.profile.id,
-    docCount: pkg.docs.length,
-    missingFields: pkg.missingFields,
-    missingDocuments: (pkg.missingDocuments || []).map((d) => d.docType),
-    // Without this the trail records the same empty list for "nothing is missing" and for
-    // "we could not find out" — the distinction the field above exists to keep.
-    missingDocumentsStatus: pkg.missingDocumentsStatus ?? null,
-    ...(pkg.missingDocumentsError ? { missingDocumentsError: pkg.missingDocumentsError } : {}),
-    learnedProfile: learned ? `${learned.state}:${learned.ahj}:${learned.utility}` : null,
-  });
-
-  // `ready_to_stage` GETS ITS WRITER — this is it.
-  //
-  // The status was labelled ("Ready to stage"), bannered with an instruction ("Docs built. Click
-  // 2 · Reviewer Gate, then 3 · Prepare Submittal."), offered as a board filter and mapped into
-  // the Build & Validate stage — and NOTHING anywhere could write it. A project that had just
-  // had its AHJ/NEM documents built still read `qc_passed`, so the board could not tell "QC is
-  // done" from "the packet exists", and the banner the operator needed was unreachable copy.
-  //
-  // THE GATE IS ONE ONE-WAY EDGE, AND IT IS NARROW ON PURPOSE:
-  //  * only from `qc_passed` — the single status that means "verified, nothing built yet". From
-  //    any other status (staged, submitted, in corrections, issued) this function stays exactly
-  //    what it has always been: a pure read that writes nothing but its own audit row. That
-  //    matters because the packet is fetched on the project screen and by the /research-ahj
-  //    route, not only by the Build Docs button.
-  //  * only when documents were actually produced (`pkg.docs.length > 0`). An empty package is
-  //    a failure to build, and a failure must never read as progress.
-  //
-  // WHAT IT DOES NOT TOUCH: `stage_detail`. QC's verdict is still the most recent thing any
-  // writer has actually established about this project, and overwriting it with a "docs built"
-  // shade would invent a sub-stage nobody measured. The reviewer gate speaks next (below), and
-  // that is the event that replaces it.
-  if (detail.project.status === "qc_passed" && pkg.docs.length > 0) {
-    db.run("UPDATE projects SET status = 'ready_to_stage', current_stage = ?, updated_at = ? WHERE id = ?", [
-      `AHJ/NEM documents built (${pkg.profile.name}) — ready to stage.`,
-      nowIso(),
-      projectId,
-    ]);
-    addAuditLog(db, projectId, "system", "application doc builder", "project.ready_to_stage", {
-      from: "qc_passed", profile: pkg.profile.id, docCount: pkg.docs.length,
-    });
-  }
-  return pkg;
+  return { detail, pkg, learned };
 }
 
 // THE REVIEWER GATE'S VERDICT, RECORDED.
@@ -4576,6 +4584,43 @@ export async function getReviewerReportHtml(db: AppDb, projectId: string): Promi
     warningCount: report.findings.filter((item) => item.severity === "warning").length,
   });
   return renderReviewerReportHtml(detail.project, report);
+}
+
+// WHAT THE AUTOMATIC CHAIN ALREADY DID, SHOWN WITHOUT DOING IT AGAIN.
+//
+// The stage-step chain builds the AHJ/NEM docs and runs the reviewer gate + historical check
+// server-side, but the project page only ever held those three results in browser memory from
+// a button click. Opening a project whose chain had just run showed all three as "not run",
+// so a pipeline that had moved read as one that had stalled.
+//
+// This is the page-load read, so it must write NOTHING: no audit rows, no status edge, no
+// reviewer verdict. Re-recording a text-only verdict on every page view would overwrite the
+// vision-enriched verdict the chain stored. Cached vision verdicts are folded in (no LLM call),
+// the same way the printable packet does it. A step with no audit row has never run and comes
+// back null, so "not run" still means exactly that.
+export async function readStageResults(db: AppDb, projectId: string): Promise<{
+  applicationDocs: ApplicationDocumentPackage | null;
+  reviewerReport: ReviewerReport | null;
+  historicalReport: HistoricalFailureReport | null;
+}> {
+  const detail = getProjectDetail(db, projectId);
+  const ran = new Set(db.query<Row>(
+    `SELECT DISTINCT action FROM audit_logs WHERE project_id = ?
+       AND action IN ('application_docs.generated', 'reviewer_report.generated', 'historical_failures.generated')`,
+    [projectId],
+  ).map((r) => text(r.action)));
+  const applicationDocs = ran.has("application_docs.generated") ? assembleApplicationDocumentPackage(db, projectId).pkg : null;
+  let reviewerReport: ReviewerReport | null = null;
+  if (ran.has("reviewer_report.generated")) {
+    reviewerReport = buildReviewerReportFor(db, detail.project);
+    try {
+      const { createLLMProvider } = await import("./llm");
+      const { applyVisionToReviewerReport } = await import("./reviewerVision");
+      reviewerReport = await applyVisionToReviewerReport(db, createLLMProvider(), reviewerReport, { cacheOnly: true });
+    } catch { /* vision is best-effort; the text report stands */ }
+  }
+  const historicalReport = ran.has("historical_failures.generated") ? buildHistoricalFailureReport(db, projectId) : null;
+  return { applicationDocs, reviewerReport, historicalReport };
 }
 
 export function rerunQc(db: AppDb, projectId: string): ProjectDetail {
@@ -6385,6 +6430,17 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     throw new HttpError(409,
       `Submission staging blocked: required portal field(s) missing — ${missingPortalFields.join("; ")}. Complete the project record before staging.`,
       { missingPortalFields },
+    );
+  }
+
+  // LAST GATE BEFORE ANY BROWSER OR PORTAL-URL RESEARCH. Every gate above has already given
+  // its verdict, so an offline install (the demo kit) still shows exactly what staging
+  // would have required, and then stops here instead of opening a live portal with no
+  // login. openPortal refuses too; this is the readable version of the same refusal.
+  if (portalAutomationDisabled()) {
+    throw new HttpError(409,
+      "Every gate is clear, but portal automation is off on this installation (PORTAL_AUTOMATION=off), so no portal will be opened. On a live install this step stages the application to the portal's review screen for a person to submit.",
+      { portalAutomationDisabled: true },
     );
   }
 

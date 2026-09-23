@@ -218,6 +218,13 @@ export function resolveHeadless(explicit?: boolean): boolean {
   return true;
 }
 
+/** PORTAL_AUTOMATION=off: this installation never opens a portal browser. For an install
+ *  that must stay offline (the demo kit carries no credentials and promises no outbound
+ *  traffic). Refuse-only, like PORTAL_ALLOW_FINAL_SUBMIT — nothing can switch it on per run. */
+export function portalAutomationDisabled(): boolean {
+  return /^(off|0|false)$/i.test(String(process.env.PORTAL_AUTOMATION ?? "").trim());
+}
+
 export async function openPortal(opts: {
   userDataDir?: string;
   storageStatePath?: string;
@@ -230,6 +237,11 @@ export async function openPortal(opts: {
    *  untrusted CA. Enable per-call or via PORTAL_IGNORE_HTTPS_ERRORS=true; never in prod. */
   ignoreHTTPSErrors?: boolean;
 }): Promise<OpenedPortal> {
+  // The chokepoint every portal run (stage, learn, replay, capture) passes through, so the
+  // switch holds even for a path that forgot to check it earlier.
+  if (portalAutomationDisabled()) {
+    throw new Error("Portal automation is off on this installation (PORTAL_AUTOMATION=off) — no portal browser will be opened.");
+  }
   const { chromium } = await import("playwright");
 
   const headless = resolveHeadless(opts.headless);
