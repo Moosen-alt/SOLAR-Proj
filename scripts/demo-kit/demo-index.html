@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo recordings</title>
+<!-- Copied to demo-kit/frontend/demo/index.html by the kit build; served at /demo/.
+     Offline: no external resources. The videos sit next to this file. -->
+<style>
+  :root { --bg:#f6f7f5; --fg:#16211b; --muted:#56615a; --card:#fff; --line:#dfe3df; --accent:#16a34a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111713; --fg:#e8eee9; --muted:#9aa59e; --card:#19211c; --line:#2a342e; --accent:#34c46a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 16px 48px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  p.lede { color: var(--muted); margin: 0 0 24px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-bottom: 22px; }
+  h2 { font-size: 19px; margin: 0 0 6px; }
+  section p { color: var(--muted); margin: 0 0 12px; }
+  video { width: 100%; height: auto; border-radius: 6px; background: #000; display: block; }
+  .missing { padding: 28px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; }
+  a { color: var(--accent); }
+  .note { font-size: 13px; color: var(--muted); margin-top: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Demo recordings</h1>
+  <p class="lede">Play these when the room has no time for a live walk-through. Everything shown is synthetic: invented homeowners at ZIP 99999, and a fictional portal. <a href="/">Back to the dashboard</a></p>
+
+  <section>
+    <h2>1 · The whole process, on our own screen</h2>
+    <p>A captioned tour of the dashboard: one board with a project in every stage, the gate refusing a job that needs a PE stamp, fees taken from each authority's own schedule, documents built automatically, then a project staged for review, one tracking approvals, and one handed off.</p>
+    <video src="walkthrough.webm" controls preload="metadata" data-name="walkthrough"></video>
+  </section>
+
+  <section>
+    <h2>2 · The portal automation</h2>
+    <p>The product's real replay engine filling an interconnection application, field by field, and stopping at the review screen. The portal is fictional and runs on this laptop; the engine and the stop-before-submit are the product's real code. It cannot click submit — a person does.</p>
+    <video src="act4-portal.webm" controls preload="metadata" data-name="act4-portal"></video>
+    <p class="note">Say it while it plays: the machine does the typing, a human signs off.</p>
+  </section>
+</main>
+<script>
+  // A missing file reads as a plain note, not a broken black box.
+  for (const v of document.querySelectorAll("video")) {
+    v.addEventListener("error", () => {
+      const d = document.createElement("div");
+      d.className = "missing";
+      d.textContent = "This recording is not in this kit yet (" + v.dataset.name + ".webm). Rebuild it with the steps in docs/DEMO_RUNBOOK.md.";
+      v.replaceWith(d);
+    }, { once: true });
+  }
+</script>
+</body>
+</html>
