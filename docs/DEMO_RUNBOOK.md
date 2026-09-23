@@ -1,123 +1,72 @@
 # Demo Runbook — live presenting Solar Submission Autopilot
 
-A demo you can open in front of a prospect without showing them another installer's
-customers, and without depending on a government server being up.
+The demo is a **separate, self-contained installation** in `demo-kit/` — its own
+database, its own documents, its own launcher. Production and the demo no longer share
+anything. You can hand the `demo-kit` folder to anyone, or carry it on a thumbdrive,
+and there is no way to show a real customer from it, because it does not contain one.
 
-**The rule that shapes this whole document:** the reliable demo touches no external
-network. Everything in Act 1–3 runs against the local DB and local documents. The live
+**The rule that shapes this document:** the reliable demo touches no external network.
+The kit runs with no API key, no SMTP, no portal credentials, and no background
+workers — it cannot reach anything, and nothing it demonstrates needs it to. The live
 portal replay is a bonus act with a video fallback, never the backbone.
 
-Verified end-to-end on 2026-09-23 against `backend/data/autopilot.sqlite`.
+Verified end-to-end on 2026-09-23.
+
+| | Production | Demo kit |
+|---|---|---|
+| Where | repo root | `demo-kit/` (git-ignored) |
+| Start | `npm run dev` | double-click `demo-kit/START-DEMO.cmd` |
+| URL | http://localhost:4173 | http://localhost:4270 |
+| Data | real installers, real homeowners | 4 synthetic projects, one fake company |
+| Secrets | `.env` with live keys | none — fresh throwaway encryption key only |
+| Network | LLM, SMTP, portals, schedulers | nothing outbound, binds 127.0.0.1 only |
+
+Both can run at the same time; the ports never collide.
 
 ---
 
-## What you are showing
+## What the kit shows
 
-Four synthetic projects for a fake company, **Solaris Demo Co**, at invented addresses
-(every ZIP is `99999`). They were built through the product's real creation paths and
-advanced by the real chain — no status was parked, no artifact was faked. The gates judged
-them exactly as they judge a live project.
+Four synthetic projects for **Solaris Demo Co** at invented addresses (every ZIP is
+`99999`), created through the product's real intake paths and advanced by the real
+chain — no status parked, no artifact faked.
 
-| Homeowner | AHJ | Utility | Status | QC |
-|---|---|---|---|---|
-| Terrence Boyd | City of Coos Bay | Pacific Power | ready_to_stage | 23 pass / 3 warn — the clean one |
-| Marisol Vega | City of Salem | PGE | ready_to_stage | 22 pass / 5 warn |
-| Priya Raman | City of Portland | PGE | ready_to_stage | 22 pass / 5 warn |
-| Gus Halvorsen | City of Tigard | PGE | ready_to_stage | 22 pass / 4 warn — **one is an `error`: PE-stamped structural** |
+| Homeowner | AHJ | Utility | QC after the gates ran |
+|---|---|---|---|
+| Terrence Boyd | City of Coos Bay | Pacific Power | 23 pass / 3 warn — the clean one |
+| Priya Raman | City of Portland | PGE | 23 pass / 4 warn |
+| Marisol Vega | City of Salem | PGE | 22 pass / 4 warn |
+| Gus Halvorsen | City of Tigard | PGE | 22 pass / 4 warn — **one is an `error`: PE-stamped structural** |
 
-Each carries **8 documents**: the uploaded `plan_set`, six sheets split and classified out
-of it (`sld`, `site_plan`, `structural`, `module_spec`, `inverter_spec`, `labels`), and an
-assembled `utility_package_zip`. **No filled permit application** — see Act 3.
+Each has 8 documents (uploaded plan set → six split sheets → assembled utility
+package zip) **plus filled AHJ forms on disk** — the prescriptive application,
+electrical application, and NEM package the job worker produced when the set was
+built.
 
-The board reads uniformly green. **The story is not in the status column — it is in the QC
-warnings**, and they differ per jurisdiction because the product knows each jurisdiction's
-requirement list. That is the point to make out loud.
-
----
-
-## Pre-flight (do this the day before, not five minutes before)
-
-```bash
-# 1. Demo data exists and is where you expect
-npx tsx scripts/demo-environment.ts --status
-#    -> Demo company: Solaris Demo Co (<a client id>)
-#    -> 4 projects, all ready_to_stage
-
-# 2. Server boots clean
-npm run dev
-#    -> banner in ~10s, "Dashboard http://localhost:4173/"
-```
-
-Read the startup banner. Today it prints two warnings you should know about before someone
-in the room reads them over your shoulder:
-
-- `30 background job(s) are in 'failed' state` — historical, unrelated to the demo path.
-- `3 client message(s) were never delivered` — real client names appear in that line.
-
-Neither is visible from the filtered board, but both are visible in the terminal. **Present
-from the browser, not from a window where the terminal is visible.**
-
-If the demo data is missing or stale, rebuild it (10–15 min, needs the LLM key):
-
-```bash
-npx tsx scripts/demo-environment.ts --reset
-npx tsx scripts/demo-environment.ts
-# then the finishing pass below — the script cannot do it in-process
-```
-
-### The finishing pass (required after any re-seed)
-
-Form acquisition runs in the job worker, so it only happens with the server up. With
-`npm run dev` running:
-
-**Derive the project IDs — never paste them.** A re-seed mints new IDs, and a re-seed is
-the only time you need this pass. Stale IDs 404, `curl` swallows it, and you wait for a
-drain that never starts.
-
-```bash
-BASE=http://localhost:4173
-
-CLIENT=$(curl -s "$BASE/api/clients" \
-  | node -pe "JSON.parse(require('fs').readFileSync(0)).clients.find(c=>/Solaris Demo/i.test(c.companyName||'')).id")
-echo "demo client: $CLIENT"   # must not be empty or 'undefined'
-
-IDS=$(curl -s "$BASE/api/projects?clientId=$CLIENT&limit=50" \
-  | node -pe "JSON.parse(require('fs').readFileSync(0)).projects.map(p=>p.id).join(' ')")
-echo "$IDS" | wc -w          # must print 4
-
-for id in $IDS; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/projects/$id/qc" \
-         -H 'Content-Type: application/json' -d '{}')
-  echo "$id -> $code"        # must be 200, not 404
-done
-```
-
-This drops all four back to `qc_passed` and enqueues `stage_step` jobs. **Wait for the queue
-to drain (~20s)** — they return to `ready_to_stage` on their own. Do not present mid-drain.
-
-```bash
-curl -s "http://localhost:4173/api/jobs?limit=300" | grep -o '"status":"running"' | wc -l
-# wait until 0
-```
-
-Job statuses are `pending` / `running` / `done` / `failed` — **not** `queued`. Grepping for
-`queued` returns zero on a busy queue and will tell you the demo is ready when it is not.
+The board reads uniformly `ready_to_stage`. **The story is in the QC results**, and
+they differ per jurisdiction because the product knows each jurisdiction's
+requirement list. Say that out loud — it is the product's whole argument.
 
 ---
 
-## Setup, immediately before presenting
+## Running it
 
-1. `npm run dev` — wait for the banner.
-2. Open http://localhost:4173/
-3. **Set the board's Client filter to "Solaris Demo Co" before you share your screen.**
-   This is the single step that keeps real customers off the display. The filter is
-   server-side (`/api/projects?clientId=...`), so real projects are not merely hidden in the
-   DOM — they are never sent to the browser.
-4. Share the browser window only. Not the desktop, not the terminal.
+1. Double-click `demo-kit/START-DEMO.cmd`. It checks Node, re-points the document
+   paths at wherever the folder now lives (this is what makes it thumbdrive-safe),
+   starts the server, and opens the browser.
+2. Present. Everything on screen is synthetic; there is no filter to remember and no
+   tab that can betray you.
+3. Close the terminal window when done.
 
-> **The client filter scopes the project board only.** Other tabs — customers,
-> communications, KB, ops — are not client-filtered and will show real installer data.
-> Rehearse the exact tabs you intend to open, and stay on them.
+The host machine needs **Node 22** installed — nothing else. The kit is ~225 MB
+(204 MB of that is `node_modules`), so it fits any thumbdrive. `better-sqlite3`'s
+compiled binary is pinned to Node 22 and **Windows**; the launcher warns on a version
+mismatch, and the kit will not run on macOS/Linux without reinstalling node_modules
+there.
+
+If the room has no Node and no time: run it on your laptop and share the browser
+window. The kit binds `127.0.0.1` only, deliberately — it will not serve the
+conference wifi.
 
 ---
 
@@ -125,143 +74,138 @@ Job statuses are `pending` / `running` / `done` / `failed` — **not** `queued`.
 
 ### Act 1 — the board (2 min)
 
-Four jobs, four different jurisdictions, each mid-flight. Point at the stage label
-(*Build & Validate, 1 of 5*) and the fact that nothing here was typed by a person: a plan
-set went in, and the product derived the AHJ, the utility, the equipment and the documents.
+Four jobs, four jurisdictions, all mid-flight at *Build & Validate*. Nothing here was
+typed by a person: a plan set went in, and the product derived the AHJ, the utility,
+the equipment, and the documents.
 
 ### Act 2 — the gate refusing to proceed (4 min — this is the demo)
 
-Open **Gus Halvorsen (Tigard)**. Go to the QC results.
+Open **Gus Halvorsen (Tigard)** → QC results:
 
-> "PE-stamped structural plans + sealed structural letter/calcs is not attached for City of
-> Tigard. Non-prescriptive path."
+> "**[error]** PE-stamped structural plans + sealed structural letter/calcs is not
+> attached for City of Tigard."
 
-That is severity `error`, and it is the whole product in one line. The system knows Tigard
-puts this job on the engineered path, knows that path requires a stamped structural
-package, has checked whether one is attached, and is refusing to call the job ready.
+The system knows Tigard puts this job on the engineered path, knows that path
+requires a stamped structural package, checked for one, and is refusing to call the
+job ready. That is the product in one line.
 
-Now open **Priya Raman (Portland)** and **Marisol Vega (Salem)** side by side. Different
-jurisdictions, different missing-document lists, named specifically:
+Contrast with **Terrence Boyd (Coos Bay)** — 23 of 26 clean, three advisory
+warnings. The gate is not noisy; it is specific. **Marisol Vega (Salem)** sits in
+between: her remaining application warning says *"entered in the portal at staging"*
+— the gate knows that document is satisfied by portal entry, not by an attachment.
 
-- Portland: *site/plot plan, fire access path, roof framing/roof plan, roof cross-section*
-- Salem: *Prescriptive solar permit application* and *Electrical (renewable-energy) permit
-  application* — by name, because Salem's requirements list names them
+### Act 3 — the artifacts (4 min)
 
-Then **Terrence Boyd (Coos Bay)** — 23 of 26 clean. The contrast is the argument: the gate
-is not noisy, it is specific.
+On any project, open the documents list: one uploaded plan set, six sheets the
+product split and classified out of it, one assembled `utility_package_zip` — the
+thing an installer otherwise assembles by hand.
 
-### Act 3 — the artifacts (3 min)
+Then the finale of this act: the **filled AHJ form**. Trigger the form-fill panel
+and download **"Oregon BCD 5952 — Prescriptive Solar PV Installation Checklist"**
+on the Coos Bay project. That is the State of Oregon's actual form, fetched blank
+and filled with 20 fields from the project — and in this kit it happens **offline,
+with no LLM**, because the binding is deterministic. The output is not a report
+about the work; it is the work.
 
-On any project, open the documents list. **Eight entries: one uploaded plan set, six sheets
-the product split and classified out of it, and one assembled `utility_package_zip`.**
+> Know what the plan-set sheets look like before you open one: they are **text
+> pages, not CAD drawings**, footed `SOLARIS DEMO CO — DEMONSTRATION PLAN SET, NOT
+> FOR CONSTRUCTION`. The content is genuine (the SLD carries a real NEC
+> 705.12(B)(3)(2) busbar calculation: 200A × 120% = 240A ≥ 175A + 40A = 215A —
+> complies). Show the documents *list* freely; open a sheet only with a sentence of
+> framing. The **filled BCD 5952 is the exception — it is the state's real PDF and
+> presents perfectly.**
 
-```
-plan_set              <name>-plan-set.pdf              (the input)
-site_plan             ... Site / plot plan.pdf          \
-sld                   ... SLD / one-line.pdf             |
-structural            ... Structural / roof framing.pdf  | derived by the splitter
-module_spec           ... Module spec.pdf                |
-inverter_spec         ... Inverter spec.pdf              |
-labels                ... Labels / placards.pdf         /
-utility_package_zip   ... all package.zip                (assembled for the utility)
-```
+### Act 4 — the portal (optional): pre-recorded video only
 
-The point: a single PDF went in, and the product recognised each sheet for what it is and
-filed it under the document type the AHJ and the utility ask for by name. The zip is the
-thing the installer would otherwise assemble by hand.
+`npm run demo:replay -- <target>` (from the production repo, not the kit) opens a
+visible Chrome window and replays a learned recipe against a **real utility
+portal**, stopping at the review screen — it cannot click submit. It is the most
+impressive thing the product does, and you must not run it live:
 
-If you open one sheet, open the **SLD / one-line** — it carries a real load-side
-interconnection calculation (200A bus × 120% = 240A allowable; 175A main + 40A PV = 215A,
-complies) which is exactly what a plan reviewer checks first.
+1. It hits a live portal — network, drift, bot-blocking, lockout all fail in front
+   of the room.
+2. Its targets bind **a real client's projects** — the exact exposure the kit exists
+   to prevent.
+3. Every run creates a real draft application someone has to clear.
 
-> **Do not promise a filled permit application.** The demo projects do not have one — form
-> acquisition did not attach it, and Act 2's warnings say so out loud ("Permit application
-> (filled) is not attached for City of Portland"). That absence is Act 2's story, not a bug
-> to explain away in Act 3.
->
-> Also know what these sheets look like: they are **text pages, not CAD drawings**, each
-> footed `SOLARIS DEMO CO — DEMONSTRATION PLAN SET, NOT FOR CONSTRUCTION`. The content is
-> genuine; the draughting is not. Show the documents *list* freely; open a sheet only if you
-> are ready to say "this is a synthetic plan set — a real one is a drawing."
+Record it once off-camera, present the clip, and say the safety property out loud
+while it plays: *the machine does the typing, a human signs off — it cannot click
+submit.* Prospects burned by automation care about that more than the speed.
 
-### Act 4 — the portal (optional, see below)
-
----
-
-## Act 4: the portal replay — read this before you promise it
-
-`npm run demo:replay -- <target>` opens a visible Chrome window and replays a recorded
-recipe against a **real utility portal**, stopping at the review screen and never clicking
-submit. It is the most impressive thing the product does.
-
-**Do not run it live in front of a prospect.** Three independent reasons:
-
-1. **It hits a live government/utility server.** Network, portal drift, bot-blocking, and
-   credential lockout are all failure modes outside your control, and each one fails in
-   front of the room.
-2. **It binds real customer data.** The targets are hardcoded to `tml-international-llc`
-   with real project IDs. You would be showing one installer another installer's customer —
-   the exact thing the demo environment exists to prevent.
-3. **Every run creates a real draft application** on that portal, which someone then has to
-   clear.
-
-### What to do instead
-
-**Record it once, present the recording.** Run it yourself, off-camera, against a project
-you are entitled to use, and capture the window. A 60-second clip of a browser filling 53
-fields and halting at the review screen makes the point, and it makes it the same way every
-time.
-
-Say the safety property out loud while it plays: *the machine does the typing, a human
-signs off — it cannot click submit.* That is a feature, not a limitation, and prospects who
-have been burned by automation will care about it more than the speed.
-
-### Why not the offline replica?
-
-`data/portal-replicas/` holds 5 captured bundles (`pacific-power` 34 pages,
-`city-of-coos-bay` 51, and three small ones), served by `npm run replica:serve`. It looks
-like the perfect offline demo target and it is not — **yet**.
-
-The bundles are static page captures keyed by route. `replica.dom.smoke.ts` uses them to
-assert DOM facts (the record-type checkbox, the nested results grid, the hidden combobox),
-which is exactly what they are good for. **Nothing drives a full recipe through one**, and a
-53-step replay needs the replica to transition between pages in response to actions — it is
-a snapshot, not a working app.
-
-Making the replica stateful enough to carry a full recipe replay is the single highest-value
-build item for this demo. It would turn Act 4 from a video into a live, offline, repeatable
-finale with no customer data and no portal dependency. It is real work, not a config change.
+(The offline portal replicas in `data/portal-replicas/` cannot replace this yet —
+they are static page captures used by the DOM smoke tests, and nothing can drive a
+full recipe through one. Making them stateful is the single highest-value build item
+for this demo.)
 
 ---
 
-## Teardown
+## Rebuilding the kit
+
+The kit is a build artifact. If it drifts or you want fresh data, rebuild from the
+production repo (needs the real `.env` for the LLM during the build only —
+the *shipped* kit never carries it):
 
 ```bash
-npx tsx scripts/demo-environment.ts --reset   # removes every demo row, exactly
+# 1. Seed a fresh isolated DB + documents (uses the same creation paths as production)
+mkdir -p demo-kit-data
+AUTOPILOT_DB_PATH=demo-kit-data/demo.sqlite \
+PROJECT_DOCS_DIR=demo-kit-data/project-documents \
+  npx tsx scripts/demo-environment.ts
+
+# 2. Assemble the kit folder: copy source (backend/src, frontend, shared, scripts,
+#    tools, portal-bot/src, package.json, tsconfig), the reference data
+#    (backend/data/reference-*.json, backend/data/ahj-forms), node_modules, and the
+#    seeded DB + documents into demo-kit/backend/data/. Write the powerless .env
+#    (see the one in demo-kit/ — copy it, generate a NEW SESSION_ENCRYPTION_KEY).
+
+# 3. Repair paths, then the finishing pass with workers ON (build mode only):
+cd demo-kit && node kit-repair-paths.mjs
+BACKGROUND_WORKERS=on npx tsx backend/src/server.ts   # + real ANTHROPIC_API_KEY in env
+# then for each project id (derive them, never paste):
+#   POST /api/projects/<id>/qc   → wait for the job queue to drain
+#   (job statuses are pending/running/done/failed — 'queued' is not a status)
+
+# 4. A re-run of QC re-splits the plan set and duplicates document rows — dedupe
+#    keeps newest per (project, type, filename). Then verify: 4 projects, 8 docs
+#    each, Tigard shows the PE-stamp error, Coos Bay ~23/3.
 ```
 
-The demo data is safe to leave in place between demos — it is marked and isolated, and
-`--reset` never touches a row it did not create. Re-seeding costs 10–15 minutes and an LLM
-spend, so leave it unless something has drifted.
+Ship it only after the acceptance check passes and the server has been relaunched
+via `START-DEMO.cmd` (workers off, no key) with the same QC results.
+
+**Never** copy `.env`, `portal-profiles/`, `.portal-profiles/`, `pge-session.json`,
+or anything under `backend/data/` beyond the two `reference-*.json` files and
+`ahj-forms/` into a kit. The kit is an allowlist, not a filtered copy.
 
 ---
 
-## Known gaps, in the order they would bite you
+## Production stays production
 
-| Risk | Blast radius | Mitigation |
-|---|---|---|
-| Client filter not set before screen-share | Real customer names on screen | Set it first, every time. Verify before sharing. |
-| Navigating off the board to an unfiltered tab | Real data in customers/comms/KB/ops | Rehearse the exact tab path; do not improvise. |
-| Terminal visible | Failed-job + undelivered-message warnings name real clients | Share the browser window only. |
-| Presenting mid-drain after a re-seed | Board reads `qc_passed`, story breaks | Wait for the job queue to hit zero. |
-| Live portal replay | Fails in front of the room | Pre-recorded video. |
-| `AUTH_ENABLED=false` | Server is open on all interfaces | Fine on localhost. Never demo from a shared network without auth on. |
+- The demo rows were removed from the production DB (`--reset`) **and** their
+  on-disk document/filled dirs were deleted — `--reset` alone leaves the files.
+- `demo-kit/` is git-ignored. It contains a database; it must never be committed.
+- If you ever seed demo data into production again (don't — use the kit), remember
+  the board's Client filter only scopes the project board; customers, comms, KB and
+  ops tabs are unfiltered.
+
+---
+
+## Known gaps
+
+| Risk | Mitigation |
+|---|---|
+| Host machine lacks Node 22 | Launcher detects and says so. Carry your laptop as the fallback. |
+| Kit copied to a new path/drive | Handled — the launcher repairs document paths on every start. |
+| QC re-run mid-demo duplicates document rows | Workers are off in the kit; the splitter cannot re-run. Don't demo in build mode. |
+| Live portal replay | Pre-recorded video, always. |
+| Kit committed to git | `.gitignore` covers `demo-kit/`; keep it that way. |
 
 ---
 
 ## The dry run is part of the plan
 
-This runbook is not finished until you have executed it start to finish, on the machine you
-will present from, with the screen shared to a second device so you can see what the room
-sees. Budget 20 minutes. The two things that break are always the same: the client filter
-was not set, and the queue had not drained.
+Before the first real showing: copy `demo-kit/` onto the actual thumbdrive, plug it
+into a machine that is not yours, double-click `START-DEMO.cmd`, and click through
+all four acts. Budget 15 minutes. The things that break are the ones a rehearsal on
+your own machine cannot catch: Node missing on the host, and paths that only repair
+correctly because the launcher ran.

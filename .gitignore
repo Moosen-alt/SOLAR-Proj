@@ -112,3 +112,6 @@ IRL NOTES/
 .playwright-mcp/
 .probe/
 scratchpad/
+
+# Portable demo kit — contains a database and documents, never commit it
+demo-kit/
