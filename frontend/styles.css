@@ -1535,6 +1535,18 @@ kbd {
   padding: 7px 9px; border: 1px solid var(--input); border-radius: var(--radius-sm);
   font: inherit; font-size: var(--text-sm); background: var(--surface); color: var(--text);
 }
+/* Which filing a pasted status is about (2+ active filings only; [hidden] otherwise). */
+.permit-status-target {
+  display: flex; flex-direction: column; gap: 4px; margin: var(--space-2) 0;
+  font-size: var(--text-sm); font-weight: 600; max-width: 100%;
+}
+.permit-status-target select {
+  padding: 7px 9px; border: 1px solid var(--input); border-radius: var(--radius-sm); max-width: 100%;
+  font: inherit; font-weight: 400; background: var(--surface); color: var(--text);
+}
+/* The paste box under it had no size rule (a ~170px browser-default box beside a full-width
+   selector); same treatment as the corrections paste box. */
+#permitStatusText { width: 100%; min-height: 64px; }
 .permit-actions, .autopilot-actions, .ops-actions, .ops-action-controls, .runbook-update-controls {
   display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center;
 }
@@ -1865,6 +1877,11 @@ kbd {
      click away; on paper it is simply there. (::details-content is Chrome's
      open/closed content box — this app is Chrome-only.) */
   .provenance::details-content { content-visibility: visible !important; }
+  /* The same rule for the folds added in UI batches A/C: the fee sheet, the portal-run
+     history, the historical causes and the settled checklist rows all print open. */
+  .fee-fold::details-content, .runs-fold::details-content, .checklist-fold::details-content,
+  details.cause-row::details-content { content-visibility: visible !important; }
+  .detail-rail { position: static !important; max-height: none !important; overflow: visible !important; }
   .provenance > summary { color: var(--muted-foreground); }
   .provenance > summary::before { content: ""; }
   .stage-accordion, .audit-accordion, .kb-accordion { break-inside: auto; }
@@ -1872,12 +1889,20 @@ kbd {
 
 /* Stronger hierarchy using the marketing site's dark teal and green palette. */
 .layout, .project-list, .project-detail { min-width: 0; }
-#pageList > .section-head { background: var(--dark); color: var(--dark-foreground); padding: 24px; border-radius: var(--radius-md) var(--radius-md) 0 0; }
-#pageList > .section-head .eyebrow { color: oklch(84% .085 153); }
-#pageList > .section-head h2 { color: var(--dark-foreground); font-size: 28px; }
+/* ONE-ROW LIST HEADER (UI batch B). The dark 135px hero said only "Solar operations /
+   Dashboard / Choose a project…" plus a count, and pushed the first card to y=459. It is
+   a plain row now: the page title, the "Needs me" pills and the count. The eyebrow and
+   the help sentence stay in the DOM (dashboard.js writes #listPageTitle only) and are
+   hidden here. */
+#pageList > .section-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; }
+#pageList > .section-head .eyebrow, #pageList > .section-head #listPageHelp { display: none; }
+#pageList > .section-head h2 { font-size: var(--text-lg); }
+#pageList > .section-head > .actions { flex: 1 1 auto; justify-content: flex-end; }
 .page-help { margin-top: 8px; color: oklch(87% .012 190); font-size: 14px; line-height: 1.6; }
 .project-filters { padding: 14px; gap: 10px; }
-.archive-filter { flex-basis: 100%; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.archive-filter { flex-basis: auto; order: 9; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+#listFilters { padding: 8px 14px 10px; align-items: center; }
+#listFilters #projectSearch { flex: 1 1 320px; }
 .archive-filter input { width: auto; min-height: auto; }
 .stage-board { padding: 0 14px 16px; grid-auto-columns: minmax(210px, 1fr); }
 .board-card { padding: 12px; gap: 7px; align-items: stretch; }
@@ -1895,5 +1920,250 @@ kbd {
   .project-filters { display: flex; flex-wrap: wrap; }
   .project-filters input[type=search] { min-width: 0; width: 100%; flex-basis: 100%; }
   .project-filters select { min-width: 0; flex: 1 1 40%; }
-  #pageList > .section-head { padding: 20px; }
+  #pageList > .section-head { padding: 10px 12px; }
 }
+
+/* ===========================================================================
+   BOARD (UI batch B): one "what it needs" chip per card, "Needs me" pills,
+   narrow empty columns, a single no-match message, the legend as a popover.
+   =========================================================================== */
+.board-card-action { display: flex; }
+.board-card-action .chip { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 4px; }
+.board-card-addr { display: block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
+.board-card.is-attention-danger { border-left: 3px solid var(--edge-fail); }
+.board-card.is-attention-warning { border-left: 3px solid var(--edge-warn); }
+.board-card.is-dimmed { opacity: .35; }
+.board-card.is-dimmed:hover { opacity: .7; }
+
+.needs-pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.needs-pill {
+  font: inherit; font-size: 12px; font-weight: 600; line-height: 1.2;
+  padding: 4px 10px; min-height: 0; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer;
+}
+.needs-pill:hover { background: var(--secondary); }
+.needs-pill.is-zero { color: var(--muted); }
+.needs-pill.is-active { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+
+@media (min-width: 701px) {
+  .stage-board:not(.board-skeleton) { grid-template-columns: var(--board-cols, none); }
+}
+.stage-col.is-empty .stage-col-head { font-size: 12px; font-weight: 650; color: var(--muted); padding: 10px 8px; }
+.stage-col.is-empty .board-empty { font-size: 11px; }
+.board-nomatch {
+  grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 12px;
+  padding: 28px 16px; border: 1px dashed var(--line); border-radius: var(--radius-md); color: var(--muted);
+}
+
+/* ===========================================================================
+   STAGE BODIES (UI batch C): grids for lists of short cards, folds with counts.
+   =========================================================================== */
+#applicationDocs .app-doc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 8px; }
+#applicationDocs .app-doc-grid > .item { margin: 0; }
+/* The two track groups (utility NEM | AHJ permits) sit side by side instead of stacking
+   full width; cards stack inside their group. The capture form is only open by default on
+   a STAGED filing (where capturing the number is the next step) — trackCardHtml. */
+#submittalTracks { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; align-items: start; }
+#submittalTracks > .track-group { min-width: 0; }
+#submittalTracks > .track-group + .track-group { margin-top: 0; }
+#submittalTracks > .track-group > article { margin: 0 0 8px; }
+
+.corrections-entry textarea { width: 100%; min-height: 64px; }
+.runs-fold { margin-top: 8px; }
+.runs-fold > summary, .checklist-fold > summary {
+  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--muted-foreground); padding: 6px 0;
+}
+.runs-fold > .stack { margin-top: 6px; }
+.checklist-fold { margin-top: 6px; }
+details.cause-row { padding-top: 5px; padding-bottom: 5px; margin-top: 4px; margin-bottom: 4px; }
+details.cause-row > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+details.cause-row > summary::-webkit-details-marker { display: none; }
+details.cause-row > summary::before { content: "▸"; font-size: 10px; color: var(--muted-foreground); }
+details.cause-row[open] > summary::before { content: "▾"; }
+details.cause-row[open] > summary { margin-bottom: 4px; }
+.cause-count { font-size: 12px; margin-left: auto; }
+
+.stage-extra-pill {
+  font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 3px 9px; border-radius: 999px;
+  background: var(--tint-warn); color: var(--ink-warn); white-space: nowrap;
+}
+.stage-extra-pill.is-danger { background: var(--tint-fail); color: var(--ink-fail); }
+
+/* The board legend as a topbar popover. */
+.start-here--pop { position: relative; margin: 0; border: none; background: transparent; overflow: visible; }
+.start-here--pop[open] { background: transparent; }
+.start-here--pop > summary {
+  padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: transparent !important;
+}
+.start-here--pop[open] > summary { background: var(--secondary) !important; border-color: var(--line); }
+.start-here--pop .start-here-hint { display: none !important; }
+.start-here--pop .start-here-title { letter-spacing: .08em; white-space: nowrap; }
+.start-here--pop > .start-here-body {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30;
+  width: min(900px, 92vw); max-height: 75vh; overflow: auto;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+@media (max-width: 700px) { .start-here--pop .start-here-title { font-size: 0; gap: 0; } .start-here--pop .start-here-title i { font-size: initial; } }
+
+/* ===========================================================================
+   PROJECT PAGE: COMPACT HEAD + STATUS RAIL (UI batch A).
+
+   The head carries who/where on the left and the Advanced fold on the right —
+   one row. The rail (.detail-rail) holds, in order: Next step, the Autopilot
+   buttons and their reason, blockers, staging banners, the status facts, and
+   money last. At >= 1400px the rail is a sticky left column beside the stages;
+   below that it stacks in the same order.
+   =========================================================================== */
+.detail-head {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start; column-gap: 16px; row-gap: 6px; margin-bottom: 10px;
+}
+.detail-head > .detail-more { margin-top: 0; justify-self: end; }
+.detail-head > .detail-more[open] { grid-column: 1 / -1; justify-self: stretch; }
+.detail-head > .detail-more[open] > summary { float: right; }
+.detail-more .status-override { margin-top: 8px; }
+.head-meta > summary { flex-wrap: nowrap; white-space: nowrap; overflow: hidden; }
+.head-meta > summary > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.head-meta > summary > .fold-hint { margin-left: 0; flex: none; }
+
+.detail-rail { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; min-width: 0; }
+.detail-rail > .next-step-banner, .detail-rail > .summary-grid, .detail-rail > .submit-blocker-note { margin: 0; }
+.detail-rail .kx-callout-panel { margin: 0; }
+.detail-rail > .autopilot-actions { gap: 8px; }
+.autopilot-reason {
+  flex-basis: 100%; margin: 0; font-size: 12px; line-height: 1.5;
+  color: var(--ink-fail); overflow-wrap: anywhere;
+}
+/* The server's own sentence under the Next step. Free prose that can run to 360+
+   characters, so it is clamped to four lines; the full text is the title. */
+.next-step-why {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+  margin-top: 4px; font-size: 12px; font-weight: 400; opacity: .85;
+}
+
+/* The fee sheet, folded to one summary line that carries every qualifier. */
+.fee-panel { padding: 7px 10px; }
+.fee-fold > summary {
+  list-style: none; cursor: pointer;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px;
+  font-size: 12px; line-height: 1.5; color: var(--text);
+}
+.fee-fold > summary::-webkit-details-marker { display: none; }
+.fee-fold > summary::before { content: "▸"; font-size: 10px; color: var(--muted-foreground); }
+.fee-fold[open] > summary::before { content: "▾"; }
+.fee-fold[open] > summary { margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.fee-fold-title { font-weight: 700; }
+.fee-fold-rule { color: var(--muted); }
+.fee-fold-alert { flex-basis: 100%; font-weight: 700; color: var(--ink-fail); }
+
+@media (min-width: 1400px) {
+  #detailView {
+    display: grid; grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+    column-gap: 20px; align-items: start;
+  }
+  #detailView > .detail-head { grid-column: 1 / -1; }
+  .detail-rail {
+    grid-column: 1; margin: 0;
+    position: sticky; top: calc(var(--topbar-h) + 12px);
+    max-height: calc(100vh - var(--topbar-h) - 24px); overflow-y: auto; overscroll-behavior: contain;
+  }
+  .detail-main { grid-column: 2; min-width: 0; }
+  .detail-main > .stage-accordion:first-child { margin-top: 0; }
+  .detail-rail .summary-grid { grid-template-columns: 1fr 1fr; gap: 6px; }
+  .detail-rail .summary-grid .metric { padding: 5px 8px; }
+  .detail-rail .summary-grid .metric strong { font-size: 13px; margin-top: 1px; }
+  .detail-rail .summary-grid .metric:last-child { grid-column: 1 / -1; }
+  .detail-rail .next-step-banner { flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px 12px; }
+  .detail-rail > .autopilot-actions { gap: 6px; }
+  /* Label and badge share the first row; each button gets a full row; the reason last. */
+  .detail-rail .autopilot-actions > #autopilotStatus { order: 1; }
+  .detail-rail .autopilot-actions > button { order: 2; flex: 1 1 100%; justify-content: center; }
+  .detail-rail .autopilot-actions > .autopilot-reason { order: 3; }
+}
+
+/* ===========================================================================
+   NEXT STEP FROM THE SERVER (backend/src/nextStep.ts). The banner, the board
+   chip and the "Needs me" pills render ONE answer. The banner says who acts,
+   the one-sentence headline, up to three reasons (each can take you to the
+   panel it is about), and the one control to use — which is also marked on
+   the page (.is-next-step) so the eye finds it.
+   =========================================================================== */
+.next-step-banner.is-danger { background: var(--tint-fail); border-color: var(--edge-fail); color: var(--ink-fail); }
+:root[data-theme="dark"] .next-step-banner.is-danger { background: var(--tint-fail); border-color: var(--edge-fail); color: var(--foreground); }
+.next-step-banner.is-server { align-items: flex-start; }
+.next-step-banner.is-server .next-step-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.next-step-who { font-size: 12px; font-weight: 600; opacity: .9; }
+.next-step-who strong { font-weight: 800; }
+.next-step-headline { font-size: 14px; line-height: 1.45; font-weight: 700; overflow-wrap: anywhere; }
+.next-step-whys { margin: 2px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.5; }
+.next-step-whys li { overflow-wrap: anywhere; }
+.next-step-fix { font-size: 12px; font-weight: 700; text-decoration: underline; padding: 0 2px; min-height: 0; color: inherit; }
+.next-step-go { align-self: flex-start; margin-top: 4px; font-size: 12px; min-height: 30px; padding: 4px 10px; }
+.next-step-provisional { font-size: 11.5px; font-style: italic; opacity: .85; overflow-wrap: anywhere; }
+.next-step-off { font-style: normal; font-weight: 600; }
+.is-next-step:not(:disabled) { box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 35%, transparent); }
+.is-flash { animation: kx-flash 1.6s ease-out 1; }
+@keyframes kx-flash {
+  0%, 30% { box-shadow: 0 0 0 4px color-mix(in oklab, var(--warning, #d97706) 60%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .is-flash { animation: none; outline: 3px solid var(--primary); } }
+
+/* Why Stage portals / Approve & Submit are off — muted text, not an alarm. */
+.autopilot-off {
+  flex-basis: 100%; order: 4; margin: 0; padding-left: 16px;
+  font-size: 12px; line-height: 1.5; color: var(--muted-foreground); overflow-wrap: anywhere;
+}
+.autopilot-off[hidden] { display: none; }
+
+.stage-extra-pill.is-neutral { background: var(--surface-2); color: var(--muted-foreground); }
+
+/* The assignee on a board card reads as what it is ("Assigned: …"), never a bare name
+   fragment beside a coloured dot. */
+.board-card-assignee-label { font-weight: 600; }
+
+/* "HOW IT FLOWS" STAYS INSIDE THE VIEWPORT. Anchored under its button (right:0) with a
+   900px width, the popover's left edge ran off-screen at 1024px and below. It is placed
+   against the viewport instead: right-aligned under the top bar, never wider than the
+   screen minus a 16px gutter on each side. The top bar is sticky with no transform, so
+   `fixed` resolves against the viewport. */
+.start-here--pop > .start-here-body {
+  position: fixed; top: calc(var(--topbar-h) + 6px); right: 16px; left: auto;
+  width: min(900px, calc(100vw - 32px)); max-height: calc(100vh - var(--topbar-h) - 24px);
+}
+/* ...and below 1280px its button is icon-only, so the top bar never wraps the nav. */
+@media (max-width: 1279px) {
+  .start-here--pop > summary { padding: 6px 8px; }
+  .start-here--pop .start-here-title { font-size: 0; gap: 0; letter-spacing: 0; }
+  .start-here--pop .start-here-title svg, .start-here--pop .start-here-title i { width: 17px; height: 17px; font-size: 17px; }
+}
+@media (max-width: 1100px) {
+  .topbar { gap: var(--space-3); padding: 0 var(--space-4); }
+  .page-tab, .page-link { padding: 8px 10px; }
+}
+
+/* THE STATUS CORRECTION FORM inside "Advanced / override & tools". It had no form styling
+   of its own (browser-default select/input, labels run inline, no box), so it read as a
+   stray paragraph under the tool buttons. Same control idiom as the other entry forms. */
+.detail-more .status-override {
+  margin: 8px 0 0; padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface);
+}
+.status-override-body { max-width: 760px; padding-left: 0; border-left: none; }
+.status-override-body .form-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 6px 0 8px; }
+.status-override-body label {
+  display: block; min-width: 200px;
+  font-size: 12px; font-weight: 600; color: var(--muted-foreground);
+}
+.status-override-body select, .status-override-body input {
+  display: block; margin-top: 4px; width: 100%; min-height: 34px; padding: 7px 9px;
+  border: 1px solid var(--input); border-radius: var(--radius-sm);
+  font: inherit; font-size: var(--text-sm); background: var(--surface); color: var(--text);
+}
+.status-override-body .actions { display: flex; justify-content: flex-start; }
+
+/* A board chip the submit gate could still overrule (the list tier does not run the gate):
+   dashed border (the fact is certain; only its precedence is not) — the title says why. */
+.board-card-action .chip.is-provisional { border-style: dashed; }

@@ -30,11 +30,13 @@ import { HttpError } from "./httpError";
 import { addAuditLog } from "./audit";
 import { logger } from "./logger";
 import { nowIso } from "./time";
-import { getProjectDetail, rerunQc, captureConfirmation } from "./repository";
+import { getProjectDetail, rerunQc, captureConfirmation, stagingMissingDocuments } from "./repository";
+import { documentInventory, owedMissingDocuments, type DocumentInventory } from "./requiredDocuments";
 import { parseJson } from "./json";
-import { buildReviewerReportFor } from "./repository";
-import type { ProjectRecord, StageDetail, SubmittalTrackType } from "../../shared/src/types";
-import { requiredTracks } from "./submittalTracks";
+import type { NextStep, ProjectRecord, StageDetail, SubmittalTrackType } from "../../shared/src/types";
+import { requiredTracks, SUBMITTAL_TRACK_TYPES, trackPermitTypes } from "./submittalTracks";
+import { stageForStatus } from "./projectStage";
+import { decideNextStep, loadFullNextStepFacts, reviewInfoFromResultJson, reviewerBlockerList, stagingFailedFor, withoutCodeResearch, type NextStepFacts, type ReviewMismatch } from "./nextStep";
 import { portalAutomationDisabled } from "../../portal-bot/src/browser";
 // STATIC, and the synchrony is load-bearing (see maybeResumeAutopilot). No load-time cycle:
 // jobQueue reaches this module only through the worker's dynamic import() in processNextJob,
@@ -57,11 +59,7 @@ export interface AutopilotBlocker {
   detail: string;
 }
 
-export interface ReviewMismatch {
-  field: string;
-  expected: string;
-  found: string;
-}
+export type { ReviewMismatch };
 
 export interface AutopilotState {
   projectId: string;
@@ -82,6 +80,19 @@ export interface AutopilotState {
   /** Required portal fields left blank though the project HAS the value — an engine gap,
    *  never the operator's data problem. */
   gapEngineUnfilled: string[];
+  /** Why Approve & Submit is disabled, in words (null when canApprove). */
+  approveDisabledReason: string | null;
+  /** S8 — may "Stage portals · Autopilot" start a run? False with a reason when the project is
+   *  operator-blocked, a run is in flight, it is past Submit, every required track is
+   *  already staged or filed (re-staging opens a duplicate draft), or the submit gate holds
+   *  back a track it would stage (gateBlockersForTracks). */
+  canStage: boolean;
+  stageDisabledReason: string | null;
+  /** The newest autopilot job's own outcome — HISTORY only. The phase is re-evaluated live
+   *  (S3); a job that ended blocked no longer pins BLOCKED on a project whose gate is clean. */
+  lastRun: { status: string; blocked: boolean; message: string; blockers: AutopilotBlocker[]; finishedAt: string | null } | null;
+  /** The ONE next-step answer (nextStep.ts), full tier. */
+  nextStep: NextStep;
 }
 
 // UNTYPED string Set — it does NOT fail typecheck when a status is removed from the
@@ -116,14 +127,21 @@ const PRE_STAGE_STATUSES = new Set([
 // human submit, already submitted, or paused mid-flow for a human). Staging is NOT
 // idempotent portal-side — a re-run creates a duplicate live application draft — so this
 // is what stops autopilot re-staging work that is already sitting in the portal.
+//
+// BY TRACK FAMILY, not by the literal permit_type. A trackless stage records its run as
+// 'permit' and a per-track stage as 'combo' — ONE filing (submittalTracks.trackPermitTypes), as
+// building/structural are one trade. Matched literally, a 'permit' draft was invisible to a
+// 'combo' check (and vice versa), so prepareSubmission's stagedAtEntry / stagedMeanwhile re-check
+// and Segment A's tracksToStage each let a second draft of the same application through.
 // Pure DB read; exported for tests.
 export function trackAlreadyStaged(db: AppDb, projectId: string, track: SubmittalTrackType): boolean {
+  const family = trackPermitTypes(track);
   const row = db.get<Row>(
     `SELECT id FROM portal_runs
-      WHERE project_id = ? AND permit_type = ?
+      WHERE project_id = ? AND permit_type IN (${family.map(() => "?").join(", ")})
         AND status IN ('awaiting_human_submit', 'submitted', 'paused_for_human')
       LIMIT 1`,
-    [projectId, track],
+    [projectId, ...family],
   );
   return Boolean(row);
 }
@@ -151,13 +169,63 @@ export function tracksToStage(db: AppDb, project: ProjectRecord, requested?: Sub
   return wanted.filter((t) => !trackAlreadyStaged(db, project.id, t));
 }
 
-// Reviewer-gate blockers for a project, in the same shape the dashboard already
-// renders. Mirrors the check inside prepareSubmission so the gate is consistent.
-function reviewerBlockerList(db: AppDb, project: ProjectRecord): AutopilotBlocker[] {
-  const report = buildReviewerReportFor(db, project);
-  return report.findings
-    .filter((finding) => finding.severity === "blocker")
-    .map((finding) => ({ code: finding.id, detail: finding.title }));
+/**
+ * THE SUBMIT-GATE BLOCKERS THAT HOLD BACK A FILING OF THESE TRACKS — the one answer Approve
+ * (for the staged draft's track) and Stage portals (for the tracks it would stage) both read.
+ *
+ * The gate's decision is project-wide; its document check counts EVERY lane's missing file, so
+ * a NEM draft read as refused over a permit-lane checklist. `document-inventory` is therefore
+ * re-scoped per track with stagingMissingDocuments — the filter prepareSubmission turns into its
+ * 409 — and `permit-path` (prepareSubmission asks it only off the NEM lane) applies only to a
+ * permit-side track. A missing row the staging-time fill produces holds back no track
+ * (owedMissingDocuments — the same predicate the gate's own document check uses): prepareSubmission
+ * fills before its own count, and a staged draft already went through that fill. Every other
+ * blocker is project-wide and holds back any track. A null track (a run tagged with no known
+ * track) keeps the unscoped LANE list: an unknown never clears.
+ * Reuses the gate result the caller already has; nothing is recomputed unless a document
+ * blocker needs scoping.
+ */
+export function gateBlockersForTracks(
+  db: AppDb,
+  project: ProjectRecord,
+  gate: NextStepFacts["gate"],
+  tracks: Array<SubmittalTrackType | null>,
+): Array<{ id: string; nextAction: string; tracks: Array<SubmittalTrackType | null> }> {
+  if (gate?.decision !== "blocked" || !tracks.length) return [];
+  const out: Array<{ id: string; nextAction: string; tracks: Array<SubmittalTrackType | null> }> = [];
+  for (const b of gate.blockers) {
+    if (b.id === "document-inventory") {
+      // A READ (GET /autopilot): same guard the gate report runs under, so no path in the
+      // inventory can queue code research for an un-profiled jurisdiction.
+      const inventory = withoutCodeResearch(() => documentInventory(db, project));
+      // A FORM THE SYSTEM FILLS ITSELF IS NOT THE OPERATOR'S TO ATTACH — asked with the SAME
+      // predicate the gate's own document check uses (owedMissingDocuments), so the gate, the
+      // banner and these buttons cannot disagree. prepareSubmission fills before it counts on
+      // every permit-side track (prepareOfficialDocuments, then the 409), so a row that fill
+      // produces holds back neither staging nor approval, and is never named in the reason. Per
+      // ROW, not all-or-nothing: a track still owing a PE letter stays held, and the reason names
+      // only the PE letter. Only permit-lane rows are held out, so NEM is unaffected; a null track
+      // still gets the unscoped LANE list (an unknown never clears a lane) — the fill-produced
+      // rows are owed by no track, since every permit-side stage fills first.
+      const owed: DocumentInventory = { ...inventory, missingBlocking: owedMissingDocuments(db, project, inventory).owed };
+      const perTrack = tracks
+        .map((t) => ({ t, missing: stagingMissingDocuments(owed, t ?? undefined) }))
+        .filter((x) => x.missing.length);
+      if (perTrack.length) {
+        out.push({
+          id: b.id,
+          nextAction: `Attach or split out the missing document(s) — ${perTrack.map((x) => `${x.t ?? "this"} filing: ${x.missing.map((d) => d.label).join("; ")}`).join(" · ")}`,
+          tracks: perTrack.map((x) => x.t),
+        });
+      }
+    } else if (b.id === "permit-path") {
+      const held = tracks.filter((t) => t !== "nem");
+      if (held.length) out.push({ id: b.id, nextAction: b.nextAction, tracks: held });
+    } else {
+      out.push({ id: b.id, nextAction: b.nextAction, tracks: [...tracks] });
+    }
+  }
+  return out;
 }
 
 // Translate an HttpError 409 blocker payload from prepareSubmission into the flat
@@ -217,92 +285,102 @@ function awaitingPortalRun(db: AppDb, projectId: string, track?: SubmittalTrackT
   return db.get<Row>(sql, params);
 }
 
-// Extract review-screen mismatches from a portal_run's result_json. The adapter stores
-// reviewMismatches + reviewAccurate in the stopAtReview step's data payload.
-function gapMissingFrom(data: Record<string, unknown> | undefined): string[] {
-  const gf = data?.gapFill as { reportedMissing?: unknown } | undefined;
-  const list = gf && Array.isArray(gf.reportedMissing) ? gf.reportedMissing.map((x) => String(x)) : [];
-  return Array.from(new Set(list)).slice(0, 20);
-}
-
-/** Required portal fields left blank even though the PROJECT HOLDS the value. Separate
- *  from gapMissingFrom on purpose: that list is work only a person can do, this list is
- *  the engine's own failure and must never be phrased as "add them to the project". */
-function gapUnfilledDespiteDataFrom(data: Record<string, unknown> | undefined): string[] {
-  const gf = data?.gapFill as { unfilledDespiteData?: unknown } | undefined;
-  const list = gf && Array.isArray(gf.unfilledDespiteData) ? gf.unfilledDespiteData.map((x) => String(x)) : [];
-  return Array.from(new Set(list)).slice(0, 20);
-}
-
+// Review-screen mismatches + gap-fill lists from a portal_run's result_json (the reader lives
+// in nextStep.ts so the next-step rule table and this panel read the same lists).
 function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[]; gapEngineUnfilled: string[] } {
-  const empty = { reviewMismatches: [], reviewAccurate: null, gapFillMissing: [], gapEngineUnfilled: [] };
-  if (!run?.result_json) return empty;
-  try {
-    const result = JSON.parse(String(run.result_json)) as Record<string, unknown>;
-    // result_json shape: { steps: [{ok, data: {reviewMismatches, reviewAccurate, gapFill}}] }
-    const steps = Array.isArray(result.steps) ? result.steps as Array<Record<string, unknown>> : [];
-    // gapFill and reviewMismatches live on DIFFERENT steps for different adapters:
-    // PowerClerk puts both on the review step, the RecipeAdapter reports gapFill on the
-    // fill step and never emits reviewMismatches. Collect each wherever it appears so
-    // the "required fields left blank" advisory fires for every adapter.
-    let reviewMismatches: ReviewMismatch[] = [];
-    let reviewAccurate: boolean | null = null;
-    const gapMissing = new Set<string>(gapMissingFrom(result));
-    const gapEngineGaps = new Set<string>(gapUnfilledDespiteDataFrom(result));
-    for (const step of steps) {
-      const data = step.data as Record<string, unknown> | undefined;
-      if (!data) continue;
-      if (!reviewMismatches.length && Array.isArray(data.reviewMismatches)) {
-        reviewMismatches = data.reviewMismatches as ReviewMismatch[];
-        reviewAccurate = typeof data.reviewAccurate === "boolean" ? data.reviewAccurate : null;
-      }
-      for (const f of gapMissingFrom(data)) gapMissing.add(f);
-      for (const f of gapUnfilledDespiteDataFrom(data)) gapEngineGaps.add(f);
-    }
-    // Top-level mismatches (some portal results flatten the step data).
-    if (!reviewMismatches.length && Array.isArray(result.reviewMismatches)) {
-      reviewMismatches = result.reviewMismatches as ReviewMismatch[];
-      reviewAccurate = typeof result.reviewAccurate === "boolean" ? result.reviewAccurate : null;
-    }
-    return { reviewMismatches, reviewAccurate, gapFillMissing: Array.from(gapMissing).slice(0, 20), gapEngineUnfilled: Array.from(gapEngineGaps).slice(0, 20) };
-  } catch { /* ignore parse errors */ }
-  return empty;
+  return reviewInfoFromResultJson(run?.result_json);
 }
 
 // Derive the current autopilot snapshot for the UI from the project status, the
 // latest portal run, and the latest autopilot job result. No dedicated table —
 // the state machine is a pure function of state we already persist.
+//
+// LIVE, NOT REPLAYED (S3). The pre-stage phase used to be the newest autopilot job's stored
+// result: a job that ended blocked kept the panel on BLOCKED, with that run's blockers, after
+// every one of them was cleared (a project whose gate read ready_to_stage with zero blockers
+// still said "Blocked"). The phase and blockers are now evaluated from the current gate, the
+// operator block and the per-track staging outcome — the same facts the next-step rule table
+// reads — and the job's own result is carried only as `lastRun` (history).
 export function getAutopilotState(db: AppDb, projectId: string): AutopilotState {
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
   const ts = project.updatedAt || nowIso();
   const run = latestPortalRun(db, projectId);
-  // A pause is only CURRENT while the run itself still sits at paused_for_human AND the
-  // project hasn't since moved past it (manual track submit / captureConfirmation update
-  // the project, not the run row) — otherwise the panel pins "paused for MFA" forever
-  // after the moment has passed, on the strength of a historical pause_reason.
-  const projectMovedOn = ["submitted", "ready_for_issue", "issued", "nem_approved", "handoff_ready", "awaiting_human_submit"].includes(project.status);
-  const pauseReason = run && String(run.status) === "paused_for_human" && !projectMovedOn
-    && typeof run.pause_reason === "string" && run.pause_reason ? String(run.pause_reason) : null;
+  const facts = loadFullNextStepFacts(db, projectId);
+  const nextStep = decideNextStep(facts);
   const noReview = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[], gapEngineUnfilled: [] as string[] };
 
-  // A run that paused mid-fill for MFA/CAPTCHA needs a human at the browser.
-  if (pauseReason) {
+  const job = db.get<Row>(
+    "SELECT * FROM job_queue WHERE project_id = ? AND job_type = 'autopilot' ORDER BY created_at DESC LIMIT 1",
+    [projectId],
+  );
+  const jobStatus = job ? String(job.status) : "";
+  const jobInFlight = jobStatus === "pending" || jobStatus === "running";
+  // Guard the parse: a corrupt/truncated job_queue.result must not 500 the autopilot panel.
+  const jobResult = job ? parseJson<{ blocked?: boolean; blockers?: AutopilotBlocker[]; message?: string } | null>(job.result == null ? null : String(job.result), null) : null;
+  const lastRun: AutopilotState["lastRun"] = job
+    ? {
+        status: jobStatus,
+        blocked: Boolean(jobResult?.blocked),
+        message: jobResult?.message ?? (job.error ? String(job.error) : ""),
+        blockers: jobResult?.blockers ?? [],
+        finishedAt: job.finished_at == null ? null : String(job.finished_at),
+      }
+    : null;
+
+  // S8 — may "Stage portals" start a run? Built from the SAME predicates Segment A applies
+  // (operator block, tracksToStage) plus the filed check, so an enabled button is one
+  // Segment A will act on, and a disabled one says why.
+  const unfinished = facts.tracks.filter((t) => !t.filed && !t.done);
+  const stillToStage = tracksToStage(db, project).filter((t) => unfinished.some((u) => u.track === t));
+  // A blocked submit gate for the tracks it would stage: Segment A stages them in order and stops
+  // at the first 409, so a held track means the button would run into the refusal the banner
+  // already names (e6b3afde: "gate is blocked" beside an enabled Stage portals).
+  const stageGateBlockers = stillToStage.length ? gateBlockersForTracks(db, project, facts.gate, stillToStage) : [];
+  const heldTracks = new Set(stageGateBlockers.flatMap((b) => b.tracks));
+  const freeTracks = stillToStage.filter((t) => !heldTracks.has(t));
+  const stageDisabledReason = facts.operatorHold
+    ? `Blocked by an operator (${facts.operatorHold.reason}) — lift the block before staging.`
+    : jobInFlight || facts.jobInFlight
+      ? "A staging / autopilot run is already in flight — wait for it to finish."
+      : stageForStatus(project.status).index >= stageForStatus("submitted").index
+        ? `The project is past Submit (${project.status.replaceAll("_", " ")}). Stage a remaining track from its track card if one still needs filing.`
+        : stillToStage.length === 0
+          ? "Every required track is already staged or filed — re-staging would open a duplicate draft. Submit the staged application(s) in the portal."
+          : stageGateBlockers.length
+            ? `The submit gate holds back the ${stillToStage.filter((t) => heldTracks.has(t)).join(", ")} filing(s): ${stageGateBlockers.map((b) => b.nextAction.replace(/[.\s]+$/, "")).join("; ")}.`
+              + (freeTracks.length ? ` The ${freeTracks.join(", ")} track(s) can be staged on their own from the track card.` : "")
+            : null;
+  const stageInfo = { canStage: stageDisabledReason === null, stageDisabledReason, lastRun, nextStep };
+
+  // A run that paused mid-fill for MFA/CAPTCHA needs a human at the browser. Per TRACK (the
+  // same fact nextStep's portal_paused reads): the newest run of a track that is not filed,
+  // or a correction reopen that paused.
+  const pausedRun = facts.reopenPause ?? unfinished.find((t) => t.latestRun?.status === "paused_for_human")?.latestRun ?? null;
+  if (pausedRun) {
     return {
       projectId, phase: "paused_for_human", stage: "Portal paused for human",
       message: "Portal run paused for MFA/CAPTCHA. A human must complete the challenge.",
-      blockers: [], canApprove: false, pauseReason, portalRunId: run ? String(run.id) : null, updatedAt: ts,
-      ...noReview,
+      blockers: [], canApprove: false, approveDisabledReason: "A portal run is paused for a person.",
+      pauseReason: pausedRun.pauseReason ?? "human input required", portalRunId: pausedRun.id, updatedAt: ts,
+      ...noReview, ...stageInfo,
     };
   }
 
   if (project.status === "submitted" || project.status === "ready_for_issue" || project.status === "issued" || project.status === "nem_approved" || project.status === "handoff_ready") {
-    return { projectId, phase: "submitted", stage: "Submitted", message: "Filing submitted; tracking approval.", blockers: [], canApprove: false, pauseReason: null, portalRunId: run ? String(run.id) : null, updatedAt: ts, ...noReview };
+    return { projectId, phase: "submitted", stage: "Submitted", message: "Filing submitted; tracking approval.", blockers: [], canApprove: false, approveDisabledReason: "Nothing is staged and awaiting approval.", pauseReason: null, portalRunId: run ? String(run.id) : null, updatedAt: ts, ...noReview, ...stageInfo };
   }
 
+  // The per-track staging outcome: a required, unfiled track whose newest staging run failed
+  // with no draft of it on the portal (nextStep.stagingFailedFor — the same predicate).
+  const stagingFailed = unfinished.filter(stagingFailedFor);
+
   if (project.status === "awaiting_human_submit") {
-    const blockers = reviewerBlockerList(db, project);
-    const reviewInfo = reviewInfoFromRun(run);
+    const blockers = facts.reviewerBlockers ?? reviewerBlockerList(db, project);
+    // The DRAFT's review info — not the newest run's, which may be a later failed re-run that
+    // carries no gap-fill report at all.
+    const awaitingRun = awaitingPortalRun(db, projectId);
+    const reviewInfo = reviewInfoFromRun(awaitingRun ?? run);
     // If the gap-fill left required portal fields blank (no project data to fill them from),
     // advise the operator to add the data and re-stage rather than submit an incomplete app.
     // TWO DIFFERENT FACTS, TWO DIFFERENT SENTENCES. "Add them to the project" is only true
@@ -324,40 +402,97 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
     // enabled on purpose (a second track staged later needs it, and re-approving only writes
     // another audit row); what changes is what the panel SAYS.
     const approvedAwaitingFiling = project.stageDetail === "approved_awaiting_filing";
+    // CAN APPROVE (S2) — not "no reviewer blockers" alone. Approve & Submit was enabled on a
+    // project whose staging FAILED for the draft's track (nothing reached the review screen), on
+    // one whose staged draft left required fields blank for lack of data, and on one whose submit
+    // gate says the filing itself is incomplete. Each is a refusal, in words. The gate refuses
+    // only on blockers about what is IN the filing — required documents and QC data (reviewer
+    // findings are `blockers` above). submitting-client / permit-path / project-fields are
+    // prepareSubmission's own staging 409s: a draft that exists already passed them, so they
+    // cannot hold back its approval.
+    //
+    // PER TRACK — the DRAFT's track. stage_detail is written by the newest run of ANY track, so
+    // reading `staging_failed` off the project refused a good NEM draft because a building re-run
+    // failed after it (7ec74634), and the gate's document check lists every lane's missing file,
+    // so a NEM draft was refused over a permit-lane checklist (29cd57b5). Both now ask about the
+    // awaiting run's own track: stagingFailedFor, and gateBlockersForTracks' scoped documents.
+    const awaitingFacts = awaitingRun ? facts.tracks.find((t) => t.stagedRun?.id === String(awaitingRun.id)) ?? null : null;
+    const awaitingPermitType = awaitingRun ? String(awaitingRun.permit_type ?? "") : "";
+    const awaitingTrack: SubmittalTrackType | null = awaitingFacts?.track
+      ?? ((SUBMITTAL_TRACK_TYPES as string[]).includes(awaitingPermitType) ? awaitingPermitType as SubmittalTrackType : null);
+    const IN_THE_FILING = new Set(["document-inventory", "qc-human-review"]);
+    const filingGateBlockers = awaitingRun
+      ? gateBlockersForTracks(db, project, facts.gate, [awaitingTrack]).filter((b) => IN_THE_FILING.has(b.id))
+      : [];
+    const approveRefusals = [
+      !awaitingRun ? "no staged portal run is awaiting a submit" : "",
+      blockers.length ? `the reviewer gate lists ${blockers.length} blocker(s)` : "",
+      awaitingFacts && stagingFailedFor(awaitingFacts) ? `the ${awaitingFacts.track} staging run failed before the review screen` : "",
+      reviewInfo.gapFillMissing.length ? `${reviewInfo.gapFillMissing.length} required portal field(s) have no project data — add them and re-stage` : "",
+      filingGateBlockers.length ? `the submit gate is blocked: ${filingGateBlockers.map((b) => b.nextAction.replace(/[.\s]+$/, "")).join("; ")}` : "",
+    ].filter(Boolean).map((r) => r.replace(/[.\s]+$/, ""));
+    const canApprove = approveRefusals.length === 0;
+    // A sibling track that failed is not a reason to refuse THIS draft — it is said, not gated.
+    const siblingNote = stagingFailed.length ? ` Staging failed for ${stagingFailed.map((t) => t.track).join(", ")} — nothing is staged there.` : "";
     const baseMsg = blockers.length
       ? "Staged, but reviewer blockers must be cleared before approval."
       : approvedAwaitingFiling
-        ? "Approval recorded. Automation stops here — open the portal, click its submit yourself, then capture the confirmation number below."
-        : "Staged to portal review. Click Approve & Submit to file.";
+        ? `Approval recorded. Automation stops here — open the portal, click its submit yourself, then capture the confirmation number below.${canApprove ? "" : ` Not approvable again yet: ${approveRefusals.join("; ")}.`}`
+        : !canApprove
+          ? `Staged, but not approvable yet: ${approveRefusals.join("; ")}.`
+          : "Staged to portal review. Click Approve & Submit to file.";
     return {
       projectId, phase: "awaiting_approval", stage: approvedAwaitingFiling ? "Approved — awaiting your filing" : "Awaiting approval",
-      message: baseMsg + gapAdvisory + engineAdvisory,
-      blockers, canApprove: blockers.length === 0, pauseReason: null, portalRunId: run ? String(run.id) : null, updatedAt: ts,
-      ...reviewInfo,
+      message: baseMsg + siblingNote + gapAdvisory + engineAdvisory,
+      blockers, canApprove, approveDisabledReason: canApprove ? null : `Not approvable: ${approveRefusals.join("; ")}.`,
+      pauseReason: null, portalRunId: run ? String(run.id) : null, updatedAt: ts,
+      ...reviewInfo, ...stageInfo,
     };
   }
 
-  // A finished autopilot job that ended blocked carries the blocker payload.
-  const job = db.get<Row>(
-    "SELECT * FROM job_queue WHERE project_id = ? AND job_type = 'autopilot' ORDER BY created_at DESC LIMIT 1",
-    [projectId],
-  );
-  if (job) {
-    const status = String(job.status);
-    if (status === "pending" || status === "running") {
-      return { projectId, phase: "running", stage: "Autopilot running", message: "Running QC → build → reviewer gate → stage.", blockers: [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview };
-    }
-    // Guard the parse: a corrupt/truncated job_queue.result must not 500 the autopilot panel.
-    const result = parseJson<{ blocked?: boolean; blockers?: AutopilotBlocker[]; message?: string } | null>(job.result == null ? null : String(job.result), null);
-    if (result?.blocked) {
-      return { projectId, phase: "blocked", stage: "Blocked", message: result.message ?? "Autopilot stopped on a gate.", blockers: result.blockers ?? [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview };
-    }
-    if (status === "failed") {
-      return { projectId, phase: "failed", stage: "Failed", message: job.error ? String(job.error) : "Autopilot run failed.", blockers: [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview };
+  if (jobInFlight) {
+    return { projectId, phase: "running", stage: "Autopilot running", message: "Running QC → build → reviewer gate → stage.", blockers: [], canApprove: false, approveDisabledReason: "Autopilot is running.", pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview, ...stageInfo };
+  }
+
+  // LIVE BLOCKERS: the operator's block, a failed staging run per track, the per-submission
+  // payment gate, and the submit gate's blockers — as they stand NOW.
+  const operatorBlock = operatorBlockedOutcome(db, projectId);
+  const unpaid = unfinished.filter((t) => t.paymentDue && stillToStage.includes(t.track));
+  // AN UNKNOWN MUST NOT READ AS "NOTHING BLOCKS IT NOW". A blocker the last run recorded that
+  // none of the live checks above re-derives (a generic 409 — e.g. "staged by another run
+  // meanwhile") is kept, marked as the last run's, until a newer portal run supersedes it.
+  const LIVE_CODES = new Set([
+    "qc_fail", "pending_review", "reviewer_blocker", "historical_missing", "missing_document", "permit_path", "needs_client", "needs_ccb",
+    "payment_required", "operator_blocked", "stage_failed", "paused_for_human", "not_pre_stage",
+  ]);
+  const jobFinishedAt = job?.finished_at == null ? "" : String(job.finished_at);
+  const runSinceJob = Boolean(run && jobFinishedAt && String(run.started_at ?? "") > jobFinishedAt);
+  const unreproduced = lastRun?.blocked && !runSinceJob ? lastRun.blockers.filter((b) => !LIVE_CODES.has(String(b.code))) : [];
+  const liveBlockers: AutopilotBlocker[] = [
+    ...(operatorBlock ? [operatorBlock] : []),
+    ...stagingFailed.map((t) => ({ code: "stage_failed", detail: `${t.track}: ${t.latestRun?.errorMessage || "the staging run failed before the review screen — see the run's debug bundle"}` })),
+    ...(unpaid.length ? [{ code: "payment_required", detail: `Payment required before staging ${unpaid.map((t) => t.track).join(", ")}: this client bills per submission — collect it on the Payment screen, then mark it paid.` }] : []),
+    ...(unfinished.length && facts.gate?.decision === "blocked" ? facts.gate.blockers.map((b) => ({ code: b.id, detail: b.nextAction })) : []),
+    ...unreproduced.map((b) => ({ code: String(b.code), detail: `Last autopilot run: ${b.detail}` })),
+  ];
+  const notApprovable = { canApprove: false, approveDisabledReason: "Available once the project is staged to the portal review screen." };
+  if (liveBlockers.length) {
+    return { projectId, phase: "blocked", stage: "Blocked", message: nextStep.headline, blockers: liveBlockers, ...notApprovable, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview, ...stageInfo };
+  }
+  // A FAILED job is still the answer while nothing has happened since it — a portal run started
+  // after it finished means someone has already moved on from that failure.
+  if (jobStatus === "failed") {
+    if (!runSinceJob) {
+      return { projectId, phase: "failed", stage: "Failed", message: job?.error ? String(job.error) : "Autopilot run failed.", blockers: [], ...notApprovable, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview, ...stageInfo };
     }
   }
 
-  return { projectId, phase: "idle", stage: "Idle", message: "Autopilot has not been started for this project.", blockers: [], canApprove: false, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview };
+  const message = !job
+    ? `Autopilot has not been started for this project. ${nextStep.headline}`
+    : lastRun?.blocked
+      ? `The last autopilot run stopped on a gate; nothing blocks it now. ${nextStep.headline}`
+      : nextStep.headline;
+  return { projectId, phase: "idle", stage: "Idle", message, blockers: [], ...notApprovable, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview, ...stageInfo };
 }
 
 // AUTO-RESUME — called (fire-and-forget) from every route that can CLEAR a

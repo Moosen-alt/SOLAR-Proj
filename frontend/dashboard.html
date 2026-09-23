@@ -85,6 +85,27 @@
         <i data-lucide="bell"></i>
         <span id="notifBadge" class="notif-badge">0</span>
       </button>
+      <!-- THE BOARD LEGEND, as a popover. It used to be a full-width strip above the
+           board. Same text, including the human-does-the-final-submit rule; the
+           id is unchanged (showPage hides it on the project page). Not .topbar-more:
+           that class must stay singular (dashboard.js dismisses it by querySelector). -->
+      <details id="startHereGuide" class="start-here start-here--pop">
+        <summary title="How a project flows through the 5 stages" aria-label="How a project flows">
+          <span class="start-here-title"><i data-lucide="compass"></i> How it flows</span>
+          <span class="start-here-hint start-here-hint--closed">Show the 5 stages</span>
+          <span class="start-here-hint start-here-hint--open">Hide</span>
+        </summary>
+        <div class="start-here-body">
+          <p class="start-here-intro">A project is born in the <a href="/parser">Parser</a> — upload the plan set + utility bill, click <em>Parse</em>, then <em>Save to project</em>, and it lands on this board already parsed. From there it moves left to right through these five stages. Pick a project from the list to see its <strong>Next step</strong> banner, which names the button to click.</p>
+          <ol class="flow-steps">
+            <li><span class="flow-num">1</span><div><strong>QC check</strong><p>Select the project, click <em>Run QC</em>. Fix anything flagged in <em>QC Results</em>, then re-run. Missing files are uploaded here too, under <em>Project Documents</em>.</p></div></li>
+            <li><span class="flow-num">2</span><div><strong>Build &amp; validate</strong><p>Click <em>Build AHJ/NEM Docs</em>, then open <em>Reviewer Gate</em> on the project to check the packet before submission.</p></div></li>
+            <li><span class="flow-num">3</span><div><strong>Submit</strong><p>Click <em>Prepare Submittal</em>. <strong>A person does the final submit</strong> in the portal — automation never clicks submit, pays fees, or solves MFA/CAPTCHA.</p></div></li>
+            <li><span class="flow-num">4</span><div><strong>Track</strong><p>Use <em>Permit Checks</em> + <em>NEM Checks</em> to monitor. Paste any correction letter into <em>Corrections</em> for an AI-drafted reply (you review before sending).</p></div></li>
+            <li><span class="flow-num">5</span><div><strong>Handoff</strong><p>When the permit is issued <em>and</em> NEM approved, copy the <em>Handoff Packet</em> to the installer. Our scope ends here — PTO is the installer's job.</p></div></li>
+          </ol>
+        </div>
+      </details>
       <details class="topbar-more">
         <summary class="icon-button" title="More" aria-label="More"><i data-lucide="more-horizontal"></i></summary>
         <div class="topbar-more-menu">
@@ -129,23 +150,10 @@
        why the intro sentence carries the Parser instead — a project is already
        `parsed` the moment it first appears on this board, so an Intake column
        could only ever have rendered as permanently complete. -->
-  <details id="startHereGuide" class="start-here">
-    <summary>
-      <span class="start-here-title"><i data-lucide="compass"></i> How a project flows</span>
-      <span class="start-here-hint start-here-hint--closed">Show the 5 stages</span>
-      <span class="start-here-hint start-here-hint--open">Hide</span>
-    </summary>
-    <div class="start-here-body">
-      <p class="start-here-intro">A project is born in the <a href="/parser">Parser</a> — upload the plan set + utility bill, click <em>Parse</em>, then <em>Save to project</em>, and it lands on this board already parsed. From there it moves left to right through these five stages. Pick a project from the list to see its <strong>Next step</strong> banner, which names the button to click.</p>
-      <ol class="flow-steps">
-        <li><span class="flow-num">1</span><div><strong>QC check</strong><p>Select the project, click <em>Run QC</em>. Fix anything flagged in <em>QC Results</em>, then re-run. Missing files are uploaded here too, under <em>Project Documents</em>.</p></div></li>
-        <li><span class="flow-num">2</span><div><strong>Build &amp; validate</strong><p>Click <em>Build AHJ/NEM Docs</em>, then open <em>Reviewer Gate</em> on the project to check the packet before submission.</p></div></li>
-        <li><span class="flow-num">3</span><div><strong>Submit</strong><p>Click <em>Prepare Submittal</em>. <strong>A person does the final submit</strong> in the portal — automation never clicks submit, pays fees, or solves MFA/CAPTCHA.</p></div></li>
-        <li><span class="flow-num">4</span><div><strong>Track</strong><p>Use <em>Permit Checks</em> + <em>NEM Checks</em> to monitor. Paste any correction letter into <em>Corrections</em> for an AI-drafted reply (you review before sending).</p></div></li>
-        <li><span class="flow-num">5</span><div><strong>Handoff</strong><p>When the permit is issued <em>and</em> NEM approved, copy the <em>Handoff Packet</em> to the installer. Our scope ends here — PTO is the installer's job.</p></div></li>
-      </ol>
-    </div>
-  </details>
+  <!-- MOVED: #startHereGuide now lives in the topbar (.topbar-end) as a "How it
+       flows" popover. Its text, including the human-does-the-final-submit
+       sentence, is unchanged and one click away; it no longer costs a 45px strip
+       above the board. showPage still hides it on the project page. -->
 
   <main class="layout">
     <section class="project-list" id="pageList" aria-label="Projects">
@@ -193,6 +201,10 @@
           <p id="listPageHelp" class="page-help">Choose a project to see what needs attention and its next step.</p>
         </div>
         <div class="actions">
+          <!-- "Needs me" pills: counts of what the board cards say (boardAttention in
+               dashboard.js — the same predicate that picks each card's chip). A click
+               dims the other cards; it is a client-side view filter, no request. -->
+          <div id="needsMePills" class="needs-pills" role="group" aria-label="Needs me"></div>
           <span id="projectCount" class="badge">0</span>
         </div>
       </div>
@@ -249,7 +261,9 @@
       <!-- Stage board: five columns = pipeline stages; a card per project in its
            current stage. The "Dashboard" page — the "where is everything" glance. -->
       <div id="projectBoard" class="stage-board"></div>
-      <div id="projectTableWrap" class="table-wrap">
+      <!-- Ships HIDDEN: showPage un-hides it on #/projects. Visible by default, it
+           painted under the board for ~2s on every dashboard load. -->
+      <div id="projectTableWrap" class="table-wrap" hidden>
         <table>
           <thead>
             <tr>
@@ -335,20 +349,10 @@
               </div>
             </details>
           </div>
-          <div class="actions autopilot-actions">
-            <span class="actions-label">Autopilot:</span>
-            <button id="startAutopilotBtn" class="primary"><i data-lucide="rocket"></i><span>Stage portals · Autopilot</span></button>
-            <button id="approveSubmitBtn" class="primary" disabled><i data-lucide="check-circle-2"></i><span>Approve &amp; Submit</span></button>
-            <span id="autopilotStatus" class="badge">idle</span>
-          </div>
-          <div id="reviewMismatchBanner" style="display:none;margin:6px 0 2px;padding:8px 12px;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;font-size:12px;color:#664d03">
-            <strong><i data-lucide="alert-triangle" style="width:13px;height:13px;vertical-align:-2px"></i> Portal review mismatch</strong> — the staged portal form may not match the project record. Review before approving.<br>
-            <span id="reviewMismatchList" class="mono" style="font-size:12px"></span>
-          </div>
-          <div id="gapFillBanner" style="display:none;margin:6px 0 2px;padding:8px 12px;background:#fde2e1;border:1px solid #f1948a;border-radius:6px;font-size:12px;color:#7b241c">
-            <strong><i data-lucide="alert-circle" style="width:13px;height:13px;vertical-align:-2px"></i> Required fields left blank</strong> — these portal fields had no project data, so the automation left them blank instead of guessing. Add the data to the project, then re-stage before submitting.<br>
-            <span id="gapFillList" class="mono" style="font-size:12px"></span>
-          </div>
+          <!-- The Autopilot buttons and the two staging banners that used to sit here
+               moved DOWN into .detail-rail (below), under the Next-step banner: the head
+               now carries only who/where plus the overflow menu, so it stays one row.
+               Every id is unchanged. -->
           <!-- Button numbers ARE the stage numbers (five-stage scale: 1 QC ·
                2 Build & Validate · 3 Submit · 4 Track · 5 Closeout). They match
                the accordion titles below, the Next-step banner, and the board
@@ -368,7 +372,7 @@
                element wearing the class would never close. This is its own
                class and needs no dismiss handler — it expands in flow. -->
           <details class="detail-more">
-            <summary><i data-lucide="settings-2"></i><span>Advanced / override &amp; tools</span> <span class="detail-more-count">8</span></summary>
+            <summary><i data-lucide="settings-2"></i><span>Advanced / override &amp; tools</span> <span class="detail-more-count">9</span></summary>
             <div class="actions step-actions">
               <span class="actions-label">Advanced / override:</span>
               <button id="runQcBtn" class="secondary"><i data-lucide="shield-check"></i><span>1 · Run QC</span></button>
@@ -382,9 +386,10 @@
               <button id="runHistoricalBtn" class="secondary"><i data-lucide="history"></i><span>Historical Check</span></button>
               <button id="deleteProjectBtn" class="danger-button"><i data-lucide="trash-2"></i><span>Delete Project</span></button>
             </div>
-          </details>
 
-          <!-- OPERATOR STATUS OVERRIDE.
+          <!-- OPERATOR STATUS OVERRIDE. Lives inside the Advanced / override fold now
+               (it is an override, and on its own row it wrapped the head to three rows
+               at 1280-1440). Same ids, same handler, one click further away.
                Before this existed, a project whose status had drifted could only
                be corrected with SQL against the live database, and `blocked` had
                no writer anywhere in the product. This is that writer, and it is a
@@ -416,13 +421,47 @@
               </div>
             </div>
           </details>
+          </details>
         </div>
 
-        <div id="paymentPanel" hidden></div>
-        <div id="submitBlockerNote" class="submit-blocker-note" hidden></div>
-        <div id="nextStepBanner" class="next-step-banner" hidden></div>
-        <div id="message" class="message" hidden></div>
-        <div id="handoffBanner" class="handoff-banner" hidden></div>
+        <!-- THE STATUS RAIL. What to do next comes FIRST, then the buttons that do it,
+             then whatever contradicts it (blockers, staging banners), then the status
+             facts, and money LAST. It used to be the other way round: a 536px fee panel
+             sat above the Next-step banner, which put "what do I do" at y=816-1163 on a
+             900px screen. At >= 1400px this is a sticky left column beside the stages;
+             below that it simply stacks in this order. #feeSheetPanel is created by
+             dashboard.js directly after #paymentPanel, so it lands at the end of the
+             rail with no JS change. Every id is unchanged. -->
+        <aside class="detail-rail" aria-label="Project status and next step">
+          <div id="nextStepBanner" class="next-step-banner" hidden></div>
+          <div class="actions autopilot-actions">
+            <span class="actions-label">Autopilot:</span>
+            <button id="startAutopilotBtn" class="primary"><i data-lucide="rocket"></i><span>Stage portals · Autopilot</span></button>
+            <button id="approveSubmitBtn" class="primary" disabled><i data-lucide="check-circle-2"></i><span>Approve &amp; Submit</span></button>
+            <span id="autopilotStatus" class="badge">idle</span>
+            <!-- The badge's reason, as TEXT. It used to exist only as the Approve
+                 button's tooltip, so "Blocked" said nothing about why. Written by
+                 applyAutopilotState via textContent. -->
+            <p id="autopilotReason" class="autopilot-reason" hidden></p>
+            <!-- The rail's answer did NOT arrive: both buttons are off (resetAutopilotRail), and
+                 this line says so, so "off with no reason" never reads as a verdict. Written by
+                 refreshAutopilot via textContent; cleared when a state arrives. -->
+            <p id="autopilotLoadFailed" class="autopilot-reason" role="status" hidden></p>
+            <!-- Why Stage portals / Approve & Submit are switched off, as TEXT (the server's
+                 stageDisabledReason / approveDisabledReason, written via textContent). -->
+            <ul id="autopilotOffReasons" class="autopilot-off" hidden></ul>
+          </div>
+          <div id="submitBlockerNote" class="submit-blocker-note" hidden></div>
+          <div id="reviewMismatchBanner" style="display:none;margin:6px 0 2px;padding:8px 12px;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;font-size:12px;color:#664d03">
+            <strong><i data-lucide="alert-triangle" style="width:13px;height:13px;vertical-align:-2px"></i> Portal review mismatch</strong> — the staged portal form may not match the project record. Review before approving.<br>
+            <span id="reviewMismatchList" class="mono" style="font-size:12px"></span>
+          </div>
+          <div id="gapFillBanner" style="display:none;margin:6px 0 2px;padding:8px 12px;background:#fde2e1;border:1px solid #f1948a;border-radius:6px;font-size:12px;color:#7b241c">
+            <strong><i data-lucide="alert-circle" style="width:13px;height:13px;vertical-align:-2px"></i> Required fields left blank</strong> — these portal fields had no project data, so the automation left them blank instead of guessing. Add the data to the project, then re-stage before submitting.<br>
+            <span id="gapFillList" class="mono" style="font-size:12px"></span>
+          </div>
+          <div id="message" class="message" hidden></div>
+          <div id="handoffBanner" class="handoff-banner" hidden></div>
 
         <section class="summary-grid">
           <!-- The sub-stage chip starts hidden AND empty, and dashboard.js only
@@ -435,6 +474,14 @@
           <div class="metric"><span>System</span><strong id="metricSystem"></strong></div>
           <div class="metric"><span>Permit/NEM</span><strong id="metricPermit"></strong></div>
         </section>
+          <div id="paymentPanel" hidden></div>
+        </aside>
+
+        <!-- The stage column. A wrapper only so the >= 1400px grid has exactly two
+             cells in its second row (rail | stages); every stage query in dashboard.js
+             is document-wide (.stage-accordion[data-stage-index]), so nothing binds to
+             the accordions being direct children of #detailView. -->
+        <div class="detail-main">
 
         <!-- Pipeline stepper: completed stages collapse with a check (✓), the current
              stage is expanded, future stages are locked. The stage is computed
@@ -492,15 +539,10 @@
               <p class="muted" style="font-size:12px;margin:4px 0 0">Tip: select multiple files at once to attach several checklist docs in one go.</p>
               <p class="muted" style="font-size:12px;margin:4px 0 0">Submittable documents must be PDFs — portals only accept PDFs and we can't read sheets out of a CAD file. Upload a .dwg/.dxf/.rvt as <strong>CAD source drawing</strong> to keep it on the project for reference; it is stored but never submitted and never counts as the plan set.</p>
             </section>
-            <section class="columns">
-              <div class="panel">
-                <div class="section-head">
-                  <h3>QC Results</h3>
-                  <span id="qcCounts" class="badge">0</span>
-                </div>
-                <div id="qcResults" class="stack"></div>
-              </div>
-              <div class="panel">
+            <!-- Human Review and QC Results used to be a side-by-side pair, and the pair
+                 was 92-97% blank on one side (a 2,700px QC list beside an 87px empty
+                 review queue). Stacked now, the act-on-it queue first. Ids unchanged. -->
+              <section class="panel">
                 <div class="section-head">
                   <h3>Human Review</h3>
                   <span id="reviewCounts" class="badge">0</span>
@@ -522,8 +564,14 @@
                   <div id="autofillSpecsStatus" class="muted autofill-status"></div>
                 </div>
                 <div id="reviewItems" class="stack"></div>
-              </div>
-            </section>
+              </section>
+              <section class="panel">
+                <div class="section-head">
+                  <h3>QC Results</h3>
+                  <span id="qcCounts" class="badge">0</span>
+                </div>
+                <div id="qcResults" class="stack"></div>
+              </section>
           </div>
         </details>
 
@@ -534,39 +582,16 @@
             <span class="stage-pill"></span>
           </summary>
           <div class="stage-body">
+            <!-- REGROUPED. The two .columns pairs here put a 1,900-3,100px panel beside
+                 a ~150px one (91-97% of the short side blank). The two SHORT status
+                 panels now share a row; the two long ones are full width. Ids unchanged. -->
             <section class="columns">
-              <div class="panel">
-                <div class="section-head">
-                  <h3>AHJ Application Docs</h3>
-                  <button id="openAppDocsBtn" class="secondary"><i data-lucide="external-link"></i><span>Open Print Packet</span></button>
-                </div>
-                <div id="applicationDocs" class="stack"></div>
-              </div>
               <div class="panel workflow-panel">
                 <div class="section-head">
                   <h3>Submission Workflow</h3>
                   <span id="workflowStatus" class="badge">not run</span>
                 </div>
                 <div id="workflowSteps" class="stack"></div>
-              </div>
-            </section>
-            <section class="panel">
-              <div class="section-head">
-                <h3>AHJ Reviewer Gate</h3>
-                <div class="actions">
-                  <span id="reviewerCounts" class="badge">not run</span>
-                  <button id="openReviewerPacketBtn" class="secondary"><i data-lucide="external-link"></i><span>Open Correction Packet</span></button>
-                </div>
-              </div>
-              <div id="reviewerGate" class="stack"></div>
-            </section>
-            <section class="columns">
-              <div class="panel">
-                <div class="section-head">
-                  <h3>Historical Failure Check</h3>
-                  <span id="historicalCounts" class="badge">not run</span>
-                </div>
-                <div id="historicalFailures" class="stack"></div>
               </div>
               <div class="panel">
                 <div class="section-head">
@@ -578,6 +603,30 @@
                 </div>
                 <div id="liveReadiness" class="stack"></div>
               </div>
+            </section>
+            <section class="panel">
+              <div class="section-head">
+                <h3>AHJ Application Docs</h3>
+                <button id="openAppDocsBtn" class="secondary"><i data-lucide="external-link"></i><span>Open Print Packet</span></button>
+              </div>
+              <div id="applicationDocs" class="stack"></div>
+            </section>
+            <section class="panel">
+              <div class="section-head">
+                <h3>AHJ Reviewer Gate</h3>
+                <div class="actions">
+                  <span id="reviewerCounts" class="badge">not run</span>
+                  <button id="openReviewerPacketBtn" class="secondary"><i data-lucide="external-link"></i><span>Open Correction Packet</span></button>
+                </div>
+              </div>
+              <div id="reviewerGate" class="stack"></div>
+            </section>
+            <section class="panel">
+              <div class="section-head">
+                <h3>Historical Failure Check</h3>
+                <span id="historicalCounts" class="badge">not run</span>
+              </div>
+              <div id="historicalFailures" class="stack"></div>
             </section>
           </div>
         </details>
@@ -735,21 +784,32 @@
               </details>
             </section>
 
-            <section class="columns">
-              <div class="panel">
-                <div class="section-head">
-                  <h3>Corrections</h3>
-                  <button id="addCorrectionBtn" class="secondary"><i data-lucide="plus"></i><span>Add</span></button>
-                </div>
-                <textarea id="correctionText" placeholder="Paste correction, deficiency, rejection, or reviewer comment text here."></textarea>
-                <div id="corrections" class="stack"></div>
+            <!-- CORRECTIONS: its own full-width section (it was a 137px panel beside a
+                 1,300-3,600px Portal Runs list). applyStageState MOVES this node to the top
+                 of 4 · Track when a Track-stage project has a correction, and back to the
+                 #correctionsPanelHome marker otherwise — moved, never re-rendered, so its
+                 ids and listeners survive. -->
+            <span id="correctionsPanelHome" hidden></span>
+            <section class="panel corrections-panel" id="correctionsPanel">
+              <div class="section-head">
+                <h3>Corrections</h3>
+                <button id="addCorrectionBtn" class="secondary"><i data-lucide="plus"></i><span>Add</span></button>
               </div>
-              <div class="panel">
+              <div class="corrections-entry">
+                <textarea id="correctionText" placeholder="Paste correction, deficiency, rejection, or reviewer comment text here."></textarea>
+              </div>
+              <div id="corrections" class="stack"></div>
+            </section>
+            <section class="panel portal-runs-panel">
                 <div class="section-head">
                   <h3>Portal Runs</h3>
                   <span class="badge">supervised</span>
                 </div>
-                <div id="portalRuns" class="stack"></div>
+                <!-- The run a person must act on (awaiting submit / paused) renders PINNED
+                     here, with Capture Confirmation directly under it; every other run is
+                     folded below with its counts. Static order, so the form node is never
+                     re-created (its submit listener is bound once, by id). -->
+                <div id="portalRunsPinned" class="stack"></div>
                 <form id="confirmationForm" class="confirmation" hidden>
                   <label>Application number<input id="applicationNumber" /></label>
                   <label>Permit number<input id="permitNumber" /></label>
@@ -758,7 +818,7 @@
                   <label>Notes<textarea id="confirmationNotes"></textarea></label>
                   <button class="primary" type="submit"><i data-lucide="clipboard-check"></i><span>Capture Confirmation</span></button>
                 </form>
-              </div>
+                <div id="portalRuns" class="stack"></div>
             </section>
           </div>
         </details>
@@ -800,6 +860,11 @@
                 <label>Permit number<input id="permitTrackingNumber" /></label>
                 <label>Check every N days<input id="permitCheckFrequencyDays" type="number" min="1" value="7" /></label>
               </div>
+              <!-- WHICH FILING the pasted text is about. Shown only with 2+ active filings; options
+                   are written by renderPermitMonitor (esc()'d), read by recordPermitStatus. -->
+              <label id="permitStatusTargetLabel" class="permit-status-target" hidden>Filing this status is about
+                <select id="permitStatusTarget"></select>
+              </label>
               <textarea id="permitStatusText" placeholder="Paste AHJ/portal/email status text here: corrections, deficiency, reviewed, approved, ready for issue, fees due, issued, etc."></textarea>
               <div class="actions permit-actions">
                 <button id="recordPermitStatusBtn" class="primary"><i data-lucide="scan-search"></i><span>Classify Status</span></button>
@@ -839,6 +904,7 @@
             <div id="auditLog" class="stack compact"></div>
           </div>
         </details>
+        </div>
 
         <!-- Team artifacts hidden for solo operation. Kept in the DOM (with their
              element IDs) so their render fns/handlers never error; restore by

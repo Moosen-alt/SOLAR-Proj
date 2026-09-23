@@ -61,6 +61,7 @@ import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, review
 import { renderReviewerReportHtml } from "./reviewerEngine";
 import { REVIEW_PACKS } from "./reviewPacks";
 import { getAutopilotState, maybeResumeAutopilot, runAutopilotApproval } from "./autopilot";
+import { computeNextStep } from "./nextStep";
 import {
   addCommunication,
   createCustomer,
@@ -1309,6 +1310,12 @@ app.get("/api/projects/:id/installer-actions", (req, res) => {
 
 app.get("/api/projects/:id/submit-gate", (req, res) => {
   res.json(getSubmitGateReport(db, req.params.id));
+});
+
+// THE NEXT STEP — one answer to "what is needed next, and from whom" (backend/src/nextStep.ts).
+// Read-only. Under /api/projects/:id, so it inherits the project scope guard (out-of-scope 404).
+app.get("/api/projects/:id/next-step", (req, res) => {
+  res.json({ nextStep: computeNextStep(db, String(req.params.id)) });
 });
 
 app.post("/api/projects/:id/ops-plan/sync", (req, res) => {

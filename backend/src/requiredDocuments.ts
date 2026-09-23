@@ -38,7 +38,7 @@ import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { projectDocsByType } from "./projectDocuments";
 import { uploadedSubmissionDocuments } from "./submissionDocuments";
-import { filledFormsByDocType, applicationKindForPath } from "./ahjForms";
+import { filledFormsByDocType, applicationKindForPath, loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
@@ -675,6 +675,82 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     missingBlocking: presence.filter((p) => !p.present && p.blocking),
     missingAdvisory: presence.filter((p) => !p.present && !p.blocking),
   };
+}
+
+/**
+ * THE MISSING ROWS THE STAGING-TIME FILL PRODUCES — the forward half of present()'s
+ * "filled form" answer, asked BEFORE the fill has run.
+ *
+ * prepareSubmission fills before it counts: on a permit-side track it runs
+ * prepareOfficialDocuments -> buildFilledFormsForProject, and only THEN reads this module's
+ * inventory for its 409. A read taken before that (the Stage portals button, Approve) saw
+ * a checklist whose template was on file but not yet filled as "missing", and disabled
+ * staging that would have succeeded — telling the operator to attach a form the system
+ * fills itself (29cd57b5, 8f4ca8dd: "Solar prescriptive checklist, filled").
+ *
+ * The answer is present() itself — the same alias-aware "is this row satisfied by a filled
+ * form" test documentInventory uses — run against the forms the fill WILL write instead of
+ * the ones already on disk. What the fill will write is read off the fill's own gates, not
+ * a restatement of them:
+ *   - nothing on an unconfirmed path (prepareOfficialDocuments returns before filling);
+ *   - loadStoredTemplates, the list buildFilledFormsForProject iterates (it already drops a
+ *     blank with no usable field map);
+ *   - formAllowedForPath with the STORED kind, the fill loop's own path gate;
+ *   - the row's form_type, the key filledApplicationForms gives a tmpl-* fill, narrowed to
+ *     APPLICATION_DOC_TYPES exactly as documentInventory narrows filled forms.
+ * Built-in registry forms are NOT counted: their name -> docType mapping lives inline in
+ * filledApplicationForms, and a second copy of it here is how the two would drift. Leaving
+ * them out errs toward the old answer (held), never toward an enabled button.
+ *
+ * What this cannot see: a stored blank whose fill THROWS (a broken AcroForm). The fill
+ * outcome is not persisted anywhere readable, and pdf-lib only fails once it parses the
+ * bytes. prepareSubmission's post-fill inventory check still refuses such a stage, in words.
+ *
+ * GENERATED documents (materializeGeneratedDocs) are deliberately absent: documentInventory
+ * never reads them, so they cannot satisfy prepareSubmission's check either.
+ */
+export function missingFilledAtStaging(db: AppDb, project: ProjectRecord, missing: DocPresence[]): Set<DocPresence> {
+  const out = new Set<DocPresence>();
+  if (!missing.some((d) => [d.docType, ...(d.altDocTypes || [])].some((k) => APPLICATION_DOC_TYPES.has(k)))) return out;
+  const permitPath = resolvePermitPath(project).path;
+  if (permitPath === "unknown") return out;
+  const willFill: Record<string, string> = {};
+  const stored = loadStoredTemplates(db, project.ahj, project.state);
+  if (stored.length) {
+    const formType = new Map(db.query<{ id: string; form_type: string }>("SELECT id, form_type FROM ahj_form_templates").map((r) => [String(r.id), String(r.form_type || "permit_application")]));
+    for (const t of stored) {
+      if (!formAllowedForPath(t.def.formName, permitPath, t.applicationKind)) continue;
+      const docType = formType.get(t.templateId) ?? "";
+      if (APPLICATION_DOC_TYPES.has(docType) && !willFill[docType]) willFill[docType] = t.def.formName;
+    }
+  }
+  for (const d of missing) {
+    if (present(d, project, {}, {}, willFill).present) out.add(d);
+  }
+  return out;
+}
+
+/**
+ * WHAT THE OPERATOR STILL OWES BEFORE STAGING — the one answer to "which required document is
+ * missing", read by the submit gate's document check (getSubmitGateReport) AND by the per-track
+ * Stage / Approve scoping (gateBlockersForTracks).
+ *
+ * Two readers used to answer it with two predicates: the buttons dropped the rows the
+ * staging-time fill produces, the gate did not — so nextStep said "The submit gate is blocked:
+ * attach … Solar prescriptive checklist, filled" and the autopilot phase read BLOCKED beside an
+ * ENABLED Stage portals (29cd57b5, e6b3afde). `owed` is inventory.missingBlocking minus those
+ * rows; `filledAtStaging` is what was held out, so a panel can still name it instead of letting
+ * it vanish.
+ *
+ * Only a PERMIT-lane row is ever held out: the fill runs on permit-side tracks only, and every
+ * application-family row (the only kind missingFilledAtStaging can clear) is permit-lane — the
+ * lane test pins that instead of trusting it. A row a person must supply (a PE letter, a plan
+ * sheet, a NEM spec) is always owed.
+ */
+export function owedMissingDocuments(db: AppDb, project: ProjectRecord, inventory: DocumentInventory): { owed: DocPresence[]; filledAtStaging: DocPresence[] } {
+  const produced = missingFilledAtStaging(db, project, inventory.missingBlocking);
+  const filledAtStaging = inventory.missingBlocking.filter((d) => d.lane === "permit" && produced.has(d));
+  return { owed: inventory.missingBlocking.filter((d) => !filledAtStaging.includes(d)), filledAtStaging };
 }
 
 // ---------------------------------------------------------------------------

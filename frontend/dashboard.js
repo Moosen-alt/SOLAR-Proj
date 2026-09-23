@@ -1,7 +1,15 @@
 const state = {
   projects: [],
+  // The whole board (unfiltered) for the "Needs me" counts; null when it could not be loaded.
+  boardAll: null,
   selectedProjectId: null,
   detail: null,
+  // The server's full next-step answer for the open project (GET /api/projects/:id/next-step,
+  // refreshed by every autopilot state), and which project it belongs to.
+  nextStep: null,
+  nextStepProjectId: null,
+  // The newest autopilot state (canStage / canApprove and their reasons).
+  autopilot: null,
   workflow: null,
   applicationDocs: null,
   filledForms: null,
@@ -28,6 +36,9 @@ const state = {
   // status" on a stale row. Cleared on project switch and after every recorded check — a stale
   // target id would file the next paste against the wrong permit.
   recheckTargetId: null,
+  // "<projectId>|<targetId>" the permit form's fields were last filled from (syncPermitForm);
+  // recordPermitStatus posts the form's numbers only with THAT filing's check.
+  permitFormFor: null,
   // Per-project manual stage open/close overrides so the operator can pin a stage
   // (e.g. Submit) open and have it persist across re-renders and navigation.
   stageOverrides: {},
@@ -465,10 +476,12 @@ async function checkHealth() {
   }
 }
 
+// The Daily Report and Action Queue panels are hidden for solo operation (dashboard.html keeps
+// their DOM so renders never error), so their two endpoints are no longer fetched on every
+// board load and refresh. loadOpsReport/loadOpsActions stay defined; restore the calls here
+// when the panels are un-hidden.
 async function loadProjects() {
   await fetchProjectPage(false);
-  await loadOpsReport();
-  await loadOpsActions();
   await loadKnowledgeBase();
   await loadPortalRecipes();
   await loadAhjForms();
@@ -500,8 +513,6 @@ async function loadProjects() {
 
 async function refreshProjectListOnly() {
   await fetchProjectPage(false);
-  await loadOpsReport();
-  await loadOpsActions();
   await loadKnowledgeBase();
   await loadEmailTracker();
 }
@@ -1126,22 +1137,150 @@ function renderProjectTable() {
   });
 }
 
+// WHAT EACH BOARD CARD NEEDS — the SERVER's answer, rendered. Every list row carries
+// `nextStep` (backend/src/nextStep.ts, the same rule table as the project page's banner and
+// GET /api/projects/:id/next-step), so the card chip, the "Needs me" pills and the banner
+// are one predicate. This table only says how each answer LOOKS: its chip label and tone,
+// and which pill it is counted under. The pills are a PARTITION of the keys — every project
+// is counted under exactly one pill, the same one its chip names — so nothing can vanish
+// from the pills or be counted twice. backend/test/submitSeam.test.ts checks every
+// NextStepKey in shared/src/types.ts has a row here.
+//
+// `count` pulls the number out of the server's own headline ("Confirm 4 portal status
+// reading(s)…"), so the chip's count is the server's count, never a second client tally.
+const NEXT_STEP_CHIP = {
+  operator_blocked: { pill: "to_fix", tone: "danger", label: "Blocked" },
+  correction_overdue: { pill: "corrections", tone: "danger", label: "Correction overdue" },
+  portal_paused: { pill: "to_fix", tone: "warning", label: "Portal paused" },
+  automation_running: { pill: "waiting", tone: "neutral", label: "Staging running" },
+  staging_failed: { pill: "staging_failed", tone: "danger", label: "Staging failed" },
+  qc_not_run: { pill: "to_fix", tone: "warning", label: "Run QC" },
+  qc_failed: { pill: "to_fix", tone: "danger", label: "QC failed", count: (n) => `${n} QC fail` },
+  qc_review_pending: { pill: "to_fix", tone: "warning", label: "QC to review", count: (n) => `${n} to review` },
+  gate_blocked: { pill: "to_fix", tone: "danger", label: "Gate blocked" },
+  gap_fill_missing: { pill: "to_fix", tone: "warning", label: "Fields missing", count: (n) => `${n} field(s) missing` },
+  resubmit_awaiting_me: { pill: "your_submit", tone: "warning", label: "Your resubmit" },
+  staged_awaiting_submit: { pill: "your_submit", tone: "warning", label: "Your submit" },
+  approved_awaiting_filing: { pill: "your_submit", tone: "warning", label: "Approved — file it" },
+  fee_due: { pill: "to_fix", tone: "warning", label: "Fee due" },
+  correction_open: { pill: "corrections", tone: "neutral", label: "Correction open" },
+  payment_due: { pill: "ready", tone: "warning", label: "Payment due" },
+  ready_to_stage: { pill: "ready", tone: "neutral", label: "Ready to stage" },
+  filing_untracked: { pill: "to_fix", tone: "warning", label: "Not tracked" },
+  portal_readings: { pill: "to_fix", tone: "warning", label: "Readings to confirm", count: (n) => `${n} reading(s) to confirm` },
+  waiting_on_agency: { pill: "waiting", tone: "neutral", label: "Waiting on agency" },
+  handoff_ready: { pill: "to_fix", tone: "neutral", label: "Hand off" },
+  done: { pill: "done", tone: "neutral", label: "Done" },
+  archived: { pill: "done", tone: "neutral", label: "Archived" },
+  unknown: { pill: "to_fix", tone: "warning", label: "Check it" },
+};
+// Does the red "N things must clear before this can be submitted" note tell the truth? Pure;
+// lifted by backend/test/submitSeam.test.ts.
+//  - Only when the gate is actually blocking (not canPrepareSubmission, with blockers).
+//  - Not once the gate itself says submitted/tracking AND the project is in Track/Closeout (the
+//    gate reports submitted_tracking as soon as ANY submission is filed, so a pre-Track project
+//    with one track filed would otherwise lose real blockers for the tracks it has not filed).
+//  - Not when the server's FULL next-step answer (gateChecked) says every required filing is
+//    made (its `allFiled` flag, derived in nextStep.ts): the gate has nothing left to hold back.
+//    (ec5c36d3: NEM and both permits on file, status still ready_to_stage, so the stage index
+//    alone could not tell.) The flag is the server's, never re-derived here from `key`.
+function showSubmitBlockerNote(gate, stageIdx, nextStep) {
+  const blockers = ((gate && gate.checks) || []).filter((check) => check.status === "blocker");
+  if (!gate || gate.canPrepareSubmission || !blockers.length) return false;
+  if (gate.decision === "submitted_tracking" && stageIdx >= 3) return false;
+  if (nextStep && nextStep.gateChecked && nextStep.allFiled === true) return false;
+  return true;
+}
+const WAITING_ON_LABEL = { designer: "Waiting on designer", customer: "Waiting on customer", ahj: "Waiting on AHJ", utility: "Waiting on utility" };
+
+// The chip for one server answer (compact or full). Pure: backend/test/submitSeam.test.ts
+// lifts it with NEXT_STEP_CHIP / WAITING_ON_LABEL in scope.
+function nextStepChip(step) {
+  if (!step || !step.key) return null;
+  const row = NEXT_STEP_CHIP[step.key] || NEXT_STEP_CHIP.unknown;
+  const first = /\b(\d+)\b/.exec(String(step.headline || ""));
+  let label = row.count && first ? row.count(Number(first[1])) : row.label;
+  // Someone else has the ball: say who, never a bare "Correction open".
+  if (step.who && WAITING_ON_LABEL[step.who] && step.urgency === "waiting") label = WAITING_ON_LABEL[step.who];
+  const tone = step.urgency === "overdue" ? "danger" : row.tone;
+  // Provisional = a list-tier answer the submit gate could still pre-empt. The server says so
+  // itself (`gateCanOverrule`, from where its rule table actually stopped); no key list here.
+  const provisional = step.gateCanOverrule === true;
+  const title = `${String(step.headline || "")}${provisional ? " — board check: the project page also runs the submit gate, which can come first." : ""}`;
+  return { key: row.pill, stepKey: step.key, tone, label, title, provisional };
+}
+
+// Returns null when nothing is shown. Server answer first; the old client guess below is only
+// the fallback for a row that arrived without one (an older server, or the list tier erroring
+// for that row) — never blank, never a second opinion beside the server's.
+function boardAttention(p) {
+  if (!p) return null;
+  const a = p.nextStep && p.nextStep.key ? nextStepChip(p.nextStep) : legacyBoardAttention(p);
+  // A DRAFT STAGED ON A PORTAL IS ALSO "YOUR SUBMIT", whatever comes first. The server's one
+  // answer names the most urgent thing (a failed sibling track, fields to add…), but a project
+  // with a staged application waiting on a person must not vanish from the "Your submit" count
+  // — that is where the operator looks for drafts to file. It counts there too, and the card
+  // says so ("Draft staged"). WHETHER a draft is staged is the server's `hasStagedDraft` (an
+  // unfiled track's awaiting run, or a reopened form) — not the project status, which stays
+  // awaiting_human_submit after the staged track is filed. A row with no server answer takes
+  // the legacy guess below, which files awaiting_human_submit under Your submit directly.
+  if (a && a.key !== "your_submit" && p.nextStep && p.nextStep.hasStagedDraft === true) a.alsoSubmit = true;
+  return a;
+}
+function legacyBoardAttention(p) {
+  const overdue = Number(p.overdueCorrections) || 0;
+  const pending = Number(p.pendingReviewCount) || 0;
+  const corrections = Number(p.correctionCount) || 0;
+  if (overdue > 0) return { key: "corrections", stepKey: "correction_overdue", tone: "danger", label: "Correction overdue" };
+  if (p.isBlocked) return { key: "to_fix", stepKey: "operator_blocked", tone: "danger", label: "Blocked" };
+  if (nextStepFor(p.status, { stageDetail: p.stageDetail, latestRunStatus: p.latestPortalStatus }).key === "staging_failed") {
+    return { key: "staging_failed", stepKey: "staging_failed", tone: "danger", label: "Staging failed" };
+  }
+  if (Number(p.qcFailCount) > 0) return { key: "to_fix", stepKey: "qc_failed", tone: "danger", label: `${Number(p.qcFailCount)} QC fail` };
+  if (p.status === "awaiting_human_submit") return { key: "your_submit", stepKey: "staged_awaiting_submit", tone: "warning", label: "Your submit" };
+  if (p.status === "awaiting_human_resubmit") return { key: "your_submit", stepKey: "resubmit_awaiting_me", tone: "warning", label: "Your resubmit" };
+  if (pending > 0) return { key: "to_fix", stepKey: "qc_review_pending", tone: "warning", label: `${pending} to review` };
+  if (corrections > 0) return { key: "corrections", stepKey: "correction_open", tone: "neutral", label: "Correction open" };
+  // The old guess had nothing to ask of the operator: no chip, counted under Waiting.
+  return { key: "waiting", stepKey: null, tone: null, label: "" };
+}
+
+// Pending human-review items the card's chip does not already count. The list payload's
+// pendingReviewCount is EVERY pending item (QC checks, portal readings, advisory notices); the
+// project page splits the same total across its stage pills (reviewItemBuckets), so the two
+// always add up. Shown only when the chip's own number does not already say it.
+function boardReviewCountChip(p, attn) {
+  const n = Number(p && p.pendingReviewCount) || 0;
+  if (!n) return "";
+  const chipN = attn && /^(\d+) /.exec(attn.label || "");
+  if (chipN && Number(chipN[1]) === n && (attn.stepKey === "qc_review_pending" || attn.stepKey === "portal_readings")) return "";
+  return `<span class="chip" title="${esc(`${n} pending review item(s) in total — QC checks, portal readings and advisory notices; the project page shows where each one is`)}">${esc(`${n} review item${n === 1 ? "" : "s"}`)}</span>`;
+}
+
 // Stage board: five columns; each project as a compact card in its current stage.
 function boardCardHtml(p, userMap) {
   const assignee = p.assignedUserId ? userMap[p.assignedUserId] : null;
   const permit = p.readyForIssue ? "ready for issue" : (p.latestPermitLabel || (p.latestPermitOutcome ? p.latestPermitOutcome.replaceAll("_", " ") : ""));
   const nem = p.nemApproved ? "NEM approved" : (p.latestNemLabel || (p.latestNemOutcome ? p.latestNemOutcome.replaceAll("_", " ") : ""));
   const active = p.id === state.selectedProjectId ? " active" : "";
-  return `<button type="button" class="board-card${active}${p.isBlocked ? " is-blocked" : ""}" data-board-pid="${p.id}">
+  const attn = boardAttention(p);
+  const attnClass = attn && attn.label && (attn.tone === "danger" || attn.tone === "warning") ? ` is-attention is-attention-${attn.tone}` : "";
+  // The lane chips are unchanged until the server's lane summary uses the latest check
+  // (server change S4); the date they are "as of" rides on the title so an old reading
+  // cannot pass for a current one.
+  const permitAsOf = p.latestPermitCheckedAt ? ` title="as of ${esc(fmtDate(p.latestPermitCheckedAt, true))}"` : "";
+  const nemAsOf = p.latestNemCheckedAt ? ` title="as of ${esc(fmtDate(p.latestNemCheckedAt, true))}"` : "";
+  return `<button type="button" class="board-card${active}${p.isBlocked ? " is-blocked" : ""}${attnClass}" data-board-pid="${esc(p.id)}" data-attn="${esc(attn ? attn.key : "")}" data-attn-also="${esc(attn && attn.alsoSubmit ? "your_submit" : "")}">
     <span class="board-card-name">${esc(p.homeownerName || "Unnamed")}</span>
-    <span class="board-card-addr muted">${esc(p.projectAddress || "No address")}</span>
+    ${attn && attn.label ? `<span class="board-card-action"><span class="chip ${esc(attn.tone)}${attn.provisional ? " is-provisional" : ""}" title="${esc(attn.title || "")}">${esc(attn.label)}</span></span>` : ""}
+    <span class="board-card-addr muted" title="${esc(p.projectAddress || "No address")}">${esc(p.projectAddress || "No address")}</span>
     <span class="board-card-meta">
-      ${permit ? `<span class="chip">Permit: ${esc(permit)}</span>` : ""}
-      ${nem ? `<span class="chip">Interconnection: ${esc(nem)}</span>` : ""}
-      ${p.qcFailCount ? `<span class="chip danger">${p.qcFailCount} QC</span>` : ""}
-      ${p.isBlocked ? `<span class="chip danger">blocked</span>` : ""}
+      ${permit ? `<span class="chip"${permitAsOf}>Permit: ${esc(permit)}</span>` : ""}
+      ${nem ? `<span class="chip"${nemAsOf}>Interconnection: ${esc(nem)}</span>` : ""}
+      ${attn && attn.alsoSubmit ? `<span class="chip" title="A staged application waits on a person's review and submit; the chip above comes first.">Draft staged</span>` : ""}
+      ${boardReviewCountChip(p, attn)}
     </span>
-    ${assignee ? `<span class="board-card-assignee"><span class="dot" style="background:${esc(assignee.color)}"></span>${esc(assignee.name)}</span>` : ""}
+    ${assignee ? `<span class="board-card-assignee" title="${esc(`Assigned to ${assignee.name || "a team member"}`)}"><span class="dot" style="background:${esc(assignee.color)}"></span><span class="board-card-assignee-label">Assigned:</span> ${esc(assignee.name || "—")}</span>` : ""}
   </button>`;
 }
 
@@ -1162,20 +1301,106 @@ function renderBoard() {
     const key = groups.has(p.stageKey) ? p.stageKey : "qc";
     groups.get(key).push(p);
   }
+  // A SEARCH THAT MATCHES NOTHING says so once, across the board, with a way out — not five
+  // columns each saying "No projects here", which reads as "the pipeline is empty".
+  const query = (projectFilterState.search || "").trim();
+  if (!state.projects.length && query) {
+    if (el.style && el.style.removeProperty) el.style.removeProperty("--board-cols");
+    el.innerHTML = `<div class="board-nomatch"><span>No projects match “${esc(query)}”</span>
+      <button type="button" class="secondary" data-clear-search="1">Clear search</button></div>`;
+    el.querySelector("[data-clear-search]")?.addEventListener("click", () => {
+      const s = $("projectSearch");
+      if (s) s.value = "";
+      projectFilterState.search = "";
+      projectFilterState.offset = 0;
+      reloadProjects();
+    });
+    renderNeedsMePills();
+    return;
+  }
+  // EMPTY COLUMNS SHRINK to narrow rails; occupied ones share the width. Column order and
+  // data-stage are unchanged (keyboard j/k walks .board-card). Set as a custom property so
+  // the phone layout's own column rule (styles.css, max-width:700px) still wins there.
+  const template = PROJECT_STAGES.map((s) => ((groups.get(s.key) || []).length ? "minmax(240px, 1fr)" : "minmax(110px, .3fr)")).join(" ");
+  if (el.style && el.style.setProperty) el.style.setProperty("--board-cols", template);
   el.innerHTML = PROJECT_STAGES.map((stage) => {
     const items = groups.get(stage.key) || [];
-    return `<div class="stage-col" data-stage="${stage.key}">
-      <div class="stage-col-head"><span>${esc(stage.label)}</span><span class="badge">${items.length}</span></div>
-      <p class="stage-col-help">${esc(STAGE_HELP[stage.key] || "")}</p>
+    // The per-column help sentence is the head's title now (it cost a line per column).
+    return `<div class="stage-col${items.length ? "" : " is-empty"}" data-stage="${stage.key}">
+      <div class="stage-col-head" title="${esc(STAGE_HELP[stage.key] || "")}"><span>${esc(stage.label)}</span><span class="badge">${items.length}</span></div>
       <div class="stage-col-body">
-        ${items.length ? items.map((p) => boardCardHtml(p, userMap)).join("") : `<p class="muted board-empty">No projects here</p>`}
+        ${items.length ? items.map((p) => boardCardHtml(p, userMap)).join("") : `<p class="muted board-empty">None here</p>`}
       </div>
     </div>`;
   }).join("");
   el.querySelectorAll("[data-board-pid]").forEach((card) => {
     card.addEventListener("click", () => selectProject(card.dataset.boardPid));
   });
+  renderNeedsMePills();
   if (window.lucide) window.lucide.createIcons();
+}
+
+// "NEEDS ME" PILLS — counts of what the cards say, from the same boardAttention() that picks
+// each card's chip (one predicate: the server's nextStep). The pills PARTITION the board —
+// every project is counted under exactly one, the pill its chip belongs to — and they count
+// the WHOLE board (state.boardAll: every project, not only the search/filter page on screen).
+// Clicking one dims every card that does not carry that need; "All" (or clicking it again)
+// clears. A view filter only: no request, no state saved.
+const NEEDS_ME_PILLS = [
+  { key: "your_submit", label: "Your submit" },
+  { key: "staging_failed", label: "Staging failed" },
+  { key: "to_fix", label: "To fix" },
+  { key: "corrections", label: "Corrections" },
+  { key: "ready", label: "Ready to stage" },
+  { key: "waiting", label: "Waiting" },
+  { key: "done", label: "Done", hideWhenZero: true },
+];
+// Pure: the pill counts for a list of rows. Lifted by backend/test/submitSeam.test.ts.
+function needsMeCounts(rows) {
+  const counts = Object.fromEntries(NEEDS_ME_PILLS.map((p) => [p.key, 0]));
+  let overdue = 0;
+  for (const p of rows || []) {
+    const a = boardAttention(p);
+    const key = a && Object.prototype.hasOwnProperty.call(counts, a.key) ? a.key : "to_fix";
+    counts[key] += 1;
+    if (a && a.alsoSubmit) counts.your_submit += 1;
+    if (a && a.stepKey === "correction_overdue") overdue += 1;
+  }
+  return { counts, overdue, total: (rows || []).length };
+}
+function renderNeedsMePills() {
+  const wrap = $("needsMePills");
+  if (!wrap) return;
+  const whole = Array.isArray(state.boardAll);
+  const { counts, overdue, total } = needsMeCounts(whole ? state.boardAll : state.projects);
+  const active = state.boardAttnFilter || "";
+  const pills = NEEDS_ME_PILLS.filter((pill) => !(pill.hideWhenZero && !counts[pill.key])).map((pill) => {
+    const n = counts[pill.key];
+    const od = pill.key === "corrections" ? overdue : 0;
+    const text = `${pill.label} (${n}${od ? `, ${od} overdue` : ""})`;
+    return `<button type="button" class="needs-pill${n ? "" : " is-zero"}${active === pill.key ? " is-active" : ""}" data-attn-pill="${esc(pill.key)}" data-attn="${esc(pill.key)}" aria-pressed="${active === pill.key}">${esc(text)}</button>`;
+  });
+  // Say what the counts cover: the whole board, or (if that fetch failed) only this page.
+  const scope = `${whole ? `Counts cover the whole board (${total} project${total === 1 ? "" : "s"}), whatever the filters show.` : "Counts cover only the projects on this page."} Each project counts under the pill its chip names; one with a staged draft also counts under Your submit.`;
+  wrap.title = scope;
+  wrap.innerHTML = `<button type="button" class="needs-pill${active ? "" : " is-active"}" data-attn-pill="" aria-pressed="${!active}">All</button>${pills.join("")}`;
+  wrap.querySelectorAll("[data-attn-pill]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.attnPill || "";
+      state.boardAttnFilter = key && state.boardAttnFilter !== key ? key : "";
+      renderNeedsMePills();
+    });
+  });
+  applyBoardAttnFilter();
+}
+function applyBoardAttnFilter() {
+  const board = $("projectBoard");
+  if (!board || !board.querySelectorAll) return;
+  const pill = NEEDS_ME_PILLS.find((p) => p.key === state.boardAttnFilter);
+  board.classList.toggle("is-attn-filtered", !!pill);
+  board.querySelectorAll(".board-card").forEach((card) => {
+    card.classList.toggle("is-dimmed", !!pill && pill.key !== card.dataset.attn && pill.key !== card.dataset.attnAlso);
+  });
 }
 
 // ----- Page router -----
@@ -1473,6 +1698,13 @@ function renderKnowledgeBase() {
 }
 
 async function selectProject(projectId) {
+  // A DIFFERENT project must never inherit the last one's answers: a failed next-step fetch on
+  // project B would otherwise leave project A's banner (and its Stage/Approve verdicts) up.
+  if (state.nextStepProjectId !== projectId) { state.nextStep = null; state.nextStepProjectId = null; }
+  // Same for the autopilot rail: its buttons, badge, reasons and banners are PAINTED state, so
+  // nulling state.autopilot alone left project A's enabled Stage / reasons on screen for B
+  // until (and, if B's fetch failed, after) B's own answer arrived.
+  if (state.selectedProjectId !== projectId || (state.autopilot && state.autopilot.projectId !== projectId)) resetAutopilotRail();
   state.selectedProjectId = projectId;
   state.detail = await api(`/api/projects/${projectId}`);
   state.workflow = null;
@@ -1518,8 +1750,23 @@ async function selectProject(projectId) {
     loadSubmittalTracks(), loadPaymentQuotes(), loadFeeSheet(), loadPortalQuestions(),
     loadStageResults(),
     loadStaleReadings(),
+    loadNextStep(projectId),
   ]);
   renderDetail();
+}
+
+// THE ONE ANSWER to "what does this project need next, and from whom" — computed on the
+// server (backend/src/nextStep.ts, full tier: includes the submit gate). The banner renders
+// it; if this fetch fails the banner falls back to the board's compact answer, then to the
+// old status table (renderNextStep) — never blank, never another project's answer.
+async function loadNextStep(projectId) {
+  try {
+    const { nextStep } = await api(`/api/projects/${projectId}/next-step`);
+    if (nextStep && nextStep.key && state.selectedProjectId === projectId) {
+      state.nextStep = nextStep;
+      state.nextStepProjectId = projectId;
+    }
+  } catch { /* the banner falls back — see renderNextStep */ }
 }
 
 function renderHandoffBanner() {
@@ -1907,9 +2154,51 @@ function renderFeeSheetPanel() {
   // Keyed on totalConfidence — computed by the backend BESIDE the sum — so the
   // marker cannot drift from the arithmetic it qualifies.
   const totalEstimated = !anyUnknown && sheet.totalConfidence === "estimated";
+  // FOLDED TO ONE LINE, AND THE LINE CARRIES EVERY QUALIFIER. The panel was 486-537px on every
+  // project and sat above the Next step. Closed, the summary still says, per track, the amount
+  // AND its confidence ("provisional", "estimate", "UNKNOWN"), how many fees are still unknown,
+  // and the human-checkout rule — an unknown must never read as a final number because the
+  // detail is one click away. Plain text built from sheet fields, escaped.
+  const foldMoney = (v) => (v == null ? "UNKNOWN" : `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+  const FOLD_QUALIFIER = { actual: "actual", verified: "verified", seeded: "provisional", estimated: "estimate", unknown: "unknown" };
+  const trackParts = sheet.lines.map((line) => {
+    const name = line.track === "nem" ? "NEM" : "Permit";
+    const q = FOLD_QUALIFIER[line.confidence] || "unknown";
+    if (line.feeUsd == null) return `${name} UNKNOWN`;
+    if (line.paymentMethod === "none") return `${name}: no fee expected (${q})`;
+    return `${name} ${line.confidence === "estimated" ? "≈ " : ""}${foldMoney(line.feeUsd)} (${q})`;
+  });
+  const unknownCount = (sheet.unknowns || []).length;
+  const totalPart = anyUnknown
+    ? "total UNKNOWN — not final"
+    : `total ${totalEstimated ? "≈ " : ""}${foldMoney(sheet.totalUsd)}${totalEstimated ? " (estimate)" : provisional.length ? " (provisional)" : ""}`;
+  const foldParts = [...trackParts, totalPart];
+  if (unknownCount) foldParts.push(`${unknownCount} still unknown`);
+  if ((sheet.outOfPortalPayments || []).length) foldParts.push(`${sheet.outOfPortalPayments.length} not payable in a portal`);
+  // Recorded receipts larger than the total is a contradiction the operator must see without
+  // opening anything (7ec74634 showed "Paid so far" above the "Project total" with no word).
+  const paidSum = receiptsSummable ? receipts.reduce((s, r) => s + Number(r.totalPaidUsd), 0) : null;
+  const paidExceeds = paidSum != null && sheet.totalUsd != null && paidSum > Number(sheet.totalUsd) + 0.005;
+  // Open by default only where money is actually the next thing: Submit/Track stage AND a
+  // per-submission charge still unpaid. An operator's own open/close survives re-renders.
+  const quotes = state.paymentQuotes ? [state.paymentQuotes.permit, state.paymentQuotes.nem].filter(Boolean) : [];
+  const unpaidDue = quotes.some((q) => q.required && q.payment?.status !== "paid" && q.payment?.status !== "waived");
+  const stageIdx = state.detail && Number.isInteger(state.detail.stageIndex) ? state.detail.stageIndex : 0;
+  const prevFold = panel.querySelector("details.fee-fold");
+  const pid = state.selectedProjectId || "";
+  const openFold = prevFold && panel.dataset.projectId === pid ? prevFold.open : (stageIdx >= 2 && unpaidDue);
+  panel.dataset.projectId = pid;
   panel.hidden = false;
   panel.innerHTML = `
-    <section class="panel kx-callout-panel ${anyUnknown || provisional.length ? "is-warn" : ""}">
+    <section class="panel kx-callout-panel fee-panel ${anyUnknown || provisional.length ? "is-warn" : ""}">
+      <details class="fee-fold"${openFold ? " open" : ""}>
+      <summary class="fee-fold-summary">
+        <span class="fee-fold-title">Fees</span>
+        <span class="fee-fold-line">${esc(foldParts.join(" · "))}</span>
+        <span class="fee-fold-rule">Checkout is always done by a person.</span>
+        ${paidExceeds ? `<span class="fee-fold-alert">Recorded payments ${esc(foldMoney(paidSum))} exceed the ${esc(foldMoney(sheet.totalUsd))} total: re-check the portal fee screen.</span>` : ""}
+      </summary>
+      <div class="fee-fold-body">
       <div class="item-title" style="margin-bottom:6px">
         <span>💵 Fees — permit and NEM</span>
         ${statusBadge(anyUnknown ? "incomplete" : provisional.length ? "provisional" : "known")}
@@ -1921,7 +2210,7 @@ function renderFeeSheetPanel() {
         The portal's own fee checkout is always completed by a person — never by automation.
       </p>
       ${sheet.lines.map(renderFeeSheetLine).join("")}
-      <table style="font-size:12px;margin:4px 0;border-collapse:collapse">
+      <table class="fee-totals" style="font-size:12px;margin:4px 0;border-collapse:collapse;max-width:360px;width:100%">
         <tr><td style="padding:1px 14px 1px 0">Jurisdiction fees (permit + NEM)</td><td style="text-align:right"><strong>${feeMoney(sheet.jurisdictionFeesUsd)}</strong></td></tr>
         <tr><td style="padding:1px 14px 1px 0">Our service fees${sheet.billingRequired ? " (per submission)" : ""}</td>
             <td style="text-align:right"><strong>${feeMoney(sheet.serviceFeesUsd)}</strong></td></tr>
@@ -1954,6 +2243,8 @@ function renderFeeSheetPanel() {
           <summary><strong>${esc(String(sheet.outOfPortalPayments.length))} charge${sheet.outOfPortalPayments.length === 1 ? "" : "s"} NOT PAYABLE in any portal — a person must pay ${sheet.outOfPortalPayments.length === 1 ? "it" : "them"} another way</strong></summary>
           <div class="provenance-body"><ul style="margin:2px 0;padding-left:18px">${sheet.outOfPortalPayments.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></div>
         </details>` : ""}
+      </div>
+      </details>
     </section>`;
 }
 
@@ -2023,7 +2314,21 @@ const NEXT_STEPS = {
   blocked: { tone: "warn", step: "Blocked", text: "This project is blocked — see the red items below. Clear the blocker, then continue the steps." },
 };
 
-function nextStepFor(status) {
+// ONE QUESTION, ONE PREDICATE: "did staging fail?" is answered HERE and nowhere else. The
+// Next-step banner (renderNextStep) and the board card chip (boardAttention) both call this,
+// so the board can never say "Staging failed" while the project page says "Staged and ready".
+// `ctx.latestRunStatus` is the newest portal run's status (the list payload's
+// latestPortalStatus, or the detail's newest portalRuns row). A failed run only counts while
+// the project is still in the staging part of the pipeline — a failed re-check on an issued
+// permit is not a staging failure. The recorded sub-stage `staging_failed` always counts.
+// Self-contained on purpose: backend/test/submitSeam.test.ts lifts this function out of the
+// file and runs it with only esc/humanize/NEXT_STEPS in scope.
+function nextStepFor(status, ctx) {
+  const c = ctx || {};
+  const stagingStatuses = ["ready_to_stage", "awaiting_human_submit", "ready_to_resubmit", "awaiting_human_resubmit"];
+  if (c.stageDetail === "staging_failed" || (c.latestRunStatus === "failed" && stagingStatuses.includes(status))) {
+    return { key: "staging_failed", tone: "warn", step: "Stage 3 · Staging failed", text: "<strong>The last staging run did not finish — nothing is staged.</strong> Check the portal run below before approving." };
+  }
   return NEXT_STEPS[status] || { tone: "info", step: "Stage 1", text: "Click <strong>1 · Run QC</strong> to check the parsed data for missing or wrong info." };
 }
 
@@ -2067,20 +2372,220 @@ function approvedAwaitingFilingGuide(project) {
   };
 }
 
+// THE STAGE LABEL IS THE PROJECT'S REAL STAGE. The old table hard-coded "Stage 3" into
+// statuses, so a Build project whose last staging run failed read "Stage 3 · Staging failed"
+// above an open "2 · Build & Validate" accordion. The label now comes from the stage index
+// the server computed for the project (the same one the accordions use), never from a table.
+function stageLabelFor(idx) {
+  const stage = Number.isInteger(idx) ? PROJECT_STAGES[idx] : null;
+  return stage ? stage.label : "";
+}
+
+const NEXT_STEP_WHO = {
+  me: "You",
+  designer: "The designer",
+  customer: "The customer",
+  ahj: "The AHJ",
+  utility: "The utility",
+  nobody: "Nobody — nothing is asked",
+};
+// Answers that describe something wrong (amber), as opposed to routine next work (neutral).
+const NEXT_STEP_PROBLEM_KEYS = ["operator_blocked", "portal_paused", "staging_failed", "qc_failed", "gate_blocked", "gap_fill_missing", "unknown"];
+
+// The banner for ONE server answer. Pure: returns { className, html }. Every server string
+// (headline, why, labels) is esc()'d — they are prose, never markup. `exists(id)` says whether
+// a fix target / button is on this page; a missing one is simply not linked.
+function nextStepBannerHtml(step, ctx) {
+  const c = ctx || {};
+  const stageIdx = Number.isInteger(c.stageIndex) ? c.stageIndex : step.stageIndex;
+  const stageLabel = stageLabelFor(stageIdx) || "Next step";
+  const exists = typeof c.exists === "function" ? c.exists : () => false;
+  const tone = step.urgency === "overdue" ? " is-danger"
+    : step.urgency === "done" ? " is-done"
+      : NEXT_STEP_PROBLEM_KEYS.includes(step.key) || (step.urgency === "today" && step.who === "me" && step.key !== "ready_to_stage") ? " is-warn" : "";
+  const who = NEXT_STEP_WHO[step.who] || "You";
+  const since = step.since ? String(step.since).slice(0, 10) : "";
+  const whys = Array.isArray(step.why) ? step.why.slice(0, 3) : [];
+  const button = step.button && step.button.id && exists(step.button.id) ? step.button : null;
+  const provisional = !step.gateChecked
+    ? `<span class="next-step-provisional">${esc(c.full === false
+      ? "Quick answer from the board — the full check did not load, so the submit gate is not included."
+      : "The submit gate is not included in this answer.")}</span>`
+    : "";
+  const html = `<span class="next-step-step">${esc(stageLabel)}</span>`
+    + `<span class="next-step-text">`
+    + `<span class="next-step-who">Who acts: <strong>${esc(who)}</strong>${since ? ` · since ${esc(since)}` : ""}</span>`
+    + `<strong class="next-step-headline">${esc(step.headline || "")}</strong>`
+    + (whys.length
+      ? `<ul class="next-step-whys">${whys.map((w) => `<li>${esc(w.text || "")}${w.fixTarget && exists(w.fixTarget)
+        ? ` <button type="button" class="linklike next-step-fix" data-fix-target="${esc(w.fixTarget)}">Show</button>` : ""}</li>`).join("")}</ul>`
+      : "")
+    + (button ? `<button type="button" class="secondary next-step-go" data-next-button="${esc(button.id)}">${esc(button.label)} ↓</button>` : "")
+    + provisional
+    + `</span>`;
+  return { className: `next-step-banner is-server${tone}`, html };
+}
+
+// Which answer the banner shows, best first: the server's FULL answer for this project; the
+// board's compact answer for it (same rule table, submit gate not included); else null, and
+// the caller falls back to the old status table. Never another project's answer.
+function currentNextStep() {
+  const pid = state.selectedProjectId || (state.detail && state.detail.project && state.detail.project.id);
+  if (state.nextStep && state.nextStepProjectId === pid) return { step: state.nextStep, full: true };
+  const rows = [].concat(state.projects || [], state.boardAll || []);
+  const row = rows.find((p) => p && p.id === pid && p.nextStep && p.nextStep.key);
+  if (row) {
+    const n = row.nextStep;
+    return {
+      step: {
+        key: n.key, who: n.who, urgency: n.urgency, headline: n.headline, why: [],
+        button: n.buttonId ? { id: n.buttonId, label: (NEXT_STEP_BUTTON_LABELS[n.buttonId] || "Go") } : null,
+        gateChecked: false, allFiled: n.allFiled === true, gateCanOverrule: n.gateCanOverrule === true, hasStagedDraft: n.hasStagedDraft === true,
+      },
+      full: false,
+    };
+  }
+  return null;
+}
+const NEXT_STEP_BUTTON_LABELS = {
+  applyStatusOverrideBtn: "Change status",
+  runQcBtn: "Run QC",
+  openReviewerPacketBtn: "Open Correction Packet",
+  approveSubmitBtn: "Approve & Submit",
+  startAutopilotBtn: "Stage portals · Autopilot",
+  addPermitTargetBtn: "Add tracking target",
+  copyHandoffPacketBtn: "Copy handoff packet",
+};
+
+// Take the operator TO a control or panel: open every <details> it sits in (stage accordion,
+// Advanced fold, status override), scroll it into view, focus it and flash it. It NEVER
+// clicks anything — the banner is navigation; the real button still asks for itself.
+function revealElement(el) {
+  if (!el) return;
+  let p = el.parentElement;
+  while (p) {
+    if (p.tagName === "DETAILS" && !p.open) {
+      p.open = true;
+      const idx = p.dataset && p.dataset.stageIndex;
+      if (idx !== undefined && state.stageOverrides) {
+        const pid = state.selectedProjectId || "";
+        (state.stageOverrides[pid] ||= {})[Number(idx)] = true;
+      }
+    }
+    p = p.parentElement;
+  }
+  if (el.tagName === "DETAILS") el.open = true;
+  // A TARGET WHOSE CONTENT IS FOLDED: the portal-runs list keeps its history behind a closed
+  // "Earlier runs (N · M failed)" fold, so "Check the portal run" landed on that one closed line.
+  // Open the fold and land on the failed run inside it (the card the why is about), else on
+  // the list itself. renderPortalRuns keeps the fold open across re-renders of this project.
+  let land = el;
+  const fold = typeof el.querySelector === "function" ? el.querySelector("details.runs-fold") : null;
+  if (fold) {
+    if (!fold.open) fold.open = true;
+    land = (typeof fold.querySelector === "function" && fold.querySelector(".item.fail")) || el;
+  }
+  if (typeof land.scrollIntoView === "function") land.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (typeof el.focus === "function") el.focus({ preventScroll: true });
+  land.classList.add("is-flash");
+  setTimeout(() => land.classList.remove("is-flash"), 1600);
+}
+
 function renderNextStep() {
   const banner = $("nextStepBanner");
   if (!banner) return;
   const { project } = state.detail;
   if (!project) { banner.hidden = true; return; }
+  const stageIdx = state.detail.stageIndex;
+
+  // THE SERVER'S ANSWER (backend/src/nextStep.ts) — the same rule table as the board chip.
+  const current = typeof currentNextStep === "function" ? currentNextStep() : null;
+  if (current) {
+    const exists = (id) => Boolean($(id));
+    const { className, html } = nextStepBannerHtml(current.step, { stageIndex: stageIdx, exists, full: current.full });
+    banner.hidden = false;
+    banner.className = className;
+    if (banner.dataset) { banner.dataset.nextKey = current.step.key; banner.dataset.nextSource = current.full ? "server" : "board"; }
+    banner.innerHTML = html;
+    // Mark the ONE button the answer names, everywhere else unmarked; reflect its enabled
+    // state on the banner's shortcut so the banner never offers what the page refuses.
+    if (typeof document !== "undefined" && document.querySelectorAll) {
+      document.querySelectorAll(".is-next-step").forEach((b) => b.classList.remove("is-next-step"));
+    }
+    const go = banner.querySelector("button[data-next-button]");
+    if (go) {
+      const target = $(go.dataset.nextButton);
+      if (target) {
+        target.classList.add("is-next-step");
+        if (target.disabled) {
+          // The answer names a button the page has switched off: say so IN the banner, in the
+          // page's own words, instead of pointing at a control that will not respond.
+          const why = (target.dataset && target.dataset.disabledReason) || target.title || "This action is not available right now.";
+          go.disabled = true;
+          go.title = why;
+          const note = document.createElement("span");
+          note.className = "next-step-provisional next-step-off";
+          note.textContent = `${go.textContent.replace(/\s*↓$/, "")} is switched off: ${why}`;
+          go.insertAdjacentElement("afterend", note);
+        }
+        go.addEventListener("click", () => revealElement(target));
+      }
+    }
+    banner.querySelectorAll("button[data-fix-target]").forEach((b) => {
+      b.addEventListener("click", () => revealElement($(b.dataset.fixTarget)));
+    });
+    return;
+  }
+
+  // FALLBACK — the server answer did not load. The old status table, so the banner is never
+  // blank; its stage label is still the project's REAL stage.
   // The status alone cannot answer this one: an approved-but-unfiled project and a freshly
   // staged one are BOTH `awaiting_human_submit` (correctly — nothing is filed in either case).
   // stage_detail is what separates them.
-  const guide = project.status === "awaiting_human_submit" && project.stageDetail === "approved_awaiting_filing"
+  //
+  // Newest run first by startedAt — the payload happens to arrive newest-first, but the banner
+  // must not depend on that.
+  const runs = (state.detail.portalRuns || []).slice().sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")));
+  let guide = project.status === "awaiting_human_submit" && project.stageDetail === "approved_awaiting_filing"
     ? approvedAwaitingFilingGuide(project)
-    : nextStepFor(project.status);
+    : nextStepFor(project.status, { stageDetail: project.stageDetail, latestRunStatus: runs[0] ? runs[0].status : null });
+  if (guide.key === "staging_failed") {
+    // "Staged and ready" beside a "Staging Failed" chip was the contradiction. Say WHICH
+    // filings failed, and — because "nothing is staged" would be false on a project where one
+    // track did stage — which filing is still waiting on a person's submit.
+    const latestPerTrack = new Map();
+    for (const run of runs) {
+      const k = run.permitType || "portal";
+      if (!latestPerTrack.has(k)) latestPerTrack.set(k, run);
+    }
+    const trackName = (k) => (k === "nem" ? "NEM" : `${humanize(k)} permit`);
+    const failed = [...latestPerTrack].filter(([, r]) => r.status === "failed").map(([k]) => trackName(k));
+    const staged = [...latestPerTrack].filter(([, r]) => r.status === "awaiting_human_submit").map(([k]) => trackName(k));
+    if (failed.length) {
+      guide = {
+        ...guide,
+        text: `<strong>The last staging run did not finish — nothing is staged for ${esc(failed.join(", "))}.</strong>`
+          + (staged.length ? ` ${esc(staged.join(", "))} ${staged.length === 1 ? "is" : "are"} staged and waiting for a person's final submit.` : "")
+          + " Check <strong>Portal Runs</strong> below before approving.",
+      };
+    }
+  }
+  // The table's "Stage N" is a guess from the status; the project's own stage wins. Only the
+  // qualifier after it ("Staging failed", "Your move") is kept.
+  const qualifier = String(guide.step || "").replace(/^Stage \d+(?: · )?/, "");
+  const realStage = stageLabelFor(stageIdx);
+  const stepLabel = realStage ? (qualifier ? `${realStage} · ${qualifier}` : realStage) : (guide.step || "Next step");
+  // The server's own sentence (current_stage) is free prose with many writers and goes stale,
+  // so it is shown ONLY where the status alone cannot explain the state: a failed staging run,
+  // or a project already in Track/Closeout. Escaped — it is plain text, never markup.
+  const showWhy = typeof project.currentStage === "string" && project.currentStage.trim()
+    && (guide.key === "staging_failed" || (Number.isInteger(stageIdx) && stageIdx >= 3));
   banner.hidden = false;
   banner.className = `next-step-banner${guide.tone === "done" ? " is-done" : guide.tone === "warn" ? " is-warn" : ""}`;
-  banner.innerHTML = `<span class="next-step-step">${esc(guide.step)}</span><span class="next-step-text">${guide.text}</span>`;
+  if (banner.dataset) { banner.dataset.nextKey = guide.key || project.status || ""; banner.dataset.nextSource = "fallback"; }
+  banner.innerHTML = `<span class="next-step-step">${esc(stepLabel)}</span><span class="next-step-text">${guide.text}${showWhy
+    ? `<span class="next-step-why" title="${esc(project.currentStage.trim())}">${esc(project.currentStage.trim())}</span>`
+    : ""}</span>`;
   const goCapture = banner.querySelector("button[data-go-capture]");
   if (goCapture) {
     goCapture.addEventListener("click", () => {
@@ -2187,6 +2692,24 @@ async function applyStatusOverride() {
   }
 }
 
+// WHERE A PENDING HUMAN-REVIEW ITEM BELONGS. The same partition the server makes
+// (repository.ts isCriticalReviewItem, which the submit gate and nextStep read): QC work is a
+// pending item that is neither a Track/ops field nor an advisory issue type. The two lists
+// are MIRRORED here because this file cannot import them — backend/test/submitSeam.test.ts
+// fails the moment they drift from repository.ts.
+const NON_QC_REVIEW_FIELDS = ["correction", "permit_status", "prepare_submission", "autopilot"];
+const ADVISORY_REVIEW_ISSUE_TYPES = ["Run triage", "Background job failed"];
+function reviewItemBuckets(items) {
+  const out = { qc: [], reading: [], notice: [] };
+  for (const it of items || []) {
+    if (!it || it.status !== "pending") continue;
+    if (it.fieldName === "permit_status") out.reading.push(it);
+    else if (NON_QC_REVIEW_FIELDS.includes(it.fieldName) || ADVISORY_REVIEW_ISSUE_TYPES.includes(it.issueType || "")) out.notice.push(it);
+    else out.qc.push(it);
+  }
+  return out;
+}
+
 // Apply the pipeline-stepper state to the five stage accordions: completed stages
 // collapse with a check, the current stage opens, future stages lock. Driven by
 // state.detail.stageIndex (computed server-side). A blocked project paints a red
@@ -2240,7 +2763,47 @@ function applyStageState() {
   // usually collapsed "Done" by the time the operator is staging — so it's easy to
   // miss WHY "Prepare Submittal" is greyed out. Surface the count on the QC/Verify
   // stage (even when done) and flag it red so the blocker is discoverable.
-  const pendingReview = (d.humanReviewItems || []).filter((it) => it.status === "pending" && it.fieldName !== "correction");
+  //
+  // NOT EVERY PENDING ITEM IS QC WORK. `permit_status` items are unclassified portal-status
+  // readings (Track work — shown on the Track accordion below), and `prepare_submission` /
+  // `autopilot` items belong to staging. Counting them here turned QC red with "10 to review"
+  // on projects whose permit is already issued. Display only: the server's submit gate still
+  // counts them (server change S6), so the Submit Gate panel may disagree until that lands.
+  // EVERY PENDING ITEM IS COUNTED SOMEWHERE VISIBLE, and the three counts add up to the board
+  // card's total (pendingReviewCount): QC checks on the QC accordion, portal readings on
+  // Track, and advisory notices (triage tips, background-job notices) on the QC accordion
+  // beside the list that shows them — they do not gate, so they are not "to review" red.
+  const buckets = reviewItemBuckets(d.humanReviewItems || []);
+  const pendingReview = buckets.qc;
+  const portalReadings = buckets.reading;
+  const trackStage = document.querySelector('.stage-accordion[data-stage-index="3"]');
+  setStageExtraPill(trackStage, "readings", portalReadings.length
+    ? `${portalReadings.length} portal reading${portalReadings.length === 1 ? "" : "s"} to confirm` : "", "warning");
+  const qcStageForNotices = document.querySelector('.stage-accordion[data-stage-index="0"]');
+  setStageExtraPill(qcStageForNotices, "notices", buckets.notice.length
+    ? `${buckets.notice.length} notice${buckets.notice.length === 1 ? "" : "s"}` : "", "neutral");
+
+  // CORRECTIONS LIVE WHERE THE PROJECT IS. The Corrections panel sits in 3 · Submit, but a
+  // correction arrives while the project is in 4 · Track — so on a Track project with an open
+  // correction the panel is MOVED (not re-rendered: ids and listeners survive) to the top of
+  // the Track stage, and back to its marker in Submit otherwise.
+  const corrPanel = $("correctionsPanel");
+  const corrHome = $("correctionsPanelHome");
+  const openCorrections = (d.corrections || []).filter((c) => !c.closedAt);
+  const overdueCorrections = openCorrections.filter((c) => c.isOverdue);
+  const trackBody = trackStage ? trackStage.querySelector(".stage-body") : null;
+  if (corrPanel && corrHome && trackBody && typeof corrPanel.insertAdjacentElement === "function") {
+    const wantTrack = active === 3 && openCorrections.length > 0;
+    if (wantTrack && corrPanel.parentElement !== trackBody) {
+      trackBody.insertAdjacentElement("afterbegin", corrPanel);
+    } else if (!wantTrack && corrPanel.previousElementSibling !== corrHome) {
+      corrHome.insertAdjacentElement("afterend", corrPanel);
+    }
+    if (wantTrack && overrides[3] === undefined) trackStage.open = true;
+  }
+  setStageExtraPill(trackStage, "overdue", active >= 3 && overdueCorrections.length
+    ? `Correction overdue${overdueCorrections.length > 1 ? ` (${overdueCorrections.length})` : ""}` : "", "danger");
+
   const qcStage = document.querySelector('.stage-accordion[data-stage-index="0"]');
   if (qcStage) {
     const pill = qcStage.querySelector(".stage-pill");
@@ -2254,6 +2817,25 @@ function applyStageState() {
       qcStage.title = "";
     }
   }
+}
+
+// An extra count pill on a stage accordion's summary (beside its Done/Current pill, which
+// stays untouched). Created on demand, removed when `text` is empty; textContent only.
+function setStageExtraPill(acc, key, text, tone) {
+  if (!acc || typeof acc.querySelector !== "function") return;
+  const summary = acc.querySelector(".stage-summary");
+  if (!summary || typeof summary.querySelector !== "function") return;
+  let pill = summary.querySelector(`.stage-extra-pill[data-extra="${key}"]`);
+  if (!text) { if (pill && pill.remove) pill.remove(); return; }
+  if (!pill) {
+    pill = document.createElement("span");
+    pill.className = `stage-extra-pill is-${tone || "warning"}`;
+    pill.dataset.extra = key;
+    const main = summary.querySelector(".stage-pill");
+    if (main && main.insertAdjacentElement) main.insertAdjacentElement("beforebegin", pill);
+    else summary.appendChild(pill);
+  }
+  pill.textContent = text;
 }
 
 // ----- Record this portal (teach the bot a new AHJ/utility portal) -----
@@ -2848,7 +3430,11 @@ function renderSubmitGate() {
   // collapsed Stage-4 panel they have to hunt for.
   const note = $("submitBlockerNote");
   if (note) {
-    if (!gate.canPrepareSubmission && blockers.length) {
+    // Withheld where it would be false (showSubmitBlockerNote); the same checks stay listed in
+    // the Submit Gate panel below — only the top-of-page alarm is withheld.
+    const stageIdxForNote = state.detail && Number.isInteger(state.detail.stageIndex) ? state.detail.stageIndex : 0;
+    const ns = state.nextStep && state.nextStepProjectId === state.selectedProjectId ? state.nextStep : null;
+    if (showSubmitBlockerNote(gate, stageIdxForNote, ns)) {
       note.hidden = false;
       const hasDocBlocker = blockers.some((b) => b.id === "document-inventory");
       // The site's numbered-step rhythm ("01 / 02 / 03" + an uppercase label)
@@ -3108,7 +3694,7 @@ function trackCardHtml(t) {
       <button type="button" class="secondary" data-track-approve="${esc(t.type)}" title="Hybrid: replay through the final application submit — only runs if you've trusted this portal for auto-submit, otherwise it stages to review. Never pays fees; stops for CAPTCHA/MFA."><i data-lucide="check-check"></i><span>Approve &amp; auto-submit</span></button>
     </div>
     ${recipeBlock}
-    <details class="track-submit"${submitted ? "" : " open"}>
+    <details class="track-submit"${t.status === "staged" ? " open" : ""}>
       <summary>${submitted ? "Update numbers / status link" : "I submitted it → capture #"}</summary>
       <div class="track-submit-form">
         ${fieldsHtml}
@@ -3236,6 +3822,12 @@ async function stageSubmittalTrack(type, btn, autoSubmit = false) {
 // ----- Autopilot: autonomous run to the single human-approval gate -----
 function applyAutopilotState(s) {
   if (!s) return;
+  // A late answer for a project the operator has already left must not paint this one.
+  if (s.projectId && state.selectedProjectId && s.projectId !== state.selectedProjectId) return;
+  state.autopilot = s;
+  // An answer arrived for THIS project: the "did not load" line is no longer true.
+  const loadFailedEl = $("autopilotLoadFailed");
+  if (loadFailedEl) { loadFailedEl.textContent = ""; loadFailedEl.hidden = true; }
   const badge = $("autopilotStatus");
   if (badge) {
     badge.textContent = s.stage || s.phase || "idle";
@@ -3244,11 +3836,65 @@ function applyAutopilotState(s) {
   const approveBtn = $("approveSubmitBtn");
   if (approveBtn) {
     approveBtn.disabled = !s.canApprove;
+    const approveOff = s.canApprove ? "" : (s.approveDisabledReason
+      || (s.blockers && s.blockers.length
+        ? `Blocked: ${s.blockers.map((b) => b.detail).join("; ")}`
+        : "Available once the project is staged to the portal review screen."));
     approveBtn.title = s.canApprove
       ? "Authorize and file. The system completes the portal submit (or you finish it in the portal)."
-      : (s.blockers && s.blockers.length
-          ? `Blocked: ${s.blockers.map((b) => b.detail).join("; ")}`
-          : "Available once the project is staged to the portal review screen.");
+      : approveOff;
+    if (approveBtn.dataset) approveBtn.dataset.disabledReason = approveOff;
+  }
+  // S8 — "Stage portals" is switched off when the server says a run would do nothing useful
+  // (operator block, a run in flight, past Submit, every track already staged or filed), and
+  // the reason is shown as text below. An older server that does not send canStage leaves the
+  // button as it was.
+  const stageBtnGate = $("startAutopilotBtn");
+  if (stageBtnGate && typeof s.canStage === "boolean") {
+    stageBtnGate.disabled = !s.canStage;
+    const stageOff = s.canStage ? "" : (s.stageDisabledReason || "Staging is not available right now.");
+    stageBtnGate.title = s.canStage ? "Stage every required filing to its portal review screen. Automation never clicks the final submit." : stageOff;
+    if (stageBtnGate.dataset) stageBtnGate.dataset.disabledReason = stageOff;
+  }
+  const offEl = $("autopilotOffReasons");
+  if (offEl && typeof offEl.replaceChildren === "function") {
+    const lines = [];
+    if (typeof s.canStage === "boolean" && !s.canStage) lines.push(`Stage portals is off: ${s.stageDisabledReason || "staging is not available right now."}`);
+    if (!s.canApprove && s.approveDisabledReason) lines.push(`Approve & Submit is off: ${s.approveDisabledReason}`);
+    offEl.replaceChildren(...lines.map((line) => { const li = document.createElement("li"); li.textContent = line; return li; }));
+    offEl.hidden = lines.length === 0;
+  }
+  // The autopilot state carries the FULL next-step answer too; keep the banner current on
+  // every poll (same project only — checked above).
+  if (s.nextStep && s.nextStep.key && (!s.projectId || s.projectId === state.selectedProjectId)) {
+    state.nextStep = s.nextStep;
+    state.nextStepProjectId = s.projectId || state.selectedProjectId;
+  }
+  if (state.detail && state.detail.project) safeRender("nextStep", renderNextStep);
+  // THE BADGE'S REASON, AS VISIBLE TEXT. "Blocked" with its cause only in a tooltip read as a
+  // bare verdict — and the banner beside it said the gate "runs automatically". The reason is
+  // written with textContent (blocker details and messages are server prose, never markup).
+  // Display only: which buttons are enabled is decided above, unchanged.
+  const reasonEl = $("autopilotReason");
+  if (reasonEl) {
+    const blockers = Array.isArray(s.blockers) ? s.blockers : [];
+    let reason = "";
+    if (!s.canApprove && blockers.length) {
+      reason = `Why ${String(s.stage || s.phase || "blocked").toLowerCase()}: ${blockers.map((b) => b.detail).filter(Boolean).join("; ")}`;
+    } else if (s.phase === "failed") {
+      reason = `Autopilot failed: ${s.message || "no reason was recorded"}`;
+    }
+    reasonEl.textContent = reason;
+    reasonEl.hidden = !reason;
+  }
+  // ONE PRIMARY ACTION. Once a project is in Track/Closeout, re-staging is not the next step,
+  // so "Stage portals" drops to a secondary button. Class only — whether it can be clicked is
+  // unchanged (that is server change S8).
+  const stageBtn = $("startAutopilotBtn");
+  if (stageBtn && state.detail && Number.isInteger(state.detail.stageIndex)) {
+    const demote = state.detail.stageIndex >= 3;
+    stageBtn.classList.toggle("secondary", demote);
+    stageBtn.classList.toggle("primary", !demote);
   }
   // Show review-screen mismatch warning when the portal form doesn't match the project.
   const banner = $("reviewMismatchBanner");
@@ -3286,12 +3932,62 @@ function applyAutopilotState(s) {
   }
 }
 
+// THE RAIL WITH NO ANSWER. Every element applyAutopilotState paints, put back to neutral:
+// both buttons OFF with no reason, the badge "idle", the reason lines and the two banners
+// hidden and empty. Used when the rail's answer is not this project's — on switching project
+// (the last project's canStage/canApprove must not carry over) and when this project's state
+// fails to load. OFF, not the HTML default: an unknown must not read as "Stage is available".
+function resetAutopilotRail() {
+  state.autopilot = null;
+  for (const id of ["startAutopilotBtn", "approveSubmitBtn"]) {
+    const btn = $(id);
+    if (!btn) continue;
+    btn.disabled = true;
+    btn.title = "";
+    if (btn.dataset) btn.dataset.disabledReason = "";
+  }
+  const badge = $("autopilotStatus");
+  if (badge) { badge.textContent = "idle"; badge.title = ""; }
+  const offEl = $("autopilotOffReasons");
+  if (offEl) {
+    if (typeof offEl.replaceChildren === "function") offEl.replaceChildren();
+    offEl.hidden = true;
+  }
+  const reasonEl = $("autopilotReason");
+  if (reasonEl) { reasonEl.textContent = ""; reasonEl.hidden = true; }
+  for (const id of ["reviewMismatchBanner", "gapFillBanner"]) {
+    const el = $(id);
+    if (el && el.style) el.style.display = "none";
+  }
+  for (const id of ["reviewMismatchList", "gapFillList"]) {
+    const el = $(id);
+    if (el) el.textContent = "";
+  }
+  // Also neutral: a "did not load" line is about the project it was written for, never the next.
+  const loadFailedEl = $("autopilotLoadFailed");
+  if (loadFailedEl) { loadFailedEl.textContent = ""; loadFailedEl.hidden = true; }
+}
+
+// The rail went neutral because THIS project's state did not arrive. Off-with-no-reason read as a
+// verdict ("nothing to stage"); this line says it is an unknown. There is no retry loop — the next
+// refresh (or a project re-open) asks again, and a state that arrives clears the line.
+const AUTOPILOT_LOAD_FAILED_TEXT = "Autopilot state did not load — refresh the page";
+
 async function refreshAutopilot() {
-  if (!state.selectedProjectId) return;
+  const pid = state.selectedProjectId;
+  if (!pid) return;
   try {
-    const { state: s } = await api(`/api/projects/${state.selectedProjectId}/autopilot`);
+    const { state: s } = await api(`/api/projects/${pid}/autopilot`);
     applyAutopilotState(s);
-  } catch { /* non-fatal — leave the badge as-is */ }
+  } catch {
+    // No answer for this project: never leave another project's (or a stale) verdict up. A
+    // late failure must not wipe a state that arrived after it, nor a project since left.
+    if (state.selectedProjectId === pid && !(state.autopilot && state.autopilot.projectId === pid)) {
+      resetAutopilotRail();
+      const loadFailedEl = $("autopilotLoadFailed");
+      if (loadFailedEl) { loadFailedEl.textContent = AUTOPILOT_LOAD_FAILED_TEXT; loadFailedEl.hidden = false; }
+    }
+  }
 }
 
 async function pollAutopilot(tries = 12) {
@@ -3323,7 +4019,9 @@ async function startAutopilot() {
   } catch (err) {
     showMessage(err.message || "Could not start autopilot.", "error");
   } finally {
-    btn.disabled = false;
+    // Re-enable only what the server allows: canStage is re-applied from the newest state
+    // (applyAutopilotState ran during the poll), not blindly switched back on.
+    btn.disabled = Boolean(state.autopilot && state.autopilot.canStage === false);
   }
 }
 
@@ -3345,7 +4043,7 @@ async function approveAndSubmit() {
       : "Approval recorded — NOT submitted. Open the portal, click its submit yourself, then use Capture Confirmation. The banner at the top of this project keeps the instruction.", "warning");
   } catch (err) {
     showMessage(err.message || "Could not approve.", "error");
-    btn.disabled = false;
+    btn.disabled = !(state.autopilot && state.autopilot.canApprove);
   }
 }
 
@@ -3946,25 +4644,37 @@ function renderHistoricalFailures() {
     <article class="item ${rejectionCauses.some((cause) => cause.count > 0) ? "warning" : "info"}">
       <div class="item-title"><span>Top rejection causes</span>${statusBadge(rejectionCauses.length)}</div>
       ${rejectionCauses.length ? rejectionCauses.map((cause) => `
-        <div class="check-row ${esc(cause.severity || "callout")}">
-          <strong>${esc(cause.title)}</strong> ${statusBadge(cause.severity || "callout")}
+        <details class="check-row cause-row ${esc(cause.severity || "callout")}">
+          <summary><strong>${esc(cause.title)}</strong> ${statusBadge(cause.severity || "callout")}
+            <span class="muted cause-count">${cause.count ? `${esc(String(cause.count))} prior record(s)` : "baseline rule"}</span></summary>
           <p>${cause.count ? `<strong>${cause.count} prior record(s)</strong>` : "Baseline rule (no learned records yet)"}${cause.rootCause ? ` · ${esc(cause.rootCause)}` : ""}. ${esc(cause.requiredAction)}</p>
           ${cause.sample ? `<p class="muted evidence-sample"><strong>Evidence:</strong> "${esc(String(cause.sample).slice(0, 280))}${String(cause.sample).length > 280 ? "…" : ""}"</p>` : `<p class="muted">No source excerpt — derived from a deterministic baseline rule.</p>`}
-        </div>
+        </details>
       `).join("") : `<p class="muted">No rejection causes on record for this AHJ/utility yet.</p>`}
     </article>
     <article class="item ${missing ? "blocker" : review ? "warning" : "pass"}">
       <div class="item-title"><span>Generated checklist</span>${statusBadge(`${missing} missing / ${review} review`)}</div>
-      ${checklist.length ? checklist.map((item) => {
-        const label = item.status === "external" ? "Provided by installer/homeowner" : humanize(item.status);
-        return `
+      ${(() => {
+        // Missing and needs-review rows are the act-on-it rows and stay open. Every other row
+        // (present / external / …) is a settled claim and folds behind its COUNT.
+        if (!checklist.length) return `<p class="muted">No checklist items generated.</p>`;
+        const row = (item) => {
+          const label = item.status === "external" ? "Provided by installer/homeowner" : humanize(item.status);
+          return `
         <div class="check-row ${esc(item.status)}">
           <strong>${esc(label.toUpperCase())}: ${esc(item.title)}</strong>
           <p>${esc(item.why)} ${esc(item.action)}</p>
           <p class="muted">${esc((item.evidence || []).join(", "))}</p>
-        </div>
-      `;
-      }).join("") : `<p class="muted">No checklist items generated.</p>`}
+        </div>`;
+        };
+        const open = checklist.filter((item) => item.status === "missing" || item.status === "needs_review");
+        const settled = checklist.filter((item) => item.status !== "missing" && item.status !== "needs_review");
+        return open.map(row).join("") + (settled.length ? `
+        <details class="checklist-fold">
+          <summary>${esc(String(settled.length))} other item${settled.length === 1 ? "" : "s"} (${esc(Object.entries(settled.reduce((acc, it) => { const k = it.status === "external" ? "external" : String(it.status || "unknown"); acc[k] = (acc[k] || 0) + 1; return acc; }, {})).map(([k, n]) => `${n} ${humanize(k).toLowerCase()}`).join(", "))})</summary>
+          ${settled.map(row).join("")}
+        </details>` : "");
+      })()}
     </article>
   `;
 }
@@ -4148,28 +4858,36 @@ function renderReviewerGate() {
   // separate block — that was duplicating the city-style correction comments.
 }
 
+// The permit form describes ONE filing: the one the "Filing this status is about" selector names
+// (permitStatusTargetId — the same answer recordPermitStatus posts against). Its application and
+// permit numbers come from THAT filing only, blank when it has none: the old fallback to "the
+// first submission carrying a number" put another filing's permit number in the form, and
+// recordPermitStatus posted it with the first filing's check (the server keeps a posted number
+// over the target's own). `state.permitFormFor` records which project + filing the fields were
+// filled from, so recordPermitStatus knows whether they belong to the filing it posts against.
 function syncPermitForm() {
-  const target = state.detail.permitCheckTargets?.[0];
+  renderPermitStatusTargetPicker(); // the selector's answer must exist before it is read
   const project = state.detail.project;
-  // Only populate a field when it's empty — re-renders (review save, background
-  // email scan, etc.) must not overwrite a tracking/application number the
-  // operator is in the middle of typing.
+  const targets = state.detail.permitCheckTargets || [];
+  const targetId = permitStatusTargetId();
+  const target = targets.find((t) => t.id === targetId) || null;
+  // A re-render for the SAME project + filing only fills empty fields — a background refresh
+  // (review save, email scan) must not overwrite a number the operator is typing. A different
+  // project or filing replaces them: what is left in the fields is about something else.
+  const formFor = `${project?.id || ""}|${target?.id || ""}`;
+  const fresh = state.permitFormFor !== formFor;
+  state.permitFormFor = formFor;
   const fill = (elId, value) => {
     const el = $(elId);
-    if (el && !el.value) el.value = value || "";
+    if (el && (fresh || !el.value)) el.value = value || "";
   };
-  fill("permitJurisdiction", target?.jurisdiction || project.ahj);
+  fill("permitJurisdiction", target?.jurisdiction || project?.ahj);
   fill("permitPortalName", target?.portalName);
   fill("permitPortalUrl", target?.portalUrl);
-  fill("permitApplicationNumber", target?.applicationNumber || latestSubmissionValue("applicationNumber"));
-  fill("permitTrackingNumber", target?.permitNumber || latestSubmissionValue("permitNumber"));
+  fill("permitApplicationNumber", target?.applicationNumber);
+  fill("permitTrackingNumber", target?.permitNumber);
   const freq = $("permitCheckFrequencyDays");
-  if (freq && !freq.value) freq.value = target?.checkFrequencyDays || 7;
-}
-
-function latestSubmissionValue(key) {
-  const submission = state.detail.submissions?.find((item) => item[key]);
-  return submission?.[key] || "";
+  if (freq && (fresh || !freq.value)) freq.value = target?.checkFrequencyDays || 7;
 }
 
 function renderQc() {
@@ -4689,12 +5407,12 @@ function renderApplicationDocs() {
       <p class="muted">From the knowledge base${learned.portalName ? ` · Portal: ${esc(learned.portalName)}` : ""}${learned.correctionCount ? ` · ${learned.correctionCount} correction(s) learned` : ""}.</p>
       <p><strong>Required docs (${learnedDocs.length}):</strong> ${esc(learnedDocs.join(" · "))}</p>
     </article>` : ""}
-    ${(pkg.docs || []).map((doc) => `
+    <div class="app-doc-grid">${(pkg.docs || []).map((doc) => `
       <article class="item ${doc.required ? "info" : "pass"}">
         <div class="item-title"><span>${esc(doc.title)}</span>${statusBadge(doc.required ? "required" : "optional")}</div>
         <p class="muted">${esc(doc.fileName)} | ${esc(doc.documentType)}</p>
       </article>
-    `).join("")}
+    `).join("")}</div>
   `;
   bindFilledFormControls();
   document.querySelectorAll("[data-goto-permit-path]").forEach((b) => b.addEventListener("click", gotoPermitPathOverride));
@@ -4922,13 +5640,59 @@ function handleStaleRecheckClick(event) {
   const box = $("permitStatusText");
   if (box) { box.focus(); box.scrollIntoView({ behavior: "smooth", block: "center" }); }
   state.recheckTargetId = targetId;
+  // The filing selector shows the same answer the POST will use.
+  const picker = $("permitStatusTarget");
+  if (picker) picker.value = targetId;
+  syncPermitForm(); // the number fields follow the filing now selected
   showMessage("Paste what the portal says for this filing, then click Classify status — it will be recorded against that filing.", "info");
+}
+
+// One filing, named the way the operator knows it: which permit + its application number.
+function permitTargetOptionLabel(target) {
+  const type = target.targetType === "nem" || target.permitType === "nem" ? "Interconnection (NEM)"
+    : target.permitType === "building" ? "Building"
+    : target.permitType === "electrical" ? "Electrical"
+    : target.permitType === "combo" ? "Building + electrical (combo)"
+    : "Permit";
+  const number = target.applicationNumber || target.permitNumber;
+  const where = target.portalName || target.jurisdiction;
+  return number ? `${type} · ${number}` : `${type} · ${where ? `${where}, ` : ""}no application number yet`;
+}
+
+// WHICH FILING the pasted status text is about. Without it, a paste on a project with a building
+// AND an electrical (or a permit AND a NEM) filing was recorded against whichever target happened
+// to be first. Hidden with 0 or 1 active filing — there is nothing to choose.
+function renderPermitStatusTargetPicker() {
+  const picker = $("permitStatusTarget");
+  const label = $("permitStatusTargetLabel");
+  if (!picker) return;
+  const active = (state.detail?.permitCheckTargets || []).filter((t) => t && t.active !== false);
+  const ids = active.map((t) => t.id);
+  const previous = picker.value;
+  picker.innerHTML = active.map((t) => `<option value="${esc(t.id)}">${esc(permitTargetOptionLabel(t))}</option>`).join("");
+  // The operator's current pick first (a background re-render must not undo it; the stale panel
+  // writes its target straight into the picker), then the stale panel's target, then the first.
+  picker.value = ids.includes(previous) ? previous
+    : ids.includes(state.recheckTargetId) ? state.recheckTargetId
+    : (ids[0] || "");
+  if (label) label.hidden = active.length <= 1;
+}
+
+// The target a pasted status is recorded against. An explicit id (the stale panel's fetch) wins;
+// then the selector (only when it names a filing this project still has), then the stale panel's
+// manual pick, then the first filing.
+function permitStatusTargetId(explicitId) {
+  const targets = state.detail?.permitCheckTargets || [];
+  const picker = $("permitStatusTarget");
+  const picked = picker && picker.value && targets.some((t) => t.id === picker.value) ? picker.value : null;
+  return explicitId || picked || state.recheckTargetId || targets[0]?.id || null;
 }
 
 function renderPermitMonitor() {
   const targets = state.detail.permitCheckTargets || [];
   const checks = state.detail.permitStatusChecks || [];
   const emailMatches = state.detail.emailProjectMatches || [];
+  renderPermitStatusTargetPicker();
 
   $("permitTargets").innerHTML = targets.length ? targets.map((target) => {
     const platformLabel = target.portalPlatform && target.portalPlatform !== "unknown" && target.portalPlatform !== "public_url"
@@ -5058,6 +5822,32 @@ function correctionTriageHtml(correction, triage) {
       ${triage.itemStatus && triage.itemStatus !== "pending" ? `<p class="muted" style="font-size:11px;margin-top:6px">Triage already ${esc(triage.itemStatus)} — re-triage the correction to propose new changes.</p>` : ""}`;
 }
 
+// WHAT A CORRECTION REOPEN ACTUALLY DID, in the server's own words. The success toast used to
+// be a bare "<n> document(s) staged" — a reopen that attached 0 of 3 revised documents read
+// as a success, because the runner's reasons (driftWarnings) and its message were dropped.
+// Pure: { text, kind } for showMessage (which writes textContent). Lifted by submitSeam.test.ts.
+function reopenResultMessage(result) {
+  const r = result || {};
+  const drift = Array.isArray(r.driftWarnings) ? r.driftWarnings.map((w) => String(w)).filter(Boolean) : [];
+  const driftText = drift.length
+    ? ` ${drift.length} problem(s) while attaching — check these on the portal before resubmitting: ${drift.slice(0, 5).join(" | ")}${drift.length > 5 ? ` (+${drift.length - 5} more)` : ""}.`
+    : "";
+  if (r.ok) {
+    const head = String(r.message || "").trim() || `Reopened "${r.reopenedForm || "the correction form"}".`;
+    const docs = ` ${Number(r.attachedDocs) || 0} document(s) attached through the attach gate.`;
+    const next = r.browserLeftOpen
+      ? " The portal browser is open at the reopened application: verify everything, then click the portal's resubmit yourself."
+      : " Open the portal, verify the reopened application, and resubmit it yourself.";
+    return { text: `${head}${docs}${driftText}${next}`, kind: drift.length ? "warning" : "info" };
+  }
+  if (r.needsHuman) {
+    const offered = (r.offeredForms || [])
+      .concat((r.candidates || []).map((c) => `${c.applicationNumber} (${c.targetType}${c.portalName ? `, ${c.portalName}` : ""})`));
+    return { text: `${r.message || "The correction reopen needs a person."}${offered.length ? ` — on offer: ${offered.join(" | ")}` : ""}${driftText}`, kind: "warning" };
+  }
+  return { text: `${r.message || "Correction reopen did not complete."}${driftText}`, kind: "error" };
+}
+
 function renderCorrections() {
   const corrections = state.detail.corrections || [];
   const projectStatus = (state.detail.project || {}).status || "";
@@ -5137,15 +5927,8 @@ function renderCorrections() {
       try {
         const result = await api(`/api/corrections/${encodeURIComponent(button.dataset.reopenCorrection)}/reopen-portal`, { method: "POST", body: "{}" });
         await selectProject(state.selectedProjectId);
-        if (result.ok) {
-          showMessage(`Reopened "${result.reopenedForm || "the correction form"}" — ${result.attachedDocs || 0} document(s) staged through the attach gate. ${result.browserLeftOpen ? "The portal browser is open at the reopened application: verify everything, then click the portal's resubmit yourself." : "Open the portal, verify the reopened application, and resubmit it yourself."}`);
-        } else if (result.needsHuman) {
-          const offered = (result.offeredForms || [])
-            .concat((result.candidates || []).map((c) => `${c.applicationNumber} (${c.targetType}${c.portalName ? `, ${c.portalName}` : ""})`));
-          showMessage(`${result.message}${offered.length ? ` — on offer: ${offered.join(" | ")}` : ""}`, "warning");
-        } else {
-          showMessage(result.message || "Correction reopen did not complete.", "error");
-        }
+        const reopenMsg = reopenResultMessage(result);
+        showMessage(reopenMsg.text, reopenMsg.kind);
       } catch (err) {
         showMessage(err.message, "error");
         button.disabled = false;
@@ -5163,7 +5946,7 @@ function renderPortalRuns() {
   // submissions row and would have picked the newest FAILED staging row for a filing that is
   // already on file. The backend now refuses that run type with a 409; this stops offering it.
   const paused = runs.find((run) => run.status === "paused_for_human" && run.runType !== "correction_reopen");
-  $("portalRuns").innerHTML = runs.length ? runs.map((run) => {
+  const runCard = (run) => {
     const isMfa = run.pauseReason === "mfa_captcha";
     const cardClass = run.status === "failed" ? "fail" : isMfa ? "warning" : "info";
     const confirmLine = run.confirmationNumber ? `<p class="muted">Confirmation: <strong>${esc(run.confirmationNumber)}</strong></p>` : "";
@@ -5192,9 +5975,36 @@ function renderPortalRuns() {
       <p class="muted">${esc(run.errorMessage || run.startedAt)}</p>
       ${resubmitAction}
     </article>`;
-  }).join("") : `<p class="muted">No portal runs yet.</p>`;
+  };
+  // PIN WHAT A PERSON MUST ACT ON; FOLD THE HISTORY WITH ITS COUNTS. On 7ec74634 the one
+  // actionable run was third of seven cards (five old FAILED runs), with Capture Confirmation
+  // ~1,250px below the panel title. The pinned runs are: every run awaiting a human submit or
+  // resubmit, and every paused run — the same states the capture form and the reopen action
+  // are offered for. Everything else goes behind "Earlier runs (N · M failed)", so the failure
+  // count is never hidden with the cards.
+  const pinnedStatuses = ["awaiting_human_submit", "awaiting_human_resubmit", "paused_for_human"];
+  const pinned = runs.filter((run) => pinnedStatuses.includes(run.status));
+  const earlier = runs.filter((run) => !pinnedStatuses.includes(run.status));
+  const earlierFailed = earlier.filter((run) => run.status === "failed").length;
+  const pinnedWrap = $("portalRunsPinned");
+  const prevFold = $("portalRuns").querySelector("details.runs-fold");
+  const foldWasOpen = !!(prevFold && prevFold.open && $("portalRuns").dataset.projectId === (state.selectedProjectId || ""));
+  if (pinnedWrap) {
+    pinnedWrap.innerHTML = pinned.map(runCard).join("");
+    $("portalRuns").innerHTML = !runs.length
+      ? `<p class="muted">No portal runs yet.</p>`
+      : earlier.length
+        ? `<details class="runs-fold"${foldWasOpen || !pinned.length && earlier.length <= 2 ? " open" : ""}>
+            <summary>${esc(pinned.length ? "Earlier runs" : "Runs")} (${esc(String(earlier.length))}${earlierFailed ? ` · ${esc(String(earlierFailed))} failed` : ""})</summary>
+            <div class="stack">${earlier.map(runCard).join("")}</div>
+          </details>`
+        : "";
+  } else {
+    $("portalRuns").innerHTML = runs.length ? runs.map(runCard).join("") : `<p class="muted">No portal runs yet.</p>`;
+  }
+  $("portalRuns").dataset.projectId = state.selectedProjectId || "";
 
-  $("portalRuns").querySelectorAll("button[data-mark-resubmitted]").forEach((button) => {
+  document.querySelectorAll("#portalRunsPinned button[data-mark-resubmitted], #portalRuns button[data-mark-resubmitted]").forEach((button) => {
     button.addEventListener("click", async () => {
       if (!confirm("Record that YOU clicked the portal's resubmit on this reopened application?\n\nThis closes the open corrections it answers. It does not submit anything.")) return;
       button.disabled = true;
@@ -5793,20 +6603,24 @@ async function addPermitTarget() {
 // happened to be first. The stale panel always passes the target its row is about.
 async function recordPermitStatus(source = "manual", targetId = null) {
   if (!state.selectedProjectId) return;
-  const target = state.detail.permitCheckTargets?.[0];
   const rawStatusText = source === "mock" ? "" : $("permitStatusText").value.trim();
   if (source === "manual" && !rawStatusText) {
     showMessage("Paste AHJ/portal status text before classifying.", "warning");
     return;
   }
+  const chosenId = permitStatusTargetId(targetId);
+  // The number fields above were filled from ONE filing (syncPermitForm, recorded in
+  // state.permitFormFor). Sent with another filing's check they would stamp that filing's number
+  // on this one's row; sent empty, the server records the chosen filing's own numbers.
+  const formIsChosen = !chosenId || state.permitFormFor === `${state.detail.project?.id || ""}|${chosenId}`;
   state.detail = await api(`/api/projects/${state.selectedProjectId}/permit-checks`, {
     method: "POST",
     body: JSON.stringify({
-      targetId: targetId || state.recheckTargetId || target?.id || null,
+      targetId: chosenId,
       source,
       rawStatusText,
-      applicationNumber: $("permitApplicationNumber").value,
-      permitNumber: $("permitTrackingNumber").value,
+      applicationNumber: formIsChosen ? $("permitApplicationNumber").value : "",
+      permitNumber: formIsChosen ? $("permitTrackingNumber").value : "",
     }),
   });
   $("permitStatusText").value = "";
@@ -6185,6 +6999,8 @@ $("applyStatusOverrideBtn")?.addEventListener("click", applyStatusOverride);
 $("addCorrectionBtn").addEventListener("click", addCorrection);
 $("addPermitTargetBtn").addEventListener("click", addPermitTarget);
 $("recordPermitStatusBtn").addEventListener("click", () => recordPermitStatus("manual"));
+// Picking another filing re-fills the form's numbers from THAT filing (never the one before it).
+$("permitStatusTarget")?.addEventListener("change", syncPermitForm);
 // The stale-reading panel renders inside #permitChecks and is rebuilt on every refresh, so its
 // re-check buttons are bound by delegation on the container, once.
 $("permitChecks").addEventListener("click", handleStaleRecheckClick);
@@ -6944,10 +7760,12 @@ async function loadMoreProjects() {
 function showBoardSkeleton() {
   const el = $("projectBoard");
   if (!el || el.hidden) return;
-  const cols = Array.from({ length: 6 }, () =>
+  const cols = Array.from({ length: PROJECT_STAGES.length }, () =>
     `<div class="board-skeleton-col">${Array.from({ length: 3 }, () => `<div class="skeleton board-skeleton-card"></div>`).join("")}</div>`
   ).join("");
   el.classList.add("board-skeleton");
+  // The skeleton keeps its own equal columns; the per-stage widths are set by renderBoard.
+  if (el.style && el.style.removeProperty) el.style.removeProperty("--board-cols");
   el.innerHTML = cols;
 }
 
@@ -6960,6 +7778,11 @@ async function fetchProjectPage(append) {
   if (projectFilterState.userId) params.set("userId", projectFilterState.userId);
   if (projectFilterState.clientId) params.set("clientId", projectFilterState.clientId);
   if (projectFilterState.sort && projectFilterState.sort !== "overdue") params.set("sort", projectFilterState.sort);
+  // THE "NEEDS ME" PILLS COUNT THE WHOLE BOARD. The page above is filtered (search / status /
+  // assignee / company) and paged, so when either applies the board is fetched once more,
+  // unfiltered, for the counts. Unfiltered and complete, the page IS the whole board. If the
+  // extra fetch fails the pills fall back to the page and say so (renderNeedsMePills).
+  const filtered = Boolean(projectFilterState.search || projectFilterState.status || projectFilterState.userId || projectFilterState.clientId);
   const data = await api(`/api/projects?${params}`);
   const page = data.projects || [];
   state.projectsTotal = data.total ?? page.length;
@@ -6967,6 +7790,15 @@ async function fetchProjectPage(append) {
     state.projects = [...state.projects, ...page];
   } else {
     state.projects = page;
+  }
+  if (!filtered && state.projects.length >= (state.projectsTotal ?? 0)) {
+    state.boardAll = state.projects;
+  } else {
+    const wholeParams = new URLSearchParams({ limit: "500", offset: "0" });
+    if ($("showArchivedProjects")?.checked) wholeParams.set("includeArchived", "true");
+    const whole = await api(`/api/projects?${wholeParams}`).catch(() => null);
+    // Only a COMPLETE board counts as the whole board (the list route caps at 500 rows).
+    state.boardAll = whole && Array.isArray(whole.projects) && (whole.total ?? whole.projects.length) <= whole.projects.length ? whole.projects : null;
   }
   renderProjects();
 }
@@ -7504,14 +8336,32 @@ $("closeKpiBtn").addEventListener("click", closeKpiModal);
 $("refreshKpiBtn").addEventListener("click", loadKpi);
 $("kpiModal").addEventListener("click", (e) => { if (e.target.id === "kpiModal") closeKpiModal(); });
 
+// Show the right LIST page before anything loads, so the first paint is already the page the
+// hash names (the board used to paint over a still-visible Projects table for ~2s). A
+// #/project/<id> deep link waits for routeFromHash below, which loads that project.
+{
+  const bootPage = (window.location.hash || "").replace(/^#\/?/, "").split("/")[0];
+  if (bootPage !== "project") showPage(VALID_PAGES.includes(bootPage) ? bootPage : "dashboard", { skipLoad: true });
+}
 await checkHealth();
-await loadProjects();
-await loadClients();
-await loadUsers();
-await loadTeamWorkload();
+// Independent loads, in parallel: the board no longer waits on clients and users in series.
+await Promise.all([loadProjects(), loadClients(), loadUsers()]);
+// Users arrive in parallel with the board, so repaint once for the assignee dots.
+renderProjects();
 // Render the page indicated by the URL hash (defaults to Dashboard). Deep links
 // like #/project/<id> load that project's workflow page directly.
 routeFromHash();
+// Team workload feeds only the Team page; it no longer holds up the first render.
+loadTeamWorkload().catch(() => { /* loadTeamWorkload reports its own error state */ });
+
+// The "How it flows" legend is a topbar popover now: close it on an outside click or Escape.
+{
+  const guide = $("startHereGuide");
+  if (guide && typeof guide.contains === "function") {
+    document.addEventListener("click", (e) => { if (guide.open && !guide.contains(e.target)) guide.open = false; });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && guide.open) guide.open = false; });
+  }
+}
 if (window.lucide) window.lucide.createIcons();
 
 // --- SSE notifications -------------------------------------------------------

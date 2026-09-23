@@ -21,6 +21,8 @@
 //     awaiting runs) — covered as its own case.
 //
 // Browser-free. Run: tsx backend/test/submitSeam.test.ts
+// FIRST: generated/filled documents land in a temp dir, never the live backend/data.
+import "./_isolate";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -371,8 +373,9 @@ check("1k. and the approve button stays available (a later track still needs it)
     cut("function", "esc"), cut("function", "humanize"),
     cut("const", "NEXT_STEPS"), cut("function", "nextStepFor"),
     cut("function", "filingPortalLabel"), cut("function", "approvedAwaitingFilingGuide"),
+    cut("function", "stageLabelFor"),
     cut("function", "renderNextStep"),
-  ].join("\n\n");
+  ].join("\n\n") + "\nconst PROJECT_STAGES = [];";
 
   const render = (project: Record<string, unknown>, portalRuns: Array<Record<string, unknown>>) => {
     const banner = { hidden: true, className: "", innerHTML: "", querySelector: () => null };
@@ -419,6 +422,463 @@ check("1k. and the approve button stays available (a later track still needs it)
   const bare = render({ status: "awaiting_human_submit", stageDetail: "approved_awaiting_filing", ahj: "", utility: "" }, []);
   check("9k. with no run and no names it still says WHERE to go, generically — never a blank",
     /the AHJ's portal|the utility's portal/.test(bare.innerHTML), bare.innerHTML.slice(0, 160));
+}
+
+// ===========================================================================
+// 10. THE NEXT STEP IS THE SERVER'S — the banner, the board chip and the "Needs me" pills all
+// render backend/src/nextStep.ts's ONE answer. Each check below was written against a defect
+// the operator saw (a "Stage 3" banner over a Build project, "Your submit (0)" with five staged
+// drafts, review items that appeared in no pill, a bare "0 document(s) staged" reopen toast,
+// Stage portals clickable when the server says a run would duplicate a draft).
+// ===========================================================================
+{
+  const { decideNextStep, NEXT_STEP_BUTTON_IDS } = await import("../src/nextStep");
+  const { isCriticalReviewItem, NON_QC_REVIEW_FIELDS } = await import("../src/repository");
+  const dashboard = fs.readFileSync(path.join(here, "..", "..", "frontend", "dashboard.js"), "utf8").replace(/\r\n/g, "\n");
+  const repoSrc = fs.readFileSync(path.join(srcDir, "repository.ts"), "utf8");
+  const typesSrc = fs.readFileSync(path.join(here, "..", "..", "shared", "src", "types.ts"), "utf8");
+
+  /** Lift a top-level `[async] function NAME(` or `const NAME = ` by bracket balance ({ [ ( ). */
+  const lift = (name: string): string => {
+    const re = new RegExp(`^(?:async )?function ${name}\\(|^const ${name} = `, "m");
+    const m = re.exec(dashboard);
+    if (!m) throw new Error(`dashboard.js: could not find ${name}`);
+    const isConst = m[0].startsWith("const");
+    let i = isConst ? m.index + m[0].length : dashboard.indexOf("{", dashboard.indexOf(")", m.index));
+    if (!isConst) { /* start at the body brace */ }
+    else if (!"{[(".includes(dashboard[i])) { const semi = dashboard.indexOf(";\n", i); return dashboard.slice(m.index, semi + 1); }
+    let depth = 0;
+    for (; i < dashboard.length; i++) {
+      const ch = dashboard[i];
+      if (ch === "{" || ch === "[" || ch === "(") depth++;
+      else if (ch === "}" || ch === "]" || ch === ")") { depth--; if (depth === 0) { i++; break; } }
+    }
+    return dashboard.slice(m.index, i) + (isConst ? ";" : "");
+  };
+  const NAMES = [
+    "esc", "humanize", "PROJECT_STAGES", "NEXT_STEPS", "nextStepFor", "filingPortalLabel", "approvedAwaitingFilingGuide",
+    "stageLabelFor", "NEXT_STEP_WHO", "NEXT_STEP_PROBLEM_KEYS", "nextStepBannerHtml", "currentNextStep", "NEXT_STEP_BUTTON_LABELS",
+    "revealElement", "renderNextStep", "NEXT_STEP_CHIP", "WAITING_ON_LABEL",
+    "nextStepChip", "boardAttention", "legacyBoardAttention", "NEEDS_ME_PILLS", "needsMeCounts",
+    "NON_QC_REVIEW_FIELDS", "ADVISORY_REVIEW_ISSUE_TYPES", "reviewItemBuckets", "reopenResultMessage", "showSubmitBlockerNote",
+    "applyAutopilotState", "startAutopilot", "fmtDate", "boardReviewCountChip", "boardCardHtml",
+    "resetAutopilotRail", "AUTOPILOT_LOAD_FAILED_TEXT", "refreshAutopilot", "selectProject",
+    "permitTargetOptionLabel", "renderPermitStatusTargetPicker", "permitStatusTargetId", "recordPermitStatus", "handleStaleRecheckClick",
+    "syncPermitForm",
+  ];
+  const code = NAMES.map(lift).join("\n\n");
+  const EXPORTS = NAMES.filter((n) => /^[a-zA-Z]/.test(n)).join(", ");
+
+  type El = Record<string, any>;
+  const mkEl = (id: string): El => ({
+    id, disabled: false, title: "", hidden: true, textContent: "", className: "", innerHTML: "", dataset: {}, style: {}, kids: [] as unknown[],
+    classList: { set: new Set<string>(), toggle(c: string, on?: boolean) { (on ?? !this.set.has(c)) ? this.set.add(c) : this.set.delete(c); }, add(c: string) { this.set.add(c); }, remove(c: string) { this.set.delete(c); }, contains(c: string) { return this.set.has(c); } },
+    replaceChildren(...k: unknown[]) { this.kids = k; },
+    querySelector: () => null, querySelectorAll: () => [],
+  });
+  const load = (els: Record<string, El>, state: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
+    const $ = (id: string) => els[id] ?? null;
+    const document = { createElement: () => ({ textContent: "" }), querySelectorAll: () => [], querySelector: () => null };
+    const stubs = { safeRender: (_n: string, fn: () => void) => fn(), showMessage: () => {}, api: async () => ({}), pollAutopilot: async () => null, ...extra };
+    // eslint-disable-next-line no-new-func
+    return new Function("$", "state", "document", ...Object.keys(stubs), `${code}\nreturn { ${EXPORTS} };`)($, state, document, ...Object.values(stubs));
+  };
+  const lib = load({}, {});
+
+  // 10a — every NextStepKey the server can emit has a chip row (a new server key cannot render blank).
+  const unionBody = /export type NextStepKey =([\s\S]*?);/.exec(typesSrc)?.[1] ?? "";
+  const serverKeys = [...unionBody.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+  const missingChip = serverKeys.filter((k) => !(k in lib.NEXT_STEP_CHIP));
+  check("10a. every NextStepKey in shared/src/types.ts has a NEXT_STEP_CHIP row", serverKeys.length >= 20 && missingChip.length === 0, `missing: ${missingChip.join(", ")} (of ${serverKeys.length})`);
+  const pillKeys = new Set((lib.NEEDS_ME_PILLS as Array<{ key: string }>).map((p) => p.key));
+  const strayPill = Object.entries(lib.NEXT_STEP_CHIP as Record<string, { pill: string }>).filter(([, v]) => !pillKeys.has(v.pill)).map(([k]) => k);
+  check("10a2. every chip row is counted under a pill that exists (the pills partition the keys)", strayPill.length === 0, strayPill.join(", "));
+  const missingLabel = (NEXT_STEP_BUTTON_IDS as readonly string[]).filter((id) => !(id in lib.NEXT_STEP_BUTTON_LABELS));
+  check("10a3. every button id the server can name has a label for the board's fallback answer", missingLabel.length === 0, missingLabel.join(", "));
+
+  // 10b — the banner renders the SERVER's answer, and its stage label is the project's REAL stage.
+  const renderWith = (state: Record<string, unknown>) => {
+    const banner = mkEl("nextStepBanner");
+    banner.querySelector = () => null;
+    const els: Record<string, El> = { nextStepBanner: banner, startAutopilotBtn: mkEl("startAutopilotBtn"), portalRuns: mkEl("portalRuns") };
+    load(els, state).renderNextStep();
+    return banner;
+  };
+  const buildProject = { id: "p-build", status: "awaiting_human_submit", stageDetail: "staging_failed", ahj: "City of Tigard", utility: "PGE" };
+  const serverAnswer = {
+    key: "staging_failed", who: "me", urgency: "today", stageIndex: 2, gateChecked: true, since: "2026-09-21T10:00:00Z",
+    headline: "Staging failed for the building permit — <b>fix</b> it.", why: [{ text: "building permit: <img src=x onerror=alert(1)>", fixTarget: "portalRuns" }],
+    button: null,
+  };
+  const b1 = renderWith({ selectedProjectId: "p-build", detail: { project: buildProject, stageIndex: 1, portalRuns: [] }, nextStep: serverAnswer, nextStepProjectId: "p-build", projects: [] });
+  check("10b. the banner shows the server's headline (source=server)", b1.dataset.nextSource === "server" && /Staging failed for the building permit/.test(b1.innerHTML), b1.innerHTML.slice(0, 200));
+  check("10b2. the stage label is the project's REAL stage (2 · Build & Validate), never a table's \"Stage 3\"",
+    /2 · Build &amp; Validate/.test(b1.innerHTML) && !/Stage 3/.test(b1.innerHTML) && !/3 · Submit/.test(b1.innerHTML), b1.innerHTML.slice(0, 160));
+  check("10b3. MUST EXCLUDE: headline and why are esc()'d into innerHTML", !/<b>|<img/.test(b1.innerHTML) && /&lt;img/.test(b1.innerHTML));
+  check("10b4. it says who acts, and links the why to its panel", /Who acts: <strong>You<\/strong>/.test(b1.innerHTML) && /data-fix-target="portalRuns"/.test(b1.innerHTML));
+  // The old status-table path (server answer unavailable) must ALSO use the real stage.
+  const b2 = renderWith({ selectedProjectId: "p-build", detail: { project: buildProject, stageIndex: 1, portalRuns: [{ status: "failed", permitType: "building", startedAt: "2026-09-21" }] }, nextStep: null, projects: [] });
+  check("10b5. fallback banner (no server answer) still names the real stage and keeps its qualifier",
+    b2.dataset.nextSource === "fallback" && /2 · Build &amp; Validate · Staging failed/.test(b2.innerHTML) && !/Stage 3/.test(b2.innerHTML), b2.innerHTML.slice(0, 160));
+  // Another project's answer is never shown; the board's compact answer is used, marked provisional.
+  const b3 = renderWith({
+    selectedProjectId: "p-build", detail: { project: buildProject, stageIndex: 1, portalRuns: [] },
+    nextStep: { ...serverAnswer, headline: "OTHER PROJECT" }, nextStepProjectId: "p-other",
+    projects: [{ id: "p-build", nextStep: { key: "ready_to_stage", who: "me", urgency: "today", headline: "Next: stage the permit (the project page checks the submit gate first).", buttonId: "startAutopilotBtn", gateChecked: false } }],
+  });
+  check("10b6. MUST EXCLUDE: another project's full answer is never rendered", !/OTHER PROJECT/.test(b3.innerHTML), b3.innerHTML.slice(0, 160));
+  check("10b7. the board's compact answer stands in, marked as not including the gate",
+    b3.dataset.nextSource === "board" && /Next: stage the permit/.test(b3.innerHTML) && /submit gate is not included/.test(b3.innerHTML), b3.innerHTML.slice(0, 260));
+
+  // 10c — board chip counts come from the SERVER's count (its headline), for real rule-table output.
+  const track = (over: Record<string, unknown>) => ({ track: "nem", filed: false, filedAt: null, done: false, latestRun: null, onPortal: false, stagedRun: null, gapFillMissing: [], feeDue: false, paymentDue: false, ...over });
+  const baseFacts = { projectId: "x", status: "ready_to_stage", stageDetail: "", archived: false, ahj: "City of X", utility: "Utility Y", operatorHold: null, openCorrections: [], jobInFlight: null, tracks: [], reopenPause: null, qcRan: true, qcFails: [], qcReview: [], portalReadings: 0, approvedRunIds: [] };
+  const readings = decideNextStep({ ...baseFacts, status: "issued", tracks: [track({ filed: true })], portalReadings: 4 } as any);
+  const readingsChip = lib.nextStepChip({ ...readings, buttonId: null });
+  check("10c. portal readings: the chip's number is the server's (4), not the list's all-pending total",
+    readings.key === "portal_readings" && /^4 /.test(readingsChip.label), `${readings.key} → ${readingsChip.label}`);
+  const qcReview = decideNextStep({ ...baseFacts, status: "qc_passed", tracks: [track({})], qcReview: [{ issueType: "a", fieldName: "f1" }, { issueType: "b", fieldName: "f2" }, { issueType: "c", fieldName: "f3" }] } as any);
+  check("10c2. QC review: the chip's number is the server's QC count (3)",
+    qcReview.key === "qc_review_pending" && /^3 to review$/.test(lib.nextStepChip(qcReview).label), `${qcReview.key} → ${lib.nextStepChip(qcReview).label}`);
+
+  // 10d — the pills PARTITION the board, and a staged draft is ALSO "Your submit".
+  const rows = serverKeys.map((key, i) => ({ id: `r${i}`, status: "ready_to_stage", nextStep: { key, who: "me", urgency: "today", headline: "x", buttonId: null, gateChecked: false, hasStagedDraft: key === "staging_failed" } }));
+  const { counts, total } = lib.needsMeCounts(rows);
+  const sum = Object.values(counts as Record<string, number>).reduce((a, n) => a + n, 0);
+  const drafts = rows.filter((r) => r.nextStep.hasStagedDraft && (lib.NEXT_STEP_CHIP[r.nextStep.key].pill !== "your_submit")).length;
+  check("10d. every project is counted once, plus once more under Your submit for a staged draft (sum = total + drafts)", sum === total + drafts && drafts === 1, `sum ${sum} total ${total} drafts ${drafts}`);
+  const failedStep = { key: "staging_failed", who: "me", urgency: "today", headline: "x", buttonId: null, gateChecked: false };
+  const staged = lib.needsMeCounts([{ id: "s", status: "awaiting_human_submit", nextStep: { ...failedStep, hasStagedDraft: true } }]);
+  check("10d2. a project with a staged draft whose chip says Staging failed is in BOTH pills (the old misfile)",
+    staged.counts.staging_failed === 1 && staged.counts.your_submit === 1, JSON.stringify(staged.counts));
+  // "Your submit" membership is the SERVER's hasStagedDraft, not the project status. Both
+  // directions: a sibling track staged while the status is still ready_to_stage IS a draft; an
+  // awaiting_human_submit project whose only staged track has since been filed is NOT.
+  const byFlag = lib.needsMeCounts([{ id: "f", status: "ready_to_stage", nextStep: { ...failedStep, hasStagedDraft: true } }]);
+  check("10d2b. MUST PASS: hasStagedDraft:true counts under Your submit whatever the status says", byFlag.counts.your_submit === 1, JSON.stringify(byFlag.counts));
+  const filedDraft = lib.needsMeCounts([{ id: "g", status: "awaiting_human_submit", nextStep: { ...failedStep, hasStagedDraft: false } }]);
+  check("10d2c. MUST EXCLUDE: awaiting_human_submit with hasStagedDraft:false is NOT counted under Your submit", filedDraft.counts.your_submit === 0 && filedDraft.counts.staging_failed === 1, JSON.stringify(filedDraft.counts));
+  const legacy = lib.needsMeCounts([{ id: "l", status: "issued", pendingReviewCount: 0 }]);
+  check("10d3. a row with no server answer still lands in a pill (the old guess is the fallback)", Object.values(legacy.counts as Record<string, number>).reduce((a, n) => a + n, 0) === 1);
+  const prov = lib.nextStepChip({ key: "ready_to_stage", who: "me", urgency: "today", headline: "Next: stage", buttonId: "startAutopilotBtn", gateChecked: false, gateCanOverrule: true });
+  const checked = lib.nextStepChip({ key: "ready_to_stage", who: "me", urgency: "today", headline: "Ready", gateChecked: true, gateCanOverrule: false });
+  check("10d4. a list answer the submit gate could overrule is marked provisional on the board", prov.provisional === true && checked.provisional === false);
+  // Provisional is the server's gateCanOverrule, not a client key list: the old list missed
+  // resubmit_awaiting_me (rule 9 sits after the gate rule), and a key on the list is not
+  // provisional when the server says the gate cannot come first.
+  const provResubmit = lib.nextStepChip({ key: "resubmit_awaiting_me", who: "me", urgency: "today", headline: "Resubmit", gateChecked: false, gateCanOverrule: true });
+  const notProv = lib.nextStepChip({ key: "ready_to_stage", who: "me", urgency: "today", headline: "Ready", gateChecked: false, gateCanOverrule: false });
+  check("10d5. MUST PASS: gateCanOverrule:true marks resubmit_awaiting_me provisional", provResubmit.provisional === true);
+  check("10d6. MUST EXCLUDE: gateCanOverrule:false is not provisional, whatever the key", notProv.provisional === false);
+
+  // 10e — every pending review item lands in exactly ONE visible bucket, and QC = the server's predicate.
+  const clientAdvisory = JSON.stringify([...(lib.ADVISORY_REVIEW_ISSUE_TYPES as string[])].sort());
+  const serverAdvisory = JSON.stringify(JSON.parse(`[${/const ADVISORY_REVIEW_ISSUE_TYPES = new Set\(\[([^\]]*)\]\)/.exec(repoSrc)?.[1] ?? ""}]`).sort());
+  check("10e. the client's advisory issue types mirror repository.ts exactly", clientAdvisory === serverAdvisory, `${clientAdvisory} vs ${serverAdvisory}`);
+  check("10e2. the client's non-QC fields mirror repository.ts exactly",
+    JSON.stringify([...(lib.NON_QC_REVIEW_FIELDS as string[])].sort()) === JSON.stringify([...NON_QC_REVIEW_FIELDS].sort()));
+  const items = [
+    ...["correction", "permit_status", "prepare_submission", "autopilot", "homeownerEmail", "systemSizeDc"].flatMap((fieldName) =>
+      ["Run triage", "Background job failed", "Missing value", ""].map((issueType) => ({ status: "pending", fieldName, issueType }))),
+    { status: "verified", fieldName: "systemSizeDc", issueType: "" },
+  ];
+  const bk = lib.reviewItemBuckets(items);
+  const serverQc = items.filter((it) => isCriticalReviewItem(it)).length;
+  check("10e3. the page's QC bucket is exactly the server's isCriticalReviewItem", bk.qc.length === serverQc, `${bk.qc.length} vs ${serverQc}`);
+  check("10e4. every pending item is counted in exactly one bucket (nothing vanishes)",
+    bk.qc.length + bk.reading.length + bk.notice.length === items.filter((i) => i.status === "pending").length);
+
+  // 10f — the reopen toast carries the server's message and its drift warnings.
+  const okDrift = lib.reopenResultMessage({ ok: true, message: "Reopened the correction form for APP-1.", attachedDocs: 0, driftWarnings: ["site_plan: upload refused (wrong type)"] });
+  check("10f. a reopen that attached nothing SAYS why (driftWarnings) and reads as a warning",
+    /upload refused/.test(okDrift.text) && /Reopened the correction form for APP-1/.test(okDrift.text) && okDrift.kind === "warning", okDrift.text);
+  const okClean = lib.reopenResultMessage({ ok: true, message: "", reopenedForm: "Resubmittal", attachedDocs: 2, driftWarnings: [], browserLeftOpen: true });
+  check("10f2. a clean reopen stays informational and still names the form + count", okClean.kind === "info" && /Resubmittal/.test(okClean.text) && /2 document/.test(okClean.text), okClean.text);
+  const failDrift = lib.reopenResultMessage({ ok: false, needsHuman: false, message: "stopped", driftWarnings: ["x"] });
+  check("10f3. a failed reopen keeps its drift warnings too", failDrift.kind === "error" && /stopped/.test(failDrift.text) && /x/.test(failDrift.text));
+
+  // 10g — the red "must clear before this can be submitted" note defers to the server's answer.
+  const blockedGate = { canPrepareSubmission: false, decision: "submitted_tracking", checks: [{ id: "document-inventory", status: "blocker" }] };
+  check("10g. withheld when the server's full answer says everything is filed (portal readings)",
+    lib.showSubmitBlockerNote(blockedGate, 1, { key: "portal_readings", gateChecked: true, allFiled: true }) === false);
+  check("10g2. MUST PASS: still shown for a real gate block before filing",
+    lib.showSubmitBlockerNote({ ...blockedGate, decision: "blocked" }, 1, { key: "gate_blocked", gateChecked: true, allFiled: false }) === true);
+  check("10g3. MUST PASS: a list-tier (unchecked) answer cannot withhold it",
+    lib.showSubmitBlockerNote({ ...blockedGate, decision: "blocked" }, 1, { key: "waiting_on_agency", gateChecked: false, allFiled: true }) === true);
+  // The server's allFiled decides, not the key: ec5c36d3's shape (every filing made, answer
+  // still ready_to_stage) withholds; a key from the old "all filed" list with allFiled:false does not.
+  check("10g4. MUST PASS: allFiled:true withholds it whatever the key (ready_to_stage)",
+    lib.showSubmitBlockerNote({ ...blockedGate, decision: "blocked" }, 1, { key: "ready_to_stage", gateChecked: true, allFiled: true }) === false);
+  check("10g5. MUST EXCLUDE: allFiled:false keeps it, even for waiting_on_agency",
+    lib.showSubmitBlockerNote({ ...blockedGate, decision: "blocked" }, 1, { key: "waiting_on_agency", gateChecked: true, allFiled: false }) === true);
+
+  // 10h — Stage portals follows the server's canStage, with the reason as TEXT; Approve's reason too.
+  const apEls: Record<string, El> = Object.fromEntries(["autopilotStatus", "approveSubmitBtn", "startAutopilotBtn", "autopilotOffReasons", "autopilotReason", "reviewMismatchBanner", "reviewMismatchList", "gapFillBanner", "gapFillList"].map((id) => [id, mkEl(id)]));
+  const apState: Record<string, unknown> = { selectedProjectId: "p1", detail: { stageIndex: 1, project: { id: "p1" } } };
+  const apLib = load(apEls, apState, { safeRender: () => {} });
+  apLib.applyAutopilotState({ projectId: "p1", phase: "idle", canApprove: false, approveDisabledReason: "Nothing is staged.", canStage: false, stageDisabledReason: "Every required track is already staged or filed.", blockers: [] });
+  const offText = (apEls.autopilotOffReasons.kids as Array<{ textContent: string }>).map((k) => k.textContent).join(" | ");
+  check("10h. canStage:false switches Stage portals OFF", apEls.startAutopilotBtn.disabled === true);
+  check("10h2. ...and says why as visible text (not only a tooltip)", apEls.autopilotOffReasons.hidden === false && /already staged or filed/.test(offText), offText);
+  check("10h3. Approve & Submit's disabled reason is visible text too", /Approve & Submit is off: Nothing is staged/.test(offText), offText);
+  apLib.applyAutopilotState({ projectId: "p1", phase: "idle", canApprove: false, canStage: true, stageDisabledReason: null, blockers: [] });
+  check("10h4. MUST PASS: canStage:true switches it back ON", apEls.startAutopilotBtn.disabled === false);
+  apLib.applyAutopilotState({ projectId: "p-other", phase: "idle", canApprove: true, canStage: false, blockers: [] });
+  check("10h5. MUST EXCLUDE: a late state for another project does not repaint this one", apEls.startAutopilotBtn.disabled === false && apEls.approveSubmitBtn.disabled === true);
+  // startAutopilot's `finally` must not blindly re-enable a button the server switched off.
+  const saEls: Record<string, El> = { startAutopilotBtn: mkEl("startAutopilotBtn") };
+  const saState: Record<string, unknown> = { selectedProjectId: "p1", autopilot: null };
+  const saLib = load(saEls, saState, { pollAutopilot: async () => { saState.autopilot = { projectId: "p1", phase: "awaiting_approval", canStage: false, blockers: [] }; return saState.autopilot; } });
+  await saLib.startAutopilot();
+  check("10h6. after a run, Stage portals stays OFF when the newest state says canStage:false", saEls.startAutopilotBtn.disabled === true);
+
+  // 10i — the board card: the assignee reads as an assignment (not a bare "● Sea" fragment), the
+  // chip carries the server headline as its title, and a staged draft says so on the card.
+  const card = lib.boardCardHtml(
+    { id: "c1", status: "awaiting_human_submit", assignedUserId: "u1", pendingReviewCount: 3, projectAddress: "1 Main St",
+      nextStep: { key: "staging_failed", who: "me", urgency: "today", headline: "Staging failed for the permit <x>", buttonId: null, gateChecked: false, hasStagedDraft: true } },
+    { u1: { name: "Sea", color: "#123456" } });
+  check("10i. the assignee is labelled (\"Assigned: Sea\"), with a title naming the assignment",
+    /Assigned:<\/span> Sea/.test(card) && /title="Assigned to Sea"/.test(card), card.replace(/\s+/g, " ").slice(-260));
+  check("10i2. the chip shows the server's answer and its escaped headline as the title",
+    />Staging failed</.test(card) && /title="Staging failed for the permit &lt;x&gt;"/.test(card));
+  check("10i3. a staged draft behind another answer says so on the card, and the review total is shown",
+    /Draft staged/.test(card) && /3 review items/.test(card) && /data-attn-also="your_submit"/.test(card));
+
+  // 10j — THE AUTOPILOT RAIL NEVER CARRIES ONE PROJECT'S VERDICT ONTO ANOTHER. selectProject
+  // used to null state.autopilot only, so project A's ENABLED Stage portals, its badge, its
+  // reason lines and its banners stayed painted on project B — for good when B's fetch failed.
+  const RAIL_IDS = ["autopilotStatus", "approveSubmitBtn", "startAutopilotBtn", "autopilotOffReasons", "autopilotReason", "reviewMismatchBanner", "reviewMismatchList", "gapFillBanner", "gapFillList"];
+  const projectAState = {
+    projectId: "p1", phase: "awaiting_approval", stage: "A-STAGE", message: "A-MESSAGE",
+    canApprove: false, approveDisabledReason: "A-APPROVE-REASON", canStage: true, stageDisabledReason: null,
+    blockers: [{ detail: "A-BLOCKER" }], reviewMismatches: [{ field: "A-FIELD", expected: "x", found: "y" }], gapFillMissing: ["A-GAP"],
+  };
+  /** Everything of project A still visible on the rail (empty = neutral). */
+  const railLeaks = (els: Record<string, El>, st: Record<string, unknown>): string[] => {
+    const leaks: string[] = [];
+    if (els.startAutopilotBtn.disabled !== true) leaks.push("Stage portals still enabled");
+    if (els.startAutopilotBtn.title || els.startAutopilotBtn.dataset.disabledReason) leaks.push(`Stage title "${els.startAutopilotBtn.title}"`);
+    if (els.approveSubmitBtn.disabled !== true) leaks.push("Approve still enabled");
+    if (els.approveSubmitBtn.title || els.approveSubmitBtn.dataset.disabledReason) leaks.push(`Approve title "${els.approveSubmitBtn.title}"`);
+    if (els.autopilotStatus.textContent !== "idle" || els.autopilotStatus.title) leaks.push(`badge "${els.autopilotStatus.textContent}"`);
+    if (!els.autopilotOffReasons.hidden || (els.autopilotOffReasons.kids as unknown[]).length) leaks.push("off-reasons shown");
+    if (!els.autopilotReason.hidden || els.autopilotReason.textContent) leaks.push(`reason "${els.autopilotReason.textContent}"`);
+    if (els.reviewMismatchBanner.style.display !== "none" || els.reviewMismatchList.textContent) leaks.push("mismatch banner");
+    if (els.gapFillBanner.style.display !== "none" || els.gapFillList.textContent) leaks.push("gap-fill banner");
+    if (st.autopilot) leaks.push("state.autopilot kept");
+    return leaks;
+  };
+  const paintA = (els: Record<string, El>, st: Record<string, unknown>) => {
+    load(els, st, { safeRender: () => {} }).applyAutopilotState(projectAState);
+    return railLeaks(els, st).length >= 9; // the fixture really painted A (else the test proves nothing)
+  };
+  {
+    // (a) refreshAutopilot's own failure: B is selected, B's fetch rejects.
+    const els: Record<string, El> = Object.fromEntries(RAIL_IDS.map((id) => [id, mkEl(id)]));
+    const st: Record<string, unknown> = { selectedProjectId: "p1", detail: { stageIndex: 2, project: { id: "p1" } } };
+    const painted = paintA(els, st);
+    st.selectedProjectId = "p2";
+    await load(els, st, { safeRender: () => {}, api: async () => { throw new Error("network down"); } }).refreshAutopilot();
+    const leaks = railLeaks(els, st);
+    check("10j. a failed autopilot fetch for project B leaves nothing of project A on the rail", painted && leaks.length === 0, `painted=${painted} leaks: ${leaks.join("; ")}`);
+    // ...but a late failure for a project already left does not repaint the one now open.
+    const els2: Record<string, El> = Object.fromEntries(RAIL_IDS.map((id) => [id, mkEl(id)]));
+    const st2: Record<string, unknown> = { selectedProjectId: "p1", detail: { stageIndex: 2, project: { id: "p1" } } };
+    paintA(els2, st2);
+    const lib2 = load(els2, st2, { safeRender: () => {}, api: async () => { st2.selectedProjectId = "p3"; throw new Error("late"); } });
+    await lib2.refreshAutopilot();
+    check("10j2. MUST EXCLUDE: a failure that lands after the operator moved on does not touch the rail", els2.startAutopilotBtn.disabled === false);
+  }
+  {
+    // (b) selectProject's own reset: switch A → B; renderDetail (which would refresh) is inert,
+    // so only selectProject can put the rail back to neutral.
+    const els: Record<string, El> = Object.fromEntries([...RAIL_IDS, "emptyState", "detailView"].map((id) => [id, mkEl(id)]));
+    const st: Record<string, unknown> = { selectedProjectId: "p1", detail: { stageIndex: 2, project: { id: "p1" } } };
+    const painted = paintA(els, st);
+    const noop = async () => {};
+    const loaders = Object.fromEntries(["loadKnowledgeBase", "loadOpsPlan", "loadSubmitGate", "loadRunbook", "loadHandoffPacket",
+      "loadCommunicationDrafts", "loadLiveReadiness", "loadProjectTimeline", "loadProcessMap", "loadInstallerPacket", "loadProjectDocuments",
+      "loadSubmittalTracks", "loadPaymentQuotes", "loadFeeSheet", "loadPortalQuestions", "loadStageResults", "loadStaleReadings", "loadNextStep"].map((n) => [n, noop]));
+    const selLib = load(els, st, {
+      safeRender: () => {}, api: async () => ({ project: { id: "p2" } }), clearMessage: () => {}, showPage: () => {},
+      renderProjects: () => {}, renderOpsActions: () => {}, renderDetail: () => {}, window: { location: { hash: "" } }, ...loaders,
+    });
+    await selLib.selectProject("p2");
+    const leaks = railLeaks(els, st);
+    check("10j3. switching project A → B puts the rail back to neutral before B's answer (Stage off, no A reasons/banners)",
+      painted && st.selectedProjectId === "p2" && leaks.length === 0, `painted=${painted} leaks: ${leaks.join("; ")}`);
+  }
+  {
+    // (c) THE NEUTRAL RAIL SAYS WHY. A failed fetch turned Stage/Approve off with no visible
+    // reason, which reads as "nothing to do here". One line says the state did not load.
+    const LOAD_FAILED = "Autopilot state did not load — refresh the page";
+    const ids = [...RAIL_IDS, "autopilotLoadFailed"];
+    const els: Record<string, El> = Object.fromEntries(ids.map((id) => [id, mkEl(id)]));
+    const st: Record<string, unknown> = { selectedProjectId: "p2", detail: { stageIndex: 1, project: { id: "p2" } } };
+    await load(els, st, { safeRender: () => {}, api: async () => { throw new Error("network down"); } }).refreshAutopilot();
+    check("10j4. a failed autopilot fetch shows the visible 'did not load' line on the rail",
+      els.autopilotLoadFailed.hidden === false && els.autopilotLoadFailed.textContent === LOAD_FAILED && els.startAutopilotBtn.disabled === true,
+      `hidden=${els.autopilotLoadFailed.hidden} text="${els.autopilotLoadFailed.textContent}"`);
+    // A late state for ANOTHER project does not clear it; this project's state does.
+    const lib4 = load(els, st, { safeRender: () => {} });
+    lib4.applyAutopilotState({ projectId: "p-other", phase: "idle", canApprove: false, canStage: true, blockers: [] });
+    check("10j5. MUST EXCLUDE: another project's late state leaves the line up", els.autopilotLoadFailed.hidden === false);
+    lib4.applyAutopilotState({ projectId: "p2", phase: "idle", canApprove: false, canStage: true, blockers: [] });
+    check("10j6. MUST PASS: this project's state arriving clears the line", els.autopilotLoadFailed.hidden === true && els.autopilotLoadFailed.textContent === "");
+    // Switching project: the line was about the project left, so the reset clears it too.
+    st.autopilot = null; // 10j6 left p2's state; without this the refresh below would (rightly) keep it and write nothing
+    await load(els, st, { safeRender: () => {}, api: async () => { throw new Error("down"); } }).refreshAutopilot();
+    const shownBefore = els.autopilotLoadFailed.hidden === false; // else the reset below proves nothing
+    load(els, st, { safeRender: () => {} }).resetAutopilotRail();
+    check("10j7. MUST EXCLUDE: the neutral reset on a project switch does not carry the line over",
+      shownBefore && els.autopilotLoadFailed.hidden === true && els.autopilotLoadFailed.textContent === "", `shownBefore=${shownBefore}`);
+    // A failure that lands after the operator moved on writes nothing.
+    const els2: Record<string, El> = Object.fromEntries(ids.map((id) => [id, mkEl(id)]));
+    const st2: Record<string, unknown> = { selectedProjectId: "p1", detail: { stageIndex: 2, project: { id: "p1" } } };
+    await load(els2, st2, { safeRender: () => {}, api: async () => { st2.selectedProjectId = "p3"; throw new Error("late"); } }).refreshAutopilot();
+    check("10j8. MUST EXCLUDE: a late failure for a project already left shows no line", els2.autopilotLoadFailed.hidden === true);
+  }
+
+  // 10l — WHICH FILING a pasted status is about. recordPermitStatus posted to the stale panel's
+  // target or the FIRST target, so on a building + NEM project a pasted utility email could only
+  // ever land on the building permit.
+  {
+    const t1 = { id: "t1", active: true, targetType: "permit", permitType: "building", applicationNumber: "DEMO-SLM-BUILDING-0001", permitNumber: "", portalName: "Salem ePermitting", jurisdiction: "Salem" };
+    const t2 = { id: "t2", active: true, targetType: "nem", permitType: "nem", applicationNumber: "<img src=x onerror=alert(1)>", permitNumber: "", portalName: "PGE PowerClerk", jurisdiction: "" };
+    const t3 = { id: "t3", active: false, targetType: "permit", permitType: "electrical", applicationNumber: "OLD-1", permitNumber: "", portalName: "", jurisdiction: "" };
+    const pickEls = (): Record<string, El> => {
+      const e: Record<string, El> = Object.fromEntries(["permitStatusTarget", "permitStatusTargetLabel", "permitStatusText", "permitApplicationNumber", "permitTrackingNumber"].map((id) => [id, mkEl(id)]));
+      e.permitStatusTarget.value = "";
+      e.permitStatusText.value = "Reviewed and approved.";
+      e.permitApplicationNumber.value = "DEMO-SLM-BUILDING-0001"; // syncPermitForm fills these from the FIRST target
+      e.permitTrackingNumber.value = "";
+      return e;
+    };
+    const noop = async () => {};
+    const loaders = { ...Object.fromEntries(["loadOpsPlan", "loadPmPackets", "loadLiveReadiness", "loadProjectTimeline", "loadProcessMap", "loadInstallerPacket", "loadStaleReadings", "loadProjects"].map((n) => [n, noop])), renderDetail: () => {} };
+    let posted: Record<string, unknown> | null = null;
+    const api = async (_url: string, opts: { body?: string } = {}) => { posted = JSON.parse(opts.body || "{}"); return { permitCheckTargets: [t1, t2, t3], permitStatusChecks: [] }; };
+    const els = pickEls();
+    const st: Record<string, unknown> = { selectedProjectId: "p1", recheckTargetId: null, detail: { permitCheckTargets: [t1, t2, t3] } };
+    const pl = load(els, st, { api, ...loaders });
+    pl.renderPermitStatusTargetPicker();
+    const html = String(els.permitStatusTarget.innerHTML);
+    check("10l. two active filings: the selector is shown and lists both (the inactive one is left out)",
+      els.permitStatusTargetLabel.hidden === false && /Building · DEMO-SLM-BUILDING-0001/.test(html) && /Interconnection \(NEM\) · /.test(html) && !/OLD-1/.test(html), html);
+    check("10l2. MUST EXCLUDE: option labels are esc()'d into innerHTML", !/<img/.test(html) && /&lt;img/.test(html));
+    check("10l3. the default is the first filing", els.permitStatusTarget.value === "t1");
+    els.permitStatusTarget.value = "t2";
+    await pl.recordPermitStatus("manual");
+    const body = (posted ?? {}) as Record<string, unknown>;
+    check("10l4. selecting the SECOND filing posts the second target id", body.targetId === "t2", JSON.stringify(body));
+    check("10l5. MUST EXCLUDE: the first filing's application number is not stamped on the second's check",
+      body.applicationNumber === "" && body.permitNumber === "", JSON.stringify(body));
+    // The first filing still carries the form's numbers — filled by the real syncPermitForm.
+    const els1 = pickEls();
+    els1.permitApplicationNumber.value = "";
+    const st1: Record<string, unknown> = { selectedProjectId: "p1", recheckTargetId: null, detail: { project: { id: "p1", ahj: "Salem" }, permitCheckTargets: [t1, t2], submissions: [] } };
+    const pl1 = load(els1, st1, { api, ...loaders });
+    pl1.syncPermitForm();
+    posted = null;
+    await pl1.recordPermitStatus("manual");
+    const body1 = (posted ?? {}) as Record<string, unknown>;
+    check("10l6. MUST PASS: the first filing posts its own id and the form's application number",
+      body1.targetId === "t1" && body1.applicationNumber === "DEMO-SLM-BUILDING-0001", JSON.stringify(body1));
+    // The stale panel's pick is the default when set; a single filing hides the selector.
+    const els3 = pickEls();
+    const st3: Record<string, unknown> = { selectedProjectId: "p1", recheckTargetId: "t2", detail: { permitCheckTargets: [t1, t2] } };
+    load(els3, st3, { api, ...loaders }).renderPermitStatusTargetPicker();
+    check("10l7. the stale panel's re-check target is preselected", els3.permitStatusTarget.value === "t2");
+    const els4 = pickEls();
+    load(els4, { selectedProjectId: "p1", recheckTargetId: null, detail: { permitCheckTargets: [t1, t3] } }, { api, ...loaders }).renderPermitStatusTargetPicker();
+    check("10l8. MUST EXCLUDE: one active filing hides the selector", els4.permitStatusTargetLabel.hidden === true);
+    // An explicit target (the stale panel's public-URL re-check) still wins over the selector.
+    const els5 = pickEls();
+    const st5: Record<string, unknown> = { selectedProjectId: "p1", recheckTargetId: null, detail: { permitCheckTargets: [t1, t2] } };
+    const pl5 = load(els5, st5, { api, ...loaders });
+    pl5.renderPermitStatusTargetPicker();
+    posted = null;
+    await pl5.recordPermitStatus("public_url", "t2");
+    check("10l9. MUST PASS: an explicit target id (stale-panel fetch) is posted as given",
+      (posted as Record<string, unknown> | null)?.targetId === "t2");
+    // The stale panel's "Paste a fresh status" (no portal URL) promises the paste is recorded
+    // against ITS filing. The selector wins at POST time, so the panel must move the selector —
+    // else the operator's paste goes to whatever the selector happened to show.
+    class FakeEl {}
+    const els6 = pickEls();
+    els6.permitStatusText.focus = () => {};
+    els6.permitStatusText.scrollIntoView = () => {};
+    const st6: Record<string, unknown> = { selectedProjectId: "p1", recheckTargetId: null, detail: { permitCheckTargets: [t1, t2] } };
+    const pl6 = load(els6, st6, { api, ...loaders, Element: FakeEl });
+    pl6.renderPermitStatusTargetPicker();
+    els6.permitStatusTarget.value = "t2"; // the operator had the NEM filing selected
+    const clicked = Object.assign(new FakeEl(), { closest: () => ({ dataset: { recheckTarget: "t1", recheckSource: "manual" } }) });
+    pl6.handleStaleRecheckClick({ target: clicked });
+    posted = null;
+    await pl6.recordPermitStatus("manual");
+    check("10l10. the stale panel's manual re-check moves the selector to its filing, and the paste posts there",
+      els6.permitStatusTarget.value === "t1" && (posted as Record<string, unknown> | null)?.targetId === "t1",
+      `selector=${els6.permitStatusTarget.value} posted=${JSON.stringify(posted)}`);
+
+    // 10l11 — THE NUMBERS COME FROM THE SELECTED FILING ONLY. With the FIRST filing selected (no
+    // permit number of its own), syncPermitForm fell back to "the first submission carrying a
+    // permit number" — the SECOND filing's — and recordPermitStatus posted it with the first
+    // filing's check; the server keeps a posted number over the target's own.
+    const f1 = { id: "f1", active: true, targetType: "permit", permitType: "building", applicationNumber: "BLD-26-0001", permitNumber: "", portalName: "Salem ePermitting", jurisdiction: "Salem", checkFrequencyDays: 7 };
+    const f2 = { id: "f2", active: true, targetType: "permit", permitType: "electrical", applicationNumber: "ELE-26-0002", permitNumber: "ELE-PERMIT-99", portalName: "Salem ePermitting", jurisdiction: "Salem", checkFrequencyDays: 7 };
+    const numEls = (): Record<string, El> => {
+      const e = pickEls();
+      e.permitApplicationNumber.value = "";
+      e.permitTrackingNumber.value = "";
+      return e;
+    };
+    const detail11 = { project: { id: "p11", ahj: "Salem" }, permitCheckTargets: [f1, f2], submissions: [
+      { submissionType: "permit", permitType: "electrical", applicationNumber: "ELE-26-0002", permitNumber: "ELE-PERMIT-99" },
+    ] };
+    const els11 = numEls();
+    const st11: Record<string, unknown> = { selectedProjectId: "p11", recheckTargetId: null, detail: detail11 };
+    const pl11 = load(els11, st11, { api, ...loaders });
+    pl11.syncPermitForm();
+    posted = null;
+    await pl11.recordPermitStatus("manual");
+    const body11 = (posted ?? {}) as Record<string, unknown>;
+    check("10l11. MUST EXCLUDE: the FIRST filing selected, the form and the POST never carry the second filing's permit number",
+      els11.permitStatusTarget.value === "f1" && body11.targetId === "f1" && !body11.permitNumber && els11.permitTrackingNumber.value === "",
+      `selector=${els11.permitStatusTarget.value} field=${els11.permitTrackingNumber.value} posted=${JSON.stringify(body11)}`);
+    check("10l12. MUST PASS: ...and the first filing's own application number is still posted", body11.applicationNumber === "BLD-26-0001", JSON.stringify(body11));
+    // Picking the second filing re-fills the numbers from IT (the selector's change handler), and
+    // picking the first again empties them — a leftover is another filing's number.
+    // (A fresh page state: recordPermitStatus above replaced state.detail with the stub's reply.)
+    const els13 = numEls();
+    const pl13 = load(els13, { selectedProjectId: "p11", recheckTargetId: null, detail: detail11 }, { api, ...loaders });
+    pl13.syncPermitForm();
+    els13.permitStatusTarget.value = "f2";
+    pl13.syncPermitForm();
+    const onSecond = `${els13.permitApplicationNumber.value}|${els13.permitTrackingNumber.value}`;
+    els13.permitStatusTarget.value = "f1";
+    pl13.syncPermitForm();
+    const backOnFirst = `${els13.permitApplicationNumber.value}|${els13.permitTrackingNumber.value}`;
+    check("10l13. switching filings replaces the numbers with the selected filing's own (never carries the last one's)",
+      onSecond === "ELE-26-0002|ELE-PERMIT-99" && backOnFirst === "BLD-26-0001|", `second=${onSecond} first=${backOnFirst}`);
+  }
+
+  // 10k — the banner's "Show" for a portal run lands ON the run: revealElement opens the closed
+  // "Earlier runs (N · M failed)" fold inside #portalRuns and lands on its failed card.
+  {
+    const flash = () => ({ set: new Set<string>(), add(c: string) { this.set.add(c); }, remove(c: string) { this.set.delete(c); } });
+    let landed = "";
+    const failCard = { tagName: "ARTICLE", classList: flash(), scrollIntoView: () => { landed = "failCard"; } };
+    const fold = { tagName: "DETAILS", open: false, querySelector: (sel: string) => (sel === ".item.fail" ? failCard : null) };
+    const runsEl = {
+      tagName: "DIV", parentElement: null, classList: flash(), dataset: {},
+      querySelector: (sel: string) => (sel === "details.runs-fold" ? fold : null),
+      scrollIntoView: () => { landed = "portalRuns"; }, focus: () => {},
+    };
+    lib.revealElement(runsEl);
+    check("10k. Show on a portal run opens the closed runs fold", fold.open === true);
+    check("10k2. ...and lands on the failed run card inside it, not the list's closed summary line", landed === "failCard", `landed on ${landed}`);
+  }
 }
 
 console.log(failures === 0

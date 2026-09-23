@@ -111,6 +111,18 @@ export function isBlockedStatus(status: ProjectStatus): boolean {
 }
 
 /**
+ * THE PROJECT-LEVEL ANSWER (S5): the status forms above, OR an open correction whose due date
+ * has passed. The permit monitor rewrites projects.status on every sweep, so a correction open
+ * for days sits at `submitted` or `issued` — its status alone never showed the red chip, and the
+ * most overdue filing on the board looked like one ticking along. `hasOverdueCorrection` is the
+ * same fact nextStep's `urgency: "overdue"` is built from (mapCorrection's isOverdue), and both
+ * the list row and the project detail pass it, so the board and the page cannot disagree.
+ */
+export function isBlockedProject(status: ProjectStatus, hasOverdueCorrection: boolean): boolean {
+  return isBlockedStatus(status) || hasOverdueCorrection;
+}
+
+/**
  * MAY A QC RUN MOVE THIS PROJECT'S STATUS? The one answer runQcForProject asks (qc.ts).
  *
  * QC may JUDGE at any status — its qc_results rows are what every staging gate reads. It may

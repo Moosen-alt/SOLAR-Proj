@@ -635,6 +635,84 @@ export interface ProjectListItem extends Omit<ProjectRecord, "parserSnapshot"> {
   isBlocked: boolean;
   // Submitting client/company name (for the team dashboard's company filter/column).
   clientName?: string | null;
+  /** The server's ONE answer to "what does this project need next, and from whom"
+   *  (backend/src/nextStep.ts), compact for the board. Same rule table as
+   *  GET /api/projects/:id/next-step; `gateChecked:false` means the list tier did not run the
+   *  submit gate (too costly per row), so a gate/reviewer blocker is only on the full answer. */
+  nextStep: NextStepCompact;
+}
+
+// ---------------------------------------------------------------------------
+// NEXT STEP — backend/src/nextStep.ts. Before this, "what is needed next" was guessed in
+// several places that disagreed (the client-side banner, the board chip, current_stage prose,
+// the autopilot badge replaying an old job result). One rule table, first match wins.
+// ---------------------------------------------------------------------------
+export type NextStepWho = "me" | "designer" | "customer" | "ahj" | "utility" | "nobody";
+export type NextStepUrgency = "overdue" | "today" | "waiting" | "done";
+export type NextStepKey =
+  | "operator_blocked"
+  | "correction_overdue"
+  | "portal_paused"
+  | "automation_running"
+  | "staging_failed"
+  | "qc_not_run"
+  | "qc_failed"
+  | "qc_review_pending"
+  | "gate_blocked"
+  | "gap_fill_missing"
+  | "resubmit_awaiting_me"
+  | "staged_awaiting_submit"
+  | "approved_awaiting_filing"
+  | "fee_due"
+  | "correction_open"
+  | "payment_due"
+  | "ready_to_stage"
+  | "filing_untracked"
+  | "portal_readings"
+  | "waiting_on_agency"
+  | "handoff_ready"
+  | "done"
+  | "archived"
+  | "unknown";
+export interface NextStepWhy {
+  text: string;
+  /** A dashboard element id the operator can be taken to (a panel or a control). */
+  fixTarget?: string;
+}
+export interface NextStep {
+  key: NextStepKey;
+  who: NextStepWho;
+  urgency: NextStepUrgency;
+  /** One sentence. Never interpolates homeowner name/address — agency names only. */
+  headline: string;
+  why: NextStepWhy[];
+  /** The ONE thing to press: an existing dashboard <button> id, or null when the move is
+   *  outside the dashboard (a portal, a designer) or has no single control. */
+  button: { id: string; label: string } | null;
+  stageIndex: number;
+  since?: string;
+  /** Did this answer include the submit gate + reviewer blockers (the detail tier)? */
+  gateChecked: boolean;
+  /** Every required filing is made (each required track filed or done) — the gate has nothing
+   *  left to hold back. Derived in nextStep.ts; the client must not re-derive it from `key`. */
+  allFiled: boolean;
+  /** A list-tier answer (gateChecked:false) that the full answer may change: something is still
+   *  to file and the rule table passed the submit-gate rule without running the gate. */
+  gateCanOverrule: boolean;
+  /** A draft is staged on a portal awaiting a person (an unfiled track's awaiting_human_submit
+   *  run, or a reopened correction form awaiting the human resubmit), whatever `key` says. */
+  hasStagedDraft: boolean;
+}
+export interface NextStepCompact {
+  key: NextStepKey;
+  who: NextStepWho;
+  urgency: NextStepUrgency;
+  headline: string;
+  buttonId: string | null;
+  gateChecked: boolean;
+  allFiled: boolean;
+  gateCanOverrule: boolean;
+  hasStagedDraft: boolean;
 }
 
 export interface QcResult {

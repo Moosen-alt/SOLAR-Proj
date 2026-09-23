@@ -72,8 +72,11 @@ import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier
 import { publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR } from "./projectDocuments";
 import { findAhjProcessProfile } from "./processProfiles";
-import { documentInventory, type DocumentInventory, type DocPresence } from "./requiredDocuments";
-import { STAGE_COUNT, stageForStatus, isBlockedStatus } from "./projectStage";
+import { documentInventory, owedMissingDocuments, type DocumentInventory, type DocPresence } from "./requiredDocuments";
+import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
+// Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
+// shape as correctionAgent. getProjectList needs the rule table synchronously.
+import { compactNextStep, decideNextStep, loadNextStepFacts } from "./nextStep";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
@@ -265,7 +268,7 @@ function mapReview(row: Row): HumanReviewItem {
   };
 }
 
-function mapCorrection(row: Row): CorrectionRecord {
+export function mapCorrection(row: Row): CorrectionRecord {
   const createdAt = text(row.created_at);
   const closedAt = row.closed_at == null ? null : text(row.closed_at);
   const slaDays = Number(row.sla_days ?? 5);
@@ -861,10 +864,20 @@ type LaneStatusSummary = Pick<
 
 // Pure analysis over already-loaded checks/emails — no DB access, so the list path can
 // batch-load all pages' rows in two queries and call this per project.
-function computeLaneStatusSummary(
+//
+// THE LATEST READING, NOT ANY READING (S4). readyForIssue / nemApproved used `.some` over EVERY
+// historical check and email, and counted `reviewed_by_ahj` (and a NEM target reading
+// ready_for_issue / issued) as "NEM approved" — so a board card said "NEM approved" while the
+// project page's track said "Under utility review". Now: each tracking target speaks through
+// its NEWEST check only, `reviewed_by_ahj` is "in review" (never approved), and "done" comes
+// from `trackDone` — isTrackDone, the one rule the tracks panel and the handoff use (a finaled
+// permit's newest reading is needs_human_review, so "latest check says issued" alone would
+// un-issue it).
+export function computeLaneStatusSummary(
   projectStatus: ProjectRecord["status"],
   checks: ReturnType<typeof mapPermitStatusCheck>[],
   emails: ReturnType<typeof mapEmailProjectMatch>[],
+  trackDone: { permit: boolean; nem: boolean } = { permit: false, nem: false },
 ): LaneStatusSummary {
   const latestPermitCheck = checks.find(hasPermitSignal) || checks.find((check) => !hasNemSignal(check)) || null;
   const latestNemCheck = checks.find(hasNemSignal) || null;
@@ -872,19 +885,32 @@ function computeLaneStatusSummary(
   const latestNemEmail = emails.find((email) => hasNemSignal(email) || email.workflow === "nem" || email.workflow === "both") || null;
   const permitEmailOutcome = latestPermitEmail ? outcomeFromEmailBucket(latestPermitEmail.emailBucket) : null;
   const nemEmailOutcome = latestNemEmail ? outcomeFromEmailBucket(latestNemEmail.emailBucket) : null;
-  const permitChecks = checks.filter((check) => hasPermitSignal(check) || !hasNemSignal(check));
-  const nemChecks = checks.filter(hasNemSignal);
+  // Newest check per tracking target (checks arrive newest-first). A legacy check with no
+  // target groups under "" — the newest of those speaks for them.
+  const latestPerTarget = (list: typeof checks): typeof checks => {
+    const seen = new Set<string>();
+    return list.filter((check) => {
+      const key = check.targetId ?? "";
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  const permitChecks = latestPerTarget(checks.filter((check) => hasPermitSignal(check) || !hasNemSignal(check)));
+  const nemChecks = latestPerTarget(checks.filter(hasNemSignal));
   const readyForIssue =
     projectStatus === "ready_for_issue"
     || projectStatus === "issued"
+    || trackDone.permit
     || permitChecks.some((check) => check.readyForIssue || check.outcome === "ready_for_issue" || check.outcome === "issued")
-    || emails.some((email) => hasPermitSignal(email) && (email.emailBucket === "permit_approval" || email.emailBucket === "inspection_final_notice"));
+    || Boolean(latestPermitEmail && (latestPermitEmail.emailBucket === "permit_approval" || latestPermitEmail.emailBucket === "inspection_final_notice"));
   const nemApproved =
     projectStatus === "approved"
     || projectStatus === "nem_approved"
     || projectStatus === "handoff_ready"
-    || nemChecks.some((check) => check.readyForIssue || ["reviewed_by_ahj", "ready_for_issue", "issued", "nem_approved"].includes(check.outcome))
-    || emails.some((email) => (hasNemSignal(email) || email.workflow === "nem" || email.workflow === "both") && email.emailBucket === "nem_approval");
+    || trackDone.nem
+    || nemChecks.some((check) => check.outcome === "nem_approved")
+    || Boolean(latestNemEmail && latestNemEmail.emailBucket === "nem_approval");
 
   return {
     latestPermitLabel: statusLabel(latestPermitCheck?.statusLabel, latestPermitCheck?.outcome ?? permitEmailOutcome),
@@ -914,7 +940,6 @@ export function getProjectList(
     orgId?: string | null;
   } = {},
 ): { projects: ProjectListItem[]; total: number } {
-  const today = new Date().toISOString().slice(0, 10);
   const limit = Math.min(options.limit ?? 200, 500);
   const offset = options.offset ?? 0;
 
@@ -957,14 +982,12 @@ export function getProjectList(
       (SELECT COUNT(*) FROM qc_results q WHERE q.project_id = p.id AND q.qc_status = 'warning') AS qcWarningCount,
       (SELECT COUNT(*) FROM human_review_items h WHERE h.project_id = p.id AND h.status = 'pending') AS pendingReviewCount,
       (SELECT COUNT(*) FROM corrections c WHERE c.project_id = p.id) AS correctionCount,
-      (SELECT COUNT(*) FROM corrections c WHERE c.project_id = p.id AND c.closed_at IS NULL
-         AND (c.due_at < ? OR (c.due_at IS NULL AND date(c.created_at, '+' || c.sla_days || ' days') < ?))) AS overdueCorrections,
       (SELECT pr.status FROM portal_runs pr WHERE pr.project_id = p.id ORDER BY pr.started_at DESC LIMIT 1) AS latestPortalStatus,
       (SELECT COALESCE(NULLIF(c.company_name, ''), c.legal_business_name) FROM clients c WHERE c.id = p.client_id) AS clientName
      FROM projects p ${where}
      ORDER BY ${order}
      LIMIT ? OFFSET ?`,
-    [today, today, ...filterParams, limit, offset],
+    [...filterParams, limit, offset],
   );
 
   // Batch-load the lane-status inputs for the entire page in TWO queries (not 2 per
@@ -988,10 +1011,22 @@ export function getProjectList(
     }
   }
 
-  const projects = rows.map((row) => {
-    const project = mapProject(row);
+  // THE NEXT STEP, per row, from the same rule table the project page uses (nextStep.ts) —
+  // batch facts, a fixed number of queries per page. The list tier does not run the submit gate
+  // (~50ms a project); its answer says gateChecked:false.
+  const mapped = rows.map((row) => ({ row, project: mapProject(row) }));
+  const factsByProject = loadNextStepFacts(db, mapped.map((m) => m.project));
+  const projects = mapped.map(({ row, project }) => {
     const { parserSnapshot: _parserSnapshot, ...listBase } = project;
-    const laneSummary = computeLaneStatusSummary(project.status, checksByProject.get(project.id) ?? [], emailsByProject.get(project.id) ?? []);
+    const facts = factsByProject.get(project.id);
+    const nextStep = compactNextStep(decideNextStep(facts!));
+    // Overdue is counted with the SAME predicate the project page renders (mapCorrection's
+    // isOverdue) — the SQL date arithmetic it replaces disagreed with it across a day boundary.
+    const overdueCorrections = facts!.openCorrections.filter((c) => c.isOverdue).length;
+    const laneSummary = computeLaneStatusSummary(project.status, checksByProject.get(project.id) ?? [], emailsByProject.get(project.id) ?? [], {
+      permit: facts!.tracks.some((t) => t.track !== "nem" && t.done),
+      nem: facts!.tracks.some((t) => t.track === "nem" && t.done),
+    });
     const stage = stageForStatus(project.status);
     return {
       ...listBase,
@@ -999,7 +1034,7 @@ export function getProjectList(
       qcWarningCount: Number(row.qcWarningCount ?? 0),
       pendingReviewCount: Number(row.pendingReviewCount ?? 0),
       correctionCount: Number(row.correctionCount ?? 0),
-      overdueCorrections: Number(row.overdueCorrections ?? 0),
+      overdueCorrections,
       assignedUserId: row.assigned_user_id == null ? null : text(row.assigned_user_id),
       clientName: row.clientName == null ? null : text(row.clientName),
       latestPortalStatus: row.latestPortalStatus == null ? null : (text(row.latestPortalStatus) as ProjectListItem["latestPortalStatus"]),
@@ -1007,8 +1042,9 @@ export function getProjectList(
       stageIndex: stage.index,
       stageLabel: stage.label,
       stageCount: STAGE_COUNT,
-      isBlocked: isBlockedStatus(project.status),
+      isBlocked: isBlockedProject(project.status, overdueCorrections > 0),
       ...laneSummary,
+      nextStep,
     };
   });
 
@@ -1028,18 +1064,19 @@ export function getProjectDetail(db: AppDb, projectId: string): ProjectDetail {
     project.parserSnapshot = { ...project.parserSnapshot, planSetExtractedText: planSetText };
   }
   const stage = stageForStatus(project.status);
+  const corrections = db.query<Row>("SELECT * FROM corrections WHERE project_id = ? ORDER BY created_at DESC", [projectId]).map(mapCorrection);
   return {
     project,
     stageKey: stage.key,
     stageIndex: stage.index,
     stageLabel: stage.label,
     stageCount: STAGE_COUNT,
-    isBlocked: isBlockedStatus(project.status),
+    isBlocked: isBlockedProject(project.status, corrections.some((c) => c.isOverdue)),
     qcResults: db.query<Row>("SELECT * FROM qc_results WHERE project_id = ? ORDER BY created_at DESC", [projectId]).map(mapQc),
     humanReviewItems: db
       .query<Row>("SELECT * FROM human_review_items WHERE project_id = ? ORDER BY status DESC, created_at DESC", [projectId])
       .map(mapReview),
-    corrections: db.query<Row>("SELECT * FROM corrections WHERE project_id = ? ORDER BY created_at DESC", [projectId]).map(mapCorrection),
+    corrections,
     permitCheckTargets: db
       .query<Row>("SELECT * FROM permit_check_targets WHERE project_id = ? ORDER BY active DESC, created_at DESC", [projectId])
       .map(mapPermitTarget),
@@ -1189,9 +1226,18 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
 // unverified extraction data: they must never flip the submit gate to blocked.
 // Live-tested failure: a triage tip about missing portal credentials blocked a
 // clean Coos Bay submittal while the QC panel showed nothing to fix.
+//
+// NOR IS TRACK / OPS WORK QC WORK (S6). `permit_status` items are monitor readings of a FILED
+// application's portal text; `prepare_submission` / `autopilot` items are job notices. Counting
+// them here painted "N thing(s) must clear before this can be submitted" in red on ISSUED
+// projects and held the staging gate shut over a permit already on file. They stay visible — the Track stage shows
+// the readings and nextStep.ts surfaces them — they just do not gate. This is the ONE answer to
+// "does this pending item hold staging?": the submit gate, prepareSubmission's 409 and every
+// report below read it.
 const ADVISORY_REVIEW_ISSUE_TYPES = new Set(["Run triage", "Background job failed"]);
-function isCriticalReviewItem(item: { status: string; fieldName: string; issueType?: string }): boolean {
-  return item.status === "pending" && item.fieldName !== "correction" && !ADVISORY_REVIEW_ISSUE_TYPES.has(item.issueType || "");
+export const NON_QC_REVIEW_FIELDS: ReadonlySet<string> = new Set(["correction", "permit_status", "prepare_submission", "autopilot"]);
+export function isCriticalReviewItem(item: { status: string; fieldName: string; issueType?: string }): boolean {
+  return item.status === "pending" && !NON_QC_REVIEW_FIELDS.has(item.fieldName) && !ADVISORY_REVIEW_ISSUE_TYPES.has(item.issueType || "");
 }
 
 export function getKnowledgeBase(db: AppDb): { profiles: PermitUtilityKnowledgeProfile[] } {
@@ -3216,6 +3262,8 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const docInventory = documentInventory(db, project);
+  // What the operator OWES — the document check below and Stage/Approve read this one answer.
+  const gateDocs = owedMissingDocuments(db, project, docInventory);
   const processMap = getProjectProcessMap(db, projectId);
   const installerPacket = getInstallerActionPacket(db, projectId);
   const activeEmailSources = db.query<Row>(
@@ -3286,8 +3334,25 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   const unverifiedForms = loadStoredTemplates(db, project.ahj, project.state)
     .filter((t) => !t.verified && formAllowedForPath(t.def.formName, gatePermitPath, t.applicationKind));
   const stagedRun = detail.portalRuns.find((run) => run.status === "awaiting_human_submit");
-  const submittedOrBeyond = detail.submissions.some((submission) => submission.status === "submitted")
-    || ["submitted", "approved", "ready_for_issue", "issued", "complete"].includes(project.status);
+  // "SUBMITTED" MEANS EVERY REQUIRED FILING, NOT ANY ONE (S7). This was "any submission is
+  // submitted, or the status says so" — so a project whose NEM application was filed while its
+  // building and electrical permits still sat staged on the portal read "Submitted/tracking",
+  // hid its blockers behind that decision, and never asked for the two filings still owed. The
+  // per-track answer is the next-step facts' (nextStep.loadNextStepFacts — ONE "is this track
+  // filed?" for the gate, the board and the project page): a submitted submissions row in the
+  // track's family, a tracking target of it carrying an application number, or isTrackDone.
+  //
+  // THE STATUS STILL SPEAKS WHEN NOTHING ELSE DOES. A project moved past Submit by an operator
+  // override, with no filing recorded on any track, would otherwise read "ready to stage" and
+  // enable the trackless Prepare Submittal on an application that is already at the agency — a
+  // duplicate draft on a live portal. Only that zero-evidence case falls back to the status; a
+  // partial filing (evidence on some track) is judged per track.
+  const gateFacts = loadNextStepFacts(db, [project]).get(projectId);
+  const gateTracks = (gateFacts?.tracks ?? []).map((t) => t.track);
+  const unfiledTracks = (gateFacts?.tracks ?? []).filter((t) => !t.filed && !t.done).map((t) => t.track);
+  const noFilingEvidence = unfiledTracks.length === gateTracks.length;
+  const statusSaysFiled = stageForStatus(project.status).index >= stageForStatus("submitted").index;
+  const submittedOrBeyond = unfiledTracks.length === 0 || (noFilingEvidence && statusSaysFiled);
   const activeEmailSource = activeEmailSources[0];
 
   const checks: SubmitGateCheck[] = [
@@ -3425,26 +3490,36 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
     // This is what stops "documents still missing" rejections: a missing blocking
     // document (plan set, SLD, site plan, structural, module/inverter spec, or the
     // PE-stamped structural docs on the engineered path) hard-blocks submit.
+    //
+    // It asks for what the operator OWES (owedMissingDocuments) — the same predicate Stage portals
+    // and Approve read. A form the staging-time fill produces from a stored template is not the
+    // operator's to attach, so it is said (its own evidence line) and never blocks: counting it
+    // here put "The submit gate is blocked: … checklist, filled" and phase BLOCKED beside an
+    // ENABLED Stage portals (29cd57b5, e6b3afde). prepareSubmission still re-counts after its
+    // fill, so a blank that fails to fill is still refused there.
     submitGateCheck({
       id: "document-inventory",
       title: "Required documents attached",
-      lane: docInventory.missingBlocking.some((d) => d.lane === "nem") && !docInventory.missingBlocking.some((d) => d.lane === "permit") ? "nem" : "permit",
-      status: docInventory.missingBlocking.length ? "blocker" : docInventory.missingAdvisory.length ? "warning" : "pass",
+      lane: gateDocs.owed.some((d) => d.lane === "nem") && !gateDocs.owed.some((d) => d.lane === "permit") ? "nem" : "permit",
+      status: gateDocs.owed.length ? "blocker" : docInventory.missingAdvisory.length ? "warning" : "pass",
       ownerRole: "Permit Ops",
       requirement: "Every required submittal document must be attached as a file (or identified in the uploaded plan set) before staging — the AHJ rejects incomplete packages.",
       evidence: [
-        `${docInventory.presence.filter((d) => d.present).length}/${docInventory.required.length} required documents present.`,
+        `${docInventory.presence.filter((d) => d.present).length}/${docInventory.required.length} required documents present${gateDocs.filledAtStaging.length ? `, ${gateDocs.filledAtStaging.length} more filled from a stored template at staging` : ""}.`,
         ...docInventory.presence.filter((d) => d.present).slice(0, 4).map((d) => `✓ ${d.label} (${d.via})`),
-        ...docInventory.missingBlocking.map((d) => `MISSING (required): ${d.label} — ${d.why}`),
+        ...gateDocs.filledAtStaging.map((d) => `Filled at staging: ${d.label} — the form's template is on file; staging fills and attaches it`),
+        ...gateDocs.owed.map((d) => `MISSING (required): ${d.label} — ${d.why}`),
         ...docInventory.missingAdvisory.map((d) => `Missing (advisory): ${d.label}`),
       ],
-      nextAction: docInventory.missingBlocking.length
-        ? `Attach or split out the missing document(s) before staging: ${docInventory.missingBlocking
+      nextAction: gateDocs.owed.length
+        ? `Attach or split out the missing document(s) before staging: ${gateDocs.owed
             .map((d) => (d.docType === "structural_letter" && d.why ? `${d.label} — ${d.why}` : d.label))
             .join("; ")}.`
         : docInventory.missingAdvisory.length
           ? "Confirm the advisory document(s) are included in the plan set."
-          : "All required documents are attached.",
+          : gateDocs.filledAtStaging.length
+            ? `All required documents are attached; staging fills the rest from stored templates: ${gateDocs.filledAtStaging.map((d) => d.label).join("; ")}.`
+            : "All required documents are attached.",
       source: "documents.inventory",
     }),
     submitGateCheck({
@@ -3530,7 +3605,11 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       ownerRole: "Operations Coordinator",
       requirement: "After manual submit, approval/PTO/correction emails and portal updates must be captured so install-ready release depends on real AHJ and utility evidence.",
       evidence: [
-        submittedOrBeyond ? `Project status: ${project.status}` : "Project has not been manually submitted yet.",
+        submittedOrBeyond
+          ? `Project status: ${project.status}`
+          : unfiledTracks.length < gateTracks.length
+            ? `Still to file: ${unfiledTracks.join(", ")} (every other required track is filed).`
+            : "Project has not been manually submitted yet.",
         ...evidenceLines(utilityApprovalEvidence),
         ...detail.submissions.slice(0, 3).map((submission) => `${submission.submissionType}: ${submission.status} ${submission.confirmationNumber || ""}`),
       ],
@@ -5090,6 +5169,9 @@ export interface CorrectionReopenResult {
   attachedDocs?: number;
   browserLeftOpen?: boolean;
   offeredForms?: string[];
+  /** Why a revised document did not attach (a refused / failed attach) — the runner's own words.
+   *  Without them a reopen that attached 0 of 3 documents read only as "attachedDocs: 0". */
+  driftWarnings?: string[];
   /** Filing candidates when the reopen could not bind ONE target — operator picks by targetId. */
   candidates?: Array<{ targetId: string; targetType: string; applicationNumber: string; portalName: string; portalUrl: string }>;
   runId?: string;
@@ -5345,6 +5427,7 @@ export async function reopenCorrectionOnPortal(
   const needsHuman = result.needsHuman === true;
   const message = String(result.message ?? "");
   const offeredForms = Array.isArray(result.offeredForms) ? (result.offeredForms as unknown[]).map((f) => String(f)) : [];
+  const driftWarnings = Array.isArray(result.driftWarnings) ? (result.driftWarnings as unknown[]).map((w) => String(w)).slice(0, 20) : [];
   const runId = id();
   // DELIBERATELY 'awaiting_human_resubmit', never 'awaiting_human_submit': the approve/
   // auto-submit path selects runs by that other status, and a reopened correction must
@@ -5366,6 +5449,7 @@ export async function reopenCorrectionOnPortal(
     runId,
     reopenedForm: String(result.reopenedForm ?? ""),
     attachedDocs: Number(result.attachedDocs ?? 0),
+    driftWarnings,
     finalSubmitClickedByAutomation: false,
   });
 
@@ -5424,7 +5508,7 @@ export async function reopenCorrectionOnPortal(
   }
 
   if (!ok && needsHuman) {
-    return surfaceNeedsHuman(message || `Correction reopen for ${applicationNumber} needs a human.`, { offeredForms, runId });
+    return { ...surfaceNeedsHuman(message || `Correction reopen for ${applicationNumber} needs a human.`, { offeredForms, runId }), driftWarnings };
   }
   return {
     ok,
@@ -5436,6 +5520,7 @@ export async function reopenCorrectionOnPortal(
     attachedDocs: Number(result.attachedDocs ?? 0),
     browserLeftOpen: result.browserLeftOpen === true,
     offeredForms,
+    driftWarnings,
     runId,
   };
 }
@@ -6468,7 +6553,9 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // failure files another. Both times the "missing" data (customer + installer emails) was
   // already on the record. Agent proposals advise; they do not gate — a human's own pending
   // items still do.
-  const pendingCount = detail.humanReviewItems.filter((item) => item.status === "pending" && item.fieldName !== "correction" && !isAdvisoryReviewItem(item.issueType)).length;
+  // The SAME predicate the submit gate reads (isCriticalReviewItem) — two answers to "does this
+  // pending item hold staging?" let the gate go green while this 409 still refused.
+  const pendingCount = detail.humanReviewItems.filter(isCriticalReviewItem).length;
   const reviewerReport = buildReviewerReportFor(db, detail.project);
   const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker");
   const historicalReport = buildHistoricalFailureReport(db, projectId);
