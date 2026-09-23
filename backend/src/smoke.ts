@@ -1,7 +1,7 @@
 import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
-import { openDatabase } from "./db";
+import { DEFAULT_ORG_ID, openDatabase } from "./db";
 import { createClient } from "./clients";
 import { saveProjectDocument } from "./projectDocuments";
 import {
@@ -31,6 +31,7 @@ import {
   prepareSubmission,
   recordPermitStatusCheck,
   addProjectNote,
+  captureConfirmation,
   syncOperationsPlan,
   updateOperationStep,
   runEmailTracker,
@@ -350,6 +351,28 @@ if (!learnedTarget?.portalName.includes("DevHub")) {
   throw new Error(`Expected knowledge base to learn DevHub portal, got ${learnedTarget?.portalName || "none"}.`);
 }
 
+// TURNAROUND IS MEASURED FROM THE FILING A PERSON SENT (L2). Before the human confirms the
+// submission there is no submitted_at, so a review reading teaches no timeline at all — the old
+// code fell back to created_at and averaged every poll.
+const timelineSamples = () => db.query<{ milestone: string; start_at: string }>(
+  "SELECT milestone, start_at FROM permit_timeline_samples WHERE project_id = ?", [detail.project.id],
+);
+const stagedRun = getProjectDetail(db, detail.project.id).portalRuns.find((run) => run.status === "awaiting_human_submit" || run.status === "paused_for_human");
+if (!stagedRun) throw new Error("Expected a staged portal run awaiting the human submit.");
+captureConfirmation(db, stagedRun.id, { submittedBy: "smoke", confirmationNumber: "CONF-SMOKE" });
+const submittedAt = db.get<{ s: string }>(
+  "SELECT MIN(submitted_at) AS s FROM submissions WHERE project_id = ? AND submitted_at IS NOT NULL", [detail.project.id],
+)?.s;
+if (!submittedAt) throw new Error("Expected the captured confirmation to stamp submitted_at.");
+
+// A milestone is a TRANSITION the monitor observed: the filing is seen in review first. (A target
+// whose first-ever reading is already the milestone never observed it — no sample; see
+// timelineSamples.ts.)
+await recordPermitStatusCheck(db, detail.project.id, {
+  targetId: withTarget.permitCheckTargets[0].id,
+  source: "manual",
+  rawStatusText: "Plan review in progress. Assigned to reviewer.",
+});
 const ready = await recordPermitStatusCheck(db, detail.project.id, {
   targetId: withTarget.permitCheckTargets[0].id,
   source: "manual",
@@ -358,15 +381,33 @@ const ready = await recordPermitStatusCheck(db, detail.project.id, {
 if (ready.project.status !== "ready_for_issue" || !ready.permitStatusChecks[0]?.readyForIssue) {
   throw new Error(`Expected ready_for_issue, got ${ready.project.status}`);
 }
+// The same reading again is a LOOK, not a milestone: still exactly one review sample.
+await recordPermitStatusCheck(db, detail.project.id, {
+  targetId: withTarget.permitCheckTargets[0].id,
+  source: "manual",
+  rawStatusText: "Pre-issuance complete. Permit is ready to issue and fees are due.",
+});
+const reviewSamples = timelineSamples().filter((sample) => sample.milestone === "reviewed");
+if (reviewSamples.length !== 1 || reviewSamples[0].start_at !== submittedAt) {
+  throw new Error(`Expected exactly one review-turnaround sample measured from submitted_at, got ${JSON.stringify(reviewSamples)}.`);
+}
 const learnedTimeline = getKnowledgeBase(db).profiles.find((profile) => profile.ahj === SMOKE_AHJ && profile.utility === SMOKE_UTILITY);
-if (!learnedTimeline || learnedTimeline.timelineSampleCount < 1 || learnedTimeline.averageTimelineDays == null) {
-  throw new Error("Expected knowledge base to learn an average timeline sample from permit status.");
+if (!learnedTimeline || !learnedTimeline.timelineNotes.some((note) => /^Measured turnaround \(submitted to review complete\): median [0-9.]+ day\(s\), n=1$/.test(note))) {
+  throw new Error(`Expected the knowledge base to derive a review turnaround (median, n=1) from the sample, got ${JSON.stringify(learnedTimeline?.timelineNotes)}.`);
+}
+// Issuance is its own milestone: no issued sample yet, so no issuance figure — an unmeasured
+// AHJ has no number rather than a polling artifact.
+if (learnedTimeline.averageTimelineDays != null || learnedTimeline.timelineSampleCount !== 0) {
+  throw new Error(`Expected no issuance timeline before any issued reading, got ${learnedTimeline.averageTimelineDays} (n=${learnedTimeline.timelineSampleCount}).`);
 }
 
+// A correction the classifier can NAME (B_designer_fix: fire setback). An unrecognised one lands
+// in C_reviewer_clarification, which is never learned as a failure pattern (L4) — its intake
+// requiredAction even embeds the service address, which must not reach the SHARED rollup.
 const correction = await recordPermitStatusCheck(db, detail.project.id, {
   targetId: withTarget.permitCheckTargets[0].id,
   source: "manual",
-  rawStatusText: "Review comments: correction required. Please revise the site plan and resubmit.",
+  rawStatusText: "Review comments: correction required. Please revise the site plan to show the fire setback pathways and resubmit.",
 });
 if (correction.project.status !== "correction_received" || !correction.corrections.length) {
   throw new Error("Expected monitor correction to create a bucketed correction.");
@@ -381,6 +422,7 @@ if (!historicalAfter.topRejectionCauses.some((cause) => cause.count > 0)) {
 }
 
 const mboxResult = await importKnowledgeFromMbox(db, {
+  orgId: DEFAULT_ORG_ID,
   sourceLabel: "smoke.mbox",
   mboxText: `From reviewer@example.com Mon Jun 15 10:00:00 2026
 Subject: Pacific Power PowerClerk correction required

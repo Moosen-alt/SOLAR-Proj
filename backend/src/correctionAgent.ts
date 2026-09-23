@@ -16,6 +16,7 @@ import { createLLMProvider } from "./llm";
 import { getProjectDetail } from "./repository";
 import { designNotesDigest } from "./autoLearn";
 import { humanizeBucket } from "./corrections";
+import { relearnCorrection } from "./knowledgeBase";
 import { listProjectDocuments } from "./projectDocuments";
 import { addAuditLog } from "./audit";
 import { logger } from "./logger";
@@ -172,7 +173,7 @@ export async function triageCorrection(
 
 // ---- persistence ----------------------------------------------------------
 
-function persistTriage(
+export function persistTriage(
   db: AppDb,
   input: { correctionId: string; projectId: string },
   t: { bucket?: CorrectionBucket; rootCause?: string; requiredAction?: string; draft?: string; actions: string[]; proposals: CorrectionDataProposal[] },
@@ -219,6 +220,11 @@ function persistTriage(
     bucket: t.bucket,
     proposalCount: t.proposals.length,
   });
+
+  // LEARN FROM THE TRIAGE, NOT THE REGEX (L4). Intake learned the regex classifier's guess; the
+  // corrections row now holds the agent's bucket / root cause / action, so the learned failure
+  // row is replaced from it — or removed, when the agent says the reviewer only asked a question.
+  relearnCorrection(db, input.correctionId);
 }
 
 // ---- helpers --------------------------------------------------------------

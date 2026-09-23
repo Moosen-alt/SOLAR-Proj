@@ -242,6 +242,68 @@ await check("S3: a last-run blocker no live check can re-derive is KEPT (marked 
   assert.ok(s.blockers.some((b) => /Last autopilot run: .*another run/.test(b.detail)), JSON.stringify(s.blockers));
 });
 
+// 3b9ce10c: the only live blocker was a failed staging run and Stage portals was ENABLED — the
+// retry is the fix, yet the phase read BLOCKED. It reads the failure now; the reason is kept.
+await check("S3: a failed staging run is the ONLY live blocker and Stage portals is on → phase 'failed' (retry), never 'blocked'", () => {
+  const pid = mkProject();
+  failStage(pid, "combo", "2026-09-20T11:00:00.000Z");
+  const s = getAutopilotState(db, pid);
+  assert.equal(s.canStage, true, `precondition: re-staging is allowed (${s.stageDisabledReason})`);
+  assert.deepEqual(s.blockers.map((b) => b.code), ["stage_failed"], "precondition: the failed run is the only live blocker");
+  assert.equal(s.phase, "failed", `phase ${s.phase} beside an enabled Stage portals — restaging is the fix`);
+  assert.match(s.blockers[0].detail, /combo: login form not found/, "the failure reason is still carried for the rail's reason line");
+  assert.equal(s.message, s.nextStep.headline, "the rail and the banner say the same sentence");
+});
+
+await check("S3 MUST STILL BLOCK: a failed staging run PLUS another live blocker (operator block / owed document) reads blocked", () => {
+  const held = mkProject();
+  failStage(held, "combo", "2026-09-20T11:00:00.000Z");
+  setProjectStatusByOperator(db, held, "blocked", "waiting on the customer", "test operator");
+  const a = getAutopilotState(db, held);
+  assert.equal(a.phase, "blocked", `operator-held: ${a.phase}`);
+  const docs = mkPermitDocMissing();
+  failStage(docs, "nem", "2026-09-20T11:00:00.000Z");
+  const b = getAutopilotState(db, docs);
+  assert.ok(b.blockers.some((x) => x.code === "stage_failed"), `precondition: ${JSON.stringify(b.blockers)}`);
+  assert.equal(b.phase, "blocked", `an owed document beside the failed run: ${b.phase}`);
+});
+
+// The two cases above also have Stage portals DISABLED, so they would still read blocked if the
+// retry rule forgot to require that EVERY live blocker is the failed run. An unpaid per-submission
+// charge does not disable Stage portals (canStage stays true) but IS a live blocker: the retry
+// would run straight into the 402. This is the case that pins `.every` and `&& canStage` apart.
+await check("S3 MUST STILL BLOCK: a failed staging run beside an unpaid per-submission charge (Stage portals still enabled) reads blocked", () => {
+  const payClient = createClient(db, { companyName: "PerSub Retry Solar", legalBusinessName: "PerSub Retry Solar", billingMode: "per_submission", serviceFeeUsd: "175", ccbLicenseNumber: "240137" });
+  const d = createProject(db, { clientId: payClient.id, owner: "Retry Pay Owner", ...FIXTURE });
+  const pid = d.project.id;
+  createdIds.push(pid);
+  saveProjectDocument(db, pid, { docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n%\n", "utf8"), source: "upload" });
+  failStage(pid, "combo", "2026-09-20T11:00:00.000Z");
+  const s = getAutopilotState(db, pid);
+  assert.deepEqual(s.blockers.map((b) => b.code).sort(), ["payment_required", "stage_failed"], `precondition: exactly these two live blockers: ${JSON.stringify(s.blockers)}`);
+  assert.equal(s.canStage, true, `precondition: Stage portals is enabled (${s.stageDisabledReason}) — otherwise this case does not reach the retry rule`);
+  assert.equal(s.phase, "blocked", `phase ${s.phase}: an unpaid charge beside the failed run read as a plain retry`);
+});
+
+// …and the other half of the rule: the failed run IS the only live blocker, but Stage portals is
+// DISABLED (a staging job for this project is already queued — the autopilot job itself is not in
+// flight, so the rail does not short-circuit to 'running'). A "re-stage" phase beside a disabled
+// button is the 3b9ce10c confusion in reverse; it keeps BLOCKED, with the failure still printed.
+await check("S3 MUST STILL BLOCK: a failed staging run as the only live blocker, with Stage portals DISABLED, reads blocked", () => {
+  const pid = mkProject();
+  failStage(pid, "combo", "2026-09-20T11:00:00.000Z");
+  db.run(
+    `INSERT INTO job_queue (id, job_type, payload, status, priority, project_id, created_at, progress, progress_total, retry_count, max_retries, org_id)
+     VALUES (?, 'prepare_submission', '{}', 'pending', 5, ?, ?, 0, 0, 0, 0, 'default')`,
+    [`job-${++seq}`, pid, "2026-09-20T11:05:00.000Z"],
+  );
+  const s = getAutopilotState(db, pid);
+  assert.deepEqual([...new Set(s.blockers.map((b) => b.code))], ["stage_failed"], `precondition: the failed run is the only live blocker: ${JSON.stringify(s.blockers)}`);
+  assert.equal(s.canStage, false, "precondition: Stage portals is disabled while a staging job is queued");
+  assert.equal(s.phase, "blocked", `phase ${s.phase} beside a DISABLED Stage portals`);
+  db.run("DELETE FROM job_queue WHERE project_id = ?", [pid]);
+});
+
 // ── S8 ─────────────────────────────────────────────────────────────────────────────────
 await check("S8: canStage — true on a clean pre-stage project, false with a reason when blocked / past Submit / all staged", () => {
   const fresh = mkProject();
@@ -522,6 +584,64 @@ await check("ONE PREDICATE MUST STILL BLOCK: a genuinely missing upload-only doc
   assert.equal(s.canStage, false);
 });
 
+// The packet screen (assembleApplicationDocumentPackage → pkg.missingDocuments) and the QC
+// early-warning rows read documentInventory RAW, so both still said the prescriptive checklist was
+// "NOT in the packet" / "not attached — staging will refuse without it" beside a gate that said
+// "Filled at staging" (e6b3afde, 29cd57b5). Same answer everywhere now: held out, and named.
+const { getApplicationDocumentPackage } = await import("../src/repository");
+const qcDocRows = (pid: string) => db.query<{ rule_id: string; qc_status: string; message: string }>(
+  "SELECT rule_id, qc_status, message FROM qc_results WHERE project_id = ? AND rule_id LIKE 'docs.%'", [pid]);
+await check("ONE PREDICATE: the packet screen and QC do not call a fill-produced form missing — they name it 'filled at staging'", () => {
+  storeSalemChecklist();
+  const pid = mkProject(SALEM); // createProject runs QC — AFTER the template is on file
+  assert.deepEqual(permitSideMissing(pid), ["solar_checklist"], "precondition: the raw inventory still says the filled checklist is not on disk");
+  const pkg = getApplicationDocumentPackage(db, pid);
+  const rows = qcDocRows(pid);
+  const wrong = [
+    pkg.missingDocumentsStatus !== "resolved" ? `packet inventory unresolved: ${pkg.missingDocumentsError}` : "",
+    (pkg.missingDocuments || []).some((d) => d.docType === "solar_checklist") ? "packet lists the checklist as MISSING" : "",
+    !(pkg.filledAtStagingDocuments || []).some((d) => d.docType === "solar_checklist") ? `packet does not name it as filled at staging: ${JSON.stringify(pkg.filledAtStagingDocuments)}` : "",
+    rows.some((r) => r.rule_id === "docs.solar_checklist" && r.qc_status === "warning") ? "QC warns the checklist is not attached" : "",
+    !rows.some((r) => r.rule_id === "docs.solar_checklist" && r.qc_status === "pass" && /filled at staging/i.test(r.message)) ? `QC does not say it is filled at staging: ${JSON.stringify(rows)}` : "",
+  ].filter(Boolean);
+  assert.deepEqual(wrong, [], wrong.join("\n         "));
+});
+
+await check("ONE PREDICATE MUST STILL WARN: a document only a person can supply (PE letter) stays missing on the packet AND a QC warning", () => {
+  storeSalemChecklist();
+  const eng = mkProject({ ...SALEM, permitPath: "ENGINEERED" });
+  const pkg = getApplicationDocumentPackage(db, eng);
+  assert.ok((pkg.missingDocuments || []).some((d) => d.docType === "structural_letter"), `packet: ${JSON.stringify(pkg.missingDocuments)}`);
+  assert.ok(!(pkg.filledAtStagingDocuments || []).some((d) => d.docType === "structural_letter"), "a PE letter read as filled at staging");
+  assert.ok(qcDocRows(eng).some((r) => r.rule_id === "docs.structural_letter" && r.qc_status === "warning"), JSON.stringify(qcDocRows(eng)));
+});
+
+await check("ONE PREDICATE: the packet card renders the held-out form as 'filled at staging', never 'NOT in the packet'", () => {
+  // The REAL documentVerdictHtml (+ the esc / plural it closes over), lifted out of dashboard.js.
+  const src = fs.readFileSync(path.resolve(import.meta.dirname, "../../frontend/dashboard.js"), "utf8");
+  const cut = (name: string): string => {
+    const at = src.indexOf(`function ${name}(`);
+    assert.ok(at > -1, `${name} is gone from dashboard.js`);
+    let depth = 0;
+    for (let j = src.indexOf("{", at); j < src.length; j++) {
+      if (src[j] === "{") depth++;
+      else if (src[j] === "}" && --depth === 0) return src.slice(at, j + 1);
+    }
+    throw new Error(`unbalanced braces reading ${name}`);
+  };
+  // eslint-disable-next-line no-new-func
+  const verdict = new Function(`${[cut("esc"), cut("plural"), cut("documentVerdictHtml")].join("\n\n")}\nreturn documentVerdictHtml;`)() as (pkg: unknown) => string;
+  const held = [{ docType: "solar_checklist", label: "Solar prescriptive checklist, <b>filled</b>", lane: "permit", why: "" }];
+  const html = verdict({ missingFields: [], missingDocumentsStatus: "resolved", missingDocuments: [], filledAtStagingDocuments: held });
+  assert.match(html, /1 required form filled at staging/, html);
+  assert.match(html, /Solar prescriptive checklist, &lt;b&gt;filled/, "the held-out form is named (esc()'d)");
+  assert.doesNotMatch(html, /NOT in the packet/, "a form staging fills read as missing");
+  // MUST STILL: an owed document beside it is still named as missing.
+  const both = verdict({ missingFields: [], missingDocumentsStatus: "resolved", missingDocuments: [{ docType: "structural_letter", label: "PE-stamped structural letter", lane: "permit", why: "engineered" }], filledAtStagingDocuments: held });
+  assert.match(both, /1 required document NOT in the packet/);
+  assert.match(both, /filled at staging/);
+});
+
 await check("ONE PREDICATE: only a PERMIT-lane row is ever held out as 'filled at staging' (the fill never runs on the NEM lane)", async () => {
   storeSalemChecklist();
   const { owedMissingDocuments } = await import("../src/requiredDocuments");
@@ -581,6 +701,29 @@ await check("gateBlockersForTracks: a permit-path blocker holds the permit track
   // Control: a project-wide blocker holds every track, NEM included.
   const qc = { decision: "blocked", blockers: [{ id: "qc-human-review", title: "QC", nextAction: "Resolve QC." }] } as never;
   assert.deepEqual(gateBlockersForTracks(db, project, qc, ["nem"]).map((b) => b.tracks), [["nem"]]);
+});
+
+// ── the gate's document evidence keeps every line that NAMES a document state ──────────────────
+// submitGateCheck capped each check's evidence at 6 lines, and the document check writes the
+// count line and up to 4 present-document lines FIRST — so on a project with 4+ documents present
+// (e6b3afde) its "Missing (advisory): …" line was cut on the server, the check read WARNING, and
+// its nextAction ("Confirm the advisory document(s)…") named none: the advisory doc was named
+// nowhere. The state-naming lines (Filled at staging / MISSING (required) / Missing (advisory))
+// are never capped; only the rest is.
+await check("gate evidence: 'Missing (advisory): …' survives beside 4+ present documents (never capped away)", () => {
+  // No label schedule anywhere → TWO advisory rows (labels + the filled checklist) beside 6 present.
+  const NL = String.fromCharCode(10);
+  const pid = mkProject({ labelsText: "", splitPagesText: FIXTURE.splitPagesText.split(NL).filter((l) => !/label/i.test(l)).join(NL) });
+  const doc = getSubmitGateReport(db, pid).checks.find((c) => c.id === "document-inventory")!;
+  const presentCount = Number(/^(\d+)\/\d+ required documents present/.exec(doc.evidence[0] ?? "")?.[1] ?? 0);
+  assert.ok(presentCount >= 4, `precondition: 4+ present documents (their lines filled the old cap): ${JSON.stringify(doc.evidence)}`);
+  assert.equal(doc.status, "warning", `precondition: the advisory documents make the check a warning: ${doc.status}`);
+  for (const name of [/label/i, /checklist/i]) {
+    assert.ok(doc.evidence.some((e) => e.startsWith("Missing (advisory): ") && name.test(e)), `advisory ${name} is named nowhere: ${JSON.stringify(doc.evidence)}`);
+  }
+  assert.ok(doc.evidence.some((e) => e.startsWith("✓ ")), `the present lines still share the rest of the cap: ${JSON.stringify(doc.evidence)}`);
+  const namedCount = doc.evidence.filter((e) => /^(Filled at staging:|MISSING \(required\):|Missing \(advisory\):)/.test(e)).length;
+  assert.ok(doc.evidence.length - namedCount <= Math.max(0, 6 - namedCount), `the other lines share what the named ones leave of the 6-line cap: ${JSON.stringify(doc.evidence)}`);
 });
 
 for (const pid of createdIds) fs.rmSync(path.resolve("backend/data/filled", pid), { recursive: true, force: true });

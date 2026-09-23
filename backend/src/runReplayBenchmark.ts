@@ -315,7 +315,7 @@ async function main(): Promise<void> {
         ahj: jurisdictionAddress?.city ?? "Salem",
         utility: "Pacific Power",
         clientId: CLIENT,
-      } as never);
+      } as never, undefined, { learningExcluded: true });
       pid = created.project.id;
       const project = created.project as unknown as ProjectRecord;
       // USE THE ACCESSOR, NOT THE RAW ROW. Spreading the DB row gave the adapter

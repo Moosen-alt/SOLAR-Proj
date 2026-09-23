@@ -112,6 +112,15 @@ export function recordPaidFeeReceipt(db: AppDb, receipt: PaidFeeReceipt, project
     || Math.abs(amounts[0] + amounts[1] + amounts[2] - amounts[3]) > 0.015) throw new Error("Receipt amounts or identity are inconsistent.");
   db.run("INSERT INTO permit_fee_history(id,state,ahj,utility,track,fee_usd,source,project_id,recorded_at) VALUES(?, 'OR', ?, '', 'permit', ?, ?, ?, ?)",
     [id, receipt.jurisdiction, receipt.authorityAmountUsd, source, projectId, nowIso()]);
+  // L5: a paid receipt is evidence about the seeded schedule for its jurisdiction. Hold it up
+  // against that schedule and, where they disagree, raise ONE deduped operator review item —
+  // never a schedule change (rule 3). Lazy import (feeSchedules is heavy and sits in a cycle-
+  // prone neighbourhood); best-effort, a receipt is recorded whatever the comparison says.
+  void import("./feeSchedules").then((fees) => {
+    const report = fees.reconcileReceiptsWithSchedules(db);
+    const touched = report.results.filter((r) => r.receipts.some((x) => x.jurisdiction === receipt.jurisdiction.replace(/\s+/g, " ").trim()));
+    fees.raiseReceiptContradictionReviews(db, { ...report, results: touched });
+  }).catch(() => null);
   return { recorded: true, reason: "Paid component recorded; excluded from whole-filing estimates." };
 }
 

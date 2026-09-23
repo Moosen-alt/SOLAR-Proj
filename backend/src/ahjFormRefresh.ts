@@ -4,7 +4,7 @@ import { logger } from "./logger";
 import { nowIso } from "./time";
 import { parseJson } from "./json";
 import { buildFieldMapForPdf, documentDateForPdf, fetchPdf, sha256, storeAhjFormTemplate, type StoredFieldMap } from "./ahjFormAuto";
-import { knowledgeResearchHint } from "./knowledgeBase";
+import { isVerifiedKnowledge, knowledgeResearchHint } from "./knowledgeBase";
 import { startPersistentSchedule } from "./schedulerState";
 
 // ---------------------------------------------------------------------------
@@ -222,8 +222,8 @@ export async function checkKnowledgeLinks(
 
   // Rotate: never-checked first, then oldest. Rows actually used by projects
   // come first within each group so live jurisdictions stay freshest.
-  const rows = db.query<{ id: string; state: string; ahj: string; utility: string; portal_url: string; confidence: string; notes: string }>(
-    `SELECT id, state, ahj, utility, portal_url, confidence, notes FROM permit_utility_knowledge
+  const rows = db.query<{ id: string; state: string; ahj: string; utility: string; portal_url: string; confidence: string; verified_at: string | null; notes: string }>(
+    `SELECT id, state, ahj, utility, portal_url, confidence, verified_at, notes FROM permit_utility_knowledge
       WHERE portal_url IS NOT NULL AND portal_url != ''
       ORDER BY link_checked_at IS NOT NULL, link_checked_at ASC, project_count DESC
       LIMIT ?`,
@@ -262,8 +262,10 @@ export async function checkKnowledgeLinks(
         logger.warn("kb-links", `re-research failed for ${row.ahj || row.utility}: ${err instanceof Error ? err.message : String(err)}`);
       }
       if (newUrl && newUrl !== row.portal_url && (await probeUrl(newUrl)) !== "dead") {
-        // Human-verified ('mixed') rows keep their URL — flag for the operator instead.
-        if (row.confidence === "mixed") {
+        // Human-verified rows keep their URL — flag for the operator instead. Verified means
+        // verified_at (isVerifiedKnowledge), not confidence 'mixed', which an automatic
+        // seeded+learned merge also wrote.
+        if (isVerifiedKnowledge(row)) {
           const note = withLinkNote(row.notes, `Portal link check ${ts}: stored URL is dead (${row.portal_url}); research suggests ${newUrl} — VERIFY and update.`);
           db.run("UPDATE permit_utility_knowledge SET portal_link_status = 'dead', link_checked_at = ?, notes = ?, updated_at = ? WHERE id = ?", [ts, note, ts, row.id]);
         } else {

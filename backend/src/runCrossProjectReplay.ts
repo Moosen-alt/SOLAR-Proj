@@ -371,7 +371,7 @@ async function main(): Promise<void> {
   let pid = "";
   let exitCode = 0;
   try {
-    const created = createProject(db, payload as never);
+    const created = createProject(db, payload as never, undefined, { learningExcluded: true });
     pid = created.project.id;
     const project = created.project as unknown as ProjectRecord;
     console.log(`\ncreated project ${variant.label}: ${pid} (${variant.homeownerName})`);

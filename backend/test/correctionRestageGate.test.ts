@@ -59,6 +59,7 @@ process.env.AUTOPILOT_AUTO_START = "0"; // lifted for section 5, which is ABOUT 
 const { openDatabase } = await import("../src/db");
 const { createProject, addManualCorrection, resolveCorrection, prepareSubmission, setProjectStatusByOperator } = await import("../src/repository");
 const { runAutopilotSegmentA, maybeResumeAutopilot } = await import("../src/autopilot");
+const { persistTriage } = await import("../src/correctionAgent");
 const db = await openDatabase();
 
 let failures = 0;
@@ -132,6 +133,17 @@ check("the gate ladder actually refuses a bare project (the fixture proves somet
 
 const triaged = addManualCorrection(db, projectId, "Please revise the one-line diagram to show the AC disconnect location.");
 assert.equal(triaged.project.status, "correction_triaged");
+// The regex classifier cannot name this one (bucket C, "Unclassified correction"), and a C
+// correction teaches no failure pattern; the learned title reads the CLASSIFICATION, never the raw
+// sample (L4/L7). So the learning arrives with the triage verdict, as it does live — driven here
+// through the agent's own persistence (persistTriage), since the fixture runs with no API key.
+persistTriage(db, { correctionId: triaged.corrections[0].id, projectId }, {
+  bucket: "B_designer_fix",
+  rootCause: "One-line / SLD does not show the AC disconnect location",
+  requiredAction: "Revise the SLD to show the AC disconnect location and resubmit.",
+  actions: [],
+  proposals: [],
+});
 const atTriaged = await refusal(projectId);
 
 check("an open correction does not loosen what the gate ladder reports", () => {

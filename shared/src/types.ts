@@ -991,6 +991,19 @@ export interface ApplicationDocumentPackage {
   /** Why the inventory could not be computed, for the operator. Set only alongside
    *  missingDocumentsStatus === "unavailable". */
   missingDocumentsError?: string;
+  /**
+   * Required documents the inventory has not seen on disk YET that the staging-time fill
+   * produces from a stored template (owedMissingDocuments' `filledAtStaging`) — held OUT of
+   * missingDocuments, because they are not the operator's to attach, and named here so the
+   * screen can say "filled at staging" instead of letting them vanish. Set alongside
+   * missingDocumentsStatus === "resolved".
+   */
+  filledAtStagingDocuments?: Array<{
+    docType: string;
+    label: string;
+    lane: "permit" | "nem";
+    why: string;
+  }>;
   html: string;
   /** When the knowledge base has a learned profile for this AHJ, its real
    *  required-document list + portal (so the PM isn't relying on the generic fallback). */
@@ -1002,6 +1015,9 @@ export interface ApplicationDocumentPackage {
     requiredDocuments: string[];
     confidence: string;
     correctionCount: number;
+    /** When a person verified the row (null = nobody has) — the badge says "Verified" only then. */
+    verifiedAt?: string | null;
+    verifiedBy?: string;
   };
   /** Human callout of the permit TYPE: combo vs separate BLD/ELE + submission method. */
   permitType?: string;
@@ -1263,6 +1279,12 @@ export interface KnowledgeSource {
   observedAt: string;
 }
 
+/**
+ * A correction pattern rolled up onto a SHARED knowledge row (every tenant reads it).
+ * Deliberately carries no raw sample text: a correction excerpt can name a homeowner or
+ * a co-customer, and the raw excerpt lives only in the org-scoped
+ * historical_failure_examples table.
+ */
 export interface CommonCorrectionPattern {
   signature: string;
   bucket: CorrectionBucket;
@@ -1270,7 +1292,6 @@ export interface CommonCorrectionPattern {
   requiredAction: string;
   count: number;
   lastSeenAt: string;
-  sample: string;
 }
 
 export interface PermitUtilityKnowledgeProfile {
@@ -1292,7 +1313,15 @@ export interface PermitUtilityKnowledgeProfile {
   commonCorrections: CommonCorrectionPattern[];
   projectCount: number;
   correctionCount: number;
+  /** A provenance LABEL only — never a lock. "mixed" was historically written both by a
+   *  human verification and by an automatic seeded+learned merge; whether a person checked
+   *  the row is `verifiedAt`, read through isVerifiedKnowledge(). */
   confidence: "seeded" | "learned" | "mixed";
+  /** When a person first verified this row (verified save or operator ruling); null =
+   *  nobody has. The ONE signal hard rule 3 locks on. */
+  verifiedAt: string | null;
+  /** Who verified it (user id, or the ruling / backfill provenance); "" when unverified. */
+  verifiedBy: string;
   sources: KnowledgeSource[];
   notes: string;
   firstSeenAt: string;

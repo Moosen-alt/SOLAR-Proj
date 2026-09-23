@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, ParserExtractedField } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
+import { persistLlmCall } from "./llmAccounting";
 import { lookupCecInverter } from "./cecEquipment";
 import { planTextForExtraction } from "./structuralIntake";
 import type { CodeResearchProvenance } from "./codeProfiles";
@@ -218,6 +219,8 @@ export interface LlmCallRecord {
   cacheWrite?: number;
   stop?: string | null;
   error?: string;
+  /** The model that answered. Implicit before LLM-6, so a model change silently re-priced history. */
+  model?: string;
 }
 
 const LLM_CALL_LOG_MAX = 400;
@@ -228,8 +231,13 @@ const llmCallLog: LlmCallRecord[] = [];
 // to drive the real surface — a mock log would prove the mock. Production writes still
 // arrive solely via instrument().
 export function recordLlmCall(rec: LlmCallRecord): void {
-  llmCallLog.push(rec);
+  const withModel: LlmCallRecord = { ...rec, model: rec.model || MODEL };
+  llmCallLog.push(withModel);
   if (llmCallLog.length > LLM_CALL_LOG_MAX) llmCallLog.splice(0, llmCallLog.length - LLM_CALL_LOG_MAX);
+  // LLM-6: the ring buffer dies with the process; the ledger does not. Best-effort and
+  // never throws (llmAccounting.persistLlmCall), attributed to whatever project/job context
+  // the caller runs under (runWithLlmContext).
+  persistLlmCall({ ...withModel, model: withModel.model as string });
 }
 
 /** Calls made at or after `sinceEpochMs`, oldest first. */
@@ -823,7 +831,7 @@ export class ClaudeLLMProvider implements LLMProvider {
     if (lastErr) {
       const err = lastErr;
       logger.error("llm", `✗ ${label} failed`, { ms: `${Math.round(performance.now() - t0)}ms`, ...meta, err: errMsg(err) });
-      recordLlmCall({ at, label, ms: Math.round(performance.now() - t0), error: errMsg(err) });
+      recordLlmCall({ at, label, model: MODEL, ms: Math.round(performance.now() - t0), error: errMsg(err) });
       throw err;
     }
     msg = msg!;
@@ -851,7 +859,7 @@ export class ClaudeLLMProvider implements LLMProvider {
       logger.info("llm", `✓ ${label}`, extra);
     }
     recordLlmCall({
-      at, label, ms,
+      at, label, model: MODEL, ms,
       inTok: u?.input_tokens, outTok: u?.output_tokens,
       cacheRead: u?.cache_read_input_tokens || undefined,
       cacheWrite: u?.cache_creation_input_tokens || undefined,
@@ -930,6 +938,7 @@ export class ClaudeLLMProvider implements LLMProvider {
       recordLlmCall({
         at: startedAt,
         label: `${label}.countTokens`,
+        model: MODEL,
         ms: Math.round(performance.now() - t0),
         inTok: whole.input_tokens,
         outTok: 0,

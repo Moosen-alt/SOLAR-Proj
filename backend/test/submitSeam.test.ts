@@ -433,7 +433,7 @@ check("1k. and the approve button stays available (a later track still needs it)
 // ===========================================================================
 {
   const { decideNextStep, NEXT_STEP_BUTTON_IDS } = await import("../src/nextStep");
-  const { isCriticalReviewItem, NON_QC_REVIEW_FIELDS } = await import("../src/repository");
+  const { isCriticalReviewItem, NON_QC_REVIEW_FIELDS, trackStateSummary } = await import("../src/repository");
   const dashboard = fs.readFileSync(path.join(here, "..", "..", "frontend", "dashboard.js"), "utf8").replace(/\r\n/g, "\n");
   const repoSrc = fs.readFileSync(path.join(srcDir, "repository.ts"), "utf8");
   const typesSrc = fs.readFileSync(path.join(here, "..", "..", "shared", "src", "types.ts"), "utf8");
@@ -463,8 +463,10 @@ check("1k. and the approve button stays available (a later track still needs it)
     "NON_QC_REVIEW_FIELDS", "ADVISORY_REVIEW_ISSUE_TYPES", "reviewItemBuckets", "reopenResultMessage", "showSubmitBlockerNote",
     "applyAutopilotState", "startAutopilot", "fmtDate", "boardReviewCountChip", "boardCardHtml",
     "resetAutopilotRail", "AUTOPILOT_LOAD_FAILED_TEXT", "refreshAutopilot", "selectProject",
+    "permitTargetKindLabel", "renderPermitMonitor", "TRACK_STATE_WORDS", "trackStateWords", "kbConfidenceBadge",
     "permitTargetOptionLabel", "renderPermitStatusTargetPicker", "permitStatusTargetId", "recordPermitStatus", "handleStaleRecheckClick",
     "syncPermitForm",
+    "plural", "statusBadge", "briefClass", "submitGateClass", "bandHead", "gateEvidenceSplit", "renderSubmitGate",
   ];
   const code = NAMES.map(lift).join("\n\n");
   const EXPORTS = NAMES.filter((n) => /^[a-zA-Z]/.test(n)).join(", ");
@@ -813,13 +815,23 @@ check("1k. and the approve button stays available (a later track still needs it)
     const pl6 = load(els6, st6, { api, ...loaders, Element: FakeEl });
     pl6.renderPermitStatusTargetPicker();
     els6.permitStatusTarget.value = "t2"; // the operator had the NEM filing selected
+    pl6.syncPermitForm(); // …so the number fields hold the NEM filing's numbers
+    const beforeClick = els6.permitApplicationNumber.value;
     const clicked = Object.assign(new FakeEl(), { closest: () => ({ dataset: { recheckTarget: "t1", recheckSource: "manual" } }) });
     pl6.handleStaleRecheckClick({ target: clicked });
+    // The re-check moved the selector to t1 — the number fields must follow it (the syncPermitForm()
+    // call in handleStaleRecheckClick), or the form shows the NEM filing's number beside a selector
+    // that names the building permit, and the paste posts that number with the building's check.
+    const afterClick = `${els6.permitApplicationNumber.value}|${els6.permitTrackingNumber.value}`;
     posted = null;
     await pl6.recordPermitStatus("manual");
     check("10l10. the stale panel's manual re-check moves the selector to its filing, and the paste posts there",
       els6.permitStatusTarget.value === "t1" && (posted as Record<string, unknown> | null)?.targetId === "t1",
       `selector=${els6.permitStatusTarget.value} posted=${JSON.stringify(posted)}`);
+    check("10l10b. ...and the number fields are refilled from THAT filing (never the one selected before the click)",
+      beforeClick === t2.applicationNumber && afterClick === "DEMO-SLM-BUILDING-0001|"
+        && (posted as Record<string, unknown> | null)?.applicationNumber === "DEMO-SLM-BUILDING-0001",
+      `before=${beforeClick} after=${afterClick} posted=${JSON.stringify(posted)}`);
 
     // 10l11 — THE NUMBERS COME FROM THE SELECTED FILING ONLY. With the FIRST filing selected (no
     // permit number of its own), syncPermitForm fell back to "the first submission carrying a
@@ -863,6 +875,39 @@ check("1k. and the approve button stays available (a later track still needs it)
       onSecond === "ELE-26-0002|ELE-PERMIT-99" && backOnFirst === "BLD-26-0001|", `second=${onSecond} first=${backOnFirst}`);
   }
 
+  // 10m — THE GATE PANEL NAMES EVERY DOCUMENT ITS CHECK NAMES. The document check writes a count
+  // line and up to four "✓" lines first; the panel printed evidence.slice(0, 4), so the
+  // "Filled at staging: …" line (index 5 on e6b3afde / 8f4ca8dd) — the only place the held-out
+  // checklist is named when the check is a WARNING over an advisory — never reached the screen.
+  {
+    const docCheck = {
+      id: "document-inventory", title: "Required documents attached", lane: "permit", status: "warning", ownerRole: "Permit Ops",
+      source: "documents.inventory", requirement: "Every required submittal document must be attached.",
+      nextAction: "Confirm the advisory document(s) are included in the plan set.",
+      evidence: [
+        "6/7 required documents present, 1 more filled from a stored template at staging.",
+        "✓ Plan set (attached file)", "✓ Site plan (in plan set)", "✓ Single-line diagram (in plan set)", "✓ Module spec sheet (in plan set)",
+        "Filled at staging: Solar prescriptive checklist, filled — the form's template is on file; staging fills and attaches it",
+        "Missing (advisory): <img src=x onerror=alert(1)> Fire access plan",
+      ],
+    };
+    const passCheck = { ...docCheck, id: "qc-human-review", title: "QC", status: "pass", nextAction: "Nothing to do.", evidence: ["a", "b", "c", "d", "e", "f"] };
+    const gateEls: Record<string, El> = Object.fromEntries(["submitGate", "submitGateStatus", "copySubmitGateBtn", "prepareBtn"].map((id) => [id, mkEl(id)]));
+    load(gateEls, { submitGate: { decision: "ready_to_stage", headline: "Ready", nextAction: "Stage it.", canPrepareSubmission: true, checks: [docCheck, passCheck], manualSubmitChecklist: [] }, detail: null },
+      { ensureKeelixDetailStyles: () => {} }).renderSubmitGate();
+    const html = String(gateEls.submitGate.innerHTML);
+    const at = html.indexOf("Required documents attached");
+    const visible = at < 0 ? "" : html.slice(at, html.indexOf('<details class="provenance">', at));
+    check("10m. the document check's 'Filled at staging' line is shown under Next, outside the closed fold",
+      /Filled at staging: Solar prescriptive checklist, filled/.test(visible), visible.slice(0, 400));
+    check("10m2. ...and every other line that names a document's state (advisory / MISSING) is shown there too, esc()'d",
+      /Missing \(advisory\): &lt;img/.test(visible) && !/<img/.test(html), visible.slice(0, 400));
+    check("10m3. MUST EXCLUDE: the present-document ✓ lines stay in the fold (Next stays the act-on-it half)",
+      !/✓ Plan set/.test(visible) && /✓ Module spec sheet/.test(html), visible.slice(0, 400));
+    check("10m4. MUST PASS: no evidence line is dropped any more — a pass row's six lines all render in its fold",
+      ["a", "b", "c", "d", "e", "f"].every((l) => html.includes(`<li>${l}</li>`)), html.slice(-600));
+  }
+
   // 10k — the banner's "Show" for a portal run lands ON the run: revealElement opens the closed
   // "Earlier runs (N · M failed)" fold inside #portalRuns and lands on its failed card.
   {
@@ -878,6 +923,70 @@ check("1k. and the approve button stays available (a later track still needs it)
     lib.revealElement(runsEl);
     check("10k. Show on a portal run opens the closed runs fold", fold.open === true);
     check("10k2. ...and lands on the failed run card inside it, not the list's closed summary line", landed === "failCard", `landed on ${landed}`);
+  }
+  // 10o — THE PERMIT / NEM METRIC READS EACH FILING'S STATE, NOT THE LANE ROLLUP. It read the
+  // process map's permitStatus ("waiting" whenever any step waits) and so said "Permit Waiting"
+  // beside a ready_for_issue permit. It reads the submittal tracks now, in the SAME words the
+  // server's process-map headline uses (trackStateSummary) — pinned equal for every status.
+  {
+    const demo = [
+      { type: "nem", category: "utility", status: "in_review" },
+      { type: "building", category: "permit", status: "ready_for_issue" },
+      { type: "electrical", category: "permit", status: "in_review" },
+    ];
+    const w = lib.trackStateWords(demo);
+    check("10o. a ready_for_issue building permit reads 'fee due' on the metric, never 'waiting'", w?.permit === "building fee due, electrical in review" && w?.nem === "in review", JSON.stringify(w));
+    check("10o2. no tracks loaded → null (the metric says 'Not checked', never a lane rollup)", lib.trackStateWords(null) === null && lib.trackStateWords([]) === null);
+    const statuses = ["not_started", "staged", "submitted", "in_review", "correction", "ready_for_issue", "issued"];
+    const drift: string[] = [];
+    for (const st of statuses) {
+      for (const set of [[{ type: "combo", category: "permit", status: st }, { type: "nem", category: "utility", status: st }],
+        [{ type: "building", category: "permit", status: st }, { type: "electrical", category: "permit", status: "in_review" }]]) {
+        const a = JSON.stringify(lib.trackStateWords(set)), b = JSON.stringify(trackStateSummary(set as never));
+        if (a !== b) drift.push(`${st}: dashboard ${a} vs server ${b}`);
+      }
+    }
+    check("10o3. ONE ANSWER: the dashboard's words equal the server headline's for every track status", drift.length === 0, drift.join("; "));
+  }
+
+  // 10p — THE KNOWLEDGE BADGE FOLLOWS THE LOCK. "mixed" rows were unlocked (only verified_at locks
+  // a row now — hard rule 3), yet the KB list still badged them "mixed" exactly as before, a label
+  // operators read as "a person checked this". "Verified" appears only when verifiedAt is set.
+  {
+    const verified = String(lib.kbConfidenceBadge({ confidence: "mixed", verifiedAt: "2026-09-19T12:00:00Z", verifiedBy: "operator ruling 2026-09-19" }));
+    const mixed = String(lib.kbConfidenceBadge({ confidence: "mixed", verifiedAt: null, verifiedBy: "" }));
+    const learnedVerified = String(lib.kbConfidenceBadge({ confidence: "learned", verifiedAt: "2026-09-19T12:00:00Z" }));
+    const seeded = String(lib.kbConfidenceBadge({ confidence: "seeded", verifiedAt: null }));
+    check("10p. verifiedAt set → a 'Verified' pass badge (whatever the confidence label)", />Verified</.test(verified) && /badge-pass/.test(verified) && />Verified</.test(learnedVerified), verified);
+    check("10p2. MUST EXCLUDE: an unverified 'mixed' row never reads Verified, and reads as the plain merge", !/Verified</.test(mixed) && !/badge-pass/.test(mixed) && mixed.includes(">Learned + seeded<"), mixed);
+    check("10p3. an unverified seeded row keeps its plain label", />Seeded</.test(seeded) && !/Verified</.test(seeded), seeded);
+    check("10p4. the KB list card and the project's learned-requirements card both use it",
+      dashboard.includes("${kbConfidenceBadge(profile)}") && dashboard.includes("${kbConfidenceBadge(learned)}")
+        && !dashboard.includes("statusBadge(profile.confidence)") && !dashboard.includes("statusBadge(learned.confidence)"));
+  }
+
+  // 10n — THE TRACKING LIST NAMES THE FILING THE SAME WAY THE SELECTOR DOES. renderPermitMonitor
+  // labelled every non-NEM target "(building permit)": an electrical filing read "Online portal
+  // (building permit)" right beside a selector that called it Electrical. Both read ONE helper.
+  {
+    const targets = [
+      { id: "t-e", active: true, targetType: "permit", permitType: "electrical", portalName: "Online portal", applicationNumber: "ELE-1", checkFrequencyDays: 7 },
+      { id: "t-s", active: true, targetType: "permit", permitType: "structural", portalName: "Structural portal", applicationNumber: "STR-1", checkFrequencyDays: 7 },
+      { id: "t-n", active: true, targetType: "nem", permitType: "", portalName: "PowerClerk", applicationNumber: "NEM-1", checkFrequencyDays: 7 },
+    ];
+    const els: Record<string, El> = { permitTargets: mkEl("permitTargets"), permitChecks: mkEl("permitChecks"), permitStatusTarget: mkEl("permitStatusTarget"), permitStatusTargetLabel: mkEl("permitStatusTargetLabel") };
+    const st = { detail: { project: { id: "p-mon" }, permitCheckTargets: targets, permitStatusChecks: [], emailProjectMatches: [] } };
+    load(els, st, { staleReadingPanel: () => "", statusLabel: (x: string) => x }).renderPermitMonitor();
+    const html = String(els.permitTargets.innerHTML);
+    const cards = html.split("<article").slice(1);
+    const cardFor = (name: string) => cards.find((c) => c.includes(name)) ?? "";
+    check("10n. MUST EXCLUDE: an electrical filing is never labelled a building permit", !/building permit/i.test(cardFor("Online portal")) && /Online portal · Electrical/.test(cardFor("Online portal")), cardFor("Online portal").slice(0, 220));
+    check("10n2. a structural filing reads Building (the building track's family)", /Structural portal · Building/.test(cardFor("Structural portal")), cardFor("Structural portal").slice(0, 220));
+    check("10n3. the NEM filing reads Interconnection (NEM)", /PowerClerk · Interconnection \(NEM\)/.test(cardFor("PowerClerk")), cardFor("PowerClerk").slice(0, 220));
+    for (const t of targets) {
+      check(`10n4. list and selector agree on the kind (${t.permitType || t.targetType})`, String(lib.permitTargetOptionLabel(t)).startsWith(`${lib.permitTargetKindLabel(t)} · `) && cardFor(t.portalName).includes(` · ${lib.permitTargetKindLabel(t)}`),
+        `${lib.permitTargetOptionLabel(t)} vs ${cardFor(t.portalName).slice(0, 160)}`);
+    }
   }
 }
 

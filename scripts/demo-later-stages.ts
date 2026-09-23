@@ -55,10 +55,10 @@
 //     the learned-failure callouts on the OTHER demo projects.
 //   · Download anything (DOCUMENT_FETCH=off, AHJ_FORM_DOWNLOADS=off, no API key).
 //
-// SIDE EFFECT YOU SHOULD KNOW ABOUT: recording a status check runs learnFromPermitStatus, which
-// upserts `learned` timeline segments into the SHARED knowledge base rows for these AHJs and
-// utilities (permit_utility_knowledge has no project_id, so neither --remove nor
-// demo-environment.ts --reset removes them). The script prints exactly which KB rows it changed.
+// LEARNING: its projects are created learning_excluded, so their status checks, targets and
+// saves teach the SHARED knowledge base nothing (no profile facts, fingerprints, failure rows or
+// timeline samples). The script still prints which KB rows changed, and that list should now be
+// empty — anything on it is a learn path that forgot the exclusion.
 // Run it only against a demo database — which is also why it refuses to run without an explicit
 // --db, and refuses (read-only check, before anything migrates) any database holding a client
 // other than the demo company.
@@ -431,7 +431,7 @@ for (const spec of SPECS) {
     homeownerEmail: `${spec.owner.toLowerCase().replace(/[^a-z]+/g, ".")}@example.invalid`,
     homeownerPhone: spec.phone,
     ...spec.snapshot,
-  } as never);
+  } as never, undefined, { learningExcluded: true });
   const id = project.id;
   createdIds.set(id, spec);
   saveProjectDocument(db, id, {

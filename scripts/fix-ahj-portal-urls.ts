@@ -31,7 +31,7 @@
 //      coverage report then names "no portal URL known" as the blocker, which is true and
 //      actionable, where a wrong URL is neither.
 //
-// Never touches a human-verified row (confidence "mixed" — hard rule 3), and never touches a
+// Never touches a human-verified row (isVerifiedKnowledge — verified_at set; hard rule 3), and never touches a
 // utility-scoped row, which legitimately holds a utility URL.
 import "dotenv/config";
 process.env.AUTOPILOT_DB_PATH = process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite";
@@ -43,15 +43,16 @@ const includeHarness = process.argv.includes("--include-harness");
 
 const { openDatabase } = await import("../backend/src/db");
 const { isUtilityPlatformUrl } = await import("../backend/src/portalChannel");
+const { isVerifiedKnowledge } = await import("../backend/src/knowledgeBase");
 
 const db = await openDatabase();
 
 const HARNESS_AHJ = /^(benchmark|cross.?project test|zztest)/i;
 const HTTP_URL = /https?:\/\/[^\s"'<>)\]]+/g;
 
-interface Row { rid: number; profile_key: string; ahj: string; portal_url: string; portal_name: string; confidence: string }
+interface Row { rid: number; profile_key: string; ahj: string; portal_url: string; portal_name: string; confidence: string; verified_at: string | null }
 const rows = db.query<Row>(
-  "SELECT rowid AS rid, profile_key, ahj, portal_url, portal_name, confidence FROM permit_utility_knowledge WHERE portal_url <> ''",
+  "SELECT rowid AS rid, profile_key, ahj, portal_url, portal_name, confidence, verified_at FROM permit_utility_knowledge WHERE portal_url <> ''",
 );
 
 let examined = 0, fixedFromRecipe = 0, fixedFromName = 0, blanked = 0, skippedVerified = 0, skippedHarness = 0;
@@ -65,7 +66,7 @@ for (const r of rows) {
   examined++;
 
   // Hard rule 3: a human-verified row is never rewritten by a script.
-  if (String(r.confidence) === "mixed") {
+  if (isVerifiedKnowledge(r)) {
     skippedVerified++;
     console.log(`  rowid ${r.rid}  ${r.profile_key}`);
     console.log(`     SKIPPED — human-verified. Fix it by hand if it is wrong; a script must not.`);

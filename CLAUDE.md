@@ -19,6 +19,9 @@ AHJ documents → stage the portal application → human verifies + submits.
 - `npm run smoke` — full end-to-end on a scratch DB. Must stay green.
 - `npm run backend:test:unit` / `npm run portal:test:unit` — unit suites (chained
   `&&`, so the FIRST failure stops the chain — later tests may not have run).
+  `backend:test:unit` ends by running `backend:test:unit:2`; register NEW backend
+  tests at the end of `:2`. The first script hit cmd.exe's 8191-char limit on
+  Windows ("The command line is too long." — nothing runs, and the exit is 1).
 - `npm run portal:test:dom` — every real-Chromium smoke, each in its own process
   (`scripts/run-dom-smokes.ts`). Discovers `*.dom.smoke.ts` from disk, so a new one
   runs without being registered anywhere. Runs ALL of them even when some fail, and
@@ -36,9 +39,11 @@ AHJ documents → stage the portal application → human verifies + submits.
    CAPTCHA/MFA. Recorded as steps (`isFinalSubmit:true`), executed by a human.
 2. Secrets (passwords, account/meter numbers, SSN) never reach the LLM —
    stripped in `buildPortalPlanner`; sensitive fields bind by name, not literal.
-3. Human-verified knowledge is never auto-overwritten: `confidence === "mixed"`
-   in `permit_utility_knowledge`, `"verified"` in `jurisdiction_code_profiles`,
-   `map.verified` on form templates. Imports/research land as `seeded`.
+3. Human-verified knowledge is never auto-overwritten: `verified_at` set in
+   `permit_utility_knowledge` (read ONLY via `isVerifiedKnowledge()` — NOT
+   `confidence === "mixed"`, which an automatic seeded+learned merge also wrote),
+   `"verified"` in `jurisdiction_code_profiles`, `map.verified` on form
+   templates. Imports/research land as `seeded`.
 4. Agent tools are narrow local handlers (no shell/network); agent data-update
    proposals require human approval (`/api/corrections/:id/apply`).
 5. A permit track must never resolve/launch a utility portal URL (PowerClerk)
@@ -74,8 +79,13 @@ allowlist (401) and the licensing gate (403), so they cannot desync.
 `jurisdiction_code_profiles`, `ahj_form_templates`, `portal_recipes`,
 `cec_equipment`. An AHJ's portal quirk learned once should help every tenant —
 that pooled knowledge is the product's core asset. Only
-`historical_failure_examples` (which carries homeowner names/addresses) is
-org-scoped. Do not "fix" the shared tables by scoping them without a decision.
+`historical_failure_examples` (raw correction excerpts: homeowner names/addresses)
+is org-scoped — by its OWN `org_id` column (migration v31; most rows have no
+project), stamped at write from the project row or the session/job, never a
+request body; `buildHistoricalFailureReport` reads only the project's org. The
+shared rollup (`common_corrections_json`) carries bucket/rootCause/requiredAction/
+count/lastSeenAt only — never a raw sample. Do not "fix" the shared tables by
+scoping them without a decision.
 
 ## Architecture notes (things that will bite you)
 

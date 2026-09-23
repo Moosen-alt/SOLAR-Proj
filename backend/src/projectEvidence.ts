@@ -366,10 +366,12 @@ export function historicalTopicForTitle(title: string): EvidenceTopic | null {
   if (/meter photo/i.test(title)) return "meterPhoto";
   if (/one-line|sld|3-line|single line/i.test(title)) return "sld";
   if (/inverter settings|1741|smart inverter/i.test(title)) return "inverterSettings";
-  if (/battery|powerwall|ess/i.test(title)) return "batteryMode";
+  // \bESS\b, never a bare "ess": "Address", "necessary", "process" and "access" all contain it.
+  if (/battery|powerwall|\bESS\b/i.test(title)) return "batteryMode";
   if (/fire|pathway|setback/i.test(title)) return "firePathway";
   if (/rafter|truss|span|framing|structural/i.test(title)) return "roofFraming";
   if (/signature|owner authorization/i.test(title)) return "ownerAuthorization";
+  if (/label|placard/i.test(title)) return "labels";
   return null;
 }
 

@@ -19,6 +19,7 @@ limits). Fuzzy name resolution; unknown jurisdictions auto-researched
 
 ## Trust model
 
-`confidence: "mixed"` rows are human-verified and never auto-overwritten;
+Rows with `verified_at` set (`isVerifiedKnowledge`) are human-verified and never
+auto-overwritten — `confidence: "mixed"` is a provenance label, not the lock;
 `seeded` rows say so — surface that flag to customers. Data isolation and the
 one-time-shown API keys follow the README provisioning runbook.

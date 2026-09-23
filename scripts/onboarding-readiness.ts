@@ -86,7 +86,7 @@ const { openDatabase } = await import("../backend/src/db");
 const { listClients, clientStagingOverlay } = await import("../backend/src/clients");
 const { orgEntitlements } = await import("../backend/src/entitlements");
 const { listPortalCredentials } = await import("../backend/src/portalCredentials");
-const { findKnowledgeForLearn } = await import("../backend/src/knowledgeBase");
+const { findKnowledgeForLearn, isVerifiedKnowledge } = await import("../backend/src/knowledgeBase");
 const { findCompleteRecipeForProject, findAnyRecipeForProject } = await import("../backend/src/portalRecipes");
 
 const clientArg = flag("client");
@@ -562,13 +562,13 @@ for (const j of jurisdictions) {
       ? null
       : findAnyRecipeForProject(db, { scopeType: "ahj", state: j.state, ahj: j.ahj, utility: j.utility, discipline: "" });
     check(
-      row ? (row.confidence === "mixed" ? "ok" : "warn") : "warn",
+      row ? (isVerifiedKnowledge(row) ? "ok" : "warn") : "warn",
       "  permit KB row",
       row
-        ? `${row.profileKey}  confidence "${row.confidence}"${row.confidence === "mixed" ? " (human-verified)" : " (unverified research — trust it only after a human confirms it)"}, portal_url ${row.portalUrl ? "set" : "MISSING"}`
+        ? `${row.profileKey}  confidence "${row.confidence}"${isVerifiedKnowledge(row) ? " (human-verified)" : " (unverified research — trust it only after a human confirms it)"}, portal_url ${row.portalUrl ? "set" : "MISSING"}`
         : "none — no permit_utility_knowledge row resolves for this AHJ",
       row
-        ? row.confidence === "mixed"
+        ? isVerifiedKnowledge(row)
           ? ""
           : `Verify the ${j.ahj} permit profile against the AHJ's own site and mark it verified; until then it is seeded research.`
         : `Research the ${j.ahj} permit portal into the knowledge base before filing there.`,
@@ -603,13 +603,13 @@ for (const j of jurisdictions) {
     const recipe = findCompleteRecipeForProject(db, { scopeType: "utility", state: j.state, utility: j.utility, discipline: "" });
     const draft = recipe ? null : findAnyRecipeForProject(db, { scopeType: "utility", state: j.state, utility: j.utility, discipline: "" });
     check(
-      row ? (row.confidence === "mixed" ? "ok" : "warn") : "warn",
+      row ? (isVerifiedKnowledge(row) ? "ok" : "warn") : "warn",
       "  utility KB row",
       row
-        ? `${row.profileKey}  confidence "${row.confidence}"${row.confidence === "mixed" ? " (human-verified)" : " (unverified research)"}, portal_url ${row.portalUrl ? "set" : "MISSING"}`
+        ? `${row.profileKey}  confidence "${row.confidence}"${isVerifiedKnowledge(row) ? " (human-verified)" : " (unverified research)"}, portal_url ${row.portalUrl ? "set" : "MISSING"}`
         : "none — no permit_utility_knowledge row resolves for this utility",
       row
-        ? row.confidence === "mixed"
+        ? isVerifiedKnowledge(row)
           ? ""
           : `Verify the ${j.utility} interconnection profile with a human before relying on it.`
         : `Research the ${j.utility} interconnection portal into the knowledge base before filing there.`,

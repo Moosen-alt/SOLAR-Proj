@@ -5,7 +5,7 @@ import { id } from "./ids";
 import { parseJson } from "./json";
 import { fieldAliases, parserField } from "./normalize";
 import { logger } from "./logger";
-import { documentInventory } from "./requiredDocuments";
+import { documentInventory, owedMissingDocuments } from "./requiredDocuments";
 import { nowIso } from "./time";
 import type { ParserPayload, ProjectRecord, QcStatus, Severity, StageDetail } from "../../shared/src/types";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
@@ -217,7 +217,7 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
     // SAME INVENTORY, read earlier — deliberately not a second list. Two lists that can disagree
     // is how the portal ends up being the thing that tells you.
     try {
-      const inv = documentInventory(db, {
+      const qcProject = {
         id: projectId,
         ahj: ctx.ahj,
         state: ctx.state,
@@ -225,7 +225,13 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
         systemSizeDcKw: (project as unknown as Record<string, unknown>).system_size_dc_kw == null
           ? null : Number((project as unknown as Record<string, unknown>).system_size_dc_kw),
         parserSnapshot: payload,
-      } as never);
+      } as never;
+      const inv = documentInventory(db, qcProject);
+      // ONE QUESTION, ONE PREDICATE: what the operator OWES (owedMissingDocuments — the submit
+      // gate's, Stage's and the packet screen's answer). A form the staging-time fill produces
+      // from a stored template is not "not attached — staging will refuse without it": staging
+      // fills it. It is said as a pass row instead of vanishing.
+      const gateDocs = owedMissingDocuments(db, qcProject, inv);
       const where = ctx.ahj ? ` for ${ctx.ahj}` : "";
       const say = (status: string, severity: string, docType: string, label: string, why: string) => {
         db.run(
@@ -239,20 +245,29 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
       // project would stall at QC the moment it is parsed, before anyone has had a chance to
       // attach anything. The hard refusal already exists at staging and stays there. This exists
       // so an operator SEES, on the day the plan set lands, what this AHJ is going to want.
-      for (const d of inv.missingBlocking) {
+      for (const d of gateDocs.owed) {
         warningCount += 1;
         say("warning", "error", d.docType, d.label,
           `${String(d.why || "")} Staging will refuse without it.`.trim());
+      }
+      for (const d of gateDocs.filledAtStaging) {
+        db.run(
+          `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+           VALUES (?, ?, 'pass', ?, 'Required document', ?, 'info', ?)`,
+          [id(), projectId, `docs.${d.docType}`, `${d.label}: filled at staging${where} — the form's template is on file; staging fills and attaches it.`, createdAt],
+        );
       }
       for (const d of inv.missingAdvisory) {
         warningCount += 1;
         say("warning", "warning", d.docType, d.label, String(d.why || ""));
       }
-      if (!inv.missingBlocking.length && !inv.missingAdvisory.length) {
+      if (!gateDocs.owed.length && !inv.missingAdvisory.length) {
         db.run(
           `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
            VALUES (?, ?, 'pass', 'docs.complete', 'Required documents', ?, 'info', ?)`,
-          [id(), projectId, `Every document this filing needs${where} is attached.`, createdAt],
+          [id(), projectId, gateDocs.filledAtStaging.length
+            ? `Every document this filing needs${where} is attached, or filled at staging from a stored template (${gateDocs.filledAtStaging.map((d) => d.label).join("; ")}).`
+            : `Every document this filing needs${where} is attached.`, createdAt],
         );
       }
     } catch (err) {

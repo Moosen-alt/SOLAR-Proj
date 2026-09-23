@@ -1574,6 +1574,22 @@ async function handleOpsActionFrameLoad() {
   await refreshProjectListOnly();
 }
 
+// WHO STANDS BEHIND A KNOWLEDGE ROW. "mixed" is a provenance LABEL (seeded + learned merged) —
+// it was once also written by a human verification, and the lock now reads verified_at alone
+// (hard rule 3, isVerifiedKnowledge). The badge follows the lock: "Verified" only when a person
+// verified the row (verifiedAt); "mixed" is shown as the plain merge it is, never as verified.
+function kbConfidenceBadge(profile) {
+  if (profile && profile.verifiedAt) {
+    const when = new Date(profile.verifiedAt);
+    const title = `Verified by a person${Number.isNaN(when.getTime()) ? "" : ` on ${when.toLocaleDateString()}`}${profile.verifiedBy ? ` (${profile.verifiedBy})` : ""} — automation never overwrites it.`;
+    return `<span class="badge badge-pass" title="${esc(title)}">Verified</span>`;
+  }
+  if (profile && profile.confidence === "mixed") {
+    return `<span class="badge" title="Seeded reference data merged with what projects taught — not verified by a person.">Learned + seeded</span>`;
+  }
+  return statusBadge(profile ? profile.confidence : "unknown");
+}
+
 function renderKnowledgeProfile(profile) {
   const title = [profile.state, profile.ahj || "Any AHJ", profile.utility || "Any utility"].filter(Boolean).join(" / ");
   const timeline = profile.averageTimelineDays == null
@@ -1595,7 +1611,7 @@ function renderKnowledgeProfile(profile) {
     <article class="item ${colorClass}" style="margin-bottom:8px">
       <div class="item-title">
         <span>${esc(title)}</span>
-        ${statusBadge(profile.confidence)}
+        ${kbConfidenceBadge(profile)}
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:12px;margin:4px 0 6px">
         <span>📁 ${profile.projectCount} project(s)</span>
@@ -2283,6 +2299,28 @@ function statusLabel(status) {
   return STATUS_LABELS[status] || humanize(status || "unknown");
 }
 
+// WHERE EACH FILING STANDS, in words — from the submittal tracks (the server's per-track state:
+// isTrackDone + the latest reading per target), never the process map's lane rollup, which reads
+// "waiting" whenever any step waits and so said "Permit Waiting" beside a ready_for_issue permit
+// (demo: Walt Brennan). Same words as the server's trackStateSummary (repository.ts), which
+// writes the process map headline. null when the tracks are not loaded — the caller falls back.
+const TRACK_STATE_WORDS = {
+  not_started: "not started", staged: "staged", submitted: "submitted", in_review: "in review",
+  correction: "correction", ready_for_issue: "fee due", issued: "issued",
+};
+function trackStateWords(tracks) {
+  if (!Array.isArray(tracks) || !tracks.length) return null;
+  const word = (t) => (t.category === "utility" && t.status === "issued" ? "approved" : TRACK_STATE_WORDS[t.status] || humanize(t.status).toLowerCase());
+  const permits = tracks.filter((t) => t.category === "permit");
+  const nem = tracks.find((t) => t.category === "utility");
+  return {
+    permit: permits.length === 0 ? "not required"
+      : permits.length === 1 ? word(permits[0])
+      : permits.map((t) => `${t.type} ${word(t)}`).join(", "),
+    nem: nem ? word(nem) : "not required",
+  };
+}
+
 // Plain-language "what do I do next" guidance for every canonical status.
 // tone: "info" (blue, normal), "warn" (amber, needs attention), "done" (green).
 //
@@ -2698,7 +2736,7 @@ async function applyStatusOverride() {
 // are MIRRORED here because this file cannot import them — backend/test/submitSeam.test.ts
 // fails the moment they drift from repository.ts.
 const NON_QC_REVIEW_FIELDS = ["correction", "permit_status", "prepare_submission", "autopilot"];
-const ADVISORY_REVIEW_ISSUE_TYPES = ["Run triage", "Background job failed"];
+const ADVISORY_REVIEW_ISSUE_TYPES = ["Run triage", "Background job failed", "Fee schedule disagrees with paid receipts"];
 function reviewItemBuckets(items) {
   const out = { qc: [], reading: [], notice: [] };
   for (const it of items || []) {
@@ -3308,10 +3346,8 @@ function renderDetail() {
     $("metricSystem").textContent = (project.systemSizeDcKw == null && project.systemSizeAcKw == null)
       ? "Not parsed yet"
       : `${project.systemSizeDcKw ?? "—"} DC / ${project.systemSizeAcKw ?? "—"} AC`;
-    const pm = state.processMap;
-    $("metricPermit").textContent = pm
-      ? `Permit ${pm.permitStatus ? statusLabel(pm.permitStatus) : "not checked"} / NEM ${pm.nemStatus ? statusLabel(pm.nemStatus) : "not checked"}`
-      : "Not checked";
+    const words = trackStateWords(state.submittalTracks);
+    $("metricPermit").textContent = words ? `Permit ${words.permit} / NEM ${words.nem}` : "Not checked";
   });
   safeRender("autopilot", () => { refreshAutopilot(); });
   // Each panel is isolated so a single bad value can't break the flow or the stepper.
@@ -3401,6 +3437,22 @@ function gotoSubmitFix(checkId) {
       setTimeout(() => el.classList.remove("fix-flash"), 1600);
     }
   });
+}
+
+// A GATE CHECK'S EVIDENCE, SPLIT BY WHAT THE OPERATOR MUST SEE. The panel used to print
+// evidence.slice(0, 4) inside the closed provenance fold. The document check writes a count line
+// and up to four "✓ present" lines FIRST, so its "Filled at staging: …" and "MISSING (required): …"
+// lines — the ones that NAME a document and say what happens to it — sat at index 5+ and were
+// never shown (e6b3afde, 8f4ca8dd: the held-out checklist named nowhere visible).
+//   named — every line that names a document's state (the prefixes getSubmitGateReport writes):
+//           shown under "Next", never capped.
+//   rest  — everything else, in the fold, uncapped: the server already caps it (submitGateCheck:
+//           6 lines, the named lines exempt — same prefixes, GATE_EVIDENCE_NAMES_A_DOCUMENT), so a
+//           second cap here only ever hid lines.
+function gateEvidenceSplit(evidence) {
+  const lines = Array.isArray(evidence) ? evidence.map((line) => String(line)) : [];
+  const names = (line) => /^(Filled at staging|MISSING \(required\)|Missing \(advisory\)):/.test(line);
+  return { named: lines.filter(names), rest: lines.filter((line) => !names(line)) };
 }
 
 function renderSubmitGate() {
@@ -3502,7 +3554,7 @@ function renderSubmitGate() {
   // and the count keeps the denominator ("6 passed") on screen. Each folded
   // row keeps its evidence disclosure, one interaction deeper.
   const actionChecks = [...blockers, ...warnings];
-  const checkRow = (check) => `
+  const checkRow = (check) => { const ev = gateEvidenceSplit(check.evidence); return `
             <article class="submit-gate-check ${briefClass(check.status)}">
               <div class="item-title">
                 <span>${esc(check.title)}</span>
@@ -3511,17 +3563,18 @@ function renderSubmitGate() {
               <!-- "Next" is the act-on-it half and stays at full weight. Owner,
                    requirement, evidence and source are provenance. -->
               <p><strong>Next:</strong> ${esc(check.nextAction)}</p>
+              ${ev.named.length ? `<ul class="evidence-list">${ev.named.map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
               ${check.id === "ahj-form-mapping-verified" && (check.status === "blocker" || check.status === "warning") ? `<button type="button" class="secondary" style="font-size:12px;margin-top:4px" onclick="document.querySelector('.stage-accordion[data-stage-index=\\'1\\']')?.setAttribute('open','');document.getElementById('applicationDocs')?.scrollIntoView({behavior:'smooth'})">Go to App Docs → verify forms</button>` : ""}
               <details class="provenance">
                 <summary>${esc(check.ownerRole)} · ${esc(check.source)}</summary>
                 <div class="provenance-body">
                   <p><strong>Owner:</strong> ${esc(check.ownerRole)}</p>
                   <p>${esc(check.requirement)}</p>
-                  ${(check.evidence || []).length ? `<ul class="evidence-list">${check.evidence.slice(0, 4).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
+                  ${ev.rest.length ? `<ul class="evidence-list">${ev.rest.map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
                   <p>${esc(check.source)}</p>
                 </div>
               </details>
-            </article>`;
+            </article>`; };
   $("submitGate").innerHTML = `
     ${bandHead("SUBMIT GATE", "Nothing goes out until a human says so.", "Automation stages the application and stops. The final submit, the fee, and any CAPTCHA or MFA are executed by a person.")}
     <article class="item ${submitGateClass(gate.decision)}">
@@ -4016,6 +4069,7 @@ async function startAutopilot() {
     const s = await pollAutopilot();
     if (s && s.phase === "awaiting_approval") showMessage("Staged to portal review. Verify, then click Approve & Submit to file.", "info");
     else if (s && s.phase === "blocked") showMessage(`Autopilot blocked: ${s.blockers.map((b) => b.detail).join("; ")}`, "error");
+    else if (s && s.phase === "failed") showMessage(s.message || "Staging failed — see the portal run.", "error");
   } catch (err) {
     showMessage(err.message || "Could not start autopilot.", "error");
   } finally {
@@ -4434,7 +4488,7 @@ function renderProcessMap() {
   $("processMapStatus").textContent = humanize(map.status);
   $("processMap").innerHTML = `
     <article class="item ${opsClass(map.status)}">
-      <div class="item-title"><span>${esc(map.headline)}</span>${statusBadge(`Permit ${humanize(map.permitStatus)} / NEM ${humanize(map.nemStatus)}`)}</div>
+      <div class="item-title"><span>${esc(map.headline)}</span>${(() => { const words = trackStateWords(state.submittalTracks); return words ? statusBadge(`Permit ${words.permit} / NEM ${words.nem}`) : ""; })()}</div>
       <p><strong>Next action:</strong> ${esc(map.nextAction)}</p>
     </article>
     <!-- The article above keeps BOTH track verdicts and the next action on
@@ -5223,6 +5277,7 @@ function documentVerdictHtml(pkg, formMissingFields = []) {
   const missingFields = [...new Set([...(pkg.missingFields || []), ...formMissingFields])];
   const inventoryResolved = pkg.missingDocumentsStatus === "resolved";
   const missingDocs = inventoryResolved ? (pkg.missingDocuments || []) : [];
+  const filledAtStaging = inventoryResolved ? (pkg.filledAtStagingDocuments || []) : [];
 
   const fieldRow = missingFields.length
     ? `<div class="kx-docstate is-missing">
@@ -5280,13 +5335,26 @@ function documentVerdictHtml(pkg, formMissingFields = []) {
     docRow = `<div class="kx-docstate is-clear">
         <span class="kx-docstate-icon" aria-hidden="true">✓</span>
         <div class="kx-docstate-body">
-          <span class="kx-docstate-title">Every required document is attached</span>
-          <span class="kx-docstate-text">The required-document inventory ran against the real uploads and filled forms on disk and found nothing blocking missing.</span>
+          <span class="kx-docstate-title">Every required document is attached${filledAtStaging.length ? " or filled at staging" : ""}</span>
+          <span class="kx-docstate-text">The required-document inventory ran against the real uploads and filled forms on disk and found nothing blocking missing${filledAtStaging.length ? " that you need to supply" : ""}.</span>
         </div>
       </div>`;
   }
+  // FILLED AT STAGING — a required form whose template is on file: staging fills and attaches it,
+  // so it is not the operator's to attach (the gate's own "Filled at staging" line, the same
+  // owedMissingDocuments answer). Named here so it neither reads as missing nor vanishes.
+  const filledRow = filledAtStaging.length
+    ? `<div class="kx-docstate is-clear">
+        <span class="kx-docstate-icon" aria-hidden="true">↻</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">${plural(filledAtStaging.length, "required form")} filled at staging</span>
+          <span class="kx-docstate-text">Not on disk yet, and nothing for you to attach: the form's template is on file, and staging fills it and attaches it to the filing.</span>
+          <ul class="kx-docstate-list">${filledAtStaging.map((d) => `<li>${esc(d.label)}</li>`).join("")}</ul>
+        </div>
+      </div>`
+    : "";
 
-  return `<div class="stack">${fieldRow}${docRow}</div>`;
+  return `<div class="stack">${fieldRow}${docRow}${filledRow}</div>`;
 }
 
 // THE PERMIT PATH, ITS EVIDENCE, AND THE OVERRIDE — on the project screen.
@@ -5403,7 +5471,7 @@ function renderApplicationDocs() {
     </div>
     ${learned ? `
     <article class="item info">
-      <div class="item-title"><span>Learned ${esc(learned.ahj)}${learned.utility ? " / " + esc(learned.utility) : ""} requirements</span>${statusBadge(learned.confidence)}</div>
+      <div class="item-title"><span>Learned ${esc(learned.ahj)}${learned.utility ? " / " + esc(learned.utility) : ""} requirements</span>${kbConfidenceBadge(learned)}</div>
       <p class="muted">From the knowledge base${learned.portalName ? ` · Portal: ${esc(learned.portalName)}` : ""}${learned.correctionCount ? ` · ${learned.correctionCount} correction(s) learned` : ""}.</p>
       <p><strong>Required docs (${learnedDocs.length}):</strong> ${esc(learnedDocs.join(" · "))}</p>
     </article>` : ""}
@@ -5647,13 +5715,21 @@ function handleStaleRecheckClick(event) {
   showMessage("Paste what the portal says for this filing, then click Classify status — it will be recorded against that filing.", "info");
 }
 
-// One filing, named the way the operator knows it: which permit + its application number.
-function permitTargetOptionLabel(target) {
-  const type = target.targetType === "nem" || target.permitType === "nem" ? "Interconnection (NEM)"
-    : target.permitType === "building" ? "Building"
+// WHICH KIND OF FILING a tracking target is — the ONE naming the filing selector and the tracking
+// list both read. The list used to label every non-NEM target "(building permit)", so an
+// electrical filing read "Online portal (building permit)" beside a selector that called it
+// Electrical. structural is the building track's family (trackPermitTypes), so it reads Building.
+function permitTargetKindLabel(target) {
+  return target.targetType === "nem" || target.permitType === "nem" ? "Interconnection (NEM)"
+    : target.permitType === "building" || target.permitType === "structural" ? "Building"
     : target.permitType === "electrical" ? "Electrical"
     : target.permitType === "combo" ? "Building + electrical (combo)"
     : "Permit";
+}
+
+// One filing, named the way the operator knows it: which permit + its application number.
+function permitTargetOptionLabel(target) {
+  const type = permitTargetKindLabel(target);
   const number = target.applicationNumber || target.permitNumber;
   const where = target.portalName || target.jurisdiction;
   return number ? `${type} · ${number}` : `${type} · ${where ? `${where}, ` : ""}no application number yet`;
@@ -5698,7 +5774,7 @@ function renderPermitMonitor() {
     const platformLabel = target.portalPlatform && target.portalPlatform !== "unknown" && target.portalPlatform !== "public_url"
       ? `<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--info);color:#fff;margin-left:6px">${esc(target.portalPlatform)}</span>`
       : "";
-    const sourceLabel = target.targetType === "nem" ? " (NEM/interconnection)" : " (building permit)";
+    const sourceLabel = ` · ${esc(permitTargetKindLabel(target))}`;
     return `
     <article class="item info">
       <div class="item-title"><span>${esc(target.portalName || target.jurisdiction || "Permit target")}${sourceLabel}</span>${statusBadge(target.latestOutcome || "active")}${platformLabel}</div>

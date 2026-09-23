@@ -22,12 +22,29 @@
 //   · It refuses to run against a database that has no real data ONLY in the sense that it
 //     does not care — it adds, it does not migrate, and --reset is exact.
 //
-//   npx tsx scripts/demo-environment.ts            # create (idempotent)
-//   npx tsx scripts/demo-environment.ts --reset    # remove every demo row
-//   npx tsx scripts/demo-environment.ts --status   # what exists right now
+//   · Its projects are created learning_excluded: a demo homeowner teaches the SHARED
+//     knowledge base nothing (no profile facts, fingerprints, failure patterns or timeline
+//     samples). --reset rebuilds the shared rollup of every profile the demo touched.
+//   · There is NO default database. It used to fall back to backend/data/autopilot.sqlite —
+//     production — so a bare run wrote demo projects into the live book. --db is required.
+//
+//   npx tsx scripts/demo-environment.ts --db <path>            # create (idempotent)
+//   npx tsx scripts/demo-environment.ts --db <path> --reset    # remove every demo row
+//   npx tsx scripts/demo-environment.ts --db <path> --status   # what exists right now
 // ---------------------------------------------------------------------------
 import "dotenv/config";
-process.env.AUTOPILOT_DB_PATH = process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite";
+import nodePath from "node:path";
+{
+  const argv = process.argv.slice(2);
+  const at = argv.indexOf("--db");
+  const dbArg = at >= 0 ? argv[at + 1] : "";
+  if (!dbArg || dbArg.startsWith("--")) {
+    console.error("\n[demo-environment] REFUSED: pass --db <path to the database>. There is no default: this script writes, and must never land on production by accident.");
+    process.exit(1);
+  }
+  // Explicit beats inherited: an AUTOPILOT_DB_PATH exported by the shell or .env must not win.
+  process.env.AUTOPILOT_DB_PATH = nodePath.resolve(dbArg);
+}
 // "No demo project is ever staged to a portal" is enforced here, not hoped for. createProject
 // auto-enqueues an autopilot run, and once the demo plan set cleared the reviewer gate nothing
 // else stood between that run and a live portal. Forced, not defaulted: an operator's .env
@@ -206,6 +223,19 @@ if (RESET) {
   }
   for (const table of clientTables) statements.push({ label: `${table} (company)`, sql: `DELETE FROM ${table} WHERE client_id = ?`, params: [clientId] });
   statements.push({ label: "clients (company)", sql: "DELETE FROM clients WHERE id = ?", params: [clientId] });
+  // The shared profiles this demo taught (older demos predate learning_excluded), collected
+  // BEFORE the rows go, so their derived fields can be rebuilt from what remains — the same
+  // rollup deleteProject runs.
+  const affectedKeys = new Set<string>();
+  for (const id of ids) {
+    for (const table of ["knowledge_events", "historical_failure_examples", "historical_project_fingerprints", "permit_timeline_samples"]) {
+      try {
+        for (const r of db.query<{ profile_key: string }>(`SELECT DISTINCT profile_key FROM ${table} WHERE project_id = ?`, [id])) {
+          if (r.profile_key) affectedKeys.add(String(r.profile_key));
+        }
+      } catch { /* table absent on an old schema */ }
+    }
+  }
   try {
     db.transaction(() => {
       let blocked: string[] = [];
@@ -223,9 +253,12 @@ if (RESET) {
     db.close();
     process.exit(1);
   }
+  const { rebuildKnowledgeRollup } = await import("../backend/src/knowledgeBase");
+  for (const key of affectedKeys) rebuildKnowledgeRollup(db, key);
   console.log(`Removed the demo environment: ${ids.length} project(s) and the ${DEMO_MARKER} company.`);
-  console.log("Not removed (no project_id or client_id to find them by): shared knowledge-base rows the demo's");
-  console.log("status checks taught (permit_utility_knowledge 'learned' segments), and document/filled-form files on disk.");
+  console.log(`Rebuilt the derived fields (project count, correction patterns, timeline) of ${affectedKeys.size} shared profile(s) it had touched.`);
+  console.log("Not removed: note/source SEGMENTS an older (pre-learning_excluded) demo merged into shared profiles,");
+  console.log("and document/filled-form files on disk.");
   db.close();
   process.exit(0);
 }
@@ -272,7 +305,7 @@ for (const spec of DEMO_PROJECTS) {
     homeownerEmail: `${spec.owner.toLowerCase().replace(/[^a-z]+/g, ".")}@example.invalid`,
     homeownerPhone: "(555) 010-0000",
     ...(spec.snapshot ?? {}),
-  } as never);
+  } as never, undefined, { learningExcluded: true });
   // A PLAN SET, because a project with no documents is a demo that breaks on the first
   // click. The board would look right and every detail page would show a wall of
   // document-inventory blockers — no plan set, no SLD, no site plan — which is precisely

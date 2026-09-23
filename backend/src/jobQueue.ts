@@ -10,6 +10,7 @@ import { runDuePermitChecks } from "./repository";
 import { scanFolder } from "./batchImport";
 import { nowIso } from "./time";
 import { logger } from "./logger";
+import { runWithLlmContext } from "./llmAccounting";
 
 export type JobType =
   | "permit_checks"
@@ -230,6 +231,8 @@ async function runMboxImportJob(db: AppDb, job: JobRecord): Promise<Record<strin
   for await (const chunk of streamMboxMessages(filePath, 500)) {
     const mboxText = chunk.join("\nFrom placeholder\n"); // re-join for importMboxKnowledge
     const result = await importMboxKnowledge(db, {
+      // The job row's org (stamped at enqueue from the session) — never the payload.
+      orgId: job.orgId,
       mboxText,
       sourceLabel: sourceLabel || "MBOX Import",
       defaultState: defaultState || "",
@@ -259,6 +262,8 @@ async function runFolderScanJob(db: AppDb, job: JobRecord): Promise<Record<strin
     useLlm?: boolean;
   };
   const summary = await scanFolder(db, folderPath, {
+    // The job row's org (stamped at enqueue from the session) — never the payload.
+    orgId: job.orgId,
     defaultState, defaultAhj, defaultUtility, useLlm,
     onProgress: (done, total) => updateJobProgress(db, job.id, done, total),
   });
@@ -637,7 +642,12 @@ export function claimNextJob(db: AppDb): JobRecord | null {
 export async function processNextJob(db: AppDb): Promise<boolean> {
   const job = claimNextJob(db);
   if (!job) return false;
+  // LLM-6: every model call this job makes — directly or in anything it awaits or schedules —
+  // is attributed to the claimed row's project, job and org in llm_calls.
+  return runWithLlmContext({ projectId: job.projectId, jobId: job.id, orgId: job.orgId }, () => runClaimedJob(db, job));
+}
 
+async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
   // Mark in-flight so the watchdog can't reclaim this run out from under us.
   inFlightJobIds.add(job.id);
   try {

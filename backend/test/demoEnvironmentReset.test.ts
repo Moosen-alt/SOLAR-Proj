@@ -88,7 +88,7 @@ const counts = async (dbPath: string): Promise<Record<string, number>> => {
   d.close();
   return out;
 };
-const runReset = (dbPath: string) => spawnSync(process.execPath, [TSX_CLI, SCRIPT, "--reset"], {
+const runReset = (dbPath: string) => spawnSync(process.execPath, [TSX_CLI, SCRIPT, "--db", dbPath, "--reset"], {
   cwd: root, encoding: "utf8", timeout: 180_000,
   env: { ...process.env, AUTOPILOT_DB_PATH: dbPath, AUTOPILOT_LOG_FILE: "" },
 });

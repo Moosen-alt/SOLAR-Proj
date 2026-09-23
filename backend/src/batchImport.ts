@@ -278,12 +278,14 @@ export async function scanFolder(
   db: AppDb,
   folderPath: string,
   options: {
+    /** The scanning job's org: the historical-failure rows this writes are org-scoped. */
+    orgId: string;
     defaultState?: string;
     defaultAhj?: string;
     defaultUtility?: string;
     useLlm?: boolean;
     onProgress?: (done: number, total: number, latest: string) => void;
-  } = {},
+  },
 ): Promise<ScanSummary> {
   const allFiles = walkPdfs(folderPath);
   const groups = groupByFolder(allFiles);
@@ -354,11 +356,15 @@ export async function scanFolder(
         }
 
         const learned = learnFromHistoricalDocument(db, {
+          orgId: options.orgId,
           state,
           ahj,
           utility,
           requiredDocuments,
+          // The file name stays PRIVATE (org-scoped failure row + dedupe signature): past-project
+          // files are named "First Last - City, ST.pdf". The shared profile gets docKind only.
           sourceLabel: `batch:${filename}`,
+          docKind: docType,
           correctionText,
           notes: `Historical ${docType.replace(/_/g, " ")} (${ahj || "unknown AHJ"}, ${state || "??"}).`,
         });

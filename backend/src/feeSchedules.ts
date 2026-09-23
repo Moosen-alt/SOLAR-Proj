@@ -42,7 +42,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { performance } from "node:perf_hooks";
 import type { AppDb } from "./db";
-import type { FeeChargeBreakdown, FeePaymentMethod, ProjectRecord } from "../../shared/src/types";
+import type { FeeChargeBreakdown, FeePaymentMethod, PaidFeeReceipt, ProjectRecord } from "../../shared/src/types";
 // ONE READER FOR "Revised 12/23/2022", shared with ahj_form_templates' own
 // document_date column. A second parser here would eventually disagree with the
 // column it is meant to explain, and a wrong date makes a stale schedule look
@@ -2127,6 +2127,7 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
       recordLlmCall({
         at: startedAt,
         label: `researchFeeSchedule[${who4}]#${turn + 1}`,
+        model,
         ms: Math.round(performance.now() - t0),
         inTok: msg.usage?.input_tokens,
         outTok: msg.usage?.output_tokens,
@@ -2264,6 +2265,7 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
     recordLlmCall({
       at: Date.now(),
       label: `researchFeeSchedule[${input.track}:${clean(input.state)}:${(clean(input.ahj) || clean(input.utility) || "?").slice(0, 40)}]#failed`,
+      model,
       ms: 0,
       error: timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : (err instanceof Error ? err.message : String(err)),
     });
@@ -3961,4 +3963,308 @@ export function lookupPublishedFee(db: AppDb, input: PublishedFeeLookupArgs): Pu
     logger.warn("fees", "lookupPublishedFee failed — falling through the quote ladder", { err: err instanceof Error ? err.message : String(err) });
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Paid receipts against the seeded schedules (read-only reconciliation)
+// ---------------------------------------------------------------------------
+//
+// L5. Real paid-fee receipts sit in permit_fee_history under `receipt_component:`
+// and every quote deliberately ignores them (submissionFees.learnedFee), because a
+// receipt's discipline label is unreliable: Tigard's `REP` receipt is filed as
+// "electrical", yet its $351.19 is electrical $133.56 + structural $180.00 + the 12%
+// Oregon state surcharge. A per-discipline median would record that combined total
+// as the electrical fee. So receipts do NOT become a quote rung — they are held up
+// against the schedule instead, and a disagreement goes to a person.
+//
+// READ-ONLY. reconcileReceiptsWithSchedules never writes, and nothing here ever
+// changes a schedule (hard rule 3): a receipt is evidence for a person to weigh,
+// not an instruction to rewrite a row.
+
+/** How a schedule stands against the receipts paid at its jurisdiction.
+ *   · corroborated — a receipt equals (within $0.02) a total this schedule, as held,
+ *     can produce: one discipline, or electrical + structural combined, each with or
+ *     without the schedule's own flat processing fee.
+ *   · corroborated_missing_surcharge — a receipt matches ONLY once the 12% Oregon
+ *     state surcharge is added to permit lines that do not carry it. The schedule's
+ *     brackets are right and its quote is short: the margin finding this exists for.
+ *   · contradicted — no total the schedule can produce matches any receipt. */
+export type ReceiptReconciliationVerdict = "corroborated" | "corroborated_missing_surcharge" | "contradicted";
+
+export const MISSING_OR_SURCHARGE_CAUSE = "missing 12% OR state surcharge";
+const RECEIPT_MATCH_TOLERANCE_USD = 0.02;
+const OREGON_STATE_SURCHARGE_PERCENT = 12;
+
+export interface ReconciledReceipt {
+  jurisdiction: string;
+  /** The parser's label — shown, never trusted (see the header above). */
+  discipline: string;
+  authorityAmountUsd: number;
+  projectId: string | null;
+  /** The candidate total that explained this receipt for this schedule; "" = none. */
+  explainedBy: string;
+  /** True when that explanation needed the 12% surcharge the schedule does not hold. */
+  neededSurcharge: boolean;
+}
+
+export interface ScheduleReceiptReconciliation {
+  profileKey: string;
+  track: FeeTrack;
+  discipline: FeeDiscipline;
+  state: string;
+  ahj: string;
+  confidence: FeeConfidence;
+  verdict: ReceiptReconciliationVerdict;
+  /** "" unless a cause is actually shown by the numbers. */
+  likelyCause: string;
+  receipts: ReconciledReceipt[];
+}
+
+export interface ReceiptReconciliationReport {
+  results: ScheduleReceiptReconciliation[];
+  /** Denominators: a clean-looking result list means nothing without them. */
+  schedulesConsidered: number;
+  schedulesWithoutReceipts: number;
+  /** Conflicted rows and delegation rows price nothing, so they are not compared. */
+  schedulesSkipped: number;
+  receiptsRead: number;
+  receiptsWithoutSchedule: number;
+}
+
+interface ReceiptRow { receipt: PaidFeeReceipt; state: string; projectId: string | null }
+
+/** A county and a city sharing a word are different authorities: "Lincoln County"
+ *  scores 65 against "City of Lincoln City" in knowledgeNameMatchScore, over the
+ *  60 bar. Only a KNOWN kind on both sides can disagree. */
+function jurisdictionKind(name: string): "county" | "city" | "" {
+  if (/\bcounty\b/i.test(name)) return "county";
+  if (/\b(?:city|town|village)\b/i.test(name)) return "city";
+  return "";
+}
+
+function receiptsFromHistory(db: AppDb): ReceiptRow[] {
+  return db.query<Row>(
+    "SELECT state, source, project_id FROM permit_fee_history WHERE track = 'permit' AND source LIKE 'receipt_component:%' ORDER BY recorded_at, id",
+  ).flatMap((row) => {
+    try {
+      const receipt = JSON.parse(text(row.source).slice("receipt_component:".length)) as PaidFeeReceipt;
+      const amount = Number(receipt?.authorityAmountUsd);
+      if (!receipt || !clean(receipt.jurisdiction) || !Number.isFinite(amount) || amount <= 0) return [];
+      return [{ receipt, state: clean(row.state).toUpperCase(), projectId: row.project_id ? text(row.project_id) : null }];
+    } catch { return []; }
+  });
+}
+
+/** One permit line a schedule can charge, with what the schedule itself adds to it. */
+interface ReceiptPart {
+  schedule: FeeScheduleRecord;
+  baseUsd: number;
+  label: string;
+  /** Surcharge percents the schedule already holds for this line (deduped: the same
+   *  12% can arrive both as bracket.stateSurcharge and as an ancillary). */
+  heldPercents: number[];
+  /** Unconditional flat processing fees: filing-wide ('' appliesTo) vs this discipline's. */
+  filingFlatUsd: number;
+  ownFlatUsd: number;
+}
+
+function receiptParts(schedule: FeeScheduleRecord): ReceiptPart[] {
+  const parts: ReceiptPart[] = [];
+  for (const b of schedule.brackets) {
+    const baseUsd = Number(b.feeUsd);
+    if (!Number.isFinite(baseUsd) || baseUsd <= 0) continue;
+    const held = new Set<number>();
+    if (b.stateSurcharge?.percent) held.add(b.stateSurcharge.percent);
+    if (b.communitySurcharge?.percent) held.add(b.communitySurcharge.percent);
+    let filingFlatUsd = 0, ownFlatUsd = 0;
+    for (const c of b.ancillaryCharges ?? []) {
+      if (c.conditional) continue;
+      const rides = !c.appliesTo ? "filing" : (!schedule.discipline || c.appliesTo === schedule.discipline) ? "own" : "";
+      if (!rides) continue;
+      if (c.kind === "surcharge" && c.percent != null && c.percent > 0) held.add(c.percent);
+      else if (c.kind === "processing" && c.amountUsd != null && c.amountUsd > 0) {
+        if (rides === "filing") filingFlatUsd += c.amountUsd; else ownFlatUsd += c.amountUsd;
+      }
+    }
+    parts.push({ schedule, baseUsd, label: clean(b.label).slice(0, 60), heldPercents: [...held], filingFlatUsd, ownFlatUsd });
+  }
+  return parts;
+}
+
+interface ReceiptCandidate { totalUsd: number; neededSurcharge: boolean; description: string; schedules: FeeScheduleRecord[] }
+
+/** Every total a combination of permit lines can reach: the held surcharges always,
+ *  the Oregon 12% added where a line lacks it (flagged), flat processing on or off.
+ *  The surcharge is taken on the PERMIT LINE only, then flat fees are added — Salem:
+ *  $94 × 1.12 + $5 = $110.28, while ($94 + $5) × 1.12 = $110.88 is not a real bill. */
+function receiptCandidates(parts: ReceiptPart[], oregon: boolean): ReceiptCandidate[] {
+  const out: ReceiptCandidate[] = [];
+  const lacks12 = parts.some((p) => !p.heldPercents.includes(OREGON_STATE_SURCHARGE_PERCENT));
+  for (const add12 of oregon && lacks12 ? [false, true] : [false]) {
+    let permitTotal = 0;
+    for (const p of parts) {
+      permitTotal += p.baseUsd;
+      for (const pct of p.heldPercents) permitTotal += round2(p.baseUsd * pct / 100);
+      if (add12 && !p.heldPercents.includes(OREGON_STATE_SURCHARGE_PERCENT)) permitTotal += round2(p.baseUsd * OREGON_STATE_SURCHARGE_PERCENT / 100);
+    }
+    // A filing-wide fee is charged once per filing, however many permit lines ride it.
+    const flat = Math.max(0, ...parts.map((p) => p.filingFlatUsd)) + parts.reduce((s, p) => s + p.ownFlatUsd, 0);
+    const lines = parts.map((p) => `${p.schedule.discipline || "permit"} "${p.label}" $${p.baseUsd.toFixed(2)}`).join(" + ");
+    const surcharge = add12 ? ` + ${OREGON_STATE_SURCHARGE_PERCENT}% OR state surcharge (not held by the schedule)` : "";
+    out.push({ totalUsd: round2(permitTotal), neededSurcharge: add12, description: `${lines}${surcharge}`, schedules: parts.map((p) => p.schedule) });
+    if (flat > 0) out.push({ totalUsd: round2(permitTotal + flat), neededSurcharge: add12, description: `${lines}${surcharge} + $${flat.toFixed(2)} processing`, schedules: parts.map((p) => p.schedule) });
+  }
+  return out;
+}
+
+/** READ-ONLY. Compare every paid receipt with the permit schedule(s) held for the same
+ *  jurisdiction — fuzzy name + state, as learnedFee matches — and say, per schedule,
+ *  whether the receipts corroborate it. Never writes; never changes a schedule. */
+export function reconcileReceiptsWithSchedules(db: AppDb): ReceiptReconciliationReport {
+  const all = db.query<Row>("SELECT * FROM fee_schedules WHERE track = 'permit' ORDER BY profile_key, discipline").map(mapSchedule);
+  const usable = all.filter((s) => s.status === "ok" && !s.collectedByProfileKey && s.brackets.length > 0);
+  const groups = new Map<string, FeeScheduleRecord[]>();
+  for (const s of usable) groups.set(s.profileKey, [...(groups.get(s.profileKey) ?? []), s]);
+
+  // Each receipt goes to its BEST-scoring jurisdiction only, never to every name
+  // that clears the bar.
+  const receipts = receiptsFromHistory(db);
+  const byGroup = new Map<string, ReceiptRow[]>();
+  let receiptsWithoutSchedule = 0;
+  for (const r of receipts) {
+    let best = 0;
+    let keys: string[] = [];
+    for (const [key, rows] of groups) {
+      const s = rows[0];
+      const rowState = s.state.trim().toUpperCase();
+      if (r.state && rowState && rowState !== r.state) continue;
+      const a = jurisdictionKind(r.receipt.jurisdiction), b = jurisdictionKind(s.ahj);
+      if (a && b && a !== b) continue;
+      const score = knowledgeNameMatchScore(r.receipt.jurisdiction, s.ahj);
+      if (score < 60 || score < best) continue;
+      if (score > best) { best = score; keys = []; }
+      keys.push(key);
+    }
+    if (!keys.length) { receiptsWithoutSchedule++; continue; }
+    for (const key of keys) byGroup.set(key, [...(byGroup.get(key) ?? []), r]);
+  }
+
+  const results: ScheduleReceiptReconciliation[] = [];
+  let schedulesWithoutReceipts = 0;
+  for (const [key, rows] of groups) {
+    const groupReceipts = byGroup.get(key) ?? [];
+    if (!groupReceipts.length) { schedulesWithoutReceipts += rows.length; continue; }
+    const oregon = rows[0].state.trim().toUpperCase() === "OR";
+    const partsBySchedule = new Map(rows.map((s) => [s, receiptParts(s)] as const));
+    const candidates: ReceiptCandidate[] = [];
+    for (const [, parts] of partsBySchedule) for (const p of parts) candidates.push(...receiptCandidates([p], oregon));
+    // Combined filings: one electrical line + one structural line from distinct rows.
+    // Never a combo or undifferentiated row with anything — Douglas County holds both
+    // with identical brackets, and adding them would double-count one permit.
+    const elec = rows.find((s) => s.discipline === "electrical");
+    const struct = rows.find((s) => s.discipline === "structural");
+    if (elec && struct) {
+      for (const e of partsBySchedule.get(elec) ?? []) for (const st of partsBySchedule.get(struct) ?? []) {
+        candidates.push(...receiptCandidates([e, st], oregon));
+      }
+    }
+    for (const schedule of rows) {
+      const mine = candidates.filter((c) => c.schedules.includes(schedule));
+      const reconciled: ReconciledReceipt[] = groupReceipts.map((r) => {
+        const amount = Number(r.receipt.authorityAmountUsd);
+        const hits = mine.filter((c) => Math.abs(c.totalUsd - amount) <= RECEIPT_MATCH_TOLERANCE_USD);
+        const hit = hits.find((c) => !c.neededSurcharge) ?? hits[0];
+        return {
+          jurisdiction: clean(r.receipt.jurisdiction), discipline: clean(r.receipt.discipline),
+          authorityAmountUsd: amount, projectId: r.projectId,
+          explainedBy: hit ? `$${hit.totalUsd.toFixed(2)} = ${hit.description}` : "",
+          neededSurcharge: !!hit?.neededSurcharge,
+        };
+      });
+      const verdict: ReceiptReconciliationVerdict = reconciled.some((r) => r.explainedBy && !r.neededSurcharge)
+        ? "corroborated"
+        : reconciled.some((r) => r.explainedBy) ? "corroborated_missing_surcharge" : "contradicted";
+      results.push({
+        profileKey: schedule.profileKey, track: schedule.track, discipline: schedule.discipline,
+        state: schedule.state, ahj: schedule.ahj, confidence: schedule.confidence, verdict,
+        likelyCause: verdict === "corroborated_missing_surcharge" ? MISSING_OR_SURCHARGE_CAUSE : "",
+        receipts: reconciled,
+      });
+    }
+  }
+  return {
+    results,
+    schedulesConsidered: usable.length,
+    schedulesWithoutReceipts,
+    schedulesSkipped: all.length - usable.length,
+    receiptsRead: receipts.length,
+    receiptsWithoutSchedule,
+  };
+}
+
+export const RECEIPT_REVIEW_ISSUE_TYPE = "Fee schedule disagrees with paid receipts";
+
+export interface ReceiptReviewOutcome {
+  profileKey: string;
+  action: "inserted" | "updated" | "unchanged" | "no_anchor";
+  projectId: string | null;
+}
+
+/** ONE deduped operator review item per schedule KEY whose receipts do not plainly
+ *  corroborate it. The note names the key, the verdicts and the receipt AMOUNTS —
+ *  never a receipt or permit number. It changes no schedule (rule 3).
+ *
+ *  human_review_items rows belong to a project, so the item rides a project that
+ *  paid one of the disagreeing receipts (same org as the receipt by construction).
+ *  A receipt imported with no project has nowhere to land: that key is reported as
+ *  `no_anchor` rather than attached to some other tenant's job.
+ *
+ *  Dedupe: an item for the key with the SAME evidence, in any status, is left alone
+ *  (a dismissed item is not resurrected by an unrelated upload); new evidence
+ *  updates the pending item, or opens one if the old item was closed. */
+export function raiseReceiptContradictionReviews(db: AppDb, report: ReceiptReconciliationReport): ReceiptReviewOutcome[] {
+  const byKey = new Map<string, ScheduleReceiptReconciliation[]>();
+  for (const r of report.results) byKey.set(r.profileKey, [...(byKey.get(r.profileKey) ?? []), r]);
+  const outcomes: ReceiptReviewOutcome[] = [];
+  for (const [profileKey, rows] of byKey) {
+    const flagged = rows.filter((r) => r.verdict !== "corroborated");
+    if (!flagged.length) continue;
+    const amounts = [...new Set(flagged.flatMap((r) => r.receipts.map((x) => x.authorityAmountUsd.toFixed(2))))].sort();
+    const fingerprint = `${flagged.map((r) => `${r.discipline || "any"}:${r.verdict}`).sort().join(",")}|${amounts.join(",")}`;
+    const lines = flagged.map((r) => {
+      const surchargeHit = r.receipts.find((x) => x.neededSurcharge);
+      const why = r.verdict === "contradicted"
+        ? `no total this schedule can produce matches any receipt ($${[...new Set(r.receipts.map((x) => x.authorityAmountUsd.toFixed(2)))].join(", $")})`
+        : `${r.likelyCause}: receipt $${surchargeHit?.authorityAmountUsd.toFixed(2)} = ${(surchargeHit?.explainedBy ?? "").replace(/^\$[\d.]+ = /, "")}`;
+      return `${r.discipline || "undifferentiated"} schedule (${r.confidence}) ${r.verdict === "contradicted" ? "CONTRADICTED" : "SHORT"}: ${why}.`;
+    });
+    const notes = [
+      `Fee schedule ${profileKey} disagrees with paid receipts.`,
+      ...lines,
+      "The schedule was NOT changed. Check it against the jurisdiction's current fee sheet and correct or verify it by hand.",
+    ].join(" ").slice(0, 1500);
+    const fieldName = `fee_schedule:${profileKey}`;
+    const same = db.get<Row>("SELECT id, project_id FROM human_review_items WHERE issue_type = ? AND field_name = ? AND parser_value = ? LIMIT 1",
+      [RECEIPT_REVIEW_ISSUE_TYPE, fieldName, fingerprint]);
+    if (same) { outcomes.push({ profileKey, action: "unchanged", projectId: text(same.project_id) }); continue; }
+    const ts = nowIso();
+    const pending = db.get<Row>("SELECT id, project_id FROM human_review_items WHERE issue_type = ? AND field_name = ? AND status = 'pending' LIMIT 1",
+      [RECEIPT_REVIEW_ISSUE_TYPE, fieldName]);
+    if (pending) {
+      db.run("UPDATE human_review_items SET parser_value = ?, notes = ?, updated_at = ? WHERE id = ?", [fingerprint, notes, ts, text(pending.id)]);
+      outcomes.push({ profileKey, action: "updated", projectId: text(pending.project_id) });
+      continue;
+    }
+    const anchor = flagged.flatMap((r) => r.receipts.filter((x) => r.verdict === "contradicted" || x.neededSurcharge))
+      .map((x) => x.projectId).find((pid) => pid && db.get<Row>("SELECT id FROM projects WHERE id = ?", [pid])) ?? null;
+    if (!anchor) { outcomes.push({ profileKey, action: "no_anchor", projectId: null }); continue; }
+    db.run(
+      `INSERT INTO human_review_items
+        (id, project_id, issue_type, field_name, parser_value, llm_suggested_value, source_excerpt, status, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, '', '', 'pending', ?, ?, ?)`,
+      [id(), anchor, RECEIPT_REVIEW_ISSUE_TYPE, fieldName, fingerprint, notes, ts, ts],
+    );
+    outcomes.push({ profileKey, action: "inserted", projectId: anchor });
+  }
+  return outcomes;
 }

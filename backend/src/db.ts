@@ -1,8 +1,10 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import Database, { type Database as DB, type Statement } from "better-sqlite3";
 import { baselineRuleDefinitions } from "./baselineRules";
 import { knowledgeProfileKey, seedInitialKnowledgeBase } from "./knowledgeBase";
+import { attachLlmCallStore } from "./llmAccounting";
 
 /**
  * The single-operator / auth-disabled tenant. Every pre-tenancy row back-fills here
@@ -126,6 +128,9 @@ export async function openDatabase(): Promise<AppDb> {
 
   const appDb = new AppDb(db);
   migrate(appDb);
+  // LLM-6: every model call this process makes is written to THIS database's llm_calls
+  // (best-effort; llmAccounting has no imports that could close a cycle).
+  attachLlmCallStore(appDb);
 
   // Jurisdiction code profiles (review gate): idempotent reference seed, never
   // overwrites verified rows. AWAITED (dynamic import only breaks the static
@@ -1979,6 +1984,142 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       // required to show nothing for it — a placeholder chip on sixteen live projects would
       // announce progress no writer ever reported.
       addColumnIfMissing(db, "projects", "stage_detail", "TEXT NOT NULL DEFAULT ''");
+    },
+  },
+  {
+    version: 30,
+    name: "knowledge_verified_at",
+    up: (db) => {
+      // "MIXED" MEANT TWO THINGS, AND HARD RULE 3 LOCKED ON BOTH.
+      //
+      // confidence "mixed" was written by the three human-verification writers AND by
+      // confidenceFrom() whenever a seeded row met a learned write. Every rule-3 check read
+      // "mixed" as "a person checked this", so 25 of the 32 production rows at "mixed" were
+      // locked against correction and re-import although no person ever looked at them.
+      //
+      // Verification now lives in its own column, read through ONE predicate
+      // (isVerifiedKnowledge). Backfill it ONLY from recorded human gestures — the events
+      // the three verified writers emit — at the FIRST such event. NOT from an 'official'
+      // source: the Portland / PGE / Pacific Power seed rows carry official sources and no
+      // human ever verified them. confidence is left untouched (a label, not a lock).
+      addColumnIfMissing(db, "permit_utility_knowledge", "verified_at", "TEXT");
+      addColumnIfMissing(db, "permit_utility_knowledge", "verified_by", "TEXT NOT NULL DEFAULT ''");
+      db.exec(`
+        UPDATE permit_utility_knowledge
+           SET verified_at = (
+                 SELECT MIN(e.created_at) FROM knowledge_events e
+                  WHERE e.profile_key = permit_utility_knowledge.profile_key
+                    AND e.event_type IN ('ahj.human_verified', 'utility.human_verified', 'ahj.operator_ruling')),
+               verified_by = 'backfill: knowledge_events human verification'
+         WHERE verified_at IS NULL
+           AND profile_key IN (
+                 SELECT profile_key FROM knowledge_events
+                  WHERE event_type IN ('ahj.human_verified', 'utility.human_verified', 'ahj.operator_ruling'));
+      `);
+    },
+  },
+  {
+    version: 31,
+    name: "historical_failures_org_scope",
+    up: (db) => {
+      // historical_failure_examples carries raw correction excerpts (homeowner and
+      // co-customer names, filing history) and CLAUDE.md always said it was org-scoped —
+      // it was not. 224 of 226 production rows came from mbox imports with no project, so
+      // scoping through the project cannot work: the row needs its own org. Every existing
+      // row lands in the default org (the only org that has ever existed); a row that DOES
+      // have a project takes that project's org.
+      addColumnIfMissing(db, "historical_failure_examples", "org_id", "TEXT NOT NULL DEFAULT 'org-default'");
+      db.exec(`
+        UPDATE historical_failure_examples
+           SET org_id = (SELECT p.org_id FROM projects p WHERE p.id = historical_failure_examples.project_id)
+         WHERE project_id IS NOT NULL
+           AND EXISTS (SELECT 1 FROM projects p WHERE p.id = historical_failure_examples.project_id);
+        CREATE INDEX IF NOT EXISTS idx_historical_failures_org ON historical_failure_examples(org_id, profile_key);
+      `);
+    },
+  },
+  {
+    version: 32,
+    name: "learning_loops_provenance",
+    up: (db) => {
+      // L3 — a project that must never teach the SHARED knowledge base (demo, benchmark,
+      // fixture). Set at creation (createProject's option) so even the birth learn skips it.
+      addColumnIfMissing(db, "projects", "learning_excluded", "INTEGER NOT NULL DEFAULT 0");
+      // L4 — a live correction's learned failure row is keyed by the correction, so the FINAL
+      // classification (triage, resolve) replaces the intake regex guess instead of adding to
+      // it, and an operator retraction is sticky (a later resolve does not re-learn it).
+      addColumnIfMissing(db, "historical_failure_examples", "correction_id", "TEXT");
+      addColumnIfMissing(db, "corrections", "learning_retracted", "INTEGER NOT NULL DEFAULT 0");
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_historical_failures_correction ON historical_failure_examples(correction_id);
+      `);
+      // Link the rows live corrections already wrote. The intake signature seed was
+      // "<project>|correction.learned|<source>|<text>" (and the boot backfill's
+      // "backfill.v2.correction.<id>" variant), so the link is exact, never a text guess.
+      // Only the KEY is filled here — no learned content changes.
+      for (const c of db.query<{ id: string; project_id: string; source: string; correction_text: string }>(
+        "SELECT id, project_id, source, correction_text FROM corrections",
+      )) {
+        const seeds = [
+          `${c.project_id}|correction.learned|${c.source}|${c.correction_text}`,
+          `${c.project_id}|backfill.v2.correction.${c.id}|${c.source}|${c.correction_text}`,
+        ].map((seed) => crypto.createHash("sha256").update(seed).digest("hex"));
+        db.run(
+          `UPDATE historical_failure_examples SET correction_id = ?
+            WHERE correction_id IS NULL AND project_id = ? AND source_signature IN (?, ?)`,
+          [c.id, c.project_id, seeds[0], seeds[1]],
+        );
+      }
+      // L2 — one row per (project, track, milestone): the FIRST transition, measured from the
+      // track's own submitted_at. The KB's timeline fields are DERIVED from this table
+      // (rebuildKnowledgeRollup), so deleting a project drops its samples with it.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS permit_timeline_samples (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          profile_key TEXT NOT NULL,
+          track TEXT NOT NULL,
+          milestone TEXT NOT NULL,
+          start_at TEXT NOT NULL,
+          end_at TEXT NOT NULL,
+          days REAL NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE (project_id, track, milestone),
+          FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_timeline_samples_profile ON permit_timeline_samples(profile_key, milestone);
+      `);
+    },
+  },
+  {
+    version: 33,
+    name: "llm_calls",
+    up: (db) => {
+      // LLM-6 — one row per model call, written by recordLlmCall (the function every call
+      // site already goes through). Metadata only: never a prompt or a response. project_id /
+      // job_id / org_id come from the AsyncLocalStorage context the job worker and the
+      // project-scoped routes set; background work with no principal records NULLs. No FK to
+      // projects: spend already incurred stays on the ledger when a project is deleted.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS llm_calls (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          at TEXT NOT NULL,
+          label TEXT NOT NULL DEFAULT '',
+          model TEXT NOT NULL DEFAULT '',
+          in_tok INTEGER,
+          out_tok INTEGER,
+          cache_read INTEGER,
+          cache_write INTEGER,
+          ms INTEGER NOT NULL DEFAULT 0,
+          stop TEXT,
+          error TEXT,
+          project_id TEXT,
+          job_id TEXT,
+          org_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_llm_calls_project ON llm_calls(project_id, at);
+        CREATE INDEX IF NOT EXISTS idx_llm_calls_at ON llm_calls(at);
+      `);
     },
   },
 ];

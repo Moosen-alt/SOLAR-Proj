@@ -8,10 +8,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { openDatabase } from "./db";
 import { HttpError } from "./httpError";
+import { llmUsageForProject, runWithLlmContext } from "./llmAccounting";
 import { parseJson } from "./json";
 import { collectDiagnostics, logErrorBlock, logger, requestLogger, startupBanner } from "./logger";
 import { checkConcurrencyConfig, readConcurrencyConfig } from "./concurrencyConfig";
-import { findLearnedProfileForProject, saveVerifiedAhjProfile, saveVerifiedUtilityProfile } from "./knowledgeBase";
+import { findLearnedProfileForProject, retractCorrectionLearning, saveVerifiedAhjProfile, saveVerifiedUtilityProfile } from "./knowledgeBase";
 import {
   listPortalRecipes,
   getPortalRecipe,
@@ -375,6 +376,15 @@ app.use("/api/clients/:id", scopeGuard("clients", "Client"));
 app.use("/api/customers/:id", scopeGuard("customers", "Customer"));
 app.use("/api/corrections/:id", childScopeGuard("corrections", "Correction"));
 app.use("/api/portal-runs/:id", childScopeGuard("portal_runs", "Portal run"));
+
+// LLM-6: model calls made while serving a project-scoped request are attributed to that
+// project (and its org) in llm_calls. AFTER the scope guard, so an out-of-scope request has
+// already been refused; a missing project attributes nothing.
+app.use("/api/projects/:id", (req: Request, _res: Response, next: NextFunction) => {
+  const row = db.get<{ org_id?: string }>("SELECT org_id FROM projects WHERE id = ?", [String(req.params.id)]);
+  if (!row) return next();
+  runWithLlmContext({ projectId: String(req.params.id), orgId: row.org_id ?? null, jobId: null }, next);
+});
 
 app.use(express.static(frontendDir));
 
@@ -1175,6 +1185,9 @@ app.post("/api/knowledge-base/import-mbox", express.json({ limit: process.env.MB
   res.status(201).json(
     await importKnowledgeFromMbox(db, {
       mboxText,
+      // The historical-failure rows this writes are org-scoped: the org is the SESSION's,
+      // never a body field.
+      orgId: requestScope(db, req).orgId,
       sourceLabel: req.body?.sourceLabel || "Imported MBOX",
       defaultState: req.body?.defaultState,
       defaultAhj: req.body?.defaultAhj,
@@ -1218,6 +1231,7 @@ app.post("/api/knowledge-base/import-mbox-file", asyncHandler(async (req, res) =
     res.status(201).json(
       await importKnowledgeFromMboxFile(db, {
         filePath: tmpFile,
+        orgId: requestScope(db, req).orgId,
         sourceLabel: String(req.header("x-source-label") || req.query.sourceLabel || "Imported MBOX file"),
         defaultState: req.query.defaultState ? String(req.query.defaultState) : undefined,
         defaultAhj: req.query.defaultAhj ? String(req.query.defaultAhj) : undefined,
@@ -1252,6 +1266,7 @@ app.post("/api/knowledge-base/import-mbox-path", asyncHandler(async (req, res) =
   res.status(201).json(
     await importKnowledgeFromMboxFile(db, {
       filePath: resolved,
+      orgId: requestScope(db, req).orgId,
       sourceLabel: req.body?.sourceLabel || path.basename(resolved),
       defaultState: req.body?.defaultState,
       defaultAhj: req.body?.defaultAhj,
@@ -1266,6 +1281,15 @@ app.get("/api/projects/:id", (req, res) => {
 
 app.delete("/api/projects/:id", (req, res) => {
   res.json(deleteProject(db, req.params.id));
+});
+
+// Model spend for ONE project: per-label calls, tokens and ESTIMATED cost from llm_calls.
+// Under /api/projects/:id, so it inherits the tenant scope guard (foreign org -> 404). There is
+// deliberately no cross-org rollup route.
+app.get("/api/projects/:id/llm-usage", (req, res) => {
+  const exists = db.get<{ id: string }>("SELECT id FROM projects WHERE id = ?", [String(req.params.id)]);
+  if (!exists) throw new HttpError(404, "Project not found.");
+  res.json(llmUsageForProject(db, String(req.params.id)));
 });
 
 app.get("/api/projects/:id/historical-failures", (req, res) => {
@@ -1491,9 +1515,29 @@ app.post("/api/corrections/:id/reopen-portal", asyncHandler(async (req, res) => 
 // Close a correction (first writer of closed_at/resubmitted). `resubmitted: true`
 // records that the corrected package was resubmitted, completing cycle-time KPIs.
 app.post("/api/corrections/:id/resolve", (req, res) => {
-  const correction = resolveCorrection(db, String(req.params.id), { resubmitted: Boolean(req.body?.resubmitted) });
+  const correction = resolveCorrection(db, String(req.params.id), {
+    resubmitted: Boolean(req.body?.resubmitted),
+    // The REAL actor, as revisions-received records it — not a hard-coded "human"/"correction".
+    actor: { type: "human", name: currentUser(db, req)?.email || "operator" },
+  });
   maybeResumeAutopilot(db, correction.projectId, "a correction was resolved"); // closing the last correction makes the project re-stageable
   res.json(correction);
+});
+
+// "This was not a real rejection — stop learning from it" (L4). Deletes the failure pattern this
+// correction taught the knowledge base and rebuilds the shared rollup; sticky, so a later triage
+// or resolve cannot learn it back. Scope: a subroute of /api/corrections/:id, so the child scope
+// guard 404s another tenant's correction before this runs, and the deny-by-default entitlement
+// gate applies — no new top-level path (routeScope.test.ts accounts for it by prefix).
+app.post("/api/corrections/:id/retract-learning", (req, res) => {
+  const correctionId = String(req.params.id);
+  const correction = db.get<{ project_id: string }>("SELECT project_id FROM corrections WHERE id = ?", [correctionId]);
+  if (!correction) throw new HttpError(404, "Correction not found.");
+  const removed = retractCorrectionLearning(db, correctionId);
+  addAuditLog(db, correction.project_id, "human", currentUser(db, req)?.email || "operator", "correction.learning_retracted", {
+    correctionId, removedRows: removed,
+  });
+  res.json({ ok: true, correctionId, removedRows: removed });
 });
 
 app.post("/api/projects/:id/permit-targets", (req, res) => {
@@ -1529,6 +1573,8 @@ app.post("/api/knowledge-base/ahj-profile", (req, res) => {
     submissionMethod: b.submissionMethod ? String(b.submissionMethod) : undefined,
     requiredDocuments: Array.isArray(b.requiredDocuments) ? b.requiredDocuments.map(String) : undefined,
     notes: b.notes ? String(b.notes) : undefined,
+    // WHO verified comes from the session, never the body.
+    verifiedBy: requestScope(db, req).userId || "human",
   });
   res.status(201).json({ saved: true, profileKey: profile.profileKey, profile });
 });
@@ -1568,6 +1614,8 @@ app.post("/api/knowledge-base/utility-profile", (req, res) => {
     acDisconnectRule: b.acDisconnectRule ? String(b.acDisconnectRule) : undefined,
     exportLimitNote: b.exportLimitNote ? String(b.exportLimitNote) : undefined,
     notes: b.notes ? String(b.notes) : undefined,
+    // WHO verified comes from the session, never the body.
+    verifiedBy: requestScope(db, req).userId || "human",
   });
   res.status(201).json({ saved: true, profileKey: profile.profileKey, profile });
 });
@@ -2426,7 +2474,9 @@ app.post(
         defaultUtility: req.query.defaultUtility ? String(req.query.defaultUtility) : undefined,
         useLlm: String(req.query.useLlm || "") === "true",
       },
-      { priority: 2, maxRetries: 1 },
+      // The scan writes org-scoped historical-failure rows under the JOB's org, so the job
+      // must carry the caller's — /scan above already did; this one fell back to the default.
+      { priority: 2, maxRetries: 1, orgId: requestScope(db, req).orgId },
     );
     res.status(201).json({ ...job, extractedPdfCount: extracted.pdfCount, folderPath: extracted.folderPath });
   },

@@ -17,6 +17,7 @@ import type {
 } from "../../shared/src/types";
 import { classifyCorrection, humanizeEnum, type CorrectionClassification } from "./corrections";
 import type { AppDb } from "./db";
+import { DEFAULT_ORG_ID } from "./db";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text } from "./json";
 import { findApplicationProfile } from "./applicationDocs";
@@ -37,7 +38,6 @@ interface KnowledgeFacts {
   portalPlatform?: string;
   submissionMethod?: string;
   requiredDocuments?: string[];
-  timelineDays?: number | null;
   timelineNote?: string;
   correction?: {
     bucket: CorrectionBucket;
@@ -48,6 +48,11 @@ interface KnowledgeFacts {
   sources?: KnowledgeSource[];
   notes?: string;
   confidence?: PermitUtilityKnowledgeProfile["confidence"];
+  /** Set ONLY by the three human-verification writers (saveVerifiedAhjProfile,
+   *  saveVerifiedUtilityProfile, the operator-ruling seeder). A write carrying it is
+   *  itself verified: it may overwrite a verified row, and it stamps verified_at. */
+  verifiedAt?: string;
+  verifiedBy?: string;
 }
 
 interface KnowledgeEventInput {
@@ -166,11 +171,31 @@ function mergeSources(existing: KnowledgeSource[], incoming: KnowledgeSource[]):
   return [...map.values()].slice(0, 40);
 }
 
+// A LABEL, NEVER A LOCK. This used to return "mixed" whenever a seeded row met a learned
+// write -- and every rule-3 check read "mixed" as "a person verified this", so an automatic
+// merge locked 25 production rows against correction and re-import. Seeded + learned is now
+// "learned" (it has real evidence behind it, and nobody checked it). "mixed" survives only
+// where a verified writer put it, or on a legacy row that already carries it; either way
+// nothing reads it as verification -- isVerifiedKnowledge() reads verified_at.
 function confidenceFrom(existing: string, incoming?: PermitUtilityKnowledgeProfile["confidence"]): PermitUtilityKnowledgeProfile["confidence"] {
-  if (existing === "mixed" || (existing === "learned" && incoming === "seeded") || (existing === "seeded" && incoming === "learned")) {
-    return "mixed";
-  }
+  if (existing === "mixed" || incoming === "mixed") return "mixed";
+  if (existing === "learned" || incoming === "learned") return "learned";
   return incoming || (existing as PermitUtilityKnowledgeProfile["confidence"]) || "seeded";
+}
+
+/**
+ * HARD RULE 3's one question: did a PERSON verify this shared knowledge row?
+ *
+ * True only when verified_at is set -- by a human-verification writer, or by the v30
+ * backfill from recorded human-verification events. NOT confidence === "mixed", which an
+ * automatic seeded+learned merge also produced. Every rule-3 check (the learn-path scalar
+ * lock, the reference-import skip, the dead-link auto-replace, the fuzzy tie-break, the
+ * maintenance scripts) calls this, so they cannot drift apart again. Accepts a mapped
+ * profile (verifiedAt) or a raw row (verified_at).
+ */
+export function isVerifiedKnowledge(row: { verifiedAt?: unknown; verified_at?: unknown } | null | undefined): boolean {
+  if (!row) return false;
+  return text(row.verifiedAt ?? row.verified_at).trim() !== "";
 }
 
 function correctionSignature(correction: KnowledgeFacts["correction"]): string {
@@ -282,10 +307,12 @@ function mergeCorrections(existing: CommonCorrectionPattern[], incoming?: Knowle
   if (!incoming) return existing;
   const signature = correctionSignature(incoming);
   const found = existing.find((item) => item.signature === signature);
+  // NO SAMPLE on the shared rollup. A raw correction excerpt can name the homeowner or a
+  // co-customer, and this JSON is served to every tenant; the excerpt stays in the
+  // org-scoped historical_failure_examples row only.
   if (found) {
     found.count += 1;
     found.lastSeenAt = at;
-    found.sample = redactSample(incoming.sample || found.sample);
   } else {
     existing.push({
       signature,
@@ -294,7 +321,6 @@ function mergeCorrections(existing: CommonCorrectionPattern[], incoming?: Knowle
       requiredAction: incoming.requiredAction,
       count: 1,
       lastSeenAt: at,
-      sample: redactSample(incoming.sample),
     });
   }
   return existing.sort((a, b) => b.count - a.count || b.lastSeenAt.localeCompare(a.lastSeenAt)).slice(0, 25);
@@ -320,16 +346,32 @@ function mapKnowledge(row: Row): PermitUtilityKnowledgeProfile {
     averageTimelineDays: row.average_timeline_days == null ? null : Number(row.average_timeline_days),
     timelineSampleCount: Number(row.timeline_sample_count ?? 0),
     timelineNotes: parseJson<string[]>(text(row.timeline_notes_json), []),
-    commonCorrections: parseJson<CommonCorrectionPattern[]>(text(row.common_corrections_json), []),
+    commonCorrections: sharedCorrectionPatterns(parseJson<CommonCorrectionPattern[]>(text(row.common_corrections_json), [])),
     projectCount: Number(row.project_count ?? 0),
     correctionCount: Number(row.correction_count ?? 0),
     confidence: text(row.confidence) as PermitUtilityKnowledgeProfile["confidence"],
+    verifiedAt: text(row.verified_at).trim() || null,
+    verifiedBy: text(row.verified_by),
     sources: parseJson<KnowledgeSource[]>(text(row.sources_json), []),
     notes: text(row.notes),
     firstSeenAt: text(row.first_seen_at),
     lastLearnedAt: text(row.last_learned_at),
     updatedAt: text(row.updated_at),
   };
+}
+
+// Only the fields a shared rollup may carry. Rows written before the rollup stopped copying
+// raw samples still hold a `sample` key in their JSON until the scrub script runs; this
+// keeps it off every read path (the KB API, the next upsert's merge) in the meantime.
+function sharedCorrectionPatterns(items: CommonCorrectionPattern[]): CommonCorrectionPattern[] {
+  return (Array.isArray(items) ? items : []).map((item) => ({
+    signature: text(item?.signature),
+    bucket: item?.bucket,
+    rootCause: text(item?.rootCause),
+    requiredAction: text(item?.requiredAction),
+    count: Number(item?.count ?? 0),
+    lastSeenAt: text(item?.lastSeenAt),
+  }));
 }
 
 function projectFromRow(row: Row): ProjectRecord {
@@ -400,24 +442,26 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
   const commonCorrections = mergeCorrections([...(current?.commonCorrections || [])], facts.correction, ts);
   const correctionCount = commonCorrections.reduce((sum, item) => sum + item.count, 0);
   const sources = mergeSources(current?.sources || [], facts.sources || []);
-  const existingAvg = current?.averageTimelineDays ?? null;
-  const existingSamples = current?.timelineSampleCount ?? 0;
-  const timelineDays = facts.timelineDays != null && Number.isFinite(facts.timelineDays) && facts.timelineDays >= 0 ? facts.timelineDays : null;
-  const timelineSampleCount = timelineDays == null ? existingSamples : existingSamples + 1;
-  const averageTimelineDays =
-    timelineDays == null ? existingAvg : existingSamples > 0 && existingAvg != null ? (existingAvg * existingSamples + timelineDays) / timelineSampleCount : timelineDays;
+  // TIMELINES ARE NOT LEARNED HERE. This used to fold a "days since submission" into a running
+  // average on EVERY status check, so the figure measured how often the monitor polled, not how
+  // long the AHJ took (Coos Bay 5.6 days, Hood River 0.0). The two columns are now derived only
+  // from permit_timeline_samples (recomputeTimelineFromSamples); every write here carries the
+  // current values through unchanged.
+  const averageTimelineDays = current?.averageTimelineDays ?? null;
+  const timelineSampleCount = current?.timelineSampleCount ?? 0;
 
   if (current) {
-    // SAFETY RULE 3: a human-verified row (confidence "mixed") must never have
-    // its verified scalar facts overwritten by a learn path (learnFromProject
-    // seeds hard-coded portal URLs on every save). For mixed rows the scalar
-    // precedence flips to FILL-BLANKS-ONLY — the current value always wins and
-    // incoming facts only land where the row is empty. Notes/docs/corrections
-    // merging stays additive (segment merge) for every confidence level.
-    // Exception: an update that is ITSELF human-verified (facts.confidence
-    // "mixed" — saveVerifiedAhjProfile / verified utility edits) may still
-    // overwrite; a human correcting their own verified row is not a regression.
-    const humanVerified = current.confidence === "mixed" && facts.confidence !== "mixed";
+    // SAFETY RULE 3: a human-verified row (isVerifiedKnowledge — verified_at set,
+    // NOT confidence "mixed") must never have its verified scalar facts
+    // overwritten by a learn path (learnFromProject seeds hard-coded portal URLs
+    // on every save). For verified rows the scalar precedence flips to
+    // FILL-BLANKS-ONLY — the current value always wins and incoming facts only
+    // land where the row is empty. Notes/docs/corrections merging stays additive
+    // (segment merge) for every confidence level.
+    // Exception: an update that is ITSELF human-verified (facts.verifiedAt —
+    // saveVerifiedAhjProfile / verified utility edits / operator rulings) may
+    // still overwrite; a human correcting their own verified row is not a regression.
+    const humanVerified = isVerifiedKnowledge(current) && !facts.verifiedAt;
     const scalar = (currentValue: string, incoming: string | undefined): string =>
       humanVerified ? currentValue || clean(incoming) : clean(incoming) || currentValue;
     db.run(
@@ -426,7 +470,9 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
            portal_platform = ?, submission_method = ?,
            required_documents_json = ?, average_timeline_days = ?, timeline_sample_count = ?,
            timeline_notes_json = ?, common_corrections_json = ?, correction_count = ?,
-           confidence = ?, sources_json = ?, notes = ?, last_learned_at = ?, updated_at = ?
+           confidence = ?, sources_json = ?, notes = ?, last_learned_at = ?, updated_at = ?,
+           verified_by = CASE WHEN verified_at IS NULL AND ? IS NOT NULL THEN ? ELSE verified_by END,
+           verified_at = COALESCE(verified_at, ?)
        WHERE profile_key = ?`,
       [
         scalar(current.state, facts.state),
@@ -451,6 +497,12 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
         mergeUnique(noteSegments(current.notes), noteSegments(facts.notes), 40).join(" | "),
         event ? ts : current.lastLearnedAt,
         ts,
+        // FIRST verification wins (the backfill takes MIN(created_at) for the same reason):
+        // a learn write passes null and can never clear it, and the operator-ruling seeder
+        // re-running on every boot cannot keep moving it.
+        facts.verifiedAt || null,
+        clean(facts.verifiedBy) || "human",
+        facts.verifiedAt || null,
         key,
       ],
     );
@@ -459,8 +511,9 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
       `INSERT INTO permit_utility_knowledge
         (id, profile_key, state, ahj, utility, portal_name, portal_url, portal_platform, submission_method, required_documents_json,
          average_timeline_days, timeline_sample_count, timeline_notes_json, common_corrections_json,
-         project_count, correction_count, confidence, sources_json, notes, first_seen_at, last_learned_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         project_count, correction_count, confidence, sources_json, notes, first_seen_at, last_learned_at, updated_at,
+         verified_at, verified_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id(),
         key,
@@ -489,6 +542,8 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
         ts,
         event ? ts : "",
         ts,
+        facts.verifiedAt || null,
+        facts.verifiedAt ? clean(facts.verifiedBy) || "human" : "",
       ],
     );
   }
@@ -506,6 +561,9 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
 }
 
 function upsertProjectFingerprint(db: AppDb, project: ProjectRecord): void {
+  // Fingerprints feed matchedProjectCount in every tenant's risk report — a demo or benchmark
+  // project must not become "a prior project like this one".
+  if (isLearningExcluded(db, project.id)) return;
   // Derive the key with the SAME city fallback that learnFromProject/upsertKnowledge
   // uses, so the fingerprint's profile_key always matches an existing profile.
   const key = profileKey({ state: project.state, ahj: project.ahj || project.city, utility: project.utility });
@@ -542,9 +600,44 @@ function upsertProjectFingerprint(db: AppDb, project: ProjectRecord): void {
   );
 }
 
+// ---------------------------------------------------------------------------
+// LEARNING EXCLUSION (L3). Demo, benchmark and fixture projects run the product's real paths,
+// and every one of those paths teaches the SHARED knowledge base — which every tenant reads.
+// projects.learning_excluded (set at creation through createProject's option) is checked at
+// the top of every project-sourced learn write: the project-event upsert below, the failure
+// example insert, the fingerprint, and the timeline sample. One predicate, read from the row.
+// ---------------------------------------------------------------------------
+export function isLearningExcluded(db: AppDb, projectId: string | null | undefined): boolean {
+  if (!projectId) return false;
+  const row = db.get<Row>("SELECT learning_excluded FROM projects WHERE id = ?", [projectId]);
+  return Number(row?.learning_excluded ?? 0) === 1;
+}
+
+/** upsertKnowledge for a PROJECT-sourced fact: null (nothing written) when the project is
+ *  excluded from learning. The only door the project learn functions use. */
+function upsertProjectKnowledge(
+  db: AppDb,
+  projectId: string,
+  facts: KnowledgeFacts,
+  event: Omit<KnowledgeEventInput, "projectId">,
+): PermitUtilityKnowledgeProfile | null {
+  if (isLearningExcluded(db, projectId)) return null;
+  return upsertKnowledge(db, facts, { ...event, projectId });
+}
+
+// The org a project's learning belongs to — read from the project ROW, never from a caller.
+function orgIdForProject(db: AppDb, projectId: string): string {
+  return text(db.get<Row>("SELECT org_id FROM projects WHERE id = ?", [projectId])?.org_id) || DEFAULT_ORG_ID;
+}
+
+// historical_failure_examples is the ONE org-scoped learning table (raw correction excerpts
+// name homeowners and co-customers). Every row carries the org that produced it: a project's
+// own org when there is a project, otherwise the org of the session / job that imported it.
+// Callers never pass a request-body value here.
 function insertHistoricalFailureExample(
   db: AppDb,
   input: {
+    orgId: string;
     project?: ProjectRecord;
     facts: KnowledgeFacts;
     correction: NonNullable<KnowledgeFacts["correction"]>;
@@ -552,18 +645,25 @@ function insertHistoricalFailureExample(
     sourceLabel: string;
     occurredAt?: string;
     signatureSeed: string;
+    /** The live correction this row was learned from (L4) — the key relearnCorrection
+     *  replaces and retracts by. Absent for imports (mbox, batch scan). */
+    correctionId?: string | null;
   },
 ): void {
+  if (input.project && isLearningExcluded(db, input.project.id)) return;
   const key = profileKey(input.facts);
   const tags = input.project ? extractProjectFeatureTags(input.project) : tagsFromText(`${input.facts.utility} ${input.facts.ahj} ${input.correction.sample}`);
   const sourceSignature = signatureFor(input.signatureSeed);
+  const orgId = input.project ? orgIdForProject(db, input.project.id) : clean(input.orgId) || DEFAULT_ORG_ID;
   db.run(
     `INSERT OR IGNORE INTO historical_failure_examples
-      (id, source_signature, profile_key, project_id, state, ahj, utility, portal_name, feature_tags_json,
-       outcome, correction_bucket, root_cause, required_action, sample, source_type, source_label, occurred_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, org_id, source_signature, profile_key, project_id, state, ahj, utility, portal_name, feature_tags_json,
+       outcome, correction_bucket, root_cause, required_action, sample, source_type, source_label, occurred_at, created_at,
+       correction_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id(),
+      orgId,
       sourceSignature,
       key,
       input.project?.id || null,
@@ -581,6 +681,7 @@ function insertHistoricalFailureExample(
       input.sourceLabel,
       input.occurredAt || nowIso(),
       nowIso(),
+      input.correctionId || null,
     ],
   );
 }
@@ -726,10 +827,11 @@ function portalFromProject(project: ProjectRecord): { portalName: string; portal
   return { portalName, portalUrl };
 }
 
-export function learnFromProject(db: AppDb, project: ProjectRecord, eventType = "project.saved"): PermitUtilityKnowledgeProfile {
+export function learnFromProject(db: AppDb, project: ProjectRecord, eventType = "project.saved"): PermitUtilityKnowledgeProfile | null {
   const portal = portalFromProject(project);
-  const profile = upsertKnowledge(
+  const profile = upsertProjectKnowledge(
     db,
+    project.id,
     {
       state: project.state,
       ahj: project.ahj || project.city,
@@ -741,8 +843,9 @@ export function learnFromProject(db: AppDb, project: ProjectRecord, eventType = 
       confidence: "learned",
       notes: "Learned from project parser payload and generated application profile.",
     },
-    { projectId: project.id, eventType, details: { status: project.status } },
+    { eventType, details: { status: project.status } },
   );
+  if (!profile) return null;
   upsertProjectFingerprint(db, project);
   return profile;
 }
@@ -752,9 +855,10 @@ export function learnFromPermitTarget(
   project: ProjectRecord,
   input: { jurisdiction?: string; portalName?: string; portalUrl?: string; applicationNumber?: string; permitNumber?: string },
   eventType = "permit_target.created",
-): PermitUtilityKnowledgeProfile {
-  return upsertKnowledge(
+): PermitUtilityKnowledgeProfile | null {
+  return upsertProjectKnowledge(
     db,
+    project.id,
     {
       state: project.state,
       ahj: input.jurisdiction || project.ahj || project.city,
@@ -767,7 +871,6 @@ export function learnFromPermitTarget(
       notes: "Portal and tracking target learned from dashboard permit monitor setup.",
     },
     {
-      projectId: project.id,
       eventType,
       details: {
         jurisdiction: input.jurisdiction || "",
@@ -779,56 +882,275 @@ export function learnFromPermitTarget(
   );
 }
 
+/**
+ * Is this classification a REJECTION worth learning as a failure pattern? A reviewer asking a
+ * question (C_reviewer_clarification) changed nothing about the package, so it is not a cause
+ * the next filing can prevent. The ONE predicate every correction learn path asks — intake,
+ * triage, resolve. (The triage agent has no separate "not a correction" verdict; it says so by
+ * choosing C.)
+ */
+export function isLearnableCorrectionBucket(bucket: string): boolean {
+  return bucket === "A_we_fix" || bucket === "B_designer_fix";
+}
+
 export function learnFromCorrection(
   db: AppDb,
   project: ProjectRecord,
+  /** The corrections row this came from. With it, the failure row is keyed by the correction
+   *  and re-derived from the row's CURRENT classification (relearnCorrection). null only for
+   *  callers with no row (tests of the classifier alone). */
+  correctionId: string | null,
   classification: CorrectionClassification,
   correctionText: string,
   source: string,
   eventType = "correction.learned",
-): PermitUtilityKnowledgeProfile {
+): PermitUtilityKnowledgeProfile | null {
   const portal = portalFromProject(project);
-  const facts: KnowledgeFacts = {
-    state: project.state,
-    ahj: project.ahj || project.city,
-    utility: project.utility,
-    portalName: portal.portalName,
-    portalUrl: portal.portalUrl,
-    requiredDocuments: docsFromCorrection(correctionText),
-    correction: {
-      bucket: classification.bucket,
-      rootCause: classification.rootCause,
-      requiredAction: classification.requiredAction,
-      sample: correctionText,
-    },
-    sources: [learnedSource("learned_correction", `Correction intake: ${source}`)],
-    confidence: "learned",
-    notes: "Common correction pattern learned from correction intake.",
-  };
-  const profile = upsertKnowledge(
+  // The shared profile learns the documents and the provenance; the PATTERN is not merged in
+  // here any more. It is derived from historical_failure_examples by rebuildKnowledgeRollup, so
+  // the intake regex guess and the later triage verdict are one row that gets replaced, not two
+  // counts that both stay.
+  const profile = upsertProjectKnowledge(
     db,
-    facts,
+    project.id,
     {
-      projectId: project.id,
+      state: project.state,
+      ahj: project.ahj || project.city,
+      utility: project.utility,
+      portalName: portal.portalName,
+      portalUrl: portal.portalUrl,
+      requiredDocuments: docsFromCorrection(correctionText),
+      sources: [learnedSource("learned_correction", `Correction intake: ${source}`)],
+      confidence: "learned",
+      notes: "Common correction pattern learned from correction intake.",
+    },
+    {
       eventType,
       details: {
         source,
+        correctionId: correctionId || null,
         bucket: classification.bucket,
         rootCause: classification.rootCause,
         newRuleRecommended: classification.newRuleRecommended,
       },
     },
   );
-  insertHistoricalFailureExample(db, {
-    project,
-    facts,
-    correction: facts.correction!,
-    sourceType: source,
-    sourceLabel: "dashboard correction intake",
-    occurredAt: nowIso(),
-    signatureSeed: `${project.id}|${eventType}|${source}|${correctionText}`,
-  });
-  return profile;
+  if (!profile) return null;
+  if (correctionId) {
+    relearnCorrection(db, correctionId);
+  } else if (isLearnableCorrectionBucket(classification.bucket)) {
+    insertHistoricalFailureExample(db, {
+      orgId: orgIdForProject(db, project.id),
+      project,
+      facts: correctionFacts(project),
+      correction: {
+        bucket: classification.bucket,
+        rootCause: classification.rootCause,
+        requiredAction: classification.requiredAction,
+        sample: correctionText,
+      },
+      sourceType: source,
+      sourceLabel: "dashboard correction intake",
+      occurredAt: nowIso(),
+      signatureSeed: `${project.id}|${eventType}|${source}|${correctionText}`,
+    });
+    rebuildKnowledgeRollup(db, profile.profileKey);
+  }
+  return mapKnowledge(db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [profile.profileKey])!);
+}
+
+function correctionFacts(project: ProjectRecord): KnowledgeFacts {
+  const portal = portalFromProject(project);
+  return {
+    state: project.state,
+    ahj: project.ahj || project.city,
+    utility: project.utility,
+    portalName: portal.portalName,
+    portalUrl: portal.portalUrl,
+  };
+}
+
+/**
+ * RE-DERIVE ONE LIVE CORRECTION'S LEARNED FAILURE ROW FROM ITS FINAL CLASSIFICATION (L4).
+ *
+ * Intake learns from the regex classifier's guess; the paid triage agent (persistTriage) and the
+ * operator (resolve) come later and are better. Every one of those moments calls this, and it
+ * replaces the row keyed by correction_id with what the corrections row says NOW:
+ *   - learnable bucket (A/B), not retracted, project not learning-excluded -> one row, whose
+ *     root cause and required action are the corrections row's (titles and severity never read
+ *     the raw sample — historicalFailures.ts);
+ *   - C_reviewer_clarification, an operator retraction, or an excluded project -> no row.
+ * Then the shared rollup is rebuilt for every key the row touched, so common_corrections_json
+ * cannot keep a pattern the source table no longer holds.
+ *
+ * Replace = DELETE then INSERT: the table has two UNIQUE keys (id, source_signature), and an
+ * INSERT OR IGNORE would silently keep the stale regex row.
+ */
+export function relearnCorrection(db: AppDb, correctionId: string): "learned" | "removed" | "skipped" {
+  const correction = db.get<Row>("SELECT * FROM corrections WHERE id = ?", [correctionId]);
+  if (!correction) return "skipped";
+  const projectRow = db.get<Row>("SELECT * FROM projects WHERE id = ?", [text(correction.project_id)]);
+  if (!projectRow) return "skipped";
+  const project = projectFromRow(projectRow);
+  const key = profileKey({ state: project.state, ahj: project.ahj || project.city, utility: project.utility });
+  const touched = new Set<string>([
+    key,
+    ...db
+      .query<Row>("SELECT DISTINCT profile_key FROM historical_failure_examples WHERE correction_id = ?", [correctionId])
+      .map((r) => text(r.profile_key)),
+  ]);
+  db.run("DELETE FROM historical_failure_examples WHERE correction_id = ?", [correctionId]);
+  const bucket = text(correction.correction_bucket);
+  const learn =
+    isLearnableCorrectionBucket(bucket) &&
+    Number(correction.learning_retracted ?? 0) !== 1 &&
+    !isLearningExcluded(db, project.id) &&
+    // FK: the failure row points at the shared profile. Intake created it; if it is gone there
+    // is nothing to attach the pattern to, and inventing a profile here is not this job.
+    Boolean(db.get<Row>("SELECT 1 AS one FROM permit_utility_knowledge WHERE profile_key = ?", [key]));
+  if (learn) {
+    insertHistoricalFailureExample(db, {
+      orgId: orgIdForProject(db, project.id),
+      project,
+      facts: correctionFacts(project),
+      correction: {
+        bucket: bucket as CorrectionBucket,
+        rootCause: text(correction.root_cause),
+        requiredAction: text(correction.required_action),
+        sample: text(correction.correction_text),
+      },
+      sourceType: text(correction.source),
+      sourceLabel: "dashboard correction",
+      occurredAt: text(correction.created_at) || nowIso(),
+      signatureSeed: `correction:${correctionId}`,
+      correctionId,
+    });
+  }
+  for (const k of touched) if (k) rebuildKnowledgeRollup(db, k);
+  return learn ? "learned" : "removed";
+}
+
+/**
+ * The operator's "this was not a real rejection, forget it" (L4 #6). Sticky: the corrections
+ * row is marked, so a later triage or resolve cannot learn it back. Returns how many learned
+ * rows were removed.
+ */
+export function retractCorrectionLearning(db: AppDb, correctionId: string): number {
+  const before = Number(
+    db.get<Row>("SELECT COUNT(*) AS n FROM historical_failure_examples WHERE correction_id = ?", [correctionId])?.n ?? 0,
+  );
+  db.run("UPDATE corrections SET learning_retracted = 1 WHERE id = ?", [correctionId]);
+  relearnCorrection(db, correctionId);
+  return before;
+}
+
+function correctionRollupSignature(row: Row): string {
+  return [text(row.correction_bucket), text(row.root_cause), text(row.required_action)]
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Recompute a shared profile's DERIVED fields from their source tables: project_count from
+ * knowledge_events, common corrections from historical_failure_examples, and the timeline from
+ * permit_timeline_samples. Called after anything that removes or replaces source rows
+ * (deleteProject, a correction relearn/retraction, a new timeline sample, demo reset).
+ */
+export function rebuildKnowledgeRollup(db: AppDb, key: string): void {
+  const projectRow = db.get<Row>(
+    `SELECT COUNT(DISTINCT project_id) AS project_count
+     FROM knowledge_events
+     WHERE profile_key = ? AND project_id IS NOT NULL`,
+    [key],
+  );
+  const correctionRows = db.query<Row>(
+    `SELECT correction_bucket, root_cause, required_action, MAX(created_at) AS last_seen_at, COUNT(*) AS count
+     FROM historical_failure_examples
+     WHERE profile_key = ?
+     GROUP BY correction_bucket, root_cause, required_action
+     ORDER BY count DESC, last_seen_at DESC
+     LIMIT 25`,
+    [key],
+  );
+  const commonCorrections = correctionRows.map((row) => ({
+    signature: correctionRollupSignature(row),
+    bucket: text(row.correction_bucket),
+    rootCause: text(row.root_cause),
+    requiredAction: text(row.required_action),
+    count: Number(row.count ?? 0),
+    lastSeenAt: text(row.last_seen_at),
+    // NO sample: this rollup is the SHARED row every tenant reads, and a raw correction
+    // excerpt can name a homeowner. The excerpt stays in the org-scoped source table.
+  }));
+  db.run(
+    `UPDATE permit_utility_knowledge
+     SET project_count = ?, common_corrections_json = ?, correction_count = ?, updated_at = ?
+     WHERE profile_key = ?`,
+    [
+      Number(projectRow?.project_count ?? 0),
+      asJson(commonCorrections),
+      commonCorrections.reduce((sum, item) => sum + item.count, 0),
+      nowIso(),
+      key,
+    ],
+  );
+  recomputeTimelineFromSamples(db, key);
+}
+
+// The per-check note the monitor used to append on every look ("issued: Issued after 5.6
+// day(s)", "waiting: In Review"): humanizeEnum(outcome) + ": ". Lower-case enum prefixes, so the
+// capitalized mbox labels ("Permit approved/issued: ...") and seeded "Reference timeline: ..."
+// segments can never match. A rebuild drops these and its own previous derived segments ONLY.
+const MONITOR_TIMELINE_NOTE_RE = /^(waiting|correction flagged|reviewed by ahj|ready for issue|issued|nem approved|needs human review|no change): /;
+const MEASURED_TIMELINE_PREFIX = "Measured turnaround";
+const MILESTONE_LABELS: Record<string, string> = {
+  issued: "issued / approved",
+  reviewed: "review complete",
+  correction_flagged: "first correction",
+};
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * The KB's timeline fields, DERIVED (L2): average_timeline_days is the MEDIAN days from the
+ * filing's own submitted_at to its first "issued/approved" reading, and timeline_sample_count is
+ * how many filings that median rests on. Milestones never mix: review-complete and
+ * first-correction turnaround are reported as their own notes, never averaged into issuance.
+ * No samples = no number (null / 0), which is what an unmeasured AHJ honestly has.
+ */
+export function recomputeTimelineFromSamples(db: AppDb, key: string): void {
+  const row = db.get<Row>("SELECT timeline_notes_json FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
+  if (!row) return;
+  const samples = db.query<Row>("SELECT milestone, days FROM permit_timeline_samples WHERE profile_key = ?", [key]);
+  const byMilestone = new Map<string, number[]>();
+  for (const sample of samples) {
+    const list = byMilestone.get(text(sample.milestone)) || [];
+    list.push(Number(sample.days));
+    byMilestone.set(text(sample.milestone), list);
+  }
+  const issued = byMilestone.get("issued") || [];
+  const round = (value: number) => Math.round(value * 10) / 10;
+  const kept = parseJson<string[]>(text(row.timeline_notes_json), []).filter(
+    (note) => !MONITOR_TIMELINE_NOTE_RE.test(note) && !note.startsWith(MEASURED_TIMELINE_PREFIX),
+  );
+  const derived = ["issued", "reviewed", "correction_flagged"]
+    .filter((m) => (byMilestone.get(m) || []).length > 0)
+    .map((m) => {
+      const list = byMilestone.get(m)!;
+      return `${MEASURED_TIMELINE_PREFIX} (submitted to ${MILESTONE_LABELS[m]}): median ${round(median(list)).toFixed(1)} day(s), n=${list.length}`;
+    });
+  db.run(
+    `UPDATE permit_utility_knowledge
+     SET average_timeline_days = ?, timeline_sample_count = ?, timeline_notes_json = ?
+     WHERE profile_key = ?`,
+    [issued.length ? round(median(issued)) : null, issued.length, asJson([...kept, ...derived]), key],
+  );
 }
 
 function docsFromCorrection(correctionText: string): string[] {
@@ -1209,7 +1531,8 @@ const MBOX_MESSAGE_CAP = 10000;
 async function runMboxImport(
   db: AppDb,
   rawMessages: AsyncIterable<string>,
-  input: { sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
+  // orgId: the importing session's / job's org. Required — the failure rows are org-scoped.
+  input: { orgId: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
 ): Promise<MboxKnowledgeImportResult> {
   const touched = new Set<string>();
   const extractedRecords: MboxExtractedLearningRecord[] = [];
@@ -1318,6 +1641,7 @@ async function runMboxImport(
 
     if (facts.correction) {
       insertHistoricalFailureExample(db, {
+        orgId: input.orgId,
         facts,
         correction: facts.correction,
         sourceType: "mbox",
@@ -1344,7 +1668,7 @@ async function runMboxImport(
 
 export async function importMboxKnowledge(
   db: AppDb,
-  input: { mboxText: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
+  input: { orgId: string; mboxText: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
 ): Promise<MboxKnowledgeImportResult> {
   const messages = splitMboxMessages(input.mboxText).slice(0, MBOX_MESSAGE_CAP);
   return runMboxImport(db, messagesFromArray(messages), input);
@@ -1355,7 +1679,7 @@ export async function importMboxKnowledge(
 // Node's ~512MB max-string limit.
 export async function importMboxKnowledgeFromFile(
   db: AppDb,
-  input: { filePath: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
+  input: { orgId: string; filePath: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
 ): Promise<MboxKnowledgeImportResult> {
   return runMboxImport(db, streamMboxMessagesFromFile(input.filePath, MBOX_MESSAGE_CAP), input);
 }
@@ -1366,14 +1690,13 @@ export function learnFromPermitStatus(
   statusCheck: PermitStatusCheck,
   target?: { jurisdiction?: string; portalName?: string; portalUrl?: string; createdAt?: string | null } | null,
   eventType = "permit_status.learned",
-): PermitUtilityKnowledgeProfile {
-  const timelineDays = timelineDaysForStatus(db, project.id, target?.createdAt || project.createdAt, statusCheck);
-  const timelineNote =
-    timelineDays == null
-      ? `${humanizeEnum(statusCheck.outcome)}: ${statusCheck.statusLabel}`
-      : `${humanizeEnum(statusCheck.outcome)}: ${statusCheck.statusLabel} after ${timelineDays.toFixed(1)} day(s)`;
-  return upsertKnowledge(
+): PermitUtilityKnowledgeProfile | null {
+  // No timeline and no per-check note any more: a check is a LOOK, not a milestone. Turnaround
+  // is measured once per (project, track, milestone) in permit_timeline_samples
+  // (timelineSamples.ts recordTimelineSample) and the KB's timeline fields are derived from it.
+  return upsertProjectKnowledge(
     db,
+    project.id,
     {
       state: project.state,
       ahj: target?.jurisdiction || project.ahj || project.city,
@@ -1381,14 +1704,11 @@ export function learnFromPermitStatus(
       portalName: target?.portalName,
       portalUrl: target?.portalUrl,
       requiredDocuments: projectDocs(project),
-      timelineDays,
-      timelineNote,
       sources: [learnedSource("learned_permit_status", "Permit monitor status check")],
       confidence: "learned",
       notes: "Timeline learned from permit/utility monitor status checks.",
     },
     {
-      projectId: project.id,
       eventType,
       details: {
         outcome: statusCheck.outcome,
@@ -1401,28 +1721,16 @@ export function learnFromPermitStatus(
   );
 }
 
-function timelineDaysForStatus(db: AppDb, projectId: string, fallbackStart: string, statusCheck: PermitStatusCheck): number | null {
-  if (!statusCheck.reviewedByAhj && statusCheck.outcome !== "correction_flagged" && !statusCheck.readyForIssue) return null;
-  const submission = db.get<Row>(
-    "SELECT submitted_at, created_at FROM submissions WHERE project_id = ? ORDER BY COALESCE(submitted_at, created_at) ASC LIMIT 1",
-    [projectId],
-  );
-  const start = text(submission?.submitted_at) || text(submission?.created_at) || fallbackStart;
-  const startMs = Date.parse(start);
-  const endMs = Date.parse(statusCheck.createdAt);
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return null;
-  return Math.round(((endMs - startMs) / 86400000) * 10) / 10;
-}
-
 export function learnFromSubmissionConfirmation(
   db: AppDb,
   project: ProjectRecord,
   input: { applicationNumber?: string; permitNumber?: string; confirmationNumber?: string },
   eventType = "submission.confirmed",
-): PermitUtilityKnowledgeProfile {
+): PermitUtilityKnowledgeProfile | null {
   const portal = portalFromProject(project);
-  return upsertKnowledge(
+  return upsertProjectKnowledge(
     db,
+    project.id,
     {
       state: project.state,
       ahj: project.ahj || project.city,
@@ -1435,7 +1743,6 @@ export function learnFromSubmissionConfirmation(
       notes: "Legal submit confirmation captured manually; future status checks can use this as timeline start.",
     },
     {
-      projectId: project.id,
       eventType,
       details: {
         hasApplicationNumber: Boolean(input.applicationNumber),
@@ -1451,13 +1758,21 @@ export function learnFromSubmissionConfirmation(
 // lists, and correction patterns into the knowledge base so future live projects
 // benefit, but never persists a project row or any PII.
 export interface HistoricalDocFacts {
+  /** The scanning job's org. The failure row is org-scoped; the shared profile is not. */
+  orgId: string;
   state?: string;
   ahj?: string;
   utility?: string;
   portalName?: string;
   requiredDocuments?: string[];
   notes?: string;
+  /** PRIVATE provenance (e.g. the file name). Past-project file names are
+   *  "First Last - City, ST.pdf" — a homeowner's name — so this goes only to the org-scoped
+   *  failure row and the dedupe signature, never into the shared profile. */
   sourceLabel: string;
+  /** What KIND of document taught this (e.g. "correction", "sld"). The shared profile's
+   *  source label is built from this, not from the file name. */
+  docKind?: string;
   correctionText?: string;
 }
 
@@ -1466,6 +1781,7 @@ export function learnFromHistoricalDocument(
   input: HistoricalDocFacts,
 ): { profileKey: string; learnedCorrection: boolean } {
   const classification = input.correctionText ? classifyCorrection(input.correctionText) : null;
+  const sharedBatchLabel = `batch scan: ${clean(input.docKind).replace(/_/g, " ") || "document"}`;
   const facts: KnowledgeFacts = {
     state: input.state,
     ahj: input.ahj,
@@ -1481,16 +1797,18 @@ export function learnFromHistoricalDocument(
             sample: input.correctionText,
           }
         : undefined,
-    sources: [learnedSource("learned_batch_import", input.sourceLabel)],
+    // A document-KIND label on the shared row, never the file name (see HistoricalDocFacts).
+    sources: [learnedSource("learned_batch_import", sharedBatchLabel)],
     confidence: "learned",
     notes: input.notes || "Learned from historical past-project document (batch scan).",
   };
   const profile = upsertKnowledge(db, facts, {
     eventType: "batch_import.document_learned",
-    details: { sourceLabel: input.sourceLabel, hasCorrection: Boolean(classification) },
+    details: { sourceLabel: sharedBatchLabel, hasCorrection: Boolean(classification) },
   });
   if (classification && facts.correction) {
     insertHistoricalFailureExample(db, {
+      orgId: input.orgId,
       facts,
       correction: facts.correction,
       sourceType: "batch_import",
@@ -1578,6 +1896,8 @@ export function saveVerifiedAhjProfile(
     submissionMethod?: string;
     requiredDocuments?: string[];
     notes?: string;
+    /** The verifying user's id (from the session, never the body). */
+    verifiedBy?: string;
   },
 ): PermitUtilityKnowledgeProfile {
   if (!input.ahj?.trim()) throw new Error("ahj is required.");
@@ -1598,6 +1918,8 @@ export function saveVerifiedAhjProfile(
     requiredDocuments: input.requiredDocuments,
     sources: [learnedSource("official", "Human-verified AHJ profile")],
     confidence: "mixed",
+    verifiedAt: nowIso(),
+    verifiedBy: clean(input.verifiedBy) || "human",
     notes: noteParts.join(" "),
   };
   return upsertKnowledge(db, facts, {
@@ -1650,16 +1972,15 @@ export function saveResearchedUtilityProfile(
 
 // ---------------------------------------------------------------------------
 // Bulk reference-spreadsheet import (see referenceImport.ts). Imports write a
-// SEEDED profile but must never clobber a human-verified one. In this table
-// human verification is recorded as confidence "mixed" (+ an official source),
-// so a row already at "mixed" is skipped. confidenceFrom() would preserve the
-// "mixed" label but the UPDATE still overwrites portal/notes — hence the
-// explicit skip here rather than relying on the confidence merge.
+// SEEDED profile but must never clobber a human-verified one. Human verification
+// is recorded in verified_at (isVerifiedKnowledge) — NOT confidence "mixed", which
+// an automatic seeded+learned merge also produced and which therefore locked rows
+// nobody had checked. The UPDATE would still overwrite portal/notes on a verified
+// row, hence the explicit skip here rather than relying on the upsert's lock.
 // ---------------------------------------------------------------------------
 
 function isHumanVerifiedProfile(db: AppDb, key: string): boolean {
-  const row = db.get<Row>("SELECT confidence FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
-  return !!row && text(row.confidence) === "mixed";
+  return isVerifiedKnowledge(db.get<Row>("SELECT verified_at FROM permit_utility_knowledge WHERE profile_key = ?", [key]));
 }
 
 export interface ReferenceUtilityInput {
@@ -1743,6 +2064,8 @@ export function saveVerifiedUtilityProfile(
     acDisconnectRule?: string;
     exportLimitNote?: string;
     notes?: string;
+    /** The verifying user's id (from the session, never the body). */
+    verifiedBy?: string;
   },
 ): PermitUtilityKnowledgeProfile {
   if (!input.utility?.trim()) throw new Error("utility is required.");
@@ -1767,6 +2090,8 @@ export function saveVerifiedUtilityProfile(
     requiredDocuments: input.requiredDocuments,
     sources: [learnedSource("official", "Human-verified utility NEM profile")],
     confidence: "mixed",
+    verifiedAt: nowIso(),
+    verifiedBy: clean(input.verifiedBy) || "human",
     notes: noteParts.join(" "),
   };
   return upsertKnowledge(db, facts, {
@@ -1922,7 +2247,7 @@ function findKnowledgeByName(
     let score = knowledgeNameMatchScore(wanted, kind === "utility" ? profile.utility : profile.ahj);
     if (!score) continue;
     if (rowState !== "unknown" && rowState === stateNorm) score += 6; // prefer state-pinned rows
-    if (profile.confidence === "mixed") score += 4; // human-verified beats seeded on ties
+    if (isVerifiedKnowledge(profile)) score += 4; // human-verified beats seeded on ties
     if (profile.notes) score += 2;
     if (!best || score > best.score) best = { profile, score };
   }
@@ -2074,7 +2399,11 @@ function seedOperatorRulings(db: AppDb): void {
     for (const ahj of ruling.ahjSpellings) {
       upsertKnowledge(
         db,
-        { state: ruling.state, ahj, utility: "", notes: ruling.note, sources: [source], confidence: "mixed" },
+        {
+          state: ruling.state, ahj, utility: "", notes: ruling.note, sources: [source], confidence: "mixed",
+          // Verified on the DATE OF THE RULING, for the same reason as observedAt above.
+          verifiedAt: source.observedAt, verifiedBy: `operator ruling ${ruling.ruledOn}`,
+        },
         { eventType: "ahj.operator_ruling", details: { ahj, state: ruling.state, ruledOn: ruling.ruledOn } },
       );
     }
@@ -2241,7 +2570,10 @@ const BACKFILL_BATCH = Number(process.env.KB_BACKFILL_BATCH || 500);
 function backfillExistingProjectLearning(db: AppDb): void {
   const projects = db.query<Row>(
     `SELECT p.* FROM projects p
-     WHERE NOT EXISTS (
+     WHERE COALESCE(p.learning_excluded, 0) = 0
+       -- An excluded project never earns its backfill event (it learns nothing), so without
+       -- this filter it would be re-selected on every boot and could fill the whole batch.
+       AND NOT EXISTS (
        SELECT 1 FROM knowledge_events e
        WHERE e.project_id = p.id AND e.event_type = 'backfill.v2.project'
      )
@@ -2282,6 +2614,7 @@ function backfillExistingProjectLearning(db: AppDb): void {
       learnFromCorrection(
         db,
         project,
+        text(correction.id),
         {
           bucket: text(correction.correction_bucket) as CorrectionBucket,
           rootCause: text(correction.root_cause),
@@ -2296,7 +2629,7 @@ function backfillExistingProjectLearning(db: AppDb): void {
       );
     }
 
-    for (const status of db.query<Row>("SELECT * FROM permit_status_checks WHERE project_id = ?", [project.id])) {
+    for (const status of db.query<Row>("SELECT * FROM permit_status_checks WHERE project_id = ? ORDER BY created_at ASC, rowid ASC", [project.id])) {
       const eventType = `backfill.v2.permit_status.${text(status.id)}`;
       if (eventExists(db, project.id, eventType)) continue;
       const target = status.target_id

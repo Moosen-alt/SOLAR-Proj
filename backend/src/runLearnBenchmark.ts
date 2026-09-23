@@ -225,7 +225,7 @@ async function main(): Promise<void> {
         }],
         permitPath: "prescriptive", framingType: "rafter", roofRafterSpacing: "24",
         roofRafterSpan: "11.5", snow: "25", deadLoad: "3.0", wind: "B",
-      } as never).project.id;
+      } as never, undefined, { learningExcluded: true }).project.id;
       pid = created;
       const started = Date.now();
       // THE CAP IS INSIDE THE RUN, NOT AROUND IT.

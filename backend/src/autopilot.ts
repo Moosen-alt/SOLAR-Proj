@@ -476,6 +476,19 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
     ...unreproduced.map((b) => ({ code: String(b.code), detail: `Last autopilot run: ${b.detail}` })),
   ];
   const notApprovable = { canApprove: false, approveDisabledReason: "Available once the project is staged to the portal review screen." };
+  // A FAILED STAGING RUN IS NOT A BLOCK WHEN RE-STAGING IS THE FIX. When the only live blocker
+  // is a track whose staging run failed and Stage portals is ENABLED, nothing stands between the
+  // operator and the retry — reading BLOCKED beside an enabled button (3b9ce10c) sent them
+  // looking for a gate that does not exist. The phase is the failure (the rail's own "failed"
+  // wording), and the blockers stay so the reason is still printed. Any other live blocker, or a
+  // disabled Stage portals, keeps BLOCKED.
+  if (liveBlockers.length && liveBlockers.every((b) => b.code === "stage_failed") && stageInfo.canStage) {
+    return {
+      projectId, phase: "failed", stage: "Staging failed — re-stage",
+      message: nextStep.headline, // the banner's sentence (staging_failed: "…fix the cause, then stage it again")
+      blockers: liveBlockers, ...notApprovable, pauseReason: null, portalRunId: run ? String(run.id) : null, updatedAt: ts, ...noReview, ...stageInfo,
+    };
+  }
   if (liveBlockers.length) {
     return { projectId, phase: "blocked", stage: "Blocked", message: nextStep.headline, blockers: liveBlockers, ...notApprovable, pauseReason: null, portalRunId: null, updatedAt: ts, ...noReview, ...stageInfo };
   }

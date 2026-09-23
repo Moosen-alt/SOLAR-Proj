@@ -19,11 +19,12 @@ process.env.AUTOPILOT_DB_PATH = process.env.AUTOPILOT_DB_PATH || "backend/data/a
 const dryRun = process.argv.includes("--dry-run");
 const { openDatabase } = await import("../backend/src/db");
 const { inferPlatform, isRecognizedPlatform, looksLikeBareUrl } = await import("../backend/src/portalPlatformRules");
+const { isVerifiedKnowledge } = await import("../backend/src/knowledgeBase");
 const db = await openDatabase();
 
-interface Row { profile_key: string; state: string; ahj: string; utility: string; portal_name: string; portal_url: string; portal_platform: string; confidence: string }
+interface Row { profile_key: string; state: string; ahj: string; utility: string; portal_name: string; portal_url: string; portal_platform: string; confidence: string; verified_at: string | null }
 const rows = db.query<Row>(
-  "SELECT profile_key, state, ahj, utility, portal_name, portal_url, portal_platform, confidence FROM permit_utility_knowledge WHERE portal_name LIKE 'http%'",
+  "SELECT profile_key, state, ahj, utility, portal_name, portal_url, portal_platform, confidence, verified_at FROM permit_utility_knowledge WHERE portal_name LIKE 'http%'",
 );
 
 let named = 0, cleared = 0, skippedVerified = 0, platformFilled = 0;
@@ -32,7 +33,7 @@ const byPlatform = new Map<string, number>();
 for (const row of rows) {
   if (!looksLikeBareUrl(row.portal_name)) continue;
   // Rule 3: a human-verified row is never rewritten by a bulk pass.
-  if (row.confidence === "mixed") { skippedVerified++; continue; }
+  if (isVerifiedKnowledge(row)) { skippedVerified++; continue; }
 
   const platform = inferPlatform(row.portal_url || row.portal_name);
   const recognized = isRecognizedPlatform(platform);

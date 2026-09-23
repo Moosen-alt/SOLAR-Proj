@@ -61,7 +61,7 @@ for (const p of projects) {
     i.status === "pending" && i.fieldName !== "correction" && i.issueType !== "Background job failed").length;
   const reviewerBlockers = buildReviewerReportFor(db, detail.project)
     .findings.filter((f: { severity: string }) => f.severity === "blocker");
-  const hist = buildHistoricalFailureReport(db, p.id);
+  const hist = buildHistoricalFailureReport(db, p.id, null);
   const learned = hist.checklist.filter((item: { status: string; sourceCauseSignature: string }) => {
     const cause = hist.topRejectionCauses.find((c: { signature: string; count: number; severity: string }) =>
       c.signature === item.sourceCauseSignature);

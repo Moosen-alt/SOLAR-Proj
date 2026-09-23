@@ -59,6 +59,7 @@ import type {
   SubmissionRecord,
   SubmitGateCheck,
   SubmitGateReport,
+  SubmittalTrack,
   SubmittalTrackType,
 } from "../../shared/src/types";
 import { touchProjectMetrics } from "./kpi";
@@ -87,7 +88,8 @@ import { isPortalPaused } from "./portalPause";
 // The ONE creator of permit_check_targets rows (extracted from markTrackSubmitted).
 // Direction matters: submittalTracks must never import repository — jobQueue statically
 // imports repository, and the circular-import guard in CLAUDE.md is about that edge.
-import { ensureCheckTarget, requiredTracks, SUBMITTAL_TRACK_TYPES, trackPermitTypes, unfinishedTracks, unfinishedUnattributedTargets } from "./submittalTracks";
+import { ensureCheckTarget, getSubmittalTracks, isTrackDone, requiredTracks, SUBMITTAL_TRACK_TYPES, trackPermitTypes, unfinishedTracks, unfinishedUnattributedTargets } from "./submittalTracks";
+import { recordTimelineSample, trackForTarget } from "./timelineSamples";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
@@ -104,6 +106,8 @@ import {
   learnFromPermitTarget,
   learnFromProject,
   learnFromSubmissionConfirmation,
+  rebuildKnowledgeRollup,
+  relearnCorrection,
   findLearnedProfileForProject,
   findKnowledgeForLearn,
   knowledgeResearchHint,
@@ -500,7 +504,14 @@ function portalProfileDir(profileBase: string, clientId: string | null, portalTy
   return path.join(...parts);
 }
 
-export function createProject(db: AppDb, payload: ParserPayload, orgId: string = DEFAULT_ORG_ID): ProjectDetail {
+export function createProject(
+  db: AppDb,
+  payload: ParserPayload,
+  orgId: string = DEFAULT_ORG_ID,
+  /** learningExcluded: a demo / benchmark / fixture project that must never teach the SHARED
+   *  knowledge base (L3). Written in the INSERT, so even the birth learn below skips it. */
+  options: { learningExcluded?: boolean } = {},
+): ProjectDetail {
   const project = normalizeProject(id(), payload);
   db.transaction(() => {
     db.run(
@@ -508,8 +519,8 @@ export function createProject(db: AppDb, payload: ParserPayload, orgId: string =
         id, client_id, homeowner_name, project_address, city, state, zip, ahj, utility,
         account_number, meter_number, system_size_dc_kw, system_size_ac_kw, total_export_kw,
         interconnection_method, status, current_stage, stage_detail, parser_confidence_summary, parser_json,
-        created_at, updated_at, org_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        created_at, updated_at, org_id, learning_excluded
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         project.id,
         project.clientId,
@@ -537,6 +548,7 @@ export function createProject(db: AppDb, payload: ParserPayload, orgId: string =
         project.createdAt,
         project.updatedAt,
         orgId,
+        options.learningExcluded ? 1 : 0,
       ],
     );
 
@@ -1093,52 +1105,8 @@ export function getProjectDetail(db: AppDb, projectId: string): ProjectDetail {
   };
 }
 
-function correctionPatternSignature(row: Row): string {
-  return [text(row.correction_bucket), text(row.root_cause), text(row.required_action)]
-    .join(" ")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-function rebuildKnowledgeRollup(db: AppDb, profileKey: string): void {
-  const projectRow = db.get<Row>(
-    `SELECT COUNT(DISTINCT project_id) AS project_count
-     FROM knowledge_events
-     WHERE profile_key = ? AND project_id IS NOT NULL`,
-    [profileKey],
-  );
-  const correctionRows = db.query<Row>(
-    `SELECT correction_bucket, root_cause, required_action, sample, MAX(created_at) AS last_seen_at, COUNT(*) AS count
-     FROM historical_failure_examples
-     WHERE profile_key = ?
-     GROUP BY correction_bucket, root_cause, required_action
-     ORDER BY count DESC, last_seen_at DESC
-     LIMIT 25`,
-    [profileKey],
-  );
-  const commonCorrections = correctionRows.map((row) => ({
-    signature: correctionPatternSignature(row),
-    bucket: text(row.correction_bucket),
-    rootCause: text(row.root_cause),
-    requiredAction: text(row.required_action),
-    count: Number(row.count ?? 0),
-    lastSeenAt: text(row.last_seen_at),
-    sample: text(row.sample),
-  }));
-  db.run(
-    `UPDATE permit_utility_knowledge
-     SET project_count = ?, common_corrections_json = ?, correction_count = ?, updated_at = ?
-     WHERE profile_key = ?`,
-    [
-      Number(projectRow?.project_count ?? 0),
-      asJson(commonCorrections),
-      commonCorrections.reduce((sum, item) => sum + item.count, 0),
-      nowIso(),
-      profileKey,
-    ],
-  );
-}
+// rebuildKnowledgeRollup lives in knowledgeBase.ts (it also derives the timeline from
+// permit_timeline_samples, and the correction relearn path there needs it).
 
 export function deleteProject(db: AppDb, projectId: string): { deleted: true; projectId: string; affectedKnowledgeProfiles: number } {
   const project = db.get<Row>("SELECT id, homeowner_name, project_address FROM projects WHERE id = ?", [projectId]);
@@ -1151,8 +1119,10 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
          UNION
          SELECT profile_key FROM historical_project_fingerprints WHERE project_id = ?
          UNION
-         SELECT profile_key FROM historical_failure_examples WHERE project_id = ?`,
-        [projectId, projectId, projectId],
+         SELECT profile_key FROM historical_failure_examples WHERE project_id = ?
+         UNION
+         SELECT profile_key FROM permit_timeline_samples WHERE project_id = ?`,
+        [projectId, projectId, projectId, projectId],
       )
       .map((row) => text(row.profile_key))
       .filter(Boolean),
@@ -1182,6 +1152,7 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
     db.run("DELETE FROM source_files WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM audit_logs WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM historical_failure_examples WHERE project_id = ?", [projectId]);
+    db.run("DELETE FROM permit_timeline_samples WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM historical_project_fingerprints WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM knowledge_events WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM project_notes WHERE project_id = ?", [projectId]);
@@ -1234,7 +1205,10 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
 // the readings and nextStep.ts surfaces them — they just do not gate. This is the ONE answer to
 // "does this pending item hold staging?": the submit gate, prepareSubmission's 409 and every
 // report below read it.
-const ADVISORY_REVIEW_ISSUE_TYPES = new Set(["Run triage", "Background job failed"]);
+// A paid receipt disagreeing with a SHARED fee schedule (feeSchedules.raiseReceiptContradictionReviews)
+// is about the schedule, not this project's data: it rides the project only because review items
+// need one, and it must never hold that project's submission.
+const ADVISORY_REVIEW_ISSUE_TYPES = new Set(["Run triage", "Background job failed", "Fee schedule disagrees with paid receipts"]);
 export const NON_QC_REVIEW_FIELDS: ReadonlySet<string> = new Set(["correction", "permit_status", "prepare_submission", "autopilot"]);
 export function isCriticalReviewItem(item: { status: string; fieldName: string; issueType?: string }): boolean {
   return item.status === "pending" && !NON_QC_REVIEW_FIELDS.has(item.fieldName) && !ADVISORY_REVIEW_ISSUE_TYPES.has(item.issueType || "");
@@ -1290,7 +1264,7 @@ function isStagedOrSubmitted(status: ProjectRecord["status"]): boolean {
 
 function operationDrafts(db: AppDb, detail: ProjectDetail): OperationStepDraft[] {
   const project = detail.project;
-  const historicalReport = buildHistoricalFailureReport(db, project.id);
+  const historicalReport = buildHistoricalFailureReport(db, project.id, null);
   const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const pendingCritical = detail.humanReviewItems.filter(isCriticalReviewItem).length;
@@ -1780,7 +1754,7 @@ export function getOperationsBrief(db: AppDb, projectId: string): OperationsBrie
   const project = detail.project;
   const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
-  const historicalReport = buildHistoricalFailureReport(db, projectId);
+  const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const blockers: OperationsBriefSignal[] = [];
   const readySignals: OperationsBriefSignal[] = [];
 
@@ -1963,7 +1937,8 @@ export function getProjectHandoffPacket(db: AppDb, projectId: string): ProjectHa
         `Status: ${project.status}`,
         `Utility/AHJ: ${[project.utility || "Utility missing", project.ahj || "AHJ missing"].join(" / ")}`,
         `System: ${project.systemSizeDcKw ?? "?"} kW DC / ${project.systemSizeAcKw ?? "?"} kW AC`,
-        `PermitFlow: ${processMap.permitStatus.replaceAll("_", " ")} | NEMflow: ${processMap.nemStatus.replaceAll("_", " ")}`,
+        // Per-track state, not the lane rollup (trackStateSummary): "fee due", never "waiting".
+        (() => { const w = trackStateSummary(getSubmittalTracks(db, project)); return `PermitFlow: ${w.permit} | NEMflow: ${w.nem}`; })(),
       ],
     }),
     handoffSection({
@@ -2401,7 +2376,7 @@ function readinessItem(input: LiveProjectReadinessItem): LiveProjectReadinessIte
 export function getLiveProjectReadinessReport(db: AppDb, projectId: string): LiveProjectReadinessReport {
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
-  const historicalReport = buildHistoricalFailureReport(db, projectId);
+  const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const activeEmailSources = db.query<Row>("SELECT id, label, last_checked_at, last_matched_count, last_error FROM email_tracking_sources WHERE active = 1 ORDER BY updated_at DESC");
@@ -2629,6 +2604,30 @@ function processLane(input: Omit<ProjectProcessLane, "status" | "currentStep" | 
   };
 }
 
+/**
+ * WHERE EACH FILING STANDS, in words — the per-track state (getSubmittalTracks: isTrackDone and
+ * the latest reading per target), never the process lanes' rollup. The lane rollup reads
+ * "waiting" whenever any step waits (a portal run awaiting its human submit, a checklist gap), so
+ * the summary said "PermitFlow waiting" while the building permit was ready_for_issue (demo:
+ * Walt Brennan). ready_for_issue is "fee due" — a person still has to pay — never "waiting" and
+ * never "issued". Several permit tracks are named one by one.
+ */
+const TRACK_STATE_WORDS: Record<SubmittalTrack["status"], string> = {
+  not_started: "not started", staged: "staged", submitted: "submitted", in_review: "in review",
+  correction: "correction", ready_for_issue: "fee due", issued: "issued",
+};
+export function trackStateSummary(tracks: readonly Pick<SubmittalTrack, "type" | "category" | "status">[]): { permit: string; nem: string } {
+  const permits = tracks.filter((t) => t.category === "permit");
+  const nem = tracks.find((t) => t.category === "utility");
+  const word = (t: Pick<SubmittalTrack, "category" | "status">) => (t.category === "utility" && t.status === "issued" ? "approved" : TRACK_STATE_WORDS[t.status]);
+  return {
+    permit: permits.length === 0 ? "not required"
+      : permits.length === 1 ? word(permits[0])
+      : permits.map((t) => `${t.type} ${word(t)}`).join(", "),
+    nem: nem ? word(nem) : "not required",
+  };
+}
+
 function renderProcessMapText(report: Omit<ProjectProcessMap, "reportText">): string {
   return [
     `PermitFlow + NEMflow Map - ${new Date(report.generatedAt).toLocaleString()}`,
@@ -2673,7 +2672,7 @@ function hasPermitSignal(check: PermitStatusCheck | EmailProjectMatch): boolean 
 export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProcessMap {
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
-  const historicalReport = buildHistoricalFailureReport(db, projectId);
+  const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
 
@@ -2975,7 +2974,8 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
     || lanes.find((lane) => lane.status === "not_started")
     || closeoutLane;
   const generatedAt = nowIso();
-  const headline = `PermitFlow ${permitLane.status.replaceAll("_", " ")}, NEMflow ${nemLane.status.replaceAll("_", " ")}, overall ${status.replaceAll("_", " ")}.`;
+  const trackWords = trackStateSummary(getSubmittalTracks(db, project));
+  const headline = `PermitFlow ${trackWords.permit}; NEMflow ${trackWords.nem}; overall ${status.replaceAll("_", " ")}.`;
   const baseReport: Omit<ProjectProcessMap, "reportText"> = {
     projectId,
     generatedAt,
@@ -3035,7 +3035,7 @@ export function getInstallerActionPacket(db: AppDb, projectId: string): Installe
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
   const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
-  const historicalReport = buildHistoricalFailureReport(db, projectId);
+  const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const applicationDocs = buildApplicationDocumentPackage(project);
   const processMap = getProjectProcessMap(db, projectId);
   const accountEvidence = evidenceForTopic(project, "accountVerification");
@@ -3222,10 +3222,20 @@ export function getInstallerActionPacket(db: AppDb, projectId: string): Installe
   };
 }
 
+// A line that NAMES a document's state is the check's answer, not supporting detail: capping it
+// away left the document check a WARNING whose advisory document was named nowhere (e6b3afde —
+// the count line and 4 present lines filled the cap first). Those lines are never capped; the
+// rest share the cap. Order is kept, so the count line stays first.
+const GATE_EVIDENCE_NAMES_A_DOCUMENT = /^(Filled at staging:|MISSING \(required\):|Missing \(advisory\):)/;
+const GATE_EVIDENCE_CAP = 6;
+
 function submitGateCheck(input: SubmitGateCheck): SubmitGateCheck {
+  const lines = input.evidence.filter(Boolean).map((line) => shorten(text(line), 190));
+  const named = lines.filter((line) => GATE_EVIDENCE_NAMES_A_DOCUMENT.test(line)).length;
+  let otherRoom = Math.max(0, GATE_EVIDENCE_CAP - named);
   return {
     ...input,
-    evidence: input.evidence.filter(Boolean).map((line) => shorten(text(line), 190)).slice(0, 6),
+    evidence: lines.filter((line) => GATE_EVIDENCE_NAMES_A_DOCUMENT.test(line) || otherRoom-- > 0),
   };
 }
 
@@ -3258,7 +3268,7 @@ function renderSubmitGateReportText(report: Omit<SubmitGateReport, "reportText">
 export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateReport {
   const detail = getProjectDetail(db, projectId);
   const project = detail.project;
-  const historicalReport = buildHistoricalFailureReport(db, projectId);
+  const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const reviewerReport = applyCachedVisionVerdicts(db, buildReviewerReportFor(db, project));
   const applicationDocs = buildApplicationDocumentPackage(project);
   const docInventory = documentInventory(db, project);
@@ -4204,6 +4214,7 @@ export async function runEmailTracker(
       }
       const mboxText = fs.readFileSync(filePath, "utf8");
       await importMboxKnowledge(db, {
+        orgId: sourceOrgId,
         mboxText,
         sourceLabel,
         defaultState: text(source.default_state),
@@ -4313,7 +4324,7 @@ export async function runEmailTracker(
 }
 
 export function getHistoricalFailureReport(db: AppDb, projectId: string): HistoricalFailureReport {
-  const report = buildHistoricalFailureReport(db, projectId);
+  const report = buildHistoricalFailureReport(db, projectId, null);
   addAuditLog(db, projectId, "system", "historical failure matcher", "historical_failures.generated", {
     matchedProjectCount: report.matchedProjectCount,
     matchedFailureRecordCount: report.matchedFailureRecordCount,
@@ -4326,7 +4337,7 @@ export function getHistoricalFailureReport(db: AppDb, projectId: string): Histor
 export function runProjectWorkflow(db: AppDb, projectId: string): ProjectWorkflow {
   runQcForProject(db, projectId);
   const detail = getProjectDetail(db, projectId);
-  const historicalReport = buildHistoricalFailureReport(db, projectId);
+  const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const reviewerReport = buildReviewerReportFor(db, detail.project);
   const applicationDocs = buildApplicationDocumentPackage(detail.project);
 
@@ -4425,7 +4436,7 @@ export function runProjectWorkflow(db: AppDb, projectId: string): ProjectWorkflo
 
 export async function importKnowledgeFromMbox(
   db: AppDb,
-  input: { mboxText: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
+  input: { orgId: string; mboxText: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
 ): Promise<MboxKnowledgeImportResult> {
   const result = await importMboxKnowledge(db, input);
   addAuditLog(db, null, "system", "mbox importer", "knowledge_base.mbox_imported", {
@@ -4444,7 +4455,7 @@ export async function importKnowledgeFromMbox(
 // Stream a large local mbox file from disk (no full-file string load).
 export async function importKnowledgeFromMboxFile(
   db: AppDb,
-  input: { filePath: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
+  input: { orgId: string; filePath: string; sourceLabel?: string; defaultState?: string; defaultAhj?: string; defaultUtility?: string },
 ): Promise<MboxKnowledgeImportResult> {
   const result = await importMboxKnowledgeFromFile(db, input);
   addAuditLog(db, null, "system", "mbox importer", "knowledge_base.mbox_imported", {
@@ -4537,9 +4548,18 @@ function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
   // documentInventory, so it goes quiet in the same breath rather than offering a second
   // opinion. So the failure is REPRESENTABLE now (missingDocumentsStatus) instead of being
   // an absence that reads as good news, and it is logged rather than discarded.
+  //
+  // ONE QUESTION, ONE PREDICATE: "what is missing" here is what the operator OWES — the same
+  // owedMissingDocuments the submit gate and Stage / Approve read. A form the staging-time fill
+  // produces from a stored template is held out of missingDocuments and NAMED in
+  // filledAtStagingDocuments; listing it as missing put "checklist NOT in the packet" on this
+  // screen beside a gate that said "filled at staging" (e6b3afde, 29cd57b5). prepareSubmission's
+  // post-fill check stays on the raw inventory — the fill has already run there.
   try {
-    pkg.missingDocuments = documentInventory(db, detail.project).missingBlocking
-      .map((d) => ({ docType: d.docType, label: d.label, lane: d.lane, why: d.why }));
+    const gateDocs = owedMissingDocuments(db, detail.project, documentInventory(db, detail.project));
+    const row = (d: DocPresence) => ({ docType: d.docType, label: d.label, lane: d.lane, why: d.why });
+    pkg.missingDocuments = gateDocs.owed.map(row);
+    pkg.filledAtStagingDocuments = gateDocs.filledAtStaging.map(row);
     pkg.missingDocumentsStatus = "resolved";
   } catch (err) {
     // Leave missingDocuments ABSENT on purpose: [] would be a claim we cannot make.
@@ -4572,6 +4592,10 @@ function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
       requiredDocuments: learned.requiredDocuments,
       confidence: learned.confidence,
       correctionCount: learned.correctionCount,
+      // The packet card's badge says "Verified" only from this (kbConfidenceBadge) — without it
+      // an operator-verified row read "Learned + seeded" here and "Verified" on the KB list.
+      verifiedAt: learned.verifiedAt,
+      verifiedBy: learned.verifiedBy,
     };
     // Merge the learned required docs into the profile's list (dedup), and if the
     // builder fell back to a generic profile, adopt the learned AHJ identity.
@@ -4705,7 +4729,7 @@ export async function readStageResults(db: AppDb, projectId: string): Promise<{
       reviewerReport = await applyVisionToReviewerReport(db, createLLMProvider(), reviewerReport, { cacheOnly: true });
     } catch { /* vision is best-effort; the text report stands */ }
   }
-  const historicalReport = ran.has("historical_failures.generated") ? buildHistoricalFailureReport(db, projectId) : null;
+  const historicalReport = ran.has("historical_failures.generated") ? buildHistoricalFailureReport(db, projectId, null) : null;
   return { applicationDocs, reviewerReport, historicalReport };
 }
 
@@ -4778,7 +4802,7 @@ export function addManualCorrection(db: AppDb, projectId: string, correctionText
       correctionId,
       bucket: classification.bucket,
     });
-    learnFromCorrection(db, detail.project, classification, correctionText, source);
+    learnFromCorrection(db, detail.project, correctionId, classification, correctionText, source);
   });
 
   // Hand the correction to the agent for a richer classification + data-update
@@ -5002,7 +5026,14 @@ export function recordDesignRevisionsReceived(
 export function resolveCorrection(
   db: AppDb,
   correctionId: string,
-  opts: { resubmitted?: boolean } = {},
+  opts: {
+    resubmitted?: boolean;
+    /** WHO closed it. The route passes the signed-in user; the monitor's terminal-status close
+     *  passes a system actor. Defaults to the historical "human"/"correction" label. */
+    actor?: { type: "human" | "system"; name: string };
+    /** Why, when it was not a person clicking resolve (e.g. "closed_on_terminal_status"). */
+    reason?: string;
+  } = {},
 ): CorrectionRecord {
   const correction = db.get<Row>("SELECT * FROM corrections WHERE id = ?", [correctionId]);
   if (!correction) throw new HttpError(404, "Correction not found.");
@@ -5017,7 +5048,13 @@ export function resolveCorrection(
       db.run("UPDATE human_review_items SET status = 'resolved', updated_at = ? WHERE id = ?", [ts, text(item.id)]);
     }
   }
-  addAuditLog(db, projectId, "human", "correction", "correction.resolved", { correctionId, resubmitted: !!opts.resubmitted });
+  const actor = opts.actor ?? { type: "human" as const, name: "correction" };
+  addAuditLog(db, projectId, actor.type, actor.name, "correction.resolved", {
+    correctionId, resubmitted: !!opts.resubmitted, ...(opts.reason ? { reason: opts.reason } : {}),
+  });
+  // The operator's resolve is the last word on what this correction WAS: re-derive its learned
+  // failure row from the row's final classification (L4). A no-op for an unchanged A/B row.
+  relearnCorrection(db, correctionId);
   // Closing the LAST open correction un-strands the project: correction_received /
   // correction_triaged are not in PRE_STAGE_STATUSES, so the auto-resume the resolve route
   // fires (maybeResumeAutopilot, "a correction was resolved") refuses to re-drive from them
@@ -5645,6 +5682,12 @@ export async function recordPermitStatusCheck(
   const ts = nowIso();
   const checkId = id();
   let correctionId: string | null = null;
+  // Which required tracks were done BEFORE this reading — closeCorrectionsOnTerminalStatus closes
+  // only what this reading FINISHES (a not-done → done transition), never on a re-poll. Read only
+  // for a finishing reading that changed its target's outcome (an unchanged poll finishes nothing).
+  const doneBeforeReading = (classification.outcome === "issued" || classification.outcome === "nem_approved") && previousOutcome !== classification.outcome
+    ? trackDoneSnapshot(db, detail.project)
+    : null;
 
   db.transaction(() => {
     // `recordCheck &&` on all three: see the note above. An unchanged poll falls straight through
@@ -5711,6 +5754,10 @@ export async function recordPermitStatusCheck(
     }
 
     updateProjectForPermitOutcome(db, detail.project.status, projectId, classification.outcome, classification.message, ts, text(target?.target_type), input.targetId || null);
+    // AFTER the status write (so resolveCorrection sees the project already issued and does not
+    // rewind it) and BEFORE the handoff check (an open correction is a handoff blocker, so the
+    // same reading that finishes the scope can hand it off).
+    if (doneBeforeReading) closeCorrectionsOnTerminalStatus(db, detail.project, classification.outcome, doneBeforeReading, ts);
     triggerHandoffIfReady(db, projectId, ts);
     // ONE ROW PER CHECK, ALWAYS — this is the per-check evidence trail, and it is the thing the
     // status-check gate above is allowed to suppress *because* this is not. `checkId` is null when
@@ -5757,6 +5804,9 @@ export async function recordPermitStatusCheck(
           }
         : null,
     );
+    // Turnaround is a MILESTONE, not a look: at most one sample per (project, track, milestone),
+    // measured from that track's own submitted_at. See timelineSamples.ts.
+    recordTimelineSample(db, detail.project, target, { outcome: classification.outcome, createdAt: ts });
   });
 
   // CLIENT UPDATE — after the transaction committed. Fire-and-forget: sends (or drafts,
@@ -5862,9 +5912,88 @@ function insertMonitorCorrection(db: AppDb, project: ProjectRecord, correctionTe
       ts,
     ],
   );
-  learnFromCorrection(db, project, classification, correctionText, source);
+  learnFromCorrection(db, project, correctionId, classification, correctionText, source);
   enqueueCorrectionTriage(db, project.id, correctionId, correctionText);
   return correctionId;
+}
+
+/**
+ * A FINISHED FILING HAS ANSWERED ITS CORRECTION (LNK-7).
+ *
+ * The UI promises "the correction closes when the resubmission actually goes out", and that
+ * close (captureConfirmation) never fires for a correction answered in the portal or by reply.
+ * Such a correction stayed open forever: overdue on the KPI, and a permanent handoff blocker on
+ * a project whose permit is issued. An issued permit / approved interconnection has by
+ * definition satisfied the correction raised against it, so when a reading finishes a track the
+ * engine closes what that finish answers — judged by isTrackDone, the ONE "is this track done"
+ * rule (ever finished on its own kind of target, no correction read since):
+ *   - a correction the monitor raised on a tracking target closes when THAT target's track is
+ *     done (an untagged permit target: when every permit track is);
+ *   - any other correction (manual, email with no target) closes only when EVERY required track
+ *     is done and no active target still reads correction_flagged.
+ * Closed through resolveCorrection with a system actor and reason closed_on_terminal_status.
+ *
+ * ONLY ON A TRANSITION, ONLY WHAT EXISTED BEFORE IT. A correction is closed by the reading that
+ * FINISHES what answers it — its answer predicate was false before this reading (`doneBefore`,
+ * snapshotted before the check row and target update) and is true after it — and only when it
+ * was created at or before that reading. Without both, a correction an operator (or an email with
+ * no target) entered on an already-finished project was closed by the next routine poll that
+ * re-read "issued", or by a blip through an unreadable page and back, and the project snapped
+ * back to handoff_ready (skeptic PROBE A). A re-issue after a NEW correction on the target is a
+ * real transition (the correction made the track not-done), so that still closes.
+ */
+function trackDoneSnapshot(db: AppDb, project: ProjectRecord): Map<SubmittalTrackType, boolean> {
+  const required = requiredTracks(project);
+  return new Map(required.map((track) => [track, isTrackDone(db, project.id, track, required)]));
+}
+
+function closeCorrectionsOnTerminalStatus(
+  db: AppDb,
+  project: ProjectRecord,
+  outcome: PermitCheckOutcome,
+  doneBefore: Map<SubmittalTrackType, boolean>,
+  readingAt: string,
+): number {
+  if (outcome !== "issued" && outcome !== "nem_approved") return 0;
+  const open = db.query<Row>(
+    "SELECT id FROM corrections WHERE project_id = ? AND closed_at IS NULL AND created_at <= ? ORDER BY created_at ASC",
+    [project.id, readingAt],
+  );
+  if (!open.length) return 0;
+  const required = requiredTracks(project);
+  const doneNow = trackDoneSnapshot(db, project);
+  const anyTargetInCorrection = Boolean(db.get<Row>(
+    "SELECT id FROM permit_check_targets WHERE project_id = ? AND active = 1 AND latest_outcome = 'correction_flagged' LIMIT 1",
+    [project.id],
+  ));
+  let closed = 0;
+  for (const row of open) {
+    const correctionId = text(row.id);
+    const raisedOn = db.get<Row>(
+      `SELECT t.target_type, t.permit_type FROM permit_status_checks c
+         JOIN permit_check_targets t ON t.id = c.target_id
+        WHERE c.correction_id = ? LIMIT 1`,
+      [correctionId],
+    );
+    const answeredBy = (done: Map<SubmittalTrackType, boolean>): boolean => {
+      const isDone = (track: SubmittalTrackType) => done.get(track) === true;
+      if (raisedOn) {
+        const track = trackForTarget(text(raisedOn.target_type), text(raisedOn.permit_type));
+        return track === "permit" ? required.filter((t) => t !== "nem").every(isDone) : isDone(track);
+      }
+      return required.length > 0 && required.every(isDone);
+    };
+    const answered = answeredBy(doneNow) && !answeredBy(doneBefore) && (Boolean(raisedOn) || !anyTargetInCorrection);
+    if (!answered) continue;
+    resolveCorrection(db, correctionId, {
+      resubmitted: false,
+      actor: { type: "system", name: "permit monitor" },
+      reason: "closed_on_terminal_status",
+    });
+    addAuditLog(db, project.id, "system", "permit monitor", "correction.closed_on_terminal_status", { correctionId, outcome });
+    closed++;
+  }
+  return closed;
 }
 
 function updateProjectForPermitOutcome(
@@ -6558,7 +6687,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const pendingCount = detail.humanReviewItems.filter(isCriticalReviewItem).length;
   const reviewerReport = buildReviewerReportFor(db, detail.project);
   const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker");
-  const historicalReport = buildHistoricalFailureReport(db, projectId);
+  const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const learnedHistoricalMissing = historicalReport.checklist.filter((item) => {
     const cause = historicalReport.topRejectionCauses.find((candidate) => candidate.signature === item.sourceCauseSignature);
     return item.status === "missing" && Boolean(cause && cause.count > 0 && cause.severity === "blocker");

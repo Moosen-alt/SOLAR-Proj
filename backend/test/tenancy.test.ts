@@ -225,6 +225,18 @@ try {
     assert.equal(write.status, 404, `assign returned ${write.status}`);
   });
 
+  // LLM-6 model spend, asserted as a PAIR for the reason given below: the owner's 200 proves the
+  // route exists and is licensed, the other tenant's 404 proves it sits behind the scope guard.
+  await run("per-project model spend (llm-usage) is registered and tenancy-scoped", async () => {
+    const own = await a(`/api/projects/${projA}/llm-usage`);
+    assert.equal(own.status, 200, `own llm-usage returned ${own.status}`);
+    const body = await own.json() as { projectId?: string; calls?: number; byLabel?: unknown[] };
+    assert.equal(body.projectId, projA);
+    assert.equal(typeof body.calls, "number");
+    assert.ok(Array.isArray(body.byLabel));
+    assert.equal((await b(`/api/projects/${projA}/llm-usage`)).status, 404, "another tenant read A's model spend");
+  });
+
   // THE OPERATOR STATUS OVERRIDE, over real HTTP.
   //
   // POST /api/projects/:id/status is the audited way to move a project the pipeline got wrong

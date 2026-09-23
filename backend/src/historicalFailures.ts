@@ -8,6 +8,8 @@ import type {
   ProjectStatus,
 } from "../../shared/src/types";
 import type { AppDb } from "./db";
+import { DEFAULT_ORG_ID } from "./db";
+import { HttpError } from "./httpError";
 import { parseJson, text } from "./json";
 import { normalizeTokens } from "./normalize";
 import { extractProjectFeatureTags, knowledgeProfileKey } from "./knowledgeBase";
@@ -20,6 +22,7 @@ import {
   statusFromEvidence,
 } from "./projectEvidence";
 import { nowIso } from "./time";
+import { buildApplicationDocumentPackage } from "./applicationDocs";
 
 type Row = Record<string, unknown>;
 
@@ -53,16 +56,27 @@ function signatureFor(row: Row): string {
   return normalizeTokens(`${text(row.correction_bucket)} ${text(row.root_cause)} ${text(row.required_action)}`) || normalizeTokens(text(row.sample));
 }
 
-function titleForCause(cause: string, action: string, sample: string): string {
-  const haystack = `${cause} ${action} ${sample}`.toLowerCase();
+/** The checklist title for a learned cause. The title picks the EVIDENCE TOPIC the project is
+ *  checked against (historicalTopicForTitle), so it reads the classified root cause and required
+ *  action ONLY — never the raw correction sample. Free text choosing the topic is how "Provide the
+ *  necessary rafter span calculations" became a battery item: "necessary" matched a bare /ess/. */
+export const APPLICATION_FORM_TITLE = "Missing or incomplete application form";
+export function titleForCause(cause: string, action: string): string {
+  const haystack = `${cause} ${action}`.toLowerCase();
   if (/account/.test(haystack)) return "Missing account verification";
   if (/meter.*photo|photo.*meter|meter picture/.test(haystack)) return "Incorrect or missing meter photo";
   if (/one.line|single line|sld|3.line/.test(haystack)) return "Missing one-line / SLD note";
   if (/1741|inverter settings|smart inverter/.test(haystack)) return "Missing inverter settings evidence";
-  if (/battery|powerwall|ess|backup/.test(haystack)) return "Battery/Powerwall mode mismatch";
+  if (/battery|powerwall|\bess\b|backup/.test(haystack)) return "Battery/Powerwall mode mismatch";
   if (/fire|pathway|setback/.test(haystack)) return "Missing fire pathway evidence";
   if (/rafter|truss|span|structural/.test(haystack)) return "Missing roof framing/span evidence";
   if (/signature|owner authorization/.test(haystack)) return "Missing signature / owner authorization";
+  // The import taxonomy's "Electrical / Labels/Placards" (knowledgeBase correctionTaxonomy): the
+  // plan set's label/placard schedule is an evidence topic we already read.
+  if (/label|placard/.test(haystack)) return "Missing label / placard schedule";
+  // "Documentation / Application Form": answered by the application package's own missing-field
+  // check (statusFor below), not by a second evidence regex.
+  if (/application form/.test(haystack)) return APPLICATION_FORM_TITLE;
   return cause || action || "Unclassified historical correction";
 }
 
@@ -99,13 +113,15 @@ function groupedCauses(rows: Row[], projectTags: Set<string>, project: ProjectRe
     }
     map.set(signature, {
       signature,
-      title: titleForCause(rootCause, requiredAction, sample),
+      title: titleForCause(rootCause, requiredAction),
       count: 1,
       correctionBucket: text(row.correction_bucket) as CorrectionBucket | "",
       rootCause,
       requiredAction,
       sample,
-      severity: /account|meter|one.line|single line|sld|structural|rafter|truss|fire|pathway/i.test(`${rootCause} ${requiredAction} ${sample}`)
+      // Severity, like the title, from the classification only: a page label in the sample
+      // ("Residential Structural Record") must not mint a blocker.
+      severity: /account|meter|one.line|single line|sld|structural|rafter|truss|fire|pathway/i.test(`${rootCause} ${requiredAction}`)
         ? "blocker"
         : "warning",
     });
@@ -151,6 +167,9 @@ function isOutOfScopeItem(title: string, ...extra: string[]): boolean {
 
 function statusFor(project: ProjectRecord, title: string, cause?: HistoricalFailureCause): HistoricalChecklistItem["status"] {
   if (isOutOfScopeItem(title, cause?.rootCause || "", cause?.requiredAction || "")) return "external";
+  // ONE PREDICATE: the application package already knows which of its fields are missing
+  // (buildApplicationDocumentPackage().missingFields — the same list that gates the package).
+  if (title === APPLICATION_FORM_TITLE) return applicationFormMissingFields(project).length ? "missing" : "present";
   const topic = historicalTopicForTitle(title);
   if (!topic) return "needs_review";
   return statusFromEvidence(evidenceForTopic(project, topic));
@@ -181,7 +200,17 @@ function checklistFromCauses(project: ProjectRecord, causes: HistoricalFailureCa
   return [...map.values()];
 }
 
+function applicationFormMissingFields(project: ProjectRecord): string[] {
+  return buildApplicationDocumentPackage(project).missingFields;
+}
+
 function evidenceForTitle(project: ProjectRecord, title: string): string[] {
+  if (title === APPLICATION_FORM_TITLE) {
+    const missing = applicationFormMissingFields(project);
+    return missing.length
+      ? [`Application package is missing: ${missing.slice(0, 6).join(", ")}${missing.length > 6 ? ", ..." : ""}`]
+      : ["Application package has every field it needs."];
+  }
   const topic = historicalTopicForTitle(title);
   if (!topic) return ["Corrected document or verified portal field"];
   const check = evidenceForTopic(project, topic);
@@ -199,9 +228,24 @@ function summarySubject(project: ProjectRecord, tags: string[]): string {
   return bits.join(" + ");
 }
 
-export function buildHistoricalFailureReport(db: AppDb, projectId: string): HistoricalFailureReport {
+/**
+ * The historical-failure risk report for ONE project.
+ *
+ * `orgId` is the CALLER's scope, per the data-layer convention: a string means "the caller
+ * is this org" (a project outside it reads as not found), null means a system / superadmin
+ * caller (scheduler, workflow, staging gate) with no principal to check.
+ *
+ * Either way, the failure rows it reads are ALWAYS the project's OWN org's.
+ * historical_failure_examples carries raw correction excerpts — homeowner and co-customer
+ * names — so it is the one learning table that is not pooled across tenants, and a
+ * superadmin looking at a project must see that tenant's history, not everyone's. (The
+ * pooled, name-free patterns live on the shared knowledge rows' common_corrections.)
+ */
+export function buildHistoricalFailureReport(db: AppDb, projectId: string, orgId: string | null): HistoricalFailureReport {
   const row = db.get<Row>("SELECT * FROM projects WHERE id = ?", [projectId]);
   if (!row) throw new Error("Project not found.");
+  const projectOrgId = text(row.org_id) || DEFAULT_ORG_ID;
+  if (orgId !== null && orgId !== projectOrgId) throw new HttpError(404, "Project not found.");
   const project = projectFromRow(row);
   const tags = extractProjectFeatureTags(project);
   const tagSet = new Set(tags);
@@ -217,10 +261,10 @@ export function buildHistoricalFailureReport(db: AppDb, projectId: string): Hist
 
   const failureRows = db.query<Row>(
     `SELECT * FROM historical_failure_examples
-     WHERE profile_key = ? OR utility = ? OR state = ?
+     WHERE org_id = ? AND (profile_key = ? OR utility = ? OR state = ?)
      ORDER BY created_at DESC
      LIMIT 3000`,
-    [key, project.utility, project.state],
+    [projectOrgId, key, project.utility, project.state],
   );
   let causes = groupedCauses(failureRows, tagSet, project);
   const matchedFailureRecordCount = causes.reduce((sum, cause) => sum + cause.count, 0);
