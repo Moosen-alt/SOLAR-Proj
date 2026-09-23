@@ -6,8 +6,9 @@ anything. You can hand the `demo-kit` folder to anyone, or carry it on a thumbdr
 and there is no way to show a real customer from it, because it does not contain one.
 
 **The rule that shapes this document:** the reliable demo touches no external network.
-The kit runs with no API key, no SMTP, no portal credentials, and no background
-workers — it cannot reach anything, and nothing it demonstrates needs it to. The live
+The kit runs with no API key, no SMTP, no portal credentials, no background
+workers, and portal automation switched off (`PORTAL_AUTOMATION=off`) — it cannot
+reach anything, and nothing it demonstrates needs it to. The live
 portal replay is a bonus act with a video fallback, never the backbone.
 
 Verified end-to-end on 2026-09-23.
@@ -46,6 +47,14 @@ built.
 The board reads uniformly `ready_to_stage`. **The story is in the QC results**, and
 they differ per jurisdiction because the product knows each jurisdiction's
 requirement list. Say that out loud — it is the product's whole argument.
+
+Three of the four read **Reviewer Gate Approved**; Tigard does not (its PE-stamp
+error). Every project's **fee sheet** is filled from real published schedules: NEM
+**$0.00** for PGE and Pacific Power (Oregon rule OAR 860-039-0045 / PGE's own FAQ),
+permits of $84 (Salem), $360 (Coos Bay), $808.41 (Portland), $313.56 (Tigard) — each
+with "where this number came from" linking the jurisdiction's own document. They are
+labelled *provisional — not verified* because they are research, not a human-checked
+figure; that label is the product being honest, not a bug.
 
 ---
 
@@ -115,6 +124,21 @@ about the work; it is the work.
 > framing. The **filled BCD 5952 is the exception — it is the state's real PDF and
 > presents perfectly.**
 
+### Live automation you *can* click in the kit
+
+- **Run QC** on any project. The chain runs by itself — re-checks the split sheets,
+  rebuilds the AHJ/NEM package, re-runs the reviewer gate and the historical check —
+  and the open page refreshes when it finishes (a toast says what ran). A re-run does
+  not duplicate documents; each project stays at 8.
+- **Stage portals · Autopilot** is safe to press. The kit runs with
+  `PORTAL_AUTOMATION=off`: every gate gives its verdict, then it stops with *"Every
+  gate is clear, but portal automation is off on this installation…"* — no browser, no
+  portal. Tigard stops earlier, on its PE-stamp gate. Pressing it on a clean project
+  resets its pill from *Reviewer Gate Approved* to *QC Passed* (autopilot re-runs QC);
+  Run QC again to restore it.
+- Avoid **Submission Workflow**: its results are not stored, so they read "not run"
+  again after you navigate away. The automatic chain's results persist.
+
 ### Act 4 — the portal (optional): pre-recorded video only
 
 `npm run demo:replay -- <target>` (from the production repo, not the kit) opens a
@@ -158,16 +182,24 @@ PROJECT_DOCS_DIR=demo-kit-data/project-documents \
 #    seeded DB + documents into demo-kit/backend/data/. Write the powerless .env
 #    (see the one in demo-kit/ — copy it, generate a NEW SESSION_ENCRYPTION_KEY).
 
-# 3. Repair paths, then the finishing pass with workers ON (build mode only):
-cd demo-kit && node kit-repair-paths.mjs
-BACKGROUND_WORKERS=on npx tsx backend/src/server.ts   # + real ANTHROPIC_API_KEY in env
+# 3. The fee schedules. Fee research needs an API key and the kit has none, so
+#    without this every fee sheet reads NEM UNKNOWN. fee_schedules is public,
+#    shared knowledge (no tenant columns) — the one table copied from production.
+#    The kit DB must have been migrated once (start its server once) first.
+npx tsx scripts/demo-copy-fee-schedules.ts --from backend/data/autopilot.sqlite \
+  --to demo-kit/backend/data/autopilot.sqlite
+
+# 4. Repair paths, start the kit with its OWN .env (PORTAL_AUTOMATION=off is what
+#    keeps "Stage portals" from opening a live portal once the gate clears):
+cd demo-kit && node kit-repair-paths.mjs && npx tsx backend/src/server.ts
 # then for each project id (derive them, never paste):
 #   POST /api/projects/<id>/qc   → wait for the job queue to drain
 #   (job statuses are pending/running/done/failed — 'queued' is not a status)
+#   The enqueue starts the job itself, so BACKGROUND_WORKERS=off is fine here.
 
-# 4. A re-run of QC re-splits the plan set and duplicates document rows — dedupe
-#    keeps newest per (project, type, filename). Then verify: 4 projects, 8 docs
-#    each, Tigard shows the PE-stamp error, Coos Bay ~23/3.
+# 5. Verify: 4 projects, 8 docs each; QC Salem 22/4, Coos Bay 23/3, Portland 23/4,
+#    Tigard 22/4 with the PE-stamp error; Salem/Coos Bay/Portland read Reviewer
+#    Gate Approved; every fee sheet resolves; no `autopilot` rows in job_queue.
 ```
 
 Ship it only after the acceptance check passes and the server has been relaunched
@@ -175,7 +207,8 @@ via `START-DEMO.cmd` (workers off, no key) with the same QC results.
 
 **Never** copy `.env`, `portal-profiles/`, `.portal-profiles/`, `pge-session.json`,
 or anything under `backend/data/` beyond the two `reference-*.json` files and
-`ahj-forms/` into a kit. The kit is an allowlist, not a filtered copy.
+`ahj-forms/` into a kit — plus the `fee_schedules` rows of step 3, and nothing else
+from the production database. The kit is an allowlist, not a filtered copy.
 
 ---
 
@@ -196,7 +229,8 @@ or anything under `backend/data/` beyond the two `reference-*.json` files and
 |---|---|
 | Host machine lacks Node 22 | Launcher detects and says so. Carry your laptop as the fallback. |
 | Kit copied to a new path/drive | Handled — the launcher repairs document paths on every start. |
-| QC re-run mid-demo duplicates document rows | Workers are off in the kit; the splitter cannot re-run. Don't demo in build mode. |
+| Presenter clicks Stage portals | Safe: `PORTAL_AUTOMATION=off` stops it after the gates, before any browser. Never remove that line from the kit `.env`. |
+| QC re-run mid-demo | Safe: the splitter skips a plan set already split (measured 8 docs → 8). |
 | Live portal replay | Pre-recorded video, always. |
 | Kit committed to git | `.gitignore` covers `demo-kit/`; keep it that way. |
 
