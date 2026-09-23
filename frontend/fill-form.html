@@ -86,7 +86,7 @@
     button.go { width: 100%; justify-content: center; margin-top: 18px; }
     /* setStatus() assigns className outright, so this is styled BY ID. */
     #status { font-size: var(--text-sm); line-height: 1.55; min-height: 18px; margin: 18px 0; color: var(--muted); }
-    #status.error { color: var(--danger); } #status.ok { color: var(--primary); }
+    #status.error { color: var(--danger); } #status.ok { color: var(--primary); } #status.warn { color: var(--warning); }
     .results { margin-top: 6px; }
     .form-row {
       display: flex; align-items: center; justify-content: space-between; gap: 14px;
@@ -275,11 +275,15 @@
         });
         const upData = await up.json().catch(() => ({}));
         if (!up.ok) { setStatus(upData.error || ("Upload failed (" + up.status + ")."), "error"); return; }
-        setStatus("Form mapped (" + (upData.fieldCount || 0) + " fields) — filling…");
+        // A form that mapped NO fields is stored as a blank and is NOT part of the fill.
+        // Say so, rather than "mapped (0 fields)" followed by "form filled from the project".
+        const mapped = upData.fillable === true;
+        setStatus(mapped ? "Form mapped (" + (upData.fieldCount || 0) + " fields) — filling…" : "Form stored but not mapped — filling the project's other forms…");
         const fill = await fetch(`/api/projects/${encodeURIComponent(selected)}/filled-forms`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
         const pkg = await fill.json().catch(() => ({}));
         if (!fill.ok) { setStatus(pkg.error || "Fill failed.", "error"); return; }
-        setStatus("Done — form filled from the project.", "ok");
+        if (mapped) setStatus("Done — form filled from the project.", "ok");
+        else setStatus(upData.message || "This form could not be mapped to project data, so it was NOT filled. Fill it by hand.", "warn");
         renderForms(pkg);
       } catch (e) { setStatus("Error: " + e.message, "error"); }
     });

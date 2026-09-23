@@ -266,6 +266,14 @@ async function httpAttempt(url: string, opts: { timeoutMs: number; userAgent: st
   }
 }
 
+/** DOCUMENT_FETCH=off: this installation never downloads a public document. ONE predicate,
+ *  read per call: fetchPublicDocument below and ahjForms.fetchFormTemplate (which keeps its
+ *  own SSRF-guarded fetch, so it cannot route through here) both ask THIS function — two
+ *  copies of the regex is how one of them stopped honouring the switch. */
+export function documentFetchDisabled(): boolean {
+  return /^(off|0|false)$/i.test(String(process.env.DOCUMENT_FETCH ?? "").trim());
+}
+
 /**
  * Retrieve a PUBLIC document, escalating from a plain fetch to a real window only when the
  * far end refuses the plain one. Never throws: every outcome is a FetchedDocument whose
@@ -281,7 +289,7 @@ export async function fetchPublicDocument(url: string, opts: FetchPublicDocument
   // passes through here, so this one line is what makes "nothing outbound" true rather than
   // true-while-every-template-happens-to-be-on-disk. Same shape as any refusal: status 0,
   // nothing was ever sent, and every caller already handles a not-ok result.
-  if (/^(off|0|false)$/i.test(String(process.env.DOCUMENT_FETCH ?? "").trim())) {
+  if (documentFetchDisabled()) {
     return { ok: false, status: 0, contentType: "", via: "http", reason: "Document downloads are off on this installation (DOCUMENT_FETCH=off).", finalUrl: url };
   }
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;

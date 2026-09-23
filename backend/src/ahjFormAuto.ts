@@ -895,14 +895,20 @@ export async function acquireFromBytes(
   const signatureFields = overlay?.signatureFields || [];
 
   const acro = await buildFieldMapForPdf(llm, { ahj, state, formName, bytes });
-  if (acro) {
+  const acroCount = acro ? Object.keys(acro.textFields).length + Object.keys(acro.checkboxes).length : 0;
+  if (acro && acroCount > 0) {
     storeAhjFormTemplate(db, {
       ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
       map: { formName, sourceUrl, fillMode: "acroform", textFields: acro.textFields, checkboxes: acro.checkboxes, signatureFields, notes: acro.notes },
     });
-    const count = Object.keys(acro.textFields).length + Object.keys(acro.checkboxes).length;
-    return { status: "acquired", message: `Acquired and mapped ${formName} (${count} field(s) of ${acro.fieldCount}${signatureFields.length ? `, ${signatureFields.length} signature line(s)` : ""}). It will be auto-filled for ${ahj}.`, formName, sourceUrl, mappedFields: count };
+    return { status: "acquired", message: `Acquired and mapped ${formName} (${acroCount} field(s) of ${acro.fieldCount}${signatureFields.length ? `, ${signatureFields.length} signature line(s)` : ""}). It will be auto-filled for ${ahj}.`, formName, sourceUrl, mappedFields: acroCount };
   }
+  // AN ACROFORM WITH ZERO MAPPED FIELDS IS NOT "ACQUIRED AND AUTO-FILLED". With no LLM (the
+  // stub provider maps nothing) this branch used to store an empty map and report "Acquired
+  // and mapped … (0 field(s) of 42). It will be auto-filled" — while loadStoredTemplates
+  // drops any map with no fields, so the form silently fell out of every fill. It now falls
+  // through to the branches below, which describe what was actually stored: vision
+  // placements if there are any, signature lines if only those, else needs_manual.
 
   // No AcroForm fields — flat/scanned. Use the vision overlay placements.
   if (overlay && overlay.overlayFields.length) {
@@ -922,10 +928,21 @@ export async function acquireFromBytes(
     return { status: "acquired", message: `Stored ${formName} with ${signatureFields.length} signature line(s) mapped. Data fields must be filled by hand.`, formName, sourceUrl, mappedFields: signatureFields.length };
   }
 
-  // Couldn't map anything — store the legit blank for manual completion.
+  // Couldn't map anything — store the legit blank for manual completion. Say WHICH kind of
+  // nothing: an AcroForm whose N fields mapped to no project data is not a flat scan, and
+  // the operator's next step differs (re-map once field mapping is available vs. fill by hand).
+  const unmappedWhy = acro
+    ? `${acro.fieldCount} fillable field(s) found, but none could be mapped to project data${acro.notes ? ` (${acro.notes})` : ""}`
+    : "Flat/scanned PDF — vision mapping found no placeable fields";
   storeAhjFormTemplate(db, {
     ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
-    map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, notes: "Flat/scanned PDF — vision mapping found no placeable fields. Stored as the blank for manual completion." },
+    map: { formName, sourceUrl, fillMode: acro ? "acroform" : "overlay", textFields: {}, checkboxes: {}, notes: `${unmappedWhy}. Stored as the blank for manual completion.` },
   });
-  return { status: "needs_manual", message: `Stored the official ${formName}, but it couldn't be auto-mapped. It's saved as the blank for manual completion.`, formName, sourceUrl, mappedFields: 0 };
+  return {
+    status: "needs_manual",
+    message: acro
+      ? `Stored ${formName}, but NONE of its ${acro.fieldCount} fillable field(s) could be mapped to project data, so it will NOT be auto-filled. It's saved as the blank for manual completion — fill it by hand, or re-map it once field mapping is available.`
+      : `Stored the official ${formName}, but it couldn't be auto-mapped. It's saved as the blank for manual completion.`,
+    formName, sourceUrl, mappedFields: 0,
+  };
 }

@@ -63,7 +63,10 @@ export function renderSnapshotNode(node: SnapNode): string {
   if (!tag || DROP_TAGS.has(tag)) return "";
   const attrs = (node[1] && typeof node[1] === "object" && !Array.isArray(node[1])) ? node[1] as Record<string, unknown> : {};
   const attrStr = Object.entries(attrs)
-    .filter(([k]) => !DROP_ATTRS.has(k.toLowerCase()) && !/^on/i.test(k))
+    // __playwright_value_ / __playwright_checked_ / __playwright_selected_ are how a trace
+    // snapshot records LIVE form state — i.e. what the operator typed (names, addresses,
+    // account and meter numbers). Dropping `value` alone left all of it in the replica.
+    .filter(([k]) => !DROP_ATTRS.has(k.toLowerCase()) && !/^on/i.test(k) && !/^__playwright/i.test(k))
     .map(([k, v]) => ` ${k}="${escAttr(String(v ?? ""))}"`)
     .join("");
   const childStart = (node[1] && typeof node[1] === "object" && !Array.isArray(node[1])) ? 2 : 1;

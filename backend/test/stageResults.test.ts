@@ -85,5 +85,9 @@ console.log("\n3. EVERY PACKAGE DOCUMENT RENDERS — INCLUDING THE MANIFEST WITH
   check("3c. the manifest specifically is on disk", "application_manifest" in made, JSON.stringify(Object.keys(made)));
 }
 
+// materializeGeneratedDocs writes under <cwd>/backend/data/filled — the repo's real data dir
+// when run from the repo root. Remove this throwaway project's folder so runs leave no trace.
+fs.rmSync(path.join(process.cwd(), "backend", "data", "filled", project.id), { recursive: true, force: true });
+
 console.log(failures ? `\nstageResults: ${failures} FAILURE(S)` : "\nstageResults: all checks passed");
 process.exit(failures ? 1 : 0);

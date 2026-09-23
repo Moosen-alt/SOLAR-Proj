@@ -18,6 +18,7 @@ import { isDocumentDateStale } from "./documentDate";
 import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
 import type { ChecklistRecovery } from "./prescriptiveChecklist";
 import { bcdChecklistAnswers } from "./bcdChecklistFacts";
+import { documentFetchDisabled } from "./documentFetch";
 
 /** Which of the two MUTUALLY EXCLUSIVE building-side applications a permit path calls
  *  for. THE single mapping from path → application kind; requiredApplicationDocs,
@@ -898,6 +899,19 @@ export async function fetchFormTemplate(def: AhjFormDefinition): Promise<Uint8Ar
   fs.mkdirSync(TEMPLATE_DIR, { recursive: true });
   const cachePath = path.join(TEMPLATE_DIR, `${def.id}.pdf`);
 
+  // DOCUMENT_FETCH=off: an offline install fills from the cached blank ONLY. This check has
+  // to come before safeFetchTemplate, not inside its try: the SSRF guard resolves the host
+  // (dns.lookup) before any fetch, so "the download failed and we fell back to cache" was
+  // still an outbound lookup of www.portland.gov every time Portland's forms were filled —
+  // while the kit's .env promised nothing outbound. Same predicate fetchPublicDocument asks.
+  if (documentFetchDisabled()) {
+    if (fs.existsSync(cachePath)) return new Uint8Array(fs.readFileSync(cachePath));
+    throw new HttpError(
+      502,
+      `Form "${def.formName}" has no cached blank on this installation, and document downloads are off (DOCUMENT_FETCH=off), so it was not fetched from ${def.sourceUrl}.`,
+    );
+  }
+
   try {
     const res = await safeFetchTemplate(def.sourceUrl);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1471,13 +1485,22 @@ export function filledApplicationForms(db: AppDb, projectId: string, permitPath?
       ? db.get<{ form_type?: string; original_filename?: string; field_map?: string }>(
           "SELECT form_type, original_filename, field_map FROM ahj_form_templates WHERE id = ?", [formId.slice(5)])
       : null;
+    // AN ORPHANED FILL IS NOT AN APPLICATION. A filled PDF counts only when the form it was
+    // filled FROM still exists: its ahj_form_templates row (tmpl-<id>) or its registry def.
+    // Without this, a tmpl-*.pdf whose row is gone (deleted template, a data dir copied onto
+    // another database — the demo kit shipped seven carrying production template ids) fell
+    // through to the registry branch, found nothing, and was counted as a nameless
+    // `permit_application` — enough to turn Coos Bay's blocking application row "present"
+    // and pass docs.complete on a form nobody can identify, re-fill, or verify.
+    if (formId.startsWith("tmpl-") && !tmpl) continue;
     if (tmpl) {
       if (tmpl.form_type) docType = String(tmpl.form_type);
       formName = String(parseJson<{ formName?: string }>(String(tmpl.field_map || "{}"), {}).formName || tmpl.original_filename || "");
       kind = storedApplicationKind(tmpl);
     } else {
       const def = ahjFormRegistry.find((d) => d.id === formId);
-      formName = def?.formName || "";
+      if (!def) continue; // same rule for a registry id the code no longer carries
+      formName = def.formName || "";
       const name = formName.toLowerCase();
       if (/electrical/.test(name)) docType = "electrical_application";
       else if (/checklist|worksheet|eligibilit/.test(name)) docType = "solar_checklist";

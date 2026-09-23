@@ -35,6 +35,7 @@ import { parseJson } from "./json";
 import { buildReviewerReportFor } from "./repository";
 import type { ProjectRecord, StageDetail, SubmittalTrackType } from "../../shared/src/types";
 import { requiredTracks } from "./submittalTracks";
+import { portalAutomationDisabled } from "../../portal-bot/src/browser";
 
 type Row = Record<string, SqlParam>;
 
@@ -534,6 +535,21 @@ export async function runAutopilotApproval(
   }
   const runId = String(run.id);
   const portalProfileId = run.portal_profile_id == null ? null : String(run.portal_profile_id);
+
+  // PORTAL_AUTOMATION=off REFUSES APPROVAL TOO, not only staging. prepareSubmission stops
+  // before any browser (repository.ts), but a run staged by MockPortalAdapter would otherwise
+  // reach submitStagedRun below: the mock "clicks final submit" and captureConfirmation stamps
+  // a MOCK-/CONF- number and moves the project to `submitted` — on an installation that
+  // promised nothing is filed. Refused AFTER every gate above has given its verdict (so an
+  // unstaged project still hears the real reason) and BEFORE the approval audit row: an
+  // "autopilot.approved" row for an approval that did not happen would be a false record.
+  // Nothing is written; status and the staged run are untouched.
+  if (portalAutomationDisabled()) {
+    throw new HttpError(409,
+      "Every gate is clear, but portal automation is off on this installation (PORTAL_AUTOMATION=off), so nothing is approved or submitted. On a live install this records the approval and hands the staged application to a person to file.",
+      { portalAutomationDisabled: true },
+    );
+  }
 
   // The regulatory authorization — recorded before any submit attempt, with the
   // approver's identity, so the audit trail shows exactly who authorized the filing.
