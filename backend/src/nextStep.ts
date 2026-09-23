@@ -319,7 +319,7 @@ export function loadNextStepFacts(db: AppDb, projects: ProjectRecord[]): Map<str
     (r) => s(r.project_id),
   );
   const feeDueKinds = groupBy(
-    db.query<Row>(`SELECT project_id, target_type FROM permit_check_targets WHERE project_id IN (${ph}) AND active = 1 AND latest_outcome = 'ready_for_issue'`, ids),
+    db.query<Row>(`SELECT project_id, target_type, permit_type FROM permit_check_targets WHERE project_id IN (${ph}) AND active = 1 AND latest_outcome = 'ready_for_issue'`, ids),
     (r) => s(r.project_id),
   );
 
@@ -339,8 +339,9 @@ export function loadNextStepFacts(db: AppDb, projects: ProjectRecord[]): Map<str
       // A numbered tracking target is evidence of a filing: its own tag, or (like isTrackDone's
       // pool) an untagged target of this kind that no required track claims.
       const claimed = new Set(tracksRequired.flatMap(trackPermitTypes));
-      const targetEvidence = (numberedTargets.get(pid) ?? []).some((r) => family.includes(s(r.permit_type))
-        || (s(r.target_type) === kind && !claimed.has(s(r.permit_type))));
+      const ownsTarget = (r: Row): boolean => family.includes(s(r.permit_type))
+        || (s(r.target_type) === kind && !claimed.has(s(r.permit_type)));
+      const targetEvidence = (numberedTargets.get(pid) ?? []).some(ownsTarget);
       return {
         track,
         filed: Boolean(filedRow) || targetEvidence,
@@ -350,7 +351,10 @@ export function loadNextStepFacts(db: AppDb, projects: ProjectRecord[]): Map<str
         onPortal: familyRuns.some((r) => ON_PORTAL.has(r.status)),
         stagedRun: staged,
         gapFillMissing: [],
-        feeDue: (feeDueKinds.get(pid) ?? []).some((r) => s(r.target_type) === kind),
+        // THIS track's filing reads ready-for-issue — not "some permit filing does". Matched by kind
+        // alone, one permit's fee made every permit track "approved", and the banner told the
+        // operator the electrical permit was approved while it sat in plan review.
+        feeDue: (feeDueKinds.get(pid) ?? []).some(ownsTarget),
         paymentDue: perSubmissionClients.has(s(project.clientId))
           && !(payments.get(pid) ?? []).some((r) => s(r.track) === billingTrack(track) && (s(r.status) === "paid" || s(r.status) === "waived")),
       };
