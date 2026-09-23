@@ -178,7 +178,9 @@ export async function notifyClientOfStatusChange(
   evt: { outcome: string; statusLabel: string; targetType: string; permitType?: string; permitNumber?: string; applicationNumber?: string },
 ): Promise<void> {
   try {
-    if (process.env.CLIENT_NOTIFICATIONS === "0" || process.env.CLIENT_NOTIFICATIONS === "false") return;
+    // "off" too: every other kill switch in this codebase accepts it, and the demo kit's .env said
+    // CLIENT_NOTIFICATIONS=off for weeks while this line quietly ignored it.
+    if (/^(0|false|off)$/i.test(String(process.env.CLIENT_NOTIFICATIONS ?? "").trim())) return;
     if (!project.clientId) return;
 
     // AN ARCHIVED PROJECT DOES NOT TALK. Hiding the card was only half the feature: the monitor

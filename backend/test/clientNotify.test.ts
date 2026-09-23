@@ -145,6 +145,20 @@ await run("CLIENT_NOTIFICATIONS=0 disables everything", async () => {
   }
 });
 
+// The demo kit's .env said CLIENT_NOTIFICATIONS=off and the check only knew "0"/"false", so the
+// kill switch it thought it had was not there.
+await run("CLIENT_NOTIFICATIONS=off disables everything too", async () => {
+  process.env.CLIENT_NOTIFICATIONS = "off";
+  try {
+    const before = db.get<{ n: number }>("SELECT COUNT(*) n FROM communications WHERE project_id = ?", [project.id])!.n;
+    await notifyClientOfStatusChange(db, project, { outcome: "nem_approved", statusLabel: "Approved", targetType: "nem" });
+    const after = db.get<{ n: number }>("SELECT COUNT(*) n FROM communications WHERE project_id = ?", [project.id])!.n;
+    assert.equal(after, before);
+  } finally {
+    delete process.env.CLIENT_NOTIFICATIONS;
+  }
+});
+
 // Close before deleting the scratch DB - Windows holds the open handle as a file lock (EBUSY).
 db.close();
 fs.rmSync(tmpDir, { recursive: true, force: true });
