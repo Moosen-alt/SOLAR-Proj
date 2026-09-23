@@ -3,6 +3,36 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## THE CHAIN RAN; THE PAGE SAID IT HADN'T (2026-09-23)
+
+Operator, on the demo kit: "the nem fee, or the auto build not going after qc and verify".
+
+- **The page never loaded the chain's results.** AHJ docs, reviewer gate and historical check
+  lived only in browser memory after a button click, so a project the stage-step chain had
+  carried to `ready_to_stage` opened with all three reading "not run". New read-only
+  `GET /api/projects/:id/stage-results` (writes NOTHING — the plain reviewer-report GET records
+  a text-only verdict and would overwrite the vision one) loads on project open; a
+  `stage_steps_done` SSE refetches it live.
+- **Verify never continued the chain.** `/human-verify` re-runs QC but only `/qc` enqueued the
+  stage steps, so the last verified item passed QC and nothing built. Proven on a scratch kit
+  server both ways: without the line the project sits at `qc_passed` with no job; with it,
+  build_docs → reviewer gate → `ready_to_stage`.
+- **Manifest PDF was silently dropped** from every prescriptive package — a "←" in its copy
+  threw in pdf-lib's WinAnsi encoder. Non-WinAnsi characters now fold (`generatedDocFiles.ts`).
+- **Two refuse-only offline switches**, set in the demo kit's `.env`: `PORTAL_AUTOMATION=off`
+  (prepareSubmission 409s after every gate has spoken; `openPortal` refuses too) and
+  `DOCUMENT_FETCH=off` (`fetchPublicDocument` refuses before sending — covers blank-form and
+  fee-schedule downloads and the headed-browser fallback). Unset in production = no change.
+
+**Verify live after pulling:** open a project whose chain has run (status `ready_to_stage`)
+straight from the board — the three Build & Validate panels show results without any click.
+Then Run QC with the project open: a "Pipeline ran automatically…" toast, panels refresh.
+
+**Open (not fixed):** Segment A's `rerunQc` resets `stage_detail` to `qc_passed` and never
+re-records the reviewer verdict, so pressing Stage portals knocks "Reviewer Gate Approved"
+back even when nothing changed. And a stale blocked autopilot result keeps showing its old
+blockers after the gate clears — nothing marks it superseded.
+
 ## THE REVIEWER GATE WAS CLEARING WORK IT HAD NEVER CHECKED (2026-09-22)
 
 Commits `da1e40b` … `8c9c3c8` (nine). Session ended cleanly here: tree clean, backend chain

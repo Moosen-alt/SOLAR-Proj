@@ -7,7 +7,8 @@ and there is no way to show a real customer from it, because it does not contain
 
 **The rule that shapes this document:** the reliable demo touches no external network.
 The kit runs with no API key, no SMTP, no portal credentials, no background
-workers, and portal automation switched off (`PORTAL_AUTOMATION=off`) — it cannot
+workers, and portal automation and document downloads switched off
+(`PORTAL_AUTOMATION=off`, `DOCUMENT_FETCH=off`, `AHJ_FORM_DOWNLOADS=off`) — it cannot
 reach anything, and nothing it demonstrates needs it to. The live
 portal replay is a bonus act with a video fallback, never the backbone.
 
@@ -190,7 +191,9 @@ npx tsx scripts/demo-copy-fee-schedules.ts --from backend/data/autopilot.sqlite 
   --to demo-kit/backend/data/autopilot.sqlite
 
 # 4. Repair paths, start the kit with its OWN .env (PORTAL_AUTOMATION=off is what
-#    keeps "Stage portals" from opening a live portal once the gate clears):
+#    keeps "Stage portals" from opening a live portal once the gate clears;
+#    DOCUMENT_FETCH=off / AHJ_FORM_DOWNLOADS=off stop blank-form downloads — the
+#    forms were acquired in step 1, which runs with downloads on):
 cd demo-kit && node kit-repair-paths.mjs && npx tsx backend/src/server.ts
 # then for each project id (derive them, never paste):
 #   POST /api/projects/<id>/qc   → wait for the job queue to drain
@@ -204,6 +207,12 @@ cd demo-kit && node kit-repair-paths.mjs && npx tsx backend/src/server.ts
 
 Ship it only after the acceptance check passes and the server has been relaunched
 via `START-DEMO.cmd` (workers off, no key) with the same QC results.
+
+> **The current kit was patched in place, not rebuilt** (2026-09-23): the wrapped plan
+> set was written over each project's `plan_set` file, the old split rows deleted, the
+> fee schedules copied, and the real chain re-run via `POST /qc`. The step-5 numbers
+> were measured on that patched kit. This recipe has not yet been run end-to-end
+> since the plan-set change — expect to shake something out the first time.
 
 **Never** copy `.env`, `portal-profiles/`, `.portal-profiles/`, `pge-session.json`,
 or anything under `backend/data/` beyond the two `reference-*.json` files and

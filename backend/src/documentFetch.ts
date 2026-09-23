@@ -276,6 +276,14 @@ export async function fetchPublicDocument(url: string, opts: FetchPublicDocument
   if ("error" in checked) {
     return { ok: false, status: 0, contentType: "", via: "http", reason: checked.error, finalUrl: url };
   }
+  // DOCUMENT_FETCH=off: an offline install (the demo kit) never downloads. Every public-
+  // document fetch — blank AHJ forms, fee schedules, the headed-browser fallback below —
+  // passes through here, so this one line is what makes "nothing outbound" true rather than
+  // true-while-every-template-happens-to-be-on-disk. Same shape as any refusal: status 0,
+  // nothing was ever sent, and every caller already handles a not-ok result.
+  if (/^(off|0|false)$/i.test(String(process.env.DOCUMENT_FETCH ?? "").trim())) {
+    return { ok: false, status: 0, contentType: "", via: "http", reason: "Document downloads are off on this installation (DOCUMENT_FETCH=off).", finalUrl: url };
+  }
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const userAgent = opts.userAgent || BROWSER_UA;
