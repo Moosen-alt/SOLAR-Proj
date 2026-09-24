@@ -23,6 +23,7 @@ import type { JurisdictionCodeProfile, ProjectRecord, ReviewerFinding } from "..
 import { REPO } from "./_isolate";
 import { buildCodeContext } from "../src/codeProfiles";
 import { evaluateDesignCodeFindings, structureType } from "../src/codeReviewRules";
+import { buildReviewerReport } from "../src/reviewerEngine";
 
 let failures = 0;
 const check = (label: string, fn: () => void): void => {
@@ -67,6 +68,12 @@ check("INFERRED from text only -> WARNING (not a blocker), evidence 'weak', and 
   assert.match(f!.message, /inferred from text, not confirmed/);
   assert.match(f!.designTeamAction, /confirm the structure type/i);
   assert.equal(structureType(project({ structuralCalcText: "Structure: HUD manufactured home on piers." })).basis, "inferred");
+});
+check("INFERRED through the real engine (buildReviewerReport): still a warning with evidence 'weak' — attachEvidence does not upgrade it", () => {
+  const report = buildReviewerReport(project({ ...PRESCRIPTIVE, structuralCalcText: "Structure: HUD manufactured home on piers." }), { codeContext: ctx });
+  const f = report.findings.find((x) => x.id === "city.struct.manufactured-home-prescriptive");
+  assert.equal(f?.severity, "warning");
+  assert.equal(f?.evidenceStatus, "weak");
 });
 check("PRECEDENCE: the intake answer beats the parser's; 'unknown' falls through to the parser", () => {
   assert.equal(kind({ structureTypeOverride: "site_built", structureType: "manufactured" }), "site_built");
