@@ -540,6 +540,32 @@ check("A name-first edition is read: 'Oregon Structural Specialty Code, 2025 Edi
   assert.deepEqual(b.map((e) => `${e.code} ${e.edition} ${e.baseCode} ${e.baseEdition}`), ["OSSC 2025 IBC 2024"]);
 });
 
+// ---------------------------------------------------------------------------------------
+// OTHER STATES — the same engine read against the shapes other states' plans and profiles use
+// (profile tokens as the live research rows spell them: "CEC-CA", "FBC-R", "FBC-B").
+// ---------------------------------------------------------------------------------------
+check("CA: a profile's state-suffixed 'CEC-CA' is the California Electrical Code a plan calls CEC", () => {
+  const ca = [{ code: "CRC", edition: "2025" }, { code: "CEC-CA", edition: "2025" }, { code: "T24-P6", edition: "2025" }];
+  assert.ok(!basisFinding("APPLICABLE CODES: 2025 CRC 2025 CEC 2025 CFC", ca), "a current CA plan raises nothing");
+  const f = basisFinding("GOVERNING CODES: 2025 CALIFORNIA RESIDENTIAL CODE (CRC) 2022 CALIFORNIA ELECTRICAL CODE (CEC)", ca);
+  assert.match(f?.message ?? "", /plan states CEC 2022 .*CEC-CA 2025/);
+  assert.doesNotMatch(f?.message ?? "", /CRC 2025 \(/, "the matching CRC is not reported");
+});
+
+check("FL: an ordinal edition '8TH EDITION (2023)' and the BUILDING volume are read as FBC-R / FBC-B", () => {
+  assert.deepEqual(basisOf("APPLICABLE CODES: FLORIDA BUILDING CODE, RESIDENTIAL 8TH EDITION (2023) 2020 NATIONAL ELECTRICAL CODE").sort(), ["FBC-R 2023", "NEC 2020"]);
+  assert.deepEqual(basisOf("GOVERNING CODES: 2023 FLORIDA BUILDING CODE, BUILDING").sort(), ["FBC-B 2023"]);
+  const fl = [{ code: "FBC-R", edition: "2023" }, { code: "FBC-B", edition: "2023" }, { code: "NEC", edition: "2020" }];
+  assert.ok(!basisFinding("GOVERNING CODES: 2023 FLORIDA BUILDING CODE, RESIDENTIAL 2023 FLORIDA BUILDING CODE, BUILDING NEC 2020", fl));
+  assert.match(basisFinding("GOVERNING CODES: FLORIDA BUILDING CODE, RESIDENTIAL 7TH EDITION (2020)", fl)?.message ?? "", /FBC-R 2020/);
+});
+
+check("WA: a bare 'CODES:' heading is a code-basis block; a state-amendment tail does not change the code", () => {
+  assert.deepEqual(basisOf("CODES: 2021 IRC WITH WASHINGTON STATE AMENDMENTS 2023 NEC").sort(), ["IRC 2021", "NEC 2023"]);
+  // MUST-EXCLUDE: the singular "PER CODE:" of a placard is still not a heading.
+  assert.deepEqual(basisOf("LABEL LOCATION: AC DISCONNECT PER CODE: NEC 2020 690.54"), []);
+});
+
 if (failures) {
   console.error(`\n${failures} design-criteria check(s) FAILED`);
   process.exit(1);

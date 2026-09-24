@@ -352,7 +352,9 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
 
 // --- code basis -------------------------------------------------------------
 
-const CODE_BASIS_HEADER = /\b(governing\s+codes?|applicable\s+codes?|code\s+basis|design\s+codes?|codes?\s+and\s+standards|references\s+and\s+codes|building\s+codes?\s+used|codes?\s+used)\b\s*[:\-–]?/gi;
+// A bare "CODES:" heads a list on many cover sheets ("CODES: 2021 IRC WITH WASHINGTON STATE
+// AMENDMENTS"); only the plural with a colon — "PER CODE: NEC 690.54" is a placard citation.
+const CODE_BASIS_HEADER = /\b(governing\s+codes?|applicable\s+codes?|code\s+basis|design\s+codes?|codes?\s+and\s+standards|references\s+and\s+codes|building\s+codes?\s+used|codes?\s+used)\b\s*[:\-–]?|\bcodes\s*:/gi;
 const NAME_STOPWORDS = new Set(["OF", "THE", "AND", "FOR", "&", "PER", "BY", "IN", "TO", "WITH", "AS", "ON", "AT", "SEE"]);
 /** An abbreviation reads as a CODE only when it ends in C (NEC, IRC, OESC, IECC …) or is a
  *  known code token (FBC-R); "OREGON", "ASCE", "NDS" and every other capitalised word do not. */
@@ -370,14 +372,21 @@ const MODEL_CODES = new Set(["IRC", "IBC", "IFC", "NEC", "IECC", "IPC", "IMC", "
 export const STATE_CODE_BASE: Readonly<Record<string, string>> = {
   ORSC: "IRC", OSSC: "IBC", OESC: "NEC", OFC: "IFC",
   CRC: "IRC", CBC: "IBC", CEC: "NEC", CFC: "IFC",
-  "FBC-R": "IRC",
+  "FBC-R": "IRC", "FBC-B": "IBC",
 };
 
-/** One spelling per code: "FBC Residential"/"FBCR" -> FBC-R, "NFPA 70" -> NEC, "I.R.C." -> IRC. */
+const US_STATES = new Set("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split(" "));
+
+/** One spelling per code: "FBC Residential"/"FBCR" -> FBC-R, "NFPA 70" -> NEC, "I.R.C." -> IRC,
+ *  and a state-suffixed profile token ("CEC-CA", written to tell the California Electrical Code
+ *  from other CECs) -> CEC. */
 export function normCodeToken(code: string): string {
   const c = String(code || "").toUpperCase().replace(/[.\s]/g, "");
   if (/^FBC-?R(?:ESIDENTIAL)?$/.test(c)) return "FBC-R";
+  if (/^FBC-?B(?:UILDING)?$/.test(c)) return "FBC-B";
   if (c === "NFPA70") return "NEC";
+  const suffixed = c.match(/^([A-Z]{2,6})-([A-Z]{2})$/);
+  if (suffixed && US_STATES.has(suffixed[2])) return suffixed[1];
   return c;
 }
 
@@ -432,8 +441,9 @@ function namedCode(name: string, paren: string, tail: string): string {
   const model = MODEL_CODE_NAMES.find(([re]) => re.test(name));
   if (model) return model[1];
   const code = acronym(name);
-  // "FLORIDA BUILDING CODE, RESIDENTIAL" is the residential volume, not the building code.
+  // "FLORIDA BUILDING CODE, RESIDENTIAL" is the residential volume, ", BUILDING" the building one.
   if (/^\s*[,\-–]?\s*RESIDENTIAL\b/i.test(tail)) return normCodeToken(`${code}-R`);
+  if (/^\s*[,\-–]?\s*BUILDING\b/i.test(tail)) return normCodeToken(`${code}-B`);
   // "CALIFORNIA ENERGY CODE" shares CEC's initials with the California ELECTRICAL Code; it is
   // not an NEC-based code, so it must not borrow CEC's base.
   if (/\bENERGY\b/.test(name) && baseModelCode(code) === "NEC") return `${code}-ENERGY`;
@@ -446,15 +456,18 @@ function namedCode(name: string, paren: string, tail: string): string {
 const NAMED_CODE = /\b((?:19|20)\d{2})\s+((?:[A-Z][A-Za-z.'-]*\s+){0,6}?(?:CODE|Code))\b(?:\s*\(\s*([^)]{1,40}?)\s*\))?/g;
 // Name first, then the edition: "Oregon Structural Specialty Code, 2025 Edition (2024 IBC)",
 // "International Residential Code, 2021 Edition".
+// An ordinal edition with the year in parentheses: "FLORIDA BUILDING CODE, RESIDENTIAL 8TH
+// EDITION (2023)".
+const NAMED_CODE_ORDINAL = /\b((?:[A-Z][A-Za-z.'-]*\s+){1,6}?(?:CODE|Code))((?:\s*[,\-–]?\s*(?:RESIDENTIAL|BUILDING|Residential|Building))?),?\s*[-–]?\s*\d{1,2}(?:ST|ND|RD|TH|st|nd|rd|th)\s+(?:EDITION|Edition)\s*\(\s*((?:19|20)\d{2})\s*\)/g;
 const NAMED_CODE_EDITION = /\b((?:[A-Z][A-Za-z.'-]*\s+){1,6}?(?:CODE|Code)),?\s+((?:19|20)\d{2})\s+(?:EDITION|Edition)\b(?:\s*\(\s*([^)]{1,40}?)\s*\))?/g;
 
 function namedItems(part: string): BasisItem[] {
   const items: BasisItem[] = [];
-  const push = (at: number, end: number, rawName: string, edition: string, rawParen: string | undefined): void => {
+  const push = (at: number, end: number, rawName: string, edition: string, rawParen: string | undefined, volume?: string): void => {
     const name = rawName.replace(/\s+/g, " ").trim().toUpperCase();
     const paren = (rawParen || "").trim();
     const base = parenBase(paren);
-    const code = namedCode(name, base ? "" : paren, part.slice(end, end + 20));
+    const code = namedCode(name, base ? "" : paren, volume ?? part.slice(end, end + 20));
     // "NEC: 2020 PER CODE: NEC 690.54" (a placard citation) is not a code named "PC": a
     // printed code name never opens with a preposition, and needs two initials besides CODE.
     if (NAME_STOPWORDS.has(name.split(" ")[0]) || code.length < 2) return;
@@ -464,6 +477,8 @@ function namedItems(part: string): BasisItem[] {
   let m: RegExpExecArray | null;
   const yearFirst = new RegExp(NAMED_CODE.source, "g");
   while ((m = yearFirst.exec(part))) push(m.index, m.index + m[0].length, m[2], m[1], m[3]);
+  const ordinal = new RegExp(NAMED_CODE_ORDINAL.source, "g");
+  while ((m = ordinal.exec(part))) push(m.index, m.index + m[0].length, m[1], m[3], undefined, m[2]);
   const nameFirst = new RegExp(NAMED_CODE_EDITION.source, "g");
   while ((m = nameFirst.exec(part))) push(m.index, m.index + m[0].length, m[1], m[2], m[3]);
   return items;
