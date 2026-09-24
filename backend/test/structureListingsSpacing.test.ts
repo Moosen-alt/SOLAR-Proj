@@ -328,6 +328,29 @@ check("FLOOD MUST-EXCLUDE: the long-condition fallback does not undo the cut —
   assert.equal(extractPortalCondition(`Conditions Condition: Sewer RecoverySeverity: NoticeTotal Conditions: 1 (Notice: 1)View Condition ${"filler ".repeat(40)}`), "Condition: Sewer Recovery");
   assert.equal(extractPortalCondition(`Condition: ${"x".repeat(150)} | next field`).length, "Condition: ".length + 140);
 });
+// r3f: "lien" had no word boundary — a page's "Client Services" became the lien "lient Services: …" and
+// outranked the page's real condition — and "Condition: None" was shown as a condition.
+check("FLOOD MUST-EXCLUDE (r3f): 'Client Services' is not a lien; 'Condition: None' / 'N/A' / 'none on file' is not a condition", () => {
+  const withClient = `Client Services: 555-0100 ${accelaPage("In Review")}`;
+  assert.equal(extractPortalCondition(withClient), "Condition: Floodplain");
+  assert.doesNotMatch(classifyPermitStatusText(withClient).message, /lient/);
+  for (const none of ["None", "N/A", "none on file", "No conditions"]) {
+    const page = accelaPage("In Review", none);
+    assert.equal(extractPortalCondition(page), "", `Condition: ${none}`);
+    assert.doesNotMatch(classifyPermitStatusText(page).message, /carries a condition/, `Condition: ${none}`);
+  }
+  assert.equal(extractPortalCondition("Record Status: In Review Condition: None Inspections Contacts Fees Payments"), "", "the window running on past 'None'");
+});
+check("FLOOD MUST-PASS (r3f): a real lien and the glued Accela names still read; a None header does not hide a later real one", () => {
+  assert.equal(extractPortalCondition(accelaPage("In Review")), "Condition: Floodplain");
+  assert.equal(extractPortalCondition(accelaPage("In Review", "Sewer Recovery")), "Condition: Sewer Recovery");
+  assert.equal(extractPortalCondition(accelaPage("In Review", "Nonconforming Use")), "Condition: Nonconforming Use", "'Non…' is a name, not 'None'");
+  const lien = "Record Status: In Review Parcel Notifications: Lien recorded against parcel 000-000 for unpaid sewer charges. Record Details";
+  assert.equal(extractPortalCondition(lien), "Lien recorded against parcel 000-000 for unpaid sewer charges");
+  assert.match(classifyPermitStatusText(lien).message, /carries a condition: "Lien recorded against parcel/);
+  assert.equal(extractPortalCondition("Parcel NotificationsHoldLien recorded 2019."), "Lien recorded 2019", "a lien glued after a lower-case word end");
+  assert.equal(extractPortalCondition("Condition: None Severity: Notice | Condition: FloodplainSeverity: Notice"), "Condition: Floodplain");
+});
 check("FLOOD MUST-EXCLUDE: a record with no condition gets no condition sentence, and the outcome is unchanged by one", () => {
   const plain = "Record 000-26-000000-STR: Residential Solar Record Status: In Review Expiration Date: 03/01/2027 Record Details";
   assert.doesNotMatch(classifyPermitStatusText(plain).message, /condition/i);

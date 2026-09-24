@@ -75,12 +75,24 @@ const conditionPattern =
  * truncating produced a banner with no facts in it — the permit number, which is the one thing an
  * operator can act on, fell off the end.
  */
+// The name OPENS with the portal's "nothing here" ("None", "None on file", "N/A", "No conditions"); the
+// window may run on into the page's next words ("None Inspections Fees …"), so only the opening counts.
+// "Nonconforming use" and "No construction in the easement" are real conditions.
+const NO_CONDITION = /^(?:none|n\/a|not\s+applicable|no\s+conditions?)(?![A-Za-z0-9/])/i;
+
 export function extractPortalCondition(text: string): string {
   const blob = String(text || "").replace(/\s+/g, " ");
   // NO LEADING WORD BOUNDARY: Accela renders this page with words glued together where markup was
   // stripped — the real record reads "PERMIT OUTSTANDINGOutstanding permit 187-M16-213", so \b
   // before "outstanding permit" never matches and the useless generic header wins instead.
-  const specific = /(outstanding permit[^.|]{0,140}|stop work order[^.|]{0,140}|lien[^.|]{0,140})/i.exec(blob);
+  // "LIEN" IS A WORD, though: with no boundary, a page's "Client Services" read as the lien
+  // "lient Services: …" and outranked the page's real condition. A lien is the whole word ("Lien",
+  // "LIENS"), or glued after a lower-case word end ("…HoldLien recorded") — never inside a word.
+  // (Case-sensitive on purpose: under the i flag, "(?<=[a-z])Lien" would match "Client" again.)
+  const notice = /(outstanding permit[^.|]{0,140}|stop work order[^.|]{0,140})/i.exec(blob);
+  const lien = /(?:(?<![A-Za-z])(?:[Ll]ien|LIEN)|(?<=[a-z])Lien)(?:s|S)?\b[^.|]{0,140}/.exec(blob);
+  // The first one on the page, as the single pattern read it.
+  const specific = notice && lien ? (lien.index < notice.index ? lien : notice) : notice ?? lien;
   if (specific) return specific[0].trim().slice(0, 180);
   // THE CONDITION'S NAME ENDS WHERE ACCELA'S NEXT FIELD BEGINS. The same glued markup puts the
   // severity straight after the name — "Condition: FloodplainSeverity: NoticeTotal Conditions: 1"
@@ -90,9 +102,17 @@ export function extractPortalCondition(text: string): string {
   // cut at the next field if one falls inside the window. A lookahead that had to find its marker
   // within 140 characters matched nothing on a written-out condition with no marker in reach, so
   // the page carried a condition and the reading showed none.
-  const header = /condition:\s*([^|]{1,140})/i.exec(blob);
-  const name = header ? header[1].split(/severity\s*:|total\s+conditions|view\s+condition/i)[0].trim() : "";
-  return name ? `Condition: ${name}`.slice(0, 180) : "";
+  // "Condition: None" / "N/A" / "none on file" is the portal saying there is NO condition — shown as
+  // one, it read as a notice stopping the permit. Such a header is skipped, not the page: a later
+  // "Condition: Floodplain" on the same page is still read.
+  const headers = /condition:\s*([^|]{1,140})/gi;
+  let header: RegExpExecArray | null;
+  while ((header = headers.exec(blob))) {
+    const name = header[1].split(/severity\s*:|total\s+conditions|view\s+condition/i)[0].trim();
+    if (name && !NO_CONDITION.test(name)) return `Condition: ${name}`.slice(0, 180);
+    headers.lastIndex = header.index + "condition:".length;
+  }
+  return "";
 }
 
 /** The record-level condition on this page, or "" — read from the WHOLE page (a condition lives
