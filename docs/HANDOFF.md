@@ -3,6 +3,42 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## PRODUCTION RUNS PINNED; POWER-LOSS RECOVERY (2026-09-24)
+
+**Production no longer runs from the dev tree.** Code runs from `.probe/prod-pinned` (a detached git
+worktree); the working directory stays the repo root, so the live DB, `.env`, uploads, logs and
+`frontend/` are the live ones, and agents editing the dev tree cannot leak into a running server
+(lazy imports used to load half-finished edits). Start: double-click `.probe\start-prod-pinned.cmd`
+(it also points `CODE_PROFILE_REFERENCE_PATH` at the pinned copy — the one cwd-relative code file).
+Re-pin: stop the server window, `git -C .probe\prod-pinned checkout --detach <verified commit>`, start
+again. Check nothing is mid-job first (`job_queue` rows not done/failed; no browser under the server
+process). Not covered by the pin: the "record a portal session" button launches `npm run
+portal:record` from the dev tree, and `frontend/` is served from the dev tree. Pinned at `0c466bb`
+(round 3 + battery line, both skeptic-verified). DB backup taken first:
+`backend/data/backups/autopilot-2026-09-24-before-pinned-restart.sqlite`.
+
+**Version.** `backend/src/buildInfo.ts` (95b65cc+) names the RUNNING code — date version from the
+commit + short sha, "pinned" / "uncommitted changes" — in the banner, `/health`, diagnostics and the
+dashboard. The pin at `0c466bb` predates it; the next re-pin shows it.
+
+**Recovery lesson.** The power died with three workflows mid-stage. The tree came back "clean", but a
+`Teleport auto-stash` (created at resume) held ~400 lines of uncommitted builder work — `git stash
+list` first on any resume. Workflow resume is same-session only; continuation scripts were rebuilt
+from the dead journals.
+
+**Operator actions still open (2026-09-24):**
+- Oregon 36/25 psf minimum ground snow: the verified write (`PUT /api/code-profiles/verify`, payload in
+  the round-3 criteria report) waits for the snow-reading invariant work to land. After it: 5 blockers
+  (204ff994, 29cd57b5, 720b05f3, 1fb3dc39, f7d7af7e) + 7 unknown-path warnings (set those projects' path).
+- Confirm Coos Bay's OSSC/OFC edition (row says 2022, plans print 2025) and OESC 2023 vs 2025.
+- Battery services/feeders <=200A: record the amount for Salem / Lincoln City (Salem 6a1c2127 is an
+  estimate until then); re-map the Coos Bay / Tigard electrical templates; re-learn one electrical recipe
+  on a battery job (0 of 804 recipe steps carry the box).
+- Recipe e965c645 (Coos Bay) step 47 is a human-patched click on a filed record number, before the final.
+- Until the bot round lands its recorder fixes: do not record NEW Accela sessions (the review-page
+  "Continue Application" can be captured as a plain click when the page carries an attachments box).
+  Stored Coos Bay recipes are safe: their review-page click is the flagged final, refused while disarmed.
+
 ## DEMO KIT, LIVE SAFETY, ONE NEXT STEP, AND A PIPELINE THAT LEARNS (2026-09-23, long session)
 
 Operator goal: a replayable, resettable client demo; ensure live isn't messed up; deep-research the
