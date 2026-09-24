@@ -163,14 +163,32 @@ await check("MUST EXCLUDE: with no SLD at all the borrowed status stays 'missing
   const f = buildReviewerReport(mk({ planSetExtractedText: "" })).findings.find((x) => x.id === "city.elec.supply-side-tap");
   assert.equal(f?.evidenceStatus, "missing");
 });
-await check("MUST EXCLUDE: a finding that carries its OWN evidence keeps its own 'verified'", () => {
+// "Its OWN evidence" means a STATED structure type (1d143d1): the parser's structureType field
+// (or the operator's intake answer) is the finding's own evidence, and a high-confidence SLD on
+// the same package must not replace it. A structure only the package TEXT suggests is inferred —
+// a warning with 'weak' evidence — and the SLD must not lift that to 'verified' either. This
+// fixture used to be text-only and asserted 'verified'; that was the pre-1d143d1 rule.
+await check("MUST EXCLUDE: a finding that carries its OWN evidence (a STATED structure type) keeps its own 'verified'", () => {
+  const f = buildReviewerReport(mk({
+    permitPath: "prescriptive",
+    structureType: "manufactured",
+    planSetExtractedText: SLD_TEXT,
+  })).findings.find((x) => x.id === "city.struct.manufactured-home-prescriptive");
+  assert.ok(f, "manufactured-home finding did not fire");
+  assert.equal(f!.severity, "blocker");
+  assert.equal(f!.evidenceStatus, "verified");
+  assert.equal(f!.evidenceFound?.[0]?.verifier, "parser", "the evidence is the parser's stated field, not the SLD");
+});
+await check("MUST EXCLUDE: a structure only the TEXT suggests stays 'weak' beside a high-confidence SLD — the SLD lifts nothing", () => {
   const f = buildReviewerReport(mk({
     permitPath: "prescriptive",
     structuralCalcText: "Structure: HUD manufactured home. Framing: 2x2 manufactured trusses @ 24\" o.c.",
     planSetExtractedText: SLD_TEXT,
   })).findings.find((x) => x.id === "city.struct.manufactured-home-prescriptive");
-  assert.ok(f, "manufactured-home finding did not fire");
-  assert.equal(f!.evidenceStatus, "verified");
+  assert.ok(f, "text-inferred manufactured-home finding did not fire");
+  assert.equal(evidenceForTopic(mk({ planSetExtractedText: SLD_TEXT }), "sld").confidence, "high", "fixture must carry HIGH sld evidence");
+  assert.equal(f!.severity, "warning");
+  assert.equal(f!.evidenceStatus, "weak");
 });
 
 // ---------------------------------------------------------------------------------------------
