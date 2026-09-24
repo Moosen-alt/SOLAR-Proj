@@ -3,6 +3,69 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## DEMO KIT, LIVE SAFETY, ONE NEXT STEP, AND A PIPELINE THAT LEARNS (2026-09-23, long session)
+
+Operator goal: a replayable, resettable client demo; ensure live isn't messed up; deep-research the
+UI (screen space, obvious next steps); evaluate the whole pipeline (linkages, LLM usage, learning).
+Every change below came through builder -> independent skeptic -> repair, each fix with a test that
+fails with the fix removed. Plan and measurements: `.probe/GOAL-PLAN.md` (git-ignored).
+
+**Demo kit (`demo-kit/`, git-ignored; runbook `docs/DEMO_RUNBOOK.md`).** 8 synthetic projects across all
+five columns (4 later-stage ones seeded by `scripts/demo-later-stages.ts` through the mock portal),
+`RESET-DEMO.cmd` + `kit-snapshot.mjs` (snapshot/restore of DB + data folders — tested on the real kit),
+`sample-docs/` (public blank forms for the live upload beat), `/demo/` page with two recordings:
+`scripts/demo-record-portal.ts` (the real RecipeAdapter on a FICTIONAL portal, stops at review) and
+`scripts/demo-record-walkthrough.ts` (captioned dashboard tour). Launchers live in `scripts/demo-kit/`.
+Kit extras copied from production are shared knowledge only: `fee_schedules` and one form template
+(`scripts/demo-copy-form-templates.ts`). Offline switches: `PORTAL_AUTOMATION=off` (staging AND approval
+refuse), `DOCUMENT_FETCH=off`, `AHJ_FORM_DOWNLOADS=off`, `CLIENT_NOTIFICATIONS=false`.
+
+**Live safety (would have hurt real filings).** Resume race started 3 parallel live staging runs from one
+upload burst (fixed: synchronous dedupe + per-project claim exclusion); new projects auto-started live
+staging nobody asked for (now opt-in `AUTOPILOT_AUTO_START=1`); false closeouts on fee-due / one-of-two
+permits (`isTrackDone`); QC/edits/verify rewinding filed projects; trackless Prepare Submittal restaging
+filed tracks; the upload sweep filing documents twice (and silently dropping >=50 MB files); research
+saving model memory as web-grounded knowledge; an orphaned filled PDF counting as an application.
+
+**One next step (`backend/src/nextStep.ts`).** One read-only rule table answers who acts / how urgent /
+the one button, on every list row and the project page; Approve and Stage are enabled from the same gate
+answer; missing documents are one predicate (`owedMissingDocuments`: a form staging fills is not
+"missing"). UI rebuilt around it: next step at y=235 (was below the fold), sticky status rail, one chip
+per board card, Needs-me pills, a filing selector for pasted statuses.
+
+**Learning.** `verified_at` replaces "mixed" as the rule-3 lock (`isVerifiedKnowledge`);
+`historical_failure_examples.org_id` (v31) and no raw samples in shared rollups; real turnaround samples
+(`permit_timeline_samples`); correction learning from the triage result with retract; `\bESS\b` etc.;
+corrections close when the project truly finishes; demo/benchmark projects never teach
+(`learning_excluded`); paid receipts reconciled against fee schedules; every model call persisted
+(`llm_calls`, `GET /api/projects/:id/llm-usage`).
+
+**Tests no longer litter production.** 13 tests wrote into `backend/data`; fixed via
+`backend/test/_isolate.ts`. 1.5 GB of existing litter moved (reversibly) to
+`backend/data/_quarantine-test-litter-20260923/` (MANIFEST inside) — delete it once you are satisfied.
+
+**Operator decisions / actions (not done automatically):**
+- RESTART production to pick up all of this. Old-vs-new on production copies changed no status, QC
+  result, review item or fee — only stale "blocked" labels, gates that asked for forms staging fills,
+  and Approve refused on 3 staged NEM drafts that left required portal fields blank.
+- Production runs straight from this dev working tree: lazily imported modules load whatever is on disk
+  at first use. Run production from a separate deploy checkout.
+- `.env` has `PORTAL_ALLOW_FINAL_SUBMIT=1`, contrary to hard rule 1's wording. Note: recorded recipes
+  can never auto-submit anyway (the recorder's "submit/pay-like" note trips the fee gate first).
+- Fee schedules short of Oregon's 12% state surcharge: Tigard and Salem (receipts prove it); Lincoln City
+  contradicts its receipt ($172.50 vs $250). Review items raised; schedules are never auto-changed.
+- Data fixes available as DRY-RUN scripts (run with `--apply` only after reading the dry run):
+  `scripts/scrub-shared-knowledge-names.ts`, `scripts/audit-learned-provenance.ts` (70 benchmark-keyed
+  KB profiles), `scripts/reconcile-fee-receipts.ts`, timeline backfill (see the tier-2 repair notes).
+- A broken stored template: City of Happy Valley checklist `304d67b7` throws in pdf-lib on fill (e6b3afde).
+- ec5c36d3's status is stale (filings made, still `ready_to_stage`) — correct it with the status override.
+
+**Open (not fixed):** ~~91 unit tests still append to `data/logs/backend.log`~~ (fixed later, `497d99f`);
+`autoLearnAdapter.test.ts` does NOT hang — its 33 cases take 6–118 s each (~12 min total), longer than
+the 300 s per-test budget in `.probe/run-chain.mjs`; `mbox_learning_records` not org-scoped; no UI yet for KB/fee-schedule "Verify" or
+correction "retract learning"; the kit's source comments mention real past jobs (strip before handing
+the folder to a third party).
+
 ## THE CHAIN RAN; THE PAGE SAID IT HADN'T (2026-09-23)
 
 Operator, on the demo kit: "the nem fee, or the auto build not going after qc and verify".
@@ -28,10 +91,9 @@ Operator, on the demo kit: "the nem fee, or the auto build not going after qc an
 straight from the board — the three Build & Validate panels show results without any click.
 Then Run QC with the project open: a "Pipeline ran automatically…" toast, panels refresh.
 
-**Open (not fixed):** Segment A's `rerunQc` resets `stage_detail` to `qc_passed` and never
-re-records the reviewer verdict, so pressing Stage portals knocks "Reviewer Gate Approved"
-back even when nothing changed. And a stale blocked autopilot result keeps showing its old
-blockers after the gate clears — nothing marks it superseded.
+**Resolved later the same day:** Segment A's `rerunQc` no longer demotes `ready_to_stage` or resets
+`stage_detail` on an unchanged pass (`qcMayMoveStatus` + no-demote rule), and the autopilot phase is now
+computed live — a stale blocked job result is history, not the current state.
 
 ## THE REVIEWER GATE WAS CLEARING WORK IT HAD NEVER CHECKED (2026-09-22)
 
