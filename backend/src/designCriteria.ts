@@ -463,6 +463,61 @@ function extractExposureAndRisk(text: string, source: string, out: StatedDesignC
 
 // --- snow ------------------------------------------------------------------
 
+/** Which label an UNSEPARATED psf value belongs to, inside a run of load labels and values. */
+type LoadValueOwner = "prev" | "next" | "both";
+
+// A load LABEL, as a design-loads list prints it: "GROUND SNOW", "FLAT ROOF SNOW LOAD", "ROOF DEAD
+// LOAD", "PV DEAD LOAD", "PV WEIGHT", "GROUND SNOW LOAD (Pg)". A heading ("DESIGN LOADS") is not one: it
+// names no load.
+const LOAD_LABEL_TOKEN = /\b(?:(?:ground|roof|flat|sloped|total|design|balanced|minimum|pv|floor|array|system|module|dead)\s+){0,2}(?:snow(?:\s+loads?)?|(?:dead|live|wind|collateral|seismic)\s+loads?|weight)\b(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?(?:\s*,?\s*asd\b)?/gi;
+const LOAD_VALUE_TOKEN = /\b\d+(?:\.\d+)?\s*(?:psf\b|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))(?:\s*\(\s*asd\s*\))?/gi;
+/** A load label that ASSIGNS the value after it ("ROOF LIVE LOAD: 20 PSF", "GROUND SNOW LOAD = 25"). */
+const ASSIGNING_LOAD_LABEL_BEFORE = /\b(?:snow|(?:dead|live|wind|collateral|seismic)\s+loads?)\b(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?\s*[:=]\s*$/i;
+
+/**
+ * THE LAYOUT OF A DESIGN-LOADS LIST DECIDES WHICH LABEL A VALUE BELONGS TO. With no separator, a
+ * value between two labels reads both ways: "ROOF DEAD LOAD 3 PSF GROUND SNOW LOAD 36 PSF" is
+ * label-first (the 3 is the dead load's), "36 PSF GROUND SNOW 25 PSF ROOF SNOW 10 PSF DEAD LOAD" is
+ * value-first (the 25 is the ROOF snow's). The extractor reads flattened text (readSources), so a
+ * vertical list and a one-line list are the same run — the run's own shape is the only evidence.
+ *
+ * A RUN is labels and psf values alternating with nothing but spaces, commas or semicolons between
+ * them. A value assigned by a load label's ":"/"=" just before the run counts as a label opening it;
+ * a label at the end that assigns its own value (":"/"=") counts as a value closing it. Then:
+ *   · opens with a label, closes with a value -> every value is its PREVIOUS label's (label-first);
+ *   · opens with a value, closes with a label -> every value is its NEXT label's (value-first);
+ *   · otherwise (one element left over either way) the layout is ambiguous -> "both": both readings
+ *     are kept, so two different Pg values show as a conflict — never one confident value picked.
+ * Keyed by the value's start index.
+ */
+function loadValueOwners(text: string): Map<number, LoadValueOwner> {
+  const tokens: Array<{ kind: "L" | "V"; start: number; end: number }> = [];
+  for (const [kind, re] of [["L", LOAD_LABEL_TOKEN], ["V", LOAD_VALUE_TOKEN]] as const) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) tokens.push({ kind, start: m.index, end: m.index + m[0].length });
+  }
+  tokens.sort((a, b) => a.start - b.start || b.end - a.end);
+  const clean: typeof tokens = [];
+  for (const t of tokens) if (!clean.length || t.start >= clean[clean.length - 1].end) clean.push(t);
+  const owners = new Map<number, LoadValueOwner>();
+  let i = 0;
+  while (i < clean.length) {
+    const run = [clean[i]];
+    while (i + 1 < clean.length && clean[i + 1].kind !== run[run.length - 1].kind && /^[\s,;]*$/.test(text.slice(run[run.length - 1].end, clean[i + 1].start))) {
+      run.push(clean[++i]);
+    }
+    i++;
+    const first = run[0];
+    const last = run[run.length - 1];
+    const opensWithLabel = first.kind === "L" || ASSIGNING_LOAD_LABEL_BEFORE.test(text.slice(Math.max(0, first.start - 60), first.start));
+    const closesWithValue = last.kind === "V" || /^\s*[:=]\s*\d/.test(text.slice(last.end, last.end + 12));
+    const owner: LoadValueOwner = opensWithLabel && closesWithValue ? "prev" : !opensWithLabel && !closesWithValue ? "next" : "both";
+    for (const t of run) if (t.kind === "V") owners.set(t.start, owner);
+  }
+  return owners;
+}
+
 function extractSnow(text: string, source: string, out: StatedDesignCriterion[]): void {
   const push = (criterion: StatedDesignCriterionKind, qualifier: StatedDesignCriterionQualifier, raw: string, m: RegExpExecArray): void => {
     const value = toNumber(raw);
@@ -478,6 +533,16 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
   };
   const asd = (s: string | undefined): boolean => !!s && /asd/i.test(s);
   let m: RegExpExecArray | null;
+  const owners = loadValueOwners(text);
+  // Where a label-first match's value starts: the number is the match's last one, before its unit.
+  const valueStartOf = (match: RegExpExecArray, raw: string): number => {
+    const head = match[0].replace(/\s*(?:psf|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))?$/i, "");
+    return match.index + head.length - raw.length;
+  };
+  // An UNSEPARATED label-first read ("GROUND SNOW 25 PSF") is the label's own unless its run is
+  // value-first: then the 25 is the NEXT label's ("… 25 PSF ROOF SNOW …").
+  const labelFirstIsNextLabels = (match: RegExpExecArray, raw: string): boolean =>
+    owners.get(valueStartOf(match, raw)) === "next";
 
   // GROUND SNOW, label first. A unit is required unless the label is followed by = or :,
   // so a numbered note ("3. GROUND SNOW LOAD …") can never lend its item number. A
@@ -486,6 +551,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
   const groundLabel = /\bground\s+snow(?:\s+loads?)?(?:\s*,?\s*p\s?g\b)?(?:\s*\((?![^)]*\basd\b)[^()]{0,40}\))?\s*(\(\s*asd\s*\)|,?\s*asd\b)?\s*(?:(of|is|[:=])\s*)?(\d+(?:\.\d+)?)\s*(psf|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))?/gi;
   while ((m = groundLabel.exec(text))) {
     if (!(m[2] && /[:=]/.test(m[2])) && !m[4]) continue;
+    if (!m[2] && labelFirstIsNextLabels(m, m[3])) continue;
     push("groundSnowPsf", asd(m[1]) ? "ground_asd" : "ground", m[3], m);
   }
   // THE UNIT BEFORE THE VALUE: a design report's "Ground Snow Load psf 25" (unit column), a
@@ -516,14 +582,17 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
   const assignedValue = (at: number): boolean => /\bsnow\b[^:=.;]{0,24}[:=]\s*$/i.test(text.slice(Math.max(0, at - 40), at));
   // …and a label that ASSIGNS its own value never also claims the number before it: in "ROOF LIVE
   // LOAD: 20 PSF GROUND SNOW LOAD: 25 PSF" the ground snow load is 25, and the 20 is the live load.
-  // With no separator, a value WITH ITS UNIT straight after the label is the label's own: in "ROOF
-  // DEAD LOAD 3 PSF GROUND SNOW LOAD 36 PSF" the 3 is the dead load (read as Pg 3, a correct plan got
-  // a below-the-minimum BLOCKER). A separator still assigns a bare number ("GROUND SNOW LOAD = 25").
+  // A separator assigns even a bare number ("GROUND SNOW LOAD = 25").
   const labelHasOwnValue = (after: number): boolean =>
-    /^(?:\s+loads?)?(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?\s*(?:[:=]\s*\d|\d+(?:\.\d+)?\s*psf\b)/i.test(text.slice(after, after + 60));
+    /^(?:\s+loads?)?(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?\s*[:=]\s*\d/i.test(text.slice(after, after + 60));
+  // With NO separator the run's layout decides (loadValueOwners): in "ROOF DEAD LOAD 3 PSF GROUND
+  // SNOW LOAD 36 PSF" the 3 is the dead load's (read as Pg 3, a correct plan got a below-the-minimum
+  // BLOCKER); in "36 PSF GROUND SNOW 25 PSF ROOF SNOW 10 PSF DEAD LOAD" the 36 IS the ground snow
+  // load (dropping it left Pg 25 alone — the same false BLOCKER on a correct 36 psf plan).
+  const valueFirstIsPrevLabels = (at: number): boolean => owners.get(at) === "prev";
   const groundAfter = /(\d+(?:\.\d+)?)\s*psf\s*(\(\s*asd\s*\)\s*)?ground\s+snow/gi;
   while ((m = groundAfter.exec(text))) {
-    if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length)) continue;
+    if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index)) continue;
     push("groundSnowPsf", asd(m[2]) ? "ground_asd" : "ground", m[1], m);
   }
 
@@ -535,11 +604,12 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
   const roofLabel = /\b(flat|sloped|total|design|balanced|minimum)?\s*roof\s+snow(?:\s+load)?(?:\s*,?\s*p\s?[fsm]\b)?\s*(?:(\[\s*psf\s*\])\s*[:=]|[:=])?\s*(\d+(?:\.\d+)?)\s*(psf)?/gi;
   while ((m = roofLabel.exec(text))) {
     if (!m[2] && !m[4]) continue;
+    if (!/[:=]/.test(m[0]) && labelFirstIsNextLabels(m, m[3])) continue;
     push("roofSnowPsf", roofQual(m[1]), m[3], m);
   }
   const roofAfter = /(\d+(?:\.\d+)?)\s*psf\s*(flat|sloped|total|design)?\s*roof\s+snow/gi;
   while ((m = roofAfter.exec(text))) {
-    if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length)) continue;
+    if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index)) continue;
     push("roofSnowPsf", roofQual(m[2]), m[1], m);
   }
   const pf = /\bp\s?f\s*=\s*(\d+(?:\.\d+)?)\s*psf/gi;
