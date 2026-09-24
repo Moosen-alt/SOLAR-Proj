@@ -808,13 +808,21 @@ export function evaluateDesignCodeFindings(
     if (!moduleListing || !rackingListing) {
       const missing = [!moduleListing ? "module listing (UL 61730 or UL 1703)" : "", !rackingListing ? "racking/mounting listing (UL 2703)" : ""].filter(Boolean);
       const found = [moduleListing, rackingListing].filter((x): x is Affirmed => x != null);
+      // A CALLOUT BY DEFAULT, A WARNING WHERE THE JURISDICTION HAS ASKED. It fired as a warning on
+      // every roof job on production (19 of 19): most plan sets name the listings only on the
+      // attached cut sheets, whose text is often image-only and never read — so "not found" is
+      // an absence we could not fully check. Where the jurisdiction's profile records that it
+      // asks for listing evidence (prescriptive.listingEvidenceRequired — learned from an AHJ
+      // correction through a human, or researched), the same absence is a warning there.
+      const listingAsked = ctx.prescriptive.listingEvidenceRequired === true;
       out.push({
         ...finding({
           id: "city.plan.ul-listings-missing",
-          severity: "warning",
+          severity: listingAsked ? "warning" : "callout",
           category: "plan_set",
           title: "UL listing for modules / racking not shown",
-          message: `The package does not state the ${missing.join(" or the ")}. UL 1741 (inverters) and UL 1699B (arc-fault) are different listings and do not answer this.`,
+          message: `No ${missing.join(" or ")} was found in the package text that could be read (cut sheets whose pages are images are not read). UL 1741 (inverters) and UL 1699B (arc-fault) are different listings and do not answer this.`
+            + (listingAsked ? ` ${ctx.ahj || "This jurisdiction"} has asked for this listing evidence before.` : ""),
           cityFeedback: "Provide UL listing for the panels, mounting and racking hardware.",
           designTeamAction: "Add the module UL 61730 (or UL 1703) listing and the racking/mounting UL 2703 listing to the plan set — equipment notes or the attached cut sheets/certificates.",
           evidenceNeeded: missing.map((m) => `${m[0].toUpperCase()}${m.slice(1)} on the plan set or an attached cut sheet/certificate`),

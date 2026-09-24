@@ -166,13 +166,26 @@ check("MH rules MUST-EXCLUDE: a site-built house and a ground-mounted array rais
 // ---------------------------------------------------------------------------------------
 const BOTH = "MODULES LISTED TO UL 61730. RACKING SYSTEM LISTED TO UL 2703 FOR BONDING AND MECHANICAL LOADING.";
 
-check("LISTINGS MUST-PASS: only UL 1741 and UL1699B -> warning, both missing, in the AHJ's own words", () => {
-  const f = get(run(project({ planSetExtractedText: "INVERTERS LISTED TO UL 1741. ARC-FAULT PROTECTION ACCORDING TO NEC 690.11 AND UL1699B." })), LISTINGS);
+const INVERTER_LISTINGS_ONLY = "INVERTERS LISTED TO UL 1741. ARC-FAULT PROTECTION ACCORDING TO NEC 690.11 AND UL1699B.";
+const ASKED = { prescriptive: { listingEvidenceRequired: true } };
+check("LISTINGS MUST-PASS: only UL 1741 and UL1699B -> a CALLOUT by default, both missing, in the AHJ's own words", () => {
+  const f = get(run(project({ planSetExtractedText: INVERTER_LISTINGS_ONLY })), LISTINGS);
   assert.ok(f, "must fire");
-  assert.equal(f!.severity, "warning");
+  assert.equal(f!.severity, "callout", "no jurisdiction has asked — an unread cut sheet is not a warning everywhere");
   assert.equal(f!.cityFeedback, "Provide UL listing for the panels, mounting and racking hardware.");
   assert.match(f!.message, /module listing/);
   assert.match(f!.message, /UL 2703/);
+  assert.match(f!.message, /text that could be read/, "an absence we could not fully check says so");
+});
+check("LISTINGS MUST-PASS: where the jurisdiction's profile asks for listing evidence -> WARNING (UL 1741 / 1699B still do not satisfy it)", () => {
+  const f = get(run(project({ planSetExtractedText: INVERTER_LISTINGS_ONLY }), ctxFor(ASKED)), LISTINGS);
+  assert.ok(f, "UL 1741 / UL 1699B satisfied a jurisdiction that asked for module/racking listings");
+  assert.equal(f!.severity, "warning");
+  assert.match(f!.message, /has asked for this listing evidence/);
+});
+check("LISTINGS MUST-EXCLUDE: a jurisdiction that asks, and a package that shows both -> no finding; listingEvidenceRequired:false -> callout", () => {
+  assert.ok(!get(run(project({ planSetExtractedText: BOTH }), ctxFor(ASKED)), LISTINGS));
+  assert.equal(get(run(project({ planSetExtractedText: INVERTER_LISTINGS_ONLY }), ctxFor({ prescriptive: { listingEvidenceRequired: false } })), LISTINGS)?.severity, "callout");
 });
 check("LISTINGS through the real engine: both missing stays evidence 'missing' (a flashing detail does not verify it)", () => {
   const p = project({ planSetExtractedText: "ATTACHMENT DETAIL: L-FOOT WITH FLASHING, LAG SCREW 2.5\" EMBEDMENT. INVERTERS UL 1741. UL1699B." });
