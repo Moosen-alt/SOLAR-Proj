@@ -182,9 +182,11 @@ function designDocumentTexts(db: AppDb, projectId: string): DesignTextSource[] {
   )) {
     const docType = text(row.doc_type);
     if (!PLAN_TEXT_DOC_TYPES.has(docType) || seen.has(docType)) continue;
-    seen.add(docType);
+    // A split page (the plan set's own sheet) or a row with no text never CLAIMS its doc type:
+    // a newer split "structural" page must not hide an older uploaded structural calculation.
     const body = text(row.extracted_text);
     if (text(row.source) === "split" || !body.trim() || body === "[no text layer]") continue;
+    seen.add(docType);
     out.push({ label: DESIGN_DOC_LABELS[docType] ?? docType, text: body });
   }
   return out;

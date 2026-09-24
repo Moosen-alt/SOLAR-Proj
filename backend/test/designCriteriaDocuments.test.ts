@@ -97,6 +97,20 @@ await check("MUST-EXCLUDE: a single stored plan set that agrees with itself -> n
   assert.equal(conflictOf(id), undefined);
 });
 
+// A split row never CLAIMS its doc type: a newer split "structural" page must not hide an older,
+// operator-uploaded structural calculation (the newest-per-type rule is for real documents).
+await check("MUST-PASS: an older uploaded structural calc (95 / Pg 28) is still read when a newer SPLIT 'structural' page exists -> BLOCKER", async () => {
+  const id = newProject(4);
+  await save(id, "plan_set", PLAN);
+  await save(id, "structural", ["Structural calculation", "Design wind speed, Vult: 95 mph (3-sec gust)", "Ground snow load, Pg : 28 psf"], "upload");
+  await new Promise((r) => setTimeout(r, 25));
+  await save(id, "structural", ["SHEET S-1", "2. WIND SPEED = 110 MPH"], "split");
+  const f = conflictOf(id);
+  assert.ok(f, "the plan set vs the uploaded calculation must conflict");
+  assert.equal(f!.severity, "blocker", f!.message);
+  assert.match(f!.message, /28 psf/);
+});
+
 if (failures) {
   console.error(`\n${failures} design-criteria document check(s) FAILED`);
   process.exit(1);
