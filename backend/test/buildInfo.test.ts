@@ -9,13 +9,20 @@
 //   - no git binary / no .git / a folder NESTED in another repo → 'fallback', no throw, no
 //     borrowed sha, and an honest "unknown build" label;
 //   - version is YYYY.MM.DD from the commit's own date string (not UTC-shifted);
-//   - dirty = tracked changes only (untracked files do not count), on a scratch repo.
+//   - dirty = tracked changes only (untracked files do not count), on a scratch repo;
+//   - ONLY `git status` failing (corrupted index) → dirty null + "working-tree state
+//     unknown", never dirty=false and a clean-looking label;
+//   - the startup banner's service line carries buildInfo().label (in-process AND from the
+//     real server), never "v0.1.0-beta" / "v<date>";
+//   - the REAL server's unauthenticated GET /health: version and build.label are
+//     buildInfo()'s, and the body carries no codeRoot or filesystem path; server.ts has no
+//     APP_VERSION constant.
 //
 // Scratch git repos live under os.tmpdir(). No network. Run: npx tsx backend/test/buildInfo.test.ts
 import "./_isolate";
-import { REPO } from "./_isolate";
+import { ISOLATED_CWD, REPO } from "./_isolate";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -176,6 +183,148 @@ check("label: pinned and dirty both shown; an unknown dirty state is not present
   assert.equal(formatBuildLabel({ version: "2026.09.24", sha: "0c466bb", dirty: true, pinned: true, source: "git" }), "2026.09.24 · 0c466bb · pinned · uncommitted changes");
   assert.equal(formatBuildLabel({ version: "2026.09.24", sha: "0c466bb", dirty: false, pinned: false, source: "git" }), "2026.09.24 · 0c466bb");
   assert.ok(formatBuildLabel({ version: "2026.09.24", sha: "0c466bb", dirty: null, pinned: false, source: "git" }).includes("unknown"));
+});
+// An unknown must not read as reassurance: ONLY `git status` fails (the index is corrupted
+// after the commit; rev-parse and log never load it), so the sha is still known but the
+// working-tree state is not. That must surface as null / "working-tree state unknown" —
+// never as dirty=false and a label identical to a clean build's.
+check("git status fails on its own → source git, dirty null, label says 'working-tree state unknown'", () => {
+  const repo = scratchRepo("v1\n");
+  const clean = computeBuildInfo({ codeRoot: repo, cwd: repo, env: NO_ENV });
+  assert.equal(clean.dirty, false, "fixture sanity: clean before the corruption");
+  // Corrupt, do not delete: a MISSING index reads as empty → every tracked file shows as
+  // deleted → dirty TRUE, which is not the case being pinned.
+  fs.writeFileSync(path.join(repo, ".git", "index"), "not an index\n");
+  // Fixture sanity: the corruption isolates `status` — log still answers, status does not.
+  assert.equal(git(repo, "log", "-1", "--format=%h"), clean.sha);
+  assert.throws(() => git(repo, "--no-optional-locks", "status", "--porcelain", "--untracked-files=no"));
+
+  const info = computeBuildInfo({ codeRoot: repo, cwd: repo, env: NO_ENV });
+  assert.equal(info.source, "git");
+  assert.equal(info.sha, clean.sha);
+  assert.equal(info.dirty, null);
+  assert.notEqual(info.dirty, false); // MUST-EXCLUDE: an unknown read as "clean"
+  assert.ok(info.label.includes("working-tree state unknown"), info.label);
+  assert.notEqual(info.label, clean.label); // MUST-EXCLUDE: indistinguishable from a clean build
+  assert.ok(!info.label.includes("uncommitted changes"), info.label); // nor invented as dirty
+});
+
+// ── 7. the startup banner names the build (in-process, deterministic) ──────────────────────
+const { collectDiagnostics, startupBanner } = await import("../src/logger");
+type BannerDb = Parameters<typeof collectDiagnostics>[0];
+/** The banner's service line — the one line that names what is running. */
+const serviceLine = (text: string): string | undefined =>
+  text.split(/\r?\n/).find((l) => l.includes("Solar Submission Autopilot"));
+/** MUST-EXCLUDE on a banner/label line: the old frozen number, or a "v"-prefixed version. */
+function assertNoLegacyVersion(line: string, version: string | null): void {
+  assert.ok(!line.includes("0.1.0"), `legacy 0.1.0 version in: ${line}`);
+  assert.ok(!/\bv\d/.test(line), `"v<number>" version prefix in: ${line}`);
+  if (version) assert.ok(!line.includes(`v${version}`), `"v${version}" in: ${line}`);
+}
+check("startupBanner: the service line carries buildInfo().label, not 'v0.1.0-beta' / 'v<date>'", () => {
+  // Every count query throws → safeCount's null; the banner needs no real database.
+  const stubDb = { get: () => { throw new Error("stub db"); } } as unknown as BannerDb;
+  const diag = collectDiagnostics(stubDb, { build: buildInfo(), port: 0, dbPath: path.join(os.tmpdir(), "none.sqlite") });
+  const lines: string[] = [];
+  const realLog = console.log;
+  console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  try { startupBanner(diag, { base: "http://localhost:0" }); } finally { console.log = realLog; }
+  const line = serviceLine(lines.join("\n"));
+  assert.ok(line, `no service line in the banner:\n${lines.join("\n")}`);
+  assert.ok(line.includes(buildInfo().label), `banner "${line}" lacks label "${buildInfo().label}"`);
+  assertNoLegacyVersion(line, buildInfo().version);
+  assert.equal(diag.version, buildInfo().version ?? "unknown");
+});
+
+// ── 8. the REAL server: GET /health body + the banner it printed ───────────────────────────
+// A builder tested in isolation cannot fail when server.ts stops calling it; only the real
+// route can. /health is UNAUTHENTICATED, so its build block must never carry codeRoot (or
+// any server filesystem path). The child inherits this process's cwd (ISOLATED_CWD) and code
+// root (REPO) and has APP_VERSION/BUILD_* deleted above, so it takes the same git path and
+// reports the same pinned state as buildInfo() here.
+check("server.ts defines no APP_VERSION constant (the frozen '0.1.0-beta' source)", () => {
+  const src = fs.readFileSync(path.join(REPO, "backend", "src", "server.ts"), "utf8");
+  assert.ok(!/\bAPP_VERSION\b/.test(src), "server.ts mentions APP_VERSION again");
+  assert.ok(!src.includes("0.1.0"), "server.ts carries a 0.1.0 literal again");
+});
+
+const serverTmp = fs.mkdtempSync(path.join(os.tmpdir(), "buildinfo-server-"));
+scratchRoots.push(serverTmp);
+const PORT = 4960 + Math.floor(Math.random() * 30);
+const BASE = `http://127.0.0.1:${PORT}`;
+const serverEnv: Record<string, string | undefined> = {
+  ...process.env,
+  AUTOPILOT_DB_PATH: path.join(serverTmp, "test.sqlite"),
+  BACKUP_DIR: path.join(serverTmp, "backups"),
+  DATA_DIR: path.join(serverTmp, "data"),
+  PORT: String(PORT),
+  SERVER_HOST: "127.0.0.1",
+  SEED_TEST_INSTALLER: "false",
+  AUTOPILOT_AUTO_START: "0",
+  MONITOR_INTERVAL_MINUTES: "0",
+  LOG_LEVEL: "warn",
+  ANTHROPIC_API_KEY: "", // stub LLM — no network
+  SESSION_ENCRYPTION_KEY: process.env.SESSION_ENCRYPTION_KEY || "unit-test-key-not-a-real-secret",
+  NO_PROXY: "*",
+  no_proxy: "*",
+};
+for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "APP_VERSION", "BUILD_SHA", "BUILD_DATE"]) delete serverEnv[k];
+
+// The expected identity, bracketing the child's own computation (a sibling commit or edit
+// in this shared tree between the two is the one legitimate way they can differ).
+const expectedBefore = computeBuildInfo({ env: NO_ENV });
+const server = spawn(process.execPath, [path.join(REPO, "node_modules/tsx/dist/cli.mjs"), path.join(REPO, "backend/src/server.ts")], {
+  env: serverEnv, stdio: ["ignore", "pipe", "pipe"], detached: false, windowsHide: true,
+});
+let serverLog = "";
+server.stdout?.on("data", (d) => { serverLog += String(d); });
+server.stderr?.on("data", (d) => { serverLog += String(d); });
+
+let health: { status: number; text: string } | null = null;
+try {
+  for (let i = 0; i < 120 && !health; i++) {
+    try {
+      const res = await fetch(`${BASE}/health`);
+      health = { status: res.status, text: await res.text() };
+    } catch { await new Promise((r) => setTimeout(r, 500)); }
+  }
+  // The banner prints synchronously in the listen callback; give the pipe a moment.
+  for (let i = 0; i < 20 && !serviceLine(serverLog); i++) await new Promise((r) => setTimeout(r, 100));
+} finally {
+  server.kill();
+}
+const expectedAfter = computeBuildInfo({ env: NO_ENV });
+const expectedLabels = new Set([buildInfo().label, expectedBefore.label, expectedAfter.label]);
+
+check("GET /health: build.label and version are buildInfo()'s; no codeRoot or filesystem path", () => {
+  assert.ok(health, `server never answered /health:\n${serverLog.slice(-2000)}`);
+  assert.equal(health.status, 200, health.text.slice(0, 500));
+  const body = JSON.parse(health.text) as { version?: unknown; build?: Record<string, unknown> };
+  assert.ok(body.build && typeof body.build === "object", `no build block: ${health.text.slice(0, 500)}`);
+  const label = String(body.build.label);
+  assert.ok(expectedLabels.has(label), `/health label "${label}" is not buildInfo().label (${[...expectedLabels].join(" | ")})`);
+  const expected = [buildInfo(), expectedBefore, expectedAfter].find((b) => b.label === label)!;
+  assert.equal(body.version, expected.version ?? "unknown");
+  assert.equal(body.build.version, expected.version);
+  assert.equal(body.build.sha, expected.sha);
+  assert.equal(body.build.source, "git");
+  assert.equal(body.build.pinned, true); // code in REPO, cwd = ISOLATED_CWD
+  assertNoLegacyVersion(String(body.version), null);
+  // MUST-EXCLUDE: the unauthenticated body names no server path.
+  assert.equal("codeRoot" in body.build, false, "codeRoot leaked into /health");
+  assert.ok(!health.text.includes("codeRoot"), "codeRoot leaked into /health");
+  const lower = health.text.toLowerCase();
+  for (const p of [REPO, ISOLATED_CWD, serverTmp]) {
+    assert.ok(!lower.includes(p.toLowerCase()) && !lower.includes(JSON.stringify(p).slice(1, -1).toLowerCase()), `path ${p} in /health`);
+  }
+  // A drive path ("C:\\..." in JSON, or "C:/..."); the leading guard keeps "http://" out.
+  assert.ok(!/(^|[^A-Za-z])[A-Za-z]:(\\\\|\/)/.test(health.text), `a drive path in /health: ${health.text.slice(0, 500)}`);
+});
+check("the real server's startup banner names the same build", () => {
+  const line = serviceLine(serverLog);
+  assert.ok(line, `no banner service line:\n${serverLog.slice(-2000)}`);
+  assert.ok([...expectedLabels].some((l) => line.includes(l)), `banner "${line}" lacks buildInfo().label (${[...expectedLabels].join(" | ")})`);
+  assertNoLegacyVersion(line, buildInfo().version);
 });
 
 for (const d of scratchRoots) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
