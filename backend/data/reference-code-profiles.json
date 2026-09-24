@@ -22,10 +22,10 @@
     },
     {
      "code": "ORSC",
-     "edition": "2021",
-     "title": "Oregon Residential Specialty Code (IRC-based)",
+     "edition": "2023",
+     "title": "Oregon Residential Specialty Code (2023 edition, based on the 2021 IRC)",
      "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/residential.aspx",
-     "notes": "IRC R324 rooftop PV provisions apply as adopted; see prescriptive solar checklist."
+     "notes": "Operator-verified 2026-09-23: current Oregon plan sets print the 2023 ORSC, and a Lincoln City building review (May 2026) states review is based on the 2023 ORSC. IRC R324 rooftop PV provisions apply as adopted; see prescriptive solar checklist."
     },
     {
      "code": "IRC",
