@@ -220,7 +220,8 @@ check("MUST-PASS: a value after a NEW list item / bullet / labelled field reads 
   assert.deepEqual(stated("(1) ARRAY NOT TO EXCEED ROOF RIDGE (2) WIND SPEED 110 MPH EXPOSURE C GROUND SNOW LOAD 25 PSF RISK CATEGORY II"), all);
   assert.deepEqual(stated("1) ARRAY NOT TO EXCEED ROOF RIDGE 2) WIND SPEED 110 MPH EXPOSURE C GROUND SNOW LOAD 25 PSF RISK CATEGORY II"), all);
   assert.deepEqual(stated("• RACKING LIMITED TO COMP SHINGLE ROOFS • WIND SPEED 110 MPH EXPOSURE C GROUND SNOW LOAD 25 PSF RISK CATEGORY II"), all);
-  assert.deepEqual(stated("• ARRAY NOT TO EXCEED ROOF RIDGE • WIND SPEED 110 MPH EXPOSURE C GROUND SNOW LOAD 25 PSF RISK CATEGORY II"), all);
+  // The 24-character rating window before a speed stops at a bullet too ("EXCEED RIDGE • WIND SPEED").
+  assert.deepEqual(stated("• ARRAY NOT TO EXCEED RIDGE • WIND SPEED 110 MPH EXPOSURE C GROUND SNOW LOAD 25 PSF RISK CATEGORY II"), all);
   assert.deepEqual(stated("MAXIMUM ROOF HEIGHT: TWO STORIES WIND SPEED 110 MPH EXPOSURE C GROUND SNOW LOAD 25 PSF RISK CATEGORY II"), all);
 });
 check("MUST-PASS (finding): '(1) ARRAY NOT TO EXCEED ROOF RIDGE (2) … GROUND SNOW LOAD 20 PSF' vs a verified 25 -> below-ahj BLOCKER, not the unknown callout", () => {
@@ -232,6 +233,9 @@ check("MUST-EXCLUDE: a limit's OWN list stays bounds ('does not exceed (1) 120 m
     "The basic design wind speed does not exceed (1) 120 mph in Wind Exposure Category C; (2) 135 mph in Wind Exposure Category B",
     "The basic design wind speed does not exceed the following: (1) 120 mph in Wind Exposure Category C; (2) 135 mph in Wind Exposure Category B",
     "The basic design wind speed does not exceed the following: 1) 120 mph in Wind Exposure Category C 2) 135 mph in Wind Exposure Category B",
+    // One letter only (two different letters close together are a table and drop on their own):
+    // the "1)" marker must not count as a number that ends the limit's field.
+    "The basic design wind speed does not exceed the following: 1) 120 mph in Wind Exposure Category C",
     "SYSTEM LIMITED TO: (1) WIND SPEED 110 MPH (2) GROUND SNOW LOAD 70 PSF (3) EXPOSURE C",
     "Wind speed does not exceed: • 120 mph Exposure C • 135 mph Exposure B",
     "• Ground snow load not to exceed 70 psf • Wind speed not to exceed 120 mph",
