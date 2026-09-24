@@ -447,8 +447,12 @@ function provenance(ctx: EffectiveCodeContext): string {
   const who = ctx.profile?.ahj ? `${ctx.profile.ahj} (${ctx.profile.state || ctx.state})` : `${ctx.state || "state"} state-level`;
   const url = ctx.designCriteria.sourceUrl ? `; source ${ctx.designCriteria.sourceUrl}` : "";
   if (ctx.verified) {
-    const by = ctx.profile?.verifiedBy ? ` by ${ctx.profile.verifiedBy}` : "";
     const at = ctx.profile?.verifiedAt ? ` on ${ctx.profile.verifiedAt.slice(0, 10)}` : "";
+    // seedReferenceCodeProfiles stamps shipped rows "verified" with verifiedBy
+    // "reference-seed". That is a row nobody at this install checked — calling it
+    // "human-verified by reference-seed" contradicts itself on the operator's screen.
+    if (ctx.profile?.verifiedBy === "reference-seed") return `${who} code profile (verified via the shipped reference seed${at}, not by an operator here${url})`;
+    const by = ctx.profile?.verifiedBy ? ` by ${ctx.profile.verifiedBy}` : "";
     return `${who} code profile (human-verified${by}${at}${url})`;
   }
   const at = ctx.profile?.researchedAt ? ` ${ctx.profile.researchedAt.slice(0, 10)}` : "";

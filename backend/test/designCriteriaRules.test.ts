@@ -98,6 +98,13 @@ check("A: provenance names the ROW used — a city resolved to the state-level d
   assert.doesNotMatch(f!.message, /City of Testport code profile/);
 });
 
+check("A: a row verified only by the shipped reference seed is not called human-verified", () => {
+  const seedCtx = ctxFor({ confidence: "verified", verifiedBy: "reference-seed", verifiedAt: "2026-07-02T00:00:00Z", designCriteria: { groundSnowLoadPsf: 36 } });
+  const f = get(run(caseA, seedCtx), BELOW);
+  assert.match(f!.message, /shipped reference seed/);
+  assert.doesNotMatch(f!.message, /human-verified/);
+});
+
 check("A: profile has no criteria -> UNKNOWN callout quoting the stated 16 psf / 120 mph (never silent, never a blocker)", () => {
   const fs = run(caseA, ctxFor({ designCriteria: {} }));
   const f = get(fs, UNKNOWN);
