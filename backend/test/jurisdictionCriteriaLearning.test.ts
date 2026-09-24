@@ -430,7 +430,7 @@ const mkProjectIn = (state: string, ahj: string): string => R.createProject(db, 
 
 await check("sameJurisdictionName: one jurisdiction under two labels is the same; a county, another type or another name is not", () => {
   const same: Array<[string, string, string]> = [["City of Plano", "Plano", "TX"], ["Portland", "City of Portland", "OR"], ["Elmore County, ID", "Elmore County", "ID"],
-    ["County of Elmore", "Elmore County", "ID"], ["Town of Testham", "Testham", "WI"], ["Portland OR", "Portland", "OR"]];
+    ["County of Elmore", "Elmore County", "ID"], ["Town of Testham", "Testham", "WI"], ["Portland OR", "Portland", "OR"], ["City of The Dalles", "The Dalles", "OR"]];
   const different: Array<[string, string, string]> = [["City of Lincoln City", "Lincoln County", "OR"], ["City of Lincoln", "Lincoln County", "OR"], ["Lincoln", "Lincoln County", "OR"],
     ["Town of Testham", "City of Testham", "WI"], ["City of Coos Bay", "Coos County", "OR"], ["Springfield", "Springfield Township", "PA"], ["City of Salem", "Salem Heights", "OR"]];
   for (const [a, b, st] of same) assert.equal(CP.sameJurisdictionName(a, b, st), true, `${a} / ${b}`);
@@ -466,6 +466,10 @@ await check("MUST EXCLUDE (Portland-shaped): a 'City of Portland' correction is 
   }));
   assert.equal(merged.saved, false);
   assert.equal(CP.exactCodeProfileRow(db, "OR", "City of Portland"), null, "the lookup created a shadowing row");
+  // Full research / an import under the project's spelling (POST /api/code-profiles/research, a
+  // code_research job) is refused the same way.
+  CP.saveResearchedCodeProfile(db, { key: "", state: "OR", ahj: "City of Portland", confidence: "seeded", adoptedCodes: [{ code: "ORSC", edition: "2021" }], amendments: [], designCriteria: { groundSnowLoadPsf: 25 }, prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "" });
+  assert.equal(CP.exactCodeProfileRow(db, "OR", "City of Portland"), null, "a research save created a shadowing row");
   process.env.ANTHROPIC_API_KEY = "sk-ant-test-never-called";
   CP.setDesignResearchEnqueuerForTests((_d, payload) => { enqueued.push(payload); });
   try {

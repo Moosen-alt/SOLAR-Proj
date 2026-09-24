@@ -276,6 +276,16 @@ function upsert(db: AppDb, profile: JurisdictionCodeProfile, opts: { confidence:
  *  human-verified row back to seeded — re-research lands as a no-op on verified
  *  jurisdictions until an operator explicitly re-verifies. */
 export function saveResearchedCodeProfile(db: AppDb, profile: JurisdictionCodeProfile): JurisdictionCodeProfile {
+  // Never CREATE a row that would shadow the human-verified row this AHJ's reads resolve to by name
+  // (research or an import for "City of Portland" creating or|city of portland over the verified
+  // or|portland). Only the refusal: same-jurisdiction rows of other labels are left to their callers.
+  if (String(profile.ahj || "").trim()) {
+    const target = resolveCriteriaWriteRow(db, profile.state, profile.ahj);
+    if (target?.kind === "blocked_verified" && target.key !== codeProfileKey(profile)) {
+      logger.info("code-profiles", `research/import not saved — ${profile.state}/${profile.ahj} reads the human-verified ${target.key}`);
+      return getCodeProfile(db, profile)!;
+    }
+  }
   const key = codeProfileKey(profile);
   const existing = db.get<Row>("SELECT confidence, payload_json FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
   if (existing && text(existing.confidence) === "verified") {
@@ -642,7 +652,7 @@ function jurisdictionIdentity(name: string, state: string): { type: string; core
   s = s.replace(/^the\s+/, "");
   let type = "";
   const pre = s.match(/^(city|town|village|township|borough|county|parish|municipality)\s+of\s+/);
-  if (pre) { type = pre[1]; s = s.slice(pre[0].length); }
+  if (pre) { type = pre[1]; s = s.slice(pre[0].length).replace(/^the\s+/, ""); } // "City of The Dalles" = "The Dalles"
   else {
     const suf = s.match(/\s+(county|parish|township|borough)$/);
     if (suf && s.length > suf[0].length) { type = suf[1]; s = s.slice(0, -suf[0].length); }
@@ -697,7 +707,9 @@ function verifiedStateLayerNote(db: AppDb, state: string, block: CriterionBlock,
   const row = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [codeProfileKey({ state, ahj: "" })]);
   if (!row || text(row.confidence) !== "verified") return "";
   const v = blockValue(mapRow(row), block, criterion);
-  return v === null ? "" : `The state's human-verified profile sets ${criterion} = ${String(v)} for every AHJ in ${state}; a seeded local value would override it on every read. A person verifies it instead.`;
+  // A DECISION, not the layering default: an AHJ row normally overrides the state default field by
+  // field, but a SEEDED value (a correction apply, a lookup) does not override a VERIFIED state value.
+  return v === null ? "" : `The state's human-verified profile sets ${criterion} = ${String(v)} for every AHJ in ${state}; a seeded local value would override it on every read. If this AHJ differs, a person verifies the local value on its own profile.`;
 }
 
 type CriterionBlock = JurisdictionCriteriaProposal["block"];
