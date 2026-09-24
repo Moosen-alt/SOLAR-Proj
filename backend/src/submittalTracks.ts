@@ -28,6 +28,7 @@ import { findAhjProcessProfile } from "./processProfiles";
 import { recipeProfileKey } from "./portalRecipes";
 import { detectPlatform } from "./publicPermitStatus";
 import { HttpError } from "./httpError";
+import { isUtilityPlatformUrl } from "./portalChannel";
 import { nowIso } from "./time";
 import { randomUUID } from "node:crypto";
 
@@ -537,6 +538,10 @@ export function markTrackSubmitted(
   const permitNumber = (input.permitNumber || "").trim();
   const confirmationNumber = (input.confirmationNumber || "").trim();
   const trackingUrl = (input.trackingUrl || "").trim();
+  // Refused before anything is written — the same rule ensureCheckTarget enforces inside the
+  // transaction below, checked here too so the refusal is the whole answer rather than a
+  // rollback of a half-written submission.
+  refuseUtilityUrlOnPermitTarget(targetTypeFor(type), trackingUrl);
 
   db.transaction(() => {
     // If a staged run left an awaiting_human_submit submission for this track, the
@@ -708,6 +713,30 @@ export interface EnsureCheckTargetResult {
   matchedOn: "application_number" | "permit_type" | "none";
 }
 
+// RULE 5 AT THE ONE CREATOR. A permit target whose URL is a utility interconnection portal is
+// the wrong-system filing bug in waiting: the permit monitor, the correction reopen and the
+// knowledge learner all treat a permit target's URL as the AHJ's. Production row 99ea32c3 came
+// in through the add-target form; the mark-submitted door (the track card's "Public status URL")
+// wrote the same row from a building/electrical/combo track until this guard sat here, where
+// every door passes. captureConfirmation passes no URL, so it is never refused.
+//
+// THE MESSAGE NAMES A CONTROL THAT EXISTS. It used to say "add it as a NEM target (target type:
+// NEM)", and nothing on the page lets an operator pick a target type. The place a utility status
+// link belongs is the NEM track card's "Public status URL" (captureFields below), saved with
+// "Save & track".
+export const UTILITY_URL_ON_PERMIT_TARGET_MESSAGE =
+  "That URL is a utility interconnection portal, not a permit portal, so it was not saved on a permit. "
+  + `Record it on the "${TRACK_LABELS.nem}" track card instead: open "I submitted it → capture #" `
+  + `(or "Update numbers / status link"), paste it into "Public status URL" and click "Save & track". `
+  + "The permit's tracking target takes the AHJ's permit portal URL.";
+
+export function refuseUtilityUrlOnPermitTarget(targetType: "permit" | "nem", ...urls: Array<string | null | undefined>): void {
+  if (targetType === "nem") return;
+  if (urls.some((u) => isUtilityPlatformUrl((u || "").trim()))) {
+    throw new HttpError(400, UTILITY_URL_ON_PERMIT_TARGET_MESSAGE);
+  }
+}
+
 export function ensureCheckTarget(
   db: AppDb,
   project: ProjectRecord,
@@ -721,6 +750,7 @@ export function ensureCheckTarget(
   const permitNumber = (input.permitNumber || "").trim();
   const trackingUrl = (input.trackingUrl || "").trim();
   const portalUrl = (input.portalUrl || "").trim();
+  refuseUtilityUrlOnPermitTarget(targetType, portalUrl, trackingUrl);
 
   const candidates = db.query<Row>(
     "SELECT * FROM permit_check_targets WHERE project_id = ? AND active = 1 ORDER BY created_at ASC",

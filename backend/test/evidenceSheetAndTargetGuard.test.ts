@@ -197,7 +197,7 @@ await check("MUST PASS: a PowerClerk URL as a PERMIT target is refused with a 40
   } catch (e) { err = e; }
   assert.ok(err, "the utility URL was accepted as a permit target");
   assert.equal((err as { status?: number }).status, 400);
-  assert.match((err as Error).message, /NEM\/interconnection target/);
+  assert.match((err as Error).message, /Public status URL/);
   assert.equal(targets().length, before, "a row was written");
   assert.equal(Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM permit_utility_knowledge")?.n ?? 0), knowledgeBefore, "the refused URL was learned");
 });

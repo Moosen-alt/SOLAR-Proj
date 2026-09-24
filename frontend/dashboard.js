@@ -6778,19 +6778,27 @@ async function addCorrection() {
   await loadProjects();
 }
 
+// A REFUSAL MUST BE SEEN. The server refuses a utility interconnection URL on a permit target
+// (rule 5) with a 400 that says where the link belongs; without this catch the rejection was
+// unhandled and clicking Track did nothing visible — an operator read "nothing happened".
 async function addPermitTarget() {
   if (!state.selectedProjectId) return;
-  state.detail = await api(`/api/projects/${state.selectedProjectId}/permit-targets`, {
-    method: "POST",
-    body: JSON.stringify({
-      jurisdiction: $("permitJurisdiction").value,
-      portalName: $("permitPortalName").value,
-      portalUrl: $("permitPortalUrl").value,
-      applicationNumber: $("permitApplicationNumber").value,
-      permitNumber: $("permitTrackingNumber").value,
-      checkFrequencyDays: Number($("permitCheckFrequencyDays").value || 7),
-    }),
-  });
+  try {
+    state.detail = await api(`/api/projects/${state.selectedProjectId}/permit-targets`, {
+      method: "POST",
+      body: JSON.stringify({
+        jurisdiction: $("permitJurisdiction").value,
+        portalName: $("permitPortalName").value,
+        portalUrl: $("permitPortalUrl").value,
+        applicationNumber: $("permitApplicationNumber").value,
+        permitNumber: $("permitTrackingNumber").value,
+        checkFrequencyDays: Number($("permitCheckFrequencyDays").value || 7),
+      }),
+    });
+  } catch (err) {
+    showMessage(err.message || "Could not save the tracking target.", "error");
+    return;
+  }
   state.workflow = null;
   state.historicalReport = null;
   await loadOpsPlan();

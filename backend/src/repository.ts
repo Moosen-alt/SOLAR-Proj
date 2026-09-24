@@ -90,7 +90,7 @@ import { isPortalPaused } from "./portalPause";
 // The ONE creator of permit_check_targets rows (extracted from markTrackSubmitted).
 // Direction matters: submittalTracks must never import repository — jobQueue statically
 // imports repository, and the circular-import guard in CLAUDE.md is about that edge.
-import { ensureCheckTarget, getSubmittalTracks, isTrackDone, requiredTracks, SUBMITTAL_TRACK_TYPES, trackPermitTypes, unfinishedTracks, unfinishedUnattributedTargets } from "./submittalTracks";
+import { ensureCheckTarget, refuseUtilityUrlOnPermitTarget, getSubmittalTracks, isTrackDone, requiredTracks, SUBMITTAL_TRACK_TYPES, trackPermitTypes, unfinishedTracks, unfinishedUnattributedTargets } from "./submittalTracks";
 import { recordTimelineSample, trackForTarget } from "./timelineSamples";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
@@ -5647,12 +5647,9 @@ export function createPermitCheckTarget(
   // its path is still accepted). Refused BEFORE the transaction so neither the row nor the
   // learned portal is recorded. The reverse (an AHJ portal given as a NEM target) is not
   // guarded: no predicate here recognises an AHJ permit portal by host.
-  if (targetType === "permit" && isUtilityPlatformUrl(input.portalUrl)) {
-    throw new HttpError(
-      400,
-      "That portal URL is a utility interconnection portal, not a permit portal. Add it as the NEM/interconnection target instead (target type: NEM), and give this permit target the AHJ's permit portal URL.",
-    );
-  }
+  // ONE rule, one message: ensureCheckTarget (every door's creator) enforces the same check;
+  // this early call only keeps the refusal ahead of the transaction.
+  refuseUtilityUrlOnPermitTarget(targetType, input.portalUrl);
   db.transaction(() => {
     // THROUGH THE ONE CREATOR (submittalTracks.ts). This used to be its own unconditional
     // INSERT, so adding the same filing twice — which is what an operator does after a page
