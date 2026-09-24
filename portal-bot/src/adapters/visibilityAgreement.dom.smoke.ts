@@ -1,23 +1,25 @@
-// TWO VISIBILITY CHECKS THAT MUST AGREE, AND MIGHT NOT.
+// TWO VISIBILITY CHECKS THAT MUST AGREE — NOW MEASURED ON THE BOT'S OWN CODE.
 //
-// PGE's inverter Model step failed identically after three separate fixes, and the
-// diagnostic line never moved: `resolved <input id="pcInputBase34" label="Model"
-// visible=false>`. An identical signature after three different fixes does not mean the
-// fixes missed — it means they were never on the executed path.
+// PGE's inverter Model step failed identically after three separate fixes, and the diagnostic
+// line never moved: `resolved <input id="pcInputBase34" label="Model" visible=false>`. The
+// level-acceptance test asked Playwright isVisible() while the diagnostic computed visibility
+// itself, and Playwright calls a 1x1 or opacity:0 control VISIBLE — so three rescues shipped into
+// a branch that never ran.
 //
-// The suspect is a disagreement inside our own code. The level-acceptance test in
-// resolveLocator asks Playwright `isVisible()`. The diagnostic that prints `visible=false`
-// computes visibility itself, from getBoundingClientRect and computed style. If Playwright
-// calls a 1x1 or opacity:0 combobox VISIBLE while our diagnostic calls it hidden, then
-// `usable` passes, level 0 is accepted, and every rescue built downstream — the enabled
-// check, the no-fallback fall-through, the unpinned ordinal twin — is dead code for that
-// step. Three fixes shipped into a branch that never ran.
-//
-// This settles it without touching a portal: drive both answers over the shapes a portal
-// actually uses to conceal a control, and print them side by side.
+// This file used to prove that divergence against its OWN inline copy of the diagnostic, so it
+// passed with the bot code deleted. It now drives the real code:
+//   - portal-bot/src/visibility.ts          — the one shared predicate (visible / usable / via);
+//   - RecipeAdapter.isTrulyVisible           — replay's gate, until replay adopts visibility.ts;
+//   - autoLearnAdapter.hasVisibleWidgetFaceInPage — the learn side's widget-face rule.
+// and asserts they agree, except on a DECLARED drift list. A declared drift that stops diverging
+// fails too, so the list is emptied the day replay adopts the shared predicate instead of rotting.
 //   npx tsx portal-bot/src/adapters/visibilityAgreement.dom.smoke.ts
 import http from "node:http";
 import { chromium } from "playwright";
+import type { PortalRecipe } from "../../../shared/src/types";
+import { visibilityOf } from "../visibility";
+import { RecipeAdapter } from "./recipeAdapter";
+import { hasVisibleWidgetFaceInPage } from "./autoLearnAdapter";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -40,7 +42,20 @@ const PAGE = `<!doctype html><html><head><style>
   <label for="clipped">Model</label><input id="clipped" class="clipped" />
   <label for="hiddenVis">Model</label><input id="hiddenVis" style="visibility:hidden" />
   <label for="displayNone">Model</label><input id="displayNone" style="display:none" />
+  <div style="opacity:0"><label for="parentOpacity">Model</label><input id="parentOpacity" /></div>
+  <div class="t-widget t-dropdown"><div class="t-dropdown-wrap"><span class="t-input">STAND-ALONE</span></div><input id="widgetBacking" style="display:none"></div>
+  <div class="dropdown"><input id="deadWidget" style="display:none"></div>
 </body></html>`;
+
+const IDS = ["normal", "zeroOpacity", "tiny", "offscreen", "clipped", "hiddenVis", "displayNone", "parentOpacity"];
+
+/** Where replay's private isTrulyVisible still differs from the shared predicate, and why. Each
+ *  entry must STILL differ — remove it when recipeAdapter adopts visibility.ts. */
+const DECLARED_REPLAY_DRIFT: Record<string, string> = {
+  offscreen: "replay's box test never looks at position, so a left:-9999px input reads as visible",
+  parentOpacity: "replay reads only the element's own opacity, not an ancestor's",
+  clipped: "replay ignores clip-path, and a 1px input's padding+border make its box > 2px",
+};
 
 const server = http.createServer((_q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(PAGE); });
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
@@ -52,50 +67,64 @@ await context.addInitScript("globalThis.__name = globalThis.__name || function (
 const page = await context.newPage();
 await page.goto(`http://127.0.0.1:${port}/`);
 
-const IDS = ["normal", "zeroOpacity", "tiny", "offscreen", "clipped", "hiddenVis", "displayNone"];
-const rows: Array<{ id: string; pw: boolean; ours: boolean }> = [];
+const recipe = { id: "va", scopeType: "ahj", profileKey: "x|y|z", state: "OR", ahj: "X", utility: "", portalPlatform: "",
+  portalUrl: "", status: "complete", version: 1, steps: [], createdBy: "t", createdAt: "", updatedAt: "", notes: "" } as unknown as PortalRecipe;
+const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: false });
+(adapter as unknown as { page: unknown }).page = page;
+const replayVisible = (sel: string): Promise<boolean> =>
+  (adapter as unknown as { isTrulyVisible(l: unknown): Promise<boolean> }).isTrulyVisible(page.locator(sel));
+
+const rows: Array<{ id: string; pw: boolean; shared: boolean; replay: boolean }> = [];
 for (const id of IDS) {
   const pw = await page.locator(`#${id}`).isVisible().catch(() => false);
-  // The diagnostic's own notion, as describeResolved computes it.
-  const ours = await page.evaluate((sel: string) => {
-    const el = document.querySelector(sel) as HTMLElement | null;
-    if (!el) return false;
-    const r = el.getBoundingClientRect();
-    const cs = getComputedStyle(el);
-    return r.width > 2 && r.height > 2 && cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) !== 0;
-  }, `#${id}`);
-  rows.push({ id, pw, ours });
+  const shared = (await visibilityOf(page.locator(`#${id}`))).visible;
+  const replay = await replayVisible(`#${id}`);
+  rows.push({ id, pw, shared, replay });
 }
 
-console.log("\n   control          playwright   ourDiagnostic   agree");
+console.log("\n   control          playwright   shared   replay   ");
 for (const r of rows) {
-  console.log(`   ${r.id.padEnd(16)} ${String(r.pw).padEnd(12)} ${String(r.ours).padEnd(15)} ${r.pw === r.ours ? "yes" : "NO  <-- divergence"}`);
+  console.log(`   ${r.id.padEnd(16)} ${String(r.pw).padEnd(12)} ${String(r.shared).padEnd(8)} ${String(r.replay).padEnd(8)}` +
+    `${r.shared !== r.replay ? ` <- replay drift${DECLARED_REPLAY_DRIFT[r.id] ? " (declared)" : " (UNDECLARED)"}` : ""}`);
 }
 
-// ---------------------------------------------------------------------------
-// What matters is not which is "right" — it is that ONE of them gates the action
-// while the OTHER writes the diagnostic a human reads.
-// ---------------------------------------------------------------------------
-const diverging = rows.filter((r) => r.pw !== r.ours);
-check("a normally rendered control is visible by both measures",
-  rows[0].pw && rows[0].ours, JSON.stringify(rows[0]));
+check("a normally rendered control is visible by every measure",
+  rows[0].pw && rows[0].shared && rows[0].replay, JSON.stringify(rows[0]));
 
-// THE DIVERGENCE IS REAL AND IS THE POINT — Playwright counts an opacity:0 and a 1x1 control
-// as visible, and both are how a portal hides a native input behind a styled widget. This
-// asserts the divergence still EXISTS, so that nobody "fixes" it by quietly switching the
-// acceptance test back to Playwright's answer and re-breaking three rescues at once.
-check("Playwright and a human disagree about opacity:0 and 1x1 — that is why the gate is ours",
-  diverging.length === 2 && diverging.every((d) => ["zeroOpacity", "tiny"].includes(d.id)),
-  `expected exactly zeroOpacity and tiny to diverge, got ${JSON.stringify(diverging.map((d) => d.id))}`);
+// THE DIVERGENCE FROM PLAYWRIGHT IS REAL AND IS THE POINT: it counts opacity:0 and 1x1 controls as
+// visible, and both are how a portal hides a native input behind a styled widget. Asserted so that
+// nobody "fixes" it by switching a gate back to Playwright's answer.
+const pwDiverging = rows.filter((r) => r.pw !== r.shared).map((r) => r.id).sort();
+check("Playwright disagrees with the shared predicate on opacity 0, 1x1, off-screen, clipped and ancestor opacity",
+  JSON.stringify(pwDiverging) === JSON.stringify(["clipped", "offscreen", "parentOpacity", "tiny", "zeroOpacity"]),
+  `diverging: ${JSON.stringify(pwDiverging)}`);
 
-check("...and the shapes a portal uses to conceal a control read as HIDDEN by our measure",
-  rows.filter((r) => ["zeroOpacity", "tiny", "hiddenVis", "displayNone"].includes(r.id)).every((r) => !r.ours),
-  JSON.stringify(rows.filter((r) => r.ours)));
+check("the shapes a portal uses to conceal a control read as HIDDEN by the shared predicate",
+  rows.filter((r) => r.id !== "normal").every((r) => !r.shared), JSON.stringify(rows.filter((r) => r.shared)));
+
+const undeclared = rows.filter((r) => r.shared !== r.replay && !DECLARED_REPLAY_DRIFT[r.id]).map((r) => r.id);
+check("replay's gate agrees with the shared predicate everywhere except the declared drift",
+  undeclared.length === 0, `undeclared drift: ${JSON.stringify(undeclared)}`);
+const healed = Object.keys(DECLARED_REPLAY_DRIFT).filter((id) => {
+  const r = rows.find((x) => x.id === id);
+  return !r || r.shared === r.replay;
+});
+check("every declared drift still diverges (empty the list when replay adopts visibility.ts)",
+  healed.length === 0, `no longer diverging — remove from DECLARED_REPLAY_DRIFT: ${JSON.stringify(healed)}`);
+
+// The widget-face rule: the learn side's answer and the shared predicate's `via` must agree.
+for (const id of ["widgetBacking", "deadWidget", "normal"]) {
+  const learn = await page.locator(`#${id}`).evaluate(hasVisibleWidgetFaceInPage);
+  const v = await visibilityOf(page.locator(`#${id}`));
+  const sharedFace = v.via === "widget-face";
+  check(`widget face "${id}": learn-side hasVisibleWidgetFaceInPage (${learn}) == shared via=widget-face (${sharedFace})`,
+    id === "normal" ? !sharedFace : learn === sharedFace, JSON.stringify(v));
+}
 
 await browser.close();
 server.close();
 if (failures) {
-  console.error(`\n${failures} visibility-agreement check(s) FAILED — see the divergence above.`);
+  console.error(`\n${failures} visibility-agreement check(s) FAILED — see the table above.`);
   process.exit(1);
 }
 console.log("\nAll visibility-agreement checks passed.");
