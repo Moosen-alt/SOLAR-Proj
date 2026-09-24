@@ -699,7 +699,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       // PowerClerk renders is a fourth shape, and the only way to add it is to have it.
       if (!fields.length) {
         try {
-          const dir = this.pageShotDir || path.join(process.cwd(), "data", "replay-review-misses");
+          const dir = this.pageShotDir || path.join(process.env.REPLAY_CAPTURE_DIR || path.join(process.cwd(), "data"), "replay-review-misses");
           fs.mkdirSync(dir, { recursive: true });
           const stamp = String(Date.now());
           const html = await this.page.content();
@@ -3052,7 +3052,7 @@ ${body.slice(0, 4000)}`);
           // live run every time. Capturing here makes the equipment page readable offline the
           // way the failure captures already made Accela's readable.
           try {
-            const dir = this.pageShotDir || path.join(process.cwd(), "data", "replay-failures");
+            const dir = this.pageShotDir || path.join(process.env.REPLAY_CAPTURE_DIR || path.join(process.cwd(), "data"), "replay-failures");
             fs.mkdirSync(dir, { recursive: true });
             const safe = String(step.note ?? step.field ?? "select").replace(/[^a-z0-9]+/gi, "-").slice(0, 40);
             fs.writeFileSync(path.join(dir, `miss-${safe}-${String(Date.now())}.html`), await this.page.content());
@@ -5356,7 +5356,7 @@ ${body.slice(0, 4000)}`);
     // from a screenshot never. The HTML costs nothing to keep and turns the next portal
     // puzzle from a sequence of live runs into a file someone reads once.
     try {
-      const dir = this.pageShotDir || path.join(process.cwd(), "data", "replay-failures");
+      const dir = this.pageShotDir || path.join(process.env.REPLAY_CAPTURE_DIR || path.join(process.cwd(), "data"), "replay-failures");
       fs.mkdirSync(dir, { recursive: true });
       const safe = String(step.note ?? step.action).replace(/[^a-z0-9]+/gi, "-").slice(0, 40);
       fs.writeFileSync(

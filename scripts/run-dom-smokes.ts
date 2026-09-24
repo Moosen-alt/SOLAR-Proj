@@ -30,12 +30,76 @@
 //   UNCLASSIFIED IS A FAILURE, NOT A SHRUG. A discovered smoke that fits no bucket is never run
 //   (it might be a live/credentialed one) and makes the suite exit non-zero until a human sorts
 //   it. Silently skipping the unknown is the bug this file exists to prevent.
+//
+//   TESTS NEVER WRITE INTO THE PRODUCTION ARTIFACT FOLDERS. One DOM run used to add ~139 files
+//   under data/ — 655 of 655 review-miss captures and 117 of 137 replay-failure captures were
+//   test output, buildReplicas turned test learn-runs into replica "portals", and the learn-run
+//   pruner (keep newest 20) EVICTED real production bundles to make room for fixtures. So every
+//   child gets AUTOLEARN_RUN_DIR / REPLAY_RUN_DIR / REPLAY_CAPTURE_DIR / PORTAL_SCREENSHOT_DIR /
+//   POWERCLERK_DEBUG_DIR pointed at a per-run temp folder, and the runner SNAPSHOTS data/ before
+//   and after: any path added or removed there turns the run red and is listed by name. The
+//   snapshot, not a grep for the env var, is the evidence — a writer nobody knew about still
+//   shows up as a new path.
+//
+//   A SMOKE MAY SAY IT DID NOT RUN. A smoke whose inputs are absent (the replica smoke without
+//   its bundles) prints `SMOKE SKIPPED - <reason>` and exits SKIP_EXIT_CODE. That is counted in
+//   its own column of the denominator — never as a pass, which is what exit 0 used to make it.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/** The exit code (with a `SMOKE SKIPPED - ` line) a smoke uses to say "my inputs are absent,
+ *  I asserted nothing". Anything else non-zero is a failure. */
+const SKIP_EXIT_CODE = 3;
+const SKIP_LINE = /^\s*SMOKE SKIPPED\s+-\s/;
+
+// ---------------------------------------------------------------------------------------------
+// Artifact isolation
+// ---------------------------------------------------------------------------------------------
+
+/** Every env var portal-bot reads to decide where a run's artifacts land. Each defaults to a
+ *  folder under <cwd>/data when unset, which is exactly the production forensics store. */
+const ARTIFACT_ENV_VARS = [
+  "AUTOLEARN_RUN_DIR",
+  "REPLAY_RUN_DIR",
+  "REPLAY_CAPTURE_DIR",
+  "PORTAL_SCREENSHOT_DIR",
+  "POWERCLERK_DEBUG_DIR",
+] as const;
+
+/** The env block for one child: each artifact var -> its own sub-folder of `root`. */
+const artifactEnvFor = (root: string): Record<(typeof ARTIFACT_ENV_VARS)[number], string> => ({
+  AUTOLEARN_RUN_DIR: path.join(root, "learn-runs"),
+  REPLAY_RUN_DIR: path.join(root, "replay-runs"),
+  REPLAY_CAPTURE_DIR: path.join(root, "replay-captures"),
+  PORTAL_SCREENSHOT_DIR: path.join(root, "screenshots"),
+  POWERCLERK_DEBUG_DIR: path.join(root, "portal-debug"),
+});
+
+/** Every file path under `dir`, relative to REPO_ROOT (empty when the folder is absent). */
+const snapshotFiles = (dir: string): Set<string> => {
+  const out = new Set<string>();
+  const walk = (d: string): void => {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) walk(full);
+      else out.add(path.relative(REPO_ROOT, full).split(path.sep).join("/"));
+    }
+  };
+  walk(dir);
+  return out;
+};
+
+const diffSnapshots = (before: Set<string>, after: Set<string>): { added: string[]; removed: string[] } => ({
+  added: [...after].filter((p) => !before.has(p)).sort(),
+  removed: [...before].filter((p) => !after.has(p)).sort(),
+});
 
 // ---------------------------------------------------------------------------------------------
 // Classification
@@ -121,6 +185,11 @@ const CONCURRENCY = Math.max(1, Number(argValue("concurrency") ?? 3));
 // replica.dom.smoke once sat for FIFTY MINUTES. Raise it, don't lower it.
 const TIMEOUT_MS = Math.max(1, Number(argValue("timeout") ?? 600)) * 1000;
 const LOG_DIR = path.join(REPO_ROOT, ".dom-smoke-logs");
+/** The production artifact store the snapshot guards. */
+const DATA_DIR = path.join(REPO_ROOT, "data");
+/** Where this run's artifacts go instead. Kept after the run (it is in the OS temp dir) so a
+ *  failing smoke's capture can still be read; its path is printed in the summary. */
+const ARTIFACT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "dom-smoke-artifacts-"));
 
 // ---------------------------------------------------------------------------------------------
 // Running one smoke
@@ -141,7 +210,7 @@ const killTree = (pid: number): void => {
   }
 };
 
-type Outcome = "pass" | "fail" | "timeout" | "disagreement";
+type Outcome = "pass" | "fail" | "timeout" | "disagreement" | "selfSkipped";
 
 interface Result {
   rel: string;
@@ -151,6 +220,8 @@ interface Result {
   failLines: string[];
   tail: string[];
   logPath: string;
+  /** Present only at concurrency 1, where a change under data/ can be pinned on one smoke. */
+  dataWrites?: { added: string[]; removed: string[] };
 }
 
 // The per-check failure marker the whole suite shares: `  FAIL - <label>` followed by an
@@ -159,13 +230,18 @@ interface Result {
 // label ("ok   - ... FAILED TO FIND."), and a loose /FAIL/ would read those as reds.
 const FAIL_LINE = /^\s*FAIL\s+-\s/;
 
-const runOne = (rel: string): Promise<Result> =>
+const runOne = (rel: string, attribute: boolean): Promise<Result> =>
   new Promise((resolve) => {
     const started = Date.now();
+    const dataBefore = attribute ? snapshotFiles(DATA_DIR) : null;
+    const artifactDir = path.join(ARTIFACT_ROOT, rel.replace(/[\\/]/g, "__").replace(/\.ts$/, ""));
     const child = spawn(process.execPath, [TSX_CLI, path.join(REPO_ROOT, rel)], {
       cwd: REPO_ROOT,
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
+      // Artifact vars are set UNCONDITIONALLY, overriding the parent's: a developer shell that
+      // exported AUTOLEARN_RUN_DIR=data/learn-runs must not route this suite into production.
+      env: { ...process.env, ...artifactEnvFor(artifactDir) },
     });
 
     let out = "";
@@ -190,17 +266,22 @@ const runOne = (rel: string): Promise<Result> =>
       const seconds = (Date.now() - started) / 1000;
 
       let outcome: Outcome;
+      const skipLine = lines.some((l) => SKIP_LINE.test(l));
       if (timedOut) outcome = "timeout";
+      // A self-reported skip needs BOTH signals: the exit code alone could be any crash that
+      // happened to exit 3, and the line alone could be printed by a smoke that then asserted.
+      else if (code === SKIP_EXIT_CODE && skipLine && failLines.length === 0) outcome = "selfSkipped";
       else if (code !== 0) outcome = "fail";
       // EXIT 0 WITH REDS IN THE LOG IS ITS OWN CATEGORY. A chain in this project once crashed
       // with a SqliteError and still reported exit 0; a smoke that prints `FAIL - ` and exits
       // clean is the same lie one level down, and it needs a different repair (fix the smoke's
       // exit path) than an honest red. Only `FAIL - ` lines and the replica runner's explicit
       // error banner are trusted here — see FAIL_LINE on why a loose match is wrong.
-      else if (failLines.length > 0 || /\bSMOKE ERROR\b/.test(out)) outcome = "disagreement";
+      else if (failLines.length > 0 || /\bSMOKE ERROR\b/.test(out) || skipLine) outcome = "disagreement";
       else outcome = "pass";
 
-      resolve({ rel, outcome, code, seconds, failLines, tail, logPath });
+      const dataWrites = dataBefore ? diffSnapshots(dataBefore, snapshotFiles(DATA_DIR)) : undefined;
+      resolve({ rel, outcome, code, seconds, failLines, tail, logPath, ...(dataWrites ? { dataWrites } : {}) });
     });
   });
 
@@ -232,6 +313,10 @@ if (only.length && selected.length === 0) {
 }
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
+// Per-smoke attribution of a data/ write is only honest when one smoke runs at a time; under
+// concurrency the global before/after diff below is still exact, just not attributable.
+const ATTRIBUTE_DATA_WRITES = CONCURRENCY === 1;
+const dataBeforeRun = snapshotFiles(DATA_DIR);
 
 console.log(`discovered ${discovered.length} *.smoke.ts | ${runnable.length} DOM | running ${selected.length}` +
   ` at concurrency ${CONCURRENCY}, ${TIMEOUT_MS / 1000}s each`);
@@ -247,10 +332,10 @@ const worker = async (): Promise<void> => {
     const i = cursor++;
     if (i >= selected.length) return;
     const rel = selected[i];
-    const res = await runOne(rel);
+    const res = await runOne(rel, ATTRIBUTE_DATA_WRITES);
     results.push(res);
     done++;
-    const tag = { pass: "ok        ", fail: "FAIL      ", timeout: "TIMEOUT   ", disagreement: "EXIT-LIED " }[res.outcome];
+    const tag = { pass: "ok        ", fail: "FAIL      ", timeout: "TIMEOUT   ", disagreement: "EXIT-LIED ", selfSkipped: "SKIPPED   " }[res.outcome];
     console.log(`${String(done).padStart(3)}/${selected.length} ${tag} ${path.basename(rel)} (${res.seconds.toFixed(0)}s)`);
   }
 };
@@ -263,6 +348,9 @@ const passed = by("pass");
 const failed = by("fail");
 const timeouts = by("timeout");
 const lied = by("disagreement");
+const selfSkipped = by("selfSkipped");
+const dataWrites = diffSnapshots(dataBeforeRun, snapshotFiles(DATA_DIR));
+const dataDirty = dataWrites.added.length + dataWrites.removed.length > 0;
 
 const rule = "=".repeat(94);
 console.log(`\n${rule}\nDOM SMOKE SUMMARY\n${rule}`);
@@ -272,7 +360,8 @@ console.log(`\n${rule}\nDOM SMOKE SUMMARY\n${rule}`);
 // set that never ran.
 console.log(
   `${discovered.length} smoke files discovered = ${passed.length} passed + ${failed.length} failed + ` +
-  `${timeouts.length} timed out + ${lied.length} exit-code-lied + ${skipped.length} skipped (not DOM)` +
+  `${timeouts.length} timed out + ${lied.length} exit-code-lied + ` +
+  `${selfSkipped.length} self-skipped (asserted nothing) + ${skipped.length} skipped (not DOM)` +
   `${filteredOut ? ` + ${filteredOut} filtered out by --only` : ""}` +
   `${unclassified.length ? ` + ${unclassified.length} UNCLASSIFIED` : ""}`,
 );
@@ -298,6 +387,38 @@ report("FAILED", failed, "red checks — the smoke ran and disagreed with the co
 report("TIMED OUT", timeouts, `killed at ${TIMEOUT_MS / 1000}s — a hang, not a red check. Different repair: find what never resolved`);
 report("EXIT CODE LIED", lied, "printed failures and STILL exited 0 — the smoke's own exit path is broken, fix that first");
 
+if (selfSkipped.length) {
+  console.log(`\nSELF-SKIPPED — ran, found its inputs absent, and ASSERTED NOTHING (${selfSkipped.length})\n${"-".repeat(94)}`);
+  console.log("  Not a pass. Each of these is a guard that did not guard anything this run.");
+  for (const r of selfSkipped) {
+    const why = r.tail.find((l) => SKIP_LINE.test(l)) ?? "(no reason line in the tail)";
+    console.log(`  ${r.rel}\n      ${why.trim()}`);
+  }
+}
+
+// THE PRODUCTION ARTIFACT STORE MUST BE UNTOUCHED, BY PATH. Additions are test litter that later
+// reads as production failures; REMOVALS are worse — that is the learn-run pruner evicting a real
+// portal's forensics to make room for a fixture.
+console.log(`\nARTIFACTS: this run's smoke artifacts are under ${ARTIFACT_ROOT}`);
+if (dataDirty) {
+  console.log(`\nDATA/ CHANGED DURING THE RUN — ${dataWrites.added.length} added, ${dataWrites.removed.length} removed\n${"-".repeat(94)}`);
+  console.log("  A smoke (or the bot code it drives) wrote to or pruned the production artifact store.");
+  console.log("  Route that writer through an artifact env var (see ARTIFACT_ENV_VARS).");
+  for (const p of dataWrites.added.slice(0, 40)) console.log(`    + ${p}`);
+  if (dataWrites.added.length > 40) console.log(`    ... and ${dataWrites.added.length - 40} more added`);
+  for (const p of dataWrites.removed.slice(0, 40)) console.log(`    - ${p}`);
+  if (dataWrites.removed.length > 40) console.log(`    ... and ${dataWrites.removed.length - 40} more removed`);
+  const culprits = results.filter((r) => r.dataWrites && r.dataWrites.added.length + r.dataWrites.removed.length > 0);
+  if (culprits.length) {
+    console.log("  attributed (concurrency 1):");
+    for (const r of culprits) console.log(`    ${r.rel}: +${r.dataWrites!.added.length} -${r.dataWrites!.removed.length}`);
+  } else if (!ATTRIBUTE_DATA_WRITES) {
+    console.log("  re-run with --concurrency 1 to attribute each change to one smoke.");
+  }
+} else {
+  console.log(`data/ unchanged: ${dataBeforeRun.size} file(s) before and after, 0 added, 0 removed.`);
+}
+
 if (skipped.length) {
   console.log(`\nSKIPPED — discovered but deliberately not part of this suite (${skipped.length})\n${"-".repeat(94)}`);
   for (const s of skipped) console.log(`  ${s.rel}\n      ${s.reason}`);
@@ -312,6 +433,6 @@ if (unclassified.length) {
 
 if (filteredOut) console.log(`\nNOT RUN THIS PASS: ${filteredOut} DOM smoke(s) excluded by --only ${JSON.stringify(only.join(","))}.`);
 
-const bad = failed.length + timeouts.length + lied.length + unclassified.length;
+const bad = failed.length + timeouts.length + lied.length + unclassified.length + (dataDirty ? 1 : 0);
 console.log(`\n${bad === 0 ? "GREEN" : `RED — ${bad} problem(s)`}`);
 process.exit(bad === 0 ? 0 : 1);
