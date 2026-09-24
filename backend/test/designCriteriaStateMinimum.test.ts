@@ -197,8 +197,10 @@ await check("MUST-PASS (r3f): label-first lists keep their own values — Pg 25 
   }
 });
 await check("MUST-PASS (r3f): an AMBIGUOUS run keeps both readings, so a low value never stands alone — the conflict shows", () => {
-  // One value left over either way: "36 PSF GROUND SNOW 25 PSF" then a label this reader does not know.
-  const text = "DESIGN LOADS 36 PSF GROUND SNOW 25 PSF ROOF LIVE";
+  // One value left over either way: a heading, then "36 PSF GROUND SNOW 25 PSF" and nothing after.
+  // (The r3f fixture ended in "ROOF LIVE", a label this reader did not know then; snow-inv made it a
+  // label, so that run is now V L V L — value-first, Pg 36 — asserted in the snow-inv block below.)
+  const text = "DESIGN LOADS 36 PSF GROUND SNOW 25 PSF";
   assert.deepEqual(snowRead(text), [25, 36]);
   const fs = run(project("City of Salem", PRESCRIPTIVE), orCtx("City of Salem"), text);
   assert.ok(fs.find((f) => f.id === "city.struct.design-criteria-conflict"), "the two readings must show as a conflict");
@@ -211,14 +213,13 @@ await check("MUST-PASS (r3f): an AMBIGUOUS run keeps both readings, so a low val
 const { statedGroundSnowReading } = await import("../src/designCriteria");
 const AMBIGUOUS = "DESIGN LOADS 36 PSF GROUND SNOW 25 PSF"; // a heading, then V L V: one value left over either way
 await check("MUST-PASS (snow-inv): an ambiguous Pg is never a minimum BLOCKER — a WARNING naming both readings", () => {
-  const r = statedGroundSnowReading(project("City of Salem"), [{ label: "Plan set", text: AMBIGUOUS }]);
-  assert.equal(r.status, "ambiguous");
   const f = minimum(run(project("City of Salem", PRESCRIPTIVE), orCtx("City of Salem"), AMBIGUOUS));
   assert.ok(f, "the low reading is still surfaced");
   assert.equal(f!.severity, "warning", f!.message);
   assert.match(f!.message, /25 psf in Plan set/);
   assert.match(f!.message, /36 psf in Plan set/);
   assert.match(f!.message, /reads more than one way/);
+  assert.equal(statedGroundSnowReading(project("City of Salem"), [{ label: "Plan set", text: AMBIGUOUS }]).status, "ambiguous");
 });
 await check("MUST-PASS (snow-inv): the below-AHJ snow line asks the same predicate — ambiguous Pg under a verified 36 psf AHJ value is a WARNING", () => {
   const ctx = orCtx("City of Salem", { designCriteria: { groundSnowLoadPsf: 36 } });
@@ -250,6 +251,81 @@ await check("MUST-PASS (snow-inv): two documents that disagree only through an u
   assert.equal(two.find((f) => f.id === "city.struct.design-criteria-conflict")?.severity, "blocker");
   assert.equal(minimum(two)?.severity, "warning");
   assert.match(minimum(two)!.message, /16 psf in Plan set; 36 psf in Engineer letter/);
+});
+
+// snow-inv item 2 (the r3f skeptic's must-fix): label-first is the default again; value-first needs
+// POSITIVE evidence (a run that opens with a value and closes with a label, V L V L); a trailing label
+// with no value never makes a label-first run ambiguous. At 2dc7527 each MUST-PASS text below gave a
+// conflict warning AND a below-the-minimum BLOCKER naming the low value.
+const verified36 = (text: string) => {
+  const fs = run(project("City of Salem", PRESCRIPTIVE), orCtx("City of Salem"), text);
+  return { min: minimum(fs), conflict: fs.find((f) => f.id === "city.struct.design-criteria-conflict") };
+};
+await check("MUST-PASS (snow-inv): label-first runs with a short or trailing label read Pg 36 only — no minimum finding, no conflict", () => {
+  const cases: Array<[string, number[]]> = [
+    ["ROOF DL 3 PSF GROUND SNOW LOAD 36 PSF", []],
+    ["LL = 20 PSF GROUND SNOW LOAD 36 PSF", []],
+    ["DL 10 PSF GROUND SNOW LOAD 36 PSF WIND SPEED 110 MPH", []],
+    ["ROOF LIVE 20 PSF GROUND SNOW LOAD 36 PSF", []],
+    ["RACKING 3 PSF GROUND SNOW LOAD 36 PSF", []],
+    ["COLLATERAL 5 PSF GROUND SNOW LOAD 36 PSF", []],
+    ["PV MODULES 2.5 PSF GROUND SNOW 36 PSF", []],
+    ["EXISTING ROOF 10 PSF GROUND SNOW LOAD 36 PSF", []],
+    ["ROOF DEAD LOAD 3 PSF GROUND SNOW LOAD 36 PSF ROOF LIVE LOAD", []],
+    ["ROOF DEAD LOAD 3 PSF GROUND SNOW LOAD 36 PSF WIND LOAD PER ASCE 7-16", []],
+    ["ROOF DEAD LOAD 15 PSF ROOF LIVE LOAD 20 PSF GROUND SNOW LOAD 36 PSF DEAD LOAD", []],
+    ["ROOF SNOW LOAD 25 PSF GROUND SNOW LOAD 36 PSF PV WEIGHT", [25]],
+    ["DEAD LOAD 3 PSF GROUND SNOW LOAD 36 PSF, ROOF SNOW LOAD 25 PSF, LIVE LOAD", [25]],
+    ["GROUND SNOW LOAD 36 PSF ROOF SNOW LOAD 25 PSF DEAD LOAD", [25]],
+  ];
+  for (const [text, roof] of cases) {
+    assert.deepEqual(snowRead(text), [36], `Pg read from: ${text}`);
+    if (roof.length) assert.deepEqual(roofRead(text), roof, `roof snow read from: ${text}`);
+    const { min, conflict } = verified36(text);
+    assert.equal(min, undefined, `minimum finding on a correct 36 psf plan (${text}): ${min?.message}`);
+    assert.equal(conflict, undefined, `conflict on: ${text}`);
+  }
+});
+await check("MUST-PASS (snow-inv): Coos Bay 16 psf with a trailing unvalued label is the BLOCKER naming 16, not 3", () => {
+  const text = "ROOF DEAD LOAD 3 PSF GROUND SNOW LOAD 16 PSF ROOF LIVE LOAD";
+  assert.deepEqual(snowRead(text), [16]);
+  const f = minimum(run(project("City of Coos Bay", PRESCRIPTIVE), orCtx("City of Coos Bay"), text));
+  assert.ok(f && f.severity === "blocker", `${f?.severity}: ${f?.message}`);
+  assert.match(f!.message, /stated 16 psf/);
+  assert.doesNotMatch(f!.message, /\b3 psf/);
+});
+await check("MUST-PASS (snow-inv): value-first under a heading reads Pg 36 — 'SNOW LOADS:' is a heading, not a label; a known trailing label settles the run", () => {
+  for (const text of [
+    "SNOW LOADS: 36 PSF GROUND SNOW 25 PSF ROOF SNOW",
+    "DESIGN LOADS 36 PSF GROUND SNOW 25 PSF ROOF LIVE",
+    "36 PSF: GROUND SNOW LOAD 25 PSF: ROOF SNOW LOAD",
+    "36 PSF Pg 25 PSF ROOF SNOW LOAD 10 PSF DEAD LOAD",
+    "110 MPH WIND SPEED 36 PSF GROUND SNOW 25 PSF ROOF SNOW",
+  ]) {
+    assert.deepEqual(snowRead(text), [36], `Pg read from: ${text}`);
+    const { min, conflict } = verified36(text);
+    assert.equal(min, undefined, `minimum finding on: ${text}`);
+    assert.equal(conflict, undefined, `conflict on: ${text}`);
+  }
+  assert.deepEqual(roofRead("SNOW LOADS: 36 PSF GROUND SNOW 25 PSF ROOF SNOW"), [25]);
+});
+await check("MUST-EXCLUDE (snow-inv): nothing r3f fixed comes back — value-first lists never read the next value", () => {
+  for (const text of ["DESIGN LOADS\n36 PSF GROUND SNOW\n25 PSF ROOF SNOW\n10 PSF DEAD LOAD", "DESIGN LOADS: 36 PSF GROUND SNOW 25 PSF ROOF SNOW 15 PSF DEAD LOAD"]) {
+    assert.deepEqual(snowRead(text), [36], `never Pg 25: ${JSON.stringify(text)}`);
+    const { min, conflict } = verified36(text);
+    assert.equal(min, undefined);
+    assert.equal(conflict, undefined);
+  }
+  assert.deepEqual(snowRead("40 PSF GROUND SNOW LOAD 28 PSF FLAT ROOF SNOW LOAD"), [40], "never Pg 28");
+  assert.deepEqual(roofRead("25 PSF ROOF SNOW 10 PSF DEAD LOAD"), [25], "never roof 10");
+  for (const [text, pg] of [
+    ["ROOF DEAD LOAD 3 PSF GROUND SNOW LOAD 36 PSF WIND SPEED 110 MPH EXPOSURE C", 36],
+    ["PV DEAD LOAD 2.5 PSF GROUND SNOW LOAD 40 PSF", 40],
+    ["DEAD LOAD 4 PSF GROUND SNOW 36 PSF", 36],
+    ["ROOF LIVE LOAD 20 PSF GROUND SNOW LOAD 36 PSF", 36],
+  ] as const) {
+    assert.deepEqual(snowRead(text), [pg], `never 3 / 2.5 / 4 / 20 as Pg: ${text}`);
+  }
 });
 
 console.log("\n2. which ROW carried the minimum decides the severity (real write path, temp DB)");
