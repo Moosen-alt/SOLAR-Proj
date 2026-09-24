@@ -345,6 +345,7 @@ check("FLOOD MUST-PASS (r3f): a real lien and the glued Accela names still read;
   assert.equal(extractPortalCondition(accelaPage("In Review")), "Condition: Floodplain");
   assert.equal(extractPortalCondition(accelaPage("In Review", "Sewer Recovery")), "Condition: Sewer Recovery");
   assert.equal(extractPortalCondition(accelaPage("In Review", "Nonconforming Use")), "Condition: Nonconforming Use", "'Non…' is a name, not 'None'");
+  assert.equal(extractPortalCondition(accelaPage("In Review", "Nonexempt Floodway")), "Condition: Nonexempt Floodway", "'None…' inside a word is a name");
   const lien = "Record Status: In Review Parcel Notifications: Lien recorded against parcel 000-000 for unpaid sewer charges. Record Details";
   assert.equal(extractPortalCondition(lien), "Lien recorded against parcel 000-000 for unpaid sewer charges");
   assert.match(classifyPermitStatusText(lien).message, /carries a condition: "Lien recorded against parcel/);
