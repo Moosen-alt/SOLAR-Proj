@@ -159,7 +159,7 @@ function normRisk(raw: string): string {
 // sheet "tested to 160 mph", "RAIL SYSTEM DESIGNED FOR 160 MPH WIND", a prescriptive checklist
 // "wind ≤ 110 mph". "Designed for" counts only directly before the value — "SYSTEM DESIGNED
 // FOR: WIND SPEED = 110 MPH" is a design-criteria header, and its label sits in between.
-const RATING_CONTEXT = /(?:\bup\s*to|\bmax(?:imum)?\.?|\bmin(?:imum)?\.?|\brated|\btested|\blimit(?:ed)?|\bexceed(?:s|ing)?|\bnot\s+more\s+than|\bless\s+than|\bgreater\s+than|≤|≥|<=|>=|<|>)[^0-9]{0,24}$|\bdesigned\s+(?:for|to)\s*(?:an?\s+)?$/i;
+const RATING_CONTEXT = /(?:\bup\s*to|\bmax(?:imum)?\.?|\bmin(?:imum)?\.?|\brated|\brating|\btested|\bcertified|\bcapacit(?:y|ies)|\blimit(?:ed)?|\bexceed(?:s|ing)?|\bnot\s+more\s+than|\bless\s+than|\bgreater\s+than|≤|≥|<=|>=|<|>)[^0-9]{0,24}$|\bdesigned\s+(?:for|to)\s*(?:an?\s+)?$/i;
 
 // A LIMIT FURTHER BACK IN THE SENTENCE governs an UNASSIGNED value. A prescriptive checklist
 // puts the limit word, then a form's furniture, then the values: "The basic design wind speed
@@ -168,7 +168,26 @@ const RATING_CONTEXT = /(?:\bup\s*to|\bmax(?:imum)?\.?|\bmin(?:imum)?\.?|\brated
 // Only an UNASSIGNED value is governed this way: "… MAXIMUM … WIND SPEED = 110 MPH" still states
 // 110 (the "=" is the statement). The sentence runs back to the last full stop (a decimal point
 // is not one), never more than 260 characters.
-const SENTENCE_LIMIT = /\b(?:exceed(?:s|ed|ing)?|limited\s+to|up\s+to|less\s+than|greater\s+than|more\s+than|or\s+less|or\s+greater|or\s+more|not\s+to\s+exceed|maximum|max)\b|≤|≥|<=|>=/i;
+//
+// A LIMIT GOVERNS ITS OWN FIELD, NOT THE REST OF THE LINE. In period-less sheet text the limit's
+// own field ends at its own value: "MAX ROOF SLOPE 30 DEG … WIND SPEED 110 MPH", "UP TO 16 MODULES
+// PER BRANCH … WIND SPEED 115 MPH", "NOT TO EXCEED 6 FT GROUND SNOW LOAD 40 PSF". A number in
+// another unit (not mph/psf) between the limit word and the value spends the limit; a checklist's
+// bounds are all mph/psf ("does not exceed … 120 mph in … C; or 135 mph …"), so they stay bounds.
+const SENTENCE_LIMIT = /\b(?:exceed(?:s|ed|ing)?|limited\s+to|up\s+to|less\s+than|greater\s+than|more\s+than|or\s+less|or\s+greater|or\s+more|not\s+to\s+exceed|maximum|max)\b|≤|≥|<=|>=/gi;
+/** A number that is not a design-criteria value (no mph/psf after it). */
+const OTHER_UNIT_NUMBER = /(?<![\d.])\d+(?:\.\d+)?(?![\d.])(?!\s*(?:mph|psf)\b)/i;
+/** Does a limit word earlier in the sentence still govern the value at "at"? */
+function limitGoverns(text: string, at: number): boolean {
+  const sentence = sentenceBefore(text, at);
+  let last: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  const re = new RegExp(SENTENCE_LIMIT.source, "gi");
+  while ((m = re.exec(sentence))) last = m;
+  if (!last) return false;
+  const between = blankParentheticals(sentence.slice(last.index + last[0].length)).replace(/\[[^[\]]*\]/g, (p) => " ".repeat(p.length));
+  return !OTHER_UNIT_NUMBER.test(between);
+}
 function sentenceBefore(text: string, at: number): string {
   const window = text.slice(Math.max(0, at - 260), at);
   let cut = 0;
@@ -179,8 +198,17 @@ function sentenceBefore(text: string, at: number): string {
 }
 /** A value with its label's separator right before it ("= 110", ": v 95", "Vult: 120"). */
 const ASSIGNED_BEFORE = /[:=]\s*(?:v\s*[_(]?\s*(?:ult|asd)?\s*\)?\s*)?$/i;
-/** A bound printed AFTER the value: "70 psf or less?", "120 mph max", "110 mph and below". */
-const BOUND_AFTER = /^\s*(?:psf|mph)?\s*(?:or\s+(?:less|lower|below|greater|more|higher|above)\b|and\s+(?:less|lower|below|greater|more|higher|above)\b|max(?:imum)?\b|\?)/i;
+/** A bound printed AFTER the value: "70 psf or less?", "110 mph and below" — whatever precedes it. */
+const BOUND_AFTER = /^\s*(?:psf|mph)?\s*(?:or\s+(?:less|lower|below|greater|more|higher|above)\b|and\s+(?:less|lower|below|greater|more|higher|above)\b|\?)/i;
+/** "120 mph max" is a rating — but only for an UNASSIGNED value. After "WIND SPEED: 110 MPH" or
+ *  "GROUND SNOW LOAD = 25 PSF" a following "MAX ..." / "MAXIMUM ..." is the NEXT field's label
+ *  ("MAX RAIL CANTILEVER 16 IN", "MAXIMUM ATTACHMENT SPACING 48 IN"), not a bound on this value. */
+const MAX_AFTER = /^\s*(?:psf|mph)?\s*max(?:imum)?\b/i;
+/** A product rating printed after the value: "115 MPH RATED", "140 MPH UPLIFT CAPACITY". */
+const RATING_AFTER = /^\s*(?:psf|mph)?\s*\(?\s*(?:rat(?:ed|ing)|tested|certified|(?:uplift\s+)?capacity)\b/i;
+function boundAfter(after: string, assigned: boolean): boolean {
+  return BOUND_AFTER.test(after) || RATING_AFTER.test(after) || (!assigned && MAX_AFTER.test(after));
+}
 /** "psf 25" / "mph V 120" split by a PDF: "2 5 PSF", "ASCE 7-1 6". Joined ONLY right after a
  *  field separator and right before the unit — anywhere else two numbers are two numbers. */
 function joinSplitDigits(text: string): string {
@@ -219,8 +247,8 @@ function extractWind(text: string, source: string, out: StatedDesignCriterion[])
     const label = lastDigit >= 0 ? pre.slice(lastDigit + 1) : pre;
     const post = text.slice(end, end + 30);
     if (RATING_CONTEXT.test(pre.slice(-30))) continue;
-    if (BOUND_AFTER.test(text.slice(end, end + 20))) continue;
-    if (!ASSIGNED_BEFORE.test(pre) && SENTENCE_LIMIT.test(sentenceBefore(text, start))) continue;
+    if (boundAfter(text.slice(end, end + 30), ASSIGNED_BEFORE.test(pre))) continue;
+    if (!ASSIGNED_BEFORE.test(pre) && limitGoverns(text, start)) continue;
     const labelBefore = /wind|\bv\s*[_(]?\s*(?:ult|asd)\b|\bv(?:ult|asd)\b|\bv\s*[:=]\s*$|\bv\s*$/i.test(label);
     // "120 MPH ultimate wind speed", "110 mph (3-sec gust) basic wind" — the label after the value,
     // used ONLY when the value has none before it: in "WIND SPEED: 110 MPH NOMINAL DESIGN WIND
@@ -228,8 +256,13 @@ function extractWind(text: string, source: string, out: StatedDesignCriterion[])
     const windAfter = labelBefore ? null : post.match(/^\s*(?:\(?\s*3[\s-]*sec(?:ond)?\.?[\s-]*gust\s*\)?\s*)?,?\s*(?:(?:ultimate|ult\.?|basic|design|nominal|asd)\s+)?(?:design\s+)?wind\b/i);
     const labelled = labelBefore
       || !!windAfter
-      // "Exposure B, 95 mph" — a speed stated inside an exposure clause is the wind speed.
-      || /\bexp(?:osure)?\.?\s*(?:cat(?:egory)?\.?\s*)?[:=]?\s*[BCD]\s*,?\s*$/i.test(label);
+      // "Exposure B, 95 mph" — a speed stated inside an exposure clause is the wind speed. Not when
+      // the exposure is the last of a TABLE's heads ("EXPOSURE B EXPOSURE C EXPOSURE D 110 MPH 6.0
+      // 5.3 …": several different letters, the same test the exposure reader applies), and not
+      // when the speed opens a ROW of speeds ("EXPOSURE C 90 MPH 110 MPH 120 MPH").
+      || (/\bexp(?:osure)?\.?\s*(?:cat(?:egory)?\.?\s*)?[:=]?\s*[BCD]\s*,?\s*$/i.test(label)
+        && new Set([...label.matchAll(/\bexp(?:osure)?\.?\s*(?:cat(?:egory)?\.?\s*)?[:=]?\s*([BCD])(?![A-Za-z0-9])/gi)].map((x) => x[1].toUpperCase())).size < 2
+        && !/^\s*,?\s*\d{2,3}(?:\.\d+)?\s*mph\b/i.test(post));
     if (!labelled) continue;
     const value = toNumber(m[1]);
     if (value == null || value < 60 || value > 250) continue;
@@ -284,7 +317,7 @@ function extractWind(text: string, source: string, out: StatedDesignCriterion[])
     const value = toNumber(lf[4]);
     if (value == null || value < 60 || value > 250) continue;
     const before = text.slice(Math.max(0, lf.index - 30), lf.index);
-    if (RATING_CONTEXT.test(before) || BOUND_AFTER.test(after)) continue;
+    if (RATING_CONTEXT.test(before) || boundAfter(after, !!lf[3])) continue;
     out.push({
       criterion: "windSpeedMph",
       value,
@@ -305,7 +338,7 @@ const EXPOSURE_LIMIT_BEFORE = /(?:\bup\s*to|\bmax(?:imum)?\b|\bmin(?:imum)?\b|\b
 // A LIST or RANGE of letters is not a stated category: "B or C", "C/D", "B, C and D", "B-D".
 const EXPOSURE_LIST_AFTER = /^\s*(?:,|\/|&|\bor\b|\band\b|\bto\b|\bthrough\b|[-–])\s*(?:exp(?:osure|\.)?\s*(?:cat(?:egory|\.)?\s*)?)?[BCD](?![A-Za-z0-9])/i;
 // "EXPOSURE B RATING", "Exposure C rated" — a product rating, not the site's category.
-const EXPOSURE_RATING_AFTER = /^\s*(?:rat(?:ed|ing)|tested|max(?:imum)?\b|or\s+(?:less|lower|greater|more|higher)\b|and\s+(?:below|above|less|greater)\b|limit)/i;
+const EXPOSURE_RATING_AFTER = /^\s*(?:rat(?:ed|ing)|tested|or\s+(?:less|lower|greater|more|higher)\b|and\s+(?:below|above|less|greater)\b|limit)/i;
 // A bare "exposure X" is the WIND exposure only beside wind ("Exposure B, 95 mph", "110 mph
 // Exposure C"); "roof exposure c. site is open" and "SUN EXPOSURE" are not.
 const WIND_NEARBY = /\bwind\b|\bmph\b|\bv\s*[_(]?\s*(?:ult|asd)\b|\bv(?:ult|asd)\b/i;
@@ -339,9 +372,11 @@ function extractExposureAndRisk(text: string, source: string, out: StatedDesignC
       if (!/[:=]/.test(m[0]) && EXPOSURE_LIMIT_BEFORE.test(text.slice(Math.max(0, at - 60), at))) continue;
       // …and the same limit further back in the sentence, across a form's ": Yes No ( check
       // one ) 120 mph in Wind Exposure Category C" (the per-field check above stops at a colon).
-      if (!/[:=]/.test(m[0]) && SENTENCE_LIMIT.test(sentenceBefore(text, at))) continue;
+      if (!/[:=]/.test(m[0]) && limitGoverns(text, at)) continue;
       const after = text.slice(end, end + 30);
       if (EXPOSURE_LIST_AFTER.test(after) || EXPOSURE_RATING_AFTER.test(after)) continue;
+      // "Exposure C max" bounds an UNASSIGNED letter; after "EXPOSURE CATEGORY: C" a "MAX. ..." is the next field.
+      if (!/[:=]/.test(m[0]) && /^\s*max(?:imum)?\b/i.test(after)) continue;
       if (candidates.some((c) => c.at === at)) continue;
       candidates.push({ at, end, letter: m[1].toUpperCase() });
     }
@@ -372,7 +407,7 @@ function extractExposureAndRisk(text: string, source: string, out: StatedDesignC
     // A form's choices printed in a row: "Identify Risk Category: I II III IV".
     if (/^\s+(?:IV|I{1,3})\s+(?:IV|I{1,3})(?![A-Za-z0-9])/.test(riskAfter)) continue;
     if (/^\s*(?:or\s+(?:less|lower|greater|more|higher)\b|and\s+(?:below|above|less|greater)\b)/i.test(riskAfter)) continue;
-    if (!/[:=]/.test(r[0]) && SENTENCE_LIMIT.test(sentenceBefore(text, r.index))) continue;
+    if (!/[:=]/.test(r[0]) && limitGoverns(text, r.index)) continue;
     out.push({ criterion: "riskCategory", value: normRisk(r[1]), qualifier: "unspecified", source, derived: false, excerpt: excerptAt(text, r.index, r.index + r[0].length) });
   }
   const asce = /\bASCE(?:\/SEI)?\s*7\s*[-–]\s*(\d{2})\b/gi;
@@ -393,8 +428,8 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
     const end = m.index + m[0].length;
     // A bound, not a value: "Is the ground snow load 70 psf or less?"; and an UNASSIGNED value
     // under a limit earlier in its sentence ("… not exceeding a ground snow load of 50 psf").
-    if (BOUND_AFTER.test(text.slice(end, end + 20))) return;
-    if (!/[:=]/.test(m[0]) && SENTENCE_LIMIT.test(sentenceBefore(text, m.index))) return;
+    if (boundAfter(text.slice(end, end + 30), /[:=]/.test(m[0]))) return;
+    if (!/[:=]/.test(m[0]) && limitGoverns(text, m.index)) return;
     out.push({ criterion, value, qualifier, source, derived: false, excerpt: excerptAt(text, m.index, end) });
   };
   const asd = (s: string | undefined): boolean => !!s && /asd/i.test(s);
@@ -435,9 +470,13 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
   // 110 PSF ROOF SNOW LOAD: 77 PSF" the 110 is not a roof snow load.
   // (A heading's colon — "Plan-set loads: 20 psf roof snow" — assigns nothing; only a snow label does.)
   const assignedValue = (at: number): boolean => /\bsnow\b[^:=.;]{0,24}[:=]\s*$/i.test(text.slice(Math.max(0, at - 40), at));
+  // …and a label that ASSIGNS its own value never also claims the number before it: in "ROOF LIVE
+  // LOAD: 20 PSF GROUND SNOW LOAD: 25 PSF" the ground snow load is 25, and the 20 is the live load.
+  const labelHasOwnValue = (after: number): boolean =>
+    /^(?:\s+loads?)?(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?\s*[:=]\s*\d/i.test(text.slice(after, after + 60));
   const groundAfter = /(\d+(?:\.\d+)?)\s*psf\s*(\(\s*asd\s*\)\s*)?ground\s+snow/gi;
   while ((m = groundAfter.exec(text))) {
-    if (assignedValue(m.index)) continue;
+    if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length)) continue;
     push("groundSnowPsf", asd(m[2]) ? "ground_asd" : "ground", m[1], m);
   }
 
@@ -453,7 +492,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
   }
   const roofAfter = /(\d+(?:\.\d+)?)\s*psf\s*(flat|sloped|total|design)?\s*roof\s+snow/gi;
   while ((m = roofAfter.exec(text))) {
-    if (assignedValue(m.index)) continue;
+    if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length)) continue;
     push("roofSnowPsf", roofQual(m[2]), m[1], m);
   }
   const pf = /\bp\s?f\s*=\s*(\d+(?:\.\d+)?)\s*psf/gi;
@@ -614,7 +653,15 @@ function namedItems(part: string): BasisItem[] {
   };
   let m: RegExpExecArray | null;
   const yearFirst = new RegExp(NAMED_CODE.source, "g");
-  while ((m = yearFirst.exec(part))) push(m.index, m.index + m[0].length, `${m[2]}${m[3] ?? ""}`, m[1], m[4]);
+  while ((m = yearFirst.exec(part))) {
+    // "2021 INTERNATIONAL RESIDENTIAL CODE OF THE STATE OF COLORADO" is the IRC; only a name that is
+    // not a known code WITHOUT its state tail takes the tail ("RESIDENTIAL CODE OF NEW YORK STATE"
+    // is the RCNYS, not a code named "RC").
+    const bare = m[2].replace(/\s+/g, " ").trim().toUpperCase();
+    const bareCode = namedCode(bare, "", part.slice(m.index + m[0].length, m.index + m[0].length + 20));
+    const known = MODEL_CODES.has(bareCode) || bareCode in STATE_CODE_BASE;
+    push(m.index, m.index + m[0].length, known || !m[3] ? m[2] : `${m[2]}${m[3]}`, m[1], m[4]);
+  }
   const ordinal = new RegExp(NAMED_CODE_ORDINAL.source, "g");
   while ((m = ordinal.exec(part))) push(m.index, m.index + m[0].length, m[1], m[3], undefined, m[2]);
   const nameFirst = new RegExp(NAMED_CODE_EDITION.source, "g");
@@ -1227,6 +1274,74 @@ function describeValues(entries: Array<{ value: string | number; sources: Set<st
   return entries.map((e) => `${e.value}${unit} in ${[...e.sources].join(", ")}`).join("; ");
 }
 
+// A MODEL CODE'S SPELLED-OUT NAME anywhere in a title ("… adoption of the 2021 International
+// Residential Code", "based on the 2020 NFPA 70 (NEC)"), for reading a profile entry's base.
+const MODEL_NAME_IN_TITLE: Array<[RegExp, string]> = [
+  [/^international\s+residential\s+code\b/i, "IRC"],
+  [/^international\s+building\s+code\b/i, "IBC"],
+  [/^international\s+fire\s+code\b/i, "IFC"],
+  [/^(?:national\s+electric(?:al)?\s+code|nfpa\s*70)\b/i, "NEC"],
+  [/^international\s+energy\s+conservation\s+code\b/i, "IECC"],
+  [/^international\s+existing\s+building\s+code\b/i, "IEBC"],
+];
+
+/** The editions of MODEL code "model" a profile entry's text states as a base: "based on the 2021
+ *  IRC", "adoption of the 2021 International Residential Code", "based on the 2020 NFPA 70 (NEC)",
+ *  "(NEC 2020)". The title decides; the notes only when the title states none. */
+function statedBaseEdition(entry: { title?: string; notes?: string }, model: string): string | null {
+  for (const said of [entry.title ?? "", entry.notes ?? ""]) {
+    const editions = new Set<string>();
+    const yearThen = /\b((?:19|20)\d{2})\s+(?:edition\s+(?:of\s+)?(?:the\s+)?)?/gi;
+    let m: RegExpExecArray | null;
+    while ((m = yearThen.exec(said))) {
+      const rest = said.slice(m.index + m[0].length);
+      const abbr = rest.match(/^([A-Z]{2,6})(?:\s*70)?\b/);
+      const named = MODEL_NAME_IN_TITLE.find(([re]) => re.test(rest))?.[1];
+      const code = named ?? (abbr ? normCodeToken(abbr[0].replace(/\s+/g, "")) : "");
+      if (code === model) editions.add(m[1]);
+    }
+    const paren = /\(\s*([A-Z]{2,6})\s*[-:]?\s*((?:19|20)\d{2})\s*\)/g;
+    while ((m = paren.exec(said))) if (normCodeToken(m[1]) === model) editions.add(m[2]);
+    if (editions.size === 1) return [...editions][0];
+    if (editions.size > 1) return null;
+  }
+  return null;
+}
+
+/**
+ * ONE PROFILE ENTRY, READ LIKE WITH LIKE. The research seeder often files a STATE code under a
+ * MODEL-code token with the STATE edition: "IRC 2023 | 2023 Oregon Residential Specialty Code
+ * (ORSC) — … adoption of the 2021 International Residential Code", "NEC 2022 | 2022 California
+ * Electrical Code (CEC) … based on the 2020 NFPA 70". Read as "IRC 2023" it is compared with a
+ * plan's IRC edition, so a correct "(2021 IRC)" plan raises a mismatch and a stale "2021 ORSC"
+ * is missed. When the entry's own title names a non-model code of the entry's edition, the entry
+ * IS that code, and the model code is its base (only where the title states one).
+ */
+function profileCodeEntry(a: { code: string; edition: string; title?: string; notes?: string }): {
+  code: string; edition: string; label: string; base: { code: string; edition: string } | null;
+} {
+  let code = normCodeToken(a.code);
+  const edition = String(a.edition).trim();
+  let label = `${a.code} ${a.edition}`;
+  if (MODEL_CODES.has(code) && a.title) {
+    const model = code;
+    const named = namedItems(a.title)
+      .map((i) => i.entry)
+      .find((e) => !MODEL_CODES.has(e.code) && e.edition === edition && (baseModelCode(e.code) ?? model) === model);
+    // No year in the title, but a state code's abbreviation: "Oregon Mechanical Specialty Code (OMSC)".
+    const abbr = named ? null : a.title.match(/\(\s*([A-Z]{2,6})\s*\)/);
+    const state = named?.code ?? (abbr && isCodeToken(abbr[1]) && !MODEL_CODES.has(normCodeToken(abbr[1])) && (baseModelCode(abbr[1]) ?? model) === model ? normCodeToken(abbr[1]) : "");
+    if (state) {
+      code = state;
+      label = `${state} ${edition} (filed as ${a.code})`;
+    }
+  }
+  // A base is read only for a state code, and only one consistent with the map ("(OSSC)" is none).
+  const model = MODEL_CODES.has(code) ? undefined : baseModelCode(code);
+  const baseEdition = model ? statedBaseEdition(a, model) : null;
+  return { code, edition, label, base: model && baseEdition ? { code: model, edition: baseEdition } : null };
+}
+
 export function evaluateDesignCriteriaFindings(
   project: ProjectRecord,
   ctx: EffectiveCodeContext,
@@ -1416,19 +1531,7 @@ export function evaluateDesignCriteriaFindings(
   // never compared by year: the 2022 Oregon Fire Code IS the right code for the 2021 IFC.
   const adopted = ctx.profile?.adoptedCodes?.length ? ctx.adoptedCodes : [];
   if (adopted.length && stated.codeBasis.length) {
-    const profileEntries = adopted.map((a) => {
-      const code = normCodeToken(a.code);
-      const said = `${a.title ?? ""} ${a.notes ?? ""}`;
-      const m = said.match(/\bbased\s+on\s+(?:the\s+)?((?:19|20)\d{2})\s+([A-Z]{2,6})\b/i)
-        ?? said.match(/\(\s*([A-Z]{2,6})\s*[-:]?\s*((?:19|20)\d{2})\s*\)/);
-      let base: { code: string; edition: string } | null = null;
-      if (m) {
-        const [bc, be] = /^\d/.test(m[1]) ? [m[2], m[1]] : [m[1], m[2]];
-        // Only a base consistent with the map is a base ("(OSSC)" in a title is not one).
-        if (baseModelCode(code) === normCodeToken(bc) && !MODEL_CODES.has(code)) base = { code: normCodeToken(bc), edition: be };
-      }
-      return { code, edition: String(a.edition).trim(), label: `${a.code} ${a.edition}`, base };
-    });
+    const profileEntries = adopted.map(profileCodeEntry);
     const lines: string[] = [];
     const seen = new Set<string>();
     const report = (key: string, line: string): void => {
