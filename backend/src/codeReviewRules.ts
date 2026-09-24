@@ -819,7 +819,23 @@ export function evaluateDesignCodeFindings(
           codeReferences: [residentialCodeRef(ctx, equipmentListings.section, equipmentListings.title, equipmentListings.note)],
         }),
         evidenceStatus: found.length ? "weak" : "missing",
-        evidenceFound: found.map((f) => affirmedEvidence(f, "Listing stated", "Listing found in the package.")),
+        // NEVER EMPTY. reviewerEngine.attachEvidence fills an empty list from the finding's topic
+        // — "racking" in the title maps it to rackingAttachment — and overwrites the status with
+        // that topic's: "verified" on any plan set with a flashing detail, i.e. "UL listing not
+        // shown — evidence: verified". The absence is the evidence.
+        evidenceFound: found.length
+          ? found.map((f) => affirmedEvidence(f, "Listing stated", "Listing found in the package."))
+          : [{
+            kind: "absence_check",
+            label: "UL 61730 / UL 1703 / UL 2703 not stated",
+            source: "Package text",
+            excerpt: "No module (UL 61730 / UL 1703) or racking (UL 2703) listing in the package text.",
+            confidence: "low",
+            pageHint: "",
+            screenshotPath: "",
+            verifier: "rule_engine",
+            note: "Absence check over the package text (parser commentary excluded).",
+          }],
       });
     }
   }

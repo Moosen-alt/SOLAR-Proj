@@ -19,7 +19,7 @@ import type { JurisdictionCodeProfile, ProjectRecord, ReviewerFinding } from "..
 import { buildCodeContext } from "../src/codeProfiles";
 import { evaluateDesignCodeFindings, structureType } from "../src/codeReviewRules";
 import { extractAhjRequiredCriteria, extractAttachmentSpacings, type DesignTextSource } from "../src/designCriteria";
-import { topicForFinding } from "../src/reviewerEngine";
+import { buildReviewerReport, topicForFinding } from "../src/reviewerEngine";
 import { visionMayRelax } from "../src/reviewerVision";
 import { classifyPermitStatusText, extractPortalCondition } from "../src/permitMonitor";
 
@@ -173,6 +173,13 @@ check("LISTINGS MUST-PASS: only UL 1741 and UL1699B -> warning, both missing, in
   assert.equal(f!.cityFeedback, "Provide UL listing for the panels, mounting and racking hardware.");
   assert.match(f!.message, /module listing/);
   assert.match(f!.message, /UL 2703/);
+});
+check("LISTINGS through the real engine: both missing stays evidence 'missing' (a flashing detail does not verify it)", () => {
+  const p = project({ planSetExtractedText: "ATTACHMENT DETAIL: L-FOOT WITH FLASHING, LAG SCREW 2.5\" EMBEDMENT. INVERTERS UL 1741. UL1699B." });
+  const f = buildReviewerReport(p, { codeContext: ctxFor() }).findings.find((x) => x.id === LISTINGS);
+  assert.ok(f, "must fire");
+  assert.equal(f!.evidenceStatus, "missing");
+  assert.ok(!(f!.evidenceFound ?? []).some((e) => /flashing|l-foot|lag/i.test(e.excerpt)), "no racking-topic excerpts pasted in");
 });
 check("LISTINGS: module shown, racking not -> names only the racking", () => {
   const f = get(run(project({ planSetExtractedText: "PV MODULES: UL 61730 LISTED." })), LISTINGS);
