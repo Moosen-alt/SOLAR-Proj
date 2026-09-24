@@ -724,6 +724,88 @@ export const WEB_RESEARCH_MAX_TOKENS = 6000;
 /** The fallback's own instructions. The fallback used to resend the web prompt ("FIRST search
  *  the web … cite it") with no tool attached, so the model spent its budget explaining it could
  *  not search and then wrote source-looking URLs from memory. */
+// DESIGN-CRITERIA LOOKUP (one AHJ: ground snow, ultimate wind speed, exposure). Measured on 10
+// AHJs in 8 states (2026-09-24): it never returned a wrong value, but it returned ONE value in
+// ten, because it accepted only a "building-department page". The values it missed were in
+// the jurisdiction's own ADOPTED CODE as published on its municipal-code or code-publisher site
+// (a city's "Residential Code 2021" Table R301.2), and in a STATE code that names the
+// jurisdiction (the Florida code's High-Velocity Hurricane Zone speeds by county). It must
+// still never take a neighbour's value, a county value that varies inside the city, a range, a
+// site-specific map, a roof snow load as ground snow, an ASD speed as Vult, or a pg(asd) as Pg.
+export const DESIGN_CRITERIA_LOOKUP_SYSTEM = `You look up ONE building jurisdiction's structural design criteria for residential roofs: ground snow load, ultimate design wind speed (Vult), wind exposure category.
+
+WHERE A VALUE MAY COME FROM (a page you actually found):
+1. The jurisdiction's building-department pages and PDFs (design criteria, "currently adopted codes").
+2. The jurisdiction's OWN ADOPTED CODE text wherever it is published — its municipal code, or a code publisher's copy of THAT jurisdiction's code (a page titled with the jurisdiction's name, e.g. "<City> Residential Code … Table R301.2"). A generic IRC/state page with the table left for "the jurisdiction to fill in" is NOT a value.
+3. A STATE code or state agency table that NAMES this jurisdiction (or its county, when the value applies to the whole county with no sub-region) and gives ONE value for it.
+Search for "<jurisdiction> Table R301.2 ground snow load wind speed" and "<jurisdiction> design criteria" first.
+
+WHEN TO OMIT (and say why in notes):
+- The source gives several values or a range for the jurisdiction ("115/125/140", special wind region inside it), or says criteria are site-specific (an address lookup tool / hazard map) — omit, and write "site-specific" in notes with the tool's URL.
+- The value belongs to a neighbouring or different jurisdiction — omit.
+- A ROOF snow load (flat/sloped/minimum roof snow, Pf, Pm) is never a ground snow load.
+- windSpeedMph must be the ULTIMATE (strength) speed Vult; omit a speed labelled ASD, nominal, Vasd, or a legacy "basic wind speed" from a pre-2012 map.
+- groundSnowLoadPsf must be the strength-level ground snow load Pg; omit a value labelled allowable-stress pg(asd) (2024-edition Table R301.2 prints pg(asd)) and say so in notes.
+- Use the CURRENT edition: a table from a superseded code cycle, or a staging/preview copy of a page, is not the value.
+
+Return ONLY JSON:
+{"groundSnowLoadPsf": {"value": <number>, "sourceUrl": "<page>", "quote": "<the exact words stating it, with the number>"} or omit,
+ "windSpeedMph": {"value": <Vult number>, "sourceUrl": "<page>", "quote": "<exact words, with the number>"} or omit,
+ "windExposure": {"value": "<B|C|D>", "sourceUrl": "<page>", "quote": "<exact words naming the exposure category>"} or omit,
+ "notes": "<what you could not confirm, and any site-specific tool>"}
+Never guess. Never use model memory.`;
+
+type LookupValue = DesignCriteriaResearchResult["values"][number];
+
+/**
+ * Parse the lookup's JSON into values the profile may store. A value survives only when it is
+ * web-grounded, has a source URL, and its QUOTE says it: the number appears in the quote as a
+ * number of its own; a wind quote does not label it ASD/nominal/Vasd; a ground-snow quote says
+ * "ground" (or pg) and is not about roof snow alone; an exposure quote names the category.
+ * Pure — tested without a network.
+ */
+export function parseDesignCriteriaLookup(parsed: Record<string, unknown>, grounded: boolean, truncated = false): DesignCriteriaResearchResult {
+  const values: DesignCriteriaResearchResult["values"] = [];
+  const dropped: string[] = [];
+  const quoteHasNumber = (quote: string, n: number): boolean =>
+    new RegExp(`(?<![\\d.])${String(n).replace(".", "\\.")}(?:\\.0+)?(?![\\d.]*\\d)`).test(quote);
+  if (grounded) {
+    for (const criterion of ["groundSnowLoadPsf", "windSpeedMph", "windExposure"] as const) {
+      const v = parsed[criterion] as { value?: unknown; sourceUrl?: unknown; quote?: unknown } | undefined;
+      if (!v || typeof v !== "object") continue;
+      const sourceUrl = typeof v.sourceUrl === "string" ? v.sourceUrl.trim() : "";
+      const quote = typeof v.quote === "string" ? v.quote.trim() : "";
+      const value = criterion === "windExposure" ? String(v.value ?? "").trim().toUpperCase() : typeof v.value === "number" ? v.value : Number.NaN;
+      if (!sourceUrl || (typeof value === "number" && !Number.isFinite(value)) || value === "") continue;
+      let why = "";
+      if (!quote) why = "no quote";
+      else if (criterion === "windExposure") {
+        if (!/^[BCD]$/.test(String(value)) || !new RegExp(`exposure[^.;]{0,40}\\b${value}\\b|\\b${value}\\b[^.;]{0,20}exposure`, "i").test(quote)) why = "quote does not name the exposure";
+      } else if (!quoteHasNumber(quote, value as number)) why = "quote does not contain the value";
+      else if (criterion === "windSpeedMph" && /\b(?:v\s*_?\s*asd|vasd|asd|nominal|allowable\s+stress)\b/i.test(quote) && !/\b(?:v\s*_?\s*ult|vult|ultimate)\b/i.test(quote)) why = "quote labels the speed ASD/nominal";
+      else if (criterion === "groundSnowLoadPsf" && !/\bground\b|\bp\s?g\b/i.test(quote)) why = "quote does not say ground snow";
+      // The below-ahj rule compares this value with a plan's STRENGTH-level Pg; an allowable-stress
+      // pg(asd) stored here would pass a plan whose Pg is too low (the snow twin of ASD-vs-Vult).
+      else if (criterion === "groundSnowLoadPsf" && /\basd\b|allowable\s+stress/i.test(quote)) why = "quote labels the ground snow pg(asd)";
+      // A staging / preview host is not the jurisdiction's published page (measured: a "prelive"
+      // copy of a superseded table).
+      if (!why && /^https?:\/\/[^/]*\b(?:prelive|preview|staging|stage|uat|dev|test)\b/i.test(sourceUrl)) why = "source is a staging/preview host";
+      if (why) { dropped.push(`${criterion} ${value} (${why})`); continue; }
+      const item: LookupValue = { criterion, value, sourceUrl, quote: quote.slice(0, 240) };
+      values.push(item);
+    }
+  }
+  const notes = typeof parsed.notes === "string" ? parsed.notes.slice(0, 400) : "";
+  return {
+    provider: "claude",
+    values,
+    webGrounded: grounded,
+    // A cut-off answer is not a negative result: an empty list from a truncated reply must not
+    // read as "the jurisdiction publishes nothing".
+    notes: `${grounded ? "Web-grounded lookup." : "No web results — nothing stored."}${truncated ? " Output truncated — not a negative result; retry." : ""}${dropped.length ? ` Dropped: ${dropped.join("; ")}.` : ""} ${notes}`.trim(),
+  };
+}
+
 export const MODEL_MEMORY_RESEARCH_RULES = `YOU HAVE NO WEB ACCESS IN THIS CALL. Answer ONLY from general knowledge of this jurisdiction and its region, and treat every answer as unverified.
 - Do NOT output any URL, link, web address or domain name anywhere. Every URL / sourceUrl field must be "" and any citations array must be empty.
 - Do NOT say you searched, found, confirmed, verified or cited anything, and do not explain that you cannot browse.
@@ -1675,41 +1757,24 @@ Rules:
   // remembered snow load is exactly the false authority a below-ahj warning must not rest on,
   // so there is no model-memory fallback here.
   async researchDesignCriteria(input: { ahj: string; state: string }): Promise<DesignCriteriaResearchResult> {
-    const system = `You look up ONE building jurisdiction's structural design criteria for residential roofs. Search the web for the jurisdiction's own building-department page (or its county's) publishing its climatic/geographic design criteria (IRC/state residential code Table R301.2). Return ONLY JSON:
-{"groundSnowLoadPsf": {"value": <number>, "sourceUrl": "<page>", "quote": "<the sentence stating it>"} or omit,
- "windSpeedMph": {"value": <ULTIMATE design wind speed Vult, number>, "sourceUrl": "<page>", "quote": "<sentence>"} or omit,
- "windExposure": {"value": "<B|C|D>", "sourceUrl": "<page>", "quote": "<sentence>"} or omit,
- "notes": "<what you could not confirm>"}
-Omit any value you did not read on a page you found. Never guess, never use a neighbouring jurisdiction's value, never give an ASD/nominal wind speed as windSpeedMph.`;
     const userMsg = `Jurisdiction: ${input.ahj}\nState: ${input.state}`;
     let raw = "";
     let grounded = false;
+    let truncated = false;
     try {
-      const web = await this.askWithWebSearch("researchDesignCriteria", system, userMsg, 1500, 3, webResearchBudgetMs());
+      // 5 searches, not 3: measured on 10 AHJs across 8 states, the lookup ran out of searches
+      // before it opened the jurisdiction's own table (one reported "cut off by a tool-use limit").
+      // 4000 tokens, not 1500: adaptive thinking shares the budget, and a 1800 cap cut one
+      // answer's JSON off (stop=max_tokens) so it parsed as "nothing found".
+      const web = await this.askWithWebSearch("researchDesignCriteria", DESIGN_CRITERIA_LOOKUP_SYSTEM, userMsg, 4000, 5, webResearchBudgetMs());
       raw = web.text;
       grounded = web.groundedSearches > 0;
+      truncated = web.stopReason === "max_tokens";
     } catch (err) {
       logger.warn("llm", "researchDesignCriteria web search failed", { err: errMsg(err) });
       return { provider: "claude", values: [], webGrounded: false, notes: "Web search failed — nothing looked up." };
     }
-    const parsed = this.parseJson<Record<string, unknown>>(raw, {});
-    const values: DesignCriteriaResearchResult["values"] = [];
-    if (grounded) {
-      for (const criterion of ["groundSnowLoadPsf", "windSpeedMph", "windExposure"] as const) {
-        const v = parsed[criterion] as { value?: unknown; sourceUrl?: unknown; quote?: unknown } | undefined;
-        if (!v || typeof v !== "object") continue;
-        const sourceUrl = typeof v.sourceUrl === "string" ? v.sourceUrl.trim() : "";
-        const value = criterion === "windExposure" ? String(v.value ?? "").trim().toUpperCase() : typeof v.value === "number" ? v.value : Number.NaN;
-        if (!sourceUrl || (typeof value === "number" && !Number.isFinite(value)) || value === "") continue;
-        values.push({ criterion, value, sourceUrl, ...(typeof v.quote === "string" && v.quote.trim() ? { quote: v.quote.trim().slice(0, 240) } : {}) });
-      }
-    }
-    return {
-      provider: "claude",
-      values,
-      webGrounded: grounded,
-      notes: `${grounded ? "Web-grounded lookup." : "No web results — nothing stored."} ${typeof parsed.notes === "string" ? parsed.notes.slice(0, 400) : ""}`.trim(),
-    };
+    return parseDesignCriteriaLookup(this.parseJson<Record<string, unknown>>(raw, {}), grounded, truncated);
   }
 
   // ADOPTED-CODES onboarding research (review gate). Same web-grounded pattern as
@@ -2181,7 +2246,7 @@ Return ONLY JSON:
   // "the tool was offered" is not "the answer came from the web". Every caller that labels its
   // result grounded must decide from `groundedSearches` (see summarizeWebSearch), not from
   // whether the JSON parsed and not from the bare search count.
-  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000): Promise<{ text: string; searches: number; groundedSearches: number }> {
+  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000): Promise<{ text: string; searches: number; groundedSearches: number; stopReason: string | null }> {
     // Hard timeout so a stalled web search can never hang the HTTP request (the
     // "Find official form" button would otherwise spin forever). On timeout we
     // abort the stream; callers catch and fall back (no URLs / model knowledge).
@@ -2208,7 +2273,7 @@ Return ONLY JSON:
       if (groundedSearches) logger.debug("llm", `  ${label} web_search ran`, { queries: searches, withResults: groundedSearches });
       else if (!searches) logger.warn("llm", `  ${label} returned without running a single web search — its answer is model memory`);
       else logger.warn("llm", `  ${label} ran ${searches} web search(es) but none returned results we can see (errored, empty, or no web_search_tool_result block) — treating its answer as model memory`);
-      return { text: this.textOf(msg), searches, groundedSearches };
+      return { text: this.textOf(msg), searches, groundedSearches, stopReason: (msg as { stop_reason?: string | null }).stop_reason ?? null };
     } finally {
       clearTimeout(timer);
     }

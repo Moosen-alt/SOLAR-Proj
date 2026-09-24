@@ -13,6 +13,7 @@ import type { JurisdictionCodeProfile, ProjectRecord, ReviewerFinding, StatedDes
 import { buildCodeContext } from "../src/codeProfiles";
 import { evaluateDesignCodeFindings } from "../src/codeReviewRules";
 import { extractStatedDesignCriteria } from "../src/designCriteria";
+import { parseDesignCriteriaLookup } from "../src/llm";
 
 let failures = 0;
 const check = (label: string, fn: () => void): void => {
@@ -244,6 +245,45 @@ check("NY MUST-PASS: RCNYS / FCNYS parse whole, no self-base; stale RCNYS named 
 });
 check("MUST-EXCLUDE: '2017 & 2020 NEC CODE' is the NEC, never a code named 'NC'", () => {
   assert.deepEqual(codes("LABELING REQUIREMENTS BASED ON THE 2017 & 2020 NEC CODE, OSHA STANDARD"), ["NEC 2020"]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Part C — the design-criteria LOOKUP's parser. The lookup now accepts more kinds of source (the
+// jurisdiction's adopted code on a code site, a state code naming it), so what it may STORE is
+// held to its quote: the value must be in the words it cites, and the words must say what it is.
+console.log("\nC. design-criteria lookup parsing");
+const url = "https://example.gov/design-criteria";
+const lookup = (o: Record<string, unknown>, grounded = true) => parseDesignCriteriaLookup(o, grounded).values.map((v) => `${v.criterion}=${v.value}`).sort();
+check("C MUST-PASS: values whose quotes state them (Vult with a Vasd beside it, a strength Pg, 'Exposure Category C')", () => {
+  assert.deepEqual(lookup({
+    windSpeedMph: { value: 175, sourceUrl: url, quote: "Risk Category II Buildings and Structures: 175 mph" },
+    groundSnowLoadPsf: { value: 39, sourceUrl: url, quote: "Ground snow load 39 lbs/ft2" },
+    windExposure: { value: "C", sourceUrl: url, quote: "All buildings and structures shall be considered to be in Exposure Category C" },
+  }), ["groundSnowLoadPsf=39", "windExposure=C", "windSpeedMph=175"]);
+  assert.deepEqual(lookup({ windSpeedMph: { value: 175, sourceUrl: url, quote: "Vult = 175 mph (Vasd = 136 mph)" } }), ["windSpeedMph=175"]);
+  assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 20, sourceUrl: url, quote: "Ground Snow Load = 20 psf (pg)" } }), ["groundSnowLoadPsf=20"]);
+});
+check("C MUST-EXCLUDE: a value its quote does not contain, a roof snow as ground, an ASD speed, an unnamed exposure, no web grounding", () => {
+  assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 36, sourceUrl: url, quote: "Site-specific ground snow loads shall be those set forth in the online lookup tool" } }), []);
+  assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 25, sourceUrl: url, quote: "Design roof load shall not be less than a uniform snow load of 25 psf" } }), []);
+  assert.deepEqual(lookup({ windSpeedMph: { value: 90, sourceUrl: url, quote: "Basic wind speed 90 mph (ASD)" } }), []);
+  assert.deepEqual(lookup({ windSpeedMph: { value: 115, sourceUrl: url, quote: "WIND DESIGN SPEED (mph): 115/125/140" } }), ["windSpeedMph=115"], "the parser keeps a quoted number; the RANGE rule lives in the prompt");
+  assert.deepEqual(lookup({ windSpeedMph: { value: 110, sourceUrl: url, quote: "Ultimate design wind speed 1100 ft elevation" } }), []);
+  assert.deepEqual(lookup({ windExposure: { value: "D", sourceUrl: url, quote: "Special wind region applies along the coast" } }), []);
+  assert.deepEqual(lookup({ windSpeedMph: { value: 120, sourceUrl: url, quote: "Vult 120 mph" } }, false), []);
+  assert.deepEqual(lookup({ windSpeedMph: { value: 120, sourceUrl: "", quote: "Vult 120 mph" } }), []);
+  const r = parseDesignCriteriaLookup({ groundSnowLoadPsf: { value: 36, sourceUrl: url, quote: "snow per the lookup tool" } }, true);
+  assert.ok(/Dropped: groundSnowLoadPsf 36/.test(r.notes), r.notes);
+});
+check("C MUST-EXCLUDE: an allowable-stress pg(asd) as the ground snow load (the rule compares a strength Pg)", () => {
+  assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 43, sourceUrl: url, quote: "Table R301.2 – ground snow load is 43 psf (pg(asd))" } }), []);
+  assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 30, sourceUrl: url, quote: "Allowable stress design ground snow load 30 psf" } }), []);
+});
+check("C MUST-EXCLUDE: a staging/preview copy of a page; a truncated reply says it is not a negative result", () => {
+  assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 35, sourceUrl: "https://city.prelive.example.com/files/table.pdf", quote: "Ground Snow Load (psf) 35" } }), []);
+  assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 35, sourceUrl: "https://www.city.example.gov/files/table.pdf", quote: "Ground Snow Load (psf) 35" } }), ["groundSnowLoadPsf=35"]);
+  assert.ok(/truncated — not a negative result/.test(parseDesignCriteriaLookup({}, true, true).notes));
+  assert.ok(!/truncated/.test(parseDesignCriteriaLookup({}, true, false).notes));
 });
 
 if (failures) {
