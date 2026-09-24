@@ -159,7 +159,7 @@ function normRisk(raw: string): string {
 // sheet "tested to 160 mph", "RAIL SYSTEM DESIGNED FOR 160 MPH WIND", a prescriptive checklist
 // "wind ≤ 110 mph". "Designed for" counts only directly before the value — "SYSTEM DESIGNED
 // FOR: WIND SPEED = 110 MPH" is a design-criteria header, and its label sits in between.
-const RATING_CONTEXT = /(?:\bup\s*to|\bmax(?:imum)?\.?|\bmin(?:imum)?\.?|\brated|\brating|\btested|\bcertified|\bcapacit(?:y|ies)|\blimit(?:ed)?|\bexceed(?:s|ing)?|\bnot\s+more\s+than|\bless\s+than|\bgreater\s+than|≤|≥|<=|>=|<|>)[^0-9]{0,24}$|\bdesigned\s+(?:for|to)\s*(?:an?\s+)?$/i;
+const RATING_CONTEXT = /(?:\bup\s*to|\bmax(?:imum)?\.?|\bmin(?:imum)?\.?|\brated|\brating|\btested|\bcertified|\bcapacit(?:y|ies)|\blimit(?:ed)?|\bexceed(?:s|ing)?|\bnot\s+more\s+than|\bless\s+than|\bgreater\s+than|≤|≥|<=|>=|<|>)[^0-9•▪●■◦]{0,24}$|\bdesigned\s+(?:for|to)\s*(?:an?\s+)?$/i;
 
 // A LIMIT FURTHER BACK IN THE SENTENCE governs an UNASSIGNED value. A prescriptive checklist
 // puts the limit word, then a form's furniture, then the values: "The basic design wind speed
@@ -177,6 +177,44 @@ const RATING_CONTEXT = /(?:\bup\s*to|\bmax(?:imum)?\.?|\bmin(?:imum)?\.?|\brated
 const SENTENCE_LIMIT = /\b(?:exceed(?:s|ed|ing)?|limited\s+to|up\s+to|less\s+than|greater\s+than|more\s+than|or\s+less|or\s+greater|or\s+more|not\s+to\s+exceed|maximum|max)\b|≤|≥|<=|>=/gi;
 /** A number that is not a design-criteria value (no mph/psf after it). */
 const OTHER_UNIT_NUMBER = /(?<![\d.])\d+(?:\.\d+)?(?![\d.])(?!\s*(?:mph|psf)\b)/i;
+// THE LIMIT'S FIELD ALSO ENDS AT A FIELD BOUNDARY — not only at a full stop or a number in
+// another unit:
+//  · a LIST MARKER or a BULLET that opens a new item: "(1) ARRAY NOT TO EXCEED ROOF RIDGE (2) WIND
+//    SPEED 110 MPH", "• RACKING LIMITED TO COMP SHINGLE ROOFS • WIND SPEED 110 MPH". (A blank line
+//    cannot be one: readSources flattens every run of whitespace before the extractors run.)
+//    Not when the new item opens with a VALUE ("does not exceed (1) 120 mph in … C; (2) 135 mph
+//    in … B" — those items are the bound's own list), and not when the limit's clause ENDS in a
+//    colon before the first item ("SYSTEM LIMITED TO: (1) WIND SPEED 110 MPH (2) …" — a header
+//    whose items are all bounds). A list marker is never itself "a number in another unit".
+//  · a LABEL WITH ITS OWN ":"/"=" VALUE, then this value's own design label: "MAXIMUM ROOF
+//    HEIGHT: TWO STORIES WIND SPEED 110 MPH". A form's furniture is not a value ("does not exceed
+//    the following: Yes No ( check one ) Wind speed 120 mph" stays a bound), and neither is a
+//    bound value in the header's clause ("…: Yes No 120 mph in Wind Exposure Category C" — the
+//    120 mph comes before the exposure's label, so the letter stays under the limit).
+const LIST_MARKER = /(?<=^|\s)(?:\(\d{1,2}\)|\d{1,2}\))(?=\s)/g;
+const FIELD_BREAK = /[•▪●■◦]|(?<=^|\s)(?:\(\d{1,2}\)|\d{1,2}\))(?=\s)/g;
+const DESIGN_LABEL = /\b(?:wind|exp(?:osure\b|\.)|ground\s+snow|snow\s+loads?|risk\s+cat|v\s*[_(]?\s*(?:ult|asd)\b|v(?:ult|asd)\b|p\s?g\b)/i;
+const FORM_FURNITURE = /\b(?:yes|no|n\/a)\b|[☐□☑☒✓✔]/gi;
+const DESIGN_VALUE = /\d+(?:\.\d+)?\s*(?:mph|psf)\b/i;
+/** Has the limit word's own field ended somewhere in `tail` (the text from the limit word to the value)? */
+function limitSpent(tail: string): boolean {
+  const numbersOnly = blankParentheticals(tail.replace(LIST_MARKER, (x) => " ".repeat(x.length))).replace(/\[[^[\]]*\]/g, (p) => " ".repeat(p.length));
+  if (OTHER_UNIT_NUMBER.test(numbersOnly)) return true;
+  const breaks = [...tail.matchAll(FIELD_BREAK)];
+  if (breaks.length && !/[:=]\s*$/.test(tail.slice(0, breaks[0].index))) {
+    for (const b of breaks) {
+      // Nothing after the marker but the value itself ("(1) 120 mph"): the item opens with a value.
+      if (!/^\s*(?:\d|$)/.test(tail.slice((b.index ?? 0) + b[0].length))) return true;
+    }
+  }
+  const sep = Math.max(tail.lastIndexOf(":"), tail.lastIndexOf("="));
+  if (sep >= 0) {
+    const post = blankParentheticals(tail.slice(sep + 1)).replace(FORM_FURNITURE, (x) => " ".repeat(x.length));
+    const lab = post.search(DESIGN_LABEL);
+    if (lab > 0 && /\S/.test(post.slice(0, lab)) && !DESIGN_VALUE.test(post.slice(0, lab))) return true;
+  }
+  return false;
+}
 /** Does a limit word earlier in the sentence still govern the value at "at"? */
 function limitGoverns(text: string, at: number): boolean {
   const sentence = sentenceBefore(text, at);
@@ -185,8 +223,7 @@ function limitGoverns(text: string, at: number): boolean {
   const re = new RegExp(SENTENCE_LIMIT.source, "gi");
   while ((m = re.exec(sentence))) last = m;
   if (!last) return false;
-  const between = blankParentheticals(sentence.slice(last.index + last[0].length)).replace(/\[[^[\]]*\]/g, (p) => " ".repeat(p.length));
-  return !OTHER_UNIT_NUMBER.test(between);
+  return !limitSpent(sentence.slice(last.index + last[0].length));
 }
 function sentenceBefore(text: string, at: number): string {
   const window = text.slice(Math.max(0, at - 260), at);
@@ -334,7 +371,14 @@ function extractWind(text: string, source: string, out: StatedDesignCriterion[])
 // A LIMIT CLAUSE governs the letter — a prescriptive checklist "Wind exposure for structure is
 // limited to Exposure Category B or C", "Less than or equal to 120 mph in Exposure Category B".
 // Numbers may sit between the limit word and the letter; a field separator (= : ; . •) may not.
-const EXPOSURE_LIMIT_BEFORE = /(?:\bup\s*to|\bmax(?:imum)?\b|\bmin(?:imum)?\b|\brat(?:ed|ing)\b|\btested\b|\blimit(?:ed|s)?\b|\bexceed(?:s|ing)?\b|\bnot\s+more\s+than|\bless\s+than|\bgreater\s+than|\bor\s+less\b|\bdesigned\s+(?:for|to)\b|≤|≥|<=|>=)[^.;:=•]{0,45}$/i;
+// The limit's own field ends where limitSpent says (a number in another unit, a new list item):
+// "MAX ROOF SLOPE 30 DEG WIND SPEED 110 MPH EXPOSURE C", "1) ARRAY NOT TO EXCEED ROOF RIDGE 2) WIND
+// SPEED 110 MPH EXPOSURE C" state Exposure C.
+const EXPOSURE_LIMIT_BEFORE = /(?:\bup\s*to|\bmax(?:imum)?\b|\bmin(?:imum)?\b|\brat(?:ed|ing)\b|\btested\b|\blimit(?:ed|s)?\b|\bexceed(?:s|ing)?\b|\bnot\s+more\s+than|\bless\s+than|\bgreater\s+than|\bor\s+less\b|\bdesigned\s+(?:for|to)\b|≤|≥|<=|>=)([^.;:=•]{0,45})$/i;
+function exposureLimitBefore(before: string): boolean {
+  const m = EXPOSURE_LIMIT_BEFORE.exec(before);
+  return !!m && !limitSpent(m[1]);
+}
 // A LIST or RANGE of letters is not a stated category: "B or C", "C/D", "B, C and D", "B-D".
 const EXPOSURE_LIST_AFTER = /^\s*(?:,|\/|&|\bor\b|\band\b|\bto\b|\bthrough\b|[-–])\s*(?:exp(?:osure|\.)?\s*(?:cat(?:egory|\.)?\s*)?)?[BCD](?![A-Za-z0-9])/i;
 // "EXPOSURE B RATING", "Exposure C rated" — a product rating, not the site's category.
@@ -369,7 +413,7 @@ function extractExposureAndRisk(text: string, source: string, out: StatedDesignC
       // whatever precedes it ("PER ASCE 7-16 MINIMUM DESIGN LOADS … EXPOSURE CATEGORY = C"); the
       // checklist's limit clauses never assign ("limited to Exposure Category B", "in Exposure
       // Category C").
-      if (!/[:=]/.test(m[0]) && EXPOSURE_LIMIT_BEFORE.test(text.slice(Math.max(0, at - 60), at))) continue;
+      if (!/[:=]/.test(m[0]) && exposureLimitBefore(text.slice(Math.max(0, at - 60), at))) continue;
       // …and the same limit further back in the sentence, across a form's ": Yes No ( check
       // one ) 120 mph in Wind Exposure Category C" (the per-field check above stops at a colon).
       if (!/[:=]/.test(m[0]) && limitGoverns(text, at)) continue;

@@ -213,6 +213,35 @@ check("MUST-EXCLUDE: a model-code entry whose title names no state code of its e
   assert.ok(f && /IRC 2021/.test(f.message) && /IRC 2015/.test(f.message), f?.message);
 });
 
+console.log("\nG. a limit's field also ends at a field boundary: a list item, a bullet, a label with its own value");
+
+check("MUST-PASS: a value after a NEW list item / bullet / labelled field reads ('(2) WIND SPEED …', '2) …', '• …', 'MAXIMUM ROOF HEIGHT: TWO STORIES …')", () => {
+  const all = ["groundSnowPsf=25/ground", "riskCategory=II/unspecified", "windExposure=C/unspecified", "windSpeedMph=110/unspecified"];
+  assert.deepEqual(stated("(1) ARRAY NOT TO EXCEED ROOF RIDGE (2) WIND SPEED 110 MPH EXPOSURE C GROUND SNOW LOAD 25 PSF RISK CATEGORY II"), all);
+  assert.deepEqual(stated("1) ARRAY NOT TO EXCEED ROOF RIDGE 2) WIND SPEED 110 MPH EXPOSURE C GROUND SNOW LOAD 25 PSF RISK CATEGORY II"), all);
+  assert.deepEqual(stated("• RACKING LIMITED TO COMP SHINGLE ROOFS • WIND SPEED 110 MPH EXPOSURE C GROUND SNOW LOAD 25 PSF RISK CATEGORY II"), all);
+  assert.deepEqual(stated("• ARRAY NOT TO EXCEED ROOF RIDGE • WIND SPEED 110 MPH EXPOSURE C GROUND SNOW LOAD 25 PSF RISK CATEGORY II"), all);
+  assert.deepEqual(stated("MAXIMUM ROOF HEIGHT: TWO STORIES WIND SPEED 110 MPH EXPOSURE C GROUND SNOW LOAD 25 PSF RISK CATEGORY II"), all);
+});
+check("MUST-PASS (finding): '(1) ARRAY NOT TO EXCEED ROOF RIDGE (2) … GROUND SNOW LOAD 20 PSF' vs a verified 25 -> below-ahj BLOCKER, not the unknown callout", () => {
+  const f = has(findings("IL", "Testfield", "(1) ARRAY NOT TO EXCEED ROOF RIDGE (2) WIND SPEED 110 MPH (3) GROUND SNOW LOAD 20 PSF", { confidence: "verified", designCriteria: { groundSnowLoadPsf: 25 } }), BELOW);
+  assert.ok(f && f.severity === "blocker" && /stated 20 psf/.test(f.message), f?.message);
+});
+check("MUST-EXCLUDE: a limit's OWN list stays bounds ('does not exceed (1) 120 mph in … C; (2) 135 mph …', '…the following: 1) …', 'LIMITED TO: (1) WIND SPEED …', bullets of values)", () => {
+  for (const t of [
+    "The basic design wind speed does not exceed (1) 120 mph in Wind Exposure Category C; (2) 135 mph in Wind Exposure Category B",
+    "The basic design wind speed does not exceed the following: (1) 120 mph in Wind Exposure Category C; (2) 135 mph in Wind Exposure Category B",
+    "The basic design wind speed does not exceed the following: 1) 120 mph in Wind Exposure Category C 2) 135 mph in Wind Exposure Category B",
+    "SYSTEM LIMITED TO: (1) WIND SPEED 110 MPH (2) GROUND SNOW LOAD 70 PSF (3) EXPOSURE C",
+    "Wind speed does not exceed: • 120 mph Exposure C • 135 mph Exposure B",
+    "• Ground snow load not to exceed 70 psf • Wind speed not to exceed 120 mph",
+  ]) assert.deepEqual(stated(t), [], t);
+});
+check("MUST-EXCLUDE: a form's furniture after the limit's colon is not a field's value ('…the following: Yes No ( check one ) Wind speed 120 mph …')", () => {
+  assert.deepEqual(stated("The basic design wind speed does not exceed the following: Yes No ( check one ) Wind speed 120 mph in Exposure Category C"), []);
+  assert.deepEqual(stated("Ground snow load does not exceed maximum load: Yes No ( check one ) 50 psf for structures under the ORSC, or 70 psf for structures under the OSSC"), []);
+});
+
 if (failures) {
   console.error(`\n${failures} design-criteria field-scope check(s) FAILED`);
   process.exit(1);
