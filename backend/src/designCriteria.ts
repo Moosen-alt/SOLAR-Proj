@@ -1077,7 +1077,8 @@ function ahjSentences(text: string): AhjSentence[] {
   // not an item: it closes the header, so the header's cue does not carry to it (on a status reading
   // the package's own values would become the jurisdiction's proposals). An unnumbered header's
   // numbered lines stay its items ("Provide the following:\n1. …\n2. …").
-  let headerMarker: { family: string; indent: number } | null = null;
+  // (Assigned inside the pieces callback, so typed by cast: TS would narrow a plain `= null` to never.)
+  let headerMarker = null as { family: string; indent: number } | null;
   for (const line of String(text || "").replace(/\r/g, "").split("\n")) {
     if (!line.trim()) { inList = false; headerMarker = null; continue; }
     const marker = lineMarkerOf(line);
@@ -1096,14 +1097,16 @@ function ahjSentences(text: string): AhjSentence[] {
       if (!flatPiece) return;
       const marked = /^[-–•*]\s*/.test(flatPiece);
       if (i > 0 && !marked && !prevEndsColon) { inList = false; headerMarker = null; }
-      const bullet = !(sibling && i === 0) && (marked || prevEndsColon || (inList && i === 0));
+      // (A sibling line has already closed the list above, so its first piece is no bullet.)
+      const bullet = marked || prevEndsColon || (inList && i === 0);
       const opensList = /:\s*$/.test(flatPiece);
       out.push({ text: flatPiece.replace(/^[-–•*]\s*/, ""), bullet, opensList, lineStart: i === 0 });
       prevEndsColon = opensList;
       if (prevEndsColon) {
         inList = true;
-        // Only a header that opens its line owns the line's marker.
-        headerMarker = i === 0 ? marker : null;
+        // The line's marker numbers the COMMENT the header sits in, wherever in the line the header
+        // is ("1. Revise per the checklist. The following are required:").
+        headerMarker = marker;
       }
     });
   }

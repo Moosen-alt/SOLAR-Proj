@@ -266,12 +266,16 @@ await check("MUST EXCLUDE (r3f): a numbered sibling comment does not inherit the
     ["Corrections:\n1. The following design criteria are required:\n   a. Ground snow load 36 psf\n2. Wind speed 110 mph per plans.", { groundSnowLoadPsf: 36 }],
     ["1. Minimum design loads shall be as follows:\n- Ground snow load 36 psf\n2. Wind exposure C noted on PV-1.", { groundSnowLoadPsf: 36 }],
     ["1) The following design criteria are required:\n   a) Ground snow load 36 psf\n2) Wind speed 110 mph per plans.", { groundSnowLoadPsf: 36 }],
+    // The header need not open its line: the "1." numbers the comment the header sits in.
+    ["1. Revise per the checklist. The following design criteria are required:\n   a. Ground snow load 36 psf\n2. Wind speed 110 mph per plans.", { groundSnowLoadPsf: 36 }],
   ];
   for (const [text, want] of cases) assert.deepEqual(asMap(extractAhjRequiredCriteria(text, { statusReading: true })), want, JSON.stringify(text));
 });
 await check("MUST PASS (r3f): a sibling closes only its own header — an unnumbered header's numbered lines stay its items; later comments still read as pasted", () => {
   for (const statusReading of [false, true]) {
     assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide the following:\n1. Ground snow load 36 psf\n2. Design wind speed 120 mph", { statusReading })), { groundSnowLoadPsf: 36, windSpeedMph: 120 }, `statusReading=${statusReading}`);
+    // Lettered items under a numbered header are ITEMS (another family), even printed flush left.
+    assert.deepEqual(asMap(extractAhjRequiredCriteria("1. The following design criteria are required:\na. Ground snow load 36 psf\nb. Design wind speed 120 mph", { statusReading })), { groundSnowLoadPsf: 36, windSpeedMph: 120 }, `lettered, statusReading=${statusReading}`);
   }
   // Comment 1 asks for a DOCUMENT (its item is the package's 16); comment 2 states the requirement.
   assert.deepEqual(asMap(extractAhjRequiredCriteria("1. Provide calculations for the following:\n- Ground snow load 16 psf\n2. Revise the design criteria to the following:\n- Ground snow load 36 psf")), { groundSnowLoadPsf: 36 });
