@@ -1155,6 +1155,20 @@ export interface DesignCriteriaResearchResult {
   notes: string;
 }
 
+/** WHAT KIND OF STRUCTURE CARRIES THE ARRAY. Two answers, not three: text can prove a
+ *  manufactured (HUD / mobile) home, but silence never proves a site-built one — so the
+ *  absence of a signal is "unknown", never "site_built". One predicate answers it
+ *  (structureTypeForProject in codeReviewRules.ts); every rule reads that. */
+export type StructureKind = "manufactured_home" | "unknown";
+
+export interface StructureTypeFact {
+  kind: StructureKind;
+  /** Where the answer came from: a structure-type FIELD, or the document text that said so. */
+  source: string;
+  /** The words that decided it, tight (no surrounding title-block text). "" when unknown. */
+  excerpt: string;
+}
+
 /** Solar-pack prescriptive-path limits; future rule packs add their own blocks. */
 export interface PrescriptiveLimits {
   maxGroundSnowPsf?: number;

@@ -1,8 +1,15 @@
-import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding } from "../../shared/src/types";
+import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, StructureTypeFact } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS } from "./projectEvidence";
 import { pathWordingScope } from "./permitPath";
-import { evaluateDesignCriteriaFindings, type DesignTextSource } from "./designCriteria";
+import {
+  evaluateDesignCriteriaFindings,
+  extractAttachmentSpacings,
+  packageTextSources,
+  PARSED_FIELDS_SOURCE,
+  residentialCodeRef,
+  type DesignTextSource,
+} from "./designCriteria";
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",
@@ -288,6 +295,154 @@ function isMlpeDesign(project: ProjectRecord, allText: string): boolean {
   // Nothing recorded — fall back to the sheets, but only on topology language.
   return hasAny(allText, MLPE_TOPOLOGY);
 }
+
+// ---------------------------------------------------------------------------
+// A STATEMENT, NOT A MENTION. The three questions below (is this a manufactured home? does
+// the engineering carry the load to the foundation? is the listing shown?) are each answered
+// by a phrase in the package — and each phrase can appear NEGATED ("not a manufactured home",
+// "no UL 2703 listing provided", "load path to the foundation not evaluated"). A negated
+// phrase must not answer yes. One reader, so the three cannot disagree about what "stated"
+// means.
+// The negation must sit IMMEDIATELY before the phrase (at most two short words between:
+// "not a manufactured home", "not listed to UL 2703") — a wider window read "engineered, not
+// prescriptive, for a manufactured home" as a denial.
+const NEGATION_BEFORE = /(?:\b(?:not|no|never|without|missing|lacks?|lacking|other\s+than|excluding|except|isn'?t)\s+(?:[a-z]+\s+){0,2}|\bnon[-\s]?)$/i;
+const NEGATION_AFTER = /^[^.;]{0,30}?\b(?:not\s+(?:provided|shown|found|included|listed|evaluated|verified|checked|analy[sz]ed|addressed|applicable)|missing|by\s+others|excluded)\b|^\s*[?:]?\s*(?:no|n\/a|none)\b/i;
+
+interface Affirmed {
+  source: string;
+  excerpt: string;
+}
+
+function affirmedIn(sources: DesignTextSource[], patterns: RegExp[]): Affirmed | null {
+  for (const s of sources) {
+    const text = String(s.text || "").replace(/\s+/g, " ");
+    for (const pattern of patterns) {
+      const re = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text))) {
+        if (m[0].length === 0) { re.lastIndex++; continue; }
+        const before = text.slice(Math.max(0, m.index - 40), m.index);
+        const after = text.slice(m.index + m[0].length, m.index + m[0].length + 40);
+        if (NEGATION_BEFORE.test(before) || NEGATION_AFTER.test(after) || /\b(?:not|no|without)\b/i.test(m[0])) continue;
+        // The matched phrase itself, not a window: the sentence around it on a cover sheet is
+        // the title block (homeowner name, address).
+        return { source: s.label, excerpt: m[0].slice(0, 120) };
+      }
+    }
+  }
+  return null;
+}
+
+function affirmedEvidence(hit: Affirmed, label: string, note: string): ReviewerFindingEvidence {
+  return {
+    kind: hit.source === PARSED_FIELDS_SOURCE ? "field_value" : "source_excerpt",
+    label,
+    source: hit.source,
+    excerpt: hit.excerpt,
+    confidence: hit.source === PARSED_FIELDS_SOURCE ? "medium" : "high",
+    pageHint: "",
+    screenshotPath: "",
+    verifier: hit.source === PARSED_FIELDS_SOURCE ? "parser" : "rule_engine",
+    note,
+  };
+}
+
+// IS THE ARRAY GOING ON A MANUFACTURED HOME?
+//
+// A coastal Oregon city bounced a roof-mounted design (2026-05-05): "The proposed installation
+// is being placed on a manufactured home. Prescriptive code does not allow this as these
+// structures are not conventionally designed to support any additional loads... revise the
+// structural design to show how the new loads will be adequately transferred through the
+// existing walls ... to the ground below (Cont. load path). R301.1.3 ORSC". Nothing in the
+// package said so — the approved engineer letter later did ("HUD manufactured home", "2x2
+// manufactured trusses @ 24\" o.c.") — and no intake field asks.
+//
+// "manufactur" is also the most common word on a plan set that is NOT about the house:
+// "AS SHOWN IN MANUFACTURER DOCUMENTATION", "manufactured by", and "manufactured trusses" on
+// an ordinary site-built roof. Those must never count. 2x2 trusses are the manufactured-home
+// tell, so "2x2 manufactured trusses" does; "2x4 manufactured trusses" does not.
+const MANUFACTURED_HOME_PATTERNS: RegExp[] = [
+  /\bmanufactured\s+(?:homes?|housing|dwellings?|residences?|house)\b/i,
+  /\bmobile\s+(?:homes?|dwellings?|residences?)\b/i,
+  /\bHUD[-\s]*(?:code\b|label|tag|data\s*plate|certif\w*|standards?\b|manufactured|homes?\b)/i,
+  /\b24\s*CFR\s*(?:part\s*)?3280\b/i,
+  /\b(?:home|HUD|dwelling)\s+data\s*plate\b/i,
+  /\bdata\s*plate\s+(?:of|on|for)\s+(?:the\s+)?(?:home|dwelling|manufactured|mobile)\b/i,
+  // Case-sensitive: "MH" as the abbreviation, with a word that makes it a dwelling. A bare
+  // "MH" is also a manhole on a site plan.
+  /\bMH\s+(?:home|unit|dwelling|park)\b/,
+  /\b2\s*["”]?\s*x\s*2\s*["”]?\s+(?:pre-?)?manufactured\s+truss/i,
+];
+
+// A structure-type answer recorded as a FIELD (intake or parser). No parser field or intake
+// question exists yet (2026-09-23); these are the names one would carry, read first so adding
+// the field needs no rule change. A short field value ("MH", "Mobile", "HUD") is the answer
+// itself.
+const STRUCTURE_TYPE_FIELDS = ["structureType", "buildingType", "dwellingType", "homeType"];
+const STRUCTURE_FIELD_SHORT = /^\s*(?:MH|HUD|manufactured|mobile|manufactured\s*\/\s*mobile)\s*(?:home|dwelling)?\s*$/i;
+
+/** The one predicate: which structure carries the array. Rules read this, nothing else. */
+export function structureType(project: ProjectRecord, extraTexts: DesignTextSource[] = []): StructureTypeFact {
+  const fields: DesignTextSource[] = [];
+  for (const key of STRUCTURE_TYPE_FIELDS) {
+    const value = str(project, key);
+    if (!value) continue;
+    if (STRUCTURE_FIELD_SHORT.test(value)) return { kind: "manufactured_home", source: PARSED_FIELDS_SOURCE, excerpt: `${key}: ${value}`.slice(0, 80) };
+    fields.push({ label: PARSED_FIELDS_SOURCE, text: value });
+  }
+  // Parser fields that carry the parser's own reading of the house.
+  for (const key of ["description", "framingType", "roofRafterSize"]) {
+    const value = str(project, key);
+    if (value) fields.push({ label: PARSED_FIELDS_SOURCE, text: value });
+  }
+  const hit = affirmedIn([...fields, ...packageTextSources(project, extraTexts)], MANUFACTURED_HOME_PATTERNS);
+  return hit ? { kind: "manufactured_home", source: hit.source, excerpt: hit.excerpt } : { kind: "unknown", source: "", excerpt: "" };
+}
+
+export function structureTypeForProject(project: ProjectRecord): StructureTypeFact {
+  return structureType(project);
+}
+
+// DOES THE ENGINEERING CARRY THE NEW LOAD TO THE GROUND? A load path must END somewhere: "load
+// path to the rafters" is an attachment check, not a load path through the walls. And "ground"
+// is not "ground snow" or "ground mount".
+const FOUNDATION = String.raw`(?:foundations?|footings?|piers?|chassis|soil|ground(?!\s*(?:snow|-?\s*mount|fault)))`;
+const LOAD_PATH_TO_FOUNDATION: RegExp[] = [
+  new RegExp(String.raw`\bload\s+path\b[^.;]{0,100}?\b${FOUNDATION}\b`, "i"),
+  new RegExp(String.raw`\b${FOUNDATION}\b[^.;]{0,60}?\bcontinuous\s+load\s+path\b`, "i"),
+  new RegExp(String.raw`\b(?:roof\s+)?framing\b[^.;]{0,60}?\bthrough\b[^.;]{0,80}?\b${FOUNDATION}\b`, "i"),
+  new RegExp(String.raw`\bloads?\b[^.;]{0,40}?\btransferr?(?:ed|ing|s)?\b[^.;]{0,80}?\bwalls?\b[^.;]{0,60}?\b${FOUNDATION}\b`, "i"),
+];
+
+// WHAT THE LISTING IS. The module listing is UL 61730 (or the legacy UL 1703); racking and
+// mounting is UL 2703. UL 1741 (inverters) and UL 1699B (arc-fault) are listings too, and are
+// on every plan set — which is exactly why a bare /UL\s*\d+/ would clear this for a package
+// that shows neither.
+export const MODULE_LISTING_PATTERNS: RegExp[] = [
+  /\bUL\s*[-/]?\s*(?:IEC\s*)?61730\b/i,
+  /\bIEC\s*\/\s*UL\s*61730\b/i,
+  /\bUL\s*-?\s*1703\b/i,
+];
+export const RACKING_LISTING_PATTERNS: RegExp[] = [/\bUL\s*-?\s*2703\b/i];
+
+const engineeredDesign: CodeReference = {
+  code: "IRC / ORSC",
+  section: "R301.1.3",
+  title: "Engineered design",
+  adoptionScope: "One- and two-family residential; verify the locally adopted edition.",
+  sourceUrl: "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning",
+  note: "Construction outside the prescriptive provisions is designed by accepted engineering practice. A manufactured home is not conventional light-frame construction.",
+};
+
+const equipmentListings: CodeReference = {
+  code: "IRC / ORSC",
+  section: "R324.3.1",
+  title: "Equipment listings",
+  adoptionScope: "Residential rooftop PV; verify the locally adopted edition.",
+  sourceUrl: "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning",
+  note: "PV modules are listed and labeled to UL 61730 (or UL 1703); rack mounting systems are listed to UL 2703 where the adopted code or the AHJ requires it.",
+};
 
 function finding(input: {
   id: string;
@@ -584,6 +739,154 @@ export function evaluateDesignCodeFindings(
   // legacy no-context path (pinned by the Oregon golden) is untouched.
   if (ctx) out.push(...evaluateDesignCriteriaFindings(project, ctx, { roofMounted, extraTexts: documentTexts }));
 
+  // What the package itself states (parser commentary excluded — see packageTextSources).
+  const packageTexts = packageTextSources(project, documentTexts);
+
+  // MANUFACTURED HOME — the prescriptive path does not apply, and an engineered design must
+  // carry the new load through the walls to the ground. Not gated on a jurisdiction context:
+  // this is what the structure IS, not a threshold from a profile, and it fires only when the
+  // package says so (see structureType).
+  const structure = structureType(project, documentTexts);
+  if (roofMounted && structure.kind === "manufactured_home") {
+    const detected = affirmedEvidence(
+      { source: structure.source, excerpt: structure.excerpt },
+      "Manufactured home",
+      "The package identifies the structure as a manufactured (HUD / mobile) home.",
+    );
+    const loadPathRef = ctx
+      ? residentialCodeRef(ctx, "R301.1.3", "Engineered design", engineeredDesign.note)
+      : engineeredDesign;
+    const cityFeedback = "The proposed installation is being placed on a manufactured home. Prescriptive code does not allow this, as these structures are not conventionally designed to support additional loads. Revise the structural design to show how the new loads will be adequately transferred through the existing roof framing and walls to the foundation / ground below (continuous load path).";
+    if (prescriptive) {
+      out.push({
+        ...finding({
+          id: "city.struct.manufactured-home-prescriptive",
+          severity: "blocker",
+          category: "structural",
+          title: "Manufactured home on the prescriptive path",
+          message: `The package identifies the structure as a manufactured home ("${structure.excerpt}", ${structure.source}), and the permit path is prescriptive. The prescriptive rooftop-PV provisions assume conventional light-frame construction; a manufactured home needs an engineered design.`,
+          cityFeedback,
+          designTeamAction: "Route the design to a structural engineer: an engineered design (not the prescriptive checklist) that shows the continuous load path from the PV attachments through the roof framing and walls to the foundation/piers.",
+          evidenceNeeded: ["Stamped engineered design for the manufactured home", "Continuous load path: attachments -> roof framing -> walls -> foundation/piers", "Framing members as built (manufactured trusses, size and spacing)"],
+          codeReferences: [loadPathRef],
+        }),
+        evidenceStatus: "verified",
+        evidenceFound: [detected],
+      });
+    } else {
+      const loadPath = affirmedIn(packageTexts, LOAD_PATH_TO_FOUNDATION);
+      if (!loadPath) {
+        out.push({
+          ...finding({
+            id: "city.struct.manufactured-home-load-path",
+            severity: "blocker",
+            category: "structural",
+            title: "Manufactured home — engineering does not show a load path to the foundation",
+            message: `The package identifies the structure as a manufactured home ("${structure.excerpt}", ${structure.source}), and no engineering text in the package shows how the new PV load reaches the foundation (a continuous load path through the walls). An attachment/rafter check alone does not answer it.`,
+            cityFeedback,
+            designTeamAction: "Have the engineer of record extend the design from the attachments through the roof framing, walls and floor system to the foundation/piers, and state the continuous load path in the sealed letter.",
+            evidenceNeeded: ["Sealed engineering showing the continuous load path to the foundation/piers", "Wall and foundation/pier capacity for the added load"],
+            codeReferences: [loadPathRef],
+          }),
+          evidenceStatus: "missing",
+          evidenceFound: [detected],
+        });
+      }
+    }
+  }
+
+  // UL LISTINGS — module (UL 61730 / UL 1703) and racking/mounting (UL 2703), stated in the
+  // package. An attached module_spec DOCUMENT is not the answer by itself: a coastal Oregon city
+  // asked for exactly these listings on a package that carried one. Its text is read (it is in
+  // the plan-set text), its presence is not. Gated on a jurisdiction context like the criteria
+  // rules above — the legacy no-context path is pinned by the Oregon golden.
+  if (ctx && roofMounted) {
+    const moduleListing = affirmedIn(packageTexts, MODULE_LISTING_PATTERNS);
+    const rackingListing = affirmedIn(packageTexts, RACKING_LISTING_PATTERNS);
+    if (!moduleListing || !rackingListing) {
+      const missing = [!moduleListing ? "module listing (UL 61730 or UL 1703)" : "", !rackingListing ? "racking/mounting listing (UL 2703)" : ""].filter(Boolean);
+      const found = [moduleListing, rackingListing].filter((x): x is Affirmed => x != null);
+      out.push({
+        ...finding({
+          id: "city.plan.ul-listings-missing",
+          severity: "warning",
+          category: "plan_set",
+          title: "UL listing for modules / racking not shown",
+          message: `The package does not state the ${missing.join(" or the ")}. UL 1741 (inverters) and UL 1699B (arc-fault) are different listings and do not answer this.`,
+          cityFeedback: "Provide UL listing for the panels, mounting and racking hardware.",
+          designTeamAction: "Add the module UL 61730 (or UL 1703) listing and the racking/mounting UL 2703 listing to the plan set — equipment notes or the attached cut sheets/certificates.",
+          evidenceNeeded: missing.map((m) => `${m[0].toUpperCase()}${m.slice(1)} on the plan set or an attached cut sheet/certificate`),
+          codeReferences: [residentialCodeRef(ctx, equipmentListings.section, equipmentListings.title, equipmentListings.note)],
+        }),
+        evidenceStatus: found.length ? "weak" : "missing",
+        evidenceFound: found.map((f) => affirmedEvidence(f, "Listing stated", "Listing found in the package.")),
+      });
+    }
+  }
+
+  // ATTACHMENT SPACING vs THE JURISDICTION'S LIMIT. The profile's prescriptive
+  // maxAttachmentSpacingIn is data (learned from an AHJ comment through a human, or
+  // researched) — no number lives here. The plan's FIELD spacing is the larger of what it
+  // states: "4'-0\" O.C. (24\" O.C. within 3 ft of edges)" is 48" in the field.
+  //
+  // "ANCHOR", NOT "ATTACHMENT", IN THE ID AND TITLE — ON PURPOSE. This finding is a MEASURED
+  // result (48 > 24), and reviewerVision relaxes any warning/blocker whose id/title maps to a
+  // plan topic (topicForFinding: /attachment|racking|mount/ -> rackingAttachment) once a sheet
+  // image merely SHOWS a spacing — the same trap that softened a real 705.12 violation. The
+  // proper home is reviewerVision's MEASURED_FINDING_IDS (not this stage's file); until it is
+  // listed there, the wording keeps the finding out of vision's reach, and
+  // structureListingsSpacing.test.ts fails if a rename makes it relaxable.
+  const ahjMaxSpacing = ctx && typeof ctx.prescriptive.maxAttachmentSpacingIn === "number" && ctx.prescriptive.maxAttachmentSpacingIn > 0
+    ? ctx.prescriptive.maxAttachmentSpacingIn
+    : null;
+  if (ctx && roofMounted && ahjMaxSpacing != null) {
+    const who = ctx.ahj || ctx.state || "the jurisdiction";
+    const stated: Array<{ inches: number; source: string; excerpt: string }> = [];
+    for (const key of ["attachmentSpacingIn", "attachmentEdgeSpacingIn"]) {
+      const v = num(project, [key]);
+      if (v != null && v >= 6 && v <= 96) stated.push({ inches: v, source: PARSED_FIELDS_SOURCE, excerpt: `${key}: ${str(project, key)}`.slice(0, 80) });
+    }
+    for (const source of packageTexts) {
+      for (const s of extractAttachmentSpacings(source.text)) stated.push({ inches: s.inches, source: source.label, excerpt: s.excerpt });
+    }
+    const profileNote = ctx.verified ? "human-verified code profile" : "seeded code profile (not yet human-verified)";
+    const ref = residentialCodeRef(ctx, roofLoads.section, roofLoads.title, roofLoads.note);
+    if (!stated.length) {
+      out.push(finding({
+        id: "city.struct.anchor-spacing-unchecked",
+        severity: "callout",
+        category: "structural",
+        title: "Roof anchor spacing not readable — not checked against the jurisdiction's limit",
+        message: `${who} accepts roof attachments at no more than ${ahjMaxSpacing}" o.c. (${profileNote}), and no attachment spacing could be read from the package, so it has NOT been checked.`,
+        cityFeedback: `Show the roof-attachment spacing on the plans; ${who} limits it to ${ahjMaxSpacing}" o.c.`,
+        designTeamAction: `Confirm the attachment spacing on the roof plan / attachment detail is no more than ${ahjMaxSpacing}" o.c.`,
+        evidenceNeeded: ["Attachment spacing (field and edge zones) on the roof plan or attachment detail"],
+        codeReferences: [ref],
+        installerCallout: false,
+      }));
+    } else {
+      const fieldSpacing = Math.max(...stated.map((s) => s.inches));
+      if (fieldSpacing > ahjMaxSpacing) {
+        const over = stated.filter((s) => s.inches > ahjMaxSpacing);
+        out.push({
+          ...finding({
+            id: "city.struct.anchor-spacing-exceeds-ahj",
+            severity: screeningSeverity,
+            category: "structural",
+            title: "Roof anchor spacing exceeds the jurisdiction's limit",
+            message: `The plan's field attachment spacing is ${fieldSpacing}" o.c. (${[...new Set(over.map((s) => s.source))].join(", ")}); ${who} accepts at most ${ahjMaxSpacing}" o.c. (${profileNote}).`,
+            cityFeedback: `Provide updated mounting spacing. The mounting spacing should be ${ahjMaxSpacing}" o.c. or less.`,
+            designTeamAction: `Revise the attachment layout and detail to ${ahjMaxSpacing}" o.c. maximum (field and edge zones), or provide engineering that justifies the wider spacing where the jurisdiction accepts it.`,
+            evidenceNeeded: [`Attachment spacing at or below ${ahjMaxSpacing}" o.c. on the roof plan and attachment detail`, ...over.slice(0, 3).map((s) => `${s.inches}" o.c. stated (${s.source})`)],
+            codeReferences: [ref],
+          }),
+          evidenceStatus: "verified",
+          evidenceFound: over.slice(0, 6).map((s) => affirmedEvidence({ source: s.source, excerpt: s.excerpt }, `Attachment spacing ${s.inches}" o.c.`, `Compared against ${who}'s ${ahjMaxSpacing}" o.c. limit.`)),
+        });
+      }
+    }
+  }
+
   if (rsdApplies && !hasAny(all, [/rapid shutdown/i, /\bRSD\b/i, /690\.12/i])) {
     const mlpe = isMlpeDesign(project, all);
     out.push(finding({
@@ -762,7 +1065,7 @@ export function evaluateDesignCodeFindings(
 
   const moduleFields = [str(project, "moduleMake"), str(project, "moduleModel"), str(project, "moduleWattage"), str(project, "moduleQty")].filter(Boolean);
   const inverterFields = [str(project, "invModel"), str(project, "pvMicroModel"), str(project, "inverterModel"), str(project, "invQty"), str(project, "pvMicroQty")].filter(Boolean);
-  const hasModuleSpec = hasAny(all, [/module spec/i, /module data/i, /\bUL\s*61730\b/i, /\bUL\s*1703\b/i]);
+  const hasModuleSpec = hasAny(all, [/module spec/i, /module data/i, ...MODULE_LISTING_PATTERNS]);
   const hasInverterSpec = hasAny(all, [/inverter spec/i, /microinverter spec/i, /\bUL\s*1741\b/i, /PCS/i]);
   // Core equipment data present = the schedule IS there (make/model/wattage/qty for
   // modules and at least model+qty for the inverter). When that's the case, only a

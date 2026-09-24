@@ -436,6 +436,67 @@ function basisOf(sentence: string): string {
   return sentence.length > 200 ? `${sentence.slice(0, 197)}...` : sentence;
 }
 
+/** One roof-attachment spacing stated in a text: where it sits, and its value in inches. */
+export interface StatedAttachmentSpacing {
+  at: number;
+  inches: number;
+  excerpt: string;
+}
+
+/**
+ * ROOF-ATTACHMENT SPACING, o.c. — ONE reader for both sides of the question: what an AHJ
+ * correction REQUIRES ("The mounting spacing should be 2' oc") and what a design STATES ("NEW
+ * PV ATTACHMENTS AT 4'-0\" O.C."). An attachment label must sit within 60 chars before the
+ * value, with no framing member between them — "RAFTER @ 16\" O.C." is framing, not an
+ * attachment. Values outside 6..96 inches are not an attachment spacing.
+ */
+export function extractAttachmentSpacings(text: string): StatedAttachmentSpacing[] {
+  const src = String(text || "");
+  const spacings: Array<{ at: number; end: number; inches: number }> = [];
+  let m: RegExpExecArray | null;
+  const ftIn = /(\d+(?:\.\d+)?)\s*(?:'|’|ft\.?|feet|foot)\s*(?:-?\s*(\d+(?:\.\d+)?)\s*(?:"|”|in\.?))?\s*(?:o\.?\s*c\b\.?|on\s+cent(?:er|re))/gi;
+  while ((m = ftIn.exec(src))) {
+    const ft = toNumber(m[1]);
+    const inch = m[2] ? toNumber(m[2]) ?? 0 : 0;
+    if (ft != null) spacings.push({ at: m.index, end: m.index + m[0].length, inches: ft * 12 + inch });
+  }
+  const inOnly = /(\d+(?:\.\d+)?)\s*(?:"|”|in\.?|inch(?:es)?)\s*(?:o\.?\s*c\b\.?|on\s+cent(?:er|re))/gi;
+  while ((m = inOnly.exec(src))) {
+    // Skip the inch tail of a 4'-0" form already read above.
+    if (spacings.some((s) => m!.index > s.at && m!.index - s.at < 12)) continue;
+    const v = toNumber(m[1]);
+    if (v != null) spacings.push({ at: m.index, end: m.index + m[0].length, inches: v });
+  }
+  const out: StatedAttachmentSpacing[] = [];
+  for (const s of spacings) {
+    const window = src.slice(Math.max(0, s.at - 60), s.at);
+    const labels = [...window.matchAll(ATTACHMENT_LABEL)];
+    if (!labels.length) continue;
+    const last = labels[labels.length - 1];
+    if (FRAMING_WORD.test(window.slice((last.index ?? 0) + last[0].length))) continue;
+    if (s.inches < 6 || s.inches > 96) continue;
+    // From the attachment word to the end of the value, nothing either side: on a roof plan the
+    // next characters are the title block (the homeowner's name and address).
+    const from = Math.max(0, s.at - 60) + (last.index ?? 0);
+    out.push({ at: s.at, inches: Math.round(s.inches * 100) / 100, excerpt: flat(src.slice(from, s.end)).slice(0, 120) });
+  }
+  return out;
+}
+
+/**
+ * Text the PACKAGE itself carries, per source — for a check that a statement in the package
+ * SATISFIES (a UL listing, a load path to the foundation). The parser's commentary is excluded
+ * on purpose: reviewFlags ("UL 2703 listing not found") and stampRecommendation ("engineer must
+ * show the load path to the foundation") talk ABOUT the package, and would clear the very
+ * finding they describe.
+ */
+export function packageTextSources(project: ProjectRecord, extraTexts: DesignTextSource[] = []): DesignTextSource[] {
+  return [
+    ...TEXT_SOURCES.filter(([key]) => key !== "stampRecommendation").map(([key, label]) => ({ label, text: snapshotText(project, key) })),
+    ...extraTexts,
+  ].filter((s) => String(s.text || "").trim());
+}
+
 /**
  * Every design requirement a correction's text STATES, deterministically (no LLM). Unit- and
  * label-anchored: a number is a ground snow load only when LABELLED ground snow / Pg and
@@ -494,30 +555,10 @@ export function extractAhjRequiredCriteria(text: string): AhjRequiredCriterion[]
       add("windExposure", m[1].toUpperCase(), sentence);
     }
 
-    // Roof-attachment spacing, o.c. — an attachment label within 60 chars before the value, and
-    // no framing member between them ("rafters @ 24\" o.c." is framing, not attachment).
-    const spacings: Array<{ at: number; inches: number }> = [];
-    const ftIn = /(\d+(?:\.\d+)?)\s*(?:'|’|ft\.?|feet|foot)\s*(?:-?\s*(\d+(?:\.\d+)?)\s*(?:"|”|in\.?))?\s*(?:o\.?\s*c\b\.?|on\s+cent(?:er|re))/gi;
-    while ((m = ftIn.exec(sentence))) {
-      const ft = toNumber(m[1]);
-      const inch = m[2] ? toNumber(m[2]) ?? 0 : 0;
-      if (ft != null) spacings.push({ at: m.index, inches: ft * 12 + inch });
-    }
-    const inOnly = /(\d+(?:\.\d+)?)\s*(?:"|”|in\.?|inch(?:es)?)\s*(?:o\.?\s*c\b\.?|on\s+cent(?:er|re))/gi;
-    while ((m = inOnly.exec(sentence))) {
-      // Skip the inch tail of a 4'-0" form already read above.
-      if (spacings.some((s) => m!.index > s.at && m!.index - s.at < 12)) continue;
-      const v = toNumber(m[1]);
-      if (v != null) spacings.push({ at: m.index, inches: v });
-    }
-    for (const s of spacings) {
+    // Roof-attachment spacing, o.c. — the shared reader below (the design side uses it too).
+    for (const s of extractAttachmentSpacings(sentence)) {
       if (cue >= 0 && s.at < cue) continue;
-      const window = sentence.slice(Math.max(0, s.at - 60), s.at);
-      const labels = [...window.matchAll(ATTACHMENT_LABEL)];
-      if (!labels.length) continue;
-      const last = labels[labels.length - 1];
-      if (FRAMING_WORD.test(window.slice((last.index ?? 0) + last[0].length))) continue;
-      if (s.inches >= 6 && s.inches <= 96) add("maxAttachmentSpacingIn", Math.round(s.inches * 100) / 100, sentence);
+      add("maxAttachmentSpacingIn", s.inches, sentence);
     }
   }
   // One criterion, one value per correction — two different values are ambiguous.
@@ -672,6 +713,11 @@ function ref(ctx: EffectiveCodeContext, section: string, title: string, note: st
     sourceUrl: IRC_FALLBACK_URL,
     note,
   });
+}
+
+/** A residential-code citation (ORSC where adopted, else IRC) at the jurisdiction's edition. */
+export function residentialCodeRef(ctx: EffectiveCodeContext, section: string, title: string, note: string): CodeReference {
+  return ref(ctx, section, title, note);
 }
 
 function describeValues(entries: Array<{ value: string | number; sources: Set<string> }>, unit: string): string {

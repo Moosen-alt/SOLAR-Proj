@@ -1,0 +1,266 @@
+// MANUFACTURED HOMES, UL LISTINGS, AND ATTACHMENT SPACING vs THE JURISDICTION'S LIMIT.
+//
+// Two real Oregon bounces (fixtures below are SYNTHETIC strings modelled on their facts — no
+// names, addresses, firms or seals):
+//   A. A coastal city: "Provide updated mounting spacing. -The mounting spacing should be 2' oc
+//      ... Provide UL listing for the panels, mounting and racking hardware." The plan said
+//      attachments 4'-0" O.C. (24" within 3 ft of edges) and showed only UL1699B.
+//   B. Another coastal city: "The proposed installation is being placed on a manufactured
+//      home. Prescriptive code does not allow this ... (Cont. load path). R301.1.3 ORSC". The
+//      approved letter later said "HUD manufactured home", "2x2 manufactured trusses @ 24\" o.c.".
+//
+// Every MUST-PASS fails with its rule removed; every MUST-EXCLUDE is a real way the patterns
+// could misread a package.
+//
+// Run: npx tsx backend/test/structureListingsSpacing.test.ts
+import "./_isolate";
+import assert from "node:assert/strict";
+import type { JurisdictionCodeProfile, ProjectRecord, ReviewerFinding } from "../../shared/src/types";
+import { buildCodeContext } from "../src/codeProfiles";
+import { evaluateDesignCodeFindings, structureType } from "../src/codeReviewRules";
+import { extractAhjRequiredCriteria, extractAttachmentSpacings, type DesignTextSource } from "../src/designCriteria";
+import { topicForFinding } from "../src/reviewerEngine";
+import { visionMayRelax } from "../src/reviewerVision";
+import { classifyPermitStatusText, extractPortalCondition } from "../src/permitMonitor";
+
+let failures = 0;
+const check = (label: string, fn: () => void): void => {
+  try { fn(); console.log(`  ok   - ${label}`); }
+  catch (err) { failures++; console.error(`  FAIL - ${label}\n         ${err instanceof Error ? err.message : String(err)}`); }
+};
+
+const project = (snapshot: Record<string, unknown>, over: Partial<ProjectRecord> = {}): ProjectRecord => ({
+  id: "structure-listings-test",
+  state: "OR",
+  ahj: "City of Testport",
+  utility: "Test Power",
+  homeownerName: "Test Owner",
+  projectAddress: "1 Test St",
+  interconnectionMethod: "Load-side breaker",
+  parserSnapshot: { mounting: "Roof mount", ...snapshot },
+  ...over,
+} as unknown as ProjectRecord);
+
+const profile = (over: Partial<JurisdictionCodeProfile>): JurisdictionCodeProfile => ({
+  key: "or|city of testport|unknown", state: "OR", ahj: "City of Testport", confidence: "seeded",
+  adoptedCodes: [{ code: "ORSC", edition: "2023" }, { code: "OESC", edition: "2023" }, { code: "NEC", edition: "2023" }],
+  amendments: [], designCriteria: {}, prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "",
+  researchedAt: "2026-09-01T00:00:00.000Z",
+  ...over,
+});
+const ctxFor = (over: Partial<JurisdictionCodeProfile> = {}) => buildCodeContext("OR", "City of Testport", profile(over));
+const VERIFIED = { confidence: "verified" as const, verifiedBy: "operator", verifiedAt: "2026-09-20T00:00:00Z" };
+
+// null = NO jurisdiction context (the legacy path). Not `undefined`: that would take the default.
+const run = (p: ProjectRecord, ctx: ReturnType<typeof ctxFor> | null = ctxFor(), docs: DesignTextSource[] = [], docTypes: string[] = []): ReviewerFinding[] =>
+  evaluateDesignCodeFindings(p, null, ctx ?? undefined, docTypes, docs);
+const get = (fs: ReviewerFinding[], id: string): ReviewerFinding | undefined => fs.find((f) => f.id === id);
+
+const MH_PRESCRIPTIVE = "city.struct.manufactured-home-prescriptive";
+const MH_LOAD_PATH = "city.struct.manufactured-home-load-path";
+const LISTINGS = "city.plan.ul-listings-missing";
+const SPACING_OVER = "city.struct.anchor-spacing-exceeds-ahj";
+const SPACING_UNCHECKED = "city.struct.anchor-spacing-unchecked";
+
+const isMh = (snapshot: Record<string, unknown>, docs: DesignTextSource[] = []): boolean =>
+  structureType(project(snapshot), docs).kind === "manufactured_home";
+
+// ---------------------------------------------------------------------------------------
+// 1. Manufactured home — the predicate.
+// ---------------------------------------------------------------------------------------
+check("MH MUST-PASS: the approved letter's own words (HUD manufactured home, 2x2 manufactured trusses)", () => {
+  assert.ok(isMh({ structuralCalcText: "Structure: HUD manufactured home. Framing: 2x2 manufactured trusses @ 24\" o.c." }));
+});
+check("MH MUST-PASS: '2x2 manufactured trusses' alone is the tell", () => {
+  assert.ok(isMh({ structuralCalcText: "ROOF FRAMING: 2\"x2\" MANUFACTURED TRUSSES @ 24\" O.C." }));
+});
+check("MH MUST-PASS: mobile home / manufactured dwelling / HUD data plate / 24 CFR 3280 / MH unit", () => {
+  assert.ok(isMh({ planSetExtractedText: "EXISTING MOBILE HOME, SINGLE STORY" }), "mobile home");
+  assert.ok(isMh({ projectDescriptionText: "Roof-mounted PV on a manufactured dwelling." }), "manufactured dwelling");
+  assert.ok(isMh({ roofPlanNotesText: "See HUD data plate for roof load zone." }), "HUD data plate");
+  assert.ok(isMh({ structuralCalcText: "Home constructed per 24 CFR 3280." }), "24 CFR 3280");
+  assert.ok(isMh({ sitePlanNotesText: "Existing MH unit on piers." }), "MH unit");
+});
+check("MH MUST-PASS: a structure-type FIELD answers it ('MH' short value), and a per-document text counts", () => {
+  const fact = structureType(project({ structureType: "MH" }));
+  assert.equal(fact.kind, "manufactured_home");
+  assert.match(fact.excerpt, /structureType: MH/);
+  assert.ok(isMh({}, [{ label: "Engineer's letter", text: "The home is a manufactured home on a pier foundation." }]));
+});
+check("MH MUST-PASS: a nearby 'not' that negates something ELSE does not deny the home", () => {
+  assert.ok(isMh({ structuralCalcText: "Design is engineered, not prescriptive, for a manufactured home." }));
+});
+check("MH MUST-EXCLUDE: manufacturer / manufactured by / site-built 'manufactured trusses'", () => {
+  assert.ok(!isMh({ planSetExtractedText: "GROUNDED USING WEEB GROUNDING CLIPS AS SHOWN IN MANUFACTURER DOCUMENTATION AND APPROVED BY THE AHJ." }), "manufacturer documentation");
+  assert.ok(!isMh({ planSetExtractedText: "RAIL MANUFACTURED BY TESTRACK INC. INSTALL PER MANUFACTURER'S INSTRUCTIONS." }), "manufactured by");
+  assert.ok(!isMh({ structuralCalcText: "ROOF FRAMING: 2x4 MANUFACTURED TRUSSES @ 24\" O.C." }), "2x4 manufactured trusses on a site-built house");
+  assert.ok(!isMh({ structuralCalcText: "Pre-manufactured trusses, engineered by the truss manufacturer." }), "pre-manufactured trusses");
+});
+check("MH MUST-EXCLUDE: a 2\"X2\" rafter with no manufactured-home words (the Lincoln City near-miss)", () => {
+  assert.ok(!isMh({ planSetExtractedText: "(N) PV MODULE 2\" X 2\" RAFTER @ 24\" O.C.", framingType: "truss", roofRafterSize: "2x2" }));
+});
+check("MH MUST-EXCLUDE: negated and answered-no forms", () => {
+  assert.ok(!isMh({ projectDescriptionText: "The structure is not a manufactured home." }), "not a manufactured home");
+  assert.ok(!isMh({ planSetExtractedText: "MANUFACTURED HOME: NO" }), "answered no");
+  assert.ok(!isMh({ planSetExtractedText: "Manufactured home? N/A" }), "N/A");
+  assert.ok(!isMh({ planSetExtractedText: "Non-manufactured home construction, site built." }), "non-");
+});
+check("MH MUST-EXCLUDE: manhole 'MH', 'Hudson', and parser commentary (reviewFlags / stampRecommendation)", () => {
+  assert.ok(!isMh({ sitePlanNotesText: "EXISTING SEWER MANHOLE (MH) AT CURB. MH RIM EL 102.3" }), "manhole MH");
+  assert.ok(!isMh({ planSetExtractedText: "HUDSON STREET FRONTAGE" }), "Hudson");
+  assert.ok(!isMh({ reviewFlags: "Verify whether this is a manufactured home.", stampRecommendation: "If a mobile home, engineering is required." }), "commentary");
+});
+
+// ---------------------------------------------------------------------------------------
+// 1b. Manufactured home — the rules.
+// ---------------------------------------------------------------------------------------
+const MH_TEXT = { structuralCalcText: "HUD manufactured home, 2x2 manufactured trusses @ 24\" o.c., attachments at 24\" o.c." };
+
+check("MH + prescriptive -> BLOCKER citing R301.1.3 of the adopted ORSC, with the AHJ's load-path wording", () => {
+  const f = get(run(project({ ...MH_TEXT, permitPath: "prescriptive" })), MH_PRESCRIPTIVE);
+  assert.ok(f, "must fire");
+  assert.equal(f!.severity, "blocker");
+  assert.match(f!.cityFeedback, /continuous load path/);
+  assert.ok(f!.codeReferences.some((r) => r.section === "R301.1.3" && /ORSC/.test(r.code)), JSON.stringify(f!.codeReferences));
+  assert.match(f!.evidenceFound?.[0]?.excerpt ?? "", /manufactured home/i);
+});
+check("MH + prescriptive is a blocker even with NO jurisdiction context (code applicability, not profile data)", () => {
+  const f = get(run(project({ ...MH_TEXT, permitPath: "prescriptive" }), null), MH_PRESCRIPTIVE);
+  assert.equal(f?.severity, "blocker");
+});
+check("MH + engineered, engineering silent on the load path -> BLOCKER (load-path), not the prescriptive one", () => {
+  const fs = run(project({ ...MH_TEXT, permitPath: "engineered" }));
+  assert.equal(get(fs, MH_LOAD_PATH)?.severity, "blocker");
+  assert.ok(!get(fs, MH_PRESCRIPTIVE));
+});
+check("MH + engineered, engineering carries the load to the foundation -> cleared", () => {
+  for (const text of [
+    "A continuous load path is provided from the PV attachments through the roof framing and walls to the foundation piers.",
+    "New loads are transferred from roof framing through the exterior walls to the footing.",
+    "Roof framing through footing verified for the added PV load.",
+  ]) {
+    const fs = run(project({ ...MH_TEXT, permitPath: "engineered" }), ctxFor(), [{ label: "Engineer's letter", text }]);
+    assert.ok(!get(fs, MH_LOAD_PATH), `should clear: ${text}`);
+  }
+});
+check("MH load-path MUST-EXCLUDE: a load path that ends at the rafters, 'ground snow', a negated statement, commentary", () => {
+  for (const snap of [
+    { structuralCalcText: `${MH_TEXT.structuralCalcText} Load path to the rafters verified by pull-out calc.` },
+    { structuralCalcText: `${MH_TEXT.structuralCalcText} Load path per attachment ground snow load 28 psf.` },
+    { structuralCalcText: `${MH_TEXT.structuralCalcText} Load path to the foundation not evaluated.` },
+    { ...MH_TEXT, stampRecommendation: "Engineer must show the continuous load path to the foundation." },
+  ]) {
+    const fs = run(project({ ...snap, permitPath: "engineered" }));
+    assert.equal(get(fs, MH_LOAD_PATH)?.severity, "blocker", `must still fire: ${JSON.stringify(snap).slice(0, 120)}`);
+  }
+});
+check("MH rules MUST-EXCLUDE: a site-built house and a ground-mounted array raise neither", () => {
+  const siteBuilt = run(project({ structuralCalcText: "2x4 manufactured trusses @ 24\" o.c.", permitPath: "prescriptive" }));
+  assert.ok(!get(siteBuilt, MH_PRESCRIPTIVE) && !get(siteBuilt, MH_LOAD_PATH));
+  const ground = run(project({ ...MH_TEXT, mounting: "Ground mount", permitPath: "prescriptive" }));
+  assert.ok(!get(ground, MH_PRESCRIPTIVE) && !get(ground, MH_LOAD_PATH));
+});
+
+// ---------------------------------------------------------------------------------------
+// 2. UL listings.
+// ---------------------------------------------------------------------------------------
+const BOTH = "MODULES LISTED TO UL 61730. RACKING SYSTEM LISTED TO UL 2703 FOR BONDING AND MECHANICAL LOADING.";
+
+check("LISTINGS MUST-PASS: only UL 1741 and UL1699B -> warning, both missing, in the AHJ's own words", () => {
+  const f = get(run(project({ planSetExtractedText: "INVERTERS LISTED TO UL 1741. ARC-FAULT PROTECTION ACCORDING TO NEC 690.11 AND UL1699B." })), LISTINGS);
+  assert.ok(f, "must fire");
+  assert.equal(f!.severity, "warning");
+  assert.equal(f!.cityFeedback, "Provide UL listing for the panels, mounting and racking hardware.");
+  assert.match(f!.message, /module listing/);
+  assert.match(f!.message, /UL 2703/);
+});
+check("LISTINGS: module shown, racking not -> names only the racking", () => {
+  const f = get(run(project({ planSetExtractedText: "PV MODULES: UL 61730 LISTED." })), LISTINGS);
+  assert.ok(f);
+  assert.doesNotMatch(f!.message, /module listing/);
+  assert.match(f!.message, /racking\/mounting listing \(UL 2703\)/);
+});
+check("LISTINGS: both shown (incl. UL/IEC 61730, ANSI/UL 2703, legacy UL 1703) -> no finding", () => {
+  assert.ok(!get(run(project({ planSetExtractedText: BOTH })), LISTINGS));
+  assert.ok(!get(run(project({ planSetExtractedText: "Module certified UL/IEC 61730. Rail ANSI/UL 2703." })), LISTINGS));
+  assert.ok(!get(run(project({ planSetExtractedText: "Module UL1703. Racking UL-2703." })), LISTINGS));
+  assert.ok(!get(run(project({}), ctxFor(), [{ label: "Racking certificate", text: "Certified to UL 2703" }, { label: "Module cut sheet", text: "UL 61730" }])), LISTINGS);
+});
+check("LISTINGS MUST-EXCLUDE: an attached module_spec DOCUMENT without the listing text does not satisfy it", () => {
+  assert.ok(get(run(project({ planSetExtractedText: "MODULE SPEC SHEET 400W" }), ctxFor(), [], ["module_spec", "plan_set"]), LISTINGS));
+});
+check("LISTINGS MUST-EXCLUDE: a negated listing and parser commentary do not satisfy it", () => {
+  assert.ok(get(run(project({ planSetExtractedText: "MODULES UL 61730.", structuralCalcText: "No UL 2703 listing provided for the rail." })), LISTINGS), "negated");
+  assert.ok(get(run(project({ planSetExtractedText: "MODULES UL 61730.", reviewFlags: "UL 2703 listing looks fine" })), LISTINGS), "reviewFlags");
+});
+check("LISTINGS: no jurisdiction context (legacy golden path) and ground mount -> no finding", () => {
+  assert.ok(!get(run(project({}), null), LISTINGS));
+  assert.ok(!get(run(project({ mounting: "Ground mount" })), LISTINGS));
+});
+
+// ---------------------------------------------------------------------------------------
+// 3. Attachment spacing vs the jurisdiction's limit.
+// ---------------------------------------------------------------------------------------
+const LIMIT24 = { prescriptive: { maxAttachmentSpacingIn: 24 } };
+const A_PLAN = "SYSTEM LEGEND = ATTACHMENT POINTS = RAFTER SIZE & SPACING - 2\"X4\" @ 16\" O.C. NEW PV ATTACHMENTS AT 4'-0\" O.C.";
+const A_CALC = "Attachments: roof hooks with (2) wood screws into decking, rail, spaced ~4'-0\" O.C. (max 24\" O.C. within 3 ft of edge/hip/eave/ridge).";
+
+check("SPACING extractor: the field 4'-0\" reads as 48; the rafter's 16\" o.c. is framing, not attachment", () => {
+  assert.deepEqual(extractAttachmentSpacings(A_PLAN).map((s) => s.inches), [48]);
+  // The edge-zone 24" sits 60+ chars from any attachment word, so it is not read — harmless:
+  // the FIELD spacing is the larger value, and that is the one compared.
+  assert.ok(extractAttachmentSpacings(A_CALC).some((s) => s.inches === 48));
+});
+check("SPACING excerpt stops at the value — the title block after it (owner name) never rides along", () => {
+  const [s] = extractAttachmentSpacings("FENCE 1'-8\" NEW PV ATTACHMENTS AT 4'-0\" O.C. N Rev TEST OWNER RESIDENCE 1 TEST ST");
+  assert.equal(s?.excerpt, "ATTACHMENTS AT 4'-0\" O.C.");
+});
+check("SPACING: the AHJ-comment extractor still reads 'mounting spacing should be 2' oc' (shared reader)", () => {
+  const got = extractAhjRequiredCriteria("Provide updated mounting spacing. -The mounting spacing should be 2' oc per R324.4.1 exception 5 exception 1.4.");
+  assert.deepEqual(got.filter((c) => c.criterion === "maxAttachmentSpacingIn").map((c) => c.value), [24]);
+});
+check("SPACING MUST-PASS: plan field 4'-0\" vs limit 24\" -> finding; seeded -> warning; names 48 and 24", () => {
+  const f = get(run(project({ planSetExtractedText: A_PLAN, permitPath: "prescriptive" }), ctxFor(LIMIT24)), SPACING_OVER);
+  assert.ok(f, "must fire");
+  assert.equal(f!.severity, "warning");
+  assert.match(f!.message, /48" o\.c\./);
+  assert.match(f!.message, /24" o\.c\./);
+});
+check("SPACING: verified profile + prescriptive path -> BLOCKER; verified + engineered -> warning (screeningSeverity)", () => {
+  assert.equal(get(run(project({ structuralCalcText: A_CALC, permitPath: "prescriptive" }), ctxFor({ ...VERIFIED, ...LIMIT24 })), SPACING_OVER)?.severity, "blocker");
+  assert.equal(get(run(project({ structuralCalcText: A_CALC, permitPath: "engineered" }), ctxFor({ ...VERIFIED, ...LIMIT24 })), SPACING_OVER)?.severity, "warning");
+});
+check("SPACING: the parser's attachmentSpacingIn field alone is enough to compare", () => {
+  assert.ok(get(run(project({ attachmentSpacingIn: "48", attachmentEdgeSpacingIn: "24" }), ctxFor(LIMIT24)), SPACING_OVER));
+});
+check("SPACING MUST-EXCLUDE: a compliant plan, framing-only spacing, and a profile with no limit", () => {
+  assert.ok(!get(run(project({ planSetExtractedText: "NEW PV ATTACHMENTS AT 24\" O.C." }), ctxFor(LIMIT24)), SPACING_OVER), "compliant");
+  const framingOnly = run(project({ planSetExtractedText: "2x4 RAFTERS @ 24\" O.C. RAFTER SIZE & SPACING 2\"X6\" @ 16\" O.C." }), ctxFor({ prescriptive: { maxAttachmentSpacingIn: 12 } }));
+  assert.ok(!get(framingOnly, SPACING_OVER), "framing spacing is not attachment spacing");
+  assert.equal(get(framingOnly, SPACING_UNCHECKED)?.severity, "callout", "nothing readable -> the unchecked callout, never silence");
+  const noLimit = run(project({ planSetExtractedText: A_PLAN }), ctxFor());
+  assert.ok(!get(noLimit, SPACING_OVER) && !get(noLimit, SPACING_UNCHECKED), "no limit on file -> no spacing finding");
+});
+check("SPACING: a measured violation is out of vision's reach (not relaxable by 'the sheet shows a spacing')", () => {
+  const f = get(run(project({ planSetExtractedText: A_PLAN, permitPath: "prescriptive" }), ctxFor({ ...VERIFIED, ...LIMIT24 })), SPACING_OVER)!;
+  assert.ok(!visionMayRelax(f) || topicForFinding(f) === null, `topic ${topicForFinding(f)} would let vision soften a measured result`);
+});
+
+// ---------------------------------------------------------------------------------------
+// 4. Floodplain — the monitor's condition reader (characterisation; the gap is reported).
+// ---------------------------------------------------------------------------------------
+const ACCELA_INTAKE = "Record 000-00-000000-STR: Record Status: Intake Requirements Needed Expiration Date: "
+  + "Record on 05/01/2026.Condition: FloodplainSeverity: NoticeTotal Conditions: 1 (Notice: 1)View Condition";
+check("FLOOD: extractPortalCondition surfaces an Accela 'Condition: Floodplain' notice", () => {
+  assert.match(extractPortalCondition(ACCELA_INTAKE), /Floodplain/);
+  assert.match(classifyPermitStatusText(ACCELA_INTAKE).message, /Floodplain/);
+});
+check("FLOOD MUST-EXCLUDE: 'air conditioning' and 'Conditions of approval' are not a record condition", () => {
+  assert.equal(extractPortalCondition("New air conditioning condenser on pad. Conditions of approval attached."), "");
+});
+
+if (failures) {
+  console.error(`\n${failures} structure/listing/spacing check(s) FAILED`);
+  process.exit(1);
+}
+console.log("\nall structure/listing/spacing checks passed");
