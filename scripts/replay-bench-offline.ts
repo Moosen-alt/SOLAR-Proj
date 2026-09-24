@@ -3,6 +3,10 @@
 //   npm run bench:offline                         every cell (3 bases x 8 variants)
 //   npm run bench:offline -- --only accela        cells whose name contains "accela"
 //   npm run bench:offline -- --learn-variants     ALSO learn every variant first-time
+//   npm run bench:offline -- --reuse-learns .probe/bench/<earlier>.json
+//                                                 replay the recipes an earlier run learned
+//                                                 (replay-only iteration; learns not re-measured)
+//   --timeout S (learn, default 240)  --replay-timeout S (default 180)  --out <file>  --debug
 //
 // WHAT RUNS, AND WHAT IS STOOD IN FOR:
 //   - Portals: synthetic replica wizards (portal-bot/src/replica/fixtures) on 127.0.0.1. Never a
@@ -58,6 +62,9 @@ const argVal = (flag: string): string | undefined => { const i = argv.indexOf(fl
 const ONLY = argVal("--only") ?? "";
 const LEARN_VARIANTS = argv.includes("--learn-variants");
 const RUN_TIMEOUT_MS = Number(argVal("--timeout") ?? 240) * 1000;
+const REPLAY_TIMEOUT_MS = Number(argVal("--replay-timeout") ?? 180) * 1000;
+/** A previous report whose learned recipes are replayed instead of learning again. */
+const REUSE_LEARNS = argVal("--reuse-learns");
 const OUT = argVal("--out") ?? path.join(REPO, ".probe", "bench", `${STAMP}.json`);
 if (argv.includes("--debug")) process.env.AUTOLEARN_RUN_DEBUG = "1"; else process.env.AUTOLEARN_RUN_DEBUG = "0";
 process.env.PORTAL_RUN_MAX_MS = String(RUN_TIMEOUT_MS + 30_000);
@@ -77,6 +84,7 @@ const { PROJECT_A, PROJECT_B, secretsOf, aOnlyLiterals } = await import("../port
 type Flavor = import("../portal-bot/src/replica/fixtures/wizards").Flavor;
 type Mutation = import("../portal-bot/src/replica/fixtures/wizards").Mutation;
 type DocKey = import("../portal-bot/src/replica/fixtures/wizards").DocKey;
+type Wizard = import("../portal-bot/src/replica/fixtures/wizards").Wizard;
 type SynthProject = import("../portal-bot/src/replica/fixtures/syntheticProjects").SynthProject;
 const { startSyntheticReplica } = await import("../portal-bot/src/replica/syntheticServer");
 const { scoreRun } = await import("../portal-bot/src/replica/benchScore");
@@ -157,6 +165,10 @@ interface LearnOutcome {
   learnBase?: string;
   message: string;
   validationErrors: string[];
+  /** The bound steps as saved — kept so a later run can --reuse-learns them. Synthetic data only. */
+  recipeSteps?: import("../shared/src/types").RecipeStep[];
+  /** Set when this learn was not run but taken from an earlier report. */
+  reusedFrom?: string;
 }
 
 async function learnCell(flavor: Flavor, mutation: Mutation): Promise<LearnOutcome> {
@@ -220,6 +232,7 @@ async function learnCell(flavor: Flavor, mutation: Mutation): Promise<LearnOutco
     savePortalRecipeSteps(db, recipe.id, bound.steps, { status: learn.reachedReview ? "complete" : "recording", notes: `offline bench learn (${STAND_IN_PLANNER_ID})` });
     out.recipeId = recipe.id;
     out.learnBase = replica.base;
+    out.recipeSteps = bound.steps;
     const s = scoreRun(wizard, replica.state, PROJECT_A, docNames(docsA), []);
     out.learnReachedReview = s.reachedReview;
     out.fieldsCorrect = s.fieldsCorrect;
@@ -275,7 +288,7 @@ interface ReplayOutcomeRow {
  *  swapped) or a reason it cannot be built. */
 type RecipeCut = (steps: import("../shared/src/types").RecipeStep[], base: string) => { steps: import("../shared/src/types").RecipeStep[] } | { reason: string };
 
-async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutcome, cut?: { name: string; fn: RecipeCut }): Promise<ReplayOutcomeRow> {
+async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutcome, cut?: { name: string; fn: RecipeCut; wizard?: Wizard }): Promise<ReplayOutcomeRow> {
   const started = Date.now();
   const cell = cut ? `${flavor}/${mutation} [${cut.name}]` : `${flavor}/${mutation}`;
   const row: ReplayOutcomeRow = {
@@ -283,7 +296,7 @@ async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutc
     blanked: 0, wrongValue: 0, wrongBoxWrites: 0, leakedAValues: 0, submitPosts: 0, payPosts: 0, rung: "", rungReason: "",
     adapterOk: false, executed: 0, recorded: 0, skippedSteps: 0, message: "", adapterSkipped: [], adapterDrift: [], fieldVerdicts: [], validationErrors: [],
   };
-  const wizard = buildWizard(flavor, mutation);
+  const wizard = cut?.wizard ?? buildWizard(flavor, mutation);
   if (!learned.recipeId || learned.status !== "ran") {
     row.status = "skipped";
     row.skipReason = `no recipe: the base learn did not complete (${learned.skipReason ?? "learn produced no recipe"})`;
@@ -316,7 +329,7 @@ async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutc
       credential: flavor === "powerclerk" ? { username: PROJECT_B.portalUsername, password: PROJECT_B.portalPassword } : undefined,
       loginUrl: replica.entryUrl,
       autoSubmit: false,
-    }), RUN_TIMEOUT_MS, `replay ${cell}`);
+    }), REPLAY_TIMEOUT_MS, `replay ${cell}`);
     const merged = mergeStepReport(result) as Record<string, unknown>;
     row.adapterOk = result.ok === true;
     row.executed = Number(merged.executed ?? 0);
@@ -372,7 +385,24 @@ console.log(`  PORTAL_ALLOW_FINAL_SUBMIT: removed from the environment${finalSub
 
 const learns: LearnOutcome[] = [];
 const baseLearn = new Map<Flavor, LearnOutcome>();
+const reused: LearnOutcome[] = REUSE_LEARNS
+  ? (JSON.parse(fs.readFileSync(path.resolve(REPO, REUSE_LEARNS), "utf8")) as { learns: LearnOutcome[] }).learns
+  : [];
 for (const f of flavorsNeeded) {
+  const prior = reused.find((l) => l.cell === `${f}/base` && l.recipeSteps?.length);
+  if (REUSE_LEARNS && prior) {
+    // NOT A MEASUREMENT OF THE LEARNER: the recipe is re-saved through the real writer into
+    // this run's scratch DB, and the learn row is carried over marked reusedFrom (and left out
+    // of the learn headline).
+    const rec = startPortalRecording(db, { scopeType: scopeOf(f), state: projA.state, ahj: projA.ahj, utility: projA.utility, portalUrl: `${prior.learnBase}/`, portalPlatform: f, discipline: `reused-${f}` });
+    savePortalRecipeSteps(db, rec.id, prior.recipeSteps!, { status: "complete", notes: `reused from ${REUSE_LEARNS}` });
+    const l: LearnOutcome = { ...prior, recipeId: rec.id, reusedFrom: REUSE_LEARNS };
+    learns.push(l);
+    baseLearn.set(f, l);
+    console.log(`\n[learn] ${f}/base REUSED from ${REUSE_LEARNS} (not re-measured)`);
+    continue;
+  }
+  if (REUSE_LEARNS) console.log(`\n[learn] ${f}/base: nothing to reuse in ${REUSE_LEARNS} — learning fresh`);
   process.stdout.write(`\n[learn] ${f}/base on project A ... `);
   const l = await learnCell(f, "base");
   learns.push(l);
@@ -399,28 +429,52 @@ for (const c of selected) {
   console.log(`${tag} — fields ${r.fieldsCorrect}/${r.fieldsExpected}, submit/pay ${r.submitPosts}/${r.payPosts}, ${r.seconds}s`);
 }
 
-// THE HAZARD, ISOLATED. The drift-seek filing hazard sits AFTER the Accela address and
-// record-type pages, so any earlier failure hides it from the accela/one_page_fewer cell. This
-// probe replays the same learned recipe on the same variant from the contacts page onward (the
-// server holds no state a skipped page would have set that these pages need). It is reported
-// on its own line and is NOT part of any headline rate.
+// THE DRIFT-SEEK HAZARD, ISOLATED (plan item M1's validity check). The hazard lives AFTER the
+// Accela address and record-type pages, so any earlier failure hides it from the
+// accela/one_page_fewer cell. Two probes replay the base-learned recipe from the contacts page
+// (the server holds no state a skipped earlier page would have set that these pages need):
+//
+//   upload page dropped — the variant as scored: the recipe carries an attachments page this
+//                         portal does not have.
+//   field page dropped  — the recipe is one FIELD page longer than the portal: the recipe runs
+//                         contacts -> Additional Information -> review, the portal contacts ->
+//                         review (neither has attachments). This is the shape where drift-seek
+//                         clicks "Continue Application" on the read-only review, which FILES.
+//
+// Reported on their own lines, never in a headline rate.
+type RecipeStepT = import("../shared/src/types").RecipeStep;
+function recipePages(steps: RecipeStepT[]): RecipeStepT[][] {
+  const pages: RecipeStepT[][] = [[]];
+  for (const s of steps) {
+    pages[pages.length - 1].push(s);
+    if (s.action === "click" && /advance:|continue/i.test(String(s.note ?? "")) && !s.isFinalSubmit) pages.push([]);
+  }
+  return pages.filter((p) => p.length);
+}
 const probes: ReplayOutcomeRow[] = [];
 if (selected.some((c) => c.name === "accela/one_page_fewer")) {
-  const fromContacts: RecipeCut = (steps, base) => {
-    let last = -1;
-    steps.forEach((s, i) => { if (/^record type/i.test(String(s.note ?? ""))) last = i; });
-    if (last < 0) return { reason: "the learned recipe has no record-type step to start after" };
-    return {
-      steps: [
-        { action: "goto", phase: "open", value: `${base}/CitizenAccess/Cap/CapEdit.aspx?stepNumber=2&pageNumber=1`, note: "harness: isolated probe starts at the contacts page" },
-        ...steps.slice(last + 1),
-      ],
-    };
+  // Both start ON the review page — exactly where the previous page's Continue lands when the
+  // portal lacks the next recipe page — and then run the recipe's page for it. Replay prechecks
+  // a new segment after a goto just as after an advance, so this is the same code path.
+  const reviewSlug = buildWizard("accela", "one_page_fewer").pages.find((p) => p.kind === "review")!.slug;
+  const landOnReview = (pick: (pages: RecipeStepT[][], upload: number) => RecipeStepT[][]): RecipeCut => (steps, base) => {
+    const pages = recipePages(steps);
+    const upload = pages.findIndex((pg) => pg.some((s) => s.action === "upload"));
+    if (upload < 1) return { reason: "the learned recipe has no upload page" };
+    return { steps: [{ action: "goto", phase: "open", value: `${base}/CitizenAccess/Cap/${reviewSlug}`, note: "harness: isolated probe lands on the review page" }, ...pick(pages, upload).flat()] };
   };
-  process.stdout.write(`[probe] accela/one_page_fewer from the contacts page ... `);
-  const p = await replayCell("accela", "one_page_fewer", baseLearn.get("accela")!, { name: "isolated: from contacts", fn: fromContacts });
-  probes.push(p);
-  console.log(`${p.status === "skipped" ? `SKIPPED (${p.skipReason})` : `submit/pay POSTs ${p.submitPosts}/${p.payPosts}`}, ${p.seconds}s`);
+  const plans: Array<{ name: string; wizard?: Wizard; fn: RecipeCut }> = [
+    // The scored variant's shape: the page the portal lacks is the ATTACHMENTS page.
+    { name: "isolated: lands on review, recipe expects its upload page", fn: landOnReview((pages, u) => pages.slice(u)) },
+    // The page the portal lacks is a FIELD page (Additional Information).
+    { name: "isolated: lands on review, recipe expects a field page", fn: landOnReview((pages, u) => [pages[u - 1], ...pages.slice(u + 1)]) },
+  ];
+  for (const plan of plans) {
+    process.stdout.write(`[probe] accela/one_page_fewer [${plan.name}] ... `);
+    const p = await replayCell("accela", "one_page_fewer", baseLearn.get("accela")!, plan);
+    probes.push(p);
+    console.log(`${p.status === "skipped" ? `SKIPPED (${p.skipReason})` : `submit/pay POSTs ${p.submitPosts}/${p.payPosts}, review=${p.replayReachedReview ? "y" : "n"}`}, ${p.seconds}s`);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -465,7 +519,7 @@ for (const m of MUTATIONS) {
 console.log("\n=== TOTAL ===");
 console.log(groupLine("all replay cells", replays));
 
-const learnRan = learns;
+const learnRan = learns.filter((l) => !l.reusedFrom);
 const learnReached = learnRan.filter((l) => l.status === "ran" && l.learnReachedReview).length;
 const secrets = learnRan.reduce((a, l) => a + l.secretsInPlannerRequests, 0);
 const plannerCalls = learnRan.reduce((a, l) => a + l.plannerCalls, 0);
@@ -510,7 +564,7 @@ const report = {
     submit_or_pay_posts: sum(replays, (r) => r.submitPosts + r.payPosts) + learnSubmit + learnPay,
     secrets_in_planner_requests: { k: secrets, n: plannerCalls },
     tripwire_accela_one_page_fewer_submit_posts: tripwire?.submitPosts ?? null,
-    tripwire_isolated_probe_submit_posts: probes[0]?.submitPosts ?? null,
+    tripwire_probes: probes.map((p) => ({ cell: p.cell, status: p.status, submitPosts: p.submitPosts, payPosts: p.payPosts, reachedReview: p.replayReachedReview })),
   },
   learns,
   replays,
