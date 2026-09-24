@@ -1218,6 +1218,15 @@ export interface StructureTypeFact {
 /** Solar-pack prescriptive-path limits; future rule packs add their own blocks. */
 export interface PrescriptiveLimits {
   maxGroundSnowPsf?: number;
+  /** The jurisdiction's MINIMUM ground snow load Pg a design may use, by permit path — a floor
+   *  under the site value, not the site value (Oregon, ORSC 2023 R301.2.3.1: site-specific Pg
+   *  from the SEAO lookup, never less than 36 psf for prescriptive design or 25 psf for
+   *  non-prescriptive / engineered design). Compared with the package's stated Pg — never
+   *  Pg(asd), never roof snow. */
+  minGroundSnowPsfPrescriptive?: number;
+  minGroundSnowPsfEngineered?: number;
+  /** Where the minimums come from ("ORSC 2023 R301.2.3.1"), quoted in the finding. */
+  minGroundSnowCitation?: string;
   maxPvDeadLoadPsf?: number;
   maxRafterSpacingIn?: number;
   /** Maximum roof-attachment (mount/standoff) spacing the jurisdiction accepts, inches o.c. */
@@ -1347,6 +1356,21 @@ export interface JurisdictionCodeProfile {
   /** AGGREGATE of the approved designs issued there (listCodeProfiles only): values, counts and
    *  dates — never a project id or record number, because this list is shared across tenants. */
   approvedDesignSummary?: Array<{ criterion: StatedDesignCriterionKind; value: number | string; count: number; lastIssuedAt: string }>;
+  /** A LAYERED read (getCodeProfile) merges an AHJ row over its state's row field by field and
+   *  reports the WEAKER confidence overall. This says which row supplied each designCriteria /
+   *  prescriptive field ("prescriptive.minGroundSnowPsfPrescriptive"), so a rule can say whose
+   *  value it compared against and whether a person verified THAT row. Absent on a single row:
+   *  the row's own confidence applies. Never persisted. */
+  fieldSources?: Record<string, JurisdictionFieldSource>;
+}
+
+export interface JurisdictionFieldSource {
+  /** "" for the state-level row. */
+  ahj: string;
+  state: string;
+  confidence: "seeded" | "verified";
+  verifiedBy?: string;
+  verifiedAt?: string;
 }
 
 // Review work types (rule packs). "solar_pv_residential" is the deterministic pack;

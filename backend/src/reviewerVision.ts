@@ -103,6 +103,8 @@ export const MEASURED_FINDING_IDS: ReadonlySet<string> = new Set([
   "city.struct.design-criteria-below-ahj",
   "city.struct.design-criteria-unknown",
   "city.code.basis-mismatch",
+  // The stated Pg against the state minimum for the permit path (Oregon: 36 / 25 psf) is arithmetic.
+  "city.struct.ground-snow-below-state-minimum",
   "city.struct.anchor-spacing-exceeds-ahj", // 48" o.c. > the jurisdiction's 24" is arithmetic
   // The listings check reads the whole package text (cut sheets included). An image showing a
   // UL mark on one sheet is not the module AND racking listing it asks for.

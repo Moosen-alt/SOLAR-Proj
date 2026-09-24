@@ -29,6 +29,7 @@ const MEASURED = [
   "city.struct.design-criteria-below-ahj",
   "city.struct.design-criteria-unknown",
   "city.code.basis-mismatch",
+  "city.struct.ground-snow-below-state-minimum",
   "city.struct.anchor-spacing-exceeds-ahj",
   "city.plan.ul-listings-missing",
 ];
@@ -48,7 +49,7 @@ const profile = (over: Partial<JurisdictionCodeProfile>): JurisdictionCodeProfil
 });
 const docs = [{ label: "Plan set", text: PLAN }, { label: "Structural letter", text: LETTER }];
 const produced: ReviewerFinding[] = [
-  ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({ designCriteria: { windSpeedMph: 120, groundSnowLoadPsf: 36 }, prescriptive: { maxAttachmentSpacingIn: 24 } })), documentTexts: docs }).findings,
+  ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({ designCriteria: { windSpeedMph: 120, groundSnowLoadPsf: 36 }, prescriptive: { maxAttachmentSpacingIn: 24, minGroundSnowPsfPrescriptive: 36, minGroundSnowPsfEngineered: 25 } })), documentTexts: docs }).findings,
   ...buildReviewerReport(project, { codeContext: buildCodeContext("OR", "City of Testport", profile({})), documentTexts: docs }).findings,
 ];
 

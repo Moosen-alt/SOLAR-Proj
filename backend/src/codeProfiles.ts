@@ -175,8 +175,23 @@ export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string 
   const base = stateRow ? mapRow(stateRow) : null;
   if (!exact) return base;
   if (!base) return exact;
+  // Which layer supplied each criteria / limit field (the merged confidence below is the weaker of
+  // the two, so a verified state value under a seeded city row would otherwise read as seeded).
+  const fieldSources: NonNullable<JurisdictionCodeProfile["fieldSources"]> = {};
+  const sourceOf = (p: JurisdictionCodeProfile) => ({
+    ahj: p.ahj, state: p.state, confidence: p.confidence,
+    ...(p.verifiedBy ? { verifiedBy: p.verifiedBy } : {}), ...(p.verifiedAt ? { verifiedAt: p.verifiedAt } : {}),
+  });
+  for (const block of ["designCriteria", "prescriptive"] as const) {
+    for (const layer of [base, exact]) {
+      for (const [field, value] of Object.entries(layer[block] ?? {})) {
+        if (value !== undefined) fieldSources[`${block}.${field}`] = sourceOf(layer);
+      }
+    }
+  }
   return {
     ...exact,
+    fieldSources,
     confidence: exact.confidence === "verified" && base.confidence === "verified" ? "verified" : "seeded",
     adoptedCodes: exact.adoptedCodes.length ? exact.adoptedCodes : base.adoptedCodes,
     amendments: [...base.amendments, ...exact.amendments],

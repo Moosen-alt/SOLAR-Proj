@@ -577,7 +577,8 @@ export function evaluateDesignCodeFindings(
   // context the legacy behavior is preserved exactly (Oregon regex + the hardcoded
   // constants), which is what the Oregon golden test pins.
   const prescriptiveScreening = ctx
-    ? Object.values(ctx.prescriptive).some((v) => v != null && (!Array.isArray(v) || v.length > 0))
+    // A minimum ground snow load is a floor for every design, not a prescriptive screening limit.
+    ? Object.entries(ctx.prescriptive).some(([k, v]) => !/^minGroundSnow/.test(k) && v != null && (!Array.isArray(v) || v.length > 0))
     : oregon;
   // Threshold-style findings from a SEEDED (unverified) profile must not hard-block —
   // the data hasn't been human-confirmed against official sources yet.
@@ -801,7 +802,10 @@ export function evaluateDesignCodeFindings(
   // jurisdiction's recorded criteria (designCriteria.ts). Needs the jurisdiction context:
   // without one there is nothing to compare against and no citation to render, so the
   // legacy no-context path (pinned by the Oregon golden) is untouched.
-  if (ctx) out.push(...evaluateDesignCriteriaFindings(project, ctx, { roofMounted, extraTexts: documentTexts }));
+  // The permit path picks the state minimum ground snow load (prescriptive vs engineered). The
+  // operator override decides first, as it does for the path itself (permitPath.resolvePermitPath).
+  const designPath = pathWordingScope(str(project, "permitPathOverride")) || pathWordingScope(str(project, "permitPath"));
+  if (ctx) out.push(...evaluateDesignCriteriaFindings(project, ctx, { roofMounted, extraTexts: documentTexts, permitPath: designPath }));
 
   // What the package itself states (parser commentary excluded — see packageTextSources).
   const packageTexts = packageTextSources(project, documentTexts);

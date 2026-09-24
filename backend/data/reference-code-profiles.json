@@ -51,7 +51,10 @@
      "C"
     ],
     "maxExportKwWithoutStudy": 25,
-    "engineerStampOverKwDc": 50
+    "engineerStampOverKwDc": 50,
+    "minGroundSnowPsfPrescriptive": 36,
+    "minGroundSnowPsfEngineered": 25,
+    "minGroundSnowCitation": "ORSC 2023 R301.2.3.1"
    },
    "fireSetbacks": [],
    "citations": [
@@ -62,6 +65,10 @@
     {
      "label": "Oregon prescriptive rooftop solar PV checklist (Washington County copy)",
      "sourceUrl": "https://www.washingtoncountyor.gov/lut/building-services/documents/solar-checklist/download?inline="
+    },
+    {
+     "label": "ORSC 2023 R301.2.3.1 \u2014 site ground snow load from the SEAO snow load lookup, not less than 36 psf for prescriptive design or 25 psf for non-prescriptive design",
+     "sourceUrl": "https://snowload.seao.org/"
     }
    ],
    "updatedAt": ""

@@ -82,6 +82,11 @@ export const codeProfileVerifySchema = z.object({
   }).default({}),
   prescriptive: z.object({
     maxGroundSnowPsf: z.number().finite().optional(),
+    // The minimum ground snow load Pg a design may use, by permit path (Oregon: ORSC 2023
+    // R301.2.3.1 — 36 psf prescriptive, 25 psf non-prescriptive), and where it comes from.
+    minGroundSnowPsfPrescriptive: z.number().finite().positive().max(400).optional(),
+    minGroundSnowPsfEngineered: z.number().finite().positive().max(400).optional(),
+    minGroundSnowCitation: z.string().max(200).optional(),
     maxPvDeadLoadPsf: z.number().finite().optional(),
     maxRafterSpacingIn: z.number().finite().optional(),
     allowedWindExposures: z.array(z.string().max(4)).max(6).optional(),
