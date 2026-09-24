@@ -807,6 +807,16 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
       // filing they have not made yet failed an inspection. It stays visible on the charge
       // breakdown with its own wording — see FeeChargeBreakdown.futureContingent.
       if (charge.futureContingent) continue;
+      // THE BATTERY'S SERVICES/FEEDERS LINE IS NOT AN OPEN QUESTION ONCE THE PORTAL'S
+      // OWN TOTAL IS ENTERED. Unlike a conditional review (did the fire bureau bill
+      // this job?), this line is not conditional — the operator rule says a battery
+      // on the electrical permit bills it — and the only thing missing was its
+      // AMOUNT. An operator-entered actual is the portal's computed total, which
+      // already contains it; "the total stays UNRESOLVED" beside a known total is
+      // the sheet contradicting itself (the no-schedule battery note below already
+      // stops at an actual — one question, one answer). Kind-specific on purpose:
+      // every other unpriced charge keeps its unknown under an actual.
+      if (charge.kind === SERVICE_FEEDER_CHARGE_KIND && line.source === "actual") continue;
       unknowns.push(`${who} also charges "${charge.label}" on this filing, and it is not priced. ${charge.reason}`);
     }
     // A BATTERY JOB'S SERVICES/FEEDERS <=200A LINE, WHEN NO SCHEDULE ITEMISED IT.

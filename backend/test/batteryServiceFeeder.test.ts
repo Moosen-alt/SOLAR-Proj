@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   const { convertLiteralsToBoundFields, deadFieldBindings, resolveRecipeFieldValues } = await import("../src/portalRecipes");
   const { planFeeBracketBindings } = await import("../src/bindFeeBrackets");
   const { createProject, getProjectDetail } = await import("../src/repository");
-  const { buildProjectFeeSheet } = await import("../src/submissionFees");
+  const { buildProjectFeeSheet, recordActualPermitFee } = await import("../src/submissionFees");
   const { resolveSource, fillLoadedForm } = await import("../src/ahjForms");
   const { curatedFormMap } = await import("../src/curatedAhjForms");
   const { extractLabels } = await import("../src/formTextLayer");
@@ -389,6 +389,54 @@ async function main(): Promise<void> {
   const readmeSheet = buildProjectFeeSheet(db, withSnapshot(BATTERY, { ahj: "City of Readme" }));
   check("GAP (schedule that refuses to evaluate): the battery's services line is still named",
     readmeSheet.unknowns.some((u) => /^Battery\/ESS job: .*Services or feeders: 200 amps or less/.test(u)), JSON.stringify(readmeSheet.unknowns));
+
+  // SKEPTIC SHOULD-FIX D: an operator-entered ACTUAL is the portal's own total and
+  // already contains the services line. The sheet must not then say "the total
+  // stays UNRESOLVED" beside a known total — the no-schedule note already stops at
+  // an actual; the charge's own unknown must agree. Each project here has its OWN
+  // id, because the actual is stored per project and would leak into the shared one.
+  const ownProject = (ahj: string, snapshot: Record<string, unknown>): ProjectRecord => {
+    const c = createProject(db, {
+      state: "OR", ahj, utility: "Portland General Electric",
+      homeownerName: "Test Owner", projectAddress: "1 Test St", city: ahj.replace(/^City of /, ""), zip: "97223", dcKw: 10,
+    } as never);
+    return { ...(getProjectDetail(db, c.project.id).project as ProjectRecord), systemSizeAcKw: 9, systemSizeDcKw: 10, parserSnapshot: snapshot as never };
+  };
+  const SVC_GAP_RE = /Services or feeders: 200 amps or less.*(not priced|UNRESOLVED|AMOUNT MISSING)/;
+  const gapActual = ownProject("City of Gapville", BATTERY);
+  recordActualPermitFee(db, gapActual, "permit", 180, "operator");
+  const gapActualSheet = buildProjectFeeSheet(db, gapActual);
+  const gapActualPermit = gapActualSheet.lines.find((l) => l.track === "permit")!;
+  check("D MUST PASS: a battery job with an operator ACTUAL shows no 'not priced / UNRESOLVED' services unknown",
+    gapActualPermit.source === "actual" && gapActualPermit.known === true && !gapActualSheet.unknowns.some((u) => SVC_GAP_RE.test(u)),
+    JSON.stringify({ source: gapActualPermit.source, unknowns: gapActualSheet.unknowns }));
+  check("D MUST EXCLUDE: the same job with NO actual keeps it",
+    buildProjectFeeSheet(db, ownProject("City of Gapville", BATTERY)).unknowns.some((u) => SVC_GAP_RE.test(u)));
+  // A conditional review charge (Portland's fire review shape) is a different
+  // question — did this filing incur it? — and an actual does not answer it here.
+  const FIRE_URL = "https://firetown.example.gov/electrical-fees.pdf";
+  const FIRE_CORPUS = ["Solar 15 kva or less | $150.00", "Fire plan review | $75.00"].join("\n");
+  const fireFinding = finding({
+    brackets: [{ minKw: 0, maxKw: 15, feeUsd: 150, label: "Solar 15 kva or less" }],
+    sourceUrl: FIRE_URL, sourceQuote: "Solar 15 kva or less | $150.00",
+  });
+  const fireLedger = ledgerFor(FIRE_URL, FIRE_CORPUS);
+  const fireHeld = corroborateAncillaryCharges([{
+    label: "Fire plan review", kind: "other", amountUsd: 75, percentOf: "",
+    conditional: true, condition: "charged when the fire marshal reviews the plans",
+    appliesTo: "electrical", quote: "Fire plan review | $75.00",
+  }], fireFinding, fireLedger);
+  check("fixture: the fire review charge survives corroboration", fireHeld.held.length === 1, JSON.stringify(fireHeld.dropped));
+  attachAncillaryCharges(fireFinding.brackets, fireHeld.held);
+  saveFeeSchedule(db, { state: "OR", ahj: "City of Firetown", track: "permit", discipline: "electrical" }, fireFinding, { corroborateAgainst: fireLedger });
+  const fireActual = ownProject("City of Firetown", BATTERY);
+  recordActualPermitFee(db, fireActual, "permit", 260, "operator");
+  const fireSheet = buildProjectFeeSheet(db, fireActual);
+  check("D MUST EXCLUDE: a conditional fire-review charge with an actual KEEPS its unknown",
+    fireSheet.unknowns.some((u) => /Fire plan review/.test(u) && /not priced/.test(u)),
+    JSON.stringify(fireSheet.unknowns));
+  check("D: ... while that same sheet's battery services line is not held open under the actual",
+    !fireSheet.unknowns.some((u) => SVC_GAP_RE.test(u)), JSON.stringify(fireSheet.unknowns));
 
   check("GAP: the same schedule for a PV-only job still quotes $150 exactly as before",
     feeForProject(db, withSnapshot(NO_BATTERY, { ahj: "City of Gapville" }), "electrical")!.feeUsd === 150);
