@@ -371,11 +371,69 @@ function genericEvidence(project: ProjectRecord, profile: AhjProcessProfile | nu
   }];
 }
 
+// EVIDENCE OF THE TOPIC IS NOT EVIDENCE OF THE FINDING.
+//
+// A finding that carries no evidence of its own borrows its TOPIC's — topicForFinding maps
+// "city.elec.supply-side-tap" to "sld", and the sld evidence is proof that a one-line EXISTS.
+// That status used to be copied straight onto the finding, so on f7d7af7e the supply-side-tap
+// callout read "evidence: verified" while the tap detail it asks for (conductor sizing, OCPD
+// ahead of the service disconnect) was never looked for. The operator read "verified" as
+// "the tap detail is on the set".
+//
+// The one predicate: topic evidence can only ever say the topic was FOUND, so a finding that
+// borrows it is at most "weak", and every borrowed excerpt says, in its label, what it does
+// and does not show. This is safe to apply to every borrower because every finding whose ask
+// IS the topic's presence (reviewer.plan.sld/site/rapid-shutdown, reviewer.plan.fire-path,
+// reviewer.utility.*) only fires when that topic is NOT high — so a high borrowed topic always
+// means the finding wanted something narrower. A finding that carries its own evidence (the
+// design-criteria and listing rules, a vision verdict) keeps whatever status it earned.
+const TOPIC_NOUN: Record<EvidenceTopic, string> = {
+  accountVerification: "Utility account text",
+  meterPhoto: "Meter text",
+  sld: "SLD",
+  siteRoofPlan: "Site/roof plan",
+  firePathway: "Fire pathway callout",
+  roofFraming: "Roof framing text",
+  rackingAttachment: "Racking/attachment text",
+  structuralLoads: "Load criteria text",
+  rapidShutdown: "Rapid shutdown callout",
+  labels: "Label callouts",
+  inverterSettings: "Inverter listing/settings text",
+  batteryMode: "Battery text",
+  utilityApproval: "Utility approval text",
+  ownerAuthorization: "Authorization text",
+};
+
+export function borrowedTopicEvidence(
+  projectId: string,
+  finding: ReviewerFinding,
+  check: ProjectEvidence,
+): { evidenceFound: ReviewerFindingEvidence[]; evidenceStatus: ReviewerFinding["evidenceStatus"] } {
+  const topicStatus = evidenceStatus(check);
+  const evidenceStatusOut: ReviewerFinding["evidenceStatus"] = topicStatus === "verified" ? "weak" : topicStatus;
+  // Mid-sentence casing that leaves acronyms alone: "Supply-side tap" -> "supply-side tap",
+  // but "SLD/one-line sheet" and "MSP bus rating" stay as written.
+  const midSentence = (value: string): string => (/^[A-Z][a-z]/.test(value) ? value.charAt(0).toLowerCase() + value.slice(1) : value);
+  const ask = midSentence((finding.evidenceNeeded[0] || finding.title).trim());
+  const noun = TOPIC_NOUN[check.topic];
+  const evidenceFound = evidenceFromTopic(projectId, check).map((item) =>
+    item.kind === "source_excerpt"
+      ? {
+          ...item,
+          label: `${noun} found — ${ask} not verified`,
+          note: `This shows the ${midSentence(noun)} is on the set. It does not show ${ask}; check the source sheet for that.`,
+        }
+      : item,
+  );
+  return { evidenceFound, evidenceStatus: evidenceStatusOut };
+}
+
 function attachEvidence(project: ProjectRecord, profile: AhjProcessProfile | null, finding: ReviewerFinding): ReviewerFinding {
   if (finding.evidenceFound?.length) return finding;
   const topic = topicForFinding(finding);
-  const evidenceFound = topic ? evidenceFromTopic(project.id, evidenceForTopic(project, topic)) : genericEvidence(project, profile, finding);
-  const status = topic ? evidenceStatus(evidenceForTopic(project, topic)) : evidenceFound.some((item) => item.kind === "process_profile") ? "profile" : evidenceFound.some((item) => item.confidence === "high") ? "verified" : "weak";
+  if (topic) return { ...finding, ...borrowedTopicEvidence(project.id, finding, evidenceForTopic(project, topic)) };
+  const evidenceFound = genericEvidence(project, profile, finding);
+  const status = evidenceFound.some((item) => item.kind === "process_profile") ? "profile" : evidenceFound.some((item) => item.confidence === "high") ? "verified" : "weak";
   return { ...finding, evidenceFound, evidenceStatus: status };
 }
 

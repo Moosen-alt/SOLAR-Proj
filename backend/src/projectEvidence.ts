@@ -140,11 +140,38 @@ function matchSources(project: ProjectRecord, patterns: RegExp[], limit = 4): { 
     for (const pattern of patterns) {
       const match = pattern.exec(source.text);
       if (!match) continue;
-      const index = Math.max(0, match.index - 70);
-      const excerpt = cleanExcerpt(source.text.slice(index, match.index + match[0].length + 110));
+      // THE EXCERPT LEADS WITH THE EVIDENCE. It used to start 70 characters BEFORE the match,
+      // and on a plan sheet the 70 characters before a sheet name are the title block — the
+      // f7d7af7e SLD evidence opened "PHONE: 1-800-… SOLAR.COM Initial Design 00 4/15/26" and
+      // the operator asked why the SLD evidence looked like our phone number. The same text
+      // also feeds the evidence-image page picker, so leading junk steered the crop too.
+      //
+      // It starts at the match, or at the sentence/label boundary just before it when one is
+      // close (the pattern that hits first is not always the earliest words: "One Line Diagram
+      // (SLD)" is found by /\bSLD\b/, and the words that make it a diagram come before it).
+      // Extracted PDF text separates text runs with two spaces, so a title-block cell ends in
+      // a boundary and the excerpt still starts at the sheet name.
+      //
+      // It also ENDS at a line break. Extracted plan-set text joins its pages with "\n", so a
+      // window that runs past one is quoting the NEXT sheet — whose first words are that
+      // sheet's title block: "SNOW LOAD: 16 PSF ACME SOLAR PHONE: 1-800-…" is the same leak
+      // at the other end, and the next sheet's words then steer the page picker to it.
+      //
+      // The page HINT still reads the wider window: a "SHEET E-1.1" label just before the
+      // match is where the sheet reference lives, and the hint is metadata, not the quote.
+      const lookback = source.text.slice(Math.max(0, match.index - 70), match.index);
+      const boundaries = [...lookback.matchAll(/[.!?;]\s+|\s[—–]\s|\s{2,}|\n|\|\s*/g)];
+      const lastBoundary = boundaries[boundaries.length - 1];
+      const start = lastBoundary
+        ? match.index - lookback.length + lastBoundary.index! + lastBoundary[0].length
+        : match.index;
+      const end = match.index + match[0].length + 180;
+      const lineBreak = source.text.indexOf("\n", match.index + match[0].length);
+      const excerpt = cleanExcerpt(source.text.slice(start, lineBreak >= 0 && lineBreak < end ? lineBreak : end));
+      const hintWindow = cleanExcerpt(source.text.slice(Math.max(0, match.index - 70), match.index + match[0].length + 110));
       if (excerpt && !excerpts.includes(excerpt)) {
         excerpts.push(excerpt);
-        hits.push({ sourceLabel: source.label, excerpt, pageHint: pageHintFor(source.label, excerpt) });
+        hits.push({ sourceLabel: source.label, excerpt, pageHint: pageHintFor(source.label, hintWindow) });
       }
       if (!labels.includes(source.label)) labels.push(source.label);
       if (excerpts.length >= limit) return { excerpts, sources: labels, hits };

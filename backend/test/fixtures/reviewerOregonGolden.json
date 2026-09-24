@@ -73,14 +73,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "sld evidence",
+          "label": "SLD found — SLD/one-line sheet number not verified",
           "source": "Split page mapping",
           "excerpt": "one-line diagram rapid shutdown site plan roof plan",
           "confidence": "high",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found strong supporting source text."
+          "note": "This shows the SLD is on the set. It does not show SLD/one-line sheet number; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -94,7 +94,7 @@
           "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
       ],
-      "evidenceStatus": "verified"
+      "evidenceStatus": "weak"
     },
     {
       "id": "city.fire.pathways-missing",
@@ -371,14 +371,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "sld evidence",
+          "label": "SLD found — MSP bus rating not verified",
           "source": "Split page mapping",
           "excerpt": "one-line diagram rapid shutdown site plan roof plan",
           "confidence": "high",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found strong supporting source text."
+          "note": "This shows the SLD is on the set. It does not show MSP bus rating; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -392,7 +392,7 @@
           "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
       ],
-      "evidenceStatus": "verified"
+      "evidenceStatus": "weak"
     },
     {
       "id": "city.elec.equipment-specs-incomplete",
@@ -430,14 +430,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "sld evidence",
+          "label": "SLD found — module make/model/wattage/quantity not verified",
           "source": "Split page mapping",
           "excerpt": "one-line diagram rapid shutdown site plan roof plan",
           "confidence": "high",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found strong supporting source text."
+          "note": "This shows the SLD is on the set. It does not show module make/model/wattage/quantity; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -451,7 +451,7 @@
           "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
       ],
-      "evidenceStatus": "verified"
+      "evidenceStatus": "weak"
     },
     {
       "id": "city.elec.dc-size-mismatch",
@@ -480,14 +480,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "sld evidence",
+          "label": "SLD found — corrected equipment schedule not verified",
           "source": "Split page mapping",
           "excerpt": "one-line diagram rapid shutdown site plan roof plan",
           "confidence": "high",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found strong supporting source text."
+          "note": "This shows the SLD is on the set. It does not show corrected equipment schedule; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -501,21 +501,21 @@
           "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
       ],
-      "evidenceStatus": "verified"
+      "evidenceStatus": "weak"
     },
     {
       "id": "reviewer.plan.rapid-shutdown",
       "severity": "warning",
       "category": "plan_set",
       "title": "Verify rapid shutdown evidence not clear",
-      "message": "Rapid shutdown evidence not clear. Found medium-confidence evidence: one-line diagram rapid shutdown site plan roof plan",
-      "cityFeedback": "Rapid shutdown evidence not clear. The parser found only medium-confidence evidence. Found medium-confidence evidence: one-line diagram rapid shutdown site plan roof plan",
+      "message": "Rapid shutdown evidence not clear. Found medium-confidence evidence: rapid shutdown site plan roof plan",
+      "cityFeedback": "Rapid shutdown evidence not clear. The parser found only medium-confidence evidence. Found medium-confidence evidence: rapid shutdown site plan roof plan",
       "designTeamAction": "Confirm the parsed evidence is on the current plan set. Show rapid shutdown equipment, initiation/control location, and required labels.",
       "evidenceNeeded": [
         "Rapid shutdown equipment",
         "RSD initiation/control location",
         "RSD label/placard callout",
-        "Parsed evidence: one-line diagram rapid shutdown site plan roof plan"
+        "Parsed evidence: rapid shutdown site plan roof plan"
       ],
       "codeReferences": [],
       "installerCallout": true,
@@ -523,14 +523,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "rapidShutdown evidence",
+          "label": "Rapid shutdown callout found — rapid shutdown equipment not verified",
           "source": "Split page mapping",
-          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "excerpt": "rapid shutdown site plan roof plan",
           "confidence": "medium",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found possible source text; human should verify on the source sheet."
+          "note": "This shows the rapid shutdown callout is on the set. It does not show rapid shutdown equipment; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -539,7 +539,7 @@
           "excerpt": "",
           "confidence": "medium",
           "pageHint": "Split page mapping",
-          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=rapidShutdown&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=rapidShutdown&hint=Split%20page%20mapping&excerpt=rapid%20shutdown%20site%20plan%20roof%20plan",
           "verifier": "parser",
           "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
@@ -565,14 +565,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "accountVerification evidence",
+          "label": "Utility account text found — utility bill/account holder match not verified",
           "source": "Normalized project field",
           "excerpt": "Project account number ****ured: ******7890",
           "confidence": "medium",
           "pageHint": "Project field",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found possible source text; human should verify on the source sheet."
+          "note": "This shows the utility account text is on the set. It does not show utility bill/account holder match; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -776,14 +776,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "sld evidence",
+          "label": "SLD found — SLD/one-line sheet number not verified",
           "source": "Split page mapping",
           "excerpt": "one-line diagram rapid shutdown site plan roof plan",
           "confidence": "high",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found strong supporting source text."
+          "note": "This shows the SLD is on the set. It does not show SLD/one-line sheet number; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -797,7 +797,7 @@
           "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
       ],
-      "evidenceStatus": "verified"
+      "evidenceStatus": "weak"
     },
     {
       "id": "city.fire.pathways-missing",
@@ -1074,14 +1074,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "sld evidence",
+          "label": "SLD found — MSP bus rating not verified",
           "source": "Split page mapping",
           "excerpt": "one-line diagram rapid shutdown site plan roof plan",
           "confidence": "high",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found strong supporting source text."
+          "note": "This shows the SLD is on the set. It does not show MSP bus rating; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -1095,7 +1095,7 @@
           "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
       ],
-      "evidenceStatus": "verified"
+      "evidenceStatus": "weak"
     },
     {
       "id": "city.elec.equipment-specs-incomplete",
@@ -1133,14 +1133,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "sld evidence",
+          "label": "SLD found — module make/model/wattage/quantity not verified",
           "source": "Split page mapping",
           "excerpt": "one-line diagram rapid shutdown site plan roof plan",
           "confidence": "high",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found strong supporting source text."
+          "note": "This shows the SLD is on the set. It does not show module make/model/wattage/quantity; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -1154,7 +1154,7 @@
           "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
       ],
-      "evidenceStatus": "verified"
+      "evidenceStatus": "weak"
     },
     {
       "id": "city.elec.dc-size-mismatch",
@@ -1183,14 +1183,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "sld evidence",
+          "label": "SLD found — corrected equipment schedule not verified",
           "source": "Split page mapping",
           "excerpt": "one-line diagram rapid shutdown site plan roof plan",
           "confidence": "high",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found strong supporting source text."
+          "note": "This shows the SLD is on the set. It does not show corrected equipment schedule; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -1204,21 +1204,21 @@
           "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
       ],
-      "evidenceStatus": "verified"
+      "evidenceStatus": "weak"
     },
     {
       "id": "reviewer.plan.rapid-shutdown",
       "severity": "warning",
       "category": "plan_set",
       "title": "Verify rapid shutdown evidence not clear",
-      "message": "Rapid shutdown evidence not clear. Found medium-confidence evidence: one-line diagram rapid shutdown site plan roof plan",
-      "cityFeedback": "Rapid shutdown evidence not clear. The parser found only medium-confidence evidence. Found medium-confidence evidence: one-line diagram rapid shutdown site plan roof plan",
+      "message": "Rapid shutdown evidence not clear. Found medium-confidence evidence: rapid shutdown site plan roof plan",
+      "cityFeedback": "Rapid shutdown evidence not clear. The parser found only medium-confidence evidence. Found medium-confidence evidence: rapid shutdown site plan roof plan",
       "designTeamAction": "Confirm the parsed evidence is on the current plan set. Show rapid shutdown equipment, initiation/control location, and required labels.",
       "evidenceNeeded": [
         "Rapid shutdown equipment",
         "RSD initiation/control location",
         "RSD label/placard callout",
-        "Parsed evidence: one-line diagram rapid shutdown site plan roof plan"
+        "Parsed evidence: rapid shutdown site plan roof plan"
       ],
       "codeReferences": [],
       "installerCallout": true,
@@ -1226,14 +1226,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "rapidShutdown evidence",
+          "label": "Rapid shutdown callout found — rapid shutdown equipment not verified",
           "source": "Split page mapping",
-          "excerpt": "one-line diagram rapid shutdown site plan roof plan",
+          "excerpt": "rapid shutdown site plan roof plan",
           "confidence": "medium",
           "pageHint": "Split page mapping",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found possible source text; human should verify on the source sheet."
+          "note": "This shows the rapid shutdown callout is on the set. It does not show rapid shutdown equipment; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",
@@ -1242,7 +1242,7 @@
           "excerpt": "",
           "confidence": "medium",
           "pageHint": "Split page mapping",
-          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=rapidShutdown&hint=Split%20page%20mapping&excerpt=one-line%20diagram%20rapid%20shutdown%20site%20plan%20roof%20plan",
+          "screenshotPath": "/api/projects/golden-or-1/evidence-image?topic=rapidShutdown&hint=Split%20page%20mapping&excerpt=rapid%20shutdown%20site%20plan%20roof%20plan",
           "verifier": "parser",
           "note": "Source page will render here. If no plan-set PDF is stored, upload it to Project Documents — then this slot shows the sheet. Use the source/page hint above meanwhile."
         }
@@ -1268,14 +1268,14 @@
       "evidenceFound": [
         {
           "kind": "source_excerpt",
-          "label": "accountVerification evidence",
+          "label": "Utility account text found — utility bill/account holder match not verified",
           "source": "Normalized project field",
           "excerpt": "Project account number ****ured: ******7890",
           "confidence": "medium",
           "pageHint": "Project field",
           "screenshotPath": "",
           "verifier": "parser",
-          "note": "Parser found possible source text; human should verify on the source sheet."
+          "note": "This shows the utility account text is on the set. It does not show utility bill/account holder match; check the source sheet for that."
         },
         {
           "kind": "screenshot_placeholder",

@@ -5596,6 +5596,21 @@ export function createPermitCheckTarget(
   const detail = getProjectDetail(db, projectId);
   const frequency = Math.max(1, Math.floor(Number(input.checkFrequencyDays || 7)));
   const targetType = input.targetType === "nem" ? "nem" : "permit";
+  // RULE 5 AT THE DOOR. This form accepted a PacifiCorp PowerClerk URL as a PERMIT target
+  // (production row 99ea32c3 on 1fb3dc39, duplicating that project's NEM target), and every
+  // later consumer — the permit monitor, the correction reopen, the knowledge learner below —
+  // then treats a utility interconnection portal as the AHJ's. The correction-reopen path
+  // already refuses such a row; refusing it here stops it being written at all. Same
+  // predicate as permitSafeUrl (host-only, so an AHJ URL that merely mentions a utility in
+  // its path is still accepted). Refused BEFORE the transaction so neither the row nor the
+  // learned portal is recorded. The reverse (an AHJ portal given as a NEM target) is not
+  // guarded: no predicate here recognises an AHJ permit portal by host.
+  if (targetType === "permit" && isUtilityPlatformUrl(input.portalUrl)) {
+    throw new HttpError(
+      400,
+      "That portal URL is a utility interconnection portal, not a permit portal. Add it as the NEM/interconnection target instead (target type: NEM), and give this permit target the AHJ's permit portal URL.",
+    );
+  }
   db.transaction(() => {
     // THROUGH THE ONE CREATOR (submittalTracks.ts). This used to be its own unconditional
     // INSERT, so adding the same filing twice — which is what an operator does after a page

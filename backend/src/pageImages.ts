@@ -127,18 +127,80 @@ function tokenize(value: string): string[] {
   return value.toLowerCase().match(/[a-z0-9.]{2,}/g) || [];
 }
 
+// THE SHEET'S OWN NAME. A plan sheet's title block carries its name as a bare text run —
+// extracted text separates runs with two or more spaces, and on the real f7d7af7e set the
+// title-block cell reads exactly "3-LINE DIAGRAM" on E 1.1 and exactly "NOTES" on E 1.2. A
+// notes sheet listing BOTH 705.12 load-side and 705.11 supply-side options, OCPD and rapid
+// shutdown matches every sld keyword, and it outranked the diagram it describes; the picker
+// then cropped boilerplate as the "evidence" for a supply-side tap. A diagram sheet is the
+// one whose NAME is the diagram, not the one that says the most electrical words.
+//
+// Only a WHOLE run counts: the sheet index lists "3-LINE DIAGRAM E 1.2:" and a notes body
+// says "SEE 3-LINE DIAGRAM", and neither is a sheet named that.
+const TOPIC_SHEET_TITLES: Partial<Record<EvidenceTopic, RegExp>> = {
+  sld: /^(?:(?:3|three|one|single)[-\s]?line|electrical|riser)\s+diagram$/i,
+};
+// A sheet NAMED notes is boilerplate for a drawing topic — it describes every option the
+// diagram might take, so it can never be the drawing.
+// No trailing colon: "PHOTOVOLTAIC NOTES:" is a heading over a notes BLOCK, which a diagram
+// sheet may well carry; the title-block cell naming the sheet has no colon.
+const NOTES_SHEET_TITLE = /^(?:(?:general|electrical|site|pv|photovoltaic)\s+)?notes$/i;
+
+function sheetRuns(text: string): string[] {
+  return text.split(/\s{2,}|\n/).map((run) => run.trim()).filter(Boolean);
+}
+
 // Score every page against a topic + excerpt/hint. Returns the top N 1-based
 // page numbers sorted best-first (or an empty array when nothing scores).
 export function selectTopPagesForTopic(pages: string[], topic: EvidenceTopic, hint: string, excerpt: string, topN = 3): number[] {
   if (!pages.length) return [];
-  const keywords = TOPIC_KEYWORDS[topic] || [];
   const sheetLabel = (hint.match(/\b([A-Z]{1,3}[-\s]?\d{1,2}(?:\.\d{1,2})?)\b/) || [])[1] || "";
-  const excerptTokens = new Set(tokenize(excerpt).filter((t) => t.length >= 4));
+  // THE TITLE BLOCK IS ON EVERY PAGE, so it is evidence for none of them. A token present on
+  // every page of a multi-page set (company name, phone, address, revision date, "INVERTER"
+  // in a project-summary strip) cannot tell pages apart; counting it only rewards the page
+  // with the most text. A one-page set is exempt — there, every token is "common".
+  const pageTokenSets = pages.map((text) => new Set(tokenize(text)));
+  const everyPage = new Set<string>(
+    pages.length >= 2 ? [...pageTokenSets[0]].filter((t) => pageTokenSets.every((set) => set.has(t))) : [],
+  );
+  const onEveryPage = (phrase: string): boolean => {
+    const tokens = tokenize(phrase);
+    return tokens.length > 0 && tokens.every((t) => everyPage.has(t)) && pages.every((p) => p.toLowerCase().includes(phrase));
+  };
+  const keywords = (TOPIC_KEYWORDS[topic] || []).filter((kw) => !onEveryPage(kw));
+  const excerptTokens = new Set(tokenize(excerpt).filter((t) => t.length >= 4 && !everyPage.has(t)));
+  const titleRe = TOPIC_SHEET_TITLES[topic];
+  // THE PAGE THAT HOLDS THE QUOTE. An evidence excerpt now LEADS with the matched text
+  // (projectEvidence.matchSources), so its opening words are a literal quote of one sheet.
+  // The longest opening that some page contains names the page the evidence came from —
+  // "SNOW LOAD: 16 PSF" sits on a cover that also carries the sheet index, and without this
+  // the index penalty handed that crop to the plot plan. An opening shorter than 12 characters
+  // is too generic to be a quote, and an excerpt whose opening is on EVERY page (title-block
+  // text) favours none of them.
+  const flat = (value: string): string => value.toLowerCase().replace(/\s+/g, " ").trim();
+  const flatPages = pages.map(flat);
+  const quote = flat(excerpt);
+  let quotePages = new Set<number>();
+  for (let len = Math.min(60, quote.length); len >= 12; len--) {
+    const prefix = quote.slice(0, len);
+    const holders = flatPages.map((p, i) => (p.includes(prefix) ? i : -1)).filter((i) => i >= 0);
+    if (holders.length) {
+      if (holders.length < pages.length || pages.length === 1) quotePages = new Set(holders);
+      break;
+    }
+  }
 
   const scored: { score: number; page: number }[] = [];
   pages.forEach((text, idx) => {
     const lower = text.toLowerCase();
     let score = 0;
+    // Not skipped on a sheet-index page: on a real Salem set the 3-line sheet itself carries the
+    // index block, and its index ENTRIES ("3-LINE DIAGRAM E 1.2:") are never a whole run.
+    if (titleRe) {
+      const runs = sheetRuns(text);
+      if (runs.some((run) => titleRe.test(run))) score += 12;
+      else if (runs.some((run) => NOTES_SHEET_TITLE.test(run))) score -= 8;
+    }
     // THE SHEET-INDEX PAGE MATCHES EVERYTHING. The cover/first sheet lists every sheet NAME,
     // so it scores for every topic and its sheer token count swallows excerpt overlap — on a
     // real Salem plan set the ELECTRICAL 3-line (which carries the index block) ranked in the
@@ -149,11 +211,12 @@ export function selectTopPagesForTopic(pages: string[], topic: EvidenceTopic, hi
     for (const kw of keywords) if (lower.includes(kw)) score += 2;
     if (sheetLabel && lower.includes(sheetLabel.toLowerCase())) score += 6;
     if (excerptTokens.size) {
-      const pageTokens = new Set(tokenize(text));
+      const pageTokens = pageTokenSets[idx];
       let overlap = 0;
       for (const t of excerptTokens) if (pageTokens.has(t)) overlap += 1;
       score += Math.min(8, overlap);
     }
+    if (quotePages.has(idx)) score += 14;
     if (score > 0) scored.push({ score, page: idx + 1 });
   });
   scored.sort((a, b) => b.score - a.score);
