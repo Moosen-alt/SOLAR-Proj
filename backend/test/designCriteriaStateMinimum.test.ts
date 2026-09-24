@@ -204,6 +204,54 @@ await check("MUST-PASS (r3f): an AMBIGUOUS run keeps both readings, so a low val
   assert.ok(fs.find((f) => f.id === "city.struct.design-criteria-conflict"), "the two readings must show as a conflict");
 });
 
+// snow-inv item 1 (the structural invariant): the minimum — and the below-AHJ snow line, and a
+// two-document conflict — is a BLOCKER only when the stated Pg is UNAMBIGUOUS (one predicate,
+// readGroundSnow / statedGroundSnowReading). At 2dc7527 the ambiguous run below produced a
+// design-criteria-conflict warning AND a ground-snow-below-state-minimum BLOCKER naming 25.
+const { statedGroundSnowReading } = await import("../src/designCriteria");
+const AMBIGUOUS = "DESIGN LOADS 36 PSF GROUND SNOW 25 PSF"; // a heading, then V L V: one value left over either way
+await check("MUST-PASS (snow-inv): an ambiguous Pg is never a minimum BLOCKER — a WARNING naming both readings", () => {
+  const r = statedGroundSnowReading(project("City of Salem"), [{ label: "Plan set", text: AMBIGUOUS }]);
+  assert.equal(r.status, "ambiguous");
+  const f = minimum(run(project("City of Salem", PRESCRIPTIVE), orCtx("City of Salem"), AMBIGUOUS));
+  assert.ok(f, "the low reading is still surfaced");
+  assert.equal(f!.severity, "warning", f!.message);
+  assert.match(f!.message, /25 psf in Plan set/);
+  assert.match(f!.message, /36 psf in Plan set/);
+  assert.match(f!.message, /reads more than one way/);
+});
+await check("MUST-PASS (snow-inv): the below-AHJ snow line asks the same predicate — ambiguous Pg under a verified 36 psf AHJ value is a WARNING", () => {
+  const ctx = orCtx("City of Salem", { designCriteria: { groundSnowLoadPsf: 36 } });
+  const f = run(project("City of Salem", PRESCRIPTIVE), ctx, AMBIGUOUS).find((x) => x.id === "city.struct.design-criteria-below-ahj");
+  assert.ok(f, "the below-AHJ finding must still show the low reading");
+  assert.equal(f!.severity, "warning", f!.message);
+  assert.match(f!.message, /Ground snow load: stated 25 psf in Plan set — /);
+  assert.match(f!.message, /reads more than one way \([^)]*36 psf in Plan set/);
+  // Control: an unambiguous 16 psf under the same verified AHJ value is still the BLOCKER, and a wind
+  // line below the AHJ still blocks beside an ambiguous snow line.
+  const g = run(project("City of Salem", PRESCRIPTIVE), ctx, "GROUND SNOW LOAD = 16 PSF").find((x) => x.id === "city.struct.design-criteria-below-ahj");
+  assert.equal(g?.severity, "blocker", g?.message);
+  const w = run(project("City of Salem", PRESCRIPTIVE), orCtx("City of Salem", { designCriteria: { groundSnowLoadPsf: 36, windSpeedMph: 120 } }), `${AMBIGUOUS} WIND SPEED = 100 MPH`).find((x) => x.id === "city.struct.design-criteria-below-ahj");
+  assert.equal(w?.severity, "blocker", w?.message);
+});
+await check("MUST-PASS (snow-inv): two documents that disagree only through an unsure reading are a conflict WARNING, and the minimum a WARNING", () => {
+  const fs = evaluateDesignCodeFindings(project("City of Salem", PRESCRIPTIVE), null, orCtx("City of Salem"), [], [
+    { label: "Plan set", text: AMBIGUOUS },
+    { label: "Engineer letter", text: "GROUND SNOW LOAD = 36 PSF" },
+  ]);
+  assert.equal(fs.find((f) => f.id === "city.struct.design-criteria-conflict")?.severity, "warning");
+  assert.equal(minimum(fs)?.severity, "warning", minimum(fs)?.message);
+  // Control: two documents that SURELY disagree (16 vs 36) keep the conflict BLOCKER; the minimum is
+  // a warning then (the package states two Pg values), naming both.
+  const two = evaluateDesignCodeFindings(project("City of Salem", PRESCRIPTIVE), null, orCtx("City of Salem"), [], [
+    { label: "Plan set", text: "GROUND SNOW LOAD = 16 PSF" },
+    { label: "Engineer letter", text: "GROUND SNOW LOAD = 36 PSF" },
+  ]);
+  assert.equal(two.find((f) => f.id === "city.struct.design-criteria-conflict")?.severity, "blocker");
+  assert.equal(minimum(two)?.severity, "warning");
+  assert.match(minimum(two)!.message, /16 psf in Plan set; 36 psf in Engineer letter/);
+});
+
 console.log("\n2. which ROW carried the minimum decides the severity (real write path, temp DB)");
 
 const { openDatabase } = await import("../src/db");

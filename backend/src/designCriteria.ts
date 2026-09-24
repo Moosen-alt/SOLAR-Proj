@@ -518,8 +518,38 @@ function loadValueOwners(text: string): Map<number, LoadValueOwner> {
   return owners;
 }
 
-function extractSnow(text: string, source: string, out: StatedDesignCriterion[]): void {
-  const push = (criterion: StatedDesignCriterionKind, qualifier: StatedDesignCriterionQualifier, raw: string, m: RegExpExecArray): void => {
+/**
+ * READ A TEXT'S SNOW LOADS BOTH WAYS. An ambiguous run ("both") is read once as label-first and once
+ * as value-first. A reading BOTH passes give is SURE; one only a single pass gives is UNSURE — the
+ * extractor itself could not tell which label its value belongs to. Both are reported (so the
+ * conflict shows), and `unsure` gets the keys (criterion|qualifier|value) of the unsure ones.
+ */
+function extractSnowBothWays(text: string, source: string, out: StatedDesignCriterion[], unsure: Set<string>): void {
+  const owners = loadValueOwners(text);
+  const passes = (["prev", "next"] as const).map((mode) => {
+    const found: StatedDesignCriterion[] = [];
+    extractSnow(text, source, found, owners, mode);
+    return found;
+  });
+  const keyOf = (c: StatedDesignCriterion): string => `${c.criterion}|${c.qualifier}|${c.value}`;
+  const inPass = passes.map((p) => new Set(p.map(keyOf)));
+  const seen = new Set<string>();
+  for (const c of [...passes[0], ...passes[1]]) {
+    const k = keyOf(c);
+    if (!(inPass[0].has(k) && inPass[1].has(k))) unsure.add(k);
+    if (seen.has(`${k}|${c.excerpt}`)) continue;
+    seen.add(`${k}|${c.excerpt}`);
+    out.push(c);
+  }
+}
+
+function extractSnow(text: string, source: string, out: StatedDesignCriterion[], owners: Map<number, LoadValueOwner>, mode: "prev" | "next"): void {
+  /** Who owns the unseparated value at `at` in THIS pass: an ambiguous run is read the pass's way. */
+  const ownerAt = (at: number): LoadValueOwner | undefined => {
+    const o = owners.get(at);
+    return o === "both" ? mode : o;
+  };
+  const push =(criterion: StatedDesignCriterionKind, qualifier: StatedDesignCriterionQualifier, raw: string, m: RegExpExecArray): void => {
     const value = toNumber(raw);
     // A 0 psf ROOF snow is "not applicable" ("Minimum Roof Snow Load, p m [psf]: 0"). A 0 psf
     // GROUND snow is a real site value (a desert jurisdiction's "GROUND SNOW LOAD: 0 PSF").
@@ -533,7 +563,6 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
   };
   const asd = (s: string | undefined): boolean => !!s && /asd/i.test(s);
   let m: RegExpExecArray | null;
-  const owners = loadValueOwners(text);
   // Where a label-first match's value starts: the number is the match's last one, before its unit.
   const valueStartOf = (match: RegExpExecArray, raw: string): number => {
     const head = match[0].replace(/\s*(?:psf|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))?$/i, "");
@@ -542,7 +571,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
   // An UNSEPARATED label-first read ("GROUND SNOW 25 PSF") is the label's own unless its run is
   // value-first: then the 25 is the NEXT label's ("… 25 PSF ROOF SNOW …").
   const labelFirstIsNextLabels = (match: RegExpExecArray, raw: string): boolean =>
-    owners.get(valueStartOf(match, raw)) === "next";
+    ownerAt(valueStartOf(match, raw)) === "next";
 
   // GROUND SNOW, label first. A unit is required unless the label is followed by = or :,
   // so a numbered note ("3. GROUND SNOW LOAD …") can never lend its item number. A
@@ -589,7 +618,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
   // SNOW LOAD 36 PSF" the 3 is the dead load's (read as Pg 3, a correct plan got a below-the-minimum
   // BLOCKER); in "36 PSF GROUND SNOW 25 PSF ROOF SNOW 10 PSF DEAD LOAD" the 36 IS the ground snow
   // load (dropping it left Pg 25 alone — the same false BLOCKER on a correct 36 psf plan).
-  const valueFirstIsPrevLabels = (at: number): boolean => owners.get(at) === "prev";
+  const valueFirstIsPrevLabels = (at: number): boolean => ownerAt(at) === "prev";
   const groundAfter = /(\d+(?:\.\d+)?)\s*psf\s*(\(\s*asd\s*\)\s*)?ground\s+snow/gi;
   while ((m = groundAfter.exec(text))) {
     if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index)) continue;
@@ -909,19 +938,34 @@ function dedupe(items: StatedDesignCriterion[]): StatedDesignCriterion[] {
  * of "somewhere in the uploaded text".
  */
 export function extractStatedDesignCriteria(project: ProjectRecord, extraTexts: DesignTextSource[] = []): StatedDesignCriteria {
-  return extractFromSources(project, readSources(project, extraTexts));
+  const { unsure: _unsure, ...stated } = extractFromSources(project, readSources(project, extraTexts));
+  return stated;
 }
 
-function extractFromSources(project: ProjectRecord, sources: ReadSource[]): StatedDesignCriteria {
+/** What the extractor read, plus which readings it was UNSURE of (see extractSnowBothWays): keys
+ *  `source|criterion|qualifier|value`. Internal — the shared StatedDesignCriteria shape is unchanged. */
+interface StatedReading extends StatedDesignCriteria {
+  unsure: Set<string>;
+}
+const readingKey = (c: StatedDesignCriterion): string => `${c.source}|${c.criterion}|${c.qualifier}|${c.value}`;
+
+function extractFromSources(project: ProjectRecord, sources: ReadSource[]): StatedReading {
   const criteria: StatedDesignCriterion[] = [];
   const codeBasis: StatedCodeBasisEntry[] = [];
+  const sure = new Set<string>();
+  const unsure = new Set<string>();
   extractParsedFields(project, criteria);
   for (const source of sources) {
     const found: StatedDesignCriterion[] = [];
     const text = joinSplitDigits(source.text);
     extractWind(text, source.label, found);
     extractExposureAndRisk(text, source.label, found);
-    extractSnow(text, source.label, found);
+    const unsureHere = new Set<string>();
+    extractSnowBothWays(text, source.label, found, unsureHere);
+    for (const c of found) {
+      const k = `${c.criterion}|${c.qualifier}|${c.value}`;
+      (unsureHere.has(k) ? unsure : sure).add(`${source.label}|${k}`);
+    }
     criteria.push(...found.map((c) => ({ ...c, derived: source.derived })));
     // The code basis is read from the package's own sheets only; a narrative summary
     // paraphrasing "2021 IRC" is not the plan's GOVERNING CODES block.
@@ -930,7 +974,10 @@ function extractFromSources(project: ProjectRecord, sources: ReadSource[]): Stat
     }
   }
   const seenBasis = new Set<string>();
+  // Two sources under one label: a value one of them read surely is sure.
+  for (const k of sure) unsure.delete(k);
   return {
+    unsure,
     documentTextRead: sources.some((s) => s.sheet),
     criteria: dedupe(criteria),
     codeBasis: codeBasis.filter((b) => {
@@ -1648,11 +1695,61 @@ function groundSnowMinimumFor(ctx: EffectiveCodeContext, path: "prescriptive" | 
   return { required, field: `prescriptive.${usePrescriptive ? "minGroundSnowPsfPrescriptive" : "minGroundSnowPsfEngineered"}`, mins };
 }
 
+/**
+ * THE ONE QUESTION EVERY GROUND-SNOW BLOCKER ASKS: what Pg does the package state, and is that
+ * reading UNAMBIGUOUS? Three rounds of regex fixes to the unseparated load-list reader each closed one
+ * layout and opened its mirror image, and each time the below-the-minimum rule turned the misread
+ * number into a BLOCKER on a correct plan. So a blocker no longer trusts any single reading:
+ *   · unambiguous = every Pg reading of the package (every source, parser fields included) is ONE
+ *     value, and at least one of them is SURE — a pass-independent reading, not one only the
+ *     label-first or only the value-first pass of an ambiguous run gave (extractSnowBothWays);
+ *   · anything else (two values, or one value only an unsure pass read) is ambiguous: at most a
+ *     warning that names every reading, never a blocker.
+ * Pg only: a Pg(asd) or a roof snow load is a different quantity.
+ */
+export type GroundSnowReading =
+  | { status: "none" }
+  | { status: "unambiguous"; value: number }
+  | { status: "ambiguous"; readings: Array<{ value: number; sources: string[]; unsure: boolean }> };
+
+function readGroundSnow(stated: StatedReading): GroundSnowReading {
+  const items = stated.criteria.filter((c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground" && typeof c.value === "number");
+  if (!items.length) return { status: "none" };
+  const byValue = new Map<number, { value: number; sources: Set<string>; unsure: boolean }>();
+  for (const c of items) {
+    const value = c.value as number;
+    const e = byValue.get(value) ?? { value, sources: new Set<string>(), unsure: true };
+    e.sources.add(c.source);
+    if (!stated.unsure.has(readingKey(c))) e.unsure = false;
+    byValue.set(value, e);
+  }
+  const entries = [...byValue.values()];
+  if (entries.length === 1 && !entries[0].unsure) return { status: "unambiguous", value: entries[0].value };
+  return { status: "ambiguous", readings: entries.map((e) => ({ value: e.value, sources: [...e.sources], unsure: e.unsure })) };
+}
+
+/** The package's stated Pg, as the ground-snow blockers read it (readGroundSnow). */
+export function statedGroundSnowReading(project: ProjectRecord, extraTexts: DesignTextSource[] = []): GroundSnowReading {
+  return readGroundSnow(extractFromSources(project, readSources(project, extraTexts)));
+}
+
+/** "36 psf in Plan set; 25 psf in Plan set (one way of reading an unseparated load list)". */
+function describeGroundReadings(reading: Extract<GroundSnowReading, { status: "ambiguous" }>): string {
+  return reading.readings
+    .map((r) => `${r.value} psf in ${r.sources.join(", ")}${r.unsure ? " [only one way of reading an unseparated load list]" : ""}`)
+    .join("; ");
+}
+/** The sentence an ambiguous Pg adds to a finding: every reading, and why it is not a blocker. */
+function ambiguousPgNote(reading: Extract<GroundSnowReading, { status: "ambiguous" }>): string {
+  return `The package's ground snow load reads more than one way (${describeGroundReadings(reading)}), so the ground snow load is a warning here, not a blocker: confirm which value is the design Pg on the plan set and in the engineer's letter/calculations.`;
+}
+
 function groundSnowMinimumFinding(
-  criteria: StatedDesignCriterion[],
+  stated: StatedReading,
   ctx: EffectiveCodeContext,
   path: "prescriptive" | "engineered" | "",
 ): ReviewerFinding | null {
+  const criteria = stated.criteria;
   const p = ctx.prescriptive ?? {};
   const applies = groundSnowMinimumFor(ctx, path);
   if (!applies) return null;
@@ -1660,6 +1757,8 @@ function groundSnowMinimumFinding(
   // Pg only: a Pg(asd) (~0.7 x Pg) or a roof snow load under the minimum says nothing about Pg.
   const below = criteria.filter((c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground" && typeof c.value === "number" && c.value < required);
   if (!below.length) return null;
+  const reading = readGroundSnow(stated);
+  const ambiguous = reading.status === "ambiguous" ? reading : null;
   const prov = fieldProvenance(ctx, field);
   const citation = String(p.minGroundSnowCitation || "").trim();
   const byValue = new Map<string, { value: string | number; sources: Set<string> }>();
@@ -1684,10 +1783,13 @@ function groundSnowMinimumFinding(
   const notes = [
     others ? `Minimums on file: ${others}. The permit path is unknown (no operator choice and no parser reading), so this is a warning until the path is set.` : "",
     documentStates ? "" : "Only the parser's reading states this value (no document text below the minimum was read); confirm it on the plan set.",
+    ambiguous ? ambiguousPgNote(ambiguous) : "",
   ].filter(Boolean).join(" ");
   return {
     id: "city.struct.ground-snow-below-state-minimum",
-    severity: path && prov.verified && documentStates ? "blocker" : "warning",
+    // A BLOCKER only on an UNAMBIGUOUS reading (readGroundSnow): the minimum never fires from a
+    // number the extractor itself was unsure of, nor from one the package contradicts elsewhere.
+    severity: path && prov.verified && documentStates && !ambiguous ? "blocker" : "warning",
     category: "structural",
     title: "Ground snow load below the state's minimum",
     message: `${line}.${notes ? ` ${notes}` : ""} Minimum from the ${prov.text}. The site-specific Pg may be higher than the minimum; it is never lower.`,
@@ -1747,7 +1849,9 @@ export function evaluateDesignCriteriaFindings(
       const key = String(c.value);
       const e = byValue.get(key) ?? { value: c.value, sources: new Set<string>(), docSources: new Set<string>() };
       e.sources.add(c.source);
-      if (!c.derived) e.docSources.add(c.source);
+      // A document counts toward a two-document BLOCKER only with a value it states SURELY: a value
+      // only one pass of an ambiguous load list gave is not that document's statement.
+      if (!c.derived && !stated.unsure.has(readingKey(c))) e.docSources.add(c.source);
       byValue.set(key, e);
     }
     if (byValue.size < 2) continue;
@@ -1815,13 +1919,23 @@ export function evaluateDesignCriteriaFindings(
   if (ahjExposure) {
     collect("Wind exposure", "", `Exposure ${ahjExposure}`, (c) => c.criterion === "windExposure" && (EXPOSURE_RANK[String(c.value)] ?? 99) < EXPOSURE_RANK[ahjExposure]);
   }
+  // The wind lines can block; the ground snow line blocks only on an UNAMBIGUOUS reading
+  // (readGroundSnow) — the same question the state-minimum rule asks.
+  const linesBeforeSnow = belowLines.length;
+  let snowAmbiguous = false;
   if (ahjSnow != null) {
     collect("Ground snow load", " psf", `${ahjSnow} psf`, (c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground" && typeof c.value === "number" && c.value < ahjSnow);
+    const reading = belowLines.length > linesBeforeSnow ? readGroundSnow(stated) : null;
+    if (reading?.status === "ambiguous") {
+      snowAmbiguous = true;
+      belowLines[belowLines.length - 1] += ` (${ambiguousPgNote(reading)})`;
+    }
   }
+  const belowCanBlock = linesBeforeSnow > 0 || (belowLines.length > 0 && !snowAmbiguous);
   if (belowLines.length) {
     out.push({
       id: "city.struct.design-criteria-below-ahj",
-      severity: ctx.verified ? "blocker" : "warning",
+      severity: ctx.verified && belowCanBlock ? "blocker" : "warning",
       category: "structural",
       title: "Design criteria below the jurisdiction's requirement",
       message: `${belowLines.join(". ")}. AHJ value from the ${provenance(ctx)}.${approvedDesignsNote(ctx, [
@@ -1847,7 +1961,7 @@ export function evaluateDesignCriteriaFindings(
   // seeded city row over a verified state row must not demote the state's verified floor), and
   // only when the path is known: with the path undecided the stricter minimum is used, as a
   // warning that says so.
-  const minFinding = groundSnowMinimumFinding(stated.criteria, ctx, opts.permitPath ?? "");
+  const minFinding = groundSnowMinimumFinding(stated, ctx, opts.permitPath ?? "");
   if (minFinding) out.push(minFinding);
 
   // (c) UNKNOWN — the jurisdiction's value is not on file. Never a blocker, never silent:
