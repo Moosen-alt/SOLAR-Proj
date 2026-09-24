@@ -120,7 +120,7 @@ import {
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
 import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
-import { classifyPermitStatusText, isAuthWallText, nextCheckIso, shouldRecordStatusCheck } from "./permitMonitor";
+import { classificationDrift, classifyPermitStatusText, isAuthWallText, nextCheckIso, shouldRecordStatusCheck } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { runQcForProject } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
@@ -5674,8 +5674,20 @@ export async function recordPermitStatusCheck(
   // advance every time we look), updateProjectForPermitOutcome, triggerHandoffIfReady, the
   // audit_logs row, and learnFromPermitStatus. "When did we last look" and "when did it last
   // move" are two questions and both keep an answer.
+  // Is the reading this target currently PUBLISHES one today's rules disagree with? Newest row by
+  // rowid, the same row staleStatusClassifications offers a re-check for — if the answer is yes, a
+  // fresh check must replace it even when it lands on the same pair (see shouldRecordStatusCheck).
+  const newestRow = target
+    ? db.get<Row>(
+      "SELECT outcome, status_label, raw_status_text FROM permit_status_checks WHERE target_id = ? ORDER BY rowid DESC LIMIT 1",
+      [input.targetId ?? null],
+    )
+    : null;
+  const baselineStale = newestRow
+    ? classificationDrift({ outcome: text(newestRow.outcome), statusLabel: text(newestRow.status_label), rawStatusText: text(newestRow.raw_status_text) }).stale
+    : false;
   const recordCheck = shouldRecordStatusCheck(
-    target ? { outcome: previousOutcome, statusLabel: previousStatusLabel } : null,
+    target ? { outcome: previousOutcome, statusLabel: previousStatusLabel, stale: baselineStale } : null,
     { outcome: classification.outcome, statusLabel: classification.statusLabel },
     source,
   );

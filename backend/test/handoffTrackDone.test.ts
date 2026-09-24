@@ -11,9 +11,10 @@
 //   2. UNTAGGED. Dashboard-added targets carry permit_type ''. On a multi-permit project the ''
 //      fallback resolved building AND electrical to the same newest-polled target, so the
 //      electrical permit's "issued" handed off a project whose building permit was in plan review.
-//   3. LATEST-ONLY. Targets are polled forever; after issuance the AHJ's text moves on ("Record
-//      Status: Finaled" → needs_human_review, "Final Approved" → reviewed_by_ahj, "Inspections in
-//      progress" → waiting), so a finaled permit read "not done" and the project never handed off.
+//   3. LATEST-ONLY. Targets are polled forever; after issuance the AHJ's text moves on ("Final
+//      Approved" → reviewed_by_ahj, "Inspections in progress" → waiting — and, until the classifier
+//      learned Accela's bare stated status, "Record Status: Finaled" → needs_human_review), so a
+//      permit past issuance read "not done" and the project never handed off.
 //   6. STAGED MEANWHILE. prepareSubmission re-checks, at the last point before dispatch, whether
 //      the track reached the portal (another run) since the call began.
 //   7. PROVENANCE. The cold-start portal.url_researched audit note says whether the URL came from
@@ -239,12 +240,14 @@ try {
     { applicationNumber: "NEM-F", targetType: "nem", permitType: "nem" },
   ]);
   await read(f1, f1t["COMBO-F"], ISSUED);
-  await read(f1, f1t["COMBO-F"], "Record Status: Finaled");
-  await check("fixture: the finaled reading classified away from 'issued'", () => {
+  // A post-issuance status that does NOT read as issued — "Finaled" now does, so it can no longer
+  // stand in for "the text moved on" (this fixture check is what caught that).
+  await read(f1, f1t["COMBO-F"], "Record Status: Inspections in Progress");
+  await check("fixture: the post-issuance reading classified away from 'issued'", () => {
     const t = db.get<Row>("SELECT latest_outcome FROM permit_check_targets WHERE id = ?", [f1t["COMBO-F"]]);
     assert.notEqual(String(t?.latest_outcome), "issued");
   });
-  await check("3a. a permit that read issued and then 'Finaled' is still DONE (panel says combo:issued)", () => {
+  await check("3a. a permit that read issued and then moved on (inspections) is still DONE (panel says combo:issued)", () => {
     assert.equal(isTrackDone(db, f1, "combo", ["nem", "combo"]), true);
     assert.ok(panel(f1).includes("combo:issued"), JSON.stringify(panel(f1)));
   });

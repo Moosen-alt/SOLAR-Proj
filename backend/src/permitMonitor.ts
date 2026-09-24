@@ -12,8 +12,22 @@ export interface PermitStatusClassification {
   message: string;
 }
 
+// "ADDL INFO NEEDED" IS A REVIEWER'S CORRECTION REQUEST. Oregon ePermitting (Accela) abbreviates
+// it, and the record status reads "In Review/Addl Info Needed" — which matched waitingPattern's
+// "in review" and was reported as "In review" at 0.72 while Coos Bay's building reviewer sat on
+// 187-26-000309-STR asking for a 36 psf snow load, 2' o.c. attachments and UL listings. Lincoln
+// City's 521-26-000356-STR went through the same status twice. The reviewer's comment itself lives
+// in the AJAX-loaded Processing Status panel a plain fetch never sees, so the STATUS is the only
+// signal we get — it has to be read as the correction it is.
 const correctionPattern =
-  /\b(correction|corrections|deficien(?:cy|cies)|rejected|returned|revision required|resubmit|resubmittal|required revisions|additional information|incomplete|review comments|not approved|denied|failed review|revise and resubmit)\b/i;
+  /\b(correction|corrections|deficien(?:cy|cies)|rejected|returned|revision required|resubmit|resubmittal|required revisions|additional information|add(?:'?l|itional)\.?\s+info(?:rmation)?\.?\s+(?:needed|required|requested)|info(?:rmation)?\s+requested|incomplete|review comments|not approved|denied|failed review|revise and resubmit)\b/i;
+
+// A BARE STATED STATUS. Accela states "Record Status: Issued" or "Record Status: Finaled" with no
+// other words, and issuedPattern wants a phrase ("permit issued", "status: issued") — the stated
+// status is extracted WITHOUT its "Status:" label, so both read "Needs human review". Only the
+// stated field is tested: a bare "issued" or "final" in page prose ("permits issued by the city",
+// "final fees") says nothing about this record.
+const statedIssuedPattern = /^(?:issued|finaled|permit finaled|closed\s*-\s*finaled?)$/i;
 
 const readyForIssuePattern =
   /\b(ready for issue|ready to issue|ready for issuance|permit ready|ready for pickup|ready for pick up|approved pending payment|pay fees?|fees? due|issuance fees?|final fees?|ready to be issued)\b/i;
@@ -133,7 +147,7 @@ export function classifyPermitStatusText(rawStatusText: string): PermitStatusCla
     };
   }
 
-  if (issuedPattern.test(text)) {
+  if (issuedPattern.test(text) || statedIssuedPattern.test(stated)) {
     return {
       outcome: "issued",
       statusLabel: "Permit issued",
@@ -309,14 +323,22 @@ export function isPolledCheckSource(source: string): boolean {
  *
  * THE FIRST CHECK ALWAYS COUNTS. A blank previous outcome is a target that has never been looked
  * at; the first reading is a transition from nothing to something.
+ *
+ * A STALE BASELINE IS NO BASELINE. `previous.stale` says the newest STORED row for this target is
+ * one today's rules would classify differently (classificationDrift). Comparing against it asks
+ * "did anything move since a verdict we no longer believe", and a "no" left that row in place as
+ * the reading every page publishes: 1fb3dc39's operator pressed Re-check three times, the target's
+ * last_checked_at advanced, no row was written, and the dashboard went on saying "Last checked
+ * 9/14" beside a panel offering the same Re-check. A fresh reading supersedes a stale one, always.
  */
 export function shouldRecordStatusCheck(
-  previous: { outcome?: string | null; statusLabel?: string | null } | null | undefined,
+  previous: { outcome?: string | null; statusLabel?: string | null; stale?: boolean } | null | undefined,
   next: { outcome: string; statusLabel: string },
   source: PermitCheckSource,
 ): boolean {
   if (!isPolledCheckSource(source)) return true;
   if (!previous) return true;
+  if (previous.stale) return true;
   const previousOutcome = String(previous.outcome ?? "").trim();
   if (!previousOutcome) return true;
   const previousLabel = String(previous.statusLabel ?? "").trim();
