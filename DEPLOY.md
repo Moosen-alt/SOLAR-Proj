@@ -58,7 +58,10 @@ docker compose up -d --build
 Plain Docker (no compose):
 
 ```bash
-docker build -t solar-submission-autopilot .
+docker build \
+  --build-arg BUILD_SHA=$(git rev-parse --short HEAD) \
+  --build-arg BUILD_DATE=$(git log -1 --format=%cI) \
+  -t solar-submission-autopilot .
 docker run -d --name solar -p 4173:4173 --env-file .env \
   -v solar-data:/app/backend/data solar-submission-autopilot
 ```
@@ -81,6 +84,21 @@ Run it under a process manager (systemd, pm2) so it restarts on crash/reboot.
 curl localhost:4173/health           # {"ok":true,...}
 curl localhost:4173/api/diagnostics  # full JSON: config, data counts, warnings
 ```
+
+**Which version is running.** The version is the running code's own commit date plus
+its short sha — `2026.09.24 · 0c466bb` — with `· pinned` when the code runs from a
+different folder than the working directory, and `· uncommitted changes` when tracked
+files differ from that commit. It is in the startup banner, one `INFO [build]` log
+line, `/health` → `build`, `/api/diagnostics` → `build`, and the dashboard's
+"Connected" label. It is read from git in the folder the code EXECUTES from
+(`backend/src/buildInfo.ts`), not the working directory.
+
+Without `.git` (the Docker image) it reads `BUILD_SHA` / `BUILD_DATE` (and an optional
+`APP_VERSION`, used verbatim) from the environment — the build-args above set them.
+Unstamped, it says `unknown build`, never a guessed number. `docker compose up --build`
+does not pass the build-args; export them and add `args:` under `build:` in
+`docker-compose.yml`, or set the env vars in `.env`. A set env value always wins over
+git, so do not leave a stale `BUILD_SHA` in a bare-Node `.env`.
 
 The **startup banner** in the logs summarizes everything (LLM on/off, auth,
 DB path/size, data counts) and lists warnings (e.g. missing key, default

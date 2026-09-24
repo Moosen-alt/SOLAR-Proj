@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Request, Response, NextFunction } from "express";
 import type { AppDb } from "./db";
+import type { BuildInfo } from "./buildInfo";
 
 const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 } as const;
 type Level = keyof typeof LEVELS;
@@ -167,7 +168,10 @@ function safeCount(db: AppDb, sql: string): number | null {
 
 export interface Diagnostics {
   service: string;
+  /** The date version ("2026.09.24") of the running code, or "unknown" — see buildInfo.ts. */
   version: string;
+  /** Full identity of the running code (admin-only endpoint, so codeRoot is included). */
+  build: BuildInfo;
   status: "ok" | "degraded";
   timestamp: string;
   uptimeSeconds: number;
@@ -192,7 +196,7 @@ export interface Diagnostics {
   warnings: string[];
 }
 
-export function collectDiagnostics(db: AppDb, opts: { version: string; port: number; dbPath: string }): Diagnostics {
+export function collectDiagnostics(db: AppDb, opts: { build: BuildInfo; port: number; dbPath: string }): Diagnostics {
   const dbSizeKb = (() => {
     try { return Math.round(fs.statSync(opts.dbPath).size / 1024); } catch { return null; }
   })();
@@ -217,7 +221,8 @@ export function collectDiagnostics(db: AppDb, opts: { version: string; port: num
 
   return {
     service: "Solar Submission Autopilot",
-    version: opts.version,
+    version: opts.build.version ?? "unknown",
+    build: opts.build,
     status: warnings.some((w) => w.includes("SESSION_ENCRYPTION_KEY")) ? "degraded" : "ok",
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.round(process.uptime()),
@@ -235,7 +240,7 @@ export function startupBanner(d: Diagnostics, urls: { base: string }): void {
   const L = (s: string) => console.log(s);
   L("");
   L("════════════════════════════════════════════════════════════");
-  L(`  ${d.service}  v${d.version}`);
+  L(`  ${d.service}  ${d.build.label}`);
   L("════════════════════════════════════════════════════════════");
   L(`  URL          ${urls.base}`);
   L(`  Dashboard    ${urls.base}/   ·   Parser  ${urls.base}/parser`);

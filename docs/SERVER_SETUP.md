@@ -63,6 +63,9 @@ HTTPS front door (Caddy — automatic certificates):
 
 Rules: ONE instance only (SQLite). Updates: `git pull && npm install
 && npm run smoke && systemctl restart solar` — migrations self-apply.
+Confirm the restart took: the banner / `curl localhost:4000/health` → `build.label`
+reads the new commit (`2026.09.24 · 0c466bb`; date version from the running code's
+own git commit — see DEPLOY.md §4). A git checkout needs no `BUILD_*` env vars.
 NEVER run with AUTH_ENABLED unset on a public interface (the server logs a
 warning for a reason).
 

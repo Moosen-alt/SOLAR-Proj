@@ -11,6 +11,7 @@ import { HttpError } from "./httpError";
 import { llmUsageForProject, runWithLlmContext } from "./llmAccounting";
 import { parseJson } from "./json";
 import { collectDiagnostics, logErrorBlock, logger, requestLogger, startupBanner } from "./logger";
+import { buildInfo, publicBuildInfo, versionString } from "./buildInfo";
 import { checkConcurrencyConfig, readConcurrencyConfig } from "./concurrencyConfig";
 import { findLearnedProfileForProject, retractCorrectionLearning, saveVerifiedAhjProfile, saveVerifiedUtilityProfile } from "./knowledgeBase";
 import {
@@ -208,7 +209,13 @@ const app = express();
 const db = await openDatabase();
 const frontendDir = path.resolve(process.cwd(), "frontend");
 const port = Number(process.env.PORT || 4173);
-const APP_VERSION = "0.1.0-beta";
+// What code is running — from the EXECUTING code's own git commit (pinned production runs
+// .probe/prod-pinned with cwd = the live folder), computed once. See buildInfo.ts.
+const BUILD = buildInfo();
+logger.info("build", `Running ${BUILD.label}`, {
+  version: BUILD.version, sha: BUILD.sha, commitDate: BUILD.commitDate, dirty: BUILD.dirty,
+  pinned: BUILD.pinned, source: BUILD.source, codeRoot: BUILD.codeRoot,
+});
 const dbPath = path.resolve(process.cwd(), process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite");
 
 const asyncHandler =
@@ -394,7 +401,7 @@ app.use(express.static(frontendDir));
 // worth paging on — the database answers, jobs are moving, and nothing is stuck.
 // No secrets or PII: counts and ages only.
 app.get("/health", (_req, res) => {
-  const out: Record<string, unknown> = { ok: true, service: "Solar Submission Autopilot", version: APP_VERSION };
+  const out: Record<string, unknown> = { ok: true, service: "Solar Submission Autopilot", version: versionString(BUILD), build: publicBuildInfo(BUILD) };
   try {
     db.get<{ one: number }>("SELECT 1 AS one"); // a DB that has gone away is the loudest failure
     out.db = "ok";
@@ -429,7 +436,7 @@ app.get("/health", (_req, res) => {
 // Full runtime diagnostics — paste this output to troubleshoot. No secrets/PII.
 app.get("/api/diagnostics", (req, res) => {
   requireAdmin(req);
-  res.json(collectDiagnostics(db, { version: APP_VERSION, port, dbPath }));
+  res.json(collectDiagnostics(db, { build: BUILD, port, dbPath }));
 });
 
 app.post("/api/projects", (req, res) => {
@@ -3055,7 +3062,7 @@ process.on("uncaughtException", (err) => {
 });
 
 const server = app.listen(port, process.env.SERVER_HOST || "0.0.0.0", () => {
-  const diag = collectDiagnostics(db, { version: APP_VERSION, port, dbPath });
+  const diag = collectDiagnostics(db, { build: BUILD, port, dbPath });
   startupBanner(diag, { base: `http://localhost:${port}` });
   // Exposure warning: app.listen(port) binds all interfaces. With auth OFF that serves all
   // customer PII + the credential/approve endpoints to anyone who can reach the port. Loud

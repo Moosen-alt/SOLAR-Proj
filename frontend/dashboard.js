@@ -467,10 +467,19 @@ function projectLaneStatusCell(label, outcome, checkedAt, ready, readyLabel) {
 async function checkHealth() {
   const el = $("serviceStatus");
   try {
-    await api("/health");
-    el.textContent = "Connected";
+    const health = await api("/health");
+    // Which code is answering (backend/src/buildInfo.ts): "2026.09.24 · 0c466bb · pinned".
+    // Optional — an older server or a stub /health has no build block, and that must not
+    // flip the status to "unreachable". Rendered INSIDE the status element so the existing
+    // narrow-screen rule that hides the status hides the label with it.
+    const buildLabel = health && health.build && typeof health.build.label === "string" ? health.build.label : "";
+    el.innerHTML = buildLabel
+      ? `Connected <span class="build-label" style="font-weight:400;color:var(--muted);white-space:nowrap">· ${esc(buildLabel)}</span>`
+      : "Connected";
+    el.title = buildLabel ? `Running build ${buildLabel}` : "";
     el.className = "conn-status conn-status--ok";
   } catch {
+    el.title = "";
     el.textContent = "Backend unreachable";
     el.className = "conn-status conn-status--down";
   }

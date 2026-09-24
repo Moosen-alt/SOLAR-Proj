@@ -76,6 +76,8 @@
     </nav>
 
     <div class="topbar-end">
+      <!-- checkHealth appends the running build ("2026.09.24 · 0c466bb", from /health) inside
+           this element, so it hides with the connection status on narrow screens. -->
       <p id="serviceStatus" class="conn-status conn-status--checking">Connecting…</p>
       <button id="refreshBtn" class="icon-button" title="Refresh (r)" aria-label="Refresh"><i data-lucide="refresh-cw"></i></button>
       <!-- The inline display:none must stay inline: bumpNotifBadge reveals the bell

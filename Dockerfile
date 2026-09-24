@@ -43,6 +43,14 @@ COPY portal-bot ./portal-bot
 COPY backend/data/reference-ahj-processes.json backend/data/reference-code-profiles.json /app/reference/
 ENV AHJ_PROCESS_REFERENCE_PATH=/app/reference/reference-ahj-processes.json
 ENV CODE_PROFILE_REFERENCE_PATH=/app/reference/reference-code-profiles.json
+# Build identity (backend/src/buildInfo.ts). The image has no .git (.dockerignore) and no git
+# binary, so without these the app honestly reports "unknown build". Stamp at build time:
+#   docker build --build-arg BUILD_SHA=$(git rev-parse --short HEAD) \
+#                --build-arg BUILD_DATE=$(git log -1 --format=%cI) -t solar-submission-autopilot .
+# Empty (the default) means "not stamped", never a version.
+ARG BUILD_SHA=""
+ARG BUILD_DATE=""
+ENV BUILD_SHA=$BUILD_SHA BUILD_DATE=$BUILD_DATE
 
 # Playwright Chromium binary — stored at a fixed path outside node_modules
 # so it survives volume mounts and is not duplicated per node_modules copy.
