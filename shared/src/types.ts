@@ -1111,7 +1111,8 @@ export type JurisdictionCriterionKey =
   | "windSpeedMph"
   | "windExposure"
   | "specialWindRegion"
-  | "maxAttachmentSpacingIn";
+  | "maxAttachmentSpacingIn"
+  | "listingEvidenceRequired";
 
 /** A design requirement an AHJ STATED in a correction, proposed for that AHJ's code profile.
  *  Never applied without a human (POST /api/corrections/:id/apply); lands as "seeded" with a
@@ -1122,8 +1123,14 @@ export interface JurisdictionCriteriaProposal {
   id: string;
   ahj: string;
   state: string;
-  /** The AHJ's OWN profile row the value would land on ("" = none yet; one is created). */
+  /** The AHJ's OWN profile row the value would land on — matched by EXACT profile key, never a
+   *  fuzzy name ("City of Lincoln City" must never land on "Lincoln County"). "" = no row with
+   *  that key yet; applying creates one under `targetProfileKey`. */
   profileKey: string;
+  /** The exact key the value will be written under (set whether or not the row exists yet). */
+  targetProfileKey?: string;
+  /** A DIFFERENT existing row a fuzzy name match would have picked — shown, never written. */
+  nearestOtherRow?: { key: string; ahj: string };
   block: "designCriteria" | "prescriptive";
   criterion: JurisdictionCriterionKey;
   value: number | string | boolean;
@@ -1137,6 +1144,20 @@ export interface JurisdictionCriteriaProposal {
    *  row is human-verified and will not be touched. applied / refused: after an apply. */
   status: "proposed" | "same_as_current" | "blocked_verified" | "applied" | "refused";
   statusNote?: string;
+}
+
+/** Where a correction was READ: the permit/NEM target the monitor checked. A monitor correction
+ *  carries it from the check itself (never reverse-engineered from the page text); it decides
+ *  which jurisdiction — if any — the correction's requirements are proposed for (hard rule 5). */
+export interface CorrectionReadingOrigin {
+  targetId: string;
+  targetType: string;
+  permitType: string;
+  jurisdiction: string;
+  recordNumber: string;
+  /** The check's source. "email": the tracker ASSIGNS a target (newest active), so the target is
+   *  a guess, not where the text was read — such a correction proposes nothing. */
+  readingSource: string;
 }
 
 /** The design criteria an ISSUED project used — corroboration for the AHJ, never its rule. */
@@ -1188,6 +1209,10 @@ export interface PrescriptiveLimits {
    *  jurisdiction to standard/engineered review instead of leaving the path undecided
    *  forever. Undefined means nobody has established it yet. */
   hasPrescriptivePath?: boolean;
+  /** The jurisdiction has ASKED for module / racking UL listing evidence (e.g. an AHJ correction
+   *  "Provide UL listing for the panels, mounting and racking hardware"). Where set, a package
+   *  that does not show the listings is a warning there, not just a callout. */
+  listingEvidenceRequired?: boolean;
   /** Where the limits above were read from, for the reviewer's citation. */
   sourceUrl?: string;
 }
@@ -1294,6 +1319,9 @@ export interface JurisdictionCodeProfile {
   verifiedAt?: string;
   verifiedBy?: string;
   updatedAt: string;
+  /** AGGREGATE of the approved designs issued there (listCodeProfiles only): values, counts and
+   *  dates — never a project id or record number, because this list is shared across tenants. */
+  approvedDesignSummary?: Array<{ criterion: StatedDesignCriterionKind; value: number | string; count: number; lastIssuedAt: string }>;
 }
 
 // Review work types (rule packs). "solar_pv_residential" is the deterministic pack;

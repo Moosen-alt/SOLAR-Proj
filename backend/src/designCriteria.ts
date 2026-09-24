@@ -661,21 +661,73 @@ export interface AhjRequiredCriterion {
   basis: string;
 }
 
-const REQUIREMENT_CUE = /\b(?:minimum|min\.|must\s+be|shall\s+be|should\s+be|needs?\s+to\s+be|is\s+required|are\s+required|required|requires?)\b/i;
+// WHICH SENTENCES STATE A REQUIREMENT. Three ways in, and nothing else:
+//  1. a requirement cue in the clause — "should be / shall be / must be / minimum ... is /
+//     required / provide ... / use ..." — and the value comes AFTER the cue;
+//  2. a bullet under a requirement header ("Provide updated design criteria ... -Ground snow
+//     load 36 psf.") inherits the header's cue;
+//  3. a BARE statement that is nothing but the criterion ("Ground snow load 36 psf.") — a short
+//     clause that OPENS with the criterion's label. A portal page that prints the applicant's
+//     entered criteria mid-line ("Record ... Addl Info Needed Wind Speed 120 mph ...") is not one.
+// And these never count, whatever cue they carry: a clause that REJECTS a value ("is incorrect",
+// "not acceptable", "not allowed", "exceeds", "does not match"), one that is CONDITIONAL ("If
+// ...", "verify whether ..."), and one that QUOTES THE PACKAGE ("Plan set: ...", "Calcs - ...",
+// "the letter states ..."). A rejected or quoted value is what the AHJ bounced, never its rule.
+const REQUIREMENT_CUE = /\b(?:minimum|min\.|must\s+(?:not\s+)?be|shall\s+(?:not\s+)?be|should\s+be|needs?\s+to\s+be|is\s+required|are\s+required|required|requires?|provide|(?:shall|must|may)\s+not\s+exceed|not\s+to\s+exceed)\b/i;
+/** The site's fact, stated: "Testcoast City is located in a special wind region". */
+const SPECIAL_WIND_STATEMENT = /\b(?:is|are|lies|sits)\s+(?:located\s+|situated\s+)?(?:with)?in\s+(?:an?\s+|the\s+)?special\s+wind\s+(?:region|zone)\b/i;
+/** A cue that FOLLOWS its value: "Exposure C is required", "36 psf ground snow is the minimum". */
+const TRAILING_REQUIREMENT = /\b(?:is|are)\s+(?:required|the\s+minimum)\b\W*$/i;
+/** Imperatives that open a clause: "Use Vult = 130 mph", "Show ground snow 36 psf", "Design for ...". */
+const IMPERATIVE_START = /^\s*(?:please\s+)?(?:use|show|design\s+(?:for|to)|revise\s+(?:to|for)|update\s+to|submit|provide)\b/i;
 // Third-person / past forms only: "the calculations show(s)/use(d)" describes the package, while
 // the imperative "Use Vult = 130 mph" / "Show ground snow 36 psf" is the requirement.
 const QUOTATION_CUE = /\b(?:shows|shown|showing|states|stated|indicates|indicated|lists|listed|uses|used|currently|(?:plans?|calc\w*|letter|drawings?|sheets?)\s+(?:show|state|use|indicate|list))\b/i;
+/** The clause rejects a value, or asks a question instead of stating a rule. "shall not exceed" /
+ *  "not to exceed" state a MAXIMUM (a requirement), so "exceed" counts only without them. */
+const REJECTION_CUE = /\b(?:is|are|was|were)\s+(?:incorrect|wrong|inaccurate|invalid|insufficient|inadequate)\b|\bnot\s+(?:acceptable|allowed|permitted|approved|correct|required|needed)\b|\bunacceptable\b|\b(?<!\bnot\s)(?<!\bnot\s+to\s)exceed(?:s|ed|ing)?\b|\bdo(?:es)?\s+not\s+(?:match|agree|comply|meet|correspond)\b|\b(?:mismatch(?:ed)?|inconsistent|conflict(?:s|ing)?)\b|\bwhether\b/i;
+/** A conditional clause ("If the site is ...", "Unless ..."), after any item number. */
+const CONDITIONAL_START = /^\s*(?:\(?\d+[.)]\s*)?(?:if|unless|where|when)\b/i;
+/** The clause opens by naming a PACKAGE document it then quotes: "Plan set: ground snow 25 psf.",
+ *  "Calcs - Exposure B", "The letter states ...", "Design criteria: Wind 110 mph ...". */
+const PACKAGE_PREFIX = /^\s*(?:\(?\d+[.)]\s*)?(?:the\s+|your\s+)?(?:submitted\s+)?(?:plan\s*sets?|plans?|drawings?|calc(?:ulation)?s?|structural\s+calc\w*|(?:engineer(?:'s|ing)?\s+|stamped\s+|structural\s+)?letter|sheet(?:\s+[A-Z]{0,3}[-\s]?\d+(?:\.\d+)?)?|design\s+criteria|spec(?:ification)?\s*sheets?|cut\s*sheets?|specs?)\s*(?:[:=\-–—]|\b(?:states?|shows?|lists?|uses?|indicates?|reads?|says?|has|have)\b)/i;
+/** A bare statement opens with the criterion's own label. */
+const BARE_LABEL_START = /^\s*(?:\(?\d+[.)]\s*)?(?:the\s+)?(?:design\s+|ultimate\s+|basic\s+)?(?:ground\s+snow|wind\s+(?:speed|exposure)|(?:wind\s+)?exposure\b|exp\.|v\s*[_(]?\s*ult|vult|(?:roof\s+)?(?:attachments?|mount(?:s|ing)?|anchors?|stand-?offs?)\s+spacing|special\s+wind)/i;
+const BARE_MAX_WORDS = 10;
 const ATTACHMENT_LABEL = /\b(?:mount(?:s|ing)?|attachments?|anchors?|anchorage|stand-?offs?|lags?|lag\s+screws?|roof\s+hooks?|hooks?|brackets?|clamps?|l-?feet|l-?foot)\b/gi;
 const FRAMING_WORD = /\b(?:rafters?|truss(?:es)?|joists?|purlins?|studs?|framing|members?|sheathing)\b/i;
+/** Module / racking listing evidence (UL 61730 / 1703 / 2703) — never an inverter's UL 1741. */
+const LISTING_WORD = /\bUL\s*(?:2703|61730|1703)\b|\bUL[\s-]*list(?:ing|ings|ed)\b|\blistings?\s+(?:for|of|documentation|evidence|certificates?|information)\b|\blisted\s+(?:to|per)\s+UL\b/i;
+const LISTING_SUBJECT = /\b(?:panels?|modules?|racking|racks?|rails?|mount(?:s|ing)?|attachments?|array)\b/i;
 
-function ahjSentences(text: string): string[] {
-  return String(text || "")
+interface AhjSentence {
+  text: string;
+  /** The line opened with a bullet mark, or followed a header that ended with ":". */
+  bullet: boolean;
+}
+
+function ahjSentences(text: string): AhjSentence[] {
+  const raw = String(text || "")
     .replace(/\r/g, "")
     // A new sentence starts after . ; ! ? + space when the next token opens a clause; a code
     // section ("R324.4.1") has no space after its dots, so it is never split.
-    .split(/\n+|(?<=[.;!?])\s+(?=[-–•*]?\s*[A-Z0-9(])/)
-    .map((s) => flat(s).replace(/^[-–•*]\s*/, ""))
-    .filter(Boolean);
+    .split(/\n+|(?<=[.;!?])\s+(?=[-–•*]?\s*[A-Z0-9(])/);
+  const out: AhjSentence[] = [];
+  let prevEndsColon = false;
+  for (const piece of raw) {
+    const flatPiece = flat(piece);
+    if (!flatPiece) continue;
+    const bullet = /^[-–•*]\s*/.test(flatPiece) || prevEndsColon;
+    out.push({ text: flatPiece.replace(/^[-–•*]\s*/, ""), bullet });
+    prevEndsColon = /:\s*$/.test(flatPiece);
+  }
+  return out;
+}
+
+/** One sentence's clauses: split at ";" and before a " but " / conditional tail, so "minimum
+ *  is 36 psf; the plans show 16 psf" and "Provide X, if Y" are judged part by part. */
+function ahjClauses(sentence: string): string[] {
+  return sentence.split(/;\s*|,?\s+(?=but\b)|,\s*(?=(?:if|unless|whether)\b)/i).map((c) => c.trim()).filter(Boolean);
 }
 
 function basisOf(sentence: string): string {
@@ -755,59 +807,36 @@ export function packageTextSources(project: ProjectRecord, extraTexts: DesignTex
 export function extractAhjRequiredCriteria(text: string): AhjRequiredCriterion[] {
   const found: AhjRequiredCriterion[] = [];
   const add = (criterion: JurisdictionCriterionKey, value: number | string | boolean, sentence: string): void => {
-    found.push({ criterion, block: criterion === "maxAttachmentSpacingIn" ? "prescriptive" : "designCriteria", value, basis: basisOf(sentence) });
+    const block = criterion === "maxAttachmentSpacingIn" || criterion === "listingEvidenceRequired" ? "prescriptive" : "designCriteria";
+    found.push({ criterion, block, value, basis: basisOf(sentence) });
   };
-  for (const sentence of ahjSentences(text)) {
-    const cue = sentence.search(REQUIREMENT_CUE);
-    // A sentence that quotes the package with no requirement in it states what was REJECTED.
-    if (cue < 0 && QUOTATION_CUE.test(sentence)) continue;
-    const from = cue < 0 ? 0 : cue;
-    let m: RegExpExecArray | null;
-
-    // Special wind region — a yes, unless negated.
-    if (/\bspecial\s+wind\s+(?:region|zone)\b/i.test(sentence) && !/\bnot\b[^.]{0,40}\bspecial\s+wind/i.test(sentence)) {
-      add("specialWindRegion", true, sentence);
-    }
-
-    // Ground snow load Pg (never Pg(asd), never roof snow).
-    const ground = /\bground\s+snow(?:\s+loads?)?(?:\s*\(?\s*p\s?g\s*\)?)?\s*(\(\s*asd\s*\)|,?\s*asd\b)?[^0-9$]{0,30}?(\d+(?:\.\d+)?)\s*(?:psf\b|pounds?\s+per\s+square\s+f(?:oo|ee)t|lbs?\s*\/\s*(?:sq\.?\s*ft|ft2|ft²))/gi;
-    while ((m = ground.exec(sentence))) {
-      if (m[1] || m.index + m[0].length <= from) continue;
-      const v = toNumber(m[2]);
-      if (v != null && v > 0 && v <= 400) add("groundSnowLoadPsf", v, sentence);
-    }
-    const groundAfter = /(\d+(?:\.\d+)?)\s*psf\s+ground\s+snow\b/gi;
-    while ((m = groundAfter.exec(sentence))) {
-      if (m.index < from) continue;
-      const v = toNumber(m[1]);
-      if (v != null && v > 0 && v <= 400) add("groundSnowLoadPsf", v, sentence);
-    }
-
-    // Ultimate design wind speed. "minimum" is the requirement here; a maximum/rating is not.
-    const wind = /(\d{2,3}(?:\.\d+)?)\s*mph\b/gi;
-    while ((m = wind.exec(sentence))) {
-      if (m.index < from) continue;
-      const pre = sentence.slice(0, m.index);
-      if (!/\bwind\b|\bv\s*[_(]?\s*ult\b|\bvult\b/i.test(pre) && !/^\s*(?:\(?\s*3[\s-]*sec(?:ond)?\.?[\s-]*gust\s*\)?\s*)?(?:ultimate\s+)?(?:design\s+)?wind\b/i.test(sentence.slice(m.index + m[0].length))) continue;
-      if (/(?:\bup\s*to|\bmax(?:imum)?\.?|\brated|\btested|\bexceed(?:s|ing)?|\bnot\s+more\s+than|\bless\s+than|≤|<=|<)[^0-9]{0,24}$/i.test(pre.slice(-30))) continue;
-      const qual = windQualifier(`${pre.slice(-40)} ${(sentence.slice(m.index + m[0].length).match(/^\s*\(?\s*(?:v\s*[_(]?\s*(?:ult|asd)\b|vult|vasd|ultimate|nominal|asd)\b/i) ?? [""])[0]}`);
-      if (qual === "nominal") continue; // the profile records the ULTIMATE speed (R301.2.1)
-      const v = toNumber(m[1]);
-      if (v != null && v >= 85 && v <= 250) add("windSpeedMph", v, sentence);
-    }
-
-    // Wind exposure category.
-    const exposure = /\bexp(?:osure|\.)\s*(?:cat(?:egory|\.)?\s*)?[:=-]?\s*([BCD])(?![A-Za-z0-9])/gi;
-    while ((m = exposure.exec(sentence))) {
-      if (m.index + m[0].length <= from) continue;
-      add("windExposure", m[1].toUpperCase(), sentence);
-    }
-
-    // Roof-attachment spacing, o.c. — the shared reader below (the design side uses it too).
-    for (const s of extractAttachmentSpacings(sentence)) {
-      if (cue >= 0 && s.at < cue) continue;
-      add("maxAttachmentSpacingIn", s.inches, sentence);
-    }
+  // A bullet inherits the requirement cue of the header it hangs under, for as long as the
+  // bullets run ("Provide updated design criteria ... -Ground snow load 36 psf.").
+  let headerCue = false;
+  for (const { text: sentence, bullet } of ahjSentences(text)) {
+    const inherited = bullet && headerCue;
+    let sentenceHasCue = false;
+    ahjClauses(sentence).forEach((clause, clauseIndex) => {
+      if (REJECTION_CUE.test(clause) || CONDITIONAL_START.test(clause) || PACKAGE_PREFIX.test(clause)) return;
+      // "X is located in a special wind region" states the site's fact: its own cue. "Exposure C is
+      // required" puts the value BEFORE its cue, so the whole (clean) clause is the requirement.
+      const own = IMPERATIVE_START.test(clause) || TRAILING_REQUIREMENT.test(clause) ? 0
+        : SPECIAL_WIND_STATEMENT.test(clause) ? clause.search(SPECIAL_WIND_STATEMENT)
+          : clause.search(REQUIREMENT_CUE);
+      if (own >= 0) sentenceHasCue = true;
+      const quote = clause.search(QUOTATION_CUE);
+      // "The calculations show the minimum ... 25 psf" — the requirement is inside the quote.
+      if (quote >= 0 && (own < 0 || quote < own)) return;
+      const bare = own < 0 && BARE_LABEL_START.test(clause) && clause.split(/\s+/).length <= BARE_MAX_WORDS;
+      const inheritsHere = inherited && clauseIndex === 0;
+      if (own < 0 && !inheritsHere && !bare) return;
+      const from = own < 0 ? 0 : own;
+      // A quotation AFTER the cue ends the requirement: "minimum is 36 psf, the plans show 16 psf".
+      const q = clause.slice(from).search(QUOTATION_CUE);
+      const to = q < 0 ? clause.length : from + q;
+      extractClause(clause, from, to, (criterion, value) => add(criterion, value, sentence));
+    });
+    if (!bullet) headerCue = sentenceHasCue;
   }
   // One criterion, one value per correction — two different values are ambiguous.
   const out: AhjRequiredCriterion[] = [];
@@ -817,6 +846,68 @@ export function extractAhjRequiredCriteria(text: string): AhjRequiredCriterion[]
     out.push(hits[0]);
   }
   return out;
+}
+
+/** The labelled values of ONE requirement clause, between [from, to). */
+function extractClause(
+  clause: string,
+  from: number,
+  to: number,
+  add: (criterion: JurisdictionCriterionKey, value: number | string | boolean) => void,
+): void {
+  let m: RegExpExecArray | null;
+  // Special wind region — stated as the site's fact ("X is located in a special wind region"), or
+  // named inside a requirement; never negated.
+  if (/\bspecial\s+wind\s+(?:region|zone)\b/i.test(clause) && !/\bnot\b[^.]{0,40}\bspecial\s+wind/i.test(clause)) {
+    if (SPECIAL_WIND_STATEMENT.test(clause) || from > 0 || IMPERATIVE_START.test(clause)) add("specialWindRegion", true);
+  }
+
+  // Ground snow load Pg (never Pg(asd), never roof snow, never a limit it must not exceed).
+  const ground = /\bground\s+snow(?:\s+loads?)?(?:\s*\(?\s*p\s?g\s*\)?)?\s*(\(\s*asd\s*\)|,?\s*asd\b)?[^0-9$]{0,30}?(\d+(?:\.\d+)?)\s*(?:psf\b|pounds?\s+per\s+square\s+f(?:oo|ee)t|lbs?\s*\/\s*(?:sq\.?\s*ft|ft2|ft²))/gi;
+  while ((m = ground.exec(clause))) {
+    const valueAt = m.index + m[0].lastIndexOf(m[2]);
+    if (m[1] || m.index + m[0].length <= from || valueAt >= to) continue;
+    if (/(?:\bup\s*to|\bmax(?:imum)?\.?|\bexceed\b|\bnot\s+more\s+than|\bless\s+than|≤|<=|<)[^0-9]{0,24}$/i.test(clause.slice(Math.max(0, valueAt - 30), valueAt))) continue;
+    const v = toNumber(m[2]);
+    if (v != null && v > 0 && v <= 400) add("groundSnowLoadPsf", v);
+  }
+  const groundAfter = /(\d+(?:\.\d+)?)\s*psf\s+ground\s+snow\b/gi;
+  while ((m = groundAfter.exec(clause))) {
+    if (m.index < from || m.index >= to) continue;
+    const v = toNumber(m[1]);
+    if (v != null && v > 0 && v <= 400) add("groundSnowLoadPsf", v);
+  }
+
+  // Ultimate design wind speed. "minimum" is the requirement here; a maximum/rating is not.
+  const wind = /(\d{2,3}(?:\.\d+)?)\s*mph\b/gi;
+  while ((m = wind.exec(clause))) {
+    if (m.index < from || m.index >= to) continue;
+    const pre = clause.slice(0, m.index);
+    const post = clause.slice(m.index + m[0].length);
+    if (!/\bwind\b|\bv\s*[_(]?\s*ult\b|\bvult\b/i.test(pre) && !/^\s*(?:\(?\s*3[\s-]*sec(?:ond)?\.?[\s-]*gust\s*\)?\s*)?(?:ultimate\s+)?(?:design\s+)?wind\b/i.test(post)) continue;
+    if (/(?:\bup\s*to|\bmax(?:imum)?\.?|\brated|\btested|\bexceed(?:s|ing)?|\bnot\s+more\s+than|\bless\s+than|≤|<=|<)[^0-9]{0,24}$/i.test(pre.slice(-30))) continue;
+    const after = (post.match(/^\s*\(?\s*(?:v\s*[_(]?\s*(?:ult|asd)\b|vult|vasd|ultimate|nominal|asd)\b/i) ?? [""])[0];
+    const qual = windQualifier(pre.slice(-40) + " " + after);
+    if (qual === "nominal") continue; // the profile records the ULTIMATE speed (R301.2.1)
+    const v = toNumber(m[1]);
+    if (v != null && v >= 85 && v <= 250) add("windSpeedMph", v);
+  }
+
+  // Wind exposure category.
+  const exposure = /\bexp(?:osure|\.)\s*(?:cat(?:egory|\.)?\s*)?[:=-]?\s*([BCD])(?![A-Za-z0-9])/gi;
+  while ((m = exposure.exec(clause))) {
+    if (m.index + m[0].length <= from || m.index + m[0].length - 1 >= to) continue;
+    add("windExposure", m[1].toUpperCase());
+  }
+
+  // Roof-attachment spacing, o.c. — the shared reader (the design side uses it too).
+  for (const sp of extractAttachmentSpacings(clause)) {
+    if ((from > 0 && sp.at < from) || sp.at >= to) continue;
+    add("maxAttachmentSpacingIn", sp.inches);
+  }
+
+  // The AHJ asked for module / racking LISTING evidence — a flag on its profile, not a number.
+  if (LISTING_WORD.test(clause) && LISTING_SUBJECT.test(clause)) add("listingEvidenceRequired", true);
 }
 
 // --- approved designs: corroboration, never the rule ----------------------------

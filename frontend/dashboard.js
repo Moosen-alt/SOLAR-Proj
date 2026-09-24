@@ -543,6 +543,9 @@ async function loadKnowledgeBase() {
   try {
     const data = await api("/api/knowledge-base");
     state.knowledgeProfiles = data.profiles || [];
+    // The jurisdictions' code profiles, for the design criteria each KB card shows. Optional: a
+    // failure (or no review entitlement) leaves the cards as they were.
+    try { state.codeProfiles = (await api("/api/code-profiles")).profiles || []; } catch { state.codeProfiles = []; }
     $("knowledgeCount").textContent = state.knowledgeProfiles.length;
     renderKnowledgeBase();
   } catch (err) {
@@ -1624,8 +1627,69 @@ function renderKnowledgeProfile(profile) {
       ${docs.length ? `<p style="margin:4px 0;font-size:12px"><strong>Required docs (${docs.length}):</strong> ${esc(docs.join(" · "))}</p>` : `<p style="margin:4px 0;font-size:12px;color:var(--muted)">No required documents learned yet.</p>`}
       ${corrections.length ? `<div style="margin-top:4px;font-size:12px"><strong>Common corrections:</strong> <ul style="margin:2px 0 0 16px;padding:0">${corrections.map((c) => `<li>${esc(c.rootCause)}${c.count > 1 ? ` (×${c.count})` : ""}</li>`).join("")}</ul></div>` : ""}
       ${profile.notes ? kbNotesHtml(profile.notes) : ""}
+      ${kbDesignCriteriaHtml(codeProfileForKb(profile, state.codeProfiles || []))}
     </article>
   `;
+}
+
+// THE JURISDICTION'S CODE PROFILE ON ITS KB CARD. Knowledge rows are keyed state|ahj|utility and
+// code profiles state|ahj, so the card finds its AHJ's own code-profile row by state + AHJ name
+// (exact, case-insensitive — a name match would put one city's criteria on another's card).
+function codeProfileForKb(kbProfile, codeProfiles) {
+  const st = String(kbProfile?.state || "").trim().toUpperCase();
+  const ahj = String(kbProfile?.ahj || "").trim().toLowerCase();
+  if (!st || !ahj) return null;
+  return (codeProfiles || []).find((c) => String(c.state || "").trim().toUpperCase() === st && String(c.ahj || "").trim().toLowerCase() === ahj) || null;
+}
+
+const KB_CRITERIA_LABELS = {
+  "designCriteria.groundSnowLoadPsf": ["Ground snow load", " psf"],
+  "designCriteria.windSpeedMph": ["Design wind speed (ultimate)", " mph"],
+  "designCriteria.windExposure": ["Wind exposure", ""],
+  "designCriteria.specialWindRegion": ["Special wind region", ""],
+  "designCriteria.seismicDesignCategory": ["Seismic design category", ""],
+  "designCriteria.frostDepthIn": ["Frost depth", " in"],
+  "prescriptive.maxAttachmentSpacingIn": ["Max attachment spacing", " in o.c."],
+  "prescriptive.listingEvidenceRequired": ["Module / racking UL listing evidence required", ""],
+};
+const KB_OBSERVED_LABELS = { groundSnowPsf: ["ground snow", " psf"], windSpeedMph: ["wind", " mph"], windExposure: ["Exposure", ""], riskCategory: ["Risk Category", ""] };
+
+// Pure (lifted by jurisdictionProposalRender.test.ts): the learned design criteria WITH WHERE EACH
+// CAME FROM — an AHJ correction (its id and record), a cited lookup, or seeded research/import —
+// and whether a person verified the row; then the approved designs issued there (aggregate only).
+// The AHJ's quoted sentence is NOT shown: this list is shared across tenants.
+function kbDesignCriteriaHtml(codeProfile) {
+  if (!codeProfile) return "";
+  const verified = codeProfile.confidence === "verified";
+  const cites = Array.isArray(codeProfile.citations) ? codeProfile.citations : [];
+  const show = (v, unit) => (typeof v === "boolean" ? (v ? "Yes" : "No") : `${v}${unit}`);
+  const rows = [];
+  for (const [field, [label, unit]] of Object.entries(KB_CRITERIA_LABELS)) {
+    const [block, key] = field.split(".");
+    const v = (codeProfile[block] || {})[key];
+    if (v === undefined || v === null || v === "") continue;
+    const c = cites.filter((x) => x && x.field === field).pop();
+    const day = (s) => String(s || "").slice(0, 10);
+    const from = c && c.kind === "ahj_correction"
+      ? `AHJ correction ${String(c.correctionId || "").slice(0, 8)}${c.recordNumber ? ` on record ${c.recordNumber}` : ""}${c.at ? `, ${day(c.at)}` : ""}`
+      : c && c.kind === "design_criteria_research"
+        ? `design-criteria lookup${c.at ? `, ${day(c.at)}` : ""}${c.sourceUrl ? ` (${c.sourceUrl})` : ""}`
+        : verified ? "entered at verification" : "seeded research / import";
+    rows.push(`<li>${esc(label)}: <strong>${esc(show(v, unit))}</strong> <span class="muted">— ${esc(from)}</span></li>`);
+  }
+  const obs = Array.isArray(codeProfile.approvedDesignSummary) ? codeProfile.approvedDesignSummary : [];
+  const obsText = obs.map((o) => {
+    const [label, unit] = KB_OBSERVED_LABELS[o.criterion] || [o.criterion, ""];
+    return `${label} ${o.value}${unit} (${o.count} issued permit${o.count === 1 ? "" : "s"}${o.lastIssuedAt ? `, latest ${String(o.lastIssuedAt).slice(0, 10)}` : ""})`;
+  });
+  if (!rows.length && !obsText.length) return "";
+  const badge = verified
+    ? `<span class="badge badge-pass">Verified${codeProfile.verifiedBy ? ` by ${esc(codeProfile.verifiedBy)}` : ""}</span>`
+    : `<span class="badge">Seeded — verify locally</span>`;
+  return `<div style="margin-top:4px;font-size:12px"><strong>Code profile design criteria</strong> ${badge}
+      ${rows.length ? `<ul style="margin:2px 0 0 16px;padding:0">${rows.join("")}</ul>` : `<p class="muted" style="margin:2px 0">No design criteria on file.</p>`}
+      ${obsText.length ? `<p style="margin:2px 0" class="muted">Approved designs used: ${esc(obsText.join("; "))} — corroboration, not the jurisdiction's rule.</p>` : ""}
+    </div>`;
 }
 
 // Notes are " | "-joined segments. Dedupe (older DBs may still carry repeats)
@@ -5866,6 +5930,8 @@ function correctionTriage(correctionId) {
       itemStatus: item.status,
       proposals: Array.isArray(parsed.proposals) ? parsed.proposals.filter((p) => p && typeof p.field === "string") : [],
       jurisdictionProposals: jurisdictionProposalList(parsed),
+      // The project half of this approval already ran (only jurisdiction proposals are left).
+      projectApplied: Boolean(parsed.projectAppliedAt),
       actions: Array.isArray(parsed.actions) ? parsed.actions.filter((a) => typeof a === "string") : [],
     };
   }
@@ -5889,6 +5955,7 @@ const JURISDICTION_CRITERION_LABELS = {
   windExposure: ["Wind exposure", ""],
   specialWindRegion: ["Special wind region", ""],
   maxAttachmentSpacingIn: ["Max attachment spacing", " in o.c."],
+  listingEvidenceRequired: ["Module / racking UL listing evidence required", ""],
 };
 const JURISDICTION_STATUS_LABELS = {
   proposed: "Will apply",
@@ -5898,6 +5965,7 @@ const JURISDICTION_STATUS_LABELS = {
   refused: "Not applied",
 };
 
+// Pure (lifted by jurisdictionProposalRender.test.ts).
 function jurisdictionProposalsHtml(list) {
   if (!list.length) return "";
   const show = (p, v) => {
@@ -5912,7 +5980,17 @@ function jurisdictionProposalsHtml(list) {
       <td>&ldquo;${esc(p.basis)}&rdquo;${p.source?.recordNumber ? ` <span class="muted">— ${esc(p.source.recordNumber)}</span>` : ""}</td>
       <td>${esc(JURISDICTION_STATUS_LABELS[p.status] || p.status)}${p.statusNote ? `<br><span class="muted" style="font-size:11px">${esc(p.statusNote)}</span>` : ""}</td>
     </tr>`).join("");
-  return `<p style="font-size:12px;margin:8px 0 2px"><strong>Jurisdiction requirements stated in this comment</strong> — for ${esc(list[0].ahj)} (${esc(list[0].state)})'s code profile, shared with every project there:</p>
+  // WHICH ROW IT WRITES — by exact key, named on the card. A row that does not exist yet is created
+  // for this AHJ; a different row a name match would have picked is shown and never written.
+  const first = list[0];
+  const key = first.profileKey || first.targetProfileKey || "";
+  const rowLine = first.profileKey
+    ? `Writes profile row <code>${esc(first.profileKey)}</code>.`
+    : `No profile row for ${esc(first.ahj)} yet — applying creates <code>${esc(key)}</code>.`;
+  const nearestLine = first.nearestOtherRow
+    ? ` <span class="muted">Not ${esc(first.nearestOtherRow.ahj)} (<code>${esc(first.nearestOtherRow.key)}</code>), which a name match would pick — that row is not changed.</span>`
+    : "";
+  return `<p style="font-size:12px;margin:8px 0 2px"><strong>Jurisdiction requirements stated in this comment</strong> — for ${esc(first.ahj)} (${esc(first.state)})'s code profile, shared with every project there. ${rowLine}${nearestLine}</p>
       <table style="font-size:12px;margin-top:2px">
         <thead><tr><th>Criterion</th><th>On file &rarr; AHJ says</th><th>AHJ comment</th><th>Status</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -5934,8 +6012,9 @@ function correctionTriageHtml(correction, triage) {
   // set. Applying it there is not a data edit: it records the triage and parks the project on
   // the designer, which is the one thing this card could never say before.
   const jurisdictionPending = (triage.jurisdictionProposals || []).some((p) => p.status === "proposed");
-  const canApply = triage.itemStatus === "pending" && (triage.proposals.length > 0 || isDesign || jurisdictionPending);
-  const applyLabel = triage.proposals.length ? "Apply these data updates" : jurisdictionPending && !isDesign ? "Apply the jurisdiction requirements" : "Record triage and wait on the designer";
+  const designOwed = isDesign && !triage.projectApplied;
+  const canApply = triage.itemStatus === "pending" && (triage.proposals.length > 0 || designOwed || jurisdictionPending);
+  const applyLabel = triage.proposals.length ? "Apply these data updates" : jurisdictionPending && !designOwed ? "Apply the jurisdiction requirements" : "Record triage and wait on the designer";
   return `
       ${triage.proposals.length ? `<table style="font-size:12px;margin-top:6px">
         <thead><tr><th>Field</th><th>Current</th><th>Proposed</th><th>Evidence</th></tr></thead>

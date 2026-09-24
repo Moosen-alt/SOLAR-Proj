@@ -72,9 +72,10 @@ const asMap = (list: Array<{ criterion: string; value: unknown }>): Record<strin
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // 1a. THE EXTRACTOR — must pass AND must exclude.
 // ─────────────────────────────────────────────────────────────────────────────────────────
-await check("MUST PASS (A): ground snow 36 psf and 2' o.c. attachment spacing (24 in) — and nothing else", () => {
+await check("MUST PASS (A): ground snow 36 psf, 2' o.c. attachment spacing (24 in), UL listing evidence — and nothing else", () => {
   const got = extractAhjRequiredCriteria(TEXT_A);
-  assert.deepEqual(asMap(got), { groundSnowLoadPsf: 36, maxAttachmentSpacingIn: 24 });
+  assert.deepEqual(asMap(got), { groundSnowLoadPsf: 36, maxAttachmentSpacingIn: 24, listingEvidenceRequired: true });
+  assert.equal(got.find((c) => c.criterion === "listingEvidenceRequired")?.block, "prescriptive");
   assert.equal(got.find((c) => c.criterion === "maxAttachmentSpacingIn")?.block, "prescriptive");
   assert.match(String(got.find((c) => c.criterion === "groundSnowLoadPsf")?.basis), /Ground snow load 36 psf/);
 });
@@ -104,9 +105,55 @@ await check("MUST EXCLUDE: live load, fee, code sections, framing, roof snow, qu
     "Pg(asd) 20 psf.",
     "Testcoast City is not located in a special wind region.",
     "Ground snow load 25 psf. Ground snow load 36 psf.", // two values: ambiguous, a human reads it
-    "Provide UL listing for the panels, mounting and racking hardware.",
   ];
   for (const text of none) assert.deepEqual(extractAhjRequiredCriteria(text), [], `extracted from: ${text}`);
+});
+
+await check("MUST EXCLUDE: a REJECTED, CONDITIONAL or QUOTED value is never proposed as the AHJ's requirement", () => {
+  const none: string[] = [
+    // rejection context
+    "Ground snow load 16 psf on the plans is incorrect.",
+    "Design wind speed 95 mph is incorrect.",
+    "Exposure B is not acceptable",
+    "Exposure B is not acceptable for this site.",
+    "The attachments at 6' o.c. are not allowed.",
+    "Anchors at 32\" o.c. exceed the manufacturer's allowable spacing.",
+    "The ground snow load in the letter (25 psf) does not match the plans (30 psf).",
+    // conditional / a question
+    "Verify whether the site is in a special wind region.",
+    "If the site is located in a special wind region, provide a wind design by an engineer.",
+    "Provide an engineered design if the ground snow load exceeds 25 psf.",
+    // the package quoted back
+    "Plan set: ground snow 25 psf.",
+    "Calcs - Exposure B, 95 mph, ground snow 28 psf.",
+    "Engineer letter: 110 mph, Exposure C.",
+    "The letter states the minimum ground snow load is 25 psf.",
+    "Per the engineer, the plans show the minimum ground snow load of 25 psf.",
+    "Engineer letter: minimum ground snow load 25 psf.", // the letter's claim, cue word and all
+    "Calcs - design wind speed shall be 110 mph.",
+    "The site's ground snow load is 36 psf.", // no cue, not a bare label statement, no header
+    "Design criteria: Wind 110 mph Exposure C, Ground snow 25 psf per engineer letter dated 1/1.",
+    // a portal page printing the applicant's entered criteria mid-line (caveat e)
+    "Record 187-26-000309-STR In Review Addl Info Needed Wind Speed 120 mph Exposure C Snow Load 16 psf",
+    // no requirement at all
+    "Rails at 48\" o.c. span; attachments at 72\" o.c.",
+    "Max span between mounts 48 in o.c.",
+    // listings: an inverter's UL 1741 is not module/racking evidence; a negated requirement is none
+    "Provide UL 1741 listing for the inverter.",
+    "UL listing is not required for the racking.",
+  ];
+  for (const text of none) assert.deepEqual(extractAhjRequiredCriteria(text).map((c) => [c.criterion, c.value]), [], `extracted from: ${text}`);
+});
+
+await check("MUST PASS: requirement cues — shall / should / minimum ... is / required / provide / a bullet under 'Provide' / special wind region stated", () => {
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Attachment spacing shall not exceed 4' o.c.")), { maxAttachmentSpacingIn: 48 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("The minimum ground snow load is 25 psf; your plans show 16 psf.")), { groundSnowLoadPsf: 25 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Exposure B is not acceptable; Exposure C is required.")), { windExposure: "C" });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide the following:\nGround snow load 36 psf\nDesign wind speed 120 mph")), { groundSnowLoadPsf: 36, windSpeedMph: 120 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide updated design criteria. -The site's ground snow load is 36 psf.")), { groundSnowLoadPsf: 36 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Testcoast City is located in a special wind region.")), { specialWindRegion: true });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide UL listing for the panels, mounting and racking hardware.")), { listingEvidenceRequired: true });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Racking must be UL 2703 listed.")), { listingEvidenceRequired: true });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -139,7 +186,7 @@ await check("intake attaches JURISDICTION proposals (blank -> value), separate f
   assert.ok(p, "no linked review item");
   assert.deepEqual(p!.proposals, [], "a jurisdiction value leaked into the project-field proposals");
   const j = p!.jurisdictionProposals;
-  assert.deepEqual(asMap(j), { groundSnowLoadPsf: 36, maxAttachmentSpacingIn: 24 });
+  assert.deepEqual(asMap(j), { groundSnowLoadPsf: 36, maxAttachmentSpacingIn: 24, listingEvidenceRequired: true });
   for (const x of j) {
     assert.equal(x.status, "proposed");
     assert.equal(x.currentValue, null);
@@ -151,13 +198,14 @@ await check("intake attaches JURISDICTION proposals (blank -> value), separate f
 
 await check("the LLM triage's rewrite of the notes keeps the jurisdiction proposals", () => {
   persistTriage(db, { correctionId: corrA, projectId: pidA }, { actions: ["Revise sheets."], proposals: [] });
-  assert.equal(itemPayload(pidA, corrA)!.jurisdictionProposals.length, 2);
+  assert.equal(itemPayload(pidA, corrA)!.jurisdictionProposals.length, 3);
 });
 
 await check("APPLY: lands as seeded with the value + a citation to the AHJ comment; a second apply does nothing", () => {
   const r = applyJurisdictionProposals(db, corrA, undefined, "operator@test");
-  assert.equal(r.applied.length, 2, JSON.stringify(r));
+  assert.equal(r.applied.length, 3, JSON.stringify(r));
   const row = ownRow("City of Testbay")!;
+  assert.equal(row.profile.prescriptive.listingEvidenceRequired, true);
   assert.equal(row.profile.confidence, "seeded");
   assert.equal(row.profile.designCriteria.groundSnowLoadPsf, 36);
   assert.equal(row.profile.prescriptive.maxAttachmentSpacingIn, 24);
@@ -218,6 +266,7 @@ await check("B: no row yet -> proposals from blank; apply creates the AHJ's seed
   const j = itemPayload(pid, cid)!.jurisdictionProposals;
   assert.deepEqual(asMap(j), { specialWindRegion: true, windSpeedMph: 120, windExposure: "D" });
   assert.ok(j.every((x) => x.profileKey === "" && x.currentValue === null));
+  assert.ok(j.every((x) => x.targetProfileKey === CP.codeProfileKey({ state: "OR", ahj: "City of Testcoast" })), "the card must name the row it will create");
   const r = applyJurisdictionProposals(db, cid, undefined, "op");
   assert.equal(r.applied.length, 3);
   const row = ownRow("City of Testcoast")!;
@@ -243,16 +292,105 @@ await check("THE APPROVAL: a design correction applies its jurisdiction values A
   const created = R.addManualCorrection(db, pid, TEXT_A).corrections[0];
   assert.equal(created.correctionBucket, "B_designer_fix");
   const out = applyCorrectionApproval(db, created.id, undefined, "op");
-  assert.equal(out.jurisdictionCriteria?.applied.length, 2);
+  assert.equal(out.jurisdictionCriteria?.applied.length, 3);
   assert.equal(String(db.get<{ status: string }>("SELECT status FROM projects WHERE id = ?", [pid])?.status), "waiting_on_designer");
 });
 
-await check("THE APPROVAL: fields that select only a PROJECT field leave the jurisdiction proposals proposed", () => {
+const reviewItem = (projectId: string, correctionId: string) =>
+  db.query<{ status: string; notes: string }>("SELECT status, notes FROM human_review_items WHERE project_id = ? AND field_name = 'correction'", [projectId])
+    .find((r) => parseCorrectionProposals(r.notes)?.correctionId === correctionId);
+const auditCount = (projectId: string, action: string): number => Number(db.get<{ n: number }>(
+  "SELECT COUNT(*) AS n FROM audit_logs WHERE project_id = ? AND action = ?", [projectId, action])?.n ?? 0);
+
+await check("THE APPROVAL: a fields-only (project) apply does NOT strand the jurisdiction proposals — the next click applies them, once", () => {
   seeded("City of Selectton");
   const pid = mkProject("City of Selectton");
   const cid = R.addManualCorrection(db, pid, TEXT_A).corrections[0].id;
   applyCorrectionApproval(db, cid, ["meterNumber"], "op");
   assert.equal(ownRow("City of Selectton")!.profile.designCriteria.groundSnowLoadPsf, undefined, "an unselected jurisdiction value was applied");
+  const mid = reviewItem(pid, cid)!;
+  assert.equal(mid.status, "pending", "the item closed with its jurisdiction proposals still 'proposed' — nothing left to click");
+  assert.ok(parseCorrectionProposals(mid.notes)!.jurisdictionProposals.every((p) => p.status === "proposed"));
+  assert.equal(auditCount(pid, "correction.waiting_on_designer"), 1);
+  // The operator's next click (the dashboard posts {}): the jurisdiction values land, the item
+  // closes, and the project half (designer wait) is NOT run a second time.
+  const out = applyCorrectionApproval(db, cid, undefined, "op");
+  assert.equal(out.jurisdictionCriteria?.applied.length, 3);
+  assert.equal(ownRow("City of Selectton")!.profile.designCriteria.groundSnowLoadPsf, 36);
+  assert.equal(reviewItem(pid, cid)!.status, "approved");
+  assert.equal(auditCount(pid, "correction.waiting_on_designer"), 1, "the designer wait ran twice");
+});
+
+await check("THE APPROVAL: a jurisdiction-only approval CLOSES the review item and marks the correction human-reviewed", () => {
+  seeded("City of Closeton");
+  const pid = mkProject("City of Closeton");
+  const created = R.addManualCorrection(db, pid, "Ground snow load 36 psf.").corrections[0];
+  assert.notEqual(created.correctionBucket, "B_designer_fix", "fixture precondition: a non-design correction");
+  applyCorrectionApproval(db, created.id, undefined, "op");
+  assert.equal(reviewItem(pid, created.id)!.status, "approved", "left pending with nothing to click");
+  assert.equal(Number(db.get<{ h: number }>("SELECT human_approved AS h FROM corrections WHERE id = ?", [created.id])?.h), 1);
+  assert.equal(db.get<{ c: string | null }>("SELECT closed_at AS c FROM corrections WHERE id = ?", [created.id])?.c ?? null, null, "approval must not close the correction itself");
+});
+
+await check("THE WRITE PATH NEVER FUZZY-MATCHES: 'City of Lincoln City' is not written into 'Lincoln County'", () => {
+  seeded("Lincoln County", { designCriteria: { windSpeedMph: 110 } });
+  const countyBefore = JSON.stringify(ownRow("Lincoln County")!.profile);
+  assert.equal(CP.ownCodeProfileRow(db, "OR", "City of Lincoln City")?.profile.ahj, "Lincoln County", "fixture precondition: the READ fuzzy match bridges these two");
+  const pid = mkProject("City of Lincoln City");
+  const cid = R.addManualCorrection(db, pid, TEXT_B.replace("Testcoast City", "Lincoln City")).corrections[0].id;
+  const j = itemPayload(pid, cid)!.jurisdictionProposals;
+  assert.ok(j.length >= 2);
+  for (const x of j) {
+    assert.equal(x.profileKey, "", "the proposal was aimed at another jurisdiction's row");
+    assert.equal(x.currentValue, null, "the proposal showed another jurisdiction's value as this one's");
+    assert.equal(x.targetProfileKey, CP.codeProfileKey({ state: "OR", ahj: "City of Lincoln City" }));
+    assert.equal(x.nearestOtherRow?.ahj, "Lincoln County", "the card should say which row a name match would have picked");
+  }
+  applyJurisdictionProposals(db, cid, undefined, "op");
+  const created = CP.exactCodeProfileRow(db, "OR", "City of Lincoln City");
+  assert.ok(created, "no row created for City of Lincoln City");
+  assert.equal(created!.profile.designCriteria.windSpeedMph, 120);
+  assert.equal(JSON.stringify(ownRow("Lincoln County")!.profile), countyBefore, "Lincoln County's shared row was changed");
+  // A proposal made before this rule (aimed at the fuzzy row) is refused, never written through —
+  // for an AHJ that has no row of its own yet, too.
+  const legacy = { ...j[0], ahj: "City of Lincoln Shore", status: "proposed" as const, currentValue: null, profileKey: ownRow("Lincoln County")!.key };
+  assert.equal(CP.applyCorrectionCriterionToProfile(db, legacy, { actor: "op", projectId: pid }).status, "refused");
+  assert.equal(CP.exactCodeProfileRow(db, "OR", "City of Lincoln Shore"), null, "a legacy fuzzy-aimed proposal still wrote");
+  assert.equal(JSON.stringify(ownRow("Lincoln County")!.profile), countyBefore);
+});
+
+await check("RESEARCH IS PER FIELD: a row created by an applied proposal does not stop adopted-code research for that AHJ", () => {
+  // City of Testcoast's row was created above by applying B — design criteria only, no codes.
+  CP.resetResearchMarkersForTests();
+  const row = CP.exactCodeProfileRow(db, "OR", "City of Testcoast")!;
+  assert.equal(row.profile.adoptedCodes.length, 0, "fixture precondition");
+  const before = Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM job_queue WHERE job_type = 'code_research' AND payload LIKE ?", [`%${row.key}%`])?.n ?? 0);
+  CP.ensureCodeProfilesResearched(db, "OR", "City of Testcoast");
+  assert.equal(CP.researchQueuedForTests().includes(row.key), true, "adopted-code research was not queued for an AHJ whose row has no codes");
+  // Control: a row WITH adopted codes is not re-researched.
+  CP.resetResearchMarkersForTests();
+  CP.ensureCodeProfilesResearched(db, "OR", "City of Testbay");
+  assert.equal(CP.researchQueuedForTests().includes(CP.codeProfileKey({ state: "OR", ahj: "City of Testbay" })), false, "a researched row was re-queued");
+  // MUST EXCLUDE: an operator IMPORT row with no codes (production: 559 of 578 rows, the Stamp
+  // Summary import — amendments + its own citation) is not re-researched: a research re-save
+  // replaces the payload and would wipe the imported stamp notes.
+  seeded("City of Stampville", { adoptedCodes: [], amendments: [{ code: "AHJ", summary: "Structural stamp required: Yes" }], citations: [{ label: "Operator stamp-requirements list (Stamp Summary)", sourceUrl: "" }] });
+  CP.resetResearchMarkersForTests();
+  CP.ensureCodeProfilesResearched(db, "OR", "City of Stampville");
+  assert.equal(CP.researchQueuedForTests().includes(CP.codeProfileKey({ state: "OR", ahj: "City of Stampville" })), false, "an operator import row was queued for a payload-replacing research");
+  void before;
+});
+
+await check("research re-saves keep what the lookup filled when the research is silent on it (fills blanks, never erases)", () => {
+  seeded("City of Keepton", { adoptedCodes: [], designCriteria: { groundSnowLoadPsf: 30 }, citations: [
+    { label: "Design criteria lookup: groundSnowLoadPsf = 30", sourceUrl: "https://keepton.example.gov/d", kind: "design_criteria_research", field: "designCriteria.groundSnowLoadPsf", at: "2026-09-01" },
+  ] });
+  seeded("City of Keepton", { designCriteria: { windSpeedMph: 100 } }); // full research lands, silent on snow
+  const row = ownRow("City of Keepton")!;
+  assert.equal(row.profile.designCriteria.groundSnowLoadPsf, 30, "research erased a cited lookup value");
+  assert.equal(row.profile.designCriteria.windSpeedMph, 100);
+  seeded("City of Keepton", { designCriteria: { groundSnowLoadPsf: 25 } }); // research that DOES state it wins
+  assert.equal(ownRow("City of Keepton")!.profile.designCriteria.groundSnowLoadPsf, 25);
 });
 
 await check("MUST EXCLUDE: a utility correction and a learning-excluded project teach no jurisdiction", () => {
@@ -269,38 +407,74 @@ await check("MUST EXCLUDE: a utility correction and a learning-excluded project 
 // ─────────────────────────────────────────────────────────────────────────────────────────
 const page = (status: string): string =>
   `Record 187-26-000777-STR: Residential Structural Record Status: ${status} Expiration Date: 03/16/2027 Record Info Processing Status`;
-const mkTarget = (pid: string, jurisdiction: string, targetType = "permit"): string => {
+const mkTarget = (pid: string, jurisdiction: string, targetType = "permit", permitType = targetType === "nem" ? "nem" : "building"): string => {
   const detail = R.createPermitCheckTarget(db, pid, {
     jurisdiction, portalName: "Test ePermitting", portalUrl: "https://permits.example.test/cap",
-    applicationNumber: "187-26-000777-STR", permitType: targetType === "nem" ? "nem" : "building", targetType,
+    applicationNumber: "187-26-000777-STR", permitType, targetType,
   } as never) as never as { permitCheckTargets: Array<{ id: string; targetType?: string }> };
   return String(detail.permitCheckTargets[detail.permitCheckTargets.length - 1].id);
 };
+// The reviewer's comment sits on its own line under the page's record header.
+const COMMENT = "\nGround snow load shall be 36 psf.";
 await check("MONITOR intake: an 'Addl Info Needed' reading's text is proposed for the TARGET's jurisdiction, with its record", async () => {
   const pid = mkProject("City of Monitorbay");
   const tid = mkTarget(pid, "Monitor County");
   db.run("UPDATE permit_check_targets SET application_number = '187-26-000888-STR' WHERE id = ?", [tid]);
   await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: page("In Review") });
+  // The page does NOT print the record number: the target comes from the check, not the text.
   await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url",
-    rawStatusText: page("In Review/Addl Info Needed").replace("187-26-000777-STR", "187-26-000888-STR") + " Ground snow load 36 psf." });
+    rawStatusText: page("In Review/Addl Info Needed").replace("Record 187-26-000777-STR: ", "") + COMMENT });
   const cid = String(db.get<{ id: string }>("SELECT id FROM corrections WHERE project_id = ?", [pid])?.id ?? "");
   assert.ok(cid, "the monitor raised no correction (fixture precondition)");
   const j = itemPayload(pid, cid)!.jurisdictionProposals;
   assert.deepEqual(asMap(j), { groundSnowLoadPsf: 36 });
   assert.equal(j[0].ahj, "Monitor County");
   assert.equal(j[0].source.recordNumber, "187-26-000888-STR");
+  // The triage rewrite rebuilds from the CHECK ROW's target, to the same answer.
+  db.run("UPDATE human_review_items SET notes = ? WHERE project_id = ? AND field_name = 'correction'",
+    [`agent-triage:${JSON.stringify({ correctionId: cid, proposals: [], actions: [] })}`, pid]);
+  persistTriage(db, { correctionId: cid, projectId: pid }, { actions: [], proposals: [] });
+  assert.equal(itemPayload(pid, cid)!.jurisdictionProposals[0]?.ahj, "Monitor County");
 });
 
-await check("MUST EXCLUDE: a correction raised on a utility (NEM) target proposes nothing for a building jurisdiction", async () => {
-  const pid = mkProject("City of Nemcorrect");
-  const tid = mkTarget(pid, "Test Power", "nem");
-  db.run("UPDATE permit_check_targets SET application_number = '187-26-000999-NEM' WHERE id = ?", [tid]);
-  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: page("In Review").replace("187-26-000777-STR", "187-26-000999-NEM") });
-  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url",
-    rawStatusText: page("In Review/Addl Info Needed").replace("187-26-000777-STR", "187-26-000999-NEM") + " Ground snow load 36 psf." });
+await check("MUST EXCLUDE (rule 5): a NEM target's correction — its page NOT printing the application number — proposes nothing for the building AHJ", async () => {
+  const pid = mkProject("City of Nembay");
+  // Named unlike the project's utility on purpose: the NEM type alone must exclude it.
+  const tid = mkTarget(pid, "Coastal Interconnection Desk", "nem");
+  db.run("UPDATE permit_check_targets SET application_number = 'APP-222222' WHERE id = ?", [tid]);
+  const nemPage = (status: string) => `Interconnection Application Status: ${status} Utility review queue`;
+  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: nemPage("In Review") });
+  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: nemPage("In Review/Addl Info Needed") + COMMENT + "\nWind exposure D is required." });
   const cid = String(db.get<{ id: string }>("SELECT id FROM corrections WHERE project_id = ?", [pid])?.id ?? "");
   assert.ok(cid, "the monitor raised no correction (fixture precondition)");
+  assert.equal(itemPayload(pid, cid)!.jurisdictionProposals.length, 0, "a utility's correction taught the building AHJ");
+  assert.equal(CP.exactCodeProfileRow(db, "OR", "City of Nembay"), null);
+  // The rebuild path (triage rewrite) must reach the same answer from the check row.
+  persistTriage(db, { correctionId: cid, projectId: pid }, { actions: [], proposals: [] });
+  assert.equal(itemPayload(pid, cid)!.jurisdictionProposals.length, 0, "the triage rebuild taught the building AHJ");
+});
+
+await check("MUST EXCLUDE: a permit-typed target whose 'jurisdiction' is the project's UTILITY teaches nothing; an EMAIL reading's assigned target teaches nothing", async () => {
+  const pid = mkProject("City of Oddtarget");
+  const tid = mkTarget(pid, "Test Power"); // target_type permit, jurisdiction = the utility (production oddity)
+  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: page("In Review") });
+  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: page("In Review/Addl Info Needed") + COMMENT });
+  const cid = String(db.get<{ id: string }>("SELECT id FROM corrections WHERE project_id = ?", [pid])?.id ?? "");
+  assert.ok(cid, "fixture precondition");
   assert.equal(itemPayload(pid, cid)!.jurisdictionProposals.length, 0);
+  const pe = mkProject("City of Emailtown");
+  const te = mkTarget(pe, "City of Emailtown");
+  await R.recordPermitStatusCheck(db, pe, { targetId: te, source: "email", rawStatusText: "Email bucket: permit\nStatus: Addl Info Needed\nCorrections required." + COMMENT });
+  const ce = String(db.get<{ id: string }>("SELECT id FROM corrections WHERE project_id = ?", [pe])?.id ?? "");
+  assert.ok(ce, "fixture precondition: the email raised a correction");
+  assert.equal(itemPayload(pe, ce)!.jurisdictionProposals.length, 0, "an email's tracker-assigned target was trusted");
+  // Control: the SAME comment on a real permit target, read on its portal, does propose.
+  const pc = mkProject("City of Controlton");
+  const tc = mkTarget(pc, "City of Controlton");
+  await R.recordPermitStatusCheck(db, pc, { targetId: tc, source: "public_url", rawStatusText: page("In Review") });
+  await R.recordPermitStatusCheck(db, pc, { targetId: tc, source: "public_url", rawStatusText: page("In Review/Addl Info Needed") + COMMENT });
+  const cc = String(db.get<{ id: string }>("SELECT id FROM corrections WHERE project_id = ?", [pc])?.id ?? "");
+  assert.equal(itemPayload(pc, cc)!.jurisdictionProposals.length, 1);
 });
 
 const obsCount = (ahj: string): number => Number(db.get<{ n: number }>(
@@ -323,6 +497,28 @@ await check("the FIRST issued reading records an observation; designCriteria is 
   assert.ok(obs[0].criteria.some((c) => c.criterion === "groundSnowPsf" && c.value === 25));
 });
 
+await check("MUST EXCLUDE: an ELECTRICAL permit reading Issued records NO approved-design observation (it reviewed no structure)", async () => {
+  const pid = mkProject("City of Elecville", { snow: "16", windSpeed: "120", wind: "C" });
+  const tid = mkTarget(pid, "City of Elecville", "permit", "electrical");
+  assert.equal(String(db.get<{ t: string }>("SELECT permit_type AS t FROM permit_check_targets WHERE id = ?", [tid])?.t), "electrical", "fixture precondition");
+  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: page("In Review") });
+  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: page("Issued") });
+  assert.equal(Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM jurisdiction_design_observations WHERE project_id = ?", [pid])?.n ?? 0), 0);
+  // A blank / legacy permit type is unknown — never corroboration either.
+  const p2 = mkProject("City of Blanktype", { snow: "16" });
+  const t2 = mkTarget(p2, "City of Blanktype", "permit", "");
+  db.run("UPDATE permit_check_targets SET permit_type = '' WHERE id = ?", [t2]);
+  await R.recordPermitStatusCheck(db, p2, { targetId: t2, source: "public_url", rawStatusText: page("In Review") });
+  await R.recordPermitStatusCheck(db, p2, { targetId: t2, source: "public_url", rawStatusText: page("Issued") });
+  assert.equal(Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM jurisdiction_design_observations WHERE project_id = ?", [p2])?.n ?? 0), 0);
+  // Control: a STRUCTURAL permit does record.
+  const p3 = mkProject("City of Structville", { snow: "25" });
+  const t3 = mkTarget(p3, "City of Structville", "permit", "structural");
+  await R.recordPermitStatusCheck(db, p3, { targetId: t3, source: "public_url", rawStatusText: page("In Review") });
+  await R.recordPermitStatusCheck(db, p3, { targetId: t3, source: "public_url", rawStatusText: page("Issued") });
+  assert.equal(Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM jurisdiction_design_observations WHERE project_id = ?", [p3])?.n ?? 0), 1);
+});
+
 await check("MUST EXCLUDE: a utility (NEM) target's approval records no building observation", async () => {
   const pid = mkProject("City of Nemtown", { snow: "25", windSpeed: "120" });
   const tid = mkTarget(pid, "Test Power", "nem");
@@ -338,6 +534,10 @@ await check("the unknown finding quotes approved designs; a value a LATER AHJ co
   assert.ok(unknown, "no unknown finding");
   assert.match(unknown!.message, /Approved designs used: ground snow 25 psf \(1 issued permit/);
   assert.doesNotMatch(unknown!.message, /187-26-000777-STR/, "a record number reached pooled finding text");
+  // The shared list (GET /api/code-profiles) carries the AGGREGATE only — never a project id or record.
+  const listed = CP.listCodeProfiles(db).find((p) => p.ahj === "City of Approvedville")!;
+  assert.ok(listed.approvedDesignSummary?.some((o) => o.criterion === "groundSnowPsf" && o.value === 25 && o.count === 1));
+  assert.doesNotMatch(JSON.stringify(listed.approvedDesignSummary), new RegExp(`187-26-000777-STR|${pidI}`), "a project id / record reached the shared list");
   // The AHJ later says 36 (a correction applied after that permit issued): 25 no longer counts.
   const cid = R.addManualCorrection(db, pidI, "Ground snow load 36 psf.").corrections[0].id;
   db.run("UPDATE corrections SET created_at = ? WHERE id = ?", ["2999-01-01T00:00:00.000Z", cid]);

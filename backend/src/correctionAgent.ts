@@ -11,14 +11,14 @@
 // ---------------------------------------------------------------------------
 
 import type { AppDb } from "./db";
-import type { AgentToolDef, CorrectionBucket, JurisdictionCriteriaProposal, ProjectDetail, ProjectRecord } from "../../shared/src/types";
+import type { AgentToolDef, CorrectionBucket, CorrectionReadingOrigin, JurisdictionCriteriaProposal, ProjectDetail, ProjectRecord } from "../../shared/src/types";
 import { createLLMProvider } from "./llm";
 import { getProjectDetail, applyCorrectionProposals } from "./repository";
 import { designNotesDigest } from "./autoLearn";
 import { humanizeBucket } from "./corrections";
 import { relearnCorrection, isLearningExcluded } from "./knowledgeBase";
 import { extractAhjRequiredCriteria } from "./designCriteria";
-import { ahjLooksLikeHostname, applyCorrectionCriterionToProfile, currentCriterionOnFile, sameCriterionValue } from "./codeProfiles";
+import { ahjLooksLikeHostname, applyCorrectionCriterionToProfile, currentCriterionOnFile, nearestOtherCodeProfileRow, sameCriterionValue } from "./codeProfiles";
 import { listProjectDocuments } from "./projectDocuments";
 import { addAuditLog } from "./audit";
 import { logger } from "./logger";
@@ -309,59 +309,81 @@ export function parseCorrectionProposals(notes: string): {
 type Row = Record<string, unknown>;
 const txt = (v: unknown): string => (v == null ? "" : String(v));
 
-/** Which jurisdiction a correction speaks for, and its record number. A monitor correction is
- *  tied to the target it was read on (its jurisdiction, its application/permit number); a
- *  utility (NEM) target's correction never teaches a building jurisdiction (hard rule 5). */
-function correctionOrigin(db: AppDb, correctionId: string, projectId: string, projectAhj: string, correctionText: string): { ahj: string; recordNumber: string; utility: boolean } {
-  const fromText = correctionText.match(/\b(?:record|permit|application|case)\s*(?:#|no\.?|number)?\s*:?\s*([A-Z0-9]{2,}(?:-[A-Z0-9]+){1,5})\b/i)?.[1] ?? "";
-  // The monitor inserts its correction BEFORE the status-check row that links it, so at intake
-  // the target is found by the record number the page printed, matched against the project's
-  // own targets; a later re-attach finds it through the check row.
-  const target = db.get<Row>(
-    `SELECT c.application_number, c.permit_number, t.target_type, t.jurisdiction
-       FROM permit_status_checks c LEFT JOIN permit_check_targets t ON t.id = c.target_id
-      WHERE c.correction_id = ? ORDER BY c.rowid DESC LIMIT 1`, [correctionId])
-    ?? (fromText
-      ? db.get<Row>(
-        `SELECT application_number, permit_number, target_type, jurisdiction FROM permit_check_targets
-          WHERE project_id = ? AND (UPPER(application_number) = UPPER(?) OR UPPER(permit_number) = UPPER(?)) LIMIT 1`,
-        [projectId, fromText, fromText])
-      : undefined);
-  const recordNumber = txt(target?.permit_number) || txt(target?.application_number) || fromText;
-  const utility = txt(target?.target_type) === "nem";
-  return { ahj: txt(target?.jurisdiction).trim() || projectAhj, recordNumber: recordNumber.slice(0, 60), utility };
+/**
+ * Which jurisdiction a correction speaks for, and its record number — or null: it teaches none.
+ *
+ * A MONITOR correction was read on a TARGET, and the target says whose comment it is. The monitor
+ * hands that target over at intake (insertMonitorCorrection's `origin`); a later rebuild (the
+ * triage rewrite) finds it through the status-check row that links the correction. Nothing is
+ * reverse-engineered from the page text: a NEM page that does not print its application number
+ * used to fall through to the project's BUILDING AHJ (hard rule 5).
+ *  - a NEM target (target or permit type), or one whose "jurisdiction" is the project's utility,
+ *    is the utility's — utilities have no code profile, so nothing is proposed;
+ *  - an email-sourced reading carries a target the tracker ASSIGNED (newest active target), not
+ *    the one the email is about — nothing is proposed; the operator can paste the comment;
+ *  - a monitor reading with no target at all proposes nothing.
+ * An operator-PASTED correction (no status check links it) speaks for the project's AHJ.
+ */
+function correctionOrigin(
+  db: AppDb,
+  correctionId: string,
+  project: { ahj: string; utility: string },
+  given?: CorrectionReadingOrigin | null,
+): { ahj: string; recordNumber: string } | null {
+  let origin: CorrectionReadingOrigin | null = given ?? null;
+  if (!given) {
+    const check = db.get<Row>(
+      `SELECT c.source, c.target_id, c.application_number, c.permit_number, t.target_type, t.permit_type, t.jurisdiction
+         FROM permit_status_checks c LEFT JOIN permit_check_targets t ON t.id = c.target_id
+        WHERE c.correction_id = ? ORDER BY c.rowid DESC LIMIT 1`, [correctionId]);
+    if (!check) return project.ahj ? { ahj: project.ahj, recordNumber: "" } : null; // operator-pasted
+    origin = {
+      targetId: txt(check.target_id), targetType: txt(check.target_type), permitType: txt(check.permit_type),
+      jurisdiction: txt(check.jurisdiction), recordNumber: txt(check.permit_number) || txt(check.application_number),
+      readingSource: txt(check.source),
+    };
+  }
+  if (!origin || !origin.targetId || origin.readingSource === "email") return null;
+  if (origin.targetType.trim().toLowerCase() === "nem" || origin.permitType.trim().toLowerCase() === "nem") return null;
+  const ahj = origin.jurisdiction.trim() || project.ahj;
+  if (!ahj || (project.utility && ahj.toLowerCase() === project.utility.trim().toLowerCase())) return null;
+  return { ahj, recordNumber: origin.recordNumber.slice(0, 60) };
 }
 
-/** The jurisdiction proposals a correction's text supports, each with the AHJ's current value. */
-export function buildJurisdictionProposals(db: AppDb, correctionId: string): JurisdictionCriteriaProposal[] {
+/** The jurisdiction proposals a correction's text supports, each with the AHJ's current value.
+ *  `origin`: the target a MONITOR correction was read on, handed over at intake. */
+export function buildJurisdictionProposals(db: AppDb, correctionId: string, origin?: CorrectionReadingOrigin | null): JurisdictionCriteriaProposal[] {
   const c = db.get<Row>("SELECT project_id, source, correction_text, created_at FROM corrections WHERE id = ?", [correctionId]);
   if (!c) return [];
   const projectId = txt(c.project_id);
-  const project = db.get<Row>("SELECT state, ahj FROM projects WHERE id = ?", [projectId]);
+  const project = db.get<Row>("SELECT state, ahj, utility FROM projects WHERE id = ?", [projectId]);
   const state = txt(project?.state).trim();
   if (!state || /utility/i.test(txt(c.source)) || isLearningExcluded(db, projectId)) return [];
   const required = extractAhjRequiredCriteria(txt(c.correction_text));
   if (!required.length) return [];
-  const origin = correctionOrigin(db, correctionId, projectId, txt(project?.ahj).trim(), txt(c.correction_text));
-  if (origin.utility || !origin.ahj || ahjLooksLikeHostname(origin.ahj)) return [];
+  const from = correctionOrigin(db, correctionId, { ahj: txt(project?.ahj).trim(), utility: txt(project?.utility) }, origin);
+  if (!from || ahjLooksLikeHostname(from.ahj)) return [];
+  const nearest = nearestOtherCodeProfileRow(db, state, from.ahj);
   return required.map((r) => {
-    const onFile = currentCriterionOnFile(db, state, origin.ahj, r.block, r.criterion);
+    const onFile = currentCriterionOnFile(db, state, from.ahj, r.block, r.criterion);
     const status: JurisdictionCriteriaProposal["status"] = onFile.confidence === "verified"
       ? "blocked_verified"
       : sameCriterionValue(onFile.value, r.value) ? "same_as_current" : "proposed";
     return {
       kind: "jurisdiction_design_criteria",
       id: `jurisdiction:${r.criterion}`,
-      ahj: origin.ahj,
+      ahj: from.ahj,
       state,
       profileKey: onFile.profileKey,
+      targetProfileKey: onFile.targetProfileKey,
+      ...(nearest ? { nearestOtherRow: nearest } : {}),
       block: r.block,
       criterion: r.criterion,
       value: r.value,
       currentValue: onFile.value,
       currentConfidence: onFile.confidence,
       basis: r.basis,
-      source: { correctionId, recordNumber: origin.recordNumber, receivedAt: txt(c.created_at) },
+      source: { correctionId, recordNumber: from.recordNumber, receivedAt: txt(c.created_at) },
       status,
       ...(status === "blocked_verified" ? { statusNote: "The jurisdiction's profile is human-verified; it will not be changed from a correction." } : {}),
     };
@@ -386,9 +408,9 @@ function linkedTriageItem(db: AppDb, correctionId: string, statuses: string[]): 
 
 /** Intake hook: attach the correction's jurisdiction proposals to its review item. Idempotent;
  *  best-effort (a failure here must never lose the correction). Returns how many attached. */
-export function attachJurisdictionProposals(db: AppDb, correctionId: string): number {
+export function attachJurisdictionProposals(db: AppDb, correctionId: string, origin?: CorrectionReadingOrigin | null): number {
   try {
-    const proposals = buildJurisdictionProposals(db, correctionId);
+    const proposals = buildJurisdictionProposals(db, correctionId, origin);
     if (!proposals.length) return 0;
     const item = linkedTriageItem(db, correctionId, ["pending"]);
     if (!item) return 0;
@@ -427,7 +449,10 @@ export function applyJurisdictionProposals(db: AppDb, correctionId: string, fiel
   const parsed = parseCorrectionProposals(`agent-triage:${JSON.stringify(item.payload)}`);
   const proposals = parsed?.jurisdictionProposals ?? [];
   const selectedProject = (parsed?.proposals ?? []).filter((p) => !fields || fields.includes(p.field));
-  const hasProjectWork = (!fields || fields.some((f) => !f.startsWith("jurisdiction:")))
+  // A project half already applied (applyCorrectionProposals kept the item open for these
+  // jurisdiction proposals) is not work again: no second snapshot write, no second designer wait.
+  const projectDone = Boolean(item.payload.projectAppliedAt);
+  const hasProjectWork = !projectDone && (!fields || fields.some((f) => !f.startsWith("jurisdiction:")))
     && (selectedProject.some((p) => p.proposedValue.trim()) || txt(c.correction_bucket) === "B_designer_fix");
   const result: JurisdictionApplyResult = { projectId, attempted: 0, applied: [], refused: [], hasProjectWork };
   for (const p of proposals) {
@@ -455,7 +480,35 @@ export function applyJurisdictionProposals(db: AppDb, correctionId: string, fiel
 export function applyCorrectionApproval(db: AppDb, correctionId: string, fields: string[] | undefined, actor: string): ProjectDetail & { jurisdictionCriteria?: JurisdictionApplyResult } {
   const jurisdiction = applyJurisdictionProposals(db, correctionId, fields, actor);
   if (jurisdiction.attempted > 0 && !jurisdiction.hasProjectWork) {
+    closeReviewedCorrectionIfDone(db, correctionId, actor);
     return { ...getProjectDetail(db, jurisdiction.projectId), jurisdictionCriteria: jurisdiction };
   }
   return { ...applyCorrectionProposals(db, correctionId, fields), ...(jurisdiction.attempted ? { jurisdictionCriteria: jurisdiction } : {}) };
+}
+
+/**
+ * A JURISDICTION-ONLY APPROVAL IS STILL AN APPROVAL. Skipping the project half (above) used to skip
+ * everything it does besides the snapshot write, so the item stayed "pending" with nothing left to
+ * click and the correction never read as human-reviewed. When nothing actionable remains — no
+ * jurisdiction proposal still "proposed", and no project half still owed (project proposals with a
+ * value, or a design correction's designer wait) — the item closes as approved and the correction
+ * is marked human_approved. The correction itself stays OPEN: closing it is the resubmit event.
+ */
+function closeReviewedCorrectionIfDone(db: AppDb, correctionId: string, actor: string): void {
+  const item = linkedTriageItem(db, correctionId, ["pending"]);
+  if (!item) return;
+  const c = db.get<Row>("SELECT project_id, correction_bucket FROM corrections WHERE id = ?", [correctionId]);
+  const parsed = parseCorrectionProposals(`agent-triage:${JSON.stringify(item.payload)}`);
+  const jurisdictionOpen = (parsed?.jurisdictionProposals ?? []).some((p) => p.status === "proposed");
+  const projectOwed = !item.payload.projectAppliedAt
+    && ((parsed?.proposals ?? []).some((p) => p.proposedValue.trim()) || txt(c?.correction_bucket) === "B_designer_fix");
+  if (jurisdictionOpen || projectOwed) return;
+  const ts = nowIso();
+  db.run("UPDATE corrections SET human_approved = 1 WHERE id = ?", [correctionId]);
+  db.run("UPDATE human_review_items SET status = 'approved', updated_at = ? WHERE id = ?", [ts, item.id]);
+  addAuditLog(db, txt(c?.project_id) || null, "human", actor || "operator", "correction.jurisdiction_proposals_applied", {
+    correctionId,
+    applied: (parsed?.jurisdictionProposals ?? []).filter((p) => p.status === "applied").length,
+    refused: (parsed?.jurisdictionProposals ?? []).filter((p) => p.status === "refused").length,
+  });
 }

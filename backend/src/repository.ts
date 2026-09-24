@@ -1,6 +1,7 @@
 import type {
   ApplicationDocumentPackage,
   AuditLog,
+  CorrectionReadingOrigin,
   CorrectionRecord,
   EmailProjectMatch,
   EmailTrackerRunResult,
@@ -128,7 +129,7 @@ import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { resolvePermitPath } from "./permitPath";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
-import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, resolvePermitPathForProject, recordApprovedDesignObservation } from "./codeProfiles";
+import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, resolvePermitPathForProject, recordApprovedDesignObservation, isStructuralPermitTrack } from "./codeProfiles";
 import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
 import { looksBotBlocked } from "./runAbort";
@@ -4950,8 +4951,20 @@ export function applyCorrectionProposals(
 
   const ts = nowIso();
   db.run("UPDATE corrections SET human_approved = 1 WHERE id = ?", [correctionId]);
-  if (item) db.run("UPDATE human_review_items SET status = 'approved', updated_at = ? WHERE id = ?", [ts, text(item.id)]);
-  addAuditLog(db, projectId, "human", "correction", "correction.proposals_applied", { correctionId, applied: proposals.length });
+  // AN APPROVAL THAT DID NOT SELECT THE JURISDICTION PROPOSALS MUST NOT STRAND THEM. Closing the
+  // item here used to leave them "proposed" behind a closed card, with no way left to apply them.
+  // While any is still open the item stays pending with its project half recorded as done (the
+  // applied project proposals move to appliedProposals), so the next click applies only them and
+  // never re-runs these project updates or the designer wait.
+  const stillProposed = (parsed?.jurisdictionProposals ?? []).some((p) => p.status === "proposed");
+  if (item && stillProposed) {
+    let stored: Record<string, unknown> = {};
+    try { stored = JSON.parse(text(item.notes).slice("agent-triage:".length)) as Record<string, unknown>; } catch { stored = {}; }
+    db.run("UPDATE human_review_items SET notes = ?, updated_at = ? WHERE id = ?", [
+      `agent-triage:${JSON.stringify({ ...stored, proposals: [], appliedProposals: proposals, projectAppliedAt: ts })}`, ts, text(item.id),
+    ]);
+  } else if (item) db.run("UPDATE human_review_items SET status = 'approved', updated_at = ? WHERE id = ?", [ts, text(item.id)]);
+  addAuditLog(db, projectId, "human", "correction", "correction.proposals_applied", { correctionId, applied: proposals.length, jurisdictionStillProposed: stillProposed });
 
   // THE DESIGNER WAIT — the real writer for `waiting_on_designer`, which until now was labeled,
   // bannered, client-worded and filterable with nothing anywhere able to write it.
@@ -5751,7 +5764,16 @@ export async function recordPermitStatusCheck(
     // `recordCheck &&` on all three: see the note above. An unchanged poll falls straight through
     // to the target/project/audit work below, which is NOT gated.
     if (recordCheck && classification.outcome === "correction_flagged") {
-      correctionId = insertMonitorCorrection(db, detail.project, rawStatusText, classification.message, ts, source === "email" ? "email" : "portal");
+      // THE TARGET THIS TEXT WAS READ ON travels with the correction — which jurisdiction (if any)
+      // it teaches is decided from the check itself, never reverse-engineered from the page text.
+      correctionId = insertMonitorCorrection(db, detail.project, rawStatusText, classification.message, ts, source === "email" ? "email" : "portal", {
+        targetId: text(target?.id),
+        targetType: text(target?.target_type),
+        permitType: text(target?.permit_type),
+        jurisdiction: text(target?.jurisdiction),
+        recordNumber: input.permitNumber || text(target?.permit_number) || input.applicationNumber || text(target?.application_number),
+        readingSource: source,
+      });
     } else if (recordCheck && classification.outcome === "needs_human_review") {
       db.run(
         `INSERT INTO human_review_items
@@ -5816,9 +5838,11 @@ export async function recordPermitStatusCheck(
     // rewind it) and BEFORE the handoff check (an open correction is a handoff blocker, so the
     // same reading that finishes the scope can hand it off).
     if (doneBeforeReading) closeCorrectionsOnTerminalStatus(db, detail.project, classification.outcome, doneBeforeReading, ts);
-    // A PERMIT target's first issued reading: record the approved design's stated criteria as
-    // corroboration for that jurisdiction (never its designCriteria). Idempotent per target.
-    if (target && classification.outcome === "issued" && previousOutcome !== "issued" && text(target.target_type) !== "nem") {
+    // A STRUCTURAL permit target's first issued reading: record the approved design's stated
+    // criteria as corroboration for that jurisdiction (never its designCriteria). Idempotent per
+    // target. An electrical or NEM issuance approved no structure and records nothing.
+    if (target && classification.outcome === "issued" && previousOutcome !== "issued"
+      && isStructuralPermitTrack(text(target.target_type), text(target.permit_type))) {
       recordApprovedDesignObservation(db, detail.project, {
         targetId: text(target.id), ahj: text(target.jurisdiction), issuedAt: ts,
         recordNumber: input.permitNumber || text(target.permit_number) || input.applicationNumber || text(target.application_number),
@@ -5934,7 +5958,15 @@ async function resolveStatusText(target: Row | null, rawStatusText: string, sour
   return "No status text available. Manual AHJ/utility portal check required.";
 }
 
-function insertMonitorCorrection(db: AppDb, project: ProjectRecord, correctionText: string, monitorMessage: string, ts: string, source: CorrectionRecord["source"]): string {
+function insertMonitorCorrection(
+  db: AppDb,
+  project: ProjectRecord,
+  correctionText: string,
+  monitorMessage: string,
+  ts: string,
+  source: CorrectionRecord["source"],
+  origin: CorrectionReadingOrigin,
+): string {
   const classification = classifyCorrection(correctionText);
   const correctionId = id();
   db.run(
@@ -5979,8 +6011,9 @@ function insertMonitorCorrection(db: AppDb, project: ProjectRecord, correctionTe
     ],
   );
   learnFromCorrection(db, project, correctionId, classification, correctionText, source);
-  // A design requirement the AHJ stated -> a proposal for that AHJ's code profile (human-applied).
-  attachJurisdictionProposals(db, correctionId);
+  // A design requirement the AHJ stated -> a proposal for the jurisdiction of the TARGET it was
+  // read on (human-applied). A NEM target's correction proposes nothing (hard rule 5).
+  attachJurisdictionProposals(db, correctionId, origin);
   enqueueCorrectionTriage(db, project.id, correctionId, correctionText);
   return correctionId;
 }
