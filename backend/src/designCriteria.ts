@@ -1491,14 +1491,15 @@ function groundSnowMinimumFinding(
   // may hold a Pg(asd) or a roof snow load — so a value only the parser read is a warning.
   const documentStates = below.some((c) => !c.derived);
   const pathName = (k: "prescriptive" | "engineered"): string => (k === "prescriptive" ? "prescriptive" : "non-prescriptive");
-  const pathWords = path === "prescriptive" ? "prescriptive design"
-    : path === "engineered" ? "non-prescriptive (engineered) design"
-      : `${required === mins.prescriptive ? "prescriptive" : "non-prescriptive"} design — the stricter minimum, used because the project's permit path is unknown`;
+  const pathWords = path === "prescriptive" ? "for prescriptive design"
+    : path === "engineered" ? "for non-prescriptive (engineered) design"
+      : "";
+  const unknownTail = path ? "" : ` for ${required === mins.prescriptive ? "prescriptive" : "non-prescriptive"} design (the stricter minimum, used because the project's permit path is unknown)`;
   const others = path ? "" : [
     mins.prescriptive != null ? `${mins.prescriptive} psf prescriptive` : "",
     mins.engineered != null ? `${mins.engineered} psf non-prescriptive` : "",
   ].filter(Boolean).join(", ");
-  const line = `Ground snow load Pg: stated ${describeValues([...byValue.values()], " psf")} — ${prov.owner}'s minimum for ${pathWords} is ${required} psf${citation ? ` (${citation})` : ""}`;
+  const line = `Ground snow load Pg: stated ${describeValues([...byValue.values()], " psf")} — ${prov.owner}'s minimum${pathWords ? ` ${pathWords}` : ""} is ${required} psf${unknownTail}${citation ? ` (${citation})` : ""}`;
   const notes = [
     others ? `Minimums on file: ${others}. The permit path is unknown (no operator choice and no parser reading), so this is a warning until the path is set.` : "",
     documentStates ? "" : "Only the parser's reading states this value (no document text below the minimum was read); confirm it on the plan set.",
