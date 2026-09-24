@@ -214,6 +214,49 @@ await check("MUST PASS (r3r): 'Provide <value> per <code>' and a header asking f
   assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide UL 2703 listing documentation for the racking.")), { listingEvidenceRequired: true });
 });
 
+// r3r-close MUST-FIX 1: a document header cuts off its items WHATEVER THE LAYOUT — under a section
+// heading, as a bullet itself, with numbered/lettered items, and with its items on its own line after
+// the colon. Each text is read as a paste AND as a status reading (both must give nothing).
+// Mutations that must fail this check: the item-number fold in ahjSentences (the "1." split off as a
+// sentence of its own made the item a bare statement), the bullet-header branch (a header ending ":"
+// that is itself an item), and the same-line list after a document's ":".
+await check("MUST EXCLUDE (r3r-close): a document header's items carry the PACKAGE's numbers in every layout", () => {
+  const none: string[] = [
+    "Structural Comments:\nProvide calculations for the following:\n- Ground snow load 16 psf\n- Wind speed 110 mph",
+    "- Provide calculations for the following:\n  - Ground snow load 16 psf\n  - Wind speed 110 mph",
+    "Provide calculations for the following:\n1. Ground snow load 16 psf\n2. Wind speed 110 mph",
+    "Provide calculations for the following: ground snow load 16 psf; wind speed 110 mph.",
+    "Structural:\nProvide a copy of the engineer letter for:\n1. 16 psf ground snow load",
+    // the same lists in the other common shapes
+    "Provide calculations for the following: 1. Ground snow load 16 psf 2. Wind speed 110 mph",
+    "Provide calculations for the following: ground snow load 16 psf. Wind speed 110 mph.",
+    "Structural Comments:\nProvide calculations for the following:\n1. Ground snow load 16 psf\n2. Wind speed 110 mph",
+    "Provide calculations for the following:\n- Structural:\n  - Ground snow load 16 psf",
+  ];
+  for (const text of none) {
+    for (const statusReading of [false, true]) {
+      assert.deepEqual(extractAhjRequiredCriteria(text, { statusReading }).map((c) => [c.criterion, c.value]), [], `extracted (statusReading=${statusReading}) from: ${JSON.stringify(text)}`);
+    }
+  }
+});
+
+await check("MUST PASS (r3r-close): a header asking for DESIGN CRITERIA keeps its items — numbered, under a heading — as a paste and as a status reading", () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["Provide the following:\n1. Ground snow load 36 psf\n2. Design wind speed 120 mph", { groundSnowLoadPsf: 36, windSpeedMph: 120 }],
+    ["Plan Review Comments:\nProvide updated design criteria on the cover sheet:\n- Ground snow load 36 psf\n- Wind speed 120 mph", { groundSnowLoadPsf: 36, windSpeedMph: 120 }],
+    ["Structural Comments:\nProvide updated design criteria on the cover sheet:\n1. Ground snow load 36 psf", { groundSnowLoadPsf: 36 }],
+    [TEXT_A, { groundSnowLoadPsf: 36, maxAttachmentSpacingIn: 24, listingEvidenceRequired: true }],
+    ["Provide Vult = 130 mph per ASCE 7-22.", { windSpeedMph: 130 }],
+  ];
+  for (const [text, want] of cases) {
+    for (const statusReading of [false, true]) {
+      assert.deepEqual(asMap(extractAhjRequiredCriteria(text, { statusReading })), want, `statusReading=${statusReading}: ${JSON.stringify(text)}`);
+    }
+  }
+  // TEXT_B's numbered items state their own cues; folding the item numbers changes none of them.
+  assert.deepEqual(asMap(extractAhjRequiredCriteria(TEXT_B)), { specialWindRegion: true, windSpeedMph: 120, windExposure: "D" });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // 1b. INTAKE -> PROPOSAL -> APPLY, through the real write paths.
 // ─────────────────────────────────────────────────────────────────────────────────────────

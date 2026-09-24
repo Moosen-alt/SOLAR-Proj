@@ -516,8 +516,11 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
   const assignedValue = (at: number): boolean => /\bsnow\b[^:=.;]{0,24}[:=]\s*$/i.test(text.slice(Math.max(0, at - 40), at));
   // …and a label that ASSIGNS its own value never also claims the number before it: in "ROOF LIVE
   // LOAD: 20 PSF GROUND SNOW LOAD: 25 PSF" the ground snow load is 25, and the 20 is the live load.
+  // With no separator, a value WITH ITS UNIT straight after the label is the label's own: in "ROOF
+  // DEAD LOAD 3 PSF GROUND SNOW LOAD 36 PSF" the 3 is the dead load (read as Pg 3, a correct plan got
+  // a below-the-minimum BLOCKER). A separator still assigns a bare number ("GROUND SNOW LOAD = 25").
   const labelHasOwnValue = (after: number): boolean =>
-    /^(?:\s+loads?)?(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?\s*[:=]\s*\d/i.test(text.slice(after, after + 60));
+    /^(?:\s+loads?)?(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?\s*(?:[:=]\s*\d|\d+(?:\.\d+)?\s*psf\b)/i.test(text.slice(after, after + 60));
   const groundAfter = /(\d+(?:\.\d+)?)\s*psf\s*(\(\s*asd\s*\)\s*)?ground\s+snow/gi;
   while ((m = groundAfter.exec(text))) {
     if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length)) continue;
@@ -966,7 +969,16 @@ interface AhjSentence {
   text: string;
   /** The line opened with a bullet mark, or followed a header that ended with ":". */
   bullet: boolean;
+  /** The sentence ends with ":" — it heads the items after it, even when it is itself a bullet
+   *  ("Structural Comments:\nProvide calculations for the following:\n- ..."). */
+  opensList: boolean;
+  /** The first sentence of its line (a later sentence runs on within the line). */
+  lineStart: boolean;
 }
+
+/** A piece that is ONLY an item number or letter: the "1." a line's "1. Ground snow load 16 psf"
+ *  splits off at its period. It is the next piece's marker, never a sentence of its own. */
+const SOLE_ITEM_MARKER = /^\(?(?:\d{1,3}|[a-z])[.)]$/i;
 
 function ahjSentences(text: string): AhjSentence[] {
   const out: AhjSentence[] = [];
@@ -979,15 +991,20 @@ function ahjSentences(text: string): AhjSentence[] {
   for (const line of String(text || "").replace(/\r/g, "").split("\n")) {
     if (!line.trim()) { inList = false; continue; }
     // A new sentence starts after . ; ! ? + space when the next token opens a clause; a code
-    // section ("R324.4.1") has no space after its dots, so it is never split.
-    line.split(/(?<=[.;!?])\s+(?=[-–•*]?\s*[A-Z0-9(])/).forEach((piece, i) => {
+    // section ("R324.4.1") has no space after its dots, so it is never split. An item number split
+    // off on its own ("1." of "1. Ground snow load 16 psf") belongs to the item after it: dropped,
+    // so the item keeps the line's first position (and with it the list it hangs under).
+    const pieces = line.split(/(?<=[.;!?])\s+(?=[-–•*]?\s*[A-Z0-9(])/)
+      .filter((piece, i, all) => !(SOLE_ITEM_MARKER.test(flat(piece)) && i < all.length - 1));
+    pieces.forEach((piece, i) => {
       const flatPiece = flat(piece);
       if (!flatPiece) return;
       const marked = /^[-–•*]\s*/.test(flatPiece);
       if (i > 0 && !marked && !prevEndsColon) inList = false;
       const bullet = marked || prevEndsColon || (inList && i === 0);
-      out.push({ text: flatPiece.replace(/^[-–•*]\s*/, ""), bullet });
-      prevEndsColon = /:\s*$/.test(flatPiece);
+      const opensList = /:\s*$/.test(flatPiece);
+      out.push({ text: flatPiece.replace(/^[-–•*]\s*/, ""), bullet, opensList, lineStart: i === 0 });
+      prevEndsColon = opensList;
       if (prevEndsColon) inList = true;
     });
   }
@@ -1096,17 +1113,24 @@ export function extractAhjRequiredCriteria(text: string, opts: { statusReading?:
   // the engineer letter for:") lists what that document must cover — the PACKAGE's numbers. Its
   // bullets neither inherit a cue nor count as bare statements.
   let headerAsksDocument = false;
-  for (const { text: sentence, bullet } of ahjSentences(text)) {
-    const underDocument = bullet && headerAsksDocument;
+  // A document asked for with its list ON THE SAME LINE ("Provide calculations for the following:
+  // ground snow load 16 psf; wind speed 110 mph."): every later clause and sentence of that line is
+  // one of its items — no bare reading, no inherited cue — until the line ends.
+  let lineDocumentList = false;
+  for (const { text: sentence, bullet, opensList, lineStart } of ahjSentences(text)) {
+    if (lineStart) lineDocumentList = false;
+    const underDocument = (bullet && headerAsksDocument) || lineDocumentList;
     const inherited = bullet && headerCue && !underDocument;
     let sentenceHasCue = false;
     let sentenceAsksDocument = false;
     ahjClauses(sentence).forEach((clause, clauseIndex) => {
+      const underInlineList = lineDocumentList;
       if (REJECTION_CUE.test(clause) || CONDITIONAL_START.test(clause) || PACKAGE_PREFIX.test(clause)) return;
       // "Provide ..." is a value's cue only with a code citation and no document asked for.
       const provideAt = clause.search(PROVIDE_CUE);
       const asksDocument = provideAsksForDocument(clause, provideAt);
       if (asksDocument) sentenceAsksDocument = true;
+      if (asksDocument && clause.indexOf(":", provideAt) >= 0) lineDocumentList = true;
       const provideRequires = provideAt >= 0 && PER_CODE.test(clause) && !asksDocument;
       const cueAt = clause.search(REQUIREMENT_CUE);
       // "X is located in a special wind region" states the site's fact: its own cue. "Exposure C is
@@ -1120,8 +1144,8 @@ export function extractAhjRequiredCriteria(text: string, opts: { statusReading?:
       const quote = clause.search(QUOTATION_CUE);
       // "The calculations show the minimum ... 25 psf" — the requirement is inside the quote.
       if (quote >= 0 && (own < 0 || quote < own)) return;
-      const bare = !statusPage && !underDocument && own < 0 && BARE_LABEL_START.test(clause) && clause.split(/\s+/).length <= BARE_MAX_WORDS;
-      const inheritsHere = inherited && clauseIndex === 0;
+      const bare = !statusPage && !underDocument && !underInlineList && own < 0 && BARE_LABEL_START.test(clause) && clause.split(/\s+/).length <= BARE_MAX_WORDS;
+      const inheritsHere = inherited && clauseIndex === 0 && !underInlineList;
       if (own < 0 && !inheritsHere && !bare) {
         // "Provide UL listing for the panels ..." asks for listing EVIDENCE: a flag, not a value.
         if (provideAt >= 0 && listingRequested(clause)) add("listingEvidenceRequired", true, sentence);
@@ -1136,6 +1160,13 @@ export function extractAhjRequiredCriteria(text: string, opts: { statusReading?:
     if (!bullet) {
       headerCue = sentenceHasCue;
       headerAsksDocument = sentenceAsksDocument;
+    } else if (opensList) {
+      // A header that is itself an item — under a section heading ("Structural Comments:\nProvide
+      // calculations for the following:"), or a bullet ("- Provide calculations for the following:")
+      // — heads what follows it, within the list it sits in: a document asked for at EITHER level
+      // stays asked for, and a cue at either level carries to the items.
+      headerCue = sentenceHasCue || headerCue;
+      headerAsksDocument = sentenceAsksDocument || headerAsksDocument;
     }
   }
   // One criterion, one value per correction — two different values are ambiguous.

@@ -14,7 +14,7 @@
 import type { AppDb } from "./db";
 import type { CodeEdition, FireSetbackRule, JurisdictionCodeAmendment, JurisdictionCodeProfile, JurisdictionDesignCriteria } from "../../shared/src/types";
 import { readXlsx, pick, type SheetData } from "./xlsxRead";
-import { codeProfileKey, getCodeProfile, listCodeProfiles, saveResearchedCodeProfile } from "./codeProfiles";
+import { codeProfileKey, listCodeProfiles, resolveCriteriaWriteRow, saveResearchedCodeProfile } from "./codeProfiles";
 import { importSeededUtilityKnowledge, importSeededAhjKnowledge } from "./knowledgeBase";
 import { logger } from "./logger";
 
@@ -112,9 +112,19 @@ export function importAhjCodesSheet(db: AppDb, sheet: SheetData, opts: { dryRun?
       continue;
     }
 
-    const key = codeProfileKey({ state, ahj });
-    const existing = getCodeProfile(db, { state, ahj });
-    if (existing && existing.confidence === "verified") { summary.skippedVerified++; continue; }
+    // THE AHJ'S OWN ROW, NEVER THE LAYERED READ. getCodeProfile folds the STATE row under every
+    // lookup: merged onto it, a seeded city row saved the verified state's prescriptive block — the
+    // 36/25 psf minimums — as its OWN seeded values, and a state-minimum BLOCKER on a 16 psf
+    // prescriptive plan became a WARNING credited to the seeded city row. (With no city row at all,
+    // the layered read answered with the state row: a verified state refused every new city.)
+    // The row is the one every other writer of one AHJ's criteria resolves (resolveCriteriaWriteRow).
+    const target = resolveCriteriaWriteRow(db, state, ahj);
+    if (target?.kind === "blocked_verified") { summary.skippedVerified++; continue; }
+    const existing = target && target.kind !== "create" ? target.profile : null;
+    // A same-jurisdiction row under another label ("Coos Bay" for "City of Coos Bay") is the row
+    // written, under its own name, so the import does not fork the jurisdiction into two rows.
+    const rowAhj = existing?.ahj || ahj;
+    const key = codeProfileKey({ state, ahj: rowAhj });
 
     if (summary.samples.length < 5) summary.samples.push(`${ahj} (${state}): ${adoptedCodes.map((c) => `${c.code} ${c.edition}`).join(", ") || "flags only"}`);
     if (opts.dryRun) { summary.imported++; continue; }
@@ -124,7 +134,7 @@ export function importAhjCodesSheet(db: AppDb, sheet: SheetData, opts: { dryRun?
     const merged: JurisdictionCodeProfile = {
       key,
       state,
-      ahj,
+      ahj: rowAhj,
       confidence: "seeded",
       adoptedCodes: dedupeCodes([...(existing?.adoptedCodes ?? []), ...adoptedCodes]),
       amendments: [...(existing?.amendments ?? []), ...amendments],

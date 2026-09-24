@@ -126,6 +126,40 @@ await check("MUST-PASS: the unknown-criteria callout says the ground snow was co
   assert.match(f!.message, /compared only with the 36 psf minimum for prescriptive design, not with the site's own Pg/);
 });
 
+// r3r-close MF1: a load printed with NO colon before the ground snow label ("ROOF DEAD LOAD 3 PSF
+// GROUND SNOW LOAD 36 PSF") was read as a second Pg — the value-first "3 PSF GROUND SNOW" — and the
+// minimum finding turned it into a false BLOCKER on a correct plan. A label followed by its own value
+// with its unit owns that value; the number before it is the other load's.
+const { extractStatedDesignCriteria } = await import("../src/designCriteria");
+const snowRead = (text: string, kind = "groundSnowPsf"): number[] =>
+  extractStatedDesignCriteria(project("City of Testport"), [{ label: "Plan set", text }]).criteria
+    .filter((c) => c.criterion === kind).map((c) => Number(c.value)).sort((a, b) => a - b);
+await check("MUST-EXCLUDE (r3r-close): an unseparated load before the ground snow label is not a Pg — no minimum finding, no conflict", () => {
+  const cases: Array<[string, number]> = [
+    ["ROOF DEAD LOAD 3 PSF GROUND SNOW LOAD 36 PSF WIND SPEED 110 MPH EXPOSURE C", 36],
+    ["PV DEAD LOAD 2.5 PSF GROUND SNOW LOAD 40 PSF", 40],
+    ["DEAD LOAD 4 PSF GROUND SNOW 36 PSF", 36],
+    ["ROOF LIVE LOAD 20 PSF GROUND SNOW LOAD 36 PSF", 36],
+  ];
+  for (const [text, pg] of cases) {
+    assert.deepEqual(snowRead(text), [pg], `Pg read from: ${text}`);
+    const fs = run(project("City of Coos Bay", PRESCRIPTIVE), orCtx("City of Coos Bay"), text);
+    assert.equal(minimum(fs), undefined, `minimum finding on a correct plan: ${text}`);
+    assert.equal(fs.find((f) => f.id === "city.struct.design-criteria-conflict"), undefined, `conflict on: ${text}`);
+  }
+  // The same rule for roof snow's value-first read.
+  assert.deepEqual(snowRead("DEAD LOAD 4 PSF ROOF SNOW LOAD 25 PSF", "roofSnowPsf"), [25]);
+});
+await check("MUST-PASS (r3r-close): value-first and separated labels still read; a 16 psf plan with a dead load before it is the BLOCKER naming 16", () => {
+  assert.deepEqual(snowRead("28 psf ground snow"), [28]);
+  assert.deepEqual(snowRead("GROUND SNOW LOAD (Pg) = 28 PSF"), [28]);
+  assert.deepEqual(snowRead("ROOF LIVE LOAD: 20 PSF GROUND SNOW LOAD: 25 PSF"), [25]);
+  const f = minimum(run(project("City of Coos Bay", PRESCRIPTIVE), orCtx("City of Coos Bay"), "ROOF DEAD LOAD 3 PSF GROUND SNOW LOAD 16 PSF"));
+  assert.ok(f && f.severity === "blocker", `${f?.severity}: ${f?.message}`);
+  assert.match(f!.message, /stated 16 psf/);
+  assert.doesNotMatch(f!.message, /\b3 psf/);
+});
+
 console.log("\n2. which ROW carried the minimum decides the severity (real write path, temp DB)");
 
 const { openDatabase } = await import("../src/db");
@@ -170,6 +204,53 @@ await check("MUST-PASS: a VERIFIED city row carrying its OWN minimum over a seed
   const f = minimum(run(project("City of Testcreek", PRESCRIPTIVE, "ID"), ctx, "GROUND SNOW LOAD = 35 PSF"));
   assert.ok(f && f.severity === "blocker", `${f?.severity}: ${f?.message}`);
   assert.match(f!.message, /City of Testcreek's minimum for prescriptive design is 40 psf/);
+});
+
+// r3r-close MF2: `npm run import:reference` merged each sheet row onto getCodeProfile's LAYERED read,
+// so a seeded city row saved the verified state's 36/25 psf minimums as its OWN seeded values, and
+// the state-minimum BLOCKER on a 16 psf prescriptive plan became a WARNING credited to the seeded
+// city row. The import merges onto the AHJ's own row (resolveCriteriaWriteRow), never the layers.
+const { importAhjCodesSheet } = await import("../src/referenceImport");
+const sheet = (rows: Array<Record<string, string>>) => ({ name: "NEC_and_Inspection Codes", headers: ["Name", "State", "NEC"], rows });
+const MIN_KEYS = ["minGroundSnowPsfPrescriptive", "minGroundSnowPsfEngineered", "minGroundSnowCitation"];
+await check("MUST-PASS (r3r-close): the reference import onto a seeded Coos Bay row keeps the state's verified minimum a BLOCKER", () => {
+  const summary = importAhjCodesSheet(db, sheet([{ Name: "City of Coos Bay", State: "OR", NEC: "2023 NEC" }]));
+  assert.equal(summary.imported, 1, JSON.stringify(summary));
+  const own = CP.exactCodeProfileRow(db, "OR", "City of Coos Bay")!.profile;
+  assert.ok(own.adoptedCodes.some((c) => c.code === "NEC" && c.edition === "2023"), "the sheet's NEC landed");
+  assert.ok(own.adoptedCodes.some((c) => c.code === "IRC"), "the row's own ORSC entry is kept");
+  for (const k of MIN_KEYS) assert.equal((own.prescriptive as Record<string, unknown>)[k], undefined, `the city row's own payload gained the state's ${k}`);
+  const ctx = CP.resolveEffectiveCodeContext(db, "OR", "City of Coos Bay");
+  assert.equal(ctx.profile?.fieldSources?.["prescriptive.minGroundSnowPsfPrescriptive"]?.ahj, "", "the minimum is still the state row's");
+  const f = minimum(run(project("City of Coos Bay", PRESCRIPTIVE), ctx, "GROUND SNOW LOAD = 16 PSF"));
+  assert.ok(f && f.severity === "blocker", `${f?.severity}: ${f?.message}`);
+  assert.match(f!.message, /OR state-level code profile \(verified/);
+});
+await check("MUST-PASS (r3r-close): a NEW Oregon city is imported (the verified state row no longer refuses it) and carries only the sheet's values", () => {
+  const summary = importAhjCodesSheet(db, sheet([{ Name: "City of Testharbor", State: "OR", NEC: "2023 NEC" }]));
+  assert.deepEqual([summary.imported, summary.skippedVerified], [1, 0], JSON.stringify(summary));
+  const own = CP.exactCodeProfileRow(db, "OR", "City of Testharbor")!.profile;
+  assert.equal(own.confidence, "seeded");
+  assert.deepEqual(own.prescriptive, {}, "no state prescriptive block copied into the new row");
+  assert.deepEqual(own.adoptedCodes.map((c) => `${c.code} ${c.edition}`), ["NEC 2023"]);
+});
+await check("MUST-EXCLUDE (r3r-close): a VERIFIED city row owning its own 40 psf minimum is skipped by the import and still owns the BLOCKER", () => {
+  CP.saveVerifiedCodeProfile(db, row("OR", "City of Testridge", { confidence: "verified", prescriptive: { minGroundSnowPsfPrescriptive: 40 } }), "operator");
+  const summary = importAhjCodesSheet(db, sheet([{ Name: "City of Testridge", State: "OR", NEC: "2023 NEC" }]));
+  assert.deepEqual([summary.imported, summary.skippedVerified], [0, 1], JSON.stringify(summary));
+  const f = minimum(run(project("City of Testridge", PRESCRIPTIVE), CP.resolveEffectiveCodeContext(db, "OR", "City of Testridge"), "GROUND SNOW LOAD = 38 PSF"));
+  assert.ok(f && f.severity === "blocker", `${f?.severity}: ${f?.message}`);
+  assert.match(f!.message, /City of Testridge's minimum for prescriptive design is 40 psf/);
+});
+await check("MUST-EXCLUDE (r3r-close): a SEEDED city row with its own 45 psf minimum over a seeded state keeps it (a WARNING naming the city) and gains none of the state's fields", () => {
+  CP.saveResearchedCodeProfile(db, row("NV", "", { prescriptive: { minGroundSnowPsfPrescriptive: 30, minGroundSnowPsfEngineered: 20 } }));
+  CP.saveResearchedCodeProfile(db, row("NV", "City of Testvale", { prescriptive: { minGroundSnowPsfPrescriptive: 45 } }));
+  importAhjCodesSheet(db, sheet([{ Name: "City of Testvale", State: "NV", NEC: "2023 NEC" }]));
+  const own = CP.exactCodeProfileRow(db, "NV", "City of Testvale")!.profile;
+  assert.deepEqual(own.prescriptive, { minGroundSnowPsfPrescriptive: 45 });
+  const f = minimum(run(project("City of Testvale", PRESCRIPTIVE, "NV"), CP.resolveEffectiveCodeContext(db, "NV", "City of Testvale"), "GROUND SNOW LOAD = 40 PSF"));
+  assert.ok(f && f.severity === "warning", `${f?.severity}: ${f?.message}`);
+  assert.match(f!.message, /City of Testvale \(NV\) code profile \(seeded/);
 });
 
 await check("MUST-PASS: PUT /api/code-profiles/verify keeps the minimums (the verify schema does not strip them) and they round-trip", async () => {
