@@ -49,12 +49,19 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
    '5kva qty':'computed.electricalTier5Qty','5KVA TOTAL':'computed.electricalTier5Total',
    '15kva qty':'computed.electricalTier15Qty','15KVA TOTAL':'computed.electricalTier15Total',
    '25kva qty':'computed.electricalTier25Qty','25KVA TOTAL':'computed.electricalTier25Total',
-   'Subtotal add ALL fees  minimum fee':'computed.electricalBaseFee',
+   // Battery job on this electrical permit: ONE "Services or feeders (installation,
+   // alteration, relocation) 200 amps or less" line (operator rule 2026-09-24,
+   // batteryServiceFeeder.ts). Field names read off the blank's AcroForm; the row
+   // text at p1 y=472.7 is "200 amps or less" under "Services or feeders", NOT the
+   // "temp 200 amps" row below it or the "MD SERVICE/FEEDER" row above it.
+   '200 AMPS QTY':'computed.servicesFeeders200Qty','200 AMPS TOTAL':'computed.servicesFeeders200Total',
+   // "add ALL fees" is the whole application, services line included — not the kVA row.
+   'Subtotal add ALL fees  minimum fee':'computed.electricalSubtotal',
    '12 surcharge 12 x subtotal':'computed.electricalStateSurcharge',
    'Community Dev surcharge 5':'computed.electricalCommunitySurcharge',
    'GRAND TOTAL fees and surcharges':'computed.coosElectricalTotal',
   });
-  for (const [key,value] of Object.entries(textFields)) if (/^computed\.(?:electrical|coosElectrical)/.test(value)) fieldFontSizes[key]=8;
+  for (const [key,value] of Object.entries(textFields)) if (/^computed\.(?:electrical|coosElectrical|servicesFeeders)/.test(value)) fieldFontSizes[key]=8;
   for(const [bucket,y] of [['le5',254],['5to15',243],['15to25',231]] as const)
    fields.push({source:'computed.electricalBaseFee',x:478,y,page:0,size:8,maxWidth:34,onlyIf:{source:'computed.feeBracket',equals:bucket}});
  }else{
@@ -81,7 +88,14 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
    at('client.electricalLicenseNumber',198,114,p,50);
    at('client.electricianLicenseNumber',304,114,p,46);
    at('computed.electricianSignerName',84,81,p,160);
-   at('computed.electricalBaseFee',537,95,p,49);
+   // Page-1 "Subtotal" sums the WHOLE fee schedule (services line included); the
+   // page-2 renewable subtotal below stays the kVA line alone.
+   at('computed.electricalSubtotal',537,95,p,49);
+   // Battery job: "Services or feeders installation, alteration, and/or relocation —
+   // 200 amps or less" (p1 row baseline y=433.9; Qty. header x=487, Total header
+   // x=551 — the same offsets as the page-2 renewable rows' 480/542 under 482/551).
+   fields.push({source:'computed.servicesFeeders200Qty',x:485,y:434,page:p,size:8,maxWidth:16});
+   fields.push({source:'computed.servicesFeeders200Total',x:542,y:434,page:p,size:8,maxWidth:31});
    at('computed.electricalStateSurcharge',537,72,p,49);
    at('computed.electricalTotalFee',537,60,p,49);
    at('lit:X',487,454,p,10); // renewable-energy table on page 2

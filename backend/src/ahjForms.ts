@@ -16,6 +16,9 @@ import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCrite
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
 import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
+import {
+  batteryStatus, SERVICE_FEEDER_CHARGE_KIND, SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
+} from "./batteryServiceFeeder";
 import type { ChecklistRecovery } from "./prescriptiveChecklist";
 import { bcdChecklistAnswers } from "./bcdChecklistFacts";
 import { documentFetchDisabled } from "./documentFetch";
@@ -448,6 +451,37 @@ function money(n: number): string {
   return n.toFixed(2);
 }
 
+/** THE BATTERY'S SERVICES/FEEDERS <=200A LINE ON AN ELECTRICAL APPLICATION.
+ *
+ *  Operator rule 2026-09-24 (batteryServiceFeeder.ts): a battery job on an
+ *  electrical permit bills ONE "Services or feeders: 200 amps or less" line on
+ *  top of the PV kVA line. Every computed name that reads this is mapped onto an
+ *  ELECTRICAL application only, so the form itself is the filing gate.
+ *
+ *  `applies` is the battery predicate; the amounts come off the electrical fee
+ *  line's own charges, written by the ONE evaluator (feeSchedules
+ *  .serviceFeederCharges) — never re-derived here. `priced` is false whenever the
+ *  schedule does not record the amount, and then every whole-application figure
+ *  (subtotal, surcharges, grand total) is left BLANK: a renewable-only total
+ *  printed beside a services quantity of 1 is the same understatement as
+ *  pricing the line at $0. The per-row renewable figures are unaffected. */
+function serviceFeederOnForm(ctx: FillContext, line: FeeScheduleLine | undefined): {
+  applies: boolean; priced: boolean; baseUsd: number; stateUsd: number; communityUsd: number;
+} {
+  const applies = batteryStatus(ctx.snapshot) === "yes";
+  const charges = line?.charges ?? [];
+  const base = charges.find((c) => c.kind === SERVICE_FEEDER_CHARGE_KIND);
+  const priced = applies && base?.amountUsd != null;
+  const sum = (kind: string) => charges.filter((c) => c.kind === kind).reduce((n, c) => n + (c.amountUsd ?? 0), 0);
+  return {
+    applies,
+    priced,
+    baseUsd: priced ? base!.amountUsd! : 0,
+    stateUsd: priced ? sum(SERVICE_FEEDER_STATE_SURCHARGE_KIND) : 0,
+    communityUsd: priced ? sum(SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND) : 0,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Prescriptive-checklist bridge: computed sources that answer an AHJ's
 // prescriptive structural checklist straight from the parsed data, so a stored
@@ -506,7 +540,19 @@ function computed(name: string, ctx: FillContext): string {
       const k = systemKva(ctx);
       return k ? String(k) : "";
     }
+    case "servicesFeeders200Qty":
+    case "servicesFeeders200Total": {
+      const line = ctx.publishedFeeLines?.find(l => l.discipline === "electrical");
+      const svc = serviceFeederOnForm(ctx, line);
+      if (name === "servicesFeeders200Qty") return svc.applies ? "1" : "";
+      return svc.priced ? money(svc.baseUsd) : "";
+    }
+    // electricalBaseFee is the RENEWABLE (kVA) line's own amount — it fills the
+    // kVA row and the renewable-table subtotal, and older stored maps also put it
+    // on the application subtotal. electricalSubtotal is the WHOLE application's
+    // subtotal ("add ALL fees"), which on a battery job includes the services line.
     case "electricalBaseFee":
+    case "electricalSubtotal":
     case "electricalStateSurcharge":
     case "electricalCommunitySurcharge":
     case "coosElectricalTotal":
@@ -514,13 +560,16 @@ function computed(name: string, ctx: FillContext): string {
       const line = ctx.publishedFeeLines?.find(l => l.discipline === "electrical");
       if (line?.feeUsd == null) return "";
       if (name === "electricalBaseFee") return line.baseFeeUsd == null ? "" : money(line.baseFeeUsd);
-      if (name === "electricalStateSurcharge") return line.stateSurchargeUsd == null ? "" : money(line.stateSurchargeUsd);
-      if (name === "electricalCommunitySurcharge") return line.communitySurchargeUsd == null ? "" : money(line.communitySurchargeUsd);
+      const svc = serviceFeederOnForm(ctx, line);
+      if (svc.applies && !svc.priced) return "";
+      if (name === "electricalSubtotal") return line.baseFeeUsd == null ? "" : money(line.baseFeeUsd + svc.baseUsd);
+      if (name === "electricalStateSurcharge") return line.stateSurchargeUsd == null ? "" : money(line.stateSurchargeUsd + svc.stateUsd);
+      if (name === "electricalCommunitySurcharge") return line.communitySurchargeUsd == null ? "" : money(line.communitySurchargeUsd + svc.communityUsd);
       if (name === "coosElectricalTotal" && line.communitySurchargeUsd == null) return "";
       // Do not represent a base-only lookup as the application's grand total.
       // Review-triggering work requires an actual review charge first.
       if (line.stateSurchargeUsd == null || systemKva(ctx) > 25 || knownElectricalReviewRequired(ctx.snapshot)) return "";
-      return money(line.feeUsd);
+      return money(line.feeUsd + svc.baseUsd + svc.stateUsd + svc.communityUsd);
     }
     case "electricalTier5Qty": case "electricalTier15Qty": case "electricalTier25Qty":
     case "electricalTier5Total": case "electricalTier15Total": case "electricalTier25Total": {

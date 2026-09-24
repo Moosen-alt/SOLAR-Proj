@@ -56,6 +56,7 @@ import type { FeeBracket, FeeScheduleRecord } from "./feeSchedules";
 import { feeForProject, findFeeScheduleForProject } from "./feeSchedules";
 import { parseBracketRow } from "./pdfTables";
 import { feeBracketFieldKey } from "../../portal-bot/src/feeBracketQuantity";
+import { SERVICE_FEEDER_200A_FIELD, isServiceFeeder200Label, serviceFeeder200Quantity } from "./batteryServiceFeeder";
 
 /** The project shape this needs — the same Pick feeForProject takes, so a caller
  *  that can evaluate a fee can always call this. */
@@ -141,6 +142,45 @@ function evaluatorAgrees(
  *  exactly as it does today. That is the safe direction: an unbound literal is
  *  the status quo and is visible in the recipe; a computed 0 is neither. */
 export function feeBracketQuantityFields(db: AppDb, project: FeeBracketProject): Record<string, string> {
+  return {
+    ...kvaBracketQuantityFields(db, project),
+    ...serviceFeederQuantityFields(project),
+  };
+}
+
+/** THE BATTERY'S SERVICES/FEEDERS <=200A BOX — the same frozen-answer bug as the
+ *  kVA bracket, on the row next to it.
+ *
+ *  Operator rule 2026-09-24: a battery job on an electrical permit bills ONE
+ *  "Services or feeders: 200 amps or less" line on top of the PV kVA line. The
+ *  portal prints that line as its own quantity box, and the recorded quantity is
+ *  whatever the LEARN project needed: "0" from a PV-only roof replayed onto a
+ *  Powerwall job under-bills the county; "1" from a battery roof replayed onto a
+ *  PV-only job bills a service nobody installed. So it is recomputed per project,
+ *  exactly as the bracket is.
+ *
+ *  ALWAYS EMITTED, and "" when the project's battery status is unknown. A
+ *  DEFINED key whose value is empty is typed blank by the replay adapter; an
+ *  UNDEFINED key replays the recorded literal — the learn project's answer. So
+ *  omitting the key for an unknown would carry the frozen quantity through,
+ *  and "0" would assert a fact nobody established.
+ *
+ *  NO SCHEDULE IS CONSULTED. This is a COUNT of service lines, not a price, and
+ *  it does not depend on whether we hold the jurisdiction's amount.
+ *
+ *  THE FILING GATE IS THE BINDING, not this function. resolveRecipeFieldValues
+ *  carries no track (see FEE_BRACKET_TRACK), so this key is emitted for every
+ *  recipe — and it reaches a portal box only through a step bound to it, which
+ *  feeBracketFieldForLabel does only for a label naming the services/feeders
+ *  <=200A fee item. That item is printed on electrical (and combination) permit
+ *  fee lists only; a building application or a utility interconnection form has
+ *  no such box, so the key simply goes unread there. */
+function serviceFeederQuantityFields(project: FeeBracketProject): Record<string, string> {
+  return { [SERVICE_FEEDER_200A_FIELD]: serviceFeeder200Quantity(project.parserSnapshot as Record<string, unknown> | null | undefined) };
+}
+
+/** The kVA bracket half — see the module header. */
+function kvaBracketQuantityFields(db: AppDb, project: FeeBracketProject): Record<string, string> {
   let schedule: FeeScheduleRecord | null = null;
   try {
     schedule = findFeeScheduleForProject(db, project, "permit", "electrical");
@@ -181,7 +221,8 @@ export function feeBracketQuantityFields(db: AppDb, project: FeeBracketProject):
   return out;
 }
 
-/** The bracket key a RECORDED PORTAL LABEL is asking about, or "".
+/** The bracket key a RECORDED PORTAL LABEL is asking about, or "" — including the
+ *  battery's services/feeders <=200A box (SERVICE_FEEDER_200A_FIELD).
  *
  *  MATCHING MUST BE NUMERIC, NEVER BY STRING. The Accela label reads
  *  "Renewable energy for electrical systems- 5.01kva through 15kva:" and the
@@ -197,6 +238,11 @@ export function feeBracketQuantityFields(db: AppDb, project: FeeBracketProject):
 export function feeBracketFieldForLabel(label: string): string {
   const text = String(label ?? "").trim();
   if (!text) return "";
+  // The services/feeders <=200A row first, and as its own key family: it is a
+  // count, not a size bracket, and parseBracketRow must never be asked to read
+  // "200 amps" as a bound. The two recognisers are disjoint — the services one
+  // refuses any label carrying "kva" — so the order only saves a parse.
+  if (isServiceFeeder200Label(text)) return SERVICE_FEEDER_200A_FIELD;
   const parsed = parseBracketRow({
     row: { page: 1, y: 0, cells: [text], xs: [0], height: 10 },
     matched: [],

@@ -66,6 +66,11 @@ import { recipeDisciplineForTrack } from "./portalChannel";
 import { resolvePermitPath, pathWordingScope, pathWordingContradicts } from "./permitPath";
 import type { PermitPath, PermitPathInputs } from "./permitPath";
 import { resolveValuation } from "./valuation";
+import {
+  batteryStatus, feeFilingIsElectrical, isServiceFeeder200Label,
+  SERVICE_FEEDER_200A_LABEL, SERVICE_FEEDER_CHARGE_KIND,
+  SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
+} from "./batteryServiceFeeder";
 // recordLlmCall, NOT a new accounting log. The fee researcher is the single most
 // expensive model operation in this system — up to twelve Opus turns with web
 // search and ten document retrievals, per jurisdiction — and it was the only one
@@ -2631,7 +2636,10 @@ function resolveLine(
   if (!raw) return null;
   const hop = followCollectedBy(db, raw);
   const hoppedFrom = hop.collectedBy ? (track === "nem" ? raw.utility : raw.ahj) : "";
-  const line = lineFor(db, project, track, hop.record, hoppedFrom, inputs);
+  // The filing is the discipline ASKED FOR — an undifferentiated row answering a
+  // structural ask is answering for the building permit, which bills no services
+  // line — and only when nothing was asked does the row's own discipline stand.
+  const line = lineFor(db, project, track, hop.record, hoppedFrom, discipline || raw.discipline, inputs);
   // A DANGLING HOP CLEARS THE ITEMISATION TOO. The charges on the line were read
   // off a row we have just decided does not answer for this project; leaving them
   // on it would print somebody else's bill beside a refusal.
@@ -2705,7 +2713,10 @@ export function feeLinesForProject(
     const valuationIsEstimate = inputs ? inputs.valuationIsEstimate === true : valuation?.method !== "contract";
     const evaluated: ReturnType<typeof evaluateSchedule> = hop.unresolved
       ? { feeUsd: null, bracketLabel: "", bracketQuote: "", corroboration: undefined, reason: hop.unresolved }
-      : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, valuationIsEstimate, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot) });
+      : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, valuationIsEstimate, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot),
+        // The FILING is the row asked for (a hopped city row is still the electrical
+        // permit), not the collecting authority's row it hops to.
+        batteryServiceFeeder: batteryServiceFeederApplies(project, track, row.discipline) });
     lines.push({
       discipline: row.discipline,
       authority: (track === "nem" ? schedule.utility : schedule.ahj) || (track === "nem" ? row.utility : row.ahj),
@@ -3348,11 +3359,16 @@ function permitCharges(
 function ancillaryCharges(
   schedule: FeeScheduleRecord,
   b: FeeBracket,
-  inputs: { electricalReviewRequired?: boolean; kw?: number | null },
+  inputs: { electricalReviewRequired?: boolean; kw?: number | null; batteryServiceFeeder?: boolean },
 ): FeeChargeBreakdown[] {
   const out: FeeChargeBreakdown[] = [];
   for (const c of b.ancillaryCharges ?? []) {
     if (c.appliesTo && c.appliesTo !== schedule.discipline) continue;
+    // A battery job's services/feeders <=200A line is emitted ONCE, by
+    // serviceFeederCharges below, which knows the answer to the condition this
+    // stored charge may carry ("when the job includes a service"). Listing it here
+    // too would bill it twice, or hold it open as a question already answered.
+    if (inputs.batteryServiceFeeder && isServiceFeeder200Label(c.label)) continue;
     // Rule 2 above: a percentage is a function of the BASE permit fee, evaluated
     // here and rounded here, never a product somebody stored.
     const amount = c.percent != null ? round2(b.feeUsd * c.percent / 100) : round2(c.amountUsd ?? 0);
@@ -3407,12 +3423,131 @@ function ancillaryCharges(
   return out;
 }
 
+/** DOES A BATTERY ADD THE SERVICES/FEEDERS <=200A LINE TO THIS FILING?
+ *
+ *  Operator rule 2026-09-24 — see batteryServiceFeeder.ts. Both inputs come from
+ *  that module's one predicate each: the battery from the parser snapshot
+ *  (tri-state; only "yes" adds anything — an unknown adds nothing and claims
+ *  nothing), the filing from the discipline this line is FOR. */
+function batteryServiceFeederApplies(
+  project: Pick<ProjectRecord, "parserSnapshot">,
+  track: FeeTrack,
+  filing: FeeDiscipline,
+): boolean {
+  if (track !== "permit") return false;
+  if (!feeFilingIsElectrical(track, filing)) return false;
+  return batteryStatus(project.parserSnapshot as Record<string, unknown> | null | undefined) === "yes";
+}
+
+/** Where a stored schedule records the services/feeders <=200A amount, if it
+ *  does: an ancillary charge carrying that label (the shape research writes a
+ *  second line of the same filing in), or an UNSIZED bracket carrying it. Only a
+ *  flat dollar amount answers — a percentage of "the permit fee" is not the
+ *  price of a service line. */
+function storedServiceFeederAmount(
+  schedule: FeeScheduleRecord,
+  b: FeeBracket,
+): { amountUsd: number; quote: string; sourceUrl: string } | null {
+  for (const c of b.ancillaryCharges ?? []) {
+    if (c.appliesTo && c.appliesTo !== schedule.discipline) continue;
+    if (!isServiceFeeder200Label(c.label)) continue;
+    const amount = Number(c.amountUsd);
+    if (c.amountUsd == null || !Number.isFinite(amount) || amount < 0) continue;
+    return { amountUsd: round2(amount), quote: clean(c.matchedLine) || clean(c.quote), sourceUrl: clean(c.sourceUrl) || schedule.sourceUrl };
+  }
+  for (const other of schedule.brackets) {
+    if (other === b) continue;
+    if (other.minKw != null || other.maxKw != null || other.minValuationUsd != null || other.maxValuationUsd != null) continue;
+    if (!isServiceFeeder200Label(other.label)) continue;
+    const amount = Number(other.feeUsd);
+    if (!Number.isFinite(amount) || amount < 0) continue;
+    return { amountUsd: round2(amount), quote: bracketEvidence(schedule, other), sourceUrl: clean(other.corroboration?.sourceUrl) || schedule.sourceUrl };
+  }
+  return null;
+}
+
+/** THE BATTERY'S SERVICES/FEEDERS <=200A LINE, as its own charge on the filing.
+ *
+ *  `partOfLineFee: false`, so resolutionFrom adds it to the filing's total and
+ *  the permit line's own amount (what a form's kVA row and a portal's kVA box ask
+ *  for) is untouched. Its surcharges ride beside it at the SAME percentages the
+ *  bracket's own surcharges carry: those statements are about "all permit fees"
+ *  (Tigard) and "the subtotal" (Coos), and a services line is a permit fee.
+ *
+ *  NOT PRICED AS $0 AND NOT LEFT OUT when the schedule does not record the
+ *  amount — which, on 2026-09-24, is every stored schedule. It is listed with
+ *  `amountUsd: null`, which is what nulls the total (a filing missing one of its
+ *  charges is not a smaller filing) and what puts the gap, in these words, on
+ *  the fee sheet's STILL-UNKNOWN list. */
+function serviceFeederCharges(
+  schedule: FeeScheduleRecord,
+  b: FeeBracket,
+  inputs: { batteryServiceFeeder?: boolean },
+): FeeChargeBreakdown[] {
+  if (!inputs.batteryServiceFeeder) return [];
+  const label = `${SERVICE_FEEDER_200A_LABEL} (battery/ESS on the electrical permit)`;
+  const stored = storedServiceFeederAmount(schedule, b);
+  if (!stored) {
+    const who = noPipe(clean(schedule.ahj)) || "this jurisdiction";
+    return [{
+      label,
+      kind: SERVICE_FEEDER_CHARGE_KIND,
+      amountUsd: null,
+      partOfLineFee: false,
+      conditional: false,
+      // ACTIONABLE CLAUSE FIRST and under 400 characters (normalizeScheduleResult
+      // slices there); no " | " (the note-segment separator).
+      reason: `SERVICES/FEEDERS <=200A AMOUNT MISSING — a battery/ESS on an electrical permit adds one `
+        + `"${SERVICE_FEEDER_200A_LABEL}" line (operator rule 2026-09-24), and ${who}'s stored schedule does not `
+        + `record that line's amount. Nothing is quoted for it and the total stays UNRESOLVED rather than smaller: `
+        + `enter the amount from the published schedule or the portal's own fee.`,
+      quote: "",
+      sourceUrl: "",
+    }];
+  }
+  const out: FeeChargeBreakdown[] = [{
+    label,
+    kind: SERVICE_FEEDER_CHARGE_KIND,
+    amountUsd: stored.amountUsd,
+    partOfLineFee: false,
+    conditional: false,
+    reason: "",
+    quote: stored.quote,
+    sourceUrl: stored.sourceUrl,
+  }];
+  if (b.stateSurcharge) {
+    out.push({
+      label: `State surcharge (${b.stateSurcharge.percent}% of the services/feeders fee)`,
+      kind: SERVICE_FEEDER_STATE_SURCHARGE_KIND,
+      amountUsd: round2(stored.amountUsd * b.stateSurcharge.percent / 100),
+      partOfLineFee: false,
+      conditional: false,
+      reason: "",
+      quote: clean(b.stateSurcharge.quote),
+      sourceUrl: clean(b.stateSurcharge.sourceUrl),
+    });
+  }
+  if (b.communitySurcharge) {
+    out.push({
+      label: `Community surcharge (${b.communitySurcharge.percent}% of the services/feeders fee)`,
+      kind: SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND,
+      amountUsd: round2(stored.amountUsd * b.communitySurcharge.percent / 100),
+      partOfLineFee: false,
+      conditional: false,
+      reason: "",
+      quote: clean(b.communitySurcharge.quote),
+      sourceUrl: clean(b.communitySurcharge.sourceUrl),
+    });
+  }
+  return out;
+}
+
 /** THE ONE EVALUATOR. Both public entry points below route through this, so the
  *  bracket boundary can only ever be decided in one place — two parallel
  *  evaluations would drift, and the boundary is the whole point of the table. */
 function evaluateSchedule(
   schedule: FeeScheduleRecord,
-  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; valuationIsEstimate?: boolean; track?: FeeTrack; permitPath?: FeePathInput; electricalReviewRequired?: boolean },
+  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; valuationIsEstimate?: boolean; track?: FeeTrack; permitPath?: FeePathInput; electricalReviewRequired?: boolean; batteryServiceFeeder?: boolean },
 ): { feeUsd: number | null; baseFeeUsd?: number; stateSurchargeUsd?: number; communitySurchargeUsd?: number; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string; charges?: FeeChargeBreakdown[]; fromEstimatedValuation?: boolean } {
   const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", bracketQuote: "", reason });
   const hit = (b: FeeBracket) => {
@@ -3522,6 +3657,7 @@ function evaluateSchedule(
     const charges = [
       ...permitCharges(schedule, eb, bracketLabel, bracketQuote, stateSurchargeUsd, communitySurchargeUsd),
       ...ancillaryCharges(schedule, eb, inputs),
+      ...serviceFeederCharges(schedule, eb, inputs),
     ];
     return { feeUsd: round2(eb.feeUsd + (stateSurchargeUsd ?? 0) + (communitySurchargeUsd ?? 0)), baseFeeUsd: feeIncludesSurcharges(`${b.label ?? ''} ${bracketQuote}`) ? undefined : eb.feeUsd, stateSurchargeUsd, communitySurchargeUsd, charges,
       fromEstimatedValuation: ladderFeeUsd != null && inputs.valuationIsEstimate === true,
@@ -3657,6 +3793,10 @@ function lineFor(
   track: FeeTrack,
   schedule: FeeScheduleRecord,
   hoppedFrom: string,
+  /** Which permit this line is FOR — decides whether a battery adds the
+   *  services/feeders line (batteryServiceFeeder.ts). Required, not defaulted: a
+   *  forgotten argument must be a compile error, not a silently dropped line. */
+  filing: FeeDiscipline,
   inputs?: FeeEvalInputs,
 ): FeeScheduleLine {
   const { kw, which } = inputs ? { kw: inputs.kw, which: inputs.kwSource } : systemRatingKw(project);
@@ -3666,7 +3806,8 @@ function lineFor(
   const valuationIsEstimate = inputs ? inputs.valuationIsEstimate === true : valuation?.method !== "contract";
   // Same ternary, same reason as feeLinesForProject — see the note there.
   const permitPath: FeePathInput = inputs ? inputs.permitPath : pathForProject(project, track);
-  const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, valuationIsEstimate, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot) });
+  const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, valuationIsEstimate, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot),
+    batteryServiceFeeder: batteryServiceFeederApplies(project, track, filing) });
   return {
     discipline: schedule.discipline,
     authority: track === "nem" ? schedule.utility : schedule.ahj,

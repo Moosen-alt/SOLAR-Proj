@@ -301,11 +301,17 @@ async function main(): Promise<void> {
   // ---------------------------------------------------------------------
   // 6. MUST EXCLUDE — no schedule on file leaves the step EXACTLY as it is.
   // ---------------------------------------------------------------------
+  // The resolver ALSO always emits the battery's services/feeders <=200A key
+  // (batteryServiceFeeder.ts — a count, not a size bracket, and never schedule-
+  // dependent). These checks are about the kVA BRACKET family, so they read
+  // only that family; batteryServiceFeeder.test.ts owns the other key.
+  const bracketKeys = (fields: Record<string, string>): Record<string, string> =>
+    Object.fromEntries(Object.entries(fields).filter(([k]) => k.startsWith(FEE_BRACKET_FIELD_PREFIX)));
   const elsewhere = {
     id: "p-elsewhere", state: "WA", ahj: "City of Nowhere", utility: "Puget Sound Energy",
     systemSizeAcKw: 9, systemSizeDcKw: 12, parserSnapshot: null,
   } as never;
-  const none = feeBracketQuantityFields(db, elsewhere);
+  const none = bracketKeys(feeBracketQuantityFields(db, elsewhere));
   check("MUST EXCLUDE: no schedule on file emits NO keys — not a wrong \"0\"",
     Object.keys(none).length === 0, JSON.stringify(none));
   check("  so the unbound literal is left exactly as it is today, which is visible in the recipe",
@@ -317,11 +323,11 @@ async function main(): Promise<void> {
   // same silent wrongness.
   const sizeless = { ...(coosProject(9) as unknown as Record<string, unknown>), systemSizeAcKw: null, systemSizeDcKw: null } as never;
   check("a project with no system size emits no keys either",
-    Object.keys(feeBracketQuantityFields(db, sizeless)).length === 0);
+    Object.keys(bracketKeys(feeBracketQuantityFields(db, sizeless))).length === 0);
 
   // A size outside every published bracket must NOT come back as all-zeros: that
   // is the same under-bill through a different door.
-  const huge = feeBracketQuantityFields(db, coosProject(400));
+  const huge = bracketKeys(feeBracketQuantityFields(db, coosProject(400)));
   check("MUST EXCLUDE: a size outside every published bracket emits no keys, never all-zeros",
     Object.keys(huge).length === 0, JSON.stringify(huge));
 
@@ -329,10 +335,10 @@ async function main(): Promise<void> {
   saveFeeSchedule(db, { state: "OR", ahj: "Flatville", track: "permit", discipline: "electrical" }, finding({
     basis: "flat", brackets: [{ feeUsd: 100, label: "Flat solar electrical permit" }],
   }));
-  const flat = feeBracketQuantityFields(db, {
+  const flat = bracketKeys(feeBracketQuantityFields(db, {
     id: "p-flat", state: "OR", ahj: "Flatville", utility: "Pacific Power",
     systemSizeAcKw: 9, systemSizeDcKw: 12, parserSnapshot: null,
-  } as never);
+  } as never));
   check("a FLAT schedule asks no bracket question, so it emits no bracket keys",
     Object.keys(flat).length === 0, JSON.stringify(flat));
 
@@ -362,7 +368,7 @@ async function main(): Promise<void> {
     sourceUrl: "https://co.coos.or.us/files/f9b20f31d/community_development_fees_-_effective_1_1_26.pdf",
     sourceQuote: "5.01 KVA to 15 KVA | $160.00",
   }));
-  const disputed = feeBracketQuantityFields(db, coosProject(9));
+  const disputed = bracketKeys(feeBracketQuantityFields(db, coosProject(9)));
   check("MUST EXCLUDE: a DISPUTED schedule ticks no box at all — the fee evaluator's refusal is inherited",
     Object.keys(disputed).length === 0, JSON.stringify(disputed));
 
