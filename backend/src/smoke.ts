@@ -38,6 +38,13 @@ import {
   runProjectWorkflow,
 } from "./repository";
 
+// NO REAL MODEL CALLS. dotenv loads the operator's real ANTHROPIC_API_KEY, and the smoke kept
+// running after its pass banner while an in-process correction-triage job spent it. Every LLM
+// entry point reads the key at CALL time (llm.ts getLlmProvider, the triage/relearn gates in
+// repository.ts), and nothing below has called one yet, so removing it here makes the whole run
+// use the stub provider. SESSION_ENCRYPTION_KEY and the rest of .env still load.
+delete process.env.ANTHROPIC_API_KEY;
+
 const smokeDb = path.resolve(process.cwd(), "backend/data/smoke.sqlite");
 fs.rmSync(smokeDb, { force: true });
 process.env.AUTOPILOT_DB_PATH = smokeDb;
@@ -489,4 +496,9 @@ if (!deletion.deleted || getProjectList(db).projects.some((project) => project.i
   throw new Error("Expected test project deletion to remove the project from the dashboard list.");
 }
 
+// A PASS ENDS THE PROCESS. Background kicks (job queue, triage, timers) otherwise keep the event
+// loop alive after the banner — a "passed" smoke that never exits hangs the update script that
+// runs it. Printed first, then the DB is closed and the process leaves with 0.
 console.log("Smoke test passed: project saved, KB seeded/learned, operations plan/notes/PM brief/PM runbook/handoff packet/communication drafts/Ops Board/action queue/daily report/live readiness/process map/installer packet/submit gate/project timeline generated, evidence trails generated, historical failure check generated, MBOX learned, QC passed, AHJ docs generated, mock portal staged, permit ready-for-issue flagged, AHJ correction bucketed, live email matched, and test project deleted cleanly.");
+try { db.close(); } catch { /* best effort — the pass is already printed */ }
+process.exit(0);
