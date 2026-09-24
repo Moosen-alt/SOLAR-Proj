@@ -7,6 +7,7 @@
 //                                                 replay the recipes an earlier run learned
 //                                                 (replay-only iteration; learns not re-measured)
 //   --timeout S (learn, default 240)  --replay-timeout S (default 180)  --out <file>  --debug
+//   --all-probes (also the slow upload-page hazard probe)
 //
 // WHAT RUNS, AND WHAT IS STOOD IN FOR:
 //   - Portals: synthetic replica wizards (portal-bot/src/replica/fixtures) on 127.0.0.1. Never a
@@ -65,6 +66,7 @@ const RUN_TIMEOUT_MS = Number(argVal("--timeout") ?? 240) * 1000;
 const REPLAY_TIMEOUT_MS = Number(argVal("--replay-timeout") ?? 180) * 1000;
 /** A previous report whose learned recipes are replayed instead of learning again. */
 const REUSE_LEARNS = argVal("--reuse-learns");
+const ALL_PROBES = argv.includes("--all-probes");
 const OUT = argVal("--out") ?? path.join(REPO, ".probe", "bench", `${STAMP}.json`);
 if (argv.includes("--debug")) process.env.AUTOLEARN_RUN_DEBUG = "1"; else process.env.AUTOLEARN_RUN_DEBUG = "0";
 process.env.PORTAL_RUN_MAX_MS = String(RUN_TIMEOUT_MS + 30_000);
@@ -464,10 +466,11 @@ if (selected.some((c) => c.name === "accela/one_page_fewer")) {
     return { steps: [{ action: "goto", phase: "open", value: `${base}/CitizenAccess/Cap/${reviewSlug}`, note: "harness: isolated probe lands on the review page" }, ...pick(pages, upload).flat()] };
   };
   const plans: Array<{ name: string; wizard?: Wizard; fn: RecipeCut }> = [
-    // The scored variant's shape: the page the portal lacks is the ATTACHMENTS page.
-    { name: "isolated: lands on review, recipe expects its upload page", fn: landOnReview((pages, u) => pages.slice(u)) },
-    // The page the portal lacks is a FIELD page (Additional Information).
+    // The page the portal lacks is a FIELD page (Additional Information) — the tripwire.
     { name: "isolated: lands on review, recipe expects a field page", fn: landOnReview((pages, u) => [pages[u - 1], ...pages.slice(u + 1)]) },
+    // The scored variant's shape: the page the portal lacks is the ATTACHMENTS page. Opt-in
+    // (--all-probes): at baseline it burns ~150 s on upload-tag timeouts to show replay stops.
+    ...(ALL_PROBES ? [{ name: "isolated: lands on review, recipe expects its upload page", fn: landOnReview((pages, u) => pages.slice(u)) }] : []),
   ];
   for (const plan of plans) {
     process.stdout.write(`[probe] accela/one_page_fewer [${plan.name}] ... `);
