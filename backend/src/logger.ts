@@ -58,9 +58,28 @@ function emit(level: Level, scope: string, message: string, extra?: Record<strin
 // Mirroring the SAME lines to a file lets a second pair of eyes tail them live, and
 // lets a crash be read afterwards when the terminal is gone. Nothing extra is written:
 // same lines, same redaction guarantees as the console output above.
+//
+// THE LOG BELONGS TO THE DATABASE IT DESCRIBES. A test run from the repo root points
+// AUTOPILOT_DB_PATH at a temp file but keeps the repo as its cwd, so 165 of 192 backend tests
+// appended to the LIVE server's data/logs/backend.log — "Stale-classification pass failed ...
+// injected: the drift pass exploded", "the AHJ process reference could not be read", a gate
+// blocking project "p-gate" — interleaved with production's own lines while a real permit problem
+// was being diagnosed from that file. A process whose database lives OUTSIDE this directory is not
+// this installation's server, so by default it logs beside its own database instead. Production,
+// the demo kit and the comparison checkouts all use a relative path inside their own folder and
+// are unaffected.
+function defaultLogFile(): string {
+  const cwd = process.cwd();
+  const dbPath = path.resolve(cwd, process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite");
+  const rel = path.relative(cwd, dbPath);
+  const dbOutsideInstall = rel.startsWith("..") || path.isAbsolute(rel);
+  return dbOutsideInstall
+    ? path.join(path.dirname(dbPath), "logs", "backend.log")
+    : path.join(cwd, "data", "logs", "backend.log");
+}
 const LOG_FILE = process.env.AUTOPILOT_LOG_FILE === ""
   ? "" // explicitly disabled
-  : (process.env.AUTOPILOT_LOG_FILE || path.join(process.cwd(), "data", "logs", "backend.log"));
+  : (process.env.AUTOPILOT_LOG_FILE || defaultLogFile());
 const LOG_MAX_BYTES = Number(process.env.AUTOPILOT_LOG_MAX_BYTES || 8 * 1024 * 1024);
 let logDirReady = false;
 let logWriteFailed = false;
