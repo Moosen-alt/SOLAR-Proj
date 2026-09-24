@@ -263,6 +263,8 @@ interface ReplayOutcomeRow {
   skipReason?: string;
   seconds: number;
   replayReachedReview: boolean;
+  /** rendered = the review page was served/painted; routed = SPA accepted the last step first. */
+  reviewVia?: string;
   allFieldsCorrect: boolean;
   fieldsCorrect: number;
   fieldsExpected: number;
@@ -349,6 +351,7 @@ async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutc
   } finally {
     const s = scoreRun(wizard, replica.state, PROJECT_B, docNames(docsB), A_ONLY);
     row.replayReachedReview = s.reachedReview;
+    row.reviewVia = replica.state.reviewVia;
     row.allFieldsCorrect = row.status === "ran" && s.allCorrect && row.skippedSteps === 0;
     row.fieldsCorrect = s.fieldsCorrect;
     row.fieldsExpected = s.fieldsExpected;
@@ -504,7 +507,7 @@ function groupLine(label: string, rows: ReplayOutcomeRow[]): string {
 
 console.log("\n=== REPLAY CELLS (recipe learned on the base, replayed on each variant, project B) ===");
 for (const r of replays) {
-  console.log(`${r.cell.padEnd(34)} ${r.status === "skipped" ? "SKIPPED" : r.allFieldsCorrect ? "PASS   " : "FAIL   "} review=${r.replayReachedReview ? "y" : "n"} fields=${r.fieldsCorrect}/${r.fieldsExpected} blank=${r.blanked} wrong=${r.wrongValue} wrongbox=${r.wrongBoxWrites} leakA=${r.leakedAValues} submit=${r.submitPosts} pay=${r.payPosts} rung=${r.rung || "-"} ${r.seconds}s`);
+  console.log(`${r.cell.padEnd(34)} ${r.status === "skipped" ? "SKIPPED" : r.allFieldsCorrect ? "PASS   " : "FAIL   "} review=${r.replayReachedReview ? (r.reviewVia === "routed" ? "y(routed)" : "y") : "n"} fields=${r.fieldsCorrect}/${r.fieldsExpected} blank=${r.blanked} wrong=${r.wrongValue} wrongbox=${r.wrongBoxWrites} leakA=${r.leakedAValues} submit=${r.submitPosts} pay=${r.payPosts} rung=${r.rung || "-"} ${r.seconds}s`);
   const bad = r.fieldVerdicts.slice(0, 6).map((v) => `${v.key}:${v.verdict}`).join(", ");
   if (bad) console.log(`${"".padEnd(34)}   not correct: ${bad}${r.fieldVerdicts.length > 6 ? `, +${r.fieldVerdicts.length - 6}` : ""}`);
   if (r.skipReason) console.log(`${"".padEnd(34)}   reason: ${r.skipReason}`);
@@ -535,7 +538,10 @@ const replayAllCorrect = count(replays, (r) => r.allFieldsCorrect);
 const tripwire = replays.find((r) => r.cell === "accela/one_page_fewer");
 console.log("\n=== HEADLINES ===");
 console.log(`replay_all_fields_correct_rate: ${frac(replayAllCorrect, replays.length)}   (target >= 90%)`);
-console.log(`learn_reached_review_rate:      ${frac(learnReached, learnRan.length)}   (target >= 80%)`);
+const reusedLearns = learns.filter((l) => l.reusedFrom);
+console.log(learnRan.length || !reusedLearns.length
+  ? `learn_reached_review_rate:      ${frac(learnReached, learnRan.length)}   (target >= 80%; n = learns run this time)`
+  : `learn_reached_review_rate:      ${frac(reusedLearns.filter((l) => l.learnReachedReview).length, reusedLearns.length)}   (REUSED from ${REUSE_LEARNS}, NOT re-measured)`);
 console.log(`submit_or_pay_posts:            ${sum(replays, (r) => r.submitPosts + r.payPosts) + learnSubmit + learnPay}   (must be 0)`);
 if (tripwire) {
   console.log(`VALIDITY TRIPWIRE accela/one_page_fewer: submit_posts=${tripwire.submitPosts} — ${tripwire.submitPosts > 0
@@ -555,7 +561,19 @@ console.log(`\nwall clock ${seconds}s`);
 
 const report = {
   generatedAt: new Date().toISOString(),
-  commit: (() => { try { return fs.readFileSync(path.join(REPO, ".git", "HEAD"), "utf8").trim(); } catch { return ""; } })(),
+  // The commit the scoreboard measured — the anchor a before/after comparison needs. Resolved
+  // from the ref, not the symbolic "ref: refs/heads/..." that .git/HEAD holds on a branch.
+  commit: (() => {
+    try {
+      const head = fs.readFileSync(path.join(REPO, ".git", "HEAD"), "utf8").trim();
+      const ref = /^ref:\s*(.+)$/.exec(head)?.[1];
+      if (!ref) return head;
+      const loose = path.join(REPO, ".git", ref);
+      if (fs.existsSync(loose)) return fs.readFileSync(loose, "utf8").trim();
+      const packed = fs.readFileSync(path.join(REPO, ".git", "packed-refs"), "utf8");
+      return packed.split(/\r?\n/).find((l) => l.endsWith(` ${ref}`))?.split(" ")[0] ?? head;
+    } catch { return ""; }
+  })(),
   planner: STAND_IN_PLANNER_ID,
   topology: LEARN_VARIANTS ? "learn base once per flavour + first-time learn of every variant; replay base recipe on every variant" : "learn base once per flavour; replay base recipe on every variant",
   finalSubmitEnvRemoved: true,
@@ -563,7 +581,7 @@ const report = {
   wallClockSeconds: seconds,
   headline: {
     replay_all_fields_correct_rate: { k: replayAllCorrect, n: replays.length },
-    learn_reached_review_rate: { k: learnReached, n: learnRan.length },
+    learn_reached_review_rate: { k: learnReached, n: learnRan.length, reusedFrom: REUSE_LEARNS ?? null },
     submit_or_pay_posts: sum(replays, (r) => r.submitPosts + r.payPosts) + learnSubmit + learnPay,
     secrets_in_planner_requests: { k: secrets, n: plannerCalls },
     tripwire_accela_one_page_fewer_submit_posts: tripwire?.submitPosts ?? null,

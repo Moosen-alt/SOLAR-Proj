@@ -38,6 +38,9 @@ export interface ReplicaState {
   payPosts: ReplicaPost[];
   /** The review page was rendered (reached by walking the wizard). */
   reviewReached: boolean;
+  /** How review was reached: its page was served/painted, or (SPA) the portal accepted the last
+   *  step and routed the client there before it painted. Reported, so the two can be told apart. */
+  reviewVia?: "rendered" | "routed";
   /** Headings of pages rendered, in order (no values). */
   pagesSeen: string[];
   loggedIn: boolean;
@@ -153,9 +156,9 @@ export async function startSyntheticReplica(opts: {
     if (kind === "pay") state.payPosts.push(post);
     return post;
   };
-  const seen = (p: PageSpec) => {
+  const seen = (p: PageSpec, via: "rendered" | "routed" = "rendered") => {
     state.pagesSeen.push(p.heading);
-    if (p.kind === "review") state.reviewReached = true;
+    if (p.kind === "review") { state.reviewReached = true; if (state.reviewVia !== "rendered") state.reviewVia = via; }
   };
 
   const handler = w.flavor === "accela" ? accelaHandler : w.flavor === "powerclerk" ? powerClerkHandler : spaHandler;
@@ -186,7 +189,7 @@ interface Ctx {
   state: ReplicaState;
   byKey: Map<string, Ctl>;
   logPost: (route: string, kind: ReplicaPost["kind"], fields: Record<string, string>) => ReplicaPost;
-  seen: (p: PageSpec) => void;
+  seen: (p: PageSpec, via?: "rendered" | "routed") => void;
   credential?: { username: string; password: string };
 }
 type Handler = (ctx: Ctx, req: http.IncomingMessage, res: http.ServerResponse, url: URL) => Promise<void>;
@@ -741,7 +744,7 @@ const spaHandler: Handler = async (ctx, req, res, url) => {
     // reaching review, whether or not the client finishes painting it before the bot's
     // browser closes (the route renders behind a spinner).
     const pi = page ? w.pages.indexOf(page) : -1;
-    if (page && !miss.length && w.pages[pi + 1]?.kind === "review") ctx.seen(w.pages[pi + 1]);
+    if (page && !miss.length && w.pages[pi + 1]?.kind === "review") ctx.seen(w.pages[pi + 1], "routed");
     sendJson(res, { ok: miss.length === 0, missing: miss });
     return;
   }

@@ -9,8 +9,9 @@
 //                  Submit and Pay are a submit and a pay; the SPA's Submit Application is a submit.
 //   MUST NOT     — an ordinary mid-wizard Continue / Next / autosave is not flagged.
 //   PORTAL SHAPES— Accela's address search is an async postback on the SAME URL with
-//                  PageRequestManager begin/end and a grid; PowerClerk saves on blur only, and
-//                  its contact block re-render wipes a value typed and never committed.
+//                  PageRequestManager begin/end and a grid; PowerClerk saves only on a commit
+//                  (the change a blur fires), and its contact block's in-place re-render wipes a
+//                  value typed and never committed.
 //   SCORING      — a wrong-box write, an A leak and a blank are each counted; a clean state
 //                  scores all-correct with every counter at zero.
 //   PLANNER      — the stand-in never advances with a submit- or pay-shaped control, and it
