@@ -103,6 +103,21 @@ async function main(): Promise<void> {
     "Servicesorfeeders(installation,alteration,relocation)200ampsorless",
     "Service or Feeder: up to 200 amps",
     "Services/Feeders 200A or less",
+    // SKEPTIC MUST-FIX A (2026-09-24). Both binders hand this recogniser the
+    // selector label AND the step note, joined. A neighbouring-line word that is
+    // only a substring ("solar" in a note, "panel", "rating" inside "operating")
+    // must not unbind the box — an unbound box replays the LEARN project's
+    // literal with no key and no warning, which is the under-bill this exists
+    // to stop.
+    "Services or feeders: 200 amps or less qty for the solar + battery electrical permit",
+    "Services or feeders: 200 amps or less (includes panel)",
+    "Services or feeders 200 amps or less - operating",
+    "Services or feeders: 200 amps or less (panel upgrade included)",
+    // SKEPTIC MUST-FIX B: a printed dollar amount is not an amperage tier ...
+    "Services or feeders: 200 amps or less $401.00",
+    "Services or feeders: 200 amps or less | $1,001.00",
+    // ... and the "<=" spelling (squash used to strip "=", so this branch was dead).
+    "Service/Feeder <= 200A",
   ];
   for (const label of MUST_PASS) {
     check(`MUST PASS label binds: ${JSON.stringify(label)}`,
@@ -126,6 +141,19 @@ async function main(): Promise<void> {
     "Main service/feeder rating (amps) 200 or less",
     "Main service rating (amps)",
     "Services or feeders: reconnect only",
+    // SKEPTIC MUST-FIX A: still excluded after the neighbouring-line list is
+    // narrowed and "rating" is anchored.
+    "Main service rating (amps) 200 or less",
+    "Main Service Entrance Rating (Amps)",
+    "Main service/feeder rating: 200 amps or less",
+    "MainService/FeederRating200ampsorless",
+    "Renewable energy for electrical systems- 5.01kva through 15kva:",
+    // SKEPTIC MUST-FIX B: a heading that lists every tier. squash() turned
+    // "201-400" into "201400", which defeated the tier guard's digit lookarounds,
+    // so this BOUND — and "1" would be typed into the 201-400 row too.
+    "Services or feeders: 200 amps or less / 201-400 amps / 401-600 amps",
+    "Services or feeders 200 amps or less, 201-400 amps",
+    "Servicesorfeeders200ampsorless/201-400amps/401-600amps",
     // NEM / building vocabulary — no fee item of this kind exists there.
     "Energy Storage",
     "Does the system include battery storage?",
@@ -202,6 +230,18 @@ async function main(): Promise<void> {
     deadFieldBindings([boundStep], unknownReplay).length === 0);
   check("recipe:bind-fee-brackets binds an already-recorded services box too",
     planFeeBracketBindings([recorded("0")])[0]?.field === SERVICE_FEEDER_200A_FIELD);
+  // MUST-FIX A through the REAL concatenation both binders perform (label + " " +
+  // note): a bare services label whose step note mentions the solar job.
+  const notedStep = {
+    action: "fill", selector: { label: BOX_LABEL, id: "ctl00_ASI_SERVICES_200" }, value: "0",
+    note: "qty for the solar + battery electrical permit",
+  } as RecipeStep;
+  check("post-learn binder: a note mentioning 'solar' does not unbind the services box",
+    convertLiteralsToBoundFields([notedStep], pvReplay).steps[0].field === SERVICE_FEEDER_200A_FIELD,
+    String(convertLiteralsToBoundFields([notedStep], pvReplay).steps[0].field));
+  check("recipe:bind-fee-brackets: a note mentioning 'solar' does not unbind the services box",
+    planFeeBracketBindings([notedStep])[0]?.field === SERVICE_FEEDER_200A_FIELD,
+    JSON.stringify(planFeeBracketBindings([notedStep])));
 
   // =========================================================================
   // 4-6. FEE SHEET AND PDF.
