@@ -1097,9 +1097,62 @@ export interface JurisdictionDesignCriteria {
   groundSnowLoadPsf?: number;
   windSpeedMph?: number;
   windExposure?: string;
+  /** The jurisdiction says it sits in a special wind region (IRC/ORSC Figure R301.2(2)
+   *  shaded area): the mapped speed is not the answer — the local value is. */
+  specialWindRegion?: boolean;
   seismicDesignCategory?: string;
   frostDepthIn?: number;
   sourceUrl?: string;
+}
+
+/** Profile fields an AHJ correction can teach. `block` says where it lands. */
+export type JurisdictionCriterionKey =
+  | "groundSnowLoadPsf"
+  | "windSpeedMph"
+  | "windExposure"
+  | "specialWindRegion"
+  | "maxAttachmentSpacingIn";
+
+/** A design requirement an AHJ STATED in a correction, proposed for that AHJ's code profile.
+ *  Never applied without a human (POST /api/corrections/:id/apply); lands as "seeded" with a
+ *  citation to the comment; never touches a verified row. */
+export interface JurisdictionCriteriaProposal {
+  kind: "jurisdiction_design_criteria";
+  /** Stable selector for the apply route's `fields`: "jurisdiction:<criterion>". */
+  id: string;
+  ahj: string;
+  state: string;
+  /** The AHJ's OWN profile row the value would land on ("" = none yet; one is created). */
+  profileKey: string;
+  block: "designCriteria" | "prescriptive";
+  criterion: JurisdictionCriterionKey;
+  value: number | string | boolean;
+  /** What that row holds for the criterion now (null = blank). Shown as old -> new. */
+  currentValue: number | string | boolean | null;
+  currentConfidence: "seeded" | "verified" | null;
+  /** The sentence the AHJ wrote (quoted, tight). */
+  basis: string;
+  source: { correctionId: string; recordNumber: string; receivedAt: string };
+  /** proposed: a human may apply it. same_as_current: nothing to change. blocked_verified: the
+   *  row is human-verified and will not be touched. applied / refused: after an apply. */
+  status: "proposed" | "same_as_current" | "blocked_verified" | "applied" | "refused";
+  statusNote?: string;
+}
+
+/** The design criteria an ISSUED project used — corroboration for the AHJ, never its rule. */
+export interface ApprovedDesignObservation {
+  projectId: string;
+  recordNumber: string;
+  issuedAt: string;
+  criteria: Array<{ criterion: StatedDesignCriterionKind; value: number | string; qualifier: StatedDesignCriterionQualifier }>;
+}
+
+export interface DesignCriteriaResearchResult {
+  provider: "claude" | "stub";
+  /** Only values found on a page the search actually returned; each carries its citation. */
+  values: Array<{ criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure"; value: number | string; sourceUrl: string; quote?: string }>;
+  webGrounded: boolean;
+  notes: string;
 }
 
 /** Solar-pack prescriptive-path limits; future rule packs add their own blocks. */
@@ -1107,6 +1160,8 @@ export interface PrescriptiveLimits {
   maxGroundSnowPsf?: number;
   maxPvDeadLoadPsf?: number;
   maxRafterSpacingIn?: number;
+  /** Maximum roof-attachment (mount/standoff) spacing the jurisdiction accepts, inches o.c. */
+  maxAttachmentSpacingIn?: number;
   allowedWindExposures?: string[];
   maxExportKwWithoutStudy?: number;
   engineerStampOverKwDc?: number;
@@ -1205,8 +1260,22 @@ export interface JurisdictionCodeProfile {
   designCriteria: JurisdictionDesignCriteria;
   prescriptive: PrescriptiveLimits;
   fireSetbacks: FireSetbackRule[];
-  /** Official sources backing this profile (the human-verification checklist). */
-  citations: Array<{ label: string; sourceUrl: string }>;
+  /** Official sources backing this profile (the human-verification checklist). An AHJ
+   *  correction has no URL: it is cited by kind "ahj_correction", the field it set, the
+   *  quoted comment and the record it was raised on. */
+  citations: Array<{
+    label: string;
+    sourceUrl: string;
+    kind?: "ahj_correction" | "design_criteria_research";
+    field?: string;
+    quote?: string;
+    correctionId?: string;
+    recordNumber?: string;
+    at?: string;
+  }>;
+  /** Design criteria ISSUED projects in this AHJ used (resolved at read time from
+   *  jurisdiction_design_observations; never persisted in the profile payload). */
+  approvedDesigns?: ApprovedDesignObservation[];
   researchedAt?: string;
   verifiedAt?: string;
   verifiedBy?: string;
@@ -2240,6 +2309,10 @@ export interface LLMProvider {
    *  design criteria) for the code-profile onboarding flow. Saved as confidence
    *  "seeded"; a human verifies before citations become authoritative. */
   researchJurisdictionCodes(input: { ahj: string; state: string }): Promise<JurisdictionCodeResearchResult>;
+  /** NARROW design-criteria lookup (ground snow, ultimate wind, exposure) for ONE AHJ whose
+   *  profile has none on file. Web-grounded values only, each with its citation. Optional so
+   *  test doubles of LLMProvider need not implement it. */
+  researchDesignCriteria?(input: { ahj: string; state: string }): Promise<DesignCriteriaResearchResult>;
   /** LLM GENERAL PLAN REVIEW (hybrid review gate): Claude vision over rendered plan
    *  pages for ANY permit work type, grounded in the jurisdiction's adopted codes.
    *  Always advisory — the caller maps findings to category "ai_review", severity

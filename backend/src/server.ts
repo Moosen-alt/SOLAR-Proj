@@ -58,6 +58,7 @@ import type { RequestScope } from "./scope";
 import { DEFAULT_ORG_ID } from "./db";
 import { ensureStatusShareToken, statusShareUrl } from "./clientNotifier";
 import { listCodeProfiles, getCodeProfile, saveResearchedCodeProfile, saveVerifiedCodeProfile, codeProfileKey } from "./codeProfiles";
+import { applyCorrectionApproval } from "./correctionAgent";
 import { runStandaloneReview, getReviewSubmission, listReviewSubmissions, reviewSubjectToProject } from "./reviewSubject";
 import { renderReviewerReportHtml } from "./reviewerEngine";
 import { REVIEW_PACKS } from "./reviewPacks";
@@ -95,7 +96,6 @@ import { ensureHeartbeat, sseBroadcast, sseSubscribe, setSseOrgResolver } from "
 import {
   addManualCorrection,
   draftLatestCorrectionResponse,
-  applyCorrectionProposals,
   recordDesignRevisionsReceived,
   reopenCorrectionOnPortal,
   resolveCorrection,
@@ -1471,9 +1471,16 @@ app.post("/api/projects/:id/corrections", asyncHandler(async (req, res) => {
 // Operator approves the correction agent's proposed data updates: apply them
 // through updateProject and mark the correction human_approved. Optional
 // `fields` limits which proposals to apply.
+//
+// The same approval also applies the correction's JURISDICTION proposals (a design requirement
+// the AHJ stated, e.g. "Ground snow load 36 psf") to that AHJ's code profile — as seeded, with a
+// citation to the comment, never over a verified row (correctionAgent.applyJurisdictionProposals).
+// They are selected by id ("jurisdiction:<criterion>") in `fields`. When the approval selects
+// ONLY jurisdiction values and there is no project work, the project apply below is skipped: it
+// would refuse (409 "no selected data updates") after the jurisdiction write already happened.
 app.post("/api/corrections/:id/apply", (req, res) => {
   const fields = Array.isArray(req.body?.fields) ? (req.body.fields as unknown[]).map(String) : undefined;
-  res.json(applyCorrectionProposals(db, String(req.params.id), fields));
+  res.json(applyCorrectionApproval(db, String(req.params.id), fields, currentUser(db, req)?.email || "operator"));
 });
 
 // THE DESIGNER WAIT ENDS HERE, AND ONLY BY A PERSON SAYING SO. A `B_designer_fix` triage

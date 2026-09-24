@@ -2122,6 +2122,34 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    version: 34,
+    name: "jurisdiction_design_observations",
+    up: (db) => {
+      // What an ISSUED permit's design stated (ground snow, wind, exposure, risk category), one
+      // row per (project, target), written on the monitor's first issued reading. Corroboration
+      // for the AHJ's code profile — NEVER its designCriteria (a conservative design over-states
+      // the minimum). Reaches an org through its project; shown to other tenants only as
+      // aggregate values/counts/dates (codeProfiles.listApprovedDesignObservations +
+      // designCriteria.approvedDesignsNote), never the project or record number.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS jurisdiction_design_observations (
+          id TEXT PRIMARY KEY,
+          profile_key TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT '',
+          ahj TEXT NOT NULL DEFAULT '',
+          project_id TEXT NOT NULL,
+          target_id TEXT NOT NULL DEFAULT '',
+          record_number TEXT NOT NULL DEFAULT '',
+          issued_at TEXT NOT NULL,
+          criteria_json TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL,
+          UNIQUE (project_id, target_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_design_observations_state ON jurisdiction_design_observations(state, profile_key);
+      `);
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

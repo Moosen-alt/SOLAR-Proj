@@ -5053,10 +5053,12 @@ function renderReview() {
     let triage = null;
     try { if (String(item.notes).startsWith("agent-triage:")) triage = JSON.parse(item.notes.slice(13)); } catch {}
     const proposals = Array.isArray(triage?.proposals) ? triage.proposals : [];
+    const jurisdictionProposals = jurisdictionProposalList(triage);
     const correctionBody = item.fieldName === "correction" ? `
       ${proposals.length ? `<table><thead><tr><th>Field</th><th>Current</th><th>Proposed</th><th>Evidence</th></tr></thead><tbody>${proposals.map(p => `<tr><td>${esc(p.field)}</td><td>${esc(p.currentValue || "Missing")}</td><td>${esc(p.proposedValue)}</td><td>${esc(p.basis)}</td></tr>`).join("")}</tbody></table>` : ""}
+      ${jurisdictionProposalsHtml(jurisdictionProposals)}
       ${Array.isArray(triage?.actions) && triage.actions.length ? `<ol>${triage.actions.map(a => `<li>${esc(a)}</li>`).join("")}</ol>` : ""}
-      ${item.status === "pending" && triage?.correctionId && proposals.length ? `<button class="primary" data-apply-correction="${esc(triage.correctionId)}">Apply these data updates</button>` : `<p class="muted">Use Corrections in the Submit stage to review the response and record resolution.</p>`}` : "";
+      ${item.status === "pending" && triage?.correctionId && (proposals.length || jurisdictionProposals.some((p) => p.status === "proposed")) ? `<button class="primary" data-apply-correction="${esc(triage.correctionId)}">Apply these data updates</button>` : `<p class="muted">Use Corrections in the Submit stage to review the response and record resolution.</p>`}` : "";
     const context = [];
     if (item.llmSuggestedValue) context.push(`<strong>AI suggestion:</strong> ${esc(item.llmSuggestedValue)}`);
     if (item.parserValue && item.parserValue !== item.llmSuggestedValue) context.push(`<strong>Parser read:</strong> ${esc(item.parserValue)}`);
@@ -5863,10 +5865,58 @@ function correctionTriage(correctionId) {
     return {
       itemStatus: item.status,
       proposals: Array.isArray(parsed.proposals) ? parsed.proposals.filter((p) => p && typeof p.field === "string") : [],
+      jurisdictionProposals: jurisdictionProposalList(parsed),
       actions: Array.isArray(parsed.actions) ? parsed.actions.filter((a) => typeof a === "string") : [],
     };
   }
   return null;
+}
+
+// JURISDICTION PROPOSALS — a design requirement the AHJ stated in this correction ("Ground snow
+// load 36 psf"), proposed for THAT AHJ's shared code profile, not for this project. Kept in its
+// own list in the same stored payload (correctionAgent.attachJurisdictionProposals) and applied
+// by the same Apply button (the route applies them as seeded, citing the comment; a verified
+// profile is never touched). Every value is esc()'d: the basis is the AHJ's own sentence.
+function jurisdictionProposalList(parsed) {
+  return Array.isArray(parsed?.jurisdictionProposals)
+    ? parsed.jurisdictionProposals.filter((p) => p && p.kind === "jurisdiction_design_criteria" && typeof p.criterion === "string")
+    : [];
+}
+
+const JURISDICTION_CRITERION_LABELS = {
+  groundSnowLoadPsf: ["Ground snow load", " psf"],
+  windSpeedMph: ["Design wind speed (ultimate)", " mph"],
+  windExposure: ["Wind exposure", ""],
+  specialWindRegion: ["Special wind region", ""],
+  maxAttachmentSpacingIn: ["Max attachment spacing", " in o.c."],
+};
+const JURISDICTION_STATUS_LABELS = {
+  proposed: "Will apply",
+  same_as_current: "Already on file",
+  blocked_verified: "Profile verified — not changed",
+  applied: "Applied (seeded)",
+  refused: "Not applied",
+};
+
+function jurisdictionProposalsHtml(list) {
+  if (!list.length) return "";
+  const show = (p, v) => {
+    if (v === null || v === undefined || v === "") return "Blank";
+    if (typeof v === "boolean") return v ? "Yes" : "No";
+    const unit = (JURISDICTION_CRITERION_LABELS[p.criterion] || ["", ""])[1];
+    return `${v}${unit}`;
+  };
+  const rows = list.map((p) => `<tr>
+      <td>${esc((JURISDICTION_CRITERION_LABELS[p.criterion] || [p.criterion])[0])}</td>
+      <td>${esc(show(p, p.currentValue))}${p.currentConfidence ? ` <span class="muted">(${esc(p.currentConfidence)})</span>` : ""} &rarr; <strong>${esc(show(p, p.value))}</strong></td>
+      <td>&ldquo;${esc(p.basis)}&rdquo;${p.source?.recordNumber ? ` <span class="muted">— ${esc(p.source.recordNumber)}</span>` : ""}</td>
+      <td>${esc(JURISDICTION_STATUS_LABELS[p.status] || p.status)}${p.statusNote ? `<br><span class="muted" style="font-size:11px">${esc(p.statusNote)}</span>` : ""}</td>
+    </tr>`).join("");
+  return `<p style="font-size:12px;margin:8px 0 2px"><strong>Jurisdiction requirements stated in this comment</strong> — for ${esc(list[0].ahj)} (${esc(list[0].state)})'s code profile, shared with every project there:</p>
+      <table style="font-size:12px;margin-top:2px">
+        <thead><tr><th>Criterion</th><th>On file &rarr; AHJ says</th><th>AHJ comment</th><th>Status</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
 }
 
 // EVERY VALUE BELOW CAME OUT OF AN LLM and goes into innerHTML — field, currentValue,
@@ -5883,17 +5933,19 @@ function correctionTriageHtml(correction, triage) {
   // A design correction usually proposes no field change at all — its fix is a revised plan
   // set. Applying it there is not a data edit: it records the triage and parks the project on
   // the designer, which is the one thing this card could never say before.
-  const canApply = triage.itemStatus === "pending" && (triage.proposals.length > 0 || isDesign);
-  const applyLabel = triage.proposals.length ? "Apply these data updates" : "Record triage and wait on the designer";
+  const jurisdictionPending = (triage.jurisdictionProposals || []).some((p) => p.status === "proposed");
+  const canApply = triage.itemStatus === "pending" && (triage.proposals.length > 0 || isDesign || jurisdictionPending);
+  const applyLabel = triage.proposals.length ? "Apply these data updates" : jurisdictionPending && !isDesign ? "Apply the jurisdiction requirements" : "Record triage and wait on the designer";
   return `
       ${triage.proposals.length ? `<table style="font-size:12px;margin-top:6px">
         <thead><tr><th>Field</th><th>Current</th><th>Proposed</th><th>Evidence</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>` : ""}
+      ${jurisdictionProposalsHtml(triage.jurisdictionProposals || [])}
       ${triage.actions.length ? `<ol style="font-size:12px;margin:6px 0 0 18px">${triage.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ol>` : ""}
       ${canApply ? `<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="primary" style="font-size:12px" data-apply-correction="${esc(correction.id)}">${esc(applyLabel)}</button>
-        <span class="muted" style="font-size:11px">Applies the proposed project data only. It does not submit anything and does not close this correction — the correction closes when the resubmission actually goes out.</span>
+        <span class="muted" style="font-size:11px">Applies the proposed project data${jurisdictionPending ? ", and records the jurisdiction requirements above on that AHJ's code profile as seeded (citing this comment)" : " only"}. It does not submit anything and does not close this correction — the correction closes when the resubmission actually goes out.</span>
       </div>` : ""}
       ${triage.itemStatus && triage.itemStatus !== "pending" ? `<p class="muted" style="font-size:11px;margin-top:6px">Triage already ${esc(triage.itemStatus)} — re-triage the correction to propose new changes.</p>` : ""}`;
 }

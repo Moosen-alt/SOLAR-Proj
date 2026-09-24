@@ -11,12 +11,14 @@
 // ---------------------------------------------------------------------------
 
 import type { AppDb } from "./db";
-import type { AgentToolDef, CorrectionBucket, ProjectRecord } from "../../shared/src/types";
+import type { AgentToolDef, CorrectionBucket, JurisdictionCriteriaProposal, ProjectDetail, ProjectRecord } from "../../shared/src/types";
 import { createLLMProvider } from "./llm";
-import { getProjectDetail } from "./repository";
+import { getProjectDetail, applyCorrectionProposals } from "./repository";
 import { designNotesDigest } from "./autoLearn";
 import { humanizeBucket } from "./corrections";
-import { relearnCorrection } from "./knowledgeBase";
+import { relearnCorrection, isLearningExcluded } from "./knowledgeBase";
+import { extractAhjRequiredCriteria } from "./designCriteria";
+import { ahjLooksLikeHostname, applyCorrectionCriterionToProfile, currentCriterionOnFile, sameCriterionValue } from "./codeProfiles";
 import { listProjectDocuments } from "./projectDocuments";
 import { addAuditLog } from "./audit";
 import { logger } from "./logger";
@@ -193,13 +195,6 @@ export function persistTriage(
   // Store proposals + checklist in the linked correction review item's notes (JSON
   // payload the endpoint reads back on apply). Match the correction identity;
   // another correction may have arrived while the model was running.
-  const payload = JSON.stringify({
-    correctionId: input.correctionId,
-    bucket: t.bucket,
-    proposals: t.proposals,
-    actions: t.actions,
-    generatedAt: ts,
-  });
   const items = db.query<{ id: string; notes: string; source_excerpt: string }>(
     "SELECT id, notes, source_excerpt FROM human_review_items WHERE project_id = ? AND field_name = 'correction' AND status = 'pending'", [input.projectId]);
   let linked = items.filter(item => parseCorrectionProposals(item.notes)?.correctionId === input.correctionId);
@@ -211,6 +206,19 @@ export function persistTriage(
       && item.source_excerpt === correction.correction_text.slice(0, 800));
   }
   if (linked.length !== 1) throw new Error("Correction triage could not identify one pending review item; proposals were not attached to another correction.");
+  // The deterministic JURISDICTION proposals ride along: this rewrite of the notes must not
+  // drop what intake attached (or whatever a human already applied from them).
+  const jurisdictionProposals = parseCorrectionProposals(linked[0].notes)?.jurisdictionProposals?.length
+    ? parseCorrectionProposals(linked[0].notes)!.jurisdictionProposals
+    : buildJurisdictionProposals(db, input.correctionId);
+  const payload = JSON.stringify({
+    correctionId: input.correctionId,
+    bucket: t.bucket,
+    proposals: t.proposals,
+    actions: t.actions,
+    ...(jurisdictionProposals.length ? { jurisdictionProposals } : {}),
+    generatedAt: ts,
+  });
   if (linked.length === 1) db.run(
     "UPDATE human_review_items SET llm_suggested_value = ?, notes = ?, updated_at = ? WHERE id = ?",
     [t.requiredAction || "", `agent-triage:${payload}`, ts, linked[0].id]);
@@ -264,7 +272,10 @@ function projectSummary(project: ProjectRecord | null): Record<string, unknown> 
 }
 
 /** Parse the agent-triage payload stored in a correction review item's notes. */
-export function parseCorrectionProposals(notes: string): { correctionId?: string; proposals: CorrectionDataProposal[]; actions: string[]; bucket?: string } | null {
+export function parseCorrectionProposals(notes: string): {
+  correctionId?: string; proposals: CorrectionDataProposal[]; actions: string[]; bucket?: string;
+  jurisdictionProposals: JurisdictionCriteriaProposal[];
+} | null {
   const m = notes.match(/^agent-triage:(\{[\s\S]*\})$/);
   if (!m) return null;
   try {
@@ -272,8 +283,179 @@ export function parseCorrectionProposals(notes: string): { correctionId?: string
     if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.proposals) || !Array.isArray(parsed.actions)) return null;
     return { correctionId: typeof parsed.correctionId === "string" ? parsed.correctionId : undefined,
       proposals: parsed.proposals.filter((p: CorrectionDataProposal) => p && typeof p.field === "string" && typeof p.proposedValue === "string"),
-      actions: parsed.actions.filter((a: unknown) => typeof a === "string"), bucket: parsed.bucket };
+      actions: parsed.actions.filter((a: unknown) => typeof a === "string"), bucket: parsed.bucket,
+      // A SEPARATE list, never mixed into `proposals`: applyCorrectionProposals writes every
+      // entry of that one into the project's snapshot, and a jurisdiction value is not a
+      // project field.
+      jurisdictionProposals: Array.isArray(parsed.jurisdictionProposals)
+        ? parsed.jurisdictionProposals.filter((p: JurisdictionCriteriaProposal) => p && p.kind === "jurisdiction_design_criteria"
+          && typeof p.id === "string" && typeof p.criterion === "string" && typeof p.state === "string" && typeof p.ahj === "string")
+        : [] };
   } catch {
     return null;
   }
+}
+
+// ---- jurisdiction proposals (AHJ comment -> the AHJ's code profile) -------------
+//
+// EVERY PROJECT TEACHES THE JURISDICTION — SAFELY. When an AHJ's correction states a design
+// requirement ("Ground snow load 36 psf", "minimum wind speed design is 120 MPH Ultimate
+// Exposure D", "mounting spacing should be 2' oc"), that is the jurisdiction telling us its
+// rule. It is extracted deterministically (no LLM) and attached to the correction's review
+// item as a PROPOSAL against the AHJ's code profile, beside the project-field proposals. It
+// is applied only by a human (POST /api/corrections/:id/apply, hard rule 4), lands as
+// "seeded" with a citation to the comment, and never touches a verified row (hard rule 3).
+
+type Row = Record<string, unknown>;
+const txt = (v: unknown): string => (v == null ? "" : String(v));
+
+/** Which jurisdiction a correction speaks for, and its record number. A monitor correction is
+ *  tied to the target it was read on (its jurisdiction, its application/permit number); a
+ *  utility (NEM) target's correction never teaches a building jurisdiction (hard rule 5). */
+function correctionOrigin(db: AppDb, correctionId: string, projectId: string, projectAhj: string, correctionText: string): { ahj: string; recordNumber: string; utility: boolean } {
+  const fromText = correctionText.match(/\b(?:record|permit|application|case)\s*(?:#|no\.?|number)?\s*:?\s*([A-Z0-9]{2,}(?:-[A-Z0-9]+){1,5})\b/i)?.[1] ?? "";
+  // The monitor inserts its correction BEFORE the status-check row that links it, so at intake
+  // the target is found by the record number the page printed, matched against the project's
+  // own targets; a later re-attach finds it through the check row.
+  const target = db.get<Row>(
+    `SELECT c.application_number, c.permit_number, t.target_type, t.jurisdiction
+       FROM permit_status_checks c LEFT JOIN permit_check_targets t ON t.id = c.target_id
+      WHERE c.correction_id = ? ORDER BY c.rowid DESC LIMIT 1`, [correctionId])
+    ?? (fromText
+      ? db.get<Row>(
+        `SELECT application_number, permit_number, target_type, jurisdiction FROM permit_check_targets
+          WHERE project_id = ? AND (UPPER(application_number) = UPPER(?) OR UPPER(permit_number) = UPPER(?)) LIMIT 1`,
+        [projectId, fromText, fromText])
+      : undefined);
+  const recordNumber = txt(target?.permit_number) || txt(target?.application_number) || fromText;
+  const utility = txt(target?.target_type) === "nem";
+  return { ahj: txt(target?.jurisdiction).trim() || projectAhj, recordNumber: recordNumber.slice(0, 60), utility };
+}
+
+/** The jurisdiction proposals a correction's text supports, each with the AHJ's current value. */
+export function buildJurisdictionProposals(db: AppDb, correctionId: string): JurisdictionCriteriaProposal[] {
+  const c = db.get<Row>("SELECT project_id, source, correction_text, created_at FROM corrections WHERE id = ?", [correctionId]);
+  if (!c) return [];
+  const projectId = txt(c.project_id);
+  const project = db.get<Row>("SELECT state, ahj FROM projects WHERE id = ?", [projectId]);
+  const state = txt(project?.state).trim();
+  if (!state || /utility/i.test(txt(c.source)) || isLearningExcluded(db, projectId)) return [];
+  const required = extractAhjRequiredCriteria(txt(c.correction_text));
+  if (!required.length) return [];
+  const origin = correctionOrigin(db, correctionId, projectId, txt(project?.ahj).trim(), txt(c.correction_text));
+  if (origin.utility || !origin.ahj || ahjLooksLikeHostname(origin.ahj)) return [];
+  return required.map((r) => {
+    const onFile = currentCriterionOnFile(db, state, origin.ahj, r.block, r.criterion);
+    const status: JurisdictionCriteriaProposal["status"] = onFile.confidence === "verified"
+      ? "blocked_verified"
+      : sameCriterionValue(onFile.value, r.value) ? "same_as_current" : "proposed";
+    return {
+      kind: "jurisdiction_design_criteria",
+      id: `jurisdiction:${r.criterion}`,
+      ahj: origin.ahj,
+      state,
+      profileKey: onFile.profileKey,
+      block: r.block,
+      criterion: r.criterion,
+      value: r.value,
+      currentValue: onFile.value,
+      currentConfidence: onFile.confidence,
+      basis: r.basis,
+      source: { correctionId, recordNumber: origin.recordNumber, receivedAt: txt(c.created_at) },
+      status,
+      ...(status === "blocked_verified" ? { statusNote: "The jurisdiction's profile is human-verified; it will not be changed from a correction." } : {}),
+    };
+  });
+}
+
+/** The ONE linked review item for a correction (any status), with its raw payload. */
+function linkedTriageItem(db: AppDb, correctionId: string, statuses: string[]): { id: string; status: string; payload: Record<string, unknown> } | null {
+  const c = db.get<Row>("SELECT project_id FROM corrections WHERE id = ?", [correctionId]);
+  if (!c) return null;
+  const rows = db.query<Row>(
+    `SELECT id, status, notes FROM human_review_items WHERE project_id = ? AND field_name = 'correction' AND status IN (${statuses.map(() => "?").join(",")})`,
+    [txt(c.project_id), ...statuses],
+  ).filter((r) => parseCorrectionProposals(txt(r.notes))?.correctionId === correctionId);
+  if (rows.length !== 1) return null;
+  try {
+    return { id: txt(rows[0].id), status: txt(rows[0].status), payload: JSON.parse(txt(rows[0].notes).slice("agent-triage:".length)) as Record<string, unknown> };
+  } catch {
+    return null;
+  }
+}
+
+/** Intake hook: attach the correction's jurisdiction proposals to its review item. Idempotent;
+ *  best-effort (a failure here must never lose the correction). Returns how many attached. */
+export function attachJurisdictionProposals(db: AppDb, correctionId: string): number {
+  try {
+    const proposals = buildJurisdictionProposals(db, correctionId);
+    if (!proposals.length) return 0;
+    const item = linkedTriageItem(db, correctionId, ["pending"]);
+    if (!item) return 0;
+    db.run("UPDATE human_review_items SET notes = ? WHERE id = ?",
+      [`agent-triage:${JSON.stringify({ ...item.payload, jurisdictionProposals: proposals })}`, item.id]);
+    return proposals.length;
+  } catch (err) {
+    logger.warn("correction-agent", `jurisdiction proposals not attached: ${err instanceof Error ? err.message : String(err)}`, { correctionId });
+    return 0;
+  }
+}
+
+export interface JurisdictionApplyResult {
+  projectId: string;
+  /** Jurisdiction proposals the request selected that were still "proposed". */
+  attempted: number;
+  applied: Array<{ id: string; note: string }>;
+  refused: Array<{ id: string; note: string }>;
+  /** Does the same apply also have PROJECT work (selected field proposals / a designer wait)? */
+  hasProjectWork: boolean;
+}
+
+/**
+ * Apply the human-approved jurisdiction proposals of one correction. `fields` selects by id
+ * ("jurisdiction:groundSnowLoadPsf"); undefined = every proposal still "proposed". Each result
+ * is written back onto the proposal (status + note), so the card shows what happened and a
+ * second click cannot re-apply.
+ */
+export function applyJurisdictionProposals(db: AppDb, correctionId: string, fields: string[] | undefined, actor: string): JurisdictionApplyResult {
+  const c = db.get<Row>("SELECT project_id, closed_at, correction_bucket FROM corrections WHERE id = ?", [correctionId]);
+  const projectId = txt(c?.project_id);
+  const empty: JurisdictionApplyResult = { projectId, attempted: 0, applied: [], refused: [], hasProjectWork: true };
+  if (!c || c.closed_at) return empty;
+  const item = linkedTriageItem(db, correctionId, ["pending"]);
+  if (!item) return empty;
+  const parsed = parseCorrectionProposals(`agent-triage:${JSON.stringify(item.payload)}`);
+  const proposals = parsed?.jurisdictionProposals ?? [];
+  const selectedProject = (parsed?.proposals ?? []).filter((p) => !fields || fields.includes(p.field));
+  const hasProjectWork = (!fields || fields.some((f) => !f.startsWith("jurisdiction:")))
+    && (selectedProject.some((p) => p.proposedValue.trim()) || txt(c.correction_bucket) === "B_designer_fix");
+  const result: JurisdictionApplyResult = { projectId, attempted: 0, applied: [], refused: [], hasProjectWork };
+  for (const p of proposals) {
+    if (p.status !== "proposed" || (fields && !fields.includes(p.id))) continue;
+    result.attempted++;
+    const r = applyCorrectionCriterionToProfile(db, p, { actor, projectId });
+    p.status = r.status;
+    p.statusNote = r.note;
+    (r.status === "applied" ? result.applied : result.refused).push({ id: p.id, note: r.note });
+  }
+  if (result.attempted) {
+    db.run("UPDATE human_review_items SET notes = ?, updated_at = ? WHERE id = ?",
+      [`agent-triage:${JSON.stringify({ ...item.payload, jurisdictionProposals: proposals })}`, nowIso(), item.id]);
+  }
+  return result;
+}
+
+/**
+ * THE ONE APPROVAL (POST /api/corrections/:id/apply): the correction's jurisdiction proposals,
+ * then its project-field proposals / designer wait (repository.applyCorrectionProposals). When
+ * the approval selected ONLY jurisdiction values and there is no project work, the project half
+ * is skipped — it would refuse with 409 "no selected data updates" AFTER the jurisdiction write
+ * had already happened, and report a success as a failure.
+ */
+export function applyCorrectionApproval(db: AppDb, correctionId: string, fields: string[] | undefined, actor: string): ProjectDetail & { jurisdictionCriteria?: JurisdictionApplyResult } {
+  const jurisdiction = applyJurisdictionProposals(db, correctionId, fields, actor);
+  if (jurisdiction.attempted > 0 && !jurisdiction.hasProjectWork) {
+    return { ...getProjectDetail(db, jurisdiction.projectId), jurisdictionCriteria: jurisdiction };
+  }
+  return { ...applyCorrectionProposals(db, correctionId, fields), ...(jurisdiction.attempted ? { jurisdictionCriteria: jurisdiction } : {}) };
 }

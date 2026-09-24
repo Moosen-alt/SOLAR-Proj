@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { performance } from "node:perf_hooks";
-import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, ParserExtractedField } from "../../shared/src/types";
+import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, DesignCriteriaResearchResult, ParserExtractedField } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
@@ -282,6 +282,10 @@ export class StubLLMProvider implements LLMProvider {
 
   async visionExtract(): Promise<Record<string, unknown>> {
     return { provider: "stub", confidence: 0, notes: "No ANTHROPIC_API_KEY configured." };
+  }
+
+  async researchDesignCriteria(): Promise<DesignCriteriaResearchResult> {
+    return { provider: "stub", values: [], webGrounded: false, notes: "No ANTHROPIC_API_KEY configured — no design-criteria lookup." };
   }
 
   async researchJurisdictionCodes(input: { ahj: string; state: string }): Promise<JurisdictionCodeResearchResult> {
@@ -1660,6 +1664,50 @@ Rules:
       notes: webGrounded
         ? "Researched from the AHJ's official site via web search. Human-verify before relying on it; the first real submittal will confirm/correct these requirements."
         : "Web search was unavailable — researched from model knowledge only. Verify against the AHJ's official site before relying on it.",
+    };
+  }
+
+  // NARROW DESIGN-CRITERIA LOOKUP for one AHJ whose profile has no ground snow / wind on file
+  // (researchJurisdictionCodes asks for everything and came back designCriteria {} for a city
+  // whose examiner then bounced a 16 psf plan for 36). Compact on purpose (LLM cost rule): three
+  // numbers, each with the page and the sentence it came from. Web-grounded or nothing — a
+  // remembered snow load is exactly the false authority a below-ahj warning must not rest on,
+  // so there is no model-memory fallback here.
+  async researchDesignCriteria(input: { ahj: string; state: string }): Promise<DesignCriteriaResearchResult> {
+    const system = `You look up ONE building jurisdiction's structural design criteria for residential roofs. Search the web for the jurisdiction's own building-department page (or its county's) publishing its climatic/geographic design criteria (IRC/state residential code Table R301.2). Return ONLY JSON:
+{"groundSnowLoadPsf": {"value": <number>, "sourceUrl": "<page>", "quote": "<the sentence stating it>"} or omit,
+ "windSpeedMph": {"value": <ULTIMATE design wind speed Vult, number>, "sourceUrl": "<page>", "quote": "<sentence>"} or omit,
+ "windExposure": {"value": "<B|C|D>", "sourceUrl": "<page>", "quote": "<sentence>"} or omit,
+ "notes": "<what you could not confirm>"}
+Omit any value you did not read on a page you found. Never guess, never use a neighbouring jurisdiction's value, never give an ASD/nominal wind speed as windSpeedMph.`;
+    const userMsg = `Jurisdiction: ${input.ahj}\nState: ${input.state}`;
+    let raw = "";
+    let grounded = false;
+    try {
+      const web = await this.askWithWebSearch("researchDesignCriteria", system, userMsg, 1500, 3, webResearchBudgetMs());
+      raw = web.text;
+      grounded = web.groundedSearches > 0;
+    } catch (err) {
+      logger.warn("llm", "researchDesignCriteria web search failed", { err: errMsg(err) });
+      return { provider: "claude", values: [], webGrounded: false, notes: "Web search failed — nothing looked up." };
+    }
+    const parsed = this.parseJson<Record<string, unknown>>(raw, {});
+    const values: DesignCriteriaResearchResult["values"] = [];
+    if (grounded) {
+      for (const criterion of ["groundSnowLoadPsf", "windSpeedMph", "windExposure"] as const) {
+        const v = parsed[criterion] as { value?: unknown; sourceUrl?: unknown; quote?: unknown } | undefined;
+        if (!v || typeof v !== "object") continue;
+        const sourceUrl = typeof v.sourceUrl === "string" ? v.sourceUrl.trim() : "";
+        const value = criterion === "windExposure" ? String(v.value ?? "").trim().toUpperCase() : typeof v.value === "number" ? v.value : Number.NaN;
+        if (!sourceUrl || (typeof value === "number" && !Number.isFinite(value)) || value === "") continue;
+        values.push({ criterion, value, sourceUrl, ...(typeof v.quote === "string" && v.quote.trim() ? { quote: v.quote.trim().slice(0, 240) } : {}) });
+      }
+    }
+    return {
+      provider: "claude",
+      values,
+      webGrounded: grounded,
+      notes: `${grounded ? "Web-grounded lookup." : "No web results — nothing stored."} ${typeof parsed.notes === "string" ? parsed.notes.slice(0, 400) : ""}`.trim(),
     };
   }
 

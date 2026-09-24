@@ -21,6 +21,9 @@ export type JobType =
   | "prepare_submission"
   | "auto_learn"
   | "code_research"
+  // The NARROW lookup: one AHJ's ground snow / ultimate wind / exposure, for a profile row
+  // that exists but has none on file (codeProfiles.ensureDesignCriteriaResearched).
+  | "design_criteria_research"
   | "fee_research"
   | "run_triage"
   | "correction_triage"
@@ -792,6 +795,11 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
         const saved = saveResearchedCodeProfile(db, research.profile);
         result = { saved: true, key: saved.key, confidence: saved.confidence, webGrounded: research.webGrounded, adoptedCodes: saved.adoptedCodes.length };
       }
+    } else if (job.jobType === "design_criteria_research") {
+      // Fills ONLY blank design criteria on the AHJ's own row, as seeded, web-grounded values
+      // with their citations only; never a verified row (codeProfiles.runDesignCriteriaResearch).
+      const { runDesignCriteriaResearch } = await import("./codeProfiles");
+      result = await runDesignCriteriaResearch(db, job.payload as Record<string, unknown>);
     } else if (job.jobType === "fee_research") {
       // Autonomous fee-schedule onboarding: web-research the jurisdiction's (or
       // utility's) published fee schedule and land it through the REAL save path —
