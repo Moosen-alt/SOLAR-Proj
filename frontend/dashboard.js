@@ -1644,6 +1644,7 @@ function codeProfileForKb(kbProfile, codeProfiles) {
 
 const KB_CRITERIA_LABELS = {
   "designCriteria.groundSnowLoadPsf": ["Ground snow load", " psf"],
+  "designCriteria.groundSnowLoadAsdPsf": ["Ground snow load pg(asd) (allowable-stress, not Pg)", " psf"],
   "designCriteria.windSpeedMph": ["Design wind speed (ultimate)", " mph"],
   "designCriteria.windExposure": ["Wind exposure", ""],
   "designCriteria.specialWindRegion": ["Special wind region", ""],
@@ -1670,8 +1671,10 @@ function kbDesignCriteriaHtml(codeProfile) {
     if (v === undefined || v === null || v === "") continue;
     const c = cites.filter((x) => x && x.field === field).pop();
     const day = (s) => String(s || "").slice(0, 10);
+    // The shared row names no correction or record (they are one org's project data): the source
+    // is "an AHJ plan-review correction" and its date.
     const from = c && c.kind === "ahj_correction"
-      ? `AHJ correction ${String(c.correctionId || "").slice(0, 8)}${c.recordNumber ? ` on record ${c.recordNumber}` : ""}${c.at ? `, ${day(c.at)}` : ""}`
+      ? `AHJ plan-review correction${c.at ? `, ${day(c.at)}` : ""}`
       : c && c.kind === "design_criteria_research"
         ? `design-criteria lookup${c.at ? `, ${day(c.at)}` : ""}${c.sourceUrl ? ` (${c.sourceUrl})` : ""}`
         : verified ? "entered at verification" : "seeded research / import";
@@ -5991,7 +5994,12 @@ function jurisdictionProposalsHtml(list) {
   // for this AHJ; a different row a name match would have picked is shown and never written.
   const first = list[0];
   const key = first.profileKey || first.targetProfileKey || "";
-  const rowLine = first.profileKey
+  // A verified row the reviews read (possibly under another label: "Portland" for "City of
+  // Portland") is never written and never shadowed by a new one — say so instead of "Writes".
+  const allBlocked = list.every((p) => p.status === "blocked_verified");
+  const rowLine = allBlocked
+    ? `Nothing is written: ${first.profileKey ? `profile row <code>${esc(first.profileKey)}</code> is human-verified` : "a human-verified profile governs these values"} — a person verifies them there.`
+    : first.profileKey
     ? `Writes profile row <code>${esc(first.profileKey)}</code>.`
     : `No profile row for ${esc(first.ahj)} yet — applying creates <code>${esc(key)}</code>.`;
   const nearestLine = first.nearestOtherRow

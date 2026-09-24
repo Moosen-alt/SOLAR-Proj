@@ -375,7 +375,9 @@ export function buildJurisdictionProposals(db: AppDb, correctionId: string, orig
   const nearest = nearestOtherCodeProfileRow(db, state, from.ahj);
   return required.map((r) => {
     const onFile = currentCriterionOnFile(db, state, from.ahj, r.block, r.criterion);
-    const status: JurisdictionCriteriaProposal["status"] = onFile.confidence === "verified"
+    // Blocked when the row the reads use is verified (or a verified state layer sets the field) —
+    // including a verified row under ANOTHER label ("Portland" for "City of Portland").
+    const status: JurisdictionCriteriaProposal["status"] = onFile.blockedNote || onFile.confidence === "verified"
       ? "blocked_verified"
       : sameCriterionValue(onFile.value, r.value) ? "same_as_current" : "proposed";
     return {
@@ -394,7 +396,7 @@ export function buildJurisdictionProposals(db: AppDb, correctionId: string, orig
       basis: r.basis,
       source: { correctionId, recordNumber: from.recordNumber, receivedAt: txt(c.created_at) },
       status,
-      ...(status === "blocked_verified" ? { statusNote: "The jurisdiction's profile is human-verified; it will not be changed from a correction." } : {}),
+      ...(status === "blocked_verified" ? { statusNote: onFile.blockedNote || "The jurisdiction's profile is human-verified; it will not be changed from a correction." } : {}),
     };
   });
 }

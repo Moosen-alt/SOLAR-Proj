@@ -89,6 +89,33 @@ export interface EffectiveCodeContext {
   citationFor(code: string, section: string, title: string, fallback?: CodeReference): CodeReference;
 }
 
+/** The citation an applied AHJ correction leaves on the SHARED profile: which field, what value,
+ *  when, and a generic source label — never the AHJ's sentence, the correction id or the record
+ *  number (those are one org's project data; they stay in its review item and audit log). */
+export function sharedCorrectionCitation(field: string, value: unknown, at: string | undefined): JurisdictionCodeProfile["citations"][number] {
+  const day = String(at || "").slice(0, 10);
+  const criterion = String(field || "").split(".").pop() || field;
+  return {
+    label: `AHJ plan-review correction${day ? ` (${day})` : ""}: ${criterion} = ${value === undefined || value === null ? "" : String(value)}`,
+    sourceUrl: "",
+    kind: "ahj_correction",
+    field,
+    ...(at ? { at } : {}),
+  };
+}
+
+/** Rows written before the shared citation was narrowed carried the quote / correction id / record:
+ *  every read (and so every later re-save, and GET /api/code-profiles) gets the narrow form. */
+function sanitizeCitations(payload: Partial<JurisdictionCodeProfile>): JurisdictionCodeProfile["citations"] {
+  const list = Array.isArray(payload.citations) ? payload.citations : [];
+  return list.map((c) => {
+    if (c?.kind !== "ahj_correction") return c;
+    const [block, key] = String(c.field || "").split(".");
+    const v = block === "designCriteria" || block === "prescriptive" ? (payload[block] as Record<string, unknown> | undefined)?.[key] : undefined;
+    return sharedCorrectionCitation(String(c.field || ""), v, c.at);
+  });
+}
+
 function mapRow(row: Row): JurisdictionCodeProfile {
   let payload: Partial<JurisdictionCodeProfile> = {};
   try { payload = JSON.parse(text(row.payload_json) || "{}") as Partial<JurisdictionCodeProfile>; } catch { payload = {}; }
@@ -102,7 +129,7 @@ function mapRow(row: Row): JurisdictionCodeProfile {
     designCriteria: payload.designCriteria ?? {},
     prescriptive: payload.prescriptive ?? {},
     fireSetbacks: Array.isArray(payload.fireSetbacks) ? payload.fireSetbacks : [],
-    citations: Array.isArray(payload.citations) ? payload.citations : [],
+    citations: sanitizeCitations(payload),
     researchedAt: text(row.researched_at) || undefined,
     verifiedAt: text(row.verified_at) || undefined,
     verifiedBy: text(row.verified_by) || undefined,
@@ -480,8 +507,17 @@ export function ensureCodeProfilesResearched(db: AppDb, state: string, ahj: stri
   if ((ahj || "").trim() && !ahjLooksLikeHostname(ahj)) layers.push({ state: st, ahj: ahj.trim() });
   else if ((ahj || "").trim()) logger.info("code-profiles", `auto-research skipped for AHJ "${ahj.trim()}" — it looks like a hostname, not a jurisdiction`);
   let enqueued = 0;
-  for (const layer of layers) {
+  for (let layer of layers) {
     try {
+      // The AHJ layer is the row a research save would land on (resolveCriteriaWriteRow): a verified
+      // row the reads use is left alone, and the same jurisdiction under another label ("Plano" for
+      // "City of Plano") is researched under ITS name — a save under the project's spelling would
+      // create a row that shadows it.
+      if (layer.ahj) {
+        const target = resolveCriteriaWriteRow(db, layer.state, layer.ahj);
+        if (!target || target.kind === "blocked_verified") continue;
+        if (target.kind === "same_jurisdiction") layer = { state: target.profile.state, ahj: target.profile.ahj };
+      }
       const key = codeProfileKey(layer);
       // WHAT THE ROW HOLDS, NOT THAT IT EXISTS. A row created only by a human applying an AHJ
       // correction's design criteria (or by the design-criteria lookup) carries no adopted codes,
@@ -571,12 +607,97 @@ export function exactCodeProfileRow(db: AppDb, state: string, ahj: string): { ke
   return row ? { key: text(row.profile_key), profile: mapRow(row) } : null;
 }
 
-/** For display only: the DIFFERENT existing row a fuzzy name match would pick for this AHJ. */
+/** For display only: the DIFFERENT jurisdiction's row a fuzzy name match would pick for this AHJ
+ *  (the row a write does NOT touch). Null when the match is this same jurisdiction under another
+ *  label ("Plano" for "City of Plano") — that row IS the one written. */
 export function nearestOtherCodeProfileRow(db: AppDb, state: string, ahj: string): { key: string; ahj: string } | null {
-  if (!String(ahj || "").trim() || !String(state || "").trim()) return null;
-  const row = fuzzyCodeRow(db, { state, ahj });
-  if (!row || text(row.profile_key) === codeProfileKey({ state, ahj })) return null;
-  return { key: text(row.profile_key), ahj: text(row.ahj) };
+  const target = resolveCriteriaWriteRow(db, state, ahj);
+  return target?.kind === "create" && target.differentRow ? target.differentRow : null;
+}
+
+// --- WHICH ROW A WRITE LANDS ON --------------------------------------------------------
+//
+// Reads resolve an AHJ to its exact-key row, else to the fuzzy name match (getCodeProfile). A write
+// that ignores that and creates a row under the project's own spelling SHADOWS the row reads used:
+// "City of Portland" created or|city of portland, and every later read of City of Portland lost the
+// human-verified or|portland row (verified -> seeded, its amendment gone) — and the new seeded row
+// then unlocked automatic full research. Imported rows are keyed by bare names ("Plano", "Seattle")
+// while projects say "City of X", so the same fork dropped imported amendments in TX, WA and FL.
+//
+// One rule for every writer of one AHJ's criteria (a correction apply, the design-criteria lookup
+// and its merge, full code research):
+//   exact key exists          -> that row (refused when human-verified);
+//   else a fuzzy match exists -> human-verified: REFUSED (a person verifies instead; nothing is
+//                                created that would outrank it);
+//                                same jurisdiction under another label: that row;
+//                                a different jurisdiction (Lincoln County for City of Lincoln
+//                                City): a new row under the exact key;
+//   else                      -> a new row under the exact key.
+
+/** "City of Plano" -> {type:"city", core:"plano"}; "Elmore County, ID" -> {type:"county", core:"elmore"}. */
+function jurisdictionIdentity(name: string, state: string): { type: string; core: string } {
+  let s = String(name || "").toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  const st = String(state || "").trim().toLowerCase();
+  if (st && s.endsWith(` ${st}`) && s.length > st.length + 1) s = s.slice(0, -(st.length + 1)).trim();
+  s = s.replace(/^the\s+/, "");
+  let type = "";
+  const pre = s.match(/^(city|town|village|township|borough|county|parish|municipality)\s+of\s+/);
+  if (pre) { type = pre[1]; s = s.slice(pre[0].length); }
+  else {
+    const suf = s.match(/\s+(county|parish|township|borough)$/);
+    if (suf && s.length > suf[0].length) { type = suf[1]; s = s.slice(0, -suf[0].length); }
+  }
+  return { type, core: s.trim() };
+}
+
+/** A bare name is a municipality ("Plano" = "City of Plano"); a county, parish, township or borough
+ *  must say so on both sides ("Lincoln" is not "Lincoln County"); two different named types differ. */
+const MUNICIPAL_TYPES = new Set(["", "city", "town", "village", "municipality"]);
+export function sameJurisdictionName(a: string, b: string, state: string): boolean {
+  const x = jurisdictionIdentity(a, state);
+  const y = jurisdictionIdentity(b, state);
+  if (!x.core || x.core !== y.core) return false;
+  if (x.type === y.type) return true;
+  return (!x.type || !y.type) && MUNICIPAL_TYPES.has(x.type) && MUNICIPAL_TYPES.has(y.type);
+}
+
+export type CriteriaWriteRow =
+  | { kind: "exact" | "same_jurisdiction"; key: string; profile: JurisdictionCodeProfile }
+  | { kind: "create"; key: string; profile: null; differentRow?: { key: string; ahj: string } }
+  | { kind: "blocked_verified"; key: string; profile: JurisdictionCodeProfile; message: string };
+
+export function resolveCriteriaWriteRow(db: AppDb, state: string, ahj: string): CriteriaWriteRow | null {
+  const st = String(state || "").trim();
+  const name = String(ahj || "").trim();
+  if (!st || !name) return null;
+  const exactKey = codeProfileKey({ state: st, ahj: name });
+  const exact = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [exactKey]);
+  if (exact) {
+    const profile = mapRow(exact);
+    return profile.confidence === "verified"
+      ? { kind: "blocked_verified", key: exactKey, profile, message: `${profile.ahj || name}'s profile is human-verified — it is not changed automatically. A person verifies the value on that profile instead.` }
+      : { kind: "exact", key: exactKey, profile };
+  }
+  const fuzzy = fuzzyCodeRow(db, { state: st, ahj: name });
+  if (fuzzy) {
+    const profile = mapRow(fuzzy);
+    const key = text(fuzzy.profile_key);
+    if (profile.confidence === "verified") {
+      return { kind: "blocked_verified", key, profile, message: `Reviews for ${name} read the human-verified profile "${profile.ahj}" (${key}). Nothing is written: a new row would replace that verified profile for every later review. A person verifies the value on "${profile.ahj}" instead.` };
+    }
+    if (sameJurisdictionName(name, profile.ahj, st)) return { kind: "same_jurisdiction", key, profile };
+    return { kind: "create", key: exactKey, profile: null, differentRow: { key, ahj: profile.ahj } };
+  }
+  return { kind: "create", key: exactKey, profile: null };
+}
+
+/** A seeded AHJ value never overrides a field the VERIFIED state layer supplies (the AHJ row is
+ *  merged over the state row on every read). The state layer's note, or "" when the write is free. */
+function verifiedStateLayerNote(db: AppDb, state: string, block: CriterionBlock, criterion: string): string {
+  const row = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [codeProfileKey({ state, ahj: "" })]);
+  if (!row || text(row.confidence) !== "verified") return "";
+  const v = blockValue(mapRow(row), block, criterion);
+  return v === null ? "" : `The state's human-verified profile sets ${criterion} = ${String(v)} for every AHJ in ${state}; a seeded local value would override it on every read. A person verifies it instead.`;
 }
 
 type CriterionBlock = JurisdictionCriteriaProposal["block"];
@@ -597,14 +718,19 @@ export function sameCriterionValue(a: CriterionValue | null, b: CriterionValue |
 /** What the AHJ's own row holds for one criterion right now (for a proposal's old -> new). */
 export function currentCriterionOnFile(db: AppDb, state: string, ahj: string, block: CriterionBlock, criterion: string): {
   profileKey: string; targetProfileKey: string; value: CriterionValue | null; confidence: "seeded" | "verified" | null;
+  /** Set when the write is refused before anyone clicks: a verified row (or verified state field) governs. */
+  blockedNote?: string;
 } {
-  // The row the apply will WRITE — exact key only (see exactCodeProfileRow).
-  const own = exactCodeProfileRow(db, state, ahj);
+  // The row the apply will WRITE — or the verified row that refuses it (resolveCriteriaWriteRow).
+  const target = resolveCriteriaWriteRow(db, state, ahj);
+  const own = target && target.kind !== "create" ? target.profile : null;
+  const stateNote = target && target.kind !== "blocked_verified" ? verifiedStateLayerNote(db, state, block, criterion) : "";
   return {
-    profileKey: own?.key ?? "",
-    targetProfileKey: codeProfileKey({ state, ahj }),
-    value: blockValue(own?.profile ?? null, block, criterion),
-    confidence: own?.profile.confidence ?? null,
+    profileKey: own ? target!.key : "",
+    targetProfileKey: target?.key ?? codeProfileKey({ state, ahj }),
+    value: blockValue(own, block, criterion),
+    confidence: stateNote ? "verified" : own?.confidence ?? null,
+    ...(target?.kind === "blocked_verified" ? { blockedNote: target.message } : stateNote ? { blockedNote: stateNote } : {}),
   };
 }
 
@@ -620,18 +746,20 @@ export function applyCorrectionCriterionToProfile(
   proposal: JurisdictionCriteriaProposal,
   opts: { actor: string; projectId: string | null },
 ): { status: "applied" | "refused"; note: string; profileKey: string } {
-  const own = exactCodeProfileRow(db, proposal.state, proposal.ahj);
-  // A proposal made before writes went exact-key-only may name a fuzzy-matched row of ANOTHER
-  // jurisdiction ("Lincoln County" for "City of Lincoln City"): never write through it.
-  if (proposal.profileKey && proposal.profileKey !== codeProfileKey({ state: proposal.state, ahj: proposal.ahj })) {
-    return { status: "refused", note: `This proposal was matched to another jurisdiction's profile row (${proposal.profileKey}), not ${proposal.ahj}'s own — re-triage the correction.`, profileKey: proposal.profileKey };
+  const target = resolveCriteriaWriteRow(db, proposal.state, proposal.ahj);
+  if (!target) return { status: "refused", note: "No state / jurisdiction on the proposal.", profileKey: "" };
+  // Hard rule 3: a verified row the reads resolve to is never written, and never shadowed.
+  if (target.kind === "blocked_verified") return { status: "refused", note: target.message, profileKey: target.key };
+  const stateNote = verifiedStateLayerNote(db, proposal.state, proposal.block, proposal.criterion);
+  if (stateNote) return { status: "refused", note: stateNote, profileKey: target.key };
+  // The row must be the one the human saw on the card. A proposal made earlier may name another
+  // jurisdiction's row ("Lincoln County" for "City of Lincoln City") or a row that has since
+  // changed identity: never write through it.
+  const shownKey = proposal.profileKey || proposal.targetProfileKey || "";
+  if (shownKey && shownKey !== target.key) {
+    return { status: "refused", note: `This proposal named profile row ${shownKey}, but ${proposal.ahj} now resolves to ${target.key} — re-triage the correction.`, profileKey: target.key };
   }
-  if (own && proposal.profileKey && own.key !== proposal.profileKey) {
-    return { status: "refused", note: `The jurisdiction now resolves to a different profile row (${own.key}) than when this was proposed — re-triage the correction.`, profileKey: own.key };
-  }
-  if (own?.profile.confidence === "verified") {
-    return { status: "refused", note: "The jurisdiction's profile is human-verified — an AHJ comment does not overwrite it. Update it through code-profile verification if it is wrong.", profileKey: own.key };
-  }
+  const own = target.kind === "create" ? null : { key: target.key, profile: target.profile };
   const now = blockValue(own?.profile ?? null, proposal.block, proposal.criterion);
   if (!sameCriterionValue(now, proposal.currentValue)) {
     return { status: "refused", note: `The profile's ${proposal.criterion} changed since this was proposed (now ${now ?? "blank"}, proposal assumed ${proposal.currentValue ?? "blank"}) — re-triage the correction to see the current value.`, profileKey: own?.key ?? "" };
@@ -648,20 +776,16 @@ export function applyCorrectionCriterionToProfile(
     citations: base.citations.filter((c) => !(c.kind === "ahj_correction" && c.field === field)),
   };
   (next[proposal.block] as Record<string, unknown>)[proposal.criterion] = proposal.value;
-  next.citations.push({
-    label: `AHJ correction${proposal.source.recordNumber ? ` on record ${proposal.source.recordNumber}` : ""} (${proposal.source.receivedAt.slice(0, 10)}): ${proposal.criterion} = ${String(proposal.value)}`,
-    sourceUrl: "",
-    kind: "ahj_correction",
-    field,
-    quote: proposal.basis.slice(0, 240),
-    correctionId: proposal.source.correctionId,
-    recordNumber: proposal.source.recordNumber,
-    at: proposal.source.receivedAt,
-  });
+  // THE SHARED ROW CARRIES THE VALUE, NOT THE COMMENT. jurisdiction_code_profiles reaches every
+  // tenant (GET /api/code-profiles); the AHJ's sentence can name a homeowner's address, and the
+  // correction id / record number point into one org's project. Those stay in the org-scoped review
+  // item (proposal.basis) and the project's audit log below.
+  next.citations.push(sharedCorrectionCitation(field, proposal.value, proposal.source.receivedAt));
   const saved = upsert(db, next, { confidence: "seeded" });
   addAuditLog(db, opts.projectId, "human", opts.actor || "operator", "code_profile.criterion_from_correction", {
     profileKey: codeProfileKey(next), field, from: proposal.currentValue, to: proposal.value,
     correctionId: proposal.source.correctionId, recordNumber: proposal.source.recordNumber,
+    quote: proposal.basis.slice(0, 240),
   });
   return { status: "applied", note: `Recorded on the ${saved.ahj || proposal.ahj} code profile as seeded, citing the AHJ comment.`, profileKey: codeProfileKey(next) };
 }
@@ -761,11 +885,15 @@ export function ensureDesignCriteriaResearched(db: AppDb, state: string, ahj: st
   const st = String(state || "").trim();
   const name = String(ahj || "").trim();
   if (!st || !name || ahjLooksLikeHostname(name)) return 0;
-  const own = exactCodeProfileRow(db, st, name);
-  if (own?.profile.confidence === "verified") return 0;
+  // The row the merge will write (resolveCriteriaWriteRow): never a verified row the reads use.
+  const target = resolveCriteriaWriteRow(db, st, name);
+  if (!target || target.kind === "blocked_verified") return 0;
+  const own = target.kind === "create" ? null : { key: target.key, profile: target.profile };
   const dc = own?.profile.designCriteria ?? {};
-  if (typeof dc.groundSnowLoadPsf === "number" && typeof dc.windSpeedMph === "number") return 0;
-  const key = own?.key ?? codeProfileKey({ state: st, ahj: name });
+  // A jurisdiction that publishes only pg(asd) (2024 IRC Table R301.2) has its ground snow answered.
+  const snowAnswered = typeof dc.groundSnowLoadPsf === "number" || typeof dc.groundSnowLoadAsdPsf === "number";
+  if (snowAnswered && typeof dc.windSpeedMph === "number") return 0;
+  const key = target.key;
   const fullAskedAt = inFlightCodeResearch.get(key);
   if (fullAskedAt != null && Date.now() - fullAskedAt < CODE_RESEARCH_WINDOW_MS) return 0;
   const fullPending = db.get<Row>(
@@ -821,10 +949,16 @@ export function mergeResearchedDesignCriteria(
   target: { state: string; ahj: string; profileKey?: string },
   result: DesignCriteriaResearchResult,
 ): { saved: boolean; filled: string[]; skipped: string[]; reason?: string; profileKey: string } {
-  const row = target.profileKey ? db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [target.profileKey]) : null;
-  const own = row ? { key: text(row.profile_key), profile: mapRow(row) } : exactCodeProfileRow(db, target.state, target.ahj);
-  const key = own?.key ?? codeProfileKey(target);
-  if (own?.profile.confidence === "verified") return { saved: false, filled: [], skipped: [], reason: "profile is human-verified", profileKey: key };
+  // The row is resolved NOW (resolveCriteriaWriteRow), not taken from the job payload: a row may
+  // have been verified, or created, since the job was queued.
+  const resolved = resolveCriteriaWriteRow(db, target.state, target.ahj);
+  if (!resolved) return { saved: false, filled: [], skipped: [], reason: "no state / jurisdiction", profileKey: "" };
+  const key = resolved.key;
+  if (resolved.kind === "blocked_verified") return { saved: false, filled: [], skipped: [], reason: `profile is human-verified — ${resolved.message}`, profileKey: key };
+  if (target.profileKey && target.profileKey !== key) {
+    logger.info("code-profiles", `design-criteria lookup for ${target.state}/${target.ahj} was queued for ${target.profileKey}; it now resolves to ${key}`);
+  }
+  const own = resolved.kind === "create" ? null : { key, profile: resolved.profile };
   if (result.provider === "stub") return { saved: false, filled: [], skipped: [], reason: "stub LLM (no API key)", profileKey: key };
   if (!result.webGrounded) return { saved: false, filled: [], skipped: [], reason: "not web-grounded — model memory is not stored as a design criterion", profileKey: key };
   const base: JurisdictionCodeProfile = own?.profile ?? {
@@ -843,11 +977,15 @@ export function mergeResearchedDesignCriteria(
     if (v.criterion === "windExposure") value = /^[BCD]$/i.test(String(v.value).trim()) ? String(v.value).trim().toUpperCase() : null;
     else value = typeof v.value === "number" && Number.isFinite(v.value) && v.value > 0 && v.value < 400 ? v.value : null;
     if (value == null) { skipped.push(`${v.criterion} (unusable value)`); continue; }
-    const had = (dc as Record<string, unknown>)[v.criterion];
-    if (had !== undefined && had !== null && had !== "") { skipped.push(`${v.criterion} (already on file)`); continue; }
-    (dc as Record<string, unknown>)[v.criterion] = value;
-    citations.push({ label: `Design criteria lookup: ${v.criterion} = ${value}`, sourceUrl: url.slice(0, 500), kind: "design_criteria_research", field: `designCriteria.${v.criterion}`, ...(v.quote ? { quote: String(v.quote).slice(0, 240) } : {}), at });
-    filled.push(v.criterion);
+    // pg(asd) is ANOTHER quantity (allowable-stress, ~0.7 x Pg): stored in its own field, never in
+    // groundSnowLoadPsf, which every rule compares with a plan's strength-level Pg.
+    const field: keyof JurisdictionDesignCriteria = v.criterion === "groundSnowLoadPsf" && v.qualifier === "pg_asd" ? "groundSnowLoadAsdPsf" : v.criterion;
+    const had = (dc as Record<string, unknown>)[field];
+    if (had !== undefined && had !== null && had !== "") { skipped.push(`${field} (already on file)`); continue; }
+    if (verifiedStateLayerNote(db, target.state, "designCriteria", field)) { skipped.push(`${field} (the state's verified profile sets it)`); continue; }
+    (dc as Record<string, unknown>)[field] = value;
+    citations.push({ label: `Design criteria lookup: ${field} = ${value}`, sourceUrl: url.slice(0, 500), kind: "design_criteria_research", field: `designCriteria.${field}`, ...(v.quote ? { quote: String(v.quote).slice(0, 240) } : {}), at });
+    filled.push(field);
   }
   if (!filled.length) return { saved: false, filled, skipped, reason: "nothing new to fill", profileKey: key };
   if (!dc.sourceUrl) dc.sourceUrl = citations.filter((c) => c.kind === "design_criteria_research").pop()?.sourceUrl;

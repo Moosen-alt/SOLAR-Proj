@@ -1094,7 +1094,12 @@ export interface CodeEdition {
 }
 
 export interface JurisdictionDesignCriteria {
+  /** Strength-level ground snow load Pg — what every rule compares with a plan's Pg. */
   groundSnowLoadPsf?: number;
+  /** The ground snow load as published in ALLOWABLE-STRESS form, pg(asd) (2024 IRC Table R301.2).
+   *  A different quantity (~0.7 x Pg): kept in its own field so it is stored, not dropped, and never
+   *  read as the strength Pg a below-ahj check compares against. */
+  groundSnowLoadAsdPsf?: number;
   windSpeedMph?: number;
   windExposure?: string;
   /** The jurisdiction says it sits in a special wind region (IRC/ORSC Figure R301.2(2)
@@ -1123,11 +1128,13 @@ export interface JurisdictionCriteriaProposal {
   id: string;
   ahj: string;
   state: string;
-  /** The AHJ's OWN profile row the value would land on — matched by EXACT profile key, never a
-   *  fuzzy name ("City of Lincoln City" must never land on "Lincoln County"). "" = no row with
-   *  that key yet; applying creates one under `targetProfileKey`. */
+  /** The existing profile row the value would land on (codeProfiles.resolveCriteriaWriteRow): the
+   *  exact key, or the SAME jurisdiction under another label ("Plano" for "City of Plano") — never
+   *  another jurisdiction's row ("City of Lincoln City" never lands on "Lincoln County"). "" = no
+   *  row yet; applying creates one under `targetProfileKey`. When the row reads use is verified the
+   *  proposal is blocked_verified and this names that row. */
   profileKey: string;
-  /** The exact key the value will be written under (set whether or not the row exists yet). */
+  /** The key the value will be written under (set whether or not the row exists yet). */
   targetProfileKey?: string;
   /** A DIFFERENT existing row a fuzzy name match would have picked — shown, never written. */
   nearestOtherRow?: { key: string; ahj: string };
@@ -1171,7 +1178,14 @@ export interface ApprovedDesignObservation {
 export interface DesignCriteriaResearchResult {
   provider: "claude" | "stub";
   /** Only values found on a page the search actually returned; each carries its citation. */
-  values: Array<{ criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure"; value: number | string; sourceUrl: string; quote?: string }>;
+  values: Array<{
+    criterion: "groundSnowLoadPsf" | "windSpeedMph" | "windExposure";
+    value: number | string;
+    sourceUrl: string;
+    quote?: string;
+    /** Ground snow only: "pg" (strength) or "pg_asd" (allowable-stress, stored as groundSnowLoadAsdPsf). */
+    qualifier?: "pg" | "pg_asd";
+  }>;
   webGrounded: boolean;
   notes: string;
 }
@@ -1313,17 +1327,17 @@ export interface JurisdictionCodeProfile {
   designCriteria: JurisdictionDesignCriteria;
   prescriptive: PrescriptiveLimits;
   fireSetbacks: FireSetbackRule[];
-  /** Official sources backing this profile (the human-verification checklist). An AHJ
-   *  correction has no URL: it is cited by kind "ahj_correction", the field it set, the
-   *  quoted comment and the record it was raised on. */
+  /** Official sources backing this profile (the human-verification checklist). An applied AHJ
+   *  correction has no URL: it is cited by kind "ahj_correction", the field it set, the value and
+   *  the date, under a generic label — never the AHJ's sentence, the correction id or the record
+   *  number (this table is shared with every tenant; those stay in the org's review item and audit
+   *  log). `quote` is only the design-criteria lookup's quote from a PUBLIC page. */
   citations: Array<{
     label: string;
     sourceUrl: string;
     kind?: "ahj_correction" | "design_criteria_research";
     field?: string;
     quote?: string;
-    correctionId?: string;
-    recordNumber?: string;
     at?: string;
   }>;
   researchedAt?: string;

@@ -211,8 +211,17 @@ await check("APPLY: lands as seeded with the value + a citation to the AHJ comme
   assert.equal(row.profile.prescriptive.maxAttachmentSpacingIn, 24);
   const cite = row.profile.citations.find((c) => c.kind === "ahj_correction" && c.field === "designCriteria.groundSnowLoadPsf");
   assert.ok(cite, "no ahj_correction citation");
-  assert.equal(cite!.correctionId, corrA);
-  assert.match(String(cite!.quote), /Ground snow load 36 psf/);
+  // MF2: the SHARED row carries criterion, value, date and a generic source — never the AHJ's
+  // sentence, the correction id or the record number (they stay in the org's review item + audit).
+  assert.match(cite!.label, /^AHJ plan-review correction \(\d{4}-\d{2}-\d{2}\): groundSnowLoadPsf = 36$/);
+  assert.ok(cite!.at, "the citation lost its date");
+  const stored = String(db.get<{ p: string }>("SELECT payload_json AS p FROM jurisdiction_code_profiles WHERE profile_key = ?", [row.key])?.p);
+  assert.doesNotMatch(stored, /Ground snow load 36 psf|Provide updated|correctionId|recordNumber/, "a correction excerpt / id reached the shared profile row");
+  assert.doesNotMatch(stored, new RegExp(corrA), "the correction id reached the shared profile row");
+  // ...and the org-scoped side still has the sentence: the review item and the project's audit log.
+  assert.match(String(itemPayload(pidA, corrA)!.jurisdictionProposals.find((x) => x.criterion === "groundSnowLoadPsf")?.basis), /Ground snow load 36 psf/);
+  assert.ok(db.query<{ d: string }>("SELECT details AS d FROM audit_logs WHERE project_id = ? AND action = 'code_profile.criterion_from_correction'", [pidA])
+    .some((r) => /Ground snow load 36 psf/.test(r.d) && r.d.includes(corrA)), "the audit log lost the quote / correction id");
   assert.ok(itemPayload(pidA, corrA)!.jurisdictionProposals.every((x) => x.status === "applied"));
   assert.equal(applyJurisdictionProposals(db, corrA, undefined, "operator@test").attempted, 0, "an applied proposal re-applied");
   assert.ok(R.getProjectDetail(db, pidA).project, "project still readable");
@@ -379,6 +388,131 @@ await check("THE WRITE PATH NEVER FUZZY-MATCHES: 'City of Lincoln City' is not w
   assert.equal(CP.applyCorrectionCriterionToProfile(db, legacy, { actor: "op", projectId: pid }).status, "refused");
   assert.equal(CP.exactCodeProfileRow(db, "OR", "City of Lincoln Shore"), null, "a legacy fuzzy-aimed proposal still wrote");
   assert.equal(JSON.stringify(ownRow("Lincoln County")!.profile), countyBefore);
+});
+
+// ─── MF1: THE WRITE PATH NEVER SHADOWS OR DOWNGRADES THE ROW THE READS USE ─────────────────
+// Reads resolve "City of Portland" to the verified bare-name row or|portland (fuzzy); imported rows
+// are keyed "Plano"/"Seattle" while projects say "City of X". A write that created a row under the
+// project's spelling replaced those rows for every later read (verified -> seeded, amendments gone).
+const fakeProvider = (result: DesignCriteriaResearchResult): LLMProvider => ({ researchDesignCriteria: async () => result } as unknown as LLMProvider);
+const enqueued: Array<Record<string, unknown>> = [];
+const mkProjectIn = (state: string, ahj: string): string => R.createProject(db, {
+  owner: "Synthetic Owner", state, dcKw: "8.4", acKw: "7.7", street: "1 Test Way", city: "Testville", zip: "00000",
+  ahj, utility: "Test Power",
+} as never).project.id;
+
+await check("sameJurisdictionName: one jurisdiction under two labels is the same; a county, another type or another name is not", () => {
+  const same: Array<[string, string, string]> = [["City of Plano", "Plano", "TX"], ["Portland", "City of Portland", "OR"], ["Elmore County, ID", "Elmore County", "ID"],
+    ["County of Elmore", "Elmore County", "ID"], ["Town of Testham", "Testham", "WI"], ["Portland OR", "Portland", "OR"]];
+  const different: Array<[string, string, string]> = [["City of Lincoln City", "Lincoln County", "OR"], ["City of Lincoln", "Lincoln County", "OR"], ["Lincoln", "Lincoln County", "OR"],
+    ["Town of Testham", "City of Testham", "WI"], ["City of Coos Bay", "Coos County", "OR"], ["Springfield", "Springfield Township", "PA"], ["City of Salem", "Salem Heights", "OR"]];
+  for (const [a, b, st] of same) assert.equal(CP.sameJurisdictionName(a, b, st), true, `${a} / ${b}`);
+  for (const [a, b, st] of different) assert.equal(CP.sameJurisdictionName(a, b, st), false, `${a} / ${b}`);
+});
+
+await check("MUST EXCLUDE (Portland-shaped): a 'City of Portland' correction is blocked_verified against the verified bare 'Portland' row; reads stay verified with the amendment; no row is created", async () => {
+  CP.saveVerifiedCodeProfile(db, {
+    key: "", state: "OR", ahj: "Portland", confidence: "verified",
+    adoptedCodes: [{ code: "ORSC", edition: "2023" }], amendments: [{ code: "AHJ", summary: "Portland solar worksheet applies" }], designCriteria: {}, prescriptive: {},
+    fireSetbacks: [], citations: [], updatedAt: "",
+  }, "reference-seed");
+  assert.equal(CP.getCodeProfile(db, { state: "OR", ahj: "City of Portland" })!.confidence, "verified", "fixture precondition: reads resolve to the verified bare-name row");
+  const pid = mkProject("City of Portland");
+  const cid = R.addManualCorrection(db, pid, "Ground snow load shall be 25 psf.").corrections[0].id;
+  const j = itemPayload(pid, cid)!.jurisdictionProposals;
+  assert.equal(j.length, 1);
+  assert.equal(j[0].status, "blocked_verified", JSON.stringify(j[0]));
+  assert.equal(j[0].profileKey, CP.codeProfileKey({ state: "OR", ahj: "Portland" }), "the card must name the verified row that governs");
+  assert.match(String(j[0].statusNote), /human-verified profile "Portland"/);
+  assert.equal(applyJurisdictionProposals(db, cid, undefined, "op").attempted, 0);
+  // A forced apply (a stale or hand-edited "proposed") is refused by the writer itself.
+  const forced = CP.applyCorrectionCriterionToProfile(db, { ...j[0], status: "proposed", profileKey: "", targetProfileKey: CP.codeProfileKey({ state: "OR", ahj: "City of Portland" }) }, { actor: "op", projectId: pid });
+  assert.equal(forced.status, "refused", forced.note);
+  assert.equal(CP.exactCodeProfileRow(db, "OR", "City of Portland"), null, "a seeded row was created that shadows the verified one");
+  const after = CP.getCodeProfile(db, { state: "OR", ahj: "City of Portland" })!;
+  assert.equal(after.confidence, "verified");
+  assert.equal(after.amendments.length, 1, "the verified amendment was dropped from reads");
+  assert.equal(CP.resolveEffectiveCodeContext(db, "OR", "City of Portland").verified, true);
+  // The lookup's merge and its queueing refuse the same way (never a row that outranks verified).
+  const merged = await CP.runDesignCriteriaResearch(db, { state: "OR", ahj: "City of Portland" }, fakeProvider({
+    provider: "claude", webGrounded: true, notes: "", values: [{ criterion: "groundSnowLoadPsf", value: 25, sourceUrl: "https://portland.example.gov/d", quote: "ground snow load 25 psf" }],
+  }));
+  assert.equal(merged.saved, false);
+  assert.equal(CP.exactCodeProfileRow(db, "OR", "City of Portland"), null, "the lookup created a shadowing row");
+  process.env.ANTHROPIC_API_KEY = "sk-ant-test-never-called";
+  CP.setDesignResearchEnqueuerForTests((_d, payload) => { enqueued.push(payload); });
+  try {
+    CP.resetResearchMarkersForTests();
+    assert.equal(CP.ensureDesignCriteriaResearched(db, "OR", "City of Portland"), 0, "a lookup was queued against a verified row");
+    assert.equal(enqueued.length, 0);
+  } finally { delete process.env.ANTHROPIC_API_KEY; CP.setDesignResearchEnqueuerForTests(null); }
+});
+
+await check("MUST PASS (TX/WA/FL bare-name import rows): 'City of X' writes the imported 'X' row, keeping its amendments; no second row", async () => {
+  const importRow = (state: string, ahj: string) => CP.saveResearchedCodeProfile(db, {
+    key: "", state, ahj, confidence: "seeded", adoptedCodes: [{ code: "IRC", edition: "2021" }],
+    amendments: [{ code: "AHJ", summary: "Structural stamp required: Yes" }, { code: "AHJ", summary: "Electrical stamp required: Yes" }, { code: "AHJ", summary: "Stamp notes: wet stamp" }],
+    designCriteria: {}, prescriptive: {}, fireSetbacks: [], citations: [{ label: "Operator stamp-requirements list (Stamp Summary)", sourceUrl: "" }], updatedAt: "",
+  });
+  importRow("TX", "Testplano");
+  importRow("WA", "Testattle");
+  importRow("FL", "Testmiami");
+  // Reads layer the (reference-seeded) state row under the AHJ row: compare the layered view before/after.
+  const readAmend = (st: string, a: string): number => CP.getCodeProfile(db, { state: st, ahj: a })!.amendments.length;
+  const txBefore = readAmend("TX", "City of Testplano");
+  const flBefore = readAmend("FL", "City of Testmiami");
+  // TX: an AHJ correction, applied by a human.
+  const pid = mkProjectIn("TX", "City of Testplano");
+  const cid = R.addManualCorrection(db, pid, "Design wind speed shall be 115 mph, Exposure C.").corrections[0].id;
+  const j = itemPayload(pid, cid)!.jurisdictionProposals;
+  assert.deepEqual(asMap(j), { windSpeedMph: 115, windExposure: "C" });
+  for (const x of j) {
+    assert.equal(x.status, "proposed");
+    assert.equal(x.profileKey, CP.codeProfileKey({ state: "TX", ahj: "Testplano" }), "the proposal did not aim at the imported row");
+    assert.equal(x.nearestOtherRow, undefined, "the card called the SAME jurisdiction's row 'not changed'");
+  }
+  assert.equal(applyJurisdictionProposals(db, cid, undefined, "op").applied.length, 2);
+  const tx = CP.exactCodeProfileRow(db, "TX", "Testplano")!;
+  assert.equal(tx.profile.designCriteria.windSpeedMph, 115);
+  assert.equal(tx.profile.amendments.length, 3, "the imported amendments were dropped");
+  assert.equal(CP.exactCodeProfileRow(db, "TX", "City of Testplano"), null, "a second row forked the jurisdiction");
+  assert.equal(readAmend("TX", "City of Testplano"), txBefore, "reads lost amendments");
+  // FL: the same through another criterion.
+  const pf = mkProjectIn("FL", "City of Testmiami");
+  const cf = R.addManualCorrection(db, pf, "Exposure D is required.").corrections[0].id;
+  assert.equal(applyJurisdictionProposals(db, cf, undefined, "op").applied.length, 1);
+  assert.equal(CP.exactCodeProfileRow(db, "FL", "Testmiami")!.profile.designCriteria.windExposure, "D");
+  assert.equal(CP.exactCodeProfileRow(db, "FL", "City of Testmiami"), null);
+  assert.equal(readAmend("FL", "City of Testmiami"), flBefore, "reads lost amendments");
+  // WA: the design-criteria LOOKUP's merge lands on the imported row too.
+  const r = await CP.runDesignCriteriaResearch(db, { state: "WA", ahj: "City of Testattle" }, fakeProvider({
+    provider: "claude", webGrounded: true, notes: "", values: [{ criterion: "groundSnowLoadPsf", value: 25, sourceUrl: "https://testattle.example.gov/d", quote: "ground snow load 25 psf" }],
+  }));
+  assert.equal(r.saved, true, JSON.stringify(r));
+  assert.equal(r.profileKey, CP.codeProfileKey({ state: "WA", ahj: "Testattle" }));
+  assert.equal(CP.exactCodeProfileRow(db, "WA", "City of Testattle"), null, "the lookup forked the jurisdiction");
+  assert.equal(CP.exactCodeProfileRow(db, "WA", "Testattle")!.profile.amendments.length, 3);
+  // Full code research is not queued under the project's spelling (its save would create the fork).
+  CP.resetResearchMarkersForTests();
+  CP.ensureCodeProfilesResearched(db, "TX", "City of Testplano");
+  assert.equal(CP.researchQueuedForTests().includes(CP.codeProfileKey({ state: "TX", ahj: "City of Testplano" })), false, "research queued under the forking key");
+});
+
+await check("a VERIFIED STATE layer's field is never overridden by a seeded AHJ value; the AHJ's other criteria still apply", () => {
+  CP.saveVerifiedCodeProfile(db, {
+    key: "", state: "ID", ahj: "", confidence: "verified", adoptedCodes: [{ code: "IRC", edition: "2018" }], amendments: [],
+    designCriteria: {}, prescriptive: { maxAttachmentSpacingIn: 48 }, fireSetbacks: [], citations: [], updatedAt: "",
+  }, "tester");
+  const pid = mkProjectIn("ID", "City of Testboise");
+  const cid = R.addManualCorrection(db, pid, "Attachment spacing shall not exceed 6' o.c. Ground snow load shall be 20 psf.").corrections[0].id;
+  const j = itemPayload(pid, cid)!.jurisdictionProposals;
+  assert.equal(j.find((x) => x.criterion === "maxAttachmentSpacingIn")?.status, "blocked_verified", JSON.stringify(j));
+  assert.equal(j.find((x) => x.criterion === "groundSnowLoadPsf")?.status, "proposed");
+  assert.equal(applyJurisdictionProposals(db, cid, undefined, "op").applied.length, 1);
+  const row = CP.exactCodeProfileRow(db, "ID", "City of Testboise")!;
+  assert.equal(row.profile.designCriteria.groundSnowLoadPsf, 20);
+  assert.equal(row.profile.prescriptive.maxAttachmentSpacingIn, undefined, "a seeded AHJ value overrode the verified state field");
+  assert.equal(CP.getCodeProfile(db, { state: "ID", ahj: "City of Testboise" })!.prescriptive.maxAttachmentSpacingIn, 48);
 });
 
 await check("RESEARCH IS PER FIELD: a row created by an applied proposal does not stop adopted-code research for that AHJ", () => {
@@ -579,7 +713,6 @@ await check("the unknown finding quotes approved designs; a value a LATER AHJ co
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // 3. LOOK IT UP AT THE AHJ — once, never when off, never to overwrite.
 // ─────────────────────────────────────────────────────────────────────────────────────────
-const enqueued: Array<Record<string, unknown>> = [];
 CP.setDesignResearchEnqueuerForTests((d, payload) => { enqueued.push(payload); enqueueJob(d, "design_criteria_research", payload, { priority: 3, maxRetries: 2 }); });
 
 await check("keyless: no lookup is enqueued", () => {
@@ -622,7 +755,6 @@ await check("MUST EXCLUDE: switched off, offline, verified, or criteria already 
   } finally { delete process.env.ANTHROPIC_API_KEY; delete process.env.CODE_RESEARCH; delete process.env.PORTAL_AUTOSEED; }
 });
 
-const fakeProvider = (result: DesignCriteriaResearchResult): LLMProvider => ({ researchDesignCriteria: async () => result } as unknown as LLMProvider);
 
 await check("the lookup fills BLANKS only, as seeded, with citations; web-grounded values only", async () => {
   seeded("City of Fillton", { designCriteria: { windSpeedMph: 110 } });

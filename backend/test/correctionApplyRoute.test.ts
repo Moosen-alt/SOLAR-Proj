@@ -54,8 +54,23 @@ const ids = await (async () => {
   const cSelect = R.addManualCorrection(db, pSelect, TEXT_A).corrections[0].id;
   const pOnly = mk("City of Routeonly");
   const cOnly = R.addManualCorrection(db, pOnly, "Ground snow load 36 psf.").corrections[0].id;
+  // MF2: the AHJ's sentence names a (synthetic) street and a record; applying it must leave neither
+  // in the SHARED profile that GET /api/code-profiles serves to every tenant.
+  seeded("City of Routequote");
+  const pQuote = mk("City of Routequote");
+  const cQuote = R.addManualCorrection(db, pQuote, "Record 187-26-000555-STR: For the installation at 12 Synthetic Lane, ground snow load shall be 36 psf.").corrections[0].id;
+  // A row written by the OLD apply (before the shared citation was narrowed) — the only way to
+  // produce that pre-existing shape now is to write it as the old code did.
+  db.run("INSERT INTO jurisdiction_code_profiles (profile_key, state, ahj, confidence, payload_json, researched_at, updated_at) VALUES (?, 'OR', 'City of Legacyrow', 'seeded', ?, ?, ?)", [
+    CP.codeProfileKey({ state: "OR", ahj: "City of Legacyrow" }),
+    JSON.stringify({ adoptedCodes: [], amendments: [], designCriteria: { groundSnowLoadPsf: 30 }, prescriptive: {}, fireSetbacks: [], citations: [
+      { label: "AHJ correction on record REC-LEGACY-9 (2026-09-01): groundSnowLoadPsf = 30", sourceUrl: "", kind: "ahj_correction", field: "designCriteria.groundSnowLoadPsf",
+        quote: "At 99 Oldrow Lane ground snow load shall be 30 psf.", correctionId: "legacy-corr-00000001", recordNumber: "REC-LEGACY-9", at: "2026-09-01T00:00:00Z" },
+    ] }),
+    "2026-09-01T00:00:00Z", "2026-09-01T00:00:00Z",
+  ]);
   db.close();
-  return { pSelect, cSelect, pOnly, cOnly };
+  return { pSelect, cSelect, pOnly, cOnly, pQuote, cQuote };
 })();
 
 // ── the real server on the same file ───────────────────────────────────────────────────────
@@ -158,6 +173,29 @@ try {
     const c = read<{ human_approved: number; closed_at: string | null }>("SELECT human_approved, closed_at FROM corrections WHERE id = ?", [ids.cOnly]);
     assert.equal(c.human_approved, 1, "the correction does not read as human-reviewed");
     assert.equal(c.closed_at, null, "an approval must not close the correction (that is the resubmit event)");
+  });
+
+  await run("MF2: GET /api/code-profiles never returns a correction quote, id or record — for a value applied now, or a row written by the old apply", async () => {
+    const res = await apply(ids.cQuote, {});
+    const text = await res.text();
+    assert.equal(res.status, 200, text.slice(0, 300));
+    assert.equal(JSON.parse(text).jurisdictionCriteria?.applied?.length, 1);
+    assert.equal(profileSnow("City of Routequote"), 36, "fixture precondition: the value was applied");
+    const list = await fetch(`${BASE}/api/code-profiles`, { headers: { cookie } });
+    const body = await list.text();
+    assert.equal(list.status, 200, body.slice(0, 300));
+    for (const leak of ["Synthetic Lane", "187-26-000555-STR", ids.cQuote, "Oldrow Lane", "REC-LEGACY-9", "legacy-corr-00000001", "correctionId", "recordNumber"]) {
+      assert.ok(!body.includes(leak), `GET /api/code-profiles leaked ${leak}`);
+    }
+    const profiles = JSON.parse(body) as Array<{ ahj: string; citations: Array<{ kind?: string; label: string; field?: string }> }> | { profiles: Array<{ ahj: string; citations: Array<{ kind?: string; label: string; field?: string }> }> };
+    const arr = Array.isArray(profiles) ? profiles : profiles.profiles;
+    const cite = arr.find((p) => p.ahj === "City of Routequote")!.citations.find((c) => c.kind === "ahj_correction")!;
+    assert.match(cite.label, /^AHJ plan-review correction \(\d{4}-\d{2}-\d{2}\): groundSnowLoadPsf = 36$/);
+    const legacy = arr.find((p) => p.ahj === "City of Legacyrow")!.citations.find((c) => c.kind === "ahj_correction")!;
+    assert.equal(legacy.label, "AHJ plan-review correction (2026-09-01): groundSnowLoadPsf = 30");
+    // The org-scoped side keeps the sentence: the project's audit log.
+    const audit = read<{ details: string }>("SELECT details FROM audit_logs WHERE project_id = ? AND action = 'code_profile.criterion_from_correction'", [ids.pQuote]);
+    assert.match(audit.details, /Synthetic Lane/);
   });
 
   await run("a second click on a closed item is refused (409), not a silent re-apply", async () => {

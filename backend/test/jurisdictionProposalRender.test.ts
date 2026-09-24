@@ -6,7 +6,8 @@
 //      PROFILE ROW the apply writes (exact key — or "applying creates <key>"), the different row a
 //      name match would have picked (shown, never written), old -> new, the listing flag legibly.
 //   2. The KB card (renderKnowledgeProfile): the AHJ's learned design criteria WITH PROVENANCE —
-//      the AHJ correction (id + record) or the cited lookup it came from, seeded vs verified —
+//      "AHJ plan-review correction" + date (never its id, record or sentence: the row is shared
+//      across tenants) or the cited lookup it came from, seeded vs verified —
 //      and "Approved designs used ..." from the aggregate. The AHJ's quoted sentence is NOT on the
 //      shared card (it can carry a homeowner's address); every value is esc()'d.
 //
@@ -82,6 +83,18 @@ check("an existing row is named by its key; the listing flag reads as words, not
   assert.doesNotMatch(t, /\btrue\b/);
 });
 
+check("MUST EXCLUDE: a proposal blocked by a VERIFIED row never reads 'Writes profile row' (nothing is written)", () => {
+  const t = text(load({}).jurisdictionProposalsHtml([proposal({
+    ahj: "City of Portland", profileKey: "or|portland|unknown", targetProfileKey: "or|portland|unknown", currentConfidence: "verified",
+    status: "blocked_verified", statusNote: "Reviews for City of Portland read the human-verified profile \"Portland\" (or|portland|unknown).",
+  })]));
+  assert.doesNotMatch(t, /Writes profile row|applying creates/);
+  assert.match(t, /Nothing is written: profile row or|portland|unknown is human-verified/);
+  assert.match(t, /Profile verified — not changed/);
+  // Control: the same row, proposable, still reads "Writes".
+  assert.match(text(load({}).jurisdictionProposalsHtml([proposal({ profileKey: "tx|plano|unknown", targetProfileKey: "tx|plano|unknown", state: "TX", ahj: "City of Plano" })])), /Writes profile row tx|plano|unknown/);
+});
+
 check("every proposal value is esc()'d (the basis is the AHJ's own sentence)", () => {
   const html = load({}).jurisdictionProposalsHtml([proposal({ ahj: "<img src=x onerror=alert(1)>", basis: "<script>x</script>", nearestOtherRow: { key: "<b>", ahj: "<i>" } })]);
   assert.doesNotMatch(html, /<img|<script|<b>|<i>/);
@@ -95,7 +108,8 @@ const codeProfile = {
   designCriteria: { groundSnowLoadPsf: 36, windSpeedMph: 120 },
   prescriptive: { maxAttachmentSpacingIn: 24, listingEvidenceRequired: true },
   citations: [
-    { label: "AHJ correction", sourceUrl: "", kind: "ahj_correction", field: "designCriteria.groundSnowLoadPsf", quote: "Ground snow load 36 psf at 12 Homeowner Lane", correctionId: "c0ffee12-1234-5678", recordNumber: "187-26-000309-STR", at: "2026-09-20T10:00:00Z" },
+    // A row written before the shared citation was narrowed can still carry these: the card must not show them.
+    { label: "AHJ correction", sourceUrl: "", kind: "ahj_correction", field: "designCriteria.groundSnowLoadPsf", quote: "Ground snow load 36 psf at 12 Homeowner Lane", correctionId: "c0ffee12-1234-5678", recordNumber: "187-26-000309-STR", at: "2026-09-20T10:00:00Z" } as Record<string, unknown>,
     { label: "lookup", sourceUrl: "https://coosbay.example.gov/design", kind: "design_criteria_research", field: "designCriteria.windSpeedMph", at: "2026-09-21T10:00:00Z" },
   ],
   approvedDesignSummary: [{ criterion: "groundSnowPsf", value: 25, count: 2, lastIssuedAt: "2026-08-30" }],
@@ -106,7 +120,8 @@ check("the KB card shows each learned criterion WITH its provenance, seeded vs v
   const t = text(html);
   assert.match(t, /Code profile design criteria/);
   assert.match(t, /Seeded — verify locally/);
-  assert.match(t, /Ground snow load: 36 psf — AHJ correction c0ffee12 on record 187-26-000309-STR, 2026-09-20/);
+  assert.match(t, /Ground snow load: 36 psf — AHJ plan-review correction, 2026-09-20/);
+  assert.doesNotMatch(t, /c0ffee12|187-26-000309-STR/, "a correction id / record number reached the shared KB card");
   assert.match(t, /Design wind speed \(ultimate\): 120 mph — design-criteria lookup, 2026-09-21 \(https:\/\/coosbay\.example\.gov\/design\)/);
   assert.match(t, /Max attachment spacing: 24 in o\.c\. — seeded research \/ import/);
   assert.match(t, /Module \/ racking UL listing evidence required: Yes/);
