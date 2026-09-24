@@ -45,6 +45,7 @@ import { id } from "./ids";
 import { text } from "./json";
 import { nowIso } from "./time";
 import { logger } from "./logger";
+import { batteryStatus, SERVICE_FEEDER_200A_LABEL, SERVICE_FEEDER_CHARGE_KIND } from "./batteryServiceFeeder";
 
 type Row = Record<string, unknown>;
 
@@ -807,6 +808,33 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
       // breakdown with its own wording — see FeeChargeBreakdown.futureContingent.
       if (charge.futureContingent) continue;
       unknowns.push(`${who} also charges "${charge.label}" on this filing, and it is not priced. ${charge.reason}`);
+    }
+    // A BATTERY JOB'S SERVICES/FEEDERS <=200A LINE, WHEN NO SCHEDULE ITEMISED IT.
+    //
+    // Operator rule 2026-09-24 (batteryServiceFeeder.ts): a battery on the electrical
+    // permit bills one "Services or feeders: 200 amps or less" line. The evaluator
+    // carries it on the electrical line whenever a schedule EVALUATES — priced, or
+    // unpriced with its own reason, and then it is named by the loop above. What it
+    // cannot carry is a line for a schedule that did not evaluate at all (no schedule
+    // on file, a basis a human has to read, a dangling hop): the permit amount is
+    // already an estimate or unknown there, and without this sentence nothing on the
+    // sheet would tell the person reading the schedule by hand to add the line.
+    // Every permit project files an electrical permit (submittalTracks.requiredTracks
+    // adds "combo" or "building"+"electrical"), so the permit billing track always
+    // includes the filing this rule is about. An operator-entered actual is the
+    // portal's own total and already contains it.
+    if (
+      line.track === "permit"
+      && line.source !== "actual"
+      && batteryStatus(project.parserSnapshot as Record<string, unknown> | null | undefined) === "yes"
+      && !(line.charges ?? []).some((c) => c.kind === SERVICE_FEEDER_CHARGE_KIND)
+    ) {
+      unknowns.push(
+        `Battery/ESS job: the electrical permit for ${who} also bills one "${SERVICE_FEEDER_200A_LABEL}" line `
+        + `(operator rule 2026-09-24), and no published schedule on file itemises it for this project — `
+        + `the permit amount shown does not include it. Add it from the jurisdiction's electrical fee schedule, `
+        + `or enter the portal's own fee.`,
+      );
     }
     if (line.paymentMethod === "mailed_check") {
       outOfPortalPayments.push(

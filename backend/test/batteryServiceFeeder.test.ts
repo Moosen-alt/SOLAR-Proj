@@ -42,6 +42,8 @@
 //   (e) ahjForms computed(): drop `if (svc.applies && !svc.priced) return "";`.
 //   (f) feeSchedules.ancillaryCharges: drop the battery skip — the stored conditional
 //       charge then ALSO lists, unanswered, and nulls a total that is known.
+//   (g) submissionFees.buildProjectFeeSheet: make the battery-note condition false —
+//       a battery job with no schedule that evaluates loses every mention of the line.
 //
 //   npx tsx backend/test/batteryServiceFeeder.test.ts
 import { REPO } from "./_isolate";
@@ -323,6 +325,31 @@ async function main(): Promise<void> {
   check("GAP: the fee sheet does not claim the permit fee is known, and nothing prices the line at $0",
     gapPermit.known === false && (gapPermit.charges ?? []).every((c) => c.kind !== SERVICE_FEEDER_CHARGE_KIND || c.amountUsd === null),
     JSON.stringify({ known: gapPermit.known, fee: gapPermit.feeUsd, source: gapPermit.source }));
+  check("GAP: the charge's own unknown carries it — no second, generic battery note on top",
+    !gapSheet.unknowns.some((u) => /^Battery\/ESS job: /.test(u)), JSON.stringify(gapSheet.unknowns));
+
+  // No schedule that EVALUATES: nothing on file at all, or a basis a person has to
+  // read. The evaluator carries no line there, so the fee sheet says it itself.
+  const nowhereBattery = withSnapshot(BATTERY, { ahj: "City of Nowhere", city: "Nowhere" });
+  const nowhereSheet = buildProjectFeeSheet(db, nowhereBattery);
+  check("GAP (no schedule on file): the fee sheet still names the battery's services line",
+    nowhereSheet.unknowns.some((u) => /^Battery\/ESS job: .*Services or feeders: 200 amps or less/.test(u)), JSON.stringify(nowhereSheet.unknowns));
+  check("MUST EXCLUDE (no schedule on file): a PV-only job gets no such note",
+    !buildProjectFeeSheet(db, withSnapshot(NO_BATTERY, { ahj: "City of Nowhere" })).unknowns.some((u) => /200 amps or less/.test(u)));
+  // A DISPUTED schedule refuses before any bracket is read, so the evaluator itemises
+  // nothing — the shape of every "a person has to read this" refusal.
+  saveFeeSchedule(db, { state: "OR", ahj: "City of Readme", track: "permit", discipline: "electrical" }, finding({
+    status: "conflicted",
+    brackets: [
+      { minKw: 0, maxKw: 15, feeUsd: 95, label: "Solar 15 kva or less" },
+      { minKw: 0, maxKw: 15, feeUsd: 120, label: "Solar 15 kva or less" },
+    ],
+    sourceUrl: "https://readme.example.gov/fees.pdf", sourceQuote: "Solar 15 kva or less | $95.00",
+  } as Partial<Finding>));
+  const readmeSheet = buildProjectFeeSheet(db, withSnapshot(BATTERY, { ahj: "City of Readme" }));
+  check("GAP (schedule that refuses to evaluate): the battery's services line is still named",
+    readmeSheet.unknowns.some((u) => /^Battery\/ESS job: .*Services or feeders: 200 amps or less/.test(u)), JSON.stringify(readmeSheet.unknowns));
+
   check("GAP: the same schedule for a PV-only job still quotes $150 exactly as before",
     feeForProject(db, withSnapshot(NO_BATTERY, { ahj: "City of Gapville" }), "electrical")!.feeUsd === 150);
 
