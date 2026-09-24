@@ -261,7 +261,11 @@ function extractExposureAndRisk(text: string, source: string, out: StatedDesignC
       // "exposure X" / "Exp. X" needs wind beside it.
       const strong = /\bwind\s+exposure|\bcat(?:egory|\.)?/i.test(m[0]);
       if (!strong && !WIND_NEARBY.test(text.slice(Math.max(0, at - 40), at)) && !WIND_NEARBY.test(text.slice(end, end + 40))) continue;
-      if (EXPOSURE_LIMIT_BEFORE.test(text.slice(Math.max(0, at - 60), at))) continue;
+      // An ASSIGNED value ("EXPOSURE CATEGORY = C", "Wind exposure category: C") is a statement
+      // whatever precedes it ("PER ASCE 7-16 MINIMUM DESIGN LOADS … EXPOSURE CATEGORY = C"); the
+      // checklist's limit clauses never assign ("limited to Exposure Category B", "in Exposure
+      // Category C").
+      if (!/[:=]/.test(m[0]) && EXPOSURE_LIMIT_BEFORE.test(text.slice(Math.max(0, at - 60), at))) continue;
       const after = text.slice(end, end + 30);
       if (EXPOSURE_LIST_AFTER.test(after) || EXPOSURE_RATING_AFTER.test(after)) continue;
       if (candidates.some((c) => c.at === at)) continue;

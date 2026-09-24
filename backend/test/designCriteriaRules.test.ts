@@ -369,6 +369,10 @@ check("MUST-PASS: exposure stated with a design-criteria label, or beside a wind
   assert.deepEqual(exposures("Exp. Cat. C"), ["C"]);
   assert.deepEqual(exposures("A sealed analysis: Exposure B, 95 mph"), ["B"]);
   assert.deepEqual(exposures("Wind Loading: v 110 mph Exposure C"), ["C"]);
+  // A limit word earlier in the line does not swallow an ASSIGNED category.
+  assert.deepEqual(exposures("PER ASCE 7-16 MINIMUM DESIGN LOADS AND ASSOCIATED CRITERIA EXPOSURE CATEGORY = C"), ["C"]);
+  assert.deepEqual(exposures("MINIMUM ROOF LIVE LOAD 20 PSF EXPOSURE CATEGORY = C"), ["C"]);
+  assert.deepEqual(exposures("MAX ATTACHMENT SPAN 48 IN WIND EXPOSURE CATEGORY: D"), ["D"]);
 });
 
 check("MUST-EXCLUDE: a rating, a bare roof word, a span-table head row and a list are not the site's exposure", () => {
