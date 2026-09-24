@@ -1,6 +1,6 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, StructureTypeFact } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
-import { FIRE_PATHWAY_PATTERNS } from "./projectEvidence";
+import { FIRE_PATHWAY_PATTERNS, packageShowsSld } from "./projectEvidence";
 import { pathWordingScope } from "./permitPath";
 import {
   evaluateDesignCriteriaFindings,
@@ -539,7 +539,9 @@ export function evaluateDesignCodeFindings(
     ? [oregonPrescriptive, portlandRafterSpan]
     : [];
 
-  if (!hasAny(all, [/\bSLD\b/i, /single.line/i, /\b3.line\b/i, /three.line/i])) {
+  // The evidence topic's own predicate (projectEvidence.packageShowsSld): this rule's private
+  // list lacked "one-line" and fired a blocker on a package the evidence called SLD-present/high.
+  if (!packageShowsSld(project)) {
     out.push(finding({
       id: "city.plan.sld-missing",
       severity: "blocker",

@@ -223,6 +223,20 @@ export const FIRE_PATHWAY_PATTERNS: RegExp[] = [
 export const FIRE_PATHWAY_DIMENSIONED =
   /(?:fire|pathway)[^.\n]{0,80}\d+\s*(?:"|''|in\b|inch|ft\b|feet|')|\d+\s*(?:"|''|in\b|inch|ft\b|feet|')[^.\n]{0,80}(?:fire|pathway)/i;
 
+// DOES THE PACKAGE SHOW AN SLD? One question, one predicate. codeReviewRules' city.plan.sld-missing
+// kept its own four-word list without "one-line", so a package whose only SLD wording was
+// "one-line diagram" (the Oregon golden fixture) raised the "Electrical one-line not reviewable"
+// BLOCKER while this topic reported the same SLD present at high confidence — the gate
+// contradicting itself about one project. The rule now reads packageShowsSld, i.e. this topic.
+// Word-bounded: an unbounded /one[-\s]?line/ read "WIND ZONE LINE" on a roof plan and "PHONE
+// LINE" in a title block as a one-line diagram — and, now that this predicate also decides the
+// sld-missing blocker, would have cleared it for a package with no diagram at all.
+const SLD_PATTERNS: RegExp[] = [/\bSLD\b/i, /\bsingle[-\s]?line\b/i, /\bone[-\s]?line\b/i, /\b3[-\s]?line\b/i, /\bthree[-\s]?line\b/i, /\belectrical diagram\b/i];
+
+export function packageShowsSld(project: ProjectRecord): boolean {
+  return evidenceForTopic(project, "sld").present;
+}
+
 function evidence(
   project: ProjectRecord,
   topic: EvidenceTopic,
@@ -285,7 +299,7 @@ export function evidenceForTopic(project: ProjectRecord, topic: EvidenceTopic): 
       );
     }
     case "sld": {
-      const patterns = [/\bSLD\b/i, /single[-\s]?line/i, /one[-\s]?line/i, /\b3[-\s]?line\b/i, /three[-\s]?line/i, /electrical diagram/i];
+      const patterns = SLD_PATTERNS;
       const mapped = matchSources(project, patterns);
       const present = mapped.excerpts.length > 0;
       const high = present && /page|sheet|diagram|705|interconnection|rapid shutdown|RSD/i.test(mapped.excerpts.join(" "));

@@ -132,8 +132,11 @@ try {
   assert.ok(span, "prescriptive span screening applies to Idaho with recorded limits");
   assert.equal(span!.severity, "warning", "SEEDED profile softens the blocker to a warning");
   assert.ok(span!.message.includes("Elmore County"), "message names the jurisdiction");
-  const sld = findings.find((f) => f.id === "city.plan.sld-missing");
-  assert.ok(sld && sld.codeReferences.some((c) => c.code.includes("2023 NEC") && /verify locally/i.test(c.adoptionScope)), "citations render the adopted edition with verify-locally phrasing");
+  // An NEC-citing finding that fires on this fixture. (It was city.plan.sld-missing, which fired
+  // only because that rule could not read "one-line diagram" — the fixture HAS an SLD.)
+  const nec = findings.find((f) => f.id === "city.elec.labels-missing");
+  assert.ok(nec && nec.codeReferences.some((c) => c.code.includes("2023 NEC") && /verify locally/i.test(c.adoptionScope)), "citations render the adopted edition with verify-locally phrasing");
+  assert.ok(!findings.some((f) => f.id === "city.plan.sld-missing"), "the fixture's 'one-line diagram' is an SLD — sld-missing must not fire");
   assert.ok(!findings.some((f) => f.codeReferences.some((c) => /oregon/i.test(c.adoptionScope) && !/verify/i.test(c.adoptionScope))), "no bare Oregon-scoped citations at an Idaho county");
   console.log(`  ok   - Idaho seeded context: data-driven screens, softened severity, adopted-edition citations`);
 } catch (err) {
