@@ -95,6 +95,18 @@ export const MEASURED_FINDING_IDS: ReadonlySet<string> = new Set([
   "city.elec.dc-size-mismatch",     // module count x wattage vs declared DC size
   "city.elec.interconnection-ambiguous",    // the design names two sides; a photo cannot pick
   "city.elec.interconnection-unclassified", // seeing an SLD does not classify the method
+  // Design criteria compared for VALUE (designCriteria.ts): two documents disagree, a stated
+  // value is below the jurisdiction's, the jurisdiction's value is not on file, the printed code
+  // editions differ. A sheet image showing a wind speed does not make it the right one — and
+  // one title word ("wind", "snow") would map these to structuralLoads.
+  "city.struct.design-criteria-conflict",
+  "city.struct.design-criteria-below-ahj",
+  "city.struct.design-criteria-unknown",
+  "city.code.basis-mismatch",
+  "city.struct.anchor-spacing-exceeds-ahj", // 48" o.c. > the jurisdiction's 24" is arithmetic
+  // The listings check reads the whole package text (cut sheets included). An image showing a
+  // UL mark on one sheet is not the module AND racking listing it asks for.
+  "city.plan.ul-listings-missing",
 ]);
 
 /** False when the finding reports a measured result rather than missing evidence. */

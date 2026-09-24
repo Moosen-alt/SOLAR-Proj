@@ -14,6 +14,7 @@
 import assert from "node:assert/strict";
 import type { ProjectRecord } from "../../shared/src/types";
 import { buildReviewerReport } from "../src/reviewerEngine";
+import { buildCodeContext } from "../src/codeProfiles";
 import { visionMayRelax, MEASURED_FINDING_IDS } from "../src/reviewerVision";
 
 let failures = 0;
@@ -58,6 +59,19 @@ for (const variant of [
   const p = mk(variant as Record<string, string>);
   if ("interco" in variant) (p as unknown as { interconnectionMethod: string }).interconnectionMethod = String((variant as Record<string, string>).interco);
   for (const f of buildReviewerReport(p).findings) allProducibleIds.add(f.id);
+}
+// The design-criteria / code-basis / listings / anchor-spacing findings need the jurisdiction
+// context (and, for a two-document conflict, per-document text) — the production path passes both.
+{
+  const plan = "GROUND SNOW LOAD = 20 PSF WIND SPEED = 110 MPH GOVERNING CODES: 2023 OESC (NEC 2020) NEW PV ATTACHMENTS AT 4'-0\" O.C.";
+  const letter = "Design wind speed, Vult: 95 mph Ground snow load, Pg : 28 psf";
+  const p = mk({ planSetExtractedText: `${plan}
+${letter}` });
+  const base = { key: "or|city of coos bay|unknown", state: "OR", ahj: "City of Coos Bay", confidence: "verified" as const, adoptedCodes: [{ code: "OESC", edition: "2023" }, { code: "NEC", edition: "2023" }], amendments: [], fireSetbacks: [], citations: [], updatedAt: "" };
+  for (const over of [{ designCriteria: { windSpeedMph: 120, groundSnowLoadPsf: 36 }, prescriptive: { maxAttachmentSpacingIn: 24 } }, { designCriteria: {}, prescriptive: {} }]) {
+    const codeContext = buildCodeContext("OR", "City of Coos Bay", { ...base, ...over });
+    for (const f of buildReviewerReport(p, { codeContext, documentTexts: [{ label: "Plan set", text: plan }, { label: "Structural letter", text: letter }] }).findings) allProducibleIds.add(f.id);
+  }
 }
 for (const id of [...MEASURED_FINDING_IDS]) {
   check(`MUST PASS: ${id} is still a real finding this engine emits`, () => {

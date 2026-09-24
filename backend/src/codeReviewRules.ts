@@ -848,10 +848,10 @@ export function evaluateDesignCodeFindings(
   // "ANCHOR", NOT "ATTACHMENT", IN THE ID AND TITLE — ON PURPOSE. This finding is a MEASURED
   // result (48 > 24), and reviewerVision relaxes any warning/blocker whose id/title maps to a
   // plan topic (topicForFinding: /attachment|racking|mount/ -> rackingAttachment) once a sheet
-  // image merely SHOWS a spacing — the same trap that softened a real 705.12 violation. The
-  // proper home is reviewerVision's MEASURED_FINDING_IDS (not this stage's file); until it is
-  // listed there, the wording keeps the finding out of vision's reach, and
-  // structureListingsSpacing.test.ts fails if a rename makes it relaxable.
+  // image merely SHOWS a spacing — the same trap that softened a real 705.12 violation. It is
+  // listed in reviewerVision's MEASURED_FINDING_IDS (visionMeasuredCriteria.test.ts pins that);
+  // the wording is a second guard, and structureListingsSpacing.test.ts fails if a rename makes
+  // it relaxable.
   const ahjMaxSpacing = ctx && typeof ctx.prescriptive.maxAttachmentSpacingIn === "number" && ctx.prescriptive.maxAttachmentSpacingIn > 0
     ? ctx.prescriptive.maxAttachmentSpacingIn
     : null;
