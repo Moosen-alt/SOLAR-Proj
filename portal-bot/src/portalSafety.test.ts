@@ -179,6 +179,10 @@ const UNKNOWN_TEXT = [
   "Your confirmation number will be emailed to you after you submit",
   "Record Number: 2026-0042 will be assigned when the review completes",
   "Permit Number: BLD-2026-0042 (pending)",
+  // An upper-case placeholder has no digit; a lower-case hex session/trace id is not an issued number.
+  "Permit Number: PENDING",
+  "Application ID: NONE",
+  "Tracking ID: 5f3a9c2e-7d41",
   // A page that still asks for the submit cancels record-number-only evidence.
   "Review your application before submitting. Project ID: PGE-INT-12345",
   "Draft application. Application ID: 12345. Click Submit to file.",
