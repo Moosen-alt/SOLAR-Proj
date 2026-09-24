@@ -1473,15 +1473,57 @@ function provenance(ctx: EffectiveCodeContext): string {
   return `${who} code profile (seeded${at} — researched/imported, not yet human-verified${url})`;
 }
 
-function residentialFamily(ctx: EffectiveCodeContext): string {
-  return ctx.adoptedCodes.some((c) => /^ORSC$/i.test(c.code)) ? "ORSC" : "IRC";
+/**
+ * THE JURISDICTION'S OWN RESIDENTIAL CODE: the adopted code built on the IRC (STATE_CODE_BASE) —
+ * ORSC, CRC, FBC-R, RCNYS … — else the IRC itself. A state code filed under the model token (the
+ * research seeder's "IRC 2023 — 2023 Oregon Residential Specialty Code (ORSC) …", "IRC 2022 — 2022
+ * California Residential Code (CRC) …") is read from its title, as profileCodeEntry reads it.
+ * `token` is the adopted entry's own code, which citationFor looks the edition up by.
+ */
+function residentialFamily(ctx: EffectiveCodeContext): { family: string; token: string } {
+  for (const a of ctx.adoptedCodes) {
+    const entry = profileCodeEntry(a);
+    if (entry.code !== "IRC" && baseModelCode(entry.code) === "IRC") return { family: entry.code, token: a.code };
+  }
+  return { family: "IRC", token: "IRC" };
 }
+
+/**
+ * WHICH IRC SECTION NUMBERS A STATE RESIDENTIAL CODE KEEPS. A state code is an amended IRC, but it
+ * may renumber, so a section is cited under the state code only where the mapping is KNOWN to be the
+ * same; anywhere else the citation stays the IRC's number and says the state code's is unmapped.
+ *  · ORSC: every section (the long-standing Oregon behaviour of these rules).
+ *  · CRC (2022, Title 24 Part 2.5): R301.1.3 Engineered design and R324.4.1 (rooftop PV structural
+ *    requirements) per the published CRC chapter 3 (ICC CARC2022 / UpCodes); R324.6 roof access and
+ *    pathways per the shipped CA reference profile. R324.3.1 is NOT confirmed.
+ *  · FBC-R (Florida Building Code, Residential): R301.1.3 Engineered design (ICC FLRC2020 / FLRC2023
+ *    R301) and R324.3.1 Equipment listings (8th edition). R324.4.1 is NOT confirmed.
+ * Never add a number here that no source states.
+ */
+const RESIDENTIAL_SECTIONS_SAME_AS_IRC: Readonly<Record<string, "all" | ReadonlySet<string>>> = {
+  ORSC: "all",
+  CRC: new Set(["R301.1.3", "R324.4.1", "R324.6"]),
+  "FBC-R": new Set(["R301.1.3", "R324.3.1"]),
+};
 
 const IRC_FALLBACK_URL = "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning";
 
 function ref(ctx: EffectiveCodeContext, section: string, title: string, note: string): CodeReference {
-  const family = residentialFamily(ctx);
-  return ctx.citationFor(family, section, title, {
+  const { family, token } = residentialFamily(ctx);
+  const same = RESIDENTIAL_SECTIONS_SAME_AS_IRC[family];
+  const mapped = family === "IRC" || same === "all" || (same instanceof Set && same.has(section));
+  if (!mapped) {
+    // Not "IRC R324.3.1" as if the IRC were the adopted code, and not an invented state number.
+    return {
+      code: "IRC",
+      section,
+      title,
+      adoptionScope: `${ctx.ahj || ctx.state || "This jurisdiction"} adopts the ${family}, built on the IRC; this is the IRC's section number.`,
+      sourceUrl: IRC_FALLBACK_URL,
+      note: `The ${family} section matching IRC ${section} is not mapped here — confirm the ${family} section before citing it. ${note}`.trim(),
+    };
+  }
+  const cited = ctx.citationFor(token, section, title, {
     code: family,
     section,
     title,
@@ -1489,9 +1531,15 @@ function ref(ctx: EffectiveCodeContext, section: string, title: string, note: st
     sourceUrl: IRC_FALLBACK_URL,
     note,
   });
+  // A state code filed under the model token cites as the state code: "2022 CRC", not "2022 IRC".
+  const tokenNorm = normCodeToken(token);
+  return tokenNorm !== family && new RegExp(`\\b${tokenNorm}$`).test(cited.code)
+    ? { ...cited, code: cited.code.replace(new RegExp(`\\b${tokenNorm}$`), family) }
+    : cited;
 }
 
-/** A residential-code citation (ORSC where adopted, else IRC) at the jurisdiction's edition. */
+/** A residential-code citation (the state's own residential code where adopted and the section is
+ *  known to match, else the IRC) at the jurisdiction's edition. */
 export function residentialCodeRef(ctx: EffectiveCodeContext, section: string, title: string, note: string): CodeReference {
   return ref(ctx, section, title, note);
 }
