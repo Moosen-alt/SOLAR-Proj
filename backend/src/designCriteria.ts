@@ -221,9 +221,12 @@ function extractWind(text: string, source: string, out: StatedDesignCriterion[])
     if (RATING_CONTEXT.test(pre.slice(-30))) continue;
     if (BOUND_AFTER.test(text.slice(end, end + 20))) continue;
     if (!ASSIGNED_BEFORE.test(pre) && SENTENCE_LIMIT.test(sentenceBefore(text, start))) continue;
-    // "120 MPH ultimate wind speed", "110 mph (3-sec gust) basic wind" — the label after the value.
-    const windAfter = post.match(/^\s*(?:\(?\s*3[\s-]*sec(?:ond)?\.?[\s-]*gust\s*\)?\s*)?,?\s*(?:(?:ultimate|ult\.?|basic|design|nominal|asd)\s+)?(?:design\s+)?wind\b/i);
-    const labelled = /wind|\bv\s*[_(]?\s*(?:ult|asd)\b|\bv(?:ult|asd)\b|\bv\s*[:=]\s*$|\bv\s*$/i.test(label)
+    const labelBefore = /wind|\bv\s*[_(]?\s*(?:ult|asd)\b|\bv(?:ult|asd)\b|\bv\s*[:=]\s*$|\bv\s*$/i.test(label);
+    // "120 MPH ultimate wind speed", "110 mph (3-sec gust) basic wind" — the label after the value,
+    // used ONLY when the value has none before it: in "WIND SPEED: 110 MPH NOMINAL DESIGN WIND
+    // SPEED: 85 MPH" the words after 110 are the NEXT field's label, and would make it nominal.
+    const windAfter = labelBefore ? null : post.match(/^\s*(?:\(?\s*3[\s-]*sec(?:ond)?\.?[\s-]*gust\s*\)?\s*)?,?\s*(?:(?:ultimate|ult\.?|basic|design|nominal|asd)\s+)?(?:design\s+)?wind\b/i);
+    const labelled = labelBefore
       || !!windAfter
       // "Exposure B, 95 mph" — a speed stated inside an exposure clause is the wind speed.
       || /\bexp(?:osure)?\.?\s*(?:cat(?:egory)?\.?\s*)?[:=]?\s*[BCD]\s*,?\s*$/i.test(label);
@@ -238,7 +241,10 @@ function extractWind(text: string, source: string, out: StatedDesignCriterion[])
       value,
       // A qualifier AFTER the value only when it is attached to it ("120 mph (Vult)") — the
       // next note's "Vasd qz = …" must not reach back and relabel this speed.
-      qualifier: windQualifier(`${label} ${(post.match(/^\s*\(?\s*(?:v\s*[_(]?\s*(?:ult|asd)\b|vult|vasd|ultimate|nominal|asd)\b/i) ?? [""])[0]} ${windAfter ? windAfter[0] : ""}`),
+      // The value's own label decides first. A qualifier WORD after the value counts only when it
+      // does not open the next field ("175 MPH NOMINAL DESIGN WIND SPEED (Vasd): 136 MPH").
+      qualifier: windQualifier(label) !== "unspecified" ? windQualifier(label)
+        : windQualifier(`${(post.match(/^\s*\(?\s*(?:v\s*[_(]?\s*(?:ult|asd)\b|vult|vasd|(?:ultimate|nominal|asd)\b(?!\s+(?:design\s+|basic\s+)?(?:wind|speed)\b))/i) ?? [""])[0]} ${windAfter ? windAfter[0] : ""}`),
       source,
       derived: false,
       excerpt: excerptAt(text, excerptStart, excerptEnd),
@@ -312,6 +318,10 @@ function extractExposureAndRisk(text: string, source: string, out: StatedDesignC
     // (snow Ce, not Exp. C) and "Exposure Category (ASCE 7-22 Table …)" (a heading, no value).
     /\b(?:wind\s+)?exposure(?:\s+cat(?:egory|\.)?)?\s*[:=-]?\s*([BCD])(?![A-Za-z0-9])/gi,
     /\bexp\.\s*(?:cat(?:egory|\.)?\s*)?[:=]?\s*([BCD])(?![A-Za-z0-9])/gi,
+    // A Washington cover sheet's "WIND EXPOSURE FACTOR: C" — the category under a looser word.
+    // Only with "wind" in front and an assigned letter; the snow "Exposure Factor, C e : 0.9"
+    // is neither.
+    /\bwind\s+exposure\s+(?:factor|class|type)\s*[:=]\s*([BCD])(?![A-Za-z0-9])/gi,
   ];
   for (const re of exposurePatterns) {
     let m: RegExpExecArray | null;
@@ -377,8 +387,9 @@ function extractExposureAndRisk(text: string, source: string, out: StatedDesignC
 function extractSnow(text: string, source: string, out: StatedDesignCriterion[]): void {
   const push = (criterion: StatedDesignCriterionKind, qualifier: StatedDesignCriterionQualifier, raw: string, m: RegExpExecArray): void => {
     const value = toNumber(raw);
-    // 0 psf is "not applicable" ("Minimum Roof Snow Load, p m [psf]: 0"), never a design value.
-    if (value == null || value <= 0 || value > 400) return;
+    // A 0 psf ROOF snow is "not applicable" ("Minimum Roof Snow Load, p m [psf]: 0"). A 0 psf
+    // GROUND snow is a real site value (a desert jurisdiction's "GROUND SNOW LOAD: 0 PSF").
+    if (value == null || value < 0 || value > 400 || (value === 0 && criterion === "roofSnowPsf")) return;
     const end = m.index + m[0].length;
     // A bound, not a value: "Is the ground snow load 70 psf or less?"; and an UNASSIGNED value
     // under a limit earlier in its sentence ("… not exceeding a ground snow load of 50 psf").
@@ -419,8 +430,16 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
     push("groundSnowPsf", asd(m[1]) ? "ground_asd" : "ground", m[3], m);
   }
   // Value first: "ground snow 28 psf" is caught above; "28 psf ground snow" here.
+  // A value-first read never takes a value its OWN label already assigned: in "ROOF SNOW LOAD:
+  // 20 PSF GROUND SNOW LOAD = 25 PSF" the 20 belongs to roof snow, and in "GROUND SNOW LOAD (Pg):
+  // 110 PSF ROOF SNOW LOAD: 77 PSF" the 110 is not a roof snow load.
+  // (A heading's colon — "Plan-set loads: 20 psf roof snow" — assigns nothing; only a snow label does.)
+  const assignedValue = (at: number): boolean => /\bsnow\b[^:=.;]{0,24}[:=]\s*$/i.test(text.slice(Math.max(0, at - 40), at));
   const groundAfter = /(\d+(?:\.\d+)?)\s*psf\s*(\(\s*asd\s*\)\s*)?ground\s+snow/gi;
-  while ((m = groundAfter.exec(text))) push("groundSnowPsf", asd(m[2]) ? "ground_asd" : "ground", m[1], m);
+  while ((m = groundAfter.exec(text))) {
+    if (assignedValue(m.index)) continue;
+    push("groundSnowPsf", asd(m[2]) ? "ground_asd" : "ground", m[1], m);
+  }
 
   // ROOF SNOW — a different quantity (Pf/Ps = f(Pg, Ce, Ct, Is, Cs)); never compared to Pg.
   const roofQual = (word: string | undefined): StatedDesignCriterionQualifier =>
@@ -433,7 +452,10 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
     push("roofSnowPsf", roofQual(m[1]), m[3], m);
   }
   const roofAfter = /(\d+(?:\.\d+)?)\s*psf\s*(flat|sloped|total|design)?\s*roof\s+snow/gi;
-  while ((m = roofAfter.exec(text))) push("roofSnowPsf", roofQual(m[2]), m[1], m);
+  while ((m = roofAfter.exec(text))) {
+    if (assignedValue(m.index)) continue;
+    push("roofSnowPsf", roofQual(m[2]), m[1], m);
+  }
   const pf = /\bp\s?f\s*=\s*(\d+(?:\.\d+)?)\s*psf/gi;
   while ((m = pf.exec(text))) push("roofSnowPsf", "flat", m[1], m);
   // The minimum roof snow load symbol: "p m = 20 psf".
@@ -474,6 +496,9 @@ export const STATE_CODE_BASE: Readonly<Record<string, string>> = {
   ORSC: "IRC", OSSC: "IBC", OESC: "NEC", OFC: "IFC",
   CRC: "IRC", CBC: "IBC", CEC: "NEC", CFC: "IFC",
   "FBC-R": "IRC", "FBC-B": "IBC",
+  // New York's codes do not end in C ("2020 RCNYS"), so without an entry here an abbreviated
+  // list is not read at all. (Washington's "WSRC"/"WSBC" end in C and read without one.)
+  RCNYS: "IRC", BCNYS: "IBC", FCNYS: "IFC",
 };
 
 const US_STATES = new Set("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split(" "));
@@ -486,8 +511,11 @@ export function normCodeToken(code: string): string {
   if (/^FBC-?R(?:ESIDENTIAL)?$/.test(c)) return "FBC-R";
   if (/^FBC-?B(?:UILDING)?$/.test(c)) return "FBC-B";
   if (c === "NFPA70") return "NEC";
-  const suffixed = c.match(/^([A-Z]{2,6})-([A-Z]{2})$/);
-  if (suffixed && US_STATES.has(suffixed[2])) return suffixed[1];
+  const suffixed = c.match(/^([A-Z]{2,6})-([A-Z]{2,3})$/);
+  // A two-letter tag is a state ("CEC-CA"); a three-letter one a city ("CBC-CHI", "CEC-CHI":
+  // Chicago's own building and electrical codes, as a profile records them and a plan prints
+  // "2019 CHICAGO BUILDING CODE"). "FBC-R" (one letter) is a volume, never stripped.
+  if (suffixed && (suffixed[2].length === 3 || US_STATES.has(suffixed[2]))) return suffixed[1];
   return c;
 }
 
@@ -539,6 +567,9 @@ function parenBase(paren: string): { baseCode: string; baseEdition: string } | n
 function namedCode(name: string, paren: string, tail: string): string {
   const parenAbbr = /^[A-Z]{2,6}(?:-[A-Z]{1,11})?$/.test(paren) && isCodeToken(paren) ? normCodeToken(paren) : "";
   if (parenAbbr) return parenAbbr;
+  // "2020 NEC CODE" is the NEC, not a code named "NC".
+  const abbrName = name.match(/^([A-Z]{2,6})\s+CODE$/);
+  if (abbrName && isCodeToken(abbrName[1])) return normCodeToken(abbrName[1]);
   const model = MODEL_CODE_NAMES.find(([re]) => re.test(name));
   if (model) return model[1];
   const code = acronym(name);
@@ -555,7 +586,9 @@ function namedCode(name: string, paren: string, tail: string): string {
 // (OSSC)", "2021 International Residential Code". Case-sensitive on the capitals: every word
 // of a code's printed name is capitalised, and "in 2021 the electrical code was…" is prose.
 // A year that ends a DATE is not an edition: a portal page's "06/03/2026 Result Code Approved".
-const NAMED_CODE = /(?<![/.\-\d])\b((?:19|20)\d{2})\s+((?:[A-Z][A-Za-z.'-]*\s+){0,6}?(?:CODE|Code))\b(?:\s*\(\s*([^)]{1,40}?)\s*\))?/g;
+// A state named AFTER "CODE" is part of the name: "2020 RESIDENTIAL CODE OF NEW YORK STATE
+// (2020 RCNYS)" is the RCNYS, not a code named "RC"; so is "… CODE OF THE STATE OF X".
+const NAMED_CODE = /(?<![/.\-\d])\b((?:19|20)\d{2})\s+((?:[A-Z][A-Za-z.'-]*\s+){0,6}?(?:CODE|Code))\b(\s+(?:of|OF)\s+(?:(?:the|THE)\s+)?(?:(?:State|STATE|Commonwealth|COMMONWEALTH)\s+(?:of|OF)\s+(?:[A-Z][A-Za-z]+\s?){1,2}|(?:[A-Z][A-Za-z]+\s+){1,2}(?:State|STATE)\b))?(?:\s*\(\s*([^)]{1,40}?)\s*\))?/g;
 // Name first, then the edition: "Oregon Structural Specialty Code, 2025 Edition (2024 IBC)",
 // "International Residential Code, 2021 Edition".
 // An ordinal edition with the year in parentheses: "FLORIDA BUILDING CODE, RESIDENTIAL 8TH
@@ -568,8 +601,11 @@ function namedItems(part: string): BasisItem[] {
   const push = (at: number, end: number, rawName: string, edition: string, rawParen: string | undefined, volume?: string): void => {
     const name = rawName.replace(/\s+/g, " ").trim().toUpperCase();
     const paren = (rawParen || "").trim();
-    const base = parenBase(paren);
-    const code = namedCode(name, base ? "" : paren, volume ?? part.slice(end, end + 20));
+    const parsedBase = parenBase(paren);
+    const code = namedCode(name, parsedBase ? "" : paren, volume ?? part.slice(end, end + 20));
+    // A parenthetical naming the SAME code is its abbreviation, not its base:
+    // "RESIDENTIAL CODE OF NEW YORK STATE (2020 RCNYS)".
+    const base = parsedBase && parsedBase.baseCode !== code ? parsedBase : null;
     // "NEC: 2020 PER CODE: NEC 690.54" (a placard citation) is not a code named "PC": a
     // printed code name never opens with a preposition, and needs two initials besides CODE.
     if (NAME_STOPWORDS.has(name.split(" ")[0]) || code.length < 2) return;
@@ -578,7 +614,7 @@ function namedItems(part: string): BasisItem[] {
   };
   let m: RegExpExecArray | null;
   const yearFirst = new RegExp(NAMED_CODE.source, "g");
-  while ((m = yearFirst.exec(part))) push(m.index, m.index + m[0].length, m[2], m[1], m[3]);
+  while ((m = yearFirst.exec(part))) push(m.index, m.index + m[0].length, `${m[2]}${m[3] ?? ""}`, m[1], m[4]);
   const ordinal = new RegExp(NAMED_CODE_ORDINAL.source, "g");
   while ((m = ordinal.exec(part))) push(m.index, m.index + m[0].length, m[1], m[3], undefined, m[2]);
   const nameFirst = new RegExp(NAMED_CODE_EDITION.source, "g");
