@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   const { convertLiteralsToBoundFields, deadFieldBindings, resolveRecipeFieldValues } = await import("../src/portalRecipes");
   const { planFeeBracketBindings } = await import("../src/bindFeeBrackets");
   const { createProject, getProjectDetail } = await import("../src/repository");
-  const { buildProjectFeeSheet, recordActualPermitFee } = await import("../src/submissionFees");
+  const { buildProjectFeeSheet, recordActualPermitFee, registerFeeScheduleLookup } = await import("../src/submissionFees");
   const { resolveSource, fillLoadedForm } = await import("../src/ahjForms");
   const { curatedFormMap } = await import("../src/curatedAhjForms");
   const { extractLabels } = await import("../src/formTextLayer");
@@ -400,6 +400,8 @@ async function main(): Promise<void> {
   const readmeSheet = buildProjectFeeSheet(db, withSnapshot(BATTERY, { ahj: "City of Readme" }));
   check("GAP (schedule that refuses to evaluate): the battery's services line is still named",
     readmeSheet.unknowns.some((u) => /^Battery\/ESS job: .*Services or feeders: 200 amps or less/.test(u)), JSON.stringify(readmeSheet.unknowns));
+  check("F MUST EXCLUDE: a schedule that REFUSED to evaluate never claims it was read",
+    !readmeSheet.unknowns.some((u) => /schedule WAS read/.test(u)), JSON.stringify(readmeSheet.unknowns));
 
   // SKEPTIC SHOULD-FIX D: an operator-entered ACTUAL is the portal's own total and
   // already contains the services line. The sheet must not then say "the total
@@ -448,6 +450,19 @@ async function main(): Promise<void> {
     JSON.stringify(fireSheet.unknowns));
   check("D: ... while that same sheet's battery services line is not held open under the actual",
     !fireSheet.unknowns.some((u) => SVC_GAP_RE.test(u)), JSON.stringify(fireSheet.unknowns));
+
+  // F MUST EXCLUDE: a valuation-LADDER schedule walked on a guessed valuation keeps
+  // its own NO JOB VALUATION sentence (the lookup seam feeValuationLadder uses).
+  registerFeeScheduleLookup((() => ({
+    feeUsd: 592.08, bracketLabel: "$25,001 - $50,000", bracketQuote: "$25,001 - $50,000",
+    sourceUrl: "https://ladder.example.gov/fees", sourceQuote: "Building Permit Fee Schedule",
+    confidence: "seeded", corroborated: false, matchedName: "City of Ladder", reason: "", valuationEstimated: true,
+  })) as never);
+  const ladderSheet = buildProjectFeeSheet(db, ownProject("City of Ladder", NO_BATTERY));
+  registerFeeScheduleLookup(null);
+  const ladderUnknown = ladderSheet.unknowns.find((u) => /^Permit fee for City of Ladder/.test(u)) ?? "";
+  check("F MUST EXCLUDE: a valuation-ladder estimate keeps the NO JOB VALUATION sentence",
+    /NO JOB VALUATION/.test(ladderUnknown) && !/schedule WAS read/.test(ladderUnknown), ladderUnknown);
 
   check("GAP: the same schedule for a PV-only job still quotes $150 exactly as before",
     feeForProject(db, withSnapshot(NO_BATTERY, { ahj: "City of Gapville" }), "electrical")!.feeUsd === 150);
