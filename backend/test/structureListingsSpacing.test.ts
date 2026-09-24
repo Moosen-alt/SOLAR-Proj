@@ -308,6 +308,26 @@ check("FLOOD: the condition reaches the message on EVERY branch — correction_f
   }
   assert.deepEqual(seen, ["correction_flagged", "waiting", "needs_human_review"], "fixture premise: three different branches");
 });
+// A CONDITION LONGER THAN THE WINDOW STILL SHOWS. The name-ending lookahead (Severity / Total
+// Conditions / View Condition / | / end) must fall inside 140 characters; a written-out condition
+// with no marker in reach matched nothing, so conditionPattern saw a condition and the reading
+// showed none — an unknown reading as "no condition". The first 140 characters show, as before.
+const LONG_CONDITION = "Applicant shall record a floodplain elevation certificate with the county prior to requesting a final inspection; the building official will not schedule a final until";
+check("FLOOD MUST-PASS: a condition that runs past 140 characters shows its first 140, marker far or absent, on every branch", () => {
+  const far = `Record Status: Issued Condition: ${LONG_CONDITION} the recorded certificate is on file with the department Severity: Notice`;
+  const none = `Record Status: In Review Condition: ${LONG_CONDITION} it is on file. Inspections Contacts Fees Payments`;
+  for (const [label, page] of [["severity far", far], ["no marker", none]] as const) {
+    const got = extractPortalCondition(page);
+    assert.match(got, /^Condition: Applicant shall record a floodplain elevation certificate/, `${label}: ${JSON.stringify(got)}`);
+    assert.ok(got.length <= "Condition: ".length + 140, `${label}: ${got.length} chars`);
+    assert.match(classifyPermitStatusText(page).message, /The record also carries a condition: "Condition: Applicant shall record/, `${label}: message`);
+  }
+});
+check("FLOOD MUST-EXCLUDE: the long-condition fallback does not undo the cut — a glued short name still ends at its Severity:", () => {
+  assert.equal(extractPortalCondition(`Condition: Floodplain${"Severity: Notice".padEnd(200, " x")}`), "Condition: Floodplain");
+  assert.equal(extractPortalCondition(`Conditions Condition: Sewer RecoverySeverity: NoticeTotal Conditions: 1 (Notice: 1)View Condition ${"filler ".repeat(40)}`), "Condition: Sewer Recovery");
+  assert.equal(extractPortalCondition(`Condition: ${"x".repeat(150)} | next field`).length, "Condition: ".length + 140);
+});
 check("FLOOD MUST-EXCLUDE: a record with no condition gets no condition sentence, and the outcome is unchanged by one", () => {
   const plain = "Record 000-26-000000-STR: Residential Solar Record Status: In Review Expiration Date: 03/01/2027 Record Details";
   assert.doesNotMatch(classifyPermitStatusText(plain).message, /condition/i);

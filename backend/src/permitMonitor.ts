@@ -86,8 +86,13 @@ export function extractPortalCondition(text: string): string {
   // severity straight after the name — "Condition: FloodplainSeverity: NoticeTotal Conditions: 1"
   // (and on production "Condition: Sewer RecoverySeverity: Notice...") — so reading to the next
   // "|" produced "FloodplainSeverity: NoticeTotal Conditions: 1 (Notice: 1)View Condition".
-  const header = /condition:\s*(.{1,140}?)\s*(?=severity\s*:|total\s+conditions|view\s+condition|\||$)/i.exec(blob);
-  return header && header[1].trim() ? `Condition: ${header[1].trim()}`.slice(0, 180) : "";
+  // THE WINDOW FIRST, THEN THE CUT. The name is read up to 140 characters (or the next "|"), then
+  // cut at the next field if one falls inside the window. A lookahead that had to find its marker
+  // within 140 characters matched nothing on a written-out condition with no marker in reach, so
+  // the page carried a condition and the reading showed none.
+  const header = /condition:\s*([^|]{1,140})/i.exec(blob);
+  const name = header ? header[1].split(/severity\s*:|total\s+conditions|view\s+condition/i)[0].trim() : "";
+  return name ? `Condition: ${name}`.slice(0, 180) : "";
 }
 
 /** The record-level condition on this page, or "" — read from the WHOLE page (a condition lives
