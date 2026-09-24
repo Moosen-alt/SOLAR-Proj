@@ -1251,6 +1251,9 @@ export interface StatedCodeBasisEntry {
 }
 
 export interface StatedDesignCriteria {
+  /** True when some of the package's own text (a document, or the sheet text) was there to
+   *  read. False means "could not be read from the package" — never "not stated". */
+  documentTextRead: boolean;
   criteria: StatedDesignCriterion[];
   codeBasis: StatedCodeBasisEntry[];
 }

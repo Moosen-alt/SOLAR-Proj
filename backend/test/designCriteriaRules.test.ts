@@ -147,8 +147,11 @@ const B_CALC_SUMMARY = "Plan-set loads: 20 psf roof snow, 20 psf roof live (0 un
 const B_LETTER = "Loading Summary Exposure and Occupancy Categories B II Wind Loading: v 95 mph qz 13.74 psf pg 28.00 psf Ground Snow Load pg "
   + "Exposure Category (ASCE 7-22 Table 26.7.3, Page 274) Fully Exposed Exposure category Ce = 0.9 Exposure Factor, Ce (ASCE 7-22 Table 7.3-1, Page 61) "
   + "q z = 13.74 psf Vasd q z = 8.34 psf Basic wind pressure V= 95 mph p f = 17.64 psf p m = 20 psf p f = 20.00 psf Total Snow Load p s = 20.00 psf";
-const caseB = project({ snow: "28", windSpeed: "95", wind: "B", riskCategory: "II", structuralCalcText: B_CALC_SUMMARY, planSetExtractedText: B_PLAN });
-const B_DOCS: DesignTextSource[] = [{ label: "Engineer's letter", text: B_LETTER }];
+// Production shape (repository.buildReviewerReportFor): one source per stored document, and the
+// snapshot's planSetExtractedText is those same documents merged into one blob.
+const caseB = project({ snow: "28", windSpeed: "95", wind: "B", riskCategory: "II", structuralCalcText: B_CALC_SUMMARY, planSetExtractedText: `${B_PLAN}
+${B_LETTER}` });
+const B_DOCS: DesignTextSource[] = [{ label: "Plan set", text: B_PLAN }, { label: "Engineer's letter", text: B_LETTER }];
 
 check("B: CONFLICT fires as a BLOCKER — plan 110/C/Pg 20 vs calculation 95/B/Pg 28, 'supersedes' does not clear it", () => {
   const f = get(run(caseB, ctxFor({}), B_DOCS), CONFLICT);
@@ -182,7 +185,7 @@ check("B: vs a profile requiring 120 mph / Exposure D -> below-ahj lists BOTH 11
 });
 
 check("B: the letter's speed is ultimate/unqualified, not nominal (the Vasd two numbers back does not relabel it)", () => {
-  const s = extractStatedDesignCriteria(project({}), B_DOCS);
+  const s = extractStatedDesignCriteria(project({}), [{ label: "Engineer's letter", text: B_LETTER }]);
   const w = s.criteria.filter((c) => c.criterion === "windSpeedMph");
   assert.ok(w.length > 0 && w.every((c) => c.value === 95 && c.qualifier !== "nominal"), JSON.stringify(w));
 });
@@ -191,6 +194,42 @@ check("B: a conflict inside ONE source only (no second document) is a WARNING, n
   const one = project({ structuralCalcText: B_CALC_SUMMARY });
   const f = get(run(one), CONFLICT);
   assert.equal(f?.severity, "warning");
+});
+
+check("C1: ONE document internally inconsistent + a parser narrative repeating one value -> WARNING, not a blocker", () => {
+  // The narrative fields are the parser's summaries (llm.ts), a reading like the scalar fields.
+  const p = project({ planSetExtractedText: "WIND SPEED = 110 MPH ... CALCULATION: Vult = 95 mph", projectDescriptionText: "Roof mount, wind 110 mph" });
+  const f = get(run(p), CONFLICT);
+  assert.equal(f?.severity, "warning", f?.message);
+  assert.match(f!.message, /No two documents disagree/);
+});
+
+check("C1: the parser's structural summary describing the conflict does not make it a second document", () => {
+  const p = project({ planSetExtractedText: B_PLAN, structuralCalcText: B_CALC_SUMMARY });
+  assert.equal(get(run(p), CONFLICT)?.severity, "warning");
+});
+
+check("C3: identical text copied into two snapshot keys is ONE source -> WARNING", () => {
+  const text = "WIND SPEED = 110 MPH GROUND SNOW LOAD = 20 PSF ... LETTER: V = 95 mph pg 28.00 psf";
+  const p = project({ planSetExtractedText: text, splitPagesText: text });
+  const f = get(run(p), CONFLICT);
+  assert.equal(f?.severity, "warning", f?.message);
+});
+
+check("C3: the merged blob beside the documents it was merged from is not a third document", () => {
+  // Plan set internally inconsistent; the merged snapshot text contains it (and a labels sheet).
+  const plan = "WIND SPEED = 110 MPH ... Vult = 95 mph";
+  const labels = "PV SYSTEM DISCONNECT LABEL";
+  const p = project({ planSetExtractedText: `${plan}
+${labels}` });
+  const f = get(run(p, ctxFor({}), [{ label: "Plan set", text: plan }, { label: "Labels sheet", text: labels }]), CONFLICT);
+  assert.equal(f?.severity, "warning", f?.message);
+});
+
+check("MUST-EXCLUDE: a sheet whose text is wholly inside another document is the same pages, not a second document", () => {
+  const plan = "S-1 WIND SPEED = 110 MPH ... CALC PAGE Vult = 95 mph";
+  const f = get(run(project({}), ctxFor({}), [{ label: "Plan set", text: plan }, { label: "Structural sheets", text: "S-1 WIND SPEED = 110 MPH" }]), CONFLICT);
+  assert.equal(f?.severity, "warning", f?.message);
 });
 
 check("B: a conflict that needs the parser's reading to exist is a WARNING", () => {

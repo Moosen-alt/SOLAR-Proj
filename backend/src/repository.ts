@@ -71,7 +71,8 @@ import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFie
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 // detectPlatform moved with the target INSERT into submittalTracks.ts's ensureCheckTarget.
 import { publicPermitStatusCheck } from "./publicPermitStatus";
-import { planSetTextForProject, projectDocsByType, DOCS_DIR } from "./projectDocuments";
+import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
+import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
 import { documentInventory, owedMissingDocuments, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
@@ -157,7 +158,35 @@ export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): Revie
   // The reviewer's plan-set requirement is about whether the package EXISTS; give it the
   // attached document types so it cannot block a project that has them.
   const uploadedDocTypes = Object.keys(projectDocsByType(db, project.id));
-  return buildReviewerReport(project, { codeContext, uploadedDocTypes });
+  return buildReviewerReport(project, { codeContext, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id) });
+}
+
+// What each stored DOCUMENT says, one source per document — so a design-criteria conflict is
+// "plan set vs structural letter", two documents, and never the merged blob against itself.
+// Newest per doc_type (the same rule as planSetTextForProject). Pages the splitter cut OUT of
+// the plan set (source 'split') are the plan set, not a second document agreeing or
+// disagreeing with it. Labelled by doc_type, never by filename (filenames carry names).
+const DESIGN_DOC_LABELS: Record<string, string> = {
+  plan_set: "Plan set", stamped_plans: "Stamped plan set", structural_letter: "Structural letter",
+  engineering_letter: "Engineering letter", structural: "Structural sheets", electrical: "Electrical sheets",
+  sld: "Single-line diagram", site_plan: "Site plan", labels: "Labels sheet",
+  module_spec: "Module spec sheet", inverter_spec: "Inverter spec sheet",
+};
+function designDocumentTexts(db: AppDb, projectId: string): DesignTextSource[] {
+  const out: DesignTextSource[] = [];
+  const seen = new Set<string>();
+  for (const row of db.query<Row>(
+    "SELECT doc_type, source, extracted_text FROM project_documents WHERE project_id = ? ORDER BY uploaded_at DESC",
+    [projectId],
+  )) {
+    const docType = text(row.doc_type);
+    if (!PLAN_TEXT_DOC_TYPES.has(docType) || seen.has(docType)) continue;
+    seen.add(docType);
+    const body = text(row.extracted_text);
+    if (text(row.source) === "split" || !body.trim() || body === "[no text layer]") continue;
+    out.push({ label: DESIGN_DOC_LABELS[docType] ?? docType, text: body });
+  }
+  return out;
 }
 
 

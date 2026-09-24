@@ -53,12 +53,21 @@ export interface DesignTextSource {
 /** The parser's scalar fields — a READING of the documents, not a document. */
 export const PARSED_FIELDS_SOURCE = "Parsed project fields";
 
-// Text the package itself carries. Parser commentary (reviewFlags) and utility/packet notes
-// are deliberately absent: they talk ABOUT the design ("plan says 110 but letter says 95")
-// and would manufacture a conflict out of the parser's own observation.
-const TEXT_SOURCES: Array<[string, string]> = [
+// MACHINE EXTRACTS OF THE SHEETS THEMSELVES. planSetExtractedText is the uploaded documents'
+// text merged into one blob (projectDocuments.planSetTextForProject); splitPagesText is the
+// splitter's sheet map. Both are the package's own words.
+const SHEET_TEXT_SOURCES: Array<[string, string]> = [
   ["planSetExtractedText", "Uploaded plan-set document text"],
   ["splitPagesText", "Split page mapping"],
+];
+// THE PARSER'S NARRATIVE SUMMARIES (llm.ts "NARRATIVE EVIDENCE BLOBS" — "a short factual
+// summary; cite sheet numbers"). They are a READING of the documents, exactly like the scalar
+// fields, never a document: on a real package the structural summary described the conflict
+// itself ("Plan-set loads … 110 mph … supersedes for loads: Exposure B, 95 mph"), and counting
+// it as a second document turned one internally inconsistent package into a two-document
+// blocker. They are still read — they are marked derived. Parser commentary (reviewFlags) and
+// utility/packet notes stay absent altogether: they talk ABOUT the design.
+const NARRATIVE_SOURCES: Array<[string, string]> = [
   ["structuralCalcText", "Structural calculation text"],
   ["electricalCalcText", "Electrical calculation text"],
   ["sitePlanNotesText", "Site plan notes"],
@@ -67,6 +76,9 @@ const TEXT_SOURCES: Array<[string, string]> = [
   ["labelsText", "Labels text"],
   ["stampRecommendation", "Stamp recommendation"],
 ];
+
+/** A stored document whose PDF had no text layer (projectDocuments marker). */
+const NO_TEXT_LAYER = "[no text layer]";
 
 function snapshotText(project: ProjectRecord, key: string): string {
   const value = project.parserSnapshot?.[key];
@@ -77,10 +89,57 @@ function flat(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+/** One text the extractor reads, and whether it is a DOCUMENT or a reading of one. */
+interface ReadSource {
+  label: string;
+  /** Flattened. */
+  text: string;
+  /** True for a reading (parser fields, narrative summaries, a merge of documents that are
+   *  also supplied one by one) — never one side of a two-document conflict. */
+  derived: boolean;
+  /** The package's own sheets (a document, or the sheet text) — not a parser summary. */
+  sheet: boolean;
+}
+
+/**
+ * Every text the package offers, ONE SOURCE PER DOCUMENT:
+ *  · per-document texts from the caller (one per stored plan/letter/calc document) first;
+ *  · the snapshot's sheet text — but when documents are supplied it is a second copy of
+ *    them, so the merged blob is skipped when it contains them all and is otherwise a
+ *    (derived) reading;
+ *  · the parser's narrative summaries, derived;
+ *  · identical text under two keys is ONE source (the first label wins).
+ */
+function readSources(project: ProjectRecord, extraTexts: DesignTextSource[]): ReadSource[] {
+  const docs = extraTexts
+    .map((s) => ({ label: s.label, text: flat(String(s.text || "")) }))
+    .filter((s) => s.text && s.text !== NO_TEXT_LAYER);
+  const out: ReadSource[] = docs.map((d) => ({ ...d, derived: false, sheet: true }));
+  for (const [key, label] of SHEET_TEXT_SOURCES) {
+    const text = flat(snapshotText(project, key));
+    if (!text || text === NO_TEXT_LAYER) continue;
+    if (docs.length && key === "planSetExtractedText" && docs.every((d) => text.includes(d.text))) continue;
+    out.push({ label, text, derived: docs.length > 0, sheet: true });
+  }
+  for (const [key, label] of NARRATIVE_SOURCES) {
+    const text = flat(snapshotText(project, key));
+    if (text) out.push({ label, text, derived: true, sheet: false });
+  }
+  const seen = new Set<string>();
+  return out.filter((s) => {
+    if (seen.has(s.text)) return false;
+    seen.add(s.text);
+    return true;
+  });
+}
+
+// WHERE A LABEL STARTS. The excerpt runs from the label keyword to the end of the value —
+// never the characters around them: on most sheets the design-criteria note sits beside the
+// title block, and a window of "context" carried title-block names into the evidence
+// (measured: "RISK CATEGORY = II DECK Rev <owner>"). A value-first match ("28 psf ground
+// snow") already contains its label.
 function excerptAt(text: string, start: number, end: number): string {
-  // Tight on purpose: a design-criteria note sits beside the title block on most sheets,
-  // and a wide window would carry the homeowner's name and address into the report.
-  return text.slice(Math.max(0, start - 24), Math.min(text.length, end + 12)).trim();
+  return text.slice(Math.max(0, start), Math.min(text.length, end)).trim();
 }
 
 function toNumber(raw: string): number | null {
@@ -370,23 +429,28 @@ function dedupe(items: StatedDesignCriterion[]): StatedDesignCriterion[] {
  * of "somewhere in the uploaded text".
  */
 export function extractStatedDesignCriteria(project: ProjectRecord, extraTexts: DesignTextSource[] = []): StatedDesignCriteria {
+  return extractFromSources(project, readSources(project, extraTexts));
+}
+
+function extractFromSources(project: ProjectRecord, sources: ReadSource[]): StatedDesignCriteria {
   const criteria: StatedDesignCriterion[] = [];
   const codeBasis: StatedCodeBasisEntry[] = [];
   extractParsedFields(project, criteria);
-  const sources: DesignTextSource[] = [
-    ...TEXT_SOURCES.map(([key, label]) => ({ label, text: snapshotText(project, key) })),
-    ...extraTexts,
-  ];
   for (const source of sources) {
-    const text = flat(source.text || "");
-    if (!text) continue;
-    extractWind(text, source.label, criteria);
-    extractExposureAndRisk(text, source.label, criteria);
-    extractSnow(text, source.label, criteria);
-    extractCodeBasis(text, source.label, codeBasis);
+    const found: StatedDesignCriterion[] = [];
+    extractWind(source.text, source.label, found);
+    extractExposureAndRisk(source.text, source.label, found);
+    extractSnow(source.text, source.label, found);
+    criteria.push(...found.map((c) => ({ ...c, derived: source.derived })));
+    // The code basis is read from the package's own sheets only; a narrative summary
+    // paraphrasing "2021 IRC" is not the plan's GOVERNING CODES block.
+    if (source.sheet) {
+      extractCodeBasis(source.text, source.label, codeBasis);
+    }
   }
   const seenBasis = new Set<string>();
   return {
+    documentTextRead: sources.some((s) => s.sheet),
     criteria: dedupe(criteria),
     codeBasis: codeBasis.filter((b) => {
       const key = `${b.source}|${b.code}|${b.edition}|${b.baseCode ?? ""}|${b.baseEdition ?? ""}`;
@@ -491,10 +555,12 @@ export function extractAttachmentSpacings(text: string): StatedAttachmentSpacing
  * finding they describe.
  */
 export function packageTextSources(project: ProjectRecord, extraTexts: DesignTextSource[] = []): DesignTextSource[] {
-  return [
-    ...TEXT_SOURCES.filter(([key]) => key !== "stampRecommendation").map(([key, label]) => ({ label, text: snapshotText(project, key) })),
-    ...extraTexts,
-  ].filter((s) => String(s.text || "").trim());
+  // The same one-source-per-document reading as the criteria extractor (readSources): the
+  // merged blob is not read a second time beside the documents it was merged from.
+  const stamp = NARRATIVE_SOURCES.find(([key]) => key === "stampRecommendation")?.[1];
+  return readSources(project, extraTexts)
+    .filter((s) => s.label !== stamp)
+    .map(({ label, text }) => ({ label, text }));
 }
 
 /**
@@ -729,8 +795,19 @@ export function evaluateDesignCriteriaFindings(
   ctx: EffectiveCodeContext,
   opts: { roofMounted: boolean; extraTexts?: DesignTextSource[] },
 ): ReviewerFinding[] {
-  const stated = extractStatedDesignCriteria(project, opts.extraTexts ?? []);
+  const sources = readSources(project, opts.extraTexts ?? []);
+  const stated = extractFromSources(project, sources);
   const out: ReviewerFinding[] = [];
+  // ONE DOCUMENT, NOT TWO: a text wholly contained in another (a sheet re-uploaded on its own,
+  // a page copied into a combined PDF) is the same pages, not a second document agreeing or
+  // disagreeing with the first.
+  const textOf = new Map(sources.map((s) => [s.label, s.text]));
+  const sameDocument = (a: string, b: string): boolean => {
+    if (a === b) return true;
+    const ta = textOf.get(a) ?? "";
+    const tb = textOf.get(b) ?? "";
+    return !!ta && !!tb && (ta.includes(tb) || tb.includes(ta));
+  };
   const who = ctx.ahj || ctx.state || "the jurisdiction";
 
   // (a) CONFLICT — one labelled quantity, two values, in one package.
@@ -757,13 +834,14 @@ export function evaluateDesignCriteriaFindings(
     if (byValue.size < 2) continue;
     const entries = [...byValue.values()];
     // Blocker only when two DIFFERENT documents each explicitly state a different value.
-    // The parser's scalar field is a reading, not a document: a disagreement that needs it
-    // to exist is a warning (and may be the parser's mistake rather than the package's).
+    // The parser's fields and narrative summaries are readings, not documents: a disagreement
+    // that needs one of them to exist is a warning (and may be the parser's mistake, or the
+    // parser describing ONE document's own inconsistency, rather than two documents'.)
     for (let i = 0; i < entries.length && !conflictBlocker; i++) {
       for (let j = 0; j < entries.length && !conflictBlocker; j++) {
         if (i === j) continue;
         for (const s1 of entries[i].docSources) {
-          if ([...entries[j].docSources].some((s2) => s2 !== s1)) { conflictBlocker = true; break; }
+          if ([...entries[j].docSources].some((s2) => !sameDocument(s1, s2))) { conflictBlocker = true; break; }
         }
       }
     }
@@ -779,7 +857,7 @@ export function evaluateDesignCriteriaFindings(
       category: "structural",
       title: "Design criteria conflict between documents",
       message: `The package states different values for the same design criterion. ${conflictLines.join(". ")}.`
-        + (conflictBlocker ? "" : " (At least one side is the parser's reading or a single source, so verify before treating it as a document conflict.)"),
+        + (conflictBlocker ? "" : " (No two documents disagree here: the values come from one document, or one side is the parser's reading of the package — verify before treating it as a document conflict.)"),
       cityFeedback: "The structural design criteria conflict between the calculations and the submitted plan set. Ensure the same design criteria (wind speed and its basis, exposure category, ground snow load, risk category) appear on all documents. A later document stating that it supersedes another does not reconcile the package — revise the superseded sheets.",
       designTeamAction: `Reconcile the design criteria across ${sources.join(", ")}: pick the governing values (at least the jurisdiction's minimums), then reissue every sheet and calculation that states them.`,
       evidenceNeeded: ["Revised plan-set structural notes with the governing design criteria", "Calculation / engineer's letter restating the same criteria", ...conflictLines].slice(0, 8),
@@ -851,7 +929,9 @@ export function evaluateDesignCriteriaFindings(
     if (missing.length) {
       const say = (pick: (c: StatedDesignCriterion) => boolean, unit: string): string => {
         const hits = stated.criteria.filter(pick);
-        if (!hits.length) return "not stated";
+        // THREE ANSWERS, NOT TWO. "Not stated" is a claim about text we read; with no readable
+        // package text it would read as reassurance about a package nobody looked at.
+        if (!hits.length) return stated.documentTextRead ? "not stated in the package text we read" : "could not be read from the package (no readable plan text on file)";
         const byValue = new Map<string, { value: string | number; sources: Set<string> }>();
         for (const c of hits) {
           // Keep the qualifier visible: a Pg(asd) 20 or a Vasd 93 quoted bare would read as
@@ -862,11 +942,11 @@ export function evaluateDesignCriteriaFindings(
           e.sources.add(c.source);
           byValue.set(key, e);
         }
-        return describeValues([...byValue.values()], "");
+        return `stated in the package: ${describeValues([...byValue.values()], "")}`;
       };
       const lines = [
-        ahjSnow == null ? `ground snow — package states ${say((c) => c.criterion === "groundSnowPsf", " psf")}` : "",
-        ahjWind == null ? `wind speed — package states ${say((c) => c.criterion === "windSpeedMph", " mph")}` : "",
+        ahjSnow == null ? `ground snow — ${say((c) => c.criterion === "groundSnowPsf", " psf")}` : "",
+        ahjWind == null ? `wind speed — ${say((c) => c.criterion === "windSpeedMph", " mph")}` : "",
       ].filter(Boolean);
       const quoted = stated.criteria.filter((c) => (ahjSnow == null && c.criterion === "groundSnowPsf") || (ahjWind == null && c.criterion === "windSpeedMph"));
       out.push({
