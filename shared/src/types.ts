@@ -1273,9 +1273,6 @@ export interface JurisdictionCodeProfile {
     recordNumber?: string;
     at?: string;
   }>;
-  /** Design criteria ISSUED projects in this AHJ used (resolved at read time from
-   *  jurisdiction_design_observations; never persisted in the profile payload). */
-  approvedDesigns?: ApprovedDesignObservation[];
   researchedAt?: string;
   verifiedAt?: string;
   verifiedBy?: string;
