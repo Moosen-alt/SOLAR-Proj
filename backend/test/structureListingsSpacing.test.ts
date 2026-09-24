@@ -185,6 +185,14 @@ check("LISTINGS MUST-PASS: where the jurisdiction's profile asks for listing evi
   assert.equal(f!.severity, "warning");
   assert.match(f!.message, /has asked for this listing evidence/);
 });
+check("LISTINGS in other states: WA / CA / FL / IL — callout by default, warning where that jurisdiction asked, never cleared by UL 1741", () => {
+  for (const [st, ahj] of [["WA", "City of Spokane"], ["CA", "City of Fresno"], ["FL", "City of Tampa"], ["IL", "Village of Oak Park"]] as const) {
+    const c = (prescriptive: Record<string, unknown>) => buildCodeContext(st, ahj, { ...profile({ prescriptive }), key: `${st.toLowerCase()}|${ahj.toLowerCase()}|unknown`, state: st, ahj, adoptedCodes: [{ code: "IRC", edition: "2021" }, { code: "NEC", edition: "2023" }] });
+    const p = project({ planSetExtractedText: INVERTER_LISTINGS_ONLY }, { state: st, ahj } as Partial<ProjectRecord>);
+    assert.equal(get(run(p, c({})), LISTINGS)?.severity, "callout", `${st} default`);
+    assert.equal(get(run(p, c({ listingEvidenceRequired: true })), LISTINGS)?.severity, "warning", `${st} asked`);
+  }
+});
 check("LISTINGS MUST-EXCLUDE: a jurisdiction that asks, and a package that shows both -> no finding; listingEvidenceRequired:false -> callout", () => {
   assert.ok(!get(run(project({ planSetExtractedText: BOTH }), ctxFor(ASKED)), LISTINGS));
   assert.equal(get(run(project({ planSetExtractedText: INVERTER_LISTINGS_ONLY }), ctxFor({ prescriptive: { listingEvidenceRequired: false } })), LISTINGS)?.severity, "callout");

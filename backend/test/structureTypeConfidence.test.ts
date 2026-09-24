@@ -151,6 +151,31 @@ check("parser schema: ONE structureType line in the STRUCTURAL block, values the
   assert.ok(lines[0].length < 260, "keep the prompt compact");
 });
 
+console.log("\n4b. Other states and AHJs — the rule is structure, not Oregon");
+for (const [st, ahj, residential] of [
+  ["WA", "City of Spokane", { code: "IRC", edition: "2021" }],
+  ["CA", "City of Fresno", { code: "CRC", edition: "2022" }],
+  ["FL", "City of Tampa", { code: "FBC-R", edition: "2023" }],
+  ["IL", "Village of Oak Park", { code: "IRC", edition: "2021" }],
+  ["ID", "Ada County", { code: "IRC", edition: "2018" }],
+] as const) {
+  check(`${st} / ${ahj}: stated MH blocks, inferred warns, a disclaimer is silent — and no Oregon code is cited`, () => {
+    const c = buildCodeContext(st, ahj, {
+      key: `${st.toLowerCase()}|${ahj.toLowerCase()}|unknown`, state: st, ahj, confidence: "seeded",
+      adoptedCodes: [residential, { code: "NEC", edition: "2023" }], amendments: [], designCriteria: {}, prescriptive: {},
+      fireSetbacks: [], citations: [], updatedAt: "",
+    } as JurisdictionCodeProfile);
+    const p = (snap: Record<string, unknown>) => ({ ...project(snap), state: st, ahj } as ProjectRecord);
+    const mh = (snap: Record<string, unknown>) => evaluateDesignCodeFindings(p({ ...PRESCRIPTIVE, ...snap }), null, c)
+      .find((f) => f.id === "city.struct.manufactured-home-prescriptive");
+    const stated = mh({ structureTypeOverride: "manufactured" });
+    assert.equal(stated?.severity, "blocker");
+    assert.ok(stated!.codeReferences.length > 0 && !stated!.codeReferences.some((r) => /ORSC|Oregon/i.test(`${r.code} ${r.adoptionScope}`)), JSON.stringify(stated!.codeReferences));
+    assert.equal(mh({ structuralCalcText: "EXISTING MH UNIT ON PIERS" })?.severity, "warning");
+    assert.equal(mh({ structuralCalcText: "NOT FOR INSTALLATION ON MOBILE HOMES" }), undefined);
+  });
+}
+
 console.log("\n5. Through the real write path (the dashboard's PUT -> updateProject)");
 {
   const os = await import("node:os");
