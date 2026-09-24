@@ -265,6 +265,31 @@ check("FLOOD: extractPortalCondition surfaces an Accela 'Condition: Floodplain' 
 check("FLOOD MUST-EXCLUDE: 'air conditioning' and 'Conditions of approval' are not a record condition", () => {
   assert.equal(extractPortalCondition("New air conditioning condenser on pad. Conditions of approval attached."), "");
 });
+// The Lincoln City record page, as Accela renders it: markup stripped, fields glued together.
+const accelaPage = (status: string, condition = "Floodplain"): string =>
+  `Record 000-26-000000-STR: Residential Solar Record Status: ${status} Expiration Date: 03/01/2027 `
+  + `Add Cancel A notice was added to this record on 05/01/2026.Condition: ${condition}Severity: NoticeTotal Conditions: 1 `
+  + "(Notice: 1)View Condition Conditions Showing 1-1 of 1 Record Details";
+check("FLOOD: the condition's name is cut at Accela's glued 'Severity:' — 'Condition: Floodplain', nothing after", () => {
+  assert.equal(extractPortalCondition(accelaPage("In Review")), "Condition: Floodplain");
+  assert.equal(extractPortalCondition(accelaPage("In Review", "Sewer Recovery")), "Condition: Sewer Recovery", "the production 720b05f3 shape");
+});
+check("FLOOD: the condition reaches the message on EVERY branch — correction_flagged, waiting, action-needed", () => {
+  const seen: string[] = [];
+  for (const status of ["Addl Info Needed", "In Review", "Intake Requirements Needed"]) {
+    const c = classifyPermitStatusText(accelaPage(status));
+    seen.push(c.outcome);
+    assert.match(c.message, /The record also carries a condition: "Condition: Floodplain"\./, `${status} -> ${c.outcome}: ${c.message}`);
+    assert.doesNotMatch(c.message, /Severity|Total Conditions/, `${status}: the condition text ran on into the next field`);
+    assert.equal((c.message.match(/carries a condition/g) || []).length, 1, `${status}: condition appended twice`);
+  }
+  assert.deepEqual(seen, ["correction_flagged", "waiting", "needs_human_review"], "fixture premise: three different branches");
+});
+check("FLOOD MUST-EXCLUDE: a record with no condition gets no condition sentence, and the outcome is unchanged by one", () => {
+  const plain = "Record 000-26-000000-STR: Residential Solar Record Status: In Review Expiration Date: 03/01/2027 Record Details";
+  assert.doesNotMatch(classifyPermitStatusText(plain).message, /condition/i);
+  assert.equal(classifyPermitStatusText(plain).outcome, classifyPermitStatusText(accelaPage("In Review")).outcome);
+});
 
 if (failures) {
   console.error(`\n${failures} structure/listing/spacing check(s) FAILED`);

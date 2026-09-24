@@ -82,8 +82,18 @@ export function extractPortalCondition(text: string): string {
   // before "outstanding permit" never matches and the useless generic header wins instead.
   const specific = /(outstanding permit[^.|]{0,140}|stop work order[^.|]{0,140}|lien[^.|]{0,140})/i.exec(blob);
   if (specific) return specific[0].trim().slice(0, 180);
-  const header = /condition:\s*([^|]{0,140})/i.exec(blob);
-  return header ? `Condition: ${header[1].trim()}`.slice(0, 180) : "";
+  // THE CONDITION'S NAME ENDS WHERE ACCELA'S NEXT FIELD BEGINS. The same glued markup puts the
+  // severity straight after the name — "Condition: FloodplainSeverity: NoticeTotal Conditions: 1"
+  // (and on production "Condition: Sewer RecoverySeverity: Notice...") — so reading to the next
+  // "|" produced "FloodplainSeverity: NoticeTotal Conditions: 1 (Notice: 1)View Condition".
+  const header = /condition:\s*(.{1,140}?)\s*(?=severity\s*:|total\s+conditions|view\s+condition|\||$)/i.exec(blob);
+  return header && header[1].trim() ? `Condition: ${header[1].trim()}`.slice(0, 180) : "";
+}
+
+/** The record-level condition on this page, or "" — read from the WHOLE page (a condition lives
+ *  outside the stated-status line), and only where the page carries condition wording. */
+export function recordConditionOf(rawStatusText: string): string {
+  return conditionPattern.test(rawStatusText) ? extractPortalCondition(rawStatusText) : "";
 }
 
 
@@ -128,7 +138,20 @@ export function isAuthWallText(rawStatusText: string): boolean {
   return [saysLogin, asksCredentials, offersRecovery].filter(Boolean).length >= 2;
 }
 
+// A RECORD CONDITION RIDES ON EVERY READING. It was appended only when the status said the
+// agency was waiting on the applicant, so the same "Condition: Floodplain" notice was silent on
+// a record reading "Addl Info Needed" (correction_flagged) or "In Review" (waiting) — and a
+// floodplain condition stops a permit whatever its review status says. The classification
+// (outcome / label / confidence) is unchanged; only the message carries it.
 export function classifyPermitStatusText(rawStatusText: string): PermitStatusClassification {
+  const result = classifyStatusOnly(rawStatusText);
+  const condition = recordConditionOf(rawStatusText);
+  return condition
+    ? { ...result, message: `${result.message} The record also carries a condition: "${condition}".` }
+    : result;
+}
+
+function classifyStatusOnly(rawStatusText: string): PermitStatusClassification {
   const stated = extractStatedStatus(rawStatusText);
   // Keep the full text when the portal states nothing — that is the old behaviour, and the
   // only behaviour available for portals that render status as prose.
@@ -209,11 +232,11 @@ export function classifyPermitStatusText(rawStatusText: string): PermitStatusCla
 
   // Checked ahead of waitingPattern on purpose — see the comment on actionNeededPattern.
   if (actionNeededPattern.test(text)) {
-    // AGAINST THE FULL PAGE, not `text`. extractStatedStatus narrows `text` to the stated status
-    // ("Intake Requirements Needed") and the condition lives elsewhere on the record — testing
-    // the narrowed string found nothing, and the first version of the test passed anyway because
-    // it matched the word "outstanding" in this very message rather than the portal's notice.
-    const condition = conditionPattern.test(rawStatusText) ? extractPortalCondition(rawStatusText) : "";
+    // The record's condition is appended by classifyPermitStatusText, read AGAINST THE FULL PAGE,
+    // not `text`: extractStatedStatus narrows `text` to the stated status ("Intake Requirements
+    // Needed") and the condition lives elsewhere on the record — testing the narrowed string found
+    // nothing, and the first version of the test passed anyway because it matched the word
+    // "outstanding" in this very message rather than the portal's notice.
     return {
       outcome: "needs_human_review",
       statusLabel: "Action needed before review",
@@ -223,8 +246,7 @@ export function classifyPermitStatusText(rawStatusText: string): PermitStatusCla
       issueFeeDue: false,
       message:
         "The agency is waiting on the APPLICANT, not reviewing — the record says requirements are "
-        + "outstanding at intake. Nothing moves until they are supplied."
-        + (condition ? ` The record also carries a condition: "${condition}".` : ""),
+        + "outstanding at intake. Nothing moves until they are supplied.",
     };
   }
 
