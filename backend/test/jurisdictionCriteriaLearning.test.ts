@@ -812,6 +812,89 @@ await check("the lookup fills BLANKS only, as seeded, with citations; web-ground
   assert.equal(ownRow("City of Verifiedport")!.profile.designCriteria.windSpeedMph, undefined, "a verified row was filled");
 });
 
+// ─── MF5: the stored number is the one next to ITS OWN label; ranges and lists are not a value ──
+const { parseDesignCriteriaLookup, ClaudeLLMProvider, DESIGN_LOOKUP_MAX_FETCHES, DESIGN_LOOKUP_MAX_PAGE_TOKENS } = await import("../src/llm");
+const GOV = "https://www.testcity.example.gov/codes/r301";
+const parsedValues = (o: Record<string, unknown>) => parseDesignCriteriaLookup(o, true).values.map((v) => `${v.criterion}=${v.value}${v.qualifier ? `/${v.qualifier}` : ""}`).sort();
+
+await check("MUST EXCLUDE (lookup): the OTHER number of a two-number quote, a value inside a range or list, a site-conditional value, a non-official page", () => {
+  const none: Array<Record<string, unknown>> = [
+    { windSpeedMph: { value: 136, sourceUrl: GOV, quote: "Vult = 175 mph, Vasd = 136 mph" } },
+    { groundSnowLoadPsf: { value: 25, sourceUrl: GOV, quote: "Roof snow load 25 psf; ground snow load 35 psf" } },
+    { groundSnowLoadPsf: { value: 20, sourceUrl: GOV, quote: "Ground snow load 20-25 psf" } },
+    { groundSnowLoadPsf: { value: 25, sourceUrl: GOV, quote: "Ground snow load 20-25 psf" } },
+    { windSpeedMph: { value: 125, sourceUrl: GOV, quote: "Ultimate design wind speed 115/125/140 mph" } },
+    { windExposure: { value: "C", sourceUrl: GOV, quote: "Wind exposure B or C" } },
+    { groundSnowLoadPsf: { value: 25, sourceUrl: GOV, quote: "Ground snow load 25 psf below 3000 ft; site-specific above" } },
+    { windSpeedMph: { value: 120, sourceUrl: "https://solar-installer-blog.example.com/wind", quote: "Vult 120 mph" } },
+  ];
+  for (const o of none) assert.deepEqual(parsedValues(o), [], JSON.stringify(o));
+});
+
+await check("MUST PASS (lookup): the labelled number of a two-number quote; a pg(asd) kept apart from Pg; an exposure named once; a code-publisher page", () => {
+  assert.deepEqual(parsedValues({ windSpeedMph: { value: 175, sourceUrl: GOV, quote: "Vult = 175 mph, Vasd = 136 mph" } }), ["windSpeedMph=175"]);
+  assert.deepEqual(parsedValues({ groundSnowLoadPsf: { value: 35, sourceUrl: GOV, quote: "Roof snow load 25 psf; ground snow load 35 psf" } }), ["groundSnowLoadPsf=35/pg"]);
+  assert.deepEqual(parsedValues({
+    groundSnowLoadPsf: { value: 49, sourceUrl: GOV, quote: "pg = 49 psf, pg(asd) = 35 psf" },
+    groundSnowLoadAsdPsf: { value: 35, sourceUrl: GOV, quote: "pg = 49 psf, pg(asd) = 35 psf" },
+  }), ["groundSnowLoadPsf=35/pg_asd", "groundSnowLoadPsf=49/pg"]);
+  assert.deepEqual(parsedValues({ groundSnowLoadAsdPsf: { value: 49, sourceUrl: GOV, quote: "pg = 49 psf, pg(asd) = 35 psf" } }), [], "a strength Pg under the pg(asd) key was trusted");
+  assert.deepEqual(parsedValues({ windExposure: { value: "C", sourceUrl: GOV, quote: "Exposure Category C" } }), ["windExposure=C"]);
+  assert.deepEqual(parsedValues({ groundSnowLoadPsf: { value: 30, sourceUrl: "https://up.codes/viewer/testcity/irc-2021/chapter/3", quote: "Ground snow load 30 psf" } }), ["groundSnowLoadPsf=30/pg"]);
+});
+
+await check("a pg(asd) lookup value is STORED (groundSnowLoadAsdPsf), never as the strength groundSnowLoadPsf; the job result carries the lookup's notes", async () => {
+  seeded("City of Asdton");
+  const r = await CP.runDesignCriteriaResearch(db, { state: "OR", ahj: "City of Asdton" }, fakeProvider({
+    provider: "claude", webGrounded: true, notes: "Web-grounded lookup. Pages read: 1.",
+    values: [{ criterion: "groundSnowLoadPsf", value: 43, qualifier: "pg_asd", sourceUrl: GOV, quote: "ground snow load is 43 psf (pg(asd))" }],
+  }));
+  const dc = ownRow("City of Asdton")!.profile.designCriteria;
+  assert.equal(dc.groundSnowLoadAsdPsf, 43);
+  assert.equal(dc.groundSnowLoadPsf, undefined, "a pg(asd) was stored as the strength Pg the rules compare with");
+  assert.match(String(r.notes), /Pages read: 1/);
+});
+
+await check("THE PAGE FETCH (stubbed client): the lookup offers web_fetch capped per lookup and per page, reads the page, and the call lands in llm_calls", async () => {
+  const provider = new ClaudeLLMProvider("sk-ant-test-never-called");
+  let captured: { tools?: Array<Record<string, unknown>> } | null = null;
+  const reply = {
+    content: [
+      { type: "server_tool_use", id: "s1", name: "web_search", input: { query: "Testcity Table R301.2" } },
+      { type: "web_search_tool_result", tool_use_id: "s1", content: [{ type: "web_search_result", url: GOV, title: "Testcity codes" }] },
+      { type: "server_tool_use", id: "f1", name: "web_fetch", input: { url: GOV } },
+      { type: "web_fetch_tool_result", tool_use_id: "f1", content: { type: "web_fetch_result", url: GOV, content: { type: "document", source: { type: "text", media_type: "text/plain", data: "Table R301.2 Ground snow load 30 psf" } } } },
+      { type: "text", text: JSON.stringify({ groundSnowLoadPsf: { value: 30, sourceUrl: GOV, quote: "Ground snow load 30 psf" }, notes: "" }) },
+    ],
+    usage: { input_tokens: 5123, output_tokens: 321, server_tool_use: { web_search_requests: 1, web_fetch_requests: 1 } },
+    stop_reason: "end_turn",
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (provider as any).client = { messages: { stream(params: { tools?: Array<Record<string, unknown>> }) { captured = params; return { finalMessage: async () => reply }; } } };
+  const before = Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM llm_calls WHERE label = 'researchDesignCriteria'")?.n ?? 0);
+  const out = await provider.researchDesignCriteria({ ahj: "City of Testcity", state: "OR" });
+  const tools = captured!.tools ?? [];
+  assert.deepEqual(tools.map((t) => t.name), ["web_search", "web_fetch"]);
+  const fetchTool = tools.find((t) => t.name === "web_fetch")!;
+  assert.equal(fetchTool.type, "web_fetch_20260209");
+  assert.equal(fetchTool.max_uses, DESIGN_LOOKUP_MAX_FETCHES);
+  assert.equal(fetchTool.max_content_tokens, DESIGN_LOOKUP_MAX_PAGE_TOKENS);
+  assert.ok(DESIGN_LOOKUP_MAX_FETCHES <= 5 && DESIGN_LOOKUP_MAX_PAGE_TOKENS <= 20000, "the fetch caps grew past the cost budget");
+  assert.deepEqual(out.values.map((v) => `${v.criterion}=${v.value}/${v.qualifier}`), ["groundSnowLoadPsf=30/pg"]);
+  assert.equal(out.webGrounded, true);
+  assert.match(out.notes, /Pages read: 1/);
+  const row = db.get<{ n: number; in_tok: number }>("SELECT COUNT(*) AS n, MAX(in_tok) AS in_tok FROM llm_calls WHERE label = 'researchDesignCriteria'");
+  assert.equal(Number(row?.n) - before, 1, "the lookup's call was not recorded in llm_calls");
+  assert.equal(Number(row?.in_tok), 5123, "the fetched page's input tokens were not recorded");
+});
+
+await check("MUST EXCLUDE: the other web-research calls are NOT given the page fetch", () => {
+  const src = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..", "src", "llm.ts"), "utf8");
+  const calls = [...src.matchAll(/this\.askWithWebSearch\(\s*"([A-Za-z]+)"[^\n]*/g)].map((m) => [m[1], /designLookupFetchTool\(\)/.test(m[0])] as const);
+  assert.ok(calls.length >= 4, "fixture precondition: the research callers were found");
+  for (const [label, hasFetch] of calls) assert.equal(hasFetch, label === "researchDesignCriteria", `${label}: page fetch ${hasFetch ? "offered" : "missing"}`);
+});
+
 await check("the job type is registered: a queued lookup runs keyless through the stub and stores nothing", async () => {
   CP.setDesignResearchEnqueuerForTests(null);
   db.run("UPDATE job_queue SET status = 'done' WHERE status IN ('pending','running')");

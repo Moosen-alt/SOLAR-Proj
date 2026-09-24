@@ -721,9 +721,6 @@ export function webResearchBudgetMs(): number {
  *  the trap findAhjFormUrl hit (44c9ba5). */
 export const WEB_RESEARCH_MAX_TOKENS = 6000;
 
-/** The fallback's own instructions. The fallback used to resend the web prompt ("FIRST search
- *  the web … cite it") with no tool attached, so the model spent its budget explaining it could
- *  not search and then wrote source-looking URLs from memory. */
 // DESIGN-CRITERIA LOOKUP (one AHJ: ground snow, ultimate wind speed, exposure). Measured on 10
 // AHJs in 8 states (2026-09-24): it never returned a wrong value, but it returned ONE value in
 // ten, because it accepted only a "building-department page". The values it missed were in
@@ -731,7 +728,15 @@ export const WEB_RESEARCH_MAX_TOKENS = 6000;
 // (a city's "Residential Code 2021" Table R301.2), and in a STATE code that names the
 // jurisdiction (the Florida code's High-Velocity Hurricane Zone speeds by county). It must
 // still never take a neighbour's value, a county value that varies inside the city, a range, a
-// site-specific map, a roof snow load as ground snow, an ASD speed as Vult, or a pg(asd) as Pg.
+// site-specific map, a roof snow load as ground snow, or an ASD speed as Vult. A pg(asd) is
+// returned under its OWN key (the 2024 IRC prints it) and stored apart from the strength Pg.
+//
+// OPERATOR DECISION (2026-09-24): this ONE call may READ pages, not only search: a search snippet
+// rarely carries a Table R301.2 row, and the table is on the page the search found. The fetch tool
+// only opens URLs already in the conversation (the search results), is capped per lookup
+// (DESIGN_LOOKUP_MAX_FETCHES) and per page (DESIGN_LOOKUP_MAX_PAGE_TOKENS), and its tokens are
+// recorded in llm_calls like every call (instrument()). What it stores is unchanged: seeded,
+// blank-fill only, each value with its page and quote (codeProfiles.mergeResearchedDesignCriteria).
 export const DESIGN_CRITERIA_LOOKUP_SYSTEM = `You look up ONE building jurisdiction's structural design criteria for residential roofs: ground snow load, ultimate design wind speed (Vult), wind exposure category.
 
 WHERE A VALUE MAY COME FROM (a page you actually found):
@@ -739,59 +744,187 @@ WHERE A VALUE MAY COME FROM (a page you actually found):
 2. The jurisdiction's OWN ADOPTED CODE text wherever it is published — its municipal code, or a code publisher's copy of THAT jurisdiction's code (a page titled with the jurisdiction's name, e.g. "<City> Residential Code … Table R301.2"). A generic IRC/state page with the table left for "the jurisdiction to fill in" is NOT a value.
 3. A STATE code or state agency table that NAMES this jurisdiction (or its county, when the value applies to the whole county with no sub-region) and gives ONE value for it.
 Search for "<jurisdiction> Table R301.2 ground snow load wind speed" and "<jurisdiction> design criteria" first.
+You may OPEN (web_fetch) a result page to read its table — only official city, county or state government pages and code-publisher copies of this jurisdiction's adopted code (up.codes, codes.iccsafe.org, municode, ecode360, codepublishing, American Legal). Open at most a few pages; never open a blog, vendor, forum or map-tool page.
 
 WHEN TO OMIT (and say why in notes):
-- The source gives several values or a range for the jurisdiction ("115/125/140", special wind region inside it), or says criteria are site-specific (an address lookup tool / hazard map) — omit, and write "site-specific" in notes with the tool's URL.
+- The source gives several values or a range for the jurisdiction ("115/125/140", "20-25 psf", "Exposure B or C", special wind region inside it), or says criteria are site-specific or vary by elevation (an address lookup tool / hazard map) — omit, and write "site-specific" in notes with the tool's URL.
 - The value belongs to a neighbouring or different jurisdiction — omit.
 - A ROOF snow load (flat/sloped/minimum roof snow, Pf, Pm) is never a ground snow load.
 - windSpeedMph must be the ULTIMATE (strength) speed Vult; omit a speed labelled ASD, nominal, Vasd, or a legacy "basic wind speed" from a pre-2012 map.
-- groundSnowLoadPsf must be the strength-level ground snow load Pg; omit a value labelled allowable-stress pg(asd) (2024-edition Table R301.2 prints pg(asd)) and say so in notes.
+- groundSnowLoadPsf is the strength-level ground snow load Pg. A value labelled allowable-stress pg(asd) (2024-edition Table R301.2 prints pg(asd)) goes under groundSnowLoadAsdPsf instead — never under groundSnowLoadPsf.
 - Use the CURRENT edition: a table from a superseded code cycle, or a staging/preview copy of a page, is not the value.
+- The quote must put the number right next to its own label (e.g. "Vult = 120 mph", "Ground snow load pg = 25 psf").
 
 Return ONLY JSON:
 {"groundSnowLoadPsf": {"value": <number>, "sourceUrl": "<page>", "quote": "<the exact words stating it, with the number>"} or omit,
+ "groundSnowLoadAsdPsf": {"value": <number>, "sourceUrl": "<page>", "quote": "<exact words, with pg(asd) and the number>"} or omit,
  "windSpeedMph": {"value": <Vult number>, "sourceUrl": "<page>", "quote": "<exact words, with the number>"} or omit,
  "windExposure": {"value": "<B|C|D>", "sourceUrl": "<page>", "quote": "<exact words naming the exposure category>"} or omit,
  "notes": "<what you could not confirm, and any site-specific tool>"}
 Never guess. Never use model memory.`;
 
+/** Page-fetch caps for the design-criteria lookup ONLY (the other web-research calls do not fetch). */
+export const DESIGN_LOOKUP_MAX_FETCHES = 3;
+export const DESIGN_LOOKUP_MAX_PAGE_TOKENS = 12000;
+
+/** The server-side fetch tool the design-criteria lookup adds beside web_search. It can only open a
+ *  URL already in the conversation (a search result); hosts are not listable here (no TLD wildcards),
+ *  so which pages count is decided on the parse side (the source URL must be a page it found). */
+export function designLookupFetchTool(): Record<string, unknown> {
+  return { type: "web_fetch_20260209", name: "web_fetch", max_uses: DESIGN_LOOKUP_MAX_FETCHES, max_content_tokens: DESIGN_LOOKUP_MAX_PAGE_TOKENS };
+}
+
+/** Pages the fetch tool actually returned (a web_fetch_tool_result whose content is a result, not an
+ *  error object). For the log line and the lookup's notes — grounding is still decided by search. */
+export function countWebFetches(msg: { content?: unknown }): number {
+  const blocks = Array.isArray(msg?.content) ? (msg.content as Array<Record<string, unknown> | null>) : [];
+  return blocks.filter((b) => b?.type === "web_fetch_tool_result" && (b.content as { type?: string } | null)?.type === "web_fetch_result").length;
+}
+
 type LookupValue = DesignCriteriaResearchResult["values"][number];
+
+/** Every standalone number in a quote, with where it sits. */
+function numbersIn(quote: string): Array<{ n: number; at: number; end: number }> {
+  const out: Array<{ n: number; at: number; end: number }> = [];
+  const re = /(?<![\d.])\d+(?:\.\d+)?(?![\d.]*\d)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(quote))) out.push({ n: Number(m[0]), at: m.index, end: m.index + m[0].length });
+  return out;
+}
+
+/** The number sits in a range or a list ("20-25 psf", "115/125/140", "25 or 30 psf"): not ONE value. */
+function inRangeOrList(quote: string, at: number, end: number): boolean {
+  const before = quote.slice(Math.max(0, at - 8), at);
+  const after = quote.slice(end, end + 14);
+  return /\d\s*(?:-|–|—|\/|,|\bto\b|\bor\b|\band\b|\bthrough\b)\s*$/i.test(before)
+    || /^\s*(?:psf|mph|lbs?)?\s*(?:-|–|—|\/|,|\bto\b|\bor\b|\band\b|\bthrough\b)\s*\d/i.test(after);
+}
+
+/**
+ * WHICH LABEL A NUMBER BELONGS TO. The text from the previous number (or ";") up to this one is its
+ * label; a parenthetical right after it ("43 psf (pg(asd))", "175 mph (Vult)") qualifies it too.
+ * "Vult = 175 mph, Vasd = 136 mph": 136's label is "Vasd". "Roof snow load 25 psf; ground snow load
+ * 35 psf": 25's label is "Roof snow load".
+ */
+/** A government host (.gov / .us / .org — many cities publish on .org) or a publisher of adopted code text. */
+const CODE_PUBLISHER_HOSTS = ["up.codes", "iccsafe.org", "municode.com", "ecode360.com", "codepublishing.com", "amlegal.com", "generalcode.com", "sterlingcodifiers.com", "qcode.us", "codelibrary.amlegal.com"];
+export function isOfficialCodeSource(url: string): boolean {
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return false; }
+  if (/\.(?:gov|us|org|mil)$/.test(host)) return true;
+  return CODE_PUBLISHER_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+}
+
+type NumberLabel = { before: string; after: string; nextNumberFollows: boolean };
+function labelOf(quote: string, nums: Array<{ at: number; end: number }>, i: number): NumberLabel {
+  const start = i > 0 ? nums[i - 1].end : 0;
+  let before = quote.slice(start, nums[i].at);
+  const cut = Math.max(before.lastIndexOf(";"), before.lastIndexOf("|"));
+  if (cut >= 0) before = before.slice(cut + 1);
+  const next = i + 1 < nums.length ? nums[i + 1].at : quote.length;
+  const after = quote.slice(nums[i].end, Math.min(next, nums[i].end + 30));
+  return { before, after, nextNumberFollows: i + 1 < nums.length && next <= nums[i].end + 30 };
+}
+
+/** A label right AFTER a number qualifies it ("175 mph (Vult)", "43 psf (pg(asd))") — unless it is
+ *  the NEXT number's label: "175 mph (Vasd = 136 mph)" assigns Vasd to 136, not to 175. */
+function trailingLabel(after: string, nextNumberFollows: boolean, re: RegExp): string | undefined {
+  const m = after.match(re);
+  if (!m) return undefined;
+  const rest = m[2] ?? "";
+  if (/^\s*\)?\s*[:=]/.test(rest) || (nextNumberFollows && /^[\s)]*$/.test(rest))) return undefined;
+  return m[1].toLowerCase();
+}
+
+type WindClass = "ult" | "asd" | "none";
+function windClass(label: NumberLabel): WindClass {
+  const labels = [...label.before.matchAll(/\bv\s*_?\s*ult\b|\bvult\b|\bultimate\b|\bv\s*_?\s*asd\b|\bvasd\b|\basd\b|\bnominal\b|allowable\s+stress|\bwind\b/gi)].map((m) => m[0].toLowerCase());
+  const tail = trailingLabel(label.after, label.nextNumberFollows, /^\s*(?:mph)?\s*\(?\s*(v\s*_?\s*ult|vult|ultimate|v\s*_?\s*asd|vasd|asd|nominal)\b([\s\S]*)$/i);
+  const nearest = tail ?? labels[labels.length - 1];
+  if (!nearest) return "none";
+  if (/asd|nominal|allowable/.test(nearest)) return "asd";
+  return "ult"; // vult / ultimate / an unqualified "wind" label next to the number
+}
+
+type SnowClass = "pg" | "pg_asd" | "roof" | "none";
+function snowClass(label: NumberLabel): SnowClass {
+  const b = label.before;
+  const groundAt = Math.max(b.search(/ground\s+snow/i) >= 0 ? b.toLowerCase().lastIndexOf("ground") : -1, (() => { const m = [...b.matchAll(/\bp\s?g\b/gi)]; return m.length ? m[m.length - 1].index ?? -1 : -1; })());
+  const roofAt = (() => { const m = [...b.matchAll(/\broof\b|\bflat\b|\bsloped\b|\bp[fsm]\b|uniform\s+snow/gi)]; return m.length ? m[m.length - 1].index ?? -1 : -1; })();
+  const asd = /\basd\b|allowable\s+stress/i.test(groundAt >= 0 ? b.slice(Math.max(0, groundAt - 40)) : b)
+    || Boolean(trailingLabel(label.after, label.nextNumberFollows, /^\s*(?:psf|lbs?\s*\/\s*(?:sq\.?\s*ft|ft2|ft²)|pounds\s+per\s+square\s+f(?:oo|ee)t)?\s*\(\s*(?:p\s?g\s*\(\s*)?(asd)\b([\s\S]*)$/i));
+  if (roofAt > groundAt) return "roof";
+  if (groundAt >= 0) return asd ? "pg_asd" : "pg";
+  return asd ? "pg_asd" : "none";
+}
+
+/** The quote conditions the value on the site (elevation, a lookup tool): not the jurisdiction's one value. */
+const SITE_CONDITIONAL = /\bsite[-\s]specific\b|\b(?:below|above|under|over)\s+\d[\d,]*\s*(?:ft|feet|')|\belevations?\b/i;
 
 /**
  * Parse the lookup's JSON into values the profile may store. A value survives only when it is
  * web-grounded, has a source URL, and its QUOTE says it: the number appears in the quote as a
- * number of its own; a wind quote does not label it ASD/nominal/Vasd; a ground-snow quote says
- * "ground" (or pg) and is not about roof snow alone; an exposure quote names the category.
+ * number of its own, BOUND TO ITS OWN LABEL (Vult / ground snow / pg) — never the other number of a
+ * two-number quote ("Vult = 175 mph, Vasd = 136 mph" stores 175 only) — and not inside a range or a
+ * list ("20-25 psf", "115/125/140", "Exposure B or C"). A ground snow load labelled pg(asd) is kept
+ * with qualifier "pg_asd" (stored apart from Pg); an exposure quote names the category.
  * Pure — tested without a network.
  */
 export function parseDesignCriteriaLookup(parsed: Record<string, unknown>, grounded: boolean, truncated = false): DesignCriteriaResearchResult {
   const values: DesignCriteriaResearchResult["values"] = [];
   const dropped: string[] = [];
-  const quoteHasNumber = (quote: string, n: number): boolean =>
-    new RegExp(`(?<![\\d.])${String(n).replace(".", "\\.")}(?:\\.0+)?(?![\\d.]*\\d)`).test(quote);
   if (grounded) {
-    for (const criterion of ["groundSnowLoadPsf", "windSpeedMph", "windExposure"] as const) {
-      const v = parsed[criterion] as { value?: unknown; sourceUrl?: unknown; quote?: unknown } | undefined;
+    for (const key of ["groundSnowLoadPsf", "groundSnowLoadAsdPsf", "windSpeedMph", "windExposure"] as const) {
+      const v = parsed[key] as { value?: unknown; sourceUrl?: unknown; quote?: unknown } | undefined;
       if (!v || typeof v !== "object") continue;
+      const criterion: LookupValue["criterion"] = key === "groundSnowLoadAsdPsf" ? "groundSnowLoadPsf" : key;
       const sourceUrl = typeof v.sourceUrl === "string" ? v.sourceUrl.trim() : "";
       const quote = typeof v.quote === "string" ? v.quote.trim() : "";
       const value = criterion === "windExposure" ? String(v.value ?? "").trim().toUpperCase() : typeof v.value === "number" ? v.value : Number.NaN;
       if (!sourceUrl || (typeof value === "number" && !Number.isFinite(value)) || value === "") continue;
       let why = "";
+      let qualifier: LookupValue["qualifier"];
       if (!quote) why = "no quote";
       else if (criterion === "windExposure") {
         if (!/^[BCD]$/.test(String(value)) || !new RegExp(`exposure[^.;]{0,40}\\b${value}\\b|\\b${value}\\b[^.;]{0,20}exposure`, "i").test(quote)) why = "quote does not name the exposure";
-      } else if (!quoteHasNumber(quote, value as number)) why = "quote does not contain the value";
-      else if (criterion === "windSpeedMph" && /\b(?:v\s*_?\s*asd|vasd|asd|nominal|allowable\s+stress)\b/i.test(quote) && !/\b(?:v\s*_?\s*ult|vult|ultimate)\b/i.test(quote)) why = "quote labels the speed ASD/nominal";
-      else if (criterion === "groundSnowLoadPsf" && !/\bground\b|\bp\s?g\b/i.test(quote)) why = "quote does not say ground snow";
-      // The below-ahj rule compares this value with a plan's STRENGTH-level Pg; an allowable-stress
-      // pg(asd) stored here would pass a plan whose Pg is too low (the snow twin of ASD-vs-Vult).
-      else if (criterion === "groundSnowLoadPsf" && /\basd\b|allowable\s+stress/i.test(quote)) why = "quote labels the ground snow pg(asd)";
+        else if (/\bexp(?:osure|\.)?\s*(?:cat(?:egory|\.)?\s*)?[:=]?\s*[BCD]\s*(?:,|\/|&|-|–|\bor\b|\band\b|\bto\b|\bthrough\b)\s*(?:exp(?:osure|\.)?\s*(?:cat(?:egory|\.)?\s*)?)?[BCD]\b/i.test(quote)) why = "quote lists several exposures";
+      } else {
+        const nums = numbersIn(quote);
+        const hits = nums.map((x, i) => ({ ...x, i })).filter((x) => x.n === value);
+        if (!hits.length) why = "quote does not contain the value";
+        else if (hits.every((h) => inRangeOrList(quote, h.at, h.end))) why = "value sits in a range or list";
+        else if (SITE_CONDITIONAL.test(quote)) why = "quote makes the value site-specific";
+        else if (criterion === "windSpeedMph") {
+          const classes = hits.filter((h) => !inRangeOrList(quote, h.at, h.end)).map((h) => windClass(labelOf(quote, nums, h.i)));
+          const speeds = nums.filter((x) => /^\s*mph\b/i.test(quote.slice(x.end, x.end + 6)));
+          if (classes.includes("ult")) { /* bound to Vult / ultimate / wind */ }
+          else if (classes.includes("asd")) why = "quote labels the speed ASD/nominal";
+          else if (speeds.length > 1) why = "quote carries several speeds and none is labelled Vult";
+          else if (/\b(?:v\s*_?\s*asd|vasd|asd|nominal|allowable\s+stress)\b/i.test(quote)) why = "quote labels the speed ASD/nominal";
+        } else {
+          const classes = hits.filter((h) => !inRangeOrList(quote, h.at, h.end)).map((h) => snowClass(labelOf(quote, nums, h.i)));
+          // Under the pg(asd) key only a number labelled pg(asd) counts; under the Pg key a number
+          // labelled pg(asd) is re-qualified (kept apart), never stored as the strength Pg.
+          if (key === "groundSnowLoadAsdPsf") {
+            if (classes.includes("pg_asd")) qualifier = "pg_asd";
+            else why = "the value is not the one labelled pg(asd)";
+          } else if (classes.includes("pg")) qualifier = "pg";
+          else if (classes.includes("pg_asd")) qualifier = "pg_asd";
+          else if (classes.includes("roof")) why = "the value is labelled roof snow, not ground snow";
+          else why = "quote does not bind the value to ground snow";
+        }
+      }
       // A staging / preview host is not the jurisdiction's published page (measured: a "prelive"
       // copy of a superseded table).
       if (!why && /^https?:\/\/[^/]*\b(?:prelive|preview|staging|stage|uat|dev|test)\b/i.test(sourceUrl)) why = "source is a staging/preview host";
-      if (why) { dropped.push(`${criterion} ${value} (${why})`); continue; }
-      const item: LookupValue = { criterion, value, sourceUrl, quote: quote.slice(0, 240) };
+      // Official pages only — the same list the prompt gives the page fetch (a fetched blog or vendor
+      // page must not become a jurisdiction's seeded value).
+      if (!why && !isOfficialCodeSource(sourceUrl)) why = "source is not an official government or code-publisher page";
+      if (why) { dropped.push(`${key} ${value} (${why})`); continue; }
+      // One value per stored field: a strength Pg and a pg(asd) may both land; two answers for the
+      // same one (the model put a pg(asd) quote under groundSnowLoadPsf and also answered the asd key) keep the first.
+      if (values.some((x) => x.criterion === criterion && (x.qualifier ?? "") === (qualifier ?? ""))) { dropped.push(`${key} ${value} (a second value for the same field)`); continue; }
+      const item: LookupValue = { criterion, value, sourceUrl, quote: quote.slice(0, 240), ...(qualifier ? { qualifier } : {}) };
       values.push(item);
     }
   }
@@ -806,6 +939,9 @@ export function parseDesignCriteriaLookup(parsed: Record<string, unknown>, groun
   };
 }
 
+/** The fallback's own instructions. The fallback used to resend the web prompt ("FIRST search
+ *  the web … cite it") with no tool attached, so the model spent its budget explaining it could
+ *  not search and then wrote source-looking URLs from memory. */
 export const MODEL_MEMORY_RESEARCH_RULES = `YOU HAVE NO WEB ACCESS IN THIS CALL. Answer ONLY from general knowledge of this jurisdiction and its region, and treat every answer as unverified.
 - Do NOT output any URL, link, web address or domain name anywhere. Every URL / sourceUrl field must be "" and any citations array must be empty.
 - Do NOT say you searched, found, confirmed, verified or cited anything, and do not explain that you cannot browse.
@@ -1761,20 +1897,26 @@ Rules:
     let raw = "";
     let grounded = false;
     let truncated = false;
+    let fetches = 0;
     try {
       // 5 searches, not 3: measured on 10 AHJs across 8 states, the lookup ran out of searches
       // before it opened the jurisdiction's own table (one reported "cut off by a tool-use limit").
       // 4000 tokens, not 1500: adaptive thinking shares the budget, and a 1800 cap cut one
       // answer's JSON off (stop=max_tokens) so it parsed as "nothing found".
-      const web = await this.askWithWebSearch("researchDesignCriteria", DESIGN_CRITERIA_LOOKUP_SYSTEM, userMsg, 4000, 5, webResearchBudgetMs());
+      // + the capped page fetch (designLookupFetchTool) — this lookup only; every other caller of
+      // askWithWebSearch is unchanged.
+      const web = await this.askWithWebSearch("researchDesignCriteria", DESIGN_CRITERIA_LOOKUP_SYSTEM, userMsg, 4000, 5, webResearchBudgetMs(), [designLookupFetchTool()]);
       raw = web.text;
       grounded = web.groundedSearches > 0;
-      truncated = web.stopReason === "max_tokens";
+      // A turn the server paused (tool-use loop limit) is as unfinished as one cut off by max_tokens.
+      truncated = web.stopReason === "max_tokens" || web.stopReason === "pause_turn";
+      fetches = web.fetches;
     } catch (err) {
       logger.warn("llm", "researchDesignCriteria web search failed", { err: errMsg(err) });
       return { provider: "claude", values: [], webGrounded: false, notes: "Web search failed — nothing looked up." };
     }
-    return parseDesignCriteriaLookup(this.parseJson<Record<string, unknown>>(raw, {}), grounded, truncated);
+    const out = parseDesignCriteriaLookup(this.parseJson<Record<string, unknown>>(raw, {}), grounded, truncated);
+    return fetches ? { ...out, notes: `${out.notes} Pages read: ${fetches}.`.trim() } : out;
   }
 
   // ADOPTED-CODES onboarding research (review gate). Same web-grounded pattern as
@@ -2246,14 +2388,16 @@ Return ONLY JSON:
   // "the tool was offered" is not "the answer came from the web". Every caller that labels its
   // result grounded must decide from `groundedSearches` (see summarizeWebSearch), not from
   // whether the JSON parsed and not from the bare search count.
-  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000): Promise<{ text: string; searches: number; groundedSearches: number; stopReason: string | null }> {
+  // `extraTools`: server tools offered beside web_search (only the design-criteria lookup passes one —
+  // the capped web_fetch); empty for every other caller, whose request is unchanged.
+  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000, extraTools: Array<Record<string, unknown>> = []): Promise<{ text: string; searches: number; groundedSearches: number; fetches: number; stopReason: string | null }> {
     // Hard timeout so a stalled web search can never hang the HTTP request (the
     // "Find official form" button would otherwise spin forever). On timeout we
     // abort the stream; callers catch and fall back (no URLs / model knowledge).
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const msg = await this.instrument(label, { chars: userMessage.length, maxTokens, webSearch: maxUses, timeoutMs }, () =>
+      const msg = await this.instrument(label, { chars: userMessage.length, maxTokens, webSearch: maxUses, timeoutMs, ...(extraTools.length ? { extraTools: extraTools.map((t) => String(t.name)) } : {}) }, () =>
         this.client.messages
           .stream(
             {
@@ -2261,7 +2405,7 @@ Return ONLY JSON:
               max_tokens: maxTokens,
               thinking: { type: "adaptive" },
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              tools: [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }] as any,
+              tools: [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }, ...extraTools] as any,
               system: this.cachedSystem(systemPrompt),
               messages: [{ role: "user", content: userMessage }],
             },
@@ -2273,7 +2417,9 @@ Return ONLY JSON:
       if (groundedSearches) logger.debug("llm", `  ${label} web_search ran`, { queries: searches, withResults: groundedSearches });
       else if (!searches) logger.warn("llm", `  ${label} returned without running a single web search — its answer is model memory`);
       else logger.warn("llm", `  ${label} ran ${searches} web search(es) but none returned results we can see (errored, empty, or no web_search_tool_result block) — treating its answer as model memory`);
-      return { text: this.textOf(msg), searches, groundedSearches, stopReason: (msg as { stop_reason?: string | null }).stop_reason ?? null };
+      const fetches = countWebFetches(msg);
+      if (extraTools.length) logger.debug("llm", `  ${label} web_fetch`, { pagesRead: fetches });
+      return { text: this.textOf(msg), searches, groundedSearches, fetches, stopReason: (msg as { stop_reason?: string | null }).stop_reason ?? null };
     } finally {
       clearTimeout(timer);
     }

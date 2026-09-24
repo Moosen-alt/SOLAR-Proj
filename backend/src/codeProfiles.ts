@@ -1007,5 +1007,6 @@ export async function runDesignCriteriaResearch(
   if (!llm.researchDesignCriteria) return { saved: false, reason: "provider has no design-criteria lookup" };
   const research = await llm.researchDesignCriteria({ state, ahj });
   const merged = mergeResearchedDesignCriteria(db, { state, ahj, profileKey }, research);
-  return { ...merged, webGrounded: research.webGrounded, found: research.values?.length ?? 0 };
+  // The lookup's own notes (truncated, pages read, what was dropped and why) reach the job result.
+  return { ...merged, webGrounded: research.webGrounded, found: research.values?.length ?? 0, notes: String(research.notes || "").slice(0, 1000) };
 }

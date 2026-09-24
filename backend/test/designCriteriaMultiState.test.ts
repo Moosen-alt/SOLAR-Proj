@@ -267,7 +267,9 @@ check("C MUST-EXCLUDE: a value its quote does not contain, a roof snow as ground
   assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 36, sourceUrl: url, quote: "Site-specific ground snow loads shall be those set forth in the online lookup tool" } }), []);
   assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 25, sourceUrl: url, quote: "Design roof load shall not be less than a uniform snow load of 25 psf" } }), []);
   assert.deepEqual(lookup({ windSpeedMph: { value: 90, sourceUrl: url, quote: "Basic wind speed 90 mph (ASD)" } }), []);
-  assert.deepEqual(lookup({ windSpeedMph: { value: 115, sourceUrl: url, quote: "WIND DESIGN SPEED (mph): 115/125/140" } }), ["windSpeedMph=115"], "the parser keeps a quoted number; the RANGE rule lives in the prompt");
+  // A value inside a list is not the jurisdiction's one value (a seeded endpoint would become the
+  // below-ahj reference): dropped by the parser, not only by the prompt.
+  assert.deepEqual(lookup({ windSpeedMph: { value: 115, sourceUrl: url, quote: "WIND DESIGN SPEED (mph): 115/125/140" } }), []);
   assert.deepEqual(lookup({ windSpeedMph: { value: 110, sourceUrl: url, quote: "Ultimate design wind speed 1100 ft elevation" } }), []);
   assert.deepEqual(lookup({ windExposure: { value: "D", sourceUrl: url, quote: "Special wind region applies along the coast" } }), []);
   assert.deepEqual(lookup({ windSpeedMph: { value: 120, sourceUrl: url, quote: "Vult 120 mph" } }, false), []);
@@ -275,9 +277,10 @@ check("C MUST-EXCLUDE: a value its quote does not contain, a roof snow as ground
   const r = parseDesignCriteriaLookup({ groundSnowLoadPsf: { value: 36, sourceUrl: url, quote: "snow per the lookup tool" } }, true);
   assert.ok(/Dropped: groundSnowLoadPsf 36/.test(r.notes), r.notes);
 });
-check("C MUST-EXCLUDE: an allowable-stress pg(asd) as the ground snow load (the rule compares a strength Pg)", () => {
-  assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 43, sourceUrl: url, quote: "Table R301.2 – ground snow load is 43 psf (pg(asd))" } }), []);
-  assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 30, sourceUrl: url, quote: "Allowable stress design ground snow load 30 psf" } }), []);
+check("C MUST-EXCLUDE: an allowable-stress pg(asd) is never the strength ground snow load — it is kept, qualified pg_asd (stored apart from Pg)", () => {
+  const q = (o: Record<string, unknown>) => parseDesignCriteriaLookup(o, true).values.map((v) => `${v.criterion}=${v.value}/${v.qualifier ?? ""}`);
+  assert.deepEqual(q({ groundSnowLoadPsf: { value: 43, sourceUrl: url, quote: "Table R301.2 – ground snow load is 43 psf (pg(asd))" } }), ["groundSnowLoadPsf=43/pg_asd"]);
+  assert.deepEqual(q({ groundSnowLoadPsf: { value: 30, sourceUrl: url, quote: "Allowable stress design ground snow load 30 psf" } }), ["groundSnowLoadPsf=30/pg_asd"]);
 });
 check("C MUST-EXCLUDE: a staging/preview copy of a page; a truncated reply says it is not a negative result", () => {
   assert.deepEqual(lookup({ groundSnowLoadPsf: { value: 35, sourceUrl: "https://city.prelive.example.com/files/table.pdf", quote: "Ground Snow Load (psf) 35" } }), []);
