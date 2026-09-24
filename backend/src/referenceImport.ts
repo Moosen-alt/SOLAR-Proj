@@ -14,7 +14,7 @@
 import type { AppDb } from "./db";
 import type { CodeEdition, FireSetbackRule, JurisdictionCodeAmendment, JurisdictionCodeProfile, JurisdictionDesignCriteria } from "../../shared/src/types";
 import { readXlsx, pick, type SheetData } from "./xlsxRead";
-import { codeProfileKey, listCodeProfiles, resolveCriteriaWriteRow, saveResearchedCodeProfile } from "./codeProfiles";
+import { codeProfileKey, getCodeProfile, listCodeProfiles, resolveCriteriaWriteRow, saveResearchedCodeProfile } from "./codeProfiles";
 import { importSeededUtilityKnowledge, importSeededAhjKnowledge } from "./knowledgeBase";
 import { logger } from "./logger";
 
@@ -131,16 +131,23 @@ export function importAhjCodesSheet(db: AppDb, sheet: SheetData, opts: { dryRun?
 
     // Merge onto any existing seeded profile so a second sheet (NEC after Polaris)
     // adds rather than replaces; a human-verified row was already skipped above.
+    // The two LISTS a layered read takes whole from the AHJ row when it has any (adoptedCodes,
+    // fireSetbacks — getCodeProfile) start from the state's when the AHJ row has none, as the
+    // layered merge gave them before: a row saved with the sheet's "NEC 2023" alone would drop the
+    // state's ORSC/OESC/IFC from every later read. Criteria, limits and amendments are never copied.
+    const stateLayer = getCodeProfile(db, { state, ahj: "" });
+    const ownCodes = existing?.adoptedCodes?.length ? existing.adoptedCodes : stateLayer?.adoptedCodes ?? [];
+    const ownSetbacks = existing?.fireSetbacks?.length ? existing.fireSetbacks : stateLayer?.fireSetbacks ?? [];
     const merged: JurisdictionCodeProfile = {
       key,
       state,
       ahj: rowAhj,
       confidence: "seeded",
-      adoptedCodes: dedupeCodes([...(existing?.adoptedCodes ?? []), ...adoptedCodes]),
+      adoptedCodes: dedupeCodes([...ownCodes, ...adoptedCodes]),
       amendments: [...(existing?.amendments ?? []), ...amendments],
       designCriteria: { ...(existing?.designCriteria ?? {}), ...designCriteria },
       prescriptive: existing?.prescriptive ?? {},
-      fireSetbacks: existing?.fireSetbacks?.length ? existing.fireSetbacks : fireSetbacks,
+      fireSetbacks: ownSetbacks.length ? ownSetbacks : fireSetbacks,
       citations: [...(existing?.citations ?? []), { label: `Operator reference list (${sheet.name})`, sourceUrl: "" }],
       updatedAt: new Date(0).toISOString(),
     };

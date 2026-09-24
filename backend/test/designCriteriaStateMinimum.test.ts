@@ -226,13 +226,27 @@ await check("MUST-PASS (r3r-close): the reference import onto a seeded Coos Bay 
   assert.ok(f && f.severity === "blocker", `${f?.severity}: ${f?.message}`);
   assert.match(f!.message, /OR state-level code profile \(verified/);
 });
-await check("MUST-PASS (r3r-close): a NEW Oregon city is imported (the verified state row no longer refuses it) and carries only the sheet's values", () => {
+await check("MUST-PASS (r3r-close): a NEW Oregon city is imported (the verified state row no longer refuses it): the sheet's NEC and the state's code list, no criteria or limits", () => {
   const summary = importAhjCodesSheet(db, sheet([{ Name: "City of Testharbor", State: "OR", NEC: "2023 NEC" }]));
   assert.deepEqual([summary.imported, summary.skippedVerified], [1, 0], JSON.stringify(summary));
   const own = CP.exactCodeProfileRow(db, "OR", "City of Testharbor")!.profile;
   assert.equal(own.confidence, "seeded");
   assert.deepEqual(own.prescriptive, {}, "no state prescriptive block copied into the new row");
-  assert.deepEqual(own.adoptedCodes.map((c) => `${c.code} ${c.edition}`), ["NEC 2023"]);
+  assert.deepEqual(own.designCriteria, {}, "no state design criteria copied into the new row");
+  assert.ok(own.adoptedCodes.some((c) => c.code === "NEC" && c.edition === "2023"), "the sheet's NEC is on the row");
+  // A layered read takes an AHJ row's code list WHOLE: the new row keeps the state's codes, so the
+  // city does not read as "NEC 2023" alone (it read the state's full list before the import).
+  const layered = CP.getCodeProfile(db, { state: "OR", ahj: "City of Testharbor" })!.adoptedCodes.map((c) => c.code);
+  for (const code of ["ORSC", "OESC"]) assert.ok(layered.includes(code), `the layered read lost the state's ${code}: ${layered.join(", ")}`);
+});
+await check("MUST-PASS (r3r-close): a sheet's 'City of Testbay' lands on the bare 'Testbay' row on file (same jurisdiction) — no second row", () => {
+  CP.saveResearchedCodeProfile(db, row("OR", "Testbay", { amendments: [{ code: "AHJ", summary: "Imported Testbay amendment" }] }));
+  importAhjCodesSheet(db, sheet([{ Name: "City of Testbay", State: "OR", NEC: "2023 NEC" }]));
+  assert.equal(CP.exactCodeProfileRow(db, "OR", "City of Testbay"), null, "the import forked the jurisdiction into a second row");
+  const bare = CP.exactCodeProfileRow(db, "OR", "Testbay")!.profile;
+  assert.ok(bare.adoptedCodes.some((c) => c.code === "NEC" && c.edition === "2023"), "the sheet's NEC landed on the row on file");
+  assert.ok(bare.amendments.some((a) => a.summary === "Imported Testbay amendment"), "the row's own amendment is kept");
+  for (const k of MIN_KEYS) assert.equal((bare.prescriptive as Record<string, unknown>)[k], undefined, `the row gained the state's ${k}`);
 });
 await check("MUST-EXCLUDE (r3r-close): a VERIFIED city row owning its own 40 psf minimum is skipped by the import and still owns the BLOCKER", () => {
   CP.saveVerifiedCodeProfile(db, row("OR", "City of Testridge", { confidence: "verified", prescriptive: { minGroundSnowPsfPrescriptive: 40 } }), "operator");
