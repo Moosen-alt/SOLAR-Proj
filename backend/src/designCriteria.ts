@@ -808,13 +808,27 @@ export interface AhjRequiredCriterion {
 // "not acceptable", "not allowed", "exceeds", "does not match"), one that is CONDITIONAL ("If
 // ...", "verify whether ..."), and one that QUOTES THE PACKAGE ("Plan set: ...", "Calcs - ...",
 // "the letter states ..."). A rejected or quoted value is what the AHJ bounced, never its rule.
-const REQUIREMENT_CUE = /\b(?:minimum|min\.|must\s+(?:not\s+)?be|shall\s+(?:not\s+)?be|should\s+be|needs?\s+to\s+be|is\s+required|are\s+required|required|requires?|provide|(?:shall|must|may)\s+not\s+exceed|not\s+to\s+exceed)\b/i;
+const REQUIREMENT_CUE = /\b(?:minimum|min\.|must\s+(?:not\s+)?be|shall\s+(?:not\s+)?be|should\s+be|needs?\s+to\s+be|is\s+required|are\s+required|required|requires?|(?:shall|must|may)\s+not\s+exceed|not\s+to\s+exceed)\b/i;
+// "PROVIDE" ASKS FOR SOMETHING; IT DOES NOT STATE A VALUE. "Provide calculations for 16 psf ground
+// snow load", "Provide a copy of the engineer letter for the 16 psf ... used", "Provide attachment
+// spacing at 72\" o.c. per the engineer letter" all carry the PACKAGE's number. So "provide" is a
+// cue for a value only when the clause cites a CODE for it ("... per R324.4.1", "per ORSC 2023",
+// "per ASCE 7-22") and does not ask for a document; otherwise it still (a) makes a header whose
+// bullets state the values ("Provide updated design criteria ... -Ground snow load 36 psf.") and
+// (b) asks for LISTING evidence, which is a flag, not a value.
+const PROVIDE_CUE = /\b(?:provide|submit)\b/i;
+const PER_CODE = /\bper\s+(?:the\s+)?(?:(?:19|20)\d{2}\s+)?(?:[A-Z]{2,6}\s+(?:(?:19|20)\d{2}\s+)?)?(?:(?:section|sec\.?|§|table|figure)\s*)?(?:R|IRC\s*R?)?\d{3}(?:\.\d+)*\b|\bper\s+(?:the\s+)?(?:[A-Z]{2,6}\s+(?:19|20)\d{2}|(?:19|20)\d{2}\s+[A-Z]{2,6}|ASCE\s*7(?:-\d{2})?)\b/i;
+const PROVIDE_DOCUMENT = /\b(?:provide|submit)\s+(?:an?\s+|the\s+|updated\s+|revised\s+|new\s+|stamped\s+|signed\s+)*(?:cop(?:y|ies)|calc\w*|documentation|letters?|engineer\w*|details?|drawings?|plans?|evidence|verification|reports?|analysis|sheets?|photos?|specs?|information|justification|design\s+(?:by|from|letter|calc\w*))\b/i;
+/** A portal STATUS PAGE printing the application's fields ("Record Status: ... Application Information.
+ *  Wind Speed 120 mph Exposure C.") — its bare "label value" lines are the applicant's entries, not
+ *  the AHJ's rule. Only cued statements count on such a page. */
+const STATUS_PAGE = /\b(?:record\s+status|application\s+information|record\s+info(?:rmation)?|processing\s+status|workflow\s+status|expiration\s+date|application\s+status)\b|\bstatus\s*:/i;
 /** The site's fact, stated: "Testcoast City is located in a special wind region". */
 const SPECIAL_WIND_STATEMENT = /\b(?:is|are|lies|sits)\s+(?:located\s+|situated\s+)?(?:with)?in\s+(?:an?\s+|the\s+)?special\s+wind\s+(?:region|zone)\b/i;
 /** A cue that FOLLOWS its value: "Exposure C is required", "36 psf ground snow is the minimum". */
 const TRAILING_REQUIREMENT = /\b(?:is|are)\s+(?:required|the\s+minimum)\b\W*$/i;
 /** Imperatives that open a clause: "Use Vult = 130 mph", "Show ground snow 36 psf", "Design for ...". */
-const IMPERATIVE_START = /^\s*(?:please\s+)?(?:use|show|design\s+(?:for|to)|revise\s+(?:to|for)|update\s+to|submit|provide)\b/i;
+const IMPERATIVE_START = /^\s*(?:please\s+)?(?:use|show|design\s+(?:for|to)|revise\s+(?:to|for)|update\s+to)\b/i;
 // Third-person / past forms only: "the calculations show(s)/use(d)" describes the package, while
 // the imperative "Use Vult = 130 mph" / "Show ground snow 36 psf" is the requirement.
 const QUOTATION_CUE = /\b(?:shows|shown|showing|states|stated|indicates|indicated|lists|listed|uses|used|currently|(?:plans?|calc\w*|letter|drawings?|sheets?)\s+(?:show|state|use|indicate|list))\b/i;
@@ -947,24 +961,35 @@ export function extractAhjRequiredCriteria(text: string): AhjRequiredCriterion[]
   };
   // A bullet inherits the requirement cue of the header it hangs under, for as long as the
   // bullets run ("Provide updated design criteria ... -Ground snow load 36 psf.").
+  // A status page's bare "label value" lines are the application's own fields (see STATUS_PAGE).
+  const statusPage = STATUS_PAGE.test(String(text || ""));
   let headerCue = false;
   for (const { text: sentence, bullet } of ahjSentences(text)) {
     const inherited = bullet && headerCue;
     let sentenceHasCue = false;
     ahjClauses(sentence).forEach((clause, clauseIndex) => {
       if (REJECTION_CUE.test(clause) || CONDITIONAL_START.test(clause) || PACKAGE_PREFIX.test(clause)) return;
+      // "Provide ..." is a value's cue only with a code citation and no document asked for.
+      const provideAt = clause.search(PROVIDE_CUE);
+      const provideRequires = provideAt >= 0 && PER_CODE.test(clause) && !PROVIDE_DOCUMENT.test(clause);
+      const cueAt = clause.search(REQUIREMENT_CUE);
       // "X is located in a special wind region" states the site's fact: its own cue. "Exposure C is
       // required" puts the value BEFORE its cue, so the whole (clean) clause is the requirement.
       const own = IMPERATIVE_START.test(clause) || TRAILING_REQUIREMENT.test(clause) ? 0
         : SPECIAL_WIND_STATEMENT.test(clause) ? clause.search(SPECIAL_WIND_STATEMENT)
-          : clause.search(REQUIREMENT_CUE);
-      if (own >= 0) sentenceHasCue = true;
+          : provideRequires ? (cueAt >= 0 ? Math.min(cueAt, provideAt) : provideAt)
+            : cueAt;
+      if (own >= 0 || provideAt >= 0) sentenceHasCue = true;
       const quote = clause.search(QUOTATION_CUE);
       // "The calculations show the minimum ... 25 psf" — the requirement is inside the quote.
       if (quote >= 0 && (own < 0 || quote < own)) return;
-      const bare = own < 0 && BARE_LABEL_START.test(clause) && clause.split(/\s+/).length <= BARE_MAX_WORDS;
+      const bare = !statusPage && own < 0 && BARE_LABEL_START.test(clause) && clause.split(/\s+/).length <= BARE_MAX_WORDS;
       const inheritsHere = inherited && clauseIndex === 0;
-      if (own < 0 && !inheritsHere && !bare) return;
+      if (own < 0 && !inheritsHere && !bare) {
+        // "Provide UL listing for the panels ..." asks for listing EVIDENCE: a flag, not a value.
+        if (provideAt >= 0 && listingRequested(clause)) add("listingEvidenceRequired", true, sentence);
+        return;
+      }
       const from = own < 0 ? 0 : own;
       // A quotation AFTER the cue ends the requirement: "minimum is 36 psf, the plans show 16 psf".
       const q = clause.slice(from).search(QUOTATION_CUE);
@@ -1042,7 +1067,11 @@ function extractClause(
   }
 
   // The AHJ asked for module / racking LISTING evidence — a flag on its profile, not a number.
-  if (LISTING_WORD.test(clause) && LISTING_SUBJECT.test(clause)) add("listingEvidenceRequired", true);
+  if (listingRequested(clause)) add("listingEvidenceRequired", true);
+}
+
+function listingRequested(clause: string): boolean {
+  return LISTING_WORD.test(clause) && LISTING_SUBJECT.test(clause);
 }
 
 // --- approved designs: corroboration, never the rule ----------------------------

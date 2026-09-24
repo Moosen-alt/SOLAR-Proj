@@ -156,6 +156,33 @@ await check("MUST PASS: requirement cues — shall / should / minimum ... is / r
   assert.deepEqual(asMap(extractAhjRequiredCriteria("Racking must be UL 2703 listed.")), { listingEvidenceRequired: true });
 });
 
+// MF3: "Provide ..." asks for something; it states a value only with a CODE citation for it.
+await check("MUST EXCLUDE: 'Provide/Submit ...' carrying the PACKAGE's number, and a flattened portal STATUS PAGE's fields", () => {
+  const none: string[] = [
+    "Provide calculations for 16 psf ground snow load.",
+    "Provide a copy of the engineer letter for the 16 psf ground snow load used.",
+    "Provide attachment spacing at 72\" o.c. per the engineer letter.",
+    "Submit calculations for 110 mph wind, Exposure C.",
+    "Provide ground snow load 16 psf per the plans.",
+    "Provide engineering calculations for 36 psf ground snow load per ORSC R301.2.3.", // a document asked for, code or not
+    // The status page, flattened WITH periods (every production portal text is single-line).
+    "Record 187-26-000309-STR: Residential Structural Record Status: Addl Info Needed. Application Information. Wind Speed 120 mph Exposure C. Snow Load 16 psf.",
+    "Record Status: Addl Info Needed Expiration Date: 03/16/2027. Ground Snow Load 16 psf. Wind Speed 120 mph.",
+    "Application Information: Wind Exposure: C Ground Snow Load: 16 psf Roof Pitch: 6/12",
+    "Permit 2026-0001 Status: Additional Information Required\nWind Speed 115 mph\nExposure C\nSnow Load 0 psf",
+  ];
+  for (const text of none) assert.deepEqual(extractAhjRequiredCriteria(text).map((c) => [c.criterion, c.value]), [], `extracted from: ${text}`);
+});
+
+await check("MUST PASS: 'Provide X per <code>' states a requirement; a CUED comment on a status page still counts; a bare statement off a status page still counts", () => {
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide attachment spacing of 48\" o.c. maximum per R324.4.1.")), { maxAttachmentSpacingIn: 48 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide design for a ground snow load of 36 psf per ORSC R301.2.3.")), { groundSnowLoadPsf: 36 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide ground snow load of 40 psf per ASCE 7-22.")), { groundSnowLoadPsf: 40 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Record Status: Addl Info Needed. Application Information. Wind Speed 110 mph. Comments: Design wind speed shall be 120 mph.")), { windSpeedMph: 120 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Ground snow load 36 psf.")), { groundSnowLoadPsf: 36 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria(TEXT_A)), { groundSnowLoadPsf: 36, maxAttachmentSpacingIn: 24, listingEvidenceRequired: true });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // 1b. INTAKE -> PROPOSAL -> APPLY, through the real write paths.
 // ─────────────────────────────────────────────────────────────────────────────────────────
