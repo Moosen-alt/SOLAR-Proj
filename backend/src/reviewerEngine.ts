@@ -1,5 +1,6 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, ReviewerReport } from "../../shared/src/types";
 import { evaluateDesignCodeFindings, mountKindForProject, isMlpeDesignForProject } from "./codeReviewRules";
+import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
 import { evidenceForTopic, evidenceLines, fieldValue, requirementsForTopic, type EvidenceTopic, type ProjectEvidence } from "./projectEvidence";
 import { nowIso } from "./time";
@@ -73,6 +74,8 @@ export function buildReviewerReport(
      *  whether the package EXISTS, and the parser-text signals below are only a proxy for
      *  that — a proxy that reads "missing" for a project holding every split document. */
     uploadedDocTypes?: string[];
+    /** Per-document text for the design-criteria rules (one source per document). */
+    documentTexts?: DesignTextSource[];
   } = {},
 ): ReviewerReport {
   const profile = findAhjProcessProfile(project);
@@ -80,7 +83,7 @@ export function buildReviewerReport(
 
   addCoreProjectFindings(project, findings);
   addSubmittalDataFindings(project, findings);
-  findings.push(...evaluateDesignCodeFindings(project, profile, opts.codeContext, opts.uploadedDocTypes ?? []));
+  findings.push(...evaluateDesignCodeFindings(project, profile, opts.codeContext, opts.uploadedDocTypes ?? [], opts.documentTexts ?? []));
   addPlanSetFindings(project, findings);
   addUtilityFindings(project, findings);
   addProfileFindings(project, profile, findings, opts.uploadedDocTypes ?? []);

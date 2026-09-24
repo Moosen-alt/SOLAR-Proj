@@ -1129,6 +1129,63 @@ export interface FireSetbackRule {
   codeReference?: CodeReference;
 }
 
+/** A design criterion a submittal package STATES (label-anchored), per source. */
+export type StatedDesignCriterionKind =
+  | "windSpeedMph"
+  | "windExposure"
+  | "groundSnowPsf"
+  | "roofSnowPsf"
+  | "riskCategory"
+  | "asce7Edition";
+
+/** What KIND of the quantity was stated. Wind: ultimate (Vult / strength) vs nominal
+ *  (Vasd / ASD) — a Vult and a Vasd of one design are two different numbers of the same
+ *  wind. Ground snow: Pg vs Pg(asd). Roof snow: flat pf vs sloped ps vs an unqualified
+ *  "roof snow". "unspecified" = the label carried no qualifier. */
+export type StatedDesignCriterionQualifier =
+  | "ultimate"
+  | "nominal"
+  | "ground"
+  | "ground_asd"
+  | "roof"
+  | "flat"
+  | "sloped"
+  | "unspecified";
+
+export interface StatedDesignCriterion {
+  criterion: StatedDesignCriterionKind;
+  /** Numbers for mph/psf, a letter for exposure ("B"|"C"|"D"), roman/arabic for risk
+   *  category ("II"), "7-22" style for the ASCE 7 edition. */
+  value: number | string;
+  qualifier: StatedDesignCriterionQualifier;
+  /** Where it was stated ("Parsed project fields", "Structural calculation text", …). */
+  source: string;
+  /** True for parser-derived scalar fields — a reading of a document, not a document. */
+  derived: boolean;
+  /** Short text window around the label + value (never a whole title block). */
+  excerpt: string;
+}
+
+/** One entry of a plan's GOVERNING CODES / code-basis block. */
+export interface StatedCodeBasisEntry {
+  /** Family token comparable to CodeEdition.code: "ORSC", "OESC", "NEC", "IRC", … */
+  code: string;
+  /** Edition year as printed. */
+  edition: string;
+  /** The printed name when the entry was spelled out ("OREGON ELECTRICAL SPECIALTY CODE"). */
+  name?: string;
+  /** Model code the state code is based on, when printed: "(NEC 2020)". */
+  baseCode?: string;
+  baseEdition?: string;
+  source: string;
+  excerpt: string;
+}
+
+export interface StatedDesignCriteria {
+  criteria: StatedDesignCriterion[];
+  codeBasis: StatedCodeBasisEntry[];
+}
+
 export interface JurisdictionCodeAmendment {
   code: string;
   section?: string;

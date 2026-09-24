@@ -2,6 +2,7 @@ import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding }
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS } from "./projectEvidence";
 import { pathWordingScope } from "./permitPath";
+import { evaluateDesignCriteriaFindings, type DesignTextSource } from "./designCriteria";
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",
@@ -328,6 +329,9 @@ export function evaluateDesignCodeFindings(
   profile: AhjProcessProfile | null,
   ctx?: EffectiveCodeContext,
   uploadedDocTypes: string[] = [],
+  /** Per-document text (one source per uploaded document), so a design-criteria conflict
+   *  can name "plan set vs engineer's letter" rather than one merged text blob. */
+  documentTexts: DesignTextSource[] = [],
 ): ReviewerFinding[] {
   const out: ReviewerFinding[] = [];
   const all = designText(project);
@@ -573,6 +577,12 @@ export function evaluateDesignCodeFindings(
       codeReferences: [...oregonWorksheetRefs, roofLoadsRef],
     }));
   }
+
+  // PRESENT IS NOT ENOUGH — the stated VALUES are compared with each other and with the
+  // jurisdiction's recorded criteria (designCriteria.ts). Needs the jurisdiction context:
+  // without one there is nothing to compare against and no citation to render, so the
+  // legacy no-context path (pinned by the Oregon golden) is untouched.
+  if (ctx) out.push(...evaluateDesignCriteriaFindings(project, ctx, { roofMounted, extraTexts: documentTexts }));
 
   if (rsdApplies && !hasAny(all, [/rapid shutdown/i, /\bRSD\b/i, /690\.12/i])) {
     const mlpe = isMlpeDesign(project, all);
