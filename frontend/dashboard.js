@@ -3092,6 +3092,7 @@ function renderRecordPortal() {
   setIfIdle("manualJobValue", snap.jobValue != null ? String(snap.jobValue) : "");
   setIfIdle("manualProjectType", snap.projectType != null ? String(snap.projectType) : "");
   setIfIdle("manualPermitPath", snap.permitPathOverride != null ? String(snap.permitPathOverride) : "");
+  setIfIdle("manualStructureType", snap.structureTypeOverride ? String(snap.structureTypeOverride) : "unknown");
   setIfIdle("manualHomeownerEmail", snap.homeownerEmail != null ? String(snap.homeownerEmail) : "");
   setIfIdle("manualHomeownerPhone", snap.homeownerPhone != null ? String(snap.homeownerPhone) : "");
   setIfIdle("manualDescription", desc);
@@ -3116,6 +3117,12 @@ async function saveManualEntry() {
   // structural). An empty selection leaves it on auto-detect — send "" explicitly so
   // clearing a prior override sticks.
   if (permitPath) payload.permitPathOverride = permitPath;
+  // STRUCTURE TYPE (site_built / manufactured / unknown) — the operator's answer, which the
+  // reviewer reads ahead of anything the parser or the plan-set text says. Sent only when it
+  // differs from what is on file, so saving another field never re-writes it.
+  const structureTypeChoice = ($("manualStructureType")?.value || "").trim();
+  const structureTypeOnFile = String(state.detail?.project?.parserSnapshot?.structureTypeOverride || "unknown");
+  if (structureTypeChoice && structureTypeChoice !== structureTypeOnFile) payload.structureTypeOverride = structureTypeChoice;
   if (email) payload.homeownerEmail = email;
   if (phone) payload.homeownerPhone = phone;
   if (desc) payload.projectDescriptionText = desc;

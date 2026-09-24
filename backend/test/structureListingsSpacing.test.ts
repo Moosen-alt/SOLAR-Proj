@@ -115,21 +115,23 @@ check("MH MUST-EXCLUDE: manhole 'MH', 'Hudson', and parser commentary (reviewFla
 // 1b. Manufactured home — the rules.
 // ---------------------------------------------------------------------------------------
 const MH_TEXT = { structuralCalcText: "HUD manufactured home, 2x2 manufactured trusses @ 24\" o.c., attachments at 24\" o.c." };
+// STATED — the blocker level. Text alone is the warning level (structureTypeConfidence.test.ts).
+const MH_STATED = { ...MH_TEXT, structureTypeOverride: "manufactured" };
 
 check("MH + prescriptive -> BLOCKER citing R301.1.3 of the adopted ORSC, with the AHJ's load-path wording", () => {
-  const f = get(run(project({ ...MH_TEXT, permitPath: "prescriptive" })), MH_PRESCRIPTIVE);
+  const f = get(run(project({ ...MH_STATED, permitPath: "prescriptive" })), MH_PRESCRIPTIVE);
   assert.ok(f, "must fire");
   assert.equal(f!.severity, "blocker");
   assert.match(f!.cityFeedback, /continuous load path/);
   assert.ok(f!.codeReferences.some((r) => r.section === "R301.1.3" && /ORSC/.test(r.code)), JSON.stringify(f!.codeReferences));
-  assert.match(f!.evidenceFound?.[0]?.excerpt ?? "", /manufactured home/i);
+  assert.match(f!.evidenceFound?.[0]?.excerpt ?? "", /structureTypeOverride: manufactured/i);
 });
 check("MH + prescriptive is a blocker even with NO jurisdiction context (code applicability, not profile data)", () => {
-  const f = get(run(project({ ...MH_TEXT, permitPath: "prescriptive" }), null), MH_PRESCRIPTIVE);
+  const f = get(run(project({ ...MH_STATED, permitPath: "prescriptive" }), null), MH_PRESCRIPTIVE);
   assert.equal(f?.severity, "blocker");
 });
 check("MH + engineered, engineering silent on the load path -> BLOCKER (load-path), not the prescriptive one", () => {
-  const fs = run(project({ ...MH_TEXT, permitPath: "engineered" }));
+  const fs = run(project({ ...MH_STATED, permitPath: "engineered" }));
   assert.equal(get(fs, MH_LOAD_PATH)?.severity, "blocker");
   assert.ok(!get(fs, MH_PRESCRIPTIVE));
 });
@@ -139,16 +141,16 @@ check("MH + engineered, engineering carries the load to the foundation -> cleare
     "New loads are transferred from roof framing through the exterior walls to the footing.",
     "Roof framing through footing verified for the added PV load.",
   ]) {
-    const fs = run(project({ ...MH_TEXT, permitPath: "engineered" }), ctxFor(), [{ label: "Engineer's letter", text }]);
+    const fs = run(project({ ...MH_STATED, permitPath: "engineered" }), ctxFor(), [{ label: "Engineer's letter", text }]);
     assert.ok(!get(fs, MH_LOAD_PATH), `should clear: ${text}`);
   }
 });
 check("MH load-path MUST-EXCLUDE: a load path that ends at the rafters, 'ground snow', a negated statement, commentary", () => {
   for (const snap of [
-    { structuralCalcText: `${MH_TEXT.structuralCalcText} Load path to the rafters verified by pull-out calc.` },
-    { structuralCalcText: `${MH_TEXT.structuralCalcText} Load path per attachment ground snow load 28 psf.` },
-    { structuralCalcText: `${MH_TEXT.structuralCalcText} Load path to the foundation not evaluated.` },
-    { ...MH_TEXT, stampRecommendation: "Engineer must show the continuous load path to the foundation." },
+    { ...MH_STATED, structuralCalcText: `${MH_TEXT.structuralCalcText} Load path to the rafters verified by pull-out calc.` },
+    { ...MH_STATED, structuralCalcText: `${MH_TEXT.structuralCalcText} Load path per attachment ground snow load 28 psf.` },
+    { ...MH_STATED, structuralCalcText: `${MH_TEXT.structuralCalcText} Load path to the foundation not evaluated.` },
+    { ...MH_STATED, stampRecommendation: "Engineer must show the continuous load path to the foundation." },
   ]) {
     const fs = run(project({ ...snap, permitPath: "engineered" }));
     assert.equal(get(fs, MH_LOAD_PATH)?.severity, "blocker", `must still fire: ${JSON.stringify(snap).slice(0, 120)}`);
@@ -157,7 +159,7 @@ check("MH load-path MUST-EXCLUDE: a load path that ends at the rafters, 'ground 
 check("MH rules MUST-EXCLUDE: a site-built house and a ground-mounted array raise neither", () => {
   const siteBuilt = run(project({ structuralCalcText: "2x4 manufactured trusses @ 24\" o.c.", permitPath: "prescriptive" }));
   assert.ok(!get(siteBuilt, MH_PRESCRIPTIVE) && !get(siteBuilt, MH_LOAD_PATH));
-  const ground = run(project({ ...MH_TEXT, mounting: "Ground mount", permitPath: "prescriptive" }));
+  const ground = run(project({ ...MH_STATED, mounting: "Ground mount", permitPath: "prescriptive" }));
   assert.ok(!get(ground, MH_PRESCRIPTIVE) && !get(ground, MH_LOAD_PATH));
 });
 

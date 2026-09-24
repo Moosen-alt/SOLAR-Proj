@@ -733,6 +733,14 @@
                     </select>
                   </label>
                   <div id="manualPermitPathHint" class="manual-entry-hint">Prescriptive and structural applications are mutually exclusive — only the matching one is generated and uploaded.</div>
+                  <label class="manual-entry-field">Structure type (the house the array goes on)
+                    <select id="manualStructureType">
+                      <option value="unknown">Unknown — not confirmed</option>
+                      <option value="site_built">Site-built house</option>
+                      <option value="manufactured">Manufactured / mobile (HUD) home</option>
+                    </select>
+                  </label>
+                  <div class="manual-entry-hint">A manufactured home cannot use the prescriptive path and needs engineering that carries the load to the foundation. Your answer here overrides what the plan-set text suggests.</div>
                   <label class="manual-entry-field">Homeowner email
                     <input id="manualHomeownerEmail" type="email" placeholder="owner@example.com" />
                   </label>

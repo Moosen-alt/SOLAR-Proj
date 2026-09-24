@@ -314,7 +314,10 @@ interface Affirmed {
   excerpt: string;
 }
 
-function affirmedIn(sources: DesignTextSource[], patterns: RegExp[]): Affirmed | null {
+/** An extra, question-specific "this mention is not a statement" test (see notAboutThisStructure). */
+type MentionGuard = (text: string, index: number, matched: string) => boolean;
+
+function affirmedIn(sources: DesignTextSource[], patterns: RegExp[], notAStatement?: MentionGuard): Affirmed | null {
   for (const s of sources) {
     const text = String(s.text || "").replace(/\s+/g, " ");
     for (const pattern of patterns) {
@@ -325,6 +328,7 @@ function affirmedIn(sources: DesignTextSource[], patterns: RegExp[]): Affirmed |
         const before = text.slice(Math.max(0, m.index - 40), m.index);
         const after = text.slice(m.index + m[0].length, m.index + m[0].length + 40);
         if (NEGATION_BEFORE.test(before) || NEGATION_AFTER.test(after) || /\b(?:not|no|without)\b/i.test(m[0])) continue;
+        if (notAStatement?.(text, m.index, m[0])) continue;
         // The matched phrase itself, not a window: the sentence around it on a cover sheet is
         // the title block (homeowner name, address).
         return { source: s.label, excerpt: m[0].slice(0, 120) };
@@ -362,33 +366,89 @@ function affirmedEvidence(hit: Affirmed, label: string, note: string): ReviewerF
 // "AS SHOWN IN MANUFACTURER DOCUMENTATION", "manufactured by", and "manufactured trusses" on
 // an ordinary site-built roof. Those must never count. 2x2 trusses are the manufactured-home
 // tell, so "2x2 manufactured trusses" does; "2x4 manufactured trusses" does not.
+//
+// SINGULAR NOUNS ONLY. A project is one house; "manufactured homes" / "mobile homes" is the
+// generic plural of a disclaimer or a rule ("does not apply to mobile/manufactured homes",
+// "NOT FOR INSTALLATION ON MOBILE HOMES", "excludes manufactured homes", "Manufactured homes
+// require a separate evaluation") — each of which read as a BLOCKER before. "HUD standards" and
+// "HUD-certified" are income-program words too, so HUD counts only with a housing word.
 const MANUFACTURED_HOME_PATTERNS: RegExp[] = [
-  /\bmanufactured\s+(?:homes?|housing|dwellings?|residences?|house)\b/i,
-  /\bmobile\s+(?:homes?|dwellings?|residences?)\b/i,
-  /\bHUD[-\s]*(?:code\b|label|tag|data\s*plate|certif\w*|standards?\b|manufactured|homes?\b)/i,
+  /\bmanufactured\s+(?:home|dwelling|residence|house|housing\s+unit)\b/i,
+  /\bmobile\s+(?:home|dwelling|residence)\b/i,
+  /\b(?:single|double|triple)[-\s]?wide\s+(?:(?:manufactured|mobile)\s+)?(?:home|unit|trailer|dwelling)\b/i,
+  /\bHUD[-\s]*(?:code\b|label|tag|data\s*plate|manufactured)/i,
   /\b24\s*CFR\s*(?:part\s*)?3280\b/i,
   /\b(?:home|HUD|dwelling)\s+data\s*plate\b/i,
   /\bdata\s*plate\s+(?:of|on|for)\s+(?:the\s+)?(?:home|dwelling|manufactured|mobile)\b/i,
-  // Case-sensitive: "MH" as the abbreviation, with a word that makes it a dwelling. A bare
-  // "MH" is also a manhole on a site plan.
-  /\bMH\s+(?:home|unit|dwelling|park)\b/,
+  // "MH" is case-sensitive (a bare "MH" is also a manhole on a site plan); the dwelling word is
+  // not — plan text is capitals, so "MH UNIT" / "MH HOME" must read like "MH unit".
+  /\bMH\s+(?:[Hh][Oo][Mm][Ee]|[Uu][Nn][Ii][Tt]|[Dd][Ww][Ee][Ll][Ll][Ii][Nn][Gg]|[Pp][Aa][Rr][Kk])\b/,
   /\b2\s*["”]?\s*x\s*2\s*["”]?\s+(?:pre-?)?manufactured\s+truss/i,
 ];
 
-// A structure-type answer recorded as a FIELD (intake or parser). No parser field or intake
-// question exists yet (2026-09-23); these are the names one would carry, read first so adding
-// the field needs no rule change. A short field value ("MH", "Mobile", "HUD") is the answer
-// itself.
-const STRUCTURE_TYPE_FIELDS = ["structureType", "buildingType", "dwellingType", "homeType"];
-const STRUCTURE_FIELD_SHORT = /^\s*(?:MH|HUD|manufactured|mobile|manufactured\s*\/\s*mobile)\s*(?:home|dwelling)?\s*$/i;
+// A MENTION IS NOT A STATEMENT ABOUT THIS HOUSE. Beyond the adjacent-negation reader shared with
+// the other questions (affirmedIn), a manufactured-home phrase is skipped when its SENTENCE:
+//   - denies applicability to it: "This letter does not apply to a manufactured home", "not for
+//     installation on a mobile home", "not valid/approved/intended for ...", "excludes ..."
+//     (unless the phrase is pinned to this house: "does not apply to THIS manufactured home");
+//   - is a code or standard's TITLE: "2022 OREGON MANUFACTURED DWELLING AND PARK SPECIALTY CODE"
+//     in a GOVERNING CODES block, "... CONSTRUCTION AND SAFETY STANDARDS";
+//   - is a form: an unchecked box ("[ ] MANUFACTURED HOME [X] SITE BUILT"), or a question with
+//     no answer or answered no ("... MANUFACTURED HOME OR MOBILE HOME (Y/N): N").
+// The window is the sentence, not two words: that was how the disclaimers got through.
+const SENTENCE_BREAK = /[.;!?]/;
+// "not" + an applicability word, or "not for / not on / not to be". A bare "for" after a "not"
+// is not enough: "engineered, not prescriptive, for a manufactured home" is a statement.
+const APPLICABILITY_DENIED = /\b(?:not|never|nor)\b[^.;!?]{0,60}?\b(?:appl(?:y|ies|icable)|valid|approved|intended|use[ds]?|install(?:ed|ation)?|permitted|allowed|suitable|designed|rated)\b[^.;!?]*$|\bnot\s+(?:for|on|to\s+be)\b[^.;!?]*$|\bexclud\w*\b[^.;!?]*$|\bexcept(?:ing)?\b[^.;!?]*$/i;
+const THIS_STRUCTURE = /(?:\b(?:this|the\s+subject|subject|the\s+existing|existing)|\(E\))\s*$/i;
+// A title runs straight into its "CODE"/"STANDARDS" — "per" / "to" / "under" in between make it
+// a sentence citing a code ("EXISTING MANUFACTURED HOME PER OREGON CODE"), which still counts.
+const TITLE_AFTER = /^\s+(?:(?!(?:per|to|under|by|with|in|of|on)\b)[A-Za-z]+\s+){0,3}(?:specialty\s+)?(?:code|standards?|act|regulations?|program)\b/i;
+// A form's box sits on one side of its label. A box BEFORE the phrase is this label's box
+// ("[X] MANUFACTURED HOME [ ] SITE BUILT": the "[ ]" after belongs to SITE BUILT); only a label
+// with no box before it takes the one after it ("MANUFACTURED HOME [ ]").
+const BOX_BEFORE = /(\[\s*[xX✓✔]?\s*\]|[☐□☒☑■]|\(\s*[xX]?\s*\))\s*$/;
+const UNCHECKED_BOX = /^(?:\[\s*\]|☐|□|\(\s*\))$/;
+const UNCHECKED_AFTER = /^\s*(?:\[\s*\]|☐|□)/;
+const QUESTION_AFTER = /^[^.;!]{0,60}?(\?|\(\s*y\s*\/\s*n\s*\))\s*:?\s*(?:(yes|y|no|n\/a|n)(?![a-z/]))?/i;
 
-/** The one predicate: which structure carries the array. Rules read this, nothing else. */
+function notAboutThisStructure(text: string, index: number, matched: string): boolean {
+  const lookback = text.slice(Math.max(0, index - 160), index);
+  const breaks = [...lookback.matchAll(new RegExp(SENTENCE_BREAK.source, "g"))];
+  const sentenceBefore = breaks.length ? lookback.slice(breaks[breaks.length - 1].index! + 1) : lookback;
+  const after = text.slice(index + matched.length, index + matched.length + 120);
+  if (APPLICABILITY_DENIED.test(sentenceBefore) && !THIS_STRUCTURE.test(sentenceBefore)) return true;
+  if (TITLE_AFTER.test(after)) return true;
+  const boxBefore = BOX_BEFORE.exec(sentenceBefore);
+  if (boxBefore ? UNCHECKED_BOX.test(boxBefore[1].replace(/\s+/g, "")) : UNCHECKED_AFTER.test(after)) return true;
+  const question = QUESTION_AFTER.exec(after);
+  if (question) return !/^y(?:es)?$/i.test(question[2] || ""); // a question counts only when answered yes
+  return false;
+}
+
+// THE STRUCTURE-TYPE FIELDS, in precedence order. The operator's intake answer
+// (structureTypeOverride, written only by the dashboard — the parser never emits it, so a
+// re-parse cannot clobber it) always wins; then the parser's own structureType; then the
+// other names a structure-type field has carried. A short value is the answer itself.
+const INTAKE_STRUCTURE_FIELD = "structureTypeOverride";
+const STRUCTURE_TYPE_FIELDS = [INTAKE_STRUCTURE_FIELD, "structureType", "buildingType", "dwellingType", "homeType"];
+const STRUCTURE_FIELD_MANUFACTURED = /^\s*(?:MH|HUD|manufactured|mobile|manufactured\s*[/-]?\s*mobile)(?:[-_\s]*(?:home|dwelling|housing))?\s*$/i;
+const STRUCTURE_FIELD_SITE_BUILT = /^\s*(?:site|stick)[-_\s]?built(?:\s+(?:home|house|dwelling))?\s*$/i;
+export const INTAKE_STRUCTURE_SOURCE = "Intake: structure type (operator)";
+
+/** The one predicate: which structure carries the array, and how that is known. Rules read
+ *  this, nothing else. */
 export function structureType(project: ProjectRecord, extraTexts: DesignTextSource[] = []): StructureTypeFact {
   const fields: DesignTextSource[] = [];
   for (const key of STRUCTURE_TYPE_FIELDS) {
     const value = str(project, key);
-    if (!value) continue;
-    if (STRUCTURE_FIELD_SHORT.test(value)) return { kind: "manufactured_home", source: PARSED_FIELDS_SOURCE, excerpt: `${key}: ${value}`.slice(0, 80) };
+    if (!value || /^\s*(?:unknown|not\s+sure|n\/a)\s*$/i.test(value)) continue;
+    const source = key === INTAKE_STRUCTURE_FIELD ? INTAKE_STRUCTURE_SOURCE : PARSED_FIELDS_SOURCE;
+    const excerpt = `${key}: ${value}`.slice(0, 80);
+    if (STRUCTURE_FIELD_MANUFACTURED.test(value)) return { kind: "manufactured_home", basis: "stated", source, excerpt };
+    // A STATED site-built answer is the answer: text inference does not override a human's (or
+    // the parser's explicit) statement about the house.
+    if (STRUCTURE_FIELD_SITE_BUILT.test(value)) return { kind: "site_built", basis: "stated", source, excerpt };
     fields.push({ label: PARSED_FIELDS_SOURCE, text: value });
   }
   // Parser fields that carry the parser's own reading of the house.
@@ -396,8 +456,10 @@ export function structureType(project: ProjectRecord, extraTexts: DesignTextSour
     const value = str(project, key);
     if (value) fields.push({ label: PARSED_FIELDS_SOURCE, text: value });
   }
-  const hit = affirmedIn([...fields, ...packageTextSources(project, extraTexts)], MANUFACTURED_HOME_PATTERNS);
-  return hit ? { kind: "manufactured_home", source: hit.source, excerpt: hit.excerpt } : { kind: "unknown", source: "", excerpt: "" };
+  const hit = affirmedIn([...fields, ...packageTextSources(project, extraTexts)], MANUFACTURED_HOME_PATTERNS, notAboutThisStructure);
+  return hit
+    ? { kind: "manufactured_home", basis: "inferred", source: hit.source, excerpt: hit.excerpt }
+    : { kind: "unknown", basis: "none", source: "", excerpt: "" };
 }
 
 export function structureTypeForProject(project: ProjectRecord): StructureTypeFact {
@@ -746,15 +808,34 @@ export function evaluateDesignCodeFindings(
 
   // MANUFACTURED HOME — the prescriptive path does not apply, and an engineered design must
   // carry the new load through the walls to the ground. Not gated on a jurisdiction context:
-  // this is what the structure IS, not a threshold from a profile, and it fires only when the
-  // package says so (see structureType).
+  // this is what the structure IS, not a threshold from a profile (see structureType).
+  //
+  // TWO CONFIDENCE LEVELS, ONE PREDICATE. A STATED structure type (the operator's intake answer
+  // or the parser's structureType field) is a BLOCKER. A structure only the package TEXT
+  // suggests is a WARNING asking for the structure type to be confirmed: text can be a
+  // disclaimer the reader misjudged, and a blocker from a misread sentence stops a real job.
   const structure = structureType(project, documentTexts);
   if (roofMounted && structure.kind === "manufactured_home") {
-    const detected = affirmedEvidence(
-      { source: structure.source, excerpt: structure.excerpt },
-      "Manufactured home",
-      "The package identifies the structure as a manufactured (HUD / mobile) home.",
-    );
+    const stated = structure.basis === "stated";
+    const fromIntake = structure.source === INTAKE_STRUCTURE_SOURCE;
+    const detected: ReviewerFindingEvidence = {
+      kind: stated ? "field_value" : "source_excerpt",
+      label: "Manufactured home",
+      source: structure.source,
+      excerpt: structure.excerpt,
+      confidence: fromIntake ? "high" : "medium",
+      pageHint: "",
+      screenshotPath: "",
+      verifier: fromIntake ? "normalized_field" : stated ? "parser" : "rule_engine",
+      note: stated
+        ? "The structure type is recorded as a manufactured (HUD / mobile) home."
+        : "Inferred from the package text only — confirm the structure type in the project's intake (Structure type).",
+    };
+    const identified = stated
+      ? `The structure is recorded as a manufactured home ("${structure.excerpt}", ${structure.source})`
+      : `The package text suggests a manufactured home ("${structure.excerpt}", ${structure.source}) — inferred from text, not confirmed`;
+    const confirmStep = stated ? "" : " First confirm the structure type in the project's intake (Structure type: site-built / manufactured); a site-built answer clears this.";
+    const severity: ReviewerFinding["severity"] = stated ? "blocker" : "warning";
     const loadPathRef = ctx
       ? residentialCodeRef(ctx, "R301.1.3", "Engineered design", engineeredDesign.note)
       : engineeredDesign;
@@ -763,16 +844,16 @@ export function evaluateDesignCodeFindings(
       out.push({
         ...finding({
           id: "city.struct.manufactured-home-prescriptive",
-          severity: "blocker",
+          severity,
           category: "structural",
           title: "Manufactured home on the prescriptive path",
-          message: `The package identifies the structure as a manufactured home ("${structure.excerpt}", ${structure.source}), and the permit path is prescriptive. The prescriptive rooftop-PV provisions assume conventional light-frame construction; a manufactured home needs an engineered design.`,
+          message: `${identified}, and the permit path is prescriptive. The prescriptive rooftop-PV provisions assume conventional light-frame construction; a manufactured home needs an engineered design.`,
           cityFeedback,
-          designTeamAction: "Route the design to a structural engineer: an engineered design (not the prescriptive checklist) that shows the continuous load path from the PV attachments through the roof framing and walls to the foundation/piers.",
+          designTeamAction: `Route the design to a structural engineer: an engineered design (not the prescriptive checklist) that shows the continuous load path from the PV attachments through the roof framing and walls to the foundation/piers.${confirmStep}`,
           evidenceNeeded: ["Stamped engineered design for the manufactured home", "Continuous load path: attachments -> roof framing -> walls -> foundation/piers", "Framing members as built (manufactured trusses, size and spacing)"],
           codeReferences: [loadPathRef],
         }),
-        evidenceStatus: "verified",
+        evidenceStatus: stated ? "verified" : "weak",
         evidenceFound: [detected],
       });
     } else {
@@ -781,12 +862,12 @@ export function evaluateDesignCodeFindings(
         out.push({
           ...finding({
             id: "city.struct.manufactured-home-load-path",
-            severity: "blocker",
+            severity,
             category: "structural",
             title: "Manufactured home — engineering does not show a load path to the foundation",
-            message: `The package identifies the structure as a manufactured home ("${structure.excerpt}", ${structure.source}), and no engineering text in the package shows how the new PV load reaches the foundation (a continuous load path through the walls). An attachment/rafter check alone does not answer it.`,
+            message: `${identified}, and no engineering text in the package shows how the new PV load reaches the foundation (a continuous load path through the walls). An attachment/rafter check alone does not answer it.`,
             cityFeedback,
-            designTeamAction: "Have the engineer of record extend the design from the attachments through the roof framing, walls and floor system to the foundation/piers, and state the continuous load path in the sealed letter.",
+            designTeamAction: `Have the engineer of record extend the design from the attachments through the roof framing, walls and floor system to the foundation/piers, and state the continuous load path in the sealed letter.${confirmStep}`,
             evidenceNeeded: ["Sealed engineering showing the continuous load path to the foundation/piers", "Wall and foundation/pier capacity for the added load"],
             codeReferences: [loadPathRef],
           }),

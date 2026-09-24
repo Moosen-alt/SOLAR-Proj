@@ -1176,14 +1176,25 @@ export interface DesignCriteriaResearchResult {
   notes: string;
 }
 
-/** WHAT KIND OF STRUCTURE CARRIES THE ARRAY. Two answers, not three: text can prove a
- *  manufactured (HUD / mobile) home, but silence never proves a site-built one — so the
- *  absence of a signal is "unknown", never "site_built". One predicate answers it
- *  (structureTypeForProject in codeReviewRules.ts); every rule reads that. */
-export type StructureKind = "manufactured_home" | "unknown";
+/** WHAT KIND OF STRUCTURE CARRIES THE ARRAY. One predicate answers it (structureType in
+ *  codeReviewRules.ts); every rule reads that. "site_built" exists only as a STATED answer
+ *  (the intake's structure-type field, or the parser's structureType): silence never proves a
+ *  site-built house, so the absence of any signal is "unknown". */
+export type StructureKind = "manufactured_home" | "site_built" | "unknown";
+
+/** HOW the answer is known — the two confidence levels the rules act on.
+ *  stated   — an explicit structure-type field: the operator's intake answer
+ *             (structureTypeOverride, which always wins) or the parser's structureType.
+ *             A stated manufactured home is a BLOCKER on the prescriptive path.
+ *  inferred — only the package text suggests it ("HUD manufactured home" in a letter). A
+ *             WARNING that asks for the structure type to be confirmed; text can be a
+ *             disclaimer the reader misjudged, so it never blocks on its own.
+ *  none     — no answer (kind "unknown"). */
+export type StructureBasis = "stated" | "inferred" | "none";
 
 export interface StructureTypeFact {
   kind: StructureKind;
+  basis: StructureBasis;
   /** Where the answer came from: a structure-type FIELD, or the document text that said so. */
   source: string;
   /** The words that decided it, tight (no surrounding title-block text). "" when unknown. */

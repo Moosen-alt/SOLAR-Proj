@@ -1180,6 +1180,7 @@ STRUCTURAL (read from structural notes / roof framing plan — drive prescriptiv
 - riskCategory: building risk/occupancy category as a Roman numeral ("I" or "II" for residential) if stated
 - lightFrame: "yes" if the structure is conventional light-frame (dimensional lumber or engineered wood rafters/trusses) construction, "no" if it is not (e.g. steel/concrete/heavy timber), else omit
 - framingType: "rafter" or "truss" — the roof framing member type
+- structureType: "manufactured" if the documents state THIS house is a manufactured/mobile (HUD) home, "site_built" if they state site-built; else omit (a disclaimer, exclusion or code title is not an answer)
 - roofLayers: number of existing roofing layers/coverings under the array (number, e.g. 1)
 - moduleHeightAboveRoof: max height of the module top above the roof surface in inches (number, e.g. 10)
 - gravityWindDesign: "yes" only when structural design notes/details establish design for the site's gravity and wind loads; cite the evidence, not just a jurisdiction default.
