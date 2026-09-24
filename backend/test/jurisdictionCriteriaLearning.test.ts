@@ -312,6 +312,9 @@ await check("THE APPROVAL: a fields-only (project) apply does NOT strand the jur
   assert.equal(mid.status, "pending", "the item closed with its jurisdiction proposals still 'proposed' — nothing left to click");
   assert.ok(parseCorrectionProposals(mid.notes)!.jurisdictionProposals.every((p) => p.status === "proposed"));
   assert.equal(auditCount(pid, "correction.waiting_on_designer"), 1);
+  // The background triage lands AFTER that approval: its rewrite must keep "project half done".
+  persistTriage(db, { correctionId: cid, projectId: pid }, { actions: ["Revise sheets."], proposals: [{ field: "meterNumber", currentValue: "", proposedValue: "M-1", basis: "x" }] });
+  assert.ok((JSON.parse(reviewItem(pid, cid)!.notes.slice(13)) as { projectAppliedAt?: string }).projectAppliedAt, "the triage rewrite dropped the record that the project half already ran");
   // The operator's next click (the dashboard posts {}): the jurisdiction values land, the item
   // closes, and the project half (designer wait) is NOT run a second time.
   const out = applyCorrectionApproval(db, cid, undefined, "op");
@@ -319,6 +322,25 @@ await check("THE APPROVAL: a fields-only (project) apply does NOT strand the jur
   assert.equal(ownRow("City of Selectton")!.profile.designCriteria.groundSnowLoadPsf, 36);
   assert.equal(reviewItem(pid, cid)!.status, "approved");
   assert.equal(auditCount(pid, "correction.waiting_on_designer"), 1, "the designer wait ran twice");
+  assert.equal(auditCount(pid, "correction.proposals_applied"), 1, "the project half was applied twice");
+});
+
+await check("OTHER STATES: a Texas AHJ's correction proposes for ITS OWN row (tx|...), never a same-named row in another state", () => {
+  // Same city name seeded in Oregon: a state is part of the key, and it is never crossed.
+  seeded("City of Plano", { designCriteria: { windSpeedMph: 100 } });
+  const orBefore = JSON.stringify(ownRow("City of Plano")!.profile);
+  const pid = R.createProject(db, {
+    owner: "Synthetic Owner", state: "TX", dcKw: "8.4", acKw: "7.7", street: "1 Test Way", city: "Plano", zip: "75074",
+    ahj: "City of Plano", utility: "Test Electric",
+  } as never).project.id;
+  const cid = R.addManualCorrection(db, pid, "Design wind speed shall be 115 mph, Exposure C.").corrections[0].id;
+  const j = itemPayload(pid, cid)!.jurisdictionProposals;
+  assert.deepEqual(asMap(j), { windSpeedMph: 115, windExposure: "C" });
+  assert.ok(j.every((x) => x.state === "TX" && x.targetProfileKey === CP.codeProfileKey({ state: "TX", ahj: "City of Plano" })));
+  assert.ok(j.every((x) => x.currentValue === null), "an Oregon value was shown as the Texas city's");
+  applyJurisdictionProposals(db, cid, undefined, "op");
+  assert.equal(CP.exactCodeProfileRow(db, "TX", "City of Plano")!.profile.designCriteria.windSpeedMph, 115);
+  assert.equal(JSON.stringify(ownRow("City of Plano")!.profile), orBefore, "the Oregon row was changed by a Texas correction");
 });
 
 await check("THE APPROVAL: a jurisdiction-only approval CLOSES the review item and marks the correction human-reviewed", () => {

@@ -211,12 +211,21 @@ export function persistTriage(
   const jurisdictionProposals = parseCorrectionProposals(linked[0].notes)?.jurisdictionProposals?.length
     ? parseCorrectionProposals(linked[0].notes)!.jurisdictionProposals
     : buildJurisdictionProposals(db, input.correctionId);
+  // An approval that already ran the PROJECT half (and kept the item open for its jurisdiction
+  // proposals) stays recorded: a triage landing afterwards must not make the next click re-run the
+  // project updates or the designer wait. Its fresh proposals are then moot — the half is done.
+  let prior: Record<string, unknown> = {};
+  try { prior = JSON.parse(linked[0].notes.slice("agent-triage:".length)) as Record<string, unknown>; } catch { prior = {}; }
+  const projectDone = prior.projectAppliedAt
+    ? { projectAppliedAt: prior.projectAppliedAt, appliedProposals: prior.appliedProposals ?? [] }
+    : null;
   const payload = JSON.stringify({
     correctionId: input.correctionId,
     bucket: t.bucket,
-    proposals: t.proposals,
+    proposals: projectDone ? [] : t.proposals,
     actions: t.actions,
     ...(jurisdictionProposals.length ? { jurisdictionProposals } : {}),
+    ...(projectDone ?? {}),
     generatedAt: ts,
   });
   if (linked.length === 1) db.run(
