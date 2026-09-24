@@ -172,6 +172,16 @@ await check("MUST-PASS: a VERIFIED city row carrying its OWN minimum over a seed
   assert.match(f!.message, /City of Testcreek's minimum for prescriptive design is 40 psf/);
 });
 
+await check("MUST-PASS: PUT /api/code-profiles/verify keeps the minimums (the verify schema does not strip them) and they round-trip", async () => {
+  const { codeProfileVerifySchema } = await import("../src/validation");
+  const body = codeProfileVerifySchema.parse({ state: "MT", ahj: "", prescriptive: { maxGroundSnowPsf: 70, ...OR_MINS } });
+  assert.deepEqual(body.prescriptive, { maxGroundSnowPsf: 70, ...OR_MINS });
+  const saved = CP.saveVerifiedCodeProfile(db, row("MT", "", { confidence: "verified", prescriptive: body.prescriptive }), "operator");
+  assert.equal(saved.prescriptive.minGroundSnowPsfPrescriptive, 36);
+  assert.equal(saved.prescriptive.minGroundSnowCitation, "ORSC 2023 R301.2.3.1");
+  assert.throws(() => codeProfileVerifySchema.parse({ state: "MT", prescriptive: { minGroundSnowPsfPrescriptive: -5 } }), "a negative minimum is refused");
+});
+
 if (failures) {
   console.error(`\n${failures} state-minimum ground snow check(s) FAILED`);
   process.exit(1);
