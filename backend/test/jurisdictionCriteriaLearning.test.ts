@@ -941,6 +941,8 @@ await check("MUST PASS (r3r): a city .gov page, up.codes, library.municode.com, 
     "https://up.codes/viewer/testcity/irc-2021/chapter/3",
     "https://library.municode.com/or/testcity/codes/code_of_ordinances",
     "https://codes.iccsafe.org/content/ORSC2023P1",
+    "https://www.floridabuilding.org/bc/bc_default.aspx", // the state's own code site, on .org
+    "https://testcity.municipal.codes/CC/Chapter9", // a publisher of the city's adopted code (cited in production)
     "https://www.co.testcounty.or.us/planning",
     "https://www.testcity.org/departments/building",
     "https://www.cityoftestcity.org/building",

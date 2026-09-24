@@ -1071,7 +1071,8 @@ export function extractAhjRequiredCriteria(text: string, opts: { statusReading?:
         : SPECIAL_WIND_STATEMENT.test(clause) ? clause.search(SPECIAL_WIND_STATEMENT)
           : provideRequires ? (cueAt >= 0 ? Math.min(cueAt, provideAt) : provideAt)
             : cueAt;
-      if (own >= 0 || (provideAt >= 0 && !asksDocument)) sentenceHasCue = true;
+      // (A header asking for a document keeps this cue: headerAsksDocument turns it off for its items.)
+      if (own >= 0 || provideAt >= 0) sentenceHasCue = true;
       const quote = clause.search(QUOTATION_CUE);
       // "The calculations show the minimum ... 25 psf" — the requirement is inside the quote.
       if (quote >= 0 && (own < 0 || quote < own)) return;

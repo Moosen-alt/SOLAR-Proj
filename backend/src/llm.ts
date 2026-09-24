@@ -800,14 +800,8 @@ function inRangeOrList(quote: string, at: number, end: number): boolean {
     || /^\s*(?:psf|mph|lbs?)?\s*(?:-|–|—|\/|,|\bto\b|\bor\b|\band\b|\bthrough\b)\s*\d/i.test(after);
 }
 
-/**
- * WHICH LABEL A NUMBER BELONGS TO. The text from the previous number (or ";") up to this one is its
- * label; a parenthetical right after it ("43 psf (pg(asd))", "175 mph (Vult)") qualifies it too.
- * "Vult = 175 mph, Vasd = 136 mph": 136's label is "Vasd". "Roof snow load 25 psf; ground snow load
- * 35 psf": 25's label is "Roof snow load".
- */
 /** Publishers of adopted code text (a jurisdiction's own code, as that jurisdiction adopted it). */
-const CODE_PUBLISHER_HOSTS = ["up.codes", "iccsafe.org", "municode.com", "ecode360.com", "codepublishing.com", "amlegal.com", "generalcode.com", "sterlingcodifiers.com", "qcode.us", "codelibrary.amlegal.com"];
+const CODE_PUBLISHER_HOSTS = ["up.codes", "iccsafe.org", "municode.com", "ecode360.com", "codepublishing.com", "amlegal.com", "generalcode.com", "sterlingcodifiers.com", "qcode.us", "codelibrary.amlegal.com", "municipal.codes", "floridabuilding.org"];
 /** Known NON-official hosts, refused whatever their suffix or name: the address-based hazard lookup
  *  tools the lookup prompt already says to omit (ATC's hazards tool, ASCE's hazard tool, SEAO's
  *  Oregon snow-load lookup — site-specific by design), and encyclopedias. */
@@ -850,6 +844,12 @@ export function isOfficialCodeSource(url: string, jurisdiction: { ahj: string; s
   return /\.org$/.test(host) && jurisdiction != null && orgHostNamesJurisdiction(host, jurisdiction);
 }
 
+/**
+ * WHICH LABEL A NUMBER BELONGS TO. The text from the previous number (or ";") up to this one is its
+ * label; a parenthetical right after it ("43 psf (pg(asd))", "175 mph (Vult)") qualifies it too.
+ * "Vult = 175 mph, Vasd = 136 mph": 136's label is "Vasd". "Roof snow load 25 psf; ground snow load
+ * 35 psf": 25's label is "Roof snow load".
+ */
 type NumberLabel = { before: string; after: string; nextNumberFollows: boolean };
 function labelOf(quote: string, nums: Array<{ at: number; end: number }>, i: number): NumberLabel {
   const start = i > 0 ? nums[i - 1].end : 0;
