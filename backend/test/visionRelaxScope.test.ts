@@ -68,7 +68,9 @@ for (const variant of [
   const p = mk({ planSetExtractedText: `${plan}
 ${letter}` });
   const base = { key: "or|city of coos bay|unknown", state: "OR", ahj: "City of Coos Bay", confidence: "verified" as const, adoptedCodes: [{ code: "OESC", edition: "2023" }, { code: "NEC", edition: "2023" }], amendments: [], fireSetbacks: [], citations: [], updatedAt: "" };
-  for (const over of [{ designCriteria: { windSpeedMph: 120, groundSnowLoadPsf: 36 }, prescriptive: { maxAttachmentSpacingIn: 24 } }, { designCriteria: {}, prescriptive: {} }]) {
+  // The state minimum ground snow load (ORSC 2023 R301.2.3.1: 36 / 25 psf) produces the
+  // ground-snow-below-state-minimum finding against the plan's 20 psf.
+  for (const over of [{ designCriteria: { windSpeedMph: 120, groundSnowLoadPsf: 36 }, prescriptive: { maxAttachmentSpacingIn: 24, minGroundSnowPsfPrescriptive: 36, minGroundSnowPsfEngineered: 25 } }, { designCriteria: {}, prescriptive: {} }]) {
     const codeContext = buildCodeContext("OR", "City of Coos Bay", { ...base, ...over });
     for (const f of buildReviewerReport(p, { codeContext, documentTexts: [{ label: "Plan set", text: plan }, { label: "Structural letter", text: letter }] }).findings) allProducibleIds.add(f.id);
   }

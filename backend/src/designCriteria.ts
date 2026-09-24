@@ -1437,7 +1437,7 @@ function profileCodeEntry(a: { code: string; edition: string; title?: string; no
 
 /** Whose row supplied a profile field, and was THAT row verified. A layered read records it per
  *  field (JurisdictionCodeProfile.fieldSources); a single row answers for all its fields. */
-function fieldProvenance(ctx: EffectiveCodeContext, field: string): { verified: boolean; text: string } {
+function fieldProvenance(ctx: EffectiveCodeContext, field: string): { verified: boolean; text: string; owner: string } {
   const src = ctx.profile?.fieldSources?.[field];
   const verified = src ? src.confidence === "verified" : ctx.verified;
   const ahj = src ? src.ahj : ctx.profile?.ahj ?? "";
@@ -1445,9 +1445,26 @@ function fieldProvenance(ctx: EffectiveCodeContext, field: string): { verified: 
   const verifiedBy = src ? src.verifiedBy : ctx.profile?.verifiedBy;
   const verifiedAt = src ? src.verifiedAt : ctx.profile?.verifiedAt;
   const who = ahj ? `${ahj} (${state})` : `${state || "state"} state-level`;
-  if (!verified) return { verified, text: `${who} code profile (seeded — researched/imported, not yet human-verified)` };
-  if (verifiedBy === "reference-seed") return { verified, text: `${who} code profile (verified via the shipped reference seed, not by an operator here)` };
-  return { verified, text: `${who} code profile (human-verified${verifiedBy ? ` by ${verifiedBy}` : ""}${verifiedAt ? ` on ${verifiedAt.slice(0, 10)}` : ""})` };
+  // Whose minimum it is, in a sentence: the state's, unless the AHJ's own row carries it.
+  const owner = ahj || state || "the state";
+  if (!verified) return { verified, owner, text: `${who} code profile (seeded — researched/imported, not yet human-verified)` };
+  if (verifiedBy === "reference-seed") return { verified, owner, text: `${who} code profile (verified via the shipped reference seed, not by an operator here)` };
+  return { verified, owner, text: `${who} code profile (human-verified${verifiedBy ? ` by ${verifiedBy}` : ""}${verifiedAt ? ` on ${verifiedAt.slice(0, 10)}` : ""})` };
+}
+
+/** The minimum ground snow load that applies to this project's path, and which profile field holds
+ *  it. Path known: its own minimum (none on file for that path -> null). Path unknown: the stricter
+ *  of the minimums on file. */
+function groundSnowMinimumFor(ctx: EffectiveCodeContext, path: "prescriptive" | "engineered" | ""): {
+  required: number; field: string; mins: { prescriptive: number | null; engineered: number | null };
+} | null {
+  const p = ctx.prescriptive ?? {};
+  const positive = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
+  const mins = { prescriptive: positive(p.minGroundSnowPsfPrescriptive), engineered: positive(p.minGroundSnowPsfEngineered) };
+  const usePrescriptive = path ? path === "prescriptive" : (mins.prescriptive ?? -1) >= (mins.engineered ?? -1);
+  const required = usePrescriptive ? mins.prescriptive : mins.engineered;
+  if (required == null) return null;
+  return { required, field: `prescriptive.${usePrescriptive ? "minGroundSnowPsfPrescriptive" : "minGroundSnowPsfEngineered"}`, mins };
 }
 
 function groundSnowMinimumFinding(
@@ -1456,24 +1473,11 @@ function groundSnowMinimumFinding(
   path: "prescriptive" | "engineered" | "",
 ): ReviewerFinding | null {
   const p = ctx.prescriptive ?? {};
-  const positive = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
-  const mins = { prescriptive: positive(p.minGroundSnowPsfPrescriptive), engineered: positive(p.minGroundSnowPsfEngineered) };
-  // Path known: its own minimum (none on file for that path -> nothing to compare). Path unknown:
-  // the stricter of the minimums on file, as a warning.
-  const pathKey = path === "prescriptive" ? "minGroundSnowPsfPrescriptive" : "minGroundSnowPsfEngineered";
-  let required: number | null;
-  let field: string;
-  if (path) {
-    required = mins[path];
-    field = `prescriptive.${pathKey}`;
-  } else {
-    const strictPrescriptive = (mins.prescriptive ?? -1) >= (mins.engineered ?? -1);
-    required = strictPrescriptive ? mins.prescriptive : mins.engineered;
-    field = `prescriptive.${strictPrescriptive ? "minGroundSnowPsfPrescriptive" : "minGroundSnowPsfEngineered"}`;
-  }
-  if (required == null) return null;
+  const applies = groundSnowMinimumFor(ctx, path);
+  if (!applies) return null;
+  const { required, field, mins } = applies;
   // Pg only: a Pg(asd) (~0.7 x Pg) or a roof snow load under the minimum says nothing about Pg.
-  const below = criteria.filter((c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground" && typeof c.value === "number" && c.value < required!);
+  const below = criteria.filter((c) => c.criterion === "groundSnowPsf" && c.qualifier === "ground" && typeof c.value === "number" && c.value < required);
   if (!below.length) return null;
   const prov = fieldProvenance(ctx, field);
   const citation = String(p.minGroundSnowCitation || "").trim();
@@ -1483,23 +1487,32 @@ function groundSnowMinimumFinding(
     e.sources.add(c.source);
     byValue.set(String(c.value), e);
   }
-  const where = ctx.state || ctx.profile?.state || "the state";
+  // A DOCUMENT must state it for a blocker. The parser's "snow" field carries no qualifier — it
+  // may hold a Pg(asd) or a roof snow load — so a value only the parser read is a warning.
+  const documentStates = below.some((c) => !c.derived);
+  const pathName = (k: "prescriptive" | "engineered"): string => (k === "prescriptive" ? "prescriptive" : "non-prescriptive");
   const pathWords = path === "prescriptive" ? "prescriptive design"
     : path === "engineered" ? "non-prescriptive (engineered) design"
-      : `${required === mins.prescriptive ? "prescriptive" : "non-prescriptive"} design — the stricter minimum, because the project's permit path is not decided`;
+      : `${required === mins.prescriptive ? "prescriptive" : "non-prescriptive"} design — the stricter minimum, used because the project's permit path is unknown`;
   const others = path ? "" : [
     mins.prescriptive != null ? `${mins.prescriptive} psf prescriptive` : "",
     mins.engineered != null ? `${mins.engineered} psf non-prescriptive` : "",
   ].filter(Boolean).join(", ");
-  const line = `Ground snow load Pg: stated ${describeValues([...byValue.values()], " psf")} — ${where}'s minimum for ${pathWords} is ${required} psf${citation ? ` (${citation})` : ""}`;
+  const line = `Ground snow load Pg: stated ${describeValues([...byValue.values()], " psf")} — ${prov.owner}'s minimum for ${pathWords} is ${required} psf${citation ? ` (${citation})` : ""}`;
+  const notes = [
+    others ? `Minimums on file: ${others}. The permit path is unknown (no operator choice and no parser reading), so this is a warning until the path is set.` : "",
+    documentStates ? "" : "Only the parser's reading states this value (no document text below the minimum was read); confirm it on the plan set.",
+  ].filter(Boolean).join(" ");
   return {
     id: "city.struct.ground-snow-below-state-minimum",
-    severity: path && prov.verified ? "blocker" : "warning",
+    severity: path && prov.verified && documentStates ? "blocker" : "warning",
     category: "structural",
     title: "Ground snow load below the state's minimum",
-    message: `${line}.${others ? ` Minimums on file: ${others}; confirm the permit path.` : ""} Minimum from the ${prov.text}. The site-specific Pg may be higher than the minimum; it is never lower.`,
-    cityFeedback: `The design ground snow load is below the minimum ${required} psf${citation ? ` required by ${citation}` : ""}${path ? ` for ${path === "prescriptive" ? "prescriptive" : "non-prescriptive"} design` : ""}. Revise the design criteria on the plan set and in the engineer's letter/calculations to the site-specific ground snow load, not less than ${required} psf.`,
-    designTeamAction: `Look up the site's ground snow load (not less than ${required} psf), re-run the structural design at that value, and reissue the plan-set design criteria and the engineer's letter/calculations.`,
+    message: `${line}.${notes ? ` ${notes}` : ""} Minimum from the ${prov.text}. The site-specific Pg may be higher than the minimum; it is never lower.`,
+    cityFeedback: path
+      ? `The design ground snow load is below the minimum ${required} psf${citation ? ` required by ${citation}` : ""} for ${pathName(path)} design. Revise the design criteria on the plan set and in the engineer's letter/calculations to the site-specific ground snow load, not less than ${required} psf.`
+      : `The design ground snow load is below the minimum ground snow load${citation ? ` of ${citation}` : ""} (${others}). Revise the design criteria on the plan set and in the engineer's letter/calculations to the site-specific ground snow load, not less than the minimum for the permit path.`,
+    designTeamAction: `${path ? "" : "Set the permit path (prescriptive or engineered) on the project. "}Look up the site's ground snow load (not less than ${path ? `${required} psf` : "the minimum for that path"}), re-run the structural design at that value, and reissue the plan-set design criteria and the engineer's letter/calculations.`,
     evidenceNeeded: ["Site-specific ground snow load Pg (not less than the state minimum)", "Plan-set design criteria at that Pg", "Engineer's letter/calculation at that Pg", line].slice(0, 6),
     codeReferences: [ref(ctx, "R301.2.3", "Snow loads", `${citation ? `${citation}: ` : ""}minimum ground snow load ${others || `${required} psf`}.`)],
     installerCallout: true,
@@ -1679,8 +1692,12 @@ export function evaluateDesignCriteriaFindings(
         }
         return `stated in the package: ${describeValues([...byValue.values()], "")}`;
       };
+      // A state minimum on file was compared (b2), but a minimum is not the site's value: say which
+      // was checked, so "not checked" and "checked" are not both implied about one number.
+      const minimum = groundSnowMinimumFor(ctx, opts.permitPath ?? "");
+      const minimumNote = minimum ? ` (compared only with the ${minimum.required} psf minimum for ${opts.permitPath ? `${opts.permitPath === "prescriptive" ? "prescriptive" : "non-prescriptive"} design` : "the stricter path, the permit path being unknown"}, not with the site's own Pg)` : "";
       const lines = [
-        ahjSnow == null ? `ground snow — ${say((c) => c.criterion === "groundSnowPsf", " psf")}` : "",
+        ahjSnow == null ? `ground snow — ${say((c) => c.criterion === "groundSnowPsf", " psf")}${minimumNote}` : "",
         ahjWind == null ? `wind speed — ${say((c) => c.criterion === "windSpeedMph", " mph")}` : "",
       ].filter(Boolean);
       const quoted = stated.criteria.filter((c) => (ahjSnow == null && c.criterion === "groundSnowPsf") || (ahjWind == null && c.criterion === "windSpeedMph"));
