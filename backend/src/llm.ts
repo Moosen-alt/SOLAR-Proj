@@ -806,13 +806,48 @@ function inRangeOrList(quote: string, at: number, end: number): boolean {
  * "Vult = 175 mph, Vasd = 136 mph": 136's label is "Vasd". "Roof snow load 25 psf; ground snow load
  * 35 psf": 25's label is "Roof snow load".
  */
-/** A government host (.gov / .us / .org — many cities publish on .org) or a publisher of adopted code text. */
+/** Publishers of adopted code text (a jurisdiction's own code, as that jurisdiction adopted it). */
 const CODE_PUBLISHER_HOSTS = ["up.codes", "iccsafe.org", "municode.com", "ecode360.com", "codepublishing.com", "amlegal.com", "generalcode.com", "sterlingcodifiers.com", "qcode.us", "codelibrary.amlegal.com"];
-export function isOfficialCodeSource(url: string): boolean {
+/** Known NON-official hosts, refused whatever their suffix or name: the address-based hazard lookup
+ *  tools the lookup prompt already says to omit (ATC's hazards tool, ASCE's hazard tool, SEAO's
+ *  Oregon snow-load lookup — site-specific by design), and encyclopedias. */
+const NON_OFFICIAL_HOSTS = ["atcouncil.org", "ascehazardtool.org", "seao.org", "wikipedia.org", "wikimedia.org", "wikiwand.com"];
+/** The words a jurisdiction's name carries that are not its name. */
+const JURISDICTION_FILLER = /\b(?:city|town|township|village|borough|county|parish|municipality|of|the)\b/g;
+/** Is the host this jurisdiction's own .org? The registrable label ("coosbay" in www.coosbay.org)
+ *  must BE the jurisdiction's name — alone, or with the usual city/county/state affixes — not merely
+ *  contain it ("salemhealth.org" is not Salem's). */
+function orgHostNamesJurisdiction(host: string, jurisdiction: { ahj: string; state: string }): boolean {
+  const label = host.split(".").slice(-2, -1)[0]?.replace(/[^a-z0-9]/g, "") ?? "";
+  const full = jurisdiction.ahj.toLowerCase().replace(/[^a-z0-9\s]/g, " ");
+  const core = full.replace(JURISDICTION_FILLER, " ").replace(/\s+/g, "");
+  if (!label || core.length < 3) return false;
+  const st = jurisdiction.state.trim().toLowerCase().replace(/[^a-z]/g, "");
+  const names = new Set([core, full.replace(/\s+/g, "")]);
+  for (const n of [...names]) {
+    for (const pre of ["", "cityof", "townof", "villageof", "countyof", "co", "ci"]) {
+      for (const post of ["", "city", "county", "co", "town"]) {
+        names.add(`${pre}${n}${post}`);
+        if (st) names.add(`${pre}${n}${post}${st}`);
+      }
+    }
+  }
+  return names.has(label);
+}
+/**
+ * THE PAGES A LOOKUP VALUE MAY COME FROM: a government host (.gov / .us / .mil), a publisher of
+ * adopted code text, or a .org that is THIS jurisdiction's own site (the host names it — pass the
+ * jurisdiction; without one no .org is accepted). Every other .org — a trade association's blog, an
+ * encyclopedia, a hazard lookup tool — is not an official page: accepting the whole suffix let a
+ * wikipedia / association / atcouncil.org value become a jurisdiction's seeded criterion.
+ */
+export function isOfficialCodeSource(url: string, jurisdiction: { ahj: string; state: string } | null = null): boolean {
   let host = "";
   try { host = new URL(url).hostname.toLowerCase(); } catch { return false; }
-  if (/\.(?:gov|us|org|mil)$/.test(host)) return true;
-  return CODE_PUBLISHER_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+  if (NON_OFFICIAL_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) return false;
+  if (/\.(?:gov|us|mil)$/.test(host)) return true;
+  if (CODE_PUBLISHER_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) return true;
+  return /\.org$/.test(host) && jurisdiction != null && orgHostNamesJurisdiction(host, jurisdiction);
 }
 
 type NumberLabel = { before: string; after: string; nextNumberFollows: boolean };
@@ -870,7 +905,13 @@ const SITE_CONDITIONAL = /\bsite[-\s]specific\b|\b(?:below|above|under|over)\s+\
  * with qualifier "pg_asd" (stored apart from Pg); an exposure quote names the category.
  * Pure — tested without a network.
  */
-export function parseDesignCriteriaLookup(parsed: Record<string, unknown>, grounded: boolean, truncated = false): DesignCriteriaResearchResult {
+export function parseDesignCriteriaLookup(
+  parsed: Record<string, unknown>,
+  grounded: boolean,
+  truncated = false,
+  /** The jurisdiction looked up — its own .org site is an official source; with null, no .org is. */
+  jurisdiction: { ahj: string; state: string } | null = null,
+): DesignCriteriaResearchResult {
   const values: DesignCriteriaResearchResult["values"] = [];
   const dropped: string[] = [];
   if (grounded) {
@@ -919,7 +960,7 @@ export function parseDesignCriteriaLookup(parsed: Record<string, unknown>, groun
       if (!why && /^https?:\/\/[^/]*\b(?:prelive|preview|staging|stage|uat|dev|test)\b/i.test(sourceUrl)) why = "source is a staging/preview host";
       // Official pages only — the same list the prompt gives the page fetch (a fetched blog or vendor
       // page must not become a jurisdiction's seeded value).
-      if (!why && !isOfficialCodeSource(sourceUrl)) why = "source is not an official government or code-publisher page";
+      if (!why && !isOfficialCodeSource(sourceUrl, jurisdiction)) why = "source is not an official government or code-publisher page";
       if (why) { dropped.push(`${key} ${value} (${why})`); continue; }
       // One value per stored field: a strength Pg and a pg(asd) may both land; two answers for the
       // same one (the model put a pg(asd) quote under groundSnowLoadPsf and also answered the asd key) keep the first.
@@ -1915,7 +1956,7 @@ Rules:
       logger.warn("llm", "researchDesignCriteria web search failed", { err: errMsg(err) });
       return { provider: "claude", values: [], webGrounded: false, notes: "Web search failed — nothing looked up." };
     }
-    const out = parseDesignCriteriaLookup(this.parseJson<Record<string, unknown>>(raw, {}), grounded, truncated);
+    const out = parseDesignCriteriaLookup(this.parseJson<Record<string, unknown>>(raw, {}), grounded, truncated, { ahj: input.ahj, state: input.state });
     return fetches ? { ...out, notes: `${out.notes} Pages read: ${fetches}.`.trim() } : out;
   }
 

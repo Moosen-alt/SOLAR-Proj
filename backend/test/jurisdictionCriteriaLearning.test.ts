@@ -183,6 +183,37 @@ await check("MUST PASS: 'Provide X per <code>' states a requirement; a CUED comm
   assert.deepEqual(asMap(extractAhjRequiredCriteria(TEXT_A)), { groundSnowLoadPsf: 36, maxAttachmentSpacingIn: 24, listingEvidenceRequired: true });
 });
 
+// r3r MUST-FIX 1: a document noun ANYWHERE in what "Provide" asks for — not only the word right after
+// it — makes the number the package's; a header that asks for a document passes no cue (and no bare
+// reading) to its items. The first text puts an ADJECTIVE before "calculations": without calc\w* in
+// the noun list, or with the old adjacent-word match, it proposes 16.
+await check("MUST EXCLUDE (r3r): 'Provide <words> calculations/calcs/letter/copy ...' and a header asking for a document carry the PACKAGE's numbers", () => {
+  const none: string[] = [
+    "Provide structural calculations per ASCE 7-22 for 16 psf ground snow load.",
+    "Provide stamped structural calcs per ASCE 7-16 for the 25 psf ground snow load.",
+    "Provide wind load calculations per ASCE 7-22 using 110 mph.",
+    "Provide a structural letter per IRC R301.2 for 16 psf ground snow load.",
+    "Provide pull-out calcs per NDS 2018 for lag screws at 48 in o.c.",
+    "Provide a copy of the engineer letter for:\n- 16 psf ground snow load\n- 110 mph wind",
+    "Provide calculations for the following:\n- Ground snow load 16 psf\n- Wind speed 110 mph",
+    // the same list with its items unmarked: every line under the header is an item, not only the first
+    "Provide calculations for the following:\nGround snow load 16 psf\nWind speed 110 mph",
+    "Provide racking manufacturer's span tables per ASCE 7-22 for attachment spacing at 72\" o.c.",
+  ];
+  for (const text of none) assert.deepEqual(extractAhjRequiredCriteria(text).map((c) => [c.criterion, c.value]), [], `extracted from: ${JSON.stringify(text)}`);
+});
+
+await check("MUST PASS (r3r): 'Provide <value> per <code>' and a header asking for DESIGN CRITERIA (not a document) still state the requirement", () => {
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide Vult = 130 mph per ASCE 7-22.")), { windSpeedMph: 130 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide ground snow load of 25 psf per ORSC R301.2.")), { groundSnowLoadPsf: 25 });
+  // TEXT_A's header names "the letter" and "the plan set" — as where the criteria GO, after "for".
+  assert.deepEqual(asMap(extractAhjRequiredCriteria(TEXT_A)), { groundSnowLoadPsf: 36, maxAttachmentSpacingIn: 24, listingEvidenceRequired: true });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide updated design criteria on the cover sheet:\n- Ground snow load 36 psf\n- Wind speed 120 mph")), { groundSnowLoadPsf: 36, windSpeedMph: 120 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide the following:\nGround snow load 36 psf\nDesign wind speed 120 mph")), { groundSnowLoadPsf: 36, windSpeedMph: 120 });
+  // A document request still carries the listing FLAG (evidence is what it asks for).
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide UL 2703 listing documentation for the racking.")), { listingEvidenceRequired: true });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // 1b. INTAKE -> PROPOSAL -> APPLY, through the real write paths.
 // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -664,6 +695,40 @@ await check("MUST EXCLUDE: a permit-typed target whose 'jurisdiction' is the pro
   assert.equal(itemPayload(pc, cc)!.jurisdictionProposals.length, 1);
 });
 
+// r3r caveat (a): WHERE a text came from decides whether its bare "label value" lines count — not a
+// list of words a status page might use. These pages carry NONE of the STATUS_PAGE markers (no
+// "Record Status", no "Status:", no "Application Information"), so only the source can catch them.
+const unmarkedPages = [
+  "Record 187-26-000309-STR: Residential Structural. Addl Info Needed. Record Details. Wind Speed 120 mph Exposure C. Snow Load 16 psf.",
+  "Permit 2026-0001. Additional Information Required. Project Details. Wind Speed 115 mph. Exposure C. Ground Snow Load 16 psf.",
+];
+await check("MUST EXCLUDE (r3r): a MONITOR reading whose page prints the application's criteria bare proposes nothing, whatever the page calls itself; the triage rebuild agrees", async () => {
+  for (const [i, text] of unmarkedPages.entries()) {
+    assert.ok(extractAhjRequiredCriteria(text).length > 0, "fixture precondition: the words alone read as bare statements");
+    const pid = mkProject(`City of Scrapeton${i}`);
+    const tid = mkTarget(pid, `City of Scrapeton${i}`);
+    await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: page("In Review") });
+    await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: text });
+    const cid = String(db.get<{ id: string }>("SELECT id FROM corrections WHERE project_id = ?", [pid])?.id ?? "");
+    assert.ok(cid, "fixture precondition: the monitor raised a correction");
+    assert.deepEqual(itemPayload(pid, cid)!.jurisdictionProposals.map((p) => [p.criterion, p.value]), [], `a scraped page's own fields were proposed: ${text}`);
+    persistTriage(db, { correctionId: cid, projectId: pid }, { actions: [], proposals: [] });
+    assert.deepEqual(itemPayload(pid, cid)!.jurisdictionProposals.map((p) => [p.criterion, p.value]), [], "the triage rebuild proposed the page's fields");
+  }
+});
+
+await check("MUST PASS (r3r): the SAME page with a CUED reviewer comment proposes the comment's value; the same bare line PASTED by a person still proposes", async () => {
+  const pid = mkProject("City of Scrapecue");
+  const tid = mkTarget(pid, "City of Scrapecue");
+  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: page("In Review") });
+  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url", rawStatusText: unmarkedPages[0].replace("Snow Load 16 psf.", "") + COMMENT });
+  const cid = String(db.get<{ id: string }>("SELECT id FROM corrections WHERE project_id = ?", [pid])?.id ?? "");
+  assert.deepEqual(asMap(itemPayload(pid, cid)!.jurisdictionProposals), { groundSnowLoadPsf: 36 });
+  const pp = mkProject("City of Pasteton");
+  const cp = R.addManualCorrection(db, pp, "Wind Speed 120 mph Exposure C.").corrections[0].id;
+  assert.deepEqual(asMap(itemPayload(pp, cp)!.jurisdictionProposals), { windSpeedMph: 120, windExposure: "C" });
+});
+
 const obsCount = (ahj: string): number => Number(db.get<{ n: number }>(
   "SELECT COUNT(*) AS n FROM jurisdiction_design_observations WHERE ahj = ?", [ahj])?.n ?? 0);
 
@@ -845,6 +910,64 @@ await check("MUST PASS (lookup): the labelled number of a two-number quote; a pg
   assert.deepEqual(parsedValues({ groundSnowLoadAsdPsf: { value: 49, sourceUrl: GOV, quote: "pg = 49 psf, pg(asd) = 35 psf" } }), [], "a strength Pg under the pg(asd) key was trusted");
   assert.deepEqual(parsedValues({ windExposure: { value: "C", sourceUrl: GOV, quote: "Exposure Category C" } }), ["windExposure=C"]);
   assert.deepEqual(parsedValues({ groundSnowLoadPsf: { value: 30, sourceUrl: "https://up.codes/viewer/testcity/irc-2021/chapter/3", quote: "Ground snow load 30 psf" } }), ["groundSnowLoadPsf=30/pg"]);
+});
+
+// r3r MUST-FIX 2: ".org" is not "official". Only a .org that is THIS jurisdiction's own site (its host
+// names it) counts; a trade association, an encyclopedia and a hazard lookup tool never do.
+const { isOfficialCodeSource } = await import("../src/llm");
+const TESTCITY = { ahj: "City of Testcity", state: "OR" };
+await check("MUST EXCLUDE (r3r): hazards.atcouncil.org, en.wikipedia.org, a trade-association .org blog, another name's .org — never an official source", () => {
+  for (const url of [
+    "https://hazards.atcouncil.org/#/wind?lat=45.5&lng=-122.6",
+    "https://en.wikipedia.org/wiki/Testcity,_Oregon",
+    "https://www.solarinstallersassociation.org/blog/oregon-wind",
+    "https://snowload.seao.org/lookup.html",
+    "https://www.testcityhealth.org/about", // CONTAINS the name, is not the city's site
+    "https://www.othertown.org/building",
+  ]) {
+    assert.equal(isOfficialCodeSource(url, TESTCITY), false, url);
+    const quote = "Ultimate design wind speed Vult 115 mph";
+    assert.deepEqual(parseDesignCriteriaLookup({ windSpeedMph: { value: 115, sourceUrl: url, quote } }, true, false, TESTCITY).values, [], url);
+  }
+  // Without the jurisdiction no .org is anyone's own site (fails closed).
+  assert.equal(isOfficialCodeSource("https://www.testcity.org/building", null), false);
+  // The block list wins over a name match (a contrived jurisdiction whose name IS the tool's host).
+  assert.equal(isOfficialCodeSource("https://hazards.atcouncil.org/#/snow", { ahj: "City of Atcouncil", state: "OR" }), false);
+});
+
+await check("MUST PASS (r3r): a city .gov page, up.codes, library.municode.com, codes.iccsafe.org, a county .us page, and the jurisdiction's OWN .org", () => {
+  for (const url of [
+    "https://www.testcity.example.gov/building/design-criteria",
+    "https://up.codes/viewer/testcity/irc-2021/chapter/3",
+    "https://library.municode.com/or/testcity/codes/code_of_ordinances",
+    "https://codes.iccsafe.org/content/ORSC2023P1",
+    "https://www.co.testcounty.or.us/planning",
+    "https://www.testcity.org/departments/building",
+    "https://www.cityoftestcity.org/building",
+  ]) assert.equal(isOfficialCodeSource(url, TESTCITY), true, url);
+});
+
+await check("the lookup hands ITS jurisdiction to the source check (stubbed client): the city's own .org value is kept, an association's .org is dropped", async () => {
+  const provider = new ClaudeLLMProvider("sk-ant-test-never-called");
+  const own = "https://www.testorgville.org/building/design-criteria";
+  const reply = {
+    content: [
+      { type: "server_tool_use", id: "s1", name: "web_search", input: { query: "Testorgville Table R301.2" } },
+      { type: "web_search_tool_result", tool_use_id: "s1", content: [{ type: "web_search_result", url: own, title: "Testorgville building" }] },
+      { type: "text", text: JSON.stringify({
+        groundSnowLoadPsf: { value: 30, sourceUrl: own, quote: "Ground snow load 30 psf" },
+        windSpeedMph: { value: 115, sourceUrl: "https://www.solarinstallersassociation.org/blog/oregon-wind", quote: "Vult 115 mph" },
+        notes: "",
+      }) },
+    ],
+    usage: { input_tokens: 900, output_tokens: 100, server_tool_use: { web_search_requests: 1 } },
+    stop_reason: "end_turn",
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (provider as any).client = { messages: { stream() { return { finalMessage: async () => reply }; } } };
+  const out = await provider.researchDesignCriteria({ ahj: "City of Testorgville", state: "OR" });
+  assert.deepEqual(out.values.map((v) => `${v.criterion}=${v.value}`), ["groundSnowLoadPsf=30"]);
+  assert.match(out.notes, /windSpeedMph 115 \(source is not an official/);
 });
 
 await check("a pg(asd) lookup value is STORED (groundSnowLoadAsdPsf), never as the strength groundSnowLoadPsf; the job result carries the lookup's notes", async () => {

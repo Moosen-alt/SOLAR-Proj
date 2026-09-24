@@ -865,7 +865,29 @@ const REQUIREMENT_CUE = /\b(?:minimum|min\.|must\s+(?:not\s+)?be|shall\s+(?:not\
 // (b) asks for LISTING evidence, which is a flag, not a value.
 const PROVIDE_CUE = /\b(?:provide|submit)\b/i;
 const PER_CODE = /\bper\s+(?:the\s+)?(?:(?:19|20)\d{2}\s+)?(?:[A-Z]{2,6}\s+(?:(?:19|20)\d{2}\s+)?)?(?:(?:section|sec\.?|§|table|figure)\s*)?(?:R|IRC\s*R?)?\d{3}(?:\.\d+)*\b|\bper\s+(?:the\s+)?(?:[A-Z]{2,6}\s+(?:19|20)\d{2}|(?:19|20)\d{2}\s+[A-Z]{2,6}|ASCE\s*7(?:-\d{2})?)\b/i;
-const PROVIDE_DOCUMENT = /\b(?:provide|submit)\s+(?:an?\s+|the\s+|updated\s+|revised\s+|new\s+|stamped\s+|signed\s+)*(?:cop(?:y|ies)|calc\w*|documentation|letters?|engineer\w*|details?|drawings?|plans?|evidence|verification|reports?|analysis|sheets?|photos?|specs?|information|justification|design\s+(?:by|from|letter|calc\w*))\b/i;
+// WHAT "PROVIDE" ASKS FOR. A document noun anywhere in what is asked for — whatever words sit
+// around it ("Provide STAMPED STRUCTURAL calcs per ASCE 7-16 for the 25 psf ...", "Provide a COPY of
+// the engineer letter for:", "Provide WIND LOAD calculations per ASCE 7-22 using 110 mph") — makes the
+// clause a request for that document, and the number in it the PACKAGE's. Only the adjacent-word
+// form was caught before (a word between "provide" and the noun let PER_CODE turn "provide" into a
+// cue). "design" alone is not a document ("Provide design for a ground snow load of 36 psf per ...").
+const DOCUMENT_NOUN = /\b(?:cop(?:y|ies)|calc\w*|documentation|documents?|letters?|engineer\w*|details?|drawings?|plans?|plan\s*sets?|evidence|verification|reports?|analys[ie]s|sheets?|photos?|specs?|specifications?|information|justification|tables?|charts?|narratives?|design\s+(?:by|from|letter|calc\w*))\b/i;
+// Where the thing asked for ENDS in a HEADER (no value in the clause): at the first preposition. TEXT_A's
+// "Provide updated design criteria FOR the letter from the engineer and the plan set" asks for design
+// criteria — the letter is where they go. "of" does not end it ("a copy of the engineer letter").
+const OBJECT_END = /\b(?:for|per|in|at|to|with|on|from|by|using|showing|confirming|demonstrating|verifying|indicating|that|which)\b|[:;(]/i;
+// Where a clause's first VALUE starts: a number with its unit, or an exposure category.
+const FIRST_VALUE = /\d+(?:\.\d+)?\s*(?:psf\b|mph\b|pounds?\b|lbs?\b|["”'’]|in\b|in\.|inch|ft\b|feet\b|foot\b|o\.?\s*c\b)|\bexposure\s+(?:cat(?:egory|\.)?\s*)?[BCD]\b|\b[BCD]\s+exposure\b/i;
+/** The clause (from its "provide/submit" at `provideAt`) asks for a DOCUMENT: a document noun sits
+ *  between "provide" and the clause's first value — or, in a header with no value, in what the header
+ *  asks for (up to its first preposition). ONE predicate for both the value cue and the header cue. */
+function provideAsksForDocument(clause: string, provideAt: number): boolean {
+  if (provideAt < 0) return false;
+  const rest = clause.slice(provideAt).replace(PROVIDE_CUE, "");
+  const valueAt = rest.search(FIRST_VALUE);
+  const upto = valueAt >= 0 ? valueAt : (() => { const e = rest.search(OBJECT_END); return e >= 0 ? e : rest.length; })();
+  return DOCUMENT_NOUN.test(rest.slice(0, upto));
+}
 /** A portal STATUS PAGE printing the application's fields ("Record Status: ... Application Information.
  *  Wind Speed 120 mph Exposure C.") — its bare "label value" lines are the applicant's entries, not
  *  the AHJ's rule. Only cued statements count on such a page. */
@@ -903,19 +925,27 @@ interface AhjSentence {
 }
 
 function ahjSentences(text: string): AhjSentence[] {
-  const raw = String(text || "")
-    .replace(/\r/g, "")
-    // A new sentence starts after . ; ! ? + space when the next token opens a clause; a code
-    // section ("R324.4.1") has no space after its dots, so it is never split.
-    .split(/\n+|(?<=[.;!?])\s+(?=[-–•*]?\s*[A-Z0-9(])/);
   const out: AhjSentence[] = [];
   let prevEndsColon = false;
-  for (const piece of raw) {
-    const flatPiece = flat(piece);
-    if (!flatPiece) continue;
-    const bullet = /^[-–•*]\s*/.test(flatPiece) || prevEndsColon;
-    out.push({ text: flatPiece.replace(/^[-–•*]\s*/, ""), bullet });
-    prevEndsColon = /:\s*$/.test(flatPiece);
+  // A header ending with ":" opens a LIST: every following line (a line of its own, marked or not)
+  // is one of its items until a blank line or a sentence that runs on within a line. "Provide
+  // calculations for the following:\nGround snow load 16 psf\nWind speed 110 mph" — both lines hang
+  // under the header, not only the first.
+  let inList = false;
+  for (const line of String(text || "").replace(/\r/g, "").split("\n")) {
+    if (!line.trim()) { inList = false; continue; }
+    // A new sentence starts after . ; ! ? + space when the next token opens a clause; a code
+    // section ("R324.4.1") has no space after its dots, so it is never split.
+    line.split(/(?<=[.;!?])\s+(?=[-–•*]?\s*[A-Z0-9(])/).forEach((piece, i) => {
+      const flatPiece = flat(piece);
+      if (!flatPiece) return;
+      const marked = /^[-–•*]\s*/.test(flatPiece);
+      if (i > 0 && !marked && !prevEndsColon) inList = false;
+      const bullet = marked || prevEndsColon || (inList && i === 0);
+      out.push({ text: flatPiece.replace(/^[-–•*]\s*/, ""), bullet });
+      prevEndsColon = /:\s*$/.test(flatPiece);
+      if (prevEndsColon) inList = true;
+    });
   }
   return out;
 }
@@ -999,8 +1029,15 @@ export function packageTextSources(project: ProjectRecord, extraTexts: DesignTex
  * carrying psf; a wind speed only with mph and a wind label; attachment spacing only with an
  * attachment label and an o.c. spacing, never a framing member's. A criterion stated with two
  * different values in one correction is ambiguous and yields nothing — a human reads it.
+ *
+ * `statusReading`: the text is a STATUS READING (the permit monitor's portal/public-page scrape, or
+ * any correction a person did not paste) — decided by the caller from where the correction came from
+ * (corrections.source), never from the words. On such a text a bare "Wind Speed 120 mph Exposure C"
+ * is the application's own field as the page prints it, however the page labels itself, so bare
+ * statements never count; cued comments still do. STATUS_PAGE stays as the narrower text check for a
+ * person who pastes a whole status page.
  */
-export function extractAhjRequiredCriteria(text: string): AhjRequiredCriterion[] {
+export function extractAhjRequiredCriteria(text: string, opts: { statusReading?: boolean } = {}): AhjRequiredCriterion[] {
   const found: AhjRequiredCriterion[] = [];
   const add = (criterion: JurisdictionCriterionKey, value: number | string | boolean, sentence: string): void => {
     const block = criterion === "maxAttachmentSpacingIn" || criterion === "listingEvidenceRequired" ? "prescriptive" : "designCriteria";
@@ -1009,16 +1046,24 @@ export function extractAhjRequiredCriteria(text: string): AhjRequiredCriterion[]
   // A bullet inherits the requirement cue of the header it hangs under, for as long as the
   // bullets run ("Provide updated design criteria ... -Ground snow load 36 psf.").
   // A status page's bare "label value" lines are the application's own fields (see STATUS_PAGE).
-  const statusPage = STATUS_PAGE.test(String(text || ""));
+  const statusPage = opts.statusReading === true || STATUS_PAGE.test(String(text || ""));
   let headerCue = false;
+  // A header that asks for a DOCUMENT ("Provide calculations for the following:", "Provide a copy of
+  // the engineer letter for:") lists what that document must cover — the PACKAGE's numbers. Its
+  // bullets neither inherit a cue nor count as bare statements.
+  let headerAsksDocument = false;
   for (const { text: sentence, bullet } of ahjSentences(text)) {
-    const inherited = bullet && headerCue;
+    const underDocument = bullet && headerAsksDocument;
+    const inherited = bullet && headerCue && !underDocument;
     let sentenceHasCue = false;
+    let sentenceAsksDocument = false;
     ahjClauses(sentence).forEach((clause, clauseIndex) => {
       if (REJECTION_CUE.test(clause) || CONDITIONAL_START.test(clause) || PACKAGE_PREFIX.test(clause)) return;
       // "Provide ..." is a value's cue only with a code citation and no document asked for.
       const provideAt = clause.search(PROVIDE_CUE);
-      const provideRequires = provideAt >= 0 && PER_CODE.test(clause) && !PROVIDE_DOCUMENT.test(clause);
+      const asksDocument = provideAsksForDocument(clause, provideAt);
+      if (asksDocument) sentenceAsksDocument = true;
+      const provideRequires = provideAt >= 0 && PER_CODE.test(clause) && !asksDocument;
       const cueAt = clause.search(REQUIREMENT_CUE);
       // "X is located in a special wind region" states the site's fact: its own cue. "Exposure C is
       // required" puts the value BEFORE its cue, so the whole (clean) clause is the requirement.
@@ -1026,11 +1071,11 @@ export function extractAhjRequiredCriteria(text: string): AhjRequiredCriterion[]
         : SPECIAL_WIND_STATEMENT.test(clause) ? clause.search(SPECIAL_WIND_STATEMENT)
           : provideRequires ? (cueAt >= 0 ? Math.min(cueAt, provideAt) : provideAt)
             : cueAt;
-      if (own >= 0 || provideAt >= 0) sentenceHasCue = true;
+      if (own >= 0 || (provideAt >= 0 && !asksDocument)) sentenceHasCue = true;
       const quote = clause.search(QUOTATION_CUE);
       // "The calculations show the minimum ... 25 psf" — the requirement is inside the quote.
       if (quote >= 0 && (own < 0 || quote < own)) return;
-      const bare = !statusPage && own < 0 && BARE_LABEL_START.test(clause) && clause.split(/\s+/).length <= BARE_MAX_WORDS;
+      const bare = !statusPage && !underDocument && own < 0 && BARE_LABEL_START.test(clause) && clause.split(/\s+/).length <= BARE_MAX_WORDS;
       const inheritsHere = inherited && clauseIndex === 0;
       if (own < 0 && !inheritsHere && !bare) {
         // "Provide UL listing for the panels ..." asks for listing EVIDENCE: a flag, not a value.
@@ -1043,7 +1088,10 @@ export function extractAhjRequiredCriteria(text: string): AhjRequiredCriterion[]
       const to = q < 0 ? clause.length : from + q;
       extractClause(clause, from, to, (criterion, value) => add(criterion, value, sentence));
     });
-    if (!bullet) headerCue = sentenceHasCue;
+    if (!bullet) {
+      headerCue = sentenceHasCue;
+      headerAsksDocument = sentenceAsksDocument;
+    }
   }
   // One criterion, one value per correction — two different values are ambiguous.
   const out: AhjRequiredCriterion[] = [];

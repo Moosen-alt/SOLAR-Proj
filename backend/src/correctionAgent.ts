@@ -368,7 +368,10 @@ export function buildJurisdictionProposals(db: AppDb, correctionId: string, orig
   const project = db.get<Row>("SELECT state, ahj, utility FROM projects WHERE id = ?", [projectId]);
   const state = txt(project?.state).trim();
   if (!state || /utility/i.test(txt(c.source)) || isLearningExcluded(db, projectId)) return [];
-  const required = extractAhjRequiredCriteria(txt(c.correction_text));
+  // Where the text CAME FROM decides whether a bare "label value" line counts: only a correction a
+  // person pasted ("manual") may state a criterion bare; a monitor reading ("portal": a portal or
+  // public-page scrape, read on a target) prints the application's own fields that way.
+  const required = extractAhjRequiredCriteria(txt(c.correction_text), { statusReading: txt(c.source) !== "manual" });
   if (!required.length) return [];
   const from = correctionOrigin(db, correctionId, { ahj: txt(project?.ahj).trim(), utility: txt(project?.utility) }, origin);
   if (!from || ahjLooksLikeHostname(from.ahj)) return [];
