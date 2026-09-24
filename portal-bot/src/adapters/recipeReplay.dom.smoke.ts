@@ -22,8 +22,11 @@ import type { PortalRecipe, RecipeStep } from "../../../shared/src/types";
 import { RecipeAdapter } from "./recipeAdapter";
 
 let failures = 0;
-const check = (label: string, fn: () => void): void => {
-  try { fn(); console.log(`  ok   - ${label}`); }
+// check() AWAITS its callback. It used to be synchronous while one callback was async, so that
+// check printed "ok" BEFORE its assertion ran — a failure there became an unhandled rejection
+// with no "FAIL -" line. Every call is awaited.
+const check = async (label: string, fn: () => void | Promise<void>): Promise<void> => {
+  try { await fn(); console.log(`  ok   - ${label}`); }
   catch (err) { failures++; console.error(`  FAIL - ${label}\n         ${err instanceof Error ? err.message : String(err)}`); }
 };
 
@@ -101,35 +104,35 @@ const jobCategory = await read("#txtJobCategory");
 const middle = await read("#txtMiddle");
 const done = await page.locator("#done").textContent().catch(() => "");
 
-check("replay completes against a real page", () => {
+await check("replay completes against a real page", () => {
   assert.equal(result.ok, true, `replay failed: ${result.message ?? ""}`);
 });
-check("bound fields replay THIS project's data, never the learn-time literal", () => {
+await check("bound fields replay THIS project's data, never the learn-time literal", () => {
   assert.equal(firstName, "Wynema", `first name: got ${JSON.stringify(firstName)}`);
   assert.equal(street, "1075 Flanagan Ave", `street: got ${JSON.stringify(street)}`);
   assert.equal(zip, "97420", `zip: got ${JSON.stringify(zip)}`);
   assert.equal(state, "OR", `state select: got ${JSON.stringify(state)}`);
 });
-check("a binding key the dictionary never defined replays its recorded answer, not a blank", async () => {
+await check("a binding key the dictionary never defined replays its recorded answer, not a blank", async () => {
   assert.equal(jobCategory, "STAND-ALONE", `got ${JSON.stringify(jobCategory)} — a blank here is a required field the portal refuses`);
 });
-check("...and it is REPORTED, not silently substituted", () => {
+await check("...and it is REPORTED, not silently substituted", () => {
   const notes = ((result.data as { agingNotes?: string[] } | undefined)?.agingNotes ?? []);
   assert.ok(notes.some((n) => /jobCategory/.test(n)), `expected an aging note naming the key, got ${JSON.stringify(notes)}`);
 });
-check("MUST EXCLUDE: a DEFINED key that is empty for this project stays blank", () => {
+await check("MUST EXCLUDE: a DEFINED key that is empty for this project stays blank", () => {
   assert.equal(middle, "", `got ${JSON.stringify(middle)} — that is the learn project's data on somebody else's application`);
 });
-check("the recorded advance ran (link with a nested <span>, as ACA renders it)", () => {
+await check("the recorded advance ran (link with a nested <span>, as ACA renders it)", () => {
   assert.equal(done, "ADVANCED", `expected the Continue link to fire, got ${JSON.stringify(done)}`);
 });
-check("a step flagged isFinalSubmit is NEVER clicked without autoSubmit", () => {
+await check("a step flagged isFinalSubmit is NEVER clicked without autoSubmit", () => {
   assert.notEqual(done, "SUBMITTED", "automation must not file the application");
 });
 // The readiness gate runs after the goto and after the advancing click. Broken it burned
 // 12s EACH; working, this whole replay is a couple of seconds. Generous bound so the test
 // reports a real regression rather than machine noise.
-check(`replay is not paying the dead readiness budget (took ${(elapsedMs / 1000).toFixed(1)}s)`, () => {
+await check(`replay is not paying the dead readiness budget (took ${(elapsedMs / 1000).toFixed(1)}s)`, () => {
   assert.ok(elapsedMs < 15000, `replay took ${elapsedMs}ms — the readiness gate is timing out again (12s per goto/click)`);
 });
 

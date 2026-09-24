@@ -98,8 +98,12 @@ const adapter = new AutoLearnAdapter("PGE PowerClerk (specs smoke)", planner, {
 const result = await adapter.learn({} as never, {} as ProjectRecord);
 
 let failures = 0;
-const check = (name: string, fn: () => void) => {
-  try { fn(); console.log(`  ok   - ${name}`); } catch (err) { failures++; console.error(`  FAIL - ${name}\n`, err instanceof Error ? err.message : err); }
+// check() AWAITS. It used to take a synchronous callback, and two checks here were empty async
+// bodies that printed "ok" while the real assertions ran bare below them — an assertion that
+// threw there crashed the smoke with no "FAIL -" line at all. Every assertion is now inside an
+// awaited check, so a red is always a named red.
+const check = async (name: string, fn: () => void | Promise<void>): Promise<void> => {
+  try { await fn(); console.log(`  ok   - ${name}`); } catch (err) { failures++; console.error(`  FAIL - ${name}\n         ${err instanceof Error ? err.message : String(err)}`); }
 };
 
 const val = (id: string) => page.$eval(`#${id}`, (e) => (e as HTMLInputElement | HTMLSelectElement).value);
@@ -108,31 +112,27 @@ const selText = (id: string) => page.$eval(`#${id}`, (e) => {
   return s.selectedIndex >= 0 ? (s.options[s.selectedIndex]?.textContent || "") : "";
 });
 
-check("learn run completed", () => assert.equal(result.ok, true, result.message || ""));
-check("module manufacturer resolved via section + name containment", async () => {});
-assert.equal(await val("modMfr"), "zn", "module manufacturer selected");
-console.log("  ok   - module manufacturer selected (Znshine → certified name)");
-const modModelText = await selText("modModel");
-if (modModelText.includes("ZXM7-UHLDD108-440/N")) console.log("  ok   - module model selected AFTER cascade populated (waited out the AJAX)");
-else { failures++; console.error(`  FAIL - module model not selected (got "${modModelText}")`); }
-const invMfr = await val("invMfr");
-if (invMfr === "ap") console.log("  ok   - inverter manufacturer selected via ALIAS (AP Systems → Altenergy Power System)");
-else { failures++; console.error(`  FAIL - inverter manufacturer not selected (got "${invMfr}")`); }
-const invModelText = await selText("invModel");
-if (invModelText.includes("DS3-L")) console.log("  ok   - inverter model selected after cascade");
-else { failures++; console.error(`  FAIL - inverter model not selected (got "${invModelText}")`); }
-check("quantities + geometry filled", async () => {});
-assert.equal(await val("modQty"), "23");
-assert.equal(await val("invQty"), "12");
-assert.equal(await val("tilt"), "22.5");
-assert.equal(await val("azimuth"), "180");
-console.log("  ok   - quantities, tilt, azimuth filled");
-const tracking = await val("tracking");
-if (tracking === "Fixed") console.log("  ok   - tracking set to Fixed");
-else { failures++; console.error(`  FAIL - tracking not set (got "${tracking}")`); }
-const ev = await val("evModel");
-if (ev === "") console.log("  ok   - EV charger Model trap NEVER touched");
-else { failures++; console.error(`  FAIL - EV charger model was filled: "${ev}"`); }
+await check("learn run completed", () => assert.equal(result.ok, true, result.message || ""));
+await check("module manufacturer selected (Znshine → certified name, via section + name containment)", async () =>
+  assert.equal(await val("modMfr"), "zn", "module manufacturer selected"));
+await check("module model selected AFTER cascade populated (waited out the AJAX)", async () => {
+  const t = await selText("modModel");
+  assert.ok(t.includes("ZXM7-UHLDD108-440/N"), `module model not selected (got "${t}")`);
+});
+await check("inverter manufacturer selected via ALIAS (AP Systems → Altenergy Power System)", async () =>
+  assert.equal(await val("invMfr"), "ap", "inverter manufacturer not selected"));
+await check("inverter model selected after cascade", async () => {
+  const t = await selText("invModel");
+  assert.ok(t.includes("DS3-L"), `inverter model not selected (got "${t}")`);
+});
+await check("quantities, tilt, azimuth filled", async () => {
+  assert.equal(await val("modQty"), "23", "module quantity");
+  assert.equal(await val("invQty"), "12", "inverter quantity");
+  assert.equal(await val("tilt"), "22.5", "tilt");
+  assert.equal(await val("azimuth"), "180", "azimuth");
+});
+await check("tracking set to Fixed", async () => assert.equal(await val("tracking"), "Fixed"));
+await check("EV charger Model trap NEVER touched", async () => assert.equal(await val("evModel"), "", "EV charger model was filled"));
 
 await browser.close();
 server.close();

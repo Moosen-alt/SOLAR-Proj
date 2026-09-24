@@ -53,26 +53,29 @@ await page.goto(parent.url);
 await page.waitForTimeout(200);
 
 let failures = 0;
-const check = (name: string, fn: () => void) => {
-  try { fn(); console.log(`  ok   - ${name}`); } catch (err) { failures++; console.error(`  FAIL - ${name}\n`, err); }
+// check() AWAITS its callback. It used to be synchronous while some callbacks were async, so
+// those printed "ok" BEFORE their assertion ran — a failure became an unhandled rejection with no
+// "FAIL -" line. Every call is awaited.
+const check = async (name: string, fn: () => void | Promise<void>): Promise<void> => {
+  try { await fn(); console.log(`  ok   - ${name}`); } catch (err) { failures++; console.error(`  FAIL - ${name}\n`, err); }
 };
 
 // 1) Main-document extraction sees light + shadow fields, with labels + sections.
 const mainRaws = await page.$$eval(EXTRACT_SEL, extractFieldsInPage);
-check("shadow-DOM field extracted with its in-root label", () => {
+await check("shadow-DOM field extracted with its in-root label", () => {
   const f = mainRaws.find((r) => r.name === "shadowEmail");
   assert.ok(f, "shadowEmail extracted");
   assert.equal(f!.label, "Shadow Email");
   assert.equal(f!.required, true);
 });
-check("shadow field's SECTION hops the shadow boundary sensibly", () => {
+await check("shadow field's SECTION hops the shadow boundary sensibly", () => {
   const f = mainRaws.find((r) => r.name === "shadowEmail");
   assert.ok(f!.section === "Shadow Section" || (f!.section || "").length > 0, `section derived (got "${f!.section}")`);
 });
 
 // 2) Upload tagging sees the shadow-root file input.
 const slots = await page.evaluate(tagUploadControls);
-check("shadow-DOM file input tagged as an upload slot", () => {
+await check("shadow-DOM file input tagged as an upload slot", () => {
   assert.ok(slots.some((s) => /shadow plan set/i.test(s.label) || s.kind === "input"), `slots: ${JSON.stringify(slots)}`);
 });
 
@@ -86,24 +89,24 @@ const adapter = new AutoLearnAdapter("DOM Smoke Portal", planner);
 (adapter as unknown as { page: unknown }).page = page;
 const raws = await (adapter as unknown as { extractAllFrames: (s: string) => Promise<Array<{ name?: string; frame?: string }>> })
   .extractAllFrames(EXTRACT_SEL);
-check("cross-origin unnamed frame's field extracted with a src: frame key", () => {
+await check("cross-origin unnamed frame's field extracted with a src: frame key", () => {
   const f = raws.find((r) => r.name === "xoriginField");
   assert.ok(f, `xoriginField extracted (saw: ${raws.map((r) => r.name).join(",")})`);
   assert.equal(f!.frame, "src:/embed/form", "frame keyed by src pathname (no session token)");
 });
 
 // 4) frameSelectorFor + frameLocator actually reach INTO the cross-origin frame.
-check("frameSelectorFor(src:) builds a working frameLocator", async () => {
+await check("frameSelectorFor(src:) builds a working frameLocator", async () => {
   assert.equal(frameSelectorFor("src:/embed/form"), 'iframe[src*="/embed/form"]');
 });
 await page.frameLocator(frameSelectorFor("src:/embed/form")).getByLabel("Cross Origin Field").fill("reached");
 const filled = await page.frames()[1].$eval("#xf", (e) => (e as HTMLInputElement).value);
-check("fill through the src-keyed frameLocator lands cross-origin", () => {
+await check("fill through the src-keyed frameLocator lands cross-origin", () => {
   assert.equal(filled, "reached");
 });
 
 // 5) Name/id keys keep their original selector shape (regression).
-check("frameSelectorFor(name) unchanged for named frames", () => {
+await check("frameSelectorFor(name) unchanged for named frames", () => {
   assert.equal(frameSelectorFor("ACADialogFrame"), 'iframe[name="ACADialogFrame"], iframe[id="ACADialogFrame"]');
 });
 
@@ -122,7 +125,7 @@ await patchPage.setContent(`<!doctype html><html><body>
 </body></html>`);
 const captured: Array<{ action: string; note?: string; value?: string; sensitive?: boolean }> = [];
 const armed = await armHumanCaptureOnPage(patchPage, (step) => captured.push(step as never));
-check("capture arms on a live page", () => assert.equal(armed, true));
+await check("capture arms on a live page", () => assert.equal(armed, true));
 
 await patchPage.selectOption("#sched", "s7");
 await patchPage.fill("#acct", "ACCT-12345");
@@ -137,12 +140,12 @@ await patchPage.getByRole("button", { name: "Continue" }).click();
 await patchPage.selectOption("#sched", ""); // post-submit change — must also be ignored
 await patchPage.waitForTimeout(300);
 
-check("human select captured with its label + value", () => {
+await check("human select captured with its label + value", () => {
   const sel = captured.find((c) => c.action === "select");
   assert.ok(sel, `captured: ${JSON.stringify(captured)}`);
   assert.equal(sel!.value, "s7");
 });
-check("sensitive field flagged for the merge-time strip, value confined to its own step", () => {
+await check("sensitive field flagged for the merge-time strip, value confined to its own step", () => {
   // Contract: the typed secret rides IN MEMORY on the sensitive step only, so the
   // backend merge can bind it to a project field key — appendHumanPatchSteps then
   // strips the literal unconditionally before anything is persisted (covered by
@@ -158,12 +161,12 @@ check("sensitive field flagged for the merge-time strip, value confined to its o
   const nonSensitive = captured.filter((c) => c.sensitive !== true);
   assert.ok(!JSON.stringify(nonSensitive).includes("ACCT-12345"), "secret never rides an unflagged step");
 });
-check("navigation click captured; submit/pay clicks NEVER captured as replayable steps", () => {
+await check("navigation click captured; submit/pay clicks NEVER captured as replayable steps", () => {
   const clicks = captured.filter((c) => c.action === "click" && (c.note || "") !== "__human_submit_observed__");
   assert.equal(clicks.length, 1, `clicks: ${JSON.stringify(clicks)}`);
   assert.ok((clicks[0].note || "").includes("Save Draft"));
 });
-check("bare Submit click emits the submit-observed signal, then DISARMS capture", () => {
+await check("bare Submit click emits the submit-observed signal, then DISARMS capture", () => {
   const markers = captured.filter((c) => (c.note || "") === "__human_submit_observed__");
   assert.equal(markers.length, 1, `expected one submit-observed marker: ${JSON.stringify(captured)}`);
   assert.ok(!captured.some((c) => (c.note || "").includes("Continue")), `Continue leaked: ${JSON.stringify(captured)}`);
@@ -187,7 +190,7 @@ check("bare Submit click emits the submit-observed signal, then DISARMS capture"
   const t0 = Date.now();
   const ready = await waitForInteractiveControls(probe, 4000);
   const ms = Date.now() - t0;
-  check("waitForInteractiveControls resolves on a page WITH a visible control (no __name throw)", () => {
+  await check("waitForInteractiveControls resolves on a page WITH a visible control (no __name throw)", () => {
     assert.equal(ready, true, "readiness gate must see the visible input");
     assert.ok(ms < 2000, `must resolve promptly, took ${ms}ms (a __name ReferenceError burns the whole budget)`);
   });
@@ -200,7 +203,7 @@ check("bare Submit click emits the submit-observed signal, then DISARMS capture"
       return helper(1) !== 2;
     } catch { return true; }
   }).catch(() => true);
-  check("a named helper inside an in-page callback is the known-bad shape", () => {
+  await check("a named helper inside an in-page callback is the known-bad shape", () => {
     assert.equal(namedArrowThrows, true, "if this ever passes, keepNames stopped rewriting and the rule can relax");
   });
   await probe.close();
