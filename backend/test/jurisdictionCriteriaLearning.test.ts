@@ -276,6 +276,8 @@ await check("MUST PASS (r3f): a sibling closes only its own header — an unnumb
     assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide the following:\n1. Ground snow load 36 psf\n2. Design wind speed 120 mph", { statusReading })), { groundSnowLoadPsf: 36, windSpeedMph: 120 }, `statusReading=${statusReading}`);
     // Lettered items under a numbered header are ITEMS (another family), even printed flush left.
     assert.deepEqual(asMap(extractAhjRequiredCriteria("1. The following design criteria are required:\na. Ground snow load 36 psf\nb. Design wind speed 120 mph", { statusReading })), { groundSnowLoadPsf: 36, windSpeedMph: 120 }, `lettered, statusReading=${statusReading}`);
+    // The same family INDENTED under the header is a nested list — items, not siblings.
+    assert.deepEqual(asMap(extractAhjRequiredCriteria("1. The following design criteria are required:\n   1. Ground snow load 36 psf\n   2. Design wind speed 120 mph", { statusReading })), { groundSnowLoadPsf: 36, windSpeedMph: 120 }, `nested, statusReading=${statusReading}`);
   }
   // Comment 1 asks for a DOCUMENT (its item is the package's 16); comment 2 states the requirement.
   assert.deepEqual(asMap(extractAhjRequiredCriteria("1. Provide calculations for the following:\n- Ground snow load 16 psf\n2. Revise the design criteria to the following:\n- Ground snow load 36 psf")), { groundSnowLoadPsf: 36 });
