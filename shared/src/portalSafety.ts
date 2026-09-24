@@ -1,0 +1,478 @@
+// ONE MODULE ANSWERS EACH PORTAL SAFETY QUESTION.
+//
+// Before this file, "is this a final submit", "is this a fee payment" and "is this field a
+// secret" each had five to eleven separate answers spread over the learner, replay, the two
+// human recorders, the network recorder and the LLM post-filter — and they disagreed. The
+// recorder's OFF_LIMITS list lacked "continue application" (Accela's filing control on its
+// review page), replay's SUBMIT_KEYWORDS lacked it too, humanCapture refused a contractor's
+// licence expiry as a payment card, and the recorder called any name containing "parameter" a
+// secret because it matched bare `meter`. Each drift was fixed where it was found and came back
+// through the next copy. This is the one copy.
+//
+// Contract:
+//   - PURE. Nothing here touches the DOM, the network or the database. The only outside input
+//     is the PORTAL_ALLOW_FINAL_SUBMIT switch, and even that is read by the caller through
+//     finalSubmitEnvAllows() and passed in — mayClickFinalSubmit never reads process.env.
+//   - SAME BYTES IN THE PAGE. Capture scripts run inside the portal page, where an import does
+//     not exist. The label/field predicates are therefore built by one self-contained factory
+//     (portalSafetyFactory) whose source is injected as PORTAL_SAFETY_IN_PAGE_SOURCE. Node calls
+//     the factory once; the page evaluates the same function text. There is no second copy to
+//     drift — portalSafety.test.ts and portalSafetyInPage.dom.smoke.ts pin that both sides give
+//     identical answers over the golden list.
+//   - BOOLEAN PREDICATES RETURN BOOLEANS. A gate that returns an object is truthy on refusal
+//     (`if (mayClickFinalSubmit(x))` would always pass), so every "may I?" question returns a
+//     plain boolean and its reasons come from a separately named function.
+//   - AN UNKNOWN NEVER READS AS REASSURANCE. classifySubmissionText answers "accepted" only on
+//     positive evidence; "Continue Application" is a submit unless the caller KNOWS the page is
+//     still fillable.
+
+// ---------------------------------------------------------------------------------------------
+// Shared contract types (other groups build on these; kept here, not in types.ts)
+// ---------------------------------------------------------------------------------------------
+
+import type { RecipeSelector } from "./types";
+
+/** What a page tells us about itself when classifying a control on it. Every field optional:
+ *  an absent field means UNKNOWN, and each predicate says which way unknown falls. */
+export interface ControlContext {
+  /** true = the page shows no fillable input (a read-only review/summary page). On such a
+   *  page an advance-worded "Continue Application" FILES the application. */
+  readOnlyPage?: boolean;
+  /** Has this session entered any real form data yet (a fill, a select, or a check that is not
+   *  a terms acknowledgment)? false = KNOWN nothing entered: a read-only page before the first
+   *  fill is an entry disclaimer (Accela's CapApplyDisclaimer — terms text, an agree box and
+   *  "Continue Application »"), which is a pass-through, never the review page. */
+  formDataEntered?: boolean;
+}
+
+/** The identity of a form field as far as the secret/payment questions need it. Attribute
+ *  NAMES and label text only — never the field's value. */
+export interface FieldIdentity {
+  label?: string | null;
+  name?: string | null;
+  id?: string | null;
+  autocomplete?: string | null;
+  type?: string | null;
+  placeholder?: string | null;
+  ariaLabel?: string | null;
+}
+
+/** How a click on a recorded control must be treated by a capture surface. */
+export type RecordedClickClass =
+  /** An ordinary control: capture it as a replayable step. */
+  | "capture"
+  /** Submit- or pay-worded: NEVER a replayable step. */
+  | "blocked"
+  /** Blocked AND it is the application's final filing click (the human just filed). */
+  | "finalSubmit";
+
+export type SubmissionVerdict = "accepted" | "rejected" | "unknown";
+
+export interface SubmissionOutcome {
+  verdict: SubmissionVerdict;
+  /** The phrase that decided it (for the run record), or null when nothing did. */
+  evidence: string | null;
+}
+
+/** A replay heal, identified by the step it healed and the recipe version it was read from —
+ *  never by (action, note), which several steps can share. `performed` is true only when the
+ *  healed step actually acted; a heal that resolved but never ran must not be persisted. */
+export interface HealedStep {
+  stepIndex: number;
+  recipeVersion: number;
+  action: string;
+  note?: string;
+  selector?: RecipeSelector;
+  performed: boolean;
+}
+
+/** A named person's approval of ONE run. There is no standing per-recipe arm. */
+export interface RunApproval {
+  approver: string;
+  runId: string;
+}
+
+export interface FinalSubmitContext {
+  /** finalSubmitEnvAllows() — PORTAL_ALLOW_FINAL_SUBMIT=1 on this process. */
+  envAllows: boolean;
+  /** The approval for THIS run, or null. */
+  runApproval: RunApproval | null;
+  /** The run the click would happen in. The approval must name exactly this run. */
+  runId: string;
+  /** The step being executed is the recipe's single terminal isFinalSubmit step. */
+  stepIsTerminalFlagged: boolean;
+  /** isRecipeShapeValid(recipe.steps). */
+  recipeShapeValid: boolean;
+}
+
+/** The minimum a recipe step must carry for the shape check. */
+export interface ShapeStep {
+  action: string;
+  isFinalSubmit?: boolean;
+  selector?: RecipeSelector | Record<string, unknown> | null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The label / field predicates — ONE self-contained factory, run in Node and in the page
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Builds every label/field predicate. SELF-CONTAINED ON PURPOSE: it references nothing outside
+ * its own body, so its source text can be evaluated inside a portal page and behave exactly as
+ * it does here. Do not hoist a regex or helper out of it — the page copy would lose it and the
+ * capture script would fail closed (every click blocked) on a live recording.
+ */
+export function portalSafetyFactory() {
+  // SUBMIT INTENT. Everything that files, finalises or commits an application. Word-bounded so
+  // "Submittal Type", "Finished Floor Elevation" and "Resubmittal" do not match.
+  const SUBMIT_WORDS =
+    /\b(submit|submit application|file application|finali[sz]e|finish|complete application|send application|confirm submission|complete submission|place order)\b/i;
+  // Accela's page advance on every page but the last, where the SAME control files the permit.
+  const CONTINUE_APPLICATION = /\bcontinue\s+application\b/i;
+
+  // PAY / FEE. The click-blocking list (it halts a real click, so it governs objects: "pay
+  // fees", "make payment", a commit verb + "order"). Bare `pay` is in: "Pay", "Pay Later",
+  // "Review and Pay" all passed earlier copies. `\bpay\b` cannot reach "Payee", "Payroll" or
+  // "Repay" (no word boundary after "pay"). Bare `fee` is deliberately NOT here — "Fee Schedule"
+  // is a link a replay may need to pass.
+  const PAY_FEE =
+    /\b(pay\s*(and|&)\s*submit|pay fees?|pay now|submit\s*(&|and)\s*pay|make payment|payments?|remit|invoices?|continue to payment|pay \$|add to cart|proceed to (payment|checkout)|checkout|fees? due|purchases?|buy now|(place|submit|confirm|complete|finali[sz]e)\s+(the\s+|my\s+|your\s+)?order|pay)\b/i;
+
+  // THE FILING CLICK ITSELF — narrower than SUBMIT_WORDS. A mid-flow "Submit Documents" or
+  // "Submit for Review" is submit-worded (never captured) but is not the application's filing,
+  // so it must not end a human's capture session.
+  const FINAL_SUBMIT_EXACT = /^(submit|submit application|submit & pay|submit and pay|submit now|submit my application)$/i;
+  const FINAL_SUBMIT_PHRASE = /\b(confirm submission|complete submission|file application)\b/i;
+
+  // SECRETS. Each alternative names a secret; the name-ish words after "account" are excluded
+  // because "Account Holder Name" is project data the planner must see and bind.
+  const SECRET_WORDS = new RegExp([
+    "password", "passcode", "pass\\s*phrase",
+    "\\bpin\\b",
+    "\\baccount\\b(?!\\s*(holder|name|owner|type|manager|executive|representative|status|contact))",
+    "\\bacct\\b", "\\bacct\\s*(no|num|number)\\b",
+    "\\bmeter\\s*(number|no|num|#|id)\\b",
+    "\\b(service\\s*)?agreement\\s*(number|no|num|#|id)\\b",
+    "\\bssn\\b", "social\\s*security", "\\btax\\s*id\\b", "\\bein\\b", "\\bitin\\b", "\\btin\\b",
+    "routing", "bank\\s*account",
+    "card\\s*(number|no\\b|#)", "\\bcvv\\b", "\\bcvc\\b", "\\bccv\\b", "security\\s*code",
+    "\\bmfa\\b", "\\b2fa\\b", "\\botp\\b", "one[\\s-]*time", "verification\\s*code", "authentication\\s*code",
+  ].join("|"), "i");
+  // A label that is ONLY "Meter" (optionally "Electric Meter:") holds the meter number.
+  const BARE_METER_LABEL = /^\s*(electric\s+|utility\s+|service\s+|gas\s+)?meter\s*[:#*]?\s*$/i;
+  const SECRET_AUTOCOMPLETE = /^(current-password|new-password|one-time-code|cc-)/i;
+
+  // PAYMENT CARD FIELDS. A card's expiry is split into MONTH and YEAR, or carries a card word —
+  // a bare "Expiration Date" is a contractor licence on half the permit forms here.
+  const PAYMENT_WORDS =
+    /\bcvv\b|\bcvc\b|\bccv\b|card\s*(number|no\b|#|type)|cardholder|card\s*holder|name on card|credit\s*card|debit\s*card|(card|\bcc\b|credit|debit)[a-z ]{0,12}exp|exp(iration|iry|\.)?\s*(month|year)\b|billing\s*zip/i;
+
+  // A camelCase / snake_case attribute reads as words: accountNumber -> "account Number".
+  const words = (s: unknown): string =>
+    String(s ?? "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_\-.[\]]+/g, " ").trim();
+
+  const parts = (f: FieldIdentity | null | undefined): string[] => {
+    if (!f) return [];
+    return [f.label, f.name, f.id, f.placeholder, f.ariaLabel].map(words).filter(Boolean);
+  };
+
+  const isPayFee = (label: string | null | undefined): boolean => !!label && PAY_FEE.test(String(label));
+
+  /** Submit-, file- or commit-worded. "Continue Application" counts unless the caller KNOWS it
+   *  cannot file here: the page is still fillable (readOnlyPage === false), or nothing has been
+   *  entered yet (formDataEntered === false — the entry disclaimer). Unknown falls to "submit". */
+  const isSubmitIntent = (label: string | null | undefined, ctx?: ControlContext | null): boolean => {
+    const t = String(label ?? "");
+    if (!t.trim()) return false;
+    if (SUBMIT_WORDS.test(t)) return true;
+    if (CONTINUE_APPLICATION.test(t)) return !(ctx && (ctx.readOnlyPage === false || ctx.formDataEntered === false));
+    return false;
+  };
+
+  /** THE filing click: the control that files the application, not merely a submit-worded
+   *  step. "Continue Application" is the filing click only on a page KNOWN to be read-only and
+   *  not known to be the entry disclaimer. */
+  const isFinalSubmitControl = (label: string | null | undefined, ctx?: ControlContext | null): boolean => {
+    const t = String(label ?? "").replace(/\s+/g, " ").replace(/[»›>→]+\s*$/, "").trim();
+    if (!t) return false;
+    if (isPayFee(t) && !/^submit\s*(&|and)\s*pay$/i.test(t)) return false;
+    if (FINAL_SUBMIT_EXACT.test(t) || FINAL_SUBMIT_PHRASE.test(t)) return true;
+    return CONTINUE_APPLICATION.test(t) && !!ctx && ctx.readOnlyPage === true && ctx.formDataEntered !== false;
+  };
+
+  // A terms / certification acknowledgment. Ticking one is not entering form data, and a page
+  // whose only live control is one is still a read-only page.
+  const ACCEPT_TERMS = /\b(i\s+)?(agree|accept|certify|acknowledge|attest|consent)\b|terms\s+(and|&)\s+conditions|under\s+penalt/i;
+  const isAcceptTermsLabel = (label: string | null | undefined): boolean => !!label && ACCEPT_TERMS.test(String(label));
+
+  /** How a capture surface (human recorder, human patch) must treat a click on this control. */
+  const classifyRecordedClick = (label: string | null | undefined, ctx?: ControlContext | null): RecordedClickClass => {
+    if (isFinalSubmitControl(label, ctx)) return "finalSubmit";
+    if (isSubmitIntent(label, ctx) || isPayFee(label)) return "blocked";
+    return "capture";
+  };
+
+  /** A field whose typed value must never be stored or sent to an LLM. */
+  const isSecretField = (f: FieldIdentity | null | undefined): boolean => {
+    if (!f) return false;
+    if (String(f.type ?? "").toLowerCase() === "password") return true;
+    if (SECRET_AUTOCOMPLETE.test(String(f.autocomplete ?? "").trim())) return true;
+    if (BARE_METER_LABEL.test(String(f.label ?? ""))) return true;
+    return parts(f).some((p) => SECRET_WORDS.test(p));
+  };
+
+  /** A payment-card field — never captured at all, not even sensitively bound. A bare
+   *  "Expiration Date" is a card expiry only when the caller knows a card field sits in the same
+   *  form (ctx.cardFieldNearby) — on its own it is the contractor's licence expiry. */
+  const isPaymentField = (f: FieldIdentity | null | undefined, ctx?: { cardFieldNearby?: boolean } | null): boolean => {
+    if (!f) return false;
+    if (/^cc-/i.test(String(f.autocomplete ?? "").trim())) return true;
+    const ps = parts(f);
+    if (ps.some((p) => PAYMENT_WORDS.test(p))) return true;
+    return !!ctx && ctx.cardFieldNearby === true && ps.some((p) => /\bexp(iry|iration|ires|\.)?\b|\b(mm|yy|yyyy)\b|\bmonth\b|\byear\b/i.test(p));
+  };
+
+  /**
+   * Runs IN THE PAGE: does the document show NO fillable form control? Two kinds of live control
+   * do not count, because a review page carries them too: a site-wide search box in the header,
+   * and a terms/certification acknowledgment (PowerClerk's and Accela's final pages both have
+   * one). Unknown (no document) is undefined, never "fillable".
+   */
+  const readOnlyPageInPage = (): boolean | undefined => {
+    const d = (globalThis as { document?: Document }).document;
+    if (!d || typeof d.querySelectorAll !== "function") return undefined;
+    const boxOk = (el: Element): boolean => {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      return r.width > 2 && r.height > 2 && cs.display !== "none" && cs.visibility !== "hidden" && Number(cs.opacity) !== 0;
+    };
+    const labelText = (el: HTMLInputElement): string => {
+      const bits = [el.getAttribute("aria-label") || ""];
+      if (el.labels) for (const l of Array.from(el.labels)) bits.push(l.textContent || "");
+      return bits.join(" ");
+    };
+    const fields = Array.from(d.querySelectorAll(
+      "input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]):not([type=reset]), select, textarea, [contenteditable=true]",
+    ));
+    return !fields.some((el) => {
+      const e = el as HTMLInputElement;
+      if (e.disabled || e.readOnly) return false;
+      if (e.type === "search" || e.closest("[role=search], form[role=search], header, nav")) return false;
+      if (/search/i.test(`${e.getAttribute("name") || ""} ${e.id || ""} ${e.getAttribute("placeholder") || ""}`)) return false;
+      if (e.type === "checkbox" || e.type === "radio") {
+        if (isAcceptTermsLabel(labelText(e))) return false;
+        // A styled checkbox hides its real input (opacity 0 / 1x1) behind a visible label —
+        // still a fillable control when the label can be seen.
+        if (boxOk(e)) return true;
+        return !!e.labels && Array.from(e.labels).some(boxOk);
+      }
+      return boxOk(e);
+    });
+  };
+
+  /**
+   * Runs IN THE PAGE: a form control's identity as a HUMAN sees it — attribute names plus the
+   * text of its <label for> and its wrapping <label>. Never its value. The CVV that reached a
+   * shared recipe as a literal had no telling attribute at all: Accela labels it with a plain
+   * <label>CVV:</label>, so reading attributes alone caught the card number and missed its three
+   * neighbours.
+   */
+  const fieldIdentityInPage = (el: Element): FieldIdentity => {
+    const labels: string[] = [];
+    const id = el.getAttribute("id");
+    if (id) {
+      try {
+        const root = (el.getRootNode ? el.getRootNode() : null) as Document | null;
+        const esc = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(id) : id.replace(/"/g, '\\"');
+        const lbl = root && root.querySelector ? root.querySelector(`label[for="${esc}"]`) : null;
+        if (lbl && lbl.textContent) labels.push(lbl.textContent);
+      } catch { /* attributes are still read */ }
+    }
+    const wrap = el.closest ? el.closest("label") : null;
+    if (wrap && wrap.textContent) labels.push(wrap.textContent);
+    return {
+      label: labels.join(" ").replace(/\s+/g, " ").trim(),
+      name: el.getAttribute("name") || "",
+      id: id || "",
+      autocomplete: el.getAttribute("autocomplete") || "",
+      type: String((el as HTMLInputElement).type || ""),
+      placeholder: el.getAttribute("placeholder") || "",
+      ariaLabel: el.getAttribute("aria-label") || "",
+    };
+  };
+
+  /** Runs IN THE PAGE: is this element a payment-card field? Its own identity decides first; a
+   *  bare expiry decides by whether a card field shares its form (or document). */
+  const isPaymentElementInPage = (el: Element): boolean => {
+    if (isPaymentField(fieldIdentityInPage(el))) return true;
+    const form = (el as HTMLInputElement).form;
+    const scope = (form || (el.getRootNode ? el.getRootNode() : null)) as ParentNode | null;
+    const others = scope && typeof scope.querySelectorAll === "function" ? Array.from(scope.querySelectorAll("input, select, textarea")) : [];
+    const cardFieldNearby = others.some((o) => o !== el && isPaymentField(fieldIdentityInPage(o)));
+    return isPaymentField(fieldIdentityInPage(el), { cardFieldNearby });
+  };
+
+  return {
+    isSubmitIntent,
+    isPayFee,
+    isFinalSubmitControl,
+    classifyRecordedClick,
+    isSecretField,
+    isPaymentField,
+    isAcceptTermsLabel,
+    readOnlyPageInPage,
+    fieldIdentityInPage,
+    isPaymentElementInPage,
+  };
+}
+
+export type PortalSafety = ReturnType<typeof portalSafetyFactory>;
+
+const impl: PortalSafety = portalSafetyFactory();
+
+export const isSubmitIntent = impl.isSubmitIntent;
+export const isPayFee = impl.isPayFee;
+export const isFinalSubmitControl = impl.isFinalSubmitControl;
+export const classifyRecordedClick = impl.classifyRecordedClick;
+export const isSecretField = impl.isSecretField;
+export const isPaymentField = impl.isPaymentField;
+export const isAcceptTermsLabel = impl.isAcceptTermsLabel;
+
+/** The name every in-page consumer reads the predicates from. */
+export const PORTAL_SAFETY_GLOBAL = "__portalSafety";
+
+/**
+ * Script text that installs the SAME predicates in a page as window.__portalSafety. Includes the
+ * __name shim (tsx/esbuild wraps inner functions in __name calls). Idempotent, and the global is
+ * non-writable so a page script cannot swap in a permissive copy.
+ */
+export const PORTAL_SAFETY_IN_PAGE_SOURCE =
+  "globalThis.__name = globalThis.__name || function (fn) { return fn; };\n" +
+  `if (!globalThis.${PORTAL_SAFETY_GLOBAL}) { try { Object.defineProperty(globalThis, ${JSON.stringify(PORTAL_SAFETY_GLOBAL)}, ` +
+  `{ value: Object.freeze((${portalSafetyFactory.toString()})()), writable: false, configurable: false }); } catch (e) {} }`;
+
+// ---------------------------------------------------------------------------------------------
+// Request-URL predicates (network recorder). Portal endpoints concatenate words
+// ("SubmitApplication", "CompleteApplication"), so these have no trailing word boundary.
+// ---------------------------------------------------------------------------------------------
+
+const FINAL_SUBMIT_URL = /(submit|finali[sz]e|completeapplication|fileapplication|continueapplication)/i;
+const PAY_FEE_URL = /(payment|checkout|invoice|paymentus|payfee|placeorder)/i;
+
+/** A request whose URL looks like a filing or a fee payment — flagged, never auto-fired. */
+export function isSubmitOrPayRequestUrl(url: string | null | undefined): boolean {
+  const u = String(url ?? "");
+  return !!u && (FINAL_SUBMIT_URL.test(u) || PAY_FEE_URL.test(u));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Submission outcome — positive evidence only
+// ---------------------------------------------------------------------------------------------
+
+const ACCEPTED_EVIDENCE: RegExp[] = [
+  /\b(application|request|submission|submittal|permit|project|form|interconnection|filing)\s+(has\s+been|was|is)\s+(successfully\s+)?(submitted|received|filed|accepted)\b/i,
+  /\bsuccessfully\s+(submitted|filed|received)\b/i,
+  /\bthank\s+you\s+for\s+(your\s+)?(submission|submitting|applying|your\s+application)\b/i,
+  /\bsubmission\s+(complete|successful|received|confirmed)\b/i,
+  /\b(confirmation|record|application|reference|tracking|permit|case|project)\s*(number|no\.?|#|id)\s*[:#]?\s*[A-Z0-9][A-Z0-9-]{3,}/i,
+];
+
+const REJECTED_EVIDENCE: RegExp[] = [
+  /\bplease\s+correct\s+the\s+following\b/i,
+  /\b(could|can)\s*not\s+be\s+submitted\b/i,
+  /\bsubmission\s+(failed|was\s+unsuccessful|error)\b/i,
+  /\b(an?\s+)?errors?\s+(has|have)?\s*occurred\b/i,
+  /\bthere\s+(was|were|is|are)\s+(an?\s+)?(problem|error|issue)s?\b/i,
+  /\b[A-Za-z][A-Za-z /]{1,40}\s+is\s+(required|invalid)\b/i,
+  /\b(required|invalid)\s+field/i,
+  /\bunable\s+to\s+(submit|process)\b/i,
+];
+
+/**
+ * What the page said after a submit click. "accepted" needs POSITIVE evidence (a confirmation or
+ * record number, "has been submitted"); "rejected" needs a validation/error phrase; a quiet
+ * page, a challenge, or both kinds at once are "unknown". A quiet page is NOT acceptance — that
+ * reading once counted a non-PowerClerk filing as accepted with nothing on screen to say so.
+ */
+export function classifySubmissionText(body: string | null | undefined): SubmissionOutcome {
+  const text = String(body ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return { verdict: "unknown", evidence: null };
+  const acc = ACCEPTED_EVIDENCE.map((re) => text.match(re)?.[0]).find(Boolean) ?? null;
+  const rej = REJECTED_EVIDENCE.map((re) => text.match(re)?.[0]).find(Boolean) ?? null;
+  if (acc && rej) return { verdict: "unknown", evidence: `conflicting: "${acc}" / "${rej}"` };
+  if (acc) return { verdict: "accepted", evidence: acc };
+  if (rej) return { verdict: "rejected", evidence: rej };
+  return { verdict: "unknown", evidence: null };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Recipe shape
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The only recipe shape in which a final submit may exist: AT MOST ONE isFinalSubmit step, it is
+ * the LAST step, it is a click, and the step immediately before it is stopForReview. Zero flagged
+ * steps is valid (most recipes). Returns the problems; empty means valid.
+ */
+export function recipeShapeProblems(steps: ReadonlyArray<ShapeStep> | null | undefined): string[] {
+  const list = Array.isArray(steps) ? steps : [];
+  const flagged = list.map((s, i) => (s && s.isFinalSubmit === true ? i : -1)).filter((i) => i >= 0);
+  if (flagged.length === 0) return [];
+  const problems: string[] = [];
+  if (flagged.length > 1) problems.push(`${flagged.length} steps are flagged isFinalSubmit (at most one is allowed): indexes ${flagged.join(", ")}`);
+  const last = flagged[flagged.length - 1];
+  if (last !== list.length - 1) problems.push(`the isFinalSubmit step (index ${last}) is not the last step (${list.length - 1})`);
+  if (String(list[last]?.action) !== "click") problems.push(`the isFinalSubmit step is a "${String(list[last]?.action)}", not a click`);
+  if (last === 0 || String(list[last - 1]?.action) !== "stopForReview") {
+    problems.push("the isFinalSubmit step does not immediately follow a stopForReview marker");
+  }
+  return problems;
+}
+
+/** Boolean form of recipeShapeProblems. */
+export function isRecipeShapeValid(steps: ReadonlyArray<ShapeStep> | null | undefined): boolean {
+  return recipeShapeProblems(steps).length === 0;
+}
+
+/** Object form, for callers that report: { valid, problems }. Never use it as a condition. */
+export function validateRecipeShape(steps: ReadonlyArray<ShapeStep> | null | undefined): { valid: boolean; problems: string[] } {
+  const problems = recipeShapeProblems(steps);
+  return { valid: problems.length === 0, problems };
+}
+
+// ---------------------------------------------------------------------------------------------
+// May automation click final submit? (hard rule 1, as amended by the operator decision)
+// ---------------------------------------------------------------------------------------------
+
+/** The process switch, read by the CALLER and passed in. Exactly "1" — not "true", not "yes". */
+export function finalSubmitEnvAllows(env: Record<string, string | undefined> = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {}): boolean {
+  return String(env.PORTAL_ALLOW_FINAL_SUBMIT ?? "").trim() === "1";
+}
+
+/** Every reason the click is refused. Empty only when ALL conditions hold. */
+export function finalSubmitRefusals(ctx: FinalSubmitContext | null | undefined): string[] {
+  if (!ctx) return ["no context"];
+  const out: string[] = [];
+  if (ctx.envAllows !== true) out.push("PORTAL_ALLOW_FINAL_SUBMIT is not 1 on this process");
+  const a = ctx.runApproval;
+  const approver = a && typeof a.approver === "string" ? a.approver.trim() : "";
+  const approvedRun = a && typeof a.runId === "string" ? a.runId.trim() : "";
+  const runId = typeof ctx.runId === "string" ? ctx.runId.trim() : "";
+  if (!a) out.push("no named person approved this run");
+  else {
+    if (!approver) out.push("the approval names no approver");
+    if (!approvedRun || !runId || approvedRun !== runId) out.push("the approval is for a different run");
+  }
+  if (ctx.stepIsTerminalFlagged !== true) out.push("the step is not the recipe's single terminal isFinalSubmit step");
+  if (ctx.recipeShapeValid !== true) out.push("the recipe shape is invalid");
+  return out;
+}
+
+/**
+ * THE final-submit gate. True only when the environment switch is on, a named person approved
+ * exactly this run, the step is the single terminal flagged step, and the recipe shape is valid.
+ * No standing per-recipe arm exists. Until a caller passes a real approval, this is always false.
+ */
+export function mayClickFinalSubmit(ctx: FinalSubmitContext | null | undefined): boolean {
+  return finalSubmitRefusals(ctx).length === 0;
+}

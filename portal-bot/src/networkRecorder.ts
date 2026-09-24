@@ -23,6 +23,7 @@ import type {
   NetworkRecipe,
   NetworkRequestRecord,
 } from "../../shared/src/types";
+import { isSubmitOrPayRequestUrl } from "../../shared/src/portalSafety";
 
 // Header / body keys ASP.NET MVC (PowerClerk) and common stacks use for CSRF.
 const CSRF_HEADER_RE = /^(requestverificationtoken|x-csrf-token|x-xsrf-token|x-anti-forgery)$/i;
@@ -42,12 +43,10 @@ const IGNORE_URL_RE = new RegExp(
 // Only these methods mutate server state — the ones worth replaying.
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-// Request URL/body signals that this is a final submit or a fee payment. Flagged
-// so replay STOPS before them (guided-manual) and never auto-pays.
-// No trailing \b: portal endpoints concatenate words ("SubmitApplication",
-// "CompleteApplication") so a word boundary after the keyword would miss them.
-const FINAL_SUBMIT_RE = /(submit|finalize|completeapplication|fileapplication)/i;
-const PAY_FEE_RE = /(payment|checkout|invoice|paymentus|payfee)/i;
+// Request URLs that look like a final submit or a fee payment are flagged so replay STOPS
+// before them (guided-manual) and never auto-pays. The URL-shaped predicate (no trailing word
+// boundary: endpoints concatenate words, "SubmitApplication") lives in shared/src/portalSafety.ts
+// beside the label-shaped ones, so a new filing or payment word is added in one place.
 
 export interface CaptureInput {
   /** NON-sensitive project/client field values, keyed by field name. Used to
@@ -188,7 +187,7 @@ export class NetworkRecorder {
     const valueBindings = inferBindings(redactedBody, this.input.fieldValues);
 
     const seq = this.seq++;
-    const isFinal = FINAL_SUBMIT_RE.test(url) || PAY_FEE_RE.test(url);
+    const isFinal = isSubmitOrPayRequestUrl(url);
     const rec: NetworkRequestRecord = {
       seq,
       method: method.toUpperCase(),

@@ -15,22 +15,41 @@
 //  - Clicks on final-submit / pay / fee controls are NEVER captured — the
 //    human clicking Submit files THIS application; it must not append a
 //    submit step that replay could act on.
-//  - Sensitive fields (password/account/meter/SSN/card) record the STEP but
-//    never persist the typed value (sensitive:true) — the merge binds it to a
+//  - Sensitive fields (password/account/meter/SSN) record the STEP but never
+//    persist the typed value (sensitive:true) — the merge binds it to a
 //    project field key by NAME and strips the literal before anything is stored.
+//  - Payment-card fields are never captured at all.
 //  - Best-effort everywhere: capture can never break the open session.
+//
+// EVERY one of those questions is answered by shared/src/portalSafety.ts — the
+// same module the recorder, the learner and replay use. The page reports what
+// it saw (label, attribute names, whether the page is read-only); the decision
+// is made here in Node by the shared predicates, except the card-field refusal,
+// which must happen IN THE PAGE so a card value never crosses the binding. For
+// that the page runs the shared factory's own source (PORTAL_SAFETY_IN_PAGE_SOURCE).
 // ---------------------------------------------------------------------------
 import type { Page } from "playwright";
 import type { RecipeSelector, RecipeStep, StepFingerprint } from "../../shared/src/types";
+import {
+  classifyRecordedClick,
+  isSecretField,
+  PORTAL_SAFETY_IN_PAGE_SOURCE,
+  type FieldIdentity,
+} from "../../shared/src/portalSafety";
 
 export interface HumanCapturePayload {
   kind: "click" | "fill" | "select" | "check" | "uncheck" | "upload" | "submitObserved";
   selector: RecipeSelector;
   value?: string;
+  /** Legacy: an explicit sensitive flag. The shared isSecretField(identity) is ORed in. */
   sensitive?: boolean;
   label?: string;
   /** Element attribute names for replay-heal tie-breaking (never values). */
   fingerprint?: StepFingerprint;
+  /** Attribute names + label text of a form field (never its value), for the secret check. */
+  identity?: FieldIdentity;
+  /** For a click: the page showed no fillable control when it happened (see readOnlyPageInPage). */
+  readOnlyPage?: boolean;
 }
 
 // Marker note carried by the pseudo-step emitted when the HUMAN clicks the portal's final
@@ -45,12 +64,19 @@ export type HumanStepFn = (step: RecipeStep) => void;
 // Map a captured interaction onto the recipe-step contract (same mapping as the
 // manual recorder in recordRecipe.ts). Values are kept literal here; the backend
 // merge converts literals that match project data into reusable field bindings.
+//
+// A click is mapped ONLY when the shared classifier calls it an ordinary control: a submit-,
+// file- or pay-worded click returns null here even when called directly, so no caller can turn
+// one into a replayable step by skipping the sink.
 export function payloadToStep(p: HumanCapturePayload): RecipeStep | null {
   const note = p.label ? `human-patch: ${p.label}` : "human-patch";
   // Submit observation is a SIGNAL, not a replayable step — see HUMAN_SUBMIT_OBSERVED_NOTE.
   if (p.kind === "submitObserved") return { action: "click", selector: {}, optional: true, note: HUMAN_SUBMIT_OBSERVED_NOTE };
-  if (p.kind === "click") return { action: "click", selector: p.selector, note };
-  if (p.kind === "fill" && p.sensitive) {
+  if (p.kind === "click") {
+    if (classifyRecordedClick(p.label, { readOnlyPage: p.readOnlyPage }) !== "capture") return null;
+    return { action: "click", selector: p.selector, note };
+  }
+  if (p.kind === "fill" && (p.sensitive || isSecretField(p.identity))) {
     // The typed value rides along IN MEMORY ONLY so the backend merge can bind it to a
     // project field key (account/meter numbers are project data); appendHumanPatchSteps
     // strips the literal unconditionally before anything is persisted.
@@ -64,6 +90,35 @@ export function payloadToStep(p: HumanCapturePayload): RecipeStep | null {
   return null;
 }
 
+/**
+ * The stateful sink one armed page reports into. A click the shared classifier calls the FINAL
+ * filing click emits ONE submitObserved signal and DISARMS the session: nothing the human does
+ * after filing (the confirmation page, a receipt download) is a fix to the recipe. A merely
+ * submit- or pay-worded click ("Submit Documents", "Pay Fees") is dropped without disarming, so
+ * the operator's remaining fixes on that page are still captured. The disarm lives here in Node,
+ * so it survives the navigation the submit itself causes.
+ */
+export function createHumanCaptureSink(onStep: HumanStepFn): (p: HumanCapturePayload) => void {
+  let disarmed = false;
+  return (p: HumanCapturePayload): void => {
+    if (!p || typeof p !== "object") return;
+    if (p.kind === "click") {
+      const cls = classifyRecordedClick(p.label, { readOnlyPage: p.readOnlyPage });
+      if (cls === "finalSubmit") {
+        if (!disarmed) {
+          disarmed = true;
+          onStep(payloadToStep({ kind: "submitObserved", selector: {}, label: p.label })!);
+        }
+        return;
+      }
+      if (cls === "blocked") return;
+    }
+    if (disarmed || p.kind === "submitObserved") return;
+    const step = payloadToStep(p);
+    if (step) onStep(step);
+  };
+}
+
 // Browser-side listener set. Serialized into the page (no closures over Node state).
 // Shadow-aware: reads the real target through composedPath(), and resolves label[for]
 // in the element's own root. Guarded so re-arming never double-registers.
@@ -72,11 +127,6 @@ function patchCaptureScript(): void {
   const w = window as any;
   if (w.__alPatchArmed) return;
   w.__alPatchArmed = true;
-
-  // Final-submit / payment intent — NEVER captured (see module SAFETY note). A BARE
-  // "Submit"/"Pay" button counts: PGE PowerClerk's final button is literally "Submit",
-  // and a real run recorded that click into the recipe before this was broadened.
-  const OFF_LIMITS = /\b(submit|pay|pay fee|pay now|make payment|continue to payment|add to cart|proceed to (payment|checkout)|checkout|file application|confirm submission|complete submission|finalize|place order)\b/i;
 
   function target(e: Event): Element | null {
     const path = typeof e.composedPath === "function" ? e.composedPath() : [];
@@ -117,26 +167,9 @@ function patchCaptureScript(): void {
     return { selector: sel, label: name, fingerprint: Object.keys(fp).length ? fp : undefined };
   }
 
-  // The field's identity as a HUMAN sees it, not just as the DOM names it. The CVV that
-  // reached a shared recipe as a literal ("520") had NO matching attribute — Accela labels
-  // it with a plain <label>CVV:</label> while the input's own name/id say nothing. Reading
-  // only attributes is why the card NUMBER (autocomplete-tagged) was caught and its three
-  // neighbours (CVV, Name on Card, expiry) were not.
-  function fieldIdentity(el: HTMLInputElement): string {
-    const bits = [el.getAttribute("name"), el.getAttribute("id"), el.getAttribute("autocomplete"), el.placeholder, el.getAttribute("aria-label")];
-    const id = el.getAttribute("id");
-    if (id) {
-      try {
-        const root = (el.getRootNode ? el.getRootNode() : document) as Document;
-        const lbl = root.querySelector ? root.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
-        if (lbl && lbl.textContent) bits.push(lbl.textContent);
-      } catch { /* CSS.escape absent on ancient pages — attributes still checked */ }
-    }
-    const wrap = el.closest ? el.closest("label") : null;
-    if (wrap && wrap.textContent) bits.push(wrap.textContent);
-    return bits.filter(Boolean).join(" ").toLowerCase();
-  }
-
+  // The field identity (attribute NAMES + label text, never the value) and the card-field
+  // refusal both come from the shared predicates the page was given (window.__portalSafety).
+  //
   // PAYMENT-CARD FIELDS ARE NEVER CAPTURED AT ALL — not even sensitively-bound. A card step
   // in a recipe is a step with no legitimate replayer: replay must never drive a payment
   // form (hard rule 1), and "bound at replay" still teaches replay WHERE the card fields
@@ -144,16 +177,21 @@ function patchCaptureScript(): void {
   // page. A Coos Bay human-patch session proved the cost of getting this wrong: CVV "520",
   // the cardholder's name and the expiry sat in the SHARED portal_recipes table for nine
   // days, in a row every tenant's replay resolves.
-  function isPaymentCardField(el: HTMLInputElement): boolean {
-    const hay = fieldIdentity(el);
-    if (/^cc-/.test(el.getAttribute("autocomplete") || "")) return true;
-    return /\bcvv\b|\bcvc\b|card\s*number|name\s*on\s*card|cardholder|card\s*type|expir(y|ation)?\s*(date|month|year)?|billing\s*zip/.test(hay);
+  //
+  // FAIL CLOSED: if the shared predicates did not install, no field event is reported at all.
+  function fieldIdentity(el: Element): Record<string, string> {
+    const ps = w.__portalSafety;
+    return ps && typeof ps.fieldIdentityInPage === "function" ? ps.fieldIdentityInPage(el) : {};
+  }
+  function isPaymentCardField(el: Element): boolean {
+    const ps = w.__portalSafety;
+    if (!ps || typeof ps.isPaymentElementInPage !== "function") return true;
+    try { return ps.isPaymentElementInPage(el) === true; } catch { return true; }
   }
 
-  function isSensitiveField(el: HTMLInputElement): boolean {
-    if (el.type === "password") return true;
-    const hay = fieldIdentity(el);
-    return /password|passcode|account\s*(no|num|#)|account number|acct|meter|ssn|social security|card\s*number|cvv|security code|mfa|otp|one.time/.test(hay);
+  function readOnlyPage(): boolean | undefined {
+    const ps = w.__portalSafety;
+    try { return ps && typeof ps.readOnlyPageInPage === "function" ? ps.readOnlyPageInPage() : undefined; } catch { return undefined; }
   }
 
   document.addEventListener("click", (e) => {
@@ -162,78 +200,54 @@ function patchCaptureScript(): void {
     const actionable = el.closest("button,a,[role=button],[role=link]");
     if (!actionable) return; // plain page click — not a replayable action
     if ((actionable as HTMLInputElement).type === "file") return; // handled by change
-    const d = describe(actionable);
-    if (OFF_LIMITS.test(d.label)) {
-      // A submit/pay-worded click is NEVER captured as a replayable step (broad match —
-      // losing a mid-flow "Submit Documents" nav click from a patch is safer than
-      // replaying one). But only the FINAL application submit disarms capture and emits
-      // the submit-observed promotion signal: a mid-flow "Submit Documents" / "Submit
-      // for Review" / "Save and Submit Later" must not promote a half-corrected
-      // recording or stop capturing the operator's remaining fixes. Final = a bare
-      // "Submit"/"Submit Application" style label, or explicit filing phrases.
-      const label = (d.label || "").trim();
-      const isFinalSubmit = /^(submit|submit application|submit & pay|submit and pay)$/i.test(label)
-        || /\b(confirm submission|complete submission|file application)\b/i.test(label);
-      if (isFinalSubmit) {
-        const alreadyDisarmed = w.__alPatchDisarmed === true;
-        w.__alPatchDisarmed = true;
-        if (!alreadyDisarmed && typeof w.__alPatchStep === "function") {
-          w.__alPatchStep({ kind: "submitObserved", selector: {}, label });
-        }
-      }
-      return;
-    }
-    if (w.__alPatchDisarmed) return;
-    if (typeof w.__alPatchStep === "function") w.__alPatchStep({ kind: "click", ...d });
+    // Reported with the page's read-only state; the SHARED classifier in Node decides whether it
+    // is an ordinary click, a blocked submit/pay control, or the final filing click.
+    if (typeof w.__alPatchStep === "function") w.__alPatchStep({ kind: "click", ...describe(actionable), readOnlyPage: readOnlyPage() });
   }, true);
 
   document.addEventListener("change", (e) => {
     const el = target(e) as HTMLInputElement | null;
     if (!el || !(el instanceof Element)) return;
-    const d = describe(el);
-    if (w.__alPatchDisarmed) return;
     if (typeof w.__alPatchStep !== "function") return;
     // Payment-card fields: refuse BEFORE any kind branches, so a card-type <select>, an
     // expiry <select>, an autofill checkbox and the CVV <input> are all equally invisible
     // to the recipe. The human still types them; the recording simply never sees it.
     if (isPaymentCardField(el)) return;
+    const d = describe(el);
+    const identity = fieldIdentity(el);
     if (el.type === "file") w.__alPatchStep({ kind: "upload", ...d });
-    else if (el.tagName === "SELECT") w.__alPatchStep({ kind: "select", value: el.value, ...d });
+    else if (el.tagName === "SELECT") w.__alPatchStep({ kind: "select", value: el.value, identity, ...d });
     else if (el.type === "checkbox" || el.type === "radio") {
       // Unchecking a pre-checked checkbox is a real fix — record it (radios only ever
       // fire change when they become checked).
       if (el.checked) w.__alPatchStep({ kind: "check", ...d });
       else if (el.type === "checkbox") w.__alPatchStep({ kind: "uncheck", ...d });
     }
-    else if (isSensitiveField(el)) w.__alPatchStep({ kind: "fill", sensitive: true, value: el.value, ...d });
-    else w.__alPatchStep({ kind: "fill", value: el.value, ...d });
+    else w.__alPatchStep({ kind: "fill", value: el.value, identity, ...d });
   }, true);
 }
 
-/** Arm the open page: expose the step binding, install the capture listeners on the
- *  current document AND on every future navigation, and report each interaction as a
- *  RecipeStep. Returns true when armed; never throws. */
+/** Arm the open page: expose the step binding, install the shared safety predicates and the
+ *  capture listeners on the current document AND on every future navigation, and report each
+ *  interaction as a RecipeStep. Returns true when armed; never throws. */
 export async function armHumanCaptureOnPage(page: Page, onStep: HumanStepFn): Promise<boolean> {
   if (!page || typeof page.evaluate !== "function") return false;
   try {
+    const sink = createHumanCaptureSink(onStep);
     try {
       await page.exposeBinding("__alPatchStep", (_src, payload: HumanCapturePayload) => {
-        try {
-          const step = payloadToStep(payload);
-          if (step) onStep(step);
-        } catch { /* the sink must never break the page */ }
+        try { sink(payload); } catch { /* the sink must never break the page */ }
       });
     } catch {
       // Already exposed on this page (re-arm) — listeners below are idempotent too.
     }
-    // esbuild/tsx serializes in-page functions with __name helper calls; openPortal pages
-    // carry the shim already, but be self-sufficient so capture arms on ANY page.
-    const NAME_SHIM = "globalThis.__name = globalThis.__name || function (fn) { return fn; };";
+    // PORTAL_SAFETY_IN_PAGE_SOURCE carries the __name shim (esbuild/tsx serializes in-page
+    // functions with __name helper calls) and installs window.__portalSafety.
     if (typeof page.addInitScript === "function") {
-      await page.addInitScript({ content: NAME_SHIM }).catch(() => null);
+      await page.addInitScript({ content: PORTAL_SAFETY_IN_PAGE_SOURCE }).catch(() => null);
       await page.addInitScript(patchCaptureScript).catch(() => null);
     }
-    await page.evaluate(NAME_SHIM);
+    await page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE);
     await page.evaluate(patchCaptureScript);
     return true;
   } catch {

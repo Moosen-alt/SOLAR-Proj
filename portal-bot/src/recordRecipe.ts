@@ -18,9 +18,124 @@
  *
  * Delete / re-record from the dashboard (Portal Recipes admin) if one wasn't completed.
  */
+import path from "node:path";
 import readline from "node:readline";
+import { pathToFileURL } from "node:url";
 import type { RecipeSelector, RecipeStep, StepFingerprint } from "../../shared/src/types";
+import {
+  classifyRecordedClick,
+  isAcceptTermsLabel,
+  isSecretField,
+  PORTAL_SAFETY_IN_PAGE_SOURCE,
+  type FieldIdentity,
+} from "../../shared/src/portalSafety";
 import { openPortal } from "./browser";
+
+/** What the in-page capture reports for one interaction. Attribute names and labels only,
+ *  except `value`, which crosses this in-memory binding so it can be bound to a field key. */
+export interface RecordedPayload {
+  kind: string;
+  selector: RecipeSelector;
+  value?: string;
+  rawValue?: string;
+  sensitive?: boolean;
+  isFile?: boolean;
+  viaFileChooser?: boolean;
+  label?: string;
+  fingerprint?: StepFingerprint;
+  identity?: FieldIdentity;
+  readOnlyPage?: boolean;
+}
+
+/** Has the recording entered real form data yet? A terms/certification tick does not count —
+ *  the agree box on an entry disclaimer is not a fill (see ControlContext.formDataEntered). */
+export function recordingHasFormData(steps: ReadonlyArray<RecipeStep>): boolean {
+  return steps.some((s) =>
+    s.action === "fill" || s.action === "select" ||
+    ((s.action === "check" || s.action === "uncheck") && !isAcceptTermsLabel(`${s.note ?? ""} ${s.selector?.name ?? ""} ${s.selector?.label ?? ""}`)));
+}
+
+/**
+ * Map one captured interaction onto a recipe step and append it. Every safety decision comes
+ * from shared/src/portalSafety.ts:
+ *   - a click is classified by classifyRecordedClick with the page's read-only state and whether
+ *     this recording has entered data yet. A submit/pay-worded click becomes a TARGETLESS optional
+ *     placeholder (never replayable, but the recipe shows where it happened); only THE filing
+ *     click is flagged isFinalSubmit.
+ *   - a fill is secret when the payload says so OR isSecretField(identity) does: the step is kept,
+ *     the literal is not.
+ */
+export function createRecorderSink(
+  steps: RecipeStep[],
+  bindField: (typed: string) => string | undefined,
+): (payload: RecordedPayload) => void {
+  return (payload: RecordedPayload): void => {
+    const sel = payload.selector;
+    // Heal tie-break metadata (attribute names only) — attached to form-control steps.
+    const fp = payload.fingerprint ? { fingerprint: payload.fingerprint } : {};
+    if (payload.kind === "click") {
+      const cls = classifyRecordedClick(payload.label, { readOnlyPage: payload.readOnlyPage, formDataEntered: recordingHasFormData(steps) });
+      if (cls === "capture") {
+        steps.push({ action: "click", selector: sel, note: payload.label });
+        return;
+      }
+      // A submit/pay-worded control the operator clicked. NEVER replayable: no selector,
+      // optional, so replay skips it — but the recipe keeps a visible placeholder instead of
+      // a silent hole. Only the filing click itself carries isFinalSubmit (and
+      // finalizeRecordedSteps keeps that flag only in the one valid terminal position).
+      steps.push({
+        action: "click",
+        selector: {},
+        optional: true,
+        ...(cls === "finalSubmit" ? { isFinalSubmit: true } : {}),
+        note: `BLOCKED — human clicked a submit/pay-like control ("${payload.label ?? ""}") here; not replayable. Re-record as a nav step if it was mid-flow navigation.`,
+      });
+    } else if (payload.kind === "fill" && (payload.sensitive || isSecretField(payload.identity))) {
+      // Credential/secret field — never persist the typed value. The value crosses
+      // ONLY this in-memory binding so it can be matched to a project field key
+      // (account/meter numbers live in project data); on a match the step binds by
+      // NAME and replay substitutes each project's own value. No match → the step
+      // is recorded valueless (optional) and skipped at replay.
+      const field = bindField(payload.value || "");
+      steps.push({ action: "fill", selector: sel, ...fp, field, sensitive: true, optional: true, note: `SENSITIVE — ${field ? `bound to project field "${field}"` : "bind to credential/redacted field"} (no value stored). ${payload.label ?? ""}`.trim() });
+    } else if (payload.kind === "fill") {
+      const field = bindField(payload.value || "");
+      steps.push(field ? { action: "fill", selector: sel, ...fp, field, note: payload.label } : { action: "fill", selector: sel, ...fp, value: payload.value, note: payload.label });
+    } else if (payload.kind === "select") {
+      // payload.value is the selected option's LABEL (replay's selectWithFallback
+      // matches label first); rawValue is the option's value attribute, kept in the
+      // note for debugging. Try binding on either — project data may hold one or the other.
+      const field = bindField(payload.value || "") || bindField(payload.rawValue || "");
+      const note = [payload.label, payload.rawValue && payload.rawValue !== payload.value ? `(option value: ${payload.rawValue})` : ""].filter(Boolean).join(" ");
+      steps.push(field ? { action: "select", selector: sel, ...fp, field, note } : { action: "select", selector: sel, ...fp, value: payload.value, note });
+    } else if (payload.kind === "check") {
+      steps.push({ action: "check", selector: sel, ...fp, note: payload.label });
+    } else if (payload.kind === "uncheck") {
+      steps.push({ action: "uncheck", selector: sel, ...fp, note: payload.label });
+    } else if (payload.kind === "upload") {
+      steps.push({ action: "upload", selector: sel, docType: "", ...(payload.viaFileChooser ? { viaFileChooser: true } : {}), note: `UPLOAD — set docType (e.g. sld, site_plan) in the dashboard. ${payload.label ?? ""}` });
+    }
+  };
+}
+
+/**
+ * Close a recording into the one valid recipe shape (shared validateRecipeShape): replay always
+ * stops at a stopForReview marker, and an isFinalSubmit step may exist only as the single LAST
+ * step, immediately after that marker. If the operator's last action was the filing click, it is
+ * kept there as the (targetless) terminal flagged step; every other flag is dropped — a flagged
+ * step mid-recipe is exactly the three-flagged shape the gate must refuse.
+ */
+export function finalizeRecordedSteps(steps: ReadonlyArray<RecipeStep>): RecipeStep[] {
+  const review: RecipeStep = { action: "stopForReview", phase: "review", note: "Stop at review — human submits manually." };
+  const last = steps[steps.length - 1];
+  const terminal = last && last.isFinalSubmit === true ? last : null;
+  const body = (terminal ? steps.slice(0, -1) : steps.slice()).map((s) => {
+    if (s.isFinalSubmit !== true) return s;
+    const { isFinalSubmit: _drop, ...rest } = s;
+    return rest as RecipeStep;
+  });
+  return terminal ? [...body, review, terminal] : [...body, review];
+}
 
 function arg(name: string, fallback = ""): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -69,57 +184,18 @@ async function main(): Promise<void> {
   const { page } = await openPortal({ userDataDir: profileDir, headless: false });
 
   // The page calls this binding for every captured interaction.
-  await page.exposeBinding(
-    "__recordStep",
-    (_src: unknown, payload: { kind: string; selector: RecipeSelector; value?: string; rawValue?: string; sensitive?: boolean; isFile?: boolean; viaFileChooser?: boolean; isFinalSubmit?: boolean; label?: string; fingerprint?: StepFingerprint }) => {
-      const sel = payload.selector;
-      // Heal tie-break metadata (attribute names only) — attached to form-control steps.
-      const fp = payload.fingerprint ? { fingerprint: payload.fingerprint } : {};
-      if (payload.kind === "click") {
-        steps.push({ action: "click", selector: sel, note: payload.label });
-      } else if (payload.kind === "blockedClick") {
-        // A submit/pay-worded control the operator clicked mid-flow. NEVER replayable:
-        // no selector, optional, so replay skips it — but the recipe keeps a visible
-        // placeholder instead of a silent hole. isFinalSubmit marks submit-like clicks
-        // for the operator's approval flow (safety rule 1: only a human-approved flag,
-        // never button text, can ever be auto-clicked — and this step has no target).
-        steps.push({
-          action: "click",
-          selector: {},
-          optional: true,
-          ...(payload.isFinalSubmit ? { isFinalSubmit: true } : {}),
-          note: `BLOCKED — human clicked a submit/pay-like control ("${payload.label ?? ""}") here; not replayable. Re-record as a nav step if it was mid-flow navigation.`,
-        });
-      } else if (payload.kind === "fill" && payload.sensitive) {
-        // Credential/secret field — never persist the typed value. The value crosses
-        // ONLY this in-memory binding so it can be matched to a project field key
-        // (account/meter numbers live in project data); on a match the step binds by
-        // NAME and replay substitutes each project's own value. No match → the step
-        // is recorded valueless (optional) and skipped at replay.
-        const field = bindField(payload.value || "");
-        steps.push({ action: "fill", selector: sel, ...fp, field, sensitive: true, optional: true, note: `SENSITIVE — ${field ? `bound to project field "${field}"` : "bind to credential/redacted field"} (no value stored). ${payload.label ?? ""}`.trim() });
-      } else if (payload.kind === "fill") {
-        const field = bindField(payload.value || "");
-        steps.push(field ? { action: "fill", selector: sel, ...fp, field, note: payload.label } : { action: "fill", selector: sel, ...fp, value: payload.value, note: payload.label });
-      } else if (payload.kind === "select") {
-        // payload.value is the selected option's LABEL (replay's selectWithFallback
-        // matches label first); rawValue is the option's value attribute, kept in the
-        // note for debugging. Try binding on either — project data may hold one or the other.
-        const field = bindField(payload.value || "") || bindField(payload.rawValue || "");
-        const note = [payload.label, payload.rawValue && payload.rawValue !== payload.value ? `(option value: ${payload.rawValue})` : ""].filter(Boolean).join(" ");
-        steps.push(field ? { action: "select", selector: sel, ...fp, field, note } : { action: "select", selector: sel, ...fp, value: payload.value, note });
-      } else if (payload.kind === "check") {
-        steps.push({ action: "check", selector: sel, ...fp, note: payload.label });
-      } else if (payload.kind === "uncheck") {
-        steps.push({ action: "uncheck", selector: sel, ...fp, note: payload.label });
-      } else if (payload.kind === "upload") {
-        steps.push({ action: "upload", selector: sel, docType: "", ...(payload.viaFileChooser ? { viaFileChooser: true } : {}), note: `UPLOAD — set docType (e.g. sld, site_plan) in the dashboard. ${payload.label ?? ""}` });
-      }
-      process.stdout.write(`  · captured ${payload.kind}${steps[steps.length - 1]?.field ? ` → field ${steps[steps.length - 1].field}` : ""}\n`);
-    },
-  );
+  const sink = createRecorderSink(steps, bindField);
+  await page.exposeBinding("__recordStep", (_src: unknown, payload: RecordedPayload) => {
+    const before = steps.length;
+    sink(payload);
+    if (steps.length > before) {
+      const s = steps[steps.length - 1];
+      process.stdout.write(`  · captured ${payload.kind}${s.isFinalSubmit ? " (FINAL SUBMIT — blocked, flagged)" : !s.selector || !Object.keys(s.selector).length ? " (blocked, not replayable)" : ""}${s.field ? ` → field ${s.field}` : ""}\n`);
+    }
+  });
 
-  // Inject the capture listeners into every page/frame.
+  // Inject the shared safety predicates, then the capture listeners, into every page/frame.
+  await page.addInitScript({ content: PORTAL_SAFETY_IN_PAGE_SOURCE });
   await page.addInitScript(captureScript);
   if (url) await page.goto(url);
 
@@ -135,26 +211,26 @@ async function main(): Promise<void> {
   });
   rl.close();
 
-  // Terminal review marker so replay always stops before submit.
-  steps.push({ action: "stopForReview", phase: "review", note: "Stop at review — human submits manually." });
+  // Terminal review marker so replay always stops before submit — in the one valid shape.
+  const closed = finalizeRecordedSteps(steps);
 
   // LLM-assisted binding: for fill/select steps without an exact-match field key, ask the
   // model to identify which project/client field each typed value corresponds to.
   // This is a single call at save-time (not per keystroke), so LLM latency is fine.
-  let finalSteps = steps;
+  let finalSteps = closed;
   if (projectId) {
-    const unboundCount = steps.filter((s) => (s.action === "fill" || s.action === "select") && !s.field && s.value).length;
+    const unboundCount = closed.filter((s) => (s.action === "fill" || s.action === "select") && !s.field && s.value).length;
     if (unboundCount > 0) {
       process.stdout.write(`  · ${unboundCount} unbound step(s) — asking the model to suggest field mappings…\n`);
       try {
         const suggestRes = await fetch(`${api}/api/portal-recipes/${recipe.id}/suggest-bindings`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ steps, projectId }),
+          body: JSON.stringify({ steps: closed, projectId }),
         });
         if (suggestRes.ok) {
           const body = await suggestRes.json();
-          finalSteps = Array.isArray(body.steps) ? body.steps : steps;
+          finalSteps = Array.isArray(body.steps) ? body.steps : closed;
           const applied = body.suggestionsApplied ?? 0;
           if (applied > 0) process.stdout.write(`  · LLM bound ${applied} additional field(s) automatically.\n`);
           if (body.warning) process.stdout.write(`  · ${body.warning}\n`);
@@ -178,7 +254,8 @@ async function main(): Promise<void> {
 
 // Browser-side capture: generates a portable selector for the target element and reports
 // each interaction back to the recorder via window.__recordStep.
-function captureScript(): void {
+// Exported so a DOM smoke can drive the REAL recorder page-side code (it had no test at all).
+export function captureScript(): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const w = window as any;
   // Shadow-aware target: the real element through composedPath() (same as humanCapture.ts).
@@ -218,11 +295,24 @@ function captureScript(): void {
     if (legend) fp.section = legend;
     return { selector: sel, label: name, ...(Object.keys(fp).length ? { fingerprint: fp } : {}) };
   }
-  // Final-submit / payment intent — NEVER captured as a replayable click (same guard as
-  // humanCapture.ts). A recorded bare "Submit" click must never sit in replayable
-  // position. Instead of silently dropping it (leaving an invisible hole in the recipe),
-  // a targetless optional placeholder is recorded — see the "blockedClick" handler.
-  const OFF_LIMITS = /\b(submit|pay|pay fee|pay now|make payment|continue to payment|add to cart|proceed to (payment|checkout)|checkout|file application|confirm submission|complete submission|finalize|place order)\b/i;
+  // Every safety decision is made in Node by shared/src/portalSafety.ts (see createRecorderSink):
+  // a click is REPORTED with the page's read-only state, and the shared classifier decides
+  // whether it is an ordinary click, a blocked submit/pay placeholder, or the filing click. The
+  // one decision made here is the card-field refusal, so a card value never crosses the binding.
+  // FAIL CLOSED: without the shared predicates, no field event is reported at all.
+  function isPaymentCardField(el: Element): boolean {
+    const ps = w.__portalSafety;
+    if (!ps || typeof ps.isPaymentElementInPage !== "function") return true;
+    try { return ps.isPaymentElementInPage(el) === true; } catch { return true; }
+  }
+  function identityOf(el: Element): Record<string, string> {
+    const ps = w.__portalSafety;
+    return ps && typeof ps.fieldIdentityInPage === "function" ? ps.fieldIdentityInPage(el) : {};
+  }
+  function readOnlyPage(): boolean | undefined {
+    const ps = w.__portalSafety;
+    try { return ps && typeof ps.readOnlyPageInPage === "function" ? ps.readOnlyPageInPage() : undefined; } catch { return undefined; }
+  }
   document.addEventListener("click", (e) => {
     const el = target(e);
     if (!el) return;
@@ -250,37 +340,13 @@ function captureScript(): void {
     const actionable = el.closest('button,a,[role="button"],[role="link"],input[type="button"],input[type="submit"],summary');
     if (!actionable) return;
     if ((actionable as HTMLInputElement).type === "file") return; // handled by change
-    const d = describe(actionable);
-    const label = String((d as { label?: unknown }).label || "");
-    if (OFF_LIMITS.test(label)) {
-      // Record a targetless placeholder instead of losing the step: submit-like labels
-      // are flagged isFinalSubmit for the approval flow (safety rule 1 — a human, not
-      // button text, decides what may ever be clicked; this step has no selector).
-      const isFinalSubmit = /\b(submit|confirm submission|complete submission|file application|finalize)\b/i.test(label);
-      w.__recordStep({ kind: "blockedClick", selector: {}, label, isFinalSubmit });
-      return;
-    }
-    w.__recordStep({ kind: "click", ...d });
+    w.__recordStep({ kind: "click", ...describe(actionable), readOnlyPage: readOnlyPage() });
   }, true);
-  // A field whose value must never be persisted as a plaintext recipe value:
-  // passwords, and anything whose name/id/autocomplete/placeholder looks like a
-  // credential or portal secret (account/meter/SSN/card). The recipe still records
-  // the fill STEP (so replay knows to type here) but stores no literal value — the
-  // operator binds it to the encrypted credential store / redacted project data.
-  function isSensitiveField(el: HTMLInputElement): boolean {
-    if (el.type === "password") return true;
-    const hay = [
-      el.getAttribute("name"),
-      el.getAttribute("id"),
-      el.getAttribute("autocomplete"),
-      el.placeholder,
-      el.getAttribute("aria-label"),
-    ].filter(Boolean).join(" ").toLowerCase();
-    return /password|passcode|account\s*(no|num|#)|account number|acct|meter|ssn|social security|card\s*number|cvv|security code|mfa|otp|one.time/.test(hay);
-  }
   document.addEventListener("change", (e) => {
     const el = target(e) as HTMLInputElement | null;
     if (!el || !(el instanceof Element)) return;
+    // Payment-card fields are refused before any kind branches: no step, no value, of any kind.
+    if (isPaymentCardField(el)) return;
     const d = describe(el);
     if (el.type === "file") {
       // A hidden/offscreen file input belongs to a custom Browse widget — replay must
@@ -294,7 +360,7 @@ function captureScript(): void {
       // the raw value rides along for the note/binding.
       const opt = (el as unknown as HTMLSelectElement).selectedOptions[0];
       const optLabel = (opt?.textContent || "").trim();
-      w.__recordStep({ kind: "select", value: optLabel || el.value, rawValue: el.value, ...d });
+      w.__recordStep({ kind: "select", value: optLabel || el.value, rawValue: el.value, identity: identityOf(el), ...d });
     }
     else if (el.type === "checkbox" || el.type === "radio") {
       // A radio only ever fires change when it becomes checked; a checkbox the operator
@@ -303,14 +369,19 @@ function captureScript(): void {
       if (el.checked) w.__recordStep({ kind: "check", ...d });
       else if (el.type === "checkbox") w.__recordStep({ kind: "uncheck", ...d });
     }
-    // Sensitive: the value crosses ONLY the in-page→handler binding so it can be
-    // bound to a project field key by NAME; the handler strips it before persisting.
-    else if (isSensitiveField(el)) w.__recordStep({ kind: "fill", sensitive: true, value: el.value, ...d });
-    else w.__recordStep({ kind: "fill", value: el.value, ...d });
+    // The value crosses ONLY the in-page→handler binding. A SECRET field (the shared
+    // isSecretField over this identity, decided in Node) is bound to a project field key by
+    // NAME and its literal is never persisted.
+    else w.__recordStep({ kind: "fill", value: el.value, identity: identityOf(el), ...d });
   }, true);
 }
 
-main().catch((err) => {
-  console.error("recordRecipe failed:", err);
-  process.exit(1);
-});
+// Run only as the CLI (npm run portal:record). Importing this module — the golden safety test
+// does, to drive createRecorderSink and finalizeRecordedSteps — must not open a browser.
+const invokedAs = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href.toLowerCase() : "";
+if (invokedAs === import.meta.url.toLowerCase()) {
+  main().catch((err) => {
+    console.error("recordRecipe failed:", err);
+    process.exit(1);
+  });
+}
