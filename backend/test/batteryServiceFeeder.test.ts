@@ -365,6 +365,13 @@ async function main(): Promise<void> {
   check("GAP: the fee sheet does not claim the permit fee is known, and nothing prices the line at $0",
     gapPermit.known === false && (gapPermit.charges ?? []).every((c) => c.kind !== SERVICE_FEEDER_CHARGE_KIND || c.amountUsd === null),
     JSON.stringify({ known: gapPermit.known, fee: gapPermit.feeUsd, source: gapPermit.source }));
+  // SKEPTIC SHOULD-FIX F: the permit line's estimate sentence must not deny the
+  // schedule the same sheet just itemised.
+  const gapPermitUnknown = gapSheet.unknowns.find((u) => /^Permit fee for City of Gapville/.test(u)) ?? "";
+  check("F MUST PASS: schedule evaluated, only an unpriced charge nulled the total — the sentence says so",
+    gapPermit.source === "valuation_estimate" && /published fee schedule WAS read/.test(gapPermitUnknown)
+      && /one charge on it is\s+not priced/.test(gapPermitUnknown) && !/no published fee schedule resolved/.test(gapPermitUnknown),
+    gapPermitUnknown);
   check("GAP: the charge's own unknown carries it — no second, generic battery note on top",
     !gapSheet.unknowns.some((u) => /^Battery\/ESS job: /.test(u)), JSON.stringify(gapSheet.unknowns));
 
@@ -374,6 +381,10 @@ async function main(): Promise<void> {
   const nowhereSheet = buildProjectFeeSheet(db, nowhereBattery);
   check("GAP (no schedule on file): the fee sheet still names the battery's services line",
     nowhereSheet.unknowns.some((u) => /^Battery\/ESS job: .*Services or feeders: 200 amps or less/.test(u)), JSON.stringify(nowhereSheet.unknowns));
+  check("F MUST EXCLUDE: no schedule on file at all keeps 'no published fee schedule resolved'",
+    nowhereSheet.unknowns.some((u) => /^Permit fee for City of Nowhere .*no published fee schedule resolved/.test(u))
+      && !nowhereSheet.unknowns.some((u) => /schedule WAS read/.test(u)),
+    JSON.stringify(nowhereSheet.unknowns));
   check("MUST EXCLUDE (no schedule on file): a PV-only job gets no such note",
     !buildProjectFeeSheet(db, withSnapshot(NO_BATTERY, { ahj: "City of Nowhere" })).unknowns.some((u) => /200 amps or less/.test(u)));
   // A DISPUTED schedule refuses before any bracket is read, so the evaluator itemises

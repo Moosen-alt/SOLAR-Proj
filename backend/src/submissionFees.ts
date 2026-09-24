@@ -783,8 +783,25 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
       // guessed — at which point that sentence is false, and it went on to cite the very
       // schedule it had just denied finding, in the same paragraph. `source` already tells the
       // two apart, so it decides which gap the operator is actually being sent to close.
+      //
+      // AND A THIRD: the schedule EVALUATED, priced its lines, and one charge on it
+      // has no amount — which nulls the schedule's total, so the ladder drops to the
+      // heuristic. "No published fee schedule resolved" is false there too (measured
+      // on 6a1c2127: the same sheet itemised that schedule's $94 line and named the
+      // unpriced battery services charge right below). The charges array is the
+      // evaluator's own output, so a non-empty unpriced charge on it is proof the
+      // schedule was read; the unpriced charges are named by the loop below.
+      const unpricedCharges = (line.charges ?? []).filter(
+        (c) => c.amountUsd == null && !c.partOfLineFee && !c.futureContingent,
+      );
       unknowns.push(
-        line.source === "published_schedule"
+        line.source === "valuation_estimate" && unpricedCharges.length
+          ? `${label} for ${who} is an ESTIMATE, not a known fee — ${who}'s published fee schedule WAS read and prices `
+            + `this filing's lines, but ${unpricedCharges.length === 1 ? "one charge on it is" : `${unpricedCharges.length} charges on it are`} `
+            + `not priced (named below), so the schedule gives no total and the $${line.feeUsd.toFixed(2)} shown is a valuation `
+            + `heuristic. Price ${unpricedCharges.length === 1 ? "that charge" : "those charges"} (or enter the portal's own fee) `
+            + `and this becomes the schedule's figure. ${line.basis}`
+          : line.source === "published_schedule"
           ? `${label} for ${who} is an ESTIMATE because this project carries NO JOB VALUATION. `
             + `${who}'s published schedule prices this filing off the job's valuation, so the $${line.feeUsd.toFixed(2)} `
             + `shown was computed from a per-watt guess at it rather than from a real figure. Record the job `
