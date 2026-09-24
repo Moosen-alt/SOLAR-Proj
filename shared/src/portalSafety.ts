@@ -124,9 +124,11 @@ export interface ShapeStep {
  */
 export function portalSafetyFactory() {
   // SUBMIT INTENT. Everything that files, finalises or commits an application. Word-bounded so
-  // "Submittal Type", "Finished Floor Elevation" and "Resubmittal" do not match.
+  // "Submittal Type", "Finished Floor Elevation" and "Resubmittal" do not match. The filing
+  // verbs are more than "submit": the correction flow's "Resubmit", a signature-and-filing
+  // "Sign and File", "e-File" and "File Permit" all file the application.
   const SUBMIT_WORDS =
-    /\b(submit|submit application|file application|finali[sz]e|finish|complete application|send application|confirm submission|complete submission|place order)\b/i;
+    /\b(submit|submit application|file application|finali[sz]e|finish|complete application|send application|confirm submission|complete submission|place order|re-?submit|re-?file|e-?file|sign\s*(and|&)\s*(file|submit)|file\s+(application|permit))\b/i;
   // Accela's page advance on every page but the last, where the SAME control files the permit.
   const CONTINUE_APPLICATION = /\bcontinue\s+application\b/i;
 
@@ -141,8 +143,8 @@ export function portalSafetyFactory() {
   // THE FILING CLICK ITSELF — narrower than SUBMIT_WORDS. A mid-flow "Submit Documents" or
   // "Submit for Review" is submit-worded (never captured) but is not the application's filing,
   // so it must not end a human's capture session.
-  const FINAL_SUBMIT_EXACT = /^(submit|submit application|submit & pay|submit and pay|submit now|submit my application)$/i;
-  const FINAL_SUBMIT_PHRASE = /\b(confirm submission|complete submission|file application)\b/i;
+  const FINAL_SUBMIT_EXACT = /^(submit|submit application|submit & pay|submit and pay|submit now|submit my application|re-?submit|re-?submit application|re-?file|e-?file|e-?file application)$/i;
+  const FINAL_SUBMIT_PHRASE = /\b(confirm submission|complete submission|file application|sign\s*(and|&)\s*(file|submit)|file\s+permit)\b/i;
 
   // SECRETS. Each alternative names a secret; the name-ish words after "account" are excluded
   // because "Account Holder Name" is project data the planner must see and bind.
@@ -153,6 +155,11 @@ export function portalSafetyFactory() {
     "\\bacct\\b", "\\bacct\\s*(no|num|number)\\b",
     "\\bmeter\\s*(number|no|num|#|id)\\b",
     "\\b(service\\s*)?agreement\\s*(number|no|num|#|id)\\b",
+    // Utility identifiers that name ONE customer's service, like an account number: PG&E's
+    // "SA ID", "Service Point ID", "Premise ID", Texas' "ESI ID", a "Customer Number". Only the
+    // identifier words — "Customer Name", "Customer Type" and "Premise Address" are project data.
+    "\\bsa\\s*id\\b", "\\besi\\s*id\\b",
+    "\\b(service\\s*point|premise|customer)\\s*(#|(id|number|no|num)\\b)",
     "\\bssn\\b", "social\\s*security", "\\btax\\s*id\\b", "\\bein\\b", "\\bitin\\b", "\\btin\\b",
     "routing", "bank\\s*account",
     "card\\s*(number|no\\b|#)", "\\bcvv\\b", "\\bcvc\\b", "\\bccv\\b", "security\\s*code",
@@ -374,8 +381,33 @@ const ACCEPTED_EVIDENCE: RegExp[] = [
   /\bsuccessfully\s+(submitted|filed|received)\b/i,
   /\bthank\s+you\s+for\s+(your\s+)?(submission|submitting|applying|your\s+application)\b/i,
   /\bsubmission\s+(complete|successful|received|confirmed)\b/i,
-  /\b(confirmation|record|application|reference|tracking|permit|case|project)\s*(number|no\.?|#|id)\s*[:#]?\s*[A-Z0-9][A-Z0-9-]{3,}/i,
 ];
+
+// RECORD-NUMBER EVIDENCE is weaker than a sentence that says "submitted": a draft page, a form
+// header and a help text all carry a "Project ID:" or "Confirmation number" LABEL. So the token
+// after the label must look like an issued number — upper-case/digits/hyphens, at least four
+// characters, AT LEAST ONE DIGIT, matched case-sensitively (under /i any four-letter word such as
+// "Type" or "will" counted) — and it must not be followed by "will", "pending", "TBD" or
+// "(to) be assigned". And a page that still ASKS for the submit ("review your application
+// before submitting", "Click Submit to file", a "Draft") cancels record-number-only evidence:
+// PowerClerk shows the project id on the draft's own header.
+const RECORD_LABEL = /\b(confirmation|record|application|reference|tracking|permit|case|project)\s*(number|no\.?|#|id)(?![A-Za-z])\s*[:#]?\s*/gi;
+const RECORD_TOKEN = /^[A-Z0-9][A-Z0-9-]{3,}$/;
+const RECORD_NOT_YET = /^[\s:()\-–—]*(will\b|pending\b|tbd\b|(to\s+)?be\s+(assigned|issued|generated|emailed|provided)\b)/i;
+const STILL_ASKS_FOR_SUBMIT =
+  /\bbefore\s+(you\s+)?(submit|submitting|filing)\b|\b(click|press|select|tap|use)\s+(the\s+)?["“']?(submit|file|finish)\b|\bsubmit\b[^.]{0,30}\bto\s+(file|complete|finish|send)\b|\breview\s+(all\s+)?(your|the)\s+(application|information|submission|details|entries)\b|\bdraft\b|\bnot\s+(yet\s+)?(been\s+)?submitted\b/i;
+
+function recordNumberEvidence(text: string): string | null {
+  RECORD_LABEL.lastIndex = 0;
+  for (let m = RECORD_LABEL.exec(text); m; m = RECORD_LABEL.exec(text)) {
+    const rest = text.slice(m.index + m[0].length);
+    const token = (/^[A-Za-z0-9][A-Za-z0-9-]*/.exec(rest) || [""])[0].replace(/-+$/, "");
+    if (!token || !RECORD_TOKEN.test(token) || !/\d/.test(token)) continue;
+    if (RECORD_NOT_YET.test(rest.slice(token.length))) continue;
+    return `${m[0]}${token}`.trim();
+  }
+  return null;
+}
 
 const REJECTED_EVIDENCE: RegExp[] = [
   /\bplease\s+correct\s+the\s+following\b/i,
@@ -397,7 +429,9 @@ const REJECTED_EVIDENCE: RegExp[] = [
 export function classifySubmissionText(body: string | null | undefined): SubmissionOutcome {
   const text = String(body ?? "").replace(/\s+/g, " ").trim();
   if (!text) return { verdict: "unknown", evidence: null };
-  const acc = ACCEPTED_EVIDENCE.map((re) => text.match(re)?.[0]).find(Boolean) ?? null;
+  const phrase = ACCEPTED_EVIDENCE.map((re) => text.match(re)?.[0]).find(Boolean) ?? null;
+  // A record number counts only when no sentence on the page still asks for the submit.
+  const acc = phrase ?? (STILL_ASKS_FOR_SUBMIT.test(text) ? null : recordNumberEvidence(text));
   const rej = REJECTED_EVIDENCE.map((re) => text.match(re)?.[0]).find(Boolean) ?? null;
   if (acc && rej) return { verdict: "unknown", evidence: `conflicting: "${acc}" / "${rej}"` };
   if (acc) return { verdict: "accepted", evidence: acc };

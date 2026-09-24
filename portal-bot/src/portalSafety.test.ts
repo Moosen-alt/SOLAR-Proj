@@ -64,11 +64,17 @@ const SUBMIT_MUST_REFUSE = [
   "Submit Documents", "Submit for Review", "Submit Now",
   // Accela's page advance — on the review page the SAME control files the permit.
   "Continue Application", "Continue Application »",
+  // Filing verbs that are not "submit" (foundation verdict, probe A): the correction flow files
+  // with "Resubmit"; a signature step files with "Sign and File"; "e-File", "File Permit".
+  "Resubmit", "Resubmit Application", "Re-submit", "Refile", "Sign and File", "Sign & Submit", "e-File", "eFile",
+  "File Permit", "File Permit Application",
 ];
 const SUBMIT_MUST_ALLOW = [
   "Next", "Continue", "Save and Continue", "Save & Next", "Proceed", "Next Step", "Save Draft", "Back",
   "Upload Document", "Search", "Add Equipment", "Cancel", "Submittal Type", "Resubmittal Documents",
   "Finished Floor Elevation", "Complete", "Applications", "",
+  // MUST-ALLOW beside the new filing verbs: a correction flow's type picker, and file widgets.
+  "Resubmittal Type", "Resubmittal", "Refiled Date", "Profile", "File Upload", "Upload File", "File Name", "Select File",
 ];
 
 /** Pay / fee (the click-blocking list). The paymentGate corpora, plus. */
@@ -92,6 +98,8 @@ const FINAL_MUST_BE: Array<[string, { readOnlyPage?: boolean; formDataEntered?: 
   ["Confirm Submission", undefined], ["Complete Submission", undefined], ["File Application", undefined],
   ["Submit Now", undefined],
   ["Continue Application", { readOnlyPage: true }], ["Continue Application »", { readOnlyPage: true, formDataEntered: true }],
+  ["Resubmit", undefined], ["Resubmit Application", undefined], ["Sign and File", undefined], ["e-File", undefined],
+  ["File Permit", undefined],
 ];
 const FINAL_MUST_NOT_BE: Array<[string, { readOnlyPage?: boolean; formDataEntered?: boolean } | undefined]> = [
   ["Submit Documents", undefined], ["Submit for Review", undefined], ["Save and Submit Later", undefined],
@@ -112,12 +120,17 @@ const SECRET_MUST_REFUSE: FieldIdentity[] = [
   { autocomplete: "one-time-code" }, { autocomplete: "current-password" }, { label: "One-Time Passcode" },
   { label: "OTP" }, { label: "PIN" }, { label: "Service Agreement ID" }, { label: "Card Number" }, { label: "CVV" },
   { label: "Security Code" }, { placeholder: "Enter your MFA code" },
+  // Utility identifiers of one customer's service (foundation verdict, probe A).
+  { label: "SA ID" }, { name: "saId" }, { label: "Service Point ID" }, { name: "servicePointId" }, { label: "Premise ID" },
+  { label: "Premise Number" }, { label: "ESI ID" }, { label: "Customer Number" }, { label: "Customer #" }, { name: "customerNo" },
 ];
 const SECRET_MUST_ALLOW: FieldIdentity[] = [
   { label: "Account Holder Name" }, { label: "Account Holder" }, { label: "Account Type" }, { label: "Meter Location" },
   { name: "parameterValue" }, { label: "Parameter" }, { label: "Submeter installed?" }, { label: "Email" },
   { label: "Project Name" }, { label: "Contractor License Number" }, { label: "Main Breaker Size" },
   { label: "Username", type: "text" }, { label: "Company Name" }, { label: "Application Number" }, {},
+  { label: "Customer Name" }, { label: "Customer Type" }, { label: "Premise Address" }, { label: "Service Point Location" },
+  { label: "Accounting Contact" }, { label: "Pinellas County" }, { label: "Resale ID Type" },
 ];
 
 const PAYMENT_MUST_REFUSE: FieldIdentity[] = [
@@ -137,6 +150,10 @@ const ACCEPTED_TEXT = [
   "Application was submitted",
   "Submission complete",
   "Your request has been received and is being processed.",
+  // A record number alone, in the shapes the verdict names as MUST-PASS.
+  "Record Number: 187-26-000309-STR",
+  "Confirmation #: APP-111667",
+  "Permit # BLD2026-00123 was issued to your account.",
 ];
 const REJECTED_TEXT = [
   "Please correct the following errors: Email is required",
@@ -152,6 +169,19 @@ const UNKNOWN_TEXT = [
   "Status: Submitted",
   // Positive AND negative evidence at once is not acceptance.
   "Your application has been submitted. There was a problem uploading one document.",
+  // A record-number LABEL is not a record number (foundation verdict: every one of these read
+  // "accepted" because the token check ran under /i and took any four-letter word).
+  "Record ID will be assigned after submission",
+  "Project Number: pending",
+  "Permit Number Type",
+  "Case Number Status Open",
+  "Application Number TBD",
+  "Your confirmation number will be emailed to you after you submit",
+  "Record Number: 2026-0042 will be assigned when the review completes",
+  "Permit Number: BLD-2026-0042 (pending)",
+  // A page that still asks for the submit cancels record-number-only evidence.
+  "Review your application before submitting. Project ID: PGE-INT-12345",
+  "Draft application. Application ID: 12345. Click Submit to file.",
 ];
 
 // ---------------------------------------------------------------------------------------------
