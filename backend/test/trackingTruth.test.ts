@@ -3,7 +3,7 @@
 // captureConfirmation — the door a human uses to say "I clicked the portal's submit and
 // here is the number" — created NO permit_check_targets row. So the monitor never looked
 // at that filing again, and the operator closed the hole by hand every single time.
-// The live audit trail is the proof, three for three on Ann Marineau (1fb3dc39):
+// The live audit trail is the proof, three for three on project 1fb3dc39:
 //
 //   16:42:00  submission.confirmation_captured  187-26-000309-STR
 //   16:43:05  permit_target.created             (operator, by hand, 65s later)
@@ -17,7 +17,7 @@
 // searches by, or to forget entirely.
 //
 // AND RE-CONFIRMING MUST NOT APPEND. The same live database records portal run b364128a
-// (David Simmons, ec5c36d3) captured TWICE, five minutes apart — 00:43:50 and 00:48:30.
+// (project ec5c36d3) captured TWICE, five minutes apart — 00:43:50 and 00:48:30.
 // That is not hypothetical: a second target for one filing polls the same application
 // twice, and the two rows can then disagree about its status.
 //
@@ -32,14 +32,18 @@
 //                           must never read as reassurance.
 //   5. boot               → a sweep runs without waiting a full MONITOR_INTERVAL_MINUTES,
 //                           and is still disabled by BOTH existing env gates.
-//   6. THE LIVE SHAPE     → replayed against a COPY of the operator's database: Ann's 3
-//                           targets and Ivy's 3 stay 3. Zero duplicates on real rows.
+//   6. THE LIVE SHAPE     → a SYNTHETIC project shaped like the operator's real rows (three
+//                           hand-added targets) replayed through ensureCheckTarget: 3 stay 3.
+//                           The replay against a copy of the real database is a separate
+//                           probe (scripts/trackingTruth.live-probe.ts) — a unit test must
+//                           never depend on production rows.
 //
 // Browser-free and offline: the monitor fixture has no portal URL, no recipe and no portal
 // profile, so runDuePermitChecks takes its own "gathered nothing" branch and the only thing
 // that moves is last_checked_at.
 //
 //   npx tsx backend/test/trackingTruth.test.ts
+import "./_isolate"; // FIRST: temp cwd; this file then points AUTOPILOT_DB_PATH at its own temp DB
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -118,7 +122,7 @@ console.log("trackingTruth: the confirmation seam, the dedupe, the leading tick,
 // 1. THE HEADLINE — a confirmed filing is scheduled for checking.
 // ---------------------------------------------------------------------------
 await check("A CONFIRMED FILING IS SCHEDULED FOR CHECKING — one active, DUE target", () => {
-  const p = mk("Ann-shaped Owner");
+  const p = mk("Three-filing Owner");
   assert.equal(targetsOf(p.id).length, 0, "fixture premise: a staged project has no tracking target yet");
   captureConfirmation(db, stage(p.id, "building", `run-bld-${p.id}`), {
     applicationNumber: "187-26-000309-STR", permitNumber: "187-26-000309-STR", submittedBy: "operator",
@@ -142,7 +146,7 @@ await check("A CONFIRMED FILING IS SCHEDULED FOR CHECKING — one active, DUE ta
 // 2. THE LIVE DOUBLE-CAPTURE — b364128a, confirmed twice, five minutes apart.
 // ---------------------------------------------------------------------------
 await check("CONFIRM TWICE → STILL ONE TARGET (the live b364128a double-capture)", () => {
-  const p = mk("David-shaped Owner");
+  const p = mk("Double-capture Owner");
   const runId = stage(p.id, "nem", `run-nem-${p.id}`);
   captureConfirmation(db, runId, { applicationNumber: "APP-111681", confirmationNumber: "APP-111681", submittedBy: "operator" });
   assert.equal(targetsOf(p.id).length, 1, "premise: the first capture created exactly one target");
@@ -157,9 +161,9 @@ await check("CONFIRM TWICE → STILL ONE TARGET (the live b364128a double-captur
 });
 
 await check("…and a RE-STAGED track confirmed again supersedes rather than appends", () => {
-  // Ivy's live history: one track staged four times, each staging appending another
+  // 720b05f3's live history: one track staged four times, each staging appending another
   // awaiting_human_submit row. Whichever run the operator confirms, there is ONE filing.
-  const p = mk("Ivy-shaped Owner");
+  const p = mk("Restaged Owner");
   captureConfirmation(db, stage(p.id, "electrical", `run-ele-a-${p.id}`), { applicationNumber: "194-26-001471-ELEC" });
   captureConfirmation(db, stage(p.id, "electrical", `run-ele-b-${p.id}`), { applicationNumber: "194-26-001471-ELEC" });
   assert.equal(targetsOf(p.id).length, 1, "two staged runs for ONE electrical filing must not produce two targets");
@@ -168,7 +172,7 @@ await check("…and a RE-STAGED track confirmed again supersedes rather than app
 // ---------------------------------------------------------------------------
 // 3. MUST-EXCLUDE — the dedupe must not collapse distinct filings.
 // ---------------------------------------------------------------------------
-await check("MUST-EXCLUDE: two real tracks stay TWO targets (the Ann/Ivy shape)", () => {
+await check("MUST-EXCLUDE: two real tracks stay TWO targets (the 1fb3dc39 / 720b05f3 shape)", () => {
   const p = mk("Two-track Owner");
   captureConfirmation(db, stage(p.id, "building", `run-2b-${p.id}`), { applicationNumber: "187-26-000305-STR", permitNumber: "187-26-000305-STR" });
   captureConfirmation(db, stage(p.id, "nem", `run-2n-${p.id}`), { applicationNumber: "APP-111651" });
@@ -183,7 +187,7 @@ await check("MUST-EXCLUDE: two real tracks stay TWO targets (the Ann/Ivy shape)"
 });
 
 await check("MUST-EXCLUDE: a separate building and electrical permit stay two targets", () => {
-  // Coos Bay files these apart — Ann carries 187-26-000309-STR and 194-26-001482-ELEC live.
+  // Coos Bay files these apart — 1fb3dc39 carries 187-26-000309-STR and 194-26-001482-ELEC live.
   const p = mk("Split-permit Owner");
   captureConfirmation(db, stage(p.id, "building", `run-sb-${p.id}`), { applicationNumber: "187-26-000309-STR" });
   captureConfirmation(db, stage(p.id, "electrical", `run-se-${p.id}`), { applicationNumber: "194-26-001482-ELEC" });
@@ -236,7 +240,7 @@ await check("A PERMIT NUMBER ALONE IS ENOUGH — the poller searches by both col
 // 5. THE OTHER TWO DOORS — reconciled, not a third pattern.
 // ---------------------------------------------------------------------------
 await check("THE OPERATOR'S HAND-ADD IS THE SAME ROW — live order: confirm, then add by hand", () => {
-  // Exactly what the operator did three times on Ann: captured the confirmation, then went
+  // Exactly what the operator did three times on 1fb3dc39: captured the confirmation, then went
   // to Permit/NEM Checks and typed the number in again 65 seconds later.
   const p = mk("Hand-add-after Owner");
   captureConfirmation(db, stage(p.id, "building", `run-ha-${p.id}`), { applicationNumber: "187-26-000309-STR" });
@@ -337,59 +341,53 @@ await check("GATE 2 — BACKGROUND_WORKERS=off still disables it, boot sweep inc
 });
 
 // ---------------------------------------------------------------------------
-// 7. THE LIVE SHAPE — replayed on a COPY of the operator's own database.
+// 7. THE LIVE SHAPE — a synthetic project shaped like the operator's real rows.
 //
-// Every fixture above builds a project parked neatly where the code expects it. The rows
-// that matter are the ones already on disk: Ann (1fb3dc39) carries 3 targets, Ivy
-// (720b05f3) carries 3, and both were built by the operator's hand over several days with
-// Accela numbers duplicated across application_number AND permit_number and PowerClerk
-// numbers in application_number alone. Replaying ensureCheckTarget over them must create
-// ZERO rows. NO LIVE WRITES: the file is copied first and the copy is what is opened.
+// Every fixture above builds a project parked neatly where the code expects it. The rows that
+// matter were built by the operator's hand over several days (1fb3dc39 and 720b05f3 carry three
+// each): Accela numbers duplicated across application_number AND permit_number, a PowerClerk
+// number in application_number alone, and a target added with no permit_type at all. Replaying
+// ensureCheckTarget over rows of that shape must create ZERO rows and match each filing to its
+// OWN row.
+//
+// This used to open a copy of backend/data/autopilot.sqlite and assert on real rows, so the unit
+// chain went red whenever the operator's data moved (a fourth target on 1fb3dc39 failed it) and
+// passed or skipped depending on the machine. The replay against real rows now lives in
+// scripts/trackingTruth.live-probe.ts, run on demand against a read-only backup.
 // ---------------------------------------------------------------------------
-const livePath = path.resolve(process.cwd(), "backend/data/autopilot.sqlite");
-if (!fs.existsSync(livePath)) {
-  // NOT a pass. Say which check did not run and why, with the path that was looked for.
-  console.log(`  SKIP - live-shape replay: no database at ${livePath} (this check runs only where the operator's data lives)`);
-} else {
-  await check("THE LIVE ROWS — Ann's 3 targets and Ivy's 3 stay 3, replayed on a COPY", async () => {
-    const liveCopy = path.join(tmpDir, "live-copy.sqlite");
-    fs.copyFileSync(livePath, liveCopy);
-    const restore = process.env.AUTOPILOT_DB_PATH;
-    process.env.AUTOPILOT_DB_PATH = liveCopy;
-    const liveDb = await openDatabase();
-    process.env.AUTOPILOT_DB_PATH = restore;
-    try {
-      for (const [who, projectId] of [
-        ["Ann Marineau", "1fb3dc39-dfdb-4c3f-a4d1-ba3bce9a03d2"],
-        ["Christopher Ivy", "720b05f3-7458-45f6-a4da-5817f85e2b2c"],
-      ] as const) {
-        const before = liveDb.query<Row>("SELECT * FROM permit_check_targets WHERE project_id = ?", [projectId]);
-        assert.equal(before.length, 3, `${who}: expected the 3 live targets on record, found ${before.length}`);
-        const project = liveDb.get<Row>("SELECT * FROM projects WHERE id = ?", [projectId]);
-        assert.ok(project, `${who}: the live project row is missing from the copy`);
-        const record = { id: projectId, ahj: String(project!.ahj ?? ""), utility: String(project!.utility ?? "") } as never;
-
-        // Replay each recorded filing through the creator, the way a re-confirmation would.
-        for (const t of before) {
-          const result = ensureCheckTarget(liveDb, record, {
-            targetType: String(t.target_type) === "nem" ? "nem" : "permit",
-            permitType: String(t.permit_type ?? ""),
-            applicationNumber: String(t.application_number ?? ""),
-            permitNumber: String(t.permit_number ?? ""),
-          });
-          assert.equal(result.created, false,
-            `${who}: replaying filing ${String(t.application_number)} CREATED a new target — a re-confirmation would duplicate it`);
-          assert.equal(result.targetId, String(t.id),
-            `${who}: filing ${String(t.application_number)} matched target ${result.targetId}, not its own row ${String(t.id)} — the wrong filing would be updated`);
-        }
-        const after = liveDb.query<Row>("SELECT id FROM permit_check_targets WHERE project_id = ?", [projectId]);
-        assert.equal(after.length, 3, `${who}: ${after.length - 3} duplicate target(s) were created on real rows`);
-      }
-    } finally {
-      try { liveDb.close(); } catch { /* best effort */ }
-    }
+await check("THE LIVE SHAPE — three hand-added targets (Accela both columns, PowerClerk app-only, no permit_type) stay 3 on replay", () => {
+  const p = mk("Live-shape Owner");
+  // Written through the operator's own door, the way the real rows were.
+  createPermitCheckTarget(db, p.id, {
+    jurisdiction: "City of Coos Bay", portalName: "Oregon ePermitting (Accela)", targetType: "permit", permitType: "building",
+    applicationNumber: "187-26-000901-STR", permitNumber: "187-26-000901-STR",
   });
-}
+  createPermitCheckTarget(db, p.id, {
+    jurisdiction: "City of Coos Bay", portalName: "Oregon ePermitting (Accela)", targetType: "permit",
+    applicationNumber: "194-26-000902-ELEC", permitNumber: "194-26-000902-ELEC",
+  });
+  createPermitCheckTarget(db, p.id, {
+    jurisdiction: "Pacific Power", portalName: "PowerClerk", targetType: "nem",
+    portalUrl: "https://pacificorpnetmetering.powerclerk.com/MvcProjects/ProjectDetails", applicationNumber: "APP-100903",
+  });
+  const before = targetsOf(p.id);
+  assert.equal(before.length, 3, "fixture premise: three targets");
+  assert.ok(before.some((t) => String(t.permit_type) === ""), "fixture premise: one row carries no permit_type, as a hand-added row can");
+  const record = getProjectDetail(db, p.id).project;
+  for (const t of before) {
+    const result = ensureCheckTarget(db, record, {
+      targetType: String(t.target_type) === "nem" ? "nem" : "permit",
+      permitType: String(t.permit_type ?? ""),
+      applicationNumber: String(t.application_number ?? ""),
+      permitNumber: String(t.permit_number ?? ""),
+    });
+    assert.equal(result.created, false,
+      `replaying filing ${String(t.application_number)} CREATED a new target — a re-confirmation would duplicate it`);
+    assert.equal(result.targetId, String(t.id),
+      `filing ${String(t.application_number)} matched target ${result.targetId}, not its own row ${String(t.id)} — the wrong filing would be updated`);
+  }
+  assert.equal(targetsOf(p.id).length, 3, "duplicate target(s) were created by the replay");
+});
 
 try { db.close(); } catch { /* best effort */ }
 fs.rmSync(tmpDir, { recursive: true, force: true });
