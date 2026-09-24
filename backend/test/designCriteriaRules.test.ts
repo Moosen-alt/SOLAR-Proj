@@ -350,6 +350,113 @@ check("MUST-EXCLUDE: a rating or a limit is not the design wind speed", () => {
   assert.deepEqual(s.criteria.filter((c) => c.criterion === "windSpeedMph"), []);
 });
 
+// ---------------------------------------------------------------------------------------
+// EXPOSURE only from a design-criteria label — never a limit, a rating, a list or a table.
+// ---------------------------------------------------------------------------------------
+const exposures = (text: string): string[] =>
+  extractStatedDesignCriteria(project({ planSetExtractedText: text })).criteria.filter((c) => c.criterion === "windExposure").map((c) => String(c.value));
+const speeds = (text: string): number[] =>
+  extractStatedDesignCriteria(project({ planSetExtractedText: text })).criteria.filter((c) => c.criterion === "windSpeedMph").map((c) => Number(c.value));
+
+// A public prescriptive-checklist wording (the kind stored on a real project as an "other"
+// document), verbatim in shape: it LIMITS the path to B or C; it states no site category.
+const OR_CHECKLIST = "• Wind exposure for structure is limited to Exposure Category B or C: • Structure is of conventional light-frame construction "
+  + "• Ultimate design wind speed a. Less than or equal to 120 mph in Exposure Category B; or b. Less than or equal to 110 mph in Exposure Category C.";
+
+check("MUST-PASS: exposure stated with a design-criteria label, or beside a wind speed", () => {
+  assert.deepEqual(exposures("Wind exposure category: C"), ["C"]);
+  assert.deepEqual(exposures("5. EXPOSURE CATEGORY = D 6. RISK CATEGORY = II"), ["D"]);
+  assert.deepEqual(exposures("Exp. Cat. C"), ["C"]);
+  assert.deepEqual(exposures("A sealed analysis: Exposure B, 95 mph"), ["B"]);
+  assert.deepEqual(exposures("Wind Loading: v 110 mph Exposure C"), ["C"]);
+});
+
+check("MUST-EXCLUDE: a rating, a bare roof word, a span-table head row and a list are not the site's exposure", () => {
+  assert.deepEqual(exposures("MODULES SHALL HAVE EXPOSURE B RATING"), [], "rating");
+  assert.deepEqual(exposures("WIND: RACKING LISTED FOR EXPOSURE CATEGORY D RATED LOADS"), [], "a labelled category followed by a rating");
+  assert.deepEqual(exposures("roof exposure c. site is open to the south"), [], "no wind label");
+  assert.deepEqual(exposures("RAIL SPAN TABLE WIND SPEED (MPH) EXPOSURE B EXPOSURE C EXPOSURE D 110 72 IN 64 IN 58 IN"), [], "table heads");
+  assert.deepEqual(exposures("Exposure category B or C permitted"), [], "a list is not a category");
+  assert.deepEqual(exposures("EXPOSURE CATEGORY C/D"), [], "a range is not a category");
+});
+
+check("MUST-EXCLUDE: the prescriptive checklist states no exposure and no design wind speed", () => {
+  assert.deepEqual(exposures(OR_CHECKLIST), []);
+  assert.deepEqual(speeds(OR_CHECKLIST), []);
+});
+
+check("MUST-EXCLUDE: a plan correctly stating Exposure C beside the checklist -> no false conflict, no false below-ahj", () => {
+  const p = project({ planSetExtractedText: `WIND SPEED = 120 MPH EXPOSURE CATEGORY = C\n${OR_CHECKLIST}` });
+  const docs = [{ label: "Plan set", text: "WIND SPEED = 120 MPH EXPOSURE CATEGORY = C" }, { label: "Prescriptive checklist", text: OR_CHECKLIST }];
+  const fs = run(p, ctxFor({ confidence: "verified", verifiedBy: "operator", designCriteria: { windSpeedMph: 120, windExposure: "C", groundSnowLoadPsf: 10 } }), docs);
+  assert.ok(!get(fs, CONFLICT), get(fs, CONFLICT)?.message);
+  assert.ok(!get(fs, BELOW), get(fs, BELOW)?.message);
+});
+
+check("MUST-EXCLUDE / MUST-PASS: 'designed for' right before a speed is a rating; a 'DESIGNED FOR:' header with a label is not", () => {
+  assert.deepEqual(speeds("RAIL SYSTEM DESIGNED FOR 160 MPH WIND"), []);
+  assert.deepEqual(speeds("SYSTEM DESIGNED FOR: WIND SPEED = 110 MPH"), [110]);
+});
+
+// ---------------------------------------------------------------------------------------
+// Parentheticals between label and value (caveat a).
+// ---------------------------------------------------------------------------------------
+check("MUST-PASS: a parenthetical between the wind label and the speed does not hide it", () => {
+  assert.deepEqual(speeds("BASIC WIND SPEED (3-SECOND GUST) = 115 MPH"), [115]);
+  assert.deepEqual(speeds("WIND SPEED (ASCE 7-16): 110 MPH"), [110]);
+  const s = extractStatedDesignCriteria(project({ planSetExtractedText: "Vult (3-sec gust): 120 mph" })).criteria.filter((c) => c.criterion === "windSpeedMph");
+  assert.deepEqual(s.map((c) => [c.value, c.qualifier]), [[120, "ultimate"]]);
+});
+
+const grounds = (text: string): Array<[unknown, string]> =>
+  extractStatedDesignCriteria(project({ planSetExtractedText: text })).criteria.filter((c) => c.criterion === "groundSnowPsf").map((c) => [c.value, c.qualifier]);
+
+check("MUST-PASS: ground snow with a parenthetical, prose, or the qualifier after the label", () => {
+  assert.deepEqual(grounds("GROUND SNOW LOAD (Pg) = 25 PSF"), [[25, "ground"]]);
+  assert.deepEqual(grounds("GROUND SNOW LOAD (ASCE 7-16 FIG 7.2-1) = 30 PSF"), [[30, "ground"]]);
+  assert.deepEqual(grounds("the site has a ground snow load of 36 psf"), [[36, "ground"]]);
+  assert.deepEqual(grounds("SNOW LOAD (GROUND): 25 PSF"), [[25, "ground"]]);
+});
+
+check("MUST-EXCLUDE: Pg(asd) stays ASD; roof snow in parentheses is not ground; prose with no value reads nothing", () => {
+  assert.deepEqual(grounds("Ground snow load Pg(asd) = 20 psf"), [[20, "ground_asd"]]);
+  assert.deepEqual(grounds("SNOW LOAD (ROOF): 25 PSF"), []);
+  assert.deepEqual(grounds("GROUND SNOW LOAD (SEE NOTE 3) VARIES BY ELEVATION"), []);
+  assert.deepEqual(grounds("3. GROUND SNOW LOAD (Pg) 4. WIND SPEED = 110 MPH"), [], "an item number is never a load");
+});
+
+// ---------------------------------------------------------------------------------------
+// The unknown callout's THREE answers (caveat a): stated / not stated / could not be read.
+// ---------------------------------------------------------------------------------------
+check("UNKNOWN: 'stated in the package' / 'not stated in the package text we read' / 'could not be read' — never 'not stated' with no text", () => {
+  const stated = get(run(project({ planSetExtractedText: "GROUND SNOW LOAD = 25 PSF WIND SPEED = 110 MPH" })), UNKNOWN)!;
+  assert.match(stated.message, /ground snow — stated in the package: 25 psf/);
+  const silent = get(run(project({ planSetExtractedText: "ROOF MOUNT PV ARRAY, 12 MODULES" })), UNKNOWN)!;
+  assert.match(silent.message, /ground snow — not stated in the package text we read/);
+  const unread = get(run(project({})), UNKNOWN)!;
+  assert.match(unread.message, /ground snow — could not be read from the package/);
+  assert.doesNotMatch(unread.message, /not stated/);
+  // The parser's own summary is a reading, not the package text: still "could not be read".
+  const onlyNarrative = get(run(project({ structuralCalcText: "Roof framing 2x6 @ 24 in." })), UNKNOWN)!;
+  assert.match(onlyNarrative.message, /could not be read from the package/);
+  // A stored document with no text layer is unreadable, not silent.
+  const scanned = get(run(project({}), ctxFor({}), [{ label: "Plan set", text: "[no text layer]" }]), UNKNOWN)!;
+  assert.match(scanned.message, /could not be read from the package/);
+});
+
+// ---------------------------------------------------------------------------------------
+// Excerpts stop at the value's own field (caveat e) — title-block names never ride along.
+// ---------------------------------------------------------------------------------------
+check("MUST-EXCLUDE: an excerpt runs label..value, never into the title block beside it", () => {
+  const text = "5. EXPOSURE CATEGORY = C 6. RISK CATEGORY = II DECK Rev JANE ROE 1 MAPLE ST OWNER JANE ROE WIND SPEED = 120 MPH MAPLE ST GROUND SNOW LOAD = 25 PSF JANE ROE";
+  const s = extractStatedDesignCriteria(project({ planSetExtractedText: text }));
+  const excerpts = s.criteria.filter((c) => !c.derived).map((c) => c.excerpt);
+  assert.ok(excerpts.length >= 4, JSON.stringify(excerpts));
+  for (const e of excerpts) assert.doesNotMatch(e, /ROE|MAPLE|DECK|OWNER/, e);
+  assert.ok(excerpts.includes("RISK CATEGORY = II"), JSON.stringify(excerpts));
+  assert.ok(excerpts.includes("WIND SPEED = 120 MPH"), JSON.stringify(excerpts));
+});
+
 if (failures) {
   console.error(`\n${failures} design-criteria check(s) FAILED`);
   process.exit(1);

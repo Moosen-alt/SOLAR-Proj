@@ -156,14 +156,24 @@ function normRisk(raw: string): string {
 // --- wind ------------------------------------------------------------------
 
 // A value that is a LIMIT or a RATING is not this building's design speed: a racking cut
-// sheet "tested to 160 mph", a prescriptive checklist "wind ≤ 110 mph".
-const RATING_CONTEXT = /(?:\bup\s*to|\bmax(?:imum)?\.?|\bmin(?:imum)?\.?|\brated|\btested|\blimit(?:ed)?|\bexceed(?:s|ing)?|\bnot\s+more\s+than|\bless\s+than|\bgreater\s+than|≤|≥|<=|>=|<|>)[^0-9]{0,24}$/i;
+// sheet "tested to 160 mph", "RAIL SYSTEM DESIGNED FOR 160 MPH WIND", a prescriptive checklist
+// "wind ≤ 110 mph". "Designed for" counts only directly before the value — "SYSTEM DESIGNED
+// FOR: WIND SPEED = 110 MPH" is a design-criteria header, and its label sits in between.
+const RATING_CONTEXT = /(?:\bup\s*to|\bmax(?:imum)?\.?|\bmin(?:imum)?\.?|\brated|\btested|\blimit(?:ed)?|\bexceed(?:s|ing)?|\bnot\s+more\s+than|\bless\s+than|\bgreater\s+than|≤|≥|<=|>=|<|>)[^0-9]{0,24}$|\bdesigned\s+(?:for|to)\s*(?:an?\s+)?$/i;
 
 function windQualifier(label: string): StatedDesignCriterionQualifier {
   if (/\bv\s*[_(]?\s*asd\b|\bvasd\b|\ballowable\s+stress|\bnominal\b|\basd\b|\bservice(?:ability)?\b/i.test(label)) return "nominal";
   if (/\bv\s*[_(]?\s*ult\b|\bvult\b|\bultimate\b|\bstrength\b/i.test(label)) return "ultimate";
   return "unspecified";
 }
+
+/** Blank every complete "( … )" group, keeping offsets: "(3-SECOND GUST)", "(ASCE 7-16)". */
+function blankParentheticals(text: string): string {
+  return text.replace(/\([^()]*\)/g, (p) => " ".repeat(p.length));
+}
+
+// Where a wind label STARTS inside the text before a speed — the excerpt begins here.
+const WIND_LABEL_START = /(?:\b(?:ultimate|basic|design)\s+)?(?:\bwind|\bv\s*[_(]?\s*(?:ult|asd)\b|\bv(?:ult|asd)\b|\bexp(?:osure|\.))|\bv\s*[:=]?\s*$/i;
 
 function extractWind(text: string, source: string, out: StatedDesignCriterion[]): void {
   const re = /(\d{2,3}(?:\.\d+)?)\s*mph\b/gi;
@@ -174,18 +184,24 @@ function extractWind(text: string, source: string, out: StatedDesignCriterion[])
     const pre = text.slice(Math.max(0, start - 70), start);
     // The LOCAL label is the text since the previous number: "…Vasd qz = 8.34 psf Basic
     // wind pressure V= 95 mph" must read "Basic wind pressure V=", not the Vasd two
-    // numbers back — otherwise an ultimate speed is filed as a nominal one.
-    const lastDigit = pre.search(/\d[^\d]*$/);
+    // numbers back — otherwise an ultimate speed is filed as a nominal one. A number inside a
+    // parenthetical is not a previous value: "BASIC WIND SPEED (3-SECOND GUST) = 115 MPH" and
+    // "WIND SPEED (ASCE 7-16): 110 MPH" keep their label.
+    const lastDigit = blankParentheticals(pre).search(/\d[^\d]*$/);
     const label = lastDigit >= 0 ? pre.slice(lastDigit + 1) : pre;
     const post = text.slice(end, end + 30);
     if (RATING_CONTEXT.test(pre.slice(-30))) continue;
+    const windAfter = post.match(/^\s*(?:\(?\s*3[\s-]*sec(?:ond)?\.?[\s-]*gust\s*\)?\s*)?,?\s*wind\b/i);
     const labelled = /wind|\bv\s*[_(]?\s*(?:ult|asd)\b|\bv(?:ult|asd)\b|\bv\s*[:=]\s*$|\bv\s*$/i.test(label)
-      || /^\s*(?:\(?\s*3[\s-]*sec(?:ond)?\.?[\s-]*gust\s*\)?\s*)?,?\s*wind\b/i.test(post)
+      || !!windAfter
       // "Exposure B, 95 mph" — a speed stated inside an exposure clause is the wind speed.
       || /\bexp(?:osure)?\.?\s*(?:cat(?:egory)?\.?\s*)?[:=]?\s*[BCD]\s*,?\s*$/i.test(label);
     if (!labelled) continue;
     const value = toNumber(m[1]);
     if (value == null || value < 60 || value > 250) continue;
+    const labelAt = label.search(WIND_LABEL_START);
+    const excerptStart = labelAt >= 0 ? start - label.length + labelAt : start;
+    const excerptEnd = labelAt < 0 && windAfter ? end + windAfter[0].length : end;
     out.push({
       criterion: "windSpeedMph",
       value,
@@ -194,38 +210,71 @@ function extractWind(text: string, source: string, out: StatedDesignCriterion[])
       qualifier: windQualifier(`${label} ${(post.match(/^\s*\(?\s*(?:v\s*[_(]?\s*(?:ult|asd)\b|vult|vasd|ultimate|nominal|asd)\b/i) ?? [""])[0]}`),
       source,
       derived: false,
-      excerpt: excerptAt(text, start - label.length, end),
+      excerpt: excerptAt(text, excerptStart, excerptEnd),
     });
     // "WIND SPEED AND EXPOSURE: 110 MPH, C" — the exposure rides after the speed.
     if (/exposure/i.test(label)) {
       const expAfter = post.match(/^\s*,?\s*(?:exp(?:osure)?\.?\s*)?([BCD])(?![A-Za-z0-9])/i);
-      if (expAfter) {
+      if (expAfter && !EXPOSURE_LIST_AFTER.test(post.slice(expAfter[0].length))) {
         out.push({
           criterion: "windExposure",
           value: expAfter[1].toUpperCase(),
           qualifier: "unspecified",
           source,
           derived: false,
-          excerpt: excerptAt(text, start - label.length, end + expAfter[0].length),
+          excerpt: excerptAt(text, excerptStart, end + expAfter[0].length),
         });
       }
     }
   }
 }
 
+// --- exposure / risk ------------------------------------------------------------
+
+// A LIMIT CLAUSE governs the letter — a prescriptive checklist "Wind exposure for structure is
+// limited to Exposure Category B or C", "Less than or equal to 120 mph in Exposure Category B".
+// Numbers may sit between the limit word and the letter; a field separator (= : ; . •) may not.
+const EXPOSURE_LIMIT_BEFORE = /(?:\bup\s*to|\bmax(?:imum)?\b|\bmin(?:imum)?\b|\brat(?:ed|ing)\b|\btested\b|\blimit(?:ed|s)?\b|\bexceed(?:s|ing)?\b|\bnot\s+more\s+than|\bless\s+than|\bgreater\s+than|\bor\s+less\b|\bdesigned\s+(?:for|to)\b|≤|≥|<=|>=)[^.;:=•]{0,45}$/i;
+// A LIST or RANGE of letters is not a stated category: "B or C", "C/D", "B, C and D", "B-D".
+const EXPOSURE_LIST_AFTER = /^\s*(?:,|\/|&|\bor\b|\band\b|\bto\b|\bthrough\b|[-–])\s*(?:exp(?:osure|\.)?\s*(?:cat(?:egory|\.)?\s*)?)?[BCD](?![A-Za-z0-9])/i;
+// "EXPOSURE B RATING", "Exposure C rated" — a product rating, not the site's category.
+const EXPOSURE_RATING_AFTER = /^\s*(?:rat(?:ed|ing)|tested|max(?:imum)?\b|or\s+less\b|limit)/i;
+// A bare "exposure X" is the WIND exposure only beside wind ("Exposure B, 95 mph", "110 mph
+// Exposure C"); "roof exposure c. site is open" and "SUN EXPOSURE" are not.
+const WIND_NEARBY = /\bwind\b|\bmph\b|\bv\s*[_(]?\s*(?:ult|asd)\b|\bv(?:ult|asd)\b/i;
+
 function extractExposureAndRisk(text: string, source: string, out: StatedDesignCriterion[]): void {
+  const candidates: Array<{ at: number; end: number; letter: string }> = [];
   const exposurePatterns: RegExp[] = [
-    // "EXPOSURE CATEGORY = C", "Exposure B", "EXPOSURE: D". The lookahead refuses "Exposure
-    // Factor", "EXPOSURE AND WET LOCATIONS", "Exposure category Ce" (snow Ce, not Exp. C)
-    // and "Exposure Category (ASCE 7-22 Table …)" (a heading with no value).
-    /\bexposure(?:\s+cat(?:egory|\.)?)?\s*[:=-]?\s*([BCD])(?![A-Za-z0-9])/gi,
+    // "EXPOSURE CATEGORY = C", "Wind exposure category: C", "Exposure B", "EXPOSURE: D". The
+    // lookahead refuses "Exposure Factor", "EXPOSURE AND WET LOCATIONS", "Exposure category Ce"
+    // (snow Ce, not Exp. C) and "Exposure Category (ASCE 7-22 Table …)" (a heading, no value).
+    /\b(?:wind\s+)?exposure(?:\s+cat(?:egory|\.)?)?\s*[:=-]?\s*([BCD])(?![A-Za-z0-9])/gi,
     /\bexp\.\s*(?:cat(?:egory|\.)?\s*)?[:=]?\s*([BCD])(?![A-Za-z0-9])/gi,
   ];
   for (const re of exposurePatterns) {
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {
-      out.push({ criterion: "windExposure", value: m[1].toUpperCase(), qualifier: "unspecified", source, derived: false, excerpt: excerptAt(text, m.index, m.index + m[0].length) });
+      const at = m.index;
+      const end = at + m[0].length;
+      // A design-criteria LABEL: "exposure category", "wind exposure", "Exp. Cat.". A bare
+      // "exposure X" / "Exp. X" needs wind beside it.
+      const strong = /\bwind\s+exposure|\bcat(?:egory|\.)?/i.test(m[0]);
+      if (!strong && !WIND_NEARBY.test(text.slice(Math.max(0, at - 40), at)) && !WIND_NEARBY.test(text.slice(end, end + 40))) continue;
+      if (EXPOSURE_LIMIT_BEFORE.test(text.slice(Math.max(0, at - 60), at))) continue;
+      const after = text.slice(end, end + 30);
+      if (EXPOSURE_LIST_AFTER.test(after) || EXPOSURE_RATING_AFTER.test(after)) continue;
+      if (candidates.some((c) => c.at === at)) continue;
+      candidates.push({ at, end, letter: m[1].toUpperCase() });
     }
+  }
+  // A TABLE, not a statement: several different exposure letters in a row ("EXPOSURE B
+  // EXPOSURE C EXPOSURE D" span-table column heads) — none of them is the site's category.
+  const tabular = (c: { at: number; end: number; letter: string }): boolean =>
+    candidates.some((o) => o !== c && o.letter !== c.letter && (Math.abs(o.at - c.end) <= 40 || Math.abs(c.at - o.end) <= 40));
+  for (const c of candidates) {
+    if (tabular(c)) continue;
+    out.push({ criterion: "windExposure", value: c.letter, qualifier: "unspecified", source, derived: false, excerpt: excerptAt(text, c.at, c.end) });
   }
   // Engineering software's summary table: "Exposure and Occupancy Categories B II".
   const combined = /\bexposure\s+and\s+(?:occupancy|risk)\s+categor(?:y|ies)\s*[:=]?\s*([BCD])\s+(IV|I{1,3}|[1-4])(?![A-Za-z0-9])/gi;
@@ -259,11 +308,19 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
   let m: RegExpExecArray | null;
 
   // GROUND SNOW, label first. A unit is required unless the label is followed by = or :,
-  // so a numbered note ("3. GROUND SNOW LOAD …") can never lend its item number.
-  const groundLabel = /\bground\s+snow(?:\s+load)?(?:\s*,?\s*p\s?g)?\s*(\(\s*asd\s*\)|,?\s*asd)?\s*(?:([:=])\s*)?(\d+(?:\.\d+)?)\s*(psf|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))?/gi;
+  // so a numbered note ("3. GROUND SNOW LOAD …") can never lend its item number. A
+  // parenthetical may sit between label and value ("GROUND SNOW LOAD (Pg) = 25 PSF",
+  // "(ASCE 7-16 FIG 7.2-1)"), and prose connects with "of"/"is" ("ground snow load of 36 psf").
+  const groundLabel = /\bground\s+snow(?:\s+loads?)?(?:\s*,?\s*p\s?g\b)?(?:\s*\((?![^)]*\basd\b)[^()]{0,40}\))?\s*(\(\s*asd\s*\)|,?\s*asd\b)?\s*(?:(of|is|[:=])\s*)?(\d+(?:\.\d+)?)\s*(psf|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))?/gi;
   while ((m = groundLabel.exec(text))) {
-    if (!m[2] && !m[4]) continue;
+    if (!(m[2] && /[:=]/.test(m[2])) && !m[4]) continue;
     push("groundSnowPsf", asd(m[1]) ? "ground_asd" : "ground", m[3], m);
+  }
+  // "SNOW LOAD (GROUND): 25 PSF" — the qualifier printed after the label.
+  const groundParen = /\bsnow\s+loads?\s*\(\s*ground\s*\)\s*(?:([:=])\s*)?(\d+(?:\.\d+)?)\s*(psf)?/gi;
+  while ((m = groundParen.exec(text))) {
+    if (!m[1] && !m[3]) continue;
+    push("groundSnowPsf", "ground", m[2], m);
   }
   // Pg symbol: "pg 28.00 psf", "p g = 28.00" (a PDF split the symbol), "Pg(asd) 20 psf".
   // "pg 5" is a page reference — the symbol needs = or a psf unit to count.
