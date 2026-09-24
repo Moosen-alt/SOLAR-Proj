@@ -31,8 +31,8 @@
 import type { Page } from "playwright";
 import type { RecipeSelector, RecipeStep, StepFingerprint } from "../../shared/src/types";
 import {
+  capturedFieldIsSecret,
   classifyRecordedClick,
-  isSecretField,
   PORTAL_SAFETY_IN_PAGE_SOURCE,
   type FieldIdentity,
 } from "../../shared/src/portalSafety";
@@ -41,7 +41,7 @@ export interface HumanCapturePayload {
   kind: "click" | "fill" | "select" | "check" | "uncheck" | "upload" | "submitObserved";
   selector: RecipeSelector;
   value?: string;
-  /** Legacy: an explicit sensitive flag. The shared isSecretField(identity) is ORed in. */
+  /** Legacy: an explicit sensitive flag. The shared capturedFieldIsSecret (identity, label) is ORed in. */
   sensitive?: boolean;
   label?: string;
   /** Element attribute names for replay-heal tie-breaking (never values). */
@@ -50,6 +50,8 @@ export interface HumanCapturePayload {
   identity?: FieldIdentity;
   /** For a click: the page showed no fillable control when it happened (see readOnlyPageInPage). */
   readOnlyPage?: boolean;
+  /** The page could not run the shared labeler: the click's label is UNKNOWN, so it is blocked. */
+  safetyUnavailable?: boolean;
 }
 
 // Marker note carried by the pseudo-step emitted when the HUMAN clicks the portal's final
@@ -73,14 +75,17 @@ export function payloadToStep(p: HumanCapturePayload): RecipeStep | null {
   // Submit observation is a SIGNAL, not a replayable step — see HUMAN_SUBMIT_OBSERVED_NOTE.
   if (p.kind === "submitObserved") return { action: "click", selector: {}, optional: true, note: HUMAN_SUBMIT_OBSERVED_NOTE };
   if (p.kind === "click") {
+    if (p.safetyUnavailable) return null;
     if (classifyRecordedClick(p.label, { readOnlyPage: p.readOnlyPage }) !== "capture") return null;
     return { action: "click", selector: p.selector, note };
   }
-  if (p.kind === "fill" && (p.sensitive || isSecretField(p.identity))) {
-    // The typed value rides along IN MEMORY ONLY so the backend merge can bind it to a
+  if ((p.kind === "fill" || p.kind === "select") && capturedFieldIsSecret(p)) {
+    // The typed/chosen value rides along IN MEMORY ONLY so the backend merge can bind it to a
     // project field key (account/meter numbers are project data); appendHumanPatchSteps
-    // strips the literal unconditionally before anything is persisted.
-    return { action: "fill", selector: p.selector, ...(p.fingerprint ? { fingerprint: p.fingerprint } : {}), value: p.value, sensitive: true, optional: true, note: `${note} — SENSITIVE, bound at replay (no value stored)` };
+    // strips the literal of every sensitive step, fill or select, before anything is persisted.
+    // A secret <select> is the same as a secret <input>: its option text never reaches the
+    // selector or the note (the shared labeler never reads a select's text).
+    return { action: p.kind, selector: p.selector, ...(p.fingerprint ? { fingerprint: p.fingerprint } : {}), value: p.value, sensitive: true, optional: true, note: `${note} — SENSITIVE, bound at replay (no value stored)` };
   }
   if (p.kind === "fill") return { action: "fill", selector: p.selector, ...(p.fingerprint ? { fingerprint: p.fingerprint } : {}), value: p.value ?? "", note };
   if (p.kind === "select") return { action: "select", selector: p.selector, ...(p.fingerprint ? { fingerprint: p.fingerprint } : {}), value: p.value ?? "", note };
@@ -103,6 +108,7 @@ export function createHumanCaptureSink(onStep: HumanStepFn): (p: HumanCapturePay
   return (p: HumanCapturePayload): void => {
     if (!p || typeof p !== "object") return;
     if (p.kind === "click") {
+      if (p.safetyUnavailable) return; // unknown label: never a replayable click
       const cls = classifyRecordedClick(p.label, { readOnlyPage: p.readOnlyPage });
       if (cls === "finalSubmit") {
         if (!disarmed) {
@@ -134,15 +140,18 @@ function patchCaptureScript(): void {
     return t instanceof Element ? t : null;
   }
 
-  function describe(el: Element): { selector: Record<string, unknown>; label: string; fingerprint?: Record<string, string> } {
-    const role = el.getAttribute("role") || ({ INPUT: "textbox", BUTTON: "button", SELECT: "combobox", A: "link", TEXTAREA: "textbox" } as Record<string, string>)[el.tagName] || "";
-    const root = el.getRootNode() as Document | ShadowRoot;
+  function describe(el: Element): { selector: Record<string, unknown>; label: string; fingerprint?: Record<string, string>; safetyUnavailable?: boolean } {
+    // Role and label come from the SHARED labeler (window.__portalSafety), the same one the
+    // recorder uses: a button's value, an image's alt and a title are read, and a <select>'s
+    // option text never is. FAIL CLOSED: without it the payload says so and the sink blocks.
+    const ps = w.__portalSafety;
+    const safetyUnavailable = !ps || typeof ps.controlLabelInPage !== "function" || typeof ps.controlRoleInPage !== "function";
+    let role = "";
+    let name = "";
+    if (!safetyUnavailable) {
+      try { role = String(ps.controlRoleInPage(el) || ""); name = String(ps.controlLabelInPage(el) || ""); } catch { /* label stays empty */ }
+    }
     const id = el.getAttribute("id");
-    const name =
-      el.getAttribute("aria-label") ||
-      (id ? (root.querySelector(`label[for="${CSS.escape(id)}"]`)?.textContent || "").trim() : "") ||
-      (el as HTMLInputElement).placeholder ||
-      (el.textContent || "").trim().slice(0, 60);
     const sel: Record<string, unknown> = {};
     const frameName = window.name || undefined;
     if (frameName) sel.frame = frameName;
@@ -164,7 +173,7 @@ function patchCaptureScript(): void {
     if (ariaAttr) fp.ariaLabel = ariaAttr;
     const legend = el.closest("fieldset")?.querySelector("legend")?.textContent?.trim();
     if (legend) fp.section = legend;
-    return { selector: sel, label: name, fingerprint: Object.keys(fp).length ? fp : undefined };
+    return { selector: sel, label: name, fingerprint: Object.keys(fp).length ? fp : undefined, ...(safetyUnavailable ? { safetyUnavailable: true } : {}) };
   }
 
   // The field identity (attribute NAMES + label text, never the value) and the card-field
@@ -197,7 +206,9 @@ function patchCaptureScript(): void {
   document.addEventListener("click", (e) => {
     const el = target(e);
     if (!el) return;
-    const actionable = el.closest("button,a,[role=button],[role=link]");
+    // input[type=submit|button|image] included: a portal whose Submit is an <input> was never
+    // reported at all, so the filing click went unobserved.
+    const actionable = el.closest("button,a,[role=button],[role=link],input[type=submit],input[type=button],input[type=image],summary");
     if (!actionable) return; // plain page click — not a replayable action
     if ((actionable as HTMLInputElement).type === "file") return; // handled by change
     // Reported with the page's read-only state; the SHARED classifier in Node decides whether it

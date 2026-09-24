@@ -50,6 +50,20 @@ const PAGES: Record<string, string> = {
     <dl><dt>Job Description</dt><dd>Rooftop PV</dd></dl>
     <label><input type="checkbox" id="cert"> I certify that the information above is correct</label>
     <a href="#" id="cont" role="button" onclick="return false">Continue Application »</a>`),
+  // Button shapes whose label is NOT their text (value / img alt / input-image alt / title), and
+  // selects: two secret (by name, by label), two ordinary. Values are synthetic.
+  "/controls": page(`<form onsubmit="return false">
+    <label for="job">Job</label><input id="job" type="text">
+    <select id="meterSel" name="meterNumber"><option value="">--</option><option>1009283745</option></select>
+    <label for="mtr2">Meter Number</label><select id="mtr2"><option value="">--</option><option>5550001111</option></select>
+    <label for="acctType">Account Type</label><select id="acctType" name="accountType"><option value="">--</option><option>Residential</option></select>
+    <label for="util">Utility</label><select id="util"><option value="">--</option><option>Pacific Power</option></select>
+    <input type="submit" id="btnSubmit" name="ctl00$btnSubmit" value="Submit">
+    <button type="button" id="imgBtn" style="padding:4px"><img alt="Submit Application" src="data:," style="display:inline-block;width:20px;height:20px"></button>
+    <input type="image" id="imgInput" alt="Submit" src="data:," style="width:24px;height:24px">
+    <a href="#" id="titled" title="Submit" onclick="return false"><span style="display:inline-block;width:20px;height:20px;background:#ccc"></span></a>
+    <input type="submit" id="nx" value="Next">
+    </form>`),
   // A fee page: the card block, including a bare "Expiration Date" select.
   "/pay": page(`<form><h2>Fee Payment</h2>
     <label for="c1">Card Number:</label><input id="c1" type="text">
@@ -198,6 +212,101 @@ try {
     check("recorder: a secret field keeps its step and loses its literal", !!acct && acct.value === undefined && !all.includes("30917442861"), all.slice(0, 400));
     check("recorder MUST-EXCLUDE: nothing from the card block, of any kind", !/4111|"520"|card|cvv|expir/i.test(all), all.slice(0, 400));
     await p.context().close();
+  }
+
+  // ---- 5. Button shapes and secret selects (foundation must-fix 4 and 5) ---------------------
+  // describe() read neither `value`, an img's `alt`, nor `title`, so these submit controls had an
+  // EMPTY label, and an empty label is "not submit" to every classifier: the recorder captured
+  // <input type=submit value="Submit"> as a css-selector click. And a <select>'s label came from
+  // its textContent — every option — so a meter-number select copied the meter number into the
+  // selector and note.
+  const SECRET_LITERALS = ["1009283745", "5550001111"];
+  const SUBMIT_SHAPES = ["#btnSubmit", "#imgBtn", "#imgInput", "#titled"];
+  {
+    const p = await newPage();
+    const steps: RecipeStep[] = [];
+    const sink = createRecorderSink(steps, () => undefined);
+    await p.exposeBinding("__recordStep", (_s: unknown, payload: RecordedPayload) => sink(payload));
+    await p.addInitScript({ content: PORTAL_SAFETY_IN_PAGE_SOURCE });
+    await p.addInitScript(captureScript);
+    await p.goto(`${base}/controls`);
+    await p.fill("#job", "Rooftop PV");
+    await p.press("#job", "Tab");
+    await p.selectOption("#meterSel", "1009283745");
+    await p.selectOption("#mtr2", "5550001111");
+    await p.selectOption("#acctType", "Residential");
+    await p.selectOption("#util", "Pacific Power");
+    await p.waitForTimeout(150);
+    const clickAt: Record<string, RecipeStep[]> = {};
+    for (const id of [...SUBMIT_SHAPES, "#nx"]) {
+      const before = steps.length;
+      await p.click(id);
+      await p.waitForTimeout(150);
+      clickAt[id] = steps.slice(before);
+    }
+    const all = JSON.stringify(steps);
+    const nx = clickAt["#nx"][0];
+    const nxResolves = nx && nx.selector?.role && nx.selector?.name
+      ? await p.getByRole(nx.selector.role as "button", { name: String(nx.selector.name), exact: true }).count()
+      : 0;
+    check("recorder MUST-PASS: <input type=submit value='Next'> is a replayable click with a non-empty note, and its selector resolves to exactly that button",
+      !!nx && nx.action === "click" && String(nx.note ?? "").trim() === "Next" && nxResolves === 1, `${JSON.stringify(nx)} resolves=${nxResolves}`);
+    for (const id of SUBMIT_SHAPES) {
+      const got = clickAt[id];
+      check(`recorder MUST-EXCLUDE: ${id} (a submit whose label is value/alt/title) is a targetless placeholder, never a click with a selector`,
+        got.length === 1 && got[0].action === "click" && Object.keys(got[0].selector ?? {}).length === 0 && /BLOCKED/.test(String(got[0].note)),
+        JSON.stringify(got));
+    }
+    const sel = (id: string) => steps.find((s) => s.action === "select" && (s.selector?.css === id || (s.fingerprint as { id?: string } | undefined)?.id === id.slice(1)));
+    const meterByName = sel("#meterSel");
+    const meterByLabel = sel("#mtr2");
+    check("recorder MUST-EXCLUDE: <select name='meterNumber'> is sensitive and keeps no value",
+      meterByName?.sensitive === true && meterByName.value === undefined, JSON.stringify(meterByName));
+    check("recorder MUST-EXCLUDE: a select labelled 'Meter Number' is sensitive and keeps no value",
+      meterByLabel?.sensitive === true && meterByLabel.value === undefined, JSON.stringify(meterByLabel));
+    check("recorder MUST-EXCLUDE: no option text of a secret select anywhere in the recording (selector, note, value)",
+      !SECRET_LITERALS.some((v) => all.includes(v)), all.slice(0, 600));
+    const acct = steps.find((s) => s.action === "select" && s.value === "Residential");
+    const util = steps.find((s) => s.action === "select" && s.value === "Pacific Power");
+    check("recorder MUST-PASS: an 'Account Type' select and a 'Utility' select keep their literal value and their label",
+      !!acct && acct.sensitive !== true && /Account Type/.test(String(acct.note)) && !!util && util.sensitive !== true && /Utility/.test(String(util.note)),
+      JSON.stringify([acct, util]));
+    await p.context().close();
+  }
+  {
+    // humanCapture: the selects, then each submit shape on its own freshly armed page (the
+    // filing click disarms the capture, so one page per shape).
+    const p = await newPage();
+    const got: RecipeStep[] = [];
+    await p.goto(`${base}/controls`);
+    await armHumanCaptureOnPage(p, (s) => got.push(s));
+    await p.selectOption("#meterSel", "1009283745");
+    await p.selectOption("#mtr2", "5550001111");
+    await p.selectOption("#util", "Pacific Power");
+    await p.click("#nx");
+    await p.waitForTimeout(300);
+    const meters = got.filter((s) => s.action === "select" && s.sensitive === true);
+    const visible = JSON.stringify(got.map((s) => ({ selector: s.selector, note: s.note, fingerprint: s.fingerprint })));
+    check("humanCapture MUST-EXCLUDE: both meter-number selects are captured sensitive (the value rides in memory only, stripped at merge)",
+      meters.length === 2, JSON.stringify(got.map((s) => ({ a: s.action, sensitive: s.sensitive, note: s.note }))));
+    check("humanCapture MUST-EXCLUDE: no secret option text in any selector, note or fingerprint", !SECRET_LITERALS.some((v) => visible.includes(v)), visible.slice(0, 600));
+    const util = got.find((s) => s.action === "select" && s.value === "Pacific Power");
+    check("humanCapture MUST-PASS: the 'Utility' select keeps its value and label", !!util && util.sensitive !== true && /Utility/.test(String(util.note)), JSON.stringify(util));
+    const nx = got.find((s) => s.action === "click");
+    check("humanCapture MUST-PASS: <input type=submit value='Next'> is reported and captured as a replayable click",
+      !!nx && nx.selector?.role === "button" && nx.selector?.name === "Next", JSON.stringify(got.filter((s) => s.action === "click")));
+    await p.context().close();
+    for (const id of SUBMIT_SHAPES) {
+      const q = await newPage();
+      const seen: RecipeStep[] = [];
+      await q.goto(`${base}/controls`);
+      await armHumanCaptureOnPage(q, (s) => seen.push(s));
+      await q.click(id);
+      await q.waitForTimeout(250);
+      check(`humanCapture MUST-EXCLUDE: ${id} is observed as the filing click (one submitObserved), never a replayable click`,
+        seen.length === 1 && seen[0].note === HUMAN_SUBMIT_OBSERVED_NOTE && Object.keys(seen[0].selector ?? {}).length === 0, JSON.stringify(seen));
+      await q.context().close();
+    }
   }
 } finally {
   await browser.close();

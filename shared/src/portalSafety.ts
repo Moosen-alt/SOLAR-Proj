@@ -152,7 +152,9 @@ export function portalSafetyFactory() {
     "password", "passcode", "pass\\s*phrase",
     "\\bpin\\b",
     "\\baccount\\b(?!\\s*(holder|name|owner|type|manager|executive|representative|status|contact))",
-    "\\bacct\\b", "\\bacct\\s*(no|num|number)\\b",
+    // "acct" is "account" abbreviated, with the same name-ish exclusions: an id "acctType" or
+    // "acctHolderName" is project data, exactly like "Account Type".
+    "\\bacct\\b(?!\\s*(holder|name|owner|type|manager|executive|representative|status|contact))", "\\bacct\\s*(no|num|number)\\b",
     "\\bmeter\\s*(number|no|num|#|id)\\b",
     "\\b(service\\s*)?agreement\\s*(number|no|num|#|id)\\b",
     // Utility identifiers that name ONE customer's service, like an account number: PG&E's
@@ -296,7 +298,12 @@ export function portalSafetyFactory() {
       } catch { /* attributes are still read */ }
     }
     const wrap = el.closest ? el.closest("label") : null;
-    if (wrap && wrap.textContent) labels.push(wrap.textContent);
+    if (wrap && wrap.textContent) {
+      // A <select>/<textarea> inside its <label>: the label's text minus the field's own text
+      // (its options / what was typed) — never a value.
+      const own = el.tagName === "SELECT" || el.tagName === "TEXTAREA" ? el.textContent || "" : "";
+      labels.push(own ? wrap.textContent.replace(own, " ") : wrap.textContent);
+    }
     return {
       label: labels.join(" ").replace(/\s+/g, " ").trim(),
       name: el.getAttribute("name") || "",
@@ -306,6 +313,93 @@ export function portalSafetyFactory() {
       placeholder: el.getAttribute("placeholder") || "",
       ariaLabel: el.getAttribute("aria-label") || "",
     };
+  };
+
+  /**
+   * Runs IN THE PAGE: the ARIA role a replay selector should use for this control. An
+   * <input type=submit|button|image|reset> is a BUTTON — mapping every INPUT to "textbox" made
+   * `<input type=submit value="Next">` a selector that can never match at replay.
+   */
+  const controlRoleInPage = (el: Element): string => {
+    const explicit = el.getAttribute("role");
+    if (explicit) return explicit;
+    const tag = el.tagName;
+    if (tag === "INPUT") {
+      const t = String((el as HTMLInputElement).type || "text").toLowerCase();
+      if (t === "submit" || t === "button" || t === "image" || t === "reset") return "button";
+      if (t === "checkbox") return "checkbox";
+      if (t === "radio") return "radio";
+      if (t === "file" || t === "hidden") return "";
+      return "textbox";
+    }
+    return ({ BUTTON: "button", SELECT: "combobox", A: "link", TEXTAREA: "textbox", SUMMARY: "button" } as Record<string, string>)[tag] || "";
+  };
+
+  /**
+   * Runs IN THE PAGE: the label a PERSON reads on this control — the text every click
+   * classifier (submit? pay? filing?) is asked about, so an empty answer is a hole: the
+   * recorder once captured `<input type=submit value="Submit">` and `<button><img
+   * alt="Submit Application"></button>` as replayable clicks because it read neither `value`
+   * nor `alt`. Read in accessible-name order: aria-label, aria-labelledby, <label for>, a
+   * wrapping <label> (form fields), a button's value / an image's alt / an img child's alt,
+   * the text of a button or link, placeholder, title.
+   *
+   * A form field's own TEXT is never its label: a <select>'s textContent is every option
+   * concatenated (a meter-number select would copy the meter numbers into the recipe), a
+   * listbox/combobox's is its options, a textarea's is what was typed.
+   */
+  const controlLabelInPage = (el: Element): string => {
+    const clean = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
+    const tag = el.tagName;
+    const role = String(el.getAttribute("role") || "").toLowerCase();
+    const type = String((el as HTMLInputElement).type || "").toLowerCase();
+    const aria = clean(el.getAttribute("aria-label"));
+    if (aria) return aria.slice(0, 120);
+    const root = (el.getRootNode ? el.getRootNode() : null) as Document | ShadowRoot | null;
+    const byId = (id: string): Element | null => {
+      try { return root && (root as Document).getElementById ? (root as Document).getElementById(id) : (root ? root.querySelector(`#${CSS.escape(id)}`) : null); } catch { return null; }
+    };
+    const labelledBy = clean(String(el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)
+      .map((id) => { const n = byId(id); return n ? n.textContent : ""; }).join(" "));
+    if (labelledBy) return labelledBy.slice(0, 120);
+    const isField = tag === "SELECT" || tag === "TEXTAREA" || (tag === "INPUT" && !/^(submit|button|image|reset)$/.test(type));
+    const id = el.getAttribute("id");
+    if (id && root) {
+      try {
+        const lbl = root.querySelector(`label[for="${CSS.escape(id)}"]`);
+        const t = clean(lbl && lbl.textContent);
+        if (t) return t.slice(0, 120);
+      } catch { /* fall through */ }
+    }
+    if (isField) {
+      // A wrapping <label>'s text, minus the field's own text (a <select> inside a <label>).
+      const wrap = el.closest ? el.closest("label") : null;
+      if (wrap) {
+        const own = clean(el.textContent);
+        let t = clean(wrap.textContent);
+        if (own && t.includes(own)) t = clean(t.replace(own, " "));
+        if (t) return t.slice(0, 120);
+      }
+    }
+    if (tag === "INPUT" && /^(submit|button|reset)$/.test(type)) {
+      const v = clean((el as HTMLInputElement).value || el.getAttribute("value"));
+      if (v) return v.slice(0, 120);
+    }
+    if (tag === "INPUT" && type === "image") {
+      const a = clean(el.getAttribute("alt") || el.getAttribute("value"));
+      if (a) return a.slice(0, 120);
+    }
+    const textless = isField || role === "listbox" || role === "combobox" || role === "option" || role === "textbox" || role === "searchbox";
+    if (!textless) {
+      const t = clean(el.textContent);
+      if (t) return t.slice(0, 120);
+      const img = el.querySelector ? el.querySelector("img[alt], [role=img][aria-label]") : null;
+      const alt = clean(img && (img.getAttribute("alt") || img.getAttribute("aria-label")));
+      if (alt) return alt.slice(0, 120);
+    }
+    const ph = clean(el.getAttribute("placeholder"));
+    if (ph) return ph.slice(0, 120);
+    return clean(el.getAttribute("title")).slice(0, 120);
   };
 
   /** Runs IN THE PAGE: is this element a payment-card field? Its own identity decides first; a
@@ -330,6 +424,8 @@ export function portalSafetyFactory() {
     readOnlyPageInPage,
     fieldIdentityInPage,
     isPaymentElementInPage,
+    controlRoleInPage,
+    controlLabelInPage,
   };
 }
 
@@ -344,6 +440,17 @@ export const classifyRecordedClick = impl.classifyRecordedClick;
 export const isSecretField = impl.isSecretField;
 export const isPaymentField = impl.isPaymentField;
 export const isAcceptTermsLabel = impl.isAcceptTermsLabel;
+
+/**
+ * The capture sinks' one secret question, for a fill AND a select: the page flagged it, or its
+ * attribute/label identity is secret, or the label a person reads on it is. A <select name=
+ * "meterNumber"> is as secret as the <input> beside it — the select branch once skipped this and
+ * kept the meter number as the step's literal.
+ */
+export function capturedFieldIsSecret(p: { sensitive?: boolean; identity?: FieldIdentity | null; label?: string | null } | null | undefined): boolean {
+  if (!p) return false;
+  return !!p.sensitive || isSecretField(p.identity) || isSecretField({ label: p.label ?? "" });
+}
 
 /** The name every in-page consumer reads the predicates from. */
 export const PORTAL_SAFETY_GLOBAL = "__portalSafety";

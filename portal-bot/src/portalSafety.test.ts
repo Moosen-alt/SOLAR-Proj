@@ -131,6 +131,8 @@ const SECRET_MUST_ALLOW: FieldIdentity[] = [
   { label: "Username", type: "text" }, { label: "Company Name" }, { label: "Application Number" }, {},
   { label: "Customer Name" }, { label: "Customer Type" }, { label: "Premise Address" }, { label: "Service Point Location" },
   { label: "Accounting Contact" }, { label: "Pinellas County" }, { label: "Resale ID Type" },
+  // "acct" abbreviates "account" and takes the same name-ish exclusions.
+  { id: "acctType" }, { name: "acctHolderName" }, { label: "Account Type", name: "accountType", id: "acctType", type: "select-one" },
 ];
 
 const PAYMENT_MUST_REFUSE: FieldIdentity[] = [
@@ -439,6 +441,36 @@ await check("recorder sink: secret fields keep the step, never the literal", () 
   assert.equal(steps[0].sensitive, true);
   assert.equal(steps[0].value, undefined, "a secret literal reached the recipe step");
 });
+await check("F5: a secret <select> is sensitive in BOTH sinks — no literal, no option text; an ordinary select keeps its value", () => {
+  const meterByName = { kind: "select", selector: { css: "#m" }, label: "", value: "1009283745", rawValue: "1009283745", identity: { name: "meterNumber", id: "m" } };
+  const meterByLabel = { kind: "select", selector: { role: "combobox", name: "Meter Number" }, label: "Meter Number", value: "5550001111", identity: {} };
+  const util = { kind: "select", selector: { role: "combobox", name: "Utility" }, label: "Utility", value: "Pacific Power", identity: { label: "Utility", id: "util" } };
+  const steps: RecipeStep[] = [];
+  const rec = createRecorderSink(steps, () => undefined);
+  rec(meterByName); rec(meterByLabel); rec(util);
+  assert.equal(steps[0].sensitive, true, "recorder: select name=meterNumber is not sensitive");
+  assert.equal(steps[1].sensitive, true, "recorder: a select labelled Meter Number is not sensitive");
+  assert.equal(steps[0].value, undefined); assert.equal(steps[1].value, undefined);
+  assert.ok(!/1009283745|5550001111/.test(JSON.stringify(steps)), `recorder kept a secret option: ${JSON.stringify(steps)}`);
+  assert.equal(steps[2].value, "Pacific Power", "recorder: an ordinary select lost its value");
+  assert.notEqual(steps[2].sensitive, true);
+  const hs = [meterByName, meterByLabel].map((p) => payloadToStep(p as never));
+  for (const s of hs) {
+    assert.equal(s?.sensitive, true, `humanCapture: ${JSON.stringify(s?.selector)} not sensitive`);
+    assert.ok(!/1009283745|5550001111/.test(JSON.stringify({ selector: s?.selector, note: s?.note })), "humanCapture put the option text in the selector/note");
+  }
+  assert.notEqual(payloadToStep(util as never)?.sensitive, true, "humanCapture: an ordinary select became sensitive");
+});
+await check("F4: a click whose page could not run the shared labeler is blocked in BOTH sinks (unknown label is not 'not submit')", () => {
+  const steps: RecipeStep[] = [];
+  createRecorderSink(steps, () => undefined)({ kind: "click", selector: { css: "#btnSubmit" }, label: "", safetyUnavailable: true });
+  assert.deepEqual(steps[0].selector, {}, "recorder kept a replayable selector on an unlabelled click from a page without the predicates");
+  assert.equal(payloadToStep({ kind: "click", selector: { css: "#btnSubmit" }, label: "", safetyUnavailable: true }), null);
+  const got: RecipeStep[] = [];
+  createHumanCaptureSink((s) => got.push(s))({ kind: "click", selector: { css: "#btnSubmit" }, label: "", safetyUnavailable: true });
+  assert.equal(got.length, 0, "humanCapture sink emitted a step for an unknown-label click");
+});
+
 await check("finalizeRecordedSteps always yields a valid shape", () => {
   const nav: RecipeStep = { action: "click", selector: { role: "button", name: "Next" } };
   const fin: RecipeStep = { action: "click", selector: {}, optional: true, isFinalSubmit: true, note: "BLOCKED" };

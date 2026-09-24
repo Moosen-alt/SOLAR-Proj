@@ -23,9 +23,9 @@ import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import type { RecipeSelector, RecipeStep, StepFingerprint } from "../../shared/src/types";
 import {
+  capturedFieldIsSecret,
   classifyRecordedClick,
   isAcceptTermsLabel,
-  isSecretField,
   PORTAL_SAFETY_IN_PAGE_SOURCE,
   type FieldIdentity,
 } from "../../shared/src/portalSafety";
@@ -45,6 +45,8 @@ export interface RecordedPayload {
   fingerprint?: StepFingerprint;
   identity?: FieldIdentity;
   readOnlyPage?: boolean;
+  /** The page could not run the shared labeler: the click's label is UNKNOWN, so it is blocked. */
+  safetyUnavailable?: boolean;
 }
 
 /** Has the recording entered real form data yet? A terms/certification tick does not count —
@@ -62,8 +64,9 @@ export function recordingHasFormData(steps: ReadonlyArray<RecipeStep>): boolean 
  *     this recording has entered data yet. A submit/pay-worded click becomes a TARGETLESS optional
  *     placeholder (never replayable, but the recipe shows where it happened); only THE filing
  *     click is flagged isFinalSubmit.
- *   - a fill is secret when the payload says so OR isSecretField(identity) does: the step is kept,
- *     the literal is not.
+ *   - a fill OR a select is secret when capturedFieldIsSecret says so (the payload's flag, its
+ *     identity, or its label): the step is kept, the literal and the option text are not.
+ *   - a click whose page could not run the shared labeler (safetyUnavailable) is blocked.
  */
 export function createRecorderSink(
   steps: RecipeStep[],
@@ -74,7 +77,11 @@ export function createRecorderSink(
     // Heal tie-break metadata (attribute names only) — attached to form-control steps.
     const fp = payload.fingerprint ? { fingerprint: payload.fingerprint } : {};
     if (payload.kind === "click") {
-      const cls = classifyRecordedClick(payload.label, { readOnlyPage: payload.readOnlyPage, formDataEntered: recordingHasFormData(steps) });
+      // A page that could not run the shared labeler reports an UNKNOWN label: blocked, never
+      // a replayable click (an empty label reads as "not submit" to every classifier).
+      const cls = payload.safetyUnavailable
+        ? "blocked"
+        : classifyRecordedClick(payload.label, { readOnlyPage: payload.readOnlyPage, formDataEntered: recordingHasFormData(steps) });
       if (cls === "capture") {
         steps.push({ action: "click", selector: sel, note: payload.label });
         return;
@@ -90,14 +97,16 @@ export function createRecorderSink(
         ...(cls === "finalSubmit" ? { isFinalSubmit: true } : {}),
         note: `BLOCKED — human clicked a submit/pay-like control ("${payload.label ?? ""}") here; not replayable. Re-record as a nav step if it was mid-flow navigation.`,
       });
-    } else if (payload.kind === "fill" && (payload.sensitive || isSecretField(payload.identity))) {
+    } else if ((payload.kind === "fill" || payload.kind === "select") && capturedFieldIsSecret(payload)) {
       // Credential/secret field — never persist the typed value. The value crosses
       // ONLY this in-memory binding so it can be matched to a project field key
       // (account/meter numbers live in project data); on a match the step binds by
       // NAME and replay substitutes each project's own value. No match → the step
       // is recorded valueless (optional) and skipped at replay.
-      const field = bindField(payload.value || "");
-      steps.push({ action: "fill", selector: sel, ...fp, field, sensitive: true, optional: true, note: `SENSITIVE — ${field ? `bound to project field "${field}"` : "bind to credential/redacted field"} (no value stored). ${payload.label ?? ""}`.trim() });
+      // A secret <select> is the same: the chosen option (label or raw value) may bind, and
+      // neither ever reaches the step — no value, and no option text in the note.
+      const field = bindField(payload.value || "") || (payload.kind === "select" ? bindField(payload.rawValue || "") : undefined);
+      steps.push({ action: payload.kind === "select" ? "select" : "fill", selector: sel, ...fp, field, sensitive: true, optional: true, note: `SENSITIVE — ${field ? `bound to project field "${field}"` : "bind to credential/redacted field"} (no value stored). ${payload.label ?? ""}`.trim() });
     } else if (payload.kind === "fill") {
       const field = bindField(payload.value || "");
       steps.push(field ? { action: "fill", selector: sel, ...fp, field, note: payload.label } : { action: "fill", selector: sel, ...fp, value: payload.value, note: payload.label });
@@ -265,15 +274,18 @@ export function captureScript(): void {
     return t instanceof Element ? t : null;
   }
   function describe(el: Element): Record<string, unknown> {
-    const role = el.getAttribute("role") || ({ INPUT: "textbox", BUTTON: "button", SELECT: "combobox", A: "link", TEXTAREA: "textbox" } as Record<string, string>)[el.tagName] || "";
-    // Shadow-aware: resolve label[for] in the element's OWN root, not the top document.
-    const root = el.getRootNode() as Document | ShadowRoot;
+    // Role and label come from the SHARED labeler (window.__portalSafety): the label is what the
+    // click classifier is asked about, so it reads a button's value, an image's alt and a title,
+    // and never a <select>'s option text. FAIL CLOSED: without the shared predicates the payload
+    // says so, and the sink treats the click as blocked (see createRecorderSink).
+    const ps = w.__portalSafety;
+    const safetyUnavailable = !ps || typeof ps.controlLabelInPage !== "function" || typeof ps.controlRoleInPage !== "function";
+    let role = "";
+    let name = "";
+    if (!safetyUnavailable) {
+      try { role = String(ps.controlRoleInPage(el) || ""); name = String(ps.controlLabelInPage(el) || ""); } catch { /* reported below */ }
+    }
     const id = el.getAttribute("id");
-    const name =
-      el.getAttribute("aria-label") ||
-      (id ? (root.querySelector(`label[for="${CSS.escape(id)}"]`)?.textContent || "").trim() : "") ||
-      (el as HTMLInputElement).placeholder ||
-      (el.textContent || "").trim().slice(0, 60);
     const sel: Record<string, unknown> = {};
     // Frame key replay understands (safeAction.frameSelectorFor): the frame element's
     // name, or "src:<pathname>" for unnamed frames (matched on the parent's iframe[src]).
@@ -293,7 +305,7 @@ export function captureScript(): void {
     if (el.getAttribute("aria-label")) fp.ariaLabel = el.getAttribute("aria-label") as string;
     const legend = el.closest("fieldset")?.querySelector("legend")?.textContent?.trim();
     if (legend) fp.section = legend;
-    return { selector: sel, label: name, ...(Object.keys(fp).length ? { fingerprint: fp } : {}) };
+    return { selector: sel, label: name, ...(Object.keys(fp).length ? { fingerprint: fp } : {}), ...(safetyUnavailable ? { safetyUnavailable: true } : {}) };
   }
   // Every safety decision is made in Node by shared/src/portalSafety.ts (see createRecorderSink):
   // a click is REPORTED with the page's read-only state, and the shared classifier decides
@@ -332,12 +344,12 @@ export function captureScript(): void {
           (listboxId ? root.querySelector(`[aria-owns~="${CSS.escape(listboxId)}"], [aria-controls~="${CSS.escape(listboxId)}"]`) : null) ||
           root.querySelector('[role="combobox"][aria-expanded="true"]') ||
           listbox || option;
-        w.__recordStep({ kind: "select", value: optionText, ...describe(combo) });
+        w.__recordStep({ kind: "select", value: optionText, identity: identityOf(combo), ...describe(combo) });
         return;
       }
     }
     // Only actionable elements — plain page clicks are noise, not replayable steps.
-    const actionable = el.closest('button,a,[role="button"],[role="link"],input[type="button"],input[type="submit"],summary');
+    const actionable = el.closest('button,a,[role="button"],[role="link"],input[type="button"],input[type="submit"],input[type="image"],summary');
     if (!actionable) return;
     if ((actionable as HTMLInputElement).type === "file") return; // handled by change
     w.__recordStep({ kind: "click", ...describe(actionable), readOnlyPage: readOnlyPage() });
