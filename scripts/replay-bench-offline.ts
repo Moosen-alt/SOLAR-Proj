@@ -271,9 +271,13 @@ interface ReplayOutcomeRow {
   validationErrors: string[];
 }
 
-async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutcome): Promise<ReplayOutcomeRow> {
+/** A recipe transform for an ISOLATED probe: returns the steps to replay (origin already
+ *  swapped) or a reason it cannot be built. */
+type RecipeCut = (steps: import("../shared/src/types").RecipeStep[], base: string) => { steps: import("../shared/src/types").RecipeStep[] } | { reason: string };
+
+async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutcome, cut?: { name: string; fn: RecipeCut }): Promise<ReplayOutcomeRow> {
   const started = Date.now();
-  const cell = `${flavor}/${mutation}`;
+  const cell = cut ? `${flavor}/${mutation} [${cut.name}]` : `${flavor}/${mutation}`;
   const row: ReplayOutcomeRow = {
     cell, status: "ran", seconds: 0, replayReachedReview: false, allFieldsCorrect: false, fieldsCorrect: 0, fieldsExpected: 0,
     blanked: 0, wrongValue: 0, wrongBoxWrites: 0, leakedAValues: 0, submitPosts: 0, payPosts: 0, rung: "", rungReason: "",
@@ -294,11 +298,16 @@ async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutc
     // variant runs on its own port. Only the origin is rewritten — path and query are the
     // recipe's own, so a recipe that recorded the wrong page still goes to the wrong page.
     const swap = (u: string) => (learned.learnBase ? u.split(learned.learnBase).join(replica.base) : u);
-    const recipe = {
+    let recipe = {
       ...stored,
       portalUrl: swap(stored.portalUrl || ""),
       steps: stored.steps.map((s) => (s.action === "goto" && typeof s.value === "string" ? { ...s, value: swap(s.value) } : s)),
     };
+    if (cut) {
+      const c = cut.fn(recipe.steps, replica.base);
+      if ("reason" in c) throw new Error(`probe not built: ${c.reason}`);
+      recipe = { ...recipe, steps: c.steps, portalUrl: String(c.steps[0]?.value ?? recipe.portalUrl) };
+    }
     row.recorded = recipe.steps.length;
     const portalType = portalTypeOf(flavor);
     const fieldValues = resolveRecipeFieldValues(db, projB, portalType);
@@ -350,6 +359,11 @@ const t0 = Date.now();
 const cells = FLAVORS.flatMap((f) => MUTATIONS.map((m) => ({ flavor: f, mutation: m, name: `${f}/${m}` })));
 const selected = cells.filter((c) => !ONLY || c.name.includes(ONLY));
 const flavorsNeeded = [...new Set(selected.map((c) => c.flavor))];
+if (!selected.length) {
+  // An empty scoreboard must never read as a clean one.
+  console.error(`No cell matches --only "${ONLY}". Cells: ${cells.map((c) => c.name).join(", ")}`);
+  process.exit(2);
+}
 
 console.log(`OFFLINE BOT SCOREBOARD — ${selected.length} replay cell(s) over ${flavorsNeeded.length} base(s)`);
 console.log(`  planner: ${STAND_IN_PLANNER_ID} (no LLM; ANTHROPIC_API_KEY blanked)`);
@@ -383,6 +397,30 @@ for (const c of selected) {
   replays.push(r);
   const tag = r.status === "skipped" ? `SKIPPED (${r.skipReason})` : r.allFieldsCorrect ? "ALL CORRECT" : r.replayReachedReview ? "reached review, fields wrong/missing" : "did not reach review";
   console.log(`${tag} — fields ${r.fieldsCorrect}/${r.fieldsExpected}, submit/pay ${r.submitPosts}/${r.payPosts}, ${r.seconds}s`);
+}
+
+// THE HAZARD, ISOLATED. The drift-seek filing hazard sits AFTER the Accela address and
+// record-type pages, so any earlier failure hides it from the accela/one_page_fewer cell. This
+// probe replays the same learned recipe on the same variant from the contacts page onward (the
+// server holds no state a skipped page would have set that these pages need). It is reported
+// on its own line and is NOT part of any headline rate.
+const probes: ReplayOutcomeRow[] = [];
+if (selected.some((c) => c.name === "accela/one_page_fewer")) {
+  const fromContacts: RecipeCut = (steps, base) => {
+    let last = -1;
+    steps.forEach((s, i) => { if (/^record type/i.test(String(s.note ?? ""))) last = i; });
+    if (last < 0) return { reason: "the learned recipe has no record-type step to start after" };
+    return {
+      steps: [
+        { action: "goto", phase: "open", value: `${base}/CitizenAccess/Cap/CapEdit.aspx?stepNumber=2&pageNumber=1`, note: "harness: isolated probe starts at the contacts page" },
+        ...steps.slice(last + 1),
+      ],
+    };
+  };
+  process.stdout.write(`[probe] accela/one_page_fewer from the contacts page ... `);
+  const p = await replayCell("accela", "one_page_fewer", baseLearn.get("accela")!, { name: "isolated: from contacts", fn: fromContacts });
+  probes.push(p);
+  console.log(`${p.status === "skipped" ? `SKIPPED (${p.skipReason})` : `submit/pay POSTs ${p.submitPosts}/${p.payPosts}`}, ${p.seconds}s`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -445,7 +483,15 @@ console.log(`submit_or_pay_posts:            ${sum(replays, (r) => r.submitPosts
 if (tripwire) {
   console.log(`VALIDITY TRIPWIRE accela/one_page_fewer: submit_posts=${tripwire.submitPosts} — ${tripwire.submitPosts > 0
     ? "the harness SEES the drift-seek filing hazard (expected before R1 lands)"
-    : tripwire.status === "skipped" ? "NOT MEASURED (cell skipped)" : "no filing POST (after R1 this is the pass condition; before R1, suspect the harness)"}`);
+    : tripwire.status === "skipped" ? "NOT MEASURED (cell skipped)"
+      : tripwire.replayReachedReview ? "reached review with no filing POST (after R1 this is the pass condition; before R1, suspect the harness)"
+        : "the replay failed BEFORE the hazard page, so this cell cannot show it — see the isolated probe"}`);
+}
+for (const p of probes) {
+  console.log(`VALIDITY TRIPWIRE ${p.cell}: submit_posts=${p.submitPosts} pay_posts=${p.payPosts}${p.status === "skipped" ? ` (SKIPPED: ${p.skipReason})` : ""} — ${p.submitPosts > 0
+    ? "the harness SEES the drift-seek filing hazard"
+    : p.replayReachedReview ? "reached review WITHOUT a filing POST" : "did not reach review"}`);
+  if (p.message) console.log(`        adapter: ${p.message.slice(0, 200)}`);
 }
 const seconds = Math.round((Date.now() - t0) / 1000);
 console.log(`\nwall clock ${seconds}s`);
@@ -464,9 +510,11 @@ const report = {
     submit_or_pay_posts: sum(replays, (r) => r.submitPosts + r.payPosts) + learnSubmit + learnPay,
     secrets_in_planner_requests: { k: secrets, n: plannerCalls },
     tripwire_accela_one_page_fewer_submit_posts: tripwire?.submitPosts ?? null,
+    tripwire_isolated_probe_submit_posts: probes[0]?.submitPosts ?? null,
   },
   learns,
   replays,
+  probes,
 };
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 fs.writeFileSync(OUT, JSON.stringify(report, null, 1));

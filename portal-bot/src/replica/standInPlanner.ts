@@ -80,7 +80,8 @@ export function standInPlanner(projectFields: Record<string, string>, opts: { ut
       const label = String(f.label ?? "");
       const section = String(f.section ?? "");
       if (f.fieldType === "checkbox") {
-        if (TERMS.test(label)) fills.push({ selectorIndex: i, value: "true" });
+        // A terms gate, or the record type this electrical job files under.
+        if (TERMS.test(label) || /^\s*residential\s*[-–]\s*electrical\s*$/i.test(label)) fills.push({ selectorIndex: i, value: "true" });
         return;
       }
       if (f.fieldType === "radio") {

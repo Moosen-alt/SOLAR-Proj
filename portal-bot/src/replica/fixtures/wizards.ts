@@ -4,7 +4,9 @@
 // Three bases, each modelled on a platform the production runs actually hit:
 //   accela     — ASP.NET WebForms: every advance a full postback, the Cap/WorkLocation address
 //                search an ASYNC UpdatePanel postback on the SAME URL (search -> results grid ->
-//                Select a row -> Continue Application), record-type radios, two contact blocks
+//                Select a row -> Continue Application; the grid nested in a layout table and
+//                each row carrying parcel + owner of record), a record-type CheckBoxList
+//                (Oregon's cbListServices), two contact blocks
 //                that share every label, an autopostback select that re-renders its panel, an
 //                attachment, and a read-only CapConfirm review whose "Continue Application"
 //                FILES the application.
@@ -57,7 +59,7 @@ export interface Expect {
 
 export interface Ctl {
   key: string;
-  kind: "text" | "textarea" | "select" | "radio" | "checkbox" | "file" | "date" | "combo";
+  kind: "text" | "textarea" | "select" | "radio" | "checklist" | "checkbox" | "file" | "date" | "combo";
   label: string;
   section: string;
   id: string;
@@ -201,7 +203,8 @@ function accelaBase(): PageSpec[] {
       slug: "CapType.aspx?module=Building", title: "Accela Citizen Access", heading: "Select a Record Type",
       kind: "form", sections: ["Building"],
       controls: [accelaCtl({
-        key: "recordType", kind: "radio", label: "Record Type", section: "Building", id: `${PM}rdoCapType`, required: true,
+        // Oregon ePermitting renders record types as an ASP.NET CheckBoxList (cbListServices).
+        key: "recordType", kind: "checklist", label: "Record Type", section: "Building", id: `${PM}cbListServices`, required: true,
         options: [
           { value: "Building/Residential/Addition/NA", text: "Residential - Building Addition" },
           { value: "Building/Residential/Electrical/NA", text: "Residential - Electrical" },
@@ -289,8 +292,11 @@ function powerClerkBase(): PageSpec[] {
         pcCtl(16, { key: "cust.state", kind: "select", label: "State", section: cust, required: true, options: STATES, expect: ex((p) => p.state, "exact") }),
         pcCtl(17, { key: "cust.zip", kind: "text", label: "Zip Code", section: cust, required: true, expect: ex((p) => p.zip, "exact") }),
         pcCtl(18, { key: "cust.county", kind: "select", label: "County", section: cust, required: true, lateOptions: true, options: COUNTIES, expect: ex((p) => p.county, "exact") }),
-        pcCtl(19, { key: "cust.account", kind: "text", label: "Utility Account Number", section: cust, required: true, expect: ex((p) => p.accountNumber, "exact") }),
-        pcCtl(20, { key: "cust.meter", kind: "text", label: "Meter Number", section: cust, required: true, expect: ex((p) => p.meterNumber, "exact") }),
+        // Not required at Next: the learner never types a secret (it records the step bound by
+        // name, value ""), so a portal that refused Next without them would stop every learn on
+        // page one and hide the rest of the wizard. Still SCORED — replay must bind them.
+        pcCtl(19, { key: "cust.account", kind: "text", label: "Utility Account Number", section: cust, expect: ex((p) => p.accountNumber, "exact") }),
+        pcCtl(20, { key: "cust.meter", kind: "text", label: "Meter Number", section: cust, expect: ex((p) => p.meterNumber, "exact") }),
       ],
     },
     {
@@ -365,7 +371,10 @@ function spaBase(): PageSpec[] {
         spaCtl(8, "ownerEmail", { key: "prop.email", kind: "text", label: "Email", section: "Property Owner", expect: ex((p) => p.ownerEmail) }),
         spaCtl(9, "siteStreet", { key: "site.street", kind: "text", label: "Street address", section: "Site Address", required: true, expect: ex((p) => p.street) }),
         spaCtl(10, "siteCity", { key: "site.city", kind: "text", label: "City", section: "Site Address", required: true, expect: ex((p) => p.city) }),
-        spaCtl(11, "siteState", { key: "site.state", kind: "combo", label: "State", section: "Site Address", required: true, options: STATES, expect: ex((p) => p.state, "exact") }),
+        // OPTIONAL on purpose: a required mat-select the extractor cannot see would stop every SPA
+        // walk here and hide every later page from the scoreboard. Its blank still fails the
+        // strict all-correct score, so nothing is hidden.
+        spaCtl(11, "siteState", { key: "site.state", kind: "combo", label: "State", section: "Site Address", options: STATES, expect: ex((p) => p.state, "exact") }),
         spaCtl(12, "siteZip", { key: "site.zip", kind: "text", label: "ZIP", section: "Site Address", required: true, relabel: "Postal code", expect: ex((p) => p.zip, "exact") }),
       ],
     },
@@ -407,7 +416,7 @@ function renameId(flavor: Flavor, c: Ctl): Ctl {
   if (flavor === "accela") {
     // A jurisdiction's build renames its user controls; the platform prefix stays.
     const id = c.id.replace(/ApplicantEdit_/, "ContactEdit1_").replace(/OwnerEdit_/, "ContactEdit2_")
-      .replace(/AppSpecInfo_ASI_1_/, "AppSpecInfoEdit_ASI_7_").replace(/attachmentEdit_/, "AttachmentsEdit_").replace(/rdoCapType/, "rblCapTypes");
+      .replace(/AppSpecInfo_ASI_1_/, "AppSpecInfoEdit_ASI_7_").replace(/attachmentEdit_/, "AttachmentsEdit_").replace(/cbListServices/, "chkRecordTypes");
     return { ...c, id, name: pmName(id) };
   }
   if (flavor === "powerclerk") {

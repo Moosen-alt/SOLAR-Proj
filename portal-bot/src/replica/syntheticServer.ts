@@ -59,11 +59,12 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** The Accela address register: each project's address plus a decoy whose name shares its
  *  first three letters, because the portal's own hint is to search a 3-character portion. */
+//  Each row carries a parcel number and the owner of record, as ACA's grid does. All synthetic.
 export const ADDRESS_REGISTER = [
-  { number: "4127", core: "Larkspur", street: "4127 Larkspur Ln", zip: "97499" },
-  { number: "4127", core: "Larch", street: "4127 Larch St", zip: "97499" },
-  { number: "918", core: "Quimby", street: "918 Quimby Ave", zip: "97498" },
-  { number: "918", core: "Quince", street: "918 Quince Rd", zip: "97498" },
+  { number: "4127", core: "Larkspur", street: "4127 Larkspur Ln", zip: "97499", parcel: "27S13W04-00812", owner: "QUILLFEATHER HARRIET" },
+  { number: "4127", core: "Larch", street: "4127 Larch St", zip: "97499", parcel: "27S13W04-00340", owner: "PENROSE ALDOUS" },
+  { number: "918", core: "Quimby", street: "918 Quimby Ave", zip: "97498", parcel: "27S13W09-01177", owner: "YARROWBY DESMOND" },
+  { number: "918", core: "Quince", street: "918 Quince Rd", zip: "97498", parcel: "27S13W09-01205", owner: "MOTTRAM ISOLDE" },
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -216,6 +217,7 @@ function acaAbsorb(ctx: Ctx, page: PageSpec, fields: Record<string, string>, mul
   for (const c of page.controls) {
     if (c.key === "worklocation.address") continue; // server-held (set by Select)
     if (c.kind === "checkbox") { ctx.state.values[c.key] = c.name in fields ? "on" : ""; continue; }
+    if (c.kind === "checklist") { ctx.state.values[c.key] = (c.options ?? []).filter((_o, i) => `${c.name}$${i}` in fields).map((o) => o.value).join(","); continue; }
     if (c.kind === "file") { if (multipart && fields[c.name]) ctx.state.values[c.key] = fields[c.name]; continue; }
     if (c.name in fields) ctx.state.values[c.key] = fields[c.name];
   }
@@ -241,6 +243,11 @@ function acaControl(c: Ctl, values: Record<string, string>): string {
   else if (c.kind === "select") {
     const onchange = c.autopostback ? ` onchange="javascript:setTimeout('__doPostBack(\\'${esc(c.name)}\\',\\'\\')', 0)"` : "";
     input = `<select id="${esc(c.id)}" name="${esc(c.name)}"${onchange}${req}>${(c.options ?? []).map((o) => `<option value="${esc(o.value)}"${o.value === v ? " selected" : ""}>${esc(o.text)}</option>`).join("")}</select>`;
+  } else if (c.kind === "checklist") {
+    // ASP.NET CheckBoxList: one checkbox per option, posted as <name>$<i>=on.
+    const chosen = new Set(v.split(",").filter(Boolean));
+    input = `<table id="${esc(c.id)}" class="ACA_CapType">${(c.options ?? []).map((o, i) => `<tr><td><input type="checkbox" id="${esc(c.id)}_${i}" name="${esc(c.name)}$${i}"${chosen.has(o.value) ? " checked" : ""}><label for="${esc(c.id)}_${i}">${esc(o.text)}</label></td></tr>`).join("")}</table>`;
+    return `<div class="ACA_TabRow">${input}</div>`;
   } else if (c.kind === "radio") {
     input = `<table id="${esc(c.id)}" class="ACA_CapType">${(c.options ?? []).map((o, i) => `<tr><td><input type="radio" id="${esc(c.id)}_${i}" name="${esc(c.name)}" value="${esc(o.value)}"${o.value === v ? " checked" : ""}><label for="${esc(c.id)}_${i}">${esc(o.text)}</label></td></tr>`).join("")}</table>`;
     return `<div class="ACA_TabRow">${input}</div>`;
@@ -263,9 +270,11 @@ function acaPanel(ctx: Ctx, idx: number, errors: string[], notice = ""): string 
     const ctl = (k: string) => page.controls.find((c) => c.key === k)!;
     const selected = values["worklocation.address"] || "";
     const grid = rows.length
-      ? `<table class="ACA_Layout"><tr><td><table id="${PM}WorkLocationEdit_gdvResult" class="ACA_GridView ACA_Grid_Caption"><tr><th>Address</th><th>Jurisdiction</th><th></th></tr>${rows.flatMap((a, ai) => ["CITY APPLICATIONS", "COUNTY APPLICATIONS"].map((jur, ji) => {
+      // The results grid sits inside an outer LAYOUT table, as ACA renders it — so a text match
+      // on a row also matches the wrapper row holding the whole grid.
+      ? `<table class="ACA_Layout"><tr><td><table id="${PM}WorkLocationEdit_gdvResult" class="ACA_GridView ACA_Grid_Caption"><tr><th>Address</th><th>Parcel Number</th><th>Owner</th><th>Jurisdiction</th><th></th></tr>${rows.flatMap((a, ai) => ["CITY APPLICATIONS", "COUNTY APPLICATIONS"].map((jur, ji) => {
           const i = ai * 2 + ji;
-          return `<tr class="ACA_TabRow_Odd"><td>${esc(`${a.street.toUpperCase()}, FERNHOLLOW OR ${a.zip}`)}</td><td>${jur}</td><td><a id="${PM}WorkLocationEdit_gdvResult_ctl${String(i + 2).padStart(2, "0")}_lnkSelect" href="javascript:__doPostBack('${ROW_TARGET(i)}','')">Select</a></td></tr>`;
+          return `<tr class="ACA_TabRow_Odd"><td>${esc(`${a.street.toUpperCase()}, FERNHOLLOW OR ${a.zip}`)}</td><td>${esc(a.parcel)}</td><td>${esc(a.owner)}</td><td>${jur}</td><td><a id="${PM}WorkLocationEdit_gdvResult_ctl${String(i + 2).padStart(2, "0")}_lnkSelect" href="javascript:__doPostBack('${ROW_TARGET(i)}','')">Select</a></td></tr>`;
         })).join("")}</table></td></tr></table>`
       : searched ? `<div class="ACA_Error_Label">Address not found. Please verify the street number and a portion of the street name.</div>` : "";
     body = `<div class="ACA_Section"><h2 class="ACA_Title">Address</h2><table class="ACA_Form">
@@ -444,7 +453,7 @@ function pcControl(c: Ctl, values: Record<string, string>): string {
   const v = values[c.key] ?? "";
   const star = c.required ? ` <span class="req">*</span>` : "";
   const label = `<label for="${esc(c.id)}">${esc(c.label.replace(/\s*\*$/, ""))}${star}</label>`;
-  const common = `id="${esc(c.id)}" name="${esc(c.name)}" data-key="${esc(c.key)}"${c.required ? " required" : ""}`;
+  const common = `id="${esc(c.id)}" name="${esc(c.name)}" data-key="${esc(c.key)}"${c.required ? ` aria-required="true"` : ""}`;
   let input = "";
   if (c.kind === "text") input = `<input type="text" ${common} value="${esc(v)}" class="form-control">`;
   else if (c.kind === "date") input = `<input type="text" ${common} value="${esc(v)}" class="form-control datepicker" placeholder="MM/DD/YYYY" autocomplete="off">`;
@@ -505,11 +514,11 @@ function pcDocument(ctx: Ctx, page: PageSpec, errors: string[]): string {
     root.querySelectorAll("[data-key]").forEach(function (el) {
       if (el.__bound) return; el.__bound = true;
       var key = el.getAttribute("data-key");
-      var saved = el.type === "checkbox" ? (el.checked ? "on" : "") : el.value;
+      el.__saved = el.type === "checkbox" ? (el.checked ? "on" : "") : el.value;
       function save() {
         var v = el.type === "checkbox" ? (el.checked ? "on" : "") : el.value;
-        if (v === saved) return;
-        saved = v;
+        if (v === el.__saved) return;
+        el.__saved = v;
         post("/MvcProjects/Autosave", { page: PAGE, key: key, value: v }).then(function () {
           var sec = el.closest("[data-rerender]");
           if (sec) setTimeout(function () { rerender(sec); }, ${w.delays.rerender});
@@ -532,8 +541,9 @@ function pcDocument(ctx: Ctx, page: PageSpec, errors: string[]): string {
           });
         });
       } else {
-        // PER-FIELD AUTOSAVE ON BLUR: typing alone saves nothing.
-        el.addEventListener("blur", save);
+        // PER-FIELD AUTOSAVE ON COMMIT: typing alone saves nothing. "change" is what a blur
+        // fires after an edit.
+        el.addEventListener("change", save);
       }
       if (el.classList.contains("datepicker")) {
         el.addEventListener("focus", function () {
@@ -557,10 +567,16 @@ function pcDocument(ctx: Ctx, page: PageSpec, errors: string[]): string {
   // The picker stays open until Escape — blur does not close it.
   document.addEventListener("keydown", function (e) { if (e.key === "Escape") { var dp = document.querySelector(".ui-datepicker"); if (dp) dp.remove(); } });
   function rerender(sec) {
-    fetch("/MvcProjects/Section?page=" + PAGE + "&section=" + encodeURIComponent(sec.getAttribute("data-section"))).then(function (r) { return r.text(); }).then(function (html) {
-      var body = sec.querySelector(".pc-section-body"); if (!body) return;
-      // A Vue-style re-render from SAVED state: whatever was typed and not yet saved is gone.
-      body.innerHTML = html; bind(body);
+    fetch("/MvcProjects/SectionValues?page=" + PAGE + "&section=" + encodeURIComponent(sec.getAttribute("data-section"))).then(function (r) { return r.json(); }).then(function (vals) {
+      // A Vue-style PATCH from SAVED state: the same elements stay (focus included), and every
+      // value is reset to what the server holds — so text typed and never committed is gone,
+      // silently, with no event a listener could catch.
+      sec.querySelectorAll("[data-key]").forEach(function (el) {
+        if (el.type === "file") return;
+        var v = vals[el.getAttribute("data-key")] || "";
+        if (el.type === "checkbox") el.checked = v === "on"; else el.value = v;
+        el.__saved = v;
+      });
     });
   }
   bind(document);
@@ -615,9 +631,12 @@ const powerClerkHandler: Handler = async (ctx, req, res, url) => {
     return;
   }
   if (p === "/MvcProjects/Counties") { sendJson(res, COUNTIES); return; }
-  if (p === "/MvcProjects/Section") {
+  if (p === "/MvcProjects/SectionValues") {
     const page = w.pages[Number(url.searchParams.get("page"))];
-    sendHtml(res, page ? pcSection(page, url.searchParams.get("section") ?? "", state.values) : "");
+    const section = url.searchParams.get("section") ?? "";
+    const out: Record<string, string> = {};
+    for (const c of page?.controls ?? []) if (c.section === section) out[c.key] = state.values[c.key] ?? "";
+    sendJson(res, out);
     return;
   }
   if (p === "/MvcProjects/EditProject/Previous") {
@@ -631,13 +650,16 @@ const powerClerkHandler: Handler = async (ctx, req, res, url) => {
     const f = parseForm(await readBody(req), ct);
     if (p === "/MvcProjects/Autosave") {
       ctx.logPost(p, "autosave", f);
-      await sleep(w.delays.autosave);
+      // The value is committed on RECEIPT (a blur that fired before Next is never lost to a
+      // race the real portal may not have); only the response — and so the re-render it
+      // triggers — is delayed. What this enforces is the documented quirk: no blur, no save.
       if (f.key && ctx.byKey.has(f.key)) state.values[f.key] = f.value ?? "";
       if (f.key && /^mod\.make$|^inv\.make$/.test(f.key)) {
         // Changing the manufacturer clears the dependent model, as the portal does.
         const child = [...ctx.byKey.values()].find((c) => c.cascadeFrom === f.key);
         if (child) state.values[child.key] = "";
       }
+      await sleep(w.delays.autosave);
       sendJson(res, { ok: true });
       return;
     }
@@ -715,6 +737,11 @@ const spaHandler: Handler = async (ctx, req, res, url) => {
     await sleep(w.delays.postback);
     const miss = page ? missingRequired(page, state.values) : [];
     if (miss.length) state.validationErrors.push(`${page!.heading}: ${miss.join(", ")}`);
+    // The portal accepted the last step before review and routes the client there: that IS
+    // reaching review, whether or not the client finishes painting it before the bot's
+    // browser closes (the route renders behind a spinner).
+    const pi = page ? w.pages.indexOf(page) : -1;
+    if (page && !miss.length && w.pages[pi + 1]?.kind === "review") ctx.seen(w.pages[pi + 1]);
     sendJson(res, { ok: miss.length === 0, missing: miss });
     return;
   }
