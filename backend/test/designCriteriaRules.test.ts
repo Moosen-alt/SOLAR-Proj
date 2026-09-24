@@ -457,6 +457,89 @@ check("MUST-EXCLUDE: an excerpt runs label..value, never into the title block be
   assert.ok(excerpts.includes("WIND SPEED = 120 MPH"), JSON.stringify(excerpts));
 });
 
+// ---------------------------------------------------------------------------------------
+// CODE BASIS — one year per code; state codes compared state-to-state; bases only when both
+// sides state one.
+// ---------------------------------------------------------------------------------------
+const basisOf = (text: string): string[] =>
+  extractStatedDesignCriteria(project({ planSetExtractedText: text })).codeBasis
+    .map((e) => `${e.code} ${e.edition}${e.baseCode ? ` (${e.baseCode} ${e.baseEdition})` : ""}`);
+const basisFinding = (text: string, adoptedCodes: JurisdictionCodeProfile["adoptedCodes"]) =>
+  get(run(project({ planSetExtractedText: text }), ctxFor({ adoptedCodes })), BASIS);
+
+// The shipped Oregon state row after 2e79795 (operator-verified), in shape.
+const OR_PROFILE: JurisdictionCodeProfile["adoptedCodes"] = [
+  { code: "OESC", edition: "2023" }, { code: "NEC", edition: "2023" },
+  { code: "ORSC", edition: "2023", title: "Oregon Residential Specialty Code (2023 edition, based on the 2021 IRC)" },
+  { code: "IRC", edition: "2021" }, { code: "IFC", edition: "2021" },
+];
+
+check("MUST-PASS: a comma-less CODE-YEAR list pairs each code with ITS year — never the previous code's", () => {
+  assert.deepEqual(basisOf("GOVERNING CODES: IRC 2021 NEC 2023 IFC 2021"), ["IRC 2021", "NEC 2023", "IFC 2021"]);
+  assert.ok(!basisFinding("GOVERNING CODES: IRC 2021 NEC 2023 IFC 2021", [{ code: "IRC", edition: "2021" }, { code: "NEC", edition: "2023" }, { code: "IFC", edition: "2021" }]), "a correct plan raises nothing");
+});
+
+check("MUST-PASS: 'ORSC 2023 OESC 2023 NEC 2023' keeps ORSC, and each code keeps its own year", () => {
+  assert.deepEqual(basisOf("CODES USED: ORSC 2023 OESC 2023 NEC 2023"), ["ORSC 2023", "OESC 2023", "NEC 2023"]);
+  assert.deepEqual(basisOf("APPLICABLE CODES: ORSC 2023 OESC 2021 NEC 2020"), ["ORSC 2023", "OESC 2021", "NEC 2020"]);
+});
+
+check("MUST-EXCLUDE: a permit-number shape is not a code and lends no year", () => {
+  assert.deepEqual(basisOf("APPLICABLE CODES: PERMIT NO 2024 BLDC 2024-00012 2021 IRC"), ["IRC 2021"]);
+  assert.deepEqual(basisOf("GOVERNING CODES: BLDC 2024-00012"), []);
+});
+
+check("MUST-EXCLUDE: a correct Oregon plan (2023 ORSC / 2023 OESC (NEC 2023) / 2022 OFC) raises no basis-mismatch", () => {
+  for (const text of [
+    "GOVERNING CODES: · 2023 OREGON RESIDENTIAL SPECIALTY CODE (ORSC) · 2023 OREGON ELECTRICAL SPECIALTY CODE (NEC 2023) · 2022 OREGON FIRE CODE",
+    "GOVERNING CODES: · 2023 OREGON RESIDENTIAL SPECIALTY CODE · 2023 OREGON ELECTRICAL SPECIALTY CODE (2023 NEC) · 2022 OREGON FIRE CODE",
+    "GOVERNING CODES: 2023 ORSC 2023 OESC (NEC 2023) 2022 OFC",
+  ]) {
+    const f = basisFinding(text, OR_PROFILE);
+    assert.ok(!f, `${text} -> ${f?.message}`);
+  }
+});
+
+check("MUST-PASS: the same Oregon plan printing (NEC 2020) beside the 2023 OESC still warns, naming the base", () => {
+  const f = basisFinding("GOVERNING CODES: · 2023 OREGON RESIDENTIAL SPECIALTY CODE (ORSC) · 2023 OREGON ELECTRICAL SPECIALTY CODE (NEC 2020) · 2022 OREGON FIRE CODE", OR_PROFILE);
+  assert.ok(f, "must warn");
+  assert.match(f!.message, /OESC 2023 based on NEC 2020/);
+  assert.match(f!.message, /NEC 2023/);
+  assert.doesNotMatch(f!.message, /OFC|IFC/, "the 2022 OFC is never compared with the 2021 IFC by year");
+});
+
+check("STATE CODES MAP TO THEIR BASE: a base parenthetical is compared only with that model code's record", () => {
+  const ca = [{ code: "CRC", edition: "2022" }, { code: "IRC", edition: "2021" }, { code: "CEC", edition: "2022" }, { code: "NEC", edition: "2020" }];
+  assert.ok(!basisFinding("GOVERNING CODES: 2022 CALIFORNIA RESIDENTIAL CODE (2021 IRC) 2022 CALIFORNIA ELECTRICAL CODE (NEC 2020)", ca));
+  const f = basisFinding("GOVERNING CODES: 2022 CALIFORNIA RESIDENTIAL CODE (2018 IRC)", ca);
+  assert.match(f?.message ?? "", /CRC 2022 based on IRC 2018/);
+  // State name to state name.
+  assert.match(basisFinding("GOVERNING CODES: 2019 CALIFORNIA RESIDENTIAL CODE", ca)?.message ?? "", /plan states CRC 2019/);
+  // A state-amended model code is that model code.
+  assert.deepEqual(basisOf("GOVERNING CODES: 2021 WASHINGTON STATE AMENDED INTERNATIONAL RESIDENTIAL CODE"), ["IRC 2021"]);
+  // Florida's residential volume is FBC-R (-> IRC), however the profile spells it.
+  assert.deepEqual(basisOf("GOVERNING CODES: 2023 FLORIDA BUILDING CODE, RESIDENTIAL"), ["FBC-R 2023"]);
+  assert.ok(!basisFinding("GOVERNING CODES: 2023 FLORIDA BUILDING CODE, RESIDENTIAL", [{ code: "FBC Residential", edition: "2023" }]));
+  assert.match(basisFinding("GOVERNING CODES: 2020 FLORIDA BUILDING CODE, RESIDENTIAL", [{ code: "FBC Residential", edition: "2023" }])?.message ?? "", /FBC-R 2020 .*FBC Residential 2023/, "the profile's spelling is the same code");
+  // A parenthetical that is not this state code's model base is not compared as its base.
+  assert.ok(!basisFinding("GOVERNING CODES: 2023 OREGON ELECTRICAL SPECIALTY CODE (IRC 2018)", OR_PROFILE));
+  // The California ENERGY Code is not the (NEC-based) California Electrical Code.
+  assert.ok(!basisOf("GOVERNING CODES: 2022 CALIFORNIA ENERGY CODE").some((e) => e.startsWith("CEC ")));
+});
+
+check("A model code on the plan vs a profile naming only the state code: compared only through the base the profile states", () => {
+  const orscOnly = [{ code: "ORSC", edition: "2023", title: "Oregon Residential Specialty Code (2023 edition, based on the 2021 IRC)" }];
+  assert.ok(!basisFinding("GOVERNING CODES: 2021 IRC", orscOnly));
+  assert.match(basisFinding("GOVERNING CODES: 2018 IRC", orscOnly)?.message ?? "", /IRC 2018.*based on IRC 2021/);
+  // No base stated on the profile side -> not compared at all.
+  assert.ok(!basisFinding("GOVERNING CODES: 2018 IRC", [{ code: "ORSC", edition: "2023" }]));
+});
+
+check("A name-first edition is read: 'Oregon Structural Specialty Code, 2025 Edition (2024 IBC)'", () => {
+  const b = extractStatedDesignCriteria(project({}), [{ label: "Structural letter", text: "Building Code: Oregon Structural Specialty Code, 2025 Edition (2024 IBC) Risk Category: II" }]).codeBasis;
+  assert.deepEqual(b.map((e) => `${e.code} ${e.edition} ${e.baseCode} ${e.baseEdition}`), ["OSSC 2025 IBC 2024"]);
+});
+
 if (failures) {
   console.error(`\n${failures} design-criteria check(s) FAILED`);
   process.exit(1);

@@ -354,9 +354,54 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[])
 
 const CODE_BASIS_HEADER = /\b(governing\s+codes?|applicable\s+codes?|code\s+basis|design\s+codes?|codes?\s+and\s+standards|references\s+and\s+codes|building\s+codes?\s+used|codes?\s+used)\b\s*[:\-–]?/gi;
 const NAME_STOPWORDS = new Set(["OF", "THE", "AND", "FOR", "&", "PER", "BY", "IN", "TO", "WITH", "AS", "ON", "AT", "SEE"]);
-/** An abbreviation reads as a CODE only when it ends in C (NEC, IRC, OESC, IECC …);
- *  "OREGON", "ASCE", "NDS" and every other capitalised word do not. */
+/** An abbreviation reads as a CODE only when it ends in C (NEC, IRC, OESC, IECC …) or is a
+ *  known code token (FBC-R); "OREGON", "ASCE", "NDS" and every other capitalised word do not. */
 const CODE_ABBR = /^[A-Z]{1,5}C$/;
+
+/** The model codes (ICC / NFPA 70) state codes are built on. */
+const MODEL_CODES = new Set(["IRC", "IBC", "IFC", "NEC", "IECC", "IPC", "IMC", "IEBC", "IFGC", "IPMC", "ISPSC"]);
+
+/**
+ * STATE CODES MAP TO THEIR BASE MODEL CODE. A state code's edition is ITS OWN (the 2023 ORSC is
+ * built on the 2021 IRC; the 2022 Oregon Fire Code on the 2021 IFC), so a state code is never
+ * compared with a model code by year. The map only says which model code a printed "(NEC 2020)"
+ * — or a profile's own "NEC 2023" entry — is the basis OF. Static engine data, not per-AHJ.
+ */
+export const STATE_CODE_BASE: Readonly<Record<string, string>> = {
+  ORSC: "IRC", OSSC: "IBC", OESC: "NEC", OFC: "IFC",
+  CRC: "IRC", CBC: "IBC", CEC: "NEC", CFC: "IFC",
+  "FBC-R": "IRC",
+};
+
+/** One spelling per code: "FBC Residential"/"FBCR" -> FBC-R, "NFPA 70" -> NEC, "I.R.C." -> IRC. */
+export function normCodeToken(code: string): string {
+  const c = String(code || "").toUpperCase().replace(/[.\s]/g, "");
+  if (/^FBC-?R(?:ESIDENTIAL)?$/.test(c)) return "FBC-R";
+  if (c === "NFPA70") return "NEC";
+  return c;
+}
+
+/** The model code a code token is built on: itself for a model code, the map for a state code. */
+export function baseModelCode(code: string): string | undefined {
+  const c = normCodeToken(code);
+  return MODEL_CODES.has(c) ? c : STATE_CODE_BASE[c];
+}
+
+function isCodeToken(token: string): boolean {
+  const c = normCodeToken(token);
+  return CODE_ABBR.test(c) || MODEL_CODES.has(c) || c in STATE_CODE_BASE;
+}
+
+// A model code's printed name ends a state-amended title: "2021 OREGON AMENDED INTERNATIONAL
+// RESIDENTIAL CODE" is the IRC, not a code named "OAIRC".
+const MODEL_CODE_NAMES: Array<[RegExp, string]> = [
+  [/INTERNATIONAL RESIDENTIAL CODE$/, "IRC"],
+  [/INTERNATIONAL BUILDING CODE$/, "IBC"],
+  [/INTERNATIONAL FIRE CODE$/, "IFC"],
+  [/NATIONAL ELECTRIC(?:AL)? CODE$/, "NEC"],
+  [/INTERNATIONAL ENERGY CONSERVATION CODE$/, "IECC"],
+  [/INTERNATIONAL EXISTING BUILDING CODE$/, "IEBC"],
+];
 
 function acronym(name: string): string {
   return name
@@ -369,25 +414,104 @@ function acronym(name: string): string {
 
 type BasisItem = { at: number; end: number; entry: Omit<StatedCodeBasisEntry, "source" | "excerpt"> };
 
+const YEAR = "(?:19|20)\\d{2}";
+/** A parenthetical naming the base model code, either order: "(NEC 2020)", "(2023 NEC)",
+ *  "(based on the 2021 IRC)". */
+function parenBase(paren: string): { baseCode: string; baseEdition: string } | null {
+  const p = paren.trim();
+  let m = p.match(new RegExp(`^([A-Z]{2,6})\\s*[-:]?\\s*(${YEAR})(?:\\s+edition)?$`, "i"));
+  if (m && isCodeToken(m[1])) return { baseCode: normCodeToken(m[1]), baseEdition: m[2] };
+  m = p.match(new RegExp(`^(?:based\\s+on\\s+(?:the\\s+)?)?(${YEAR})\\s+([A-Z]{2,6})$`, "i"));
+  if (m && isCodeToken(m[2])) return { baseCode: normCodeToken(m[2]), baseEdition: m[1] };
+  return null;
+}
+
+function namedCode(name: string, paren: string, tail: string): string {
+  const parenAbbr = /^[A-Z]{2,6}(?:-[A-Z]{1,11})?$/.test(paren) && isCodeToken(paren) ? normCodeToken(paren) : "";
+  if (parenAbbr) return parenAbbr;
+  const model = MODEL_CODE_NAMES.find(([re]) => re.test(name));
+  if (model) return model[1];
+  const code = acronym(name);
+  // "FLORIDA BUILDING CODE, RESIDENTIAL" is the residential volume, not the building code.
+  if (/^\s*[,\-–]?\s*RESIDENTIAL\b/i.test(tail)) return normCodeToken(`${code}-R`);
+  // "CALIFORNIA ENERGY CODE" shares CEC's initials with the California ELECTRICAL Code; it is
+  // not an NEC-based code, so it must not borrow CEC's base.
+  if (/\bENERGY\b/.test(name) && baseModelCode(code) === "NEC") return `${code}-ENERGY`;
+  return code;
+}
+
 // "2023 OREGON ELECTRICAL SPECIALTY CODE (NEC 2020)", "2022 OREGON STRUCTURAL SPECIALTY CODE
 // (OSSC)", "2021 International Residential Code". Case-sensitive on the capitals: every word
 // of a code's printed name is capitalised, and "in 2021 the electrical code was…" is prose.
 const NAMED_CODE = /\b((?:19|20)\d{2})\s+((?:[A-Z][A-Za-z.'-]*\s+){0,6}?(?:CODE|Code))\b(?:\s*\(\s*([^)]{1,40}?)\s*\))?/g;
+// Name first, then the edition: "Oregon Structural Specialty Code, 2025 Edition (2024 IBC)",
+// "International Residential Code, 2021 Edition".
+const NAMED_CODE_EDITION = /\b((?:[A-Z][A-Za-z.'-]*\s+){1,6}?(?:CODE|Code)),?\s+((?:19|20)\d{2})\s+(?:EDITION|Edition)\b(?:\s*\(\s*([^)]{1,40}?)\s*\))?/g;
 
 function namedItems(part: string): BasisItem[] {
   const items: BasisItem[] = [];
-  const re = new RegExp(NAMED_CODE.source, "g");
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(part))) {
-    const name = m[2].replace(/\s+/g, " ").trim().toUpperCase();
-    const paren = (m[3] || "").trim();
-    const parenBase = paren.match(/^([A-Z]{2,6})\s*[-:]?\s*((?:19|20)\d{2})$/);
-    const parenAbbr = !parenBase && /^[A-Z]{2,6}$/.test(paren) ? paren : "";
-    const code = parenAbbr || acronym(name);
+  const push = (at: number, end: number, rawName: string, edition: string, rawParen: string | undefined): void => {
+    const name = rawName.replace(/\s+/g, " ").trim().toUpperCase();
+    const paren = (rawParen || "").trim();
+    const base = parenBase(paren);
+    const code = namedCode(name, base ? "" : paren, part.slice(end, end + 20));
     // "NEC: 2020 PER CODE: NEC 690.54" (a placard citation) is not a code named "PC": a
     // printed code name never opens with a preposition, and needs two initials besides CODE.
-    if (NAME_STOPWORDS.has(name.split(" ")[0]) || code.length < 2) continue;
-    items.push({ at: m.index, end: m.index + m[0].length, entry: { code, edition: m[1], name, ...(parenBase ? { baseCode: parenBase[1], baseEdition: parenBase[2] } : {}) } });
+    if (NAME_STOPWORDS.has(name.split(" ")[0]) || code.length < 2) return;
+    if (items.some((i) => at < i.end && end > i.at)) return;
+    items.push({ at, end, entry: { code, edition, name, ...(base ?? {}) } });
+  };
+  let m: RegExpExecArray | null;
+  const yearFirst = new RegExp(NAMED_CODE.source, "g");
+  while ((m = yearFirst.exec(part))) push(m.index, m.index + m[0].length, m[2], m[1], m[3]);
+  const nameFirst = new RegExp(NAMED_CODE_EDITION.source, "g");
+  while ((m = nameFirst.exec(part))) push(m.index, m.index + m[0].length, m[1], m[2], m[3]);
+  return items;
+}
+
+type BasisToken = { kind: "year" | "code"; at: number; end: number; value: string };
+
+/**
+ * Bare abbreviations in a code-basis block, READ IN ORDER and PAIRED ONCE: a code and a year
+ * side by side (either order) form one entry and are consumed, so one year can never serve two
+ * codes. "IRC 2021 NEC 2023 IFC 2021" is exactly those three pairs; "2021 IBC 3) 2018 IRC" is
+ * two. A permit-number shape ("BLDC 2024-00012") is not a code and not a year.
+ */
+function abbreviationItems(block: string, taken: Array<[number, number]>): BasisItem[] {
+  const free = (a: number, b: number): boolean => !taken.some(([x, y]) => a < y && b > x);
+  const tokens: BasisToken[] = [];
+  // Case-sensitive: codes are printed as capitals, and a lower-case word is never one.
+  const re = new RegExp(`\\b(${YEAR})\\b(?!\\s*-\\s*\\d)|\\b([A-Z]{2,6}(?:-R\\b)?)\\b`, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(block))) {
+    const at = m.index;
+    const end = at + m[0].length;
+    if (!free(at, end)) continue;
+    if (m[1]) {
+      // "2024-00012" is excluded by the lookahead; so is the tail of "00012-2024".
+      if (/\d\s*-\s*$/.test(block.slice(Math.max(0, at - 3), at))) continue;
+      tokens.push({ kind: "year", at, end, value: m[1] });
+    } else if (isCodeToken(m[2])) {
+      // A permit-number prefix: "BLDC 2024-00012", "ELEC# 2024-0031", "BLD 20240012".
+      if (/^\s*[-#:]?\s*(?:(?:19|20)\d{2}\s*-\s*\d+|\d{5,})/.test(block.slice(end))) continue;
+      tokens.push({ kind: "code", at, end, value: m[2] });
+    }
+  }
+  const items: BasisItem[] = [];
+  for (let i = 0; i + 1 < tokens.length;) {
+    const a = tokens[i];
+    const b = tokens[i + 1];
+    if (a.kind === b.kind || !/^\s*[-:]?\s*$/.test(block.slice(a.end, b.at))) { i++; continue; }
+    const code = a.kind === "code" ? a : b;
+    const year = a.kind === "year" ? a : b;
+    let end = b.end;
+    const paren = block.slice(end).match(/^\s*\(\s*([^)]{1,40}?)\s*\)/);
+    const base = paren ? parenBase(paren[1]) : null;
+    if (base && paren) end += paren[0].length;
+    items.push({ at: a.at, end, entry: { code: normCodeToken(code.value), edition: year.value, ...(base ?? {}) } });
+    i += 2;
+    // The tokens inside a consumed "(NEC 2020)" belong to this entry.
+    while (i < tokens.length && tokens[i].at < end) i++;
   }
   return items;
 }
@@ -409,25 +533,7 @@ function extractCodeBasis(text: string, source: string, out: StatedCodeBasisEntr
     const blockStart = h.index + h[0].length;
     const block = text.slice(blockStart, blockStart + 520);
     const items: BasisItem[] = namedItems(block);
-    const taken: Array<[number, number]> = items.map((i) => [i.at, i.end]);
-    const free = (a: number, b: number): boolean => !taken.some(([x, y]) => a < y && b > x);
-    let m: RegExpExecArray | null;
-    // Case-sensitive: codes are printed as capitals, and a lower-case word is never one.
-    const abbrPatterns: Array<[RegExp, number, number]> = [
-      [/\b((?:19|20)\d{2})\s+([A-Z]{2,6})\b/g, 2, 1],
-      [/\b([A-Z]{2,6})\s*[-:]?\s*((?:19|20)\d{2})\b/g, 1, 2],
-    ];
-    for (const [re, codeIdx, yearIdx] of abbrPatterns) {
-      while ((m = re.exec(block))) {
-        const code = m[codeIdx];
-        if (!CODE_ABBR.test(code) || !free(m.index, m.index + m[0].length)) continue;
-        let end = m.index + m[0].length;
-        const base = block.slice(end).match(/^\s*\(\s*([A-Z]{2,6})\s*[-:]?\s*((?:19|20)\d{2})\s*\)/);
-        if (base) end += base[0].length;
-        items.push({ at: m.index, end, entry: { code, edition: m[yearIdx], ...(base ? { baseCode: base[1], baseEdition: base[2] } : {}) } });
-        taken.push([m.index, end]);
-      }
-    }
+    items.push(...abbreviationItems(block, items.map((i) => [i.at, i.end])));
     items.sort((a, b) => a.at - b.at);
     // A block is contiguous: once the entries stop, whatever follows is another note.
     let lastEnd = 0;
@@ -1028,21 +1134,62 @@ export function evaluateDesignCriteriaFindings(
 
   // (d) CODE BASIS — the plan's printed editions vs what the profile says is adopted. A
   // warning at most: most profiles are seeded, and either side may be the stale one.
+  //
+  // LIKE WITH LIKE. A plan entry is compared with the profile entry of the SAME named code
+  // (state code to state code: ORSC with ORSC). Base model codes are compared only when a base
+  // is stated on BOTH sides — the plan's "(NEC 2020)" against the profile's own NEC entry or a
+  // base its entry's title states ("based on the 2021 IRC"). A state code and a model code are
+  // never compared by year: the 2022 Oregon Fire Code IS the right code for the 2021 IFC.
   const adopted = ctx.profile?.adoptedCodes?.length ? ctx.adoptedCodes : [];
   if (adopted.length && stated.codeBasis.length) {
+    const profileEntries = adopted.map((a) => {
+      const code = normCodeToken(a.code);
+      const said = `${a.title ?? ""} ${a.notes ?? ""}`;
+      const m = said.match(/\bbased\s+on\s+(?:the\s+)?((?:19|20)\d{2})\s+([A-Z]{2,6})\b/i)
+        ?? said.match(/\(\s*([A-Z]{2,6})\s*[-:]?\s*((?:19|20)\d{2})\s*\)/);
+      let base: { code: string; edition: string } | null = null;
+      if (m) {
+        const [bc, be] = /^\d/.test(m[1]) ? [m[2], m[1]] : [m[1], m[2]];
+        // Only a base consistent with the map is a base ("(OSSC)" in a title is not one).
+        if (baseModelCode(code) === normCodeToken(bc) && !MODEL_CODES.has(code)) base = { code: normCodeToken(bc), edition: be };
+      }
+      return { code, edition: String(a.edition).trim(), label: `${a.code} ${a.edition}`, base };
+    });
     const lines: string[] = [];
     const seen = new Set<string>();
-    const check = (code: string, edition: string, how: string, source: string): void => {
-      const same = adopted.filter((a) => a.code.trim().toUpperCase() === code.toUpperCase());
-      if (!same.length || same.some((a) => String(a.edition).trim() === edition)) return;
-      const key = `${code}|${edition}`;
+    const report = (key: string, line: string): void => {
       if (seen.has(key)) return;
       seen.add(key);
-      lines.push(`${how} ${code} ${edition} (${source}) — profile records ${same.map((a) => `${a.code} ${a.edition}`).join(" / ")}`);
+      lines.push(line);
     };
     for (const b of stated.codeBasis) {
-      check(b.code, b.edition, "plan states", b.source);
-      if (b.baseCode && b.baseEdition) check(b.baseCode, b.baseEdition, `plan states ${b.code} ${b.edition} based on`, b.source);
+      const code = normCodeToken(b.code);
+      const same = profileEntries.filter((a) => a.code === code);
+      if (same.length && !same.some((a) => a.edition === b.edition)) {
+        report(`${code}|${b.edition}`, `plan states ${b.code} ${b.edition} (${b.source}) — profile records ${same.map((a) => a.label).join(" / ")}`);
+      }
+      // The plan's printed base, compared with a base the profile states for that model code.
+      if (b.baseCode && b.baseEdition) {
+        const model = normCodeToken(b.baseCode);
+        const own = baseModelCode(code);
+        if (!own || own === model) {
+          const recorded = [
+            ...profileEntries.filter((a) => a.code === model).map((a) => ({ edition: a.edition, label: a.label })),
+            ...profileEntries.filter((a) => a.base?.code === model).map((a) => ({ edition: a.base!.edition, label: `${a.label} (based on ${model} ${a.base!.edition})` })),
+          ];
+          if (recorded.length && !recorded.some((r) => r.edition === b.baseEdition)) {
+            report(`${code}|${b.edition}|${model}|${b.baseEdition}`, `plan states ${b.code} ${b.edition} based on ${model} ${b.baseEdition} (${b.source}) — profile records ${recorded.map((r) => r.label).join(" / ")}`);
+          }
+        }
+      }
+      // A plan naming the MODEL code where the profile names only the state code built on it:
+      // compared only with a base the profile states ("ORSC 2023, based on the 2021 IRC").
+      if (!same.length && MODEL_CODES.has(code)) {
+        const via = profileEntries.filter((a) => a.base?.code === code);
+        if (via.length && !via.some((a) => a.base!.edition === b.edition)) {
+          report(`${code}|${b.edition}`, `plan states ${b.code} ${b.edition} (${b.source}) — profile records ${via.map((a) => `${a.label} (based on ${code} ${a.base!.edition})`).join(" / ")}`);
+        }
+      }
     }
     if (lines.length) {
       out.push({
@@ -1055,7 +1202,7 @@ export function evaluateDesignCriteriaFindings(
         designTeamAction: "Confirm the adopted editions with the jurisdiction; correct the plan's GOVERNING CODES block, or correct the jurisdiction's code profile if the plan is right.",
         evidenceNeeded: ["Governing-codes block on the cover sheet", ...lines].slice(0, 6),
         codeReferences: [...new Set(stated.codeBasis.map((b) => b.code))]
-          .filter((code) => adopted.some((a) => a.code.toUpperCase() === code.toUpperCase()))
+          .filter((code) => profileEntries.some((a) => a.code === normCodeToken(code)))
           .slice(0, 4)
           .map((code) => ctx.citationFor(code, "Adopted edition", `${code} as adopted by ${who}`)),
         installerCallout: true,
