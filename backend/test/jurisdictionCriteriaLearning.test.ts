@@ -257,6 +257,31 @@ await check("MUST PASS (r3r-close): a header asking for DESIGN CRITERIA keeps it
   assert.deepEqual(asMap(extractAhjRequiredCriteria(TEXT_B)), { specialWindRegion: true, windSpeedMph: 120, windExposure: "D" });
 });
 
+// r3f MF2: after the item-number fold, a numbered SIBLING comment ("2." after a header that was itself
+// "1. …:") read as an item of comment 1's header, so the header's cue carried to it — and on a STATUS
+// reading the package's own 110 mph / Exposure C became the jurisdiction's proposals. A line whose
+// marker is the header's own family at the same level is the next comment: it closes the header.
+await check("MUST EXCLUDE (r3f): a numbered sibling comment does not inherit the numbered header's cue (status reading)", () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["Corrections:\n1. The following design criteria are required:\n   a. Ground snow load 36 psf\n2. Wind speed 110 mph per plans.", { groundSnowLoadPsf: 36 }],
+    ["1. Minimum design loads shall be as follows:\n- Ground snow load 36 psf\n2. Wind exposure C noted on PV-1.", { groundSnowLoadPsf: 36 }],
+    ["1) The following design criteria are required:\n   a) Ground snow load 36 psf\n2) Wind speed 110 mph per plans.", { groundSnowLoadPsf: 36 }],
+  ];
+  for (const [text, want] of cases) assert.deepEqual(asMap(extractAhjRequiredCriteria(text, { statusReading: true })), want, JSON.stringify(text));
+});
+await check("MUST PASS (r3f): a sibling closes only its own header — an unnumbered header's numbered lines stay its items; later comments still read as pasted", () => {
+  for (const statusReading of [false, true]) {
+    assert.deepEqual(asMap(extractAhjRequiredCriteria("Provide the following:\n1. Ground snow load 36 psf\n2. Design wind speed 120 mph", { statusReading })), { groundSnowLoadPsf: 36, windSpeedMph: 120 }, `statusReading=${statusReading}`);
+  }
+  // Comment 1 asks for a DOCUMENT (its item is the package's 16); comment 2 states the requirement.
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("1. Provide calculations for the following:\n- Ground snow load 16 psf\n2. Revise the design criteria to the following:\n- Ground snow load 36 psf")), { groundSnowLoadPsf: 36 });
+  assert.deepEqual(asMap(extractAhjRequiredCriteria("1. Provide a stamped engineer letter for the following:\n   a. Attachment spacing 48 in\n2. Ground snow load: 36 psf")), { groundSnowLoadPsf: 36 });
+  // A bullet header's same-level bullets are still its items: the document header still cuts them off.
+  for (const statusReading of [false, true]) {
+    assert.deepEqual(extractAhjRequiredCriteria("- Provide calculations for the following:\n- Ground snow load 16 psf\n- Wind speed 110 mph", { statusReading }), [], `statusReading=${statusReading}`);
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // 1b. INTAKE -> PROPOSAL -> APPLY, through the real write paths.
 // ─────────────────────────────────────────────────────────────────────────────────────────

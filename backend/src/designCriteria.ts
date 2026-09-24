@@ -1050,6 +1050,19 @@ interface AhjSentence {
  *  splits off at its period. It is the next piece's marker, never a sentence of its own. */
 const SOLE_ITEM_MARKER = /^\(?(?:\d{1,3}|[a-z])[.)]$/i;
 
+/** A line's list marker: "1." "2)" "(3)" (numeric), "a." "b)" (letter), or a bullet mark. */
+const LINE_MARKER = /^(\s*)(?:([-–•*])|(\()?(?:(\d{1,3})|([a-z]))([.)]))\s/i;
+
+/** The marker's FAMILY and LEVEL: "1." and "2." are one family; "a.", "(1)", "1)" and "-" are others. */
+function lineMarkerOf(line: string): { family: string; indent: number } | null {
+  const m = LINE_MARKER.exec(line);
+  if (!m) return null;
+  const indent = m[1].replace(/\t/g, "    ").length;
+  if (m[2]) return { family: `bullet${m[2]}`, indent };
+  const kind = m[4] ? "num" : m[5] === m[5]!.toLowerCase() ? "lower" : "upper";
+  return { family: `${m[3] ? "(" : ""}${kind}${m[6]}`, indent };
+}
+
 function ahjSentences(text: string): AhjSentence[] {
   const out: AhjSentence[] = [];
   let prevEndsColon = false;
@@ -1058,8 +1071,20 @@ function ahjSentences(text: string): AhjSentence[] {
   // calculations for the following:\nGround snow load 16 psf\nWind speed 110 mph" — both lines hang
   // under the header, not only the first.
   let inList = false;
+  // THE HEADER'S OWN MARKER. A header that is itself a numbered comment ("1. The following design
+  // criteria are required:") heads its lettered / bulleted items, but a line with the SAME marker
+  // family at the same level or shallower ("2. Wind speed 110 mph per plans.") is the next COMMENT,
+  // not an item: it closes the header, so the header's cue does not carry to it (on a status reading
+  // the package's own values would become the jurisdiction's proposals). An unnumbered header's
+  // numbered lines stay its items ("Provide the following:\n1. …\n2. …").
+  let headerMarker: { family: string; indent: number } | null = null;
   for (const line of String(text || "").replace(/\r/g, "").split("\n")) {
-    if (!line.trim()) { inList = false; continue; }
+    if (!line.trim()) { inList = false; headerMarker = null; continue; }
+    const marker = lineMarkerOf(line);
+    // (An ORDERED marker only: a bullet header's same-level bullets are how a flat list prints its items.)
+    const sibling = !!(inList && headerMarker && marker && !marker.family.startsWith("bullet")
+      && marker.family === headerMarker.family && marker.indent <= headerMarker.indent);
+    if (sibling) { inList = false; prevEndsColon = false; headerMarker = null; }
     // A new sentence starts after . ; ! ? + space when the next token opens a clause; a code
     // section ("R324.4.1") has no space after its dots, so it is never split. An item number split
     // off on its own ("1." of "1. Ground snow load 16 psf") belongs to the item after it: dropped,
@@ -1070,12 +1095,16 @@ function ahjSentences(text: string): AhjSentence[] {
       const flatPiece = flat(piece);
       if (!flatPiece) return;
       const marked = /^[-–•*]\s*/.test(flatPiece);
-      if (i > 0 && !marked && !prevEndsColon) inList = false;
-      const bullet = marked || prevEndsColon || (inList && i === 0);
+      if (i > 0 && !marked && !prevEndsColon) { inList = false; headerMarker = null; }
+      const bullet = !(sibling && i === 0) && (marked || prevEndsColon || (inList && i === 0));
       const opensList = /:\s*$/.test(flatPiece);
       out.push({ text: flatPiece.replace(/^[-–•*]\s*/, ""), bullet, opensList, lineStart: i === 0 });
       prevEndsColon = opensList;
-      if (prevEndsColon) inList = true;
+      if (prevEndsColon) {
+        inList = true;
+        // Only a header that opens its line owns the line's marker.
+        headerMarker = i === 0 ? marker : null;
+      }
     });
   }
   return out;
