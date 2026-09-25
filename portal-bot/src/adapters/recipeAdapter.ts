@@ -1135,7 +1135,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           // put the one-page-fewer replays past 200 s, on a page that had already been reached.
           {
             const here = await this.pageSafetyContext();
-            if (here.reviewPage === true && false) {
+            if (here.reviewPage === true) {
               this.driftWarnings.push(`"${String(step.note ?? step.action).slice(0, 44)}" is not on this page, and this page is the portal's REVIEW page — the recipe expects a page this portal does not have; not retried`);
               break;
             }
