@@ -20,9 +20,11 @@
 //      - QUIET-FROM-START: an autopostback deferred by DEFER_MS (> one evaluate round-trip, <
 //        the 300ms quiet window) on a page that has been idle a while. Measured only from the
 //        last activity, the page already looks quiet and the wait returns before the postback.
-//      - THE "POSTBACK BEGAN" MARK: a FULL-PAGE postback (__doPostBack -> form.submit(), no
-//        ScriptManager). No PageRequestManager, no XHR, no DOM change while the server takes
-//        POSTBACK_MS: only the mark says the page is busy until the new document lands.
+//      - THE "POSTBACK BEGAN" MARK: __doPostBack is called, but the page submits the form only
+//        after a "please wait" delay longer than the quiet window (no ScriptManager). No PRM, no
+//        XHR, no DOM change and no pending navigation in that stretch: only the mark says busy.
+//        (A plain full-page postback does NOT need the mark under Playwright — evaluate blocks
+//        while a navigation is pending — so that case is kept as a waiter check, not a kill test.)
 //
 // POSTBACK_MS (700) is longer than the quiet window (300), so a quiet window alone cannot hold a
 // wait through a whole round trip. In check 1 BOTH the PageRequestManager hook and the "postback
@@ -133,6 +135,15 @@ const FULL_POSTBACK_PAGE = `<!doctype html><html><body style="font:14px sans-ser
   var theForm = document.forms['aspnetForm'];
   function __doPostBack(target, arg) { theForm.__EVENTTARGET.value = target; theForm.submit(); }
 </script></body></html>`;
+// The same, but the page's own __doPostBack shows a "please wait" state and submits the form only
+// after SUBMIT_DEFER_MS — longer than the quiet window (loading panels do this). Between the call
+// and the submit NOTHING is in flight and nothing navigates: only the "postback began" mark,
+// set when __doPostBack is called, says the page is busy.
+const SUBMIT_DEFER_MS = 450;
+const FULL_DEFERRED_PAGE = FULL_POSTBACK_PAGE.replace(
+  "theForm.submit(); }",
+  `setTimeout(function () { theForm.submit(); }, ${SUBMIT_DEFER_MS}); }`,
+);
 const FULL_RESULT_PAGE = `<!doctype html><html><body><p id="landed">The postback's new document.</p></body></html>`;
 
 const server = http.createServer((q, r) => {
@@ -142,6 +153,7 @@ const server = http.createServer((q, r) => {
     setTimeout(() => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(FULL_RESULT_PAGE); }, POSTBACK_MS);
     return;
   }
+  if (url.startsWith("/full-deferred")) { r.writeHead(200, { "Content-Type": "text/html" }); r.end(FULL_DEFERRED_PAGE); return; }
   if (url.startsWith("/full")) { r.writeHead(200, { "Content-Type": "text/html" }); r.end(FULL_POSTBACK_PAGE); return; }
   if (url.startsWith("/counties")) {
     setTimeout(() => { r.writeHead(200, { "Content-Type": "application/json" }); r.end(JSON.stringify(["Deschutes", "Crook"])); }, 600);
@@ -262,15 +274,28 @@ try {
     await page.context().close();
   }
   {
-    // THE "POSTBACK BEGAN" MARK. A full-page postback: no PageRequestManager, no XHR, no DOM
-    // mutation for POSTBACK_MS — only the mark set by __doPostBack/form.submit() says "busy". The
-    // wait must return on the NEW document, not on the old one after a quiet 300ms.
+    // A full-page postback (no Sys, form.submit()): the wait returns on the NEW document. NOTE —
+    // measured, not assumed: this passes with the "postback began" mark removed too, because
+    // Playwright's page.evaluate BLOCKS while a navigation is pending and then throws (read as a
+    // navigation). So it pins the waiter's behaviour, not the mark; the next check pins the mark.
     const page = await fresh("/full");
     await page.selectOption("#county", "Deschutes");
     const res = await waitForSettled(page);
     const landed = await page.locator("#landed").count().catch(() => 0);
     check("a full-page postback (no Sys, form.submit()) is waited out until its new document lands",
       res.settled && landed === 1 && res.waitedMs >= POSTBACK_MS - 50, `settle=${JSON.stringify(res)} landed=${landed}`);
+    await page.context().close();
+  }
+  {
+    // THE "POSTBACK BEGAN" MARK. __doPostBack is called at once, but the page submits only after
+    // SUBMIT_DEFER_MS (> the quiet window): no PRM, no XHR, no mutation, no pending navigation in
+    // that stretch. Without the mark the wait returns on the OLD document before the submit.
+    const page = await fresh("/full-deferred");
+    await page.selectOption("#county", "Deschutes");
+    const res = await waitForSettled(page);
+    const landed = await page.locator("#landed").count().catch(() => 0);
+    check(`a postback whose page defers the submit ${SUBMIT_DEFER_MS}ms is waited for from the __doPostBack call (the "postback began" mark)`,
+      res.settled && landed === 1 && res.waitedMs >= SUBMIT_DEFER_MS + POSTBACK_MS - 50, `settle=${JSON.stringify(res)} landed=${landed}`);
     await page.context().close();
   }
 
