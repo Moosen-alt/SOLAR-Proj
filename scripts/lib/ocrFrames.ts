@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PII_MATCHER } from "./piiMask";
 
 const OCR_PS1 = String.raw`
 $ErrorActionPreference = "Stop"
@@ -114,26 +115,27 @@ export function sampleVideoFrames(video: string, outDir: string, fps = 2): strin
   return fs.readdirSync(outDir).filter((f) => /^frame-\d+\.png$/.test(f)).sort().map((f) => path.join(outDir, f));
 }
 
-const alnum = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-
 /**
- * Which of `values` the OCR text carries. Matching is on the alphanumerics alone (OCR drops
- * and re-spaces punctuation; a spaced account number is still the account number), and a
- * purely alphabetic value must sit at word boundaries in the raw text — the same rule the
- * masker applies, so the two instruments agree on what counts.
+ * Which of `values` the OCR text carries. Matching goes through THE matcher the masker uses
+ * (piiMask.ts piiTextMatcher: letters and digits only, Unicode-folded — OCR drops and
+ * re-spaces punctuation, a spaced account number is still the account number, "Jose" is
+ * "José"; a purely alphabetic value sits at word boundaries), so the two instruments cannot
+ * disagree on what counts. NOTE the instrument's own blind spot: the Windows OCR engine reads
+ * in the user's profile language; a value in another script (Cyrillic, CJK) is not readable
+ * by an en-US engine — see ocrBlindValues, and use geometry (the in-page audit) for those.
  */
 export function piiHitsInText(text: string, values: string[]): string[] {
-  const raw = text.toLowerCase();
-  const norm = alnum(text);
   const hits: string[] = [];
   for (const v of values) {
-    const n = alnum(v);
-    if (n.length < 3 || !norm.includes(n)) continue;
-    if (/^[a-z]+$/.test(n)) {
-      const re = new RegExp(`(^|[^a-z])${n}([^a-z]|$)`, "i");
-      if (!re.test(raw)) continue;
-    }
-    hits.push(v);
+    const p = PII_MATCHER.prepare(v);
+    if (p.len < 3) continue;
+    if (PII_MATCHER.ranges(text, [p]).length) hits.push(v);
   }
   return hits;
+}
+
+/** The values an OCR engine reading a LATIN-script language cannot be expected to read: any
+ *  with a letter outside the Latin script. A "0 hits" over these is not evidence. */
+export function ocrBlindValues(values: string[]): string[] {
+  return values.filter((v) => /[^\p{Script=Latin}\p{N}\p{P}\p{S}\p{Z}\p{M}\p{Cc}]/u.test(v));
 }

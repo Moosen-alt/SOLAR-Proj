@@ -14,11 +14,17 @@
 //      the state code, a bare street number, stop words (Ave, Energy, LLC), an equipment model.
 //      And the hit counter, which the smoke's verdict rests on, reads a spaced account number
 //      and an upper-cased last name, and does not read a name inside a longer word.
+//   3. ONE MATCHER, UNICODE-AWARE (piiTextMatcher: NFKD, marks stripped, \p{L}\p{N}, the
+//      page and Node built from the same source). MUST INCLUDE: a Cyrillic name and its
+//      tokens, a CJK name, 'Zoë', 'José', 'Nguyễn'; 'Jose' in text matches 'José'; '山田太郎'
+//      inside '山田太郎様'. MUST EXCLUDE: 'Иван' inside 'Иванов', 'Desmond' inside 'Desmondia'
+//      (a cased-letter boundary). And ocrBlindValues names the values a Latin OCR engine
+//      cannot read, so "0 hits" on them is never reported as proof.
 //
 //   npx tsx backend/test/demoRealRunGuard.test.ts
 import { realRunRefusals, recipeTargetHosts } from "../../scripts/lib/realRunGuard";
-import { piiMaskValues, piiMaskShapesFor } from "../../scripts/lib/piiMask";
-import { piiHitsInText } from "../../scripts/lib/ocrFrames";
+import { PII_MATCHER, piiMaskValues, piiMaskShapesFor } from "../../scripts/lib/piiMask";
+import { ocrBlindValues, piiHitsInText } from "../../scripts/lib/ocrFrames";
 
 let failures = 0;
 let checks = 0;
@@ -80,6 +86,34 @@ console.log("\n2. piiMaskValues and piiHitsInText");
   check("MUST-EXCLUDE: text with no values has no hits", piiHitsInText("Customer Information First Name Last Name Email Phone", values).length === 0, piiHitsInText("Customer Information First Name Last Name Email Phone", values).join("|"));
   check("shapes: PowerClerk gets its own list, unknown platforms the generic one, and both cover a dashboard table",
     piiMaskShapesFor("powerclerk") !== piiMaskShapesFor("unknown") && [piiMaskShapesFor("powerclerk"), piiMaskShapesFor("")].every((s) => s.some((r) => new RegExp(r.url, "i").test("https://x/Dashboard") && r.selectors.includes("table"))));
+}
+
+console.log("\n3. Unicode: ONE matcher for the value list, the page and the OCR counter");
+{
+  const values = piiMaskValues({
+    project: { homeownerName: "Zoë Müller-Ålesund", accountNumber: "8802 4680 13", parserSnapshot: { electricalSupervisorName: "Иван Петров", installerContactName: "山田太郎", ubAccountHolderName: "José Ñañez", homeownerPhone: "(541) 555-0163" } },
+    installer: { company: "Ñu Solar Ltd" },
+    extra: ["Nguyễn Văn An", "Desmond Yarrowby"],
+  });
+  const has = (v: string) => values.includes(v);
+  check("MUST-INCLUDE: a Cyrillic name and its tokens", has("Иван Петров") && has("Иван") && has("Петров"));
+  check("MUST-INCLUDE: a CJK name; a 3-letter accented first name ('Zoë'); accented tokens (José, Ñañez, Nguyễn, Văn)", has("山田太郎") && has("Zoë") && has("José") && has("Ñañez") && has("Nguyễn") && has("Văn"));
+  check("MUST-INCLUDE: the whole accented company ('Ñu Solar Ltd') stays a value", has("Ñu Solar Ltd"));
+  check("MUST-EXCLUDE: a 2-letter accented token is not a value; 'Ltd' and 'Solar' are stop words", !has("Ñu") && !has("Ltd") && !has("Solar"));
+  const m = PII_MATCHER;
+  check("normalize: NFKD + marks stripped + \\p{L}\\p{N}, each kept char mapped to its ORIGINAL index",
+    m.normalize("Zoë-Ñu 12").norm === "zoenu12" && m.normalize("Zoë-Ñu 12").map.join() === "0,1,2,4,5,7,8" && m.normalize("山田太郎").norm === "山田太郎", JSON.stringify(m.normalize("Zoë-Ñu 12")));
+  check("ranges: a Cyrillic value is found in Cyrillic text; 'Jose' in the page matches the value 'José'; a spaced account matches",
+    m.ranges("Holder: Иван Петров.", [m.prepare("Иван Петров")]).join() === "8,19" && m.ranges("Jose Nanez", [m.prepare("José Ñañez")]).length === 1 && m.ranges("Acct 8802 4680 13", [m.prepare("8802468013")]).length === 1);
+  check("ranges MUST-EXCLUDE: 'Иван' inside 'Иванов' and 'Desmond' inside 'Desmondia' are not matches (cased-letter boundary)",
+    m.ranges("Иванов", [m.prepare("Иван")]).length === 0 && m.ranges("Desmondia Ltd", [m.prepare("Desmond")]).length === 0);
+  check("ranges: an uncased script has no word spaces — '山田太郎' inside '山田太郎様' IS a match", m.ranges("山田太郎様", [m.prepare("山田太郎")]).length === 1);
+  const hits = piiHitsInText("Contact: Иван Петров · Jose · ZOE MULLER-ALESUND · Иванов · Desmondia", values);
+  check("piiHitsInText: reads the Cyrillic name, the accent-stripped 'Jose' and 'ZOE MULLER-ALESUND' as hits", ["Иван Петров", "Иван", "Петров", "José", "Zoë Müller-Ålesund", "Zoë"].every((v) => hits.includes(v)), hits.join("|"));
+  check("piiHitsInText MUST-EXCLUDE: 'Иванов' is not 'Иван'; 'Desmondia' is not 'Desmond'", !piiHitsInText("Иванов", values).includes("Иван") && !piiHitsInText("Desmondia", values).includes("Desmond"));
+  const blind = ocrBlindValues(values);
+  check("ocrBlindValues: the Cyrillic and CJK values are OCR-blind (a Latin engine cannot read them); accented Latin values are not",
+    ["Иван Петров", "Иван", "Петров", "山田太郎"].every((v) => blind.includes(v)) && !blind.includes("José") && !blind.includes("Zoë Müller-Ålesund") && !blind.includes("8802 4680 13"), blind.join("|"));
 }
 
 console.log(`\n${checks - failures}/${checks} demoRealRunGuard check(s) passed.`);

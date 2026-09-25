@@ -14,17 +14,30 @@
 //            saw, the pages it rendered, whether review was walked) is byte-identical masked
 //            and unmasked; the review page's innerText is identical (the layer adds no text);
 //            and the masked run scores all-correct on the replica's own scoreboard.
-//   GEOMETRY — independently of OCR, every control and text range that carries a raw value
-//            sits under an overlay box at each step (a platform-independent check that runs
-//            even where no OCR engine exists).
+//   GEOMETRY — independently of OCR, every control and every CHARACTER of text that carries a
+//            raw value sits under an overlay box at each step (a platform-independent check
+//            that runs even where no OCR engine exists — and the only instrument for a value
+//            the OCR engine cannot read: en-US OCR reads "Иван" as Latin look-alikes and
+//            piiHitsInText then finds nothing, so "0 hits" there is blindness, not proof).
+//
+// Section 0b, THE CORNER PAGE (own 127.0.0.1 server, geometry only, ~5s): what the replica
+// never renders — a Cyrillic, a CJK and accented names (in text and in an input), a phone and
+// an account split across inline elements, a listbox <select size=4> whose option text carries
+// a value, a node appended AFTER load (boxed after ONE animation frame with no scan() call:
+// the MutationObserver, not the 250ms interval), and MUST-EXCLUDEs: a bare "4680" line, "Иван"
+// inside "Иванов", "Desmond" inside "Desmondia", a listbox with no value are NOT boxed.
+//   npx tsx scripts/demoMaskReplica.dom.smoke.ts --corner-only     (kill-test loop, seconds)
 //
 // Sections 1-4 drive the wizard with the primitives the replay engine uses (fill + Tab to
 // commit, selectOption, setInputFiles, a typed date dismissed with Escape, click Next), so the
 // masked/unmasked comparison is exact. Section 6 then runs THE RECORDER ITSELF —
 // demo-record-portal.ts --real-run --i-am-present --headed, the command the runbook gives —
-// against the replica from a scratch database seeded through the product's own writers, with
-// the real RecipeAdapter replaying a hand-written PowerClerk-shaped recipe to review, and OCRs
-// every frame of the video it kept. (A headed Chromium window opens for ~90s during it.)
+// against the replica from a scratch database seeded through the product's own writers (the
+// supervising electrician a CYRILLIC name, which OCR cannot read), with the real
+// RecipeAdapter replaying a hand-written PowerClerk-shaped recipe to review, OCRs every frame
+// of the video it kept, and reads the recorder's own review-stop mask audit (geometry,
+// in-page, independent of the matcher) — which must find rects carrying a value and none
+// outside a box. (A headed Chromium window opens for ~90s during it.)
 //
 // Also pinned (section 5): the recorder refuses, from its CLI and before any database is read,
 // a --real-run without --i-am-present, with PORTAL_ALLOW_FINAL_SUBMIT set, headless, or --no-mask.
@@ -33,6 +46,7 @@
 //   npx tsx scripts/run-dom-smokes.ts --only demoMaskReplica --concurrency 1
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright";
@@ -41,11 +55,12 @@ import { PROJECT_A, PROJECT_B, aOnlyLiterals } from "../portal-bot/src/replica/f
 import { startSyntheticReplica, type ReplicaState } from "../portal-bot/src/replica/syntheticServer";
 import { scoreRun } from "../portal-bot/src/replica/benchScore";
 import { isLoopbackHost } from "./demo-portal/network";
-import { PII_MASK_LAYER_ID, piiMaskInitScript, piiMaskShapesFor, piiMaskValues } from "./lib/piiMask";
-import { ffmpegAvailable, ocrFrames, ocrUnavailableReason, piiHitsInText, sampleVideoFrames } from "./lib/ocrFrames";
+import { PII_MASK_LAYER_ID, piiMaskInitScript, piiMaskShapesFor, piiMaskValues, type PiiMaskAudit } from "./lib/piiMask";
+import { ffmpegAvailable, ocrBlindValues, ocrFrames, ocrUnavailableReason, piiHitsInText, sampleVideoFrames } from "./lib/ocrFrames";
 import { realRunRefusals } from "./lib/realRunGuard";
 
 const SKIP_EXIT_CODE = 3;
+const CORNER_ONLY = process.argv.includes("--corner-only");
 let failures = 0;
 let checks = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -125,8 +140,11 @@ interface RunResult {
   boxesPerStep: Record<string, number>;
 }
 
-/** Independent of the masker: every control and text range that carries a RAW value must sit
- *  under an overlay box. Returns descriptors (element ids / "text") — never the values. */
+/** Independent of the masker: every control and every CHARACTER of text that carries a RAW
+ *  value (plain case-insensitive substring, per text node) must sit under an overlay box. A
+ *  listbox (size>1 / multiple) paints every option, so every option counts. Returns
+ *  descriptors (element ids / "text@tag#id") — never the values. Per-character rects, so a
+ *  bare accented edge character ("Jos|é", "|Ñ|u") shows up. */
 function uncoveredInPage(raw: string[], layerId: string): string[] {
   const layer = document.getElementById(layerId);
   const boxes = layer ? Array.from(layer.children).map((c) => c.getBoundingClientRect()) : [];
@@ -139,7 +157,12 @@ function uncoveredInPage(raw: string[], layerId: string): string[] {
   for (const el of Array.from(document.querySelectorAll("input, select, textarea"))) {
     const e = el as HTMLInputElement | HTMLSelectElement;
     if (e.type === "hidden" || e.type === "file" || e.type === "checkbox") continue;
-    const shown = e.tagName === "SELECT" ? ((e as HTMLSelectElement).selectedOptions[0]?.textContent || "") : e.value;
+    let shown = "";
+    if (e.tagName === "SELECT") {
+      const s = e as HTMLSelectElement;
+      const listbox = s.multiple || s.size > 1;
+      shown = (listbox ? Array.from(s.options) : Array.from(s.selectedOptions)).map((o) => o.textContent || "").join("\n");
+    } else shown = e.value;
     if (!raw.some((v) => shown.toLowerCase().includes(v.toLowerCase()))) continue;
     const r = e.getBoundingClientRect();
     if (onScreen(r) && !covered(r)) out.push(`field#${e.id || e.name}`);
@@ -149,17 +172,135 @@ function uncoveredInPage(raw: string[], layerId: string): string[] {
     const p = n.parentElement;
     if (!p || p.closest("script,style,option") || (layer && layer.contains(p))) continue;
     const text = n.nodeValue || "";
+    const lower = text.toLowerCase();
     for (const v of raw) {
-      let at = text.toLowerCase().indexOf(v.toLowerCase());
+      const lv = v.toLowerCase();
+      let at = lower.indexOf(lv);
       while (at >= 0) {
-        const range = document.createRange();
-        range.setStart(n, at); range.setEnd(n, at + v.length);
-        for (const r of Array.from(range.getClientRects())) if (onScreen(r) && !covered(r)) out.push(`text@${p.tagName.toLowerCase()}#${p.id || p.className || "?"}`);
-        at = text.toLowerCase().indexOf(v.toLowerCase(), at + 1);
+        for (let i = at; i < at + v.length; i++) {
+          if (!/[\p{L}\p{N}]/u.test(text[i])) continue; // a bare bracket or hyphen reveals nothing
+          const range = document.createRange();
+          range.setStart(n, i); range.setEnd(n, i + 1);
+          for (const r of Array.from(range.getClientRects())) {
+            if (!onScreen(r) || covered(r)) continue;
+            const d = `text@${p.tagName.toLowerCase()}#${p.id || p.className || "?"}`;
+            if (!out.includes(d)) out.push(d);
+          }
+        }
+        at = lower.indexOf(lv, at + 1);
       }
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log("\n0b. THE CORNER PAGE: Unicode names, split nodes, a listbox, a late node — geometry, no OCR");
+{
+  const V = {
+    cyrillic: "Иван Петров", cjk: "山田太郎", jose: "José Ñañez", zoe: "Zoë Müller-Ålesund", company: "Ñu Solar Ltd",
+    account: "8802 4680 13", phone: "(541) 555-0163", ascii: "Quimbyfield", desmond: "Desmond Yarrowby",
+  };
+  const values = piiMaskValues({
+    project: { homeownerName: V.zoe, accountNumber: V.account, parserSnapshot: { homeownerPhone: V.phone, ubAccountHolderName: V.jose, electricalSupervisorName: V.cyrillic, installerContactName: V.cjk } },
+    installer: { company: V.company },
+    extra: [V.ascii, V.desmond],
+  });
+  check("MUST-INCLUDE: Cyrillic, CJK and accented names are values, with their tokens (Иван Петров / Иван / Петров / 山田太郎 / Zoë / José / Ñañez)",
+    ["Иван Петров", "Иван", "Петров", "山田太郎", "Zoë", "José", "Ñañez", "Zoë Müller-Ålesund", "Ñu Solar Ltd"].every((v) => values.includes(v)), values.filter((v) => /[^\x00-\x7f]/.test(v)).join("|"));
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Corner</title>
+<style>body{font:16px Arial;margin:20px} .row{margin:8px 0}</style></head>
+<body><h1>Customer Information</h1>
+<div class="row" id="r-cyr">Account holder: ${esc(V.cyrillic)}</div>
+<div class="row" id="r-cjk">Contact: ${esc(V.cjk)}</div>
+<div class="row" id="r-cjk2">Contact (honorific): ${esc(V.cjk)}様</div>
+<div class="row" id="r-jose">Holder: ${esc(V.jose)}</div>
+<div class="row" id="r-zoe">Name: ${esc(V.zoe)}</div>
+<div class="row" id="r-nu">Company: ${esc(V.company)}</div>
+<div class="row" id="r-split-phone">Phone: (541) <span id="sp1">555-0163</span></div>
+<div class="row" id="r-split-acct">Account: 8802 <b id="sp2">4680</b> 13</div>
+<div class="row" id="r-ref">Ref: 4680</div>
+<div class="row" id="r-ivanov">Street: Иванов prospekt</div>
+<div class="row" id="r-desmondia">Firm: Desmondia Ltd</div>
+<div class="row"><label for="lb">Existing customers</label><br><select id="lb" size="4"><option value="">-- none --</option><option value="c1">Customer: ${esc(V.zoe)}</option><option value="c2">Customer: ${esc(V.ascii)} Holdings</option><option value="c3">Other</option></select>
+<select id="lb2" size="3"><option>Alpha</option><option>Beta</option><option>Gamma</option></select></div>
+<div class="row"><label for="cyr-in">Electrician</label> <input id="cyr-in" type="text" value="${esc(V.cyrillic)}"></div>
+</body></html>`;
+  const server = http.createServer((_req, res) => { res.setHeader("content-type", "text/html; charset=utf-8"); res.end(PAGE); });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  // Geometry RAW: the values, plus the split fragments (each lives in its own text node) and
+  // the MUST-EXCLUDE probes ("Иван", "Desmond" — found by raw substring inside the longer words).
+  const RAW = [V.cyrillic, V.cjk, V.jose, V.zoe, V.company, "555-0163", "4680", V.ascii, "Иван", "Desmond"];
+  const AUDIT_RAW = [V.cyrillic, V.cjk, V.jose, V.zoe, V.company, V.account, V.phone, V.ascii];
+  const browser = await chromium.launch();
+  try {
+    const ctx = await browser.newContext({ viewport: { width: 1000, height: 760 } });
+    await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || function (fn) { return fn; };" });
+    await ctx.addInitScript({ content: piiMaskInitScript({ values, shapes: piiMaskShapesFor("powerclerk"), extraSelectors: [] }) });
+    await ctx.addInitScript({ content: `globalThis.__uncov = ${uncoveredInPage.toString()};` });
+    const page = await ctx.newPage();
+    await page.goto(`${base}/`);
+    await page.waitForTimeout(500);
+    const uncovered = await page.evaluate(([raw, id]) => (globalThis as unknown as { __uncov: (r: string[], id: string) => string[] }).__uncov(raw as string[], id as string), [RAW, PII_MASK_LAYER_ID]);
+    const leaks = uncovered.filter((u) => !/#(r-ref|r-ivanov|r-desmondia)$/.test(u));
+    check("GEOMETRY: every character of the Cyrillic, CJK (bare and with an honorific) and accented names, in text and in the input, sits under a box",
+      !leaks.some((u) => /r-cyr|r-cjk|r-jose|r-zoe|r-nu|cyr-in/.test(u)), leaks.join("; "));
+    check("GEOMETRY: a phone and an account split across inline elements are boxed in every node ((541) <span>555-0163</span>; 8802 <b>4680</b> 13)",
+      !leaks.some((u) => /r-split|sp1|sp2/.test(u)), leaks.join("; "));
+    check("GEOMETRY: a listbox whose option text carries a value is boxed whole", !leaks.some((u) => /field#lb$/.test(u)), leaks.join("; "));
+    check("no other rect carrying a raw value is uncovered", leaks.length === 0, leaks.join("; "));
+    check("MUST-EXCLUDE: a bare '4680' line, 'Иван' inside 'Иванов' and 'Desmond' inside 'Desmondia' are NOT boxed (no digit partials; cased-letter word boundary)",
+      ["text@div#r-ref", "text@div#r-ivanov", "text@div#r-desmondia"].every((d) => uncovered.includes(d)), uncovered.join("; "));
+    const lb2 = await page.evaluate((id) => {
+      const layer = document.getElementById(id);
+      const boxes = layer ? Array.from(layer.children).map((c) => c.getBoundingClientRect()) : [];
+      const r = document.getElementById("lb2")!.getBoundingClientRect();
+      const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+      return boxes.some((b) => cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom);
+    }, PII_MASK_LAYER_ID);
+    check("MUST-EXCLUDE: a listbox with no value in any option is not boxed", !lb2);
+    // The independent in-page audit agrees — and is independent: it counts 'Desmond' inside
+    // 'Desmondia' as an uncovered rect, which the matcher's boundary rule deliberately leaves bare.
+    const audit = await page.evaluate((raw) => (globalThis as unknown as { __piiMask: { audit: (v: string[]) => PiiMaskAudit } }).__piiMask.audit(raw), AUDIT_RAW);
+    check(`the in-page audit finds the values' rects (${audit.rectsChecked}) and none outside a box`, audit.rectsChecked >= 40 && audit.uncovered === 0, JSON.stringify(audit));
+    const auditDesmond = await page.evaluate((raw) => (globalThis as unknown as { __piiMask: { audit: (v: string[]) => PiiMaskAudit } }).__piiMask.audit(raw), ["Desmond"]);
+    check("MUST-EXCLUDE: the audit is raw-substring, not the matcher — it reports 'Desmond' inside 'Desmondia' as uncovered", auditDesmond.uncovered > 0 && auditDesmond.where.includes("div#r-desmondia"), JSON.stringify(auditDesmond));
+    const maskedText = await page.evaluate(() => document.body.innerText); // before the late row below
+    // THE MUTATION OBSERVER: a value-bearing node appended after load is boxed after ONE animation
+    // frame with NO scan() call (the observer's microtask queues the redraw; the 250ms interval
+    // could not have run).
+    const mo = await page.evaluate(async () => {
+      const api = (globalThis as unknown as { __piiMask: { boxes(): unknown[] } }).__piiMask;
+      const before = api.boxes().length;
+      const p = document.createElement("p"); p.id = "late"; p.textContent = "Late row: Quimbyfield 8802 4680 13"; document.body.appendChild(p);
+      await Promise.resolve(); // the observer's notification microtask runs before this one resumes
+      await new Promise((r) => requestAnimationFrame(r));
+      const afterOneFrame = api.boxes().length;
+      return { before, afterOneFrame };
+    });
+    check(`MUTATION OBSERVER: a node appended after load is boxed after ONE animation frame, no scan() (${mo.before} -> ${mo.afterOneFrame})`, mo.afterOneFrame > mo.before, JSON.stringify(mo));
+    const lateAudit = await page.evaluate((raw) => (globalThis as unknown as { __piiMask: { audit: (v: string[]) => PiiMaskAudit } }).__piiMask.audit(raw), [V.ascii, V.account]);
+    check("...and the late row's value characters are all under a box", lateAudit.uncovered === 0 && lateAudit.rectsChecked > 0, JSON.stringify(lateAudit));
+    await ctx.close();
+    // Unmasked control: no layer, same text.
+    const ctx2 = await browser.newContext({ viewport: { width: 1000, height: 760 } });
+    const page2 = await ctx2.newPage();
+    await page2.goto(`${base}/`);
+    const unmaskedText = await page2.evaluate(() => document.body.innerText);
+    const layer2 = await page2.evaluate((id) => !!document.getElementById(id), PII_MASK_LAYER_ID);
+    check("HARMLESS: body.innerText is identical with and without the mask layer, and the unmasked page has no layer",
+      maskedText === unmaskedText && maskedText.length > 100 && !layer2, `masked=${maskedText.length}B unmasked=${unmaskedText.length}B`);
+    await ctx2.close();
+  } finally {
+    await browser.close();
+    server.close();
+  }
+  if (CORNER_ONLY) {
+    console.log(`\n${checks - failures}/${checks} corner check(s) passed (--corner-only: sections 1-6 not run).`);
+    process.exit(failures ? 1 : 0);
+  }
 }
 
 async function walkWizard(label: string, masked: boolean): Promise<RunResult> {
@@ -360,7 +501,8 @@ if (ocrReason) {
     const h = piiHitsInText(t, STRINGS);
     if (h.length) { mHits += h.length; mHitFrames.push(`${path.basename(f)}(${h.length})`); }
   }
-  check(`MASKED: 0 PII hits over ${mText.size} frame(s) x ${STRINGS.length} string(s) — got ${mHits}`, mHits === 0, `frames with hits: ${mHitFrames.slice(0, 10).join(", ")}`);
+  const blind = ocrBlindValues(STRINGS);
+  check(`MASKED: 0 PII hits over ${mText.size} frame(s) x ${STRINGS.length - blind.length} OCR-readable string(s) — got ${mHits} (${blind.length} non-Latin string(s) are OCR-blind: geometry covers those)`, mHits === 0, `frames with hits: ${mHitFrames.slice(0, 10).join(", ")}`);
   const mAccount = [...mText.values()].filter((t) => norm(t).includes(norm(ACCOUNT_LIST_VALUE))).length;
   check("MASKED MUST-EXCLUDE: the account list's other application is on no frame", mAccount === 0, `${mAccount} frame(s)`);
 
@@ -377,7 +519,7 @@ if (ocrReason) {
   check("UNMASKED MUST-EXCLUDE: the account list's other application is readable on the dashboard", uAccount);
   const mCounty = norm(mText.get(path.resolve(masked.shots["02-customer"])) ?? "").includes(norm(PROJECT_B.county));
   check("MASKED: the County select's chosen option text is NOT readable", !mCounty);
-  console.log(`  OCR denominators: masked ${mText.size} frames / ${STRINGS.length} strings / ${mHits} hits; unmasked ${uText.size} frames / ${STRINGS.length} strings / ${uHits} hits`);
+  console.log(`  OCR denominators: masked ${mText.size} frames / ${STRINGS.length} strings (${blind.length} OCR-blind) / ${mHits} hits; unmasked ${uText.size} frames / ${STRINGS.length} strings / ${uHits} hits`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -433,6 +575,9 @@ console.log("\n6. THE RECORDER'S --real-run, END TO END on the replica: real wri
   const replica = await startSyntheticReplica({ wizard: w, credential: { username: PROJECT_B.portalUsername, password: PROJECT_B.portalPassword } });
   if (!isLoopbackHost(new URL(replica.base).hostname)) throw new Error("refusing: the replica is not on a loopback host");
   const B = PROJECT_B;
+  // The supervising electrician gets a CYRILLIC name: a value the en-US OCR cannot read, so the
+  // recorder's own in-page audit (geometry) is the instrument that must see it boxed.
+  const E2E_ELECTRICIAN = "Иван Петров";
   const db = await openDatabase();
   const client = createClient(db, { companyName: B.installer.company, ccbLicenseNumber: "318822" });
   const project = createProject(db, {
@@ -440,7 +585,7 @@ console.log("\n6. THE RECORDER'S --real-run, END TO END on the replica: real wri
     ahj: B.ahj, utility: B.utility, dcKw: B.dcKw, acKw: B.acKw, account: B.accountNumber, meter: B.meterNumber,
     homeownerEmail: B.ownerEmail, homeownerPhone: B.ownerPhone, county: B.county,
     installerCompanyName: B.installer.company, installerContactName: `${B.installer.contactFirst} ${B.installer.contactLast}`,
-    installerEmail: B.installer.email, installerPhone: B.installer.phone, electricalSupervisorName: B.installer.electricianName,
+    installerEmail: B.installer.email, installerPhone: B.installer.phone, electricalSupervisorName: E2E_ELECTRICIAN,
     moduleMake: B.moduleMake, moduleModel: B.moduleModel, moduleQty: B.moduleQty, inverterMake: B.inverterMake, inverterModel: B.inverterModel, inverterQty: B.inverterQty,
   } as never, undefined, { learningExcluded: true }).project;
   createPortalCredential(db, client.id, { portalType: "powerclerk", portalUrl: replica.entryUrl, username: B.portalUsername, password: B.portalPassword });
@@ -529,6 +674,11 @@ console.log("\n6. THE RECORDER'S --real-run, END TO END on the replica: real wri
   check("the SENSITIVE account and meter steps replayed from the project row (the portal holds both; nothing skipped)",
     replica.state.values["cust.account"] === B.accountNumber && replica.state.values["cust.meter"] === B.meterNumber && Array.isArray(report.skipped) && (report.skipped as unknown[]).length === 0,
     `account=${replica.state.values["cust.account"] ? "held" : "EMPTY"} meter=${replica.state.values["cust.meter"] ? "held" : "EMPTY"} skipped=${JSON.stringify(report.skipped)}`);
+  check("the Cyrillic electrician REACHED the portal (the replica holds it), or its coverage below would prove nothing",
+    replica.state.values["elec.name"] === E2E_ELECTRICIAN, `elec.name=${replica.state.values["elec.name"] ? "held (different)" : "EMPTY"}`);
+  const audit = (report.maskAudit ?? null) as PiiMaskAudit | null;
+  check(`REAL-RUN MASK AUDIT (geometry, in-page, at the review stop): rects carrying a value found and none outside a box (${audit ? `${audit.rectsChecked} rects, ${audit.uncovered} uncovered` : "NOT MEASURED"})`,
+    !!audit && audit.rectsChecked >= 20 && audit.uncovered === 0, `${JSON.stringify(audit)} note=${report.maskAuditNote}`);
   const hostsSeen = Object.keys((report.browserHostsSeen as Record<string, number>) ?? {});
   check("the only host the browser touched is the replica's (loopback)", hostsSeen.length === 1 && isLoopbackHost(hostsSeen[0]) && Number(report.nodeNetworkAttempts ? (report.nodeNetworkAttempts as unknown[]).length : 0) === 0, hostsSeen.join(","));
   check("the video and the step shots exist", fs.existsSync(out) && fs.existsSync(shotsDir) && fs.readdirSync(shotsDir).length >= 5, `video=${fs.existsSync(out)} shots=${fs.existsSync(shotsDir) ? fs.readdirSync(shotsDir).length : 0}`);
@@ -547,9 +697,9 @@ console.log("\n6. THE RECORDER'S --real-run, END TO END on the replica: real wri
       if (h.length) { hits += h.length; hitFrames.push(`${path.basename(f)}(${h.length})`); }
       if (/customer information|installer information|terms and conditions|my projects|sign in/i.test(t)) labelFrames++;
     }
-    check(`REAL-RUN RECORDING: 0 PII hits over ${text.size} frame(s) x ${STRINGS.length} string(s) — got ${hits}`, text.size === e2eFrames.length && hits === 0, `frames with hits: ${hitFrames.slice(0, 8).join(", ")}`);
+    check(`REAL-RUN RECORDING: 0 PII hits over ${text.size} frame(s) x ${STRINGS.length} OCR-readable string(s) — got ${hits} (the Cyrillic electrician is OCR-blind: the audit above covers it)`, text.size === e2eFrames.length && hits === 0, `frames with hits: ${hitFrames.slice(0, 8).join(", ")}`);
     check(`REAL-RUN RECORDING: the frames still read as the portal's pages (${labelFrames} of ${text.size} carry a page label)`, labelFrames > text.size / 2);
-    console.log(`  OCR denominators (recorder path): ${text.size} frames / ${STRINGS.length} strings / ${hits} hits`);
+    console.log(`  OCR denominators (recorder path): ${text.size} frames / ${STRINGS.length} strings (+1 OCR-blind, audited by geometry) / ${hits} hits`);
   }
   await replica.close();
   console.log(`  real-run artifacts: ${e2eRoot}`);

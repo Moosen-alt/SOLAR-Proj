@@ -91,7 +91,10 @@
 //     · MASKING IS ON: every known value of the project and its credential's user name is
 //       boxed on screen at record time (rendering only — the portal's state is what the bot
 //       filled; scripts/lib/piiMask.ts, proven on the replica by
-//       scripts/demoMaskReplica.dom.smoke.ts). A person still reviews every frame before use;
+//       scripts/demoMaskReplica.dom.smoke.ts). At the review stop the mask's independent
+//       audit (raw substring, per-character rects) is run and reported as `maskAudit`
+//       (rects carrying a value / rects outside every box / where) — a report, not a save
+//       condition. A person still reviews every frame before use;
 //     · login: the stored credential is used when there is one; MFA / a missing credential
 //       hands the browser to the person present and waits (--login-wait);
 //     · the video is kept only if the engine stopped at the review screen with the flagged
@@ -564,15 +567,16 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   // ── 6b. The mask: every known value of the project and the login, counted, never printed.
   let maskValueCount = 0;
   let maskScript = "";
+  let maskValues: string[] = []; // held for the review-stop audit; never printed
   if (maskOn) {
     const src = o.maskValuesFrom && o.maskValuesFrom !== projectId ? getProjectDetail(db, o.maskValuesFrom).project : stagedProject;
-    const values = piiMaskValues({
+    maskValues = piiMaskValues({
       project: { ...src, parserSnapshot: { ...(src.parserSnapshot as Record<string, unknown>), ...overlay } },
       credential: { username: credential?.username ?? "" },
       extra: [],
     });
-    maskValueCount = values.length;
-    maskScript = piiMaskInitScript({ values, shapes: piiMaskShapesFor(recipe.portalPlatform), extraSelectors: o.maskSelectors });
+    maskValueCount = maskValues.length;
+    maskScript = piiMaskInitScript({ values: maskValues, shapes: piiMaskShapesFor(recipe.portalPlatform), extraSelectors: o.maskSelectors });
     console.log(`[demo-record] masking ON: ${maskValueCount} known value(s), ${o.maskSelectors.length} extra selector(s), platform shape "${recipe.portalPlatform || "generic"}"`);
   }
 
@@ -653,6 +657,11 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   let reviewPageNamed = false;
   let runError = "";
   let gateObservations: import("./demo-portal/gateProbe").ClickGateObservation[] = [];
+  // The mask's independent audit at the review stop (scripts/lib/piiMask.ts audit()): counts
+  // and element descriptors only. null = not measured (unmasked run, or the api was missing),
+  // which the report states as such — never as zero.
+  let maskAudit: import("./lib/piiMask").PiiMaskAudit | null = null;
+  let maskAuditNote = maskOn ? "not measured: the run did not reach the review stop" : "not measured: masking off";
   try {
     if (!realRun) {
       // Title card.
@@ -705,6 +714,16 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
     finalUrl = page.url();
     finalTitle = await page.title().catch(() => "");
     reviewPageNamed = await page.evaluate(() => document.body?.innerText || "").then((t) => isReviewPageText(t)).catch(() => false);
+    if (maskScript) {
+      // As drawn — no scan() first: the question is what the frame shows at the stop.
+      maskAudit = await page.evaluate((raw) => {
+        const api = (globalThis as unknown as Record<string, { audit?: (v: string[]) => unknown } | undefined>).__piiMask;
+        return api && typeof api.audit === "function" ? (api.audit(raw) as import("./lib/piiMask").PiiMaskAudit) : null;
+      }, maskValues).catch(() => null);
+      maskAuditNote = maskAudit ? "measured at the review stop, boxes as drawn" : "not measured: the mask api was not present on the review page";
+      if (maskAudit) console.log(`[demo-record] mask audit at the review stop: ${maskAudit.rectsChecked} rendered rect(s) carry a known value, ${maskAudit.uncovered} outside every box${maskAudit.uncovered ? ` — REVIEW THESE FRAMES: ${maskAudit.where.slice(0, 8).join(", ")}` : ""}`);
+      else console.error(`[demo-record] mask audit: ${maskAuditNote}`);
+    }
 
     if (!realRun) {
       // Independent read-back: what the fictional portal's own review page now shows.
@@ -819,6 +838,8 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
     masked: maskOn,
     maskValueCount,
     maskSelectorCount: o.maskSelectors.length,
+    maskAudit,
+    maskAuditNote,
     login: `${loginResult.status}`,
     replayOk: fillResult.ok,
     replayMessage: String(fillResult.message ?? "").slice(0, 600),
