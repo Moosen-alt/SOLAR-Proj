@@ -15,8 +15,19 @@
 //   3. A page with no Sys at all (partial rendering off) settles by the quiet window, and a
 //      fetch-driven cascade is waited out by the request counter.
 //
-// POSTBACK_MS (700) is longer than the quiet window (300) on purpose: a quiet window alone
-// cannot pass check 1 — only the PageRequestManager hook can.
+//   4. THE setTimeout GAP. Right after a commit nothing is in flight yet, so two mechanisms must
+//      hold the wait until the postback shows itself — and each has a check that fails without it:
+//      - QUIET-FROM-START: an autopostback deferred by DEFER_MS (> one evaluate round-trip, <
+//        the 300ms quiet window) on a page that has been idle a while. Measured only from the
+//        last activity, the page already looks quiet and the wait returns before the postback.
+//      - THE "POSTBACK BEGAN" MARK: a FULL-PAGE postback (__doPostBack -> form.submit(), no
+//        ScriptManager). No PageRequestManager, no XHR, no DOM change while the server takes
+//        POSTBACK_MS: only the mark says the page is busy until the new document lands.
+//
+// POSTBACK_MS (700) is longer than the quiet window (300), so a quiet window alone cannot hold a
+// wait through a whole round trip. In check 1 BOTH the PageRequestManager hook and the "postback
+// began" grace can hold it (either alone passes); the next check cuts the grace to 100ms so only
+// the hook can.
 //
 //   npx tsx portal-bot/src/settle.dom.smoke.ts
 import http from "node:http";
@@ -30,6 +41,9 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 };
 
 const POSTBACK_MS = 700;
+/** How long the deferred autopostback waits: longer than an evaluate round-trip (so the first
+ *  settle snapshot sees nothing in flight), shorter than the 300ms quiet window. */
+const DEFER_MS = 180;
 
 const WEBFORMS_PAGE = `<!doctype html><html><body style="font:14px sans-serif;padding:16px">
 <form id="aspnetForm" onsubmit="return false">
@@ -44,7 +58,7 @@ const WEBFORMS_PAGE = `<!doctype html><html><body style="font:14px sans-serif;pa
   };
   // Server state carried between requests, like ViewState: the dependent lists live here.
   var viewState = { utility: [], model: [], invModel: [] };
-  var posted = { zip: "", mfr: "", inv: "" };
+  var posted = { zip: "", mfr: "", inv: "", mfrSlow: "" };
   var begin = [], end = [], current = null;
   function opts(list, sel) {
     return '<option value="">--</option>' + list.map(function (o) {
@@ -58,7 +72,9 @@ const WEBFORMS_PAGE = `<!doctype html><html><body style="font:14px sans-serif;pa
       '<label for="mfr">Module Manufacturer</label><select id="mfr" onchange="setTimeout(function(){__doPostBack(\\'mfr\\',\\'\\')},0)">' + opts(Object.keys(CATALOG.mfr), v.mfr) + '</select>' +
       '<label for="model">Module Model</label><select id="model">' + opts(vs.model) + '</select>' +
       '<label for="inv">Inverter Manufacturer</label><select id="inv" onchange="setTimeout(function(){__doPostBack(\\'inv\\',\\'\\')},0)">' + opts(Object.keys(CATALOG.inv), v.inv) + '</select>' +
-      '<label for="invModel">Inverter Model</label><select id="invModel">' + opts(vs.invModel) + '</select>';
+      '<label for="invModel">Inverter Model</label><select id="invModel">' + opts(vs.invModel) + '</select>' +
+      // The same cascade, but the markup defers its postback by DEFER_MS instead of 0.
+      '<label for="mfrSlow">Racking Manufacturer</label><select id="mfrSlow" onchange="setTimeout(function(){__doPostBack(\\'mfrSlow\\',\\'\\')},${DEFER_MS})">' + opts(Object.keys(CATALOG.mfr), v.mfrSlow) + '</select>';
   }
   var prm = {
     add_beginRequest: function (h) { begin.push(h); },
@@ -72,7 +88,7 @@ const WEBFORMS_PAGE = `<!doctype html><html><body style="font:14px sans-serif;pa
     var req = {
       target: target,
       vs: JSON.parse(JSON.stringify(viewState)),
-      v: { zip: document.getElementById("zip").value, mfr: document.getElementById("mfr").value, inv: document.getElementById("inv").value }
+      v: { zip: document.getElementById("zip").value, mfr: document.getElementById("mfr").value, inv: document.getElementById("inv").value, mfrSlow: document.getElementById("mfrSlow").value }
     };
     if (current) { clearTimeout(current.timer); window.__postbacks.aborted++; end.forEach(function (h) { h(); }); current = null; }
     window.__postbacks.started++;
@@ -83,6 +99,7 @@ const WEBFORMS_PAGE = `<!doctype html><html><body style="font:14px sans-serif;pa
       if (target === "zip") req.vs.utility = CATALOG.zip[req.v.zip] || [];
       if (target === "mfr") req.vs.model = CATALOG.mfr[req.v.mfr] || [];
       if (target === "inv") req.vs.invModel = CATALOG.inv[req.v.inv] || [];
+      if (target === "mfrSlow") req.vs.model = CATALOG.mfr[req.v.mfrSlow] || [];
       viewState = req.vs; posted = req.v;
       render(viewState, posted);
       current = null;
@@ -104,8 +121,28 @@ const PLAIN_PAGE = `<!doctype html><html><body style="font:14px sans-serif;paddi
 <p id="static">Nothing else happens on this page.</p>
 </body></html>`;
 
+// A WebForms page WITHOUT a ScriptManager: no Sys, and __doPostBack posts the WHOLE form. While the
+// server takes POSTBACK_MS the old document sits there unchanged — no XHR, no mutation.
+const FULL_POSTBACK_PAGE = `<!doctype html><html><body style="font:14px sans-serif;padding:16px">
+<form id="aspnetForm" method="post" action="/full-result">
+  <input type="hidden" name="__EVENTTARGET" id="__EVENTTARGET" value="">
+  <label for="county">County</label>
+  <select id="county" name="county" onchange="setTimeout(function(){__doPostBack('county','')},0)"><option value="">--</option><option>Deschutes</option></select>
+</form>
+<script>
+  var theForm = document.forms['aspnetForm'];
+  function __doPostBack(target, arg) { theForm.__EVENTTARGET.value = target; theForm.submit(); }
+</script></body></html>`;
+const FULL_RESULT_PAGE = `<!doctype html><html><body><p id="landed">The postback's new document.</p></body></html>`;
+
 const server = http.createServer((q, r) => {
   const url = String(q.url ?? "");
+  if (url.startsWith("/full-result")) {
+    q.resume();
+    setTimeout(() => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(FULL_RESULT_PAGE); }, POSTBACK_MS);
+    return;
+  }
+  if (url.startsWith("/full")) { r.writeHead(200, { "Content-Type": "text/html" }); r.end(FULL_POSTBACK_PAGE); return; }
   if (url.startsWith("/counties")) {
     setTimeout(() => { r.writeHead(200, { "Content-Type": "application/json" }); r.end(JSON.stringify(["Deschutes", "Crook"])); }, 600);
     return;
@@ -205,6 +242,35 @@ try {
     check("a fetch-driven cascade is waited out by the in-flight request counter",
       res.settled && counties.join("|") === "Deschutes|Crook" && /net/.test(res.reason),
       `settle=${JSON.stringify(res)} counties=${JSON.stringify(counties)}`);
+    await page.context().close();
+  }
+
+  // ---- 3b. The setTimeout gap: each closer has a check that fails without it ----------------
+  {
+    // QUIET-FROM-START. The page has been idle for a while (lastActivity is stale), the change
+    // defers its postback by DEFER_MS, and the wait starts at once. Nothing is in flight at the
+    // first snapshot; only "quiet must also be measured from the start of THIS wait" keeps it
+    // waiting until the postback shows itself (after which the PageRequestManager holds it).
+    const page = await fresh("/");
+    await page.waitForTimeout(500);
+    await page.selectOption("#mfrSlow", "Borealis");
+    const res = await waitForSettled(page);
+    const model = await optionsOf(page, "#model");
+    check(`a postback deferred ${DEFER_MS}ms after an idle stretch is waited for (quiet is measured from the start of the wait)`,
+      res.settled && model.join("|") === "B-1" && res.waitedMs >= DEFER_MS + POSTBACK_MS - 50,
+      `settle=${JSON.stringify(res)} model=${JSON.stringify(model)}`);
+    await page.context().close();
+  }
+  {
+    // THE "POSTBACK BEGAN" MARK. A full-page postback: no PageRequestManager, no XHR, no DOM
+    // mutation for POSTBACK_MS — only the mark set by __doPostBack/form.submit() says "busy". The
+    // wait must return on the NEW document, not on the old one after a quiet 300ms.
+    const page = await fresh("/full");
+    await page.selectOption("#county", "Deschutes");
+    const res = await waitForSettled(page);
+    const landed = await page.locator("#landed").count().catch(() => 0);
+    check("a full-page postback (no Sys, form.submit()) is waited out until its new document lands",
+      res.settled && landed === 1 && res.waitedMs >= POSTBACK_MS - 50, `settle=${JSON.stringify(res)} landed=${landed}`);
     await page.context().close();
   }
 
