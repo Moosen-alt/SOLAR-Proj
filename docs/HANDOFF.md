@@ -48,6 +48,11 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 - FINAL SUBMIT: the operator wants to submit from the dashboard (Approve & Submit -> the bot clicks the portal's submit), so
   PORTAL_ALLOW_FINAL_SUBMIT stays on; it becomes acceptable only with the per-run approval gate (bot round R2 + W1 A2)
   verified. CLAUDE.md hard rule 1 is to be reworded to match — with the operator's OK — once that gate is verified.
+- DEMO RECORDING ON PGE (operator ruling 2026-09-24, late): the operator AUTHORISES a supervised run on PGE's live PowerClerk with clearly
+  test-labelled homeowner data, recorded on video with PII/account-header masking, for the offline demo; the operator deletes the draft(s)
+  afterwards. Still: learn/replay to the REVIEW screen and stop, never submit, PORTAL_ALLOW_FINAL_SUBMIT unset for the session, operator present
+  for login/MFA, the test project flagged learning_excluded (demo projects never teach the KB), a human reviews every frame before use.
+  Caveat: PowerClerk may validate the PGE account number / service address — fallback is a real unfiled project's values, masked.
 - KNOWLEDGE PRE-LOAD SPEND (prospect states): only AFTER the live research-accuracy evals pass
   (`.probe/jurisdiction/`): state layers for FL/TX/UT/CA (~$2) + the top 5 AHJs/utilities per state from
   `.probe/prospects/PREP-PLAN.md` §6 (~20 entities, ~$50), seeded, operator spot-verifies. Everything else is researched
