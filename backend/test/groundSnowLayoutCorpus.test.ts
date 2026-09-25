@@ -74,12 +74,14 @@ function lists(family: 36 | 16, labels = groundLabels): Item[][] {
 }
 
 type Order = "label-first" | "value-first";
-type Sep = ":" | "=" | "-" | "none";
+// Round 6: the em dash (the typographic dash Word/InDesign emit) and a run of dot leaders (a title
+// block's table fill) are the same spaced separator as the hyphen — the round-5 skeptic's MF-A.
+type Sep = ":" | "=" | "-" | "—" | "....." | "none";
 type Form = "one line" | "per line" | "comma list" | "DESIGN LOADS heading" | "SNOW LOADS: heading";
 const ORDERS: Order[] = ["label-first", "value-first"];
-const SEPS: Sep[] = [":", "=", "-", "none"];
+const SEPS: Sep[] = [":", "=", "-", "—", ".....", "none"];
 const FORMS: Form[] = ["one line", "per line", "comma list", "DESIGN LOADS heading", "SNOW LOADS: heading"];
-const sepText = (sep: Sep): string => (sep === "none" ? " " : sep === ":" ? ": " : sep === "-" ? " - " : " = ");
+const sepText = (sep: Sep): string => (sep === "none" ? " " : sep === ":" ? ": " : sep === "=" ? " = " : ` ${sep} `);
 
 function renderItem(i: Item, order: Order, sep: Sep): string {
   const s = sepText(sep);

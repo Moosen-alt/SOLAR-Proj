@@ -476,11 +476,26 @@ interface LoadValueRun { owner: LoadValueOwner; valueFirstList: boolean }
  * DEAD LOAD - 3 PSF GROUND SNOW LOAD - 36 PSF" split into a value-first "3 PSF GROUND SNOW LOAD" and
  * read Pg 3 (a BLOCKER on a correct plan). ONE definition, used by the run glue, evidenceBefore and
  * every label reader — each place that knew only ":"/"=" was a place the mirror image slipped through.
+ *
+ * EVERY DASH GLYPH A SHEET PRINTS IS THE SAME DASH: the hyphen, the en dash, the em dash Word and
+ * InDesign emit ("GROUND SNOW LOAD — 36 PSF"), a double hyphen ("-- 36 PSF"), and a run of DOT LEADERS
+ * — the commonest title-block table fill ("GROUND SNOW LOAD ..... 36 PSF"). With only "-"/"–" known,
+ * "ROOF DEAD LOAD — 3 PSF GROUND SNOW LOAD — 36 PSF" and its dot-leader twin split exactly the way the
+ * unrecognised hyphen did (Pg 3, a BLOCKER on a correct plan). A single full stop is not a leader
+ * ("DEAD LOAD 10 psf. GROUND SNOW LOAD 36 PSF" ends a sentence), and a dash touching a digit is still a
+ * sign or an edition ("ASCE 7—16").
  */
-const SEP = String.raw`(?:[:=]|(?<=\s)[-–](?=\s))`;
+const DASH = String.raw`(?:[-–—]|--|\.{2,})`;
+const SEP = String.raw`(?:[:=]|(?<=\s)${DASH}(?=\s))`;
 /** A separator the regex captured: a DASH assigns only through the run's ownership (it is also how
  *  some sheets join list items), unlike ":"/"=" which assign outright. */
-const isDashSep = (sep: string | undefined): boolean => !!sep && /[-–]/.test(sep) && !/[:=]/.test(sep);
+const isDashSep = (sep: string | undefined): boolean => !!sep && /[-–—.]/.test(sep) && !/[:=]/.test(sep);
+/** Text that ends in ":"/"=" or a spaced dash — the separator that hands the value after it to the label before it. */
+const SEP_BEFORE = new RegExp(String.raw`(?:[:=]|\s${DASH}(?=\s))\s*$`);
+/** …and that separator directly after a label word or a closing parenthesis (not after a heading or nothing). */
+const LABEL_SEP_BEFORE = new RegExp(String.raw`[A-Za-z)]\s*(?:[:=]|${DASH}(?=\s))\s*$`);
+/** A gap holding an assigning separator: never two side-by-side cells of a table. */
+const SEP_IN_GAP = new RegExp(String.raw`[:=]|\s${DASH}\s`);
 /** A value with a MINUS sign ("C&C PRESSURE -16 PSF", "ZONE 1: -16.5 PSF") is a wind pressure, never
  *  a load: a dash touching the digit that is not inside a range or an edition ("7-16"). Measured: a
  *  column-major table's "-16 PSF GROUND SNOW LOAD" read as Pg 16 (a BLOCKER on a correct 36 psf plan). */
@@ -511,7 +526,7 @@ const LOAD_VALUE_TOKEN = new RegExp(String.raw`${NOT_NEGATIVE}\b\d+(?:\.\d+)?\s*
 /** A HEADING over a list, not a label of one load: "SNOW LOADS", "DESIGN SNOW LOADS" (plural, bare). */
 const HEADING_LABEL = /^(?:design\s+)?snow\s+loads$/i;
 /** Text that ENDS in a heading: "DESIGN LOADS", "SNOW LOADS:", "DESIGN CRITERIA -", "LOADS". */
-const HEADING_BEFORE = /\b(?:loads|criteria|parameters|notes|summary|information)\s*[:\-–]?\s*$/i;
+const HEADING_BEFORE = /\b(?:loads|criteria|parameters|notes|summary|information)\s*[:\-–—]?\s*$/i;
 /** Text that ends in a label or value of a NON-psf quantity, or in a unit: it cannot own a psf value. */
 const OTHER_QUANTITY_BEFORE = /(?:\b(?:wind(?:\s+speed)?|speed|v\s*ult|vult|v\s*asd|vasd|exposure(?:\s+cat(?:egory|\.)?)?|risk(?:\s+cat(?:egory|\.)?)?|occupancy(?:\s+cat(?:egory|\.)?)?|asce(?:\s*7)?|mph|psf|ft|feet|in|inch(?:es)?|deg(?:rees)?|kw|kwdc|kwac|v|a|amps?)|\d|["'”’°%])\s*[:=]?\s*$/i;
 /** Prose words: "USE 36 PSF GROUND SNOW", "a ground snow load of 36 psf", "MINIMUM 25 PSF". */
@@ -529,8 +544,8 @@ function evidenceBefore(text: string, at: number): "assign" | "label" | "none" {
   if (!before.trim()) return "none";
   if (HEADING_BEFORE.test(before)) return "none";
   if (OTHER_QUANTITY_BEFORE.test(before)) return "none";
-  // ":"/"=" or a spaced dash ("ROOF DEAD LOAD - 3 PSF"); a dash touching the value is its sign.
-  if (/(?:[:=]|\s[-–](?=\s))\s*$/.test(before)) return /[A-Za-z)]\s*(?:[:=]|[-–](?=\s))\s*$/.test(before) ? "assign" : "none";
+  // ":"/"=" or a spaced dash ("ROOF DEAD LOAD - 3 PSF", "— 3 PSF", "..... 3 PSF"); a dash touching the value is its sign.
+  if (SEP_BEFORE.test(before)) return LABEL_SEP_BEFORE.test(before) ? "assign" : "none";
   const word = before.match(/([A-Za-z][A-Za-z'.\-]*)\s*$/)?.[1];
   if (!word || word.length < 2) return "none";
   if (PROSE_WORD.has(word.toLowerCase().replace(/\.$/, ""))) return "none";
@@ -621,7 +636,7 @@ function loadValueOwners(text: string): Map<number, LoadValueRun> {
   const sideBySide = (a: { kind: "L" | "V"; end: number }, b: { kind: "L" | "V"; start: number }): boolean => {
     const gap = between(a, b);
     if (glue.test(gap)) return true;
-    if (a.kind !== b.kind || /[:=]|\s[-–]\s/.test(gap)) return false;
+    if (a.kind !== b.kind || SEP_IN_GAP.test(gap)) return false;
     return a.kind === "L"
       ? gap.length <= 40 && !/\d/.test(gap) && !/\b(?:n\/?a|none|tbd)\b/i.test(gap)
       : /^(?:[\s,;]|[-−]?\d+(?:\.\d+)?\s*(?:[mM][pP][hH]|[pP][sS][fF]|[kK][pP][aA])?\b|\b(?:[BCD]|I{1,3}|IV)\b)*$/.test(gap);

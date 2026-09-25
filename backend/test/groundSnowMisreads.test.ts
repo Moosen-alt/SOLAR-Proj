@@ -282,6 +282,34 @@ for (const t of ["SNOW: Pg = 1.72 kPa", "SNOW LOAD (GROUND) = 1.72 KPA"]) {
   });
 }
 
+// ROUND 6 (the round-5 skeptic's must-fixes; the last snow round — real documents are the acceptance
+// instrument from here). Every text below is the verdict's own, verbatim.
+
+console.log("MF-A — every dash glyph a sheet prints, and a run of dot leaders, is the same spaced separator");
+reads36("GROUND SNOW LOAD — 36 PSF");
+reads36("ROOF DEAD LOAD — 3 PSF GROUND SNOW LOAD — 36 PSF");
+reads36("ROOF DEAD LOAD — 3 PSF Pg — 36 PSF");
+reads36("ROOF DEAD LOAD ..... 3 PSF GROUND SNOW LOAD ..... 36 PSF");
+reads36("GROUND SNOW LOAD ........ 36 PSF ROOF SNOW LOAD ........ 25 PSF DEAD LOAD ........ 10 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
+reads36("GROUND SNOW LOAD .. 36 PSF");
+reads36("ROOF DEAD LOAD 3 PSF -- GROUND SNOW LOAD -- 36 PSF");
+reads36("36 PSF — GROUND SNOW LOAD 25 PSF — ROOF SNOW LOAD", (j) => assert.deepEqual(j.roof, [25], show(j)));
+reads36("36 PSF ..... GROUND SNOW LOAD 25 PSF ..... ROOF SNOW LOAD", (j) => assert.deepEqual(j.roof, [25], show(j)));
+// A production phrasing with its "=" rendered as an em dash, and as dot leaders.
+reads36("WIND SPEED AND EXPOSURE — 120 MPH, C ROOF SNOW LOAD — 25 PSF DEAD LOAD FOR ROOF-MOUNTED PANELS ATTACHMENTS — 2.81 PSF GROUND SNOW LOAD — 36 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
+reads36("WIND SPEED AND EXPOSURE ..... 120 MPH, C ROOF SNOW LOAD ..... 25 PSF DEAD LOAD FOR ROOF-MOUNTED PANELS ATTACHMENTS ..... 2.81 PSF GROUND SNOW LOAD ..... 36 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
+blocks16("GROUND SNOW LOAD — 16 PSF");
+blocks16("ROOF DEAD LOAD — 3 PSF GROUND SNOW LOAD — 16 PSF");
+blocks16("ROOF DEAD LOAD ..... 3 PSF GROUND SNOW LOAD ..... 16 PSF");
+// An em dash touching a digit is an edition or a sign, never a separator; a single full stop is not a leader.
+reads36("ASCE 7—16 GROUND SNOW LOAD 36 PSF");
+neverBlocks("C&C PRESSURE —16 PSF GROUND SNOW LOAD 36 PSF", [16]);
+reads36("DEAD LOAD 10 psf. GROUND SNOW LOAD 36 PSF");
+reads36("ROOF SNOW LOAD 25 PSF. GROUND SNOW LOAD 36 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
+// Caveat (f): a SPACED double hyphen assigns — "C&C PRESSURE -- 16 PSF" hands the 16 to the C&C pressure,
+// so the plan's ground snow is its 36 alone (a sure 36, correct: the skeptic's own note).
+reads36("C&C PRESSURE -- 16 PSF GROUND SNOW LOAD 36 PSF");
+
 if (failures) {
   console.error(`\n${failures} ground-snow misread check(s) FAILED`);
   process.exit(1);
