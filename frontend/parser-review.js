@@ -335,7 +335,9 @@
       const excerpt = String(r.excerpt || '');
       const statedVerbatim = label && excerpt && label.test(excerpt) && !FORMULA.test(excerpt) && !(field === 'existingBuildingArea' && NOT_THIS_AREA.test(excerpt)) && numberIn(excerpt, r.value);
       const wholeFeet = field === 'buildingHeightInches' && Number(r.value) === 0 && /\d+\s*(?:FT|FEET|')\b/i.test(excerpt) && !/\d+\s*(?:IN\b|INCH|")/i.test(excerpt);
-      if ((statedVerbatim || wholeFeet) && kind !== 'guessed' && kind !== 'unreadable' && kind !== 'inferred') {
+      // wholeFeet is deterministic (a height printed as "25 ft" has 0 inches) so it stands
+      // whatever kind the model attached; a stated value yields to a genuine doubt.
+      if (wholeFeet || (statedVerbatim && kind !== 'guessed' && kind !== 'unreadable' && kind !== 'inferred')) {
         resolved.push({ field, value: r.value, how: `stated on the ${where(r)}${quote(r)}${wholeFeet ? ' — height given in whole feet' : ''}`, evidence: r });
         done.add(field);
         continue;
@@ -344,9 +346,11 @@
       done.add(field);
     }
 
-    // (e) structured conflicts from the plan text itself.
+    // (e) structured conflicts from the plan text itself — unless the model already reported
+    // the same contradiction under another field name (it files it under electricalCalcText).
     const rsd = rsdConflict(planText);
-    if (rsd && !done.has('rapidShutdown')) pushConflict('rapidShutdown', rsd.readings, rsd.note);
+    const rsdAlready = conflicts.some((c) => /SHUTDOWN\s*[-:–—]\s*NO/i.test(c.text) && /RAPID|690\.12/i.test(c.text));
+    if (rsd && !rsdAlready && !done.has('rapidShutdown')) pushConflict('rapidShutdown', rsd.readings, rsd.note);
 
     const counts = { resolved: resolved.length, unsure: unsure.length, missing: missing.length, conflicts: conflicts.length };
     return { resolved, unsure, missing, conflicts, counts };

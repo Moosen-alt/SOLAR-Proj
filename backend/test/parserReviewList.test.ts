@@ -174,6 +174,12 @@ const visionPass = (fields: Record<string, unknown>) => ({ kind: "vision", label
   // RSD: labels alone, no "SHUTDOWN - NO" → no conflict
   assert.equal(PR.rsdConflict("E 1.2 NOTES RAPID SHUTDOWN PER NEC 690.12"), null);
   assert.equal(PR.rsdConflict("SHUTDOWN - NO"), null);
+  // RSD reported by the model under another field name is not listed twice
+  const rsdOnce = PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [textPass({}, [], { conflicts: [{ field: "electricalCalcText", readings: [{ value: "SHUTDOWN - NO", source: "plan_set", excerpt: "SHUTDOWN - NO" }, { value: "rapid shutdown labels shown", source: "plan_set", excerpt: "RAPID SHUTDOWN 690.12" }] }] })] });
+  assert.equal(rsdOnce.conflicts.length, 1, "one RSD conflict, not the model's plus the page's");
+  // a whole-feet height resolves its 0 inches even when the model calls it inferred
+  const inches = PR.resolveReviewItems({ attached: ["plan_set", "structural_letter"], planText: planTextSF, passes: [textPass({ buildingHeightInches: field(0, "structural_letter", "Roof Height 25 ft", 0.5) }, ["buildingHeightInches"], { uncertainties: [{ field: "buildingHeightInches", kind: "inferred", reason: "height given only in whole feet" }] })] });
+  assert.ok(inches.resolved.some((x: { field: string }) => x.field === "buildingHeightInches"));
   ok("must-exclude: duplex, outbuilding array, unmatched bill holder, no-CEC make, split letter, inferred value, RSD needs both readings");
 }
 
