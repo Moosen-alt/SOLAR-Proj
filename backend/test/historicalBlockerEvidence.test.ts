@@ -136,8 +136,8 @@ const withFields = mk("Framing Fields Owner", { framingType: "truss", roofRafter
 check("MUST-PASS: parsed framing fields (truss @ 24 in o.c., 11.5 ft span) clear the historical blocker",
   !blockedByFraming(withFields), JSON.stringify(historicalBlockers(withFields)));
 const typeOnly = mk("Framing Type Only Owner", { framingType: "truss" });
-check("…a member type with no size/spacing/span is a lead, not proof: it is not MISSING, and not PRESENT either",
-  framingItem(typeOnly)?.status === "needs_review", String(framingItem(typeOnly)?.status));
+check("…a member type with no size/spacing/span is not proof: the correction asked for the numbers, so the item is MISSING (a lead that reads 'needs review' would not block the gate)",
+  framingItem(typeOnly)?.status === "missing" && blockedByFraming(typeOnly), `${framingItem(typeOnly)?.status} ${JSON.stringify(historicalBlockers(typeOnly))}`);
 const junkField = mk("Framing Unknown Owner", { framingType: "unknown" });
 check("MUST-EXCLUDE: a framing field that says 'unknown' is not evidence", blockedByFraming(junkField), JSON.stringify(historicalBlockers(junkField)));
 
@@ -313,6 +313,13 @@ check("…and the plan-set evidence still clears the project that HAS it", !bloc
   // (codeReviewRules.ts city.struct.framing-missing) reads only the text fields (designText) and
   // never the parsed framing fields, so it still fires here — a pre-existing gap in a file this
   // change does not own (see the close report's open issues), not something this test pins.
+  // A parsed member TYPE with no parsed size/spacing/span, beside a framing sheet title that
+  // satisfies the reviewer's own regex: the only thing left is the learned blocker, and a
+  // "needs review" lead does not block the gate. The correction asked for numbers; none is here.
+  const txTypeOnly = mkTx({ ...noMemberFields, framingType: "rafter", roofPlanNotesText: "SHEET INDEX: PV-1 SITE PLAN, PV-2 ROOF PLAN, PV-3 ROOF FRAMING PLAN, E-1 SLD. Racking per manufacturer." });
+  check("MF1 MUST-EXCLUDE (TX gate): a parsed framing TYPE with no size/spacing/span (beside a framing sheet title) keeps the learned blocker and never reaches ready_to_stage",
+    blockedByFraming(txTypeOnly) && framingItem(txTypeOnly)?.status === "missing" && computeNextStep(db, txTypeOnly).key !== "ready_to_stage",
+    `${framingItem(txTypeOnly)?.status} ${computeNextStep(db, txTypeOnly).key} ${JSON.stringify(historicalBlockers(txTypeOnly))}`);
   const txParsed = mkTx({ roofPlanNotesText: "Racking per manufacturer.", structuralCalcText: "", splitPagesText: noSplit });
   check("MF1 MUST-PASS (TX gate): parsed framingType + spacing + span clear the learned blocker as well",
     !blockedByFraming(txParsed) && framingItem(txParsed)?.status === "present",

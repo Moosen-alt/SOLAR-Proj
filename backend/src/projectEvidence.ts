@@ -281,9 +281,8 @@ function evidence(
 //             (hasStampedStructuralEvidence — the one predicate for that question);
 //   high    = a named member WITH a dimension in the same clause (2x6, 24" o.c., span 12 ft), or
 //             the parsed member plus a parsed spacing/span/size, or the sealed letter.
-// A parsed member with no dimension is a lead (medium → the checklist says "needs review", not
-// "missing"); nothing named at all is missing, which is what keeps the blocker for a set that
-// truly lacks it.
+// A member with no dimension — in the text or the parsed fields — is missing, which is what keeps
+// the blocker for a set that truly lacks it (see the last paragraph below).
 //
 // THE DIMENSION MUST BELONG TO THE MEMBER (2026-09-24, D1 verification MF1). Any number in a
 // clause that named a member used to count, and every plan set has a clause like that which is
@@ -300,7 +299,8 @@ function evidence(
 // dropped before judging (the part before it — "2X6 RAFTERS @ 24\" O.C., ATTACH RAILS W/ LAGS" —
 // still counts), and what is left must NAME a member and carry a MEMBER dimension: an NxM size
 // (never the tail of a fraction — "3/8 x 5" is a lag), a spacing on centre, or a span with its
-// length. Plan text that only names a member no longer makes the topic present.
+// length. Plan text that only names a member no longer makes the topic present — and neither does
+// a parsed framingType with no parsed size, spacing or span.
 const FRAMING_MEMBER = /\b(?:rafters?|truss(?:es)?|(?:i-?|ceiling |roof )?joists?|tji|top chords?|framing)\b/i;
 const FRAMING_ATTACHMENT = /\b(?:lag(?:s|ged|ging)?|screws?|bolts?|embedment|embed(?:ded)?|stand-?offs?|l-?f(?:oo|ee)t|mounts?|mounting|mounted|attach\w*|flash(?:ed|ing|ings)?|rails?|racking|clamps?|brackets?|hooks?|fasten\w*)\b/i;
 const MEMBER_DIMENSION: RegExp[] = [
@@ -355,10 +355,14 @@ export function roofFramingFacts(project: ProjectRecord): { present: boolean; hi
     if (MEMBER_DIMENSION.some((re) => re.test(memberText))) dimensioned = true;
   }
   const sealed = hasStampedStructuralEvidence(project);
-  // Plan text counts only with a member dimension (see above); the parser's structured member is
-  // still a lead on its own.
-  const present = dimensioned || memberOk || sealed;
-  const high = dimensioned || sealed || (memberOk && dims.length > 0);
+  // Plan text counts only with a member dimension (see above), and so does the parser's
+  // structured member: framingType "rafter" with no parsed size/spacing/span answers none of what
+  // the correction asked for. It used to be a "needs review" lead — which the gate does not block
+  // on — so a parsed type beside a sheet title ("PV-3 ROOF FRAMING PLAN", enough for the
+  // reviewer's own regex) reached ready_to_stage at City of Austin with the learned blocker in
+  // force. Present now means a member WITH a member dimension, from either source, or the seal.
+  const present = dimensioned || sealed || (memberOk && dims.length > 0);
+  const high = present;
   return { present, high, fieldLines };
 }
 
