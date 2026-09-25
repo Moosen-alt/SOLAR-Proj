@@ -240,7 +240,77 @@ await check("B3: generic — ANY state whose layer says uniform inherits (a synt
   await CP.runCodeResearch(db, { state: "ZL", ahj: "" }, fakeResearcher([{ family: "residential", code: "IRC", edition: "2012", sourceUrl: "https://zl.example.gov" }], true, { adoptionModel: { model: "local_adoption" } }).provider);
   CP.saveResearchedCodeProfile(db, blank("ZL", "City of Localton", { adoptedCodes: [{ family: "residential", code: "IRC", edition: "2021", origin: "import" }] }));
   assert.deepEqual(codesOf(CP.getCodeProfile(db, { state: "ZL", ahj: "City of Localton" })), ["IRC 2021"], "a local-adoption AHJ lost its own edition (or read the state floor)");
-  assert.deepEqual(codesOf(CP.getCodeProfile(db, { state: "ZL", ahj: "City of Norow" })), ["IRC 2012"]);
+  // A local-adoption AHJ with NO row does not read the state's floor as its edition (M1).
+  assert.deepEqual(codesOf(CP.getCodeProfile(db, { state: "ZL", ahj: "City of Norow" })), [], "a no-row city in a local-adoption state read the state floor as its own edition");
+  assert.deepEqual(codesOf(CP.getCodeProfile(db, { state: "ZL", ahj: "" })), ["IRC 2012"], "the state-level read lost the state's own entry");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// M1 — a local-adoption AHJ reads the same whether or not it has a row
+// ─────────────────────────────────────────────────────────────────────────────────────────
+await check("M1 MUST-PASS: a no-row TX city and a stamp-only TX row both read no IRC/IBC, keep NEC 2026 inherited, and cite 'No adopted-code data' for the IRC", () => {
+  CP.saveResearchedCodeProfile(db, blank("TX", "City of Hasrow", { amendments: [{ code: "AHJ", summary: "Structural stamp required: Yes" }] }));
+  for (const ahj of ["City of Norowville", "City of Hasrow"]) {
+    const read = CP.getCodeProfile(db, { state: "TX", ahj })!;
+    const fams = read.adoptedCodes.map((c) => F.codeFamilyOf(c));
+    assert.ok(!fams.includes("residential") && !fams.includes("building"), `${ahj} reads a state floor as its edition: ${codesOf(read)}`);
+    const nec = read.adoptedCodes.find((c) => c.code === "NEC");
+    assert.equal(nec?.edition, "2026", `${ahj} lost the state's NEC: ${codesOf(read)}`);
+    assert.equal(nec?.inheritedFrom, "state", `${ahj}'s NEC is not marked inherited`);
+    const irc = CP.resolveEffectiveCodeContext(db, "TX", ahj).citationFor("IRC", "R324", "Solar");
+    assert.match(String(irc.note), /No adopted-code data/, `${ahj} cites the IRC as ${irc.code}`);
+  }
+});
+
+await check("M1 MUST-EXCLUDE: the TX state-level read still lists IRC 2012; an OR city with no row still reads every OR state code", () => {
+  assert.ok(codesOf(CP.getCodeProfile(db, { state: "TX", ahj: "" })).includes("IRC 2012"), "the TX state read lost its IRC floor");
+  const orState = codesOf(CP.getCodeProfile(db, { state: "OR", ahj: "" }));
+  const orCity = codesOf(CP.getCodeProfile(db, { state: "OR", ahj: "City of Norowor" }));
+  assert.deepEqual(orCity, orState, "an Oregon city with no row does not read every state code");
+  assert.equal(CP.getCodeProfile(db, { state: "OR", ahj: "City of Norowor" })?.confidence, "verified", "the verified OR state row stopped reading as verified");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// M5 — a human's statement is never hidden by a seeded state fact
+// ─────────────────────────────────────────────────────────────────────────────────────────
+await check("M5 MUST-PASS: a VERIFIED AHJ row's NEC 2020 in a uniform family (NC) is read, not dropped", () => {
+  assert.equal(F.familyAdoptionModel(CP.stateAdoptionModel(db, "NC"), "electrical"), "statewide_uniform", "fixture: NC electrical is uniform");
+  CP.saveVerifiedCodeProfile(db, blank("NC", "City of Verifiedton", { adoptedCodes: [{ family: "electrical", code: "NEC", edition: "2020" }] }), "operator");
+  const read = CP.getCodeProfile(db, { state: "NC", ahj: "City of Verifiedton" })!;
+  const nec = read.adoptedCodes.filter((c) => F.codeFamilyOf(c) === "electrical");
+  assert.deepEqual(nec.map((c) => `${c.code} ${c.edition}`), ["NEC 2020"], `the verified statement was not the read: ${codesOf(read)}`);
+  assert.equal(CP.resolveEffectiveCodeContext(db, "NC", "City of Verifiedton").citationFor("NEC", "690.12", "Rapid shutdown").code, "2020 NEC");
+  // An operator-origin entry on a seeded row is a person's statement too.
+  CP.saveResearchedCodeProfile(db, blank("NC", "City of Operatorton", { adoptedCodes: [{ family: "electrical", code: "NEC", edition: "2020", origin: "operator" }] }));
+  assert.ok(codesOf(CP.getCodeProfile(db, { state: "NC", ahj: "City of Operatorton" })).includes("NEC 2020"), "an operator entry was dropped");
+});
+
+await check("M5 MUST-EXCLUDE: seeded, research and import AHJ entries in a uniform family are still dropped", () => {
+  for (const [name, origin] of [["City of Seedton", undefined], ["City of Researchton", "research"], ["City of Importon", "import"]] as const) {
+    CP.saveResearchedCodeProfile(db, blank("NC", name, { adoptedCodes: [{ family: "electrical", code: "NEC", edition: "2020", ...(origin ? { origin } : {}) }] }));
+    const read = CP.getCodeProfile(db, { state: "NC", ahj: name })!;
+    assert.ok(!codesOf(read).includes("NEC 2020"), `${name} (${origin ?? "no origin"}) read its own NEC in a uniform family: ${codesOf(read)}`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// M2 — AHJ research is scoped to what it was asked; it never displaces a statewide minimum
+// ─────────────────────────────────────────────────────────────────────────────────────────
+await check("M2 MUST-PASS (read): research that landed before the state said min+amend never displaces the state's edition", async () => {
+  // The skeptic's A2 order: the AHJ result lands first (no model known), then the state layer.
+  await CP.runCodeResearch(db, { state: "ZM", ahj: "City of Earlybird" }, fakeResearcher([
+    { family: "residential", code: "IRC", edition: "2018", sourceUrl: "https://earlybird.example.gov" },
+    { family: "electrical", code: "NEC", edition: "2017", sourceUrl: "https://earlybird.example.gov" },
+  ], true).provider);
+  await CP.runCodeResearch(db, { state: "ZM", ahj: "" }, fakeResearcher([
+    { family: "residential", code: "IRC", edition: "2021", sourceUrl: "https://zm.example.gov" },
+    { family: "electrical", code: "NEC", edition: "2023", sourceUrl: "https://zm.example.gov" },
+  ], true, { adoptionModel: { model: "statewide_minimum_local_amend" } }).provider);
+  const read = codesOf(CP.getCodeProfile(db, { state: "ZM", ahj: "City of Earlybird" }));
+  assert.deepEqual(read.sort(), ["IRC 2021", "NEC 2023"], `a research-origin AHJ copy displaced the state's minimum: ${read}`);
+  // An operator import in a min+amend family is a person's statement and still wins.
+  CP.saveResearchedCodeProfile(db, blank("ZM", "City of Importville", { adoptedCodes: [{ family: "residential", code: "IRC", edition: "2018", origin: "import", notes: "Imported from operator reference list — verify against the AHJ." }] }));
+  assert.ok(codesOf(CP.getCodeProfile(db, { state: "ZM", ahj: "City of Importville" })).includes("IRC 2018"), "an operator import in a min+amend family was dropped");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────

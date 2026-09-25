@@ -285,28 +285,38 @@ function attributedEntry(c: CodeEdition): boolean {
  * by the state's adoption model (it used to be the whole list: one AHJ entry dropped every state
  * code). Order: the AHJ's kept entries in its order, then the state's in its order.
  *   statewide_uniform            — the state's edition only; an AHJ entry for it is ignored (a city
- *                                  in Oregon cannot adopt its own ORSC — a stored one is wrong).
- *   statewide_minimum_local_amend— the AHJ's own attributed entry, else the state's.
+ *                                  in Oregon cannot adopt its own ORSC — a stored one is wrong) —
+ *                                  UNLESS a person stated it (the AHJ row is human-verified, or the
+ *                                  entry's origin is "operator"): hard rule 3, a seeded / reference
+ *                                  fact never hides a human's statement. That entry is read, in
+ *                                  place of the state's for its family.
+ *   statewide_minimum_local_amend— the AHJ's own OPERATOR/IMPORT entry (a person's statement), else
+ *                                  the state's. A machine-owned AHJ entry (research, the reference,
+ *                                  a memory-era entry with no origin) never displaces the state's
+ *                                  edition: the edition is the state's; locals only amend it.
  *   local_adoption               — the AHJ's own only: a state floor is not the city's edition, and
  *                                  showing it would read an unknown as an answer.
  *   unknown model                — the AHJ's own, else the state's.
  * Entries with no decidable family stay with their row (state ones only when the AHJ has none).
+ * An AHJ with NO row reads through this too (ownCodes []): a local-adoption family then reads as
+ * no data, never as the state's floor.
  */
-export function inheritAdoptedCodes(stateCodes: CodeEdition[], ownCodes: CodeEdition[], model: JurisdictionAdoptionModel | undefined): CodeEdition[] {
+export function inheritAdoptedCodes(
+  stateCodes: CodeEdition[],
+  ownCodes: CodeEdition[],
+  model: JurisdictionAdoptionModel | undefined,
+  opts: { ownVerified?: boolean } = {},
+): CodeEdition[] {
   const fam = (c: CodeEdition) => codeFamilyOf(c);
-  const ownByFamily = new Map<CodeFamily, CodeEdition[]>();
-  for (const c of ownCodes) {
-    const f = fam(c);
-    if (f) ownByFamily.set(f, [...(ownByFamily.get(f) ?? []), c]);
-  }
+  const personStated = (c: CodeEdition) => !!opts.ownVerified || c.origin === "operator";
   const keptOwnFamilies = new Set<CodeFamily>();
   const out: CodeEdition[] = [];
   for (const c of ownCodes) {
     const f = fam(c);
     if (!f) { out.push(c); continue; }
     const m = familyAdoptionModel(model, f);
-    if (m === "statewide_uniform") continue;
-    if (m === "statewide_minimum_local_amend" && !attributedEntry(c) && stateCodes.some((s) => fam(s) === f)) continue;
+    if (m === "statewide_uniform" && !personStated(c)) continue;
+    if (m === "statewide_minimum_local_amend" && researchOwnedEntry(c) && !personStated(c) && stateCodes.some((s) => fam(s) === f)) continue;
     out.push(c);
     keptOwnFamilies.add(f);
   }
@@ -315,7 +325,7 @@ export function inheritAdoptedCodes(stateCodes: CodeEdition[], ownCodes: CodeEdi
     if (!f) { if (!ownCodes.length) out.push({ ...s, inheritedFrom: "state" }); continue; }
     const m = familyAdoptionModel(model, f);
     if (m === "local_adoption") continue;
-    if (m !== "statewide_uniform" && keptOwnFamilies.has(f)) continue;
+    if (keptOwnFamilies.has(f)) continue;
     out.push({ ...s, inheritedFrom: "state" });
   }
   return out;
@@ -357,12 +367,19 @@ export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string 
   const stateRow = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [codeProfileKey({ state: input.state, ahj: "" })]);
   const exact = exactRow ? mapRow(exactRow) : null;
   const base = stateRow ? mapRow(stateRow) : null;
-  if (!exact) return base;
   // The state's adoption model decides, family by family, whose edition the AHJ reads — also when
-  // the state has NO row yet (the reference data still knows Oregon is uniform).
-  const model = base?.adoptionModel ?? stateAdoptionModel(db, exact.state || text(input.state));
+  // the state has NO row yet (the reference data still knows Oregon is uniform), and also when the
+  // AHJ has NO row: a Texas city nobody has researched must not read Texas's IRC 2012 floor as its
+  // own edition (it reads "no adopted-code data" for its local families, exactly as it would with
+  // a stamp-only row). Only the state-level read (no AHJ asked) returns the state row whole.
+  const model = base?.adoptionModel ?? stateAdoptionModel(db, exact?.state || text(input.state));
+  if (!exact) {
+    if (!base || !String(input.ahj || "").trim()) return base;
+    return { ...base, ...(model ? { adoptionModel: model } : {}), adoptedCodes: inheritAdoptedCodes(base.adoptedCodes, [], model) };
+  }
+  const ownVerified = exact.confidence === "verified";
   if (!base) {
-    const own = inheritAdoptedCodes([], exact.adoptedCodes, model);
+    const own = inheritAdoptedCodes([], exact.adoptedCodes, model, { ownVerified });
     return own.length === exact.adoptedCodes.length ? exact : { ...exact, adoptedCodes: own };
   }
   // Which layer supplied each criteria / limit field (the merged confidence below is the weaker of
@@ -383,7 +400,7 @@ export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string 
     ...exact,
     fieldSources,
     confidence: exact.confidence === "verified" && base.confidence === "verified" ? "verified" : "seeded",
-    adoptedCodes: inheritAdoptedCodes(base.adoptedCodes, exact.adoptedCodes, model),
+    adoptedCodes: inheritAdoptedCodes(base.adoptedCodes, exact.adoptedCodes, model, { ownVerified }),
     // State-level facts: the state row's (the AHJ row never carries them).
     ...(model ? { adoptionModel: model } : {}),
     ...(base.upcoming?.length ? { upcoming: base.upcoming } : {}),
