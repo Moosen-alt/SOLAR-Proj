@@ -662,6 +662,20 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
     out.push({ criterion, value, qualifier, source, derived: false, excerpt: excerptAt(text, m.index, end) });
   };
   const asd = (s: string | undefined): boolean => !!s && /asd/i.test(s);
+  // THE ASD QUALIFIER ON EITHER SIDE of a label-first reading: after the value ("GROUND SNOW LOAD =
+  // 25.2 PSF (ASD)", "Pg = 25.2 PSF (ASD)") or before the label ("ASD GROUND SNOW LOAD: 25.2 PSF").
+  // Read only before the value, a plan stating its ASD ground snow alone was read as Pg 25.2 and
+  // blocked. A bare trailing "ASD" that opens the NEXT field ("36 PSF ASD WIND SPEED: 85 MPH") is not
+  // this value's qualifier.
+  const asdAround = (match: RegExpExecArray): boolean => {
+    const end = match.index + match[0].length;
+    const after = text.slice(end, end + 30);
+    const before = text.slice(Math.max(0, match.index - 12), match.index);
+    return /^\s*(?:\(\s*asd\s*\)|,?\s*asd\b(?!\s*(?:wind|basic|design|ultimate|speed|velocity|v\b|mph|\d)))/i.test(after)
+      || /\basd\s*\)?\s*$/i.test(before);
+  };
+  const groundQual = (label: string | undefined, match: RegExpExecArray): StatedDesignCriterionQualifier =>
+    asd(label) || asdAround(match) ? "ground_asd" : "ground";
   let m: RegExpExecArray | null;
   // Where a label-first match's value starts: the capture group's own index (the "d" flag) — a
   // match may carry more after the value than its unit.
@@ -681,7 +695,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   while ((m = groundLabel.exec(text))) {
     if (!(m[2] && /[:=]/.test(m[2])) && !m[4]) continue;
     if ((!m[2] || isDashSep(m[2])) && labelFirstIsNextLabels(m, 3)) continue;
-    push("groundSnowPsf", asd(m[1]) ? "ground_asd" : "ground", m[3], m);
+    push("groundSnowPsf", groundQual(m[1], m), m[3], m);
   }
   // THE UNIT BEFORE THE VALUE: a design report's "Ground Snow Load psf 25" (unit column), a
   // calc table's "Ground Snow Load [psf]: 25". A BRACKETED unit counts only with its separator:
@@ -689,7 +703,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // it the cell repeats Pg under a "p g (asd)" label that contradicts the letter's own Pg(asd)
   // (measured: 15 of 15 letters) — the letter's design statement is its Design Parameters block.
   const groundUnitFirst = /\bground\s+snow(?:\s+loads?)?(?:\s*,?\s*p\s?g\b)?\s*(?:psf\s+|\[\s*psf\s*\]\s*[:=]\s*)(\d+(?:\.\d+)?)(?![\d.])(?!\s*psf)/gi;
-  while ((m = groundUnitFirst.exec(text))) push("groundSnowPsf", "ground", m[1], m);
+  while ((m = groundUnitFirst.exec(text))) push("groundSnowPsf", groundQual(undefined, m), m[1], m);
   // "SNOW LOAD (GROUND): 25 PSF" — the qualifier printed after the label. It asks the run's ownership
   // like every other label reader: in "36 PSF SNOW LOAD (GROUND) 10 PSF DEAD LOAD" the 10 is the dead
   // load's (read as Pg 10, a BLOCKER on a correct plan). Its value-first form is groundParenAfter.
@@ -697,7 +711,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   while ((m = groundParen.exec(text))) {
     if (!(m[1] && /[:=]/.test(m[1])) && !m[3]) continue;
     if ((!m[1] || isDashSep(m[1])) && labelFirstIsNextLabels(m, 2)) continue;
-    push("groundSnowPsf", "ground", m[2], m);
+    push("groundSnowPsf", groundQual(undefined, m), m[2], m);
   }
   // A FORMULA'S COEFFICIENT is not a stated value: "Pf = 0.7 Ce Ct Is Pg = 0.7 (1.0)(1.1)(1.0)(36 PSF)",
   // "pf = 0.7 x Ce x Ct x Is x pg = 0.7 x 1.0 x …" — a unitless number after "Pg =" that a
@@ -713,7 +727,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
     if (!m[4] && coefficientAt(m.indices![3][1])) continue;
     // "36 PSF Pg 25 PSF ROOF SNOW": in a value-first list the 25 is the next label's, as for "GROUND SNOW".
     if ((!m[2] || isDashSep(m[2])) && labelFirstIsNextLabels(m, 3)) continue;
-    push("groundSnowPsf", asd(m[1]) ? "ground_asd" : "ground", m[3], m);
+    push("groundSnowPsf", groundQual(m[1], m), m[3], m);
   }
   // Value first: "ground snow 28 psf" is caught above; "28 psf ground snow" here.
   // A value-first read never takes a value its OWN label already assigned: in "ROOF SNOW LOAD:
