@@ -148,7 +148,10 @@ await run("autonomous research: first contact queues the STATE layer first (the 
   // county's code research waits (pending_state) instead of racing it.
   assert.equal(n, 1, "only the state default layer is queued on first contact");
   assert.equal(codeResearchDecision(db, "MT", "Gallatin County").reason, "pending_state");
-  await new Promise((r) => setTimeout(r, 400)); // lazy-import enqueue settles
+  // The enqueue sits behind a lazy import of jobQueue (its first load in this process): wait for it
+  // to land rather than a fixed 400 ms, which a loaded machine (the full unit run) can outlast.
+  for (let i = 0; i < 50 && !db.get("SELECT id FROM job_queue WHERE job_type = 'code_research'"); i++) await new Promise((r) => setTimeout(r, 200));
+  await new Promise((r) => setTimeout(r, 200));
   const jobs = db.query<{ payload: string; status: string }>("SELECT payload, status FROM job_queue WHERE job_type = 'code_research'");
   assert.ok(jobs.length >= 1, `jobs enqueued (${jobs.length})`);
   assert.ok(jobs.every((j) => /"ahj":""/.test(j.payload)), `a county layer was queued before its state: ${jobs.map((j) => j.payload).join(" | ")}`);
