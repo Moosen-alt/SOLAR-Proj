@@ -2223,6 +2223,22 @@ export function dedupeKnowledgeNotes(db: AppDb): number {
   return repaired;
 }
 
+/** The newest versioned migration this code carries — what a database opened by THIS build's
+ *  openDatabase() would be migrated to. Read-only; lets a script refuse to write to a database
+ *  that an older pinned server still runs (it would otherwise migrate it under that server). */
+export function latestSchemaVersion(): number {
+  return VERSIONED_MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0);
+}
+
+/** MAX(schema_meta.version) of an already-open handle, 0 when the table is missing. */
+export function currentSchemaVersion(db: AppDb): number {
+  try {
+    return Number(db.get<{ max: number | null }>("SELECT MAX(version) AS max FROM schema_meta")?.max ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
 function runVersionedMigrations(db: AppDb): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_meta (

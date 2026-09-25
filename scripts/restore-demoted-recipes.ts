@@ -24,13 +24,22 @@
 // A restore sets status 'complete' (auto_submit_enabled stays 0 — there is no arm), stamps a
 // note, and writes a `portal_recipe.restored` audit row naming the run and the reason.
 //
-// DRY RUN BY DEFAULT. Point AUTOPILOT_DB_PATH at the database (production: a .backup copy first).
-//   AUTOPILOT_DB_PATH=<db> npx tsx scripts/restore-demoted-recipes.ts            # report only
-//   AUTOPILOT_DB_PATH=<db> npx tsx scripts/restore-demoted-recipes.ts --apply    # write
+// DRY RUN BY DEFAULT, AND THE DRY RUN IS READ-ONLY AT THE DATABASE LEVEL (trust skeptic M5): it
+// opens the file with better-sqlite3 readonly — never through openDatabase(), which migrates and
+// seeds whatever it opens (a dry run on a production copy used to apply a migration, write two
+// knowledge_events rows and refresh 387 KB rows). --apply opens the file plainly (no migrations, no
+// seeds either) and REFUSES a database whose schema is older than this code's: the operator's next
+// step is openDatabase, so the live DB must already be at this build's schema — i.e. --apply runs
+// only AFTER the re-pin, on the migrated live DB (or on a migrated copy to rehearse). A live WAL
+// database may refuse a readonly open; dry-run on a .backup copy.
+//   AUTOPILOT_DB_PATH=<copy> npx tsx scripts/restore-demoted-recipes.ts            # report only (readonly)
+//   AUTOPILOT_DB_PATH=<db>   npx tsx scripts/restore-demoted-recipes.ts --apply    # write (schema must be current)
 //   add --json for a machine-readable report.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AppDb } from "../backend/src/db";
+import Database from "better-sqlite3";
+import { AppDb, currentSchemaVersion, latestSchemaVersion } from "../backend/src/db";
+import { recipeDisciplineForTrack } from "../backend/src/portalChannel";
 import { replayFailureBlamesRecipe, upsertRecipeNote, type ReplayFailureAttribution } from "../backend/src/portalRecipes";
 import { extractStageFailureMessage } from "../backend/src/repository";
 import { addAuditLog } from "../backend/src/audit";
@@ -76,6 +85,20 @@ export function findDemotionEvent(db: AppDb, recipe: Row): DemotionEvent | null 
   // Legacy: the old code wrote recipeStale:true only in the branch that demoted the recipe.
   const scopeUtility = s(recipe.scope_type) === "utility";
   const name = (s(recipe.ahj) || s(recipe.utility) || s(recipe.profile_key)).trim().toLowerCase();
+  // THE RUN'S TRACK MUST BE THIS RECIPE'S DISCIPLINE (trust skeptic M6). An AHJ holds one recipe
+  // per discipline (structural / electrical / combo); a legacy run names only the AHJ, so its
+  // permit_type (building → structural, electrical, combo — the one mapper the stage uses) says
+  // which sibling it replayed. A trackless run ('permit' / '') could only have replayed a legacy
+  // '' row, and a '' recipe beside disciplined siblings is ambiguous — refused, never guessed.
+  const siblingKeys = scopeUtility ? 0 : Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM portal_recipes WHERE profile_key = ?", [s(recipe.profile_key)])?.n ?? 0);
+  const disciplineMatches = (permitType: string): boolean => {
+    if (scopeUtility) return true;
+    const runDiscipline = recipeDisciplineForTrack(permitType);
+    const own = s(recipe.discipline);
+    if (runDiscipline) return own === runDiscipline;
+    // trackless legacy run: only a '' recipe, and only when it is the sole recipe on its key
+    return own === "" && siblingKeys <= 1;
+  };
   const runs = db.query<Row>(
     `SELECT pr.id, pr.project_id, pr.permit_type, pr.started_at, pr.finished_at, pr.result_json, pr.recipe_id, p.state
        FROM portal_runs pr LEFT JOIN projects p ON p.id = pr.project_id
@@ -94,6 +117,7 @@ export function findDemotionEvent(db: AppDb, recipe: Row): DemotionEvent | null 
       const trackIsUtility = s(r.permit_type) === "nem";
       matches = Boolean(named) && named === name
         && trackIsUtility === scopeUtility
+        && disciplineMatches(s(r.permit_type))
         && s(r.state).trim().toLowerCase() === s(recipe.state).trim().toLowerCase()
         && s(r.started_at) >= s(recipe.created_at);
     }
@@ -169,6 +193,26 @@ export function applyRecipeRestores(db: AppDb, plan: RestoreDecision[], actor = 
   return restored;
 }
 
+/**
+ * OPEN WITHOUT MIGRATING OR SEEDING. Dry run: readonly at the SQLite level (a write anywhere throws).
+ * --apply: a plain read-write handle, refused unless the file is already at this build's schema —
+ * the operator's next openDatabase() must find nothing to migrate.
+ */
+export function openForScript(dbPath: string, apply: boolean): AppDb {
+  const probe = new AppDb(new Database(dbPath, { readonly: true, fileMustExist: true }));
+  const have = currentSchemaVersion(probe);
+  const want = latestSchemaVersion();
+  if (!apply) return probe;
+  probe.close();
+  if (have !== want) {
+    console.error(`Refusing --apply: ${dbPath} is at schema v${have}, this code expects v${want}. Run --apply only after the re-pin (the server has migrated the live DB), or on a migrated copy. Nothing was written.`);
+    process.exit(2);
+  }
+  const rw = new Database(dbPath, { fileMustExist: true });
+  rw.pragma("busy_timeout = 5000");
+  return new AppDb(rw);
+}
+
 // ---------------------------------------------------------------------------------------------
 // CLI — only when invoked directly (the test imports the functions without side effects).
 // ---------------------------------------------------------------------------------------------
@@ -185,8 +229,8 @@ if (invokedDirectly) {
     console.error("Set AUTOPILOT_DB_PATH to the database to read (for production: a .backup copy first).");
     process.exit(2);
   }
-  const { openDatabase } = await import("../backend/src/db");
-  const db = await openDatabase();
+  const dbPath = path.resolve(process.env.AUTOPILOT_DB_PATH);
+  const db = openForScript(dbPath, apply);
   const plan = planRecipeRestores(db);
   if (asJson) {
     console.log(JSON.stringify({ apply, db: process.env.AUTOPILOT_DB_PATH, plan }, null, 2));
