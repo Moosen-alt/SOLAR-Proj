@@ -10,6 +10,16 @@ import { RecipeAdapter, fingerprintBoost, healTargetOf, scoreHealCandidate, rank
 // Keep the persist-settle sleep negligible so the gap-fill-ordering tests run fast and
 // deterministically (the production default is 3s). "1" → Number("1") || 3000 === 1.
 process.env.AUTOLEARN_SAVE_SETTLE_MS = "1";
+// Anything a replay under test writes goes to a temp folder, never the repo's data/.
+{
+  const os = await import("node:os");
+  const fsm = await import("node:fs");
+  const pth = await import("node:path");
+  const dir = fsm.mkdtempSync(pth.join(os.tmpdir(), "recipe-adapter-test-"));
+  process.env.REPLAY_CAPTURE_DIR = dir;
+  process.env.REPLAY_RUN_DIR = pth.join(dir, "runs");
+  process.env.PORTAL_SCREENSHOT_DIR = pth.join(dir, "screenshots");
+}
 
 // --- Fake Playwright page/locator ------------------------------------------------
 

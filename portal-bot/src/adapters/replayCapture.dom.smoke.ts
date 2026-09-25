@@ -31,6 +31,7 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 };
 
 const SECRET = "84201937465";
+const STARTED = Date.now();
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
   res.writeHead(200, { "content-type": "text/html" });
@@ -102,7 +103,7 @@ console.log("\n3. MUST-EXCLUDE: the pre-filled 11-digit value is in no file repl
   const leaking = files.filter((f) => !f.endsWith(".png") && fs.readFileSync(f, "utf8").includes(SECRET));
   check("no capture file contains the pre-filled account number", files.length > 0 && leaking.length === 0, `leaking=${leaking.map((f) => path.basename(f)).join(",")}`);
   const cwdData = path.join(process.cwd(), "data", "replay-failures");
-  const strays = allFiles(cwdData).filter((f) => /capture-smoke|miss-County|Meter-Reading/i.test(f));
+  const strays = allFiles(cwdData).filter((f) => fs.statSync(f).mtimeMs >= STARTED);
   check("nothing fell back to data/", strays.length === 0, strays.join(","));
 }
 

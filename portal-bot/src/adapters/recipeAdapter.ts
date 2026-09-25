@@ -5692,7 +5692,6 @@ export class RecipeAdapter extends BasePortalAdapter {
   private async writeSanitizedCapture(dir: string, base: string, opts: { target?: unknown; text?: string } = {}): Promise<string> {
     try {
       if (!this.page) return "";
-      fs.mkdirSync(dir, { recursive: true });
       const frames: Array<{ url?: () => string; name?: () => string; evaluate?: (fn: unknown) => Promise<unknown> }> =
         typeof this.page.frames === "function" ? this.page.frames() : [this.page];
       const captured: Array<{ url: string; name: string; html: string }> = [];
@@ -5731,6 +5730,9 @@ export class RecipeAdapter extends BasePortalAdapter {
           return { outerHTML: secret ? `<${el.tagName.toLowerCase()} [secret control — markup withheld]>` : c.outerHTML.slice(0, 20_000), options: opts, secret };
         }, PORTAL_SAFETY_GLOBAL).catch(() => null) as TargetCapture | null;
       }
+      // Nothing readable (a unit-test fake, a closed page): write nothing rather than an empty shell.
+      if (!captured.length && !target) return "";
+      fs.mkdirSync(dir, { recursive: true });
       const file = path.join(dir, `${base}.json`);
       fs.writeFileSync(file, JSON.stringify({
         url: String(this.page.url?.() ?? "").slice(0, 200),

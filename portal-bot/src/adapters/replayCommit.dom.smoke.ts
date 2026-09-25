@@ -14,6 +14,14 @@
 //
 //   npx tsx portal-bot/src/adapters/replayCommit.dom.smoke.ts
 import { chromium } from "playwright";
+import nodeFs from "node:fs";
+import nodeOs from "node:os";
+import nodePath from "node:path";
+// Every artifact this smoke's replays write goes to a temp folder, never data/.
+const SMOKE_ARTIFACTS = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "replay-smoke-"));
+process.env.REPLAY_CAPTURE_DIR = SMOKE_ARTIFACTS;
+process.env.REPLAY_RUN_DIR = nodePath.join(SMOKE_ARTIFACTS, "runs");
+process.env.PORTAL_SCREENSHOT_DIR = nodePath.join(SMOKE_ARTIFACTS, "screenshots");
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../../shared/src/types";
 import { RecipeAdapter } from "./recipeAdapter";
 import { buildWizard } from "../replica/fixtures/wizards";
@@ -38,7 +46,7 @@ await page.fill("#Password", "p1");
 await Promise.all([page.waitForURL(/Dashboard/), page.click("#btnSignIn")]);
 
 const steps: RecipeStep[] = [
-  { action: "goto", value: `${r.base}/${inst.slug}`, note: "installer information" },
+  { action: "goto", value: `${r.base}/${inst.slug}`, note: "open the page" },
   { action: "fill", selector: { css: "#pcInputBase30" }, note: "Name", field: "installerContactName" },
   { action: "fill", selector: { css: "#pcInputBase33" }, note: "Phone", field: "installerPhone" },
   { action: "fill", selector: { css: "#pcInputBase31" }, note: "Company", field: "installerCompanyName" },

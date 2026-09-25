@@ -14,6 +14,14 @@
 //   npx tsx portal-bot/src/adapters/submitOutcome.dom.smoke.ts
 import http from "node:http";
 import { chromium } from "playwright";
+import nodeFs from "node:fs";
+import nodeOs from "node:os";
+import nodePath from "node:path";
+// Every artifact this smoke's replays write goes to a temp folder, never data/.
+const SMOKE_ARTIFACTS = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "replay-smoke-"));
+process.env.REPLAY_CAPTURE_DIR = SMOKE_ARTIFACTS;
+process.env.REPLAY_RUN_DIR = nodePath.join(SMOKE_ARTIFACTS, "runs");
+process.env.PORTAL_SCREENSHOT_DIR = nodePath.join(SMOKE_ARTIFACTS, "screenshots");
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../../shared/src/types";
 import { RecipeAdapter } from "./recipeAdapter";
 

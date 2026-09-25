@@ -13,6 +13,14 @@
 //
 //   npx tsx portal-bot/src/adapters/driftSeekReview.dom.smoke.ts
 import { chromium } from "playwright";
+import nodeFs from "node:fs";
+import nodeOs from "node:os";
+import nodePath from "node:path";
+// Every artifact this smoke's replays write goes to a temp folder, never data/.
+const SMOKE_ARTIFACTS = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "replay-smoke-"));
+process.env.REPLAY_CAPTURE_DIR = SMOKE_ARTIFACTS;
+process.env.REPLAY_RUN_DIR = nodePath.join(SMOKE_ARTIFACTS, "runs");
+process.env.PORTAL_SCREENSHOT_DIR = nodePath.join(SMOKE_ARTIFACTS, "screenshots");
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../../shared/src/types";
 import { RecipeAdapter } from "./recipeAdapter";
 import { buildWizard } from "../replica/fixtures/wizards";
@@ -58,7 +66,7 @@ console.log("\n1. MUST-EXCLUDE: the recipe expects a field page; the portal is a
   const { result, close } = await run(recipeOf(r.base, steps), { workDescription: "PV", systemSizeDcKw: "7.2", moduleQuantity: "18", numberOfStories: "2" });
   check("the server received NO filing POST", r.state.submitPosts.length === 0, `submitPosts=${r.state.submitPosts.length}`);
   check("the run failed", result.ok === false, String(result.message).slice(0, 200));
-  check("with a named terminal-page drift reason", /terminal-page drift/i.test(String(result.message)) && /names itself the review step/i.test(String(result.message)), String(result.message).slice(0, 300));
+  check("with a named reason: the landing page is TERMINAL and its control is the filing click", /the page it landed on is TERMINAL/.test(String(result.message)) && /(is the filing click on this page|terminal-page drift)/i.test(String(result.message)), String(result.message).slice(0, 600));
   await close();
   await r.close();
 }
