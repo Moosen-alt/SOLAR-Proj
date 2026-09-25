@@ -142,6 +142,45 @@ await check("(e6) a Tigard KB row carrying PGE's PowerClerk is no claim, and nev
   assert.equal(hostFitsTrackAndEntity("building", tigard, PGE_NM, "kb").code, "track_conflict");
 });
 
+// ── resolution skeptic MF4: junk KB entity names claim nothing ───────────────────────────────
+await check("(e7) MF4: a reference import's junk AHJ names ('OR portal', '1 - 5 DAYS', …) own no portal — MUST-EXCLUDE Lincoln City is refused Roseburg's portal (it is Roseburg's, not shared); MUST-PASS Roseburg fits it, Medford fits its own", () => {
+  // The rows production holds, written through the writer that let them in (the reference import).
+  const ROSEBURG = "https://roseburgor.portal.opengov.com/";
+  const MEDFORD = "https://medford-or-us.avolvecloud.com/ProjectDox/";
+  const WASHCO = "https://pprmaca.co.washington.or.us/CitizenAccess/";
+  const TUKWILA = "https://tukwilawa.portal.opengov.com/";
+  const imported = (state: string, ahj: string, portalUrl: string) =>
+    kb.importSeededAhjKnowledge(db, { state, ahj, portalUrl, sourceLabel: "reference sheet (e7)" });
+  assert.equal(imported("OR", "ROSEBURG", ROSEBURG), "imported");
+  assert.equal(imported("OR", "OR portal", ROSEBURG), "imported", "premise: the import lets the junk row in (that is why the evidence must judge it)");
+  assert.equal(imported("OR", "1 - 5 DAYS", MEDFORD), "imported");
+  assert.equal(imported("OR", "2-5 days / REV 3-8 days if resubmitted", WASHCO), "imported");
+  assert.equal(imported("WA", "WA portal", TUKWILA), "imported");
+  assert.equal(imported("WA", "Tukwila", TUKWILA), "imported");
+  // MUST-EXCLUDE: Roseburg's portal has ONE owner — Roseburg — so Lincoln City is refused it.
+  const lincoln = entity("ahj", "OR", "City of Lincoln City")!;
+  const roseburgOwners = [...new Set(lincoln.otherClaims.filter((c) => /roseburgor/.test(c.url)).map((c) => c.owner))];
+  assert.deepEqual(roseburgOwners, ["ROSEBURG (OR)"], `junk names count as owners: ${JSON.stringify(roseburgOwners)}`);
+  const fit = hostFitsTrackAndEntity("building", lincoln, ROSEBURG, "kb");
+  assert.equal(fit.code, "foreign_entity", `Lincoln City launched Roseburg's portal: ${fit.reason}`);
+  assert.equal(lincoln.otherClaims.some((c) => /DAYS|days|portal \(/.test(c.owner)), false, `a turnaround or column header owns a portal: ${JSON.stringify(lincoln.otherClaims.map((c) => c.owner))}`);
+  const tukwilaOwners = [...new Set(entity("ahj", "WA", "City of Kent")!.otherClaims.filter((c) => /tukwila/.test(c.url)).map((c) => c.owner))];
+  assert.deepEqual(tukwilaOwners, ["Tukwila (WA)"]);
+  // MUST-PASS: the real owners fit their own portals (aliases: "City of Roseburg" is "ROSEBURG").
+  assert.ok(kb.knowledgeNameMatchScore("City of Roseburg", "ROSEBURG") >= 78, "the alias scorer does not merge the spellings (ENTITY_ALIAS_MIN_SCORE is 78)");
+  const roseburg = entity("ahj", "OR", "City of Roseburg")!;
+  assert.ok(roseburg.ownPortals.some((u) => /roseburgor/.test(u)), "Roseburg does not own its own portal");
+  assert.equal(hostFitsTrackAndEntity("building", roseburg, ROSEBURG, "kb").fits, true);
+  const medford = hostFitsTrackAndEntity("building", entity("ahj", "OR", "City of Medford"), MEDFORD, "kb");
+  assert.equal(medford.fits, true, `Medford refused its own portal because a turnaround owned it: ${medford.reason}`);
+  const washco = hostFitsTrackAndEntity("building", entity("ahj", "OR", "Washington County"), WASHCO, "kb");
+  assert.equal(washco.fits, true, washco.reason);
+  // A city that merely sounds like a duration is still an entity (no digit → not a turnaround).
+  assert.equal(imported("OR", "Days Creek", "https://dayscreek.portal.example/"), "imported");
+  const daysCreekOwners = [...new Set(entity("ahj", "OR", "City of Lincoln City")!.otherClaims.filter((c) => /dayscreek/.test(c.url)).map((c) => c.owner))];
+  assert.deepEqual(daysCreekOwners, ["Days Creek (OR)"], "Days Creek is a jurisdiction, not a turnaround");
+});
+
 // ── end to end: the real prepareSubmission, browser stubbed ──────────────────────────────────
 await check("(s1) a Portland recipe that drives Tigard's verified portal is not replayed, and is left untouched", async () => {
   // The fixture's AHJ (Portland) has a complete recipe whose entry is Tigard's EnerGov host.

@@ -269,8 +269,30 @@ export function findAnyRecipeForProject(
 // sharing a portal".
 // ---------------------------------------------------------------------------
 const ENTITY_ALIAS_MIN_SCORE = 78;
+/**
+ * JUNK A REFERENCE IMPORT LEFT IN THE AHJ COLUMN CLAIMS NO PORTAL (resolution skeptic MF4). On
+ * production 'OR portal (OR)' + 'ROSEBURG (OR)' made roseburgor.portal.opengov.com read as SHARED
+ * (two owners → fits any Oregon AHJ), while '1 - 5 DAYS (OR)' was the sole owner of Medford's
+ * portal and '2-5 days / REV 3-8 days …' of Washington County's — a real Medford project would
+ * have been refused its own portal as foreign. isJunkEntityName (knowledgeBase) catches bare
+ * state names and digits; these are the other shapes a spreadsheet's process columns leak:
+ *   - "<state> portal" / "<state> website" / "… login" — a column header, not a jurisdiction;
+ *   - a turnaround ("1 - 5 DAYS", "2-5 days / REV 3-8 days") — a DIGIT with a time unit (a
+ *     digit is required: "Days Creek" is a city);
+ *   - a platform ("SolarAPP+") and placeholders ("n/a", "online", "varies", "see notes").
+ * Judged here (the portal evidence), not at the import, which is another workstream's door.
+ */
+function looksLikePortalJunkName(name: string): boolean {
+  const n = name.trim();
+  if (!n) return true;
+  if (/^(?:[a-z]{2}|[a-z]+)\s+(?:portal|website|web ?site|site|link|url|login|log-?in|e-?permitting)\s*$/i.test(n)) return true;
+  if (/\d/.test(n) && /\b(?:days?|weeks?|hours?|hrs?|business\s+days?|rev)\b/i.test(n)) return true;
+  if (/^solar\s*app\+?$/i.test(n)) return true;
+  if (/^(?:n\/?a|none|null|tbd|tba|varies|online|portal|email|e-?mail|paper|in person|unknown|see\s+(?:notes?|below|above))\s*$/i.test(n)) return true;
+  return false;
+}
 function isRealEntityName(name: string): boolean {
-  return Boolean(name.trim()) && !isJunkEntityName(name) && !ahjLooksLikeHostname(name);
+  return Boolean(name.trim()) && !isJunkEntityName(name) && !ahjLooksLikeHostname(name) && !looksLikePortalJunkName(name);
 }
 /** A trailing state code is spelling, not identity: "Tigard, OR" is "Tigard". */
 function entityNameCore(name: string): string {
