@@ -364,6 +364,17 @@ check("PINNED 'DESIGN SNOW: Is Pg = 36 PSF' alone reads nothing (a product's res
   assert.ok(!j.min && !j.ahj, show(j));
 });
 
+console.log("K25 — a label that closes a value-first list and then assigns a formula COEFFICIENT does not close the list with a value");
+// loadValueOwners' lastAssignsOwn asks OWN_VALUE_AFTER (a separator and a number that is not a coefficient),
+// not the old '^\s*[:=]\s*\d'. The difference shows only where the closing label's first word is prose
+// ("DESIGN", "MINIMUM") so no label-ish word claims the value before it: with the old test the run
+// "36 PSF GROUND SNOW LOAD 25 PSF DESIGN SNOW LOAD Ps = 0.7 x …" closed with a value, read as "both"
+// (A{36?/25?}, a warning on a correct plan; a 16 psf plan's BLOCKER lost) — with OWN_VALUE_AFTER the
+// coefficient is no value, the list is V L V L, and the 36 is the sure Pg (round-5 skeptic K25).
+reads36("36 PSF GROUND SNOW LOAD 25 PSF DESIGN SNOW LOAD Ps = 0.7 x Ce x Ct x Is x Pg = 0.7 x 1.0 x 1.1 x 1.0 x 36 = 27.7 PSF");
+blocks16("16 PSF GROUND SNOW LOAD 10 PSF DESIGN SNOW LOAD Ps = 0.7 x Ce x Ct x Is x Pg = 0.7 x 1.0 x 1.1 x 1.0 x 16 = 12.3 PSF");
+reads36("36 PSF GROUND SNOW LOAD 25 PSF DESIGN SNOW LOAD = 0.7 Ce Ct Is Pg = 27.7 PSF");
+
 if (failures) {
   console.error(`\n${failures} ground-snow misread check(s) FAILED`);
   process.exit(1);
