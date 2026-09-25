@@ -71,6 +71,24 @@ export function expectedValues(w: Wizard, project: SynthProject, docs: Record<Do
   return out;
 }
 
+/** Pairs of scored controls whose expected values for `project` are interchangeable: a replay
+ *  that swaps them leaves a state identical to the correct one, so no counter can see it.
+ *  Printed by the scoreboard so a clean number is not read as covering them. */
+export function knownBlindSpots(w: Wizard, project: SynthProject, docs: Record<DocKey, string>): string[] {
+  const scored = scoredControls(w);
+  const expected = expectedValues(w, project, docs);
+  const out: string[] = [];
+  for (let i = 0; i < scored.length; i++) {
+    for (let j = i + 1; j < scored.length; j++) {
+      const a = scored[i], b = scored[j];
+      const wa = expected.get(a.key) ?? "", wb = expected.get(b.key) ?? "";
+      if (!wa.trim() || !wb.trim()) continue;
+      if (matches(a.expect!, wa, wb) && matches(b.expect!, wb, wa)) out.push(`${a.key} <-> ${b.key}`);
+    }
+  }
+  return out;
+}
+
 export function scoreRun(
   w: Wizard,
   state: ReplicaState,

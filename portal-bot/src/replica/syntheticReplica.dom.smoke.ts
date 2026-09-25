@@ -22,7 +22,7 @@ import { chromium } from "playwright";
 import { buildWizard, scoredControls, type DocKey } from "./fixtures/wizards";
 import { PROJECT_A, PROJECT_B, aOnlyLiterals } from "./fixtures/syntheticProjects";
 import { startSyntheticReplica, type ReplicaState } from "./syntheticServer";
-import { expectedValues, scoreRun } from "./benchScore";
+import { expectedValues, knownBlindSpots, scoreRun } from "./benchScore";
 import { standInPlanner } from "./standInPlanner";
 
 let failures = 0;
@@ -80,7 +80,19 @@ console.log("\n1. ACCELA: async search on the same URL; the review page's Contin
   check("a mid-wizard Continue Application advances and is NOT a submit", r.state.submitPosts.length === 0 && /CapType/i.test(page.url()), `${page.url()} submits=${r.state.submitPosts.length}`);
   const review = w.pages.find((p) => p.kind === "review")!;
   await page.goto(`${r.base}/CitizenAccess/Cap/${review.slug}`);
-  check("rendering the review page marks it reached", r.state.reviewReached === true);
+  // MUST-EXCLUDE: a recipe of one goto to CapConfirm.aspx scored review=y before (0/19 fields).
+  check("MUST-EXCLUDE: a direct GET of the review page is NOT reaching review (reviewVia=direct)", r.state.reviewReached === false && r.state.reviewVia === "direct", `reached=${r.state.reviewReached} via=${r.state.reviewVia}`);
+  // MUST-PASS: the portal's own Continue from the last page before review, its required
+  // upload committed, IS reaching review. Refused without the upload.
+  const preIdx = w.pages.indexOf(review) - 1;
+  const pre = w.pages[preIdx];
+  const preUrl = `${r.base}/CitizenAccess/Cap/${pre.slug}`;
+  const cont = { __EVENTTARGET: "ctl00$PlaceHolderMain$actionBarBottom$btnContinue", __EVENTARGUMENT: "", __PAGEIDX: String(preIdx) };
+  await page.request.post(preUrl, { multipart: cont, maxRedirects: 0 });
+  check("MUST-EXCLUDE: Continue from the last page with its required upload missing is refused, not reached", r.state.reviewReached === false && r.state.validationErrors.some((e) => e.startsWith(pre.heading)), `reached=${r.state.reviewReached} errors=${r.state.validationErrors.join("|")}`);
+  const fileCtl = pre.controls.find((c) => c.kind === "file" && c.required)!;
+  await page.request.post(preUrl, { multipart: { ...cont, [fileCtl.name]: { name: "B-plan-set.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n%%EOF\n") } }, maxRedirects: 0 });
+  check("MUST-PASS: Continue from the last page before review, required values committed, reaches review (walked)", r.state.reviewReached === true && r.state.reviewVia === "walked", `reached=${r.state.reviewReached} via=${r.state.reviewVia}`);
   await Promise.all([page.waitForURL(/CapCompletion/i, { timeout: 8000 }).catch(() => null), page.click("a[id$='actionBarBottom_btnContinue']")]);
   check("the review page's Continue Application IS a submit (flagged), and the portal says it filed", r.state.submitPosts.length === 1 && /successfully submitted/i.test(await page.locator("body").innerText()), `submits=${r.state.submitPosts.length}`);
   await page.context().close();
@@ -123,6 +135,13 @@ console.log("\n2. POWERCLERK: autosave on blur only; a re-render wipes the uncom
   const review = w.pages.find((p) => p.kind === "review")!;
   await page.goto(`${r.base}/${review.slug}`);
   check("no autosave, Next or login POST was flagged", r.state.submitPosts.length === 0 && r.state.payPosts.length === 0);
+  check("MUST-EXCLUDE: serving the Review & Submit page on a GET is not reaching review", r.state.reviewReached === false && r.state.reviewVia === "direct", `reached=${r.state.reviewReached} via=${r.state.reviewVia}`);
+  const pcPre = w.pages[w.pages.indexOf(review) - 1];
+  for (const c of pcPre.controls.filter((x) => x.required && x.kind === "file")) {
+    await page.request.post(`${r.base}/MvcProjects/Upload`, { multipart: { page: String(w.pages.indexOf(pcPre)), key: c.key, file: { name: `${c.key}.pdf`, mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n%%EOF\n") } } });
+  }
+  await page.request.post(`${r.base}/MvcProjects/Next`, { form: { page: String(w.pages.indexOf(pcPre)) }, maxRedirects: 0 });
+  check("MUST-PASS: Next from the last page before review, its required uploads committed, reaches review (walked)", r.state.reviewReached === true && r.state.reviewVia === "walked", `reached=${r.state.reviewReached} via=${r.state.reviewVia} errors=${r.state.validationErrors.join("|")}`);
   await page.click("#btnPay");
   await page.waitForLoadState("domcontentloaded");
   check("the Pay button's POST is flagged as pay", r.state.payPosts.length === 1, `pay=${r.state.payPosts.length}`);
@@ -151,6 +170,8 @@ console.log("\n3. SPA: one URL, client-validated steps; Submit Application flags
   check("a valid step posts its values and routes on, the URL path unchanged", r.state.values["app.company"] === "Kestrel Energy LLC" && new URL(page.url()).pathname === "/apply" && r.state.submitPosts.length === 0, page.url());
   await page.goto(`${r.base}/apply#/step/review`);
   await page.waitForSelector("text=Submit Application");
+  await page.waitForTimeout(200);
+  check("MUST-EXCLUDE: painting the SPA review route without the last step accepted is not reaching review", r.state.reviewReached === false && r.state.reviewVia === "direct", `reached=${r.state.reviewReached} via=${r.state.reviewVia}`);
   await page.getByRole("button", { name: "Submit Application" }).click();
   await page.waitForTimeout(500);
   check("Submit Application's POST is flagged as submit", r.state.submitPosts.length === 1, `submit=${r.state.submitPosts.length}`);
@@ -184,6 +205,15 @@ console.log("\n4. SCORING: every counter moves on its own evidence, and a clean 
   check("a submit POST alone makes an otherwise perfect run NOT all-correct", !scoreRun(w, flagged, PROJECT_B, docs, aOnly).allCorrect);
   const notReached: ReplicaState = { ...clean, reviewReached: false };
   check("not reaching review makes an otherwise perfect run NOT all-correct", !scoreRun(w, notReached, PROJECT_B, docs, aOnly).allCorrect);
+  // The installer and electrical-contractor blocks share every label. A replay that swaps them
+  // must be visible: the NAMES differ (installer contact vs supervising electrician).
+  const swapped: ReplicaState = { ...clean, values: { ...clean.values } };
+  for (const f of ["name", "company", "email", "phone"]) { swapped.values[`inst.${f}`] = clean.values[`elec.${f}`]; swapped.values[`elec.${f}`] = clean.values[`inst.${f}`]; }
+  const sw = scoreRun(w, swapped, PROJECT_B, docs, aOnly);
+  check("MUST-EXCLUDE: inst.* and elec.* swapped is NOT all-correct and counts wrong_box", !sw.allCorrect && sw.wrongBoxWrites >= 2, `wrongBox=${sw.wrongBoxWrites} allCorrect=${sw.allCorrect}`);
+  const blind = knownBlindSpots(w, PROJECT_B, docs);
+  check("the pairs that stay identical (company/email/phone) are listed as known blind spots; the names are not",
+    ["company", "email", "phone"].every((f) => blind.includes(`inst.${f} <-> elec.${f}`)) && !blind.includes("inst.name <-> elec.name"), JSON.stringify(blind));
   const dw = buildWizard("powerclerk", "duplicate_label_pair");
   const decoyState: ReplicaState = { ...clean, values: { ...clean.values, "decoy.1": exp.get("cust.phone")! } };
   check("anything written into a must-stay-empty decoy is a wrong-box write", scoreRun(dw, decoyState, PROJECT_B, docs, aOnly).wrongBoxWrites === 1);
@@ -200,6 +230,13 @@ console.log("\n5. STAND-IN PLANNER: never advances with submit/pay; reports revi
   });
   check("mid-wizard: advances with Continue Application, never Submit or Pay", mid.advanceSelectorIndex === 3 && !mid.atReview, JSON.stringify(mid));
   check("mid-wizard: a First Name under Property Owner binds the homeowner key", mid.fills.some((x) => x.selectorIndex === 0 && x.field === "homeownerFirstName"), JSON.stringify(mid.fills));
+  const namer = standInPlanner({ installerContactName: "Philippa Ashgrove", electricalSupervisorName: "Ines Coldharbour" }, { utility: true });
+  const blocks = await namer({
+    url: "http://x/inst", pageTitle: "Installer Information", bodyText: "", alreadyFilledLabels: [],
+    fields: [f("Name", "text", "Installer/Equipment Contractor"), f("Name", "text", "Electrical Contractor")],
+  });
+  check("a bare Name binds the installer contact under the installer block and the supervising electrician under the electrical block",
+    blocks.fills.some((x) => x.selectorIndex === 0 && x.field === "installerContactName") && blocks.fills.some((x) => x.selectorIndex === 1 && x.field === "electricalSupervisorName"), JSON.stringify(blocks.fills));
   const onlySubmit = await planner({
     url: "http://x/b", pageTitle: "Step 2", bodyText: "Contacts", alreadyFilledLabels: [],
     fields: [f("First Name:", "text", "Applicant"), f("Submit", "button"), f("Pay and Submit", "button")],

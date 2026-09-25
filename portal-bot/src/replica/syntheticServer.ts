@@ -36,11 +36,14 @@ export interface ReplicaState {
   submitPosts: ReplicaPost[];
   /** POSTs that would pay a fee. Must be 0. */
   payPosts: ReplicaPost[];
-  /** The review page was rendered (reached by walking the wizard). */
+  /** Review was reached BY WALKING THE WIZARD: the portal's own advance from the last page
+   *  before review accepted that page (its required values committed). Serving the review page
+   *  on a GET does NOT set this — a recipe of one goto to the review URL has not reached review. */
   reviewReached: boolean;
-  /** How review was reached: its page was served/painted, or (SPA) the portal accepted the last
-   *  step and routed the client there before it painted. Reported, so the two can be told apart. */
-  reviewVia?: "rendered" | "routed";
+  /** How: walked (Accela Continue / PowerClerk Next from the last page before review, accepted),
+   *  routed (the SPA accepted the last step and routed the client there), or direct (the review
+   *  page was only served/painted, with nothing walked — reviewReached stays false). */
+  reviewVia?: "walked" | "routed" | "direct";
   /** Headings of pages rendered, in order (no values). */
   pagesSeen: string[];
   loggedIn: boolean;
@@ -156,13 +159,19 @@ export async function startSyntheticReplica(opts: {
     if (kind === "pay") state.payPosts.push(post);
     return post;
   };
-  const seen = (p: PageSpec, via: "rendered" | "routed" = "rendered") => {
+  const seen = (p: PageSpec) => {
     state.pagesSeen.push(p.heading);
-    if (p.kind === "review") { state.reviewReached = true; if (state.reviewVia !== "rendered") state.reviewVia = via; }
+    if (p.kind === "review" && !state.reviewReached) state.reviewVia = "direct";
+  };
+  /** The portal's own advance from a page accepted it and is taking the client to `next`. */
+  const advancedTo = (next: PageSpec | undefined, via: "walked" | "routed") => {
+    if (next?.kind !== "review") return;
+    state.reviewReached = true;
+    if (state.reviewVia !== "walked") state.reviewVia = via;
   };
 
   const handler = w.flavor === "accela" ? accelaHandler : w.flavor === "powerclerk" ? powerClerkHandler : spaHandler;
-  const ctx: Ctx = { w, state, byKey, logPost, seen, credential: opts.credential };
+  const ctx: Ctx = { w, state, byKey, logPost, seen, advancedTo, credential: opts.credential };
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -175,13 +184,18 @@ export async function startSyntheticReplica(opts: {
   await new Promise<void>((r) => server.listen(opts.port ?? 0, "127.0.0.1", () => r()));
   const port = (server.address() as { port: number }).port;
   const base = `http://127.0.0.1:${port}`;
-  const entryUrl = w.flavor === "accela" ? `${base}/CitizenAccess/Cap/${w.pages[0].slug}`
-    : w.flavor === "powerclerk" ? `${base}/Account/Login`
-      : `${base}/apply#/step/${w.pages[0].slug}`;
+  const entryUrl = entryUrlOf(w, base);
   return {
     base, entryUrl, state, wizard: w,
     close: () => new Promise<void>((r) => { server.closeAllConnections?.(); server.close(() => r()); }),
   };
+}
+
+/** Where a wizard's portal starts, on a server at `base`. */
+export function entryUrlOf(w: Wizard, base: string): string {
+  return w.flavor === "accela" ? `${base}/CitizenAccess/Cap/${w.pages[0].slug}`
+    : w.flavor === "powerclerk" ? `${base}/Account/Login`
+      : `${base}/apply#/step/${w.pages[0].slug}`;
 }
 
 interface Ctx {
@@ -189,7 +203,8 @@ interface Ctx {
   state: ReplicaState;
   byKey: Map<string, Ctl>;
   logPost: (route: string, kind: ReplicaPost["kind"], fields: Record<string, string>) => ReplicaPost;
-  seen: (p: PageSpec, via?: "rendered" | "routed") => void;
+  seen: (p: PageSpec) => void;
+  advancedTo: (next: PageSpec | undefined, via: "walked" | "routed") => void;
   credential?: { username: string; password: string };
 }
 type Handler = (ctx: Ctx, req: http.IncomingMessage, res: http.ServerResponse, url: URL) => Promise<void>;
@@ -428,6 +443,7 @@ const accelaHandler: Handler = async (ctx, req, res, url) => {
         sendHtml(res, acaDocument(ctx, postIdx, acaPanel(ctx, postIdx, miss.map((m) => `${m}: This field is required.`))));
         return;
       }
+      ctx.advancedTo(w.pages[postIdx + 1], "walked");
       redirect(res, acaUrl(w.pages[postIdx + 1]));
       return;
     }
@@ -686,6 +702,7 @@ const powerClerkHandler: Handler = async (ctx, req, res, url) => {
         return;
       }
       const wi = wiz.indexOf(page);
+      if (wi >= 0) ctx.advancedTo(wiz[wi + 1], "walked");
       redirect(res, `/${wiz[Math.min(wiz.length - 1, wi + 1)].slug}`);
       return;
     }
@@ -744,7 +761,7 @@ const spaHandler: Handler = async (ctx, req, res, url) => {
     // reaching review, whether or not the client finishes painting it before the bot's
     // browser closes (the route renders behind a spinner).
     const pi = page ? w.pages.indexOf(page) : -1;
-    if (page && !miss.length && w.pages[pi + 1]?.kind === "review") ctx.seen(w.pages[pi + 1], "routed");
+    if (page && !miss.length) ctx.advancedTo(w.pages[pi + 1], "routed");
     sendJson(res, { ok: miss.length === 0, missing: miss });
     return;
   }

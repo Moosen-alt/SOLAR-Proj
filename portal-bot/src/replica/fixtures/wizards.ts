@@ -307,7 +307,11 @@ function powerClerkBase(): PageSpec[] {
         pcCtl(31, { key: "inst.company", kind: "text", label: "Company", section: inst, required: true, expect: ex((p) => p.installer.company) }),
         pcCtl(32, { key: "inst.email", kind: "text", label: "Email", section: inst, required: true, expect: ex((p) => p.installer.email) }),
         pcCtl(33, { key: "inst.phone", kind: "text", label: "Phone", section: inst, required: true, expect: ex((p) => p.installer.phone, "digits") }),
-        pcCtl(40, { key: "elec.name", kind: "text", label: "Name", section: elec, required: true, expect: ex((p) => fullName(p.installer.contactFirst, p.installer.contactLast)) }),
+        // The electrical contractor's NAME is the supervising electrician, not the installer contact:
+        // distinct values, so a replay that swaps the two same-labelled blocks scores wrong_box.
+        // Company/email/phone stay the installer's (the product has no separate electrical
+        // company), and the scoreboard prints those pairs as a known blind spot.
+        pcCtl(40, { key: "elec.name", kind: "text", label: "Name", section: elec, required: true, expect: ex((p) => p.installer.electricianName) }),
         pcCtl(41, { key: "elec.company", kind: "text", label: "Company", section: elec, required: true, expect: ex((p) => p.installer.company) }),
         pcCtl(42, { key: "elec.email", kind: "text", label: "Email", section: elec, expect: ex((p) => p.installer.email) }),
         pcCtl(43, { key: "elec.phone", kind: "text", label: "Phone", section: elec, expect: ex((p) => p.installer.phone, "digits") }),

@@ -21,6 +21,10 @@ export interface SynthInstaller {
   state: string;
   zip: string;
   license: string;
+  /** The company's supervising electrician (the product's electricalSupervisorName) - the
+   *  person an Electrical Contractor block names, distinct from the installer contact so a
+   *  swap of the two blocks is visible to the scoreboard. */
+  electricianName: string;
 }
 
 export interface SynthProject {
@@ -94,6 +98,7 @@ export const PROJECT_A: SynthProject = {
     state: "OR",
     zip: "97411",
     license: "CCB 220417",
+    electricianName: "Rowan Thistlewood",
   },
   portalUsername: "brightfield.permits",
   portalPassword: "Pw-Replica-A!93",
@@ -136,6 +141,7 @@ export const PROJECT_B: SynthProject = {
     state: "OR",
     zip: "97433",
     license: "CCB 318822",
+    electricianName: "Ines Coldharbour",
   },
   portalUsername: "kestrel.office",
   portalPassword: "Pw-Replica-B!57",

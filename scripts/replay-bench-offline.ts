@@ -8,6 +8,19 @@
 //                                                 (replay-only iteration; learns not re-measured)
 //   --timeout S (learn, default 240)  --replay-timeout S (default 180)  --out <file>  --debug
 //   --all-probes (also the slow upload-page hazard probe)
+//   --fast        a 4-mutation subset (base, ids_renamed, one_page_fewer, duplicate_label_pair)
+//                 for quick iteration. NON-COMPARABLE: its headline denominators differ from a
+//                 full run, and the report says so on every headline line.
+//   --budget S    the wall-clock budget (default 1860 s = 31 min for a full run, 900 s for --fast)
+//
+// RUNTIME BUDGET. A full run is ~31 minutes (measured 1850-1880 s at 2683c3e/2dc7527; the SPA
+// replays alone take ~800 s, mostly the bot's own review-screen search). The bot's timeouts are
+// NOT shortened in bench mode — that would change what is measured. The run prints its budget
+// and whether it was met, and the JSON carries both.
+//
+// THE ANCHOR. `git rev-parse HEAD` is read at START and again at the END (benchAnchor.ts). The
+// report carries commitAtStart, commitAtEnd, headMoved and dirty flags; an unresolvable anchor
+// prints UNKNOWN and the process exits 3 (the report is still written, marked UNKNOWN).
 //
 // WHAT RUNS, AND WHAT IS STOOD IN FOR:
 //   - Portals: synthetic replica wizards (portal-bot/src/replica/fixtures) on 127.0.0.1. Never a
@@ -35,6 +48,15 @@ import "../backend/test/_isolate"; // FIRST: temp cwd, so nothing lands in the r
 import { REPO } from "../backend/test/_isolate";
 import fs from "node:fs";
 import path from "node:path";
+import { startAnchor, finishAnchor } from "../portal-bot/src/replica/benchAnchor";
+
+// The anchor is read FIRST — before anything slow — so it names the code this run loaded.
+// Every git call runs in REPO: _isolate has already moved cwd to a temp dir.
+const ANCHOR_START = startAnchor(REPO);
+if (ANCHOR_START.commitAtStart === "UNKNOWN") {
+  console.error("COMMIT ANCHOR: UNKNOWN — `git rev-parse HEAD` did not resolve in the repo. A scoreboard with no anchor cannot be a before/after reference; refusing to run.");
+  process.exit(3);
+}
 
 // ---------------------------------------------------------------------------------------------
 // Environment — set before any backend or portal-bot module loads.
@@ -67,7 +89,11 @@ const REPLAY_TIMEOUT_MS = Number(argVal("--replay-timeout") ?? 180) * 1000;
 /** A previous report whose learned recipes are replayed instead of learning again. */
 const REUSE_LEARNS = argVal("--reuse-learns");
 const ALL_PROBES = argv.includes("--all-probes");
-const OUT = argVal("--out") ?? path.join(REPO, ".probe", "bench", `${STAMP}.json`);
+const FAST = argv.includes("--fast");
+const FAST_MUTATIONS = ["base", "ids_renamed", "one_page_fewer", "duplicate_label_pair"];
+const BUDGET_S = Number(argVal("--budget") ?? (FAST ? 900 : 1860));
+// Relative to the REPO, not the cwd: _isolate has moved cwd to a temp dir that is deleted at exit.
+const OUT = path.resolve(REPO, argVal("--out") ?? path.join(".probe", "bench", `${STAMP}.json`));
 if (argv.includes("--debug")) process.env.AUTOLEARN_RUN_DEBUG = "1"; else process.env.AUTOLEARN_RUN_DEBUG = "0";
 process.env.PORTAL_RUN_MAX_MS = String(RUN_TIMEOUT_MS + 30_000);
 
@@ -88,8 +114,8 @@ type Mutation = import("../portal-bot/src/replica/fixtures/wizards").Mutation;
 type DocKey = import("../portal-bot/src/replica/fixtures/wizards").DocKey;
 type Wizard = import("../portal-bot/src/replica/fixtures/wizards").Wizard;
 type SynthProject = import("../portal-bot/src/replica/fixtures/syntheticProjects").SynthProject;
-const { startSyntheticReplica } = await import("../portal-bot/src/replica/syntheticServer");
-const { scoreRun } = await import("../portal-bot/src/replica/benchScore");
+const { startSyntheticReplica, entryUrlOf } = await import("../portal-bot/src/replica/syntheticServer");
+const { scoreRun, knownBlindSpots } = await import("../portal-bot/src/replica/benchScore");
 const { standInPlanner, STAND_IN_PLANNER_ID } = await import("../portal-bot/src/replica/standInPlanner");
 type ProjectRecord = import("../shared/src/types").ProjectRecord;
 type LearnPlanRequest = import("../portal-bot/src/adapters/autoLearnAdapter").LearnPlanRequest;
@@ -117,6 +143,7 @@ function makeProject(p: SynthProject): ProjectRecord {
     businessEmail: p.installer.email, businessPhone: p.installer.phone,
     businessAddress: p.installer.street, businessCity: p.installer.city, businessState: p.installer.state, businessZip: p.installer.zip,
     ccbLicenseNumber: p.installer.license.replace(/\D/g, ""),
+    electricalSupervisorName: p.installer.electricianName,
   });
   const detail = createProject(db, {
     clientId: client.id, owner: `${p.ownerFirst} ${p.ownerLast}`, street: p.street, city: p.city, state: p.state, zip: p.zip,
@@ -171,6 +198,19 @@ interface LearnOutcome {
   recipeSteps?: import("../shared/src/types").RecipeStep[];
   /** Set when this learn was not run but taken from an earlier report. */
   reusedFrom?: string;
+  /** The recipe ROW's identity as the learn created it. --reuse-learns re-creates exactly this
+   *  row: replay reads recipe.discipline (e.g. to rank Accela's CITY vs COUNTY address rows),
+   *  so a reused recipe under another discipline measures a different recipe. */
+  recipeIdentity?: RecipeIdentity;
+}
+
+interface RecipeIdentity { scopeType: "ahj" | "utility"; portalPlatform: string; discipline: string }
+
+/** The one place a learn's recipe identity is derived — used by the learn AND, for reports
+ *  written before the identity was stored, by --reuse-learns. */
+function recipeIdentityFor(flavor: Flavor, cell: string): RecipeIdentity {
+  const scopeType = scopeOf(flavor);
+  return { scopeType, portalPlatform: flavor, discipline: scopeType === "ahj" ? `electrical-${cell}` : cell };
 }
 
 async function learnCell(flavor: Flavor, mutation: Mutation): Promise<LearnOutcome> {
@@ -198,9 +238,11 @@ async function learnCell(flavor: Flavor, mutation: Mutation): Promise<LearnOutco
       return inner(req);
     };
     if (leakedIntoFields.length) out.secretsInPlannerRequests += 1;
+    const identity = recipeIdentityFor(flavor, cell);
+    out.recipeIdentity = identity;
     const recipe = startPortalRecording(db, {
-      scopeType, state: projA.state, ahj: projA.ahj, utility: projA.utility,
-      portalUrl: replica.entryUrl, portalPlatform: flavor, discipline: scopeType === "ahj" ? `electrical-${cell}` : cell,
+      scopeType: identity.scopeType, state: projA.state, ahj: projA.ahj, utility: projA.utility,
+      portalUrl: replica.entryUrl, portalPlatform: identity.portalPlatform, discipline: identity.discipline,
     });
     const pf = projectFields;
     const learn = await withTimeout(learnPortal({
@@ -262,9 +304,15 @@ interface ReplayOutcomeRow {
   status: "ran" | "skipped";
   skipReason?: string;
   seconds: number;
+  /** The WIZARD WAS WALKED to review in a run that completed: the portal's own advance from the
+   *  last page before review accepted that page's required values. A timed-out (skipped) run
+   *  never counts, whatever the server saw. */
   replayReachedReview: boolean;
-  /** rendered = the review page was served/painted; routed = SPA accepted the last step first. */
+  /** walked | routed (SPA accepted the last step) | direct (the review page was only served on
+   *  a GET, e.g. a recipe goto — NOT reaching review). */
   reviewVia?: string;
+  /** What the server saw, before the skipped-run rule — diagnosis only. */
+  serverReviewReached?: boolean;
   allFieldsCorrect: boolean;
   fieldsCorrect: number;
   fieldsExpected: number;
@@ -286,6 +334,13 @@ interface ReplayOutcomeRow {
   adapterDrift: string[];
   fieldVerdicts: Array<{ key: string; verdict: string; note?: string }>;
   validationErrors: string[];
+}
+
+/** How review was (not) reached, for the cell line. Only walked/routed in a completed run is "y". */
+function reviewTag(r: ReplayOutcomeRow): string {
+  if (r.replayReachedReview) return `y(${r.reviewVia ?? "walked"})`;
+  if (r.serverReviewReached && r.status === "skipped") return "n(run timed out)";
+  return r.reviewVia === "direct" ? "n(direct GET only)" : "n";
 }
 
 /** A recipe transform for an ISOLATED probe: returns the steps to replay (origin already
@@ -350,7 +405,8 @@ async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutc
     row.skipReason = (err instanceof Error ? err.message : String(err)).slice(0, 200);
   } finally {
     const s = scoreRun(wizard, replica.state, PROJECT_B, docNames(docsB), A_ONLY);
-    row.replayReachedReview = s.reachedReview;
+    row.serverReviewReached = s.reachedReview;
+    row.replayReachedReview = row.status === "ran" && s.reachedReview;
     row.reviewVia = replica.state.reviewVia;
     row.allFieldsCorrect = row.status === "ran" && s.allCorrect && row.skippedSteps === 0;
     row.fieldsCorrect = s.fieldsCorrect;
@@ -375,7 +431,9 @@ async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutc
 // ---------------------------------------------------------------------------------------------
 const t0 = Date.now();
 const cells = FLAVORS.flatMap((f) => MUTATIONS.map((m) => ({ flavor: f, mutation: m, name: `${f}/${m}` })));
-const selected = cells.filter((c) => !ONLY || c.name.includes(ONLY));
+const selected = cells.filter((c) => (!ONLY || c.name.includes(ONLY)) && (!FAST || FAST_MUTATIONS.includes(c.mutation)));
+/** Any subset (--only, --fast) is not comparable with a full run's headline. */
+const SUBSET = FAST ? "--fast subset" : ONLY ? `--only "${ONLY}" subset` : "";
 const flavorsNeeded = [...new Set(selected.map((c) => c.flavor))];
 if (!selected.length) {
   // An empty scoreboard must never read as a clean one.
@@ -383,7 +441,9 @@ if (!selected.length) {
   process.exit(2);
 }
 
-console.log(`OFFLINE BOT SCOREBOARD — ${selected.length} replay cell(s) over ${flavorsNeeded.length} base(s)`);
+console.log(`OFFLINE BOT SCOREBOARD — ${selected.length} replay cell(s) over ${flavorsNeeded.length} base(s)${SUBSET ? ` — ${SUBSET}, NON-COMPARABLE with a full run` : ""}`);
+console.log(`  anchor: ${ANCHOR_START.commitAtStart.slice(0, 10)} at start${ANCHOR_START.dirtyAtStart ? " — DIRTY (uncommitted edits under the measured paths)" : ANCHOR_START.dirtyAtStart === null ? " — dirty state UNKNOWN" : " (clean)"}`);
+console.log(`  budget: ${BUDGET_S}s wall clock`);
 console.log(`  planner: ${STAND_IN_PLANNER_ID} (no LLM; ANTHROPIC_API_KEY blanked)`);
 console.log(`  scratch: ${path.relative(REPO, SCRATCH)}  (DB + artifacts; nothing under data/)`);
 console.log(`  PORTAL_ALLOW_FINAL_SUBMIT: removed from the environment${finalSubmitWasSet ? " (it WAS set in the parent shell)" : ""}`);
@@ -399,12 +459,15 @@ for (const f of flavorsNeeded) {
     // NOT A MEASUREMENT OF THE LEARNER: the recipe is re-saved through the real writer into
     // this run's scratch DB, and the learn row is carried over marked reusedFrom (and left out
     // of the learn headline).
-    const rec = startPortalRecording(db, { scopeType: scopeOf(f), state: projA.state, ahj: projA.ahj, utility: projA.utility, portalUrl: `${prior.learnBase}/`, portalPlatform: f, discipline: `reused-${f}` });
+    // The SAME recipe row: scope, platform and discipline as the original learn created it (a
+    // report from before they were stored gets the learn's own derivation, and says so).
+    const identity = prior.recipeIdentity ?? recipeIdentityFor(f, prior.cell);
+    const rec = startPortalRecording(db, { scopeType: identity.scopeType, state: projA.state, ahj: projA.ahj, utility: projA.utility, portalUrl: entryUrlOf(buildWizard(f, "base"), prior.learnBase ?? ""), portalPlatform: identity.portalPlatform, discipline: identity.discipline });
     savePortalRecipeSteps(db, rec.id, prior.recipeSteps!, { status: "complete", notes: `reused from ${REUSE_LEARNS}` });
-    const l: LearnOutcome = { ...prior, recipeId: rec.id, reusedFrom: REUSE_LEARNS };
+    const l: LearnOutcome = { ...prior, recipeId: rec.id, reusedFrom: REUSE_LEARNS, recipeIdentity: identity };
     learns.push(l);
     baseLearn.set(f, l);
-    console.log(`\n[learn] ${f}/base REUSED from ${REUSE_LEARNS} (not re-measured)`);
+    console.log(`\n[learn] ${f}/base REUSED from ${REUSE_LEARNS} (not re-measured) — recipe row ${identity.scopeType}/${identity.portalPlatform}/${identity.discipline}${prior.recipeIdentity ? "" : " (derived: the report predates stored identities)"}`);
     continue;
   }
   if (REUSE_LEARNS) console.log(`\n[learn] ${f}/base: nothing to reuse in ${REUSE_LEARNS} — learning fresh`);
@@ -479,7 +542,7 @@ if (selected.some((c) => c.name === "accela/one_page_fewer")) {
     process.stdout.write(`[probe] accela/one_page_fewer [${plan.name}] ... `);
     const p = await replayCell("accela", "one_page_fewer", baseLearn.get("accela")!, plan);
     probes.push(p);
-    console.log(`${p.status === "skipped" ? `SKIPPED (${p.skipReason})` : `submit/pay POSTs ${p.submitPosts}/${p.payPosts}, review=${p.replayReachedReview ? "y" : "n"}`}, ${p.seconds}s`);
+    console.log(`${p.status === "skipped" ? `SKIPPED (${p.skipReason})` : `submit/pay POSTs ${p.submitPosts}/${p.payPosts}, review=${reviewTag(p)}`}, ${p.seconds}s`);
   }
 }
 
@@ -495,6 +558,8 @@ function groupLine(label: string, rows: ReplayOutcomeRow[]): string {
   return [
     label.padEnd(24),
     `all-correct ${frac(count(rows, (r) => r.allFieldsCorrect), n)}`.padEnd(22),
+    // replayReachedReview is false on a skipped row by construction: a timed-out run never
+    // counts as reaching review, whatever the server saw.
     `review ${frac(count(rows, (r) => r.replayReachedReview), n)}`.padEnd(18),
     `fields ${frac(sum(rows, (r) => r.fieldsCorrect), sum(rows, (r) => r.fieldsExpected))}`.padEnd(20),
     `blank ${sum(rows, (r) => r.blanked)}`.padEnd(9),
@@ -507,7 +572,7 @@ function groupLine(label: string, rows: ReplayOutcomeRow[]): string {
 
 console.log("\n=== REPLAY CELLS (recipe learned on the base, replayed on each variant, project B) ===");
 for (const r of replays) {
-  console.log(`${r.cell.padEnd(34)} ${r.status === "skipped" ? "SKIPPED" : r.allFieldsCorrect ? "PASS   " : "FAIL   "} review=${r.replayReachedReview ? (r.reviewVia === "routed" ? "y(routed)" : "y") : "n"} fields=${r.fieldsCorrect}/${r.fieldsExpected} blank=${r.blanked} wrong=${r.wrongValue} wrongbox=${r.wrongBoxWrites} leakA=${r.leakedAValues} submit=${r.submitPosts} pay=${r.payPosts} rung=${r.rung || "-"} ${r.seconds}s`);
+  console.log(`${r.cell.padEnd(34)} ${r.status === "skipped" ? "SKIPPED" : r.allFieldsCorrect ? "PASS   " : "FAIL   "} review=${reviewTag(r)} fields=${r.fieldsCorrect}/${r.fieldsExpected} blank=${r.blanked} wrong=${r.wrongValue} wrongbox=${r.wrongBoxWrites} leakA=${r.leakedAValues} submit=${r.submitPosts} pay=${r.payPosts} rung=${r.rung || "-"} ${r.seconds}s`);
   const bad = r.fieldVerdicts.slice(0, 6).map((v) => `${v.key}:${v.verdict}`).join(", ");
   if (bad) console.log(`${"".padEnd(34)}   not correct: ${bad}${r.fieldVerdicts.length > 6 ? `, +${r.fieldVerdicts.length - 6}` : ""}`);
   if (r.skipReason) console.log(`${"".padEnd(34)}   reason: ${r.skipReason}`);
@@ -524,6 +589,12 @@ for (const m of MUTATIONS) {
 }
 console.log("\n=== TOTAL ===");
 console.log(groupLine("all replay cells", replays));
+// What the instrument CANNOT see, printed so a clean number is not read as covering it.
+const blindSpots = flavorsNeeded.flatMap((f) => knownBlindSpots(buildWizard(f, "base"), PROJECT_B, docNames(docsB)).map((b) => `${f}: ${b}`));
+if (blindSpots.length) {
+  console.log("\nKNOWN BLIND SPOTS (a swap between these boxes scores correct — their expected values are identical):");
+  for (const b of blindSpots) console.log(`  ${b}`);
+}
 
 const learnRan = learns.filter((l) => !l.reusedFrom);
 const learnReached = learnRan.filter((l) => l.status === "ran" && l.learnReachedReview).length;
@@ -536,56 +607,65 @@ console.log(`SECRETS IN PLANNER REQUESTS: ${secrets} of ${plannerCalls} request(
 
 const replayAllCorrect = count(replays, (r) => r.allFieldsCorrect);
 const tripwire = replays.find((r) => r.cell === "accela/one_page_fewer");
+const scoredFilingPosts = sum(replays, (r) => r.submitPosts + r.payPosts) + learnSubmit + learnPay;
+const probeFilingPosts = probes.reduce((a, p) => a + p.submitPosts + p.payPosts, 0);
+const subsetTag = SUBSET ? `   [${SUBSET} — NON-COMPARABLE]` : "";
 console.log("\n=== HEADLINES ===");
-console.log(`replay_all_fields_correct_rate: ${frac(replayAllCorrect, replays.length)}   (target >= 90%)`);
+console.log(`replay_all_fields_correct_rate: ${frac(replayAllCorrect, replays.length)}   (target >= 90%)${subsetTag}`);
 const reusedLearns = learns.filter((l) => l.reusedFrom);
 console.log(learnRan.length || !reusedLearns.length
-  ? `learn_reached_review_rate:      ${frac(learnReached, learnRan.length)}   (target >= 80%; n = learns run this time)`
+  ? `learn_reached_review_rate:      ${frac(learnReached, learnRan.length)}   (target >= 80%; n = learns run this time; review = the wizard walked to it)${subsetTag}`
   : `learn_reached_review_rate:      ${frac(reusedLearns.filter((l) => l.learnReachedReview).length, reusedLearns.length)}   (REUSED from ${REUSE_LEARNS}, NOT re-measured)`);
-console.log(`submit_or_pay_posts:            ${sum(replays, (r) => r.submitPosts + r.payPosts) + learnSubmit + learnPay}   (must be 0)`);
+// Scored cells AND the isolated probe on ONE line: a bare 0 here while a probe filed would read
+// as reassurance.
+console.log(`submit_or_pay_posts:            scored ${scoredFilingPosts}; ${probes.length
+  ? `isolated drift-seek probe ${probeFilingPosts} filing POST${probeFilingPosts === 1 ? "" : "s"}`
+  : "isolated drift-seek probe NOT RUN (select accela/one_page_fewer to run it)"}   (both must be 0)`);
 if (tripwire) {
   console.log(`VALIDITY TRIPWIRE accela/one_page_fewer: submit_posts=${tripwire.submitPosts} — ${tripwire.submitPosts > 0
-    ? "the harness SEES the drift-seek filing hazard (expected before R1 lands)"
+    ? "the replay FILED on the drift-seek hazard"
     : tripwire.status === "skipped" ? "NOT MEASURED (cell skipped)"
-      : tripwire.replayReachedReview ? "reached review with no filing POST (after R1 this is the pass condition; before R1, suspect the harness)"
+      : tripwire.replayReachedReview ? "reached review with no filing POST"
         : "the replay failed BEFORE the hazard page, so this cell cannot show it — see the isolated probe"}`);
 }
 for (const p of probes) {
   console.log(`VALIDITY TRIPWIRE ${p.cell}: submit_posts=${p.submitPosts} pay_posts=${p.payPosts}${p.status === "skipped" ? ` (SKIPPED: ${p.skipReason})` : ""} — ${p.submitPosts > 0
-    ? "the harness SEES the drift-seek filing hazard"
-    : p.replayReachedReview ? "reached review WITHOUT a filing POST" : "did not reach review"}`);
+    ? "the replay FILED from the review page (the drift-seek hazard)"
+    : "no filing POST"} (review=${reviewTag(p)}; the probe itself STARTS on review with a harness goto, which is not reaching it)`);
   if (p.message) console.log(`        adapter: ${p.message.slice(0, 200)}`);
 }
 const seconds = Math.round((Date.now() - t0) / 1000);
-console.log(`\nwall clock ${seconds}s`);
+const budgetMet = seconds <= BUDGET_S;
+console.log(`\nwall clock ${seconds}s — budget ${BUDGET_S}s ${budgetMet ? "MET" : `OVER BUDGET by ${seconds - BUDGET_S}s`}${SUBSET ? ` (${SUBSET})` : ""}`);
+const anchor = finishAnchor(REPO, ANCHOR_START);
+console.log(anchor.summary);
 
 const report = {
   generatedAt: new Date().toISOString(),
-  // The commit the scoreboard measured — the anchor a before/after comparison needs. Resolved
-  // from the ref, not the symbolic "ref: refs/heads/..." that .git/HEAD holds on a branch.
-  commit: (() => {
-    try {
-      const head = fs.readFileSync(path.join(REPO, ".git", "HEAD"), "utf8").trim();
-      const ref = /^ref:\s*(.+)$/.exec(head)?.[1];
-      if (!ref) return head;
-      const loose = path.join(REPO, ".git", ref);
-      if (fs.existsSync(loose)) return fs.readFileSync(loose, "utf8").trim();
-      const packed = fs.readFileSync(path.join(REPO, ".git", "packed-refs"), "utf8");
-      return packed.split(/\r?\n/).find((l) => l.endsWith(` ${ref}`))?.split(" ")[0] ?? head;
-    } catch { return ""; }
-  })(),
+  // The commit the scoreboard measured, read at START (and again at the end). See benchAnchor.ts.
+  commitAtStart: anchor.commitAtStart,
+  commitAtEnd: anchor.commitAtEnd,
+  headMoved: anchor.headMoved,
+  dirtyAtStart: anchor.dirtyAtStart,
+  dirtyAtEnd: anchor.dirtyAtEnd,
+  anchorTrustworthy: anchor.trustworthy,
+  anchorSummary: anchor.summary,
+  subset: SUBSET || null,
   planner: STAND_IN_PLANNER_ID,
   topology: LEARN_VARIANTS ? "learn base once per flavour + first-time learn of every variant; replay base recipe on every variant" : "learn base once per flavour; replay base recipe on every variant",
+  reviewRule: "review counts only when the portal's own advance from the last page before review accepted it (walked/routed) in a run that completed; a direct GET is reviewVia=direct and does not count",
+  knownBlindSpots: blindSpots,
   finalSubmitEnvRemoved: true,
   finalSubmitWasSetInParent: finalSubmitWasSet,
   wallClockSeconds: seconds,
+  runtime: { seconds, budgetSeconds: BUDGET_S, budgetMet, fast: FAST },
   headline: {
     replay_all_fields_correct_rate: { k: replayAllCorrect, n: replays.length },
     learn_reached_review_rate: { k: learnReached, n: learnRan.length, reusedFrom: REUSE_LEARNS ?? null },
-    submit_or_pay_posts: sum(replays, (r) => r.submitPosts + r.payPosts) + learnSubmit + learnPay,
+    submit_or_pay_posts: { scored: scoredFilingPosts, isolatedProbe: probes.length ? probeFilingPosts : null, isolatedProbesRun: probes.length, note: "scored = scored replay cells + learns; isolatedProbe = the drift-seek tripwire probe(s), null when not run" },
     secrets_in_planner_requests: { k: secrets, n: plannerCalls },
     tripwire_accela_one_page_fewer_submit_posts: tripwire?.submitPosts ?? null,
-    tripwire_probes: probes.map((p) => ({ cell: p.cell, status: p.status, submitPosts: p.submitPosts, payPosts: p.payPosts, reachedReview: p.replayReachedReview })),
+    tripwire_probes: probes.map((p) => ({ cell: p.cell, status: p.status, submitPosts: p.submitPosts, payPosts: p.payPosts, reachedReview: p.replayReachedReview, reviewVia: p.reviewVia ?? null })),
   },
   learns,
   replays,
@@ -594,4 +674,8 @@ const report = {
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 fs.writeFileSync(OUT, JSON.stringify(report, null, 1));
 console.log(`JSON: ${path.relative(REPO, OUT)}`);
+if (anchor.commitAtStart === "UNKNOWN" || anchor.commitAtEnd === "UNKNOWN") {
+  console.error("COMMIT ANCHOR UNKNOWN at the end of the run — exiting 3.");
+  process.exit(3);
+}
 process.exit(0);
