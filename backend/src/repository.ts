@@ -86,7 +86,7 @@ import { clientStagingOverlay, getClient } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, lockedOutCredential } from "./portalCredentials";
 import { logger } from "./logger";
-import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isUtilityPlatformUrl, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack, hostFitsTrackAndEntity, scopeForTrack, trackSafeUrl, type HostFit, type PortalUrlSource } from "./portalChannel";
+import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack, hostFitsTrackAndEntity, scopeForTrack, trackSafeUrl, type HostFit, type PortalUrlSource } from "./portalChannel";
 import { isPortalPaused } from "./portalPause";
 // The ONE creator of permit_check_targets rows (extracted from markTrackSubmitted).
 // Direction matters: submittalTracks must never import repository — jobQueue statically
@@ -147,6 +147,18 @@ export function setRecipeStageRunnerForTests(runner: RecipeStageRunner | null): 
   if (process.env.AUTOPILOT_TEST_SEAMS !== "1") throw new Error("setRecipeStageRunnerForTests needs AUTOPILOT_TEST_SEAMS=1 — it is a test seam only.");
   recipeStageRunner = runner ?? stageWithRecipe;
 }
+
+// THE STATUS MONITOR'S TWO DOORS TO THE OUTSIDE — the authenticated scrape (a browser) and the
+// public fetch (the network) — behind the same kind of seam, so the sweep's own resolution (which
+// recipe, which URL, the track/entity judgment) runs for real in a test with nothing opened.
+type StatusCheckSeams = { checkStatus?: typeof checkStatusWithAdapter | null; publicCheck?: typeof publicPermitStatusCheck | null };
+let statusCheckSeams: StatusCheckSeams = {};
+export function setStatusCheckSeamsForTests(seams: StatusCheckSeams | null): void {
+  if (process.env.AUTOPILOT_TEST_SEAMS !== "1") throw new Error("setStatusCheckSeamsForTests needs AUTOPILOT_TEST_SEAMS=1 — it is a test seam only.");
+  statusCheckSeams = seams ?? {};
+}
+const statusScrape: typeof checkStatusWithAdapter = (...args) => (statusCheckSeams.checkStatus ?? checkStatusWithAdapter)(...args);
+const publicStatusFetch: typeof publicPermitStatusCheck = (...args) => (statusCheckSeams.publicCheck ?? publicPermitStatusCheck)(...args);
 
 // THE FAILURE TEXT LIVES ON THE FAILING STEP, NOT THE SUMMARY. stageWithRecipe's failure
 // result carries no top-level message - "Recipe step failed (fill - inverter quantity)" rides
@@ -5476,17 +5488,35 @@ export async function reopenCorrectionOnPortal(
   const applicationNumber = text(target.application_number);
 
   // 2) RESOLVE THE PORTAL — the target's own URL first, else the track-scoped recipe's.
-  const recipe = findCompleteRecipeForProject(db, { scopeType, state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
+  //    WHOSE PORTAL? (resolution skeptic MF3: the same two-way predicate the stage uses.) The
+  //    recipe is judged by track AND entity (recipeHostFit) — one that drives the other track's
+  //    host, another entity's portal, or a portal a person's verified row contradicts is never
+  //    replayed here (the reopen then runs on the target's own URL with no steps). The resolved
+  //    URL is judged by the track half of rule 5, BOTH ways: a permit filing is never reopened
+  //    on a utility platform, and a NEM filing never on an AHJ permit platform. Stop before any
+  //    browser opens.
+  const reopenTrack = targetType === "nem" ? "nem" : "permit";
+  let recipe = findCompleteRecipeForProject(db, { scopeType, state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
     ?? findAnyRecipeForProject(db, { scopeType, state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility });
+  if (recipe) {
+    const entityInput = { scope: scopeType, state: detail.project.state, name: scopeType === "utility" ? detail.project.utility : detail.project.ahj, excludeRecipeIds: [recipe.id] };
+    const fit = recipeHostFit(reopenTrack, portalEntityEvidence(db, entityInput), recipe);
+    if (!fit.fits) {
+      addAuditLog(db, projectId, "system", "correction reopen", fit.code === "track_conflict" ? "portal.track_host_conflict" : "portal.entity_host_conflict", {
+        correctionId, targetId: text(target.id), recipeId: recipe.id, url: fit.url, code: fit.code, reason: fit.reason,
+      });
+      recipe = null;
+    }
+  }
   const portalUrl = text(target.portal_url) || (recipe?.portalUrl ?? "");
-  // Rule 5: a PERMIT filing must never be reopened on a utility platform (and a poisoned
-  // URL is exactly how that would happen). Stop before any browser opens.
-  if (targetType === "permit" && isUtilityPlatformUrl(portalUrl)) {
+  if (portalUrl && !trackSafeUrl(reopenTrack, portalUrl)) {
     addAuditLog(db, projectId, "system", "correction reopen", "portal.track_host_conflict", {
-      correctionId, targetId: text(target.id), url: portalUrl,
+      correctionId, targetId: text(target.id), url: portalUrl, track: reopenTrack,
     });
     return surfaceNeedsHuman(
-      `Correction reopen stopped: the permit filing ${applicationNumber} is bound to a utility interconnection portal URL (${portalUrl}) — that's the NEM portal, not the permit portal. Fix the tracking target's portal URL and retry.`,
+      targetType === "permit"
+        ? `Correction reopen stopped: the permit filing ${applicationNumber} is bound to a utility interconnection portal URL (${portalUrl}) — that's the NEM portal, not the permit portal. Fix the tracking target's portal URL and retry.`
+        : `Correction reopen stopped: the NEM filing ${applicationNumber} is bound to an AHJ permit portal URL (${portalUrl}) — that's the permit portal, not the utility's interconnection portal. Fix the tracking target's portal URL and retry.`,
       { candidates: [describe(target)] },
     );
   }
@@ -5977,12 +6007,16 @@ async function resolveStatusText(target: Row | null, rawStatusText: string, sour
       : "No status text available. Manual AHJ/utility portal check required.";
   }
 
-  if ((source === "public_url" || source === "portal") && target?.portal_url) {
+  // Rule 5 both ways at the fetch (resolution skeptic MF3): a permit target bound to a utility
+  // host (production 99ea32c3: permit, APP-111667, pacificorpnetmetering.powerclerk.com) is not
+  // fetched, and a NEM target bound to an AHJ permit platform is not either.
+  const fetchUrl = target ? trackSafeUrl(text(target.target_type) === "nem" ? "nem" : "permit", text(target.portal_url)) : "";
+  if ((source === "public_url" || source === "portal") && target && fetchUrl) {
     // Try the platform-aware public fetcher (Accela capID URL, EnerGov CSS API,
     // SolarAPP+, or generic HTML strip). Passes application/permit numbers so
     // Accela can construct the direct record-detail URL without login.
     const appNums = [text(target.application_number), text(target.permit_number)].filter(Boolean);
-    const publicText = await publicPermitStatusCheck(text(target.portal_url), appNums).catch(() => null);
+    const publicText = await publicStatusFetch(fetchUrl, appNums).catch(() => null);
     // A LOGIN PAGE IS NOT A PERMIT STATUS. isAuthWallText already guards the authenticated
     // scrape path three times over; this path never consulted it, so an expired PowerClerk
     // session returned "PowerClerk Log In Username: Password: Forgot Password?..." and that
@@ -6377,8 +6411,23 @@ export async function runDuePermitChecks(
     //      ANY learned portal are auto-scanned, not just the two hardcoded platforms.
     //   2. Legacy hardcoded platform profiles (Accela / PowerClerk storage-state blobs).
     let rawStatusText: string | undefined;
-    let source: "portal" | "public_url" | "mock" = text(target.portal_url) ? "public_url" : "mock";
     const targetType = text(target.target_type); // "permit" | "nem"
+    const track = targetType === "nem" ? "nem" : "permit";
+    // ── WHOSE PORTAL? (resolution skeptic MF3: the same two-way predicate the stage uses) ──
+    // The target's own URLs are judged by the TRACK half of rule 5, both ways: a permit target
+    // bound to a utility host (production 99ea32c3) and a NEM target bound to an AHJ permit
+    // platform are neither scraped nor fetched. The recipe is judged by track AND entity
+    // (recipeHostFit): a recipe that drives the other track's host, another entity's portal or
+    // a portal a person's verified row contradicts is never handed to the scraper.
+    const safeTargetPortalUrl = trackSafeUrl(track, text(target.portal_url));
+    const safeTrackingUrl = trackSafeUrl(track, text(target.tracking_url));
+    if ((text(target.portal_url) && !safeTargetPortalUrl) || (text(target.tracking_url) && !safeTrackingUrl)) {
+      addAuditLog(db, projectId, "system", "permit monitor", "portal.track_host_conflict", {
+        targetId: text(target.id), track, url: text(target.portal_url) && !safeTargetPortalUrl ? text(target.portal_url) : text(target.tracking_url),
+        reason: track === "nem" ? "the target's URL is an AHJ permit portal, and this is a NEM filing" : "the target's URL is a utility interconnection portal, and this is a permit filing",
+      });
+    }
+    let source: "portal" | "public_url" | "mock" = safeTargetPortalUrl ? "public_url" : "mock";
     const applicationNumbers = [text(target.application_number), text(target.permit_number)].filter(Boolean);
     const projectDetail = getProjectDetail(db, projectId);
     const clientId = projectDetail.project.clientId ?? "";
@@ -6386,9 +6435,19 @@ export async function runDuePermitChecks(
 
     if (applicationNumbers.length > 0) {
       const scopeType: "ahj" | "utility" = targetType === "nem" ? "utility" : "ahj";
-      const recipe =
+      let recipe =
         findCompleteRecipeForProject(db, { scopeType, state: projectDetail.project.state, ahj: projectDetail.project.ahj, utility: projectDetail.project.utility })
         ?? findAnyRecipeForProject(db, { scopeType, state: projectDetail.project.state, ahj: projectDetail.project.ahj, utility: projectDetail.project.utility });
+      if (recipe) {
+        const entityInput = { scope: scopeType, state: projectDetail.project.state, name: scopeType === "utility" ? projectDetail.project.utility : projectDetail.project.ahj, excludeRecipeIds: [recipe.id] };
+        const fit = recipeHostFit(track, portalEntityEvidence(db, entityInput), recipe);
+        if (!fit.fits) {
+          addAuditLog(db, projectId, "system", "permit monitor", fit.code === "track_conflict" ? "portal.track_host_conflict" : "portal.entity_host_conflict", {
+            targetId: text(target.id), track, recipeId: recipe.id, url: fit.url, code: fit.code, reason: fit.reason,
+          });
+          recipe = null;
+        }
+      }
       if (recipe?.portalUrl) {
         // Same credential/profile conventions as the learner/replay: portalType key is
         // "utility" | "AHJ", persistent per-client browser profile carries the session.
@@ -6400,7 +6459,7 @@ export async function runDuePermitChecks(
               ?? getDecryptedCredentialAny(db, clientId, recipe.portalUrl))
             ?? undefined
           : undefined;
-        const scraped = await checkStatusWithAdapter("recipe", applicationNumbers, {
+        const scraped = await statusScrape("recipe", applicationNumbers, {
           recipe,
           fieldValues: {},
           docsByType: {},
@@ -6416,27 +6475,28 @@ export async function runDuePermitChecks(
     }
 
     const portalType = targetType === "nem" ? "powerclerk_pge" : "accela_oregon";
-    const portalProfile = rawStatusText ? null : db.get<{ id: string; portal_type: string; encrypted_storage_state?: string }>(
+    // The legacy platform adapter logs in at the target's own URL — only a track-safe one.
+    const portalProfile = rawStatusText || (text(target.portal_url) && !safeTargetPortalUrl) ? null : db.get<{ id: string; portal_type: string; encrypted_storage_state?: string }>(
       "SELECT * FROM portal_profiles WHERE portal_type = ? ORDER BY created_at DESC LIMIT 1",
       [portalType],
     );
     if (portalProfile?.encrypted_storage_state) {
-      const userDataDir = portalProfileDir(profileBase, clientId ?? null, portalType, text(target.portal_url));
+      const userDataDir = portalProfileDir(profileBase, clientId ?? null, portalType, safeTargetPortalUrl);
       const credential = clientId
         ? (getDecryptedCredential(db, clientId, portalType)
-            ?? (text(target.portal_url) ? getDecryptedCredentialByUrl(db, clientId, text(target.portal_url)) : null)
-            ?? getDecryptedCredentialAny(db, clientId, text(target.portal_url)))
+            ?? (safeTargetPortalUrl ? getDecryptedCredentialByUrl(db, clientId, safeTargetPortalUrl) : null)
+            ?? getDecryptedCredentialAny(db, clientId, safeTargetPortalUrl))
           ?? undefined
         : undefined;
       const adapterType = portalType === "powerclerk_pge" ? "powerclerk" : "accela";
-      const scraped = await checkStatusWithAdapter(adapterType, applicationNumbers, {
+      const scraped = await statusScrape(adapterType, applicationNumbers, {
         encryptedStorageStatePath: portalProfile.encrypted_storage_state,
         headless: true,
         credential,
         userDataDir,
         // Track-scoped portal URL (already resolved for the credential lookup above) so a
         // multi-tenant platform adapter checks status on the RIGHT subdomain.
-        loginUrl: text(target.portal_url) || undefined,
+        loginUrl: safeTargetPortalUrl || undefined,
       }).catch(() => null);
       if (scraped && !isAuthWallText(scraped)) {
         rawStatusText = scraped;
@@ -6446,12 +6506,10 @@ export async function runDuePermitChecks(
     // No authenticated scrape — try the public tracking URL (exact CapDetail / record-detail
     // link that requires no login), then fall back to the generic portal_url.
     if (!rawStatusText) {
-      const trackingUrl = text(target.tracking_url);
-      const portalUrl = text(target.portal_url);
-      const checkUrl = trackingUrl || portalUrl;
+      const checkUrl = safeTrackingUrl || safeTargetPortalUrl;
       const appNums = [text(target.application_number), text(target.permit_number)].filter(Boolean);
       if (checkUrl) {
-        const publicText = await publicPermitStatusCheck(checkUrl, appNums).catch(() => null);
+        const publicText = await publicStatusFetch(checkUrl, appNums).catch(() => null);
         if (publicText && publicText.length > 40 && !isAuthWallText(publicText)) {
           rawStatusText = publicText;
           source = "public_url";

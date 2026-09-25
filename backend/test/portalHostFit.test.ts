@@ -223,4 +223,116 @@ await check("(s2) a permit recipe whose goto leaves for a utility portal is refu
   assert.ok(fx.audits("portal.track_host_conflict").some((a) => JSON.parse(a.details).recipeId === recipe.id));
 });
 
+// ── resolution skeptic MF3: the status monitor and the correction reopen resolve through the
+//    same two-way predicate — nothing opens a browser or fetches the other track's portal ──────
+type ScrapeCall = { adapter: string; recipeId: string | null; loginUrl: string | null };
+const scrapes: ScrapeCall[] = [];
+const fetches: string[] = [];
+repo.setStatusCheckSeamsForTests({
+  checkStatus: (async (adapter: string, _apps: string[], opts: { recipe?: { id: string }; loginUrl?: string }) => {
+    scrapes.push({ adapter, recipeId: opts?.recipe?.id ?? null, loginUrl: opts?.loginUrl ?? null });
+    return null; // nothing read — the sweep falls through to the public fetch
+  }) as never,
+  publicCheck: (async (url: string) => { fetches.push(url); return null; }) as never,
+});
+const targetFor = (projectId: string, input: { targetType: "permit" | "nem"; portalUrl: string; applicationNumber: string; permitType?: string }) => {
+  repo.createPermitCheckTarget(db, projectId, { ...input, jurisdiction: "x", portalName: "x", permitType: input.permitType ?? (input.targetType === "nem" ? "nem" : "building") });
+  const row = db.get<{ id: string }>("SELECT id FROM permit_check_targets WHERE project_id = ? ORDER BY created_at DESC LIMIT 1", [projectId])!;
+  return row.id;
+};
+/** One sweep over exactly these targets (every other target retired; time, not the thing under test). */
+const sweep = async (...targetIds: string[]) => {
+  db.run("UPDATE permit_check_targets SET active = 0");
+  for (const t of targetIds) db.run("UPDATE permit_check_targets SET active = 1, next_check_at = NULL WHERE id = ?", [t]);
+  scrapes.length = 0; fetches.length = 0;
+  await repo.runDuePermitChecks(db, "all");
+};
+const correctionFor = (projectId: string) => repo.addManualCorrection(db, projectId, "Correction: the application was returned for revision — please resubmit the corrected plan set.", "portal").corrections[0].id;
+type ReopenRunner = NonNullable<Parameters<typeof repo.reopenCorrectionOnPortal>[2]>["runner"];
+const reopenCalls: Array<{ recipeId: string; portalUrl: string; steps: number }> = [];
+const reopenRunner = (async (recipe: { id: string; portalUrl: string; steps: unknown[] }) => {
+  reopenCalls.push({ recipeId: recipe.id, portalUrl: recipe.portalUrl, steps: recipe.steps.length });
+  return { ok: false, needsHuman: true, message: "stub reopen", offeredForms: [] };
+}) as unknown as ReopenRunner;
+const conflicts = (action: string, projectId: string) => fx.audits(action).filter((a) => a.project_id === projectId).map((a) => JSON.parse(a.details));
+
+await check("(m3a) MUST-EXCLUDE: a PERMIT target bound to a utility host (production 99ea32c3) is neither scraped nor fetched; MUST-PASS: a Coos Bay permit target on aca-oregon is fetched", async () => {
+  const project = fx.newProject({ ahj: "City of Coos Bay", city: "Coos Bay", zip: "97420" });
+  // LEGACY DATA, NOT THE THING UNDER TEST: createPermitCheckTarget refuses a utility URL on a permit
+  // target at the door today; production row 99ea32c3 predates that door, so it is inserted as held.
+  const past = new Date(Date.now() - 86_400_000).toISOString();
+  db.run(
+    `INSERT INTO permit_check_targets (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number, check_frequency_days, active, last_checked_at, next_check_at, latest_outcome, latest_status_label, notes, target_type, permit_type, portal_platform, tracking_url, created_at, updated_at)
+     VALUES ('tgt-99ea32c3', ?, 'City of Coos Bay', 'PowerClerk', ?, 'APP-111667', '', 7, 1, NULL, ?, NULL, '', '', 'permit', 'building', 'powerclerk', '', ?, ?)`,
+    [project, PACIFICORP_NM, past, past, past],
+  );
+  await sweep("tgt-99ea32c3");
+  assert.deepEqual(fetches, [], `the permit target's utility URL was fetched: ${JSON.stringify(fetches)}`);
+  assert.deepEqual(scrapes.filter((c) => c.loginUrl && /powerclerk/.test(c.loginUrl)), [], "the legacy adapter was pointed at the utility URL");
+  assert.ok(conflicts("portal.track_host_conflict", project).some((d) => d.targetId === "tgt-99ea32c3"), "the conflict was not audited");
+  // MUST-PASS: the same AHJ's permit target on its permit portal is fetched.
+  const ok = fx.newProject({ ahj: "City of Coos Bay", city: "Coos Bay", zip: "97420" });
+  const t = targetFor(ok, { targetType: "permit", portalUrl: ACA_OREGON, applicationNumber: "187-26-000305-STR" });
+  await sweep(t);
+  assert.ok(fetches.length >= 1 && fetches.every((u) => u === ACA_OREGON), `the Coos Bay permit target was not fetched (the sweep and the status resolver each fetch once): ${JSON.stringify(fetches)}`);
+});
+
+await check("(m3b) MUST-EXCLUDE: a permit target whose AHJ recipe drives a utility host is not handed to the scraper; MUST-PASS: a Pacific Power NEM target scrapes with the utility recipe (discipline '')", async () => {
+  // A legacy '' discipline AHJ recipe for Portland that drives PowerClerk (the poisoned shape).
+  const bad = recipes.startPortalRecording(db, { scopeType: "ahj", state: "OR", ahj: "Portland", utility: "PGE", portalUrl: PGE_NM, createdBy: "test" });
+  recipes.savePortalRecipeSteps(db, bad.id, [fill(1), fill(2), REVIEW], { status: "complete" });
+  const project = fx.newProject(); // Portland / PGE
+  const t = targetFor(project, { targetType: "permit", portalUrl: "", applicationNumber: "187-26-000999-STR" });
+  await sweep(t);
+  assert.deepEqual(scrapes.filter((c) => c.recipeId === bad.id), [], "the poisoned AHJ recipe was handed to checkStatusWithAdapter");
+  assert.ok(conflicts("portal.track_host_conflict", project).some((d) => d.recipeId === bad.id && d.targetId === t), "the recipe conflict was not audited");
+  // MUST-PASS: the utility recipe (discipline '') reaches the scraper for a NEM target.
+  const pac = utilityRecipe("OR", "Pacific Power", PACIFICORP_NM);
+  const nemProject = fx.newProject({ utility: "Pacific Power" });
+  const nt = targetFor(nemProject, { targetType: "nem", portalUrl: PACIFICORP_NM, applicationNumber: "APP-222" });
+  await sweep(nt);
+  assert.ok(scrapes.some((c) => c.adapter === "recipe" && c.recipeId === pac.id), `the utility recipe was not scraped: ${JSON.stringify(scrapes)}`);
+});
+
+await check("(m3c) MUST-EXCLUDE: a NEM target / reopen bound to an AHJ permit platform (aca-oregon) stops before any browser, audited portal.track_host_conflict", async () => {
+  const project = fx.newProject({ utility: "Pacific Power" });
+  // The door does not guard this direction (createPermitCheckTarget: "the reverse is not guarded").
+  const t = targetFor(project, { targetType: "nem", portalUrl: ACA_OREGON, applicationNumber: "APP-333" });
+  await sweep(t);
+  assert.deepEqual(fetches, [], `the NEM target's permit-platform URL was fetched: ${JSON.stringify(fetches)}`);
+  assert.deepEqual(scrapes.filter((c) => c.loginUrl && /accela/.test(c.loginUrl)), []);
+  assert.ok(conflicts("portal.track_host_conflict", project).some((d) => d.targetId === t), "the sweep's conflict was not audited");
+  reopenCalls.length = 0;
+  const result = await repo.reopenCorrectionOnPortal(db, correctionFor(project), { targetId: t, runner: reopenRunner });
+  assert.equal(reopenCalls.length, 0, "the reopen opened a browser on the permit platform for a NEM filing");
+  assert.equal(result.needsHuman, true);
+  assert.match(result.message, /AHJ permit portal/);
+  assert.ok(fx.audits("portal.track_host_conflict").filter((a) => a.project_id === project).some((a) => a.actor_name === "correction reopen"), "the reopen's conflict was not audited");
+});
+
+await check("(m3d) MUST-EXCLUDE: a reopen never replays a recipe whose host fit is platform_conflict / foreign_entity; MUST-PASS: the Pacific Power NEM reopen replays the utility recipe", async () => {
+  // Tigard: a person verified EnerGov; a '' discipline Tigard recipe on aca-oregon is a platform conflict.
+  kb.saveVerifiedAhjProfile(db, { state: "OR", ahj: "City of Tigard", portalUrl: TIGARD_ENERGOV, portalPlatform: "energov", verifiedBy: "test" });
+  const stale = recipes.startPortalRecording(db, { scopeType: "ahj", state: "OR", ahj: "City of Tigard", utility: "PGE", portalUrl: ACA_OREGON, createdBy: "test" });
+  recipes.savePortalRecipeSteps(db, stale.id, [fill(1), fill(2), REVIEW], { status: "complete" });
+  const tigard = fx.newProject({ ahj: "City of Tigard", city: "Tigard", zip: "97223" });
+  const t = targetFor(tigard, { targetType: "permit", portalUrl: TIGARD_ENERGOV, applicationNumber: "BLD-2026-0101" });
+  reopenCalls.length = 0;
+  await repo.reopenCorrectionOnPortal(db, correctionFor(tigard), { targetId: t, runner: reopenRunner });
+  assert.equal(reopenCalls.length, 1, "the reopen on Tigard's own verified portal did not run");
+  assert.notEqual(reopenCalls[0].recipeId, stale.id, "the reopen replayed the recipe that drives aca-oregon against Tigard's verified EnerGov portal");
+  assert.equal(reopenCalls[0].steps, 0, "steps of a misfit recipe were replayed");
+  assert.equal(reopenCalls[0].portalUrl, TIGARD_ENERGOV);
+  assert.ok(conflicts("portal.entity_host_conflict", tigard).some((d) => d.recipeId === stale.id && d.code === "platform_conflict"), "the recipe misfit was not audited");
+  // MUST-PASS: the utility recipe reopens the NEM filing.
+  const pac = recipes.findCompleteRecipeForProject(db, { scopeType: "utility", state: "OR", utility: "Pacific Power" })!;
+  assert.ok(pac, "setup: the Pacific Power recipe from (m3b) is missing");
+  const nemProject = fx.newProject({ utility: "Pacific Power" });
+  const nt = targetFor(nemProject, { targetType: "nem", portalUrl: PACIFICORP_NM, applicationNumber: "APP-444" });
+  reopenCalls.length = 0;
+  await repo.reopenCorrectionOnPortal(db, correctionFor(nemProject), { targetId: nt, runner: reopenRunner });
+  assert.deepEqual(reopenCalls.map((c) => c.recipeId), [pac.id], `the NEM reopen did not replay the utility recipe: ${JSON.stringify(reopenCalls)}`);
+});
+
+repo.setStatusCheckSeamsForTests(null);
 finish("portal-host-fit");
