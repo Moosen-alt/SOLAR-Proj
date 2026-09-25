@@ -3957,7 +3957,7 @@ function buildReviewItems(){
   ].filter(Boolean);
   const passes = state.passes || [];
   const planText = state.planDoc?.text || '';
-  state.reviewItems = (passes.length || planText) ? ParserReview.resolveReviewItems({ passes, attached, planText }) : null;
+  state.reviewItems = (passes.length || planText) ? ParserReview.resolveReviewItems({ passes, attached, planText, meterVerdict: getVal('ubMeterVerification') }) : null;
   state.passNotes = ParserReview.mergeNotes(passes.map(p => ({ label: p.label, docsGiven: p.docsGiven, notes: p.response && p.response.notes })), attached);
   (state.passNotes.sections || []).forEach(s => pushFlag(s));
   const installer = installerFlagLine();
@@ -4276,6 +4276,16 @@ async function runParse(){
   // fast path, so a fully AI-read packet never pays the OCR cost.
   await ocrFallbackIfNeeded(ub, meterPhoto);
 
+  // A plan set that prints the bill/photo meter under a label neither the regex parser knew
+  // nor the model cited still confirms it: a verbatim digits match in the plan text is the
+  // plan-set meter (evidence recorded), never a guess.
+  if (!(getVal('planMeterNumber') || '').trim() && (getVal('ubMeterNumber') || '').trim()){
+    const hit = ParserReview.meterInText(state.planDoc?.text || '', getVal('ubMeterNumber'));
+    if (hit){
+      setVal('planMeterNumber', digits(hit));
+      state.llmEvidence.push({ field: 'planMeterNumber', value: digits(hit), confidence: 0.9, source: 'plan_set', sheet: 'verbatim text match', excerpt: hit });
+    }
+  }
   // ONE meter verdict, computed once from whatever the final fields hold. The early
   // regex-path verdict was never recomputed after the smart-read passes landed, so the
   // box said "UB or meter photo meter missing" while both fields held the same digits.

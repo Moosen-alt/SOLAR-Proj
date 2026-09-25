@@ -36,7 +36,13 @@ same(PR.meterTargets({ source: "plan_set", vision: true }), ["planMeterNumber"],
 same(PR.meterTargets({ source: undefined, vision: false, docsGiven: ["plan_set", "structural_letter"] }), ["planMeterNumber"]);
 same(PR.meterTargets({ source: undefined, vision: false, docsGiven: ["utility_bill"] }), ["meter", "ubMeterNumber"], "no provenance + no plan set given → it can only be the bill's");
 same(PR.meterTargets({ source: undefined, vision: true }), ["meter", "ubMeterNumber"]);
-ok("meter: provenance routes the reading; one compare predicate");
+// verbatim confirmation in the plan text: grouped digits count, near-misses do not
+assert.equal(PR.meterInText("UTILITY: SAMPLE POWER METER #151 198 589. ESID 1234", "151198589"), "151 198 589");
+assert.equal(PR.meterInText("METER NUMBER: 1786346", "1786346"), "1786346");
+assert.equal(PR.meterInText("METER NUMBER: 11786346", "1786346"), "", "a longer number containing the digits is not the meter");
+assert.equal(PR.meterInText("METER NUMBER: 1786347", "1786346"), "");
+assert.equal(PR.meterInText("METER 12345", "12345"), "", "too short to be a verbatim confirmation");
+ok("meter: provenance routes the reading; one compare predicate; verbatim plan-text confirmation");
 
 // ---------------------------------------------------------------------------
 // 2. NOTES — one attributed section; a pass may not assert an attached doc was not supplied.
@@ -180,6 +186,29 @@ const visionPass = (fields: Record<string, unknown>) => ({ kind: "vision", label
   // a whole-feet height resolves its 0 inches even when the model calls it inferred
   const inches = PR.resolveReviewItems({ attached: ["plan_set", "structural_letter"], planText: planTextSF, passes: [textPass({ buildingHeightInches: field(0, "structural_letter", "Roof Height 25 ft", 0.5) }, ["buildingHeightInches"], { uncertainties: [{ field: "buildingHeightInches", kind: "inferred", reason: "height given only in whole feet" }] })] });
   assert.ok(inches.resolved.some((x: { field: string }) => x.field === "buildingHeightInches"));
+  // the letter's "Roof Height N ft" is the building height even when the model calls it inferred
+  const feet = PR.resolveReviewItems({ attached: ["plan_set", "structural_letter"], planText: planTextSF, passes: [textPass({ buildingHeightFeet: field(15, "structural_letter", "Roof Height 15 ft", 0.75) }, ["buildingHeightFeet"], { uncertainties: [{ field: "buildingHeightFeet", kind: "inferred", reason: "no grade-to-ridge height stated" }] })] });
+  assert.ok(feet.resolved.some((x: { field: string; value: number }) => x.field === "buildingHeightFeet" && x.value === 15));
+  // a flagged meter the cross-check already confirmed is RESOLVED; a mismatch is a CONFLICT; no verdict → unsure
+  const meterOk = PR.resolveReviewItems({ attached: ["plan_set", "meter_photo"], planText: planTextSF, meterVerdict: "DIGITS MATCH", passes: [textPass({ meter: field("5001415986", "plan_set", "UTILITY METER #5 001 415 986", 0.6) }, ["meter"])] });
+  assert.ok(meterOk.resolved.some((x: { field: string; how: string }) => x.field === "meter" && /DIGITS MATCH/.test(x.how)));
+  const meterBad = PR.resolveReviewItems({ attached: ["plan_set", "meter_photo"], planText: planTextSF, meterVerdict: "MISMATCH. Plan 5001415986 vs UB/photo 5001415987.", passes: [textPass({ meter: field("5001415986", "plan_set", "UTILITY METER #5 001 415 986", 0.6) }, ["meter"])] });
+  assert.ok(meterBad.conflicts.some((x: { field: string }) => x.field === "meter") && !meterBad.resolved.length);
+  const meterNone = PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, meterVerdict: "Plan meter parsed. UB or meter photo meter missing.", passes: [textPass({ meter: field("5001415986", "plan_set", "UTILITY METER #5 001 415 986", 0.6) }, ["meter"])] });
+  assert.ok(meterNone.unsure.some((x: { field: string }) => x.field === "meter"));
+  // two documents agree + one confident reading → RESOLVED; one pass alone at 78% stays unsure
+  const agree = PR.resolveReviewItems({ attached: ["plan_set", "utility_bill", "meter_photo"], planText: planTextSF, passes: [
+    { kind: "vision", label: "photos", docsGiven: ["meter_photo"], response: { fields: { state: field("AZ", "meter_photo", "SRP CONNECT", 0.5) }, lowConfidenceFields: ["state"], notes: "" } },
+    textPass({ state: field("AZ", "utility_bill", "PHOENIX AZ 85040", 0.97) }, []),
+  ] });
+  assert.ok(agree.resolved.some((x: { field: string; how: string }) => x.field === "state" && /two documents agree/.test(x.how)));
+  const alone = PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [textPass({ pvBreaker: field("30A", "plan_set", "(N) PV BREAKER 30A/2P", 0.78) }, ["pvBreaker"], { uncertainties: [{ field: "pvBreaker", kind: "inferred", reason: "label and value glued" }] })] });
+  assert.ok(alone.unsure.some((x: { field: string }) => x.field === "pvBreaker") && !alone.resolved.length, "one pass's flagged reading is not resolved by its own confidence");
+  const disagree = PR.resolveReviewItems({ attached: ["plan_set", "utility_bill"], planText: planTextSF, passes: [
+    { kind: "vision", label: "photos", docsGiven: ["utility_bill"], response: { fields: { state: field("NM", "utility_bill", "ALBUQUERQUE NM", 0.9) }, lowConfidenceFields: ["state"], notes: "" } },
+    textPass({ state: field("AZ", "plan_set", "PHOENIX AZ", 0.97) }, []),
+  ] });
+  assert.ok(disagree.conflicts.some((x: { field: string }) => x.field === "state") && !disagree.resolved.length, "disagreeing documents are a conflict, never resolved by confidence");
   ok("must-exclude: duplex, outbuilding array, unmatched bill holder, no-CEC make, split letter, inferred value, RSD needs both readings");
 }
 
@@ -229,6 +258,13 @@ ok("no Oregon leakage: licence label by state, N/A dropped, identified-vs-unknow
   const trench = PR.locatesDecision({ sop: false, ruleLocatesRequired: pgeRule, nonBreakerTypes: ["TRENCH"], breakerOnly: false, evidence: [{ type: "TRENCH", page: 2, sheet: "PV 1.1", text: "~119 FT TRENCH TO BE 24\" DEEP", snippet: "" }] });
   assert.equal(trench.needed, true);
   assert.match(trench.quotes[0], /TRENCH TO BE 24/);
+  // a one-word match quotes its context, and repeats collapse
+  const kw = PR.locatesDecision({ sop: false, ruleLocatesRequired: pgeRule, nonBreakerTypes: ["TRENCH"], breakerOnly: false, evidence: [
+    { type: "TRENCH", page: 3, sheet: "PV 1.1", text: "TRENCH", snippet: "ON WALL (UNDER EAVE) ~119 FT TRENCH TO BE 24\" DEEP WITH 18\" MINIMUM FILL" },
+    { type: "TRENCH", page: 3, sheet: "PV 1.1", text: "TRENCH", snippet: "ON WALL (UNDER EAVE) ~119 FT TRENCH TO BE 24\" DEEP WITH 18\" MINIMUM FILL" },
+  ] });
+  assert.equal(kw.quotes.length, 1);
+  assert.match(kw.quotes[0], /119 FT TRENCH TO BE 24/);
   assert.equal(PR.locatesDecision({ sop: false, ruleLocatesRequired: pgeRule, nonBreakerTypes: ["UNDERGROUND"], breakerOnly: false, evidence: [{ type: "UNDERGROUND", text: "NEW UNDERGROUND CONDUIT" }] }).needed, true);
   assert.equal(PR.locatesDecision({ sop: false, ruleLocatesRequired: pgeRule, nonBreakerTypes: ["SERVICE_RELOCATION"], breakerOnly: false, evidence: [{ type: "SERVICE_RELOCATION", text: "METER RELOCATION" }] }).needed, true);
   assert.equal(PR.locatesDecision({ sop: false, ruleLocatesRequired: pgeRule, nonBreakerTypes: ["POLE"], breakerOnly: false, evidence: [{ type: "POLE", text: "NEW UTILITY POLE" }] }).needed, true);

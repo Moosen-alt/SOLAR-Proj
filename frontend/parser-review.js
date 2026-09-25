@@ -44,6 +44,18 @@
     return `MISMATCH. Plan ${planMeter} vs UB/photo ${ubMeter}.`;
   }
 
+  /** The meter number as it appears VERBATIM in a document's text (digits possibly grouped
+   *  with spaces/hyphens, as plan sets print them: "METER #151 198 589"), or ''. Lets the
+   *  page confirm a bill/photo meter against a plan set that prints it under a label the
+   *  regex parser did not know and the model did not cite. Never invents: digits only. */
+  function meterInText(text, meter) {
+    const d = digits(meter);
+    if (d.length < 6 || !text) return '';
+    const re = new RegExp('(?<![0-9])' + d.split('').join('[\\s\\-]?') + '(?![0-9])');
+    const m = String(text).match(re);
+    return m ? m[0] : '';
+  }
+
   /** Which form fields a `meter` reading belongs to. The reading's own provenance decides:
    *  a meter read off the bill or the photo is the UB/photo meter even when the TEXT pass
    *  read it (a PDF bill goes through the text pass, not vision); a meter read off the plan
@@ -226,8 +238,10 @@
    * passes:   [{ kind:'vision'|'text', label, docsGiven:[docKind...], response:{fields, lowConfidenceFields, notes, conflicts?, uncertainties?, resolutions?} }]
    * attached: [docKind...] the documents on the page
    * planText: raw plan-set text (single-family basis, RSD contradiction)
+   * meterVerdict: the page's one meter verdict (compareMeters), so a flagged `meter` reading
+   *               that the cross-check already confirmed is RESOLVED, and a mismatch is a CONFLICT
    */
-  function resolveReviewItems({ passes, attached, planText }) {
+  function resolveReviewItems({ passes, attached, planText, meterVerdict }) {
     passes = passes || []; attached = attached || [];
     const readings = readingsFor(passes);
     const byField = (f) => readings.filter((r) => r.field === f);
@@ -311,6 +325,23 @@
       const u = uncertaintyByField.get(field);
       const kind = u && u.kind ? String(u.kind) : '';
       const reason = u && u.reason ? clean(u.reason) : '';
+      if (field === 'meter' && rs.length) {
+        const v = String(meterVerdict || '');
+        if (/DIGITS MATCH|LIKELY MATCH/i.test(v)) { resolved.push({ field, value: rs[0].value, how: `the meter cross-check confirms it: ${v} (${rs.map(where).join(' / ')})`, evidence: rs[0] }); done.add(field); continue; }
+        if (/^MISMATCH/i.test(v)) { pushConflict(field, rs, v); continue; }
+      }
+      // Two documents agree and at least one reading is confident: one pass's doubt does not
+      // outrank the other's certainty (a state read off a meter photo at 50% while the bill
+      // prints the address at 97%).
+      if (rs.length >= 2 && new Set(rs.map((r) => String(r.value).toUpperCase())).size === 1 && kind !== 'conflicting') {
+        const best = rs.reduce((a, b) => (b.confidence > a.confidence ? b : a));
+        const sources = new Set(rs.map((r) => r.source));
+        if (best.confidence >= 0.75 && sources.size >= 2) {
+          resolved.push({ field, value: best.value, how: `two documents agree: ${rs.map((r) => `${where(r)}${quote(r)}`).join('; ')}`, evidence: best });
+          done.add(field);
+          continue;
+        }
+      }
       if (field === 'dwellingUnits' || field === 'numberOfBuildings') {
         const stated = rs.find((r) => String(r.value) !== '1' && numberIn(r.excerpt, r.value) && /UNIT|BUILDING|DWELLING/i.test(r.excerpt));
         if (!stated && sf && !(field === 'numberOfBuildings' && WORK_ON_OUTBUILDING.test(String(planText || '')))) {
@@ -335,10 +366,14 @@
       const excerpt = String(r.excerpt || '');
       const statedVerbatim = label && excerpt && label.test(excerpt) && !FORMULA.test(excerpt) && !(field === 'existingBuildingArea' && NOT_THIS_AREA.test(excerpt)) && numberIn(excerpt, r.value);
       const wholeFeet = field === 'buildingHeightInches' && Number(r.value) === 0 && /\d+\s*(?:FT|FEET|')\b/i.test(excerpt) && !/\d+\s*(?:IN\b|INCH|")/i.test(excerpt);
+      // The sealed letter's "Roof Height 25 ft" IS the building height the permit form asks
+      // for (operator rule); the model tends to call it "inferred" because no separate
+      // grade-to-ridge figure exists. Deterministic, so it stands whatever kind was attached.
+      const roofHeight = field === 'buildingHeightFeet' && /ROOF\s+HEIGHT\s*:?\s*\d+/i.test(excerpt) && numberIn(excerpt, r.value);
       // wholeFeet is deterministic (a height printed as "25 ft" has 0 inches) so it stands
       // whatever kind the model attached; a stated value yields to a genuine doubt.
-      if (wholeFeet || (statedVerbatim && kind !== 'guessed' && kind !== 'unreadable' && kind !== 'inferred')) {
-        resolved.push({ field, value: r.value, how: `stated on the ${where(r)}${quote(r)}${wholeFeet ? ' — height given in whole feet' : ''}`, evidence: r });
+      if (wholeFeet || roofHeight || (statedVerbatim && kind !== 'guessed' && kind !== 'unreadable' && kind !== 'inferred')) {
+        resolved.push({ field, value: r.value, how: `stated on the ${where(r)}${quote(r)}${wholeFeet ? ' — height given in whole feet' : ''}${roofHeight ? " — the letter's Roof Height is the building height unless an elevation states grade-to-ridge" : ''}`, evidence: r });
         done.add(field);
         continue;
       }
@@ -432,7 +467,17 @@
     }
     const hits = (evidence || []).filter((e) => EXCAVATION_TYPES.includes(e.type));
     if (!hits.length) return { needed: false, basis: 'no excavation evidence (no trench, underground run, service relocation or pole work on the plan set)', quotes: [] };
-    return { needed: true, basis: 'excavation evidence on the plan set', quotes: hits.slice(0, 3).map((e) => `${e.type} p.${e.page}${e.sheet ? ' ' + e.sheet : ''}: "${clean(e.text || e.snippet).slice(0, 140)}"`) };
+    // Quote the callout, not the bare keyword: a one-word match ("TRENCH") shows its context.
+    const quoteOf = (e) => { const t = clean(e.text); const s = clean(e.snippet); return (t.length >= 24 || !s) ? t : s; };
+    const seen = new Set();
+    const quotes = [];
+    for (const e of hits) {
+      const q = `${e.type} p.${e.page}${e.sheet ? ' ' + e.sheet : ''}: "${quoteOf(e).slice(0, 160)}"`;
+      if (seen.has(q)) continue;
+      seen.add(q); quotes.push(q);
+      if (quotes.length >= 3) break;
+    }
+    return { needed: true, basis: 'excavation evidence on the plan set', quotes };
   }
 
   // -------------------------------------------------------------------------
@@ -496,7 +541,7 @@
   }
 
   return {
-    compareMeters, meterTargets,
+    compareMeters, meterTargets, meterInText,
     mergeNotes, assertsMissingAttached,
     resolveReviewItems, rsdConflict, singleFamilyBasis, namesMatch,
     licenseLabel, installerLine, identifyUtility,
