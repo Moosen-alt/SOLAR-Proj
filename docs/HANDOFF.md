@@ -32,6 +32,18 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 36/25 payload on the production copy: all 5 blockers are document-stated; the one parser-only project
 (ec5c36d3) is also unknown-path, so a warning under either rule. Kept as built in 641326f.
 
+**Operator rulings on learn/replay (2026-09-24, from the portal-readiness plan `.probe/readiness/PLAN.md`):**
+- A replay failure nobody can attribute KEEPS the recipe and flags it for a human (never demotes). Harness aborts, document
+  gates and challenges never demote.
+- The demoted NEM recipes (PacifiCorp `6282e671`, PGE `481c00f4`/`e9efa4a3`) are RESTORED once that fix lands, then proven
+  with one supervised replay each.
+- On Oregon's statewide Accela portal a recipe learned for one city MAY replay for another city when the record/permit type
+  matches (city fields still bind per project; drift stops the run; every run stops at review).
+- Supervised live checks approved once the safety fixes land (learn to the review screen, stop, never submit, operator
+  present): PacifiCorp + PGE NEM, Accela Coos Bay then Salem, Happy Valley EnerGov. Tyler login has 2FA — the run parks at
+  the code prompt with the window open and the OPERATOR types the code (automation never does MFA). No 54-portal login sweep.
+- Research must work for ANY new state: IL/TX are the development set; acceptance runs on held-out states.
+
 **Operator actions still open (2026-09-24):**
 - Oregon 36/25 psf minimum ground snow: the verified write (`PUT /api/code-profiles/verify`, payload in
   the round-3 criteria report) waits for the snow-reading invariant work to land. After it: 5 blockers
