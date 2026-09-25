@@ -97,9 +97,12 @@ const fail = (why: string, text: string): void => { if (failures.length < 40) fa
 for (const family of [36, 16] as const) {
   const n = { layouts: 0, readExactly: 0, notRead: 0, ambiguous: 0, minWarnings: 0, conflicts: 0, blockers: 0, falseBlockers: 0 };
   const ambiguousShapes = new Map<string, number>();
+  const failedShapes = new Map<string, number>();
   for (const items of lists(family)) {
     for (const order of ORDERS) for (const sep of SEPS) for (const form of FORMS) {
       const text = render(items, order, sep, form);
+      const shape = `${order} / sep ${sep} / ${form}`;
+      const failedBefore = failures.length;
       n.layouts++;
       const docs = [{ label: "Plan set", text }];
       const reading = statedGroundSnowReading(project, docs);
@@ -110,7 +113,6 @@ for (const family of [36, 16] as const) {
       if (reading.status === "none") n.notRead++;
       if (reading.status === "ambiguous") {
         n.ambiguous++;
-        const shape = `${order} / sep ${sep} / ${form}`;
         ambiguousShapes.set(shape, (ambiguousShapes.get(shape) ?? 0) + 1);
       }
       if (conflict) n.conflicts++;
@@ -133,9 +135,11 @@ for (const family of [36, 16] as const) {
           }
         }
       }
+      if (failures.length > failedBefore) failedShapes.set(shape, (failedShapes.get(shape) ?? 0) + 1);
     }
   }
   console.log(`TRUE Pg ${family}: layouts ${n.layouts} | read exactly ${n.readExactly} | not read ${n.notRead} | ambiguous ${n.ambiguous} | minimum warnings ${n.minWarnings} | conflicts ${n.conflicts} | minimum BLOCKERS ${n.blockers}${family === 36 ? ` (false: ${n.falseBlockers})` : ""}`);
+  if (failedShapes.size) console.log(`  FAILED by layout: ${[...failedShapes].map(([k, v]) => `${k}: ${v}`).join("; ")}`);
   if (ambiguousShapes.size) console.log(`  ambiguous by layout: ${[...ambiguousShapes].map(([k, v]) => `${k}: ${v}`).join("; ")}`);
 }
 
