@@ -1189,6 +1189,8 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
     db.run("DELETE FROM permit_status_checks WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM permit_check_targets WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM portal_runs WHERE project_id = ?", [projectId]);
+    // Approve & Submit approvals (migration v35) carry a FK to projects.
+    db.run("DELETE FROM portal_run_approvals WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM submissions WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM human_review_items WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM corrections WHERE project_id = ?", [projectId]);
@@ -6657,6 +6659,11 @@ const PORTAL_RUNNER_ID = `${os.hostname()}|${process.pid}|${id().slice(0, 8)}`;
  *  for the pid. Another host → unknowable, so only its age can retire it. */
 function portalRunnerAlive(runner: string, startedAt: string): boolean {
   if (!runner) return false; // a row from before runners were recorded
+  // NO RUN IS 'running' FOR SIX HOURS. Checked first and for every runner: a dead runner's pid
+  // reused by an unrelated process would otherwise answer "alive" forever, and the track would be
+  // refused as "still running" until someone edited the database.
+  const age = Date.now() - Date.parse(startedAt);
+  if (!Number.isFinite(age) || age >= 6 * 3600_000) return false;
   if (runner === PORTAL_RUNNER_ID) return true;
   const [host, pidText] = runner.split("|");
   if (host === os.hostname()) {
@@ -6664,8 +6671,7 @@ function portalRunnerAlive(runner: string, startedAt: string): boolean {
     if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false; // our pid, another boot: reused
     try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException)?.code === "EPERM"; }
   }
-  const age = Date.now() - Date.parse(startedAt);
-  return Number.isFinite(age) && age < 6 * 3600_000;
+  return true; // another host, younger than the cap: cannot tell, so it holds the track
 }
 
 function insertRunningPortalRun(db: AppDb, input: {

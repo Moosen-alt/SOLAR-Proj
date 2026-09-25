@@ -172,5 +172,16 @@ await check("(k) every recipe writer clears a legacy arm", () => {
   assert.equal(armed(recipe.id), 0, "finishPortalRecipe left the arm");
 });
 
+await check("(l) a project that received an Approve & Submit can still be deleted (its approvals go with it)", () => {
+  const projectId = fx.newProject();
+  approve(projectId);
+  // A consumed one too: the approval table carries a foreign key to projects.
+  const consumed = approve(projectId);
+  db.run("UPDATE portal_run_approvals SET consumed_at = ? WHERE id = ?", [new Date().toISOString(), consumed.id]);
+  repo.deleteProject(db, projectId);
+  assert.equal(db.get("SELECT id FROM projects WHERE id = ?", [projectId]), null, "the project was not deleted");
+  assert.equal(db.query("SELECT id FROM portal_run_approvals WHERE project_id = ?", [projectId]).length, 0, "approvals outlived their project");
+});
+
 repo.setRecipeStageRunnerForTests(null);
 finish("auto-submit-trust");

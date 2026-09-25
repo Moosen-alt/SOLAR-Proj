@@ -168,5 +168,28 @@ await check("(e) while a run is in flight a second stage is refused; when its ru
   await first;
 });
 
+await check("(e2) a 'running' row whose runner pid is alive (maybe reused) holds the track only for 6 hours — then recovery retires it", async () => {
+  fx.completeRecipe();
+  const projectId = fx.newProject();
+  let release: (() => void) | null = null;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  fx.stubRunner(async () => { await gate; return { portalName: "stub", ok: true, finalSubmitClicked: false, pauseReason: null, steps: [{ ok: true, message: "staged" }] }; });
+  const first = repo.prepareSubmission(db, projectId);
+  for (let i = 0; i < 200 && fx.latestRun(projectId)?.status !== "running"; i++) await new Promise((r) => setTimeout(r, 25));
+  const runId = String(fx.latestRun(projectId)!.id);
+  // The row now claims a LIVE process on this host that is not this one (our parent is alive —
+  // exactly what a dead runner's reused pid looks like to the OS).
+  const os = await import("node:os");
+  db.run("UPDATE portal_runs SET runner = ? WHERE id = ?", [`${os.hostname()}|${process.ppid}|other-boot`, runId]);
+  assert.equal(repo.recoverInterruptedPortalRuns(db, { projectId }).length, 0, "a fresh run with a live runner was retired");
+  // Time passing (not the thing under test): the run is now seven hours old.
+  db.run("UPDATE portal_runs SET started_at = ? WHERE id = ?", [new Date(Date.now() - 7 * 3600_000).toISOString(), runId]);
+  const recovered = repo.recoverInterruptedPortalRuns(db, { projectId });
+  assert.equal(recovered.length, 1, "a seven-hour-old 'running' row with a live (reused) pid held the track forever");
+  assert.equal(fx.latestRun(projectId)!.status, "interrupted");
+  release!();
+  await first;
+});
+
 repo.setRecipeStageRunnerForTests(null);
 finish("replay-outcome");
