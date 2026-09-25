@@ -560,6 +560,45 @@ await check("B4 MUST-EXCLUDE: an IFC citation never borrows a non-IFC fire code 
   assert.ok(!/FFPC/.test(fire.code), `an IFC section was cited as ${fire.code}`);
 });
 
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// Should-fix items from the skeptic's verdict
+// ─────────────────────────────────────────────────────────────────────────────────────────
+await check("SF-h: a VERIFIED state row is staleness-checked once an announced edition's date passes since it was verified — not before", () => {
+  CP.saveVerifiedCodeProfile(db, blank("ZY", "", {
+    adoptedCodes: [{ family: "residential", code: "ZYRC", edition: "2023", basedOn: "2021 IRC" }],
+    upcoming: [{ family: "residential", code: "ZYRC", edition: "2026", anticipatedDate: "2026-10-01" }],
+  }), "tester");
+  const zy = CP.codeProfileKey({ state: "ZY", ahj: "" });
+  db.run("UPDATE jurisdiction_code_profiles SET verified_at = ? WHERE profile_key = ?", ["2026-09-01T00:00:00Z", zy]);
+  assert.equal(CP.codeResearchDecision(db, "ZY", "", "2026-09-30T00:00:00Z").reason, "verified_fresh");
+  const due = CP.codeResearchDecision(db, "ZY", "", "2026-10-02T00:00:00Z");
+  assert.equal(due.action, "verify_check", JSON.stringify(due));
+  assert.equal(due.reason, "upcoming_due");
+});
+
+await check("SF-d: research for a name that fuzzy-resolves to a VERIFIED row reports not saved (the row is unchanged)", async () => {
+  CP.saveVerifiedCodeProfile(db, blank("ZP", "Portlandia", { amendments: [{ code: "AHJ", summary: "keep" }] }), "tester");
+  const before = JSON.stringify(payloadOf(CP.codeProfileKey({ state: "ZP", ahj: "Portlandia" })));
+  const r = await CP.runCodeResearch(db, { state: "ZP", ahj: "City of Portlandia" }, fakeResearcher([{ family: "residential", code: "IRC", edition: "2021", sourceUrl: "https://p.example.gov" }], true).provider);
+  assert.equal(r.saved, false, `a refused save reported saved: ${JSON.stringify(r)}`);
+  assert.equal(r.verified, true);
+  assert.equal(JSON.stringify(payloadOf(CP.codeProfileKey({ state: "ZP", ahj: "Portlandia" }))), before);
+});
+
+await check("SF-a: a phase-in whose previous edition is its own entry allows both; one with no previous on file is still a phase-in", () => {
+  const two = F.editionsInEffect([
+    { family: "electrical", code: "NEC", edition: "2023", effectiveDate: "2026-06-01", mandatoryDate: "2026-12-01" },
+    { family: "electrical", code: "NEC", edition: "2020", effectiveDate: "2021-01-01" },
+  ], "electrical", "2026-09-24");
+  assert.equal(two.status, "phase_in");
+  assert.deepEqual(two.allowed.map((a) => a.edition), ["2023", "2020"]);
+  const ma = F.editionsInEffect([{ family: "residential", code: "780 CMR", edition: "2021", effectiveDate: "2024-10-11", mandatoryDate: "2025-06-30" }], "residential", "2025-01-15");
+  assert.equal(ma.status, "phase_in", "a concurrency window read as one edition in effect");
+  assert.match(ma.note, /not on file/);
+  // After the mandatory date: one edition.
+  assert.equal(F.editionsInEffect([{ family: "residential", code: "780 CMR", edition: "2021", effectiveDate: "2024-10-11", mandatoryDate: "2025-06-30" }], "residential", "2025-07-01").status, "in_effect");
+});
+
 CP.setCodeResearchEnqueuerForTests(null);
 CP.setDesignResearchEnqueuerForTests(null);
 console.log(failures ? `\ncodeEditionResearch: ${failures} FAILED` : "\ncodeEditionResearch: all checks passed");

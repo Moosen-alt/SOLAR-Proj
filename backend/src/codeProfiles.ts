@@ -1189,9 +1189,9 @@ export function ensureCodeProfilesResearched(db: AppDb, state: string, ahj: stri
       // changes the row, so nothing else would stop it repeating.
       const recent = db.get<Row>(
         `SELECT id FROM job_queue
-          WHERE job_type = 'code_research' AND payload LIKE ?
+          WHERE job_type = 'code_research' AND payload LIKE ? ESCAPE '\\'
             AND (status IN ('pending','running') OR created_at > ?)`,
-        [`%"profileKey":"${key}"%`, new Date(Date.now() - window).toISOString()],
+        [`%"profileKey":"${likeLiteral(key)}"%`, new Date(Date.now() - window).toISOString()],
       );
       if (recent) continue;
       inFlightCodeResearch.set(key, Date.now());
@@ -1372,7 +1372,11 @@ export async function runCodeResearch(db: AppDb, payload: Partial<CodeResearchJo
   if (research.provider === "stub") return { saved: false, reason: "stub LLM (no API key)", notes: research.notes };
   if (!research.webGrounded) return { saved: false, reason: "not web-grounded — model memory is never stored as an edition", ...evidence, notes: String(research.notes || "").slice(0, 600) };
   if (!research.profile.adoptedCodes.length && !research.profile.adoptionModel) return { saved: false, reason: "research found no adopted codes", ...evidence };
-  const key = codeProfileKey({ state, ahj });
+  // The row the save would land on: the exact key, or — for an AHJ — the human-verified row its
+  // name resolves to by fuzzy match ("City of Portland" -> or|portland), which the save refuses to
+  // shadow. Either way the result is "not saved", never a saved:true over an unchanged row.
+  const writeTarget = ahj.trim() ? resolveCriteriaWriteRow(db, state, ahj) : null;
+  const key = writeTarget?.kind === "blocked_verified" ? writeTarget.key : codeProfileKey({ state, ahj });
   const targetVerified = text(db.get<Row>("SELECT confidence FROM jurisdiction_code_profiles WHERE profile_key = ?", [key])?.confidence) === "verified";
   const before = targetVerified ? listEditionProposals(db, key).map((p) => p.fingerprint) : [];
   const saved = saveResearchedCodeProfile(db, research.profile, { ...(families?.length ? { families } : {}) });
@@ -1707,15 +1711,15 @@ export function ensureDesignCriteriaResearched(db: AppDb, state: string, ahj: st
   const fullAskedAt = inFlightCodeResearch.get(key);
   if (fullAskedAt != null && Date.now() - fullAskedAt < CODE_RESEARCH_WINDOW_MS) return 0;
   const fullPending = db.get<Row>(
-    "SELECT id FROM job_queue WHERE job_type = 'code_research' AND payload LIKE ? AND status IN ('pending','running')", [`%${key}%`],
+    "SELECT id FROM job_queue WHERE job_type = 'code_research' AND payload LIKE ? ESCAPE '\\' AND status IN ('pending','running')", [`%${likeLiteral(key)}%`],
   );
   if (fullPending) return 0;
   const askedAt = inFlightDesignResearch.get(key);
   if (askedAt != null && Date.now() - askedAt < DESIGN_RESEARCH_WINDOW_MS) return 0;
   const recent = db.get<Row>(
-    `SELECT id FROM job_queue WHERE job_type = 'design_criteria_research' AND payload LIKE ?
+    `SELECT id FROM job_queue WHERE job_type = 'design_criteria_research' AND payload LIKE ? ESCAPE '\\'
         AND (status IN ('pending','running') OR created_at > ?)`,
-    [`%${key}%`, new Date(Date.now() - DESIGN_RESEARCH_WINDOW_MS).toISOString()],
+    [`%${likeLiteral(key)}%`, new Date(Date.now() - DESIGN_RESEARCH_WINDOW_MS).toISOString()],
   );
   if (recent) return 0;
   inFlightDesignResearch.set(key, Date.now());

@@ -184,23 +184,42 @@ export function editionsInEffect(entries: CodeEdition[], family: CodeFamily, dat
   const dated = mine.filter((e) => isoDay(e.effectiveDate));
   const effective = dated.filter((e) => isoDay(e.effectiveDate) <= d).sort((a, b) => isoDay(b.effectiveDate).localeCompare(isoDay(a.effectiveDate)));
   const current = effective[0];
+  // The edition an entry replaces: its own previousEdition, else ANOTHER entry of the family on file
+  // that took effect before it (or carries no date) — the previous edition recorded as its own row.
+  const previousOf = (e: CodeEdition): { code: string; edition: string } | null => {
+    const own = String(e.previousEdition || "").trim();
+    if (own) return { code: e.code, edition: own };
+    const start = isoDay(e.effectiveDate);
+    const older = mine
+      .filter((o) => o !== e && String(o.edition).trim() !== String(e.edition).trim() && (!isoDay(o.effectiveDate) || isoDay(o.effectiveDate) < start))
+      .sort((a, b) => isoDay(b.effectiveDate).localeCompare(isoDay(a.effectiveDate)))[0];
+    return older ? { code: older.code, edition: String(older.edition).trim() } : null;
+  };
   if (current) {
     const mandatory = isoDay(current.mandatoryDate);
-    const prev = String(current.previousEdition || "").trim();
-    if (mandatory && d < mandatory && prev) {
-      return {
-        family, status: "phase_in",
-        allowed: [{ code: current.code, edition: current.edition, role: "current" }, { code: current.code, edition: prev, role: "previous" }],
-        note: `${current.code} ${current.edition} took effect ${isoDay(current.effectiveDate)}; ${current.code} ${prev} is still allowed until ${mandatory}.`,
-      };
+    if (mandatory && d < mandatory) {
+      const prev = previousOf(current);
+      return prev
+        ? {
+          family, status: "phase_in",
+          allowed: [{ code: current.code, edition: current.edition, role: "current" }, { code: prev.code, edition: prev.edition, role: "previous" }],
+          note: `${current.code} ${current.edition} took effect ${isoDay(current.effectiveDate)}; ${prev.code} ${prev.edition} is still allowed until ${mandatory}.`,
+        }
+        // A concurrency window whose previous edition is not on file: still a phase-in — never read
+        // as "one edition applies" (a plan to the previous edition may be valid until the date).
+        : {
+          family, status: "phase_in",
+          allowed: [{ code: current.code, edition: current.edition, role: "current" }],
+          note: `${current.code} ${current.edition} took effect ${isoDay(current.effectiveDate)}; the previous edition is still allowed until ${mandatory}, but which edition that is is not on file.`,
+        };
     }
     return { family, status: "in_effect", allowed: [{ code: current.code, edition: current.edition, role: "current" }], note: `${current.code} ${current.edition} in effect since ${isoDay(current.effectiveDate)}.` };
   }
   const future = dated.sort((a, b) => isoDay(a.effectiveDate).localeCompare(isoDay(b.effectiveDate)))[0];
   if (future) {
-    const prev = String(future.previousEdition || "").trim();
+    const prev = previousOf(future);
     return prev
-      ? { family, status: "previous_in_effect", allowed: [{ code: future.code, edition: prev, role: "previous" }], note: `${future.code} ${future.edition} takes effect ${isoDay(future.effectiveDate)}; ${future.code} ${prev} applies until then.` }
+      ? { family, status: "previous_in_effect", allowed: [{ code: prev.code, edition: prev.edition, role: "previous" }], note: `${future.code} ${future.edition} takes effect ${isoDay(future.effectiveDate)}; ${prev.code} ${prev.edition} applies until then.` }
       : { family, status: "unknown", allowed: [], note: `${future.code} ${future.edition} takes effect ${isoDay(future.effectiveDate)}; the edition in effect before it is not on file.` };
   }
   const undated = mine[0];
