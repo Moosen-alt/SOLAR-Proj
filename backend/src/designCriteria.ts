@@ -468,11 +468,14 @@ type LoadValueOwner = "prev" | "next" | "both";
 
 // A load LABEL, as a design-loads list prints it: "GROUND SNOW", "FLAT ROOF SNOW LOAD", "ROOF DEAD
 // LOAD", "PV DEAD LOAD", "PV WEIGHT", "GROUND SNOW LOAD (Pg)" — and the short forms plan sets print
-// beside them: "DL", "ROOF DL", "LL", "ROOF LIVE", "RACKING", "COLLATERAL", "PV MODULES", a bare "Pg".
+// beside them: "DL", "ROOF DL", "LL", "ROOF LIVE", "RACKING", "COLLATERAL", "PV MODULES", a bare "Pg" —
+// and a calculation's other psf quantities: "qz"/"qh" (velocity pressure), "WIND PRESSURE", "p net".
+// Measured on the production copy: a calc summary's "qz 13.74 psf pg 28.00 psf Ground Snow Load pg"
+// read 13.74 as a second Pg while "qz" was not a label.
 // A heading ("DESIGN LOADS", "SNOW LOADS:") is not one: it names no load (dropped in loadValueOwners).
 // A label of a NON-psf quantity ("WIND SPEED") is deliberately not one either: in "110 MPH WIND SPEED
 // 36 PSF GROUND SNOW" it would open the run as a label and take the 36.
-const LOAD_LABEL_TOKEN = /\b(?:(?:(?:ground|roof|flat|sloped|total|design|balanced|minimum|pv|floor|array|system|module|dead)\s+){0,2}(?:snow(?:\s+loads?)?|(?:dead|live|wind|collateral|seismic)\s+loads?|weight)\b(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?(?:\s*,?\s*asd\b)?|(?:roof\s+)?(?:dl|ll)\b|roof\s+live\b|racking(?:\s+weight)?\b|collateral\b|pv\s+(?:modules?|panels?|array)(?:\s+weight)?\b|p\s?g\b(?!\s*\(\s*asd))/gi;
+const LOAD_LABEL_TOKEN = /\b(?:(?:(?:ground|roof|flat|sloped|total|design|balanced|minimum|pv|floor|array|system|module|dead)\s+){0,2}(?:snow(?:\s+loads?)?|(?:dead|live|wind|collateral|seismic)\s+loads?|weight)\b(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?(?:\s*,?\s*asd\b)?|(?:roof\s+)?(?:dl|ll)\b|roof\s+live\b|racking(?:\s+weight)?\b|collateral\b|pv\s+(?:modules?|panels?|array)(?:\s+weight)?\b|p\s?g\b(?!\s*\(\s*asd)|q\s?[zh]\b|(?:velocity|wind|design\s+wind)\s+pressures?\b|p\s?net\b)/gi;
 const LOAD_VALUE_TOKEN = /\b\d+(?:\.\d+)?\s*(?:psf\b|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))(?:\s*\(\s*asd\s*\))?/gi;
 /** A HEADING over a list, not a label of one load: "SNOW LOADS", "DESIGN SNOW LOADS" (plural, bare). */
 const HEADING_LABEL = /^(?:design\s+)?snow\s+loads$/i;

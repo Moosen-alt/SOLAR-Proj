@@ -328,6 +328,17 @@ await check("MUST-EXCLUDE (snow-inv): nothing r3f fixed comes back — value-fir
   }
 });
 
+await check("MUST-EXCLUDE (snow-inv, measured on the production copy): a calc summary's 'qz 13.74 psf pg 28.00 psf' never reads 13.74 as Pg", () => {
+  // The loading-summary template of a structural calculation (two letters on the production copy): with
+  // "qz" unknown, the run read V L V L after a label-ish word -> "both" -> an unsure Pg 13.74, a new
+  // conflict warning and a below-the-minimum warning on a correct 28 / 31 psf letter.
+  const text = "Loading Summary Exposure and Occupancy Categories B II Wind Loading: v 95 mph Value overridden from ASCE Hazards default qz 13.74 psf pg 28.00 psf Ground Snow Load pg (Value overridden from ASCE Hazards default)";
+  assert.deepEqual(snowRead(text), [28]);
+  const r = statedGroundSnowReading(project("City of Testport"), [{ label: "Structural letter", text }]);
+  assert.deepEqual(r, { status: "unambiguous", value: 28 });
+  assert.deepEqual(snowRead("WIND PRESSURE 22 PSF GROUND SNOW LOAD 36 PSF"), [36], "a wind pressure is a psf label too");
+});
+
 console.log("\n2. which ROW carried the minimum decides the severity (real write path, temp DB)");
 
 const { openDatabase } = await import("../src/db");
