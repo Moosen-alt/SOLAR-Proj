@@ -524,6 +524,11 @@ console.log("\n6. THE RECORDER'S --real-run, END TO END on the replica: real wri
     report.finalSubmitStepHasNoTarget === true && report.submitOrPayRequestsAborted === 0 && JSON.stringify(report.finalSubmitClickedSources) === "[false,false,false]", JSON.stringify([report.finalSubmitStepHasNoTarget, report.submitOrPayRequestsAborted, report.finalSubmitClickedSources]));
   check("the replica WALKED to review with nothing filed or paid, and holds every value the adapter committed", replica.state.reviewReached && replica.state.reviewVia === "walked" && replica.state.submitPosts.length === 0 && replica.state.payPosts.length === 0 && Object.keys(replica.state.values).length >= 26,
     `reached=${replica.state.reviewReached} via=${replica.state.reviewVia} values=${Object.keys(replica.state.values).length} errors=${replica.state.validationErrors.join("|")}`);
+  // Hard rule 2's two values, bound by NAME (sensitive steps, no literal stored): they must have
+  // REACHED the portal in this run, or the 0 OCR hits on them below would prove nothing.
+  check("the SENSITIVE account and meter steps replayed from the project row (the portal holds both; nothing skipped)",
+    replica.state.values["cust.account"] === B.accountNumber && replica.state.values["cust.meter"] === B.meterNumber && Array.isArray(report.skipped) && (report.skipped as unknown[]).length === 0,
+    `account=${replica.state.values["cust.account"] ? "held" : "EMPTY"} meter=${replica.state.values["cust.meter"] ? "held" : "EMPTY"} skipped=${JSON.stringify(report.skipped)}`);
   const hostsSeen = Object.keys((report.browserHostsSeen as Record<string, number>) ?? {});
   check("the only host the browser touched is the replica's (loopback)", hostsSeen.length === 1 && isLoopbackHost(hostsSeen[0]) && Number(report.nodeNetworkAttempts ? (report.nodeNetworkAttempts as unknown[]).length : 0) === 0, hostsSeen.join(","));
   check("the video and the step shots exist", fs.existsSync(out) && fs.existsSync(shotsDir) && fs.readdirSync(shotsDir).length >= 5, `video=${fs.existsSync(out)} shots=${fs.existsSync(shotsDir) ? fs.readdirSync(shotsDir).length : 0}`);
