@@ -313,6 +313,51 @@ await check("M2 MUST-PASS (read): research that landed before the state said min
   assert.ok(codesOf(CP.getCodeProfile(db, { state: "ZM", ahj: "City of Importville" })).includes("IRC 2018"), "an operator import in a min+amend family was dropped");
 });
 
+await check("M2 MUST-PASS (save): an MD AHJ research asked for its local families stores only those — the unasked IRC 2015 never lands, the read shows MD's IRC 2021", async () => {
+  const d = CP.codeResearchDecision(db, "MD", "City of Probeville");
+  assert.equal(d.action, "research", JSON.stringify(d));
+  assert.ok(d.families?.includes("electrical") && !d.families.includes("residential"), `fixture: MD local families ${JSON.stringify(d.families)}`);
+  const f = fakeResearcher([
+    { family: "electrical", code: "NEC", edition: "2020", sourceUrl: "https://probeville.example.gov" },
+    { family: "residential", code: "IRC", edition: "2015", sourceUrl: "https://probeville.example.gov" },
+  ], true);
+  const r = await CP.runCodeResearch(db, { state: d.state, ahj: d.ahj, profileKey: d.key, families: d.families }, f.provider);
+  assert.equal(r.saved, true, JSON.stringify(r));
+  assert.deepEqual(f.asked[0].families, d.families, "the researcher was not asked the decision's families");
+  assert.deepEqual(codesOf(payloadOf(d.key)), ["NEC 2020"], `an unasked family was stored: ${codesOf(payloadOf(d.key))}`);
+  const read = CP.getCodeProfile(db, { state: "MD", ahj: "City of Probeville" })!;
+  const irc = read.adoptedCodes.filter((c) => F.codeFamilyOf(c) === "residential");
+  assert.deepEqual(irc.map((c) => `${c.code} ${c.edition}${c.inheritedFrom ? "(state)" : ""}`), ["IRC 2021(state)"], `the read: ${codesOf(read)}`);
+  // The POST /research route saves with no families: the state's local families scope it.
+  CP.saveResearchedCodeProfile(db, blank("MD", "City of Routeville", {
+    adoptedCodes: [{ family: "residential", code: "IRC", edition: "2015" }, { family: "electrical", code: "NEC", edition: "2020" }],
+    researchProvenance: { ...grounded, at: new Date().toISOString() },
+  }));
+  assert.deepEqual(codesOf(payloadOf(CP.codeProfileKey({ state: "MD", ahj: "City of Routeville" }))), ["NEC 2020"], "a route-shaped save stored a family the state sets");
+});
+
+await check("M2 MUST-EXCLUDE: a TX AHJ research for residential still stores, and reads, its own IRC 2021", async () => {
+  const d = CP.codeResearchDecision(db, "TX", "City of Ownirc");
+  assert.ok(d.families?.includes("residential"), JSON.stringify(d));
+  const r = await CP.runCodeResearch(db, { state: d.state, ahj: d.ahj, profileKey: d.key, families: d.families }, fakeResearcher([
+    { family: "residential", code: "IRC", edition: "2021", sourceUrl: "https://ownirc.example.gov" },
+  ], true).provider);
+  assert.equal(r.saved, true, JSON.stringify(r));
+  assert.deepEqual(codesOf(payloadOf(d.key)), ["IRC 2021"]);
+  const read = CP.getCodeProfile(db, { state: "TX", ahj: "City of Ownirc" })!;
+  const irc = read.adoptedCodes.filter((c) => F.codeFamilyOf(c) === "residential");
+  assert.deepEqual(irc.map((c) => `${c.code} ${c.edition}${c.inheritedFrom ? "(state)" : ""}`), ["IRC 2021"], `the read: ${codesOf(read)}`);
+  // A research result can never claim a person's authority: an "operator" origin it carries is
+  // replaced (it would otherwise outrank the state's minimum once the state's model is known).
+  CP.saveResearchedCodeProfile(db, blank("ZO", "City of Claimton", {
+    adoptedCodes: [{ family: "electrical", code: "NEC", edition: "2017", origin: "operator" }],
+    researchProvenance: { ...grounded, at: new Date().toISOString() },
+  }));
+  assert.equal(payloadOf(CP.codeProfileKey({ state: "ZO", ahj: "City of Claimton" }))?.adoptedCodes[0]?.origin, "research", "a research result's 'operator' origin was stored");
+  await CP.runCodeResearch(db, { state: "ZO", ahj: "" }, fakeResearcher([{ family: "electrical", code: "NEC", edition: "2023", sourceUrl: "https://zo.example.gov" }], true, { adoptionModel: { model: "statewide_minimum_local_amend" } }).provider);
+  assert.deepEqual(codesOf(CP.getCodeProfile(db, { state: "ZO", ahj: "City of Claimton" })), ["NEC 2023"], "a research result's 'operator' origin outranked the state's minimum");
+});
+
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // B4
 // ─────────────────────────────────────────────────────────────────────────────────────────

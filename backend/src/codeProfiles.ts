@@ -528,7 +528,13 @@ function upsert(db: AppDb, profile: JurisdictionCodeProfile, opts: { confidence:
  * An IMPORT save (no researchProvenance: the operator spreadsheets, which pre-merge the row
  * themselves) replaces the payload as before, keeping AHJ-correction and lookup-cited values.
  */
-export function saveResearchedCodeProfile(db: AppDb, profile: JurisdictionCodeProfile): JurisdictionCodeProfile {
+export function saveResearchedCodeProfile(
+  db: AppDb,
+  profile: JurisdictionCodeProfile,
+  /** AHJ research: the families it was ASKED for (the job payload). Absent -> the state's
+   *  local-adoption families when its model is known. Editions outside the scope are dropped. */
+  opts: { families?: CodeFamily[] } = {},
+): JurisdictionCodeProfile {
   const incomingProvenance = provenanceOf(profile);
   const isResearch = !!incomingProvenance;
   if (incomingProvenance && !incomingProvenance.webGrounded) {
@@ -562,24 +568,32 @@ export function saveResearchedCodeProfile(db: AppDb, profile: JurisdictionCodePr
   if (!isResearch) {
     return upsert(db, existing ? keepCorrectionCitedValues(mapRow({ ...existing, profile_key: key }), profile) : profile, { confidence: "seeded" });
   }
-  const incoming = scopeResearchToLayer(db, profile);
+  const incoming = scopeResearchToLayer(db, profile, opts.families);
   return upsert(db, existing ? mergeResearchIntoRow(mapRow(existing), incoming) : incoming, { confidence: "seeded" });
 }
 
-/** Research codes are machine-owned: every entry is marked, and an AHJ-level result keeps only the
- *  families its state does not adopt uniformly (and no state-level facts). */
-function scopeResearchToLayer(db: AppDb, profile: JurisdictionCodeProfile): JurisdictionCodeProfile {
-  const origin = provenanceOf(profile)?.method === "reference_truth" ? "reference" : "research";
-  let adoptedCodes = (profile.adoptedCodes ?? []).map((c) => ({ ...c, origin: c.origin ?? origin, ...(c.family || !codeFamilyOf(c) ? {} : { family: codeFamilyOf(c) }) }));
+/** Research codes are machine-owned: every entry is marked (a research result can never carry an
+ *  "operator" origin — that is a person's statement, and reads outrank the state with it). An
+ *  AHJ-level result keeps only the families it was ASKED for — the job's families, else the state's
+ *  local-adoption families when its model is known — never a uniform family, and no state-level
+ *  facts. An entry whose family cannot be decided is kept (it claims no family's edition). */
+function scopeResearchToLayer(db: AppDb, profile: JurisdictionCodeProfile, askedFamilies?: CodeFamily[]): JurisdictionCodeProfile {
+  const origin: CodeEdition["origin"] = provenanceOf(profile)?.method === "reference_truth" ? "reference" : "research";
+  let adoptedCodes: CodeEdition[] = (profile.adoptedCodes ?? []).map((c) => ({ ...c, origin, ...(c.family || !codeFamilyOf(c) ? {} : { family: codeFamilyOf(c) }) }));
   if (!String(profile.ahj || "").trim()) return { ...profile, adoptedCodes };
   const model = stateAdoptionModel(db, profile.state);
-  const dropped: string[] = [];
+  const scope = askedFamilies?.length ? askedFamilies : model ? locallyAdoptedFamilies(model) : undefined;
+  const uniform: string[] = [];
+  const unasked: string[] = [];
   adoptedCodes = adoptedCodes.filter((c) => {
     const f = codeFamilyOf(c);
-    if (f && familyAdoptionModel(model, f) === "statewide_uniform") { dropped.push(editionLabel(c)); return false; }
+    if (!f) return true;
+    if (familyAdoptionModel(model, f) === "statewide_uniform") { uniform.push(editionLabel(c)); return false; }
+    if (scope && !scope.includes(f)) { unasked.push(editionLabel(c)); return false; }
     return true;
   });
-  if (dropped.length) logger.info("code-profiles", `${profile.state}/${profile.ahj}: dropped ${dropped.join(", ")} — the state adopts ${dropped.length === 1 ? "that family" : "those families"} uniformly; the AHJ reads the state's edition`);
+  if (uniform.length) logger.info("code-profiles", `${profile.state}/${profile.ahj}: dropped ${uniform.join(", ")} — the state adopts ${uniform.length === 1 ? "that family" : "those families"} uniformly; the AHJ reads the state's edition`);
+  if (unasked.length) logger.info("code-profiles", `${profile.state}/${profile.ahj}: dropped ${unasked.join(", ")} — outside the families this research was asked for (${scope!.join(", ") || "none"}); the AHJ reads the state's edition there`);
   const { adoptionModel: _a, upcoming: _u, ...rest } = profile;
   return { ...rest, adoptedCodes };
 }
@@ -1270,7 +1284,7 @@ export async function runCodeResearch(db: AppDb, payload: Partial<CodeResearchJo
   const key = codeProfileKey({ state, ahj });
   const targetVerified = text(db.get<Row>("SELECT confidence FROM jurisdiction_code_profiles WHERE profile_key = ?", [key])?.confidence) === "verified";
   const before = targetVerified ? listEditionProposals(db, key).map((p) => p.fingerprint) : [];
-  const saved = saveResearchedCodeProfile(db, research.profile);
+  const saved = saveResearchedCodeProfile(db, research.profile, { ...(families?.length ? { families } : {}) });
   if (targetVerified) {
     const after = listEditionProposals(db, key);
     return { saved: false, verified: true, proposals: after.length, newProposal: after.some((p) => !before.includes(p.fingerprint)), ...evidence };
