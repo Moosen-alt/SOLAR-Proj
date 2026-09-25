@@ -173,6 +173,11 @@ neverBlocks("FLAT ROOF SNOW LOAD Pf = 0.7 Ce Ct Is Pg = 0.7 (1.0)(1.1)(1.0)(36 P
 });
 reads36("pg = 36 psf; pf = 0.7 x Ce x Ct x Is x pg = 0.7 x 1.0 x 1.1 x 1.0 x 36 = 27.7 psf");
 reads36("Pg = 36 PSF, Ce = 1.0, Ct = 1.1, Is = 1.0, Pf = 0.7 * Ce * Ct * Is * Pg = 0.7 * 1.0 * 1.1 * 1.0 * 36 = 27.7 PSF");
+// The symbol as a factor in a product: the value after it is the product's result, not Pg.
+blocks16("Pg = 16 psf (strength); Pg(asd) = 0.7 x Pg = 11.2 psf");
+blocks16("GROUND SNOW LOAD: 16 PSF. ASD SNOW S = 0.7 Pg = 11.2 PSF");
+reads36("Pg = 36 psf (strength); Pg(asd) = 0.7 x Pg = 25.2 psf");
+reads36("2. Pg = 36 PSF");
 reads36("SEE DETAIL 3, pg 5. GROUND SNOW LOAD: 36 PSF");
 check("MUST-EXCLUDE 'pg 5' is a page reference", () => {
   const j = judge("REFER TO pg 5 FOR ATTACHMENT DETAILS");

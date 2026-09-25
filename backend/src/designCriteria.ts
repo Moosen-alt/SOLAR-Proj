@@ -797,6 +797,10 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   while ((m = pgSymbol.exec(text))) {
     if (!(m[2] && /[:=]/.test(m[2])) && !m[4]) continue;
     if (!m[4] && (coefficientAt(m.indices![3][1]) || otherUnitAt(m.indices![3][1]))) continue;
+    // The symbol as a FACTOR in a product ("Pg(asd) = 0.7 x Pg = 11.2 psf", "S = 0.7 Pg = 11.2 PSF"):
+    // the value after it is the product's result, not Pg (it read as a second, sure Pg and turned a
+    // plan's own 16 psf into a two-value warning).
+    if (/(?:[×*·⋅]|\bx|\d*\.\d+)\s*$/i.test(text.slice(Math.max(0, m.index - 8), m.index))) continue;
     // "36 PSF Pg 25 PSF ROOF SNOW": in a value-first list the 25 is the next label's, as for "GROUND SNOW".
     if ((!m[2] || isDashSep(m[2])) && labelFirstIsNextLabels(m, 3)) continue;
     push("groundSnowPsf", groundQual(m[1], m), m[3], m);
