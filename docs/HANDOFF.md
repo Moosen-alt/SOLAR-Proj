@@ -62,8 +62,14 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 
 **Operator actions still open (2026-09-24):**
 - Oregon 36/25 psf minimum ground snow: the verified write (`PUT /api/code-profiles/verify`, payload in
-  the round-3 criteria report) waits for the snow-reading invariant work to land. After it: 5 blockers
-  (204ff994, 29cd57b5, 720b05f3, 1fb3dc39, f7d7af7e) + 7 unknown-path warnings (set those projects' path).
+  `.probe/r3r-criteria-fix/verify-payload.json`) is NO LONGER BLOCKED by the snow-reading work: rounds 4-5 landed
+  (blockers only on an unambiguous reading; 0 false blockers on two generators of 595k/416k layouts; production
+  byte-identical). Do it AT THE NEXT RE-PIN so the new reader is live. Expected on today's 19 projects: 4 blockers
+  (204ff994, 29cd57b5, 720b05f3, 1fb3dc39) + 8 warnings (7 unknown-path + f7d7af7e, whose plan set and letter
+  disagree — a conflict, not a minimum blocker). Snow work is DONE unless a REAL document shows a false blocker
+  (the multi-state corpus measures that); a last small round closes only the two shapes common in real plan sets
+  (em dash / dot-leader separators, the 'Pf = 0.7 Ce Ct Is Pg' calc line). Still open: two documents that both
+  read below the minimum but disagree with each other give only warnings (operator decision).
 - Confirm Coos Bay's OSSC/OFC edition (row says 2022, plans print 2025) and OESC 2023 vs 2025.
 - Battery services/feeders <=200A: record the amount for Salem / Lincoln City (Salem 6a1c2127 is an
   estimate until then); re-map the Coos Bay / Tigard electrical templates; re-learn one electrical recipe
