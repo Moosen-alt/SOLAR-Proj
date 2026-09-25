@@ -656,6 +656,30 @@ function loadValueOwners(text: string): Map<number, LoadValueRun> {
     if (!closesSegment) tableBlocks.add(blockOf[k]);
   });
   const indexOf = new Map(clean.map((t, k) => [t, k] as const));
+  // A STRAY VALUE JUST BEFORE A LABEL-FIRST RUN. A value-first list is BROKEN by a token the glue does not
+  // recognise — a parenthetical after the value ("36 PSF (ULT.)", "36 PSF (1.72 KPA)"), a footnote mark
+  // ("36 PSF*"), a full stop ("36 psf."), a unit spelt oddly ("36 P.S.F.", pdf.js's "36 P SF") or no unit
+  // at all ("36 GROUND SNOW LOAD") — and the fragment that opens with the ground label then read SURE
+  // label-first, taking the NEXT label's value: "36 PSF (ULT.) GROUND SNOW LOAD 25 PSF ROOF SNOW LOAD" was
+  // Pg 25, a BLOCKER on a correct plan (a 16 psf plan in the same shapes blocked naming 10). ONE RULE, no
+  // new tokens: a run that opens with a label, just after a value no label-first run owns, is "both" —
+  // read both ways, its values unsure, a warning naming the readings, never a blocker. The stray value is
+  // either a value token whose run is not label-first, parted from the label by nothing but decoration (a
+  // complete parenthetical, ",;.*", a separator), or a bare number — then at most two short unit-ish words
+  // — ending the text since the previous token. Not a stray value: one a label before it owns ("ROOF DEAD
+  // LOAD 3 PSF (TYP.) GROUND SNOW LOAD 36 PSF"), one inside an unbalanced parenthesis ("ROOF LIVE LOAD
+  // 20 PSF (0 PSF UNDER PV), GROUND SNOW 36 PSF" — a production shape), a list marker ("2. GROUND SNOW
+  // LOAD", "2)"), a speed ("110 MPH GROUND SNOW LOAD"), an edition ("ASCE 7-16"), a sign ("-16 PSF").
+  const decorationOnly = new RegExp(String.raw`^(?:[\s,;.*†]|${SEP})*$`);
+  const bareNumberTail = new RegExp(String.raw`(?<![\d.\-–—−])\d+(?:\.\d+)?(?=[\s:=])\s*(?:(?!mph\b)[A-Za-z][A-Za-z.\/²]{0,8}\s*){0,2}(?:[\s,;.*†]|${SEP})*$`, "i");
+  const strayValueBefore = (first: (typeof clean)[number]): boolean => {
+    const k = indexOf.get(first)!;
+    const p = k > 0 ? clean[k - 1] : undefined;
+    const seg = blankParentheticals(text.slice(p ? p.end : 0, first.start));
+    if (p?.kind === "V" && owners.get(p.start)?.owner !== "prev" && decorationOnly.test(seg)) return true;
+    // "10 PSF EXISTING ROOF 36 GROUND SNOW LOAD 3 PSF …": a bare number after an unlisted label is stray too.
+    return bareNumberTail.test(seg.slice(-40));
+  };
   let i = 0;
   while (i < clean.length) {
     const run = [clean[i]];
@@ -676,7 +700,7 @@ function loadValueOwners(text: string): Map<number, LoadValueRun> {
     const labelFirstMarked = run.some((t, k) => t.kind === "L" && k + 1 < run.length && sepIn.test(between(t, run[k + 1])));
     let owner: LoadValueOwner;
     if (first.kind === "L") {
-      owner = "prev";
+      owner = strayValueBefore(first) ? "both" : "prev";
     } else {
       const before = evidenceBefore(text, first.start);
       if (before === "assign") owner = "prev";

@@ -375,6 +375,65 @@ reads36("36 PSF GROUND SNOW LOAD 25 PSF DESIGN SNOW LOAD Ps = 0.7 x Ce x Ct x Is
 blocks16("16 PSF GROUND SNOW LOAD 10 PSF DESIGN SNOW LOAD Ps = 0.7 x Ce x Ct x Is x Pg = 0.7 x 1.0 x 1.1 x 1.0 x 16 = 12.3 PSF");
 reads36("36 PSF GROUND SNOW LOAD 25 PSF DESIGN SNOW LOAD = 0.7 Ce Ct Is Pg = 27.7 PSF");
 
+console.log("MF-D (one rule) — a value-first run BROKEN by a token the glue does not recognise reads UNSURE on both sides, never sure label-first");
+// "36 PSF (ULT.) GROUND SNOW LOAD 25 PSF ROOF SNOW LOAD": the parenthetical after the 36 broke the run, and
+// the fragment opening with the ground label read the 25 as a SURE Pg — a BLOCKER on a correct plan (and a
+// 16 psf plan blocked naming 10). The one rule: a run that opens with a label, just after a value no
+// label-first run owns, is read both ways — a warning naming the readings, never a blocker. No new tokens:
+// the 36 itself is not read here (its reader needs the label beside it), so the warning names the 25.
+/** MF-D on a 36 psf plan: never a BLOCKER, `notSure` never a sure Pg, and the minimum is a WARNING. */
+function warnsUnsure(text: string, notSure: number[]): void {
+  neverBlocks(text, notSure, (j) => {
+    assert.equal(j.min?.severity, "warning", show(j));
+    assert.notEqual(j.says, "none", show(j));
+  });
+}
+/** MF-D on a 16 psf plan: blocked naming 16, or a warning; 10 is never a sure Pg. */
+function neverSure10(text: string): void {
+  check(`MUST-PASS a 16 psf plan is blocked naming 16 or warned, never a sure 10: ${JSON.stringify(text)}`, () => {
+    const j = judge(text);
+    assert.notEqual(j.says, "U10", show(j));
+    if (j.reading.status === "ambiguous") assert.ok(!j.reading.readings.some((r) => r.value === 10 && !r.unsure), `10 is a sure reading — ${show(j)}`);
+    if (j.min?.severity === "blocker") assert.match(j.min.message.match(/Ground snow load Pg: stated ([^—]*)—/)?.[1] ?? "", /^16 psf in Plan set\s*$/, show(j));
+    else assert.equal(j.min?.severity, "warning", show(j));
+  });
+}
+const D36 = [
+  "36 PSF (ULT.) GROUND SNOW LOAD 25 PSF ROOF SNOW LOAD",
+  "36 PSF (1.72 KPA) GROUND SNOW LOAD 25 PSF ROOF SNOW LOAD",
+  "36 PSF* GROUND SNOW LOAD 25 PSF ROOF SNOW LOAD",
+  "36 psf. GROUND SNOW LOAD 25 PSF ROOF SNOW LOAD",
+  "36 P.S.F. GROUND SNOW LOAD 25 PSF ROOF SNOW LOAD",
+  "36 P\nSF GROUND SNOW LOAD 25 PSF ROOF SNOW LOAD",
+  "36 GROUND SNOW LOAD 25 PSF ROOF SNOW LOAD",
+  "36 PSF (1.72 KPA) GROUND SNOW LOAD 25 PSF (1.20 KPA) ROOF SNOW LOAD 10 PSF (0.48 KPA) DEAD LOAD",
+  // The same list with ":" / "=" after each value (a third of the skeptic's decoration family).
+  "36 PSF (ULT.): GROUND SNOW LOAD 25 PSF: ROOF SNOW LOAD",
+  "36 PSF (ULT.) = GROUND SNOW LOAD 25 PSF = ROOF SNOW LOAD",
+  "36: GROUND SNOW LOAD 25 PSF: ROOF SNOW LOAD",
+  // A stray value after a value-first fragment the reader does not list ("10 PSF EXISTING ROOF 36 GROUND …").
+  "10 PSF EXISTING ROOF 36 GROUND SNOW LOAD 3 PSF ROOF DEAD LOAD",
+];
+for (const t of D36) warnsUnsure(t, [25, 3]);
+for (const t of D36) neverSure10(t.replace(/\b36\b/g, "16").replace(/\b25\b/g, "10").replace("1.72 KPA", "0.77 KPA").replace("1.20 KPA", "0.48 KPA"));
+// MUST-EXCLUDE: nothing precedes the run; a paren after a LABEL-FIRST value; a value a label before it owns;
+// a list marker; a speed; an edition; a sign; a heading's colon. Every one stays a sure 36.
+reads36("GROUND SNOW LOAD 36 PSF ROOF SNOW LOAD 25 PSF DEAD LOAD", (j) => assert.deepEqual(j.roof, [25], show(j)));
+reads36("ROOF LIVE LOAD 20 PSF (0 PSF UNDER PV), GROUND SNOW 36 PSF, WIND 110 MPH");
+reads36("GROUND SNOW LOAD 36 PSF, ROOF SNOW 25 PSF (BALANCED), DEAD 3 PSF");
+reads36("GROUND SNOW LOAD 36 PSF (ULT.) ROOF SNOW LOAD 25 PSF (ULT.) DEAD LOAD 10 PSF (ULT.)", (j) => assert.deepEqual(j.roof, [25], show(j)));
+reads36("ROOF DEAD LOAD 3 PSF (TYP.) GROUND SNOW LOAD 36 PSF (TYP.)");
+reads36("EXISTING ROOFING 10 PSF (TYP.) GROUND SNOW LOAD 36 PSF (TYP.)");
+reads36("2. GROUND SNOW LOAD 36 PSF 3. ROOF SNOW LOAD 25 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
+reads36("2) GROUND SNOW LOAD 36 PSF 3) ROOF SNOW LOAD 25 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
+reads36("110 MPH GROUND SNOW LOAD 36 PSF ROOF SNOW LOAD 25 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
+reads36("WIND SPEED 110 MPH (TYP.) GROUND SNOW LOAD 36 PSF");
+reads36("ASCE 7-16 GROUND SNOW LOAD 36 PSF ROOF SNOW LOAD 25 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
+reads36("C&C PRESSURE -16 PSF (TYP.) GROUND SNOW LOAD 36 PSF");
+reads36("SNOW LOADS: GROUND SNOW LOAD 36 PSF ROOF SNOW LOAD 25 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
+blocks16("ROOF DEAD LOAD 3 PSF (TYP.) GROUND SNOW LOAD 16 PSF (TYP.)");
+blocks16("2. GROUND SNOW LOAD 16 PSF 3. ROOF SNOW LOAD 10 PSF");
+
 if (failures) {
   console.error(`\n${failures} ground-snow misread check(s) FAILED`);
   process.exit(1);
