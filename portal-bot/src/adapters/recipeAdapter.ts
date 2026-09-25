@@ -381,6 +381,8 @@ export class RecipeAdapter extends BasePortalAdapter {
   private finalSubmitAttempted = false;
   /** The recipe step index the loop is on — the final-submit gate's "is this the terminal step". */
   private currentStepIdx = -1;
+  /** The step whose selector resolveLocator is resolving right now (for disambiguation). */
+  private resolvingStep: RecipeStep | null = null;
   /** Every click/press/goto the chokepoint refused this run, in order. */
   guardRefusals: string[] = [];
 
@@ -2754,7 +2756,8 @@ export class RecipeAdapter extends BasePortalAdapter {
     // when narrowToOne did it, and again when this hint was added without the same guard.
     const nameHint = (step.action === "check" || step.action === "uncheck")
       ? "" : String(step.note ?? step.field ?? "");
-    let scoped = await this.resolveLocator(step.selector, nameHint);
+    this.resolvingStep = step;
+    let scoped = await this.resolveLocator(step.selector, nameHint).finally(() => { this.resolvingStep = null; });
     // A HIDDEN INPUT IS THE NORMAL STATE FOR A STYLED CHECKBOX, NOT A PROBLEM TO SOLVE.
     //
     // The third door onto the same regression. `isTrulyVisible` correctly calls an opacity:0
@@ -4084,6 +4087,53 @@ export class RecipeAdapter extends BasePortalAdapter {
    *
    * Silent when there is nothing to choose (0 or 1 match), which is the common case.
    */
+  /** A label that matched several controls: the one the step RECORDED (its id fallback), else
+   *  the one in the section its binding names — only a UNIQUE answer. null = no decision. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async disambiguateByRecordedIdentity(loc: any, step: RecipeStep, n: number): Promise<any | null> {
+    if (!loc || typeof loc.nth !== "function" || n <= 1) return null;
+    // A REPEATED LABEL IS NOT A CHOICE BETWEEN EQUALS — THE STEP RECORDED WHICH ONE IT MEANT.
+    //
+    // PowerClerk prints "Name *" in the installer block AND the electrical-contractor block; a
+    // label-first selector matches both, and "first visible" wrote the electrician into the
+    // installer's box (the scoreboard's inst.name wrong_box). The recorded id fallback and the
+    // step's binding (electricalSupervisorName → an Electrical section) each say which. Asked in
+    // that order, and only a UNIQUE answer among the label's own matches is taken — an id alone
+    // never overrides the label, it only chooses between controls that carry it.
+    const sel = step.selector ?? {};
+    const ids = new Set([step.fingerprint?.id, ...[sel, ...(sel.fallbacks ?? [])].map((s) => /^#([A-Za-z_][\w:.-]*)$/.exec(String(s?.css ?? ""))?.[1])]
+      .filter((x): x is string => !!x));
+    const side = SIDES.find((s) => s.field.test(String(step.field ?? "")));
+    const probe: Array<{ i: number; id: string; section: string; visible: boolean }> = [];
+    for (let i = 0; i < Math.min(n, 12); i++) {
+      const c = loc.nth(i) as { evaluate?: (fn: unknown) => Promise<{ id: string; section: string }>; isVisible?: () => Promise<boolean> };
+      if (typeof c.evaluate !== "function" || typeof c.isVisible !== "function") break;
+      const info = await c.evaluate((el: Element) => {
+        let section = "";
+        for (let a: Element | null = el.parentElement; a && !section; a = a.parentElement) {
+          const h = a.querySelector("h1, h2, h3, h4, h5, legend, [role=heading]");
+          if (h && !h.contains(el)) section = (h.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80);
+        }
+        return { id: el.id || "", section };
+      }).catch(() => null);
+      if (!info) continue;
+      probe.push({ i, id: info.id, section: info.section, visible: await c.isVisible().catch(() => false) });
+    }
+    const byId = probe.filter((p) => p.id && ids.has(p.id));
+    if (byId.length === 1) {
+      this.agingNotes.push(`"${String(step.note ?? step.action).slice(0, 40)}" matched ${n} controls — its recorded id picked one of them`);
+      return loc.nth(byId[0].i);
+    }
+    if (side) {
+      const own = probe.filter((p) => p.visible && sideVerdict(side.side, p.section) === 1);
+      if (own.length === 1) {
+        this.agingNotes.push(`"${String(step.note ?? step.action).slice(0, 40)}" matched ${n} controls — the ${side.side} section (${own[0].section.slice(0, 30)}) is the one its binding names`);
+        return loc.nth(own[0].i);
+      }
+    }
+    return null;
+  }
+
   private async narrowToOne(
     scoped: { count?: () => Promise<number>; nth?: (i: number) => unknown; first?: () => unknown } | null | undefined,
     step: RecipeStep,
@@ -4095,6 +4145,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       return scoped as never;
     }
     if (n <= 1) return scoped as never;
+    {
+      const picked = await this.disambiguateByRecordedIdentity(scoped, step, n);
+      if (picked) return picked as never;
+    }
     // THE STEP SAYS WHICH CONTROL IT WANTS — READ IT BEFORE TAKING THE FIRST ONE.
     //
     // A recipe can record a selector as bare as `{css: "select"}`, and Coos Bay's attachment
@@ -4306,6 +4360,11 @@ export class RecipeAdapter extends BasePortalAdapter {
     try {
       const n = await loc.count();
       if (n <= 1) return collapse();
+      // The step being resolved recorded which of these it meant (id fallback / binding side).
+      if (this.resolvingStep) {
+        const picked = await this.disambiguateByRecordedIdentity(loc, this.resolvingStep, n);
+        if (picked) return picked;
+      }
       // VISIBLE AND ENABLED beats merely visible. Oregon ePermitting's landing page carries a
       // DISABLED decorative "Apply" nav pill; headless layout put it first in DOM order, this
       // returned it as "the visible match", and the click waited its full timeout on a button
@@ -5860,6 +5919,19 @@ const SIDES: Array<{ side: string; field: RegExp; section: RegExp }> = [
   { side: "electrical", field: /^(electrical|electrician)/i, section: /\belectric/i },
 ];
 
+/** Does this section heading belong to the side a binding names? 1 = only that side's words,
+ *  -1 = only another side's, 0 = neither or both ("Electrical Contractor" reads as installer
+ *  AND electrical, so it proves nothing for the installer). */
+export function sideVerdict(side: string, section: string): 1 | 0 | -1 {
+  const s = String(section ?? "");
+  if (!s.trim()) return 0;
+  const own = SIDES.find((x) => x.side === side);
+  if (!own) return 0;
+  const mine = own.section.test(s);
+  const other = SIDES.some((x) => x.side !== side && x.section.test(s));
+  return mine && !other ? 1 : !mine && other ? -1 : 0;
+}
+
 /** The heal target for a recorded step: recorded attributes first, derived ones otherwise. */
 export function healTargetOf(step: RecipeStep, value = ""): HealTarget {
   const fp = step.fingerprint ?? {};
@@ -5903,9 +5975,7 @@ export function scoreHealCandidate(f: ExtractedField, t: HealTarget, ordinalAmon
   const rs = lc(t.section);
   if (section && rs && Math.min(section.length, rs.length) >= 4 && (section.includes(rs) || rs.includes(section))) score += 14;
   if (t.side && section) {
-    const own = SIDES.find((s) => s.side === t.side)!;
-    if (own.section.test(section)) score += 12;
-    else if (SIDES.some((s) => s.side !== t.side && s.section.test(section))) score -= 12;
+    score += 12 * sideVerdict(t.side, section);
   }
   if (t.nearText && lc(fp.nearText) && (lc(fp.nearText).includes(lc(t.nearText)) || lc(t.nearText).includes(lc(fp.nearText)))) score += 6;
   if (t.value && f.options?.length) {

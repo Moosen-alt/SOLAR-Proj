@@ -31,6 +31,8 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 };
 
 const SECRET = "84201937465";
+// A value with no digits: only stripping input values (not the digit masking) keeps it out.
+const NAME_VALUE = "Quillfeather-Yarrowby";
 const STARTED = Date.now();
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -41,6 +43,7 @@ const server = http.createServer((req, res) => {
   }
   res.end(`<!doctype html><html><head><title>Service Details</title></head><body><h2>Service Details</h2>
     <label for="acct">Utility Account Number</label><input id="acct" name="acct" value="${SECRET}">
+    <label for="owner">Account Holder</label><input id="owner" name="owner" value="${NAME_VALUE}">
     <label for="city">City</label><input id="city" name="city">
     <iframe name="countyFrame" src="/frame" style="width:400px;height:80px"></iframe>
     <button type="button">Next</button></body></html>`);
@@ -102,6 +105,8 @@ console.log("\n3. MUST-EXCLUDE: the pre-filled 11-digit value is in no file repl
   const files = allFiles(CAPTURE_DIR);
   const leaking = files.filter((f) => !f.endsWith(".png") && fs.readFileSync(f, "utf8").includes(SECRET));
   check("no capture file contains the pre-filled account number", files.length > 0 && leaking.length === 0, `leaking=${leaking.map((f) => path.basename(f)).join(",")}`);
+  const leakingName = files.filter((f) => !f.endsWith(".png") && fs.readFileSync(f, "utf8").includes(NAME_VALUE));
+  check("no capture file contains the pre-filled account holder (a value digit masking cannot catch)", files.length > 0 && leakingName.length === 0, `leaking=${leakingName.map((f) => path.basename(f)).join(",")}`);
   const cwdData = path.join(process.cwd(), "data", "replay-failures");
   const strays = allFiles(cwdData).filter((f) => fs.statSync(f).mtimeMs >= STARTED);
   check("nothing fell back to data/", strays.length === 0, strays.join(","));

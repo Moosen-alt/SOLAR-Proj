@@ -1,19 +1,22 @@
-// COMMIT + READ-BACK — every replayed fill is committed (blur, then settle on what the page is
-// doing) before the next one starts, and read back from the intended control.
+// COMMIT + READ-BACK, AND THE REPEATED LABEL — replayed fills in real Chromium against the
+// synthetic replicas (127.0.0.1 only).
 //
-// The synthetic PowerClerk replica's contact block RE-RENDERS from saved state ~300 ms after each
-// autosave (a Vue-style patch: every value reset to what the server holds). A masked field typed
-// key-by-key (Phone, ~0.5 s) that starts before the previous field's re-render lands is wiped
-// MID-TYPING; the remaining keystrokes leave a fragment ("…0199"), and a read-back that accepted
-// "shown is contained in wanted" called that held. That is the bench's "inst.phone wrong".
-//
-//   MUST-PASS     Name, Phone, Company replayed into the installer block all reach the SERVER
-//                 with B's exact values.
-//   MUST-EXCLUDE  a fragment of the wanted value is never accepted as held (checked by reading
-//                 the server, not the adapter's report).
+//   1. AUTOPOSTBACK, ONE AT A TIME (Accela-shaped UpdatePanel). Choosing Occupancy fires an async
+//      postback that re-renders the panel from the values AS POSTED ~0.7 s later. A field typed
+//      while it is in flight is overwritten — and a read-back taken the instant after typing
+//      called it held. Every fill/select is now committed (blur) and SETTLED on the page's own
+//      PageRequestManager before the next starts.
+//      MUST-PASS  the module count typed after Occupancy is still there once the postback landed.
+//   2. PER-FIELD AUTOSAVE (PowerClerk-shaped): Name, Phone (masked, typed key by key), Company all
+//      reach the SERVER whole.
+//   3. THE REPEATED LABEL: "Name *" in the installer block AND the electrical-contractor block,
+//      recorded label-first with an id fallback (the real recipe's shape).
+//      MUST-PASS    each name lands in its own block.
+//      MUST-EXCLUDE the electrician's name in the installer's box (the scoreboard's
+//                   inst.name wrong_box).
 //
 //   npx tsx portal-bot/src/adapters/replayCommit.dom.smoke.ts
-import { chromium } from "playwright";
+import { chromium, type Page } from "playwright";
 import nodeFs from "node:fs";
 import nodeOs from "node:os";
 import nodePath from "node:path";
@@ -33,45 +36,77 @@ const check = (label: string, ok: boolean, detail = ""): void => {
   else { failures++; console.error(`  FAIL - ${label}\n         ${detail}`); }
 };
 
-const w = buildWizard("powerclerk", "base");
-const r = await startSyntheticReplica({ wizard: w, credential: { username: "u1", password: "p1" } });
-const inst = w.pages.find((p) => /installer information/i.test(p.heading))!;
 const browser = await chromium.launch();
-const ctx = await browser.newContext();
-await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
-const page = await ctx.newPage();
-await page.goto(r.entryUrl);
-await page.fill("#UserName", "u1");
-await page.fill("#Password", "p1");
-await Promise.all([page.waitForURL(/Dashboard/), page.click("#btnSignIn")]);
-
-const steps: RecipeStep[] = [
-  { action: "goto", value: `${r.base}/${inst.slug}`, note: "open the page" },
-  { action: "fill", selector: { css: "#pcInputBase30" }, note: "Name", field: "installerContactName" },
-  { action: "fill", selector: { css: "#pcInputBase33" }, note: "Phone", field: "installerPhone" },
-  { action: "fill", selector: { css: "#pcInputBase31" }, note: "Company", field: "installerCompanyName" },
-  { action: "stopForReview" },
-];
-const recipe: PortalRecipe = {
-  id: "commit-smoke", scopeType: "utility", profileKey: "or||cascadia", state: "OR", ahj: "", utility: "Cascadia Power",
-  portalPlatform: "powerclerk", portalUrl: `${r.base}/Dashboard`, status: "complete", version: 1, createdBy: "smoke", createdAt: "", updatedAt: "", notes: "",
+const recipeOf = (scopeType: "ahj" | "utility", portalUrl: string, steps: RecipeStep[]): PortalRecipe => ({
+  id: "commit-smoke", scopeType, profileKey: "or||cascadia", state: "OR", ahj: "City of Fernhollow", utility: "Cascadia Power",
+  portalPlatform: "fixture", portalUrl, status: "complete", version: 1, createdBy: "smoke", createdAt: "", updatedAt: "", notes: "",
   steps,
-};
-const values = { installerContactName: "Philippa Ashgrove", installerPhone: "541-555-0199", installerCompanyName: "Kestrel Energy LLC" };
-const adapter = new RecipeAdapter(recipe, values, {});
-(adapter as unknown as { page: unknown }).page = page;
-const result = await adapter.fillApplication({} as ProjectRecord);
-await page.waitForTimeout(w.delays.autosave + w.delays.rerender + 400); // let any last re-render land
+});
+async function replay(page: Page, recipe: PortalRecipe, values: Record<string, string>) {
+  const adapter = new RecipeAdapter(recipe, values, {});
+  (adapter as unknown as { page: unknown }).page = page;
+  return adapter.fillApplication({} as ProjectRecord);
+}
+async function newPage(): Promise<Page> {
+  const ctx = await browser.newContext();
+  await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
+  return ctx.newPage();
+}
 
-const s = r.state.values;
-check("Name reached the server", s["inst.name"] === values.installerContactName, JSON.stringify(s));
-check("Phone reached the server WHOLE (no mid-typing wipe fragment)", String(s["inst.phone"] ?? "").replace(/\D/g, "") === "5415550199", `inst.phone=${JSON.stringify(s["inst.phone"])}`);
-check("Company reached the server", s["inst.company"] === values.installerCompanyName, JSON.stringify(s));
-check("the run reports no failed/unverified field", result.ok === true && ((result.data as { fieldsUnverified?: string[] })?.fieldsUnverified ?? []).length === 0, `${result.ok} ${String(result.message).slice(0, 200)} unverified=${JSON.stringify((result.data as { fieldsUnverified?: string[] })?.fieldsUnverified)}`);
+console.log("\n1. AUTOPOSTBACK: a field typed after an autopostback select survives the postback");
+{
+  const w = buildWizard("accela", "base");
+  const r = await startSyntheticReplica({ wizard: w });
+  const ai = w.pages.find((p) => /additional information/i.test(p.heading))!;
+  const page = await newPage();
+  const result = await replay(page, recipeOf("ahj", `${r.base}/CitizenAccess/Default.aspx`, [
+    { action: "goto", value: `${r.base}/CitizenAccess/Cap/${ai.slug}`, note: "open the page" },
+    { action: "select", selector: { label: "Occupancy Type:" }, note: "Occupancy Type:", value: "Single Family Dwelling" },
+    { action: "fill", selector: { label: "Total Number of Modules:" }, note: "Total Number of Modules:", field: "moduleQuantity" },
+    { action: "stopForReview" },
+  ]), { moduleQuantity: "18" });
+  await page.waitForTimeout(w.delays.postback + 800); // any postback still in flight lands
+  const modules = await page.locator("input[id$='AppSpecInfo_ASI_1_2']").inputValue().catch(() => "");
+  const occ = await page.locator("select[id$='AppSpecInfo_ASI_1_3']").inputValue().catch(() => "");
+  check("Occupancy held through its own postback", occ === "SFD", `occupancy=${occ}`);
+  check("MUST-PASS: the module count typed after it survived the postback", modules === "18", `modules="${modules}" ok=${result.ok} ${String(result.message).slice(0, 160)}`);
+  await page.context().close();
+  await r.close();
+}
 
-await ctx.close();
+console.log("\n2. PER-FIELD AUTOSAVE + 3. THE REPEATED LABEL (PowerClerk installer page)");
+{
+  const w = buildWizard("powerclerk", "base");
+  const r = await startSyntheticReplica({ wizard: w, credential: { username: "u1", password: "p1" } });
+  const inst = w.pages.find((p) => /installer information/i.test(p.heading))!;
+  const page = await newPage();
+  await page.goto(r.entryUrl);
+  await page.fill("#UserName", "u1");
+  await page.fill("#Password", "p1");
+  await Promise.all([page.waitForURL(/Dashboard/), page.click("#btnSignIn")]);
+  const values = { installerContactName: "Philippa Ashgrove", installerPhone: "541-555-0199", installerCompanyName: "Kestrel Energy LLC", electricalSupervisorName: "Ines Coldharbour" };
+  const result = await replay(page, recipeOf("utility", `${r.base}/Dashboard`, [
+    { action: "goto", value: `${r.base}/${inst.slug}`, note: "open the page" },
+    // The shapes the learn records: label first, the render-order id as a fallback.
+    { action: "fill", selector: { label: "Name *", fallbacks: [{ css: "#pcInputBase30" }] }, note: "Name *", field: "installerContactName" },
+    { action: "fill", selector: { label: "Company *", fallbacks: [{ css: "#pcInputBase31" }] }, note: "Company *", field: "installerCompanyName" },
+    { action: "fill", selector: { label: "Phone *", fallbacks: [{ css: "#pcInputBase33" }] }, note: "Phone *", field: "installerPhone" },
+    { action: "fill", selector: { label: "Name *", fallbacks: [{ css: "#pcInputBase40" }] }, note: "Name *", field: "electricalSupervisorName" },
+    { action: "stopForReview" },
+  ]), values);
+  await page.waitForTimeout(w.delays.autosave + w.delays.rerender + 400); // let any last re-render land
+  const s = r.state.values;
+  check("2. Company reached the server", s["inst.company"] === values.installerCompanyName, JSON.stringify(s));
+  check("2. Phone reached the server WHOLE", String(s["inst.phone"] ?? "").replace(/\D/g, "") === "5415550199", `inst.phone=${JSON.stringify(s["inst.phone"])}`);
+  check("3. MUST-PASS: the installer contact is in the installer's Name box", s["inst.name"] === values.installerContactName, `inst.name=${JSON.stringify(s["inst.name"])}`);
+  check("3. MUST-PASS: the supervising electrician is in the electrical contractor's Name box", s["elec.name"] === values.electricalSupervisorName, `elec.name=${JSON.stringify(s["elec.name"])}`);
+  check("3. MUST-EXCLUDE: the electrician's name is NOT in the installer's box", s["inst.name"] !== values.electricalSupervisorName);
+  check("the run reports no unverified field", result.ok === true && ((result.data as { fieldsUnverified?: string[] })?.fieldsUnverified ?? []).length === 0, `${result.ok} ${String(result.message).slice(0, 200)} unverified=${JSON.stringify((result.data as { fieldsUnverified?: string[] })?.fieldsUnverified)}`);
+  await page.context().close();
+  await r.close();
+}
+
 await browser.close();
-await r.close();
 if (failures) { console.error(`\nreplayCommit: ${failures} check(s) FAILED`); process.exit(1); }
-console.log("\nreplayCommit: all checks passed (real Chromium, synthetic replica)");
+console.log("\nreplayCommit: all checks passed (real Chromium, synthetic replicas)");
 process.exit(0);
