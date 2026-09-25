@@ -172,6 +172,12 @@ const EXAMPLE_INTAKE = {
       username: "sunrise.permits",
       password: "typed-here-once-then-delete-this-file",
       securityAnswers: "mother's maiden name: Reyes",
+      // The two kickoff answers every portal account needs (INTAKE_CHECKLIST §5). Neither is a
+      // secret. Leaving a key OUT on a re-run keeps whatever is stored; "" means "asked, not
+      // yet agreed", which the coverage report prints as "fees NOT AGREED".
+      mfaRequired: false,
+      mfaCodeDestination: "",
+      feeResponsibility: "card-on-file",
       notes: "non-secret operational hints only — this column is LLM-visible",
     },
   ],
@@ -214,7 +220,7 @@ const { createUser, updateUser } = await import("../backend/src/users");
 // verifyPassword in auth.ts is its only reader, so a second copy of the hasher here would
 // be a login that silently cannot log in the moment either side changed.
 const { setUserPassword } = await import("../backend/src/auth");
-const { createPortalCredential, updatePortalCredential } = await import("../backend/src/portalCredentials");
+const { createPortalCredential, updatePortalCredential, FEE_RESPONSIBILITY_VALUES } = await import("../backend/src/portalCredentials");
 const { grantProduct, orgEntitlements, productsForEdition, PRODUCT_KEYS } = await import("../backend/src/entitlements");
 const { addAuditLog } = await import("../backend/src/audit");
 const { decryptStorageState } = await import("../portal-bot/src/cryptoStorage");
@@ -246,6 +252,14 @@ const CLIENT_FIELDS = [
   // client field", so an operator filling the template correctly got a warning and a dropped
   // value. updatesInbox is the address every automated status update is sent to.
   "updatesInbox", "billingContactEmail", "licenseState", "insuranceExpiry", "bondExpiry",
+] as const;
+
+/** Every key a portalCredentials[] entry may carry. The last three are the per-portal kickoff
+ *  answers (migration v18 columns mfa_required / mfa_code_destination / fee_responsibility);
+ *  none of them is a secret, so they are written as plain columns, not into the envelope. */
+const CRED_FIELDS = [
+  "portalType", "portalUrl", "username", "password", "securityAnswers", "notes",
+  "mfaRequired", "mfaCodeDestination", "feeResponsibility",
 ] as const;
 
 /** Fields that never throw when blank but silently produce blank PORTAL fields, which is a
@@ -360,6 +374,23 @@ if (keyMissing && !dryRun) {
   );
 }
 
+// PUBLIC_BASE_URL. Every link this company will ever receive from us — the one-time credential
+// link, the /status and /portal pages in their update emails — is built from it. Unset, the
+// code falls back to http://localhost:<PORT>; SET to localhost (production's .env today), the
+// notifier's own "not set" warning never fires. Either way every link is dead off this machine,
+// and the first person to notice is the customer. Not fatal: onboarding writes no links.
+const publicBase = str(process.env.PUBLIC_BASE_URL);
+let publicBaseHost = "";
+try { publicBaseHost = publicBase ? new URL(publicBase).hostname.toLowerCase() : ""; } catch { publicBaseHost = "(unparseable)"; }
+const publicBaseDead = !publicBase || ["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0", "(unparseable)"].includes(publicBaseHost);
+if (publicBaseDead) {
+  warnings.push(
+    `PUBLIC_BASE_URL is ${publicBase ? `"${publicBase}"` : "unset"} — every client-facing link (the one-time credential link, ` +
+    "the status and portal pages in update emails) will point at this machine and will not open for the customer. " +
+    "Set it in .env to the address the customer actually reaches (see docs/OPERATIONS.md, \"Public address\") and restart the server.",
+  );
+}
+
 const clientName = str(clientIn.companyName) || str(clientIn.legalBusinessName);
 if (!clientName) problems.push("client.companyName (or client.legalBusinessName) is required — createClient refuses a nameless client.");
 if (!str(clientIn.ccbLicenseNumber)) {
@@ -438,6 +469,39 @@ credsIn.forEach((c, i) => {
   if (!str(c.portalType)) warnings.push(`portalCredentials[${i}].portalType is blank. Harmless for lookup (portal_type is mostly display) but the sweep reports read better with "<STATE> · <Platform>".`);
   if (/pass|pwd|answer|ssn|account num|meter/i.test(str(c.notes))) {
     problems.push(`portalCredentials[${i}].notes looks like it contains a secret. That column is PLAINTEXT and LLM-VISIBLE (knowledgeResearchHint feeds it to the research prompt). Security answers belong in securityAnswers, which rides inside the encrypted envelope.`);
+  }
+  const label = str(c.portalType) || url || `#${i}`;
+  // UNKNOWN KEYS INSIDE A CREDENTIAL WERE DROPPED WITH NO WARNING AT ALL. That is how
+  // feeResponsibility and mfaRequired went missing: the intake template has asked for both
+  // since migration v18, this script never read either, and every onboarded portal then read
+  // "fees NOT AGREED" in the coverage report although the customer had answered on the call.
+  for (const key of Object.keys(c)) {
+    if (key.startsWith("_") || (CRED_FIELDS as readonly string[]).includes(key)) continue;
+    warnings.push(`portalCredentials[${i}].${key} (${label}) is not a credential field this script writes — it is dropped. Known: ${CRED_FIELDS.join(", ")}.`);
+  }
+  // FEES. The answer is validated here, before the DB opens, with the SAME normalisation the
+  // writer applies (trim + lowercase against FEE_RESPONSIBILITY_VALUES) — so a typo is an intake
+  // problem (exit 1, nothing written), not a 400 thrown six rows into the transaction.
+  if ("feeResponsibility" in c) {
+    const fee = str(c.feeResponsibility).toLowerCase();
+    if (fee && !(FEE_RESPONSIBILITY_VALUES as readonly string[]).includes(fee)) {
+      problems.push(`portalCredentials[${i}].feeResponsibility "${str(c.feeResponsibility)}" (${label}) is not one of ${FEE_RESPONSIBILITY_VALUES.join(", ")} (or "" for not yet agreed). An invented value would read as an agreement nobody made.`);
+    } else if (!fee) {
+      warnings.push(`portalCredentials[${i}].feeResponsibility is blank (${label}) — recorded as "asked, not yet agreed", and the coverage report will say fees NOT AGREED for this portal until someone answers it.`);
+    }
+  } else {
+    warnings.push(`portalCredentials[${i}] (${label}) has no feeResponsibility. Who pays this portal's fees is agreed per portal at kickoff; a new row is stored as "not yet agreed", and an existing row keeps what it has.`);
+  }
+  // MFA. A boolean, strictly: "yes"/"no" strings would otherwise coerce ("no" is truthy) and
+  // record the opposite of what the customer said.
+  if ("mfaRequired" in c && typeof c.mfaRequired !== "boolean") {
+    problems.push(`portalCredentials[${i}].mfaRequired (${label}) must be true or false (a JSON boolean), not ${JSON.stringify(c.mfaRequired)}.`);
+  }
+  if (c.mfaRequired === true && !str(c.mfaCodeDestination)) {
+    warnings.push(`portalCredentials[${i}] (${label}) needs MFA but mfaCodeDestination is blank. A paused run can then only say it stopped — not whose inbox holds the code. Ask for a shared inbox we can read, or the named person who relays it.`);
+  }
+  if ("mfaCodeDestination" in c && /\b\d{6}\b|code\s*[:=]/i.test(str(c.mfaCodeDestination))) {
+    problems.push(`portalCredentials[${i}].mfaCodeDestination (${label}) looks like it holds a code. It is plaintext: it names WHO to ask (an inbox or a person), never the code itself.`);
   }
 });
 
@@ -797,10 +861,17 @@ try {
   interface CredPlan {
     portalType: string; portalUrl: string; username: string; password: string; notes: string;
     securityAnswers: string; id: string | null; verdict: Verdict; changed: string[]; secretUnreadable: boolean;
+    /** The kickoff answers, ONLY for keys the intake actually names — an omitted key is
+     *  absent here, so it is neither diffed nor written (updatePortalCredential's `key in
+     *  payload` semantics). Sending `mfaRequired: false` for an omitted key would silently
+     *  un-record an MFA portal; sending `feeResponsibility: ""` would erase an agreement. */
+    answers: { mfaRequired?: boolean; mfaCodeDestination?: string; feeResponsibility?: string };
   }
   const credPlans: CredPlan[] = [];
   const existingCreds = clientId
-    ? db.query<Record<string, unknown>>("SELECT id, portal_type, portal_url, username_reference, encrypted_secret, notes FROM portal_credentials WHERE client_id = ?", [clientId])
+    ? db.query<Record<string, unknown>>(
+      "SELECT id, portal_type, portal_url, username_reference, encrypted_secret, notes, " +
+      "mfa_required, mfa_code_destination, fee_responsibility FROM portal_credentials WHERE client_id = ?", [clientId])
     : [];
   // A BLANK SECRET IN THE INTAKE MEANS "LEAVE THE STORED ONE ALONE", NOT "IT IS EMPTY". That is
   // the only way an operator can keep a filled intake on disk with the passwords stripped out
@@ -824,7 +895,11 @@ try {
       password: typeof c.password === "string" ? c.password : "", notes: str(c.notes),
       securityAnswers: str(c.securityAnswers), id: row ? String(row.id) : null,
       verdict: row ? "unchanged" : "create", changed: [], secretUnreadable: false,
+      answers: {},
     };
+    if ("mfaRequired" in c) plan.answers.mfaRequired = c.mfaRequired === true;
+    if ("mfaCodeDestination" in c) plan.answers.mfaCodeDestination = str(c.mfaCodeDestination);
+    if ("feeResponsibility" in c) plan.answers.feeResponsibility = str(c.feeResponsibility).toLowerCase();
     const label = plan.portalType || portalUrl || `#${i}`;
     if (!row) {
       // Creating: the password is genuinely required — createPortalCredential throws on a blank
@@ -841,6 +916,10 @@ try {
     } else {
       if (str(row.portal_type) !== plan.portalType) plan.changed.push("portalType");
       if (str(row.notes) !== plan.notes) plan.changed.push("notes");
+      // Plain columns, so they diff without the key — on a dry run as well as a real one.
+      if (plan.answers.mfaRequired !== undefined && (Number(row.mfa_required ?? 0) === 1) !== plan.answers.mfaRequired) plan.changed.push("mfaRequired");
+      if (plan.answers.mfaCodeDestination !== undefined && str(row.mfa_code_destination) !== plan.answers.mfaCodeDestination) plan.changed.push("mfaCodeDestination");
+      if (plan.answers.feeResponsibility !== undefined && str(row.fee_responsibility) !== plan.answers.feeResponsibility) plan.changed.push("feeResponsibility");
       // Envelope fields, diffed only where the intake actually said something. username is
       // always supplied (validated above) and is also mirrored in the plaintext
       // username_reference column, so it can be diffed without the key.
@@ -907,6 +986,7 @@ try {
   line(`onboard-company  ${dryRun ? "DRY RUN" : "WRITE"}   intake: ${intakePath}`);
   line(`  database                 ${process.env.AUTOPILOT_DB_PATH}`);
   line(`  SESSION_ENCRYPTION_KEY   ${keyMissing ? (rawKey ? "default placeholder — a real run will refuse" : "missing — a real run will refuse") : "set"}`);
+  line(`  PUBLIC_BASE_URL          ${publicBaseDead ? `${publicBase || "unset"} — customer links will be DEAD (see WARNINGS)` : publicBase}`);
   line(`  lane                     ${tenantLane ? "TENANT (the company logs in as its own org — see the LANE B dead end at the top of this script)" : "SERVICE BUREAU (the company is a client row inside the operator's own tenant)"}`);
 
   rule("ORG (the tenant that logs in)");
@@ -949,6 +1029,10 @@ try {
     line(`  ${verdictLabel(c.verdict).padEnd(26)} ${c.portalType || "(no portalType)"}`);
     line(`      url                    ${c.portalUrl}`);
     line(`      username               ${secretState(c.username)}   password ${secretState(c.password)}   security answers ${secretState(c.securityAnswers)}`);
+    const fee = c.answers.feeResponsibility;
+    line(`      fees                   ${fee === undefined ? (c.verdict === "create" ? "NOT AGREED (not in intake)" : "not in intake — stored answer kept") : fee || "NOT AGREED (blank in intake)"}`);
+    const mfa = c.answers.mfaRequired;
+    line(`      mfa                    ${mfa === undefined ? (c.verdict === "create" ? "not in intake — recorded as no" : "not in intake — stored answer kept") : mfa ? `required   code destination ${secretState(c.answers.mfaCodeDestination ?? "")}` : "not required"}`);
     if (c.secretUnreadable) line("      NOTE                   the stored blob will not decrypt under the current SESSION_ENCRYPTION_KEY — it is already dead and will be replaced");
     if (c.changed.length) line(`      to update              ${c.changed.join(", ")}`);
   }
@@ -1025,6 +1109,7 @@ try {
           createPortalCredential(db, clientId, {
             portalType: c.portalType, portalUrl: c.portalUrl, username: c.username,
             password: c.password, notes: c.notes, securityAnswers: c.securityAnswers,
+            ...c.answers,
           });
         } else {
           // updatePortalCredential re-encrypts ONLY when a password is present. The plan
@@ -1036,6 +1121,9 @@ try {
           updatePortalCredential(db, clientId, c.id!, {
             portalType: c.portalType, portalUrl: c.portalUrl, notes: c.notes,
             username: c.username, password: c.password, securityAnswers: c.securityAnswers,
+            // Only the answers the intake named (see CredPlan.answers): an omitted key keeps
+            // the stored agreement rather than resetting it.
+            ...c.answers,
           });
         }
         addAuditLog(db, null, "human", actorFlag, "portal_credential.onboarded", { clientId, portalType: c.portalType, portalUrl: c.portalUrl, action: c.verdict });

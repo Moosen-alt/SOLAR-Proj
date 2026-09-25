@@ -45,8 +45,8 @@ export interface PortalCredentialView {
 export const FEE_RESPONSIBILITY_VALUES = ["card-on-file", "customer-pays", "mailed-check", "keelix-pays"] as const;
 
 /** Normalises and REFUSES anything outside the vocabulary. The REST schema
- *  (validation.ts) does not declare this key, so this function is the only gate the value
- *  ever passes through — a silently-accepted "venmo" would read as an agreement nobody made,
+ *  (validation.ts) declares this key as a plain string on purpose, so this function is the only
+ *  gate the value ever passes through — a silently-accepted "venmo" would read as an agreement nobody made,
  *  and the whole value of the column is that the answer means something at kickoff. */
 function normalizeFeeResponsibility(raw: unknown): string {
   const value = s(raw).trim().toLowerCase();

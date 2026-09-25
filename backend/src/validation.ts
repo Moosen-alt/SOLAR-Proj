@@ -28,6 +28,14 @@ export const portalCredentialCreateSchema = z.object({
   username: z.string().min(1, "username is required").max(320),
   password: z.string().min(1, "password is required").max(1024),
   notes: z.string().max(2000).optional(),
+  // The per-portal kickoff answers (migration v18). Declared here because zod STRIPS every key a
+  // schema does not name: until these three were listed, a POST or PUT carrying them answered
+  // 201/200 and stored nothing. feeResponsibility is a plain string ON PURPOSE — its vocabulary
+  // has exactly one gate, normalizeFeeResponsibility in portalCredentials.ts (400 on anything
+  // else), and a second list here would be a second predicate that can drift from it.
+  mfaRequired: z.boolean().optional(),
+  mfaCodeDestination: z.string().max(500).optional(),
+  feeResponsibility: z.string().max(40).optional(),
 });
 
 export const portalCredentialUpdateSchema = z.object({
@@ -36,6 +44,11 @@ export const portalCredentialUpdateSchema = z.object({
   username: z.string().max(320).optional(),
   password: z.string().max(1024).optional(),
   notes: z.string().max(2000).optional(),
+  // Same three as the create schema. Optional and stripped-when-absent, which is exactly the
+  // `key in payload` semantics updatePortalCredential needs: an omitted answer is kept.
+  mfaRequired: z.boolean().optional(),
+  mfaCodeDestination: z.string().max(500).optional(),
+  feeResponsibility: z.string().max(40).optional(),
 });
 
 // scope: the frontend sends "ahj" or "utility"; "permit"/"nem" accepted as aliases.
