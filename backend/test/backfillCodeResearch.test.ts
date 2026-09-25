@@ -126,5 +126,31 @@ await check("MUST-PASS: --apply runs the real save path, states first, at most 2
   assert.ok(stamp.adoptedCodes.some((c) => c.edition === "2021"), "the research did not land on the stamp row");
 });
 
+await check("MUST-PASS: an AHJ in a state with no adoption model is pending_state in the plan, and --apply researches it once its state lands", async () => {
+  CP.saveResearchedCodeProfile(db, blank("ZB", "City of Waitfirst", { amendments: [{ code: "AHJ", summary: "Structural stamp required: Yes" }] }));
+  const plan = await B.planBackfill(db, { states: ["ZB"] });
+  const zb = plan.tallies.find((t) => t.state === "ZB")!;
+  assert.equal(zb.wouldResearchState, 1, JSON.stringify(plan.items));
+  assert.equal(zb.pendingState, 1, `the AHJ is not pending its state: ${JSON.stringify(plan.items)}`);
+  assert.equal(zb.wouldResearchAhj, 0, "an AHJ was planned before its state's model is known");
+  const asked: string[] = [];
+  const provider = {
+    async researchJurisdictionCodes(input: JurisdictionCodeResearchInput) {
+      asked.push(`${input.ahj || "(state)"}:${(input.families ?? []).join("+")}`);
+      return {
+        provider: "claude" as const, webGrounded: true, needsHumanVerification: true as const, notes: "",
+        profile: blank(input.state, input.ahj, {
+          adoptedCodes: [{ family: "residential", code: "IRC", edition: input.ahj ? "2021" : "2018", sourceUrl: "https://zb.example.gov" }],
+          ...(input.ahj ? {} : { adoptionModel: { model: "local_adoption" as const } }),
+          researchProvenance: { webGrounded: true, method: "web_search" as const, at: new Date().toISOString(), searches: 3, groundedSearches: 2 },
+        }),
+      };
+    },
+  } as unknown as LLMProvider;
+  await B.applyBackfill(db, plan, { provider, log: () => {} });
+  assert.equal(asked[0], "(state):", `the state did not go first: ${asked}`);
+  assert.ok(asked.some((a) => a.startsWith("City of Waitfirst:") && a.includes("residential")), `the pending AHJ never ran after its state: ${asked}`);
+});
+
 console.log(failures ? `\nbackfillCodeResearch: ${failures} FAILED` : "\nbackfillCodeResearch: all checks passed");
 process.exit(failures ? 1 : 0);

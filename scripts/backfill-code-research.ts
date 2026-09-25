@@ -107,8 +107,6 @@ export async function planBackfill(db: AppDb, opts: { states?: string[]; limit?:
   for (const st of states) {
     const d = CP.codeResearchDecision(db as never, st, "", opts.asOf);
     items.push({ state: st, ahj: "", key: d.key, layer: "state", action: d.action === "verify_check" ? "skip" : d.action, reason: d.action === "verify_check" ? `verified (staleness check due: ${d.reason})` : d.reason });
-    const model = CP.stateAdoptionModel(db as never, st);
-    const stateWillResearch = d.action === "research";
     const seen = new Set<string>();
     // A project names an AHJ under its own spelling ("City of Coos Bay"); the row on file may carry
     // another ("Coos Bay"). Both resolve to one write key — "has projects" is decided by that key.
@@ -125,8 +123,10 @@ export async function planBackfill(db: AppDb, opts: { states?: string[]; limit?:
       seen.add(k);
       const hasProjects = projectKeys.has(k);
       if (opts.projectsOnly && !hasProjects) continue;
-      // STATE FIRST: with no adoption model known yet, an AHJ waits for its state's research.
-      if (!model && stateWillResearch && a.action === "research") {
+      // STATE FIRST: with no adoption model known yet, an AHJ waits for its state's research — the
+      // decision itself says so (the live trigger applies the same rule); --apply re-decides it
+      // once the state layer has landed.
+      if (a.action === "skip" && a.reason === "pending_state") {
         items.push({ state: st, ahj: a.ahj, key: k, layer: "ahj", action: "pending_state", reason: "state adoption model unknown until the state layer is researched", hasProjects });
         continue;
       }

@@ -1164,7 +1164,7 @@ export type CodeResearchDecision = {
 } & (
   | { action: "research"; reason: "no_row" | "no_grounded_codes" | "memory_provenance" | "upcoming_due" | "older_than_180d"; families?: CodeFamily[] }
   | { action: "verify_check"; reason: "upcoming_due" | "older_than_180d"; families?: undefined }
-  | { action: "skip"; reason: "verified_fresh" | "blocked_verified" | "inherits_state" | "fresh" | "no_jurisdiction"; families?: undefined }
+  | { action: "skip"; reason: "verified_fresh" | "blocked_verified" | "inherits_state" | "pending_state" | "fresh" | "no_jurisdiction"; families?: undefined }
 );
 
 function daysSince(iso: string | undefined, now: number): number {
@@ -1213,8 +1213,17 @@ export function codeResearchDecision(db: AppDb, state: string, ahj: string, asOf
     if (target.kind === "same_jurisdiction") { st = target.profile.state; name = target.profile.ahj; }
     row = target.kind === "create" ? null : target.profile;
     const key = codeProfileKey({ state: st, ahj: name });
-    // STATE FIRST: what the state adopts uniformly (or as the minimum every AHJ enforces) is not
-    // looked up city by city. Only local-adoption families are the AHJ's to research.
+    // STATE FIRST, ALSO ON THE LIVE TRIGGER: with no adoption model known, the AHJ waits while its
+    // state layer is still to be researched — researched in parallel, an AHJ copy of the state's
+    // editions could land first and then read as the AHJ's own (and, the state having said
+    // "inherits", never be looked at again). Once the state layer has been researched (fresh, or
+    // verified) the AHJ proceeds with or without a model: a state answer that omits the model
+    // must not strand every AHJ in it.
+    if (!model && codeResearchDecision(db, st, "", asOf).action === "research") {
+      return { state: st, ahj: name, key, action: "skip", reason: "pending_state" };
+    }
+    // What the state adopts uniformly (or as the minimum every AHJ enforces) is not looked up city
+    // by city. Only local-adoption families are the AHJ's to research.
     const local = model ? locallyAdoptedFamilies(model) : undefined;
     if (local && !local.length) return { state: st, ahj: name, key, action: "skip", reason: "inherits_state" };
     const base = { state: st, ahj: name, key, ...(local ? { families: local } : {}) };

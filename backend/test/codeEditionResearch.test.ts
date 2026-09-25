@@ -271,6 +271,43 @@ await check("M1 MUST-EXCLUDE: the TX state-level read still lists IRC 2012; an O
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────
+// M3 — state first on the LIVE trigger, for a state nobody has researched
+// ─────────────────────────────────────────────────────────────────────────────────────────
+const ensureQueued = (state: string, ahj: string) => {
+  queued.length = 0;
+  CP.resetResearchMarkersForTests();
+  CP.ensureCodeProfilesResearched(db, state, ahj);
+  return { state: queued.filter((p) => p.ahj === ""), ahj: queued.filter((p) => p.ahj !== "") };
+};
+
+await check("M3 MUST-PASS: the first ensure in a new state queues only the state layer; after the state says local_adoption, the AHJ is queued with its families", async () => {
+  const first = ensureQueued("ZX", "City of Foo");
+  assert.equal(first.state.length, 1, `the state layer was not queued: ${JSON.stringify(queued)}`);
+  assert.equal(first.ahj.length, 0, `the AHJ was researched before its state: ${JSON.stringify(first.ahj)}`);
+  assert.equal(CP.codeResearchDecision(db, "ZX", "City of Foo").reason, "pending_state");
+  await CP.runCodeResearch(db, { state: "ZX", ahj: "" }, fakeResearcher(
+    [{ family: "electrical", code: "NEC", edition: "2023", sourceUrl: "https://zx.example.gov" }], true,
+    { adoptionModel: { model: "mixed", byFamily: { residential: "local_adoption", electrical: "statewide_uniform" } } },
+  ).provider);
+  const second = ensureQueued("ZX", "City of Foo");
+  assert.equal(second.ahj.length, 1, `the AHJ was not queued after its state landed: ${JSON.stringify(queued)}`);
+  assert.deepEqual(second.ahj[0].families, ["residential"]);
+});
+
+await check("M3 MUST-EXCLUDE: a statewide_uniform new state never queues an AHJ code research; no AHJ stays pending after a model-less state research lands", async () => {
+  assert.equal(ensureQueued("ZU", "City of Uni").ahj.length, 0, "an AHJ was queued before its state");
+  await CP.runCodeResearch(db, { state: "ZU", ahj: "" }, fakeResearcher([{ family: "residential", code: "IRC", edition: "2021", sourceUrl: "https://zu.example.gov" }], true, { adoptionModel: { model: "statewide_uniform" } }).provider);
+  assert.equal(ensureQueued("ZU", "City of Uni").ahj.length, 0, "a uniform state's AHJ was researched");
+  assert.equal(CP.codeResearchDecision(db, "ZU", "City of Uni").reason, "inherits_state");
+  // A state answer with codes but no adoption model: the AHJ proceeds (all families its own).
+  assert.equal(CP.codeResearchDecision(db, "ZN", "City of Nomodel").reason, "pending_state");
+  await CP.runCodeResearch(db, { state: "ZN", ahj: "" }, fakeResearcher([{ family: "residential", code: "IRC", edition: "2021", sourceUrl: "https://zn.example.gov" }], true).provider);
+  const d = CP.codeResearchDecision(db, "ZN", "City of Nomodel");
+  assert.equal(d.action, "research", `the AHJ stayed stranded after its state landed: ${JSON.stringify(d)}`);
+  assert.equal(ensureQueued("ZN", "City of Nomodel").ahj.length, 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
 // M5 — a human's statement is never hidden by a seeded state fact
 // ─────────────────────────────────────────────────────────────────────────────────────────
 await check("M5 MUST-PASS: a VERIFIED AHJ row's NEC 2020 in a uniform family (NC) is read, not dropped", () => {
