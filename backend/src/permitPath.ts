@@ -68,6 +68,44 @@ function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
 }
 
+// THE STATE IS AN ALLOWLIST, NOT "ANYTHING THAT IS NOT OR" (2026-09-24, D1 verification MF2).
+//
+// Intake stores the state as typed (createProject has no normaliser), and the standard-review
+// rule below routes every non-Oregon state past Oregon's prescriptive-vs-engineered confirmation.
+// Its first normaliser only knew "OREGON" and "ORE", so a Portland project stored as "Oreg.",
+// "OR 97201", "Portland, OR", "97201", "OR, USA", "O.R." or "Oregon State" was NOT "OR", routed to
+// the standard review, and skipped the confirmation with no gate blocker at all — the fail-open
+// the previous "unknown" fallback had prevented. Now a state routes only when it normalises to a
+// recognised two-letter US code: full names and the common abbreviations map to their code;
+// anything else resolves UNKNOWN with the "add the project's state" basis, which the gate blocks
+// on. Inlined (designCriteria.US_STATES is the same list) because this module must not import
+// the design-criteria engine for a two-line lookup.
+const US_STATE_CODES = new Set("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split(" "));
+const US_STATE_NAMES: Record<string, string> = {
+  ALABAMA: "AL", ALASKA: "AK", ARIZONA: "AZ", ARKANSAS: "AR", CALIFORNIA: "CA", COLORADO: "CO", CONNECTICUT: "CT",
+  DELAWARE: "DE", FLORIDA: "FL", GEORGIA: "GA", HAWAII: "HI", IDAHO: "ID", ILLINOIS: "IL", INDIANA: "IN", IOWA: "IA",
+  KANSAS: "KS", KENTUCKY: "KY", LOUISIANA: "LA", MAINE: "ME", MARYLAND: "MD", MASSACHUSETTS: "MA", MICHIGAN: "MI",
+  MINNESOTA: "MN", MISSISSIPPI: "MS", MISSOURI: "MO", MONTANA: "MT", NEBRASKA: "NE", NEVADA: "NV", "NEW HAMPSHIRE": "NH",
+  "NEW JERSEY": "NJ", "NEW MEXICO": "NM", "NEW YORK": "NY", "NORTH CAROLINA": "NC", "NORTH DAKOTA": "ND", OHIO: "OH",
+  OKLAHOMA: "OK", OREGON: "OR", PENNSYLVANIA: "PA", "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC", "SOUTH DAKOTA": "SD",
+  TENNESSEE: "TN", TEXAS: "TX", UTAH: "UT", VERMONT: "VT", VIRGINIA: "VA", WASHINGTON: "WA", "WEST VIRGINIA": "WV",
+  WISCONSIN: "WI", WYOMING: "WY", "DISTRICT OF COLUMBIA": "DC",
+  // Common abbreviations (AP style and the ones operators type).
+  ORE: "OR", OREG: "OR", CALIF: "CA", CAL: "CA", TEX: "TX", FLA: "FL", WASH: "WA", ARIZ: "AZ", COLO: "CO", ILL: "IL",
+  MASS: "MA", MICH: "MI", MINN: "MN", MISS: "MS", NEB: "NE", NEV: "NV", OKLA: "OK", PENN: "PA", PENNA: "PA", TENN: "TN",
+  WIS: "WI", WISC: "WI", WYO: "WY", KANS: "KS", CONN: "CT", DEL: "DE", IND: "IN",
+};
+
+/** The two-letter US state code a stored state spelling means, or "" when it is not one we
+ *  recognise. "Oregon", "Ore.", "oreg", " or " → "OR"; "OR 97201", "Portland, OR", "97201",
+ *  "OR, USA", "O.R.", "OR-Oregon", "Oregon State" → "" (never guessed: the gate asks). */
+export function usStateCode(value: unknown): string {
+  const raw = clean(value).toUpperCase().replace(/\.+$/, "").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  if (US_STATE_CODES.has(raw)) return raw;
+  return US_STATE_NAMES[raw] ?? "";
+}
+
 function snap(project: PermitPathInputs, key: string): string {
   return clean((project.parserSnapshot || {})[key]);
 }
@@ -408,22 +446,22 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   // BCD 440-5952 values, and Florida (FBC, exposure D, 150 mph as a matter of course),
   // Ohio (RCO) and Iowa answer to their own codes.
   //
-  // So outside Oregon the honest answer is UNKNOWN, not a verdict from the wrong book.
-  // "unknown" is not a dead end here: staging already refuses to proceed on it until the
-  // operator picks a path (repository.ts), and the project screen has the dropdown for
-  // exactly that. The cost is a decision per non-Oregon project; the alternative is the
-  // product telling an operator a Cape Coral roof "clears the prescriptive screen" when
-  // no Florida rule was ever consulted.
+  // So outside Oregon the screen is never run from Oregon's numbers. A recognised non-Oregon
+  // state routes to the STANDARD structural review (the rule below — there is no
+  // prescriptive-vs-engineered choice to confirm there); a state this resolver cannot
+  // recognise, or none at all, is UNKNOWN, not a verdict from the wrong book. "unknown" is
+  // not a dead end here: staging already refuses to proceed on it until the operator picks
+  // a path (repository.ts), and the project screen has the dropdown for exactly that.
   //
   // When a jurisdiction's own limits are loaded (jurisdiction_code_profiles carries
   // `prescriptive`, and evaluatePrescriptiveCriteria already reads them), this gate is
-  // where that data gets its say — until then it refuses rather than guesses.
-  // Intake stores the state as typed: "Oregon", "Ore." or " or " must still be OREGON here. Before
-  // the standard-review rule an unrecognised spelling fell to "unknown" (the gate blocked — safe);
-  // now anything that is not OR routes to the standard review, so an Oregon project spelled out
-  // would skip its prescriptive-vs-engineered confirmation. One normaliser, at the one comparison.
-  const rawState = clean(project.state).toUpperCase().replace(/\.$/, "");
-  const stateCode = rawState === "OREGON" || rawState === "ORE" ? "OR" : rawState;
+  // where that data gets its say.
+  // Intake stores the state as typed: "Oregon", "Ore." or " or " must still be OREGON here, and
+  // "Oreg.", "OR 97201" or "Portland, OR" must not read as SOME OTHER STATE (which routes past
+  // Oregon's confirmation). One allowlist normaliser (usStateCode), at the one comparison: a
+  // spelling it does not recognise is "" and resolves UNKNOWN below, which the gate blocks on.
+  const stateCode = usStateCode(project.state);
+  const stateUnrecognised = !stateCode && Boolean(clean(project.state));
   const jurisdiction = opts.limits ?? {};
   // A STRAY LIMIT IS NOT A PRESCRIPTIVE PATH. Only the explicit hasPrescriptivePath flag —
   // which research sets by asking the question directly — says this jurisdiction publishes
@@ -462,11 +500,14 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   }
 
   if (stateCode !== "OR" && !hasResearchedLimits) {
-    // No state on file: there is no jurisdiction to route by at all, so no claim is made.
+    // No state on file, or a spelling this resolver does not recognise: there is no jurisdiction
+    // to route by, so no claim is made — never "some other state, standard review".
     basis.push(
       `The prescriptive screen encoded here is Oregon's (ORSC / BCD 440-5952 limits). `
-      + `This project has no state on file, so those limits do not apply and no path is inferred from them. `
-      + `Add the project's state (or confirm the path on Manual entry → Permit path).`,
+      + (stateUnrecognised
+        ? `This project's state ("${clean(project.state).slice(0, 40)}") is not a recognised US state spelling, so no path is inferred from it. `
+        : `This project has no state on file, so those limits do not apply and no path is inferred from them. `)
+      + `${stateUnrecognised ? "Correct" : "Add"} the project's state (a two-letter code, e.g. OR) or confirm the path on Manual entry → Permit path.`,
     );
     return finalize("unknown", "default");
   }

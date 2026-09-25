@@ -20,7 +20,10 @@
 //   MUST-PASS    a jurisdiction's own stamp rule still demands the letter (CA 12 kW, Chicago);
 //   MUST-EXCLUDE an Oregon project skipping its path confirmation (no structural inputs → unknown
 //                → the gate blocks), and an unknown-path Oregon project treated as confirmed;
-//   MUST-EXCLUDE a project with NO state treated as routed.
+//   MUST-EXCLUDE a project with NO state treated as routed;
+//   MUST-EXCLUDE (MF2) a state spelling the resolver does not recognise ("Oreg.", "OR 97201",
+//                "Portland, OR", "97201", garbage) treated as "some other state" and routed past
+//                Oregon's confirmation — it is unknown (or Oregon), and the gate blocks.
 import "./_isolate";
 
 process.env.SEED_TEST_INSTALLER = "false";
@@ -169,6 +172,47 @@ check("MUST-EXCLUDE premise: the Oregon project has no path signal", resolvePerm
   resolvePermitPathForProject(db, orUnknownProject).path);
 check("MUST-EXCLUDE gate: an unknown-path OREGON project is still blocked at the permit-path check (never treated as confirmed)",
   gateBlockers(orUnknown).includes("permit-path"), JSON.stringify(gateBlockers(orUnknown)));
+
+// ── MF2 (D1 verification): the state is an ALLOWLIST, not "anything that is not OR" ────────
+// Intake stores the state as typed. The first normaliser knew "OREGON" and "ORE" only, so a
+// Portland project stored as "Oreg.", "OR 97201", "Portland, OR" or "97201" was "not OR", routed
+// to the standard review and skipped Oregon's confirmation with NO gate blocker — the fail-open
+// the old "unknown" fallback had prevented.
+const NO_STRUCTURAL = { framingType: "", roofRafterSpacing: "", roofRafterSpan: "", snow: "", wind: "", windSpeed: "", deadLoad: "", permitPath: "" };
+for (const [spelled, code] of [["Florida", "FL"], ["Texas", "TX"], ["utah", "UT"], ["Calif.", "CA"], ["Tex", "TX"], ["Fla.", "FL"], ["Wash", "WA"], [" il ", "IL"]] as const) {
+  const r = resolvePermitPath(bare(spelled));
+  check(`MF2 MUST-PASS resolver: "${spelled}" (${code}) routes to the standard review like "${code}"`,
+    r.path === "engineered" && r.standardReview === true, JSON.stringify({ path: r.path, standardReview: r.standardReview }));
+}
+for (const spelled of ["Oreg.", "OREG", "Oregon State", "OR 97201", "Portland, OR", "97201", "OR, USA", "O.R.", "OR-Oregon", "Or.", "Ore", "garbage", "??", "Oregon, USA", "Orgeon"]) {
+  const r = resolvePermitPath(bare(spelled, NO_STRUCTURAL));
+  check(`MF2 MUST-EXCLUDE resolver: "${spelled}" with no structural inputs never routes to the standard review (unknown or Oregon)`,
+    r.standardReview === false && r.path === "unknown", JSON.stringify({ path: r.path, source: r.source, standardReview: r.standardReview, basis: r.basis }));
+}
+check("MF2: an unrecognised spelling's basis says so (not 'no state on file')",
+  /not a recognised US state spelling/.test(resolvePermitPath(bare("OR 97201", NO_STRUCTURAL)).basis.join(" ")), resolvePermitPath(bare("OR 97201", NO_STRUCTURAL)).basis.join(" "));
+// A recognised non-Oregon state that ALSO happens to have researched limits, and Oregon's own
+// abbreviations, are unchanged.
+check("MF2: 'Oreg.' with clean numerics is OREGON (runs ORSC's screen: prescriptive)", resolvePermitPath(bare("Oreg.")).path === "prescriptive");
+check("MF2: an unrecognised spelling with a researched prescriptive path still runs that jurisdiction's own screen",
+  resolvePermitPath(bare("Oreg."), { limits: { hasPrescriptivePath: true, maxRafterSpacingIn: 24 } }).path === "prescriptive");
+
+// The gate: a real Portland project stored as "Oreg." with no structural inputs is BLOCKED at the
+// permit-path check — exactly like the "OR" one above — never ready.
+for (const spelled of ["Oreg.", "OR 97201", "Portland, OR", "97201"]) {
+  const pid = mk({ state: spelled, city: "Portland", ahj: "Portland", utility: "PGE" }, {
+    permitPath: "", framingType: "", roofRafterSpacing: "", roofRafterSpan: "", snow: "", deadLoad: "", wind: "", mounting: "",
+  });
+  const project = getProjectDetail(db, pid).project;
+  check(`MF2 MUST-EXCLUDE gate: a Portland project stored as "${spelled}" is blocked at permit-path (never standard review)`,
+    gateBlockers(pid).includes("permit-path") && resolvePermitPathForProject(db, project).standardReview === false && computeNextStep(db, pid).key !== "ready_to_stage",
+    `${computeNextStep(db, pid).key} ${JSON.stringify(gateBlockers(pid))} ${JSON.stringify(resolvePermitPathForProject(db, project))}`);
+}
+for (const [spelled, j] of [["Florida", JURISDICTIONS[0]], ["Texas", JURISDICTIONS[1]]] as const) {
+  const pid = mk({ ...j, state: spelled });
+  check(`MF2 MUST-PASS gate: "${spelled}" spelled out with complete documents still reaches ready_to_stage`,
+    computeNextStep(db, pid).key === "ready_to_stage" && !gateBlockers(pid).includes("permit-path"), `${computeNextStep(db, pid).key} ${JSON.stringify(gateBlockers(pid))}`);
+}
 
 if (failures) { console.error(`\noutOfStatePermitPath: ${failures} FAILED`); process.exit(1); }
 console.log("\noutOfStatePermitPath: all checks passed");
