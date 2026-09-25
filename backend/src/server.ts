@@ -150,6 +150,7 @@ import {
   runProjectWorkflow,
   runDuePermitChecks,
   createRunApproval,
+  finalSubmitJobPayload,
 } from "./repository";
 import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
 import { ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
@@ -2719,12 +2720,16 @@ app.post("/api/projects/:id/prepare-submission", (req, res) => {
   // approver is the signed-in user when auth is on — never a body-supplied name then; with auth off
   // it is the name the dashboard sends, and "dashboard" (no name) is not a person: no approval is
   // recorded and the run stops at review like any other.
+  // THE APPROVAL IS BOUND TO THIS REQUEST (trust skeptic M1): the job carries the flag AND the
+  // approval's id only when this request minted one; a request that named nobody is enqueued as
+  // an ordinary run (autoSubmit false) — it can never pick up an approval someone else minted.
+  let approval: { id: string } | null = null;
   if (autoSubmit || allowFinalSubmit) {
     const user = currentUser(db, req);
     if (AUTH_ENABLED && !user) throw new HttpError(401, "Sign in to approve a final submit.");
     const approverName = AUTH_ENABLED ? String(user?.name || user?.email || "").trim() : String(req.body?.approverName || "").trim();
     if (approverName) {
-      createRunApproval(db, { projectId, track: track ?? "permit", approver: approverName, approverUserId: user?.id ?? null });
+      approval = createRunApproval(db, { projectId, track: track ?? "permit", approver: approverName, approverUserId: user?.id ?? null });
     } else {
       addAuditLog(db, projectId, "human", "dashboard", "portal.final_submit_not_approved", {
         track: track ?? "permit", reason: "no named approver — the run will stop at review",
@@ -2735,7 +2740,7 @@ app.post("/api/projects/:id/prepare-submission", (req, res) => {
   // many seconds (sometimes minutes), which would otherwise hang or time out the HTTP
   // request. Enqueue + kick the worker, return 202 with the jobId; the client polls
   // /api/jobs/:id and refetches the project once it's done. SSE still fires on completion.
-  const job = enqueueJob(db, "prepare_submission", { track, autoSubmit, allowFinalSubmit }, { projectId, priority: 7, maxRetries: 0 });
+  const job = enqueueJob(db, "prepare_submission", finalSubmitJobPayload({ track, autoSubmit, allowFinalSubmit, approval }), { projectId, priority: 7, maxRetries: 0 });
   processNextJob(db)
     .then(() => {
       // Check the JOB first: a staging-gate 409 (QC/docs/CCB/permit-path/host conflict)

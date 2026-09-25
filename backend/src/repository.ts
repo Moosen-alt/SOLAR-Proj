@@ -6624,18 +6624,66 @@ export function createRunApproval(
   return { id: approvalId, approver, expiresAt };
 }
 
-/** Take (and consume, atomically) the newest live approval for (project, track). Single use. */
-function claimRunApproval(db: AppDb, projectId: string, track: string): { id: string; approver: string } | null {
+/**
+ * Take (and consume, atomically) ONE NAMED approval — the one the request that started this run
+ * minted — for (project, track). Single use.
+ *
+ * BY ID, NEVER "THE NEWEST LIVE ONE". The old claim took the newest unconsumed approval for the
+ * (project, track), so an approval whose own run was refused at a staging gate BEFORE the claim
+ * stayed live for thirty minutes and was handed to the next request that asked for a final
+ * submit — including one that named nobody (trust skeptic M1). Now the approval id travels with
+ * the request (the route puts it in the job payload; direct callers pass it), the claim happens
+ * before the first gate (a refused run burns it), and a run with no id in hand claims nothing.
+ * The id alone is not the check: the row must still be this project's, this track's, unconsumed
+ * and unexpired.
+ */
+function claimRunApproval(db: AppDb, projectId: string, track: string, approvalId: string | null | undefined): { id: string; approver: string } | null {
+  const wanted = String(approvalId ?? "").trim();
+  if (!wanted) return null;
   const row = db.get<Row>(
     `SELECT id, approver FROM portal_run_approvals
-      WHERE project_id = ? AND track = ? AND consumed_at IS NULL AND expires_at > ?
-      ORDER BY created_at DESC LIMIT 1`,
-    [projectId, track || "permit", nowIso()],
+      WHERE id = ? AND project_id = ? AND track = ? AND consumed_at IS NULL AND expires_at > ?`,
+    [wanted, projectId, track || "permit", nowIso()],
   );
   if (!row) return null;
   db.run("UPDATE portal_run_approvals SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL", [nowIso(), text(row.id)]);
   if (Number(db.get<{ n: number }>("SELECT changes() AS n")?.n ?? 0) === 0) return null; // another run took it
   return { id: text(row.id), approver: text(row.approver) };
+}
+
+/** The approval id the RUNNING prepare_submission job for this project carries in its payload —
+ *  the job the route enqueued for the request that minted the approval. The job queue runs at
+ *  most one portal-effect job per project at a time (jobQueue PROJECT_BUSY_SQL), so the running
+ *  row IS this request's job. Null when no job is running or it names no approval. */
+function runningJobApprovalId(db: AppDb, projectId: string): string | null {
+  const row = db.get<Row>(
+    `SELECT payload FROM job_queue WHERE project_id = ? AND job_type = 'prepare_submission' AND status = 'running'
+      ORDER BY started_at DESC LIMIT 1`,
+    [projectId],
+  );
+  if (!row) return null;
+  const payload = parseJson<Record<string, unknown>>(text(row.payload) || "{}", {});
+  const approvalId = typeof payload.approvalId === "string" ? payload.approvalId.trim() : "";
+  return approvalId || null;
+}
+
+/**
+ * WHAT THE PREPARE-SUBMISSION ROUTE ENQUEUES for a final-submit request. autoSubmit /
+ * allowFinalSubmit reach the job as true ONLY when THIS request minted an approval (a named
+ * person approved this exact run); the approval's id rides along so the run claims that one and
+ * no other. A request that named nobody is enqueued as an ordinary run that stops at review — it
+ * never carries the flag on the strength of an approval somebody else minted earlier.
+ */
+export function finalSubmitJobPayload(input: {
+  track?: string | null; autoSubmit: boolean; allowFinalSubmit: boolean; approval: { id: string } | null;
+}): { track?: string; autoSubmit: boolean; allowFinalSubmit: boolean; approvalId: string | null } {
+  const minted = Boolean(input.approval && String(input.approval.id || "").trim());
+  return {
+    track: input.track || undefined,
+    autoSubmit: minted && input.autoSubmit === true,
+    allowFinalSubmit: minted && input.allowFinalSubmit === true,
+    approvalId: minted ? String(input.approval!.id).trim() : null,
+  };
 }
 
 /**
@@ -6940,8 +6988,36 @@ function kbRowRank(row: { state?: string; ahj?: string; verified_at?: string | n
   return rank;
 }
 
-export async function prepareSubmission(db: AppDb, projectId: string, track?: SubmittalTrackType, autoSubmit?: boolean, allowFinalSubmit?: boolean): Promise<ProjectDetail> {
+export async function prepareSubmission(
+  db: AppDb, projectId: string, track?: SubmittalTrackType, autoSubmit?: boolean, allowFinalSubmit?: boolean,
+  /** The approval THIS request minted (Approve & Submit). Omitted by the job handler: the running
+   *  job's payload carries it. With neither, the run claims nothing and stops at review. */
+  approvalId?: string | null,
+): Promise<ProjectDetail> {
   const detail = getProjectDetail(db, projectId);
+  // A FINAL SUBMIT WAS ASKED FOR: take the named approval the Approve & Submit action recorded for
+  // THIS request — by id (the route put it in the job payload; a direct caller passes it) — BEFORE
+  // the first staging gate. Consumed here, single use: a run refused at any gate below has still
+  // used its approval up, so it can never be picked up by a later request (trust skeptic M1). Its
+  // id becomes THIS run's id, so the approval names this run and no other. No approval → an
+  // ordinary run that stops at review.
+  const wantsFinalSubmit = autoSubmit === true || allowFinalSubmit === true;
+  const claimedApproval = wantsFinalSubmit
+    ? claimRunApproval(db, projectId, track ?? "permit", approvalId ?? runningJobApprovalId(db, projectId))
+    : null;
+  if (claimedApproval) {
+    // Audited at the claim: a run the gates refuse below leaves no run row, and the operator
+    // must still be able to see why Approve & Submit did not end in a click.
+    addAuditLog(db, projectId, "system", "submit gate", "portal.run_approval_claimed", {
+      approvalId: claimedApproval.id, approvedBy: claimedApproval.approver, track: track ?? "permit",
+    });
+  } else if (wantsFinalSubmit) {
+    addAuditLog(db, projectId, "system", "submit gate", "portal.run_approval_missing", {
+      track: track ?? "permit", approvalId: approvalId ?? null,
+      reason: "no live approval by that id for this project and track — the run stops at review",
+    });
+  }
+  const runId = claimedApproval?.id ?? id();
   // AN OPERATOR'S HOLD STOPS STAGING — first, before anything is billed, built or opened.
   const hold = operatorHoldReason(db, projectId);
   if (hold !== null) {
@@ -7196,14 +7272,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     throw new HttpError(409, `Submitting client "${submittingClient.companyName || submittingClient.legalBusinessName || detail.project.clientId}" has no CCB license number on file. Add it in the Clients tab before staging.`, { needsCcb: true, clientId: detail.project.clientId });
   }
 
-  // A FINAL SUBMIT WAS ASKED FOR: take the named approval the Approve & Submit action recorded for
-  // this (project, track). Consumed here, single use — a refused or failed run does not leave it
-  // lying around for the next one. Its id becomes THIS run's id, so the approval names this run
-  // and no other. No approval → an ordinary run that stops at review.
-  const claimedApproval = autoSubmit === true || allowFinalSubmit === true
-    ? claimRunApproval(db, projectId, track ?? "permit")
-    : null;
-  const runId = claimedApproval?.id ?? id();
+  // (The approval was claimed at the top of this function, before the first gate — see there.)
   const submissionId = id();
   const ts = nowIso();
   // Prefer the backend-split/uploaded document set (the real upload-ready files, named
@@ -7622,7 +7691,6 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // The hand-coded adapters' delegated submit (allowFinalSubmit) answers to the same function, so
   // with no recipe it is refused: the ruling requires a valid recipe shape for any click.
   const runApproval = claimedApproval ? { approver: claimedApproval.approver, runId } : null;
-  const wantsFinalSubmit = autoSubmit === true || allowFinalSubmit === true;
   const submitRefusals = wantsFinalSubmit
     ? automaticSubmitRefusals(db, { recipeId: recipe?.id ?? null, runApproval, runId, borrowedFrom: borrowed?.learnedFor ?? null })
     : [];

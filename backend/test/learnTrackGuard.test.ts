@@ -243,6 +243,30 @@ try {
     res = await post("/api/portal-recipes/record", { scopeType: "ahj", state: "OR", ahj: "Portland", utility: "PGE", portalUrl: "https://devhub.portlandoregon.gov/" });
     assert.equal(res.status, 201, await res.text());
   });
+
+  // ── trust skeptic M1, the route half: the approval this request minted rides in ITS job ──
+  await check("(m1-route) Approve & Submit enqueues the approval's id in its own job; the run claims it BEFORE the first gate, so a gate-refused run has used it up", async () => {
+    // A project an early gate refuses before any browser: an operator hold (the first gate).
+    const held = fx.newProject();
+    repo.setProjectStatusByOperator(db, held, "blocked", "waiting on the homeowner", "operator");
+    const res = await post(`/api/projects/${held}/prepare-submission`, { track: "building", autoSubmit: true });
+    const body = await res.text();
+    assert.equal(res.status, 202, body);
+    const { jobId } = JSON.parse(body) as { jobId: string };
+    const approvals = db.query<{ id: string; consumed_at: string | null }>("SELECT id, consumed_at FROM portal_run_approvals WHERE project_id = ?", [held]);
+    assert.equal(approvals.length, 1, "the signed-in approver's request minted no approval");
+    const job = db.get<{ payload: string; status: string; error: string | null }>("SELECT payload, status, error FROM job_queue WHERE id = ?", [jobId])!;
+    const payload = JSON.parse(job.payload) as { autoSubmit?: boolean; approvalId?: string | null };
+    assert.equal(payload.approvalId, approvals[0].id, "the job does not carry the approval it was minted with");
+    assert.equal(payload.autoSubmit, true);
+    for (let i = 0; i < 100 && db.get<{ status: string }>("SELECT status FROM job_queue WHERE id = ?", [jobId])?.status === "running"; i++) await new Promise((r) => setTimeout(r, 100));
+    const finished = db.get<{ status: string; error: string | null }>("SELECT status, error FROM job_queue WHERE id = ?", [jobId])!;
+    assert.equal(finished.status, "failed", `the held project's run was not refused: ${JSON.stringify(finished)}`);
+    assert.match(String(finished.error), /blocked by an operator/);
+    assert.equal(db.query("SELECT id FROM portal_runs WHERE project_id = ?", [held]).length, 0, "a refused run wrote a run row");
+    const consumed = db.get<{ consumed_at: string | null }>("SELECT consumed_at FROM portal_run_approvals WHERE id = ?", [approvals[0].id]);
+    assert.ok(consumed?.consumed_at, "the gate-refused run left its approval live for the next request to pick up");
+  });
 } finally {
   server.kill("SIGTERM");
 }
