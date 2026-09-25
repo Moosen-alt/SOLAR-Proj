@@ -650,7 +650,8 @@ export async function researchAndSaveAhj(
   if (research.provider === "stub" || !research.requiredDocuments.length) {
     return { research, profileKey: null, saved: false };
   }
-  const profile = saveResearchedAhjProfile(db, { ahj: input.ahj.trim(), state: (input.state || "").trim(), utility: input.utility?.trim() }, research);
+  const profile = saveResearchedAhjProfile(db, { ahj: input.ahj.trim(), state: (input.state || "").trim(), utility: input.utility?.trim() },
+    researchWithFittedUrl(db, "permit", { state: input.state, name: input.ahj }, research));
   return { research, profileKey: profile.profileKey, saved: true };
 }
 
@@ -673,8 +674,33 @@ export async function researchAndSaveUtility(
   if (research.provider === "stub" || !research.requiredDocuments.length) {
     return { research, profileKey: null, saved: false };
   }
-  const profile = saveResearchedUtilityProfile(db, { utility: input.utility.trim(), state: (input.state || "").trim(), ahj: input.ahj?.trim() }, research);
+  const profile = saveResearchedUtilityProfile(db, { utility: input.utility.trim(), state: (input.state || "").trim(), ahj: input.ahj?.trim() },
+    researchWithFittedUrl(db, "nem", { state: input.state, name: input.utility }, research));
   return { research, profileKey: profile.profileKey, saved: true };
+}
+
+/**
+ * A RESEARCHED URL IS SAVED TO THE KB ONLY WHEN IT FITS (hostFitsTrackAndEntity). Research that
+ * disagrees with the track, with a portal a person verified, or lands on another entity's portal
+ * was already refused for THIS stage — but saving it as the entity's seeded row made it the
+ * entity's own claim, and the NEXT stage launched it unconfirmed. The rest of the research
+ * (documents, steps, notes) is still saved; the URL is left out with a note saying why. The
+ * returned research is untouched, so the caller still sees (and reports) what was found.
+ */
+export function researchWithFittedUrl<T extends { portalUrl: string; notes: string }>(
+  db: AppDb,
+  track: "permit" | "nem",
+  entity: { state?: string; name?: string },
+  research: T,
+): T {
+  const url = String(research.portalUrl || "").trim();
+  if (!url) return research;
+  const fit = hostFitsTrackAndEntity(track, portalEntityEvidence(db, { scope: scopeForTrack(track), state: entity.state, name: entity.name }), url, "research");
+  if (fit.fits) return research;
+  addAuditLog(db, null, "system", "kb research", "knowledge.researched_url_not_saved", {
+    track, state: entity.state ?? "", entity: entity.name ?? "", url, code: fit.code, reason: fit.reason,
+  });
+  return { ...research, portalUrl: "", notes: `${research.notes || ""} [researched portal not saved: ${url} — ${fit.reason}]`.trim() };
 }
 
 // Update an existing project from a (re-)parsed payload. Merges the new fields
@@ -8062,6 +8088,9 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
           const seed = await autoLearnPortal(db, projectId, {
             scope: track === "nem" ? "utility" : "ahj",
             portalUrl: credentialUrl,
+            // Already fitted here; the learn's own door re-asks the same question, and must know
+            // a statewide-fallback URL is the deliberate statewide rule, not someone else's row.
+            urlSource: statewidePortalUrl && credentialUrl === statewidePortalUrl ? "statewide" : "kb",
             createdBy: "auto-seed (staging)",
             permitType: track === "nem" ? undefined : (track === "electrical" || track === "mpu" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
             // The recipe key's discipline for this track - MUST be the same value the

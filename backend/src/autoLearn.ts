@@ -30,7 +30,7 @@ import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/a
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials, nearestStoredLogins, recordLoginOutcome } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
-import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey } from "./portalRecipes";
+import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey, portalEntityEvidence } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
@@ -41,7 +41,8 @@ import { HttpError } from "./httpError";
 import { formPurposeMismatch } from "./formPurpose";
 import { looksBotBlocked } from "./runAbort";
 import { id } from "./ids";
-import { knowledgeProfileKey, findKnowledgeForLearn } from "./knowledgeBase";
+import { knowledgeProfileKey, findKnowledgeForLearn, isVerifiedKnowledge } from "./knowledgeBase";
+import { hostFitsTrackAndEntity, type PortalUrlSource } from "./portalChannel";
 import { getCodeProfile } from "./codeProfiles";
 import { certifiedNamesForMake } from "./cecEquipment";
 import { recordDraftTouch, type DraftTouch } from "./draftLedger";
@@ -390,7 +391,7 @@ export function buildPortalPlanner(
     ].filter(Boolean).join("\n");
   }
 
-  const llm = createLLMProvider();
+  const llm = learnLlmFactory();
   const planner = async (req: LearnPlanRequest): Promise<LearnPlanResponse> => {
     const indexedFields = req.fields.map((f, i) => ({ index: i, label: f.label, fieldType: f.fieldType, options: f.options, section: f.section }));
     const plan = await llm.planPortalFields({
@@ -509,6 +510,77 @@ export function buildLearnDraftTouch(input: {
   };
 }
 
+// ── Test seams (AUTOPILOT_TEST_SEAMS=1 only): the browser learn and the LLM provider ──────────
+// A test must prove a learn is refused BEFORE any browser launches (the stub launcher is never
+// called) and see exactly what the verifiers are sent, without a real browser or a real LLM.
+type LearnPortalFn = typeof learnPortal;
+let learnPortalRunner: LearnPortalFn = learnPortal;
+let learnLlmFactory: () => ReturnType<typeof createLLMProvider> = createLLMProvider;
+export function setAutoLearnSeamsForTests(seams: { learnPortal?: LearnPortalFn | null; llm?: (() => ReturnType<typeof createLLMProvider>) | null }): void {
+  if (process.env.AUTOPILOT_TEST_SEAMS !== "1") throw new Error("setAutoLearnSeamsForTests needs AUTOPILOT_TEST_SEAMS=1 — it is a test seam only.");
+  if ("learnPortal" in seams) learnPortalRunner = seams.learnPortal ?? learnPortal;
+  if ("llm" in seams) learnLlmFactory = seams.llm ?? createLLMProvider;
+}
+
+/** Review-screen labels that name a secret (account/meter numbers, passwords, SSN, card data).
+ *  Such fields are bound at replay from the encrypted credential store, never from the recipe,
+ *  and they never go to a verifier. One predicate for the text AND the vision verifier. */
+export const SENSITIVE_REVIEW_LABEL = /\b(password|passcode|account\s*(number|no|#)?|acct|meter\s*(number|no|#)?|ssn|social security|tax\s*id|ein|routing|card\s*number|cvv|security code)\b/i;
+
+/**
+ * WRITE THE URL A TRUSTED LEARN PROVED BACK TO THE KB — the one door, both scopes.
+ *
+ * It used to be `UPDATE ... WHERE ahj = ?`: every row with that AHJ NAME in EVERY state (42 AHJ
+ * names occur in more than one state; "City of Tigard" has rows in OR, AL, AR and WA), human-
+ * verified rows included (rule 3), with whatever URL the learn ran — the utility-scope branch
+ * likewise overwrote a verified utility row on conflict. Now: the URL must fit the track and the
+ * entity (hostFitsTrackAndEntity), the write touches only THIS entity's rows in THIS state (by
+ * profile_key), and a row isVerifiedKnowledge() holds is never written. Returns what it did.
+ */
+export function recordTrustedLearnPortalUrl(
+  db: AppDb,
+  input: { scope: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; portalUrl: string },
+): { written: string[]; skippedVerified: string[]; refused: string | null } {
+  const scope = input.scope === "utility" ? "utility" : "ahj";
+  const state = String(input.state ?? "").trim();
+  const name = String((scope === "utility" ? input.utility : input.ahj) ?? "").trim();
+  const out = { written: [] as string[], skippedVerified: [] as string[], refused: null as string | null };
+  if (!name) { out.refused = "no entity name"; return out; }
+  const track = scope === "utility" ? "nem" : "permit";
+  const fit = hostFitsTrackAndEntity(track, portalEntityEvidence(db, { scope, state, name }), input.portalUrl, "learn");
+  if (!fit.fits) { out.refused = fit.reason; return out; }
+  const now = new Date().toISOString();
+  // The rows this entity owns in this state: the entity-only key, and (AHJ) the key with the
+  // project's utility — the two keys the resolvers read. Never a same-named row elsewhere.
+  const keys = scope === "utility"
+    ? [knowledgeProfileKey({ state, ahj: "", utility: name })]
+    : [...new Set([knowledgeProfileKey({ state, ahj: name, utility: "" }), knowledgeProfileKey({ state, ahj: name, utility: input.utility })])];
+  for (const key of keys) {
+    const row = db.get<Record<string, unknown>>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
+    if (row && isVerifiedKnowledge(row)) { out.skippedVerified.push(key); continue; }
+    if (row) {
+      db.run("UPDATE permit_utility_knowledge SET portal_url = ?, updated_at = ? WHERE profile_key = ?", [input.portalUrl, now, key]);
+      out.written.push(key);
+    }
+  }
+  // No row for the entity-only key yet → create the minimal one (the pre-existing utility-branch
+  // behaviour, now for both scopes), so the next project on this entity finds the portal.
+  const baseKey = keys[0];
+  if (!out.written.includes(baseKey) && !out.skippedVerified.includes(baseKey)) {
+    db.run(
+      `INSERT INTO permit_utility_knowledge
+         (id, profile_key, state, ahj, utility, portal_url, notes, first_seen_at, last_learned_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(profile_key) DO NOTHING`,
+      [id(), baseKey, state, scope === "utility" ? "" : name, scope === "utility" ? name : "", input.portalUrl,
+        scope === "utility" ? "Auto-learned utility NEM portal entry URL (trusted learn)." : "Auto-learned AHJ permit portal entry URL (trusted learn).",
+        now, now, now],
+    );
+    out.written.push(baseKey);
+  }
+  return out;
+}
+
 export async function autoLearnPortal(
   db: AppDb,
   projectId: string,
@@ -516,6 +588,9 @@ export async function autoLearnPortal(
     scope: "ahj" | "utility";
     portalUrl: string;
     createdBy?: string;
+    /** Where portalUrl came from (the staging self-seed passes "statewide" for the statewide
+     *  fallback). Judged by hostFitsTrackAndEntity before anything else happens. */
+    urlSource?: PortalUrlSource;
     permitType?: "structural" | "electrical";
     /** Recipe discipline for THIS stage's track (recipeDisciplineForTrack). Authoritative
      *  over permitType — it is the same value the recipe lookup keys on. */
@@ -560,13 +635,41 @@ export async function autoLearnPortal(
     : baseProject;
 
   const scopeType = input.scope === "utility" ? "utility" : "ahj";
+  const portalUrl = (input.portalUrl || "").trim();
+  if (!portalUrl) throw new HttpError(400, "portalUrl is required to learn a portal.");
+  // RULE 5, BOTH WAYS, AND THE ENTITY — AT THE LEARN'S OWN DOOR, BEFORE ANYTHING ELSE. Every
+  // caller (the operator's /auto-learn, the staging self-seed, the stale-recipe re-learn, the
+  // supervised script) reaches a browser through here, and the only guard used to be on the
+  // staging path: disk showed AHJ-scoped learns on PowerClerk and ComEd hosts. The entity's own
+  // existing recipe for this key is not evidence for its own URL (a mis-keyed recipe re-learning
+  // itself would vouch for its wrong host). Nothing is launched, locked or written on a refusal.
+  {
+    const own = findAnyRecipeForProject(db, {
+      scopeType, state: project.state, ahj: project.ahj, utility: project.utility,
+      discipline: scopeType === "utility" ? "" : input.discipline,
+    });
+    const entity = portalEntityEvidence(db, {
+      scope: scopeType, state: project.state, name: scopeType === "utility" ? project.utility : project.ahj,
+      excludeRecipeIds: own ? [own.id] : [],
+    });
+    const fit = hostFitsTrackAndEntity(scopeType === "utility" ? "nem" : "permit", entity, portalUrl, input.urlSource ?? "operator");
+    if (!fit.fits) {
+      addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_refused_host", {
+        scope: scopeType, portalUrl, code: fit.code, reason: fit.reason, createdBy: input.createdBy ?? null,
+      });
+      throw new HttpError(409,
+        `Not learning ${portalUrl}: ${fit.reason}. Nothing was opened. `
+        + (fit.code === "track_conflict"
+          ? `Learn the ${scopeType === "utility" ? "utility's interconnection" : "AHJ's permit"} portal for this track instead.`
+          : `If ${scopeType === "utility" ? project.utility || "this utility" : project.ahj || "this AHJ"} really files there, save that portal on its knowledge-base profile (verified), then learn again.`),
+        { hostRefused: true, code: fit.code, portalUrl });
+    }
+  }
   if (scopeType === "ahj") {
     const { resolvePermitPath } = await import("./permitPath");
     if (resolvePermitPath(project).path === "unknown") throw new HttpError(409,
       "Confirm the permit path (prescriptive or engineered) before learning an AHJ application.");
   }
-  const portalUrl = (input.portalUrl || "").trim();
-  if (!portalUrl) throw new HttpError(400, "portalUrl is required to learn a portal.");
 
   // ONE LIVE LEARN PER PORTAL RECIPE. Recipes are shared across tenants on purpose — an AHJ
   // quirk learned once helps everyone — so two clients filing with the same AHJ can trigger
@@ -727,7 +830,7 @@ async function autoLearnPortalInner(
   let budgetForAttempt = input.budgetMs;
   // Named so the headed retry below can re-run the IDENTICAL learn; headlessForAttempt is
   // read when the options are built, so flipping it and calling again is all that differs.
-  const runLearn = () => learnPortal({
+  const runLearn = () => learnPortalRunner({
       portalName: scopeType === "utility" ? project.utility : project.ahj,
       portalUrl,
       project,
@@ -1138,15 +1241,14 @@ async function autoLearnPortalInner(
     maxPages: learn.pageCount,
     message: "Verifying the filled values against the project record…",
   });
-  const llm = createLLMProvider();
+  const llm = learnLlmFactory();
   const reviewBody = learn.reviewScreen.bodyTextSnippet || "";
 
   // Sensitive fields (account#, meter#, password) are stripped from projectFields so they
   // never reach the LLM planner. Strip them from the review-screen fields before the text
   // verifier too — they're bound at replay from the encrypted credential store, not from the
   // recipe, so a masked portal value must NOT gate recipe promotion.
-  const SENSITIVE_REVIEW_RE = /\b(password|passcode|account\s*(number|no|#)?|acct|meter\s*(number|no|#)?|ssn|social security|tax\s*id|ein|routing|card\s*number|cvv|security code)\b/i;
-  const nonSensitiveReviewFields = learn.reviewScreen.fields.filter((f) => !SENSITIVE_REVIEW_RE.test(f.label));
+  const nonSensitiveReviewFields = learn.reviewScreen.fields.filter((f) => !SENSITIVE_REVIEW_LABEL.test(f.label));
 
   // THREE independent verification signals, combined for defense in depth:
   //  1. text — the LLM compares the DOM-scraped field/value pairs to the project data;
@@ -1168,7 +1270,10 @@ async function autoLearnPortalInner(
       visionVerification = await llm.verifyPortalFillVision({
         screenshotBase64: learn.reviewScreenshotBase64,
         mimeType: "image/png",
-        reviewFields: learn.reviewScreen.fields,
+        // The SAME filtered list the text verifier gets (it used to receive every scraped field,
+        // account and meter numbers included). The screenshot itself is still a raw render —
+        // masking it is the L2 work, recorded as open.
+        reviewFields: nonSensitiveReviewFields,
         projectFields,
         bodyText: reviewBody,
       });
@@ -1190,7 +1295,10 @@ async function autoLearnPortalInner(
   // screenshot does NOT count (the vision call may have failed/returned nothing), so the
   // honest "could not be read" message isn't suppressed.
   const visionUsable = !!(visionVerification && visionVerification.matches.length > 0);
-  const reviewReadable = learn.reviewScreen.fields.length > 0 || reviewBody.trim().length > 0 || visionUsable;
+  // READABLE MEANS PARSED FIELDS OR A VISION READ. A non-empty body snippet used to count, and
+  // any 320-character scrap of page chrome ("Home | Help | Log out …") made a review screen
+  // nobody parsed "readable" — the vacuous "accurate over an unread page" the trust gate names.
+  const reviewReadable = learn.reviewScreen.fields.length > 0 || visionUsable;
 
   // Vision is authoritative for DISPLAY when it actually read the page (it sees read-only
   // review screens the DOM scrape can't). But TRUST is granted only when the signals AGREE —
@@ -1478,7 +1586,7 @@ async function autoLearnPortalInner(
   {
     try {
       const maskMatches = (ms: Array<{ label: string; expected: string; found: string; ok: boolean }>) =>
-        ms.map((m) => SENSITIVE_REVIEW_RE.test(m.label)
+        ms.map((m) => SENSITIVE_REVIEW_LABEL.test(m.label)
           ? { label: m.label, expected: "***sensitive***", found: "***sensitive***", ok: m.ok }
           : m);
       let dest: string;
@@ -1560,29 +1668,17 @@ async function autoLearnPortalInner(
   // SCOPE-GATED: a utility (NEM) learn must write the utility-keyed row ONLY — stamping the
   // utility URL onto the AHJ-keyed row poisons the permit track's launch URL (a permit stage
   // would then open the NEM portal, e.g. PowerClerk for a City of Willamina building permit).
+  // Keyed on profile_key + state, never a verified row, only a URL that fits the track and the
+  // entity — see recordTrustedLearnPortalUrl (one door for both scopes).
   if (trusted) {
     try {
-      if (scopeType === "ahj" && (project.ahj || "").trim()) {
-        db.run(
-          `UPDATE permit_utility_knowledge SET portal_url = ?, updated_at = ? WHERE ahj = ?`,
-          [portalUrl, new Date().toISOString(), project.ahj],
-        );
-      } else if (scopeType === "utility" && (project.utility || "").trim()) {
-        // Single canonical upsert keyed on profile_key (UNIQUE): creates the minimal
-        // utility-keyed row when the KB only carries AHJ-keyed rows for this territory,
-        // updates it otherwise. One key discipline — a separate UPDATE-by-utility-string
-        // then INSERT-by-profile-key pair could disagree on which row is "the" row and
-        // silently drop the learned URL.
-        const nowTs = new Date().toISOString();
-        db.run(
-          `INSERT INTO permit_utility_knowledge
-             (id, profile_key, state, ahj, utility, portal_url, notes, first_seen_at, last_learned_at, updated_at)
-           VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(profile_key) DO UPDATE SET portal_url = excluded.portal_url, updated_at = excluded.updated_at`,
-          [id(), knowledgeProfileKey({ state: project.state, ahj: "", utility: project.utility }),
-            project.state || "", project.utility, portalUrl,
-            "Auto-learned utility NEM portal entry URL (trusted learn).", nowTs, nowTs, nowTs],
-        );
+      const kbWrite = recordTrustedLearnPortalUrl(db, {
+        scope: scopeType, state: project.state, ahj: project.ahj, utility: project.utility, portalUrl,
+      });
+      if (kbWrite.skippedVerified.length || kbWrite.refused) {
+        addAuditLog(db, projectId, "system", "auto-learn", "portal.learned_url_not_written", {
+          scope: scopeType, skippedVerified: kbWrite.skippedVerified, refused: kbWrite.refused,
+        });
       }
     } catch { /* KB upsert is best-effort */ }
   }

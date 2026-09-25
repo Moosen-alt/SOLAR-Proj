@@ -348,6 +348,31 @@ export function portalEntityEvidence(
   };
 }
 
+/**
+ * THE ROUTE EDGE: refuse an operator-supplied portal URL that does not fit (409, never a silent
+ * launch). A track conflict is rule 5 and has no override. Another entity's portal, or one that
+ * disagrees with the portal a person verified for this entity, is refused with the way through:
+ * save the portal on the entity's own KB profile (verified) — that is the confirmation.
+ */
+export function assertOperatorPortalUrlFits(
+  db: AppDb,
+  input: { track: string | null | undefined; state?: string; name?: string; url: string; excludeRecipeIds?: string[] },
+): void {
+  const url = s(input.url).trim();
+  if (!url) return;
+  const scope = scopeForTrack(input.track);
+  const entity = portalEntityEvidence(db, { scope, state: input.state, name: input.name, excludeRecipeIds: input.excludeRecipeIds });
+  const fit = hostFitsTrackAndEntity(input.track, entity, url, "operator");
+  if (fit.fits) return;
+  const who = s(input.name).trim() || (scope === "utility" ? "this utility" : "this AHJ");
+  throw new HttpError(409,
+    `${url} was refused: ${fit.reason}. `
+    + (fit.code === "track_conflict"
+      ? `Use the ${scope === "utility" ? "utility's interconnection" : "AHJ's permit"} portal for this track.`
+      : `If ${who} really files there, save that portal on ${who}'s knowledge-base profile (verified) and try again.`),
+    { hostRefused: true, code: fit.code, portalUrl: url });
+}
+
 /** Every portal a recipe drives: its entry URL and each goto step's URL. */
 export function recipePortalUrls(recipe: { portalUrl?: string; steps?: RecipeStep[] }): string[] {
   const urls = [s(recipe.portalUrl).trim()];

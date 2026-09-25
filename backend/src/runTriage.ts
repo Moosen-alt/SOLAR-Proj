@@ -127,7 +127,13 @@ export function digestBundle(dir: string): { summary: string; pages: PageSummary
   lines.push(`RUN ${path.basename(dir)} — status=${String(result.status)} pages=${String(result.pageCount)} finalSubmitRecorded=${String(result.finalSubmitRecorded)}`);
   lines.push(`verify: accurate=${String(verification.accurate)} confidence=${String(verification.confidence)}`);
   if (gating.length) lines.push(`deterministic gating mismatches: ${gating.join(", ")}`);
-  for (const m of detMismatches.slice(0, 8)) lines.push(`  mismatch ${m.field}: expected "${String(m.expected).slice(0, 40)}" found "${String(m.found).slice(0, 40)}"`);
+  // A mismatch on a secret field (account / meter number, password, SSN) names the field only —
+  // its values never reach the triage LLM (rule 2).
+  for (const m of detMismatches.slice(0, 8)) {
+    lines.push(/acc(oun)?t|meter|ssn|social|passw/i.test(String(m.field))
+      ? `  mismatch ${m.field}: (value withheld — sensitive field)`
+      : `  mismatch ${m.field}: expected "${String(m.expected).slice(0, 40)}" found "${String(m.found).slice(0, 40)}"`);
+  }
   if (misses.length) lines.push(`REQUIRED fields left blank: ${misses.join(" | ")}`);
   for (const p of pages) {
     if (p.unfilled.length) lines.push(`page ${p.page}: ${p.decided}/${p.fillable} filled — unfilled: ${p.unfilled.slice(0, 8).join(", ")}`);
@@ -182,6 +188,12 @@ For each real issue call report_finding with:
 
 Do NOT invent problems. If the run looks clean, report nothing. Be concise. When done, stop — do not summarize.`;
 
+/** A bundle screenshot that shows filled values: the review screen, and every after-fill shot. */
+export function isUnmaskedFilledShot(fname: string): boolean {
+  const f = String(fname || "").toLowerCase();
+  return /(^|[-_])review([-_.]|$)/.test(f) || /(^|[-_])after([-_.]|$)/.test(f);
+}
+
 /** Run the triage agent on a finished bundle and apply the safe fixes. */
 export async function triageLearnRun(db: AppDb, runId: string, projectId: string): Promise<TriageResult> {
   const dir = runDir(runId);
@@ -195,7 +207,7 @@ export async function triageLearnRun(db: AppDb, runId: string, projectId: string
   const tools: AgentToolDef[] = [
     {
       name: "read_bundle_file",
-      description: "Read one file from this run's debug bundle by name (e.g. 'p007-plan.json', 'verdict.json', 'review.png'). PNG files are returned as an image you can see.",
+      description: "Read one file from this run's debug bundle by name (e.g. 'p007-plan.json', 'verdict.json', 'p007-before-page.png'). PNG files are returned as an image you can see; the review and after-fill shots are withheld (they show the filled values).",
       input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
       handler: ({ name }) => {
         const fname = String(name || "");
@@ -203,6 +215,13 @@ export async function triageLearnRun(db: AppDb, runId: string, projectId: string
         const full = path.join(dir, fname);
         if (!fs.existsSync(full)) return { kind: "text", text: `No such file: ${fname}` };
         if (/\.png$/i.test(fname)) {
+          // RULE 2 FOR PICTURES. The review screen and every after-fill shot render the values
+          // the run TYPED — account and meter numbers included — as raw pixels, and this tool
+          // hands the image to the LLM. Those shots are withheld until captures are masked (L2);
+          // the before-fill and login shots show the page, not our data.
+          if (isUnmaskedFilledShot(fname)) {
+            return { kind: "text", text: `${fname} is withheld: it shows the values this run filled (possibly account or meter numbers) as unmasked pixels. Use the page's JSON/text files instead.` };
+          }
           try { return { kind: "image", base64: fs.readFileSync(full).toString("base64"), mimeType: "image/png", caption: fname }; }
           catch { return { kind: "text", text: `Could not read ${fname}` }; }
         }

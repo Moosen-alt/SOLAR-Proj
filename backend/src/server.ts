@@ -25,7 +25,9 @@ import {
   finishPortalRecipe,
   promoteRecordingIfEligible,
   findAnyRecipeForProject,
+  assertOperatorPortalUrlFits,
 } from "./portalRecipes";
+import { trackSafeUrl } from "./portalChannel";
 import { listPortalPauses, pausePortal, resumePortal } from "./portalPause";
 import {
   listPortalCredentials,
@@ -1578,6 +1580,12 @@ app.post("/api/knowledge-base/research-ahj", asyncHandler(async (req, res) => {
 app.post("/api/knowledge-base/ahj-profile", (req, res) => {
   const b = req.body || {};
   if (!String(b.ahj || "").trim()) throw new HttpError(400, "ahj is required.");
+  // RULE 5 AT THE KB WRITE: a person verifying an AHJ can still paste the utility's portal (the
+  // Happy Valley row had PowerClerk in portal_url). A verified row outranks everything, so a wrong
+  // one here would pin the permit track to the NEM portal. The entity half is the person's call.
+  if (b.portalUrl && !trackSafeUrl("permit", String(b.portalUrl))) {
+    throw new HttpError(409, `${String(b.portalUrl)} is a utility interconnection portal — it belongs on the utility's profile, not the AHJ's.`, { hostRefused: true, code: "track_conflict" });
+  }
   const profile = saveVerifiedAhjProfile(db, {
     state: String(b.state || ""),
     ahj: String(b.ahj),
@@ -1615,6 +1623,9 @@ app.post("/api/knowledge-base/research-utility", asyncHandler(async (req, res) =
 app.post("/api/knowledge-base/utility-profile", (req, res) => {
   const b = req.body || {};
   if (!String(b.utility || "").trim()) throw new HttpError(400, "utility is required.");
+  if (b.portalUrl && !trackSafeUrl("nem", String(b.portalUrl))) {
+    throw new HttpError(409, `${String(b.portalUrl)} is an AHJ permit portal — it belongs on the AHJ's profile, not the utility's.`, { hostRefused: true, code: "track_conflict" });
+  }
   const profile = saveVerifiedUtilityProfile(db, {
     state: String(b.state || ""),
     utility: String(b.utility),
@@ -1650,6 +1661,15 @@ app.get("/api/portal-recipes/:id", (req, res) => {
 app.post("/api/portal-recipes/record", (req, res) => {
   const b = req.body || {};
   const scopeType = String(b.scopeType) === "utility" ? "utility" : "ahj";
+  // An operator-supplied portal URL is judged like every other (rule 5 both ways + the entity).
+  if (b.portalUrl) {
+    assertOperatorPortalUrlFits(db, {
+      track: scopeType === "utility" ? "nem" : "permit",
+      state: b.state ? String(b.state) : "",
+      name: scopeType === "utility" ? String(b.utility ?? "") : String(b.ahj ?? ""),
+      url: String(b.portalUrl),
+    });
+  }
   res.status(201).json(
     startPortalRecording(db, {
       scopeType,
@@ -1775,6 +1795,10 @@ app.post("/api/projects/:id/launch-record", (req, res) => {
   const b = (req.body || {}) as Record<string, string>;
   const scope = String(b.scope || "ahj") === "utility" ? "utility" : "ahj";
   const name = scope === "utility" ? (p.utility || "") : (p.ahj || "");
+  // The recorder opens THIS URL in a live browser: judged before any window opens.
+  if (b.portalUrl) {
+    assertOperatorPortalUrlFits(db, { track: scope === "utility" ? "nem" : "permit", state: p.state, name, url: String(b.portalUrl) });
+  }
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || scope;
   // The server is started from the project root (`tsx backend/src/server.ts`),
   // so process.cwd() IS the root where `npm run portal:record` resolves.
@@ -1839,6 +1863,17 @@ app.post("/api/projects/:id/auto-learn", (req, res) => {
   // Fail fast on a bad project id — a 404 at enqueue time beats a failed job later.
   if (!db.get<{ id?: string }>("SELECT id FROM projects WHERE id = ?", [projectId])) {
     throw new HttpError(404, "Project not found.");
+  }
+  // RULE 5 BOTH WAYS + THE ENTITY, AT ENQUEUE — a 409 now beats a job that fails later (and
+  // autoLearnPortal asks the same question again at its own door). The project's own recipe for
+  // this key is not evidence for the URL being judged.
+  {
+    const lp = getProjectDetail(db, projectId).project;
+    const own = findAnyRecipeForProject(db, { scopeType: scope, state: lp.state, ahj: lp.ahj, utility: lp.utility });
+    assertOperatorPortalUrlFits(db, {
+      track: scope === "utility" ? "nem" : "permit", state: lp.state,
+      name: scope === "utility" ? lp.utility : lp.ahj, url: portalUrl, excludeRecipeIds: own ? [own.id] : [],
+    });
   }
   // maxRetries 0: a failed learn must NOT auto-relaunch browsers on a timer — the
   // operator reads the verdict/bundle and decides.
