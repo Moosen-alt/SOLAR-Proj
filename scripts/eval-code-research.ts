@@ -14,8 +14,12 @@
 //     grounded · source on an official domain · WRONG edition (the dangerous one: an edition
 //     that is not the truth's) · omitted;
 //   per state: adoption model correct; upcoming editions found;
-//   per AHJ: local editions exact / wrong / omitted, and — for an AHJ that inherits the state —
-//     any edition the research invented for it (a conflict).
+//   per AHJ: asked EXACTLY what the product asks (codeResearchDecision on the scratch DB, which the
+//     shipped state layers seed on open) — an AHJ the product would not research (inherits_state,
+//     pending_state, fresh, blocked_verified) is reported as "not researched by the product" and
+//     never sent; local editions exact / wrong / omitted are scored ONLY in the asked families (a
+//     truth family outside the ask is listed as notAsked), and — for an AHJ that inherits the
+//     state — any edition the research invented for it (a conflict).
 //
 // Every rate prints with its denominator. Total tokens and cost come from llm_calls. The result
 // JSON lands in <out>/<timestamp>.json (default .probe/code-editions/eval/).
@@ -149,6 +153,71 @@ export function officialDomain(url: string | undefined, truthUrls: string[]): bo
   return truthUrls.some((u) => { try { return new URL(u).hostname.toLowerCase() === host; } catch { return false; } });
 }
 
+// --- What the PRODUCT asks for an AHJ (the eval measures the product's request, not the truth's) ---
+
+type CPModule = typeof import("../backend/src/codeProfiles");
+type AnyDb = Parameters<CPModule["codeResearchDecision"]>[0];
+
+export interface AhjResearchInput {
+  /** The product would research this AHJ's codes now. */
+  run: boolean;
+  /** The name the product researches under (a row on file under another label wins). */
+  ahj: string;
+  /** The families the product asks for (codeResearchDecision) — undefined = all. */
+  families?: string[];
+  /** Why not, when run is false ("inherits_state" = the state sets every family). */
+  reason: string;
+}
+
+/** THE PRODUCT'S AHJ REQUEST: codeResearchDecision on the (scratch) database — the same call the
+ *  automatic trigger and the backfill make. An AHJ the product would not research is reported as
+ *  such, never researched with a request the product would not send. */
+export function ahjResearchInput(CP: Pick<CPModule, "codeResearchDecision">, db: AnyDb, state: string, ahj: string, asOf?: string): AhjResearchInput {
+  const d = CP.codeResearchDecision(db, state, ahj, asOf ? `${asOf.slice(0, 10)}T12:00:00Z` : undefined);
+  if (d.action !== "research") return { run: false, ahj: d.ahj || ahj, reason: d.reason };
+  return { run: true, ahj: d.ahj || ahj, ...(d.families?.length ? { families: [...d.families] } : {}), reason: d.reason };
+}
+
+export interface AhjFamilyScore {
+  family: string;
+  truth: string | null | undefined;
+  found: string | null;
+  editionExact: boolean;
+  wrongEdition: boolean;
+  omitted: boolean;
+  officialSource: boolean;
+}
+
+/** Score an AHJ answer ONLY in the families the product asked for. A truth family outside the ask is
+ *  listed as notAsked (the product reads the state's edition there) — never scored as omitted. An
+ *  edition the research returned outside the ask is listed as outOfScope (the save drops it). */
+export function scoreAhj(
+  truthAhj: TruthAhj,
+  codes: Array<Record<string, string | undefined>>,
+  familiesAsked: string[] | undefined,
+  familyOf: (c: Record<string, string | undefined>) => string | undefined,
+  truthUrls: string[],
+): { local: AhjFamilyScore[]; notAsked: string[]; outOfScope: string[] } {
+  const asked = (fam: string) => !familiesAsked?.length || familiesAsked.includes(fam);
+  const local = Object.entries(truthAhj.localEditions ?? {}).filter(([, e]) => editionYear(e?.edition) && !e?.superseded);
+  const byFamily = (fam: string) => codes.filter((c) => familyOf(c) === fam);
+  const scored = local.filter(([fam]) => asked(fam)).map(([fam, e]) => {
+    const got = byFamily(fam);
+    const exact = got.find((c) => editionYear(c.edition) === editionYear(e.edition));
+    const pick = exact ?? got[0];
+    return {
+      family: fam, truth: e.edition, found: pick ? `${pick.code} ${pick.edition}` : null,
+      editionExact: !!exact, wrongEdition: !exact && got.length > 0, omitted: got.length === 0,
+      officialSource: exact ? officialDomain(exact.sourceUrl, truthUrls) : false,
+    };
+  });
+  return {
+    local: scored,
+    notAsked: local.filter(([fam]) => !asked(fam)).map(([fam]) => fam),
+    outOfScope: codes.filter((c) => { const f = familyOf(c); return !!f && !asked(f); }).map((c) => `${c.code} ${c.edition}`),
+  };
+}
+
 interface FamilyScore {
   family: string;
   truth: string;
@@ -161,14 +230,17 @@ interface FamilyScore {
   officialSource: boolean;
 }
 
-export async function main(argv: string[]): Promise<number> {
+const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..");
+
+/** `deps.provider` is a test seam (a fake researcher; no API key needed). */
+export async function main(argv: string[], deps: { provider?: { researchJurisdictionCodes(input: Record<string, unknown>): Promise<unknown> } } = {}): Promise<number> {
   const arg = (name: string): string | undefined => {
     const i = argv.indexOf(`--${name}`);
     return i >= 0 ? argv[i + 1] : undefined;
   };
   const truthDir = arg("truth");
   if (!truthDir) { console.error("--truth <dir> is required"); return 2; }
-  if (!String(process.env.ANTHROPIC_API_KEY || "").trim()) { console.error("ANTHROPIC_API_KEY is not set — this eval calls the real API."); return 2; }
+  if (!deps.provider && !String(process.env.ANTHROPIC_API_KEY || "").trim()) { console.error("ANTHROPIC_API_KEY is not set — this eval calls the real API."); return 2; }
   const truth = loadTruth(truthDir);
   const states = (arg("states") ? arg("states")!.split(",") : Object.keys(truth)).map((s) => s.trim().toUpperCase()).filter((s) => truth[s]);
   const ahjSpec = arg("ahjs");
@@ -187,12 +259,13 @@ export async function main(argv: string[]): Promise<number> {
   }
   process.env.AUTOPILOT_DB_PATH = scratchDb;
   process.env.SKIP_CODE_RESEARCH = "1"; // opening the DB must not queue research of its own
-  const { openDatabase } = await import(pathToFileURL(path.resolve("backend/src/db.ts")).href);
-  const { createLLMProvider } = await import(pathToFileURL(path.resolve("backend/src/llm.ts")).href);
-  const { codeFamilyOf, modelCodeInText } = await import(pathToFileURL(path.resolve("backend/src/codeFamilies.ts")).href);
-  const { estimateLlmCallCostUsd } = await import(pathToFileURL(path.resolve("backend/src/llmAccounting.ts")).href);
+  const imp = (p: string) => import(pathToFileURL(path.join(REPO_ROOT, p)).href);
+  const { openDatabase } = await imp("backend/src/db.ts");
+  const CP = await imp("backend/src/codeProfiles.ts") as CPModule;
+  const { codeFamilyOf, modelCodeInText } = await imp("backend/src/codeFamilies.ts");
+  const { estimateLlmCallCostUsd } = await imp("backend/src/llmAccounting.ts");
   const db = await openDatabase();
-  const llm = createLLMProvider();
+  const llm = deps.provider ?? (await imp("backend/src/llm.ts")).createLLMProvider();
   const startedAt = new Date().toISOString();
 
   type Job = { kind: "state"; state: string } | { kind: "ahj"; state: string; ahj: TruthAhj };
@@ -219,18 +292,24 @@ export async function main(argv: string[]): Promise<number> {
         ...t.upcoming.map((u) => String(u.url || "")),
         ...t.ahjs.map((a) => String(a.url || "")),
       ].filter(Boolean);
-      const localFamilies = job.kind === "ahj"
-        ? Object.entries(t.families).filter(([, f]) => f.scope === "local").map(([k]) => k)
-        : [];
+      // An AHJ is asked exactly what the PRODUCT would ask (codeResearchDecision on the scratch DB,
+      // after the shipped state layers seeded it) — or not researched at all, as in the product.
+      const input = job.kind === "ahj" ? ahjResearchInput(CP, db, job.state, job.ahj.name, t.asOf) : null;
+      if (input && !input.run) {
+        results.push({ kind: "ahj", state: job.state, ahj: job.ahj.name, notResearchedByProduct: true, reason: input.reason, inheritsState: job.ahj.inheritsState });
+        console.log(`  ${job.state}/${job.ahj.name}: not researched by the product (${input.reason})`);
+        continue;
+      }
+      const localFamilies = input?.families ?? [];
       const t0 = Date.now();
       let research: { webGrounded: boolean; profile: { adoptedCodes: Array<Record<string, string | undefined>>; adoptionModel?: { model: string; byFamily?: Record<string, string> }; upcoming?: Array<Record<string, string | undefined>>; researchProvenance?: Record<string, unknown> }; notes: string };
       try {
         research = await llm.researchJurisdictionCodes({
           state: job.state,
-          ahj: job.kind === "ahj" ? job.ahj.name : "",
+          ahj: input ? input.ahj : "",
           ...(localFamilies.length ? { families: localFamilies } : {}),
           asOf: t.asOf,
-        });
+        }) as typeof research;
       } catch (err) {
         results.push({ kind: job.kind, state: job.state, ahj: job.kind === "ahj" ? job.ahj.name : "", error: err instanceof Error ? err.message : String(err) });
         continue;
@@ -272,16 +351,14 @@ export async function main(argv: string[]): Promise<number> {
         });
       } else {
         const a = job.ahj;
-        const local = Object.entries(a.localEditions ?? {}).filter(([, e]) => editionYear(e?.edition) && !e?.superseded);
-        const scored = local.map(([fam, e]) => {
-          const got = byFamily(fam);
-          const exact = got.find((c) => editionYear(c.edition) === editionYear(e.edition));
-          return { family: fam, truth: e.edition, found: (exact ?? got[0]) ? `${(exact ?? got[0]).code} ${(exact ?? got[0]).edition}` : null, editionExact: !!exact, wrongEdition: !exact && got.length > 0, omitted: got.length === 0, officialSource: exact ? officialDomain(exact.sourceUrl, truthUrls) : false };
-        });
+        const scoredAhj = scoreAhj(a, codes, localFamilies.length ? localFamilies : undefined, (c) => codeFamilyOf(c as never), truthUrls);
         // An AHJ that inherits a uniform state must not come back with its own editions.
         const uniformFamilies = Object.entries(t.families).filter(([, f]) => f.scope === "statewide").map(([k]) => k);
         const conflicts = a.inheritsState ? codes.filter((c) => uniformFamilies.includes(String(codeFamilyOf(c as never)))).map((c) => `${c.code} ${c.edition}`) : [];
-        results.push({ kind: "ahj", state: job.state, ahj: a.name, ms: Date.now() - t0, grounded: research.webGrounded, inheritsState: a.inheritsState, localFamilies, local: scored, conflicts, provenance: research.profile.researchProvenance });
+        results.push({
+          kind: "ahj", state: job.state, ahj: a.name, researchedAs: input!.ahj, ms: Date.now() - t0, grounded: research.webGrounded, inheritsState: a.inheritsState,
+          localFamilies, local: scoredAhj.local, notAsked: scoredAhj.notAsked, outOfScope: scoredAhj.outOfScope, conflicts, provenance: research.profile.researchProvenance,
+        });
       }
       console.log(`  ${job.kind === "state" ? job.state : `${job.state}/${(job as { ahj: TruthAhj }).ahj.name}`} done in ${Math.round((Date.now() - t0) / 1000)}s (grounded=${research.webGrounded})`);
     }
@@ -294,7 +371,8 @@ export async function main(argv: string[]): Promise<number> {
   const withDate = fams.filter((f) => f.effectiveDateExact !== null);
   const withBasis = fams.filter((f) => f.basedOnMatch !== null);
   const stateRows = results.filter((r) => r.kind === "state");
-  const ahjRows = results.filter((r) => r.kind === "ahj");
+  const ahjRows = results.filter((r) => r.kind === "ahj" && !r.notResearchedByProduct && !r.error);
+  const ahjSkipped = results.filter((r) => r.kind === "ahj" && r.notResearchedByProduct);
   const calls = db.query("SELECT label, model, in_tok, out_tok, cache_read, cache_write FROM llm_calls WHERE at >= ? AND label LIKE 'researchJurisdictionCodes%'", [startedAt]) as Array<{ label: string; model: string; in_tok: number | null; out_tok: number | null; cache_read: number | null; cache_write: number | null }>;
   const tokensIn = calls.reduce((n, c) => n + (c.in_tok ?? 0), 0);
   const tokensOut = calls.reduce((n, c) => n + (c.out_tok ?? 0), 0);
@@ -323,6 +401,8 @@ export async function main(argv: string[]): Promise<number> {
       localExact: `${ahjRows.reduce((n, r) => n + (r.local as Array<{ editionExact: boolean }>).filter((x) => x.editionExact).length, 0)}/${ahjRows.reduce((n, r) => n + (r.local as unknown[]).length, 0)}`,
       localWrong: ahjRows.reduce((n, r) => n + (r.local as Array<{ wrongEdition: boolean }>).filter((x) => x.wrongEdition).length, 0),
       inheritConflicts: ahjRows.reduce((n, r) => n + (r.conflicts as unknown[]).length, 0),
+      notAskedFamilies: ahjRows.reduce((n, r) => n + (r.notAsked as unknown[]).length, 0),
+      notResearchedByProduct: ahjSkipped.map((r) => `${r.state}/${r.ahj} (${r.reason})`),
     },
     cost: {
       calls: calls.length,
@@ -335,7 +415,8 @@ export async function main(argv: string[]): Promise<number> {
   console.log("\n=== code research eval (verified truth only) ===");
   console.log(`families: ${summary.families.editionExact}/${summary.families.denominator} edition exact · ${summary.families.wrongEdition}/${summary.families.denominator} WRONG edition · ${summary.families.omitted}/${summary.families.denominator} omitted · ${summary.families.officialSource}/${summary.families.denominator} official source · effectiveDate ${summary.families.effectiveDateExact} · basedOn ${summary.families.basedOnMatch}`);
   console.log(`states: ${summary.states.grounded}/${summary.states.denominator} grounded · adoption model ${summary.states.adoptionModelCorrect} · upcoming ${summary.states.upcomingFound}`);
-  if (ahjRows.length) console.log(`ahjs: ${summary.ahjs.grounded}/${summary.ahjs.denominator} grounded · local editions exact ${summary.ahjs.localExact} · wrong ${summary.ahjs.localWrong} · editions invented for inheriting AHJs ${summary.ahjs.inheritConflicts}`);
+  if (ahjRows.length) console.log(`ahjs: ${summary.ahjs.grounded}/${summary.ahjs.denominator} grounded · local editions exact ${summary.ahjs.localExact} · wrong ${summary.ahjs.localWrong} · editions invented for inheriting AHJs ${summary.ahjs.inheritConflicts} · truth families the product does not ask (not scored) ${summary.ahjs.notAskedFamilies}`);
+  if (ahjSkipped.length) console.log(`ahjs not researched by the product: ${summary.ahjs.notResearchedByProduct.join(", ")}`);
   console.log(`cost: ${summary.cost.calls} call(s), ${tokensIn} in / ${tokensOut} out tokens, $${summary.cost.tokenCostUsd} tokens + ~$${summary.cost.webSearchFeeUsdEstimate} search fees (${searches} searches)`);
   fs.mkdirSync(outDir, { recursive: true });
   const outFile = path.join(outDir, `${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
