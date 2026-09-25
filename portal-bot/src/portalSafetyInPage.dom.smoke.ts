@@ -54,6 +54,12 @@ const PAGES: Record<string, string> = {
     <dl><dt>Job Description</dt><dd>Rooftop PV</dd></dl>
     <label><input type="checkbox" id="cert"> I certify that the information above is correct</label>
     <a href="#" id="cont" role="button" onclick="return false">Continue Application »</a>`),
+  // A summary page with an attachment widget and NO review wording (a portal whose wording we do
+  // not know, or an attachments-only step): the file input must not make it "fillable".
+  "/review-plain": page(`${HEADER}<h2>Project Summary</h2>
+    <dl><dt>Job Description</dt><dd>Rooftop PV</dd></dl>
+    <label for="att">Attachments</label><input type="file" id="att">
+    <a href="#" id="cont" role="button" onclick="return false">Continue Application »</a>`),
   // Button shapes whose label is NOT their text (value / img alt / input-image alt / title), and
   // selects: two secret (by name, by label), two ordinary. Values are synthetic.
   "/controls": page(`<form onsubmit="return false">
@@ -203,6 +209,14 @@ try {
     await p.fill("#c2", "520");
     await p.selectOption("#c5", "02");
     await p.click("h2");
+    await p.goto(`${base}/review-plain`);
+    const plainBefore = steps.length;
+    await p.click("#cont");
+    await p.waitForTimeout(300);
+    const plain = steps.slice(plainBefore);
+    check("recorder MUST-EXCLUDE: a summary page whose only live control is an attachment widget -> 'Continue Application' is a targetless placeholder, never navigation",
+      plain.length === 1 && Object.keys(plain[0].selector ?? {}).length === 0 && plain[0].isFinalSubmit !== true, JSON.stringify(plain));
+    steps.splice(plainBefore);
     await p.goto(`${base}/review`);
     await p.click("#cont");
     await p.waitForTimeout(300);
