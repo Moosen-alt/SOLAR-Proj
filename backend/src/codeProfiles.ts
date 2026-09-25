@@ -943,19 +943,24 @@ export function proposeEditionUpdate(db: AppDb, verifiedRow: JurisdictionCodePro
     ...(found.adoptionModel ? { adoptionModel: found.adoptionModel } : {}),
     ...(found.upcoming?.length ? { upcoming: found.upcoming } : {}),
   };
-  const seen = db.get<Row>("SELECT id FROM audit_logs WHERE action = ? AND details LIKE ? LIMIT 1", [PROPOSAL_ACTION, `%"fingerprint":"${fingerprint}"%`]);
+  const seen = db.get<Row>("SELECT id FROM audit_logs WHERE action = ? AND details LIKE ? ESCAPE '\\' LIMIT 1", [PROPOSAL_ACTION, `%"fingerprint":"${likeLiteral(fingerprint)}"%`]);
   if (seen) return { ...proposal, isNew: false };
   addAuditLog(db, null, "system", source === "reference" ? "reference code data" : "code research", PROPOSAL_ACTION, proposal as unknown as Record<string, unknown>);
   logger.warn("code-profiles", `human-verified ${key} looks stale: ${changes.map((c) => `${c.family} ${c.current ?? "(none)"} -> ${c.proposed}`).join("; ")} — proposal ${fingerprint} awaits a person`);
   return { ...proposal, isNew: true };
 }
 
+/** A value matched LITERALLY inside a LIKE pattern (with ESCAPE '\'): "%" and "_" are wildcards. */
+function likeLiteral(value: string): string {
+  return String(value).replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 /** Proposals still awaiting a person: the newest per row, the row still verified and still not
  *  stating them, and not dismissed. */
 export function listEditionProposals(db: AppDb, profileKey?: string): JurisdictionEditionProposal[] {
   const rows = db.query<Row>(
-    `SELECT details, created_at FROM audit_logs WHERE action = ? ${profileKey ? "AND details LIKE ?" : ""} ORDER BY created_at DESC LIMIT 500`,
-    profileKey ? [PROPOSAL_ACTION, `%"profileKey":"${profileKey.replace(/[%_]/g, "")}"%`] : [PROPOSAL_ACTION],
+    `SELECT details, created_at FROM audit_logs WHERE action = ? ${profileKey ? "AND details LIKE ? ESCAPE '\\'" : ""} ORDER BY created_at DESC LIMIT 500`,
+    profileKey ? [PROPOSAL_ACTION, `%"profileKey":"${likeLiteral(profileKey)}"%`] : [PROPOSAL_ACTION],
   );
   const dismissed = new Set(db.query<Row>("SELECT details FROM audit_logs WHERE action = ?", [PROPOSAL_DISMISSED]).map((r) => {
     try { return String((JSON.parse(text(r.details)) as { fingerprint?: string }).fingerprint || ""); } catch { return ""; }

@@ -718,7 +718,7 @@
    "updatedAt": ""
   }
  ],
- "stateAdoptionsComment": "GENERATED from the source-verified truth files (.probe/code-editions/truth/*.verified.json, confirmed claims only) \u2014 state layers seeded as 'seeded' with provenance reference_truth; a human-verified state row is never written, a disagreement becomes an edition proposal. Regenerate, do not hand-edit.",
+ "stateAdoptionsComment": "Generated 2026-09-24 from the source-verified code-edition truth files (confirmed claims only; see the code-editions build report). Seeded as 'seeded' with provenance reference_truth and merged onto seeded state rows at boot; a human-verified state row is never written \u2014 a disagreement becomes an edition proposal. Every value carries its official sourceUrl/quote: keep them when editing.",
  "stateAdoptions": [
   {
    "state": "AZ",
