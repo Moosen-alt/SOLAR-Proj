@@ -37,8 +37,11 @@ AHJ documents → stage the portal application → human verifies + submits.
 
 1. Automation NEVER clicks final submit, NEVER pays portal fees, NEVER solves
    CAPTCHA/MFA. Recorded as steps (`isFinalSubmit:true`), executed by a human.
-2. Secrets (passwords, account/meter numbers, SSN) never reach the LLM —
-   stripped in `buildPortalPlanner`; sensitive fields bind by name, not literal.
+2. Secrets (passwords, account/meter numbers, SSN, ESI/SA ids) never reach the LLM
+   downstream — stripped in `buildPortalPlanner`; sensitive fields bind by name, not
+   literal. The one allowed read: INTAKE may read the customer's own document (bill,
+   meter photo) to find the account/meter; nothing downstream re-sends the value and no
+   response is logged. (Operator wording, 2026-09-25; pinned by a payload-scan test.)
 3. Human-verified knowledge is never auto-overwritten: `verified_at` set in
    `permit_utility_knowledge` (read ONLY via `isVerifiedKnowledge()` — NOT
    `confidence === "mixed"`, which an automatic seeded+learned merge also wrote),
