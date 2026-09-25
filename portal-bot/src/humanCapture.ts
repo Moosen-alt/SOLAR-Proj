@@ -34,6 +34,8 @@ import {
   capturedFieldIsSecret,
   classifyRecordedClick,
   PORTAL_SAFETY_IN_PAGE_SOURCE,
+  recordingHasFormData,
+  type ControlContext,
   type FieldIdentity,
 } from "../../shared/src/portalSafety";
 
@@ -50,6 +52,8 @@ export interface HumanCapturePayload {
   identity?: FieldIdentity;
   /** For a click: the page showed no fillable control when it happened (see readOnlyPageInPage). */
   readOnlyPage?: boolean;
+  /** For a click: the page named itself the review step (see reviewPageInPage). */
+  reviewPage?: boolean;
   /** The page could not run the shared labeler: the click's label is UNKNOWN, so it is blocked. */
   safetyUnavailable?: boolean;
 }
@@ -70,13 +74,15 @@ export type HumanStepFn = (step: RecipeStep) => void;
 // A click is mapped ONLY when the shared classifier calls it an ordinary control: a submit-,
 // file- or pay-worded click returns null here even when called directly, so no caller can turn
 // one into a replayable step by skipping the sink.
-export function payloadToStep(p: HumanCapturePayload): RecipeStep | null {
+export function payloadToStep(p: HumanCapturePayload, ctx?: ControlContext): RecipeStep | null {
   const note = p.label ? `human-patch: ${p.label}` : "human-patch";
   // Submit observation is a SIGNAL, not a replayable step — see HUMAN_SUBMIT_OBSERVED_NOTE.
   if (p.kind === "submitObserved") return { action: "click", selector: {}, optional: true, note: HUMAN_SUBMIT_OBSERVED_NOTE };
   if (p.kind === "click") {
     if (p.safetyUnavailable) return null;
-    if (classifyRecordedClick(p.label, { readOnlyPage: p.readOnlyPage }) !== "capture") return null;
+    // Called on its own, the page context is only what the payload carries (formDataEntered
+    // unknown); the sink passes its full context.
+    if (classifyRecordedClick(p.label, ctx ?? { readOnlyPage: p.readOnlyPage, reviewPage: p.reviewPage }) !== "capture") return null;
     return { action: "click", selector: p.selector, note };
   }
   if ((p.kind === "fill" || p.kind === "select") && capturedFieldIsSecret(p)) {
@@ -103,13 +109,29 @@ export function payloadToStep(p: HumanCapturePayload): RecipeStep | null {
  * the operator's remaining fixes on that page are still captured. The disarm lives here in Node,
  * so it survives the navigation the submit itself causes.
  */
-export function createHumanCaptureSink(onStep: HumanStepFn): (p: HumanCapturePayload) => void {
+export interface HumanCaptureOptions {
+  /** The session is KNOWN to start before any form data was entered (armed on the portal's
+   *  first page). Default false: every production caller arms at the REVIEW screen, after the
+   *  automation filled the form — steps this sink never saw — so "nothing entered yet" is
+   *  unknown there, and must stay undefined, never false. */
+  startsFresh?: boolean;
+}
+
+export function createHumanCaptureSink(onStep: HumanStepFn, opts: HumanCaptureOptions = {}): (p: HumanCapturePayload) => void {
   let disarmed = false;
+  // formDataEntered, asked of the SAME predicate the recorder uses (recordingHasFormData) over
+  // the steps this sink has emitted. It only ever PROMOTES to true; it is false only for a
+  // session declared fresh.
+  const emitted: RecipeStep[] = [];
+  const formDataEntered = (): boolean | undefined =>
+    recordingHasFormData(emitted) ? true : opts.startsFresh === true ? false : undefined;
   return (p: HumanCapturePayload): void => {
     if (!p || typeof p !== "object") return;
+    let ctx: ControlContext | undefined;
     if (p.kind === "click") {
       if (p.safetyUnavailable) return; // unknown label: never a replayable click
-      const cls = classifyRecordedClick(p.label, { readOnlyPage: p.readOnlyPage });
+      ctx = { readOnlyPage: p.readOnlyPage, reviewPage: p.reviewPage, formDataEntered: formDataEntered() };
+      const cls = classifyRecordedClick(p.label, ctx);
       if (cls === "finalSubmit") {
         if (!disarmed) {
           disarmed = true;
@@ -120,8 +142,8 @@ export function createHumanCaptureSink(onStep: HumanStepFn): (p: HumanCapturePay
       if (cls === "blocked") return;
     }
     if (disarmed || p.kind === "submitObserved") return;
-    const step = payloadToStep(p);
-    if (step) onStep(step);
+    const step = payloadToStep(p, ctx);
+    if (step) { emitted.push(step); onStep(step); }
   };
 }
 
@@ -198,6 +220,10 @@ function patchCaptureScript(): void {
     try { return ps.isPaymentElementInPage(el) === true; } catch { return true; }
   }
 
+  function reviewPage(): boolean | undefined {
+    const ps = w.__portalSafety;
+    try { return ps && typeof ps.reviewPageInPage === "function" ? ps.reviewPageInPage() : undefined; } catch { return undefined; }
+  }
   function readOnlyPage(): boolean | undefined {
     const ps = w.__portalSafety;
     try { return ps && typeof ps.readOnlyPageInPage === "function" ? ps.readOnlyPageInPage() : undefined; } catch { return undefined; }
@@ -213,7 +239,7 @@ function patchCaptureScript(): void {
     if ((actionable as HTMLInputElement).type === "file") return; // handled by change
     // Reported with the page's read-only state; the SHARED classifier in Node decides whether it
     // is an ordinary click, a blocked submit/pay control, or the final filing click.
-    if (typeof w.__alPatchStep === "function") w.__alPatchStep({ kind: "click", ...describe(actionable), readOnlyPage: readOnlyPage() });
+    if (typeof w.__alPatchStep === "function") w.__alPatchStep({ kind: "click", ...describe(actionable), readOnlyPage: readOnlyPage(), reviewPage: reviewPage() });
   }, true);
 
   document.addEventListener("change", (e) => {
@@ -241,10 +267,10 @@ function patchCaptureScript(): void {
 /** Arm the open page: expose the step binding, install the shared safety predicates and the
  *  capture listeners on the current document AND on every future navigation, and report each
  *  interaction as a RecipeStep. Returns true when armed; never throws. */
-export async function armHumanCaptureOnPage(page: Page, onStep: HumanStepFn): Promise<boolean> {
+export async function armHumanCaptureOnPage(page: Page, onStep: HumanStepFn, opts: HumanCaptureOptions = {}): Promise<boolean> {
   if (!page || typeof page.evaluate !== "function") return false;
   try {
-    const sink = createHumanCaptureSink(onStep);
+    const sink = createHumanCaptureSink(onStep, opts);
     try {
       await page.exposeBinding("__alPatchStep", (_src, payload: HumanCapturePayload) => {
         try { sink(payload); } catch { /* the sink must never break the page */ }

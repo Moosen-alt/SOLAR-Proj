@@ -28,12 +28,15 @@ import {
   isPayFee,
   isPaymentField,
   isRecipeShapeValid,
+  isReviewPageText,
   isSecretField,
   isSubmitIntent,
   isSubmitOrPayRequestUrl,
   mayClickFinalSubmit,
   PORTAL_SAFETY_IN_PAGE_SOURCE,
+  recordingHasFormData,
   validateRecipeShape,
+  type ControlContext,
   type FieldIdentity,
   type FinalSubmitContext,
   type PortalSafety,
@@ -93,15 +96,18 @@ const PAY_MUST_ALLOW = [
 ];
 
 /** THE filing click, with and without page context. */
-const FINAL_MUST_BE: Array<[string, { readOnlyPage?: boolean; formDataEntered?: boolean } | undefined]> = [
+const FINAL_MUST_BE: Array<[string, ControlContext | undefined]> = [
   ["Submit", undefined], ["Submit Application", undefined], ["Submit & Pay", undefined], ["submit and pay", undefined],
   ["Confirm Submission", undefined], ["Complete Submission", undefined], ["File Application", undefined],
   ["Submit Now", undefined],
-  ["Continue Application", { readOnlyPage: true }], ["Continue Application »", { readOnlyPage: true, formDataEntered: true }],
+  // Accela's advance files on the page that NAMES itself the review step — read-only or not (a
+  // review page with a signature box or an attachment widget still files).
+  ["Continue Application", { reviewPage: true }], ["Continue Application »", { readOnlyPage: true, formDataEntered: true, reviewPage: true }],
+  ["Continue Application »", { readOnlyPage: false, formDataEntered: true, reviewPage: true }],
   ["Resubmit", undefined], ["Resubmit Application", undefined], ["Sign and File", undefined], ["e-File", undefined],
   ["File Permit", undefined],
 ];
-const FINAL_MUST_NOT_BE: Array<[string, { readOnlyPage?: boolean; formDataEntered?: boolean } | undefined]> = [
+const FINAL_MUST_NOT_BE: Array<[string, ControlContext | undefined]> = [
   ["Submit Documents", undefined], ["Submit for Review", undefined], ["Save and Submit Later", undefined],
   ["Pay Now", undefined], ["Submit Payment", undefined], ["Next", undefined], ["Continue", { readOnlyPage: true }],
   // Unknown page: the capture must not disarm on every Accela page.
@@ -109,6 +115,10 @@ const FINAL_MUST_NOT_BE: Array<[string, { readOnlyPage?: boolean; formDataEntere
   ["Continue Application", { readOnlyPage: false }],
   // The entry disclaimer: read-only, nothing entered yet — a pass-through, never the filing.
   ["Continue Application »", { readOnlyPage: true, formDataEntered: false }],
+  // Read-only but NOT named a review page (an attachments-only step; wording we do not know):
+  // blocked by isSubmitIntent, but not PROVEN the filing — no disarm, no draft promotion.
+  ["Continue Application", { readOnlyPage: true }],
+  ["Continue Application »", { readOnlyPage: true, formDataEntered: true, reviewPage: false }],
 ];
 
 const SECRET_MUST_REFUSE: FieldIdentity[] = [
@@ -228,6 +238,27 @@ await check("'Continue Application' is allowed ONLY when the page is KNOWN filla
   assert.ok(!isSubmitIntent("Continue Application", { readOnlyPage: false }), "known fillable page");
   assert.ok(!isSubmitIntent("Continue Application »", { readOnlyPage: true, formDataEntered: false }), "entry disclaimer");
   assert.ok(isSubmitIntent("Submit", { readOnlyPage: false }), "a real submit word is never excused by context");
+  // A page that names itself the review step is never excused — not by a live signature box,
+  // not by an empty recording (a resumed draft's review page).
+  assert.ok(isSubmitIntent("Continue Application", { readOnlyPage: false, reviewPage: true }), "review page with a live field");
+  assert.ok(isSubmitIntent("Continue Application »", { readOnlyPage: true, formDataEntered: false, reviewPage: true }), "review page, nothing entered in THIS session");
+  assert.ok(isSubmitIntent("Continue Application »", { readOnlyPage: true, formDataEntered: undefined }), "mid-flow session, read-only page");
+});
+await check("isReviewPageText: the page NAMES itself the review step (MUST-MATCH / MUST-NOT)", () => {
+  const MUST = ["Step 3: Review", "Step 4 - Review", "STEP 3 : REVIEW", "Review and Submit", "Review & Submit", "Contact Information (Read-only)",
+    "Review your application", "Review all of the information below", "Your form will not be submitted until you click Submit"];
+  const NOT = ["Please review the terms and conditions below", "I accept the terms and conditions", "Plan Review Fee", "Review Type",
+    "Step 2: Project Information", "Resubmittal Review Comments", "Reviewer", "", "Step 3: Documents"];
+  for (const t of MUST) { assert.ok(isReviewPageText(t), `"${t}" is not a review page`); assert.ok(pageCopy.isReviewPageText(t), `page copy: "${t}"`); }
+  for (const t of NOT) { assert.ok(!isReviewPageText(t), `"${t}" wrongly reads as a review page`); assert.ok(!pageCopy.isReviewPageText(t), `page copy: "${t}"`); }
+});
+await check("recordingHasFormData: fills/selects/checks count; a terms tick and clicks do not", () => {
+  assert.equal(recordingHasFormData([]), false);
+  assert.equal(recordingHasFormData([{ action: "click", selector: { name: "Next" } }]), false);
+  assert.equal(recordingHasFormData([{ action: "check", note: "I agree to the terms and conditions" }]), false, "the disclaimer's agree box is not form data");
+  assert.equal(recordingHasFormData([{ action: "check", selector: { name: "Solar PV" } }]), true);
+  assert.equal(recordingHasFormData([{ action: "fill", selector: { label: "Job" } }]), true);
+  assert.equal(recordingHasFormData([{ action: "select", selector: {} }]), true);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -269,7 +300,9 @@ await check("recorded clicks: capture / blocked / finalSubmit", () => {
   assert.equal(classifyRecordedClick("Next"), "capture");
   assert.equal(classifyRecordedClick("Continue Application", { readOnlyPage: false }), "capture");
   assert.equal(classifyRecordedClick("Continue Application"), "blocked");
-  assert.equal(classifyRecordedClick("Continue Application", { readOnlyPage: true }), "finalSubmit");
+  assert.equal(classifyRecordedClick("Continue Application", { readOnlyPage: true }), "blocked", "read-only, not named review: blocked, not proven filing");
+  assert.equal(classifyRecordedClick("Continue Application", { readOnlyPage: true, reviewPage: true }), "finalSubmit");
+  assert.equal(classifyRecordedClick("Continue Application", { readOnlyPage: false, reviewPage: true }), "finalSubmit", "a live field does not excuse a review page");
   assert.equal(classifyRecordedClick("Submit Documents"), "blocked");
   assert.equal(classifyRecordedClick("Pay Fees"), "blocked");
   assert.equal(classifyRecordedClick("Place Order"), "blocked");
@@ -399,7 +432,7 @@ await check("humanCapture sink: the filing click signals ONCE and disarms; a mid
   assert.equal(got.length, 1, "a mid-flow submit must not disarm the capture");
   sink({ kind: "click", selector: {}, label: "Continue Application", readOnlyPage: false });
   assert.equal(got.length, 2, "Accela's advance on a fillable page is captured as navigation");
-  sink({ kind: "click", selector: {}, label: "Continue Application »", readOnlyPage: true });
+  sink({ kind: "click", selector: {}, label: "Continue Application »", readOnlyPage: true, reviewPage: true });
   sink({ kind: "click", selector: {}, label: "Submit" });
   sink({ kind: "fill", selector: { label: "After" }, label: "After", value: "x", identity: { label: "After" } });
   const signals = got.filter((s) => s.note === HUMAN_SUBMIT_OBSERVED_NOTE);
@@ -426,9 +459,14 @@ await check("recorder sink: Accela's advance is navigation mid-flow, a placehold
   sink({ kind: "click", selector: { role: "link", name: "Continue Application »" }, label: "Continue Application »" });
   assert.deepEqual(steps[3].selector, {}, "unknown page: a targetless placeholder, never a replayable filing click");
   assert.notEqual(steps[3].isFinalSubmit, true);
-  sink({ kind: "click", selector: { role: "link", name: "Continue Application »" }, label: "Continue Application »", readOnlyPage: true });
+  sink({ kind: "click", selector: { role: "link", name: "Continue Application »" }, label: "Continue Application »", readOnlyPage: true, reviewPage: true });
   assert.deepEqual(steps[4].selector, {});
   assert.equal(steps[4].isFinalSubmit, true, "the review page's Continue Application is the filing click");
+  // Read-only after data, but not named review (an attachments-only step): blocked, unflagged.
+  sink({ kind: "click", selector: { role: "link", name: "Continue Application »" }, label: "Continue Application »", readOnlyPage: true, reviewPage: false });
+  assert.deepEqual(steps[5].selector, {}, "a read-only page's Continue Application stayed replayable");
+  assert.notEqual(steps[5].isFinalSubmit, true);
+  steps.splice(5, 1);
   for (const l of [...SUBMIT_MUST_REFUSE, ...PAY_MUST_REFUSE]) {
     const before = steps.length;
     sink({ kind: "click", selector: { role: "button", name: l }, label: l });
@@ -440,6 +478,51 @@ await check("recorder sink: secret fields keep the step, never the literal", () 
   createRecorderSink(steps, () => undefined)({ kind: "fill", selector: { label: "Meter #" }, label: "Meter #", value: "M-99", identity: { label: "Meter #" } });
   assert.equal(steps[0].sensitive, true);
   assert.equal(steps[0].value, undefined, "a secret literal reached the recipe step");
+});
+await check("F1 humanCapture: formDataEntered from the SAME predicate as the recorder; a mid-flow session keeps it unknown", () => {
+  const CONT = "Continue Application »";
+  // Production shape: armed AT REVIEW, no steps seen. The review page (named review, read-only
+  // with an attachment widget) -> the filing click: one signal, never a replayable step.
+  {
+    const got: RecipeStep[] = [];
+    const sink = createHumanCaptureSink((s) => got.push(s));
+    sink({ kind: "click", selector: { role: "link", name: CONT }, label: CONT, readOnlyPage: true, reviewPage: true });
+    assert.equal(got.length, 1); assert.equal(got[0].note, HUMAN_SUBMIT_OBSERVED_NOTE, "mid-flow review page: not observed as the filing");
+  }
+  // MUST-EXCLUDE the old inversion: mid-flow, zero emitted steps must NOT read as "nothing
+  // entered" — a read-only page's Continue Application is never captured as navigation.
+  {
+    const got: RecipeStep[] = [];
+    createHumanCaptureSink((s) => got.push(s))({ kind: "click", selector: { role: "link", name: CONT }, label: CONT, readOnlyPage: true, reviewPage: false });
+    assert.equal(got.length, 0, `mid-flow read-only page: ${JSON.stringify(got)} (captured, or a signal on a guess)`);
+  }
+  // MUST-PASS: a session KNOWN to start fresh -> the entry disclaimer's advance is navigation,
+  // no signal, no disarm; after a fill, an unnamed read-only page is blocked; the review page files.
+  {
+    const got: RecipeStep[] = [];
+    const sink = createHumanCaptureSink((s) => got.push(s), { startsFresh: true });
+    sink({ kind: "check", selector: { role: "checkbox", name: "I agree to the terms and conditions" }, label: "I agree to the terms and conditions" });
+    sink({ kind: "click", selector: { role: "link", name: CONT }, label: CONT, readOnlyPage: true, reviewPage: false });
+    assert.ok(got.some((s) => s.action === "click" && Object.keys(s.selector ?? {}).length > 0), `fresh disclaimer advance not captured: ${JSON.stringify(got)}`);
+    assert.ok(!got.some((s) => s.note === HUMAN_SUBMIT_OBSERVED_NOTE), "fresh disclaimer advance signalled a submit");
+    sink({ kind: "fill", selector: { label: "Job" }, label: "Job", value: "PV", identity: { label: "Job" } });
+    const n = got.length;
+    sink({ kind: "click", selector: { role: "link", name: CONT }, label: CONT, readOnlyPage: true, reviewPage: false });
+    assert.equal(got.length, n, "after data, an unnamed read-only page's advance was captured");
+    sink({ kind: "click", selector: { role: "link", name: CONT }, label: CONT, readOnlyPage: true, reviewPage: true });
+    assert.equal(got[got.length - 1].note, HUMAN_SUBMIT_OBSERVED_NOTE, "the review page's advance did not signal the filing");
+  }
+});
+await check("F1 recorder: a recording that may start mid-flow keeps formDataEntered unknown; a named review page files even with nothing entered", () => {
+  const CONT = "Continue Application »";
+  const steps: RecipeStep[] = [];
+  const sink = createRecorderSink(steps, () => undefined, { startsFresh: false });
+  sink({ kind: "click", selector: { role: "link", name: CONT }, label: CONT, readOnlyPage: true, reviewPage: false });
+  assert.deepEqual(steps[0].selector, {}, "not-fresh recorder captured a read-only page's advance as navigation");
+  const fresh: RecipeStep[] = [];
+  createRecorderSink(fresh, () => undefined)({ kind: "click", selector: { role: "link", name: CONT }, label: CONT, readOnlyPage: true, reviewPage: true });
+  assert.deepEqual(fresh[0].selector, {}, "a resumed draft's REVIEW page advance was captured as navigation");
+  assert.equal(fresh[0].isFinalSubmit, true);
 });
 await check("F5: a secret <select> is sensitive in BOTH sinks — no literal, no option text; an ordinary select keeps its value", () => {
   const meterByName = { kind: "select", selector: { css: "#m" }, label: "", value: "1009283745", rawValue: "1009283745", identity: { name: "meterNumber", id: "m" } };

@@ -35,14 +35,19 @@ import type { RecipeSelector } from "./types";
 /** What a page tells us about itself when classifying a control on it. Every field optional:
  *  an absent field means UNKNOWN, and each predicate says which way unknown falls. */
 export interface ControlContext {
-  /** true = the page shows no fillable input (a read-only review/summary page). On such a
-   *  page an advance-worded "Continue Application" FILES the application. */
+  /** true = the page shows no fillable input (a read-only review/summary page). An attachment
+   *  widget (input[type=file]) does not make a page fillable: review pages carry one. */
   readOnlyPage?: boolean;
   /** Has this session entered any real form data yet (a fill, a select, or a check that is not
    *  a terms acknowledgment)? false = KNOWN nothing entered: a read-only page before the first
    *  fill is an entry disclaimer (Accela's CapApplyDisclaimer — terms text, an agree box and
-   *  "Continue Application »"), which is a pass-through, never the review page. */
+   *  "Continue Application »"), which is a pass-through, never the review page. A session that
+   *  starts mid-flow does not know, and leaves this undefined — never false. */
   formDataEntered?: boolean;
+  /** true = the page NAMES itself the review step ("Step 3: Review", "Review and Submit",
+   *  "(read-only)" — reviewPageInPage). Independent of readOnlyPage: a review page with a
+   *  signature box or an attachment widget still files on its advance. */
+  reviewPage?: boolean;
 }
 
 /** The identity of a form field as far as the secret/payment questions need it. Attribute
@@ -187,26 +192,43 @@ export function portalSafetyFactory() {
 
   const isPayFee = (label: string | null | undefined): boolean => !!label && PAY_FEE.test(String(label));
 
-  /** Submit-, file- or commit-worded. "Continue Application" counts unless the caller KNOWS it
-   *  cannot file here: the page is still fillable (readOnlyPage === false), or nothing has been
-   *  entered yet (formDataEntered === false — the entry disclaimer). Unknown falls to "submit". */
+  // THE PAGE NAMES ITSELF THE REVIEW STEP. Deliberately narrower than "mentions review":
+  // "Please review the terms and conditions" is an entry disclaimer, "Plan Review Fee" a fee line.
+  const REVIEW_PAGE =
+    /\bstep\s*\d+\s*[:.\-–—]?\s*review\b|\breview\s+(and|&)\s+submit\b|\(read[\s-]*only\)|\breview\s+(all\s+)?(of\s+)?(your|the)\s+(application|information|details|entries|submission)\b|\bwill\s+not\s+be\s+submitted\s+until\b/i;
+  const isReviewPageText = (text: string | null | undefined): boolean => REVIEW_PAGE.test(String(text ?? ""));
+
+  /**
+   * Submit-, file- or commit-worded. "Continue Application" — Accela's advance, which FILES on
+   * the review page — is excused ONLY when the caller KNOWS it cannot file here: the page does
+   * not name itself the review step, AND either it is still fillable (readOnlyPage === false) or
+   * nothing has been entered yet (formDataEntered === false — the entry disclaimer). Anything
+   * unknown falls to "submit".
+   */
   const isSubmitIntent = (label: string | null | undefined, ctx?: ControlContext | null): boolean => {
     const t = String(label ?? "");
     if (!t.trim()) return false;
     if (SUBMIT_WORDS.test(t)) return true;
-    if (CONTINUE_APPLICATION.test(t)) return !(ctx && (ctx.readOnlyPage === false || ctx.formDataEntered === false));
+    if (CONTINUE_APPLICATION.test(t)) {
+      const excused = !!ctx && ctx.reviewPage !== true && (ctx.readOnlyPage === false || ctx.formDataEntered === false);
+      return !excused;
+    }
     return false;
   };
 
-  /** THE filing click: the control that files the application, not merely a submit-worded
-   *  step. "Continue Application" is the filing click only on a page KNOWN to be read-only and
-   *  not known to be the entry disclaimer. */
+  /**
+   * THE filing click: the control that files the application, not merely a submit-worded step.
+   * "Continue Application" is the filing click only on a page that NAMES itself the review step.
+   * A read-only page that does not (an attachments-only step, a page whose wording we do not
+   * know) is NOT proven to be the filing — isSubmitIntent still blocks the click, but a capture
+   * session is not ended and a draft is not promoted on a guess.
+   */
   const isFinalSubmitControl = (label: string | null | undefined, ctx?: ControlContext | null): boolean => {
     const t = String(label ?? "").replace(/\s+/g, " ").replace(/[»›>→]+\s*$/, "").trim();
     if (!t) return false;
     if (isPayFee(t) && !/^submit\s*(&|and)\s*pay$/i.test(t)) return false;
     if (FINAL_SUBMIT_EXACT.test(t) || FINAL_SUBMIT_PHRASE.test(t)) return true;
-    return CONTINUE_APPLICATION.test(t) && !!ctx && ctx.readOnlyPage === true && ctx.formDataEntered !== false;
+    return CONTINUE_APPLICATION.test(t) && !!ctx && ctx.reviewPage === true;
   };
 
   // A terms / certification acknowledgment. Ticking one is not entering form data, and a page
@@ -246,6 +268,12 @@ export function portalSafetyFactory() {
    * do not count, because a review page carries them too: a site-wide search box in the header,
    * and a terms/certification acknowledgment (PowerClerk's and Accela's final pages both have
    * one). Unknown (no document) is undefined, never "fillable".
+   *
+   * An attachment widget (input[type=file]) does not count either. Accela's review page
+   * (CapConfirm) carries a live "Attachments" upload input; counting it called the review page
+   * fillable, so "Continue Application" there — the filing click — was recorded as ordinary
+   * navigation by both recorders and replayed. The cost is on an attachments-ONLY step: it reads
+   * read-only, so its "Continue Application" is blocked (not replayable) rather than captured.
    */
   const readOnlyPageInPage = (): boolean | undefined => {
     const d = (globalThis as { document?: Document }).document;
@@ -261,7 +289,7 @@ export function portalSafetyFactory() {
       return bits.join(" ");
     };
     const fields = Array.from(d.querySelectorAll(
-      "input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]):not([type=reset]), select, textarea, [contenteditable=true]",
+      "input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]):not([type=reset]):not([type=file]), select, textarea, [contenteditable=true]",
     ));
     return !fields.some((el) => {
       const e = el as HTMLInputElement;
@@ -277,6 +305,14 @@ export function portalSafetyFactory() {
       }
       return boxOk(e);
     });
+  };
+
+  /** Runs IN THE PAGE: does the page's visible text name it the review step? Unknown (no
+   *  document/body) is undefined. */
+  const reviewPageInPage = (): boolean | undefined => {
+    const d = (globalThis as { document?: Document }).document;
+    if (!d || !d.body) return undefined;
+    return isReviewPageText(d.body.innerText || d.body.textContent || "");
   };
 
   /**
@@ -422,6 +458,8 @@ export function portalSafetyFactory() {
     isPaymentField,
     isAcceptTermsLabel,
     readOnlyPageInPage,
+    isReviewPageText,
+    reviewPageInPage,
     fieldIdentityInPage,
     isPaymentElementInPage,
     controlRoleInPage,
@@ -440,6 +478,29 @@ export const classifyRecordedClick = impl.classifyRecordedClick;
 export const isSecretField = impl.isSecretField;
 export const isPaymentField = impl.isPaymentField;
 export const isAcceptTermsLabel = impl.isAcceptTermsLabel;
+export const isReviewPageText = impl.isReviewPageText;
+
+/** The minimum of a recorded step the form-data question needs. */
+export interface FormDataStep {
+  action: string;
+  note?: string;
+  selector?: { name?: string; label?: string } | Record<string, unknown> | null;
+}
+
+/**
+ * Has a recording entered real form data yet? A fill or a select does; a check/uncheck does
+ * unless it is a terms/certification acknowledgment (the agree box on an entry disclaimer is not
+ * form data). The ONE predicate both capture sinks use for ControlContext.formDataEntered — the
+ * recorder over its whole recording, humanCapture over the steps it has emitted.
+ */
+export function recordingHasFormData(steps: ReadonlyArray<FormDataStep>): boolean {
+  return steps.some((s) => {
+    if (s.action === "fill" || s.action === "select") return true;
+    if (s.action !== "check" && s.action !== "uncheck") return false;
+    const sel = (s.selector ?? {}) as { name?: unknown; label?: unknown };
+    return !isAcceptTermsLabel(`${s.note ?? ""} ${String(sel.name ?? "")} ${String(sel.label ?? "")}`);
+  });
+}
 
 /**
  * The capture sinks' one secret question, for a fill AND a select: the page flagged it, or its

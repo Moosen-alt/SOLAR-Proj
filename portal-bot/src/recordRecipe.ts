@@ -25,8 +25,8 @@ import type { RecipeSelector, RecipeStep, StepFingerprint } from "../../shared/s
 import {
   capturedFieldIsSecret,
   classifyRecordedClick,
-  isAcceptTermsLabel,
   PORTAL_SAFETY_IN_PAGE_SOURCE,
+  recordingHasFormData,
   type FieldIdentity,
 } from "../../shared/src/portalSafety";
 import { openPortal } from "./browser";
@@ -45,17 +45,15 @@ export interface RecordedPayload {
   fingerprint?: StepFingerprint;
   identity?: FieldIdentity;
   readOnlyPage?: boolean;
+  /** For a click: the page named itself the review step (see reviewPageInPage). */
+  reviewPage?: boolean;
   /** The page could not run the shared labeler: the click's label is UNKNOWN, so it is blocked. */
   safetyUnavailable?: boolean;
 }
 
-/** Has the recording entered real form data yet? A terms/certification tick does not count —
- *  the agree box on an entry disclaimer is not a fill (see ControlContext.formDataEntered). */
-export function recordingHasFormData(steps: ReadonlyArray<RecipeStep>): boolean {
-  return steps.some((s) =>
-    s.action === "fill" || s.action === "select" ||
-    ((s.action === "check" || s.action === "uncheck") && !isAcceptTermsLabel(`${s.note ?? ""} ${s.selector?.name ?? ""} ${s.selector?.label ?? ""}`)));
-}
+/** Has the recording entered real form data yet? The shared predicate (humanCapture asks the
+ *  same one) — re-exported here for the callers that imported it from the recorder. */
+export { recordingHasFormData };
 
 /**
  * Map one captured interaction onto a recipe step and append it. Every safety decision comes
@@ -71,7 +69,14 @@ export function recordingHasFormData(steps: ReadonlyArray<RecipeStep>): boolean 
 export function createRecorderSink(
   steps: RecipeStep[],
   bindField: (typed: string) => string | undefined,
+  opts: {
+    /** The recording starts at the portal's front door (the CLI opened --url itself), so an
+     *  empty recording KNOWS nothing was entered. false = it may start mid-flow (a resumed
+     *  draft): until this recording enters data, formDataEntered stays UNKNOWN, never false. */
+    startsFresh?: boolean;
+  } = {},
 ): (payload: RecordedPayload) => void {
+  const startsFresh = opts.startsFresh !== false;
   return (payload: RecordedPayload): void => {
     const sel = payload.selector;
     // Heal tie-break metadata (attribute names only) — attached to form-control steps.
@@ -81,7 +86,14 @@ export function createRecorderSink(
       // a replayable click (an empty label reads as "not submit" to every classifier).
       const cls = payload.safetyUnavailable
         ? "blocked"
-        : classifyRecordedClick(payload.label, { readOnlyPage: payload.readOnlyPage, formDataEntered: recordingHasFormData(steps) });
+        : classifyRecordedClick(payload.label, {
+          readOnlyPage: payload.readOnlyPage,
+          reviewPage: payload.reviewPage,
+          // The recorder opens the portal itself and sees every step from the first page, so an
+          // empty recording is KNOWN to have entered nothing (the entry disclaimer's advance is a
+          // pass-through). A review page still files: reviewPage outranks this.
+          formDataEntered: recordingHasFormData(steps) ? true : startsFresh ? false : undefined,
+        });
       if (cls === "capture") {
         steps.push({ action: "click", selector: sel, note: payload.label });
         return;
@@ -193,7 +205,9 @@ async function main(): Promise<void> {
   const { page } = await openPortal({ userDataDir: profileDir, headless: false });
 
   // The page calls this binding for every captured interaction.
-  const sink = createRecorderSink(steps, bindField);
+  // Fresh only when this CLI opens the portal itself; without --url the operator's persistent
+  // profile may resume a draft mid-flow.
+  const sink = createRecorderSink(steps, bindField, { startsFresh: !!url });
   await page.exposeBinding("__recordStep", (_src: unknown, payload: RecordedPayload) => {
     const before = steps.length;
     sink(payload);
@@ -325,6 +339,10 @@ export function captureScript(): void {
     const ps = w.__portalSafety;
     try { return ps && typeof ps.readOnlyPageInPage === "function" ? ps.readOnlyPageInPage() : undefined; } catch { return undefined; }
   }
+  function reviewPage(): boolean | undefined {
+    const ps = w.__portalSafety;
+    try { return ps && typeof ps.reviewPageInPage === "function" ? ps.reviewPageInPage() : undefined; } catch { return undefined; }
+  }
   document.addEventListener("click", (e) => {
     const el = target(e);
     if (!el) return;
@@ -352,7 +370,7 @@ export function captureScript(): void {
     const actionable = el.closest('button,a,[role="button"],[role="link"],input[type="button"],input[type="submit"],input[type="image"],summary');
     if (!actionable) return;
     if ((actionable as HTMLInputElement).type === "file") return; // handled by change
-    w.__recordStep({ kind: "click", ...describe(actionable), readOnlyPage: readOnlyPage() });
+    w.__recordStep({ kind: "click", ...describe(actionable), readOnlyPage: readOnlyPage(), reviewPage: reviewPage() });
   }, true);
   document.addEventListener("change", (e) => {
     const el = target(e) as HTMLInputElement | null;

@@ -17,7 +17,9 @@
 //      card block is never reported, a secret field keeps its step but not its literal.
 //
 //   npx tsx portal-bot/src/portalSafetyInPage.dom.smoke.ts
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 import { chromium, type Page } from "playwright";
 import {
   classifyRecordedClick,
@@ -26,11 +28,13 @@ import {
   isSubmitIntent,
   PORTAL_SAFETY_IN_PAGE_SOURCE,
 } from "../../shared/src/portalSafety";
-import type { RecipeStep } from "../../shared/src/types";
+import type { PortalRecipe, RecipeStep } from "../../shared/src/types";
+import { RecipeAdapter } from "./adapters/recipeAdapter";
 import { armHumanCaptureOnPage, HUMAN_SUBMIT_OBSERVED_NOTE } from "./humanCapture";
-import { captureScript, createRecorderSink, type RecordedPayload } from "./recordRecipe";
+import { captureScript, createRecorderSink, finalizeRecordedSteps, type RecordedPayload } from "./recordRecipe";
 
 let failures = 0;
+let capturedSummary = "captured Accela pages: not run";
 const check = (label: string, ok: boolean, detail = ""): void => {
   if (ok) console.log(`  ok   - ${label}`);
   else { failures++; console.error(`  FAIL - ${label}\n         ${detail}`); }
@@ -308,11 +312,199 @@ try {
       await q.context().close();
     }
   }
+
+  // ---- 6. CAPTURED Accela pages (foundation must-fix 1) --------------------------------------
+  // The synthetic /review above was built to fit the heuristic. The captured Coos Bay flow is not
+  // so kind: its review page (CapConfirm) carries a live Attachments <input type=file>, which
+  // made readOnlyPageInPage say "fillable", so both recorders captured the filing click as
+  // navigation and replay clicked it. Read-only use of data/portal-replicas: this prints URL
+  // paths, control ids, counts and booleans only.
+  await capturedAccelaPages();
 } finally {
   await browser.close();
   server.close();
 }
 
+async function capturedAccelaPages(): Promise<void> {
+  const bundlePath = path.resolve(process.cwd(), "data", "portal-replicas", "city-of-coos-bay.json");
+  if (!fs.existsSync(bundlePath)) {
+    capturedSummary = "captured Accela pages: SKIPPED (no data/portal-replicas/city-of-coos-bay.json in this checkout) — 0 captured-page checks ran";
+    return;
+  }
+  const bundle = JSON.parse(fs.readFileSync(bundlePath, "utf8")) as { pages: Array<{ url: string; html: string }> };
+  // The fullest capture of that page that carries the control and its "Continue Application" text.
+  const pageFor = (re: RegExp, control: RegExp): number => {
+    let best = -1;
+    bundle.pages.forEach((pg, i) => {
+      if (re.test(String(pg.url)) && control.test(pg.html) && /Continue Application/.test(pg.html) && (best < 0 || pg.html.length > bundle.pages[best].html.length)) best = i;
+    });
+    return best;
+  };
+  // Chosen by URL path + control id, never by content, so a re-captured bundle keeps working.
+  const IDX = {
+    disclaimer: pageFor(/CapApplyDisclaimer\.aspx/i, /btnNextStep/),
+    review: pageFor(/CapConfirm\.aspx/i, /actionBarBottom_btnContinue/),
+    edit: pageFor(/CapEdit\.aspx/i, /actionBarBottom_btnContinue/),
+    location: pageFor(/WorkLocation\.aspx/i, /serviceControl_btnContinue/),
+  };
+  const missing = Object.entries(IDX).filter(([, i]) => i < 0).map(([k]) => k);
+  if (missing.length) {
+    check(`captured bundle carries every page this section needs (missing: ${missing.join(", ")})`, false, "re-capture or update the selectors");
+    return;
+  }
+  const CONTROL: Record<keyof typeof IDX, string> = {
+    disclaimer: "a[id$='btnNextStep']",
+    review: "a[id$='actionBarBottom_btnContinue']",
+    edit: "a[id$='actionBarBottom_btnContinue']",
+    location: "a[id$='serviceControl_btnContinue']",
+  };
+  const capServer = http.createServer((q, r) => {
+    const m = /^\/cap\/(\d+)/.exec(String(q.url ?? ""));
+    r.writeHead(200, { "Content-Type": "text/html" });
+    r.end(m ? bundle.pages[Number(m[1])]?.html ?? "" : "<html></html>");
+  });
+  await new Promise<void>((r) => capServer.listen(0, "127.0.0.1", () => r()));
+  const capBase = `http://127.0.0.1:${(capServer.address() as { port: number }).port}`;
+  let external = 0;
+  // Every captured page references live portal assets: abort them (counted), never fetch them.
+  // The captured anchors post back (__doPostBack -> form.submit()); neutralise navigation so the
+  // click is observed on the page it was made on.
+  const NO_NAV = "HTMLFormElement.prototype.submit = function () {}; document.addEventListener('click', function (e) { e.preventDefault(); }, false);";
+  const capPage = async (): Promise<Page> => {
+    const ctx = await browser.newContext();
+    await ctx.addInitScript("globalThis.__name = globalThis.__name || function (fn) { return fn; };");
+    await ctx.route("**/*", (route) => {
+      if (new URL(route.request().url()).hostname === "127.0.0.1") return route.continue();
+      external++;
+      return route.abort();
+    });
+    return ctx.newPage();
+  };
+  const verdict = async (p: Page) => p.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ps = (globalThis as any).__portalSafety;
+    return { ro: ps.readOnlyPageInPage(), review: ps.reviewPageInPage(), files: document.querySelectorAll("input[type=file]").length };
+  });
+  const pathOf = (i: number): string => String(bundle.pages[i].url).replace(/^https?:\/\/[^/]+/, "").replace(/\?.*/, "");
+  const PRIOR_DATA: RecipeStep = { action: "fill", selector: { css: "#earlier" }, value: "synthetic", note: "entered earlier in the flow" };
+  const CLS = (s: RecipeStep | undefined): string => !s ? "none" : s.note === HUMAN_SUBMIT_OBSERVED_NOTE ? "SUBMIT_OBSERVED"
+    : Object.keys(s.selector ?? {}).length ? "capture" : s.isFinalSubmit ? "finalSubmit(placeholder)" : "blocked(placeholder)";
+
+  // (a) What the page says about itself.
+  {
+    const p = await capPage();
+    for (const k of Object.keys(IDX) as Array<keyof typeof IDX>) {
+      await p.goto(`${capBase}/cap/${IDX[k]}`, { waitUntil: "domcontentloaded" });
+      await p.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE);
+      const v = await verdict(p);
+      console.log(`     captured ${k.padEnd(10)} page ${String(IDX[k]).padStart(2)} ${pathOf(IDX[k])}: readOnly=${v.ro} reviewPage=${v.review} fileInputs=${v.files}`);
+      if (k === "review") {
+        check("captured CapConfirm: an Attachments file input does not make the review page fillable", v.ro === true && v.files > 0, JSON.stringify(v));
+        check("captured CapConfirm names itself the review step", v.review === true, JSON.stringify(v));
+      } else {
+        check(`captured ${pathOf(IDX[k])} does NOT read as a review page`, v.review === false, JSON.stringify(v));
+      }
+    }
+    await p.context().close();
+  }
+
+  // (b) The recorder (portal:record) on each captured page.
+  const recordOn = async (k: keyof typeof IDX, prior: RecipeStep[], opts: { startsFresh?: boolean } = {}): Promise<RecipeStep[]> => {
+    const p = await capPage();
+    const steps: RecipeStep[] = [...prior];
+    const sink = createRecorderSink(steps, () => undefined, opts);
+    await p.exposeBinding("__recordStep", (_s: unknown, payload: RecordedPayload) => sink(payload));
+    await p.addInitScript({ content: PORTAL_SAFETY_IN_PAGE_SOURCE });
+    await p.addInitScript(captureScript);
+    await p.addInitScript({ content: NO_NAV });
+    await p.goto(`${capBase}/cap/${IDX[k]}`, { waitUntil: "domcontentloaded" });
+    await p.locator(CONTROL[k]).first().click({ timeout: 5000 });
+    await p.waitForTimeout(250);
+    await p.context().close();
+    return steps.slice(prior.length);
+  };
+  {
+    const fresh = await recordOn("disclaimer", []);
+    check("recorder MUST-PASS: captured entry disclaimer, nothing entered yet -> 'Continue Application' is navigation", fresh.length === 1 && CLS(fresh[0]) === "capture", JSON.stringify(fresh.map(CLS)));
+    for (const k of ["edit", "location"] as const) {
+      const got = await recordOn(k, [PRIOR_DATA]);
+      check(`recorder MUST-PASS: captured ${pathOf(IDX[k])} -> 'Continue Application' is navigation`, got.length === 1 && CLS(got[0]) === "capture", JSON.stringify(got.map(CLS)));
+    }
+    const review = await recordOn("review", [PRIOR_DATA]);
+    check("recorder MUST-EXCLUDE: captured CapConfirm -> 'Continue Application' is the flagged, targetless filing placeholder",
+      review.length === 1 && CLS(review[0]) === "finalSubmit(placeholder)", JSON.stringify(review.map(CLS)));
+    const reviewFresh = await recordOn("review", []);
+    check("recorder MUST-EXCLUDE: captured CapConfirm with nothing entered in THIS recording (a resumed draft) -> still never navigation",
+      reviewFresh.length === 1 && CLS(reviewFresh[0]) !== "capture", JSON.stringify(reviewFresh.map(CLS)));
+
+    // Replay never clicks what the recorder produced on the review page. Negative control first:
+    // the counter DOES see a click when a step targets the control (else "0 clicks" proves nothing).
+    const recipeSteps = finalizeRecordedSteps([PRIOR_DATA, ...review]);
+    const p = await capPage();
+    await p.addInitScript({ content: NO_NAV });
+    await p.goto(`${capBase}/cap/${IDX.review}`, { waitUntil: "domcontentloaded" });
+    await p.evaluate((sel) => {
+      const w = window as unknown as { __filingClicks: number };
+      w.__filingClicks = 0;
+      document.addEventListener("click", (e) => { if ((e.target as Element).closest(sel)) w.__filingClicks++; }, true);
+    }, CONTROL.review);
+    const recipe = { id: "smoke", scopeType: "ahj", profileKey: "smoke", state: "OR", ahj: "Smoke", utility: "", portalPlatform: "accela", portalUrl: capBase,
+      status: "complete", version: 1, steps: recipeSteps, createdBy: "", createdAt: "", updatedAt: "", notes: "" } as unknown as PortalRecipe;
+    const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: false });
+    (adapter as unknown as { page: Page }).page = p;
+    const exec = (s: RecipeStep) => (adapter as unknown as { executeStep(s: RecipeStep, pastReview: boolean): Promise<boolean> }).executeStep(s, false).catch(() => false);
+    const clicks = () => p.evaluate(() => (window as unknown as { __filingClicks: number }).__filingClicks);
+    for (const s of recipeSteps.filter((x) => x.action === "click")) await exec(s);
+    await p.waitForTimeout(200);
+    const fromRecording = await clicks();
+    await p.locator(CONTROL.review).first().click({ timeout: 5000 });
+    await p.waitForTimeout(200);
+    const control = (await clicks()) - fromRecording;
+    check("MUST-EXCLUDE: RecipeAdapter.executeStep never clicks CapConfirm's Continue Application from the recorded steps (and the counter does see a real click on it)",
+      fromRecording === 0 && control >= 1, `from recording=${fromRecording}, negative control=${control}`);
+    await p.context().close();
+  }
+
+  // (c) humanCapture on each captured page.
+  const humanOn = async (k: keyof typeof IDX, opts: { startsFresh?: boolean } = {}, thenFill = false): Promise<RecipeStep[]> => {
+    const p = await capPage();
+    const got: RecipeStep[] = [];
+    await p.addInitScript({ content: NO_NAV });
+    await p.goto(`${capBase}/cap/${IDX[k]}`, { waitUntil: "domcontentloaded" });
+    await armHumanCaptureOnPage(p, (s) => got.push(s), opts);
+    await p.locator(CONTROL[k]).first().click({ timeout: 5000 });
+    await p.waitForTimeout(250);
+    if (thenFill) {
+      // Not disarmed: a later fix on the same page is still captured (the header search box is
+      // the one text input every captured page has; the value is synthetic).
+      const box = p.locator("input[type=text]:visible").first();
+      if (await box.count()) { await box.fill("synthetic after"); await box.press("Tab"); await p.waitForTimeout(200); }
+    }
+    await p.context().close();
+    return got;
+  };
+  {
+    const fresh = await humanOn("disclaimer", { startsFresh: true }, true);
+    check("humanCapture MUST-PASS: captured disclaimer, fresh session -> navigation, NO SUBMIT_OBSERVED, and not disarmed",
+      CLS(fresh[0]) === "capture" && !fresh.some((s) => s.note === HUMAN_SUBMIT_OBSERVED_NOTE) && fresh.some((s) => s.value === "synthetic after"),
+      JSON.stringify(fresh.map(CLS)));
+    const mid = await humanOn("disclaimer", {}, true);
+    check("humanCapture MUST-PASS: captured disclaimer, mid-flow session -> NO SUBMIT_OBSERVED, no disarm, no replayable click",
+      !mid.some((s) => s.note === HUMAN_SUBMIT_OBSERVED_NOTE) && !mid.some((s) => s.action === "click") && mid.some((s) => s.value === "synthetic after"),
+      JSON.stringify(mid.map(CLS)));
+    for (const k of ["edit", "location"] as const) {
+      const got = await humanOn(k);
+      check(`humanCapture MUST-PASS: captured ${pathOf(IDX[k])} -> 'Continue Application' is navigation`, got.length === 1 && CLS(got[0]) === "capture", JSON.stringify(got.map(CLS)));
+    }
+    const review = await humanOn("review", {}, true);
+    check("humanCapture MUST-EXCLUDE: captured CapConfirm (armed at review, as production does) -> one SUBMIT_OBSERVED, no replayable step, then disarmed",
+      review.length === 1 && review[0].note === HUMAN_SUBMIT_OBSERVED_NOTE, JSON.stringify(review.map(CLS)));
+  }
+  await new Promise<void>((r) => capServer.close(() => r()));
+  capturedSummary = `captured Accela pages: ${Object.keys(IDX).length} pages driven, ${external} external request(s) aborted`;
+}
+
+console.log(`\n${capturedSummary}`);
 if (failures) { console.error(`\n${failures} in-page safety check(s) FAILED.`); process.exit(1); }
 console.log("\nAll in-page safety checks passed.");
 process.exit(0);
