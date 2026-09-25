@@ -69,7 +69,7 @@ import path from "node:path";
 import os from "node:os";
 import { checkStatusWithAdapter, runCorrectionReopen, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { portalAutomationDisabled, resolveHeadless } from "../../portal-bot/src/browser";
-import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, collectHealedSteps, persistHealedSteps, getPortalRecipe, portalEntityEvidence, recipeHostFit, findBorrowableRecipe, replayFailureBlamesRecipe, type BorrowedRecipeChoice } from "./portalRecipes";
+import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, collectHealedSteps, persistHealedSteps, getPortalRecipe, portalEntityEvidence, recipeHostFit, findBorrowableRecipe, replayFailureBlamesRecipe, recipeShapeSignature, type BorrowedRecipeChoice } from "./portalRecipes";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 // detectPlatform moved with the target INSERT into submittalTracks.ts's ensureCheckTarget.
 import { publicPermitStatusCheck } from "./publicPermitStatus";
@@ -8031,6 +8031,9 @@ export async function prepareSubmission(
       // persistHealedSteps. The heals ride on the fill step's data (the adapter result's top level
       // never carried them, so this block was dead code); both places are read.
       const healed = collectHealedSteps(result);
+      // THE SHAPE THIS REPLAY READ (trust skeptic M3): a human step edit does not bump the version,
+      // so heals and the demotion are measured against the steps as they were when the run began.
+      const replayShapeSig = recipeShapeSignature(recipe.steps);
       // A BORROWED RECIPE IS NEVER CHANGED BY ANOTHER ENTITY'S RUN. A heal on Salem's page is a
       // fact about Salem's page; written onto the Coos Bay recipe it would break Coos Bay. The
       // heals are recorded for the operator and discarded; drift stops the run (ruling).
@@ -8038,7 +8041,7 @@ export async function prepareSubmission(
         addAuditLog(db, projectId, "system", "portal staging", "portal.borrowed_recipe_heal_discarded", {
           runId, recipeId: recipe.id, learnedFor: borrowed.learnedFor, heals: healed.length,
         });
-      } else if (healed.length) persistHealedSteps(db, recipe.id, recipe.version, healed, { projectId, runId });
+      } else if (healed.length) persistHealedSteps(db, recipe.id, recipe.version, healed, { projectId, runId, expectedShapeSig: replayShapeSig });
       // WHOSE FAULT WAS THE FAILURE? (operator ruling 2026-09-24: keep-and-flag.)
       //
       // This used to demote on /recipe step failed/i over EVERY step's message joined — with no
@@ -8070,7 +8073,7 @@ export async function prepareSubmission(
       const replayVerdict = replayFailed && !borrowed
         ? (() => {
           try {
-            return demoteOnReplayFailure(db, recipe.id, extractStageFailureMessage(result), recipe.version, { runId, projectId });
+            return demoteOnReplayFailure(db, recipe.id, extractStageFailureMessage(result), recipe.version, { runId, projectId, expectedShapeSig: replayShapeSig });
           } catch {
             return null; /* best-effort: the run result stands */
           }

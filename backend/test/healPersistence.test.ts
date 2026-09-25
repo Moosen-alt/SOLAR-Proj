@@ -116,5 +116,49 @@ await check("(e) a heal whose index points at a step with a different action is 
   assert.equal((steps[2].selector as { name?: string }).name, undefined, "a fill heal overwrote the review marker's selector");
 });
 
+// ── trust skeptic M3: a human step edit mid-replay does not bump the version ────────────────
+await check("(m3a) MUST-EXCLUDE: a step inserted through savePortalRecipeSteps (the PUT …/steps writer) mid-replay shifts every index — the heal is discarded, audited, never landed on the shifted step", async () => {
+  const recipes = fx.recipes;
+  const STEPS: RecipeStep[] = [
+    { action: "fill", selector: { name: "owner" }, field: "homeownerName", value: "x", note: "Owner" } as RecipeStep,
+    { action: "fill", selector: { name: "city" }, field: "projectCity", value: "Portland", note: "City" } as RecipeStep,
+    fx.REVIEW, fx.FINAL,
+  ];
+  const recipe = fx.completeRecipe(STEPS);
+  const projectId = fx.newProject();
+  fx.stubRunner(async () => {
+    // The operator inserts a new FIRST step through the real steps writer while the replay runs.
+    const inserted = { action: "fill", selector: { name: "email" }, field: "homeownerEmail", value: "e", note: "Email" } as RecipeStep;
+    recipes.savePortalRecipeSteps(db, recipe.id, [inserted, ...STEPS], { status: "complete" });
+    return okWithHeals([{ stepIndex: 1, recipeVersion: recipe.version, action: "fill", note: "City", selector: { name: "healed_city" }, performed: true }]);
+  });
+  await repo.prepareSubmission(db, projectId);
+  const row = fx.recipeRow(recipe.id);
+  assert.equal(Number(row.version), recipe.version, "premise: the steps writer does not bump the version (that is why the shape is compared)");
+  const steps = stepsOf(recipe.id);
+  assert.equal((steps[1].selector as { name?: string }).name, "owner", "the City heal overwrote the Owner step of the human-edited recipe");
+  assert.equal((steps[2].selector as { name?: string }).name, "city", "the heal landed on the shifted City step — it was measured against the OLD steps");
+  const run = fx.latestRun(projectId)!;
+  const discarded = auditsFor("recipe.heal_discarded", run.id);
+  assert.equal(discarded.length, 1, "the discarded heal left no audit row");
+  assert.match(JSON.parse(discarded[0].details).reason, /steps were edited/);
+});
+
+await check("(m3b) MUST-PASS: a run that heals step 1 and then drifts at a later step still demotes — its own heal is not 'the recipe changed'", async () => {
+  const recipe = fx.completeRecipe(CITY_STEPS);
+  const projectId = fx.newProject();
+  fx.stubRunner(async () => ({
+    portalName: "stub", ok: false, finalSubmitClicked: false, pauseReason: null,
+    steps: [
+      { ok: true, message: "Opened stub portal.", data: { healedSteps: [heal(1, recipe.version)] } },
+      { ok: false, message: "Recipe step failed (fill — inverter quantity): locator.fill: Timeout 8000ms exceeded." },
+    ],
+  }));
+  await repo.prepareSubmission(db, projectId);
+  const row = fx.recipeRow(recipe.id);
+  assert.equal((stepsOf(recipe.id)[1].selector as { name?: string }).name, "healed_city_1", "the heal was not persisted");
+  assert.equal(row.status, "needs_rerecord", "the run's own heal spared its drift (the shape guard is reading selectors)");
+});
+
 repo.setRecipeStageRunnerForTests(null);
 finish("heal-persistence");

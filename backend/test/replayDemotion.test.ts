@@ -219,6 +219,26 @@ await check("(h) drift on a recipe that was re-recorded DURING the replay does n
   assert.equal(auditFor("portal_recipe.demotion_skipped", recipe.id).length, 1, "the skipped demotion was not audited");
 });
 
+// ── (m3) trust skeptic M3: a human step edit mid-replay (no version bump) ────────────────────
+await check("(m3) MUST-EXCLUDE: drift on the OLD steps does not demote a recipe a human edited through savePortalRecipeSteps during the replay", async () => {
+  const recipe = fx.completeRecipe();
+  const projectId = fx.newProject();
+  fx.stubRunner(async () => {
+    // The operator inserts a step through the real steps writer (the PUT …/steps route's) mid-run.
+    const inserted = { action: "fill", selector: { name: "email" }, field: "homeownerEmail", value: "e", note: "Email" } as never;
+    recipes.savePortalRecipeSteps(db, recipe.id, [inserted, ...recipe.steps], { status: "complete" });
+    return fx.failingStep("Recipe step failed (fill — inverter quantity): locator.fill: Timeout 8000ms exceeded.");
+  });
+  await repo.prepareSubmission(db, projectId);
+  const row = fx.recipeRow(recipe.id);
+  assert.equal(Number(row.version), recipe.version, "premise: the steps writer does not bump the version");
+  assert.equal(row.status, "complete", "drift measured against the OLD steps demoted the edited recipe");
+  const run = fx.latestRun(projectId)!;
+  const skipped = auditFor("portal_recipe.demotion_skipped", recipe.id, run.id);
+  assert.equal(skipped.length, 1, "the skipped demotion was not audited");
+  assert.match(JSON.parse(skipped[0].details).reason, /steps were edited/);
+});
+
 // ── the human door stays separate ────────────────────────────────────────────────────────────
 await check("the human's mark-for-re-record still demotes with no evidence, and is audited as a person's act", () => {
   const recipe = fx.completeRecipe();

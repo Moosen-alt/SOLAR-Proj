@@ -656,8 +656,28 @@ export function recipeStructureSignature(steps: RecipeStep[]): string {
     // never the value, so the signature tracks structure, not a project's data.
     return [step.action, sel.name || sel.text || sel.css || "", step.field || ""].join("|");
   });
-  const joined = shape.join("\n");
-  // Cheap deterministic 32-bit hash (FNV-1a) — no crypto import needed for a fingerprint.
+  return fnv1a(shape.join("\n"));
+}
+
+/**
+ * THE SHAPE A REPLAY READ — the ordered (action, field, note, terminal marker) of every step,
+ * with NO selectors. This is what a replay's heal and demotion are measured against (trust
+ * skeptic M3): the version guard cannot see a human step edit (savePortalRecipeSteps — the PUT
+ * …/steps route and appendHumanPatchSteps — does not bump the version), so a step inserted
+ * mid-replay shifted every index and the heal for "City" landed on "Owner". Selectors are left
+ * out on purpose: a heal rewrites a selector, and a run that heals step 2 and then drifts at
+ * step 7 must still demote — with selectors in the hash its own heal would read as "the recipe
+ * changed" and spare it. A structural edit (insert, delete, reorder, retarget a field) changes
+ * this; a repaired selector does not.
+ */
+export function recipeShapeSignature(steps: RecipeStep[]): string {
+  const shape = (Array.isArray(steps) ? steps : []).map((step) =>
+    [step.action, step.field || "", step.note || "", step.isFinalSubmit === true ? "F" : ""].join("|"));
+  return fnv1a(shape.join("\n"));
+}
+
+// Cheap deterministic 32-bit hash (FNV-1a) — no crypto import needed for a fingerprint.
+function fnv1a(joined: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < joined.length; i++) {
     h ^= joined.charCodeAt(i);
@@ -950,7 +970,13 @@ export function demoteOnReplayFailure(
   recipeId: string,
   failureText: string,
   expectedVersion: number,
-  ctx: { runId?: string | null; projectId?: string | null } = {},
+  ctx: {
+    runId?: string | null; projectId?: string | null;
+    /** recipeShapeSignature of the steps the replay READ. A human step edit does not bump the
+     *  version (savePortalRecipeSteps), so the shape is compared too: drift on the old steps says
+     *  nothing about the edited recipe. */
+    expectedShapeSig?: string | null;
+  } = {},
 ): { action: ReplayDemotionAction; attribution: ReplayFailureAttribution | null; reason: string; recipe: PortalRecipe } {
   const recipe = getPortalRecipe(db, recipeId);
   const audit = (action: string, details: Record<string, unknown>): void => {
@@ -967,6 +993,10 @@ export function demoteOnReplayFailure(
   if (recipe.version !== expectedVersion) {
     audit("portal_recipe.demotion_skipped", { reason: "recipe changed during replay" });
     return { action: "version_changed", attribution: null, reason: "the recipe changed while the replay ran", recipe };
+  }
+  if (ctx.expectedShapeSig && recipeShapeSignature(recipe.steps) !== ctx.expectedShapeSig) {
+    audit("portal_recipe.demotion_skipped", { reason: "recipe changed during replay (its steps were edited)" });
+    return { action: "version_changed", attribution: null, reason: "the recipe's steps were edited while the replay ran", recipe };
   }
   const verdict = replayFailureBlamesRecipe(failureText);
   const now = nowIso();
@@ -1050,7 +1080,12 @@ export function persistHealedSteps(
   recipeId: string,
   expectedVersion: number,
   healed: ReportedHeal[],
-  ctx: { projectId?: string | null; runId?: string | null } = {},
+  ctx: {
+    projectId?: string | null; runId?: string | null;
+    /** recipeShapeSignature of the steps the replay READ — a human step edit (no version bump)
+     *  shifts every index, and the heal must then be discarded, never landed on another step. */
+    expectedShapeSig?: string | null;
+  } = {},
 ): { applied: number[]; discarded: string | null } {
   // (1) Disarm first — its own statement, outside the try.
   db.run("UPDATE portal_recipes SET auto_submit_enabled = 0 WHERE id = ?", [recipeId]);
@@ -1071,6 +1106,7 @@ export function persistHealedSteps(
     if (!row) return discard("recipe no longer exists");
     if (Number(row.version ?? 0) !== expectedVersion) return discard("recipe changed during replay");
     const steps = parseJson<RecipeStep[]>(s(row.steps_json) || "[]", []);
+    if (ctx.expectedShapeSig && recipeShapeSignature(steps) !== ctx.expectedShapeSig) return discard("recipe changed during replay (its steps were edited)");
     const applied: number[] = [];
     for (const h of usable) {
       const st = steps[h.stepIndex];
