@@ -215,6 +215,46 @@ hist.revokeHistoricalBlockerAcknowledgement(db, { projectId: later, signature, a
 check("after a revoke, the Portland projects are blocked again", blockedByFraming(later) && blockedByFraming(noFraming), JSON.stringify(historicalBlockers(later)));
 check("…and the plan-set evidence still clears the project that HAS it", !blockedByFraming(withSheets));
 
+// ── MF3 (D1 verification): the ruling outlives the project it was recorded from ────────────
+// deleteProject runs "DELETE FROM audit_logs WHERE project_id = ?". Recorded against the
+// originating project, a revoke died with it and the AHJ-wide acknowledgement resurrected
+// (fail-open); an acknowledgement died with its project and the ruling vanished. Through the
+// REAL deleteProject.
+{
+  const { deleteProject } = await import("../src/repository");
+  const ackFrom = mk("MF3 Ack From Owner");
+  await attachPlanSet(ackFrom, NO_FRAMING_SHEETS);
+  const revokeFrom = mk("MF3 Revoke From Owner");
+  await attachPlanSet(revokeFrom, NO_FRAMING_SHEETS);
+  const bystander = mk("MF3 Bystander Owner");
+  await attachPlanSet(bystander, NO_FRAMING_SHEETS);
+  check("MF3 SETUP: the bystander is blocked before any ruling", blockedByFraming(bystander));
+  hist.acknowledgeHistoricalBlocker(db, { projectId: ackFrom, signature, actor: "ops@example.test", note: "MF3" }, null);
+  check("MF3 SETUP: acknowledged from project A, the bystander is unblocked", !blockedByFraming(bystander));
+  hist.revokeHistoricalBlockerAcknowledgement(db, { projectId: revokeFrom, signature, actor: "ops@example.test" }, null);
+  check("MF3 SETUP: revoked from project B, the bystander is blocked again", blockedByFraming(bystander));
+  deleteProject(db, revokeFrom);
+  check("MF3 MUST-EXCLUDE: deleting the project the REVOKE was recorded from does not resurrect the acknowledgement — the bystander stays blocked",
+    blockedByFraming(bystander) && hist.listHistoricalBlockerAcknowledgements(db, bystander, null).length === 0,
+    `${JSON.stringify(historicalBlockers(bystander))} acks=${JSON.stringify(hist.listHistoricalBlockerAcknowledgements(db, bystander, null))}`);
+  const ackFrom2 = mk("MF3 Ack From Owner 2");
+  await attachPlanSet(ackFrom2, NO_FRAMING_SHEETS);
+  const ack2 = hist.acknowledgeHistoricalBlocker(db, { projectId: ackFrom2, signature, actor: "ops@example.test", note: "MF3 again" }, null);
+  check("MF3 SETUP: acknowledged again from project D, the bystander is unblocked", !blockedByFraming(bystander));
+  deleteProject(db, ackFrom2);
+  check("MF3 MUST-PASS: the acknowledgement survives deleteProject of the project it was recorded from — the bystander stays unblocked and the ruling is still listed",
+    !blockedByFraming(bystander) && hist.listHistoricalBlockerAcknowledgements(db, bystander, null).some((a) => a.signature === signature && a.note === "MF3 again"),
+    `${JSON.stringify(historicalBlockers(bystander))} acks=${JSON.stringify(hist.listHistoricalBlockerAcknowledgements(db, bystander, null))} ack=${JSON.stringify(ack2)}`);
+  const rows = db.query<{ project_id: string | null; details: string }>("SELECT project_id, details FROM audit_logs WHERE action LIKE 'historical_blocker.%' ORDER BY created_at ASC, rowid ASC");
+  check("MF3: the ruling rows carry no project_id (they belong to the org x AHJ) but name the originating project in details",
+    rows.length >= 3 && rows.every((r) => r.project_id === null && /"projectId":"[0-9a-f-]{36}"/i.test(r.details)), JSON.stringify(rows.slice(-3)));
+  // Leave the AHJ blocked for the TX section below (which learns its own correction at Austin).
+  hist.revokeHistoricalBlockerAcknowledgement(db, { projectId: bystander, signature, actor: "ops@example.test" }, null);
+  check("MF3: revoked once more from the bystander itself, it is blocked again", blockedByFraming(bystander));
+  deleteProject(db, ackFrom);
+  check("MF3 MUST-EXCLUDE: deleting the first acknowledging project afterwards changes nothing either", blockedByFraming(bystander));
+}
+
 // ── MF1 at a STANDARD-REVIEW AHJ (TX): nothing else backstops the framing there ─────────────
 // In Oregon the prescriptive-span reviewer check still catches a set with no rafter numbers; at a
 // standard-review AHJ (FL/TX/UT/CA — the prospects) the learned blocker is the only thing between

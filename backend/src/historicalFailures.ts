@@ -335,6 +335,15 @@ function projectWithPlanSetText(db: AppDb, project: ProjectRecord): ProjectRecor
 //
 // Stored on the audit trail (append-only; the newest acknowledge/revoke per key wins), so the
 // decision is attributable and reversible without a schema change.
+//
+// AN AHJ-LEVEL RULING IS NOT A PROJECT ROW (2026-09-24, D1 verification MF3). The rows used to
+// carry the originating project's id in audit_logs.project_id, and deleteProject runs
+// "DELETE FROM audit_logs WHERE project_id = ?": deleting the project a revoke was recorded from
+// deleted the revoke, and the AHJ-wide acknowledgement RESURRECTED (every project there unblocked
+// again, silently); deleting the project an acknowledgement was recorded from made the ruling
+// vanish. Duplicate projects are deleted routinely (five groups in the load test). So both rows
+// are written with project_id NULL — the ruling belongs to the org × AHJ, not to the project it
+// happened to be recorded from — and the originating project id lives in details.projectId.
 // ---------------------------------------------------------------------------
 const ACK_ACTION = "historical_blocker.acknowledged";
 const REVOKE_ACTION = "historical_blocker.ack_revoked";
@@ -407,8 +416,8 @@ export function acknowledgeHistoricalBlocker(
   if (!cause) throw new HttpError(404, "That historical blocker is not one of this project's learned blockers.");
   const note = String(input.note ?? "").trim().slice(0, 300);
   const actor = String(input.actor ?? "").trim() || "operator";
-  addAuditLog(db, input.projectId, "human", actor, ACK_ACTION, {
-    orgId: projectOrgId, state: project.state, ahj, signature: cause.signature, title: cause.title, note,
+  addAuditLog(db, null, "human", actor, ACK_ACTION, {
+    orgId: projectOrgId, state: project.state, ahj, signature: cause.signature, title: cause.title, note, projectId: input.projectId,
   });
   return activeAcknowledgements(db, projectOrgId, project.state, ahj).get(cause.signature)!;
 }
@@ -422,8 +431,8 @@ export function revokeHistoricalBlockerAcknowledgement(
   const { project, projectOrgId } = scopedProject(db, input.projectId, orgId);
   const ahj = (project.ahj || project.city).trim();
   if (!activeAcknowledgements(db, projectOrgId, project.state, ahj).has(input.signature)) return { revoked: false };
-  addAuditLog(db, input.projectId, "human", String(input.actor ?? "").trim() || "operator", REVOKE_ACTION, {
-    orgId: projectOrgId, state: project.state, ahj, signature: input.signature,
+  addAuditLog(db, null, "human", String(input.actor ?? "").trim() || "operator", REVOKE_ACTION, {
+    orgId: projectOrgId, state: project.state, ahj, signature: input.signature, projectId: input.projectId,
   });
   return { revoked: true };
 }
