@@ -343,6 +343,9 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  A field that never landed (ambiguous model left blank for the human) is not
    *  "lost to a re-render" and must not be repaired or reported as such. */
   private landedSelectFields = new Set<string>();
+  /** Recorded uploads this run PERFORMED: the slot's recorded label and the file name the portal
+   *  was handed. The read-back for an upload (see uploadSlotsHeld). */
+  private uploadsPerformed: Array<{ label: string; fileName: string }> = [];
   /** Policy-default steps whose control was absent when their turn came — re-tried once
    *  just before the page's advance, when a conditional section has had every chance to
    *  render. Cleared on each advance. */
@@ -3393,12 +3396,14 @@ export class RecipeAdapter extends BasePortalAdapter {
           await chooser.setFiles(file);
           await this.markRecordedUpload(scoped, chooser);
           await this.waitForUploadAccepted();
+          this.noteUploadPerformed(recordedLabel, file);
           return true;
         }
         this.options.beforeUpload?.(step.docType!, filePath);
         await scoped!.setInputFiles(file);
         await this.markRecordedUpload(scoped, null);
         await this.waitForUploadAccepted();
+        this.noteUploadPerformed(recordedLabel, file);
         return true;
       }
       default:
@@ -4943,7 +4948,78 @@ export class RecipeAdapter extends BasePortalAdapter {
     for (const name of found.requiredSeen) {
       if (!this.requiredFieldsSeen.includes(name)) this.requiredFieldsSeen.push(name);
     }
+    const held = await this.uploadSlotsHeld(found.empty.map((e) => e.name));
+    if (held.size) return { ...found, empty: found.empty.filter((e) => !held.has(e.name)) };
     return found;
+  }
+
+  private noteUploadPerformed(label: string, file: unknown): void {
+    const fileName = typeof file === "string" ? path.basename(file)
+      : String((file as { name?: unknown } | null)?.name ?? "");
+    if (label && fileName) this.uploadsPerformed.push({ label, fileName });
+  }
+
+  /** AN EMPTY FILE BOX IS NOT A MISSING DOCUMENT. A browser never restores a file input's
+   *  value, so after the portal takes the upload and re-renders (Accela's Save, any postback)
+   *  the required slot reads EMPTY beside the portal's own "Uploaded: plan-set.pdf". The sweep
+   *  reported that as a required field "that would not stay filled" on every Accela replay whose
+   *  server held the document — telling a person to attach by hand what was already attached.
+   *
+   *  Discharged ONLY on positive evidence, read back from the page now: (a) this run performed
+   *  the recorded upload for a slot of that label, (b) a visible FILE input carries that label,
+   *  and (c) the page lists the exact file name the run handed the portal. A slot the run never
+   *  uploaded to, a same-named text box, or a page that does not list the file all stay blank —
+   *  pageIsPassThrough shares this sweep, and a false "filled" there clicks past a missing
+   *  attachment. Returns the empty names that are held uploads. */
+  private async uploadSlotsHeld(emptyNames: string[]): Promise<Set<string>> {
+    const held = new Set<string>();
+    if (!emptyNames.length || !this.uploadsPerformed.length || typeof this.page?.evaluate !== "function") return held;
+    const norm = (t: string): string => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const candidates: Array<{ name: string; fileName: string }> = [];
+    for (const name of emptyNames) {
+      const nb = norm(name);
+      if (!nb) continue;
+      const up = [...this.uploadsPerformed].reverse().find((u) => {
+        const nl = norm(u.label);
+        return !!nl && (nl === nb || (nb.length > 6 && nl.includes(nb)) || (nl.length > 6 && nb.includes(nl)));
+      });
+      if (up) candidates.push({ name, fileName: up.fileName });
+    }
+    if (!candidates.length) return held;
+    const verdicts = await this.page.evaluate((cands: Array<{ name: string; fileName: string }>) => {
+      const n = (t: string): string => String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const body = String(document.body?.innerText || "").toLowerCase();
+      const fileInputs = Array.from(document.querySelectorAll('input[type="file"]')).filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 || r.height > 0;
+      });
+      const labelOf = (el: Element): string => {
+        const id = el.getAttribute("id");
+        const byFor = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+        const parts = [byFor?.textContent, el.getAttribute("aria-label"), el.closest("label")?.textContent];
+        let p: Element | null = el.parentElement;
+        for (let i = 0; i < 3 && p; i++, p = p.parentElement) {
+          const t = (p as HTMLElement).innerText || "";
+          if (t.length <= 200) parts.push(t);
+        }
+        return parts.filter(Boolean).map((t) => n(String(t))).join(" | ");
+      };
+      const labels = fileInputs.map(labelOf);
+      return cands.map((c) => {
+        const want = n(c.name);
+        const isFileSlot = !!want && labels.some((l) => l.includes(want));
+        const listed = !!c.fileName && body.includes(c.fileName.toLowerCase());
+        return isFileSlot && listed;
+      });
+    }, candidates).catch(() => null) as boolean[] | null;
+    if (!Array.isArray(verdicts)) return held; // unreadable: not evidence the upload held
+    candidates.forEach((c, i) => {
+      if (verdicts[i] !== true) return;
+      held.add(c.name);
+      const note = `"${c.name.slice(0, 48)}": the file box reads empty after the portal took the upload, and the page lists the uploaded file — held (a browser never restores a file input's value)`;
+      if (!this.agingNotes.includes(note)) this.agingNotes.push(note);
+    });
+    return held;
   }
 
   /** A FIELD WE FILLED THAT HAS SINCE GONE BLANK IS A RE-RENDER, NOT A MISSING VALUE.
