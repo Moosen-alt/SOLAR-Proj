@@ -861,7 +861,7 @@ export function seedReferenceStateAdoptions(db: AppDb, adoptions: ReferenceState
       if (!row) { upsert(db, profile, { confidence: "seeded" }); out.created++; continue; }
       const existing = mapRow(row);
       if (existing.confidence === "verified") {
-        if (proposeEditionUpdate(db, existing, profile, "reference")) out.proposed++;
+        if (proposeEditionUpdate(db, existing, profile, "reference")?.isNew) out.proposed++;
         else out.skipped++;
         continue;
       }
@@ -928,7 +928,7 @@ function fingerprintOf(key: string, changes: JurisdictionEditionProposal["change
 
 /** Record (once) that a verified row disagrees with grounded research / the reference data.
  *  Returns the proposal, or null when the row already states every proposed edition. */
-export function proposeEditionUpdate(db: AppDb, verifiedRow: JurisdictionCodeProfile, found: JurisdictionCodeProfile, source: "reference" | "research"): JurisdictionEditionProposal | null {
+export function proposeEditionUpdate(db: AppDb, verifiedRow: JurisdictionCodeProfile, found: JurisdictionCodeProfile, source: "reference" | "research"): (JurisdictionEditionProposal & { isNew: boolean }) | null {
   const changes = editionChanges(verifiedRow.adoptedCodes, found.adoptedCodes ?? []);
   if (!changes.length) return null;
   const key = verifiedRow.key || codeProfileKey(verifiedRow);
@@ -940,10 +940,10 @@ export function proposeEditionUpdate(db: AppDb, verifiedRow: JurisdictionCodePro
     ...(found.upcoming?.length ? { upcoming: found.upcoming } : {}),
   };
   const seen = db.get<Row>("SELECT id FROM audit_logs WHERE action = ? AND details LIKE ? LIMIT 1", [PROPOSAL_ACTION, `%"fingerprint":"${fingerprint}"%`]);
-  if (seen) return proposal;
+  if (seen) return { ...proposal, isNew: false };
   addAuditLog(db, null, "system", source === "reference" ? "reference code data" : "code research", PROPOSAL_ACTION, proposal as unknown as Record<string, unknown>);
   logger.warn("code-profiles", `human-verified ${key} looks stale: ${changes.map((c) => `${c.family} ${c.current ?? "(none)"} -> ${c.proposed}`).join("; ")} — proposal ${fingerprint} awaits a person`);
-  return proposal;
+  return { ...proposal, isNew: true };
 }
 
 /** Proposals still awaiting a person: the newest per row, the row still verified and still not
