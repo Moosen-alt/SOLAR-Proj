@@ -1257,6 +1257,38 @@ async function testDriftDenominatorKeepsBatteryFieldsWhenThereIsABattery(): Prom
     `unknown battery state must replay as recorded, not silently shrink the check: ${JSON.stringify(unknown)}`);
 }
 
+// R4: A FAILURE CAPTURE NEVER WAITS FOR THE CONTROL THAT FAILED TO APPEAR. The fake locator's
+// evaluate() behaves like Playwright's: it waits for its element (here 5 s standing in for the
+// default 30 s) unless a shorter timeout is passed. MUST-EXCLUDE: an absent target (count 0) costs
+// no wait at all. MUST-PASS: a present target is still captured, markup and options.
+async function testFailureCaptureDoesNotWaitForAnAbsentTarget() {
+  const os = await import("node:os");
+  const fsm = await import("node:fs");
+  const pth = await import("node:path");
+  const dir = fsm.mkdtempSync(pth.join(os.tmpdir(), "capture-wait-"));
+  const frame = { url: () => "http://127.0.0.1/review", name: () => "", evaluate: async () => "<body>review</body>" };
+  const adapter = withFakePage(new RecipeAdapter(baseRecipe([]), {}, {}), {
+    frames: () => [frame], url: () => "http://127.0.0.1/review", evaluate: async () => null,
+  });
+  const locator = (present: boolean) => ({
+    count: async () => (present ? 1 : 0),
+    evaluate: (_fn: unknown, _arg: unknown, o?: { timeout?: number }) => present
+      ? Promise.resolve({ outerHTML: "<select id=\"county\"></select>", options: ["Alpha", "Beta"], secret: false })
+      : new Promise((_res, rej) => setTimeout(() => rej(new Error("Timeout exceeded")), o?.timeout ?? 5000)),
+  });
+  const write = (adapter as unknown as { writeSanitizedCapture: (d: string, b: string, o: unknown) => Promise<string> }).writeSanitizedCapture.bind(adapter);
+  const t0 = Date.now();
+  const absentFile = await write(dir, "absent", { target: locator(false) });
+  const took = Date.now() - t0;
+  assert.ok(took < 1000, `capturing an ABSENT target waited ${took} ms for it (the step already spent its timeout proving it absent)`);
+  assert.ok(absentFile, "the page itself is still captured when the target is absent");
+  assert.equal(JSON.parse(fsm.readFileSync(absentFile, "utf8")).target, null);
+  const presentFile = await write(dir, "present", { target: locator(true) });
+  const cap = JSON.parse(fsm.readFileSync(presentFile, "utf8"));
+  assert.ok(/county/.test(cap.target?.outerHTML ?? ""), `a present target's markup is captured: ${JSON.stringify(cap.target)}`);
+  assert.deepEqual(cap.target.options, ["Alpha", "Beta"]);
+}
+
 // R1: THE CHOKEPOINT IS THE ONLY DOOR. Read the adapter's own source: no .click( / .press( /
 // .goto( / .dblclick( / .tap( may appear outside guardedClick / guardedPress / guardedGoto, so a
 // raw click re-introduced anywhere (the drift-seek click-through was one) fails here without a
@@ -1312,6 +1344,7 @@ async function testGotoLeavingThePortalStopsTheRun() {
 }
 
 const tests: Array<[string, () => Promise<void>]> = [
+  ["R4: a failure capture never waits for the control that failed to appear", testFailureCaptureDoesNotWaitForAnAbsentTarget],
   ["R1: no click/press/goto outside the replay chokepoint (static)", testNoRawActionOutsideTheChokepoint],
   ["R1: a goto that leaves the recipe's portal stops the run, named (rule 5)", testGotoLeavingThePortalStopsTheRun],
   ["R2: each missing input of the final-submit gate keeps it unclicked", testFinalSubmitGateRefusesEachMissingInput],

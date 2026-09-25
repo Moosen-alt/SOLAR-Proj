@@ -5826,9 +5826,15 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
       type TargetCapture = { outerHTML: string; options: string[]; secret: boolean };
       let target: TargetCapture | null = null;
-      const t = opts.target as { first?: () => unknown; evaluate?: (fn: unknown, arg: unknown) => Promise<unknown> } | null | undefined;
+      const t = opts.target as { first?: () => unknown; count?: () => Promise<number>; evaluate?: (fn: unknown, arg: unknown, o?: { timeout?: number }) => Promise<unknown> } | null | undefined;
       const one = t && typeof t.first === "function" ? (t.first() as typeof t) : t;
-      if (one && typeof one.evaluate === "function") {
+      // A FAILURE CAPTURE NEVER WAITS FOR THE CONTROL THAT FAILED TO APPEAR. A locator's
+      // evaluate() waits the default 30 s for its element — and the commonest reason we are
+      // capturing at all is that the element is NOT there. Measured: a missing upload slot on a
+      // review page cost 30 s for the step and another 30 s for this capture. Count first (no
+      // wait), and bound the read for an element that detaches between the count and the read.
+      const present = one && typeof one.count === "function" ? await one.count().catch(() => 0) : 1;
+      if (one && typeof one.evaluate === "function" && present > 0) {
         await this.page.evaluate?.(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
         target = await one.evaluate((el: Element, g: string) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -5841,7 +5847,7 @@ export class RecipeAdapter extends BasePortalAdapter {
             ? Array.from((el as HTMLSelectElement).options).map((o) => o.text.replace(/\s+/g, " ").trim()).slice(0, 200)
             : [];
           return { outerHTML: secret ? `<${el.tagName.toLowerCase()} [secret control — markup withheld]>` : c.outerHTML.slice(0, 20_000), options: opts, secret };
-        }, PORTAL_SAFETY_GLOBAL).catch(() => null) as TargetCapture | null;
+        }, PORTAL_SAFETY_GLOBAL, { timeout: 2000 }).catch(() => null) as TargetCapture | null;
       }
       // Nothing readable (a unit-test fake, a closed page): write nothing rather than an empty shell.
       if (!captured.length && !target) return "";
