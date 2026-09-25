@@ -27,6 +27,14 @@ export interface PermitPathResolution {
   path: PermitPath;
   /** Where the decision came from — an explicit operator choice always wins. */
   source: "operator" | "parser" | "structural-screen" | "default";
+  /** STANDARD STRUCTURAL REVIEW: OUTSIDE Oregon, where the jurisdiction has no prescriptive
+   *  rooftop-PV path on file (researched false, or never researched). There is no
+   *  prescriptive-vs-engineered CHOICE to confirm there — the one application is the standard
+   *  structural (building) review — so the path is "engineered" for routing (which application,
+   *  which fee rows) but it does NOT by itself demand a PE stamp: the jurisdiction's own stamp
+   *  rule decides that (resolveStampRequirement steps 2-3). A flag beside `source` (which stays
+   *  "structural-screen") because the source union is mirrored in shared/src/types.ts. */
+  standardReview: boolean;
   /** Human-readable reasons, surfaced in the docs + reviewer so the call is auditable. */
   basis: string[];
   /** True when the path is engineered → stamped plans + structural letter are required. */
@@ -277,8 +285,11 @@ export function resolveStampRequirement(
     waivable = false,
   ): StampRequirement => ({ required, source, reason, waivable, satisfiedByEvidence });
 
-  // 1. This project's own path. Strongest signal — engineered means engineered.
-  if (resolvePermitPath(project).path === "engineered") {
+  // 1. This project's own path. Strongest signal — engineered means engineered. A STANDARD
+  //    structural review (outside Oregon, no prescriptive path on file) is not a demand for an
+  //    Oregon-style PE package: the jurisdiction's own rule below decides the stamp there.
+  const own = resolvePermitPath(project);
+  if (own.path === "engineered" && !own.standardReview) {
     return done(true, "engineered_path",
       "Non-prescriptive path: the AHJ requires a wet/digital PE stamp on the structural sheets and a sealed engineering letter.");
   }
@@ -328,13 +339,19 @@ export interface PermitPathOptions {
 
 export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOptions = {}): PermitPathResolution {
   const basis: string[] = [];
-  const finalize = (path: PermitPath, source: PermitPathResolution["source"]): PermitPathResolution => ({
-    path,
-    source,
-    basis,
-    needsEngineeredDocs: path === "engineered",
-    requiredEngineeredDocs: path === "engineered" ? ENGINEERED_REQUIRED_DOCS : [],
-  });
+  const finalize = (path: PermitPath, source: PermitPathResolution["source"], standardReview = false): PermitPathResolution => {
+    // A standard structural review asks for what THAT jurisdiction's rule asks for — not
+    // Oregon's engineered-path PE package. See `standardReview` above.
+    const engineeredPackage = path === "engineered" && !standardReview;
+    return {
+      path,
+      source,
+      standardReview,
+      basis,
+      needsEngineeredDocs: engineeredPackage,
+      requiredEngineeredDocs: engineeredPackage ? ENGINEERED_REQUIRED_DOCS : [],
+    };
+  };
 
   // 1. Operator override — explicit dropdown choice is authoritative.
   const override = snap(project, "permitPathOverride").toLowerCase();
@@ -416,19 +433,35 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   // A jurisdiction that PUBLISHES NO prescriptive PV path has answered the question: every
   // rooftop project there goes to standard/engineered review. That is a fact researched from
   // the jurisdiction, not an Oregon inference, so it routes.
-  if (stateCode !== "OR" && jurisdiction.hasPrescriptivePath === false) {
+  //
+  // AND SO DOES A JURISDICTION WITH NO PRESCRIPTIVE PATH ON FILE. "Prescriptive vs engineered —
+  // confirm which" is an OREGON question (ORSC / BCD 440-5952 publishes two applications and the
+  // AHJ takes one). Asking it of every other state stopped all 25 IL and WA projects in the
+  // 100-project load test at "Permit path confirmed" (2026-09-24): an operator was being asked to
+  // choose between two applications that jurisdiction does not publish. Outside Oregon, unless the
+  // jurisdiction's own research says it HAS a prescriptive path, there is one route — the standard
+  // structural (building) review — and the project asks only for what that review needs: the
+  // roof framing + attachment detail (every project's required set) and a sealed letter only when
+  // the jurisdiction's own stamp rule says so (resolveStampRequirement). The operator can still
+  // pick prescriptive for a jurisdiction that publishes one; its researched limits take over once
+  // they land. Never "prescriptive": no Oregon number judges a Florida roof.
+  if (stateCode && stateCode !== "OR" && !hasResearchedLimits) {
+    const where = project.ahj || stateCode;
     basis.push(
-      `${project.ahj || stateCode || "This jurisdiction"} publishes no prescriptive rooftop-PV path`
-      + `${jurisdiction.sourceUrl ? ` (${jurisdiction.sourceUrl})` : ""}, so rooftop PV goes through standard structural review.`,
+      jurisdiction.hasPrescriptivePath === false
+        ? `${where} publishes no prescriptive rooftop-PV path${jurisdiction.sourceUrl ? ` (${jurisdiction.sourceUrl})` : ""}, so rooftop PV goes through standard structural review.`
+        : `No prescriptive rooftop-PV path is on file for ${where} (the prescriptive-vs-engineered screen here is Oregon's ORSC / BCD 440-5952 and does not apply in ${stateCode}), so rooftop PV goes through the standard structural (building) review — no path choice to confirm.`,
+      `What that review needs: the roof framing + attachment detail, and a PE-sealed structural letter only if ${where}'s own rule requires one. If ${where} publishes a prescriptive path, choose it (Manual entry → Permit path).`,
     );
-    return finalize("engineered", "structural-screen");
+    return finalize("engineered", "structural-screen", true);
   }
 
   if (stateCode !== "OR" && !hasResearchedLimits) {
+    // No state on file: there is no jurisdiction to route by at all, so no claim is made.
     basis.push(
       `The prescriptive screen encoded here is Oregon's (ORSC / BCD 440-5952 limits). `
-      + `${stateCode ? `This project is in ${stateCode}` : "This project has no state on file"}, so those limits do not apply and no path is inferred from them. `
-      + `Confirm the path (Manual entry → Permit path); the jurisdiction's own limits are researched automatically on first encounter and will answer this once they land.`,
+      + `This project has no state on file, so those limits do not apply and no path is inferred from them. `
+      + `Add the project's state (or confirm the path on Manual entry → Permit path).`,
     );
     return finalize("unknown", "default");
   }
@@ -732,6 +765,9 @@ export function pathWordingContradicts(scope: PathWordingScope, path: PermitPath
 
 /** One-line human callout summarizing the path + its fee/review implications. */
 export function permitPathCallout(res: PermitPathResolution): string {
+  if (res.standardReview) {
+    return "Standard structural review — this jurisdiction has no prescriptive rooftop-PV path on file, so there is no prescriptive-vs-engineered choice to make. File its building/structural application with the roof framing + attachment detail; a PE-sealed letter only where its own rule requires one.";
+  }
   if (res.path === "prescriptive") {
     return "Prescriptive path — upload ONLY the prescriptive application. Meets prescriptive code, no plan review, reduced permit fee. Do NOT also upload the structural application.";
   }

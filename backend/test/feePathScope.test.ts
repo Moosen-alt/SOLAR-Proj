@@ -283,10 +283,14 @@ async function main(): Promise<void> {
     state,
     parserSnapshot: { ...(SHINGLE_CLEAN as { parserSnapshot: Record<string, unknown> }).parserSnapshot, ...snapshot },
   });
+  // (2026-09-24) The invariant is "never prescriptive from Oregon's numbers". The MECHANISM
+  // changed: "unknown" stopped every out-of-state project at the gate forever (load test: 25/25
+  // IL + WA), asking an Oregon question. With no prescriptive path on file the route is the
+  // STANDARD structural review (standardReview) — see outOfStatePermitPath.test.ts.
   for (const state of ["FL", "OH", "IA"]) {
     const out = resolvePermitPath(otherState(state));
-    check(`MUST PASS: numerics that clear OREGON's screen resolve UNKNOWN in ${state}, never "prescriptive"`,
-      out.path === "unknown", JSON.stringify(out.path));
+    check(`MUST PASS: numerics that clear OREGON's screen never read "prescriptive" in ${state} — standard structural review`,
+      out.path !== "prescriptive" && out.standardReview === true, JSON.stringify({ path: out.path, standardReview: out.standardReview }));
   }
   check("...and the basis SAYS the screen was Oregon's rather than going quiet",
     /Oregon|ORSC|440-5952/i.test(resolvePermitPath(otherState("FL")).basis.join(" ")),
@@ -329,8 +333,8 @@ async function main(): Promise<void> {
   // allowedWindExposures ["B","C","D"] — correct design-criteria data that says nothing
   // about whether a prescriptive PV path exists. Treating a fragment as one let a project
   // "clear" a screen of a single check with every other limit absent.
-  check("MUST EXCLUDE: stray limits WITHOUT hasPrescriptivePath do not manufacture a verdict",
-    resolvePermitPath(FL(), { limits: { allowedWindExposures: ["B", "C", "D"] } }).path === "unknown",
+  check("MUST EXCLUDE: stray limits WITHOUT hasPrescriptivePath do not manufacture a PRESCRIPTIVE verdict (standard review)",
+    resolvePermitPath(FL(), { limits: { allowedWindExposures: ["B", "C", "D"] } }).standardReview === true,
     JSON.stringify(resolvePermitPath(FL(), { limits: { allowedWindExposures: ["B", "C", "D"] } }).path));
   check("MUST EXCLUDE: the Oregon membrane-roof rule does not fire outside Oregon",
     resolvePermitPath(FL({ roofMaterial: "TPO" }), { limits: flLimits }).path === "prescriptive");

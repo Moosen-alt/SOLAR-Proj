@@ -905,6 +905,26 @@ function addProfileFindings(project: ProjectRecord, profile: AhjProcessProfile |
 function addPermitPathFindings(project: ProjectRecord, findings: ReviewerFinding[]): void {
   const path = resolvePermitPath(project);
 
+  // OUTSIDE OREGON with no prescriptive path on file there is no path CHOICE (permitPath.ts,
+  // standardReview): the one application is the standard structural review. Say that,
+  // and never the Oregon engineered-path demand for a PE package — the stamp, where the
+  // jurisdiction's own rule wants one, is on the required-documents list already.
+  if (path.standardReview) {
+    findings.push(finding(
+      "reviewer.permit-path.standard-review",
+      "callout",
+      "structural",
+      "Standard structural review (no prescriptive path on file)",
+      `${path.basis.join(" ")}`,
+      true,
+      {
+        cityFeedback: "Rooftop PV is reviewed through the jurisdiction's standard structural (building) permit review.",
+        designTeamAction: "Make sure the plan set shows the roof framing (member, size, spacing, span) and the attachment detail; attach a PE-sealed letter only where the jurisdiction's rule requires one.",
+      },
+    ));
+    return;
+  }
+
   if (path.path === "engineered") {
     const haveStamp = hasStampedStructuralEvidence(project);
     findings.push(finding(
