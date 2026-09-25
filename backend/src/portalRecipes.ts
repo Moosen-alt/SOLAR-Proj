@@ -688,6 +688,101 @@ export function demoteOnReplayFailure(
   return { action: "flagged", attribution: verdict.attribution, reason: verdict.reason, recipe: getPortalRecipe(db, recipeId) };
 }
 
+/** A heal as the replay reports it (shared/src/portalSafety HealedStep), read defensively. */
+export interface ReportedHeal {
+  stepIndex: number;
+  recipeVersion?: number;
+  action: string;
+  note?: string;
+  selector?: unknown;
+  performed: boolean;
+}
+
+/** Every heal a replay result reports — on the result itself or on any step's data (where
+ *  recipeAdapter actually puts them) — one per step index, the last report winning. */
+export function collectHealedSteps(result: unknown): ReportedHeal[] {
+  const r = (result ?? {}) as { healedSteps?: unknown; steps?: Array<{ data?: { healedSteps?: unknown } }> };
+  const lists: unknown[] = [r.healedSteps, ...(Array.isArray(r.steps) ? r.steps.map((st) => st?.data?.healedSteps) : [])];
+  const byIndex = new Map<number, ReportedHeal>();
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const h of list as Array<Partial<ReportedHeal>>) {
+      if (!h || !Number.isInteger(h.stepIndex)) continue;
+      byIndex.set(Number(h.stepIndex), h as ReportedHeal);
+    }
+  }
+  return [...byIndex.values()];
+}
+
+/**
+ * PERSIST A REPLAY'S HEALS — onto the step each one healed, and only onto the recipe it healed.
+ *
+ * The old writer matched heals by (action, note) and rewrote EVERY step that shared them — one
+ * heal re-pointed all six "No" radios of a policy page at the same control. It read the row with
+ * no version check, so it could patch steps a concurrent re-learn had just written. And the
+ * auto-submit disarm sat inside the same try as the step write ("best-effort"), so a throwing save
+ * left a healed — unverified — recipe armed.
+ *
+ * Now: (1) the disarm is its own statement, FIRST, outside any try — auto_submit_enabled is never
+ * authority (maySubmitAutomatically does not read it), but a healed recipe must never look armed;
+ * (2) only heals that PERFORMED and were read from THIS version apply, each by stepIndex, and only
+ * when the step still has the action the heal reports; (3) the write is
+ * `UPDATE ... WHERE id = ? AND version = ?` — if the recipe moved during the replay the heals are
+ * discarded with an audit row, never merged into a recipe they were not measured against. The
+ * version is NOT bumped: a heal is the same recipe with a repaired selector (and a bump would make
+ * the same run's demotion check think the recipe changed under it).
+ */
+export function persistHealedSteps(
+  db: AppDb,
+  recipeId: string,
+  expectedVersion: number,
+  healed: ReportedHeal[],
+  ctx: { projectId?: string | null; runId?: string | null } = {},
+): { applied: number[]; discarded: string | null } {
+  // (1) Disarm first — its own statement, outside the try.
+  db.run("UPDATE portal_recipes SET auto_submit_enabled = 0 WHERE id = ?", [recipeId]);
+  const audit = (action: string, details: Record<string, unknown>): void => {
+    try {
+      addAuditLog(db, ctx.projectId ?? null, "system", "recipe replay", action, { recipeId, expectedVersion, runId: ctx.runId ?? null, ...details });
+    } catch { /* audit is best-effort */ }
+  };
+  const usable = (healed ?? []).filter((h) => h && h.performed === true && Number.isInteger(h.stepIndex) && h.stepIndex >= 0
+    && (h.recipeVersion === undefined || h.recipeVersion === null || Number(h.recipeVersion) === expectedVersion));
+  if (!usable.length) return { applied: [], discarded: null };
+  const discard = (reason: string): { applied: number[]; discarded: string } => {
+    audit("recipe.heal_discarded", { reason, stepIndexes: usable.map((h) => h.stepIndex).slice(0, 20) });
+    return { applied: [], discarded: reason };
+  };
+  try {
+    const row = db.get<Row>("SELECT version, steps_json, notes FROM portal_recipes WHERE id = ?", [recipeId]);
+    if (!row) return discard("recipe no longer exists");
+    if (Number(row.version ?? 0) !== expectedVersion) return discard("recipe changed during replay");
+    const steps = parseJson<RecipeStep[]>(s(row.steps_json) || "[]", []);
+    const applied: number[] = [];
+    for (const h of usable) {
+      const st = steps[h.stepIndex];
+      if (!st || st.action !== h.action) continue; // the step is not the one the heal measured
+      steps[h.stepIndex] = {
+        ...st,
+        selector: { ...((h.selector ?? {}) as object), fallbacks: [...(st.selector ? [st.selector] : [])] } as RecipeStep["selector"],
+      };
+      applied.push(h.stepIndex);
+    }
+    if (!applied.length) return discard("no reported heal matches its step (index/action)");
+    const note = `[self-healed ${nowIso().slice(0, 10)}: step(s) ${applied.map((i) => i + 1).join(", ")} re-anchored — verify the next review screen]`;
+    db.run(
+      `UPDATE portal_recipes SET steps_json = ?, structure_sig = ?, notes = ?, updated_at = ?
+        WHERE id = ? AND version = ?`,
+      [asJson(steps), recipeStructureSignature(steps), upsertRecipeNote(row.notes, "self-healed", note), nowIso(), recipeId, expectedVersion],
+    );
+    if (Number(db.get<{ n: number }>("SELECT changes() AS n")?.n ?? 0) === 0) return discard("recipe changed during replay");
+    audit("recipe.self_healed", { stepIndexes: applied, steps: applied.map((i) => steps[i]?.note ?? steps[i]?.action).slice(0, 10) });
+    return { applied, discarded: null };
+  } catch (err) {
+    return discard(`heal write failed: ${err instanceof Error ? err.message.slice(0, 160) : String(err)}`);
+  }
+}
+
 /** The flag a kept-but-unattributed failure raised, or "" when none is raised. */
 export function recipeReviewFlag(db: AppDb, recipeId: string): { reason: string; flaggedAt: string | null } {
   const row = db.get<Row>("SELECT flag_reason, flagged_at FROM portal_recipes WHERE id = ?", [recipeId]);

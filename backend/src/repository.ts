@@ -68,7 +68,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { checkStatusWithAdapter, runCorrectionReopen, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { portalAutomationDisabled, resolveHeadless } from "../../portal-bot/src/browser";
-import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, getPortalRecipe, savePortalRecipeSteps } from "./portalRecipes";
+import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, collectHealedSteps, persistHealedSteps, getPortalRecipe } from "./portalRecipes";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 // detectPlatform moved with the target INSERT into submittalTracks.ts's ensureCheckTarget.
 import { publicPermitStatusCheck } from "./publicPermitStatus";
@@ -7468,23 +7468,12 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         logger.warn("portal", "headed retry failed", { projectId, err: e instanceof Error ? e.message : String(e) });
       }
     }
-    // SELF-HEALED STEPS: replay repaired drifted selectors by label re-anchoring.
-    // Persist the healed selectors into the recipe (healed primary, old selector
-    // kept as fallback) so next replay doesn't re-heal — and DROP auto-submit
-    // trust: a healed recipe is unverified until a human confirms the next
-    // review screen looks right (silent false-repair is the known failure mode).
-    const healed = (result as { healedSteps?: Array<{ note: string; action: string; selector: unknown }> }).healedSteps ?? [];
-    if (healed.length) {
-      try {
-        const steps = (getPortalRecipe(db, recipe.id).steps ?? []).map((st: import("../../shared/src/types").RecipeStep) => {
-          const h = healed.find((x) => x.action === st.action && (st.note || st.action) === x.note);
-          return h ? { ...st, selector: { ...(h.selector as object), fallbacks: [...(st.selector ? [st.selector] : [])] } as typeof st.selector } : st;
-        });
-        savePortalRecipeSteps(db, recipe.id, steps, { notes: `Self-healed ${healed.length} drifted step(s) on ${nowIso()} — verify the next review screen before trusting auto-submit again.` });
-        db.run("UPDATE portal_recipes SET auto_submit_enabled = 0, updated_at = ? WHERE id = ?", [nowIso(), recipe.id]);
-        addAuditLog(db, projectId, "system", "recipe replay", "recipe.self_healed", { recipeId: recipe.id, steps: healed.map((h) => h.note).slice(0, 10) });
-      } catch { /* healing persistence is best-effort; the run result stands */ }
-    }
+    // SELF-HEALED STEPS: replay repaired drifted selectors. Persist each heal onto the ONE step
+    // it healed (by stepIndex), only if the recipe is still the version this replay read — see
+    // persistHealedSteps. The heals ride on the fill step's data (the adapter result's top level
+    // never carried them, so this block was dead code); both places are read.
+    const healed = collectHealedSteps(result);
+    if (healed.length) persistHealedSteps(db, recipe.id, recipe.version, healed, { projectId, runId });
     // WHOSE FAULT WAS THE FAILURE? (operator ruling 2026-09-24: keep-and-flag.)
     //
     // This used to demote on /recipe step failed/i over EVERY step's message joined — with no
