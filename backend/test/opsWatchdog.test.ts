@@ -212,6 +212,80 @@ a = await poll();
 await check("...and not again on the next poll", () => assert.ok(!keys(a).includes("event:gap")));
 
 // ---------------------------------------------------------------------------
+// F2 (D2 verification): job-failures is an EVENT, but a throttled one. With failed24h rising on
+// every 5-min poll (a portal outage during a 100-project batch) the core sent one message per
+// poll — 48 in 4 h — and an operator stops reading the channel. Fake fetch, fake clock.
+// ---------------------------------------------------------------------------
+console.log("watchdog core: a sustained failure run is throttled, and no rise is dropped");
+{
+  const { JOB_FAILURES_MIN_GAP_HOURS } = await import("../../scripts/ops/watchdogCore");
+  let failed = 10;
+  let clock2 = T0;
+  const deps = { fetch: async () => ({ status: 200, json: async () => ({ ok: true, db: "ok", jobs: { pending: 0, running: 1, failed24h: failed } }) }), now: () => new Date(clock2) };
+  const cfg: WatchdogConfig = { ...config, backupDir: null, offboxDir: null };
+  let st: WatchdogState = emptyState();
+  const jobAlerts: Alert[] = [];
+  const perPoll: number[] = [];
+  const tick = async (advanceMin = 5): Promise<Alert[]> => {
+    clock2 += advanceMin * 60_000;
+    const r = await runOnce(cfg, st, deps, {});
+    st = r.state;
+    const mine = r.alerts.filter((x) => x.key === "job-failures");
+    jobAlerts.push(...mine);
+    perPoll.push(mine.length);
+    return mine;
+  };
+  await tick(0); // baseline reading
+  const first = await tick(); // (still quiet: no rise yet)
+  await check("no rise, no message", () => assert.equal(first.length, 0));
+  failed += 1;
+  const single = await tick();
+  await check("MUST-PASS: a single rise after a quiet period sends exactly ONE job-failures message on that poll", () => {
+    assert.equal(single.length, 1);
+    assert.match(single[0].summary, /^1 background job\(s\) failed permanently since the last check \(11 in the last 24 h\)/);
+  });
+  // 48 consecutive 5-min polls, each with one more failure.
+  const before = jobAlerts.length;
+  for (let i = 0; i < 48; i++) { failed += 1; await tick(); }
+  const sent = jobAlerts.slice(before);
+  const allowed = 1 + Math.ceil(4 / JOB_FAILURES_MIN_GAP_HOURS);
+  await check(`MUST-EXCLUDE: 48 rising polls in 4 h send at most 1 + 4 h / ${JOB_FAILURES_MIN_GAP_HOURS} h = ${allowed} messages, not 48`, () => {
+    assert.ok(sent.length <= allowed, `${sent.length} job-failures messages`);
+    assert.ok(sent.length >= 2, `only ${sent.length} — the throttle must still report`);
+  });
+  await check("MUST-EXCLUDE: no poll ever sends two job-failures entries", () => assert.ok(perPoll.every((n) => n <= 1), perPoll.join(",")));
+  await check("MUST-PASS: suppressed rises are carried — the counts in the messages sent add up to the 48 rises, none dropped", () => {
+    const counted = sent.reduce((sum, a) => sum + Number(/^(\d+) background job/.exec(a.summary)?.[1] ?? 0), 0);
+    const pending = st.jobFailures?.pendingRise ?? 0;
+    assert.equal(counted + pending, 48, `messages carry ${counted}, pending ${pending}`);
+    assert.ok(sent.slice(1).every((a) => /failed permanently since \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(/.test(a.summary)), sent.map((a) => a.summary).join("\n"));
+  });
+  await check("MUST-PASS: a rise seen while throttled is reported as soon as the gap has passed, even on a poll where the count did not rise", async () => {
+    // Drain: keep polling with no new rise until whatever is pending goes out.
+    let drained: Alert[] = [];
+    for (let i = 0; i < 14 && !drained.length; i++) drained = await tick();
+    const pendingBefore = st.jobFailures?.pendingRise ?? 0;
+    assert.equal(pendingBefore, 0, "something is still pending after the gap");
+    // A quiet hour, then one rise while quiet: immediate again.
+    await tick(60 * JOB_FAILURES_MIN_GAP_HOURS);
+    failed += 3;
+    const again = await tick();
+    assert.equal(again.length, 1);
+    assert.match(again[0].summary, /^3 background job\(s\) failed permanently since the last check/);
+  });
+  await check("a state file written before the throttle (no jobFailures) loads and polls fine", async () => {
+    const legacy = { ...emptyState(), lastFailed24h: failed };
+    delete (legacy as Partial<WatchdogState>).jobFailures;
+    failed += 2;
+    clock2 += 5 * 60_000;
+    const r = await runOnce(cfg, legacy, deps, {});
+    assert.deepEqual(r.alerts.map((a) => a.key), ["job-failures"]);
+    assert.match(r.alerts[0].summary, /^2 background job/);
+  });
+  for (const a of jobAlerts) noPlanted([a]);
+}
+
+// ---------------------------------------------------------------------------
 // The CLI end to end: real nodemailer against a fake SMTP server, plus a webhook.
 // ---------------------------------------------------------------------------
 console.log("watchdog CLI: real SMTP + webhook delivery, state across --once runs");

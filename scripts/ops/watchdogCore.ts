@@ -9,7 +9,11 @@
 //               consecutive failed polls (default 2), so one slow response is not a page.
 //   queue       /health's own "pending but nothing running" warning (the stuck-worker shape).
 //   job-failures  /health jobs.failed24h going UP between polls = new permanent job failures.
-//               An EVENT (one message per rise), not a state.
+//               An EVENT, not a state — but a THROTTLED one: the first rise after a quiet spell
+//               is sent at once; rises inside the next JOB_FAILURES_MIN_GAP_HOURS are added up
+//               and sent as ONE message ("N failed since <time>") when the gap has passed. A
+//               portal outage during a 100-project batch used to send one message per poll (48
+//               in 4 h, D2 verification F2), and an operator stops reading a channel like that.
 //   backup      the newest automatic snapshot in BACKUP_DIR is older than the allowed age, or the
 //               server recorded a failed attempt (.last-backup.json) after it.
 //   offbox      (when an off-box folder is configured) the newest snapshot there is too old, or
@@ -44,6 +48,20 @@ export interface WatchdogConfig {
   backupMaxAgeHours: number;
   offboxDir: string | null;
   offboxMaxAgeHours: number;
+  /** Least time between two job-failures messages (default JOB_FAILURES_MIN_GAP_HOURS). */
+  jobFailuresMinGapHours?: number;
+}
+
+export const JOB_FAILURES_MIN_GAP_HOURS = 1;
+
+/** The job-failures throttle: rises seen while a message was not allowed yet, carried until the
+ *  next message (never dropped). */
+export interface JobFailuresState {
+  lastAlertAt: string | null;
+  /** Rises accumulated since the last message (0 = nothing pending). */
+  pendingRise: number;
+  /** When the first pending rise was observed. */
+  pendingSince: string | null;
 }
 
 export interface CheckState {
@@ -62,6 +80,8 @@ export interface WatchdogState {
   checks: Record<string, CheckState>;
   /** Alerts that no channel accepted last time — re-sent first on the next run. */
   undelivered: Alert[];
+  /** Absent in state files written before the throttle: treated as nothing pending. */
+  jobFailures?: JobFailuresState;
 }
 
 export type AlertKind = "problem" | "reminder" | "recovered" | "event" | "armed";
@@ -104,6 +124,11 @@ export function loadState(file: string): { state: WatchdogState; fresh: boolean 
           lastFailed24h: typeof raw.lastFailed24h === "number" ? raw.lastFailed24h : null,
           checks: raw.checks as Record<string, CheckState>,
           undelivered: Array.isArray(raw.undelivered) ? raw.undelivered.slice(-20) : [],
+          ...(raw.jobFailures && typeof raw.jobFailures === "object" ? { jobFailures: {
+            lastAlertAt: typeof raw.jobFailures.lastAlertAt === "string" ? raw.jobFailures.lastAlertAt : null,
+            pendingRise: typeof raw.jobFailures.pendingRise === "number" && raw.jobFailures.pendingRise > 0 ? Math.floor(raw.jobFailures.pendingRise) : 0,
+            pendingSince: typeof raw.jobFailures.pendingSince === "string" ? raw.jobFailures.pendingSince : null,
+          } } : {}),
         },
         fresh: false,
       };
@@ -250,11 +275,25 @@ export async function runOnce(config: WatchdogConfig, prev: WatchdogState, deps:
       recovered: `Background jobs are moving again (pending ${obs.jobs.pending}, running ${obs.jobs.running})`,
     });
     const failed = obs.jobs.failed24h;
+    const jf: JobFailuresState = state.jobFailures ?? { lastAlertAt: null, pendingRise: 0, pendingSince: null };
+    state.jobFailures = jf;
     if (state.lastFailed24h !== null && failed > state.lastFailed24h) {
-      const rise = failed - state.lastFailed24h;
+      jf.pendingRise += failed - state.lastFailed24h;
+      if (!jf.pendingSince) jf.pendingSince = nowIso;
+    }
+    // One message per gap, carrying every rise seen since the last one. A rise that arrives while
+    // the gap is open waits; it is reported (with its count) as soon as the gap has passed — on
+    // that later poll even if the count did not rise again on it.
+    const gapMs = Math.max(0, config.jobFailuresMinGapHours ?? JOB_FAILURES_MIN_GAP_HOURS) * 3600_000;
+    const gapOpen = jf.lastAlertAt !== null && now.getTime() - Date.parse(jf.lastAlertAt) < gapMs;
+    if (jf.pendingRise > 0 && !gapOpen) {
+      const sinceThisPoll = jf.pendingSince === nowIso;
       alert("job-failures", "event",
-        `${rise} background job(s) failed permanently since the last check (${failed} in the last 24 h). ` +
+        `${jf.pendingRise} background job(s) failed permanently since ${sinceThisPoll ? "the last check" : localTime(new Date(jf.pendingSince!))} (${failed} in the last 24 h). ` +
         "Open the dashboard's review queue (\"Background job failed\") — portal runs that failed are never retried on their own.");
+      jf.lastAlertAt = nowIso;
+      jf.pendingRise = 0;
+      jf.pendingSince = null;
     }
     state.lastFailed24h = failed;
   } else {

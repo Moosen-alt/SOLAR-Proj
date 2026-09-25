@@ -381,7 +381,7 @@ For reference, the drill run read-only on 2026-09-24 against the newest snapshot
 |---|---|
 | server | `/health` doesn't answer, or returns an error, 2 polls in a row |
 | queue | `/health` reports jobs pending but nothing running (a stuck worker) |
-| job-failures | `/health` shows more permanently failed jobs than at the last poll |
+| job-failures | `/health` shows more permanently failed jobs than at the last poll. The first rise is sent at once; further rises within the next hour are added up and sent as one message ("N failed since <time>"), so a sustained failure run is a few messages an hour at most, never one per poll |
 | backup | the newest snapshot is older than `BACKUP_INTERVAL_HOURS` × 1.5 + 1 h, or the last snapshot attempt failed |
 | offbox | the newest off-box snapshot is older than `WATCHDOG_OFFBOX_MAX_AGE_HOURS`, or the last sync reported a problem |
 | gap | the watchdog itself didn't run for 15 min or more (the machine was off); reported once it is back |
