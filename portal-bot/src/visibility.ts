@@ -22,8 +22,9 @@
 //             for a concealed checkbox/radio whose <label> a person can see (click the label, or
 //             drive the input with force); `via: "widget-face"` for a dropdown widget's hidden
 //             backing input whose visible face is the control. Never usable when disabled
-//             (itself, a disabled <fieldset>, aria-disabled) or aria-hidden / inert (commonly the
-//             page behind an open modal).
+//             (itself, a disabled <fieldset>, aria-disabled), inert, or inside an aria-hidden
+//             ANCESTOR (commonly the page behind an open modal). aria-hidden on the element
+//             ITSELF (select2 v4's native <select>) leaves only the widget-face route open.
 // An element that cannot be read at all is reported `known: false` — never as a confident
 // "hidden" or "visible" (an unknown must not read as reassurance).
 import type { ElementHandle, Locator } from "playwright";
@@ -76,15 +77,20 @@ export function visibilityVerdictInPage(el: Element): VisibilityVerdict {
   const disabled = input.disabled === true
     || el.getAttribute("aria-disabled") === "true"
     || !!(el.closest("fieldset[disabled]") && !el.closest("fieldset[disabled] > legend"));
-  const ariaHidden = !!el.closest("[aria-hidden='true']");
+  // aria-hidden on an ANCESTOR is the page behind an open modal: never usable. aria-hidden on the
+  // element ITSELF is also how select2 v4 hides the native <select> it replaces — that select is
+  // driven through its widget face, so self-aria-hidden only closes the "self" and "label" routes.
+  const selfAriaHidden = el.getAttribute("aria-hidden") === "true";
+  const ancestorAriaHidden = !!(el.parentElement && el.parentElement.closest("[aria-hidden='true']"));
   const inert = !!el.closest("[inert]");
   if (disabled) reasons.push("disabled");
-  if (ariaHidden) reasons.push("aria-hidden");
+  if (ancestorAriaHidden) reasons.push("aria-hidden (ancestor)");
   if (inert) reasons.push("inert");
 
   let via: UsableVia = "none";
-  if (!disabled && !ariaHidden && !inert) {
-    if (visible) via = "self";
+  if (!disabled && !ancestorAriaHidden && !inert) {
+    if (visible && !selfAriaHidden) via = "self";
+    else if (selfAriaHidden && (input.type === "checkbox" || input.type === "radio")) via = "none";
     else if (input.type === "checkbox" || input.type === "radio") {
       // A styled checkbox: the real input is concealed, the LABEL is what a person clicks.
       const labels = Array.from(input.labels || []);
@@ -107,7 +113,9 @@ export function visibilityVerdictInPage(el: Element): VisibilityVerdict {
         if (sib && /(^|\s)(select2-container|chosen-container)/.test(sib.className || "") && (sib as HTMLElement).offsetParent !== null) via = "widget-face";
       }
     }
-    if (via === "none") reasons.push("not visible, and no visible label or widget face drives it");
+    if (via === "none") {
+      reasons.push(selfAriaHidden ? "aria-hidden (itself), and no visible widget face drives it" : "not visible, and no visible label or widget face drives it");
+    }
   }
   return { known: true, visible, usable: via !== "none", via, reasons };
 }

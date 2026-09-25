@@ -63,6 +63,12 @@ const PAGE = `<!doctype html><html><head><style>
   <fieldset disabled><legend>Owner</legend><input id="fieldsetDisabled"></fieldset>
   <input id="ariaDisabled" aria-disabled="true">
   <div aria-hidden="true"><input id="behindModal"></div>
+  <!-- select2 v4 puts aria-hidden="true" on the native select it replaces: usable via the face. -->
+  <select id="s2v4" class="select2-hidden-accessible" aria-hidden="true" tabindex="-1" style="position:absolute;width:1px;height:1px;opacity:0"><option>A</option></select><span class="select2 select2-container select2-container--default" style="display:inline-block;width:160px;height:28px">A</span>
+  <!-- ...but the same widget behind an open modal (aria-hidden ANCESTOR) is not usable. -->
+  <div aria-hidden="true"><select id="s2v4Behind" class="select2-hidden-accessible" aria-hidden="true" tabindex="-1" style="position:absolute;width:1px;height:1px;opacity:0"><option>A</option></select><span class="select2 select2-container select2-container--default" style="display:inline-block;width:160px;height:28px">A</span></div>
+  <!-- A visible control marked aria-hidden itself, with no widget face: not usable. -->
+  <input id="selfAriaHidden" aria-hidden="true">
   <div inert><input id="inertInput"></div>
 </body></html>`;
 
@@ -99,6 +105,9 @@ const EXPECT: Array<[string, boolean, boolean, UsableVia]> = [
   ["fieldsetDisabled", true, false, "none"],
   ["ariaDisabled", true, false, "none"],
   ["behindModal", true, false, "none"],
+  ["s2v4", false, true, "widget-face"],
+  ["s2v4Behind", false, false, "none"],
+  ["selfAriaHidden", true, false, "none"],
   ["inertInput", true, false, "none"],
 ];
 
