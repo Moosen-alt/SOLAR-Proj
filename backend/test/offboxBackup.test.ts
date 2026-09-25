@@ -33,9 +33,12 @@ process.env.SEED_TEST_INSTALLER = "false";
 process.env.AUTOPILOT_AUTO_START = "0";
 const KEY = "offbox-test-key-not-a-real-secret";
 process.env.SESSION_ENCRYPTION_KEY = KEY;
+// This test's own backend.log (the isolate disables it by default), to check what [backup] writes there.
+const logFile = path.join(ISOLATED_CWD, "logs", "backend.log");
+process.env.AUTOPILOT_LOG_FILE = logFile;
 
 const { openDatabase } = await import("../src/db");
-const { runBackup } = await import("../src/backup");
+const { runBackup, startBackupScheduler } = await import("../src/backup");
 const { createClient } = await import("../src/clients");
 const { createPortalCredential } = await import("../src/portalCredentials");
 const { saveProjectDocument } = await import("../src/projectDocuments");
@@ -211,6 +214,27 @@ const docless = script("scripts/ops/restore-drill.ts", ["--from", noDocs, "--no-
 check("a snapshot copied without its documents FAILs (a restore would 404 every upload)", () => {
   assert.equal(docless.code, 1, docless.out);
   assert.match(docless.out, /FAIL\s+documents\s+0 of 1/);
+});
+
+// ---------------------------------------------------------------------------
+console.log("the scheduler's log lines");
+const logText = (): string => (fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8") : "");
+check("a normal scheduled snapshot reaches backend.log (it used to be console-only)", () => {
+  startBackupScheduler(db); // interval 0: one snapshot now, no timer
+  assert.match(logText(), /\[backup\] snapshot written/);
+});
+// MUST-EXCLUDE: a process pointed at ANOTHER database's backup directory (a test or smoke server
+// that inherited the live .env) must not log "snapshot failed" nor write a failure status there.
+const statusBefore = fs.readFileSync(path.join(backupDir, ".last-backup.json"), "utf8");
+fs.writeFileSync(path.join(backupDir, ".backup-source.json"), JSON.stringify({ source: path.join(ISOLATED_CWD, "some-other.sqlite") }));
+const failedBefore = (logText().match(/snapshot failed/g) ?? []).length;
+startBackupScheduler(db);
+check("MUST-EXCLUDE: a directory-conflict refusal is logged as a refusal, never as 'snapshot failed'", () => {
+  assert.equal((logText().match(/snapshot failed/g) ?? []).length, failedBefore, "a conflict was logged as a backup failure");
+  assert.match(logText(), /refused: this backup directory belongs to another database/);
+});
+check("MUST-EXCLUDE: ...and leaves the owner's status file untouched (the watchdog would page)", () => {
+  assert.equal(fs.readFileSync(path.join(backupDir, ".last-backup.json"), "utf8"), statusBefore);
 });
 
 check("no output carries a customer name, street, document name or password", () => {

@@ -165,20 +165,39 @@ Do all of §4 and §5.1 in one `.env` edit, followed by one restart. Open `.env`
 
 ### 4.1 Create a login before turning auth on
 
-The one user today has **no password**. Turning auth on without seeding one locks everyone out. The seed runs at startup only while **no** user has a password:
+The one user today has **no password**, and its role is **operator**, not admin (read from the 2026-09-24 snapshot). Turning auth on without seeding a password locks everyone out.
 
-- If `ADMIN_EMAIL` matches an existing user, that user gets the password.
-- Otherwise a new admin account is created.
+The seed runs at startup only while **no** user has a password:
 
-Use the existing account's email. preflight's `admin login` line reads it for you.
+- If `ADMIN_EMAIL` matches an existing user, it sets that user's password **and leaves its role alone**. Pointing it at today's operator account therefore gives a login that every admin page refuses (diagnostics, manual backup, products).
+- If `ADMIN_EMAIL` matches no user, it creates a **new account with role admin**.
+
+So **use a new address**:
 
 ```ini
 AUTH_ENABLED=true
-ADMIN_EMAIL=<the existing operator email>
+ADMIN_EMAIL=<a NEW address, e.g. admin@yourcompany.com - not the existing operator's>
 ADMIN_PASSWORD=<a long passphrase - also store it in the password manager>
 ```
 
-After the restart, sign in once at `http://127.0.0.1:4173/login`. Then **delete the `ADMIN_PASSWORD=` line** from `.env`; it is no longer read. preflight warns until you do.
+Before restarting, preflight's `admin login` line must read `WARN ... creates a NEW admin account <address>`. It reads **FAIL** if `ADMIN_EMAIL` points at the operator account.
+
+After the restart:
+
+1. Sign in once at `http://127.0.0.1:4173/login` with the new address.
+2. **Delete the `ADMIN_PASSWORD=` line** from `.env`; it is no longer read. preflight warns until you do.
+3. Rerun preflight. `admin login` must read PASS.
+
+The old operator account stays without a password, so it cannot sign in. That is harmless.
+
+**If some account already has a password but none is admin** (preflight: `... can sign in, but no ADMIN account has a password`), the seed will not run again. Instead, promote one account while the server is stopped (§7 step 5), then start it:
+
+```powershell
+node -e 'const D=require(`better-sqlite3`);const d=new D(`backend/data/autopilot.sqlite`);console.log(d.prepare(`UPDATE users SET role=''admin'' WHERE email=?`).run(process.argv[1]).changes);d.close()' you@yourcompany.com
+# prints 1 when one account was promoted
+```
+
+Run this from the install folder. If `.env` sets `AUTOPILOT_DB_PATH`, use that path instead of `backend/data/autopilot.sqlite`.
 
 ### 4.2 Give the session cookie its own secret
 

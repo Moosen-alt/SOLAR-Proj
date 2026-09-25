@@ -42,17 +42,33 @@ try {
 } catch {
   admins = null;
 }
-const adminWithPw = (admins ?? []).filter((u) => (u.role === "admin" || u.role === "superadmin") && u.hasPassword);
+const isAdmin = (u: { role: string }): boolean => u.role === "admin" || u.role === "superadmin";
+const adminWithPw = (admins ?? []).filter((u) => isAdmin(u) && u.hasPassword);
+const anyWithPw = (admins ?? []).filter((u) => u.hasPassword);
 const seedReady = Boolean(env.ADMIN_EMAIL && env.ADMIN_PASSWORD);
+// seedAdminUser (auth.ts) runs only while NO user has a password. When ADMIN_EMAIL matches an
+// existing user it sets that user's password and LEAVES ITS ROLE; otherwise it inserts a new
+// row with role 'admin'. Production's one user is role 'operator' (2026-09-24), so pointing
+// ADMIN_EMAIL at it yields a login that every admin-only page refuses.
 if (admins === null) {
   add("access", "admin login", "WARN", `could not read users from ${dbPath}`);
 } else if (adminWithPw.length) {
   add("access", "admin login", "PASS", `${adminWithPw.length} admin account(s) with a password (${adminWithPw.map((u) => u.email).join(", ")})`);
+} else if (anyWithPw.length) {
+  add("access", "admin login", "WARN",
+    `${anyWithPw.map((u) => `${u.email} (${u.role})`).join(", ")} can sign in, but no ADMIN account has a password - admin pages (diagnostics, manual backup) will refuse. ` +
+    "The ADMIN_* seed no longer runs once any user has a password: promote one account (OPERATIONS.md s4.1).");
 } else if (seedReady) {
   const match = admins.find((u) => u.email.toLowerCase() === String(env.ADMIN_EMAIL).trim().toLowerCase());
-  add("access", "admin login", "WARN",
-    `no account has a password yet; ADMIN_EMAIL/ADMIN_PASSWORD are set, so the next start with AUTH_ENABLED=true sets it` +
-    (match ? ` on the existing account ${match.email} (role ${match.role})` : " on a NEW admin account (ADMIN_EMAIL matches no existing user)"));
+  if (match && !isAdmin(match)) {
+    add("access", "admin login", "FAIL",
+      `ADMIN_EMAIL is the existing account ${match.email}, whose role is ${match.role}: the next start sets its password but NOT admin. ` +
+      "Use a NEW address for ADMIN_EMAIL (a new admin account is created) - OPERATIONS.md s4.1.");
+  } else {
+    add("access", "admin login", "WARN",
+      "no account has a password yet; the next start with AUTH_ENABLED=true " +
+      (match ? `sets it on the existing admin account ${match.email}` : `creates a NEW admin account ${String(env.ADMIN_EMAIL).trim()}`));
+  }
 } else {
   add("access", "admin login", "FAIL", "no account has a password and ADMIN_EMAIL/ADMIN_PASSWORD are not set - turning auth on would lock everyone out");
 }

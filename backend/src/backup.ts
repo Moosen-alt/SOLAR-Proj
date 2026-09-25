@@ -366,11 +366,16 @@ export function startBackupScheduler(db: AppDb): void {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error("[backup] snapshot failed:", message);
-      logger.error("backup", "snapshot failed", { error: message.slice(0, 300) });
-      // The watchdog reads this: a failed snapshot is an alert, not a console line nobody sees.
-      // Except when the directory is not ours to write in (see BackupDirectoryConflictError).
-      if (!(err instanceof BackupDirectoryConflictError)) {
+      console.error(err instanceof BackupDirectoryConflictError ? message : `[backup] snapshot failed: ${message}`);
+      if (err instanceof BackupDirectoryConflictError) {
+        // Not a failure of THIS database's backups - this process is pointed at a directory that
+        // belongs to another database (a test or smoke server that inherited the live .env). It must
+        // not read as "snapshot failed" in the log the operator is told to grep, and it must not
+        // write a failure status into a directory it does not own (the watchdog would page).
+        logger.warn("backup", "refused: this backup directory belongs to another database; no snapshot taken by this process");
+      } else {
+        logger.error("backup", "snapshot failed", { error: message.slice(0, 300) });
+        // The watchdog reads this: a failed snapshot is an alert, not a console line nobody sees.
         writeStatusFile(STATUS_FILE, { ok: false, at: new Date().toISOString(), error: message.slice(0, 300) });
       }
     }

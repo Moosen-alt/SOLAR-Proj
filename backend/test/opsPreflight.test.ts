@@ -39,8 +39,10 @@ const { seedAdminUser } = await import("../src/auth");
 const { createUser } = await import("../src/users");
 const db = await openDatabase();
 createUser(db, { name: "Owner", email: "owner@ops.invalid" });
-db.backupTo(noPw); // today's shape: one user, no password
-seedAdminUser(db); // the production path: sets the password on the matching existing user
+db.backupTo(noPw); // today's shape: one OPERATOR user, no password
+seedAdminUser(db); // the production path: sets the password on the matching existing user - and leaves its role
+const pwNotAdmin = path.join(ISOLATED_CWD, "pw-not-admin.sqlite");
+db.backupTo(pwNotAdmin); // what following ADMIN_EMAIL=<existing operator> actually produces
 db.run("UPDATE users SET role = 'admin' WHERE email = ?", ["owner@ops.invalid"]); // the documented promotion (no role writer exists)
 db.close();
 
@@ -112,6 +114,20 @@ check("MUST-EXCLUDE: AUTH_SECRET equal to the session key is a FAIL, not a PASS"
 check("final submit armed WITH a login is a WARN naming the per-run approval (the operator's ruling), not a FAIL", () => {
   assert.match(line(armed.out, "PORTAL_ALLOW_FINAL_SUBMIT"), /WARN .*per-run approval/);
 });
+console.log("preflight: the admin seed does not promote");
+const seedExisting = preflight({ AUTOPILOT_DB_PATH: noPw, AUTH_ENABLED: "true", ADMIN_EMAIL: "Owner@ops.invalid", ADMIN_PASSWORD: SECRETS.adminPw, BACKUP_DIR: backupDir });
+check("MUST-EXCLUDE: ADMIN_EMAIL pointing at the existing OPERATOR account is a FAIL (it would get a password, not admin)", () => {
+  assert.match(line(seedExisting.out, "admin login"), /FAIL .*role is operator: the next start sets its password but NOT admin/);
+});
+const seedNew = preflight({ AUTOPILOT_DB_PATH: noPw, AUTH_ENABLED: "true", ADMIN_EMAIL: "admin@ops.invalid", ADMIN_PASSWORD: SECRETS.adminPw, BACKUP_DIR: backupDir });
+check("a NEW ADMIN_EMAIL is the right move: WARN (not effective until the restart) naming the new admin", () => {
+  assert.match(line(seedNew.out, "admin login"), /WARN .*creates a NEW admin account admin@ops\.invalid/);
+});
+const operatorOnly = preflight({ AUTOPILOT_DB_PATH: pwNotAdmin, AUTH_ENABLED: "true", BACKUP_DIR: backupDir });
+check("MUST-EXCLUDE: a password on an operator account is not reported as 'no password' nor as an admin PASS", () => {
+  assert.match(line(operatorOnly.out, "admin login"), /WARN .*owner@ops\.invalid \(operator\) can sign in, but no ADMIN account has a password/);
+});
+
 const shortHistory = preflight({ AUTOPILOT_DB_PATH: withAdmin, BACKUP_DIR: backupDir, BACKUP_INTERVAL_HOURS: "2", BACKUP_KEEP: "14" });
 check("a 2 h interval that keeps only 14 snapshots (28 h of history) warns with the number to set", () => {
   assert.match(line(shortHistory.out, "BACKUP_INTERVAL_HOURS"), /PASS/);
