@@ -183,6 +183,11 @@ await check("B3: the shipped reference layer gives every truth state an adoption
   assert.equal(CP.stateAdoptionModel(db, "TX")?.model, "local_adoption");
   assert.deepEqual(F.locallyAdoptedFamilies(CP.stateAdoptionModel(db, "OR")), []);
   assert.ok(F.locallyAdoptedFamilies(CP.stateAdoptionModel(db, "TX")).includes("residential"));
+  // A state layer that says a family is LOCAL retires the memory-era state entry for it (Arizona
+  // adopts no statewide residential code; the shipped seed row said "IRC 2018").
+  const az = codesOf(CP.getCodeProfile(db, { state: "AZ", ahj: "" }));
+  assert.ok(!az.includes("IRC 2018"), `Arizona still claims a statewide IRC: ${az}`);
+  assert.ok(az.includes("IFC 2024"), `Arizona lost its state fire code: ${az}`);
   // A seeded state row created from the reference carries it on the row too.
   assert.equal(CP.getCodeProfile(db, { state: "NY", ahj: "" })?.adoptionModel?.model, "statewide_uniform");
 });
@@ -335,6 +340,7 @@ await check("B3+B4 MUST-PASS (Coos Bay): after the operator approves the proposa
   const read = CP.getCodeProfile(db, { state: "OR", ahj: "City of Coquilleview" })!;
   for (const want of ["OSSC 2025", "OFC 2025", "ORSC 2023", "OESC 2023"]) assert.ok(codesOf(read).includes(want), `${want} missing: ${codesOf(read)}`);
   assert.ok(!codesOf(read).includes("IFC 2021"), "the stale IFC 2021 survived approval");
+  assert.ok(codesOf(or).includes("IRC 2021") && codesOf(or).includes("NEC 2023"), `approval replaced families it did not change: ${codesOf(or)}`);
   const ctx = CP.resolveEffectiveCodeContext(db, "OR", "City of Coquilleview");
   const fire = ctx.citationFor("IFC", "1205", "Solar PV systems");
   assert.equal(fire.code, "2025 OFC", `an IFC citation in Oregon reads ${fire.code}`);

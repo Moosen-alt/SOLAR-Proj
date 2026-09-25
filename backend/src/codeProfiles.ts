@@ -590,9 +590,13 @@ export function mergeResearchIntoRow(existing: JurisdictionCodeProfile, incoming
   const incomingFamilies = new Set(incoming.adoptedCodes.map(fam).filter((f): f is CodeFamily => !!f));
   const keptImports = existing.adoptedCodes.filter((c) => !researchOwnedEntry(c));
   const importFamilies = new Set(keptImports.map(fam).filter((f): f is CodeFamily => !!f));
+  // A state layer that says a family is LOCAL (no state edition — Arizona's residential code) also
+  // retires a machine-owned state entry for it: the memory-era "IRC 2018" on Arizona's row said the
+  // state adopts one, which is exactly what the research found it does not.
+  const localAtState = (f: CodeFamily) => !incoming.ahj && familyAdoptionModel(incoming.adoptionModel, f) === "local_adoption";
   const keptResearch = existing.adoptedCodes.filter((c) => researchOwnedEntry(c) && (() => {
     const f = fam(c);
-    return f ? !incomingFamilies.has(f) : !incoming.adoptedCodes.some((n) => normCodeToken(n.code) === normCodeToken(c.code));
+    return f ? !incomingFamilies.has(f) && !localAtState(f) : !incoming.adoptedCodes.some((n) => normCodeToken(n.code) === normCodeToken(c.code));
   })());
   const added = incoming.adoptedCodes.filter((c) => {
     const f = fam(c);
@@ -983,15 +987,18 @@ export function applyEditionProposal(db: AppDb, fingerprint: string, actor: stri
   const row = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [p.profileKey]);
   if (!row) return { status: "refused", note: "The profile row no longer exists." };
   const current = mapRow(row);
-  const families = new Set(p.proposedCodes.map((c) => codeFamilyOf(c)).filter((f): f is CodeFamily => !!f));
+  // Only the families the proposal CHANGES: a family the row already states correctly keeps the
+  // person's own entries (Oregon's verified "IRC 2021" beside "ORSC 2023" is not touched).
+  const families = new Set(p.changes.map((c) => c.family));
+  const adding = p.proposedCodes.filter((c) => { const f = codeFamilyOf(c); return !!f && families.has(f); });
   const keep = current.adoptedCodes.filter((c) => { const f = codeFamilyOf(c); return !f || !families.has(f); });
   const cites = [...current.citations];
-  for (const c of p.proposedCodes) {
+  for (const c of adding) {
     if (c.sourceUrl && !cites.some((x) => x.sourceUrl === c.sourceUrl)) cites.push({ label: `${editionLabel(c)} — adopted edition source`, sourceUrl: c.sourceUrl, ...(c.quote ? { quote: String(c.quote).slice(0, 240) } : {}) });
   }
   const saved = saveVerifiedCodeProfile(db, {
     ...current,
-    adoptedCodes: [...keep, ...p.proposedCodes.map((c) => ({ ...c, origin: "operator" as const }))],
+    adoptedCodes: [...keep, ...adding.map((c) => ({ ...c, origin: "operator" as const }))],
     citations: cites,
     ...(p.adoptionModel ? { adoptionModel: p.adoptionModel } : {}),
     ...(p.upcoming ? { upcoming: p.upcoming } : {}),
