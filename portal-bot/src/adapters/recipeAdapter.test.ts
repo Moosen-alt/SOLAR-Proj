@@ -905,6 +905,24 @@ async function testRecordTypeNotOfferedRefusesToFile() {
   assert.match(String(result.message), /Residential - Mechanical/);
 }
 
+// THE RECORD-TYPE GUARD SETTLES BEFORE IT COUNTS. Right after the previous page's full postback
+// the list can be unpainted; count() does not wait, and the guard used to read "(none read)" and
+// refuse to file a type that was about to appear (the scoreboard's Accela record-type race). The
+// list here "paints" only once the adapter has settled the page.
+async function testRecordTypeGuardSettlesBeforeCounting() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const offered: string[] = [];
+  const adapter = new RecipeAdapter(baseRecipe([electricalRecordTypeStep]), {}, {});
+  const page = makeRecordTypePage(offered, log);
+  withFakePage(adapter, page);
+  (adapter as unknown as { settle: () => Promise<void> }).settle = async () => {
+    if (!offered.length) offered.push(...COOS_BAY_CITY, "Residential - Electrical");
+  };
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true, `settled, then found the offered type (${result.message})`);
+  assert.deepEqual(page.checked, ["Residential - Electrical"]);
+}
+
 async function testRecordTypeOfferedIsCheckedByLabel() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
   const structural: RecipeStep = { ...electricalRecordTypeStep, selector: { ...electricalRecordTypeStep.selector, label: "Residential - Structural" }, note: "Residential - Structural" };
@@ -1295,6 +1313,7 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["CLICK: a disabled namesake ahead of the real control is skipped", testDisabledNamesakeSkipped],
   ["RECORD TYPE: a type this jurisdiction does not offer refuses to file", testRecordTypeNotOfferedRefusesToFile],
   ["RECORD TYPE: an offered type is checked by its own label", testRecordTypeOfferedIsCheckedByLabel],
+  ["RECORD TYPE: the guard settles before it counts (no race with a just-navigated page)", testRecordTypeGuardSettlesBeforeCounting],
   ["RECORD TYPE: two matching types is a refusal, not a coin flip", testRecordTypeAmbiguousRefusesToGuess],
   ["RECORD TYPE: self-heal never re-anchors a permit type", testRecordTypeIsNeverSelfHealed],
   ["DRIFT: zero overlap on data segment fails fast as needs_rerecord message", testDriftZeroOverlapFailsFast],
