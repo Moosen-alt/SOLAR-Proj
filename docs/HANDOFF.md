@@ -60,6 +60,27 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 - Readiness reports (2026-09-24): `.probe/readiness/PLAN.md` (portals), `.probe/presentation/READINESS.md` (claims + demo;
   cut-offs assumed Mon — shift one day), `.probe/volume/DAY1-OF-100.md` (volume, ops, onboarding).
 
+**W1 close stage landed (2026-09-25) — the two skeptics' must-fixes (trust M1-M7, resolution MF1-MF4):**
+- FINAL SUBMIT: an approval is bound to the request that minted it (claimed by id, before the first gate; a
+  gate-refused run burns it, audited `portal.run_approval_claimed`; a request that named nobody is enqueued
+  with autoSubmit=false). Trust M1 no longer blocks `PORTAL_ALLOW_FINAL_SUBMIT=1`; CLAUDE.md hard rule 1 still
+  says NEVER and is to be reworded with the operator's OK (unchanged here).
+- KEEP-AND-FLAG is visible on the API (`flagReason`/`flaggedAt` on every recipe) and clearable
+  (`POST /api/portal-recipes/:id/clear-flag`, audited). The DASHBOARD does not render it yet
+  (frontend/dashboard.js was another workflow's file this round): in `renderPortalRecipes`, after
+  `${badge(r.status)}`, add `${r.flagReason ? `<span title="${esc(r.flagReason)}" style="...">Flagged — check the
+  run</span><button class="secondary" data-recipe-clear-flag="${esc(r.id)}">Clear flag</button>` : ""}` and wire the
+  button to `POST /api/portal-recipes/${id}/clear-flag`.
+- RESTORE SCRIPT (`scripts/restore-demoted-recipes.ts`): the dry run is READ-ONLY at the SQLite level (never
+  openDatabase); `--apply` refuses a database below this build's schema. Order of operations: dry-run on a
+  `.backup` copy any time; re-pin (the server migrates the live DB); THEN `--apply` on the live DB; then one
+  supervised replay each for PacifiCorp `6282e671` and PGE `481c00f4` (`e9efa4a3` stays demoted: no run demoted it).
+- The status monitor and the correction reopen now resolve through the same two-way host predicate as the stage
+  (production permit target `99ea32c3`, bound to pacificorpnetmetering.powerclerk.com, is no longer fetched;
+  fix its portal URL). Carried, not fixed: both lookups pass no discipline, so they resolve no AHJ recipe keyed
+  structural/electrical/combo — the monitor scrapes AHJ portals only through '' rows.
+- Junk reference-import AHJ names ('OR portal', '1 - 5 DAYS', '2-5 days / REV …') no longer own or share a portal.
+
 **Operator actions still open (2026-09-24):**
 - Oregon 36/25 psf minimum ground snow: the verified write (`PUT /api/code-profiles/verify`, payload in
   `.probe/r3r-criteria-fix/verify-payload.json`) is NO LONGER BLOCKED by the snow-reading work: rounds 4-5 landed
