@@ -559,6 +559,7 @@ function unvaluedLabelAfter(text: string, end: number): boolean {
  *   · opens with a VALUE but a separator hands a value to the label BEFORE it ("36 PSF GROUND SNOW
  *     LOAD - 25 PSF …"): the separator and the shape disagree -> "both", unless a label-ish word
  *     before the run owns the opening value (then label-first throughout).
+ *   · two labels or two values side by side anywhere in the block (a flattened TABLE) -> "both".
  * Keyed by the value's start index.
  */
 function loadValueOwners(text: string): Map<number, LoadValueRun> {
@@ -578,6 +579,20 @@ function loadValueOwners(text: string): Map<number, LoadValueRun> {
   const between = (a: { end: number }, b: { start: number }): string => text.slice(a.end, b.start);
   const glue = new RegExp(String.raw`^(?:[\s,;]|${SEP})*$`);
   const sepIn = new RegExp(SEP);
+  // A FLATTENED TABLE is not a list: pdf.js prints a header row then a value row ("DEAD LOAD LIVE
+  // LOAD GROUND SNOW LOAD 10 PSF 20 PSF 36 PSF"), or a column-major table ("36 PSF 25 PSF 3 PSF GROUND
+  // SNOW LOAD ROOF SNOW LOAD DEAD LOAD"). Read as runs, each put its first value beside the ground
+  // label (Pg 10, Pg 3 — BLOCKERs on correct plans). A BLOCK (tokens joined by nothing but glue) in
+  // which two LABELS or two VALUES sit side by side is a table the alternation cannot map, so every
+  // value in it is "both": read, but UNSURE — a warning naming the readings, never a blocker.
+  const blockOf: number[] = [];
+  const tableBlocks = new Set<number>();
+  clean.forEach((t, k) => {
+    const joined = k > 0 && glue.test(between(clean[k - 1], t));
+    blockOf[k] = k === 0 ? 0 : joined ? blockOf[k - 1] : blockOf[k - 1] + 1;
+    if (joined && clean[k - 1].kind === t.kind) tableBlocks.add(blockOf[k]);
+  });
+  const indexOf = new Map(clean.map((t, k) => [t, k] as const));
   let i = 0;
   while (i < clean.length) {
     const run = [clean[i]];
@@ -612,6 +627,7 @@ function loadValueOwners(text: string): Map<number, LoadValueRun> {
     }
     // A value-first LIST: opens with a value and alternates at least V L V L.
     const valueFirstList = first.kind === "V" && run.length >= 4;
+    if (tableBlocks.has(blockOf[indexOf.get(first)!])) owner = "both";
     for (const t of run) if (t.kind === "V") owners.set(t.start, { owner, valueFirstList });
   }
   return owners;

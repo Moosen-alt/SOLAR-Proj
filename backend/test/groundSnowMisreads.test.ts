@@ -218,6 +218,9 @@ warnsNaming("DEAD LOAD LIVE LOAD GROUND SNOW LOAD 10 PSF 20 PSF 36 PSF", [10]);
 warnsNaming("ROOF SNOW LOAD GROUND SNOW LOAD 25 PSF 36 PSF", [25]);
 warnsNaming("36 PSF 25 PSF 3 PSF GROUND SNOW LOAD ROOF SNOW LOAD DEAD LOAD", [3]);
 neverBlocks("ROOF SNOW LOAD GROUND SNOW LOAD 10 PSF 16 PSF", [10]);
+// Two labels side by side alone (a header row) — and two values side by side alone (a value column).
+neverBlocks("ROOF SNOW LOAD GROUND SNOW LOAD 25 PSF", [25]);
+neverBlocks("36 PSF 25 PSF GROUND SNOW LOAD", [25]);
 reads36("GROUND SNOW LOAD 36 PSF ROOF SNOW LOAD 25 PSF DEAD LOAD", (j) => assert.deepEqual(j.roof, [25], show(j)));
 reads36("DEAD LOAD 10 PSF LIVE LOAD 20 PSF GROUND SNOW LOAD 36 PSF");
 
