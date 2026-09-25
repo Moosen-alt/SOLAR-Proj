@@ -211,17 +211,21 @@ and deleted afterwards. Every PGE recipe is `needs_rerecord`, so beat 1 is not o
   `e9efa4a3` v1, were `auto_submit_enabled=0` on 2026-09-24). The PGE credential's last login was
   accepted 2026-09-21 and a password rotation was planned — confirm it still logs in before the day.
 
-**Seed A and B.** Restart 4173 from this checkout first (beat 1 posts to
-`/api/portal-recipes/record` and reads `staging-field-values` on it, and the seeder's
-`openDatabase()` applies v35 — one table, five columns, additive — to a production file that sat
-at v34; the seeder also runs the same boot-time KB reference seeding a server start does):
+**Seed A and B.** Beat 1 posts to `/api/portal-recipes/record` and reads `staging-field-values`
+on 4173 — both routes exist in the pinned build (0c466bb; checked 2026-09-25), so no restart is
+needed for the recording itself. The seeder's `openDatabase()` does apply migration v35 (one new
+table, `portal_run_approvals`, additive; the pinned server never reads it) to the production file,
+which sits at v34, and runs the same boot-time KB reference seeding a server start does. Either
+seed at the next re-pin, or seed now after a backup (`backend/data/backups/` — take one first):
 ```bash
 npx tsx scripts/demo-kit/seed-live-demo-project.ts --dry-run                     # prints the plan, opens nothing
 AUTOPILOT_DB_PATH=backend/data/autopilot.sqlite npx tsx scripts/demo-kit/seed-live-demo-project.ts --apply \
-  --account-a <10 digits> --meter-a <meter> --account-b <10 digits> --meter-b <meter> \
-  [--address "<street>, Tigard, 97223"] [--address-b "<other street>, Tigard, 97223"]
+  --account-a 1234567890 --meter-a 100000001 --account-b 2345678901 --meter-b 100000002 \
+  --ahj "City of Portland" --address "1234 SE Solar Demo St, Portland, 97202" --address-b "1236 SE Solar Demo St, Portland, 97202"
 ```
-Defaults: client `tml-international-llc`, City of Tigard / OR, utility `"Portland General Electric"`
+(The operator chose a made-up Portland street on 2026-09-25 so the test address cannot match a real home; the
+dummy account/meter values above are placeholders in PGE's format — nothing looks them up.)
+Defaults without those flags: client `tml-international-llc`, City of Tigard / OR, utility `"Portland General Electric"`
 (pass the **same string** to `portal:record`), DEMO TEST HOMEOWNER A/B, (503) 555-01xx,
 `@example.com`, 7.2 kW DC (A) / 6.4 kW DC (B), Qcells 400 W + Enphase IQ8PLUS, 200 A main, 40 A
 backfeed, Schedule 7, four "DEMO TEST — NOT A REAL DOCUMENT" PDFs. It prints the two ids and the
@@ -245,6 +249,13 @@ the four seeded PDFs. Answer the questions that blanked before: export limit **N
 that the PGE recipe (re-recorded in place — the existing row moves to the next version, it is not
 a new id) is `complete` with auto-submit off. 4173 must be running for this beat.
 
+**Between the beats — give every upload step its document type.** The recorder saves each UPLOAD
+step with an empty `docType`, the recipe is still `complete`, and replay *skips* such steps — so
+beat 2 would reach review with PGE's three required uploads missing. In Portal Recipes → the PGE
+recipe, set `docType` on each UPLOAD step to the seeded slot it filled (`sld`, `site_plan`,
+`inverter_spec`, `module_spec`) and save. Only then take the copy for beat 2. (Product gap: the
+recorder should ask for the document type at capture — tracked for the bot round.)
+
 **Beat 2 — the bot replays for B** (masked; this is the video). Take the copy *after* beat 1 —
 an earlier copy lacks the recipe. Export only the decryption key, never `source .env` (it carries
 `PORTAL_ALLOW_FINAL_SUBMIT=1` and the recorder would refuse): PowerShell
@@ -253,8 +264,15 @@ and waits (`--login-wait`), which is fine:
 ```bash
 node -e "new (require('better-sqlite3'))('backend/data/autopilot.sqlite',{readonly:true}).backup('.probe/pge-demo/pge-demo-copy.sqlite')"
 npx tsx scripts/demo-record-portal.ts --real-run --i-am-present --headed --db .probe/pge-demo/pge-demo-copy.sqlite \
-  --project <B id> --out .probe/pge-demo/real-portal.webm --shots .probe/pge-demo/real-shots
+  --project <B id> --out .probe/pge-demo/real-portal.webm --shots .probe/pge-demo/real-shots \
+  --mask-selectors ".widget"
 ```
+`--mask-selectors ".widget"` is **not optional**: after login the bot lands on PowerClerk's home page,
+whose *Recent Projects* widget lists a Project Owner name per row — real customers from earlier
+filings. The masker knows only B's values, the login and the overlay, and its built-in "home"
+region rule looks for a table/grid that PGE's page does not use; both home panels are wrapped in
+`class="widget"`, which appears on no EditProject page, so boxing `.widget` hides the list and
+nothing else. Check the first frames of the video for that page before anything else.
 The recorder refuses unless `--i-am-present`, `--headed`, masking on and the env var unset; without
 `--real-run` a non-loopback host is refused outright; the flagged final step is never clicked and
 any submit/pay POST aborts the run and voids the video. At the review screen the engine stops:
