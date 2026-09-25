@@ -690,17 +690,27 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // (measured: 15 of 15 letters) — the letter's design statement is its Design Parameters block.
   const groundUnitFirst = /\bground\s+snow(?:\s+loads?)?(?:\s*,?\s*p\s?g\b)?\s*(?:psf\s+|\[\s*psf\s*\]\s*[:=]\s*)(\d+(?:\.\d+)?)(?![\d.])(?!\s*psf)/gi;
   while ((m = groundUnitFirst.exec(text))) push("groundSnowPsf", "ground", m[1], m);
-  // "SNOW LOAD (GROUND): 25 PSF" — the qualifier printed after the label.
+  // "SNOW LOAD (GROUND): 25 PSF" — the qualifier printed after the label. It asks the run's ownership
+  // like every other label reader: in "36 PSF SNOW LOAD (GROUND) 10 PSF DEAD LOAD" the 10 is the dead
+  // load's (read as Pg 10, a BLOCKER on a correct plan). Its value-first form is groundParenAfter.
   const groundParen = new RegExp(String.raw`\bsnow\s+loads?\s*\(\s*ground\s*\)\s*(?:(${SEP})\s*)?(\d+(?:\.\d+)?)\s*(psf)?`, "gid");
   while ((m = groundParen.exec(text))) {
     if (!(m[1] && /[:=]/.test(m[1])) && !m[3]) continue;
+    if ((!m[1] || isDashSep(m[1])) && labelFirstIsNextLabels(m, 2)) continue;
     push("groundSnowPsf", "ground", m[2], m);
   }
+  // A FORMULA'S COEFFICIENT is not a stated value: "Pf = 0.7 Ce Ct Is Pg = 0.7 (1.0)(1.1)(1.0)(36 PSF)",
+  // "pf = 0.7 x Ce x Ct x Is x pg = 0.7 x 1.0 x …" — a unitless number after "Pg =" that a
+  // multiplication, a parenthesised factor or a code coefficient (Ce, Ct, Cs, Is) follows (it read
+  // as Pg 0.7, a BLOCKER naming 0.7 psf).
+  const coefficientAt = (end: number): boolean =>
+    /^\s*(?:[×*·⋅]|x(?=\s*[\d(A-Za-z])|\(\s*\d|C[etsa]\b|Is\b)/i.test(text.slice(end, end + 12));
   // Pg symbol: "pg 28.00 psf", "p g = 28.00" (a PDF split the symbol), "Pg(asd) 20 psf".
   // "pg 5" is a page reference — the symbol needs = or a psf unit to count.
   const pgSymbol = new RegExp(String.raw`\bp\s?g\b\s*(\(\s*asd\s*\)|,\s*asd\b|\s+asd\b)?\s*(?:(${SEP})\s*)?(\d+(?:\.\d+)?)\s*(psf)?`, "gid");
   while ((m = pgSymbol.exec(text))) {
     if (!(m[2] && /[:=]/.test(m[2])) && !m[4]) continue;
+    if (!m[4] && coefficientAt(m.indices![3][1])) continue;
     // "36 PSF Pg 25 PSF ROOF SNOW": in a value-first list the 25 is the next label's, as for "GROUND SNOW".
     if ((!m[2] || isDashSep(m[2])) && labelFirstIsNextLabels(m, 3)) continue;
     push("groundSnowPsf", asd(m[1]) ? "ground_asd" : "ground", m[3], m);
@@ -734,6 +744,12 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   while ((m = groundAfter.exec(text))) {
     if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index) || !valueFirstOnly(m[2], m.index)) continue;
     push("groundSnowPsf", asd(m[3]) ? "ground_asd" : "ground", m[1], m);
+  }
+  // "36 PSF SNOW LOAD (GROUND)" — the parenthetical label, value first, read as "36 PSF GROUND SNOW".
+  const groundParenAfter = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?snow\s+loads?\s*\(\s*ground\s*\)`, "gi");
+  while ((m = groundParenAfter.exec(text))) {
+    if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index) || !valueFirstOnly(m[2], m.index)) continue;
+    push("groundSnowPsf", "ground", m[1], m);
   }
   // "36 PSF Pg 25 PSF ROOF SNOW LOAD" — the symbol printed after its value, read only in a value-first
   // LIST (V L V L …). A bare "Pg" is also a table's column header: in "36 PSF 2.8 PSF Pg PV DEAD LOAD"
