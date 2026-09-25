@@ -141,6 +141,34 @@ check("…a member type with no size/spacing/span is a lead, not proof: it is no
 const junkField = mk("Framing Unknown Owner", { framingType: "unknown" });
 check("MUST-EXCLUDE: a framing field that says 'unknown' is not evidence", blockedByFraming(junkField), JSON.stringify(historicalBlockers(junkField)));
 
+// ── MF1 (D1 verification): the dimension must belong to the MEMBER ─────────────────────────
+// Every plan set has a clause that names a rafter while describing the ATTACHMENT; its fastener
+// size and attachment spacing used to read as "framing shown" (present/high) and cleared the
+// learned blocker. A sheet title or "to be verified" named a member and read needs_review, which
+// the gate does not block on. Through the real PDF extraction, like the fixtures above.
+const MF1_EXCLUDE: Array<[string, string[]]> = [
+  ["a lag-screw attachment detail", ["ATTACHMENT DETAIL: 5/16\" x 4\" SS LAG SCREW INTO RAFTER, 2.5\" MIN EMBEDMENT, FLASHED."]],
+  ["rails attached to rafters @ 48\" o.c.", ["RAILS ATTACHED TO RAFTERS WITH L-FOOT MOUNTS @ 48\" O.C. MAX."]],
+  ["standoffs lagged to rafters @ 48 in o.c.", ["Racking attachment detail shows flashed standoffs lagged to rafters @ 48 in o.c."]],
+  ["a 3/8 x 5 lag into the rafters", ["ATTACHMENT: rafters, 3/8 x 5 lag, 2 per foot."]],
+  ["a sheet title only", ["SHEET INDEX: PV-1 SITE PLAN, PV-2 ROOF PLAN, PV-3 ROOF FRAMING PLAN, E-1 SLD"]],
+  ["'existing roof framing to be verified'", ["EXISTING ROOF FRAMING TO BE VERIFIED BY INSTALLER PRIOR TO INSTALL."]],
+];
+for (const [label, lines] of MF1_EXCLUDE) {
+  const pid = mk(`MF1 Exclude ${label}`);
+  await attachPlanSet(pid, [...NO_FRAMING_SHEETS, ...lines]);
+  check(`MF1 MUST-EXCLUDE: ${label} keeps the learned framing blocker`, blockedByFraming(pid) && framingItem(pid)?.status === "missing",
+    `${framingItem(pid)?.status} ${JSON.stringify(historicalBlockers(pid))}`);
+}
+const memberDims = mk("MF1 Member Dimensions Owner");
+await attachPlanSet(memberDims, [...NO_FRAMING_SHEETS, "ROOF FRAMING: 2x6 rafters @ 24\" o.c., 10 ft span.", "ATTACHMENT DETAIL: 5/16\" x 4\" SS LAG SCREW INTO RAFTER, FLASHED."]);
+check("MF1 MUST-PASS: '2x6 rafters @ 24\" o.c., 10 ft span' clears the learned blocker (the lag detail beside it does not spoil it)",
+  !blockedByFraming(memberDims) && framingItem(memberDims)?.status === "present", `${framingItem(memberDims)?.status} ${JSON.stringify(historicalBlockers(memberDims))}`);
+const mixedLine = mk("MF1 Mixed Line Owner");
+await attachPlanSet(mixedLine, [...NO_FRAMING_SHEETS, "2X6 RAFTERS @ 24\" O.C., ATTACH RAILS W/ 5/16\" LAGS"]);
+check("MF1 MUST-PASS: framing and attachment on ONE line — the member's part still counts",
+  !blockedByFraming(mixedLine), JSON.stringify(historicalBlockers(mixedLine)));
+
 // ── AHJ-level acknowledgement: once, by an operator ─────────────────────────────────────────
 const signature = framingItem(noFraming)?.sourceCauseSignature ?? "";
 check("SETUP: the blocker carries a cause signature", Boolean(signature));
@@ -186,6 +214,65 @@ check("MUST-EXCLUDE: a signature that is not one of this project's learned block
 hist.revokeHistoricalBlockerAcknowledgement(db, { projectId: later, signature, actor: "ops@example.test" }, null);
 check("after a revoke, the Portland projects are blocked again", blockedByFraming(later) && blockedByFraming(noFraming), JSON.stringify(historicalBlockers(later)));
 check("…and the plan-set evidence still clears the project that HAS it", !blockedByFraming(withSheets));
+
+// ── MF1 at a STANDARD-REVIEW AHJ (TX): nothing else backstops the framing there ─────────────
+// In Oregon the prescriptive-span reviewer check still catches a set with no rafter numbers; at a
+// standard-review AHJ (FL/TX/UT/CA — the prospects) the learned blocker is the only thing between
+// an attachment-only set and ready_to_stage. The smoke's complete fixture, moved to Austin.
+{
+  const { createClient } = await import("../src/clients");
+  const { computeNextStep } = await import("../src/nextStep");
+  const txClient = createClient(db, {
+    companyName: "Framing TX Solar LLC", legalBusinessName: "Framing TX Solar LLC", ccbLicenseNumber: "240135",
+    electricalLicenseNumber: "C1234", businessEmail: "ops@ftx.test", businessPhone: "(512) 555-0142",
+  });
+  const noSplit = "01 Site/Roof Plan and PV layout with fire pathway: pages 1-2\n02 SLD 3-Line Diagram with NEC 705.12 calculation and rapid shutdown: page 3\n03 Racking attachment detail: pages 4-5\n04 Module spec UL 61730: pages 6-8\n05 Inverter spec UL 1741 SB: pages 9-11\n06 Label schedule and placards: page 12";
+  const COMPLETE_TX: Record<string, string> = {
+    street: "123 Solar Way", city: "Austin", state: "TX", zip: "78701", ahj: "City of Austin", utility: "Austin Energy",
+    account: "1234567890", meter: "987654321", dcKw: "8.6", acKw: "6.5", exportKw: "6.5", moduleMake: "Qcells",
+    moduleModel: "Q.TRON BLK M-G2.C1+/AC", moduleWattage: "430", moduleQty: "20", invModel: "IQ8M", invQty: "20", invOutputW: "325",
+    interco: "Load-side breaker", busRating: "200", mainBreaker: "200", pvBreaker: "40", permitPath: "PRESCRIPTIVE",
+    framingType: "rafter", roofRafterSpacing: "24", roofRafterSpan: "10", snow: "25", deadLoad: "3.2", wind: "B", mounting: "Roof mount",
+    locateCalloutText: "No locate-triggering scope found.",
+    sitePlanNotesText: "Roof plan shows fire access pathway, ridge/eave setbacks, array dimensions, service equipment, and PV layout.",
+    roofPlanNotesText: "Roof framing: 2x6 rafters at 24 inches on center, 10 ft clear span, roof slope 5:12. Racking attachment detail shows flashed standoffs lagged to rafters.",
+    structuralCalcText: "Rooftop PV structural check complete. Dead load 3.2 psf, ground snow 25 psf, wind exposure B, rafter span checked.",
+    electricalCalcText: "NEC 705.12 load-side calculation: 200A bus x 120 percent = 240A, 200A main + 40A PV breaker = 240A. NEC 690.12 rapid shutdown shown.",
+    labelsText: "PV label schedule includes rapid shutdown label, service power source directory, disconnect labels, and backfed breaker warning.",
+    splitPagesText: "01 Site/Roof Plan and PV layout with fire pathway: pages 1-2\n02 SLD 3-Line Diagram with NEC 705.12 calculation and rapid shutdown: page 3\n03 Roof framing and racking attachment detail: pages 4-5\n04 Module spec UL 61730: pages 6-8\n05 Inverter spec UL 1741 SB: pages 9-11\n06 Label schedule and placards: page 12",
+    utilityDownloadChecklistText: "Utility package includes SLD/3-line, site/plot plan, module spec, inverter spec, utility bill, meter data, and account data.",
+    packetReadinessText: "READY - Plan set\nREADY - Utility bill\nREADY - Module spec\nREADY - Inverter spec",
+  };
+  let txSeq = 0;
+  const mkTx = (over: Record<string, string> = {}): string => {
+    const pid = createProject(db, { clientId: txClient.id, owner: `TX Framing Owner ${++txSeq}`, ...COMPLETE_TX, street: `${200 + txSeq} Congress Ave`, ...over } as Payload).project.id;
+    saveProjectDocument(db, pid, { docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n% plan set\n", "utf8"), source: "upload" });
+    return pid;
+  };
+  const reviewerFramingBlocker = (pid: string): boolean => (getSubmitGateReport(db, pid).checks.find((c) => c.id === "permit-requirements")?.evidence ?? [])
+    .some((l) => l.startsWith("Roof framing information missing"));
+  const txControl = mkTx();
+  check("SETUP (TX): the complete fixture reaches ready_to_stage at City of Austin before any correction", computeNextStep(db, txControl).key === "ready_to_stage", computeNextStep(db, txControl).key);
+  learnFramingCorrection(mkTx());
+  const noMemberFields = { framingType: "", roofRafterSpacing: "", roofRafterSpan: "", structuralCalcText: "", splitPagesText: noSplit };
+  const txAttachOnly = mkTx({ ...noMemberFields, roofPlanNotesText: "Racking attachment detail shows flashed standoffs lagged to rafters @ 48 in o.c." });
+  check("MF1 MUST-EXCLUDE (TX gate): an attachment-only set is blocked by the learned framing blocker, never ready_to_stage",
+    blockedByFraming(txAttachOnly) && computeNextStep(db, txAttachOnly).key !== "ready_to_stage"
+    && getSubmitGateReport(db, txAttachOnly).checks.find((c) => c.id === "permit-requirements")?.status === "blocker",
+    `${computeNextStep(db, txAttachOnly).key} ${JSON.stringify(historicalBlockers(txAttachOnly))}`);
+  const txSheetTitle = mkTx({ ...noMemberFields, roofPlanNotesText: "SHEET INDEX: PV-1 SITE PLAN, PV-2 ROOF PLAN, PV-3 ROOF FRAMING PLAN, E-1 SLD. Racking per manufacturer." });
+  check("MF1 MUST-EXCLUDE (TX gate): a framing SHEET TITLE is not framing — the learned blocker stays and the gate stays blocked",
+    blockedByFraming(txSheetTitle) && computeNextStep(db, txSheetTitle).key !== "ready_to_stage",
+    `${computeNextStep(db, txSheetTitle).key} ${JSON.stringify(historicalBlockers(txSheetTitle))}`);
+  const txMembers = mkTx({ ...noMemberFields, roofPlanNotesText: "Roof framing: 2x6 rafters @ 24\" o.c., 10 ft span. Racking attachment detail shows flashed standoffs lagged to rafters @ 48 in o.c." });
+  check("MF1 MUST-PASS (TX gate): '2x6 rafters @ 24\" o.c., 10 ft span' clears the learned blocker AND the reviewer's framing finding",
+    !blockedByFraming(txMembers) && !reviewerFramingBlocker(txMembers) && computeNextStep(db, txMembers).key === "ready_to_stage",
+    `${computeNextStep(db, txMembers).key} ${JSON.stringify(getSubmitGateReport(db, txMembers).checks.filter((c) => c.status === "blocker").map((c) => c.evidence))}`);
+  const txParsed = mkTx({ roofPlanNotesText: "Racking per manufacturer.", structuralCalcText: "", splitPagesText: noSplit });
+  check("MF1 MUST-PASS (TX gate): parsed framingType + spacing + span clear both as well",
+    !blockedByFraming(txParsed) && !reviewerFramingBlocker(txParsed) && computeNextStep(db, txParsed).key === "ready_to_stage",
+    `${computeNextStep(db, txParsed).key} ${JSON.stringify(getSubmitGateReport(db, txParsed).checks.filter((c) => c.status === "blocker").map((c) => c.evidence))}`);
+}
 
 void fs;
 if (failures) { console.error(`\nhistoricalBlockerEvidence: ${failures} FAILED`); process.exit(1); }

@@ -281,13 +281,47 @@ function evidence(
 //             (hasStampedStructuralEvidence — the one predicate for that question);
 //   high    = a named member WITH a dimension in the same clause (2x6, 24" o.c., span 12 ft), or
 //             the parsed member plus a parsed spacing/span/size, or the sealed letter.
-// A named member with no dimension is a lead (medium → the checklist says "needs review", not
+// A parsed member with no dimension is a lead (medium → the checklist says "needs review", not
 // "missing"); nothing named at all is missing, which is what keeps the blocker for a set that
 // truly lacks it.
+//
+// THE DIMENSION MUST BELONG TO THE MEMBER (2026-09-24, D1 verification MF1). Any number in a
+// clause that named a member used to count, and every plan set has a clause like that which is
+// about the ATTACHMENT, not the roof: "5/16\" x 4\" SS LAG SCREW INTO RAFTER, 2.5\" MIN EMBEDMENT"
+// and "RAILS ATTACHED TO RAFTERS WITH L-FOOT MOUNTS @ 48\" O.C." both read present/high, so at a
+// standard-review AHJ (City of Austin TX) a set whose only framing text was "standoffs lagged to
+// rafters @ 48 in o.c." cleared a learned "rafter size, spacing and span" blocker and reached
+// ready_to_stage with 0 blockers. The fastener's size and the attachment's spacing say nothing
+// about the rafter it goes into. And a member merely NAMED in plan text — a sheet title "PV-3
+// ROOF FRAMING PLAN", "EXISTING ROOF FRAMING TO BE VERIFIED" — is not framing evidence either:
+// the correction asked for size, spacing and span, and those words carry none.
+//
+// So, per comma-separated part of a clause: a part that talks about a fastener or attachment is
+// dropped before judging (the part before it — "2X6 RAFTERS @ 24\" O.C., ATTACH RAILS W/ LAGS" —
+// still counts), and what is left must NAME a member and carry a MEMBER dimension: an NxM size
+// (never the tail of a fraction — "3/8 x 5" is a lag), a spacing on centre, or a span with its
+// length. Plan text that only names a member no longer makes the topic present.
 const FRAMING_MEMBER = /\b(?:rafters?|truss(?:es)?|(?:i-?|ceiling |roof )?joists?|tji|top chords?|framing)\b/i;
-const FRAMING_DIMENSION = /\b\d+(?:\.\d+)?\s*[x×]\s*\d+|\b\d+(?:\.\d+)?\s*(?:"|''|in\b|inch(?:es)?|ft\b|feet|')|@\s*\d+|\bspan\b[^\n]{0,24}\d/i;
+const FRAMING_ATTACHMENT = /\b(?:lag(?:s|ged|ging)?|screws?|bolts?|embedment|embed(?:ded)?|stand-?offs?|l-?f(?:oo|ee)t|mounts?|mounting|mounted|attach\w*|flash(?:ed|ing|ings)?|rails?|racking|clamps?|brackets?|hooks?|fasten\w*)\b/i;
+const MEMBER_DIMENSION: RegExp[] = [
+  // Nominal size: "2x6", "2 X 10", "1.75x11.875" — not "3/8 x 5" (the 8 is a fraction's tail).
+  /(?<![\/\d.])\d+(?:\.\d+)?\s*[x×]\s*\d+(?:\.\d+)?(?![\/\d])/i,
+  // Spacing on centre: "@ 24\" o.c.", "at 24 inches on center", "24 in OC", "24\" O.C.".
+  /\d+(?:\.\d+)?\s*(?:"|''|in\b\.?|inch(?:es)?)?\s*(?:o\.?\s*c\b\.?|on[-\s]?cent(?:er|re))/i,
+  // Spacing written with @ and a unit: "rafters @ 24\"", "@ 16 in".
+  /@\s*\d+(?:\.\d+)?\s*(?:"|''|in\b|inch(?:es)?)/i,
+  // Span with its length: "span 11 ft 6 in", "clear span: 10'", "10 ft clear span".
+  /\bspans?\b[^\n,]{0,24}\d/i,
+  /\d+(?:\.\d+)?\s*(?:ft\b|feet|')[^\n,]{0,20}\bspans?\b/i,
+];
 const FRAMING_DENIAL = /\b(?:not|no|none|missing|unknown|n\/a|tbd|without|lacks?|blank)\b|n't\b/i;
 const MEMBER_WORD = /\b(?:rafter|truss|joist|i-?joist|tji|beam|purlin)s?\b/i;
+
+/** A clause's member-owned framing text: its comma parts, minus any part about a fastener or an
+ *  attachment. Exported for the test that pins the vocabulary. */
+export function framingMemberText(clause: string): string {
+  return clause.split(",").filter((part) => !FRAMING_ATTACHMENT.test(part)).join(",");
+}
 
 function framingField(project: ProjectRecord, keys: string[]): string {
   for (const key of keys) {
@@ -311,17 +345,19 @@ export function roofFramingFacts(project: ProjectRecord): { present: boolean; hi
   ].filter(Boolean);
   const fieldLines = memberOk ? [`Parsed roof framing: ${member}${dims.length ? `, ${dims.join(", ")}` : ""}`] : [];
 
-  let named = false;
   let dimensioned = false;
   for (const raw of allProjectEvidenceText(project).split(/[\n;]|\.(?=\s|$)/)) {
     // "No. 2" / "No.2" is the lumber grade (a NUMBER), not a denial.
     const clause = raw.replace(/\bno\.?\s*(?=[#\d])/gi, " number ");
-    if (!FRAMING_MEMBER.test(clause) || FRAMING_DENIAL.test(clause)) continue;
-    named = true;
-    if (FRAMING_DIMENSION.test(clause)) dimensioned = true;
+    if (FRAMING_DENIAL.test(clause)) continue;
+    const memberText = framingMemberText(clause);
+    if (!FRAMING_MEMBER.test(memberText)) continue;
+    if (MEMBER_DIMENSION.some((re) => re.test(memberText))) dimensioned = true;
   }
   const sealed = hasStampedStructuralEvidence(project);
-  const present = named || memberOk || sealed;
+  // Plan text counts only with a member dimension (see above); the parser's structured member is
+  // still a lead on its own.
+  const present = dimensioned || memberOk || sealed;
   const high = dimensioned || sealed || (memberOk && dims.length > 0);
   return { present, high, fieldLines };
 }
