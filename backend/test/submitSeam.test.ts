@@ -460,6 +460,10 @@ check("1k. and the approve button stays available (a later track still needs it)
     "stageLabelFor", "NEXT_STEP_WHO", "NEXT_STEP_PROBLEM_KEYS", "nextStepBannerHtml", "currentNextStep", "NEXT_STEP_BUTTON_LABELS",
     "revealElement", "renderNextStep", "NEXT_STEP_CHIP", "WAITING_ON_LABEL",
     "nextStepChip", "boardAttention", "legacyBoardAttention", "NEEDS_ME_PILLS", "needsMeCounts",
+    // The board's gate answers (boardGateTruth.test.ts covers them); lifted because boardAttention,
+    // boardCardHtml and applyAutopilotState call them.
+    "GATE_ANSWER_TTL_MS", "gateStampFor", "boardStepFor", "compactGateAnswer", "rememberGateAnswer", "BOARD_WHO_SHORT", "boardWhoHtml",
+    "STATUS_LABELS", "statusLabel", "PRE_STAGE_STATUSES", "statusBoxView", "renderStatusBox",
     "NON_QC_REVIEW_FIELDS", "ADVISORY_REVIEW_ISSUE_TYPES", "reviewItemBuckets", "reopenResultMessage", "showSubmitBlockerNote",
     "applyAutopilotState", "startAutopilot", "fmtDate", "boardReviewCountChip", "boardCardHtml",
     "resetAutopilotRail", "AUTOPILOT_LOAD_FAILED_TEXT", "refreshAutopilot", "selectProject",

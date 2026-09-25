@@ -8,6 +8,13 @@ const state = {
   // refreshed by every autopilot state), and which project it belongs to.
   nextStep: null,
   nextStepProjectId: null,
+  // THE GATE'S ANSWER PER BOARD CARD. The project list carries the list-tier answer, which never
+  // runs the submit gate (gateChecked:false); a card must not say "Ready to stage" on it. Each such
+  // card's FULL answer (GET /api/projects/:id/next-step — the same rule table WITH the gate) is
+  // fetched a few at a time and kept here: pid -> { step, stamp, at } or { failedAt, stamp }.
+  // `stamp` ties it to the list row it was fetched for (updatedAt + list key), so a changed
+  // project is re-asked. See hydrateBoardGates.
+  gateAnswers: {},
   // The newest autopilot state (canStage / canApprove and their reasons).
   autopilot: null,
   workflow: null,
@@ -1111,6 +1118,8 @@ function renderProjects() {
   // decides which container is visible. Render both so a page switch is instant.
   renderBoard();
   renderProjectTable();
+  // Ask the submit gate for every card whose list answer it could still overrule.
+  if (typeof fetch === "function") void hydrateBoardGates();
 }
 
 function renderProjectTable() {
@@ -1218,8 +1227,115 @@ function nextStepChip(step) {
   // Provisional = a list-tier answer the submit gate could still pre-empt. The server says so
   // itself (`gateCanOverrule`, from where its rule table actually stopped); no key list here.
   const provisional = step.gateCanOverrule === true;
+  // "READY" IS THE GATE'S WORD, NOT THE LIST'S. The list tier never runs the submit gate, so its
+  // ready_to_stage only means "nothing before the gate stopped it" — the 100-project load test
+  // showed 100 cards reading "Ready to stage" while the gate passed 16, and the demo's refusal
+  // project read "Ready to stage" beside BLOCKED. Until the gate's own answer for the card
+  // arrives (hydrateBoardGates), a ready-pill answer the gate could overrule says so, and is
+  // counted under its own pill, never under "Ready to stage".
+  if (row.pill === "ready" && step.gateChecked !== true && step.gateCanOverrule !== false) {
+    return {
+      key: "gate_pending", stepKey: step.key, tone: "neutral",
+      label: step.key === "ready_to_stage" ? "Gate check pending" : label,
+      title: `${String(step.headline || "")} — the submit gate has not been checked for this card yet; it can still block.`,
+      provisional: true,
+    };
+  }
   const title = `${String(step.headline || "")}${provisional ? " — board check: the project page also runs the submit gate, which can come first." : ""}`;
   return { key: row.pill, stepKey: step.key, tone, label, title, provisional };
+}
+
+// WHICH ANSWER A BOARD CARD SHOWS: the gate's own (full) answer for this row when one has been
+// fetched for it (state.gateAnswers — hydrateBoardGates), else the list row's answer. The cached
+// answer is used only for the row it was fetched for (same updatedAt + list key) and only while
+// fresh, so a project that changed is shown as unchecked until it is asked again. Pure apart from
+// reading state.gateAnswers; lifted by backend/test/boardGateTruth.test.ts.
+const GATE_ANSWER_TTL_MS = 5 * 60 * 1000;
+function gateStampFor(p) {
+  return `${(p && p.updatedAt) || ""}|${(p && p.nextStep && p.nextStep.key) || ""}`;
+}
+function boardStepFor(p, now) {
+  const listStep = p && p.nextStep && p.nextStep.key ? p.nextStep : null;
+  if (!listStep || listStep.gateChecked === true) return listStep;
+  const answers = (typeof state !== "undefined" && state && state.gateAnswers) || {};
+  const cached = answers[p.id];
+  const at = typeof now === "number" ? now : Date.now();
+  if (cached && cached.step && cached.stamp === gateStampFor(p) && at - cached.at < GATE_ANSWER_TTL_MS) return cached.step;
+  return listStep;
+}
+// The full answer, reduced to what a card reads (the list row's compact shape, gate included).
+function compactGateAnswer(step) {
+  return {
+    key: step.key, who: step.who, urgency: step.urgency, headline: step.headline,
+    buttonId: step.button && step.button.id ? step.button.id : (step.buttonId || null),
+    gateChecked: step.gateChecked === true, allFiled: step.allFiled === true,
+    gateCanOverrule: step.gateCanOverrule === true, hasStagedDraft: step.hasStagedDraft === true,
+  };
+}
+// Does this row still need the gate's answer? Any list answer the gate could pre-empt (the
+// server's gateCanOverrule), or — from a server too old to say — a ready-pill answer.
+function rowNeedsGateAnswer(p, now) {
+  const s = p && p.nextStep;
+  if (!s || !s.key || s.gateChecked === true) return false;
+  const pill = (NEXT_STEP_CHIP[s.key] || {}).pill;
+  if (!(s.gateCanOverrule === true || (s.gateCanOverrule === undefined && pill === "ready"))) return false;
+  const answers = (typeof state !== "undefined" && state && state.gateAnswers) || {};
+  const c = answers[p.id];
+  if (!c || c.stamp !== gateStampFor(p)) return true;
+  if (c.inFlight) return false;
+  if (c.step) return now - c.at >= GATE_ANSWER_TTL_MS;
+  return !c.failedAt || now - c.failedAt >= 60 * 1000;
+}
+// Record a full answer for a row (the board's fetch, or the project page's own next-step load).
+function rememberGateAnswer(projectId, step) {
+  if (!projectId || !step || !step.key || step.gateChecked !== true || !state.gateAnswers) return;
+  const row = [].concat(state.projects || [], state.boardAll || []).find((p) => p && p.id === projectId);
+  if (!row) return;
+  state.gateAnswers[projectId] = { stamp: gateStampFor(row), at: Date.now(), step: compactGateAnswer(step) };
+}
+// Fetch the gate's answer for every card that needs one, THREE AT A TIME: the load test froze the
+// server for 11 s when 300 detail reads fired together. Ready-pill cards first (they are the ones
+// that would otherwise claim readiness). Each answer re-renders the board (debounced).
+let gateHydrationRunning = false;
+let gateHydrationAgain = false;
+let gateRenderTimer = null;
+function scheduleBoardRerender() {
+  if (gateRenderTimer) return;
+  gateRenderTimer = setTimeout(() => { gateRenderTimer = null; safeRender("board", renderBoard); }, 200);
+}
+async function hydrateBoardGates() {
+  if (!state.gateAnswers) state.gateAnswers = {};
+  if (gateHydrationRunning) { gateHydrationAgain = true; return; }
+  gateHydrationRunning = true;
+  try {
+    do {
+      gateHydrationAgain = false;
+      const now = Date.now();
+      const seen = new Set();
+      const queue = [].concat(state.boardAll || [], state.projects || [])
+        .filter((p) => p && p.id && !seen.has(p.id) && seen.add(p.id) && rowNeedsGateAnswer(p, now))
+        .sort((a, b) => Number((NEXT_STEP_CHIP[b.nextStep.key] || {}).pill === "ready") - Number((NEXT_STEP_CHIP[a.nextStep.key] || {}).pill === "ready"));
+      const worker = async () => {
+        while (queue.length) {
+          const p = queue.shift();
+          const stamp = gateStampFor(p);
+          state.gateAnswers[p.id] = { stamp, inFlight: true };
+          try {
+            const { nextStep } = await api(`/api/projects/${encodeURIComponent(p.id)}/next-step`);
+            state.gateAnswers[p.id] = nextStep && nextStep.key && nextStep.gateChecked === true
+              ? { stamp, at: Date.now(), step: compactGateAnswer(nextStep) }
+              : { stamp, failedAt: Date.now() };
+          } catch {
+            state.gateAnswers[p.id] = { stamp, failedAt: Date.now() };
+          }
+          scheduleBoardRerender();
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker));
+    } while (gateHydrationAgain);
+  } finally {
+    gateHydrationRunning = false;
+  }
 }
 
 // Returns null when nothing is shown. Server answer first; the old client guess below is only
@@ -1227,7 +1343,11 @@ function nextStepChip(step) {
 // for that row) — never blank, never a second opinion beside the server's.
 function boardAttention(p) {
   if (!p) return null;
-  const a = p.nextStep && p.nextStep.key ? nextStepChip(p.nextStep) : legacyBoardAttention(p);
+  const step = boardStepFor(p);
+  const a = step ? nextStepChip(step) : legacyBoardAttention(p);
+  // WHO ACTS NEXT, on the card (the server's `who`). A card still waiting on its gate check has
+  // no owner yet — the gate may name the designer.
+  if (a && step && step.who && a.key !== "gate_pending") a.who = step.who;
   // A DRAFT STAGED ON A PORTAL IS ALSO "YOUR SUBMIT", whatever comes first. The server's one
   // answer names the most urgent thing (a failed sibling track, fields to add…), but a project
   // with a staged application waiting on a person must not vanish from the "Your submit" count
@@ -1236,7 +1356,7 @@ function boardAttention(p) {
   // unfiled track's awaiting run, or a reopened form) — not the project status, which stays
   // awaiting_human_submit after the staged track is filed. A row with no server answer takes
   // the legacy guess below, which files awaiting_human_submit under Your submit directly.
-  if (a && a.key !== "your_submit" && p.nextStep && p.nextStep.hasStagedDraft === true) a.alsoSubmit = true;
+  if (a && a.key !== "your_submit" && step && step.hasStagedDraft === true) a.alsoSubmit = true;
   return a;
 }
 function legacyBoardAttention(p) {
@@ -1269,6 +1389,15 @@ function boardReviewCountChip(p, attn) {
   return `<span class="chip" title="${esc(`${n} pending review item(s) in total — QC checks, portal readings and advisory notices; the project page shows where each one is`)}">${esc(`${n} review item${n === 1 ? "" : "s"}`)}</span>`;
 }
 
+// WHO ACTS NEXT on a card, in one word, from the server's answer. Silent when the chip already
+// says it ("Waiting on designer"), when nobody is asked, and on a card still waiting on its gate.
+const BOARD_WHO_SHORT = { me: "You", designer: "Designer", customer: "Customer", ahj: "AHJ", utility: "Utility" };
+function boardWhoHtml(attn) {
+  const who = attn && attn.who ? BOARD_WHO_SHORT[attn.who] : "";
+  if (!who || /^Waiting on /.test(attn.label || "")) return "";
+  return ` <span class="board-card-who muted" style="margin-left:6px;font-size:12px" title="Who acts next">Next: ${esc(who)}</span>`;
+}
+
 // Stage board: five columns; each project as a compact card in its current stage.
 function boardCardHtml(p, userMap) {
   const assignee = p.assignedUserId ? userMap[p.assignedUserId] : null;
@@ -1284,7 +1413,7 @@ function boardCardHtml(p, userMap) {
   const nemAsOf = p.latestNemCheckedAt ? ` title="as of ${esc(fmtDate(p.latestNemCheckedAt, true))}"` : "";
   return `<button type="button" class="board-card${active}${p.isBlocked ? " is-blocked" : ""}${attnClass}" data-board-pid="${esc(p.id)}" data-attn="${esc(attn ? attn.key : "")}" data-attn-also="${esc(attn && attn.alsoSubmit ? "your_submit" : "")}">
     <span class="board-card-name">${esc(p.homeownerName || "Unnamed")}</span>
-    ${attn && attn.label ? `<span class="board-card-action"><span class="chip ${esc(attn.tone)}${attn.provisional ? " is-provisional" : ""}" title="${esc(attn.title || "")}">${esc(attn.label)}</span></span>` : ""}
+    ${attn && attn.label ? `<span class="board-card-action"><span class="chip ${esc(attn.tone)}${attn.provisional ? " is-provisional" : ""}" title="${esc(attn.title || "")}">${esc(attn.label)}</span>${boardWhoHtml(attn)}</span>` : ""}
     <span class="board-card-addr muted" title="${esc(p.projectAddress || "No address")}">${esc(p.projectAddress || "No address")}</span>
     <span class="board-card-meta">
       ${permit ? `<span class="chip"${permitAsOf}>Permit: ${esc(permit)}</span>` : ""}
@@ -1364,6 +1493,9 @@ const NEEDS_ME_PILLS = [
   { key: "to_fix", label: "To fix" },
   { key: "corrections", label: "Corrections" },
   { key: "ready", label: "Ready to stage" },
+  // Cards whose list answer would read "ready" but whose submit gate has not answered yet
+  // (nextStepChip). They move to their real pill as each gate answer arrives.
+  { key: "gate_pending", label: "Gate check pending", hideWhenZero: true },
   { key: "waiting", label: "Waiting" },
   { key: "done", label: "Done", hideWhenZero: true },
 ];
@@ -1858,6 +1990,8 @@ async function loadNextStep(projectId) {
       state.nextStep = nextStep;
       state.nextStepProjectId = projectId;
     }
+    // The board card for this project shows the same full answer.
+    rememberGateAnswer(projectId, nextStep);
   } catch { /* the banner falls back — see renderNextStep */ }
 }
 
@@ -2355,7 +2489,11 @@ const STATUS_LABELS = {
   parsed: "Parsed",
   qc_failed: "QC failed",
   qc_passed: "QC passed",
-  ready_to_stage: "Ready to stage",
+  // The STATUS is where the pipeline is (QC passed, documents built); whether the project is
+  // READY to stage is the submit gate's answer, shown from the next-step answer (statusBoxView,
+  // the board chip). Labelled "Ready to stage", this status sat beside BLOCKED on every
+  // gate-blocked project (demo S1; load test: 100 "ready", gate 16).
+  ready_to_stage: "Docs built",
   awaiting_human_submit: "Awaiting human submit",
   submitted: "Submitted",
   correction_received: "Correction received",
@@ -2373,6 +2511,34 @@ const STATUS_LABELS = {
 
 function statusLabel(status) {
   return STATUS_LABELS[status] || humanize(status || "unknown");
+}
+
+// THE PROJECT PAGE'S STATUS BOX. Before staging, the recorded status only says where the pipeline
+// got to (QC passed / docs built); whether the project is READY is the submit gate's answer. So
+// for those statuses the box shows the next-step answer — "Ready to stage" only when the GATE
+// said so, the blocker ("Gate blocked") when it did not — with the recorded status in the
+// tooltip. Every other status reads as recorded. `current` is currentNextStep(): { step, full }.
+// Pure; lifted by backend/test/boardGateTruth.test.ts.
+const PRE_STAGE_STATUSES = ["parsed", "qc_passed", "ready_to_stage"];
+function statusBoxView(project, current) {
+  const recorded = statusLabel(project && project.status);
+  if (!project || !PRE_STAGE_STATUSES.includes(project.status)) return { text: recorded, title: "", hideStageDetail: false };
+  const step = current && current.step && current.step.key ? current.step : null;
+  if (!step || step.gateChecked !== true) {
+    return {
+      text: project.status === "parsed" ? recorded : `${recorded} — gate not checked`,
+      title: `Recorded status: ${recorded}. The submit gate's answer has not loaded, so this does not say the project is ready.`,
+      hideStageDetail: false,
+    };
+  }
+  const chip = nextStepChip(step);
+  const text = step.key === "ready_to_stage" ? "Ready to stage" : (chip && chip.label) || recorded;
+  return {
+    text,
+    title: `Recorded status: ${recorded}. ${String(step.headline || "")}`.trim(),
+    // "QC passed" beside a blocker reads as reassurance; the blocker is the answer.
+    hideStageDetail: NEXT_STEP_PROBLEM_KEYS.includes(step.key),
+  };
 }
 
 // WHERE EACH FILING STANDS, in words — from the submittal tracks (the server's per-track state:
@@ -3406,24 +3572,36 @@ function safeRender(label, fn) {
   }
 }
 
+// The Status box + its sub-stage chip. Re-run whenever the next-step answer changes (the
+// project page's own load, every autopilot poll) — the answer lands after the first render.
+function renderStatusBox() {
+  const project = state.detail && state.detail.project;
+  if (!project || !$("metricStatus")) return;
+  // The Status box says what the NEXT-STEP ANSWER says (statusBoxView), not the bare recorded
+  // status: "Ready to stage / QC passed" beside BLOCKED was the demo's refusal project.
+  const box = statusBoxView(project, typeof currentNextStep === "function" ? currentNextStep() : null);
+  $("metricStatus").textContent = box.text;
+  $("metricStatus").title = box.title;
+  // Sub-stage chip on the Status metric. textContent + hidden, so nothing is
+  // interpolated into innerHTML here at all. No stage_detail → the element
+  // stays hidden AND empty: the header shows the status and says nothing more,
+  // which is the truth about a project the system has recorded no sub-stage for.
+  const stageDetailEl = $("metricStageDetail");
+  if (stageDetailEl) {
+    const detail = typeof project.stageDetail === "string" ? project.stageDetail.trim() : "";
+    stageDetailEl.textContent = detail ? humanize(detail) : "";
+    stageDetailEl.title = detail ? `Sub-stage recorded by the system: ${detail}` : "";
+    stageDetailEl.hidden = !detail || box.hideStageDetail;
+  }
+}
+
 function renderDetail() {
   ensureKeelixDetailStyles();
   const { project } = state.detail;
   safeRender("header", () => {
     $("detailTitle").textContent = project.homeownerName || "Unnamed project";
     $("detailSubtitle").textContent = project.projectAddress || "No address captured";
-    $("metricStatus").textContent = statusLabel(project.status);
-    // Sub-stage chip on the Status metric. textContent + hidden, so nothing is
-    // interpolated into innerHTML here at all. No stage_detail → the element
-    // stays hidden AND empty: the header shows the status and says nothing more,
-    // which is the truth about a project the system has recorded no sub-stage for.
-    const stageDetailEl = $("metricStageDetail");
-    if (stageDetailEl) {
-      const detail = typeof project.stageDetail === "string" ? project.stageDetail.trim() : "";
-      stageDetailEl.textContent = detail ? humanize(detail) : "";
-      stageDetailEl.title = detail ? `Sub-stage recorded by the system: ${detail}` : "";
-      stageDetailEl.hidden = !detail;
-    }
+    renderStatusBox();
     $("metricUtility").textContent = project.utility || "Missing";
     $("metricAhj").textContent = project.ahj || "Missing";
     $("metricSystem").textContent = (project.systemSizeDcKw == null && project.systemSizeAcKw == null)
@@ -4005,8 +4183,10 @@ function applyAutopilotState(s) {
   if (s.nextStep && s.nextStep.key && (!s.projectId || s.projectId === state.selectedProjectId)) {
     state.nextStep = s.nextStep;
     state.nextStepProjectId = s.projectId || state.selectedProjectId;
+    rememberGateAnswer(state.nextStepProjectId, s.nextStep);
   }
   if (state.detail && state.detail.project) safeRender("nextStep", renderNextStep);
+  if (state.detail && state.detail.project) safeRender("statusBox", renderStatusBox);
   // THE BADGE'S REASON, AS VISIBLE TEXT. "Blocked" with its cause only in a tooltip read as a
   // bare verdict — and the banner beside it said the gate "runs automatically". The reason is
   // written with textContent (blocker details and messages are server prose, never markup).
@@ -5027,14 +5207,27 @@ function syncPermitForm() {
   if (freq && (fresh || !freq.value)) freq.value = target?.checkFrequencyDays || 7;
 }
 
+// A QC ROW'S DISPLAYED VERDICT. A row the rule wrote at severity error/blocker is a FAIL on this
+// panel whatever its qc_status says: the demo's "PE-stamped structural plans … not attached …
+// Staging will refuse without it" row is qc_status=warning, severity=error, and the panel read
+// "0 fail / 4 warn" over a staging blocker (demo S2b). Pure; lifted by boardGateTruth.test.ts.
+function qcVerdict(result) {
+  const severity = String((result && result.severity) || "").toLowerCase();
+  if ((result && result.qcStatus) === "fail" || severity === "error" || severity === "blocker") return "fail";
+  return (result && result.qcStatus) || "info";
+}
+function qcCounts(results) {
+  const verdicts = (results || []).map(qcVerdict);
+  return { fails: verdicts.filter((v) => v === "fail").length, warnings: verdicts.filter((v) => v === "warning").length };
+}
+
 function renderQc() {
   const results = state.detail.qcResults || [];
-  const fails = results.filter((x) => x.qcStatus === "fail").length;
-  const warnings = results.filter((x) => x.qcStatus === "warning").length;
+  const { fails, warnings } = qcCounts(results);
   $("qcCounts").textContent = `${fails} fail / ${warnings} warn`;
   $("qcResults").innerHTML = results.length ? results.map((result) => `
-    <article class="item ${esc(result.qcStatus)}">
-      <div class="item-title"><span>${esc(result.ruleName)}</span>${statusBadge(result.qcStatus)}</div>
+    <article class="item ${esc(qcVerdict(result))}">
+      <div class="item-title"><span>${esc(result.ruleName)}</span>${statusBadge(qcVerdict(result))}</div>
       <p>${esc(result.message)}</p>
     </article>
   `).join("") : `<p class="muted">No QC results yet.</p>`;
