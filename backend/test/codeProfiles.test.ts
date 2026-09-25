@@ -141,13 +141,17 @@ await run("buildCodeContext is pure and honors a null profile", () => {
   assert.equal(ctx.profile, null);
 });
 
-await run("autonomous research: first contact queues state + county layers, deduped", async () => {
-  const { ensureCodeProfilesResearched } = await import("../src/codeProfiles");
+await run("autonomous research: first contact queues the STATE layer first (the county waits for it), deduped", async () => {
+  const { ensureCodeProfilesResearched, codeResearchDecision } = await import("../src/codeProfiles");
   const n = ensureCodeProfilesResearched(db, "MT", "Gallatin County");
-  assert.equal(n, 2, "state default + county layers queued");
+  // State first: Montana's adoption model is unknown until its state layer is researched, so the
+  // county's code research waits (pending_state) instead of racing it.
+  assert.equal(n, 1, "only the state default layer is queued on first contact");
+  assert.equal(codeResearchDecision(db, "MT", "Gallatin County").reason, "pending_state");
   await new Promise((r) => setTimeout(r, 400)); // lazy-import enqueue settles
   const jobs = db.query<{ payload: string; status: string }>("SELECT payload, status FROM job_queue WHERE job_type = 'code_research'");
-  assert.ok(jobs.length >= 2, `jobs enqueued (${jobs.length})`);
+  assert.ok(jobs.length >= 1, `jobs enqueued (${jobs.length})`);
+  assert.ok(jobs.every((j) => /"ahj":""/.test(j.payload)), `a county layer was queued before its state: ${jobs.map((j) => j.payload).join(" | ")}`);
   // Re-ensure: nothing new — pending/running jobs AND recent attempts dedupe
   // (in stub mode jobs finish instantly without storing a row; the 6h window
   // stops every review from re-queuing no-op research).
