@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { performance } from "node:perf_hooks";
-import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, DesignCriteriaResearchResult, ParserExtractedField } from "../../shared/src/types";
+import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
@@ -288,7 +288,7 @@ export class StubLLMProvider implements LLMProvider {
     return { provider: "stub", values: [], webGrounded: false, notes: "No ANTHROPIC_API_KEY configured — no design-criteria lookup." };
   }
 
-  async researchJurisdictionCodes(input: { ahj: string; state: string }): Promise<JurisdictionCodeResearchResult> {
+  async researchJurisdictionCodes(input: JurisdictionCodeResearchInput): Promise<JurisdictionCodeResearchResult> {
     return {
       provider: "stub",
       profile: {
@@ -1019,6 +1019,30 @@ export function summarizeWebSearch(msg: { content?: unknown; usage?: unknown }):
   const groundedSearches = blocks.filter((b) => b?.type === "web_search_tool_result" && Array.isArray(b?.content) && (b.content as unknown[]).length > 0).length;
   return { searches: Math.max(blockCount, usageCount), groundedSearches };
 }
+
+/** The result URLs the web searches actually RETURNED (web_search_tool_result blocks with a results
+ *  array — also when the search ran from code execution), deduped and bounded. Evidence stored on a
+ *  research row's provenance: which pages the answer could have come from. */
+export function webSearchResultUrls(msg: { content?: unknown }, max = 20): string[] {
+  const blocks = Array.isArray(msg?.content) ? (msg.content as Array<Record<string, unknown> | null>) : [];
+  const urls: string[] = [];
+  for (const b of blocks) {
+    if (b?.type !== "web_search_tool_result" || !Array.isArray(b.content)) continue;
+    for (const r of b.content as Array<Record<string, unknown> | null>) {
+      const u = typeof r?.url === "string" ? r.url.trim() : "";
+      if (/^https?:\/\//i.test(u) && !urls.includes(u)) urls.push(u.slice(0, 300));
+      if (urls.length >= max) return urls;
+    }
+  }
+  return urls;
+}
+
+/** Output budget for the code-edition research. It asks for dated editions per family (effective /
+ *  mandatory dates, basis, previous edition, a quote) plus the state's adoption model and upcoming
+ *  editions: the measured 4.9k-token answer at the old shape grows, and adaptive thinking spends
+ *  from the same budget. Truncation parses to {} and stores nothing, so this is a ceiling, not a
+ *  cost — tokens are billed as used. */
+export const CODE_RESEARCH_MAX_TOKENS = 10000;
 
 export class ClaudeLLMProvider implements LLMProvider {
   private client: Anthropic;
@@ -1960,17 +1984,32 @@ Rules:
     return fetches ? { ...out, notes: `${out.notes} Pages read: ${fetches}.`.trim() } : out;
   }
 
-  // ADOPTED-CODES onboarding research (review gate). Same web-grounded pattern as
-  // researchAhjRequirements, but targets the jurisdiction's ADOPTED CODE EDITIONS,
-  // state/local amendments, and site design criteria. Output is saved as confidence
-  // "seeded" and a human verifies each claim against its citation before the review
-  // gate cites it authoritatively.
-  async researchJurisdictionCodes(input: { ahj: string; state: string }): Promise<JurisdictionCodeResearchResult> {
-    const intro = `You are a building-department code analyst onboarding a jurisdiction into a plan-review tool. Determine what building codes the jurisdiction has ADOPTED and its local design criteria.`;
-    const searchStep = `FIRST search the web — prefer, in order: (1) the jurisdiction's own building-department page (.gov/.us/.org), (2) the STATE building-codes agency (state building codes division / DOPL / BCD — many states adopt codes statewide and counties/cities inherit them), (3) the state electrical board for the NEC cycle. Ground every value in a page you actually found and cite it. If a value cannot be confirmed, OMIT it rather than guessing.`;
+  // ADOPTED-CODES onboarding research (review gate). Targets the code EDITIONS IN EFFECT on a date,
+  // per canonical family, with their dates and basis, and — at the state level — how the state
+  // adopts each family. Output is saved as confidence "seeded" and a human verifies each claim
+  // against its citation before the review gate cites it authoritatively.
+  //
+  // WEB-GROUNDED OR NOTHING. There is no model-memory fallback here: a remembered edition is exactly
+  // the wrong answer this data exists to prevent (production's memory-era rows said "IRC 2023" for
+  // Coos Bay — no such edition), and the save path refuses to store one. A call that does not
+  // ground returns an empty profile marked model_memory, with the search evidence, and costs no
+  // second call.
+  async researchJurisdictionCodes(input: JurisdictionCodeResearchInput): Promise<JurisdictionCodeResearchResult> {
+    const asOf = /^\d{4}-\d{2}-\d{2}/.test(String(input.asOf || "")) ? String(input.asOf).slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const stateLayer = !String(input.ahj || "").trim();
+    const families = (input.families ?? []).filter((f) => ["residential", "building", "electrical", "fire", "energy", "mechanical", "plumbing"].includes(f));
+    const intro = `You are a building-code analyst for a plan-review tool. Find which code EDITIONS are in effect on ${asOf} for the jurisdiction below${stateLayer ? ", and how the state adopts each code family" : ""}, plus its local design criteria.`;
+    const searchStep = `FIRST search the web. Prefer official sources: the state agency that adopts each code (building codes division, fire marshal, electrical board, the state administrative code/register), then the jurisdiction's own building department or municipal code. Every edition must come from a page you found: cite it and quote the words that state it. OMIT what you cannot confirm — an omission is better than a guess. An edition adopted for a FUTURE date, or still proposed, goes in "upcoming", never in adoptedCodes.`;
+    const scope = stateLayer
+      ? ""
+      : families.length
+        ? `\n- The state adopts the other families for every AHJ. Research ONLY this jurisdiction's own adopted editions for: ${families.join(", ")}.`
+        : `\n- State-adopted editions apply to the city/county unless it adopted its own — report the edition that applies here and say which level adopted it.`;
     const body = `Return ONLY JSON:
-{
-  "adoptedCodes": [{"code": "<IRC|IBC|NEC|IFC|IPC|IMC|IECC|state specialty code abbreviation>", "edition": "<year>", "title": "<full name incl. state amendments note>", "sourceUrl": "<the page confirming this>", "notes": "<effective date / amendment note>"}],
+{${stateLayer ? `
+  "adoptionModel": {"model": "statewide_uniform|statewide_minimum_local_amend|local_adoption|mixed", "byFamily": {"<family>": "<model, only where it differs>"}, "sourceUrl": "<statute/rule saying so>", "quote": "<≤25 words>"},` : ""}
+  "adoptedCodes": [{"family": "residential|building|electrical|fire|energy|mechanical|plumbing", "code": "<the jurisdiction's own abbreviation (ORSC, CRC, FBC-R, RCNYS) or the model code (IRC, NEC) when adopted under that name>", "edition": "<year>", "basedOn": "<model code + edition it is built on, e.g. 2021 IRC>", "effectiveDate": "YYYY-MM-DD", "mandatoryDate": "YYYY-MM-DD, first day ONLY this edition may be used (omit if no phase-in)", "previousEdition": "<year>", "sourceUrl": "<page stating it>", "quote": "<≤25 words from that page>"}],${stateLayer ? `
+  "upcoming": [{"family": "<family>", "code": "", "edition": "", "basedOn": "", "anticipatedDate": "YYYY-MM-DD", "status": "adopted|filed|in rulemaking|proposed", "sourceUrl": ""}],` : ""}
   "amendments": [{"code": "<family>", "section": "<section if known>", "summary": "<what the state/local amendment changes>", "sourceUrl": "<source>"}],
   "designCriteria": {"groundSnowLoadPsf": <number or omit>, "windSpeedMph": <number or omit>, "windExposure": "<B|C|D or omit>", "seismicDesignCategory": "<or omit>", "frostDepthIn": <number or omit>, "sourceUrl": "<the county/city design-criteria page>"},
   "prescriptive": {"hasPrescriptivePath": <true|false — omit ONLY if you genuinely could not tell>, "maxGroundSnowPsf": <number or omit>, "maxPvDeadLoadPsf": <number or omit>, "maxRafterSpacingIn": <number or omit>, "allowedWindExposures": ["<B>","<C>"] or omit, "maxWindSpeedMphExpB": <number or omit>, "maxWindSpeedMphExpC": <number or omit>, "engineerStampOverKwDc": <number or omit>, "sourceUrl": "<the page publishing the prescriptive path>"},
@@ -1978,8 +2017,9 @@ Rules:
   "confidenceNotes": "<what you could and could not confirm>"
 }
 
-Rules:
-- STATE-adopted codes apply to the county/city unless it has its own amendments — say which level each value came from in titles/notes.
+Rules:${stateLayer ? `
+- Adoption model per family: statewide_uniform = one edition everywhere, localities cannot adopt another; statewide_minimum_local_amend = the state edition applies everywhere and localities may amend it; local_adoption = each city/county adopts its own edition. "mixed" overall when families differ.` : ""}${scope}
+- One adoptedCodes entry per family in effect on ${asOf}. During a phase-in (both editions allowed) give the new edition with effectiveDate, mandatoryDate and previousEdition.
 - Design criteria (ground snow load, wind, frost depth, seismic) are usually published by the COUNTY/CITY building department; only include numbers you found on such a page.
 - THE PRESCRIPTIVE BLOCK IS ABOUT ROOFTOP SOLAR PV SPECIFICALLY. Some states publish a
   prescriptive (no-engineering) rooftop-PV path with printed limits — Oregon's ORSC via BCD
@@ -1992,46 +2032,85 @@ Rules:
 - This is ADVISORY and will be human-verified — never invent a sourceUrl.
 - Return valid JSON only.`;
     const system = `${intro}\n\n${searchStep}\n\n${body}`;
-    const userMsg = `Jurisdiction (AHJ): ${input.ahj || "(state-level default)"}\nState: ${input.state}\n\nResearch the adopted building/electrical/fire codes and local design criteria for this jurisdiction.`;
+    const userMsg = `Jurisdiction (AHJ): ${input.ahj || "(state-level default)"}\nState: ${input.state}\nAs of: ${asOf}\n\nResearch the code editions in effect${stateLayer ? ", the state's adoption model, announced upcoming editions," : ""} and local design criteria for this jurisdiction.`;
     interface Raw {
-      adoptedCodes?: unknown; amendments?: unknown; designCriteria?: Record<string, unknown>; prescriptive?: Record<string, unknown>;
-      citations?: unknown; confidenceNotes?: unknown;
+      adoptionModel?: Record<string, unknown>; adoptedCodes?: unknown; upcoming?: unknown; amendments?: unknown;
+      designCriteria?: Record<string, unknown>; prescriptive?: Record<string, unknown>; citations?: unknown; confidenceNotes?: unknown;
     }
     let parsed: Raw = {};
     let webGrounded = false;
+    let evidence: { searches: number; groundedSearches: number; resultUrls: string[]; inputTokens?: number; outputTokens?: number; model: string; stopReason?: string | null } = { searches: 0, groundedSearches: 0, resultUrls: [], model: MODEL };
+    let failure = "";
     try {
-      const web = await this.askWithWebSearch("researchJurisdictionCodes", system, userMsg, WEB_RESEARCH_MAX_TOKENS, 6, webResearchBudgetMs());
+      const web = await this.askWithWebSearch("researchJurisdictionCodes", system, userMsg, CODE_RESEARCH_MAX_TOKENS, 6, webResearchBudgetMs());
+      evidence = { searches: web.searches, groundedSearches: web.groundedSearches, resultUrls: web.resultUrls, inputTokens: web.inputTokens, outputTokens: web.outputTokens, model: web.model, stopReason: web.stopReason };
       const p = this.parseJson<Raw>(web.text, {});
-      if (web.groundedSearches > 0 && p && Array.isArray(p.adoptedCodes) && p.adoptedCodes.length) {
+      const hasCodes = !!p && Array.isArray(p.adoptedCodes) && p.adoptedCodes.length > 0;
+      const hasModel = stateLayer && !!p?.adoptionModel && typeof p.adoptionModel === "object";
+      if (web.groundedSearches > 0 && (hasCodes || hasModel)) {
         parsed = p;
         webGrounded = true;
+      } else {
+        failure = web.groundedSearches === 0
+          ? `no web search returned results (${web.searches} attempted)`
+          : web.stopReason === "max_tokens" ? "the answer was truncated (max_tokens) and did not parse" : "the answer named no adopted code";
       }
     } catch (err) {
-      logger.warn("llm", "researchJurisdictionCodes web search failed — falling back to model knowledge", { err: errMsg(err) });
-    }
-    if (!webGrounded) {
-      const raw = await this.askLong("researchJurisdictionCodes.fallback", `${intro}\n\n${MODEL_MEMORY_RESEARCH_RULES}\n\n${body}`, userMsg, WEB_RESEARCH_MAX_TOKENS);
-      parsed = this.parseJson<Raw>(raw, {});
+      failure = `web search failed: ${errMsg(err)}`;
+      logger.warn("llm", "researchJurisdictionCodes web search failed — nothing is recorded (no model-memory fallback for code editions)", { err: errMsg(err) });
     }
     const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
     const strv = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
-    // A sourceUrl is the claim "this value is on that page". Model memory has no page, so it
-    // gets no sourceUrl and no citations — the review gate would otherwise hyperlink a recall
-    // as the authority for a code edition.
+    const day = (v: unknown): string | undefined => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? v.trim() : undefined);
+    const fam = (v: unknown) => (typeof v === "string" && ["residential", "building", "electrical", "fire", "energy", "mechanical", "plumbing"].includes(v.trim().toLowerCase()) ? v.trim().toLowerCase() as CodeFamily : undefined);
+    // Only a grounded answer is parsed at all; the helpers keep the old stance anyway.
     const src = (v: unknown): string | undefined => (webGrounded ? strv(v) : undefined);
-    // …and no link hidden in its prose either.
     const prose = (v: unknown): string | undefined => (webGrounded ? strv(v) : strv(typeof v === "string" ? stripUrlsFromModelMemory(v) : v));
     const d = parsed.designCriteria ?? {};
     const researchNotes = `${webGrounded
       ? "Researched from official sources via web search."
-      : "Web search unavailable — model knowledge only."} ${prose(parsed.confidenceNotes) || ""}`.trim();
-    const profile: JurisdictionCodeProfile & { researchProvenance: CodeResearchProvenance } = {
+      : `Not web-grounded — nothing recorded (${failure || "no answer"}).`} ${prose(parsed.confidenceNotes) || ""}`.trim();
+    const am = (parsed.adoptionModel ?? {}) as Record<string, unknown>;
+    const models = ["statewide_uniform", "statewide_minimum_local_amend", "local_adoption", "mixed"];
+    const byFamily: Partial<Record<CodeFamily, CodeFamilyAdoptionModel>> = {};
+    for (const [k, v] of Object.entries((am.byFamily ?? {}) as Record<string, unknown>)) {
+      const f = fam(k);
+      if (f && typeof v === "string" && models.includes(v) && v !== "mixed") byFamily[f] = v as CodeFamilyAdoptionModel;
+    }
+    const adoptionModel: JurisdictionAdoptionModel | undefined = stateLayer && webGrounded && typeof am.model === "string" && models.includes(am.model)
+      ? { model: am.model as JurisdictionAdoptionModel["model"], ...(Object.keys(byFamily).length ? { byFamily } : {}), ...(src(am.sourceUrl) ? { sourceUrl: src(am.sourceUrl)!.slice(0, 500) } : {}), ...(strv(am.quote) ? { quote: strv(am.quote)!.slice(0, 300) } : {}) }
+      : undefined;
+    const upcoming: UpcomingCodeEdition[] = (stateLayer && Array.isArray(parsed.upcoming) ? parsed.upcoming : [])
+      .filter((u): u is Record<string, unknown> => !!u && typeof u === "object")
+      .map((u) => ({
+        family: fam(u.family) as CodeFamily, code: String(u.code || "").slice(0, 40), edition: String(u.edition || "").slice(0, 16),
+        ...(strv(u.basedOn) ? { basedOn: strv(u.basedOn)!.slice(0, 120) } : {}),
+        ...(day(u.anticipatedDate) ? { anticipatedDate: day(u.anticipatedDate) } : {}),
+        ...(strv(u.status) ? { status: strv(u.status)!.slice(0, 40) } : {}),
+        ...(src(u.sourceUrl) ? { sourceUrl: src(u.sourceUrl)!.slice(0, 500) } : {}),
+      }))
+      .filter((u) => u.family && u.code && u.edition)
+      .slice(0, 12);
+    const profile: JurisdictionCodeProfile = {
       key: "", state: input.state, ahj: input.ahj, confidence: "seeded",
       adoptedCodes: (Array.isArray(parsed.adoptedCodes) ? parsed.adoptedCodes : [])
         .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
-        .map((c) => ({ code: String(c.code || "").slice(0, 24), edition: String(c.edition || "").slice(0, 12), title: prose(c.title), sourceUrl: src(c.sourceUrl), notes: prose(c.notes) }))
+        .map((c) => {
+          const out: CodeEdition = { code: String(c.code || "").slice(0, 24), edition: String(c.edition || "").slice(0, 12) };
+          const f = fam(c.family);
+          if (f) out.family = f;
+          if (strv(c.basedOn)) out.basedOn = strv(c.basedOn)!.slice(0, 120);
+          if (day(c.effectiveDate)) out.effectiveDate = day(c.effectiveDate);
+          if (day(c.mandatoryDate)) out.mandatoryDate = day(c.mandatoryDate);
+          if (strv(c.previousEdition)) out.previousEdition = strv(c.previousEdition)!.slice(0, 16);
+          if (prose(c.title)) out.title = prose(c.title);
+          if (src(c.sourceUrl)) out.sourceUrl = src(c.sourceUrl)!.slice(0, 500);
+          if (strv(c.quote) && webGrounded) out.quote = strv(c.quote)!.slice(0, 300);
+          if (prose(c.notes)) out.notes = prose(c.notes);
+          return out;
+        })
         .filter((c) => c.code && c.edition)
-        .slice(0, 12),
+        .slice(0, 16),
       amendments: (Array.isArray(parsed.amendments) ? parsed.amendments : [])
         .filter((a): a is Record<string, unknown> => !!a && typeof a === "object")
         .map((a) => ({ code: String(a.code || "").slice(0, 24), section: strv(a.section), summary: String(prose(a.summary) || "").slice(0, 400), sourceUrl: src(a.sourceUrl) }))
@@ -2072,10 +2151,20 @@ Rules:
         .filter((c) => c.sourceUrl)
         .slice(0, 20),
       updatedAt: "",
-      // Rides on the profile because the callers that persist it (jobQueue's code_research,
+      ...(adoptionModel ? { adoptionModel } : {}),
+      ...(upcoming.length ? { upcoming } : {}),
+      // Rides on the profile because the callers that persist it (codeProfiles.runCodeResearch,
       // POST /api/code-profiles/research) hand saveResearchedCodeProfile only research.profile;
-      // upsert writes it into payload_json so a stored row says how it was researched.
-      researchProvenance: { webGrounded, method: webGrounded ? "web_search" : "model_memory", notes: researchNotes.slice(0, 1000) },
+      // upsert writes it into payload_json so a stored row says how it was researched — with the
+      // grounding EVIDENCE (search counts, the result URLs returned, model, tokens).
+      researchProvenance: {
+        webGrounded, method: webGrounded ? "web_search" : "model_memory", notes: researchNotes.slice(0, 1000), at: new Date().toISOString(),
+        searches: evidence.searches, groundedSearches: evidence.groundedSearches,
+        ...(evidence.resultUrls.length ? { resultUrls: evidence.resultUrls.slice(0, 20) } : {}),
+        model: evidence.model,
+        ...(evidence.inputTokens !== undefined ? { inputTokens: evidence.inputTokens } : {}),
+        ...(evidence.outputTokens !== undefined ? { outputTokens: evidence.outputTokens } : {}),
+      },
     };
     return {
       provider: "claude",
@@ -2431,7 +2520,7 @@ Return ONLY JSON:
   // whether the JSON parsed and not from the bare search count.
   // `extraTools`: server tools offered beside web_search (only the design-criteria lookup passes one —
   // the capped web_fetch); empty for every other caller, whose request is unchanged.
-  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000, extraTools: Array<Record<string, unknown>> = []): Promise<{ text: string; searches: number; groundedSearches: number; fetches: number; stopReason: string | null }> {
+  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000, extraTools: Array<Record<string, unknown>> = []): Promise<{ text: string; searches: number; groundedSearches: number; fetches: number; stopReason: string | null; resultUrls: string[]; inputTokens?: number; outputTokens?: number; model: string }> {
     // Hard timeout so a stalled web search can never hang the HTTP request (the
     // "Find official form" button would otherwise spin forever). On timeout we
     // abort the stream; callers catch and fall back (no URLs / model knowledge).
@@ -2460,7 +2549,15 @@ Return ONLY JSON:
       else logger.warn("llm", `  ${label} ran ${searches} web search(es) but none returned results we can see (errored, empty, or no web_search_tool_result block) — treating its answer as model memory`);
       const fetches = countWebFetches(msg);
       if (extraTools.length) logger.debug("llm", `  ${label} web_fetch`, { pagesRead: fetches });
-      return { text: this.textOf(msg), searches, groundedSearches, fetches, stopReason: (msg as { stop_reason?: string | null }).stop_reason ?? null };
+      const usage = (msg as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
+      return {
+        text: this.textOf(msg), searches, groundedSearches, fetches,
+        stopReason: (msg as { stop_reason?: string | null }).stop_reason ?? null,
+        resultUrls: webSearchResultUrls(msg),
+        inputTokens: typeof usage?.input_tokens === "number" ? usage.input_tokens : undefined,
+        outputTokens: typeof usage?.output_tokens === "number" ? usage.output_tokens : undefined,
+        model: MODEL,
+      };
     } finally {
       clearTimeout(timer);
     }

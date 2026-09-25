@@ -717,5 +717,2209 @@
    ],
    "updatedAt": ""
   }
+ ],
+ "stateAdoptionsComment": "GENERATED from the source-verified truth files (.probe/code-editions/truth/*.verified.json, confirmed claims only) \u2014 state layers seeded as 'seeded' with provenance reference_truth; a human-verified state row is never written, a disagreement becomes an edition proposal. Regenerate, do not hand-edit.",
+ "stateAdoptions": [
+  {
+   "state": "AZ",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "local_adoption",
+    "sourceUrl": "https://www.azleg.gov/ars/11/00861.htm",
+    "quote": "In any county that has adopted zoning pursuant to this chapter, the board of supervisors may adopt and enforce, for the unincorporated areas of the county so zoned, a building code and other related codes to regulate the quality, type of material and workmanship of all aspects of construction of buildings or structures",
+    "note": "No statewide building/residential/electrical/plumbing/mechanical/energy code. Cities/towns adopt codes by reference by ordinance (A.R.S. 9-802); counties that have adopted zoning may adopt a building code for unincorporated areas, limited to national model codes or the code of the largest city in the county (A.R.S. 11-861). FIRE: the State Fire Marshal's State Fire Code governs state/county buildings and schools and construction in areas without a locally adopted fire code (residential dwellings of fewer than five units excluded from OSFM review); a county-adopted fire code must be as stringen"
+   },
+   "adoptedCodes": [
+    {
+     "family": "fire",
+     "code": "IFC",
+     "edition": "2024",
+     "title": "Arizona State Fire Code (OSFM)",
+     "basedOn": "2024 IFC",
+     "effectiveDate": "2026-04-13",
+     "sourceUrl": "https://dffm.az.gov/fire-marshal/arizona-state-statute-and-fire-code",
+     "quote": "International Fire Code As of April 13, 2026, the Arizona Office of the State Fire Marshal will be operating using the 2024 International Fire Code or IFC."
+    }
+   ],
+   "citations": [
+    {
+     "label": "AZ code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.azleg.gov/ars/11/00861.htm"
+    },
+    {
+     "label": "AZ code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.azleg.gov/ars/9/00802.htm"
+    },
+    {
+     "label": "AZ code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.azleg.gov/ars/11/00861.htm"
+    }
+   ]
+  },
+  {
+   "state": "CA",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_minimum_local_amend",
+    "sourceUrl": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=HSC&sectionNum=18941.5",
+    "quote": "Neither the State Building Standards Law contained in this part, nor the application of building standards contained in this section, shall limit the authority of a city, county, or city and county to establish more restrictive building standards, including, but not limited to, green building standards, reasonably necessary because of local climatic, geological, or topographical conditions.",
+    "note": "CBSC publishes Title 24 on a triennial cycle, effective statewide on one date; cities/counties may adopt more restrictive standards reasonably necessary because of local climatic, geological or topographical conditions (HSC 18941.5(b)). From Oct 1, 2025 to June 1, 2031 the CBSC must reject local modifications affecting residential units unless an exception applies (HSC 17958.7(c)). Electrical (Part 3), fire (Part 9) and energy (Part 6) are Title 24 parts."
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "CRC",
+     "edition": "2025",
+     "title": "CRC (Title 24 Part 2.5)",
+     "basedOn": "2024 IRC",
+     "effectiveDate": "2026-01-01",
+     "sourceUrl": "https://www.dgs.ca.gov/BSC/Codes",
+     "quote": "The 2025 California Building Standards Code (Cal. Code Regs., Title 24) will be published July 1, 2025, with an effective date of January 1, 2026."
+    },
+    {
+     "family": "building",
+     "code": "CBC",
+     "edition": "2025",
+     "title": "CBC (Title 24 Part 2)",
+     "basedOn": "2024 IBC",
+     "effectiveDate": "2026-01-01",
+     "sourceUrl": "https://www.dgs.ca.gov/BSC/Codes",
+     "quote": "The 2025 California Building Standards Code (Cal. Code Regs., Title 24) will be published July 1, 2025, with an effective date of January 1, 2026."
+    },
+    {
+     "family": "electrical",
+     "code": "CEC",
+     "edition": "2025",
+     "title": "California Electrical Code (Title 24 Part 3)",
+     "basedOn": "2023 NEC",
+     "effectiveDate": "2026-01-01",
+     "sourceUrl": "https://www.dgs.ca.gov/BSC/Rulemaking/2024-Triennial-Cycle",
+     "quote": "The proposed code changes include adoption of the 2024 editions of the ICC and IAPMO model codes and the 2023 edition of the NEC. ... These code changes will result in the 2025 edition of the California Building Standards Code, Title 24 of the California Code of Regulations, effective January 1, 202"
+    },
+    {
+     "family": "fire",
+     "code": "CFC",
+     "edition": "2025",
+     "title": "CFC (Title 24 Part 9)",
+     "basedOn": "2024 IFC",
+     "effectiveDate": "2026-01-01",
+     "sourceUrl": "https://www.dgs.ca.gov/BSC/News/Page-Content/CALCode-Quarterly-Newsletters-Archive/CALCode-Quarterly-Winter-2024",
+     "quote": "In January, a three-day commission meeting is scheduled to review the adoption of the rest of the model codes: the International Building Code, the International Residential Code, the International Wildland-Urban Interface Code, the International Fire Code, and the International Existing Building Co"
+    },
+    {
+     "family": "energy",
+     "code": "T24-P6",
+     "edition": "2025",
+     "title": "California Energy Code (Title 24 Part 6)",
+     "effectiveDate": "2026-01-01",
+     "sourceUrl": "https://www.dgs.ca.gov/BSC/Codes",
+     "quote": "The 2025 California Building Standards Code (Cal. Code Regs., Title 24) will be published July 1, 2025, with an effective date of January 1, 2026."
+    },
+    {
+     "family": "mechanical",
+     "code": "CMC",
+     "edition": "2025",
+     "title": "CMC (Title 24 Part 4)",
+     "basedOn": "2024 UMC",
+     "effectiveDate": "2026-01-01",
+     "sourceUrl": "https://www.dgs.ca.gov/BSC/Rulemaking/2024-Triennial-Cycle/PreCycle",
+     "quote": "These steps include state agency review of the new model codes (e.g. 2024 International Building, Residential, Existing, and Fires Codes, 2024 Uniform Plumbing and Mechanical Codes, and the 2023 National Electrical Code)."
+    },
+    {
+     "family": "plumbing",
+     "code": "CPC",
+     "edition": "2025",
+     "title": "CPC (Title 24 Part 5)",
+     "basedOn": "2024 UPC",
+     "effectiveDate": "2026-01-01",
+     "sourceUrl": "https://www.dgs.ca.gov/BSC/Rulemaking/2024-Triennial-Cycle/PreCycle",
+     "quote": "These steps include state agency review of the new model codes (e.g. 2024 International Building, Residential, Existing, and Fires Codes, 2024 Uniform Plumbing and Mechanical Codes, and the 2023 National Electrical Code)."
+    }
+   ],
+   "citations": [
+    {
+     "label": "CA code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=HSC&sectionNum=18941.5"
+    },
+    {
+     "label": "CA code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=HSC&sectionNum=17958.7"
+    }
+   ]
+  },
+  {
+   "state": "CO",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "mixed",
+    "byFamily": {
+     "residential": "local_adoption",
+     "building": "local_adoption",
+     "electrical": "statewide_minimum_local_amend",
+     "fire": "local_adoption",
+     "energy": "statewide_minimum_local_amend",
+     "mechanical": "local_adoption",
+     "plumbing": "statewide_minimum_local_amend"
+    },
+    "sourceUrl": "https://osa.colorado.gov/building-codes",
+    "quote": "Colorado has no statewide building code; building codes are primarily adopted and enforced at the local level except where noted below. The Colorado Department of Public Safety, Division of Fire Prevention and Control, adopts building codes for the construction of public K-12 schools, and health facilities.",
+    "note": "BUILDING/RESIDENTIAL/FIRE/MECHANICAL: no statewide code; local adoption, except DFPC codes for public K-12 schools and health facilities and DOLA codes for site-built hotels/motels/multifamily in no-code jurisdictions. ELECTRICAL: State Electrical Board NEC minimum (3 CCR 710-1 Rule 1.5); the State does not inspect where a local Electrical Inspection Program exists (DPO list includes Denver and El Paso County). PLUMBING/FUEL GAS: State Plumbing Board (3 CCR 720-1 Rule 1.2). ENERGY: jurisdictions updating any building code must adopt the state model energy code at the same time."
+   },
+   "adoptedCodes": [
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2026",
+     "title": "NEC as adopted by the Colorado State Electrical Board (3 CCR 710-1 Rule 1.5)",
+     "basedOn": "2026 NEC (NFPA 70)",
+     "effectiveDate": "2026-08-01",
+     "previousEdition": "2023",
+     "sourceUrl": "https://www.sos.state.co.us/CCR/GenerateRulePdf.do?ruleVersionId=12606&fileName=3%20CCR%20710-1",
+     "quote": "This Rule does not include later amendments to or editions of the National Electrical Code, 2026 Edition. The effective date shall be August 1, 2026."
+    },
+    {
+     "family": "energy",
+     "code": "MLECC",
+     "edition": "2025",
+     "title": "Colorado Model Low Energy and Carbon Code (MLECC) -- required on local code update",
+     "basedOn": "2024 IECC with Colorado amendments",
+     "effectiveDate": "2026-07-01",
+     "sourceUrl": "https://energyoffice.colorado.gov/building-energy-codes-toolkit",
+     "quote": "The code is based on the 2024 International Energy Conservation Code, with amendments specific to Colorado. Cities and counties with building codes must adopt this code, or a more stringent code, when adopting or updating any building code after July 1, 2026."
+    },
+    {
+     "family": "plumbing",
+     "code": "IPC",
+     "edition": "2024",
+     "title": "Colorado Plumbing Code / Colorado Fuel Gas Code (3 CCR 720-1 Rule 1.2)",
+     "basedOn": "2024 IPC, 2024 IFGC, and plumbing/fuel-gas provisions of the 2024 IRC",
+     "effectiveDate": "2026-08-14",
+     "sourceUrl": "https://www.sos.state.co.us/CCR/GenerateRulePdf.do?ruleVersionId=12668&fileName=3%20CCR%20720-1",
+     "quote": "Chapters 2-13, 15; and Appendices B, C, D, and E of the IPC, 2024 edition promulgated by the International Code Council 1st printing (June 2023). ... IRC, 2024 edition, promulgated by the International Code Council, 1st printing (May 2024). ... IFGC, 2024 edition, promulgated by the International Co"
+    }
+   ],
+   "citations": [
+    {
+     "label": "CO code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://osa.colorado.gov/building-codes"
+    },
+    {
+     "label": "CO code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://dpo.colorado.gov/ElectricalPlumbingPermits"
+    },
+    {
+     "label": "CO code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://energyoffice.colorado.gov/building-energy-codes-toolkit"
+    }
+   ]
+  },
+  {
+   "state": "FL",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_minimum_local_amend",
+    "sourceUrl": "https://www.flsenate.gov/Laws/Statutes/2025/553.73",
+    "quote": "The initial adoption of, and any subsequent update or amendment to, the Florida Building Code by the commission is deemed adopted for use statewide without adoptions by local government. For a building permit for which an application is submitted prior to the effective date of the Florida Building Code, the state minimum building code in effect in the permitting jurisdiction on the date of the app",
+    "note": "The Florida Building Commission adopts one Florida Building Code (Building, Residential, Energy, Mechanical, Plumbing, Fuel Gas, Existing, Accessibility; NEC adopted through it) that is in force statewide with no local adoption; a city/county CANNOT adopt a different edition, but may adopt more-stringent local technical amendments (limited, not more than once every 6 months). Fire: the State Fire Marshal adopts the Florida Fire Prevention Code statewide. Permits applied for before a new edition's effective date stay under the prior code for the life of the permit (no dual-edition phase-in)."
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "FBC-R",
+     "edition": "2023",
+     "title": "FBC-Residential 8th Edition",
+     "basedOn": "2021 IRC",
+     "effectiveDate": "2023-12-31",
+     "sourceUrl": "https://www.floridabuilding.org/c/default.aspx",
+     "quote": "The Effective Date for the Florida Building Code, 8th Edition (2023), is December 31, 2023."
+    },
+    {
+     "family": "building",
+     "code": "FBC-B",
+     "edition": "2023",
+     "title": "FBC-Building 8th Edition",
+     "basedOn": "2021 IBC",
+     "effectiveDate": "2023-12-31",
+     "sourceUrl": "https://www.floridabuilding.org/fbc/thecode/2023_Code_Development/2023_Code_Resources/Analysis-of-Changes-8th-Ed-2023-FBCB-Final.pdf",
+     "quote": "The 7 th Edition (2020) FBCB is the base code for the 8 th Edition (2023) FBCB. The model code used to update the 8 th Edition (2023) FBCB is the 2021 International Building Code (IBC)."
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2020",
+     "title": "NEC (adopted via FBC 8th Edition)",
+     "basedOn": "2020 NFPA 70",
+     "effectiveDate": "2023-12-31",
+     "sourceUrl": "https://www.floridabuilding.org/fbc/commission/FBC_1024/Commission/FBC-2023_Workplan_with_Glitch-October_2024.pdf",
+     "quote": "Commission selects 2021 I Codes \u201cmodel codes\u201d and 2020 NEC to conduct its review"
+    },
+    {
+     "family": "fire",
+     "code": "FFPC",
+     "edition": "2023",
+     "title": "Florida Fire Prevention Code (FFPC) 8th Edition",
+     "basedOn": "2021 NFPA 1 and 2021 NFPA 101 with Florida amendments",
+     "effectiveDate": "2023-12-31",
+     "sourceUrl": "https://myfloridacfo.com/division/sfm/bfp/florida-fire-prevention-code",
+     "quote": "8th Edition (2023) FFPC Online & Purchasing (Effective date: December 31, 2023)"
+    },
+    {
+     "family": "energy",
+     "code": "FBC-E",
+     "edition": "2023",
+     "title": "FBC-Energy Conservation 8th Edition",
+     "basedOn": "2021 IECC (per 'Based on 2021 I-Codes')",
+     "effectiveDate": "2023-12-31",
+     "sourceUrl": "https://www.floridabuilding.org/c/default.aspx",
+     "quote": "The Effective Date for the Florida Building Code, 8th Edition (2023), is December 31, 2023."
+    },
+    {
+     "family": "mechanical",
+     "code": "FBC-M",
+     "edition": "2023",
+     "title": "FBC-Mechanical 8th Edition",
+     "basedOn": "2021 IMC (per 'Based on 2021 I-Codes')",
+     "effectiveDate": "2023-12-31",
+     "sourceUrl": "https://www.floridabuilding.org/c/default.aspx",
+     "quote": "The Effective Date for the Florida Building Code, 8th Edition (2023), is December 31, 2023."
+    },
+    {
+     "family": "plumbing",
+     "code": "FBC-P",
+     "edition": "2023",
+     "title": "FBC-Plumbing 8th Edition",
+     "basedOn": "2021 IPC (per 'Based on 2021 I-Codes')",
+     "effectiveDate": "2023-12-31",
+     "sourceUrl": "https://www.floridabuilding.org/c/default.aspx",
+     "quote": "The Effective Date for the Florida Building Code, 8th Edition (2023), is December 31, 2023."
+    }
+   ],
+   "upcoming": [
+    {
+     "family": "residential",
+     "code": "FBC-R",
+     "edition": "2026",
+     "basedOn": "2024 I-Codes (IBC, IRC, IMC, IPC, IFGC, IEBC, IECC) and 2023 NEC",
+     "anticipatedDate": "2026-12-31",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.floridabuilding.org/fbc/commission/FBC_0626/Commission/2026_FBC_Workplan_June_2026.pdf"
+    },
+    {
+     "family": "building",
+     "code": "FBC-B",
+     "edition": "2026",
+     "basedOn": "2024 I-Codes (IBC, IRC, IMC, IPC, IFGC, IEBC, IECC) and 2023 NEC",
+     "anticipatedDate": "2026-12-31",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.floridabuilding.org/fbc/commission/FBC_0626/Commission/2026_FBC_Workplan_June_2026.pdf"
+    },
+    {
+     "family": "energy",
+     "code": "FBC-E",
+     "edition": "2026",
+     "basedOn": "2024 I-Codes (IBC, IRC, IMC, IPC, IFGC, IEBC, IECC) and 2023 NEC",
+     "anticipatedDate": "2026-12-31",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.floridabuilding.org/fbc/commission/FBC_0626/Commission/2026_FBC_Workplan_June_2026.pdf"
+    },
+    {
+     "family": "mechanical",
+     "code": "FBC-M",
+     "edition": "2026",
+     "basedOn": "2024 I-Codes (IBC, IRC, IMC, IPC, IFGC, IEBC, IECC) and 2023 NEC",
+     "anticipatedDate": "2026-12-31",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.floridabuilding.org/fbc/commission/FBC_0626/Commission/2026_FBC_Workplan_June_2026.pdf"
+    },
+    {
+     "family": "plumbing",
+     "code": "FBC-P",
+     "edition": "2026",
+     "basedOn": "2024 I-Codes (IBC, IRC, IMC, IPC, IFGC, IEBC, IECC) and 2023 NEC",
+     "anticipatedDate": "2026-12-31",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.floridabuilding.org/fbc/commission/FBC_0626/Commission/2026_FBC_Workplan_June_2026.pdf"
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2026",
+     "basedOn": "2024 I-Codes (IBC, IRC, IMC, IPC, IFGC, IEBC, IECC) and 2023 NEC",
+     "anticipatedDate": "2026-12-31",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.floridabuilding.org/fbc/commission/FBC_0626/Commission/2026_FBC_Workplan_June_2026.pdf"
+    },
+    {
+     "family": "fire",
+     "code": "FFPC",
+     "edition": "2026",
+     "basedOn": "2024 NFPA 1 and NFPA 101",
+     "anticipatedDate": "2026-12-31",
+     "status": "in rulemaking",
+     "sourceUrl": "https://myfloridacfo.com/docs-sf/state-fire-marshal-libraries/sfm-documents/bfp/florida-fire-prevention-code/9th-edition-(2026)-ffpc-development-plancf7b2aad-3704-49e5-8340-24f304349169.pdf"
+    }
+   ],
+   "citations": [
+    {
+     "label": "FL code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.flsenate.gov/Laws/Statutes/2025/553.73"
+    },
+    {
+     "label": "FL code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.flsenate.gov/Laws/Statutes/2025/553.73"
+    }
+   ]
+  },
+  {
+   "state": "ID",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "mixed",
+    "byFamily": {
+     "residential": "statewide_minimum_local_amend",
+     "building": "statewide_minimum_local_amend",
+     "electrical": "statewide_uniform",
+     "fire": "statewide_minimum_local_amend",
+     "energy": "statewide_minimum_local_amend",
+     "mechanical": "statewide_uniform",
+     "plumbing": "statewide_uniform"
+    },
+    "sourceUrl": "https://legislature.idaho.gov/statutesrules/idstat/Title39/T39CH41/SECT39-4116/",
+    "quote": "Except as otherwise provided in this chapter, local governments that issue building permits and perform building code enforcement activities shall, by ordinance effective January 1 of the year following the adoption by the Idaho building code board, adopt the following codes...",
+    "note": "BUILDING/RESIDENTIAL/ENERGY: the Idaho Building Code Board adopts the IBC, IRC (Idaho Residential Code) and IECC by rule (IDAPA 24.39.30); local governments that run a building program must adopt them by ordinance effective Jan 1 of the year after Board adoption (I.C. 39-4116(2)); they may amend if at least equivalent (39-4116(4)) but may not adopt IRC/residential-IECC provisions the Board has not adopted (39-4116(4)(b)). ELECTRICAL: 2023 NEC adopted by statute (I.C. 54-1001), amended by the Electrical Board (IDAPA 24.39.10); cities may run their own electrical program (e.g. Boise); DOPL permi"
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2018",
+     "title": "Idaho Residential Code (IRC parts I, II, III and IX with Idaho amendments; IDAPA 24.39.30.600.03)",
+     "basedOn": "2018 IRC",
+     "sourceUrl": "https://adminrules.idaho.gov/rules/current/24/243930.pdf",
+     "quote": "03. International Residential Code, 2018 Edition . Parts I, II, III, and IX of the 2018 Edition for one (1)- and two (2)- family dwellings, with the following amendments: (7-1-24)"
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2018",
+     "title": "IBC as amended (IDAPA 24.39.30.600.01)",
+     "basedOn": "2018 IBC (plus 2021 IBC mass-timber provisions)",
+     "sourceUrl": "https://adminrules.idaho.gov/rules/current/24/243930.pdf",
+     "quote": "01. International Building Code . The 2018 Edition, including appendices pertaining to building accessibility, with the following amendments: (7-1-24) ... 02. International Building Code, 2021 Edition . The following provisions of the 2021 Edition related"
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2023",
+     "title": "Idaho Electrical Code (NEC as amended by IDAPA 24.39.10)",
+     "basedOn": "2023 NEC (NFPA 70)",
+     "sourceUrl": "https://legislature.idaho.gov/statutesrules/idstat/Title54/T54CH10/SECT54-1001/",
+     "quote": "The 2023 National Electrical Code, NFPA 70, is hereby adopted by the Idaho legislature."
+    },
+    {
+     "family": "fire",
+     "code": "IFC",
+     "edition": "2018",
+     "title": "IFC as adopted by the State Fire Marshal (IDAPA 18.08.01)",
+     "basedOn": "2018 IFC",
+     "sourceUrl": "https://dopl.idaho.gov/wp-content/uploads/2025/06/2025-Updated-Idaho-Adopted-Codes.pdf",
+     "quote": "Fire Code (administered by the Idaho State Fire Marshal): 2018 International Fire Code"
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2018",
+     "title": "Idaho Energy Conservation Code (IECC with amendments; IDAPA 24.39.30.600.06)",
+     "basedOn": "2018 IECC",
+     "sourceUrl": "https://adminrules.idaho.gov/rules/current/24/243930.pdf",
+     "quote": "06. International Energy Conservation Code \u2013 Residential Provisions . The 2018 Edition with the following amendments: (7-1-24)"
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2018",
+     "title": "IMC / IFGC (IRC parts V & VI for dwellings)",
+     "basedOn": "2018 IMC and 2018 IFGC",
+     "sourceUrl": "https://dopl.idaho.gov/wp-content/uploads/2025/06/2025-Updated-Idaho-Adopted-Codes.pdf",
+     "quote": "Mechanical Codes: 2018 International Mechanical Code 2018 International Fuel Gas Code 2018 International Residential Code Parts V & VI"
+    },
+    {
+     "family": "plumbing",
+     "code": "ISPC",
+     "edition": "2017",
+     "title": "Idaho State Plumbing Code (IDAPA 24.39.20)",
+     "basedOn": "2015 UPC",
+     "sourceUrl": "https://adminrules.idaho.gov/rules/current/24/243920.pdf",
+     "quote": "Pursuant to Section 54-2601, Idaho Code, the Board adopts, as the Idaho State Plumbing Code (ISPC), the 2015 Uniform Plumbing Code, including Appendices A, B, C, D, E, G, I, J, K and L, with the following amendments:"
+    }
+   ],
+   "citations": [
+    {
+     "label": "ID code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://legislature.idaho.gov/statutesrules/idstat/Title39/T39CH41/SECT39-4116/"
+    },
+    {
+     "label": "ID code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://legislature.idaho.gov/statutesrules/idstat/Title39/T39CH41/SECT39-4116/"
+    },
+    {
+     "label": "ID code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://legislature.idaho.gov/statutesrules/idstat/Title39/T39CH41/SECT39-4109/"
+    }
+   ]
+  },
+  {
+   "state": "IL",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "mixed",
+    "byFamily": {
+     "residential": "local_adoption",
+     "building": "local_adoption",
+     "electrical": "local_adoption",
+     "fire": "statewide_minimum_local_amend",
+     "energy": "statewide_minimum_local_amend",
+     "plumbing": "statewide_uniform"
+    },
+    "sourceUrl": "https://www.ilga.gov/documents/legislation/publicacts/103/PDF/103-0510.pdf",
+    "quote": "Beginning January 1, 2025, any municipal building code or county building code must: (1) regulate the structural design of new buildings, other than residential buildings, in a manner that is at least as stringent as the baseline building code; (2) regulate the structural design of rehabilitation work in existing buildings, other than residential buildings, in a manner that is at least as stringen",
+    "note": "Building, residential, electrical, mechanical and fire codes are adopted LOCALLY by each city/village/county (most large cities are home-rule). Since 2025-01-01 (Public Act 103-0510) any municipal or county building code must regulate structural design at least as stringently as the 'baseline' IBC/IEBC/IRC \u2014 the least-restrictive ICC edition first published in the current or preceding 9 calendar years (so a 2012-era code no longer qualifies in 2026) \u2014 and local governments must identify their adopted code (title, edition, amendments) to the Capital Development Board at least 30 days before its"
+   },
+   "adoptedCodes": [
+    {
+     "family": "fire",
+     "code": "NFPA 101",
+     "edition": "2015",
+     "title": "OSFM Fire Prevention and Safety rules (41 Ill. Adm. Code 100) \u2014 NFPA 101 Life Safety Code as the state minimum; cities adopt their own fire codes",
+     "basedOn": "NFPA 101-2015",
+     "effectiveDate": "2020-01-01",
+     "previousEdition": "2000",
+     "sourceUrl": "https://sfm.illinois.gov/resources/life-safety-code.html",
+     "quote": "The Office of the State Fire Marshal (OSFM) updated its administrative rules, which, in part, updates the adopted life safety code from the NFPA 101, Life Safety Code (2000 Edition) to the NFPA 101, Life Safety Code (2015 Edition). These changes became effective on January 1, 2020."
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2024",
+     "title": "Illinois Energy Conservation Code (20 ILCS 3125; 71 Ill. Adm. Code 600, CDB)",
+     "basedOn": "2024 IECC as amended",
+     "effectiveDate": "2025-11-30",
+     "sourceUrl": "https://cdb.illinois.gov/business/codes/illinois-energy-codes/illinois-energy-conservation-code.html",
+     "quote": "Residential Buildings must comply with Illinois Energy Conservation Code per 20 ILCS 3125. See Subpart D of the Illinois Energy Code for more information. The 2024 edition of the IECC as amended went into effect on 11/30/25."
+    },
+    {
+     "family": "plumbing",
+     "code": "ILPC",
+     "edition": "2014",
+     "title": "Illinois Plumbing Code (77 Ill. Adm. Code 890, IDPH)",
+     "basedOn": "Illinois-specific code (not a model code)",
+     "effectiveDate": "2014-04-24",
+     "sourceUrl": "https://www.ilga.gov/agencies/JCAR/EntirePart?titlepart=07700890",
+     "quote": "(Source: Amended at 38 Ill. Reg. 9940, effective April 24, 2014)"
+    }
+   ],
+   "upcoming": [
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2026",
+     "sourceUrl": "https://cdb.illinois.gov/business/codes/buildingcodesregulations.html"
+    }
+   ],
+   "citations": [
+    {
+     "label": "IL code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.ilga.gov/documents/legislation/publicacts/103/PDF/103-0510.pdf"
+    },
+    {
+     "label": "IL code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.ilga.gov/documents/legislation/publicacts/103/PDF/103-0510.pdf"
+    },
+    {
+     "label": "IL code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://cdb.illinois.gov/business/codes/buildingcodesregulations.html"
+    }
+   ]
+  },
+  {
+   "state": "MA",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_uniform",
+    "byFamily": {
+     "energy": "statewide_minimum_local_amend"
+    },
+    "sourceUrl": "https://malegislature.gov/Laws/GeneralLaws/PartI/TitleXX/Chapter143/Section98",
+    "quote": "The board of selectmen in a town or the mayor in a city may recommend to the board the adoption of rules and regulations imposing more restrictive standards than those established by the state building code for construction, alteration, repair, demolition, and removal in such a city or town.",
+    "note": "The Board of Building Regulations and Standards (BBRS) adopts the Massachusetts State Building Code (780 CMR) - a Base volume and a Residential volume (ch. 51, 1-2 family and townhouses <=3 stories) - uniformly statewide. A city/town cannot adopt a different edition; it may only ask the BBRS to adopt more restrictive rules for special local conditions (M.G.L. c.143 s.98), which the BBRS itself must approve. Electrical (527 CMR 12.00) and fire (527 CMR 1.00) are adopted statewide by the Board of Fire Prevention Regulations (Dept. of Fire Services). ENERGY is the one local option: every municipa"
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "780 CMR",
+     "edition": "2021",
+     "title": "780 CMR 10th Edition, Residential volume (ch. 51 Massachusetts Residential Code)",
+     "basedOn": "2021 IRC with Massachusetts amendments",
+     "effectiveDate": "2024-10-11",
+     "mandatoryDate": "2025-06-30",
+     "sourceUrl": "https://www.mass.gov/handbook/tenth-edition-of-the-ma-state-building-code-780",
+     "quote": "The tenth edition building code became first effective on October 11, 2024 with a concurrency period, during which either the ninth or tenth edition building codes could be utilized. This concurrency period, which was thereafter extended, ends June 30, 2025, at which time the tenth edition will be t"
+    },
+    {
+     "family": "building",
+     "code": "780 CMR",
+     "edition": "2021",
+     "title": "780 CMR 10th Edition, Base volume",
+     "basedOn": "2021 IBC with Massachusetts amendments",
+     "effectiveDate": "2024-10-11",
+     "mandatoryDate": "2025-06-30",
+     "sourceUrl": "https://www.mass.gov/handbook/tenth-edition-of-the-ma-state-building-code-780",
+     "quote": "The primary structure of the 10th Edition Building Code is based upon adoption of the 35 chapters and appendices of the 2021 International Building Code (IBC)."
+    },
+    {
+     "family": "electrical",
+     "code": "527 CMR 12",
+     "edition": "2026",
+     "title": "Massachusetts Electrical Code (527 CMR 12.00)",
+     "basedOn": "2026 NFPA 70 (NEC) with Massachusetts amendments",
+     "effectiveDate": "2026-04-24",
+     "sourceUrl": "https://www.mass.gov/info-details/massachusetts-electrical-code",
+     "quote": "The Board of Fire Prevention Regulations voted to approve the Amendments to 527 CMR 12.00 Massachusetts Electrical Code based on the 2026 edition of NFPA 70 National Electrical Code.  The Electrical Code is effective as of April 24, 2026."
+    },
+    {
+     "family": "fire",
+     "code": "527 CMR 1",
+     "edition": "2021",
+     "title": "Massachusetts Comprehensive Fire Safety Code (527 CMR 1.00)",
+     "basedOn": "2021 NFPA 1 with Massachusetts amendments",
+     "effectiveDate": "2022-12-09",
+     "previousEdition": "2015",
+     "sourceUrl": "https://www.mass.gov/info-details/massachusetts-fire-code",
+     "quote": "The current Massachusetts Comprehensive Fire Safety Code is based on NFPA 1 - 2021 edition, with Massachusetts amendments. ... The current State Fire Code went into effect on December 9, 2022."
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2021",
+     "title": "780 CMR 10th Edition base energy code (municipal opt-in: Stretch Code 225 CMR 22 or Specialized Opt-in Code 225 CMR 23)",
+     "basedOn": "2021 IECC with Massachusetts amendments (base)",
+     "effectiveDate": "2024-10-11",
+     "mandatoryDate": "2025-06-30",
+     "sourceUrl": "https://www.mass.gov/handbook/tenth-edition-of-the-ma-state-building-code-780",
+     "quote": "The tenth edition code is based on modified versions of the following 2021 International Codes (I-Codes) as published by the International Code Council (ICC): International Building Code (IBC) International Residential Code (IRC) International Existing Building Code (IEBC) International Mechanical C"
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2021",
+     "title": "780 CMR 10th Edition (IMC as modified)",
+     "basedOn": "2021 IMC with Massachusetts amendments",
+     "effectiveDate": "2024-10-11",
+     "mandatoryDate": "2025-06-30",
+     "sourceUrl": "https://www.mass.gov/handbook/tenth-edition-of-the-ma-state-building-code-780",
+     "quote": "The tenth edition code is based on modified versions of the following 2021 International Codes (I-Codes) as published by the International Code Council (ICC): ... International Mechanical Code (IMC)"
+    }
+   ],
+   "citations": [
+    {
+     "label": "MA code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://malegislature.gov/Laws/GeneralLaws/PartI/TitleXX/Chapter143/Section98"
+    }
+   ]
+  },
+  {
+   "state": "MD",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "mixed",
+    "byFamily": {
+     "residential": "statewide_minimum_local_amend",
+     "building": "statewide_minimum_local_amend",
+     "electrical": "local_adoption",
+     "fire": "statewide_uniform",
+     "energy": "statewide_minimum_local_amend",
+     "mechanical": "local_adoption",
+     "plumbing": "local_adoption"
+    },
+    "sourceUrl": "https://www.labor.maryland.gov/labor/build/buildcodes.shtml",
+    "quote": "Maryland's law related to building codes is called the Maryland Building Performance Standards (MBPS). It requires each jurisdiction in Maryland to use the same edition of the same building codes that are the International Building Code (IBC), the International Residential Code (IRC), and the International Energy Conservation Code (IECC). ... Each local jurisdiction in Maryland may modify these co",
+    "note": "Building/residential/energy: the Department of Labor (Building Codes Administration) adopts the IBC, IRC and IECC with state modifications as the Maryland Building Performance Standards (MBPS, COMAR 09.12.51); every jurisdiction must use the SAME edition, may make local amendments (but may not weaken the IECC/IBC Ch. 13, townhouse/1-2 family sprinkler, or wind provisions), and must implement a new state edition within 12 months of its effective date. So a city/county cannot choose a different edition, but local enforcement can lag up to 12 months (and in practice longer: City of Frederick move"
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2021",
+     "title": "Maryland Building Performance Standards (IRC as modified, COMAR 09.12.51)",
+     "basedOn": "2021 IRC",
+     "effectiveDate": "2023-05-29",
+     "mandatoryDate": "2024-05-29",
+     "sourceUrl": "https://www.dllr.state.md.us/labor/build/buildadmin.shtml",
+     "quote": "State (the Department) has adopted the 2021 edition of IBC, IRC, IECC, IgCC & IEBC for (I) COMAR 09.12.50 Model Performance Code & COMAR 09.12.51 Maryland Building Performance Standards ... The effective date is May 29, 2023. State law requires local jurisdiction to start implementing & enforcing th"
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2021",
+     "title": "Maryland Building Performance Standards (IBC as modified, COMAR 09.12.51)",
+     "basedOn": "2021 IBC",
+     "effectiveDate": "2023-05-29",
+     "mandatoryDate": "2024-05-29",
+     "sourceUrl": "https://www.dllr.state.md.us/labor/build/buildadmin.shtml",
+     "quote": "The effective date is May 29, 2023. State law requires local jurisdiction to start implementing & enforcing the new requirements by May 29, 2024."
+    },
+    {
+     "family": "fire",
+     "code": "NFPA 1",
+     "edition": "2024",
+     "title": "Maryland State Fire Prevention Code (COMAR 29.06.01)",
+     "basedOn": "2024 NFPA 1 and 2024 NFPA 101",
+     "effectiveDate": "2025-06-23",
+     "sourceUrl": "https://regs.maryland.gov/us/md/exec/comar/29.06.01.08",
+     "quote": "The NFPA 1 Fire Code (2024 Edition) is incorporated by reference, except for the amendments in Regulation .09 of this chapter and the following amendments:"
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2021",
+     "title": "Maryland Building Performance Standards (IECC as modified)",
+     "basedOn": "2021 IECC",
+     "effectiveDate": "2023-05-29",
+     "mandatoryDate": "2024-05-29",
+     "sourceUrl": "https://energy.maryland.gov/pages/policy-energy-codes.aspx",
+     "quote": "On May 29, 2023, the State of Maryland adopted the 2021 IECC. All local jurisdictions were required to amend and adopt the new code for local code enforcement by May 29, 2024, 12 months after state adoption."
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2021",
+     "title": "State HVACR Board mechanical code (local jurisdictions adopt their own)",
+     "basedOn": "2021 IMC & 2021 IRC w/ HVACR amendments",
+     "sourceUrl": "https://labor.maryland.gov/labor/build/buildcodematrix.pdf",
+     "quote": "Mechanical (2) LABOR (Maryland Board of Heating, Ventilation, Air Conditioning and Regfrigeration Contrcators 2021 IMC & 2021 IRC w/ HVACR amendments   n/a   n/a  Mechanical (3)   local jurisdiction   (locally adopted)"
+    },
+    {
+     "family": "plumbing",
+     "code": "IPC",
+     "edition": "2021",
+     "title": "State Plumbing Code (COMAR 09.20.01; local jurisdictions also adopt)",
+     "basedOn": "2021 IPC",
+     "sourceUrl": "https://labor.maryland.gov/labor/build/buildcodematrix.pdf",
+     "quote": "Plumbing (2)   LABOR (Maryland Board of Plumbing)   2021 IPC   n/a   2021 IPC  Plumbing (3)   local jurisdiction   (locally adopted)"
+    }
+   ],
+   "upcoming": [
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2024",
+     "basedOn": "2024 IBC, 2024 IRC, 2024 IECC, 2024 IPC, 2024 IMC; NEC 2023 (MPC, modular/State buildings)",
+     "status": "in rulemaking",
+     "sourceUrl": "https://dsd.maryland.gov/MDRIssues/5313/Assembled.aspx"
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2024",
+     "basedOn": "2024 IBC, 2024 IRC, 2024 IECC, 2024 IPC, 2024 IMC; NEC 2023 (MPC, modular/State buildings)",
+     "status": "in rulemaking",
+     "sourceUrl": "https://dsd.maryland.gov/MDRIssues/5313/Assembled.aspx"
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2024",
+     "basedOn": "2024 IBC, 2024 IRC, 2024 IECC, 2024 IPC, 2024 IMC; NEC 2023 (MPC, modular/State buildings)",
+     "status": "in rulemaking",
+     "sourceUrl": "https://dsd.maryland.gov/MDRIssues/5313/Assembled.aspx"
+    },
+    {
+     "family": "plumbing",
+     "code": "IPC",
+     "edition": "2024",
+     "basedOn": "2024 IBC, 2024 IRC, 2024 IECC, 2024 IPC, 2024 IMC; NEC 2023 (MPC, modular/State buildings)",
+     "status": "in rulemaking",
+     "sourceUrl": "https://dsd.maryland.gov/MDRIssues/5313/Assembled.aspx"
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2024",
+     "basedOn": "2024 IBC, 2024 IRC, 2024 IECC, 2024 IPC, 2024 IMC; NEC 2023 (MPC, modular/State buildings)",
+     "status": "in rulemaking",
+     "sourceUrl": "https://dsd.maryland.gov/MDRIssues/5313/Assembled.aspx"
+    }
+   ],
+   "citations": [
+    {
+     "label": "MD code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.labor.maryland.gov/labor/build/buildcodes.shtml"
+    }
+   ]
+  },
+  {
+   "state": "ME",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_uniform",
+    "sourceUrl": "https://legislature.maine.gov/statutes/10/title10sec9724.html",
+    "quote": "A municipality of up to 4,000 residents is not required to enforce, but may not adopt or enforce a building code other than the Maine Uniform Building Code, the Maine Uniform Energy Code or the Maine Uniform Building and Energy Code.",
+    "note": "Building/residential/energy/mechanical: the Maine Uniform Building and Energy Code (MUBEC, state Technical Building Codes and Standards Board) is an express limit on home rule \u2014 it MUST be enforced in municipalities over 4,000 residents; smaller municipalities need not enforce it but may not adopt any other building code. Municipalities may opt into the state's optional stretch-code appendix (Portland did by referendum). Electrical: the NEC adopted statewide by the Electricians' Examining Board (applies everywhere). Plumbing: state Plumbers' Examining Board (UPC). Fire/life safety: NFPA 1 and "
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2021",
+     "title": "MUBEC \u2014 2021 IRC with Maine amendments",
+     "basedOn": "2021 IRC",
+     "effectiveDate": "2025-04-07",
+     "previousEdition": "2015",
+     "sourceUrl": "https://www.maine.gov/dps/fmo/sites/maine.gov.dps.fmo/files/inline-files/Maine%20Building%20Codes%20FAQ.pdf",
+     "quote": "As of April 7, 2025, MUBEC is updating from the 2015 codes to the 2021 version of the I-codes (IBC, IEBC, IRC, IECC & IMC) and the 2019 version of adopted ASHRAE Standards (62.1, 62.2 & 90.1)."
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2021",
+     "title": "MUBEC \u2014 2021 IBC with Maine amendments",
+     "basedOn": "2021 IBC",
+     "effectiveDate": "2025-04-07",
+     "previousEdition": "2015",
+     "sourceUrl": "https://www.maine.gov/dps/fmo/sites/maine.gov.dps.fmo/files/inline-files/Maine%20Building%20Codes%20FAQ.pdf",
+     "quote": "As of April 7, 2025, MUBEC is updating from the 2015 codes to the 2021 version of the I-codes (IBC, IEBC, IRC, IECC & IMC) and the 2019 version of adopted ASHRAE Standards (62.1, 62.2 & 90.1)."
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2026",
+     "title": "NEC as adopted by the Maine Electricians' Examining Board",
+     "basedOn": "2026 NEC (NFPA 70-2026)",
+     "effectiveDate": "2026-07-01",
+     "sourceUrl": "https://www.maine.gov/pfr/professionallicensing/professions/electricians",
+     "quote": "All installations of electrical equipment commencing on or after July 1, 2026 must comply with the NFPA standard 70, National Electrical Code (2026 edition), Copyright \u00a9 2025 National Fire Protection Association as adopted by the Board"
+    },
+    {
+     "family": "fire",
+     "code": "NFPA 1",
+     "edition": "2018",
+     "title": "State Fire Marshal adopted NFPA standards (NFPA 1 Fire Prevention Code; NFPA 101 Life Safety Code)",
+     "basedOn": "NFPA 1-2018 / NFPA 101-2018",
+     "sourceUrl": "https://www11.maine.gov/dps/fmo/laws-rules-policy/nfpa-standards",
+     "quote": "State Adopted NFPA Standards NFPA 1: Fire Prevention Code, 2018 Edition ... NFPA 101: Life Safety Code, 2018 Edition"
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2021",
+     "title": "MUBEC \u2014 2021 IECC + ASHRAE 90.1-2019 (optional stretch-code appendix)",
+     "basedOn": "2021 IECC",
+     "effectiveDate": "2025-04-07",
+     "previousEdition": "2015",
+     "sourceUrl": "https://www.maine.gov/dps/fmo/sites/maine.gov.dps.fmo/files/inline-files/Maine%20Building%20Codes%20FAQ.pdf",
+     "quote": "As of April 7, 2025, MUBEC is updating from the 2015 codes to the 2021 version of the I-codes (IBC, IEBC, IRC, IECC & IMC) and the 2019 version of adopted ASHRAE Standards (62.1, 62.2 & 90.1)."
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2021",
+     "title": "MUBEC \u2014 2021 IMC",
+     "basedOn": "2021 IMC",
+     "effectiveDate": "2025-04-07",
+     "previousEdition": "2015",
+     "sourceUrl": "https://www.maine.gov/dps/fmo/sites/maine.gov.dps.fmo/files/inline-files/Maine%20Building%20Codes%20FAQ.pdf",
+     "quote": "As of April 7, 2025, MUBEC is updating from the 2015 codes to the 2021 version of the I-codes (IBC, IEBC, IRC, IECC & IMC) and the 2019 version of adopted ASHRAE Standards (62.1, 62.2 & 90.1)."
+    },
+    {
+     "family": "plumbing",
+     "code": "UPC",
+     "edition": "2021",
+     "title": "Maine Internal Plumbing Code (Uniform Plumbing Code) \u2014 state Plumbers' Examining Board",
+     "basedOn": "2021 UPC",
+     "effectiveDate": "2022-01-01",
+     "sourceUrl": "https://content.civicplus.com/api/assets/f78fce94-2677-4146-83ab-741f1c23bca6",
+     "quote": "Internal plumbing code adopted pursuant to 32 M.R.S. \u00a73403-B (Uniform Plumbing Code 2021) Current version adopted January 1, 2022"
+    }
+   ],
+   "citations": [
+    {
+     "label": "ME code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://legislature.maine.gov/statutes/10/title10sec9724.html"
+    },
+    {
+     "label": "ME code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.maine.gov/dps/fmo/sites/maine.gov.dps.fmo/files/inline-files/MUBEC%20Standards%20and%20Amendments.pdf"
+    }
+   ]
+  },
+  {
+   "state": "MI",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "mixed",
+    "byFamily": {
+     "residential": "statewide_uniform",
+     "building": "statewide_uniform",
+     "electrical": "statewide_uniform",
+     "fire": "local_adoption",
+     "energy": "statewide_uniform",
+     "mechanical": "statewide_uniform",
+     "plumbing": "statewide_uniform"
+    },
+    "sourceUrl": "https://www.legislature.mi.gov/documents/mcl/pdf/mcl-125-1508a.pdf",
+    "quote": "(1) This act and the code apply throughout the state.",
+    "note": "Construction codes (building, residential, electrical, mechanical, plumbing, energy) are the single Stille-DeRossett-Hale State Construction Code promulgated by LARA's Bureau of Construction Codes and apply throughout the state; a local governmental subdivision may only choose to ADMINISTER/ENFORCE the state code (otherwise the state/county enforces) and cannot adopt a different edition. Fire prevention is LOCAL: the state fire prevention rules (NFPA 1, existing conditions) apply only where a jurisdiction has not legally adopted its own nationally recognized fire code. Residential (2015 MRC) i"
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "MRC",
+     "edition": "2015",
+     "title": "Michigan Residential Code (MRC)",
+     "basedOn": "2015 IRC",
+     "effectiveDate": "2016-02-08",
+     "sourceUrl": "https://www.michigan.gov/lara/bureau-list/bcc/rules-acts/codes/code-books",
+     "quote": "Residential Code 2015 Michigan Residential Code Current Code \u2013 Effective February 8, 2016"
+    },
+    {
+     "family": "building",
+     "code": "MBC",
+     "edition": "2021",
+     "title": "Michigan Building Code (MBC)",
+     "basedOn": "2021 IBC",
+     "effectiveDate": "2025-04-09",
+     "sourceUrl": "https://www.michigan.gov/lara/bureau-list/bcc/rules-acts/codes/code-books",
+     "quote": "2021 Michigan Building Code - Current Code -Effective April 9, 2025 NOTE: Residential requirements are contained in the Michigan Residential Code."
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2023",
+     "title": "Michigan Electrical Code (Part 8 rules + NEC)",
+     "basedOn": "2023 NEC",
+     "effectiveDate": "2024-03-12",
+     "sourceUrl": "https://www.michigan.gov/lara/bureau-list/bcc/rules-acts/codes/code-books",
+     "quote": "Electrical Code 2023 National Electrical Code (NEC) ** Current Code - Effective March 12, 2024 NOTE: Residential requirements are contained in the Michigan Residential Code."
+    },
+    {
+     "family": "fire",
+     "code": "NFPA 1",
+     "edition": "2006",
+     "title": "Michigan Fire Prevention Code rules (R 29.1651 et seq.) \u2014 local fire code governs where adopted",
+     "basedOn": "NFPA 1 (2006), existing conditions only",
+     "sourceUrl": "https://ars.apps.lara.state.mi.us/AdminCode/DownloadAdminCodeFile?FileName=27_10026_AdminCode.pdf",
+     "quote": "This code shall apply to existing conditions only. These rules do not apply in a local jurisdiction with a legally adopted nationally recognized fire prevention code."
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2015",
+     "title": "Michigan Energy Code (residential in MRC ch.11) / 2021 Michigan Commercial Energy Code",
+     "basedOn": "2015 IECC residential / 2021 IECC commercial + ASHRAE 90.1",
+     "effectiveDate": "2025-04-22",
+     "sourceUrl": "https://www.michigan.gov/lara/bureau-list/bcc/rules-acts/codes/code-books",
+     "quote": "Energy Commercial Code 2021 Michigan Commercial Energy Code -Current Code-Effective April 22, 2025 2015 Michigan Energy Code \u2013 Effective September 20, 2017"
+    },
+    {
+     "family": "mechanical",
+     "code": "MMC",
+     "edition": "2021",
+     "title": "Michigan Mechanical Code (MMC)",
+     "basedOn": "2021 IMC",
+     "effectiveDate": "2024-03-12",
+     "sourceUrl": "https://www.michigan.gov/lara/bureau-list/bcc/rules-acts/codes/code-books",
+     "quote": "2021 Michigan Mechanical Code Current Code-Effective March 12, 2024 NOTE: Residential requirements are contained in the Michigan Residential Code."
+    },
+    {
+     "family": "plumbing",
+     "code": "MPC",
+     "edition": "2021",
+     "title": "Michigan Plumbing Code (MPC)",
+     "basedOn": "2021 IPC",
+     "effectiveDate": "2024-03-12",
+     "sourceUrl": "https://www.michigan.gov/lara/bureau-list/bcc/rules-acts/codes/code-books",
+     "quote": "Plumbing Code 2021 Michigan Plumbing Code Current Code-March 12, 2024 NOTE: Residential requirements are contained in the Michigan Residential Code."
+    }
+   ],
+   "upcoming": [
+    {
+     "family": "residential",
+     "code": "MRC",
+     "edition": "2021",
+     "basedOn": "2021 IRC",
+     "status": "adopted",
+     "sourceUrl": "https://www.michigan.gov/lara/bureau-list/bcc/rules-acts/rules/currently-open"
+    },
+    {
+     "family": "plumbing",
+     "code": "MPC",
+     "edition": "2024",
+     "basedOn": "2024 IPC",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.michigan.gov/lara/bureau-list/bcc/rules-acts/rules/currently-open"
+    }
+   ],
+   "citations": [
+    {
+     "label": "MI code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.legislature.mi.gov/documents/mcl/pdf/mcl-125-1508a.pdf"
+    },
+    {
+     "label": "MI code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.legislature.mi.gov/documents/mcl/pdf/mcl-125-1508b.pdf"
+    }
+   ]
+  },
+  {
+   "state": "NC",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_uniform",
+    "sourceUrl": "https://www.ncleg.gov/EnactedLegislation/Statutes/PDF/BySection/Chapter_143/GS_143-138.pdf",
+    "quote": "Except as otherwise provided in this section, the North Carolina State Building Code shall apply throughout the State, from the time of its adoption.",
+    "note": "The NC Building Code Council (and, for dwellings, the Residential Code Council) adopts one North Carolina State Building Code that applies throughout the state; cities/counties do not adopt editions. A local government may adopt a fire prevention code (and floodplain rules), but it is not effective until approved by the Code Council, and it may not add fire provisions for dwellings under the NC Residential Code beyond what that code prescribes. Raleigh's UDO adopts the state technical codes 'as adopted by the North Carolina Building Code Council' by reference. The 2024 code can be used early o"
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "NCRC",
+     "edition": "2018",
+     "title": "2018 North Carolina Residential Code (NCRC)",
+     "basedOn": "2015 IRC",
+     "effectiveDate": "2019-01-01",
+     "sourceUrl": "https://www.ncosfm.gov/codes/codes-current-and-past",
+     "quote": "The 2018 Residential Code was effective from January 1, 2019 and is currently effective. The 2018 Residential Code was also available during a transition period from July 1, 2018 through December 31, 2018."
+    },
+    {
+     "family": "building",
+     "code": "NCBC",
+     "edition": "2018",
+     "title": "2018 North Carolina Building Code",
+     "basedOn": "2015 IBC",
+     "effectiveDate": "2019-01-01",
+     "sourceUrl": "https://www.ncosfm.gov/codes/codes-current-and-past",
+     "quote": "The following 2018 Codes were effective from January 1, 2019 and are currently effective. The 2018 Codes were also available during a transition period from July 1, 2018 through December 31, 2018."
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2017",
+     "title": "North Carolina Electrical Code (NEC + NC amendments) - SPLIT BY SCOPE",
+     "basedOn": "2017 NFPA 70 for buildings within the scope of the NC Residential Code (1-2 family dwellings / townhouses); 2020 NFPA 70",
+     "effectiveDate": "2018-06-12",
+     "sourceUrl": "https://www.ncosfm.gov/2024-1212-effective-date-2024-north-carolina-state-building-code/open",
+     "quote": "2017 North Carolina Electrical Code (2017 NFPA 70 National Electrical Code with NC Amendments) for buildings and structures included within the scope of the 2018 North Carolina Residential Code. 4. 2020 North Carolina Electrical Code (2020 NFPA 70 National Electrical Code with NC Amendments) for bui"
+    },
+    {
+     "family": "fire",
+     "code": "NCFC",
+     "edition": "2018",
+     "title": "2018 North Carolina Fire Code",
+     "basedOn": "2015 IFC",
+     "effectiveDate": "2019-01-01",
+     "sourceUrl": "https://www.ncosfm.gov/codes/codes-current-and-past",
+     "quote": "The following 2018 Codes were effective from January 1, 2019 and are currently effective."
+    },
+    {
+     "family": "energy",
+     "code": "NCECC",
+     "edition": "2018",
+     "title": "2018 North Carolina Energy Conservation Code",
+     "basedOn": "2015 IECC",
+     "effectiveDate": "2019-01-01",
+     "sourceUrl": "https://www.ncosfm.gov/codes/codes-current-and-past",
+     "quote": "The following 2018 Codes were effective from January 1, 2019 and are currently effective."
+    },
+    {
+     "family": "mechanical",
+     "code": "NCMC",
+     "edition": "2018",
+     "title": "2018 North Carolina Mechanical Code",
+     "basedOn": "2015 IMC",
+     "effectiveDate": "2019-01-01",
+     "sourceUrl": "https://www.ncosfm.gov/codes/codes-current-and-past",
+     "quote": "The following 2018 Codes were effective from January 1, 2019 and are currently effective."
+    },
+    {
+     "family": "plumbing",
+     "code": "NCPC",
+     "edition": "2018",
+     "title": "2018 North Carolina Plumbing Code",
+     "basedOn": "2015 IPC",
+     "effectiveDate": "2019-01-01",
+     "sourceUrl": "https://www.ncosfm.gov/codes/codes-current-and-past",
+     "quote": "The following 2018 Codes were effective from January 1, 2019 and are currently effective."
+    }
+   ],
+   "upcoming": [
+    {
+     "family": "residential",
+     "code": "NCRC",
+     "edition": "2024",
+     "basedOn": "electrical: 2023 NFPA 70; I-code base edition not stated on an official page read",
+     "status": "adopted",
+     "sourceUrl": "https://www.ncosfm.gov/letter-re-2024-state-building-code-effective-date/open"
+    },
+    {
+     "family": "building",
+     "code": "NCBC",
+     "edition": "2024",
+     "basedOn": "electrical: 2023 NFPA 70; I-code base edition not stated on an official page read",
+     "status": "adopted",
+     "sourceUrl": "https://www.ncosfm.gov/letter-re-2024-state-building-code-effective-date/open"
+    },
+    {
+     "family": "fire",
+     "code": "NCFC",
+     "edition": "2024",
+     "basedOn": "electrical: 2023 NFPA 70; I-code base edition not stated on an official page read",
+     "status": "adopted",
+     "sourceUrl": "https://www.ncosfm.gov/letter-re-2024-state-building-code-effective-date/open"
+    },
+    {
+     "family": "energy",
+     "code": "NCECC",
+     "edition": "2024",
+     "basedOn": "electrical: 2023 NFPA 70; I-code base edition not stated on an official page read",
+     "status": "adopted",
+     "sourceUrl": "https://www.ncosfm.gov/letter-re-2024-state-building-code-effective-date/open"
+    },
+    {
+     "family": "mechanical",
+     "code": "NCMC",
+     "edition": "2024",
+     "basedOn": "electrical: 2023 NFPA 70; I-code base edition not stated on an official page read",
+     "status": "adopted",
+     "sourceUrl": "https://www.ncosfm.gov/letter-re-2024-state-building-code-effective-date/open"
+    },
+    {
+     "family": "plumbing",
+     "code": "NCPC",
+     "edition": "2024",
+     "basedOn": "electrical: 2023 NFPA 70; I-code base edition not stated on an official page read",
+     "status": "adopted",
+     "sourceUrl": "https://www.ncosfm.gov/letter-re-2024-state-building-code-effective-date/open"
+    }
+   ],
+   "citations": [
+    {
+     "label": "NC code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.ncleg.gov/EnactedLegislation/Statutes/PDF/BySection/Chapter_143/GS_143-138.pdf"
+    },
+    {
+     "label": "NC code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.ncleg.gov/EnactedLegislation/Statutes/PDF/BySection/Chapter_143/GS_143-138.pdf"
+    }
+   ]
+  },
+  {
+   "state": "NJ",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_uniform",
+    "sourceUrl": "https://www.nj.gov/dca/codes/codreg/pdf_regs/njac_5_23_3.pdf",
+    "quote": "(a)   Except as is otherwise provided in (b), (c) and (d) below, the provisions of this subchapter shall apply uniformly throughout the State. Any standards other than those provided herein are void and of no effect.",
+    "note": "The Department of Community Affairs adopts the Uniform Construction Code (N.J.A.C. 5:23) and its subcodes; they apply uniformly statewide and any other standards are void, so a municipality cannot adopt a different edition or local technical amendments. Each municipality (or a DCA/shared agency) is the local 'enforcing agency' - a construction official plus building, electrical, plumbing and fire protection subcode officials - and issues one construction permit with per-subcode technical sections. Subcode revisions carry a six-month grace period (N.J.A.C. 5:23-1.6) in which a complete applicat"
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2024",
+     "title": "One- and Two-Family Dwelling Subcode (N.J.A.C. 5:23-3.21), IRC/2024 NJ ed.",
+     "basedOn": "2024 IRC",
+     "effectiveDate": "2026-08-17",
+     "mandatoryDate": "2027-02-17",
+     "previousEdition": "2021",
+     "sourceUrl": "https://www.nj.gov/dca/codes/codreg/pdf_regs/njac_5_23_3.pdf",
+     "quote": "Commissioner hereby adopts the model code of the International Code Council, 2024 International Residential Code known as the IRC/2024 as the one- and two-family dwelling subcode in New Jersey subject to the modifications stated at (c) below."
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2024",
+     "title": "Building Subcode (N.J.A.C. 5:23-3.14), IBC/2024 NJ ed.",
+     "basedOn": "2024 IBC",
+     "effectiveDate": "2026-08-17",
+     "mandatoryDate": "2027-02-17",
+     "previousEdition": "2021",
+     "sourceUrl": "https://www.nj.gov/dca/codes/codreg/pdf_regs/njac_5_23_3.pdf",
+     "quote": "the Commissioner hereby adopts the model code of the International Code Council, 2024 International Building Code, known as the \"IBC/2024.\" This code is hereby adopted by reference as the building subcode for New Jersey subject to the modifications stated at (b) below."
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2023",
+     "title": "Electrical Subcode (N.J.A.C. 5:23-3.16)",
+     "basedOn": "2023 NFPA 70 with TIAs 70-23-1 through 70-23-13",
+     "effectiveDate": "2026-08-17",
+     "mandatoryDate": "2027-02-17",
+     "previousEdition": "2020",
+     "sourceUrl": "https://www.nj.gov/dca/codes/codreg/pdf_regs/njac_5_23_3.pdf",
+     "quote": "the Commissioner hereby adopts the model code of the National Fire Protection Association, known as \"The National Electrical Code (NEC) 2023,\" and Tentative Interim Amendments 70-23-1 through 70-23-13 as the electrical subcode for New Jersey."
+    },
+    {
+     "family": "fire",
+     "code": "IFC",
+     "edition": "2024",
+     "title": "Fire Protection Subcode (N.J.A.C. 5:23-3.17) - fire-protection portions of the 2024 building/electrical/mechanical/fuel gas/1-2 family subcodes; IFC/2024 as ref",
+     "basedOn": "2024 IBC/IRC fire-protection chapters; IFC/2024 as a referenced code",
+     "effectiveDate": "2026-08-17",
+     "mandatoryDate": "2027-02-17",
+     "previousEdition": "2021",
+     "sourceUrl": "https://www.nj.gov/dca/codes/codreg/pdf_regs/njac_5_23_3.pdf",
+     "quote": "the Commissioner hereby adopts the following portions of the building, electrical, mechanical, fuel gas, and one- and two-family dwelling subcodes, to the extent delineated at N.J.A.C. 5:23-3.4, as the fire protection subcode for New Jersey."
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2024",
+     "title": "Energy Subcode (N.J.A.C. 5:23-3.18)",
+     "basedOn": "2024 IECC (low-rise residential); ASHRAE 90.1-2022 (commercial & other residential)",
+     "effectiveDate": "2026-08-17",
+     "mandatoryDate": "2027-02-17",
+     "previousEdition": "2021",
+     "sourceUrl": "https://www.nj.gov/dca/codes/codreg/pdf_regs/njac_5_23_3.pdf",
+     "quote": "Commissioner hereby adopts the model code of the International Code Council, known as the International Energy Conservation Code/2024 (IECC/2024), as the energy subcode for New Jersey."
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2024",
+     "title": "Mechanical Subcode (N.J.A.C. 5:23-3.20)",
+     "basedOn": "2024 IMC",
+     "effectiveDate": "2026-08-17",
+     "mandatoryDate": "2027-02-17",
+     "previousEdition": "2021",
+     "sourceUrl": "https://www.nj.gov/dca/codes/codreg/pdf_regs/njac_5_23_3.pdf",
+     "quote": "the Commissioner hereby adopts the model code of the International Code Council, Inc., known as the International Mechanical Code/2024. This code is hereby adopted by reference as the Mechanical Subcode for the State of New Jersey subject to the modifications at (b) below."
+    },
+    {
+     "family": "plumbing",
+     "code": "NSPC",
+     "edition": "2024",
+     "title": "Plumbing Subcode (N.J.A.C. 5:23-3.15)",
+     "basedOn": "2024 National Standard Plumbing Code (NOT IPC)",
+     "effectiveDate": "2026-08-17",
+     "mandatoryDate": "2027-02-17",
+     "previousEdition": "2021",
+     "sourceUrl": "https://www.nj.gov/dca/codes/codreg/pdf_regs/njac_5_23_3.pdf",
+     "quote": "Commissioner hereby adopts the Model Code of the International Association of Plumbing and Mechanical Officials, known as \"The National Standard Plumbing Code/2024,\" as the plumbing subcode for New Jersey."
+    }
+   ],
+   "citations": [
+    {
+     "label": "NJ code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.nj.gov/dca/codes/codreg/pdf_regs/njac_5_23_3.pdf"
+    }
+   ]
+  },
+  {
+   "state": "NM",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_minimum_local_amend",
+    "sourceUrl": "https://www.rld.nm.gov/wp-content/uploads/2021/07/Article-13-CILA-7.1.21.pdf",
+    "quote": "E. All political subdivisions of the state are subject to the provisions of codes adopted and approved under the Construction Industries Licensing Act. Such codes constitute a minimum requirement for the codes of political subdivisions.",
+    "note": "The Construction Industries Commission/CID adopts building, residential, electrical, plumbing, mechanical and energy codes statewide as NMAC Title 14 rules; they bind every political subdivision as a minimum (NMSA 60-13-44(E)). Local full-service departments (Albuquerque, Rio Rancho) permit under the state codes. FIRE: the State Fire Marshal's New Mexico Fire Code (10.25.5 NMAC) is a state minimum; locals may be stricter."
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "NMRBC",
+     "edition": "2021",
+     "title": "2021 New Mexico Residential Building Code (14.7.3 NMAC)",
+     "basedOn": "2021 IRC",
+     "effectiveDate": "2023-07-14",
+     "mandatoryDate": "2023-12-14",
+     "sourceUrl": "https://www.srca.nm.gov/parts/title14/14.007.0003.html",
+     "quote": "July 14, 2023, unless a later date is cited at the end of a section."
+    },
+    {
+     "family": "building",
+     "code": "NMCBC",
+     "edition": "2021",
+     "title": "2021 New Mexico Commercial Building Code (14.7.2 NMAC)",
+     "basedOn": "2021 IBC",
+     "effectiveDate": "2023-07-14",
+     "sourceUrl": "https://www.srca.nm.gov/parts/title14/14.007.0002.html",
+     "quote": "14.7.2.5 EFFECTIVE DATE: July, 14, 2023, unless a later date is cited at the end of a section."
+    },
+    {
+     "family": "electrical",
+     "code": "NMEC",
+     "edition": "2020",
+     "title": "2020 New Mexico Electrical Code (14.10.4 NMAC)",
+     "basedOn": "2020 NEC",
+     "effectiveDate": "2023-03-28",
+     "mandatoryDate": "2023-09-28",
+     "sourceUrl": "https://www.srca.nm.gov/parts/title14/14.010.0004.html",
+     "quote": "March 28, 2023, unless a later date is cited at the end of a section."
+    },
+    {
+     "family": "fire",
+     "code": "IFC",
+     "edition": "2021",
+     "title": "New Mexico Fire Code (10.25.5 NMAC, State Fire Marshal)",
+     "basedOn": "2021 IFC",
+     "effectiveDate": "2022-11-01",
+     "sourceUrl": "https://www.srca.nm.gov/parts/title10/10.025.0005.html",
+     "quote": "\"IFC\" means the New Mexico currently adopted international fire code, [2015] 2021 edition, published by the International Code Council"
+    },
+    {
+     "family": "energy",
+     "code": "NMRECC",
+     "edition": "2021",
+     "title": "2021 New Mexico Residential Energy Conservation Code (14.7.6 NMAC)",
+     "basedOn": "2021 IECC",
+     "effectiveDate": "2024-01-30",
+     "mandatoryDate": "2024-07-30",
+     "sourceUrl": "https://www.srca.nm.gov/parts/title14/14.007.0006.html",
+     "quote": "January 30, 2024 unless a later date is cited at the end of a section. From the date of publication of this rule in the New Mexico register, until month July 30, 2024, permits may be issued under either the previously-adopted rule, or this rule. After month July 30, 2024, permits may be issued only "
+    },
+    {
+     "family": "mechanical",
+     "code": "NMMC",
+     "edition": "2021",
+     "title": "2021 New Mexico Mechanical Code (14.9.2 NMAC)",
+     "basedOn": "2021 UMC",
+     "mandatoryDate": "2022-09-10",
+     "sourceUrl": "https://www.srca.nm.gov/parts/title14/14.009.0002.html",
+     "quote": "May 15, 2018, unless a later date is cited at the end of a section. From the date of publication of this rule in the New Mexico register, until September 10, 2022, permits may be issued under either the previously adopted rule, or this rule. After September 10, 2022, permits may be issued only under"
+    },
+    {
+     "family": "plumbing",
+     "code": "NMPC",
+     "edition": "2021",
+     "title": "2021 New Mexico Plumbing Code (14.8.2 NMAC)",
+     "basedOn": "2021 UPC",
+     "mandatoryDate": "2022-09-10",
+     "sourceUrl": "https://www.srca.nm.gov/parts/title14/14.008.0002.html",
+     "quote": "May 15, 2018 unless a later date is cited at the end of a section. From the date of"
+    }
+   ],
+   "upcoming": [
+    {
+     "family": "plumbing",
+     "code": "NMPC",
+     "edition": "2024",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.rld.nm.gov/2026/03/05/notice-of-public-hearing-construction-industries-division/"
+    },
+    {
+     "family": "mechanical",
+     "code": "NMMC",
+     "edition": "2024",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.rld.nm.gov/2026/03/05/notice-of-public-hearing-construction-industries-division/"
+    }
+   ],
+   "citations": [
+    {
+     "label": "NM code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.rld.nm.gov/wp-content/uploads/2021/07/Article-13-CILA-7.1.21.pdf"
+    },
+    {
+     "label": "NM code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.srca.nm.gov/parts/title10/10.025.0005.html"
+    }
+   ]
+  },
+  {
+   "state": "NY",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_uniform",
+    "sourceUrl": "https://dos.ny.gov/legal-memorandum-lg07-uniform-code-and-local-authority",
+    "quote": "The Uniform Code is applicable in all parts of the State except New York City (which has its own construction code).",
+    "note": "The NYS Uniform Fire Prevention and Building Code (Uniform Code, 19 NYCRR) and the State Energy Conservation Construction Code (Energy Code) are adopted by the State Fire Prevention and Building Code Council and apply everywhere in the state EXCEPT New York City, which has its own construction codes. Every city, town, village and county administers/enforces the Uniform Code; a municipality cannot adopt a different edition \u2014 local laws more restrictive than the Uniform Code require Code Council approval (Executive Law 379). Electrical: the RCNYS electrical chapters (34-43) are based on the 2023"
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "RCNYS",
+     "edition": "2025",
+     "title": "2025 Residential Code of New York State (RCNYS)",
+     "basedOn": "2024 IRC",
+     "effectiveDate": "2025-12-31",
+     "previousEdition": "2020",
+     "sourceUrl": "https://dos.ny.gov/notice-adoption",
+     "quote": "The effective date of the 2025 NYS Uniform Code is December 31, 2025. In addition, the Code Council voted to provide that, during the transition period between the publication of the Notice of Adoption and the effective date of the 2025 NYS Uniform Code, a person shall have the option of complying w"
+    },
+    {
+     "family": "building",
+     "code": "BCNYS",
+     "edition": "2025",
+     "title": "2025 Building Code of New York State (BCNYS)",
+     "basedOn": "2024 IBC",
+     "effectiveDate": "2025-12-31",
+     "previousEdition": "2020",
+     "sourceUrl": "https://dos.ny.gov/notice-adoption",
+     "quote": "Beginning on December 31, 2025, regulated parties submitting building permit applications are required to comply with the 2025 NYS Uniform Code."
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2023",
+     "title": "2025 RCNYS Part VIII (Chapters 34-43) / NFPA 70 as referenced",
+     "basedOn": "2023 NEC",
+     "effectiveDate": "2025-12-31",
+     "sourceUrl": "https://greenfieldny.gov/wp-content/uploads/2025/09/2025ResidentialBuildingCode-1.pdf",
+     "quote": "This Electrical Part (Chapters 34 through 43) ... is based on the 2023 National Electrical Code (NEC) (NFPA 70--2023)"
+    },
+    {
+     "family": "fire",
+     "code": "FCNYS",
+     "edition": "2025",
+     "title": "2025 Fire Code of New York State (FCNYS)",
+     "basedOn": "2024 IFC",
+     "effectiveDate": "2025-12-31",
+     "previousEdition": "2020",
+     "sourceUrl": "https://dos.ny.gov/notice-adoption",
+     "quote": "The effective date of the 2025 NYS Uniform Code is December 31, 2025."
+    },
+    {
+     "family": "energy",
+     "code": "ECCCNYS",
+     "edition": "2025",
+     "title": "2025 Energy Conservation Construction Code of New York State (ECCCNYS) / NYS ASHRAE 90.1-2025",
+     "effectiveDate": "2025-12-31",
+     "sourceUrl": "https://dos.ny.gov/notice-adoption",
+     "quote": "The effective date of the modifications to Part 1240 is December 31, 2025. There is no transition period. Beginning on December 31, 2025, regulated parties submitting building permit applications will be required to comply with the 2025 ECCCNYS and NYS ASHRAE 90.1-2025."
+    },
+    {
+     "family": "mechanical",
+     "code": "MCNYS",
+     "edition": "2025",
+     "title": "2025 Mechanical Code of New York State (MCNYS)",
+     "basedOn": "2024 IMC",
+     "effectiveDate": "2025-12-31",
+     "previousEdition": "2020",
+     "sourceUrl": "https://dos.ny.gov/notice-adoption",
+     "quote": "The effective date of the 2025 NYS Uniform Code is December 31, 2025."
+    },
+    {
+     "family": "plumbing",
+     "code": "PCNYS",
+     "edition": "2025",
+     "title": "2025 Plumbing Code of New York State (PCNYS)",
+     "basedOn": "2024 IPC",
+     "effectiveDate": "2025-12-31",
+     "previousEdition": "2020",
+     "sourceUrl": "https://dos.ny.gov/notice-adoption",
+     "quote": "The effective date of the 2025 NYS Uniform Code is December 31, 2025."
+    }
+   ],
+   "citations": [
+    {
+     "label": "NY code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://dos.ny.gov/legal-memorandum-lg07-uniform-code-and-local-authority"
+    },
+    {
+     "label": "NY code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://dos.ny.gov/division-building-standards-and-codes-frequently-asked-questions"
+    }
+   ]
+  },
+  {
+   "state": "OH",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_uniform",
+    "sourceUrl": "https://codes.ohio.gov/assets/laws/administrative-code/rules/4101/8/4101$8-1-01_eff_7_1_19.pdf",
+    "quote": "Municipal corporations may make further and additional regulations, not in conflict with Chapters 3781. and 3791. of the Revised Code or with the rules of the board of building standards.",
+    "note": "The Ohio Board of Building Standards (BBS) adopts the Ohio Building Code, Mechanical, Plumbing codes and the Residential Code of Ohio (RCO) as state rules (OAC 4101:1, 4101:8) that apply statewide; the State Fire Marshal adopts the Ohio Fire Code (OAC 1301:7-7). Municipalities/counties cannot adopt a different edition; they may only add regulations not in conflict with R.C. 3781/3791 or BBS rules, and enforce through BBS-certified building departments. The rules in effect on the date of first plan-approval application govern the project. Where no municipal, township or county residential build"
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "RCO",
+     "edition": "2019",
+     "title": "Residential Code of Ohio (RCO), OAC 4101:8",
+     "basedOn": "2018 IRC",
+     "effectiveDate": "2019-07-01",
+     "sourceUrl": "https://codes.ohio.gov/assets/laws/administrative-code/rules/4101/8/4101$8-1-01_eff_7_1_19.pdf",
+     "quote": "The 2018 edition of the \"International Residential Code\", first printing, Chapters 2 through 24, 29, and 44 as published by the \"International Code Council, Inc.\" is used as the basis of this document as is incorporated fully except as modified in italic herein."
+    },
+    {
+     "family": "building",
+     "code": "OBC",
+     "edition": "2024",
+     "title": "Ohio Building Code (OBC), OAC 4101:1 \u2014 '2024 OBC'",
+     "basedOn": "2021 IBC",
+     "effectiveDate": "2024-03-01",
+     "sourceUrl": "https://codes.ohio.gov/assets/laws/administrative-code/rules/4101/1/4101$1-1-01_eff_10_15_25.pdf",
+     "quote": "Except as provided in Chapters 4101:1-1 to 4101:1-35 of the Administrative Code, the International Building Code 2021 edition, Chapters 2 through 35 and appendix H, as published by the \"International Code Council, Inc.\" including all subsequently published errata and printings, and readily available"
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2023",
+     "title": "NFPA 70 as incorporated by the RCO (4101:8-34) and referenced by the OBC (4101:1-35)",
+     "basedOn": "2023 NEC",
+     "effectiveDate": "2024-04-15",
+     "previousEdition": "2017",
+     "sourceUrl": "https://codes.ohio.gov/ohio-administrative-code/rule-4101:8-44-01",
+     "quote": "70--1723: National Electrical Code (as modified in Chapter 34)"
+    },
+    {
+     "family": "fire",
+     "code": "OFC",
+     "edition": "2021",
+     "title": "Ohio Fire Code (OFC), OAC 1301:7-7 (State Fire Marshal)",
+     "basedOn": "2021 IFC (Chapter 12 from the 2024 IFC)",
+     "effectiveDate": "2025-11-20",
+     "sourceUrl": "https://codes.ohio.gov/assets/laws/administrative-code/rules/1301/7/1301$7-7-01_eff_11_20_25.pdf",
+     "quote": "Chapters 1 through 11 and 20 through 80 of the 2021 edition of the International Fire Code and Chapter 12 of the 2024 edition of the International Fire Code, as published by the International Code Council, Inc., and readily available at https://www.iccsafe.org, are hereby incorporated by reference"
+    },
+    {
+     "family": "mechanical",
+     "code": "OMC",
+     "edition": "2024",
+     "title": "Ohio Mechanical Code (OMC) \u2014 '2024 OMC'",
+     "basedOn": "2021 IMC",
+     "effectiveDate": "2024-03-01",
+     "sourceUrl": "https://governor.ohio.gov/media/news-and-media/dewine-husted-announce-effective-date-for-ohios-updated-building-codes",
+     "quote": "The entire 2024 Ohio Building, Mechanical, Plumbing, and Existing Building Codes, which were updated based on the 2021 International Model Codes, are available online ."
+    },
+    {
+     "family": "plumbing",
+     "code": "OPC",
+     "edition": "2024",
+     "title": "Ohio Plumbing Code (OPC) \u2014 '2024 OPC'",
+     "basedOn": "2021 IPC",
+     "effectiveDate": "2024-03-01",
+     "sourceUrl": "https://governor.ohio.gov/media/news-and-media/dewine-husted-announce-effective-date-for-ohios-updated-building-codes",
+     "quote": "Ohio Governor Mike DeWine and Lt. Governor Jon Husted today announced that the 2024 Ohio Building (OBC), Mechanical (OMC), and Plumbing Codes (OPC) rules go into effect on Friday, March 1, 2024."
+    }
+   ],
+   "citations": [
+    {
+     "label": "OH code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://codes.ohio.gov/assets/laws/administrative-code/rules/4101/8/4101$8-1-01_eff_7_1_19.pdf"
+    },
+    {
+     "label": "OH code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://codes.ohio.gov/assets/laws/administrative-code/rules/4101/1/4101$1-1-01_eff_10_15_25.pdf"
+    }
+   ]
+  },
+  {
+   "state": "OR",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_uniform",
+    "sourceUrl": "https://www.oregonlegislature.gov/bills_laws/ors/ors455.html",
+    "quote": "The state building code shall be applicable and uniform throughout this state and in all municipalities, and no municipality shall enact or enforce any ordinance, rule or regulation relating to the same matters encompassed by the state building code but which provides different requirements unless authorized by the Director of the Department of Consumer and Business Services.",
+    "note": "The Oregon state building code is uniform in every municipality; a city/county cannot enforce different requirements unless authorized by the DCBS Director (ORS 455.040). Cities/counties administer it. The Oregon Fire Code is adopted separately by the Office of State Fire Marshal."
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "ORSC",
+     "edition": "2023",
+     "basedOn": "2021 IRC",
+     "effectiveDate": "2023-10-01",
+     "mandatoryDate": "2024-04-01",
+     "previousEdition": "2021",
+     "sourceUrl": "https://secure.sos.state.or.us/oard/displayDivisionRules.action?selectedDivision=4173",
+     "quote": "Effective October 1, 2023, the 2023 Oregon Residential Specialty Code consists of the following: ... The 2021 edition of the International Residential Code for One- and Two-Family Dwellings as published by the International Code Council, Inc. ... The 2021 Oregon Residential Specialty Code, with the "
+    },
+    {
+     "family": "building",
+     "code": "OSSC",
+     "edition": "2025",
+     "basedOn": "2024 IBC (with IFC and IEBC provisions)",
+     "effectiveDate": "2025-10-01",
+     "mandatoryDate": "2026-04-01",
+     "previousEdition": "2022",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/Pages/ossc-adoption.aspx",
+     "quote": "2025 Oregon Structural Specialty Code (OSSC) ... Based on the 2024 International Building Code (IBC), International Fire Code (IFC) and International Existing Building Code (IEBC) ... Effective Oct. 1, 2025 with *six-month phase-in period ... Mandatory April 1, 2026 ... use of the 2022 OSSC or the 2"
+    },
+    {
+     "family": "electrical",
+     "code": "OESC",
+     "edition": "2023",
+     "basedOn": "2023 NEC (NFPA 70)",
+     "effectiveDate": "2023-10-01",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/Pages/electrical.aspx",
+     "quote": "2023 Oregon Electrical Specialty Code (OESC) ... Effective Oct. 1, 2023 ... Based on the 2023 National Electrical Code (NEC)"
+    },
+    {
+     "family": "fire",
+     "code": "OFC",
+     "edition": "2025",
+     "basedOn": "2024 IFC",
+     "effectiveDate": "2025-10-01",
+     "mandatoryDate": "2026-04-01",
+     "previousEdition": "2022",
+     "sourceUrl": "https://www.oregon.gov/osfm/fire-service-partners/pages/oregon-fire-code.aspx",
+     "quote": "The adoption of the 2025 Oregon Fire Code (OFC) has an effective date of October 1, 2025. ... the 2022 OFC may be used in new construction plan reviews for a period of 180-days beginning October 1, 2025, and ending March 31, 2026."
+    },
+    {
+     "family": "energy",
+     "code": "OEESC",
+     "edition": "2025",
+     "basedOn": "ASHRAE 90.1-2022 (commercial only)",
+     "effectiveDate": "2025-01-01",
+     "mandatoryDate": "2025-07-01",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/Pages/adopted-codes.aspx",
+     "quote": "2025 Oregon Energy Efficiency Specialty Code (OEESC) ... Effective Jan. 1, 2025 with *6-month phase-in / Mandatory July 1, 2025 ... ASHRAE Standard 90.1-2022"
+    },
+    {
+     "family": "mechanical",
+     "code": "OMSC",
+     "edition": "2025",
+     "basedOn": "2024 IMC and 2024 IFGC",
+     "effectiveDate": "2025-10-01",
+     "mandatoryDate": "2026-04-01",
+     "previousEdition": "2022",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/Pages/omsc-adoption.aspx",
+     "quote": "Based on the 2024 International Mechanical Code (IMC) and International Fuel Gas Code (IFGC) ... Effective Oct. 1, 2025 with a *6-month phase-in period ... Mandatory: April 1, 2026 ... During the phase-in period, use of the 2022 OMSC or the 2025 OMSC is permitted."
+    },
+    {
+     "family": "plumbing",
+     "code": "OPSC",
+     "edition": "2023",
+     "basedOn": "2021 UPC",
+     "effectiveDate": "2023-10-01",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/Pages/adopted-codes.aspx",
+     "quote": "2023 Oregon Plumbing Specialty Code (OPSC) ... Effective Oct. 1, 2023 ... Based on the 2021 OPSC and 2021 Uniform Plumbing Code (UPC)"
+    }
+   ],
+   "upcoming": [
+    {
+     "family": "residential",
+     "code": "ORSC",
+     "edition": "2026",
+     "basedOn": "2024 IRC",
+     "anticipatedDate": "2026-10-01",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/Documents/26orsc-timeline.pdf"
+    },
+    {
+     "family": "electrical",
+     "code": "OESC",
+     "edition": "2026",
+     "basedOn": "2026 NEC (NFPA 70)",
+     "anticipatedDate": "2026-10-01",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/Pages/oesc-adoption.aspx"
+    },
+    {
+     "family": "plumbing",
+     "code": "OPSC",
+     "edition": "2026",
+     "basedOn": "2024 UPC",
+     "anticipatedDate": "2026-10-01",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/Pages/OPSC-adoption.aspx"
+    }
+   ],
+   "citations": [
+    {
+     "label": "OR code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.oregonlegislature.gov/bills_laws/ors/ors455.html"
+    }
+   ]
+  },
+  {
+   "state": "PA",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_minimum_local_amend",
+    "sourceUrl": "https://www.pa.gov/agencies/dli/programs-services/labor-management-relations/bureau-of-occupational-and-industrial-safety/uniform-construction-code-home",
+    "quote": "Pennsylvania's statewide building code, generally known as the Uniform Construction Code (UCC), has to be followed by builders in the state.",
+    "note": "The Pennsylvania Construction Code Act makes the Uniform Construction Code (34 Pa. Code ch. 401-405, adopted by L&I on the RAC's triennial review) the statewide code; municipalities cannot adopt a different edition. Opt-in municipalities administer/enforce it themselves or via a third-party agency; in opt-out municipalities certified third-party agencies hired by the owner enforce the residential UCC. Municipalities may amend the UCC only by 'municipal code change ordinances' that L&I reviews under 35 P.S. 7210.503. Fire: the IFC is part of the UCC only to the extent other adopted ICC codes re"
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2021",
+     "title": "UCC (International Residential Code of 2021 as modified in 34 Pa. Code 403.21(a)(7))",
+     "basedOn": "2021 IRC",
+     "effectiveDate": "2026-01-01",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.pacodeandbulletin.gov/Display/pacode?file=%2Fsecure%2Fpacode%2Fdata%2F034%2Fchapter403%2Fs403.21.html",
+     "quote": "(a) The Department adopts and incorporates by reference the following codes as the Uniform Construction Code: ... (7) The \u2018\u2018International Residential Code of 2021,\u2019\u2019 except that:"
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2021",
+     "title": "UCC (International Building Code of 2021 as modified in 34 Pa. Code 403.21(a)(1))",
+     "basedOn": "2021 IBC",
+     "effectiveDate": "2026-01-01",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.pacodeandbulletin.gov/Display/pacode?file=%2Fsecure%2Fpacode%2Fdata%2F034%2Fchapter403%2Fs403.21.html",
+     "quote": "(1) The provisions of Chapters 2\u201410, 12\u201429 and 31\u201435 of the \u2018\u2018International Building Code of 2021,\u2019\u2019 except:"
+    },
+    {
+     "family": "electrical",
+     "code": "UCC-E",
+     "edition": "2021",
+     "title": "UCC \u2014 electrical via 2021 IRC Chapters 34-43 (residential, with PA modifications e.g. E3601.8) and IBC 2021 ch.27 / referenced NFPA 70 (commercial)",
+     "effectiveDate": "2026-01-01",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.pacodeandbulletin.gov/Display/pacode?file=%2Fsecure%2Fpacode%2Fdata%2F034%2Fchapter403%2Fs403.21.html",
+     "quote": "(LL) Section E3601.8 (relating to emergency disconnects) is modified with respect to its first sentence by inserting ''detached'' between ''two-family'' and ''dwelling units[.]''"
+    },
+    {
+     "family": "fire",
+     "code": "IFC",
+     "edition": "2021",
+     "title": "UCC \u2014 International Fire Code of 2021 (only as referenced by the other adopted ICC codes)",
+     "basedOn": "2021 IFC",
+     "effectiveDate": "2026-01-01",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.pacodeandbulletin.gov/Display/pacode?file=%2Fsecure%2Fpacode%2Fdata%2F034%2Fchapter403%2Fs403.21.html",
+     "quote": "(8) The \u2018\u2018International Fire Code of 2021\u2019\u2019 only to the extent it is referenced by other ICC codes adopted in this chapter."
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2021",
+     "title": "UCC (International Energy Conservation Code of 2021, with RAC exclusions; IRC N11 retains some 2018 provisions)",
+     "basedOn": "2021 IECC",
+     "effectiveDate": "2026-01-01",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.pacodeandbulletin.gov/Display/pacode?file=%2Fsecure%2Fpacode%2Fdata%2F034%2Fchapter403%2Fs403.21.html",
+     "quote": "(9) The \u2018\u2018International Energy Conservation Code of 2021\u2019\u2019 is adopted as follows:"
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2021",
+     "title": "UCC (International Mechanical Code of 2021)",
+     "basedOn": "2021 IMC",
+     "effectiveDate": "2026-01-01",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.pacodeandbulletin.gov/Display/pacode?file=%2Fsecure%2Fpacode%2Fdata%2F034%2Fchapter403%2Fs403.21.html",
+     "quote": "(3) The \u2018\u2018International Mechanical Code of 2021.\u2019\u2019"
+    },
+    {
+     "family": "plumbing",
+     "code": "IPC",
+     "edition": "2021",
+     "title": "UCC (International Plumbing Code of 2021)",
+     "basedOn": "2021 IPC",
+     "effectiveDate": "2026-01-01",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.pacodeandbulletin.gov/Display/pacode?file=%2Fsecure%2Fpacode%2Fdata%2F034%2Fchapter403%2Fs403.21.html",
+     "quote": "(6) The \u2018\u2018International Plumbing Code of 2021\u2019\u2019 except:"
+    }
+   ],
+   "citations": [
+    {
+     "label": "PA code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.pa.gov/agencies/dli/programs-services/labor-management-relations/bureau-of-occupational-and-industrial-safety/uniform-construction-code-home"
+    },
+    {
+     "label": "PA code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://www.pa.gov/agencies/dli/programs-services/labor-management-relations/bureau-of-occupational-and-industrial-safety/uniform-construction-code-home"
+    }
+   ]
+  },
+  {
+   "state": "SC",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_uniform",
+    "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/Building%20Codes%20in%20Effect%20for%20South%20Carolina%20Final.pdf",
+    "quote": "The mandatory codes referenced in S.C, Ann. \u00a76-9-50(1976, as amended), modified and adopted by the South Carolina Building Codes Council (Council), must be enforced by every South Carolina municipality and county. Appendices to the mandatory codes may not be used by municipalities and counties unless the appendices are specifically adopted as a local modification by the Building Codes Council.",
+    "note": "The SC Building Codes Council (LLR) modifies and adopts the mandatory codes (S.C. Code 6-9-50) and sets one implementation date; every municipality and county must enforce them and cannot pick a different edition. Local technical modifications exist only if the Council grants them on a local basis (e.g. Greenville County radon appendix) and the locality then adopts them by ordinance; appendices likewise only via Council approval. Localities adopt only the administrative provisions by ordinance. Energy is statutory: the Energy Standard Act fixes the 2009 IECC. Permissive codes (IPMC, IEBC, etc."
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2021",
+     "title": "2021 South Carolina Residential Code",
+     "basedOn": "2021 IRC",
+     "effectiveDate": "2023-01-01",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/Building%20Codes%20in%20Effect%20for%20South%20Carolina%20Final.pdf",
+     "quote": "On October 6, 2021, the South Carolina Building Codes Council adopted the latest editions of the mandatory codes and appendices with modifications, as referenced in S.C. Code Ann. \u00a76-9-50 (1976, as amended), to be enforced by all municipalities and counties in South Carolina. The Council established"
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2021",
+     "title": "2021 South Carolina Building Code",
+     "basedOn": "2021 IBC",
+     "effectiveDate": "2023-01-01",
+     "sourceUrl": "https://llr.sc.gov/bcc/BCAdoption.aspx",
+     "quote": "The South Carolina Building Codes Council adopted the 2021 South Carolina Building Codes at their meeting on October 6, 2021. The Council approved an effective date of January 1, 2023."
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2020",
+     "title": "NEC with SC modifications",
+     "basedOn": "2020 NFPA 70",
+     "effectiveDate": "2023-01-01",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/Building%20Codes%20in%20Effect%20for%20South%20Carolina%20Final.pdf",
+     "quote": "2020 National Electrical Code (NFPA 70) with SC modifications"
+    },
+    {
+     "family": "fire",
+     "code": "IFC",
+     "edition": "2021",
+     "title": "2021 South Carolina Fire Code",
+     "basedOn": "2021 IFC",
+     "effectiveDate": "2023-01-01",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/Building%20Codes%20in%20Effect%20for%20South%20Carolina%20Final.pdf",
+     "quote": "2021 South Carolina Fire Code or the 2021 International Fire Code with SC modifications"
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2009",
+     "title": "South Carolina Energy Standard (statutory)",
+     "basedOn": "2009 IECC",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/2024%20Final%20Modification%20Index%20with%20Hyperlinks.pdf",
+     "quote": "The South Carolina Legislature has enacted the Energy Standard Act (S.C. Code Ann. ...), and pursuant to the Energy Standard Act, the 2009 edition of the International Energy Conservation Code has been statutorily adopted as the energy standard and is mandatory for use in all jurisdictions within th"
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2021",
+     "title": "2021 South Carolina Mechanical Code",
+     "basedOn": "2021 IMC",
+     "effectiveDate": "2023-01-01",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/Building%20Codes%20in%20Effect%20for%20South%20Carolina%20Final.pdf",
+     "quote": "2021 South Carolina Mechanical Code or the 2021 International Mechanical Code with SC modifications"
+    },
+    {
+     "family": "plumbing",
+     "code": "IPC",
+     "edition": "2021",
+     "title": "2021 South Carolina Plumbing Code",
+     "basedOn": "2021 IPC",
+     "effectiveDate": "2023-01-01",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/Building%20Codes%20in%20Effect%20for%20South%20Carolina%20Final.pdf",
+     "quote": "2021 South Carolina Plumbing Code or the 2021 International Plumbing Code with SC modifications"
+    }
+   ],
+   "upcoming": [
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2024",
+     "basedOn": "2024 IBC, 2024 IRC, 2024 IFC, 2024 IPC, 2024 IMC, 2024 IFGC, 2023 NEC",
+     "anticipatedDate": "2027-01-01",
+     "status": "adopted",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/2024%20Final%20Modification%20Index%20with%20Hyperlinks.pdf"
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2024",
+     "basedOn": "2024 IBC, 2024 IRC, 2024 IFC, 2024 IPC, 2024 IMC, 2024 IFGC, 2023 NEC",
+     "anticipatedDate": "2027-01-01",
+     "status": "adopted",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/2024%20Final%20Modification%20Index%20with%20Hyperlinks.pdf"
+    },
+    {
+     "family": "fire",
+     "code": "IFC",
+     "edition": "2024",
+     "basedOn": "2024 IBC, 2024 IRC, 2024 IFC, 2024 IPC, 2024 IMC, 2024 IFGC, 2023 NEC",
+     "anticipatedDate": "2027-01-01",
+     "status": "adopted",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/2024%20Final%20Modification%20Index%20with%20Hyperlinks.pdf"
+    },
+    {
+     "family": "plumbing",
+     "code": "IPC",
+     "edition": "2024",
+     "basedOn": "2024 IBC, 2024 IRC, 2024 IFC, 2024 IPC, 2024 IMC, 2024 IFGC, 2023 NEC",
+     "anticipatedDate": "2027-01-01",
+     "status": "adopted",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/2024%20Final%20Modification%20Index%20with%20Hyperlinks.pdf"
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2024",
+     "basedOn": "2024 IBC, 2024 IRC, 2024 IFC, 2024 IPC, 2024 IMC, 2024 IFGC, 2023 NEC",
+     "anticipatedDate": "2027-01-01",
+     "status": "adopted",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/2024%20Final%20Modification%20Index%20with%20Hyperlinks.pdf"
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2024",
+     "basedOn": "2024 IBC, 2024 IRC, 2024 IFC, 2024 IPC, 2024 IMC, 2024 IFGC, 2023 NEC",
+     "anticipatedDate": "2027-01-01",
+     "status": "adopted",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/2024%20Final%20Modification%20Index%20with%20Hyperlinks.pdf"
+    }
+   ],
+   "citations": [
+    {
+     "label": "SC code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://llr.sc.gov/bcc/PDFfiles/Building%20Codes%20in%20Effect%20for%20South%20Carolina%20Final.pdf"
+    }
+   ]
+  },
+  {
+   "state": "TX",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "local_adoption",
+    "byFamily": {
+     "electrical": "statewide_minimum_local_amend"
+    },
+    "sourceUrl": "https://statutes.capitol.texas.gov/Docs/LG/htm/LG.214.htm",
+    "quote": "To protect the public health, safety, and welfare, the International Residential Code, as it existed on May 1, 2012, is adopted as a municipal residential building code in this state.",
+    "note": "Texas has no statewide enforced building code. State law sets a FLOOR for municipalities: the IRC 'as it existed on May 1, 2012' is the municipal residential code and the IBC 'as it existed on May 1, 2012' the municipal commercial code; each city may adopt later ICC editions and local amendments by ordinance after a public hearing \u2014 so the edition in force is whatever each city adopted (commonly with North Central Texas COG regional amendments in DFW). Electrical: TDLR must adopt each new NEC as 'the electrical code for the state' (2026 NEC effective 2026-09-01), while cities adopt/amend their"
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2012",
+     "title": "Municipal residential building code floor (Local Gov't Code 214.212)",
+     "basedOn": "2012 IRC (state minimum; each city adopts its own edition)",
+     "effectiveDate": "2022-01-01",
+     "sourceUrl": "https://statutes.capitol.texas.gov/Docs/LG/htm/LG.214.htm",
+     "quote": "To protect the public health, safety, and welfare, the International Residential Code, as it existed on May 1, 2012, is adopted as a municipal residential building code in this state."
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2012",
+     "title": "Municipal commercial building code floor (Local Gov't Code 214.216)",
+     "basedOn": "2012 IBC (state minimum; each city adopts its own edition)",
+     "effectiveDate": "2022-01-01",
+     "sourceUrl": "https://statutes.capitol.texas.gov/Docs/LG/htm/LG.214.htm",
+     "quote": "To protect the public health, safety, and welfare, the International Building Code, as it existed on May 1, 2012, is adopted as a municipal commercial building code in this state."
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2026",
+     "title": "National Electrical Code as adopted by the Texas Commission of Licensing and Regulation (16 TAC ch. 73)",
+     "basedOn": "2026 NEC (NFPA 70-2026), with a GFCI exception for certain outdoor outlets",
+     "effectiveDate": "2026-09-01",
+     "previousEdition": "2023",
+     "sourceUrl": "https://www.tdlr.texas.gov/news/rulemaking/2026/09/01/commission-adopts-rules-12/",
+     "quote": "The adopted amendments adopt the 2026 National Electrical Code as the state electrical code, with a limited exception pertaining to ground-fault circuit interrupter requirements for certain outdoor outlets."
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2015",
+     "title": "State energy code (Health & Safety Code 388.003; SECO)",
+     "basedOn": "2015 IRC Chapter 11 (single-family) / 2015 IECC (all other)",
+     "effectiveDate": "2016-09-01",
+     "sourceUrl": "https://statutes.capitol.texas.gov/Docs/HS/htm/HS.388.htm",
+     "quote": "On September 1, 2016, the energy efficiency chapter of the International Residential Code, as it existed on May 1, 2015, is adopted as the energy code in this state for single-family residential construction."
+    }
+   ],
+   "citations": [
+    {
+     "label": "TX code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://statutes.capitol.texas.gov/Docs/LG/htm/LG.214.htm"
+    },
+    {
+     "label": "TX code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://statutes.capitol.texas.gov/Docs/LG/htm/LG.214.htm"
+    }
+   ]
+  },
+  {
+   "state": "VA",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_uniform",
+    "sourceUrl": "https://law.lis.virginia.gov/vacode/title36/chapter6/section36-98/",
+    "quote": "The Board is hereby directed and empowered to adopt and promulgate a Uniform Statewide Building Code. Such building code shall supersede the building codes and regulations of the counties, municipalities and other political subdivisions and state agencies.",
+    "note": "The Board of Housing and Community Development adopts the Virginia Uniform Statewide Building Code (USBC: Virginia Construction Code incl. the IRC as the Virginia Residential Code, the 2020 NEC, IECC, IMC, IPC, IFGC) and the Statewide Fire Prevention Code (SFPC). The USBC supersedes local building codes; localities enforce it and cannot adopt a different edition or local technical amendments. Local SFPC enforcement is optional for localities, but the SFPC edition is statewide. Each new edition has a one-year window in which the applicant may choose the prior edition."
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "VRC",
+     "edition": "2021",
+     "title": "2021 Virginia Residential Code (IRC as amended via the 2021 Virginia Construction Code / USBC Part I)",
+     "basedOn": "2021 IRC",
+     "effectiveDate": "2024-01-18",
+     "mandatoryDate": "2025-01-18",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.dhcd.virginia.gov/codes",
+     "quote": "Effective January 18, 2024, Virginia adopted the 2021 I-codes as referenced in the Virginia Construction Part 1 and the 2021 Statewide Fire Prevention Code; and the 2020 National Electrical Code."
+    },
+    {
+     "family": "building",
+     "code": "VCC",
+     "edition": "2021",
+     "title": "2021 Virginia Construction Code (USBC Part I)",
+     "basedOn": "2021 IBC",
+     "effectiveDate": "2024-01-18",
+     "mandatoryDate": "2025-01-18",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.dhcd.virginia.gov/codes",
+     "quote": "The effective date of the 2021 Uniform Statewide Building Code, 2021 Statewide Fire Prevention Code, 2021 Industrialized Building Safety Regulations and the 2021 Amusement Device Regulations is Jan. 18, 2024"
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2020",
+     "title": "NEC (referenced by the 2021 USBC)",
+     "basedOn": "2020 NFPA 70",
+     "effectiveDate": "2024-01-18",
+     "mandatoryDate": "2025-01-18",
+     "previousEdition": "2017",
+     "sourceUrl": "https://www.dhcd.virginia.gov/codes",
+     "quote": "Effective January 18, 2024, Virginia adopted the 2021 I-codes as referenced in the Virginia Construction Part 1 and the 2021 Statewide Fire Prevention Code; and the 2020 National Electrical Code."
+    },
+    {
+     "family": "fire",
+     "code": "SFPC",
+     "edition": "2021",
+     "title": "2021 Virginia Statewide Fire Prevention Code (SFPC)",
+     "basedOn": "2021 IFC",
+     "effectiveDate": "2024-01-18",
+     "sourceUrl": "https://www.dhcd.virginia.gov/codes",
+     "quote": "The effective date of the 2021 Uniform Statewide Building Code, 2021 Statewide Fire Prevention Code, 2021 Industrialized Building Safety Regulations and the 2021 Amusement Device Regulations is Jan. 18, 2024"
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2021",
+     "title": "IECC as amended in the 2021 USBC",
+     "basedOn": "2021 IECC",
+     "effectiveDate": "2024-01-18",
+     "mandatoryDate": "2025-01-18",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.fredericksburgva.gov/899/Building-Codes",
+     "quote": "The current editions of the model codes that make up the USBC are: 2021 Virginia Uniform Statewide Building Code, (USBC) 2021 International Fuel Gas Code (IFGC) 2021 International Building Code (as amended), (IBC) 2021 International Energy Conservation Code (IECC) 2021 International Residential Code"
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2021",
+     "title": "IMC as referenced in the 2021 USBC",
+     "basedOn": "2021 IMC",
+     "effectiveDate": "2024-01-18",
+     "mandatoryDate": "2025-01-18",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.dhcd.virginia.gov/codes",
+     "quote": "Effective January 18, 2024, Virginia adopted the 2021 I-codes as referenced in the Virginia Construction Part 1 and the 2021 Statewide Fire Prevention Code; and the 2020 National Electrical Code."
+    },
+    {
+     "family": "plumbing",
+     "code": "IPC",
+     "edition": "2021",
+     "title": "IPC as referenced in the 2021 USBC",
+     "basedOn": "2021 IPC",
+     "effectiveDate": "2024-01-18",
+     "mandatoryDate": "2025-01-18",
+     "previousEdition": "2018",
+     "sourceUrl": "https://www.dhcd.virginia.gov/codes",
+     "quote": "Effective January 18, 2024, Virginia adopted the 2021 I-codes as referenced in the Virginia Construction Part 1 and the 2021 Statewide Fire Prevention Code; and the 2020 National Electrical Code."
+    }
+   ],
+   "upcoming": [
+    {
+     "family": "residential",
+     "code": "VRC",
+     "edition": "2024",
+     "basedOn": "2024 I-Codes (base documents: 2024 VCC, 2024 SFPC, 2024 VEBC, 2024 VPMC); NEC edition not stated on a page read",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.dhcd.virginia.gov/sites/default/files/DocX/2024-code-development-cycle/stakeholder-memo-april-30.pdf"
+    },
+    {
+     "family": "building",
+     "code": "VCC",
+     "edition": "2024",
+     "basedOn": "2024 I-Codes (base documents: 2024 VCC, 2024 SFPC, 2024 VEBC, 2024 VPMC); NEC edition not stated on a page read",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.dhcd.virginia.gov/sites/default/files/DocX/2024-code-development-cycle/stakeholder-memo-april-30.pdf"
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2024",
+     "basedOn": "2024 I-Codes (base documents: 2024 VCC, 2024 SFPC, 2024 VEBC, 2024 VPMC); NEC edition not stated on a page read",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.dhcd.virginia.gov/sites/default/files/DocX/2024-code-development-cycle/stakeholder-memo-april-30.pdf"
+    },
+    {
+     "family": "fire",
+     "code": "SFPC",
+     "edition": "2024",
+     "basedOn": "2024 I-Codes (base documents: 2024 VCC, 2024 SFPC, 2024 VEBC, 2024 VPMC); NEC edition not stated on a page read",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.dhcd.virginia.gov/sites/default/files/DocX/2024-code-development-cycle/stakeholder-memo-april-30.pdf"
+    },
+    {
+     "family": "energy",
+     "code": "IECC",
+     "edition": "2024",
+     "basedOn": "2024 I-Codes (base documents: 2024 VCC, 2024 SFPC, 2024 VEBC, 2024 VPMC); NEC edition not stated on a page read",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.dhcd.virginia.gov/sites/default/files/DocX/2024-code-development-cycle/stakeholder-memo-april-30.pdf"
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2024",
+     "basedOn": "2024 I-Codes (base documents: 2024 VCC, 2024 SFPC, 2024 VEBC, 2024 VPMC); NEC edition not stated on a page read",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.dhcd.virginia.gov/sites/default/files/DocX/2024-code-development-cycle/stakeholder-memo-april-30.pdf"
+    },
+    {
+     "family": "plumbing",
+     "code": "IPC",
+     "edition": "2024",
+     "basedOn": "2024 I-Codes (base documents: 2024 VCC, 2024 SFPC, 2024 VEBC, 2024 VPMC); NEC edition not stated on a page read",
+     "status": "in rulemaking",
+     "sourceUrl": "https://www.dhcd.virginia.gov/sites/default/files/DocX/2024-code-development-cycle/stakeholder-memo-april-30.pdf"
+    }
+   ],
+   "citations": [
+    {
+     "label": "VA code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://law.lis.virginia.gov/vacode/title36/chapter6/section36-98/"
+    }
+   ]
+  },
+  {
+   "state": "WA",
+   "asOf": "2026-09-24",
+   "adoptionModel": {
+    "model": "statewide_minimum_local_amend",
+    "sourceUrl": "https://app.leg.wa.gov/rcw/default.aspx?cite=19.27.060",
+    "quote": "The governing bodies of counties and cities may amend the codes enumerated in RCW 19.27.031 as amended and adopted by the state building code council as they apply within their respective jurisdictions, but the amendments shall not result in a code that is less than the minimum performance standards and objectives contained in the state building code except as provided in subsection (2) of this se",
+    "note": "SBCC adopts the IBC/IRC/IMC/IFC/UPC and WA State Energy Code by WAC, effective in all counties and cities on one date; cities/counties may amend but not below the state minimum, and amendments affecting single-family or multifamily residential buildings need SBCC approval (RCW 19.27.060). Electrical is separate: L&I adopts the NEC in WAC 296-46B; listed cities issue their own electrical permits (L&I 'City Electrical Permits & Inspections' list), otherwise L&I."
+   },
+   "adoptedCodes": [
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2021",
+     "title": "IRC as amended by WAC 51-51",
+     "basedOn": "2021 IRC",
+     "effectiveDate": "2024-03-15",
+     "sourceUrl": "https://app.leg.wa.gov/wac/default.aspx?cite=51-51-008",
+     "quote": "The International Residential Code adopted by chapter 51-51 WAC shall become effective in all counties and cities of this state on March 15, 2024."
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2021",
+     "title": "IBC as amended by WAC 51-50",
+     "basedOn": "2021 IBC",
+     "effectiveDate": "2024-03-15",
+     "sourceUrl": "https://app.leg.wa.gov/wac/default.aspx?cite=51-50-008",
+     "quote": "The International Building Code adopted under chapter 51-50 WAC shall become effective in all counties and cities of this state on March 15, 2024."
+    },
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2023",
+     "title": "NEC as amended by WAC 296-46B (L&I)",
+     "basedOn": "2023 NEC (NFPA 70-2023)",
+     "effectiveDate": "2024-04-01",
+     "sourceUrl": "https://app.leg.wa.gov/wac/default.aspx?cite=296-46B-010",
+     "quote": "The 2023 edition of the National Electrical Code (NFPA 70 - 2023) including Annex A, B, C and subsequent Errata"
+    },
+    {
+     "family": "fire",
+     "code": "IFC",
+     "edition": "2021",
+     "title": "IFC as amended by WAC 51-54A",
+     "basedOn": "2021 IFC",
+     "effectiveDate": "2024-03-15",
+     "sourceUrl": "https://app.leg.wa.gov/wac/default.aspx?cite=51-54A-008",
+     "quote": "The International Fire Code adopted by chapter 51-54A WAC shall become effective in all counties and cities of this state on March 15, 2024."
+    },
+    {
+     "family": "energy",
+     "code": "WSEC",
+     "edition": "2021",
+     "title": "WSEC-R (WAC 51-11R) / WSEC-C (WAC 51-11C)",
+     "basedOn": "Washington State Energy Code, 2021 edition",
+     "effectiveDate": "2024-03-15",
+     "sourceUrl": "https://app.leg.wa.gov/wac/default.aspx?cite=51-11R-10100",
+     "quote": "The 2021 edition of the Washington State Energy Code is hereby adopted. The Washington State Energy Code adopted under chapter 51-11R WAC shall become effective in all counties and cities of this state on March 15, 2024."
+    },
+    {
+     "family": "mechanical",
+     "code": "IMC",
+     "edition": "2021",
+     "title": "IMC as amended by WAC 51-52",
+     "basedOn": "2021 IMC",
+     "effectiveDate": "2024-03-15",
+     "sourceUrl": "https://app.leg.wa.gov/wac/default.aspx?cite=51-52-008",
+     "quote": "The International Mechanical Code adopted by chapter 51-52 WAC shall become effective in all counties and cities of this state on March 15, 2024."
+    },
+    {
+     "family": "plumbing",
+     "code": "UPC",
+     "edition": "2021",
+     "title": "UPC as amended by WAC 51-56",
+     "basedOn": "2021 UPC",
+     "effectiveDate": "2024-03-15",
+     "sourceUrl": "https://app.leg.wa.gov/wac/default.aspx?cite=51-56-008",
+     "quote": "The Uniform Plumbing Code adopted by chapter 51-56 WAC shall become effective in all counties and cities of this state on March 15, 2024."
+    }
+   ],
+   "upcoming": [
+    {
+     "family": "electrical",
+     "code": "NEC",
+     "edition": "2026",
+     "basedOn": "2026 NEC (NFPA 70-2026)",
+     "anticipatedDate": "2026-12-31",
+     "status": "adopted",
+     "sourceUrl": "https://app.leg.wa.gov/wac/default.aspx?cite=296-46B-010"
+    },
+    {
+     "family": "residential",
+     "code": "IRC",
+     "edition": "2024",
+     "basedOn": "2024 IRC",
+     "anticipatedDate": "2027-05-03",
+     "status": "in rulemaking",
+     "sourceUrl": "https://sbcc.wa.gov/"
+    },
+    {
+     "family": "building",
+     "code": "IBC",
+     "edition": "2024",
+     "basedOn": "2024 IBC",
+     "anticipatedDate": "2027-05-03",
+     "status": "in rulemaking",
+     "sourceUrl": "https://sbcc.wa.gov/"
+    },
+    {
+     "family": "fire",
+     "code": "IFC",
+     "edition": "2024",
+     "basedOn": "2024 IFC",
+     "anticipatedDate": "2027-05-03",
+     "status": "in rulemaking",
+     "sourceUrl": "https://sbcc.wa.gov/"
+    },
+    {
+     "family": "energy",
+     "code": "WSEC",
+     "edition": "2024",
+     "basedOn": "Washington State Energy Code",
+     "status": "in rulemaking",
+     "sourceUrl": "https://sbcc.wa.gov/"
+    }
+   ],
+   "citations": [
+    {
+     "label": "WA code adoption model (verified 2026-09-24)",
+     "sourceUrl": "https://app.leg.wa.gov/rcw/default.aspx?cite=19.27.060"
+    }
+   ]
+  }
  ]
 }

@@ -210,20 +210,20 @@ await run("utility research: aborted web search -> webGrounded:false, no portal 
   assert.deepEqual(webTimeouts, [webResearchBudgetMs()]);
 });
 
-await run("code research: aborted web search -> model_memory provenance, no sourceUrl, no citations", async () => {
+await run("code research: aborted web search -> model_memory provenance, NOTHING recalled, no second (memory) call", async () => {
+  // B1 (code editions): a remembered edition is never stored, so the researcher does not pay for a
+  // model-memory fallback it would throw away. It used to keep the recalled "2021".
   const { provider, calls, webTimeouts } = makeProvider("abort", codesJson, codesJson);
   const r = await provider.researchJurisdictionCodes({ ahj: "Example County", state: "ZZ" });
   assert.equal(r.webGrounded, false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const prov = (r.profile as any).researchProvenance;
+  const prov = r.profile.researchProvenance;
   assert.equal(prov?.method, "model_memory");
   assert.equal(prov?.webGrounded, false);
   assert.equal(r.profile.citations.length, 0);
   assert.ok(!hasUrl(JSON.stringify(r.profile)), `a link survived: ${JSON.stringify(r.profile)}`);
-  assert.equal(r.profile.adoptedCodes[0]?.edition, "2021", "the recalled content itself is kept (seeded, verify locally)");
-  const fallback = calls.find((c) => !c.hasTools)!;
-  assert.ok(!fallback.system.includes("FIRST search the web") && /NO WEB ACCESS/.test(fallback.system));
-  assert.ok(fallback.maxTokens >= 4000);
+  assert.equal(r.profile.adoptedCodes.length, 0, "a recalled edition came back from an ungrounded research");
+  assert.ok(calls.every((c) => c.hasTools), "a model-memory fallback call was made for code editions");
+  assert.ok(calls[0].maxTokens >= 6000, "code research lost its output budget");
   assert.deepEqual(webTimeouts, [webResearchBudgetMs()]);
 });
 
@@ -411,19 +411,32 @@ await run("KB save: model-memory utility research stores the marker and NO porta
   assert.ok(!hasUrl(row.notes), `notes carry a link: ${row.notes}`);
 });
 
-await run("code-profile save: payload_json records model_memory provenance; a seeded re-save without it keeps it", async () => {
-  const { provider } = makeProvider("abort", codesJson, codesJson);
-  const research = await provider.researchJurisdictionCodes({ ahj: "Example County", state: "ZZ" });
-  saveResearchedCodeProfile(db, research.profile);
+await run("code-profile save: a model-memory result stores NOTHING; the grounded one lands with its evidence; an import re-save keeps it", async () => {
   const key = codeProfileKey({ state: "ZZ", ahj: "Example County" });
-  const payload = () => JSON.parse(db.get<{ payload_json: string }>("SELECT payload_json FROM jurisdiction_code_profiles WHERE profile_key = ?", [key])!.payload_json);
-  assert.equal(payload().researchProvenance?.method, "model_memory", `payload: ${JSON.stringify(payload()).slice(0, 300)}`);
-  assert.equal(payload().researchProvenance?.webGrounded, false);
-  assert.ok(!/https?:\/\//.test(JSON.stringify(payload())), "a link persisted in payload_json");
-  // A reference-import style merge: a plain profile with no provenance, seeded.
-  const { researchProvenance: _drop, ...plain } = research.profile as typeof research.profile & { researchProvenance?: unknown };
+  const row = () => db.get<{ payload_json: string }>("SELECT payload_json FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
+  const payload = () => JSON.parse(row()!.payload_json);
+  // MUST-EXCLUDE (B1): model memory produces no row — a row would read "researched" and block the
+  // grounded attempt behind it.
+  const memory = await makeProvider("abort", codesJson, codesJson).provider.researchJurisdictionCodes({ ahj: "Example County", state: "ZZ" });
+  saveResearchedCodeProfile(db, memory.profile);
+  assert.ok(!row(), `a model-memory research stored a row: ${row()?.payload_json?.slice(0, 200)}`);
+  // MUST-PASS: the grounded research lands, carrying the grounding EVIDENCE.
+  const grounded = await makeProvider("searched-json", codesJson, {}).provider.researchJurisdictionCodes({ ahj: "Example County", state: "ZZ" });
+  saveResearchedCodeProfile(db, grounded.profile);
+  const prov = payload().researchProvenance;
+  assert.equal(prov?.method, "web_search", `payload: ${JSON.stringify(payload()).slice(0, 300)}`);
+  assert.equal(prov?.webGrounded, true);
+  assert.equal(prov?.searches, 1);
+  assert.equal(prov?.groundedSearches, 1);
+  assert.deepEqual(prov?.resultUrls, [searchHit.url], "the result URL the search returned is not on the row");
+  assert.equal(typeof prov?.model, "string");
+  assert.equal(prov?.outputTokens, 1);
+  assert.equal(payload().adoptedCodes[0]?.edition, "2021");
+  assert.equal(payload().adoptedCodes[0]?.origin, "research", "a research code is not marked machine-owned");
+  // A reference-import style merge: a plain profile with no provenance, seeded — keeps the marker.
+  const { researchProvenance: _drop, ...plain } = grounded.profile;
   saveResearchedCodeProfile(db, { ...plain, amendments: [...plain.amendments, { code: "NEC", summary: "Imported note" }] });
-  assert.equal(payload().researchProvenance?.method, "model_memory", "a merge must not launder the model-memory marker away");
+  assert.equal(payload().researchProvenance?.method, "web_search", "an import re-save dropped the provenance");
 });
 
 console.log(failures ? `\n${failures} FAILED` : "\nall research-provenance tests passed");

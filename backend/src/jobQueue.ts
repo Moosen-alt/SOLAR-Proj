@@ -782,19 +782,12 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
       // automatically the first time any review touches an un-profiled jurisdiction
       // (codeProfiles.ensureCodeProfilesResearched). A human verifies later; until
       // then findings phrase "verify locally" and seeded thresholds never hard-block.
-      const { createLLMProvider } = await import("./llm");
-      const { saveResearchedCodeProfile } = await import("./codeProfiles");
-      const state = String(job.payload.state || "");
-      const ahj = String(job.payload.ahj || "");
-      const research = await createLLMProvider().researchJurisdictionCodes({ state, ahj });
-      if (research.provider === "stub" || research.profile.adoptedCodes.length === 0) {
-        // Don't store an empty row — it would block future auto-research for this
-        // layer. Leave the jurisdiction un-profiled and report why.
-        result = { saved: false, reason: research.provider === "stub" ? "stub LLM (no API key)" : "research found no adopted codes", notes: research.notes };
-      } else {
-        const saved = saveResearchedCodeProfile(db, research.profile);
-        result = { saved: true, key: saved.key, confidence: saved.confidence, webGrounded: research.webGrounded, adoptedCodes: saved.adoptedCodes.length };
-      }
+      // The body lives in codeProfiles.runCodeResearch (the backfill's --apply runs the same path):
+      // a stub / model-memory / empty result stores NOTHING (the job row is the backoff marker and
+      // carries the grounding evidence); a verified target gets a proposal, never a write; anything
+      // else MERGES onto the row (stamp notes, imports and corrections are kept).
+      const { runCodeResearch } = await import("./codeProfiles");
+      result = await runCodeResearch(db, job.payload as Record<string, unknown>);
     } else if (job.jobType === "design_criteria_research") {
       // Fills ONLY blank design criteria on the AHJ's own row, as seeded, web-grounded values
       // with their citations only; never a verified row (codeProfiles.runDesignCriteriaResearch).

@@ -20,19 +20,28 @@ import type { AppDb } from "./db";
 import type {
   ApprovedDesignObservation,
   CodeEdition,
+  CodeFamily,
   CodeReference,
+  CodeResearchProvenance,
   DesignCriteriaResearchResult,
+  JurisdictionAdoptionModel,
   JurisdictionCodeProfile,
   JurisdictionCriteriaProposal,
   JurisdictionDesignCriteria,
+  JurisdictionEditionProposal,
   LLMProvider,
   PrescriptiveLimits,
   FireSetbackRule,
   ProjectRecord,
+  UpcomingCodeEdition,
 } from "../../shared/src/types";
 import { knowledgeProfileKey, knowledgeNameMatchScore, isLearningExcluded } from "./knowledgeBase";
 import { addAuditLog } from "./audit";
-import { extractStatedDesignCriteria } from "./designCriteria";
+import { extractStatedDesignCriteria, normCodeToken } from "./designCriteria";
+import {
+  CODE_FAMILIES, codeFamilyOf, editionLabel, editionsInEffect, familyAdoptionModel, isAdoptionModel,
+  isCodeFamily, isFamilyAdoptionModel, locallyAdoptedFamilies, modelBaseOf, upcomingDue,
+} from "./codeFamilies";
 import { isAutoSeedDisabled } from "./portalChannel";
 import { id as newId } from "./ids";
 import { logger } from "./logger";
@@ -45,17 +54,69 @@ const text = (v: unknown): string => (v == null ? "" : String(v));
 /** HOW A SEEDED PROFILE WAS RESEARCHED — stored in payload_json, because "seeded" alone
  *  cannot tell an operator (or a cleanup) a web-grounded answer from model memory, and both
  *  are shared with every tenant. researchJurisdictionCodes attaches it to the profile it
- *  returns; absent means the row came from a path that does not say (imports, seeds). */
-export interface CodeResearchProvenance {
-  webGrounded: boolean;
-  method: "web_search" | "model_memory";
-  notes?: string;
-}
+ *  returns; absent means the row came from a path that does not say (imports, seeds).
+ *  The type lives in shared/src/types.ts; re-exported for the modules that import it here. */
+export type { CodeResearchProvenance };
+
+const PROVENANCE_METHODS = ["web_search", "model_memory", "reference_truth"] as const;
+const MAX_RESULT_URLS = 20;
 
 function provenanceOf(value: unknown): CodeResearchProvenance | undefined {
   const p = (value as { researchProvenance?: unknown } | null)?.researchProvenance as Partial<CodeResearchProvenance> | undefined;
   if (!p || typeof p !== "object" || typeof p.webGrounded !== "boolean") return undefined;
-  return { webGrounded: p.webGrounded, method: p.webGrounded ? "web_search" : "model_memory", ...(p.notes ? { notes: String(p.notes).slice(0, 1000) } : {}) };
+  const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : undefined);
+  // The stored method is kept when it is one we know ("reference_truth" is grounded but not a web
+  // search); an unknown/missing one is derived from webGrounded, as before.
+  const method = (PROVENANCE_METHODS as readonly string[]).includes(String(p.method)) && (p.method !== "model_memory" || !p.webGrounded)
+    ? p.method as CodeResearchProvenance["method"]
+    : p.webGrounded ? "web_search" : "model_memory";
+  const out: CodeResearchProvenance = { webGrounded: p.webGrounded, method };
+  if (p.notes) out.notes = String(p.notes).slice(0, 1000);
+  if (typeof p.at === "string" && p.at) out.at = p.at.slice(0, 40);
+  for (const k of ["searches", "groundedSearches", "inputTokens", "outputTokens"] as const) {
+    const n = num(p[k]);
+    if (n !== undefined) out[k] = n;
+  }
+  if (Array.isArray(p.resultUrls)) {
+    const urls = p.resultUrls.map((u) => String(u || "").slice(0, 300)).filter((u) => /^https?:\/\//i.test(u));
+    if (urls.length) out.resultUrls = [...new Set(urls)].slice(0, MAX_RESULT_URLS);
+  }
+  if (typeof p.model === "string" && p.model) out.model = p.model.slice(0, 60);
+  return out;
+}
+
+/** A stored adoption model, validated (unknown values dropped rather than trusted). */
+function adoptionModelOf(value: unknown): JurisdictionAdoptionModel | undefined {
+  const m = value as Partial<JurisdictionAdoptionModel> | null | undefined;
+  if (!m || typeof m !== "object" || !isAdoptionModel(m.model)) return undefined;
+  const byFamily: JurisdictionAdoptionModel["byFamily"] = {};
+  for (const [fam, v] of Object.entries(m.byFamily ?? {})) if (isCodeFamily(fam) && isFamilyAdoptionModel(v)) byFamily[fam] = v;
+  return {
+    model: m.model,
+    ...(Object.keys(byFamily).length ? { byFamily } : {}),
+    ...(m.sourceUrl ? { sourceUrl: String(m.sourceUrl).slice(0, 500) } : {}),
+    ...(m.quote ? { quote: String(m.quote).slice(0, 400) } : {}),
+    ...(m.note ? { note: String(m.note).slice(0, 600) } : {}),
+  };
+}
+
+function upcomingOf(value: unknown): UpcomingCodeEdition[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value
+    .filter((u): u is Record<string, unknown> => !!u && typeof u === "object")
+    .map((u) => ({
+      family: isCodeFamily(u.family) ? u.family : codeFamilyOf({ code: String(u.code || ""), basedOn: String(u.basedOn || "") }),
+      code: String(u.code || "").slice(0, 40),
+      edition: String(u.edition || "").slice(0, 16),
+      ...(u.basedOn ? { basedOn: String(u.basedOn).slice(0, 120) } : {}),
+      ...(/^\d{4}-\d{2}-\d{2}/.test(String(u.anticipatedDate || "")) ? { anticipatedDate: String(u.anticipatedDate).slice(0, 10) } : {}),
+      ...(u.status ? { status: String(u.status).slice(0, 40) } : {}),
+      ...(u.sourceUrl ? { sourceUrl: String(u.sourceUrl).slice(0, 500) } : {}),
+      ...(u.quote ? { quote: String(u.quote).slice(0, 300) } : {}),
+    }))
+    .filter((u): u is UpcomingCodeEdition => !!u.family && !!u.code && !!u.edition)
+    .slice(0, 12);
+  return out;
 }
 
 // Model-code fallbacks used when a jurisdiction has no profile: current ICC/NFPA
@@ -134,7 +195,130 @@ function mapRow(row: Row): JurisdictionCodeProfile {
     verifiedAt: text(row.verified_at) || undefined,
     verifiedBy: text(row.verified_by) || undefined,
     updatedAt: text(row.updated_at),
+    ...optionalLayerFields(payload),
   };
+}
+
+function optionalLayerFields(payload: unknown): Pick<JurisdictionCodeProfile, "adoptionModel" | "upcoming" | "researchProvenance"> {
+  const p = (payload ?? {}) as { adoptionModel?: unknown; upcoming?: unknown };
+  const adoptionModel = adoptionModelOf(p.adoptionModel);
+  const upcoming = upcomingOf(p.upcoming);
+  const researchProvenance = provenanceOf(payload);
+  return {
+    ...(adoptionModel ? { adoptionModel } : {}),
+    ...(upcoming && upcoming.length ? { upcoming } : {}),
+    ...(researchProvenance ? { researchProvenance } : {}),
+  };
+}
+
+// --- The state's adoption model --------------------------------------------------------------
+//
+// WHICH LAYER OWNS A FAMILY'S EDITION is a structural fact about the state (ORS 455.040 makes
+// Oregon's building code uniform in every municipality; Texas leaves the IRC to each city). It is
+// read from the state row (research / the reference seed), else from the shipped reference data —
+// a state whose row is human-verified (Oregon) cannot carry a seeded adoption model on that row,
+// and must not lose the fact for it.
+
+let referenceCache: { path: string; data: ReferenceFile | null } | null = null;
+interface ReferenceStateAdoption {
+  state: string;
+  asOf: string;
+  adoptionModel: JurisdictionAdoptionModel;
+  adoptedCodes: CodeEdition[];
+  upcoming?: UpcomingCodeEdition[];
+  citations?: JurisdictionCodeProfile["citations"];
+}
+interface ReferenceFile {
+  profiles?: Array<JurisdictionCodeProfile & { confidence?: string }>;
+  stateAdoptions?: ReferenceStateAdoption[];
+}
+
+function referencePath(): string {
+  return path.resolve(process.env.CODE_PROFILE_REFERENCE_PATH || path.join(process.cwd(), "backend/data/reference-code-profiles.json"));
+}
+
+function loadReference(): ReferenceFile | null {
+  const p = referencePath();
+  if (referenceCache && referenceCache.path === p) return referenceCache.data;
+  let data: ReferenceFile | null = null;
+  try { data = fs.existsSync(p) ? (JSON.parse(fs.readFileSync(p, "utf8")) as ReferenceFile) : null; } catch { data = null; }
+  referenceCache = { path: p, data };
+  return data;
+}
+
+/** Test seam: forget the cached reference file (a test that swaps CODE_PROFILE_REFERENCE_PATH). */
+export function resetReferenceCacheForTests(): void {
+  referenceCache = null;
+}
+
+function referenceStateAdoption(state: string): ReferenceStateAdoption | undefined {
+  const st = String(state || "").trim().toUpperCase();
+  return (loadReference()?.stateAdoptions ?? []).find((s) => String(s.state || "").toUpperCase() === st);
+}
+
+/** How this state adopts its codes: the state row's own (research / reference seed), else the shipped
+ *  reference data. Undefined = not known (every family is then treated as the AHJ's own). */
+export function stateAdoptionModel(db: AppDb, state: string): JurisdictionAdoptionModel | undefined {
+  const st = String(state || "").trim();
+  if (!st) return undefined;
+  try {
+    const row = db.get<Row>("SELECT payload_json FROM jurisdiction_code_profiles WHERE profile_key = ?", [codeProfileKey({ state: st, ahj: "" })]);
+    if (row) {
+      const own = adoptionModelOf((JSON.parse(text(row.payload_json) || "{}") as { adoptionModel?: unknown }).adoptionModel);
+      if (own) return own;
+    }
+  } catch { /* fall through to the reference */ }
+  const ref = referenceStateAdoption(st);
+  return ref ? adoptionModelOf(ref.adoptionModel) : undefined;
+}
+
+/** A code entry an AHJ row holds on its own authority: research, an operator import or edit, the
+ *  reference data — not a legacy entry with no origin (model-memory research, or state codes an
+ *  older import copied down), which an explicit state edition outranks. */
+function attributedEntry(c: CodeEdition): boolean {
+  if (c.origin) return true;
+  return /^Imported from operator reference list/i.test(String(c.notes || ""));
+}
+
+/**
+ * PER-FAMILY INHERITANCE. An AHJ row's own entries and its state's entries, merged FAMILY BY FAMILY
+ * by the state's adoption model (it used to be the whole list: one AHJ entry dropped every state
+ * code). Order: the AHJ's kept entries in its order, then the state's in its order.
+ *   statewide_uniform            — the state's edition only; an AHJ entry for it is ignored (a city
+ *                                  in Oregon cannot adopt its own ORSC — a stored one is wrong).
+ *   statewide_minimum_local_amend— the AHJ's own attributed entry, else the state's.
+ *   local_adoption               — the AHJ's own only: a state floor is not the city's edition, and
+ *                                  showing it would read an unknown as an answer.
+ *   unknown model                — the AHJ's own, else the state's.
+ * Entries with no decidable family stay with their row (state ones only when the AHJ has none).
+ */
+export function inheritAdoptedCodes(stateCodes: CodeEdition[], ownCodes: CodeEdition[], model: JurisdictionAdoptionModel | undefined): CodeEdition[] {
+  const fam = (c: CodeEdition) => codeFamilyOf(c);
+  const ownByFamily = new Map<CodeFamily, CodeEdition[]>();
+  for (const c of ownCodes) {
+    const f = fam(c);
+    if (f) ownByFamily.set(f, [...(ownByFamily.get(f) ?? []), c]);
+  }
+  const keptOwnFamilies = new Set<CodeFamily>();
+  const out: CodeEdition[] = [];
+  for (const c of ownCodes) {
+    const f = fam(c);
+    if (!f) { out.push(c); continue; }
+    const m = familyAdoptionModel(model, f);
+    if (m === "statewide_uniform") continue;
+    if (m === "statewide_minimum_local_amend" && !attributedEntry(c) && stateCodes.some((s) => fam(s) === f)) continue;
+    out.push(c);
+    keptOwnFamilies.add(f);
+  }
+  for (const s of stateCodes) {
+    const f = fam(s);
+    if (!f) { if (!ownCodes.length) out.push({ ...s, inheritedFrom: "state" }); continue; }
+    const m = familyAdoptionModel(model, f);
+    if (m === "local_adoption") continue;
+    if (m !== "statewide_uniform" && keptOwnFamilies.has(f)) continue;
+    out.push({ ...s, inheritedFrom: "state" });
+  }
+  return out;
 }
 
 export function codeProfileKey(input: { state?: string; ahj?: string }): string {
@@ -174,7 +358,13 @@ export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string 
   const exact = exactRow ? mapRow(exactRow) : null;
   const base = stateRow ? mapRow(stateRow) : null;
   if (!exact) return base;
-  if (!base) return exact;
+  // The state's adoption model decides, family by family, whose edition the AHJ reads — also when
+  // the state has NO row yet (the reference data still knows Oregon is uniform).
+  const model = base?.adoptionModel ?? stateAdoptionModel(db, exact.state || text(input.state));
+  if (!base) {
+    const own = inheritAdoptedCodes([], exact.adoptedCodes, model);
+    return own.length === exact.adoptedCodes.length ? exact : { ...exact, adoptedCodes: own };
+  }
   // Which layer supplied each criteria / limit field (the merged confidence below is the weaker of
   // the two, so a verified state value under a seeded city row would otherwise read as seeded).
   const fieldSources: NonNullable<JurisdictionCodeProfile["fieldSources"]> = {};
@@ -193,7 +383,10 @@ export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string 
     ...exact,
     fieldSources,
     confidence: exact.confidence === "verified" && base.confidence === "verified" ? "verified" : "seeded",
-    adoptedCodes: exact.adoptedCodes.length ? exact.adoptedCodes : base.adoptedCodes,
+    adoptedCodes: inheritAdoptedCodes(base.adoptedCodes, exact.adoptedCodes, model),
+    // State-level facts: the state row's (the AHJ row never carries them).
+    ...(model ? { adoptionModel: model } : {}),
+    ...(base.upcoming?.length ? { upcoming: base.upcoming } : {}),
     amendments: [...base.amendments, ...exact.amendments],
     designCriteria: { ...base.designCriteria, ...exact.designCriteria },
     prescriptive: { ...base.prescriptive, ...exact.prescriptive },
@@ -203,8 +396,14 @@ export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string 
 }
 
 export function listCodeProfiles(db: AppDb): JurisdictionCodeProfile[] {
+  let proposals = new Map<string, JurisdictionEditionProposal[]>();
+  try {
+    for (const p of listEditionProposals(db)) proposals.set(p.profileKey, [...(proposals.get(p.profileKey) ?? []), p]);
+  } catch { proposals = new Map(); }
   return db.query<Row>("SELECT * FROM jurisdiction_code_profiles ORDER BY state, ahj").map((row) => {
-    const profile = mapRow(row);
+    const mapped = mapRow(row);
+    const pending = proposals.get(mapped.key);
+    const profile = pending?.length ? { ...mapped, editionProposals: pending } : mapped;
     if (!profile.ahj) return profile;
     let summary: JurisdictionCodeProfile["approvedDesignSummary"] = [];
     try { summary = summarizeApprovedDesigns(listApprovedDesignObservations(db, profile.state, profile.ahj)); } catch { summary = []; }
@@ -242,17 +441,25 @@ function upsert(db: AppDb, profile: JurisdictionCodeProfile, opts: { confidence:
   // merge cannot launder model memory into an unmarked row. A human verification drops it:
   // "verified" is the stronger statement.
   let priorProvenance: CodeResearchProvenance | undefined;
-  if (existing && opts.confidence === "seeded") {
-    try { priorProvenance = provenanceOf(JSON.parse(text(existing.payload_json) || "{}")); } catch { priorProvenance = undefined; }
+  let priorPayload: Record<string, unknown> = {};
+  if (existing) {
+    try { priorPayload = JSON.parse(text(existing.payload_json) || "{}") as Record<string, unknown>; } catch { priorPayload = {}; }
   }
+  if (existing && opts.confidence === "seeded") priorProvenance = provenanceOf(priorPayload);
   const researchProvenance = provenanceOf(profile) ?? priorProvenance;
+  // State-level facts are kept across a re-save that does not carry them (an operator verify
+  // through the PUT route edits codes/criteria and says nothing about the adoption model).
+  const adoptionModel = adoptionModelOf(profile.adoptionModel) ?? adoptionModelOf(priorPayload.adoptionModel);
+  const upcoming = upcomingOf(profile.upcoming) ?? upcomingOf(priorPayload.upcoming);
   const payload = JSON.stringify({
-    adoptedCodes: profile.adoptedCodes ?? [],
+    adoptedCodes: (profile.adoptedCodes ?? []).map(({ inheritedFrom: _read, ...c }) => c),
     amendments: profile.amendments ?? [],
     designCriteria: profile.designCriteria ?? {},
     prescriptive: profile.prescriptive ?? {},
     fireSetbacks: profile.fireSetbacks ?? [],
     citations: profile.citations ?? [],
+    ...(adoptionModel ? { adoptionModel } : {}),
+    ...(upcoming && upcoming.length ? { upcoming } : {}),
     ...(researchProvenance && opts.confidence === "seeded" ? { researchProvenance } : {}),
   });
   if (existing) {
@@ -287,27 +494,134 @@ function upsert(db: AppDb, profile: JurisdictionCodeProfile, opts: { confidence:
   return getCodeProfile(db, profile)!;
 }
 
-/** Persist an LLM-researched (or bulk-imported) profile. NEVER downgrades a
- *  human-verified row back to seeded — re-research lands as a no-op on verified
- *  jurisdictions until an operator explicitly re-verifies. */
+/**
+ * Persist an LLM-researched (or bulk-imported) profile. NEVER downgrades a human-verified row back
+ * to seeded — research onto a verified row is recorded as an edition PROPOSAL for a person instead
+ * (never written).
+ *
+ * A RESEARCH save (the profile carries researchProvenance — the researcher and the reference seed
+ * attach it) is gated and MERGED:
+ *   · not web-grounded -> nothing is stored. Model memory is not an edition: stored, the review
+ *     would cite it, and the row would read "researched" and block the grounded attempt behind it.
+ *   · onto an existing row -> mergeResearchIntoRow: research-owned codes are replaced family by
+ *     family, operator imports / corrections / stamp notes / amendments / citations are kept, and
+ *     design criteria and prescriptive limits fill BLANKS only.
+ *   · an AHJ-level save drops editions for families its state adopts uniformly (the AHJ reads the
+ *     state's; a local "edition" there is a conflict, not a finding).
+ * An IMPORT save (no researchProvenance: the operator spreadsheets, which pre-merge the row
+ * themselves) replaces the payload as before, keeping AHJ-correction and lookup-cited values.
+ */
 export function saveResearchedCodeProfile(db: AppDb, profile: JurisdictionCodeProfile): JurisdictionCodeProfile {
-  // Never CREATE a row that would shadow the human-verified row this AHJ's reads resolve to by name
-  // (research or an import for "City of Portland" creating or|city of portland over the verified
-  // or|portland). Only the refusal: same-jurisdiction rows of other labels are left to their callers.
+  const incomingProvenance = provenanceOf(profile);
+  const isResearch = !!incomingProvenance;
+  if (incomingProvenance && !incomingProvenance.webGrounded) {
+    logger.info("code-profiles", `research not saved — ${profile.state}/${profile.ahj || "(state default)"} was not web-grounded (model memory is never stored as an edition)`);
+    return getCodeProfile(db, profile) ?? { ...profile, adoptedCodes: [], amendments: [], citations: [] };
+  }
   if (String(profile.ahj || "").trim()) {
     const target = resolveCriteriaWriteRow(db, profile.state, profile.ahj);
+    // Never CREATE a row that would shadow the human-verified row this AHJ's reads resolve to by
+    // name (research or an import for "City of Portland" creating or|city of portland over the
+    // verified or|portland).
     if (target?.kind === "blocked_verified" && target.key !== codeProfileKey(profile)) {
       logger.info("code-profiles", `research/import not saved — ${profile.state}/${profile.ahj} reads the human-verified ${target.key}`);
       return getCodeProfile(db, profile)!;
     }
+    // A research save lands on the same jurisdiction's row under its own label ("Coos Bay" for
+    // "City of Coos Bay") instead of forking it; imports resolve their row themselves.
+    if (isResearch && target?.kind === "same_jurisdiction") profile = { ...profile, state: target.profile.state, ahj: target.profile.ahj };
   }
   const key = codeProfileKey(profile);
-  const existing = db.get<Row>("SELECT confidence, payload_json FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
+  const existing = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
   if (existing && text(existing.confidence) === "verified") {
-    logger.info("code-profiles", `research skipped — ${profile.state}/${profile.ahj || "(state default)"} is human-verified`);
+    if (isResearch && profile.adoptedCodes?.length) {
+      const proposal = proposeEditionUpdate(db, mapRow(existing), profile, incomingProvenance?.method === "reference_truth" ? "reference" : "research");
+      logger.info("code-profiles", `research not saved — ${profile.state}/${profile.ahj || "(state default)"} is human-verified${proposal ? `; ${proposal.changes.length} edition change(s) proposed for a person` : " and agrees with it"}`);
+    } else {
+      logger.info("code-profiles", `research skipped — ${profile.state}/${profile.ahj || "(state default)"} is human-verified`);
+    }
     return getCodeProfile(db, profile)!;
   }
-  return upsert(db, existing ? keepCorrectionCitedValues(mapRow({ ...existing, profile_key: key }), profile) : profile, { confidence: "seeded" });
+  if (!isResearch) {
+    return upsert(db, existing ? keepCorrectionCitedValues(mapRow({ ...existing, profile_key: key }), profile) : profile, { confidence: "seeded" });
+  }
+  const incoming = scopeResearchToLayer(db, profile);
+  return upsert(db, existing ? mergeResearchIntoRow(mapRow(existing), incoming) : incoming, { confidence: "seeded" });
+}
+
+/** Research codes are machine-owned: every entry is marked, and an AHJ-level result keeps only the
+ *  families its state does not adopt uniformly (and no state-level facts). */
+function scopeResearchToLayer(db: AppDb, profile: JurisdictionCodeProfile): JurisdictionCodeProfile {
+  const origin = provenanceOf(profile)?.method === "reference_truth" ? "reference" : "research";
+  let adoptedCodes = (profile.adoptedCodes ?? []).map((c) => ({ ...c, origin: c.origin ?? origin, ...(c.family || !codeFamilyOf(c) ? {} : { family: codeFamilyOf(c) }) }));
+  if (!String(profile.ahj || "").trim()) return { ...profile, adoptedCodes };
+  const model = stateAdoptionModel(db, profile.state);
+  const dropped: string[] = [];
+  adoptedCodes = adoptedCodes.filter((c) => {
+    const f = codeFamilyOf(c);
+    if (f && familyAdoptionModel(model, f) === "statewide_uniform") { dropped.push(editionLabel(c)); return false; }
+    return true;
+  });
+  if (dropped.length) logger.info("code-profiles", `${profile.state}/${profile.ahj}: dropped ${dropped.join(", ")} — the state adopts ${dropped.length === 1 ? "that family" : "those families"} uniformly; the AHJ reads the state's edition`);
+  const { adoptionModel: _a, upcoming: _u, ...rest } = profile;
+  return { ...rest, adoptedCodes };
+}
+
+/** Is this stored code entry machine-owned (a later grounded research may replace it)? Research,
+ *  the reference seed, and legacy entries with no origin (memory-era research). Operator imports
+ *  and edits are not. */
+function researchOwnedEntry(c: CodeEdition): boolean {
+  if (c.origin) return c.origin === "research" || c.origin === "reference";
+  return !attributedEntry(c);
+}
+
+/**
+ * MERGE, NOT REPLACE. What a grounded research adds to an existing seeded row:
+ *   adoptedCodes    — for each family the research found, the row's machine-owned entries of that
+ *                     family are replaced; operator-imported entries are kept and win their family.
+ *   designCriteria, prescriptive — BLANK fields only (an AHJ correction, the lookup, an operator
+ *                     import put the others there).
+ *   amendments, fireSetbacks, citations — the row's kept; research amendments/citations appended
+ *                     (deduped); research fireSetbacks only when the row has none.
+ *   adoptionModel, upcoming, researchProvenance — research-owned: the research's.
+ */
+export function mergeResearchIntoRow(existing: JurisdictionCodeProfile, incoming: JurisdictionCodeProfile): JurisdictionCodeProfile {
+  const fam = (c: CodeEdition) => codeFamilyOf(c);
+  const incomingFamilies = new Set(incoming.adoptedCodes.map(fam).filter((f): f is CodeFamily => !!f));
+  const keptImports = existing.adoptedCodes.filter((c) => !researchOwnedEntry(c));
+  const importFamilies = new Set(keptImports.map(fam).filter((f): f is CodeFamily => !!f));
+  const keptResearch = existing.adoptedCodes.filter((c) => researchOwnedEntry(c) && (() => {
+    const f = fam(c);
+    return f ? !incomingFamilies.has(f) : !incoming.adoptedCodes.some((n) => normCodeToken(n.code) === normCodeToken(c.code));
+  })());
+  const added = incoming.adoptedCodes.filter((c) => {
+    const f = fam(c);
+    return !(f && importFamilies.has(f));
+  });
+  const fillBlanks = <T extends object>(have: T, add: T): T => {
+    const out: Record<string, unknown> = { ...(have as Record<string, unknown>) };
+    for (const [k, v] of Object.entries(add as Record<string, unknown>)) {
+      const cur = out[k];
+      if ((cur === undefined || cur === null || cur === "") && v !== undefined && v !== null && v !== "") out[k] = v;
+    }
+    return out as T;
+  };
+  const amendKey = (a: { code: string; section?: string; summary: string }) => `${a.code}|${a.section ?? ""}|${a.summary}`.toLowerCase();
+  const haveAmend = new Set(existing.amendments.map(amendKey));
+  const citeKey = (c: JurisdictionCodeProfile["citations"][number]) => `${c.kind ?? ""}|${c.field ?? ""}|${c.label}|${c.sourceUrl}`.toLowerCase();
+  const haveCite = new Set(existing.citations.map(citeKey));
+  return {
+    ...existing,
+    adoptedCodes: [...keptImports, ...keptResearch, ...added],
+    amendments: [...existing.amendments, ...(incoming.amendments ?? []).filter((a) => !haveAmend.has(amendKey(a)))],
+    designCriteria: fillBlanks(existing.designCriteria ?? {}, incoming.designCriteria ?? {}),
+    prescriptive: fillBlanks(existing.prescriptive ?? {}, incoming.prescriptive ?? {}),
+    fireSetbacks: existing.fireSetbacks.length ? existing.fireSetbacks : incoming.fireSetbacks ?? [],
+    citations: [...existing.citations, ...(incoming.citations ?? []).filter((c) => !haveCite.has(citeKey(c)))],
+    ...(incoming.adoptionModel ? { adoptionModel: incoming.adoptionModel } : {}),
+    ...(incoming.upcoming ? { upcoming: incoming.upcoming } : {}),
+    ...(incoming.researchProvenance ? { researchProvenance: incoming.researchProvenance } : {}),
+  };
 }
 
 /** WHAT THE AHJ ITSELF SAID OUTRANKS RESEARCH. A value a human applied from the AHJ's own
@@ -414,7 +728,12 @@ export function buildCodeContext(state: string, ahj: string, profile: Jurisdicti
     prescriptive: profile?.prescriptive ?? {},
     fireSetbacks: profile?.fireSetbacks ?? [],
     citationFor(code: string, section: string, title: string, fallback?: CodeReference): CodeReference {
-      const edition = adopted.find((e) => e.code.toUpperCase() === code.toUpperCase());
+      // The entry filed under the asked code, else — for a model code — the state code BUILT ON it
+      // (Oregon's fire code is the OFC, built on the IFC: an "IFC" citation there is the OFC's).
+      // Never the IRC: a state residential code may renumber, and residentialCodeRef owns that map.
+      const asked = normCodeToken(code);
+      const edition = adopted.find((e) => e.code.toUpperCase() === code.toUpperCase())
+        ?? (asked !== "IRC" ? adopted.find((e) => normCodeToken(e.code) !== asked && modelBaseOf(e) === asked) : undefined);
       // ONE STATE'S CODE IS NOT ANOTHER'S AUTHORITY.
       //
       // The rules pass Oregon fallbacks (ORSC/OSSC sections, oregon.gov/bcd worksheet
@@ -447,6 +766,20 @@ export function buildCodeContext(state: string, ahj: string, profile: Jurisdicti
       // Did this edition come from the jurisdiction, or is it the model-code default
       // standing in? The difference is the whole claim being made.
       const isModelDefault = !profile?.adoptedCodes?.length;
+      const basis = edition.basedOn ? `, built on the ${edition.basedOn}` : "";
+      const inherited = edition.inheritedFrom === "state" && ahj ? ` — ${state}'s statewide edition` : "";
+      if (!isModelDefault && (basis || inherited)) {
+        return {
+          code: `${edition.edition} ${edition.code}`.trim(),
+          section,
+          title,
+          adoptionScope: verified
+            ? `${ahj || state}: adopted ${edition.code} ${edition.edition}${basis}${inherited}.`
+            : `${ahj || state}: ${edition.code} ${edition.edition}${basis}${inherited} (seeded — verify locally before citing as authoritative).`,
+          sourceUrl: safeUrl(edition.sourceUrl) || safeUrl(fallback?.sourceUrl) || "",
+          note: edition.notes || fallback?.note || "",
+        };
+      }
       return {
         code: `${edition.edition} ${edition.code}`.trim(),
         section,
@@ -469,9 +802,10 @@ export function buildCodeContext(state: string, ahj: string, profile: Jurisdicti
 // Idempotent; NEVER overwrites a verified row; seeds only missing/seeded keys.
 export function seedReferenceCodeProfiles(db: AppDb): void {
   try {
-    const filePath = path.resolve(process.env.CODE_PROFILE_REFERENCE_PATH || path.join(process.cwd(), "backend/data/reference-code-profiles.json"));
+    const filePath = referencePath();
     if (!fs.existsSync(filePath)) return;
-    const data = JSON.parse(fs.readFileSync(filePath, "utf8")) as { profiles?: Array<JurisdictionCodeProfile & { confidence?: string }> };
+    const data = JSON.parse(fs.readFileSync(filePath, "utf8")) as ReferenceFile;
+    referenceCache = { path: filePath, data };
     let seeded = 0;
     for (const p of data.profiles ?? []) {
       const key = codeProfileKey(p);
@@ -481,9 +815,193 @@ export function seedReferenceCodeProfiles(db: AppDb): void {
       seeded++;
     }
     if (seeded > 0) logger.info("code-profiles", `seeded ${seeded} jurisdiction code profile(s) from reference data`);
+    const layers = seedReferenceStateAdoptions(db, data.stateAdoptions ?? []);
+    if (layers.created || layers.merged || layers.proposed) {
+      logger.info("code-profiles", `reference state layers: ${layers.created} created, ${layers.merged} merged onto seeded rows, ${layers.proposed} proposal(s) for human-verified rows`);
+    }
   } catch (err) {
     logger.warn("code-profiles", `reference seed failed: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/** The state layer a reference entry describes, as a research-shaped profile (provenance
+ *  "reference_truth": every value was confirmed on the cited official page as of `asOf`). */
+export function referenceStateProfile(sa: ReferenceStateAdoption): JurisdictionCodeProfile {
+  const asOf = String(sa.asOf || "").slice(0, 10);
+  return {
+    key: "", state: String(sa.state || "").toUpperCase(), ahj: "", confidence: "seeded",
+    adoptedCodes: (sa.adoptedCodes ?? []).map((c) => ({ ...c, origin: "reference" as const })),
+    amendments: [], designCriteria: {}, prescriptive: {}, fireSetbacks: [],
+    citations: sa.citations ?? [],
+    updatedAt: "",
+    adoptionModel: sa.adoptionModel,
+    ...(sa.upcoming?.length ? { upcoming: sa.upcoming } : {}),
+    researchProvenance: { webGrounded: true, method: "reference_truth", at: asOf, notes: `Shipped reference data: each edition confirmed on the cited official page as of ${asOf}.` },
+  };
+}
+
+/**
+ * THE SHIPPED STATE LAYERS (reference-code-profiles.json "stateAdoptions", generated from the
+ * source-verified truth files). Runs on every open; idempotent:
+ *   no state row            -> created, seeded;
+ *   a seeded row            -> merged through the research merge (machine-owned codes replaced per
+ *                              family, everything else kept) — unless the row already carries this
+ *                              reference or a grounded research newer than it;
+ *   a human-verified row    -> NEVER written (hard rule 3): a disagreement becomes an edition
+ *                              proposal a person resolves by re-verifying.
+ */
+export function seedReferenceStateAdoptions(db: AppDb, adoptions: ReferenceStateAdoption[]): { created: number; merged: number; proposed: number; skipped: number } {
+  const out = { created: 0, merged: 0, proposed: 0, skipped: 0 };
+  for (const sa of adoptions) {
+    try {
+      if (!sa?.state || !sa.adoptionModel) { out.skipped++; continue; }
+      const profile = referenceStateProfile(sa);
+      const key = codeProfileKey(profile);
+      const row = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
+      if (!row) { upsert(db, profile, { confidence: "seeded" }); out.created++; continue; }
+      const existing = mapRow(row);
+      if (existing.confidence === "verified") {
+        if (proposeEditionUpdate(db, existing, profile, "reference")) out.proposed++;
+        else out.skipped++;
+        continue;
+      }
+      const prov = existing.researchProvenance;
+      const asOf = profile.researchProvenance!.at!;
+      const rowAt = String(prov?.at || "").slice(0, 10);
+      if (prov?.webGrounded && rowAt && rowAt >= asOf) { out.skipped++; continue; }
+      upsert(db, mergeResearchIntoRow(existing, profile), { confidence: "seeded" });
+      out.merged++;
+    } catch (err) {
+      logger.warn("code-profiles", `reference state layer ${sa?.state} not seeded: ${err instanceof Error ? err.message : String(err)}`);
+      out.skipped++;
+    }
+  }
+  return out;
+}
+
+// --- Newer editions for a HUMAN-VERIFIED row: a proposal, never a write ---------------------------
+//
+// Hard rule 3: research and the reference seed never write a verified row. When either finds that
+// row stale (Oregon's verified IFC 2021 while the 2025 OFC is in effect; no OSSC at all), the
+// finding is recorded as a JurisdictionEditionProposal in the audit log (append-only, no project;
+// one per distinct finding) and surfaced on GET /api/code-profiles (listCodeProfiles). A person
+// resolves it by re-verifying the row — applyEditionProposal is that re-verification.
+
+const PROPOSAL_ACTION = "code_profile.edition_proposal";
+const PROPOSAL_DISMISSED = "code_profile.edition_proposal_dismissed";
+
+function entryAgrees(have: CodeEdition, want: CodeEdition): boolean {
+  if (normCodeToken(have.code) === normCodeToken(want.code) && String(have.edition).trim() === String(want.edition).trim()) return true;
+  // A verified "IRC 2021" beside "ORSC 2023 (2021 IRC)": the same statement about the basis.
+  const basis = String(want.basedOn || "");
+  const model = modelBaseOf(want);
+  return !!model && normCodeToken(have.code) === model && new RegExp(`\\b${String(have.edition).trim()}\\b`).test(basis);
+}
+
+/** Per family: the edition the proposal carries that the verified row does not state. */
+export function editionChanges(current: CodeEdition[], proposed: CodeEdition[], asOf = nowIso()): JurisdictionEditionProposal["changes"] {
+  const changes: JurisdictionEditionProposal["changes"] = [];
+  for (const family of CODE_FAMILIES) {
+    const inEffect = editionsInEffect(proposed, family, asOf);
+    const want = proposed.find((p) => codeFamilyOf(p) === family && inEffect.allowed.some((a) => a.role === "current" && a.edition === p.edition && a.code === p.code))
+      ?? proposed.find((p) => codeFamilyOf(p) === family);
+    if (!want) continue;
+    const have = current.filter((c) => codeFamilyOf(c) === family);
+    if (have.some((h) => entryAgrees(h, want))) continue;
+    changes.push({
+      family,
+      current: have.length ? have.map((h) => `${h.code} ${h.edition}`).join(", ") : null,
+      proposed: editionLabel(want),
+      ...(want.sourceUrl ? { sourceUrl: want.sourceUrl } : {}),
+      ...(want.quote ? { quote: String(want.quote).slice(0, 300) } : {}),
+    });
+  }
+  return changes;
+}
+
+function fingerprintOf(key: string, changes: JurisdictionEditionProposal["changes"]): string {
+  const s = `${key}|${changes.map((c) => `${c.family}:${c.proposed}`).sort().join(";")}`;
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return `${key}#${(h >>> 0).toString(16)}`;
+}
+
+/** Record (once) that a verified row disagrees with grounded research / the reference data.
+ *  Returns the proposal, or null when the row already states every proposed edition. */
+export function proposeEditionUpdate(db: AppDb, verifiedRow: JurisdictionCodeProfile, found: JurisdictionCodeProfile, source: "reference" | "research"): JurisdictionEditionProposal | null {
+  const changes = editionChanges(verifiedRow.adoptedCodes, found.adoptedCodes ?? []);
+  if (!changes.length) return null;
+  const key = verifiedRow.key || codeProfileKey(verifiedRow);
+  const fingerprint = fingerprintOf(key, changes);
+  const proposal: JurisdictionEditionProposal = {
+    profileKey: key, state: verifiedRow.state, ahj: verifiedRow.ahj, fingerprint, source, createdAt: nowIso(), changes,
+    proposedCodes: (found.adoptedCodes ?? []).map(({ inheritedFrom: _r, ...c }) => c),
+    ...(found.adoptionModel ? { adoptionModel: found.adoptionModel } : {}),
+    ...(found.upcoming?.length ? { upcoming: found.upcoming } : {}),
+  };
+  const seen = db.get<Row>("SELECT id FROM audit_logs WHERE action = ? AND details LIKE ? LIMIT 1", [PROPOSAL_ACTION, `%"fingerprint":"${fingerprint}"%`]);
+  if (seen) return proposal;
+  addAuditLog(db, null, "system", source === "reference" ? "reference code data" : "code research", PROPOSAL_ACTION, proposal as unknown as Record<string, unknown>);
+  logger.warn("code-profiles", `human-verified ${key} looks stale: ${changes.map((c) => `${c.family} ${c.current ?? "(none)"} -> ${c.proposed}`).join("; ")} — proposal ${fingerprint} awaits a person`);
+  return proposal;
+}
+
+/** Proposals still awaiting a person: the newest per row, the row still verified and still not
+ *  stating them, and not dismissed. */
+export function listEditionProposals(db: AppDb, profileKey?: string): JurisdictionEditionProposal[] {
+  const rows = db.query<Row>(
+    `SELECT details, created_at FROM audit_logs WHERE action = ? ${profileKey ? "AND details LIKE ?" : ""} ORDER BY created_at DESC LIMIT 500`,
+    profileKey ? [PROPOSAL_ACTION, `%"profileKey":"${profileKey.replace(/[%_]/g, "")}"%`] : [PROPOSAL_ACTION],
+  );
+  const dismissed = new Set(db.query<Row>("SELECT details FROM audit_logs WHERE action = ?", [PROPOSAL_DISMISSED]).map((r) => {
+    try { return String((JSON.parse(text(r.details)) as { fingerprint?: string }).fingerprint || ""); } catch { return ""; }
+  }));
+  const newest = new Map<string, JurisdictionEditionProposal>();
+  for (const r of rows) {
+    let p: JurisdictionEditionProposal;
+    try { p = JSON.parse(text(r.details)) as JurisdictionEditionProposal; } catch { continue; }
+    if (!p?.profileKey || newest.has(p.profileKey) || (profileKey && p.profileKey !== profileKey)) continue;
+    newest.set(p.profileKey, p);
+  }
+  const out: JurisdictionEditionProposal[] = [];
+  for (const p of newest.values()) {
+    if (dismissed.has(p.fingerprint)) continue;
+    const row = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [p.profileKey]);
+    if (!row || text(row.confidence) !== "verified") continue;
+    if (!editionChanges(mapRow(row).adoptedCodes, p.proposedCodes).length) continue; // re-verified since
+    out.push(p);
+  }
+  return out;
+}
+
+/** A PERSON approved the proposal: re-verify the row with the proposed editions. Codes of the
+ *  families the proposal covers are replaced; the row's other codes, amendments, design criteria,
+ *  prescriptive limits, setbacks and citations are kept; the proposal's sources are cited. */
+export function applyEditionProposal(db: AppDb, fingerprint: string, actor: string): { status: "applied" | "refused"; note: string; profile?: JurisdictionCodeProfile } {
+  const p = listEditionProposals(db).find((x) => x.fingerprint === fingerprint);
+  if (!p) return { status: "refused", note: "No pending proposal with that id (applied, dismissed, superseded, or the row is no longer verified)." };
+  const row = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [p.profileKey]);
+  if (!row) return { status: "refused", note: "The profile row no longer exists." };
+  const current = mapRow(row);
+  const families = new Set(p.proposedCodes.map((c) => codeFamilyOf(c)).filter((f): f is CodeFamily => !!f));
+  const keep = current.adoptedCodes.filter((c) => { const f = codeFamilyOf(c); return !f || !families.has(f); });
+  const cites = [...current.citations];
+  for (const c of p.proposedCodes) {
+    if (c.sourceUrl && !cites.some((x) => x.sourceUrl === c.sourceUrl)) cites.push({ label: `${editionLabel(c)} — adopted edition source`, sourceUrl: c.sourceUrl, ...(c.quote ? { quote: String(c.quote).slice(0, 240) } : {}) });
+  }
+  const saved = saveVerifiedCodeProfile(db, {
+    ...current,
+    adoptedCodes: [...keep, ...p.proposedCodes.map((c) => ({ ...c, origin: "operator" as const }))],
+    citations: cites,
+    ...(p.adoptionModel ? { adoptionModel: p.adoptionModel } : {}),
+    ...(p.upcoming ? { upcoming: p.upcoming } : {}),
+  }, actor || "operator");
+  addAuditLog(db, null, "human", actor || "operator", "code_profile.edition_proposal_applied", { fingerprint, profileKey: p.profileKey, changes: p.changes });
+  return { status: "applied", note: `Re-verified ${p.profileKey} with ${p.changes.length} edition change(s).`, profile: saved };
+}
+
+export function dismissEditionProposal(db: AppDb, fingerprint: string, actor: string, reason = ""): void {
+  addAuditLog(db, null, "human", actor || "operator", PROPOSAL_DISMISSED, { fingerprint, reason: String(reason).slice(0, 400) });
 }
 
 /** Is this "AHJ" really a hostname / portal address? The learn benchmark created projects
@@ -532,53 +1050,47 @@ export function ensureCodeProfilesResearched(db: AppDb, state: string, ahj: stri
   if ((ahj || "").trim() && !ahjLooksLikeHostname(ahj)) layers.push({ state: st, ahj: ahj.trim() });
   else if ((ahj || "").trim()) logger.info("code-profiles", `auto-research skipped for AHJ "${ahj.trim()}" — it looks like a hostname, not a jurisdiction`);
   let enqueued = 0;
-  for (let layer of layers) {
+  for (const layer of layers) {
     try {
-      // The AHJ layer is the row a research save would land on (resolveCriteriaWriteRow): a verified
-      // row the reads use is left alone, and the same jurisdiction under another label ("Plano" for
-      // "City of Plano") is researched under ITS name — a save under the project's spelling would
-      // create a row that shadows it.
-      if (layer.ahj) {
-        const target = resolveCriteriaWriteRow(db, layer.state, layer.ahj);
-        if (!target || target.kind === "blocked_verified") continue;
-        if (target.kind === "same_jurisdiction") layer = { state: target.profile.state, ahj: target.profile.ahj };
-      }
-      const key = codeProfileKey(layer);
-      // WHAT THE ROW HOLDS, NOT THAT IT EXISTS. A row created only by a human applying an AHJ
-      // correction's design criteria (or by the design-criteria lookup) carries no adopted codes,
-      // and "a row exists, done" would then never research that AHJ's code cycle. Such a row is
-      // still researched. Any other row — a verified one, one with codes, or an operator import
-      // (the Stamp Summary rows carry amendments and their own citation) — is left alone as
-      // before: a research re-save replaces the payload, and must not wipe imported notes.
-      const existing = db.get<Row>("SELECT confidence, payload_json FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
-      if (existing && (text(existing.confidence) === "verified" || !rowHoldsOnlyLearnedCriteria(existing))) continue;
+      const d = codeResearchDecision(db, layer.state, layer.ahj);
+      if (d.action === "skip") continue;
+      const key = d.key;
       const askedAt = inFlightCodeResearch.get(key);
-      if (askedAt != null && Date.now() - askedAt < CODE_RESEARCH_WINDOW_MS) continue;
-      // Dedupe: a pending/running job for this layer, OR any attempt in the last
-      // 6 hours (a stub/failed research stores no row — without the time window,
-      // every review of the jurisdiction would re-queue no-op research forever).
+      const window = d.action === "verify_check" ? VERIFY_CHECK_WINDOW_MS : CODE_RESEARCH_WINDOW_MS;
+      if (askedAt != null && Date.now() - askedAt < window) continue;
+      // Dedupe: a pending/running job for this layer, OR any attempt inside the window (a stub or
+      // ungrounded research stores nothing — without the window, every review of the jurisdiction
+      // would re-queue it forever). A verified row's staleness check backs off 30 days: it never
+      // changes the row, so nothing else would stop it repeating.
       const recent = db.get<Row>(
         `SELECT id FROM job_queue
           WHERE job_type = 'code_research' AND payload LIKE ?
             AND (status IN ('pending','running') OR created_at > ?)`,
-        [`%${key}%`, new Date(Date.now() - CODE_RESEARCH_WINDOW_MS).toISOString()],
+        [`%"profileKey":"${key}"%`, new Date(Date.now() - window).toISOString()],
       );
       if (recent) continue;
       inFlightCodeResearch.set(key, Date.now());
+      const payload: CodeResearchJobPayload = {
+        state: d.state, ahj: d.ahj, profileKey: key, reason: d.reason,
+        ...(d.action === "verify_check" ? { mode: "verify_check" as const } : {}),
+        ...(d.families?.length ? { families: d.families } : {}),
+      };
+      if (codeResearchEnqueuerForTests) codeResearchEnqueuerForTests(db, payload);
       // Lazy import avoids a static cycle (jobQueue -> ... -> codeProfiles).
-      void import("./jobQueue").then(({ enqueueJob, processNextJob }) => {
+      else void import("./jobQueue").then(({ enqueueJob, processNextJob }) => {
         // maxRetries 2: the worker's retry math (`retryCount+1 < maxRetries`)
         // means 1 yields ZERO retries — 2 gives the intended single retry.
-        enqueueJob(db, "code_research", { state: layer.state, ahj: layer.ahj, profileKey: key }, { priority: 3, maxRetries: 2 });
+        enqueueJob(db, "code_research", payload as unknown as Record<string, unknown>, { priority: 3, maxRetries: 2 });
         void processNextJob(db).catch(() => null);
       }).catch(() => { inFlightCodeResearch.delete(key); });
       enqueued++;
-      logger.info("code-profiles", `auto-research queued for ${layer.state}/${layer.ahj || "(state default)"}`);
+      logger.info("code-profiles", `auto-research queued for ${d.state}/${d.ahj || "(state default)"} (${d.reason})`);
     } catch { /* autonomy is best-effort — never break a review */ }
   }
   // A row can EXIST and still say nothing about the site: Coos Bay's researched profile had
   // adopted codes and designCriteria {} — so the check above ("a row exists, done") never
-  // asked again, and every project there reviewed against an unknown ground snow load.
+  // asked again, and every project there reviewed against an unknown ground snow load. This runs
+  // for every AHJ, including one whose codes it inherits from a uniform state.
   const ahjLayer = layers.find((l) => l.ahj);
   if (ahjLayer) {
     try { enqueued += ensureDesignCriteriaResearched(db, ahjLayer.state, ahjLayer.ahj); } catch { /* best-effort */ }
@@ -586,18 +1098,155 @@ export function ensureCodeProfilesResearched(db: AppDb, state: string, ahj: stri
   return enqueued;
 }
 
-/** Does this row hold NOTHING but design criteria learned from AHJ corrections / the lookup? No
- *  adopted codes, no amendments or fire setbacks, no research provenance, and every citation of
- *  kind "ahj_correction" or "design_criteria_research". Unparseable -> false (leave it alone). */
-function rowHoldsOnlyLearnedCriteria(row: Row): boolean {
-  try {
-    const p = JSON.parse(text(row.payload_json) || "{}") as Partial<JurisdictionCodeProfile> & { researchProvenance?: unknown };
-    const len = (v: unknown): number => (Array.isArray(v) ? v.length : 0);
-    if (len(p.adoptedCodes) || len(p.amendments) || len(p.fireSetbacks) || p.researchProvenance) return false;
-    return (Array.isArray(p.citations) ? p.citations : []).every((c) => c?.kind === "ahj_correction" || c?.kind === "design_criteria_research");
-  } catch {
-    return false;
+/** A verified row's staleness check (research whose only output is a proposal) backs off longer. */
+const VERIFY_CHECK_WINDOW_MS = 30 * 24 * 3600_000;
+/** A grounded row older than this is re-researched (codes change on a ~3-year cycle, with phase-ins). */
+export const CODE_RESEARCH_MAX_AGE_DAYS = 180;
+
+export interface CodeResearchJobPayload {
+  state: string;
+  ahj: string;
+  profileKey: string;
+  /** "verify_check": the target is human-verified — the research may only produce a proposal. */
+  mode?: "verify_check";
+  /** AHJ layer: only these families (the state leaves them to local adoption). */
+  families?: CodeFamily[];
+  reason?: string;
+}
+
+export type CodeResearchDecision = {
+  state: string;
+  ahj: string;
+  key: string;
+} & (
+  | { action: "research"; reason: "no_row" | "no_grounded_codes" | "memory_provenance" | "upcoming_due" | "older_than_180d"; families?: CodeFamily[] }
+  | { action: "verify_check"; reason: "upcoming_due" | "older_than_180d"; families?: undefined }
+  | { action: "skip"; reason: "verified_fresh" | "blocked_verified" | "inherits_state" | "fresh" | "no_jurisdiction"; families?: undefined }
+);
+
+function daysSince(iso: string | undefined, now: number): number {
+  const t = Date.parse(String(iso || ""));
+  return Number.isFinite(t) ? (now - t) / 86_400_000 : Infinity;
+}
+
+/** Codes on this row that a grounded source put there (research, the reference data, an operator)
+ *  for the given families (all when none are named). */
+function hasGroundedCodes(profile: JurisdictionCodeProfile, families?: CodeFamily[]): boolean {
+  const inScope = (c: CodeEdition) => !families?.length || families.includes(codeFamilyOf(c) as CodeFamily);
+  const codes = profile.adoptedCodes.filter(inScope);
+  if (!codes.length) return false;
+  if (codes.some((c) => c.origin === "research" || c.origin === "reference" || c.origin === "operator")) return true;
+  // Rows researched before entries carried an origin: the row's provenance speaks for them.
+  return profile.researchProvenance?.webGrounded === true;
+}
+
+/**
+ * WHETHER (AND WHY) ONE LAYER'S CODES SHOULD BE RESEARCHED NOW — the one rule the automatic trigger
+ * and the backfill share.
+ *   AHJ layer:  a verified row is never researched; in a state whose every family is adopted
+ *               uniformly (or as a statewide minimum) the AHJ inherits and only its design criteria
+ *               are looked up; otherwise the local families are researched when the row has no
+ *               grounded code for them, holds model memory, or is stale.
+ *   State layer: a verified row gets a staleness CHECK (proposal only) when it is older than 180
+ *               days or an announced edition's date has passed since it was verified; a seeded row
+ *               is researched when it has no grounded codes, holds model memory, an upcoming date
+ *               passed after its research, or it is older than 180 days.
+ * Rows that hold only stamp notes / imports / corrections are researched too: the save MERGES.
+ */
+export function codeResearchDecision(db: AppDb, state: string, ahj: string, asOf: string = nowIso()): CodeResearchDecision {
+  const now = Date.parse(asOf) || Date.now();
+  let st = String(state || "").trim();
+  let name = String(ahj || "").trim();
+  if (!st) return { state: st, ahj: name, key: "", action: "skip", reason: "no_jurisdiction" };
+  let row: JurisdictionCodeProfile | null = null;
+  const model = stateAdoptionModel(db, st);
+  if (name) {
+    // The row a research save would land on (resolveCriteriaWriteRow): a verified row the reads use
+    // is left alone, and the same jurisdiction under another label ("Plano" for "City of Plano") is
+    // researched under ITS name — a save under the project's spelling would fork it.
+    const target = resolveCriteriaWriteRow(db, st, name);
+    if (!target) return { state: st, ahj: name, key: "", action: "skip", reason: "no_jurisdiction" };
+    if (target.kind === "blocked_verified") return { state: st, ahj: name, key: target.key, action: "skip", reason: "blocked_verified" };
+    if (target.kind === "same_jurisdiction") { st = target.profile.state; name = target.profile.ahj; }
+    row = target.kind === "create" ? null : target.profile;
+    const key = codeProfileKey({ state: st, ahj: name });
+    // STATE FIRST: what the state adopts uniformly (or as the minimum every AHJ enforces) is not
+    // looked up city by city. Only local-adoption families are the AHJ's to research.
+    const local = model ? locallyAdoptedFamilies(model) : undefined;
+    if (local && !local.length) return { state: st, ahj: name, key, action: "skip", reason: "inherits_state" };
+    const base = { state: st, ahj: name, key, ...(local ? { families: local } : {}) };
+    if (!row) return { ...base, action: "research", reason: "no_row" };
+    return seededRowDecision(base, row, local, now);
   }
+  const key = codeProfileKey({ state: st, ahj: "" });
+  const stateRowRaw = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
+  row = stateRowRaw ? mapRow(stateRowRaw) : null;
+  if (!row) return { state: st, ahj: "", key, action: "research", reason: "no_row" };
+  if (row.confidence === "verified") {
+    const upcoming = row.upcoming?.length ? row.upcoming : referenceStateAdoption(st)?.upcoming;
+    if (upcomingDue(upcoming, row.verifiedAt, new Date(now).toISOString()).length) return { state: st, ahj: "", key, action: "verify_check", reason: "upcoming_due" };
+    if (daysSince(row.verifiedAt, now) > CODE_RESEARCH_MAX_AGE_DAYS) return { state: st, ahj: "", key, action: "verify_check", reason: "older_than_180d" };
+    return { state: st, ahj: "", key, action: "skip", reason: "verified_fresh" };
+  }
+  return seededRowDecision({ state: st, ahj: "", key }, row, undefined, now);
+}
+
+function seededRowDecision(
+  base: { state: string; ahj: string; key: string; families?: CodeFamily[] },
+  row: JurisdictionCodeProfile,
+  families: CodeFamily[] | undefined,
+  now: number,
+): CodeResearchDecision {
+  if (row.confidence === "verified") return { ...base, action: "skip", reason: "blocked_verified", families: undefined };
+  const prov = row.researchProvenance;
+  if (prov && !prov.webGrounded && row.adoptedCodes.length) return { ...base, action: "research", reason: "memory_provenance" };
+  if (!hasGroundedCodes(row, families)) return { ...base, action: "research", reason: prov && !prov.webGrounded ? "memory_provenance" : "no_grounded_codes" };
+  const researchedAt = prov?.at || row.researchedAt;
+  if (upcomingDue(row.upcoming, researchedAt, new Date(now).toISOString()).length) return { ...base, action: "research", reason: "upcoming_due" };
+  if (daysSince(researchedAt, now) > CODE_RESEARCH_MAX_AGE_DAYS) return { ...base, action: "research", reason: "older_than_180d" };
+  return { ...base, action: "skip", reason: "fresh", families: undefined };
+}
+
+/** Test seam: enqueue WITHOUT kicking the worker. null restores the real path. */
+let codeResearchEnqueuerForTests: ((db: AppDb, payload: CodeResearchJobPayload) => void) | null = null;
+export function setCodeResearchEnqueuerForTests(fn: ((db: AppDb, payload: CodeResearchJobPayload) => void) | null): void {
+  codeResearchEnqueuerForTests = fn;
+}
+
+/**
+ * THE code_research JOB BODY (jobQueue's handler and the backfill's --apply both call this, so the
+ * backfill runs the real save path). `provider` is a test seam.
+ *   stub / not web-grounded / no codes -> nothing stored (the job row is the backoff marker), and the
+ *   grounding evidence is reported;
+ *   a verified target -> saveResearchedCodeProfile records a proposal, never a write;
+ *   otherwise -> the research MERGE onto the row.
+ */
+export async function runCodeResearch(db: AppDb, payload: Partial<CodeResearchJobPayload> & Record<string, unknown>, provider?: LLMProvider): Promise<Record<string, unknown>> {
+  const state = String(payload.state || "");
+  const ahj = String(payload.ahj || "");
+  const families = Array.isArray(payload.families) ? payload.families.filter(isCodeFamily) : undefined;
+  const llm = provider ?? (await import("./llm")).createLLMProvider();
+  const research = await llm.researchJurisdictionCodes({ state, ahj, ...(families?.length ? { families } : {}) });
+  const prov = provenanceOf(research.profile);
+  const evidence = {
+    webGrounded: research.webGrounded,
+    searches: prov?.searches ?? 0,
+    groundedSearches: prov?.groundedSearches ?? 0,
+    resultUrls: prov?.resultUrls?.length ?? 0,
+    outputTokens: prov?.outputTokens,
+  };
+  if (research.provider === "stub") return { saved: false, reason: "stub LLM (no API key)", notes: research.notes };
+  if (!research.webGrounded) return { saved: false, reason: "not web-grounded — model memory is never stored as an edition", ...evidence, notes: String(research.notes || "").slice(0, 600) };
+  if (!research.profile.adoptedCodes.length && !research.profile.adoptionModel) return { saved: false, reason: "research found no adopted codes", ...evidence };
+  const key = codeProfileKey({ state, ahj });
+  const targetVerified = text(db.get<Row>("SELECT confidence FROM jurisdiction_code_profiles WHERE profile_key = ?", [key])?.confidence) === "verified";
+  const before = targetVerified ? listEditionProposals(db, key).map((p) => p.fingerprint) : [];
+  const saved = saveResearchedCodeProfile(db, research.profile);
+  if (targetVerified) {
+    const after = listEditionProposals(db, key);
+    return { saved: false, verified: true, proposals: after.length, newProposal: after.some((p) => !before.includes(p.fingerprint)), ...evidence };
+  }
+  return { saved: true, key: saved.key, confidence: saved.confidence, adoptedCodes: saved.adoptedCodes.length, ...evidence };
 }
 
 /** CODE_RESEARCH=off stops every automatic jurisdiction lookup (full code research and the

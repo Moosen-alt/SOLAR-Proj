@@ -652,25 +652,42 @@ await check("a VERIFIED STATE layer's field is never overridden by a seeded AHJ 
 });
 
 await check("RESEARCH IS PER FIELD: a row created by an applied proposal does not stop adopted-code research for that AHJ", () => {
-  // City of Testcoast's row was created above by applying B — design criteria only, no codes.
+  // OREGON ADOPTS EVERY FAMILY UNIFORMLY (ORS 455.040; the shipped reference layer): City of
+  // Testcoast — whose row was created above by applying B, design criteria only — reads the state's
+  // editions, so its codes are NOT researched city by city (B3). Its design criteria still are.
   CP.resetResearchMarkersForTests();
   const row = CP.exactCodeProfileRow(db, "OR", "City of Testcoast")!;
   assert.equal(row.profile.adoptedCodes.length, 0, "fixture precondition");
-  const before = Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM job_queue WHERE job_type = 'code_research' AND payload LIKE ?", [`%${row.key}%`])?.n ?? 0);
+  assert.equal(CP.codeResearchDecision(db, "OR", "City of Testcoast").reason, "inherits_state");
   CP.ensureCodeProfilesResearched(db, "OR", "City of Testcoast");
-  assert.equal(CP.researchQueuedForTests().includes(row.key), true, "adopted-code research was not queued for an AHJ whose row has no codes");
-  // Control: a row WITH adopted codes is not re-researched.
+  assert.equal(CP.researchQueuedForTests().includes(row.key), false, "an Oregon city's codes were researched although the state adopts them uniformly");
+  // In a LOCAL-ADOPTION state (Texas adopts no residential code for its cities) the same shape of
+  // row — criteria from an applied correction, no codes — IS researched, for the local families.
+  const txSeeded = (ahj: string, over: Partial<JurisdictionCodeProfile>) => CP.saveResearchedCodeProfile(db, {
+    key: "", state: "TX", ahj, confidence: "seeded", adoptedCodes: [], amendments: [], designCriteria: {}, prescriptive: {},
+    fireSetbacks: [], citations: [], updatedAt: "", ...over,
+  });
+  txSeeded("City of Testcoastal", { designCriteria: { windSpeedMph: 115 }, citations: [CP.sharedCorrectionCitation("designCriteria.windSpeedMph", 115, "2026-09-01")] });
   CP.resetResearchMarkersForTests();
-  CP.ensureCodeProfilesResearched(db, "OR", "City of Testbay");
-  assert.equal(CP.researchQueuedForTests().includes(CP.codeProfileKey({ state: "OR", ahj: "City of Testbay" })), false, "a researched row was re-queued");
-  // MUST EXCLUDE: an operator IMPORT row with no codes (production: 559 of 578 rows, the Stamp
-  // Summary import — amendments + its own citation) is not re-researched: a research re-save
-  // replaces the payload and would wipe the imported stamp notes.
-  seeded("City of Stampville", { adoptedCodes: [], amendments: [{ code: "AHJ", summary: "Structural stamp required: Yes" }], citations: [{ label: "Operator stamp-requirements list (Stamp Summary)", sourceUrl: "" }] });
+  CP.ensureCodeProfilesResearched(db, "TX", "City of Testcoastal");
+  const txKey = CP.codeProfileKey({ state: "TX", ahj: "City of Testcoastal" });
+  assert.equal(CP.researchQueuedForTests().includes(txKey), true, "adopted-code research was not queued for an AHJ whose row has no codes");
+  assert.ok(CP.codeResearchDecision(db, "TX", "City of Testcoastal").families?.includes("residential"), "a TX city's research is not scoped to its local families");
+  // Control: a row WITH web-grounded research codes (fresh) is not re-researched.
+  txSeeded("City of Testbayou", {
+    adoptedCodes: [{ family: "residential", code: "IRC", edition: "2021", sourceUrl: "https://testbayou.example.gov/codes" }],
+    researchProvenance: { webGrounded: true, method: "web_search", at: new Date().toISOString(), searches: 3, groundedSearches: 3 },
+  });
   CP.resetResearchMarkersForTests();
-  CP.ensureCodeProfilesResearched(db, "OR", "City of Stampville");
-  assert.equal(CP.researchQueuedForTests().includes(CP.codeProfileKey({ state: "OR", ahj: "City of Stampville" })), false, "an operator import row was queued for a payload-replacing research");
-  void before;
+  CP.ensureCodeProfilesResearched(db, "TX", "City of Testbayou");
+  assert.equal(CP.researchQueuedForTests().includes(CP.codeProfileKey({ state: "TX", ahj: "City of Testbayou" })), false, "a researched row was re-queued");
+  // An operator IMPORT row with no codes (production: 559 of 578 rows, the Stamp Summary import —
+  // amendments + its own citation) IS researched now: the research save MERGES and keeps the stamp
+  // notes (codeEditionResearch.test.ts pins the merge).
+  txSeeded("City of Stampville", { amendments: [{ code: "AHJ", summary: "Structural stamp required: Yes" }], citations: [{ label: "Operator stamp-requirements list (Stamp Summary)", sourceUrl: "" }] });
+  CP.resetResearchMarkersForTests();
+  CP.ensureCodeProfilesResearched(db, "TX", "City of Stampville");
+  assert.equal(CP.researchQueuedForTests().includes(CP.codeProfileKey({ state: "TX", ahj: "City of Stampville" })), true, "a stamp-import row with no codes was never researched");
 });
 
 await check("research re-saves keep what the lookup filled when the research is silent on it (fills blanks, never erases)", () => {

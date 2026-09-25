@@ -1091,6 +1091,99 @@ export interface CodeEdition {
   title?: string;
   sourceUrl?: string;
   notes?: string;
+  /** The canonical family this code governs (codeFamilies.codeFamilyOf decides when absent). */
+  family?: CodeFamily;
+  /** The model code + edition this state code is built on ("2021 IRC", "2024 IFC"). */
+  basedOn?: string;
+  /** ISO date this edition took effect. */
+  effectiveDate?: string;
+  /** ISO date from which ONLY this edition may be used (a phase-in, if any, ends the day before). */
+  mandatoryDate?: string;
+  /** The edition this one replaced — still allowed during a phase-in. */
+  previousEdition?: string;
+  /** A short quote from `sourceUrl` that states the edition (research / reference evidence). */
+  quote?: string;
+  /** WHO put this entry on the row. "research" (a web-grounded research save) and "reference"
+   *  (the shipped, source-verified reference data) are machine-owned: a later grounded research
+   *  replaces them family by family. "import" (an operator spreadsheet) and "operator" are kept
+   *  by research saves. Absent = a legacy entry written before this field existed. */
+  origin?: CodeEditionOrigin;
+  /** READ-TIME ONLY (getCodeProfile): this AHJ inherits the entry from its state's row. */
+  inheritedFrom?: "state";
+}
+
+/** The canonical code families a state's own code names map onto (ORSC -> residential,
+ *  OSSC -> building, 780 CMR -> building …). codeFamilies.ts owns the mapping. */
+export type CodeFamily = "residential" | "building" | "electrical" | "fire" | "energy" | "mechanical" | "plumbing";
+
+/** How a state adopts a code family:
+ *  - statewide_uniform: one edition everywhere; a city/county cannot adopt its own (OR, NY, NC).
+ *  - statewide_minimum_local_amend: a state edition every AHJ enforces, with local amendments (WA, CA, FL).
+ *  - local_adoption: each city/county adopts its own edition (TX residential, AZ, IL).
+ *  - mixed: differs by family — see byFamily. */
+export type CodeAdoptionModel = "statewide_uniform" | "statewide_minimum_local_amend" | "local_adoption" | "mixed";
+export type CodeFamilyAdoptionModel = Exclude<CodeAdoptionModel, "mixed">;
+export type CodeEditionOrigin = "research" | "reference" | "import" | "operator";
+
+/** A state layer's adoption model (only on a state row, ahj ""). */
+export interface JurisdictionAdoptionModel {
+  model: CodeAdoptionModel;
+  /** Per family where it differs from `model` (and every family when model is "mixed"). */
+  byFamily?: Partial<Record<CodeFamily, CodeFamilyAdoptionModel>>;
+  sourceUrl?: string;
+  quote?: string;
+  note?: string;
+}
+
+/** An edition a state has announced but that is not (yet) in effect. */
+export interface UpcomingCodeEdition {
+  family: CodeFamily;
+  code: string;
+  edition: string;
+  basedOn?: string;
+  /** ISO date the state expects it to take effect. */
+  anticipatedDate?: string;
+  /** "adopted" | "filed" | "in rulemaking" | "proposed" — free text as the source says it. */
+  status?: string;
+  sourceUrl?: string;
+  quote?: string;
+}
+
+/** HOW A SEEDED PROFILE'S CODES WERE FOUND — stored in payload_json. "seeded" alone cannot tell an
+ *  operator (or a re-research trigger) a web-grounded answer from model memory, and both are shared
+ *  with every tenant. The grounding EVIDENCE rides along so a stored row can be audited. */
+export interface CodeResearchProvenance {
+  webGrounded: boolean;
+  /** "reference_truth": the shipped reference data, each value confirmed on an official page. */
+  method: "web_search" | "model_memory" | "reference_truth";
+  notes?: string;
+  /** ISO timestamp of the research (or the reference data's as-of date). */
+  at?: string;
+  /** web_search calls attempted / calls that returned results. */
+  searches?: number;
+  groundedSearches?: number;
+  /** Result URLs the searches actually returned (bounded). */
+  resultUrls?: string[];
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+/** A newer edition found for a HUMAN-VERIFIED row. Never written to the row (hard rule 3): it is
+ *  recorded as a proposal and a person re-verifies. */
+export interface JurisdictionEditionProposal {
+  profileKey: string;
+  state: string;
+  ahj: string;
+  /** Stable hash of the proposed codes — one proposal per distinct finding. */
+  fingerprint: string;
+  source: "reference" | "research";
+  createdAt: string;
+  changes: Array<{ family: CodeFamily; current: string | null; proposed: string | null; sourceUrl?: string; quote?: string }>;
+  /** The full adopted-code list a re-verification would record. */
+  proposedCodes: CodeEdition[];
+  adoptionModel?: JurisdictionAdoptionModel;
+  upcoming?: UpcomingCodeEdition[];
 }
 
 export interface JurisdictionDesignCriteria {
@@ -1362,6 +1455,14 @@ export interface JurisdictionCodeProfile {
    *  value it compared against and whether a person verified THAT row. Absent on a single row:
    *  the row's own confidence applies. Never persisted. */
   fieldSources?: Record<string, JurisdictionFieldSource>;
+  /** State rows only: how the state adopts each code family (research or the reference data). */
+  adoptionModel?: JurisdictionAdoptionModel;
+  /** State rows only: announced editions not yet in effect. */
+  upcoming?: UpcomingCodeEdition[];
+  /** How the row's codes were found (absent: an import / legacy row that does not say). */
+  researchProvenance?: CodeResearchProvenance;
+  /** listCodeProfiles only, verified rows only: newer editions found that await a person. */
+  editionProposals?: JurisdictionEditionProposal[];
 }
 
 export interface JurisdictionFieldSource {
@@ -1400,6 +1501,16 @@ export interface AiPlanReviewResult {
 
 /** LLM web-search research result for a jurisdiction's ADOPTED CODES (the code-profile
  *  onboarding path). Always confidence "seeded" until a human verifies. */
+export interface JurisdictionCodeResearchInput {
+  ahj: string;
+  state: string;
+  /** AHJ layer only: the families the state leaves to local adoption — the only editions worth
+   *  researching at this level. Absent = every family (a state layer, or an unknown state model). */
+  families?: CodeFamily[];
+  /** ISO date the research is "as of" (defaults to today) — which editions are in effect ON it. */
+  asOf?: string;
+}
+
 export interface JurisdictionCodeResearchResult {
   provider: "claude" | "stub";
   profile: JurisdictionCodeProfile;
@@ -2399,7 +2510,7 @@ export interface LLMProvider {
   /** Web-search research of a jurisdiction's ADOPTED CODES (editions, amendments,
    *  design criteria) for the code-profile onboarding flow. Saved as confidence
    *  "seeded"; a human verifies before citations become authoritative. */
-  researchJurisdictionCodes(input: { ahj: string; state: string }): Promise<JurisdictionCodeResearchResult>;
+  researchJurisdictionCodes(input: JurisdictionCodeResearchInput): Promise<JurisdictionCodeResearchResult>;
   /** NARROW design-criteria lookup (ground snow, ultimate wind, exposure) for ONE AHJ whose
    *  profile has none on file. Web-grounded values only, each with its citation. Optional so
    *  test doubles of LLMProvider need not implement it. */

@@ -62,7 +62,7 @@ function parseCode(cell: string): { edition: string; family?: string } | null {
 function addEdition(out: CodeEdition[], family: string, cell: string): void {
   const parsed = parseCode(cell);
   if (!parsed) return;
-  out.push({ code: parsed.family || family, edition: parsed.edition, notes: "Imported from operator reference list — verify against the AHJ." });
+  out.push({ code: parsed.family || family, edition: parsed.edition, notes: "Imported from operator reference list — verify against the AHJ.", origin: "import" });
 }
 
 // ---- AHJ adopted codes ----------------------------------------------------
@@ -135,8 +135,11 @@ export function importAhjCodesSheet(db: AppDb, sheet: SheetData, opts: { dryRun?
     // fireSetbacks — getCodeProfile) start from the state's when the AHJ row has none, as the
     // layered merge gave them before: a row saved with the sheet's "NEC 2023" alone would drop the
     // state's ORSC/OESC/IFC from every later read. Criteria, limits and amendments are never copied.
+    // (Adopted codes no longer start from the state's: getCodeProfile now inherits them FAMILY BY
+    // FAMILY at read time — inheritAdoptedCodes — and a copy froze the state's editions into the AHJ
+    // row, so a later state update never reached it. fireSetbacks are still taken whole.)
     const stateLayer = getCodeProfile(db, { state, ahj: "" });
-    const ownCodes = existing?.adoptedCodes?.length ? existing.adoptedCodes : stateLayer?.adoptedCodes ?? [];
+    const ownCodes = existing?.adoptedCodes ?? [];
     const ownSetbacks = existing?.fireSetbacks?.length ? existing.fireSetbacks : stateLayer?.fireSetbacks ?? [];
     const merged: JurisdictionCodeProfile = {
       key,
