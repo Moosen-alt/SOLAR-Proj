@@ -592,7 +592,11 @@ export function evaluateDesignCodeFindings(
   const powerSourceDirectoryRef = cite("NEC", powerSourceDirectory);
   const loadSideRef = cite("NEC", loadSideInterconnection);
   const supplySideRef = cite("NEC", supplySideInterconnection);
-  const roofLoadsRef = cite("IRC", roofLoads);
+  // The roof-loads section is a RESIDENTIAL-code section: cite it under the jurisdiction's own
+  // residential code (ORSC / CRC / FBC-R …) where the numbering is known to match, else the IRC's
+  // number with an "unmapped" note — never "2023 IRC" for an ORSC row filed under the IRC token, and
+  // never the legacy "IRC / ORSC" label in California or Florida. No context: the legacy constant.
+  const roofLoadsRef = ctx ? residentialCodeRef(ctx, roofLoads.section, roofLoads.title, roofLoads.note) : roofLoads;
   const roofAccessRef = cite("IRC", roofAccess);
   const fireAccessRef = cite("IFC", fireAccess);
   const essRef = cite("NEC", essReference);

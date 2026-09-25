@@ -92,6 +92,34 @@ check("MUST-PASS: CA -> CRC R301.1.3, FL -> FBC-R R301.1.3, OR -> ORSC R301.1.3 
   assert.deepEqual([manufacturedRef("IL", "Testfield", IL).code, manufacturedRef("IL", "Testfield", IL).section], ["2021 IRC", "R301.1.3"]);
 });
 
+console.log("\n3. through the rules: the roof-loads citation (roofLoadsRef) — snow-inv item 4");
+
+// At 2dc7527 roofLoadsRef was cite("IRC", roofLoads): a Coos-Bay-shaped row (the ORSC filed under the
+// IRC token, edition 2023) printed "2023 IRC R324.4.1" — there is no 2023 IRC — and CA / FL, with no
+// IRC entry, fell back to the legacy "IRC / ORSC" label.
+const roofRef = (state: string, ahj: string, ctx: EffectiveCodeContext): CodeReference => {
+  const f = evaluateDesignCodeFindings(project(state, ahj), null, ctx, [], []).find((x) => x.id === "city.struct.framing-missing");
+  assert.ok(f, "the framing-missing finding must fire (no framing in the package)");
+  const r = f!.codeReferences.find((c) => c.section === "R324.4.1");
+  assert.ok(r, `no R324.4.1 reference: ${JSON.stringify(f!.codeReferences.map((c) => `${c.code} ${c.section}`))}`);
+  return r!;
+};
+check("MUST-PASS: the roof-loads reference cites the jurisdiction's residential code — ORSC (also filed as IRC), CRC, IRC", () => {
+  const coos = ctxOf("OR", "City of Testbay", [{ code: "IRC", edition: "2023", title: "2023 Oregon Residential Specialty Code (ORSC) — statewide amended adoption of the 2021 International Residential Code" }]);
+  assert.equal(roofRef("OR", "City of Testbay", coos).code, "2023 ORSC", "never '2023 IRC'");
+  assert.equal(roofRef("OR", "City of Testport", OR).code, "2023 ORSC");
+  assert.equal(roofRef("CA", "City of Testvale", CA).code, "2025 CRC", "R324.4.1 is a mapped CRC section");
+  assert.equal(roofRef("CA", "City of Testvale", CA_FILED_AS_IRC).code, "2022 CRC");
+  assert.equal(roofRef("IL", "Testfield", IL).code, "2021 IRC");
+});
+check("MUST-EXCLUDE: FL's R324.4.1 is not mapped to the FBC-R — the IRC's number with the unmapped note, never 'IRC / ORSC' or an invented FBC-R section", () => {
+  const r = roofRef("FL", "Testee County", FL);
+  assert.equal(r.code, "IRC");
+  assert.match(r.note, /The FBC-R section matching IRC R324\.4\.1 is not mapped here/);
+  assert.match(r.note, /dead load, live load, and attachment assumptions/, "the rule's own note is kept");
+  for (const ctx of [CA, FL, OR, IL]) assert.notEqual(roofRef(ctx.state, ctx.ahj, ctx).code, "IRC / ORSC");
+});
+
 if (failures) {
   console.error(`\n${failures} residential-code-family check(s) FAILED`);
   process.exit(1);
