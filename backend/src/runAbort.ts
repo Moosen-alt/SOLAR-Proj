@@ -26,8 +26,11 @@
 // often the far end dropping us, and which is a real finding worth keeping.
 // ---------------------------------------------------------------------------
 
+// "waiting for the portal profile to free up" is our OWN profile lease (portal-bot browser.ts
+// acquireProfile) refusing to start a second browser on a profile another of our runs holds —
+// production run dd5073fd died on it. Nothing a portal does produces that sentence.
 const HARNESS_ABORT =
-  /target (page|browser)?,? ?(context|browser)? ?(has been|was) closed|browser has been closed|already running|launchpersistentcontext|browser ?type\.|session closed|target closed|worker exited|SIGINT|SIGTERM/i;
+  /target (page|browser)?,? ?(context|browser)? ?(has been|was) closed|browser has been closed|already running|launchpersistentcontext|browser ?type\.|session closed|target closed|worker exited|SIGINT|SIGTERM|waiting for the portal profile to free up/i;
 
 /**
  * True when a run ended for a reason that says nothing about the portal: our browser or

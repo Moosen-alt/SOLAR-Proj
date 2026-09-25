@@ -68,7 +68,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { checkStatusWithAdapter, runCorrectionReopen, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { portalAutomationDisabled, resolveHeadless } from "../../portal-bot/src/browser";
-import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, getPortalRecipe, savePortalRecipeSteps } from "./portalRecipes";
+import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, getPortalRecipe, savePortalRecipeSteps } from "./portalRecipes";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 // detectPlatform moved with the target INSERT into submittalTracks.ts's ensureCheckTarget.
 import { publicPermitStatusCheck } from "./publicPermitStatus";
@@ -133,6 +133,17 @@ import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, resolvePermi
 import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
 import { looksBotBlocked } from "./runAbort";
+
+// THE ONE SEAM A TEST MAY STUB: the recipe-replay launcher prepareSubmission calls. Everything
+// around it — the gates, the run row, the outcome, the demotion, the heal write, the approval —
+// runs for real; only the browser is replaced. Refuses unless the process opted in explicitly,
+// so no production path can swap the thing that drives a live portal.
+type RecipeStageRunner = typeof stageWithRecipe;
+let recipeStageRunner: RecipeStageRunner = stageWithRecipe;
+export function setRecipeStageRunnerForTests(runner: RecipeStageRunner | null): void {
+  if (process.env.AUTOPILOT_TEST_SEAMS !== "1") throw new Error("setRecipeStageRunnerForTests needs AUTOPILOT_TEST_SEAMS=1 — it is a test seam only.");
+  recipeStageRunner = runner ?? stageWithRecipe;
+}
 
 // THE FAILURE TEXT LIVES ON THE FAILING STEP, NOT THE SUMMARY. stageWithRecipe's failure
 // result carries no top-level message - "Recipe step failed (fill - inverter quantity)" rides
@@ -7380,6 +7391,8 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       { track: first, permitNumber: null, submittedAt: null, stagedMeanwhile });
   }
   let result: Record<string, unknown>;
+  // What the replay-failure classifier decided about the recipe, for the run's own message.
+  let replayVerdictNote = "";
   if (channelDecision.blocked) {
     // Kill-switch tripped: surface a manual handoff and drive NO automation.
     const msg = `${portalLabel} is paused (legal kill-switch). ${channelDecision.reason} Submit this application by hand and resume the portal once it's cleared.`;
@@ -7390,7 +7403,12 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     // portal. Migration v8 repairs the KB rows but can't rewrite recipes — without this
     // check the recipe's existence bypasses the self-seed gate below and stages the
     // permit in the wrong system. Flag it for re-recording and stop.
-    try { markPortalRecipeForRerecord(db, recipe.id); } catch { /* best-effort */ }
+    try {
+      markPortalRecipeForRerecord(db, recipe.id, {
+        actor: "track/host gate", actorType: "system", projectId,
+        reason: `an AHJ recipe points at a utility interconnection portal (${recipe.portalUrl})`,
+      });
+    } catch { /* best-effort */ }
     const msg = `The recorded recipe for ${portalLabel} points at a utility interconnection portal (${recipe.portalUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. It was mis-recorded and has been flagged for re-recording. Record the AHJ's permit portal, then re-stage.`;
     addAuditLog(db, projectId, "system", "submit gate", "portal.track_host_conflict", { track: track ?? "permit", url: recipe.portalUrl, recipeId: recipe.id });
     result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
@@ -7413,7 +7431,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     addAuditLog(db, projectId, "system", "submit gate", "portal.discipline_conflict", { track: track ?? "permit", recipeDiscipline: recipeDisciplineConflict, recipeId: recipe.id });
     result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
   } else if (recipe && runActorLabel === "RecipeAdapter") {
-    result = await stageWithRecipe(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
+    result = await recipeStageRunner(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
 
     // A BOT WALL MUST NOT BLOCK A FILING — RETRY WITH A REAL WINDOW.
     //
@@ -7435,7 +7453,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         projectId, portal: portalLabel,
       });
       try {
-        const headedResult = await stageWithRecipe(
+        const headedResult = await recipeStageRunner(
           recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files,
           { ...stageOptions, headless: false },
         );
@@ -7467,30 +7485,38 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
         addAuditLog(db, projectId, "system", "recipe replay", "recipe.self_healed", { recipeId: recipe.id, steps: healed.map((h) => h.note).slice(0, 10) });
       } catch { /* healing persistence is best-effort; the run result stands */ }
     }
-    // PROACTIVE STALENESS: a replay that dies on a recorded step is almost always selector
-    // drift — the portal changed under a recipe that used to work. Mark it needs_rerecord so
-    // it stops silently failing every future stage and surfaces for re-recording, and tell
-    // the operator plainly instead of leaving a raw "Recipe step failed" message.
-    // NOTE: the "(page drift)" fail-fast in recipeAdapter.precheckPageDrift relies
-    // on this same /recipe step failed/i match to land in needs_rerecord.
-    // THE FAILURE TEXT LIVES ON THE FAILING STEP, NOT THE SUMMARY. stageWithRecipe's
-    // failure result carries no top-level message — "Recipe step failed (fill — inverter
-    // quantity)" rides in steps[].message — so testing result.message alone made this
-    // entire block DEAD CODE for replay step failures: a fresh Daly intake staged NEM
-    // against a stale recipe, failed cleanly, and the recipe stayed "complete" with no
-    // re-learn queued and no staleness note for the operator.
-    const stageFailText = [
-      typeof result.message === "string" ? result.message : "",
-      ...(Array.isArray((result as { steps?: Array<{ message?: unknown }> }).steps)
-        ? ((result as { steps: Array<{ message?: unknown }> }).steps ?? []).map((s) => (typeof s.message === "string" ? s.message : ""))
-        : []),
-    ].filter(Boolean).join(" | ");
-    if (result && result.ok === false && /recipe step failed/i.test(stageFailText)) {
-      try {
-        markPortalRecipeForRerecord(db, recipe.id);
-      } catch {
-        /* best-effort: surfacing the staleness still happens below */
-      }
+    // WHOSE FAULT WAS THE FAILURE? (operator ruling 2026-09-24: keep-and-flag.)
+    //
+    // This used to demote on /recipe step failed/i over EVERY step's message joined — with no
+    // classifier at all. PGE 481c00f4 was demoted in the same second a run died with "Target
+    // page, context or browser has been closed"; PacifiCorp 6282e671 after a document-gate
+    // refusal. NEM replay went offline for every production utility on failures that said
+    // nothing about either recipe. And feeding the JOINED text to the classifier fails the
+    // other way: the review step's boilerplate says "handle any MFA/fee", so every failure
+    // would read as an MFA wall and nothing would ever demote.
+    //
+    // So: the failing step's OWN message (extractStageFailureMessage) goes to the one
+    // classifier, demoteOnReplayFailure. Drift it could not heal → demote (and only then a
+    // re-learn). Harness aborts, document gates, missing project data, challenges and outages
+    // → keep. Nothing attributable → keep AND flag for a human. A paused run (MFA/CAPTCHA
+    // wall) is not a failure of anything and never reaches here.
+    // Only a replay that FAILED (not a pause) is judged. A paused run stopped at a challenge.
+    const replayFailed = result && result.ok === false && !(typeof result.pauseReason === "string" && result.pauseReason);
+    const replayVerdict = replayFailed
+      ? (() => {
+        try {
+          return demoteOnReplayFailure(db, recipe.id, extractStageFailureMessage(result), recipe.version, { runId, projectId });
+        } catch {
+          return null; /* best-effort: the run result stands */
+        }
+      })()
+      : null;
+    if (replayVerdict?.action === "flagged") {
+      replayVerdictNote = " The recipe was KEPT (nothing in the failure points at it) and flagged for a human to look at.";
+    } else if (replayVerdict?.action === "kept") {
+      replayVerdictNote = ` The recipe was kept: ${replayVerdict.reason}.`;
+    }
+    if (replayVerdict?.action === "demoted") {
       // SELF-HEAL: the system already has a safe autonomous learner (never clicks
       // final submit, respects the portal kill-switch) — queue a fresh learn of
       // this portal instead of leaving a manual "re-record it" dead end. One-shot
@@ -7525,7 +7551,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       result = {
         ...result,
         recipeStale: true,
-        message: `${result.message || stageFailText.slice(0, 300)} — this recipe looks stale (the portal likely changed) and has been flagged for re-recording. ${relearnQueued ? "A fresh learn of the portal was queued automatically; re-stage once it finishes." : "Re-record it, then re-stage."}`,
+        message: `${result.message || extractStageFailureMessage(result)} — this recipe looks stale (the portal likely changed) and has been flagged for re-recording. ${relearnQueued ? "A fresh learn of the portal was queued automatically; re-stage once it finishes." : "Re-record it, then re-stage."}`,
       };
     }
   } else if (runActorLabel === "AutoLearnAdapter") {
@@ -7618,7 +7644,7 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // operator looks for an application that doesn't exist. Mark it failed and surface the
   // concise (non-sensitive) reason from the first failing step.
   const adapterFailed = !adapterOk && !pauseReason;
-  const failureMessage = adapterFailed ? extractStageFailureMessage(result) : "";
+  const failureMessage = adapterFailed ? `${extractStageFailureMessage(result)}${replayVerdictNote}` : "";
   // Permit/record number + record link scraped off the completion page after an
   // operator-authorized final submit (the "relay continuation" capture).
   const capturedPermitNumber = autoSubmitted ? String((result as Record<string, unknown>).capturedPermitNumber || "").trim() : "";

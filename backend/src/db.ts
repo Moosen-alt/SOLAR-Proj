@@ -2150,6 +2150,46 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    version: 35,
+    name: "portal_run_trust",
+    up: (db) => {
+      // REPLAY TRUST AND RUN OUTCOME (operator rulings 2026-09-24).
+      //
+      // portal_run_approvals — a NAMED PERSON'S approval of ONE staging run. Minted only by the
+      // Approve & Submit action (POST /api/projects/:id/prepare-submission with autoSubmit), and
+      // its id IS the run id of the run it approves: prepareSubmission adopts it as that run's
+      // portal_runs.id and consumes it in the same statement, so one approval can never cover a
+      // second run. There is no standing per-recipe arm — portal_recipes.auto_submit_enabled is
+      // never authority (repository.maySubmitAutomatically does not read it).
+      // Reaches an org through its project (CLAUDE.md: child rows carry no org_id).
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS portal_run_approvals (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          track TEXT NOT NULL DEFAULT 'permit',
+          approver TEXT NOT NULL,
+          approver_user_id TEXT,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          consumed_at TEXT,
+          FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_run_approvals_project ON portal_run_approvals(project_id, track, consumed_at);
+      `);
+      // portal_runs: WHICH recipe version a run replayed (so a demotion/restore never has to be
+      // reconstructed from a project's utility name again), and WHO is running it (the row is now
+      // written BEFORE the browser opens, as 'running'; a row whose runner process is gone is an
+      // interrupted run, not a live one).
+      addColumnIfMissing(db, "portal_runs", "recipe_id", "TEXT");
+      addColumnIfMissing(db, "portal_runs", "recipe_version", "INTEGER");
+      addColumnIfMissing(db, "portal_runs", "runner", "TEXT NOT NULL DEFAULT ''");
+      // portal_recipes: KEEP AND FLAG. A replay failure nobody can attribute keeps the recipe
+      // replayable and raises this flag for a human instead of demoting it.
+      addColumnIfMissing(db, "portal_recipes", "flag_reason", "TEXT NOT NULL DEFAULT ''");
+      addColumnIfMissing(db, "portal_recipes", "flagged_at", "TEXT");
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

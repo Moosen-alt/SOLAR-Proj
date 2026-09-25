@@ -69,7 +69,7 @@ async function main(): Promise<void> {
     deletePortalRecipe(db, recipe.id);
     console.log(`DELETED recipe ${desc}. The next stage will self-seed a fresh recipe.`);
   } else {
-    markPortalRecipeForRerecord(db, recipe.id);
+    markPortalRecipeForRerecord(db, recipe.id, { actor: "recipe:clear CLI", reason: "invalidated from the command line" });
     console.log(`Invalidated (status -> needs_rerecord) recipe ${desc}. The next stage will RE-LEARN it. (Use --delete to remove the row entirely.)`);
   }
 }

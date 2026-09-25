@@ -284,6 +284,7 @@ export function startPortalRecording(
          prev_steps_json = CASE WHEN ? != '' THEN ? ELSE prev_steps_json END,
          portal_platform = COALESCE(NULLIF(?, ''), portal_platform),
          portal_url = COALESCE(NULLIF(?, ''), portal_url),
+         flag_reason = '', flagged_at = NULL,
          discipline = ?, notes = ?, updated_at = ? WHERE id = ?`,
       [nextVersion,
         outgoingSteps.length ? s(existing.steps_json) : "", outgoingSteps.length ? s(existing.steps_json) : "",
@@ -561,47 +562,157 @@ const TRANSIENT_FAILURE: Array<[RegExp, string]> = [
   [/page\.goto|navigation timeout|timeout .{0,20}exceeded.{0,20}navigat|net::ERR_TIMED_OUT/i, "the page never finished loading"],
 ];
 
+// NOT ABOUT THE RECIPE, EITHER — the run was stopped by something about THIS PROJECT or by the
+// filing's own outcome, and the same recipe replays cleanly for the next project:
+//   - a DOCUMENT GATE refused an upload (submissionDocuments.uploadDocumentGuard: the document
+//     changed mid-run, the permit path moved, the project vanished). PacifiCorp 6282e671 was
+//     demoted on exactly this ("The site_plan document changed or no longer matches this permit
+//     path") on 2026-09-21 and NEM replay went offline for the whole utility.
+//   - MISSING PROJECT DATA — the project asked for something this jurisdiction does not offer, or
+//     a value the step needs is absent. Fix the project, not the recipe.
+//   - THE FINAL-SUBMIT OUTCOME needs a human (refused, unconfirmed, a challenge or a fee dialog
+//     after the click). That is a filing to verify, never drift.
+const PROJECT_OR_OUTCOME_FAILURE: Array<[RegExp, string]> = [
+  [/document changed or no longer matches|upload stopped|permit path changed|document gate|required document\(s\) not attached|upload (was )?refused|refused (to attach|the upload)/i,
+    "a document gate refused the upload — the project's documents, not the recipe"],
+  [/is not offered here|matches \d+ of the types offered|address not in oregon epermitting|no value (was )?(supplied|provided|available)|missing (project|required) (data|value|field)|value dictionary does not define|project (data|record) (is )?missing|needs an answer/i,
+    "the project is missing data this step needs (or asked for something this jurisdiction does not offer)"],
+  [/final submit clicked|after the submit click|final-submit click did not complete|final submit needs a human|final submit triggered a challenge|payment dialog|fees are never automated/i,
+    "the final-submit outcome needs a human to verify — that is a filing to check, not drift"],
+];
+
+// ATTRIBUTABLE TO THE RECIPE: the page no longer looks the way the recipe remembers — a recorded
+// control that no longer resolves (a selector/locator wait timing out), a control or option that
+// no longer exists, or the replay's own page-drift tripwire. This is the ONLY family that demotes.
+const RECIPE_DRIFT =
+  /page drift|waiting for (selector|locator)|locator\.[a-z]+:\s*timeout|timeout \d+ms exceeded|not found|no longer (on|exists|present|offered)|does not exist|resolved to 0 elements|no element|strict mode violation|no usable selector|element is not (visible|attached|enabled)|option .{0,60}not (offered|available|in (the )?list)|did not match any option/i;
+
+/** Who a failed replay's own failure message points at.
+ *  - "recipe": drift the replay could not heal, a control that no longer exists → demote.
+ *  - "not_recipe": the environment, our harness, the project's data/documents, or the filing's
+ *    outcome → keep, never demote, never queue a re-learn.
+ *  - "unknown": nobody can attribute it (including NO message at all) → KEEP AND FLAG for a
+ *    human (operator ruling 2026-09-24). An unattributed failure must not read as "the recipe
+ *    is broken" — that is how a dead browser retired PGE 481c00f4. */
+export type ReplayFailureAttribution = "recipe" | "not_recipe" | "unknown";
+
 /**
- * Does this failure text point at the RECIPE (so a complete recipe should be demoted), or at
- * the run's environment (so it should not)? Exported for the fixture and for any future caller
- * that has to make the same judgement — there must not be a second copy of this rule.
+ * Does this failure text point at the RECIPE (so a complete recipe should be demoted), at the
+ * run's environment/project (so it should not), or at nothing anyone can name? Exported for the
+ * fixture and for the restore script — there must not be a second copy of this rule.
  */
-export function replayFailureBlamesRecipe(failureText: unknown): { blamesRecipe: boolean; reason: string } {
+export function replayFailureBlamesRecipe(failureText: unknown): { blamesRecipe: boolean; attribution: ReplayFailureAttribution; reason: string } {
   const text = String(failureText ?? "").trim();
-  if (!text) return { blamesRecipe: true, reason: "" };
-  if (isHarnessAbort(text)) return { blamesRecipe: false, reason: "our own browser or process went away mid-run" };
-  if (looksBotBlocked(text)) return { blamesRecipe: false, reason: "the portal refused the automated browser (WAF/bot wall)" };
-  for (const [re, reason] of TRANSIENT_FAILURE) {
-    if (re.test(text)) return { blamesRecipe: false, reason };
+  if (!text) return { blamesRecipe: false, attribution: "unknown", reason: "the run reported no failure message to attribute" };
+  if (isHarnessAbort(text)) return { blamesRecipe: false, attribution: "not_recipe", reason: "our own browser or process went away mid-run (or our own profile lease refused to start it)" };
+  if (looksBotBlocked(text)) return { blamesRecipe: false, attribution: "not_recipe", reason: "the portal refused the automated browser (WAF/bot wall)" };
+  for (const [re, reason] of [...TRANSIENT_FAILURE, ...PROJECT_OR_OUTCOME_FAILURE]) {
+    if (re.test(text)) return { blamesRecipe: false, attribution: "not_recipe", reason };
   }
-  return { blamesRecipe: true, reason: "" };
+  if (RECIPE_DRIFT.test(text)) {
+    return { blamesRecipe: true, attribution: "recipe", reason: "the page no longer matches what the recipe recorded (drift the replay could not heal)" };
+  }
+  return { blamesRecipe: false, attribution: "unknown", reason: "the failure could not be attributed to the recipe or to anything else" };
 }
 
+export type ReplayDemotionAction = "demoted" | "kept" | "flagged" | "not_complete" | "version_changed";
+
+/**
+ * THE RUN-DRIVEN DEMOTION — the only door a FAILED REPLAY has to a recipe's status.
+ *
+ * `failureText` is REQUIRED and must be the failing step's OWN message
+ * (repository.extractStageFailureMessage), never the whole run's steps joined: the review step's
+ * boilerplate says "handle any MFA/fee", so a joined text reads every failure as an MFA wall and
+ * nothing is ever demoted (24 of 26 production failures would have been spared).
+ *
+ * `expectedVersion` is the recipe version the replay READ. A recipe re-learned or edited while the
+ * replay ran is a different recipe; a failure of the old one says nothing about it.
+ *
+ * Only an attribution of "recipe" demotes. "not_recipe" keeps the recipe with a note; "unknown"
+ * keeps it and raises the flag (flag_reason) for a human. Every outcome writes an audit row, so a
+ * later restore reads what happened instead of reconstructing it.
+ */
+export function demoteOnReplayFailure(
+  db: AppDb,
+  recipeId: string,
+  failureText: string,
+  expectedVersion: number,
+  ctx: { runId?: string | null; projectId?: string | null } = {},
+): { action: ReplayDemotionAction; attribution: ReplayFailureAttribution | null; reason: string; recipe: PortalRecipe } {
+  const recipe = getPortalRecipe(db, recipeId);
+  const audit = (action: string, details: Record<string, unknown>): void => {
+    try {
+      addAuditLog(db, ctx.projectId ?? null, "system", "recipe replay", action, {
+        recipeId, profileKey: recipe.profileKey, version: recipe.version, expectedVersion,
+        runId: ctx.runId ?? null, failureText: String(failureText ?? "").slice(0, 300), ...details,
+      });
+    } catch { /* audit is best-effort */ }
+  };
+  if (recipe.status !== "complete") {
+    return { action: "not_complete", attribution: null, reason: `the recipe is ${recipe.status}, not complete`, recipe };
+  }
+  if (recipe.version !== expectedVersion) {
+    audit("portal_recipe.demotion_skipped", { reason: "recipe changed during replay" });
+    return { action: "version_changed", attribution: null, reason: "the recipe changed while the replay ran", recipe };
+  }
+  const verdict = replayFailureBlamesRecipe(failureText);
+  const now = nowIso();
+  if (verdict.attribution === "recipe") {
+    db.run(
+      `UPDATE portal_recipes SET status = 'needs_rerecord', auto_submit_enabled = 0, notes = ?, updated_at = ?
+        WHERE id = ? AND version = ? AND status = 'complete'`,
+      [upsertRecipeNote(recipe.notes, "demoted by replay", `[demoted by replay ${now.slice(0, 10)}: ${verdict.reason} — "${String(failureText).slice(0, 160)}"]`),
+        now, recipeId, expectedVersion],
+    );
+    const changed = Number(db.get<{ n: number }>("SELECT changes() AS n")?.n ?? 0) > 0;
+    if (!changed) {
+      audit("portal_recipe.demotion_skipped", { reason: "recipe changed during replay" });
+      return { action: "version_changed", attribution: verdict.attribution, reason: "the recipe changed while the replay ran", recipe: getPortalRecipe(db, recipeId) };
+    }
+    audit("portal_recipe.demoted", { attribution: verdict.attribution, reason: verdict.reason });
+    return { action: "demoted", attribution: verdict.attribution, reason: verdict.reason, recipe: getPortalRecipe(db, recipeId) };
+  }
+  if (verdict.attribution === "not_recipe") {
+    const note = `[kept trusted: a replay failed, but ${verdict.reason} — that says nothing about the recipe, so it was not demoted]`;
+    db.run("UPDATE portal_recipes SET notes = ?, updated_at = ? WHERE id = ?", [mergeRecipeNotes(recipe.notes, note), now, recipeId]);
+    audit("portal_recipe.demotion_refused", { attribution: verdict.attribution, reason: verdict.reason });
+    return { action: "kept", attribution: verdict.attribution, reason: verdict.reason, recipe: getPortalRecipe(db, recipeId) };
+  }
+  // KEEP AND FLAG. Still replayable; a human is asked to look.
+  const flag = `A replay failed and the failure could not be attributed (${String(failureText || "no message").slice(0, 160)}) — kept replayable; check the run and clear this flag, or mark the recipe for re-record.`;
+  db.run(
+    "UPDATE portal_recipes SET flag_reason = ?, flagged_at = ?, notes = ?, updated_at = ? WHERE id = ?",
+    [flag, now, upsertRecipeNote(recipe.notes, "flagged for review", `[flagged for review ${now.slice(0, 10)}: an unattributed replay failure — kept replayable]`), now, recipeId],
+  );
+  audit("portal_recipe.replay_failure_flagged", { attribution: verdict.attribution, reason: verdict.reason });
+  return { action: "flagged", attribution: verdict.attribution, reason: verdict.reason, recipe: getPortalRecipe(db, recipeId) };
+}
+
+/** The flag a kept-but-unattributed failure raised, or "" when none is raised. */
+export function recipeReviewFlag(db: AppDb, recipeId: string): { reason: string; flaggedAt: string | null } {
+  const row = db.get<Row>("SELECT flag_reason, flagged_at FROM portal_recipes WHERE id = ?", [recipeId]);
+  return { reason: s(row?.flag_reason), flaggedAt: row?.flagged_at ? s(row.flagged_at) : null };
+}
+
+/**
+ * THE HUMAN (OR GATE) DECISION to re-record a recipe: the dashboard's "Flag re-record", the
+ * recipe:clear CLI, and the track/host mis-key gate. A deliberate act needs no failure evidence —
+ * which is exactly why a FAILED RUN must never come through here (demoteOnReplayFailure is its
+ * door). Audited with who asked, so the restore script can tell a human's re-record from a run's.
+ */
 export function markPortalRecipeForRerecord(
   db: AppDb,
   recipeId: string,
-  /** The run's own failure text. Supply it whenever the demotion is being driven by a FAILED
-   *  RUN rather than by a human decision — without it a transient outage demotes a verified
-   *  recipe and the portal has to be learned all over again. */
-  opts: { failureText?: string } = {},
+  opts: { actor?: string; actorType?: "human" | "system"; reason?: string; projectId?: string | null } = {},
 ): PortalRecipe {
   const recipe = getPortalRecipe(db, recipeId);
-  if (recipe.status === "complete" && opts.failureText) {
-    const verdict = replayFailureBlamesRecipe(opts.failureText);
-    if (!verdict.blamesRecipe) {
-      const note = `[kept trusted: a replay failed, but ${verdict.reason} — that says nothing about the recipe, so it was not demoted]`;
-      db.run("UPDATE portal_recipes SET notes = ?, updated_at = ? WHERE id = ?",
-        [mergeRecipeNotes(recipe.notes, note), nowIso(), recipeId]);
-      try {
-        addAuditLog(db, null, "system", "recipe replay", "portal_recipe.demotion_refused", {
-          recipeId, profileKey: recipe.profileKey, reason: verdict.reason,
-          failureText: String(opts.failureText).slice(0, 240),
-        });
-      } catch { /* audit is best-effort */ }
-      return getPortalRecipe(db, recipeId);
-    }
-  }
   db.run("UPDATE portal_recipes SET status = 'needs_rerecord', updated_at = ? WHERE id = ?", [nowIso(), recipeId]);
+  try {
+    addAuditLog(db, opts.projectId ?? null, opts.actorType ?? "human", opts.actor || "operator", "portal_recipe.marked_for_rerecord", {
+      recipeId, profileKey: recipe.profileKey, version: recipe.version, fromStatus: recipe.status,
+      reason: String(opts.reason ?? "").slice(0, 240),
+    });
+  } catch { /* audit is best-effort */ }
   return getPortalRecipe(db, recipeId);
 }
 

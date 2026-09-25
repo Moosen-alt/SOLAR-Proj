@@ -28,7 +28,7 @@
 //   3. portalRecipes.savePortalRecipeSteps: restore `options.status ?? (steps.length ? "complete" : "recording")`.
 //   4. jobQueue.recoverStalePortalRecordings: replace mergeRecipeNotes(...) with the bare string.
 //   5. portalRecipes.savePortalRecipeSteps: force `const shallower = false`.
-//   6. portalRecipes.markPortalRecipeForRerecord: drop the replayFailureBlamesRecipe guard.
+//   6. portalRecipes.demoteOnReplayFailure: demote regardless of replayFailureBlamesRecipe.
 //
 // Browser-free, scratch DB. Run: tsx backend/test/trustGate.test.ts
 // ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ process.env.RECIPE_RECORDING_STALE_MS = "0";
 const { openDatabase } = await import("../src/db");
 const {
   startPortalRecording, savePortalRecipeSteps, getPortalRecipe,
-  markPortalRecipeForRerecord, replayFailureBlamesRecipe, mergeRecipeNotes,
+  markPortalRecipeForRerecord, demoteOnReplayFailure, replayFailureBlamesRecipe, mergeRecipeNotes,
 } = await import("../src/portalRecipes");
 const { recoverStalePortalRecordings } = await import("../src/jobQueue");
 const { evaluateTrustGate } = await import("../src/autoLearn");
@@ -311,9 +311,8 @@ run("a portal outage does not demote a verified recipe", () => {
   const good = startPortalRecording(db, { ...scope, portalUrl: "https://gate.example/apply" });
   savePortalRecipeSteps(db, good.id, [...fills(30), reviewEnd], { status: "complete", notes: "Auto-learned and verified (high confidence) on 11 page(s)." });
 
-  const after = markPortalRecipeForRerecord(db, good.id, {
-    failureText: "Recipe step failed (goto — application) | net::ERR_NAME_NOT_RESOLVED at https://gate.example/apply",
-  });
+  const after = demoteOnReplayFailure(db, good.id,
+    "Recipe step failed (goto — application) | net::ERR_NAME_NOT_RESOLVED at https://gate.example/apply", good.version).recipe;
   assert.equal(after.status, "complete", "the portal being unreachable says nothing about the recipe");
   assert.match(after.notes, /kept trusted/i, "and the refusal is recorded so nobody thinks the check silently passed");
   assert.match(after.notes, /Auto-learned and verified/, "the original verification note survives");
@@ -323,9 +322,8 @@ run("real selector drift DOES demote a verified recipe", () => {
   const scope = freshScope();
   const good = startPortalRecording(db, { ...scope, portalUrl: "https://gate.example/apply" });
   savePortalRecipeSteps(db, good.id, [...fills(30), reviewEnd], { status: "complete" });
-  const after = markPortalRecipeForRerecord(db, good.id, {
-    failureText: "Recipe step failed (fill — inverter quantity): waiting for selector \"#inv_qty\" timed out after 15000ms",
-  });
+  const after = demoteOnReplayFailure(db, good.id,
+    "Recipe step failed (fill — inverter quantity): waiting for selector \"#inv_qty\" timed out after 15000ms", good.version).recipe;
   assert.equal(after.status, "needs_rerecord", "drift is exactly what this check is for");
 });
 

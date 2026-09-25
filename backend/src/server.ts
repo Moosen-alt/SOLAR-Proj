@@ -1691,7 +1691,12 @@ app.post("/api/portal-recipes/:id/finish", asyncHandler(async (req, res) => {
   res.json(recipe);
 }));
 app.post("/api/portal-recipes/:id/rerecord", (req, res) => {
-  res.json(markPortalRecipeForRerecord(db, String(req.params.id)));
+  // A HUMAN's decision — audited with who made it, so a run-driven demotion (which has its own
+  // door, demoteOnReplayFailure) and a person's re-record can never be confused later.
+  const user = currentUser(db, req);
+  res.json(markPortalRecipeForRerecord(db, String(req.params.id), {
+    actor: user?.name || "operator", actorType: "human", reason: String(req.body?.reason ?? "").slice(0, 240),
+  }));
 });
 app.delete("/api/portal-recipes/:id", (req, res) => {
   res.json(deletePortalRecipe(db, String(req.params.id)));
