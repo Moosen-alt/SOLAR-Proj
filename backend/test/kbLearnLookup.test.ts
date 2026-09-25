@@ -66,14 +66,21 @@ async function main(): Promise<void> {
   const { saveResearchedCodeProfile, getCodeProfile, resolveEffectiveCodeContext } = await import("../src/codeProfiles");
   saveResearchedCodeProfile(db, {
     key: "", state: "ID", ahj: "Elmore County", confidence: "seeded",
-    adoptedCodes: [{ code: "NEC", edition: "2017", title: "National Electrical Code" }],
+    // An operator IMPORT (referenceImport's shape). Idaho adopts its residential code as a statewide
+    // minimum a county may amend, so the county's own imported edition is the one cited; its
+    // electrical code is uniform statewide (Idaho Electrical Code), so an imported county NEC is not.
+    adoptedCodes: [
+      { code: "IRC", edition: "2021", title: "International Residential Code", origin: "import", notes: "Imported from operator reference list — verify against the AHJ." },
+      { code: "NEC", edition: "2017", title: "National Electrical Code", origin: "import", notes: "Imported from operator reference list — verify against the AHJ." },
+    ],
     amendments: [], designCriteria: { groundSnowLoadPsf: 30, windSpeedMph: 105 },
     prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "",
   });
   const elmore = getCodeProfile(db, { state: "ID", ahj: "Elmore County, ID" });
   check("code profile fuzzy: 'Elmore County, ID' hits 'Elmore County'", elmore?.designCriteria.windSpeedMph === 105);
   const elmoreCtx = resolveEffectiveCodeContext(db, "ID", "Elmore County Idaho");
-  check("reviewer context cites imported NEC edition", elmoreCtx.adoptedCodes.some((c) => c.code === "NEC" && c.edition === "2017"));
+  check("reviewer context cites imported IRC edition", elmoreCtx.adoptedCodes.some((c) => c.code === "IRC" && c.edition === "2021"));
+  check("reviewer context cites the state's uniform NEC, not a county import", elmoreCtx.adoptedCodes.some((c) => c.code === "NEC" && c.edition === "2023") && !elmoreCtx.adoptedCodes.some((c) => c.code === "NEC" && c.edition === "2017"));
   const wrongState = getCodeProfile(db, { state: "OR", ahj: "Elmore County" });
   check("code profile fuzzy never crosses state", wrongState?.designCriteria.windSpeedMph !== 105);
 
