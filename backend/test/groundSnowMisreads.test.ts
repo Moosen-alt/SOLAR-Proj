@@ -317,6 +317,53 @@ neverBlocks("25 PSFGROUND SNOW LOAD 36 PSF", [25]);
 reads36("36PSF GROUND SNOW 25PSF ROOF SNOW 3PSF DEAD LOAD", (j) => assert.deepEqual(j.roof, [25], show(j)));
 reads36("36 PSF GROUND SNOW 25 PSF ROOF SNOW 10 PSF DEAD LOAD", (j) => assert.deepEqual(j.roof, [25], show(j)));
 
+console.log("MF-B — the Pg symbol as the LAST FACTOR of a juxtaposed product ('0.7 Ce Ct Is Pg = 27.7 psf') is not a stated Pg");
+reads36("GROUND SNOW LOAD Pg = 36 PSF\nFLAT ROOF SNOW LOAD Pf = 0.7 Ce Ct Is Pg = 25.2 PSF");
+reads36("Pg = 36 psf. Pf = 0.7 Ce Ct Is Pg = 27.7 psf");
+/** A correct 36 psf plan beside a calculation document: U36, no conflict, no minimum finding. */
+const reads36WithCalc = (plan: string, calc: string): void => {
+  check(`MUST-PASS plan + calc reads Pg 36 only, no conflict: ${JSON.stringify(plan)} + ${JSON.stringify(calc)}`, () => {
+    const docs = [{ label: "Plan set", text: plan }, { label: "Structural calculations", text: calc }];
+    const reading = statedGroundSnowReading(project, docs);
+    const fs = evaluateDesignCodeFindings(project, null, ctx, [], docs);
+    const says = reading.status === "unambiguous" ? `U${reading.value}` : reading.status === "ambiguous" ? `A{${reading.readings.map((r) => `${r.value}${r.unsure ? "?" : ""}`).join("/")}}` : "none";
+    const found = fs.filter((f) => [MIN_ID, AHJ_ID, CONFLICT_ID].includes(f.id)).map((f) => `${f.id}=${f.severity}`);
+    assert.equal(says, "U36", `reads ${says}; findings ${found.join(", ") || "none"}`);
+    assert.deepEqual(found, [], `reads ${says}; findings ${found.join(", ")}`);
+  });
+};
+for (const calc of ["Pf = 0.7 Ce Ct Is Pg = 27.7 psf", "FLAT ROOF SNOW LOAD Pf = 0.7 Ce Ct Is Pg = 27.7 PSF", "Pf = 0.7 Ce Ct I Pg = 27.7 PSF", "Pg = 36 psf. Pf = 0.7 Ce Ct Is Pg = 27.7 psf"]) {
+  reads36WithCalc("GROUND SNOW LOAD: 36 PSF", calc);
+}
+blocks16("GROUND SNOW LOAD: 16 PSF\nPf = 0.7 Ce Ct Is Pg = 11.2 PSF");
+check("MUST-PASS a 16 psf plan beside the calc's product line is still the BLOCKER naming 16", () => {
+  const docs = [{ label: "Plan set", text: "GROUND SNOW LOAD: 16 PSF" }, { label: "Structural calculations", text: "Pf = 0.7 Ce Ct Is Pg = 11.2 PSF" }];
+  const reading = statedGroundSnowReading(project, docs);
+  const min = evaluateDesignCodeFindings(project, null, ctx, [], docs).find((f) => f.id === MIN_ID);
+  assert.deepEqual(reading, { status: "unambiguous", value: 16 }, JSON.stringify(reading));
+  assert.equal(min?.severity, "blocker", `min=${min?.severity ?? "-"}`);
+  assert.match(min!.message.match(/Ground snow load Pg: stated ([^—]*)—/)?.[1] ?? "", /^16 psf in Plan set\s*$/, min!.message);
+});
+// A comma list of the coefficients is not a product: Pg = 36 is stated.
+reads36("Ce = 1.0, Ct = 1.1, Is = 1.0, Pg = 36 PSF, Pf = 27.7 PSF", (j) => assert.deepEqual(j.roof, [27.7], show(j)));
+reads36("SNOW: Pg = 36 PSF, Ce = 1.0, Ct = 1.1, Is = 1.0");
+reads36("GROUND SNOW LOAD: 36 PSF Pf=0.7CeCtIsPg=27.7psf");
+check("MUST-EXCLUDE the production calc's 'p f = 0.7CeCtIsPg When Pg > 20 psf' still reads Pg 31 alone", () => {
+  const j = judge("qz 13.75 psf pg 31.00 psf Ground Snow Load pg (Value overridden from ASCE Hazards default) p f = 0.7CeCtIsPg When Pg > 20 psf, then use Pf = 20 psf");
+  assert.equal(j.says, "U31", show(j));
+});
+blocks16("GROUND SNOW LOAD: 16 PSF\nPg,asd = 0.7 Pg = 11.2 psf");
+// PINNED DECISION: 'DESIGN SNOW: Is Pg = 36 PSF' alone reads NOTHING. "Is Pg" is the importance factor
+// times Pg — the design snow, a product whose result is not a stated Pg (the same rule as
+// '0.7 Ce Ct Is Pg = 27.7'). The package then gets the unknown callout, which asks a human; before this
+// round it read a sure Pg 36. Either reading is defensible; this test says which one the engine gives,
+// so a change is a decision, not a drift.
+check("PINNED 'DESIGN SNOW: Is Pg = 36 PSF' alone reads nothing (a product's result is not a stated Pg)", () => {
+  const j = judge("DESIGN SNOW: Is Pg = 36 PSF");
+  assert.equal(j.says, "none", show(j));
+  assert.ok(!j.min && !j.ahj, show(j));
+});
+
 if (failures) {
   console.error(`\n${failures} ground-snow misread check(s) FAILED`);
   process.exit(1);

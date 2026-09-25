@@ -816,6 +816,13 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
     // the value after it is the product's result, not Pg (it read as a second, sure Pg and turned a
     // plan's own 16 psf into a two-value warning).
     if (/(?:[×*·⋅]|\bx|\d*\.\d+)\s*$/i.test(text.slice(Math.max(0, m.index - 8), m.index))) continue;
+    // …and the LAST FACTOR of a JUXTAPOSED product — the commonest line in a snow calc: "Pf = 0.7 Ce Ct
+    // Is Pg = 27.7 psf", "Ce Ct I Pg", "0.7(Ce)(Ct)(Is)(Pg)". A coefficient symbol (Ce, Ct, Cs, Ca, Is,
+    // I) or a closing-then-opening parenthesis right before the symbol makes the value after it the
+    // product's result (it read as a second SURE Pg: a conflict BLOCKER on a correct plan beside its
+    // calc, and a real 16 psf plan's blocker LOST to a two-value warning). A comma list is not a product
+    // ("Is = 1.0, Pg = 36 PSF" states Pg); so "DESIGN SNOW: Is Pg = 36 PSF" alone reads nothing.
+    if (/\b(?:C[etsa]|Is?|\)\s*\()\s*$/.test(text.slice(Math.max(0, m.index - 8), m.index))) continue;
     // "36 PSF Pg 25 PSF ROOF SNOW": in a value-first list the 25 is the next label's, as for "GROUND SNOW".
     if ((!m[2] || isDashSep(m[2])) && labelFirstIsNextLabels(m, 3)) continue;
     push("groundSnowPsf", groundQual(m[1], m), m[3], m);

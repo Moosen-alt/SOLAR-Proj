@@ -173,6 +173,10 @@ function* layouts(kind: string, family: 36 | 16): Generator<[string, string]> {
     const formulas = [
       `FLAT ROOF SNOW LOAD Pf = 0.7 Ce Ct Is Pg = 0.7 (1.0)(1.1)(1.0)(${family} PSF) = ${pf} PSF`,
       `pf = 0.7 x Ce x Ct x Is x pg = 0.7 x 1.0 x 1.1 x 1.0 x ${family} = ${pf} psf`,
+      // Round 6: the JUXTAPOSED product, the commonest line in a snow calc — its result is not a Pg
+      // (round-5 skeptic MF-B). Without the guard: 62 false BLOCKERs (a '36 PSF Pg' the list could not
+      // read, then the 27.7 read as the only, sure Pg).
+      `FLAT ROOF SNOW LOAD Pf = 0.7 Ce Ct Is Pg = ${pf} PSF`,
     ];
     let k = 0;
     for (const items of L) {
