@@ -113,7 +113,7 @@ interface Counts { layouts: number; readExactly: number; notRead: number; ambigu
 const newCounts = (): Counts => ({ layouts: 0, readExactly: 0, notRead: 0, ambiguous: 0, minWarnings: 0, conflicts: 0, blockers: 0, falseBlockers: 0 });
 
 /** Judge ONE layout of a TRUE-Pg `family` plan; tallies into `n`, failures by `shape`. */
-function judge(family: 36 | 16, text: string, shape: string, n: Counts, ambiguousShapes: Map<string, number>, failedShapes: Map<string, number>): void {
+function judge(family: 36 | 16, text: string, shape: string, n: Counts, ambiguousShapes: Map<string, number>, failedShapes: Map<string, number>, mustRead = false): void {
   const failedBefore = failures.length;
   n.layouts++;
   const docs = [{ label: "Plan set", text }];
@@ -147,6 +147,8 @@ function judge(family: 36 | 16, text: string, shape: string, n: Counts, ambiguou
       }
     }
   }
+  // A family whose every layout states Pg plainly (metric first) must READ it, not merely not misread it.
+  if (mustRead && !(reading.status === "unambiguous" && reading.value === family)) fail(`not read exactly (${reading.status} ${values.join("/")})`, text);
   if (failures.length > failedBefore) failedShapes.set(shape, (failedShapes.get(shape) ?? 0) + 1);
 }
 
@@ -205,7 +207,7 @@ for (const kind of FAMILIES) {
     const n = newCounts();
     const ambiguousShapes = new Map<string, number>();
     const failedShapes = new Map<string, number>();
-    for (const [text, shape] of layouts(kind, family)) judge(family, text, shape, n, ambiguousShapes, failedShapes);
+    for (const [text, shape] of layouts(kind, family)) judge(family, text, shape, n, ambiguousShapes, failedShapes, kind === "metric");
     console.log(`${kind.padEnd(7)} TRUE Pg ${family}: layouts ${n.layouts} | read exactly ${n.readExactly} | not read ${n.notRead} | ambiguous ${n.ambiguous} | minimum warnings ${n.minWarnings} | conflicts ${n.conflicts} | minimum BLOCKERS ${n.blockers}${family === 36 ? ` (false: ${n.falseBlockers})` : ""}`);
     if (failedShapes.size) console.log(`  FAILED by layout: ${[...failedShapes].map(([k, v]) => `${k}: ${v}`).join("; ")}`);
     if (ambiguousShapes.size) console.log(`  ambiguous by layout: ${[...ambiguousShapes].map(([k, v]) => `${k}: ${v}`).join("; ")}`);

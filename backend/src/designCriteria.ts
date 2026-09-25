@@ -615,15 +615,16 @@ function loadValueOwners(text: string): Map<number, LoadValueRun> {
   // A table's cells may be quantities this reader does not tokenise: "ROOF SNOW LOAD C&C PRESSURE
   // GROUND SNOW LOAD 25 PSF -16 PSF 36 PSF", "16 PSF 110 MPH 10 PSF GROUND SNOW LOAD WIND SPEED …". So
   // two LABELS are side by side across a short gap with no number, no separator and no "no value"
-  // mark (N/A, NONE); two VALUES across a gap of nothing but other numbers ("110 MPH", "-16 PSF") —
-  // a WORD between two values is a label ("GROUND SNOW LOAD 36 PSF EXISTING ROOF 10 PSF").
+  // mark (N/A, NONE); two VALUES across a gap of nothing but other values ("110 MPH", "-16 PSF", an
+  // exposure "C", a risk category "II") — a WORD between two values is a label ("GROUND SNOW LOAD 36
+  // PSF EXISTING ROOF 10 PSF").
   const sideBySide = (a: { kind: "L" | "V"; end: number }, b: { kind: "L" | "V"; start: number }): boolean => {
     const gap = between(a, b);
     if (glue.test(gap)) return true;
     if (a.kind !== b.kind || /[:=]|\s[-–]\s/.test(gap)) return false;
     return a.kind === "L"
       ? gap.length <= 40 && !/\d/.test(gap) && !/\b(?:n\/?a|none|tbd)\b/i.test(gap)
-      : /^(?:[\s,;]|[-−]?\d+(?:\.\d+)?\s*(?:mph|psf|kpa)?\b)*$/i.test(gap);
+      : /^(?:[\s,;]|[-−]?\d+(?:\.\d+)?\s*(?:[mM][pP][hH]|[pP][sS][fF]|[kK][pP][aA])?\b|\b(?:[BCD]|I{1,3}|IV)\b)*$/.test(gap);
   };
   const blockOf: number[] = [];
   const tableBlocks = new Set<number>();
