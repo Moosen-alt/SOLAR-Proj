@@ -48,6 +48,10 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 - FINAL SUBMIT: the operator wants to submit from the dashboard (Approve & Submit -> the bot clicks the portal's submit), so
   PORTAL_ALLOW_FINAL_SUBMIT stays on; it becomes acceptable only with the per-run approval gate (bot round R2 + W1 A2)
   verified. CLAUDE.md hard rule 1 is to be reworded to match — with the operator's OK — once that gate is verified.
+- KNOWLEDGE PRE-LOAD SPEND (prospect states): only AFTER the live research-accuracy evals pass
+  (`.probe/jurisdiction/`): state layers for FL/TX/UT/CA (~$2) + the top 5 AHJs/utilities per state from
+  `.probe/prospects/PREP-PLAN.md` §6 (~20 entities, ~$50), seeded, operator spot-verifies. Everything else is researched
+  per customer from their last 90 days of jobs (~$25-80 each). Not all 105 AHJs (~$275) up front.
 - Readiness reports (2026-09-24): `.probe/readiness/PLAN.md` (portals), `.probe/presentation/READINESS.md` (claims + demo;
   cut-offs assumed Mon — shift one day), `.probe/volume/DAY1-OF-100.md` (volume, ops, onboarding).
 
