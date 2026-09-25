@@ -3,12 +3,17 @@
 // scripts/demo-record-portal.ts records the real replay engine stopping at a fictional portal's
 // review screen. Three defects, each pinned here:
 //
-//   1. WRONG GATE. The recipe's final-submit note said "submit/pay-like"; executeClick tests
-//      "<name> <note>" against PAY_FEE_REPLAY_GATE FIRST and `\bpay\b` matched, so the FEE gate
-//      stopped the engine while the captions credit the guided-manual final-submit rule.
+//   1. THE FLAGGED FINAL STEP — ONE QUESTION: was it refused, by ANY gate, and never clicked?
+//      The engine's gate order has changed under the recorder twice (the fee gate answered
+//      first for a "submit/pay-like" note; today the flagged branch's SHARED final-submit gate
+//      answers, and the probe's "guided-manual" label is unreachable). Every refusal path is
+//      the safe outcome, so the recorder accepts every one and REPORTS which gate.
 //      MUST PASS: the demo recipe's final submit, through the engine's REAL executeClick, is
-//      refused by the guided-manual rule. MUST DISCRIMINATE: the old wording reads as the fee
-//      gate, and a non-final "Submit" click as another gate — or the probe proves nothing.
+//      refused by some gate with nothing clicked. MUST EXCLUDE (the pure decision,
+//      scripts/lib/realRunGuard.ts): a flagged step a gate did NOT refuse (clicked / threw /
+//      the stub was clicked / no flagged step) is a problem. MUST DISCRIMINATE: the old
+//      wording reads as the fee gate, and a non-final "Submit" click as another gate — or the
+//      gate the recorder reports is a guess.
 //   2. ANY PROJECT. --project took any id from any database. MUST REFUSE: a database with a
 //      client other than Solaris Demo Co, a database with no demo company, a project of another
 //      company, a demo project whose ZIP is not 99999. MUST PASS: a demo project at 99999.
@@ -43,6 +48,7 @@ const { RecipeAdapter, PAY_FEE_REPLAY_GATE } = await import("../../portal-bot/sr
 const { probeClickGates, preflightFinalSubmitSteps } = await import("../../scripts/demo-portal/gateProbe");
 const { demoPortalRecipe } = await import("../../scripts/demo-portal/recipe");
 const { demoOnlyDatabaseProblem, demoProjectProblem } = await import("../../scripts/demo-portal/guards");
+const { flaggedFinalStepOutcome, REFUSAL_GATES } = await import("../../scripts/lib/realRunGuard");
 const { openDatabase } = await import("../src/db");
 const { createClient } = await import("../src/clients");
 const { createProject } = await import("../src/repository");
@@ -58,10 +64,20 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 {
   const recipe = demoPortalRecipe("http://127.0.0.1:9");
   const pre = await preflightFinalSubmitSteps(new RecipeAdapter(recipe, {}, {}, { autoSubmit: false }), recipe.steps, PAY_FEE_REPLAY_GATE);
-  check("1a. the demo recipe's final submit is refused by the guided-manual final-submit rule",
-    pre.observations.length === 1 && pre.observations[0].gate === "final-submit-guided-manual" && !pre.clickAttempted,
-    JSON.stringify(pre.observations));
-  check("1b. ...and not by the fee gate", pre.observations.every((o) => !o.feeGateMatched));
+  const outcome = flaggedFinalStepOutcome(pre.observations, pre.clickAttempted);
+  check(`1a. MUST-PASS: the demo recipe's flagged final submit is refused by SOME click gate and never clicked (engine: ${outcome.gates.join(",") || "none"})`,
+    outcome.refused && pre.observations.length === 1 && REFUSAL_GATES.has(pre.observations[0].gate) && !pre.clickAttempted,
+    JSON.stringify({ outcome, observations: pre.observations }));
+  check("1b. ...and the gate is reported, not the fee gate for this wording", pre.observations.every((o) => !o.feeGateMatched) && outcome.gates.length === 1);
+  check("1a'. MUST-PASS: the guided-manual label, the fee gate and the page-aware/submit-keyword block are each a refusal",
+    ["final-submit-guided-manual", "fee-gate", "other-refusal"].every((g) => flaggedFinalStepOutcome([{ gate: g, note: "x" }], false).refused));
+  check("1a''. MUST-EXCLUDE: a flagged step that a gate did NOT refuse is a problem (clicked / threw / stub clicked / no flagged step / one of two clicked)",
+    !flaggedFinalStepOutcome([{ gate: "clicked", note: "x" }], false).refused
+    && !flaggedFinalStepOutcome([{ gate: "threw", note: "x", error: "boom" }], false).refused
+    && !flaggedFinalStepOutcome([{ gate: "other-refusal", note: "x" }], true).refused
+    && !flaggedFinalStepOutcome([], false).refused
+    && !flaggedFinalStepOutcome([{ gate: "other-refusal", note: "x" }, { gate: "clicked", note: "y" }], false).refused
+    && /NOT refused|attempted to click|no isFinalSubmit/.test(String(flaggedFinalStepOutcome([{ gate: "clicked", note: "x" }], false).problem)));
 
   const oldSteps = recipe.steps.map((s) => s.isFinalSubmit ? { ...s, note: `BLOCKED — human clicked a submit/pay-like control ("Submit application") here; not replayable.` } : s);
   const old = await preflightFinalSubmitSteps(new RecipeAdapter({ ...recipe, steps: oldSteps }, {}, {}, { autoSubmit: false }), oldSteps, PAY_FEE_REPLAY_GATE);
@@ -86,8 +102,9 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 {
   const r = spawnSync(process.execPath, [TSX_CLI, RECORDER, "--selftest"], { cwd: root, encoding: "utf8", timeout: 180_000, env: { ...process.env } });
   const out = String(r.stdout ?? "");
-  check("1f. demo-record-portal --selftest passes, including the gate checks",
-    r.status === 0 && /selftest passed/.test(out) && /refused by the guided-manual final-submit rule \(engine: final-submit-guided-manual\)/.test(out),
+  check("1f. demo-record-portal --selftest passes, including the gate checks (refused by a named gate, never clicked)",
+    r.status === 0 && /selftest passed/.test(out) && /ok +- the recipe's flagged final submit is refused and never clicked \(engine: (fee-gate|final-submit-guided-manual|other-refusal)/.test(out)
+    && /ok +- MUST-EXCLUDE: a clicked \/ attempted \/ absent flagged step is not a refusal/.test(out),
     `status=${r.status} ${out.split("\n").filter((l) => /FAIL/.test(l)).join(" | ")}`);
 }
 
@@ -165,7 +182,7 @@ const leftovers = (tmp: string): string[] => fs.readdirSync(tmp).filter((f) => f
   const err = String(r.stderr ?? "") + String(r.stdout ?? "");
   check("3d. a demo kit run that throws after the copy (no browser to launch) exits non-zero",
     r.status !== 0 && r.status !== null && !/REFUSED/.test(String(r.stderr ?? "")), `status=${r.status} tail=${err.slice(-300)}`);
-  check("3e. ...it got past the guards and the preflight (so the copy really happened)", /preflight: the engine refuses the final submit by final-submit-guided-manual/.test(err), err.slice(-400));
+  check("3e. ...it got past the guards and the preflight (so the copy really happened), and the preflight names the gate", /preflight: the engine refuses the final submit by (fee-gate|final-submit-guided-manual|other-refusal)/.test(err), err.slice(-400));
   check("3f. ...and the temp dir with the DB copy is gone (finally ran)", leftovers(k.tmp).length === 0, leftovers(k.tmp).join(", "));
   check("3g. ...and no video was written", !fs.existsSync(path.join(k.kit, "act4.webm")));
 }

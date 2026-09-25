@@ -60,6 +60,53 @@ export function realRunRefusals(i: RealRunGuardInput): string[] {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// THE FLAGGED FINAL STEP: ONE QUESTION — was it refused, by any gate, and never clicked?
+//
+// The engine's executeClick refuses a click through several gates that all answer `false`:
+// the fee gate, the past-review block, the submit-keyword block, and the flagged-final branch's
+// shared final-submit gate (PORTAL_ALLOW_FINAL_SUBMIT not 1 / no named approval / not the
+// terminal step / invalid shape). Which one answers first is the engine's business and has
+// changed under the recorder before (the gate probe's "guided-manual" label used to be the
+// answer; today the shared gate is). The recording is safe on EVERY refusal path, so the
+// recorder accepts every refusal and REPORTS which gate — it never requires one gate by name.
+// What it does not accept: a click ("clicked"), a throw (a click may have reached the portal
+// mid-way), a step that never reached the gate ("not-evaluated"), or no flagged step at all.
+// ---------------------------------------------------------------------------
+export interface FlaggedFinalObservation {
+  gate: string;
+  note?: string;
+  error?: string;
+}
+
+/** The gate labels that are a refusal. Anything else is not. */
+export const REFUSAL_GATES: ReadonlySet<string> = new Set(["fee-gate", "final-submit-guided-manual", "other-refusal"]);
+
+export interface FlaggedFinalOutcome {
+  /** Every flagged step was refused by some gate and nothing was clicked. */
+  refused: boolean;
+  /** The gate labels observed, in order (reported, never required by name). */
+  gates: string[];
+  /** Why not, when `refused` is false. */
+  problem: string | null;
+}
+
+/** The recorder's preflight decision on the flagged final-submit step(s) put through the
+ *  engine's real executeClick against a stub element (`clickAttempted` = the stub was clicked). */
+export function flaggedFinalStepOutcome(observations: ReadonlyArray<FlaggedFinalObservation>, clickAttempted: boolean): FlaggedFinalOutcome {
+  const gates = observations.map((o) => o.gate);
+  if (clickAttempted) return { refused: false, gates, problem: "the engine attempted to click a final-submit step in guided-manual mode" };
+  if (!observations.length) return { refused: false, gates, problem: "the recipe has no isFinalSubmit step for the engine to refuse" };
+  const notRefused = observations.filter((o) => !REFUSAL_GATES.has(o.gate));
+  if (notRefused.length) {
+    return {
+      refused: false, gates,
+      problem: notRefused.map((o) => `"${String(o.note ?? "").slice(0, 60)}": the flagged final step was NOT refused (engine answered ${JSON.stringify(o.gate)}${o.error ? `: ${o.error.slice(0, 120)}` : ""})`).join("; "),
+    };
+  }
+  return { refused: true, gates, problem: null };
+}
+
 /** Hostnames a recipe would open: its portal URL and every goto step's URL. */
 export function recipeTargetHosts(recipe: { portalUrl?: string | null; steps?: ReadonlyArray<{ action: string; value?: unknown }> | null }): string[] {
   const urls: string[] = [];

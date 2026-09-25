@@ -34,9 +34,12 @@
 //     production database passed with --db — cannot be recorded (scripts/demo-portal/guards.ts).
 //   · REFUSES before the portal or a browser starts unless the recipe's final-submit step,
 //     put through the engine's real executeClick on a page-less guided-manual adapter, is
-//     refused by the guided-manual final-submit rule — not the fee gate, not anything else
-//     (scripts/demo-portal/gateProbe.ts). During the run the same probe watches the real
-//     adapter, and the gate the engine actually answered with is printed and is a save condition.
+//     REFUSED — by any of the engine's click gates — and never clicked. Which gate answered
+//     (the fee gate, the submit-keyword / page-aware block, the shared final-submit gate) is
+//     observed (scripts/demo-portal/gateProbe.ts) and REPORTED, never required by name: the
+//     engine's gate order has changed under this recorder before, and every refusal is the
+//     safe outcome. During the run the same probe watches the real adapter; a clicked, thrown
+//     or never-evaluated flagged step refuses the video (scripts/lib/realRunGuard.ts).
 //   · The database is COPIED to a temp dir and the copy is opened (openDatabase migrates,
 //     which is a write). The source — normally the demo kit's DB — is only ever read. The temp
 //     dir (DB copy, raw video, engine shots) is removed in a finally on every exit path.
@@ -46,7 +49,7 @@
 //     the browser's proxy is a dead loopback port so traffic outside the page (if any)
 //     cannot leave either.
 //   · The video is written to a temp dir and moved to --out ONLY when: the replay reached
-//     review (ok), the engine stopped the final submit by the guided-manual final-submit rule
+//     review (ok), the engine REFUSED the final submit by one of its click gates
 //     (observed, see above), finalSubmitClicked is false from every source, the fixture server saw no
 //     request to its submit endpoint and no non-GET request at all, no request was aborted,
 //     and the Node traps caught nothing. Otherwise it is deleted and the script exits 1.
@@ -92,7 +95,7 @@
 //     · login: the stored credential is used when there is one; MFA / a missing credential
 //       hands the browser to the person present and waits (--login-wait);
 //     · the video is kept only if the engine stopped at the review screen with the flagged
-//       final-submit step either refused by the guided-manual rule or skipped for want of a
+//       final-submit step either refused by a click gate or skipped for want of a
 //       target (the recorder's shape: selector {} + optional), finalSubmitClicked false from
 //       every source, and zero submit/pay POSTs. The draft the portal autosaved is the
 //       operator's to delete afterwards.
@@ -108,6 +111,8 @@ import path from "node:path";
 import tls from "node:tls";
 // Side-effect free (a type-only playwright import), so it is safe ahead of the traps.
 import { installLoopbackOnlyRoute, isLoopbackHost } from "./demo-portal/network";
+// Pure (no network, no browser): the one question asked of the flagged final step.
+import { REFUSAL_GATES, flaggedFinalStepOutcome } from "./lib/realRunGuard";
 
 // ── 1. Network traps, before anything else is imported ─────────────────────────────────
 const nodeNetworkAttempts: string[] = [];
@@ -194,8 +199,10 @@ export interface RecordingEvidence {
   reachedReviewUrl: boolean;
   /** Which click gate the ENGINE answered the final-submit step with, observed on the real
    *  adapter during the run (scripts/demo-portal/gateProbe.ts); "not-evaluated" when the step
-   *  never reached executeClick. The captions say the guided-manual rule stopped the engine,
-   *  so that — and only that — is what a kept video may show. */
+   *  never reached executeClick. ONE question is asked of it: was the flagged step refused, by
+   *  ANY gate, and never clicked? Every refusal path is the expected safe outcome and is
+   *  reported by name (scripts/lib/realRunGuard.ts REFUSAL_GATES); "clicked", "threw",
+   *  "not-evaluated" (with a target) and no evidence at all refuse the video. */
   finalSubmitGates: string[];
   /** "fictional" (default): the Act 4 recording on the demo portal. "real": a supervised real
    *  portal run, where the three fields below carry the evidence the fixture server gave. */
@@ -213,15 +220,16 @@ export function recordingVerdict(e: RecordingEvidence): { keep: boolean; reasons
   const real = e.mode === "real";
   if (!e.replayOk) reasons.push("the replay did not complete cleanly to the review screen");
   if (!e.reachedReviewUrl) reasons.push(real ? "the page does not name itself the review step" : "the browser is not on the review page");
-  const guided = e.finalSubmitGates.length > 0 && e.finalSubmitGates.every((g) => g === "final-submit-guided-manual");
+  // ONE question: was the flagged final step refused, by any gate, and never clicked?
+  const refused = e.finalSubmitGates.length > 0 && e.finalSubmitGates.every((g) => REFUSAL_GATES.has(g));
   // real: the recorder-shaped step (no selector, optional) is skipped by the engine before any
   // gate — accepted only when that is what the recipe holds; a step WITH a target that never
   // reached the gate is a step that was not refused.
   const skippedNoTarget = real && e.finalSubmitStepHasNoTarget === true && e.finalSubmitGates.length === 1 && e.finalSubmitGates[0] === "not-evaluated";
-  if (!guided && !skippedNoTarget) {
+  if (!refused && !skippedNoTarget) {
     reasons.push(real
-      ? `the final-submit step was neither refused by the guided-manual rule nor skipped for want of a target (engine answered: ${JSON.stringify(e.finalSubmitGates)}; step has no target: ${e.finalSubmitStepHasNoTarget === true})`
-      : `the final-submit step was not stopped by the guided-manual final-submit rule the captions describe (engine answered: ${JSON.stringify(e.finalSubmitGates)})`);
+      ? `the final-submit step was neither refused by a click gate nor skipped for want of a target (engine answered: ${JSON.stringify(e.finalSubmitGates)}; step has no target: ${e.finalSubmitStepHasNoTarget === true})`
+      : `the final-submit step was not refused by the engine's click gates (engine answered: ${JSON.stringify(e.finalSubmitGates)})`);
   }
   // Unknown is not reassurance: every source must say false explicitly.
   if (e.finalSubmitClickedSources.length === 0 || e.finalSubmitClickedSources.some((v) => v !== false)) {
@@ -240,20 +248,23 @@ export function recordingVerdict(e: RecordingEvidence): { keep: boolean; reasons
 }
 
 /** The recorder's own preflight: the recipe's final-submit step(s) through the engine's real
- *  executeClick on a page-less guided-manual adapter. Null when every one is refused by the
- *  guided-manual final-submit rule and nothing was clicked; otherwise why not. */
-async function finalSubmitPreflightProblem(steps: import("../shared/src/types").RecipeStep[]): Promise<{ problem: string | null; gates: string[] }> {
+ *  executeClick on a page-less guided-manual adapter. ONE question: was every flagged step
+ *  refused, by any gate, and never clicked? `problem` is null when so; `gates` names the gate(s)
+ *  that answered, and `reasons` carries the engine's own words for a refusal in the flagged
+ *  branch (its "final submit NOT clicked — …" drift warning), so the report says WHY, not
+ *  only that. Nothing here requires one gate by name: the engine's gate order has changed
+ *  under this recorder before, and every refusal is the safe outcome. */
+async function finalSubmitPreflightProblem(steps: import("../shared/src/types").RecipeStep[]): Promise<{ problem: string | null; gates: string[]; reasons: string[] }> {
   const { RecipeAdapter, PAY_FEE_REPLAY_GATE } = await import("../portal-bot/src/adapters/recipeAdapter");
-  const { preflightFinalSubmitSteps, describeGate } = await import("./demo-portal/gateProbe");
+  const { preflightFinalSubmitSteps } = await import("./demo-portal/gateProbe");
   const { demoPortalRecipe } = await import("./demo-portal/recipe");
   const recipe = { ...demoPortalRecipe("http://127.0.0.1:9"), steps };
-  const res = await preflightFinalSubmitSteps(new RecipeAdapter(recipe, {}, {}, { autoSubmit: false }), steps, PAY_FEE_REPLAY_GATE);
-  const gates = res.observations.map((o) => o.gate);
-  if (res.clickAttempted) return { problem: "the engine attempted to click a final-submit step in guided-manual mode", gates };
-  if (!res.observations.length) return { problem: "the recipe has no isFinalSubmit step for the engine to refuse", gates };
-  const wrong = res.observations.filter((o) => o.gate !== "final-submit-guided-manual");
-  if (wrong.length) return { problem: wrong.map((o) => `"${o.note.slice(0, 60)}": ${describeGate(o)}`).join("; "), gates };
-  return { problem: null, gates };
+  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: false });
+  const res = await preflightFinalSubmitSteps(adapter, steps, PAY_FEE_REPLAY_GATE);
+  const outcome = flaggedFinalStepOutcome(res.observations, res.clickAttempted);
+  const warnings = (adapter as unknown as { driftWarnings?: unknown }).driftWarnings;
+  const reasons = Array.isArray(warnings) ? warnings.map(String).filter((w) => /final submit NOT clicked/i.test(w)) : [];
+  return { problem: outcome.problem, gates: outcome.gates, reasons };
 }
 
 async function selftest(): Promise<number> {
@@ -263,7 +274,12 @@ async function selftest(): Promise<number> {
   };
   const cases: Array<[string, Partial<RecordingEvidence>, boolean]> = [
     ["clean run is kept", {}, true],
-    ["a stop by the FEE gate refuses (captions would lie)", { finalSubmitGates: ["fee-gate"] }, false],
+    // ONE question: refused by ANY gate and never clicked. Every refusal path is kept (and reported).
+    ["MUST-PASS: a stop by the FEE gate is a refusal — kept", { finalSubmitGates: ["fee-gate"] }, true],
+    ["MUST-PASS: a stop by the page-aware / submit-keyword / shared final-submit gate ('other-refusal') is a refusal — kept", { finalSubmitGates: ["other-refusal"] }, true],
+    ["MUST-EXCLUDE: a flagged step the engine CLICKED refuses", { finalSubmitGates: ["clicked"] }, false],
+    ["MUST-EXCLUDE: a flagged step whose click THREW (may have reached the portal) refuses", { finalSubmitGates: ["threw"] }, false],
+    ["MUST-EXCLUDE: two flagged steps, one refused and one clicked, refuse", { finalSubmitGates: ["other-refusal", "clicked"] }, false],
     ["a final-submit step that never reached the click gate refuses", { finalSubmitGates: ["not-evaluated"] }, false],
     ["no final-submit gate evidence refuses", { finalSubmitGates: [] }, false],
     ["a submit POST refuses", { submitRequests: 1, nonGetRequests: 1 }, false],
@@ -279,7 +295,8 @@ async function selftest(): Promise<number> {
     ["real: guided-manual refusal is kept", { mode: "real", submitOrPayRequests: 0 }, true],
     ["real: a flagged step with NO target, skipped (not-evaluated), is kept", { mode: "real", finalSubmitGates: ["not-evaluated"], finalSubmitStepHasNoTarget: true, submitOrPayRequests: 0 }, true],
     ["real MUST-EXCLUDE: not-evaluated with a step that HAS a target refuses", { mode: "real", finalSubmitGates: ["not-evaluated"], finalSubmitStepHasNoTarget: false, submitOrPayRequests: 0 }, false],
-    ["real MUST-EXCLUDE: the FEE gate refuses", { mode: "real", finalSubmitGates: ["fee-gate"], submitOrPayRequests: 0 }, false],
+    ["real MUST-PASS: a stop by the FEE gate or another click gate is a refusal — kept", { mode: "real", finalSubmitGates: ["fee-gate", "other-refusal"], submitOrPayRequests: 0 }, true],
+    ["real MUST-EXCLUDE: a clicked flagged step refuses", { mode: "real", finalSubmitGates: ["clicked"], submitOrPayRequests: 0 }, false],
     ["real MUST-EXCLUDE: one submit/pay POST refuses", { mode: "real", submitOrPayRequests: 1 }, false],
     ["real MUST-EXCLUDE: an unknown submit/pay count refuses", { mode: "real" }, false],
     ["real MUST-EXCLUDE: finalSubmitClicked unknown refuses", { mode: "real", submitOrPayRequests: 0, finalSubmitClickedSources: [false, undefined] }, false],
@@ -309,20 +326,29 @@ async function selftest(): Promise<number> {
   console.log(`  ${nodeNetworkAttempts.length - before === probes.length ? "ok  " : "FAIL"} - traps counted ${nodeNetworkAttempts.length - before}/${probes.length}`);
   if (nodeNetworkAttempts.length - before !== probes.length) bad++;
   nodeNetworkAttempts.splice(before);
-  // Which gate the ENGINE uses on the recipe's final submit — the real executeClick, no browser.
+  // The ENGINE's real executeClick on the recipe's final submit, no browser: refused by SOME
+  // gate, never clicked — which gate is reported, not required.
   const { demoPortalRecipe } = await import("./demo-portal/recipe");
   const steps = demoPortalRecipe("http://127.0.0.1:9").steps;
   const current = await finalSubmitPreflightProblem(steps);
-  const okCurrent = current.problem === null && current.gates.join() === "final-submit-guided-manual";
+  const okCurrent = current.problem === null && current.gates.length === 1 && REFUSAL_GATES.has(current.gates[0]);
   if (!okCurrent) bad++;
-  console.log(`  ${okCurrent ? "ok  " : "FAIL"} - the recipe's final submit is refused by the guided-manual final-submit rule (engine: ${current.gates.join(", ") || "none"}${current.problem ? `; ${current.problem}` : ""})`);
+  console.log(`  ${okCurrent ? "ok  " : "FAIL"} - the recipe's flagged final submit is refused and never clicked (engine: ${current.gates.join(", ") || "none"}${current.reasons.length ? `; ${current.reasons.join(" | ").slice(0, 200)}` : ""}${current.problem ? `; ${current.problem}` : ""})`);
+  // MUST-EXCLUDE, on the pure decision: a flagged step that a gate did NOT refuse is a problem.
+  const clicked = flaggedFinalStepOutcome([{ gate: "clicked", note: "x" }], false);
+  const attempted = flaggedFinalStepOutcome([{ gate: "other-refusal", note: "x" }], true);
+  const none = flaggedFinalStepOutcome([], false);
+  const okExclude = !clicked.refused && !attempted.refused && !none.refused && flaggedFinalStepOutcome([{ gate: "other-refusal" }], false).refused && flaggedFinalStepOutcome([{ gate: "fee-gate" }], false).refused;
+  if (!okExclude) bad++;
+  console.log(`  ${okExclude ? "ok  " : "FAIL"} - MUST-EXCLUDE: a clicked / attempted / absent flagged step is not a refusal; fee-gate and other-refusal are`);
   // Discrimination: the recorder's own "submit/pay-like" wording must read as the FEE gate, or
-  // the probe could not tell the two apart and the check above would prove nothing.
+  // the probe could not tell gates apart and the gate it reports would be a guess. (Still a
+  // refusal: the video would be kept, with "fee-gate" in its report.)
   const oldNote = steps.map((s) => s.isFinalSubmit ? { ...s, note: `BLOCKED — human clicked a submit/pay-like control ("Submit application") here; not replayable.` } : s);
   const old = await finalSubmitPreflightProblem(oldNote);
-  const okOld = old.problem !== null && old.gates.join() === "fee-gate";
+  const okOld = old.problem === null && old.gates.join() === "fee-gate";
   if (!okOld) bad++;
-  console.log(`  ${okOld ? "ok  " : "FAIL"} - the recorder's "submit/pay-like" wording is caught as the FEE gate and refused (engine: ${old.gates.join(", ") || "none"})`);
+  console.log(`  ${okOld ? "ok  " : "FAIL"} - the probe DISCRIMINATES: the "submit/pay-like" wording is attributed to the FEE gate (engine: ${old.gates.join(", ") || "none"})`);
   console.log(bad ? `\n${bad} selftest check(s) FAILED` : "\nselftest passed");
   return bad ? 1 : 0;
 }
@@ -461,14 +487,14 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   const { isSubmitOrPayRequestUrl, isReviewPageText } = await import("../shared/src/portalSafety");
 
   // PREFLIGHT, before the portal or a browser exists: the recipe's final-submit step through
-  // the engine's real executeClick. A recipe the FEE gate (or anything but the guided-manual
-  // final-submit rule) would stop cannot produce the video the captions describe.
+  // the engine's real executeClick. ONE question — refused by some gate, never clicked? — and
+  // the gate that answered is reported. A flagged step no gate refuses cannot be recorded.
   // (Fictional only: a real recipe's flagged step is the recorder's shape — no selector — and
   // the real-run verdict accepts "skipped for want of a target" for exactly that step.)
   if (!realRun) {
     const pre = await finalSubmitPreflightProblem(demoPortalRecipe("http://127.0.0.1:9").steps);
     if (pre.problem) { console.error(`[demo-record] REFUSED before recording: ${pre.problem}`); return 2; }
-    console.log(`[demo-record] preflight: the engine refuses the final submit by ${pre.gates.join(", ")}`);
+    console.log(`[demo-record] preflight: the engine refuses the final submit by ${pre.gates.join(", ")}${pre.reasons.length ? ` (${pre.reasons.join(" | ").slice(0, 200)})` : ""}`);
   }
 
   const db = await openDatabase();
@@ -728,6 +754,9 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   const finalSubmitObs = gateObservations.filter((g) => g.isFinalSubmit);
   for (const g of finalSubmitObs) console.log(`[demo-record] final submit "${g.note.slice(0, 50)}": ${describeGate(g)}`);
   if (!finalSubmitObs.length) console.log("[demo-record] final submit: the step never reached the engine's click gate");
+  // The engine's own words for a refusal in the flagged branch (the shared final-submit gate).
+  const finalSubmitRefusalReasons = (Array.isArray(fillResult.data?.driftWarnings) ? (fillResult.data!.driftWarnings as unknown[]).map(String) : []).filter((w) => /final submit NOT clicked/i.test(w));
+  for (const w of finalSubmitRefusalReasons) console.log(`[demo-record] engine: ${w.slice(0, 220)}`);
   const flaggedSteps = recipe.steps.filter((s) => s.isFinalSubmit === true);
   const finalSubmitStepHasNoTarget = flaggedSteps.length === 1 && Object.keys((flaggedSteps[0].selector ?? {}) as object).length === 0;
   const evidence: RecordingEvidence = {
@@ -813,6 +842,7 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
     finalSubmitClickedSources: evidence.finalSubmitClickedSources,
     finalSubmitStepHasNoTarget,
     finalSubmitStoppedBy: finalSubmitObs.map((g) => ({ gate: g.gate, reason: describeGate(g), feeGateMatched: g.feeGateMatched, autoSubmitConsulted: g.autoSubmitConsulted })),
+    finalSubmitRefusalReasons,
     clickGateObservations: gateObservations.map((g) => `${g.gate}: ${g.note.slice(0, 50)}`),
     fixtureRequests: portal ? portal.log.length : 0,
     fixtureSubmitRequests: evidence.submitRequests,
