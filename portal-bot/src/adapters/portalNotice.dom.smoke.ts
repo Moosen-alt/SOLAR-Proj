@@ -14,6 +14,7 @@
 //                  that says "the portal reported" on a healthy run is worse than silence.
 //
 //   npx tsx portal-bot/src/adapters/portalNotice.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import { collectPortalNoticesFrom, collectValidationErrorsFrom } from "./autoLearnAdapter";

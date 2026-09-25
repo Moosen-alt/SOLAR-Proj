@@ -20,6 +20,7 @@
 // calling one a dropdown puts a value where no person could have typed it.
 //
 //   npx tsx portal-bot/src/adapters/widgetDropdown.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import { EXTRACT_SEL, extractFieldsInPage, hasVisibleWidgetFaceInPage } from "./autoLearnAdapter";

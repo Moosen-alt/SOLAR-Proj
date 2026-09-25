@@ -10,6 +10,7 @@
 // Pins that an icon button is identified by its accessible name, while an ordinary button
 // still goes by its visible text — which is what a human reads and what most portals use.
 //   npx tsx portal-bot/src/adapters/iconButton.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import assert from "node:assert/strict";
 import http from "node:http";
 import { chromium } from "playwright";

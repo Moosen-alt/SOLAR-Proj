@@ -1,3 +1,4 @@
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";

@@ -12,6 +12,7 @@
 //   enterSubmit.dom.smoke; here we assert the application-form REFUSAL.
 //
 //   npx tsx portal-bot/src/adapters/enterSubmitGuard.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import { AutoLearnAdapter, type LearnPlanner } from "./autoLearnAdapter";

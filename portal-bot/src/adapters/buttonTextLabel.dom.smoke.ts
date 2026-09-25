@@ -19,6 +19,7 @@
 //                  option soup; a text input still prefers its real label over its name.
 //
 //   npx tsx portal-bot/src/adapters/buttonTextLabel.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import { AutoLearnAdapter, type LearnPlanner } from "./autoLearnAdapter";

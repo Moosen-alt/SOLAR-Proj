@@ -10,6 +10,7 @@
 // select/combobox fill path (click -> open -> pick), across bare repeated labels in <fieldset>
 // groups, and never touches the EV-charger trap.
 // Run: npx tsx portal-bot/src/adapters/powerClerkSpecsCombobox.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

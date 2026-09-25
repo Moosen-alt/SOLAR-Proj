@@ -16,6 +16,7 @@
 // Also checked here: the capture must not leave a trace on the page the learner is still
 // working on, and must not start recording the operator's data.
 //   npx tsx portal-bot/src/captureVisibility.dom.smoke.ts
+import "./smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";

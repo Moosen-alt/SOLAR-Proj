@@ -17,6 +17,7 @@
 //      card block is never reported, a secret field keeps its step but not its literal.
 //
 //   npx tsx portal-bot/src/portalSafetyInPage.dom.smoke.ts
+import "./smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";

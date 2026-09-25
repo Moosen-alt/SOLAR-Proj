@@ -9,6 +9,7 @@
 // so it passed with the bot code deleted. It now runs AutoLearnAdapter.fillOtherSpecifyFields
 // itself against the fixture and reads back what landed.
 //   npx tsx portal-bot/src/adapters/otherSpecify.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import type { RecipeStep } from "../../../shared/src/types";

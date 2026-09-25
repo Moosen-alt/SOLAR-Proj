@@ -11,6 +11,7 @@
 // AutoLearnAdapter.fillSectionEmails itself and reads back what landed where.
 // All identities here are fictional.
 //   npx tsx portal-bot/src/adapters/sectionEmail.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import type { RecipeStep } from "../../../shared/src/types";

@@ -11,6 +11,7 @@
 // when the page does not move — "the search ran and found nothing" and "the search never
 // ran" have looked identical in every run on record.
 //   npx tsx portal-bot/src/adapters/enterSubmit.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import { advanceSignatureOf } from "./autoLearnAdapter";

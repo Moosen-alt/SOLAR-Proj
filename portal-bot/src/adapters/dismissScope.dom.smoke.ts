@@ -16,6 +16,7 @@
 // says "Smoke Detector Permit". Both directions are asserted -- a dismisser that stops
 // dismissing is the other way to break this.
 //   npx tsx portal-bot/src/adapters/dismissScope.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import { dismissPageModals } from "./autoLearnAdapter";

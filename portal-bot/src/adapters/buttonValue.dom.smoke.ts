@@ -10,6 +10,7 @@
 // SUBMIT_INTENT and could be clicked as an ordinary advance — a filing nobody authorised.
 //
 //   npx tsx portal-bot/src/adapters/buttonValue.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import { EXTRACT_SEL, extractFieldsInPage } from "./autoLearnAdapter";

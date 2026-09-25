@@ -14,6 +14,7 @@
 // and asserts they agree, except on a DECLARED drift list. A declared drift that stops diverging
 // fails too, so the list is emptied the day replay adopts the shared predicate instead of rotting.
 //   npx tsx portal-bot/src/adapters/visibilityAgreement.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import type { PortalRecipe } from "../../../shared/src/types";

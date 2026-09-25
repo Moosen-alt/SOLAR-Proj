@@ -9,6 +9,7 @@
 // Covers the pure rule AND that the rule's input — the accept attribute — is actually read
 // off the live DOM, because the rule is worthless if the slot never carries the list.
 //   npx tsx portal-bot/src/adapters/uploadAccept.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import { fileTypeAllowed, tagUploadControls } from "./autoLearnAdapter";

@@ -15,6 +15,7 @@
 // and pay controls). It now runs AutoLearnAdapter.clickFallbackAdvance itself, in Chromium,
 // one button per page, and records what was ACTUALLY clicked.
 //   npx tsx portal-bot/src/adapters/fallbackAdvance.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import type { RecipeStep } from "../../../shared/src/types";

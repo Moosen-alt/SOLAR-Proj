@@ -14,6 +14,7 @@
 //                  selector with no narrowing fallback keeps the old broad resolution.
 //
 //   npx tsx portal-bot/src/adapters/duplicateLabel.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium } from "playwright";
 import { AutoLearnAdapter, type LearnPlanner } from "./autoLearnAdapter";

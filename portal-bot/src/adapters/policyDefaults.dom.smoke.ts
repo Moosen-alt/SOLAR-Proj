@@ -12,6 +12,7 @@
 // systematic fault.
 //
 // Run: npx tsx portal-bot/src/adapters/policyDefaults.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import assert from "node:assert/strict";
 import http from "node:http";
 import { chromium } from "playwright";

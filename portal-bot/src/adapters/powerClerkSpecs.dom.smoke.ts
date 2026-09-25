@@ -6,6 +6,7 @@
 // Proves: section-context matching → alias resolution → cascade wait → fill, and
 // that the EV-charger trap section is never touched.
 // Run: npx tsx portal-bot/src/adapters/powerClerkSpecs.dom.smoke.ts
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

@@ -2,6 +2,7 @@
 // set in one of those slots used to look successful and become a permanent plan_set
 // recipe binding. Covers resolution and the real browser upload/record/replay seams.
 // No live portal or LLM; discovered automatically by npm run portal:test:dom.
+import "../smokeArtifactDirs"; // hand-run safe: artifact dirs default to a temp folder, never data/
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
