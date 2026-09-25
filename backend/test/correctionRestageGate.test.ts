@@ -259,7 +259,9 @@ check("with the data held still, the refusal is byte-identical across two differ
     }
     // And the gates it DOES apply are all still there — "no status gate" must never become
     // "no gates".
-    for (const gate of ["assertSubmissionPaid", "status = 'submitted'", "failCount", "reviewerBlockers", "missingDocuments", "permitPathUnknown", "needsClient"]) {
+    // The filed-track guard reads submitted AND submitted_unconfirmed (an automation click the portal
+    // did not confirm is still a filing — replayOutcome.test.ts).
+    for (const gate of ["assertSubmissionPaid", "status IN ('submitted', 'submitted_unconfirmed')", "failCount", "reviewerBlockers", "missingDocuments", "permitPathUnknown", "needsClient"]) {
       assert.ok(body.includes(gate), `prepareSubmission must still apply the \`${gate}\` gate`);
     }
   });

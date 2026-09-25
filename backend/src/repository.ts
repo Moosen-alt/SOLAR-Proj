@@ -66,6 +66,7 @@ import type {
 import { touchProjectMetrics } from "./kpi";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { checkStatusWithAdapter, runCorrectionReopen, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { portalAutomationDisabled, resolveHeadless } from "../../portal-bot/src/browser";
 import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, collectHealedSteps, persistHealedSteps, getPortalRecipe } from "./portalRecipes";
@@ -132,7 +133,7 @@ import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine"
 import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, resolvePermitPathForProject, recordApprovedDesignObservation, isStructuralPermitTrack } from "./codeProfiles";
 import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
-import { looksBotBlocked } from "./runAbort";
+import { isHarnessAbort, looksBotBlocked } from "./runAbort";
 
 // THE ONE SEAM A TEST MAY STUB: the recipe-replay launcher prepareSubmission calls. Everything
 // around it — the gates, the run row, the outcome, the demotion, the heal write, the approval —
@@ -6489,6 +6490,153 @@ function extractStageFailureMessage(result: Record<string, unknown>): string {
   return firstLine.slice(0, 300) || "Portal run failed before reaching review.";
 }
 
+// ---------------------------------------------------------------------------------------------
+// A STAGE RUN'S OUTCOME (A3). PortalRunStatus in shared/src/types.ts lags these values (that file
+// belongs to another workstream); the column is TEXT and the backend owns the vocabulary here.
+//   running               — the row written BEFORE the adapter starts
+//   submitted             — automation clicked the final submit and the portal CONFIRMED it
+//   submitted_unconfirmed — automation clicked the final submit and the portal did not say
+//                           (a human verifies on the portal; the duplicate guard counts it)
+//   interrupted           — a 'running' row whose runner process is gone
+// ---------------------------------------------------------------------------------------------
+export type StageRunStatus =
+  | "running" | "awaiting_human_submit" | "paused_for_human" | "submitted" | "submitted_unconfirmed" | "failed" | "interrupted";
+
+/** A step message that can only exist after the final-submit click happened. "Final submit needs
+ *  a human … stopped without clicking" is deliberately NOT here: that one did not click. */
+const FINAL_SUBMIT_CLICKED_MESSAGE =
+  /final submit clicked|after the submit click|approved final-submit click did not complete|final submit triggered a challenge after the click|the submit raised a payment dialog/i;
+
+/**
+ * THE ONE ANSWER TO "HOW DID THIS STAGE RUN END?" — the only source of a stage run's final
+ * portal_runs.status and of its submissions row status.
+ *
+ * It reads what the adapter REPORTS HAPPENED, not what the run was permitted to do: a click the
+ * gate should have refused is still a click, and recording it as 'failed' is how a second filing
+ * got past the duplicate guard. Evidence of a click, any one of: the result's
+ * finalSubmitClicked / finalSubmitClickedByAutomation, any step's data.finalSubmitClicked, or a
+ * step message that only exists after the click (production runs ff90c10a/cb9a5f88/6aff4df6 said
+ * "After the submit click the page neither confirmed nor rejected" with finalSubmitClicked=false).
+ * A click is 'submitted' only on an explicit 'accepted' verdict; anything else is
+ * 'submitted_unconfirmed' — an unknown never reads as reassurance.
+ */
+export function derivePortalRunOutcome(result: Record<string, unknown>): {
+  status: Exclude<StageRunStatus, "running" | "interrupted">;
+  submissionStatus: "submitted" | "submitted_unconfirmed" | "paused_for_human" | "failed" | "awaiting_human_submit";
+  finalSubmitClicked: boolean;
+  submissionVerdict: "accepted" | "rejected" | "unknown" | null;
+  pauseReason: string | null;
+  harnessAbort: boolean;
+} {
+  const steps = Array.isArray(result.steps) ? (result.steps as Array<{ ok?: unknown; message?: unknown; data?: Record<string, unknown> }>) : [];
+  const clicked = result.finalSubmitClicked === true
+    || result.finalSubmitClickedByAutomation === true
+    || steps.some((st) => st?.data?.finalSubmitClicked === true)
+    || steps.some((st) => typeof st?.message === "string" && FINAL_SUBMIT_CLICKED_MESSAGE.test(st.message));
+  const verdictOf = (v: unknown): "accepted" | "rejected" | "unknown" | null => {
+    const s = String((v as { verdict?: unknown } | null | undefined)?.verdict ?? "");
+    return s === "accepted" || s === "rejected" || s === "unknown" ? s : null;
+  };
+  const verdict = verdictOf(result.finalSubmitOutcome) ?? verdictOf(result.submissionOutcome)
+    ?? steps.map((st) => verdictOf(st?.data?.finalSubmitOutcome)).find((v) => v !== null) ?? null;
+  const pauseReason = typeof result.pauseReason === "string" && result.pauseReason ? result.pauseReason : null;
+  if (clicked) {
+    const status = verdict === "accepted" ? "submitted" : "submitted_unconfirmed";
+    return { status, submissionStatus: status, finalSubmitClicked: true, submissionVerdict: verdict ?? "unknown", pauseReason, harnessAbort: false };
+  }
+  if (pauseReason) return { status: "paused_for_human", submissionStatus: "paused_for_human", finalSubmitClicked: false, submissionVerdict: null, pauseReason, harnessAbort: false };
+  if (result.ok === true) return { status: "awaiting_human_submit", submissionStatus: "awaiting_human_submit", finalSubmitClicked: false, submissionVerdict: null, pauseReason: null, harnessAbort: false };
+  // A failure that was OUR browser/process going away is kept distinct in the record (never scored,
+  // never a verdict about the portal) — but the status stays 'failed': autopilot's Segment A reads
+  // any other status as "complete", and an 'aborted' run is not a staged one.
+  return {
+    status: "failed", submissionStatus: "failed", finalSubmitClicked: false, submissionVerdict: null, pauseReason: null,
+    harnessAbort: isHarnessAbort(extractStageFailureMessage(result)),
+  };
+}
+
+/** Who is driving a run: this host, this process, this boot. */
+const PORTAL_RUNNER_ID = `${os.hostname()}|${process.pid}|${id().slice(0, 8)}`;
+
+/** Is the process that wrote this runner id still alive? Same boot → yes. Same host → ask the OS
+ *  for the pid. Another host → unknowable, so only its age can retire it. */
+function portalRunnerAlive(runner: string, startedAt: string): boolean {
+  if (!runner) return false; // a row from before runners were recorded
+  if (runner === PORTAL_RUNNER_ID) return true;
+  const [host, pidText] = runner.split("|");
+  if (host === os.hostname()) {
+    const pid = Number(pidText);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false; // our pid, another boot: reused
+    try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException)?.code === "EPERM"; }
+  }
+  const age = Date.now() - Date.parse(startedAt);
+  return Number.isFinite(age) && age < 6 * 3600_000;
+}
+
+function insertRunningPortalRun(db: AppDb, input: {
+  runId: string; projectId: string; portalProfileId: string | null; startedAt: string; permitType: string;
+  actor: string; recipeId: string | null; recipeVersion: number | null;
+}): void {
+  db.run(
+    `INSERT INTO portal_runs
+      (id, project_id, portal_profile_id, run_type, status, started_at, finished_at, error_message,
+       human_action_required, screenshots_path, logs_path, result_json, pause_reason, permit_type,
+       recipe_id, recipe_version, runner)
+     VALUES (?, ?, ?, 'prepare_submit', 'running', ?, NULL, '', 0, '', '', ?, NULL, ?, ?, ?, ?)`,
+    [input.runId, input.projectId, input.portalProfileId, input.startedAt, asJson({ actor: input.actor }),
+      input.permitType, input.recipeId, input.recipeVersion, PORTAL_RUNNER_ID],
+  );
+}
+
+/**
+ * RETIRE 'running' ROWS WHOSE RUNNER IS GONE. A run that was 'running' when its process died may
+ * have created an application on the portal; it becomes 'interrupted' with its URL kept and an
+ * audit row, so the operator is pointed at the portal instead of the row claiming a live run
+ * forever (or, worse, a re-stage opening a second draft beside it unnoticed).
+ * Called by prepareSubmission for the project it is about to stage; exported for startup
+ * recovery. `isAlive` is injectable for tests.
+ */
+export function recoverInterruptedPortalRuns(
+  db: AppDb,
+  opts: { projectId?: string; isAlive?: (runner: string, startedAt: string) => boolean } = {},
+): Array<{ runId: string; projectId: string; permitType: string; trackingUrl: string }> {
+  const alive = opts.isAlive ?? portalRunnerAlive;
+  const rows = db.query<Row>(
+    `SELECT id, project_id, permit_type, started_at, runner, tracking_url FROM portal_runs
+      WHERE status = 'running'${opts.projectId ? " AND project_id = ?" : ""}`,
+    opts.projectId ? [opts.projectId] : [],
+  );
+  const recovered: Array<{ runId: string; projectId: string; permitType: string; trackingUrl: string }> = [];
+  for (const r of rows) {
+    if (alive(text(r.runner), text(r.started_at))) continue;
+    const url = text(r.tracking_url);
+    db.run(
+      `UPDATE portal_runs SET status = 'interrupted', finished_at = ?, human_action_required = 1,
+         error_message = ? WHERE id = ? AND status = 'running'`,
+      [nowIso(),
+        `The run was interrupted (its process went away) — the portal may already hold a draft or a filing${url ? ` at ${url}` : ""}. Check the portal before staging this track again.`,
+        text(r.id)],
+    );
+    addAuditLog(db, text(r.project_id), "system", "portal run recovery", "portal.run_interrupted", {
+      runId: text(r.id), track: text(r.permit_type), trackingUrl: url || null, runner: text(r.runner),
+    });
+    recovered.push({ runId: text(r.id), projectId: text(r.project_id), permitType: text(r.permit_type), trackingUrl: url });
+  }
+  return recovered;
+}
+
+/** A live 'running' stage run on any of these permit types (another run holds the track). */
+function trackRunInFlight(db: AppDb, projectId: string, permitTypes: string[], exceptRunId?: string): Row | null {
+  if (!permitTypes.length) return null;
+  return db.get<Row>(
+    `SELECT id, started_at, permit_type FROM portal_runs
+      WHERE project_id = ? AND status = 'running' AND permit_type IN (${permitTypes.map(() => "?").join(", ")})
+        ${exceptRunId ? "AND id != ?" : ""}
+      ORDER BY started_at DESC LIMIT 1`,
+    [projectId, ...permitTypes, ...(exceptRunId ? [exceptRunId] : [])],
+  );
+}
+
 // Check that a project record has the portal-specific fields required to run the adapter.
 // Returns a list of human-readable missing field labels (empty = all good).
 // This runs BEFORE any Playwright browser opens so failures surface cheaply.
@@ -6691,12 +6839,32 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // tracks panel and the handoff read (submittalTracks.trackPermitTypes): the legacy trackless
   // run is recorded as 'permit', and the panel shows it as the combo filing.
   const trackFamily = (t: string): string[] => trackPermitTypes(t as SubmittalTrackType);
+  // THE DUPLICATE GUARD COUNTS AUTOMATION'S CLICKS (A3). A filing is on the portal when a human
+  // captured it (submissions 'submitted'), OR automation clicked the final submit — whatever the
+  // run row ended up saying: a submissions row 'submitted_unconfirmed', a run whose result reports
+  // the click (08909df6 / 5864e8ef clicked and were recorded 'failed', and the second filing went
+  // through), or a portal.auto_submitted audit row for the track.
   const filedOn = (t: string): Row | null => {
     const family = trackFamily(t);
+    const ph = family.map(() => "?").join(", ");
     return db.get<Row>(
-      `SELECT permit_number, application_number, submitted_at FROM submissions
-        WHERE project_id = ? AND permit_type IN (${family.map(() => "?").join(", ")}) AND status = 'submitted'
+      `SELECT permit_number, application_number, submitted_at, status AS via FROM submissions
+        WHERE project_id = ? AND permit_type IN (${ph}) AND status IN ('submitted', 'submitted_unconfirmed')
         ORDER BY submitted_at DESC LIMIT 1`,
+      [projectId, ...family],
+    ) ?? db.get<Row>(
+      `SELECT '' AS permit_number, '' AS application_number, started_at AS submitted_at, 'automation_click' AS via FROM portal_runs
+        WHERE project_id = ? AND permit_type IN (${ph})
+          AND (status IN ('submitted', 'submitted_unconfirmed')
+            OR json_extract(result_json, '$.finalSubmitClicked') = 1
+            OR json_extract(result_json, '$.finalSubmitClickedByAutomation') = 1)
+        ORDER BY started_at DESC LIMIT 1`,
+      [projectId, ...family],
+    ) ?? db.get<Row>(
+      `SELECT '' AS permit_number, '' AS application_number, created_at AS submitted_at, 'automation_click' AS via FROM audit_logs
+        WHERE project_id = ? AND action = 'portal.auto_submitted'
+          AND COALESCE(json_extract(details, '$.track'), 'permit') IN (${ph})
+        ORDER BY created_at DESC LIMIT 1`,
       [projectId, ...family],
     );
   };
@@ -6717,7 +6885,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
       [projectId, ...family, projectId],
     );
   };
-  const filedNumber = (row: Row): string => text(row.permit_number) || text(row.application_number) || "(no number captured)";
+  const filedNumber = (row: Row): string => text(row.permit_number) || text(row.application_number)
+    || (text(row.via) && text(row.via) !== "submitted"
+      ? "(no number captured — automation clicked the final submit and the portal did not confirm it; verify on the portal)"
+      : "(no number captured)");
   const filedWhen = (row: Row): string => (row.submitted_at ? ` on ${String(row.submitted_at).slice(0, 10)}` : "");
   // What a trackless call covers: every required track, plus its own 'permit' tag when no
   // required track already folds it in (a separate building/electrical AHJ) — otherwise a
@@ -6731,6 +6902,17 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   const { trackAlreadyStaged } = await import("./autopilot");
   const stageCovers = (track ? [track] : footprint) as SubmittalTrackType[];
   const stagedAtEntry = new Set(stageCovers.filter((t) => trackAlreadyStaged(db, projectId, t)));
+  // A RUN ALREADY ON THIS TRACK. A 'running' row whose process is gone is an interrupted run
+  // (recovered here, audited, its URL kept); one whose process is alive holds the track, and a
+  // second run beside it would open a second draft on the portal.
+  recoverInterruptedPortalRuns(db, { projectId });
+  const inFlightAtEntry = trackRunInFlight(db, projectId, [...new Set(stageCovers.flatMap((t) => trackFamily(t)))]);
+  if (inFlightAtEntry) {
+    throw new HttpError(409,
+      `A portal run for the ${text(inFlightAtEntry.permit_type)} track started at ${text(inFlightAtEntry.started_at)} and is still running. `
+      + "Staging again beside it would open a duplicate application on the portal — wait for it to finish.",
+      { track: track ?? "permit", runInFlight: text(inFlightAtEntry.id) });
+  }
   if (track) {
     const filed = filedOn(track);
     if (filed) {
@@ -7174,6 +7356,8 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // (auto_submit_enabled). Hand-coded adapters (Accela/PowerClerk) stay guided-manual.
   // Even then the adapter never clicks a fee-payment control and bails on CAPTCHA/MFA.
   let resolvedAutoSubmit = false;
+  // The named approval of THIS run (A2 fills it; null = no approval, never clicked).
+  const runApproval = null as { approver: string; runId: string } | null;
   if (autoSubmit && recipe) {
     const trustRow = db.get<{ auto_submit_enabled?: number }>(
       "SELECT auto_submit_enabled FROM portal_recipes WHERE id = ?",
@@ -7380,7 +7564,10 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // (jobQueue PROJECT_BUSY_SQL: one portal-effect job per project at a time, and every
   // prepareSubmission caller is such a job); it stays open across processes and for a job the
   // watchdog reclaims mid-run.
-  const stagedMeanwhile = stageCovers.filter((t) => !stagedAtEntry.has(t) && trackAlreadyStaged(db, projectId, t));
+  // A 'running' row another run inserted while this one prepared counts as staged-meanwhile too:
+  // trackAlreadyStaged (autopilot.ts) does not know that status.
+  const stagedMeanwhile = stageCovers.filter((t) => (!stagedAtEntry.has(t) && trackAlreadyStaged(db, projectId, t))
+    || Boolean(trackRunInFlight(db, projectId, trackFamily(t))));
   if (stagedMeanwhile.length) {
     const first = stagedMeanwhile[0];
     addAuditLog(db, projectId, "system", "submit gate", "portal.staged_meanwhile", { track: track ?? "permit", tracks: stagedMeanwhile });
@@ -7393,409 +7580,444 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   let result: Record<string, unknown>;
   // What the replay-failure classifier decided about the recipe, for the run's own message.
   let replayVerdictNote = "";
-  if (channelDecision.blocked) {
-    // Kill-switch tripped: surface a manual handoff and drive NO automation.
-    const msg = `${portalLabel} is paused (legal kill-switch). ${channelDecision.reason} Submit this application by hand and resume the portal once it's cleared.`;
-    result = { ok: false, finalSubmitClicked: false, pauseReason: "portal_paused", message: msg, steps: [{ ok: false, message: msg }] };
-  } else if (recipe && runActorLabel === "RecipeAdapter" && track !== "nem" && isUtilityPlatformUrl(recipe.portalUrl)) {
-    // TRACK/HOST GATE for the REPLAY path: a pre-fix learn mis-keyed by the KB poisoning
-    // bug can leave an AHJ-scoped COMPLETE recipe whose steps drive the utility NEM
-    // portal. Migration v8 repairs the KB rows but can't rewrite recipes — without this
-    // check the recipe's existence bypasses the self-seed gate below and stages the
-    // permit in the wrong system. Flag it for re-recording and stop.
-    try {
-      markPortalRecipeForRerecord(db, recipe.id, {
-        actor: "track/host gate", actorType: "system", projectId,
-        reason: `an AHJ recipe points at a utility interconnection portal (${recipe.portalUrl})`,
-      });
-    } catch { /* best-effort */ }
-    const msg = `The recorded recipe for ${portalLabel} points at a utility interconnection portal (${recipe.portalUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. It was mis-recorded and has been flagged for re-recording. Record the AHJ's permit portal, then re-stage.`;
-    addAuditLog(db, projectId, "system", "submit gate", "portal.track_host_conflict", { track: track ?? "permit", url: recipe.portalUrl, recipeId: recipe.id });
-    result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
-  } else if (recipe && runActorLabel === "RecipeAdapter" && recipeDisciplineConflict) {
-    // DISCIPLINE GATE: this AHJ's recipe was learned for the OTHER permit discipline —
-    // its recorded steps select that discipline's jurisdiction row and record type, and
-    // the replay clicks would succeed silently (no drift, no self-heal), filing this
-    // track down the wrong jurisdiction's application path. NOT flagged for re-record:
-    // the recipe is valid for its own discipline, and its ROW is simply keyed wrong.
-    //
-    // RECIPES ARE DISCIPLINE-KEYED, AND THIS SAID THEY WERE NOT. Migration v14
-    // (`recipe_discipline`) keys portal_recipes on (profile_key, discipline) — see
-    // db.ts:892-894 and docs/HANDOFF.md ("RESOLVED (migration v14)"). The comment and the
-    // operator-facing message below both claimed, in the present tense, that the product
-    // lacked a capability it shipped, and then told the operator to hand-file. The real
-    // remedy is that this recipe's row carries discipline '' (a pre-v14 legacy row) or the
-    // wrong discipline, and it can be re-keyed — scripts/rekey-recipe.ts does exactly that.
-    // Rare gate, which is exactly when the operator has no context to doubt the message.
-    const msg = `The recorded recipe for ${portalLabel} is keyed for the ${recipeDisciplineConflict} permit discipline, so replaying it for the ${track} track would file under the wrong jurisdiction/application type. Its steps are valid for ${recipeDisciplineConflict} — the row is keyed wrong (usually a recipe recorded before recipes carried a discipline). Re-key it with scripts/rekey-recipe.ts, or record a recipe for the ${track} track; submit this one by hand meanwhile (the ${recipeDisciplineConflict} track still replays automatically).`;
-    addAuditLog(db, projectId, "system", "submit gate", "portal.discipline_conflict", { track: track ?? "permit", recipeDiscipline: recipeDisciplineConflict, recipeId: recipe.id });
-    result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
-  } else if (recipe && runActorLabel === "RecipeAdapter") {
-    result = await recipeStageRunner(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
-
-    // A BOT WALL MUST NOT BLOCK A FILING — RETRY WITH A REAL WINDOW.
-    //
-    // autoLearnPortal has had this since Baltimore ("portal refused a headless browser —
-    // retrying with a real window"); STAGING never did, so a portal that refuses headless
-    // failed the submission outright even though the same machine could have filed it. It is
-    // not hypothetical: coosbayor.gov returns 403 to every programmatic client including
-    // HEADLESS Playwright, and 200 to a headed window. A portal behaving that way at staging
-    // time is a filing that silently does not happen.
-    //
-    // Same guard rails as the learn path: only on a failure that LOOKS like a bot block (not
-    // on any old failure, which would double every real error's cost), only once, only when we
-    // were actually headless, and only when the operator has not switched it off. The retry
-    // result is kept only if it got further, so a second refusal cannot erase the first
-    // result's diagnostics.
-    if (!result.ok && looksBotBlocked(stageFailureText(result)) && stageOptions.headless !== false
-        && process.env.PORTAL_HEADED_RETRY !== "0") {
-      logger.info("portal", "portal refused a headless browser at staging — retrying with a real window", {
-        projectId, portal: portalLabel,
-      });
-      try {
-        const headedResult = await recipeStageRunner(
-          recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files,
-          { ...stageOptions, headless: false },
-        );
-        const before = Array.isArray((result as { steps?: unknown[] }).steps) ? (result as { steps: unknown[] }).steps.length : 0;
-        const after = Array.isArray((headedResult as { steps?: unknown[] }).steps) ? (headedResult as { steps: unknown[] }).steps.length : 0;
-        if (headedResult.ok || after > before) {
-          result = headedResult;
-          result.message = `${result.message ?? ""} (succeeded on a headed retry — this portal refuses headless browsers)`.trim();
-          addAuditLog(db, projectId, "system", "portal staging", "portal.headed_retry", { portal: portalLabel, track: track ?? "permit" });
-        }
-      } catch (e) {
-        logger.warn("portal", "headed retry failed", { projectId, err: e instanceof Error ? e.message : String(e) });
-      }
-    }
-    // SELF-HEALED STEPS: replay repaired drifted selectors. Persist each heal onto the ONE step
-    // it healed (by stepIndex), only if the recipe is still the version this replay read — see
-    // persistHealedSteps. The heals ride on the fill step's data (the adapter result's top level
-    // never carried them, so this block was dead code); both places are read.
-    const healed = collectHealedSteps(result);
-    if (healed.length) persistHealedSteps(db, recipe.id, recipe.version, healed, { projectId, runId });
-    // WHOSE FAULT WAS THE FAILURE? (operator ruling 2026-09-24: keep-and-flag.)
-    //
-    // This used to demote on /recipe step failed/i over EVERY step's message joined — with no
-    // classifier at all. PGE 481c00f4 was demoted in the same second a run died with "Target
-    // page, context or browser has been closed"; PacifiCorp 6282e671 after a document-gate
-    // refusal. NEM replay went offline for every production utility on failures that said
-    // nothing about either recipe. And feeding the JOINED text to the classifier fails the
-    // other way: the review step's boilerplate says "handle any MFA/fee", so every failure
-    // would read as an MFA wall and nothing would ever demote.
-    //
-    // So: the failing step's OWN message (extractStageFailureMessage) goes to the one
-    // classifier, demoteOnReplayFailure. Drift it could not heal → demote (and only then a
-    // re-learn). Harness aborts, document gates, missing project data, challenges and outages
-    // → keep. Nothing attributable → keep AND flag for a human. A paused run (MFA/CAPTCHA
-    // wall) is not a failure of anything and never reaches here.
-    // Only a replay that FAILED (not a pause) is judged. A paused run stopped at a challenge.
-    const replayFailed = result && result.ok === false && !(typeof result.pauseReason === "string" && result.pauseReason);
-    const replayVerdict = replayFailed
-      ? (() => {
-        try {
-          return demoteOnReplayFailure(db, recipe.id, extractStageFailureMessage(result), recipe.version, { runId, projectId });
-        } catch {
-          return null; /* best-effort: the run result stands */
-        }
-      })()
-      : null;
-    if (replayVerdict?.action === "flagged") {
-      replayVerdictNote = " The recipe was KEPT (nothing in the failure points at it) and flagged for a human to look at.";
-    } else if (replayVerdict?.action === "kept") {
-      replayVerdictNote = ` The recipe was kept: ${replayVerdict.reason}.`;
-    }
-    if (replayVerdict?.action === "demoted") {
-      // SELF-HEAL: the system already has a safe autonomous learner (never clicks
-      // final submit, respects the portal kill-switch) — queue a fresh learn of
-      // this portal instead of leaving a manual "re-record it" dead end. One-shot
-      // event-driven enqueue (maxRetries 0 — a failed learn must not relaunch
-      // browsers on a timer), deduped against an already-queued learn.
-      let relearnQueued = false;
-      try {
-        if (process.env.ANTHROPIC_API_KEY && !portalPaused && recipe.portalUrl && process.env.AUTO_RELEARN_STALE !== "0") {
-          // Dedupe portal-wide, not per-project: the stale recipe is shared by
-          // every project on this AHJ/utility, and N projects hitting it must
-          // not queue N identical browser learns of the same portal. Also skip
-          // if this portal was already re-learned recently (6h window).
-          const pending = db.get<Row>(
-            `SELECT id FROM job_queue WHERE job_type = 'auto_learn' AND payload LIKE ?
-               AND (status IN ('pending','running') OR created_at > ?) LIMIT 1`,
-            [`%${recipe.portalUrl}%`, new Date(Date.now() - 6 * 3600_000).toISOString()],
-          );
-          if (!pending) {
-            void import("./jobQueue").then(({ enqueueJob }) => {
-              enqueueJob(db, "auto_learn", {
-                scope: track === "nem" ? "utility" : "ahj",
-                portalUrl: recipe.portalUrl,
-                createdBy: "auto-relearn (stale recipe)",
-                permitType: track === "nem" ? undefined : (track === "electrical" || track === "mpu" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
-                discipline: trackDiscipline,
-              }, { projectId, priority: 5, maxRetries: 0 });
-            }).catch(() => null);
-            relearnQueued = true;
-          }
-        }
-      } catch { /* self-heal is best-effort */ }
-      result = {
-        ...result,
-        recipeStale: true,
-        message: `${result.message || extractStageFailureMessage(result)} — this recipe looks stale (the portal likely changed) and has been flagged for re-recording. ${relearnQueued ? "A fresh learn of the portal was queued automatically; re-stage once it finishes." : "Re-record it, then re-stage."}`,
-      };
-    }
-  } else if (runActorLabel === "AutoLearnAdapter") {
-    // Self-seed: learn + stage in one pass. Reuse the entry URL already resolved for the
-    // credential match; pass the client-overlaid stagedProject so the learner fills authoritative
-    // contractor identity (not the raw parse).
-    // TRACK/HOST SANITY GATE: a permit (AHJ) track must never launch a known utility-
-    // platform host — a PowerClerk URL reaching this point means the resolution chain
-    // picked up the NEM portal (e.g. a poisoned KB row), and learning the wrong portal
-    // both wastes the pass AND mis-keys the recorded recipe to the AHJ scope.
-    const trackHostConflict = track !== "nem" && isUtilityPlatformUrl(credentialUrl);
-    if (!credentialUrl) {
-      // No entry URL to launch the learner — stop and surface rather than guess a portal.
-      const msg = process.env.ANTHROPIC_API_KEY
-        ? `No portal URL is known for ${portalLabel}, and automatic research couldn't confirm one either. Record the portal once (or add its URL to the knowledge base) and re-stage.`
-        : `No portal URL is known for ${portalLabel}, so the universal learner can't seed a recipe yet. Record the portal once (or add its URL to the knowledge base) and re-stage — with an ANTHROPIC_API_KEY configured this would have been researched automatically.`;
-      result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
-    } else if (trackHostConflict) {
-      const msg = `The only portal URL known for ${portalLabel} is a utility interconnection portal (${credentialUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. Staging stopped so the permit isn't filed in the wrong system. Record the AHJ's permit portal once (or add its URL to the knowledge base) and re-stage.`;
-      addAuditLog(db, projectId, "system", "submit gate", "portal.track_host_conflict", { track: track ?? "permit", url: credentialUrl });
-      result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
-    } else {
-      try {
-        const { autoLearnPortal } = await import("./autoLearn");
-        const seed = await autoLearnPortal(db, projectId, {
-          scope: track === "nem" ? "utility" : "ahj",
-          portalUrl: credentialUrl,
-          createdBy: "auto-seed (staging)",
-          permitType: track === "nem" ? undefined : (track === "electrical" || track === "mpu" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
-          // The recipe key's discipline for this track - MUST be the same value the
-          // lookup above asked for, or the learned recipe is never found again.
-          discipline: trackDiscipline,
-          // The self-seed IS this track's staging run when no trusted recipe exists yet, so the
-          // operator's delegated submit has to reach it here too — otherwise the only portals it
-          // can never file on are precisely the ones with no recipe.
-          allowFinalSubmit: allowFinalSubmit === true,
-          project: stagedProject,
-          // Match the hand-coded/replay adapters' headed setting so the self-seed opens a visible
-          // browser locally and leaves it open at review for the human (headless on a server).
-          headless: stageOptions.headless,
-        });
-        result = seedOutcomeToStageResult(seed);
-        // Say WHY this stage learned instead of replaying, so a re-learn on an AHJ that
-        // already had a recipe doesn't look like the recipe went missing.
-        if (droppedLegacyRecipeDiscipline && typeof result.message === "string") {
-          result.message = `${result.message} (This AHJ's existing recipe was recorded for the ${droppedLegacyRecipeDiscipline} permit, so the ${track} track learned its own — each discipline now keeps a separate recipe.)`;
-        }
-      } catch (err) {
-        // Learner couldn't even start (network/login/validation) — stop and surface.
-        const msg = `Universal learn failed before staging: ${err instanceof Error ? err.message : String(err)}. Resolve the blocker and re-stage, or record the portal manually.`;
-        result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
-      }
-    }
-  } else if (runActorLabel === "OregonEPermittingAdapter") {
-    result = await stageWithAccela(stagedProject, files, stageOptions);
-  } else if (runActorLabel === "PowerClerkAdapter") {
-    result = await stageWithPowerClerk(stagedProject, files, stageOptions);
-  } else if (runActorLabel === "NoAdapter" || autoSeedEnabled) {
-    // Nothing REAL to drive: no recorded recipe and either no adapter for this real
-    // portal (NoAdapter — including PORTAL_AUTOSEED=0, where the "legacy hand-coded
-    // fallback" only exists for Accela/PowerClerk) or no known portal at all in
-    // real mode. Do NOT run the mock — a mock "staged to review" that never touched
-    // the portal moves a real filing to awaiting_human_submit, and the mock approve
-    // path then fabricates MOCK-/CONF- permit numbers staff would trust. Stop and
-    // surface the actionable blocker instead.
-    const where = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
-    const msg = `No portal automation is available for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
-    result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
-  } else {
-    // The mock stands in ONLY when there is no real portal AND auto-seed is off —
-    // offline dev, the smoke test, and the simulated rehearsal. A project with a
-    // real portal can never reach it in any mode.
-    result = await stageWithMockPortal(stagedProject, files, reviewerReport);
-  }
-
-  // Determine status: if the adapter paused for MFA/CAPTCHA, record it distinctly
-  // so the UI can show a specific banner and the operator knows to resume manually.
-  const pauseReason = typeof result.pauseReason === "string" ? result.pauseReason : null;
-  // A filing is recorded "submitted" by automation ONLY when the adapter explicitly
-  // reports it actually clicked the allowlisted final-submit step (finalSubmitClicked)
-  // AND the run was clean (ok). We never infer submission from "didn't fail" — the old
-  // `result.ok !== false` fabricated a legal-submission record when nothing was clicked.
-  const adapterOk = result.ok === true;
-  const finalSubmitClicked = result.finalSubmitClicked === true;
-  const autoSubmitted = resolvedAutoSubmit && !pauseReason && adapterOk && finalSubmitClicked;
-  // FAILURE GATE: a run where the adapter returned ok:false and did NOT pause for
-  // MFA/CAPTCHA staged nothing — login failed, a step errored, or the review screen was
-  // never reached. This MUST NOT read as "awaiting_human_submit": that fabricates a
-  // "staged, ready to submit" state for a run that never touched the portal, so the
-  // operator looks for an application that doesn't exist. Mark it failed and surface the
-  // concise (non-sensitive) reason from the first failing step.
-  const adapterFailed = !adapterOk && !pauseReason;
-  const failureMessage = adapterFailed ? `${extractStageFailureMessage(result)}${replayVerdictNote}` : "";
-  // Permit/record number + record link scraped off the completion page after an
-  // operator-authorized final submit (the "relay continuation" capture).
-  const capturedPermitNumber = autoSubmitted ? String((result as Record<string, unknown>).capturedPermitNumber || "").trim() : "";
-  const capturedConfirmation = autoSubmitted ? String((result as Record<string, unknown>).capturedConfirmationNumber || "").trim() : "";
-  const capturedRecordLink = autoSubmitted ? String((result as Record<string, unknown>).capturedRecordLink || "").trim() : "";
-  // WHERE THE EVIDENCE LIVES. Captured on EVERY outcome, not just a successful one: a run
-  // that was refused is exactly when someone needs to see the page. evidenceDir is the
-  // folder of page shots; outcomeShotPath is the single picture of how the filing ended
-  // (the completion page and its record number, or the refusal).
-  const evidenceDir = String((result as Record<string, unknown>).evidenceDir
-    ?? (result as Record<string, unknown>).debugDir ?? "").trim();
-  const outcomeShotPath = String((result as Record<string, unknown>).outcomeShotPath ?? "").trim();
-  const runSeconds = (() => {
-    const started = Date.parse(ts);
-    return Number.isFinite(started) ? Math.max(0, Math.round((Date.now() - started) / 1000)) : 0;
-  })();
-  const runStatus = pauseReason ? "paused_for_human" : autoSubmitted ? "submitted" : adapterFailed ? "failed" : "awaiting_human_submit";
-  // SELF-HEAL: a failed/paused STAGING run produces the same debug bundle the
-  // learn path already triages automatically — enqueue the triage agent here
-  // too so production staging failures get root-caused (and safe fixes applied)
-  // without an operator manually opening the bundle. Best-effort, opt out with
-  // RUN_TRIAGE=off; the enqueue self-kicks the worker.
-  try {
-    const debugDir = String((result as Record<string, unknown>).debugDir ?? "");
-    const gapMissing = Array.isArray((result as Record<string, unknown>).gapFillMissing) && ((result as Record<string, unknown>).gapFillMissing as unknown[]).length > 0;
-    if ((runStatus === "failed" || pauseReason || gapMissing) && debugDir && process.env.RUN_TRIAGE !== "off") {
-      const triageRunId = debugDir.split(/[\\/]/).filter(Boolean).pop() || "";
-      if (triageRunId) {
-        void import("./jobQueue").then(({ enqueueJob }) => {
-          enqueueJob(db, "run_triage", { runId: triageRunId }, { projectId, priority: 3 });
-        }).catch(() => null);
-      }
-    }
-  } catch { /* triage is best-effort */ }
-  if (autoSubmitted) {
-    addAuditLog(db, projectId, "portal_bot", runActorLabel, "portal.auto_submitted", {
-      track: track ?? "permit", finalSubmitClickedByAutomation: true, feePaymentAutomated: false,
-    });
-  }
-
-  // Tag the run + submission with the track being staged so each filing (NEM,
-  // building, electrical, combo) shows separately in the submittal-tracks panel.
-  const permitTypeTag = track ?? "permit";
-  const submissionType = track === "nem" ? "interconnection" : "permit";
-  const trackLabelText = track ? `${permitTypeTag.toUpperCase()} ` : "";
-
-  // The self-seed/learn can run for minutes (a live browser pass); the project — or a stored portal
-  // profile — may be deleted or reset during that window. Persisting a portal_run/submission whose
-  // project_id (or portal_profile_id) no longer exists violates a FOREIGN KEY and 500s the whole
-  // request, discarding the run record. Re-validate both right before committing: fail cleanly if the
-  // project vanished, and drop an orphaned portal_profile_id to null (a valid, FK-satisfying value).
-  if (!db.get<{ id?: string }>("SELECT id FROM projects WHERE id = ?", [projectId])) {
-    throw new HttpError(409, "The project was deleted or reset while the portal run was in progress, so the run could not be recorded. Re-create the project and re-stage. (Any browser the bot opened may still be at the portal.)");
-  }
+  // THE RUN ROW EXISTS BEFORE THE BROWSER OPENS (A3). Until now it was written only after the
+  // adapter returned: 4 of 7 interrupted production jobs left no record of an application the
+  // portal may already have created, and a re-stage opened a duplicate draft. 'running' names
+  // the recipe version and the process driving it; a row whose runner is gone is recovered as
+  // 'interrupted' (recoverInterruptedPortalRuns), never read as a live run or as a staged one.
+  // A stored portal profile may have been deleted since it was resolved; the run row's FK must
+  // hold, so an orphaned id becomes null (a valid, FK-satisfying value).
   const safePortalProfileId = portalProfileId && db.get<{ id?: string }>("SELECT id FROM portal_profiles WHERE id = ?", [portalProfileId])
     ? portalProfileId
     : null;
+  insertRunningPortalRun(db, {
+    runId, projectId, portalProfileId: safePortalProfileId, startedAt: ts, permitType: track ?? "permit",
+    actor: runActorLabel, recipeId: recipe?.id ?? null, recipeVersion: recipe?.version ?? null,
+  });
+  try {
+    if (channelDecision.blocked) {
+      // Kill-switch tripped: surface a manual handoff and drive NO automation.
+      const msg = `${portalLabel} is paused (legal kill-switch). ${channelDecision.reason} Submit this application by hand and resume the portal once it's cleared.`;
+      result = { ok: false, finalSubmitClicked: false, pauseReason: "portal_paused", message: msg, steps: [{ ok: false, message: msg }] };
+    } else if (recipe && runActorLabel === "RecipeAdapter" && track !== "nem" && isUtilityPlatformUrl(recipe.portalUrl)) {
+      // TRACK/HOST GATE for the REPLAY path: a pre-fix learn mis-keyed by the KB poisoning
+      // bug can leave an AHJ-scoped COMPLETE recipe whose steps drive the utility NEM
+      // portal. Migration v8 repairs the KB rows but can't rewrite recipes — without this
+      // check the recipe's existence bypasses the self-seed gate below and stages the
+      // permit in the wrong system. Flag it for re-recording and stop.
+      try {
+        markPortalRecipeForRerecord(db, recipe.id, {
+          actor: "track/host gate", actorType: "system", projectId,
+          reason: `an AHJ recipe points at a utility interconnection portal (${recipe.portalUrl})`,
+        });
+      } catch { /* best-effort */ }
+      const msg = `The recorded recipe for ${portalLabel} points at a utility interconnection portal (${recipe.portalUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. It was mis-recorded and has been flagged for re-recording. Record the AHJ's permit portal, then re-stage.`;
+      addAuditLog(db, projectId, "system", "submit gate", "portal.track_host_conflict", { track: track ?? "permit", url: recipe.portalUrl, recipeId: recipe.id });
+      result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+    } else if (recipe && runActorLabel === "RecipeAdapter" && recipeDisciplineConflict) {
+      // DISCIPLINE GATE: this AHJ's recipe was learned for the OTHER permit discipline —
+      // its recorded steps select that discipline's jurisdiction row and record type, and
+      // the replay clicks would succeed silently (no drift, no self-heal), filing this
+      // track down the wrong jurisdiction's application path. NOT flagged for re-record:
+      // the recipe is valid for its own discipline, and its ROW is simply keyed wrong.
+      //
+      // RECIPES ARE DISCIPLINE-KEYED, AND THIS SAID THEY WERE NOT. Migration v14
+      // (`recipe_discipline`) keys portal_recipes on (profile_key, discipline) — see
+      // db.ts:892-894 and docs/HANDOFF.md ("RESOLVED (migration v14)"). The comment and the
+      // operator-facing message below both claimed, in the present tense, that the product
+      // lacked a capability it shipped, and then told the operator to hand-file. The real
+      // remedy is that this recipe's row carries discipline '' (a pre-v14 legacy row) or the
+      // wrong discipline, and it can be re-keyed — scripts/rekey-recipe.ts does exactly that.
+      // Rare gate, which is exactly when the operator has no context to doubt the message.
+      const msg = `The recorded recipe for ${portalLabel} is keyed for the ${recipeDisciplineConflict} permit discipline, so replaying it for the ${track} track would file under the wrong jurisdiction/application type. Its steps are valid for ${recipeDisciplineConflict} — the row is keyed wrong (usually a recipe recorded before recipes carried a discipline). Re-key it with scripts/rekey-recipe.ts, or record a recipe for the ${track} track; submit this one by hand meanwhile (the ${recipeDisciplineConflict} track still replays automatically).`;
+      addAuditLog(db, projectId, "system", "submit gate", "portal.discipline_conflict", { track: track ?? "permit", recipeDiscipline: recipeDisciplineConflict, recipeId: recipe.id });
+      result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+    } else if (recipe && runActorLabel === "RecipeAdapter") {
+      result = await recipeStageRunner(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
 
-  db.transaction(() => {
-    db.run(
-      `INSERT INTO portal_runs
-        (id, project_id, portal_profile_id, run_type, status, started_at, finished_at, error_message,
-         human_action_required, screenshots_path, logs_path, result_json, pause_reason, permit_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [runId, projectId, safePortalProfileId, "prepare_submit", runStatus, ts, nowIso(), failureMessage, 1,
-        // A FILE, never a folder: /portal-runs/:id/review-screenshot sendFile()s this column.
-        outcomeShotPath,
-        // logs_path: the learn-run debug bundle folder (set by the self-seed path) — links a
-        // failed/paused run straight to its forensic artifacts under data/learn-runs/.
-        String((result as Record<string, unknown>).debugDir ?? ""),
-        // Persist WHICH adapter actually drove this run — the autopilot approve path
-        // must never mock-submit a run that a real adapter staged (see autopilot.ts).
-        asJson({ ...result, actor: runActorLabel }), pauseReason, permitTypeTag],
-    );
-
-    db.run(
-      `INSERT INTO submissions
-        (id, project_id, portal_profile_id, submission_type, permit_type, status, application_number, permit_number,
-         confirmation_number, submitted_at, submitted_by, screenshots_path, notes, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        submissionId,
-        projectId,
-        safePortalProfileId,
-        submissionType,
-        permitTypeTag,
-        autoSubmitted ? "submitted" : pauseReason ? "paused_for_human" : adapterFailed ? "failed" : "awaiting_human_submit",
-        "",
-        capturedPermitNumber,
-        capturedConfirmation,
-        autoSubmitted ? ts : null,
-        autoSubmitted ? "automation (operator-approved auto-submit)" : "",
-        evidenceDir,
-        autoSubmitted
-          // WHAT WAS FILED, WHEN, AND WHERE THE PROOF IS — on the record itself, so a
-          // completed run can be verified without reading a log. The elapsed time is the
-          // measured cost of one replay: what a filing takes when nobody has to watch it.
-          ? `${trackLabelText}${portalLabel} submitted via approved auto-submit (application submit only; no fee payment).`
-            + `${capturedPermitNumber ? ` Record ${capturedPermitNumber}.` : ""}`
-            + ` Confirmed ${nowIso()}${runSeconds ? ` after ${runSeconds}s` : ""}.`
-            + `${outcomeShotPath ? ` Completion page: ${outcomeShotPath}` : ""}`
-          : pauseReason
-            ? `${trackLabelText}${portalLabel} run PAUSED for a human at a ${pauseReason} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`
-            : adapterFailed
-              ? `${trackLabelText}${portalLabel} run FAILED before review — nothing was staged on the portal. ${failureMessage}`
-              : `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.`,
-        ts,
-      ],
-    );
-
-    db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
-      // On failure OR an MFA/CAPTCHA pause, leave the project in its prior (pre-run) status — never
-      // advance a project to "awaiting_human_submit" for a run that staged nothing (a pause means the
-      // learner was walled at the challenge and never reached review).
-      autoSubmitted ? "submitted" : (pauseReason || adapterFailed) ? detail.project.status : "awaiting_human_submit",
-      autoSubmitted
-        ? `${trackLabelText}${portalLabel} auto-submitted (operator-approved)${capturedPermitNumber ? ` — record ${capturedPermitNumber}` : ""}. Tracking status.`
-        : pauseReason
-          ? `${trackLabelText}${portalLabel} run paused at a ${pauseReason} challenge — not staged. Complete it in the open browser, then re-stage.`
-          : adapterFailed
-            ? `${trackLabelText}${portalLabel} run failed — not staged. ${failureMessage}`
-            : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
-      // THE THREE OUTCOMES A PROSE LINE COULD NEVER BE FILTERED ON. A paused run and a failed
-      // run BOTH leave the status untouched at its pre-run value, so status alone cannot tell
-      // an operator that anything happened — before this column, the only difference between
-      // "finish the MFA challenge in the browser that is still open" and "the adapter died,
-      // retry" was a sentence.
-      (autoSubmitted ? "auto_submitted"
-        : pauseReason ? "staging_paused"
-        : adapterFailed ? "staging_failed"
-        : "staged_for_review") satisfies StageDetail,
-      nowIso(),
-      projectId,
-    ]);
-
-    // Persist the captured permit/record number + record link onto the track's tracking
-    // target so the status poller follows it and the operator sees the number + link.
-    if (autoSubmitted && (capturedPermitNumber || capturedRecordLink)) {
-      const tgt = db.get<Row>(
-        "SELECT id FROM permit_check_targets WHERE project_id = ? AND permit_type = ? AND active = 1 ORDER BY updated_at DESC LIMIT 1",
-        [projectId, permitTypeTag],
-      );
-      if (tgt) {
-        db.run(
-          "UPDATE permit_check_targets SET permit_number = COALESCE(NULLIF(?, ''), permit_number), tracking_url = COALESCE(NULLIF(?, ''), tracking_url), updated_at = ? WHERE id = ?",
-          [capturedPermitNumber, capturedRecordLink, nowIso(), text(tgt.id)],
-        );
+      // A BOT WALL MUST NOT BLOCK A FILING — RETRY WITH A REAL WINDOW.
+      //
+      // autoLearnPortal has had this since Baltimore ("portal refused a headless browser —
+      // retrying with a real window"); STAGING never did, so a portal that refuses headless
+      // failed the submission outright even though the same machine could have filed it. It is
+      // not hypothetical: coosbayor.gov returns 403 to every programmatic client including
+      // HEADLESS Playwright, and 200 to a headed window. A portal behaving that way at staging
+      // time is a filing that silently does not happen.
+      //
+      // Same guard rails as the learn path: only on a failure that LOOKS like a bot block (not
+      // on any old failure, which would double every real error's cost), only once, only when we
+      // were actually headless, and only when the operator has not switched it off. The retry
+      // result is kept only if it got further, so a second refusal cannot erase the first
+      // result's diagnostics.
+      if (!result.ok && looksBotBlocked(stageFailureText(result)) && stageOptions.headless !== false
+          && process.env.PORTAL_HEADED_RETRY !== "0") {
+        logger.info("portal", "portal refused a headless browser at staging — retrying with a real window", {
+          projectId, portal: portalLabel,
+        });
+        try {
+          const headedResult = await recipeStageRunner(
+            recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files,
+            { ...stageOptions, headless: false },
+          );
+          const before = Array.isArray((result as { steps?: unknown[] }).steps) ? (result as { steps: unknown[] }).steps.length : 0;
+          const after = Array.isArray((headedResult as { steps?: unknown[] }).steps) ? (headedResult as { steps: unknown[] }).steps.length : 0;
+          if (headedResult.ok || after > before) {
+            result = headedResult;
+            result.message = `${result.message ?? ""} (succeeded on a headed retry — this portal refuses headless browsers)`.trim();
+            addAuditLog(db, projectId, "system", "portal staging", "portal.headed_retry", { portal: portalLabel, track: track ?? "permit" });
+          }
+        } catch (e) {
+          logger.warn("portal", "headed retry failed", { projectId, err: e instanceof Error ? e.message : String(e) });
+        }
       }
-      db.run("UPDATE portal_runs SET tracking_url = COALESCE(NULLIF(?, ''), tracking_url) WHERE id = ?", [capturedRecordLink, runId]);
+      // SELF-HEALED STEPS: replay repaired drifted selectors. Persist each heal onto the ONE step
+      // it healed (by stepIndex), only if the recipe is still the version this replay read — see
+      // persistHealedSteps. The heals ride on the fill step's data (the adapter result's top level
+      // never carried them, so this block was dead code); both places are read.
+      const healed = collectHealedSteps(result);
+      if (healed.length) persistHealedSteps(db, recipe.id, recipe.version, healed, { projectId, runId });
+      // WHOSE FAULT WAS THE FAILURE? (operator ruling 2026-09-24: keep-and-flag.)
+      //
+      // This used to demote on /recipe step failed/i over EVERY step's message joined — with no
+      // classifier at all. PGE 481c00f4 was demoted in the same second a run died with "Target
+      // page, context or browser has been closed"; PacifiCorp 6282e671 after a document-gate
+      // refusal. NEM replay went offline for every production utility on failures that said
+      // nothing about either recipe. And feeding the JOINED text to the classifier fails the
+      // other way: the review step's boilerplate says "handle any MFA/fee", so every failure
+      // would read as an MFA wall and nothing would ever demote.
+      //
+      // So: the failing step's OWN message (extractStageFailureMessage) goes to the one
+      // classifier, demoteOnReplayFailure. Drift it could not heal → demote (and only then a
+      // re-learn). Harness aborts, document gates, missing project data, challenges and outages
+      // → keep. Nothing attributable → keep AND flag for a human. A paused run (MFA/CAPTCHA
+      // wall) is not a failure of anything and never reaches here.
+      // Only a replay that FAILED (not a pause) is judged. A paused run stopped at a challenge.
+      const replayFailed = result && result.ok === false && !(typeof result.pauseReason === "string" && result.pauseReason);
+      const replayVerdict = replayFailed
+        ? (() => {
+          try {
+            return demoteOnReplayFailure(db, recipe.id, extractStageFailureMessage(result), recipe.version, { runId, projectId });
+          } catch {
+            return null; /* best-effort: the run result stands */
+          }
+        })()
+        : null;
+      if (replayVerdict?.action === "flagged") {
+        replayVerdictNote = " The recipe was KEPT (nothing in the failure points at it) and flagged for a human to look at.";
+      } else if (replayVerdict?.action === "kept") {
+        replayVerdictNote = ` The recipe was kept: ${replayVerdict.reason}.`;
+      }
+      if (replayVerdict?.action === "demoted") {
+        // SELF-HEAL: the system already has a safe autonomous learner (never clicks
+        // final submit, respects the portal kill-switch) — queue a fresh learn of
+        // this portal instead of leaving a manual "re-record it" dead end. One-shot
+        // event-driven enqueue (maxRetries 0 — a failed learn must not relaunch
+        // browsers on a timer), deduped against an already-queued learn.
+        let relearnQueued = false;
+        try {
+          if (process.env.ANTHROPIC_API_KEY && !portalPaused && recipe.portalUrl && process.env.AUTO_RELEARN_STALE !== "0") {
+            // Dedupe portal-wide, not per-project: the stale recipe is shared by
+            // every project on this AHJ/utility, and N projects hitting it must
+            // not queue N identical browser learns of the same portal. Also skip
+            // if this portal was already re-learned recently (6h window).
+            const pending = db.get<Row>(
+              `SELECT id FROM job_queue WHERE job_type = 'auto_learn' AND payload LIKE ?
+                 AND (status IN ('pending','running') OR created_at > ?) LIMIT 1`,
+              [`%${recipe.portalUrl}%`, new Date(Date.now() - 6 * 3600_000).toISOString()],
+            );
+            if (!pending) {
+              void import("./jobQueue").then(({ enqueueJob }) => {
+                enqueueJob(db, "auto_learn", {
+                  scope: track === "nem" ? "utility" : "ahj",
+                  portalUrl: recipe.portalUrl,
+                  createdBy: "auto-relearn (stale recipe)",
+                  permitType: track === "nem" ? undefined : (track === "electrical" || track === "mpu" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
+                  discipline: trackDiscipline,
+                }, { projectId, priority: 5, maxRetries: 0 });
+              }).catch(() => null);
+              relearnQueued = true;
+            }
+          }
+        } catch { /* self-heal is best-effort */ }
+        result = {
+          ...result,
+          recipeStale: true,
+          message: `${result.message || extractStageFailureMessage(result)} — this recipe looks stale (the portal likely changed) and has been flagged for re-recording. ${relearnQueued ? "A fresh learn of the portal was queued automatically; re-stage once it finishes." : "Re-record it, then re-stage."}`,
+        };
+      }
+    } else if (runActorLabel === "AutoLearnAdapter") {
+      // Self-seed: learn + stage in one pass. Reuse the entry URL already resolved for the
+      // credential match; pass the client-overlaid stagedProject so the learner fills authoritative
+      // contractor identity (not the raw parse).
+      // TRACK/HOST SANITY GATE: a permit (AHJ) track must never launch a known utility-
+      // platform host — a PowerClerk URL reaching this point means the resolution chain
+      // picked up the NEM portal (e.g. a poisoned KB row), and learning the wrong portal
+      // both wastes the pass AND mis-keys the recorded recipe to the AHJ scope.
+      const trackHostConflict = track !== "nem" && isUtilityPlatformUrl(credentialUrl);
+      if (!credentialUrl) {
+        // No entry URL to launch the learner — stop and surface rather than guess a portal.
+        const msg = process.env.ANTHROPIC_API_KEY
+          ? `No portal URL is known for ${portalLabel}, and automatic research couldn't confirm one either. Record the portal once (or add its URL to the knowledge base) and re-stage.`
+          : `No portal URL is known for ${portalLabel}, so the universal learner can't seed a recipe yet. Record the portal once (or add its URL to the knowledge base) and re-stage — with an ANTHROPIC_API_KEY configured this would have been researched automatically.`;
+        result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+      } else if (trackHostConflict) {
+        const msg = `The only portal URL known for ${portalLabel} is a utility interconnection portal (${credentialUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. Staging stopped so the permit isn't filed in the wrong system. Record the AHJ's permit portal once (or add its URL to the knowledge base) and re-stage.`;
+        addAuditLog(db, projectId, "system", "submit gate", "portal.track_host_conflict", { track: track ?? "permit", url: credentialUrl });
+        result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+      } else {
+        try {
+          const { autoLearnPortal } = await import("./autoLearn");
+          const seed = await autoLearnPortal(db, projectId, {
+            scope: track === "nem" ? "utility" : "ahj",
+            portalUrl: credentialUrl,
+            createdBy: "auto-seed (staging)",
+            permitType: track === "nem" ? undefined : (track === "electrical" || track === "mpu" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
+            // The recipe key's discipline for this track - MUST be the same value the
+            // lookup above asked for, or the learned recipe is never found again.
+            discipline: trackDiscipline,
+            // The self-seed IS this track's staging run when no trusted recipe exists yet, so the
+            // operator's delegated submit has to reach it here too — otherwise the only portals it
+            // can never file on are precisely the ones with no recipe.
+            allowFinalSubmit: allowFinalSubmit === true,
+            project: stagedProject,
+            // Match the hand-coded/replay adapters' headed setting so the self-seed opens a visible
+            // browser locally and leaves it open at review for the human (headless on a server).
+            headless: stageOptions.headless,
+          });
+          result = seedOutcomeToStageResult(seed);
+          // Say WHY this stage learned instead of replaying, so a re-learn on an AHJ that
+          // already had a recipe doesn't look like the recipe went missing.
+          if (droppedLegacyRecipeDiscipline && typeof result.message === "string") {
+            result.message = `${result.message} (This AHJ's existing recipe was recorded for the ${droppedLegacyRecipeDiscipline} permit, so the ${track} track learned its own — each discipline now keeps a separate recipe.)`;
+          }
+        } catch (err) {
+          // Learner couldn't even start (network/login/validation) — stop and surface.
+          const msg = `Universal learn failed before staging: ${err instanceof Error ? err.message : String(err)}. Resolve the blocker and re-stage, or record the portal manually.`;
+          result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+        }
+      }
+    } else if (runActorLabel === "OregonEPermittingAdapter") {
+      result = await stageWithAccela(stagedProject, files, stageOptions);
+    } else if (runActorLabel === "PowerClerkAdapter") {
+      result = await stageWithPowerClerk(stagedProject, files, stageOptions);
+    } else if (runActorLabel === "NoAdapter" || autoSeedEnabled) {
+      // Nothing REAL to drive: no recorded recipe and either no adapter for this real
+      // portal (NoAdapter — including PORTAL_AUTOSEED=0, where the "legacy hand-coded
+      // fallback" only exists for Accela/PowerClerk) or no known portal at all in
+      // real mode. Do NOT run the mock — a mock "staged to review" that never touched
+      // the portal moves a real filing to awaiting_human_submit, and the mock approve
+      // path then fabricates MOCK-/CONF- permit numbers staff would trust. Stop and
+      // surface the actionable blocker instead.
+      const where = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
+      const msg = `No portal automation is available for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
+      result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+    } else {
+      // The mock stands in ONLY when there is no real portal AND auto-seed is off —
+      // offline dev, the smoke test, and the simulated rehearsal. A project with a
+      // real portal can never reach it in any mode.
+      result = await stageWithMockPortal(stagedProject, files, reviewerReport);
+    }
+  } catch (err) {
+    // An adapter that THROWS staged nothing we can vouch for. Recorded as a failed run (the row
+    // above already exists), never as a 500 that leaves the row 'running' forever.
+    const msg = `Portal run errored: ${err instanceof Error ? err.message : String(err)}`;
+    result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
+  }
+
+  // THE RUN'S OUTCOME COMES FROM ONE FUNCTION (derivePortalRunOutcome), and it answers from what
+  // the adapter REPORTS happened — never from what this call was permitted to do. A run in which
+  // automation clicked a final submit is 'submitted' (the portal confirmed) or
+  // 'submitted_unconfirmed' (it did not say), with a submissions row written in the same
+  // transaction — never 'failed': production runs 08909df6 and 5864e8ef clicked the submit and
+  // were recorded failed with no submission, so the duplicate guard let a second filing through.
+  try {
+    const outcome = derivePortalRunOutcome(result);
+    const pauseReason = outcome.pauseReason;
+    const clicked = outcome.finalSubmitClicked;
+    const acceptedFiling = outcome.status === "submitted";
+    const adapterFailed = outcome.status === "failed";
+    const failureMessage = adapterFailed
+      ? `${outcome.harnessAbort ? "[our browser/harness went away — this says nothing about the portal] " : ""}${extractStageFailureMessage(result)}${replayVerdictNote}`
+      : "";
+    // Permit/record number + record link scraped off the completion page after a final submit.
+    const capturedPermitNumber = clicked ? String((result as Record<string, unknown>).capturedPermitNumber || "").trim() : "";
+    const capturedConfirmation = clicked ? String((result as Record<string, unknown>).capturedConfirmationNumber || "").trim() : "";
+    const capturedRecordLink = clicked ? String((result as Record<string, unknown>).capturedRecordLink || "").trim() : "";
+    // WHERE THE EVIDENCE LIVES. Captured on EVERY outcome, not just a successful one: a run
+    // that was refused is exactly when someone needs to see the page. evidenceDir is the
+    // folder of page shots; outcomeShotPath is the single picture of how the filing ended
+    // (the completion page and its record number, or the refusal).
+    const evidenceDir = String((result as Record<string, unknown>).evidenceDir
+      ?? (result as Record<string, unknown>).debugDir ?? "").trim();
+    const outcomeShotPath = String((result as Record<string, unknown>).outcomeShotPath ?? "").trim();
+    const runSeconds = (() => {
+      const started = Date.parse(ts);
+      return Number.isFinite(started) ? Math.max(0, Math.round((Date.now() - started) / 1000)) : 0;
+    })();
+    const runStatus = outcome.status;
+    // SELF-HEAL: a failed/paused STAGING run produces the same debug bundle the
+    // learn path already triages automatically — enqueue the triage agent here
+    // too so production staging failures get root-caused (and safe fixes applied)
+    // without an operator manually opening the bundle. Best-effort, opt out with
+    // RUN_TRIAGE=off; the enqueue self-kicks the worker.
+    try {
+      const debugDir = String((result as Record<string, unknown>).debugDir ?? "");
+      const gapMissing = Array.isArray((result as Record<string, unknown>).gapFillMissing) && ((result as Record<string, unknown>).gapFillMissing as unknown[]).length > 0;
+      if ((runStatus === "failed" || pauseReason || gapMissing) && debugDir && process.env.RUN_TRIAGE !== "off") {
+        const triageRunId = debugDir.split(/[\\/]/).filter(Boolean).pop() || "";
+        if (triageRunId) {
+          void import("./jobQueue").then(({ enqueueJob }) => {
+            enqueueJob(db, "run_triage", { runId: triageRunId }, { projectId, priority: 3 });
+          }).catch(() => null);
+        }
+      }
+    } catch { /* triage is best-effort */ }
+    if (clicked) {
+      addAuditLog(db, projectId, "portal_bot", runActorLabel, "portal.auto_submitted", {
+        track: track ?? "permit", runId, finalSubmitClickedByAutomation: true, feePaymentAutomated: false,
+        outcome: outcome.submissionVerdict, runStatus,
+        // Who approved THIS run (null when a click happened without one — which the gate forbids,
+        // and which is recorded here all the same: a click is a fact, not a permission).
+        approvedBy: runApproval?.approver ?? null,
+      });
     }
 
-    addAuditLog(db, projectId, "portal_bot", runActorLabel, pauseReason ? "portal.paused_for_human" : adapterFailed ? "portal.run_failed" : "portal.staged_to_review", {
-      runId,
-      portalProfileId,
-      portalType,
-      finalSubmitClickedByAutomation: false,
-      ...(adapterFailed ? { failureReason: failureMessage } : {}),
-      mustShowAhjPreviewWindow: reviewerReport.finalSubmitGate.mustShowAhjPreviewWindow,
-      finalSubmitButtonAloneIsEnough: reviewerReport.finalSubmitGate.finalSubmitButtonAloneIsEnough,
-    });
-  });
+    // Tag the run + submission with the track being staged so each filing (NEM,
+    // building, electrical, combo) shows separately in the submittal-tracks panel.
+    const permitTypeTag = track ?? "permit";
+    const submissionType = track === "nem" ? "interconnection" : "permit";
+    const trackLabelText = track ? `${permitTypeTag.toUpperCase()} ` : "";
 
+    // The self-seed/learn can run for minutes (a live browser pass); the project may be deleted or
+    // reset during that window. Fail cleanly if it vanished (deleteProject also removed the run row).
+    if (!db.get<{ id?: string }>("SELECT id FROM projects WHERE id = ?", [projectId])) {
+      throw new HttpError(409, "The project was deleted or reset while the portal run was in progress, so the run could not be recorded. Re-create the project and re-stage. (Any browser the bot opened may still be at the portal.)");
+    }
+
+    db.transaction(() => {
+      // The row inserted as 'running' before the adapter started — finished here, by the derived
+      // outcome (the only writer of a stage run's final status).
+      db.run(
+        `UPDATE portal_runs SET status = ?, finished_at = ?, error_message = ?, human_action_required = ?,
+           screenshots_path = ?, logs_path = ?, result_json = ?, pause_reason = ?
+         WHERE id = ?`,
+        [runStatus, nowIso(), failureMessage, 1,
+          // A FILE, never a folder: /portal-runs/:id/review-screenshot sendFile()s this column.
+          outcomeShotPath,
+          // logs_path: the learn-run debug bundle folder (set by the self-seed path) — links a
+          // failed/paused run straight to its forensic artifacts under data/learn-runs/.
+          String((result as Record<string, unknown>).debugDir ?? ""),
+          // Persist WHICH adapter actually drove this run — the autopilot approve path
+          // must never mock-submit a run that a real adapter staged (see autopilot.ts).
+          asJson({ ...result, actor: runActorLabel, harnessAbort: outcome.harnessAbort || undefined, submissionVerdict: outcome.submissionVerdict ?? undefined }),
+          pauseReason, runId],
+      );
+
+      db.run(
+        `INSERT INTO submissions
+          (id, project_id, portal_profile_id, submission_type, permit_type, status, application_number, permit_number,
+           confirmation_number, submitted_at, submitted_by, screenshots_path, notes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          submissionId,
+          projectId,
+          safePortalProfileId,
+          submissionType,
+          permitTypeTag,
+          outcome.submissionStatus,
+          "",
+          capturedPermitNumber,
+          capturedConfirmation,
+          clicked ? ts : null,
+          clicked ? `automation (final submit approved by ${runApproval?.approver || "no recorded approver"})` : "",
+          evidenceDir,
+          clicked
+            // WHAT WAS FILED, WHEN, AND WHERE THE PROOF IS — on the record itself, so a
+            // completed run can be verified without reading a log. The elapsed time is the
+            // measured cost of one replay: what a filing takes when nobody has to watch it.
+            ? (acceptedFiling
+              ? `${trackLabelText}${portalLabel} submitted by automation after a named approval (application submit only; no fee payment).`
+                + `${capturedPermitNumber ? ` Record ${capturedPermitNumber}.` : ""}`
+                + ` Confirmed ${nowIso()}${runSeconds ? ` after ${runSeconds}s` : ""}.`
+                + `${outcomeShotPath ? ` Completion page: ${outcomeShotPath}` : ""}`
+              : `${trackLabelText}${portalLabel}: automation CLICKED the final submit, and the portal did not confirm the filing`
+                + ` (${outcome.submissionVerdict ?? "unknown"}). Verify on the portal whether it was filed before anything is staged or clicked again.`
+                + `${outcomeShotPath ? ` Page: ${outcomeShotPath}` : ""}`)
+            : pauseReason
+              ? `${trackLabelText}${portalLabel} run PAUSED for a human at a ${pauseReason} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`
+              : adapterFailed
+                ? `${trackLabelText}${portalLabel} run FAILED before review — nothing was staged on the portal. ${failureMessage}`
+                : `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.`,
+          ts,
+        ],
+      );
+
+      db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [
+        // On failure, an MFA/CAPTCHA pause, or an UNCONFIRMED click, leave the project in its prior
+        // status — never advance it to awaiting_human_submit for a run that staged nothing, and never
+        // to 'submitted' on a filing the portal did not confirm (the submissions row and the
+        // duplicate guard carry the click).
+        acceptedFiling ? "submitted" : (pauseReason || adapterFailed || clicked) ? detail.project.status : "awaiting_human_submit",
+        clicked
+          ? (acceptedFiling
+            ? `${trackLabelText}${portalLabel} submitted by automation (approved run)${capturedPermitNumber ? ` — record ${capturedPermitNumber}` : ""}. Tracking status.`
+            : `${trackLabelText}${portalLabel}: final submit CLICKED by automation, not confirmed by the portal — verify on the portal before anything else.`)
+          : pauseReason
+            ? `${trackLabelText}${portalLabel} run paused at a ${pauseReason} challenge — not staged. Complete it in the open browser, then re-stage.`
+            : adapterFailed
+              ? `${trackLabelText}${portalLabel} run failed — not staged. ${failureMessage}`
+              : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.`,
+        // THE THREE OUTCOMES A PROSE LINE COULD NEVER BE FILTERED ON. A paused run and a failed
+        // run BOTH leave the status untouched at its pre-run value, so status alone cannot tell
+        // an operator that anything happened — before this column, the only difference between
+        // "finish the MFA challenge in the browser that is still open" and "the adapter died,
+        // retry" was a sentence.
+        (clicked ? "auto_submitted"
+          : pauseReason ? "staging_paused"
+          : adapterFailed ? "staging_failed"
+          : "staged_for_review") satisfies StageDetail,
+        nowIso(),
+        projectId,
+      ]);
+
+      // Persist the captured permit/record number + record link onto the track's tracking
+      // target so the status poller follows it and the operator sees the number + link.
+      if (clicked && (capturedPermitNumber || capturedRecordLink)) {
+        const tgt = db.get<Row>(
+          "SELECT id FROM permit_check_targets WHERE project_id = ? AND permit_type = ? AND active = 1 ORDER BY updated_at DESC LIMIT 1",
+          [projectId, permitTypeTag],
+        );
+        if (tgt) {
+          db.run(
+            "UPDATE permit_check_targets SET permit_number = COALESCE(NULLIF(?, ''), permit_number), tracking_url = COALESCE(NULLIF(?, ''), tracking_url), updated_at = ? WHERE id = ?",
+            [capturedPermitNumber, capturedRecordLink, nowIso(), text(tgt.id)],
+          );
+        }
+        db.run("UPDATE portal_runs SET tracking_url = COALESCE(NULLIF(?, ''), tracking_url) WHERE id = ?", [capturedRecordLink, runId]);
+      }
+
+      addAuditLog(db, projectId, "portal_bot", runActorLabel,
+        clicked ? "portal.final_submit_clicked" : pauseReason ? "portal.paused_for_human" : adapterFailed ? "portal.run_failed" : "portal.staged_to_review", {
+          runId,
+          portalProfileId,
+          portalType,
+          runStatus,
+          finalSubmitClickedByAutomation: clicked,
+          ...(adapterFailed ? { failureReason: failureMessage, harnessAbort: outcome.harnessAbort } : {}),
+          mustShowAhjPreviewWindow: reviewerReport.finalSubmitGate.mustShowAhjPreviewWindow,
+          finalSubmitButtonAloneIsEnough: reviewerReport.finalSubmitGate.finalSubmitButtonAloneIsEnough,
+        });
+    });
+
+  } catch (err) {
+    // Recording the outcome failed. The row must not stay 'running': this process is alive, so
+    // the next stage of the track would read it as a run in flight and refuse forever.
+    try {
+      db.run("UPDATE portal_runs SET status = 'failed', finished_at = ?, error_message = ? WHERE id = ? AND status = 'running'",
+        [nowIso(), `Recording the run outcome failed: ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`, runId]);
+    } catch { /* the original error is the one to surface */ }
+    throw err;
+  }
   return getProjectDetail(db, projectId);
 }
 
@@ -7980,7 +8202,7 @@ export function captureConfirmation(
       [projectId, ...(scopeByType ? [runPermitType] : [])],
     );
     const fallback = awaiting.length ? [] : db.query<Row>(
-      `SELECT id, permit_type, submission_type FROM submissions WHERE project_id = ? AND status IN ('failed', 'paused_for_human')${scopeByType ? " AND permit_type = ?" : ""}
+      `SELECT id, permit_type, submission_type FROM submissions WHERE project_id = ? AND status IN ('failed', 'paused_for_human', 'submitted_unconfirmed')${scopeByType ? " AND permit_type = ?" : ""}
        ORDER BY created_at DESC LIMIT 1`,
       [projectId, ...(scopeByType ? [runPermitType] : [])],
     );
