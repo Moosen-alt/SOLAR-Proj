@@ -43,6 +43,13 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   present): PacifiCorp + PGE NEM, Accela Coos Bay then Salem, Happy Valley EnerGov. Tyler login has 2FA — the run parks at
   the code prompt with the window open and the OPERATOR types the code (automation never does MFA). No 54-portal login sweep.
 - Research must work for ANY new state: IL/TX are the development set; acceptance runs on held-out states.
+- PRESENTATION: Tue 2026-09-29, demo kit only (no production, no live portal in the room). Prospects' jobs are in FL, TX, UT
+  and CA. The bar is a supervised pilot we can actually run for them, and a 100-project customer after that.
+- FINAL SUBMIT: the operator wants to submit from the dashboard (Approve & Submit -> the bot clicks the portal's submit), so
+  PORTAL_ALLOW_FINAL_SUBMIT stays on; it becomes acceptable only with the per-run approval gate (bot round R2 + W1 A2)
+  verified. CLAUDE.md hard rule 1 is to be reworded to match — with the operator's OK — once that gate is verified.
+- Readiness reports (2026-09-24): `.probe/readiness/PLAN.md` (portals), `.probe/presentation/READINESS.md` (claims + demo;
+  cut-offs assumed Mon — shift one day), `.probe/volume/DAY1-OF-100.md` (volume, ops, onboarding).
 
 **Operator actions still open (2026-09-24):**
 - Oregon 36/25 psf minimum ground snow: the verified write (`PUT /api/code-profiles/verify`, payload in
