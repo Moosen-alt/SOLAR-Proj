@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../../shared/src/types";
-import { RecipeAdapter, fingerprintBoost, healTargetOf, scoreHealCandidate, rankHealCandidates, decideHeal, HEAL_MIN_SCORE, HEAL_TIE_MARGIN } from "./recipeAdapter";
+import { RecipeAdapter, fingerprintBoost, healTargetOf, scoreHealCandidate, rankHealCandidates, decideHeal, sideVerdict, HEAL_MIN_SCORE, HEAL_TIE_MARGIN } from "./recipeAdapter";
 
 // Browser-free tests for the recipe replay loop. We inject a fake Playwright page
 // so we can assert the safety-critical behaviours (final-submit denylist, stop-at-
@@ -286,6 +286,10 @@ async function testFlaggedFinalSubmitNotClickedWithoutAutoSubmit() {
   assert.equal(result.ok, true);
   assert.deepEqual(log.clicks, [], "guided-manual must never click the final submit, even when flagged");
   assert.equal(result.data?.finalSubmitClicked, false);
+  // The refused final submit is where a guided run ENDS — not a skipped step that makes a
+  // correct run read as incomplete — and the report says why it was left for a human.
+  assert.deepEqual((result.data as { skipped?: string[] }).skipped ?? [], [], "the refused final submit is not a skipped step");
+  assert.ok(((result.data as { agingNotes?: string[] }).agingNotes ?? []).some((n) => /final submit left for a human/.test(n)), "the report names why");
 }
 
 // PAY_FEE is ALWAYS blocked, even in autoSubmit and even if (wrongly) flagged.
@@ -696,6 +700,11 @@ async function testHealScoringUnit() {
   assert.equal(scoreHealCandidate(f("Completely Different", "Inverter Information", { name: "x" }), t), -1, "no label anchor → never a candidate");
   const tie = decideHeal(rankHealCandidates([f("Manufacturer", "Equipment"), f("Manufacturer", "Equipment")], healTargetOf({ action: "select", note: "Manufacturer" } as RecipeStep)));
   assert.equal(tie.kind, "ambiguous", "equal candidates are a refusal");
+  // A section that reads as TWO sides ("Electrical Contractor": electrical, and "contractor" for
+  // the installer) still counts for the electrician, and loses to the installer's own section.
+  assert.ok(sideVerdict("electrical", "Electrical Contractor") > 0, "the electrician's section counts for the electrician");
+  assert.ok(sideVerdict("installer", "Installer/Equipment Contractor") > sideVerdict("installer", "Electrical Contractor"), "the installer's own section beats the shared word");
+  assert.equal(sideVerdict("installer", "PV Module Information"), -1);
   const weak = decideHeal(rankHealCandidates([f("Manufacturer Name Of Record", "")], healTargetOf({ action: "select", note: "manufacturer" } as RecipeStep)));
   assert.equal(weak.kind, "none", `a contains-only label with nothing else agreeing is below the minimum (${HEAL_MIN_SCORE})`);
 }

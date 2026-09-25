@@ -906,6 +906,21 @@ export class RecipeAdapter extends BasePortalAdapter {
         break;
       }
 
+      // THE RECORDED FINAL SUBMIT IS WHERE A GUIDED RUN ENDS. A learn records the filing click
+      // as a flagged step (often with no stopForReview before it). When the gate refuses it — no
+      // approval for this run, the env switch off, an invalid shape — that is the review stop
+      // doing its job, not a step that failed: stop here exactly as stopForReview does, and say
+      // why in the report. (Counted as a "skipped" step it made every correct run read as
+      // incomplete.)
+      if (isFinalSubmitStep(step) && !pastReview) {
+        const refusals = this.finalSubmitRefusalsNow();
+        if (refusals.length) {
+          this.agingNotes.push(`final submit left for a human (not clicked: ${refusals.join("; ")})`);
+          await this.runGapFill(this.page);
+          this.gapFilledPage = await this.pageIdentity().catch(() => "");
+          break;
+        }
+      }
       if (step.action === "stopForReview") {
         if (!this.options.autoSubmit) {
           // Gap-fill the LAST data section once more before review: it is not followed by an
@@ -1316,7 +1331,15 @@ export class RecipeAdapter extends BasePortalAdapter {
         if (driftFail) {
           let sought = 0;
           while (sought < DRIFT_SEEK_PAGES && await this.pageIsPassThrough()) {
-            const cont = this.page.getByRole("link", { name: /continue application/i }).first();
+            // THE PORTAL'S OWN ADVANCE, AS THE RECIPE NAMES IT: the advance step that just ran
+            // ("Next" on PowerClerk and SPAs), else Accela's "Continue Application".
+            const advName = String(step.selector?.name || step.selector?.text || "").trim();
+            const byRecipe = advName && /^advance\b/i.test(String(step.note ?? ""))
+              ? this.page.getByRole(step.selector?.role === "link" ? "link" : "button", { name: advName, exact: true })
+              : null;
+            const cont = byRecipe && (await byRecipe.count().catch(() => 0)) > 0
+              ? byRecipe.first()
+              : this.page.getByRole("link", { name: /continue application/i }).first();
             const has = await cont.count().catch(() => 0);
             if (!has) break;
             // THROUGH THE CHOKEPOINT, AS A PASS-THROUGH. A read-only page with nothing to fill
@@ -3411,7 +3434,24 @@ export class RecipeAdapter extends BasePortalAdapter {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ps = (globalThis as any)[g];
       if (!ps) return {};
-      const reviewPage = ps.reviewPageInPage();
+      // THE PAGE, NOT ITS STEP NAVIGATOR. A wizard lists every step on every page ("Review &
+      // Submit" in PowerClerk's step bar, the SPA's stepper header), so the whole body names the
+      // review step on page one. The shared predicate reads the page's LAID-OUT text (innerText,
+      // so block boundaries stay word boundaries — a detached clone's text glues "Logout" to
+      // "Step 4: Review" and the review page stops naming itself) with the navigator's text cut.
+      // Deliberately NOT header/footer: a portal may put the page's own title in a <header>, and
+      // losing it would un-name a review page — the direction that files.
+      let pageText = document.body ? (document.body.innerText || "") : "";
+      const navs = Array.from(document.querySelectorAll("nav, [role=navigation], [role=tablist], [aria-label*=step i], [class*=stepper], [class*=steps], [class*=stepNav], [class*=step-nav], [class*=progress]"))
+        .concat(Array.from(document.querySelectorAll("ol, ul")).filter((list) => {
+          const items = Array.from(list.children);
+          return items.length >= 3 && items.every((li) => ((li as HTMLElement).innerText || "").trim().length < 60);
+        }));
+      for (const el of navs) {
+        const t = ((el as HTMLElement).innerText || "").trim();
+        if (t) pageText = pageText.split(t).join(" \n ");
+      }
+      const reviewPage = document.body ? ps.isReviewPageText(pageText) : undefined;
       const readOnlyPage = ps.readOnlyPageInPage();
       const filing = Array.from(document.querySelectorAll("button, a, input[type=submit], input[type=button], input[type=image], [role=button], [role=link]"))
         .filter((el) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 2 && r.height > 2; })
@@ -4125,7 +4165,9 @@ export class RecipeAdapter extends BasePortalAdapter {
       return loc.nth(byId[0].i);
     }
     if (side) {
-      const own = probe.filter((p) => p.visible && sideVerdict(side.side, p.section) === 1);
+      const graded = probe.filter((p) => p.visible).map((p) => ({ ...p, v: sideVerdict(side.side, p.section) }));
+      const best = Math.max(0, ...graded.map((p) => p.v));
+      const own = best > 0 ? graded.filter((p) => p.v === best) : [];
       if (own.length === 1) {
         this.agingNotes.push(`"${String(step.note ?? step.action).slice(0, 40)}" matched ${n} controls — the ${side.side} section (${own[0].section.slice(0, 30)}) is the one its binding names`);
         return loc.nth(own[0].i);
@@ -5919,17 +5961,19 @@ const SIDES: Array<{ side: string; field: RegExp; section: RegExp }> = [
   { side: "electrical", field: /^(electrical|electrician)/i, section: /\belectric/i },
 ];
 
-/** Does this section heading belong to the side a binding names? 1 = only that side's words,
- *  -1 = only another side's, 0 = neither or both ("Electrical Contractor" reads as installer
- *  AND electrical, so it proves nothing for the installer). */
-export function sideVerdict(side: string, section: string): 1 | 0 | -1 {
+/** Does this section heading belong to the side a binding names? 1 = only that side's words;
+ *  0.5 = that side's AND another's ("Electrical Contractor" reads as installer — "contractor" —
+ *  and electrical); -1 = only another side's; 0 = no side at all. Graded, so the section that is
+ *  ONLY the installer's beats one that is also the electrician's, and the electrician's own
+ *  section still counts for the electrician. */
+export function sideVerdict(side: string, section: string): 1 | 0.5 | 0 | -1 {
   const s = String(section ?? "");
   if (!s.trim()) return 0;
   const own = SIDES.find((x) => x.side === side);
   if (!own) return 0;
   const mine = own.section.test(s);
   const other = SIDES.some((x) => x.side !== side && x.section.test(s));
-  return mine && !other ? 1 : !mine && other ? -1 : 0;
+  return mine && !other ? 1 : mine && other ? 0.5 : other ? -1 : 0;
 }
 
 /** The heal target for a recorded step: recorded attributes first, derived ones otherwise. */

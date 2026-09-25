@@ -94,6 +94,38 @@ console.log("\n2. MUST-PASS: a read-only page that is NOT terminal is clicked th
   await r.close();
 }
 
+console.log("\n3. MUST-PASS: a form page whose STEP BAR lists the review step is not terminal; a pass-through page advanced by the recipe's own \"Next\"");
+{
+  // The SPA prints every step in a stepper header ("5 Review your application") on every page.
+  // Read as the page's own text, that named page ONE the review step and refused its Next.
+  const w = buildWizard("spa", "extra_readonly_page");
+  const r = await startSyntheticReplica({ wizard: w });
+  const lbl = (label: string, field: string): RecipeStep => ({ action: "fill", selector: { label }, note: label, field });
+  const steps: RecipeStep[] = [
+    { action: "goto", value: r.entryUrl, note: "open the application" },
+    lbl("First name", "installerFirstName"), lbl("Last name", "installerLastName"), lbl("Company", "installerCompanyName"),
+    lbl("Email", "installerEmail"), lbl("Phone", "installerPhone"),
+    { action: "click", selector: { role: "button", name: "Next", exact: true }, note: "advance: Next" },
+    lbl("Street address", "street"), lbl("City", "city"), lbl("ZIP", "zip"),
+    { action: "stopForReview" },
+  ];
+  const values = {
+    installerFirstName: "Philippa", installerLastName: "Ashgrove", installerCompanyName: "Kestrel Energy LLC",
+    installerEmail: "office@kestrel.example.com", installerPhone: "541-555-0199", street: "918 Quimby Ave", city: "Fernhollow", zip: "97498",
+  };
+  const recipe = { ...recipeOf(r.base, steps), portalUrl: r.entryUrl };
+  const { result, adapter, page, close } = await run(recipe, values);
+  check("the first page's Next was NOT refused (the step bar is not the page)", adapter.guardRefusals.length === 0, adapter.guardRefusals.join(" | "));
+  check("the applicant step reached the server", r.state.values["app.company"] === values.installerCompanyName, JSON.stringify(r.state.values));
+  const drift = ((result.data as { driftWarnings?: string[] })?.driftWarnings ?? []).join(" | ");
+  check("the \"Before you continue\" page was clicked through with the recipe's own Next", /clicked through 1 page/i.test(drift), `${drift.slice(0, 300)} ${String(result.message).slice(0, 200)}`);
+  const street = await page.locator("input[formcontrolname]").evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value)).catch(() => [] as string[]);
+  check("the Property fills landed on the page after it", street.includes(values.street), JSON.stringify(street));
+  check("no filing POST", r.state.submitPosts.length === 0);
+  await close();
+  await r.close();
+}
+
 await browser.close();
 if (failures) { console.error(`\ndriftSeekReview: ${failures} check(s) FAILED`); process.exit(1); }
 console.log("\ndriftSeekReview: all checks passed (real Chromium, synthetic replica)");
