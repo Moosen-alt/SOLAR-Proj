@@ -408,7 +408,9 @@ async function replayCell(flavor: Flavor, mutation: Mutation, learned: LearnOutc
     row.serverReviewReached = s.reachedReview;
     row.replayReachedReview = row.status === "ran" && s.reachedReview;
     row.reviewVia = replica.state.reviewVia;
-    row.allFieldsCorrect = row.status === "ran" && s.allCorrect && row.skippedSteps === 0;
+    // STRICT: the server holds every value AND the bot's own run ended clean (a run that reports
+    // failure needs a person to look, whatever the server holds) AND nothing was skipped.
+    row.allFieldsCorrect = row.status === "ran" && s.allCorrect && row.skippedSteps === 0 && row.adapterOk;
     row.fieldsCorrect = s.fieldsCorrect;
     row.fieldsExpected = s.fieldsExpected;
     row.blanked = s.blanked;

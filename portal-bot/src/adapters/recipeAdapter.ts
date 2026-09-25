@@ -1128,6 +1128,18 @@ export class RecipeAdapter extends BasePortalAdapter {
           // picks one; breaking out instead turned a timing artefact into a dead recipe.
           const isAmbiguous = err instanceof Error && /strict mode violation/i.test(err.message);
           if ((!isTimeout && !isAmbiguous) || attempt >= RETRY_BACKOFF_MS.length) break;
+          // NEVER RETRY — AND NEVER RELOAD — ON THE REVIEW PAGE. A control that is missing there
+          // belongs to a page this portal does not have (the recipe is longer than the portal),
+          // so waiting cannot produce it, and a reload of a review page is the last thing a
+          // replay should do to it. Measured: three backoffs and reloads per missing upload slot
+          // put the one-page-fewer replays past 200 s, on a page that had already been reached.
+          {
+            const here = await this.pageSafetyContext();
+            if (here.reviewPage === true) {
+              this.driftWarnings.push(`"${String(step.note ?? step.action).slice(0, 44)}" is not on this page, and this page is the portal's REVIEW page — the recipe expects a page this portal does not have; not retried`);
+              break;
+            }
+          }
           if (isAmbiguous) {
             this.agingNotes.push(
               `"${String(step.note ?? step.action).slice(0, 40)}" matched several controls by the time it was acted on — the page was still rendering; retried against the settled page`,

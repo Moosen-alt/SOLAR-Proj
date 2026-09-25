@@ -126,6 +126,37 @@ console.log("\n3. MUST-PASS: a form page whose STEP BAR lists the review step is
   await r.close();
 }
 
+console.log("\n4. A control missing on the REVIEW page is not waited for, retried or reloaded");
+{
+  // The recipe is one page longer than the portal: its upload slot belongs to an attachments page
+  // this portal skips, so the replay stands on the review page looking for it. Three backoffs and
+  // reloads per step put these replays past 200 s; on the review page nothing can appear.
+  const w = buildWizard("accela", "one_page_fewer");
+  const r = await startSyntheticReplica({ wizard: w });
+  const review = w.pages.find((p) => p.kind === "review")!;
+  const pdf = nodePath.join(SMOKE_ARTIFACTS, "B-plan-set.pdf");
+  nodeFs.writeFileSync(pdf, "%PDF-1.4\n%%EOF\n");
+  const steps: RecipeStep[] = [
+    { action: "goto", value: `${r.base}/CitizenAccess/Cap/${review.slug}`, note: "resume the application" },
+    { action: "upload", selector: { css: "input[id$='attachmentEdit_fileUpload']" }, note: "upload plan_set: Plans - Construction", docType: "plan_set" },
+    { action: "stopForReview" },
+  ];
+  const ctx = await browser.newContext();
+  await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
+  const page = await ctx.newPage();
+  const adapter = new RecipeAdapter(recipeOf(r.base, steps), {}, { plan_set: pdf });
+  (adapter as unknown as { page: unknown }).page = page;
+  const t0 = Date.now();
+  const result = await adapter.fillApplication({} as ProjectRecord);
+  const secs = (Date.now() - t0) / 1000;
+  const drift = ((result.data as { driftWarnings?: string[] })?.driftWarnings ?? []).join(" | ");
+  check("the run stops, saying the page is the portal's REVIEW page", result.ok === false && /REVIEW page/.test(drift + String(result.message)), `${String(result.message).slice(0, 200)} | ${drift.slice(0, 200)}`);
+  check("within one attempt's timeout, not three backoffs and reloads (< 60 s)", secs < 60, `took ${secs.toFixed(1)} s`);
+  check("no filing POST", r.state.submitPosts.length === 0);
+  await ctx.close();
+  await r.close();
+}
+
 await browser.close();
 if (failures) { console.error(`\ndriftSeekReview: ${failures} check(s) FAILED`); process.exit(1); }
 console.log("\ndriftSeekReview: all checks passed (real Chromium, synthetic replica)");
