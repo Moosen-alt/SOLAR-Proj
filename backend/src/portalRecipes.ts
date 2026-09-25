@@ -5,7 +5,12 @@ import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text as s } from "./json";
-import { knowledgeProfileKey, knowledgeNameMatchScore } from "./knowledgeBase";
+import { knowledgeProfileKey, knowledgeNameMatchScore, isJunkEntityName, isVerifiedKnowledge } from "./knowledgeBase";
+import { ahjLooksLikeHostname } from "./codeProfiles";
+import {
+  hostFitsTrackAndEntity, portalHostOf, recipeDisciplineForTrack, recipeDisciplineFromSteps, recipeRecordTypeFromSteps,
+  samePortal, scopeForTrack, trackSafeUrl, type HostFit, type PortalEntity, type PortalUrlSource,
+} from "./portalChannel";
 import { isHarnessAbort, looksBotBlocked } from "./runAbort";
 import { certifiedModelFor } from "./cecEquipment";
 import { nowIso } from "./time";
@@ -237,6 +242,253 @@ export function findAnyRecipeForProject(
     [key, discipline, discipline],
   );
   return row ? mapRecipe(row) : findRecipeByNameAlias(db, input, false);
+}
+
+// ---------------------------------------------------------------------------
+// WHOSE PORTAL IS THIS? The evidence hostFitsTrackAndEntity (portalChannel) judges a URL by.
+//
+// Built from the two shared tables that name portals: portal_recipes (every status — a draft
+// still says where its entity files) and permit_utility_knowledge. Only claims that pass the
+// track half of rule 5 count (a PowerClerk URL parked on an AHJ row is the poisoning, not a
+// claim), only rows that name a real entity (the learn benchmark keyed rows on the portal HOST —
+// "Benchmark aca-prod.accela.com" — which is no jurisdiction), and only rows pinned to a state
+// (a same-named AHJ in another state is a different entity). Names are merged with the KB's own
+// alias scorer, so "PGE" and "Portland General Electric" are ONE owner, never "two entities
+// sharing a portal".
+// ---------------------------------------------------------------------------
+const ENTITY_ALIAS_MIN_SCORE = 78;
+function isRealEntityName(name: string): boolean {
+  return Boolean(name.trim()) && !isJunkEntityName(name) && !ahjLooksLikeHostname(name);
+}
+/** A trailing state code is spelling, not identity: "Tigard, OR" is "Tigard". */
+function entityNameCore(name: string): string {
+  return name.trim().replace(/,\s*[A-Za-z]{2}\.?$/, "").replace(/\s+[A-Z]{2}$/, "").trim();
+}
+function sameEntity(stateA: string, nameA: string, stateB: string, nameB: string): boolean {
+  const sa = stateA.trim().toLowerCase();
+  const sb = stateB.trim().toLowerCase();
+  const score = knowledgeNameMatchScore(entityNameCore(nameA), entityNameCore(nameB));
+  if (!sa || !sb) return sa === sb && score === 100;
+  return sa === sb && score >= ENTITY_ALIAS_MIN_SCORE;
+}
+/** "Generic Oregon ePermitting AHJ" names a SHARED portal (the statewide one), not an entity. */
+function declaresSharedPortal(name: string): boolean {
+  return /^generic\b/i.test(name.trim());
+}
+
+export function portalEntityEvidence(
+  db: AppDb,
+  input: {
+    scope: "ahj" | "utility"; state?: string; name?: string;
+    /** Recipes under judgment: a recipe is never evidence for itself (a mis-keyed recipe would
+     *  otherwise make its own wrong host "this entity's portal"). */
+    excludeRecipeIds?: string[];
+  },
+): PortalEntity | null {
+  const scope = input.scope === "utility" ? "utility" : "ahj";
+  const name = s(input.name).trim();
+  const state = s(input.state).trim();
+  if (!name) return null;
+  const excluded = new Set((input.excludeRecipeIds ?? []).filter(Boolean));
+  const trackForScope = scope === "utility" ? "nem" : "permit";
+  type Claim = { url: string; state: string; name: string; verified: boolean };
+  const claims: Claim[] = [];
+  const add = (url: unknown, rowState: unknown, rowName: unknown, verified: boolean) => {
+    const u = s(url).trim();
+    const n = s(rowName).trim();
+    const st = s(rowState).trim();
+    if (!portalHostOf(u) || !trackSafeUrl(trackForScope, u) || !isRealEntityName(n) || !st) return;
+    claims.push({ url: u, state: st, name: n, verified });
+  };
+  for (const row of db.query<Row>(
+    "SELECT id, state, ahj, utility, portal_url FROM portal_recipes WHERE scope_type = ? AND portal_url IS NOT NULL AND portal_url != ''",
+    [scope],
+  )) {
+    if (excluded.has(s(row.id))) continue;
+    add(row.portal_url, row.state, scope === "utility" ? row.utility : row.ahj, false);
+  }
+  // KB: AHJ rows for the AHJ scope; UTILITY-KEYED rows (no AHJ) for the utility scope — an AHJ
+  // row's utility column says which utility serves the city, not where the utility files.
+  // Both columns: reference imports file the link in portal_name, and one row had both inverted.
+  const kbRows = db.query<Row>(
+    scope === "utility"
+      ? `SELECT * FROM permit_utility_knowledge WHERE (ahj IS NULL OR ahj = '') AND utility != ''
+           AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%')`
+      : `SELECT * FROM permit_utility_knowledge WHERE ahj IS NOT NULL AND ahj != ''
+           AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%')`,
+  );
+  for (const row of kbRows) {
+    const verified = isVerifiedKnowledge(row);
+    const rowName = scope === "utility" ? row.utility : row.ahj;
+    add(row.portal_url, row.state, rowName, verified);
+    add(row.portal_name, row.state, rowName, verified);
+  }
+  const own = claims.filter((c) => sameEntity(state, name, c.state, c.name));
+  const sharedPortals = [...new Set(claims.filter((c) => declaresSharedPortal(c.name)).map((c) => c.url))];
+  // Other owners, alias-merged within a state. The label is the first spelling seen.
+  const owners: Array<{ state: string; name: string; label: string }> = [];
+  const otherClaims: Array<{ url: string; owner: string }> = [];
+  for (const c of claims) {
+    if (own.includes(c) || declaresSharedPortal(c.name)) continue;
+    let owner = owners.find((o) => sameEntity(o.state, o.name, c.state, c.name));
+    if (!owner) {
+      owner = { state: c.state, name: c.name, label: `${c.name} (${c.state.toUpperCase()})` };
+      owners.push(owner);
+    }
+    otherClaims.push({ url: c.url, owner: owner.label });
+  }
+  return {
+    scope,
+    state,
+    name,
+    ownPortals: [...new Set(own.map((c) => c.url))],
+    verifiedPortals: [...new Set(own.filter((c) => c.verified).map((c) => c.url))],
+    otherClaims,
+    sharedPortals,
+  };
+}
+
+/** Every portal a recipe drives: its entry URL and each goto step's URL. */
+export function recipePortalUrls(recipe: { portalUrl?: string; steps?: RecipeStep[] }): string[] {
+  const urls = [s(recipe.portalUrl).trim()];
+  for (const st of recipe.steps ?? []) {
+    if (st?.action === "goto" && /^https?:\/\//i.test(s(st.value).trim())) urls.push(s(st.value).trim());
+  }
+  return urls.filter(Boolean);
+}
+
+/** Does this recipe fit the track and the entity — its entry URL AND every portal it navigates
+ *  to (a Tigard EnerGov recipe carried a goto to aca-oregon.accela.com)? The first misfit. */
+export function recipeHostFit(
+  track: string | null | undefined,
+  entity: PortalEntity | null,
+  recipe: { portalUrl?: string; steps?: RecipeStep[] },
+): HostFit & { url: string } {
+  const urls = recipePortalUrls(recipe);
+  if (!urls.length) return { fits: true, code: "ok", reason: "the recipe names no portal URL", url: "" };
+  for (const u of urls) {
+    const fit = hostFitsTrackAndEntity(track, entity, u, "recipe");
+    if (!fit.fits) return { ...fit, url: u };
+  }
+  return { fits: true, code: "ok", reason: "every portal the recipe drives fits", url: urls[0] };
+}
+
+// ---------------------------------------------------------------------------
+// STATEWIDE / SHARED-PORTAL REUSE (operator ruling 2026-09-24).
+//
+// One portal instance often serves many jurisdictions: aca-oregon.accela.com files for every
+// subscribing Oregon city, MyGovernmentOnline for dozens of Texas and Louisiana towns, a county
+// iWorQ for its cities. Keying recipes per jurisdiction meant every city on such a portal
+// started from scratch (Salem's learn reached review 1 time in 11; Lincoln City never did)
+// while a complete recipe for the SAME portal and the SAME application sat one row away.
+//
+// THE RULE (an engine rule, not an Accela patch). When an entity has no complete recipe of its
+// own, a COMPLETE recipe learned for ANOTHER entity may replay for it when ALL of these hold:
+//   - same scope (never across tracks), same state;
+//   - the target's OWN resolved portal (its KB row, draft, or statewide fallback — never the
+//     donor's URL) is the same portal as the donor's entry, and every portal the donor navigates
+//     to is that portal too (never across hosts, never across tenants of a path-tenanted host);
+//   - same discipline, exactly (a legacy '' row never lends), and the donor's recorded record
+//     type is a choice of that discipline (never across record types). A donor that never
+//     recorded its record type cannot prove it files the same application, so it never lends;
+//   - if the target itself ever recorded a record type on this portal, the donor's is the same;
+//     if two donors would lend DIFFERENT record types, nobody lends (we cannot tell which is the
+//     target's);
+//   - the donor is not flagged for a human, and its URL fits the target entity (hostFits…).
+// Per-project and per-entity fields bind from the TARGET project at replay (resolveRecipeFieldValues);
+// the choice is recorded on the run and shown; drift stops the run; the run stops at review.
+//
+// THE UTILITY (NEM) SCOPE NEVER BORROWS. A utility's application program is its own tariff
+// program, and nothing in a project says which program on a shared host the target utility
+// uses — so "same program" can never be established, and two utilities on one host with
+// different programs must not cross. Trackless stages (no discipline) never borrow either.
+// ---------------------------------------------------------------------------
+export interface BorrowedRecipeChoice {
+  recipe: PortalRecipe;
+  learnedFor: string;
+  learnedForState: string;
+  portalHost: string;
+  recordType: string;
+  discipline: string;
+}
+export interface BorrowDecision {
+  choice: BorrowedRecipeChoice | null;
+  reason: string;
+  rejected: Array<{ recipeId: string; learnedFor: string; why: string }>;
+}
+
+export function findBorrowableRecipe(
+  db: AppDb,
+  input: {
+    track: string | null | undefined;
+    state?: string;
+    ahj?: string;
+    utility?: string;
+    /** The TARGET entity's own resolved portal URL, and where it came from. */
+    targetPortalUrl: string;
+    targetSource?: PortalUrlSource;
+    entity: PortalEntity | null;
+  },
+): BorrowDecision {
+  const none = (reason: string, rejected: BorrowDecision["rejected"] = []): BorrowDecision => ({ choice: null, reason, rejected });
+  if (scopeForTrack(input.track) === "utility") return none("a utility (NEM) recipe is never borrowed: the target's program cannot be established");
+  const discipline = recipeDisciplineForTrack(input.track);
+  if (!discipline) return none("a stage with no permit discipline never borrows");
+  const state = s(input.state).trim();
+  const ahj = s(input.ahj).trim();
+  if (!state || !ahj) return none("the project has no state or AHJ to borrow for");
+  const target = s(input.targetPortalUrl).trim();
+  if (!portalHostOf(target)) return none("the AHJ has no portal of its own on file, so there is no portal to match a recipe to");
+  // The target's portal must fit the target. Every donor URL must then be THAT portal (checked
+  // per donor below), so a donor can only ever drive a portal the target itself resolved to.
+  const targetFit = hostFitsTrackAndEntity(input.track, input.entity, target, input.targetSource ?? "kb");
+  if (!targetFit.fits) return none(`the AHJ's own portal does not fit: ${targetFit.reason}`);
+
+  // What the target itself ever recorded as its record type on this portal (any status).
+  const ownTypes = new Set(
+    db.query<Row>("SELECT * FROM portal_recipes WHERE scope_type = 'ahj' AND discipline = ?", [discipline])
+      .filter((r) => sameEntity(state, ahj, s(r.state), s(r.ahj)) && samePortal(s(r.portal_url), target))
+      .map((r) => recipeRecordTypeFromSteps(parseJson<RecipeStep[]>(s(r.steps_json) || "[]", [])).toLowerCase())
+      .filter(Boolean),
+  );
+
+  const rejected: BorrowDecision["rejected"] = [];
+  const eligible: BorrowedRecipeChoice[] = [];
+  const rows = db.query<Row>(
+    `SELECT * FROM portal_recipes WHERE scope_type = 'ahj' AND status = 'complete' AND discipline = ?
+      ORDER BY updated_at DESC, version DESC`,
+    [discipline],
+  );
+  for (const row of rows) {
+    const donor = mapRecipe(row);
+    const learnedFor = donor.ahj;
+    if (sameEntity(state, ahj, donor.state, donor.ahj)) continue; // its own (found by the exact lookup, or deliberately dropped)
+    if (!isRealEntityName(learnedFor)) continue; // benchmark rows keyed on a hostname are no jurisdiction
+    const reject = (why: string) => { rejected.push({ recipeId: donor.id, learnedFor: `${learnedFor} (${donor.state})`, why }); };
+    if (donor.state.trim().toLowerCase() !== state.toLowerCase()) continue; // other states are not candidates at all
+    if (!samePortal(donor.portalUrl, target)) continue; // other portals are not candidates at all
+    if (s(row.flag_reason).trim()) { reject(`flagged for a human: ${s(row.flag_reason).slice(0, 80)}`); continue; }
+    const leaves = recipePortalUrls(donor).find((u) => !samePortal(u, target));
+    if (leaves) { reject(`it navigates off the portal to ${portalHostOf(leaves) || leaves}`); continue; }
+    const recordType = recipeRecordTypeFromSteps(donor.steps);
+    if (!recordType) { reject("it never recorded which record type it files, so it cannot prove it is the same application"); continue; }
+    const stepsDiscipline = recipeDisciplineFromSteps(donor.steps);
+    const typeFits = discipline === "electrical" || discipline === "structural"
+      ? stepsDiscipline === discipline
+      : stepsDiscipline === null;
+    if (!typeFits) { reject(`its record type "${recordType}" is not a ${discipline} application`); continue; }
+    if (ownTypes.size && !ownTypes.has(recordType.toLowerCase())) {
+      reject(`its record type "${recordType}" differs from the one ${ahj} recorded (${[...ownTypes].join(", ")})`);
+      continue;
+    }
+    eligible.push({ recipe: donor, learnedFor, learnedForState: donor.state, portalHost: portalHostOf(target), recordType, discipline });
+  }
+  if (!eligible.length) return none(rejected.length ? "no recipe on this portal qualifies" : "no complete recipe for this portal and discipline exists", rejected);
+  const types = new Set(eligible.map((e) => e.recordType.toLowerCase()));
+  if (types.size > 1) {
+    return none(`recipes on this portal file different record types (${[...new Set(eligible.map((e) => e.recordType))].join(" / ")}) — which one is ${ahj}'s cannot be told`, rejected);
+  }
+  return { choice: eligible[0], reason: `learned for ${eligible[0].learnedFor} on the same portal and record type`, rejected };
 }
 
 // Start (or reset) a recording for a portal. Creates a 'recording' stub keyed by

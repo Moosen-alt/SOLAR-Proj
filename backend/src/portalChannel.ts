@@ -289,15 +289,225 @@ const UTILITY_PLATFORM_HOSTS = [
   "coned.com",         // Con Edison (NY)
   "psegliny.com",      // PSEG Long Island (NY)
   "pseg.com",          // PSE&G (NJ)
+  // Salesforce Experience Cloud. Several utilities run their interconnection intake as a
+  // Salesforce community (<utility>.my.site.com, <utility>.force.com) — the NEM catalog found
+  // no KB row for them and a permit track would have waved one through. RISK, recorded: an AHJ
+  // that genuinely files permits through a Salesforce community would now be refused on the
+  // permit track; none is in the KB today (checked 2026-09-24), and rule 5 fails closed.
+  "force.com",
+  "my.site.com",
 ];
 export function isUtilityPlatformUrl(url: string | null | undefined): boolean {
-  const u = (url || "").toLowerCase();
   // Match on the HOST only. A substring test over the whole URL would flag an AHJ portal
   // whose path merely mentions a utility (".../permits?utility=pge.com/..."), and would
   // also let a lookalike domain ("notpge.com.evil.test") slip past a naive check.
-  let host: string;
-  try { host = new URL(u).hostname; } catch { host = u; }
+  const host = portalHostOf(url) || String(url || "").toLowerCase();
   return UTILITY_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+}
+
+// ── Permit-platform host knowledge (the OTHER direction of rule 5) ──────────────────────
+// Rule 5 is two-way: a permit track never launches a utility portal, AND a NEM track never
+// launches an AHJ permit portal. The second half had no predicate at all — the NEM chain took
+// the first URL any AHJ-keyed KB row offered, so a Coos Bay project's NEM stage could resolve
+// aca-oregon.accela.com. These are the permit-software VENDORS' own domains (a city's own .gov
+// domain is deliberately NOT here: municipal utilities file interconnections on .gov hosts too).
+const PERMIT_PLATFORM_HOSTS = [
+  "accela.com",            // Accela Citizen Access (aca-oregon, aca-prod/<agency>, …)
+  "tylerhost.net",         // Tyler EnerGov CSS (<city>-energovweb.tylerhost.net)
+  "iworq.net",             // iWorQ (<city>.portal.iworq.net)
+  "opengov.com",           // OpenGov / ViewPoint (<city>.portal.opengov.com)
+  "viewpointcloud.com",
+  "smartgovcommunity.com", // SmartGov
+  "citizenserve.com",
+  "mygovernmentonline.org", // MyGovernmentOnline (TX/LA/…) — one host, many jurisdictions
+  "avolvecloud.com",       // ProjectDox
+  "communitycore.com",
+  "bsaonline.com",
+  "permittrax.com",
+  "cloudpermit.com",
+  "permiteyes.us",
+  "civicgov4.com",
+  "govoutreach.com",
+  "mapsonline.net",        // PeopleGIS Simplicity
+  "aspgov.com",
+  "gosolarapp.org",        // SolarAPP+ — an AHJ permit, never an interconnection
+  "etrakit.net",
+];
+export function isPermitPlatformUrl(url: string | null | undefined): boolean {
+  const host = portalHostOf(url);
+  if (!host) return false;
+  return PERMIT_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+}
+
+/** The lower-cased hostname of a portal URL ("" when it is not an http(s) URL). "www." is
+ *  dropped so www.x.gov and x.gov are one portal. */
+export function portalHostOf(url: string | null | undefined): string {
+  const raw = String(url ?? "").trim();
+  if (!/^https?:\/\//i.test(raw)) return "";
+  try {
+    return new URL(raw).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+/** The first path segment of a portal URL, lower-cased — on a path-tenanted host (one Accela
+ *  instance serving many agencies as aca-prod.accela.com/CHINO, …/SANDIEGO) it names the tenant.
+ *  "" when the URL has no path segment or the first one is a page (it carries a dot). */
+export function portalTenantOf(url: string | null | undefined): string {
+  const raw = String(url ?? "").trim();
+  if (!portalHostOf(raw)) return "";
+  try {
+    const seg = new URL(raw).pathname.split("/").filter(Boolean)[0] ?? "";
+    return seg.includes(".") ? "" : seg.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/** Same host (both http(s) URLs). */
+export function sameHost(a: string | null | undefined, b: string | null | undefined): boolean {
+  const ha = portalHostOf(a);
+  return Boolean(ha) && ha === portalHostOf(b);
+}
+
+/** Are two URLs the same PORTAL? Same host, and — when both name a first path segment — the
+ *  same one (a path-tenanted host is a different portal per tenant). A URL with no segment
+ *  (the host root) is compatible with any tenant of its host. */
+export function samePortal(a: string | null | undefined, b: string | null | undefined): boolean {
+  const ha = portalHostOf(a);
+  if (!ha || ha !== portalHostOf(b)) return false;
+  const ta = portalTenantOf(a);
+  const tb = portalTenantOf(b);
+  return !ta || !tb || ta === tb;
+}
+
+/** The recipe scope a track files under: NEM → the utility; every permit track (and a
+ *  trackless legacy stage) → the AHJ. */
+export function scopeForTrack(track: string | null | undefined): "ahj" | "utility" {
+  return track === "nem" ? "utility" : "ahj";
+}
+
+/** THE TRACK HALF of rule 5, both directions: "" when the URL belongs to the other track's
+ *  kind of portal, the URL otherwise. The successor of the one-way permitSafeUrl closure. */
+export function trackSafeUrl(track: string | null | undefined, url: string | null | undefined): string {
+  const value = String(url ?? "").trim();
+  if (!value) return "";
+  if (scopeForTrack(track) === "ahj") return isUtilityPlatformUrl(value) ? "" : value;
+  return isPermitPlatformUrl(value) ? "" : value;
+}
+
+// ── Does this URL belong to THIS track and THIS entity? ─────────────────────────────────
+//
+// ONE TWO-WAY PREDICATE for every place a portal URL is chosen: recipe resolution, the learn
+// entry, KB portal writes, operator-supplied URLs, and research. Three incidents, one shape:
+//   - a ComEd (IL) test project was staged with the PGE (OR) recipe (fe12ed81);
+//   - research resolved Tigard to Accela although Tigard's human-verified row says EnerGov;
+//   - a Tigard KB row points at pgenm.powerclerk.com (PGE's NEM portal).
+// Rule 5 caught only the permit→utility direction, and nothing asked whether the host belongs
+// to the project's OWN utility or AHJ.
+//
+// The entity carries its evidence (built from the DB by portalRecipes.portalEntityEvidence):
+//   ownPortals      — portals this entity's own recipes / KB rows point at (track-safe only);
+//   verifiedPortals — the subset from HUMAN-VERIFIED KB rows (rule 3: a person said so);
+//   otherClaims     — portals OTHER entities of the same scope point at, each tagged with its
+//                     owner (aliases already merged: "PGE" and "Portland General Electric" are
+//                     one owner). A portal only ONE other owner claims, and this entity never
+//                     does, is that entity's portal. A portal two or more owners claim
+//                     (aca-oregon.accela.com serves every subscribing Oregon city) is shared and
+//                     fits anyone on the track.
+// Pure: no DB, so every caller and every test asks the same question the same way.
+export interface PortalEntity {
+  scope: "ahj" | "utility";
+  state: string;
+  name: string;
+  ownPortals: string[];
+  verifiedPortals: string[];
+  otherClaims: Array<{ url: string; owner: string }>;
+  /** Portals the KB DECLARES shared ("Generic Oregon ePermitting AHJ" names the statewide
+   *  portal, not a jurisdiction): never another entity's portal, whoever else claims it. */
+  sharedPortals?: string[];
+}
+
+/** Where a candidate URL came from. `operator` = typed by a person on a route; `statewide` =
+ *  the deliberate statewide-portal fallback; `research` = LLM/web research; everything else is
+ *  something stored (a recipe, a KB row). */
+export type PortalUrlSource = "recipe" | "kb" | "research" | "operator" | "statewide" | "learn";
+
+export type HostFitCode = "ok" | "no_url" | "track_conflict" | "platform_conflict" | "foreign_entity";
+export interface HostFit {
+  fits: boolean;
+  code: HostFitCode;
+  reason: string;
+}
+
+export function hostFitsTrackAndEntity(
+  track: string | null | undefined,
+  entity: PortalEntity | null,
+  url: string | null | undefined,
+  source: PortalUrlSource = "kb",
+): HostFit {
+  const value = String(url ?? "").trim();
+  const host = portalHostOf(value);
+  if (!host) return { fits: false, code: "no_url", reason: "no portal URL" };
+  const scope = scopeForTrack(track);
+  const trackName = scope === "utility" ? "NEM (utility interconnection)" : "permit (AHJ)";
+  // 1. THE TRACK, both directions — no source, not even an operator, overrides rule 5.
+  if (!trackSafeUrl(track, value)) {
+    return {
+      fits: false,
+      code: "track_conflict",
+      reason: scope === "ahj"
+        ? `${host} is a utility interconnection portal, and this is a ${trackName} filing`
+        : `${host} is an AHJ permit portal, and this is a ${trackName} filing`,
+    };
+  }
+  if (!entity) return { fits: true, code: "ok", reason: "track fits; no entity evidence" };
+  const who = entity.name || (scope === "utility" ? "this utility" : "this AHJ");
+  // Judged by HOST here: an entity's rows point at many pages of one portal (a login page, a
+  // record's detail page, the dashboard), and a first-path-segment test would read those as
+  // different portals. The tenant-strict samePortal is for recipe REUSE (findBorrowableRecipe).
+  const matches = (list: string[]) => list.some((p) => sameHost(p, value));
+  // 2. A PERSON SAID WHERE THIS ENTITY FILES. Anything stored or researched that disagrees is
+  //    not launched unconfirmed (the statewide fallback included — a verified row outranks a
+  //    derived rule). An operator's own URL is judged at the route, which can confirm it.
+  if (entity.verifiedPortals.length && !matches(entity.verifiedPortals)) {
+    return {
+      fits: false,
+      code: "platform_conflict",
+      reason: `${host} is not the portal a person verified for ${who} (${entity.verifiedPortals.map(portalHostOf).filter(Boolean).join(", ")})`,
+    };
+  }
+  // 3. ANOTHER ENTITY'S PORTAL. Only when this entity has no claim on it at all.
+  if (source !== "statewide" && !matches(entity.ownPortals) && !matches(entity.sharedPortals ?? [])) {
+    const owners = [...new Set(entity.otherClaims.filter((c) => sameHost(c.url, value)).map((c) => c.owner))];
+    if (owners.length === 1) {
+      return {
+        fits: false,
+        code: "foreign_entity",
+        reason: `${host} is ${owners[0]}'s portal — nothing on file says ${who} files there`,
+      };
+    }
+  }
+  return { fits: true, code: "ok", reason: matches(entity.ownPortals) ? `${host} is ${who}'s own portal` : `${host} fits the ${trackName} track` };
+}
+
+// ── What a recipe files: its record type / application program ────────────────────────
+/** The record type (or application program) a recipe selects, from the learner's own step
+ *  notes ("record type: Residential - Structural", "application program: Distributed
+ *  Generation"). "" when the recipe never recorded one. */
+export function recipeRecordTypeFromSteps(steps: Array<{ note?: string }> | null | undefined): string {
+  let found = "";
+  for (const s of steps ?? []) {
+    const note = String(s?.note ?? "").trim();
+    const m = /^(?:record type|application program):\s*(.+)$/i.exec(note);
+    if (!m) continue;
+    const label = m[1].trim();
+    // "record type: continue" is the advance click after the choice, not a choice.
+    if (/^continue\b/i.test(label)) continue;
+    found = label;
+  }
+  return found;
 }
 
 // Single parse of the PORTAL_AUTOSEED mode switch — hand-rolled copies of this predicate

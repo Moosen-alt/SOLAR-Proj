@@ -73,9 +73,9 @@ export async function setupStageFixture(tag: string) {
 
   let seq = 0;
   /** A fresh project that clears every gate (its own row, so tests never share state). */
-  const newProject = (): string => {
+  const newProject = (overrides: Partial<typeof FIXTURE> = {}): string => {
     seq += 1;
-    const created = repo.createProject(db, { clientId: client.id, ...FIXTURE, owner: `Replay Owner ${seq}`, street: `${100 + seq} Solar Way` });
+    const created = repo.createProject(db, { clientId: client.id, ...FIXTURE, owner: `Replay Owner ${seq}`, street: `${100 + seq} Solar Way`, ...overrides });
     const projectId = created.project.id;
     docs.saveProjectDocument(db, projectId, {
       docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf",
