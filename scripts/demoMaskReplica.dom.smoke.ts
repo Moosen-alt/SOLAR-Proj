@@ -18,17 +18,20 @@
 //            sits under an overlay box at each step (a platform-independent check that runs
 //            even where no OCR engine exists).
 //
-// The driver uses the primitives the replay engine uses (fill + Tab to commit, selectOption,
-// setInputFiles, a typed date dismissed with Escape, click Next). The real RecipeAdapter is
-// NOT driven here: no recipe in the repo replays the PowerClerk replica to review through it
-// yet (bench 2026-09-24: 14/28 fields, review not reached) — that is an open item, not a claim.
+// Sections 1-4 drive the wizard with the primitives the replay engine uses (fill + Tab to
+// commit, selectOption, setInputFiles, a typed date dismissed with Escape, click Next), so the
+// masked/unmasked comparison is exact. Section 6 then runs THE RECORDER ITSELF —
+// demo-record-portal.ts --real-run --i-am-present --headed, the command the runbook gives —
+// against the replica from a scratch database seeded through the product's own writers, with
+// the real RecipeAdapter replaying a hand-written PowerClerk-shaped recipe to review, and OCRs
+// every frame of the video it kept. (A headed Chromium window opens for ~90s during it.)
 //
-// Also pinned: the recorder's real-run guard refuses, from its CLI and before any database is
-// read, a --real-run without --i-am-present, with PORTAL_ALLOW_FINAL_SUBMIT set, or headless.
+// Also pinned (section 5): the recorder refuses, from its CLI and before any database is read,
+// a --real-run without --i-am-present, with PORTAL_ALLOW_FINAL_SUBMIT set, headless, or --no-mask.
 //
-//   npx tsx scripts/demoMaskReplica.dom.smoke.ts            (real Chromium; ~2-3 minutes)
+//   npx tsx scripts/demoMaskReplica.dom.smoke.ts            (real Chromium + Windows OCR; ~4 minutes)
 //   npx tsx scripts/run-dom-smokes.ts --only demoMaskReplica --concurrency 1
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -399,6 +402,152 @@ console.log("\n5. THE RECORDER'S CLI refuses a real run before any database is r
   const dd = run(["--real-run", "--i-am-present", "--headed", "--no-mask", "--out", "x.webm", "--project", "p"]);
   check("--real-run --no-mask: exit 2 (masking is forced on for a real portal)", dd.status === 2 && /masking/.test(dd.out), dd.out.slice(-300));
   try { fs.rmSync(empty, { recursive: true, force: true }); } catch { /* temp */ }
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log("\n6. THE RECORDER'S --real-run, END TO END on the replica: real writers, real adapter, real verdict");
+// The command the runbook gives, run for real against the synthetic PowerClerk replica: a
+// scratch database seeded through the product's own writers (client, project B, a stored
+// credential, a complete utility recipe, two documents), the recorder spawned with
+// --real-run --i-am-present --headed, the RecipeAdapter replaying to review, the video kept
+// by the real-run verdict — and every frame of it OCR'd for project B's values.
+{
+  const e2eRoot = fs.mkdtempSync(path.join(os.tmpdir(), "demo-mask-realrun-"));
+  const env = {
+    AUTOPILOT_DB_PATH: path.join(e2eRoot, "prod-copy.sqlite"), PROJECT_DOCS_DIR: path.join(e2eRoot, "project-documents"), BACKUP_DIR: path.join(e2eRoot, "backups"),
+    AUTOPILOT_LOG_FILE: "", SEED_TEST_INSTALLER: "false", AUTOPILOT_AUTO_START: "0", AUTO_STAGE_STEPS: "0", BACKGROUND_WORKERS: "off", CLIENT_NOTIFICATIONS: "off",
+    SESSION_ENCRYPTION_KEY: "smoke-only-key-not-a-secret",
+  };
+  Object.assign(process.env, env);
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.PORTAL_ALLOW_FINAL_SUBMIT;
+  const { openDatabase } = await import("../backend/src/db");
+  const { createClient } = await import("../backend/src/clients");
+  const { createProject } = await import("../backend/src/repository");
+  const { createPortalCredential } = await import("../backend/src/portalCredentials");
+  const { startPortalRecording, savePortalRecipeSteps } = await import("../backend/src/portalRecipes");
+  const { saveProjectDocument } = await import("../backend/src/projectDocuments");
+  type RecipeStep = import("../shared/src/types").RecipeStep;
+
+  const w = buildWizard("powerclerk", "base");
+  const replica = await startSyntheticReplica({ wizard: w, credential: { username: PROJECT_B.portalUsername, password: PROJECT_B.portalPassword } });
+  if (!isLoopbackHost(new URL(replica.base).hostname)) throw new Error("refusing: the replica is not on a loopback host");
+  const B = PROJECT_B;
+  const db = await openDatabase();
+  const client = createClient(db, { companyName: B.installer.company, ccbLicenseNumber: "318822" });
+  const project = createProject(db, {
+    clientId: client.id, owner: `${B.ownerFirst} ${B.ownerLast}`, street: B.street, city: B.city, state: B.state, zip: B.zip,
+    ahj: B.ahj, utility: B.utility, dcKw: B.dcKw, acKw: B.acKw, account: B.accountNumber, meter: B.meterNumber,
+    homeownerEmail: B.ownerEmail, homeownerPhone: B.ownerPhone, county: B.county,
+    installerCompanyName: B.installer.company, installerContactName: `${B.installer.contactFirst} ${B.installer.contactLast}`,
+    installerEmail: B.installer.email, installerPhone: B.installer.phone, electricalSupervisorName: B.installer.electricianName,
+    moduleMake: B.moduleMake, moduleModel: B.moduleModel, moduleQty: B.moduleQty, inverterMake: B.inverterMake, inverterModel: B.inverterModel, inverterQty: B.inverterQty,
+  } as never, undefined, { learningExcluded: true }).project;
+  createPortalCredential(db, client.id, { portalType: "powerclerk", portalUrl: replica.entryUrl, username: B.portalUsername, password: B.portalPassword });
+  saveProjectDocument(db, project.id, { docType: "sld", filename: DOCS.sld, contentType: "application/pdf", buffer: PDF });
+  saveProjectDocument(db, project.id, { docType: "site_plan", filename: DOCS.site_plan, contentType: "application/pdf", buffer: PDF });
+  const fill = (css: string, label: string, field: string, learn = "LEARN-TIME-VALUE"): RecipeStep => ({ action: "fill", phase: "fill", selector: { css, fallbacks: [{ label }] }, field, value: learn, note: label });
+  const choose = (css: string, label: string, field: string, learn = ""): RecipeStep => ({ action: "select", phase: "fill", selector: { css, fallbacks: [{ label }] }, field, value: learn, note: label });
+  const next = (): RecipeStep => ({ action: "click", phase: "fill", selector: { role: "button", name: "Next", exact: true, fallbacks: [{ css: "#btnNext" }] }, note: "advance: Next" });
+  const future = new Date(Date.now() + 60 * 86400000);
+  const futureStr = `${String(future.getMonth() + 1).padStart(2, "0")}/${String(future.getDate()).padStart(2, "0")}/${future.getFullYear()}`;
+  const steps: RecipeStep[] = [
+    { action: "goto", phase: "open", value: `${replica.base}/Dashboard`, note: "entry url" },
+    { action: "click", phase: "open", selector: { role: "link", name: "Start a New Application", exact: true, fallbacks: [{ css: "#btnNewProject" }] }, note: "advance: Start a New Application" },
+    fill("#pcInputBase10", "First Name", "homeownerFirstName", "LEARN-TIME-FIRST"),
+    fill("#pcInputBase11", "Last Name", "homeownerLastName", "LEARN-TIME-LAST"),
+    fill("#pcInputBase12", "Email", "homeownerEmail", "learn-time@example.invalid"),
+    fill("#pcInputBase13", "Phone", "homeownerPhone", "(000) 000-0000"),
+    fill("#pcInputBase14", "Service Address", "street", "1 Learn-Time Street"),
+    fill("#pcInputBase15", "City", "city", "Learntown"),
+    choose("#pcInputBase16", "State", "state", "WA"),
+    fill("#pcInputBase17", "Zip Code", "zip", "00000"),
+    choose("#pcInputBase18", "County", "county", "Lindow"),
+    { action: "fill", phase: "fill", selector: { css: "#pcInputBase19", fallbacks: [{ label: "Utility Account Number" }] }, field: "accountNumber", sensitive: true, optional: true, note: `SENSITIVE — bound to project field "accountNumber" (no value stored). Utility Account Number` },
+    { action: "fill", phase: "fill", selector: { css: "#pcInputBase20", fallbacks: [{ label: "Meter Number" }] }, field: "meterNumber", sensitive: true, optional: true, note: `SENSITIVE — bound to project field "meterNumber" (no value stored). Meter Number` },
+    next(),
+    fill("#pcInputBase30", "Name", "installerContactName", "Learn Person"),
+    fill("#pcInputBase31", "Company", "installerCompanyName", "Learn Co"),
+    fill("#pcInputBase32", "Email", "installerEmail", "learn@example.invalid"),
+    fill("#pcInputBase33", "Phone", "installerPhone", "(000) 000-0001"),
+    fill("#pcInputBase40", "Name", "electricalSupervisorName", "Learn Electrician"),
+    fill("#pcInputBase41", "Company", "installerCompanyName", "Learn Co"),
+    fill("#pcInputBase42", "Email", "installerEmail", "learn@example.invalid"),
+    fill("#pcInputBase43", "Phone", "installerPhone", "(000) 000-0001"),
+    next(),
+    choose("#pcInputBase50", "Manufacturer", "moduleMake", "HQC"),
+    choose("#pcInputBase51", "Model", "moduleModel", "HQC-400"),
+    fill("#pcInputBase52", "Quantity", "moduleQty", "1"),
+    choose("#pcInputBase60", "Manufacturer", "inverterMake", "APS"),
+    choose("#pcInputBase61", "Model", "inverterModel", "APS-DS3L"),
+    fill("#pcInputBase62", "Quantity", "inverterQty", "1"),
+    { action: "fill", phase: "fill", selector: { css: "#pcInputBase70", fallbacks: [{ label: "Estimated In-Service Date" }] }, value: futureStr, note: "Estimated In-Service Date" },
+    next(),
+    { action: "upload", phase: "upload", selector: { css: "#pcInputBase80" }, docType: "sld", note: "upload sld: One-Line Diagram" },
+    { action: "upload", phase: "upload", selector: { css: "#pcInputBase81" }, docType: "site_plan", note: "upload site_plan: Site Plan" },
+    next(),
+    { action: "check", phase: "review", selector: { css: "#pcInputBase90", fallbacks: [{ label: "Click to Accept Terms and Conditions" }] }, note: "Click to Accept Terms and Conditions" },
+    { action: "stopForReview", phase: "review", note: "Stop at review — human submits manually." },
+    // The recorder's own shape for the human's submit: no selector, optional, flagged.
+    { action: "click", phase: "review", selector: {}, optional: true, isFinalSubmit: true, note: `BLOCKED — human clicked a submit/pay-like control ("Submit") here; not replayable.` },
+  ];
+  const rec = startPortalRecording(db, { scopeType: "utility", state: B.state, utility: B.utility, portalPlatform: "powerclerk", portalUrl: replica.entryUrl, createdBy: "demoMaskReplica smoke" });
+  savePortalRecipeSteps(db, rec.id, steps, { status: "complete", notes: "smoke recipe for the synthetic replica" });
+  await new Promise((r) => setTimeout(r, 2500)); // the background PDF text extraction finishes before the handle closes
+  db.close();
+
+  const TSX_CLI = path.join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
+  const RECORDER = path.join(REPO, "scripts", "demo-record-portal.ts");
+  const out = path.join(e2eRoot, "real.webm");
+  const shotsDir = path.join(e2eRoot, "shots");
+  // spawn, not spawnSync: the replica lives in THIS process and must keep serving.
+  const r = await new Promise<{ status: number | null; text: string }>((resolve) => {
+    const childEnv = { ...process.env, AUTOPILOT_DB_PATH: "", REPLAY_RUN_DIR: path.join(e2eRoot, "replay-runs") } as Record<string, string>;
+    delete childEnv.PORTAL_ALLOW_FINAL_SUBMIT;
+    const child = spawn(process.execPath, [TSX_CLI, RECORDER, "--real-run", "--i-am-present", "--headed", "--db", env.AUTOPILOT_DB_PATH, "--project", project.id, "--out", out, "--shots", shotsDir, "--login-wait", "30", "--slowmo", "0"],
+      { cwd: e2eRoot, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+    let text = "";
+    child.stdout.on("data", (d) => { text += String(d); });
+    child.stderr.on("data", (d) => { text += String(d); });
+    const timer = setTimeout(() => child.kill(), 480_000);
+    child.on("close", (status) => { clearTimeout(timer); resolve({ status, text }); });
+  });
+  fs.writeFileSync(path.join(e2eRoot, "recorder.log"), r.text, "utf8");
+  const jsonStart = r.text.indexOf("{\n  \"mode\"");
+  let report: Record<string, unknown> = {};
+  try { report = jsonStart >= 0 ? JSON.parse(r.text.slice(jsonStart, r.text.indexOf("\n}\n", jsonStart) + 2)) : {}; } catch { report = {}; }
+  const tail = r.text.split("\n").filter((l) => /demo-record\]|error/i.test(l)).slice(-6).join(" | ").slice(0, 600);
+  check("the recorder exited 0 and KEPT the video by the real-run verdict", r.status === 0 && report.kept === true, `status=${r.status} refused=${JSON.stringify(report.refusedBecause)} ${tail}`);
+  check(`the run was masked with the project's values (mode=${report.mode}, masked=${report.masked}, ${report.maskValueCount} values)`, report.mode === "real" && report.masked === true && Number(report.maskValueCount) >= 15);
+  check(`the stored credential logged in and the RecipeAdapter replayed to the review page (login=${report.login}, executed=${report.executed}, ${report.finalUrlPath})`, report.login === "logged_in" && report.replayOk === true && /review/.test(String(report.finalUrlPath)));
+  check("the flagged final submit had no target and was skipped; zero submit/pay POSTs; finalSubmitClicked false from every source",
+    report.finalSubmitStepHasNoTarget === true && report.submitOrPayRequestsAborted === 0 && JSON.stringify(report.finalSubmitClickedSources) === "[false,false,false]", JSON.stringify([report.finalSubmitStepHasNoTarget, report.submitOrPayRequestsAborted, report.finalSubmitClickedSources]));
+  check("the replica WALKED to review with nothing filed or paid, and holds every value the adapter committed", replica.state.reviewReached && replica.state.reviewVia === "walked" && replica.state.submitPosts.length === 0 && replica.state.payPosts.length === 0 && Object.keys(replica.state.values).length >= 26,
+    `reached=${replica.state.reviewReached} via=${replica.state.reviewVia} values=${Object.keys(replica.state.values).length} errors=${replica.state.validationErrors.join("|")}`);
+  const hostsSeen = Object.keys((report.browserHostsSeen as Record<string, number>) ?? {});
+  check("the only host the browser touched is the replica's (loopback)", hostsSeen.length === 1 && isLoopbackHost(hostsSeen[0]) && Number(report.nodeNetworkAttempts ? (report.nodeNetworkAttempts as unknown[]).length : 0) === 0, hostsSeen.join(","));
+  check("the video and the step shots exist", fs.existsSync(out) && fs.existsSync(shotsDir) && fs.readdirSync(shotsDir).length >= 5, `video=${fs.existsSync(out)} shots=${fs.existsSync(shotsDir) ? fs.readdirSync(shotsDir).length : 0}`);
+  if (!ocrReason && fs.existsSync(out)) {
+    const e2eFrames = [...(fs.existsSync(shotsDir) ? fs.readdirSync(shotsDir).map((f) => path.join(shotsDir, f)) : [])];
+    if (ffmpegAvailable()) e2eFrames.push(...sampleVideoFrames(out, path.join(e2eRoot, "frames"), 8));
+    const text = ocrFrames(e2eFrames);
+    // The recorder derives the values from the PROJECT ROW; the check uses the smoke's own
+    // list (built from PROJECT_B), plus the dashboard's other application.
+    const STRINGS = [...MASK_VALUES, ACCOUNT_LIST_VALUE];
+    let hits = 0;
+    const hitFrames: string[] = [];
+    let labelFrames = 0;
+    for (const [f, t] of text) {
+      const h = piiHitsInText(t, STRINGS);
+      if (h.length) { hits += h.length; hitFrames.push(`${path.basename(f)}(${h.length})`); }
+      if (/customer information|installer information|terms and conditions|my projects|sign in/i.test(t)) labelFrames++;
+    }
+    check(`REAL-RUN RECORDING: 0 PII hits over ${text.size} frame(s) x ${STRINGS.length} string(s) — got ${hits}`, text.size === e2eFrames.length && hits === 0, `frames with hits: ${hitFrames.slice(0, 8).join(", ")}`);
+    check(`REAL-RUN RECORDING: the frames still read as the portal's pages (${labelFrames} of ${text.size} carry a page label)`, labelFrames > text.size / 2);
+    console.log(`  OCR denominators (recorder path): ${text.size} frames / ${STRINGS.length} strings / ${hits} hits`);
+  }
+  await replica.close();
+  console.log(`  real-run artifacts: ${e2eRoot}`);
 }
 
 console.log(`\n${checks - failures}/${checks} mask check(s) passed. Artifacts: ${work}`);

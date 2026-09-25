@@ -93,7 +93,7 @@ export interface PiiMaskSource {
 
 /** Snapshot keys whose scalar values are a person's or a service's identity. Bare "name" is
  *  included on purpose (homeownerName, installerContactName, ubAccountHolderName…). */
-const PII_SNAPSHOT_KEY = /(name|address|street|phone|email|account|meter|esi|\bsa\s*_?id|premise|service\s*point|service\s*agreement|customer|signat|licen[cs]e|owner|contact)/i;
+const PII_SNAPSHOT_KEY = /(name|address|street|county|parcel|apn|phone|email|account|meter|esi|\bsa\s*_?id|premise|service\s*point|service\s*agreement|customer|signat|licen[cs]e|owner|contact)/i;
 /** Snapshot keys that name a thing, not a person — a "moduleModelName" is not PII. */
 const NOT_PII_SNAPSHOT_KEY = /(module|inverter|panel|battery|equipment|manufacturer|make|model|utility(name)?$|ahj|jurisdiction|city$|state$|portal|platform|program|rate|tariff|file|path|url|type$|status|stage|method|kind|category)/i;
 
