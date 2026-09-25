@@ -140,6 +140,54 @@ Never run a live replay against a real portal in front of a client: it would hit
 site, bind a real client's projects, and create a real draft application. That is exactly
 what the kit exists to avoid.
 
+### Recording a real portal run for the demo (optional, done beforehand, never live)
+
+A prospect may want to see a real utility portal (PGE's PowerClerk), not "Demo Utility Co".
+The same recorder can record a **real, unfiled** project's replay to the review screen with
+every customer value **masked on screen at record time** — the name, address, phone, email,
+account and meter numbers, the installer's login name and company, and the account's
+application list are boxed in the rendering only; what the engine fills and what the portal
+autosaves are untouched (`scripts/lib/piiMask.ts`; proven on the synthetic PowerClerk
+replica by `scripts/demoMaskReplica.dom.smoke.ts`: 0 OCR hits masked over 150+ frames, the
+unmasked control run shows them, and the portal's recorded state is byte-identical).
+
+**Prerequisites — all of them, or the recorder refuses before it reads a database:**
+
+- A real project that has **not been filed** and whose utility recipe is complete (learned)
+  and trusted. The run creates a **draft** on the portal; you delete that draft afterwards.
+- A **person present** at the keyboard for the whole run (`--i-am-present`): login and any
+  MFA are yours to finish in the browser window; the recorder waits (`--login-wait`).
+- `PORTAL_ALLOW_FINAL_SUBMIT` **unset** in the shell (not `0` — unset). The recorder never
+  carries a run approval, so the engine cannot click submit; the recorder additionally
+  aborts any browser POST whose URL reads as a filing or a payment and refuses the video.
+- A **copy** of the production database (stop the server or take a backup copy first);
+  the recorder copies it again and opens only its own copy. Run with the production `.env`
+  loaded so the stored credential can be decrypted (`SESSION_ENCRYPTION_KEY`).
+- `--headed`: you must see the browser. Masking is forced on (`--no-mask` is refused).
+
+```bash
+npx tsx scripts/demo-record-portal.ts --real-run --i-am-present --headed \
+  --db backups/autopilot-copy.sqlite --project <project id> \
+  --out demo-kit/frontend/demo/real-portal.webm --shots demo-kit/frontend/demo/real-shots \
+  [--mask-selectors ".navbar-user,#accountMenu"]   # extra regions to box, if the header shows more
+```
+
+The video is kept only when the engine stopped at the review screen with the final submit
+refused or skipped for want of a target, `finalSubmitClicked` false from every source, no
+submit/pay POST, and nothing trapped on the Node side. The report prints the number of
+masked values and every host the browser touched — never a value.
+
+**Then a human reviews every frame** (`--shots` and the video, scrubbed slowly) before the
+recording goes anywhere near a prospect: the masker boxes the values it knows and the
+regions it is told about; a value the portal renders in a way it does not know (CSS
+content, a canvas, an unlisted header block) is yours to catch, and `--mask-selectors` is
+how you add the region and re-record. Delete the portal draft. Do not show the frames to
+anyone before that review is done.
+
+**Fallback:** the fictional recording above (Act 5) is the default and is always safe to
+show. Use the real-portal recording only if it was made, reviewed and the draft cleaned up
+before the day.
+
 ---
 
 ## What is safe to click
