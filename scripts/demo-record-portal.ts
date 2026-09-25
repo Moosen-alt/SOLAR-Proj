@@ -63,7 +63,39 @@
 //                           calls per step; 0 already runs ~65s (its own 3s settle per page
 //                           paces the video), and 50+ pushes past 90s
 //     [--headed]            show the browser (default headless; video records either way)
+//     [--mask]              also mask the project's values on screen (the real-run look, on the
+//                           fictional portal; scripts/lib/piiMask.ts)
 //   npx tsx scripts/demo-record-portal.ts --selftest   # the save-gate predicate, no browser
+//
+// REAL RUN (a real, UNFILED project on a real portal, a person present, supervised):
+//   npx tsx scripts/demo-record-portal.ts --real-run --i-am-present --headed \
+//       --db <copy of the production DB> --project <id> --out real-run.webm [--shots <dir>]
+//       [--recipe <id>]             default: the project's complete UTILITY-track recipe
+//                                   (findCompleteRecipeForProject — track-scoped, hard rule 5)
+//       [--mask-values-from <id>]   default: --project. Values are counted, never printed
+//       [--mask-selectors a,b,c]    extra CSS regions to box (the account header, a list)
+//       [--login-wait <s>]          default 300: how long to wait for the person to finish
+//                                   login / MFA in the browser before giving up
+//   What changes in a real run, and only there (scripts/lib/realRunGuard.ts is the gate):
+//     · REFUSED unless --i-am-present, --headed, masking on, PORTAL_ALLOW_FINAL_SUBMIT unset
+//       (not "0" — unset), no run approval anywhere, and the recipe's shape valid;
+//     · the demo-only database guards are skipped (it IS a real project); the DB is still
+//       copied and only the copy is opened;
+//     · the Node-side traps and the browser route allow the recipe's own host(s), and nothing
+//       else Node-side; the browser may load a portal's CDN assets, every host is listed in the
+//       report; a browser POST whose URL reads as a filing or a payment
+//       (isSubmitOrPayRequestUrl) is ABORTED and counted — the video is refused if any occurred;
+//     · MASKING IS ON: every known value of the project and its credential's user name is
+//       boxed on screen at record time (rendering only — the portal's state is what the bot
+//       filled; scripts/lib/piiMask.ts, proven on the replica by
+//       scripts/demoMaskReplica.dom.smoke.ts). A person still reviews every frame before use;
+//     · login: the stored credential is used when there is one; MFA / a missing credential
+//       hands the browser to the person present and waits (--login-wait);
+//     · the video is kept only if the engine stopped at the review screen with the flagged
+//       final-submit step either refused by the guided-manual rule or skipped for want of a
+//       target (the recorder's shape: selector {} + optional), finalSubmitClicked false from
+//       every source, and zero submit/pay POSTs. The draft the portal autosaved is the
+//       operator's to delete afterwards.
 // ---------------------------------------------------------------------------
 import dns from "node:dns";
 import fs from "node:fs";
@@ -79,6 +111,10 @@ import { installLoopbackOnlyRoute, isLoopbackHost } from "./demo-portal/network"
 
 // ── 1. Network traps, before anything else is imported ─────────────────────────────────
 const nodeNetworkAttempts: string[] = [];
+// Hosts a REAL RUN may reach from Node (the recipe's own, added only after the real-run guard
+// has passed with the recipe read). Empty for the fictional recording: loopback only.
+const allowedHosts = new Set<string>();
+const hostAllowed = (h: string | undefined | null): boolean => isLoopbackHost(h) || allowedHosts.has(String(h ?? "").trim().toLowerCase());
 function hostOfRequestArgs(args: unknown[]): string {
   const a = args[0];
   if (typeof a === "string") { try { return new URL(a).hostname; } catch { return a; } }
@@ -98,12 +134,12 @@ for (const [mod, scheme] of [[http, "http"], [https, "https"]] as Array<[typeof 
   const origGet = mod.get.bind(mod);
   (mod as { request: unknown }).request = (...args: unknown[]) => {
     const h = hostOfRequestArgs(args);
-    if (!isLoopbackHost(h)) refuse(`${scheme}.request`, h);
+    if (!hostAllowed(h)) refuse(`${scheme}.request`, h);
     return (origRequest as (...a: unknown[]) => unknown)(...args);
   };
   (mod as { get: unknown }).get = (...args: unknown[]) => {
     const h = hostOfRequestArgs(args);
-    if (!isLoopbackHost(h)) refuse(`${scheme}.get`, h);
+    if (!hostAllowed(h)) refuse(`${scheme}.get`, h);
     return (origGet as (...a: unknown[]) => unknown)(...args);
   };
 }
@@ -117,7 +153,7 @@ for (const [mod, name] of [[net, "net"], [tls, "tls"]] as Array<[Record<string, 
       const host = typeof a === "object" && a !== null
         ? ((a as { path?: string }).path ? "localhost" : String((a as { host?: string }).host ?? "localhost"))
         : typeof args[1] === "string" ? args[1] : "localhost";
-      if (!isLoopbackHost(host)) refuse(`${name}.${fn}`, host);
+      if (!hostAllowed(host)) refuse(`${name}.${fn}`, host);
       return orig.apply(mod, args);
     };
   }
@@ -125,12 +161,12 @@ for (const [mod, name] of [[net, "net"], [tls, "tls"]] as Array<[Record<string, 
 {
   const origLookup = dns.lookup.bind(dns);
   (dns as { lookup: unknown }).lookup = (host: string, ...rest: unknown[]) => {
-    if (!isLoopbackHost(host)) refuse("dns.lookup", host);
+    if (!hostAllowed(host)) refuse("dns.lookup", host);
     return (origLookup as (...a: unknown[]) => unknown)(host, ...rest);
   };
   const origP = dns.promises.lookup.bind(dns.promises);
   (dns.promises as { lookup: unknown }).lookup = (host: string, ...rest: unknown[]) => {
-    if (!isLoopbackHost(host)) refuse("dns.promises.lookup", host);
+    if (!hostAllowed(host)) refuse("dns.promises.lookup", host);
     return (origP as (...a: unknown[]) => unknown)(host, ...rest);
   };
 }
@@ -140,7 +176,7 @@ if (typeof globalThis.fetch === "function") {
     const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     let h = "";
     try { h = new URL(u).hostname; } catch { h = u; }
-    if (!isLoopbackHost(h)) refuse("fetch", h);
+    if (!hostAllowed(h)) refuse("fetch", h);
     return origFetch(input, init);
   }) as typeof fetch;
 }
@@ -161,22 +197,45 @@ export interface RecordingEvidence {
    *  never reached executeClick. The captions say the guided-manual rule stopped the engine,
    *  so that — and only that — is what a kept video may show. */
   finalSubmitGates: string[];
+  /** "fictional" (default): the Act 4 recording on the demo portal. "real": a supervised real
+   *  portal run, where the three fields below carry the evidence the fixture server gave. */
+  mode?: "fictional" | "real";
+  /** real: the recipe's flagged final-submit step has NO selector (the recorder writes
+   *  `selector: {}` + optional), so the engine skipped it for want of a target and the click
+   *  gate was never consulted. "not-evaluated" is acceptable ONLY together with this. */
+  finalSubmitStepHasNoTarget?: boolean;
+  /** real: browser POSTs whose URL reads as a filing or a payment (isSubmitOrPayRequestUrl),
+   *  aborted at the route and counted. Must be 0. */
+  submitOrPayRequests?: number;
 }
 export function recordingVerdict(e: RecordingEvidence): { keep: boolean; reasons: string[] } {
   const reasons: string[] = [];
+  const real = e.mode === "real";
   if (!e.replayOk) reasons.push("the replay did not complete cleanly to the review screen");
-  if (!e.reachedReviewUrl) reasons.push("the browser is not on the review page");
-  if (e.finalSubmitGates.length === 0 || e.finalSubmitGates.some((g) => g !== "final-submit-guided-manual")) {
-    reasons.push(`the final-submit step was not stopped by the guided-manual final-submit rule the captions describe (engine answered: ${JSON.stringify(e.finalSubmitGates)})`);
+  if (!e.reachedReviewUrl) reasons.push(real ? "the page does not name itself the review step" : "the browser is not on the review page");
+  const guided = e.finalSubmitGates.length > 0 && e.finalSubmitGates.every((g) => g === "final-submit-guided-manual");
+  // real: the recorder-shaped step (no selector, optional) is skipped by the engine before any
+  // gate — accepted only when that is what the recipe holds; a step WITH a target that never
+  // reached the gate is a step that was not refused.
+  const skippedNoTarget = real && e.finalSubmitStepHasNoTarget === true && e.finalSubmitGates.length === 1 && e.finalSubmitGates[0] === "not-evaluated";
+  if (!guided && !skippedNoTarget) {
+    reasons.push(real
+      ? `the final-submit step was neither refused by the guided-manual rule nor skipped for want of a target (engine answered: ${JSON.stringify(e.finalSubmitGates)}; step has no target: ${e.finalSubmitStepHasNoTarget === true})`
+      : `the final-submit step was not stopped by the guided-manual final-submit rule the captions describe (engine answered: ${JSON.stringify(e.finalSubmitGates)})`);
   }
   // Unknown is not reassurance: every source must say false explicitly.
   if (e.finalSubmitClickedSources.length === 0 || e.finalSubmitClickedSources.some((v) => v !== false)) {
     reasons.push(`finalSubmitClicked was not false from every source (${JSON.stringify(e.finalSubmitClickedSources)})`);
   }
-  if (e.submitRequests > 0) reasons.push(`the fixture server received ${e.submitRequests} submit request(s)`);
-  if (e.nonGetRequests > 0) reasons.push(`the fixture server received ${e.nonGetRequests} non-GET request(s)`);
+  if (real) {
+    if (e.submitOrPayRequests === undefined) reasons.push("the submit/pay request count is unknown");
+    else if (e.submitOrPayRequests > 0) reasons.push(`${e.submitOrPayRequests} browser POST(s) to a submit/pay-looking URL were attempted (aborted)`);
+  } else {
+    if (e.submitRequests > 0) reasons.push(`the fixture server received ${e.submitRequests} submit request(s)`);
+    if (e.nonGetRequests > 0) reasons.push(`the fixture server received ${e.nonGetRequests} non-GET request(s)`);
+  }
   if (e.abortedRequests > 0) reasons.push(`${e.abortedRequests} non-loopback browser request(s) were attempted (aborted)`);
-  if (e.nodeNetworkAttempts > 0) reasons.push(`${e.nodeNetworkAttempts} non-loopback Node network attempt(s) were trapped`);
+  if (e.nodeNetworkAttempts > 0) reasons.push(`${e.nodeNetworkAttempts} Node network attempt(s) outside the allowed hosts were trapped`);
   return { keep: reasons.length === 0, reasons };
 }
 
@@ -216,6 +275,15 @@ async function selftest(): Promise<number> {
     ["not on the review page refuses", { reachedReviewUrl: false }, false],
     ["an aborted off-host request refuses", { abortedRequests: 1 }, false],
     ["a trapped Node network call refuses", { nodeNetworkAttempts: 1 }, false],
+    // REAL RUN: the recorder-shaped final submit (no target) is skipped, not refused.
+    ["real: guided-manual refusal is kept", { mode: "real", submitOrPayRequests: 0 }, true],
+    ["real: a flagged step with NO target, skipped (not-evaluated), is kept", { mode: "real", finalSubmitGates: ["not-evaluated"], finalSubmitStepHasNoTarget: true, submitOrPayRequests: 0 }, true],
+    ["real MUST-EXCLUDE: not-evaluated with a step that HAS a target refuses", { mode: "real", finalSubmitGates: ["not-evaluated"], finalSubmitStepHasNoTarget: false, submitOrPayRequests: 0 }, false],
+    ["real MUST-EXCLUDE: the FEE gate refuses", { mode: "real", finalSubmitGates: ["fee-gate"], submitOrPayRequests: 0 }, false],
+    ["real MUST-EXCLUDE: one submit/pay POST refuses", { mode: "real", submitOrPayRequests: 1 }, false],
+    ["real MUST-EXCLUDE: an unknown submit/pay count refuses", { mode: "real" }, false],
+    ["real MUST-EXCLUDE: finalSubmitClicked unknown refuses", { mode: "real", submitOrPayRequests: 0, finalSubmitClickedSources: [false, undefined] }, false],
+    ["real MUST-EXCLUDE: not on a review page refuses", { mode: "real", submitOrPayRequests: 0, reachedReviewUrl: false }, false],
   ];
   let bad = 0;
   for (const [label, patch, want] of cases) {
@@ -282,17 +350,33 @@ async function main(): Promise<number> {
 
   const outArg = arg("out");
   if (!outArg || !/\.webm$/i.test(outArg)) {
-    console.error("usage: demo-record-portal.ts --out <path.webm> [--project <id>] [--db <path>] [--shots <dir>] [--slowmo <ms>] [--headed]");
+    console.error("usage: demo-record-portal.ts --out <path.webm> [--project <id>] [--db <path>] [--shots <dir>] [--slowmo <ms>] [--headed] [--mask]\n" +
+      "       demo-record-portal.ts --real-run --i-am-present --headed --db <copy> --project <id> --out <path.webm> [--recipe <id>] [--mask-values-from <id>] [--mask-selectors a,b] [--login-wait <s>]");
     return 2;
   }
   const out = path.resolve(outArg);
-  const projectId = arg("project") || TERRENCE_BOYD;
+  const realRun = has("real-run");
+  const projectId = arg("project") || (realRun ? "" : TERRENCE_BOYD);
   const shotsDir = arg("shots") ? path.resolve(String(arg("shots"))) : "";
   const slowMo = Math.max(0, Number(arg("slowmo") ?? 20));
   const headless = !has("headed");
+  // Masking: ON for anything but the fictional portal; on the fictional portal only with --mask.
+  const maskOn = realRun ? !has("no-mask") : has("mask") && !has("no-mask");
+  const maskValuesFrom = arg("mask-values-from") || projectId;
+  const maskSelectors = String(arg("mask-selectors") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const loginWaitS = Math.max(10, Number(arg("login-wait") ?? 300));
+  const recipeId = arg("recipe") || "";
   // Test-only: have the RECORDER (not the engine) click submit after the replay, to prove
   // the save gate refuses a recording that shows a submit. Never used for a real recording.
-  const injectSubmit = has("inject-submit-click");
+  const injectSubmit = has("inject-submit-click") && !realRun;
+
+  // ── 3b. THE REAL-RUN GUARD, phase 1 — before any database is looked for. ─────────────
+  {
+    const { realRunRefusals } = await import("./lib/realRunGuard");
+    const refusals = realRunRefusals({ realRun, iAmPresent: has("i-am-present"), env: process.env, runApproval: null, headed: !headless, maskOn });
+    if (refusals.length) { for (const r of refusals) console.error(`[demo-record] REFUSED: ${r}`); return 2; }
+    if (realRun && !projectId) { console.error("[demo-record] REFUSED: --real-run needs --project <id>"); return 2; }
+  }
 
   // No LLM, whatever the shell carries: gap-fill is never enabled here, and this makes sure.
   for (const k of Object.keys(process.env)) if (/^(ANTHROPIC|OPENAI|CLAUDE)_/i.test(k)) delete process.env[k];
@@ -304,14 +388,17 @@ async function main(): Promise<number> {
   // company, and the project must be that company's, at the demo ZIP: a --project id copied
   // off a production board, or a production database passed with --db, is refused here, before
   // it is copied anywhere.
+  // A REAL RUN is the one case where the database is a real one (a copy of production, passed
+  // with --db) — the guard above has already required a person present; these demo-only checks
+  // are skipped, and the copy-then-open discipline below still holds.
   const kitRoot = path.resolve(process.cwd());
   const srcDb = path.resolve(arg("db") || path.join("backend", "data", "autopilot.sqlite"));
-  if (!fs.existsSync(srcDb)) { console.error(`No database at ${srcDb}. Run from a demo kit folder.`); return 2; }
-  if (path.dirname(srcDb).toLowerCase() !== path.join(kitRoot, "backend", "data").toLowerCase()) {
-    console.error(`[demo-record] REFUSED: the database (${srcDb}) must be this folder's own backend/data database — run from the demo kit folder.`);
-    return 2;
-  }
-  {
+  if (!fs.existsSync(srcDb)) { console.error(`No database at ${srcDb}. ${realRun ? "Pass --db <a copy of the production database>." : "Run from a demo kit folder."}`); return 2; }
+  if (!realRun) {
+    if (path.dirname(srcDb).toLowerCase() !== path.join(kitRoot, "backend", "data").toLowerCase()) {
+      console.error(`[demo-record] REFUSED: the database (${srcDb}) must be this folder's own backend/data database — run from the demo kit folder.`);
+      return 2;
+    }
     const { demoOnlyDatabaseProblem, demoProjectProblem } = await import("./demo-portal/guards");
     const Database = (await import("better-sqlite3")).default;
     const ro = new Database(srcDb, { readonly: true, fileMustExist: true });
@@ -327,7 +414,10 @@ async function main(): Promise<number> {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "demo-record-"));
   const cleanups: Array<() => Promise<unknown> | unknown> = [];
   try {
-    return await recordInto(work, cleanups, { out, projectId, shotsDir, slowMo, headless, injectSubmit, srcDb, kitRoot });
+    return await recordInto(work, cleanups, {
+      out, projectId, shotsDir, slowMo, headless, injectSubmit, srcDb, kitRoot,
+      realRun, maskOn, maskValuesFrom, maskSelectors, loginWaitS, recipeId,
+    });
   } finally {
     // Every exit path — a refusal, a thrown error, a kept or discarded video — lands here.
     for (const fn of cleanups.reverse()) { try { await fn(); } catch { /* best effort */ } }
@@ -338,10 +428,11 @@ async function main(): Promise<number> {
 interface RecordOptions {
   out: string; projectId: string; shotsDir: string; slowMo: number; headless: boolean;
   injectSubmit: boolean; srcDb: string; kitRoot: string;
+  realRun: boolean; maskOn: boolean; maskValuesFrom: string; maskSelectors: string[]; loginWaitS: number; recipeId: string;
 }
 
 async function recordInto(work: string, cleanups: Array<() => Promise<unknown> | unknown>, o: RecordOptions): Promise<number> {
-  const { out, projectId, shotsDir, slowMo, headless, injectSubmit, srcDb, kitRoot } = o;
+  const { out, projectId, shotsDir, slowMo, headless, injectSubmit, srcDb, kitRoot, realRun, maskOn } = o;
   const dbCopy = path.join(work, "autopilot.sqlite");
   for (const suffix of ["", "-wal", "-shm"]) {
     if (fs.existsSync(srcDb + suffix)) fs.copyFileSync(srcDb + suffix, dbCopy + suffix);
@@ -353,9 +444,10 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
 
   const { openDatabase } = await import("../backend/src/db");
   const { getProjectDetail } = await import("../backend/src/repository");
-  const { resolveRecipeFieldValues } = await import("../backend/src/portalRecipes");
+  const { resolveRecipeFieldValues, findCompleteRecipeForProject, getPortalRecipe } = await import("../backend/src/portalRecipes");
   const { clientStagingOverlay } = await import("../backend/src/clients");
   const { submissionDocumentsByType } = await import("../backend/src/submissionDocuments");
+  const { getDecryptedCredentialByUrl } = await import("../backend/src/portalCredentials");
   const { RecipeAdapter } = await import("../portal-bot/src/adapters/recipeAdapter");
   const { performLogin } = await import("../portal-bot/src/adapters/loginFlow");
   const { chromium } = await import("playwright");
@@ -364,11 +456,16 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   const { captionInitScript, FINAL_CAPTION, CAPTION_FOOTER } = await import("./demo-portal/captions");
   const { PAY_FEE_REPLAY_GATE } = await import("../portal-bot/src/adapters/recipeAdapter");
   const { probeClickGates, describeGate } = await import("./demo-portal/gateProbe");
+  const { piiMaskInitScript, piiMaskShapesFor, piiMaskValues } = await import("./lib/piiMask");
+  const { realRunRefusals, recipeTargetHosts } = await import("./lib/realRunGuard");
+  const { isSubmitOrPayRequestUrl, isReviewPageText } = await import("../shared/src/portalSafety");
 
   // PREFLIGHT, before the portal or a browser exists: the recipe's final-submit step through
   // the engine's real executeClick. A recipe the FEE gate (or anything but the guided-manual
   // final-submit rule) would stop cannot produce the video the captions describe.
-  {
+  // (Fictional only: a real recipe's flagged step is the recorder's shape — no selector — and
+  // the real-run verdict accepts "skipped for want of a target" for exactly that step.)
+  if (!realRun) {
     const pre = await finalSubmitPreflightProblem(demoPortalRecipe("http://127.0.0.1:9").steps);
     if (pre.problem) { console.error(`[demo-record] REFUSED before recording: ${pre.problem}`); return 2; }
     console.log(`[demo-record] preflight: the engine refuses the final submit by ${pre.gates.join(", ")}`);
@@ -393,30 +490,74 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   const attached: Array<{ docType: string; file: string }> = [];
   const beforeUpload = (docType: string, file: string): void => {
     const abs = path.resolve(file);
-    if (!abs.toLowerCase().startsWith(kitRoot.toLowerCase() + path.sep)) {
+    // Fictional: only the kit's own files. Real: the project's documents live where the
+    // database says (PROJECT_DOCS_DIR); they must exist, and nothing else is attached.
+    if (!realRun && !abs.toLowerCase().startsWith(kitRoot.toLowerCase() + path.sep)) {
       throw new Error(`refusing to attach ${docType}: ${path.basename(abs)} is outside the kit folder`);
     }
     if (!fs.existsSync(abs)) throw new Error(`refusing to attach ${docType}: file missing`);
     attached.push({ docType, file: abs });
   };
 
-  // ── 6. Portal + browser ───────────────────────────────────────────────────────────
-  const portal = await startDemoPortal();
-  let portalOpen = true;
-  const closePortal = async (): Promise<void> => { if (portalOpen) { portalOpen = false; await portal.close(); } };
-  cleanups.push(closePortal);
-  // The test-only submit click may only ever land on this process's own loopback fixture.
-  if (injectSubmit && !/^http:\/\/127\.0\.0\.1:\d+$/.test(portal.baseUrl)) {
-    throw new Error("--inject-submit-click refused: the portal is not the local fixture");
+  // ── 6. The recipe and the portal ────────────────────────────────────────────────────
+  let portal: Awaited<ReturnType<typeof startDemoPortal>> | null = null;
+  let portalOpen = false;
+  const closePortal = async (): Promise<void> => { if (portal && portalOpen) { portalOpen = false; await portal.close(); } };
+  let recipe: import("../shared/src/types").PortalRecipe;
+  let credential: { username: string; password: string } | null = null;
+  let realHosts: string[] = [];
+  if (realRun) {
+    // The TRACK-SCOPED lookup (hard rule 5): a utility recipe for the project's utility. A
+    // permit recipe can never be launched from here.
+    const found = o.recipeId
+      ? getPortalRecipe(db, o.recipeId)
+      : findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility });
+    if (!found) { console.error(`[demo-record] REFUSED: no complete UTILITY-track recipe for ${JSON.stringify(detail.project.utility)} / ${detail.project.state}. Learn it first (or pass --recipe <id>).`); return 2; }
+    if (found.scopeType !== "utility") { console.error(`[demo-record] REFUSED: recipe ${found.id} is a ${found.scopeType} recipe — a real run records the utility track only.`); return 2; }
+    recipe = found;
+    realHosts = recipeTargetHosts(recipe);
+    // THE REAL-RUN GUARD, phase 2 — with the recipe read: its hosts and its shape.
+    const refusals = realRunRefusals({ realRun, iAmPresent: true, env: process.env, runApproval: null, headed: !headless, maskOn, targetHosts: realHosts, recipeSteps: recipe.steps });
+    if (refusals.length) { for (const r of refusals) console.error(`[demo-record] REFUSED: ${r}`); return 2; }
+    for (const h of realHosts) allowedHosts.add(h);
+    console.log(`[demo-record] REAL RUN: recipe ${recipe.id} (${recipe.portalPlatform || "portal"}, v${recipe.version}, ${recipe.steps.length} steps) → host(s) ${realHosts.join(", ")}`);
+    credential = getDecryptedCredentialByUrl(db, detail.project.clientId ?? "", recipe.portalUrl || "");
+    console.log(`[demo-record] credential: ${credential ? "stored login found (never printed)" : "none stored — you will log in yourself in the browser"}`);
+  } else {
+    portal = await startDemoPortal();
+    portalOpen = true;
+    cleanups.push(closePortal);
+    // The test-only submit click may only ever land on this process's own loopback fixture.
+    if (injectSubmit && !/^http:\/\/127\.0\.0\.1:\d+$/.test(portal.baseUrl)) {
+      throw new Error("--inject-submit-click refused: the portal is not the local fixture");
+    }
+    recipe = demoPortalRecipe(portal.baseUrl);
+    credential = FIXTURE_CREDENTIAL;
   }
-  const recipe = demoPortalRecipe(portal.baseUrl);
 
+  // ── 6b. The mask: every known value of the project and the login, counted, never printed.
+  let maskValueCount = 0;
+  let maskScript = "";
+  if (maskOn) {
+    const src = o.maskValuesFrom && o.maskValuesFrom !== projectId ? getProjectDetail(db, o.maskValuesFrom).project : stagedProject;
+    const values = piiMaskValues({
+      project: { ...src, parserSnapshot: { ...(src.parserSnapshot as Record<string, unknown>), ...overlay } },
+      credential: { username: credential?.username ?? "" },
+      extra: [],
+    });
+    maskValueCount = values.length;
+    maskScript = piiMaskInitScript({ values, shapes: piiMaskShapesFor(recipe.portalPlatform), extraSelectors: o.maskSelectors });
+    console.log(`[demo-record] masking ON: ${maskValueCount} known value(s), ${o.maskSelectors.length} extra selector(s), platform shape "${recipe.portalPlatform || "generic"}"`);
+  }
+
+  // ── 7. Browser ──────────────────────────────────────────────────────────────────────
   const browser = await chromium.launch({
     headless,
     slowMo,
     // Belt and braces for "nothing leaves": the page's requests are routed below; anything
-    // the browser does outside a page is pointed at a closed loopback port.
-    proxy: { server: "http://127.0.0.1:9", bypass: "127.0.0.1,localhost" },
+    // the browser does outside a page is pointed at a closed loopback port. A real run needs
+    // the real host, so there the route below is the (counting) guard instead.
+    ...(realRun ? {} : { proxy: { server: "http://127.0.0.1:9", bypass: "127.0.0.1,localhost" } }),
     args: [
       "--disable-extensions",
       "--disable-background-networking",
@@ -437,9 +578,30 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   let contextOpen = true;
   const closeContext = async (): Promise<void> => { if (contextOpen) { contextOpen = false; await context.close(); } };
   cleanups.push(closeContext);
-  const routeCounters = await installLoopbackOnlyRoute(context);
+  // Fictional: loopback only, everything else aborted and counted. Real: every host is
+  // counted (a portal loads CDN assets), and a POST whose URL reads as a filing or a payment
+  // is ABORTED and counted — the one request this recording must never let out.
+  const routeCounters = realRun ? { loopback: 0, aborted: 0, abortedHosts: [] as string[] } : await installLoopbackOnlyRoute(context);
+  const hostsSeen = new Map<string, number>();
+  let submitOrPayRequests = 0;
+  if (realRun) {
+    await context.route("**/*", async (route) => {
+      const req = route.request();
+      let host = "";
+      try { host = new URL(req.url()).hostname; } catch { host = req.url().slice(0, 40); }
+      hostsSeen.set(host, (hostsSeen.get(host) ?? 0) + 1);
+      if (req.method() !== "GET" && req.method() !== "HEAD" && isSubmitOrPayRequestUrl(req.url())) {
+        submitOrPayRequests++;
+        console.error(`[demo-record] ABORTED a ${req.method()} to a submit/pay-looking URL on ${host}`);
+        await route.abort("blockedbyclient");
+        return;
+      }
+      await route.continue();
+    });
+  }
   await context.addInitScript({ content: NAME_SHIM });
-  await context.addInitScript({ content: captionInitScript() });
+  if (!realRun) await context.addInitScript({ content: captionInitScript() });
+  if (maskScript) await context.addInitScript({ content: maskScript });
   const page = await context.newPage();
 
   const shots: string[] = [];
@@ -461,20 +623,41 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   let adapterFlag: boolean | undefined;
   let reviewRows: Array<{ label: string; value: string }> = [];
   let finalUrl = "";
+  let finalTitle = "";
+  let reviewPageNamed = false;
   let runError = "";
   let gateObservations: import("./demo-portal/gateProbe").ClickGateObservation[] = [];
   try {
-    // Title card.
-    await page.goto(`${portal.baseUrl}/intro`);
-    await hold(4500);
-    await shot("01-intro.png");
+    if (!realRun) {
+      // Title card.
+      await page.goto(`${portal!.baseUrl}/intro`);
+      await hold(4500);
+      await shot("01-intro.png");
+    }
 
     // What RecipeAdapter.login() does once its browser is open: go to the portal URL and
     // run the shared login flow.
     await page.goto(recipe.portalUrl);
     await hold(1200);
-    loginResult = await performLogin(page, FIXTURE_CREDENTIAL);
+    loginResult = await performLogin(page, credential ?? undefined);
     console.log(`[demo-record] login: ${loginResult.status} — ${loginResult.message}`);
+    if (!loginResult.ok && realRun) {
+      // The person present finishes it (MFA, a challenge, no stored credential). Done when
+      // no password box is showing on one of the recipe's own hosts.
+      console.log(`[demo-record] waiting up to ${o.loginWaitS}s for you to finish the login in the browser window…`);
+      const deadline = Date.now() + o.loginWaitS * 1000;
+      let done = false;
+      while (Date.now() < deadline) {
+        await hold(2000);
+        const pw = await page.locator("input[type=password]:visible").count().catch(() => 1);
+        let host = "";
+        try { host = new URL(page.url()).hostname.toLowerCase(); } catch { /* about:blank */ }
+        if (pw === 0 && allowedHosts.has(host)) { done = true; break; }
+      }
+      if (!done) throw new Error(`login was not completed within ${o.loginWaitS}s`);
+      loginResult = { ok: true, status: "human", message: "completed by the person present" };
+      await shot("01-logged-in.png");
+    }
     if (!loginResult.ok) throw new Error(`login did not succeed: ${loginResult.status}`);
 
     // The rest of runAdapter's sequence, on the adapter the staging path would build.
@@ -494,16 +677,25 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
     }
     adapterFlag = adapter.finalSubmitClicked;
     finalUrl = page.url();
+    finalTitle = await page.title().catch(() => "");
+    reviewPageNamed = await page.evaluate(() => document.body?.innerText || "").then((t) => isReviewPageText(t)).catch(() => false);
 
-    // Independent read-back: what the portal's own review page now shows.
-    reviewRows = await page.$$eval("table.summary tr", (trs) => trs
-      .map((tr) => ({ label: (tr.querySelector("th")?.textContent || "").trim(), value: (tr.querySelector("td")?.textContent || "").trim() }))
-      .filter((r) => r.value !== "" || r.label === "")).catch(() => []);
+    if (!realRun) {
+      // Independent read-back: what the fictional portal's own review page now shows.
+      reviewRows = await page.$$eval("table.summary tr", (trs) => trs
+        .map((tr) => ({ label: (tr.querySelector("th")?.textContent || "").trim(), value: (tr.querySelector("td")?.textContent || "").trim() }))
+        .filter((r) => r.value !== "" || r.label === "")).catch(() => []);
+    }
 
     if (injectSubmit) {
       // TEST ONLY — the recorder clicks, to prove the gate below refuses the video.
       await page.locator("#submitApplication").click().catch(() => {});
       await hold(1500);
+    } else if (realRun) {
+      await hold(1200);
+      await shot("99-stopped-at-review.png");
+      console.log("[demo-record] the engine has stopped at the review screen; closing the browser in 6s (nothing is submitted; delete the portal's autosaved draft yourself afterwards)");
+      await hold(6000);
     } else {
       await caption("The engine has stopped. The rest is a person's job.", FINAL_CAPTION, "✔ Submit application: NOT clicked — left for a person", "final");
       await page.evaluate(() => {
@@ -531,13 +723,17 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   await closeBrowser();
   await closePortal();
 
-  // ── 7. The gate ──────────────────────────────────────────────────────────────────
+  // ── 8. The gate ──────────────────────────────────────────────────────────────────
   // The ENGINE's own answer on the final-submit step(s), as observed during this run.
   const finalSubmitObs = gateObservations.filter((g) => g.isFinalSubmit);
   for (const g of finalSubmitObs) console.log(`[demo-record] final submit "${g.note.slice(0, 50)}": ${describeGate(g)}`);
   if (!finalSubmitObs.length) console.log("[demo-record] final submit: the step never reached the engine's click gate");
+  const flaggedSteps = recipe.steps.filter((s) => s.isFinalSubmit === true);
+  const finalSubmitStepHasNoTarget = flaggedSteps.length === 1 && Object.keys((flaggedSteps[0].selector ?? {}) as object).length === 0;
   const evidence: RecordingEvidence = {
+    mode: realRun ? "real" : "fictional",
     finalSubmitGates: finalSubmitObs.length ? finalSubmitObs.map((g) => g.gate) : ["not-evaluated"],
+    finalSubmitStepHasNoTarget,
     replayOk: !runError && loginResult.ok && fillResult.ok === true && reviewResult.ok === true,
     finalSubmitClickedSources: [
       adapterFlag,
@@ -545,11 +741,14 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
       // runAdapter's own derivation, reproduced: a clicked allowlisted submit shows up here.
       (reviewResult.ok && reviewResult.data?.finalSubmitClicked === true) || adapterFlag === true ? true : false,
     ],
-    submitRequests: portal.submitPosts().length,
-    nonGetRequests: portal.nonGetRequests().length,
+    submitRequests: portal ? portal.submitPosts().length : 0,
+    nonGetRequests: portal ? portal.nonGetRequests().length : 0,
+    submitOrPayRequests: realRun ? submitOrPayRequests : undefined,
     abortedRequests: routeCounters.aborted,
     nodeNetworkAttempts: nodeNetworkAttempts.length,
-    reachedReviewUrl: /\/apply\/review$/.test(finalUrl),
+    // Fictional: the fixture's review URL. Real: the page names itself the review step, or its
+    // URL/title says review — the adapter's own report alone is not the evidence.
+    reachedReviewUrl: realRun ? (reviewPageNamed || /review/i.test(`${finalUrl} ${finalTitle}`)) : /\/apply\/review$/.test(finalUrl),
   };
   const verdict = recordingVerdict(evidence);
 
@@ -579,6 +778,7 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   const list = (k: string): string[] => (Array.isArray(data[k]) ? (data[k] as unknown[]).map(String) : []);
   const LEARN_LITERAL = /LEARN-TIME|learn-time@|Learntown|1 Learn-Time/i;
   const report = {
+    mode: evidence.mode,
     kept: verdict.keep,
     refusedBecause: verdict.reasons,
     out: verdict.keep ? out : null,
@@ -587,10 +787,14 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
     resolution: "1440x900",
     slowMo,
     headless,
+    masked: maskOn,
+    maskValueCount,
+    maskSelectorCount: o.maskSelectors.length,
     login: `${loginResult.status}`,
     replayOk: fillResult.ok,
     replayMessage: String(fillResult.message ?? "").slice(0, 600),
     stopAtReview: String(reviewResult.message ?? "").slice(0, 300),
+    recipe: realRun ? { id: recipe.id, platform: recipe.portalPlatform, version: recipe.version, hosts: realHosts } : "fictional",
     stepsInRecipe: recipe.steps.length,
     executed: data.executed,
     skipped: list("skipped"),
@@ -605,19 +809,23 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
     reviewPageRows: reviewRows.filter((r) => r.label).length,
     reviewPageMissing: reviewRows.filter((r) => /missing/i.test(r.value)).map((r) => r.label),
     reviewPageLearnLiterals: reviewRows.filter((r) => LEARN_LITERAL.test(r.value)).map((r) => r.label),
+    reviewPageNamed,
     finalSubmitClickedSources: evidence.finalSubmitClickedSources,
+    finalSubmitStepHasNoTarget,
     finalSubmitStoppedBy: finalSubmitObs.map((g) => ({ gate: g.gate, reason: describeGate(g), feeGateMatched: g.feeGateMatched, autoSubmitConsulted: g.autoSubmitConsulted })),
     clickGateObservations: gateObservations.map((g) => `${g.gate}: ${g.note.slice(0, 50)}`),
-    fixtureRequests: portal.log.length,
+    fixtureRequests: portal ? portal.log.length : 0,
     fixtureSubmitRequests: evidence.submitRequests,
     fixtureNonGetRequests: evidence.nonGetRequests,
     browserLoopbackRequests: routeCounters.loopback,
     browserAbortedRequests: routeCounters.aborted,
     browserAbortedHosts: [...new Set(routeCounters.abortedHosts)],
+    browserHostsSeen: realRun ? Object.fromEntries(hostsSeen) : undefined,
+    submitOrPayRequestsAborted: realRun ? submitOrPayRequests : undefined,
     nodeNetworkAttempts,
     finalUrlPath: finalUrl ? new URL(finalUrl).pathname : "",
     shots,
-    footer: CAPTION_FOOTER,
+    footer: realRun ? "Real portal, real unfiled project, masked on screen at record time. A person reviews every frame before use." : CAPTION_FOOTER,
     runError,
   };
   console.log(JSON.stringify(report, null, 2));
