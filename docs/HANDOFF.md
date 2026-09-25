@@ -53,6 +53,12 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   afterwards. Still: learn/replay to the REVIEW screen and stop, never submit, PORTAL_ALLOW_FINAL_SUBMIT unset for the session, operator present
   for login/MFA, the test project flagged learning_excluded (demo projects never teach the KB), a human reviews every frame before use.
   Caveat: PowerClerk may validate the PGE account number / service address — fallback is a real unfiled project's values, masked.
+- NEM INSIDE A PERMIT PORTAL (operator ruling 2026-09-25): where a utility takes its interconnection application through the CITY's permit
+  portal (Provo, St. George, Spanish Fork, Lehi; Austin Energy, BTU, DME), the NEM track may use that permit-platform host ONLY when the
+  utility's own human-VERIFIED KB record names that portal — never host-wide, never from a seeded/researched row. Rule 5 otherwise unchanged
+  (aca-oregon on Pacific Power NEM still refused).
+- STANDING AUTHORIZATION (operator 2026-09-25): "yes to any other adjustments you have to make to get it functional how we want it" —
+  functional adjustments and rule wording that match verified behaviour may proceed without a per-item ask; each one is logged here.
 - KNOWLEDGE PRE-LOAD SPEND (prospect states): only AFTER the live research-accuracy evals pass
   (`.probe/jurisdiction/`): state layers for FL/TX/UT/CA (~$2) + the top 5 AHJs/utilities per state from
   `.probe/prospects/PREP-PLAN.md` §6 (~20 entities, ~$50), seeded, operator spot-verifies. Everything else is researched
