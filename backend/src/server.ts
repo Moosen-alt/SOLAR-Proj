@@ -147,6 +147,7 @@ import {
   runEmailTracker,
   runProjectWorkflow,
   runDuePermitChecks,
+  createRunApproval,
 } from "./repository";
 import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
 import { ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
@@ -1703,13 +1704,23 @@ app.delete("/api/portal-recipes/:id", (req, res) => {
 });
 // Hybrid: trust a recorded portal for one-click approve-submit (must have been recorded
 // through the final application submit). Off by default; fee payment is never automated.
+// THERE IS NO STANDING PER-RECIPE ARM (operator ruling 2026-09-24). Automation may click a final
+// submit only in a run a named person approved (Approve & Submit on the filing — see
+// repository.maySubmitAutomatically), so arming a recipe is refused; DISarming is always allowed
+// (it clears a legacy arm, which no decision reads any more). 404 for a recipe that is not there.
 app.put("/api/portal-recipes/:id/auto-submit", (req, res) => {
+  const recipe = getPortalRecipe(db, String(req.params.id));
   const enabled = req.body?.enabled === true || String(req.body?.enabled) === "true";
-  db.run("UPDATE portal_recipes SET auto_submit_enabled = ?, updated_at = ? WHERE id = ?", [
-    enabled ? 1 : 0, new Date().toISOString(), String(req.params.id),
-  ]);
-  addAuditLog(db, null, "human", "operator", "portal_recipe.auto_submit_toggled", { recipeId: String(req.params.id), enabled });
-  res.json({ ok: true, autoSubmitEnabled: enabled });
+  if (enabled) {
+    throw new HttpError(409,
+      "Recipes are no longer armed for auto-submit. A final submit happens only in a run a named person approves: "
+      + "use Approve & Submit on the filing (with PORTAL_ALLOW_FINAL_SUBMIT=1 on the server). Nothing was changed.",
+      { noStandingArm: true, recipeId: recipe.id });
+  }
+  db.run("UPDATE portal_recipes SET auto_submit_enabled = 0, updated_at = ? WHERE id = ?", [new Date().toISOString(), recipe.id]);
+  const user = currentUser(db, req);
+  addAuditLog(db, null, "human", user?.name || "operator", "portal_recipe.auto_submit_toggled", { recipeId: recipe.id, enabled: false, orgId: user?.orgId ?? null });
+  res.json({ ok: true, autoSubmitEnabled: false });
 });
 
 // ── Per-portal legal kill-switch ───────────────────────────────────────────────────────────
@@ -2667,12 +2678,23 @@ app.post("/api/projects/:id/prepare-submission", (req, res) => {
   // Recorded in the audit trail BEFORE the run, with the approver's identity, exactly as
   // autopilot/approve does: a filing must always be attributable to a person.
   const allowFinalSubmit = req.body?.allowFinalSubmit === true || String(req.body?.allowFinalSubmit) === "true";
-  if (allowFinalSubmit) {
-    const approver = currentUser(db, req);
-    if (AUTH_ENABLED && !approver) throw new HttpError(401, "Sign in to authorize a final submit.");
-    addAuditLog(db, projectId, "human",
-      AUTH_ENABLED ? (approver?.name || "authenticated user") : (String(req.body?.approverName || "").trim() || "dashboard"),
-      "portal.final_submit_authorized", { track: track ?? "permit" });
+  // APPROVE & SUBMIT: A NAMED PERSON APPROVES THIS RUN. The approval row is the only thing that
+  // lets the run click the portal's final submit (repository.maySubmitAutomatically also needs
+  // PORTAL_ALLOW_FINAL_SUBMIT=1, a complete recipe and its one flagged terminal submit). The
+  // approver is the signed-in user when auth is on — never a body-supplied name then; with auth off
+  // it is the name the dashboard sends, and "dashboard" (no name) is not a person: no approval is
+  // recorded and the run stops at review like any other.
+  if (autoSubmit || allowFinalSubmit) {
+    const user = currentUser(db, req);
+    if (AUTH_ENABLED && !user) throw new HttpError(401, "Sign in to approve a final submit.");
+    const approverName = AUTH_ENABLED ? String(user?.name || user?.email || "").trim() : String(req.body?.approverName || "").trim();
+    if (approverName) {
+      createRunApproval(db, { projectId, track: track ?? "permit", approver: approverName, approverUserId: user?.id ?? null });
+    } else {
+      addAuditLog(db, projectId, "human", "dashboard", "portal.final_submit_not_approved", {
+        track: track ?? "permit", reason: "no named approver — the run will stop at review",
+      });
+    }
   }
   // Staging runs OFF the request path as a background job: a live portal pass can take
   // many seconds (sometimes minutes), which would otherwise hang or time out the HTTP

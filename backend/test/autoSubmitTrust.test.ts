@@ -1,0 +1,176 @@
+// A FINAL SUBMIT HAPPENS ONLY IN A RUN A NAMED PERSON APPROVED — NEVER ON A STANDING ARM.
+//
+// Operator ruling (2026-09-24): automation may click the portal's final submit ONLY right after a
+// named person approved THAT exact run (Approve & Submit), with PORTAL_ALLOW_FINAL_SUBMIT=1 and a
+// valid recipe shape (one terminal isFinalSubmit click right after stopForReview). There is no
+// standing per-recipe arm: auto_submit_enabled is never authority, and every recipe writer clears
+// it. Before this, resolution read ONLY portal_recipes.auto_submit_enabled — no status, no
+// environment switch, no approver — and production had two armed rows (e965c645 "NOT verified",
+// and 6282e671 while needs_rerecord).
+//
+// Every case drives the REAL prepareSubmission; the approval is written by createRunApproval (the
+// Approve & Submit route's writer). The stub adapter records the options the bot would receive.
+//
+// KILL TESTS:
+//   K1 repository.automaticSubmitRefusals: drop the finalSubmitEnvAllows check → (b) (c) fail.
+//   K2 resolve from auto_submit_enabled instead (the old code) → (a) fails.
+//   K3 drop the recipe-shape / flagged-step checks → (e) fails.
+//   K4 claimRunApproval: do not consume (drop the UPDATE) → (h) fails.
+//
+// Run: npx tsx backend/test/autoSubmitTrust.test.ts
+import "./_isolate"; // FIRST
+import assert from "node:assert/strict";
+import type { RecipeStep } from "../../shared/src/types";
+import { setupStageFixture, check, finish } from "./_stageFixture";
+
+const fx = await setupStageFixture("auto-submit-trust");
+const { db, repo, recipes } = fx;
+
+type Seen = { autoSubmit?: boolean; runApproval?: { approver: string; runId: string } | null; runId?: string; allowFinalSubmit?: boolean };
+/** Stage once with autoSubmit requested; return what the bot was handed and the run row. */
+async function stageAsking(projectId: string, opts: { env?: string | null; fail?: boolean } = {}) {
+  if (opts.env === null || opts.env === undefined) delete process.env.PORTAL_ALLOW_FINAL_SUBMIT;
+  else process.env.PORTAL_ALLOW_FINAL_SUBMIT = opts.env;
+  let seen: Seen | null = null;
+  fx.stubRunner(async (_r, _p, _f, _d, _files, options) => {
+    seen = { autoSubmit: options?.autoSubmit, runApproval: options?.runApproval ?? null, runId: options?.runId, allowFinalSubmit: options?.allowFinalSubmit };
+    // Staged to review; nothing clicked — the question here is only what the bot was ALLOWED.
+    if (opts.fail) return fx.failingStep("Recipe step failed (fill — x): locator.fill: Target page, context or browser has been closed");
+    return { portalName: "stub", ok: true, finalSubmitClicked: false, pauseReason: null, steps: [{ ok: true, message: "staged" }] };
+  });
+  await repo.prepareSubmission(db, projectId, undefined, /* autoSubmit */ true);
+  delete process.env.PORTAL_ALLOW_FINAL_SUBMIT;
+  const run = fx.latestRun(projectId)!;
+  assert.equal(JSON.parse(String(run.result_json)).actor, "RecipeAdapter", "setup: the stage did not take the recipe branch");
+  return { seen: seen as unknown as Seen, run };
+}
+const approve = (projectId: string, approver = "A. Person") =>
+  repo.createRunApproval(db, { projectId, track: "permit", approver, approverUserId: null });
+const declined = (projectId: string) => fx.audits("portal.auto_submit_declined").filter((a) => a.project_id === projectId);
+
+await check("(g) MUST-PASS: a named approval of THIS run + PORTAL_ALLOW_FINAL_SUBMIT=1 + a complete, well-shaped recipe → allowed, and the approval names this run", async () => {
+  fx.completeRecipe(); // [...fills, stopForReview, final submit click]
+  const projectId = fx.newProject();
+  const approval = approve(projectId);
+  const { seen, run } = await stageAsking(projectId, { env: "1" });
+  assert.equal(seen.autoSubmit, true, "a fully approved run was not allowed to submit — a gate nothing can pass is an outage");
+  assert.deepEqual(seen.runApproval, { approver: "A. Person", runId: approval.id });
+  assert.equal(seen.runId, approval.id, "the bot was told a different run id than the approval names");
+  assert.equal(run.id, approval.id, "the run row does not carry the approved run's id");
+  const row = db.get<{ consumed_at: string | null }>("SELECT consumed_at FROM portal_run_approvals WHERE id = ?", [approval.id]);
+  assert.ok(row?.consumed_at, "the approval was not consumed by its run");
+});
+
+await check("(a) an ARMED recipe with no approval is NOT allowed — the arm is not authority", async () => {
+  const recipe = fx.completeRecipe();
+  // Precondition (not the thing under test): a legacy armed row, as production had.
+  db.run("UPDATE portal_recipes SET auto_submit_enabled = 1 WHERE id = ?", [recipe.id]);
+  const projectId = fx.newProject();
+  const { seen } = await stageAsking(projectId, { env: "1" });
+  assert.equal(seen.autoSubmit, false, "a standing per-recipe arm let a run submit with nobody's approval");
+  assert.equal(seen.runApproval, null);
+  assert.match(JSON.parse(declined(projectId)[0].details).reasons.join(" | "), /no named person approved this run/);
+});
+
+await check("(b) an approval with PORTAL_ALLOW_FINAL_SUBMIT unset is NOT allowed", async () => {
+  fx.completeRecipe();
+  const projectId = fx.newProject();
+  approve(projectId);
+  const { seen } = await stageAsking(projectId, { env: null });
+  assert.equal(seen.autoSubmit, false);
+  assert.equal(seen.runApproval, null, "the bot was handed an approval the process switch forbids");
+  assert.match(JSON.parse(declined(projectId)[0].details).reasons.join(" | "), /PORTAL_ALLOW_FINAL_SUBMIT/);
+});
+
+await check("(c) PORTAL_ALLOW_FINAL_SUBMIT=true (not exactly 1) is NOT allowed", async () => {
+  fx.completeRecipe();
+  const projectId = fx.newProject();
+  approve(projectId);
+  const { seen } = await stageAsking(projectId, { env: "true" });
+  assert.equal(seen.autoSubmit, false);
+});
+
+await check("(d) an approval for ANOTHER project is not this run's approval", async () => {
+  fx.completeRecipe();
+  const other = fx.newProject();
+  approve(other);
+  const projectId = fx.newProject();
+  const { seen } = await stageAsking(projectId, { env: "1" });
+  assert.equal(seen.autoSubmit, false);
+  const left = db.get<{ consumed_at: string | null }>("SELECT consumed_at FROM portal_run_approvals WHERE project_id = ?", [other]);
+  assert.equal(left?.consumed_at ?? null, null, "a run consumed another project's approval");
+});
+
+await check("(e) a recipe with TWO flagged submits, or a flagged step that is not terminal, or none — NOT allowed", async () => {
+  const bad: RecipeStep[][] = [
+    [...fx.fills(2), fx.REVIEW, fx.FINAL, fx.FINAL],
+    [...fx.fills(2), fx.REVIEW, fx.FINAL, ...fx.fills(1)],
+    [...fx.fills(2), fx.FINAL],
+    [...fx.fills(2), fx.REVIEW],
+  ];
+  for (const steps of bad) {
+    fx.completeRecipe(steps);
+    const projectId = fx.newProject();
+    approve(projectId);
+    const { seen } = await stageAsking(projectId, { env: "1" });
+    assert.equal(seen.autoSubmit, false, `allowed a click on an invalid shape: ${steps.map((st) => st.action + (st.isFinalSubmit ? "*" : "")).join(",")}`);
+  }
+});
+
+await check("(f) a blank approver is refused at the approval itself — 'dashboard' is not a person", () => {
+  const projectId = fx.newProject();
+  assert.throws(() => approve(projectId, "   "), /named approver/);
+  assert.equal(db.query("SELECT id FROM portal_run_approvals WHERE project_id = ?", [projectId]).length, 0);
+});
+
+await check("(h) an approval is SINGLE USE — the next run of the same track is an ordinary run", async () => {
+  fx.completeRecipe();
+  const projectId = fx.newProject();
+  approve(projectId);
+  // The approved run dies (our browser closed) — nothing staged, so the track can be re-run.
+  const first = await stageAsking(projectId, { env: "1", fail: true });
+  assert.equal(first.seen.autoSubmit, true, "setup: the first (approved) run was not allowed");
+  const second = await stageAsking(projectId, { env: "1" });
+  assert.equal(second.seen.autoSubmit, false, "one approval covered a SECOND run");
+  assert.equal(second.seen.runApproval, null);
+  assert.notEqual(second.run.id, first.run.id);
+});
+
+await check("(i) an EXPIRED approval is never honoured", async () => {
+  fx.completeRecipe();
+  const projectId = fx.newProject();
+  const approval = approve(projectId);
+  // Time passing (not the thing under test): age the approval past its window.
+  db.run("UPDATE portal_run_approvals SET expires_at = ? WHERE id = ?", ["2000-01-01T00:00:00.000Z", approval.id]);
+  const { seen } = await stageAsking(projectId, { env: "1" });
+  assert.equal(seen.autoSubmit, false, "a stale approval let a run submit");
+});
+
+await check("(j) the decision re-reads the recipe: a recipe that is not complete, or no recipe at all, is refused", () => {
+  const recipe = fx.completeRecipe();
+  const runId = "run-j";
+  const ok = { recipeId: recipe.id, runApproval: { approver: "A. Person", runId }, runId, env: { PORTAL_ALLOW_FINAL_SUBMIT: "1" } };
+  assert.equal(repo.maySubmitAutomatically(db, ok), true, "setup: the same inputs on a complete recipe must pass");
+  recipes.markPortalRecipeForRerecord(db, recipe.id, { actor: "test" });
+  assert.equal(repo.maySubmitAutomatically(db, ok), false, "a needs_rerecord recipe may submit");
+  assert.equal(repo.maySubmitAutomatically(db, { ...ok, recipeId: null }), false, "a run with no recipe (hand-coded / self-seed) may submit");
+  assert.equal(repo.maySubmitAutomatically(db, { ...ok, runApproval: { approver: "A. Person", runId: "another-run" } }), false, "an approval for another run was accepted");
+});
+
+await check("(k) every recipe writer clears a legacy arm", () => {
+  const arm = (rid: string) => db.run("UPDATE portal_recipes SET auto_submit_enabled = 1 WHERE id = ?", [rid]);
+  const armed = (rid: string) => Number(fx.recipeRow(rid).auto_submit_enabled);
+  const recipe = fx.completeRecipe();
+  arm(recipe.id); recipes.savePortalRecipeSteps(db, recipe.id, [...fx.fills(3), fx.REVIEW, fx.FINAL]);
+  assert.equal(armed(recipe.id), 0, "savePortalRecipeSteps left the arm");
+  arm(recipe.id); recipes.markPortalRecipeForRerecord(db, recipe.id, { actor: "test" });
+  assert.equal(armed(recipe.id), 0, "markPortalRecipeForRerecord left the arm");
+  arm(recipe.id); recipes.startPortalRecording(db, { scopeType: "ahj", state: "OR", ahj: "Portland", utility: "PGE", createdBy: "test" });
+  assert.equal(armed(recipe.id), 0, "startPortalRecording left the arm");
+  recipes.savePortalRecipeSteps(db, recipe.id, [...fx.fills(3), fx.REVIEW, fx.FINAL], { status: "recording" });
+  arm(recipe.id); recipes.finishPortalRecipe(db, recipe.id, "test");
+  assert.equal(armed(recipe.id), 0, "finishPortalRecipe left the arm");
+});
+
+repo.setRecipeStageRunnerForTests(null);
+finish("auto-submit-trust");

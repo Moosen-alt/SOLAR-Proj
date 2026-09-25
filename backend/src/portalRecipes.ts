@@ -284,7 +284,7 @@ export function startPortalRecording(
          prev_steps_json = CASE WHEN ? != '' THEN ? ELSE prev_steps_json END,
          portal_platform = COALESCE(NULLIF(?, ''), portal_platform),
          portal_url = COALESCE(NULLIF(?, ''), portal_url),
-         flag_reason = '', flagged_at = NULL,
+         flag_reason = '', flagged_at = NULL, auto_submit_enabled = 0,
          discipline = ?, notes = ?, updated_at = ? WHERE id = ?`,
       [nextVersion,
         outgoingSteps.length ? s(existing.steps_json) : "", outgoingSteps.length ? s(existing.steps_json) : "",
@@ -347,7 +347,7 @@ export function restoreRecipeSnapshotIfAbandoned(db: AppDb, recipeId: string): "
     ? "[re-record abandoned — restored the previous working recipe]"
     : "[re-record abandoned — the previous steps were restored, but they had never been verified, so this needs a re-record rather than a promotion]";
   db.run(
-    `UPDATE portal_recipes SET steps_json = ?, status = ?, structure_sig = ?, prev_steps_json = NULL,
+    `UPDATE portal_recipes SET steps_json = ?, status = ?, structure_sig = ?, prev_steps_json = NULL, auto_submit_enabled = 0,
        notes = ?, updated_at = ? WHERE id = ? AND status = 'recording'`,
     [asJson(steps), proven ? "complete" : "needs_rerecord", recipeStructureSignature(steps),
       mergeRecipeNotes(base, note), nowIso(), recipeId],
@@ -442,7 +442,7 @@ export function savePortalRecipeSteps(
     .filter(Boolean).join(" ").trim();
 
   db.run(
-    `UPDATE portal_recipes SET steps_json = ?, status = ?, structure_sig = ?,
+    `UPDATE portal_recipes SET steps_json = ?, status = ?, structure_sig = ?, auto_submit_enabled = 0,
        prev_steps_json = CASE WHEN ? = 'complete' THEN NULL ELSE prev_steps_json END,
        notes = ?, updated_at = ? WHERE id = ?`,
     [asJson(finalSteps), status, recipeStructureSignature(finalSteps), status, notes, nowIso(), recipeId],
@@ -462,7 +462,7 @@ export function finishPortalRecipe(db: AppDb, recipeId: string, finishedBy?: str
   // statement that clears prev_steps_json must strip the marker, or a marker outlives its
   // payload and describes the NEXT snapshot — the one thing that would make the stale
   // sweep's proven/unproven judgement lie.
-  db.run("UPDATE portal_recipes SET status = 'complete', prev_steps_json = NULL, notes = ?, updated_at = ? WHERE id = ?", [
+  db.run("UPDATE portal_recipes SET status = 'complete', prev_steps_json = NULL, auto_submit_enabled = 0, notes = ?, updated_at = ? WHERE id = ?", [
     mergeRecipeNotes(stripPrevMarker(recipe.notes), `[verified by ${finishedBy || "operator"} — promoted from recording]`),
     nowIso(), recipeId,
   ]);
@@ -681,7 +681,7 @@ export function demoteOnReplayFailure(
   // KEEP AND FLAG. Still replayable; a human is asked to look.
   const flag = `A replay failed and the failure could not be attributed (${String(failureText || "no message").slice(0, 160)}) — kept replayable; check the run and clear this flag, or mark the recipe for re-record.`;
   db.run(
-    "UPDATE portal_recipes SET flag_reason = ?, flagged_at = ?, notes = ?, updated_at = ? WHERE id = ?",
+    "UPDATE portal_recipes SET flag_reason = ?, flagged_at = ?, auto_submit_enabled = 0, notes = ?, updated_at = ? WHERE id = ?",
     [flag, now, upsertRecipeNote(recipe.notes, "flagged for review", `[flagged for review ${now.slice(0, 10)}: an unattributed replay failure — kept replayable]`), now, recipeId],
   );
   audit("portal_recipe.replay_failure_flagged", { attribution: verdict.attribution, reason: verdict.reason });
@@ -801,7 +801,7 @@ export function markPortalRecipeForRerecord(
   opts: { actor?: string; actorType?: "human" | "system"; reason?: string; projectId?: string | null } = {},
 ): PortalRecipe {
   const recipe = getPortalRecipe(db, recipeId);
-  db.run("UPDATE portal_recipes SET status = 'needs_rerecord', updated_at = ? WHERE id = ?", [nowIso(), recipeId]);
+  db.run("UPDATE portal_recipes SET status = 'needs_rerecord', auto_submit_enabled = 0, updated_at = ? WHERE id = ?", [nowIso(), recipeId]);
   try {
     addAuditLog(db, opts.projectId ?? null, opts.actorType ?? "human", opts.actor || "operator", "portal_recipe.marked_for_rerecord", {
       recipeId, profileKey: recipe.profileKey, version: recipe.version, fromStatus: recipe.status,

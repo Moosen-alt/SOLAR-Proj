@@ -134,6 +134,7 @@ import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, resolvePermi
 import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
 import { isHarnessAbort, looksBotBlocked } from "./runAbort";
+import { finalSubmitEnvAllows, recipeShapeProblems } from "../../shared/src/portalSafety";
 
 // THE ONE SEAM A TEST MAY STUB: the recipe-replay launcher prepareSubmission calls. Everything
 // around it — the gates, the run row, the outcome, the demotion, the heal write, the approval —
@@ -6555,6 +6556,100 @@ export function derivePortalRunOutcome(result: Record<string, unknown>): {
   };
 }
 
+// ---------------------------------------------------------------------------------------------
+// FINAL SUBMIT: A NAMED PERSON'S APPROVAL OF ONE RUN (A2; operator ruling 2026-09-24).
+//
+// Automation may click a portal's final submit ONLY right after a named person approved THAT
+// run (the Approve & Submit action), with PORTAL_ALLOW_FINAL_SUBMIT=1 on the process at decision
+// time, a recipe that is 'complete', and a recipe shape with exactly one isFinalSubmit click, last,
+// right after the stopForReview marker. There is NO standing per-recipe arm:
+// portal_recipes.auto_submit_enabled is never read here, and every recipe writer clears it.
+// The approval row's id IS the id of the run it approves (prepareSubmission adopts it), and it is
+// consumed by that run — it can never cover a second one. portal-bot re-checks the same
+// conditions at the click (shared/src/portalSafety.mayClickFinalSubmit).
+// ---------------------------------------------------------------------------------------------
+
+/** How long an approval waits for its run. Approve & Submit enqueues the run immediately; an
+ *  approval nobody's run picked up within this window is stale and is never honoured. */
+const RUN_APPROVAL_TTL_MS = 30 * 60_000;
+
+/** Record a named person's approval of the NEXT staging run of (project, track). The only writer
+ *  is the Approve & Submit route. Refuses a blank approver: "dashboard" is not a person. */
+export function createRunApproval(
+  db: AppDb,
+  input: { projectId: string; track: string; approver: string; approverUserId?: string | null },
+): { id: string; approver: string; expiresAt: string } {
+  const approver = String(input.approver ?? "").trim();
+  if (!approver) throw new HttpError(400, "A final submit needs a named approver — sign in, or give your name, before approving.");
+  const approvalId = id();
+  const now = Date.now();
+  const expiresAt = new Date(now + RUN_APPROVAL_TTL_MS).toISOString();
+  db.run(
+    `INSERT INTO portal_run_approvals (id, project_id, track, approver, approver_user_id, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [approvalId, input.projectId, input.track || "permit", approver, input.approverUserId ?? null, new Date(now).toISOString(), expiresAt],
+  );
+  addAuditLog(db, input.projectId, "human", approver, "portal.final_submit_approved", {
+    approvalId, track: input.track || "permit", expiresAt,
+  });
+  return { id: approvalId, approver, expiresAt };
+}
+
+/** Take (and consume, atomically) the newest live approval for (project, track). Single use. */
+function claimRunApproval(db: AppDb, projectId: string, track: string): { id: string; approver: string } | null {
+  const row = db.get<Row>(
+    `SELECT id, approver FROM portal_run_approvals
+      WHERE project_id = ? AND track = ? AND consumed_at IS NULL AND expires_at > ?
+      ORDER BY created_at DESC LIMIT 1`,
+    [projectId, track || "permit", nowIso()],
+  );
+  if (!row) return null;
+  db.run("UPDATE portal_run_approvals SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL", [nowIso(), text(row.id)]);
+  if (Number(db.get<{ n: number }>("SELECT changes() AS n")?.n ?? 0) === 0) return null; // another run took it
+  return { id: text(row.id), approver: text(row.approver) };
+}
+
+/**
+ * EVERY REASON automation may NOT click the final submit in this run. Empty only when all hold.
+ * Reads the recipe FROM THE DATABASE (status and steps as they are now, not as the caller last
+ * saw them) and the environment switch at call time. Never reads auto_submit_enabled.
+ */
+export function automaticSubmitRefusals(
+  db: AppDb,
+  input: { recipeId: string | null; runApproval: { approver: string; runId: string } | null; runId: string; env?: Record<string, string | undefined> },
+): string[] {
+  const out: string[] = [];
+  if (!finalSubmitEnvAllows(input.env ?? process.env)) out.push("PORTAL_ALLOW_FINAL_SUBMIT is not 1 on this process");
+  const a = input.runApproval;
+  const approver = a && typeof a.approver === "string" ? a.approver.trim() : "";
+  const runId = String(input.runId ?? "").trim();
+  if (!a) out.push("no named person approved this run");
+  else {
+    if (!approver) out.push("the approval names no approver");
+    if (!runId || String(a.runId ?? "").trim() !== runId) out.push("the approval is for a different run");
+  }
+  const row = input.recipeId ? db.get<Row>("SELECT status, steps_json FROM portal_recipes WHERE id = ?", [input.recipeId]) : null;
+  if (!row) {
+    out.push("no recorded recipe drives this run (a final submit needs a recipe with a flagged, terminal submit step)");
+  } else {
+    if (text(row.status) !== "complete") out.push(`the recipe is ${text(row.status) || "unknown"}, not complete`);
+    const steps = parseJson<Array<{ action: string; isFinalSubmit?: boolean }>>(text(row.steps_json) || "[]", []);
+    const flagged = steps.filter((st) => st && st.isFinalSubmit === true).length;
+    if (flagged === 0) out.push("the recipe has no flagged final-submit step");
+    out.push(...recipeShapeProblems(steps).map((p) => `recipe shape: ${p}`));
+  }
+  return out;
+}
+
+/** THE decision: may automation click the final submit in this run? A plain boolean; the reasons
+ *  come from automaticSubmitRefusals. */
+export function maySubmitAutomatically(
+  db: AppDb,
+  input: { recipeId: string | null; runApproval: { approver: string; runId: string } | null; runId: string; env?: Record<string, string | undefined> },
+): boolean {
+  return automaticSubmitRefusals(db, input).length === 0;
+}
+
 /** Who is driving a run: this host, this process, this boot. */
 const PORTAL_RUNNER_ID = `${os.hostname()}|${process.pid}|${id().slice(0, 8)}`;
 
@@ -7053,7 +7148,14 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     throw new HttpError(409, `Submitting client "${submittingClient.companyName || submittingClient.legalBusinessName || detail.project.clientId}" has no CCB license number on file. Add it in the Clients tab before staging.`, { needsCcb: true, clientId: detail.project.clientId });
   }
 
-  const runId = id();
+  // A FINAL SUBMIT WAS ASKED FOR: take the named approval the Approve & Submit action recorded for
+  // this (project, track). Consumed here, single use — a refused or failed run does not leave it
+  // lying around for the next one. Its id becomes THIS run's id, so the approval names this run
+  // and no other. No approval → an ordinary run that stops at review.
+  const claimedApproval = autoSubmit === true || allowFinalSubmit === true
+    ? claimRunApproval(db, projectId, track ?? "permit")
+    : null;
+  const runId = claimedApproval?.id ?? id();
   const submissionId = id();
   const ts = nowIso();
   // Prefer the backend-split/uploaded document set (the real upload-ready files, named
@@ -7355,21 +7457,26 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
   // recipe-based portal is in use AND that recipe is explicitly trusted
   // (auto_submit_enabled). Hand-coded adapters (Accela/PowerClerk) stay guided-manual.
   // Even then the adapter never clicks a fee-payment control and bails on CAPTCHA/MFA.
-  let resolvedAutoSubmit = false;
-  // The named approval of THIS run (A2 fills it; null = no approval, never clicked).
-  const runApproval = null as { approver: string; runId: string } | null;
-  if (autoSubmit && recipe) {
-    const trustRow = db.get<{ auto_submit_enabled?: number }>(
-      "SELECT auto_submit_enabled FROM portal_recipes WHERE id = ?",
-      [recipe.id],
-    );
-    // bool() (not Boolean()) — a string "0" cell must read as false: this flag ARMS auto-submit.
-    resolvedAutoSubmit = bool(trustRow?.auto_submit_enabled);
-    if (autoSubmit && !resolvedAutoSubmit) {
-      addAuditLog(db, projectId, "system", "submit gate", "portal.auto_submit_declined", {
-        reason: recipe ? "recipe_not_trusted" : "no_recipe", track: track ?? "permit",
-      });
-    }
+  // MAY THIS RUN CLICK THE FINAL SUBMIT? One function answers (automaticSubmitRefusals /
+  // maySubmitAutomatically): a named approval of THIS run, PORTAL_ALLOW_FINAL_SUBMIT=1 now, a
+  // complete recipe, and the one-terminal-flagged-click-after-stopForReview shape. The recipe's
+  // auto_submit_enabled column is NOT consulted — a standing per-recipe arm is never authority.
+  // The hand-coded adapters' delegated submit (allowFinalSubmit) answers to the same function, so
+  // with no recipe it is refused: the ruling requires a valid recipe shape for any click.
+  const runApproval = claimedApproval ? { approver: claimedApproval.approver, runId } : null;
+  const wantsFinalSubmit = autoSubmit === true || allowFinalSubmit === true;
+  const submitRefusals = wantsFinalSubmit
+    ? automaticSubmitRefusals(db, { recipeId: recipe?.id ?? null, runApproval, runId })
+    : [];
+  const resolvedAutoSubmit = wantsFinalSubmit && submitRefusals.length === 0;
+  if (wantsFinalSubmit && !resolvedAutoSubmit) {
+    addAuditLog(db, projectId, "system", "submit gate", "portal.auto_submit_declined", {
+      track: track ?? "permit", runId, approvedBy: runApproval?.approver ?? null, reasons: submitRefusals,
+    });
+  } else if (resolvedAutoSubmit) {
+    addAuditLog(db, projectId, "system", "submit gate", "portal.auto_submit_allowed", {
+      track: track ?? "permit", runId, approvedBy: runApproval?.approver ?? null, recipeId: recipe?.id ?? null, recipeVersion: recipe?.version ?? null,
+    });
   }
 
   // Overlay the linked client's contractor/licensing identity onto the project
@@ -7424,10 +7531,13 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
     credential,
     userDataDir,
     autoSubmit: resolvedAutoSubmit,
-    // Operator-delegated submit for the HAND-CODED adapters (Accela/PowerClerk), which the
-    // trusted-recipe autoSubmit path above does not cover. Still double-gated: runAdapter
-    // also requires PORTAL_ALLOW_FINAL_SUBMIT=1, and the adapter still refuses to pay a fee.
-    allowFinalSubmit: allowFinalSubmit === true,
+    // THIS run's named approval, only when the decision above allowed it (null otherwise), and the
+    // run id it names — portal-bot re-checks both, with the environment, at the click.
+    runApproval: resolvedAutoSubmit ? runApproval : null,
+    runId,
+    // Operator-delegated submit for the HAND-CODED adapters: the same decision. With no recipe
+    // (the hand-coded and self-seed paths) the decision refuses, so this is false there.
+    allowFinalSubmit: allowFinalSubmit === true && resolvedAutoSubmit,
     // THE OPERATOR JUST SUBMITTED IN THE OPEN WINDOW. Reading the record number off the
     // completion page is the largest avoidable interruption in the product (~258 per 100
     // projects — it happens on every single filing, and a person types a number that is
@@ -7778,7 +7888,8 @@ export async function prepareSubmission(db: AppDb, projectId: string, track?: Su
             // The self-seed IS this track's staging run when no trusted recipe exists yet, so the
             // operator's delegated submit has to reach it here too — otherwise the only portals it
             // can never file on are precisely the ones with no recipe.
-            allowFinalSubmit: allowFinalSubmit === true,
+            // The self-seed has no complete recipe, so the one final-submit decision refused it.
+            allowFinalSubmit: allowFinalSubmit === true && resolvedAutoSubmit,
             project: stagedProject,
             // Match the hand-coded/replay adapters' headed setting so the self-seed opens a visible
             // browser locally and leaves it open at review for the human (headless on a server).
