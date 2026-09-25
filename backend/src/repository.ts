@@ -6477,7 +6477,7 @@ export async function runDuePermitChecks(
 // puts the human-readable reason first; verbose browser launch logs follow after a
 // newline and are dropped. Adapters already redact credentials/tokens from step
 // messages, so this never surfaces secrets.
-function extractStageFailureMessage(result: Record<string, unknown>): string {
+export function extractStageFailureMessage(result: Record<string, unknown>): string {
   const steps = Array.isArray(result.steps)
     ? (result.steps as Array<{ ok?: boolean; message?: unknown }>)
     : [];
