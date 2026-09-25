@@ -672,11 +672,23 @@ function loadValueOwners(text: string): Map<number, LoadValueRun> {
   // LOAD", "2)"), a speed ("110 MPH GROUND SNOW LOAD"), an edition ("ASCE 7-16"), a sign ("-16 PSF").
   const decorationOnly = new RegExp(String.raw`^(?:[\s,;.*†]|${SEP})*$`);
   const bareNumberTail = new RegExp(String.raw`(?<![\d.\-–—−])\d+(?:\.\d+)?(?=[\s:=])\s*(?:(?!mph\b)[A-Za-z][A-Za-z.\/²]{0,8}\s*){0,2}(?:[\s,;.*†]|${SEP})*$`, "i");
+  /** Values whose run OPENS with a label token: owned by that label, whatever follows them. */
+  const labelLed = new Set<number>();
   const strayValueBefore = (first: (typeof clean)[number]): boolean => {
     const k = indexOf.get(first)!;
     const p = k > 0 ? clean[k - 1] : undefined;
     const seg = blankParentheticals(text.slice(p ? p.end : 0, first.start));
-    if (p?.kind === "V" && owners.get(p.start)?.owner !== "prev" && decorationOnly.test(seg)) return true;
+    if (p?.kind === "V" && decorationOnly.test(seg)) {
+      if (owners.get(p.start)?.owner !== "prev") return true;
+      // "10 PSF EXISTING ROOF 36 PSF (ULT.) GROUND SNOW LOAD …": a LONE value owned only by the label-ish
+      // word before it, when that word sits between it and another lone value — the word is either
+      // value's (the 10's trailing label, or the 36's leading one), so the 36 is not surely owned. Not
+      // after a label-led value ("ROOF SNOW LOAD 25 PSF (TYP.) EXISTING ROOFING 10 PSF (TYP.) GROUND SNOW
+      // LOAD 36 PSF": the 25 is ROOF SNOW LOAD's, so EXISTING ROOFING opens the next item), and not
+      // when the word assigns ("EXISTING ROOF: 36 PSF").
+      const q = k > 1 ? clean[k - 2] : undefined;
+      if (!labelLed.has(p.start) && q?.kind === "V" && !labelLed.has(q.start) && evidenceBefore(text, p.start) !== "assign") return true;
+    }
     // "10 PSF EXISTING ROOF 36 GROUND SNOW LOAD 3 PSF …": a bare number after an unlisted label is stray too.
     return bareNumberTail.test(seg.slice(-40));
   };
@@ -715,7 +727,11 @@ function loadValueOwners(text: string): Map<number, LoadValueRun> {
     // A value-first LIST: opens with a value and alternates at least V L V L.
     const valueFirstList = first.kind === "V" && run.length >= 4;
     if (tableBlocks.has(blockOf[indexOf.get(first)!])) owner = "both";
-    for (const t of run) if (t.kind === "V") owners.set(t.start, { owner, valueFirstList });
+    for (const t of run) {
+      if (t.kind !== "V") continue;
+      owners.set(t.start, { owner, valueFirstList });
+      if (first.kind === "L") labelLed.add(t.start);
+    }
   }
   return owners;
 }

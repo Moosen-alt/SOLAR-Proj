@@ -413,6 +413,11 @@ const D36 = [
   "36: GROUND SNOW LOAD 25 PSF: ROOF SNOW LOAD",
   // A stray value after a value-first fragment the reader does not list ("10 PSF EXISTING ROOF 36 GROUND …").
   "10 PSF EXISTING ROOF 36 GROUND SNOW LOAD 3 PSF ROOF DEAD LOAD",
+  // …and with a unit: the word between two values ("EXISTING ROOF") could be either's, so the 36 is not
+  // surely the label-first value of EXISTING ROOF (the skeptic's residual F2 class, 2,778 layouts).
+  "10 PSF EXISTING ROOF 36 PSF (ULT.) GROUND SNOW LOAD 25 PSF ROOF SNOW LOAD",
+  "10 PSF (0.48 KPA): EXISTING ROOF 36 PSF (1.72 KPA): GROUND SNOW LOAD 25 PSF (1.20 KPA): ROOF SNOW LOAD",
+  "10 psf. EXISTING ROOF\n36 psf. GROUND SNOW LOAD\n25 psf. ROOF SNOW LOAD",
 ];
 for (const t of D36) warnsUnsure(t, [25, 3]);
 for (const t of D36) neverSure10(t.replace(/\b36\b/g, "16").replace(/\b25\b/g, "10").replace("1.72 KPA", "0.77 KPA").replace("1.20 KPA", "0.48 KPA"));
@@ -424,6 +429,10 @@ reads36("GROUND SNOW LOAD 36 PSF, ROOF SNOW 25 PSF (BALANCED), DEAD 3 PSF");
 reads36("GROUND SNOW LOAD 36 PSF (ULT.) ROOF SNOW LOAD 25 PSF (ULT.) DEAD LOAD 10 PSF (ULT.)", (j) => assert.deepEqual(j.roof, [25], show(j)));
 reads36("ROOF DEAD LOAD 3 PSF (TYP.) GROUND SNOW LOAD 36 PSF (TYP.)");
 reads36("EXISTING ROOFING 10 PSF (TYP.) GROUND SNOW LOAD 36 PSF (TYP.)");
+// A label-first list stays label-first through an unlisted label: the 25 is ROOF SNOW LOAD's, so the
+// word after it opens a new item and the 10 is EXISTING ROOFING's own.
+reads36("ROOF SNOW LOAD 25 PSF (TYP.) EXISTING ROOFING 10 PSF (TYP.) GROUND SNOW LOAD 36 PSF (TYP.)", (j) => assert.deepEqual(j.roof, [25], show(j)));
+reads36("EXISTING ROOF: 10 PSF (ULT.) GROUND SNOW LOAD 36 PSF (ULT.)");
 reads36("2. GROUND SNOW LOAD 36 PSF 3. ROOF SNOW LOAD 25 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
 reads36("2) GROUND SNOW LOAD 36 PSF 3) ROOF SNOW LOAD 25 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
 reads36("110 MPH GROUND SNOW LOAD 36 PSF ROOF SNOW LOAD 25 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
