@@ -481,6 +481,21 @@ const SEP = String.raw`(?:[:=]|(?<=\s)[-–](?=\s))`;
 /** A separator the regex captured: a DASH assigns only through the run's ownership (it is also how
  *  some sheets join list items), unlike ":"/"=" which assign outright. */
 const isDashSep = (sep: string | undefined): boolean => !!sep && /[-–]/.test(sep) && !/[:=]/.test(sep);
+/** A value with a MINUS sign ("C&C PRESSURE -16 PSF", "ZONE 1: -16.5 PSF") is a wind pressure, never
+ *  a load: a dash touching the digit that is not inside a range or an edition ("7-16"). Measured: a
+ *  column-major table's "-16 PSF GROUND SNOW LOAD" read as Pg 16 (a BLOCKER on a correct 36 psf plan). */
+const NOT_NEGATIVE = String.raw`(?<![\d.])(?<!(?:^|[^\w.])[-−])`;
+/** What follows a formula's COEFFICIENT: a multiplication, a parenthesised factor, or a code
+ *  coefficient ("0.7 x 1.0", "0.7 (1.0)(1.1)", "0.7 Ce Ct Is"). */
+const COEFFICIENT_TAIL = String.raw`\s*(?:[×*·⋅]|x(?=\s*[\d(A-Za-z])|\(\s*\d|C[etsa]\b|Is\b)`;
+/** A separator and a number that is not a formula coefficient: a label ASSIGNING its own value. */
+const ASSIGNS_OWN_VALUE = String.raw`\s*[:=]\s*\d+(?:\.\d+)?(?![\d.])(?!${COEFFICIENT_TAIL})`;
+const COEFFICIENT_AFTER = new RegExp(`^${COEFFICIENT_TAIL}`, "i");
+/** Right after a label: it assigns its own value ("GROUND SNOW LOAD = 25"), not a coefficient
+ *  ("ROOF SNOW LOAD pf = 0.7 x Ce x …" is the calculation line, not the roof snow load 0.7). */
+const OWN_VALUE_AFTER = new RegExp(`^${ASSIGNS_OWN_VALUE}`, "i");
+/** …and allowing the label's tail first: "LOAD", its symbol, a parenthetical ("(Pg)"). */
+const LABEL_OWN_VALUE_AFTER = new RegExp(String.raw`^(?:\s+loads?)?(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?${ASSIGNS_OWN_VALUE}`, "i");
 
 // A load LABEL, as a design-loads list prints it: "GROUND SNOW", "FLAT ROOF SNOW LOAD", "ROOF DEAD
 // LOAD", "PV DEAD LOAD", "PV WEIGHT", "GROUND SNOW LOAD (Pg)" — and the short forms plan sets print
@@ -492,7 +507,7 @@ const isDashSep = (sep: string | undefined): boolean => !!sep && /[-–]/.test(s
 // A label of a NON-psf quantity ("WIND SPEED") is deliberately not one either: in "110 MPH WIND SPEED
 // 36 PSF GROUND SNOW" it would open the run as a label and take the 36.
 const LOAD_LABEL_TOKEN = /\b(?:(?:(?:ground|roof|flat|sloped|total|design|balanced|minimum|pv|floor|array|system|module|dead)\s+){0,2}(?:snow(?:\s+loads?)?|(?:dead|live|wind|collateral|seismic)\s+loads?|weight)\b(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?(?:\s*,?\s*asd\b)?|(?:roof\s+)?(?:dl|ll)\b|roof\s+live\b|racking(?:\s+weight)?\b|collateral\b|pv\s+(?:modules?|panels?|array)(?:\s+weight)?\b|p\s?g\b(?!\s*\(\s*asd)|q\s?[zh]\b|(?:velocity|wind|design\s+wind)\s+pressures?\b|p\s?net\b)/gi;
-const LOAD_VALUE_TOKEN = /\b\d+(?:\.\d+)?\s*(?:psf\b|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))(?:\s*\(\s*asd\s*\))?/gi;
+const LOAD_VALUE_TOKEN = new RegExp(String.raw`${NOT_NEGATIVE}\b\d+(?:\.\d+)?\s*(?:psf\b|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))(?:\s*\(\s*asd\s*\))?`, "gi");
 /** A HEADING over a list, not a label of one load: "SNOW LOADS", "DESIGN SNOW LOADS" (plural, bare). */
 const HEADING_LABEL = /^(?:design\s+)?snow\s+loads$/i;
 /** Text that ENDS in a heading: "DESIGN LOADS", "SNOW LOADS:", "DESIGN CRITERIA -", "LOADS". */
@@ -531,8 +546,16 @@ function unvaluedLabelAfter(text: string, end: number): boolean {
   const word = m[1].toLowerCase();
   if (PROSE_WORD.has(word)) return false;
   if (/^(?:wind|exposure|risk|occupancy|asce|seismic|speed|mph|psf|code|codes|note|notes|sheet|see|per)$/.test(word)) return false;
-  // Its own value follows within a few words: a label of the next item, not a claimant.
-  return !/\d/.test(after.slice(m[0].length, m[0].length + 30));
+  // Its own value follows within a few words: a label of the next item, not a claimant — unless a
+  // load label comes first and the number is THAT label's ("… 10 PSF EXISTING ROOF GROUND SNOW LOAD =
+  // 25.2 PSF (ASD)": EXISTING ROOF has no value of its own).
+  // A formula's coefficient ("EXISTING ROOF pf = 0.7 x Ce …") is no value of its own either.
+  const rest = after.slice(m[0].length, m[0].length + 30);
+  const own = [...rest.matchAll(/\d+(?:\.\d+)?/g)].find((n) => !COEFFICIENT_AFTER.test(rest.slice((n.index ?? 0) + n[0].length)));
+  if (!own) return true;
+  const digit = own.index ?? 0;
+  const label = rest.search(new RegExp(LOAD_LABEL_TOKEN.source, "i"));
+  return label >= 0 && label < digit;
 }
 
 /**
@@ -589,13 +612,31 @@ function loadValueOwners(text: string): Map<number, LoadValueRun> {
   // LOAD | ROOF LIVE LOAD: 20 PSF" (a value-first list, then a label-first line: V L L), "GROUND SNOW
   // LOAD 16 PSF | 10 PSF DEAD LOAD" (L V V). Flattened text runs sections together, so that boundary
   // is everywhere on a real sheet; a table's pair opens its block or follows another same-kind token.
+  // A table's cells may be quantities this reader does not tokenise: "ROOF SNOW LOAD C&C PRESSURE
+  // GROUND SNOW LOAD 25 PSF -16 PSF 36 PSF", "16 PSF 110 MPH 10 PSF GROUND SNOW LOAD WIND SPEED …". So
+  // two LABELS are side by side across a short gap with no number, no separator and no "no value"
+  // mark (N/A, NONE); two VALUES across a gap of nothing but other numbers ("110 MPH", "-16 PSF") —
+  // a WORD between two values is a label ("GROUND SNOW LOAD 36 PSF EXISTING ROOF 10 PSF").
+  const sideBySide = (a: { kind: "L" | "V"; end: number }, b: { kind: "L" | "V"; start: number }): boolean => {
+    const gap = between(a, b);
+    if (glue.test(gap)) return true;
+    if (a.kind !== b.kind || /[:=]|\s[-–]\s/.test(gap)) return false;
+    return a.kind === "L"
+      ? gap.length <= 40 && !/\d/.test(gap) && !/\b(?:n\/?a|none|tbd)\b/i.test(gap)
+      : /^(?:[\s,;]|[-−]?\d+(?:\.\d+)?\s*(?:mph|psf|kpa)?\b)*$/i.test(gap);
+  };
   const blockOf: number[] = [];
   const tableBlocks = new Set<number>();
   clean.forEach((t, k) => {
-    const joined = k > 0 && glue.test(between(clean[k - 1], t));
+    const joined = k > 0 && sideBySide(clean[k - 1], t);
     blockOf[k] = k === 0 ? 0 : joined ? blockOf[k - 1] : blockOf[k - 1] + 1;
     if (!joined || clean[k - 1].kind !== t.kind) return;
-    const closesSegment = k >= 2 && blockOf[k - 2] === blockOf[k] && clean[k - 2].kind !== t.kind;
+    // V L | L …: the first label closes a value-first segment (a trailing label reads the same either way).
+    // L V | V L: the first value closes a label-first segment AND the second opens a value-first one —
+    // an orphan value at the end ("EXISTING ROOF GROUND SNOW LOAD 10 PSF 36 PSF", a header row whose
+    // first cell is a label this reader does not list) is a table.
+    const after = (): boolean => k + 1 < clean.length && clean[k + 1].kind !== t.kind && sideBySide(t, clean[k + 1]);
+    const closesSegment = k >= 2 && blockOf[k - 2] === blockOf[k] && clean[k - 2].kind !== t.kind && (t.kind === "L" || after());
     if (!closesSegment) tableBlocks.add(blockOf[k]);
   });
   const indexOf = new Map(clean.map((t, k) => [t, k] as const));
@@ -609,7 +650,7 @@ function loadValueOwners(text: string): Map<number, LoadValueRun> {
     const first = run[0];
     let last = run[run.length - 1];
     // A label at the end that assigns its own bare number ("GROUND SNOW LOAD = 25") closes with a value.
-    const lastAssignsOwn = last.kind === "L" && /^\s*[:=]\s*\d/.test(text.slice(last.end, last.end + 12));
+    const lastAssignsOwn = last.kind === "L" && OWN_VALUE_AFTER.test(text.slice(last.end, last.end + 40));
     const closesWithValue = last.kind === "V" || lastAssignsOwn;
     if (lastAssignsOwn && run.length > 1) last = run[run.length - 2];
     // "36 PSF: GROUND SNOW LOAD", "36 PSF - GROUND SNOW LOAD" — a value a separator hands to the label AFTER it.
@@ -687,13 +728,14 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // THE ASD QUALIFIER ON EITHER SIDE of a label-first reading: after the value ("GROUND SNOW LOAD =
   // 25.2 PSF (ASD)", "Pg = 25.2 PSF (ASD)") or before the label ("ASD GROUND SNOW LOAD: 25.2 PSF").
   // Read only before the value, a plan stating its ASD ground snow alone was read as Pg 25.2 and
-  // blocked. A bare trailing "ASD" that opens the NEXT field ("36 PSF ASD WIND SPEED: 85 MPH") is not
-  // this value's qualifier.
+  // blocked. A bare trailing "ASD" counts only where the statement ends ("= 25.2 PSF ASD."); followed
+  // by words it opens the NEXT field ("36 PSF ASD WIND SPEED: 85 MPH", "36 PSF ASD GROUND SNOW LOAD:
+  // 25.2 PSF") and is not this value's qualifier.
   const asdAround = (match: RegExpExecArray): boolean => {
     const end = match.index + match[0].length;
     const after = text.slice(end, end + 30);
     const before = text.slice(Math.max(0, match.index - 12), match.index);
-    return /^\s*(?:\(\s*asd\s*\)|,?\s*asd\b(?!\s*(?:wind|basic|design|ultimate|speed|velocity|v\b|mph|\d)))/i.test(after)
+    return /^\s*(?:\(\s*asd\s*\)|,?\s*asd\b(?=\s*(?:$|[.,;|)])))/i.test(after)
       || /\basd\s*\)?\s*$/i.test(before);
   };
   const groundQual = (label: string | undefined, match: RegExpExecArray): StatedDesignCriterionQualifier =>
@@ -747,7 +789,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // multiplication, a parenthesised factor or a code coefficient (Ce, Ct, Cs, Is) follows (it read
   // as Pg 0.7, a BLOCKER naming 0.7 psf).
   const coefficientAt = (end: number): boolean =>
-    /^\s*(?:[×*·⋅]|x(?=\s*[\d(A-Za-z])|\(\s*\d|C[etsa]\b|Is\b)/i.test(text.slice(end, end + 12));
+    COEFFICIENT_AFTER.test(text.slice(end, end + 12));
   // Pg symbol: "pg 28.00 psf", "p g = 28.00" (a PDF split the symbol), "Pg(asd) 20 psf".
   // "pg 5" is a page reference — the symbol needs = or a psf unit to count.
   const pgSymbol = new RegExp(String.raw`\bp\s?g\b\s*(\(\s*asd\s*\)|,\s*asd\b|\s+asd\b)?\s*(?:(${SEP})\s*)?${metricFirst}(\d+(?:\.\d+)?)\s*(psf)?`, "gid");
@@ -774,7 +816,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // A separator assigns even a bare number ("GROUND SNOW LOAD = 25").
   // (Only ":"/"=": a spaced dash assigns through the run's ownership, which these readers already ask.)
   const labelHasOwnValue = (after: number): boolean =>
-    /^(?:\s+loads?)?(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?\s*[:=]\s*\d/i.test(text.slice(after, after + 60));
+    LABEL_OWN_VALUE_AFTER.test(text.slice(after, after + 90));
   // With NO separator the run's layout decides (loadValueOwners): in "ROOF DEAD LOAD 3 PSF GROUND
   // SNOW LOAD 36 PSF" the 3 is the dead load's (read as Pg 3, a correct plan got a below-the-minimum
   // BLOCKER); in "36 PSF GROUND SNOW 25 PSF ROOF SNOW 10 PSF DEAD LOAD" the 36 IS the ground snow
@@ -783,13 +825,13 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // A separator between the value and the label AFTER it ("36 PSF: GROUND SNOW LOAD") reads only in a
   // run that is value-first (loadValueOwners) — never on its own.
   const valueFirstOnly = (sep: string | undefined, at: number): boolean => !sep || ownerAt(at) === "next";
-  const groundAfter = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?(\(\s*asd\s*\)\s*)?ground\s+snow`, "gi");
+  const groundAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?(\(\s*asd\s*\)\s*)?ground\s+snow`, "gi");
   while ((m = groundAfter.exec(text))) {
     if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index) || !valueFirstOnly(m[2], m.index)) continue;
     push("groundSnowPsf", asd(m[3]) ? "ground_asd" : "ground", m[1], m);
   }
   // "36 PSF SNOW LOAD (GROUND)" — the parenthetical label, value first, read as "36 PSF GROUND SNOW".
-  const groundParenAfter = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?snow\s+loads?\s*\(\s*ground\s*\)`, "gi");
+  const groundParenAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?snow\s+loads?\s*\(\s*ground\s*\)`, "gi");
   while ((m = groundParenAfter.exec(text))) {
     if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index) || !valueFirstOnly(m[2], m.index)) continue;
     push("groundSnowPsf", "ground", m[1], m);
@@ -797,7 +839,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // "36 PSF Pg 25 PSF ROOF SNOW LOAD" — the symbol printed after its value, read only in a value-first
   // LIST (V L V L …). A bare "Pg" is also a table's column header: in "36 PSF 2.8 PSF Pg PV DEAD LOAD"
   // (column-major) the two-token "2.8 PSF Pg" is no evidence the 2.8 is Pg (it read as Pg 2.8).
-  const pgAfter = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*psf\s*(?:${SEP}\s*)?\(?\s*p\s?g\b(?!\s*\(?\s*asd)`, "gi");
+  const pgAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\s*(?:${SEP}\s*)?\(?\s*p\s?g\b(?!\s*\(?\s*asd)`, "gi");
   while ((m = pgAfter.exec(text))) {
     if (ownerAt(m.index) !== "next" || !owners.get(m.index)?.valueFirstList || assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length)) continue;
     push("groundSnowPsf", "ground", m[1], m);
@@ -815,7 +857,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
     if (!/[:=]/.test(m[0]) && labelFirstIsNextLabels(m, 3)) continue;
     push("roofSnowPsf", roofQual(m[1]), m[3], m);
   }
-  const roofAfter = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?(flat|sloped|total|design)?\s*roof\s+snow`, "gi");
+  const roofAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?(flat|sloped|total|design)?\s*roof\s+snow`, "gi");
   while ((m = roofAfter.exec(text))) {
     if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index) || !valueFirstOnly(m[2], m.index)) continue;
     push("roofSnowPsf", roofQual(m[3]), m[1], m);

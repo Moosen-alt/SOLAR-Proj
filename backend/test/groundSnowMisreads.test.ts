@@ -230,6 +230,34 @@ blocks16("16 PSF GROUND SNOW LOAD\nFLAT ROOF SNOW LOAD Pf = 0.7 Ce Ct Is Pg = 0.
 reads36("GROUND SNOW LOAD 36 PSF ROOF SNOW LOAD 25 PSF DEAD LOAD", (j) => assert.deepEqual(j.roof, [25], show(j)));
 reads36("DEAD LOAD 10 PSF LIVE LOAD 20 PSF GROUND SNOW LOAD 36 PSF");
 
+// A table's cells may be quantities the reader does not tokenise (an unknown label, a wind speed, a
+// negative pressure): still a table.
+neverBlocks("ROOF SNOW LOAD C&C PRESSURE GROUND SNOW LOAD 25 PSF -16 PSF 36 PSF", [25]);
+neverBlocks("ROOF SNOW LOAD WIND SPEED GROUND SNOW LOAD 25 PSF 110 MPH 36 PSF", [25]);
+neverBlocks("16 PSF 110 MPH 10 PSF GROUND SNOW LOAD WIND SPEED ROOF SNOW LOAD", [10]);
+neverBlocks("ROOF SNOW LOAD WIND SPEED GROUND SNOW LOAD 25 PSF 110 MPH 36 PSF DEAD LOAD 10 PSF", [25]);
+// A header row whose first cell is a label the reader does not list: the orphan last value makes it a table.
+neverBlocks("EXISTING ROOF GROUND SNOW LOAD 10 PSF 36 PSF", [10]);
+neverBlocks("MODULE RAILS\nWIND SPEED\nGROUND SNOW LOAD\n3 PSF\n110 MPH\n36 PSF", [3]);
+// …but a word between two values is a label of its own, not a table cell.
+blocks16("GROUND SNOW LOAD 16 PSF EXISTING ROOF 10 PSF");
+// …and a label whose value is "N/A" is not a header cell.
+blocks16("SEISMIC LOAD N/A GROUND SNOW LOAD 16 PSF");
+
+console.log("round 5 corpus finds — a negative value, a formula line after a list, an ASD line after a list");
+// A value with a minus sign is a wind pressure, never a load (column-major "-16 PSF GROUND SNOW LOAD").
+neverBlocks("36 PSF -16 PSF GROUND SNOW LOAD C&C PRESSURE", [16]);
+neverBlocks("36 PSF 10 PSF -16 PSF GROUND SNOW LOAD EXISTING ROOFING C&C PRESSURE", [16]);
+// "ROOF SNOW LOAD pf = 0.7 x Ce …": the formula line after a list is not the roof label assigning 0.7.
+neverBlocks("3 PSF MODULE RAILS\n36 PSF GROUND SNOW LOAD\n25 PSF ROOF SNOW LOAD\npf = 0.7 x Ce x Ct x Is x pg = 0.7 x 1.0 x 1.1 x 1.0 x 36 = 27.7 psf", [25]);
+// "10 PSF EXISTING ROOF GROUND SNOW LOAD = 25.2 PSF (ASD)": EXISTING ROOF has no value of its own.
+neverBlocks("3 PSF MODULE RAILS\n36 PSF GROUND SNOW LOAD\n10 PSF EXISTING ROOF\nGROUND SNOW LOAD = 25.2 PSF (ASD)", [10]);
+// "GROUND SNOW LOAD Pf = 0.7 Ce …" (the formula line right after the label): the label does not assign 0.7.
+blocks16("16 PSF GROUND SNOW LOAD\nPf = 0.7 Ce Ct Is Pg = 0.7 (1.0)(1.1)(1.0)(16 PSF) = 12.3 PSF");
+neverBlocks("3 PSF MODULE RAILS\n36 PSF GROUND SNOW LOAD\n10 PSF EXISTING ROOF\npf = 0.7 x Ce x Ct x Is x pg = 0.7 x 1.0 x 1.1 x 1.0 x 36 = 27.7 psf", [10]);
+// A bare "ASD" that opens the next line is not the value's qualifier.
+reads36("GROUND SNOW LOAD 36 PSF\nASD GROUND SNOW LOAD: 25.2 PSF", (j) => assert.deepEqual(j.asd, [25.2], show(j)));
+
 console.log("caveat (b) — metric first reads the psf value, never the kPa one");
 reads36("GROUND SNOW LOAD = 1.72 KPA (36 PSF)");
 reads36("GROUND SNOW LOAD: 36 PSF (1.72 KPA)");
