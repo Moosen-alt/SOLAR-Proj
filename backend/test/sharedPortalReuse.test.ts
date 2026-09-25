@@ -211,4 +211,51 @@ await check("(s4) a borrowed recipe never clicks a final submit, even with a nam
   assert.ok(borrowedRun.some((r) => /borrowed recipe always stops at review/.test(r)), JSON.stringify(borrowedRun));
 });
 
+// ── resolution skeptic MF1 / MF2: the two invariants the suite did not lock ──────────────────
+const FINAL = { action: "click", selector: { text: "Submit" }, isFinalSubmit: true, note: "final submit" } as RecipeStep;
+
+await check("(x1) MF1 MUST-EXCLUDE: a needs_rerecord donor (written through the real writers) lends nothing; MUST-PASS: a complete donor for another AHJ still lends", () => {
+  // Coos Bay's structural recipe demoted (the status writer) — it was the only donor for Salem.
+  recipes.savePortalRecipeSteps(db, coosStructural.id, accelaSteps("Residential - Structural"), { status: "needs_rerecord" });
+  assert.equal(fx.recipeRow(coosStructural.id).status, "needs_rerecord", "setup");
+  const none = decide("building", "OR", "City of Salem", ACA_OREGON);
+  assert.equal(none.choice, null, `a demoted donor lent: ${JSON.stringify(none.choice?.recipe.id)}`);
+  // A complete donor for another AHJ, same portal, same record type — with the valid final-submit
+  // shape (stopForReview then one terminal flagged click) x2 needs.
+  const newportStructural = ahjRecipe({ state: "OR", ahj: "City of Newport", portalUrl: ACA_OREGON, discipline: "structural", steps: [...accelaSteps("Residential - Structural"), FINAL] });
+  assert.equal(decide("building", "OR", "City of Salem", ACA_OREGON).choice?.recipe.id, newportStructural.id, "a complete donor did not lend");
+});
+
+await check("(x2) MF2 MUST-EXCLUDE: end to end through prepareSubmission, a borrowed run with a named approval, PORTAL_ALLOW_FINAL_SUBMIT=1 and a valid donor shape is still handed autoSubmit=false / no approval, audited 'borrowed'; MUST-PASS: the donor AHJ's own approved run is allowed", async () => {
+  process.env.PORTAL_ALLOW_FINAL_SUBMIT = "1";
+  try {
+    const seen: Array<{ autoSubmit: boolean; runApproval: unknown }> = [];
+    fx.stubRunner(async (_recipe, _project, _fields, _docs, _files, options) => {
+      seen.push({ autoSubmit: Boolean((options as { autoSubmit?: boolean }).autoSubmit), runApproval: (options as { runApproval?: unknown }).runApproval ?? null });
+      return { ok: true, finalSubmitClicked: false, steps: [{ ok: true, message: "reached review" }] };
+    });
+    // Borrowed: a Salem project on the Newport recipe, with Salem's own named approval of THIS run.
+    const salem = salemProject();
+    const approval = repo.createRunApproval(db, { projectId: salem, track: "building", approver: "Dana Operator" });
+    await repo.prepareSubmission(db, salem, "building", true, true, approval.id);
+    const run = fx.latestRun(salem)!;
+    assert.equal(JSON.parse(String(run.result_json)).borrowedRecipe?.learnedFor, "City of Newport", "setup: the run did not borrow");
+    assert.deepEqual(seen, [{ autoSubmit: false, runApproval: null }], "the runner was told it may click the final submit on a borrowed recipe");
+    const declined = fx.audits("portal.auto_submit_declined").filter((a) => a.project_id === salem).map((a) => JSON.parse(a.details));
+    assert.equal(declined.length, 1, "no auto_submit_declined audit row");
+    assert.equal(declined[0].approvedBy, "Dana Operator", "the refusal was 'no approval', not the borrowing — the approval was not claimed");
+    assert.ok(declined[0].reasons.some((r: string) => /borrowed/.test(r)), JSON.stringify(declined[0].reasons));
+    // MUST-PASS: Newport's own project, its own recipe, the same kind of approval → allowed.
+    const newport = fx.newProject({ ahj: "City of Newport", city: "Newport", zip: "97365" });
+    const own = repo.createRunApproval(db, { projectId: newport, track: "building", approver: "Dana Operator" });
+    await repo.prepareSubmission(db, newport, "building", true, true, own.id);
+    assert.equal(seen.length, 2, "the owner's run did not reach the runner");
+    assert.equal(seen[1].autoSubmit, true, "the owner's own approved run was refused");
+    assert.deepEqual(seen[1].runApproval, { approver: "Dana Operator", runId: own.id });
+    assert.ok(fx.audits("portal.auto_submit_allowed").some((a) => a.project_id === newport));
+  } finally {
+    delete process.env.PORTAL_ALLOW_FINAL_SUBMIT;
+  }
+});
+
 finish("shared-portal-reuse");
