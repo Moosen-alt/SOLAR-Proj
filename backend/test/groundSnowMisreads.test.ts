@@ -310,6 +310,13 @@ reads36("ROOF SNOW LOAD 25 PSF. GROUND SNOW LOAD 36 PSF", (j) => assert.deepEqua
 // so the plan's ground snow is its 36 alone (a sure 36, correct: the skeptic's own note).
 reads36("C&C PRESSURE -- 16 PSF GROUND SNOW LOAD 36 PSF");
 
+console.log("MF-C — a value-first reader never reads across an OCR-glued label ('25 PSFGROUND SNOW LOAD')");
+neverBlocks("ROOF SNOW LOAD 25 PSFGROUND SNOW LOAD 36 PSF", [25]);
+neverBlocks("25 PSFGROUND SNOW LOAD 36 PSF", [25]);
+// A missing space between the digit and its unit is still a unit; a bare value-first list is still read.
+reads36("36PSF GROUND SNOW 25PSF ROOF SNOW 3PSF DEAD LOAD", (j) => assert.deepEqual(j.roof, [25], show(j)));
+reads36("36 PSF GROUND SNOW 25 PSF ROOF SNOW 10 PSF DEAD LOAD", (j) => assert.deepEqual(j.roof, [25], show(j)));
+
 if (failures) {
   console.error(`\n${failures} ground-snow misread check(s) FAILED`);
   process.exit(1);

@@ -845,13 +845,17 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // A separator between the value and the label AFTER it ("36 PSF: GROUND SNOW LOAD") reads only in a
   // run that is value-first (loadValueOwners) — never on its own.
   const valueFirstOnly = (sep: string | undefined, at: number): boolean => !sep || ownerAt(at) === "next";
-  const groundAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?(\(\s*asd\s*\)\s*)?ground\s+snow`, "gi");
+  // THE UNIT ENDS AT A WORD BOUNDARY, as the label token's "\bground" demands: OCR text "ROOF SNOW LOAD
+  // 25 PSFGROUND SNOW LOAD 36 PSF" glues the unit to the next label, and a reader that accepted zero
+  // whitespace read the 25 as a sure Pg (a BLOCKER on a correct plan). Nothing is read there — the
+  // unknown callout asks a human. "36PSF GROUND SNOW" (no space before the unit) still reads.
+  const groundAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\b\s*(${SEP}\s*)?(\(\s*asd\s*\)\s*)?ground\s+snow`, "gi");
   while ((m = groundAfter.exec(text))) {
     if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index) || !valueFirstOnly(m[2], m.index)) continue;
     push("groundSnowPsf", asd(m[3]) ? "ground_asd" : "ground", m[1], m);
   }
   // "36 PSF SNOW LOAD (GROUND)" — the parenthetical label, value first, read as "36 PSF GROUND SNOW".
-  const groundParenAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?snow\s+loads?\s*\(\s*ground\s*\)`, "gi");
+  const groundParenAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\b\s*(${SEP}\s*)?snow\s+loads?\s*\(\s*ground\s*\)`, "gi");
   while ((m = groundParenAfter.exec(text))) {
     if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index) || !valueFirstOnly(m[2], m.index)) continue;
     push("groundSnowPsf", "ground", m[1], m);
@@ -859,7 +863,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // "36 PSF Pg 25 PSF ROOF SNOW LOAD" — the symbol printed after its value, read only in a value-first
   // LIST (V L V L …). A bare "Pg" is also a table's column header: in "36 PSF 2.8 PSF Pg PV DEAD LOAD"
   // (column-major) the two-token "2.8 PSF Pg" is no evidence the 2.8 is Pg (it read as Pg 2.8).
-  const pgAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\s*(?:${SEP}\s*)?\(?\s*p\s?g\b(?!\s*\(?\s*asd)`, "gi");
+  const pgAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\b\s*(?:${SEP}\s*)?\(?\s*p\s?g\b(?!\s*\(?\s*asd)`, "gi");
   while ((m = pgAfter.exec(text))) {
     if (ownerAt(m.index) !== "next" || !owners.get(m.index)?.valueFirstList || assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length)) continue;
     push("groundSnowPsf", "ground", m[1], m);
@@ -877,7 +881,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
     if (!/[:=]/.test(m[0]) && labelFirstIsNextLabels(m, 3)) continue;
     push("roofSnowPsf", roofQual(m[1]), m[3], m);
   }
-  const roofAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?(flat|sloped|total|design)?\s*roof\s+snow`, "gi");
+  const roofAfter = new RegExp(String.raw`${NOT_NEGATIVE}(\d+(?:\.\d+)?)\s*psf\b\s*(${SEP}\s*)?(flat|sloped|total|design)?\s*roof\s+snow`, "gi");
   while ((m = roofAfter.exec(text))) {
     if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index) || !valueFirstOnly(m[2], m.index)) continue;
     push("roofSnowPsf", roofQual(m[3]), m[1], m);
