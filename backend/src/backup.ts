@@ -2,11 +2,24 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AppDb } from "./db";
 import { DOCS_DIR } from "./projectDocuments";
+import { logger } from "./logger";
+import {
+  BACKUP_STATUS_NAME, copyVerified, pruneAutomaticSnapshots, sidecarPath, writeChecksumSidecar, writeStatusFile,
+} from "./offboxBackup";
 
 // Where snapshots go, and how many to keep. Both overridable via env.
 const BACKUP_DIR = path.resolve(process.cwd(), process.env.BACKUP_DIR || "backend/data/backups");
 const KEEP = Number(process.env.BACKUP_KEEP || 14);
 const INTERVAL_HOURS = Number(process.env.BACKUP_INTERVAL_HOURS || 24);
+
+// OFF-BOX COPY (optional, OFF unless set). BACKUP_DIR is still where every snapshot is written
+// first — this adds a SECOND destination (a synced cloud folder or a network share) and changes
+// nothing about the first. Only the snapshot + its checksum are copied from inside the server; the
+// document mirror goes off-box through scripts/ops/offbox-sync.ts, so a slow share can never stall
+// the event loop for a 2 GB tree. A failure here NEVER fails the primary backup.
+const SECOND_DIR = process.env.BACKUP_SECOND_DIR ? path.resolve(process.cwd(), process.env.BACKUP_SECOND_DIR) : "";
+const SECOND_KEEP = Number(process.env.BACKUP_SECOND_KEEP || KEEP);
+const STATUS_FILE = path.join(BACKUP_DIR, BACKUP_STATUS_NAME);
 
 // Uploaded plan sets, stamped letters, meter photos and split sheets are files on
 // disk; only their metadata lives in SQLite. Backing up the database alone produces
@@ -52,6 +65,12 @@ export interface BackupRunInfo extends BackupInfo {
   portalSessionFilesCopied: number;
   /** Portal session files now held in the mirror — 0 means NO portal logins are backed up. */
   portalSessionFilesMirrored: number;
+  /** SHA-256 of the snapshot, also written beside it as `<file>.sha256`. */
+  sha256: string;
+  /** Where the verified off-box copy landed, or null when BACKUP_SECOND_DIR is unset or the copy failed. */
+  secondCopy: string | null;
+  /** Why the off-box copy failed (the primary snapshot is still good), or null. */
+  secondError: string | null;
 }
 
 /**
@@ -108,11 +127,16 @@ export function claimBackupDirectory(sourcePath: string, dir = BACKUP_DIR, marke
   return null;
 }
 
+/** The directory belongs to a DIFFERENT database. Distinct so the scheduler can refuse without
+ *  writing a failure status into a directory it does not own — a stray test server pointed at the
+ *  operator's backup drive must not page the operator about the operator's (healthy) backups. */
+export class BackupDirectoryConflictError extends Error {}
+
 // Write one snapshot now. Returns the created file path.
 export function runBackup(db: AppDb): BackupRunInfo {
   const conflict = claimBackupDirectory(db.sourcePath);
   if (conflict) {
-    throw new Error(
+    throw new BackupDirectoryConflictError(
       `[backup] REFUSED: ${BACKUP_DIR} holds snapshots of ${conflict}, not ${db.sourcePath}. ` +
         `One backup directory backs up one database — mixing them lets rotation retire real restore ` +
         `points to make room for another database's. Point BACKUP_DIR somewhere else for this process, ` +
@@ -123,11 +147,24 @@ export function runBackup(db: AppDb): BackupRunInfo {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const file = path.join(BACKUP_DIR, `autopilot-${stamp}.sqlite`);
   db.backupTo(file);
+  // The checksum is taken NOW, while the bytes are the ones VACUUM INTO just wrote — every later
+  // copy (and the restore drill) is compared against this, so bit rot on E: is detectable too.
+  const sha256 = writeChecksumSidecar(file);
   pruneOldBackups();
   const docs = mirrorDocuments();
   const profiles = mirrorPortalProfiles();
   const stat = fs.statSync(file);
-  return {
+  let secondCopy: string | null = null;
+  let secondError: string | null = null;
+  if (SECOND_DIR) {
+    try {
+      secondCopy = copyVerified(file, SECOND_DIR, sha256).dest;
+      pruneAutomaticSnapshots(SECOND_DIR, SECOND_KEEP);
+    } catch (err) {
+      secondError = (err instanceof Error ? err.message : String(err)).slice(0, 300);
+    }
+  }
+  const info: BackupRunInfo = {
     file,
     sizeBytes: stat.size,
     createdAt: new Date().toISOString(),
@@ -136,7 +173,16 @@ export function runBackup(db: AppDb): BackupRunInfo {
     documentsMissingOnDisk: countMissingDocumentFiles(db),
     portalSessionFilesCopied: profiles.copied,
     portalSessionFilesMirrored: profiles.total,
+    sha256,
+    secondCopy,
+    secondError,
   };
+  writeStatusFile(STATUS_FILE, {
+    ok: true, at: info.createdAt, file: path.basename(file), sizeBytes: info.sizeBytes, sha256,
+    second: SECOND_DIR ? { ok: !secondError, error: secondError } : null,
+    documentsMissingOnDisk: info.documentsMissingOnDisk,
+  });
+  return info;
 }
 
 export function listBackups(): BackupInfo[] {
@@ -174,6 +220,11 @@ function pruneOldBackups(): void {
       fs.unlinkSync(path.join(BACKUP_DIR, old.file));
     } catch {
       /* best effort */
+    }
+    try {
+      fs.unlinkSync(sidecarPath(path.join(BACKUP_DIR, old.file)));
+    } catch {
+      /* a snapshot from before sidecars existed has none */
     }
   }
 }
@@ -296,14 +347,32 @@ export function startBackupScheduler(db: AppDb): void {
         `[backup] snapshot written: ${info.file} (${Math.round(info.sizeBytes / 1024)} KB); ` +
           `documents mirrored: ${info.documentsMirrored} (+${info.documentsCopied} new)`,
       );
+      // ALSO to backend.log. These lines used to reach only the console window, so a power cut or
+      // a closed window erased the only record of whether last night's backup ran (ops audit §5).
+      logger.info("backup", `snapshot written (${Math.round(info.sizeBytes / 1024)} KB)`, {
+        file: path.basename(info.file), sha256: info.sha256.slice(0, 16), documentsMirrored: info.documentsMirrored,
+        secondCopy: info.secondCopy ? "ok" : SECOND_DIR ? "FAILED" : "off",
+      });
+      if (info.secondError) {
+        console.error(`[backup] off-box copy to ${SECOND_DIR} FAILED (primary snapshot is fine): ${info.secondError}`);
+        logger.error("backup", "off-box copy failed (primary snapshot is fine)", { error: info.secondError });
+      }
       if (info.documentsMissingOnDisk > 0) {
         console.error(
           `[backup] WARNING: ${info.documentsMissingOnDisk} document row(s) point at files missing from ${DOCS_DIR}. ` +
             `Those uploads are gone from the live tree; check ${DOCS_MIRROR} for mirrored copies.`,
         );
+        logger.warn("backup", `${info.documentsMissingOnDisk} document row(s) point at files missing from the live tree`);
       }
     } catch (err) {
-      console.error("[backup] snapshot failed:", err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[backup] snapshot failed:", message);
+      logger.error("backup", "snapshot failed", { error: message.slice(0, 300) });
+      // The watchdog reads this: a failed snapshot is an alert, not a console line nobody sees.
+      // Except when the directory is not ours to write in (see BackupDirectoryConflictError).
+      if (!(err instanceof BackupDirectoryConflictError)) {
+        writeStatusFile(STATUS_FILE, { ok: false, at: new Date().toISOString(), error: message.slice(0, 300) });
+      }
     }
   };
   tick();
