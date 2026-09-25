@@ -1,5 +1,6 @@
 import type { HistoricalChecklistItem, ProjectRecord } from "../../shared/src/types";
 import { text } from "./json";
+import { hasStampedStructuralEvidence } from "./permitPath";
 
 export type EvidenceConfidence = "high" | "medium" | "low";
 
@@ -262,6 +263,69 @@ function evidence(
   };
 }
 
+// DOES THE PACKAGE SHOW THE ROOF FRAMING? — the question a learned "Missing roof framing/span
+// evidence" correction asks of every later project at that AHJ.
+//
+// It used to be answered by any of seven bare words anywhere in the text: rafter, truss, framing,
+// span, STRUCTURAL, ENGINEER, PRESCRIPTIVE. The last three are on every plan set ever drawn —
+// "STRUCTURAL NOTES:", "without the written approval of the engineer", "prescriptive path" — so
+// once the history check could read the uploaded sheets (historicalFailures.ts) the blocker would
+// have cleared for a set with no framing on it at all. And the parser's own STRUCTURED answer
+// (framingType "truss", roofRafterSpacing 24) was not read at all, so a project whose parse said
+// exactly what the correction asked for read "missing" — the load test's 12 blocked projects.
+//
+// Now, one clause at a time (a denial in its own clause — "rafter size not shown" — is not
+// evidence; "No.2" the lumber grade is a number, not a denial):
+//   present = a framing member is NAMED (rafter / truss / joist / framing), or the parsed
+//             framingType names one, or a sealed structural letter/calcs is in hand
+//             (hasStampedStructuralEvidence — the one predicate for that question);
+//   high    = a named member WITH a dimension in the same clause (2x6, 24" o.c., span 12 ft), or
+//             the parsed member plus a parsed spacing/span/size, or the sealed letter.
+// A named member with no dimension is a lead (medium → the checklist says "needs review", not
+// "missing"); nothing named at all is missing, which is what keeps the blocker for a set that
+// truly lacks it.
+const FRAMING_MEMBER = /\b(?:rafters?|truss(?:es)?|(?:i-?|ceiling |roof )?joists?|tji|top chords?|framing)\b/i;
+const FRAMING_DIMENSION = /\b\d+(?:\.\d+)?\s*[x×]\s*\d+|\b\d+(?:\.\d+)?\s*(?:"|''|in\b|inch(?:es)?|ft\b|feet|')|@\s*\d+|\bspan\b[^\n]{0,24}\d/i;
+const FRAMING_DENIAL = /\b(?:not|no|none|missing|unknown|n\/a|tbd|without|lacks?|blank)\b|n't\b/i;
+const MEMBER_WORD = /\b(?:rafter|truss|joist|i-?joist|tji|beam|purlin)s?\b/i;
+
+function framingField(project: ProjectRecord, keys: string[]): string {
+  for (const key of keys) {
+    const value = text(project.parserSnapshot?.[key]).trim();
+    if (value && !/^(?:unknown|n\/a|na|none|tbd|not\s+sure|-+|\?+)$/i.test(value)) return value;
+  }
+  return "";
+}
+
+export function roofFramingFacts(project: ProjectRecord): { present: boolean; high: boolean; fieldLines: string[] } {
+  // The parser's structured reading of the framing (llm.ts STRUCTURAL block; structuralIntake.ts).
+  const member = framingField(project, ["framingType"]);
+  const memberOk = MEMBER_WORD.test(member);
+  const spacing = framingField(project, ["roofRafterSpacing", "rafterSpacing"]);
+  const span = framingField(project, ["roofRafterSpan", "rafterSpan"]);
+  const size = framingField(project, ["roofRafterSize", "rafterSize"]);
+  const dims = [
+    /\d/.test(size) ? `size ${size}` : "",
+    /\d/.test(spacing) ? `${spacing.replace(/[^0-9.]/g, "")} in o.c.` : "",
+    /\d/.test(span) ? `span ${span.replace(/[^0-9.]/g, "")} ft` : "",
+  ].filter(Boolean);
+  const fieldLines = memberOk ? [`Parsed roof framing: ${member}${dims.length ? `, ${dims.join(", ")}` : ""}`] : [];
+
+  let named = false;
+  let dimensioned = false;
+  for (const raw of allProjectEvidenceText(project).split(/[\n;]|\.(?=\s|$)/)) {
+    // "No. 2" / "No.2" is the lumber grade (a NUMBER), not a denial.
+    const clause = raw.replace(/\bno\.?\s*(?=[#\d])/gi, " number ");
+    if (!FRAMING_MEMBER.test(clause) || FRAMING_DENIAL.test(clause)) continue;
+    named = true;
+    if (FRAMING_DIMENSION.test(clause)) dimensioned = true;
+  }
+  const sealed = hasStampedStructuralEvidence(project);
+  const present = named || memberOk || sealed;
+  const high = dimensioned || sealed || (memberOk && dims.length > 0);
+  return { present, high, fieldLines };
+}
+
 export function evidenceForTopic(project: ProjectRecord, topic: EvidenceTopic): ProjectEvidence {
   const all = allProjectEvidenceText(project);
   switch (topic) {
@@ -317,10 +381,11 @@ export function evidenceForTopic(project: ProjectRecord, topic: EvidenceTopic): 
       return evidence(project, topic, present, high ? "high" : present ? "medium" : "low", FIRE_PATHWAY_PATTERNS);
     }
     case "roofFraming": {
+      // The excerpt list is unchanged (what the evidence card quotes); WHETHER framing is shown is
+      // decided by roofFramingFacts — see its header for why the bare words stopped counting.
       const patterns = [/rafter/i, /truss/i, /framing/i, /span/i, /structural/i, /engineer/i, /prescriptive/i];
-      const present = hasAny(project, patterns);
-      const high = present && /spacing|span|2x|engineer|stamped|worksheet|dead load|snow|wind/i.test(all);
-      return evidence(project, topic, present, high ? "high" : present ? "medium" : "low", patterns);
+      const facts = roofFramingFacts(project);
+      return evidence(project, topic, facts.present, facts.high ? "high" : facts.present ? "medium" : "low", patterns, facts.fieldLines);
     }
     case "rackingAttachment": {
       const patterns = [/racking/i, /attachment/i, /standoff/i, /lag/i, /flashing/i, /rail/i, /mounting/i, /embedment/i];

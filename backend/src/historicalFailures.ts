@@ -23,6 +23,8 @@ import {
 } from "./projectEvidence";
 import { nowIso } from "./time";
 import { buildApplicationDocumentPackage } from "./applicationDocs";
+import { planSetTextForProject } from "./projectDocuments";
+import { addAuditLog } from "./audit";
 
 type Row = Record<string, unknown>;
 
@@ -246,7 +248,7 @@ export function buildHistoricalFailureReport(db: AppDb, projectId: string, orgId
   if (!row) throw new Error("Project not found.");
   const projectOrgId = text(row.org_id) || DEFAULT_ORG_ID;
   if (orgId !== null && orgId !== projectOrgId) throw new HttpError(404, "Project not found.");
-  const project = projectFromRow(row);
+  const project = projectWithPlanSetText(db, projectFromRow(row));
   const tags = extractProjectFeatureTags(project);
   const tagSet = new Set(tags);
   const key = knowledgeProfileKey({ state: project.state, ahj: project.ahj || project.city, utility: project.utility });
@@ -270,7 +272,22 @@ export function buildHistoricalFailureReport(db: AppDb, projectId: string, orgId
   const matchedFailureRecordCount = causes.reduce((sum, cause) => sum + cause.count, 0);
   if (!causes.length) causes = fallbackCauses(project);
 
-  const checklist = checklistFromCauses(project, causes);
+  // AN OPERATOR'S AHJ-LEVEL ACKNOWLEDGEMENT turns a learned BLOCKER into a reminder at THIS
+  // jurisdiction, for THIS org — the gate (repository.getSubmitGateReport) blocks only on a
+  // blocker-severity cause, so the item stays on the checklist and the gate row stays a
+  // warning, but it no longer stops every later project there.
+  const acks = activeAcknowledgements(db, projectOrgId, project.state, project.ahj || project.city);
+  causes = causes.map((cause) => {
+    const ack = cause.severity === "blocker" ? acks.get(cause.signature) : undefined;
+    return ack ? { ...cause, severity: "warning" as const } : cause;
+  });
+
+  const checklist = checklistFromCauses(project, causes).map((item) => {
+    const ack = item.sourceCauseSignature ? acks.get(item.sourceCauseSignature) : undefined;
+    return ack && item.status === "missing"
+      ? { ...item, why: `${item.why} Acknowledged for ${ack.ahj} by ${ack.actor} on ${ack.at.slice(0, 10)}${ack.note ? ` ("${ack.note}")` : ""} — a reminder, no longer a blocker there.` }
+      : item;
+  });
   const dataConfidence =
     matchedProjectCount >= 25 && matchedFailureRecordCount >= 10 ? "high" : matchedProjectCount >= 5 || matchedFailureRecordCount >= 3 ? "medium" : "low";
   const summaryLabel = `This project matches ${matchedProjectCount} prior ${summarySubject(project, tags)} project${matchedProjectCount === 1 ? "" : "s"} and ${matchedFailureRecordCount} similar failure/delay record${matchedFailureRecordCount === 1 ? "" : "s"}.`;
@@ -291,4 +308,122 @@ export function buildHistoricalFailureReport(db: AppDb, projectId: string, orgId
       matchedFailureRecordCount ? "Historical failures came from redacted correction/status/email learning records." : "No similar historical failure records yet; baseline prevention checks were used.",
     ],
   };
+}
+
+// ---------------------------------------------------------------------------
+// THE SAME PROJECT THE GATE SEES. getProjectDetail overlays the uploaded plan-set text onto the
+// snapshot so the reviewer reads the actual sheets; this report built its project from the bare
+// row, so its evidence checks never saw them. At Portland, Coos Bay, Lincoln City and Douglas
+// (load test, 2026-09-24) one old "roof framing" correction therefore blocked every later
+// project — including 12 whose uploaded sheets state the framing. Same overlay, same rule: the
+// parser's own text wins when it already carries the field.
+// ---------------------------------------------------------------------------
+function projectWithPlanSetText(db: AppDb, project: ProjectRecord): ProjectRecord {
+  if (project.parserSnapshot.planSetExtractedText) return project;
+  let planSetText = "";
+  try { planSetText = planSetTextForProject(db, project.id); } catch { planSetText = ""; }
+  return planSetText ? { ...project, parserSnapshot: { ...project.parserSnapshot, planSetExtractedText: planSetText } } : project;
+}
+
+// ---------------------------------------------------------------------------
+// ACKNOWLEDGED ONCE, AT THE AHJ. An operator who knows a learned blocker does not apply at a
+// jurisdiction (or that the jurisdiction accepts what every set already carries) says so ONCE,
+// for that AHJ — not once per project. Scope is the project's ORG (historical_failure_examples is
+// the one org-scoped learning table; one tenant's ruling on its own history must not clear
+// another's) × state × AHJ × the cause's signature (a new, differently worded correction is new
+// information and blocks again).
+//
+// Stored on the audit trail (append-only; the newest acknowledge/revoke per key wins), so the
+// decision is attributable and reversible without a schema change.
+// ---------------------------------------------------------------------------
+const ACK_ACTION = "historical_blocker.acknowledged";
+const REVOKE_ACTION = "historical_blocker.ack_revoked";
+
+export interface HistoricalBlockerAck {
+  orgId: string;
+  state: string;
+  ahj: string;
+  signature: string;
+  title: string;
+  actor: string;
+  note: string;
+  at: string;
+}
+
+const ackScopeKey = (state: string, ahj: string): string => `${state.trim().toLowerCase()}|${ahj.trim().toLowerCase()}`;
+
+function activeAcknowledgements(db: AppDb, orgId: string, state: string, ahj: string): Map<string, HistoricalBlockerAck> {
+  const out = new Map<string, HistoricalBlockerAck>();
+  if (!ahj.trim()) return out;
+  const scope = ackScopeKey(state, ahj);
+  const rows = db.query<Row>(
+    "SELECT action, actor_name, details, created_at FROM audit_logs WHERE action IN (?, ?) ORDER BY created_at ASC, rowid ASC",
+    [ACK_ACTION, REVOKE_ACTION],
+  );
+  for (const row of rows) {
+    const d = parseJson<Record<string, unknown>>(text(row.details), {});
+    if (text(d.orgId) !== orgId || ackScopeKey(text(d.state), text(d.ahj)) !== scope) continue;
+    const signature = text(d.signature);
+    if (!signature) continue;
+    if (text(row.action) === REVOKE_ACTION) { out.delete(signature); continue; }
+    out.set(signature, {
+      orgId, state: text(d.state), ahj: text(d.ahj), signature, title: text(d.title),
+      actor: text(row.actor_name) || "an operator", note: text(d.note), at: text(row.created_at),
+    });
+  }
+  return out;
+}
+
+/** The learned blocker acknowledgements in force at a project's AHJ (for the project page). */
+export function listHistoricalBlockerAcknowledgements(db: AppDb, projectId: string, orgId: string | null): HistoricalBlockerAck[] {
+  const { project, projectOrgId } = scopedProject(db, projectId, orgId);
+  return [...activeAcknowledgements(db, projectOrgId, project.state, project.ahj || project.city).values()];
+}
+
+function scopedProject(db: AppDb, projectId: string, orgId: string | null): { project: ProjectRecord; projectOrgId: string } {
+  const row = db.get<Row>("SELECT * FROM projects WHERE id = ?", [projectId]);
+  if (!row) throw new HttpError(404, "Project not found.");
+  const projectOrgId = text(row.org_id) || DEFAULT_ORG_ID;
+  if (orgId !== null && orgId !== projectOrgId) throw new HttpError(404, "Project not found.");
+  return { project: projectFromRow(row), projectOrgId };
+}
+
+/**
+ * Acknowledge ONE learned historical blocker for the project's AHJ (and org). `orgId` is the
+ * caller's scope (null = system/superadmin); the org written is always the PROJECT's. The
+ * signature must be a learned cause (count > 0) this project's report actually carries — the
+ * route cannot mint an acknowledgement for a cause nobody saw.
+ */
+export function acknowledgeHistoricalBlocker(
+  db: AppDb,
+  input: { projectId: string; signature: string; actor: string; note?: string },
+  orgId: string | null,
+): HistoricalBlockerAck {
+  const { project, projectOrgId } = scopedProject(db, input.projectId, orgId);
+  const ahj = (project.ahj || project.city).trim();
+  if (!ahj) throw new HttpError(409, "This project has no AHJ, so there is no jurisdiction to acknowledge the blocker for.");
+  const report = buildHistoricalFailureReport(db, input.projectId, orgId);
+  const cause = report.topRejectionCauses.find((c) => c.signature === input.signature && c.count > 0);
+  if (!cause) throw new HttpError(404, "That historical blocker is not one of this project's learned blockers.");
+  const note = String(input.note ?? "").trim().slice(0, 300);
+  const actor = String(input.actor ?? "").trim() || "operator";
+  addAuditLog(db, input.projectId, "human", actor, ACK_ACTION, {
+    orgId: projectOrgId, state: project.state, ahj, signature: cause.signature, title: cause.title, note,
+  });
+  return activeAcknowledgements(db, projectOrgId, project.state, ahj).get(cause.signature)!;
+}
+
+/** Take an AHJ-level acknowledgement back: the blocker blocks again at that AHJ. */
+export function revokeHistoricalBlockerAcknowledgement(
+  db: AppDb,
+  input: { projectId: string; signature: string; actor: string },
+  orgId: string | null,
+): { revoked: boolean } {
+  const { project, projectOrgId } = scopedProject(db, input.projectId, orgId);
+  const ahj = (project.ahj || project.city).trim();
+  if (!activeAcknowledgements(db, projectOrgId, project.state, ahj).has(input.signature)) return { revoked: false };
+  addAuditLog(db, input.projectId, "human", String(input.actor ?? "").trim() || "operator", REVOKE_ACTION, {
+    orgId: projectOrgId, state: project.state, ahj, signature: input.signature,
+  });
+  return { revoked: true };
 }
