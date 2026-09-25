@@ -465,6 +465,22 @@ function extractExposureAndRisk(text: string, source: string, out: StatedDesignC
 
 /** Which label an UNSEPARATED psf value belongs to, inside a run of load labels and values. */
 type LoadValueOwner = "prev" | "next" | "both";
+/** A value's owner, and whether its run is a value-first LIST (opens with a value and alternates at
+ *  least V L V L): the only place a bare "Pg" printed after a value reads it (pgAfter). */
+interface LoadValueRun { owner: LoadValueOwner; valueFirstList: boolean }
+
+/**
+ * AN ASSIGNING SEPARATOR between a label and its value: ":", "=", or a SPACED dash ("GROUND SNOW LOAD
+ * - 36 PSF", "36 PSF – GROUND SNOW LOAD"). A dash touching a digit is a sign ("C&C PRESSURE -16 PSF")
+ * or a range/edition ("ASCE 7-16"), never a separator. Measured: with the dash unrecognised, "ROOF
+ * DEAD LOAD - 3 PSF GROUND SNOW LOAD - 36 PSF" split into a value-first "3 PSF GROUND SNOW LOAD" and
+ * read Pg 3 (a BLOCKER on a correct plan). ONE definition, used by the run glue, evidenceBefore and
+ * every label reader — each place that knew only ":"/"=" was a place the mirror image slipped through.
+ */
+const SEP = String.raw`(?:[:=]|(?<=\s)[-–](?=\s))`;
+/** A separator the regex captured: a DASH assigns only through the run's ownership (it is also how
+ *  some sheets join list items), unlike ":"/"=" which assign outright. */
+const isDashSep = (sep: string | undefined): boolean => !!sep && /[-–]/.test(sep) && !/[:=]/.test(sep);
 
 // A load LABEL, as a design-loads list prints it: "GROUND SNOW", "FLAT ROOF SNOW LOAD", "ROOF DEAD
 // LOAD", "PV DEAD LOAD", "PV WEIGHT", "GROUND SNOW LOAD (Pg)" — and the short forms plan sets print
@@ -498,7 +514,8 @@ function evidenceBefore(text: string, at: number): "assign" | "label" | "none" {
   if (!before.trim()) return "none";
   if (HEADING_BEFORE.test(before)) return "none";
   if (OTHER_QUANTITY_BEFORE.test(before)) return "none";
-  if (/[:=]\s*$/.test(before)) return /[A-Za-z)]\s*[:=]\s*$/.test(before) ? "assign" : "none";
+  // ":"/"=" or a spaced dash ("ROOF DEAD LOAD - 3 PSF"); a dash touching the value is its sign.
+  if (/(?:[:=]|\s[-–](?=\s))\s*$/.test(before)) return /[A-Za-z)]\s*(?:[:=]|[-–](?=\s))\s*$/.test(before) ? "assign" : "none";
   const word = before.match(/([A-Za-z][A-Za-z'.\-]*)\s*$/)?.[1];
   if (!word || word.length < 2) return "none";
   if (PROSE_WORD.has(word.toLowerCase().replace(/\.$/, ""))) return "none";
@@ -525,8 +542,8 @@ function unvaluedLabelAfter(text: string, end: number): boolean {
  * value-first (the 25 is the ROOF snow's). The extractor reads flattened text (readSources), so a
  * vertical list and a one-line list are the same run — the run's own shape is the only evidence.
  *
- * A RUN is labels and psf values alternating with nothing but spaces, commas, semicolons, ":" or "="
- * between them. LABEL-FIRST IS THE DEFAULT; value-first needs POSITIVE evidence. Three rounds of
+ * A RUN is labels and psf values alternating with nothing but spaces, commas, semicolons, ":", "=" or
+ * a spaced dash (SEP) between them. LABEL-FIRST IS THE DEFAULT; value-first needs POSITIVE evidence. Three rounds of
  * fixes each closed one layout and opened its mirror image, so each rule below is one reading of
  * the evidence, and a run the evidence cannot settle is "both" — read both ways, its values UNSURE
  * (extractSnowBothWays), and never a blocker (readGroundSnow):
@@ -539,9 +556,12 @@ function unvaluedLabelAfter(text: string, end: number): boolean {
  *     a label-ish word precedes the run, value-first if an unvalued label-ish word follows it (or a
  *     value is followed by ":"/"=" and its label), and "both" when the evidence is on neither side
  *     or on both ("DESIGN LOADS 36 PSF GROUND SNOW 25 PSF").
+ *   · opens with a VALUE but a separator hands a value to the label BEFORE it ("36 PSF GROUND SNOW
+ *     LOAD - 25 PSF …"): the separator and the shape disagree -> "both", unless a label-ish word
+ *     before the run owns the opening value (then label-first throughout).
  * Keyed by the value's start index.
  */
-function loadValueOwners(text: string): Map<number, LoadValueOwner> {
+function loadValueOwners(text: string): Map<number, LoadValueRun> {
   const tokens: Array<{ kind: "L" | "V"; start: number; end: number }> = [];
   for (const [kind, re] of [["L", LOAD_LABEL_TOKEN], ["V", LOAD_VALUE_TOKEN]] as const) {
     re.lastIndex = 0;
@@ -554,12 +574,14 @@ function loadValueOwners(text: string): Map<number, LoadValueOwner> {
   tokens.sort((a, b) => a.start - b.start || b.end - a.end);
   const clean: typeof tokens = [];
   for (const t of tokens) if (!clean.length || t.start >= clean[clean.length - 1].end) clean.push(t);
-  const owners = new Map<number, LoadValueOwner>();
+  const owners = new Map<number, LoadValueRun>();
   const between = (a: { end: number }, b: { start: number }): string => text.slice(a.end, b.start);
+  const glue = new RegExp(String.raw`^(?:[\s,;]|${SEP})*$`);
+  const sepIn = new RegExp(SEP);
   let i = 0;
   while (i < clean.length) {
     const run = [clean[i]];
-    while (i + 1 < clean.length && clean[i + 1].kind !== run[run.length - 1].kind && /^[\s,;:=]*$/.test(between(run[run.length - 1], clean[i + 1]))) {
+    while (i + 1 < clean.length && clean[i + 1].kind !== run[run.length - 1].kind && glue.test(between(run[run.length - 1], clean[i + 1]))) {
       run.push(clean[++i]);
     }
     i++;
@@ -569,14 +591,18 @@ function loadValueOwners(text: string): Map<number, LoadValueOwner> {
     const lastAssignsOwn = last.kind === "L" && /^\s*[:=]\s*\d/.test(text.slice(last.end, last.end + 12));
     const closesWithValue = last.kind === "V" || lastAssignsOwn;
     if (lastAssignsOwn && run.length > 1) last = run[run.length - 2];
-    // "36 PSF: GROUND SNOW LOAD" — a value that a separator hands to the label AFTER it.
-    const valueFirstMarked = run.some((t, k) => t.kind === "V" && k + 1 < run.length && /[:=]/.test(between(t, run[k + 1])));
+    // "36 PSF: GROUND SNOW LOAD", "36 PSF - GROUND SNOW LOAD" — a value a separator hands to the label AFTER it.
+    const valueFirstMarked = run.some((t, k) => t.kind === "V" && k + 1 < run.length && sepIn.test(between(t, run[k + 1])));
+    // "GROUND SNOW LOAD - 25 PSF" inside a run that OPENS with a value: the separator hands the 25 to
+    // the label BEFORE it — the opposite of the run's value-first shape. Evidence both ways.
+    const labelFirstMarked = run.some((t, k) => t.kind === "L" && k + 1 < run.length && sepIn.test(between(t, run[k + 1])));
     let owner: LoadValueOwner;
     if (first.kind === "L") {
       owner = "prev";
     } else {
       const before = evidenceBefore(text, first.start);
       if (before === "assign") owner = "prev";
+      else if (labelFirstMarked) owner = before === "label" && !valueFirstMarked ? "prev" : "both";
       else if (!closesWithValue) owner = before === "label" && !valueFirstMarked ? "both" : "next";
       else {
         const lf = before === "label";
@@ -584,7 +610,9 @@ function loadValueOwners(text: string): Map<number, LoadValueOwner> {
         owner = lf && !vf ? "prev" : vf && !lf ? "next" : "both";
       }
     }
-    for (const t of run) if (t.kind === "V") owners.set(t.start, owner);
+    // A value-first LIST: opens with a value and alternates at least V L V L.
+    const valueFirstList = first.kind === "V" && run.length >= 4;
+    for (const t of run) if (t.kind === "V") owners.set(t.start, { owner, valueFirstList });
   }
   return owners;
 }
@@ -614,10 +642,10 @@ function extractSnowBothWays(text: string, source: string, out: StatedDesignCrit
   }
 }
 
-function extractSnow(text: string, source: string, out: StatedDesignCriterion[], owners: Map<number, LoadValueOwner>, mode: "prev" | "next"): void {
+function extractSnow(text: string, source: string, out: StatedDesignCriterion[], owners: Map<number, LoadValueRun>, mode: "prev" | "next"): void {
   /** Who owns the unseparated value at `at` in THIS pass: an ambiguous run is read the pass's way. */
   const ownerAt = (at: number): LoadValueOwner | undefined => {
-    const o = owners.get(at);
+    const o = owners.get(at)?.owner;
     return o === "both" ? mode : o;
   };
   const push = (criterion: StatedDesignCriterionKind, qualifier: StatedDesignCriterionQualifier, raw: string, m: RegExpExecArray): void => {
@@ -628,30 +656,31 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
     const end = m.index + m[0].length;
     // A bound, not a value: "Is the ground snow load 70 psf or less?"; and an UNASSIGNED value
     // under a limit earlier in its sentence ("… not exceeding a ground snow load of 50 psf").
-    if (boundAfter(text.slice(end, end + 30), /[:=]/.test(m[0]))) return;
-    if (!/[:=]/.test(m[0]) && limitGoverns(text, m.index)) return;
+    const assigned = new RegExp(SEP).test(m[0]);
+    if (boundAfter(text.slice(end, end + 30), assigned)) return;
+    if (!assigned && limitGoverns(text, m.index)) return;
     out.push({ criterion, value, qualifier, source, derived: false, excerpt: excerptAt(text, m.index, end) });
   };
   const asd = (s: string | undefined): boolean => !!s && /asd/i.test(s);
   let m: RegExpExecArray | null;
-  // Where a label-first match's value starts: the number is the match's last one, before its unit.
-  const valueStartOf = (match: RegExpExecArray, raw: string): number => {
-    const head = match[0].replace(/\s*(?:psf|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))?$/i, "");
-    return match.index + head.length - raw.length;
-  };
-  // An UNSEPARATED label-first read ("GROUND SNOW 25 PSF") is the label's own unless its run is
-  // value-first: then the 25 is the NEXT label's ("… 25 PSF ROOF SNOW …").
-  const labelFirstIsNextLabels = (match: RegExpExecArray, raw: string): boolean =>
-    ownerAt(valueStartOf(match, raw)) === "next";
+  // Where a label-first match's value starts: the capture group's own index (the "d" flag) — a
+  // match may carry more after the value than its unit.
+  const valueStartOf = (match: RegExpExecArray, group: number): number => match.indices?.[group]?.[0] ?? match.index;
+  // An UNSEPARATED (or dash-separated) label-first read ("GROUND SNOW 25 PSF") is the label's own
+  // unless its run is value-first: then the 25 is the NEXT label's ("… 25 PSF ROOF SNOW …").
+  const labelFirstIsNextLabels = (match: RegExpExecArray, group: number): boolean =>
+    ownerAt(valueStartOf(match, group)) === "next";
 
   // GROUND SNOW, label first. A unit is required unless the label is followed by = or :,
   // so a numbered note ("3. GROUND SNOW LOAD …") can never lend its item number. A
   // parenthetical may sit between label and value ("GROUND SNOW LOAD (Pg) = 25 PSF",
   // "(ASCE 7-16 FIG 7.2-1)"), and prose connects with "of"/"is" ("ground snow load of 36 psf").
-  const groundLabel = /\bground\s+snow(?:\s+loads?)?(?:\s*,?\s*p\s?g\b)?(?:\s*\((?![^)]*\basd\b)[^()]{0,40}\))?\s*(\(\s*asd\s*\)|,?\s*asd\b)?\s*(?:(of|is|[:=])\s*)?(\d+(?:\.\d+)?)\s*(psf|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))?/gi;
+  // A spaced dash separates too ("GROUND SNOW LOAD - 36 PSF"), but only with a unit, and — as a dash
+  // also joins list items — only where the run's layout agrees the value is this label's.
+  const groundLabel = new RegExp(String.raw`\bground\s+snow(?:\s+loads?)?(?:\s*,?\s*p\s?g\b)?(?:\s*\((?![^)]*\basd\b)[^()]{0,40}\))?\s*(\(\s*asd\s*\)|,?\s*asd\b)?\s*(?:(of|is|${SEP})\s*)?(\d+(?:\.\d+)?)\s*(psf|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))?`, "gid");
   while ((m = groundLabel.exec(text))) {
     if (!(m[2] && /[:=]/.test(m[2])) && !m[4]) continue;
-    if (!m[2] && labelFirstIsNextLabels(m, m[3])) continue;
+    if ((!m[2] || isDashSep(m[2])) && labelFirstIsNextLabels(m, 3)) continue;
     push("groundSnowPsf", asd(m[1]) ? "ground_asd" : "ground", m[3], m);
   }
   // THE UNIT BEFORE THE VALUE: a design report's "Ground Snow Load psf 25" (unit column), a
@@ -662,18 +691,18 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   const groundUnitFirst = /\bground\s+snow(?:\s+loads?)?(?:\s*,?\s*p\s?g\b)?\s*(?:psf\s+|\[\s*psf\s*\]\s*[:=]\s*)(\d+(?:\.\d+)?)(?![\d.])(?!\s*psf)/gi;
   while ((m = groundUnitFirst.exec(text))) push("groundSnowPsf", "ground", m[1], m);
   // "SNOW LOAD (GROUND): 25 PSF" — the qualifier printed after the label.
-  const groundParen = /\bsnow\s+loads?\s*\(\s*ground\s*\)\s*(?:([:=])\s*)?(\d+(?:\.\d+)?)\s*(psf)?/gi;
+  const groundParen = new RegExp(String.raw`\bsnow\s+loads?\s*\(\s*ground\s*\)\s*(?:(${SEP})\s*)?(\d+(?:\.\d+)?)\s*(psf)?`, "gid");
   while ((m = groundParen.exec(text))) {
-    if (!m[1] && !m[3]) continue;
+    if (!(m[1] && /[:=]/.test(m[1])) && !m[3]) continue;
     push("groundSnowPsf", "ground", m[2], m);
   }
   // Pg symbol: "pg 28.00 psf", "p g = 28.00" (a PDF split the symbol), "Pg(asd) 20 psf".
   // "pg 5" is a page reference — the symbol needs = or a psf unit to count.
-  const pgSymbol = /\bp\s?g\b\s*(\(\s*asd\s*\)|,\s*asd\b|\s+asd\b)?\s*(?:([:=])\s*)?(\d+(?:\.\d+)?)\s*(psf)?/gi;
+  const pgSymbol = new RegExp(String.raw`\bp\s?g\b\s*(\(\s*asd\s*\)|,\s*asd\b|\s+asd\b)?\s*(?:(${SEP})\s*)?(\d+(?:\.\d+)?)\s*(psf)?`, "gid");
   while ((m = pgSymbol.exec(text))) {
-    if (!m[2] && !m[4]) continue;
+    if (!(m[2] && /[:=]/.test(m[2])) && !m[4]) continue;
     // "36 PSF Pg 25 PSF ROOF SNOW": in a value-first list the 25 is the next label's, as for "GROUND SNOW".
-    if (!m[2] && labelFirstIsNextLabels(m, m[3])) continue;
+    if ((!m[2] || isDashSep(m[2])) && labelFirstIsNextLabels(m, 3)) continue;
     push("groundSnowPsf", asd(m[1]) ? "ground_asd" : "ground", m[3], m);
   }
   // Value first: "ground snow 28 psf" is caught above; "28 psf ground snow" here.
@@ -690,6 +719,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // …and a label that ASSIGNS its own value never also claims the number before it: in "ROOF LIVE
   // LOAD: 20 PSF GROUND SNOW LOAD: 25 PSF" the ground snow load is 25, and the 20 is the live load.
   // A separator assigns even a bare number ("GROUND SNOW LOAD = 25").
+  // (Only ":"/"=": a spaced dash assigns through the run's ownership, which these readers already ask.)
   const labelHasOwnValue = (after: number): boolean =>
     /^(?:\s+loads?)?(?:\s*,?\s*p\s?[gfsm]\b)?(?:\s*\([^()]{0,40}\))?\s*[:=]\s*\d/i.test(text.slice(after, after + 60));
   // With NO separator the run's layout decides (loadValueOwners): in "ROOF DEAD LOAD 3 PSF GROUND
@@ -700,15 +730,17 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // A separator between the value and the label AFTER it ("36 PSF: GROUND SNOW LOAD") reads only in a
   // run that is value-first (loadValueOwners) — never on its own.
   const valueFirstOnly = (sep: string | undefined, at: number): boolean => !sep || ownerAt(at) === "next";
-  const groundAfter = /(\d+(?:\.\d+)?)\s*psf\s*([:=]\s*)?(\(\s*asd\s*\)\s*)?ground\s+snow/gi;
+  const groundAfter = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?(\(\s*asd\s*\)\s*)?ground\s+snow`, "gi");
   while ((m = groundAfter.exec(text))) {
     if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index) || !valueFirstOnly(m[2], m.index)) continue;
     push("groundSnowPsf", asd(m[3]) ? "ground_asd" : "ground", m[1], m);
   }
-  // "36 PSF Pg" — the symbol printed after its value, read only in a value-first run.
-  const pgAfter = /(\d+(?:\.\d+)?)\s*psf\s*(?:[:=]\s*)?\(?\s*p\s?g\b(?!\s*\(?\s*asd)/gi;
+  // "36 PSF Pg 25 PSF ROOF SNOW LOAD" — the symbol printed after its value, read only in a value-first
+  // LIST (V L V L …). A bare "Pg" is also a table's column header: in "36 PSF 2.8 PSF Pg PV DEAD LOAD"
+  // (column-major) the two-token "2.8 PSF Pg" is no evidence the 2.8 is Pg (it read as Pg 2.8).
+  const pgAfter = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*psf\s*(?:${SEP}\s*)?\(?\s*p\s?g\b(?!\s*\(?\s*asd)`, "gi");
   while ((m = pgAfter.exec(text))) {
-    if (ownerAt(m.index) !== "next" || assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length)) continue;
+    if (ownerAt(m.index) !== "next" || !owners.get(m.index)?.valueFirstList || assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length)) continue;
     push("groundSnowPsf", "ground", m[1], m);
   }
 
@@ -717,13 +749,14 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
     !word ? "roof" : /flat/i.test(word) ? "flat" : /sloped|total/i.test(word) ? "sloped" : "roof";
   // "ROOF SNOW LOAD: 20 PSF", "Minimum roof snow load, Pm: 20 psf", and a calc table's unit-first
   // "Flat Roof Snow Load, p f [psf]: 21" (bracketed unit + separator, as for ground snow).
-  const roofLabel = /\b(flat|sloped|total|design|balanced|minimum)?\s*roof\s+snow(?:\s+load)?(?:\s*,?\s*p\s?[fsm]\b)?\s*(?:(\[\s*psf\s*\])\s*[:=]|[:=])?\s*(\d+(?:\.\d+)?)\s*(psf)?/gi;
+  const roofLabel = new RegExp(String.raw`\b(flat|sloped|total|design|balanced|minimum)?\s*roof\s+snow(?:\s+load)?(?:\s*,?\s*p\s?[fsm]\b)?\s*(?:(\[\s*psf\s*\])\s*[:=]|${SEP})?\s*(\d+(?:\.\d+)?)\s*(psf)?`, "gid");
   while ((m = roofLabel.exec(text))) {
     if (!m[2] && !m[4]) continue;
-    if (!/[:=]/.test(m[0]) && labelFirstIsNextLabels(m, m[3])) continue;
+    // ":"/"=" assign outright; a spaced dash, like no separator, only where the run's layout agrees.
+    if (!/[:=]/.test(m[0]) && labelFirstIsNextLabels(m, 3)) continue;
     push("roofSnowPsf", roofQual(m[1]), m[3], m);
   }
-  const roofAfter = /(\d+(?:\.\d+)?)\s*psf\s*([:=]\s*)?(flat|sloped|total|design)?\s*roof\s+snow/gi;
+  const roofAfter = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*psf\s*(${SEP}\s*)?(flat|sloped|total|design)?\s*roof\s+snow`, "gi");
   while ((m = roofAfter.exec(text))) {
     if (assignedValue(m.index) || labelHasOwnValue(m.index + m[0].length) || valueFirstIsPrevLabels(m.index) || !valueFirstOnly(m[2], m.index)) continue;
     push("roofSnowPsf", roofQual(m[3]), m[1], m);
