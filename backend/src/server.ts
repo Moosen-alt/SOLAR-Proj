@@ -20,6 +20,7 @@ import {
   startPortalRecording,
   savePortalRecipeSteps,
   markPortalRecipeForRerecord,
+  clearPortalRecipeFlag,
   deletePortalRecipe,
   resolveRecipeFieldValues,
   finishPortalRecipe,
@@ -1718,6 +1719,16 @@ app.post("/api/portal-recipes/:id/rerecord", (req, res) => {
   const user = currentUser(db, req);
   res.json(markPortalRecipeForRerecord(db, String(req.params.id), {
     actor: user?.name || "operator", actorType: "human", reason: String(req.body?.reason ?? "").slice(0, 240),
+  }));
+});
+// A HUMAN CLEARS THE KEEP-AND-FLAG FLAG (trust skeptic M4): the operator looked at the run the
+// flag names and the recipe stays replayable. Audited with who cleared it. The recipe's flag is
+// returned with every recipe (flagReason / flaggedAt on GET /api/portal-recipes).
+app.post("/api/portal-recipes/:id/clear-flag", (req, res) => {
+  const user = currentUser(db, req);
+  res.json(clearPortalRecipeFlag(db, String(req.params.id), {
+    actor: user?.name || user?.email || String(req.body?.actor ?? "").trim() || "operator",
+    note: String(req.body?.note ?? "").slice(0, 240),
   }));
 });
 app.delete("/api/portal-recipes/:id", (req, res) => {

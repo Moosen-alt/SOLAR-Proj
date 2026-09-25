@@ -267,6 +267,26 @@ try {
     const consumed = db.get<{ consumed_at: string | null }>("SELECT consumed_at FROM portal_run_approvals WHERE id = ?", [approvals[0].id]);
     assert.ok(consumed?.consumed_at, "the gate-refused run left its approval live for the next request to pick up");
   });
+
+  // ── trust skeptic M4, the route half: the flag is returned with the recipe and a human clears it ──
+  await check("(m4-route) GET /api/portal-recipes returns the flag; POST …/clear-flag clears it as the signed-in person", async () => {
+    const recipe = fx.completeRecipe();
+    // The flag's own writer: an unattributed replay failure (keep-and-flag).
+    const verdict = recipes.demoteOnReplayFailure(db, recipe.id, "Portal run errored: Cannot read properties of undefined (reading 'x')", recipe.version, {});
+    assert.equal(verdict.action, "flagged", "setup: the failure was not flagged");
+    let res = await fetch(`${BASE}/api/portal-recipes`, { headers: { cookie } });
+    const listed = ((await res.json()) as { recipes: Array<{ id: string; flagReason?: string; flaggedAt?: string | null }> }).recipes.find((r) => r.id === recipe.id);
+    assert.ok(listed?.flagReason && listed.flaggedAt, `the route does not return the flag: ${JSON.stringify(listed)}`);
+    res = await post(`/api/portal-recipes/${recipe.id}/clear-flag`, { note: "looked at the run" });
+    const cleared = (await res.json()) as { flagReason?: string; flaggedAt?: string | null; status?: string };
+    assert.equal(res.status, 200, JSON.stringify(cleared));
+    assert.equal(cleared.flagReason, "");
+    assert.equal(cleared.status, "complete");
+    const audit = db.get<{ actor_name: string }>("SELECT actor_name FROM audit_logs WHERE action = 'portal_recipe.flag_cleared' AND details LIKE ? ORDER BY created_at DESC", [`%${recipe.id}%`]);
+    assert.match(String(audit?.actor_name), /admin@learnguard.test|admin/i, "the clear is not attributed to the signed-in person");
+    res = await post("/api/portal-recipes/does-not-exist/clear-flag", {});
+    assert.equal(res.status, 404);
+  });
 } finally {
   server.kill("SIGTERM");
 }

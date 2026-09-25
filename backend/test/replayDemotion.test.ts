@@ -134,6 +134,31 @@ await check("(d) an unattributable failure KEEPS the recipe and FLAGS it for a h
   assert.match(String(run.error_message), /flagged for a human/i, "the run's own message does not say the recipe was kept and flagged");
 });
 
+// ── (m4) the flag is VISIBLE and CLEARABLE (trust skeptic M4) ──────────────────────────────
+await check("(m4) MUST-PASS: the flag a kept-and-flagged failure raised is returned with the recipe (the list route's reader); MUST-EXCLUDE: a kept not_recipe failure carries no flag; a human clears it, audited", async () => {
+  const { recipe, row } = await stageFailingWith("Portal run errored: Cannot read properties of undefined (reading 'flag')");
+  const listed = recipes.listPortalRecipes(db).find((r) => r.id === recipe.id)!;
+  assert.ok(listed, "setup: the recipe is not listed");
+  assert.equal(listed.flagReason, String(row.flag_reason), "the list does not carry the flag — nobody will see it");
+  assert.ok(listed.flagReason.length > 0 && listed.flaggedAt, "an unattributed failure raised no visible flag");
+  assert.equal(recipes.getPortalRecipe(db, recipe.id).flagReason, listed.flagReason);
+  // A human clears it (the POST /api/portal-recipes/:id/clear-flag writer), audited with who.
+  const cleared = recipes.clearPortalRecipeFlag(db, recipe.id, { actor: "A. Operator", note: "looked at the run: our own bug" });
+  assert.equal(cleared.flagReason, "");
+  assert.equal(cleared.flaggedAt, null);
+  assert.equal(cleared.status, "complete", "clearing a flag must not touch the status");
+  const audits = auditFor("portal_recipe.flag_cleared", recipe.id);
+  assert.equal(audits.length, 1, "the clear left no audit row");
+  assert.equal(audits[0].actor_name, "A. Operator");
+  assert.match(JSON.parse(audits[0].details).flagReason, /could not be attributed/);
+  // Idempotent: clearing again writes nothing.
+  recipes.clearPortalRecipeFlag(db, recipe.id, { actor: "A. Operator" });
+  assert.equal(auditFor("portal_recipe.flag_cleared", recipe.id).length, 1);
+  // MUST-EXCLUDE: a kept (attributable) failure raises nothing to show.
+  const kept = await stageFailingWith("Recipe step failed (fill — Email): locator.fill: Target page, context or browser has been closed");
+  assert.equal(recipes.listPortalRecipes(db).find((r) => r.id === kept.recipe.id)!.flagReason, "", "a harness abort showed a flag");
+});
+
 await check("(e) a failing step with NO message is unattributable: kept and flagged, never demoted", async () => {
   const { row } = await stageFailingWith(undefined);
   assert.equal(row.status, "complete");

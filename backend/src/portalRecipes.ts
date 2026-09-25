@@ -21,8 +21,20 @@ import { FEE_BRACKET_FIELD_PREFIX } from "../../portal-bot/src/feeBracketQuantit
 type Row = Record<string, unknown>;
 
 
-function mapRecipe(row: Row): PortalRecipe {
+/** A recipe as the API returns it: the shared PortalRecipe plus the keep-and-flag flag (operator
+ *  ruling 2026-09-24: a replay failure nobody can attribute keeps the recipe and FLAGS it for a
+ *  human — a flag nobody can see is no flag). Kept here, not in shared types (owned elsewhere). */
+export type PortalRecipeWithFlag = PortalRecipe & {
+  /** Why a human is asked to look ("" when nothing is flagged). Raised by demoteOnReplayFailure
+   *  (unattributed failure) and the restore script; cleared by clearPortalRecipeFlag. */
+  flagReason: string;
+  flaggedAt: string | null;
+};
+
+function mapRecipe(row: Row): PortalRecipeWithFlag {
   return {
+    flagReason: s(row.flag_reason),
+    flaggedAt: row.flagged_at ? s(row.flagged_at) : null,
     id: s(row.id),
     scopeType: s(row.scope_type) === "utility" ? "utility" : "ahj",
     profileKey: s(row.profile_key),
@@ -152,11 +164,11 @@ export function recipeProfileKey(input: { scopeType: "ahj" | "utility"; state?: 
     : knowledgeProfileKey({ state: input.state, ahj: input.ahj, utility: input.utility });
 }
 
-export function listPortalRecipes(db: AppDb): PortalRecipe[] {
+export function listPortalRecipes(db: AppDb): PortalRecipeWithFlag[] {
   return db.query<Row>("SELECT * FROM portal_recipes ORDER BY updated_at DESC").map(mapRecipe);
 }
 
-export function getPortalRecipe(db: AppDb, recipeId: string): PortalRecipe {
+export function getPortalRecipe(db: AppDb, recipeId: string): PortalRecipeWithFlag {
   const row = db.get<Row>("SELECT * FROM portal_recipes WHERE id = ?", [recipeId]);
   if (!row) throw new HttpError(404, "Portal recipe not found.");
   return mapRecipe(row);
@@ -182,7 +194,7 @@ function findRecipeByNameAlias(
   db: AppDb,
   input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; discipline?: string },
   requireComplete: boolean,
-): PortalRecipe | null {
+): PortalRecipeWithFlag | null {
   const wanted = s(input.scopeType === "utility" ? input.utility : input.ahj).trim();
   if (!wanted) return null;
   // A state-less project is exactly where a wrong-portal replay could slip through, since
@@ -208,7 +220,7 @@ function findRecipeByNameAlias(
 export function findCompleteRecipeForProject(
   db: AppDb,
   input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; discipline?: string },
-): PortalRecipe | null {
+): PortalRecipeWithFlag | null {
   const key = recipeProfileKey(input);
   const discipline = s(input.discipline);
   const row = db.get<Row>(
@@ -228,7 +240,7 @@ export function findCompleteRecipeForProject(
 export function findAnyRecipeForProject(
   db: AppDb,
   input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; discipline?: string },
-): PortalRecipe | null {
+): PortalRecipeWithFlag | null {
   const key = recipeProfileKey(input);
   const discipline = s(input.discipline);
   // Discipline-scoped for the same reason as above. Critically, this is what the learn
@@ -429,7 +441,7 @@ export function recipeHostFit(
 // different programs must not cross. Trackless stages (no discipline) never borrow either.
 // ---------------------------------------------------------------------------
 export interface BorrowedRecipeChoice {
-  recipe: PortalRecipe;
+  recipe: PortalRecipeWithFlag;
   learnedFor: string;
   learnedForState: string;
   portalHost: string;
@@ -1064,6 +1076,33 @@ export function persistHealedSteps(
 export function recipeReviewFlag(db: AppDb, recipeId: string): { reason: string; flaggedAt: string | null } {
   const row = db.get<Row>("SELECT flag_reason, flagged_at FROM portal_recipes WHERE id = ?", [recipeId]);
   return { reason: s(row?.flag_reason), flaggedAt: row?.flagged_at ? s(row.flagged_at) : null };
+}
+
+/**
+ * A HUMAN CLEARS THE FLAG (trust skeptic M4): the operator looked at the run the flag names and
+ * decided the recipe is fine. Audited with who cleared it and what the flag said, so the next
+ * unattributed failure is not mistaken for the one already looked at. Idempotent: clearing a
+ * recipe that carries no flag changes nothing and writes no audit row. The status is untouched —
+ * a person who thinks the recipe is broken uses "mark for re-record" instead.
+ */
+export function clearPortalRecipeFlag(
+  db: AppDb,
+  recipeId: string,
+  opts: { actor?: string; note?: string } = {},
+): PortalRecipeWithFlag {
+  const recipe = getPortalRecipe(db, recipeId); // 404 if missing
+  if (!recipe.flagReason.trim()) return recipe;
+  const now = nowIso();
+  const actor = s(opts.actor).trim() || "operator";
+  const note = s(opts.note).trim().slice(0, 240);
+  db.run(
+    "UPDATE portal_recipes SET flag_reason = '', flagged_at = NULL, notes = ?, updated_at = ? WHERE id = ?",
+    [upsertRecipeNote(recipe.notes, "flag cleared", `[flag cleared ${now.slice(0, 10)} by ${actor}${note ? `: ${note}` : ""}]`), now, recipeId],
+  );
+  addAuditLog(db, null, "human", actor, "portal_recipe.flag_cleared", {
+    recipeId, profileKey: recipe.profileKey, version: recipe.version, flagReason: recipe.flagReason.slice(0, 300), flaggedAt: recipe.flaggedAt, note,
+  });
+  return getPortalRecipe(db, recipeId);
 }
 
 /**
