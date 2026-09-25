@@ -114,7 +114,10 @@
       const read = (p.docsGiven || []).map(docLabel).join(' + ') || 'documents';
       sections.push(`Notes (${p.label || 'pass'}, read: ${read}): ${body}`);
     }
-    return { text: sections.join('\n'), sections, dropped };
+    // ONE notes item for the review list: every pass attributed inside it, never two "Notes:"
+    // entries that can contradict each other.
+    const line = sections.length ? `Notes — ${sections.map((s) => s.replace(/^Notes \(/, '(')).join(' ‖ ')}` : '';
+    return { text: sections.join('\n'), sections, line, dropped };
   }
 
   // -------------------------------------------------------------------------

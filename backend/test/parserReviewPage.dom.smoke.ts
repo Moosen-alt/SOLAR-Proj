@@ -193,9 +193,8 @@ try {
   });
   check("6. RSD contradiction is a structured conflict", () => assert.match(out.critical, /rapidShutdown: NO \(plan set/));
   check("2. notes: one attributed section per pass; the 'not supplied' claims are gone; N/A dropped from the installer line", () => {
-    assert.equal((out.flags.match(/^Notes \(/gm) || []).length, 2, out.flags);
-    assert.match(out.flags, /Notes \(bill \/ meter photos, read: utility bill \+ meter photo\)/);
-    assert.match(out.flags, /Notes \(plan set text, read: plan set \+ structural letter\)/);
+    assert.equal((out.flags.match(/^Notes/gm) || []).length, 1, out.flags);
+    assert.match(out.flags, /^Notes — \(bill \/ meter photos, read: utility bill \+ meter photo\): .* ‖ \(plan set text, read: plan set \+ structural letter\): /m);
     assert.doesNotMatch(out.flags, /no bill supplied|No utility bill or meter photo provided/);
     assert.match(out.flags, /verify homeowner name with the utility bill/);
     assert.match(out.flags, /Plan-set installer read from the title block: Sample Solar Co \| 1-800-000-0000$/m);

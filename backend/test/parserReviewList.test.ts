@@ -59,6 +59,10 @@ ok("meter: provenance routes the reading; one compare predicate; verbatim plan-t
   assert.match(m.text, /Dead load: letter 3.0 psf/);
   assert.match(m.text, /read: plan set \+ structural letter/);
   assert.equal(m.dropped.length, 2);
+  // the review list gets ONE notes item carrying both attributions — never two "Notes" entries
+  assert.equal((m.line.match(/Notes/g) || []).length, 1, m.line);
+  assert.match(m.line, /^Notes — \(photos, read: utility bill \+ meter photo\): .* ‖ \(text, read: plan set \+ structural letter\): /);
+  assert.equal(PR.mergeNotes([], ["plan_set"]).line, "");
   // MUST-EXCLUDE: when the bill really is NOT attached, the sentence stands.
   const m2 = PR.mergeNotes([passes[1]], ["plan_set", "structural_letter"]);
   assert.match(m2.text, /No utility bill or meter photo provided/);
