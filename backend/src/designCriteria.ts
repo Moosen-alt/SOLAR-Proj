@@ -585,12 +585,18 @@ function loadValueOwners(text: string): Map<number, LoadValueRun> {
   // label (Pg 10, Pg 3 — BLOCKERs on correct plans). A BLOCK (tokens joined by nothing but glue) in
   // which two LABELS or two VALUES sit side by side is a table the alternation cannot map, so every
   // value in it is "both": read, but UNSURE — a warning naming the readings, never a blocker.
+  // Not a table: a pair that only CLOSES an alternating segment and opens the next — "… 10 PSF DEAD
+  // LOAD | ROOF LIVE LOAD: 20 PSF" (a value-first list, then a label-first line: V L L), "GROUND SNOW
+  // LOAD 16 PSF | 10 PSF DEAD LOAD" (L V V). Flattened text runs sections together, so that boundary
+  // is everywhere on a real sheet; a table's pair opens its block or follows another same-kind token.
   const blockOf: number[] = [];
   const tableBlocks = new Set<number>();
   clean.forEach((t, k) => {
     const joined = k > 0 && glue.test(between(clean[k - 1], t));
     blockOf[k] = k === 0 ? 0 : joined ? blockOf[k - 1] : blockOf[k - 1] + 1;
-    if (joined && clean[k - 1].kind === t.kind) tableBlocks.add(blockOf[k]);
+    if (!joined || clean[k - 1].kind !== t.kind) return;
+    const closesSegment = k >= 2 && blockOf[k - 2] === blockOf[k] && clean[k - 2].kind !== t.kind;
+    if (!closesSegment) tableBlocks.add(blockOf[k]);
   });
   const indexOf = new Map(clean.map((t, k) => [t, k] as const));
   let i = 0;

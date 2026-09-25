@@ -221,6 +221,12 @@ neverBlocks("ROOF SNOW LOAD GROUND SNOW LOAD 10 PSF 16 PSF", [10]);
 // Two labels side by side alone (a header row) — and two values side by side alone (a value column).
 neverBlocks("ROOF SNOW LOAD GROUND SNOW LOAD 25 PSF", [25]);
 neverBlocks("36 PSF 25 PSF GROUND SNOW LOAD", [25]);
+// Not a table: a pair that closes one alternating segment and opens the next (sections run together
+// in flattened text) — a sure reading stays sure, and a sure 16 stays a BLOCKER.
+reads36("36 PSF GROUND SNOW LOAD 25 PSF ROOF SNOW LOAD 10 PSF DEAD LOAD\nROOF LIVE LOAD: 20 PSF", (j) => assert.deepEqual(j.roof, [25], show(j)));
+blocks16("16 PSF GROUND SNOW LOAD 10 PSF DEAD LOAD\nROOF LIVE LOAD: 20 PSF");
+blocks16("GROUND SNOW LOAD 16 PSF 10 PSF DEAD LOAD");
+blocks16("16 PSF GROUND SNOW LOAD\nFLAT ROOF SNOW LOAD Pf = 0.7 Ce Ct Is Pg = 0.7 (1.0)(1.1)(1.0)(16 PSF) = 12.3 PSF");
 reads36("GROUND SNOW LOAD 36 PSF ROOF SNOW LOAD 25 PSF DEAD LOAD", (j) => assert.deepEqual(j.roof, [25], show(j)));
 reads36("DEAD LOAD 10 PSF LIVE LOAD 20 PSF GROUND SNOW LOAD 36 PSF");
 
