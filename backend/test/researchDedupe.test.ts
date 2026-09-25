@@ -24,7 +24,7 @@ delete process.env.SKIP_CODE_RESEARCH;
 delete process.env.FEE_RESEARCH;
 
 const { openDatabase } = await import("../src/db");
-const { ensureCodeProfilesResearched, ahjLooksLikeHostname, codeProfileKey } = await import("../src/codeProfiles");
+const { ensureCodeProfilesResearched, ahjLooksLikeHostname, codeProfileKey, saveResearchedCodeProfile } = await import("../src/codeProfiles");
 const { ensureFeeSchedulesResearched } = await import("../src/feeSchedules");
 const { startJobWorker } = await import("../src/jobQueue");
 
@@ -51,6 +51,17 @@ await run("code research: 5 synchronous calls -> exactly 1 job per layer", async
   for (let i = 0; i < 5; i++) ensureCodeProfilesResearched(db, "ZQ", "City of Burstville");
   await settle();
   assert.equal(jobsFor("code_research", `"profileKey":"${stateKey}"`), 1, "state layer");
+  // State first: ZQ's adoption model is unknown until its state layer lands, so the AHJ waits.
+  assert.equal(jobsFor("code_research", `"profileKey":"${ahjKey}"`), 0, "the AHJ layer was queued before its state");
+  // The state layer lands (grounded, local adoption): the AHJ's burst now dedupes to one job.
+  saveResearchedCodeProfile(db, {
+    key: "", state: "ZQ", ahj: "", confidence: "seeded", amendments: [], designCriteria: {}, prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "",
+    adoptedCodes: [{ family: "electrical", code: "NEC", edition: "2023", sourceUrl: "https://zq.example.gov" }],
+    adoptionModel: { model: "local_adoption" },
+    researchProvenance: { webGrounded: true, method: "web_search", at: new Date().toISOString() },
+  });
+  for (let i = 0; i < 5; i++) ensureCodeProfilesResearched(db, "ZQ", "City of Burstville");
+  await settle();
   assert.equal(jobsFor("code_research", `"profileKey":"${ahjKey}"`), 1, "AHJ layer");
   // And a later call (jobs now in the table) still adds nothing.
   ensureCodeProfilesResearched(db, "ZQ", "City of Burstville");
