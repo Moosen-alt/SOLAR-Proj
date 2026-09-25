@@ -178,6 +178,9 @@ const visionPass = (fields: Record<string, unknown>) => ({ kind: "vision", label
   // a model-reported CONFLICT on a structural field whose letter readings disagree is not resolved by the letter
   const split = PR.resolveReviewItems({ attached: ["plan_set", "structural_letter"], planText: planTextSF, passes: [textPass({ snow: field(40, "structural_letter", "Ground Snow Load 40 psf", 0.6) }, ["snow"], { conflicts: [{ field: "snow", readings: [{ value: 40, source: "structural_letter" }, { value: 30, source: "structural_letter" }, { value: 40, source: "plan_set" }] }] })] });
   assert.ok(!split.resolved.some((x: { field: string }) => x.field === "snow") && split.conflicts.some((x: { field: string }) => x.field === "snow"));
+  // a number inside a calculation line is never "stated", even with no reason attached
+  const formula = PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [textPass({ busRating: field("200A", "plan_set", "MAX. PV OCPD (200A x 120%) - 200 = 40A BUS", 0.7) }, ["busRating"])] });
+  assert.ok(formula.unsure.some((x: { field: string }) => x.field === "busRating") && !formula.resolved.length, "a calculation line must not resolve a stated field");
   // a guessed/inferred value with a verbatim-looking excerpt is still unsure
   const inferred = PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [textPass({ moduleHeightAboveRoof: field(6, "plan_set", '6" MAX', 0.5) }, ["moduleHeightAboveRoof"], { uncertainties: [{ field: "moduleHeightAboveRoof", kind: "inferred", reason: "from a dimension on the mount detail" }] })] });
   assert.ok(inferred.unsure.some((x: { field: string }) => x.field === "moduleHeightAboveRoof") && !inferred.resolved.length);
