@@ -848,7 +848,7 @@ const TRANSIENT_FAILURE: Array<[RegExp, string]> = [
   // A NAVIGATION timeout is the portal not answering. A SELECTOR/wait timeout is the page
   // not looking the way the recipe remembers, which is exactly the drift that should demote —
   // so it is deliberately absent from this list.
-  [/page\.goto|navigation timeout|timeout .{0,20}exceeded.{0,20}navigat|net::ERR_TIMED_OUT/i, "the page never finished loading"],
+  [/page\.goto|navigation timeout|timeout .{0,20}exceeded.{0,20}navigat|net::ERR_TIMED_OUT|page\.waitFor(URL|LoadState|Navigation)/i, "the page never finished loading"],
 ];
 
 // NOT ABOUT THE RECIPE, EITHER — the run was stopped by something about THIS PROJECT or by the
@@ -868,7 +868,28 @@ const PROJECT_OR_OUTCOME_FAILURE: Array<[RegExp, string]> = [
     "the project is missing data this step needs (or asked for something this jurisdiction does not offer)"],
   [/final submit clicked|after the submit click|final-submit click did not complete|final submit needs a human|final submit triggered a challenge|payment dialog|fees are never automated/i,
     "the final-submit outcome needs a human to verify — that is a filing to check, not drift"],
+  // TEXT THE PORTAL SAID ABOUT THE PROJECT never demotes (trust skeptic M2). The adapter's
+  // advance step reports the portal's own validation message ("The portal says: Service Account
+  // Number: Account not found", "Meter number does not exist ...") — that is the project's data
+  // being refused by the portal, and RECIPE_DRIFT's "not found | does not exist" would otherwise
+  // read it as a control that vanished. Tested BEFORE the drift family on purpose.
+  [/did not advance[\s\S]{0,240}the portal says:/i,
+    "the portal refused the page with its own validation text — the project's data (or the portal's state), not the recipe"],
 ];
+
+// THE ADAPTER'S OWN PAGE-DRIFT TRIPWIRE, WHEN IT BLAMES A BLANK REQUIRED FIELD: the replay is not
+// on the page the recipe expects, but the adapter's best reading is that an earlier required
+// field was left blank and the portal refused to advance — project data, or drift; nobody can
+// say from the text. Unattributed → keep and flag for a human (never demote on it).
+const DRIFT_BLAMED_ON_BLANK_FIELD = /left blank and the portal refused to advance|required field was left blank/i;
+
+/** The captured page description recipeAdapter appends to a failing step's message —
+ *  " [url=… | title=… | visible controls: … | self-heal: …]" — is what the page HAD, not what
+ *  failed; it must never steer the verdict (a /403/ in the URL or a "Help: MFA setup" button
+ *  turned real drift into a WAF or MFA reading). Only the text before it is classified. */
+export function replayFailureTextWithoutPageContext(failureText: unknown): string {
+  return String(failureText ?? "").replace(/\s*\[(?:url=|title=|visible controls:|self-heal:)[\s\S]*$/, "").trim();
+}
 
 // ATTRIBUTABLE TO THE RECIPE: the page no longer looks the way the recipe remembers — a recorded
 // control that no longer resolves (a selector/locator wait timing out), a control or option that
@@ -891,12 +912,15 @@ export type ReplayFailureAttribution = "recipe" | "not_recipe" | "unknown";
  * fixture and for the restore script — there must not be a second copy of this rule.
  */
 export function replayFailureBlamesRecipe(failureText: unknown): { blamesRecipe: boolean; attribution: ReplayFailureAttribution; reason: string } {
-  const text = String(failureText ?? "").trim();
+  const text = replayFailureTextWithoutPageContext(failureText);
   if (!text) return { blamesRecipe: false, attribution: "unknown", reason: "the run reported no failure message to attribute" };
   if (isHarnessAbort(text)) return { blamesRecipe: false, attribution: "not_recipe", reason: "our own browser or process went away mid-run (or our own profile lease refused to start it)" };
   if (looksBotBlocked(text)) return { blamesRecipe: false, attribution: "not_recipe", reason: "the portal refused the automated browser (WAF/bot wall)" };
   for (const [re, reason] of [...TRANSIENT_FAILURE, ...PROJECT_OR_OUTCOME_FAILURE]) {
     if (re.test(text)) return { blamesRecipe: false, attribution: "not_recipe", reason };
+  }
+  if (DRIFT_BLAMED_ON_BLANK_FIELD.test(text)) {
+    return { blamesRecipe: false, attribution: "unknown", reason: "the replay is off its page, but the adapter itself blames an earlier blank required field — project data or drift, a human decides" };
   }
   if (RECIPE_DRIFT.test(text)) {
     return { blamesRecipe: true, attribution: "recipe", reason: "the page no longer matches what the recipe recorded (drift the replay could not heal)" };

@@ -75,6 +75,23 @@ await check("classifier: production messages land in the right family (MUST-PASS
     // nobody can say
     ["Portal run errored: Cannot read properties of undefined (reading 'x')", "unknown"],
     ["", "unknown"],
+    // ── trust skeptic M2 ──
+    // MUST-EXCLUDE: text the PORTAL said about the PROJECT never demotes ("not found" / "does
+    // not exist" are the portal's validation words here, not a vanished control).
+    ['Recipe step failed (click — advance: Next): the portal did not advance (it refused "advance: Next"). The portal says: Service Account Number: Account not found', "not_recipe"],
+    ['Recipe step failed (click — advance: Next): the portal did not advance (it refused "advance: Next"). The portal says: Meter number does not exist for this account', "not_recipe"],
+    ['Recipe step failed (click — advance: Next): the portal did not advance (it refused "advance: Next"). The portal says: Meter Number: This field is required.', "not_recipe"],
+    // MUST-EXCLUDE: the adapter's page-drift tripwire that itself blames a blank required field is unattributed (keep and flag), never 'recipe'.
+    ['Recipe step failed (page drift): only 0 of 6 recorded fields for this section ("A", "B", "C"…) are on the current page — the replay is not on the page the recipe expects, most likely because an earlier required field was left blank and the portal refused to advance. Stopping rather than filling the wrong controls.', "unknown"],
+    // MUST-PASS: real drift stays 'recipe' — and the captured page description after it (a /403/ in
+    // the URL, a "Help: MFA setup" button, "DNS settings") must not steer the verdict.
+    ["Recipe step failed (fill — inverter quantity): locator.fill: Timeout 8000ms exceeded.", "recipe"],
+    ['Recipe step failed (click — Next): locator.click: Timeout 30000ms exceeded. [url=https://x.gov/Project/403/Edit | visible controls: "Help: MFA setup"]', "recipe"],
+    ['Recipe step failed (fill — Customer Address): locator.fill: Timeout 30000ms exceeded. [url=https://aca-oregon.accela.com/x | visible controls: "DNS settings"]', "recipe"],
+    ['Recipe step failed (fill — Email): locator.fill: Timeout 30000ms exceeded. [title="Session expired" | visible controls: "Log in"]', "recipe"],
+    // A slow portal (a navigation wait) is not the recipe.
+    ["Recipe step failed (fill — Email): page.waitForLoadState: Timeout 30000ms exceeded.", "not_recipe"],
+    ["Recipe step failed (click — Next): page.waitForURL: Timeout 30000ms exceeded.", "not_recipe"],
   ];
   for (const [text, want] of cases) {
     assert.equal(recipes.replayFailureBlamesRecipe(text).attribution, want, `"${text.slice(0, 90)}" should be ${want}`);
