@@ -2,11 +2,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { performance } from "node:perf_hooks";
-import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition } from "../../shared/src/types";
+import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
-import { lookupCecInverter } from "./cecEquipment";
+import { lookupCecInverter, lookupCecModuleMake } from "./cecEquipment";
 import { planTextForExtraction } from "./structuralIntake";
 import type { CodeResearchProvenance } from "./codeProfiles";
 
@@ -1404,11 +1404,18 @@ You are given up to three documents:
 Return ONLY a JSON object of this exact shape:
 {
   "fields": {
-    "<fieldId>": { "value": <string|number|null|array|object>, "confidence": <0..1>, "evidence": { "source": "plan_set|utility_bill|meter_photo", "sheet": "<sheet/page hint e.g. PV-2 or Cover>", "excerpt": "<verbatim text you read it from, MAX 100 CHARACTERS>" } }
+    "<fieldId>": { "value": <string|number|null|array|object>, "confidence": <0..1>, "evidence": { "source": "plan_set|utility_bill|meter_photo|structural_letter", "sheet": "<sheet/page hint e.g. PV-2 or Cover>", "excerpt": "<verbatim text you read it from, MAX 100 CHARACTERS>" } }
   },
   "lowConfidenceFields": ["<fieldId>", ...],
+  "uncertainties": [ { "field": "<fieldId>", "kind": "unreadable|guessed|inferred|conflicting|unconfirmed", "reason": "<one short sentence>" } ],
+  "conflicts": [ { "field": "<fieldId>", "readings": [ { "value": <value>, "source": "plan_set|utility_bill|meter_photo|structural_letter", "sheet": "<hint>", "excerpt": "<verbatim, MAX 100 CHARACTERS>" }, ... ], "note": "<what disagrees>" } ],
   "notes": "<short notes on anything ambiguous or worth a human double-check>"
 }
+
+UNCERTAINTY AND CONFLICTS ARE STRUCTURED, NOT PROSE:
+- lowConfidenceFields is for values that are UNREADABLE (garbled text), GUESSED (no excerpt to cite), INFERRED (derived from something that is not the value itself, e.g. a breaker read off a 705.12 maximum calculation) or CONFLICTING (documents disagree). A value printed on a document beside its label ("Roof Height 25 ft", "PANELS WILL NOT EXTEND MORE THAN 6\" ABOVE") is STATED — it is NOT low confidence merely because no second document confirms it; if you list it anyway, its kind is "unconfirmed". Every lowConfidenceFields entry gets an "uncertainties" row with its kind and a reason.
+- Whenever two documents (or two places in one document) give DIFFERENT values for the same field — owner name on the title block vs the letter, dead load on the letter vs the plan set's array table, rafters vs trusses, "SHUTDOWN - NO" vs rapid-shutdown labels — report it in "conflicts" with EVERY reading and its source/excerpt (the structural letter's readings carry source "structural_letter"), and still put your best value in "fields". Do not bury a disagreement in notes only.
+- You are shown ONLY the documents listed below. The intake page may hold others you were not given: NEVER write that a bill, meter photo, plan set or letter was "not supplied" / "not provided" — describe only what the text you were given shows.
 
 EVIDENCE IS REQUIRED for accuracy: for every field, include an "evidence" object citing where you read it (which document, the sheet/page hint if visible, and a verbatim excerpt of AT MOST 100 CHARACTERS — just enough for a human to find the line; longer excerpts are truncated on receipt and only cost time). If you cannot cite a source, lower confidence and add the field to lowConfidenceFields.
 VALUE TYPES: almost every field is a scalar. The few documented as structured (notably pvArrays) MUST be emitted as real JSON arrays/objects, never as a stringified version of one.
@@ -1418,7 +1425,7 @@ IDENTITY / SITE
 - owner: full homeowner name(s) (e.g. "Abigail Boileau & Thomas Boileau")
 - street, city, state (2-letter), zip: service address parts
 - ahj: Authority Having Jurisdiction (permitting city/county), e.g. "City of Newberg"
-- utility: electric utility normalized ("PGE", "Pacific Power")
+- utility: the electric utility as the documents name it, in its common short form (e.g. "Eversource", "Oncor", "SRP", "APS", "Duke Energy", "PGE", "Pacific Power"). Any US utility; do not force it into another utility's naming.
 - account: utility account number (digits as printed)
 - meter: meter number/serial
 SYSTEM / EQUIPMENT
@@ -1494,8 +1501,8 @@ BUILDING GEOMETRY (read from the site plan / structural sheet / cover-sheet proj
 - dwellingUnits: number of dwelling units in the building (number; 1 for a single-family house).
 - numberOfBuildings: number of buildings on the permit (number; 1 unless the plans show more).
 - stampRecommendation: one line on whether PE-stamped/sealed structural documentation is present or required (e.g. "PE-sealed structural letter provided — existing framing adequate" / "no stamp present; AHJ may require one"). Base it ONLY on what the documents show.
-UTILITY INTERCONNECTION (PGE PowerClerk / Pacific Power customer generation NEM)
-- utilitySchedule: the utility rate schedule from the bill (e.g. PGE "Schedule 7", Pacific Power "Schedule 4")
+UTILITY INTERCONNECTION (the utility's NEM / interconnection application, whichever utility it is)
+- utilitySchedule: the utility rate schedule / rate plan printed on the bill (e.g. "Schedule 7", "Schedule 4", "R1 Residential", "E-27", "Basic Plan")
 - serviceVoltage: service voltage (e.g. "240V")
 - servicePhase: "single-phase" or "three-phase"
 - numberOfCircuits: number of PV backfeed circuits/strings (number)
@@ -1510,7 +1517,7 @@ CLIENT ONBOARDING — the INSTALLER/CONTRACTOR shown on the plan set title block
   client record — these do NOT fill the project's contractor fields (those come from the
   selected client), they're a suggestion to create/match the client:
 - contractorCompany: installer/contractor business name
-- contractorCcb: CCB / contractor license number
+- contractorCcb: the contractor's STATE licence number exactly as the title block prints it, whatever the state calls it (Oregon CCB, Massachusetts/Pennsylvania HIC, Arizona ROC, Texas TDLR/TECL, California CSLB, Nevada NSCB, Florida CVC…). Omit when none is printed — "N/A" is not a value.
 - contractorElectricalLicense: the company's electrical contractor license number (e.g. "C1556")
 - contractorMetroCityLicense: metro/city contractor or business license number, if shown (e.g. Portland Metro / city license)
 - contractorAddress: contractor business address
@@ -1538,7 +1545,7 @@ READING PLAN-SET TEXT (these quirks are common across design vendors — handle 
 - SOME PLAN SETS CARRY NO STRUCTURAL BLOCK AT ALL (common in California, where loads live in a separate stamped structural letter). If snow/wind/dead load/rafter data is not in the documents, OMIT those keys — never infer them from the jurisdiction or from typical values.
 
 Rules:
-- Set confidence honestly; put anything <0.6 or guessed into lowConfidenceFields.
+- Set confidence honestly. lowConfidenceFields means unreadable / guessed / inferred / conflicting (see above) — not "printed once, not double-confirmed".
 - Account/meter numbers: only digits you can actually read; never invent or pad. Join spaced account segments (e.g. "65564191-001 4" -> "65564191-0014"); do not drop a trailing check digit.
 - Electrical amps come from the PLAN SET (SLD, datasheets) — not the bill. Structural loads come from the STRUCTURAL_LETTER when one is supplied (it is the sealed source of record), otherwise from the plan set's structural notes.
 - When a STRUCTURAL_LETTER is present, set stampRecommendation to a one-line statement of what it certifies and whether it is sealed/stamped (e.g. "PE-sealed structural letter provided: existing framing adequate, no upgrades required"). Never claim a stamp that the document does not show.
@@ -1565,19 +1572,25 @@ Rules:
     // property of the document. The retry is bounded at one so a genuinely unparseable
     // response still surfaces promptly rather than doubling the wait repeatedly.
     const user = parts.join("\n\n");
+    const documentsSeen: Array<ParserFieldEvidence["source"]> = [
+      ...(input.planText?.trim() ? ["plan_set" as const] : []),
+      ...(input.utilityBillText?.trim() ? ["utility_bill" as const] : []),
+      ...(input.meterText?.trim() ? ["meter_photo" as const] : []),
+      ...(input.structuralLetterText?.trim() ? ["structural_letter" as const] : []),
+    ];
     try {
-      return this.normalizeExtraction(
+      return finalizeExtraction(this.normalizeExtraction(
         await this.askLong("extractProjectFields", system, user, 16000),
         "Could not parse LLM response.",
-      );
+      ), documentsSeen);
     } catch (err) {
       logger.warn("llm", "extractProjectFields response unreadable — retrying once", {
         err: err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120),
       });
-      return this.normalizeExtraction(
+      return finalizeExtraction(this.normalizeExtraction(
         await this.askLong("extractProjectFields", system, user, 16000),
         "Could not parse LLM response (retry).",
-      );
+      ), documentsSeen);
     }
   }
 
@@ -1588,6 +1601,8 @@ Rules:
     const parsed = this.parseJson<{
       fields?: Record<string, { value: unknown; confidence?: number; evidence?: { source?: string; sheet?: string; excerpt?: string } }>;
       lowConfidenceFields?: string[];
+      uncertainties?: unknown;
+      conflicts?: unknown;
       notes?: string;
       [FAILED]?: boolean;
     }>(raw, { fields: {}, lowConfidenceFields: [], notes: parseFailNote, [FAILED]: true });
@@ -1625,18 +1640,21 @@ Rules:
       const ev = entry.evidence;
       const evidence = ev && (ev.sheet || ev.excerpt || ev.source)
         ? {
-            source: (["plan_set", "utility_bill", "meter_photo"].includes(String(ev.source)) ? ev.source : "plan_set") as "plan_set" | "utility_bill" | "meter_photo",
+            source: evidenceSource(ev.source),
             sheet: ev.sheet ? String(ev.sheet).slice(0, 40) : undefined,
             excerpt: ev.excerpt ? String(ev.excerpt).slice(0, 200) : undefined,
           }
         : undefined;
       fields[key] = { value: value as ParserExtractedField["value"], confidence, evidence };
     }
+    const lowConfidenceFields = Array.isArray(parsed.lowConfidenceFields) ? parsed.lowConfidenceFields.filter((f): f is string => typeof f === "string") : [];
     return {
       provider: "claude",
       fields,
-      lowConfidenceFields: Array.isArray(parsed.lowConfidenceFields) ? parsed.lowConfidenceFields : [],
+      lowConfidenceFields,
       notes: typeof parsed.notes === "string" ? parsed.notes : "",
+      uncertainties: normalizeUncertainties(parsed.uncertainties),
+      conflicts: normalizeConflicts(parsed.conflicts),
     };
   }
 
@@ -1659,11 +1677,12 @@ Include an "evidence" object for every field (where on the document you read it 
 
 Field ids (omit if not present):
 - owner, street, city, state (2-letter), zip
-- utility (normalize: PacifiCorp/Pacific Power -> "Pacific Power"; Portland General/PGE -> "PGE")
+- utility: the utility's common short name as the bill or meter shows it, for ANY US utility (e.g. "Eversource", "Oncor", "SRP", "Penelec"; PacifiCorp -> "Pacific Power"; Portland General -> "PGE"). In a deregulated market (Texas) the retail provider on the bill is not the wires utility on the meter — report the wires/delivery utility and mention the retailer in notes.
 - account: the utility account number, digits/dashes EXACTLY as printed
 - meter: the meter serial/number, digits only
 - servicePeriod: e.g. "Mar 13, 2026 - Apr 13, 2026"
-- utilitySchedule: the rate schedule printed on the bill (e.g. "Schedule 7" for PGE, "Schedule 4" for Pacific Power) — needed for the NEM/interconnection application
+- utilitySchedule: the rate schedule / rate plan printed on the bill (e.g. "Schedule 7", "R1HP Residential", "Basic Plan") — needed for the NEM/interconnection application
+Describe only what these images show; never state that a document you were not shown was "not supplied" — the intake page may hold it.
 
 CRITICAL accuracy rules:
 - Transcribe account and meter numbers digit-by-digit from the image. Do NOT guess or "correct" them. If a digit is genuinely unreadable, lower confidence and add the field to lowConfidenceFields.
@@ -1690,7 +1709,10 @@ CRITICAL accuracy rules:
         messages: [{ role: "user", content }],
       }),
     );
-    return this.normalizeExtraction(this.textOf(msg), "Could not parse vision response.");
+    return finalizeExtraction(
+      this.normalizeExtraction(this.textOf(msg), "Could not parse vision response."),
+      [...new Set(input.images.map((i) => (i.kind === "plan_page" ? "plan_set" : i.kind) as ParserFieldEvidence["source"]))],
+    );
   }
 
   async classifyCorrection(input: { correctionText: string; project?: ProjectRecord }): Promise<{ bucket: CorrectionBucket; confidence: number; notes: string }> {
@@ -3121,4 +3143,86 @@ export async function enrichMboxLearningWithLlm(input: {
     logger.error("llm", "MBOX enrichment failed", { err: errMsg(err) });
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// PARSER EXTRACTION POST-PROCESSING — no model. Provenance that survives receipt,
+// structured uncertainty / conflicts, and the deterministic resolutions the parser page
+// shows as RESOLVED (value + how) instead of "not fully sure".
+// ---------------------------------------------------------------------------
+const EVIDENCE_SOURCES: ReadonlyArray<ParserFieldEvidence["source"]> = ["plan_set", "utility_bill", "meter_photo", "structural_letter"];
+
+/** A structural letter's provenance used to be coerced to plan_set here, which silently
+ *  deleted the sealed-source rule's only input. Unknown strings still fall back to plan_set. */
+export function evidenceSource(raw: unknown): ParserFieldEvidence["source"] {
+  const s = String(raw ?? "").toLowerCase().trim().replace(/[\s-]+/g, "_");
+  return (EVIDENCE_SOURCES as readonly string[]).includes(s) ? (s as ParserFieldEvidence["source"]) : "plan_set";
+}
+
+const UNCERTAINTY_KINDS = new Set<ParserExtractionUncertainty["kind"]>(["unreadable", "guessed", "inferred", "conflicting", "unconfirmed"]);
+
+export function normalizeUncertainties(raw: unknown): ParserExtractionUncertainty[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ParserExtractionUncertainty[] = [];
+  for (const u of raw) {
+    if (!u || typeof u !== "object") continue;
+    const rec = u as { field?: unknown; kind?: unknown; reason?: unknown };
+    const field = String(rec.field ?? "").trim();
+    if (!field) continue;
+    const kindRaw = String(rec.kind ?? "").toLowerCase().trim() as ParserExtractionUncertainty["kind"];
+    out.push({ field, kind: UNCERTAINTY_KINDS.has(kindRaw) ? kindRaw : "guessed", reason: String(rec.reason ?? "").trim().slice(0, 240) });
+  }
+  return out;
+}
+
+export function normalizeConflicts(raw: unknown): ParserExtractionConflict[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ParserExtractionConflict[] = [];
+  for (const c of raw) {
+    if (!c || typeof c !== "object") continue;
+    const rec = c as { field?: unknown; readings?: unknown; note?: unknown };
+    const field = String(rec.field ?? "").trim();
+    if (!field || !Array.isArray(rec.readings)) continue;
+    const readings: ParserExtractionConflict["readings"] = [];
+    for (const r of rec.readings) {
+      if (!r || typeof r !== "object") continue;
+      const rr = r as { value?: unknown; source?: unknown; sheet?: unknown; excerpt?: unknown };
+      if (rr.value == null || rr.value === "") continue;
+      const value = typeof rr.value === "number" ? rr.value : String(rr.value).trim().slice(0, 120);
+      readings.push({ value, source: evidenceSource(rr.source), sheet: rr.sheet ? String(rr.sheet).slice(0, 40) : undefined, excerpt: rr.excerpt ? String(rr.excerpt).slice(0, 200) : undefined });
+    }
+    if (readings.length < 2) continue; // one reading is not a disagreement
+    out.push({ field, readings, note: rec.note ? String(rec.note).trim().slice(0, 300) : undefined });
+  }
+  return out;
+}
+
+/**
+ * Deterministic resolutions after a pass, plus the record of which documents the pass was
+ * GIVEN (from the request — never from the model, which cannot know what else the page holds).
+ *   - moduleMake: when the plan set never printed a make (or the model was unsure of it), the
+ *     CEC equipment list resolves it from the model string — and only when every listing of
+ *     that model names ONE manufacturer. No match → the field stays as the model left it.
+ */
+export function finalizeExtraction(result: ParserLlmExtraction, documentsSeen: Array<ParserFieldEvidence["source"]>): ParserLlmExtraction {
+  const out: ParserLlmExtraction = { ...result, documentsSeen: [...documentsSeen] };
+  const resolutions: ParserExtractionResolution[] = [...(result.resolutions ?? [])];
+  const make = result.fields.moduleMake;
+  const model = result.fields.moduleModel;
+  const modelStr = model && typeof model.value === "string" ? model.value.trim() : "";
+  const makeUnsure = !make || make.value === "" || result.lowConfidenceFields.includes("moduleMake");
+  if (modelStr && makeUnsure) {
+    const hit = lookupCecModuleMake(modelStr);
+    if (hit) {
+      out.fields = {
+        ...result.fields,
+        moduleMake: { value: hit.manufacturer, confidence: 0.9, evidence: { source: model?.evidence?.source ?? "plan_set", sheet: "CEC equipment list", excerpt: `${modelStr} is listed under ${hit.manufacturer}`.slice(0, 200) } },
+      };
+      out.lowConfidenceFields = result.lowConfidenceFields.filter((f) => f !== "moduleMake");
+      if (result.uncertainties) out.uncertainties = result.uncertainties.filter((u) => u.field !== "moduleMake");
+      resolutions.push({ field: "moduleMake", value: hit.manufacturer, how: `CEC equipment list: module ${modelStr} is listed under ${hit.manufacturer}${make && make.value ? ` (the plan set reads "${String(make.value)}")` : " (no make printed on the plan set)"}` });
+    }
+  }
+  if (resolutions.length) out.resolutions = resolutions;
+  return out;
 }

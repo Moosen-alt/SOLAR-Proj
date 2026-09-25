@@ -247,6 +247,9 @@ export function certifiedNamesForMake(db: AppDb, kind: CecKind | "battery", make
 // In-memory inverter-spec cache so llm.ts stays DB-free (import direction:
 // llm → cecEquipment only). Primed at startup and after each successful sync.
 let inverterCache: Map<string, { manufacturer: string; model: string; powerW: number | null; outputCurrentA: number | null }> | null = null;
+// Module cache for the same reason: the parser resolves a missing/unsure moduleMake from
+// the model string ("Q.TRON BLK M-G2.C1+/AC" is listed under Hanwha Q CELLS) without a DB.
+let moduleCache: Array<{ manufacturer: string; model: string; key: string }> | null = null;
 
 export function primeCecCache(db: AppDb): void {
   try {
@@ -266,6 +269,38 @@ export function primeCecCache(db: AppDb): void {
   } catch {
     inverterCache = null;
   }
+  try {
+    const rows = db.query<{ manufacturer: string; model: string }>("SELECT manufacturer, model FROM cec_equipment WHERE kind = 'module'");
+    moduleCache = rows.map((r) => ({ manufacturer: r.manufacturer, model: r.model, key: compact(r.model) }));
+  } catch {
+    moduleCache = null;
+  }
+}
+
+/**
+ * The manufacturer the CEC list files a MODULE model under — or null. Used by the parser
+ * to resolve a make the plan set never printed ("(26) Q.TRON BLK M-G2.C1+/AC - 430W").
+ * Exact (punctuation-insensitive) first; otherwise the listing must START with the model at
+ * a token boundary; a hit counts only when every matching listing agrees on ONE manufacturer
+ * (a shared prefix across two makers is not an answer). Never guesses: null on ambiguity.
+ */
+export function lookupCecModuleMake(model: string): { manufacturer: string; listedModel: string } | null {
+  if (!moduleCache || !moduleCache.length) return null;
+  const want = compact(model);
+  if (want.length < 4) return null;
+  const wantNorm = String(model ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  let pool = moduleCache.filter((m) => m.key === want);
+  if (!pool.length) {
+    pool = moduleCache.filter((m) => {
+      const t = m.model.toLowerCase().replace(/\s+/g, " ").trim();
+      if (!t.startsWith(wantNorm)) return false;
+      const next = t.charAt(wantNorm.length);
+      return !next || !/[a-z0-9]/.test(next);
+    });
+  }
+  const makers = [...new Set(pool.map((m) => m.manufacturer))];
+  if (makers.length !== 1) return null;
+  return { manufacturer: makers[0], listedModel: pool[0].model };
 }
 
 /** Offline inverter lookup from the primed CEC cache. null when unprimed/empty/miss. */

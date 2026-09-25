@@ -279,6 +279,9 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <!-- The review-list rules (meter cross-check, notes, resolution, scope callout, locates)
+       live in their own DOM-free file so the backend unit test loads the SAME code. -->
+  <script src="parser-review.js?v=1"></script>
 </head>
 
 <body>
@@ -819,6 +822,12 @@ const state = {
   llmSnapshot:{},
   llmEvidence:[],
   llmAssist:null,
+  // One entry per smart-read pass: which documents it was GIVEN and what it answered.
+  // The review list is built from these once, at the end of the parse (parser-review.js),
+  // instead of each pass pushing its own "Notes:" / "Not fully sure" lines as it lands.
+  passes:[],
+  reviewItems:null,
+  passNotes:null,
   electricalScope:null,
   // Which company the plan set points at (backend/src/clientMatch.ts), and whether a
   // human has agreed with it. `clientConfirmed` starts true so an operator who never
@@ -2641,21 +2650,11 @@ function parseMeterPhotoData(meterDoc){
   return {meterRaw: serials[0] || '', text};
 }
 
+// ONE predicate for the meter cross-check (parser-review.js). The regex paths below
+// still call it early; runParse recomputes the verdict ONCE at the end from whatever
+// the final planMeterNumber / ubMeterNumber fields hold, after every pass has landed.
 function compareMeters(planMeter, ubMeter){
-  const a = digits(planMeter);
-  const b = digits(ubMeter);
-  if (!a && !b) return 'No meter numbers parsed.';
-  if (a && !b) return 'Plan meter parsed. UB or meter photo meter missing.';
-  if (!a && b) return 'UB or meter photo meter parsed. Plan-set meter missing.';
-  if (a === b) return 'DIGITS MATCH';
-  if (a.endsWith(b) || b.endsWith(a)) return 'LIKELY MATCH. One meter value appears truncated.';
-
-  // Handles OCR suffix issue where PGE meter 24787072IN was previously read as 247870721.
-  if ((b.length === a.length + 1 && b.startsWith(a)) || (a.length === b.length + 1 && a.startsWith(b))) {
-    return 'LIKELY MATCH. Extra trailing digit appears to be OCR suffix noise.';
-  }
-
-  return `MISMATCH. Plan ${planMeter} vs UB/photo ${ubMeter}.`;
+  return ParserReview.compareMeters(planMeter, ubMeter);
 }
 
 function fillProjectFields(plan){
@@ -3172,6 +3171,14 @@ function buildCriticalWarnings(plan, ub){
   if (state.utilityPriorityFlags.length){
     blocks.push('UTILITY / ELECTRICAL');
     state.utilityPriorityFlags.forEach((x,i)=>blocks.push(`${i+1}. ${x}`));
+    blocks.push('');
+  }
+  // The review list: what the smart read settled and how (RESOLVED), what it read but
+  // cannot vouch for (UNSURE: value + evidence + why), what nothing in the packet states
+  // (MISSING: who supplies it) and what the documents disagree on (CONFLICTS) — with
+  // counts, so "9 items" never again means nine bare "not fully sure" lines.
+  if (state.reviewItems){
+    ParserReview.formatReviewList(state.reviewItems).forEach(l => blocks.push(l));
     blocks.push('');
   }
   if (state.reviewFlags.length){
@@ -3880,12 +3887,14 @@ function applyExtraction(result, applied, opts = {}){
     let targets = LLM_FIELD_TARGETS[fieldId];
     if (fieldId === 'meter'){
       // Keep the plan-set meter and the photographed/bill meter INDEPENDENT so
-      // compareMeters() can truly cross-validate them. A vision pass reads the
-      // real meter/bill image → canonical `meter` + `ubMeterNumber`; the text
-      // pass reads the plan set's stated meter → `planMeterNumber`. Previously a
-      // single value was written to BOTH, so the cross-check always "matched"
-      // and a misread photo silently overwrote the plan-set value.
-      targets = opts.vision ? ['meter', 'ubMeterNumber'] : ['planMeterNumber'];
+      // compareMeters() can truly cross-validate them. The reading's OWN provenance
+      // (evidence.source) decides the field: a meter read off the bill or the photo is
+      // the UB/photo meter even when the TEXT pass read it (a PDF bill goes through the
+      // text pass, not vision), and a plan-set meter is the plan meter whichever pass
+      // read it. Routing by pass alone put a bill meter into planMeterNumber, left
+      // ubMeterNumber empty, and the verdict read "UB or meter photo meter missing"
+      // under a note saying the bill and photo matched.
+      targets = ParserReview.meterTargets({ source: entry.evidence && entry.evidence.source, vision: !!opts.vision, docsGiven: opts.docsGiven });
     }
     // Same-name fallback: LLM_FIELD_TARGETS only maps the ~24 fields whose DOM id
     // differs from the canonical key. Everything else the LLM harvests (the whole
@@ -3907,18 +3916,52 @@ function applyExtraction(result, applied, opts = {}){
       }
     });
   });
-  (result.lowConfidenceFields || []).forEach(f => state.reviewFlags.push(`Not fully sure on "${f}" — please double-check.`));
-  if (result.notes) state.reviewFlags.push(`Notes: ${result.notes}`);
-  // Record WHAT THE PLAN SET SAID about the installer, verbatim. This is the evidence
-  // trail only — the decision about which client it is belongs to the resolver, whose
-  // answer lands in #clientMatchPanel. Keep this a statement of fact: two different
-  // sentences telling the coordinator what to do about the same company is how a
-  // pre-selected client and an "onboard this one" instruction end up on screen together.
-  if (state.suggestedClient && state.suggestedClient.contractorCompany){
-    const s = state.suggestedClient;
-    const bits = [s.contractorCompany, s.contractorCcb ? `CCB ${s.contractorCcb}` : '', s.contractorElectricalLicense ? `Elec ${s.contractorElectricalLicense}` : '', s.contractorMetroCityLicense ? `Metro/City ${s.contractorMetroCityLicense}` : '', s.contractorSupervisor ? `Supervisor ${s.contractorSupervisor}` : '', s.contractorElectricianLicense ? `Electrician Lic ${s.contractorElectricianLicense}` : '', s.contractorPhone, s.contractorEmail].filter(Boolean).join(' | ');
-    state.reviewFlags.push(`Plan-set installer read from the title block: ${bits}`);
-  }
+  // The pass's verdicts (low-confidence fields, notes, structured conflicts) are NOT
+  // pushed as flags here. They are kept per pass, with the documents the pass was
+  // given, and resolved ONCE at the end of runParse (buildReviewItems) — so a value
+  // the letter states outright is RESOLVED, not "not fully sure", and a pass that never
+  // saw the bill cannot tell the operator no bill was supplied.
+  state.passes.push({
+    kind: opts.vision ? 'vision' : 'text',
+    label: opts.vision ? 'bill / meter photos' : 'plan set text',
+    docsGiven: opts.docsGiven || [],
+    response: result,
+  });
+}
+
+// Record WHAT THE PLAN SET SAID about the installer, verbatim. This is the evidence
+// trail only — the decision about which client it is belongs to the resolver, whose
+// answer lands in #clientMatchPanel. Keep this a statement of fact: two different
+// sentences telling the coordinator what to do about the same company is how a
+// pre-selected client and an "onboard this one" instruction end up on screen together.
+// The licence label follows the project's STATE (HIC in MA/PA, ROC in AZ, CSLB in CA,
+// CCB in OR…) and 'N/A' fields are dropped — an MA title block is not an Oregon one.
+function installerFlagLine(){
+  if (!state.suggestedClient || !state.suggestedClient.contractorCompany) return '';
+  return ParserReview.installerLine(state.suggestedClient, getVal('state'));
+}
+
+// Turn the passes into the review list — once, after every pass and fallback has landed.
+// Resolution is deterministic (parser-review.js) and never invents: a value the letter or
+// plan set states outright is RESOLVED with its evidence; a conflict the sealed-source or
+// account-holder rule settles is RESOLVED with the rule named; the rest stays UNSURE
+// (value + evidence + why), MISSING (who supplies it) or a CONFLICT naming every reading.
+// Notes become one attributed section per pass, and a pass that was not given a document
+// cannot claim it was not supplied — the page knows what is attached.
+function buildReviewItems(){
+  const attached = [
+    state.planFile ? 'plan_set' : '',
+    state.ubFile ? 'utility_bill' : '',
+    state.meterFile ? 'meter_photo' : '',
+    state.structuralLetterFile ? 'structural_letter' : '',
+  ].filter(Boolean);
+  const passes = state.passes || [];
+  const planText = state.planDoc?.text || '';
+  state.reviewItems = (passes.length || planText) ? ParserReview.resolveReviewItems({ passes, attached, planText }) : null;
+  state.passNotes = ParserReview.mergeNotes(passes.map(p => ({ label: p.label, docsGiven: p.docsGiven, notes: p.response && p.response.notes })), attached);
+  (state.passNotes.sections || []).forEach(s => pushFlag(s));
+  const installer = installerFlagLine();
+  if (installer) pushFlag(installer);
 }
 
 // Build a readable evidence summary (field = value — [source/sheet] "excerpt").
@@ -3958,9 +4001,9 @@ async function runLlmAssist(){
   if (visionImages.length){
     setProgress(null, 'Reading the bill & meter photos…');
     try {
-      const v = await postJson('/api/parser/vision-extract', { images: visionImages, defaultState: getVal('state') || 'OR' });
+      const v = await postJson('/api/parser/vision-extract', { images: visionImages, defaultState: getVal('state') || undefined });
       if (v.provider === 'stub'){ authOff = true; }
-      else { applyExtraction(v, applied, { vision: true }); ranAny = true; }
+      else { applyExtraction(v, applied, { vision: true, docsGiven: visionImages.map(i => i.kind) }); ranAny = true; }
     } catch (e){
       if (e.status === 502) state.reviewFlags.push(`Smart read (photos): ${e.message}`);
       else state.reviewFlags.push(`Smart read of photos unavailable: ${e.message}. Falling back to text scan for those fields.`);
@@ -3971,10 +4014,11 @@ async function runLlmAssist(){
   if (haveText){
     setProgress(null, 'Reading the plan set…');
     try {
-      const t = await postJson('/api/parser/llm-extract', { planText, utilityBillText, meterText, structuralLetterText, defaultState: getVal('state') || 'OR' });
+      const t = await postJson('/api/parser/llm-extract', { planText, utilityBillText, meterText, structuralLetterText, defaultState: getVal('state') || undefined });
       if (t.provider === 'stub'){ authOff = true; }
       else {
-        applyExtraction(t, applied, { vision: false });
+        const docsGiven = [planText.trim() ? 'plan_set' : '', utilityBillText.trim() ? 'utility_bill' : '', meterText.trim() ? 'meter_photo' : '', structuralLetterText.trim() ? 'structural_letter' : ''].filter(Boolean);
+        applyExtraction(t, applied, { vision: false, docsGiven });
         // WHICH COMPANY IS THIS? The backend read the title-block installer off this same
         // response and said which client it points at. Only the TEXT pass carries it —
         // the vision pass sees bill/meter photos, not the plan set.
@@ -4154,6 +4198,9 @@ async function runParse(){
   state.llmAssist = null;
   state.llmSnapshot = {};
   state.llmEvidence = [];
+  state.passes = [];
+  state.reviewItems = null;
+  state.passNotes = null;
   state.suggestedClient = null;
   state.clientResolution = null;
   state.clientConfirmed = true;
@@ -4228,6 +4275,12 @@ async function runParse(){
   // number it could not read), filling just the empty fields. Skipped entirely on the
   // fast path, so a fully AI-read packet never pays the OCR cost.
   await ocrFallbackIfNeeded(ub, meterPhoto);
+
+  // ONE meter verdict, computed once from whatever the final fields hold. The early
+  // regex-path verdict was never recomputed after the smart-read passes landed, so the
+  // box said "UB or meter photo meter missing" while both fields held the same digits.
+  setVal('ubMeterVerification', compareMeters(getVal('planMeterNumber'), getVal('ubMeterNumber')));
+  buildReviewItems();
 
   const finalPlan = {...plan};
   Object.keys(finalPlan).forEach(k => { if ($(k)) finalPlan[k] = getVal(k); });
@@ -4540,6 +4593,13 @@ function buildScopeEvidenceV40(plan, classified){
     /\bSERVICE\s+RELOCATION\b[^\n]{0,220}/i
   ], {preferred:['site','sld','cover'], confidence:0.72}));
 
+  // Pole work is digging: for a utility without an operator SOP it is one of the four
+  // excavation signals (trench / underground / service relocation / pole) that call 811.
+  add(findEvidenceV40(classified, 'POLE', 'Utility pole work', [
+    /\b(?:NEW|SET|REPLACE|INSTALL)\s+(?:A\s+)?(?:UTILITY\s+|SERVICE\s+|POWER\s+)?POLE\b[^\n]{0,160}/i,
+    /\bPOLE[-\s]MOUNTED\s+(?:METER|SERVICE|DISCONNECT|PANEL)\b[^\n]{0,160}/i
+  ], {preferred:['site','sld'], confidence:0.70}));
+
   return allEvidence;
 }
 
@@ -4571,9 +4631,24 @@ function normalizeRuleUtilityV40(utilityText){
 function detectElectricalScope(plan){
   const rawText = normalizeText(state.planDoc?.text || '');
   const classified = classifyPlanSheetsV40(state.planDoc);
-  const evidence = buildScopeEvidenceV40(plan, classified);
-  const utilityNorm = normalizeRuleUtilityV40(`${plan.utility || getVal('utility') || ''} ${rawText.slice(0,6000)}`);
-  const rule = SCOPE_UTILITY_RULES_V40[utilityNorm] || SCOPE_UTILITY_RULES_V40.UNKNOWN;
+  const rawEvidence = buildScopeEvidenceV40(plan, classified);
+  // TAP vs BREAKER: scope comes from the plan's own interconnection callout, quoted. A
+  // general note that lists the NEC article for each tap method ("5. FEEDER TAP
+  // INTERCONNECTION (LOADSIDE) ACCORDING TO NEC 705.12(B)(1)") or an alternative-option
+  // line never sets scope — that is how a load-side-breaker job read as a supply-side tap.
+  const tapFilter = ParserReview.filterTapEvidence(rawEvidence.filter(e => e.type === 'TAP'), rawEvidence.filter(e => e.type === 'BREAKER'));
+  const evidence = rawEvidence.filter(e => e.type !== 'TAP').concat(tapFilter.kept);
+  // IDENTIFIED is not UNKNOWN. PGE and Pacific Power carry the operator's SOP rule tables;
+  // any other utility the documents name (Eversource, Oncor, SRP…) is identified with no
+  // utility-specific rules on file — generic rules apply and the words say so. Only when
+  // nothing named a utility is it "not identified".
+  const utilityId = ParserReview.identifyUtility(plan.utility || getVal('utility') || '', rawText);
+  const utilityNorm = utilityId.norm;
+  const rule = utilityNorm === 'OTHER'
+    ? { ...SCOPE_UTILITY_RULES_V40.UNKNOWN,
+        label: `${utilityId.name} (identified; no utility-specific D/R rules on file — generic rules applied)`,
+        notes: `${utilityId.name} identified from the documents. No utility-specific D/R or locate SOP is on file, so generic rules were applied — confirm with ${utilityId.name} before scheduling.` }
+    : (SCOPE_UTILITY_RULES_V40[utilityNorm] || SCOPE_UTILITY_RULES_V40.UNKNOWN);
 
   const flags = {
     mpu: hasScopeEvidenceV40(evidence, 'MPU'),
@@ -4587,7 +4662,8 @@ function detectElectricalScope(plan){
     loadBreaker: hasScopeEvidenceV40(evidence, 'BREAKER'),
     trench: hasScopeEvidenceV40(evidence, 'TRENCH'),
     underground: hasScopeEvidenceV40(evidence, 'UNDERGROUND'),
-    serviceRelocation: hasScopeEvidenceV40(evidence, 'SERVICE_RELOCATION')
+    serviceRelocation: hasScopeEvidenceV40(evidence, 'SERVICE_RELOCATION'),
+    pole: hasScopeEvidenceV40(evidence, 'POLE')
   };
 
   flags.meterWork = flags.meterCollar || flags.meterBase;
@@ -4616,11 +4692,13 @@ function detectElectricalScope(plan){
   if (flags.trench) nonBreakerTypes.push('TRENCH');
   if (flags.underground) nonBreakerTypes.push('UNDERGROUND');
   if (flags.serviceRelocation) nonBreakerTypes.push('SERVICE_RELOCATION');
+  if (flags.pole) nonBreakerTypes.push('POLE');
 
   const isBreakerOnlyInterconnect = flags.loadBreaker && nonBreakerTypes.length === 0;
-  flags.locatesNeeded = nonBreakerTypes.some(t => rule.locatesRequired.includes(t));
-  if (!flags.locatesNeeded && nonBreakerTypes.length > 0) flags.locatesNeeded = true;
-  if (isBreakerOnlyInterconnect) flags.locatesNeeded = false;
+  // 811 is for digging. The operator's PGE / Pacific Power SOP lists are applied exactly as
+  // written; for a utility without an SOP, locates fire on excavation evidence only.
+  const locates = ParserReview.locatesDecision({ sop: utilityId.sop, ruleLocatesRequired: rule.locatesRequired, nonBreakerTypes, breakerOnly: isBreakerOnlyInterconnect, evidence });
+  flags.locatesNeeded = locates.needed;
 
   flags.privateLocatesNeeded = flags.locatesNeeded && /PRIVATE\s+LOCATE|PRIVATE\s+LOCATES|PRIVATE\s+UTILITY\s+LOCATE|SEPTIC|IRRIGATION|SPRINKLER|PROPANE|GAS\s+LINE|DRAIN\s+LINE/i.test(rawText);
 
@@ -4638,7 +4716,8 @@ function detectElectricalScope(plan){
       PARTIAL_HOME_BACKUP:'Partial-home backup battery scope detected',
       TRENCH:'Trenching or ground disturbance detected',
       UNDERGROUND:'New underground conduit/feed/run detected',
-      SERVICE_RELOCATION:'Meter/service relocation detected'
+      SERVICE_RELOCATION:'Meter/service relocation detected',
+      POLE:'Utility pole work detected'
     };
     locateHits.push({type:t, label:labels[t] || `${t} detected`, evidence:ev});
   });
@@ -4668,11 +4747,14 @@ function detectElectricalScope(plan){
     if (flags.meterBase) addDr('METER_BASE', 'Pac Power: meter/service equipment replacement should be treated as D/R/manual utility review.');
     if (flags.partialHomeBackup) info.push('Pac Power: partial-home backup detected. Per PM SOP, partial-home backup does not trigger D/R by itself.');
   } else {
+    const who = utilityId.identified ? `${utilityId.name} identified; no utility-specific D/R rules on file.` : 'Utility is not confirmed.';
     if (flags.fullHomeBackup || flags.meterCollar || flags.meterBase || flags.fsu || flags.psu){
-      addDr('UNKNOWN_UTILITY', 'Utility is not confirmed. D/R manual review required for detected meter/service/full-backup scope.');
+      addDr('UNKNOWN_UTILITY', `${who} D/R manual review required for detected meter/service/full-backup scope.`);
     }
-    if (flags.mpu) info.push('Utility unknown: MPU detected. Confirm utility-specific D/R path before scheduling.');
+    if (flags.mpu) info.push(`${who} MPU detected — confirm ${utilityId.identified ? utilityId.name + "'s" : 'the utility-specific'} D/R path before scheduling.`);
+    if (utilityId.identified && nonBreakerTypes.length > 0) info.push(`${utilityId.name} identified; no utility-specific D/R / locate rules on file — generic rules applied.`);
   }
+  tapFilter.dropped.forEach(d => info.push(`Tap mention ignored (p.${d.evidence.page}${d.evidence.sheet ? ' ' + d.evidence.sheet : ''}): "${clean(d.evidence.text).slice(0, 60)}" — ${d.why}.`));
 
   const meterSpotNeeded = !!(dr && rule.meterSpotRequiredWhenDr);
   const conflicts = [];
@@ -4682,8 +4764,11 @@ function detectElectricalScope(plan){
   if (flags.fullHomeBackup && flags.partialHomeBackup){
     conflicts.push('Both full-home and partial-home backup language was detected. PM must confirm actual backup scope.');
   }
-  if (utilityNorm === 'UNKNOWN' && nonBreakerTypes.length > 0){
-    conflicts.push('Utility was not confidently identified while non-breaker scope was detected. Confirm utility before relying on D/R logic.');
+  if (!utilityId.identified && nonBreakerTypes.length > 0){
+    conflicts.push('Utility was not identified by any document while non-breaker scope was detected. Confirm utility before relying on D/R logic.');
+  }
+  if (utilityId.identified && !utilityId.sop && nonBreakerTypes.length > 0){
+    pushFlag(`${utilityId.name} identified; no utility-specific D/R / locate rules on file — generic rules applied to: ${nonBreakerTypes.join(', ')}.`);
   }
   if (!classified.some(p => p.primary === 'sld') && (flags.mpu || flags.fsu || flags.psu || flags.meterCollar || flags.meterBase || flags.lineSideTap)){
     conflicts.push('No high-confidence SLD page was classified. Evidence came from cover/site/spec text, so PM should verify the SLD manually.');
@@ -4709,7 +4794,7 @@ function detectElectricalScope(plan){
   if (flags.partialHomeBackup) work.push('Partial-home backup battery scope');
   if (flags.lineSideTap) work.push(flags.tapType || 'Tap interconnection');
   if (flags.loadBreaker && !flags.lineSideTap) work.push('Breaker interconnection');
-  if (flags.trench || flags.underground || flags.serviceRelocation) work.push('Ground disturbance / underground / service relocation scope');
+  if (flags.trench || flags.underground || flags.serviceRelocation || flags.pole) work.push('Ground disturbance / underground / service relocation / pole scope');
   if (flags.locatesNeeded) work.push('Utility locates required');
   if (flags.privateLocatesNeeded) work.push('Private locates may be needed');
   if (flags.acDisconnect) work.push('AC disconnect');
@@ -4719,7 +4804,9 @@ function detectElectricalScope(plan){
   if (flags.fsu || flags.psu) pushPriority(`${rule.label}: FSU/PSU detected. D/R coordination and locates required.`);
   if (flags.meterCollar) pushPriority(`${rule.label}: Meter collar / MMD / ConnectDER detected. D/R/manual utility review, locates, and meter spot required when D/R applies.`);
   if (flags.meterBase) pushPriority(`${rule.label}: Meter base replacement detected. Confirm D/R path and meter spot.`);
-  if (flags.locatesNeeded) pushPriority('Utility locates are required because the scope is not breaker-only. Submit 811/utility locate request before scheduling.');
+  if (flags.locatesNeeded) pushPriority(utilityId.sop
+    ? 'Utility locates are required because the scope is not breaker-only. Submit 811/utility locate request before scheduling.'
+    : `Utility locates (811) are required — ${locates.basis}: ${locates.quotes.join('; ')}. Submit the locate request before scheduling.`);
   if (meterSpotNeeded) pushPriority('Meter spot needed because D/R is required.');
 
   const decision = {
@@ -4734,7 +4821,7 @@ function detectElectricalScope(plan){
     ruleNotes: rule.notes
   };
 
-  return {flags, work, dr, reasons, info, evidence, classified, conflicts, decision, meterSpotNeeded, confidence, confidenceScore};
+  return {flags, work, dr, reasons, info, evidence, classified, conflicts, decision, meterSpotNeeded, confidence, confidenceScore, utilityId, locates, tapIgnored: tapFilter.dropped};
 }
 
 function updateEvidenceEngineUiV40(scope){

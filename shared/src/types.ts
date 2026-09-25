@@ -2362,7 +2362,10 @@ export interface PublicProjectStatusPayload {
 
 /** Where an extracted value came from — shown to the PM to verify accuracy. */
 export interface ParserFieldEvidence {
-  source: "plan_set" | "utility_bill" | "meter_photo";
+  /** `structural_letter` carries the sealed-source rule: when a letter and the plan set
+   *  disagree on a structural value, the letter governs — so its provenance must survive
+   *  (it used to be coerced to plan_set on receipt). */
+  source: "plan_set" | "utility_bill" | "meter_photo" | "structural_letter";
   /** Sheet/page hint, e.g. "PV-2" or "Cover". */
   sheet?: string;
   /** Short verbatim excerpt the value was read from. */
@@ -2390,6 +2393,37 @@ export interface ParserLlmExtraction {
   lowConfidenceFields: string[];
   /** Short human-readable notes about anything ambiguous or worth verifying. */
   notes: string;
+  /** Which documents this pass was GIVEN (from the request, not the model). The parser
+   *  page attributes notes by pass and refuses a pass's claim that a document it was
+   *  never handed was "not supplied". Absent on older backends. */
+  documentsSeen?: Array<ParserFieldEvidence["source"]>;
+  /** Cross-document disagreements the model found, one per field with every reading, so
+   *  the page can resolve by rule (sealed letter over plan set; bill account holder over
+   *  title block) or show a CONFLICT naming each reading. Absent on older backends. */
+  conflicts?: ParserExtractionConflict[];
+  /** WHY each lowConfidenceFields entry is uncertain. `unconfirmed` = printed once and not
+   *  corroborated — the page treats that as STATED; the other kinds stay unsure. */
+  uncertainties?: ParserExtractionUncertainty[];
+  /** Deterministic server-side resolutions (no model): e.g. moduleMake from the CEC list. */
+  resolutions?: ParserExtractionResolution[];
+}
+
+export interface ParserExtractionConflict {
+  field: string;
+  readings: Array<{ value: string | number; source: ParserFieldEvidence["source"]; sheet?: string; excerpt?: string }>;
+  note?: string;
+}
+
+export interface ParserExtractionUncertainty {
+  field: string;
+  kind: "unreadable" | "guessed" | "inferred" | "conflicting" | "unconfirmed";
+  reason: string;
+}
+
+export interface ParserExtractionResolution {
+  field: string;
+  value: string | number;
+  how: string;
 }
 
 // ===========================================================================
