@@ -707,9 +707,15 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   // "(ASCE 7-16 FIG 7.2-1)"), and prose connects with "of"/"is" ("ground snow load of 36 psf").
   // A spaced dash separates too ("GROUND SNOW LOAD - 36 PSF"), but only with a unit, and — as a dash
   // also joins list items — only where the run's layout agrees the value is this label's.
-  const groundLabel = new RegExp(String.raw`\bground\s+snow(?:\s+loads?)?(?:\s*,?\s*p\s?g\b)?(?:\s*\((?![^)]*\basd\b)[^()]{0,40}\))?\s*(\(\s*asd\s*\)|,?\s*asd\b)?\s*(?:(of|is|${SEP})\s*)?(\d+(?:\.\d+)?)\s*(psf|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))?`, "gid");
+  // METRIC FIRST: "GROUND SNOW LOAD = 1.72 KPA (36 PSF)" states 36 psf; the kPa number is skipped, and
+  // a bare number after the separator that carries ANOTHER unit ("= 1.72 KPA") is never a psf value
+  // (it read as Pg 1.72, a BLOCKER).
+  const metricFirst = String.raw`(?:\d+(?:\.\d+)?\s*(?:kpa|kn\s*\/\s*m(?:2|²|\^2))\s*[(\[]\s*)?`;
+  const otherUnitAt = (end: number): boolean => /^\s*(?:kpa|kn\s*\/\s*m|kg\s*\/\s*m|pa\b|psi\b|mph\b)/i.test(text.slice(end, end + 12));
+  const groundLabel = new RegExp(String.raw`\bground\s+snow(?:\s+loads?)?(?:\s*,?\s*p\s?g\b)?(?:\s*\((?![^)]*\basd\b)[^()]{0,40}\))?\s*(\(\s*asd\s*\)|,?\s*asd\b)?\s*(?:(of|is|${SEP})\s*)?${metricFirst}(\d+(?:\.\d+)?)\s*(psf|lbs?\/?(?:sq\.?\s*ft|ft2|ft²))?`, "gid");
   while ((m = groundLabel.exec(text))) {
     if (!(m[2] && /[:=]/.test(m[2])) && !m[4]) continue;
+    if (!m[4] && otherUnitAt(m.indices![3][1])) continue;
     if ((!m[2] || isDashSep(m[2])) && labelFirstIsNextLabels(m, 3)) continue;
     push("groundSnowPsf", groundQual(m[1], m), m[3], m);
   }
@@ -726,6 +732,7 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
   const groundParen = new RegExp(String.raw`\bsnow\s+loads?\s*\(\s*ground\s*\)\s*(?:(${SEP})\s*)?(\d+(?:\.\d+)?)\s*(psf)?`, "gid");
   while ((m = groundParen.exec(text))) {
     if (!(m[1] && /[:=]/.test(m[1])) && !m[3]) continue;
+    if (!m[3] && otherUnitAt(m.indices![2][1])) continue;
     if ((!m[1] || isDashSep(m[1])) && labelFirstIsNextLabels(m, 2)) continue;
     push("groundSnowPsf", groundQual(undefined, m), m[2], m);
   }
@@ -737,10 +744,10 @@ function extractSnow(text: string, source: string, out: StatedDesignCriterion[],
     /^\s*(?:[×*·⋅]|x(?=\s*[\d(A-Za-z])|\(\s*\d|C[etsa]\b|Is\b)/i.test(text.slice(end, end + 12));
   // Pg symbol: "pg 28.00 psf", "p g = 28.00" (a PDF split the symbol), "Pg(asd) 20 psf".
   // "pg 5" is a page reference — the symbol needs = or a psf unit to count.
-  const pgSymbol = new RegExp(String.raw`\bp\s?g\b\s*(\(\s*asd\s*\)|,\s*asd\b|\s+asd\b)?\s*(?:(${SEP})\s*)?(\d+(?:\.\d+)?)\s*(psf)?`, "gid");
+  const pgSymbol = new RegExp(String.raw`\bp\s?g\b\s*(\(\s*asd\s*\)|,\s*asd\b|\s+asd\b)?\s*(?:(${SEP})\s*)?${metricFirst}(\d+(?:\.\d+)?)\s*(psf)?`, "gid");
   while ((m = pgSymbol.exec(text))) {
     if (!(m[2] && /[:=]/.test(m[2])) && !m[4]) continue;
-    if (!m[4] && coefficientAt(m.indices![3][1])) continue;
+    if (!m[4] && (coefficientAt(m.indices![3][1]) || otherUnitAt(m.indices![3][1]))) continue;
     // "36 PSF Pg 25 PSF ROOF SNOW": in a value-first list the 25 is the next label's, as for "GROUND SNOW".
     if ((!m[2] || isDashSep(m[2])) && labelFirstIsNextLabels(m, 3)) continue;
     push("groundSnowPsf", groundQual(m[1], m), m[3], m);

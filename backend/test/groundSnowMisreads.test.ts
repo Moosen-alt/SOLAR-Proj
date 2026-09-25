@@ -232,6 +232,13 @@ check("MUST-EXCLUDE a bare kPa value is never a psf Pg: 'GROUND SNOW LOAD = 1.72
   assert.equal(j.says, "none", show(j));
 });
 blocks16("GROUND SNOW LOAD = 0.77 KPA (16 PSF)");
+reads36("SNOW: Pg = 1.72 kPa (36 psf)");
+for (const t of ["SNOW: Pg = 1.72 kPa", "SNOW LOAD (GROUND) = 1.72 KPA"]) {
+  check(`MUST-EXCLUDE a bare kPa value is never a psf Pg: ${JSON.stringify(t)}`, () => {
+    const j = judge(t);
+    assert.equal(j.says, "none", show(j));
+  });
+}
 
 if (failures) {
   console.error(`\n${failures} ground-snow misread check(s) FAILED`);
