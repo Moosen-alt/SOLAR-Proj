@@ -204,7 +204,9 @@
     return shared.length >= 1 && ta[ta.length - 1] === tb[tb.length - 1];
   }
 
-  const MULTI_UNIT = /\bDUPLEX\b|\bTRIPLEX\b|\bFOURPLEX\b|\bMULTI[-\s]?FAMILY\b|\bMULTI[-\s]?UNIT\b|\bAPARTMENTS?\b|\bCONDO(?:MINIUM)?S?\b|\bTOWNHO(?:ME|USE)S?\b|\b(?:2|3|4|TWO|THREE|FOUR)[-\s]?(?:UNIT|FAMILY)\b|\bUNITS?\s*[:#]?\s*[2-9]\b|\bR-?2\b|\bADU\b|\bACCESSORY\s+DWELLING\b/i;
+  // "2 Unit Depth" in a racking calc is not a two-unit building: the count-word forms must
+  // name a dwelling/structure or use the plural "UNITS".
+  const MULTI_UNIT = /\bDUPLEX\b|\bTRIPLEX\b|\bFOURPLEX\b|\bMULTI[-\s]?FAMILY\b|\bMULTI[-\s]?UNIT\b|\bAPARTMENTS?\b|\bCONDO(?:MINIUM)?S?\b|\bTOWNHO(?:ME|USE)S?\b|\b(?:2|3|4|TWO|THREE|FOUR)[-\s]?(?:UNIT|FAMILY)\s+(?:DWELLING|RESIDENCE|BUILDING|HOME|HOUSE|STRUCTURE|APARTMENT)\b|\b(?:2|3|4|TWO|THREE|FOUR)[-\s]?UNITS\b|\bUNITS?\s*[:#]\s*[2-9]\b|\bR-?2\s+OCCUPANCY\b|\bOCCUPANCY\s*(?:TYPE|GROUP)?\s*[:=]?\s*R-?2\b|\bADU\b|\bACCESSORY\s+DWELLING\b/i;
   const SINGLE_FAMILY = /\bRESIDENCE\b|\bSINGLE[-\s]FAMILY\b|\bR-?3\b|\bMAIN\s+HOUSE\b|\bSFR\b|\bSFD\b|\bDWELLING\b/i;
   const WORK_ON_OUTBUILDING = /(?:ARRAY|MODULES?|\bPV\b|PANELS?)\s+(?:ON|AT|OVER)\s+(?:THE\s+)?(?:\(?[NE]\)?\s+)?(?:DETACHED\s+|EXISTING\s+)?(?:GARAGE|SHED|BARN|CARPORT|ADU|WORKSHOP|OUTBUILDING|SHOP)\b|\bGROUND[-\s]MOUNT/i;
 
@@ -377,7 +379,7 @@
         done.add(field);
         continue;
       }
-      unsure.push({ field, value: r.value, evidence: r, why: reason || (kind ? `${kind} (model confidence ${Math.round(r.confidence * 100)}%)` : `model confidence ${Math.round(r.confidence * 100)}% — read from ${where(r)}${quote(r)} but not stated outright`) });
+      unsure.push({ field, value: r.value, evidence: r, why: reason || (kind ? `${kind} (model confidence ${Math.round(r.confidence * 100)}%)` : `the read flagged it at ${Math.round(r.confidence * 100)}% confidence without a reason — read from ${where(r)}${quote(r)}; verify against the document`) });
       done.add(field);
     }
 

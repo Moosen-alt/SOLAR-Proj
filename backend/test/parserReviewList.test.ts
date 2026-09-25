@@ -156,6 +156,10 @@ const visionPass = (fields: Record<string, unknown>) => ({ kind: "vision", label
   const duplex = PR.resolveReviewItems({ attached: ["plan_set"], planText: "JANE SAMPLE RESIDENCE  DUPLEX - 2 UNITS  100 EXAMPLE RD", passes: [textPass({ dwellingUnits: field(1, "plan_set", "RESIDENCE", 0.5) }, ["dwellingUnits"])] });
   assert.ok(!duplex.resolved.some((x: { field: string }) => x.field === "dwellingUnits"), "dwellingUnits must not resolve to 1 on a duplex");
   assert.ok(duplex.unsure.some((x: { field: string }) => x.field === "dwellingUnits"));
+  assert.equal(PR.singleFamilyBasis("JANE SAMPLE RESIDENCE  TWO-FAMILY DWELLING"), null);
+  assert.equal(PR.singleFamilyBasis("JANE SAMPLE RESIDENCE  OCCUPANCY: R-2"), null);
+  // a racking calculation's "2 Unit Depth" is not a two-unit building
+  assert.equal(PR.singleFamilyBasis("JANE SAMPLE RESIDENCE  Unit Depth x Unit Width x Unit Depth / 2 Unit Depth = 7.60 in."), "RESIDENCE");
   // an array drawn on a detached garage: numberOfBuildings stays open
   const garage = PR.resolveReviewItems({ attached: ["plan_set"], planText: "JANE SAMPLE RESIDENCE  (N) 8 MODULES ON DETACHED GARAGE  MAIN HOUSE", passes: [textPass({ numberOfBuildings: field(1, "plan_set", "MAIN HOUSE", 0.5) }, ["numberOfBuildings"])] });
   assert.ok(!garage.resolved.some((x: { field: string }) => x.field === "numberOfBuildings"));
