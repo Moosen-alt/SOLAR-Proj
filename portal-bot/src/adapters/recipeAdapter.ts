@@ -70,15 +70,21 @@ import { reviewComparison, scrapeReviewScreen as scrapeReviewScreenShared, type 
 import { sweepEmptyRequiredControls, type EmptyRequired } from "../requiredControlSweep";
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
+import {
+  classifySubmissionText, finalSubmitEnvAllows, finalSubmitRefusals, isFinalSubmitControl, isPayFee,
+  isRecipeShapeValid, isSubmitIntent, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE,
+  type HealedStep, type RunApproval, type SubmissionOutcome,
+} from "../../../shared/src/portalSafety";
+import { commitField, installSettleProbe, waitForSettled } from "../settle";
 
 // How long the drift precheck waits for an async-rendered form to paint before concluding
 // the replay is on the wrong page. PowerClerk's Ameren form reports zero inputs for several
 // seconds after its URL loads; judging it on the first DOM read failed whole runs.
 const DRIFT_SETTLE_MS = Math.max(2000, Number(process.env.RECIPE_DRIFT_SETTLE_MS ?? 15000));
-import { detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
+import { redactCaptureText, readbackMatches, detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { performLogin } from "./loginFlow";
 import { chooseCorrectionForm, correctionFormSelector, isRefusal, scanProjectForms, type ProjectFormRow } from "./correctionForm";
-import { EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom, acaApplyEntryFrom, advanceSignatureOf } from "./autoLearnAdapter";
+import { type ExtractedField, EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom, acaApplyEntryFrom, advanceSignatureOf } from "./autoLearnAdapter";
 import { tagUploadControls } from "./autoLearnAdapter";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
@@ -241,13 +247,38 @@ const UPLOAD_APPEAR_MS = 3000;
 const COVERED_CONTROL_WARNING =
   "a dropdown or date picker stayed open after two Escapes — the next control may have been driven while covered; verify it by eye";
 
+/** Where replay's diagnostic captures go: REPLAY_CAPTURE_DIR, else data/ under the cwd. */
+export function replayCaptureRoot(): string {
+  return process.env.REPLAY_CAPTURE_DIR ? path.resolve(process.env.REPLAY_CAPTURE_DIR) : path.join(process.cwd(), "data");
+}
+
+/** Retention: a capture folder keeps its newest CAPTURE_KEEP files. */
+const CAPTURE_KEEP = Math.max(20, Number(process.env.REPLAY_CAPTURE_KEEP ?? 400) || 400);
+function pruneCaptureDir(dir: string): void {
+  try {
+    const files = fs.readdirSync(dir).map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs })).filter((x) => Number.isFinite(x.t));
+    if (files.length <= CAPTURE_KEEP) return;
+    files.sort((a, b) => b.t - a.t);
+    for (const old of files.slice(CAPTURE_KEEP)) fs.rmSync(path.join(dir, old.f), { force: true, recursive: true });
+  } catch { /* retention is best-effort */ }
+}
+
+/** A click, press or goto the replay chokepoint (guardAction) refused. Its message is the named
+ *  reason; it is never a timeout, so the retry loop does not retry it. */
+export class ReplayGuardRefusal extends Error {
+  constructor(public readonly reason: string) {
+    super(`replay safety gate refused: ${reason}`);
+    this.name = "ReplayGuardRefusal";
+  }
+}
+
 export class RecipeAdapter extends BasePortalAdapter {
   portalName: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private page: any = null;
   /** Steps repaired mid-replay by label re-anchoring (reported to the backend,
    *  which patches the recipe and requires human re-verification). */
-  private healedSteps: Array<{ note: string; action: string; selector: RecipeSelector }> = [];
+  private healedSteps: HealedStep[] = [];
   /** Why the last self-heal attempt produced nothing. Empty when it healed or was never
    *  tried. Surfaced in the failure context so "the selector drifted" and "the control is
    *  present but unclickable" stop looking identical from the outside. */
@@ -339,15 +370,33 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  is. Anything unclassified stays in driftWarnings and stops the run being called clean,
    *  so a new warning that means "this filing is wrong" fails closed. */
   private agingNotes: string[] = [];
-  // Set true ONLY when the automation actually clicked an explicit isFinalSubmit step
-  // in autoSubmit mode and the portal accepted it (no challenge / no error).
+  // Set true the moment automation CLICKED the recipe's approved final submit — whatever the
+  // portal said afterwards (see finalSubmitOutcome). A click whose outcome is unknown is still a
+  // click: reporting it false invites a second one (the 09-02 double filing).
   finalSubmitClicked = false;
+  /** What the page said after the final-submit click, read ONLY through classifySubmissionText:
+   *  "accepted" needs positive evidence, a quiet page is "unknown". null = never clicked. */
+  finalSubmitOutcome: SubmissionOutcome | null = null;
+  /** Set before the final-submit click is attempted: a run clicks it at most once. */
+  private finalSubmitAttempted = false;
+  /** The recipe step index the loop is on — the final-submit gate's "is this the terminal step". */
+  private currentStepIdx = -1;
+  /** Every click/press/goto the chokepoint refused this run, in order. */
+  guardRefusals: string[] = [];
 
   constructor(
     private recipe: PortalRecipe,
     private fieldValues: Record<string, string>,
     private docsByType: Record<string, string>,
-    private options: { autoSubmit?: boolean; beforeUpload?: (docType: string, file: string) => void } = {},
+    private options: {
+      autoSubmit?: boolean;
+      beforeUpload?: (docType: string, file: string) => void;
+      /** A named person's approval of ONE run. Absent/null → the final submit is never clicked.
+       *  There is no standing per-recipe arm. */
+      runApproval?: RunApproval | null;
+      /** The run this replay IS. The approval must name exactly this run. */
+      runId?: string;
+    } = {},
   ) {
     super();
     this.portalName = `Recipe: ${recipe.ahj || recipe.utility || recipe.profileKey} (${recipe.portalPlatform || "portal"})`;
@@ -388,7 +437,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       this.opened = opened;
       this.page = opened.page;
       if (this.recipe.portalUrl) {
-        await this.page.goto(this.recipe.portalUrl);
+        await this.guardedGoto(this.recipe.portalUrl, "open the recipe's portal");
         await smartWait(this.page);
       }
 
@@ -430,9 +479,12 @@ export class RecipeAdapter extends BasePortalAdapter {
   }
   async stopAtReview(): Promise<PortalStepResult> {
     if (this.finalSubmitClicked) {
+      const outcome = this.finalSubmitOutcome ?? { verdict: "unknown" as const, evidence: null };
       return ok(
-        `${this.portalName}: approved auto-submit clicked the recorded final submit; no rejection banner or challenge appeared afterwards. CONFIRM the filing exists on the portal (list/record number) — a clean click is evidence, not proof. No fee payment was automated.`,
-        { finalSubmitClicked: true },
+        outcome.verdict === "accepted"
+          ? `${this.portalName}: the approved final submit was clicked and the portal confirmed it (${String(outcome.evidence ?? "").slice(0, 80)}). CONFIRM the filing exists on the portal (list/record number). No fee payment was automated.`
+          : `${this.portalName}: the approved final submit was CLICKED; outcome ${outcome.verdict.toUpperCase()} — human must verify on the portal before anything is clicked again.${outcome.evidence ? ` (${String(outcome.evidence).slice(0, 120)})` : ""} No fee payment was automated.`,
+        { finalSubmitClicked: true, finalSubmitOutcome: outcome },
       );
     }
     return ok(
@@ -512,8 +564,8 @@ export class RecipeAdapter extends BasePortalAdapter {
   async checkStatus(applicationNumbers: string[]): Promise<string | null> {
     if (!this.page || !this.recipe.portalUrl || !applicationNumbers.length) return null;
     try {
-      await this.page.goto(this.recipe.portalUrl);
-      await this.page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+      await this.guardedGoto(this.recipe.portalUrl, "read-only status check");
+      await this.settle(15000);
       return scanStatusFromBody(this.page, applicationNumbers);
     } catch {
       return null;
@@ -577,7 +629,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           );
         }
         if (target) {
-          await target.click({ timeout: 10_000 });
+          await this.guardedClick(target, "open the filing to correct", { timeout: 10_000 });
           await smartWait(this.page);
         }
       }
@@ -607,7 +659,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       // never fall through to a second-choice row.
       const urlBefore = String(this.page.url?.() ?? "");
       const control = this.page.locator(`[data-al-cform="${choice.row.key}"]`).first();
-      const clicked = await control.click({ timeout: 10_000 }).then(() => true).catch(() => false);
+      const clicked = await this.guardedClick(control, "open the correction form", { timeout: 10_000 }).then(() => true).catch(() => false);
       if (!clicked) {
         return fail(
           `Correction reopen stopped: the chosen form's own control ("${choice.row.name}" [${choice.row.action}]) could not be clicked. Nothing else was tried — a human must reopen it.`,
@@ -699,14 +751,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       // PowerClerk renders is a fourth shape, and the only way to add it is to have it.
       if (!fields.length) {
         try {
-          const dir = this.pageShotDir || path.join(process.env.REPLAY_CAPTURE_DIR || path.join(process.cwd(), "data"), "replay-review-misses");
-          fs.mkdirSync(dir, { recursive: true });
+          const dir = this.pageShotDir || path.join(replayCaptureRoot(), "replay-review-misses");
           const stamp = String(Date.now());
-          const html = await this.page.content();
-          fs.writeFileSync(path.join(dir, `review-unreadable-${stamp}.html`), html);
-          fs.writeFileSync(path.join(dir, `review-unreadable-${stamp}.txt`), `url: ${String(this.page.url?.() ?? "")}
-
-${body.slice(0, 4000)}`);
+          // Through the sanitizer: no typed value, no digit run, every frame.
+          await this.writeSanitizedCapture(dir, `review-unreadable-${stamp}`, { text: body });
           await this.page.screenshot({ path: path.join(dir, `review-unreadable-${stamp}.png`), fullPage: true }).catch(() => {});
         } catch { /* diagnostics must never change the outcome */ }
       }
@@ -805,6 +853,7 @@ ${body.slice(0, 4000)}`);
     };
     for (let stepIdx = 0; stepIdx < this.recipe.steps.length; stepIdx++) {
       const recordedStep = this.recipe.steps[stepIdx];
+      this.currentStepIdx = stepIdx;
       const inArrayBlock = this.arrayBlockStart >= 0
         && stepIdx >= this.arrayBlockStart && stepIdx <= this.arrayBlockEnd;
       // ON A REPEAT PASS, ONLY THE PER-ARRAY STEPS RUN AGAIN. The block's bounds are
@@ -874,9 +923,7 @@ ${body.slice(0, 4000)}`);
       // only commits fields on blur; advancing too soon saves a BLANK draft. If the prior
       // steps filled fields, wait for the autosave to settle before this click.
       if (step.action === "click" && prevWasInput) {
-        if (typeof this.page.waitForLoadState === "function") {
-          await this.page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => null);
-        }
+        await this.settle(8000);
         // Number.isFinite (not ||) so an explicit AUTOLEARN_SAVE_SETTLE_MS=0 disables the wait.
         //
         // THE PORTAL'S OWN COMMIT SIGNAL BEATS A GUESSED SLEEP. When the page carries an
@@ -1105,17 +1152,19 @@ ${body.slice(0, 4000)}`);
           // Bounded to the START of the run, because after the entry step a recipe is
           // SUPPOSED to have navigated away and going back would undo its own progress.
           // An ambiguity is a timing problem, not a stale-page one: settle, do not reload.
-          if (isAmbiguous) { await this.page.waitForLoadState?.("networkidle", { timeout: 8000 }).catch(() => null); continue; }
+          if (isAmbiguous) { await this.settle(8000); continue; }
           const entryUrl = String(this.recipe.steps.find((s) => s.action === "goto")?.value || "");
           const here = String(this.page.url?.() ?? "");
           if (entryUrl && executed <= 1 && here && !here.startsWith(entryUrl)) {
             this.driftWarnings.push(
               `the session landed on ${here.slice(0, 60)} rather than the recipe's entry URL — returned there before retrying (commonly a login redirect)`,
             );
-            await this.page.goto(entryUrl, { waitUntil: "networkidle", timeout: 20000 }).catch(() => null);
+            await this.guardedGoto(entryUrl, "return to the recipe's entry URL after a login redirect", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => null);
+            await this.settle(8000);
           } else {
             // Reload on timeout retries to recover from stale page state.
-            await this.page.reload({ waitUntil: "networkidle", timeout: 15000 }).catch(() => null);
+            await this.page.reload({ waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => null);
+            await this.settle(8000);
           }
           // A reload can bring the announcement/cookie banner straight back, and a timeout
           // is the signature of a covered target — clear both before spending the next
@@ -1163,7 +1212,7 @@ ${body.slice(0, 4000)}`);
         const here = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
         const entry = acaApplyEntryFrom(here);
         if (entry) {
-          const went = await this.page.goto(entry, { waitUntil: "domcontentloaded", timeout: 30000 })
+          const went = await this.guardedGoto(entry, "re-enter the Accela Apply flow", { waitUntil: "domcontentloaded", timeout: 30000 })
             .then(() => true).catch(() => false);
           if (went) {
             await waitForInteractiveControls(this.page);
@@ -1191,14 +1240,26 @@ ${body.slice(0, 4000)}`);
         // (safety rule) and never invented: no confident label match → fail as
         // before. Heals are reported so the backend patches the recipe AND
         // drops auto-submit trust until a human re-verifies the next review.
-        const healedSelector = await this.healSelectorForStep(step).catch(() => null);
-        if (healedSelector) {
+        const heal = await this.healSelectorForStep(step).catch(() => null);
+        if (heal && "ambiguous" in heal) {
+          // A named refusal, not a guess: the step fails below with the ambiguity as its reason.
+          lastErr = new Error(heal.ambiguous);
+        } else if (heal) {
+          const healedSelector = heal;
           try {
             const healedStep: RecipeStep = { ...step, selector: { ...healedSelector, fallbacks: [...(step.selector ? [step.selector] : []), ...(healedSelector.fallbacks ?? [])] } };
             const done = await this.executeStep(healedStep, pastReview);
-            if (done) executed++;
-            else skipped.push(String(step.note || step.action).slice(0, 70));
-            this.healedSteps.push({ note: step.note || step.action, action: step.action, selector: healedSelector });
+            if (done) {
+              executed++;
+              // A HEAL IS REPORTED ONLY WHEN THE HEALED STEP PERFORMED, and it is identified by
+              // step index + recipe version — never by (note, action), which several steps of
+              // one recipe share (19 of 79 production recipes). A heal that resolved but never
+              // acted must not patch the recipe.
+              this.healedSteps.push({
+                stepIndex: stepIdx, recipeVersion: Number(this.recipe.version ?? 0),
+                note: step.note || step.action, action: step.action, selector: healedSelector, performed: true,
+              });
+            } else skipped.push(String(step.note || step.action).slice(0, 70));
             succeeded = true;
           } catch { /* healed selector didn't take either — fail below as before */ }
         }
@@ -1256,7 +1317,18 @@ ${body.slice(0, 4000)}`);
             const cont = this.page.getByRole("link", { name: /continue application/i }).first();
             const has = await cont.count().catch(() => 0);
             if (!has) break;
-            await cont.click({ timeout: 8000 }).catch(() => null);
+            // THROUGH THE CHOKEPOINT, AS A PASS-THROUGH. A read-only page with nothing to fill
+            // is exactly what a review page is too, and there this link FILES. The gate refuses
+            // a pass-through click-through on any terminal page, whatever the link says.
+            try {
+              await this.guardedClick(cont, "drift-seek click-through of a page with nothing to fill", { timeout: 8000 }, { passThrough: true });
+            } catch (err) {
+              if (err instanceof ReplayGuardRefusal) {
+                driftFail = `${driftFail} — and the page it landed on is TERMINAL: ${err.reason}. Stopped without clicking; the recipe expects a page this portal does not have.`;
+                break;
+              }
+              // A click that merely timed out is the old behaviour: carry on and re-check.
+            }
             await waitForInteractiveControls(this.page);
             sought++;
             if (!(await this.precheckPageDrift(stepIdx + 1))) {
@@ -1628,9 +1700,9 @@ ${body.slice(0, 4000)}`);
       try {
         const loc = make();
         if (!(await loc.count().catch(() => 0))) continue;
-        await loc.first().click({ timeout: 8000 });
+        await this.guardedClick(loc.first(), "add another array row", { timeout: 8000 });
         await sleep(1200);
-        await this.page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => null);
+        await this.settle(4000);
         if (await this.countArrayRows() > before) return true;
       } catch { /* try the next shape */ }
     }
@@ -2343,7 +2415,7 @@ ${body.slice(0, 4000)}`);
       const ok = slot.kind === "browse"
         ? await Promise.all([
             this.page.waitForEvent("filechooser", { timeout: 8000 }),
-            loc.click({ timeout: 6000 }),
+            this.guardedClick(loc, "open an upload file chooser", { timeout: 6000 }),
           ]).then(([chooser]: [{ setFiles: (f: unknown) => Promise<void> }, unknown]) => {
             this.options.beforeUpload?.(hit.docType, file);
             return chooser.setFiles(payload);
@@ -2385,7 +2457,7 @@ ${body.slice(0, 4000)}`);
         // Re-locate by text each time — the banner re-renders after every navigation.
         const link = this.page.locator("a").filter({ hasText: new RegExp(`^\\s*${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`) }).last();
         if (!(await link.count().catch(() => 0))) continue;
-        await link.click({ timeout: 8000 }).catch(() => null);
+        await this.guardedClick(link, `open the page the rejection names (${label.slice(0, 30)})`, { timeout: 8000 }).catch(() => null);
         await smartWait(this.page, 2500);
         this.driftWarnings.push(`submit rejected — repairing "${label}"`);
         await this.runGapFill(this.page).catch(() => null);
@@ -2395,13 +2467,17 @@ ${body.slice(0, 4000)}`);
       const tabs = this.page.locator("[id^='page-header'], [role='tab'], .stepNav a");
       const tabCount = await tabs.count().catch(() => 0);
       if (tabCount > 0) {
-        await tabs.nth(tabCount - 1).click({ timeout: 8000 }).catch(() => null);
+        await this.guardedClick(tabs.nth(tabCount - 1), "return to the last wizard page", { timeout: 8000 }).catch(() => null);
         await smartWait(this.page, 2500);
       }
       const submit = this.page.getByRole("button", { name: /^\s*Submit\s*$/i })
         .or(this.page.locator('input[type="submit"][value*="Submit" i]')).last();
       if (!(await submit.count().catch(() => 0))) return round > 0;
-      await submit.click({ timeout: 10000 }).catch(() => null);
+      // A SECOND CLICK OF THE FILING CONTROL. The shared gate is asked again, now — the
+      // one-per-run rule is waived only for this repair re-click of the SAME approved submit.
+      const again = this.finalSubmitRefusalsNow().filter((r) => !/already attempted/.test(r));
+      if (again.length) { this.driftWarnings.push(`repair re-submit NOT clicked — ${again.join("; ")}`); return false; }
+      await this.guardedClick(submit, "re-submit after repairing the rejection", { timeout: 10000 }, { finalSubmitApproved: true }).catch(() => null);
       await smartWait(this.page, 4000);
       const still = await this.page.evaluate(() => {
         const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
@@ -2537,8 +2613,8 @@ ${body.slice(0, 4000)}`);
       return false;
     }
     const best = rows[ranked[0].index];
-    const okClick = await this.page.locator(`[data-al-row="${best.key}"]`).first()
-      .click({ timeout: 12000 }).then(() => true).catch((err: unknown) => {
+    const okClick = await this.guardedClick(this.page.locator(`[data-al-row="${best.key}"]`).first(), "select the ranked address version", { timeout: 12000 })
+      .then(() => true).catch((err: unknown) => {
         // SAY WHY. This returned false in silence, so the step landed in `skipped` with no
         // reason and the NEXT step — waiting for a Continue button that only appears once a
         // row is chosen — took the blame. Coos Bay reported "work location: continue" timing
@@ -2604,10 +2680,21 @@ ${body.slice(0, 4000)}`);
     }
     if (this.isRecordTypeStep(step)) {
       const wanted = String(step.selector?.label || step.note || "").trim();
+      // SETTLE BEFORE COUNTING. count() does not wait: right after the previous page's full
+      // postback navigated here, the list can be unpainted, and "not offered — refusing to file"
+      // was then a race (measured on the Accela replica: the record-type page had been served,
+      // the guard read "(none read)"). Settle on what the page is doing, wait for a control,
+      // then count — and when nothing matches, settle and look exactly once more.
+      await this.settle(8000);
+      await waitForInteractiveControls(this.page, 8000);
       // Exact first. "Residential - Structural" must not resolve through a substring onto
       // "Residential - Structural - Demolition": one unambiguous name, or nothing.
       const exact = this.page.getByRole("checkbox", { name: wanted, exact: true });
-      const exactCount = await exact.count().catch(() => 0);
+      let exactCount = await exact.count().catch(() => 0);
+      if (exactCount === 0 && (await this.page.getByRole("checkbox", { name: wanted, exact: false }).count().catch(() => 0)) === 0) {
+        await this.settle(4000);
+        exactCount = await exact.count().catch(() => 0);
+      }
       if (exactCount === 1) {
         await exact.first().check({ timeout: 10000 });
         this.driftWarnings.push(`record type "${wanted}" selected by label (positional fallback refused)`);
@@ -2771,7 +2858,7 @@ ${body.slice(0, 4000)}`);
     }
     switch (step.action) {
       case "goto":
-        await this.page.goto(this.resolveValue(step));
+        await this.guardedGoto(this.resolveValue(step), `recipe goto${step.note ? ` (${String(step.note).slice(0, 40)})` : ""}`);
         await smartWait(this.page);
         // A recorded goto lands on a fresh section that a Vue/SPA portal may still be mounting.
         // Wait until an interactive control is up so the next step's fill targets a bound input
@@ -2804,9 +2891,13 @@ ${body.slice(0, 4000)}`);
           // REPLAY. 8s is far beyond any real re-render while surfacing a genuine miss fast.
           await scoped!.fill(v, { timeout: FILL_TIMEOUT_MS });
         }
-        // Blur to COMMIT the value into the portal's JS model (PowerClerk's Vue saves on
-        // blur). Without it the field shows filled but never persists → blank draft.
-        if (typeof scoped!.blur === "function") await scoped!.blur().catch(() => {});
+        // COMMIT THE VALUE, THEN WAIT FOR WHAT THE COMMIT STARTED. locator.fill() fires
+        // `input` only — no `change`, no blur — so a portal that saves (PowerClerk's Vue) or
+        // cascades/postbacks (ASP.NET autopostback) on change never hears it. commitField blurs
+        // (Tab as the fallback) and then settles on what the page is doing — PageRequestManager
+        // begin/end, a postback just begun, requests, DOM quiet — so autopostback fields go
+        // strictly ONE AT A TIME (overlapping UpdatePanel postbacks are last-wins).
+        await this.commitAndSettle(scoped);
         // A data-bound value can carry a unit suffix ("225A") that a decimal field (e.g.
         // PowerClerk "Amps") rejects with "Please enter a valid decimal number." Retry once
         // with a bare number so replayed recipes don't re-introduce the invalid value.
@@ -2814,7 +2905,7 @@ ${body.slice(0, 4000)}`);
           const bare = toBareNumber(v);
           if (bare && bare !== v) {
             await scoped!.fill(bare);
-            if (typeof scoped!.blur === "function") await scoped!.blur().catch(() => {});
+            await this.commitAndSettle(scoped);
           }
         }
         // READ IT BACK, BECAUSE TYPING IS NOT SAVING.
@@ -2848,10 +2939,14 @@ ${body.slice(0, 4000)}`);
           } else {
             await scoped!.fill(v, { timeout: FILL_TIMEOUT_MS }).catch(() => null);
           }
-          if (typeof scoped!.blur === "function") await scoped!.blur().catch(() => {});
+          await this.commitAndSettle(scoped);
           await this.waitForAutosaveCommitted();
           if (!(await this.fillHeld(scoped, v))) {
-            this.driftWarnings.push(`"${String(step.note ?? step.action).slice(0, 48)}" did not hold the value it was given — the portal shows something else`);
+            // RE-ASSERTED ONCE WITH A PROPER COMMIT AND IT STILL DID NOT HOLD: the portal is
+            // re-rendering the value away (a contact block patched from saved state) or the
+            // fill landed somewhere else. A FAILED step with its reason — never a silent accept,
+            // and never a loop.
+            this.driftWarnings.push(`FAILED "${String(step.note ?? step.action).slice(0, 48)}": did not hold after commit + settle and one re-assert — read back from the intended control it shows something else (re-render wipe or a write that landed elsewhere)`);
             if (!this.fieldsUnverified.includes(fieldName)) this.fieldsUnverified.push(fieldName);
             return false;
           }
@@ -2911,6 +3006,9 @@ ${body.slice(0, 4000)}`);
         // interconnection application is far worse than the skip this started as, so the
         // model rules have to run before that fallback ever sees the value.
         let selected = false;
+        /** The exact value the select landed as (a model listing, a certified alias) — what the
+         *  read-back compares against. */
+        let landedAs = v;
         // The page-side model rules can only read a NATIVE <select>. PowerClerk renders a
         // Vue combobox <input> on its spec pages, which exposes no <option> elements — and
         // treating "cannot read this control" as "no match" made the guard refuse every
@@ -2949,13 +3047,14 @@ ${body.slice(0, 4000)}`);
           }
           if (picked) {
             selected = await selectWithFallback(this.page, scoped, picked);
+            if (selected) landedAs = picked;
             if (selected && picked !== v) this.driftWarnings.push(`model "${v}" matched the portal's listing "${picked}"`);
           } else {
             // No safe match on a list that IS loaded. Leave it blank for the human rather
             // than let the generic contains-match choose a neighbouring model for us —
             // asked for "DS3-L" it would take "DS3-LV {120V}" and report success.
             this.driftWarnings.push(`model "${v}" has no unambiguous match in this dropdown — left blank for review`);
-            await this.page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => null);
+            await this.settle(4000);
             return false;
           }
         }
@@ -2967,6 +3066,7 @@ ${body.slice(0, 4000)}`);
           for (const alt of equipmentMakeCandidates(v).slice(1)) {
             selected = await selectWithFallback(this.page, scoped, alt);
             if (selected) {
+              landedAs = alt;
               this.driftWarnings.push(`manufacturer "${v}" matched the portal's certified name "${alt}"`);
               break;
             }
@@ -3009,7 +3109,7 @@ ${body.slice(0, 4000)}`);
                 if (!selected && this.isManufacturerStep(step)) {
                   for (const alt of equipmentMakeCandidates(v).slice(1)) {
                     selected = await selectWithFallback(this.page, relox.first(), alt);
-                    if (selected) { this.driftWarnings.push(`manufacturer "${v}" matched the portal's certified name "${alt}"`); break; }
+                    if (selected) { landedAs = alt; this.driftWarnings.push(`manufacturer "${v}" matched the portal's certified name "${alt}"`); break; }
                   }
                 }
                 if (selected) {
@@ -3024,7 +3124,7 @@ ${body.slice(0, 4000)}`);
         // Wait for any Vue/React re-renders triggered by the dropdown change to settle
         // before filling subsequent fields (e.g. PowerClerk resets contact fields on
         // contact-type dropdown change).
-        await this.page.waitForLoadState("networkidle", { timeout: 4000 }).catch(() => null);
+        await this.settle(4000);
         // WHY DID IT MISS? A select that lands nothing is reported as a bare SKIP, and
         // "the widget never opened" and "it opened but this value is not in it" need
         // completely different fixes. Live PacifiCorp skipped both equipment Model steps
@@ -3052,10 +3152,9 @@ ${body.slice(0, 4000)}`);
           // live run every time. Capturing here makes the equipment page readable offline the
           // way the failure captures already made Accela's readable.
           try {
-            const dir = this.pageShotDir || path.join(process.env.REPLAY_CAPTURE_DIR || path.join(process.cwd(), "data"), "replay-failures");
-            fs.mkdirSync(dir, { recursive: true });
+            const dir = this.pageShotDir || path.join(replayCaptureRoot(), "replay-failures");
             const safe = String(step.note ?? step.field ?? "select").replace(/[^a-z0-9]+/gi, "-").slice(0, 40);
-            fs.writeFileSync(path.join(dir, `miss-${safe}-${String(Date.now())}.html`), await this.page.content());
+            await this.writeSanitizedCapture(dir, `miss-${safe}-${String(Date.now())}`, { target: scoped });
           } catch { /* diagnostics never change the outcome */ }
         }
         // COMMIT WHAT LANDED. PowerClerk autosaves per field on blur — the fill path has
@@ -3074,13 +3173,33 @@ ${body.slice(0, 4000)}`);
         if (selected && typeof scoped?.blur === "function") {
           try {
             if (isNativeSelect && typeof scoped.focus === "function") await scoped.focus({ timeout: 2000 });
-            await scoped.blur({ timeout: 2000 });
           } catch { /* commit is best-effort — never fail a landed select over it */ }
+          // Blur + settle: a cascade / autopostback this select started finishes before the
+          // next step runs (one at a time — overlapping postbacks are last-wins).
+          await this.commitAndSettle(scoped);
         }
         // The blur STARTS the autosave; the next step must not run until it FINISHES, or the
         // server re-render restores the old value ("Saving..." caught on the final screenshot,
         // the inverter manufacturer empty again after every pass).
         if (selected) await this.waitForAutosaveCommitted();
+        // READ IT BACK FROM THE INTENDED CONTROL — the selected option's text/value, after the
+        // commit settled. selectWithFallback's "true" means "I clicked an option"; an autopostback
+        // that re-rendered the panel, or a pick that landed on another widget, shows up only
+        // here. A mismatch is re-asserted ONCE with the proper commit, then it is a failed step.
+        if (selected) {
+          const held = await this.selectionHeld(scoped, landedAs);
+          if (held === false) {
+            const again = await selectWithFallback(this.page, scoped, landedAs).catch(() => false);
+            if (again) await this.commitAndSettle(scoped);
+            await this.waitForAutosaveCommitted();
+            if ((await this.selectionHeld(scoped, landedAs)) !== true) {
+              this.driftWarnings.push(`FAILED select "${String(step.note ?? step.field ?? "").slice(0, 48)}": the control does not show ${JSON.stringify(landedAs.slice(0, 40))} after commit + settle and one re-assert (re-rendered away, or the pick landed on another control)`);
+              selected = false;
+            } else {
+              this.agingNotes.push(`select "${String(step.note ?? step.field ?? "").slice(0, 40)}" needed a second commit to hold — the portal re-rendered it once`);
+            }
+          }
+        }
         const selName = String(step.note ?? step.field ?? step.action).slice(0, 60);
         if (selected) { if (!this.fieldsVerified.includes(selName)) this.fieldsVerified.push(selName); }
         else if (!this.fieldsUnverified.includes(selName)) this.fieldsUnverified.push(selName);
@@ -3161,7 +3280,7 @@ ${body.slice(0, 4000)}`);
           this.agingNotes.push(`"${String(step.note ?? "checkbox").slice(0, 40)}" would not tick from the input — ticked it by its label, which is how a styled checkbox is driven`);
         }
         // Same settle for checkbox changes that may trigger form re-renders.
-        await this.page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => null);
+        await this.settle(3000);
         return true;
       }
       case "uncheck":
@@ -3170,7 +3289,7 @@ ${body.slice(0, 4000)}`);
         return true;
       case "press":
         await waitForElement(scoped);
-        await scoped!.press(step.value || "Enter");
+        await this.guardedPress(scoped, step.value || "Enter", `recipe press${step.note ? ` (${String(step.note).slice(0, 40)})` : ""}`);
         return true;
       case "waitFor":
         if (scoped) await scoped.waitFor({ state: "visible", timeout: 15000 });
@@ -3230,7 +3349,7 @@ ${body.slice(0, 4000)}`);
           // The real <input> is created on click — intercept the file-chooser dialog.
           const [chooser] = await Promise.all([
             this.page.waitForEvent("filechooser", { timeout: 8000 }),
-            scoped!.click({ timeout: 6000 }),
+            this.guardedClick(scoped, "open the recorded upload chooser", { timeout: 6000 }),
           ]);
           this.options.beforeUpload?.(step.docType!, filePath);
           await chooser.setFiles(file);
@@ -3247,6 +3366,236 @@ ${body.slice(0, 4000)}`);
       default:
         return false;
     }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // THE CHOKEPOINT. Replay performs no click, press or goto that did not pass guardAction.
+  //
+  // Before this, the gates lived in executeClick alone, so every other door onto the page — the
+  // drift-seek click-through, the address-row picker, the rejection-repair Submit, a goto to
+  // whatever URL a recipe resolved to — went round them. The drift-seek loop clicked "Continue
+  // Application" on Accela's read-only review page, where that link FILES (the scoreboard's
+  // isolated tripwire recorded the filing POST). Page-aware on purpose: a label alone cannot tell
+  // Accela's two meanings of "Continue Application" apart; the page it sits on can.
+  //
+  // recipeAdapter.test.ts reads this file and fails on any .click( / .press( / .goto( outside
+  // the three guarded helpers below.
+  // ---------------------------------------------------------------------------------------------
+
+  /** Registrable-domain-ish key of a URL: the last two host labels (three under a two-letter
+   *  second level such as co.uk), the whole host for an IP or a single-label host. */
+  private static siteOf(url: string): string {
+    let host = "";
+    try { host = new URL(url).hostname.toLowerCase(); } catch { return ""; }
+    if (!host || /^\d+(\.\d+){3}$/.test(host) || host === "localhost" || !host.includes(".")) return host;
+    const parts = host.split(".");
+    const n = parts.length >= 3 && parts[parts.length - 2].length <= 3 && parts[parts.length - 1].length === 2 ? 3 : 2;
+    return parts.slice(-n).join(".");
+  }
+
+  /** Identity providers a portal login legitimately bounces through. Small on purpose. */
+  private static readonly SSO_SITES = new Set([
+    "microsoftonline.com", "b2clogin.com", "okta.com", "auth0.com", "onelogin.com", "pingidentity.com", "login.gov", "id.me",
+  ]);
+
+  /** The page, as the shared predicates read it: does it NAME itself the review step, is it
+   *  read-only, and does it show a filing-shaped control. Unknown (a page that cannot be read)
+   *  answers every question with undefined. */
+  private async pageSafetyContext(): Promise<{ reviewPage?: boolean; readOnlyPage?: boolean; filingControl?: string }> {
+    if (!this.page || typeof this.page.evaluate !== "function") return {};
+    await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+    const read = await this.page.evaluate((g: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ps = (globalThis as any)[g];
+      if (!ps) return {};
+      const reviewPage = ps.reviewPageInPage();
+      const readOnlyPage = ps.readOnlyPageInPage();
+      const filing = Array.from(document.querySelectorAll("button, a, input[type=submit], input[type=button], input[type=image], [role=button], [role=link]"))
+        .filter((el) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 2 && r.height > 2; })
+        .map((el) => String(ps.controlLabelInPage(el) || (el as HTMLElement).innerText || (el as HTMLInputElement).value || ""))
+        .find((t) => ps.isFinalSubmitControl(t, { reviewPage }));
+      return { reviewPage, readOnlyPage, filingControl: filing || "" };
+    }, PORTAL_SAFETY_GLOBAL).catch(() => null) as { reviewPage?: boolean; readOnlyPage?: boolean; filingControl?: string } | null;
+    return read && typeof read === "object" ? read : {};
+  }
+
+  /** The control's label as a person reads it (aria, label[for], value, text, img alt). "" when
+   *  it cannot be read — an unknown, never reassurance. */
+  private async controlLabelOf(target: unknown): Promise<string> {
+    const t = target as { evaluate?: (fn: unknown, arg: unknown) => Promise<unknown> } | null;
+    if (!t || typeof t.evaluate !== "function" || !this.page || typeof this.page.evaluate !== "function") return "";
+    await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+    const label = await t.evaluate((el: Element, g: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ps = (globalThis as any)[g];
+      const img = el.querySelector ? el.querySelector("img[alt]") : null;
+      return String((ps && ps.controlLabelInPage(el)) || (el as HTMLElement).innerText || (el as HTMLInputElement).value
+        || el.getAttribute("title") || (img && img.getAttribute("alt")) || "").replace(/\s+/g, " ").trim();
+    }, PORTAL_SAFETY_GLOBAL).catch(() => "");
+    return String(label ?? "");
+  }
+
+  /**
+   * May replay perform this action? Returns the refusal reason, or "" when allowed. Every
+   * refusal is recorded (guardRefusals + driftWarnings) so a refused click that a caller's
+   * .catch swallows is still visible in the run report.
+   */
+  private async guardAction(intent:
+    | { kind: "goto"; url: string; why: string }
+    | { kind: "click" | "press"; target: unknown; why: string; key?: string; passThrough?: boolean; finalSubmitApproved?: boolean },
+  ): Promise<string> {
+    const refuse = (reason: string): string => {
+      const line = `REFUSED ${intent.kind} (${intent.why}): ${reason}`;
+      this.guardRefusals.push(line);
+      this.driftWarnings.push(line);
+      return reason;
+    };
+    if (intent.kind === "goto") {
+      // HARD RULE 5 INSIDE REPLAY. A goto may not leave the portal the recipe belongs to: a
+      // permit recipe must never land on a utility portal and vice versa, and a recipe whose
+      // goto points at another site is a recipe to fix, not a URL to follow.
+      const url = String(intent.url || "");
+      if (!/^https?:\/\//i.test(url)) return url ? refuse(`"${url.slice(0, 80)}" is not an http(s) URL`) : refuse("no URL");
+      const target = RecipeAdapter.siteOf(url);
+      const anchor = this.recipe.portalUrl || String(this.recipe.steps.find((s) => s.action === "goto")?.value ?? "");
+      const home = anchor ? RecipeAdapter.siteOf(anchor) : "";
+      if (this.recipe.scopeType === "ahj" && /powerclerk/i.test(target) && !/powerclerk/i.test(home)) {
+        return refuse(`a permit recipe may not open a utility (PowerClerk) portal: ${target}`);
+      }
+      if (this.recipe.scopeType === "utility" && /accela|tylerhost|epermit/i.test(target) && !/accela|tylerhost|epermit/i.test(home)) {
+        return refuse(`a utility recipe may not open a permit portal: ${target}`);
+      }
+      if (home && target !== home && !RecipeAdapter.SSO_SITES.has(target)) {
+        return refuse(`goto leaves the recipe's portal (${home}) for ${target} — stopped rather than followed`);
+      }
+      return "";
+    }
+    // A key press that is not Enter/Space cannot activate a control (Escape, Tab, arrows).
+    if (intent.kind === "press" && !/^(enter|numpadenter|space| )$/i.test(String(intent.key ?? "Enter"))) return "";
+    const label = await this.controlLabelOf(intent.target);
+    // 1) Fees: never, in any mode, whatever the flag.
+    if (isPayFee(label) || PAY_FEE_REPLAY_GATE.test(label)) return refuse(`"${label.slice(0, 60)}" pays a fee`);
+    if (intent.finalSubmitApproved) {
+      // Only executeClick's flagged branch sets this, after finalSubmitRefusalsNow() passed.
+      return "";
+    }
+    const ctx = await this.pageSafetyContext();
+    // 2) THE filing click, as the shared predicate knows it: submit-worded, or "Continue
+    //    Application" on a page that names itself the review step.
+    if (isFinalSubmitControl(label, { reviewPage: ctx.reviewPage === true })) return refuse(`"${label.slice(0, 60)}" is the filing click on this page`);
+    // Submit-worded (never "Continue Application" here — that one is decided by the page below).
+    if (isSubmitIntent(label, { reviewPage: false, readOnlyPage: false })) return refuse(`"${label.slice(0, 60)}" is submit-worded`);
+    // 3) A TERMINAL PAGE: it names itself the review step, or it is read-only and shows a
+    //    filing-shaped control. On it, a pass-through click-through is refused whatever the
+    //    control says, and so is any forward-shaped or unreadable control.
+    const terminal = ctx.reviewPage === true || (ctx.readOnlyPage === true && !!ctx.filingControl);
+    if (terminal) {
+      const why = ctx.reviewPage ? "the page names itself the review step" : `the page is read-only and shows the filing control "${String(ctx.filingControl).slice(0, 40)}"`;
+      if (intent.passThrough) return refuse(`terminal-page drift: ${why} — clicking through it would file the application`);
+      if (!label || /\b(continue|next|proceed|forward|submit|finish|finali[sz]e|complete|confirm|file|done|send|save\s*(and|&)\s*continue)\b/i.test(label)) {
+        return refuse(`terminal-page drift: ${why}, and "${label.slice(0, 60) || "(unreadable control)"}" would move past it`);
+      }
+    }
+    return "";
+  }
+
+  /** Every click in replay. Refused → throws ReplayGuardRefusal (named), nothing clicked. */
+  private async guardedClick(target: unknown, why: string, opts?: { timeout?: number; force?: boolean }, flags: { passThrough?: boolean; finalSubmitApproved?: boolean } = {}): Promise<void> {
+    const reason = await this.guardAction({ kind: "click", target, why, ...flags });
+    if (reason) throw new ReplayGuardRefusal(reason);
+    await (target as { click: (o?: unknown) => Promise<void> }).click(opts);
+  }
+
+  /** Every key press in replay. Enter/Space are clicks on the focused control. */
+  private async guardedPress(target: unknown, key: string, why: string): Promise<void> {
+    const focused = /^(enter|numpadenter|space| )$/i.test(key) && this.page && typeof this.page.locator === "function"
+      ? (target && typeof (target as { evaluate?: unknown }).evaluate === "function" ? target : this.page.locator(":focus"))
+      : target;
+    const reason = await this.guardAction({ kind: "press", target: focused, key, why });
+    if (reason) throw new ReplayGuardRefusal(reason);
+    await (target as { press: (k: string) => Promise<void> }).press(key);
+  }
+
+  /** Every navigation in replay. */
+  private async guardedGoto(url: string, why: string, opts?: Record<string, unknown>): Promise<unknown> {
+    const reason = await this.guardAction({ kind: "goto", url, why });
+    if (reason) throw new ReplayGuardRefusal(reason);
+    return this.page.goto(url, opts);
+  }
+
+  /** WAIT FOR THE PAGE TO SETTLE BY WHAT IT IS DOING (settle.ts): PageRequestManager begin/end,
+   *  a postback just begun, young requests, DOM quiet. Replaces every networkidle wait replay had
+   *  — an UpdatePanel postback fires no load event, and networkidle is a guess about quiet that a
+   *  long-poll never gives. A page that cannot be read (unit-test fakes) has nothing to wait on. */
+  private async settle(timeoutMs = 10_000): Promise<void> {
+    if (!this.page || typeof this.page.evaluate !== "function" || typeof this.page.addInitScript !== "function") return;
+    await installSettleProbe(this.page).catch(() => null);
+    await waitForSettled(this.page, { timeoutMs }).catch(() => null);
+  }
+
+  /** Why the final submit may NOT be clicked right now — the shared gate, asked at the click. */
+  private finalSubmitRefusalsNow(): string[] {
+    const steps = this.recipe.steps;
+    const last = steps.length - 1;
+    const out = finalSubmitRefusals({
+      envAllows: finalSubmitEnvAllows(process.env),
+      runApproval: this.options.runApproval ?? null,
+      runId: String(this.options.runId ?? ""),
+      stepIsTerminalFlagged: this.currentStepIdx === last && isFinalSubmitStep(steps[last]),
+      recipeShapeValid: isRecipeShapeValid(steps),
+    });
+    if (this.finalSubmitAttempted) out.push("the final submit was already attempted in this run");
+    return out;
+  }
+
+  /** Read the page after a final-submit click through the ONE shared classifier. Waits out a
+   *  visible "Processing…" indicator and presses a confirm dialog's OK (part of the approved
+   *  submit — a dialog mentioning payment stops instead). */
+  private async pollSubmissionOutcome(): Promise<SubmissionOutcome> {
+    if (!this.page || typeof this.page.evaluate !== "function") {
+      return { verdict: "unknown", evidence: "the page could not be read" };
+    }
+    let last: SubmissionOutcome = { verdict: "unknown", evidence: null };
+    let processingTicks = 0;
+    for (let poll = 0; poll < 6; poll++) {
+      await smartWait(this.page, 2500);
+      if (processingTicks < 120) { // ~5min of spinner grace — PacifiCorp outlasted 90s twice
+        const processing = await this.page.evaluate(() => Array.from(document.querySelectorAll("div, span, [role='status']")).some((el) => {
+          const r = (el as HTMLElement).getBoundingClientRect();
+          const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+          return r.width > 0 && r.height > 0 && !!t && t.length < 60 && /^(processing|submitting|saving)\b/i.test(t);
+        })).catch(() => false);
+        if (processing === true) { processingTicks++; poll--; continue; }
+      }
+      const modal = await this.page.evaluate(() => {
+        const panels = Array.from(document.querySelectorAll(
+          "[data-test-role='ai-screen-multi-page-progression-warning'], [data-test-role='ai-screen-nav-warning'], [role='dialog'], .modal.show, .modal[style*='display: block']"));
+        for (const p of panels) {
+          const r = (p as HTMLElement).getBoundingClientRect();
+          if (!(r.width > 2 && r.height > 2)) continue;
+          const text = ((p as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+          if (/pay|fee|payment|checkout/i.test(text)) return { blocked: text.slice(0, 160) };
+          for (const b of Array.from(p.querySelectorAll("button, a, [role='button']"))) {
+            const t = ((b as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+            if (/^(ok|yes|confirm|continue|submit|proceed)$/i.test(t)) {
+              (b as HTMLElement).setAttribute("data-al-modal-ok", "1");
+              return { ok: t, text: text.slice(0, 120) };
+            }
+          }
+        }
+        return null;
+      }).catch(() => null) as { ok?: string; text?: string; blocked?: string } | null;
+      if (modal?.blocked) throw new Error(`The submit raised a payment dialog — fees are never automated. (${modal.blocked.slice(0, 120)})`);
+      if (modal?.ok) {
+        this.driftWarnings.push(`submit confirm dialog ("${(modal.text || "").slice(0, 60)}") — clicked ${modal.ok}`);
+        await this.guardedClick(this.page.locator("[data-al-modal-ok='1']").first(), "the approved submit's confirm dialog", { timeout: 5000 }, { finalSubmitApproved: true }).catch(() => null);
+        await smartWait(this.page, 2500);
+      }
+      const body = String(await this.page.locator("body").innerText().catch(() => "") ?? "");
+      last = classifySubmissionText(body);
+      if (last.verdict !== "unknown") return last;
+    }
+    return last;
   }
 
   // Click safety gate (P0-3 allowlist + P0-4 structural challenge detection).
@@ -3277,181 +3626,61 @@ ${body.slice(0, 4000)}`);
     //    the explicitly flagged final submit. We never infer "submit button" from regex.
     if (SUBMIT_KEYWORDS.test(name) && !flaggedFinal) return false;
 
-    // 4) The explicitly allowlisted final submit.
+    // 4) The explicitly allowlisted final submit — clicked ONLY through the shared gate, asked
+    //    at the click itself: PORTAL_ALLOW_FINAL_SUBMIT=1 re-read now, a named person's
+    //    approval of exactly THIS run, the recipe's single terminal flagged step after its
+    //    stopForReview, and a valid recipe shape. autoSubmit alone (a standing per-recipe arm)
+    //    is not an approval, and never was meant to be one.
     if (flaggedFinal) {
-      // Guided-manual: never click the final submit — a human always does.
-      if (!this.options.autoSubmit) return false;
+      const refusals = this.finalSubmitRefusalsNow();
+      if (refusals.length) {
+        this.driftWarnings.push(`final submit NOT clicked — ${refusals.join("; ")}`);
+        return false;
+      }
       // Trusted auto-submit: STRUCTURALLY detect a CAPTCHA/MFA challenge (iframe-based
       // included) on the final page and bail to a human if present. Never solve/bypass.
       const challenge = await detectChallengeFrame(this.page);
       if (challenge) {
         throw new Error(`Final submit needs a human: ${challenge}. Automation stopped without clicking.`);
       }
-      await scoped!.click();
-      // Let the portal settle, then verify we did not land back on a challenge or an
-      // error page. "Unknown page state after the click" is treated as a STOP, not a
-      // success — finalSubmitClicked stays false unless the portal cleanly accepted it.
+      // AT MOST ONCE PER RUN. Marked before the click: a click that throws mid-way may still
+      // have reached the portal, and the retry loop must never produce a second filing.
+      this.finalSubmitAttempted = true;
+      try {
+        await this.guardedClick(scoped, "the approved final submit", undefined, { finalSubmitApproved: true });
+      } catch (err) {
+        throw new Error(`The approved final-submit click did not complete (${err instanceof Error ? err.message.slice(0, 160) : String(err)}) — NOT retried; a human must check whether the portal filed it.`);
+      }
+      this.finalSubmitClicked = true;
+      // Let the portal settle, then verify we did not land on a challenge.
       await smartWait(this.page, 3000);
       const postChallenge = await detectChallengeFrame(this.page);
       if (postChallenge) {
+        this.finalSubmitOutcome = { verdict: "unknown", evidence: `challenge after the click: ${postChallenge}` };
         throw new Error(`Final submit triggered a challenge after the click (${postChallenge}); pausing for human verification.`);
       }
-      // A CLICK THAT LANDED IS NOT A FILING THAT WAS ACCEPTED. PowerClerk answers a submit
-      // with missing fields by staying on the page and painting "Unable to Submit Form" with
-      // the fields listed — no error thrown, no challenge, click "successful". This run then
-      // reported "the portal accepted it" while the utility's project list gained nothing;
-      // the operator called it what it was. So read the page: a visible rejection banner
-      // means the submit FAILED, reported with the portal's own list of what is missing.
-      let rejection = typeof this.page.evaluate !== "function" ? "" : await this.page.evaluate(() => {
-        const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-        for (const el of Array.from(document.querySelectorAll("div, section, [role='alert']"))) {
-          if (!vis(el)) continue;
-          const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
-          if (!t || t.length > 1500) continue;
-          if (/unable to submit|could not (be )?submit|fix the errors below|missing required fields|validation failure/i.test(t)) {
-            return t.slice(0, 600);
-          }
-        }
-        return "";
-      }).catch(() => "");
-      // THE BANNER CAN ARRIVE AFTER OUR FIRST LOOK. PacifiCorp validates server-side; a 3s
-      // wait read a clean page, success was claimed, and the utility's list gained nothing —
-      // twice. Poll: either a rejection appears, or positive evidence of acceptance does
-      // (the URL leaves the wizard, or the page says submitted/thank you). Only one of those
-      // two outcomes lets us say anything; a quiet page proves neither.
-      // A page we cannot READ (test fakes) can't be polled for evidence either way; the
-      // pre-verification contract applies there. Every production page can be read.
-      let accepted = typeof this.page.evaluate !== "function";
-      // A PAGE THAT SAYS IT IS STILL PROCESSING HAS NOT ANSWERED. Marineau's NEM submit was
-      // accepted (APP-111667) seconds AFTER this poll gave up: the outcome shot caught
-      // "Processing Submit..." mid-spin, the six looks expired against a page that was
-      // neither quiet nor decided, and a real filing was reported as unconfirmed — the
-      // operator then has to probe the account to learn what happened. Ticks spent watching
-      // a visible processing indicator don't count against the evidence budget; the spinner
-      // wait has its own generous bound so a genuinely wedged page still stops for a human.
-      let processingTicks = 0;
-      for (let poll = 0; poll < 6 && !rejection && !accepted; poll++) {
-        await smartWait(this.page, 2500);
-        if (typeof this.page.evaluate === "function" && processingTicks < 120) { // ~5min of spinner grace — PacifiCorp outlasted 90s twice
-          const processing = await this.page.evaluate(() => {
-            const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-            for (const el of Array.from(document.querySelectorAll("div, span, [role='status']"))) {
-              if (!vis(el)) continue;
-              const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
-              if (t && t.length < 60 && /^(processing|submitting|saving)\b/i.test(t)) return true;
-            }
-            return false;
-          }).catch(() => false);
-          if (processing === true) { processingTicks++; poll--; continue; }
-        }
-        // A CONFIRM MODAL BETWEEN THE CLICK AND THE FILING. PowerClerk's Vue wizard can answer
-        // Submit with its own dialog (ai-screen-multi-page-progression-warning — "you have
-        // unvisited pages", with an OK) — the page then just sits there: no banner, no
-        // confirmation, a quiet timeout. The modal's OK is part of the submit the operator
-        // already authorised. A dialog mentioning payment is NOT — fees stay human, always.
-        if (typeof this.page.evaluate === "function") {
-          const modal = await this.page.evaluate(() => {
-            const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 2 && r.height > 2; };
-            const panels = Array.from(document.querySelectorAll(
-              "[data-test-role='ai-screen-multi-page-progression-warning'], [data-test-role='ai-screen-nav-warning'], [role='dialog'], .modal.show, .modal[style*='display: block']"));
-            for (const p of panels) {
-              if (!vis(p)) continue;
-              const text = ((p as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
-              if (/pay|fee|payment|checkout/i.test(text)) return { blocked: text.slice(0, 160) };
-              const btns = Array.from(p.querySelectorAll("button, a, [role='button']"));
-              for (const b of btns) {
-                const t = ((b as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
-                if (/^(ok|yes|confirm|continue|submit|proceed)$/i.test(t)) {
-                  (b as HTMLElement).setAttribute("data-al-modal-ok", "1");
-                  return { ok: t, text: text.slice(0, 120) };
-                }
-              }
-            }
-            return null;
-          }).catch(() => null) as { ok?: string; text?: string; blocked?: string } | null;
-          if (modal?.blocked) {
-            throw new Error(`The submit raised a payment dialog — fees are never automated. (${modal.blocked.slice(0, 120)})`);
-          }
-          if (modal?.ok) {
-            this.driftWarnings.push(`submit confirm dialog ("${(modal.text || "").slice(0, 60)}") — clicked ${modal.ok}`);
-            await this.page.locator("[data-al-modal-ok='1']").first().click({ timeout: 5000 }).catch(() => null);
-            await smartWait(this.page, 2500);
-          }
-        }
-        accepted = typeof this.page.evaluate !== "function" ? false : await this.page.evaluate(() => {
-          const body = (document.body.innerText || "").slice(0, 4000);
-          if (/thank you.{0,200}(submitted|received)|has been (successfully )?submitted|application (number|id)\s*[:#]/is.test(body)) return true;
-          // PowerClerk's accepted state, measured on the first real filing: the wizard
-          // becomes "View/Edit: APP-111652" with "Application Submitted", and the URL flips
-          // to LandingPage?ProjectId=... Two runs filed successfully while this poll called
-          // them "quiet" for lack of exactly these signals — which produced the duplicate.
-          if (/View\/Edit:\s*APP-\d+|application submitted|project number:\s*APP-\d+/i.test(body)) return true;
-          if (/LandingPage/i.test(location.href)) return true;
-          return !/EditProject/i.test(location.href); // left the wizard entirely
-        }).catch(() => false);
-        if (accepted) break;
-        rejection = typeof this.page.evaluate !== "function" ? "" : await this.page.evaluate(() => {
-          const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-          for (const el of Array.from(document.querySelectorAll("div, section, [role='alert']"))) {
-            if (!vis(el)) continue;
-            const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
-            if (t && t.length <= 1500 && /unable to submit|could not (be )?submit|fix the errors below|missing required fields|validation failure/i.test(t)) return t.slice(0, 600);
-          }
-          return "";
-        }).catch(() => "");
-      }
-      if (!rejection && !accepted) {
-        await this.capturePageShot("UNCONFIRMED", true);
-        throw new Error("After the submit click the page neither confirmed nor rejected the filing — stopping for a human. A quiet page is not an accepted application.");
-      }
-
-      if (rejection) {
-        // THE BANNER IS A WORK LIST, NOT JUST A VERDICT. PacifiCorp's "Unable to Submit
-        // Form" names each missing field WITH A LINK to its page ("Page 3", "Page 7"). The
-        // operator's instruction: read the errors, go and fix them, submit again. So each
-        // named page gets a gap-fill pass and an upload sweep (the real data is present at
-        // replay — a field can be blank here only because a reveal hid it from the recording),
-        // then Submit is clicked again. Bounded, and anything still missing after the last
-        // round is reported in the portal's own words.
+      // A CLICK THAT LANDED IS NOT A FILING THAT WAS ACCEPTED. Read the page through the ONE
+      // shared classifier: "accepted" only on positive evidence (a confirmation sentence or an
+      // issued record number), "rejected" on the portal's refusal, and a quiet page "unknown" —
+      // never "accepted because the page went quiet".
+      let outcome = await this.pollSubmissionOutcome();
+      if (outcome.verdict === "rejected") {
+        // THE BANNER IS A WORK LIST, NOT JUST A VERDICT. Each named page gets a gap-fill pass
+        // and an upload sweep, then the gate is asked AGAIN before Submit is clicked again.
         const repaired = await this.repairFromRejectionBanner();
-        if (repaired) {
-          const again = typeof this.page.evaluate !== "function" ? "" : await this.page.evaluate(() => {
-            const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-            for (const el of Array.from(document.querySelectorAll("div, section, [role='alert']"))) {
-              if (!vis(el)) continue;
-              const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
-              if (t && t.length <= 1500 && /unable to submit|could not (be )?submit|fix the errors below|missing required fields|validation failure/i.test(t)) return t.slice(0, 600);
-            }
-            return "";
-          }).catch(() => "");
-          if (!again) {
-            // Repair round: same rule — only positive evidence counts.
-            const ok2 = typeof this.page.evaluate !== "function" ? false : await this.page.evaluate(() => {
-              const body = (document.body.innerText || "").slice(0, 4000);
-              if (/thank you.{0,200}(submitted|received)|has been (successfully )?submitted|application (number|id)\s*[:#]/is.test(body)) return true;
-              return !/EditProject/i.test(location.href);
-            }).catch(() => false);
-            if (!ok2) {
-              await this.capturePageShot("UNCONFIRMED after repair", true);
-              throw new Error("Repair cleared the banner but the page never confirmed the filing — stopping for a human.");
-            }
-            await this.capturePageShot("SUBMITTED", true);
-            this.finalSubmitClicked = true;
-            return true;
-          }
-          await this.capturePageShot("REFUSED after repair", true);
-          throw new Error(`The portal still refused after repair: ${again.slice(0, 350)}`);
-        }
-        await this.capturePageShot("REFUSED", true);
-        throw new Error(`The portal REFUSED the submission: ${rejection.slice(0, 400)}`);
+        if (repaired) outcome = await this.pollSubmissionOutcome();
       }
-      // THE VERIFICATION SHOT. Until now the run photographed every page on the way in and
-      // nothing on the way out, so the one page an operator actually wants to see after
-      // clicking Submit — the completion page carrying the record number — was the only page
-      // never captured.
-      await this.capturePageShot("SUBMITTED", true);
-      this.finalSubmitClicked = true;
-      return true;
+      this.finalSubmitOutcome = outcome;
+      if (outcome.verdict === "accepted") {
+        await this.capturePageShot("SUBMITTED", true);
+        return true;
+      }
+      if (outcome.verdict === "rejected") {
+        await this.capturePageShot("REFUSED", true);
+        throw new Error(`Final submit clicked; the portal REFUSED the submission: ${String(outcome.evidence ?? "").slice(0, 300)}`);
+      }
+      await this.capturePageShot("UNCONFIRMED", true);
+      throw new Error("Final submit clicked; outcome unknown — human must verify. The page neither confirmed nor refused the filing; a quiet page is not an accepted application.");
     }
 
     // 5) Ordinary navigation/UI click (pre-review). Safe to perform.
@@ -3465,7 +3694,7 @@ ${body.slice(0, 4000)}`);
     const beforeEffect = await this.pageEffect();
 
     await waitForElement(scoped);
-    await scoped!.click();
+    await this.guardedClick(scoped, `recipe click${step.note ? ` (${String(step.note).slice(0, 50)})` : ""}`);
     // A recorded Next/Continue advances a Vue wizard to a not-yet-bound section. Wait for an
     // interactive control to mount before the next fill so we never type onto an unmounted page
     // (best-effort; never skips — the retry/reload loop still recovers a genuine miss).
@@ -3639,7 +3868,7 @@ ${body.slice(0, 4000)}`);
     await dismissPageModals(this.page).catch(() => null);
     await clearPageOverlays(this.page).catch(() => null);
     const again = await this.resolveLocator(step.selector).catch(() => null);
-    if (again && typeof again.click === "function") await again.click({ timeout: 8000 }).catch(() => null);
+    if (again && typeof again.click === "function") await this.guardedClick(again, "retry an advance that did not move", { timeout: 8000 }).catch(() => null);
     for (let i = 0; i < ADVANCE_SETTLE_TRIES && !(await moved()); i++) await sleep(ADVANCE_SETTLE_MS);
     if (await moved()) {
       this.driftWarnings.push(`advance "${String(step.note ?? "click").slice(0, 44)}" needed an overlay dismissed before it took`);
@@ -4259,7 +4488,7 @@ ${body.slice(0, 4000)}`);
       for (let i = 0; i < 2; i++) {
         const kb = (this.page as { keyboard?: { press?: (k: string) => Promise<void> } }).keyboard;
         if (!kb?.press) return false;
-        await kb.press("Escape").catch(() => null);
+        await this.guardedPress(kb, "Escape", "dismiss a stale popup").catch(() => null);
         await this.page.waitForTimeout?.(120).catch(() => null);
         if (!(await countOpen())) {
           this.driftWarnings.push(
@@ -4310,6 +4539,43 @@ ${body.slice(0, 4000)}`);
    * turns 7.2 into 7.20, and a date input rewrites 2026-10-01 as 10/01/2026 — none of those
    * are failures. Only an empty box, or a value sharing nothing with what we typed, is.
    */
+  /** Commit a field the way a person does — leave it — and settle on what that started
+   *  (settle.ts commitField: blur, Tab as the fallback, then PageRequestManager / postback /
+   *  request / DOM quiet). A control without a page behind it (unit-test fakes) is blurred. */
+  private async commitAndSettle(scoped: unknown): Promise<void> {
+    const loc = scoped as { blur?: (o?: unknown) => Promise<void>; page?: () => unknown } | null;
+    if (!loc) return;
+    const real = typeof loc.page === "function" && this.page && typeof this.page.evaluate === "function" && typeof this.page.addInitScript === "function";
+    if (real) {
+      // quietMs 450: longer than the ~300ms a portal waits before re-rendering a block from its
+      // saved state after an autosave, so a re-render that is coming is waited for, not raced.
+      await commitField(loc as never, { timeoutMs: 8000, quietMs: 450 }).catch(() => null);
+      return;
+    }
+    if (typeof loc.blur === "function") await loc.blur().catch(() => {});
+  }
+
+  /** Does the intended select/combobox show `want`? Reads the SELECTED OPTION (text and value)
+   *  of a native select, the value/text of a combobox face. null = could not read (not
+   *  evidence either way). */
+  private async selectionHeld(scoped: unknown, want: string): Promise<boolean | null> {
+    const loc = scoped as { evaluate?: (fn: (el: Element) => string) => Promise<string> } | null;
+    if (!loc || typeof loc.evaluate !== "function" || !want.trim()) return null;
+    const shown = await loc.evaluate((el: Element) => {
+      if (el.tagName === "SELECT") {
+        const s = el as HTMLSelectElement;
+        const o = s.options[s.selectedIndex];
+        return o ? `${o.text}\u0001${o.value}` : "";
+      }
+      const i = el as HTMLInputElement;
+      return String((typeof i.value === "string" && i.value) || el.textContent || "");
+    }).catch(() => null as unknown as string);
+    if (shown === null || shown === undefined) return null;
+    const [text, value] = String(shown).split("\u0001");
+    if (!String(text ?? "").trim() && !String(value ?? "").trim()) return false;
+    return readbackMatches(String(text ?? ""), want) || (value !== undefined && readbackMatches(value, want));
+  }
+
   private async fillHeld(
     scoped: { inputValue?: (opts?: { timeout?: number }) => Promise<string> } | null | undefined,
     expected: string,
@@ -4325,7 +4591,11 @@ ${body.slice(0, 4000)}`);
     if (a === b) return true;
     const na = Number(shown.replace(/[^0-9.-]/g, "")), nb = Number(want.replace(/[^0-9.-]/g, ""));
     if (Number.isFinite(na) && Number.isFinite(nb) && na === nb && a && b) return true;
-    if (a.includes(b) || b.includes(a)) return true;
+    // The box may DECORATE what we typed (a mask adds "(", ")", a suffix), so shown ⊇ wanted
+    // holds. The reverse — the box shows a FRAGMENT of what we typed — is the signature of a
+    // re-render that wiped the field mid-typing ("0199" left of "541-555-0199"), and it used to
+    // read as held. It is a miss.
+    if (a.includes(b)) return true;
     // A date input reorders its parts rather than losing them: 2026-10-01 → 10/01/2026.
     const parts = (s: string): string => (s.match(/\d+/g) ?? []).map((n) => String(Number(n))).sort().join("-");
     if (parts(shown) && parts(shown) === parts(want)) return true;
@@ -4519,7 +4789,7 @@ ${body.slice(0, 4000)}`);
       const one = loc.first?.();
       if (!one?.click) continue;
       if (!(await this.isTrulyVisible(one as never))) continue;
-      await one.click({ timeout: 6000 }).catch(() => null);
+      await this.guardedClick(one, "tick a styled checkbox by its label", { timeout: 6000 }).catch(() => null);
       if (await box.isChecked().catch(() => false)) return true;
     }
     return false;
@@ -4853,8 +5123,8 @@ ${body.slice(0, 4000)}`);
       row.first(),
     ]) {
       if (!(await cand.count().catch(() => 0))) continue;
-      if (!(await cand.click({ timeout: 8000 }).then(() => true).catch(() => false))) continue;
-      await this.page.waitForLoadState?.("networkidle", { timeout: 12000 }).catch(() => null);
+      if (!(await this.guardedClick(cand, "select the project's address row", { timeout: 8000 }).then(() => true).catch(() => false))) continue;
+      await this.settle(12000);
       await this.page.waitForTimeout?.(900).catch(() => null);
       const afterUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
       const afterSig = await snap();
@@ -5356,13 +5626,14 @@ ${body.slice(0, 4000)}`);
     // from a screenshot never. The HTML costs nothing to keep and turns the next portal
     // puzzle from a sequence of live runs into a file someone reads once.
     try {
-      const dir = this.pageShotDir || path.join(process.env.REPLAY_CAPTURE_DIR || path.join(process.cwd(), "data"), "replay-failures");
-      fs.mkdirSync(dir, { recursive: true });
+      const dir = this.pageShotDir || path.join(replayCaptureRoot(), "replay-failures");
       const safe = String(step.note ?? step.action).replace(/[^a-z0-9]+/gi, "-").slice(0, 40);
-      fs.writeFileSync(
-        path.join(dir, `step${String(stepIdx).padStart(3, "0")}-${safe}.html`),
-        await this.page.content(),
-      );
+      // The step's own control, as its recorded selector names it (every frame is kept too,
+      // so a control inside an iframe is in the capture whichever way this resolves).
+      let target: unknown = null;
+      try { target = step.selector ? this.locator(step.selector) : null; } catch { target = null; }
+      const body = String(await this.page.locator?.("body").innerText().catch(() => "") ?? "");
+      await this.writeSanitizedCapture(dir, `step${String(stepIdx).padStart(3, "0")}-${safe}`, { target, text: body });
     } catch { /* diagnostics must never change the outcome */ }
     const parts: string[] = [];
     try {
@@ -5393,7 +5664,8 @@ ${body.slice(0, 4000)}`);
     if (this.healDiagnostic) parts.push(`self-heal: ${this.healDiagnostic}`);
     try {
       if (typeof this.page.screenshot === "function") {
-        const dir = process.env.PORTAL_SCREENSHOT_DIR || path.join(process.cwd(), "data", "screenshots");
+        const dir = process.env.REPLAY_CAPTURE_DIR ? path.join(process.env.REPLAY_CAPTURE_DIR, "screenshots")
+          : process.env.PORTAL_SCREENSHOT_DIR || path.join(process.cwd(), "data", "screenshots");
         await fs.promises.mkdir(dir, { recursive: true });
         const file = path.join(dir, `replay-fail-step${String(stepIdx).padStart(3, "0")}-${Date.now()}.png`);
         await this.page.screenshot({ path: file, fullPage: true });
@@ -5404,7 +5676,80 @@ ${body.slice(0, 4000)}`);
     return parts.length ? ` [${parts.join(" | ")}]` : "";
   }
 
-  private async healSelectorForStep(step: RecipeStep): Promise<RecipeSelector | null> {
+  /**
+   * A SANITIZED, ALL-FRAMES CAPTURE — the learn sanitizer's rules, for replay's diagnostic files.
+   *
+   * Replay wrote raw page.content() (typed values, prefilled account numbers) and a body slice
+   * with no redaction: 22 review-miss .txt files held runs of 9+ digits. And it saved only the
+   * TOP frame, so half the real-portal failure captures (PowerClerk's County, inside a frame)
+   * could not show the control that failed. This keeps every frame, with values, `checked` and
+   * `selected` stripped and scripts removed exactly as learnDebug.capturePageHtml does, the body
+   * text redacted (digit runs, emails), and the TARGET control's own markup + option list.
+   * Directories: REPLAY_RUN_DIR (the run's page folder) / REPLAY_CAPTURE_DIR, data/ only when
+   * neither is set; each capture folder is pruned to its newest CAPTURE_KEEP files.
+   * Best-effort and never throws. Returns the path written ("" when nothing was).
+   */
+  private async writeSanitizedCapture(dir: string, base: string, opts: { target?: unknown; text?: string } = {}): Promise<string> {
+    try {
+      if (!this.page) return "";
+      fs.mkdirSync(dir, { recursive: true });
+      const frames: Array<{ url?: () => string; name?: () => string; evaluate?: (fn: unknown) => Promise<unknown> }> =
+        typeof this.page.frames === "function" ? this.page.frames() : [this.page];
+      const captured: Array<{ url: string; name: string; html: string }> = [];
+      for (const fr of frames.slice(0, 12)) {
+        if (typeof fr?.evaluate !== "function") continue;
+        const html = await fr.evaluate(() => {
+          const doc = document.documentElement.cloneNode(true) as HTMLElement;
+          for (const el of Array.from(doc.querySelectorAll("script, noscript"))) el.remove();
+          for (const el of Array.from(doc.querySelectorAll("input, textarea"))) {
+            el.removeAttribute("value");
+            el.removeAttribute("checked");
+            (el as HTMLInputElement).value = "";
+            if (el.tagName === "TEXTAREA") el.textContent = "";
+          }
+          for (const el of Array.from(doc.querySelectorAll("option"))) el.removeAttribute("selected");
+          return `<!doctype html><html>${doc.innerHTML}</html>`;
+        }).catch(() => "") as string;
+        if (html) captured.push({ url: String(fr.url?.() ?? "").slice(0, 200), name: String(fr.name?.() ?? ""), html: redactCaptureText(html, 2_000_000) });
+      }
+      type TargetCapture = { outerHTML: string; options: string[]; secret: boolean };
+      let target: TargetCapture | null = null;
+      const t = opts.target as { first?: () => unknown; evaluate?: (fn: unknown, arg: unknown) => Promise<unknown> } | null | undefined;
+      const one = t && typeof t.first === "function" ? (t.first() as typeof t) : t;
+      if (one && typeof one.evaluate === "function") {
+        await this.page.evaluate?.(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+        target = await one.evaluate((el: Element, g: string) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const ps = (globalThis as any)[g];
+          const secret = !!ps && ps.isSecretField(ps.fieldIdentityInPage(el));
+          const c = el.cloneNode(true) as HTMLElement;
+          c.removeAttribute("value");
+          for (const o of Array.from(c.querySelectorAll("option"))) o.removeAttribute("selected");
+          const opts = el.tagName === "SELECT" && !secret
+            ? Array.from((el as HTMLSelectElement).options).map((o) => o.text.replace(/\s+/g, " ").trim()).slice(0, 200)
+            : [];
+          return { outerHTML: secret ? `<${el.tagName.toLowerCase()} [secret control — markup withheld]>` : c.outerHTML.slice(0, 20_000), options: opts, secret };
+        }, PORTAL_SAFETY_GLOBAL).catch(() => null) as TargetCapture | null;
+      }
+      const file = path.join(dir, `${base}.json`);
+      fs.writeFileSync(file, JSON.stringify({
+        url: String(this.page.url?.() ?? "").slice(0, 200),
+        capturedAt: new Date().toISOString(),
+        sanitized: "values/checked/selected stripped, scripts removed, digit runs and emails masked",
+        text: redactCaptureText(opts.text ?? ""),
+        target: target ? { ...target, outerHTML: redactCaptureText(target.outerHTML, 20_000), options: target.options.map((o) => redactCaptureText(o, 200)) } : null,
+        frames: captured,
+      }, null, 1));
+      // The main frame alone as .html, so a person can open it in a browser.
+      if (captured[0]) fs.writeFileSync(path.join(dir, `${base}.html`), captured[0].html);
+      pruneCaptureDir(dir);
+      return file;
+    } catch {
+      return "";
+    }
+  }
+
+  private async healSelectorForStep(step: RecipeStep): Promise<RecipeSelector | { ambiguous: string } | null> {
     // WHY THIS REPORTS. Every exit below used to be a bare `return null`, so a heal that
     // never ran (page gone, $$eval threw) looked exactly like a heal that ran and found
     // nothing. A live PGE replay failed at step 1 on a control the failure diagnostic
@@ -5414,18 +5759,9 @@ ${body.slice(0, 4000)}`);
       this.healDiagnostic = "no page to re-extract from";
       return null;
     }
-    const wanted = (step.note || step.selector?.label || step.selector?.name || "").trim().toLowerCase();
-    if (wanted.length < 3) {
-      this.healDiagnostic = `nothing to anchor on (note/label is ${JSON.stringify(wanted)})`;
-      return null;
-    }
-    let raws: unknown[] = [];
-    try { raws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage); }
-    catch (err) {
-      // Do NOT swallow this. A function declared inside the extraction script compiles to
-      // __name(fn, "…"), which does not exist in the browser; that throw is what made an
-      // earlier scan read as "found nothing" for three separate investigations.
-      this.healDiagnostic = `re-extraction threw: ${err instanceof Error ? err.message : String(err)}`;
+    const target = healTargetOf(step, step.action === "select" ? this.resolveValue(step) : "");
+    if (target.label.length < 3) {
+      this.healDiagnostic = `nothing to anchor on (note/label is ${JSON.stringify(target.label)})`;
       return null;
     }
     const compat = (t: string): boolean =>
@@ -5433,41 +5769,181 @@ ${body.slice(0, 4000)}`);
       : step.action === "check" || step.action === "uncheck" ? t === "checkbox" || t === "radio"
       : step.action === "click" ? t === "button"
       : t === "text" || t === "other" || t === "select";
-    let best: { sel: RecipeSelector; score: number } | null = null;
-    const sawCompatible: string[] = [];
-    for (const raw of raws as Parameters<typeof toExtractedField>[0][]) {
-      const f = toExtractedField(raw);
-      if (!compat(f.fieldType)) continue;
-      const label = (f.label || "").trim().toLowerCase();
-      if (label && sawCompatible.length < 10) sawCompatible.push(label.slice(0, 40));
-      if (!label) continue;
-      const contains = label.includes(wanted) || wanted.includes(label);
-      const base = label === wanted ? 100 : contains && Math.min(label.length, wanted.length) >= 5 ? 70 : 0;
-      // Fingerprint is a TIE-BREAK bonus only (max 58 < the 70 label gate):
-      // two bare "Manufacturer" fields both score 70/100 on label — the one whose
-      // recorded attributes (name/placeholder/id/aria/section) match wins. A
-      // fingerprint can never substitute for the label anchor (never invented).
-      if (base < 70) continue;
-      const score = base + fingerprintBoost(f.fingerprint, step.fingerprint);
-      if (!best || score > best.score) best = { sel: f.selector, score };
+    // BELOW THE MINIMUM, LOOK ONCE MORE — the page may still be rendering the control. One
+    // settle and one re-localization, then a clear failure. Never a loop.
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass === 1) await this.settle(4000);
+      let raws: unknown[] = [];
+      try { raws = await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage); }
+      catch (err) {
+        // Do NOT swallow this. A function declared inside the extraction script compiles to
+        // __name(fn, "…"), which does not exist in the browser; that throw is what made an
+        // earlier scan read as "found nothing" for three separate investigations.
+        this.healDiagnostic = `re-extraction threw: ${err instanceof Error ? err.message : String(err)}`;
+        return null;
+      }
+      const fields = (raws as Parameters<typeof toExtractedField>[0][]).map((r) => toExtractedField(r)).filter((f) => compat(f.fieldType));
+      const ranked = rankHealCandidates(fields, target);
+      const verdict = decideHeal(ranked);
+      if (verdict.kind === "none") {
+        const seen = fields.map((f) => (f.label || "").trim().toLowerCase()).filter(Boolean).slice(0, 10);
+        this.healDiagnostic = ranked.length
+          ? `best candidate ${JSON.stringify(ranked[0].label.slice(0, 40))} scored ${ranked[0].score} < minimum ${HEAL_MIN_SCORE}${pass ? " (after one settle + re-localize)" : ""}`
+          : seen.length
+            ? `no ${step.action}-compatible control matched ${JSON.stringify(target.label.slice(0, 50))}; page offers: ${seen.map((s) => JSON.stringify(s.slice(0, 40))).join(", ")}`
+            : `re-extraction returned no ${step.action}-compatible controls at all (${raws.length} element(s) scanned)`;
+        continue;
+      }
+      if (verdict.kind === "ambiguous") {
+        // A TIE IS NOT A CHOICE. Two bare "Manufacturer" boxes with nothing to tell them apart
+        // used to heal onto whichever came first — the inverter make written into the module's
+        // box, and the RECIPE PATCHED with that selector. Refuse, named.
+        this.healDiagnostic = verdict.reason;
+        return { ambiguous: verdict.reason };
+      }
+      if (JSON.stringify(verdict.field.selector) === JSON.stringify(step.selector)) {
+        // The page still offers exactly the control we recorded, so the selector is not the
+        // problem — something is stopping the action from LANDING (an overlay, a disabled
+        // state). Saying so points at a completely different fix than "selector drifted".
+        this.healDiagnostic = "the live page offers the SAME selector that just failed — the control is there but the click is not landing (overlay/disabled?), not a drifted selector";
+        return null;
+      }
+      this.healDiagnostic = `healed onto ${JSON.stringify(verdict.field.label.slice(0, 40))} (score ${verdict.score}, next ${verdict.runnerUp ?? "none"})`;
+      return verdict.field.selector;
     }
-    if (best && JSON.stringify(best.sel) === JSON.stringify(step.selector)) {
-      // The page still offers exactly the control we recorded, so the selector is not the
-      // problem — something is stopping the click from LANDING (an overlay, a disabled
-      // state). Saying so points at a completely different fix than "selector drifted".
-      this.healDiagnostic = "the live page offers the SAME selector that just failed — the control is there but the click is not landing (overlay/disabled?), not a drifted selector";
-      return null;
-    }
-    if (!best) {
-      this.healDiagnostic = sawCompatible.length
-        ? `no ${step.action}-compatible control matched ${JSON.stringify(wanted.slice(0, 50))}; page offers: ${sawCompatible.map((s) => JSON.stringify(s)).join(", ")}`
-        : `re-extraction returned no ${step.action}-compatible controls at all (${raws.length} element(s) scanned)`;
-    }
-    return best?.sel ?? null;
+    return null;
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// SELF-HEAL BY WEIGHTED MULTI-ATTRIBUTE FINGERPRINT
+//
+// One attribute is one guess; several agreeing attributes are evidence (the Similo result: a
+// weighted multi-attribute match roughly halves locator failures against any single locator).
+// The target is what the step RECORDED — label, name, id, placeholder, aria-label, section,
+// neighbouring text — plus what can be DERIVED at replay when the learn did not capture it: the
+// side of the form the step's binding belongs to (inverterMake → an inverter section), the value
+// a select must be able to take (the option-list signature), and the recorded ordinal.
+//
+// Rules: the label is the anchor (no label, no heal — attributes alone never invent a target);
+// a heal must clear a minimum score; and two candidates within the tie margin are a refusal with
+// a named ambiguity, never "the first one".
+// ---------------------------------------------------------------------------------------------
 
+export const HEAL_MIN_SCORE = 40;
+export const HEAL_TIE_MARGIN = 6;
+
+export interface HealTarget {
+  label: string;
+  name?: string;
+  id?: string;
+  placeholder?: string;
+  ariaLabel?: string;
+  section?: string;
+  nearText?: string;
+  /** The form side the step's binding names (inverter / module / battery / owner / installer / electrical). */
+  side?: string;
+  /** For a select: the value it must be able to take. */
+  value?: string;
+  /** The recorded ordinal among same-labelled controls. */
+  ordinal?: number;
+}
+
+const SIDES: Array<{ side: string; field: RegExp; section: RegExp }> = [
+  { side: "inverter", field: /^(inverter|existingInverter)/i, section: /\binverter/i },
+  { side: "module", field: /^(module|pvModule|array\d*Module|existingModule|totalModule)/i, section: /\b(module|pv\s*array|array|panel)/i },
+  { side: "battery", field: /^(battery|ess|storage)/i, section: /\b(batter|storage|ess)\b/i },
+  { side: "owner", field: /^(homeowner|owner|ubAccountHolder|customer)/i, section: /\b(owner|customer|homeowner|property|account\s*holder)/i },
+  { side: "installer", field: /^(installer|contractor|applicant|ccb)/i, section: /\b(installer|contractor|applicant|company|licensed)/i },
+  { side: "electrical", field: /^(electrical|electrician)/i, section: /\belectric/i },
+];
+
+/** The heal target for a recorded step: recorded attributes first, derived ones otherwise. */
+export function healTargetOf(step: RecipeStep, value = ""): HealTarget {
+  const fp = step.fingerprint ?? {};
+  const sel = step.selector ?? {};
+  const allSel = [sel, ...(sel.fallbacks ?? [])];
+  const cssId = allSel.map((s) => /^#([A-Za-z_][\w:.-]*)$/.exec(String(s.css ?? ""))?.[1]).find(Boolean);
+  const side = SIDES.find((s) => s.field.test(String(step.field ?? "")))?.side;
+  return {
+    label: String(step.note || sel.label || sel.name || "").trim().toLowerCase(),
+    name: fp.name || (sel.role ? undefined : sel.name) || undefined,
+    id: fp.id || cssId || undefined,
+    placeholder: fp.placeholder || sel.placeholder || undefined,
+    ariaLabel: fp.ariaLabel || undefined,
+    section: fp.section || undefined,
+    nearText: fp.nearText || undefined,
+    side,
+    value: value || undefined,
+    ordinal: typeof sel.nth === "number" ? sel.nth : undefined,
+  };
+}
+
+const lc = (s?: string): string => String(s ?? "").trim().toLowerCase();
+const compactHeal = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/** Score one live candidate against the target. Pure; exported for tests. Returns -1 when the
+ *  label anchor does not hold (the candidate is not considered at all). */
+export function scoreHealCandidate(f: ExtractedField, t: HealTarget, ordinalAmongSameLabel = 0): number {
+  const label = lc(f.label);
+  if (!label || !t.label) return -1;
+  const contains = label.includes(t.label) || t.label.includes(label);
+  const labelScore = label === t.label ? 40 : contains && Math.min(label.length, t.label.length) >= 5 ? 28 : 0;
+  if (!labelScore) return -1;
+  const fp = f.fingerprint ?? {};
+  const eq = (a?: string, b?: string): boolean => !!a && !!b && lc(a) === lc(b);
+  let score = labelScore;
+  if (eq(fp.name, t.name)) score += 12;
+  if (eq(fp.id, t.id)) score += 8;
+  if (eq(fp.placeholder, t.placeholder)) score += 8;
+  if (eq(fp.ariaLabel, t.ariaLabel)) score += 8;
+  const section = lc(f.section || fp.section);
+  const rs = lc(t.section);
+  if (section && rs && Math.min(section.length, rs.length) >= 4 && (section.includes(rs) || rs.includes(section))) score += 14;
+  if (t.side && section) {
+    const own = SIDES.find((s) => s.side === t.side)!;
+    if (own.section.test(section)) score += 12;
+    else if (SIDES.some((s) => s.side !== t.side && s.section.test(section))) score -= 12;
+  }
+  if (t.nearText && lc(fp.nearText) && (lc(fp.nearText).includes(lc(t.nearText)) || lc(t.nearText).includes(lc(fp.nearText)))) score += 6;
+  if (t.value && f.options?.length) {
+    const v = compactHeal(t.value);
+    score += f.options.some((o) => { const c = compactHeal(o); return !!c && (c === v || c.includes(v) || (c.length >= 4 && v.includes(c))); }) ? 10 : -10;
+  }
+  if (typeof t.ordinal === "number" && t.ordinal === ordinalAmongSameLabel) score += 4;
+  return score;
+}
+
+export interface RankedHeal { field: ExtractedField; label: string; score: number }
+
+/** Every candidate whose label anchor holds, best first. */
+export function rankHealCandidates(fields: ExtractedField[], t: HealTarget): RankedHeal[] {
+  const seenPerLabel = new Map<string, number>();
+  const out: RankedHeal[] = [];
+  for (const f of fields) {
+    const key = lc(f.label);
+    const ord = seenPerLabel.get(key) ?? 0;
+    seenPerLabel.set(key, ord + 1);
+    const score = scoreHealCandidate(f, t, ord);
+    if (score >= 0) out.push({ field: f, label: f.label || "", score });
+  }
+  return out.sort((a, b) => b.score - a.score);
+}
+
+/** Heal, refuse a tie, or find nothing — never "the first of equals". */
+export function decideHeal(ranked: RankedHeal[]):
+  | { kind: "heal"; field: ExtractedField; score: number; runnerUp?: number }
+  | { kind: "ambiguous"; reason: string }
+  | { kind: "none" } {
+  const top = ranked[0];
+  if (!top || top.score < HEAL_MIN_SCORE) return { kind: "none" };
+  const next = ranked[1];
+  if (next && top.score - next.score < HEAL_TIE_MARGIN) {
+    const where = (r: RankedHeal) => `${JSON.stringify(r.label.slice(0, 30))}${r.field.section ? ` in ${JSON.stringify(String(r.field.section).slice(0, 30))}` : ""} (${r.score})`;
+    return { kind: "ambiguous", reason: `self-heal refused — ambiguous: ${where(top)} and ${where(next)} score within ${HEAL_TIE_MARGIN}; nothing recorded or derivable tells them apart` };
+  }
+  return { kind: "heal", field: top.field, score: top.score, runnerUp: next?.score };
+}
 /** Tie-break bonus for replay self-heal: how well a live element's recorded-style
  *  attributes match the step's captured fingerprint. Pure + exported for tests.
  *  Max 58 — deliberately below the 70-point label gate so attributes alone can

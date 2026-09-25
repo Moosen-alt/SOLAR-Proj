@@ -206,6 +206,13 @@ interface StageOptions {
   // portal, the recipe adapter may replay through the final application submit
   // (never fee payment). Default false = guided-manual (stop at review).
   autoSubmit?: boolean;
+  // A NAMED PERSON'S APPROVAL OF ONE RUN — the only thing that lets a recipe replay click its
+  // flagged final submit (with PORTAL_ALLOW_FINAL_SUBMIT=1 re-read at the click, and a valid
+  // recipe shape). autoSubmit alone never clicks it. Absent/null → never clicked. There is no
+  // standing per-recipe arm; the approval must name exactly `runId`.
+  runApproval?: import("../../shared/src/portalSafety").RunApproval | null;
+  // The run this stage IS (the approval's runId must equal it).
+  runId?: string;
   // OPERATOR-DELEGATED FINAL SUBMIT. Distinct from autoSubmit, which is the RecipeAdapter
   // replaying a TRUSTED recipe through its own recorded submit step. This is the operator
   // saying "file it now, on my behalf" for a HAND-CODED adapter — the equivalent of them
@@ -568,7 +575,10 @@ export async function stageWithRecipe(
   files: string[],
   options: StageOptions = {},
 ): Promise<Record<string, unknown>> {
-  return browserLimiter(() => runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType, { autoSubmit: options.autoSubmit, beforeUpload: options.beforeUpload }), project, files, options));
+  return browserLimiter(() => runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType, {
+    autoSubmit: options.autoSubmit, beforeUpload: options.beforeUpload,
+    runApproval: options.runApproval ?? null, runId: options.runId,
+  }), project, files, options));
 }
 
 // CORRECTION CONTINUATION: reopen a SUSPENDED filing's correction form on the live portal.

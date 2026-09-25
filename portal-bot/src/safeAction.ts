@@ -49,6 +49,21 @@ export function redactStatusText(text: string | null | undefined): string | null
   return masked.slice(0, MAX_STATUS_SNIPPET);
 }
 
+// Redact page text kept in a DIAGNOSTIC CAPTURE (a replay failure / review-miss file): every run
+// of 6+ digits (account, meter, phone, parcel) masked to its last 4, every email address masked.
+// Unlike redactStatusText it keeps the text's length budget large (a capture is read by a person
+// debugging a page), and it never returns null. Idempotent.
+export function redactCaptureText(text: string | null | undefined, max = 6000): string {
+  const t = String(text ?? "");
+  return t
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[email]")
+    .replace(/\d[\d\s().-]{4,}\d/g, (m) => {
+      const digits = m.replace(/\D/g, "");
+      return digits.length >= 6 ? maskId(digits) : m;
+    })
+    .slice(0, max);
+}
+
 // Read-only status scrape tail shared by the live adapters' checkStatus(): reads the page
 // body text, finds the first known application/permit number, and returns a REDACTED,
 // capped snippet around it (account/meter-like digit runs masked) — never a multi-thousand-

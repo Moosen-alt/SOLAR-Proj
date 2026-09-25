@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../../shared/src/types";
-import { RecipeAdapter, fingerprintBoost } from "./recipeAdapter";
+import { RecipeAdapter, fingerprintBoost, healTargetOf, scoreHealCandidate, rankHealCandidates, decideHeal, HEAL_MIN_SCORE, HEAL_TIE_MARGIN } from "./recipeAdapter";
 
 // Browser-free tests for the recipe replay loop. We inject a fake Playwright page
 // so we can assert the safety-critical behaviours (final-submit denylist, stop-at-
@@ -40,6 +40,10 @@ function makeFakePage(opts: {
   // enables the self-heal + drift-precheck paths (absent on legacy fakes → both
   // features silently no-op, which the backward-compat tests rely on).
   rawFields?: Array<Record<string, unknown>>;
+  // When set, the page is "readable": page.evaluate exists (answering null to every in-page
+  // question) and locator("body").innerText() returns this text — enough for the final-submit
+  // outcome read, which only ever reads the body through the shared classifier.
+  bodyText?: string;
 }) {
   const present = opts.present ?? {};
   const log = opts.log;
@@ -64,6 +68,7 @@ function makeFakePage(opts: {
       setInputFiles: async () => undefined,
       // Used by detectChallengeFrame to read iframe src attributes.
       evaluateAll: async () => opts.iframeSrcs ?? [],
+      innerText: async () => (key === "css:body" ? opts.bodyText ?? "" : ""),
     };
     return loc;
   }
@@ -95,8 +100,21 @@ function makeFakePage(opts: {
     waitForFunction: async () => { page.readyCheckCount += 1; return true; },
   };
   if (opts.rawFields) page.$$eval = async () => opts.rawFields;
+  if (opts.bodyText !== undefined) page.evaluate = async () => null;
   return page;
 }
+
+// THE FINAL-SUBMIT GATE'S INPUTS. PORTAL_ALLOW_FINAL_SUBMIT is re-read at the click, so a test
+// sets it around the run and restores it after.
+async function withFinalSubmitEnv<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.PORTAL_ALLOW_FINAL_SUBMIT;
+  if (value === undefined) delete process.env.PORTAL_ALLOW_FINAL_SUBMIT; else process.env.PORTAL_ALLOW_FINAL_SUBMIT = value;
+  try { return await fn(); } finally {
+    if (prev === undefined) delete process.env.PORTAL_ALLOW_FINAL_SUBMIT; else process.env.PORTAL_ALLOW_FINAL_SUBMIT = prev;
+  }
+}
+const APPROVED_RUN_R = { autoSubmit: true, runApproval: { approver: "A. Person", runId: "R" }, runId: "R" };
+const CONFIRMATION = "Your application has been successfully submitted. Record Number: 187-26-000309-STR";
 
 function baseRecipe(steps: RecipeStep[]): PortalRecipe {
   return {
@@ -179,21 +197,71 @@ async function testIdOnlyFinalSubmitNotClickedWithoutFlag() {
   assert.equal(result.data?.finalSubmitClicked, false);
 }
 
-// P0-3: the SAME id/css-only step IS clicked when explicitly flagged isFinalSubmit in
-// autoSubmit mode, and finalSubmitClicked is reported true.
+// R2 MUST-PASS: the flagged final submit is clicked ONLY when every input of the shared gate
+// agrees, asked at the click: PORTAL_ALLOW_FINAL_SUBMIT=1, a named person's approval of THIS run,
+// the recipe's single terminal flagged step right after stopForReview. Local fixture only.
+// Acceptance is read through classifySubmissionText: a confirmation page is "accepted".
 async function testFlaggedFinalSubmitClickedInAutoSubmit() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
   const recipe = baseRecipe([
     { action: "stopForReview" },
     { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: true });
-  withFakePage(adapter, makeFakePage({ log }));
-  const result = await adapter.fillApplication(fakeProject);
-  assert.equal(result.ok, true);
-  assert.deepEqual(log.clicks, ["css:#ctl00_btnSubmit"], "flagged final submit must be clicked in autoSubmit");
+  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
+  withFakePage(adapter, makeFakePage({ log, bodyText: CONFIRMATION }));
+  const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
+  assert.equal(result.ok, true, String(result.message));
+  assert.deepEqual(log.clicks, ["css:#ctl00_btnSubmit"], "env 1 + approval for run R + run R + terminal flagged step → clicked");
   assert.equal((adapter as unknown as { finalSubmitClicked: boolean }).finalSubmitClicked, true, "finalSubmitClicked must be true");
   assert.equal(result.data?.finalSubmitClicked, true);
+  assert.equal(adapter.finalSubmitOutcome?.verdict, "accepted", "a confirmation page is positive evidence");
+}
+
+// R2 MUST-EXCLUDE: each missing input of the gate alone keeps the final submit unclicked.
+async function testFinalSubmitGateRefusesEachMissingInput() {
+  const flagged = { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep;
+  const cases: Array<{ name: string; env: string | undefined; opts: Record<string, unknown>; steps: RecipeStep[] }> = [
+    { name: "autoSubmit:true with the env switch unset", env: undefined, opts: APPROVED_RUN_R, steps: [{ action: "stopForReview" }, flagged] },
+    { name: "autoSubmit:true, env 1, runApproval null", env: "1", opts: { autoSubmit: true, runApproval: null, runId: "R" }, steps: [{ action: "stopForReview" }, flagged] },
+    { name: "autoSubmit:true, env 1, no approval option at all", env: "1", opts: { autoSubmit: true }, steps: [{ action: "stopForReview" }, flagged] },
+    { name: "an approval for run R2 while in run R", env: "1", opts: { autoSubmit: true, runApproval: { approver: "A. Person", runId: "R2" }, runId: "R" }, steps: [{ action: "stopForReview" }, flagged] },
+    { name: "an approval naming no approver", env: "1", opts: { autoSubmit: true, runApproval: { approver: " ", runId: "R" }, runId: "R" }, steps: [{ action: "stopForReview" }, flagged] },
+    { name: "env 'true' (only exactly 1 arms it)", env: "true", opts: APPROVED_RUN_R, steps: [{ action: "stopForReview" }, flagged] },
+    { name: "a flagged step that is not last", env: "1", opts: APPROVED_RUN_R, steps: [{ action: "stopForReview" }, flagged, { action: "waitFor" }] },
+    { name: "a flagged step not after stopForReview", env: "1", opts: APPROVED_RUN_R, steps: [{ action: "waitFor" }, flagged] },
+    { name: "two flagged steps", env: "1", opts: APPROVED_RUN_R, steps: [{ action: "stopForReview" }, flagged, flagged] },
+  ];
+  for (const c of cases) {
+    const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+    const adapter = new RecipeAdapter(baseRecipe(c.steps), {}, {}, c.opts as never);
+    withFakePage(adapter, makeFakePage({ log, bodyText: CONFIRMATION }));
+    const result = await withFinalSubmitEnv(c.env, () => adapter.fillApplication(fakeProject));
+    assert.deepEqual(log.clicks, [], `MUST-EXCLUDE (${c.name}): the final submit must not be clicked`);
+    assert.equal(adapter.finalSubmitClicked, false, `${c.name}: finalSubmitClicked stays false`);
+    assert.notEqual(result.data?.finalSubmitClicked, true, `${c.name}: never reported clicked`);
+  }
+}
+
+// R2: a quiet page after the approved click is "unknown", never "accepted" — the click is
+// reported (finalSubmitClicked true, so nothing re-clicks it), the run stops for a human, and the
+// click happens ONCE even though the step failed.
+async function testFinalSubmitQuietPageIsUnknownAndNotRetried() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "stopForReview" },
+    { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
+  ]);
+  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
+  withFakePage(adapter, makeFakePage({ log, bodyText: "Step 5: Record Issuance" }));
+  const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
+  assert.equal(result.ok, false, "an unconfirmed filing is not a clean run");
+  assert.match(String(result.message), /outcome unknown — human must verify/);
+  assert.deepEqual(log.clicks, ["css:#ctl00_btnSubmit"], "clicked exactly once — never retried");
+  assert.equal(adapter.finalSubmitClicked, true, "the click happened and is reported");
+  assert.equal(adapter.finalSubmitOutcome?.verdict, "unknown");
+  const review = await adapter.stopAtReview();
+  assert.equal(review.data?.finalSubmitClicked, true);
+  assert.match(String(review.message), /UNKNOWN — human must verify/);
 }
 
 // A flagged final submit must STILL never be clicked in guided-manual (autoSubmit off).
@@ -217,9 +285,10 @@ async function testPayFeeBlockedInAutoSubmit() {
     { action: "stopForReview" },
     { action: "click", selector: { role: "button", name: "Pay Now" }, isFinalSubmit: true } as RecipeStep,
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: true });
-  withFakePage(adapter, makeFakePage({ log }));
-  const result = await adapter.fillApplication(fakeProject);
+  // Fully approved and armed: the fee gate must stop it on its own.
+  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
+  withFakePage(adapter, makeFakePage({ log, bodyText: CONFIRMATION }));
+  const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
   assert.equal(result.ok, true);
   assert.deepEqual(log.clicks, [], "PAY_FEE must be hard-blocked even in autoSubmit even if flagged final");
   assert.equal(result.data?.finalSubmitClicked, false);
@@ -233,12 +302,13 @@ async function testIframeChallengeStopsAutoSubmit() {
     { action: "stopForReview" },
     { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: true });
+  // Approved and armed, so the challenge check is what stops it.
+  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
   withFakePage(adapter, makeFakePage({
     log,
     frameUrls: ["https://www.google.com/recaptcha/api2/anchor?k=abc"],
   }));
-  const result = await adapter.fillApplication(fakeProject);
+  const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
   assert.equal(result.ok, false, "an iframe challenge at the final step must fail the run");
   assert.deepEqual(log.clicks, [], "must NOT click final submit when a challenge iframe is present");
   assert.equal((adapter as unknown as { finalSubmitClicked: boolean }).finalSubmitClicked, false);
@@ -369,10 +439,10 @@ async function testRenderReadinessNotOnFinalSubmit() {
     { action: "stopForReview" },
     { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: true });
-  const page = makeFakePage({ log });
+  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
+  const page = makeFakePage({ log, bodyText: CONFIRMATION });
   withFakePage(adapter, page);
-  const result = await adapter.fillApplication(fakeProject);
+  const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
   assert.equal(result.ok, true);
   assert.deepEqual(log.clicks, ["css:#ctl00_btnSubmit"], "the flagged final submit ran");
   assert.equal(page.readyCheckCount, 0, "render-readiness must NOT run on the final-submit branch");
@@ -458,9 +528,9 @@ async function testGapFillReportInFinalSubmitResult() {
     { action: "stopForReview" },
     { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {}, { autoSubmit: true });
-  withFakePage(adapter, makeFakePage({ log }));
-  const result = await adapter.fillApplication(fakeProject);
+  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
+  withFakePage(adapter, makeFakePage({ log, bodyText: CONFIRMATION }));
+  const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
   assert.equal(result.ok, true);
   assert.equal(result.data?.finalSubmitClicked, true);
   assertGapFillReport(result.data?.gapFill, "final-submit");
@@ -499,7 +569,11 @@ async function testHealPrefersFingerprintMatch() {
   assert.ok(healedCss.includes("#i2") && !healedCss.includes("#m1"), `fingerprint picked the inverter-section field (got ${healedCss})`);
 }
 
-// Backward compat: same scenario minus the fingerprint — legacy first-candidate wins.
+// A LEGACY STEP (no recorded fingerprint) BOUND TO THE INVERTER. This test used to EXPECT the
+// inverter make to heal into the MODULE's Manufacturer box (#m1, first of equals) — that
+// expectation was the bug: a wrong-box write, and the recipe patched with it. The derived
+// fingerprint (the binding inverterManufacturer names the inverter side) puts it in #i2, and
+// the heal is identified by step index + recipe version.
 async function testHealWithoutFingerprintLegacy() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
   const recipe = baseRecipe([
@@ -516,10 +590,104 @@ async function testHealWithoutFingerprintLegacy() {
     ],
   }));
   const result = await adapter.fillApplication(fakeProject);
-  assert.equal(result.ok, true);
-  const healed = (result.data as { healedSteps?: Array<{ selector: unknown }> }).healedSteps ?? [];
+  assert.equal(result.ok, true, String(result.message));
+  const healed = (result.data as { healedSteps?: Array<{ selector: unknown; stepIndex?: number; recipeVersion?: number; performed?: boolean }> }).healedSteps ?? [];
   assert.equal(healed.length, 1);
-  assert.ok(JSON.stringify(healed[0].selector).includes("#m1"), "no fingerprint → first ≥70 candidate (legacy)");
+  const sel = JSON.stringify(healed[0].selector);
+  assert.ok(!sel.includes("#m1"), `MUST-EXCLUDE: the inverter make never heals into the module's box (got ${sel})`);
+  assert.ok(sel.includes("#i2"), `the inverter binding heals into the inverter section (got ${sel})`);
+  assert.equal(healed[0].stepIndex, 0, "identified by step index");
+  assert.equal(healed[0].recipeVersion, 1, "and recipe version");
+  assert.equal(healed[0].performed, true);
+}
+
+// TWO CANDIDATES NOTHING TELLS APART: refuse with a named ambiguity — no fill, no heal reported,
+// the run fails on that step saying why.
+async function testHealRefusesATie() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", field: "inverterManufacturer" },
+    { action: "stopForReview" },
+  ]);
+  const adapter = new RecipeAdapter(recipe, { inverterManufacturer: "AP Systems" }, {});
+  withFakePage(adapter, makeFakePage({
+    log,
+    present: { "css:#old-gone-id": false },
+    rawFields: [
+      { label: "Manufacturer", fieldType: "text", id: "e1", name: "equip_a", section: "Equipment" },
+      { label: "Manufacturer", fieldType: "text", id: "e2", name: "equip_b", section: "Equipment" },
+    ],
+  }));
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, false, "a tie fails the step");
+  assert.match(String(result.message), /self-heal refused — ambiguous/, `named ambiguity (${result.message})`);
+  assert.equal(log.fills.length, 0, "nothing was written");
+  assert.equal(((result.data as { healedSteps?: unknown[] }).healedSteps ?? []).length, 0, "no heal reported");
+}
+
+// A HEAL WHOSE HEALED STEP DID NOT PERFORM IS NOT A HEAL: it must not reach healedSteps (the
+// backend patches the recipe from that list).
+async function testHealNotReportedWhenHealedStepDidNotPerform() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", field: "inverterManufacturer" },
+    { action: "stopForReview" },
+  ]);
+  const adapter = new RecipeAdapter(recipe, { inverterManufacturer: "AP Systems" }, {});
+  withFakePage(adapter, makeFakePage({
+    log,
+    present: { "css:#old-gone-id": false },
+    rawFields: [{ label: "Manufacturer", fieldType: "text", id: "i2", name: "inv_mfr", section: "Inverter Information" }],
+  }));
+  // The recorded step throws (as a dead selector does); the healed attempt returns false.
+  const a = adapter as unknown as { executeStep: (s: RecipeStep, p: boolean) => Promise<boolean> };
+  const real = a.executeStep.bind(adapter);
+  a.executeStep = async (s, p) => {
+    if (s.action !== "fill") return real(s, p);
+    if (JSON.stringify(s.selector).includes("#old-gone-id") && !JSON.stringify(s.selector).includes("#i2")) throw new Error("some error: control gone");
+    return false;
+  };
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(((result.data as { healedSteps?: unknown[] }).healedSteps ?? []).length, 0, "a heal that did not perform is not reported");
+  assert.ok(((result.data as { skipped?: string[] }).skipped ?? []).some((s) => /Manufacturer/.test(s)), "the step is reported skipped");
+}
+
+// BELOW THE MINIMUM, LOOK ONCE MORE: the first re-extraction finds nothing (the control is still
+// rendering); after one settle the second finds it. Without the re-localization the step fails.
+async function testHealRelocalizesOnceBelowMinimum() {
+  const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+  const recipe = baseRecipe([
+    { action: "fill", selector: { css: "#old-gone-id" }, note: "Manufacturer", field: "inverterManufacturer" },
+    { action: "stopForReview" },
+  ]);
+  const adapter = new RecipeAdapter(recipe, { inverterManufacturer: "AP Systems" }, {});
+  const page = makeFakePage({ log, present: { "css:#old-gone-id": false }, rawFields: [] });
+  // The control "renders" only once the heal itself has settled the page.
+  let inHeal = false;
+  let settledInHeal = false;
+  const a = adapter as unknown as { settle: (ms?: number) => Promise<void>; healSelectorForStep: (s: RecipeStep) => Promise<unknown> };
+  const realHeal = a.healSelectorForStep.bind(adapter);
+  a.healSelectorForStep = async (s) => { inHeal = true; try { return await realHeal(s); } finally { inHeal = false; } };
+  a.settle = async () => { if (inHeal) settledInHeal = true; };
+  page.$$eval = async () => (settledInHeal ? [{ label: "Manufacturer", fieldType: "text", id: "i2", name: "inv_mfr", section: "Inverter Information" }] : []);
+  withFakePage(adapter, page);
+  const result = await adapter.fillApplication(fakeProject);
+  assert.equal(result.ok, true, `re-localized once and healed (${result.message})`);
+  assert.equal(((result.data as { healedSteps?: unknown[] }).healedSteps ?? []).length, 1);
+}
+
+async function testHealScoringUnit() {
+  const f = (label: string, section: string, extra: Record<string, unknown> = {}) => ({ selector: { label }, label, fieldType: "select", section, fingerprint: { section, ...extra } }) as never;
+  const t = healTargetOf({ action: "select", note: "Manufacturer", field: "inverterMake" } as RecipeStep, "Enphase");
+  assert.equal(t.side, "inverter", "the binding derives the side");
+  const inv = scoreHealCandidate({ ...(f("Manufacturer", "Inverter Information") as object), options: ["Enphase Energy", "SolarEdge"] } as never, t);
+  const mod = scoreHealCandidate({ ...(f("Manufacturer", "PV Module Information") as object), options: ["REC", "Qcells"] } as never, t);
+  assert.ok(inv > mod + HEAL_TIE_MARGIN, `inverter side + option signature beat the module box (${inv} vs ${mod})`);
+  assert.equal(scoreHealCandidate(f("Completely Different", "Inverter Information", { name: "x" }), t), -1, "no label anchor → never a candidate");
+  const tie = decideHeal(rankHealCandidates([f("Manufacturer", "Equipment"), f("Manufacturer", "Equipment")], healTargetOf({ action: "select", note: "Manufacturer" } as RecipeStep)));
+  assert.equal(tie.kind, "ambiguous", "equal candidates are a refusal");
+  const weak = decideHeal(rankHealCandidates([f("Manufacturer Name Of Record", "")], healTargetOf({ action: "select", note: "manufacturer" } as RecipeStep)));
+  assert.equal(weak.kind, "none", `a contains-only label with nothing else agreeing is below the minimum (${HEAL_MIN_SCORE})`);
 }
 
 // A matching fingerprint must NEVER manufacture a heal when no label matches.
@@ -1052,7 +1220,65 @@ async function testDriftDenominatorKeepsBatteryFieldsWhenThereIsABattery(): Prom
     `unknown battery state must replay as recorded, not silently shrink the check: ${JSON.stringify(unknown)}`);
 }
 
+// R1: THE CHOKEPOINT IS THE ONLY DOOR. Read the adapter's own source: no .click( / .press( /
+// .goto( / .dblclick( / .tap( may appear outside guardedClick / guardedPress / guardedGoto, so a
+// raw click re-introduced anywhere (the drift-seek click-through was one) fails here without a
+// browser. Comments are stripped first; in-page evaluate bodies never call these.
+async function testNoRawActionOutsideTheChokepoint() {
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(new URL("./recipeAdapter.ts", import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split(/\r?\n/).map((l) => l.replace(/\/\/.*$/, ""));
+  const helpers = ["guardedClick", "guardedPress", "guardedGoto"];
+  let inHelper = "";
+  let depth = 0;
+  const offenders: string[] = [];
+  src.forEach((line, i) => {
+    const m = /^\s*private async (guardedClick|guardedPress|guardedGoto)\(/.exec(line);
+    if (m && !inHelper) { inHelper = m[1]; depth = 0; }
+    if (inHelper) {
+      depth += (line.match(/{/g) ?? []).length - (line.match(/}/g) ?? []).length;
+      if (depth <= 0 && /}\s*$/.test(line) && !m) { inHelper = ""; return; }
+      return;
+    }
+    if (/\.(click|dblclick|tap|press|goto)\(/.test(line)) offenders.push(`${i + 1}: ${line.trim().slice(0, 110)}`);
+  });
+  assert.ok(helpers.every((h) => src.some((l) => l.includes(`private async ${h}(`))), "the three guarded helpers exist");
+  assert.deepEqual(offenders, [], `raw click/press/goto outside the chokepoint:\n${offenders.join("\n")}`);
+}
+
+// R1 / hard rule 5 inside replay: a goto that leaves the recipe's portal stops the run, named.
+async function testGotoLeavingThePortalStopsTheRun() {
+  const cases: Array<{ name: string; scope: "ahj" | "utility"; portalUrl: string; to: string; allowed: boolean }> = [
+    { name: "permit recipe goto a PowerClerk utility portal", scope: "ahj", portalUrl: "https://aca-oregon.accela.com/OREGON/Default.aspx", to: "https://pacificpower.powerclerk.com/MvcProjects/Home", allowed: false },
+    { name: "utility recipe goto an Accela permit portal", scope: "utility", portalUrl: "https://pge.powerclerk.com/", to: "https://aca-oregon.accela.com/OREGON/Cap/CapHome.aspx", allowed: false },
+    { name: "a goto to another site entirely (tylerhost -> accela)", scope: "ahj", portalUrl: "https://coosbay-or.tylerhost.net/prod/selfservice", to: "https://aca-oregon.accela.com/OREGON/Default.aspx", allowed: false },
+    { name: "a goto within the recipe's own site (another subdomain)", scope: "ahj", portalUrl: "https://aca-oregon.accela.com/OREGON/Default.aspx", to: "https://www.accela.com/OREGON/Cap/CapApplyDisclaimer.aspx", allowed: true },
+    { name: "a goto within the same host", scope: "ahj", portalUrl: "https://aca-oregon.accela.com/OREGON/Default.aspx", to: "https://aca-oregon.accela.com/OREGON/Cap/CapApplyDisclaimer.aspx?module=Building", allowed: true },
+    { name: "an SSO bounce", scope: "utility", portalUrl: "https://pge.powerclerk.com/", to: "https://login.microsoftonline.com/common/oauth2", allowed: true },
+  ];
+  for (const c of cases) {
+    const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+    const recipe = { ...baseRecipe([{ action: "goto", value: c.to, note: "entry" }, { action: "stopForReview" }]), scopeType: c.scope, portalUrl: c.portalUrl };
+    const adapter = new RecipeAdapter(recipe, {}, {});
+    withFakePage(adapter, makeFakePage({ log }));
+    const result = await adapter.fillApplication(fakeProject);
+    if (c.allowed) {
+      assert.deepEqual(log.gotos, [c.to], `MUST-PASS (${c.name}): navigated`);
+      assert.equal(result.ok, true, `${c.name}: ${result.message}`);
+    } else {
+      assert.deepEqual(log.gotos, [], `MUST-EXCLUDE (${c.name}): never navigated`);
+      assert.equal(result.ok, false, `${c.name}: the run stops`);
+      assert.match(String(result.message), /replay safety gate refused: .*(may not open|leaves the recipe's portal)/, `${c.name}: a named reason (${result.message})`);
+    }
+  }
+}
+
 const tests: Array<[string, () => Promise<void>]> = [
+  ["R1: no click/press/goto outside the replay chokepoint (static)", testNoRawActionOutsideTheChokepoint],
+  ["R1: a goto that leaves the recipe's portal stops the run, named (rule 5)", testGotoLeavingThePortalStopsTheRun],
+  ["R2: each missing input of the final-submit gate keeps it unclicked", testFinalSubmitGateRefusesEachMissingInput],
+  ["R2: a quiet page after the approved click is unknown, reported, never retried", testFinalSubmitQuietPageIsUnknownAndNotRetried],
   ["RESOLVE: a hidden-only primary falls through to the visible fallback", testHiddenPrimaryFallsThroughToVisibleFallback],
   ["RESOLVE: a visible-but-DISABLED primary falls through too", testDisabledOnlyPrimaryFallsThroughToFallback],
   ["RESOLVE: an ordinal fallback that lands on a hidden control retries unpinned", testOrdinalFallbackRetriesUnpinned],
@@ -1067,13 +1293,17 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["DRIFT: frame-scoped steps excluded from the expected set", testDriftFrameScopedExcluded],
   ["DRIFT: page without \$\$eval passes silently (legacy)", testDriftNoEvalSilent],
   ["HEAL FINGERPRINT: ambiguous label healed onto the fingerprint-matching field", testHealPrefersFingerprintMatch],
-  ["HEAL FINGERPRINT: legacy recipes (no fingerprint) behave as before", testHealWithoutFingerprintLegacy],
+  ["HEAL (R3): a legacy step bound to the inverter never heals into the module's box; identified by index+version", testHealWithoutFingerprintLegacy],
+  ["HEAL (R3): a tie is refused with a named ambiguity", testHealRefusesATie],
+  ["HEAL (R3): a heal whose healed step did not perform is not reported", testHealNotReportedWhenHealedStepDidNotPerform],
+  ["HEAL (R3): below the minimum, settle and re-localize once", testHealRelocalizesOnceBelowMinimum],
+  ["HEAL (R3): weighted multi-attribute scoring, minimum and tie margin", testHealScoringUnit],
   ["HEAL FINGERPRINT: attributes alone never invent a match", testFingerprintNeverInventsMatch],
   ["fingerprintBoost unit scoring (max 58 < 70 gate)", testFingerprintBoostUnit],
   ["stopForReview halts replay and blocks later clicks", testStopForReviewHalts],
   ["pay/submit keyword clicks are blocked; safe clicks run", testFinalSubmitDenylist],
   ["P0-3: id/css-only final submit NOT clicked in autoSubmit without isFinalSubmit", testIdOnlyFinalSubmitNotClickedWithoutFlag],
-  ["P0-3: flagged final submit IS clicked in autoSubmit and reports finalSubmitClicked", testFlaggedFinalSubmitClickedInAutoSubmit],
+  ["R2: flagged final submit IS clicked only with env 1 + this run's approval + terminal flagged step; accepted on positive evidence", testFlaggedFinalSubmitClickedInAutoSubmit],
   ["P0-3: flagged final submit NOT clicked in guided-manual", testFlaggedFinalSubmitNotClickedWithoutAutoSubmit],
   ["P0-3: PAY_FEE always blocked in autoSubmit even if flagged", testPayFeeBlockedInAutoSubmit],
   ["P0-4: iframe CAPTCHA/MFA challenge stops autoSubmit final click", testIframeChallengeStopsAutoSubmit],
