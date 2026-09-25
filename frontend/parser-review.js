@@ -493,7 +493,21 @@
   const CODE_CLAUSE = /\b(?:ACCORDING\s+TO|PER|IN\s+ACCORDANCE\s+WITH|AS\s+(?:PERMITTED|ALLOWED|REQUIRED)\s+BY|COMPL(?:Y|IES|IANT)\s+WITH|SHALL\s+(?:MEET|COMPLY))\b[^.;]{0,50}\b(?:NEC|NFPA\s*70|CEC)\b|\b(?:NEC|CEC)\s*\d{3}\.\d+/i;
   const OPTION_CLAUSE = /\b(?:OPTION(?:AL|S)?|ALTERNAT(?:E|IVE)(?:LY)?|IN\s+LIEU\s+OF|WHERE\s+APPLICABLE|IF\s+(?:A\s+|THE\s+)?(?:LOAD|SUPPLY|LINE|FEEDER)|MAY\s+BE\s+(?:USED|MADE|INSTALLED)|EITHER\b|\bOR\s+(?:A\s+)?(?:LOAD|SUPPLY|LINE|FEEDER)\s+SIDE)\b/i;
 
-  const isExplicit = (e) => EXPLICIT_LABEL.test(String(e.text || '')) && (TAP_WORDS.test(String(e.text || '')) || BREAKER_WORDS.test(String(e.text || '')));
+  // An explicit callout is the label with its answer right beside it ("POINT OF
+  // INTERCONNECT, LOAD BREAKER 20A/2P", "INTERCONNECTION METHOD: LOAD SIDE TAP"). A label
+  // that merely precedes a numbered code note a sentence later ("POINT OF INTERCONNECT 4. THE
+  // COMBINED OCPD ... 5. FEEDER TAP INTERCONNECTION ACCORDING TO NEC 705.12") is not one.
+  const LABEL_RE = /\b(?:INTERCONNECTION\s+(?:METHOD|TYPE)|POINT\s+OF\s+INTERCONNECT(?:ION)?|POI)\b/i;
+  function isExplicit(e) {
+    const t = String(e.text || '');
+    const lm = t.match(LABEL_RE);
+    if (!lm) return false;
+    const rest = t.slice(lm.index + lm[0].length);
+    const wm = rest.match(TAP_WORDS) || rest.match(BREAKER_WORDS);
+    if (!wm) return false;
+    const between = rest.slice(0, wm.index);
+    return between.length <= 60 && !/[.;]\s|\b\d{1,2}\.\s|ACCORDING|IN\s+ACCORDANCE|\bPER\b|\bNEC\b/i.test(between);
+  }
   function tapWindow(e) {
     const snippet = String(e.snippet || e.text || '');
     const m = snippet.search(TAP_WORDS);

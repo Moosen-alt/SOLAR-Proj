@@ -165,7 +165,7 @@ try {
       status: document.getElementById("parseStatus")!.textContent || "",
       verdict: v("ubMeterVerification"), planMeter: v("planMeterNumber"), ubMeter: v("ubMeterNumber"),
       critical: v("criticalWarnings"), flags: v("reviewFlags"),
-      scope: s?.electricalScope ? { nonBreakerTypes: s.electricalScope.decision?.nonBreakerTypes, locates: s.electricalScope.flags?.locatesNeeded, utility: s.electricalScope.decision?.utility, rule: s.electricalScope.decision?.rule, tapIgnored: (s.electricalScope.tapIgnored || []).length } : null,
+      scope: s?.electricalScope ? { nonBreakerTypes: s.electricalScope.decision?.nonBreakerTypes, locates: s.electricalScope.flags?.locatesNeeded, utility: s.electricalScope.decision?.utility, rule: s.electricalScope.decision?.rule, tapIgnored: (s.electricalScope.tapIgnored || []).length, tapKept: (s.electricalScope.evidence || []).filter((e: { type: string }) => e.type === "TAP").map((e: { text: string; snippet: string; page: number }) => ({ page: e.page, text: e.text, snippet: String(e.snippet).slice(0, 300) })) } : null,
       priority: s?.utilityPriorityFlags ?? [],
     };
   });

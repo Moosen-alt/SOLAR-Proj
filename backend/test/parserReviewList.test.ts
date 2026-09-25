@@ -297,6 +297,10 @@ ok("no Oregon leakage: licence label by state, N/A dropped, identified-vs-unknow
   assert.equal(r.kept.length, 0, "general-note tap mentions never set scope");
   assert.equal(r.dropped.length, 2);
   assert.match(r.dropped[0].why, /code-reference|option/);
+  // a label heading followed a sentence later by a numbered code note is NOT an explicit callout
+  const heading = PR.filterTapEvidence([ev("TAP", "POINT OF INTERCONNECT 4. THE COMBINED OVERCURRENT DEVICE MAY BE EXCLUDED ACCORDING TO NEC 705.12 (B)(3)(3). 5. FEEDER TAP INTERCONNECTION (LOADSIDE) ACCORDING TO NEC 705.12 (B)(1) 6. SUPPLY SIDE TAP", "WIRE TAG BUS BAR RATING POINT OF INTERCONNECT 4. THE COMBINED OVERCURRENT DEVICE MAY BE EXCLUDED ACCORDING TO NEC 705.12 (B)(3)(3). 5. FEEDER TAP INTERCONNECTION (LOADSIDE) ACCORDING TO NEC 705.12 (B)(1) 6", "notes", 3)], breakers);
+  assert.equal(heading.kept.length, 0, "a heading word 220 chars before a numbered tap note is not a callout");
+  assert.equal(heading.explicitTap.length, 0);
   // a bare tap mention (not a code clause) while the callout names a breaker: dropped, citing the callout
   const bare = PR.filterTapEvidence([ev("TAP", "LOAD SIDE TAP", "SEE DETAIL FOR LOAD SIDE TAP LUG KIT", "notes", 9)], breakers);
   assert.equal(bare.kept.length, 0);
