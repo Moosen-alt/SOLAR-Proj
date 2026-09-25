@@ -308,6 +308,59 @@ await check("M3 MUST-EXCLUDE: a statewide_uniform new state never queues an AHJ 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────
+// M4 — one grounded research does not flip a state's adoption model
+// ─────────────────────────────────────────────────────────────────────────────────────────
+const TX_KEY = CP.codeProfileKey({ state: "TX", ahj: "" });
+await check("M4 MUST-EXCLUDE: one research does not flip TX from local_adoption; Flipton keeps its IRC 2021; the disagreement is on GET /api/code-profiles", async () => {
+  CP.saveResearchedCodeProfile(db, blank("TX", "City of Flipton", { adoptedCodes: [{ family: "residential", code: "IRC", edition: "2021", sourceUrl: "https://flipton.example.gov" }], researchProvenance: { ...grounded, at: new Date().toISOString() } }));
+  assert.equal(CP.stateAdoptionModel(db, "TX")?.model, "local_adoption", "fixture");
+  const r = await CP.runCodeResearch(db, { state: "TX", ahj: "" }, fakeResearcher(
+    [{ family: "residential", code: "IRC", edition: "2012", sourceUrl: "https://tx.example.gov" }], true,
+    { adoptionModel: { model: "statewide_uniform", sourceUrl: "https://tx.example.gov/model" } },
+  ).provider);
+  assert.equal(r.saved, true, JSON.stringify(r));
+  assert.equal(CP.stateAdoptionModel(db, "TX")?.model, "local_adoption", "one research flipped the state's adoption model");
+  assert.equal(payloadOf(TX_KEY)?.adoptionModel?.model, "local_adoption", "the stored model was replaced");
+  const read = CP.getCodeProfile(db, { state: "TX", ahj: "City of Flipton" })!;
+  assert.deepEqual(read.adoptedCodes.filter((c) => F.codeFamilyOf(c) === "residential").map((c) => `${c.code} ${c.edition}${c.inheritedFrom ? "(state)" : ""}`), ["IRC 2021"], `Flipton's read: ${codesOf(read)}`);
+  const listed = CP.listCodeProfiles(db).find((p) => p.key === TX_KEY)?.editionProposals ?? [];
+  const model = listed.find((p) => p.kind === "adoption_model");
+  assert.ok(model, `the disagreement is not on the listing: ${JSON.stringify(listed)}`);
+  assert.ok(model!.changes.some((c) => c.family === "residential" && c.current === "local_adoption" && c.proposed === "statewide_uniform"), JSON.stringify(model!.changes));
+  // Idempotent: the same finding again adds no second proposal; the reseed does not flip it either.
+  await CP.runCodeResearch(db, { state: "TX", ahj: "" }, fakeResearcher([{ family: "residential", code: "IRC", edition: "2012", sourceUrl: "https://tx.example.gov" }], true, { adoptionModel: { model: "statewide_uniform", sourceUrl: "https://tx.example.gov/model" } }).provider);
+  CP.seedReferenceCodeProfiles(db);
+  assert.equal(CP.listEditionProposals(db, TX_KEY).filter((p) => p.kind === "adoption_model").length, 1);
+  assert.equal(CP.stateAdoptionModel(db, "TX")?.model, "local_adoption");
+});
+
+await check("M4 MUST-PASS: a research that agrees with the stored model, or one for a state with no model, stores it; a person can accept a proposed model", async () => {
+  await CP.runCodeResearch(db, { state: "TX", ahj: "" }, fakeResearcher([{ family: "residential", code: "IRC", edition: "2012", sourceUrl: "https://tx.example.gov" }], true,
+    { adoptionModel: { ...CP.stateAdoptionModel(db, "TX")!, note: "agreeing research", sourceUrl: "https://tx.example.gov/agree" } }).provider);
+  assert.equal(payloadOf(TX_KEY)?.adoptionModel?.note, "agreeing research", "an agreeing research's model was not stored");
+  await CP.runCodeResearch(db, { state: "ZW", ahj: "" }, fakeResearcher([{ family: "residential", code: "IRC", edition: "2021", sourceUrl: "https://zw.example.gov" }], true, { adoptionModel: { model: "local_adoption" } }).provider);
+  assert.equal(CP.stateAdoptionModel(db, "ZW")?.model, "local_adoption", "a state with no model did not take the research's");
+  // The person decides: approving the TX proposal changes the model (and only the model).
+  const [p] = CP.listEditionProposals(db, TX_KEY).filter((x) => x.kind === "adoption_model");
+  const codesBefore = JSON.stringify(payloadOf(TX_KEY)!.adoptedCodes);
+  const res = CP.applyEditionProposal(db, p.fingerprint, "operator@test");
+  assert.equal(res.status, "applied", res.note);
+  assert.equal(CP.stateAdoptionModel(db, "TX")?.model, "statewide_uniform");
+  assert.equal(payloadOf(TX_KEY)!.confidence, "seeded", "approving a model promoted the row to verified");
+  assert.equal(JSON.stringify(payloadOf(TX_KEY)!.adoptedCodes), codesBefore, "approving a model changed the codes");
+  assert.equal(CP.listEditionProposals(db, TX_KEY).filter((x) => x.kind === "adoption_model").length, 0, "the applied proposal is still pending");
+  // The next boot's reference seed does not silently undo the person's decision.
+  db.run("UPDATE jurisdiction_code_profiles SET payload_json = json_set(payload_json, '$.researchProvenance.at', '2026-01-01') WHERE profile_key = ?", [TX_KEY]);
+  CP.seedReferenceCodeProfiles(db);
+  assert.equal(CP.stateAdoptionModel(db, "TX")?.model, "statewide_uniform", "the reference seed reverted a person's decision");
+  // Restore TX for the checks below (a person's decision again).
+  const [back] = CP.listEditionProposals(db, TX_KEY).filter((x) => x.kind === "adoption_model");
+  assert.ok(back, "the reference's disagreement was not proposed");
+  assert.equal(CP.applyEditionProposal(db, back.fingerprint, "operator@test").status, "applied");
+  assert.equal(CP.stateAdoptionModel(db, "TX")?.model, "local_adoption");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
 // M5 — a human's statement is never hidden by a seeded state fact
 // ─────────────────────────────────────────────────────────────────────────────────────────
 await check("M5 MUST-PASS: a VERIFIED AHJ row's NEC 2020 in a uniform family (NC) is read, not dropped", () => {

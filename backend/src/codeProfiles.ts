@@ -556,6 +556,20 @@ export function saveResearchedCodeProfile(
   }
   const key = codeProfileKey(profile);
   const existing = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [key]);
+  // ONE RESEARCH DOES NOT FLIP HOW A WHOLE STATE ADOPTS ITS CODES. A state research whose adoption
+  // model disagrees (for any family) with the model already known for the state — the row's own,
+  // else the shipped source-verified reference — keeps the known model and records a proposal a
+  // person resolves (GET /api/code-profiles shows it on the state row). A state with no known model
+  // takes the research's; one that agrees stores it. The reference seed is not a research here.
+  const incomingModel = adoptionModelOf(profile.adoptionModel);
+  if (isResearch && incomingModel && !String(profile.ahj || "").trim() && incomingProvenance?.method !== "reference_truth") {
+    const known = stateAdoptionModel(db, profile.state);
+    const conflicts = adoptionModelConflicts(known, incomingModel);
+    if (known && conflicts.length) {
+      proposeAdoptionModelChange(db, { key, state: profile.state, ahj: "" }, incomingModel, conflicts, "research");
+      profile = { ...profile, adoptionModel: known };
+    }
+  }
   if (existing && text(existing.confidence) === "verified") {
     if (isResearch && profile.adoptedCodes?.length) {
       const proposal = proposeEditionUpdate(db, mapRow(existing), profile, incomingProvenance?.method === "reference_truth" ? "reference" : "research");
@@ -904,6 +918,15 @@ export function seedReferenceStateAdoptions(db: AppDb, adoptions: ReferenceState
       const asOf = profile.researchProvenance!.at!;
       const rowAt = String(prov?.at || "").slice(0, 10);
       if (prov?.webGrounded && rowAt && rowAt >= asOf) { out.skipped++; continue; }
+      // A model the row already carries (a person approved it, or an earlier reference said it) is
+      // not silently replaced either: a disagreement becomes a proposal.
+      const modelConflicts = adoptionModelConflicts(existing.adoptionModel, profile.adoptionModel);
+      if (existing.adoptionModel && modelConflicts.length) {
+        if (proposeAdoptionModelChange(db, { key, state: existing.state, ahj: "" }, profile.adoptionModel!, modelConflicts, "reference")?.isNew) out.proposed++;
+        upsert(db, mergeResearchIntoRow(existing, { ...profile, adoptionModel: existing.adoptionModel }), { confidence: "seeded" });
+        out.merged++;
+        continue;
+      }
       upsert(db, mergeResearchIntoRow(existing, profile), { confidence: "seeded" });
       out.merged++;
     } catch (err) {
@@ -981,13 +1004,52 @@ export function proposeEditionUpdate(db: AppDb, verifiedRow: JurisdictionCodePro
   return { ...proposal, isNew: true };
 }
 
+/** Per family: where two adoption models BOTH say something and say different things. A family
+ *  only one of them decides is not a conflict. */
+export function adoptionModelConflicts(known: JurisdictionAdoptionModel | undefined, incoming: JurisdictionAdoptionModel | undefined): JurisdictionEditionProposal["changes"] {
+  const out: JurisdictionEditionProposal["changes"] = [];
+  if (!known || !incoming) return out;
+  for (const family of CODE_FAMILIES) {
+    const a = familyAdoptionModel(known, family);
+    const b = familyAdoptionModel(incoming, family);
+    if (a && b && a !== b) {
+      out.push({ family, current: a, proposed: b, ...(incoming.sourceUrl ? { sourceUrl: incoming.sourceUrl } : {}), ...(incoming.quote ? { quote: String(incoming.quote).slice(0, 300) } : {}) });
+    }
+  }
+  return out;
+}
+
+/** Record (once per distinct finding) that a grounded research disagrees with the state's known
+ *  adoption model. The row keeps its model; a person decides (applyEditionProposal / dismiss). */
+export function proposeAdoptionModelChange(
+  db: AppDb,
+  row: { key: string; state: string; ahj: string },
+  proposedModel: JurisdictionAdoptionModel,
+  changes: JurisdictionEditionProposal["changes"],
+  source: "reference" | "research",
+): (JurisdictionEditionProposal & { isNew: boolean }) | null {
+  if (!changes.length) return null;
+  const fingerprint = fingerprintOf(row.key, changes.map((c) => ({ ...c, proposed: `adoption-model:${c.proposed}` })));
+  const proposal: JurisdictionEditionProposal = {
+    profileKey: row.key, state: row.state, ahj: row.ahj, kind: "adoption_model", fingerprint, source, createdAt: nowIso(), changes,
+    proposedCodes: [], adoptionModel: proposedModel,
+  };
+  const seen = db.get<Row>("SELECT id FROM audit_logs WHERE action = ? AND details LIKE ? ESCAPE '\\' LIMIT 1", [PROPOSAL_ACTION, `%"fingerprint":"${likeLiteral(fingerprint)}"%`]);
+  if (seen) return { ...proposal, isNew: false };
+  addAuditLog(db, null, "system", source === "reference" ? "reference code data" : "code research", PROPOSAL_ACTION, proposal as unknown as Record<string, unknown>);
+  logger.warn("code-profiles", `${row.key}: research says ${changes.map((c) => `${c.family} ${c.proposed}`).join(", ")} — the state's known model says ${changes.map((c) => `${c.family} ${c.current}`).join(", ")}; the known model is kept and proposal ${fingerprint} awaits a person`);
+  return { ...proposal, isNew: true };
+}
+
 /** A value matched LITERALLY inside a LIKE pattern (with ESCAPE '\'): "%" and "_" are wildcards. */
 function likeLiteral(value: string): string {
   return String(value).replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
-/** Proposals still awaiting a person: the newest per row, the row still verified and still not
- *  stating them, and not dismissed. */
+/** Proposals still awaiting a person: the newest per row and kind, not dismissed, and still true —
+ *    editions:       the row still verified and still not stating them;
+ *    adoption_model: the row still there and the state's known model still disagreeing (a seeded
+ *                    state row counts: that is where a research's disagreement lands). */
 export function listEditionProposals(db: AppDb, profileKey?: string): JurisdictionEditionProposal[] {
   const rows = db.query<Row>(
     `SELECT details, created_at FROM audit_logs WHERE action = ? ${profileKey ? "AND details LIKE ? ESCAPE '\\'" : ""} ORDER BY created_at DESC LIMIT 500`,
@@ -1000,14 +1062,23 @@ export function listEditionProposals(db: AppDb, profileKey?: string): Jurisdicti
   for (const r of rows) {
     let p: JurisdictionEditionProposal;
     try { p = JSON.parse(text(r.details)) as JurisdictionEditionProposal; } catch { continue; }
-    if (!p?.profileKey || newest.has(p.profileKey) || (profileKey && p.profileKey !== profileKey)) continue;
-    newest.set(p.profileKey, p);
+    if (!p?.profileKey || (profileKey && p.profileKey !== profileKey)) continue;
+    const slot = `${p.profileKey}|${p.kind ?? "editions"}`;
+    if (newest.has(slot)) continue;
+    newest.set(slot, p);
   }
   const out: JurisdictionEditionProposal[] = [];
   for (const p of newest.values()) {
     if (dismissed.has(p.fingerprint)) continue;
     const row = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [p.profileKey]);
-    if (!row || text(row.confidence) !== "verified") continue;
+    if (!row) continue;
+    if (p.kind === "adoption_model") {
+      const current = mapRow(row);
+      if (!adoptionModelConflicts(stateAdoptionModel(db, current.state), p.adoptionModel).length) continue; // resolved since
+      out.push(p);
+      continue;
+    }
+    if (text(row.confidence) !== "verified") continue;
     if (!editionChanges(mapRow(row).adoptedCodes, p.proposedCodes).length) continue; // re-verified since
     out.push(p);
   }
@@ -1023,6 +1094,17 @@ export function applyEditionProposal(db: AppDb, fingerprint: string, actor: stri
   const row = db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [p.profileKey]);
   if (!row) return { status: "refused", note: "The profile row no longer exists." };
   const current = mapRow(row);
+  if (p.kind === "adoption_model") {
+    // A person accepted the research's adoption model. Only the model changes: the row's codes and
+    // its confidence are untouched (approving a model is not a verification of the editions).
+    if (!p.adoptionModel) return { status: "refused", note: "The proposal carries no adoption model." };
+    let payload: Record<string, unknown> = {};
+    try { payload = JSON.parse(text(row.payload_json) || "{}") as Record<string, unknown>; } catch { payload = {}; }
+    payload.adoptionModel = { ...p.adoptionModel, note: `${p.adoptionModel.note ? `${p.adoptionModel.note} ` : ""}Approved by ${actor || "operator"} ${nowIso().slice(0, 10)}.`.slice(0, 600) };
+    db.run("UPDATE jurisdiction_code_profiles SET payload_json = ?, updated_at = ? WHERE profile_key = ?", [JSON.stringify(payload), nowIso(), p.profileKey]);
+    addAuditLog(db, null, "human", actor || "operator", "code_profile.edition_proposal_applied", { fingerprint, profileKey: p.profileKey, kind: p.kind, changes: p.changes });
+    return { status: "applied", note: `Adoption model of ${p.profileKey} set by ${actor || "operator"} (${p.changes.map((c) => `${c.family}: ${c.proposed}`).join(", ")}).`, profile: getCodeProfile(db, current) ?? current };
+  }
   // Only the families the proposal CHANGES: a family the row already states correctly keeps the
   // person's own entries (Oregon's verified "IRC 2021" beside "ORSC 2023" is not touched).
   const families = new Set(p.changes.map((c) => c.family));

@@ -1170,11 +1170,17 @@ export interface CodeResearchProvenance {
 }
 
 /** A newer edition found for a HUMAN-VERIFIED row. Never written to the row (hard rule 3): it is
- *  recorded as a proposal and a person re-verifies. */
+ *  recorded as a proposal and a person re-verifies.
+ *  kind "adoption_model": a grounded state research DISAGREED with the state's known adoption model
+ *  (on any row, seeded or verified). The stored model is kept — one research does not flip how a
+ *  whole state adopts its codes — and a person decides; `changes[].current/proposed` are then
+ *  per-family adoption models, `adoptionModel` the research's, and `proposedCodes` is empty. */
 export interface JurisdictionEditionProposal {
   profileKey: string;
   state: string;
   ahj: string;
+  /** Absent = "editions" (proposals recorded before the kind existed). */
+  kind?: "editions" | "adoption_model";
   /** Stable hash of the proposed codes — one proposal per distinct finding. */
   fingerprint: string;
   source: "reference" | "research";
