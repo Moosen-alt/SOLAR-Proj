@@ -250,7 +250,7 @@ await check("MUST-PASS (snow-inv): two documents that disagree only through an u
   ]);
   assert.equal(two.find((f) => f.id === "city.struct.design-criteria-conflict")?.severity, "blocker");
   assert.equal(minimum(two)?.severity, "warning");
-  assert.match(minimum(two)!.message, /16 psf in Plan set; 36 psf in Engineer letter/);
+  assert.match(minimum(two)!.message, /states more than one value \(16 psf in Plan set; 36 psf in Engineer letter\)/);
 });
 
 // snow-inv item 2 (the r3f skeptic's must-fix): label-first is the default again; value-first needs

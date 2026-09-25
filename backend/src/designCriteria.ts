@@ -1828,7 +1828,9 @@ function describeGroundReadings(reading: Extract<GroundSnowReading, { status: "a
 }
 /** The sentence an ambiguous Pg adds to a finding: every reading, and why it is not a blocker. */
 function ambiguousPgNote(reading: Extract<GroundSnowReading, { status: "ambiguous" }>): string {
-  return `The package's ground snow load reads more than one way (${describeGroundReadings(reading)}), so the ground snow load is a warning here, not a blocker: confirm which value is the design Pg on the plan set and in the engineer's letter/calculations.`;
+  // An unsure reading is the extractor's doubt; sure readings that differ are the package's own conflict.
+  const what = reading.readings.some((r) => r.unsure) ? "reads more than one way" : "states more than one value";
+  return `The package's ground snow load ${what} (${describeGroundReadings(reading)}), so the ground snow load is a warning here, not a blocker: confirm which value is the design Pg on the plan set and in the engineer's letter/calculations.`;
 }
 
 function groundSnowMinimumFinding(
