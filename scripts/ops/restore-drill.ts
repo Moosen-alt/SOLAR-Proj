@@ -21,8 +21,11 @@
 //                 migrations (skip with --no-boot-check)
 //
 // PRIVACY: counts only. No names, addresses, file names or credential values are printed.
-// NEVER WRITES outside the scratch folder (a temp dir unless --to), which it deletes unless
-// --keep-scratch. The backup folder is opened read-only.
+// NEVER WRITES outside the scratch folder — a fresh restore-drill-<random> folder the drill makes
+// itself (in the OS temp dir, or inside --to), which is the only thing it deletes afterwards
+// unless --keep-scratch. A --to that is, contains, or is inside the live data folder, a backup
+// folder or the folder being read is refused (exit 2) before anything is written. The backup
+// folder is opened read-only.
 //
 // EXIT: 0 PASS, 1 FAIL, 3 PASS WITH WARNINGS, 2 bad configuration.
 import fs from "node:fs";
@@ -69,9 +72,48 @@ if (!fs.existsSync(snapshot)) {
 }
 // The documents mirror sits beside the snapshots in both BACKUP_DIR and the off-box folder.
 const docsMirror = path.join(path.dirname(snapshot), "documents");
-const scratch = flag("to") ? path.resolve(process.cwd(), flag("to")) : fs.mkdtempSync(path.join(os.tmpdir(), "restore-drill-"));
-fs.mkdirSync(scratch, { recursive: true });
 const keepScratch = args.includes("--keep-scratch");
+
+// THE DRILL DELETES ONLY WHAT IT CREATED (2026-09-24, D2 verification F1). `--to <folder>` used
+// to make <folder> itself the scratch: the restored copy was written as <folder>/autopilot.sqlite
+// — the production database's own basename — and the finally-block rm'd <folder> recursively.
+// So `--to backend/data` replaced the LIVE database with the snapshot and then deleted the data
+// folder, documents and all; `--to E:\` would have wiped the backup drive. Now:
+//   1. a --to that is, contains, or sits inside a folder the product owns (the live DB's folder,
+//      BACKUP_DIR, BACKUP_SECOND_DIR, PROJECT_DOCS_DIR) or the backup being read is refused —
+//      exit 2, before anything is written;
+//   2. otherwise the drill makes a FRESH child restore-drill-<random> inside --to and works only
+//      there, so a pre-existing file in --to (even one named autopilot.sqlite) is never touched,
+//      and the cleanup removes that child alone (plus --to itself only when the drill created it
+//      and it is empty afterwards).
+const norm = (p: string): string => { const r = path.resolve(process.cwd(), p); return process.platform === "win32" ? r.toLowerCase() : r; };
+const within = (inner: string, outer: string): boolean => { const rel = path.relative(norm(outer), norm(inner)); return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel)); };
+const protectedFolders: Array<[string, string]> = [
+  ["the live database's folder (AUTOPILOT_DB_PATH)", path.dirname(path.resolve(process.cwd(), process.env.AUTOPILOT_DB_PATH || "backend/data/autopilot.sqlite"))],
+  ["BACKUP_DIR", path.resolve(process.cwd(), process.env.BACKUP_DIR || "backend/data/backups")],
+  ...(process.env.BACKUP_SECOND_DIR ? [["BACKUP_SECOND_DIR", path.resolve(process.cwd(), process.env.BACKUP_SECOND_DIR)] as [string, string]] : []),
+  ["PROJECT_DOCS_DIR", path.resolve(process.cwd(), process.env.PROJECT_DOCS_DIR || "backend/data/project-documents")],
+  ["the backup folder being read", path.dirname(snapshot)],
+];
+let scratchParent = "";
+let scratchParentCreated = false;
+let scratch = "";
+if (flag("to")) {
+  scratchParent = path.resolve(process.cwd(), flag("to"));
+  const clash = protectedFolders.find(([, folder]) => within(scratchParent, folder) || within(folder, scratchParent));
+  if (clash) {
+    line(`restore-drill: refused: --to ${scratchParent} is, contains, or is inside ${clash[0]} (${clash[1]}). The drill writes and then deletes its scratch; point --to at an empty folder outside every live and backup folder.`);
+    process.exit(2);
+  }
+  if (fs.existsSync(scratchParent) && !fs.statSync(scratchParent).isDirectory()) {
+    line(`restore-drill: refused: --to ${scratchParent} is a file, not a folder.`);
+    process.exit(2);
+  }
+  if (!fs.existsSync(scratchParent)) { fs.mkdirSync(scratchParent, { recursive: true }); scratchParentCreated = true; }
+  scratch = fs.mkdtempSync(path.join(scratchParent, "restore-drill-"));
+} else {
+  scratch = fs.mkdtempSync(path.join(os.tmpdir(), "restore-drill-"));
+}
 
 line(`restore-drill   ${new Date().toISOString()}`);
 line(`  snapshot  ${snapshot}`);
@@ -174,7 +216,9 @@ try {
   record("drill", "FAIL", `stopped: ${(err as Error).message.slice(0, 200)}`);
 } finally {
   if (!keepScratch) {
+    // Only the folder the drill itself made (a mkdtemp child), never a folder the user named.
     try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* Windows may hold a handle briefly */ }
+    if (scratchParentCreated) { try { if (fs.readdirSync(scratchParent).length === 0) fs.rmdirSync(scratchParent); } catch { /* leave it */ } }
   }
 }
 

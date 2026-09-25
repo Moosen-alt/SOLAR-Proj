@@ -217,6 +217,82 @@ check("a snapshot copied without its documents FAILs (a restore would 404 every 
 });
 
 // ---------------------------------------------------------------------------
+// F1 (D2 verification): --to <existing folder> used to overwrite <folder>/autopilot.sqlite with the
+// snapshot and then rm the whole folder recursively — `--to backend/data` replaced the live DB and
+// deleted the data folder; `--to E:\` would have wiped the backup drive.
+console.log("restore drill: --to never touches what it did not create");
+const occupied = path.join(ISOLATED_CWD, "occupied");
+fs.mkdirSync(path.join(occupied, "sub"), { recursive: true });
+{
+  const Database = (await import("better-sqlite3")).default;
+  const live = new Database(path.join(occupied, "autopilot.sqlite"));
+  live.exec("CREATE TABLE LIVE_ONLY (id INTEGER PRIMARY KEY, note TEXT); INSERT INTO LIVE_ONLY (note) VALUES ('this is the operator''s own database');");
+  live.close();
+}
+fs.writeFileSync(path.join(occupied, "keep.txt"), "important\n");
+fs.writeFileSync(path.join(occupied, "sub", "doc.pdf"), "%PDF-1.4 keep\n");
+const occupiedBefore = new Map(["autopilot.sqlite", "keep.txt", path.join("sub", "doc.pdf")].map((f) => [f, sha(path.join(occupied, f))]));
+const toOccupied = script("scripts/ops/restore-drill.ts", ["--from", syncDest, "--no-dotenv", "--to", occupied], { SESSION_ENCRYPTION_KEY: KEY });
+check("MUST-EXCLUDE: --to <folder with an autopilot.sqlite and other files>: every pre-existing file survives byte-identical", () => {
+  assert.ok(fs.existsSync(occupied), `${occupied} was deleted (exit ${toOccupied.code})\n${toOccupied.out}`);
+  for (const [f, digest] of occupiedBefore) {
+    assert.ok(fs.existsSync(path.join(occupied, f)), `${f} is gone (exit ${toOccupied.code})\n${toOccupied.out}`);
+    assert.equal(sha(path.join(occupied, f)), digest, `${f} was rewritten (exit ${toOccupied.code})\n${toOccupied.out}`);
+  }
+});
+check("...and the drill either refused (exit 2, nothing written) or ran in a fresh child folder it made and removed", () => {
+  if (toOccupied.code === 2) {
+    assert.deepEqual(fs.readdirSync(occupied).sort(), ["autopilot.sqlite", "keep.txt", "sub"]);
+    return;
+  }
+  assert.ok(toOccupied.code === 0 || toOccupied.code === 3, toOccupied.out);
+  assert.match(toOccupied.out, /scratch\s+.*occupied[\\/]restore-drill-/);
+  assert.match(toOccupied.out, /PASS\s+boot/);
+  assert.deepEqual(fs.readdirSync(occupied).sort(), ["autopilot.sqlite", "keep.txt", "sub"], "the child scratch folder was not removed");
+});
+const liveDataDir = path.dirname(process.env.AUTOPILOT_DB_PATH!);
+const liveListing = fs.readdirSync(liveDataDir).sort();
+const liveDbSha = sha(process.env.AUTOPILOT_DB_PATH!);
+const toLive = script("scripts/ops/restore-drill.ts", ["--from", syncDest, "--no-dotenv", "--no-boot-check", "--to", liveDataDir], { SESSION_ENCRYPTION_KEY: KEY });
+check("MUST-EXCLUDE: --to <the live database's folder> is refused before anything is written (exit 2)", () => {
+  assert.equal(toLive.code, 2, toLive.out);
+  assert.match(toLive.out, /refused: --to .* is, contains, or is inside the live database's folder/);
+  assert.ok(!/checksum/.test(toLive.out), "a check ran");
+  assert.deepEqual(fs.readdirSync(liveDataDir).sort(), liveListing);
+  assert.equal(sha(process.env.AUTOPILOT_DB_PATH!), liveDbSha, "the live database was rewritten");
+});
+const toAbove = script("scripts/ops/restore-drill.ts", ["--from", syncDest, "--no-dotenv", "--no-boot-check", "--to", path.dirname(liveDataDir)], { SESSION_ENCRYPTION_KEY: KEY });
+check("MUST-EXCLUDE: --to <a folder that CONTAINS the live folder> is refused too", () => {
+  assert.equal(toAbove.code, 2, toAbove.out);
+  assert.match(toAbove.out, /refused/);
+});
+const toBackups = script("scripts/ops/restore-drill.ts", ["--from", syncDest, "--no-dotenv", "--no-boot-check", "--to", path.join(backupDir, "drill")], { SESSION_ENCRYPTION_KEY: KEY });
+check("MUST-EXCLUDE: --to <inside BACKUP_DIR> is refused (the backups are not a scratch area)", () => {
+  assert.equal(toBackups.code, 2, toBackups.out);
+  assert.ok(!fs.existsSync(path.join(backupDir, "drill")));
+});
+const toSource = script("scripts/ops/restore-drill.ts", ["--from", syncDest, "--no-dotenv", "--no-boot-check", "--to", syncDest], { SESSION_ENCRYPTION_KEY: KEY });
+check("MUST-EXCLUDE: --to <the backup folder being read> is refused", () => {
+  assert.equal(toSource.code, 2, toSource.out);
+  assert.equal(snaps(syncDest).length, 3);
+});
+const fresh = path.join(ISOLATED_CWD, "drill-new", "scratch");
+const toFresh = script("scripts/ops/restore-drill.ts", ["--from", syncDest, "--no-dotenv", "--to", fresh], { SESSION_ENCRYPTION_KEY: KEY });
+check("MUST-PASS: --to <new folder> runs all six checks and PASSes, and the folder it made is gone afterwards", () => {
+  assert.equal(toFresh.code, 0, toFresh.out);
+  for (const c of ["checksum", "integrity", "contents", "documents", "logins", "boot"]) assert.match(toFresh.out, new RegExp(`PASS\\s+${c}`));
+  assert.ok(!fs.existsSync(fresh), `${fresh} still exists: ${fs.existsSync(fresh) ? fs.readdirSync(fresh).join(",") : ""}`);
+});
+const kept = path.join(ISOLATED_CWD, "drill-kept");
+const toKept = script("scripts/ops/restore-drill.ts", ["--from", syncDest, "--no-dotenv", "--no-boot-check", "--to", kept, "--keep-scratch"], { SESSION_ENCRYPTION_KEY: KEY });
+check("MUST-PASS: --to <new folder> --keep-scratch leaves the restored copy in a child the drill made", () => {
+  assert.equal(toKept.code, 0, toKept.out);
+  const children = fs.readdirSync(kept).filter((f) => f.startsWith("restore-drill-"));
+  assert.equal(children.length, 1, fs.readdirSync(kept).join(","));
+  assert.ok(fs.existsSync(path.join(kept, children[0], "autopilot.sqlite")));
+});
+
+// ---------------------------------------------------------------------------
 console.log("the scheduler's log lines");
 const logText = (): string => (fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8") : "");
 check("a normal scheduled snapshot reaches backend.log (it used to be console-only)", () => {
