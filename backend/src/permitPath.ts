@@ -418,7 +418,12 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   // When a jurisdiction's own limits are loaded (jurisdiction_code_profiles carries
   // `prescriptive`, and evaluatePrescriptiveCriteria already reads them), this gate is
   // where that data gets its say — until then it refuses rather than guesses.
-  const stateCode = clean(project.state).toUpperCase();
+  // Intake stores the state as typed: "Oregon", "Ore." or " or " must still be OREGON here. Before
+  // the standard-review rule an unrecognised spelling fell to "unknown" (the gate blocked — safe);
+  // now anything that is not OR routes to the standard review, so an Oregon project spelled out
+  // would skip its prescriptive-vs-engineered confirmation. One normaliser, at the one comparison.
+  const rawState = clean(project.state).toUpperCase().replace(/\.$/, "");
+  const stateCode = rawState === "OREGON" || rawState === "ORE" ? "OR" : rawState;
   const jurisdiction = opts.limits ?? {};
   // A STRAY LIMIT IS NOT A PRESCRIPTIVE PATH. Only the explicit hasPrescriptivePath flag —
   // which research sets by asking the question directly — says this jurisdiction publishes

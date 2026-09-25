@@ -83,6 +83,11 @@ check("MUST-EXCLUDE: a project with NO state is not routed (unknown — no juris
   resolvePermitPath(bare("")).path === "unknown");
 check("MUST-EXCLUDE: an Oregon project with no structural inputs stays UNKNOWN (it must confirm its path)",
   resolvePermitPath(bare("OR", { framingType: "", roofRafterSpacing: "", roofRafterSpan: "", snow: "", wind: "", windSpeed: "", deadLoad: "", permitPath: "" })).path === "unknown");
+for (const spelled of ["Oregon", "oregon", "Ore.", " or "]) {
+  check(`MUST-EXCLUDE: an Oregon project with the state spelled "${spelled}" and no structural inputs stays UNKNOWN (never standard review)`,
+    resolvePermitPath(bare(spelled, { framingType: "", roofRafterSpacing: "", roofRafterSpan: "", snow: "", wind: "", windSpeed: "", deadLoad: "", permitPath: "" })).path === "unknown");
+  check(`…and "${spelled}" with clean numerics runs ORSC's screen (prescriptive)`, resolvePermitPath(bare(spelled)).path === "prescriptive");
+}
 check("…while an Oregon project that clears ORSC's screen is still prescriptive (Oregon's rule is untouched)",
   resolvePermitPath(bare("OR")).path === "prescriptive");
 
