@@ -954,6 +954,78 @@ tbody tr:hover, tbody tr.active { background: var(--tint-select); }
 .portal-identity-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 6px; align-items: center; margin-bottom: 6px; }
 .portal-identity-row .danger-button { padding: 6px 8px; }
 
+/* --- Clients & Contractor Licensing: list column + selected-client editor -----------------
+   Scoped to .clients-modal-body; the Customers and Users modals share .modal-body /
+   .clients-list-pane / .clients-form-pane and are not touched by these rules.
+   What went wrong: .modal-body is a 2-column grid and this modal gave it THREE children, so
+   #clientCredentials auto-placed into row 2 of the 260px LIST column. With .modal-body
+   overflow:hidden, row 1 (list + form) was squashed to a sliver (clipped "Clients" heading,
+   two scrollbars side by side), the logins' inputs (intrinsic ~150px min width, no pane
+   styles) spilled over the column edge, and the cred Delete buttons wrapped "Dele/te".
+   Now: column 1 = the list (its own scroll); column 2 = ONE scroll region holding the form
+   AND the selected client's links + logins. */
+.clients-modal-body { grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1 1 auto; }
+/* Author display rules below would otherwise defeat the [hidden] attribute this modal toggles
+   (#clientCredentials, #clientLinkResultWrap, #clientFormStatus). */
+.clients-modal-body [hidden] { display: none !important; }
+.clients-modal-body button { white-space: nowrap; }
+
+.clients-modal-body .clients-list-pane { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: 16px 14px 0; }
+.clients-modal-body .clients-list-pane .section-head { padding: 0 2px 12px; margin: 0 0 10px; align-items: center; gap: 10px; flex: 0 0 auto; }
+.clients-modal-body .clients-list-pane .section-head h3 { margin: 0; font-size: 15px; }
+.clients-modal-body .clients-list-pane .section-head button { min-height: 32px; padding: 0 10px; }
+.clients-modal-body #clientsList { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 2px 16px; }
+.clients-modal-body .client-row strong { overflow-wrap: anywhere; }
+
+.clients-modal-body .clients-editor-pane { min-width: 0; min-height: 0; overflow-y: auto; }
+.clients-modal-body .clients-form-pane { overflow: visible; padding: 16px 20px 0; }
+.clients-modal-body .clients-form-pane > h3:first-of-type { margin-top: 0; }
+/* Save / Delete stay reachable while the form scrolls; the bar releases once the pane
+   scrolls past the form into the links and logins. */
+.clients-modal-body .clients-form-actions { position: sticky; bottom: 0; z-index: 1; margin: 16px -20px 0; padding: 12px 20px; background: var(--surface); border-top: 1px solid var(--line); }
+
+.clients-modal-body label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; flex: 1 1 0; min-width: 0; }
+.clients-modal-body input, .clients-modal-body textarea, .clients-modal-body select { width: 100%; min-width: 0; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; color: var(--text); background: var(--surface); }
+.clients-modal-body .form-row { display: flex; gap: 10px; }
+
+.clients-modal-body .clients-creds { padding: 18px 20px 24px; border-top: 1px solid var(--line); background: var(--surface); }
+.clients-modal-body .clients-creds h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.clients-modal-body .clients-creds-hint { font-size: 12px; margin: 0 0 10px; }
+.clients-modal-body .clients-creds-hint:empty { display: none; }
+.clients-modal-body .clients-creds-block + .clients-creds-block { margin-top: 20px; }
+.clients-modal-body .clients-creds-block > .actions { margin: 0 0 10px; gap: 8px; }
+.clients-modal-body .clients-creds-block > label { margin-bottom: 10px; }
+
+.clients-modal-body .cred-list { display: flex; flex-direction: column; gap: 6px; margin: 0 0 12px; }
+.clients-modal-body .cred-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 8px 8px 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.clients-modal-body .cred-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; }
+.clients-modal-body .cred-row-text strong { overflow-wrap: anywhere; }
+.clients-modal-body .cred-row-user { color: var(--muted); overflow-wrap: anywhere; }
+.clients-modal-body .cred-row-lock { font-size: 11px; }
+.clients-modal-body .cred-row-del { min-height: 32px; padding: 0 10px; gap: 6px; font-size: 12px; }
+.clients-modal-body .cred-row-del svg { width: 14px; height: 14px; }
+.clients-modal-body .cred-add { padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-2); }
+.clients-modal-body .cred-add > * + * { margin-top: 10px; }
+.clients-modal-body .cred-add-title { font-size: 12px; font-weight: 600; color: var(--muted); }
+.clients-modal-body .cred-add .actions { gap: 10px; }
+
+/* Phone / narrow: the two columns stack — a short scrolling list, then the editor. */
+@media (max-width: 720px) {
+  #clientsModal { padding: 8px; }
+  #clientsModal .modal-card { max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px); }
+  #clientsModal .modal-head { padding: 12px 14px; gap: 10px; }
+  #clientsModal .modal-head h2 { font-size: 16px; }
+  .clients-modal-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .clients-modal-body .clients-list-pane { border-right: 0; border-bottom: 1px solid var(--line); max-height: 30vh; padding: 12px 14px 0; }
+  .clients-modal-body #clientsList { padding-bottom: 12px; }
+  .clients-modal-body .clients-form-pane { padding: 14px 14px 0; }
+  .clients-modal-body .clients-form-actions { margin: 16px -14px 0; padding: 10px 14px; }
+  .clients-modal-body .clients-creds { padding: 16px 14px 20px; }
+  .clients-modal-body .form-row { flex-direction: column; gap: 10px; }
+  .clients-modal-body .portal-identity-row { grid-template-columns: minmax(0, 1fr); }
+  .clients-modal-body .portal-identity-row .danger-button { justify-self: end; }
+}
+
 /* Learned-evidence excerpt shown under historical rejection causes */
 .evidence-sample { font-style: italic; border-left: 2px solid var(--line); padding-left: 8px; margin-top: 4px; }
 

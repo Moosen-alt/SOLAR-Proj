@@ -1207,7 +1207,11 @@
         <h2>Clients &amp; Contractor Licensing</h2>
         <button id="closeClientsBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
       </div>
-      <div class="modal-body">
+      <!-- Two columns: the client LIST, and the SELECTED client's editor. The editor pane holds
+           the business form AND that client's links + portal logins (they belong to the
+           selected client). #clientCredentials stays OUTSIDE the #clientForm form: Enter in a
+           login field, or a type-less data-cred-del button, would otherwise submit the client. -->
+      <div class="modal-body clients-modal-body">
         <div class="clients-list-pane">
           <div class="section-head">
             <h3>Clients</h3>
@@ -1215,6 +1219,7 @@
           </div>
           <div id="clientsList" class="stack compact"></div>
         </div>
+        <div class="clients-editor-pane">
         <form id="clientForm" class="clients-form-pane stack">
           <input type="hidden" id="clientId" />
           <div id="clientFormStatus" class="message" hidden></div>
@@ -1284,36 +1289,44 @@
           <button type="button" id="addPortalIdentityBtn" class="secondary"><i data-lucide="plus"></i><span>Add portal identity</span></button>
 
           <label>Notes<textarea id="c_notes"></textarea></label>
-          <div class="actions">
+          <div class="actions clients-form-actions">
             <button type="submit" class="primary"><i data-lucide="save"></i><span>Save client</span></button>
             <button type="button" id="deleteClientBtn" class="danger-button"><i data-lucide="trash-2"></i><span>Delete</span></button>
           </div>
         </form>
 
-        <div id="clientCredentials" hidden style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
-          <h3>Client links</h3>
-          <p class="muted">Share project progress or let this client supply portal logins securely.</p>
-          <div class="actions" style="margin:10px 0">
-            <button type="button" id="clientTrackingLinkBtn" class="secondary">Create tracking link</button>
-            <button type="button" id="clientCredentialLinkBtn" class="secondary">Create secure login request</button>
-          </div>
-          <label id="clientLinkResultWrap" hidden>Link to share<input id="clientLinkResult" readonly /></label>
-          <p id="clientLinkStatus" role="status" class="muted"></p>
-          <h3 style="margin:0 0 6px">Portal logins (encrypted)</h3>
-          <p class="muted" style="font-size:12px;margin:0 0 8px">Passwords are stored encrypted (AES-256-GCM) and never shown again. Used by the bot to log in for this client only.</p>
-          <div id="credList" class="stack" style="margin-bottom:8px"></div>
-          <div class="form-row">
-            <label>Portal type<input id="cred_portalType" placeholder="e.g. accela_oregon" /></label>
-            <label>Portal URL<input id="cred_portalUrl" placeholder="https://…" /></label>
-          </div>
-          <div class="form-row">
-            <label>Username<input id="cred_username" autocomplete="off" /></label>
-            <label>Password<input id="cred_password" type="password" autocomplete="new-password" /></label>
-          </div>
-          <div class="actions">
-            <button type="button" id="addCredentialBtn" class="secondary"><i data-lucide="key-round"></i><span>Save login</span></button>
-            <span id="credStatus" class="muted" style="font-size:12px"></span>
-          </div>
+        <div id="clientCredentials" class="clients-creds" hidden>
+          <section class="clients-creds-block">
+            <h3>Client links</h3>
+            <p class="muted clients-creds-hint">Share project progress or let this client supply portal logins securely.</p>
+            <div class="actions">
+              <button type="button" id="clientTrackingLinkBtn" class="secondary"><i data-lucide="link"></i><span>Create tracking link</span></button>
+              <button type="button" id="clientCredentialLinkBtn" class="secondary"><i data-lucide="shield-check"></i><span>Create secure login request</span></button>
+            </div>
+            <label id="clientLinkResultWrap" hidden>Link to share<input id="clientLinkResult" readonly /></label>
+            <p id="clientLinkStatus" role="status" class="muted clients-creds-hint"></p>
+          </section>
+          <section class="clients-creds-block">
+            <h3>Portal logins (encrypted)</h3>
+            <p class="muted clients-creds-hint">Passwords are stored encrypted (AES-256-GCM) and never shown again. Used by the bot to log in for this client only.</p>
+            <div id="credList" class="cred-list"></div>
+            <div class="cred-add">
+              <div class="cred-add-title">Add a login</div>
+              <div class="form-row">
+                <label>Portal type<input id="cred_portalType" placeholder="e.g. accela_oregon" /></label>
+                <label>Portal URL<input id="cred_portalUrl" placeholder="https://…" /></label>
+              </div>
+              <div class="form-row">
+                <label>Username<input id="cred_username" autocomplete="off" /></label>
+                <label>Password<input id="cred_password" type="password" autocomplete="new-password" /></label>
+              </div>
+              <div class="actions">
+                <button type="button" id="addCredentialBtn" class="secondary"><i data-lucide="key-round"></i><span>Save login</span></button>
+                <span id="credStatus" class="muted clients-creds-hint"></span>
+              </div>
+            </div>
+          </section>
+        </div>
         </div>
       </div>
     </div>

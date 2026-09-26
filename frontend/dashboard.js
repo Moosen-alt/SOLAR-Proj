@@ -7706,10 +7706,11 @@ async function loadClientCredentials(clientId) {
     const list = $("credList");
     const creds = data.credentials || [];
     list.innerHTML = creds.length
-      ? creds.map((c) => `<div class="card" style="padding:6px 8px;display:flex;justify-content:space-between;align-items:center;gap:8px">
-          <span style="font-size:13px"><strong>${esc(c.portalType || "portal")}</strong> · ${esc(c.usernameReference)} ${c.hasSecret ? "🔒" : ""}</span>
-          <button class="danger" data-cred-del="${esc(c.id)}" style="font-size:11px">Delete</button></div>`).join("")
-      : '<p class="muted" style="font-size:12px">No saved logins yet.</p>';
+      ? creds.map((c) => `<div class="cred-row">
+          <div class="cred-row-text"><strong>${esc(c.portalType || "portal")}</strong><span class="cred-row-user">${esc(c.usernameReference)}${c.hasSecret ? ' <span class="cred-row-lock" title="Password stored encrypted">🔒</span>' : ""}</span></div>
+          <button type="button" class="danger-button cred-row-del" data-cred-del="${esc(c.id)}"><i data-lucide="trash-2"></i><span>Delete</span></button></div>`).join("")
+      : '<p class="muted clients-creds-hint">No saved logins yet.</p>';
+    if (window.lucide) window.lucide.createIcons();
     list.querySelectorAll("[data-cred-del]").forEach((b) => b.addEventListener("click", async () => {
       try {
         // A stored portal login is unrecoverable once deleted (encrypted at rest,
