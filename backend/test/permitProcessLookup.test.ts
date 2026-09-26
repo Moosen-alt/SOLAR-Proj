@@ -253,6 +253,19 @@ await check("(a3) MUST-EXCLUDE: a prerequisite office is never the issuing agenc
   assert.equal(ppl.namesOnlyAsPrerequisite("Marion County", "Marion County Building Inspection issues permits for Fernhill"), false);
   assert.equal(ppl.namesOnlyAsPrerequisite("Fernhill", "Obtain Fernhill zoning approval before applying."), true);
 });
+await check("(a4) MUST-EXCLUDE: an agency named only by generic words is NOT FOUND (and nobody is asked by that name); a dashed/comma tail is dropped", async () => {
+  const gp = processAnswer({ issuingAgency: { value: "Building Inspections Division", sourceUrl: COUNTY, quote: "An approved permit by the Building Inspections Division is required for any residential solar panel" } });
+  const r = ppl.parseProcessPart(gp, [COUNTY], "end_turn");
+  assert.equal(r.issuingAgency.value, null);
+  const bare = JSON.parse(processAnswer());
+  bare.issuingAgency.value = null;
+  for (const p of bare.permits) p.issuingAgency = { value: "Building", sourceUrl: COUNTY, quote: "All electrical work requires an approved permit by the Building Inspections Division." };
+  const rec = recorder({ process: grounded(JSON.stringify(bare)), docs: grounded(feesAnswer()) });
+  await ppl.runPermitProcessLookup(db, rec.llm, { state: "OR", ahj: "City of Mossgiel" });
+  assert.ok(rec.asked.filter((a) => !/process$/.test(a.label)).every((a) => docsUserAgency(a.user) === "City of Mossgiel"), JSON.stringify(rec.asked.map((a) => docsUserAgency(a.user))));
+  const ev = ppl.parseProcessPart(processAnswer({ issuingAgency: { value: "City of Evanston — Community Development Department, Building and", sourceUrl: COUNTY, quote: "The City of Evanston's Permit Desk handles all building permits" } }), [COUNTY], "end_turn");
+  assert.equal(ev.issuingAgency.value, "City of Evanston");
+});
 await check("(q1) MUST-PASS: the portal step asks the ISSUING AGENCY, reads pages (bounded), and fills the portal + record type part one could not cite", async () => {
   const r = recorder({
     process: grounded(jeffersonShape()),

@@ -212,11 +212,14 @@ const supportsAmount = (fee: PermitFeeAnswer, quote: string) => {
 /** "Marion County (Marion County Public Works Building Inspection Division)" → "Marion County": the
  *  agency's NAME, which is what an address grid, a fee key and a person read. */
 const agencyName = (v: unknown): string | null => {
-  let s = str(v).replace(/\s*\([^)]*\)\s*$/, "").replace(/\s+[–-]\s+.*$/, "").trim();
+  let s = str(v).replace(/\s*\([^)]*\)\s*$/, "").replace(/\s+[–—-]\s+.*$/, "").replace(/,.*$/, "").trim();
   // "Marion County Building" / "Marion County Public Works Building Inspection" → "Marion County".
   const tokens = s.split(/\s+/);
   while (tokens.length > 1 && GENERIC_ORG_WORDS.has(tokens[tokens.length - 1].toLowerCase())) tokens.pop();
   s = tokens.join(" ");
+  // A name made only of generic words ("Building Inspections Division" → "Building") names NO
+  // agency: asking "Building" for documents/fees asks nobody. Not usable → NOT FOUND.
+  if (!words(s).some((w) => !GENERIC_ORG_WORDS.has(w))) return null;
   return s || null;
 };
 const asDiscipline = (v: unknown): PermitProcessDiscipline | null => {
