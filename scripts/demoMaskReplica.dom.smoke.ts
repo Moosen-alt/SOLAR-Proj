@@ -200,11 +200,12 @@ console.log("\n0b. THE CORNER PAGE: Unicode names, split nodes, a listbox, a lat
   const V = {
     cyrillic: "Иван Петров", cjk: "山田太郎", jose: "José Ñañez", zoe: "Zoë Müller-Ålesund", company: "Ñu Solar Ltd",
     account: "8802 4680 13", phone: "(541) 555-0163", ascii: "Quimbyfield", desmond: "Desmond Yarrowby",
+    ivan: "Ivan Petrov", zoeAscii: "Zoe Mullerson",
   };
   const values = piiMaskValues({
     project: { homeownerName: V.zoe, accountNumber: V.account, parserSnapshot: { homeownerPhone: V.phone, ubAccountHolderName: V.jose, electricalSupervisorName: V.cyrillic, installerContactName: V.cjk } },
     installer: { company: V.company },
-    extra: [V.ascii, V.desmond],
+    extra: [V.ascii, V.desmond, V.ivan, V.zoeAscii],
   });
   check("MUST-INCLUDE: Cyrillic, CJK and accented names are values, with their tokens (Иван Петров / Иван / Петров / 山田太郎 / Zoë / José / Ñañez)",
     ["Иван Петров", "Иван", "Петров", "山田太郎", "Zoë", "José", "Ñañez", "Zoë Müller-Ålesund", "Ñu Solar Ltd"].every((v) => values.includes(v)), values.filter((v) => /[^\x00-\x7f]/.test(v)).join("|"));
@@ -223,6 +224,11 @@ console.log("\n0b. THE CORNER PAGE: Unicode names, split nodes, a listbox, a lat
 <div class="row" id="r-ref">Ref: 4680</div>
 <div class="row" id="r-ivanov">Street: Иванов prospekt</div>
 <div class="row" id="r-desmondia">Firm: Desmondia Ltd</div>
+<div class="row" id="r-glue-label"><label>Owner</label><span id="g1">${esc(V.desmond)}</span></div>
+<div class="row" id="r-glue-br">${esc(V.ivan)}<br>Electrician</div>
+<div class="row" id="r-glue-block"><span style="display:block">Name</span><span style="display:block" id="g3">${esc(V.zoeAscii)}</span></div>
+<div class="row" id="r-glue-br2">Holder<br>${esc(V.ascii)}<br>Account</div>
+<div class="row" id="r-glue-margin"><b style="margin-right:12px">Contact</b><span id="g5">${esc(V.ivan)}</span></div>
 <div class="row"><label for="lb">Existing customers</label><br><select id="lb" size="4"><option value="">-- none --</option><option value="c1">Customer: ${esc(V.zoe)}</option><option value="c2">Customer: ${esc(V.ascii)} Holdings</option><option value="c3">Other</option></select>
 <select id="lb2" size="3"><option>Alpha</option><option>Beta</option><option>Gamma</option></select></div>
 <div class="row"><label for="cyr-in">Electrician</label> <input id="cyr-in" type="text" value="${esc(V.cyrillic)}"></div>
@@ -232,11 +238,11 @@ console.log("\n0b. THE CORNER PAGE: Unicode names, split nodes, a listbox, a lat
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   // Geometry RAW: the values, plus the split fragments (each lives in its own text node) and
   // the MUST-EXCLUDE probes ("Иван", "Desmond" — found by raw substring inside the longer words).
-  const RAW = [V.cyrillic, V.cjk, V.jose, V.zoe, V.company, "555-0163", "4680", V.ascii, "Иван", "Desmond"];
-  const AUDIT_RAW = [V.cyrillic, V.cjk, V.jose, V.zoe, V.company, V.account, V.phone, V.ascii];
+  const RAW = [V.cyrillic, V.cjk, V.jose, V.zoe, V.company, "555-0163", "4680", V.ascii, "Иван", "Desmond", V.desmond, V.ivan, V.zoeAscii];
+  const AUDIT_RAW = [V.cyrillic, V.cjk, V.jose, V.zoe, V.company, V.account, V.phone, V.ascii, V.desmond, V.ivan, V.zoeAscii];
   const browser = await chromium.launch();
   try {
-    const ctx = await browser.newContext({ viewport: { width: 1000, height: 760 } });
+    const ctx = await browser.newContext({ viewport: { width: 1000, height: 1100 } });
     await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || function (fn) { return fn; };" });
     await ctx.addInitScript({ content: piiMaskInitScript({ values, shapes: piiMaskShapesFor("powerclerk"), extraSelectors: [] }) });
     await ctx.addInitScript({ content: `globalThis.__uncov = ${uncoveredInPage.toString()};` });
@@ -249,6 +255,12 @@ console.log("\n0b. THE CORNER PAGE: Unicode names, split nodes, a listbox, a lat
       !leaks.some((u) => /r-cyr|r-cjk|r-jose|r-zoe|r-nu|cyr-in/.test(u)), leaks.join("; "));
     check("GEOMETRY: a phone and an account split across inline elements are boxed in every node ((541) <span>555-0163</span>; 8802 <b>4680</b> 13)",
       !leaks.some((u) => /r-split|sp1|sp2/.test(u)), leaks.join("; "));
+    // N1: the line-box run puts a separator between text nodes, so an element edge is a word
+    // boundary. Flattened with NONE, "Owner"+"Desmond" read as one word and the name was bare.
+    const glued = await page.evaluate(() => ["r-glue-label", "r-glue-br", "r-glue-block", "r-glue-br2", "r-glue-margin"]
+      .map((id) => { const r = document.getElementById(id)!.getBoundingClientRect(); return r.height > 0 && r.bottom <= innerHeight; }));
+    check("GEOMETRY (N1): a name glued to a neighbour element's text is boxed — <label>Owner</label><span>name, name<br>next line, display:block spans, a margin-separated <b> — every element edge is a word boundary",
+      glued.every(Boolean) && !leaks.some((u) => /r-glue|#g[135]$/.test(u)), `on screen=${glued.join(",")} ${leaks.join("; ")}`);
     check("GEOMETRY: a listbox whose option text carries a value is boxed whole", !leaks.some((u) => /field#lb$/.test(u)), leaks.join("; "));
     check("no other rect carrying a raw value is uncovered", leaks.length === 0, leaks.join("; "));
     check("MUST-EXCLUDE: a bare '4680' line, 'Иван' inside 'Иванов' and 'Desmond' inside 'Desmondia' are NOT boxed (no digit partials; cased-letter word boundary)",
@@ -285,7 +297,7 @@ console.log("\n0b. THE CORNER PAGE: Unicode names, split nodes, a listbox, a lat
     check("...and the late row's value characters are all under a box", lateAudit.uncovered === 0 && lateAudit.rectsChecked > 0, JSON.stringify(lateAudit));
     await ctx.close();
     // Unmasked control: no layer, same text.
-    const ctx2 = await browser.newContext({ viewport: { width: 1000, height: 760 } });
+    const ctx2 = await browser.newContext({ viewport: { width: 1000, height: 1100 } });
     const page2 = await ctx2.newPage();
     await page2.goto(`${base}/`);
     const unmaskedText = await page2.evaluate(() => document.body.innerText);

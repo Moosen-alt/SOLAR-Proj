@@ -32,7 +32,9 @@
 //                matched per LINE BOX, not per text node: the text nodes under one block
 //                element (inline children — <span>, <b>, <a> — do not break a run) are
 //                flattened and the match mapped back to each node, so "(541) <span>555-0163"
-//                and "8802 <b>4680</b> 13" are caught. Matching is on the letters and digits
+//                and "8802 <b>4680</b> 13" are caught — and every element edge is a word
+//                boundary, so a name glued to a label's text ("<label>Owner</label><span>
+//                Desmond Yarrowby", "Ivan Petrov<br>Electrician") is caught too. Matching is on the letters and digits
 //                alone, UNICODE-AWARE (NFKD, marks stripped, \p{L}\p{N}): "8802 4680 13",
 //                "(541) 555-0163", "Иван Петров", "山田太郎", "Zoë" and "José" are all values,
 //                and "Jose" in the page matches "José" — ONE normaliser (piiTextMatcher) serves
@@ -412,7 +414,16 @@ function piiMaskInPage(cfg: PiiMaskConfig, layerId: string, safetyGlobal: string
   };
 
   // Text is matched per LINE BOX: the text nodes under one block-level element form a run
-  // (inline children do not break it), flattened with no separator and mapped back to nodes.
+  // (inline children do not break it), flattened and mapped back to nodes. The MATCHER's runs
+  // put a separator that belongs to no node between two text nodes (RUN_SEP): normalize()
+  // drops it, so "(541) <span>555-0163" still matches across the edge, and the word-boundary
+  // test sees it, so every element edge is a word boundary — "<label>Owner</label><span>
+  // Desmond", "Ivan Petrov<br>Electrician", display:block spans and a margin-separated <b>
+  // render as separate words and must match as separate words (flattened with NO separator
+  // they read as "OwnerDesmond" and the name was left bare). The accepted cost is an
+  // over-mask: "Desmond<i>ia</i>" split across nodes is boxed; "Desmondia" in one node is not.
+  // The audit's runs take no separator (sep ""): its raw substring search stays independent.
+  const RUN_SEP = "\u001f";
   const INLINE = new Set(["SPAN", "B", "I", "U", "EM", "STRONG", "A", "SMALL", "SUB", "SUP", "MARK", "ABBR", "CODE", "LABEL", "FONT", "S", "DEL", "INS", "Q", "CITE", "DFN", "KBD", "SAMP", "VAR", "TIME", "DATA", "BDI", "BDO", "WBR", "BR", "BIG", "TT", "NOBR", "STRIKE"]);
   const blockOf = (el: Element | null): Element | null => {
     let e = el;
@@ -420,7 +431,7 @@ function piiMaskInPage(cfg: PiiMaskConfig, layerId: string, safetyGlobal: string
     return e;
   };
   type Run = { block: Element | null; nodes: Text[]; starts: number[]; text: string };
-  const textRuns = (root: Node, layer: Element | null): Run[] => {
+  const textRuns = (root: Node, layer: Element | null, sep: string): Run[] => {
     const walker = d.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode: (n) => {
         const p = n.parentElement;
@@ -436,6 +447,7 @@ function piiMaskInPage(cfg: PiiMaskConfig, layerId: string, safetyGlobal: string
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       const block = blockOf(n.parentElement);
       if (!cur || cur.block !== block) { cur = { block, nodes: [], starts: [], text: "" }; runs.push(cur); }
+      if (cur.nodes.length) cur.text += sep; // between nodes: an offset no node owns (runRects skips it)
       cur.starts.push(cur.text.length);
       cur.nodes.push(n as Text);
       cur.text += n.nodeValue || "";
@@ -509,7 +521,7 @@ function piiMaskInPage(cfg: PiiMaskConfig, layerId: string, safetyGlobal: string
       if (r) push(r, "field", 1);
     }
     // (b) text, per line box: only the matched characters, across inline element boundaries.
-    for (const run of textRuns(body, layer)) {
+    for (const run of textRuns(body, layer, RUN_SEP)) {
       if (run.text.length < 3) continue;
       const ranges = findRanges(run.text);
       for (const [s, e] of ranges) {
@@ -548,7 +560,7 @@ function piiMaskInPage(cfg: PiiMaskConfig, layerId: string, safetyGlobal: string
     // Text: every occurrence of every raw value in a line box, one rect per LETTER OR DIGIT
     // (a bare bracket, hyphen or space outside a box reveals nothing on its own).
     const INFORMATIVE = /[\p{L}\p{N}]/u;
-    for (const run of textRuns(d.body, layer)) {
+    for (const run of textRuns(d.body, layer, "")) {
       const lower = run.text.toLowerCase();
       for (const v of raws) {
         let at = lower.indexOf(v);
