@@ -708,7 +708,7 @@ export async function runPermitProcessLookup(
   // Pages we read for documents / fees, handed to that question verbatim (compact excerpts) — the
   // model may cite them, and a quote cited to one must be ON it (parseDocsFeesPart's page door).
   const pageBlock = ev?.docs.length
-    ? `\n\nPages already read for you (quote them exactly; cite the URL exactly as given):\n${ev.docs.map((d, i) => `[${i + 1}] ${d.page.finalUrl} (${d.kind === "fees" ? "fee schedule" : "checklist / requirements"})\n${d.excerpt}`).join("\n\n")}`
+    ? `\n\nPages already read for you (quote them exactly; cite the URL exactly as given). They may not cover everything — search for anything they do not state:\n${ev.docs.map((d, i) => `[${i + 1}] ${d.page.finalUrl} (${d.kind === "fees" ? "fee schedule" : "checklist / requirements"})\n${d.excerpt}`).join("\n\n")}`
     : "";
 
   // THE PORTAL IS ITS OWN GROUNDED STEP (reading the agency's pages), for the permits still without a
@@ -744,7 +744,11 @@ export async function runPermitProcessLookup(
   for (const a of answers) {
     if (a.first) logCall("documentsFees", a.first, { readPages: true, agency: a.agency });
     logCall(a.kind === "portal" ? "portal" : a.first ? "documentsFees (retry, no page reading)" : "documentsFees", a.r, { readPages: !a.first, agency: a.agency });
-    const grounded = a.r.groundedSearches > 0;
+    // GROUNDED = the web search returned results, OR (documents/fees) the pages WE read were handed to
+    // the question: an answer may rest on them alone (measured: with the fee schedule in hand the model
+    // ran no search, and "no search" read as model memory and discarded the whole answer). Every value
+    // is still cited to a page the search returned or we read, and a quote cited to our page must be ON it.
+    const grounded = a.r.groundedSearches > 0 || (a.kind === "docs" && Boolean(pageBlock) && !a.r.error && Boolean(a.r.text));
     if (a.kind === "portal") {
       raw.portal += (raw.portal ? "\n" : "") + a.r.text;
       raw.portalUrls.push(...seenOf(a.r));

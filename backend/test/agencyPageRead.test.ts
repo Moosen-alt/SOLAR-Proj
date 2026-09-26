@@ -17,6 +17,7 @@
 //   K11 contractor prerequisite without the contractor word → (n1) fails.
 //   K12 lookup without the reader wiring        → (i1) fails.
 //   K13 platform markers read from a page's links (no same-host rule) → (r5) fails.
+//   K14 a documents/fees answer resting only on our pages read as ungrounded → (i1) fails.
 //
 // Run: npx tsx backend/test/agencyPageRead.test.ts
 import "./_isolate"; // FIRST
@@ -269,7 +270,7 @@ await check("(i1) the lookup READS the agency's page: the portal from its link, 
     if (i.label.endsWith(".process")) return g(process1, [CENTER]);
     if (i.label.endsWith(".documentsFees")) {
       docsUser = i.user;
-      return g(JSON.stringify({ permits: [{ discipline: "combo", documents: { value: null }, fee: { value: { amountUsd: 312, basis: "flat per permit (up to 15 kW)", lines: [{ label: "Solar - Residential (Up to 15 kW)", amountUsd: 312 }] }, sourceUrl: FEES, quote: "1049 Solar - Residential (Up to 15 kW) per permit [2],[4] $ 312" } }] }), ["https://www.example-search.com/x"]);
+      return g(JSON.stringify({ permits: [{ discipline: "combo", documents: { value: null }, fee: { value: { amountUsd: 312, basis: "flat per permit (up to 15 kW)", lines: [{ label: "Solar - Residential (Up to 15 kW)", amountUsd: 312 }] }, sourceUrl: FEES, quote: "1049 Solar - Residential (Up to 15 kW) per permit [2],[4] $ 312" } }] }), [], { groundedSearches: 0, searches: 0 }); // answered from the pages WE read, no search
     }
     return g(JSON.stringify({ permits: [] }), []);
   } };
