@@ -2354,6 +2354,33 @@ function renderFeeCharges(line) {
     </details>`;
 }
 
+// WHERE THE NUMBER CAME FROM, ON THE CARD'S FACE (new-AHJ e2e, gap 4).
+//
+// A fee with a number now shows its schedule line and source beside the number, not only one
+// click away — the number is what gets quoted, so its source travels with it. And an UNKNOWN fee
+// whose schedule IS on file (a tier or formula the job's own facts did not resolve — FirstEnergy
+// "Level 2 - $250.00 + $1.00 per kW" with no system size yet) printed a bare UNKNOWN, with the
+// reason and the schedule inside the closed provenance block: a stored answer read as "nothing
+// found". The reason and the link are on the face now. Never a number: an unresolved schedule is
+// still an unknown, and feeMoney() still prints UNKNOWN above this line.
+function feeFaceSourceHtml(line) {
+  const url = httpUrl(line.sourceUrl);
+  const link = url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(portalHostname(url) || url)}</a>` : "";
+  if (line.feeUsd != null) {
+    const parts = [
+      line.bracketLabel ? `line “${esc(line.bracketLabel)}”` : "",
+      esc(FEE_SOURCE_TEXT[line.source] || line.source || ""),
+      link,
+    ].filter(Boolean);
+    return parts.length ? `<p class="fee-face-source" style="margin:2px 0;font-size:12px">Source: ${parts.join(" · ")}</p>` : "";
+  }
+  const basis = String(line.basis || "").trim();
+  if (!url && !basis) return "";
+  return `<p class="fee-face-source" style="margin:2px 0;font-size:12px">${url
+    ? `<strong>Schedule on file — not resolved for this job:</strong> ${link}. `
+    : ""}${basis ? `Why unknown: ${esc(basis)}` : ""}</p>`;
+}
+
 function renderFeeSheetLine(line) {
   const conf = FEE_CONFIDENCE[line.confidence] || FEE_CONFIDENCE.unknown;
   // Provisional and unknown fees carry the warning tone, so the card LOOKS unfinished.
@@ -2361,7 +2388,9 @@ function renderFeeSheetLine(line) {
   // (an estimate is not knowledge) but it still has a figure to act on — it warns, it
   // does not block. Blocker stays for the line with no number at all.
   const tone = line.confidence === "actual" || line.confidence === "verified" ? "pass" : line.feeUsd != null ? "warning" : "blocker";
-  const trackLabel = line.track === "nem" ? "NEM / interconnection" : "Permit (AHJ)";
+  // "Utility interconnection", not "NEM": Oncor and SRP jobs have no utility net metering, and the
+  // fee is the interconnection application's either way (new-AHJ e2e gap 3).
+  const trackLabel = line.track === "nem" ? "Utility interconnection" : "Permit (AHJ)";
   const url = httpUrl(line.sourceUrl);
   return `
     <article class="item ${tone}" style="margin-bottom:8px">
@@ -2378,6 +2407,7 @@ function renderFeeSheetLine(line) {
         // are how-this-gets-paid facts an operator must see without a click.
         ? ""
         : `<p style="margin:2px 0;font-size:12px">${esc(FEE_PAYMENT_METHOD[line.paymentMethod] || line.paymentMethod || "")}</p>`}
+      ${feeFaceSourceHtml(line)}
       ${renderFeeCharges(line)}
       <!-- The amount and how it is paid drive action, so they stay loud. Where
            the number came from is the product's core claim and is kept in full —
@@ -2440,7 +2470,7 @@ function renderFeeSheetPanel() {
     if (!receipts.length) { panel.hidden = true; panel.innerHTML = ""; return; }
     panel.hidden = false;
     panel.innerHTML = `<section class="panel kx-callout-panel">
-      <div class="item-title" style="margin-bottom:6px"><span>💵 Fees — permit and NEM</span>${statusBadge("receipts only")}</div>
+      <div class="item-title" style="margin-bottom:6px"><span>💵 Fees — permit and utility interconnection</span>${statusBadge("receipts only")}</div>
       ${receiptsBlock}
     </section>`;
     return;
@@ -2458,9 +2488,10 @@ function renderFeeSheetPanel() {
   const foldMoney = (v) => (v == null ? "UNKNOWN" : `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
   const FOLD_QUALIFIER = { actual: "actual", verified: "verified", seeded: "provisional", estimated: "estimate", unknown: "unknown" };
   const trackParts = sheet.lines.map((line) => {
-    const name = line.track === "nem" ? "NEM" : "Permit";
+    const name = line.track === "nem" ? "Utility" : "Permit";
     const q = FOLD_QUALIFIER[line.confidence] || "unknown";
-    if (line.feeUsd == null) return `${name} UNKNOWN`;
+    // A schedule on file that did not resolve is still UNKNOWN — but it is not "nothing found".
+    if (line.feeUsd == null) return `${name} UNKNOWN${httpUrl(line.sourceUrl) ? " (schedule on file, not resolved)" : ""}`;
     if (line.paymentMethod === "none") return `${name}: no fee expected (${q})`;
     return `${name} ${line.confidence === "estimated" ? "≈ " : ""}${foldMoney(line.feeUsd)} (${q})`;
   });
@@ -2496,7 +2527,7 @@ function renderFeeSheetPanel() {
       </summary>
       <div class="fee-fold-body">
       <div class="item-title" style="margin-bottom:6px">
-        <span>💵 Fees — permit and NEM</span>
+        <span>💵 Fees — permit and utility interconnection</span>
         ${statusBadge(anyUnknown ? "incomplete" : provisional.length ? "provisional" : "known")}
       </div>
       <!-- Sentence one restated the heading directly above it ("Fees — permit and
@@ -2507,7 +2538,7 @@ function renderFeeSheetPanel() {
       </p>
       ${sheet.lines.map(renderFeeSheetLine).join("")}
       <table class="fee-totals" style="font-size:12px;margin:4px 0;border-collapse:collapse;max-width:360px;width:100%">
-        <tr><td style="padding:1px 14px 1px 0">Jurisdiction fees (permit + NEM)</td><td style="text-align:right"><strong>${feeMoney(sheet.jurisdictionFeesUsd)}</strong></td></tr>
+        <tr><td style="padding:1px 14px 1px 0">Jurisdiction fees (permit + utility)</td><td style="text-align:right"><strong>${feeMoney(sheet.jurisdictionFeesUsd)}</strong></td></tr>
         <tr><td style="padding:1px 14px 1px 0">Our service fees${sheet.billingRequired ? " (per submission)" : ""}</td>
             <td style="text-align:right"><strong>${feeMoney(sheet.serviceFeesUsd)}</strong></td></tr>
         <tr style="border-top:1px solid var(--border)"><td style="padding:3px 14px 1px 0"><strong>Project total${totalEstimated ? " (estimate)" : ""}</strong></td>
@@ -4019,6 +4050,85 @@ const TRACK_STATUS_CLASS = {
   in_review: "info", correction: "blocker", issued: "pass",
 };
 
+// WHERE A TRACK IS FILED, AS FOUND — ON THE CARD (new-AHJ e2e, gap 4).
+//
+// The per-job lookup found Iowa City's EnerGov URL and Waltham's "no online portal, paper
+// drop-off", and the tracks still said "Unknown — verify". The server now resolves the channel
+// from the lookup (cited) / profile / knowledge base and says how it knows (`channelBasis`); this
+// draws it: every http(s) URL in the channel sentence is a link (untrusted text: esc() everything,
+// httpUrl() gates the href), the basis is a chip beside it, and an older server that sends no
+// basis draws no chip — the sentence already carries its own "verify" wording.
+const TRACK_CHANNEL_BASIS = {
+  cited: { badge: "badge-info", label: "cited" },
+  verified: { badge: "badge-pass", label: "verified by a person" },
+  known: { badge: "badge-info", label: "on record" },
+  profile: { badge: "badge-warning", label: "profile — verify" },
+  researched: { badge: "badge-warning", label: "researched — verify" },
+  unknown: { badge: "badge-warning", label: "not found yet" },
+};
+
+function linkifyText(text) {
+  const s = String(text ?? "");
+  const re = /https?:\/\/[^\s<>"'`]+/g;
+  // Trailing sentence punctuation and a closing paren or square bracket belong to the prose, not
+  // the URL. Those two are written as unicode escapes in the pattern string so the brackets in
+  // this function stay balanced for the tests, which lift it out of this file by bracket counting.
+  const trailing = new RegExp("[.,;:!?\\u0029\\u005d]+$");
+  let out = "";
+  let last = 0;
+  let m;
+  while ((m = re.exec(s))) {
+    const url = m[0].replace(trailing, "");
+    out += esc(s.slice(last, m.index));
+    const safe = httpUrl(url);
+    const shown = safe.replace(/^https?:\/\/(?:www\.)?/i, "").replace(/\/$/, "");
+    out += safe
+      ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${esc(shown.length > 60 ? `${shown.slice(0, 59)}…` : shown)}</a>`
+      : esc(url);
+    last = m.index + url.length;
+    re.lastIndex = last;
+  }
+  return out + esc(s.slice(last));
+}
+
+function trackChannelHtml(t) {
+  const channel = String(t.channel || "");
+  const basis = TRACK_CHANNEL_BASIS[t.channelBasis];
+  const lines = [
+    `<p class="muted track-channel" style="margin:0 0 4px">Channel: ${linkifyText(channel)}${basis ? ` <span class="badge ${basis.badge}">${esc(basis.label)}</span>` : ""}${t.lastCheckedAt ? ` · last checked ${esc(fmtDate(t.lastCheckedAt))}` : ""}</p>`,
+  ];
+  // A portal URL the server resolved but did not write into the sentence.
+  const portal = httpUrl(t.portalUrl);
+  if (portal && !channel.includes(portal)) {
+    lines.push(`<p class="muted track-channel-link" style="margin:0 0 4px">Portal: ${linkifyText(portal)}</p>`);
+  }
+  // The recorder's pre-fill URL, when no recipe exists yet, comes from the knowledge base or a
+  // profile's source page — which may be an information page, not the application portal (rule 5:
+  // an information page is never a portal). Shown as what it is: a link on file, unverified.
+  const onFile = t.hasRecipe ? "" : httpUrl(t.recipePortalUrl);
+  if (onFile && !channel.includes(onFile) && onFile !== portal) {
+    lines.push(`<p class="muted track-channel-link" style="margin:0 0 4px">Link on file (not verified as the application portal): ${linkifyText(onFile)}</p>`);
+  }
+  if (t.structureBasis) lines.push(`<p class="muted" style="margin:0 0 4px;font-size:12px">Permit structure: ${linkifyText(t.structureBasis)}</p>`);
+  return lines.join("");
+}
+
+// Offices that must see the plans BEFORE this filing (Waltham: fire review, then building) — each
+// step cited. When drawn as a list, the next-action sentence drops its own copy of the same steps.
+function trackPrerequisitesHtml(t) {
+  const steps = Array.isArray(t.prerequisites) ? t.prerequisites.filter((p) => p && p.step) : [];
+  if (!steps.length) return "";
+  return `<div class="track-prereqs" style="margin:0 0 6px;font-size:12px"><strong>Before this filing, at another office:</strong>
+    <ol style="margin:2px 0 0 18px;padding:0">${steps.map((p) => `<li>${esc(p.step)}${httpUrl(p.sourceUrl) ? ` — ${linkifyText(httpUrl(p.sourceUrl))}` : ""}</li>`).join("")}</ol></div>`;
+}
+
+function trackNextActionText(t) {
+  const next = String(t.nextAction || "");
+  const listed = Array.isArray(t.prerequisites) && t.prerequisites.some((p) => p && p.step);
+  const m = listed ? /^FIRST, at another office:[\s\S]*?\bTHEN:\s*([\s\S]+)$/.exec(next) : null;
+  return m ? `After those: ${m[1]}` : next;
+}
+
 function trackCardHtml(t) {
   const cls = TRACK_STATUS_CLASS[t.status] || "info";
   // Captured numbers — only the fields this track actually uses (NEM has no permit #).
@@ -4067,8 +4177,9 @@ function trackCardHtml(t) {
       <span>${esc(t.label)}</span>
       ${statusBadge(t.statusLabel)}
     </div>
-    <p class="muted" style="margin:0 0 4px">Channel: ${esc(t.channel)}${t.lastCheckedAt ? ` · last checked ${esc(fmtDate(t.lastCheckedAt))}` : ""}</p>
-    <p style="margin:0 0 6px;font-size:12px">→ ${esc(t.nextAction)}</p>
+    ${trackChannelHtml(t)}
+    ${trackPrerequisitesHtml(t)}
+    <p style="margin:0 0 6px;font-size:12px">→ ${linkifyText(trackNextActionText(t))}</p>
     ${captured ? `<p style="margin:0 0 4px">${captured} ${trackLink ? "&nbsp;·&nbsp; " + trackLink : ""}</p>` : (trackLink ? `<p style="margin:0 0 4px">${trackLink}</p>` : "")}
     ${t.recipeId && (t.recipeStatus === "complete" || t.recipeStatus === "recording")
       && !screenshotMisses.has(screenshotKey(state.selectedProjectId, t.recipeId, t.recipeStatus))
@@ -4108,7 +4219,9 @@ function renderSubmittalTracks() {
   const group = (title, list) => list.length
     ? `<div class="track-group"><div class="track-group-head">${title}</div>${list.map(trackCardHtml).join("")}</div>`
     : "";
-  wrap.innerHTML = group("Utility — Net Metering (NEM)", utility) + group("AHJ — Permit(s)", permits);
+  // "Interconnection", not "Net Metering (NEM)": Texas (Oncor) and SRP jobs have no utility net
+  // metering; the card's own label says what the program is (new-AHJ e2e, gap 3).
+  wrap.innerHTML = group("Utility — interconnection", utility) + group("AHJ — Permit(s)", permits);
 
   wrap.querySelectorAll("button[data-track-submit]").forEach((btn) => {
     btn.addEventListener("click", () => markSubmittalTrack(btn.dataset.trackSubmit));
