@@ -107,8 +107,8 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   it knowing which agency charges), and a fuzzy fee-schedule match never bridges a CITY to a like-named COUNTY (City of Jefferson ≠
   Jefferson County) — a county collecting a city's fees is a sourced delegation row only.
 - Rule adjusted (operator authorization 2026-09-25, B8): "Engineered design with no stamped calculation" asks resolvePermitPath first —
-  never on a path RESOLVED prescriptive (text signals only while undecided; the Oregon golden now also shows it where the path
-  resolved engineered). The profile finding says "Oregon statewide profile applied" / "Per-job lookup applied" (callout) with the
+  never on a path RESOLVED prescriptive (the resolver only suppresses; wording/plan signals still raise it otherwise, so the
+  Oregon golden is unchanged). Planner KB context names only the filing entity's own track-safe portal. The profile finding says "Oregon statewide profile applied" / "Per-job lookup applied" (callout) with the
   packet's own predicate. Final-preview, installer-scope and prescriptive-upload reminders moved from findings to
   finalSubmitGate.requirements; the locates callout needs digging. The code-basis finding is unchanged: at HEAD it compares electrical
   (OESC 2021/NEC 2020 vs 2023 — TRUE per BCD), and ORSC is not compared.
