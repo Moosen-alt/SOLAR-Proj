@@ -485,6 +485,21 @@ ok("no Oregon leakage: licence label by state, N/A dropped, identified-vs-unknow
   // ground snow vs roof snow are different quantities
   const s = run([{ field: "snow", readings: [{ value: 30, source: "plan_set", excerpt: "GROUND SNOW LOAD 30 PSF" }, { value: 21, source: "structural_letter", excerpt: "Roof Snow Load 21 psf" }] }]);
   assert.ok(!s.resolved.some((x: { field: string }) => x.field === "snow") && s.conflicts.some((x: { field: string }) => x.field === "snow"), "roof snow never replaces ground snow");
+  // every roof-area qualifier makes a zone-specific reading (one assert per word, so none is decorative)
+  for (const q of ["Edge zone", "Ridge", "Corner", "Eave", "Hip", "Rake", "Perimeter", "Interior", "Non-exposed modules", "Zone 3r"]) {
+    const r = run([{ field: "attachmentSpacingIn", readings: [planSpacing, { value: 40, source: "structural_letter", excerpt: `${q} attachments at 40 in O.C.` }] }]);
+    assert.ok(!r.resolved.some((x: { field: string }) => x.field === "attachmentSpacingIn") && r.conflicts.some((x: { field: string }) => x.field === "attachmentSpacingIn"), `"${q}" qualifies the letter reading`);
+  }
+  const ne = run([{ field: "attachmentSpacingIn", readings: [{ value: 48, source: "plan_set", excerpt: "NON-EXPOSED MODULES: ATTACHMENTS @ 48\" O.C." }, { value: 24, source: "structural_letter", excerpt: "Exposed modules: attachments at 24 in O.C." }] }]);
+  assert.ok(!ne.resolved.some((x: { field: string }) => x.field === "attachmentSpacingIn"), "non-exposed and exposed are different quantities");
+  // ultimate vs ASD / unqualified wind speed are different quantities; Vult and ULTIMATE are the same one
+  const wind = (plan: string, letter: string) => run([{ field: "windSpeed", readings: [{ value: 110, source: "plan_set", excerpt: plan }, { value: 115, source: "structural_letter", excerpt: letter }] }]);
+  for (const [p, l] of [["WIND SPEED = 110 MPH", "Vult = 115 mph"], ["ASD WIND SPEED 110 MPH", "Ultimate wind speed 115 mph"], ["NOMINAL WIND SPEED 110", "Wind speed 115 mph"], ["WIND SPEED 110 MPH", "V ult 115 mph"]]) {
+    const w = wind(p, l);
+    assert.ok(!w.resolved.some((x: { field: string }) => x.field === "windSpeed") && w.conflicts.some((x: { field: string }) => x.field === "windSpeed"), `${p} vs ${l} is a conflict`);
+  }
+  assert.ok(wind("ULTIMATE WIND SPEED 110 MPH", "Vult = 115 mph").resolved.some((x: { field: string; value: number }) => x.field === "windSpeed" && x.value === 115), "Vult and ULTIMATE are the same quantity");
+  assert.ok(wind("ASD WIND SPEED 110 MPH", "Vasd = 115 mph").resolved.some((x: { field: string; value: number }) => x.field === "windSpeed" && x.value === 115), "Vasd and ASD are the same quantity");
   // MUST-PASS: the same quantity still goes to the sealed letter — unqualified over unqualified,
   // the same zone on both sides, and the dead-load pair (asserted in section 3) keeps resolving
   const u = run([{ field: "attachmentSpacingIn", readings: [planSpacing, { value: 32, source: "structural_letter", sheet: "p.3", excerpt: "Attachments at 32 in O.C. with 2 rails" }] }]);
