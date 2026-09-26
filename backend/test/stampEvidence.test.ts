@@ -223,7 +223,12 @@ const { saveProjectDocument } = await import("../src/projectDocuments");
 const { documentInventory } = await import("../src/requiredDocuments");
 
 const db = await openDatabase();
-const pdfBytes = Buffer.from(await (await PDFDocument.create()).save());
+// Distinct bytes per document type: identical bytes under two doc types are ONE file, attached once
+// (submissionDocuments.duplicateUploads, 2026-09-26).
+const pdfBytesFor = async (title: string) => { const d = await PDFDocument.create(); d.setTitle(title); return Buffer.from(await d.save()); };
+const pdfBytesByType: Record<string, Buffer> = {};
+for (const t of ["plan_set", "structural_letter", "stamped_plans", "engineering_letter", "structural"]) pdfBytesByType[t] = await pdfBytesFor(t);
+const pdfBytes = pdfBytesByType.plan_set;
 
 /** An engineered Portland rooftop with a real plan-set PDF attached and whatever stamp text the
  *  case is about. `extraDocs` is how a project that genuinely HAS the letter as a file is built. */
@@ -241,7 +246,7 @@ function inventoryFor(snapshot: Record<string, unknown>, extraDocs: string[] = [
   const projectId = detail.project.id;
   for (const docType of ["plan_set", ...extraDocs]) {
     saveProjectDocument(db, projectId, {
-      docType, filename: `${docType}.pdf`, contentType: "application/pdf", buffer: pdfBytes, source: "upload",
+      docType, filename: `${docType}.pdf`, contentType: "application/pdf", buffer: pdfBytesByType[docType] ?? pdfBytes, source: "upload",
     });
   }
   const inv = documentInventory(db, getProjectDetail(db, projectId).project);
