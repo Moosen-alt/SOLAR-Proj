@@ -511,15 +511,69 @@
     const between = rest.slice(0, wm.index);
     return between.length <= 60 && !/[.;]\s|\b\d{1,2}\.\s|ACCORDING|IN\s+ACCORDANCE|\bPER\b|\bNEC\b/i.test(between);
   }
-  function tapWindow(e) {
-    const snippet = String(e.snippet || e.text || '');
-    const m = snippet.search(TAP_WORDS);
-    if (m < 0) return snippet;
-    return snippet.slice(Math.max(0, m - 140), m + 140);
+  // A code clause or an option word counts only when it belongs to the tap phrase itself:
+  // the same sentence, the same numbered note or the same label. Label pages run one label
+  // into the next with no punctuation ("CODE REF: NEC 690.13(B) PRODUCTION METER LABEL
+  // LOCATION: MAIN SERVICE PANEL SOLAR CONNECTION LINE SIDE TAP"), so a cite that merely
+  // sits nearby belongs to the neighbouring label, not to the tap — and that label is the
+  // only TAP evidence a real line-side-tap job may carry.
+  const TAP_WORDS_G = new RegExp(TAP_WORDS.source, 'gi');
+  const SEGMENT_BREAK = /[.;!?](?=\s+[A-Z(\[])|[·•]|(?:^|\s)\d{1,2}(?:\.\d{1,2})+\.?\s*(?=[A-Z(])|(?:^|\s)\d{1,2}\.\s+(?=[A-Z(])|\b(?:LABEL\s+LOCATION|CODE\s+REF(?:ERENCE)?S?|PER\s+CODE\(?S?\)?|WARNING|CAUTION|DANGER|NOTICE)\s*:|-{2,}\s*PAGE\s+\d+\s*-{2,}/gi;
+  const NEW_WORK = /(?:\(N\)|\bNEW)\s*(?:[A-Z]+\s+){0,2}$/i;
+  const METHOD_FORM = /^\s*(?:\(\s*(?:LOAD|LINE|SUPPLY)\s*SIDE\s*\)\s*)?INTERCON+ECT/i;
+
+  /** The tap phrase this evidence is about, located in its snippet: the occurrence nearest
+   *  the match offset (the scope engine keeps 120 characters before the match), never simply
+   *  the first tap word in the snippet — that can be a different mention. */
+  function locateTap(e) {
+    const s = String(e.snippet || e.text || '');
+    const text = clean(e.text);
+    const own = (text.match(TAP_WORDS) || [])[0];
+    const expected = Math.min(120, s.length) + Math.max(0, text.search(TAP_WORDS));
+    let best = null;
+    TAP_WORDS_G.lastIndex = 0;
+    let m;
+    while ((m = TAP_WORDS_G.exec(s))) {
+      const same = own && clean(m[0]).toUpperCase() === clean(own).toUpperCase();
+      const d = Math.abs(m.index - expected) - (same ? 1e6 : 0);
+      if (!best || d < best.d) best = { d, pos: m.index, len: m[0].length };
+    }
+    return best ? { s, pos: best.pos, len: best.len } : null;
   }
+
+  /** The tap phrase's own sentence / numbered note / label, and whether it is a numbered note. */
+  function tapSegment(s, pos, len) {
+    let start = 0; let end = s.length; let numbered = false;
+    SEGMENT_BREAK.lastIndex = 0;
+    let m;
+    while ((m = SEGMENT_BREAK.exec(s))) {
+      const b0 = m.index; const b1 = m.index + m[0].length;
+      if (b1 <= pos) { start = b1; numbered = /^\s*\d/.test(m[0]); }
+      else if (b0 >= pos + len) { end = b0; break; }
+      if (m[0].length === 0) SEGMENT_BREAK.lastIndex++;
+    }
+    // Title-block and label soup can run hundreds of characters with no break at all; never
+    // look further than 140 characters either side (the old window), so a stray word there
+    // ("ALTERNATIVE" in a scrambled title block) cannot reach the tap either.
+    if (start < pos - 140) { start = pos - 140; numbered = false; }
+    end = Math.min(end, pos + len + 140);
+    return { before: s.slice(start, pos), after: s.slice(pos + len, end), segment: s.slice(start, end), numbered };
+  }
+
   function isNoteMention(e) {
-    const w = tapWindow(e);
-    return CODE_CLAUSE.test(w) || OPTION_CLAUSE.test(w) || /(?:^|\s)\d{1,2}\.\s+(?:[A-Z ()\/-]{0,40})?(?:LOAD|SUPPLY|LINE|FEEDER)\s+(?:SIDE\s+)?TAP\s+INTERCONNECTION/i.test(w);
+    const at = locateTap(e);
+    if (!at) return false;
+    const { before, after, segment, numbered } = tapSegment(at.s, at.pos, at.len);
+    // "(N) SUPPLY SIDE TAP PER NEC 705.11(A)" is new work being called out, cite or not.
+    if (NEW_WORK.test(before)) return false;
+    if (OPTION_CLAUSE.test(segment)) return true;
+    const code = CODE_CLAUSE.test(segment);
+    const method = METHOD_FORM.test(after);
+    // A numbered note that cites the code for a tap method ("5. FEEDER TAP INTERCONNECTION
+    // (LOADSIDE) ACCORDING TO NEC 705.12(B)(1)") is the general list of permitted methods.
+    if (numbered && (code || method)) return true;
+    // Unnumbered, the same list reads "<METHOD> TAP INTERCONNECTION ACCORDING TO NEC …".
+    return method && code;
   }
 
   /** tapEvidence / breakerEvidence: the scope-engine entries ({type,text,snippet,page,sheet,sheetType}). */

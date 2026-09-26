@@ -324,4 +324,39 @@ ok("no Oregon leakage: licence label by state, N/A dropped, identified-vs-unknow
   ok("tap vs breaker: callout sets scope; code-reference/option notes never do; real taps still detected");
 }
 
+// ---------------------------------------------------------------------------
+// 6b (close). A code clause counts only when it belongs to the tap phrase itself — the same
+// sentence, numbered note or label — never because it sits nearby. Label pages run labels
+// together with no punctuation; on real line-side-tap jobs the label is the ONLY TAP evidence.
+// ---------------------------------------------------------------------------
+{
+  // the evidence's own tap sits ~120 chars into the snippet, as the scope engine builds it
+  const at120 = (pre: string, tap: string, post: string) => (" ".repeat(Math.max(0, 120 - pre.length)) + pre).slice(-120) + tap + post;
+  const ev = (text: string, snippet: string, sheetType = "labels", page = 9) => ({ type: "TAP", text, snippet, sheetType, page, sheet: "", confidence: 0.8 });
+  const keep = (label: string, e: ReturnType<typeof ev>) => { const r = PR.filterTapEvidence([e], []); assert.equal(r.kept.length, 1, `${label} must be KEPT: ${JSON.stringify(r.dropped.map((d: { why: string }) => d.why))}`); };
+  const drop = (label: string, e: ReturnType<typeof ev>) => { const r = PR.filterTapEvidence([e], []); assert.equal(r.kept.length, 0, `${label} must be DROPPED`); assert.match(r.dropped[0].why, /code-reference|option/); };
+
+  // MUST-EXCLUDE (real taps still detected) — look-alikes of the three real label-only jobs.
+  keep("label after another label's CODE REF", ev("LINE SIDE TAP", at120("SHUTDOWN SWITCH CODE REF: NEC 690.13 (B) PRODUCTION METER LABEL LOCATION: MAIN SERVICE PANEL SOLAR CONNECTION ", "LINE SIDE TAP", " PHOTOVOLTAIC DC DISCONNECT WARNING: PHOTOVOLTAIC POWER SOURCE CODE REF: NEC 690.31(D)(2)")));
+  keep("label after a PER CODE(S): NEC cite", ev("LINE SIDE TAP", at120("PER CODE(S): NEC 690.54 PV SYSTEM DISCONNECT LABEL LOCATION: MAIN SERVICE PANEL SOLAR CONNECTION ", "LINE SIDE TAP", " PHOTOVOLTAIC DC DISCONNECT WARNING: PHOTOVOLTAIC POWER SOURCE 100 EXAMPLE RD")));
+  keep("label followed by a page break and a labelling note", ev("LINE SIDE TAP", at120("P H O T O V O L T A I C LABEL LOCATION: MAIN SERVICE DISCONNECT SOLAR CONNECTION ", "LINE SIDE TAP", " --- PAGE 9 --- LABELING NOTES: AFFIXED [NEC 690.56(C)(1)(A)]. 5. LABELS TO BE A MINIMUM LETTER HEIGHT")));
+  keep("new supply-side tap on the SLD, with its own cite", ev("SUPPLY SIDE TAP", at120("UTILITY METER (E) MAIN SERVICE PANEL 200A ", "SUPPLY SIDE TAP", " PER NEC 705.11(A) (N) SERVICE ENTRANCE CONDUCTORS"), "sld", 6));
+  keep("(N) marks new work even in method form", ev("SUPPLY SIDE TAP", at120("LINE SIDE INTERCONNECTION AT MAIN SERVICE PANEL. (N) ", "SUPPLY SIDE TAP", " INTERCONNECTION PER NEC 705.11 WITH INSULATION PIERCING CONNECTORS"), "sld", 6));
+  keep("an option word in the NEIGHBOURING label does not reach the tap", ev("LINE SIDE TAP", at120("LABEL LOCATION: SUB PANEL (OPTIONAL) CODE REF: NEC 705.12 LABEL LOCATION: MAIN SERVICE PANEL SOLAR CONNECTION ", "LINE SIDE TAP", " WARNING: DUAL POWER SOURCE")));
+  // scrambled title-block text runs on with no break; a stray option word 200 chars on is not the tap's
+  keep("a stray word far along break-free title-block soup", ev("LINE SIDE TAP", at120("ROOF MOUNT SYSTEM BE ELECTRICAL PHOTOVOLTAIC SAMPLE POWER SAMPLE CITY ", "LINE SIDE TAP", " (18) SAMPLE Q.MI-349 (240V) (L/W/H) 67.8/44.6/1.57 (18) SAMPLE BLK 430W 6.282 KW AC 7.740 KW DC SYSTEM OTHER ARE WITHIN THE 18 MODULES ROOF MOUNTED SHOWN ALTERNATIVE LAYOUT"), "cover", 1));
+  // the snippet's FIRST tap word is a numbered note; this evidence is the label after it
+  keep("the evidence's own tap, not the first tap word in the snippet", ev("LINE SIDE TAP", at120("6. SUPPLY SIDE TAP INTERCONNECTION ACCORDING TO NEC 705.11. LABEL LOCATION: MAIN SERVICE PANEL SOLAR CONNECTION ", "LINE SIDE TAP", " PHOTOVOLTAIC AC DISCONNECT")));
+
+  // MUST-PASS (notes still never set scope) — the MA1 numbered-note shapes and their kin.
+  drop("numbered method note with its cite", ev("FEEDER TAP", at120("THE COMBINED OVERCURRENT DEVICE MAY BE EXCLUDED ACCORDING TO NEC 705.12 (B)(3)(3). 5. ", "FEEDER TAP", " INTERCONNECTION (LOADSIDE) ACCORDING TO NEC 705.12 (B)(1) 6. SUPPLY SIDE TAP INTERCONNECTION ACCORDING TO NEC 705.11"), "notes", 3));
+  drop("hierarchical number glued to the word", ev("SUPPLY SIDE TAP", at120("EXEMPT FROM ADDITIONAL ENTRANCE CONDUCTORS IN ACCORDANCE WITH NEC 230.42 2.7.8BACKFEEDING ", "SUPPLY SIDE TAP", " INTERCONNECTION ACCORDING TO NEC 705.11 WITH SERVICE ENTRANCE CONDUCTORS"), "notes", 3));
+  drop("numbered note citing the code (no INTERCONNECTION word)", ev("SUPPLY SIDE TAP", at120("ALL WORK SHALL BE PERFORMED BY A LICENSED ELECTRICIAN. 3. ", "SUPPLY SIDE TAP", " SHALL COMPLY WITH NEC 705.11 AND 230.46"), "notes", 3));
+  drop("unnumbered method form with its cite", ev("SUPPLY SIDE TAP", at120("GENERAL ELECTRICAL NOTES: ", "SUPPLY SIDE TAP", " INTERCONNECTION ACCORDING TO NEC 705.11 WITH SERVICE ENTRANCE CONDUCTORS"), "notes", 3));
+  drop("option in the tap's own sentence", ev("SUPPLY SIDE TAP", at120("THE PV SYSTEM SHALL CONNECT THROUGH A BACKFED BREAKER. ALTERNATIVELY A ", "SUPPLY SIDE TAP", " MAY BE USED WHERE THE BUS CANNOT ACCEPT THE BREAKER."), "notes", 3));
+  // the snippet carries a real label later on, but THIS evidence is the numbered note
+  drop("the evidence's own tap is the note even with a label later in the snippet", ev("FEEDER TAP", at120("MAY BE EXCLUDED ACCORDING TO NEC 705.12 (B)(3)(3). 5. ", "FEEDER TAP", " INTERCONNECTION (LOADSIDE) ACCORDING TO NEC 705.12 (B)(1). LABEL LOCATION: MAIN SERVICE PANEL SOLAR CONNECTION LINE SIDE TAP"), "notes", 3));
+  ok("tap close: a cite or option word counts only inside the tap's own sentence / numbered note / label; label-only real taps kept, numbered method notes dropped");
+}
+
 console.log(`\nparserReviewList: all ${passed} checks passed`);
