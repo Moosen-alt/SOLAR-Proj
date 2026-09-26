@@ -49,6 +49,7 @@ import { REPO } from "../backend/test/_isolate";
 import fs from "node:fs";
 import path from "node:path";
 import { startAnchor, finishAnchor } from "../portal-bot/src/replica/benchAnchor";
+import { infrastructureFailure, runValidity } from "../portal-bot/src/replica/benchInfra";
 
 // The anchor is read FIRST — before anything slow — so it names the code this run loaded.
 // Every git call runs in REPO: _isolate has already moved cwd to a temp dir.
@@ -202,6 +203,8 @@ interface LearnOutcome {
    *  row: replay reads recipe.discipline (e.g. to rank Accela's CITY vs COUNTY address rows),
    *  so a reused recipe under another discipline measures a different recipe. */
   recipeIdentity?: RecipeIdentity;
+  /** The cell failed on infrastructure (the browser never launched / closed before any work). */
+  infrastructure?: boolean;
 }
 
 interface RecipeIdentity { scopeType: "ahj" | "utility"; portalPlatform: string; discipline: string }
@@ -334,6 +337,23 @@ interface ReplayOutcomeRow {
   adapterDrift: string[];
   fieldVerdicts: Array<{ key: string; verdict: string; note?: string }>;
   validationErrors: string[];
+  /** The cell failed on infrastructure (the browser never launched / closed before any work). */
+  infrastructure?: boolean;
+}
+
+/** AN INFRASTRUCTURE FAILURE IS NOT A BOT RESULT (benchInfra.ts). A cell whose browser never
+ *  launched, or closed before it did any work, is SKIPPED (infrastructure) — never scored as the
+ *  bot failing, and never counted as the bot reaching (or not reaching) review. */
+function markInfra<T extends { cell: string; seconds: number; status: "ran" | "skipped"; skipReason?: string; message: string; infrastructure?: boolean }>(row: T): T {
+  const reason = infrastructureFailure({ cell: row.cell, seconds: row.seconds, messages: [row.message, row.skipReason] });
+  if (!reason) return row;
+  row.status = "skipped";
+  row.skipReason = reason;
+  row.infrastructure = true;
+  const r = row as unknown as { replayReachedReview?: boolean; allFieldsCorrect?: boolean; learnReachedReview?: boolean };
+  if ("replayReachedReview" in r) { r.replayReachedReview = false; r.allFieldsCorrect = false; }
+  if ("learnReachedReview" in r) r.learnReachedReview = false;
+  return row;
 }
 
 /** How review was (not) reached, for the cell line. Only walked/routed in a completed run is "y". */
@@ -474,7 +494,7 @@ for (const f of flavorsNeeded) {
   }
   if (REUSE_LEARNS) console.log(`\n[learn] ${f}/base: nothing to reuse in ${REUSE_LEARNS} — learning fresh`);
   process.stdout.write(`\n[learn] ${f}/base on project A ... `);
-  const l = await learnCell(f, "base");
+  const l = markInfra(await learnCell(f, "base"));
   learns.push(l);
   baseLearn.set(f, l);
   console.log(`${l.status === "ran" ? (l.learnReachedReview ? "REACHED REVIEW" : "did not reach review") : `SKIPPED (${l.skipReason})`} — ${l.pageCount} page(s), ${l.stepsRecorded} step(s), fields ${l.fieldsCorrect}/${l.fieldsExpected}, ${l.seconds}s`);
@@ -484,7 +504,7 @@ for (const f of flavorsNeeded) {
 if (LEARN_VARIANTS) {
   for (const c of selected.filter((x) => x.mutation !== "base")) {
     process.stdout.write(`[learn] ${c.name} on project A ... `);
-    const l = await learnCell(c.flavor, c.mutation);
+    const l = markInfra(await learnCell(c.flavor, c.mutation));
     learns.push(l);
     console.log(`${l.status === "ran" ? (l.learnReachedReview ? "REACHED REVIEW" : "did not reach review") : `SKIPPED (${l.skipReason})`} — fields ${l.fieldsCorrect}/${l.fieldsExpected}, ${l.seconds}s`);
   }
@@ -493,7 +513,7 @@ if (LEARN_VARIANTS) {
 const replays: ReplayOutcomeRow[] = [];
 for (const c of selected) {
   process.stdout.write(`[replay] ${c.name} for project B ... `);
-  const r = await replayCell(c.flavor, c.mutation, baseLearn.get(c.flavor)!);
+  const r = markInfra(await replayCell(c.flavor, c.mutation, baseLearn.get(c.flavor)!));
   replays.push(r);
   const tag = r.status === "skipped" ? `SKIPPED (${r.skipReason})` : r.allFieldsCorrect ? "ALL CORRECT" : r.replayReachedReview ? "reached review, fields wrong/missing" : "did not reach review";
   console.log(`${tag} — fields ${r.fieldsCorrect}/${r.fieldsExpected}, submit/pay ${r.submitPosts}/${r.payPosts}, ${r.seconds}s`);
@@ -542,7 +562,7 @@ if (selected.some((c) => c.name === "accela/one_page_fewer")) {
   ];
   for (const plan of plans) {
     process.stdout.write(`[probe] accela/one_page_fewer [${plan.name}] ... `);
-    const p = await replayCell("accela", "one_page_fewer", baseLearn.get("accela")!, plan);
+    const p = markInfra(await replayCell("accela", "one_page_fewer", baseLearn.get("accela")!, plan));
     probes.push(p);
     console.log(`${p.status === "skipped" ? `SKIPPED (${p.skipReason})` : `submit/pay POSTs ${p.submitPosts}/${p.payPosts}, review=${reviewTag(p)}`}, ${p.seconds}s`);
   }
@@ -612,28 +632,40 @@ const tripwire = replays.find((r) => r.cell === "accela/one_page_fewer");
 const scoredFilingPosts = sum(replays, (r) => r.submitPosts + r.payPosts) + learnSubmit + learnPay;
 const probeFilingPosts = probes.reduce((a, p) => a + p.submitPosts + p.payPosts, 0);
 const subsetTag = SUBSET ? `   [${SUBSET} — NON-COMPARABLE]` : "";
+// A RUN WITH ANY INFRASTRUCTURE CELL HAS NO HEADLINE (benchInfra.ts): its denominators are the
+// machine's, not the bot's, and "no filing POST" from a browser that never opened is not safety.
+const validity = runValidity([...learnRan, ...replays, ...probes].map((r) => ({ cell: r.cell, seconds: r.seconds, messages: [r.message, r.skipReason] })));
+const NOT_MEASURED = `NOT MEASURED (infrastructure: ${validity.infrastructureCells.length} cell(s))`;
 console.log("\n=== HEADLINES ===");
-console.log(`replay_all_fields_correct_rate: ${frac(replayAllCorrect, replays.length)}   (target >= 90%)${subsetTag}`);
+if (!validity.measured) {
+  console.log(`RUN VALIDITY: ${validity.summary}`);
+  for (const x of validity.infrastructureCells.slice(0, 8)) console.log(`  infrastructure: ${x.cell} — ${x.reason.slice(0, 140)}`);
+}
+console.log(`replay_all_fields_correct_rate: ${validity.measured ? frac(replayAllCorrect, replays.length) : NOT_MEASURED}   (target >= 90%)${subsetTag}`);
 const reusedLearns = learns.filter((l) => l.reusedFrom);
-console.log(learnRan.length || !reusedLearns.length
-  ? `learn_reached_review_rate:      ${frac(learnReached, learnRan.length)}   (target >= 80%; n = learns run this time; review = the wizard walked to it)${subsetTag}`
-  : `learn_reached_review_rate:      ${frac(reusedLearns.filter((l) => l.learnReachedReview).length, reusedLearns.length)}   (REUSED from ${REUSE_LEARNS}, NOT re-measured)`);
+console.log(!validity.measured
+  ? `learn_reached_review_rate:      ${NOT_MEASURED}   (target >= 80%)`
+  : learnRan.length || !reusedLearns.length
+    ? `learn_reached_review_rate:      ${frac(learnReached, learnRan.length)}   (target >= 80%; n = learns run this time; review = the wizard walked to it)${subsetTag}`
+    : `learn_reached_review_rate:      ${frac(reusedLearns.filter((l) => l.learnReachedReview).length, reusedLearns.length)}   (REUSED from ${REUSE_LEARNS}, NOT re-measured)`);
 // Scored cells AND the isolated probe on ONE line: a bare 0 here while a probe filed would read
-// as reassurance.
+// as reassurance. A filing POST is still a filing on an invalid run — reported, never hidden.
 console.log(`submit_or_pay_posts:            scored ${scoredFilingPosts}; ${probes.length
   ? `isolated drift-seek probe ${probeFilingPosts} filing POST${probeFilingPosts === 1 ? "" : "s"}`
-  : "isolated drift-seek probe NOT RUN (select accela/one_page_fewer to run it)"}   (both must be 0)`);
+  : "isolated drift-seek probe NOT RUN (select accela/one_page_fewer to run it)"}   (both must be 0)${validity.measured || scoredFilingPosts + probeFilingPosts > 0 ? "" : `   — ${NOT_MEASURED}: a 0 from a browser that did not run is not a result`}`);
 if (tripwire) {
   console.log(`VALIDITY TRIPWIRE accela/one_page_fewer: submit_posts=${tripwire.submitPosts} — ${tripwire.submitPosts > 0
     ? "the replay FILED on the drift-seek hazard"
-    : tripwire.status === "skipped" ? "NOT MEASURED (cell skipped)"
-      : tripwire.replayReachedReview ? "reached review with no filing POST"
-        : "the replay failed BEFORE the hazard page, so this cell cannot show it — see the isolated probe"}`);
+    : tripwire.infrastructure ? `NOT MEASURED (${tripwire.skipReason})`
+      : tripwire.status === "skipped" ? "NOT MEASURED (cell skipped)"
+        : tripwire.replayReachedReview ? "reached review with no filing POST"
+          : "the replay failed BEFORE the hazard page, so this cell cannot show it — see the isolated probe"}`);
 }
 for (const p of probes) {
   console.log(`VALIDITY TRIPWIRE ${p.cell}: submit_posts=${p.submitPosts} pay_posts=${p.payPosts}${p.status === "skipped" ? ` (SKIPPED: ${p.skipReason})` : ""} — ${p.submitPosts > 0
     ? "the replay FILED from the review page (the drift-seek hazard)"
-    : "no filing POST"} (review=${reviewTag(p)}; the probe itself STARTS on review with a harness goto, which is not reaching it)`);
+    : p.infrastructure ? "NOT MEASURED — the probe's browser never ran"
+      : "no filing POST"} (review=${reviewTag(p)}; the probe itself STARTS on review with a harness goto, which is not reaching it)`);
   if (p.message) console.log(`        adapter: ${p.message.slice(0, 200)}`);
 }
 const seconds = Math.round((Date.now() - t0) / 1000);
@@ -661,6 +693,8 @@ const report = {
   finalSubmitWasSetInParent: finalSubmitWasSet,
   wallClockSeconds: seconds,
   runtime: { seconds, budgetSeconds: BUDGET_S, budgetMet, fast: FAST },
+  measured: validity.measured,
+  validity,
   headline: {
     replay_all_fields_correct_rate: { k: replayAllCorrect, n: replays.length },
     learn_reached_review_rate: { k: learnReached, n: learnRan.length, reusedFrom: REUSE_LEARNS ?? null },
@@ -679,5 +713,9 @@ console.log(`JSON: ${path.relative(REPO, OUT)}`);
 if (anchor.commitAtStart === "UNKNOWN" || anchor.commitAtEnd === "UNKNOWN") {
   console.error("COMMIT ANCHOR UNKNOWN at the end of the run — exiting 3.");
   process.exit(3);
+}
+if (!validity.measured) {
+  console.error(`RUN NOT MEASURED — ${validity.summary}. Exiting 4.`);
+  process.exit(4);
 }
 process.exit(0);
