@@ -208,9 +208,19 @@
     const shared = ta.filter((t) => tb.includes(t));
     return shared.length >= 2;
   }
+  /** How a non-matching document name relates to the bill holder, for the conflict wording:
+   *  'surname-only-doc' — the document prints a surname and no given name ("SAMPLE RESIDENCE"),
+   *  so it cannot confirm or deny the person; 'kin' — both print a full name, same surname,
+   *  different given name (a spouse or relative); '' — otherwise. */
+  function nameRelation(billName, docName) {
+    const tb = nameTokens(billName); const td = nameTokens(docName);
+    if (!tb.length || !td.length || namesMatch(billName, docName)) return '';
+    if (td.length === 1) return tb.includes(td[0]) ? 'surname-only-doc' : '';
+    const shared = td.filter((t) => tb.includes(t));
+    return shared.length === 1 && (shared[0] === td[td.length - 1] || shared[0] === tb[tb.length - 1]) ? 'kin' : '';
+  }
   function sharesSurnameOnly(a, b) {
-    const ta = nameTokens(a); const tb = nameTokens(b);
-    return !namesMatch(a, b) && ta.length > 0 && tb.length > 0 && ta[ta.length - 1] === tb[tb.length - 1];
+    return nameRelation(a, b) === 'kin';
   }
 
   // "2 Unit Depth" in a racking calc is not a two-unit building: the count-word forms must
@@ -317,9 +327,13 @@
           resolved.push({ field: 'owner', value: bill.value, how: `utility bill account holder is the account of record (${where(bill)})${matches.length ? `, matches the ${matches.map(where).join(' and ')}` : ''}${nonMatch.length ? `; the ${nonMatch.map((k) => `${where(k)} names "${k.value}"`).join(', ')} — confirm with the installer` : ''}`, evidence: bill });
           done.add('owner');
         } else {
-          const kin = candidates.filter((k) => sharesSurnameOnly(bill.value, k.value));
-          pushConflict('owner', [bill, ...candidates], kin.length
-            ? `the bill account holder shares only a surname with ${kin.map((k) => `the ${where(k)} ("${k.value}")`).join(' and ')} — a different person (spouse or relative?); confirm whose name goes on the application before filing`
+          const kin = candidates.filter((k) => nameRelation(bill.value, k.value) === 'kin');
+          const bare = candidates.filter((k) => nameRelation(bill.value, k.value) === 'surname-only-doc');
+          const says = [];
+          if (bare.length) says.push(`${bare.map((k) => `the ${where(k)} gives a surname only ("${k.value}")`).join(' and ')}, so it cannot confirm the given name`);
+          if (kin.length) says.push(`the bill account holder shares only a surname with ${kin.map((k) => `the ${where(k)} ("${k.value}")`).join(' and ')} — a different given name (spouse or relative?)`);
+          pushConflict('owner', [bill, ...candidates], says.length
+            ? `${says.join('; ')} — confirm whose name goes on the application before filing`
             : 'the bill account holder matches none of the names on the documents — resolve before filing');
         }
       } else if (!bill && (c || candidates.length > 1)) {

@@ -394,6 +394,17 @@ ok("no Oregon leakage: licence label by state, N/A dropped, identified-vs-unknow
   const sc = spouse.conflicts.find((x: { field: string }) => x.field === "owner");
   assert.ok(sc && /PAT SAMPLE/.test(sc.text) && /Jane Sample/i.test(sc.text), "the conflict names the bill holder and the document name");
   assert.match(sc.text, /shares only a surname/);
+  assert.doesNotMatch(sc.text, /gives a surname only/);
+  // a title block that prints a surname only ("SAMPLE RESIDENCE") names no different person:
+  // still a CONFLICT (no given-name match), but the words must not invent a spouse
+  const bareTitle = PR.resolveReviewItems({ attached: ["plan_set", "utility_bill"], planText: planTextSF, passes: [
+    visionPass({ owner: field("JANE SAMPLE", "utility_bill", "Service Provided To: JANE SAMPLE", 0.97) }),
+    textPass({ owner: field("SAMPLE RESIDENCE", "plan_set", "SAMPLE RESIDENCE", 0.5, "PV 0.0") }, ["owner"]),
+  ] });
+  const bt = bareTitle.conflicts.find((x: { field: string }) => x.field === "owner");
+  assert.ok(bt && !bareTitle.resolved.some((x: { field: string }) => x.field === "owner"));
+  assert.match(bt.text, /gives a surname only \("SAMPLE RESIDENCE"\)/);
+  assert.doesNotMatch(bt.text, /spouse|different given name|matches/, bt.text);
   assert.doesNotMatch(JSON.stringify(spouse), /matches the plan set/, "never claims a match that does not exist");
   // MUST-PASS: the same person with a middle initial on the bill still resolves to the bill holder
   const same = PR.resolveReviewItems({ attached: ["plan_set", "utility_bill"], planText: planTextSF, passes: [
