@@ -75,6 +75,14 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   portal (Provo, St. George, Spanish Fork, Lehi; Austin Energy, BTU, DME), the NEM track may use that permit-platform host ONLY when the
   utility's own human-VERIFIED KB record names that portal — never host-wide, never from a seeded/researched row. Rule 5 otherwise unchanged
   (aca-oregon on Pacific Power NEM still refused).
+- TYPED E-SIGNATURE ON A DRAFT (operator ruling 2026-09-26): "This is fine. Push it to the review page." On a portal's signature step
+  (Tyler EnerGov step 6: 'Enable Type Signature' + typed name "as consent to electronically sign") the bot MAY complete the TYPED signature with
+  the signer name from the CLIENT RECORD (bound by field, never a literal; no name on the client -> pause for the operator, never invented) and
+  advance to the REVIEW step, where it stops: the review Submit stays refused (hard rule 1 unchanged — no final submit, no fee, no CAPTCHA/MFA).
+  A DRAWN (canvas) signature is never made by automation — stop for a person.
+- FLEX OVER FALSE STOPS (operator 2026-09-26, after a production false stop on Oregon ePermitting Step 1): "too safe is an issue now ... we need
+  to allow for some flex". The network backstop is the hard line for filing/paying; on-page heuristics stop only on a POSITIVELY identified
+  terminal step, and a new false stop on a legitimate step counts as a must-fix in review rounds.
 - STANDING AUTHORIZATION (operator 2026-09-25): "yes to any other adjustments you have to make to get it functional how we want it" —
   functional adjustments and rule wording that match verified behaviour may proceed without a per-item ask; each one is logged here.
 - STANDING AUTHORIZATION, WIDENED (operator 2026-09-25 23:55): "parse anything you can and make it work, also change the rules as needed to
