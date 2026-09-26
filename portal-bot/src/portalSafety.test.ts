@@ -111,6 +111,9 @@ const FINAL_MUST_BE: Array<[string, ControlContext | undefined]> = [
 ];
 const FINAL_MUST_NOT_BE: Array<[string, ControlContext | undefined]> = [
   ["Submit Documents", undefined], ["Submit for Review", undefined], ["Save and Submit Later", undefined],
+  // A bare "File" is BLOCKED (submit-worded) but not proven to be THE filing click: it must not
+  // end a capture session or promote a draft on a guess.
+  ["File", undefined], ["File now", undefined],
   ["Pay Now", undefined], ["Submit Payment", undefined], ["Next", undefined], ["Continue", { readOnlyPage: true }],
   // Unknown page: the capture must not disarm on every Accela page.
   ["Continue Application", undefined],

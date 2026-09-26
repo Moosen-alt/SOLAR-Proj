@@ -148,7 +148,7 @@ export function portalSafetyFactory() {
   // THE FILING CLICK ITSELF — narrower than SUBMIT_WORDS. A mid-flow "Submit Documents" or
   // "Submit for Review" is submit-worded (never captured) but is not the application's filing,
   // so it must not end a human's capture session.
-  const FINAL_SUBMIT_EXACT = /^(submit|submit application|submit & pay|submit and pay|submit now|submit my application|re-?submit|re-?submit application|re-?file|e-?file|e-?file application|file|file now)$/i;
+  const FINAL_SUBMIT_EXACT = /^(submit|submit application|submit & pay|submit and pay|submit now|submit my application|re-?submit|re-?submit application|re-?file|e-?file|e-?file application)$/i;
   const FINAL_SUBMIT_PHRASE = /\b(confirm submission|complete submission|file application|sign\s*(and|&)\s*(file|submit)|file\s+permit)\b/i;
 
   // SECRETS. Each alternative names a secret; the name-ish words after "account" are excluded
