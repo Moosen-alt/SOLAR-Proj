@@ -272,6 +272,18 @@ export function stateAdoptionModel(db: AppDb, state: string): JurisdictionAdopti
   return ref ? adoptionModelOf(ref.adoptionModel) : undefined;
 }
 
+/** THE FAMILIES AN AHJ-LAYER CODE RESEARCH ASKS FOR. The state's local-adoption families; and
+ *  when there is at least one (so the AHJ is researched anyway, no new call), also the families the
+ *  state sets only as a MINIMUM that cities may amend — Texas's NEC is TDLR's floor, and Venus
+ *  adopted 2020 (new-AHJ e2e, 2026-09-26): never asked, the city read the state's 2026. A state
+ *  whose every family is uniform or minimum (PA, NM, MA) still skips the AHJ layer. */
+export function ahjResearchFamilies(model: JurisdictionAdoptionModel | null | undefined): CodeFamily[] {
+  const local = locallyAdoptedFamilies(model);
+  if (!local.length) return local;
+  const amendable = CODE_FAMILIES.filter((f) => familyAdoptionModel(model, f) === "statewide_minimum_local_amend");
+  return [...local, ...amendable.filter((f) => !local.includes(f))];
+}
+
 /** A code entry an AHJ row holds on its own authority: research, an operator import or edit, the
  *  reference data — not a legacy entry with no origin (model-memory research, or state codes an
  *  older import copied down), which an explicit state edition outranks. */
@@ -316,7 +328,13 @@ export function inheritAdoptedCodes(
     if (!f) { out.push(c); continue; }
     const m = familyAdoptionModel(model, f);
     if (m === "statewide_uniform" && !personStated(c)) continue;
-    if (m === "statewide_minimum_local_amend" && researchOwnedEntry(c) && !personStated(c) && stateCodes.some((s) => fam(s) === f)) continue;
+    // A STATE RULE NEVER OVERRIDES A CITED LOCAL RULE. Venus TX (new-AHJ e2e, 2026-09-26): the
+    // city's own page says "The City of Venus has Adopted the 2020 NEC", and the code panel showed
+    // Texas's 2026 NEC — then told the installer to "update" a plan that was right. A machine-owned
+    // entry still yields to the state's edition when it is NOT a cited local adoption (no quote,
+    // a quote that does not state the edition, or the state's own source).
+    if (m === "statewide_minimum_local_amend" && researchOwnedEntry(c) && !personStated(c) && stateCodes.some((s) => fam(s) === f)
+      && !citedLocalAdoption(c, stateCodes)) continue;
     out.push(c);
     keptOwnFamilies.add(f);
   }
@@ -329,6 +347,43 @@ export function inheritAdoptedCodes(
     out.push({ ...s, inheritedFrom: "state" });
   }
   return out;
+}
+
+const FAMILY_QUOTE_WORDS: Record<CodeFamily, RegExp> = {
+  residential: /\bIRC\b|residential/i,
+  building: /\bIBC\b|building\s+code/i,
+  electrical: /\bNEC\b|electrical\s+code|NFPA\s*70\b/i,
+  fire: /\bIFC\b|fire\s+code/i,
+  energy: /\bIECC\b|energy/i,
+  mechanical: /\bIMC\b|mechanical/i,
+  plumbing: /\b[IU]PC\b|plumbing/i,
+};
+
+function hostOf(url: string | undefined): string {
+  try { return new URL(String(url || "")).hostname.toLowerCase().replace(/^www\./, ""); } catch { return ""; }
+}
+
+/**
+ * IS THIS AN AHJ ENTRY A LOCAL PAGE STATES, WITH ITS OWN WORDS? All of:
+ *   · machine-owned research / reference evidence (a quote is only stored from a web-grounded
+ *     answer, so a model-memory entry can never qualify);
+ *   · a source URL and a quote that names BOTH the edition year and the code (by token or name);
+ *   · the source is not one the state layer itself cites (the state's statute or TDLR page is the
+ *     state's rule, not a local adoption).
+ */
+export function citedLocalAdoption(c: CodeEdition, stateCodes: CodeEdition[]): boolean {
+  if (c.origin !== "research" && c.origin !== "reference") return false;
+  const quote = String(c.quote || "");
+  const host = hostOf(c.sourceUrl);
+  if (!host || !quote.trim()) return false;
+  const edition = String(c.edition || "").match(/\d{4}/)?.[0];
+  if (!edition || !quote.includes(edition)) return false;
+  const f = codeFamilyOf(c);
+  const token = normCodeToken(c.code);
+  const namesCode = (token && new RegExp(`\\b${token.replace(/[^A-Za-z0-9]/g, "")}\\b`, "i").test(quote)) || (f ? FAMILY_QUOTE_WORDS[f].test(quote) : false);
+  if (!namesCode) return false;
+  const stateHosts = new Set(stateCodes.map((s) => hostOf(s.sourceUrl)).filter(Boolean));
+  return !stateHosts.has(host);
 }
 
 export function codeProfileKey(input: { state?: string; ahj?: string }): string {
@@ -596,7 +651,7 @@ function scopeResearchToLayer(db: AppDb, profile: JurisdictionCodeProfile, asked
   let adoptedCodes: CodeEdition[] = (profile.adoptedCodes ?? []).map((c) => ({ ...c, origin, ...(c.family || !codeFamilyOf(c) ? {} : { family: codeFamilyOf(c) }) }));
   if (!String(profile.ahj || "").trim()) return { ...profile, adoptedCodes };
   const model = stateAdoptionModel(db, profile.state);
-  const scope = askedFamilies?.length ? askedFamilies : model ? locallyAdoptedFamilies(model) : undefined;
+  const scope = askedFamilies?.length ? askedFamilies : model ? ahjResearchFamilies(model) : undefined;
   const uniform: string[] = [];
   const unasked: string[] = [];
   adoptedCodes = adoptedCodes.filter((c) => {
@@ -1306,7 +1361,7 @@ export function codeResearchDecision(db: AppDb, state: string, ahj: string, asOf
     }
     // What the state adopts uniformly (or as the minimum every AHJ enforces) is not looked up city
     // by city. Only local-adoption families are the AHJ's to research.
-    const local = model ? locallyAdoptedFamilies(model) : undefined;
+    const local = model ? ahjResearchFamilies(model) : undefined;
     if (local && !local.length) return { state: st, ahj: name, key, action: "skip", reason: "inherits_state" };
     const base = { state: st, ahj: name, key, ...(local ? { families: local } : {}) };
     if (!row) return { ...base, action: "research", reason: "no_row" };

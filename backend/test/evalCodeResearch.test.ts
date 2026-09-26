@@ -99,8 +99,11 @@ await check("MUST-PASS: the eval asks TX:Mesquite exactly the families codeResea
 
 await check("MUST-EXCLUDE: a family the product does not ask is never scored as omitted; an inheriting AHJ is not researched", () => {
   const local = mesquite!.local as Array<{ family: string }>;
-  assert.ok(!local.some((l) => l.family === "electrical"), `electrical (state-set in TX) was scored: ${JSON.stringify(local)}`);
-  assert.deepEqual(mesquite!.notAsked, ["electrical"]);
+  // RULING 2026-09-26 (new-AHJ e2e, Venus TX): a Texas city is also asked for the NEC — TDLR's
+  // edition is a MINIMUM cities amend, and a cited local adoption beats it — so electrical is asked
+  // and scored now. What stays excluded: an inheriting AHJ (below) is not researched at all.
+  assert.ok(local.some((l) => l.family === "electrical"), `electrical (a TX minimum cities amend) was not asked: ${JSON.stringify(local)}`);
+  assert.deepEqual(mesquite!.notAsked, []);
   assert.equal(coos?.notResearchedByProduct, true, `Coos Bay: ${JSON.stringify(coos)}`);
   assert.equal(coos?.reason, "inherits_state");
   assert.ok(!asked.some((a) => a.ahj === "City of Coos Bay"), "an inheriting AHJ was sent to the researcher");

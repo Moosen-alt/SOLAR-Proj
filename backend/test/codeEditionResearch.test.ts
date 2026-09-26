@@ -199,7 +199,9 @@ await check("B3 MUST-PASS: a TX city with no row triggers AHJ research for its l
   const job = queued.find((p) => p.ahj === "City of Newtexas");
   assert.ok(job, `no AHJ research queued: ${JSON.stringify(queued)}`);
   assert.ok((job!.families as string[]).includes("residential"));
-  assert.ok(!(job!.families as string[]).includes("electrical"), "a state-set family was researched per city");
+  // RULING 2026-09-26 (Venus TX, new-AHJ e2e): TX's NEC is a state MINIMUM cities amend; the city is
+  // researched anyway, so it is asked for its NEC too (a cited local adoption beats the state's).
+  assert.ok((job!.families as string[]).includes("electrical"), "the amendable NEC was not asked of a city researched anyway");
 });
 
 await check("B3 MUST-EXCLUDE: an Oregon (uniform) AHJ is not researched, and research can't give it its own edition", async () => {
@@ -403,10 +405,12 @@ await check("M2 MUST-PASS (read): research that landed before the state said min
   assert.ok(codesOf(CP.getCodeProfile(db, { state: "ZM", ahj: "City of Importville" })).includes("IRC 2018"), "an operator import in a min+amend family was dropped");
 });
 
-await check("M2 MUST-PASS (save): an MD AHJ research asked for its local families stores only those — the unasked IRC 2015 never lands, the read shows MD's IRC 2021", async () => {
+await check("M2 MUST-PASS (save): an MD AHJ research stores the families it was asked (local + amendable minimum); an uncited IRC 2015 never displaces MD's IRC 2021 at read", async () => {
   const d = CP.codeResearchDecision(db, "MD", "City of Probeville");
   assert.equal(d.action, "research", JSON.stringify(d));
-  assert.ok(d.families?.includes("electrical") && !d.families.includes("residential"), `fixture: MD local families ${JSON.stringify(d.families)}`);
+  // RULING 2026-09-26: an AHJ researched anyway is also asked its state-MINIMUM families (MD residential),
+  // so the IRC 2015 is stored — but an UNCITED entry (no quote) never displaces the state's edition at read.
+  assert.ok(d.families?.includes("electrical") && d.families.includes("residential"), `fixture: MD research families ${JSON.stringify(d.families)}`);
   const f = fakeResearcher([
     { family: "electrical", code: "NEC", edition: "2020", sourceUrl: "https://probeville.example.gov" },
     { family: "residential", code: "IRC", edition: "2015", sourceUrl: "https://probeville.example.gov" },
@@ -414,7 +418,7 @@ await check("M2 MUST-PASS (save): an MD AHJ research asked for its local familie
   const r = await CP.runCodeResearch(db, { state: d.state, ahj: d.ahj, profileKey: d.key, families: d.families }, f.provider);
   assert.equal(r.saved, true, JSON.stringify(r));
   assert.deepEqual(f.asked[0].families, d.families, "the researcher was not asked the decision's families");
-  assert.deepEqual(codesOf(payloadOf(d.key)), ["NEC 2020"], `an unasked family was stored: ${codesOf(payloadOf(d.key))}`);
+  assert.deepEqual(codesOf(payloadOf(d.key)).sort(), ["IRC 2015", "NEC 2020"], `the asked families were not stored: ${codesOf(payloadOf(d.key))}`);
   const read = CP.getCodeProfile(db, { state: "MD", ahj: "City of Probeville" })!;
   const irc = read.adoptedCodes.filter((c) => F.codeFamilyOf(c) === "residential");
   assert.deepEqual(irc.map((c) => `${c.code} ${c.edition}${c.inheritedFrom ? "(state)" : ""}`), ["IRC 2021(state)"], `the read: ${codesOf(read)}`);
@@ -423,7 +427,10 @@ await check("M2 MUST-PASS (save): an MD AHJ research asked for its local familie
     adoptedCodes: [{ family: "residential", code: "IRC", edition: "2015" }, { family: "electrical", code: "NEC", edition: "2020" }],
     researchProvenance: { ...grounded, at: new Date().toISOString() },
   }));
-  assert.deepEqual(codesOf(payloadOf(CP.codeProfileKey({ state: "MD", ahj: "City of Routeville" }))), ["NEC 2020"], "a route-shaped save stored a family the state sets");
+  assert.deepEqual(codesOf(payloadOf(CP.codeProfileKey({ state: "MD", ahj: "City of Routeville" }))).sort(), ["IRC 2015", "NEC 2020"], "a route-shaped save is scoped like the job");
+  const routeRead = CP.getCodeProfile(db, { state: "MD", ahj: "City of Routeville" })!;
+  assert.ok(routeRead.adoptedCodes.some((c) => c.code === "IRC" && c.edition === "2021" && c.inheritedFrom === "state") && !routeRead.adoptedCodes.some((c) => c.edition === "2015"),
+    `an uncited IRC 2015 displaced MD's edition: ${codesOf(routeRead)}`);
 });
 
 await check("M2 MUST-EXCLUDE: a TX AHJ research for residential still stores, and reads, its own IRC 2021", async () => {

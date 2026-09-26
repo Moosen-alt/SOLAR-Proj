@@ -2365,14 +2365,20 @@ export function evaluateDesignCriteriaFindings(
         category: "plan_set",
         title: "Plan's code basis differs from the jurisdiction's adopted codes",
         message: `${lines.join("; ")}. Profile: ${provenance(ctx)}. One side is out of date — confirm the currently adopted editions.`,
-        cityFeedback: `Update the plan's governing-codes block to the code editions currently adopted by ${who}.`,
+        // AN UNVERIFIED PROFILE CANNOT TELL AN INSTALLER TO CHANGE THEIR PLAN. Venus TX (new-AHJ e2e,
+        // 2026-09-26): a seeded state edition (NEC 2026) against a plan that correctly said 2020 —
+        // and the installer was told to "update" it. Only a human-verified profile may ask for the
+        // change; otherwise the ask is to confirm with the AHJ, and it is not an installer callout.
+        cityFeedback: ctx.verified
+          ? `Update the plan's governing-codes block to the code editions currently adopted by ${who}.`
+          : `Confirm with ${who} which code editions are currently adopted before changing the plan's governing-codes block — the editions on file are unverified.`,
         designTeamAction: "Confirm the adopted editions with the jurisdiction; correct the plan's GOVERNING CODES block, or correct the jurisdiction's code profile if the plan is right.",
         evidenceNeeded: ["Governing-codes block on the cover sheet", ...lines].slice(0, 6),
         codeReferences: [...new Set(stated.codeBasis.map((b) => b.code))]
           .filter((code) => profileEntries.some((a) => a.code === normCodeToken(code)))
           .slice(0, 4)
           .map((code) => ctx.citationFor(code, "Adopted edition", `${code} as adopted by ${who}`)),
-        installerCallout: true,
+        installerCallout: ctx.verified,
         evidenceStatus: "verified",
         evidenceFound: stated.codeBasis.slice(0, 12).map((b) => ({
           kind: "source_excerpt" as const,
