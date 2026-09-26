@@ -166,6 +166,10 @@ console.log(`
    recipe, so the next run does it without you.
 
    It stops at the review screen. Final submit, portal fees, CAPTCHA and MFA stay yours.
+   If the portal asks for a second factor (a code, an email link, a push), the run PAUSES with
+   the window open — "PAUSED — needs-human (mfa)" prints here — and carries on by itself once
+   you complete it in the window (bounded by PORTAL_PROFILE_WAIT_MS, default 15 min). The bot
+   never types, requests or picks a factor.
 `);
 
 if (dryRun) { console.log("--dry-run: nothing opened.\n"); process.exit(0); }
