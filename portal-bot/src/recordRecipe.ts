@@ -76,7 +76,11 @@ export function createRecorderSink(
     startsFresh?: boolean;
   } = {},
 ): (payload: RecordedPayload) => void {
-  const startsFresh = opts.startsFresh !== false;
+  // UNKNOWN BY DEFAULT, like createHumanCaptureSink: only a caller that KNOWS it opened the
+  // portal at its front door says so. Defaulting to fresh failed open — with no opts, a read-only
+  // page's "Continue Application" with nothing entered was captured as replayable navigation
+  // (recorder skeptic probe G-f).
+  const startsFresh = opts.startsFresh === true;
   return (payload: RecordedPayload): void => {
     const sel = payload.selector;
     // Heal tie-break metadata (attribute names only) — attached to form-control steps.

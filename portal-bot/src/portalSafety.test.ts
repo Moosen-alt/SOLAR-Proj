@@ -450,7 +450,8 @@ await check("humanCapture: secret identity marks the fill sensitive; ordinary id
 
 await check("recorder sink: Accela's advance is navigation mid-flow, a placeholder when unknown, the filing click on review", () => {
   const steps: RecipeStep[] = [];
-  const sink = createRecorderSink(steps, () => undefined);
+  // The CLI opened --url itself, so it KNOWS the recording starts fresh (the default is unknown).
+  const sink = createRecorderSink(steps, () => undefined, { startsFresh: true });
   // Entry disclaimer: read-only page, nothing entered yet -> a pass-through click.
   sink({ kind: "click", selector: { role: "link", name: "Continue Application »" }, label: "Continue Application »", readOnlyPage: true });
   assert.equal(steps[0].action, "click");
@@ -525,6 +526,20 @@ await check("F1 recorder: a recording that may start mid-flow keeps formDataEnte
   createRecorderSink(fresh, () => undefined)({ kind: "click", selector: { role: "link", name: CONT }, label: CONT, readOnlyPage: true, reviewPage: true });
   assert.deepEqual(fresh[0].selector, {}, "a resumed draft's REVIEW page advance was captured as navigation");
   assert.equal(fresh[0].isFinalSubmit, true);
+});
+await check("F1 recorder default (recorder skeptic MF3): no opts is UNKNOWN, like humanCapture — a read-only page's Continue Application is not captured; startsFresh:true captures the disclaimer advance", () => {
+  const CONT = "Continue Application »";
+  const payload = { kind: "click", selector: { role: "link", name: CONT }, label: CONT, readOnlyPage: true, reviewPage: false } as const;
+  // MUST-EXCLUDE: a new caller that passes no opts.
+  const noOpts: RecipeStep[] = [];
+  createRecorderSink(noOpts, () => undefined)(payload);
+  assert.equal(noOpts.length, 1);
+  assert.deepEqual(noOpts[0].selector, {}, `no-opts recorder captured a read-only page's Continue Application as navigation: ${JSON.stringify(noOpts)}`);
+  assert.equal(noOpts[0].optional, true);
+  // MUST-PASS: the CLI that opened --url itself says so, and the entry disclaimer's advance is navigation.
+  const fresh: RecipeStep[] = [];
+  createRecorderSink(fresh, () => undefined, { startsFresh: true })(payload);
+  assert.deepEqual(fresh[0].selector, { role: "link", name: CONT }, `fresh recorder did not capture the disclaimer advance: ${JSON.stringify(fresh)}`);
 });
 await check("F5: a secret <select> is sensitive in BOTH sinks — no literal, no option text; an ordinary select keeps its value", () => {
   const meterByName = { kind: "select", selector: { css: "#m" }, label: "", value: "1009283745", rawValue: "1009283745", identity: { name: "meterNumber", id: "m" } };
