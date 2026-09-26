@@ -76,7 +76,8 @@ import { publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
 import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
-import { statewidePortalFor, describeCited, lookedUpRecordType } from "./permitProcess";
+import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor } from "./permitProcess";
+import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
 import { documentInventory, owedMissingDocuments, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
@@ -7604,6 +7605,24 @@ export async function prepareSubmission(
         targetRecordType: lookedUpRecordType(detail.project, track)?.value ?? "",
       });
       borrowDecisionReason = decision.reason;
+      // B4: A BORROWED RECIPE MUST BIND TO THIS PROJECT, or it is not borrowed. Every agency /
+      // jurisdiction selection binds from the target's per-job answer (never the donor's literal);
+      // a selection that cannot be bound refuses the borrow with the named reason.
+      if (decision.choice) {
+        const probe = bindRecipeForReplay({
+          steps: decision.choice.recipe.steps ?? [], portalUrl: decision.choice.recipe.portalUrl,
+          project: detail.project, fieldValues: {}, track,
+          borrowed: { learnedFor: decision.choice.learnedFor, discipline: decision.choice.discipline },
+          agency: issuingAgencyFor(detail.project, track),
+        });
+        if (probe.refusal) {
+          addAuditLog(db, projectId, "system", "submit gate", "portal.recipe_borrow_refused", {
+            track, recipeId: decision.choice.recipe.id, learnedFor: decision.choice.learnedFor, reason: probe.refusal,
+          });
+          borrowDecisionReason = `borrow refused: ${probe.refusal}`;
+          decision.choice = null;
+        }
+      }
       if (decision.choice) {
         borrowed = decision.choice;
         recipe = decision.choice.recipe;
@@ -7985,6 +8004,7 @@ export async function prepareSubmission(
   let result: Record<string, unknown>;
   // What the replay-failure classifier decided about the recipe, for the run's own message.
   let replayVerdictNote = "";
+  let replayBinding: ReturnType<typeof bindRecipeForReplay> | null = null;
   // THE RUN ROW EXISTS BEFORE THE BROWSER OPENS (A3). Until now it was written only after the
   // adapter returned: 4 of 7 interrupted production jobs left no record of an application the
   // portal may already have created, and a re-stage opened a duplicate draft. 'running' names
@@ -8056,7 +8076,23 @@ export async function prepareSubmission(
       addAuditLog(db, projectId, "system", "submit gate", "portal.discipline_conflict", { track: track ?? "permit", recipeDiscipline: recipeDisciplineConflict, recipeId: recipe.id });
       result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
     } else if (recipe && runActorLabel === "RecipeAdapter") {
-      result = await recipeStageRunner(recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files, stageOptions);
+      // THE REPLAY NEVER CARRIES ANOTHER PROJECT'S DATA (recipeReplayBinding): record links are
+      // not replayed, project literals bind to THIS project, the agency row binds to the looked-up
+      // agency, and state vocabulary guidance applies — on the own recipe AND a borrowed one.
+      const replayFieldValues = resolveRecipeFieldValues(db, stagedProject, portalType);
+      replayBinding = bindRecipeForReplay({
+        steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: detail.project, fieldValues: replayFieldValues, track,
+        borrowed: borrowed ? { learnedFor: borrowed.learnedFor, discipline: borrowed.discipline } : null,
+        agency: issuingAgencyFor(detail.project, track),
+      });
+      if (replayBinding.changes.length) {
+        addAuditLog(db, projectId, "system", "portal staging", "portal.replay_binding", {
+          runId, recipeId: recipe.id, changes: replayBinding.changes.map((c) => ({ index: c.index, kind: c.kind, reason: c.reason.slice(0, 200) })),
+        });
+      }
+      const boundRecipe = { ...recipe, steps: replayBinding.steps };
+      const boundValues = { ...replayFieldValues, ...replayBinding.fieldValues };
+      result = await recipeStageRunner(boundRecipe, stagedProject, boundValues, docsByType, files, stageOptions);
 
       // A BOT WALL MUST NOT BLOCK A FILING — RETRY WITH A REAL WINDOW.
       //
@@ -8079,7 +8115,7 @@ export async function prepareSubmission(
         });
         try {
           const headedResult = await recipeStageRunner(
-            recipe, stagedProject, resolveRecipeFieldValues(db, stagedProject, portalType), docsByType, files,
+            boundRecipe, stagedProject, boundValues, docsByType, files,
             { ...stageOptions, headless: false },
           );
           const before = Array.isArray((result as { steps?: unknown[] }).steps) ? (result as { steps: unknown[] }).steps.length : 0;
@@ -8097,7 +8133,11 @@ export async function prepareSubmission(
       // it healed (by stepIndex), only if the recipe is still the version this replay read — see
       // persistHealedSteps. The heals ride on the fill step's data (the adapter result's top level
       // never carried them, so this block was dead code); both places are read.
-      const healed = collectHealedSteps(result);
+      // Heals are reported against the steps the run EXECUTED; map each back to the stored step it
+      // healed (a record-link step the binding dropped shifts every later index).
+      const healed = collectHealedSteps(result)
+        .map((h) => ({ ...h, stepIndex: replayBinding?.originalIndex[h.stepIndex] ?? -1 }))
+        .filter((h) => h.stepIndex >= 0);
       // THE SHAPE THIS REPLAY READ (trust skeptic M3): a human step edit does not bump the version,
       // so heals and the demotion are measured against the steps as they were when the run began.
       const replayShapeSig = recipeShapeSignature(recipe.steps);
@@ -8322,7 +8362,8 @@ export async function prepareSubmission(
       : undefined;
     const borrowedNote = borrowedRecord
       ? ` Filled from the ${borrowedRecord.learnedFor} ${borrowedRecord.discipline} recipe (record type "${borrowedRecord.recordType}", same portal ${borrowedRecord.portalHost}) — check every jurisdiction-specific answer before submitting.`
-      : "";
+        + (replayBinding ? describeReplayBinding(replayBinding) : "")
+      : (replayBinding ? describeReplayBinding(replayBinding) : "");
     const runSeconds = (() => {
       const started = Date.parse(ts);
       return Number.isFinite(started) ? Math.max(0, Math.round((Date.now() - started) / 1000)) : 0;

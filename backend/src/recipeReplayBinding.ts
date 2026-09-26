@@ -1,0 +1,241 @@
+// A RECIPE REPLAY NEVER PUTS ANOTHER PROJECT'S DATA INTO THIS APPLICATION.
+//
+// Measured on the two complete Coos Bay recipes on Oregon ePermitting (2026-09-25): the
+// structural recipe's "Description of Work" (243 characters) and "Additional Comments" carried
+// the learn job's DC/AC kW, module count and make as LITERALS; building height, stories, areas,
+// dwelling units and number of buildings were literals; its agency-specific questions were
+// identified only by the donor agency's control ids (…_COOS_BAY_rdo_0_0_1 behind a bare "No");
+// and step 47 was a human-patch click on the link "187-26-000309-STR" — Coos Bay's own FILED
+// RECORD. Replayed for another project, that last step opens a previous customer's record.
+//
+// This runs on EVERY recipe replay (the entity's own recipe and a borrowed one) in the backend,
+// before the steps reach the adapter, and returns the steps the run may execute plus a named
+// account of every change. It is pure: no DB, no browser.
+//
+//   R1 RECORD LINKS — a click/check whose target names a specific permit record number never
+//      replays (own or borrowed). Stripped with a named reason.
+//   R2 PROJECT LITERALS — a free-text fill under a project-specific label (description of work,
+//      comments, building height, stories, areas, dwelling units, buildings) binds to THIS
+//      project's value (resolveRecipeFieldValues already derives each key; an empty value is a
+//      blank the reviewer sees, never the learn job's answer). Any other free-text literal that
+//      carries system figures (kW, watts, a "(19) Make Model" module count) is blanked.
+//   R3 AGENCY (the address-version / jurisdiction row) — bound to the issuing agency the per-job
+//      lookup found for THIS AHJ and track. A BORROWED recipe with no known agency, or whose
+//      live row preference (city row for structural, county row for electrical — the adapter's
+//      rankAddressVersions) contradicts the looked-up agency, REFUSES with a named reason.
+//   R4 DONOR-AGENCY IDENTITY (borrowed, different agency) — CSS fallbacks naming the donor's
+//      agency code or a positional service-list index are stripped; a step whose only identity
+//      was such an id behind a bare answer ("Yes"/"No") is stripped (the required-field sweep
+//      then stops the run for a human instead of answering someone else's question).
+//   R5 STATE VOCABULARY GUIDANCE (Oregon BCD, cited in permitProcess.STATE_PERMIT_RULES):
+//      Category of Construction = the structure type (never "Other"), Type of Work = Alteration
+//      for an existing building, and the "Other Category" free text is left empty.
+import type { CitedFact, ProjectRecord, RecipeStep } from "../../shared/src/types";
+import { stateRulesFor } from "./permitProcess";
+
+export interface ReplayBindingChange {
+  index: number;
+  kind: "stripped" | "rebound" | "blanked" | "fallbacks_stripped" | "vocabulary";
+  label: string;
+  reason: string;
+}
+export interface ReplayBinding {
+  steps: RecipeStep[];
+  /** For each returned step, its index in the recipe as stored (heals map back through this). */
+  originalIndex: number[];
+  /** Keys added to the field-value dictionary (e.g. the blank key, the issuing agency). */
+  fieldValues: Record<string, string>;
+  changes: ReplayBindingChange[];
+  /** Set only for a BORROWED recipe that cannot be bound to this project: do not borrow. */
+  refusal: string | null;
+}
+
+/** A permit record number: 187-26-000309-STR, 555-26-002978-ELEC, BLD2024-00123, B-24-001234. */
+export const RECORD_NUMBER = /\b(?:[A-Z0-9]{2,5}-\d{2}-\d{4,7}(?:-[A-Z]{2,6})?|[A-Z]{2,5}\d{2,4}-\d{3,7}|[A-Z]{1,3}-\d{2}-\d{5,7})\b/;
+export const REPLAY_BLANK_FIELD = "__replayBlank";
+
+const PROJECT_LITERAL_BINDINGS: Array<{ re: RegExp; field: string }> = [
+  { re: /description of work|work description|project description|scope of work|describe (the )?work/i, field: "workDescription" },
+  { re: /additional comments|^\*?comments:?$/i, field: "workDescription" },
+  { re: /building height.*(feet|ft)/i, field: "buildingHeightFeet" },
+  { re: /building height.*(inch|in\b)/i, field: "buildingHeightInches" },
+  { re: /number of stories|^\*?stories:?$/i, field: "numberOfStories" },
+  { re: /new building area/i, field: "newBuildingArea" },
+  { re: /existing building area/i, field: "existingBuildingArea" },
+  { re: /dwelling units/i, field: "dwellingUnits" },
+  { re: /number of buildings/i, field: "numberOfBuildings" },
+];
+/** Free text that carries a system's figures: "8.36 kW", "440W", "(19) ZNShine …". */
+const SYSTEM_FIGURES = /\b\d+(?:\.\d+)?\s*kW\b|\b\d{3}\s?W\b|\(\d+\)\s*[A-Za-z]/i;
+
+const labelOf = (s: RecipeStep): string => String(s.selector?.label || s.selector?.name || s.selector?.text || s.note || "").trim();
+const cssOf = (s: RecipeStep): string[] => [s.selector?.css ?? "", ...(s.selector?.fallbacks ?? []).map((f) => f.css ?? "")].filter(Boolean);
+
+/** "Marion County" → county; "City of Coos Bay" → city; otherwise unknown. */
+export function agencyKind(name: string): "county" | "city" | "" {
+  const n = String(name ?? "").toLowerCase();
+  if (/\bcounty\b/.test(n)) return "county";
+  if (/\b(city|town|village)\b/.test(n)) return "city";
+  return "";
+}
+/** Accela agency code convention seen on Oregon ePermitting: "Marion County" → MARION_CO,
+ *  "Coos County" → COOS_CO, "City of Coos Bay" → COOS_BAY. "" when it cannot be derived. */
+export function agencyCodeFor(name: string): string {
+  const n = String(name ?? "").trim();
+  if (!n) return "";
+  const county = /^(.+?)\s+county\b/i.exec(n);
+  if (county) return `${county[1].trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_CO`;
+  const city = /^(?:city|town|village) of\s+(.+)$/i.exec(n);
+  if (city) return city[1].trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+  return "";
+}
+/** The agency code an ASI control id carries: …AppSpec7E1D9A3EEdit_COOS_BAY_ddl_1_0 → COOS_BAY. */
+export function agencyCodeInCss(css: string): string {
+  const m = /AppSpec[0-9A-F]+Edit_([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*?)_(?:ddl|txt|rdo|chk|cb|lbl|dt)_\d/.exec(css);
+  return m ? m[1] : "";
+}
+const POSITIONAL_SERVICE_LIST = /cbListServices_\d+|rptAgency_ctl\d+/i;
+
+export function bindRecipeForReplay(input: {
+  steps: RecipeStep[];
+  portalUrl?: string;
+  project: Pick<ProjectRecord, "state" | "ahj"> & { parserSnapshot?: Record<string, unknown> };
+  fieldValues: Record<string, string>;
+  track: string | null | undefined;
+  /** Set when the recipe was learned for ANOTHER entity (findBorrowableRecipe). */
+  borrowed: { learnedFor: string; discipline: string } | null;
+  /** The issuing agency the per-job lookup found for this AHJ and track (permitProcess). */
+  agency: CitedFact<string> | null;
+}): ReplayBinding {
+  const changes: ReplayBindingChange[] = [];
+  const steps: RecipeStep[] = [];
+  const originalIndex: number[] = [];
+  const fieldValues: Record<string, string> = { [REPLAY_BLANK_FIELD]: "" };
+  const agencyName = String(input.agency?.value ?? "").trim();
+  if (agencyName) fieldValues.issuingAgency = agencyName;
+  const targetCode = agencyCodeFor(agencyName);
+  const snapshot = input.project.parserSnapshot ?? {};
+  const guidance = stateRulesFor(input.project.state).applicationInfoGuidance?.value ?? null;
+  const groundMount = /ground/i.test(String(snapshot.mountType ?? ""));
+  const newConstruction = /new construction|new (home|dwelling|building)/i.test(String(snapshot.constructionType ?? snapshot.workType ?? ""));
+  // The recipe's OWN vocabulary for a structure type (a CoC select whose answer is not "Other").
+  const structureVocab = input.steps.find((s) => s.action === "select" && /category of construction/i.test(labelOf(s))
+    && String(s.value ?? "").trim() && !/^other$/i.test(String(s.value ?? "").trim()) && /dwelling|family|residential/i.test(String(s.value)))?.value ?? "";
+  const residentialSingle = /single|one|1\b|two|duplex|family|dwelling|sfd|residential/i.test(String(snapshot.structureDescription ?? snapshot.occupancy ?? snapshot.structureType ?? "residential"));
+  let refusal: string | null = null;
+  const wantsCountyRow = /elec/i.test(String(input.borrowed?.discipline ?? input.track ?? ""));
+
+  input.steps.forEach((original, index) => {
+    let step: RecipeStep = { ...original, selector: original.selector ? { ...original.selector, fallbacks: original.selector.fallbacks ? [...original.selector.fallbacks] : undefined } : original.selector };
+    const label = labelOf(step);
+    const note = String(step.note ?? "");
+    const record = (kind: ReplayBindingChange["kind"], reason: string) => changes.push({ index, kind, label: label.slice(0, 60), reason });
+
+    // R1 — never open a specific filed record.
+    if ((step.action === "click" || step.action === "check") && !step.isFinalSubmit) {
+      const hay = [step.selector?.name, step.selector?.text, step.selector?.label, note].map((v) => String(v ?? "")).join(" ");
+      const m = RECORD_NUMBER.exec(hay);
+      if (m) {
+        record("stripped", `clicks the specific filed record ${m[0]} — replaying it would open a previous customer's record`);
+        return;
+      }
+    }
+
+    // R3 — the agency / jurisdiction row.
+    const isAgencyRow = /data-al-row\s*=/.test(step.selector?.css ?? "") || /^address version:/i.test(note) || /^work location: select .*row/i.test(note);
+    if (isAgencyRow) {
+      if (input.borrowed) {
+        if (!agencyName) {
+          refusal = refusal ?? `the ${input.borrowed.learnedFor} recipe selects the issuing agency (its address-version row "${note.replace(/^address version:\s*/i, "").slice(0, 40)}"), and the agency that issues ${input.project.ahj}'s ${input.track ?? "permit"} permits is not known — the per-job lookup found none, so that selection cannot be bound to this project`;
+        } else {
+          const kind = agencyKind(agencyName);
+          const livePrefers = wantsCountyRow ? "county" : "city";
+          if (kind && kind !== livePrefers) {
+            refusal = refusal ?? `${input.project.ahj}'s ${input.track ?? "permit"} permits are issued by ${agencyName} (a ${kind}), but the replay's live address-version ranking prefers the ${livePrefers.toUpperCase()} row for this discipline — it cannot yet be bound to the looked-up agency, so borrowing the ${input.borrowed.learnedFor} recipe could file with the wrong agency`;
+          }
+        }
+      }
+      if (agencyName) {
+        // APPENDED, never replaced: the adapter reads the recorded note (county/electrical) as a
+        // live-ranking signal, and the discipline detector reads it too.
+        step.note = `${note || "address version"} — issuing agency: ${agencyName} (${input.agency?.origin === "lookup" ? "per-job lookup" : input.agency?.origin ?? "lookup"})`;
+        if (step.selector?.fallbacks?.length) step.selector.fallbacks = step.selector.fallbacks.filter((f) => !(f.role === "link" && /^select$/i.test(String(f.name ?? ""))));
+        record("rebound", `agency row bound to ${agencyName}`);
+      }
+    }
+
+    // R4 — the donor agency's identity (borrowed only, different agency).
+    if (input.borrowed && step.selector) {
+      const donorCode = cssOf(step).map(agencyCodeInCss).find(Boolean) ?? "";
+      const foreignCode = donorCode && donorCode !== targetCode;
+      const beforeCss = cssOf(step).length;
+      const keep = (css: string | undefined) => !css || (!POSITIONAL_SERVICE_LIST.test(css) && !(foreignCode && agencyCodeInCss(css) === donorCode));
+      if (step.selector.fallbacks) step.selector.fallbacks = step.selector.fallbacks.filter((f) => keep(f.css));
+      if (step.selector.css && !keep(step.selector.css)) delete step.selector.css;
+      if (cssOf(step).length < beforeCss) {
+        const bareAnswer = /^(yes|no|n\/?a)$/i.test(String(step.selector.label ?? step.selector.name ?? "").trim())
+          && !step.selector.css && !step.selector.testId && !step.selector.placeholder;
+        if (bareAnswer && foreignCode) {
+          record("stripped", `its question was identified only by ${donorCode}'s control id behind a bare "${step.selector.label ?? step.selector.name}" — never answer another agency's question; the required-field sweep stops for a person`);
+          return;
+        }
+        record("fallbacks_stripped", foreignCode ? `CSS fallbacks naming ${donorCode} (the donor agency) or a positional list index were dropped` : "positional service-list fallback dropped");
+      }
+    }
+
+    // R5 — state vocabulary guidance (Category of Construction / Type of Work).
+    if (guidance) {
+      if (step.action === "select" && /^\*?category of construction:?$/i.test(label) && /^other$/i.test(String(step.value ?? "").trim())) {
+        if (structureVocab && residentialSingle) {
+          step.value = String(structureVocab);
+          record("vocabulary", `Category of Construction = the structure type ("${structureVocab}"), not "Other" (state guidance)`);
+        } else {
+          step = { ...step, value: "", field: REPLAY_BLANK_FIELD };
+          record("vocabulary", "Category of Construction must be the structure type, not \"Other\" (state guidance) — left for a person");
+        }
+      } else if (step.action === "select" && /^\*?type of work:?$/i.test(label) && /^new$/i.test(String(step.value ?? "").trim()) && !groundMount && !newConstruction) {
+        step.value = guidance.typeOfWorkExisting;
+        record("vocabulary", `Type of Work = ${guidance.typeOfWorkExisting} for an existing building (state guidance)`);
+      } else if ((step.action === "fill") && /other category of construction/i.test(label)) {
+        step = { ...step, value: "", field: REPLAY_BLANK_FIELD, optional: true };
+        record("blanked", "\"Other Category of Construction\" applies only when the category is Other (state guidance: solar is not Other)");
+      }
+    }
+
+    // R2 — project-specific free text.
+    if (step.action === "fill" && step.field !== REPLAY_BLANK_FIELD) {
+      const known = step.field && Object.prototype.hasOwnProperty.call(input.fieldValues, step.field);
+      const literal = String(step.value ?? "").trim();
+      if (!known) {
+        const binding = PROJECT_LITERAL_BINDINGS.find((b) => b.re.test(label) || b.re.test(note));
+        if (binding && Object.prototype.hasOwnProperty.call(input.fieldValues, binding.field)) {
+          step = { ...step, field: binding.field };
+          record("rebound", `bound to this project's ${binding.field}${literal ? " (the recorded answer was the learn project's)" : ""}`);
+        } else if (literal && SYSTEM_FIGURES.test(literal)) {
+          step = { ...step, value: "", field: REPLAY_BLANK_FIELD };
+          record("blanked", "a free-text literal carrying the learn project's system figures");
+        }
+      }
+    }
+
+    steps.push(step);
+    originalIndex.push(index);
+  });
+
+  return { steps, originalIndex, fieldValues, changes, refusal };
+}
+
+/** One operator-readable line for the run message. */
+export function describeReplayBinding(b: ReplayBinding): string {
+  if (!b.changes.length) return "";
+  const n = (k: ReplayBindingChange["kind"]) => b.changes.filter((c) => c.kind === k).length;
+  const parts = [
+    n("stripped") ? `${n("stripped")} step(s) not replayed` : "",
+    n("rebound") ? `${n("rebound")} bound to this project` : "",
+    n("blanked") ? `${n("blanked")} left blank` : "",
+    n("vocabulary") ? `${n("vocabulary")} answered per state guidance` : "",
+    n("fallbacks_stripped") ? `${n("fallbacks_stripped")} donor-specific selector(s) dropped` : "",
+  ].filter(Boolean);
+  const stripped = b.changes.filter((c) => c.kind === "stripped").map((c) => c.reason).slice(0, 2);
+  return ` Replay binding: ${parts.join(", ")}.${stripped.length ? ` ${stripped.join(" ")}` : ""}`;
+}

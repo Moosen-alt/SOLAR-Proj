@@ -81,6 +81,17 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   different portal. A person's verified portal still outranks it.
 - NEM inside a permit portal implemented in hostFitsTrackAndEntity (the one predicate): host AND tenant (path segment + tenant query
   params such as citizenserve installationID) must match a portal the UTILITY's own verified, utility-keyed KB row names.
+- REPLAY BINDING (2026-09-26, `backend/src/recipeReplayBinding.ts`, applied in prepareSubmission to EVERY recipe, own or borrowed):
+  a click on a specific filed record's link (Coos Bay STR step 47 "187-26-000309-STR") never replays; free-text literals under
+  project labels bind to THIS project's keys; a borrowed recipe binds its address-version row to the per-job looked-up agency or the
+  borrow REFUSES (audited `portal.recipe_borrow_refused`); donor-agency ASI control ids / positional service-list indexes are dropped
+  for another agency; heals map back through `originalIndex`.
+- OPEN (portal-bot, owned by the bot-close workflow): `recipeAdapter.pickAddressVersionLive` ranks CITY rows for structural and
+  COUNTY rows for electrical. Until it also prefers the row naming `fieldValues.issuingAgency` (now supplied), a borrow whose
+  looked-up agency contradicts that preference (City of Jefferson structural → Marion County) is REFUSED rather than risk the city row.
+- Rule adjusted (operator authorization 2026-09-25): planner prompt — the kVA fee tier follows the AC rating (systemSizeAcKw), not DC;
+  Category of Construction = the structure type and Type of Work = Alteration for an existing building (BCD guidance), never
+  "Other"/"Solar"/"New". The replay binding applies the same guidance to recorded Oregon recipes.
 - KNOWLEDGE PRE-LOAD SPEND (prospect states): only AFTER the live research-accuracy evals pass
   (`.probe/jurisdiction/`): state layers for FL/TX/UT/CA (~$2) + the top 5 AHJs/utilities per state from
   `.probe/prospects/PREP-PLAN.md` §6 (~20 entities, ~$50), seeded, operator spot-verifies. Everything else is researched
