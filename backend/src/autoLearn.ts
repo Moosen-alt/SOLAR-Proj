@@ -902,6 +902,12 @@ async function autoLearnPortalInner(
       project,
       planner,
       credential,
+      // A LOGIN MET MID-RUN on another host (a city page first, then the statewide Accela
+      // sign-in) gets THAT host's own saved login — host and jurisdiction segment matched by
+      // getDecryptedCredentialByUrl, so one portal's password is never typed into another.
+      // Without it the learner can use only the start site's login (live: City of Jefferson,
+      // 2026-09-25 — it now stops cleanly instead of looping, but still could not sign in).
+      credentialForUrl: (u: string) => (project.clientId ? getDecryptedCredentialByUrl(db, project.clientId, u) : null),
       userDataDir,
       // A caller that stops WAITING for this run does not stop the run; it walks on,
       // holding a browser profile and spending LLM calls where nobody is looking. The

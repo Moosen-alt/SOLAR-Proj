@@ -207,6 +207,31 @@ const env: Record<string, string | undefined> = {
   AUTOPILOT_TEST_SEAMS: "",
 };
 for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]) delete env[k];
+// (h) A LOGIN MET MID-RUN on another host. Live (City of Jefferson, 2026-09-25): the run started
+// on a state help page, met Accela's sign-in later, and had no way to ask for Accela's login. The
+// learner is handed a resolver; it must return the saved login for THAT host + jurisdiction only.
+// KILL: drop credentialForUrl from runLearn's options → "the learner is given no resolver" fails.
+await check("(h) a login met mid-run on another host gets that host's own saved login, and only that one", async () => {
+  process.env.SESSION_ENCRYPTION_KEY = process.env.SESSION_ENCRYPTION_KEY || "unit-test-key-not-a-real-secret";
+  const creds = await import("../src/portalCredentials");
+  creds.createPortalCredential(db, fx.client.id, { portalType: "ahj", portalUrl: "https://aca-oregon.accela.com/oregon/", username: "tml-test-user", password: "not-a-real-password" });
+  let seen: ((u: string) => unknown) | undefined;
+  autoLearn.setAutoLearnSeamsForTests({
+    learnPortal: (async (input: { credentialForUrl?: (u: string) => unknown }) => { launches++; seen = input.credentialForUrl; return { ...failedLearn }; }) as never,
+  });
+  try {
+    await autoLearn.autoLearnPortal(db, fx.newProject(), { scope: "ahj", portalUrl: "https://devhub.portlandoregon.gov/", createdBy: "operator" });
+  } finally {
+    autoLearn.setAutoLearnSeamsForTests({ learnPortal: (async () => { launches++; return { ...failedLearn, ...nextLearn }; }) as never });
+  }
+  assert.equal(typeof seen, "function", "the learner is given no resolver: a mid-run login on another host can never sign in");
+  const hit = (await Promise.resolve(seen!("https://aca-oregon.accela.com/oregon/Login.aspx?ReturnUrl=x"))) as { username?: string } | null;
+  assert.equal(hit?.username, "tml-test-user", "MUST-PASS: Accela's sign-in page gets the saved Accela login");
+  assert.equal(await Promise.resolve(seen!("https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login")), null, "MUST-EXCLUDE: another portal's host gets nothing");
+  assert.equal(await Promise.resolve(seen!("https://aca-oregon.accela.com/otherjurisdiction/Login.aspx")), null, "MUST-EXCLUDE: another jurisdiction on the same Accela host gets nothing");
+  assert.equal(await Promise.resolve(seen!("https://aca-prod.accela.com/sandiego/Login.aspx")), null, "MUST-EXCLUDE: another Accela host gets nothing");
+});
+
 const server = spawn(process.execPath, [path.join(REPO, "node_modules/tsx/dist/cli.mjs"), path.join(REPO, "backend/src/server.ts")], {
   env: env as NodeJS.ProcessEnv, cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"],
 });
