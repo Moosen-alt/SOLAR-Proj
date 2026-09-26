@@ -14,6 +14,8 @@
 // on file: … confirm on the roof plan"), never a check mark.
 import type { LLMProvider, WebLookupResult } from "../../shared/src/types";
 import { isOfficialCodeSource } from "./llm";
+import { fetchPublicDocument } from "./documentFetch";
+import { extractPdfTextItems } from "./pdfTables";
 
 export type PlacementRuleKind = "fire_setback" | "access_pathway" | "placement" | "local_amendment";
 
@@ -86,13 +88,77 @@ export async function researchPlacementRules(
   const result = await llm.webLookup({
     label: "pvPlacementRules",
     system: PLACEMENT_LOOKUP_SYSTEM,
-    user: `Jurisdiction: ${jurisdiction.ahj}\nState: ${jurisdiction.state}`,
-    maxTokens: 3000,
-    maxSearches: 4,
+    user: `Jurisdiction: ${jurisdiction.ahj}\nState: ${jurisdiction.state}\n`
+      + `Searches that find these pages: "${jurisdiction.ahj} fire department solar PV checklist", "${jurisdiction.ahj} residential solar submittal requirements", "${jurisdiction.ahj} solar access pathway ridge setback".`,
+    // Live, 2026-09-26: a 3000-token answer was cut off on Scottsdale, and a 180 s budget aborted a
+    // second Scottsdale pass. A background job can afford both.
+    maxTokens: 6000,
+    maxSearches: 5,
     readPages: true,
     maxFetches: 3,
+    timeoutMs: 240_000,
   });
   if (result.error) return { rules: [], dropped: [], webGrounded: false, error: result.error };
   const parsed = parsePlacementLookup(result, jurisdiction);
-  return { ...parsed, webGrounded: result.groundedSearches > 0 };
+  const checked = await verifyPlacementQuotes(parsed.rules);
+  return { rules: checked.rules, dropped: [...parsed.dropped, ...checked.dropped], webGrounded: result.groundedSearches > 0 };
+}
+
+/** The text of one page, for the quote check: "" when it could not be retrieved. */
+export type PlacementPageReader = (url: string) => Promise<{ ok: boolean; text: string; status: number }>;
+
+async function readPageText(url: string): Promise<{ ok: boolean; text: string; status: number }> {
+  // Plain HTTP only — a background job never opens a browser window for this.
+  const doc = await fetchPublicDocument(url, { allowBrowser: false, timeoutMs: 20_000, maxBytes: 12 * 1024 * 1024 });
+  if (!doc.ok) return { ok: false, text: "", status: doc.status };
+  if (/pdf/i.test(doc.contentType) && doc.bytes) {
+    try {
+      const items = await extractPdfTextItems(doc.bytes, { maxPages: 40 });
+      return { ok: true, text: items.map((i) => i.str ?? "").join(" "), status: doc.status };
+    } catch { return { ok: false, text: "", status: doc.status }; }
+  }
+  return { ok: true, text: String(doc.text ?? "").replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " "), status: doc.status };
+}
+
+let pageReaderForTests: PlacementPageReader | null = null;
+/** Test seam: read pages without the network. null restores the real reader. */
+export function setPlacementPageReaderForTests(fn: PlacementPageReader | null): void {
+  pageReaderForTests = fn;
+}
+
+/** Letters, digits and % only, entities and typographic quotes/primes folded — so a quote survives
+ *  the page's line breaks, &nbsp; and curly marks, and nothing else. */
+export function foldForQuote(value: string): string {
+  return String(value || "")
+    .replace(/&nbsp;|&#160;/gi, " ").replace(/&amp;/gi, "&").replace(/&quot;|&#34;|&rdquo;|&ldquo;|&#8221;|&#8220;/gi, "\"")
+    .replace(/&#39;|&rsquo;|&lsquo;|&#8217;|&#8216;/gi, "'")
+    .toLowerCase()
+    .replace(/[^a-z0-9%]+/g, "");
+}
+
+/**
+ * EVERY STORED RULE IS ON THE PAGE WE RETRIEVED. The lookup's own page reads are not returned to us,
+ * and a live pass (2026-09-26) cited a Waltham URL that answers a plain client with the city's 404
+ * page — the rules it quoted could not be shown to be Waltham's. So each cited page is fetched
+ * (plain HTTP, no browser) and a rule is kept only when its folded text appears in the page's.
+ * A page we cannot retrieve keeps nothing: an unverifiable rule is an unknown, not a rule.
+ */
+export async function verifyPlacementQuotes(rules: PlacementRule[]): Promise<{ rules: PlacementRule[]; dropped: string[] }> {
+  const reader = pageReaderForTests ?? readPageText;
+  const pages = new Map<string, { ok: boolean; text: string; status: number }>();
+  const kept: PlacementRule[] = [];
+  const dropped: string[] = [];
+  for (const r of rules) {
+    if (!pages.has(r.sourceUrl)) {
+      let page = { ok: false, text: "", status: 0 };
+      try { page = await reader(r.sourceUrl); } catch { /* unreadable */ }
+      pages.set(r.sourceUrl, { ...page, text: foldForQuote(page.text) });
+    }
+    const page = pages.get(r.sourceUrl)!;
+    if (!page.ok) { dropped.push(`page not retrievable (status ${page.status}) — "${r.rule.slice(0, 60)}" not stored: ${r.sourceUrl}`); continue; }
+    const needle = foldForQuote(r.rule);
+    if (needle.length < 12 || !page.text.includes(needle)) { dropped.push(`quote not found on the page we retrieved — "${r.rule.slice(0, 60)}": ${r.sourceUrl}`); continue; }
+    kept.push(r);
+  }
+  return { rules: kept, dropped };
 }

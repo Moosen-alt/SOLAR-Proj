@@ -20,7 +20,7 @@ process.env.CODE_RESEARCH = "off";
 
 const { openDatabase } = await import("../src/db");
 const CP = await import("../src/codeProfiles");
-const { parsePlacementLookup } = await import("../src/pvPlacementRules");
+const { parsePlacementLookup, setPlacementPageReaderForTests, verifyPlacementQuotes } = await import("../src/pvPlacementRules");
 const { buildReviewerReport } = await import("../src/reviewerEngine");
 type LLMProvider = import("../../shared/src/types").LLMProvider;
 type ProjectRecord = import("../../shared/src/types").ProjectRecord;
@@ -70,6 +70,22 @@ const project = (over: Partial<ProjectRecord> = {}): ProjectRecord => ({
   id: "placement-test", state: "MA", ahj: "Waltham", utility: "Eversource", homeownerName: "Test Owner", projectAddress: "1 Test St",
   interconnectionMethod: "Load-side breaker", parserSnapshot: { mounting: "Roof mount" }, ...over,
 } as unknown as ProjectRecord);
+
+// The cited page, as a plain client retrieves it (line breaks, &nbsp;, a curly quote — the fold must survive them).
+setPlacementPageReaderForTests(async (url) => url === W_URL
+  ? { ok: true, status: 200, text: "<h2>Solar PV Checklist</h2><ol><li>Item 11. Three-foot access path should, if possible,\n be clear of&nbsp;incoming electrical service.</li></ol>" }
+  : { ok: false, status: 404, text: "" });
+
+await check("P5 MUST-EXCLUDE: a rule whose page does not carry the quote, or whose page cannot be retrieved, is not stored", async () => {
+  const other = "https://www.city.waltham.ma.us/fire-department/files/solar-panel-ess-faqs";
+  const r = await verifyPlacementQuotes([
+    { kind: "fire_setback", rule: "Solar arrays must be set back 5 feet from every ridge.", sourceUrl: W_URL },
+    { kind: "fire_setback", rule: "If solar arrays consume more than 33% of all roof planes, provide a 36 inch path.", sourceUrl: other },
+    { kind: "access_pathway", rule: W_RULE, sourceUrl: W_URL },
+  ]);
+  assert.deepEqual(r.rules.map((x) => x.rule), [W_RULE], JSON.stringify(r));
+  assert.ok(r.dropped.some((d) => /quote not found/.test(d)) && r.dropped.some((d) => /not retrievable \(status 404\)/.test(d)), JSON.stringify(r.dropped));
+});
 
 await check("P3 MUST-PASS: the design-criteria job stores Waltham's rule on Waltham's row (a uniform state) and the reviewer shows it as a callout", async () => {
   const r = await CP.runDesignCriteriaResearch(db, { state: "MA", ahj: "Waltham" },
@@ -126,6 +142,7 @@ await check("T2 MUST-EXCLUDE: a research that searched and found nothing is not 
   assert.equal(CP.ownCodeProfileRow(db, "IA", "North Liberty"), null, "a row was created from uncited editions");
 });
 
+setPlacementPageReaderForTests(null);
 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows keeps the sqlite handle */ }
 if (failures) {
   console.error(`\ne2eGapPlacementResearch: ${failures} FAILED`);
