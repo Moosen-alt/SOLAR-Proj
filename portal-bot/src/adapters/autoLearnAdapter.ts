@@ -3187,7 +3187,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         result = {
           ...result,
           ...(filing.length ? { ok: false, stopReason: result.stopReason || "backstop_abort" } : {}),
-          message: `${filing.length ? "STOPPED BY THE NETWORK BACKSTOP — the page tried to file or pay (or post from the review page) during the learn; the recorded steps must be reviewed before any replay. " : ""}${result.message} [${lines.join(" | ").slice(0, 600)}]`,
+          message: `${filing.length && result.stopReason !== "backstop_abort" ? "STOPPED BY THE NETWORK BACKSTOP — the page tried to file or pay (or post from the review page) during the learn; the recorded steps must be reviewed before any replay. " : ""}${result.message} [${lines.join(" | ").slice(0, 600)}]`,
         };
       }
       return result;
