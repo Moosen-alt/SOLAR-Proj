@@ -5928,7 +5928,11 @@ export class RecipeAdapter extends BasePortalAdapter {
         try {
           raws = (await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage)) as Array<{ label?: string }>;
         } catch (scanErr) {
-          if (Date.now() >= deadline) throw scanErr;
+          // Only a NAVIGATION error is worth a rescan. Any other failure (a page that cannot run
+          // the extractor at all) is not going to change by waiting, and must not burn the whole
+          // drift budget on every segment (it cost the replay smokes ~10 s each).
+          const navigating = /context was destroyed|because of a navigation|frame was detached|navigating/i.test(String((scanErr as Error)?.message ?? scanErr));
+          if (!navigating || Date.now() >= deadline) throw scanErr;
           await this.settle(3000);
           await sleep(300);
           continue;
