@@ -126,6 +126,11 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   surcharge line is that percentage of the base (saveFeeSchedule opt citedStateSurcharge; basis prose alone never applies one).
   A permit quote in a surcharge state whose priced line carries none now says "PLUS the state surcharge on the <agency>
   <discipline> permit (up to 12%) — NOT included"; Jefferson-shaped result: $172.53 + that note on structural (truth $180.60).
+- RULE-2 INCIDENT (found 2026-09-26 02:50): on the City of Jefferson learn run (2026-09-25 22:53-22:59, pinned 0c466bb) the planner's design
+  digest carried the METER number (spaced "#77 902 323" in a site-plan line matching the disconnect topic) to the model on each planner call;
+  the account number was not in it. Cause: the value filter only dropped WHOLE-value matches; the digest is prose added after it. Fixed in
+  9193e97 (embedded redaction, separators ignored; kbLearnLookup test, kill-tested). Ships with the re-pin — until then no Stage on real portals.
+  Follow-up: the gate workflow's F17 payload-scan test must cover EVERY prompt builder (planner, reviewer, vision, triage, correction agent).
 - KNOWLEDGE PRE-LOAD SPEND (prospect states): only AFTER the live research-accuracy evals pass
   (`.probe/jurisdiction/`): state layers for FL/TX/UT/CA (~$2) + the top 5 AHJs/utilities per state from
   `.probe/prospects/PREP-PLAN.md` §6 (~20 entities, ~$50), seeded, operator spot-verifies. Everything else is researched
