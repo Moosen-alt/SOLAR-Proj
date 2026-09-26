@@ -76,7 +76,7 @@ import { publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
 import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
-import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor } from "./permitProcess";
+import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor } from "./permitProcess";
 import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
 import { documentInventory, owedMissingDocuments, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
@@ -88,7 +88,7 @@ import { clientStagingOverlay, getClient } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, lockedOutCredential } from "./portalCredentials";
 import { logger } from "./logger";
-import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack, hostFitsTrackAndEntity, scopeForTrack, trackSafeUrl, type HostFit, type PortalUrlSource } from "./portalChannel";
+import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack, hostFitsTrackAndEntity, scopeForTrack, trackSafeUrl, portalHostOf, type HostFit, type PortalUrlSource } from "./portalChannel";
 import { isPortalPaused } from "./portalPause";
 // The ONE creator of permit_check_targets rows (extracted from markTrackSubmitted).
 // Direction matters: submittalTracks must never import repository — jobQueue statically
@@ -7542,6 +7542,14 @@ export async function prepareSubmission(
     });
     if (track === "nem") utilityPortalUrl = fitUrl(fuzzy.utility?.portalUrl, "kb");
     else ahjPortalUrl = fitUrl(fuzzy.ahj?.portalUrl, "kb");
+  }
+  // THE PER-JOB LOOKUP'S PORTAL for this track's permit (cited, seeded) — judged like research
+  // (a verified portal for the AHJ outranks it; an information page never fits). The statewide
+  // portal is not taken here: that answer is the statewide fallback below, labelled as such.
+  if (track !== "nem" && !ahjPortalUrl) {
+    const looked = permitAnswerForTrack(detail.project, track)?.portalUrl.value ?? "";
+    const statewideHost = portalHostOf(stateRulesFor(detail.project.state).statewidePortal?.value ?? "");
+    if (looked && portalHostOf(looked) !== statewideHost) ahjPortalUrl = fitUrl(looked, "research");
   }
   // A draft/recording recipe (not yet promoted to "complete") still carries the entry URL the
   // operator — or a prior auto-learn pass — pointed the recorder at. Recover it so the universal

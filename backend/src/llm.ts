@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { performance } from "node:perf_hooks";
-import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition } from "../../shared/src/types";
+import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition, WebLookupResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
@@ -286,6 +286,10 @@ export class StubLLMProvider implements LLMProvider {
 
   async researchDesignCriteria(): Promise<DesignCriteriaResearchResult> {
     return { provider: "stub", values: [], webGrounded: false, notes: "No ANTHROPIC_API_KEY configured — no design-criteria lookup." };
+  }
+
+  async webLookup(): Promise<WebLookupResult> {
+    return { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: "No ANTHROPIC_API_KEY configured — no lookup." };
   }
 
   async researchJurisdictionCodes(input: JurisdictionCodeResearchInput): Promise<JurisdictionCodeResearchResult> {
@@ -1980,6 +1984,18 @@ Rules:
   // numbers, each with the page and the sentence it came from. Web-grounded or nothing — a
   // remembered snow load is exactly the false authority a below-ahj warning must not rest on,
   // so there is no model-memory fallback here.
+  // PER-JOB PERMIT-PROCESS LOOKUP transport (permitProcessLookup.ts owns the prompt, the parse and
+  // every validation). Its own timeout per call, so one aborted part loses one part, not all.
+  async webLookup(input: { label: string; system: string; user: string; maxTokens?: number; maxSearches?: number; readPages?: boolean; timeoutMs?: number }): Promise<WebLookupResult> {
+    try {
+      const web = await this.askWithWebSearch(input.label, input.system, input.user, input.maxTokens ?? WEB_RESEARCH_MAX_TOKENS,
+        input.maxSearches ?? 5, input.timeoutMs ?? webResearchBudgetMs(), input.readPages ? [designLookupFetchTool()] : []);
+      return { text: web.text, groundedSearches: web.groundedSearches, stopReason: web.stopReason, resultUrls: web.resultUrls, pagesRead: web.fetches };
+    } catch (err) {
+      return { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: errMsg(err) };
+    }
+  }
+
   async researchDesignCriteria(input: { ahj: string; state: string }): Promise<DesignCriteriaResearchResult> {
     const userMsg = `Jurisdiction: ${input.ahj}\nState: ${input.state}`;
     let raw = "";

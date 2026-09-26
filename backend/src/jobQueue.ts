@@ -25,6 +25,9 @@ export type JobType =
   // that exists but has none on file (codeProfiles.ensureDesignCriteriaResearched).
   | "design_criteria_research"
   | "fee_research"
+  // THE PER-JOB PERMIT-PROCESS LOOKUP (permitProcessLookup.ts): agency, combo vs separate, portal +
+  // record type, documents and fees per permit — cited, seeded — for an AHJ with no process of its own.
+  | "permit_process_lookup"
   | "run_triage"
   | "correction_triage"
   // The LOCAL pipeline steps (QC, doc package, reviewer gate, historical check) running
@@ -835,6 +838,33 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
             reason: (outcome.reason || "").slice(0, 400) || undefined,
           });
       } catch { /* audit is best-effort — never fail the job over it */ }
+    } else if (job.jobType === "permit_process_lookup") {
+      // Lands 'seeded' through permitProcess.savePermitProcessLookup (a verified row is never
+      // overwritten) and its fees through saveFeeSchedule; then asks for fee research on whatever
+      // the lookup could not price — for the agency it found, via the delegation it wrote.
+      const { runPermitProcessLookup } = await import("./permitProcessLookup");
+      const { createLLMProvider } = await import("./llm");
+      const p = job.payload as Record<string, unknown>;
+      const run = await runPermitProcessLookup(db, createLLMProvider(), {
+        state: String(p.state || ""), ahj: String(p.ahj || ""), utility: String(p.utility || ""),
+        dcKw: String(p.dcKw || ""), acKw: String(p.acKw || ""), permitPath: String(p.permitPath || ""),
+      });
+      result = { saved: run.saved, reason: run.reason, calls: run.calls };
+      try {
+        addAuditLog(db, job.projectId, "system", "permit process lookup", run.saved ? "permit_process.looked_up" : "permit_process.no_result", {
+          ahj: String(p.ahj || ""), state: String(p.state || ""), saved: run.saved, reason: run.reason.slice(0, 300),
+          agency: run.lookup?.issuingAgency?.value ?? null, structure: run.lookup?.permitStructure?.value ?? null,
+        });
+      } catch { /* audit is best-effort */ }
+      if (job.projectId) {
+        try {
+          const { getProjectDetail } = await import("./repository");
+          const { ensureFeeSchedulesResearched } = await import("./feeSchedules");
+          const { requiredTracks } = await import("./submittalTracks");
+          const project = getProjectDetail(db, job.projectId).project;
+          void ensureFeeSchedulesResearched(db, project, requiredTracks(project)).catch(() => null);
+        } catch { /* fee research is best-effort */ }
+      }
     } else {
       result = { skipped: true, reason: "job type handled externally" };
     }

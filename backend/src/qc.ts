@@ -401,7 +401,17 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
       utility,
       parserSnapshot: payload,
     } as unknown as ProjectRecord;
-    void ensureFeeSchedulesResearched(db, projectLike, requiredTracks(projectLike)).catch(() => null);
+    // THE PER-JOB PROCESS LOOKUP FIRST (permitProcessLookup): an AHJ with no process of its own
+    // gets agency / structure / portal / record type / documents / fees looked up, cited, seeded.
+    // When it is queued, fee research waits for it — the lookup job re-triggers fee research once it
+    // knows WHICH agency charges (the fee researcher, asked about City of Jefferson, read Marion
+    // County's $67.25, reported found:false and stored nothing).
+    void (async () => {
+      const { ensurePermitProcessLookedUp } = await import("./permitProcessLookup");
+      const queued = await ensurePermitProcessLookedUp(db, projectLike as never);
+      const tracks = requiredTracks(projectLike);
+      await ensureFeeSchedulesResearched(db, projectLike, queued ? tracks.filter((t) => t === "nem") : tracks);
+    })().catch(() => null);
   } catch (err) {
     logger.warn("qc", "fee-research trigger failed", { projectId, err: err instanceof Error ? err.message : String(err) });
   }

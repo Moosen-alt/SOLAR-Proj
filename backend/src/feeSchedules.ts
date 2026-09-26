@@ -80,6 +80,7 @@ import {
 // files, under a label that names the jurisdiction.
 import { recordLlmCall, sanitizeApiKey } from "./llm";
 import { logger } from "./logger";
+import { agencyKind } from "./recipeReplayBinding";
 import { id } from "./ids";
 import { text } from "./json";
 import { nowIso } from "./time";
@@ -2536,6 +2537,13 @@ function findRawScheduleForProject(
     // real fee for the wrong permit.
     if (discipline && rec.discipline && rec.discipline !== discipline) continue;
     const name = track === "nem" ? rec.utility : rec.ahj;
+    // A CITY IS NOT THE COUNTY OF THE SAME NAME. "City of Jefferson" (Marion County area) scores
+    // 65 against "Jefferson County" (Madras) — a different place; a fuzzy bridge across kinds is
+    // the wrong-authority fee. A county that collects a city's fees is a sourced DELEGATION row
+    // (collectedByProfileKey), never a name match.
+    const kindWanted = track === "nem" ? "" : agencyKind(wanted);
+    const kindRow = track === "nem" ? "" : agencyKind(name);
+    if (kindWanted && kindRow && kindWanted !== kindRow) continue;
     const score = knowledgeNameMatchScore(wanted, name);
     if (score < 60) continue;
     if (!best || score > best.score) best = { row: rec, score };

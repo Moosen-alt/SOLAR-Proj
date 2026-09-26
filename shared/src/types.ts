@@ -2555,6 +2555,9 @@ export interface LLMProvider {
    *  profile has none on file. Web-grounded values only, each with its citation. Optional so
    *  test doubles of LLMProvider need not implement it. */
   researchDesignCriteria?(input: { ahj: string; state: string }): Promise<DesignCriteriaResearchResult>;
+  /** ONE web-grounded lookup with a caller-owned prompt (the per-job permit-process lookup,
+   *  backend/src/permitProcessLookup.ts). Transport only: the caller parses and validates. */
+  webLookup?(input: { label: string; system: string; user: string; maxTokens?: number; maxSearches?: number; readPages?: boolean; timeoutMs?: number }): Promise<WebLookupResult>;
   /** LLM GENERAL PLAN REVIEW (hybrid review gate): Claude vision over rendered plan
    *  pages for ANY permit work type, grounded in the jurisdiction's adopted codes.
    *  Always advisory — the caller maps findings to category "ai_review", severity
@@ -3260,4 +3263,16 @@ export interface PermitProcessLookup {
   notes?: string[];
   verifiedAt?: string | null;
   verifiedBy?: string | null;
+}
+
+/** What LLMProvider.webLookup returns: the model's text and the search evidence around it. */
+export interface WebLookupResult {
+  text: string;
+  /** Searches that returned results (0 = the answer is model memory and must not be used). */
+  groundedSearches: number;
+  /** "max_tokens" / "pause_turn" = the answer was cut off. */
+  stopReason: string | null;
+  resultUrls: string[];
+  pagesRead: number;
+  error?: string;
 }

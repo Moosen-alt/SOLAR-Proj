@@ -96,6 +96,16 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   silent blank, never a guess. BCD 5952 "BCD license #" = the client's electrical contractor licence (client record only, Oregon only);
   "Listing agency" = the module datasheet (text, then a vision read of the datasheet page — `moduleListing.ts`, once per project).
   The 5952 fill note names the ONE missing fact.
+- PER-JOB LOOKUP BUILT (2026-09-26, `backend/src/permitProcessLookup.ts`, job `permit_process_lookup`, queued by the QC trigger for an
+  AHJ with no lookup row and no seeded process profile, when a model key and the worker are up): two web-grounded calls (process;
+  documents+fees for the AGENCY the first found), each its own timeout. Every value needs a source the search returned and a quote
+  that itself states it (agency name / fee amount / structure words), else NOT FOUND; an information page is never a portal; an
+  ungrounded or truncated answer keeps nothing. Fees land through saveFeeSchedule, with a sourced DELEGATION row when a county issues
+  for a city. `PERMIT_PROCESS_LOOKUP=off` disables. Its answers feed tracks, the statewide/own portal, the borrow record-type check,
+  the replay agency binding, the zoning question and the fee quote.
+- Rule adjusted (operator authorization 2026-09-25): fee research waits for the per-job lookup when one is queued (the lookup re-triggers
+  it knowing which agency charges), and a fuzzy fee-schedule match never bridges a CITY to a like-named COUNTY (City of Jefferson ≠
+  Jefferson County) — a county collecting a city's fees is a sourced delegation row only.
 - Rule adjusted (operator authorization 2026-09-25): planner prompt — the kVA fee tier follows the AC rating (systemSizeAcKw), not DC;
   Category of Construction = the structure type and Type of Work = Alteration for an existing building (BCD guidance), never
   "Other"/"Solar"/"New". The replay binding applies the same guidance to recorded Oregon recipes.
