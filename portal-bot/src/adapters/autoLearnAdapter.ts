@@ -19,6 +19,7 @@ import { parseStreetName, parseStreetNumber, parseStreetLine, correctTruncatedAd
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
+import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../../shared/src/portalSafety";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
 // having a human record it. Each page is scraped into a structured snapshot
@@ -8133,8 +8134,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 // because it dismisses modals at the top of every page; replay is the path that actually runs
 // for every project.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function dismissPageModals(page: any): Promise<void> {
-  if (!page) return;
+export async function dismissPageModals(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
+  opts: { click?: (loc: unknown, why: string) => Promise<unknown> } = {},
+): Promise<{ dismissed: string[]; refused: string[] }> {
+  const out = { dismissed: [] as string[], refused: [] as string[] };
+  if (!page) return out;
   // FAST PATH. The walk below probes 20+ selectors, up to 3 times, plus an Escape fallback
   // — about 1.5s even on a page with no overlay at all. That was fine when only the learner
   // called it once per page; replay calls it before every click, where it added ~5s to a
@@ -8152,7 +8158,7 @@ export async function dismissPageModals(page: any): Promise<void> {
       const els = Array.from(document.querySelectorAll("button, a, .btn, [role=button]"));
       return els.some((el) => DISMISS_TEXT.test(((el as HTMLElement).innerText || "").trim()));
     }).catch(() => true); // unreadable page → do the full walk, as before
-    if (!worthDoing) return;
+    if (!worthDoing) return out;
   }
   // Match dismiss controls whether they're <button>, <a>, or .btn (PowerClerk uses
   // Bootstrap .btn links/buttons), so a "Got it"/"Close" link is caught too.
@@ -8202,17 +8208,54 @@ export async function dismissPageModals(page: any): Promise<void> {
     `${clickable}:text-is("×")`,
     '[role="dialog"] button',
   ];
+  // HARD RULE 1 INSIDE THE DISMISSER. This pass is not a recorded step and, before this, not a
+  // gated click either: `[role="dialog"] button` clicked a Bootstrap confirm's FIRST button,
+  // "Submit Application", and `:text-is("OK")` clicked the OK of "You are about to submit your
+  // application" — four filing POSTs on a local fixture with no approval (replay skeptic,
+  // modal-probe.log). Every candidate is now asked the shared in-page question first
+  // (dismissalRefusalInPage: its own label, and for an answer-shaped label the dialog's text),
+  // and a caller that owns a chokepoint (replay's guardAction) is handed the click itself.
+  // Unreadable -> refused, never clicked.
+  if (typeof page.evaluate === "function") await page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+  const refusedKeys = new Set<string>();
   for (let attempt = 0; attempt < 3; attempt++) {
     let dismissed = false;
     for (const sel of dismissSelectors) {
       try {
-        const loc = page.locator(sel).first();
-        if ((await loc.count()) > 0 && (await loc.isVisible().catch(() => false))) {
-          await loc.click({ timeout: 2000 }).catch(() => null);
+        const all = page.locator(sel);
+        const n = Math.min(5, await all.count());
+        for (let i = 0; i < n && !dismissed; i++) {
+          const key = `${sel}#${i}`;
+          if (refusedKeys.has(key)) continue;
+          const loc = all.nth(i);
+          if (!(await loc.isVisible().catch(() => false))) continue;
+          const refusal = typeof loc.evaluate === "function"
+            ? String(await loc.evaluate((el: Element, g: string) => {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const ps = (globalThis as any)[g];
+              return ps && typeof ps.dismissalRefusalInPage === "function" ? ps.dismissalRefusalInPage(el) : "the page's safety predicates are not installed";
+            }, PORTAL_SAFETY_GLOBAL).catch(() => "the control could not be read") ?? "")
+            : "the control could not be read";
+          if (refusal) {
+            refusedKeys.add(key);
+            out.refused.push(`dismisser refused ${sel}: ${refusal}`);
+            continue;
+          }
+          if (opts.click) {
+            const ok = await Promise.resolve(opts.click(loc, `dismiss an overlay (${sel.slice(0, 40)})`)).then(() => true).catch((e: unknown) => {
+              refusedKeys.add(key);
+              out.refused.push(`dismisser refused ${sel}: ${String((e as Error)?.message ?? e).slice(0, 160)}`);
+              return false;
+            });
+            if (!ok) continue;
+          } else {
+            await loc.click({ timeout: 2000 }).catch(() => null);
+          }
+          out.dismissed.push(sel);
           await smartWait(page, 400);
           dismissed = true;
-          break;
         }
+        if (dismissed) break;
       } catch { /* non-fatal */ }
     }
     // Fallback: a lingering backdrop/popover with no matched button — press Escape.
@@ -8228,6 +8271,7 @@ export async function dismissPageModals(page: any): Promise<void> {
     }
     if (!dismissed) break;
   }
+  return out;
 }
 
 // SHARED WITH REPLAY. Extracted verbatim from AutoLearnAdapter.clearOverlays so the RecipeAdapter

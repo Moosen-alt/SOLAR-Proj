@@ -1316,6 +1316,30 @@ async function testNoRawActionOutsideTheChokepoint() {
   assert.deepEqual(offenders, [], `raw click/press/goto outside the chokepoint:\n${offenders.join("\n")}`);
 }
 
+// R1 EXTENDS TO THE HELPERS REPLAY IMPORTS. dismissPageModals (autoLearnAdapter) clicked a
+// confirm dialog's "OK" / first button raw, before every step and on every retry — four filing
+// POSTs on the skeptic's fixture. Replay must hand it the chokepoint (a click callback), and the
+// dismisser's own raw click (the learner's path) must come after the in-page refusal check.
+async function testImportedHelpersStayBehindTheChokepoint() {
+  const fs = await import("node:fs");
+  const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").split(/\r?\n/).map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+  const replay = strip(fs.readFileSync(new URL("./recipeAdapter.ts", import.meta.url), "utf8"));
+  const calls = replay.match(/dismissPageModals\([^)]*\)?/g) ?? [];
+  const unguarded = calls.filter((c) => !/click\s*:/.test(replay.slice(replay.indexOf(c), replay.indexOf(c) + 200)));
+  assert.ok(calls.length >= 1, "replay still dismisses overlays");
+  assert.deepEqual(unguarded, [], `replay calls dismissPageModals without routing its clicks through guardAction: ${unguarded.join(" ; ")}`);
+  const learner = strip(fs.readFileSync(new URL("./autoLearnAdapter.ts", import.meta.url), "utf8"));
+  const start = learner.indexOf("export async function dismissPageModals(");
+  const end = learner.indexOf("export async function clearPageOverlays(");
+  assert.ok(start > 0 && end > start, "dismissPageModals is where this test expects it");
+  const body = learner.slice(start, end);
+  const firstCheck = body.indexOf("dismissalRefusalInPage");
+  const clicks = [...body.matchAll(/\.click\(/g)].map((m) => m.index ?? 0);
+  assert.ok(firstCheck > 0, "the dismisser asks the shared in-page refusal question");
+  assert.ok(clicks.every((i) => i > firstCheck), "every click in the dismisser comes after the refusal check");
+  assert.ok(/if \(refusal\)/.test(body) && /opts\.click/.test(body), "a refusal skips the control, and a caller's chokepoint performs the click");
+}
+
 // R1 / hard rule 5 inside replay: a goto that leaves the recipe's portal stops the run, named.
 async function testGotoLeavingThePortalStopsTheRun() {
   const cases: Array<{ name: string; scope: "ahj" | "utility"; portalUrl: string; to: string; allowed: boolean }> = [
@@ -1346,6 +1370,7 @@ async function testGotoLeavingThePortalStopsTheRun() {
 const tests: Array<[string, () => Promise<void>]> = [
   ["R4: a failure capture never waits for the control that failed to appear", testFailureCaptureDoesNotWaitForAnAbsentTarget],
   ["R1: no click/press/goto outside the replay chokepoint (static)", testNoRawActionOutsideTheChokepoint],
+  ["R1: the overlay dismissor replay imports stays behind the chokepoint (static)", testImportedHelpersStayBehindTheChokepoint],
   ["R1: a goto that leaves the recipe's portal stops the run, named (rule 5)", testGotoLeavingThePortalStopsTheRun],
   ["R2: each missing input of the final-submit gate keeps it unclicked", testFinalSubmitGateRefusesEachMissingInput],
   ["R2: a quiet page after the approved click is unknown, reported, never retried", testFinalSubmitQuietPageIsUnknownAndNotRetried],

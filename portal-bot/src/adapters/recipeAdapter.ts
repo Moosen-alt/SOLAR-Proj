@@ -1018,7 +1018,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       // clearing pass. It is a FIRST-RUN artifact, and per-portal browser profiles mean
       // every portal now gets a first run.
       if (step.action === "click" || step.action === "goto" || step.action === "check" || step.action === "uncheck") {
-        await dismissPageModals(this.page).catch(() => null);
+        await this.dismissModalsGuarded();
         await clearPageOverlays(this.page).catch(() => null);
       }
 
@@ -1202,7 +1202,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           // is the signature of a covered target — clear both before spending the next
           // attempt. clearOverlays is the generic breaker for portals we have no selector
           // for; dismissModals handles the ones we do.
-          await dismissPageModals(this.page).catch(() => null);
+          await this.dismissModalsGuarded();
           await clearPageOverlays(this.page).catch(() => null);
         }
       }
@@ -3576,6 +3576,23 @@ export class RecipeAdapter extends BasePortalAdapter {
     await (target as { press: (k: string) => Promise<void> }).press(key);
   }
 
+  /** The overlay dismisser, with every click it makes routed through guardAction. It was the one
+   *  door onto the page left outside the chokepoint: a raw click on a confirm dialog's "OK" or
+   *  first button, before every click step and on every retry (replay skeptic, 4 filing POSTs).
+   *  What it refused is recorded like any other refusal. */
+  private async dismissModalsGuarded(): Promise<void> {
+    const r = await dismissPageModals(this.page, {
+      click: (loc: unknown, why: string) => this.guardedClick(loc, why, { timeout: 2000 }),
+    }).catch(() => null);
+    // A refusal by guardAction (the click callback threw) is already recorded there; the in-page
+    // refusals are not.
+    for (const line of r?.refused ?? []) {
+      if (this.guardRefusals.includes(line) || line.includes("replay safety gate refused:")) continue;
+      this.guardRefusals.push(line);
+      this.driftWarnings.push(line);
+    }
+  }
+
   /** Every navigation in replay. */
   private async guardedGoto(url: string, why: string, opts?: Record<string, unknown>): Promise<unknown> {
     const reason = await this.guardAction({ kind: "goto", url, why });
@@ -3925,7 +3942,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     // iterations without it ever noticing.
     for (let i = 0; i < ADVANCE_SETTLE_TRIES && !(await moved()); i++) await sleep(ADVANCE_SETTLE_MS);
     if (await moved()) return;
-    await dismissPageModals(this.page).catch(() => null);
+    await this.dismissModalsGuarded();
     await clearPageOverlays(this.page).catch(() => null);
     const again = await this.resolveLocator(step.selector).catch(() => null);
     if (again && typeof again.click === "function") await this.guardedClick(again, "retry an advance that did not move", { timeout: 8000 }).catch(() => null);

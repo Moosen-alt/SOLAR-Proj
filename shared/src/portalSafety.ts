@@ -449,7 +449,44 @@ export function portalSafetyFactory() {
     return isPaymentField(fieldIdentityInPage(el), { cardFieldNearby });
   };
 
+  /**
+   * Runs IN THE PAGE: may an overlay DISMISSER (not a recorded step) click this control? Returns
+   * the refusal reason, or "" when the click only closes something.
+   *
+   * The dismisser's list reaches `[role=dialog] button` and a bare "OK": on a confirm dialog that
+   * says "You are about to submit your application", OK IS the filing click, and the first button
+   * of a Bootstrap confirm can be "Submit Application" itself. A close-only label (Got it, Close,
+   * Dismiss, x, Cancel, a close icon) closes whatever the dialog says. Any other label — OK, Yes,
+   * Accept, Confirm, a dialog's arbitrary first button — answers the dialog's QUESTION, so the
+   * dialog's own text is read too: a question about submitting, filing or paying is refused.
+   * Unknown (no element) refuses.
+   */
+  const dismissalRefusalInPage = (el: Element | null | undefined): string => {
+    if (!el) return "the control could not be read";
+    const clean = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
+    const h = el as HTMLElement;
+    const label = clean(controlLabelInPage(el) || h.innerText || (el as HTMLInputElement).value || "");
+    if (isPayFee(label)) return `"${label.slice(0, 60)}" pays a fee`;
+    if (isSubmitIntent(label, null) || isFinalSubmitControl(label, { reviewPage: true })) return `"${label.slice(0, 60)}" is submit-worded`;
+    const cls = String(el.getAttribute("class") || "");
+    const aria = clean(el.getAttribute("aria-label"));
+    const closeOnly = /^(got it|dismiss|close|cancel|no thanks|not now|skip|maybe later|later|×|x|✕)$/i.test(label)
+      || /^close$/i.test(aria) || /\b(btn-close|x-tool-close)\b/.test(cls);
+    if (closeOnly) return "";
+    const dlg = el.closest ? el.closest("[role=dialog], [role=alertdialog], dialog, .modal, [class*=modal], .popover, [class*=x-window]") : null;
+    if (!dlg) return "";
+    let text = clean((dlg as HTMLElement).innerText || dlg.textContent || "");
+    const own = clean(h.innerText || h.textContent || "");
+    if (own) text = text.split(own).join(" ");
+    if (isPayFee(text)) return `"${label.slice(0, 40) || "(unlabelled)"}" answers a dialog about paying: "${text.slice(0, 80)}"`;
+    if (isSubmitIntent(text, null) || /\b(fil(e|ing)\s+(this|the|your|my)\b|cannot\s+be\s+undone)/i.test(text)) {
+      return `"${label.slice(0, 40) || "(unlabelled)"}" answers a dialog about filing: "${text.slice(0, 80)}"`;
+    }
+    return "";
+  };
+
   return {
+    dismissalRefusalInPage,
     isSubmitIntent,
     isPayFee,
     isFinalSubmitControl,
