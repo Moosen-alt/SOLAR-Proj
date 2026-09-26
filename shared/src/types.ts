@@ -3286,6 +3286,12 @@ export interface PermitProcessPermitAnswer {
   recordType: CitedFact<string>;
   documents: CitedFact<string[]>;
   fee: CitedFact<PermitFeeAnswer>;
+  /** Every solar record type the PORTAL'S OWN catalog lists for this permit, with the condition
+   *  that selects each (SolarAPP+ vs standard, prescriptive vs engineered). When the plan path
+   *  cannot pick one, recordType stays null and the operator is asked. */
+  recordTypeCandidates?: Array<{ label: string; condition: string; sourceUrl: string; quote: string }>;
+  /** The portal's platform as its own page shows it ("accela" / "energov" / "other"). */
+  portalPlatform?: string;
 }
 export interface PermitProcessLookup {
   profileKey: string;
@@ -3301,6 +3307,9 @@ export interface PermitProcessLookup {
   prerequisites?: CitedFact<string>[];
   /** Adopted codes the lookup found (display only; the gate reads jurisdiction_code_profiles). */
   codes?: CitedFact<string[]>;
+  /** Pages the lookup READ ITSELF (agency pages, the portal's public catalog, fee schedules), each
+   *  with what came of the read — the audit trail for every value cited to one of them. */
+  pagesRead?: Array<{ url: string; ok: boolean; reason: string }>;
   lookedUpAt: string;
   model?: string;
   costUsd?: number;
