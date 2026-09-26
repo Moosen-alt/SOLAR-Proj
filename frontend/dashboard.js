@@ -684,6 +684,19 @@ function recipeStepRowHtml(r, step, i) {
   </li>`;
 }
 
+// KEEP-AND-FLAG, VISIBLE (operator ruling 2026-09-24, trust skeptic M4): a replay failure nobody
+// could attribute keeps the recipe replayable and raises flagReason for a human. A flag nobody
+// can see is no flag — so the recipe row says why, and a person clears it once they have looked
+// at the run (POST /api/portal-recipes/:id/clear-flag, audited with who cleared it).
+function recipeFlagHtml(r) {
+  const reason = String(r.flagReason || "").trim();
+  if (!reason) return "";
+  return `<div class="recipe-flag" data-recipe-flag="${esc(r.id)}" style="margin-top:6px;padding:6px 8px;border-left:3px solid var(--warning);background:var(--surface-2);font-size:12px;display:flex;gap:8px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap">
+      <div><strong>Flagged for review</strong>${r.flaggedAt ? ` <span class="muted">(${esc(String(r.flaggedAt).slice(0, 10))})</span>` : ""}: ${esc(reason)}</div>
+      <button class="secondary" data-recipe-clear-flag="${esc(r.id)}" style="font-size:11px">Clear flag</button>
+    </div>`;
+}
+
 function renderPortalRecipes() {
   const el = $("portalRecipes");
   if (!el) return;
@@ -724,6 +737,7 @@ function renderPortalRecipes() {
           <input type="checkbox" data-recipe-trust="${esc(r.id)}" ${r.autoSubmitEnabled ? "checked" : ""} />
           Trust for one-click approve-submit (hybrid)
         </label>` : '<div class="muted" style="font-size:11px;margin-top:4px">Not replayable until a complete recording is saved.</div>'}
+      ${recipeFlagHtml(r)}
       ${stepsBlock(r)}
     </div>`).join("");
   el.querySelectorAll("[data-recipe-toggle-steps]").forEach((b) => b.addEventListener("click", () => {
@@ -766,6 +780,19 @@ function renderPortalRecipes() {
   el.querySelectorAll("[data-recipe-rerecord]").forEach((b) => b.addEventListener("click", async () => {
     try { await api(`/api/portal-recipes/${b.getAttribute("data-recipe-rerecord")}/rerecord`, { method: "POST" }); await loadPortalRecipes(); }
     catch (err) { showMessage(err.message || "Failed.", "error"); }
+  }));
+  el.querySelectorAll("[data-recipe-clear-flag]").forEach((b) => b.addEventListener("click", async () => {
+    const id = b.getAttribute("data-recipe-clear-flag");
+    if (!confirm("Clear this flag?\n\nOnly after you have looked at the run it names. The recipe stays replayable; if it is broken, use \"Flag re-record\" instead.")) return;
+    b.disabled = true;
+    try {
+      await api(`/api/portal-recipes/${encodeURIComponent(id)}/clear-flag`, { method: "POST", body: JSON.stringify({}) });
+      showMessage("Flag cleared.", "info");
+      await loadPortalRecipes();
+    } catch (err) {
+      showMessage(err.message || "Could not clear the flag.", "error");
+      b.disabled = false;
+    }
   }));
 }
 
