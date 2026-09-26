@@ -301,6 +301,30 @@ export function getDecryptedCredentialByUrl(
   return null;
 }
 
+/**
+ * THE LEARN'S CREDENTIAL FOR ONE TARGET PORTAL (B11). The URL decides FIRST: host + first path
+ * segment (selectCredentialUrlsFor), the same guard that keeps one Accela city's password out of
+ * its neighbour's login. A row whose portal_type is literally the generic "AHJ" / "utility" used
+ * to win BEFORE the URL was looked at — whatever portal its stored URL named — so an operator
+ * who typed "AHJ" into the free-text type field on Iowa City's login would have had it typed into
+ * Lee County's. A typed row now stands only when its OWN stored URL fits the target (which the
+ * URL step already found); a typed row for a different portal is never used. Last resort, as
+ * before: the client's ONLY credential when its host does not contradict the target
+ * (getDecryptedCredentialAny).
+ *
+ * `portalType` is kept in the signature so a caller cannot forget which track it is on; it no
+ * longer outranks the URL.
+ */
+export function getDecryptedCredentialForPortal(
+  db: AppDb,
+  clientId: string,
+  _portalType: string,
+  targetUrl: string,
+): { username: string; password: string } | null {
+  return getDecryptedCredentialByUrl(db, clientId, targetUrl)
+    ?? getDecryptedCredentialAny(db, clientId, targetUrl);
+}
+
 // Last-resort fallback: ONLY when the client has exactly one stored credential is it
 // unambiguous which login to use. When a client has credentials for multiple portals
 // (e.g. a utility NEM portal AND an AHJ permit portal), guessing could fill one portal's

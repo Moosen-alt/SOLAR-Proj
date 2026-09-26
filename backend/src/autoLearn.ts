@@ -28,7 +28,7 @@ import { resolveHeadless } from "../../portal-bot/src/browser";
 import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
-import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials, nearestStoredLogins, recordLoginOutcome } from "./portalCredentials";
+import { getDecryptedCredentialForPortal, getDecryptedCredentialByUrl, listPortalCredentials, nearestStoredLogins, recordLoginOutcome } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
 import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey, portalEntityEvidence } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
@@ -788,13 +788,12 @@ async function autoLearnPortalInner(
     permitType: input.permitType,
   });
 
-  // Credential lookup: try exact portalType match first, then URL hostname match, then
-  // most-recent credential for this client (handles mismatched portal_type strings).
+  // Credential lookup (B11): the portal's URL decides FIRST (host + first path segment), then
+  // the client's only credential when its host does not contradict the target. A row whose
+  // portal_type is literally "AHJ"/"utility" never outranks the URL — it used to win for every
+  // target whatever portal it was stored for (getDecryptedCredentialForPortal).
   const credential = project.clientId
-    ? (getDecryptedCredential(db, project.clientId, portalType)
-        ?? getDecryptedCredentialByUrl(db, project.clientId, portalUrl)
-        ?? getDecryptedCredentialAny(db, project.clientId, portalUrl))
-      ?? undefined
+    ? getDecryptedCredentialForPortal(db, project.clientId, portalType, portalUrl) ?? undefined
     : undefined;
   const profileBase = process.env.PORTAL_PROFILES_DIR || path.join(process.cwd(), "portal-profiles");
   const userDataDir = project.clientId
