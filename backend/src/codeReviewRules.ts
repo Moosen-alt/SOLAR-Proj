@@ -900,7 +900,13 @@ export function evaluateDesignCodeFindings(
   // the plan-set text), its presence is not. Gated on a jurisdiction context like the criteria
   // rules above — the legacy no-context path is pinned by the Oregon golden.
   if (ctx && roofMounted) {
-    const moduleListing = affirmedIn(packageTexts, MODULE_LISTING_PATTERNS);
+    // The module datasheet's listing, when its page was an IMAGE, is read once by vision
+    // (moduleListing.ensureModuleListingAgency) and kept with the printed words — those words are
+    // package evidence too ("UL listing not shown" was FALSE on City of Jefferson: the marks were on
+    // an image page).
+    const datasheetWords = str(project, "moduleListingAgencyEvidence");
+    const moduleListing = affirmedIn(packageTexts, MODULE_LISTING_PATTERNS)
+      ?? (datasheetWords ? affirmedIn([{ label: "Module datasheet (read from the page image)", text: datasheetWords }], MODULE_LISTING_PATTERNS) : null);
     const rackingListing = affirmedIn(packageTexts, RACKING_LISTING_PATTERNS);
     if (!moduleListing || !rackingListing) {
       const missing = [!moduleListing ? "module listing (UL 61730 or UL 1703)" : "", !rackingListing ? "racking/mounting listing (UL 2703)" : ""].filter(Boolean);

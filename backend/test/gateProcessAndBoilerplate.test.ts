@@ -68,6 +68,13 @@ check("(d2) MUST-EXCLUDE: 'No excavation — roof mount only' is not a locates f
   assert.ok(titles(report({ locateCalloutText: "Trench 40 ft from array to MSP; call 811 before digging." })).includes("Locates/utility coordination"));
 });
 
+check("(u1) the module listing read from the datasheet's IMAGE counts as package evidence; without it the module listing is asked for", () => {
+  const listingMsg = (r: ReturnType<typeof report>) => r.findings.filter((f) => /UL listing/.test(f.title)).map((f) => f.message).join(" ");
+  assert.match(listingMsg(report({})), /module listing \(UL 61730 or UL 1703\)/, "MUST-PASS: nothing read → asked for");
+  const read = report({ moduleListingAgency: "UL", moduleListingAgencyEvidence: "module datasheet (vision read): UL 61730-1 & UL 61730-2" });
+  assert.doesNotMatch(listingMsg(read), /module listing \(UL 61730 or UL 1703\)/, "the datasheet's own printed marks were read");
+});
+
 if (failures) { console.error(`\n${failures} gate check(s) failed.`); process.exit(1); }
 console.log("\nAll gate process/boilerplate checks passed.");
 process.exit(0);
