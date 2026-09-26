@@ -143,6 +143,8 @@ export async function startSyntheticReplica(opts: {
   /** The only login the PowerClerk-shaped portal accepts. */
   credential?: { username: string; password: string };
   port?: number;
+  /** Accela only: put the portal behind its Login.aspx, in one of the production shapes. */
+  accelaLogin?: AccelaLoginMode;
 }): Promise<SyntheticReplica> {
   const w = opts.wizard;
   const state: ReplicaState = {
@@ -171,7 +173,7 @@ export async function startSyntheticReplica(opts: {
   };
 
   const handler = w.flavor === "accela" ? accelaHandler : w.flavor === "powerclerk" ? powerClerkHandler : spaHandler;
-  const ctx: Ctx = { w, state, byKey, logPost, seen, advancedTo, credential: opts.credential };
+  const ctx: Ctx = { w, state, byKey, logPost, seen, advancedTo, credential: opts.credential, accelaLogin: w.flavor === "accela" ? opts.accelaLogin : undefined };
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -206,6 +208,7 @@ interface Ctx {
   seen: (p: PageSpec) => void;
   advancedTo: (next: PageSpec | undefined, via: "walked" | "routed") => void;
   credential?: { username: string; password: string };
+  accelaLogin?: AccelaLoginMode;
 }
 type Handler = (ctx: Ctx, req: http.IncomingMessage, res: http.ServerResponse, url: URL) => Promise<void>;
 
@@ -382,8 +385,96 @@ function acaDocument(ctx: Ctx, idx: number, panel: string): string {
 </script></body></html>`;
 }
 
+/** Accela's own login (Login.aspx) and the situations the production learn met around it
+ *  (2026-09-25, city-of-jefferson): a run that STARTS on a non-portal page and meets the login
+ *  mid-run, a session that drops once or keeps dropping, an entry that bounces to the records
+ *  home, a login whose secret box is not a password field, and a maze of distinct pages with
+ *  nothing to fill. Off unless a test asks for it: the scoreboard's Accela has no login. */
+export type AccelaLoginMode = "normal" | "sessionDropsOnce" | "sessionAlwaysDrops" | "entryBouncesHome" | "codeBoxLogin" | "maze";
+
+function acaLoginPage(returnUrl: string, error: string, codeBox: boolean): string {
+  const ret = esc(returnUrl);
+  // A real ACA login page is link-heavy chrome around a small form.
+  const chrome = Array.from({ length: 12 }, (_, i) => `<a href="/CitizenAccess/Help${i}.aspx">Help topic ${i + 1}</a>`).join(" ");
+  const secret = codeBox
+    ? `<label for="${PM}LoginBox_txtCode">Access code:</label><input type="text" id="${PM}LoginBox_txtCode" name="accessCode">`
+    : `<label for="${PM}LoginBox_txtPassword">Password:</label><input type="password" id="${PM}LoginBox_txtPassword" name="password">`;
+  return `<!doctype html><html><head><title>Accela Citizen Access</title></head><body>
+    <div id="hdr"><a href="/CitizenAccess/Default.aspx">Home</a> ${chrome}</div>
+    <h1>Login</h1>${error ? `<div class="ACA_Error_Label">${esc(error)}</div>` : ""}
+    <form method="post" action="/CitizenAccess/Login.aspx?ReturnUrl=${encodeURIComponent(returnUrl)}">
+      <input type="hidden" name="ReturnUrl" value="${ret}">
+      <label for="${PM}LoginBox_txtUserId">User Name or E-mail:</label><input type="text" id="${PM}LoginBox_txtUserId" name="userId">
+      ${secret}
+      <button type="submit" id="${PM}LoginBox_btnLogin">Sign In</button>
+    </form><p><a href="/CitizenAccess/Account/RegisterDisclaimer.aspx">Register for an Account</a></p></body></html>`;
+}
+
+/** Returns true when the login layer answered the request. */
+async function accelaLoginLayer(ctx: Ctx, req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<boolean> {
+  const mode = ctx.accelaLogin;
+  if (!mode) return false;
+  const { state, w } = ctx;
+  const p = url.pathname;
+  if (p === "/info") {
+    // The non-portal page a production run started on: guidance text and a link into the portal.
+    sendHtml(res, `<!doctype html><html><head><title>How to permit solar</title></head><body><h1>How to permit a solar installation</h1>
+      <p>Residential solar requires an electrical permit. Apply online through the statewide permitting portal.</p>
+      <p><a id="go" href="${mode === "maze" ? "/maze?n=1" : "/CitizenAccess/Default.aspx"}">Apply for a building permit online</a></p></body></html>`);
+    return true;
+  }
+  if (mode === "maze" && p === "/maze") {
+    const n = Number(url.searchParams.get("n") || "1");
+    sendHtml(res, `<!doctype html><html><head><title>Permit resources ${n}</title></head><body><h1>Permit resources, part ${n}</h1>
+      <p>Section ${n} of the permitting guide. Nothing on this page is a form.</p>
+      <p><a id="more" href="/maze?n=${n + 1}">Continue</a></p></body></html>`);
+    return true;
+  }
+  if (/\/login\.aspx$/i.test(p)) {
+    const returnUrl = url.searchParams.get("ReturnUrl") || acaUrl(w.pages[0]);
+    if (req.method === "POST") {
+      const f = parseForm(await readBody(req), String(req.headers["content-type"] || ""));
+      ctx.logPost(p, "login", { userId: f.userId ?? "", password: f.password ?? f.accessCode ?? "", passwordEmpty: (f.password ?? f.accessCode ?? "") ? "no" : "yes" });
+      const ok = !!ctx.credential && f.userId === ctx.credential.username && (f.password ?? f.accessCode) === ctx.credential.password;
+      if (ok) {
+        state.loggedIn = true;
+        redirect(res, mode === "entryBouncesHome" ? `${ACA_BASE}CapHome.aspx?module=Building` : (f.ReturnUrl || returnUrl));
+        return true;
+      }
+      sendHtml(res, acaLoginPage(returnUrl, "Invalid user name or password.", mode === "codeBoxLogin"));
+      return true;
+    }
+    sendHtml(res, acaLoginPage(returnUrl, "", mode === "codeBoxLogin"));
+    return true;
+  }
+  const inPortal = p === "/" || p === "/CitizenAccess/Default.aspx" || p.toLowerCase().startsWith(ACA_BASE.toLowerCase());
+  if (!inPortal) return false;
+  if (!state.loggedIn) {
+    redirect(res, `/CitizenAccess/Login.aspx?ReturnUrl=${encodeURIComponent(p + url.search)}`);
+    return true;
+  }
+  if (mode === "entryBouncesHome" && /capapplydisclaimer/i.test(p)) {
+    redirect(res, `${ACA_BASE}CapHome.aspx?module=Building`);
+    return true;
+  }
+  if (mode === "sessionDropsOnce" && !state.values.__dropped && acaPageFor(w, url) >= 2) {
+    // The session expires once, mid-wizard.
+    state.values.__dropped = "1";
+    state.loggedIn = false;
+    redirect(res, `/CitizenAccess/Login.aspx?ReturnUrl=${encodeURIComponent(p + url.search)}`);
+    return true;
+  }
+  if (mode === "sessionAlwaysDrops") {
+    // Every page is served once, and the session is gone by the next request: "logging in then
+    // out over and over".
+    state.loggedIn = false;
+  }
+  return false;
+}
+
 const accelaHandler: Handler = async (ctx, req, res, url) => {
   const { w, state } = ctx;
+  if (await accelaLoginLayer(ctx, req, res, url)) return;
   if (url.pathname === "/" || url.pathname === "/CitizenAccess/Default.aspx") { redirect(res, acaUrl(w.pages[0])); return; }
   if (/\/cap\/caphome\.aspx$/i.test(url.pathname)) {
     // The records module the header "Search" tab leads to — off the Apply wizard.

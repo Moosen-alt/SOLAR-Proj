@@ -725,9 +725,16 @@ export async function learnPortal(input: {
   hasBattery?: boolean;
   /** Accept a cookie banner offering nothing but an acceptance; decline is always tried first. */
   allowConsentAccept?: boolean;
+  /** The stored credential for a HOST, for a login form met mid-run (bound by name; see
+   *  AutoLearnAdapter options). The backend should pass its host resolver
+   *  (getDecryptedCredentialByUrl for the client); without it the run's own credential is used
+   *  only on the start URL's site. */
+  credentialForUrl?: (url: string) => { username: string; password: string } | null | undefined | Promise<{ username: string; password: string } | null | undefined>;
+  /** No-fill-progress bound for the walk (default 360 s). */
+  noProgressBudgetMs?: number;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { maxPages: input.maxPages, budgetMs: input.budgetMs, docsByType: input.docsByType, beforeUpload: input.beforeUpload, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity, allowFinalSubmit: input.allowFinalSubmit, hasBattery: input.hasBattery, allowConsentAccept: input.allowConsentAccept });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { credentialForUrl: input.credentialForUrl, noProgressBudgetMs: input.noProgressBudgetMs, maxPages: input.maxPages, budgetMs: input.budgetMs, docsByType: input.docsByType, beforeUpload: input.beforeUpload, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity, allowFinalSubmit: input.allowFinalSubmit, hasBattery: input.hasBattery, allowConsentAccept: input.allowConsentAccept });
   let tmpStatePath: string | undefined;
   let leaveOpen = false;
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it

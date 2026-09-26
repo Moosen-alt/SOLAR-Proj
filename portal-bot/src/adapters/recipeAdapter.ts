@@ -76,6 +76,7 @@ import {
   type HealedStep, type RunApproval, type SubmissionOutcome,
 } from "../../../shared/src/portalSafety";
 import { commitField, installSettleProbe, waitForSettled } from "../settle";
+import { siteOfUrl } from "../siteOf";
 
 // How long the drift precheck waits for an async-rendered form to paint before concluding
 // the replay is on the wrong page. PowerClerk's Ameren form reports zero inputs for several
@@ -3535,12 +3536,7 @@ export class RecipeAdapter extends BasePortalAdapter {
   /** Registrable-domain-ish key of a URL: the last two host labels (three under a two-letter
    *  second level such as co.uk), the whole host for an IP or a single-label host. */
   private static siteOf(url: string): string {
-    let host = "";
-    try { host = new URL(url).hostname.toLowerCase(); } catch { return ""; }
-    if (!host || /^\d+(\.\d+){3}$/.test(host) || host === "localhost" || !host.includes(".")) return host;
-    const parts = host.split(".");
-    const n = parts.length >= 3 && parts[parts.length - 2].length <= 3 && parts[parts.length - 1].length === 2 ? 3 : 2;
-    return parts.slice(-n).join(".");
+    return siteOfUrl(url);
   }
 
   /** Identity providers a portal login legitimately bounces through. Small on purpose. */

@@ -9,7 +9,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback, readClosedComboboxOptions } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
-import { performLogin, lastRevealTrail } from "./loginFlow";
+import { performLogin, lastRevealTrail, loginFormPresent } from "./loginFlow";
 import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel, chooseApplicationType } from "./applicationEntry";
 import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type ProgramGroup } from "./applicationProgram";
 import { planHiddenReveal, planLabelProxy } from "./revealHidden";
@@ -20,6 +20,7 @@ import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
 import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../../shared/src/portalSafety";
+import { hostOfUrl, siteOfUrl } from "../siteOf";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
 // having a human record it. Each page is scraped into a structured snapshot
@@ -139,6 +140,10 @@ export interface LearnResult {
   /** "mfa_captcha" if a challenge stopped us, else null. */
   pauseReason: string | null;
   message: string;
+  /** A NAMED stop (machine-readable), when the walk ended itself for a reason it can name:
+   *  login_needed_no_credential, login_repeated_on_host, login_midrun_failed,
+   *  login_advance_with_empty_credentials, aca_wrong_module_cap, no_fill_progress. */
+  stopReason?: string;
   /** Base64 PNG screenshot taken when the review/confirm page is reached. */
   reviewScreenshotBase64?: string;
   /** True when the bot reached a review/confirm page. */
@@ -237,6 +242,9 @@ const PAY_FEE = /\b(pay\s*(and|&)\s*submit|pay fees?|pay fee|pay now|submit\s*(&
 const REPEAT_PAGE_LIMIT = 3;
 
 const SUBMIT_INTENT = /\b(continue application|submit application|file application|submit|finish|finalize|confirm submission|place order|complete submission)\b/i;
+/** A login-worded control ("Sign In", "Log in", "Login", "Log On"). Never a walk advance while its
+ *  credential boxes are empty — see the login_advance_refused stop. */
+const LOGIN_ADVANCE = /^\s*(sign\s*-?\s*in|log\s*-?\s*in|login|log\s*on|sign\s*on)\b/i;
 
 // PAGING A TABLE IS NOT ADVANCING AN APPLICATION.
 //
@@ -1947,6 +1955,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // Equipment fields whose select verification failed for EVERY candidate this
   // run — retrying them each rescan pass just burns waitForOptionReady caps.
   private equipmentFillFailed = new Set<string>();
+  /** The run's own credential (from login()); used mid-run only on the start URL's site. */
+  private runCredential: { username: string; password: string } | undefined;
+  /** Site of the URL the run was opened at — the site the run's own credential belongs to. */
+  private startSite = "";
+  /** Hosts whose login form the MID-RUN login pass has already met this run (once per host). */
+  private readonly midRunLoginHosts = new Set<string>();
 
   constructor(
     portalName: string,
@@ -2017,6 +2031,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
        *  what a live Coos Bay run wrote. Empty = the pass is skipped for that section. */
       contactIdentity?: ContactIdentity;
       siteContactIdentity?: ContactIdentity;
+      /**
+       * THE STORED CREDENTIAL FOR A HOST, bound by name (hard rule 2: the value crosses into
+       * performLogin only, never a plan, a step or a log). A login form met MID-RUN (after a
+       * navigation, a redirect, a session drop) asks this for the host it is on. The backend's
+       * host resolver (getDecryptedCredentialByUrl) is the right implementation; when absent, the
+       * run's own credential is used only on the START URL's site — a login saved for one portal
+       * is never typed into another. null = none for that host: the run stops, named.
+       */
+      credentialForUrl?: (url: string) => { username: string; password: string } | null | undefined | Promise<{ username: string; password: string } | null | undefined>;
+      /** Wall-clock budget without a single landed fill (or a login) before the walk stops
+       *  itself, named. Default 360 000 (live Accela reaches its first fill ~4 pages / ~250 s in). A page that never becomes fillable must not cost
+       *  90 s x N advance passes. */
+      noProgressBudgetMs?: number;
     } = {},
   ) {
     super();
@@ -2901,6 +2928,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       });
       this.opened = opened;
       this.page = opened.page;
+      this.runCredential = context.credential;
+      this.startSite = context.startUrl ? siteOfUrl(context.startUrl) : "";
 
       // Navigate to the portal entry URL so the learn loop starts on the application page.
       if (context.startUrl) {
@@ -3012,6 +3041,59 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       this.debug?.event({ type: "login_error", message: err instanceof Error ? err.message : String(err) });
       return { ok: false, message: `Auto-learn login failed: ${err instanceof Error ? err.message : String(err)}` };
     }
+  }
+
+  /** The stored credential for the host of `url` — the caller's resolver when one was given,
+   *  else the run's own credential ONLY on the start URL's site (a login saved for one portal is
+   *  never typed into another). Never logged, never returned anywhere but performLogin. */
+  private async credentialFor(url: string): Promise<{ username: string; password: string } | null> {
+    if (this.options.credentialForUrl) {
+      const c = await Promise.resolve(this.options.credentialForUrl(url)).catch(() => null);
+      return c && c.username && c.password ? c : null;
+    }
+    const c = this.runCredential;
+    if (!c || !c.username || !c.password) return null;
+    return this.startSite && siteOfUrl(url) === this.startSite ? c : null;
+  }
+
+  /**
+   * A LOGIN FORM MET MID-RUN (see a1 in the walk). "continue" = logged in, re-read the page;
+   * a LearnResult = the walk stops, named; null = no login form here.
+   */
+  private async midRunLoginGate(url: string, pageCount: number, steps: RecipeStep[], notices: string[]): Promise<"continue" | LearnResult | null> {
+    if (!this.page) return null;
+    const present = await loginFormPresent(this.page).catch(() => false);
+    if (!present) return null;
+    const host = hostOfUrl(url) || "(unknown host)";
+    if (this.midRunLoginHosts.has(host)) {
+      this.debug?.event({ type: "login_midrun_repeat", page: pageCount, host });
+      return {
+        ...fail(steps, this.portalName, `Stopped: ${host} showed its login form again after this run already signed in there — the session is not holding (or the credential is being refused). Logging in again would loop; a person should check the stored login for ${host}.`, null, pageCount, notices),
+        stopReason: "login_repeated_on_host",
+      };
+    }
+    this.midRunLoginHosts.add(host);
+    const cred = await this.credentialFor(url);
+    if (!cred) {
+      this.debug?.event({ type: "login_midrun_no_credential", page: pageCount, host });
+      return {
+        ...fail(steps, this.portalName, `Stopped: ${host} asks for a login mid-run and no stored credential is bound to that host. Add the username + password for ${host} under the client's logins, then retry. Nothing was typed into its login form.`, null, pageCount, notices),
+        stopReason: "login_needed_no_credential",
+      };
+    }
+    const res = await performLogin(this.page, cred);
+    this.debug?.event({ type: "login_midrun", page: pageCount, host, status: res.status });
+    if (res.status === "mfa_captcha") {
+      return { ...fail(steps, this.portalName, `Stopped at ${host}'s login: ${res.message} A human must complete the MFA/CAPTCHA.`, "mfa_captcha", pageCount, notices), stopReason: "login_midrun_mfa" };
+    }
+    if (res.status === "logged_in" || res.status === "already_authenticated") {
+      await smartWait(this.page, 800);
+      return "continue";
+    }
+    return {
+      ...fail(steps, this.portalName, `Stopped: the mid-run login at ${host} did not succeed (${res.status}): ${res.message}`, null, pageCount, notices),
+      stopReason: "login_midrun_failed",
+    };
   }
 
   // --- the real entrypoint --------------------------------------------------
@@ -4147,6 +4229,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     let everFoundFillable = false;
     // How many navigation-link clicks we've followed from dashboard/home pages.
     let navCount = 0;
+    // The no-fill-progress bound (see a1b in the loop).
+    const noProgressBudgetMs = this.options.noProgressBudgetMs && this.options.noProgressBudgetMs > 0 ? this.options.noProgressBudgetMs : 360_000;
+    let lastFillProgressAt = Date.now();
+    let lastFillCount = 0;
 
     if (!this.page) {
       return fail(steps, this.portalName, "learn() called before login() opened a page.");
@@ -4301,6 +4387,34 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // page revisits are DELIBERATE (wrong-module re-entry walks back through the
       // disclaimer + address steps), so they must not consume the stuck/cycle
       // recovery budget or trip its exhaustion break before the pass can run.
+      // a1) A LOGIN FORM MET AT ANY POINT IN THE RUN IS A LOGIN, NOT A FORM (production,
+      //     2026-09-25, city-of-jefferson): the run began on a non-portal page, so the login
+      //     pass said no_login_required and the stored credential was never used; when
+      //     Accela's Login.aspx appeared mid-run the walk treated it as a form, pressed "Sign
+      //     In" with EMPTY boxes (a 90 s advance timeout), the wrong-module re-entry sent it
+      //     back, and it repeated for six minutes filling nothing. Now: the login pass runs
+      //     with the credential bound to THIS host (by name — performLogin types it; nothing
+      //     else sees it), ONCE per host per run; MFA/CAPTCHA hands over to a person; no
+      //     credential for the host, or a second login form on a host already logged in this
+      //     run, stops the walk NAMED in seconds.
+      {
+        // Progress = a recorded fill/select/check/upload since the last look.
+        const fillsNow = steps.filter((s) => s.action === "fill" || s.action === "select" || s.action === "check" || s.action === "uncheck" || s.action === "upload").length;
+        if (fillsNow > lastFillCount) { lastFillCount = fillsNow; lastFillProgressAt = Date.now(); }
+        const midRun = await this.midRunLoginGate(url, pageCount, steps, portalNotices);
+        if (midRun === "continue") { lastFillProgressAt = Date.now(); continue; }
+        if (midRun) return midRun;
+      }
+      // a1b) NO FILL PROGRESS IS A BOUNDED STATE (the other half of the same production run).
+      //      A page that never becomes fillable must not cost 90 s x N advance passes: when no
+      //      fill has landed (and no login happened) for the budget, the walk stops, named,
+      //      and says what the budget was.
+      if (Date.now() - lastFillProgressAt > noProgressBudgetMs) {
+        const secs = Math.round((Date.now() - lastFillProgressAt) / 1000);
+        this.debug?.event({ type: "no_fill_progress", page: pageCount, seconds: secs, budgetSeconds: Math.round(noProgressBudgetMs / 1000) });
+        return { ...fail(steps, this.portalName, `Stopped: no field was filled for ${secs}s (budget ${Math.round(noProgressBudgetMs / 1000)}s) across ${pageCount} page(s) — the walk is not reaching a fillable page. Page trace: ${pageTrace.slice(-4).join(" | ") || "(none)"}`, null, pageCount, portalNotices), stopReason: "no_fill_progress" };
+      }
+
       const acaDeterministicAhead = this.isAcaUrl(url) && (
         (this.acaWrongModulePage(url, fields) !== null && acaReentries < 2) ||
         (/CapApplyDisclaimer/i.test(url) && acaDisclaimerPasses < 3) ||
@@ -4385,6 +4499,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // wizard — leave immediately (bounded), BEFORE the planner can operate on the
         // operator's real filings (Resume Application / Pay Fees Due / attachments).
         const wrongModule = this.acaWrongModulePage(url, fields);
+        // THE RE-ENTRY IS CAPPED AND THE CAP ENDS THE RUN, NAMED. Past two re-entries this used
+        // to fall through to the planner on the operator's real records page (Resume
+        // Application / Pay Fees Due), and in production the walk kept being sent back to it.
+        if (wrongModule && acaReentries >= 2) {
+          this.debug?.event({ type: "aca_wrong_module_cap", page: pageCount, kind: wrongModule, reentries: acaReentries });
+          return {
+            ...fail(steps, this.portalName, `Stopped: the portal returned the walk to its ${wrongModule} page after ${acaReentries} re-entries of the Apply flow — re-entering again would loop. The entry URL or the session is not leading into the application.`, null, pageCount, portalNotices),
+            stopReason: "aca_wrong_module_cap",
+          };
+        }
         if (wrongModule && acaReentries < 2) {
           const entry = this.acaApplyEntryUrl(url);
           if (entry) {
@@ -5784,6 +5908,27 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             pauseReason: null,
             message: `Stopped: the planner returned a pay/fee control ("${advanceField.label}") as the advance button. Never automated. The recipe was recorded up to this page; a human must continue.`,
           };
+        }
+        // "SIGN IN" IS NEVER AN ADVANCE WHILE ITS CREDENTIAL BOXES ARE EMPTY (production,
+        // city-of-jefferson: Sign In pressed on an empty Accela login form, 90 s timeout, then
+        // re-entry and again, for six minutes). A login is the login pass's job (a1 above, with
+        // the host's stored credential); the planner's walk never types a credential, so a
+        // login-worded advance here can only submit empty boxes. Refused and named.
+        if (LOGIN_ADVANCE.test(String(advanceField.label ?? ""))) {
+          const emptyBoxes = await this.page.evaluate(() => {
+            // No named helper in here: keepNames would wrap it in __name, which the page may lack.
+            const boxes = Array.from(document.querySelectorAll("input")).filter((i) => i.getBoundingClientRect().width > 0 && i.getBoundingClientRect().height > 0) as HTMLInputElement[];
+            const pw = boxes.filter((i) => (i.getAttribute("type") || "").toLowerCase() === "password");
+            const user = boxes.filter((i) => /user|login|e-?mail|account/i.test(`${i.name} ${i.id} ${i.getAttribute("autocomplete") || ""} ${i.getAttribute("aria-label") || ""}`));
+            return pw.length === 0 || pw.some((i) => !i.value) || user.some((i) => !i.value);
+          }).catch(() => true);
+          if (emptyBoxes) {
+            this.debug?.event({ type: "login_advance_refused", page: pageCount, label: String(advanceField.label ?? "").slice(0, 40) });
+            return {
+              ...fail(steps, this.portalName, `Stopped: the walk's advance on page ${pageCount} was "${String(advanceField.label ?? "").slice(0, 40)}" with its credential boxes empty — a login is never pressed empty. ${this.midRunLoginHosts.size ? "The login pass already ran on this host this run." : "No login form was recognised on this page for the login pass."}`, null, pageCount, portalNotices),
+              stopReason: "login_advance_with_empty_credentials",
+            };
+          }
         }
         // Same exit discipline as the atReview break above: re-assert what the portal wiped
         // since the mid-page verify, so the page we advance OFF carries what we typed. Then
