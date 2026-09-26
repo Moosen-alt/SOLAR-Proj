@@ -18,6 +18,7 @@
 //   K12 lookup without the reader wiring        → (i1) fails.
 //   K13 platform markers read from a page's links (no same-host rule) → (r5) fails.
 //   K14 a documents/fees answer resting only on our pages read as ungrounded → (i1) fails.
+//   K15 a bulleted checklist quote must be contiguous → (f2) fails. K16 any submittal guide read as a checklist → (f2) fails.
 //
 // Run: npx tsx backend/test/agencyPageRead.test.ts
 import "./_isolate"; // FIRST
@@ -206,6 +207,15 @@ await check("(f1) MUST-PASS/EXCLUDE: a fee cited to a page WE READ is kept only 
   assert.match(String(para.notFound), /not on the fee's source page/);
   const computed = ppl.parseDocsFeesPart(answer("1049 Solar - Residential (Up to 15 kW) per permit [2],[4] $ 312", 333), [FEES], "end_turn", texts).byDiscipline.get("combo")!.fee;
   assert.equal(computed.value, null, "an amount the quote does not print is refused");
+});
+
+await check("(f2) a checklist quoted item by item is on the page though a PDF interleaves other words between items; an item the page does not print is not; only a SOLAR checklist is read as one", () => {
+  const pdfText = "Residential permit application (B-1), signed and dated by the contractor or property owner  info\nProperty owner consent form if application filed by contractor (B-13A)\nBuilding Plans (three sets):\nSite Plan  info\nRoof Plan  info";
+  assert.ok(reader.quoteOnPage("☐ Residential permit application (B-1), signed and dated by the contractor or property owner ☐ Property owner consent form if application filed by contractor (B-13A) • Site Plan • Roof Plan", pdfText));
+  assert.ok(!reader.quoteOnPage("☐ Residential permit application (B-1) ☐ Structural calculations stamped by an engineer", pdfText), "an item not on the page");
+  assert.equal(cat.classifyDocument("Deck Submittal Guide", "https://www.x.gov/home/showpublisheddocument/14/1"), null);
+  assert.equal(cat.classifyDocument("Solar PV Submittal Checklist", "https://www.x.gov/home/showpublisheddocument/99/1"), "checklist");
+  assert.equal(cat.classifyDocument("Master Fee Schedule", "https://www.x.gov/fees"), "fees");
 });
 
 await check("(p1) politeness: one host is read >= the gap apart, other hosts are not held up; a refusal backs the host off (never asked again); a sign-in URL is never fetched and a redirect onto one is not read", async () => {

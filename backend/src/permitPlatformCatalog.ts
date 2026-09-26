@@ -358,7 +358,8 @@ export const DOCUMENT_URL = /\.pdf(?:$|[?#])|showpublisheddocument|\/documentcen
  *  a checklist (a "Solar" news page is neither). */
 export function classifyDocument(words: string, href: string): "fees" | "checklist" | null {
   if (FEE_LINK.test(words)) return "fees";
-  if (CHECKLIST_LINK.test(words) && (DOCUMENT_URL.test(href) || /checklist|submittal|requirement|guide/i.test(words))) return "checklist";
+  // A checklist is a SOLAR one (a deck or fence submittal guide is another job's).
+  if (CHECKLIST_LINK.test(words) && /solar|photo-?voltaic|\bpv\b/i.test(words) && (DOCUMENT_URL.test(href) || /checklist|submittal|requirement|guide/i.test(words))) return "checklist";
   return null;
 }
 /** The fee schedule / checklist links on the agency's own pages (own domain or a document host it

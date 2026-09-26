@@ -249,7 +249,10 @@ export function normaliseForQuote(s: string): string {
  *  occurs in the page text after normalisation. A quote we cannot find there is the model's word. */
 export function quoteOnPage(quote: string, pageText: string): boolean {
   const page = normaliseForQuote(pageText);
-  const segs = String(quote ?? "").split(/\.{3}|…|\s\|\s/).map(normaliseForQuote).filter((s) => s.split(" ").length >= 2 || /\d/.test(s));
+  // A checklist quoted item by item ("☐ Site Plan • Roof Plan"): each item is its own segment — a
+  // PDF's cells interleave other words between items (a link label "info" after each), so the list
+  // is never contiguous on the page, while every item still is.
+  const segs = String(quote ?? "").split(/\.{3}|…|\s\|\s|[☐☑☒□■▪•●◦·]/).map(normaliseForQuote).filter((s) => s.split(" ").length >= 2 || /\d/.test(s));
   if (!segs.length || !page) return false;
   return segs.every((s) => page.includes(s) || page.includes(s.replace(/\.$/, "")));
 }
