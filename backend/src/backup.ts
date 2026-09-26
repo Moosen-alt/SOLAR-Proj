@@ -46,6 +46,47 @@ const PROFILES_DIR = path.resolve(process.cwd(), process.env.PORTAL_PROFILES_DIR
 const PROFILES_MIRROR = path.join(BACKUP_DIR, "portal-profiles");
 const SESSION_FILE_RE = /(^|[\\/])(Cookies|Cookies-journal|Login Data|Login Data-journal|Web Data|Preferences|Local State|Secure Preferences)$|[\\/](Local Storage|Session Storage|IndexedDB)[\\/]/i;
 
+/**
+ * A TREE AT ITS DEFAULT LOCATION BELONGS TO THE DATABASE AT ITS DEFAULT LOCATION.
+ *
+ * On 2026-09-26 a scratch server for a UI audit started with its own AUTOPILOT_DB_PATH and its own
+ * BACKUP_DIR, but left PROJECT_DOCS_DIR and PORTAL_PROFILES_DIR unset. Both resolved to the REAL
+ * trees, and the startup snapshot mirrored 1.2 GB of customer documents and the live portal login
+ * sessions into the auditor's scratch folder. The source marker above could not catch it: the
+ * backup directory genuinely did belong to that scratch database — it was the SOURCE trees that
+ * belonged to someone else.
+ *
+ * So each mirror asks whether its source tree is this database's. The three defaults resolve from
+ * one working directory (the same `path.resolve(process.cwd(), …)` db.ts, projectDocuments.ts and
+ * this file use), and they travel together: the default document tree and the default profile
+ * tree are the default data directory's. A database outside that directory is some other
+ * deployment — a smoke, a scratch server under .probe/ — and it mirrors only trees that were ALSO
+ * moved. Paths are compared resolved, not by whether an env var is set: `dotenv/config` hands
+ * every process the live `.env`, and an explicit PROJECT_DOCS_DIR spelling the default path is
+ * still the real tree.
+ *
+ * A production database moved off the default with its trees left behind would stop mirroring —
+ * so a skip is never silent: it is named on the run result, in the status file, and in the log.
+ */
+const DEFAULT_DB_PATH = path.resolve(process.cwd(), "backend/data/autopilot.sqlite"); // db.ts's default
+const DEFAULT_DOCS_DIR = path.resolve(process.cwd(), "backend/data/project-documents"); // projectDocuments.ts's default
+const DEFAULT_PROFILES_DIR = path.resolve(process.cwd(), "portal-profiles");
+
+/**
+ * May a backup of the database at `dbPath` mirror the source tree at `tree`?
+ *
+ * A tree that was moved is the moving process's own. A tree at its default belongs to a database
+ * in the default DATA DIRECTORY (backend/data/) — the directory, not the file name, because the
+ * test isolate (backend/test/_isolate.ts) runs `backend/data/test.sqlite` beside its own
+ * `backend/data/project-documents` under a temp cwd, and that pair is one data root.
+ */
+export function mirrorTreeBelongsToDatabase(
+  tree: string, dbPath: string,
+  defaults: { tree: string; db: string },
+): boolean {
+  return !sameFile(tree, defaults.tree) || sameFile(path.dirname(path.resolve(dbPath)), path.dirname(path.resolve(defaults.db)));
+}
+
 /** One snapshot file on disk. */
 export interface BackupInfo {
   file: string;
@@ -67,6 +108,9 @@ export interface BackupRunInfo extends BackupInfo {
   portalSessionFilesMirrored: number;
   /** SHA-256 of the snapshot, also written beside it as `<file>.sha256`. */
   sha256: string;
+  /** Source trees NOT mirrored because they belong to another database (see
+   *  mirrorTreeBelongsToDatabase) — one plain sentence each. Empty on a normal run. */
+  mirrorSkipped: string[];
   /** Where the verified off-box copy landed, or null when BACKUP_SECOND_DIR is unset or the copy failed. */
   secondCopy: string | null;
   /** Why the off-box copy failed (the primary snapshot is still good), or null. */
@@ -151,8 +195,17 @@ export function runBackup(db: AppDb): BackupRunInfo {
   // copy (and the restore drill) is compared against this, so bit rot on E: is detectable too.
   const sha256 = writeChecksumSidecar(file);
   pruneOldBackups();
-  const docs = mirrorDocuments();
-  const profiles = mirrorPortalProfiles();
+  const mirrorSkipped: string[] = [];
+  const owns = (tree: string, defaultTree: string, what: string): boolean => {
+    if (mirrorTreeBelongsToDatabase(tree, db.sourcePath, { tree: defaultTree, db: DEFAULT_DB_PATH })) return true;
+    mirrorSkipped.push(
+      `${what} not mirrored: ${tree} is the default ${what} tree, which belongs to ${DEFAULT_DB_PATH}, ` +
+        `not to ${db.sourcePath}. Point ${what === "document" ? "PROJECT_DOCS_DIR" : "PORTAL_PROFILES_DIR"} at this database's own tree.`,
+    );
+    return false;
+  };
+  const docs = owns(DOCS_DIR, DEFAULT_DOCS_DIR, "document") ? mirrorDocuments() : { copied: 0, total: 0 };
+  const profiles = owns(PROFILES_DIR, DEFAULT_PROFILES_DIR, "portal-profile") ? mirrorPortalProfiles() : { copied: 0, total: 0 };
   const stat = fs.statSync(file);
   let secondCopy: string | null = null;
   let secondError: string | null = null;
@@ -173,6 +226,7 @@ export function runBackup(db: AppDb): BackupRunInfo {
     documentsMissingOnDisk: countMissingDocumentFiles(db),
     portalSessionFilesCopied: profiles.copied,
     portalSessionFilesMirrored: profiles.total,
+    mirrorSkipped,
     sha256,
     secondCopy,
     secondError,
@@ -181,6 +235,7 @@ export function runBackup(db: AppDb): BackupRunInfo {
     ok: true, at: info.createdAt, file: path.basename(file), sizeBytes: info.sizeBytes, sha256,
     second: SECOND_DIR ? { ok: !secondError, error: secondError } : null,
     documentsMissingOnDisk: info.documentsMissingOnDisk,
+    ...(mirrorSkipped.length ? { mirrorSkipped } : {}),
   });
   return info;
 }
@@ -353,6 +408,10 @@ export function startBackupScheduler(db: AppDb): void {
         file: path.basename(info.file), sha256: info.sha256.slice(0, 16), documentsMirrored: info.documentsMirrored,
         secondCopy: info.secondCopy ? "ok" : SECOND_DIR ? "FAILED" : "off",
       });
+      for (const reason of info.mirrorSkipped) {
+        console.error(`[backup] ${reason}`);
+        logger.warn("backup", reason);
+      }
       if (info.secondError) {
         console.error(`[backup] off-box copy to ${SECOND_DIR} FAILED (primary snapshot is fine): ${info.secondError}`);
         logger.error("backup", "off-box copy failed (primary snapshot is fine)", { error: info.secondError });
