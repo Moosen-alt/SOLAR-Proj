@@ -2615,6 +2615,35 @@ app.post("/api/parser/llm-extract", asyncHandler(async (req, res) => {
   }
 }));
 
+// IMAGE-ONLY PLAN SET (a scan with no text layer): the PDF itself is posted; its key sheets are
+// rendered and read by vision, capped (scannedPlanSet.ts). A plan set WITH a usable text layer
+// is refused here (409) — the text path reads it. The response names every vision-read field.
+app.post(
+  "/api/parser/plan-scan-extract",
+  express.raw({ type: ["application/pdf", "application/octet-stream"], limit: process.env.DOC_UPLOAD_LIMIT || "100mb" }),
+  asyncHandler(async (req, res) => {
+    const bytes = Buffer.isBuffer(req.body) ? new Uint8Array(req.body) : null;
+    if (!bytes || bytes.length < 5 || Buffer.from(bytes.subarray(0, 5)).toString() !== "%PDF-") throw new HttpError(400, "Post the plan-set PDF as the request body (application/pdf).");
+    const defaultState = typeof req.query.defaultState === "string" ? req.query.defaultState : undefined;
+    const { createLLMProvider } = await import("./llm");
+    const { readPlanSetForExtraction } = await import("./scannedPlanSet");
+    try {
+      const read = await readPlanSetForExtraction(createLLMProvider(), bytes, { defaultState });
+      if (read.mode === "text" || !read.extraction) throw new HttpError(409, `This plan set has a text layer (${read.textChars} characters over ${read.pageCount} page(s)); the text parser reads it.`);
+      // A name read off an IMAGE is not in any text layer: it may suggest a client, never pre-select one.
+      let clientResolution: ClientResolution | undefined;
+      try {
+        const { installerIdentityFromExtraction, resolveClientFromPlanSet } = await import("./clientMatch");
+        clientResolution = resolveClientFromPlanSet(db, { ...installerIdentityFromExtraction(read.extraction.fields), companyNameInText: false }, reqOrgFilter(db, req));
+      } catch { /* a resolution failure never takes down the read */ }
+      res.json({ ...read.extraction, clientResolution } satisfies ParserExtractionResponse);
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+      throw normalizeLlmError(err);
+    }
+  }),
+);
+
 // Vision-based extraction from the actual document IMAGES (utility bill, meter
 // photo). Far more accurate for account/meter numbers than in-browser OCR text.
 // Account/meter values flow back to populate the project record but are never logged.

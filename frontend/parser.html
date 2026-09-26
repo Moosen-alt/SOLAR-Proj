@@ -4042,14 +4042,43 @@ async function runLlmAssist(){
     }
   }
 
+  // 1b) IMAGE-ONLY PLAN SET. A scan has no text layer (two Iowa City sets had 0 characters), so
+  // the text pass below would read nothing. The PDF goes to the server, which renders its key
+  // sheets (cover, site plan, one-line, spec — capped) and reads them by vision; every field it
+  // returns is named as a vision read in the review flags. Same rule as the server's
+  // (scannedPlanSet.planTextIsNearEmpty): under 40 letters/digits per page is no text layer.
+  let scanRead = false;
+  const planChars = String(planText || '').replace(/---\s*(?:OCR\s+)?PAGE\s+\d+\s*---/gi, '').replace(/[^A-Za-z0-9]/g, '').length;
+  if (state.planFile && /pdf/i.test(`${state.planFile.type} ${state.planFile.name}`) && planChars < 40 * Math.max(1, state.planDoc?.pageCount || 1)){
+    setProgress(null, 'The plan set is a scan — reading its key sheets by image…');
+    try {
+      const q = getVal('state') ? `?defaultState=${encodeURIComponent(getVal('state'))}` : '';
+      const resp = await fetch(`/api/parser/plan-scan-extract${q}`, { method:'POST', headers:{'Content-Type':'application/pdf'}, body: state.planFile });
+      const v = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw Object.assign(new Error(v.error || `Request failed (${resp.status})`), { status: resp.status });
+      if (v.provider === 'stub'){ authOff = true; }
+      else {
+        applyExtraction(v, applied, { vision: true, docsGiven: ['plan_set'] });
+        if (v.clientResolution) await applyClientResolution(v.clientResolution);
+        state.reviewFlags.push(`Image-only plan set: read by VISION from pages ${(v.visionPages || []).join(', ')} — ${(v.visionFields || []).length ? `fields from vision: ${(v.visionFields || []).join(', ')}` : 'no field could be read'}. Verify each against the sheet.`);
+        ranAny = true;
+        scanRead = true;
+      }
+    } catch (e){
+      state.reviewFlags.push(`Image-only plan set could not be read by vision: ${e.message}. Enter the plan-set fields by hand.`);
+    }
+  }
+
   // 2) Text pass on the plan set (and any docs) — fills the rest.
-  if (haveText){
+  if (haveText && !(scanRead && !utilityBillText.trim() && !meterText.trim() && !structuralLetterText.trim())){
     setProgress(null, 'Reading the plan set…');
     try {
-      const t = await postJson('/api/parser/llm-extract', { planText, utilityBillText, meterText, structuralLetterText, defaultState: getVal('state') || undefined });
+      // A scan already read by vision sends no (empty) plan text to the text pass.
+      const textPlan = scanRead ? '' : planText;
+      const t = await postJson('/api/parser/llm-extract', { planText: textPlan, utilityBillText, meterText, structuralLetterText, defaultState: getVal('state') || undefined });
       if (t.provider === 'stub'){ authOff = true; }
       else {
-        const docsGiven = [planText.trim() ? 'plan_set' : '', utilityBillText.trim() ? 'utility_bill' : '', meterText.trim() ? 'meter_photo' : '', structuralLetterText.trim() ? 'structural_letter' : ''].filter(Boolean);
+        const docsGiven = [textPlan.trim() ? 'plan_set' : '', utilityBillText.trim() ? 'utility_bill' : '', meterText.trim() ? 'meter_photo' : '', structuralLetterText.trim() ? 'structural_letter' : ''].filter(Boolean);
         applyExtraction(t, applied, { vision: false, docsGiven });
         // WHICH COMPANY IS THIS? The backend read the title-block installer off this same
         // response and said which client it points at. Only the TEXT pass carries it —

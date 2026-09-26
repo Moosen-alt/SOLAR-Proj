@@ -2434,6 +2434,10 @@ export interface ParserLlmExtraction {
   uncertainties?: ParserExtractionUncertainty[];
   /** Deterministic server-side resolutions (no model): e.g. moduleMake from the CEC list. */
   resolutions?: ParserExtractionResolution[];
+  /** Set when the plan set had no text layer and was read by VISION from page images: the
+   *  field ids that came from vision, and which pages were read (scannedPlanSet.ts). */
+  visionFields?: string[];
+  visionPages?: number[];
 }
 
 export interface ParserExtractionConflict {
@@ -2568,6 +2572,8 @@ export interface LLMProvider {
      *  the structural screen (loads, exposure, framing) and for stamp evidence. */
     structuralLetterText?: string;
     defaultState?: string;
+    /** A SCANNED plan set (no text layer): its key sheets as page images (backend scannedPlanSet.ts). */
+    planPageImages?: Array<{ page: number; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>;
   }): Promise<ParserLlmExtraction>;
   /** Vision-based extraction from the actual document images — accurate for account/meter numbers that OCR mangles. */
   extractProjectFieldsFromImages(input: {

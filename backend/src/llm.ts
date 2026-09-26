@@ -1330,9 +1330,20 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
   }
 
   // Larger budget than ask() — plan sets are dense and we want every field.
-  private async askLong(label: string, systemPrompt: string, userMessage: string, maxTokens = 4096, format?: Anthropic.JSONOutputFormat): Promise<string> {
+  private async askLong(label: string, systemPrompt: string, userMessage: string, maxTokens = 4096, format?: Anthropic.JSONOutputFormat,
+    images?: Array<{ label: string; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>): Promise<string> {
+    // Page images (a scanned plan set with no text layer) go BEFORE the text, each labelled.
+    const content: string | Anthropic.Messages.ContentBlockParam[] = images?.length
+      ? [
+          ...images.flatMap((img) => [
+            { type: "text" as const, text: img.label },
+            { type: "image" as const, source: { type: "base64" as const, media_type: img.mimeType, data: img.base64 } },
+          ]),
+          { type: "text" as const, text: userMessage },
+        ]
+      : userMessage;
     const run = (budget: number) =>
-      this.instrument(label, { chars: userMessage.length, maxTokens: budget, effort: "high", ...(format ? { schema: true } : {}) }, () =>
+      this.instrument(label, { chars: userMessage.length, maxTokens: budget, effort: "high", ...(images?.length ? { images: images.length } : {}), ...(format ? { schema: true } : {}) }, () =>
         this.client.messages
           .stream({
             model: MODEL,
@@ -1342,7 +1353,7 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
             // `format`, when supplied, constrains decoding to the route's JSON schema.
             output_config: { effort: "high", ...(format ? { format } : {}) },
             system: this.cachedSystem(systemPrompt),
-            messages: [{ role: "user", content: userMessage }],
+            messages: [{ role: "user", content }],
           })
           .finalMessage(),
       );
@@ -1396,6 +1407,8 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
     meterText?: string;
     structuralLetterText?: string;
     defaultState?: string;
+    /** A SCANNED plan set (no text layer): its key sheets as page images (scannedPlanSet.ts caps them). */
+    planPageImages?: Array<{ page: number; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>;
   }): Promise<ParserLlmExtraction> {
     const system = `You are an expert solar permit intake specialist. You read the raw extracted text of a residential solar project's documents and pull out every field a permit/interconnection application needs. The text comes from PDF extraction and OCR, so it may be noisy, out of order, or have character errors — use judgment and cross-check between documents.
 
@@ -1566,6 +1579,10 @@ Rules:
     const parts: string[] = [];
     if (input.defaultState) parts.push(`(Default state hint if ambiguous: ${input.defaultState})`);
     if (input.planText?.trim()) parts.push(`=== PLAN_SET ===\n${planTextForExtraction(input.planText)}`);
+    const pageImages = input.planPageImages ?? [];
+    if (pageImages.length) {
+      parts.push(`=== PLAN_SET (SCANNED) ===\nThis plan set has NO text layer. The attached PLAN_SET PAGE images (pages ${pageImages.map((p) => p.page).join(", ")} of the set, chosen as its likely cover/title, site plan, one-line and spec sheets) ARE the plan set: read them as the PLAN_SET document. For every field, evidence.source is "plan_set" and evidence.sheet names the page ("page 3") and sheet label if legible. Read only what the images show; a sheet you were not shown is not "absent".`);
+    }
     if (input.utilityBillText?.trim()) parts.push(`=== UTILITY_BILL ===\n${input.utilityBillText.slice(0, 8000)}`);
     if (input.meterText?.trim()) parts.push(`=== METER_PHOTO ===\n${input.meterText.slice(0, 2000)}`);
     if (input.structuralLetterText?.trim()) parts.push(`=== STRUCTURAL_LETTER ===\n${input.structuralLetterText.slice(0, 12000)}`);
@@ -1582,15 +1599,16 @@ Rules:
     // property of the document. The retry is bounded at one so a genuinely unparseable
     // response still surfaces promptly rather than doubling the wait repeatedly.
     const user = parts.join("\n\n");
+    const images = pageImages.map((p) => ({ label: `PLAN_SET PAGE ${p.page} image:`, base64: p.base64, mimeType: p.mimeType }));
     const documentsSeen: Array<ParserFieldEvidence["source"]> = [
-      ...(input.planText?.trim() ? ["plan_set" as const] : []),
+      ...(input.planText?.trim() || pageImages.length ? ["plan_set" as const] : []),
       ...(input.utilityBillText?.trim() ? ["utility_bill" as const] : []),
       ...(input.meterText?.trim() ? ["meter_photo" as const] : []),
       ...(input.structuralLetterText?.trim() ? ["structural_letter" as const] : []),
     ];
     try {
       return finalizeExtraction(this.normalizeExtraction(
-        await this.askLong("extractProjectFields", system, user, 16000),
+        await this.askLong("extractProjectFields", system, user, 16000, undefined, images),
         "Could not parse LLM response.",
       ), documentsSeen);
     } catch (err) {
@@ -1598,7 +1616,7 @@ Rules:
         err: err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120),
       });
       return finalizeExtraction(this.normalizeExtraction(
-        await this.askLong("extractProjectFields", system, user, 16000),
+        await this.askLong("extractProjectFields", system, user, 16000, undefined, images),
         "Could not parse LLM response (retry).",
       ), documentsSeen);
     }
