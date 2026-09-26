@@ -1342,7 +1342,7 @@ async function testImportedHelpersStayBehindTheChokepoint() {
   // may only follow the shared implicit-submission question (replay skeptic MF3).
   const combo = strip(fs.readFileSync(new URL("../comboboxFill.ts", import.meta.url), "utf8"));
   const enters = [...combo.matchAll(/\.press\(\s*"Enter"/g)].map((m) => m.index ?? 0);
-  const asked = combo.indexOf("implicitSubmitRefusalInPage");
+  const asked = combo.indexOf("enterRefusalInPage");
   assert.ok(enters.length >= 1 && asked > 0 && enters.every((i) => i > asked && combo.slice(asked, i).includes("if (refusal)")),
     "every Enter comboboxFill presses comes after the implicit-submission refusal check");
 }

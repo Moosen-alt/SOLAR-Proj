@@ -3613,6 +3613,20 @@ export class RecipeAdapter extends BasePortalAdapter {
     return r && typeof r === "object" ? r : null;
   }
 
+  /** The shared in-page Enter question (enterRefusalInPage) for this control. A control that
+   *  cannot be asked (no evaluate: a unit-test double) has nothing Enter can reach that we could
+   *  read, and the caller's label gate still runs; a page that fails to answer is refused. */
+  private async enterRefusalOf(target: unknown): Promise<string> {
+    const t = target as { evaluate?: (fn: unknown, arg: unknown) => Promise<unknown> } | null;
+    if (!t || typeof t.evaluate !== "function" || !this.page || typeof this.page.evaluate !== "function") return "";
+    await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+    return String(await t.evaluate((el: Element, g: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ps = (globalThis as any)[g];
+      return ps && typeof ps.enterRefusalInPage === "function" ? ps.enterRefusalInPage(el) : "the page's safety predicates are not installed";
+    }, PORTAL_SAFETY_GLOBAL).catch(() => "the control could not be read") ?? "");
+  }
+
   /**
    * May replay perform this action? Returns the refusal reason, or "" when allowed. Every
    * refusal is recorded (guardRefusals + driftWarnings) so a refused click that a caller's
@@ -3665,6 +3679,12 @@ export class RecipeAdapter extends BasePortalAdapter {
       } else if (imp && isSubmitOrPayRequestUrl(imp.action)) {
         return refuse(`Enter submits the form to ${imp.action.slice(0, 80)}, a filing/payment endpoint`);
       }
+      // EVERY CONTROL ENTER CAN REACH, not only the default: a declared default whose button is
+      // missing, a page script that maps Enter to the form's filing button (the conservative
+      // rule), and any form on a page that names itself the review step (enterRefusalInPage).
+      // Unreadable -> refused.
+      const enterWhy = await this.enterRefusalOf(intent.target);
+      if (enterWhy) return refuse(`Enter here: ${enterWhy}`);
     }
     const label = await this.controlLabelOf(intent.target);
     // 1) Fees: never, in any mode, whatever the flag.

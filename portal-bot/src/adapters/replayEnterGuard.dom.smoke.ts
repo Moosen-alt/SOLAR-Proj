@@ -11,6 +11,13 @@
 //   whose action is a filing endpoint -> no POST, a named refusal.
 // Also the shared in-page question comboboxFill asks before its own Enter (MUST-PASS/EXCLUDE).
 //
+// CLOSE-MUSTFIX (checker's bypassEnter.probe.ts): an Enter is judged against EVERY control it can
+// activate (enterRefusalInPage). MUST-EXCLUDE aspnetDefault / aspnetHiddenDefault (a declared
+// WebForm_FireDefaultButton default), jsKeydown (a script maps Enter to the filing button: the
+// conservative rule), reviewNoButton (any form on a page that names itself the review step).
+// MUST-PASS accelaContinue (Accela's mid-flow Continue Application in the same whole-page form)
+// and login (a Sign In form's Enter signs in).
+//
 // Run: npx tsx portal-bot/src/adapters/replayEnterGuard.dom.smoke.ts
 import "../smokeArtifactDirs";
 import http from "node:http";
@@ -36,6 +43,53 @@ const BUTTONS: Record<string, string> = {
   // No button at all: implicit submission posts to the form's own action.
   noButtonFilingAction: "",
 };
+// THE CLOSE-MUSTFIX CHECKER'S ENTER SHAPES (bypassEnter.probe.ts, verbatim) — each FILED on replay
+// and the run reported ok=true "stopped at review" — plus the MUST-PASS pages the conservative
+// rule must not break. Enter is pressed in #q on every page.
+const FIRE_DEFAULT = `<script>function WebForm_FireDefaultButton(event, target) {
+  if (event.keyCode == 13) { var src = event.srcElement || event.target;
+    if (!src || (src.tagName.toLowerCase() != "textarea")) { var b = document.getElementById(target);
+      if (b && typeof(b.click) != "undefined") { b.click(); event.cancelBubble = true; if (event.stopPropagation) event.stopPropagation(); return false; } } }
+  return true; }</script>`;
+const PAGES: Record<string, string> = {
+  // (a) ASP.NET Panel DefaultButton: the FIRST submit is Search; the DECLARED default files.
+  aspnetDefault: `<h1>Step 2: Project Details</h1>${FIRE_DEFAULT}
+    <form method="post" action="/Cap/CapEdit.aspx"><div id="pnl" onkeypress="javascript:return WebForm_FireDefaultButton(event, 'ctl00_btnFile')">
+      <label for="q">Parcel Number</label><input id="q" name="q">
+      <input type="submit" name="btnSearch" value="Search" formaction="/search">
+      <input type="submit" id="ctl00_btnFile" name="btnFile" value="Submit Application" formaction="/submit">
+    </div></form>`,
+  // (a') the same, with the declared default HIDDEN (WebForms pages often hide it): only the
+  //      declared-default rule sees it — the conservative rule reads visible controls.
+  aspnetHiddenDefault: `<h1>Step 2: Project Details</h1>${FIRE_DEFAULT}
+    <form method="post" action="/Cap/CapEdit.aspx"><div id="pnl" onkeypress="javascript:return WebForm_FireDefaultButton(event, 'ctl00_btnFile')">
+      <label for="q">Parcel Number</label><input id="q" name="q">
+      <input type="submit" name="btnSearch" value="Search" formaction="/search">
+      <input type="submit" id="ctl00_btnFile" name="btnFile" value="Submit Application" formaction="/submit" style="display:none">
+    </div></form>`,
+  // (b) a page script maps Enter to the filing button; the first submit is Search.
+  jsKeydown: `<h1>Step 2: Project Details</h1>
+    <form method="post" action="/other"><label for="q">Parcel Number</label>
+      <input id="q" name="q" onkeydown="if(event.key==='Enter'){event.preventDefault();this.form.requestSubmit(document.getElementById('f'));}">
+      <button type="submit" formaction="/search">Search</button><button id="f" type="submit" formaction="/submit">Submit Application</button></form>`,
+  // (c) a page that names itself the review step; a one-box form with NO button, action not filing-worded.
+  reviewNoButton: `<h1>Step 5: Review and Submit</h1><p>Please review your application before submitting.</p>
+    <form method="post" action="/apply/42"><label for="q">Parcel Number</label><input id="q" name="q"></form>
+    <a href="javascript:void(0)">Submit Application</a>`,
+  // MUST-PASS: Accela's whole-page WebForms form carries the mid-flow "Continue Application"
+  // (__doPostBack link) on a fillable, non-review page; Enter in the parcel box runs Search.
+  accelaContinue: `<h1>Step 1: Work Location</h1>
+    <script>function __doPostBack(t, a) { var f = document.forms[0]; f.__EVENTTARGET.value = t; f.submit(); }</script>
+    <form method="post" action="/Cap/CapEdit.aspx"><input type="hidden" name="__EVENTTARGET">
+      <label for="st">Street Name</label><input id="st" name="st">
+      <label for="q">Parcel Number</label><input id="q" name="q"> <input type="submit" value="Search" formaction="/search">
+      <a id="cont" href="javascript:__doPostBack('ctl00$PlaceHolderMain$actionBarBottom$btnContinue','')">Continue Application &raquo;</a>
+    </form>`,
+  // MUST-PASS: a login form's Enter still signs in.
+  login: `<h1>Sign in to your account</h1>
+    <form method="post" action="/Account/Login"><label for="q">User Name</label><input id="q" name="q">
+      <label for="pw">Password</label><input id="pw" name="pw" type="password"><button type="submit">Sign In</button></form>`,
+};
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
   if (req.method === "POST") {
@@ -50,6 +104,11 @@ const server = http.createServer((req, res) => {
     return;
   }
   const m = url.searchParams.get("m") || "search";
+  if (PAGES[m]) {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(`<!doctype html><html><head><title>Portal</title></head><body>${PAGES[m]}</body></html>`);
+    return;
+  }
   const action = m === "noButtonFilingAction" ? "/SubmitApplication" : "/other";
   res.writeHead(200, { "content-type": "text/html" });
   res.end(`<!doctype html><html><head><title>Portal</title></head><body><h1>Step 2: Project Details</h1>
@@ -61,20 +120,22 @@ const server = http.createServer((req, res) => {
 });
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+const boxLabel = (m: string): string => (m === "login" ? "User Name" : "Parcel Number");
 const recipe = (m: string): PortalRecipe => ({
   id: "enter-guard", scopeType: "ahj", profileKey: "or|x|", state: "OR", ahj: "X", utility: "",
   portalPlatform: "fixture", portalUrl: `${base}/form?m=${m}`, status: "complete", version: 1, createdBy: "s", createdAt: "", updatedAt: "", notes: "",
   steps: [
     { action: "goto", value: `${base}/form?m=${m}`, note: "open" },
-    { action: "fill", selector: { css: "#q", label: "Parcel Number" }, value: "12-34", note: "Parcel Number" } as RecipeStep,
-    { action: "press", selector: { css: "#q", label: "Parcel Number" }, value: "Enter", note: "Parcel Number" } as RecipeStep,
+    { action: "fill", selector: { css: "#q", label: boxLabel(m) }, value: "12-34", note: boxLabel(m) } as RecipeStep,
+    { action: "press", selector: { css: "#q", label: boxLabel(m) }, value: "Enter", note: boxLabel(m) } as RecipeStep,
     { action: "stopForReview" },
   ],
 } as unknown as PortalRecipe);
 
 const browser = await chromium.launch();
 try {
-  for (const m of Object.keys(BUTTONS)) {
+  const MUST_PASS_POSTS: Record<string, string> = { search: "/search", accelaContinue: "/search", login: "/Account/Login" };
+  for (const m of [...Object.keys(BUTTONS), ...Object.keys(PAGES)]) {
     const ctx = await browser.newContext();
     await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
     const page = await ctx.newPage();
@@ -87,8 +148,8 @@ try {
     catch (e) { msg = `threw ${String(e).slice(0, 160)}`; }
     await ctx.close().catch(() => null);
     const refusals = adapter.guardRefusals.join(" | ");
-    if (m === "search") {
-      check("MUST-PASS default button 'Search': the Enter is pressed and posts /search", posts.join(",") === "/search", `POSTs=[${posts.join(",")}] ${msg}`);
+    if (MUST_PASS_POSTS[m]) {
+      check(`MUST-PASS ${m}: the Enter is pressed and posts ${MUST_PASS_POSTS[m]}`, posts.join(",") === MUST_PASS_POSTS[m], `POSTs=[${posts.join(",")}] refusals=${refusals || "(none)"} ${msg}`);
     } else {
       check(`MUST-EXCLUDE ${m}: no POST`, posts.length === 0, `POSTs=[${posts.join(",")}] ${msg}`);
       check(`MUST-EXCLUDE ${m}: a named refusal, and the run does not report success`,

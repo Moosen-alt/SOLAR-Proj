@@ -7422,6 +7422,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     const beforeUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
     const loc = await this.locator(lastFill.selector).catch(() => null);
     if (!loc) return false;
+    // AN ENTER IS JUDGED AGAINST EVERY CONTROL IT CAN ACTIVATE (hard rule 1, the shared in-page
+    // enterRefusalInPage replay's gate asks): a declared ASP.NET default button, any submit- or
+    // pay-worded control of the same form (a page script can map Enter to it), a review page.
+    // Unreadable -> no Enter.
+    if (typeof this.page.evaluate === "function" && typeof loc.evaluate === "function") {
+      await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+      const refusal = String(await loc.evaluate((el: Element, g: string) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ps = (globalThis as any)[g];
+        return ps && typeof ps.enterRefusalInPage === "function" ? ps.enterRefusalInPage(el) : "the page's safety predicates are not installed";
+      }, PORTAL_SAFETY_GLOBAL).catch(() => "the box could not be read") ?? "");
+      if (refusal) {
+        this.debug?.event({ type: "enter_submit_refused", reason: refusal.slice(0, 160) });
+        return false;
+      }
+    }
     const pressed = await loc.press("Enter").then(() => true).catch(() => false);
     if (!pressed) return false;
     await this.waitAfterClick(beforeUrl, await this.pageFingerprint(), this.tabCount()).catch(() => null);

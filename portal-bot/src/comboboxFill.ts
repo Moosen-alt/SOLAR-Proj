@@ -600,7 +600,7 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
       ? String(await widgetSearch.evaluate((el: Element, g: string) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const ps = (globalThis as any)[g];
-        return ps && typeof ps.implicitSubmitRefusalInPage === "function" ? ps.implicitSubmitRefusalInPage(el) : "the page's safety predicates are not installed";
+        return ps && typeof ps.enterRefusalInPage === "function" ? ps.enterRefusalInPage(el) : "the page's safety predicates are not installed";
       }, PORTAL_SAFETY_GLOBAL).catch(() => "the box could not be read") ?? "")
       : "the box could not be read";
     if (refusal) { lastComboboxEnterRefusal = refusal; return false; }

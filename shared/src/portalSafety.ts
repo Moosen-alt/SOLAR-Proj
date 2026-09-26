@@ -617,14 +617,30 @@ export function portalSafetyFactory() {
    * skeptic, enter-probe.log). The default button is tagged data-al-default-submit="1" so the
    * caller can judge it with its full click gate.
    */
-  const implicitSubmitInPage = (el: Element | null | undefined): { label: string; action: string; tagged: boolean } | null => {
+  const implicitSubmitInPage = (el: Element | null | undefined): { label: string; action: string; tagged: boolean; missingDefault?: string } | null => {
     if (!el) return null;
     const tag = el.tagName;
     if (tag === "TEXTAREA" || tag === "BUTTON" || tag === "A" || tag === "SELECT") return null;
     if (tag === "INPUT" && /^(submit|image|button|reset|checkbox|radio|file)$/i.test(String((el as HTMLInputElement).type || ""))) return null;
     const form = (el as HTMLInputElement).form || (el.closest ? el.closest("form") : null);
-    if (!form) return null;
     for (const old of Array.from(document.querySelectorAll("[data-al-default-submit]"))) old.removeAttribute("data-al-default-submit");
+    // A DECLARED DEFAULT BUTTON OUTRANKS TREE ORDER. ASP.NET's Panel DefaultButton renders
+    // onkeypress="return WebForm_FireDefaultButton(event, '<id>')" on an ancestor: Enter clicks
+    // THAT button and cancels the browser's own implicit submission. The first submit was
+    // "Search" and the declared default "Submit Application" on the checker's aspnetDefault
+    // fixture — the exact markup WebForms emits, and Accela is WebForms.
+    for (let p: Element | null = el; p; p = p.parentElement) {
+      const code = `${p.getAttribute("onkeypress") || ""} ${p.getAttribute("onkeydown") || ""}`;
+      const m = /WebForm_FireDefaultButton\s*\(\s*event\s*,\s*['"]([^'"]+)['"]/.exec(code);
+      const id = m ? m[1] : (p.getAttribute("data-default-button") || p.getAttribute("data-defaultbutton") || "");
+      if (!id) continue;
+      const declared = document.getElementById(id);
+      if (!declared) return { label: "", action: "", tagged: false, missingDefault: id.slice(0, 60) };
+      declared.setAttribute("data-al-default-submit", "1");
+      const label = String(controlLabelInPage(declared) || (declared as HTMLElement).innerText || (declared as HTMLInputElement).value || "").replace(/\s+/g, " ").trim();
+      return { label, action: String((declared as HTMLButtonElement).formAction || (form ? form.action : "") || ""), tagged: true };
+    }
+    if (!form) return null;
     const btn = Array.from(form.elements).find((c) => (c.tagName === "BUTTON" && String((c as HTMLButtonElement).type || "submit").toLowerCase() === "submit")
       || (c.tagName === "INPUT" && /^(submit|image)$/i.test(String((c as HTMLInputElement).type || "")))) as HTMLButtonElement | HTMLInputElement | undefined;
     if (btn) {
@@ -640,9 +656,56 @@ export function portalSafetyFactory() {
   const implicitSubmitRefusalInPage = (el: Element | null | undefined): string => {
     const imp = implicitSubmitInPage(el);
     if (!imp) return "";
+    if (imp.missingDefault) return `Enter here activates the declared default button #${imp.missingDefault}, which is not on the page — unknown`;
     if (isPayFee(imp.label)) return `Enter here activates "${imp.label.slice(0, 60)}", which pays a fee`;
     if (isSubmitIntent(imp.label, null) || isFinalSubmitControl(imp.label, { reviewPage: true })) return `Enter here activates "${imp.label.slice(0, 60)}", which is submit-worded`;
     if (isSubmitOrPayRequestUrl(imp.action)) return `Enter here submits the form to ${imp.action.slice(0, 80)}, a filing/payment endpoint`;
+    return "";
+  };
+
+  /**
+   * Runs IN THE PAGE: may the BOT press Enter in this element? The reason, or "". An Enter is
+   * judged against EVERY control it can activate, not only the one implicit submission picks:
+   *   1. the control implicit submission / a declared ASP.NET default button activates
+   *      (implicitSubmitRefusalInPage — the caller also runs its full click gate on it);
+   *   2. CONSERVATIVE: a page script can map Enter to ANY control of the form (a keydown that
+   *      calls requestSubmit(fileBtn) — checker's jsKeydown), so Enter is refused in a form that
+   *      holds any visible submit- or pay-worded control: buttons, submit/image inputs, and
+   *      __doPostBack links. Judged with isSubmitIntent IN THIS PAGE'S CONTEXT, so Accela's
+   *      mid-flow "Continue Application" on a fillable, non-review page stays excused;
+   *   3. TERMINAL PAGE: on a page that names itself the review step, Enter in any form submits
+   *      that form whatever its action says (checker's reviewNoButton: action /apply/42).
+   * Not in a form, and no declared default: "" (a page script is the network backstop's job).
+   */
+  const enterRefusalInPage = (el: Element | null | undefined): string => {
+    if (!el) return "the box could not be read";
+    const own = implicitSubmitRefusalInPage(el);
+    if (own) return own;
+    const form = ((el as HTMLInputElement).form || (el.closest ? el.closest("form") : null)) as HTMLFormElement | null;
+    if (!form) return "";
+    const reviewPage = reviewPageInPage();
+    if (reviewPage === true) return "this page names itself the review step — Enter in its form would submit it";
+    const readOnlyPage = readOnlyPageInPage();
+    const ctx: ControlContext = { reviewPage: reviewPage === false ? false : undefined, readOnlyPage };
+    const visible = (c: Element): boolean => {
+      const r = c.getBoundingClientRect();
+      const cs = getComputedStyle(c);
+      return r.width > 1 && r.height > 1 && cs.display !== "none" && cs.visibility !== "hidden";
+    };
+    const candidates = new Set<Element>();
+    for (const c of Array.from(form.elements)) candidates.add(c);
+    for (const c of Array.from(form.querySelectorAll("button, input[type=submit], input[type=image], input[type=button], [role=button], a[href*='doPostBack' i], a[onclick*='doPostBack' i], a[href*='DoPostBack']"))) candidates.add(c);
+    for (const c of Array.from(candidates)) {
+      if (c === el) continue;
+      const tag = c.tagName;
+      const type = String(c.getAttribute("type") || "").toLowerCase();
+      const isControl = tag === "BUTTON" || (tag === "INPUT" && /^(submit|image|button)$/.test(type)) || c.getAttribute("role") === "button" || tag === "A";
+      if (!isControl || !visible(c)) continue;
+      const label = String(controlLabelInPage(c) || (c as HTMLElement).innerText || (c as HTMLInputElement).value || "").replace(/\s+/g, " ").trim();
+      if (!label) continue;
+      if (isPayFee(label)) return `the form also holds "${label.slice(0, 50)}", which pays a fee — a page script can map Enter to it`;
+      if (isSubmitIntent(label, ctx)) return `the form also holds "${label.slice(0, 50)}", which is submit-worded — a page script can map Enter to it`;
+    }
     return "";
   };
 
@@ -650,6 +713,8 @@ export function portalSafetyFactory() {
     dismissalRefusalInPage,
     implicitSubmitInPage,
     implicitSubmitRefusalInPage,
+    enterRefusalInPage,
+    submitsOrNavigatesInPage,
     isSubmitOrPayRequestUrl,
     isSubmitIntent,
     isPayFee,
