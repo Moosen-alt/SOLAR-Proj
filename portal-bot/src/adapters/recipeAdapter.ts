@@ -388,6 +388,9 @@ export class RecipeAdapter extends BasePortalAdapter {
   private resolvingStep: RecipeStep | null = null;
   /** Every click/press/goto the chokepoint refused this run, in order. */
   guardRefusals: string[] = [];
+  /** How long an upload step waits for its named file slot to MOUNT (client-rendered steps show a
+   *  spinner first) before it is skipped, named. Bounded: never a 30 s wait per retry. */
+  static UPLOAD_SLOT_WAIT_MS = 10_000;
 
   constructor(
     private recipe: PortalRecipe,
@@ -3392,18 +3395,48 @@ export class RecipeAdapter extends BasePortalAdapter {
         // upload your one-line drawing"), so prefer matching that against the labels the
         // re-tag reports, and fall back to the recorded index only when nothing matches.
         if (step.selector?.css?.includes("data-al-upl")) {
-          const slots = await this.page.evaluate(tagUploadControls).catch(() => null) as Array<{ key: string; label: string }> | null;
+          // TAG AFTER THE CONTROLS MOUNT — AND NEVER WAIT ON AN ATTRIBUTE NOTHING WILL SET.
+          //
+          // This tagged ONCE and then setInputFiles waited 30 s (per retry) for [data-al-upl="f0"].
+          // A client-rendered step (the SPA shows a spinner, then mounts its file slots) had no
+          // file input at tag time, so the tag never existed: 7 of 8 SPA cells died on "upload
+          // plan_set" at ~174 s each (replay skeptic, evidence/step022-upload-plan-set-*). Now the
+          // tag is re-taken in a bounded poll until the slot the step names is there; if it never
+          // appears, the step is skipped NAMED within seconds, and the document goes to no other
+          // slot (a differently labelled slot is never a fallback).
           const wanted = String(step.note ?? "").split(":").slice(1).join(":").trim();
-          if (slots?.length && wanted) {
-            const norm = (v: string) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-            const want = norm(wanted);
-            const hit = slots.find((sl) => norm(sl.label) === want)
-              ?? slots.find((sl) => want.length > 6 && (norm(sl.label).includes(want) || want.includes(norm(sl.label))));
-            if (hit && `[data-al-upl="${hit.key}"]` !== step.selector.css) {
-              this.agingNotes.push(`upload "${wanted.slice(0, 48)}" moved from ${step.selector.css} to slot ${hit.key} — re-anchored by label`);
-              scoped = await this.locator({ css: `[data-al-upl="${hit.key}"]` });
-            }
+          const norm = (v: string) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          const want = norm(wanted);
+          const recordedCss = step.selector.css;
+          const pick = (slots: Array<{ key: string; label: string }>) => want
+            ? (slots.find((sl) => norm(sl.label) === want)
+              ?? slots.find((sl) => want.length > 6 && !!norm(sl.label) && (norm(sl.label).includes(want) || want.includes(norm(sl.label)))))
+            : slots.find((sl) => `[data-al-upl="${sl.key}"]` === recordedCss);
+          const started = Date.now();
+          let slots: Array<{ key: string; label: string }> = [];
+          let hit: { key: string; label: string } | undefined;
+          for (;;) {
+            slots = (await this.page.evaluate(tagUploadControls).catch(() => null) as Array<{ key: string; label: string }> | null) ?? [];
+            hit = pick(slots);
+            if (hit || Date.now() - started >= RecipeAdapter.UPLOAD_SLOT_WAIT_MS) break;
+            await this.settle(1500);
+            await sleep(400);
           }
+          if (!hit) {
+            // The recorded index is a fallback only for a slot with no label of its own to
+            // contradict the step's (an unlabelled Browse box); never for a differently labelled one.
+            const recorded = slots.find((sl) => `[data-al-upl="${sl.key}"]` === recordedCss);
+            const recordedLabel2 = norm(recorded?.label ?? "");
+            if (!recorded || (want && recordedLabel2 && recordedLabel2 !== "document")) {
+              const secs = Math.round((Date.now() - started) / 100) / 10;
+              this.driftWarnings.push(`upload "${wanted.slice(0, 48) || recordedCss}" has no matching file slot on this page after ${secs}s (${slots.length} slot(s): ${slots.map((s) => s.label.slice(0, 30)).join(" | ") || "none"}) — not attached, and not attached to any other slot`);
+              this.noteUnresolved(step);
+              return false;
+            }
+          } else if (`[data-al-upl="${hit.key}"]` !== recordedCss) {
+            this.agingNotes.push(`upload "${wanted.slice(0, 48)}" moved from ${recordedCss} to slot ${hit.key} — re-anchored by label`);
+          }
+          scoped = await this.locator({ css: hit ? `[data-al-upl="${hit.key}"]` : recordedCss });
         }
         if (step.viaFileChooser) {
           // The real <input> is created on click — intercept the file-chooser dialog.
@@ -3419,7 +3452,9 @@ export class RecipeAdapter extends BasePortalAdapter {
           return true;
         }
         this.options.beforeUpload?.(step.docType!, filePath);
-        await scoped!.setInputFiles(file);
+        // Bounded: the slot was just found (or the selector is a recorded css the page has); a
+        // 30 s default wait here is a hang, not patience.
+        await scoped!.setInputFiles(file, { timeout: 8000 });
         await this.markRecordedUpload(scoped, null);
         await this.waitForUploadAccepted();
         this.noteUploadPerformed(recordedLabel, file);
