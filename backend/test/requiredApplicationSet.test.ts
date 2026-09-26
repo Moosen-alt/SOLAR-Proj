@@ -127,7 +127,9 @@ const mk = (permitPathOverride?: string) => createProject(db, {
 // points at nothing is correctly not a document.
 const attach = (pid: string, docType: string): void => {
   const file = path.join(tmpDir, `${pid}-${docType}.pdf`);
-  fs.writeFileSync(file, "%PDF-1.4 test fixture");
+  // Distinct bytes per document: identical bytes under two doc types are one file attached once
+  // (submissionDocuments.duplicateUploads).
+  fs.writeFileSync(file, `%PDF-1.4 test fixture ${docType}`);
   db.run(
     `INSERT INTO project_documents (id, project_id, doc_type, original_filename, stored_path, source, uploaded_at)
      VALUES (?, ?, ?, ?, ?, 'upload', ?)`,

@@ -4,6 +4,8 @@ import { filledFormsByDocType, formContradictsPath } from "./ahjForms";
 import { generatedDocFilesByType } from "./generatedDocFiles";
 import { resolvePermitPath } from "./permitPath";
 import { projectDocsByType } from "./projectDocuments";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
 
 /** One selection policy for learning and replay. An explicitly uploaded document
  * takes precedence over a generated form of the same type. Generated forms are
@@ -22,8 +24,29 @@ export function submissionDocumentsByType(db: AppDb, project: ProjectRecord): Re
 
 /** Explicit wrong-path uploads cannot override a compatible generated form.
  * Generic applications remain valid; arbitrary body prose is not a title. */
+// THE SAME FILE IS NEVER TWO DOCUMENTS. City of Jefferson's inverter_spec upload was byte-identical
+// to its module_spec (1,051,462 bytes): an intake mis-slot the staging would have attached twice as
+// two different documents. The first doc type in DUPLICATE_PRECEDENCE keeps the file; the later one
+// is dropped from the upload set and reported, so the inventory can say "same file as …".
+const DUPLICATE_PRECEDENCE = ["plan_set", "sld", "site_plan", "structural", "structural_letter", "stamped_plans", "module_spec", "inverter_spec",
+  "racking_spec", "battery_spec", "labels", "utility_bill", "meter_photo"];
+export function duplicateUploads(docs: Record<string, string>): Array<{ docType: string; sameAs: string }> {
+  const rank = (t: string) => { const i = DUPLICATE_PRECEDENCE.indexOf(t); return i < 0 ? DUPLICATE_PRECEDENCE.length : i; };
+  const hashes = new Map<string, string>();
+  const out: Array<{ docType: string; sameAs: string }> = [];
+  for (const [type, file] of Object.entries(docs).sort((a, b) => rank(a[0]) - rank(b[0]))) {
+    let digest = "";
+    try { digest = createHash("sha256").update(fs.readFileSync(file)).digest("hex"); } catch { continue; }
+    const first = hashes.get(digest);
+    if (first && first !== type) out.push({ docType: type, sameAs: first });
+    else hashes.set(digest, type);
+  }
+  return out;
+}
+
 export function uploadedSubmissionDocuments(db: AppDb, project: ProjectRecord): Record<string, string> {
   const docs = projectDocsByType(db, project.id);
+  for (const dup of duplicateUploads(docs)) delete docs[dup.docType];
   const permitPath = resolvePermitPath(project).path;
   const rows = db.query<{ doc_type: string; stored_path: string; original_filename: string }>(
     "SELECT doc_type, stored_path, original_filename FROM project_documents WHERE project_id = ?", [project.id]);

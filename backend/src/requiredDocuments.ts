@@ -37,7 +37,7 @@
 import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { projectDocsByType } from "./projectDocuments";
-import { uploadedSubmissionDocuments } from "./submissionDocuments";
+import { duplicateUploads, uploadedSubmissionDocuments } from "./submissionDocuments";
 import { filledFormsByDocType, applicationKindForPath, loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
@@ -643,8 +643,16 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     }
   } catch { /* KB optional */ }
   const required = [...baselineItems, ...kbItems];
+  // A doc type whose upload was the SAME FILE as another's (submissionDocuments.duplicateUploads) is
+  // attached once, under the first type. Its row is FLAGGED rather than silently satisfied or
+  // silently blocking: one datasheet can legitimately cover both (an AC module's sheet includes its
+  // microinverter), and a person confirms which.
+  const duplicates = new Map(duplicateUploads(projectDocsByType(db, project.id)).map((d) => [d.docType, d.sameAs]));
   const presence: DocPresence[] = required.map((item) => {
-    const p = present(item, project, docsByType, uploads, filledApplications);
+    const sameAs = duplicates.get(item.docType);
+    const p = sameAs && uploads[sameAs]
+      ? { present: true, via: `same file as ${sameAs.replace(/_/g, " ")} — attached once; confirm it covers the ${item.docType.replace(/_spec$/, "").replace(/_/g, " ")}` }
+      : present(item, project, docsByType, uploads, filledApplications);
     // HONESTY CHECK on the sealed letter: presence only proves a FILE is in the
     // slot — a placeholder PDF satisfies the gate identically (live-tested with a
     // file literally named "FAKE STAMPS.pdf"). We can't verify a real PE seal

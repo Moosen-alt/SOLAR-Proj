@@ -85,7 +85,9 @@ const mk = (permitPathOverride?: string) => createProject(db, {
 // points at nothing is correctly not a document.
 const attach = (pid: string, docType: string): void => {
   const file = path.join(tmpDir, `${pid}-${docType}.pdf`);
-  fs.writeFileSync(file, "%PDF-1.4 test fixture");
+  // Distinct bytes per document: identical bytes under two doc types are one file attached once
+  // (submissionDocuments.duplicateUploads).
+  fs.writeFileSync(file, `%PDF-1.4 test fixture ${docType}`);
   db.run(
     `INSERT INTO project_documents (id, project_id, doc_type, original_filename, stored_path, source, uploaded_at)
      VALUES (?, ?, ?, ?, ?, 'upload', ?)`,
@@ -234,8 +236,17 @@ check("NO SIGNAL, NO DEMAND: an AHJ we hold no process knowledge for is asked fo
   const unknownAhj = { id: "p-nowhere", clientId: null, state: "OR", ahj: "City of Nowhereville", utility: "PGE", parserSnapshot: { permitPathOverride: "prescriptive" } };
   assert.equal(findApplicationProfile(unknownAhj as never).requiresPrescriptiveChecklist, true,
     "premise: the Oregon fallback profile really does carry the checklist flag");
-  assert.deepEqual(requiredApplicationDocs(unknownAhj as never, applicationDocContext(unknownAhj as never)), [],
-    "an AHJ with no structure knowledge and no process flags must demand nothing at all");
+  // RULE ADJUSTED (operator authorization 2026-09-25, B1): an unknown OREGON AHJ now has a cited
+  // state-rule structure (separate — OAR 918-050-0180(2)), so its rows exist — as portal entries
+  // that never BLOCK. Outside Oregon (no cited rule) nothing is demanded, exactly as before.
+  const rows = requiredApplicationDocs(unknownAhj as never, applicationDocContext(unknownAhj as never));
+  assert.ok(rows.filter((r) => r.docType !== "solar_checklist").every((r) => !r.blocking),
+    "the application rows are portal entries and never block on a state-rule answer");
+  // On a CONFIRMED prescriptive path the BCD 440-5952 checklist is owed statewide (the product fills it).
+  assert.ok(rows.some((r) => r.docType === "solar_checklist"));
+  const unknownWa = { ...unknownAhj, state: "WA" };
+  assert.deepEqual(requiredApplicationDocs(unknownWa as never, applicationDocContext(unknownWa as never)), [],
+    "an AHJ with no structure knowledge, no process flags and no state rule must demand nothing at all");
 });
 
 const unconfirmed = mk();
