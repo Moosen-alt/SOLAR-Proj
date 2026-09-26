@@ -45,6 +45,8 @@ import { findAhjProcessProfile, ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE
 import { findKnowledgeForLearn } from "./knowledgeBase";
 import { HttpError } from "./httpError";
 import { findApplicationProfile, namedApplicationForm, permitStructureForProject } from "./applicationDocs";
+import { normalizeAhjName, permitProcessFor, stateRulesFor } from "./permitProcess";
+import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -165,6 +167,8 @@ export const APPLICATION_DOC_TYPES = new Set([
   "building_application",
   "electrical_application",
   "solar_checklist",
+  // A state PV worksheet (Iowa SFM) filled from a stored template (pvWorksheetRequirement).
+  "pv_worksheet",
 ]);
 
 export interface DocPresence extends RequiredDocItem {
@@ -363,10 +367,14 @@ export function requiredApplicationDocs(
   // process FLAG keeps its old standing as a signal in its own right.
   const wantsChecklist = Boolean(flags.requiresSolarChecklist)
     || (wantsBuilding && Boolean(ctx.requiresPrescriptiveChecklist));
+  // A STATE PV WORKSHEET is its own signal (Iowa's SFM worksheet): the per-job lookup's
+  // documents, else the cited state rule. Path-independent — it is electrical, not the
+  // prescriptive checklist.
+  const worksheet = pvWorksheetRequirement(project);
   // NO SIGNAL, NO DEMAND. A project with no resolved structure and no process
   // flags (an AHJ we have no knowledge of, or a bare project in a unit test)
   // must not be told to attach applications nobody can name.
-  if (!wantsBuilding && !wantsElectrical && !wantsChecklist) return [];
+  if (!wantsBuilding && !wantsElectrical && !wantsChecklist) return worksheet ? [worksheet] : [];
 
   const path = resolvePermitPath(project).path;
   const where = (ctx.ahjLabel || project.ahj || "").trim() || "This AHJ";
@@ -483,7 +491,41 @@ export function requiredApplicationDocs(
     });
   }
 
+  if (worksheet) out.push(worksheet);
   return out;
+}
+
+/**
+ * THE STATE PV WORKSHEET ROW (Iowa SFM worksheet). Registered where the per-job lookup stores a
+ * permit's documents — any lookup document naming the worksheet makes it BLOCKING for that AHJ —
+ * and, beneath it, the cited state rule: blocking where the rule records the AHJ's application
+ * requires it (Iowa City), advisory elsewhere in the state. One wording predicate
+ * (iowaPvWorksheet.namesPvWorksheet). docType pv_worksheet — NOT solar_checklist, which is the
+ * prescriptive path's evidence and is dropped on the engineered path.
+ */
+export function pvWorksheetRequirement(project: ProjectRecord): RequiredApplicationDoc | null {
+  const state = String(project.state ?? "").trim();
+  const ahj = String(project.ahj ?? "").trim();
+  if (!state) return null;
+  const lookup = ahj ? permitProcessFor({ state, ahj }) : null;
+  for (const permit of lookup?.permits ?? []) {
+    const hit = (permit.documents?.value ?? []).find((d) => namesPvWorksheet(d));
+    if (hit) {
+      return {
+        docType: PV_WORKSHEET_DOC_TYPE, label: "PV worksheet (state electrical worksheet), filled", lane: "permit", blocking: true, discipline: "electrical",
+        why: `${ahj}'s permit process lists "${hit}"${permit.documents.sourceUrl ? ` (${permit.documents.sourceUrl})` : ""}. The worksheet is filled from the parsed plan set and its written-out 690.7/690.8/690.9 calculations; unknowns are asked, never guessed.`,
+      };
+    }
+  }
+  const rule = stateRulesFor(state).pvWorksheet;
+  if (!rule?.value) return null;
+  const required = Boolean(ahj) && rule.value.requiredAt.includes(normalizeAhjName(ahj));
+  return {
+    docType: PV_WORKSHEET_DOC_TYPE, label: `${rule.value.formName}, filled`, lane: "permit", blocking: required, discipline: "electrical",
+    why: required
+      ? `${ahj}'s solar application requires it as an attachment: ${rule.quote}`
+      : `The state electrical inspection asks for it (${rule.quote}). Not recorded as a required attachment for ${ahj || "this AHJ"} — advisory.`,
+  };
 }
 
 /**

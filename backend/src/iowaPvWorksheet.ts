@@ -200,7 +200,10 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
       : pvBreaker != null ? `pvBreaker "${str("pvBreaker")}" (no circuit current to check it against)` : "no PV breaker or circuit current parsed");
 
   // ── interconnection ────────────────────────────────────────────────────────────────────
-  const side = interconnectionSide(`${project.interconnectionMethod ?? ""}\n${str("interco")}`);
+  // The operator's answer to the interconnection question settles an ambiguous plan set.
+  const answer = str("iaPvInterconnection");
+  const side: InterconnectionSide = /^line/i.test(answer) ? "supply" : /^load/i.test(answer) ? "load"
+    : interconnectionSide(`${project.interconnectionMethod ?? ""}\n${str("interco")}`);
   set("p2.lineside", side === "supply" ? "X" : "", `interco "${str("interco")}" -> ${side}`);
   set("p2.loadside", side === "load" ? "X" : "", `interco "${str("interco")}" -> ${side}`);
   if (side === "both" || side === "unknown") {
@@ -224,6 +227,9 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
     const intercoText = str("interco").toLowerCase();
     if (cited.row) {
       set(`p2.lsc.${cited.row}`, "X", `the plan's own method: "${cited.quote}"`);
+    } else if (/feeder|sub.?panel/.test(intercoText) && /\(B\)\(1\)\(([ab])\)/.test(str("iaPvFeederRow"))) {
+      const r = /\(B\)\(1\)\(([ab])\)/.exec(str("iaPvFeederRow"))![1];
+      set(`p2.lsc.B1${r}`, "X", `operator answer: ${str("iaPvFeederRow")}`);
     } else if (/feeder|sub.?panel/.test(intercoText)) {
       ask("iaPvFeederRow", "The PV connects on a feeder: which 705.12(B)(1) item applies — (a) or (b)?", ["705.12(B)(1)(a)", "705.12(B)(1)(b)"]);
     } else if (/\btap\b/.test(intercoText)) {
@@ -325,4 +331,101 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   tick("p4.9", /grounding electrode|\bGES\b|ground(?:ing)? rod|\bGEC\b/i.test(text), "grounding electrode system shown on the plan text");
 
   return { values, basis, questions };
+}
+
+// ── THE BLANK: recognised by its own text layer, never by a guessed URL ─────────────────────
+// No public URL for the SFM blank has been retrieved, so there is no byte hash to pin. The form
+// is instead recognised by ANCHORS — printed labels at the exact positions the 2020-NEC edition
+// prints them (read off the operator's copy, 612x792, PDF points from the bottom-left). A blank
+// whose anchors are missing or moved is a different revision — the corpus shows a 2023-NEC
+// edition in circulation with different 705.12 rows — and is REFUSED, never filled with these
+// coordinates.
+export interface WorksheetAnchor { page: number; text: string; x: number; y: number }
+export const IOWA_PV_WORKSHEET_ANCHORS: WorksheetAnchor[] = [
+  { page: 0, text: "PHOTOVOLTAIC WORKSHEET", x: 161, y: 622 },
+  { page: 0, text: "Article 690, 691, & 705 of the 2020", x: 72, y: 489 },
+  { page: 1, text: "PV SYSTEM INFORMATION", x: 228, y: 567 },
+  { page: 1, text: "PV SYSTEM OVERVIEW", x: 127, y: 427 },
+  { page: 1, text: "Lineside Connect 705.11", x: 329, y: 405 },
+  { page: 1, text: "LOADSIDE CONNECTIONS", x: 243, y: 198 },
+  { page: 1, text: "NEC 705.12(B)(1)(a)", x: 181, y: 183 },
+  { page: 1, text: "NEC 705.12(B)(3)(2)", x: 181, y: 122 },
+  { page: 1, text: "NEC 705.12 (B)(3)(6)", x: 181, y: 61 },
+  { page: 2, text: "CALCULATION SHEET", x: 217, y: 671 },
+  { page: 2, text: "2020 NEC 690.7 Maximum Voltage.", x: 109, y: 502 },
+  { page: 2, text: "690.7(A)(1)", x: 95, y: 472 },
+  { page: 2, text: "2020 NEC 690.9 Overcurrent Protection.", x: 108, y: 164 },
+  { page: 3, text: "FINAL PV SUBMITTAL CHECKLIST", x: 184, y: 657 },
+];
+const normLabel = (s: string) => s.replace(/[–—]/g, "-").replace(/[“”]/g, "\"").replace(/\s+/g, " ").trim();
+
+/** Every anchor present at its position (±2.5 pt). Returns the anchors that failed. */
+export function iowaPvWorksheetAnchorMisses(labels: Array<{ page: number; str: string; x: number; y: number }>): WorksheetAnchor[] {
+  return IOWA_PV_WORKSHEET_ANCHORS.filter((a) => !labels.some((l) => l.page === a.page
+    && normLabel(l.str).includes(normLabel(a.text)) && Math.abs(l.x - a.x) <= 2.5 && Math.abs(l.y - a.y) <= 2.5));
+}
+
+export const IOWA_PV_WORKSHEET_FORM_NAME = "Iowa SFM Electrical Bureau Photovoltaic Worksheet (2020 NEC)";
+export const PV_WORKSHEET_DOC_TYPE = "pv_worksheet";
+
+type Overlay = { source: string; page: number; x: number; y: number; size?: number; maxWidth?: number; onlyIf?: { source: string; equals?: string } };
+/** The overlay map (the fill engine's stored-template shape). Every value is computed.iaPv.<id>. */
+export function iowaPvWorksheetFieldMap(sourceUrl: string) {
+  const f: Overlay[] = [];
+  const text = (id: string, page: number, x: number, y: number, maxWidth: number, size = 9) => f.push({ source: `computed.iaPv.${id}`, page, x, y, size, maxWidth });
+  const box = (id: string, page: number, x: number, y: number) => f.push({ source: "lit:X", page, x, y, size: 9, maxWidth: 10, onlyIf: { source: `computed.iaPv.${id}`, equals: "X" } });
+  // page 2 (index 1): system information
+  text("p2.arrays", 1, 78, 540, 22);
+  box("p2.standardString", 1, 74, 512); box("p2.microArray", 1, 254, 512);
+  box("p2.roofMount", 1, 74, 484); box("p2.groundMount", 1, 254, 484); box("p2.combination", 1, 398, 484);
+  box("p2.rsdYes", 1, 73, 455); box("p2.rsdNo", 1, 109, 455);
+  // overview column (values sit at x=242 on the operator's copy)
+  text("p2.maxSystemVoltage", 1, 242, 401, 80); text("p2.maxCircuitCurrent", 1, 242, 379, 80);
+  text("p2.numInverters", 1, 242, 357, 80); text("p2.battery", 1, 242, 336, 80);
+  text("p2.minPvOcpd", 1, 242, 313, 80); text("p2.dcdc", 1, 242, 291, 80);
+  // interconnection column (x=494)
+  box("p2.lineside", 1, 494, 401); box("p2.loadside", 1, 494, 379);
+  text("p2.serviceVoltage", 1, 494, 357, 70); text("p2.serviceAmps", 1, 494, 337, 70);
+  text("p2.busRating", 1, 494, 313, 70); text("p2.serviceConductor", 1, 494, 291, 70);
+  // 705.12(B) rows: the mark sits left of each "NEC 705.12(B)…" label (x=181). No filled sample
+  // carries a row mark, so x=168 is the blank line's estimated position — preview before filing.
+  for (const [id, y] of [["B1a", 183], ["B1b", 168], ["B2", 152], ["B31", 137], ["B32", 122], ["B33", 107], ["B34", 91], ["B35", 76], ["B36", 61]] as const) box(`p2.lsc.${id}`, 1, 168, y + 1);
+  // page 3 (index 2): calculation sheet
+  box("p3.loc12fam", 2, 74, 578); box("p3.locOther", 2, 74, 563); box("p3.locNotBuilding", 2, 74, 548);
+  for (const [id, y] of [["A1", 472], ["A2", 457], ["A3", 442], ["B1", 427], ["B2", 412]] as const) box(`p3.${id}`, 2, 75, y + 1);
+  text("p3.A.calc", 2, 90, 379, 440, 8);
+  for (const [id, y] of [["a1", 318], ["a2", 288], ["b", 273], ["c", 243]] as const) box(`p3.B.${id}`, 2, 75, y + 1);
+  box("p3.B.d", 2, 311, 311); box("p3.B.e", 2, 311, 266); box("p3.B.A2", 2, 311, 236);
+  text("p3.B.calc", 2, 90, 197, 440, 8);
+  for (const [id, y] of [["B", 134], ["C", 119], ["D", 104]] as const) box(`p3.C.${id}`, 2, 76, y + 1);
+  text("p3.C.calc", 2, 90, 69, 440, 8);
+  // page 4 (index 3): final checklist — 3, 4 and 10 are the filer's attestation (never computed "X")
+  for (const [i, y] of [[1, 431], [2, 413], [3, 396], [4, 379], [5, 362], [6, 344], [7, 329], [8, 312], [9, 294], [10, 278]] as const) box(`p4.${i}`, 3, 116, y);
+  return {
+    formName: IOWA_PV_WORKSHEET_FORM_NAME, sourceUrl, fillMode: "overlay" as const,
+    textFields: {} as Record<string, string>, checkboxes: {} as Record<string, { source: string; equals?: string }>,
+    overlayFields: f, signatureFields: [],
+    requiredFields: {
+      "maximum system voltage (module Voc, temperature coefficient, site low temperature)": "computed.iaPv.p2.maxSystemVoltage",
+      "maximum circuit current": "computed.iaPv.p2.maxCircuitCurrent",
+      "number of arrays (mounting planes)": "computed.iaPv.p2.arrays",
+      "service conductor size": "computed.iaPv.p2.serviceConductor",
+      "interconnection (705.11 line side or 705.12 load side)": "computed.iaPv.p4.8",
+    },
+    notes: "Iowa SFM PV worksheet (2020 NEC) recognised by its printed labels at their exact positions. Values are the project's parsed fields and written-out derivations (iowaPvWorksheet.ts); unknowns stay blank and are listed as missing. Page 4 items 3, 4 and 10 are the filer's attestation and are left for the person who reviews and files. The 705.12(B) row mark position is estimated — preview before filing.",
+  };
+}
+
+/** A blank whose text layer carries every anchor -> the field map; anything else -> null. */
+export async function iowaPvWorksheetTemplate(bytes: Uint8Array, sourceUrl: string) {
+  const { extractLabels } = await import("./formTextLayer");
+  const labels = await extractLabels(bytes);
+  if (!labels.length || iowaPvWorksheetAnchorMisses(labels).length) return null;
+  return iowaPvWorksheetFieldMap(sourceUrl);
+}
+
+/** Required-document wording that names this worksheet (Iowa City's EnerGov card is "Standard or
+ *  Micro-Inverter Array ..."). One predicate for the lookup's documents and the state rule. */
+export function namesPvWorksheet(text: string): boolean {
+  return /(?:standard|string)\s*(?:or|\/)\s*micro[-\s]*inverter\s+array|photovoltaic\s+(?:systems?\s+)?worksheet|\bpv\s+(?:system\s+)?worksheet/i.test(String(text ?? ""));
 }

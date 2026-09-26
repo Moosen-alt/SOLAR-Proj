@@ -160,7 +160,7 @@ const PDF_REQUIRED_DOC_TYPES = new Set([
   "plan_set", "plan", "plan_pdf", "combined_plan_set", "full_plan_set",
   "sld", "site_plan", "structural", "structural_letter", "stamped_plans",
   "engineering_letter", "electrical", "module_spec", "inverter_spec", "labels",
-  "permit_application", "building_application", "electrical_application", "solar_checklist",
+  "permit_application", "building_application", "electrical_application", "solar_checklist", "pv_worksheet",
 ]);
 
 // Slots that hold a photo or a scan. A PDF is fine here too — people scan the meter

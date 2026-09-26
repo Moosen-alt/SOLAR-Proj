@@ -24,6 +24,7 @@ export {
 } from "./documentDate";
 import { documentDateForPdf } from "./documentDate";
 import { bcd5952Template } from "./bcd5952Template";
+import { iowaPvWorksheetTemplate, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
 
 // ---------------------------------------------------------------------------
@@ -535,6 +536,9 @@ function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research:
 // under its own slot instead of overwriting a single "permit_application" row.
 export function classifyFormType(nameOrUrl: string, fallback: string): string {
   const t = (nameOrUrl || "").toLowerCase();
+  // The Iowa SFM PV worksheet is an ELECTRICAL worksheet, not the path-scoped prescriptive
+  // checklist: a caller that recognised it (by its anchors) keeps its own type.
+  if (fallback === PV_WORKSHEET_DOC_TYPE) return fallback;
   if (/checklist|worksheet|eligibilit/.test(t)) return "solar_checklist";
   if (/electrical|ele[-_ ]?permit/.test(t)) return "electrical_application";
   if (/building|structural|bld[-_ ]?permit/.test(t)) return "building_application";
@@ -882,6 +886,22 @@ export async function acquireFromBytes(
     storeAhjFormTemplate(db, { ahjName: ahj, state, formType: "solar_checklist", filename: `${bcd.formName}.pdf`, bytes,
       applicationKind: "prescriptive", documentDate: "2024-05-01", retrievedAt, map: bcd });
     return { status: "acquired", message: "Stored the official BCD 5952 checklist with the exact-revision field map. It is a checklist only; separate applications remain separate requirements. Preview before filing.", formName: bcd.formName, sourceUrl, mappedFields: Object.keys(bcd.textFields).length };
+  }
+
+  // THE IOWA SFM PV WORKSHEET (2020 NEC): recognised by its printed labels at their exact
+  // positions (no public URL for the blank has been retrieved, so no byte hash). A moved or
+  // re-worded anchor (the 2023-NEC edition) is not this map and falls through to the generic path.
+  const iaPv = await iowaPvWorksheetTemplate(bytes, sourceUrl);
+  if (iaPv) {
+    if (String(state).trim().toUpperCase() !== "IA") {
+      return { status: "needs_manual", sourceUrl, message: "This is the Iowa State Fire Marshal PV worksheet; it belongs to an Iowa jurisdiction. Select the matching authority before mapping it." };
+    }
+    const protectedTemplate = loadStoredTemplates(db, ahj, state).find(t => t.verified &&
+      db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type === PV_WORKSHEET_DOC_TYPE);
+    if (protectedTemplate) return { status: "exists", message: "The verified PV worksheet map was retained.", formName: iaPv.formName, sourceUrl };
+    storeAhjFormTemplate(db, { ahjName: ahj, state, formType: PV_WORKSHEET_DOC_TYPE, filename: `${iaPv.formName}.pdf`, bytes,
+      applicationKind: null, retrievedAt, map: iaPv });
+    return { status: "acquired", message: "Stored the Iowa SFM PV worksheet (2020 NEC) with its label-anchored field map. Values come from the project's parsed fields and written-out calculations; unknowns stay blank and are listed. Preview before filing.", formName: iaPv.formName, sourceUrl, mappedFields: iaPv.overlayFields.length };
   }
 
   // What the document says about ITSELF, read once and stamped on every branch

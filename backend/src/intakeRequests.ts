@@ -9,6 +9,8 @@ import { logger } from "./logger";
 import { formFactQuestions } from "./bcdChecklistFacts";
 import { issuingAgencyFor } from "./permitProcess";
 import { resolvePermitPath } from "./permitPath";
+import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
+import { pvWorksheetRequirement } from "./requiredDocuments";
 
 // Per-project client intake requests.
 //
@@ -128,7 +130,12 @@ function formFactIntakeQuestions(project: ProjectRecord): PortalIntakeQuestion[]
   try {
     const checklistApplies = String(project.state ?? "").trim().toUpperCase() === "OR" && resolvePermitPath(project).path !== "engineered";
     const agency = issuingAgencyFor(project, "building")?.value ?? issuingAgencyFor(project, "electrical")?.value ?? null;
-    return formFactQuestions(project, { checklistApplies, issuingAgency: agency })
+    // A state PV worksheet owed (Iowa SFM): its multiple-choice questions (line vs load side, the
+    // feeder row, dwelling units) ride the same mechanism. Free-text unknowns (module Voc, the
+    // site low, the service conductor) cannot be rigidly answered here and are listed as missing
+    // on the filled worksheet instead.
+    const worksheet = pvWorksheetRequirement(project) ? iowaPvWorksheetValues(project).questions.filter((q) => q.options.length >= 2) : [];
+    return [...formFactQuestions(project, { checklistApplies, issuingAgency: agency }), ...worksheet]
       .map((q) => ({ key: q.key, label: q.label, options: q.options, kind: q.kind }));
   } catch {
     return [];

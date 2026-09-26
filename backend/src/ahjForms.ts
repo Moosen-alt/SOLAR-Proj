@@ -21,6 +21,7 @@ import {
 } from "./batteryServiceFeeder";
 import type { ChecklistRecovery } from "./prescriptiveChecklist";
 import { bcdChecklistAnswers, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
+import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
 import { documentFetchDisabled } from "./documentFetch";
 
 /** Which of the two MUTUALLY EXCLUSIVE building-side applications a permit path calls
@@ -371,6 +372,8 @@ export interface FillContext {
   // Lazily-evaluated prescriptive criteria rows, cached so the presc* computed
   // sources evaluate the screen once per fill (see prescriptiveComputed).
   prescriptive?: PrescriptiveCriterion[];
+  // The Iowa SFM PV worksheet's values, cached like `prescriptive` (iowaPvWorksheet.ts).
+  iaPv?: Record<string, string>;
   // Per-AHJ prescriptive limit overrides from the jurisdiction code profile
   // (loaded in buildContext) — the presc* sources must screen against the SAME
   // limits QC's baseline rules use, not always the Oregon defaults.
@@ -526,6 +529,9 @@ function computed(name: string, ctx: FillContext): string {
     return bcdChecklistAnswers(ctx.project)[key] === m[2] ? "X" : "";
   }
   if (name.startsWith("presc")) return prescriptiveComputed(name, ctx);
+  // Iowa SFM PV worksheet: every value is iowaPvWorksheetValues' (parsed field, written-out
+  // derivation, or "" for an operator question) — computed once per fill.
+  if (name.startsWith("iaPv.")) return (ctx.iaPv ??= iowaPvWorksheetValues(ctx.project).values)[name.slice(5)] ?? "";
   switch (name) {
     case "installerRole": {
       const role = String(ctx.snapshot.installerRole ?? "").trim().toLowerCase();

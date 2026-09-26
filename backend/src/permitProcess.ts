@@ -160,7 +160,13 @@ export interface StatePermitRules {
   surcharge?: CitedFact<number>;
   /** Portal application-info vocabulary guidance (Category of Construction / Type of Work). */
   applicationInfoGuidance?: CitedFact<{ categoryOfConstruction: "structure_type"; typeOfWorkExisting: string; solarIsNotOther: boolean }>;
+  /** A state PV worksheet the electrical inspection asks for (Iowa: the SFM Electrical Bureau
+   *  PHOTOVOLTAIC WORKSHEET). `requiredAt` = normalized AHJ names whose own application REQUIRES
+   *  it as an attachment (observed); elsewhere in the state it is advisory. */
+  pvWorksheet?: CitedFact<{ formName: string; requiredAt: string[] }>;
 }
+
+const IOWA_CITY_ENERGOV = "https://energovapp.civic.iowa-city.org/energovprod/";
 
 const OAR_918_050_0180 = "https://secure.sos.state.or.us/oard/view.action?ruleNumber=918-050-0180";
 const BCD_5952 = "https://www.oregon.gov/bcd/Formslibrary/5952.pdf";
@@ -209,6 +215,20 @@ export const STATE_PERMIT_RULES: Record<string, StatePermitRules> = {
       quote: "Category of Construction (CoC) would be the structure type the system is being installed to … if the structure already exists, Type of Work = Alteration … Solar is not considered 'Other' under CoC or under ToW.",
       origin: "state_rule",
     },
+  },
+};
+// IOWA. The State Fire Marshal Electrical Bureau's PV worksheet: its page 1 says it "has been
+// provided for the installer to complete and submit to their electrical inspector prior to the
+// inspection date". Iowa City's EnerGov "Residential Electrical - Solar" application makes it a
+// REQUIRED attachment card (operator walk-through of the portal, 2026-09-26 — the city's web page
+// says it is not submitted; the portal wins). The SFM's own download URL was not retrieved, so the
+// source is the portal that asks for it.
+STATE_PERMIT_RULES.IA = {
+  pvWorksheet: {
+    value: { formName: "Iowa SFM Electrical Bureau Photovoltaic Worksheet (2020 NEC)", requiredAt: ["iowa city", "city of iowa city"] },
+    sourceUrl: IOWA_CITY_ENERGOV,
+    quote: "Attachments — REQUIRED: \"Standard or Micro-Inverter Array ...\" (.pdf,.docx) [Iowa City EnerGov, Residential Electrical - Solar]; worksheet p.1: \"provided for the installer to complete and submit to their electrical inspector prior to the inspection date\"",
+    origin: "operator",
   },
 };
 export const BCD_5952_URL = BCD_5952;
