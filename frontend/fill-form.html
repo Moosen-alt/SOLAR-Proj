@@ -5,7 +5,7 @@
   <link rel="icon" type="image/png" href="/assets/brand/keel-symbol-64.png" />
   <link rel="apple-touch-icon" href="/assets/brand/keel-symbol-180.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Fill a form · Solar Submission Autopilot</title>
+  <title>Fill a form · Keelix</title>
   <link rel="stylesheet" href="/styles.css" />
   <!-- Manrope is NOT linked here. It is vendored in frontend/vendor and declared with
        @font-face in /styles.css, which every page below loads — see the MANROPE block at
@@ -27,9 +27,16 @@
       display: flex; align-items: center; justify-content: space-between; gap: 16px;
       padding: 14px 28px; background: var(--bg); border-bottom: 1px solid var(--line);
     }
-    .ff-brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-    .ff-brand strong { font-size: var(--text-sm); font-weight: 700; letter-spacing: -.01em; }
-    .ff-brand span { font-size: var(--text-xs); color: var(--muted); }
+    /* Same wordmark as the dashboard and the Parser (.brand/.brand-mark/.brand-word from
+       /styles.css). DIRECT CHILD only: a bare `.ff-brand span` would repaint the wordmark. */
+    .ff-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .ff-brand > span { font-size: var(--text-xs); color: var(--muted); white-space: nowrap; }
+    .ff-topbar nav .button { white-space: nowrap; }
+    @media (max-width: 560px) {
+      .ff-topbar { padding: 10px 16px; gap: 10px; }
+      .ff-brand > span { display: none; }
+      body .ff-wrap { padding-left: 16px; padding-right: 16px; }
+    }
 
     .ff-wrap { max-width: 920px; margin: 0 auto; padding: 0 28px 110px; }
     .ff-eyebrow {
@@ -113,7 +120,10 @@
 <body>
   <header class="ff-topbar">
     <div class="ff-brand">
-      <strong>Solar Submission Autopilot</strong>
+      <a class="brand" href="/dashboard" aria-label="Keelix Automation — dashboard">
+        <span class="brand-mark" aria-hidden="true"><img src="/assets/brand/keel-symbol-64.png" alt="" width="26" height="26" /></span>
+        <span class="brand-word"><span class="brand-name">KEELIX</span><span class="brand-sub">AUTOMATION</span></span>
+      </a>
       <span>Form filling</span>
     </div>
     <nav><a class="button ghost" href="/dashboard">&#8592; Dashboard</a></nav>
@@ -141,7 +151,7 @@
         <span class="ff-num">02 A</span>
         <h2>Look it up automatically</h2>
         <div class="hint">Same auto-acquisition the autopilot uses: researches the AHJ's required form(s), downloads, maps, and fills — no upload needed.</div>
-        <label for="formTypeFind">Form type <span class="opt">(blank = the AHJ's full required set)</span></label>
+        <label for="formTypeFind">Form type</label>
         <select id="formTypeFind">
           <option value="">All required forms</option>
           <option value="permit_application">Permit application</option>

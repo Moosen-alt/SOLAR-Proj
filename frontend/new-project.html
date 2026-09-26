@@ -5,7 +5,7 @@
   <link rel="icon" type="image/png" href="/assets/brand/keel-symbol-64.png" />
   <link rel="apple-touch-icon" href="/assets/brand/keel-symbol-180.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>New project · Solar Submission Autopilot</title>
+  <title>New project · Keelix</title>
   <link rel="stylesheet" href="/styles.css" />
   <!-- Manrope is NOT linked here. It is vendored in frontend/vendor and declared with
        @font-face in /styles.css, which every page below loads — see the MANROPE block at
@@ -28,9 +28,23 @@
       display: flex; align-items: center; justify-content: space-between; gap: 16px;
       padding: 14px 28px; background: var(--bg); border-bottom: 1px solid var(--line);
     }
-    .np-brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-    .np-brand strong { font-size: var(--text-sm); font-weight: 700; letter-spacing: -.01em; }
-    .np-brand span { font-size: var(--text-xs); color: var(--muted); }
+    /* Same wordmark as the dashboard and the Parser (.brand/.brand-mark/.brand-word from
+       /styles.css). DIRECT CHILD only: a bare `.np-brand span` would repaint the wordmark. */
+    .np-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .np-brand > span { font-size: var(--text-xs); color: var(--muted); white-space: nowrap; }
+    .np-topbar nav { display: flex; align-items: center; gap: 6px; }
+    .np-topbar nav .button { white-space: nowrap; }
+    .np-topbar .np-short { display: none; }
+    @media (max-width: 560px) {
+      .np-topbar { padding: 10px 16px; gap: 10px; }
+      .np-brand > span { display: none; }
+      .np-topbar .np-long { display: none; }
+      .np-topbar .np-short { display: inline; }
+      body .np-wrap { padding-left: 16px; padding-right: 16px; }
+    }
+    /* Two-up groups: auto-fit made three columns and left a lone "Meter #" beside two holes. */
+    .np-grid.cols2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    @media (max-width: 560px) { .np-grid.cols2 { grid-template-columns: 1fr; } }
 
     .np-wrap { max-width: 940px; margin: 0 auto; padding: 0 28px 110px; }
     .np-eyebrow {
@@ -82,12 +96,15 @@
 <body>
   <header class="np-topbar">
     <div class="np-brand">
-      <strong>Solar Submission Autopilot</strong>
+      <a class="brand" href="/dashboard" aria-label="Keelix Automation — dashboard">
+        <span class="brand-mark" aria-hidden="true"><img src="/assets/brand/keel-symbol-64.png" alt="" width="26" height="26" /></span>
+        <span class="brand-word"><span class="brand-name">KEELIX</span><span class="brand-sub">AUTOMATION</span></span>
+      </a>
       <span>New project</span>
     </div>
     <nav>
       <a class="button ghost" href="/dashboard">&#8592; Dashboard</a>
-      <a class="button secondary" href="/parser">Upload documents instead</a>
+      <a class="button secondary" href="/parser"><span class="np-long">Upload documents instead</span><span class="np-short">Upload docs</span></a>
     </nav>
   </header>
 
@@ -95,10 +112,10 @@
     <div class="np-hero">
       <span class="np-eyebrow">Project intake</span>
       <h1>Start the project by hand.</h1>
-      <p>Enter everything you have in one place. Only the homeowner name and install address are
-         required — the parser and the knowledge base fill the rest, and blanks can be completed
-         later. Grouped to match the Oregon BCD solar checklist and the utility (PowerClerk)
-         interconnection application.</p>
+      <p>Enter everything you have in one place. Only the client, homeowner name and install
+         address are required — the parser and the knowledge base fill the rest, and blanks can be
+         completed later. Grouped the way the permit application and the utility's interconnection
+         application ask for them.</p>
     </div>
     <div class="np-rule"></div>
 
@@ -120,7 +137,7 @@
           <div class="np-field"><label for="homeownerPhone">Phone <span class="opt">(optional)</span></label><input id="homeownerPhone" name="homeownerPhone" type="tel" /></div>
           <div class="np-field wide"><label for="street">Install address <span class="req">*</span></label><input id="street" name="street" required autocomplete="off" placeholder="Street address" /></div>
           <div class="np-field"><label for="city">City</label><input id="city" name="city" /></div>
-          <div class="np-field"><label for="state">State</label><input id="state" name="state" value="OR" maxlength="2" /></div>
+          <div class="np-field"><label for="state">State</label><input id="state" name="state" placeholder="e.g. OR" maxlength="2" /></div>
           <div class="np-field"><label for="zip">ZIP</label><input id="zip" name="zip" inputmode="numeric" /></div>
         </div>
       </section>
@@ -130,8 +147,8 @@
         <span class="np-num">02</span>
         <h2>Jurisdiction &amp; utility</h2>
         <div class="sec-hint">The permitting authority (AHJ) and the utility that receives the net-metering / interconnection request.</div>
-        <div class="np-grid">
-          <div class="np-field"><label for="ahj">AHJ / building dept</label><input id="ahj" name="ahj" placeholder="e.g. Oregon ePermitting, Washington County" /></div>
+        <div class="np-grid cols2">
+          <div class="np-field"><label for="ahj">AHJ / building dept</label><input id="ahj" name="ahj" placeholder="e.g. City of Portland" /></div>
           <div class="np-field"><label for="utility">Utility</label><input id="utility" name="utility" placeholder="e.g. PGE, Pacific Power" /></div>
           <div class="np-field"><label for="account">Utility account #</label><input id="account" name="account" autocomplete="off" /></div>
           <div class="np-field"><label for="meter">Meter #</label><input id="meter" name="meter" autocomplete="off" /></div>
@@ -151,7 +168,7 @@
         <span class="np-num">03</span>
         <h2>System size &amp; value</h2>
         <div class="sec-hint">Sizing (kW) drives the interconnection tier; job value drives the permit fee.</div>
-        <div class="np-grid">
+        <div class="np-grid cols2">
           <div class="np-field"><label for="dcKw">System size DC (kW)</label><input id="dcKw" name="dcKw" inputmode="decimal" /></div>
           <div class="np-field"><label for="acKw">System size AC (kW)</label><input id="acKw" name="acKw" inputmode="decimal" /></div>
           <div class="np-field"><label for="exportKw">Total export (kW)</label><input id="exportKw" name="exportKw" inputmode="decimal" /></div>

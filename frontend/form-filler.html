@@ -5,7 +5,7 @@
   <link rel="icon" type="image/png" href="/assets/brand/keel-symbol-64.png" />
   <link rel="apple-touch-icon" href="/assets/brand/keel-symbol-180.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Form Filler · standalone tool</title>
+  <title>Form filler · Keelix</title>
   <link rel="stylesheet" href="/styles.css" />
   <!-- Manrope is NOT linked here. It is vendored in frontend/vendor and declared with
        @font-face in /styles.css, which every page below loads — see the MANROPE block at
@@ -27,6 +27,18 @@
        --primary-foreground text. */
     body { background: var(--bg); color: var(--text); }
 
+    /* The same header every tool page carries: the Keelix wordmark (.brand from /styles.css)
+       and a way back. This page had neither — no brand and no route to the dashboard. It
+       scrolls away; the tool bar below stays sticky. */
+    .ff2-top {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      padding: 12px 20px; background: var(--bg); border-bottom: 1px solid var(--line);
+    }
+    .ff2-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .ff2-brand > span { font-size: var(--text-xs); color: var(--muted); white-space: nowrap; }
+    .ff2-top .button { white-space: nowrap; }
+    @media (max-width: 560px) { .ff2-top { padding: 10px 16px; } .ff2-brand > span { display: none; } }
+
     .ff2-bar {
       position: sticky; top: 0; z-index: 20; background: var(--bg);
       border-bottom: 1px solid var(--line); padding: 12px 20px;
@@ -39,7 +51,9 @@
     /* setStatus() assigns className outright, so this is styled BY ID. The old
        120px floor was enough on its own to wrap the toolbar onto a second row at
        1440, stranding "Download filled PDF" under everything else. */
-    #ff2status { font-size: var(--text-xs); color: var(--muted); }
+    /* Bounded: a long status ("Loaded · auto-fill or click to add values") pushed the bar wider
+       than a phone. The full text is in title=. */
+    #ff2status { font-size: var(--text-xs); color: var(--muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #ff2status.error { color: var(--danger); } #ff2status.ok { color: var(--primary); }
     /* The instructional hints are the first thing worth losing when the toolbar
        runs out of room; the controls are not. Measured at 1440 (the laptop this
@@ -50,7 +64,18 @@
 
     .ff2-eyebrow { font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--primary); }
 
-    .ff2-stage { padding: 28px 20px 60px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+    /* The rendered pages keep their natural width; the STAGE scrolls sideways, not the page
+       (at 390 the whole page scrolled to 749px once a form loaded). `safe center` keeps a page
+       wider than the stage from being clipped on its left edge. */
+    .ff2-stage { padding: 28px 20px 60px; display: flex; flex-direction: column; align-items: safe center; gap: 20px; max-width: 100%; overflow-x: auto; }
+    .ff2-page { flex: none; }
+    #ff2lookup { flex-wrap: wrap; }
+    #ff2lookup input, #ff2lookup select { max-width: 100%; }
+    #ff2autoNote { margin-left: 12px; }
+    /* Batch fill: every control the same height, so the labels share one baseline. */
+    #ff2batch label { white-space: nowrap; }
+    #ff2batch .bx-col { min-height: 34px; min-width: 120px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-weight: 400; background: var(--card); color: var(--text); }
+    #ff2batch label input { min-height: 34px; box-sizing: border-box; }
     .ff2-page { position: relative; box-shadow: var(--shadow); border: 1px solid var(--border); background: #fff; border-radius: var(--radius-sm); overflow: hidden; }
     .ff2-page canvas { display: block; }
     .ff2-field {
@@ -86,8 +111,18 @@
   </style>
 </head>
 <body>
+  <header class="ff2-top">
+    <div class="ff2-brand">
+      <a class="brand" href="/dashboard" aria-label="Keelix Automation — dashboard">
+        <span class="brand-mark" aria-hidden="true"><img src="/assets/brand/keel-symbol-64.png" alt="" width="26" height="26" /></span>
+        <span class="brand-word"><span class="brand-name">KEELIX</span><span class="brand-sub">AUTOMATION</span></span>
+      </a>
+      <span>Form filler</span>
+    </div>
+    <a class="button ghost" href="/dashboard">&#8592; Dashboard</a>
+  </header>
   <div class="ff2-bar">
-    <h1>Form Filler</h1>
+    <h1>Form filler</h1>
     <label class="button primary" style="margin:0"><input type="file" id="ff2file" accept=".pdf,.docx,.doc,application/pdf" hidden />Upload form</label>
     <input id="ff2url" placeholder="…or paste a form URL" style="width:180px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit" />
     <button class="secondary" id="ff2fetch">Fetch</button>
@@ -108,26 +143,26 @@
 
   <div id="ff2lookup" style="display:none;background:var(--surface);border-bottom:1px solid var(--line);padding:10px 18px;align-items:center;gap:8px">
     <span class="hint">Look up the blank form from the AHJ site:</span>
-    <input id="lk_ahj" placeholder="AHJ (e.g. Bellingham city)" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit" />
+    <input id="lk_ahj" placeholder="AHJ (e.g. Springfield)" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit" />
     <input id="lk_state" placeholder="State" maxlength="2" style="width:60px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit" />
     <select id="lk_type" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit">
       <option value="">Any form</option><option value="refund">Refund request</option>
       <option value="permit_application">Permit application</option><option value="utility_application">Interconnection</option>
     </select>
     <button class="primary" id="ff2lookupGo">Find &amp; load</button>
-    <span class="hint">Uses web search (needs API key)</span>
+    <span class="hint">Searches the AHJ's website</span>
   </div>
 
   <div id="ff2batch" style="display:none;background:var(--surface);border-bottom:1px solid var(--line);padding:14px 18px">
     <div class="ff2-eyebrow" style="margin-bottom:8px">Batch fill</div><div style="font-size:var(--text-sm);color:var(--muted);margin-bottom:10px">Paste rows from your spreadsheet (tab-separated).</div>
-    <textarea id="bx_rows" placeholder="12758&#9;Jane Example&#9;&#9;123 Example St, Bellingham, WA, 98229&#9;…&#9;https://cob.org/.../024-refund-request-form.pdf" style="width:100%;height:90px;border:1px solid var(--line);border-radius:6px;padding:8px;font-family:monospace;font-size:12px"></textarea>
+    <textarea id="bx_rows" placeholder="10001&#9;Jane Example&#9;&#9;123 Example St, Springfield, WA, 98000&#9;…&#9;https://example.gov/forms/request-form.pdf" style="width:100%;height:90px;border:1px solid var(--line);border-radius:6px;padding:8px;font-family:monospace;font-size:12px"></textarea>
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">
-      <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Person requesting refund (all rows)<input id="bx_requester" placeholder="Your company name" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit;font-weight:400" /></label>
+      <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Requester (all rows)<input id="bx_requester" placeholder="Your company name" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit;font-weight:400" /></label>
       <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Form URL column<select id="bx_url" class="bx-col"></select></label>
       <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Project address column<select id="bx_addr" class="bx-col"></select></label>
       <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Permit # column<select id="bx_permit" class="bx-col"></select></label>
       <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">Reason column<select id="bx_reasonCol" class="bx-col"></select></label>
-      <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">…or reason for all<input id="bx_reason" placeholder="Permit canceled by applicant" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit;font-weight:400" /></label>
+      <label style="font-size:11px;font-weight:700;display:flex;flex-direction:column;gap:3px">…or reason for all<input id="bx_reason" placeholder="e.g. Permit canceled" style="padding:7px 9px;border:1px solid var(--line);border-radius:6px;font:inherit;font-weight:400" /></label>
       <button class="primary" id="bx_run">Fill all → download ZIP</button>
     </div>
     <div id="bx_status" style="font-size:12px;margin-top:8px;color:var(--muted,#778)"></div>
@@ -137,12 +172,12 @@
   <div class="ff2-data" id="ff2data">
     <div class="ff2-data-grid">
       <label>Name<input id="d_name" placeholder="Full name" /></label>
-      <label>Permit #<input id="d_permitNumber" placeholder="ELE2026-0918" /></label>
-      <label>Project address<input id="d_street" placeholder="1801 35th St" /></label>
+      <label>Permit #<input id="d_permitNumber" placeholder="e.g. permit number" /></label>
+      <label>Project address<input id="d_street" placeholder="e.g. 123 Example St" /></label>
       <label>City<input id="d_city" /></label>
       <label>State<input id="d_state" maxlength="2" /></label>
       <label>ZIP<input id="d_zip" /></label>
-      <label>Date<input id="d_date" placeholder="05/04/2026" /></label>
+      <label>Date<input id="d_date" placeholder="MM/DD/YYYY" /></label>
     </div>
     <div class="ff2-eyebrow" style="margin:4px 0 10px">Company boilerplate — applied to every form</div>
     <div class="ff2-data-grid">
@@ -183,7 +218,7 @@
     }
     const stage = document.getElementById("ff2stage");
     const statusEl = document.getElementById("ff2status");
-    const setStatus = (t, k) => { statusEl.textContent = t; statusEl.className = k || ""; };
+    const setStatus = (t, k) => { statusEl.textContent = t; statusEl.title = t; statusEl.className = k || ""; };
     let pdfBytes = null;           // Uint8Array of the (converted) PDF
     let pageMeta = [];             // per page: { wrap, widthPt, heightPt }
     const fields = [];             // { page, fx, fy, sizePt, text, el }

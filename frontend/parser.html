@@ -5,7 +5,7 @@
   <link rel="icon" type="image/png" href="/assets/brand/keel-symbol-64.png" />
   <link rel="apple-touch-icon" href="/assets/brand/keel-symbol-180.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Solar Submission Engine | Solar Autopilot</title>
+  <title>Project intake · Keelix</title>
   <link rel="stylesheet" href="/styles.css" />
   <!-- Manrope is NOT linked here. It is vendored in frontend/vendor and declared with
        @font-face in /styles.css, which every page below loads — see the MANROPE block at
@@ -49,6 +49,14 @@
        tagline size. This matches only the tagline beside the mark. */
     .ps-brand > span { font-size: var(--text-xs); color: var(--muted); }
     .ps-topbar nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .ps-topbar nav .button, .ps-brand > span { white-space: nowrap; }
+    /* At phone width the tagline wrapped to two lines beside the wordmark and the nav stacked
+       under itself; the wordmark already says where you are. */
+    @media (max-width: 560px) {
+      .ps-topbar { padding: 10px 16px; gap: 10px; }
+      .ps-brand > span { display: none; }
+      .ps-topbar nav { flex-wrap: nowrap; }
+    }
 
     .ps-wrap { max-width: 1160px; margin: 0 auto; padding: 0 28px 44px; }
     /* Browser-default link blue is the one colour on this page that belongs to no
@@ -124,6 +132,13 @@
       padding: 13px 20px;
     }
     details.ps-card > summary:hover { background: var(--surface-2); }
+    /* At phone width a wrapping flex row put the chevron alone on its own line above the
+       title. Stack instead: chevron in its own column, title + notes in the other. */
+    @media (max-width: 700px) {
+      details.ps-card > summary { display: grid; grid-template-columns: 9px minmax(0, 1fr); column-gap: 10px; row-gap: 3px; }
+      details.ps-card > summary > * { grid-column: 2; min-width: 0; }
+      details.ps-card > summary::before { grid-column: 1; grid-row: 1; align-self: start; margin-top: 8px; }
+    }
     details.ps-card > summary::-webkit-details-marker { display: none; }
     details.ps-card > summary::before {
       content: ""; flex: none; align-self: center;
@@ -304,7 +319,7 @@
   </div>
   <nav>
     <a class="button ghost" href="/dashboard">&#8592; Dashboard</a>
-    <a class="button secondary" href="/new-project">New project</a>
+    <a class="button primary" href="/new-project">New project</a>
   </nav>
 </header>
 
@@ -425,7 +440,7 @@
         <div class="ps-field"><label for="owner">Homeowner name</label><input id="owner" /></div>
         <div class="ps-field"><label for="street">Project address</label><input id="street" /></div>
         <div class="ps-field"><label for="city">City</label><input id="city" /></div>
-        <div class="ps-field"><label for="state">State</label><input id="state" value="OR" /></div>
+        <div class="ps-field"><label for="state">State</label><input id="state" placeholder="e.g. OR" /></div>
         <div class="ps-field"><label for="zip">ZIP</label><input id="zip" /></div>
         <div class="ps-field"><label for="meter">Meter number</label><input id="meter" /></div>
         <div class="ps-field"><label for="account">Account number</label><input id="account" /></div>
@@ -541,18 +556,18 @@
         <strong>Permit path + stamp</strong>
         <!-- "Reference only" is the honest part and stays. The clause explaining what
              prescriptive vs engineered means taught, and is gone. -->
-        <span class="ps-summary-note">Reference only &mdash; backend QC and the AHJ reviewer gate are the source of truth.</span>
+        <span class="ps-summary-note">For reference &mdash; final checks happen in QC and the plan review gate.</span>
       </summary>
       <div class="ps-card-body">
         <div class="ps-readout">
           <span class="ps-eyebrow">Permit path</span>
-          <span class="ps-readout-value" id="pathMain">REVIEW</span>
-          <span class="ps-readout-note" id="pathSub">Packet needs confirmation on one or more items.</span>
+          <span class="ps-readout-value" id="pathMain">&mdash;</span>
+          <span class="ps-readout-note" id="pathSub">Not read yet &mdash; upload a plan set.</span>
         </div>
         <div class="ps-readout">
           <span class="ps-eyebrow">Stamp</span>
-          <span class="ps-readout-value" id="stampMain">MANUAL REVIEW</span>
-          <span class="ps-readout-note" id="stampSub">If a required structural item fails, send to design for the stamped/engineered path.</span>
+          <span class="ps-readout-value" id="stampMain">&mdash;</span>
+          <span class="ps-readout-note" id="stampSub">Not read yet &mdash; upload a plan set.</span>
         </div>
         <div class="ps-grid" style="margin-top:18px">
           <div class="ps-field"><label for="pathReasons">Permit path reasons</label><textarea id="pathReasons" class="tall" readonly></textarea></div>
@@ -611,17 +626,17 @@
       </summary>
       <div class="ps-card-body">
       <div class="ps-grid">
-        <div class="ps-field"><label for="ubAccountHolder">UB account holder</label><input id="ubAccountHolder" /></div>
-        <div class="ps-field"><label for="ubAccountNumber">UB account number</label><input id="ubAccountNumber" /></div>
-        <div class="ps-field"><label for="ubServiceAddress">UB service address</label><input id="ubServiceAddress" /></div>
-        <div class="ps-field"><label for="ubMeterNumber">UB meter number</label><input id="ubMeterNumber" /></div>
+        <div class="ps-field"><label for="ubAccountHolder">Bill account holder</label><input id="ubAccountHolder" /></div>
+        <div class="ps-field"><label for="ubAccountNumber">Bill account number</label><input id="ubAccountNumber" /></div>
+        <div class="ps-field"><label for="ubServiceAddress">Bill service address</label><input id="ubServiceAddress" /></div>
+        <div class="ps-field"><label for="ubMeterNumber">Bill meter number</label><input id="ubMeterNumber" /></div>
         <div class="ps-field"><label for="planMeterNumber">Plan-set meter number</label><input id="planMeterNumber" /></div>
         <div class="ps-field"><label for="ubMeterVerification">Meter verification</label><input id="ubMeterVerification" /></div>
       </div>
       <div id="ubVerificationHelp" class="ps-status">Upload a utility bill to verify account info and meter number.</div>
       <div class="ps-stack" style="margin-top:14px">
-        <div class="ps-field"><label for="ubParserNotes">UB parser notes</label><textarea id="ubParserNotes" readonly></textarea></div>
-        <div class="ps-field"><label for="ubRawTextPreview">UB OCR / text preview</label><textarea id="ubRawTextPreview" readonly class="tall"></textarea></div>
+        <div class="ps-field"><label for="ubParserNotes">Bill reading notes</label><textarea id="ubParserNotes" readonly></textarea></div>
+        <div class="ps-field"><label for="ubRawTextPreview">Bill text (OCR preview)</label><textarea id="ubRawTextPreview" readonly class="tall"></textarea></div>
       </div>
       </div>
     </details>
@@ -629,7 +644,7 @@
     <details class="ps-card">
       <summary>
         <strong>Submission text builder</strong>
-        <span class="ps-summary-note">Collapsed &mdash; the LLM now auto-writes these (editable copy surface).</span>
+        <span class="ps-summary-note">Written for you automatically &mdash; edit if needed.</span>
       </summary>
       <div class="ps-card-body">
         <div class="ps-grid">
@@ -684,7 +699,7 @@
     <details class="ps-card">
       <summary>
         <strong>Utility portal spec builder</strong>
-        <span class="ps-summary-note">Collapsed &mdash; redundant with the taught portal automation and the backend NEM worksheet.</span>
+        <span class="ps-summary-note">Optional &mdash; the portal step fills these.</span>
       </summary>
       <div class="ps-card-body">
         <div class="ps-grid">
@@ -4419,8 +4434,8 @@ function resetAll(){
   // Only non-client UI defaults remain hardcoded. Installer/contractor/CCB info is
   // NEVER defaulted — it comes from the selected client to avoid wrong-client data.
   document.querySelectorAll('input:not([type=file]), textarea').forEach(el => {
-    if (el.id === 'state') el.value = 'OR';
-    else if (el.id === 'projectDoxSplitMode') el.value = 'individual';
+    // No state default: a pre-filled "OR" rode along onto CA / TX jobs (UI audit F31).
+    if (el.id === 'projectDoxSplitMode') el.value = 'individual';
     else if (el.id === 'projectDoxNamingPreset') el.value = 'numericSheet';
     else el.value = '';
   });
@@ -5452,7 +5467,7 @@ function buildSystemPayload() {
     homeownerName: getVal('owner'),
     projectAddress: getVal('street'),
     city: getVal('city'),
-    state: getVal('state') || 'OR',
+    state: getVal('state'), // blank -> the extracted state is kept (no silent "OR")
     zip: getVal('zip'),
     ahj: getVal('ahj'),
     utility: getVal('utility'),
