@@ -416,4 +416,50 @@ ok("no Oregon leakage: licence label by state, N/A dropped, identified-vs-unknow
   ok("owner close: a surname-only match is a CONFLICT naming both; given name + surname still resolves");
 }
 
+// ---------------------------------------------------------------------------
+// 4b (close 3). A compound surname counts ONCE: "DE LA CRUZ" is one surname, not three
+// shared tokens, so two people who share it are a spouse/relative pair, never a match.
+// ---------------------------------------------------------------------------
+{
+  // MUST-PASS: the same person written four ways still matches "JANE SAMPLE" (both directions)
+  for (const n of ["SAMPLE, JANE A", "SAMPLE JANE", "JANE SAMPLE-DOE", "JANE A SAMPLE"]) {
+    assert.equal(PR.namesMatch(n, "JANE SAMPLE"), true, `${n} is JANE SAMPLE`);
+    assert.equal(PR.namesMatch("JANE SAMPLE", n), true, `JANE SAMPLE is ${n}`);
+  }
+  assert.equal(PR.namesMatch("DE LA CRUZ, MARIA", "MARIA DE LA CRUZ RESIDENCE"), true, "a compound surname with the same given name still matches");
+  // MUST-EXCLUDE: a shared surname block (however many tokens) with a different given name
+  for (const [a, b] of [["MARIA DE LA CRUZ", "JOSE DE LA CRUZ"], ["MARIA GARCIA LOPEZ", "JOSE GARCIA LOPEZ"], ["ANNA VAN DER BERG", "PIET VAN DER BERG"], ["SMITH FAMILY TRUST", "JONES FAMILY TRUST"], ["JOSE DE LA CRUZ GARCIA", "MARIA DE LA CRUZ"], ["MARIA DE LA CRUZ", "DE LA CRUZ RESIDENCE"], ["ANNA VAN DER BERG", "PIET VAN DEN BERG"], ["JOSE GARCIA LOPEZ MARTINEZ", "MARIA GARCIA LOPEZ"]]) {
+    assert.equal(PR.namesMatch(a, b), false, `${a} is not ${b}`);
+    assert.equal(PR.namesMatch(b, a), false, `${b} is not ${a}`);
+  }
+  const owner = (bill: string, plan: string) => PR.resolveReviewItems({ attached: ["plan_set", "utility_bill"], planText: planTextSF, passes: [
+    visionPass({ owner: field(bill, "utility_bill", `Service Provided To: ${bill}`, 0.97) }),
+    textPass({ owner: field(plan, "plan_set", `${plan} RESIDENCE`, 0.6, "PV 0.0") }, ["owner"]),
+  ] });
+  // MUST-EXCLUDE through the page's resolver: the spouse is a CONFLICT naming both, never RESOLVED
+  const cruz = owner("MARIA DE LA CRUZ", "JOSE DE LA CRUZ");
+  assert.ok(!cruz.resolved.some((x: { field: string }) => x.field === "owner"), "a compound-surname spouse must not resolve to the bill holder");
+  assert.doesNotMatch(JSON.stringify(cruz), /matches the plan set/);
+  const cc = cruz.conflicts.find((x: { field: string }) => x.field === "owner");
+  assert.ok(cc && /MARIA DE LA CRUZ/.test(cc.text) && /JOSE DE LA CRUZ/.test(cc.text), "the conflict names both people");
+  assert.match(cc.text, /shares only a surname/);
+  // an initial-only bill name is not "a different given name" — the given name is just not confirmed
+  const init = owner("J SAMPLE", "JANE SAMPLE");
+  const ic = init.conflicts.find((x: { field: string }) => x.field === "owner");
+  assert.ok(ic && !init.resolved.some((x: { field: string }) => x.field === "owner"));
+  assert.match(ic.text, /initial or surname only \("J SAMPLE"\).*not confirmed/);
+  assert.doesNotMatch(ic.text, /different given name|spouse/);
+  // a family trust on the plan names a surname, not a person called FAMILY: no spouse invented
+  const trust = owner("JANE SMITH", "SMITH FAMILY TRUST");
+  const tc = trust.conflicts.find((x: { field: string }) => x.field === "owner");
+  assert.ok(tc && !trust.resolved.some((x: { field: string }) => x.field === "owner"));
+  assert.match(tc.text, /gives a surname only/);
+  assert.doesNotMatch(tc.text, /spouse|different given name/);
+  // MUST-PASS through the resolver: a joint bill naming the plan-set owner resolves to the bill
+  const joint = owner("JOHN & JANE SAMPLE", "JANE SAMPLE");
+  const jr = joint.resolved.find((x: { field: string }) => x.field === "owner");
+  assert.ok(jr && jr.value === "JOHN & JANE SAMPLE" && /matches the plan set/.test(jr.how), "a joint account holder that names the owner still resolves");
+  ok("owner close 3: a compound surname counts once — spouse pairs are CONFLICTs; reversed / comma / hyphenated / middle-initial forms still match");
+}
+
 console.log(`\nparserReviewList: all ${passed} checks passed`);

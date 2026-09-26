@@ -196,31 +196,77 @@
     return String(excerpt).toUpperCase().includes(v.toUpperCase());
   };
 
+  // Words that are never a person's name: title-block filler, suffixes, and the trust/estate
+  // wording around a name ("SMITH FAMILY TRUST" is the Smiths, not a person called FAMILY).
+  const NAME_FILLER = /^(?:JR|SR|II|III|IV|MR|MRS|MS|DR|AND|THE|OF|FAMILY|TRUST|TRUSTEES?|LIVING|REVOCABLE|IRREVOCABLE|ESTATE|LLC|INC)$/;
+  // Surname particles: part of a compound surname block, never evidence of a given name.
+  const SURNAME_PARTICLE = new Set(['DE', 'LA', 'LAS', 'LOS', 'DEL', 'DELLA', 'DA', 'DI', 'DO', 'DOS', 'DAS', 'VAN', 'VON', 'DER', 'DEN', 'TER', 'TEN', 'LE', 'DU', 'ST', 'SAN', 'SANTA', 'BIN', 'BEN']);
   function nameTokens(name) {
-    return clean(name).toUpperCase().replace(/\bRESIDENCE\b|\bRES\.?\b|\bPROJECT\b|\bHOUSE\b/g, '').replace(/[^A-Z ]/g, ' ').split(/\s+/).filter((t) => t.length >= 2 && !/^(?:JR|SR|II|III|IV|MR|MRS|MS|DR|AND|THE|OF)$/.test(t));
+    return clean(name).toUpperCase().replace(/\bRESIDENCE\b|\bRES\.?\b|\bPROJECT\b|\bHOUSE\b|\bET\s+(?:AL|UX|VIR)\b/g, '').replace(/[^A-Z ]/g, ' ').split(/\s+/).filter((t) => t.length >= 2 && !NAME_FILLER.test(t));
+  }
+  /** One token list per person, given name first: "SAMPLE, JANE A" → JANE A SAMPLE, and a joint
+   *  "JOHN & JANE SAMPLE" → JOHN SAMPLE + JANE SAMPLE (a lone given name takes the surname
+   *  block of the last person named). */
+  function namePersons(name) {
+    let s = clean(name).toUpperCase();
+    const comma = s.match(/^([^,&+/]+),\s*(.+)$/);
+    if (comma) s = `${comma[2]} ${comma[1]}`;
+    const people = s.split(/\s*(?:&|\+|\/|\bAND\b)\s*/).map(nameTokens).filter((t) => t.length);
+    const last = people[people.length - 1] || [];
+    return people.map((t) => (t.length === 1 && last.length >= 2 && t !== last ? [t[0], ...last.slice(1)] : t));
+  }
+  const commonSuffix = (a, b) => { let k = 0; while (k < a.length && k < b.length && a[a.length - 1 - k] === b[b.length - 1 - k]) k++; return k; };
+  function personsMatch(pa, pb) {
+    if (!pa.length || !pb.length) return false;
+    if (pa.length >= 2 && pa.join(' ') === pb.join(' ')) return true;
+    const k = commonSuffix(pa, pb);
+    if (k >= 1) {
+      // The shared ending is the surname block, and a compound surname ("DE LA CRUZ",
+      // "GARCIA LOPEZ", "VAN DER BERG") counts ONCE however many tokens it has. A name that
+      // is nothing but that block names no given name (ga/gb empty), so it confirms no person.
+      const ga = pa.slice(0, pa.length - k).filter((t) => !SURNAME_PARTICLE.has(t));
+      const gb = pb.slice(0, pb.length - k).filter((t) => !SURNAME_PARTICLE.has(t));
+      return ga.some((t) => gb.includes(t));
+    }
+    // No shared ending: a reversed name ("SAMPLE JANE") or a double surname on one side only
+    // ("JANE SAMPLE-DOE"). Each name's leading token must appear in the other — so a given
+    // name is shared — plus one more shared name token.
+    const shared = new Set(pa.filter((t) => pb.includes(t) && !SURNAME_PARTICLE.has(t)));
+    return pb.includes(pa[0]) && pa.includes(pb[0]) && shared.size >= 2;
   }
   function namesMatch(a, b) {
-    const ta = nameTokens(a); const tb = nameTokens(b);
-    if (!ta.length || !tb.length) return false;
     // Given name AND surname: a shared surname alone is a spouse or a relative ("PAT SAMPLE"
-    // on the bill, "JANE SAMPLE" on the plan set), not the same person — calling that a match
-    // would put a false "matches the plan set" into the resolution text.
-    const shared = ta.filter((t) => tb.includes(t));
-    return shared.length >= 2;
+    // on the bill, "JANE SAMPLE" on the plan set, or "MARIA DE LA CRUZ" vs "JOSE DE LA CRUZ"),
+    // not the same person — calling that a match would put a false "matches the plan set"
+    // into the resolution text.
+    const pa = namePersons(a); const pb = namePersons(b);
+    return pa.some((x) => pb.some((y) => personsMatch(x, y)));
   }
   /** How a non-matching document name relates to the bill holder, for the conflict wording:
-   *  'surname-only-doc' — the document prints a surname and no given name ("SAMPLE RESIDENCE"),
-   *  so it cannot confirm or deny the person; 'kin' — both print a full name, same surname,
-   *  different given name (a spouse or relative); '' — otherwise. */
+   *  'surname-only-doc' — the document prints a surname and no given name ("SAMPLE RESIDENCE",
+   *  "DE LA CRUZ RESIDENCE"), so it cannot confirm or deny the person; 'surname-only-bill' —
+   *  the bill prints an initial or surname only ("J SAMPLE"), so the given name is not
+   *  confirmed; 'kin' — both print a full name, same surname block, different given name (a
+   *  spouse or relative); '' — otherwise. */
   function nameRelation(billName, docName) {
-    const tb = nameTokens(billName); const td = nameTokens(docName);
-    if (!tb.length || !td.length || namesMatch(billName, docName)) return '';
-    if (td.length === 1) return tb.includes(td[0]) ? 'surname-only-doc' : '';
-    const shared = td.filter((t) => tb.includes(t));
-    return shared.length === 1 && (shared[0] === td[td.length - 1] || shared[0] === tb[tb.length - 1]) ? 'kin' : '';
-  }
-  function sharesSurnameOnly(a, b) {
-    return nameRelation(a, b) === 'kin';
+    if (namesMatch(billName, docName)) return '';
+    let rel = '';
+    for (const tb of namePersons(billName)) for (const td of namePersons(docName)) {
+      const k = commonSuffix(tb, td);
+      let r = '';
+      if (k >= 1 && k >= td.length) r = 'surname-only-doc';
+      else if (k >= 1 && k >= tb.length) r = 'surname-only-bill';
+      else if (k >= 1) r = 'kin';
+      else if (td.length === 1 && tb.includes(td[0])) r = 'surname-only-doc';
+      else if (tb.length === 1 && td.includes(tb[0])) r = 'surname-only-bill';
+      else {
+        const shared = td.filter((t) => tb.includes(t));
+        if (shared.length === 1 && (shared[0] === td[td.length - 1] || shared[0] === tb[tb.length - 1])) r = 'kin';
+      }
+      if (r === 'surname-only-doc' || r === 'surname-only-bill') return r;
+      if (r) rel = r;
+    }
+    return rel;
   }
 
   // "2 Unit Depth" in a racking calc is not a two-unit building: the count-word forms must
@@ -329,7 +375,9 @@
         } else {
           const kin = candidates.filter((k) => nameRelation(bill.value, k.value) === 'kin');
           const bare = candidates.filter((k) => nameRelation(bill.value, k.value) === 'surname-only-doc');
+          const partial = candidates.filter((k) => nameRelation(bill.value, k.value) === 'surname-only-bill');
           const says = [];
+          if (partial.length) says.push(`the bill prints an initial or surname only ("${bill.value}"), so the given name on ${partial.map((k) => `the ${where(k)} ("${k.value}")`).join(' and ')} is not confirmed`);
           if (bare.length) says.push(`${bare.map((k) => `the ${where(k)} gives a surname only ("${k.value}")`).join(' and ')}, so it cannot confirm the given name`);
           if (kin.length) says.push(`the bill account holder shares only a surname with ${kin.map((k) => `the ${where(k)} ("${k.value}")`).join(' and ')} — a different given name (spouse or relative?)`);
           pushConflict('owner', [bill, ...candidates], says.length
