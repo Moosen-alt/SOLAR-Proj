@@ -980,6 +980,10 @@ tbody tr:hover, tbody tr.active { background: var(--tint-select); }
 .clients-modal-body .clients-editor-pane { min-width: 0; min-height: 0; overflow-y: auto; }
 .clients-modal-body .clients-form-pane { overflow: visible; padding: 16px 20px 0; }
 .clients-modal-body .clients-form-pane > h3:first-of-type { margin-top: 0; }
+/* Section headings must read ABOVE the field labels, not as another (muted, same-size) label:
+   full-strength text, a touch larger, and a rule between sections. */
+.clients-modal-body .clients-form-pane > h3, .clients-modal-body .clients-creds h3 { font-size: 14px; font-weight: 700; color: var(--text); }
+.clients-modal-body .clients-form-pane > h3:not(:first-of-type) { margin-top: 12px; padding-top: 16px; border-top: 1px solid var(--line); }
 /* Save / Delete stay reachable while the form scrolls; the bar releases once the pane
    scrolls past the form into the links and logins. */
 .clients-modal-body .clients-form-actions { position: sticky; bottom: 0; z-index: 1; margin: 16px -20px 0; padding: 12px 20px; background: var(--surface); border-top: 1px solid var(--line); }
@@ -989,7 +993,7 @@ tbody tr:hover, tbody tr.active { background: var(--tint-select); }
 .clients-modal-body .form-row { display: flex; gap: 10px; }
 
 .clients-modal-body .clients-creds { padding: 18px 20px 24px; border-top: 1px solid var(--line); background: var(--surface); }
-.clients-modal-body .clients-creds h3 { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.clients-modal-body .clients-creds h3 { margin: 0 0 4px; }
 .clients-modal-body .clients-creds-hint { font-size: 12px; margin: 0 0 10px; }
 .clients-modal-body .clients-creds-hint:empty { display: none; }
 .clients-modal-body .clients-creds-block + .clients-creds-block { margin-top: 20px; }
