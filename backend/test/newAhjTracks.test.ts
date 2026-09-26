@@ -25,6 +25,8 @@
 //   K7 utilityFilingLookup: unknown program labelled net metering                     → (u4) fails.
 //   K8 applicationDocs: Oregon template list outside Oregon                           → (j5) fails.
 //   K9 requiredDocuments: standard review ignored (Oregon row vocabulary everywhere)  → (j5b) fails.
+//   K10 applicationDocs: shippedProfileNeedsPerJobLookup always false                 → (s9) fails.
+//   K11 utilityFilingLookup: the trigger ignores a stored row                         → (u7) fails.
 //
 // Run: npx tsx backend/test/newAhjTracks.test.ts
 import "./_isolate"; // FIRST
@@ -210,6 +212,19 @@ await check("(s8) MUST-PASS: Oregon's cited state rule still settles an Oregon A
   assert.match(a.basis, /918-050-0180/);
 });
 
+await check("(s9) MUST-PASS: a shipped profile that cannot answer the structure asks for per-job research; MUST-EXCLUDE: one that can does not", () => {
+  assert.equal(appDocs.shippedProfileNeedsPerJobLookup(project({ ahj: "Arroyo Hondo" })), true);      // hedged note + flags
+  assert.equal(appDocs.shippedProfileNeedsPerJobLookup(project({ ahj: "Pinon Mesa County" })), true); // bare row
+  assert.equal(appDocs.shippedProfileNeedsPerJobLookup(project({ ahj: "Tres Piedras" })), false);     // the note says it
+  assert.equal(appDocs.shippedProfileNeedsPerJobLookup(project({ state: "OR", ahj: "City of Fernhollow" })), false); // cited state rule
+});
+await check("(s10) the code-profile amendment predicate recognises a second structure answer, and only that", () => {
+  assert.equal(appDocs.amendmentClaimsPermitStructure("Separate building (structural) and electrical permits required. PE-stamped drawings expected."), true);
+  assert.equal(appDocs.amendmentClaimsPermitStructure("BOTH a building permit and an electrical permit are required for residential rooftop PV"), true);
+  assert.equal(appDocs.amendmentClaimsPermitStructure("Structural stamp required: Yes"), false);
+  assert.equal(appDocs.amendmentClaimsPermitStructure("Line-side tap allowed: No"), false);
+});
+
 // ── GAP 4: what the lookup found reaches the card ─────────────────────────────────────────────
 console.log("\nGAP 4 — the found portal reaches the tracks");
 await check("(c1) MUST-PASS: the lookup's cited portal and record type are the permit track's channel and portal URL", () => {
@@ -314,6 +329,20 @@ await check("(u6) MUST-EXCLUDE: an ungrounded answer keeps nothing; a verified r
   assert.equal(again.saved, false);
   assert.equal(ufl.getUtilityFilingLookup(db, "NM", "Verified Electric")?.filing.value?.name, "Verified PowerClerk");
   assert.match(trackOf(project({ ahj: "Village of Lomita", utility: "Verified Electric" }), "nem").channel, /verified by a person/);
+});
+
+await check("(u7) the trigger: off without a model key; with one it looks a utility up ONCE (fire-and-forget), then reads the stored row", async () => {
+  const llm = stub(ans({ value: { name: "Once PowerClerk", url: null }, sourceUrl: "https://once-electric.example.com/solar", quote: "Apply through Once PowerClerk" }, { value: null }), ["https://once-electric.example.com/solar"]);
+  assert.equal(ufl.ensureUtilityFilingLookedUp(db, { state: "NM", utility: "Once Electric", city: "" } as never, llm), false, "no key → no lookup");
+  process.env.ANTHROPIC_API_KEY = "test-key-not-used";
+  try {
+    assert.equal(ufl.ensureUtilityFilingLookedUp(db, { state: "NM", utility: "Once Electric", city: "" } as never, llm), true);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(ufl.getUtilityFilingLookup(db, "NM", "Once Electric")?.filing.value?.name, "Once PowerClerk");
+    assert.equal(ufl.ensureUtilityFilingLookedUp(db, { state: "NM", utility: "Once Electric", city: "" } as never, llm), false, "a stored row is not looked up again");
+  } finally {
+    process.env.ANTHROPIC_API_KEY = "";
+  }
 });
 
 console.log(failures ? `\nnewAhjTracks: ${failures} check(s) FAILED` : "\nnewAhjTracks: all checks passed");

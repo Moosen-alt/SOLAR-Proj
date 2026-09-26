@@ -625,12 +625,6 @@ export async function ensureAhjFormsForProject(
   // PRESCRIPTIVE project researched a generic "building application", and a structural
   // blank whose filename says nothing satisfied it on every path. The kind travels with
   // the slot now.
-  // THE UTILITY'S FILING LOCATION rides this per-project research pass (fire-and-forget, once per
-  // utility, shared): where the interconnection application is filed and what the program is
-  // (utilityFilingLookup). Nothing here waits on it; the tracks read the stored row.
-  if (opts.allowResearch !== false) {
-    try { ensureUtilityFilingLookedUp(db, project, llm); } catch { /* best-effort */ }
-  }
   const needed = new Map<string, NeededAhjForm>();
   const want = (formType: string, applicationKind: "prescriptive" | "structural" | null = null): void => {
     const prior = needed.get(formType);
@@ -681,6 +675,13 @@ export async function ensureAhjFormTemplate(
   formType = "permit_application",
   opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean } = {},
 ): Promise<EnsureFormResult> {
+  // THE UTILITY'S FILING LOCATION rides every per-project form-research pass — the pipeline's
+  // (ensureAhjFormsForProject) and the operator's "Find official form" — fire-and-forget, once per
+  // utility (shared, deduped in utilityFilingLookup): where the interconnection application is
+  // filed and what the program is. Nothing here waits on it; the tracks read the stored row.
+  if (opts.allowResearch !== false) {
+    try { ensureUtilityFilingLookedUp(db, project, llm); } catch { /* best-effort */ }
+  }
   // WHICH of the two building-side applications this call is for. Given by the caller
   // (the required set decided it from the permit path); otherwise resolved from the
   // project, so a direct "find official form" click is path-aware too.

@@ -200,6 +200,20 @@ function permitStructureParts(a: PermitStructureAnswer): { core: string; pre: st
   return { core, pre };
 }
 
+/**
+ * FOR THE LOOKUP TRIGGER (permitProcessLookup.ensurePermitProcessLookedUp — not this module's file,
+ * which today skips the per-job lookup for ANY AHJ with a seeded process profile): does a shipped
+ * profile leave this AHJ's permit process unanswered? True when no hand-written profile matches and
+ * the one answer is UNKNOWN — the seeded row has flags but no words, and no cited state rule covers
+ * it (Scottsdale's "Looks like combo permit (?)", Santa Fe County's bare "In-person: appointment
+ * only"). Per-job research should run for such an AHJ, and — cited — it outranks the shipped row.
+ */
+export function shippedProfileNeedsPerJobLookup(project: ProjectRecord): boolean {
+  const profile = findApplicationProfile(project);
+  if (applicationProfiles.includes(profile) && profile.id !== "oregon-generic-epermitting") return false;
+  return permitStructureAnswer(project).level === "unknown";
+}
+
 /** THE CODE-PROFILE AMENDMENT SURFACE (codeProfiles.ts — not this module's file): a state
  *  amendment whose summary claims the permit structure ("Separate building (structural) and
  *  electrical permits required") is a second answer to this question. The code panel should
