@@ -89,6 +89,13 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 - OPEN (portal-bot, owned by the bot-close workflow): `recipeAdapter.pickAddressVersionLive` ranks CITY rows for structural and
   COUNTY rows for electrical. Until it also prefers the row naming `fieldValues.issuingAgency` (now supplied), a borrow whose
   looked-up agency contradicts that preference (City of Jefferson structural → Marion County) is REFUSED rather than risk the city row.
+- Rule adjusted (operator authorization 2026-09-25 + operator answers 2026-09-26): a form fact no document states (roof layer count,
+  module height per the BCD 5952 figures, structure description; a city's zoning sign-off when a COUNTY issues its permits) is an
+  operator QUESTION through the existing portal-question/intake mechanism (`unansweredPortalQuestions` now includes
+  `bcdChecklistFacts.formFactQuestions`; only once the plan set has been read), stored on the project and read by every form — never a
+  silent blank, never a guess. BCD 5952 "BCD license #" = the client's electrical contractor licence (client record only, Oregon only);
+  "Listing agency" = the module datasheet (text, then a vision read of the datasheet page — `moduleListing.ts`, once per project).
+  The 5952 fill note names the ONE missing fact.
 - Rule adjusted (operator authorization 2026-09-25): planner prompt — the kVA fee tier follows the AC rating (systemSizeAcKw), not DC;
   Category of Construction = the structure type and Type of Work = Alteration for an existing building (BCD guidance), never
   "Other"/"Solar"/"New". The replay binding applies the same guidance to recorded Oregon recipes.

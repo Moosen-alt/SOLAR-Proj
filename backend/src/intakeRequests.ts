@@ -6,6 +6,9 @@ import { getProjectDetail, updateProject } from "./repository";
 import { resolveValuation } from "./valuation";
 import { nowIso } from "./time";
 import { logger } from "./logger";
+import { formFactQuestions } from "./bcdChecklistFacts";
+import { issuingAgencyFor } from "./permitProcess";
+import { resolvePermitPath } from "./permitPath";
 
 // Per-project client intake requests.
 //
@@ -121,6 +124,17 @@ export function setPortalQuestionSource(fn: PortalQuestionSource | null): void {
 /** The shared portal question bank for this project, normalized and filtered to
  *  publicly safe, rigidly answerable (has options) questions. Empty when the
  *  bank module isn't built yet — intake links keep working without it. */
+function formFactIntakeQuestions(project: ProjectRecord): PortalIntakeQuestion[] {
+  try {
+    const checklistApplies = String(project.state ?? "").trim().toUpperCase() === "OR" && resolvePermitPath(project).path !== "engineered";
+    const agency = issuingAgencyFor(project, "building")?.value ?? issuingAgencyFor(project, "electrical")?.value ?? null;
+    return formFactQuestions(project, { checklistApplies, issuingAgency: agency })
+      .map((q) => ({ key: q.key, label: q.label, options: q.options, kind: q.kind }));
+  } catch {
+    return [];
+  }
+}
+
 async function bankQuestionsForProject(db: AppDb, project: ProjectRecord): Promise<PortalIntakeQuestion[]> {
   try {
     if (questionSource) return normalizeQuestions(flattenBankTracks(await questionSource(db, project)));
@@ -315,7 +329,10 @@ function questionIsOpen(project: ProjectRecord, q: PortalIntakeQuestion, columns
 
 /** Bank questions this project has NOT answered yet. */
 export async function unansweredPortalQuestions(db: AppDb, project: ProjectRecord): Promise<PortalIntakeQuestion[]> {
-  const bank = await bankQuestionsForProject(db, project);
+  // FORM FACTS NO DOCUMENT STATES (bcdChecklistFacts.formFactQuestions — roof layer count, module
+  // height per the figures, structure description, a city's zoning sign-off when a county issues):
+  // asked through the SAME intake mechanism, answered into the project, read by every form.
+  const bank = [...await bankQuestionsForProject(db, project), ...formFactIntakeQuestions(project)];
   if (!bank.length) return [];
   const columns = perJobColumnAnswers(db, project.id);
   return bank.filter((q) => questionIsOpen(project, q, columns));

@@ -20,7 +20,7 @@ import {
   batteryStatus, SERVICE_FEEDER_CHARGE_KIND, SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
 } from "./batteryServiceFeeder";
 import type { ChecklistRecovery } from "./prescriptiveChecklist";
-import { bcdChecklistAnswers } from "./bcdChecklistFacts";
+import { bcdChecklistAnswers, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
 import { documentFetchDisabled } from "./documentFetch";
 
 /** Which of the two MUTUALLY EXCLUSIVE building-side applications a permit path calls
@@ -749,13 +749,30 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     client,
     publishedElectricalBrackets,
     publishedFeeLines: feeForProject(db, project, "permit")?.lines,
-    snapshot: (project.parserSnapshot ?? {}) as Record<string, unknown>,
+    // Parsed/operator values win; beneath them, BCD 5952 facts another record already answers
+    // (BCD license # from the client's electrical contractor licence, the module's listing
+    // agency from its datasheet text) — bcdChecklistFacts.bcd5952SnapshotAdditions.
+    snapshot: {
+      ...bcd5952SnapshotAdditions(project, client as Record<string, unknown>, { moduleSpec: moduleSpecText(db, project.id) }),
+      ...((project.parserSnapshot ?? {}) as Record<string, unknown>),
+    } as Record<string, unknown>,
     // The signature stamped on a permit form comes from the org that OWNS the
     // project — this runs from background jobs with no request, so it can't be
     // taken from a session.
     signatures: loadDefaultSignaturesByRole(db, projectOrgId(db, project.id)),
     prescriptiveLimits,
   };
+}
+
+/** The module datasheet's extracted text (the listing agency is read from it — never from the
+ *  plan set, whose "UL CERTIFICATION" sheets belong to other equipment). */
+function moduleSpecText(db: AppDb, projectId: string): string {
+  try {
+    return String(db.get<{ t?: string }>(
+      "SELECT extracted_text AS t FROM project_documents WHERE project_id = ? AND doc_type = 'module_spec' ORDER BY uploaded_at DESC LIMIT 1",
+      [projectId],
+    )?.t ?? "");
+  } catch { return ""; }
 }
 
 /** The org that owns a project, for background work that has no request context. */
@@ -1072,11 +1089,9 @@ export async function fillLoadedForm(
     }
     return drawn;
   };
-  const unresolvedChecklistRows = checklist.recognized ? [
-    ["designInstallation", "gravity/wind design and manufacturer instructions"], ["framing", "framing compliance"],
-    ["roofing", "roof material and layer count"], ["heightFigures", "module height and referenced figure compliance"],
-    ["attachments", "attachment method compliance"],
-  ].filter(([key]) => !bcdChecklistAnswers(ctx.project)[key]).map(([, label]) => label) : [];
+  // NAME THE MISSING FACT, NOT THE ROW: "roof material and layer count" on a project whose roof
+  // material was parsed read as "it filled metal roofing" (bcdChecklistFacts.bcd5952MissingFacts).
+  const unresolvedChecklistRows = checklist.recognized ? bcd5952MissingFacts(ctx.project).map((m) => m.missing) : [];
   const checklistMessage = checklist.recognized
     ? "BCD 5952: filled independently supported answers. Review the completed PDF before filing."
       + (unresolvedChecklistRows.length ? ` Still needs evidence: ${unresolvedChecklistRows.join("; ")}.` : "")
@@ -1267,6 +1282,17 @@ export interface FilledFormPackage {
 }
 
 export async function buildFilledFormsForProject(db: AppDb, project: ProjectRecord): Promise<FilledFormPackage> {
+  // READ THE MODULE DATASHEET BEFORE FILLING (Oregon: BCD 5952 Part IV "Listing agency"). Text
+  // first; a vision read of the datasheet page only when the text layer names no mark and a model
+  // key is configured. The answer lands on the project (with its evidence) and is used below.
+  if (String(project.state ?? "").trim().toUpperCase() === "OR" && !String((project.parserSnapshot ?? {}).moduleListingAgency ?? "").trim()) {
+    try {
+      const { ensureModuleListingAgency } = await import("./moduleListing");
+      const { createLLMProvider } = await import("./llm");
+      const reading = await ensureModuleListingAgency(db, project, process.env.ANTHROPIC_API_KEY ? createLLMProvider() : null);
+      if (reading.agency) project = { ...project, parserSnapshot: { ...(project.parserSnapshot ?? {}), moduleListingAgency: reading.agency } };
+    } catch { /* best-effort: the row stays blank and the fill note names it */ }
+  }
   const permitPath = resolvePermitPath(project).path;
   const defs = matchingForms(project.ahj).filter((d) => d.status === "verified");
   const ctx = buildContext(db, project);
