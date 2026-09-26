@@ -255,6 +255,177 @@ await check("(n1) prerequisites and codes quoted from a page we read: account ap
   assert.deepEqual(codes?.editions.sort(), ["2021 International Residential Code", "2023 National Electrical Code"]);
 });
 
+// ── lookup-recall-2-close (the skeptic's BROKEN verdict, 2026-09-26) ─────────────────────
+// Real agency pages saved once (scripts / styles / unused attributes stripped): Waltham's
+// Applications page (paper-only; its one vendor link is iWorQ "Report a Concern"), Scottsdale's
+// Permit Services page (SPUR on tylerhost), Carlsbad's SolarAPP page, Iowa City's Building
+// Inspection page, Lee County's DCD page, Waltham's Electrical Permit Fees table.
+const resolveNamed = async (pages: Record<string, Served>, start: string[], names: string[]) => {
+  const s = site(pages);
+  const r = newReader(s.fetch);
+  const read = await Promise.all(start.map((u) => r.read(u)));
+  return { res: await cat.resolvePortalFromPages(r, read, { names }), requests: s.requests };
+};
+const synthetic = (body: string) => `<html><head><title>Building</title></head><body><main>${body}</main></body></html>`;
+
+await check("(m1) MUST-EXCLUDE (close MF1/MF2): a vendor link is not the portal on its host alone — Waltham's paper-only page with a 'Report a Concern' iWorQ link, a 'Powered by Accela' footer, OpenGov marketing, a 311 request portal, a parcel viewer, SolarAPP+'s root, another township's tenant, a county page listing its cities' tenants", async () => {
+  const W = "https://www.city.waltham.ma.us/1289/Applications";
+  const waltham = await resolveNamed({ [W]: { text: fixture("waltham-applications.html") } }, [W], ["Waltham City", "City of Waltham"]);
+  assert.equal(waltham.res, null, `Waltham: no portal (got ${waltham.res?.url} ${waltham.res?.quote})`);
+  const CITY_PAGE = "https://www.examplecity.gov/building";
+  const shapes: Array<[string, string]> = [
+    ["Powered by Accela", `<p>Solar permits must be dropped off in person at City Hall.</p><div><a href="https://www.accela.com/">Powered by Accela</a></div>`],
+    ["OpenGov marketing", `<a href="https://www.opengov.com/">OpenGov</a>`],
+    ["311 request portal", `<p>Applications must be dropped off.</p><a href="https://user.govoutreach.com/examplecity/support.php?cmd=shell">Citizen Request Portal</a>`],
+    ["parcel viewer", `<a href="https://www.mapsonline.net/examplecity/index.html">Online Property Viewer</a>`],
+    ["SolarAPP+ root", `<p>Email your application.</p><a href="https://gosolarapp.org/">SolarAPP+</a>`],
+    ["another township's tenant", `<a href="https://othertownship.portal.iworq.net/OTHERTOWNSHIP/permits/600">Other Township online permit portal</a>`],
+    ["concern form on the city's own tenant", `<a href="https://examplecity.portal.iworq.net/portalhome/examplecity">Report a Concern</a>`],
+    ["county page listing its cities' tenants", `<h2>Inside a city? Apply with your city</h2><ul><li><a href="https://aca-prod.accela.com/CITYA/Default.aspx">City A permit portal</a></li><li><a href="https://aca-prod.accela.com/CITYB/Default.aspx">City B permit portal</a></li></ul><h2>Unincorporated</h2><p><a href="https://aca-prod.accela.com/COUNTYX/Default.aspx">Apply online - County permit portal</a></p>`],
+  ];
+  for (const [what, body] of shapes) {
+    for (const names of [["City of Examplecity"], []]) {
+      const { res } = await resolveNamed({ [CITY_PAGE]: { text: synthetic(body) } }, [CITY_PAGE], names);
+      assert.equal(res, null, `${what} (names ${JSON.stringify(names)}): no portal (got ${res?.url})`);
+    }
+  }
+});
+
+await check("(m2) MUST-PASS: the portal from the agency's own page — Scottsdale SPUR (EnerGov on tylerhost, named by its target and tenant), Lee's eConnect (ACA tenant LEECO), Carlsbad's CSS and Iowa City's portal (own-domain link, read), Columbus's portal (own-domain frame, read), a unique unnamed tenant, and a tenant our read shows is this agency's", async () => {
+  const S = "https://www.scottsdaleaz.gov/planning-development/permit-services";
+  const sc = await resolveNamed({ [S]: { text: fixture("scottsdale-permit-services.html") } }, [S], ["City of Scottsdale"]);
+  assert.equal(sc.res?.url, "https://cityofscottsdaleaz-energovweb.tylerhost.net/apps/selfservice#/home", `Scottsdale (${sc.res?.url})`);
+  assert.equal(sc.res?.platform, "energov");
+  const L = "https://www.leegov.com/dcd";
+  const lee = await resolveNamed({ [L]: { text: fixture("lee-dcd.html") } }, [L], ["Lee County"]);
+  assert.equal(lee.res?.url, "https://aca-prod.accela.com/LEECO/Default.aspx", `Lee (${lee.res?.url})`);
+  const C = "https://www.carlsbadca.gov/departments/community-development/building/solarapp";
+  const carlsbad = await resolveNamed({ [C]: { text: fixture("carlsbad-solarapp.html") }, "https://eg.carlsbadca.gov/EnerGov_Prod/selfservice/CarlsbadCAProd": { text: fixture("energov-css-shell.html") } }, [C], ["City of Carlsbad"]);
+  assert.equal(carlsbad.res?.url, "https://eg.carlsbadca.gov/EnerGov_Prod/selfservice/CarlsbadCAProd#/home", `Carlsbad (${carlsbad.res?.url})`);
+  assert.equal(carlsbad.res?.platform, "energov");
+  const I = "https://www.icgov.org/business/building-inspection-services";
+  const ic = await resolveNamed({ [I]: { text: fixture("iowacity-building.html") }, "https://www.icgov.org/business/business-permit-portal": { text: fixture("energov-css-shell.html"), finalUrl: "https://egov.iowa-city.org/energovprod/selfservice" } }, [I], ["Iowa City"]);
+  assert.equal(ic.res?.url, "https://egov.iowa-city.org/energovprod/selfservice", `Iowa City (${ic.res?.url})`);
+  const CO = "https://www.columbus.gov/Business-Development/Building-Zoning-Services/Frequently-Asked-Questions";
+  const CAP = "https://www.columbus.gov/Business-Development/Citizen-Access-Portal";
+  const col = await resolveNamed({ [CO]: { text: synthetic(`<p>Apply through the <a href="${CAP}">Citizen Access Portal</a>.</p>`) }, [CAP]: { text: fixture("aca-frame-wrapper.html"), finalUrl: "https://portal.columbus.gov/Permits/Default.aspx" } }, [CO], ["City of Columbus"]);
+  assert.equal(col.res?.url, "https://portal.columbus.gov/Permits/Default.aspx", `Columbus (${col.res?.url})`);
+  assert.equal(col.res?.platform, "accela");
+  const SD = "https://www.sandiegocounty.gov/pds/bldg";
+  const unique = await resolveNamed({ [SD]: { text: synthetic(`<p><a href="https://aca-prod.accela.com/SANDAG/Default.aspx">Apply online</a> for building permits.</p>`) } }, [SD], ["County of San Diego"]);
+  assert.equal(unique.res?.url, "https://aca-prod.accela.com/SANDAG/Default.aspx", "the only tenant the page links as its portal");
+  assert.equal(cat.tenantNamesAgency("https://aca-prod.accela.com/SANDAG/Default.aspx", ["County of San Diego"]), false, "a 3-letter key never names a longer tenant");
+  assert.equal(cat.tenantNamesAgency("https://aca-prod.accela.com/LEECO/Default.aspx", ["Lee County"]), true);
+  const TWO = "https://www.examplecity.gov/building";
+  const aca = (agency: string) => `<html><head><title>Accela Citizen Access</title></head><body><main><h1>${agency} Online Permits</h1><p>Welcome to the ${agency} permit portal.</p></main></body></html>`;
+  const read = await resolveNamed({
+    [TWO]: { text: synthetic(`<a href="https://aca-prod.accela.com/ABC/Default.aspx">Permit portal</a> <a href="https://aca-prod.accela.com/XYZ/Default.aspx">Permit portal (new)</a>`) },
+    "https://aca-prod.accela.com/ABC/Default.aspx": { text: aca("City of Othertown") },
+    "https://aca-prod.accela.com/XYZ/Default.aspx": { text: aca("City of Examplecity") },
+  }, [TWO], ["City of Examplecity"]);
+  assert.equal(read.res?.url, "https://aca-prod.accela.com/XYZ/Default.aspx", `the tenant whose page names this agency (${read.res?.url})`);
+  assert.equal(read.res?.via, "vendor link (tenant read)");
+});
+
+await check("(o1) isOfficialAgencyHost (close F2): .gov / a US locality .us / the agency's own domain are official; a directory, a code publisher, a vendor, an ISP, another borough's site are not", () => {
+  const pass: Array<[string, string[]]> = [["www.icgov.org", ["Iowa City"]], ["www.leegov.com", ["Lee County"]], ["www.city.waltham.ma.us", ["Waltham City"]], ["www.santafecountynm.gov", ["Santa Fe County"]],
+    ["www.cityofevanston.org", ["City of Evanston"]], ["www.tigard-or.gov", ["City of Tigard"]], ["www.clarkcountynv.gov", ["Clark County"]], ["www.co.marion.or.us", ["Marion County"]], ["www.cityofvenus.org", ["Town of Venus"]]];
+  for (const [h, n] of pass) assert.equal(cat.isOfficialAgencyHost(h, n), true, `official: ${h}`);
+  const fail: Array<[string, string[]]> = [["www.countyoffice.org", ["Examplecity"]], ["codepublishing.com", ["Examplecity"]], ["www.citybizlist.com", ["Examplecity"]], ["www.cityfeet.com", ["Examplecity"]],
+    ["www.govpilot.com", ["Examplecity"]], ["comcast.com", ["Examplecity"]], ["library.municode.com", ["Examplecity"]], ["www.pattonboro.com", ["Northern Cambria Borough"]], ["public.mygov.us", ["Town of Venus"]],
+    ["www.solarreviews.com", ["Examplecity"]], ["www.waltham-news.com", ["Waltham City"]], ["www.govoutreach.com", ["Examplecity"]]];
+  for (const [h, n] of fail) assert.equal(cat.isOfficialAgencyHost(h, n), false, `not official: ${h}`);
+});
+
+await check("(c4) MUST-EXCLUDE (close F3): record-type look-alikes are not PV — solar hot water, a solar screen, remove-and-reinstall, panel removal, a wind turbine, a pool heater; MUST-PASS: the PV types beside them", () => {
+  const C = (labels: string[]) => ({ platform: "energov" as const, sourceUrl: "https://x-energovweb.tylerhost.net/apps/selfservice/api/Home/Menu", types: labels.map((l) => ({ label: l, description: "", category: "Building" })) });
+  for (const l of ["Residential Solar Hot Water", "Solar Water Heating", "Solar Screen Installation", "Residential Solar - Remove and Reinstall", "Residential Solar Panel Removal", "Residential Renewable Energy - Wind Turbine", "Solar Pool Heater"]) {
+    assert.deepEqual(cat.solarRecordTypeCandidates(C([l, "Residential Deck"])).map((c) => c.label), [], `not PV: ${l}`);
+  }
+  const pv = ["Residential Solar", "Residential Electrical - Solar", "PV Solar", "BLDG Residential – Solar/Photovoltaic", "BLDG Solar APP+ Permit (Residential < 38.4 Kwh)", "Residential Renewable Energy - Prescriptive", "Residential Photovoltaic/Battery System"];
+  for (const l of pv) assert.deepEqual(cat.solarRecordTypeCandidates(C([l, "Residential Solar Hot Water", "Residential Solar - Remove and Reinstall"])).map((c) => c.label), [l], `PV: ${l}`);
+});
+
+await check("(c5) MUST-PASS (close F5): with 2+ candidates and no deciding plan path, a CITED record type naming one candidate chooses it; MUST-EXCLUDE: one naming none (or several) leaves the operator question", () => {
+  const catalog = { platform: "energov" as const, sourceUrl: "https://eg.example.gov/selfservice/api/Home/Menu", types: [
+    { label: "BLDG Solar APP+ Permit (Residential < 38.4 Kwh)", description: "", category: "Building" },
+    { label: "BLDG Residential – Solar/Photovoltaic", description: "", category: "Building" },
+  ] };
+  const named = ppl.recordTypeFromCatalog(catalog, "combo", undefined, "Residential – Solar/Photovoltaic");
+  assert.equal(named.recordType?.value, "BLDG Residential – Solar/Photovoltaic", `chosen (${named.recordType?.notFound})`);
+  assert.equal(named.question, "");
+  const none = ppl.recordTypeFromCatalog(catalog, "combo", undefined, "Residential Deck");
+  assert.equal(none.recordType?.value, null);
+  assert.match(none.question, /Which record type/);
+  const both = ppl.recordTypeFromCatalog(catalog, "combo", undefined, "BLDG");
+  assert.equal(both.recordType?.value, null, "a word both labels carry names neither");
+});
+
+await check("(f3) fee sources (close F4): an archived / prior-year / superseded schedule or another permit kind's is not this job's; the current year's solar / building schedule ranks first; a year inside a document id is not a year", () => {
+  assert.equal(cat.classifyDocument("2019 Fee Schedule (archived)", "https://www.x.gov/DocumentCenter/View/1/2019-fee-schedule"), null);
+  assert.equal(cat.classifyDocument("Fee Schedule FY 2023-24", "https://www.x.gov/fees"), null, "a prior fiscal year");
+  assert.equal(cat.classifyDocument("Superseded Master Fee Schedule", "https://www.x.gov/fees"), null);
+  assert.equal(cat.classifyDocument("Trench Permit Fee Schedule", "https://www.city.waltham.ma.us/1307/Trench-Permit-Fee-Schedule"), null);
+  assert.equal(cat.classifyDocument("Right-of-Way Permit Fees", "https://www.x.gov/row-fees"), null);
+  assert.equal(cat.classifyDocument("Master Fee Schedule FY2026", "https://www.x.gov/DocumentCenter/View/2"), "fees");
+  assert.equal(cat.classifyDocument("Permit Fees", "https://www.x.gov/DocumentCenter/View/2019/Permit-Fees"), "fees", "/View/2019/ is an id");
+  assert.equal(cat.classifyDocument("Building Permit Fee Schedule FY 2026-27", "https://www.x.gov/x.pdf"), "fees");
+  assert.deepEqual(cat.yearsNamed("Master Fee Schedule FY 2026-27 (PDF)", "https://www.x.gov/home/showpublisheddocument/27129/639"), [2027]);
+  assert.deepEqual(cat.yearsNamed("", "https://www.scottsdaleaz.gov/docs/fees-fy25-26/permit-fee-schedule---miscellaneous.pdf"), [2026]);
+  assert.equal(cat.staleOrOtherFeeSource("", "https://www.pattonboro.com/wp-content/uploads/2017/01/2018-Building-Permit-Fee-Schedule.pdf", 2026), "a prior-year schedule (2018)");
+  assert.equal(cat.staleOrOtherFeeSource("", "https://www.x.gov/wp-content/uploads/2018/01/2018-Building-Permit-Application.pdf", 2026), null, "an application form's year does not date a schedule");
+  const P = "https://www.x.gov/building";
+  const pg = { url: P, finalUrl: P, ok: true, status: 200, kind: "html" as const, reason: "", ...reader.parseHtml(synthetic(`<a href="/master-fees.pdf">Master Fee Schedule</a> <a href="/solar-fees-fy2027.pdf">Solar Permit Fee Schedule FY 2026-27</a> <a href="/fees-2019.pdf">2019 Fee Schedule</a>`), P) };
+  assert.deepEqual(cat.documentLinks([pg], ["Examplecity"]).map((d) => d.text), ["Solar Permit Fee Schedule FY 2026-27", "Master Fee Schedule"]);
+});
+
+await check("(f4) MUST-PASS (close F4): Waltham's '$50 Solar Installation' — a table row whose words and amount are in different cells — is on the page; MUST-EXCLUDE: an amount another row prints, an unprinted amount, and prose words spread across a sentence", () => {
+  const F = "https://www.city.waltham.ma.us/2102/Electrical-Permit-Fees";
+  const p = reader.parseHtml(fixture("waltham-electrical-fees.html"), F);
+  assert.ok(reader.quoteOnPage("Residential ... Solar Installation $50", p.text), "the quoted row is on the page");
+  assert.ok(reader.quoteOnPage("Solar Installation | $50", p.text));
+  assert.ok(!reader.quoteOnPage("Solar Installation $25", p.text), "$25 is another row's amount");
+  assert.ok(!reader.quoteOnPage("Solar Installation $75", p.text), "$75 is printed nowhere on that row");
+  assert.ok(reader.quoteOnPage("Solar Installation $50", "Electrical\nSolar Installation  Residential  $50\nService  $75"), "a PDF row's columns apart");
+  assert.ok(!reader.quoteOnPage("site plan required", "A site plan showing the array location and setbacks is required for review."), "prose is never loosened");
+  const texts = new Map([[ppl.pageKey(F), p.text]]);
+  const ans = JSON.stringify({ permits: [{ discipline: "electrical", documents: { value: null }, fee: { value: { amountUsd: 50, basis: "flat", lines: [{ label: "Solar Installation", amountUsd: 50 }] }, sourceUrl: F, quote: "Residential ... Solar Installation $50" } }] });
+  const fee = ppl.parseDocsFeesPart(ans, [F], "end_turn", texts).byDiscipline.get("electrical")!.fee;
+  assert.equal(fee.value?.amountUsd, 50, `kept (${fee.notFound})`);
+});
+
+await check("(f5) MUST-EXCLUDE (close F4): a fee cited to a schedule that is GONE now (404 when read), to an archived / prior-year schedule, or to another permit kind's schedule is not kept; MUST-PASS: the same fee cited to a current page is", () => {
+  const ans = (url: string) => JSON.stringify({ permits: [{ discipline: "combo", documents: { value: null }, fee: { value: { amountUsd: 168, basis: "flat", lines: [{ label: "Solar Residential", amountUsd: 168 }] }, sourceUrl: url, quote: "Solar Residential · $168 · Solar Commercial · $331" } }] });
+  const GONE = "https://www.scottsdaleaz.gov/docs/fees-fy25-26/permit-fee-schedule---miscellaneous.pdf?sfvrsn=8c6543cc_4";
+  const fee = (url: string, gone: string[] = []) => ppl.parseDocsFeesPart(ans(url), [url], "end_turn", new Map(), gone).byDiscipline.get("combo")!.fee;
+  assert.equal(fee(GONE, [ppl.pageKey(GONE)]).value, null, "gone");
+  assert.match(String(fee(GONE, [ppl.pageKey(GONE)]).notFound), /no longer there/);
+  assert.equal(fee("https://www.x.gov/files/2019-fee-schedule-archived.pdf").value, null, "archived");
+  assert.equal(fee("https://www.x.gov/1307/Trench-Permit-Fee-Schedule").value, null, "another kind");
+  assert.equal(fee(GONE).value?.amountUsd, 168, "not known gone -> kept (status quo)");
+  assert.equal(fee("https://www.x.gov/files/fees-fy26-27/building-fee-schedule.pdf").value?.amountUsd, 168);
+});
+
+await check("(p2) politeness (close F7): a 404 is a missing page, not a refusal — the host is asked again; 401/403/429 and a challenge still back it off; the per-lookup read budget holds", async () => {
+  const s = site({ "https://f.example.gov/missing": { status: 404 }, "https://f.example.gov/ok": { text: "<p>ok</p>" }, "https://g.example.gov/x": { status: 429 }, "https://g.example.gov/y": { text: "<p>y</p>" } });
+  const r = newReader(s.fetch);
+  assert.equal((await r.read("https://f.example.gov/missing")).status, 404);
+  assert.equal((await r.read("https://f.example.gov/ok")).ok, true, "a 404 does not back the host off");
+  await r.read("https://g.example.gov/x");
+  assert.match((await r.read("https://g.example.gov/y")).reason, /backed off/, "a 429 does");
+  assert.equal(reader.isRefusal(404, "HTTP 404 from x.gov — the site refused an ordinary HTTP client"), false);
+  assert.equal(reader.isRefusal(410, "HTTP 410"), false);
+  assert.equal(reader.isRefusal(403, "HTTP 403"), true);
+  assert.equal(reader.isRefusal(503, "x.gov answered with a human-verification challenge (HTTP 503)"), true);
+  assert.equal(reader.isRefusal(200, "the site refused an ordinary HTTP client"), true);
+  reader._resetPoliteness();
+  const s2 = site({ "https://h.example.gov/1": { text: "<p>1</p>" }, "https://h2.example.gov/2": { text: "<p>2</p>" }, "https://h3.example.gov/3": { text: "<p>3</p>" } });
+  const small = reader.createPageReader({ fetch: s2.fetch, minGapMs: 0, maxReads: 2 });
+  await small.read("https://h.example.gov/1"); await small.read("https://h2.example.gov/2");
+  assert.match((await small.read("https://h3.example.gov/3")).reason, /budget is spent/);
+  assert.equal(s2.requests.length, 2, "the third URL is never fetched");
+});
+
 // ── The lookup, end to end, with a stubbed model and saved pages ──────────────────────────
 const g = (text: string, urls: string[], over: Partial<WebLookupResult> = {}): WebLookupResult => ({ text, groundedSearches: 3, searches: 3, stopReason: "end_turn", resultUrls: urls, pagesRead: 0, ...over });
 
@@ -307,6 +478,50 @@ await check("(i2) MUST-EXCLUDE: no reader (no model key / page reading off) -> n
   const run = await ppl.runPermitProcessLookup(db, llm, { state: "OR", ahj: "City of Cedarton" });
   assert.equal(run.lookup?.pagesRead, undefined);
   assert.equal(run.reads, undefined);
+});
+
+await check("(i3) end to end (close F5/F6/F4): the page-read portal goes only to the permits its publisher issues (the State's electrical permit is not given the city's portal); a CITED record type naming one of 2 catalog candidates is kept; a fee cited to a schedule that 404s now is not", async () => {
+  const base = "https://alderbrookor-energovweb.tylerhost.net/apps/SelfService";
+  const OLD_FEES = `${CITY}/home/showpublisheddocument/555/1`;
+  const STATE = "https://www.oregon.gov/bcd/electrical-permits";
+  const menu = { Result: { Menus: [
+    { Label: "BLDG Solar APP+ Permit (Residential < 38.4 Kwh)", Description: "", CategoryName: "Building", CaseTypeInfo: {} },
+    { Label: "BLDG Residential – Solar/Photovoltaic", Description: "", CategoryName: "Building", CaseTypeInfo: {} },
+  ] } };
+  const s = site({
+    [CENTER]: { text: fixture("agency-permit-center.html") }, [HUB]: { text: fixture("agency-hub.html") },
+    [`${base}/api/Home/GetTenants`]: { contentType: "application/json", text: JSON.stringify({ Result: [{ TenantID: 1, TenantName: "Community Development Hub", TenantUrl: "home" }] }) },
+    [`${base}/api/Home/Menu`]: { contentType: "application/json", text: JSON.stringify(menu) },
+  });
+  const process1 = JSON.stringify({
+    issuingAgency: { value: "City of Alderbrook", sourceUrl: CENTER, quote: "The City of Alderbrook Permit Center issues building permits." },
+    permitStructure: { value: "separate", sourceUrl: CENTER, quote: "Solar needs a building permit and a separate electrical permit." },
+    permits: [
+      { discipline: "structural", label: "Building", portalUrl: { value: null }, recordType: { value: "Residential – Solar/Photovoltaic", sourceUrl: CENTER, quote: "Solar systems are filed under Residential – Solar/Photovoltaic." } },
+      { discipline: "electrical", label: "Electrical", issuingAgency: { value: "Oregon Building Codes Division", sourceUrl: STATE, quote: "The Oregon Building Codes Division issues electrical permits in Alderbrook." }, portalUrl: { value: null }, recordType: { value: null } },
+    ],
+  });
+  const asked: Array<{ label: string; user: string }> = [];
+  const llm = { webLookup: async (i: { label: string; user: string }) => {
+    asked.push(i);
+    if (i.label.endsWith(".process")) return g(process1, [CENTER, STATE]);
+    if (i.label.endsWith(".documentsFees")) {
+      return g(JSON.stringify({ permits: [{ discipline: "structural", documents: { value: null }, fee: { value: { amountUsd: 199, basis: "flat", lines: [{ label: "Solar - SolarApp+ Residential", amountUsd: 199 }] }, sourceUrl: OLD_FEES, quote: "Solar - SolarApp+ Residential per permit $ 199" } }] }), [OLD_FEES]);
+    }
+    return g(JSON.stringify({ permits: [] }), []);
+  } };
+  const run = await ppl.runPermitProcessLookup(db, llm, { state: "OR", ahj: "City of Alderbrook", dcKw: "8.0", acKw: "7.6", force: true, reader: newReader(s.fetch) });
+  const st = run.lookup!.permits.find((p) => p.discipline === "structural")!;
+  const el = run.lookup!.permits.find((p) => p.discipline === "electrical")!;
+  assert.equal(st.portalUrl.value, PORTAL, `structural: the city's page-read portal (${st.portalUrl.notFound})`);
+  assert.notEqual(el.portalUrl.value, PORTAL, "electrical: the State issues it — not the city's portal");
+  assert.ok(asked.some((a) => a.label.endsWith(".portal") && /Permits: electrical/.test(a.user)), `the portal step asks for the electrical permit (${asked.map((a) => a.label).join(", ")})`);
+  assert.equal(st.recordType.value, "BLDG Residential – Solar/Photovoltaic", `the cited type names one candidate (${st.recordType.notFound})`);
+  assert.equal(st.recordType.sourceUrl, `${base}/api/Home/Menu`, "in the portal's own label, cited to its catalog");
+  assert.ok(!(run.lookup!.notes ?? []).some((n) => /Operator question/.test(n)), "no question when the cited type decides it");
+  assert.equal(st.fee.value, null, "the cited schedule 404s now");
+  assert.match(String(st.fee.notFound), /no longer there/);
+  assert.ok(s.requests.some((q) => q.url === OLD_FEES), "the cited schedule was read once");
 });
 
 console.log(failures ? `\n${failures} agency page read test(s) FAILED` : "\nAll agency page read tests passed.");

@@ -36,7 +36,7 @@ import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stat
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
 import { parseBracketRow } from "./pdfTables";
-import { chooseRecordType, classifyDocument, DOCUMENT_URL, detectPlatform, documentLinks, excerptFor, extractCodeEditions, extractPrerequisites, isOfficialAgencyHost, platformOfUrl, readPortalCatalog, registrableDomain, resolvePortalFromPages, solarRecordTypeCandidates, type PortalCatalog, type PortalResolution, type RecordTypeCandidate } from "./permitPlatformCatalog";
+import { candidateNamedBy, chooseRecordType, classifyDocument, DOCUMENT_URL, staleOrOtherFeeSource, detectPlatform, documentLinks, excerptFor, extractCodeEditions, extractPrerequisites, isOfficialAgencyHost, platformOfUrl, readPortalCatalog, registrableDomain, resolvePortalFromPages, solarRecordTypeCandidates, type PortalCatalog, type PortalResolution, type RecordTypeCandidate } from "./permitPlatformCatalog";
 import { createPageReader, quoteOnPage, type PageReader, type ReadPage } from "./agencyPageReader";
 import { documentFetchDisabled } from "./documentFetch";
 export { registrableDomain };
@@ -380,7 +380,17 @@ export function pageKey(url: string): string {
   try { const u = new URL(str(url)); u.hash = ""; return `${u.protocol}//${u.host.toLowerCase()}${u.pathname.replace(/\/+$/, "")}${u.search}`; } catch { return str(url); }
 }
 
-export function parseDocsFeesPart(text: string, seenUrls: string[], stopReason: string | null, pageTexts: Map<string, string> = new Map()): {
+/** A FEE'S SOURCE MUST BE THIS JOB'S CURRENT SCHEDULE (close F4): not a page the server now says is
+ *  gone (404 / 410 — the schedule was replaced), not an archived / prior-year schedule, not another
+ *  permit kind's (a trench / right-of-way schedule). */
+function currentFeeSource(fee: CitedFact<PermitFeeAnswer>, gone: string[]): CitedFact<PermitFeeAnswer> {
+  if (!fee.value) return fee;
+  if (gone.includes(pageKey(fee.sourceUrl))) return { ...fee, value: null, notFound: `the cited schedule is no longer there (HTTP 404 when read) — a replaced schedule, not kept (${fee.sourceUrl})` };
+  const why = staleOrOtherFeeSource("", fee.sourceUrl);
+  return why ? { ...fee, value: null, notFound: `the cited source is ${why} — not this job's fee (${fee.sourceUrl})` } : fee;
+}
+
+export function parseDocsFeesPart(text: string, seenUrls: string[], stopReason: string | null, pageTexts: Map<string, string> = new Map(), gone: string[] = []): {
   byDiscipline: Map<PermitProcessDiscipline, { documents: CitedFact<string[]>; fee: CitedFact<PermitFeeAnswer> }>; problem: string;
 } {
   const out = new Map<PermitProcessDiscipline, { documents: CitedFact<string[]>; fee: CitedFact<PermitFeeAnswer> }>();
@@ -409,7 +419,7 @@ export function parseDocsFeesPart(text: string, seenUrls: string[], stopReason: 
       },
       supports: supportsAmount,
     });
-    out.set(discipline, { documents: onOurPage(documents, pageTexts, "required documents"), fee: onOurPage(fee, pageTexts, "fee") });
+    out.set(discipline, { documents: onOurPage(documents, pageTexts, "required documents"), fee: onOurPage(currentFeeSource(fee, gone), pageTexts, "fee") });
   }
   return { byDiscipline: out, problem: "" };
 }
@@ -467,6 +477,8 @@ export interface AgencyEvidence {
   seen: string[];
   /** pageKey(url) -> the text we read (for the quote-on-page door). */
   pageTexts: Map<string, string>;
+  /** pageKey of every page we asked for that the server says is not there (404 / 410). */
+  gone: string[];
 }
 const DOC_URL = /\.pdf(?:$|[?#])|showpublisheddocument|\/documentcenter\/view\//i;
 /** Every sourceUrl the answer cites, the issuing agency's first. */
@@ -525,7 +537,7 @@ export async function readAgencyEvidence(reader: PageReader, input: {
   const pages = await Promise.all(pageUrls.map((u) => reader.read(u)));
   const okPages = pages.filter((p) => p.ok && p.kind === "html");
 
-  const portal = okPages.length ? await resolvePortalFromPages(reader, okPages) : null;
+  const portal = okPages.length ? await resolvePortalFromPages(reader, okPages, { names }) : null;
   const platformPages: string[] = [];
   const platformReads = new Map<string, ReadPage>();
   const notePlatform = (pg: ReadPage) => { platformPages.push(pg.url, pg.finalUrl); platformReads.set(portalTenantKey(pg.url), pg); platformReads.set(portalTenantKey(pg.finalUrl), pg); };
@@ -546,7 +558,14 @@ export async function readAgencyEvidence(reader: PageReader, input: {
     const kind = onAgency(u) ? classifyDocument(t, u) : null;
     if (kind && !docLinks.some((d) => pageKey(d.href) === pageKey(u))) docLinks.push({ href: u, text: t, kind });
   }
-  for (const u of input.citedUrls) if (DOC_URL.test(u) && official(u) && !docLinks.some((d) => pageKey(d.href) === pageKey(u))) docLinks.push({ href: u, text: "", kind: /fee/i.test(u) ? "fees" : "checklist" });
+  for (const u of input.citedUrls) {
+    if (!DOC_URL.test(u) || !official(u) || docLinks.some((d) => pageKey(d.href) === pageKey(u))) continue;
+    const kind = /fee/i.test(u) ? "fees" : "checklist";
+    // A cited fee document that is archived / a prior year's / another permit kind's is not read as
+    // this job's schedule (close F4).
+    if (kind === "fees" && staleOrOtherFeeSource("", u)) continue;
+    docLinks.push({ href: u, text: "", kind });
+  }
   const picked = [...docLinks.filter((d) => d.kind === "fees").slice(0, 2), ...docLinks.filter((d) => d.kind === "checklist")].slice(0, MAX_DOCS);
   const docPages = await Promise.all(picked.map(async (d) => {
     let page = await reader.read(d.href);
@@ -576,14 +595,17 @@ export async function readAgencyEvidence(reader: PageReader, input: {
   // come later and are cited by their own URL.
   const allReads = [...pages, ...docPages.map((d) => d.page)];
   if (portal?.portalPage) allReads.push(portal.portalPage);
+  const gone: string[] = [];
   for (const pg of allReads) {
+    // A page the server says is NOT THERE (404 / 410) now: a fee cited to it is stale (close F4).
+    if (!pg.ok && (pg.status === 404 || pg.status === 410)) gone.push(pageKey(pg.url));
     if (!pg.ok) continue;
     seen.push(pg.url, pg.finalUrl);
     pageTexts.set(pageKey(pg.url), pg.text);
     pageTexts.set(pageKey(pg.finalUrl), pg.text);
   }
   for (const u of platformPages) seen.push(u);
-  return { agencyDomain, pages, portal, platformPages: [...new Set(platformPages)], platformReads, docs, prerequisites: prerequisites.slice(0, 6), codes, seen: [...new Set(seen)], pageTexts };
+  return { agencyDomain, pages, portal, platformPages: [...new Set(platformPages)], platformReads, docs, prerequisites: prerequisites.slice(0, 6), codes, seen: [...new Set(seen)], pageTexts, gone };
 }
 
 /** The portal's public catalog -> the record type for each permit of this job (chooseRecordType),
@@ -596,11 +618,11 @@ export function recordTypeFromCatalog(catalog: PortalCatalog | null, discipline:
   const pool = all.filter((c) => c.discipline === null || c.discipline === discipline || discipline === "combo");
   if (!pool.length) return { recordType: null, candidates: [], question: "" };
   let { chosen, question } = chooseRecordType(pool, permitPath);
-  // The agency's own words (a cited record type) may name the path — "SolarAPP+", "prescriptive".
+  // A CITED record type (the agency's own words) that names ONE candidate — by its label, or by the
+  // path it names ("SolarAPP+", "prescriptive") — decides it (close F5).
   if (!chosen && modelValue) {
-    const tag = /solar ?app/i.test(modelValue) ? "solarapp" : /non[- ]?prescriptive|engineered/i.test(modelValue) ? "engineered" : /prescriptive/i.test(modelValue) ? "prescriptive" : "";
-    const hit = tag ? pool.filter((c) => c.path === tag) : [];
-    if (hit.length === 1) { chosen = hit[0]; question = ""; }
+    const hit = candidateNamedBy(pool, modelValue);
+    if (hit) { chosen = hit; question = ""; }
   }
   return {
     recordType: chosen ? { value: chosen.label, sourceUrl: chosen.sourceUrl, quote: chosen.quote, origin: "lookup" } : { value: null, sourceUrl: catalog.sourceUrl, quote: "", origin: "lookup", notFound: question },
@@ -692,7 +714,20 @@ export async function runPermitProcessLookup(
   // THE PORTAL RESOLVED FROM THE AGENCY'S OWN PAGE (our read attests it) outranks a model-cited one;
   // its public catalog names the record type in the PORTAL'S words.
   const detPortal: CitedFact<string> | null = ev?.portal ? { value: ev.portal.url, sourceUrl: ev.portal.sourceUrl, quote: ev.portal.quote, origin: "lookup" } : null;
-  const portalOf = (d: PermitProcessDiscipline) => detPortal ?? byDiscipline.get(d)?.portalUrl ?? null;
+  // ONLY FOR THE PERMITS ITS PUBLISHER ISSUES (close F6): the portal an agency's own page links is that
+  // agency's. A permit whose cited issuing agency is a DIFFERENT one (Santa Fe County's page vs the
+  // State's electrical permit, cited on the State's domain) does not get it — the portal step asks
+  // that agency.
+  const publisherDomain = ev?.portal ? registrableDomain(portalHostOf(ev.portal.sourceUrl)) : "";
+  const topAgency = issuingAgency.value ? normalizeAhjName(issuingAgency.value) : "";
+  const issuedByPublisher = (d: PermitProcessDiscipline) => {
+    const a = byDiscipline.get(d)?.issuingAgency;
+    if (!a?.value) return true;
+    if (topAgency && normalizeAhjName(a.value) === topAgency) return true;
+    return Boolean(publisherDomain) && registrableDomain(portalHostOf(a.sourceUrl)) === publisherDomain;
+  };
+  const detPortalFor = (d: PermitProcessDiscipline) => (detPortal && issuedByPublisher(d) ? detPortal : null);
+  const portalOf = (d: PermitProcessDiscipline) => detPortalFor(d) ?? byDiscipline.get(d)?.portalUrl ?? null;
   const platformReads = ev?.platformReads ?? new Map<string, ReadPage>();
   const pageFor = (url: string) => platformReads.get(portalTenantKey(url)) ?? (ev?.portal && portalTenantKey(ev.portal.url) === portalTenantKey(url) ? ev.portal.portalPage : undefined);
   const recordFor = new Map<PermitProcessDiscipline, ReturnType<typeof recordTypeFromCatalog>>();
@@ -743,6 +778,7 @@ export async function runPermitProcessLookup(
   const raw = { process: p1.text, documentsFees: "", processUrls: p1.resultUrls, documentsFeesUrls: [] as string[], portal: "", portalUrls: [] as string[] };
   const ourSeen = ev?.seen ?? [];
   const pageTexts = ev?.pageTexts ?? new Map<string, string>();
+  const gone = [...(ev?.gone ?? [])];
   for (const a of answers) {
     if (a.first) logCall("documentsFees", a.first, { readPages: true, agency: a.agency });
     logCall(a.kind === "portal" ? "portal" : a.first ? "documentsFees (retry, no page reading)" : "documentsFees", a.r, { readPages: !a.first, agency: a.agency });
@@ -773,7 +809,18 @@ export async function runPermitProcessLookup(
     } else {
       raw.documentsFees += (raw.documentsFees ? "\n" : "") + a.r.text;
       raw.documentsFeesUrls.push(...seenOf(a.r));
-      const df = grounded ? parseDocsFeesPart(a.r.text, [...seenOf(a.r), ...ourSeen], a.r.stopReason, pageTexts) : { byDiscipline: new Map(), problem: a.r.error ?? "ungrounded" };
+      // A CITED FEE SCHEDULE WE HAVE NOT READ: one polite read (≤ 2 per answer) to learn whether it is
+      // still there — a schedule that 404s now was replaced (close F4: a FY25-26 PDF cited in FY26-27).
+      if (reader && grounded) {
+        const feeUrls = [...new Set(((parseJsonLoose(a.r.text)?.permits ?? []) as Array<Record<string, unknown>>)
+          .map((p) => str((p?.fee as Record<string, unknown> | undefined)?.sourceUrl)).filter((u) => /^https?:\/\//i.test(u)))]
+          .filter((u) => !pageTexts.has(pageKey(u)) && !gone.includes(pageKey(u))).slice(0, 2);
+        for (const u of feeUrls) {
+          const pg = await reader.read(u);
+          if (!pg.ok && (pg.status === 404 || pg.status === 410)) gone.push(pageKey(u));
+        }
+      }
+      const df = grounded ? parseDocsFeesPart(a.r.text, [...seenOf(a.r), ...ourSeen], a.r.stopReason, pageTexts, gone) : { byDiscipline: new Map(), problem: a.r.error ?? "ungrounded" };
       if (df.problem) problems.push(df.problem);
       for (const d of a.disciplines) {
         const hit = df.byDiscipline.get(d);
@@ -789,7 +836,7 @@ export async function runPermitProcessLookup(
     documents: ungrounded("not found"), fee: ungrounded("not found"),
   }));
   // The portal: ours (from the agency's page) > part one's cited > the portal step's.
-  const finalPortal = (p: PermitProcessPermitAnswer) => detPortal ?? (p.portalUrl.value || !portalFor.get(p.discipline) ? p.portalUrl : portalFor.get(p.discipline)!.portalUrl);
+  const finalPortal = (p: PermitProcessPermitAnswer) => detPortalFor(p.discipline) ?? (p.portalUrl.value || !portalFor.get(p.discipline) ? p.portalUrl : portalFor.get(p.discipline)!.portalUrl);
   // A portal that came from the model: its catalog too (when its platform is readable).
   await fillRecordTypes(basePermits.map((p) => p.discipline), (d) => {
     const p = basePermits.find((x) => x.discipline === d)!;
@@ -802,13 +849,18 @@ export async function runPermitProcessLookup(
     const portalUrl = finalPortal(p);
     const rc = recordFor.get(p.discipline);
     const modelRecordType = p.recordType.value || !pf ? p.recordType : pf.recordType;
-    if (rc?.question && !questions.includes(rc.question)) questions.push(rc.question);
+    // THE ?? FALLTHROUGH (close F5): the catalog's answer is an object even when it chose nothing, so
+    // a CITED record type (from whichever step) that names one candidate decides it here too.
+    const namedByModel = rc && !rc.recordType?.value ? candidateNamedBy(rc.candidates, modelRecordType.value) : null;
+    const catalogRecordType: CitedFact<string> | null = namedByModel ? { value: namedByModel.label, sourceUrl: namedByModel.sourceUrl, quote: namedByModel.quote, origin: "lookup" } : rc?.recordType ?? null;
+    if (rc?.question && !namedByModel && !catalogRecordType?.value && !questions.includes(rc.question)) questions.push(rc.question);
     return {
       ...p,
       portalUrl,
       // The PORTAL'S OWN label (its public catalog) outranks the agency page's words; with several
-      // solar types and no deciding plan path, recordType is null and the candidates carry the choice.
-      recordType: rc?.recordType ?? modelRecordType,
+      // solar types and no deciding plan path or cited type, recordType is null and the candidates
+      // carry the choice.
+      recordType: catalogRecordType ?? modelRecordType,
       ...(rc?.candidates.length ? { recordTypeCandidates: rc.candidates.map((c) => ({ label: c.label, condition: c.condition, sourceUrl: c.sourceUrl, quote: c.quote })) } : {}),
       ...(portalUrl.value ? { portalPlatform: (ev?.portal && portalUrl === detPortal ? ev.portal.platform : platformOfUrl(portalUrl.value)) ?? undefined } : {}),
       documents: df?.documents ?? ungrounded("not found"),

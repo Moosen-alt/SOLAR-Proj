@@ -1,0 +1,390 @@
+
+
+
+
+<!DOCTYPE html>
+<html data-ng-app="app.main" lang=en>
+<head>
+    <link id="faviconLink" rel="icon" type="image/*" sizes="16x16" href="https://cdn.forge.tylertech.com/v1/images/branding/tyler/talking-t-logo.svg" />
+    <meta charset="utf-8" />
+    <meta name="description" content="Citizen Self Service website" />
+    <meta id="isTylerIdEnabled" value="true">
+    <!--Disable edge formatting for phone numbers this should be handled per case basis-->
+    <meta name="format-detection" content="telephone=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>SelfService Public Site</title>
+    
+    
+    
+    <link href='//fonts.googleapis.com/css?family=Lato' rel='stylesheet' type='text/css'>
+    <link rel="stylesheet"
+          href="https://js.arcgis.com/4.24/esri/themes/light/main.css" />
+    <link rel="stylesheet" href="//fonts.googleapis.com/css?family=Roboto:400,500,700,400italic|Material+Icons">
+
+    <!-- Telerik Kendo Grid theme stylesheet-->
+    <link rel="stylesheet" href="https://kendo.cdn.telerik.com/2020.2.513/styles/kendo.bootstrap-v4.min.css" />
+
+    <link href="/energovprod/selfservice/Content/css/thirdparty?v=Q4H9jDuroUagcLkdi2cbAZhigQ4nKQ7Zg_JXOqGhgpo1" rel="stylesheet"/>
+
+    <link href="/energovprod/selfservice/Content/SelfServiceCore?v=MF40Bb64ODyeio8kC3Q4kafexNRq2wxqfeYtLxp_IiY1" rel="stylesheet"/>
+
+    <link href="/energovprod/selfservice/Content/SelfServiceMap?v=AL8mFHIxGl_fJwfGzHGT8wfaM0_W1voXw0mKBJNYxHU1" rel="stylesheet"/>
+
+    <link href="/energovprod/selfservice/Content/css?v=DQR57yLNt9ISBspUVqpsxnOJflKpC6nc_vIOfJ76Jlg1" rel="stylesheet"/>
+
+    <script src="/energovprod/selfservice/bundles/modernizr?v=inCVuEFe6J4Q07A0AcRsbJic_UE5MwpRMNGcOtk94TE1"></script>
+
+    <script src="/energovprod/selfservice/bundles/thirdparty?v=8ue9_am0w4MZCxdMxGqh8dvJgb45yX8utZdm-TKWkO81"></script>
+
+    <script src="/energovprod/selfservice/bundles/joinmeeting?v=QEdVpLOd5RXkzbHutF3TTfenZYfZcC8i5hv5SYS_bAM1"></script>
+
+
+
+    <!-- Telerik Kendo UI -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/2.4.0/jszip.js"></script>
+    <script src="https://kendo.cdn.telerik.com/2020.2.513/js/kendo.all.min.js"></script>
+
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/core-js/2.6.5/core.min.js"></script>
+    <script type="text/javascript" src="https://unpkg.com/element-closest/browser"></script>
+    <script src="/energovprod/selfservice/bundles/datepicker?v=v3eovzOw326w0il0Ew_7XuT9IMcbPQOY9NMHE29CGZQ1"></script>
+
+
+
+    <style type="text/css">
+        html, body, .esri-view {
+            padding: 0;
+            margin: 0;
+            height: 100%;
+            width: 100%;
+        }
+
+        /* When viewport is large, menu toggle button will disappear from tab order and display*/
+        @media (min-width: 768px) {
+            #menu-toggle {
+                display: none;
+            }
+        }
+    </style>
+    <script id="scriptScreenId"></script>
+    <script id="scriptAdapterID"></script>
+</head>
+
+<body data-ng-controller="shellController as vm" ng-class="{'overflow-hidden':vm.isiFrameViewer}">
+    <div id="overlay" aria-label="Processing" tabindex="0" ng-show="vm.showProcessing()"></div>
+
+
+
+    <div id="wrapper" data-nosnippet>
+
+        <div id="page-content-wrapper" class="container-fluid" is_iframe="{{vm.isiFrameViewer}}">
+            <div class="aboveBodyContent">
+                <div id="sidebar-wrapper">
+                    <div tyler-main-menu-sidebar data-vm="vm" data-menu-items="vm.menuItems"></div>
+                </div>
+
+                <div class="row appHeader" data-ng-cloak="">
+                    <div role="banner">
+                        <div class="appHeaderLeft">
+                            <div ng-if="vm.hasLoadedSelectedTenantCulture && vm.showTenantHeader()" compile-html="{{vm.selectedTenantCulture.HeaderHtml}}"></div>
+                            <div ng-if="vm.hasLoadedSelectedTenantCulture && !vm.showTenantHeader()">
+                                <a id="tenantLogo" href="" ng-click="vm.goHome()"><img src="/energovprod/selfservice/Content/app/images/header.png" aria-label="{{vm.tenant}}" style="width: 457px; height: 96px"></a>
+                            </div>
+                        </div>
+
+                        <div class="appHeaderRight pull-right">
+                            <div class="row">
+                                <!--Greeting Message-->
+                                <div role="region" aria-label="{{vm.userService.userName}}&#39;s user settings, shopping cart, and language select" class="welcomeGreetings">
+                                    <span ng-if='!true' class="welcomeGreetings-standardsize">{{vm.greetingText}}</span>
+                                    <span ng-if="!true && !vm.userService.isUserLoggedIn && vm.removeRegistrationInFeeEstimator" class="welcomeGreetings-standardsize">{{vm.userService.userName}}</span>
+                                    <!--Display this button group if the user is not logged in-->
+                                    <div class="btn-group" ng-show="(!vm.userService.isUserLoggedIn && !vm.removeRegistrationInFeeEstimator && !true)">
+                                        <a id="link-Greetings" class="btn dropdown-toggle welcomeGreetings-standardsize" ng-class="isExpanded" ng-init="isExpanded = false" ng-click="isExpanded = !isExpanded" data-toggle="dropdown" aria-expanded="{{ isExpanded }}" role="button" aria-label="Guest dropdown menu to login or register" href="">
+                                            {{vm.userService.userName}}
+                                            <span class="caret"></span>
+                                        </a>
+                                        <ul class="dropdown-menu">
+                                            <li>
+                                                <a id="link-LoginUnderGreetings" href="" ng-click="vm.login()">Log In</a>
+                                            </li>
+                                            <li>
+                                                <a href="" ng-click="vm.register()">Register</a>
+                                            </li>
+
+                                        </ul>
+                                    </div>
+                                    <div ng-if='true' class="btn-group">
+                                        <div class="btn-group" ng-if="(!vm.hideLoginOrRegisterLink && (!vm.userService.isUserLoggedIn && !vm.userService.isUserPartialLoggedIn) && !vm.removeRegistrationInFeeEstimator && !vm.showCancelRegistrationLink() && !vm.showCompleteRegistrationLink())">
+                                            <a id="link-LoginUnderGreetings" href="" ng-click="vm.login()">Login or Register</a>
+                                        </div>
+                                        <div class="btn-group" ng-if="(!vm.removeRegistrationInFeeEstimator && vm.showCompleteRegistrationLink())">
+                                            <a id="link-CompleteRegistration" href="" ng-click="vm.completeRegistration()">Complete Registration</a>
+                                        </div>
+                                        <div class="btn-group" ng-if="(!vm.removeRegistrationInFeeEstimator && vm.showCancelRegistrationLink())">
+                                            <a id="link-CancelRegistration" href="" ng-click="vm.logout()">Cancel Registration</a>
+                                        </div>
+                                    </div>
+                                    <!--Display this button group if the user is logged in-->
+                                    <div class="btn-group" ng-show="vm.userService.isUserLoggedIn && !vm.userService.isUserPartialLoggedIn">
+                                        <a id="link-Greetings" ng-class="isExpanded" ng-init="isExpanded = false" ng-click="isExpanded = !isExpanded"
+                                           class="btn dropdown-toggle welcomeGreetings-standardsize"
+                                           role="button"
+                                           aria-expanded="{{ isExpanded }}"
+                                           data-toggle="dropdown" href=""
+                                           aria-label="User dropdown menu to update profile, view invoices, or logout"
+                                           title="{{vm.userService.userName}}">
+                                            {{vm.userService.userName | limitTo: 36}}{{vm.userService.userName.length > 36 ? '...' : ''}}
+                                            <span class="caret"></span>
+                                        </a>
+                                        <ul class="dropdown-menu user-profile-menu">
+                                            <li>
+                                                <a id="link-MyAccountUnderGreetings" href="" ng-click="vm.manageMyUser()">My Account</a>
+                                            </li>
+                                            <li class="menu-indent">
+                                                <a id="link-PersonalInfo" href="" ng-click="vm.managePersonalInformation()">Personal Info</a>
+                                            </li>
+                                            <li class="menu-indent">
+                                                <a id="link-Addresses" href="" ng-click="vm.manageAddresses()">Addresses</a>
+                                            </li>
+                                            <li class="menu-indent">
+                                                <a id="link-MyInvoice" href="" ng-click="vm.manageInvoices()">My Invoices</a>
+                                            </li>
+                                            <li class="menu-indent" ng-if="!vm.hideMyBusinesses">
+                                                <a id="link-MyBusinessesUnderGreetings" href="" ng-click="vm.manageMyBusinesses()">My Businesses</a>
+                                            </li>
+                                            <hr class="margin-top-five margin-sm-bottom">
+                                            <li>
+                                                <a id="link-SavedWork" href="" ng-click="vm.manageSavedWork()">Saved Work</a>
+                                            </li>
+                                            <li>
+                                                <a id="link-ContactManager" href="" ng-click="vm.manageContactManager()">Contact Manager</a>
+                                            </li>
+                                            <hr class="margin-top-five margin-sm-bottom">
+                                            <li>
+                                                <a id="link-LogoutUnderGreetings" href="" ng-click="vm.logout()">Log Out</a>
+                                            </li>
+                                        </ul>
+                                    </div>
+
+                                    <!--Display this button group if the user is partially logged in-->
+                                    <div class="btn-group" ng-show="!vm.userService.isUserLoggedIn && vm.userService.isUserPartialLoggedIn">
+                                        <a id="link-Greetings" ng-class="isExpanded" ng-init="isExpanded = false" ng-click="isExpanded = !isExpanded"
+                                           class="btn dropdown-toggle welcomeGreetings-standardsize"
+                                           role="button"
+                                           aria-expanded="{{ isExpanded }}"
+                                           data-toggle="dropdown" href=""
+                                           aria-label="User dropdown menu to update profile, view invoices, or logout"
+                                           title="{{vm.userService.userName}}">
+                                            {{vm.userService.userName | limitTo: 36}}{{vm.userService.userName.length > 36 ? '...' : ''}}
+                                            <span class="caret"></span>
+                                        </a>
+                                        <ul class="dropdown-menu">
+                                            <li>
+                                                <a id="link-LogoutUnderGreetings" href="" ng-click="vm.logout()">Log Out</a>
+                                            </li>
+                                        </ul>
+                                    </div>
+                                    <!--Display the shopping cart if the user is logged in-->
+                                    <div class="btn-group">
+                                        <a ng-if="vm.userService.isUserLoggedIn" id="button-shopping-cart-login" data-ng-show="vm.cartService.totalNumOfCartItems > 0" aria-label="Shopping Cart. There are {{vm.cartService.totalNumOfCartItems}} items in your shopping cart." class="btn btn-link" href="{{vm.linkToMyCart}}" ng-click="vm.setLinkToMyCart()">
+                                            <span class="fa fa-shopping-cart" style="color: black"></span>&nbsp;
+                                            <span class="text-primary shopping-cart-count-contrast" data-ng-bind="vm.cartService.totalNumOfCartItems"></span>
+                                        </a>
+                                        <a ng-if="vm.userService.isUserLoggedIn" id="button-ShoppingCart" data-ng-show="vm.cartService.totalNumOfCartItems == 0" aria-label="Shopping Cart. There are no items in your shopping cart." class="btn btn-link" href="{{vm.linkToMyCart}}" ng-click="vm.setLinkToMyCart()">
+                                            <span class="fa fa-shopping-cart" style="color: black"></span>
+                                            <span class="text-primary shopping-cart-count-contrast" data-ng-bind="vm.cartService.totalNumOfCartItems"></span>
+                                        </a>
+                                        <a ng-if="vm.isGoogleTranslateEnabled"
+                                           id="icon-googleTranslate"
+                                           ng-click="vm.toggleGoogleTranslate()"
+                                           aria-label="select language"
+                                           title="Select Language"
+                                           href=""
+                                           class="btn btn-link">
+                                            <span class="fas fa-globe" ng-style="vm.showGoogleTranslate && {'color':'#0073c5'} || {'color': 'black'}"></span>
+                                        </a>
+                                    </div>
+                                </div>
+
+                                <div class="languageSettings" data-ng-show="vm.cultures.length > 1">
+                                    <select aria-label="Select Language" data-ng-model="vm.culture" ng-change="vm.selectCulture()" ng-options="item.CultureName as item.LanguageCountry for item in vm.cultures">
+                                        <option value="" ng-if="false"></option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <div ng-if="vm.showGoogleTranslate" class="pull-right">
+                                    <div id="google_translate_element"></div>
+                                    <script type="text/javascript">
+                                        function googleTranslateElementInit() {
+                                            new google.translate.TranslateElement({ pageLanguage: 'en' }, 'google_translate_element');
+                                        }
+                                    </script>
+                                    
+                                    <script type="{{ 'text/javascript' }}" src="//translate.google.com/translate_a/element.js?cb=googleTranslateElementInit"></script>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <a href="" id="skip-to-content" ng-click="vm.skipToMainContent()">Skip To Main Content</a>
+                </div>
+
+                <div class="row mainMenuRow navbar-header">
+                    <button id="menu-toggle" type="button" class="col-sm-3 navbar-toggle mainMenuToggle" ng-class="isExpanded" ng-init="isExpanded = false" ng-click="isExpanded = !isExpanded" data-toggle="toggled" data-target="#wrapper" tabindex="0" aria-expanded="{{ isExpanded }}" aria-label="Main Menu">
+                        <span class="fa fa-bars"></span>
+                    </button>
+                    <div class="col-sm-9 mainMenuTitle"><span ng-bind="vm.tenant"></span></div>
+                </div>
+
+                <div tyler-main-menu data-vm="vm" data-menu-items="vm.menuItems"></div>
+
+                
+<div id="notificationCarousel" ng-show="vm.notifications.length">
+    <div class="row">
+        <div class="col-xs-2 col-sm-1"></div>
+        <div class="col-xs-8 col-sm-10">
+            <div class="carousel-inner carousel slide" id="Carousel" notificationcarousel data-ride="carousel" data-interval="vm.carouselInterval">
+                <div class="item" ng-class="{active : $first}" ng-repeat="notification in vm.notifications">
+                    <div class="text-center" ng-focus="vm.pauseCarousel()" ng-blur="vm.playCarousel()" role="region">
+                        <div compile-html="{{notification.Element}}"></div>
+                        <span ng-if="$last" ng-init="vm.initCarousel()"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-xs-2 col-sm-1">
+            <div id="carouselButtons" ng-show="vm.notifications.length > 1">
+                <span class="carousel-control" data-target="#Carousel" ng-click="vm.playPrevious()" tabindex="0" aria-label="Select Notification Options Previous">
+                    <span class="fa fa-chevron-left"></span>
+                </span>
+                <span id="playButton" class="middle carousel-control" tabindex="0" ng-click="vm.toggleCarousel()" aria-label="Pause">
+                    <span id="carouselIcon" class="fa fa-pause"></span>
+                </span>
+                <span class="right carousel-control" data-target="#Carousel" ng-click="vm.playNext()" tabindex="0" aria-label="Next">
+                    <span class="fa fa-chevron-right"></span>
+                </span>
+            </div>
+        </div>
+    </div>
+</div>
+            </div>
+            <!-- Begin page content -->
+            <div ng-class="{'container': !vm.isContainerFluid && !vm.isApplicationMapViewer}" id="pageContainer" data-ng-cloak="">
+                <div>
+                    <div id="bodyDiv" role="main" ng-class="{'padding-bottom-zero': vm.isMapViewer || vm.isiFrameViewer}">
+                        <div id="bodyContainer">
+                            <div id="bodyView" data-ng-view="">
+                                <h1>Welcome to portal home</h1>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="push" ng-class="{'removeElement': vm.isMapViewer|| vm.isiFrameViewer}">
+            
+            <footer id="footer-content-wrapper" ng-if="vm.hasLoadedSelectedTenantCulture && vm.showTenantFooter()" data-ng-cloak ng-class="{'removeElement': vm.isMapViewer}">
+                <div role="document" compile-html="{{vm.selectedTenantCulture.FooterHtml}}"></div>
+
+            </footer>
+            
+            <footer id="footer-content-wrapper" class="appFooter" ng-if="vm.hasLoadedSelectedTenantCulture && !vm.showTenantFooter()" data-ng-cloak ng-class="{'removeElement': vm.isMapViewer}">
+            </footer>
+        </div>
+    </div>
+    <div id="diagnostic-errors-container" class="hidden"></div>
+</body>
+
+</html>
+
+<script src="/energovprod/selfservice/selfservice/shared?v=rUm0eWuPp4Gm8gMcZ1QFGaN5cBC7dcxZd0Pykuwoid41"></script>
+
+<script src="/energovprod/selfservice/selfservice/core?v=NXtVrx5GBDZxdwxYWXaDsxhLBk1MvWcsv3Fvdddbs8A1"></script>
+
+<script src="/energovprod/selfservice/selfservice/map?v=JwBlbv6Qi3pFgS_craF1W-QFdv-EV4GjRNOKFjRpM_41"></script>
+
+<script src="/energovprod/selfservice/app/modules?v=WRW0R8MDkKdfKs934wka1eeydR6r49QTotmxeKjq_m01"></script>
+
+
+<!--  Load software package bundles -->
+<script src="/energovprod/selfservice/app/energov?v=hBDuo8fiLeaZClnVFG_Kr_9VFupAHnm_kP-Fk_zXp6Q1"></script>
+
+
+<script>
+
+    TylerComponentsWeb.lib.defineComponents();
+    var locationPath ='/energovprod/selfservice/';
+    window.dojoConfig = {
+        packages: [
+            {
+                name: "cssCustomWidgets",
+                location: locationPath + "Scripts/SelfService-Map/custom-widgets"
+            }
+        ]
+    };
+
+    function showSkipLink(event) {
+        let skipLink = document.getElementById('skip-to-content');
+        if (skipLink && skipLink.style.position !== 'static') {
+            if (event.key === 'Tab' || event.keyCode === 9) {
+                /* Display the link when it receives focus */
+                skipLink.style.position = 'static';
+                skipLink.style.width = 'auto';
+                skipLink.style.height = 'auto';
+                setTimeout(function () {
+                    skipLink.focus();
+                }, 0);
+            }
+        }
+    };
+    document.addEventListener('keydown', showSkipLink);
+</script>
+
+<script type="text/javascript" src="https://js.arcgis.com/4.24/"></script>
+
+<script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?libraries=places&sensor=false"></script>
+<script type="text/javascript">
+    // this creates global modules that will be used by other modules
+    // to access some global variables stored in globals module.  We cannot use type script here.
+    angular.module('app.globalsModule', []).factory('globalsService', function () {
+
+    // Set Favicon from LocalStorage
+    var base64Image = localStorage.getItem("TenantFaviconCss");
+    if (base64Image) {
+    var favicon = document.getElementById("faviconLink");
+    favicon.setAttribute("href", base64Image);
+    }
+
+    var globals = {};
+    globals.baseUrl = '/energovprod/selfservice/';
+    globals.version = '2025.3.1.25';
+    globals.webApiBaseUrl = '/energovprod/selfservice/api';
+    globals.defaultPopupTitle = 'Warning';
+    globals.tenantUrl = '';
+    globals.culture = 'en-US';
+    globals.pageSizeList = [{"Key":10,"Value":10},{"Key":25,"Value":25},{"Key":50,"Value":50},{"Key":100,"Value":100}];
+    globals.enableClientErrorLogging = false;
+    globals.clientSiteResources =  [{"Key":"ClientSiteResource_CorrectInvalidValueMessage","Value":"Please correct invalid values"},{"Key":"ClientSiteResource_AnErrorHasOccurred","Value":"An error has occurred"},{"Key":"ClientSiteResource_SaveHasBeenSuccessful","Value":"Save has been successful."},{"Key":"ClientSiteResource_Close","Value":"Close"},{"Key":"ClientSiteResource_OK","Value":"OK"},{"Key":"ClientSiteResource_Cancel","Value":"Cancel"},{"Key":"ClientSiteResource_Link","Value":"Click to view"},{"Key":"ClientSiteResource_Permit","Value":"Permits"},{"Key":"ClientSiteResource_Inspection","Value":"Inspections"},{"Key":"ClientSiteResource_Success","Value":"Success"},{"Key":"ClientSiteResource_NotFound","Value":"The resource you are looking for is not found, or is temporarily unavailable."},{"Key":"ContactLicenseInvalidAlertMessage","Value":"does not have the required certification for the selected contact type"},{"Key":"PageTitle_CSSWebsite","Value":"Civic Access"},{"Key":"PageTitle_ApplyForPermit","Value":"Apply for Permit"},{"Key":"PageTitle_ApplyForPlan","Value":"Apply for Plan"},{"Key":"PageTitle_ApplyForProfessionalLicense","Value":"Apply for License"},{"Key":"PageTitle_ApplyForBusinessLicense","Value":"Apply for License"},{"Key":"PageTitle_ApplyForOperationalPermit","Value":"Apply for Operational Permit"},{"Key":"PageTitle_ApplyForApplication","Value":"Apply For Application"},{"Key":"PageTitle_RenewLicense","Value":"Renew License"},{"Key":"PageTitle_Dashboard","Value":"Dashboard"},{"Key":"PageTitle_FeeEstimator","Value":"Fee Estimator"},{"Key":"PageTitle_Map","Value":"Map"},{"Key":"PageTitle_MyInvoices","Value":"My Invoices"},{"Key":"PageTitle_MyLicenses","Value":"My Licenses"},{"Key":"PageTitle_MyPermits","Value":"My Permits"},{"Key":"PageTitle_MyPlans","Value":"My Plans"},{"Key":"PageTitle_MyRemainingInpections","Value":"My Existing Inspections"},{"Key":"PageTitle_MyRequests","Value":"My Requests"},{"Key":"PageTitle_PayInvoice","Value":"Pay Invoice"},{"Key":"PageTitle_PublicSearch","Value":"Public Information"},{"Key":"PageTitle_TodaysInspections","Value":"Today's Inspections"},{"Key":"PageTitle_RequestInpection","Value":"Request Inspections"},{"Key":"PageTitle_ManageAccount","Value":"My Account"},{"Key":"MenuContactManager","Value":"Contact Manager"},{"Key":"MenuSavedWork","Value":"Saved Work"},{"Key":"PageTitle_Report","Value":"Public Reports"},{"Key":"PageTitle_Estimate_Permit_Fees","Value":"Estimate Permit Fees"},{"Key":"PageTitle_Estimate_Plan_Fees","Value":"Estimate Plan Fees"},{"Key":"PageTitle_Calendar_Events","Value":"Calendar Events"},{"Key":"PageTitle_Request_Inspections","Value":"Request Inspections"},{"Key":"PageTitle_Login","Value":"Log In"},{"Key":"PageTitle_Register","Value":"Registration"},{"Key":"PageTitle_ShoppingCart","Value":"Shopping Cart"},{"Key":"PageTitle_ApplicationAssistant","Value":"Application Assistant"},{"Key":"TableCheckBoxFalse","Value":"No"},{"Key":"TableCheckBoxTrue","Value":"Yes"},{"Key":"InvalidBusinessLicenseDraft","Value":"Business saved in this draft is no longer valid. Please begin the application process again."},{"Key":"PageTitle_ResubmitAttachment","Value":"Resubmit File"},{"Key":"DraftSaveSuccessfulMessage","Value":"Save has been successful. \r\n\r\nNote: Attachments cannot be saved in a draft."},{"Key":"Global_License_Label","Value":"License Number:"},{"Key":"Global_Permit_Label","Value":"Permit Number:"},{"Key":"Global_Plan_Label","Value":"Plan Number:"},{"Key":"Global_CodeCase_Label","Value":"Code Case Number:"},{"Key":"Global_Request_Label","Value":"Request Number:"},{"Key":"Global_Business_Label","Value":"Business Number:"},{"Key":"Global_Fire_Occupancy_Label","Value":"Fire Occupancy Number:"},{"Key":"Global_Rental_Property_Label","Value":"Rental Property Number:"},{"Key":"Global_Landlord_License_Label","Value":"Landlord License Number:"},{"Key":"Global_Operational_Permit_Label","Value":"Operational Permit:"}];
+    globals.tylerIdEnabled = true
+    globals.authority = "https://identity.tylerportico.com/oauth2/default/";
+    globals.client_id = "0oaldwiimruPV6ZWz4x7";
+    globals.redirect_uri = "{host}/callback"
+    globals.silent_redirect_uri = "{host}/silent";
+    globals.scope = "openid email profile";
+    globals.post_logout_redirect_uri = "{host}/home";
+    globals.accessTokenExpiringNotificationTime = 60
+    globals.post_redirect_uri = "{host}/home";
+    globals.require_authentication = false;
+    return globals;
+    });
+
+</script>
+
+<!-- Google Analytics -->
+<script src="/energovprod/selfservice/Scripts/googleAnalytics.js"></script>
+<!-- End Google Analytics -->
+<script src="/energovprod/selfservice/Scripts/oidc-client.min.js"></script>
+

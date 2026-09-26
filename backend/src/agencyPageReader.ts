@@ -10,7 +10,8 @@
 //   - >= 10 s between requests to one host, serialised per host across every reader in the process
 //     (three concurrent lookups on aca-prod.accela.com still queue);
 //   - a host that refuses once (401/403/429, a wall, a challenge, a "no automated access" notice)
-//     is BACKED OFF for the rest of the process — never asked again;
+//     is BACKED OFF for an hour (BACK_OFF_MS) — not asked again; a 404 / 410 is a missing page, not
+//     a refusal (isRefusal);
 //   - a size cap, a timeout, a per-lookup read budget;
 //   - NEVER A LOGIN: a URL whose path names a sign-in / register / OAuth step is not fetched, and a
 //     page that lands on one is not read. No cookies are kept (plain fetch, no jar), no credential is
@@ -115,6 +116,15 @@ const isBackedOff = (host: string) => {
 /** Tests only: forget the process-wide host state. */
 export function _resetPoliteness(): void { hostChain.clear(); hostLast.clear(); backedOff.clear(); }
 const REFUSED_REASON = /refus|challenge|captcha|no automated|robots|wall|HTTP 40[13]\b|HTTP 429\b/i;
+/** A REFUSAL backs a host off; a MISSING PAGE does not (close F7: an Apache 404 on a county's site was
+ *  classed "refused an ordinary HTTP client" and silenced the host for an hour — its permit-packets
+ *  page was then never read). 401 / 403 / 429 always refuse; a challenge / wall / "no automated
+ *  access" notice refuses unless the server said the page is not there (404 / 410). */
+export function isRefusal(status: number, reason: string): boolean {
+  if ([401, 403, 429].includes(status)) return true;
+  if (status === 404 || status === 410) return false;
+  return REFUSED_REASON.test(String(reason ?? ""));
+}
 
 export interface PageReader {
   read(url: string, opts?: { headers?: Record<string, string>; json?: boolean }): Promise<ReadPage>;
@@ -155,8 +165,11 @@ export function createPageReader(opts: { fetch?: RawFetch; maxReads?: number; mi
     hostChain.set(host, run);
     const got = await run;
     if (!got) return none(url, `${host} refused an earlier read — backed off`);
+    // A redirect onto another host (an agency link landing on a vendor) starts THAT host's gap clock too.
+    const landed = portalHostOf(got.finalUrl);
+    if (landed && landed !== host) hostLast.set(landed, Date.now());
     if (!got.ok) {
-      if (REFUSED_REASON.test(got.reason) || [401, 403, 429].includes(got.status)) backedOff.set(host, { reason: got.reason.slice(0, 120), at: Date.now() });
+      if (isRefusal(got.status, got.reason)) backedOff.set(host, { reason: got.reason.slice(0, 120), at: Date.now() });
       return { ...none(url, got.reason), status: got.status, finalUrl: got.finalUrl || url };
     }
     const finalUrl = got.finalUrl || url;
@@ -244,6 +257,15 @@ export function parseHtml(html: string, pageUrl: string): { title: string; text:
   // The page's OWN words: site navigation / header / footer menus are every page's furniture (and
   // run together into one line), so they are dropped from the text — their links were kept above.
   $("script, style, noscript, svg, template, nav, header, footer, [role=navigation], [role=banner], [role=contentinfo]").remove();
+  // A TABLE ROW IS ONE LINE, its cells apart (close F4: "<td>Solar Installation</td><td>$50</td>"
+  // read as "Solar Installation$50", so the fee row the model quoted was "not on the page"). Block
+  // elements end a line. (Links were collected above, before the rows are flattened.)
+  $("br").replaceWith("\n");
+  $("tr").each((_i, el) => {
+    const cells = $(el).children("td, th").map((_j, c) => $(c).text().replace(/\s+/g, " ").trim()).get().filter(Boolean);
+    if (cells.length) $(el).text(`\n${cells.join(" | ")}\n`);
+  });
+  $("p, li, div, h1, h2, h3, h4, h5, h6, dt, dd, table, section, article, blockquote").each((_i, el) => { $(el).append("\n"); });
   const text = $("body").text().replace(/[ \t\f\v\r]+/g, " ").replace(/\s*\n\s*/g, "\n").split("\n").filter((l) => l.length <= 600).join("\n").trim().slice(0, TEXT_CAP);
   return { title, text, links, html: html.slice(0, HTML_CAP) };
 }
@@ -262,5 +284,15 @@ export function quoteOnPage(quote: string, pageText: string): boolean {
   // is never contiguous on the page, while every item still is.
   const segs = String(quote ?? "").split(/\.{3}|…|\s\|\s|[☐☑☒□■▪•●◦·]/).map(normaliseForQuote).filter((s) => s.split(" ").length >= 2 || /\d/.test(s));
   if (!segs.length || !page) return false;
-  return segs.every((s) => page.includes(s) || page.includes(s.replace(/\.$/, "")));
+  // ONE ROW (close F4): a table row's words split across cells ("Solar Installation | Residential |
+  // $50", a PDF row's columns) — the segment's tokens in order within ONE short line, each a whole
+  // token, so an amount must be printed on that same row (never a number from another row).
+  // A ROW is a line whose cells are apart: " | " (an HTML table row, parseHtml) or a run of spaces (a
+  // PDF row, pdfText). A prose line is never loosened.
+  const rows = String(pageText ?? "").split("\n").filter((l) => /\s\|\s|\S {2,}\S/.test(l)).map(normaliseForQuote).filter((l) => l && l.length <= 300).map((l) => l.split(" "));
+  const inOneRow = (seg: string) => {
+    const toks = seg.replace(/\.$/, "").split(" ").filter(Boolean);
+    return rows.some((row) => { let i = 0; for (const t of row) if (t === toks[i]) i++; return i === toks.length; });
+  };
+  return segs.every((s) => page.includes(s) || page.includes(s.replace(/\.$/, "")) || inOneRow(s));
 }

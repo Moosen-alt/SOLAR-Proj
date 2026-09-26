@@ -20,7 +20,7 @@
 //   4. PREREQUISITES AND CODES FROM THE WORDS ON A PAGE WE READ — each a sentence quoted verbatim.
 import type { PermitProcessDiscipline } from "../../shared/src/types";
 import type { PageLink, PageReader, ReadPage } from "./agencyPageReader";
-import { hostFitsTrackAndEntity, isPermitPlatformUrl, portalHostOf } from "./portalChannel";
+import { hostFitsTrackAndEntity, isPermitPlatformUrl, portalHostOf, portalTenantKey, portalTenantOf } from "./portalChannel";
 
 export type PermitPlatform = "energov" | "accela" | "other";
 
@@ -34,17 +34,65 @@ export function registrableDomain(host: string): string {
   return labels.slice(-2).join(".");
 }
 
-const GENERIC_NAME_WORDS = new Set(["city", "county", "town", "village", "the", "of", "and", "department", "division", "building", "services", "community", "development", "public", "works", "inspection", "inspections", "permit", "permits", "office", "unincorporated", "township", "borough", "parish"]);
-/** An AGENCY'S OWN page: a government TLD, a gov/city/county word in the domain, or a distinctive
- *  word of the agency's / AHJ's name in it. A blog, a vendor's marketing site or a directory is not. */
+const GENERIC_NAME_WORDS = new Set(["city", "county", "town", "village", "the", "of", "and", "department", "division", "building", "services", "community", "development", "public", "works", "inspection", "inspections", "permit", "permits", "office", "unincorporated", "township", "borough", "parish", "state", "government", "planning", "code", "codes", "enforcement", "regional", "agency"]);
+/** The distinctive keys of an agency's / AHJ's names: each non-generic word (>= 3 letters) and the
+ *  run-together name ("santafe", "northerncambria"). "Lee County" -> ["lee"]. */
+export function nameKeys(names: string[]): string[] {
+  const out = new Set<string>();
+  for (const n of names) {
+    const ws = String(n ?? "").toLowerCase().replace(/[^a-z\s-]+/g, " ").split(/[\s-]+/).filter((w) => w && !GENERIC_NAME_WORDS.has(w));
+    for (const w of ws) if (w.length >= 3) out.add(w);
+    if (ws.length > 1 && ws.join("").length >= 5) out.add(ws.join(""));
+  }
+  return [...out];
+}
+/** The initials of a name without its leading "City of" ("Iowa City" -> "ic"). */
+function initialsOf(name: string): string {
+  const ws = String(name ?? "").toLowerCase().replace(/^\s*(?:the\s+)?(?:city|town|county|village|borough|township)\s+of\s+/, "").split(/[^a-z]+/).filter((w) => w && !["of", "the", "and"].includes(w));
+  return ws.length >= 2 ? ws.map((w) => w[0]).join("") : "";
+}
+const US_STATES = new Set("al ak az ar ca co ct de fl ga hi id il in ia ks ky la me md ma mi mn ms mo mt ne nv nh nj nm ny nc nd oh ok or pa ri sc sd tn tx ut vt va wa wv wi wy dc".split(" "));
+/**
+ * An AGENCY'S OWN page (close F2 — no /city|county|gov/ substring or ^co shortcut: countyoffice.org,
+ * codepublishing.com, citybizlist.com, cityfeet.com, govpilot.com and comcast.com all passed those):
+ *   - a government TLD (.gov / .mil), or a US locality domain (<x>.<st>.us: city.waltham.ma.us,
+ *     co.marion.or.us) — never a bare .us (mygov.us is a vendor);
+ *   - or the AGENCY'S OWN DOMAIN: once its official affixes are removed (cityof / townof / countyof /
+ *     city / county / town / twp / boro / gov / co / ci, and a state's two letters), the label is exactly
+ *     one of the name's distinctive keys, or its initials with a "gov" affix: cityofevanston.org,
+ *     clarkcountynv.gov, leegov.com (lee + gov), icgov.org (Iowa City's initials + gov), tigard-or.gov.
+ * A vendor's host, a directory, a news or code-publishing site is not.
+ */
 export function isOfficialAgencyHost(host: string, names: string[]): boolean {
-  const h = String(host ?? "").toLowerCase();
+  const h = String(host ?? "").toLowerCase().replace(/^www\./, "");
   if (!h || isPermitPlatformUrl(`https://${h}/`)) return false;
-  if (/\.(?:gov|us|mil)$/.test(h)) return true;
-  const dom = registrableDomain(h).split(".")[0];
-  if (/gov|^cityof|^countyof|^co[a-z]{2,}|city|county/.test(dom)) return true;
-  const distinctive = names.flatMap((n) => String(n ?? "").toLowerCase().split(/[^a-z]+/)).filter((w) => w.length >= 4 && !GENERIC_NAME_WORDS.has(w));
-  return distinctive.some((w) => dom.includes(w));
+  if (/\.(?:gov|mil)$/.test(h)) return true;
+  const us = /\.([a-z]{2})\.us$/.exec(h);
+  if (us && US_STATES.has(us[1])) return true;
+  const label = registrableDomain(h).split(".")[0].replace(/-/g, "");
+  const keys = nameKeys(names);
+  const initials = names.map(initialsOf).filter(Boolean);
+  // Strip affixes step by step; every intermediate form is a candidate for "the name itself".
+  const forms = new Set<string>([label]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const f of [...forms]) {
+      const next: string[] = [];
+      const pre = /^(cityof|townof|countyof|villageof|boroughof|townshipof|city|county|town|gov|co|ci)(.+)$/.exec(f);
+      if (pre) next.push(pre[2]);
+      const suf = /^(.+?)(city|county|town|township|twp|borough|boro|village|gov)$/.exec(f);
+      if (suf) next.push(suf[1]);
+      const st = /^(.+?)([a-z]{2})$/.exec(f);
+      if (st && US_STATES.has(st[2]) && st[1].length >= 3) next.push(st[1]);
+      for (const n of next) if (n.length >= 2 && !forms.has(n)) { forms.add(n); changed = true; }
+    }
+  }
+  if ([...forms].some((f) => keys.includes(f))) return true;
+  // Initials only with an explicit "gov" affix (icgov.org) — two letters alone name nobody.
+  const govStripped = /^(.+?)gov$|^gov(.+)$/.exec(label);
+  const core = govStripped ? (govStripped[1] ?? govStripped[2]) : "";
+  return Boolean(core) && initials.includes(core);
 }
 
 // ── Platform markers ──────────────────────────────────────────────────────────────────────
@@ -78,9 +126,62 @@ export function platformOfUrl(url: string): PermitPlatform | null {
 // ── Link words ────────────────────────────────────────────────────────────────────────────
 /** Words that NAME an application portal. */
 export const PORTAL_LINK_WORDS = /apply online|apply for (?:a |your )?(?:building )?permits?|online (?:permit|portal|application|services|submittal)|customer self[- ]?service|citizen'?s? (?:access|portal|self[- ]?service)|self[- ]?service|permit(?:ting)? (?:portal|system)|e-?permit|e-?connect|development hub|online portal|\bportal\b|citizen ?access|accela|energov|etrakit|citizenserve/i;
-/** Words that name something ELSE (a transparency / payment / GIS / records portal, a video, a guide). */
-const NOT_PORTAL_WORDS = /transparen|pay (?:a |your )?(?:bill|utility|invoice)|utility bill|job|employ|career|parks?\b|librar|\bgis\b|\bmaps?\b|open data|records request|public records|agenda|video|youtube|how[- ]to|tutorial|guide|faq|help|creating an account|translate|facebook|twitter|instagram|linkedin|nextdoor|newsletter/i;
+/** Words that name something ELSE (a transparency / payment / GIS / records portal, a 311 / request /
+ *  concern system, a property viewer, a video, a guide, the vendor's own credit line). */
+const NOT_PORTAL_WORDS = /transparen|pay (?:a |your )?(?:bill|utility|invoice)|utility bill|job|employ|career|parks?\b|librar|\bgis\b|\bmaps?\b|open data|records request|public records|agenda|video|youtube|how[- ]to|tutorial|guide|faq|help|creating an account|translate|facebook|twitter|instagram|linkedin|nextdoor|newsletter|concern|complain|\b311\b|request|report (?:a|an)\b|code enforcement|property (?:viewer|search|information|lookup)|parcel|assessor|powered by/i;
 const PLATFORMISH_PATH = /selfservice|citizenaccess|citizen-access|energov|\/aca\b|etrakit|\/cap\/|permits?portal|epermit/i;
+/** A link TARGET whose path (never its host: "<city>.portal.iworq.net/portalhome" is iWorQ's
+ *  landing for a concern form) names an application portal. */
+const PORTAL_TARGET_PATH = /selfservice|citizen-?access|\/energov|etrakit|\/cap\/|e-?permit|\/permits?(?:[/_.-]|$)|\/apply\b|\/applications?\b/i;
+/** Hosts on the vendor list that are never an AHJ's APPLICATION portal as a page link: a 311 / CRM
+ *  (GovOutreach), a parcel GIS viewer (PeopleGIS MapsOnline, unless the words name permits), and
+ *  SolarAPP+ (where an approval is obtained; the permit is then filed in the city's own portal). */
+const NEVER_PAGE_PORTAL_HOST = /(?:^|\.)(?:govoutreach\.com|gosolarapp\.org|solarapp\.nrel\.gov)$/i;
+/** Hosts where ONE instance serves many agencies and the tenant is the first path segment. */
+const PATH_TENANT_HOST = /(?:^|\.)(?:accela\.com|citizenserve\.com|mygovernmentonline\.org)$/i;
+/** Subdomain labels that name the vendor's product, not the tenant. */
+const GENERIC_TENANT_LABEL = /^(?:www|portal|portals|aca|aca-?prod|aca-?[a-z]+|energovweb|energov|css|selfservice|permits?|apps?|online|public|citizen|prod|web|secure)$/i;
+
+/** The vendor's own site — its bare / www host (www.accela.com, opengov.com, gosolarapp.org), a
+ *  marketing subdomain — or a shared instance with no tenant in the path (aca-prod.accela.com/). */
+export function isVendorRootOrMarketing(href: string): boolean {
+  const host = portalHostOf(href);
+  if (!host) return true;
+  if (host === registrableDomain(host)) return true;
+  if (/^(?:info|go|learn|blog|support|help|community|developers?|docs|marketing|resources|investors?|status|news)\./i.test(host)) return true;
+  if (PATH_TENANT_HOST.test(host) && !portalTenantOf(href)) return true;
+  return false;
+}
+/** The tenant a vendor URL names, as letters: the path tenant on a shared instance (LEECO), else the
+ *  subdomain's own labels ("cityofscottsdaleaz-energovweb" -> "cityofscottsdaleaz"). */
+export function vendorTenantToken(href: string): string {
+  const host = portalHostOf(href);
+  if (!host) return "";
+  if (PATH_TENANT_HOST.test(host)) return portalTenantOf(href).replace(/[^a-z]/g, "");
+  const sub = host.slice(0, Math.max(0, host.length - registrableDomain(host).length - 1));
+  return sub.split(/[.]/).flatMap((l) => l.split(/-(?=energov|css|portal|selfservice|web|prod)/i)).filter((l) => l && !GENERIC_TENANT_LABEL.test(l)).join("").replace(/[^a-z]/gi, "").toLowerCase();
+}
+/** The tenant NAMES this agency: it contains one of the name's distinctive keys (a key under 5
+ *  letters must BE the tenant, give or take an official affix / a state's letters: "leeco",
+ *  "cityoflee" — "san" never names "sandag"). */
+export function tenantNamesAgency(href: string, names: string[]): boolean {
+  const t = vendorTenantToken(href);
+  if (!t) return false;
+  return nameKeys(names).some((k) => (k.length >= 5 ? t.includes(k) : new RegExp(`^(?:cityof|townof|countyof|villageof|co|ci)?${k}(?:co|county|city|town|twp|gov|[a-z]{2})?$`).test(t)));
+}
+/** The link's words name ANOTHER jurisdiction ("Other Township online permit portal", "City of
+ *  Hampton permits" on a county page listing its cities' portals). */
+export function wordsNameAnotherJurisdiction(text: string, names: string[]): boolean {
+  const own = new Set(names.flatMap((n) => String(n ?? "").toLowerCase().split(/[^a-z]+/)).filter(Boolean));
+  const found: string[] = [];
+  for (const m of String(text ?? "").matchAll(/\b(?:city|town|township|county|borough|village|parish) of ((?:[A-Z][a-zA-Z'.-]+)(?: [A-Z][a-zA-Z'.-]+)?)/gi)) found.push(m[1]);
+  for (const m of String(text ?? "").matchAll(/\b((?:[A-Z][a-zA-Z'.-]+)(?: [A-Z][a-zA-Z'.-]+)?) (?:Township|County|City|Borough|Village|Parish)\b/g)) found.push(m[1]);
+  const generic = /^(?:the|our|your|this|a|an|apply|online|permit|permits|portal|building|residential|commercial|unincorporated|inside|outside|citizen|public|new|search|for|in|of)$/i;
+  return found.some((f) => {
+    const ws = f.toLowerCase().split(/[^a-z]+/).filter((w) => w && !generic.test(w));
+    return ws.length > 0 && !ws.some((w) => own.has(w));
+  });
+}
 
 export interface PortalResolution {
   url: string;
@@ -89,13 +190,24 @@ export interface PortalResolution {
   sourceUrl: string;
   /** "<the link's words>" -> <its target>, as that page prints it. */
   quote: string;
-  via: "vendor link" | "own-domain portal (markers read)" | "redirect onto a vendor host" | "one hop";
+  via: "vendor link" | "vendor link (tenant read)" | "own-domain portal (markers read)" | "redirect onto a vendor host" | "one hop";
   /** The portal page itself, when we read it (platform markers). */
   portalPage?: ReadPage;
 }
 interface Candidate { link: PageLink; page: ReadPage; score: number; vendor: boolean }
 
-function candidatesOn(page: ReadPage): Candidate[] {
+/**
+ * THE LINKS ON A PAGE WE READ THAT MAY BE ITS APPLICATION PORTAL (close MF1/MF2). A link to a
+ * permit-software vendor's host is a candidate ONLY when
+ *   - its words name an application portal (PORTAL_LINK_WORDS) or its target's PATH does (an EnerGov
+ *     /selfservice, an ACA tenant, an iWorQ /permits page — never "portal" in a host name);
+ *   - its words do not name something else (a concern / 311 / request form, a parcel viewer, a
+ *     "Powered by" credit, GIS, transparency) nor another jurisdiction;
+ *   - it is not the vendor's own site (www.accela.com, www.opengov.com, a tenant-less shared host) nor
+ *     a host that is never an application portal (GovOutreach 311, SolarAPP+, a MapsOnline viewer).
+ * Whether the TENANT is this agency's is decided in resolvePortalFromPages.
+ */
+function candidatesOn(page: ReadPage, names: string[]): Candidate[] {
   if (!page.ok || page.kind !== "html") return [];
   const pageDom = registrableDomain(portalHostOf(page.finalUrl));
   const out: Candidate[] = [];
@@ -107,36 +219,78 @@ function candidatesOn(page: ReadPage): Candidate[] {
     const ownDomain = !vendor && registrableDomain(host) === pageDom;
     const named = PORTAL_LINK_WORDS.test(link.text);
     if (vendor) {
-      // SolarAPP+ is where an approval is obtained, not (usually) the city's application portal —
-      // kept, ranked last.
-      const solarApp = /gosolarapp\.org$/i.test(host);
-      out.push({ link, page, vendor: true, score: (solarApp ? 0 : 4) + (named ? 2 : 0) + (/selfservice\/[^/#?]+|accela\.com\/[^/]+\//i.test(link.href) ? 1 : 0) });
+      if (isVendorRootOrMarketing(link.href) || NEVER_PAGE_PORTAL_HOST.test(host)) continue;
+      if (/(?:^|\.)mapsonline\.net$/i.test(host) && !/permit/i.test(`${link.text} ${link.href}`)) continue;
+      let path = "";
+      try { path = new URL(link.href).pathname; } catch { /* keep "" */ }
+      const targetNamed = PORTAL_TARGET_PATH.test(path) || (/(?:^|\.)accela\.com$/i.test(host) && Boolean(portalTenantOf(link.href)));
+      if (!named && !targetNamed) continue;
+      if (wordsNameAnotherJurisdiction(link.text, names)) continue;
+      out.push({ link, page, vendor: true, score: (named ? 2 : 0) + (targetNamed ? 1 : 0) + (/selfservice\/[^/#?]+|accela\.com\/[^/]+\//i.test(link.href) ? 1 : 0) });
     } else if (ownDomain && (named || (host !== portalHostOf(page.finalUrl) && PLATFORMISH_PATH.test(link.href)))) {
+      if (wordsNameAnotherJurisdiction(link.text, names)) continue;
       out.push({ link, page, vendor: false, score: (named ? 2 : 0) + (host !== portalHostOf(page.finalUrl) ? 1 : 0) + (PLATFORMISH_PATH.test(link.href) ? 1 : 0) });
     }
   }
   return out;
 }
 const quoteOf = (link: PageLink, landed?: string) => `"${link.text || "(link)"}" -> ${link.href}${landed && landed !== link.href ? ` (opens ${landed})` : ""}`.slice(0, 300);
+/** A platform page we read that names this agency in its own title / words. */
+function pageNamesAgency(page: ReadPage, names: string[]): boolean {
+  const words = ` ${`${page.title} ${page.text}`.toLowerCase().replace(/[^a-z]+/g, " ")} `;
+  const run = words.replace(/ /g, "");
+  return nameKeys(names).some((k) => (k.length >= 5 ? run.includes(k) : words.includes(` ${k} `)));
+}
 
 /**
  * Resolve the application portal from the agency's own pages (already read). Reads (politely) the
  * own-domain candidates to confirm a platform, following one hop. Returns null when no page we
  * read links one — never a guess.
+ *
+ * A VENDOR-HOSTED TENANT IS THIS AGENCY'S only when (in this order):
+ *   1. its tenant / subdomain names the agency (tenantNamesAgency: "cityofscottsdaleaz-energovweb",
+ *      aca-prod.accela.com/LEECO for Lee County); or
+ *   2. [after the own-domain candidates, whose read attests them] it is the ONLY tenant the pages we
+ *      read link as a portal; or
+ *   3. we read it and it shows the platform's markers AND this agency's name.
+ * Otherwise it is not the portal (a county page listing its cities' tenants resolves nothing).
+ * `names`: the AHJ's and the issuing agency's names ([] = only doors 2 and the own-domain read).
  */
-export async function resolvePortalFromPages(reader: PageReader, pages: ReadPage[], opts: { maxVerify?: number } = {}): Promise<PortalResolution | null> {
+export async function resolvePortalFromPages(reader: PageReader, pages: ReadPage[], opts: { maxVerify?: number; names?: string[] } = {}): Promise<PortalResolution | null> {
   let verifyLeft = opts.maxVerify ?? 4;
+  const names = (opts.names ?? []).filter(Boolean);
+  const vendorHit = (c: Candidate, hop: boolean, via?: PortalResolution["via"], portalPage?: ReadPage): PortalResolution =>
+    ({ url: c.link.href, platform: platformOfUrl(c.link.href) ?? (portalPage ? detectPlatform(portalPage) : null) ?? "other", sourceUrl: c.page.finalUrl, quote: quoteOf(c.link), via: via ?? (hop ? "one hop" : "vendor link"), ...(portalPage ? { portalPage } : {}) });
   const tryCandidates = async (cands: Candidate[], hop: boolean): Promise<PortalResolution | null> => {
-    const sorted = [...cands].sort((a, b) => b.score - a.score);
+    const byScore = (a: Candidate, b: Candidate) => b.score - a.score;
+    const vendors = cands.filter((c) => c.vendor).sort(byScore);
+    const named = vendors.find((c) => tenantNamesAgency(c.link.href, names));
+    if (named) return vendorHit(named, hop);
+    const own = await tryOwnDomain(cands.filter((c) => !c.vendor).sort(byScore), hop);
+    if (own) return own;
+    const tenants = new Set(vendors.map((c) => portalTenantKey(c.link.href)));
+    if (tenants.size === 1) return vendorHit(vendors[0], hop);
+    // Several tenants, none named: read them (budget) — the platform's markers AND this agency's name.
+    const tried = new Set<string>();
+    for (const c of vendors) {
+      const key = portalTenantKey(c.link.href);
+      if (tried.has(key) || verifyLeft <= 0 || !names.length) continue;
+      tried.add(key);
+      verifyLeft--;
+      const t = await reader.read(c.link.href);
+      if (t.ok && detectPlatform(t) && pageNamesAgency(t, names) && hostFitsTrackAndEntity("building", null, t.finalUrl, "research").fits) return vendorHit(c, hop, "vendor link (tenant read)", t);
+    }
+    return null;
+  };
+  const tryOwnDomain = async (sorted: Candidate[], hop: boolean): Promise<PortalResolution | null> => {
     for (const c of sorted) {
-      if (c.vendor) {
-        return { url: c.link.href, platform: platformOfUrl(c.link.href) ?? "other", sourceUrl: c.page.finalUrl, quote: quoteOf(c.link), via: hop ? "one hop" : "vendor link" };
-      }
       if (verifyLeft <= 0) break;
       verifyLeft--;
       const target = await reader.read(c.link.href);
       if (!target.ok) continue;
-      if (isPermitPlatformUrl(target.finalUrl) && hostFitsTrackAndEntity("building", null, target.finalUrl, "research").fits) {
+      // The agency's own link landing on a vendor host attests that tenant — unless it landed on the
+      // vendor's own site or a host that is never an application portal (a 311 CRM, SolarAPP+).
+      if (isPermitPlatformUrl(target.finalUrl) && !isVendorRootOrMarketing(target.finalUrl) && !NEVER_PAGE_PORTAL_HOST.test(portalHostOf(target.finalUrl)) && hostFitsTrackAndEntity("building", null, target.finalUrl, "research").fits) {
         return { url: target.finalUrl, platform: platformOfUrl(target.finalUrl) ?? detectPlatform(target) ?? "other", sourceUrl: c.page.finalUrl, quote: quoteOf(c.link, target.finalUrl), via: "redirect onto a vendor host", portalPage: target };
       }
       const platform = detectPlatform(target);
@@ -145,13 +299,13 @@ export async function resolvePortalFromPages(reader: PageReader, pages: ReadPage
       }
       // ONE HOP: an own-domain page the link's words name as the portal, which in turn links it.
       if (!hop && PORTAL_LINK_WORDS.test(c.link.text)) {
-        const next = await tryCandidates(candidatesOn(target).filter((n) => n.vendor || portalHostOf(n.link.href) !== portalHostOf(target.finalUrl)), true);
+        const next = await tryCandidates(candidatesOn(target, names).filter((n) => n.vendor || portalHostOf(n.link.href) !== portalHostOf(target.finalUrl)), true);
         if (next) return next;
       }
     }
     return null;
   };
-  return tryCandidates(pages.flatMap(candidatesOn), false);
+  return tryCandidates(pages.flatMap((p) => candidatesOn(p, names)), false);
 }
 
 // ── Catalogs ──────────────────────────────────────────────────────────────────────────────
@@ -266,7 +420,10 @@ export async function readPortalCatalog(reader: PageReader, portal: PortalResolu
 
 // ── The solar record types, and which one this job files ─────────────────────────────────
 const SOLAR_TYPE = /solar|photo-?voltaic|\bpv\b|renewable energy/i;
-const NOT_A_PV_APPLICATION = /pool|water heat|thermal|revision|renewal|extension|re-?inspection|inspection trip|deferred|violation|complaint|enforcement|plan review only/i;
+// Record-type LOOK-ALIKES (close F3): a solar water heater, a solar screen, taking an array off and
+// putting it back, a wind turbine, a pool heater — each carries "solar" / "renewable energy" in its
+// label and none is a PV installation. A catalog whose only solar types are these offers none.
+const NOT_A_PV_APPLICATION = /pool|water heat|hot water|solar water|thermal|screen|shade|remov|re-?install|detach|re-?set\b|\br ?& ?r\b|wind|turbine|geothermal|revision|renewal|extension|re-?inspection|inspection trip|deferred|violation|complaint|enforcement|plan review only/i;
 export interface RecordTypeCandidate {
   label: string;
   /** The condition that selects this type ("prescriptive path", "SolarAPP+ approval …"). */
@@ -294,6 +451,21 @@ export function solarRecordTypeCandidates(catalog: PortalCatalog): RecordTypeCan
     const quote = `${t.label}${t.description ? ` — ${t.description}` : ""}${t.value ? ` (${t.value})` : ""}`.replace(/\s+/g, " ").slice(0, 300);
     return { label: t.label, condition, path, discipline, sourceUrl: catalog.sourceUrl, quote };
   });
+}
+/** The ONE candidate a cited record type names (close F5): the label equals it, or one contains the
+ *  other; the path it names ("SolarAPP+", "prescriptive") when exactly one candidate is on that path.
+ *  None or several -> null. */
+export function candidateNamedBy(cands: RecordTypeCandidate[], cited: string | null | undefined): RecordTypeCandidate | null {
+  const v = String(cited ?? "").trim();
+  if (!v || !cands.length) return null;
+  const norm = (s: string) => s.toLowerCase().replace(/[–—]/g, "-").replace(/[^a-z0-9+]+/g, " ").trim();
+  const m = norm(v);
+  const byName = cands.filter((c) => { const l = norm(c.label); return l === m || (l.length >= 6 && m.includes(l)) || (m.length >= 6 && l.includes(m)); });
+  if (byName.length === 1) return byName[0];
+  if (byName.length > 1) return null;
+  const tag = /solar ?app/i.test(v) ? "solarapp" : /non[- ]?prescriptive|engineered/i.test(v) ? "engineered" : /prescriptive/i.test(v) ? "prescriptive" : "";
+  const byPath = tag ? cands.filter((c) => c.path === tag) : [];
+  return byPath.length === 1 ? byPath[0] : null;
 }
 /** Which candidate THIS job files: the only one; or the one the plan path selects. Several and the
  *  path cannot decide -> null (the operator is asked, with every candidate and its condition). */
@@ -357,13 +529,57 @@ export const DOCUMENT_URL = /\.pdf(?:$|[?#])|showpublisheddocument|\/documentcen
  *  (a link's text or a search result's title) and, for a checklist, its being a document or naming
  *  a checklist (a "Solar" news page is neither). */
 export function classifyDocument(words: string, href: string): "fees" | "checklist" | null {
-  if (FEE_LINK.test(words)) return "fees";
+  if (FEE_LINK.test(words)) return staleOrOtherFeeSource(words, href) ? null : "fees";
   // A checklist is a SOLAR one (a deck or fence submittal guide is another job's).
   if (CHECKLIST_LINK.test(words) && /solar|photo-?voltaic|\bpv\b/i.test(words) && (DOCUMENT_URL.test(href) || /checklist|submittal|requirement|guide/i.test(words))) return "checklist";
   return null;
 }
+// ── Which fee schedule is THIS job's (close F4) ─────────────────────────────────────────
+/** The years a fee source names: in its words, and in its URL's path only inside a segment that has
+ *  letters ("2019-fee-schedule", "fees-fy25-26" — never a document id like /View/2019/). A fiscal
+ *  year counts as the year it ends ("FY25-26" -> 2026). */
+export function yearsNamed(words: string, href: string): number[] {
+  let path = "";
+  try { path = decodeURIComponent(new URL(href).pathname); } catch { path = ""; }
+  const segs = [String(words ?? ""), ...path.split("/").filter((s) => /[a-z]/i.test(s))];
+  const out: number[] = [];
+  for (const s of segs) {
+    for (const m of s.matchAll(/\bfy\s*-?\s*'?(\d{4}|\d{2})(?!\d)(?:\s*[-/–]\s*'?(\d{4}|\d{2})(?!\d))?/gi)) {
+      const end = m[2] ?? m[1];
+      out.push(end.length === 2 ? 2000 + Number(end) : Number(end));
+    }
+    for (const m of s.replace(/\bfy\s*-?\s*'?(?:\d{4}|\d{2})(?!\d)(?:\s*[-/–]\s*'?(?:\d{4}|\d{2})(?!\d))?/gi, " ").matchAll(/(?<!\d)(20\d\d)(?:\s*[-/–]\s*(20\d\d|\d\d))?(?!\d)/g)) {
+      const end = m[2] ? (m[2].length === 2 ? 2000 + Number(m[2]) : Number(m[2])) : Number(m[1]);
+      out.push(end);
+    }
+  }
+  return out.filter((y) => y >= 2000 && y <= 2100);
+}
+/** Another permit KIND's schedule (a trench, a right-of-way, a sign …) — not this job's unless its
+ *  words also name the building / electrical / solar work. */
+const OTHER_FEE_KIND = /trench|right[- ]of[- ]way|\brow\b|encroach|excavat|street|sidewalk|curb|driveway|sewer|water (?:service|meter|main|connection)|stormwater|utility (?:connection|billing)|\bsigns?\b|zoning|subdivision|land use|grading|fire (?:alarm|sprinkler|prevention|marshal|department)|business licen|alarm|animal|dog|parking|special event|food|liquor|tree|park(?:s|ing)?\b|recreation|cemetery|library|police/i;
+const JOB_FEE_KIND = /building|electric|solar|photo-?voltaic|\bpv\b|construction|master fee/i;
+/** An archived / prior-year / superseded schedule, or one for another permit kind — never the job's
+ *  fee source. `now` is the current year (tests pass it). */
+export function staleOrOtherFeeSource(words: string, href: string, now = new Date().getFullYear()): string | null {
+  const both = `${words ?? ""} ${(() => { try { return decodeURIComponent(new URL(href).pathname).replace(/[-_/]+/g, " "); } catch { return ""; } })()}`;
+  if (/archiv|supersed|obsolete|expired|rescinded|historical|previous|prior year|old fee|draft|proposed/i.test(both)) return "an archived / superseded / draft schedule";
+  // A year dates a SCHEDULE (a fee / rate schedule); an application form's year does not.
+  const years = /fee|schedule|rates?\b/i.test(both) ? yearsNamed(words, href) : [];
+  if (years.length && Math.max(...years) < now) return `a prior-year schedule (${Math.max(...years)})`;
+  if (OTHER_FEE_KIND.test(both) && !JOB_FEE_KIND.test(both)) return "a schedule for another permit kind";
+  return null;
+}
+/** Current-year solar / building schedules first, then a master schedule, then the rest. */
+function feeRank(words: string, href: string, now = new Date().getFullYear()): number {
+  const years = yearsNamed(words, href);
+  const both = `${words} ${href}`;
+  return (years.some((y) => y >= now) ? 4 : 0) + (/solar|photo-?voltaic|\bpv\b|electric/i.test(both) ? 3 : /building|construction/i.test(both) ? 2 : /master/i.test(both) ? 1 : 0);
+}
+
 /** The fee schedule / checklist links on the agency's own pages (own domain or a document host it
- *  links), fee schedules first. */
+ *  links), fee schedules first (the current year's solar / building schedule before the rest); an
+ *  archived, prior-year or other-kind schedule is not one (classifyDocument). */
 export function documentLinks(pages: ReadPage[], names: string[]): Array<{ href: string; text: string; kind: "fees" | "checklist" }> {
   const out: Array<{ href: string; text: string; kind: "fees" | "checklist" }> = [];
   for (const page of pages) {
@@ -377,7 +593,7 @@ export function documentLinks(pages: ReadPage[], names: string[]): Array<{ href:
       if (kind && !out.some((o) => o.href === l.href)) out.push({ href: l.href, text: l.text, kind });
     }
   }
-  return out.sort((a, b) => Number(b.kind === "fees") - Number(a.kind === "fees"));
+  return out.sort((a, b) => Number(b.kind === "fees") - Number(a.kind === "fees") || (a.kind === "fees" ? feeRank(b.text, b.href) - feeRank(a.text, a.href) : 0));
 }
 const FEE_LINE = /solar|photo-?voltaic|\bpv\b|renewable|\bkva\b|\bkw\b|surcharge|electrical permit|minor work/i;
 const DOC_LINE = /required|submit|plan|site|diagram|spec|checklist|form|application|upload|attach|stamp|seal|engineer|calculation|drawing/i;
