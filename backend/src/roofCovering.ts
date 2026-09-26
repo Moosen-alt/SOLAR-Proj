@@ -11,7 +11,7 @@
 // shingle / shake / flat word too ("concrete shake tile", "flat tile", "tile shingle") — and a
 // tile roof must never collapse into composition shingle or wood shake.
 
-export type RoofFamily = "tile" | "membrane" | "metal" | "composition" | "wood" | "unknown";
+export type RoofFamily = "tile" | "membrane" | "metal" | "composition" | "wood" | "slate" | "unknown";
 
 export interface RoofCovering {
   family: RoofFamily;
@@ -21,6 +21,14 @@ export interface RoofCovering {
 }
 
 const TILE = /\b(?:s[-\s]?tiles?|tiles?|barrel|spanish\s+tile|mission\s+tile)\b/i;
+// A roof COVERED in concrete / clay / terra cotta is a tile roof even when the sheet never says
+// "tile": the LLM contract copies the sheet's wording, so "ROOF MATERIAL: CONCRETE" arrives as
+// "Concrete" — before this it classified unknown, and an Oregon job routed PRESCRIPTIVE with a
+// blank 5952 roofing row. Not when the word names the structure under the covering ("Composition
+// Shingle over concrete deck"), and not when another covering is named alongside it.
+const TILE_MATERIAL = /\b(?:concrete|clay|terra[-\s]?cotta)\b/i;
+const STRUCTURE_NOT_COVERING = /\b(?:deck(?:ing)?|slab|substrate|sheathing|podium|parapet|framing|joists?|structure|foundation)\b/i;
+const OTHER_COVERING = /\b(?:compos\w*|asphalt|comp|metal|standing[-\s]?seam|corrugated|steel|alumin(?:i)?um)\b/i;
 const MEMBRANE = /\b(tpo|epdm|pvc|membrane|torch|built[-\s]?up|bur|tar|gravel|foam|spf|rolled|mod(ified)?[-\s]?bit(umen)?)\b/i;
 
 /** Tile subtype words found in the text (material, then profile). */
@@ -40,10 +48,14 @@ export function classifyRoofCovering(material: unknown, subtypeHint: unknown = "
   const both = `${m} ${hint}`;
   if (TILE.test(both)) return { family: "tile", subtype: tileSubtype(both) };
   if (!m) return { family: "unknown", subtype: "" };
+  if (TILE_MATERIAL.test(m) && !STRUCTURE_NOT_COVERING.test(m) && !OTHER_COVERING.test(m) && !MEMBRANE.test(m)) return { family: "tile", subtype: tileSubtype(both) };
   if (MEMBRANE.test(m)) return { family: "membrane", subtype: "" };
   if (/metal|standing[-\s]?seam|corrugated/i.test(m)) return { family: "metal", subtype: "" };
   if (/compos|asphalt|comp\b|shingle/i.test(m) && !/\b(wood|cedar|shake)\b/i.test(m)) return { family: "composition", subtype: "" };
   if (/\b(wood|cedar|shake)\b/i.test(m)) return { family: "wood", subtype: "" };
+  // Slate is a RECOGNISED covering outside Oregon's row (metal / wood / composition): a known "No",
+  // not an unknown. Its own family — it is not tile (no tile-hook / tile dead-load findings).
+  if (/\bslate\b/i.test(m)) return { family: "slate", subtype: "" };
   return { family: "unknown", subtype: "" };
 }
 
@@ -57,7 +69,8 @@ export function oregonRoofingRowQualifies(material: unknown, subtype: unknown, l
   const m = String(layers ?? "").trim().match(/^\s*(\d+(?:\.\d+)?)/);
   const n = m ? Number(m[1]) : null;
   if (!String(material ?? "").trim() && covering !== "tile") return null;
-  if (covering === "tile" || covering === "membrane") return false;
+  // The row is an ALLOWLIST: a recognised covering outside it answers No.
+  if (covering === "tile" || covering === "membrane" || covering === "slate") return false;
   if (covering === "metal") return true;
   if (covering === "composition") return n == null ? null : n <= 2;
   if (covering === "wood") return n == null ? null : n <= 1;

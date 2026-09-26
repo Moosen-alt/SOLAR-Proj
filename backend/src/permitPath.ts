@@ -552,7 +552,9 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   // clean numbers routed PRESCRIPTIVE (the wrong application, and a 5952 that should never be
   // filed). roofCovering.ts is the one predicate (bcdChecklistFacts asks the same one).
   const covering = classifyRoofCovering(roofMaterial, snap(project, "roofMaterialSubtype"));
-  const nonPrescriptiveRoof = covering.family === "membrane" || covering.family === "tile";
+  // A roof described only by its material ("Concrete", "Clay", "Terra cotta") is tile; slate is its
+  // own recognised family — both outside the row's allowlist (roofCovering.ts decides).
+  const nonPrescriptiveRoof = covering.family === "membrane" || covering.family === "tile" || covering.family === "slate";
   // The roofing rule is Oregon's ORSC row, so it only speaks for Oregon. Another state's
   // published path may admit membranes or tile; until its own rule is researched, this stays
   // quiet rather than asserting Oregon's into a Florida verdict.
@@ -566,7 +568,7 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   if (nonPrescriptiveRoof && stateCode === "OR") {
     screenFailures.push(covering.family === "tile"
       ? `roofing material "${roofMaterial}"${covering.subtype && !roofMaterial.toLowerCase().includes(covering.subtype.toLowerCase()) ? ` (${covering.subtype})` : ""} is tile — not a prescriptive-eligible covering (the BCD 5952 roofing row admits only metal, single-layer wood shingles/shakes, or <=2-layer composition), so tile-roof PV is non-prescriptive in Oregon: file the engineered/structural application`
-      : `roofing material "${roofMaterial}" is not a prescriptive-eligible covering (metal, wood shingle/shake, or <=2-layer composition) — membrane-roof PV is non-prescriptive in Oregon`);
+      : `roofing material "${roofMaterial}" is not a prescriptive-eligible covering (metal, wood shingle/shake, or <=2-layer composition) — ${covering.family}-roof PV is non-prescriptive in Oregon`);
   }
   // ULTIMATE WIND SPEED, not just exposure. A COASTAL site routinely parses as exposure C —
   // inside the B/C allowance — while its design wind speed sits in the special wind region

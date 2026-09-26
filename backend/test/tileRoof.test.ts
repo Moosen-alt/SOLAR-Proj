@@ -184,6 +184,49 @@ await check("(g6) MUST-EXCLUDE: comp and metal jobs raise no tile finding at all
   }
 });
 
+// ── (m) a roof named only by its MATERIAL (no word "tile") — the skeptic's look-alike ────────
+// The LLM contract copies the sheet's wording, so "ROOF MATERIAL: CONCRETE" arrives as "Concrete".
+const MATERIAL_ONLY = [["Concrete", "Concrete"], ["Concrete roof covering", "Concrete"], ["Clay", "Clay"], ["Terra cotta", "Clay"], ["Terra-Cotta", "Clay"], ["Concrete shake", "Concrete"]] as const;
+await check("(m1) MUST-PASS: 'Concrete' / 'Concrete roof covering' / 'Clay' / 'Terra cotta' / 'Concrete shake' are tile, with the subtype; slate is its own recognised family", () => {
+  for (const [m, sub] of MATERIAL_ONLY) {
+    const c = roof.classifyRoofCovering(m);
+    assert.equal(c.family, "tile", m); assert.equal(c.subtype, sub, `${m} subtype`);
+  }
+  assert.equal(roof.classifyRoofCovering("Slate").family, "slate");
+  assert.equal(roof.classifyRoofCovering("Natural slate").family, "slate");
+});
+await check("(m2) MUST-EXCLUDE: concrete as the STRUCTURE, or beside another covering, is not tile; comp/metal/membrane keep their families", () => {
+  assert.equal(roof.classifyRoofCovering("Composition Shingle over concrete deck").family, "composition");
+  assert.equal(roof.classifyRoofCovering("Standing seam metal over concrete deck").family, "metal");
+  assert.equal(roof.classifyRoofCovering("TPO over concrete deck").family, "membrane");
+  assert.equal(roof.classifyRoofCovering("Concrete deck").family, "unknown", "a deck is not a covering");
+  assert.equal(roof.classifyRoofCovering("Concrete slab").family, "unknown");
+  assert.equal(roof.classifyRoofCovering("Asphalt shingle").family, "composition");
+  assert.equal(roof.classifyRoofCovering("Cedar shake").family, "wood", "a wood shake is still wood");
+});
+await check("(m3) MUST-PASS: each material-only tile wording (and slate) answers Oregon's 5952 roofing row NO and routes ENGINEERED; tile findings fire for the tile ones", () => {
+  for (const [m] of [...MATERIAL_ONLY, ["Slate"]] as const) {
+    const p = reload(make({ roofMaterial: m, roofLayers: "" }).id);
+    assert.equal(facts.bcdChecklistAnswers(p).roofing, "No", m);
+    const r = pp.resolvePermitPath(p);
+    assert.equal(r.path, "engineered", `${m}: ${r.basis.join(" ")}`);
+    assert.match(r.basis.join(" "), m === "Slate" ? /slate-roof PV is non-prescriptive in Oregon/ : /is tile/, m);
+    const got = rules.evaluateDesignCodeFindings(p, null, undefined, []).map((f) => f.id);
+    if (m === "Slate") for (const id of TILE_IDS) assert.ok(!got.includes(id), `slate is not tile: ${id}`);
+    else assert.ok(got.includes("city.struct.tile-attachment-missing"), `${m}: ${got.join(",")}`);
+  }
+  const ctx = { permitStructure: "separate" as const, requiresPrescriptiveChecklist: true };
+  const docs = req.requiredApplicationDocs(reload(make({ roofMaterial: "Concrete roof covering", roofLayers: "" }).id), ctx).map((d) => d.docType);
+  assert.ok(!docs.includes("solar_checklist"), `the 5952 is not filed on a concrete-covered roof: ${docs}`);
+});
+await check("(m4) MUST-EXCLUDE: comp over a concrete deck (1 layer) and metal stay PRESCRIPTIVE with the row Yes", () => {
+  for (const over of [{ roofMaterial: "Composition Shingle over concrete deck", roofLayers: "1" }, { roofMaterial: "Standing seam metal", roofLayers: "" }]) {
+    const p = reload(make(over).id);
+    assert.equal(facts.bcdChecklistAnswers(p).roofing, "Yes", over.roofMaterial);
+    assert.equal(pp.resolvePermitPath(p).path, "prescriptive", over.roofMaterial);
+  }
+});
+
 // ── (i) the parse: an explicit tile label outranks a model's shingle guess ───────────────
 await check("(i1) MUST-PASS: 'ROOF MATERIAL: CONCRETE S-TILE' overrides a model's 'Composition Shingle'; subtype + method ride along", () => {
   const out = intake.supplementStructuralIntake({ provider: "stub", fields: { roofMaterial: { value: "Composition Shingle", confidence: 0.6 } }, lowConfidenceFields: [], notes: "" } as never,
