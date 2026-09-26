@@ -209,6 +209,8 @@
     const when = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
     // "last checked Sep 26, 2026", or — for a filing we have not read yet — "not checked yet".
     // It used to print "last checked —" beside a "Checking…" badge, which reads as a broken page.
+    // Statuses before anything has been filed — the same set as portal.html's.
+    const BEFORE_FILING = new Set(["pending", "parsed", "qc_failed", "qc_passed", "ready_to_stage", "awaiting_human_submit", "blocked"]);
     const lastChecked = (iso) => iso ? "last checked " + when(iso) : "not checked yet";
     const badge = (outcome, label) => `<span class="badge ${GOOD.has(outcome) ? "good" : WARN.has(outcome) ? "warn" : ""}">${esc(label || outcome || "Not checked yet")}</span>`;
 
@@ -264,7 +266,10 @@
             </div>
             ${badge(t.outcome, t.statusLabel)}
             ${readingNote(t, t.statusLabel || t.outcome)}
-          </div>`).join("") || `<div class="empty">Tracking will appear here once the application is submitted.</div>`;
+          </div>`).join("") || (BEFORE_FILING.has(d.project.status)
+            ? `<div class="empty">Tracking will appear here once the application is submitted.</div>`
+            // An Approved or Submitted job with no linked filing must not say it has not been filed.
+            : `<div class="empty">No application number is linked to this project on this page yet.</div>`);
         // EVERY LINE NAMES ITS FILING. This card used to render date + status only, so a project
         // with a structural AND an electrical permit produced "Permit issued / In review / Permit
         // issued / In review…" with nothing saying which permit each line was about. The label and

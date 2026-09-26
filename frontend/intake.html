@@ -148,8 +148,10 @@
         return;
       }
       if (!res.ok) {
-        deadLink(res.status === 410 ? "This link has expired." : "This link isn't valid.",
-          data.error || "Ask your permit coordinator for a new one.");
+        // The headline already says what happened; the lede carries the next step, not a repeat.
+        if (res.status === 410) deadLink("This link has expired.", "Links like this one stop working after a while. Ask your permit coordinator for a new one.");
+        else if (res.status === 404) deadLink("This link isn't valid.", "It may have been copied only in part, or replaced by a newer link. Ask your permit coordinator for a new one.");
+        else deadLink("We couldn't load this form.", data.error || "Reload this page. If it keeps happening, ask your permit coordinator for a new link.");
         return;
       }
       try {

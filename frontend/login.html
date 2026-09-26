@@ -100,6 +100,7 @@
     .login-card input:focus-visible { border-color: var(--primary); }
     .login-card button { width: 100%; justify-content: center; margin-top: var(--space-5); min-height: 42px; }
     #loginError { color: var(--danger); font-size: var(--text-sm); margin-top: var(--space-3); min-height: 20px; }
+    #loginError:empty { min-height: 0; margin-top: 0; }
     .login-legal { margin-top: var(--space-5); font-size: var(--text-xs); color: var(--muted); line-height: 1.6; }
   </style>
 </head>
@@ -131,7 +132,7 @@
     <div class="login-form-side">
       <form class="login-card" id="loginForm">
         <h1>Sign in.</h1>
-        <p class="muted login-sub">Solar Submission Autopilot</p>
+        <p class="muted login-sub">Keelix Automation</p>
         <label for="email">Email</label>
         <input id="email" type="email" autocomplete="username" required />
         <label for="password">Password</label>
@@ -163,7 +164,7 @@
           err.textContent = data.error || "Sign in failed.";
         }
       } catch (e2) {
-        err.textContent = "Network error: " + e2.message;
+        err.textContent = "Could not reach the server. Check your connection and try again.";
       }
     });
   </script>
