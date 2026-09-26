@@ -3206,3 +3206,58 @@ export interface PaidFeeReceipt {
   totalPaidUsd: number;
   paidAt: string;
 }
+
+// ── PER-JOB PERMIT PROCESS (operator steer 2026-09-25: "It needs to look up the right stuff per job") ──
+// One record per AHJ answering: who issues the permits, how the work is permitted (one combo
+// permit or separate structural + electrical), which portal and record type each permit files
+// under, which documents each permit needs, and what each costs. Every answer carries its
+// source and the words it rests on, or says it was NOT FOUND — never a guess. Lands 'seeded'
+// (shared knowledge, like permit_utility_knowledge); a person's 'verified' row is never
+// auto-overwritten (hard rule 3).
+export type PermitProcessOrigin = "lookup" | "state_rule" | "operator" | "kb";
+export interface CitedFact<T> {
+  /** null = not found. */
+  value: T | null;
+  sourceUrl: string;
+  /** The exact words on the source that state the answer. */
+  quote: string;
+  origin: PermitProcessOrigin;
+  /** When value is null: what was searched and why no answer was accepted. */
+  notFound?: string;
+}
+export type PermitProcessDiscipline = "structural" | "electrical" | "combo" | "other";
+export interface PermitFeeAnswer {
+  /** The authority's total for this permit on this job, when the schedule prices it. */
+  amountUsd: number | null;
+  /** "flat" (prescriptive flat fee), "tiered" (kVA tier), "valuation", … in words. */
+  basis: string;
+  lines: Array<{ label: string; amountUsd: number }>;
+}
+export interface PermitProcessPermitAnswer {
+  discipline: PermitProcessDiscipline;
+  /** The permit as the AHJ names it ("Residential Structural"). */
+  label: string;
+  issuingAgency: CitedFact<string>;
+  portalUrl: CitedFact<string>;
+  recordType: CitedFact<string>;
+  documents: CitedFact<string[]>;
+  fee: CitedFact<PermitFeeAnswer>;
+}
+export interface PermitProcessLookup {
+  profileKey: string;
+  state: string;
+  ahj: string;
+  confidence: "seeded" | "verified";
+  /** The agency that issues this AHJ's residential solar permits (a county can issue for a city). */
+  issuingAgency: CitedFact<string>;
+  permitStructure: CitedFact<"separate" | "combo">;
+  permits: PermitProcessPermitAnswer[];
+  /** Adopted codes the lookup found (display only; the gate reads jurisdiction_code_profiles). */
+  codes?: CitedFact<string[]>;
+  lookedUpAt: string;
+  model?: string;
+  costUsd?: number;
+  notes?: string[];
+  verifiedAt?: string | null;
+  verifiedBy?: string | null;
+}

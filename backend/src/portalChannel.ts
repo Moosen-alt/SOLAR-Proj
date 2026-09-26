@@ -339,6 +339,64 @@ export function isPermitPlatformUrl(url: string | null | undefined): boolean {
   return PERMIT_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
 }
 
+// ── Is this URL an APPLICATION PORTAL at all? ────────────────────────────────────────────
+// A stage launched https://www.oregon.gov/bcd/epermitting/help/records/pages/permit-for-solar.aspx
+// — BCD's staff guidance on how to fill a record — found nothing fillable, and SAVED a recipe
+// whose entry URL was that help page. The recipe then vouched for its own URL ("oregon.gov is City
+// of Jefferson's own portal"), the application profile's sourceUrl (the same page) passed too, and
+// cold-start research never ran because "a URL" was on file. No predicate asked whether a URL is
+// somewhere an application can be FILED.
+//
+// Judged from the URL alone (no fetch — this runs inside every resolver). An information page is:
+//   - a document (.pdf/.doc/.docx/.xls/.xlsx/.rtf/.txt);
+//   - a page under a help/FAQ/guide/brochure/handout/forms-library/news path segment;
+//   - a SharePoint content page ("/Pages/<name>.aspx") on a government site — the CMS every
+//     Oregon state agency and many counties publish on; application portals are not built on it.
+// A known permit/interconnection PLATFORM host is never an information page (its help pages are
+// still on the platform that files), and a bare host is never one.
+const INFO_PATH_SEGMENT = /^(?:help|faqs?|guides?|guidance|brochures?|handouts?|formslibrary|forms-library|news|newsroom|blog|press-releases?|how-to)$/i;
+const DOCUMENT_EXT = /\.(?:pdf|docx?|xlsx?|rtf|txt|pptx?)$/i;
+export function isInformationalPageUrl(url: string | null | undefined): boolean {
+  const raw = String(url ?? "").trim();
+  const host = portalHostOf(raw);
+  if (!host) return false;
+  if (isPermitPlatformUrl(raw) || UTILITY_INTERCONNECTION_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) return false;
+  let pathname = "";
+  try {
+    pathname = decodeURIComponent(new URL(raw).pathname);
+  } catch {
+    return false;
+  }
+  const segs = pathname.split("/").filter(Boolean);
+  if (!segs.length) return false;
+  if (DOCUMENT_EXT.test(segs[segs.length - 1])) return true;
+  if (segs.some((seg) => INFO_PATH_SEGMENT.test(seg))) return true;
+  const gov = /\.(?:gov|us)$/.test(host) || /\.(?:gov|state)\.[a-z]{2}\.us$/.test(host);
+  if (gov && segs.length >= 2 && /^pages$/i.test(segs[segs.length - 2]) && /\.aspx$/i.test(segs[segs.length - 1])) return true;
+  return false;
+}
+/** The interconnection SOFTWARE hosts (not the utilities' marketing domains) — the part of the
+ *  utility list that files applications, so never an information page. */
+const UTILITY_INTERCONNECTION_PLATFORM_HOSTS = ["powerclerk.com", "connectthegrid.com", "customerapplication.com"];
+
+/** Tenant identity of a portal URL: the first path segment plus any tenant-naming query parameter
+ *  (citizenserve's installationID, an ACA agency code). Two URLs are the SAME TENANT only when
+ *  host and all of these agree — the strict form used where a portal is UNLOCKED for a track. */
+const TENANT_QUERY_PARAMS = ["installationid", "agency", "agencycode", "tenant", "jurisdiction", "juris", "orgid", "cityid"];
+export function portalTenantKey(url: string | null | undefined): string {
+  const raw = String(url ?? "").trim();
+  const host = portalHostOf(raw);
+  if (!host) return "";
+  try {
+    const u = new URL(raw);
+    const q: string[] = [];
+    u.searchParams.forEach((v, k) => { if (TENANT_QUERY_PARAMS.includes(k.toLowerCase())) q.push(`${k.toLowerCase()}=${v.toLowerCase()}`); });
+    return `${host}/${portalTenantOf(raw)}?${q.sort().join("&")}`;
+  } catch {
+    return host;
+  }
+}
+
 /** The lower-cased hostname of a portal URL ("" when it is not an http(s) URL). "www." is
  *  dropped so www.x.gov and x.gov are one portal. */
 export function portalHostOf(url: string | null | undefined): string {
@@ -427,6 +485,10 @@ export interface PortalEntity {
   /** Portals the KB DECLARES shared ("Generic Oregon ePermitting AHJ" names the statewide
    *  portal, not a jurisdiction): never another entity's portal, whoever else claims it. */
   sharedPortals?: string[];
+  /** UTILITY scope only: permit-platform portals this utility's OWN human-VERIFIED KB record names
+   *  (a municipal utility whose NEM application lives inside the city's permit portal — Utah munis,
+   *  Austin Energy, BTU, Denton). The ONLY way a permit-platform host opens on the NEM track. */
+  verifiedPermitPlatformPortals?: string[];
 }
 
 /** Where a candidate URL came from. `operator` = typed by a person on a route; `statewide` =
@@ -434,7 +496,7 @@ export interface PortalEntity {
  *  something stored (a recipe, a KB row). */
 export type PortalUrlSource = "recipe" | "kb" | "research" | "operator" | "statewide" | "learn";
 
-export type HostFitCode = "ok" | "no_url" | "track_conflict" | "platform_conflict" | "foreign_entity";
+export type HostFitCode = "ok" | "no_url" | "not_a_portal" | "track_conflict" | "platform_conflict" | "foreign_entity";
 export interface HostFit {
   fits: boolean;
   code: HostFitCode;
@@ -452,8 +514,36 @@ export function hostFitsTrackAndEntity(
   if (!host) return { fits: false, code: "no_url", reason: "no portal URL" };
   const scope = scopeForTrack(track);
   const trackName = scope === "utility" ? "NEM (utility interconnection)" : "permit (AHJ)";
+  // 0. SOMEWHERE AN APPLICATION CAN BE FILED. A help page, a guide, a PDF is never a portal entry,
+  //    whoever stored it (isInformationalPageUrl).
+  if (isInformationalPageUrl(value)) {
+    return {
+      fits: false,
+      code: "not_a_portal",
+      reason: `${value} is an information page (help/guide/document), not an application portal`,
+    };
+  }
   // 1. THE TRACK, both directions — no source, not even an operator, overrides rule 5.
+  //    ONE carve-out (operator ruling 2026-09-25): a utility whose NEM application lives inside
+  //    the CITY's permit portal may use that permit-platform portal on the NEM track ONLY when
+  //    that utility's OWN human-VERIFIED KB record names it — same host AND same tenant, never
+  //    host-wide, never from a seeded/researched row, never from the AHJ's row
+  //    (portalEntityEvidence builds verifiedPermitPlatformPortals from utility-keyed verified rows
+  //    only). A permit track never gains the mirror carve-out: it never launches a utility portal.
+  if (
+    scope === "utility" && entity?.scope === "utility" && isPermitPlatformUrl(value)
+    && (entity.verifiedPermitPlatformPortals ?? []).some((p) => portalTenantKey(p) === portalTenantKey(value))
+  ) {
+    return { fits: true, code: "ok", reason: `${host} is the portal ${entity.name || "this utility"}'s own human-verified record names for its interconnection application` };
+  }
   if (!trackSafeUrl(track, value)) {
+    if (scope === "utility" && entity?.scope === "utility" && isPermitPlatformUrl(value)) {
+      return {
+        fits: false,
+        code: "track_conflict",
+        reason: `${host} is an AHJ permit portal, and this is a ${trackName} filing — a permit-platform portal opens on the NEM track only when ${entity.name || "the utility"}'s own human-VERIFIED record names that exact portal (host and tenant)`,
+      };
+    }
     return {
       fits: false,
       code: "track_conflict",

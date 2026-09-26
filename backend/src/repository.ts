@@ -76,6 +76,7 @@ import { publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
 import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
+import { statewidePortalFor, describeCited, lookedUpRecordType } from "./permitProcess";
 import { documentInventory, owedMissingDocuments, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
@@ -7564,14 +7565,21 @@ export async function prepareSubmission(
   // profile files through e-permitting/Accela uses the shared Oregon ePermitting portal
   // (one Accela instance for all subscribed jurisdictions — only the jurisdiction field
   // differs), instead of failing with "no portal URL known".
+  //
+  // B2 (2026-09-25): the fallback no longer needs a seeded process profile that says
+  // "e-permitting". City of Jefferson had none, so its permit tracks resolved no portal of their
+  // own, never borrowed, and launched BCD's help page instead. permitProcess.statewidePortalFor
+  // answers from the per-job lookup first (this AHJ files on the statewide portal / on a
+  // DIFFERENT portal → no fallback), then from the cited state rule when nothing says otherwise.
+  // A person's verified portal for the AHJ still outranks it (fitUrl → hostFitsTrackAndEntity).
   let statewidePortalUrl = "";
-  if (track !== "nem" && !ahjPortalUrl && (detail.project.state || "").trim().toUpperCase() === "OR") {
+  let statewideBasis = "";
+  if (track !== "nem" && !ahjPortalUrl && !draftRecipe) {
     const process = findAhjProcessProfile(detail.project);
-    if (process && /e.?permitting|accela/i.test(process.submissionMethod)) {
-      const genericRow = db.get<{ portal_url?: string }>(
-        "SELECT portal_url FROM permit_utility_knowledge WHERE ahj = 'Generic Oregon ePermitting AHJ' AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1",
-      );
-      statewidePortalUrl = permitSafeUrl(genericRow?.portal_url || "https://aca-oregon.accela.com/oregon/", "statewide");
+    const statewide = statewidePortalFor(detail.project, track, { processProfileMethod: process?.submissionMethod ?? null });
+    if (statewide) {
+      statewidePortalUrl = permitSafeUrl(statewide.url, "statewide");
+      statewideBasis = describeCited("Statewide portal", statewide.basis);
     }
   }
   // The AHJ's / utility's OWN portal, from its own evidence only — never from a borrowed recipe.
@@ -7593,6 +7601,7 @@ export async function prepareSubmission(
       const decision = findBorrowableRecipe(db, {
         track, state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility,
         targetPortalUrl: ownPortalUrl, targetSource: ownPortalUrl && ownPortalUrl === statewidePortalUrl ? "statewide" : "kb", entity: hostEntity,
+        targetRecordType: lookedUpRecordType(detail.project, track)?.value ?? "",
       });
       borrowDecisionReason = decision.reason;
       if (decision.choice) {

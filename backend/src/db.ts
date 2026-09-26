@@ -139,6 +139,11 @@ export async function openDatabase(): Promise<AppDb> {
   try {
     (await import("./codeProfiles")).seedReferenceCodeProfiles(appDb);
   } catch { /* reference data is best-effort */ }
+  // Per-job permit process answers: loaded into the in-process registry that the pure
+  // (db-less) track/document/fee resolvers read — the same pattern as the process-profile cache.
+  try {
+    (await import("./permitProcess")).loadPermitProcessRegistry(appDb);
+  } catch { /* best-effort: resolvers fall back to the cited state rules */ }
 
   // Periodically fold the WAL back into the main .db file so the primary file
   // stays current (a stray copy of just the .db is then near-complete) and the
@@ -2188,6 +2193,31 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       // replayable and raises this flag for a human instead of demoting it.
       addColumnIfMissing(db, "portal_recipes", "flag_reason", "TEXT NOT NULL DEFAULT ''");
       addColumnIfMissing(db, "portal_recipes", "flagged_at", "TEXT");
+    },
+  },
+  {
+    version: 36,
+    name: "permit_process_lookups",
+    up: (db) => {
+      // PER-JOB PERMIT PROCESS (operator steer 2026-09-25). One row per AHJ (state|ahj): who
+      // issues the permits, combo vs separate, portal + record type + documents + fee per permit,
+      // each answer cited or marked not-found (shared/src/types.ts PermitProcessLookup). SHARED
+      // knowledge on purpose, like permit_utility_knowledge: an AHJ's process learned once helps
+      // every tenant, and it carries no customer data. 'seeded' from the lookup; a person's
+      // 'verified' row (verified_at) is never auto-overwritten (hard rule 3).
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS permit_process_lookups (
+          profile_key TEXT PRIMARY KEY,
+          state TEXT NOT NULL DEFAULT '',
+          ahj TEXT NOT NULL DEFAULT '',
+          confidence TEXT NOT NULL DEFAULT 'seeded',
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          looked_up_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          verified_at TEXT,
+          verified_by TEXT
+        );
+      `);
     },
   },
 ];

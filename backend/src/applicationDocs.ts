@@ -7,6 +7,7 @@ import type {
 } from "../../shared/src/types";
 import { nowIso } from "./time";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus } from "./processProfiles";
+import { describeCited, lookedUpPermitStructure, statePermitStructure } from "./permitProcess";
 import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
 
 // Derive combo-vs-separate from the AHJ process knowledge when the static application
@@ -30,13 +31,39 @@ function permitStructureFromAhjProcess(project: ProjectRecord): "separate" | "co
 /** Resolve a project's permit structure across all signals: static profile → AHJ process
  *  notes/flags → derived flags. Used for both the submittal tracks and doc generation. */
 export function permitStructureForProject(project: ProjectRecord): "separate" | "combo" | "unknown" {
+  return permitStructureWithBasis(project).structure;
+}
+
+/**
+ * The permit structure AND the evidence it rests on, strongest first:
+ *   1. a hand-written profile's explicit structure; 2. the AHJ's seeded process profile;
+ *   3. the per-job lookup (permitProcess, cited, seeded); 4. a profile that names both a
+ *   structural and an electrical application; 5. a CITED STATE RULE — Oregon: "Electrical
+ *   components of a PV system require an electrical permit" (OAR 918-050-0180(2)), so every
+ *   Oregon jurisdiction files a structural AND a separate electrical permit unless its own
+ *   evidence says otherwise (B1); 6. a profile flag that only names a building application.
+ * Step 5 sits ABOVE step 6 on purpose: "the profile mentions a building application" is a
+ * derivation, not evidence of a combination permit, and in Oregon it filed ONE combo track
+ * for a jurisdiction whose two old records were a -STR and an -ELEC.
+ */
+export function permitStructureWithBasis(project: ProjectRecord): { structure: "separate" | "combo" | "unknown"; basis: string } {
   const profile = findApplicationProfile(project);
-  if (profile.permitStructure && profile.permitStructure !== "unknown") return profile.permitStructure;
+  if (profile.permitStructure && profile.permitStructure !== "unknown") return { structure: profile.permitStructure, basis: `${profile.name} profile` };
   const fromProcess = permitStructureFromAhjProcess(project);
-  if (fromProcess !== "unknown") return fromProcess;
-  if (profile.requiresStructuralApplication && profile.requiresElectricalApplication) return "separate";
-  if (profile.requiresAhjApplication || profile.requiresStructuralApplication) return "combo";
-  return "unknown";
+  if (fromProcess !== "unknown") return { structure: fromProcess, basis: "the AHJ's seeded process profile" };
+  const lookedUp = lookedUpPermitStructure(project);
+  if (lookedUp?.value) return { structure: lookedUp.value, basis: describeCited("Permit structure", lookedUp) };
+  if (profile.requiresStructuralApplication && profile.requiresElectricalApplication) return { structure: "separate", basis: `${profile.name} profile names both applications` };
+  // SCOPE: the state rule answers for a jurisdiction that files on the STATE's shared portal
+  // (Oregon ePermitting) — the generic Oregon fallback, or a profile whose method is ePermitting.
+  // A hand-written profile for a jurisdiction with its own portal (Portland DevHub) keeps its own
+  // answer; that is the AHJ's evidence, and changing it is a separate, per-AHJ decision.
+  const onStatewidePortal = profile.id === "oregon-generic-epermitting"
+    || /e-?permitting|accela/i.test(`${profile.submissionMethod ?? ""} ${profile.portalName ?? ""}`);
+  const stateRule = onStatewidePortal ? statePermitStructure(project) : null;
+  if (stateRule?.value) return { structure: stateRule.value, basis: describeCited("Permit structure", stateRule) };
+  if (profile.requiresAhjApplication || profile.requiresStructuralApplication) return { structure: "combo", basis: `${profile.name} profile names one building application` };
+  return { structure: "unknown", basis: "no evidence" };
 }
 
 export const applicationProfiles: ApplicationRequirementProfile[] = [

@@ -45,7 +45,9 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 };
 
 const { project } = R.createProject(db, {
-  owner: "Terminal Close", street: "1 Test St", city: "Closeville", state: "OR", zip: "97000",
+  // WA, not OR: an Oregon ePermitting AHJ now files a STRUCTURAL + a separate ELECTRICAL permit (OAR
+  // 918-050-0180(2), cited state rule, 2026-09-26) — this fixture needs a single combo-permit AHJ.
+  owner: "Terminal Close", street: "1 Test St", city: "Closeville", state: "WA", zip: "98000",
   ahj: "Closeville", utility: "Pacific Power", dcKw: "5", acKw: "4",
 } as never);
 const pid = project.id;

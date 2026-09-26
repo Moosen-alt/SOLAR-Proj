@@ -790,11 +790,18 @@ await check("ACQUISITION GOES AFTER THE PRESCRIPTIVE BLANK, not 'whatever is und
     "the saved engineered blank has no field map: report needs_manual without repeated research");
 });
 
-await check("...while an AHJ with no structure knowledge still gets its one generic application", () => {
-  // The baseline slot. Removing it would stop acquisition dead for every AHJ we have no
-  // process profile for — a much bigger regression than the one being fixed.
+await check("...while an AHJ with no structure knowledge gets the CITED state answer, never a blocking demand", () => {
+  // RULE ADJUSTED (operator authorization 2026-09-25, B1): an Oregon AHJ we know nothing about
+  // files on Oregon ePermitting, and OAR 918-050-0180(2) says a PV system's electrical components
+  // need an electrical permit — so the structure is "separate" on a cited state rule, not
+  // "unknown". The application rows are portal entries (no PDF owed), so none of them blocks.
   const unknownAhj = { id: "p-unknown", clientId: null, state: "OR", ahj: "City of Nowhereville", utility: "PGE", parserSnapshot: {} };
-  assert.deepEqual(requiredApplicationDocs(unknownAhj as never, applicationDocContext(unknownAhj as never)), []);
+  const rows = requiredApplicationDocs(unknownAhj as never, applicationDocContext(unknownAhj as never));
+  assert.deepEqual(rows.map((r) => r.docType).sort(), ["building_application", "electrical_application", "solar_checklist"]);
+  assert.ok(rows.every((r) => !r.blocking), "a state-rule answer never blocks a filing on its own");
+  // …and outside Oregon (no cited state rule) the old NO SIGNAL, NO DEMAND still holds.
+  const unknownWa = { ...unknownAhj, state: "WA", ahj: "City of Nowhereville WA" };
+  assert.deepEqual(requiredApplicationDocs(unknownWa as never, applicationDocContext(unknownWa as never)), []);
 });
 
 // ---------------------------------------------------------------------------

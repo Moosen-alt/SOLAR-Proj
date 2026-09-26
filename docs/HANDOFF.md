@@ -65,6 +65,22 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   no payment, no CAPTCHA/MFA by automation) and hard rule 2 (secrets never reach the model downstream).
 - PER-JOB LOOKUP (operator 2026-09-25 23:50): "It needs to look up the right stuff per job" — agency, permit structure, portal + record type,
   documents/forms, fees and codes are looked up by the product for each new AHJ (cited, seeded), never hand-seeded per city.
+- PER-JOB PROCESS RECORD (2026-09-26, `backend/src/permitProcess.ts`, table `permit_process_lookups`, migration v36): one row per
+  AHJ (exact state|name key — never fuzzy, so City of Jefferson never reads Jefferson County answers) holding agency, permit
+  structure, and per permit {portal, record type, documents, fee}, each `{value, sourceUrl, quote}` or NOT FOUND. Layers, strongest
+  first: the AHJ's own evidence > the per-job lookup (seeded; verified never overwritten) > CITED STATE RULES (`STATE_PERMIT_RULES`).
+- Rule adjusted (operator authorization 2026-09-25): an Oregon AHJ that files on Oregon ePermitting and has no structure answer of its
+  own now files a STRUCTURAL and a separate ELECTRICAL permit (OAR 918-050-0180(2), cited state rule) — no longer one 'combo' track.
+  Hand-written non-ePermitting profiles (Portland DevHub) keep their own answer. Unknown-OR-AHJ application rows are portal entries
+  and never block (requiredApplicationSet updated); two combo-track test fixtures moved from OR to WA.
+- Rule adjusted (operator authorization 2026-09-25): hostFitsTrackAndEntity refuses an INFORMATION PAGE (help/FAQ/guide path, a
+  document, a gov SharePoint `/Pages/*.aspx`) as `not_a_portal`, and portalEntityEvidence never counts one as an entity's portal —
+  a junk recipe on BCD's help page no longer vouches for itself, and the applicationDocs sourceUrl can no longer be launched.
+- Rule adjusted (operator authorization 2026-09-25): the Oregon statewide-portal fallback no longer requires a seeded process profile
+  naming e-permitting; it applies from the per-job lookup (this AHJ files there), else the cited state rule when no evidence names a
+  different portal. A person's verified portal still outranks it.
+- NEM inside a permit portal implemented in hostFitsTrackAndEntity (the one predicate): host AND tenant (path segment + tenant query
+  params such as citizenserve installationID) must match a portal the UTILITY's own verified, utility-keyed KB row names.
 - KNOWLEDGE PRE-LOAD SPEND (prospect states): only AFTER the live research-accuracy evals pass
   (`.probe/jurisdiction/`): state layers for FL/TX/UT/CA (~$2) + the top 5 AHJs/utilities per state from
   `.probe/prospects/PREP-PLAN.md` §6 (~20 entities, ~$50), seeded, operator spot-verifies. Everything else is researched

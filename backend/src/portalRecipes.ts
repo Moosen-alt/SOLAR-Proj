@@ -9,11 +9,13 @@ import { knowledgeProfileKey, knowledgeNameMatchScore, isJunkEntityName, isVerif
 import { ahjLooksLikeHostname } from "./codeProfiles";
 import {
   hostFitsTrackAndEntity, portalHostOf, recipeDisciplineForTrack, recipeDisciplineFromSteps, recipeRecordTypeFromSteps,
-  samePortal, scopeForTrack, trackSafeUrl, type HostFit, type PortalEntity, type PortalUrlSource,
+  samePortal, scopeForTrack, trackSafeUrl, isInformationalPageUrl, isPermitPlatformUrl,
+  type HostFit, type PortalEntity, type PortalUrlSource,
 } from "./portalChannel";
 import { isHarnessAbort, looksBotBlocked } from "./runAbort";
 import { certifiedModelFor } from "./cecEquipment";
 import { nowIso } from "./time";
+import { sameRecordType } from "./permitProcess";
 import { parseStreetNumber, parseStreetName, parseStreetLine } from "../../portal-bot/src/addressParse";
 import { feeBracketFieldForLabel, feeBracketQuantityFields } from "./feeBracketFields";
 import { FEE_BRACKET_FIELD_PREFIX } from "../../portal-bot/src/feeBracketQuantity";
@@ -327,11 +329,23 @@ export function portalEntityEvidence(
   const trackForScope = scope === "utility" ? "nem" : "permit";
   type Claim = { url: string; state: string; name: string; verified: boolean };
   const claims: Claim[] = [];
-  const add = (url: unknown, rowState: unknown, rowName: unknown, verified: boolean) => {
+  // UTILITY scope: a permit-platform portal named by the utility's OWN human-verified record
+  // (a municipal utility whose NEM application lives in the city's permit portal). Kept apart —
+  // it is not a claim on the portal for anyone else, and only hostFitsTrackAndEntity's one
+  // carve-out reads it.
+  const verifiedPermitPlatform: Claim[] = [];
+  const add = (url: unknown, rowState: unknown, rowName: unknown, verified: boolean, fromKbRow = false) => {
     const u = s(url).trim();
     const n = s(rowName).trim();
     const st = s(rowState).trim();
-    if (!portalHostOf(u) || !trackSafeUrl(trackForScope, u) || !isRealEntityName(n) || !st) return;
+    if (!portalHostOf(u) || !isRealEntityName(n) || !st) return;
+    // An information page (a help/guide page, a PDF) is nobody's portal — a junk recipe saved on
+    // BCD's help page must not make oregon.gov "City of Jefferson's own portal".
+    if (isInformationalPageUrl(u)) return;
+    if (!trackSafeUrl(trackForScope, u)) {
+      if (scope === "utility" && verified && fromKbRow && isPermitPlatformUrl(u)) verifiedPermitPlatform.push({ url: u, state: st, name: n, verified });
+      return;
+    }
     claims.push({ url: u, state: st, name: n, verified });
   };
   for (const row of db.query<Row>(
@@ -354,8 +368,8 @@ export function portalEntityEvidence(
   for (const row of kbRows) {
     const verified = isVerifiedKnowledge(row);
     const rowName = scope === "utility" ? row.utility : row.ahj;
-    add(row.portal_url, row.state, rowName, verified);
-    add(row.portal_name, row.state, rowName, verified);
+    add(row.portal_url, row.state, rowName, verified, true);
+    add(row.portal_name, row.state, rowName, verified, true);
   }
   const own = claims.filter((c) => sameEntity(state, name, c.state, c.name));
   const sharedPortals = [...new Set(claims.filter((c) => declaresSharedPortal(c.name)).map((c) => c.url))];
@@ -379,6 +393,7 @@ export function portalEntityEvidence(
     verifiedPortals: [...new Set(own.filter((c) => c.verified).map((c) => c.url))],
     otherClaims,
     sharedPortals,
+    verifiedPermitPlatformPortals: [...new Set(verifiedPermitPlatform.filter((c) => sameEntity(state, name, c.state, c.name)).map((c) => c.url))],
   };
 }
 
@@ -487,6 +502,9 @@ export function findBorrowableRecipe(
     targetPortalUrl: string;
     targetSource?: PortalUrlSource;
     entity: PortalEntity | null;
+    /** The record type the per-job lookup found for THIS AHJ's permit (permitProcess). A donor
+     *  filing a different record type never lends; "" = the lookup did not find one. */
+    targetRecordType?: string;
   },
 ): BorrowDecision {
   const none = (reason: string, rejected: BorrowDecision["rejected"] = []): BorrowDecision => ({ choice: null, reason, rejected });
@@ -536,6 +554,11 @@ export function findBorrowableRecipe(
       ? stepsDiscipline === discipline
       : stepsDiscipline === null;
     if (!typeFits) { reject(`its record type "${recordType}" is not a ${discipline} application`); continue; }
+    const lookedUpType = s(input.targetRecordType).trim();
+    if (lookedUpType && !sameRecordType(lookedUpType, recordType)) {
+      reject(`its record type "${recordType}" differs from the one the per-job lookup found for ${ahj} ("${lookedUpType}")`);
+      continue;
+    }
     if (ownTypes.size && !ownTypes.has(recordType.toLowerCase())) {
       reject(`its record type "${recordType}" differs from the one ${ahj} recorded (${[...ownTypes].join(", ")})`);
       continue;
