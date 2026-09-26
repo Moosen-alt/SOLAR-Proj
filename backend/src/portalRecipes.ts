@@ -285,9 +285,28 @@ const ENTITY_ALIAS_MIN_SCORE = 78;
  *   - a platform ("SolarAPP+") and placeholders ("n/a", "online", "varies", "see notes").
  * Judged here (the portal evidence), not at the import, which is another workstream's door.
  */
-function looksLikePortalJunkName(name: string): boolean {
+export function looksLikePortalJunkName(name: string): boolean {
   const n = name.trim();
   if (!n) return true;
+  // A SPREADSHEET SENTENCE NAMES NO ENTITY (close MF4-class). Production aae50fab (AZ) holds
+  // 'FIRE PERMIT: 3 kW – 15 kW submit for permit via email NON SOLARAPP+ SUBMITTALS:' in the AHJ
+  // column; on a host nobody else claims it would be the SOLE owner, and every real AZ city would
+  // be refused that portal as another entity's. The shapes, none of which a jurisdiction's or a
+  // utility's name takes:
+  //   - a label — a word followed by ':' ("ELECTRICAL PERMIT:");
+  //   - an electrical quantity — a number with a unit ("3 kW", "15 kW", "200 amps", "240 volts");
+  //   - submission instructions — "submit…", "submittals", "via email" (NOT bare "email":
+  //     'Tomball (emailed for link to portal)' is Tomball, with a note);
+  //   - a sentence — ten or more words in the NAME ITSELF, i.e. before any parenthetical note or
+  //     " — department" suffix ("No permit required unless there is a derate, MPU, battery or
+  //     demand manager. App", production e26e5b17). The longest real names run to nine ("Unified
+  //     Government of Wyandotte County and Kansas City, Kansas"), and production's
+  //     "Cook County, IL (unincorporated) — Dept. of Building and Zoning" is three before its suffix.
+  if (/[a-z)]\s*:/i.test(n)) return true;
+  if (/\b\d+(?:\.\d+)?\s*(?:kw|kwh|kwdc|kwac|kva|mw|mwh|watts?|amps?|volts?|vac|vdc)\b/i.test(n)) return true;
+  if (/\bsubmit(?:s|tals?|ted|ting)?\b|\bvia\s+e-?mail\b/i.test(n)) return true;
+  const core = n.replace(/\([^)]*\)/g, " ").split(/\s[—–-]\s/)[0];
+  if (core.split(/\s+/).filter((w) => /[a-z0-9]/i.test(w)).length >= 10) return true;
   if (/^(?:[a-z]{2}|[a-z]+)\s+(?:portal|website|web ?site|site|link|url|login|log-?in|e-?permitting)\s*$/i.test(n)) return true;
   if (/\d/.test(n) && /\b(?:days?|weeks?|hours?|hrs?|business\s+days?|rev)\b/i.test(n)) return true;
   if (/^solar\s*app\+?$/i.test(n)) return true;

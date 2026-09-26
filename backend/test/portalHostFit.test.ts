@@ -181,6 +181,59 @@ await check("(e7) MF4: a reference import's junk AHJ names ('OR portal', '1 - 5 
   assert.deepEqual(daysCreekOwners, ["Days Creek (OR)"], "Days Creek is a jurisdiction, not a turnaround");
 });
 
+// ── close MF4-class: a spreadsheet SENTENCE in the AHJ column names no entity ────────────────
+// Production aae50fab (AZ): 'FIRE PERMIT: 3 kW – 15 kW submit for permit via email NON SOLARAPP+
+// SUBMITTALS:' on gosolarapp.org — masked today only because West Palm Beach's row also claims that
+// host. On a host nobody else claims, the sentence was the SOLE owner (probe P3b) and a real AZ city
+// was refused the portal as foreign_entity.
+// KILL: drop the four shape rules from looksLikePortalJunkName → (e8) fails.
+await check("(e8) MF4-class MUST-EXCLUDE: a sentence ('ELECTRICAL PERMIT: 3 kW – 15 kW submit … SUBMITTALS:') owns no host — Tucson is not refused it, and aae50fab's sentence owns gosolarapp.org with no West Palm Beach row; MUST-PASS: 'Tomball (emailed for link to portal)' and 'Village of Skokie, IL' still own theirs", () => {
+  const imported = (state: string, ahj: string, portalUrl: string) =>
+    kb.importSeededAhjKnowledge(db, { state, ahj, portalUrl, sourceLabel: "reference sheet (e8)" });
+  const ownersOn = (who: ReturnType<typeof entity>, re: RegExp) => [...new Set((who?.otherClaims ?? []).filter((c) => re.test(c.url)).map((c) => c.owner))];
+  // P3b: the sentence alone on a non-platform host.
+  const HOST = "https://permits.examplecounty-az.gov/portal/";
+  assert.equal(imported("AZ", "ELECTRICAL PERMIT: 3 kW – 15 kW submit for permit via email NON SOLARAPP+ SUBMITTALS:", HOST), "imported", "premise: the import lets the row in");
+  const tucson = entity("ahj", "AZ", "City of Tucson");
+  assert.deepEqual(ownersOn(tucson, /examplecounty-az/), [], "a spreadsheet sentence counts as the host's owner");
+  const fit = hostFitsTrackAndEntity("building", tucson, HOST, "kb");
+  assert.notEqual(fit.code, "foreign_entity", `Tucson was refused a host only a sentence claims: ${fit.reason}`);
+  assert.equal(fit.fits, true, fit.reason);
+  // aae50fab's own text on gosolarapp.org.
+  const GOSOLAR = "https://www.gosolarapp.org/";
+  assert.equal(imported("AZ", "FIRE PERMIT: 3 kW – 15 kW submit for permit via email NON SOLARAPP+ SUBMITTALS:", GOSOLAR), "imported");
+  assert.equal(ownersOn(entity("ahj", "AZ", "City of Tucson"), /gosolarapp/).some((o) => /PERMIT|kW/.test(o)), false, "aae50fab's sentence is counted as an owner of gosolarapp.org");
+  // ...and once West Palm Beach's row is gone (the seeded reference row that masks it on production;
+  // SEED DATA, NOT THE THING UNDER TEST — removed so the sentence is the only claim left).
+  db.run("DELETE FROM permit_utility_knowledge WHERE lower(ahj) LIKE '%west palm beach%' AND portal_url LIKE '%gosolarapp%'");
+  const tucsonAgain = entity("ahj", "AZ", "City of Tucson");
+  assert.deepEqual(ownersOn(tucsonAgain, /gosolarapp/), [], "aae50fab's sentence owns gosolarapp.org once nothing masks it");
+  assert.equal(hostFitsTrackAndEntity("building", tucsonAgain, GOSOLAR, "kb").fits, true);
+  // MUST-PASS: real names that carry a note, a comma or a state still own their hosts.
+  const TOMBALL = "https://tomballtx.example-permits.com/";
+  const SKOKIE = "https://www.bsaonline.com/?uid=skokie";
+  assert.equal(imported("TX", "Tomball (emailed for link to portal)", TOMBALL), "imported");
+  assert.equal(imported("IL", "Village of Skokie, IL", SKOKIE), "imported");
+  const houston = entity("ahj", "TX", "City of Houston");
+  assert.deepEqual(ownersOn(houston, /tomballtx/), ["Tomball (emailed for link to portal) (TX)"], "Tomball's note made it no entity");
+  assert.equal(hostFitsTrackAndEntity("building", houston, TOMBALL, "kb").code, "foreign_entity", "Tomball's portal is not Tomball's");
+  const evanston = entity("ahj", "IL", "City of Evanston");
+  assert.deepEqual(ownersOn(evanston, /bsaonline/), ["Village of Skokie, IL (IL)"], "Skokie no longer owns its portal");
+  // The shape rules, both ways, on the names themselves.
+  for (const junk of ["FIRE PERMIT: 3 kW – 15 kW submit for permit via email NON SOLARAPP+ SUBMITTALS:", "Building Permit: see notes", "10 kW or less", "submittals via email only",
+    "applications are accepted by the building division at the front counter only",
+    "No permit required unless there is a derate, MPU, battery or demand manager. App"]) {
+    assert.equal(recipes.looksLikePortalJunkName(junk), true, `not recognised as junk: ${junk}`);
+  }
+  for (const real of ["Tomball (emailed for link to portal)", "Village of Skokie, IL", "Days Creek", "City of Dayton", "Generic Oregon ePermitting AHJ",
+    "Unified Government of Wyandotte County and Kansas City, Kansas", "Public Utility District No. 1 of Snohomish County", "Town of Mount Pleasant", "Consolidated City of Indianapolis and Marion County",
+    "Pacific Gas & Electric", "Portland General Electric", "Commonwealth Edison (ComEd)", "ROSEBURG", "Washington County",
+    "Cook County, IL (unincorporated) — Dept. of Building and Zoning", "Kane County, IL (unincorporated) — Development & Community Services",
+    "Lake County, IL (unincorporated) — Department of Planning, Building and Development"]) {
+    assert.equal(recipes.looksLikePortalJunkName(real), false, `a real name was rejected as junk: ${real}`);
+  }
+});
+
 // ── end to end: the real prepareSubmission, browser stubbed ──────────────────────────────────
 await check("(s1) a Portland recipe that drives Tigard's verified portal is not replayed, and is left untouched", async () => {
   // The fixture's AHJ (Portland) has a complete recipe whose entry is Tigard's EnerGov host.
