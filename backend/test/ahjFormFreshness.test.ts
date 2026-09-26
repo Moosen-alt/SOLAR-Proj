@@ -86,9 +86,11 @@ async function main(): Promise<void> {
   const project = { id: "p-forms", clientId: null, state: "OR", ahj: "City of Formville", utility: "PGE", parserSnapshot: {} } as never;
   const ensured = await ensureAhjFormsForProject(db, llm, project);
   check("needed set includes checklist from KB", ensured.neededTypes.includes("solar_checklist"), JSON.stringify(ensured.neededTypes));
-  const appResult = ensured.results.find((r) => r.formType === "permit_application");
+  // An unknown OREGON AHJ now files building + electrical (cited state rule, 2026-09-26): the stored
+  // generic application answers the BUILDING-side slot (its altDocTypes alias).
+  const appResult = ensured.results.find((r) => r.formType === "permit_application" || r.formType === "building_application");
   const checklistResult = ensured.results.find((r) => r.formType === "solar_checklist");
-  check("stored application short-circuits as exists", appResult?.status === "exists", JSON.stringify(appResult));
+  check("stored application short-circuits as exists", appResult?.status === "exists", JSON.stringify(ensured.results.map((r) => [r.formType, r.status, String(r.message).slice(0, 80)])));
   check("checklist still attempted (stub → not_found)", Boolean(checklistResult) && checklistResult!.status !== "exists", JSON.stringify(checklistResult));
 
   // AN OPERATOR VERIFYING MID-REFRESH MUST NOT LOSE THAT WORK.

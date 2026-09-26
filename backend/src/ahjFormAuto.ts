@@ -3,7 +3,7 @@ import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type OverlayField, type SignaturePlacement } from "./ahjForms";
-import { describePermitType, findApplicationProfile } from "./applicationDocs";
+import { describePermitType, findApplicationProfile, permitStructureForProject } from "./applicationDocs";
 import { fetchPublicDocument } from "./documentFetch";
 import { logger } from "./logger";
 import { saveResearchedAhjProfile, knowledgeResearchHint, findKnowledgeForLearn } from "./knowledgeBase";
@@ -676,10 +676,14 @@ export async function ensureAhjFormTemplate(
   // stored STRUCTURAL blank is not the prescriptive application, and answering
   // "exists" off it is what left a prescriptive project permanently without the
   // only form its AHJ will accept.
-  if (hasStoredTemplateOfType(db, project.ahj, project.state, formType, applicationKind)) {
+  // The building-side row accepts the generic application blank (requiredDocuments' altDocTypes):
+  // an AHJ whose one stored application is filed as "permit_application" has its building-side form
+  // once its structure resolves SEPARATE (building + electrical) — the same alias the inventory uses.
+  const acceptedTypes = formType === "building_application" ? ["building_application", "permit_application"] : [formType];
+  if (acceptedTypes.some((t) => hasStoredTemplateOfType(db, project.ahj, project.state, t, applicationKind))) {
     const usable = loadStoredTemplates(db, project.ahj, project.state).some(t => {
       const type = db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type;
-      return type === formType && (!applicationKind || !t.applicationKind || t.applicationKind === applicationKind)
+      return acceptedTypes.includes(String(type)) && (!applicationKind || !t.applicationKind || t.applicationKind === applicationKind)
         && (Object.keys(t.def.textFields || {}).length > 0 || Object.keys(t.def.checkboxes || {}).length > 0 || (t.def.overlayFields?.length ?? 0) > 0);
     });
     if (!usable) return { status: "needs_manual", mappedFields: 0,
@@ -711,7 +715,9 @@ export async function ensureAhjFormTemplate(
   // in their portal. Skip the web search to save time and cost.
   const ahjProfile = findApplicationProfile(project);
   if (ahjProfile.requiresPortalEntryOnly) {
-    const pt = describePermitType(ahjProfile);
+    // The structure every other surface resolved (tracks, packet) — never the bare profile's
+    // "not yet confirmed" when a cited answer exists.
+    const pt = describePermitType(ahjProfile, { permitStructure: permitStructureForProject(project) });
     return {
       status: "not_found",
       permitType: pt.callout,
