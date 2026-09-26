@@ -299,6 +299,34 @@
   // dwellings, and the bare token also matches a revision tag ("REV R3").
   const SINGLE_FAMILY = /\bRESIDENCE\b|\bSINGLE[-\s]FAMILY\b|\bMAIN\s+HOUSE\b|\bSFR\b|\bSFD\b|\bDWELLING\b/i;
   const WORK_ON_OUTBUILDING = /(?:ARRAY|MODULES?|\bPV\b|PANELS?)\s+(?:ON|AT|OVER)\s+(?:THE\s+)?(?:\(?[NE]\)?\s+)?(?:DETACHED\s+|EXISTING\s+)?(?:GARAGE|SHED|BARN|CARPORT|ADU|WORKSHOP|OUTBUILDING|SHOP)\b|\bGROUND[-\s]MOUNT/i;
+  // Another structure named anywhere in the plan text, or trench scope (a run to or from a
+  // detached building). A real PA plan set drew the whole array on a detached structure with a
+  // ~119 ft trench back to the house while its text never said "ARRAY ON GARAGE" — so any of
+  // these makes "one building" an inference. "UTILITY SERVICE: UNDERGROUND" is the service
+  // drop, not trench scope: UNDERGROUND counts only beside a conduit/run/feeder.
+  const OTHER_STRUCTURE = /\b(?:DETACHED\s+(?:GARAGE|STRUCTURE|BUILDING|SHOP|CARPORT)|GARAGE|SHEDS?|BARNS?|CARPORTS?|WORKSHOP|POOL\s*HOUSE|OUTBUILDINGS?|ACCESSORY\s+(?:STRUCTURE|BUILDING)|PERGOLA|PATIO\s+COVER|ADU)\b/gi;
+  const TRENCH_SCOPE = /\bTRENCH(?:ES|ING)?\b|\bDIRECT[-\s]BUR(?:IAL|IED)\b|\bUNDERGROUND\s+(?:PV\s+)?(?:CONDUIT|RUN|FEEDER|CIRCUIT|WIRING)\b/gi;
+  /** '' when the plan text names no other structure and no trench scope; otherwise the words
+   *  found, each quoted once with its surrounding text, for the UNSURE reason. */
+  function otherStructureEvidence(planText) {
+    const t = clean(planText);
+    if (!t) return '';
+    const seen = new Map();
+    const take = (re, kind, cap) => {
+      let n = 0;
+      for (const m of t.matchAll(re)) {
+        const w = m[0].toUpperCase().replace(/\s+/g, ' ');
+        if (seen.has(w) || n >= cap) continue;
+        seen.set(w, { kind, ctx: t.slice(Math.max(0, m.index - 30), m.index + m[0].length + 30).trim() });
+        n++;
+      }
+    };
+    take(new RegExp(WORK_ON_OUTBUILDING.source, 'gi'), 'structure', 1);
+    take(OTHER_STRUCTURE, 'structure', 3);
+    take(TRENCH_SCOPE, 'trench', 1);
+    if (!seen.size) return '';
+    return [...seen].map(([w, e]) => `${e.kind === 'trench' ? 'trench scope ' : ''}${w} ("…${e.ctx}…")`).join(', ');
+  }
 
   function singleFamilyBasis(planText) {
     const t = String(planText || '');
@@ -447,8 +475,19 @@
       }
       if (field === 'dwellingUnits' || field === 'numberOfBuildings') {
         const stated = rs.find((r) => String(r.value) !== '1' && numberIn(r.excerpt, r.value) && /UNIT|BUILDING|DWELLING/i.test(r.excerpt));
-        if (!stated && sf && !(field === 'numberOfBuildings' && WORK_ON_OUTBUILDING.test(String(planText || '')))) {
-          resolved.push({ field, value: 1, how: field === 'dwellingUnits' ? `single-family residence: title block reads "${sf}" and the plan set carries no multi-unit language` : `one building carries the work: title block reads "${sf}" and no array is drawn on an outbuilding`, evidence: rs[0] || null });
+        const outb = field === 'numberOfBuildings' && !stated ? otherStructureEvidence(planText) : '';
+        if (outb) {
+          // The plan names another structure or trench scope: which building carries the work
+          // is an inference, so it stays UNSURE with that evidence and the read's own basis.
+          const why = `the plan text names ${outb} — the array may sit on, or run to, another structure; confirm which building(s) carry the work${reason ? `; the read's basis: ${reason}` : ''}`;
+          if (rs[0]) unsure.push({ field, value: rs[0].value, evidence: rs[0], why }); else missing.push({ field, suppliedBy: supplier(field), why });
+          done.add(field);
+          continue;
+        }
+        if (!stated && sf) {
+          // The basis quotes only what the text shows: singleFamilyBasis matches anywhere in the
+          // plan text (a site-plan "MAIN HOUSE" label is not the title block).
+          resolved.push({ field, value: 1, how: field === 'dwellingUnits' ? `single-family residence: the plan set reads "${sf}" and carries no multi-unit language` : `one building carries the work: the plan set reads "${sf}" and its text names no other structure (garage, shed, barn, carport, detached or accessory building) and no trench run`, evidence: rs[0] || null });
           done.add(field);
           continue;
         }

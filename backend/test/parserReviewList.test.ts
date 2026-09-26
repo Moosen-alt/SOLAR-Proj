@@ -497,4 +497,44 @@ ok("no Oregon leakage: licence label by state, N/A dropped, identified-vs-unknow
   ok("sealed-source close 3: a zone/exposure-qualified letter reading is a CONFLICT, never a resolution; the same quantity still goes to the letter");
 }
 
+// ---------------------------------------------------------------------------
+// 6 (close 3). A resolution's basis quotes what the document says. "One building" was resolved
+// with "no array is drawn on an outbuilding" on a plan set whose array sat on a detached
+// structure with a trench back to the house; its text never said "ARRAY ON GARAGE". When the
+// plan names another structure or trench scope, the count is an inference: UNSURE, with the
+// evidence and the read's own basis stated.
+// ---------------------------------------------------------------------------
+{
+  const inferred = { uncertainties: [{ field: "numberOfBuildings", kind: "inferred", reason: "array assumed on the main house only" }] };
+  const outPlan = `PV 0.0 COVER  JANE SAMPLE RESIDENCE  100 EXAMPLE RD
+PV 1.0 SITE PLAN  DRIVEWAY  MAIN HOUSE  GARAGE  SHED  PROPERTY LINE
+PV 1.1  (N) AC DISCONNECT  ~100 FT TRENCH TO BE 24" DEEP  1" PVC CONDUIT
+UTILITY SERVICE: UNDERGROUND`;
+  const nb = PR.resolveReviewItems({ attached: ["plan_set"], planText: outPlan, passes: [textPass({
+    numberOfBuildings: field(1, "plan_set", "MAIN HOUSE ... GARAGE ... SHED", 0.55, "PV 1.0"),
+    dwellingUnits: field(1, "plan_set", "JANE SAMPLE RESIDENCE", 0.55, "PV 0.0"),
+  }, ["numberOfBuildings", "dwellingUnits"], inferred)] });
+  // MUST-EXCLUDE: no resolution, and never the claim that no array is on an outbuilding
+  assert.ok(!nb.resolved.some((x: { field: string }) => x.field === "numberOfBuildings"), "numberOfBuildings must not resolve when the plan names another structure and a trench");
+  assert.doesNotMatch(JSON.stringify(nb), /no array is drawn|names no other structure/);
+  const nu = nb.unsure.find((x: { field: string }) => x.field === "numberOfBuildings");
+  assert.ok(nu && nu.value === 1, "numberOfBuildings is UNSURE with the read's value");
+  assert.match(nu.why, /GARAGE/); assert.match(nu.why, /SHED/); assert.match(nu.why, /trench scope TRENCH/);
+  assert.match(nu.why, /array assumed on the main house only/, "the model's inference is stated as the basis, not upgraded to a fact");
+  assert.doesNotMatch(nu.why, /UNDERGROUND/, "the utility service drop is not trench scope");
+  // a trench alone (no structure word) is enough to leave it open
+  const tr = PR.resolveReviewItems({ attached: ["plan_set"], planText: "JANE SAMPLE RESIDENCE  PV CONDUIT IN TRENCH 18\" DEEP", passes: [textPass({ numberOfBuildings: field(1, "plan_set", "RESIDENCE", 0.5) }, ["numberOfBuildings"])] });
+  assert.ok(tr.unsure.some((x: { field: string }) => x.field === "numberOfBuildings"));
+  // a detached garage does not change the unit count: dwellingUnits still resolves, quoting the text
+  const du = nb.resolved.find((x: { field: string }) => x.field === "dwellingUnits");
+  assert.ok(du && du.value === 1 && /the plan set reads "RESIDENCE"/.test(du.how), "dwellingUnits resolves on the RESIDENCE the text shows");
+  // MUST-PASS: no other structure, no trench, "UTILITY SERVICE: UNDERGROUND" only → resolves,
+  // and the basis says what was checked (never "title block", which the match cannot know)
+  const one = PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF + "\nUTILITY SERVICE: UNDERGROUND", passes: [textPass({ numberOfBuildings: field(1, "plan_set", "MAIN HOUSE", 0.55) }, ["numberOfBuildings"], inferred)] });
+  const or = one.resolved.find((x: { field: string }) => x.field === "numberOfBuildings");
+  assert.ok(or && or.value === 1 && /the plan set reads "RESIDENCE"/.test(or.how) && /names no other structure/.test(or.how), "one building still resolves when the text names nothing else");
+  assert.doesNotMatch(JSON.stringify(one), /title block reads/);
+  ok("buildings close 3: another structure or trench scope leaves numberOfBuildings UNSURE with the evidence; the basis quotes the text");
+}
+
 console.log(`\nparserReviewList: all ${passed} checks passed`);
