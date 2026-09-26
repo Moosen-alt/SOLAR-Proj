@@ -447,7 +447,7 @@ export function getIntakeRequestPublic(db: AppDb, token: string): {
   questions: Array<{ key: string; label: string; options: string[]; value: string; required: boolean }>;
 } {
   const row = db.get<IntakeRow>("SELECT * FROM project_intake_requests WHERE token = ?", [token]);
-  if (!row) throw new HttpError(404, "Intake link not found.");
+  if (!row) throw new HttpError(404, "This link isn't recognised. Ask your permit coordinator for a new one.");
   if (row.expires_at && Date.parse(row.expires_at) < Date.now()) {
     throw new HttpError(410, "This intake link has expired. Ask your permit coordinator for a new one.");
   }
@@ -490,9 +490,9 @@ export function submitIntakeRequest(
   answers: Record<string, unknown>,
 ): { ok: true; projectId: string } {
   const row = db.get<IntakeRow>("SELECT * FROM project_intake_requests WHERE token = ?", [token]);
-  if (!row) throw new HttpError(404, "Intake link not found.");
+  if (!row) throw new HttpError(404, "This link isn't recognised. Ask your permit coordinator for a new one.");
   if (row.expires_at && Date.parse(row.expires_at) < Date.now()) {
-    throw new HttpError(410, "This intake link has expired.");
+    throw new HttpError(410, "This intake link has expired. Ask your permit coordinator for a new one.");
   }
 
   const project = getProjectDetail(db, row.project_id).project;
