@@ -721,7 +721,7 @@ await check("gate evidence: 'Missing (advisory): …' survives beside 4+ present
   for (const name of [/label/i, /checklist/i]) {
     assert.ok(doc.evidence.some((e) => e.startsWith("Missing (advisory): ") && name.test(e)), `advisory ${name} is named nowhere: ${JSON.stringify(doc.evidence)}`);
   }
-  assert.ok(doc.evidence.some((e) => e.startsWith("✓ ")), `the present lines still share the rest of the cap: ${JSON.stringify(doc.evidence)}`);
+  assert.ok(doc.evidence.some((e) => /^(File attached|Found in the plan set): /.test(e)), `the present lines still share the rest of the cap: ${JSON.stringify(doc.evidence)}`);
   const namedCount = doc.evidence.filter((e) => /^(Filled at staging:|MISSING \(required\):|Missing \(advisory\):)/.test(e)).length;
   assert.ok(doc.evidence.length - namedCount <= Math.max(0, 6 - namedCount), `the other lines share what the named ones leave of the 6-line cap: ${JSON.stringify(doc.evidence)}`);
 });

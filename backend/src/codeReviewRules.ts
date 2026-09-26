@@ -190,7 +190,11 @@ function hasAny(text: string, patterns: RegExp[]): boolean {
 }
 
 function isOregon(project: ProjectRecord, profile: AhjProcessProfile | null): boolean {
-  return project.state.toUpperCase() === "OR" || profile?.state.toUpperCase() === "OR" || /oregon|portland|clackamas|washington county|hillsboro|salem/i.test(project.ahj);
+  // A known non-Oregon state is never Oregon: the name fallback ("Salem", "Portland",
+  // "Washington County") is for a project with no state, not for Massachusetts or Maine.
+  const st = String(project.state || "").trim().toUpperCase();
+  if (st && st !== "OR") return false;
+  return st === "OR" || profile?.state.toUpperCase() === "OR" || /oregon|portland|clackamas|washington county|hillsboro|salem/i.test(project.ahj);
 }
 
 // IS THIS ON A ROOF? Everything downstream hangs on the answer: fire access pathways, roof

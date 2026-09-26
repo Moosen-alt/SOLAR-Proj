@@ -96,9 +96,42 @@ function clean(value: unknown): string {
 
 interface QcContext {
   db: AppDb;
+  projectId: string;
   ahj: string;
   state: string;
   payload: ParserPayload;
+}
+
+// WAITING ON THE CUSTOMER'S BILL IS A WAIT, NOT A FAILURE.
+//
+// The account and meter numbers are printed on the customer's utility bill (the meter number
+// also on the meter). A plan set does not carry them. New-AHJ e2e test (2026-09-26): QC on a plan
+// set alone failed 7 of 7 projects on these two fields, and qc_failed stopped the whole chain —
+// the permit side included, which never needs them. With no bill and no meter photo on file,
+// the missing value is a NAMED WAIT (warning, advisory review item) and the rest of the chain
+// runs. Once a bill or meter photo IS on file and the value is still missing, it is a real
+// failure again: something read the document and could not find it.
+export const WAITING_ON_BILL_ISSUE_TYPE = "Waiting on the customer's utility bill";
+const BILL_FIELDS = new Set(["accountNumber", "meterNumber"]);
+
+/** A utility bill or a meter photo is on file for this project. */
+export function customerBillOnFile(db: AppDb, projectId: string): boolean {
+  try {
+    const row = db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ? AND doc_type IN ('utility_bill', 'meter_photo')",
+      [projectId],
+    );
+    return Number(row?.n ?? 0) > 0;
+  } catch {
+    // No documents table: nothing is on file, which is the wait.
+    return false;
+  }
+}
+
+function waitingOnBillMessage(check: Check): string {
+  const what = check.fieldName === "meterNumber" ? "meter number (on the bill, or read off a meter photo)" : "account number";
+  return `Waiting on the customer's utility bill — the ${what} is read from it, never typed from memory. `
+    + "Upload the bill (or send the customer an intake request). Only the interconnection (NEM) application needs it; the permit side proceeds meanwhile.";
 }
 
 function statusFor(check: Check, ctx: QcContext): QcStatus {
@@ -106,6 +139,7 @@ function statusFor(check: Check, ctx: QcContext): QcStatus {
   const aliases = check.aliases ?? fieldAliases[check.fieldName] ?? [check.fieldName];
   const value = aliases.map((alias) => clean(payload[alias])).find(Boolean) || parserField(payload, check.fieldName);
   if (!check.required) return "pass";
+  if (BILL_FIELDS.has(check.fieldName) && !value && !customerBillOnFile(db, ctx.projectId)) return "warning";
 
   if (check.fieldName === "splitPages") {
     // Only require human review when the AHJ's portal platform needs individual
@@ -168,6 +202,7 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
   const payload = parseJson<ParserPayload>(project.parser_json, {});
   const ctx: QcContext = {
     db,
+    projectId,
     ahj: project.ahj || clean(payload.ahj) || "",
     state: project.state || clean(payload.state) || "",
     payload,
@@ -185,14 +220,24 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
       if (qcStatus === "fail") failCount += 1;
       if (qcStatus === "warning") warningCount += 1;
 
-      const message = qcStatus === "pass" ? `${check.ruleName} present.` : check.message;
+      const waitingOnBill = qcStatus === "warning" && check.severity === "blocker" && BILL_FIELDS.has(check.fieldName);
+      const message = qcStatus === "pass" ? `${check.ruleName} present.` : waitingOnBill ? waitingOnBillMessage(check) : check.message;
       db.run(
         `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id(), projectId, qcStatus, check.ruleId, check.ruleName, message, check.severity, createdAt],
+        [id(), projectId, qcStatus, check.ruleId, check.ruleName, message, waitingOnBill ? "warning" : check.severity, createdAt],
       );
 
-      if (qcStatus !== "pass") {
+      if (BILL_FIELDS.has(check.fieldName) && qcStatus !== "pass") {
+        // The review item says which it is NOW: a wait (advisory — the gate does not count it as
+        // pending critical work) or, once a bill is on file, the ordinary blocker.
+        const issueType = waitingOnBill ? WAITING_ON_BILL_ISSUE_TYPE : check.ruleName;
+        ensureReviewItem(db, projectId, check.fieldName, issueType, parserField(payload, check.fieldName), message, qcStatus === "fail");
+        db.run(
+          "UPDATE human_review_items SET issue_type = ?, notes = ?, updated_at = ? WHERE project_id = ? AND field_name = ? AND status = 'pending'",
+          [issueType, message, nowIso(), projectId, check.fieldName],
+        );
+      } else if (qcStatus !== "pass") {
         // Re-open a still-failing BLOCKER (qcStatus "fail") even if it was previously
         // resolved — otherwise an approval that didn't populate the field leaves QC
         // failing with no item to fix (a silent trap). Warnings are not re-opened.

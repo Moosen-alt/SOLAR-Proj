@@ -261,10 +261,14 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
   const wind = str(payload, "wind");
   const split = `${str(payload, "splitPagesText")}\n${str(payload, "utilityDownloadChecklistText")}`;
   const notes = `${str(payload, "utilityUploadNotesText")}\n${str(payload, "projectDescriptionText")}\n${str(payload, "sitePlanNotesText")}`;
-  const isOregon = state === "OR" || /oregon|portland|hillsboro|beaverton|gresham|clackamas|washington county/i.test(ahj);
-  const isPortland = /portland/i.test(ahj);
+  // A KNOWN NON-OREGON STATE IS NEVER OREGON. The AHJ-name fallback exists for payloads with no
+  // state; with one, "Portland" (Maine), "Salem" (Massachusetts) or "Washington County"
+  // (Pennsylvania) must not pull Oregon's NEM program, prescriptive limits or PGE's package in.
+  const nonOregonState = !!state && state !== "OR";
+  const isOregon = state === "OR" || (!nonOregonState && /oregon|portland|hillsboro|beaverton|gresham|clackamas|washington county/i.test(ahj));
+  const isPortland = isOregon && /portland/i.test(ahj);
   const isPacific = /pacific|pacificorp/i.test(utility);
-  const isPge = /\bPGE\b|portland general/i.test(utility);
+  const isPge = !nonOregonState && /\bPGE\b|portland general/i.test(utility);
 
   // PRESCRIPTIVE-PATH SCREENS — data-driven when a jurisdiction code context is
   // provided (the per-AHJ adopted-codes profile), so any state/county with limits

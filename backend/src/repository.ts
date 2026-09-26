@@ -84,7 +84,7 @@ import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // shape as correctionAgent. getProjectList needs the rule table synchronously.
 import { compactNextStep, decideNextStep, loadNextStepFacts } from "./nextStep";
 import { addAuditLog } from "./audit";
-import { clientStagingOverlay, getClient } from "./clients";
+import { clientStagingOverlay, getClient, parseStateLicenses } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, lockedOutCredential } from "./portalCredentials";
 import { logger } from "./logger";
@@ -128,7 +128,7 @@ import {
 import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
 import { classificationDrift, classifyPermitStatusText, isAuthWallText, nextCheckIso, shouldRecordStatusCheck } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
-import { runQcForProject } from "./qc";
+import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { resolvePermitPath } from "./permitPath";
@@ -1324,7 +1324,9 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
 const ADVISORY_REVIEW_ISSUE_TYPES = new Set(["Run triage", "Background job failed", "Fee schedule disagrees with paid receipts"]);
 export const NON_QC_REVIEW_FIELDS: ReadonlySet<string> = new Set(["correction", "permit_status", "prepare_submission", "autopilot"]);
 export function isCriticalReviewItem(item: { status: string; fieldName: string; issueType?: string }): boolean {
-  return item.status === "pending" && !NON_QC_REVIEW_FIELDS.has(item.fieldName) && !ADVISORY_REVIEW_ISSUE_TYPES.has(item.issueType || "");
+  // The bill wait (qc.ts) is advisory: read at call time, not in the Set, so no import-order cycle
+  // can leave the constant uninitialised when this module loads.
+  return item.status === "pending" && !NON_QC_REVIEW_FIELDS.has(item.fieldName) && !ADVISORY_REVIEW_ISSUE_TYPES.has(item.issueType || "") && item.issueType !== WAITING_ON_BILL_ISSUE_TYPE;
 }
 
 export function getKnowledgeBase(db: AppDb): { profiles: PermitUtilityKnowledgeProfile[] } {
@@ -3335,12 +3337,49 @@ export function getInstallerActionPacket(db: AppDb, projectId: string): Installe
   };
 }
 
+/**
+ * A PRESENT DOCUMENT SAYS ONLY THAT IT IS PRESENT. The inventory's labels describe what the AHJ
+ * wants the document to SHOW ("Site / plot plan with fire access + escape pathways", "… (rapid
+ * shutdown …)"), and the gate printed them after a green check: "✓ Site / plot plan with fire
+ * access + escape pathways (attached file)" — on the Waltham job whose fire department then
+ * rejected exactly that pathway (new-AHJ e2e, 2026-09-26). Nothing had read the drawing. So the
+ * line names the document without its content claim, says how it was found, and carries no
+ * check mark: a check mark means a rule was CHECKED; "file attached" means only that.
+ */
+export function documentPresenceLine(label: string, via: string): string {
+  const bare = String(label || "").replace(/\s*\([^)]*\)/g, "").replace(/\s+with\s+.*$/i, "").trim() || String(label || "").trim();
+  const how = String(via || "").trim();
+  const claimed = bare !== String(label || "").trim();
+  const tail = claimed ? " — its contents are not checked here" : "";
+  if (/^in plan set/i.test(how)) return `Found in the plan set: ${bare}${tail}`;
+  if (/^attached file/i.test(how)) return `File attached: ${bare}${how.slice("attached file".length)}${tail}`;
+  return `On file: ${bare}${how ? ` (${how})` : ""}${tail}`;
+}
+
 // A line that NAMES a document's state is the check's answer, not supporting detail: capping it
 // away left the document check a WARNING whose advisory document was named nowhere (e6b3afde —
 // the count line and 4 present lines filled the cap first). Those lines are never capped; the
 // rest share the cap. Order is kept, so the count line stays first.
 const GATE_EVIDENCE_NAMES_A_DOCUMENT = /^(Filled at staging:|MISSING \(required\):|Missing \(advisory\):)/;
 const GATE_EVIDENCE_CAP = 6;
+
+/** The contractor licence on file for the project's state: Oregon's CCB for an Oregon job; else a
+ *  stateLicenses entry for the state, else the named licence columns when the client's licence
+ *  state is this state. The number is "" when none is on file — an unknown, never a CCB demand. */
+export function contractorLicenceForState(clientRow: Row, projectState: string): { oregon: boolean; state: string; label: string; number: string } {
+  const st = String(projectState || "").trim().toUpperCase();
+  const oregon = st === "OR" || !st;
+  if (oregon) return { oregon, state: st, label: "CCB", number: String(clientRow.ccb_license_number || "").trim() };
+  const listed = parseStateLicenses(clientRow.state_licenses_json).find((l) => l.state === st);
+  if (listed) return { oregon, state: st, label: `${st} licence${listed.kind ? ` (${listed.kind.replace(/_/g, " ")})` : ""}`, number: listed.number };
+  if (String(clientRow.license_state || "").trim().toUpperCase() === st) {
+    const ec = String(clientRow.electrical_license_number || "").trim();
+    if (ec) return { oregon, state: st, label: `${st} electrical licence`, number: ec };
+    const other = String(clientRow.ccb_license_number || "").trim();
+    if (other) return { oregon, state: st, label: `${st} contractor licence`, number: other };
+  }
+  return { oregon, state: st, label: `${st} licence`, number: "" };
+}
 
 function submitGateCheck(input: SubmitGateCheck): SubmitGateCheck {
   const lines = input.evidence.filter(Boolean).map((line) => shorten(text(line), 190));
@@ -3424,11 +3463,17 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
     ["AC size", project.systemSizeAcKw],
     ["Interconnection", project.interconnectionMethod],
   ];
-  const missingCritical = criticalFields.filter(([, value]) => !hasValue(value)).map(([label]) => label);
+  const missingCriticalAll = criticalFields.filter(([, value]) => !hasValue(value)).map(([label]) => label);
+  // ACCOUNT / METER WITH NO BILL ON FILE IS A NAMED WAIT (qc.ts WAITING_ON_BILL_ISSUE_TYPE): the
+  // customer's bill carries them and nothing else does. The wait is shown, laned NEM, and does not
+  // block the permit side; with a bill on file a missing value blocks again.
+  const waitingOnBill = customerBillOnFile(db, projectId) ? [] : missingCriticalAll.filter((label) => label === "Account" || label === "Meter");
+  const missingCritical = missingCriticalAll.filter((label) => !waitingOnBill.includes(label));
   // Safe client lookup (no throw) for the submitting-client gate.
   const submittingClientRow = project.clientId
-    ? db.get<Row>("SELECT company_name, legal_business_name, ccb_license_number FROM clients WHERE id = ?", [project.clientId])
+    ? db.get<Row>("SELECT company_name, legal_business_name, ccb_license_number, electrical_license_number, license_state, state_licenses_json FROM clients WHERE id = ?", [project.clientId])
     : null;
+  const licence = submittingClientRow ? contractorLicenceForState(submittingClientRow, project.state) : null;
   const permitLane = processMap.lanes.find((lane) => lane.key === "permit");
   const nemLane = processMap.lanes.find((lane) => lane.key === "nem");
   const blockedPermitSteps = (permitLane?.steps || []).filter((step) => step.status === "blocked");
@@ -3483,31 +3528,46 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       id: "single-project-record",
       title: "Single project record",
       lane: "intake",
-      status: missingCritical.length ? "blocker" : "pass",
+      status: missingCritical.length ? "blocker" : waitingOnBill.length ? "warning" : "pass",
       ownerRole: "Intake Coordinator",
       requirement: "Homeowner, service address, AHJ, utility, account, meter, system size, and interconnection method must be captured before PermitFlow or NEMflow staging.",
-      evidence: missingCritical.length ? missingCritical.map((field) => `Missing: ${field}`) : criticalFields.map(([label, value]) => `${label}: ${hasValue(value) ? "captured" : "missing"}`),
-      nextAction: missingCritical.length ? `Resolve missing source-of-truth fields: ${missingCritical.join(", ")}.` : "Use this record as the source for every form, portal, and tracker.",
+      evidence: [
+        // The wait first: the evidence is capped at six lines and nine "captured" lines follow.
+        ...(waitingOnBill.length ? [`Waiting on the customer's utility bill: ${waitingOnBill.join(", ")} (read from the bill; needed for the NEM application only)`] : []),
+        ...(missingCritical.length ? missingCritical.map((field) => `Missing: ${field}`) : criticalFields.filter(([label]) => !waitingOnBill.includes(label)).map(([label, value]) => `${label}: ${hasValue(value) ? "captured" : "missing"}`)),
+      ],
+      nextAction: missingCritical.length
+        ? `Resolve missing source-of-truth fields: ${missingCritical.join(", ")}.`
+        : waitingOnBill.length
+          ? `Waiting on the customer's utility bill for the ${waitingOnBill.join(" and ").toLowerCase()} number — upload it or send an intake request. The permit side can proceed.`
+          : "Use this record as the source for every form, portal, and tracker.",
       source: "project.fields",
     }),
     submitGateCheck({
       id: "submitting-client",
-      title: "Submitting client & CCB",
+      // The CCB is OREGON's contractor board. Outside Oregon the check asks for a client and
+      // reports the licence on file for the project's state — it never asks a Pennsylvania job
+      // for a CCB number (new-AHJ e2e, 2026-09-26), and an unknown requirement stays a warning.
+      title: licence?.oregon ? "Submitting client & CCB" : "Submitting client & contractor licence",
       lane: "intake",
-      status: !submittingClientRow ? "blocker" : !String(submittingClientRow.ccb_license_number || "").trim() ? "blocker" : "pass",
+      status: !submittingClientRow ? "blocker" : licence!.number ? "pass" : licence!.oregon ? "blocker" : "warning",
       ownerRole: "Intake Coordinator",
-      requirement: "A submitting client with a CCB/contractor license must be assigned, so the filing uses the correct contractor — never default or another client's info.",
+      requirement: licence?.oregon || !submittingClientRow
+        ? "A submitting client with a CCB/contractor license must be assigned, so the filing uses the correct contractor — never default or another client's info."
+        : `A submitting client must be assigned, so the filing uses the correct contractor — never default or another client's info. The contractor licence ${licence!.state || "this state"} / the AHJ require is on the application form.`,
       evidence: !submittingClientRow
         ? ["No submitting client assigned to this project."]
         : [
             `Client: ${String(submittingClientRow.company_name || submittingClientRow.legal_business_name || "(unnamed)")}`,
-            String(submittingClientRow.ccb_license_number || "").trim() ? `CCB: ${String(submittingClientRow.ccb_license_number)}` : "No CCB license on file.",
+            licence!.number ? `${licence!.label}: ${licence!.number}` : licence!.oregon ? "No CCB license on file." : `No contractor licence for ${licence!.state || "this state"} on file.`,
           ],
       nextAction: !submittingClientRow
         ? "Assign the submitting client in the project header before staging."
-        : !String(submittingClientRow.ccb_license_number || "").trim()
-          ? "Add the client's CCB license number in the Clients tab."
-          : "Verified — this client's contractor info will be used on the filing.",
+        : licence!.number
+          ? "Verified — this client's contractor info will be used on the filing."
+          : licence!.oregon
+            ? "Add the client's CCB license number in the Clients tab."
+            : `Confirm which contractor licence ${licence!.state || "the state"} and ${project.ahj || "the AHJ"} require on the application, and add it to the client's state licences in the Clients tab.`,
       source: "project.client",
     }),
     submitGateCheck({
@@ -3629,7 +3689,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       requirement: "Every required submittal document must be attached as a file (or identified in the uploaded plan set) before staging — the AHJ rejects incomplete packages.",
       evidence: [
         `${docInventory.presence.filter((d) => d.present).length}/${docInventory.required.length} required documents present${gateDocs.filledAtStaging.length ? `, ${gateDocs.filledAtStaging.length} more filled from a stored template at staging` : ""}.`,
-        ...docInventory.presence.filter((d) => d.present).slice(0, 4).map((d) => `✓ ${d.label} (${d.via})`),
+        ...docInventory.presence.filter((d) => d.present).slice(0, 4).map((d) => documentPresenceLine(d.label, d.via)),
         ...gateDocs.filledAtStaging.map((d) => `Filled at staging: ${d.label} — the form's template is on file; staging fills and attaches it`),
         ...gateDocs.owed.map((d) => `MISSING (required): ${d.label} — ${d.why}`),
         ...docInventory.missingAdvisory.map((d) => `Missing (advisory): ${d.label}`),
@@ -7353,7 +7413,9 @@ export async function prepareSubmission(
     throw new HttpError(409, "No submitting client assigned. Assign the client whose CCB/contractor license belongs on this permit before staging — we never submit with default or another client's info.", { needsClient: true });
   }
   const submittingClient = getClient(db, detail.project.clientId);
-  if (!submittingClient.ccbLicenseNumber?.trim()) {
+  // The CCB is Oregon's contractor board: required for an Oregon filing only. Elsewhere the
+  // licence a state requires is on its own form, and the gate reports it (never a CCB demand).
+  if (["OR", ""].includes(String(detail.project.state || "").trim().toUpperCase()) && !submittingClient.ccbLicenseNumber?.trim()) {
     throw new HttpError(409, `Submitting client "${submittingClient.companyName || submittingClient.legalBusinessName || detail.project.clientId}" has no CCB license number on file. Add it in the Clients tab before staging.`, { needsCcb: true, clientId: detail.project.clientId });
   }
 
