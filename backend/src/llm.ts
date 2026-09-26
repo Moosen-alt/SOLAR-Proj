@@ -1527,7 +1527,7 @@ CLIENT ONBOARDING — the INSTALLER/CONTRACTOR shown on the plan set title block
   client record — these do NOT fill the project's contractor fields (those come from the
   selected client), they're a suggestion to create/match the client:
 - contractorCompany: installer/contractor business name
-- contractorCcb: the contractor's STATE licence number exactly as the title block prints it, whatever the state calls it (Oregon CCB, Massachusetts/Pennsylvania HIC, Arizona ROC, Texas TDLR/TECL, California CSLB, Nevada NSCB, Florida CVC…). Omit when none is printed — "N/A" is not a value.
+- contractorCcb: the contractor's STATE licence number exactly as the title block prints it, whatever the state calls it (Oregon CCB, Massachusetts/Pennsylvania HIC, Arizona ROC, Texas TDLR/TECL, California CSLB, Nevada NSCB, Florida CVC…; Iowa's electrical contractor licence reads "EL" + 6 digits + a class suffix, e.g. EL123456MA). Omit when none is printed — "N/A" is not a value. A number shaped NN-NNNNNNN is a federal EIN / tax id even when the title block labels it "LICENSE #" — it is NOT a licence; put it in no licence field.
 - contractorElectricalLicense: the company's electrical contractor license number (e.g. "C1556")
 - contractorMetroCityLicense: metro/city contractor or business license number, if shown (e.g. Portland Metro / city license)
 - contractorAddress: contractor business address

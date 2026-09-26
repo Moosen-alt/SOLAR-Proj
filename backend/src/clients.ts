@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ClientPortalIdentity, ClientRecord } from "../../shared/src/types";
+import type { ClientPartnerContact, ClientPortalIdentity, ClientRecord, ClientStateLicense } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
 import { HttpError } from "./httpError";
@@ -67,8 +67,43 @@ function mapClient(row: Row, identities: ClientPortalIdentity[]): ClientRecord {
     billingMode: s(row.billing_mode),
     serviceFeeUsd: row.service_fee_usd == null || row.service_fee_usd === "" ? null : Number(row.service_fee_usd),
     portalIdentities: identities,
+    stateLicenses: parseStateLicenses(row.state_licenses_json),
+    partnerContacts: parsePartnerContacts(row.partner_contacts_json),
     createdAt: s(row.created_at),
   };
+}
+
+function jsonArray(raw: unknown): Record<string, unknown>[] {
+  if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+  try { const v = JSON.parse(s(raw) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+/** Stored/accepted licences: state + number required; kind free text. */
+export function parseStateLicenses(raw: unknown): ClientStateLicense[] {
+  return jsonArray(raw)
+    .map((l) => ({ state: s(l?.state).trim().toUpperCase().slice(0, 2), kind: s(l?.kind).trim(), number: s(l?.number).trim() }))
+    .filter((l) => l.state && l.number);
+}
+/** Stored/accepted partner contacts: a company name required; scope by portal and/or AHJ. */
+export function parsePartnerContacts(raw: unknown): ClientPartnerContact[] {
+  return jsonArray(raw)
+    .map((p) => ({
+      role: s(p?.role).trim() || "contractor_electrical", companyName: s(p?.companyName).trim(), contactName: s(p?.contactName).trim(),
+      licenseNumber: s(p?.licenseNumber).trim(), licenseState: s(p?.licenseState).trim().toUpperCase().slice(0, 2),
+      email: s(p?.email).trim(), phone: s(p?.phone).trim(), portalType: s(p?.portalType).trim(), ahj: s(p?.ahj).trim(),
+    }))
+    .filter((p) => p.companyName);
+}
+
+/** The partner contact for this filing: AHJ + portal match first, then AHJ, then portal, then an
+ *  unscoped entry for the role. null when the client names none — the client itself files. */
+export function partnerContactFor(client: Pick<ClientRecord, "partnerContacts">, scope: { ahj?: string; portalType?: string; role?: string }): ClientPartnerContact | null {
+  const norm = (v: string | undefined) => String(v ?? "").toLowerCase().replace(/^city of\s+/, "").replace(/[^a-z0-9]+/g, " ").trim();
+  const role = scope.role ?? "contractor_electrical";
+  const list = (client.partnerContacts ?? []).filter((p) => p.role === role);
+  const ahjOk = (p: ClientPartnerContact) => !p.ahj || norm(p.ahj) === norm(scope.ahj);
+  const portalOk = (p: ClientPartnerContact) => !p.portalType || p.portalType === scope.portalType;
+  const rank = (p: ClientPartnerContact) => (p.ahj ? 2 : 0) + (p.portalType ? 1 : 0);
+  return list.filter((p) => ahjOk(p) && portalOk(p)).sort((a, b) => rank(b) - rank(a))[0] ?? null;
 }
 
 // Money-ish → number|null (0 is a valid service fee; blank clears to env default).
@@ -190,6 +225,7 @@ export function createClient(db: AppDb, payload: Record<string, unknown>, orgId:
   return db.transaction(() => {
     db.run(`INSERT INTO clients (${columns.join(", ")}) VALUES (${placeholders})`, values);
     replaceIdentities(db, clientId, payload.portalIdentities as PortalIdentityInput[] | undefined);
+    writeLicenceAndPartnerJson(db, clientId, payload);
     return getClient(db, clientId);
   });
 }
@@ -209,8 +245,15 @@ export function updateClient(db: AppDb, clientId: string, payload: Record<string
     if ("portalIdentities" in payload) {
       replaceIdentities(db, clientId, payload.portalIdentities as PortalIdentityInput[] | undefined);
     }
+    writeLicenceAndPartnerJson(db, clientId, payload);
     return getClient(db, clientId);
   });
+}
+
+/** stateLicenses / partnerContacts: written only when present in the payload (partial update). */
+function writeLicenceAndPartnerJson(db: AppDb, clientId: string, payload: Record<string, unknown>): void {
+  if ("stateLicenses" in payload) db.run("UPDATE clients SET state_licenses_json = ? WHERE id = ?", [JSON.stringify(parseStateLicenses(payload.stateLicenses)), clientId]);
+  if ("partnerContacts" in payload) db.run("UPDATE clients SET partner_contacts_json = ? WHERE id = ?", [JSON.stringify(parsePartnerContacts(payload.partnerContacts)), clientId]);
 }
 
 /**

@@ -2603,7 +2603,7 @@ app.post("/api/parser/llm-extract", asyncHandler(async (req, res) => {
     let clientResolution: ClientResolution | undefined;
     try {
       const { resolveClientForExtraction } = await import("./clientMatch");
-      clientResolution = resolveClientForExtraction(db, extraction.fields, reqOrgFilter(db, req));
+      clientResolution = resolveClientForExtraction(db, extraction.fields, reqOrgFilter(db, req), planText);
     } catch (err) {
       logger.warn("parser", "client resolution failed — parse returned without a client suggestion", {
         error: err instanceof Error ? err.message : String(err),

@@ -1021,6 +1021,10 @@ function migrate(db: AppDb): void {
   // A filed FORM read by position (the Iowa SFM PV worksheet: pvWorksheetGate.readFiledPvWorksheet),
   // JSON. The text blob above loses the positions that say which value belongs to which box.
   addColumnIfMissing(db, "project_documents", "form_reading_json", "TEXT NOT NULL DEFAULT ''");
+  // Client contractor licences in other states (JSON ClientStateLicense[]) and PARTNER
+  // contractor contacts per portal/AHJ (JSON ClientPartnerContact[]) — clients.ts.
+  addColumnIfMissing(db, "clients", "state_licenses_json", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(db, "clients", "partner_contacts_json", "TEXT NOT NULL DEFAULT '[]'");
 
   runVersionedMigrations(db);
 

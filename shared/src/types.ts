@@ -255,7 +255,35 @@ export interface ClientRecord {
   /** Operator's per-submission service fee ("top fee") in USD; null = env default. */
   serviceFeeUsd: number | null;
   portalIdentities: ClientPortalIdentity[];
+  /** Contractor licences beyond the named columns, one per issuing state/kind (Iowa "EL"
+   *  electrical, Florida EC/CVC, Texas TECL, Utah DOPL...). clientMatch matches them like a CCB. */
+  stateLicenses?: ClientStateLicense[];
+  /** A PARTNER contractor this client files through, per portal and/or AHJ (Iowa City: the plan
+   *  set is the solar company's, the permit's "Contractor (Electrical)" is a local licensed EC). */
+  partnerContacts?: ClientPartnerContact[];
   createdAt: string;
+}
+
+export interface ClientStateLicense {
+  /** Two-letter issuing state. */
+  state: string;
+  /** What the licence is, e.g. "electrical_contractor", "contractor", "solar_contractor". */
+  kind: string;
+  number: string;
+}
+
+export interface ClientPartnerContact {
+  /** The permit contact role this partner fills, e.g. "contractor_electrical". */
+  role: string;
+  companyName: string;
+  contactName: string;
+  licenseNumber: string;
+  licenseState: string;
+  email: string;
+  phone: string;
+  /** Scope: a portal type and/or an AHJ name ("" = any). */
+  portalType: string;
+  ahj: string;
 }
 
 // --- Per-submission payment gate ------------------------------------------
@@ -2458,16 +2486,23 @@ export interface PlanSetInstallerIdentity {
   supervisorName?: string;
   /** The supervising electrician's PERSONAL licence — never a company identifier. */
   electricianLicenseNumber?: string;
+  /** False when a text layer was supplied and the company name is NOT in it (a logo-only name):
+   *  the name can then only propose candidates, never pre-select. */
+  companyNameInText?: boolean;
+  /** Printed numbers that LOOK like licences but are not (an EIN-shaped NN-NNNNNNN), kept so the
+   *  explanation can say why they were not used. */
+  rejectedLicenceNumbers?: string[];
 }
 
-/** Which leg of the match fired. Only `ccb` may bind a client without a human. */
-export type ClientMatchKind = "ccb" | "phone" | "name";
+/** Which leg of the match fired. Only an exact licence (`ccb`, `state_license`) may bind a
+ *  client without a human. */
+export type ClientMatchKind = "ccb" | "state_license" | "phone" | "name";
 
 /** One reason a client was proposed — what matched, on which field, how well. */
 export interface ClientMatchEvidence {
   kind: ClientMatchKind;
   /** The clients-table column compared (named so a reviewer can check the claim). */
-  clientField: "ccb_license_number" | "business_phone" | "phone" | "company_name" | "legal_business_name" | "dba";
+  clientField: "ccb_license_number" | "electrical_license_number" | "state_licenses" | "business_phone" | "phone" | "company_name" | "legal_business_name" | "dba";
   /** The value read off the plan set. */
   planSetValue: string;
   /** The value stored on the client row. */
