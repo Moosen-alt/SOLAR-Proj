@@ -420,7 +420,8 @@ async function accelaLoginLayer(ctx: Ctx, req: http.IncomingMessage, res: http.S
     // The non-portal page a production run started on: guidance text and a link into the portal.
     sendHtml(res, `<!doctype html><html><head><title>How to permit solar</title></head><body><h1>How to permit a solar installation</h1>
       <p>Residential solar requires an electrical permit. Apply online through the statewide permitting portal.</p>
-      <p><a id="go" href="${mode === "maze" ? "/maze?n=1" : "/CitizenAccess/Default.aspx"}">Apply for a building permit online</a></p></body></html>`);
+      <p><a id="go" href="${mode === "maze" ? "/maze?n=1" : "/CitizenAccess/Default.aspx"}">Apply online</a></p>
+      <p><a id="checklist" href="/info#checklist">Solar permit application checklist</a></p></body></html>`);
     return true;
   }
   if (mode === "maze" && p === "/maze") {

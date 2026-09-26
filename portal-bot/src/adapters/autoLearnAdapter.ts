@@ -3238,8 +3238,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (!this.isAcaUrl(url)) return null;
     let pathname = "";
     try { pathname = new URL(url).pathname.toLowerCase(); } catch { return null; }
+    // The control's id is in selector.css only when it had no label: a LABELLED search box
+    // carries its id in selector.fallbacks, so the marker reads both (a labelled "Record Number"
+    // box on the records home went unrecognised, and the walk planned on the operator's records).
     const marker = (re: RegExp) =>
-      fields.some((f) => re.test(f.label || "") || re.test(f.selector?.name || "") || re.test(f.selector?.css || ""));
+      fields.some((f) => re.test(f.label || "") || re.test(f.selector?.name || "") || re.test(f.selector?.css || "")
+        || (f.selector?.fallbacks ?? []).some((fb) => re.test(String((fb as { css?: string }).css ?? ""))));
     if ((pathname.endsWith("/cap/caphome.aspx") || pathname.endsWith("/cap/myrecordscap.aspx")) && marker(/generalsearchform|gdvpermitlist/i)) return "records_home";
     if (pathname.endsWith("/cap/capdetail.aspx") && marker(/addfordetailpage|attachmentedit/i)) return "record_detail";
     return null;
@@ -4412,7 +4416,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       if (Date.now() - lastFillProgressAt > noProgressBudgetMs) {
         const secs = Math.round((Date.now() - lastFillProgressAt) / 1000);
         this.debug?.event({ type: "no_fill_progress", page: pageCount, seconds: secs, budgetSeconds: Math.round(noProgressBudgetMs / 1000) });
-        return { ...fail(steps, this.portalName, `Stopped: no field was filled for ${secs}s (budget ${Math.round(noProgressBudgetMs / 1000)}s) across ${pageCount} page(s) — the walk is not reaching a fillable page. Page trace: ${pageTrace.slice(-4).join(" | ") || "(none)"}`, null, pageCount, portalNotices), stopReason: "no_fill_progress" };
+        return { ...fail(steps, this.portalName, `Stopped: no field was filled for ${secs}s (budget ${Math.round(noProgressBudgetMs / 1000)}s, checked between pages) across ${pageCount} page(s) — the walk is not reaching a fillable page. Page trace: ${pageTrace.slice(-4).join(" | ") || "(none)"}`, null, pageCount, portalNotices), stopReason: "no_fill_progress" };
       }
 
       const acaDeterministicAhead = this.isAcaUrl(url) && (
