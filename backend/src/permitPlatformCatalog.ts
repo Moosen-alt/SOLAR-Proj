@@ -48,16 +48,23 @@ export function isOfficialAgencyHost(host: string, names: string[]): boolean {
 }
 
 // ── Platform markers ──────────────────────────────────────────────────────────────────────
-const ACA_MARKERS = /Accela Citizen Access|\/Cap\/CapHome\.aspx|CapApplyDisclaimer\.aspx|agencyCode\s*[=:'"]/i;
-const ENERGOV_MARKERS = /SelfService Public Site|tyler-main-menu|EnerGov/i;
+// Markers of the PAGE ITSELF — never of a page it links: an agency page linking an EnerGov tenant
+// (".../energovweb.tylerhost.net/apps/SelfService") or an ACA record search is not that platform, so
+// href values are removed before the markers are read, and ACA's own navigation counts only when it
+// is on the page's own host.
+const ACA_TITLE = /Accela Citizen Access/i;
+const ACA_SOURCE = /\bagencyCode\s*[=:]|ACA_Config|\bAccelaCitizenAccess\b/i;
+const ENERGOV_SOURCE = /SelfService Public Site|tyler-main-menu/i;
 const OTHER_PLATFORM_MARKERS = /eTRAKiT|Citizenserve|ViewPoint Cloud|OpenGov|SmartGov|CityView Portal|MyGovernmentOnline|iWorQ|Cloudpermit|Click2Gov|Clariti/i;
-/** Which permit platform a page we READ is, by its own markers (URL shape as a tie-breaker). */
+/** Which permit platform a page we READ is, by its own markers (never by what it links). */
 export function detectPlatform(page: Pick<ReadPage, "ok" | "html" | "text" | "title" | "finalUrl" | "links">): PermitPlatform | null {
   if (!page.ok) return null;
-  const hay = `${page.title}\n${page.html ?? page.text}`;
-  if (ACA_MARKERS.test(hay) || page.links.some((l) => /\/Cap\/CapHome\.aspx\?module=/i.test(l.href))) return "accela";
-  if (ENERGOV_MARKERS.test(hay) && /selfservice/i.test(`${page.finalUrl} ${hay}`)) return "energov";
-  if (OTHER_PLATFORM_MARKERS.test(page.title) || OTHER_PLATFORM_MARKERS.test(String(page.html ?? "").slice(0, 20000))) return "other";
+  const source = String(page.html ?? "").replace(/\b(?:href|src|action)\s*=\s*(?:"[^"]*"|'[^']*')/gi, "");
+  const host = portalHostOf(page.finalUrl);
+  if (ACA_TITLE.test(page.title) || ACA_SOURCE.test(source)
+    || page.links.some((l) => portalHostOf(l.href) === host && /\/Cap\/Cap(?:Home|ApplyDisclaimer)\.aspx\?(?:[^#]*&)?module=/i.test(l.href))) return "accela";
+  if (ENERGOV_SOURCE.test(`${page.title}\n${source}`)) return "energov";
+  if (OTHER_PLATFORM_MARKERS.test(page.title)) return "other";
   return null;
 }
 /** Platform from a vendor URL alone (no read): ACA and EnerGov have unmistakable URL shapes. */
@@ -110,7 +117,7 @@ function candidatesOn(page: ReadPage): Candidate[] {
   }
   return out;
 }
-const quoteOf = (link: PageLink) => `"${link.text || "(link)"}" -> ${link.href}`.slice(0, 300);
+const quoteOf = (link: PageLink, landed?: string) => `"${link.text || "(link)"}" -> ${link.href}${landed && landed !== link.href ? ` (opens ${landed})` : ""}`.slice(0, 300);
 
 /**
  * Resolve the application portal from the agency's own pages (already read). Reads (politely) the
@@ -130,11 +137,11 @@ export async function resolvePortalFromPages(reader: PageReader, pages: ReadPage
       const target = await reader.read(c.link.href);
       if (!target.ok) continue;
       if (isPermitPlatformUrl(target.finalUrl) && hostFitsTrackAndEntity("building", null, target.finalUrl, "research").fits) {
-        return { url: target.finalUrl, platform: platformOfUrl(target.finalUrl) ?? detectPlatform(target) ?? "other", sourceUrl: c.page.finalUrl, quote: quoteOf(c.link), via: "redirect onto a vendor host", portalPage: target };
+        return { url: target.finalUrl, platform: platformOfUrl(target.finalUrl) ?? detectPlatform(target) ?? "other", sourceUrl: c.page.finalUrl, quote: quoteOf(c.link, target.finalUrl), via: "redirect onto a vendor host", portalPage: target };
       }
       const platform = detectPlatform(target);
       if (platform && hostFitsTrackAndEntity("building", null, target.finalUrl, "research").fits) {
-        return { url: target.finalUrl, platform, sourceUrl: c.page.finalUrl, quote: quoteOf(c.link), via: hop ? "one hop" : "own-domain portal (markers read)", portalPage: target };
+        return { url: target.finalUrl, platform, sourceUrl: c.page.finalUrl, quote: quoteOf(c.link, target.finalUrl), via: hop ? "one hop" : "own-domain portal (markers read)", portalPage: target };
       }
       // ONE HOP: an own-domain page the link's words name as the portal, which in turn links it.
       if (!hop && PORTAL_LINK_WORDS.test(c.link.text)) {
@@ -226,9 +233,15 @@ export async function readAccelaCatalog(reader: PageReader, portalUrl: string, p
   const entry = portalPage?.ok ? portalPage : await reader.read(portalUrl);
   if (!entry.ok) return { platform: "accela", sourceUrl: portalUrl, types: [], problem: `the portal page could not be read (${entry.reason})` };
   const modules = new Map<string, string>();
-  for (const l of entry.links) {
-    const mm = /\/Cap\/Cap(?:Home|ApplyDisclaimer)\.aspx\?(?:[^#]*&)?module=([^&#]+)/i.exec(l.href);
-    if (mm && !modules.has(mm[1].toLowerCase())) modules.set(mm[1].toLowerCase(), l.href.replace(/CapApplyDisclaimer\.aspx/i, "CapHome.aspx"));
+  const addModule = (href: string) => {
+    const mm = /\/Cap\/Cap(?:Home|ApplyDisclaimer)\.aspx\?(?:[^#'"]*&)?module=([^&#'"]+)/i.exec(href);
+    if (mm && !modules.has(mm[1].toLowerCase())) modules.set(mm[1].toLowerCase(), href.replace(/CapApplyDisclaimer\.aspx/i, "CapHome.aspx"));
+  };
+  for (const l of entry.links) addModule(l.href);
+  // ACA's tab bar is built by script from a data array (['URL','/<AGENCY>/Cap/CapHome.aspx?module=…']),
+  // so the module links are in the page source, not in anchors.
+  for (const m of String(entry.html ?? "").matchAll(/['"]((?:\/[^'"\s]*)?\/Cap\/Cap(?:Home|ApplyDisclaimer)\.aspx\?[^'"\s]*module=[^'"\s]+)['"]/gi)) {
+    try { addModule(new URL(m[1].replace(/&amp;/g, "&"), entry.finalUrl).toString()); } catch { /* not a URL */ }
   }
   const ordered = [...modules.entries()].sort(([a], [b]) => Number(ACA_MODULE_PRIORITY.test(b)) - Number(ACA_MODULE_PRIORITY.test(a)) || Number(/build|permit/i.test(b)) - Number(/build|permit/i.test(a)));
   const picked = ordered.filter(([k]) => ACA_MODULE_PRIORITY.test(k) || /build|permit/i.test(k)).slice(0, 2);
@@ -299,8 +312,11 @@ function sentences(text: string): string[] {
   return String(text ?? "").replace(/\s+/g, " ").split(/(?<=[.!?])\s+(?=[A-Z0-9"'(])/).map((s) => s.trim()).filter((s) => s.length >= 20 && s.length <= 400);
 }
 const PREREQ_KINDS: Array<{ kind: string; re: RegExp }> = [
-  { kind: "Portal account approval", re: /\baccount\b[^.]{0,120}\b(?:approv|verif|activat)|\b(?:approv|verif|activat)\w*[^.]{0,60}\baccount\b/i },
-  { kind: "Contractor licence / registration linked to the account", re: /(?:licen[cs]e|registration|registered)[^.]{0,120}\b(?:account|profile|must|required|will need)|\b(?:add|link|associate)\b[^.]{0,60}(?:licen[cs]e|registration)/i },
+  { kind: "Portal account approval", re: /\b(?:account|online access|log ?in|credentials)\b[^.]{0,120}\b(?:approv|verif|activat)|\b(?:approv|verif|activat)\w*[^.]{0,80}\b(?:account|online access|log ?in)\b/i },
+  // A CONTRACTOR'S licence / registration the filing depends on (never a pet, a business or a
+  // daycare licence): the sentence names a contractor / installer / electrician AND a licence or
+  // registration, and (below) says it is required.
+  { kind: "Contractor licence / registration", re: /\b(?:contractor|installer|electrician)s?\b[^.]{0,140}\b(?:licen[cs]\w*|regist\w*|certificate of competency)|\b(?:licen[cs]\w*|regist\w*)\b[^.]{0,100}\b(?:contractor|installer|electrician)s?\b/i },
   { kind: "Approval before the permit", re: /\b(?:plans? (?:approval|examination|review)|solar ?app\+?[^.]{0,40}approv|approval id)[^.]{0,160}\b(?:before|prior to|first|then|after)\b|\b(?:after|once)\b[^.]{0,80}\b(?:approv\w*|issued)\b[^.]{0,80}\b(?:apply|permit|pull)/i },
 ];
 export interface CitedNote { kind: string; value: string; sourceUrl: string; quote: string }
@@ -308,8 +324,10 @@ export function extractPrerequisites(page: Pick<ReadPage, "ok" | "finalUrl" | "t
   if (!page.ok) return [];
   const out: CitedNote[] = [];
   for (const s of sentences(page.text)) {
-    if (!/\b(?:must|required|requires|need|needs|will need|only|before|prior|first|approv|allow)/i.test(s)) continue;
+    if (!/\b(?:must|required|requires|need|needs|will need|shall|only|before|prior|first|approv|takes)/i.test(s)) continue;
     const k = PREREQ_KINDS.find((x) => x.re.test(s));
+    if (k?.kind === "Contractor licence / registration" && (!/\b(?:must|required|requires|shall|will need|only)\b/i.test(s) || !/\b(?:permits?|applications?|apply|portal|account|submit\w*)\b/i.test(s))) continue;
+    if (k && out.filter((o) => o.kind === k.kind).length >= 2) continue;
     if (!k || out.some((o) => o.kind === k.kind && o.quote === s)) continue;
     const lead = /\b\d+\s*(?:-|–|to)\s*\d+\s+business days|\b\d+\s+business days/i.exec(s)?.[0];
     out.push({ kind: k.kind, value: `${k.kind}${lead ? ` (${lead})` : ""}: ${s}`.slice(0, 300), sourceUrl: page.finalUrl, quote: s.slice(0, 300) });
@@ -334,6 +352,15 @@ export function extractCodeEditions(page: Pick<ReadPage, "ok" | "finalUrl" | "te
 // ── Documents worth reading for documents / fees ─────────────────────────────────────────
 const FEE_LINK = /fee schedule|master fee|fees? (?:and|&) charges|permit fees?|fee resolution|fee table|schedule of fees/i;
 const CHECKLIST_LINK = /checklist|submittal|solar|photovoltaic|\bpv\b|application requirements|required documents/i;
+export const DOCUMENT_URL = /\.pdf(?:$|[?#])|showpublisheddocument|\/documentcenter\/view\/|\/weblink\/|\/edoc\//i;
+/** A fee schedule, a solar checklist / submittal requirement, or neither — by the words naming it
+ *  (a link's text or a search result's title) and, for a checklist, its being a document or naming
+ *  a checklist (a "Solar" news page is neither). */
+export function classifyDocument(words: string, href: string): "fees" | "checklist" | null {
+  if (FEE_LINK.test(words)) return "fees";
+  if (CHECKLIST_LINK.test(words) && (DOCUMENT_URL.test(href) || /checklist|submittal|requirement|guide/i.test(words))) return "checklist";
+  return null;
+}
 /** The fee schedule / checklist links on the agency's own pages (own domain or a document host it
  *  links), fee schedules first. */
 export function documentLinks(pages: ReadPage[], names: string[]): Array<{ href: string; text: string; kind: "fees" | "checklist" }> {
@@ -344,8 +371,8 @@ export function documentLinks(pages: ReadPage[], names: string[]): Array<{ href:
     for (const l of page.links) {
       const host = portalHostOf(l.href);
       if (!host || (registrableDomain(host) !== dom && !isOfficialAgencyHost(host, names))) continue;
-      if (/translate|facebook|twitter|mailto/i.test(l.href)) continue;
-      const kind = FEE_LINK.test(l.text) ? "fees" : CHECKLIST_LINK.test(l.text) && /\.pdf\b|showpublisheddocument|document|checklist|solar/i.test(`${l.href} ${l.text}`) ? "checklist" : null;
+      if (/translate|facebook|twitter|mailto|[?&]splash=|isexternal/i.test(l.href)) continue;
+      const kind = classifyDocument(l.text, l.href);
       if (kind && !out.some((o) => o.href === l.href)) out.push({ href: l.href, text: l.text, kind });
     }
   }

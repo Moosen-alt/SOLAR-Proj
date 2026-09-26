@@ -36,7 +36,7 @@ import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stat
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
 import { parseBracketRow } from "./pdfTables";
-import { chooseRecordType, detectPlatform, documentLinks, excerptFor, extractCodeEditions, extractPrerequisites, isOfficialAgencyHost, platformOfUrl, readPortalCatalog, registrableDomain, resolvePortalFromPages, solarRecordTypeCandidates, type PortalCatalog, type PortalResolution, type RecordTypeCandidate } from "./permitPlatformCatalog";
+import { chooseRecordType, classifyDocument, DOCUMENT_URL, detectPlatform, documentLinks, excerptFor, extractCodeEditions, extractPrerequisites, isOfficialAgencyHost, platformOfUrl, readPortalCatalog, registrableDomain, resolvePortalFromPages, solarRecordTypeCandidates, type PortalCatalog, type PortalResolution, type RecordTypeCandidate } from "./permitPlatformCatalog";
 import { createPageReader, quoteOnPage, type PageReader, type ReadPage } from "./agencyPageReader";
 import { documentFetchDisabled } from "./documentFetch";
 export { registrableDomain };
@@ -499,7 +499,7 @@ const MAX_DOCS = 3;
  * ≤ 4 portal verifications incl. one hop, ≤ 2 proposed-portal checks, ≤ 3 catalog reads, ≤ 3 documents).
  */
 export async function readAgencyEvidence(reader: PageReader, input: {
-  ahj: string; agencyNames: string[]; citedUrls: string[]; agencyCitation?: string; resultUrls: string[]; proposedPortals: string[];
+  ahj: string; agencyNames: string[]; citedUrls: string[]; agencyCitation?: string; resultUrls: string[]; resultTitles?: Record<string, string>; proposedPortals: string[];
 }): Promise<AgencyEvidence> {
   const names = [input.ahj, ...input.agencyNames].filter(Boolean);
   const official = (u: string) => { const h = portalHostOf(u); return Boolean(h) && isOfficialAgencyHost(h, names); };
@@ -540,9 +540,23 @@ export async function readAgencyEvidence(reader: PageReader, input: {
   // Documents: the fee schedule / checklist the agency's pages link, then the documents the answer
   // cites on official hosts; fee schedules first.
   const docLinks = documentLinks(okPages, names);
-  for (const u of input.citedUrls) if (DOC_URL.test(u) && official(u) && !docLinks.some((d) => d.href === u)) docLinks.push({ href: u, text: "", kind: /fee/i.test(u) ? "fees" : "checklist" });
+  // A search result on the agency's domain whose TITLE names its fee schedule / solar checklist (the
+  // model saw it but its own fetch was refused — url_not_allowed / url_not_accessible).
+  for (const [u, t] of Object.entries(input.resultTitles ?? {})) {
+    const kind = onAgency(u) ? classifyDocument(t, u) : null;
+    if (kind && !docLinks.some((d) => pageKey(d.href) === pageKey(u))) docLinks.push({ href: u, text: t, kind });
+  }
+  for (const u of input.citedUrls) if (DOC_URL.test(u) && official(u) && !docLinks.some((d) => pageKey(d.href) === pageKey(u))) docLinks.push({ href: u, text: "", kind: /fee/i.test(u) ? "fees" : "checklist" });
   const picked = [...docLinks.filter((d) => d.kind === "fees").slice(0, 2), ...docLinks.filter((d) => d.kind === "checklist")].slice(0, MAX_DOCS);
-  const docPages = await Promise.all(picked.map(async (d) => ({ page: await reader.read(d.href), kind: d.kind })));
+  const docPages = await Promise.all(picked.map(async (d) => {
+    let page = await reader.read(d.href);
+    // A fee PAGE that prices nothing itself links its schedule: one hop to the linked document.
+    if (d.kind === "fees" && page.ok && page.kind === "html" && !excerptFor(page, "fees")) {
+      const next = page.links.find((l) => classifyDocument(l.text, l.href) === "fees" && DOCUMENT_URL.test(l.href));
+      if (next) { const pdf = await reader.read(next.href); if (pdf.ok) page = pdf; }
+    }
+    return { page, kind: d.kind };
+  }));
   const docs = docPages.filter((d) => d.page.ok && d.page.text).map((d) => ({ ...d, excerpt: excerptFor(d.page, d.kind) })).filter((d) => d.excerpt);
 
   const prerequisites: CitedFact<string>[] = [];
@@ -644,7 +658,7 @@ export async function runPermitProcessLookup(
     const agencyNames = [first.issuingAgency.value, ...first.permits.map((p) => p.issuingAgency.value)].filter((x): x is string => Boolean(x));
     const agencyCitation = first.issuingAgency.value ? first.issuingAgency.sourceUrl : first.permits.find((p) => p.issuingAgency.value)?.issuingAgency.sourceUrl;
     try {
-      ev = await readAgencyEvidence(reader, { ahj: input.ahj, agencyNames, citedUrls: cited.all, agencyCitation, resultUrls: p1.resultUrls, proposedPortals: proposedPortals(p1json) });
+      ev = await readAgencyEvidence(reader, { ahj: input.ahj, agencyNames, citedUrls: cited.all, agencyCitation, resultUrls: p1.resultUrls, resultTitles: p1.resultTitles, proposedPortals: proposedPortals(p1json) });
     } catch (err) {
       logger.warn("permit-process", `agency page read failed: ${err instanceof Error ? err.message : String(err)}`);
     }

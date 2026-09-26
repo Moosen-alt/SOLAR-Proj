@@ -1,0 +1,8 @@
+MASTER FEE SCHEDULE FY 2026-27
+Building Permits
+1047  Residential  each  [2] $  410
+1048 Solar - SolarApp+ Residential  per permit [1] $  199
+Add Residential Battery Back-up  per permit [2] $  261
+1049 Solar - Residential (Up to 15 kW)  per permit [2],[4] $  312
+1050 Per kW above 15kW  per kW  $  21
+[4] Limited to maximum amounts set by AB1414

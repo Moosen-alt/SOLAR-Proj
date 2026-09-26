@@ -3331,5 +3331,7 @@ export interface WebLookupResult {
   searches?: number;
   /** Pages the fetch tool returned (readPages): a lookup may cite a page it OPENED. */
   fetchedUrls?: string[];
+  /** The title each search result carried, by URL. */
+  resultTitles?: Record<string, string>;
   error?: string;
 }

@@ -1054,6 +1054,23 @@ export function webSearchResultUrls(msg: { content?: unknown }, max = 20): strin
   return urls;
 }
 
+/** The TITLE each search result carried, by URL (the per-job lookup picks the agency's fee schedule /
+ *  checklist from its search results by title — a URL alone rarely says "fee schedule"). */
+export function webSearchResultTitles(msg: { content?: unknown }, max = 400): Record<string, string> {
+  const blocks = Array.isArray(msg?.content) ? (msg.content as Array<Record<string, unknown> | null>) : [];
+  const out: Record<string, string> = {};
+  let n = 0;
+  for (const b of blocks) {
+    if (b?.type !== "web_search_tool_result" || !Array.isArray(b.content)) continue;
+    for (const r of b.content as Array<Record<string, unknown> | null>) {
+      const u = typeof r?.url === "string" ? r.url.trim().slice(0, 300) : "";
+      const t = typeof r?.title === "string" ? r.title.trim().slice(0, 200) : "";
+      if (/^https?:\/\//i.test(u) && t && !(u in out)) { out[u] = t; if (++n >= max) return out; }
+    }
+  }
+  return out;
+}
+
 /** Output budget for the code-edition research. It asks for dated editions per family (effective /
  *  mandatory dates, basis, previous edition, a quote) plus the state's adoption model and upcoming
  *  editions: the measured 4.9k-token answer at the old shape grows, and adaptive thinking spends
@@ -2035,7 +2052,7 @@ Rules:
         400);
       return {
         text: web.text, groundedSearches: web.groundedSearches, searches: web.searches, stopReason: web.stopReason, resultUrls: web.resultUrls, pagesRead: web.fetches,
-        fetchedUrls: web.fetchedUrls,
+        fetchedUrls: web.fetchedUrls, resultTitles: web.resultTitles,
       };
     } catch (err) {
       return { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: errMsg(err) };
@@ -2605,7 +2622,7 @@ Return ONLY JSON:
   // whether the JSON parsed and not from the bare search count.
   // `extraTools`: server tools offered beside web_search (only the design-criteria lookup passes one —
   // the capped web_fetch); empty for every other caller, whose request is unchanged.
-  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000, extraTools: Array<Record<string, unknown>> = [], resultUrlCap = 20): Promise<{ text: string; searches: number; groundedSearches: number; fetches: number; fetchedUrls: string[]; stopReason: string | null; resultUrls: string[]; inputTokens?: number; outputTokens?: number; model: string }> {
+  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000, extraTools: Array<Record<string, unknown>> = [], resultUrlCap = 20): Promise<{ text: string; searches: number; groundedSearches: number; fetches: number; fetchedUrls: string[]; stopReason: string | null; resultUrls: string[]; resultTitles: Record<string, string>; inputTokens?: number; outputTokens?: number; model: string }> {
     // Hard timeout so a stalled web search can never hang the HTTP request (the
     // "Find official form" button would otherwise spin forever). On timeout we
     // abort the stream; callers catch and fall back (no URLs / model knowledge).
@@ -2639,6 +2656,7 @@ Return ONLY JSON:
         text: this.textOf(msg), searches, groundedSearches, fetches, fetchedUrls: webFetchResultUrls(msg),
         stopReason: (msg as { stop_reason?: string | null }).stop_reason ?? null,
         resultUrls: webSearchResultUrls(msg, resultUrlCap),
+        resultTitles: webSearchResultTitles(msg, resultUrlCap),
         inputTokens: typeof usage?.input_tokens === "number" ? usage.input_tokens : undefined,
         outputTokens: typeof usage?.output_tokens === "number" ? usage.output_tokens : undefined,
         model: MODEL,

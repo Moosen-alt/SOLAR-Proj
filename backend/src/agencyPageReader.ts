@@ -71,6 +71,16 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 export const defaultRawFetch: RawFetch = async (url, opts) => {
   if (!opts.headers && !opts.json) {
     const d = await fetchPublicDocument(url, { allowBrowser: false, timeoutMs: opts.timeoutMs, maxBytes: opts.maxBytes });
+    // A FALSE WALL ON A PAGE WE HOLD (measured 2026-09-26: Lee County's ACA Default.aspx answered
+    // HTTP 200 with the real 88 KB page, and the shared wall predicate matched "Storage access denied"
+    // inside one of its <script>s). Same predicate (looksBotBlocked), asked of the page's VISIBLE words
+    // instead of its source; a challenge or a "no automated access" notice is never overridden.
+    if (!d.ok && d.status >= 200 && d.status < 300 && d.text && /html/i.test(d.contentType) && /refused an ordinary HTTP client/i.test(d.reason)) {
+      const visible = parseHtml(d.text, d.finalUrl || url).text;
+      if (visible.length > 500 && !looksBotBlocked(visible)) {
+        return { ok: true, status: d.status, contentType: d.contentType, text: d.text, finalUrl: d.finalUrl || url, reason: `HTTP ${d.status} (a script's words tripped the wall check; the visible page is not a wall)` };
+      }
+    }
     return { ok: d.ok, status: d.status, contentType: d.contentType, bytes: d.bytes, text: d.text, finalUrl: d.finalUrl || url, reason: d.reason };
   }
   try {
@@ -217,12 +227,16 @@ export function parseHtml(html: string, pageUrl: string): { title: string; text:
     const a = $(el);
     const words = [a.text(), a.attr("title") ?? "", a.attr("aria-label") ?? "", ...a.find("img[alt]").map((_j, img) => $(img).attr("alt") ?? "").get()]
       .map((s) => String(s).replace(/\s+/g, " ").trim()).filter(Boolean);
-    push(String(a.attr("href")), [...new Set(words)].join(" "));
+    // An Outlook safelinks tooltip ("Original URL: … Click or tap if you trust this link.") is the
+    // mail client's words, not the page author's.
+    push(String(a.attr("href")), [...new Set(words)].join(" ").replace(/Original URL:.*?(?:trust this link\.?|$)/i, "").trim());
   });
   $("iframe[src], frame[src]").each((_i, el) => { push(String($(el).attr("src")), `(frame) ${$(el).attr("title") ?? $(el).attr("name") ?? ""}`.trim()); });
   const title = $("title").first().text().replace(/\s+/g, " ").trim();
-  $("script, style, noscript, svg, template").remove();
-  const text = $("body").text().replace(/[ \t\f\v\r]+/g, " ").replace(/\s*\n\s*/g, "\n").replace(/\n{2,}/g, "\n").trim().slice(0, TEXT_CAP);
+  // The page's OWN words: site navigation / header / footer menus are every page's furniture (and
+  // run together into one line), so they are dropped from the text — their links were kept above.
+  $("script, style, noscript, svg, template, nav, header, footer, [role=navigation], [role=banner], [role=contentinfo]").remove();
+  const text = $("body").text().replace(/[ \t\f\v\r]+/g, " ").replace(/\s*\n\s*/g, "\n").split("\n").filter((l) => l.length <= 600).join("\n").trim().slice(0, TEXT_CAP);
   return { title, text, links, html: html.slice(0, HTML_CAP) };
 }
 
