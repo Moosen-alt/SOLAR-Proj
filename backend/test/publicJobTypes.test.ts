@@ -26,6 +26,8 @@ const callback = ts.transpile(`const handler = ${callbacks[0].getText(ast)}; han
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None,
 });
 
+// The handler runs in a vm context: its objects carry that realm's prototypes, so compare as plain data.
+const plain = (v: unknown): unknown => JSON.parse(JSON.stringify(v));
 const queued: Array<{ jobType: unknown; payload: unknown; options: Record<string, unknown> }> = [];
 const events: string[] = [];
 const handler = vm.runInNewContext(callback, {
@@ -63,12 +65,27 @@ for (const jobType of ["permit_checks", "nem_checks", "mbox_import", "folder_sca
   assert.deepEqual(events, ["scope", "project guard", "enqueue"], "scope is checked before enqueue");
   const job = queued.at(-1)!;
   assert.equal(job.jobType, jobType);
-  assert.equal(job.payload, payload);
+  if (jobType === "prepare_submission") assert.deepEqual(plain(job.payload), payload);
+  else assert.equal(job.payload, payload);
   assert.equal(job.options.orgId, "org-test");
   assert.equal(job.options.projectId, "own-project");
   assert.equal(job.options.priority, 7);
   assert.equal(job.options.assignedToUser, "operator");
   assert.equal(job.options.scheduledAt, "2030-01-01T00:00:00Z");
+}
+// Close M1-jobs: final-submit authority never rides the generic route. A prepare_submission body
+// carrying autoSubmit / allowFinalSubmit / someone's approvalId reaches the queue as its track only.
+// KILL: pass the payload verbatim again → this fails.
+{
+  const forged = { track: "building", autoSubmit: true, allowFinalSubmit: true, approvalId: "alice-live-approval" };
+  handler({ body: { jobType: "prepare_submission", payload: forged, projectId: "own-project", priority: 10 } }, response);
+  assert.deepEqual(plain(queued.at(-1)!.payload), { track: "building" }, "the generic route carried final-submit authority into a staging job");
+  handler({ body: { jobType: "prepare_submission", payload: { autoSubmit: true, approvalId: "x" }, projectId: "own-project" } }, response);
+  assert.deepEqual(plain(queued.at(-1)!.payload), {}, "a trackless forged body kept a final-submit key");
+  // Other job types are untouched (their payloads carry no approval).
+  const auto = { track: "permit", note: "kept" };
+  handler({ body: { jobType: "autopilot", payload: auto, projectId: "own-project" } }, response);
+  assert.equal(queued.at(-1)!.payload, auto);
 }
 const beforeCrossTenant = queued.length;
 assert.throws(() => handler({ body: { jobType: "autopilot", projectId: "other-tenant" } }, response),

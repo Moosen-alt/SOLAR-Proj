@@ -2170,7 +2170,16 @@ app.post("/api/jobs", (req, res) => {
   // A job naming another tenant's project would run against it as system, so the
   // reference is checked before the job is ever queued.
   assertRefInScope(scope, "projects", projectId, "Project");
-  res.status(201).json(enqueueJob(db, jobType, payload || {}, { priority, assignedToUser, projectId, scheduledAt, orgId: scope.orgId }));
+  // FINAL-SUBMIT AUTHORITY NEVER RIDES THE GENERIC ROUTE (close M1-jobs). The job handler reads
+  // autoSubmit / allowFinalSubmit from the payload and the run claims the approval whose id the
+  // RUNNING job's payload names — so a body written here, carrying someone's live approval id
+  // (GET /api/jobs returns payloads) at a higher priority, was a run that person never approved.
+  // Approve & Submit enqueues through POST /api/projects/:id/prepare-submission, which mints the
+  // approval for THIS request; through /api/jobs a staging run carries its track and nothing else.
+  const jobPayload = jobType === "prepare_submission"
+    ? (typeof payload?.track === "string" && payload.track.trim() ? { track: payload.track.trim() } : {})
+    : payload || {};
+  res.status(201).json(enqueueJob(db, jobType, jobPayload, { priority, assignedToUser, projectId, scheduledAt, orgId: scope.orgId }));
 });
 // Batch folder scan — enqueues a background job to classify + import all PDFs in a folder
 // ---------------------------------------------------------------------------

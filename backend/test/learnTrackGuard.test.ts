@@ -293,6 +293,39 @@ try {
     assert.ok(consumed?.consumed_at, "the gate-refused run left its approval live for the next request to pick up");
   });
 
+  // ── close M1-jobs (probe P1): the GENERIC job route never carries a final-submit approval ──
+  // KILL: server.ts POST /api/jobs passes `payload || {}` verbatim again → this case goes red
+  // (the forged job claims Alice's approval before the hold gate refuses it).
+  await check("(m1-jobs) MUST-EXCLUDE: a prepare_submission job forged through POST /api/jobs with {autoSubmit:true, approvalId:<Alice's live id>} at priority 10 runs with autoSubmit=false, claims nothing, and Alice's approval stays live", async () => {
+    // A project the first gate (an operator hold) refuses before any browser — AFTER the claim.
+    const held = fx.newProject();
+    repo.setProjectStatusByOperator(db, held, "blocked", "waiting on the homeowner", "operator");
+    // Alice's approval, minted through its real writer (what Approve & Submit records).
+    const alice = repo.createRunApproval(db, { projectId: held, track: "permit", approver: "Alice", approverUserId: null });
+    const res = await post("/api/jobs", {
+      jobType: "prepare_submission", projectId: held, priority: 10,
+      payload: { autoSubmit: true, allowFinalSubmit: true, approvalId: alice.id },
+    });
+    const body = await res.text();
+    assert.equal(res.status, 201, body);
+    const { id: jobId } = JSON.parse(body) as { id: string };
+    const stored = JSON.parse(db.get<{ payload: string }>("SELECT payload FROM job_queue WHERE id = ?", [jobId])!.payload) as Record<string, unknown>;
+    assert.equal(stored.autoSubmit, undefined, `the generic route stored autoSubmit: ${JSON.stringify(stored)}`);
+    assert.equal(stored.approvalId, undefined, `the generic route stored an approval id: ${JSON.stringify(stored)}`);
+    // The route kicks the queue itself (enqueueJob's instant drain): wait for the run to finish.
+    for (let i = 0; i < 150 && ["pending", "running"].includes(String(db.get<{ status: string }>("SELECT status FROM job_queue WHERE id = ?", [jobId])?.status)); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const finished = db.get<{ status: string; error: string | null }>("SELECT status, error FROM job_queue WHERE id = ?", [jobId])!;
+    assert.equal(finished.status, "failed", `premise: the forged job never ran to the hold gate: ${JSON.stringify(finished)}`);
+    assert.match(String(finished.error), /blocked by an operator/);
+    const row = db.get<{ consumed_at: string | null }>("SELECT consumed_at FROM portal_run_approvals WHERE id = ?", [alice.id]);
+    assert.equal(row?.consumed_at ?? null, null, "the forged job claimed Alice's approval — a run she never approved was handed her final-submit authority");
+    const gateAudits = db.query<{ action: string }>(
+      "SELECT action FROM audit_logs WHERE project_id = ? AND action IN ('portal.run_approval_claimed', 'portal.run_approval_missing')", [held]);
+    assert.deepEqual(gateAudits, [], "the forged job reached prepareSubmission asking for a final submit (autoSubmit was not false)");
+  });
+
   // ── trust skeptic M4, the route half: the flag is returned with the recipe and a human clears it ──
   await check("(m4-route) GET /api/portal-recipes returns the flag; POST …/clear-flag clears it as the signed-in person", async () => {
     const recipe = fx.completeRecipe();
