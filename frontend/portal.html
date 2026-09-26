@@ -43,10 +43,10 @@
        face to the client, so it carries the site's structure — the wordmark, a
        green uppercase eyebrow over every section, a confident sentence-case
        heading, a dark full-bleed band under the header, hairline cards and pill
-       chips on warm paper. Nothing about the data or the wording changed. */
+       chips on the app's page colour. Nothing about the data or the wording changed. */
     :root {
       color-scheme: light;
-      --bg:        oklch(98.5% .004 95);   /* warm paper, not white */
+      --bg:        oklch(95% .012 190);    /* = styles.css --background, the same page colour as intake/credentials/login */
       --surface:   oklch(100% 0 0);
       --surface-2: oklch(95.5% .009 180);
       --text:      oklch(20.5% .025 220);
@@ -201,6 +201,11 @@
 
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const when = (iso) => iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—";
+    const lastChecked = (iso) => iso ? "last checked " + when(iso) : "not checked yet";
+    // Statuses before anything has been filed. Only here is "Tracking starts once the application
+    // is filed" true — an Approved or Submitted job with no linked filing used to say it too, which
+    // told a client their approved permit had not been filed.
+    const BEFORE_FILING = new Set(["pending", "parsed", "qc_failed", "qc_passed", "ready_to_stage", "awaiting_human_submit", "blocked"]);
     const cls = (key) => NEEDS_YOU.has(key) ? "you" : DONE.has(key) ? "good" : WARN.has(key) ? "warn" : "";
 
     async function load() {
@@ -242,7 +247,7 @@
           return row && row.needsRecheck ? "stale" : "current";
         };
         // `claim` is the sentence the caveat qualifies — a filing with no reading at all shows
-        // "Checking…", which asserts nothing, so there is nothing to walk back.
+        // "Not checked yet", which asserts nothing, so there is nothing to walk back.
         const readingNote = (row, claim) => {
           const state = readingOf(row);
           if (state === "current" || !claim) return "";
@@ -254,12 +259,14 @@
               <div class="what">
                 <div class="name">${esc(t.label)}</div>
                 <div class="muted">${t.submittedAt ? "Filed " + when(t.submittedAt) : "Not filed yet"}${t.applicationNumber ? " · " + esc(t.applicationNumber) : ""}${t.confirmationNumber ? " · receipt " + esc(t.confirmationNumber) : ""}</div>
-                <div class="muted">${t.permitNumber && t.permitNumber !== t.applicationNumber ? "Permit " + esc(t.permitNumber) + " · " : ""}last checked ${when(t.lastCheckedAt)}</div>
+                <div class="muted">${t.permitNumber && t.permitNumber !== t.applicationNumber ? "Permit " + esc(t.permitNumber) + " · " : ""}${lastChecked(t.lastCheckedAt)}</div>
               </div>
-              <span class="badge ${cls(t.outcome)}">${esc(t.statusLabel || t.outcome || "Checking…")}</span>
+              <span class="badge ${cls(t.outcome)}">${esc(t.statusLabel || t.outcome || "Not checked yet")}</span>
               ${readingNote(t, t.statusLabel || t.outcome)}
             </div>`).join("")
-            || `<div class="empty">Tracking starts once the application is filed.</div>`;
+            || (BEFORE_FILING.has(p.statusKey)
+              ? `<div class="empty">Tracking starts once the application is filed.</div>`
+              : `<div class="empty">No application number is linked to this project on this page yet.</div>`);
           // The latest few updates, in the words we actually sent them. Same sentences as the
           // email for the same event — one source, two channels (backend/src/clientUpdates.ts).
           // Capped so a long-running job does not bury the current status under its own history.
@@ -277,23 +284,25 @@
               <div class="card-body">${tracks}</div>
               ${updates ? `<div class="updates"><div class="head">Latest updates</div>${updates}</div>` : ""}
             </div>`;
-        }).join("") || `<div class="card"><div class="card-body"><div class="empty">No projects yet. They appear here as soon as we open one.</div></div></div>`;
+        }).join("");
 
         app.innerHTML = `
           <div class="band band-ink">
             <div class="inner">
               <p class="eyebrow">Permitting &amp; interconnection</p>
               <h1>${esc(d.company || "Your projects")}</h1>
-              <p class="lede">${projects.length} project${projects.length === 1 ? "" : "s"} tracked here. Updated automatically as each one moves.</p>
+              <p class="lede">${projects.length
+                ? `${projects.length} project${projects.length === 1 ? "" : "s"} tracked here. Reload this page any time for the latest status.`
+                : "Your projects will appear here as soon as we open one."}</p>
               ${yours ? `<div class="needs-you">${yours} need${yours === 1 ? "s" : ""} something from you</div>` : ""}
             </div>
           </div>
           <div class="band band-paper">
             <div class="inner">
-              <p class="eyebrow">Your projects</p>
+              ${projects.length ? `<p class="eyebrow">Your projects</p>
               <h2>Every filing we are running for you, in one place.</h2>
-              ${cards}
-              <footer>Updated automatically as your permits and interconnections move.<br>Bookmark this page — the link does not expire.</footer>
+              ${cards}` : `<div class="card"><div class="card-body"><div class="empty">No projects yet. Bookmark this page — each new project shows up here as soon as we open it.</div></div></div>`}
+              <footer>We update each status as your permits and interconnections move — reload for the latest.<br>Bookmark this page — the link does not expire.</footer>
             </div>
           </div>`;
       } catch {

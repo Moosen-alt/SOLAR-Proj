@@ -62,7 +62,10 @@ export const PUBLIC_STATUS_TEXT: Record<ProjectStatus, string> = {
   awaiting_human_resubmit: "Revision prepared — waiting on final submission",
   ready_for_issue: "Permit ready for issue — fees or pickup may be due",
   issued: "Permit issued",
-  approved: "Under review by the jurisdiction",
+  // Written when a check reads the jurisdiction as done reviewing (outcome reviewed_by_ahj - "approved",
+  // "review complete", "passed review"; permitMonitor.ts reviewedPattern) or by an operator. It used to
+  // read "Under review", which told a client an approved job was still waiting (UI audit F4).
+  approved: "Approved by the jurisdiction",
   nem_approved: "Interconnection approved",
   handoff_ready: "Approved — ready for installation",
   blocked: "Paused — our team is resolving something",
@@ -99,7 +102,7 @@ export interface ClientPortalTrack {
  *
  * ONE PREDICATE, used by trackLabel and publicCheckLabel both. A second copy that tested only
  * target_type would disagree with the row's own name on a legacy target whose target_type is blank
- * and whose permit_type is 'nem' — a page calling one filing "Utility interconnection (NEM)" and
+ * and whose permit_type is 'nem' — a page calling one filing "Utility interconnection" and
  * then saying the jurisdiction is reviewing it.
  */
 export type TrackKind = "nem" | "permit";
@@ -124,7 +127,8 @@ export function trackKind(targetType: string, permitType: string): TrackKind {
  * carries the jurisdiction's own suffix.
  */
 export function trackLabel(targetType: string, permitType: string): string {
-  if (trackKind(targetType, permitType) === "nem") return "Utility interconnection (NEM)";
+  // No "(NEM)": a client reads that as jargon, and "interconnection" already says which filing it is.
+  if (trackKind(targetType, permitType) === "nem") return "Utility interconnection";
   switch ((permitType || "").trim().toLowerCase()) {
     case "electrical": return "Electrical permit";
     // The fee layer calls this "structural" and permit_type calls it "building"; they are the

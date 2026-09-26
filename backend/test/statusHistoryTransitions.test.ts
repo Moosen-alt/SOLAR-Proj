@@ -477,7 +477,7 @@ await check("A LADDER ALREADY IN THE TABLE COLLAPSES AT READ TIME", async () => 
   assert.equal(payload.history.length, 1,
     `five identical rows reached the client as ${payload.history.length} lines — the read-time `
     + `collapse is gone: ${JSON.stringify(payload.history)}`);
-  assert.equal(payload.history[0].label, "Utility interconnection (NEM)",
+  assert.equal(payload.history[0].label, "Utility interconnection",
     `the NEM filing is not named on the card: ${JSON.stringify(payload.history[0])}`);
   assert.equal(payload.history[0].applicationNumber, "APP-111667");
 });
@@ -565,7 +565,7 @@ await check("A NEM ROW NEVER SAYS 'JURISDICTION' — through the endpoint, badge
   assert.match(strTrack.statusLabel, /jurisdiction/i,
     `the building permit badge reads "${strTrack.statusLabel}" — the city does review this one`);
   assert.doesNotMatch(strTrack.statusLabel, /\butility\b/i, strTrack.statusLabel);
-  assert.equal(nemTrack.label, "Utility interconnection (NEM)");
+  assert.equal(nemTrack.label, "Utility interconnection");
 
   const nemHist = payload.history.find((h) => h.applicationNumber === "APP-222888")!;
   const strHist = payload.history.find((h) => h.applicationNumber === "187-26-000777-STR")!;
@@ -1450,7 +1450,7 @@ await check("A NEM FILING IS NOT REVIEWED BY A JURISDICTION — every branch, bo
 
 await check("THE TRACK KIND COMES FROM THE ROW, and a blank target_type still finds the NEM", () => {
   // trackLabel and publicCheckLabel must agree on what a filing IS. A legacy target with a blank
-  // target_type and permit_type 'nem' is titled "Utility interconnection (NEM)" by trackLabel; if
+  // target_type and permit_type 'nem' is titled "Utility interconnection" by trackLabel; if
   // the wording asked a different question it would title the row for the utility and then say the
   // jurisdiction was reviewing it.
   assert.equal(trackKind("nem", ""), "nem");
@@ -1458,7 +1458,7 @@ await check("THE TRACK KIND COMES FROM THE ROW, and a blank target_type still fi
   assert.equal(trackKind("permit", "building"), "permit");
   assert.equal(trackKind("", ""), "permit", "an unknown track must not be guessed into the utility's queue");
   for (const [type, permitType] of [["nem", "nem"], ["", "nem"], ["NEM", ""]] as Array<[string, string]>) {
-    assert.equal(trackLabel(type, permitType), "Utility interconnection (NEM)");
+    assert.equal(trackLabel(type, permitType), "Utility interconnection");
     assert.doesNotMatch(publicCheckLabel("waiting", "In review", trackKind(type, permitType)), /jurisdiction/i,
       `trackLabel calls (${type}/${permitType}) an interconnection while the badge names a jurisdiction`);
   }
