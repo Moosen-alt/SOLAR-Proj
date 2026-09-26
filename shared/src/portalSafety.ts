@@ -44,8 +44,8 @@ export interface ControlContext {
    *  "Continue Application »"), which is a pass-through, never the review page. A session that
    *  starts mid-flow does not know, and leaves this undefined — never false. */
   formDataEntered?: boolean;
-  /** true = the page NAMES itself the review step ("Step 3: Review", "Review and Submit",
-   *  "(read-only)" — reviewPageInPage). Independent of readOnlyPage: a review page with a
+  /** true = the page NAMES itself the review step ("Step 3: Review", "Review and Submit" —
+   *  reviewPageInPage; a "(Read-only)" section marker is not a name). Independent of readOnlyPage: a review page with a
    *  signature box or an attachment widget still files on its advance. */
   reviewPage?: boolean;
 }
@@ -194,8 +194,13 @@ export function portalSafetyFactory() {
 
   // THE PAGE NAMES ITSELF THE REVIEW STEP. Deliberately narrower than "mentions review":
   // "Please review the terms and conditions" is an entry disclaimer, "Plan Review Fee" a fee line.
+  // A "(Read-only)" SECTION marker is NOT the page naming itself: Oregon ePermitting's Step 1
+  // locks the picked Site Address / Parcel / Owner sections as "(Read-only)", and reading that as
+  // the review page refused the ordinary "Continue Application »" on a production replay
+  // (City of Jefferson, 2026-09-26). The captured review page (CapConfirm) says "Step 4 : Review"
+  // itself; dropping the marker changed no verdict on the 94 captured replica pages.
   const REVIEW_PAGE =
-    /\bstep\s*\d+\s*[:.\-–—]?\s*review\b|\breview\s+(and|&)\s+submit\b|\(read[\s-]*only\)|\breview\s+(all\s+)?(of\s+)?(your|the)\s+(application|information|details|entries|submission)\b|\bwill\s+not\s+be\s+submitted\s+until\b/i;
+    /\bstep\s*\d+\s*[:.\-–—]?\s*review\b|\breview\s+(and|&)\s+submit\b|\breview\s+(all\s+)?(of\s+)?(your|the)\s+(application|information|details|entries|submission)\b|\bwill\s+not\s+be\s+submitted\s+until\b/i;
   const isReviewPageText = (text: string | null | undefined): boolean => REVIEW_PAGE.test(String(text ?? ""));
 
   /**

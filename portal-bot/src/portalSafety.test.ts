@@ -250,10 +250,16 @@ await check("'Continue Application' is allowed ONLY when the page is KNOWN filla
   assert.ok(isSubmitIntent("Continue Application »", { readOnlyPage: true, formDataEntered: undefined }), "mid-flow session, read-only page");
 });
 await check("isReviewPageText: the page NAMES itself the review step (MUST-MATCH / MUST-NOT)", () => {
-  const MUST = ["Step 3: Review", "Step 4 - Review", "STEP 3 : REVIEW", "Review and Submit", "Review & Submit", "Contact Information (Read-only)",
-    "Review your application", "Review all of the information below", "Your form will not be submitted until you click Submit"];
+  const MUST = ["Step 3: Review", "Step 4 - Review", "STEP 3 : REVIEW", "Review and Submit", "Review & Submit",
+    "Review your application", "Review all of the information below", "Your form will not be submitted until you click Submit",
+    // The captured review page names itself AND carries locked sections: still the review page.
+    "Step 4 : Review Site Address (Read-only) Parcel (Read-only) Owner (Read-only) Continue Application »"];
   const NOT = ["Please review the terms and conditions below", "I accept the terms and conditions", "Plan Review Fee", "Review Type",
-    "Step 2: Project Information", "Resubmittal Review Comments", "Reviewer", "", "Step 3: Documents"];
+    "Step 2: Project Information", "Resubmittal Review Comments", "Reviewer", "", "Step 3: Documents",
+    // A locked section is not the page naming itself — Oregon ePermitting Step 1 after the address pick
+    // (production false stop, City of Jefferson 2026-09-26), with the wizard bar listing Review and Pay Fees ahead.
+    "Contact Information (Read-only)",
+    "ePermit 1 General Info 2 Services 3 Review 4 Pay Fees 5 Completion Step 1 : General Info > Site Address Information Site Address (Read-only) Parcel (Read-only) Owner (Read-only) Continue Application » Save and resume later"];
   for (const t of MUST) { assert.ok(isReviewPageText(t), `"${t}" is not a review page`); assert.ok(pageCopy.isReviewPageText(t), `page copy: "${t}"`); }
   for (const t of NOT) { assert.ok(!isReviewPageText(t), `"${t}" wrongly reads as a review page`); assert.ok(!pageCopy.isReviewPageText(t), `page copy: "${t}"`); }
 });
