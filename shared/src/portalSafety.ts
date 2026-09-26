@@ -325,23 +325,60 @@ export function portalSafetyFactory() {
    * <label>CVV:</label>, so reading attributes alone caught the card number and missed its three
    * neighbours.
    */
+  /**
+   * Runs IN THE PAGE: the text of a LABELLING element about `field`, with every form control's
+   * own text removed — the field itself, and any select / option / listbox / combobox / textarea /
+   * input / textbox inside the label. A <select>'s textContent is every option (a meter number),
+   * a textarea's is what was typed, a widget's rendered selection is the current value. Walked by
+   * node, not string-replaced: `<label for=m>Meter <select id=m>..1009283745..</select></label>`
+   * gave "Meter --1009283745" on the label[for] route, which also un-matched BARE_METER_LABEL
+   * (recorder skeptic F5, probes G-a / H).
+   */
+  const labelTextOf = (labelEl: Element | null | undefined, field: Element | null | undefined): string => {
+    if (!labelEl) return "";
+    // Only a FIELD has a value to leak. A button or link labelled by itself or by a container
+    // (aria-labelledby="btn row3") keeps its text, exactly as before.
+    const FIELDISH = "select, textarea, input:not([type=submit]):not([type=button]):not([type=image]):not([type=reset]), [role=combobox], [role=listbox], [role=textbox], [role=searchbox]";
+    if (!field || typeof field.matches !== "function" || !field.matches(FIELDISH)) return String(labelEl.textContent || "").replace(/\s+/g, " ").trim();
+    const SKIP ="select, option, optgroup, textarea, input, [role=listbox], [role=combobox], [role=option], [role=textbox], [role=searchbox], [contenteditable=true]";
+    let out = "";
+    const walk = (n: Node): void => {
+      if (n.nodeType === 3) { out += n.nodeValue || ""; return; }
+      if (n.nodeType !== 1) return;
+      const e = n as Element;
+      // A removed control leaves a word boundary; plain text concatenates exactly as textContent.
+      if (field && e === field) { out += " "; return; }
+      if (e !== labelEl && typeof e.matches === "function" && e.matches(SKIP)) { out += " "; return; }
+      if (/^(SCRIPT|STYLE|TEMPLATE)$/.test(e.tagName)) return;
+      for (const c of Array.from(n.childNodes)) walk(c);
+    };
+    // A labelling element that IS a control, or sits inside the field (a widget's rendered
+    // selection), labels nothing — it is the field's own value.
+    if (field && (labelEl === field || field.contains(labelEl))) return "";
+    if (labelEl !== field && typeof labelEl.matches === "function" && labelEl.matches("select, option, textarea, input, [role=option], [role=listbox]")) return "";
+    walk(labelEl);
+    return out.replace(/\s+/g, " ").trim();
+  };
+
   const fieldIdentityInPage = (el: Element): FieldIdentity => {
     const labels: string[] = [];
     const id = el.getAttribute("id");
+    let forLabel: Element | null = null;
     if (id) {
       try {
         const root = (el.getRootNode ? el.getRootNode() : null) as Document | null;
         const esc = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(id) : id.replace(/"/g, '\\"');
-        const lbl = root && root.querySelector ? root.querySelector(`label[for="${esc}"]`) : null;
-        if (lbl && lbl.textContent) labels.push(lbl.textContent);
+        forLabel = root && root.querySelector ? root.querySelector(`label[for="${esc}"]`) : null;
+        const t = labelTextOf(forLabel, el);
+        if (t) labels.push(t);
       } catch { /* attributes are still read */ }
     }
     const wrap = el.closest ? el.closest("label") : null;
-    if (wrap && wrap.textContent) {
-      // A <select>/<textarea> inside its <label>: the label's text minus the field's own text
+    if (wrap && wrap !== forLabel) {
+      // A <select>/<textarea> inside its <label>: the label's text minus every control's own text
       // (its options / what was typed) — never a value.
-      const own = el.tagName === "SELECT" || el.tagName === "TEXTAREA" ? el.textContent || "" : "";
-      labels.push(own ? wrap.textContent.replace(own, " ") : wrap.textContent);
+      const t = labelTextOf(wrap, el);
+      if (t) labels.push(t);
     }
     return {
       label: labels.join(" ").replace(/\s+/g, " ").trim(),
@@ -398,25 +435,26 @@ export function portalSafetyFactory() {
     const byId = (id: string): Element | null => {
       try { return root && (root as Document).getElementById ? (root as Document).getElementById(id) : (root ? root.querySelector(`#${CSS.escape(id)}`) : null); } catch { return null; }
     };
+    // EVERY LABEL ROUTE STRIPS THE FIELD'S OWN TEXT (labelTextOf): aria-labelledby that points at
+    // a widget's rendered selection (select2's "select2-<id>-container" — the CURRENT VALUE) or at
+    // a container holding the field, a label[for] that wraps its own <select>, a wrapping label.
     const labelledBy = clean(String(el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)
-      .map((id) => { const n = byId(id); return n ? n.textContent : ""; }).join(" "));
+      .map((id) => labelTextOf(byId(id), el)).join(" "));
     if (labelledBy) return labelledBy.slice(0, 120);
     const isField = tag === "SELECT" || tag === "TEXTAREA" || (tag === "INPUT" && !/^(submit|button|image|reset)$/.test(type));
     const id = el.getAttribute("id");
     if (id && root) {
       try {
         const lbl = root.querySelector(`label[for="${CSS.escape(id)}"]`);
-        const t = clean(lbl && lbl.textContent);
+        const t = clean(labelTextOf(lbl, el));
         if (t) return t.slice(0, 120);
       } catch { /* fall through */ }
     }
     if (isField) {
-      // A wrapping <label>'s text, minus the field's own text (a <select> inside a <label>).
+      // A wrapping <label>'s text, minus every control's own text (a <select> inside a <label>).
       const wrap = el.closest ? el.closest("label") : null;
       if (wrap) {
-        const own = clean(el.textContent);
-        let t = clean(wrap.textContent);
-        if (own && t.includes(own)) t = clean(t.replace(own, " "));
+        const t = clean(labelTextOf(wrap, el));
         if (t) return t.slice(0, 120);
       }
     }

@@ -439,7 +439,8 @@ async function capturedAccelaPages(): Promise<void> {
     return steps.slice(prior.length);
   };
   {
-    const fresh = await recordOn("disclaimer", []);
+    // The CLI opened the portal at its front door, so it says startsFresh (the default is unknown).
+    const fresh = await recordOn("disclaimer", [], { startsFresh: true });
     check("recorder MUST-PASS: captured entry disclaimer, nothing entered yet -> 'Continue Application' is navigation", fresh.length === 1 && CLS(fresh[0]) === "capture", JSON.stringify(fresh.map(CLS)));
     for (const k of ["edit", "location"] as const) {
       const got = await recordOn(k, [PRIOR_DATA]);

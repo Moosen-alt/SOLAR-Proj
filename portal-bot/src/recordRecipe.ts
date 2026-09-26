@@ -366,7 +366,32 @@ export function captureScript(): void {
           (listboxId ? root.querySelector(`[aria-owns~="${CSS.escape(listboxId)}"], [aria-controls~="${CSS.escape(listboxId)}"]`) : null) ||
           root.querySelector('[role="combobox"][aria-expanded="true"]') ||
           listbox || option;
-        w.__recordStep({ kind: "select", value: optionText, identity: identityOf(combo), ...describe(combo) });
+        // THE NATIVE CONTROL THE WIDGET FRONTS, when there is one (recorder skeptic F5, probe G-b).
+        // A select2/chosen face is labelled by aria-labelledby -> its rendered selection, i.e. the
+        // CURRENT VALUE, and carries none of the native control's name/id/label[for]. So a select2
+        // over <select name=meterNumber> with <label for>Meter Number</label> recorded
+        // {role:combobox, name:'Select...'} sensitive:false with the meter number as the literal
+        // (real select2 fires change through jQuery: the native change branch never runs). The
+        // identity AND the label come from the native select: select2's "select2-<id>-container|
+        // results" ids, the select.select2-hidden-accessible / chosen select just before the
+        // container, or chosen's "<id>_chosen" container id.
+        const native = ((): Element | null => {
+          const ids = [combo.getAttribute("aria-labelledby"), combo.getAttribute("aria-owns"), combo.getAttribute("aria-controls"), listboxId, combo.getAttribute("id")].filter(Boolean).join(" ");
+          const m = /select2-(\S+?)-(container|results)\b/.exec(ids);
+          const byId = (id: string): Element | null => { try { return (root as Document).getElementById ? (root as Document).getElementById(id) : root.querySelector(`#${CSS.escape(id)}`); } catch { return null; } };
+          if (m) { const s = byId(m[1]); if (s && s.tagName === "SELECT") return s; }
+          const cont = combo.closest(".select2-container, .chosen-container");
+          if (cont) {
+            let p = cont.previousElementSibling;
+            while (p && p.tagName !== "SELECT" && /select2-container|chosen-container/.test(String(p.getAttribute("class") || ""))) p = p.previousElementSibling;
+            if (p && p.tagName === "SELECT") return p;
+            const cid = cont.getAttribute("id") || "";
+            if (/_chosen$/.test(cid)) { const s = byId(cid.replace(/_chosen$/, "")); if (s && s.tagName === "SELECT") return s; }
+          }
+          return null;
+        })();
+        const owner = native || combo;
+        w.__recordStep({ kind: "select", value: optionText, identity: identityOf(owner), ...describe(owner) });
         return;
       }
     }
