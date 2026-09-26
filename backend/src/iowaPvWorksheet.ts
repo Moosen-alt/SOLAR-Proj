@@ -68,6 +68,21 @@ function firstNumber(raw: unknown): number | null {
   return m ? Number(m[0]) : null;
 }
 
+/** The service's LINE-TO-LINE voltage from how a plan writes it: "120/240V", "240/120V",
+ *  "120/240 1PH" -> 240; "120/208 3PH" -> 208; "277/480Y" -> 480. A split-phase or wye service is
+ *  written low/high in either order, so the value is the HIGHEST plausible voltage (100-600),
+ *  never the last number — "240/120V" filed 120 on the worksheet. A current ("200A") is not a
+ *  voltage. null when nothing reads as a voltage. */
+export function serviceVoltageOf(raw: unknown): number | null {
+  const t = String(raw ?? "");
+  const volts: number[] = [];
+  for (const m of t.matchAll(/(?<![\d.])(\d{3})(?![\d.])(?!\s*A(?:MPS?)?\b)/gi)) {
+    const v = Number(m[1]);
+    if (v >= 100 && v <= 600) volts.push(v);
+  }
+  return volts.length ? Math.max(...volts) : null;
+}
+
 export type InterconnectionSide = "supply" | "load" | "both" | "unknown";
 /** Supply (line) side = NEC 705.11; load side = 705.12. A bare "705.12(A)" is the 2017 NEC's
  *  supply-side section (a 2022 Iowa City set cited it for a line-side tap), so it is not
@@ -213,8 +228,8 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   if (side === "both" || side === "unknown") {
     ask("iaPvInterconnection", `Is the PV connection line side (705.11) or load side (705.12)? The plan set reads "${str("interco") || "nothing"}".`, ["Line side (705.11)", "Load side (705.12)"]);
   }
-  const volts = String(str("serviceVoltage") || str("voltage")).match(/\d{3}/g);
-  set("p2.serviceVoltage", volts ? volts[volts.length - 1] : "", `serviceVoltage "${str("serviceVoltage") || str("voltage")}"`);
+  const serviceV = serviceVoltageOf(str("serviceVoltage") || str("voltage"));
+  set("p2.serviceVoltage", serviceV != null ? String(serviceV) : "", `serviceVoltage "${str("serviceVoltage") || str("voltage")}"${serviceV != null ? ` -> ${serviceV} V line to line` : ""}`);
   const service = amps("mainServiceRating") ?? amps("mainBreaker");
   set("p2.serviceAmps", service != null ? String(service) : "", str("mainServiceRating") ? `mainServiceRating "${str("mainServiceRating")}"` : `mainBreaker "${str("mainBreaker")}"`);
   const bus = amps("busRating");

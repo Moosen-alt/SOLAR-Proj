@@ -163,6 +163,19 @@ await check("(e7) AC-coupled ESS on a micro system adds its inverter amps to the
   assert.equal(v["p2.maxCircuitCurrent"], "32.93A", "12.1 + 5000/240 = 32.93");
 });
 
+await check("(sv1) MUST-PASS service voltage is the line-to-line value however the plan orders it: 240/120V, 120/240V, 120/240 1PH -> 240; 120/208 3PH -> 208", () => {
+  for (const [raw, want] of [["240/120V", "240"], ["120/240V", "240"], ["120/240 1PH", "240"], ["240V", "240"], ["120/208V 3PH", "208"], ["277/480Y", "480"]] as const) {
+    assert.equal(W({ ...SHAPE23, serviceVoltage: raw }).values["p2.serviceVoltage"], want, raw);
+  }
+  assert.equal(W({ ...SHAPE23, serviceVoltage: "", voltage: "240/120" }).values["p2.serviceVoltage"], "240", "the voltage field too");
+});
+await check("(sv2) MUST-EXCLUDE a split-phase service is never filed as 120, a current is never a voltage, nothing readable -> blank", () => {
+  for (const raw of ["240/120V", "240/120 V 1PH 3W", "120/240V", "120V/240V"]) assert.notEqual(W({ ...SHAPE23, serviceVoltage: raw }).values["p2.serviceVoltage"], "120", raw);
+  assert.equal(ws.serviceVoltageOf("200A 240/120V"), 240);
+  assert.equal(ws.serviceVoltageOf("200A"), null);
+  assert.equal(W({ ...SHAPE23, serviceVoltage: "split phase" }).values["p2.serviceVoltage"], "");
+});
+
 await check("(q1) an operator's answers to the worksheet questions reach the form (arrays, load-side row, DC-DC max voltage, unit current)", () => {
   const none: Record<string, unknown> = { ...SHAPE23, iaPvArrayCount: "2" }; delete none.azimuth; delete none.tilt;
   assert.equal(W(none).values["p2.arrays"], "2");

@@ -92,6 +92,10 @@ await check("(v1) MUST-PASS: max system voltage entered as 240 (the AC service) 
   assert.ok(f && f.severity === "blocker");
   assert.match(f!.message, /51\.2 V DC/);
 });
+await check("(v3) MUST-PASS: a '120/240V' service is named as the 240 V service it is, never 120", async () => {
+  const f = (await ids({ ...GOOD, maxV: "240" }, { serviceVoltage: "120/240V" })).find((x) => x.id === "city.elec.pvws-max-voltage-ac");
+  assert.ok(f); assert.match(f!.message, /the 240 V AC service/); assert.doesNotMatch(f!.message, /the 120 V AC service/);
+});
 await check("(v2) an uncorrected STC Voc -> the max-voltage warning; the corrected value -> nothing", async () => {
   assert.ok((await ids({ ...GOOD, maxV: "45.00 VOC" })).some((x) => x.id === "city.elec.pvws-max-voltage"));
   assert.ok(!(await ids({ ...GOOD, maxV: "51.5 V" })).some((x) => x.id.startsWith("city.elec.pvws-max-voltage")), "within 5%");

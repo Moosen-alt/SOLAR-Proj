@@ -21,7 +21,7 @@
 // that the form's sections are not the 2023 NEC he uses); no 2023 row map is encoded from memory.
 // A plan citation that is not a 2020 row is reported as exactly that — for a person to map.
 import type { CodeReference, ProjectRecord, ReviewerFinding } from "../../shared/src/types";
-import { citedLoadSideRow, interconnectionSide, iowaPvWorksheetAnchorMisses, iowaPvWorksheetValues, mountingPlaneCount } from "./iowaPvWorksheet";
+import { citedLoadSideRow, interconnectionSide, iowaPvWorksheetAnchorMisses, iowaPvWorksheetValues, mountingPlaneCount, serviceVoltageOf } from "./iowaPvWorksheet";
 
 export interface FiledWorksheetReading {
   /** Text read in each value zone of the filed worksheet ("" when blank). */
@@ -143,7 +143,7 @@ export function pvWorksheetFindings(project: ProjectRecord, input: PvWorksheetGa
 
   // 2. MAX SYSTEM VOLTAGE: never the AC service voltage; the 690.7 value when derivable.
   const statedV = num(v["p2.maxSystemVoltage"]);
-  const serviceV = num(String(s.serviceVoltage ?? s.voltage ?? ""));
+  const serviceV = serviceVoltageOf(String(s.serviceVoltage || s.voltage || ""));
   const wantV = num(d["p2.maxSystemVoltage"]);
   if (statedV != null && (/\bAC\b/i.test(v["p2.maxSystemVoltage"]) || (serviceV != null && statedV === serviceV) || [120, 208, 240].includes(statedV))) {
     out.push(finding("city.elec.pvws-max-voltage-ac", "blocker", "Worksheet max system voltage is the AC service voltage",
