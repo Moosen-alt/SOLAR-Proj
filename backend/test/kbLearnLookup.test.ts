@@ -239,6 +239,44 @@ async function main(): Promise<void> {
       joint.ubAccountHolderEmail === "ann@example.com" && !!joint.ubAccountHolder);
     check("...while the account NUMBER from the same project is still stripped everywhere",
       !JSON.stringify(joint).includes("ACCT-000111222"), JSON.stringify(joint).slice(0, 200));
+
+    // SAFETY RULE 2 — a secret EMBEDDED in prose. Live (2026-09-25): a site-plan line quoting
+    // the meter with spaces ("meter #77 902 323") matched the digest's disconnect topic and
+    // went to the model on every planner call; the whole-value filter never saw it.
+    // Invented numbers; the shape (spaced / split-check-digit) is the real one.
+    const { designNotesDigest } = await import("../src/autoLearn");
+    const digits = (s: string) => s.replace(/\D/g, "");
+    const proseProject = {
+      ...(secretProject as Record<string, unknown>),
+      id: "p-prose", accountNumber: "40123456-0012", meterNumber: "81234567",
+      parserSnapshot: {
+        meter: "81234567", account: "40123456-0012", meterLocation: "exterior",
+        sitePlanNotesText: "Existing interior main service panel tied to exterior utility meter #81 234 567, new PV AC disconnect (visible, lockable, labeled) within 10' of the utility meter",
+        electricalCalcText: "Utility account 40123456-001 2 on file, backup loads not in scope; 200A main, 70A fuses in the new PV AC disconnect; 12.913 kW AC",
+        labelsText: "Meter 81.234.567 - rapid shutdown label at the service",
+      },
+    } as never;
+    const digest = designNotesDigest(proseProject);
+    check("MUST-PASS: the digest carries no meter number, whatever the separators",
+      !digits(digest).includes("81234567"), digest);
+    check("MUST-PASS: the digest carries no account number with a split check digit",
+      !digits(digest).includes("401234560012"), digest);
+    const prose = buildPortalPlanner(db, proseProject, { portalType: "accela", scopeType: "ahj", permitType: "electrical" }).projectFields;
+    check("MUST-PASS: nothing the planner sends carries the meter or account digits",
+      !digits(JSON.stringify(prose)).includes("81234567") && !digits(JSON.stringify(prose)).includes("401234560012"),
+      String(prose.designNotes).slice(0, 300));
+    check("MUST-EXCLUDE: the disconnect signal survives (the line is kept, only the number goes)",
+      /disconnect/i.test(String(prose.designNotes)) && /within 10/i.test(String(prose.designNotes)) && String(prose.designNotes).includes("[redacted]"),
+      String(prose.designNotes).slice(0, 300));
+    check("MUST-EXCLUDE: ordinary numbers in the digest are untouched (200A main, 70A fuses)",
+      /200A main/.test(digest) && /70A fuses/.test(digest), digest);
+    const { redactSecretValues, projectSecretValues } = await import("../src/autoLearn");
+    const plain = "37 modules, 12.913 kW AC, ZIP 97140, 2x4 trusses @ 24 in, 1812345678 is a different number";
+    check("MUST-EXCLUDE: decimals, ZIPs, sizes and a LONGER digit run containing the meter are not redacted",
+      redactSecretValues(plain, projectSecretValues(proseProject)) === plain,
+      redactSecretValues(plain, projectSecretValues(proseProject)));
+    check("MUST-EXCLUDE: a meter-keyed WORD is not an identifier ('exterior' stays in the notes)",
+      /exterior utility meter/i.test(digest), digest);
   } catch (err) {
     check("buildPortalPlanner secret-strip testable", false, String(err));
   }
