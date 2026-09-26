@@ -33,7 +33,9 @@ async function loadWorkTypes() {
     return;
   }
   $("workType").innerHTML = workTypes
-    .map((w) => `<option value="${esc(w.workType)}" title="${esc(w.description)}">${esc(w.label)}${w.deterministic ? " (deterministic checks)" : " (AI pre-review)"}</option>`)
+    // The review mode rides in the tooltip: as a suffix on the option text it clipped the
+    // label in the picker ("Residential rooftop solar PV (de…").
+    .map((w) => `<option value="${esc(w.workType)}" title="${esc(w.description)} — ${w.deterministic ? "deterministic checks" : "AI pre-review"}">${esc(w.label)}</option>`)
     .join("");
   $("workType").addEventListener("change", toggleSolarFields);
   toggleSolarFields();
@@ -122,6 +124,14 @@ async function runReview() {
 // The severity words are the report's own vocabulary and are matched on
 // elsewhere; these are DISPLAY labels only, keyed by that vocabulary.
 const SEVERITY_LABEL = { blocker: "Blocker", warning: "Potential issue", callout: "Note" };
+// Where the finding's observation comes from, keyed by the report's own category. Every card
+// used to say "Plan set", including "Homeowner name missing" (which comes from the form).
+const SOURCE_LABEL = {
+  project_data: "Intake form", plan_set: "Plan set", structural: "Plan set", electrical: "Plan set",
+  ahj_profile: "Jurisdiction", utility_nem: "Utility", ai_review: "AI page review",
+  installer: "Installer", portal: "Portal",
+};
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 // One "POTENTIAL ISSUE" panel, laid out exactly as the AHJ preflight card on the
 // marketing site: what the code requires, what the plan set shows, what to do.
@@ -139,7 +149,7 @@ function issueHtml(f) {
       <span class="rv-issue-kind">${esc(SEVERITY_LABEL[f.severity] || f.severity)}</span>
       <h4>${esc(f.title)}${f.category === "ai_review" ? '<span class="rv-ai-badge">AI-assisted — confirm before acting</span>' : ""}</h4>
       ${refs ? `<div class="rv-issue-line"><span>AHJ requirement</span>${refs}</div>` : ""}
-      ${f.message ? `<div class="rv-issue-line"><span>Plan set</span><p>${esc(f.message)}</p></div>` : ""}
+      ${f.message ? `<div class="rv-issue-line"><span>${esc(SOURCE_LABEL[f.category] || "Finding")}</span><p>${esc(f.message)}</p></div>` : ""}
       ${rec ? `<div class="rv-rec"><span>Recommended action</span><p>${esc(rec)}</p></div>` : ""}
     </div>`;
 }
@@ -150,7 +160,7 @@ function renderReport(report, aiSummary, aiNotes) {
   const passes = findings.filter((f) => f.severity === "pass");
   const issues = findings.filter((f) => f.severity !== "pass");
   const blockers = issues.filter((f) => f.severity === "blocker").length;
-  $("resultSummary").textContent = `— ${findings.length} finding(s), ${blockers} blocker(s)${aiSummary ? ` · AI: ${aiSummary}` : ""}${aiNotes ? ` · ${aiNotes}` : ""}`;
+  $("resultSummary").textContent = `— ${plural(findings.length, "finding", "findings")}, ${plural(blockers, "blocker", "blockers")}${aiSummary ? ` · AI: ${aiSummary}` : ""}${aiNotes ? ` · ${aiNotes}` : ""}`;
 
   const subject = [$("ahj").value.trim(), $("state").value.trim()].filter(Boolean).join(", ") || "This project";
   // The option text carries a "(deterministic checks)" / "(AI pre-review)" suffix
@@ -166,7 +176,7 @@ function renderReport(report, aiSummary, aiNotes) {
   }
   cols.push(`<div class="rv-issues">
         <div class="rv-col-title">${issues.length
-          ? `${issues.length} item(s) to review`
+          ? `${plural(issues.length, "item", "items")} to review`
           : "Nothing flagged"}</div>
         ${issues.length
           ? issues.map(issueHtml).join("")
@@ -218,7 +228,7 @@ async function loadSubmissions() {
     $("subs").innerHTML = submissions.map((s) => `
       <div class="rv-sub" role="button" tabindex="0" data-submission="${esc(s.id)}">
         <span>${esc(s.ahj)}, ${esc(s.state)} · ${esc(s.workType.replace(/_/g, " "))}</span>
-        <span class="rv-muted">${s.blockers} blocker(s) / ${s.findings} finding(s) · ${new Date(s.createdAt).toLocaleString()}</span>
+        <span class="rv-muted">${plural(Number(s.blockers) || 0, "blocker", "blockers")} / ${plural(Number(s.findings) || 0, "finding", "findings")} ·${new Date(s.createdAt).toLocaleString()}</span>
       </div>`).join("") || '<span class="rv-muted">No reviews yet.</span>';
     $("subs").querySelectorAll("[data-submission]").forEach((row) => {
       const open = () => window.open(`/api/review/submissions/${encodeURIComponent(row.dataset.submission)}?format=html`, "_blank");
@@ -231,11 +241,13 @@ async function loadSubmissions() {
 // --- Jurisdiction code profile manager -------------------------------------------
 let editingProfile = null;
 async function loadProfiles() {
+  // The verify panel opens inside the list (under its row); re-rendering the list would take it along.
+  if ($("profiles").contains($("verifyPanel"))) closeVerifyPanel();
   try {
     const { profiles } = await (await api("/api/code-profiles")).json();
     $("profiles").innerHTML = profiles.map((p, i) => `
       <div class="rv-profile-row">
-        <span>${esc(p.state)}${p.ahj ? " · " + esc(p.ahj) : " · (state default)"} <span class="${p.confidence === "verified" ? "badge-verified" : "badge-seeded"}">${esc(p.confidence)}</span></span>
+        <span>${esc(profileName(p))} <span class="${p.confidence === "verified" ? "badge-verified" : "badge-seeded"}">${esc(p.confidence)}</span></span>
         <span style="display:flex;align-items:center;gap:12px">
           <span class="rv-codes">${(p.adoptedCodes || []).map((c) => `${esc(c.code)} ${esc(c.edition)}`).join(", ") || "no codes recorded"}</span>
           <button class="secondary" data-edit="${i}">Review / verify</button>
@@ -249,13 +261,58 @@ async function loadProfiles() {
         designCriteria: editingProfile.designCriteria, prescriptive: editingProfile.prescriptive,
         fireSetbacks: editingProfile.fireSetbacks, citations: editingProfile.citations,
       };
+      // The raw JSON is still what the PUT sends (and what an operator edits under "Edit raw");
+      // the readable summary above it is display only.
       $("verifyEditor").value = JSON.stringify(editable, null, 2);
+      $("verifyRaw").open = false;
+      $("verifyTitle").textContent = `Verify ${profileName(editingProfile)}`;
+      $("verifySummary").innerHTML = profileSummaryHtml(editingProfile);
+      const sources = (editingProfile.citations || []).length;
+      $("verifyStatus").textContent = `Check every value against ${sources === 1 ? "its cited source" : `its ${sources} cited sources`} before verifying.`;
+      // Open directly under the row that was clicked, not at the bottom of a 25-row list.
+      btn.closest(".rv-profile-row").after($("verifyPanel"));
       $("verifyPanel").style.display = "";
-      $("verifyStatus").textContent = `Check every value against the citations (${(editingProfile.citations || []).length} source(s)) before verifying.`;
-      $("verifyPanel").scrollIntoView({ behavior: "smooth" });
+      $("verifyPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
     }));
   } catch { $("profiles").textContent = "Could not load profiles."; }
 }
+
+function profileName(p) {
+  return `${p.state}${p.ahj ? ` · ${p.ahj}` : " (state default)"}`;
+}
+const httpUrl = (u) => (/^https?:\/\//i.test(String(u || "")) ? String(u) : "");
+const sourceLink = (u) => (httpUrl(u) ? ` <a href="${esc(httpUrl(u))}" target="_blank" rel="noopener">source</a>` : "");
+const humanKey = (k) => String(k).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+const plainValue = (v) => (v == null ? "" : typeof v === "object" ? Object.entries(v).filter(([, x]) => x !== "" && x != null).map(([k, x]) => `${humanKey(k)}: ${typeof x === "object" ? JSON.stringify(x) : x}`).join("; ") : String(v));
+
+// A readable table of what the operator is about to lock as human-verified.
+function profileSummaryHtml(p) {
+  const rows = [];
+  const section = (title, items) => rows.push(`<div class="rv-vsec"><h4>${esc(title)}</h4>${items.length
+    ? `<ul>${items.join("")}</ul>` : '<p class="rv-muted">None recorded.</p>'}</div>`);
+  section("Adopted codes", (p.adoptedCodes || []).map((c) =>
+    `<li><b>${esc(c.code)} ${esc(c.edition)}</b>${c.title ? ` — ${esc(c.title)}` : ""}${c.basedOn ? ` <span class="rv-muted">(based on ${esc(c.basedOn)})</span>` : ""}${c.effectiveDate ? ` <span class="rv-muted">effective ${esc(c.effectiveDate)}</span>` : ""}${sourceLink(c.sourceUrl)}</li>`));
+  section("Amendments", (p.amendments || []).map((a) =>
+    `<li><b>${esc([a.code, a.section].filter(Boolean).join(" "))}</b>${a.summary ? ` — ${esc(a.summary)}` : ""}${sourceLink(a.sourceUrl)}</li>`));
+  const kv = (obj) => Object.entries(obj || {}).filter(([k, v]) => k !== "sourceUrl" && v !== "" && v != null)
+    .map(([k, v]) => `<li><b>${esc(humanKey(k))}:</b> ${esc(plainValue(v))}</li>`);
+  const dc = kv(p.designCriteria);
+  if (dc.length && httpUrl(p.designCriteria?.sourceUrl)) dc.push(`<li class="rv-muted">Design criteria${sourceLink(p.designCriteria.sourceUrl)}</li>`);
+  section("Design criteria", dc);
+  section("Prescriptive limits", kv(p.prescriptive));
+  section("Fire setbacks", (p.fireSetbacks || []).map((f) => `<li>${esc(plainValue(f))}</li>`));
+  section("Citations", (p.citations || []).map((c) =>
+    `<li>${esc(c.label || httpUrl(c.sourceUrl) || "Source")}${sourceLink(c.sourceUrl)}</li>`));
+  return rows.join("");
+}
+
+function closeVerifyPanel() {
+  $("verifyPanel").style.display = "none";
+  // Park the panel back outside #profiles so a list re-render never destroys it.
+  $("profiles").after($("verifyPanel"));
+  editingProfile = null;
+}
+$("verifyCancel").addEventListener("click", closeVerifyPanel);
 
 $("researchBtn").addEventListener("click", async () => {
   const state = $("cpState").value.trim();
@@ -272,15 +329,28 @@ $("researchBtn").addEventListener("click", async () => {
 });
 
 $("verifyBtn").addEventListener("click", async () => {
+  let payload;
+  try { payload = JSON.parse($("verifyEditor").value); } catch (err) {
+    $("verifyRaw").open = true;
+    $("verifyStatus").textContent = `The raw profile is not valid JSON: ${err.message}`;
+    return;
+  }
+  const name = profileName({ state: payload.state || "", ahj: payload.ahj || "" });
+  // Verifying locks the profile against automatic overwrite (hard rule 3) — one stray click
+  // used to do that with no confirmation.
+  if (!window.confirm(`Mark ${name} verified?\n\nThis locks it from automatic overwrite: later research will not change it. Only confirm after checking every value against its cited source.`)) return;
+  $("verifyBtn").disabled = true;
   try {
-    const payload = JSON.parse($("verifyEditor").value);
     await api("/api/code-profiles/verify", { method: "PUT", body: JSON.stringify(payload) });
-    $("verifyStatus").textContent = "Verified — citations for this jurisdiction are now authoritative.";
-    $("verifyPanel").style.display = "none";
+    closeVerifyPanel();
+    // Written OUTSIDE the panel it just closed, so the operator actually sees it.
+    $("cpStatus").textContent = `${name} verified — its citations are now authoritative.`;
     loadProfiles();
     refreshProfileBanner();
   } catch (err) {
     $("verifyStatus").textContent = `Verify failed: ${err.message}`;
+  } finally {
+    $("verifyBtn").disabled = false;
   }
 });
 
