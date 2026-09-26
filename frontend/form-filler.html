@@ -200,9 +200,10 @@
     </div>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <!-- pdf.js from /vendor (pinned, see vendor/VERSIONS.json): no internet needed to preview a form. -->
+  <script src="/vendor/pdf-3.11.174.min.js"></script>
   <script>
-    if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker-3.11.174.min.js";
     const RENDER_SCALE = 1.4;
     // Chunked base64 — spreading a 500KB Uint8Array into String.fromCharCode(...)
     // overflows the call stack ("Maximum call stack size exceeded").

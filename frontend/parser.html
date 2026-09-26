@@ -290,11 +290,11 @@
     .ps-footnote { margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); font-size: var(--text-xs); color: var(--muted); line-height: 1.6; max-width: 92ch; }
   </style>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <!-- Served from /vendor (pinned copies, see vendor/VERSIONS.json) so the Parser works with
+       no internet — venue wifi must not decide whether a plan set can be read. pdf-lib, JSZip
+       and FileSaver used to load here too; nothing on this page called them. -->
+  <script src="/vendor/pdf-3.11.174.min.js"></script>
+  <script src="/vendor/tesseract-5.1.1.min.js"></script>
   <!-- The review-list rules (meter cross-check, notes, resolution, scope callout, locates)
        live in their own DOM-free file so the backend unit test loads the SAME code. -->
   <script src="parser-review.js?v=7"></script>
@@ -817,8 +817,15 @@
 'use strict';
 
 if (window.pdfjsLib) {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker-3.11.174.min.js';
 }
+// tesseract.js fetches its worker, its WASM core and the English data from jsdelivr unless told
+// otherwise — the script tag alone is not offline. Every recognize() call spreads these in.
+const TESSERACT_PATHS = {
+  workerPath: '/vendor/tesseract.worker-5.1.1.min.js',
+  corePath: '/vendor',   // picks tesseract-core-simd-lstm.wasm.js or tesseract-core-lstm.wasm.js
+  langPath: '/vendor',   // eng.traineddata.gz (4.0.0_best_int, the LSTM-only default)
+};
 
 const state = {
   planDoc:null,
@@ -1080,6 +1087,7 @@ function makeOcrCropCanvas(img, crop, scale=2.2, threshold=false){
 
 async function ocrCanvas(canvas, label, options={}){
   const result = await Tesseract.recognize(canvas.toDataURL('image/png'), 'eng', {
+    ...TESSERACT_PATHS,
     ...options,
     logger: m => {
       if (m.status && m.progress != null) {
@@ -1091,7 +1099,7 @@ async function ocrCanvas(canvas, label, options={}){
 }
 
 async function ocrImageFile(file, label='image'){
-  if (!window.Tesseract) return {fileName:file.name, text:'', notes:[`Tesseract not loaded for ${label}. Check internet/CDN access.`]};
+  if (!window.Tesseract) return {fileName:file.name, text:'', notes:[`Tesseract not loaded for ${label}. /vendor/tesseract-5.1.1.min.js did not load — check the server.`]};
 
   const url = await fileToDataURL(file);
   const img = await loadImageFromDataUrl(url);
@@ -1177,6 +1185,7 @@ async function extractPdfFirstPagesWithOcr(file, maxPages=2, label='PDF image'){
     await page.render({canvasContext:ctx, viewport}).promise;
     const img = canvas.toDataURL('image/png');
     const result = await Tesseract.recognize(img, 'eng', {
+      ...TESSERACT_PATHS,
       logger:m=>{
         if (m.status && m.progress != null) {
           setProgress(Math.round(m.progress * 100), `Reading ${label} (page ${p}) closely… ${Math.round(m.progress*100)}%`);
