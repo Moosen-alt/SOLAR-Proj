@@ -111,7 +111,7 @@ const detail = createProject(db, {
   moduleQty: "20",
   invModel: "IQ8M",
   invQty: "20",
-  invOutputW: "325",
+  invOutputW: "1.35",
   interco: "Load-side breaker",
   busRating: "200",
   mainBreaker: "200",

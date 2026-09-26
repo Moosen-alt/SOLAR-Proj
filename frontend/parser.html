@@ -467,11 +467,11 @@
         <div class="ps-field"><label for="invMake">Inverter make</label><input id="invMake" /></div>
         <div class="ps-field"><label for="invModel">Inverter model</label><input id="invModel" /></div>
         <div class="ps-field"><label for="invQty">Inverter quantity</label><input id="invQty" /></div>
-        <div class="ps-field"><label for="invOutputW">Inverter AC output power (W)</label><input id="invOutputW" /></div>
+        <div class="ps-field"><label for="invOutputW">Inverter output current, per unit (A)</label><input id="invOutputW" /></div>
         <div class="ps-field"><label for="pvMicroMake">PV microinverter make</label><input id="pvMicroMake" /></div>
         <div class="ps-field"><label for="pvMicroModel">PV microinverter model</label><input id="pvMicroModel" /></div>
         <div class="ps-field"><label for="pvMicroQty">PV microinverter quantity</label><input id="pvMicroQty" /></div>
-        <div class="ps-field"><label for="pvMicroOutputW">PV microinverter output (W)</label><input id="pvMicroOutputW" /></div>
+        <div class="ps-field"><label for="pvMicroOutputW">PV microinverter output current, per unit (A)</label><input id="pvMicroOutputW" /></div>
         <div class="ps-field"><label for="mciMake">Rapid shutdown / MCI make</label><input id="mciMake" /></div>
         <div class="ps-field"><label for="mciModel">Rapid shutdown / MCI model</label><input id="mciModel" /></div>
         <div class="ps-field"><label for="mciQty">Rapid shutdown / MCI quantity</label><input id="mciQty" /></div>
@@ -1618,6 +1618,13 @@ function parseRoofPlanes(planDoc){
 }
 
 
+// The ESS inverter's rated output becomes invOutputW when a battery is present, and invOutputW
+// is AMPS (see parseInverterOutputAmps) — so kW converts to amps at 240 V, never to watts.
+function essOutputAmpsFromKw(kw){
+  const a = (Number(kw) * 1000) / 240;
+  return Number.isFinite(a) && a > 0 ? String(Math.round(a * 100) / 100) : '';
+}
+
 function parseBatteryData(allText){
   const all = normalizeText(allText || '');
   const flat = normalizeEquipmentText(all);
@@ -1631,7 +1638,7 @@ function parseBatteryData(allText){
     essInverterMake:'',
     essInverterModel:'',
     essInverterQty:'',
-    essInverterOutputW:'',
+    essInverterOutputA:'',
     gatewayMake:'',
     gatewayModel:'',
     backupPanel:'',
@@ -1782,10 +1789,7 @@ function parseBatteryData(allText){
     out.essInverterMake = out.essInverterMake || 'Tesla';
     out.essInverterModel = out.essInverterModel || normalizeTeslaPowerwallModel(out.batteryModel) || (/POWERWALL\s*2/i.test(all) ? 'Powerwall 2' : 'Powerwall 3');
     out.essInverterQty = out.essInverterQty || out.batteryQty || '1';
-    if (out.batteryOutputKw) {
-      const w = Number(out.batteryOutputKw) * 1000;
-      out.essInverterOutputW = Number.isFinite(w) ? String(Math.round(w)) : '';
-    }
+    if (out.batteryOutputKw) out.essInverterOutputA = essOutputAmpsFromKw(out.batteryOutputKw);
   }
 
   return out;
@@ -1805,6 +1809,40 @@ function cleanModuleType(raw=''){
   s = s.replace(/\bZNSHINE\b/i,'ZNShine');
   s = s.replace(/\bTESLA\b/i,'Tesla');
   return s;
+}
+
+// ONE UNIT, END TO END: the rated continuous AC output CURRENT of ONE inverter, in AMPS, as a
+// string ('' when the plan set does not say). invOutputW / pvMicroOutputW are amps everywhere
+// that reads them (llm.ts contract, qc.ts, baselineRules.ts, dashboard.js) — this fallback used
+// to fill them with WATTS (7600, 349, 768, x240 for Tesla) and only baselineRules' >100 A
+// plausibility guard kept the breaker check from firing on it. A value printed in amps stays
+// amps; a value printed in W or VA is divided by the nominal AC voltage (208 V only when the set
+// says 208 V and not 240 V). Never multiplies amps up to watts.
+function parseInverterOutputAmps(sld, invModel='', invMake='', invLine='', allText=''){
+  const toAmps = (w, v) => { const n = Number(w); return n > 0 ? String(Math.round((n / v) * 100) / 100) : ''; };
+  const scope = `${allText || ''}\n${sld || ''}`;
+  const acV = /\b208\s*V/i.test(scope) && !/\b(?:120\/)?240\s*V/i.test(scope) ? 208 : 240;
+  // Printed in AMPS per unit.
+  const amps = matchFirst(sld, [
+    /TESLA\s+[0-9.]+\s*KW\s+SOLAR[\s\S]{0,160}?OUTPUT\s*:?\s*240VAC[\s\S]{0,80}?(\d{1,2}(?:\.\d+)?)\s*A\b/i,
+    /MAX(?:IMUM)?\.?\s*CONT(?:INUOUS)?\.?\s*OUTPUT\s+CURRENT[\s\S]{0,40}?(\d{1,2}(?:\.\d+)?)\s*A\b/i
+  ]);
+  if (amps && Number(amps) > 0) return String(Number(amps));
+  // Printed in WATTS / VA per unit -> amps at the nominal AC voltage.
+  const watts = matchFirst(sld, [
+    /INVERTER CHARACTERISTICS\s*-\s*TESLA[\s\S]{0,180}?NOMINAL POWER\s+(\d{3,5})\s*W/i,
+    /MICROINVERTERS?\s+SPECIFICATION[\s\S]{0,180}?MAXIMUM\s+AC\s+OUTPUT[\s\S]{0,80}?(\d{2,5})\s*(?:W|VA)\b/i,
+    /MICROINVERTER\s+MAKE[\s\S]{0,220}?(?:AP\s*SYSTEMS|APSYSTEMS)\s+DS3[-\s]?[A-Z0-9]+\s+(\d{2,5})\s*W/i,
+    /MICROINVERTER\s+MAX\.?\s*CONT\.?\s*OUTPUT POWER[\s\S]{0,120}?(\d{2,5})\s*(?:W|VA)\b/i,
+    /MAX\.?\s*CONT\.?\s*OUTPUT POWER[\s\S]{0,80}?(\d{2,5})\s*(?:W|VA)\b/i,
+    /Q\.MI[A-Z0-9.\-]+\s*\(?\s*240V\s*\)?\s*(?:\d+V\s*)?(\d{2,5})\s*W/i
+  ]);
+  if (watts) return toAmps(watts, acV);
+  // Model-only fallbacks: the datasheet rating of the named model, converted the same way.
+  if (invModel && /TESLA.*7\.6|7\.6KW\s+SOLAR/i.test(invModel)) return toAmps(7600, 240);
+  if (invModel && /Q\.MI\.349/i.test(invModel)) return toAmps(349, 240);
+  if (invModel && /DS3/i.test(invModel)) return toAmps(768, 240);
+  return '';
 }
 
 function parsePlanData(planDoc){
@@ -1901,16 +1939,10 @@ function parsePlanData(planDoc){
   let invMake = detectMake(`${invLine} ${invModel} ${all.slice(0,8000)}`, 'inverter');
   if (!invMake && /DS3|AP\s*SYSTEMS|APSYSTEMS|ALTENERGY\s+POWER\s+SYSTEM/i.test(`${invLine} ${invModel} ${all}`)) invMake = 'Altenergy Power System';
 
-  let invOutputW = matchFirst(sld, [
-    /INVERTER CHARACTERISTICS\s*-\s*TESLA[\s\S]{0,180}?NOMINAL POWER\s+(\d{3,5})\s*W/i,
-    /TESLA\s+[0-9.]+\s*KW\s+SOLAR[\s\S]{0,160}?OUTPUT\s*:?\s*240VAC[\s\S]{0,80}?(\d{1,2}(?:\.\d+)?)\s*A/i,
-    /MICROINVERTERS?\s+SPECIFICATION[\s\S]{0,180}?MAXIMUM\s+AC\s+OUTPUT[\s\S]{0,80}?(\d{2,5})\s*W/i,
-    /MICROINVERTER\s+MAKE[\s\S]{0,220}?(?:AP\s*SYSTEMS|APSYSTEMS)\s+DS3[-\s]?[A-Z0-9]+\s+(\d{2,5})\s*W/i,
-    /MICROINVERTER\s+MAX\.?\s*CONT\.?\s*OUTPUT POWER[\s\S]{0,120}?(\d{2,5})\s*W/i,
-    /MAX\.?\s*CONT\.?\s*OUTPUT POWER[\s\S]{0,80}?(\d{2,5})\s*W/i,
-    /Q\.MI[A-Z0-9.\-]+\s*\(?\s*240V\s*\)?\s*(?:\d+V\s*)?(\d{2,5})\s*W/i
-  ]) || (invModel && /TESLA.*7\.6|7\.6KW\s+SOLAR/i.test(invModel) ? '7600' : invModel && /Q\.MI\.349/i.test(invModel) ? '349' : invModel && /DS3/i.test(invModel) ? '768' : '');
-  if (Number(invOutputW) > 0 && Number(invOutputW) < 100 && /TESLA/i.test(`${invMake} ${invLine} ${invModel}`)) invOutputW = String(Math.round(Number(invOutputW) * 240));
+  // invOutputW / pvMicroOutputW carry AMPS (the llm.ts contract, qc.ts, baselineRules.ts and
+  // dashboard.js all read them as rated continuous output CURRENT per unit). The field names
+  // are historical; parseInverterOutputAmps is the one place the regex fallback fills them.
+  let invOutputW = parseInverterOutputAmps(sld, invModel, invMake, invLine, all);
 
   const isPvMicroInverterSystem = /MICROINVERTER|INTEGRATED INVERTER|Q\.MI|AP\s*SYSTEMS|APSYSTEMS|DS3|ENPHASE|IQ8|IQ7/i.test(`${invLine} ${invModel}`);
   let pvMicroMake = isPvMicroInverterSystem ? invMake : '';
@@ -1924,7 +1956,7 @@ function parsePlanData(planDoc){
     invMake = battery.essInverterMake || 'Tesla';
     invModel = battery.essInverterModel;
     invQty = battery.essInverterQty || battery.batteryQty || '1';
-    invOutputW = battery.essInverterOutputW || invOutputW;
+    invOutputW = battery.essInverterOutputA || invOutputW;
   }
 
   const mciLine = matchFirst(cover, [
@@ -2045,7 +2077,7 @@ function parsePlanData(planDoc){
     essInverterMake:battery.essInverterMake,
     essInverterModel:battery.essInverterModel,
     essInverterQty:battery.essInverterQty,
-    essInverterOutputW:battery.essInverterOutputW,
+    essInverterOutputA:battery.essInverterOutputA,
     phase,
     voltage,
     busRating,
@@ -2672,7 +2704,7 @@ function fillProjectFields(plan){
     plan.invMake = plan.essInverterMake || 'Tesla';
     plan.invModel = plan.essInverterModel;
     plan.invQty = plan.essInverterQty || plan.batteryQty || '1';
-    plan.invOutputW = plan.essInverterOutputW || plan.invOutputW;
+    plan.invOutputW = plan.essInverterOutputA || plan.invOutputW;
   }
   if (/^\d{2,6}\s+(?:N|S|E|W|NE|NW|SE|SW)$/i.test(plan.street || '') && /\b(CT|RD|AVE|ST|DR|LN|WAY|PL)\b/i.test(plan.city || '')){
     const cm = String(plan.city).match(/^(.+?\b(?:CT|RD|AVE|ST|DR|LN|WAY|PL)\b)\s+(.+)$/i);
@@ -3298,8 +3330,8 @@ function buildUtilitySpecs(plan){
     `Nominal voltage: ${plan.voltage || '[voltage]'}`,
     `AC system size: ${plan.acKw || '[AC kW]'} kW`,
     `Total export: ${plan.exportKw || plan.acKw || '[export kW]'} kW`,
-    plan.invOutputW ? `Main inverter / ESS output: ${plan.invOutputW} W each` : '',
-    plan.pvMicroModel ? `PV microinverters: ${plan.pvMicroQty || ''} ${plan.pvMicroMake || ''} ${plan.pvMicroModel}${plan.pvMicroOutputW ? `, ${plan.pvMicroOutputW} W each` : ''}` : '',
+    plan.invOutputW ? `Main inverter / ESS output current: ${plan.invOutputW} A each` : '',
+    plan.pvMicroModel ? `PV microinverters: ${plan.pvMicroQty || ''} ${plan.pvMicroMake || ''} ${plan.pvMicroModel}${plan.pvMicroOutputW ? `, ${plan.pvMicroOutputW} A output current each` : ''}` : '',
     plan.batteryModel ? `Battery: ${plan.batteryQty || '1'} ${plan.batteryMake || ''} ${plan.batteryModel}` : '',
     plan.batteryCapacityKwh ? `Battery capacity: ${plan.batteryCapacityKwh} kWh` : '',
     plan.batteryOutputKw ? `Battery output: ${plan.batteryOutputKw} kW` : '',
