@@ -34,8 +34,8 @@
 //                flattened and the match mapped back to each node, so "(541) <span>555-0163"
 //                and "8802 <b>4680</b> 13" are caught — and every element edge is a word
 //                boundary, so a name glued to a label's text ("<label>Owner</label><span>
-//                Desmond Yarrowby", "Ivan Petrov<br>Electrician") is caught too. Matching is on the letters and digits
-//                alone, UNICODE-AWARE (NFKD, marks stripped, \p{L}\p{N}): "8802 4680 13",
+//                Desmond Yarrowby", "Ivan Petrov<br>Electrician") is caught too. Matching is
+//                on the letters and digits alone, UNICODE-AWARE (NFKD, marks stripped, \p{L}\p{N}): "8802 4680 13",
 //                "(541) 555-0163", "Иван Петров", "山田太郎", "Zoë" and "José" are all values,
 //                and "Jose" in the page matches "José" — ONE normaliser (piiTextMatcher) serves
 //                the value list, the page and the OCR hit counter, so no two can disagree.
@@ -56,7 +56,9 @@
 //     predicate it checks cannot disagree with it) over text characters (each letter or
 //     digit its own rect), inputs and options, and reports how many rendered rects sit
 //     outside every box: counts and element descriptors, never the values. The recorder runs
-//     it at the review stop.
+//     it at the review stop over the matcher-built list AND the raw source strings
+//     (piiRawSourceStrings — the fields themselves, never passed through the matcher), so a
+//     value the list builder dropped is still looked for.
 //
 // Known limits (a human still reviews every frame before a video is used): a value the page
 // renders through CSS (content:, a background image), a native <select> popup while it is
@@ -303,6 +305,44 @@ export function piiMaskValues(src: PiiMaskSource): string[] {
     const s = clean(e);
     if (/^\p{L}[\p{L}\p{M}'.-]*(\s+\p{L}[\p{L}\p{M}'.-]*)+$/u.test(s)) addName(s); else add(s);
   }
+  return [...out];
+}
+
+/**
+ * The RAW source strings, for the audit only: the same fields piiMaskValues reads (the same
+ * snapshot KEY filter, which names fields, not text), each value whole and cleaned, with NO
+ * use of the matcher — no normalize(), no alnum(), no tokens. The recorder audits these
+ * alongside the matcher-built list, so a value the list builder drops (a script the matcher
+ * does not know, a fold that erases it) is still looked for on screen and reported uncovered
+ * when nothing boxed it. An audit fed only piiMaskValues' output could never see that.
+ * Deliberate drops are mirrored with raw-character predicates so a normal run does not sprout
+ * false uncovered rects: under 3 characters, a bare 1-3 digit number, a lone stop word.
+ */
+export function piiRawSourceStrings(src: PiiMaskSource): string[] {
+  const out = new Set<string>();
+  const add = (v: unknown): void => {
+    const s = clean(v);
+    if (s.length < 3) return;
+    if (/^[\s\d().#-]+$/.test(s) && (s.match(/\d/g) ?? []).length < 4) return;
+    if (STOP_WORDS.has(s.toLowerCase())) return;
+    out.add(s);
+  };
+  const p = src.project;
+  if (p) {
+    for (const v of [p.homeownerName, p.projectAddress, p.city, p.zip, p.accountNumber, p.meterNumber]) add(v);
+    const snap = p.parserSnapshot && typeof p.parserSnapshot === "object" ? p.parserSnapshot : {};
+    for (const [k, v] of Object.entries(snap)) {
+      if (v == null || typeof v === "object" || typeof v === "boolean") continue;
+      const s = clean(v);
+      if (!s || s.length > 120) continue;
+      if (!PII_SNAPSHOT_KEY.test(k) || NOT_PII_SNAPSHOT_KEY.test(k)) continue;
+      add(s);
+    }
+  }
+  if (src.credential?.username) add(src.credential.username);
+  const i = src.installer;
+  if (i) for (const v of [i.company, i.contactName, i.email, i.phone, i.license]) add(v);
+  for (const e of src.extra ?? []) add(e);
   return [...out];
 }
 

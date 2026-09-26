@@ -20,10 +20,13 @@
 //      inside '山田太郎様'. MUST EXCLUDE: 'Иван' inside 'Иванов', 'Desmond' inside 'Desmondia'
 //      (a cased-letter boundary). And ocrBlindValues names the values a Latin OCR engine
 //      cannot read, so "0 hits" on them is never reported as proof.
+//   4. piiRawSourceStrings — the raw fields the recorder's review-stop audit looks for beside
+//      the matcher's list, each WHOLE, never through the matcher (so a value the list builder
+//      drops is still audited). MUST EXCLUDE: tokens, an equipment model, a 3-digit number.
 //
 //   npx tsx backend/test/demoRealRunGuard.test.ts
 import { realRunRefusals, recipeTargetHosts } from "../../scripts/lib/realRunGuard";
-import { PII_MATCHER, piiMaskValues, piiMaskShapesFor } from "../../scripts/lib/piiMask";
+import { PII_MATCHER, piiMaskValues, piiMaskShapesFor, piiRawSourceStrings } from "../../scripts/lib/piiMask";
 import { ocrBlindValues, piiHitsInText } from "../../scripts/lib/ocrFrames";
 
 let failures = 0;
@@ -114,6 +117,29 @@ console.log("\n3. Unicode: ONE matcher for the value list, the page and the OCR 
   const blind = ocrBlindValues(values);
   check("ocrBlindValues: the Cyrillic and CJK values are OCR-blind (a Latin engine cannot read them); accented Latin values are not",
     ["Иван Петров", "Иван", "Петров", "山田太郎"].every((v) => blind.includes(v)) && !blind.includes("José") && !blind.includes("Zoë Müller-Ålesund") && !blind.includes("8802 4680 13"), blind.join("|"));
+}
+
+console.log("\n4. piiRawSourceStrings: what the review-stop audit looks for BESIDES the matcher's list");
+{
+  const src = {
+    project: {
+      homeownerName: "Zoë Müller-Ålesund", projectAddress: "918 Quimby Ave, Fernhollow, OR 97498", city: "Fernhollow", state: "OR", zip: "97498", accountNumber: "8802 4680 13",
+      parserSnapshot: { electricalSupervisorName: "Иван Петров", installerContactName: "山田太郎", moduleModelName: "REC400AA Pure-R", serviceAccountSuffix: "918", ownerSignature: "✍✍✍", utilityName: "Pacific Gas" },
+    },
+    credential: { username: "kestrel.office" },
+    installer: { company: "Ñu Solar Ltd", contactName: "Ines Coldharbour", phone: "(541) 555-0163" },
+    extra: ["Solar"],
+  };
+  const raw = piiRawSourceStrings(src);
+  const has = (v: string) => raw.includes(v);
+  check("MUST-INCLUDE: each source field WHOLE — the Cyrillic and CJK names, the accented owner, the address, city, zip, account, login, company, contact, phone",
+    ["Иван Петров", "山田太郎", "Zoë Müller-Ålesund", "918 Quimby Ave, Fernhollow, OR 97498", "Fernhollow", "97498", "8802 4680 13", "kestrel.office", "Ñu Solar Ltd", "Ines Coldharbour", "(541) 555-0163"].every(has), raw.join("|"));
+  check("MUST-EXCLUDE: no tokens (the audit's raw substring finds the whole value), an equipment model, a non-PII snapshot key, a 3-digit number, a 2-letter state, a lone stop word",
+    !has("Иван") && !has("Zoë") && !has("REC400AA Pure-R") && !has("Pacific Gas") && !has("918") && !has("OR") && !has("Solar"), raw.join("|"));
+  // Independence from the matcher: a value the matcher reduces to nothing is dropped from the
+  // mask's list, and is exactly what the audit must still look for.
+  check("INDEPENDENT of the matcher: a value it reduces to nothing ('✍✍✍') is not a mask value but IS a raw source string",
+    !piiMaskValues(src).includes("✍✍✍") && has("✍✍✍"));
 }
 
 console.log(`\n${checks - failures}/${checks} demoRealRunGuard check(s) passed.`);

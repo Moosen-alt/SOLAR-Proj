@@ -92,7 +92,8 @@
 //       boxed on screen at record time (rendering only — the portal's state is what the bot
 //       filled; scripts/lib/piiMask.ts, proven on the replica by
 //       scripts/demoMaskReplica.dom.smoke.ts). At the review stop the mask's independent
-//       audit (raw substring, per-character rects) is run and reported as `maskAudit`
+//       audit (raw substring, per-character rects) is run — over the mask's values AND the
+//       raw source strings, which never pass through the matcher — and reported as `maskAudit`
 //       (rects carrying a value / rects outside every box / where) — a report, not a save
 //       condition. A person still reviews every frame before use;
 //     · login: the stored credential is used when there is one; MFA / a missing credential
@@ -485,7 +486,7 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   const { captionInitScript, FINAL_CAPTION, CAPTION_FOOTER } = await import("./demo-portal/captions");
   const { PAY_FEE_REPLAY_GATE } = await import("../portal-bot/src/adapters/recipeAdapter");
   const { probeClickGates, describeGate } = await import("./demo-portal/gateProbe");
-  const { piiMaskInitScript, piiMaskShapesFor, piiMaskValues } = await import("./lib/piiMask");
+  const { piiMaskInitScript, piiMaskShapesFor, piiMaskValues, piiRawSourceStrings } = await import("./lib/piiMask");
   const { realRunRefusals, recipeTargetHosts } = await import("./lib/realRunGuard");
   const { isSubmitOrPayRequestUrl, isReviewPageText } = await import("../shared/src/portalSafety");
 
@@ -567,14 +568,20 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   // ── 6b. The mask: every known value of the project and the login, counted, never printed.
   let maskValueCount = 0;
   let maskScript = "";
-  let maskValues: string[] = []; // held for the review-stop audit; never printed
+  let maskValues: string[] = []; // the mask's list; never printed
+  // What the review-stop audit looks for: the mask's list PLUS the raw source strings, which
+  // never pass through the matcher — so a value the list builder dropped is still audited
+  // (an audit fed only the matcher's own output could not see that). Never printed.
+  let maskAuditValues: string[] = [];
   if (maskOn) {
     const src = o.maskValuesFrom && o.maskValuesFrom !== projectId ? getProjectDetail(db, o.maskValuesFrom).project : stagedProject;
-    maskValues = piiMaskValues({
+    const maskSource: import("./lib/piiMask").PiiMaskSource = {
       project: { ...src, parserSnapshot: { ...(src.parserSnapshot as Record<string, unknown>), ...overlay } },
       credential: { username: credential?.username ?? "" },
       extra: [],
-    });
+    };
+    maskValues = piiMaskValues(maskSource);
+    maskAuditValues = [...new Set([...maskValues, ...piiRawSourceStrings(maskSource)])];
     maskValueCount = maskValues.length;
     maskScript = piiMaskInitScript({ values: maskValues, shapes: piiMaskShapesFor(recipe.portalPlatform), extraSelectors: o.maskSelectors });
     console.log(`[demo-record] masking ON: ${maskValueCount} known value(s), ${o.maskSelectors.length} extra selector(s), platform shape "${recipe.portalPlatform || "generic"}"`);
@@ -719,7 +726,7 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
       maskAudit = await page.evaluate((raw) => {
         const api = (globalThis as unknown as Record<string, { audit?: (v: string[]) => unknown } | undefined>).__piiMask;
         return api && typeof api.audit === "function" ? (api.audit(raw) as import("./lib/piiMask").PiiMaskAudit) : null;
-      }, maskValues).catch(() => null);
+      }, maskAuditValues).catch(() => null);
       maskAuditNote = maskAudit ? "measured at the review stop, boxes as drawn" : "not measured: the mask api was not present on the review page";
       if (maskAudit) console.log(`[demo-record] mask audit at the review stop: ${maskAudit.rectsChecked} rendered rect(s) carry a known value, ${maskAudit.uncovered} outside every box${maskAudit.uncovered ? ` — REVIEW THESE FRAMES: ${maskAudit.where.slice(0, 8).join(", ")}` : ""}`);
       else console.error(`[demo-record] mask audit: ${maskAuditNote}`);
@@ -837,6 +844,7 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
     headless,
     masked: maskOn,
     maskValueCount,
+    maskAuditValueCount: maskAuditValues.length,
     maskSelectorCount: o.maskSelectors.length,
     maskAudit,
     maskAuditNote,

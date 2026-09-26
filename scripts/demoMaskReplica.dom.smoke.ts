@@ -55,7 +55,7 @@ import { PROJECT_A, PROJECT_B, aOnlyLiterals } from "../portal-bot/src/replica/f
 import { startSyntheticReplica, type ReplicaState } from "../portal-bot/src/replica/syntheticServer";
 import { scoreRun } from "../portal-bot/src/replica/benchScore";
 import { isLoopbackHost } from "./demo-portal/network";
-import { PII_MASK_LAYER_ID, piiMaskInitScript, piiMaskShapesFor, piiMaskValues, type PiiMaskAudit } from "./lib/piiMask";
+import { PII_MASK_LAYER_ID, piiMaskInitScript, piiMaskShapesFor, piiMaskValues, piiRawSourceStrings, type PiiMaskAudit } from "./lib/piiMask";
 import { ffmpegAvailable, ocrBlindValues, ocrFrames, ocrUnavailableReason, piiHitsInText, sampleVideoFrames } from "./lib/ocrFrames";
 import { realRunRefusals } from "./lib/realRunGuard";
 
@@ -694,6 +694,13 @@ console.log("\n6. THE RECORDER'S --real-run, END TO END on the replica: real wri
   const audit = (report.maskAudit ?? null) as PiiMaskAudit | null;
   check(`REAL-RUN MASK AUDIT (geometry, in-page, at the review stop): rects carrying a value found and none outside a box (${audit ? `${audit.rectsChecked} rects, ${audit.uncovered} uncovered` : "NOT MEASURED"})`,
     !!audit && audit.rectsChecked >= 20 && audit.uncovered === 0, `${JSON.stringify(audit)} note=${report.maskAuditNote}`);
+  // N3: the audit must not be fed ONLY the matcher's own output (a value the list builder
+  // drops would then never be looked for — under an ASCII-only matcher the Cyrillic electrician
+  // left the list AND the audit, and this section stayed green). The recorder audits the list
+  // PLUS the raw source strings; the Cyrillic electrician is one of those whatever the matcher does.
+  check(`the review-stop audit looked for the mask's list AND the raw source strings (${audit?.valuesChecked} checked = ${report.maskAuditValueCount} audited >= ${report.maskValueCount} masked), and the raw strings carry the Cyrillic electrician`,
+    !!audit && audit.valuesChecked === Number(report.maskAuditValueCount) && Number(report.maskAuditValueCount) >= Number(report.maskValueCount) &&
+    piiRawSourceStrings({ project: { parserSnapshot: { electricalSupervisorName: E2E_ELECTRICIAN } } }).includes(E2E_ELECTRICIAN));
   const hostsSeen = Object.keys((report.browserHostsSeen as Record<string, number>) ?? {});
   check("the only host the browser touched is the replica's (loopback)", hostsSeen.length === 1 && isLoopbackHost(hostsSeen[0]) && Number(report.nodeNetworkAttempts ? (report.nodeNetworkAttempts as unknown[]).length : 0) === 0, hostsSeen.join(","));
   check("the video and the step shots exist", fs.existsSync(out) && fs.existsSync(shotsDir) && fs.readdirSync(shotsDir).length >= 5, `video=${fs.existsSync(out)} shots=${fs.existsSync(shotsDir) ? fs.readdirSync(shotsDir).length : 0}`);
