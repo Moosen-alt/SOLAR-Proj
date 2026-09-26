@@ -56,7 +56,9 @@ async function main(): Promise<void> {
   const project = { id: "p1", state: "OR", ahj: "City of Woodburn", utility: "PGE", city: "Woodburn" } as never;
   const utilCtx = buildLearnKbContext(db, project, { scopeType: "utility" });
   check("utility context has disconnect note", /disconnect/i.test(utilCtx), utilCtx.slice(0, 200));
-  check("utility context includes AHJ secondary", /ePermitting/i.test(utilCtx));
+  check("utility context includes AHJ secondary", /AHJ: Woodburn/i.test(utilCtx));
+  // Rule 5 in the prompt (2026-09-26): a NEM planner is never handed the AHJ's permit portal as a portal line.
+  check("utility context never names the AHJ permit portal", !/aca-oregon.accela.com/i.test(utilCtx), utilCtx.slice(0, 300));
   const ahjCtx = buildLearnKbContext(db, project, { scopeType: "ahj", permitType: "structural" });
   check("ahj context has AHJ notes", /fire review/i.test(ahjCtx));
   check("ahj context includes code profile", /Adopted codes|code profile/i.test(ahjCtx), ahjCtx.slice(0, 300));
