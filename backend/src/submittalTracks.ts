@@ -38,7 +38,7 @@ interface Row { [key: string]: unknown }
 const s = (v: unknown): string => (v == null ? "" : String(v));
 
 // The TYPE's name — used where a track is named in notes and stage details. What a card is TITLED
-// comes from trackLabel() below: a permit card says what the ONE structure answer settled, and the
+// comes from permitTrackLabel() / utilityTrackPresentation: a permit card says what the ONE structure answer settled, and the
 // utility card says what the utility's program IS (utilityFilingLookup) — "net metering" only
 // where that is known, never by default.
 const TRACK_LABELS: Record<SubmittalTrackType, string> = {
@@ -197,7 +197,9 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   // off in person"): that is a finding, shown as one — not a cited quote, so "verify".
   const noPortal = (permitProcessFor(project)?.permits ?? [])
     .map((p) => (p.portalUrl?.value ? "" : s(p.portalUrl?.notFound).trim()))
-    .find((nf) => /\bno (?:online )?(?:application )?portal\b|\bpaper\b|\bin[- ]person\b|\bdrop(?:ped)?[- ]off\b|\bby (?:us )?mail\b|\bnot accepted online\b/i.test(nf));
+    // Negations of an online filing only — "only paper application PDFs found" is a search
+    // report, not a statement that there is no portal.
+    .find((nf) => /\bno online (?:application )?portal\b|\bno (?:application )?portal (?:exists|is available|available)\b|\bdoes not (?:have|offer|use) an? (?:online )?(?:application )?portal\b|\bnot (?:accepted|available|submitted) online\b|\bno online (?:application|submission|filing)\b|\b(?:must|are to) be (?:dropped off|submitted in[- ]person|mailed)\b|\bin[- ]person (?:only|drop[- ]?off|submittal)\b|\bdrop[- ]off only\b/i.test(nf));
   if (noPortal) {
     return { channel: `No online application portal found — ${noPortal.slice(0, 200)} (per-job lookup; verify on the AHJ site)`, basis: "researched", portalUrl: "" };
   }
@@ -222,6 +224,13 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
     }
   }
   return { channel: "Unknown — verify on the AHJ site", basis: "unknown", portalUrl: "" };
+}
+
+/** A tracking target's portal_name: the found portal's host, else the channel without its
+ *  evidence parenthetical — a name, not the card's sentence. */
+function targetPortalName(track: SubmittalTrackType, project: ProjectRecord, db: AppDb | null): string {
+  const r = channelResolution(db, track, project);
+  return r.portalUrl ? portalHostOf(r.portalUrl) : r.channel.replace(/s*([^)]*)s*$/, "");
 }
 
 function channelFor(track: SubmittalTrackType, project: ProjectRecord, db: AppDb | null = null): string {
@@ -938,7 +947,7 @@ export function ensureCheckTarget(
       targetId,
       project.id,
       input.jurisdiction ?? (targetType === "nem" ? project.utility || "" : project.ahj || ""),
-      input.portalName ?? (track ? channelFor(track, project, db) : ""),
+      input.portalName ?? (track ? targetPortalName(track, project, db) : ""),
       portalUrl,
       applicationNumber,
       permitNumber,

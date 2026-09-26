@@ -280,6 +280,7 @@ export async function runUtilityFilingLookup(
 
 const inFlight = new Map<string, number>();
 const RETRY_MS = 24 * 3600 * 1000;
+const EMPTY_RETRY_MS = 7 * 24 * 3600 * 1000;
 /**
  * THE TRIGGER, fire-and-forget: look up a project's utility once (per utility, shared), when a
  * model key is configured and nothing is on file. Returns true when a lookup was started. Callers
@@ -293,11 +294,18 @@ export function ensureUtilityFilingLookedUp(
   if (/^(off|0|false)$/i.test(str(process.env.UTILITY_FILING_LOOKUP)) || !process.env.ANTHROPIC_API_KEY) return false;
   if (!llm?.webLookup || !str(project.utility) || !str(project.state)) return false;
   const key = utilityFilingKey(project.state, project.utility);
-  if (getUtilityFilingLookup(db, project.state, project.utility)) return false;
+  const stored = getUtilityFilingLookup(db, project.state, project.utility);
+  // A grounded search that found NOTHING is stored (the same utility is not searched on every
+  // project) — but not forever: with no route to re-run a row, one bad search day would pin a
+  // utility to "not yet confirmed" for good. An empty seeded row older than EMPTY_RETRY_MS is
+  // looked up again; an answered or verified row never is.
+  const emptyAndStale = stored && stored.confidence !== "verified" && !stored.filing?.value && !stored.program?.value
+    && Date.now() - Date.parse(stored.lookedUpAt || "") > EMPTY_RETRY_MS;
+  if (stored && !emptyAndStale) return false;
   const last = inFlight.get(key);
   if (last && Date.now() - last < RETRY_MS) return false;
   inFlight.set(key, Date.now());
-  void runUtilityFilingLookup(db, llm, { state: project.state, utility: project.utility, city: project.city })
+  void runUtilityFilingLookup(db, llm, { state: project.state, utility: project.utility, city: project.city, force: Boolean(emptyAndStale) })
     .then((run) => logger.info("utility-filing", `utility filing lookup for ${project.utility} (${project.state}): ${run.reason}`, { grounded: run.grounded, dropped: run.dropped.length }))
     .catch((err) => logger.warn("utility-filing", `utility filing lookup failed for ${project.utility}: ${err instanceof Error ? err.message : String(err)}`));
   return true;

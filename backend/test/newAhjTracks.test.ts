@@ -27,6 +27,9 @@
 //   K9 requiredDocuments: standard review ignored (Oregon row vocabulary everywhere)  → (j5b) fails.
 //   K10 applicationDocs: shippedProfileNeedsPerJobLookup always false                 → (s9) fails.
 //   K11 utilityFilingLookup: the trigger ignores a stored row                         → (u7) fails.
+//   K12 utilityFilingLookup: any stored row (empty included) blocks a re-lookup       → (u8) fails.
+//   K13 submittalTracks: bare "paper" in the lookup's notFound reads as no-portal     → (c4) fails.
+//   K14 processProfiles: a department-only AHJ never falls to the mailing city        → (j2b) fails.
 //
 // Run: npx tsx backend/test/newAhjTracks.test.ts
 import "./_isolate"; // FIRST
@@ -98,6 +101,9 @@ await check("(j2) MUST-PASS: the city's own name, a bare name and an empty AHJ w
   assert.equal(pp.findAhjProcessProfile(project({ ahj: "City of Pinon Mesa", city: "Pinon Mesa" }))?.ahj, "Pinon Mesa");
   assert.equal(pp.findAhjProcessProfile(project({ ahj: "Pinon Mesa", city: "" }))?.ahj, "Pinon Mesa");
   assert.equal(pp.findAhjProcessProfile(project({ ahj: "", city: "Pinon Mesa" }))?.ahj, "Pinon Mesa");
+});
+await check("(j2b) MUST-PASS: an AHJ field of department words only falls to the mailing city (same rule as the Oregon registry)", () => {
+  assert.equal(pp.findAhjProcessProfile(project({ ahj: "Building Division", city: "Pinon Mesa" }))?.ahj, "Pinon Mesa");
 });
 await check("(j3) MUST-EXCLUDE: state mismatch always loses", () => {
   assert.equal(pp.findAhjProcessProfile(project({ state: "AZ", ahj: "City of Pinon Mesa", city: "Pinon Mesa" })), null);
@@ -253,6 +259,11 @@ await check("(c3) MUST-PASS: 'no online portal — paper' that the lookup found 
   assert.match(t.channel, /^No online application portal found — No online portal — building permits must be dropped off in person/);
   assert.doesNotMatch(t.channel, /^Unknown/);
 });
+await check("(c4) MUST-EXCLUDE: a search report that merely mentions paper forms is not 'no online portal'", () => {
+  lookup("NM", "City of Formsville", { permits: [{ discipline: "combo", label: "Solar", issuingAgency: none(),
+    portalUrl: none("Searched the city site; only paper application PDFs were found, no portal page was returned"), recordType: none(), documents: none(), fee: none() }] });
+  assert.doesNotMatch(trackOf(project({ ahj: "City of Formsville" }), "combo").channel, /No online application portal found/);
+});
 
 // ── GAP 3: the utility filing location ────────────────────────────────────────────────────────
 console.log("\nGAP 3 — where the utility application is filed");
@@ -340,6 +351,23 @@ await check("(u7) the trigger: off without a model key; with one it looks a util
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(ufl.getUtilityFilingLookup(db, "NM", "Once Electric")?.filing.value?.name, "Once PowerClerk");
     assert.equal(ufl.ensureUtilityFilingLookedUp(db, { state: "NM", utility: "Once Electric", city: "" } as never, llm), false, "a stored row is not looked up again");
+  } finally {
+    process.env.ANTHROPIC_API_KEY = "";
+  }
+});
+
+await check("(u8) an EMPTY seeded row is looked up again after a week; a fresh empty row and an answered one are not", async () => {
+  const llm = stub(ans({ value: null }, { value: null }), ["https://x.example.com"]);
+  const empty = (utility: string, daysAgo: number) => ufl.saveUtilityFilingLookup(db, { state: "NM", utility, lookedUpAt: new Date(Date.now() - daysAgo * 86400000).toISOString(),
+    filing: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "nothing" }, program: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "nothing" } } as never);
+  empty("Stale Empty Electric", 8);
+  empty("Fresh Empty Electric", 1);
+  process.env.ANTHROPIC_API_KEY = "test-key-not-used";
+  try {
+    assert.equal(ufl.ensureUtilityFilingLookedUp(db, { state: "NM", utility: "Stale Empty Electric", city: "" } as never, llm), true);
+    assert.equal(ufl.ensureUtilityFilingLookedUp(db, { state: "NM", utility: "Fresh Empty Electric", city: "" } as never, llm), false);
+    assert.equal(ufl.ensureUtilityFilingLookedUp(db, { state: "NM", utility: "Gridline Electric", city: "" } as never, llm), false);
+    await new Promise((r) => setTimeout(r, 50));
   } finally {
     process.env.ANTHROPIC_API_KEY = "";
   }

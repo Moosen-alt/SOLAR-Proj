@@ -273,8 +273,10 @@ function jurisdictionNames(rawAhj: string): Array<{ core: string; kind: Jurisdic
 function projectJurisdictionNames(input: ProjectRecord | ParserPayload): Array<{ core: string; kind: JurisdictionKind }> {
   const direct = clean("ahj" in input ? input.ahj : input.ahj);
   const city = clean("city" in input ? input.city : input.city);
-  if (direct) return jurisdictionNames(direct);
-  return city ? jurisdictionNames(city).map((n) => ({ ...n, kind: n.kind === "county" ? n.kind : "city" as JurisdictionKind })) : [];
+  // An AHJ field of department words only ("Building Division") names no place: fall to the city,
+  // the same rule applicationDocs.findApplicationProfile applies to the hand-written registry.
+  if (direct && jurisdictionCore(direct)) return jurisdictionNames(direct);
+  return city ?jurisdictionNames(city).map((n) => ({ ...n, kind: n.kind === "county" ? n.kind : "city" as JurisdictionKind })) : [];
 }
 
 /** Whole-word containment: "west salem" contains "salem"; "salemtown" does not. */
