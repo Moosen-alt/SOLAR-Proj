@@ -202,15 +202,24 @@
   function namesMatch(a, b) {
     const ta = nameTokens(a); const tb = nameTokens(b);
     if (!ta.length || !tb.length) return false;
+    // Given name AND surname: a shared surname alone is a spouse or a relative ("PAT SAMPLE"
+    // on the bill, "JANE SAMPLE" on the plan set), not the same person — calling that a match
+    // would put a false "matches the plan set" into the resolution text.
     const shared = ta.filter((t) => tb.includes(t));
-    if (shared.length >= 2) return true;
-    return shared.length >= 1 && ta[ta.length - 1] === tb[tb.length - 1];
+    return shared.length >= 2;
+  }
+  function sharesSurnameOnly(a, b) {
+    const ta = nameTokens(a); const tb = nameTokens(b);
+    return !namesMatch(a, b) && ta.length > 0 && tb.length > 0 && ta[ta.length - 1] === tb[tb.length - 1];
   }
 
   // "2 Unit Depth" in a racking calc is not a two-unit building: the count-word forms must
   // name a dwelling/structure or use the plural "UNITS".
-  const MULTI_UNIT = /\bDUPLEX\b|\bTRIPLEX\b|\bFOURPLEX\b|\bMULTI[-\s]?FAMILY\b|\bMULTI[-\s]?UNIT\b|\bAPARTMENTS?\b|\bCONDO(?:MINIUM)?S?\b|\bTOWNHO(?:ME|USE)S?\b|\b(?:2|3|4|TWO|THREE|FOUR)[-\s]?(?:UNIT|FAMILY)\s+(?:DWELLING|RESIDENCE|BUILDING|HOME|HOUSE|STRUCTURE|APARTMENT)\b|\b(?:2|3|4|TWO|THREE|FOUR)[-\s]?UNITS\b|\bUNITS?\s*[:#]\s*[2-9]\b|\bR-?2\s+OCCUPANCY\b|\bOCCUPANCY\s*(?:TYPE|GROUP)?\s*[:=]?\s*R-?2\b|\bADU\b|\bACCESSORY\s+DWELLING\b/i;
-  const SINGLE_FAMILY = /\bRESIDENCE\b|\bSINGLE[-\s]FAMILY\b|\bR-?3\b|\bMAIN\s+HOUSE\b|\bSFR\b|\bSFD\b|\bDWELLING\b/i;
+  const MULTI_UNIT = /\bDUPLEX\b|\bTRIPLEX\b|\bFOURPLEX\b|\bMULTI[-\s]?FAMILY\b|\bMULTI[-\s]?UNIT\b|\bAPARTMENTS?\b|\bCONDO(?:MINIUM)?S?\b|\bTOWNHO(?:ME|USE)S?\b|\b(?:2|3|4|TWO|THREE|FOUR)[-\s]?(?:UNIT|FAMILY)\s+(?:DWELLING|RESIDENCE|BUILDING|HOME|HOUSE|STRUCTURE|APARTMENT)\b|\b(?:2|3|4|TWO|THREE|FOUR)[-\s]?FAMILY\b|\b(?:2|3|4|TWO|THREE|FOUR)[-\s]?UNITS\b|\bUNITS?\s*[:#]\s*[2-9]\b|\bR-?2\s+OCCUPANCY\b|\bOCCUPANCY\s*(?:TYPE|GROUP)?\s*[:=]?\s*R-?2\b|\bADU\b|\bACCESSORY\s+DWELLING\b/i;
+  // "TWO FAMILY" / "2-FAMILY" alone is a two-family house (common in MA) — no dwelling noun
+  // required. R-3 is NOT a single-family basis: IRC/IBC R-3 covers one- AND two-family
+  // dwellings, and the bare token also matches a revision tag ("REV R3").
+  const SINGLE_FAMILY = /\bRESIDENCE\b|\bSINGLE[-\s]FAMILY\b|\bMAIN\s+HOUSE\b|\bSFR\b|\bSFD\b|\bDWELLING\b/i;
   const WORK_ON_OUTBUILDING = /(?:ARRAY|MODULES?|\bPV\b|PANELS?)\s+(?:ON|AT|OVER)\s+(?:THE\s+)?(?:\(?[NE]\)?\s+)?(?:DETACHED\s+|EXISTING\s+)?(?:GARAGE|SHED|BARN|CARPORT|ADU|WORKSHOP|OUTBUILDING|SHOP)\b|\bGROUND[-\s]MOUNT/i;
 
   function singleFamilyBasis(planText) {
@@ -308,7 +317,10 @@
           resolved.push({ field: 'owner', value: bill.value, how: `utility bill account holder is the account of record (${where(bill)})${matches.length ? `, matches the ${matches.map(where).join(' and ')}` : ''}${nonMatch.length ? `; the ${nonMatch.map((k) => `${where(k)} names "${k.value}"`).join(', ')} — confirm with the installer` : ''}`, evidence: bill });
           done.add('owner');
         } else {
-          pushConflict('owner', [bill, ...candidates], 'the bill account holder matches none of the names on the documents — resolve before filing');
+          const kin = candidates.filter((k) => sharesSurnameOnly(bill.value, k.value));
+          pushConflict('owner', [bill, ...candidates], kin.length
+            ? `the bill account holder shares only a surname with ${kin.map((k) => `the ${where(k)} ("${k.value}")`).join(' and ')} — a different person (spouse or relative?); confirm whose name goes on the application before filing`
+            : 'the bill account holder matches none of the names on the documents — resolve before filing');
         }
       } else if (!bill && (c || candidates.length > 1)) {
         pushConflict('owner', candidates, 'no utility bill attached to break the tie — the account holder on the bill is the name of record');

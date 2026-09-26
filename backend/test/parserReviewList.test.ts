@@ -359,4 +359,50 @@ ok("no Oregon leakage: licence label by state, N/A dropped, identified-vs-unknow
   ok("tap close: a cite or option word counts only inside the tap's own sentence / numbered note / label; label-only real taps kept, numbered method notes dropped");
 }
 
+// ---------------------------------------------------------------------------
+// 3 (close). Two-family houses are common in MA: "TWO FAMILY" / "2-FAMILY" with no dwelling
+// noun after it is still two units, and R-3 (one- AND two-family; also a "REV R3" tag) is
+// never a single-family basis.
+// ---------------------------------------------------------------------------
+{
+  for (const t of ["SAMPLE RESIDENCE TWO FAMILY", "SAMPLE RESIDENCE 2-FAMILY", "SAMPLE RESIDENCE 2 FAMILY  100 EXAMPLE RD", "SAMPLE RESIDENCE THREE-FAMILY"]) {
+    assert.equal(PR.singleFamilyBasis(t), null, `${t} is not single-family`);
+    const r = PR.resolveReviewItems({ attached: ["plan_set"], planText: t, passes: [textPass({ dwellingUnits: field(1, "plan_set", "RESIDENCE", 0.5) }, ["dwellingUnits"])] });
+    assert.ok(!r.resolved.some((x: { field: string }) => x.field === "dwellingUnits"), `dwellingUnits must not resolve to 1 on "${t}"`);
+  }
+  assert.equal(PR.singleFamilyBasis("PV 0.0 COVER  OCCUPANCY: R-3  CONSTRUCTION TYPE V-B"), null, "R-3 alone is one- or two-family: no basis");
+  assert.equal(PR.singleFamilyBasis("PV 0.0 COVER  REV R3  100 EXAMPLE RD"), null, "a revision tag is not an occupancy");
+  // MUST-PASS: an explicit single-family statement still resolves, R-3 beside it or not
+  assert.equal(PR.singleFamilyBasis("OCCUPANCY: R-3 SINGLE FAMILY"), "SINGLE FAMILY");
+  assert.equal(PR.singleFamilyBasis("JANE SAMPLE RESIDENCE  REV R3"), "RESIDENCE");
+  ok("duplex close: TWO FAMILY / 2-FAMILY alone blocks single-family; R-3 is not a basis");
+}
+
+// ---------------------------------------------------------------------------
+// 4 (close). Owner tie-break: a shared surname is not the same person.
+// ---------------------------------------------------------------------------
+{
+  assert.equal(PR.namesMatch("PAT SAMPLE", "JANE SAMPLE"), false, "surname-only is not a match");
+  assert.equal(PR.namesMatch("JANE A SAMPLE", "Jane Sample Residence"), true, "given name + surname, middle initial ignored");
+  assert.equal(PR.namesMatch("SAMPLE, JANE", "JANE SAMPLE"), true);
+  // MUST-EXCLUDE: bill PAT SAMPLE, plan + letter JANE SAMPLE (a spouse) → CONFLICT naming both, nothing resolved
+  const spouse = PR.resolveReviewItems({ attached: ["plan_set", "utility_bill", "structural_letter"], planText: planTextSF, passes: [
+    visionPass({ owner: field("PAT SAMPLE", "utility_bill", "Service Provided To: PAT SAMPLE", 0.97) }),
+    textPass({ owner: field("Jane Sample", "plan_set", "JANE SAMPLE RESIDENCE", 0.6, "PV 0.0") }, ["owner"], { conflicts: [{ field: "owner", readings: [{ value: "JANE SAMPLE", source: "plan_set", sheet: "PV 0.0" }, { value: "Jane Sample Residence", source: "structural_letter", sheet: "p.1" }] }] }),
+  ] });
+  assert.ok(!spouse.resolved.some((x: { field: string }) => x.field === "owner"), "owner must not resolve on a surname-only match");
+  const sc = spouse.conflicts.find((x: { field: string }) => x.field === "owner");
+  assert.ok(sc && /PAT SAMPLE/.test(sc.text) && /Jane Sample/i.test(sc.text), "the conflict names the bill holder and the document name");
+  assert.match(sc.text, /shares only a surname/);
+  assert.doesNotMatch(JSON.stringify(spouse), /matches the plan set/, "never claims a match that does not exist");
+  // MUST-PASS: the same person with a middle initial on the bill still resolves to the bill holder
+  const same = PR.resolveReviewItems({ attached: ["plan_set", "utility_bill"], planText: planTextSF, passes: [
+    visionPass({ owner: field("JANE A SAMPLE", "utility_bill", "Service Provided To: JANE A SAMPLE", 0.97) }),
+    textPass({ owner: field("Jane Sample", "plan_set", "JANE SAMPLE RESIDENCE", 0.6, "PV 0.0") }, ["owner"]),
+  ] });
+  const so = same.resolved.find((x: { field: string }) => x.field === "owner");
+  assert.ok(so && so.value === "JANE A SAMPLE" && /matches the plan set/.test(so.how));
+  ok("owner close: a surname-only match is a CONFLICT naming both; given name + surname still resolves");
+}
+
 console.log(`\nparserReviewList: all ${passed} checks passed`);
