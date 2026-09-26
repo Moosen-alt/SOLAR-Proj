@@ -939,6 +939,9 @@ async function autoLearnPortalInner(
       // identity into both sections produced a mixed contact live (owner name +
       // contractor address).
       siteContactIdentity: {
+        // The property's parcel (parser snapshot) — the ACA work-location pass searches by it,
+        // by the panel's Search button, when the address finds nothing (Lee County).
+        parcel: projectFields.parcelNumber || "",
         firstName: projectFields.homeownerFirstName || "",
         lastName: projectFields.homeownerLastName || "",
         email: projectFields.homeownerEmail || "",

@@ -52,6 +52,9 @@ export interface ContactIdentity {
    *  signature step PAUSES for the operator. Carried here because it is the filing contractor's
    *  identity, and this is the object the learn runner already passes through. */
   signerName?: string;
+  /** The PROPERTY's assessor parcel number (site contact only) — the ACA work-location pass
+   *  searches by it, dashes removed, when the address search finds nothing (Lee County). */
+  parcel?: string;
   firstName?: string;
   lastName?: string;
   email?: string;
@@ -3575,7 +3578,37 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       nameUsed = nameCore;
       outcome = await doSearch(nameUsed);
     }
-    if (outcome !== "results") return bail(`address search returned no results (${outcome})`);
+    // THE PARCEL SEARCH, BY THE SAME PANEL BUTTON. Lee County looks addresses up by parcel
+    // number without dashes; when the address finds nothing and the panel has a Parcel box and
+    // the project has a parcel, search by it — the address boxes cleared (ACA ANDs the
+    // criteria), the digits without dashes, and the panel's OWN Search clicked. Never Enter:
+    // close3 made Enter in "Parcel Number" a refusal (it is not a search box by identity), and
+    // the button is the portal's own way to search anyway.
+    let via: "address" | "parcel" = "address";
+    let parcelUsed = "";
+    if (outcome !== "results") {
+      const parcelRaw = String(this.siteContactIdentity.parcel ?? "").trim();
+      let parcelBox = scope.locator("input[id*='ParcelNo' i], input[name*='ParcelNo' i], input[id*='txtParcel' i]").first();
+      if (!(await parcelBox.count().catch(() => 0))) parcelBox = scope.getByLabel(/parcel/i).first();
+      if (parcelRaw && await parcelBox.count().catch(() => 0)) {
+        parcelUsed = parcelRaw.replace(/[-\s]/g, "");
+        await numBox.fill("").catch(() => null);
+        await nameBox.fill("").catch(() => null);
+        await parcelBox.fill(parcelUsed).catch(() => null);
+        await searchBtn.click({ timeout: 10000 }).catch(() => null);
+        await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
+        let sawEmpty = 0;
+        outcome = "unknown";
+        for (let i = 0; i < 12; i++) {
+          await page.waitForTimeout?.(1000).catch(() => null);
+          if (await resultRows()) { outcome = "results"; break; }
+          if (await noResultsText()) { if (++sawEmpty >= 2) { outcome = "empty"; break; } } else sawEmpty = 0;
+        }
+        this.debug?.event({ type: "work_location_parcel", outcome });
+        if (outcome === "results") via = "parcel";
+      }
+    }
+    if (outcome !== "results") return bail(`address search returned no results (${outcome})${parcelUsed ? " — nor did the parcel search" : ""}`);
     // Forensics: capture the result rows' text (address + jurisdiction offerings) so a
     // wrong-row selection is diagnosable from the bundle alone (address only — already
     // part of this run's data, no new PII).
@@ -3586,11 +3619,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // The fills are BOUND (field:), not literal — portal_recipes are shared, so a replay
     // must search THAT project's address, never the learn project's. The backend's
     // resolveRecipeFieldValues derives both keys with the same addressParse helpers.
+    if (via === "parcel") {
+      // Bound to the project's parcel; "(no dashes)" tells replay to send the digits the same
+      // way (recipeAdapter resolveValue). No literal: a recipe is shared across projects.
+      steps.push({ action: "fill", phase: "fill", selector: { css: "input[id*='ParcelNo' i], input[name*='ParcelNo' i], input[id*='txtParcel' i]", fallbacks: [{ label: "Parcel Number" }], ...inFrame }, field: "parcelNumber", note: "work location: parcel number (no dashes)" });
+    } else {
     steps.push({ action: "fill", phase: "fill", selector: { css: "input[id*='StreetNo4Search']", fallbacks: [{ label: "Street Number" }], ...inFrame }, field: "streetNumber", value: streetNo, note: "work location: street number" });
     // When THIS portal only matched the 3-char portion (the retry fired), bind the
     // portion key — replaying the full core name would re-hit the same zero-result
     // wall on every future project, and the replay has no retry of its own.
     steps.push({ action: "fill", phase: "fill", selector: { css: "input[id*='txtStreetName']", fallbacks: [{ label: "Street Name" }], ...inFrame }, field: nameUsed === nameCore ? "streetNameCore" : "streetNameSearchPortion", value: nameUsed, note: "work location: street name (portion)" });
+    }
     // Recorded with the SAME union breadth the pass matched with, so a build whose
     // panel search is an input/button (not an <a>) still replays.
     steps.push({ action: "click", phase: "fill", selector: { css: "a[id$='WorkLocationEdit_btnSearch'], a[id^='ctl00_PlaceHolderMain'][id$='_btnSearch'], input[id^='ctl00_PlaceHolderMain'][id$='_btnSearch'], button[id^='ctl00_PlaceHolderMain'][id$='_btnSearch']", ...inFrame }, note: "work location: search" });

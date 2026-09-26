@@ -1740,6 +1740,11 @@ export class RecipeAdapter extends BasePortalAdapter {
     // to (a planner-chosen installerContactName would sign as the contact). Empty = runAll
     // pauses before this step, named.
     if (step.action === "fill" && isSignatureStep(step)) return String(this.fieldValues.authorizedSignerName ?? "").replace(/\s+/g, " ").trim();
+    // A PARCEL SEARCHED "(no dashes)" (the learner's ACA work-location pass, Lee County): the
+    // same characters, dashes and spaces dropped — the way the learn searched it.
+    if (step.action === "fill" && step.field && /\(no dashes\)/i.test(String(step.note ?? ""))) {
+      return String(this.fieldValues[step.field] ?? "").replace(/[-\s]/g, "");
+    }
     if (step.field) {
       // PREFER THE PORTAL'S OWN STRING for equipment models. The backend resolves
       // "<field>Certified" from the CEC list — the same list the portal builds its dropdown
