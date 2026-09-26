@@ -1442,7 +1442,9 @@ SYSTEM / EQUIPMENT
 - pvMicroOutputW: microinverter rated output CURRENT in amps per unit (number; from the micro datasheet)
 - inverterSettings: note grid-support listing / settings, e.g. "UL 1741 SB" or "UL 1741 SA, PCS profile" (needed for utility interconnection)
 - batteryMake, batteryModel, batteryQty (number)
-- roofMaterial (e.g. "Composition Shingle"), mounting (e.g. "Roof Mount")
+- roofMaterial (e.g. "Composition Shingle"), mounting (e.g. "Roof Mount"). A TILE roof is tile — never "shingle": write e.g. "Concrete Tile", "Clay S-Tile", "Flat Concrete Tile" exactly as the sheets say (a "concrete shake tile" is tile, not wood shake)
+- roofMaterialSubtype: tile roofs only — "Concrete", "Clay", "S-tile", "Flat tile" (or two joined with " / ", e.g. "Concrete / S-tile"); omit for non-tile roofs
+- tileAttachmentMethod: tile roofs only — "tile hook", "tile-replacement mount" or "comp-out", from the attachment detail / racking notes; omit if the sheets do not say
 EXISTING SYSTEM (system ADDITIONS: the plan set shows an existing PV system remaining in service alongside the new install — e.g. an "EXISTING ARRAY" on the site plan, "EXISTING SYSTEM SPECIFICATIONS" block, "(E) PV" on the SLD)
 - existingSystem: "yes" when an existing PV system is shown remaining in service; omit otherwise
 - existingDcKw (number), existingAcKw (number): the EXISTING system's size

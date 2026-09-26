@@ -1,4 +1,5 @@
 import type { ProjectRecord } from "../../shared/src/types";
+import { classifyRoofCovering, oregonRoofingRowQualifies } from "./roofCovering";
 type Answer = "Yes" | "No" | "";
 type Fact = boolean | null;
 const all = (...v: Fact[]): Fact => v.includes(false) ? false : v.includes(null) ? null : true;
@@ -22,11 +23,10 @@ export function bcdChecklistAnswers(project: ProjectRecord): Record<string, Answ
   // (operator ruling 2026-09-21; Simmons's real permit 187-26-000328-STR went structural).
   // In practice such a project routes engineered and this form is never built for it —
   // this keeps the row honest for any copy that does get filled.
-  const membrane = /\b(tpo|epdm|pvc|membrane|torch|built[-\s]?up|bur|tar|gravel|foam|spf|rolled|mod(ified)?[-\s]?bit(umen)?)\b/.test(roof);
-  const roofing = !roof ? null : membrane ? false
-    : /metal/.test(roof) ? true
-    : /compos|asphalt/.test(roof) ? max("roofLayers", 2)
-    : /wood|shake/.test(roof) ? max("roofLayers", 1) : null;
+  // TILE is a known "No" for the same reason (concrete / clay / S-tile / flat tile are not in the
+  // row's list), and it is classified FIRST so "concrete shake tile" never reads as wood shake and
+  // "tile shingle" never as composition — roofCovering.ts is the one predicate for all of this.
+  const roofing = !roof ? null : oregonRoofingRowQualifies(s.roofMaterial, s.roofMaterialSubtype, s.roofLayers);
   const exposure = str("wind").toUpperCase();
   const spaced = n("attachmentSpacingIn");
   const method1 = all(flag("attachmentToFraming"), spaced == null ? null : spaced <= 24 ? true :
@@ -95,7 +95,8 @@ export function formFactQuestions(
   const planRead = has("roofMaterial") || has("framingType");
   if (opts.checklistApplies && planRead) {
     const roof = String(s.roofMaterial ?? "").trim();
-    if (/compos|asphalt|wood|shake/i.test(roof) && !has("roofLayers")) {
+    const family = classifyRoofCovering(s.roofMaterial, s.roofMaterialSubtype).family;
+    if ((family === "composition" || family === "wood") && !has("roofLayers")) {
       out.push({ key: "roofLayers", label: `How many layers of roofing are on the ${roof} roof?`, options: ["1", "2", "3 or more"], kind: "form-fact" });
     }
     if (!has("moduleHeightFiguresCompliant") && !(has("moduleHeightAboveRoof") && has("moduleFiguresCompliant"))) {

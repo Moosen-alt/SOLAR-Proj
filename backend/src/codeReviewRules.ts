@@ -2,6 +2,7 @@ import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, 
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS, packageShowsSld } from "./projectEvidence";
 import { pathWordingScope, resolvePermitPath } from "./permitPath";
+import { classifyRoofCovering, statedRoofDeadLoads, tileAttachmentFromText, tileAttachmentMethodOf, TILE_MIN_ROOF_DEAD_LOAD_PSF } from "./roofCovering";
 import {
   evaluateDesignCriteriaFindings,
   extractAttachmentSpacings,
@@ -791,6 +792,79 @@ export function evaluateDesignCodeFindings(
       evidenceNeeded: ["Racking/attachment detail", "Attachment spacing table", "Fastener/embedment callout", "Flashing/waterproofing note"],
       codeReferences: [roofLoadsRef],
     }));
+  }
+
+  // TILE ROOFS (roofCovering.ts is the one predicate). A tile roof is attached differently
+  // (tile hook / tile-replacement mount / comp-out), leaks differently (the flashing detail is the
+  // tile's, not a comp flashing), and weighs 9-12 psf where composition weighs 2-4 — so a calc
+  // carrying a shingle roof's dead load under-reads the framing. Each finding quotes what the
+  // package says; none fires on a composition, metal or membrane roof.
+  const covering = classifyRoofCovering(str(project, "roofMaterial"), str(project, "roofMaterialSubtype"));
+  if (roofMounted && covering.family === "tile") {
+    const roofLabel = `${str(project, "roofMaterial")}${covering.subtype && !str(project, "roofMaterial").toLowerCase().includes(covering.subtype.toLowerCase()) ? ` (${covering.subtype})` : ""}`;
+    const parsedMethod = tileAttachmentMethodOf(str(project, "tileAttachmentMethod"));
+    const textMethods = tileAttachmentFromText(all);
+    const distinctText = [...new Set(textMethods.map((m) => m.method))];
+    if (!parsedMethod && distinctText.length !== 1) {
+      out.push(finding({
+        id: "city.struct.tile-attachment-missing",
+        severity: distinctText.length === 0 ? "blocker" : "warning",
+        category: "structural",
+        title: distinctText.length === 0 ? "Tile roof with no tile attachment method" : "Tile attachment method ambiguous",
+        message: distinctText.length === 0
+          ? `The roof is ${roofLabel}, but no tile attachment method (tile hook, tile-replacement mount, or comp-out) is named anywhere in the package.`
+          : `The roof is ${roofLabel}, and the package names more than one tile attachment method: ${textMethods.map((m) => `${m.method} ("${m.quote}")`).join("; ")}.`,
+        cityFeedback: "Identify the attachment listed for tile roofs (tile hook, tile-replacement mount/flashing, or comp-out), with the manufacturer detail showing how the tile is cut/replaced and flashed.",
+        designTeamAction: "Add the tile attachment detail and its manufacturer spec sheet; name one method per roof plane.",
+        evidenceNeeded: ["Tile attachment detail (hook / replacement mount / comp-out)", "Attachment manufacturer spec sheet listing tile roofs", "Flashing detail for the tile attachment"],
+        codeReferences: [roofLoadsRef],
+      }));
+    }
+    const method = parsedMethod || (distinctText.length === 1 ? distinctText[0] : "");
+    if (method && !/\bflash(?:ing|ings|ed|foot)?\b/i.test(all)) {
+      out.push(finding({
+        id: "city.struct.tile-flashing-missing",
+        severity: "warning",
+        category: "structural",
+        title: "Tile attachment flashing detail not shown",
+        message: `The roof is ${roofLabel} with a ${method} attachment, but the package shows no flashing/waterproofing detail for it.`,
+        cityFeedback: `Provide the flashing/waterproofing detail for the ${method} on the ${roofLabel} roof (under-tile flashing, replacement-tile flashing, or the comp-out patch flashing).`,
+        designTeamAction: "Add the manufacturer's flashing detail for the tile attachment to the attachment sheet.",
+        evidenceNeeded: ["Tile attachment flashing detail"],
+        codeReferences: [roofLoadsRef],
+      }));
+    }
+    const statedDl = statedRoofDeadLoads(all);
+    const light = statedDl.filter((d) => d.psf < TILE_MIN_ROOF_DEAD_LOAD_PSF);
+    if (statedDl.length === 0 || light.length === statedDl.length) {
+      out.push(finding({
+        id: "city.struct.tile-dead-load",
+        severity: "warning",
+        category: "structural",
+        title: statedDl.length === 0 ? "Roof dead load for the tile not stated" : "Roof dead load reads like a shingle roof",
+        message: statedDl.length === 0
+          ? `The roof is ${roofLabel} (tile weighs roughly ${TILE_MIN_ROOF_DEAD_LOAD_PSF}-12 psf), and no roof dead load including the tile is stated in the package.`
+          : `The roof is ${roofLabel}, but the stated roof dead load ${light.map((d) => `${d.psf} psf ("${d.quote}")`).join("; ")} is below the roughly ${TILE_MIN_ROOF_DEAD_LOAD_PSF}-12 psf a tile covering alone weighs.`,
+        cityFeedback: "State the existing roof dead load including the tile covering in the structural calculation, and show the framing carries it plus the PV dead load.",
+        designTeamAction: "Update the structural calculation / letter to include the tile weight in the roof dead load.",
+        evidenceNeeded: ["Roof dead load including tile (psf)", "PV dead load (psf)", "Framing check with both"],
+        codeReferences: [roofLoadsRef],
+      }));
+    }
+    const needsStamp = resolvePermitPath(project).needsEngineeredDocs;
+    if (needsStamp && !hasStampedEngineering && !out.some((f) => f.id === "city.struct.stamped-engineering-missing")) {
+      out.push(finding({
+        id: "city.struct.tile-stamped-engineering-missing",
+        severity: "blocker",
+        category: "structural",
+        title: "Tile roof on the engineered path with no stamped engineering",
+        message: `The roof is ${roofLabel}; ${project.state.toUpperCase() === "OR" ? "Oregon's prescriptive roofing row does not admit tile, so" : "the resolved permit path is engineered, so"} the job files the engineered/structural application and needs a stamped structural calculation — none is in the package.`,
+        cityFeedback: "Provide the stamped/sealed structural calculation or engineer's letter covering the tile roof's dead load, the framing, and the tile attachment point loads.",
+        designTeamAction: "Obtain the sealed engineering from the engineer of record and file the engineered/structural application (not the prescriptive checklist).",
+        evidenceNeeded: ["Stamped/sealed structural calculation or letter", "Roof dead load including tile", "Tile attachment point loads"],
+        codeReferences: [...oregonWorksheetRefs, roofLoadsRef],
+      }));
+    }
   }
 
   const snow = num(project, ["snow", "groundSnowLoad"]);

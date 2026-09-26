@@ -20,6 +20,7 @@
 // ---------------------------------------------------------------------------
 
 import type { PrescriptiveLimits, ProjectRecord } from "../../shared/src/types";
+import { classifyRoofCovering, oregonRoofingRowQualifies } from "./roofCovering";
 
 export type PermitPath = "prescriptive" | "engineered" | "unknown";
 
@@ -545,12 +546,27 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   // An UNKNOWN material stays silent (absence is not failure); only a RECOGNIZED
   // non-qualifying covering fails the screen.
   const roofMaterial = snap(project, "roofMaterial");
-  const nonPrescriptiveRoof = /\b(tpo|epdm|pvc|membrane|torch|built[-\s]?up|bur|tar|gravel|foam|spf|rolled|mod(ified)?[-\s]?bit(umen)?)\b/i.test(roofMaterial);
+  // TILE IS OUTSIDE THE ROW TOO. Concrete / clay / S-tile / flat tile are none of metal, wood
+  // shingle/shake or composition, so an Oregon tile roof answers the BCD 5952 roofing row NO and
+  // the job is not prescriptive — before this, the screen only knew membranes and a tile roof with
+  // clean numbers routed PRESCRIPTIVE (the wrong application, and a 5952 that should never be
+  // filed). roofCovering.ts is the one predicate (bcdChecklistFacts asks the same one).
+  const covering = classifyRoofCovering(roofMaterial, snap(project, "roofMaterialSubtype"));
+  const nonPrescriptiveRoof = covering.family === "membrane" || covering.family === "tile";
   // The roofing rule is Oregon's ORSC row, so it only speaks for Oregon. Another state's
-  // published path may admit membranes; until its own rule is researched, this stays quiet
-  // rather than asserting Oregon's into a Florida verdict.
+  // published path may admit membranes or tile; until its own rule is researched, this stays
+  // quiet rather than asserting Oregon's into a Florida verdict.
+  // The same row also refuses a THIRD layer of composition (or a second of wood) — the checklist
+  // answers No there, so the path must not say prescriptive while its own form says No.
+  const layersFail = !nonPrescriptiveRoof && stateCode === "OR"
+    && oregonRoofingRowQualifies(roofMaterial, snap(project, "roofMaterialSubtype"), snap(project, "roofLayers")) === false;
+  if (layersFail) {
+    screenFailures.push(`${snap(project, "roofLayers")} existing layer(s) of "${roofMaterial}" — the BCD 5952 roofing row admits no more than two layers of composition (one of wood shingles/shakes)`);
+  }
   if (nonPrescriptiveRoof && stateCode === "OR") {
-    screenFailures.push(`roofing material "${roofMaterial}" is not a prescriptive-eligible covering (metal, wood shingle/shake, or <=2-layer composition) — membrane-roof PV is non-prescriptive in Oregon`);
+    screenFailures.push(covering.family === "tile"
+      ? `roofing material "${roofMaterial}"${covering.subtype && !roofMaterial.toLowerCase().includes(covering.subtype.toLowerCase()) ? ` (${covering.subtype})` : ""} is tile — not a prescriptive-eligible covering (the BCD 5952 roofing row admits only metal, single-layer wood shingles/shakes, or <=2-layer composition), so tile-roof PV is non-prescriptive in Oregon: file the engineered/structural application`
+      : `roofing material "${roofMaterial}" is not a prescriptive-eligible covering (metal, wood shingle/shake, or <=2-layer composition) — membrane-roof PV is non-prescriptive in Oregon`);
   }
   // ULTIMATE WIND SPEED, not just exposure. A COASTAL site routinely parses as exposure C —
   // inside the B/C allowance — while its design wind speed sits in the special wind region

@@ -2000,8 +2000,8 @@ function parsePlanData(planDoc){
   ]);
 
   const roofMaterial = title(matchFirst(cover, [
-    /ROOF MATERIAL\s*:?\s*([A-Z ]+?)(?=\s+ASCE|\s+WIND|\s+ROOF|\n|$)/i,
-    /MATERIAL\s*[-:]?\s*(COMPOSITE SHINGLE|COMP SHINGLE|TILE|METAL|TPO|FLAT ROOF)/i
+    /ROOF MATERIAL\s*:?\s*([A-Z][A-Z -]*?)(?=\s+ASCE|\s+WIND|\s+ROOF|\n|$)/i,
+    /MATERIAL\s*[-:]?\s*((?:CONCRETE |CLAY )?(?:S-|FLAT )?TILE|COMPOSITE SHINGLE|COMP SHINGLE|METAL|TPO|FLAT ROOF)/i
   ]));
   const racking = title(matchFirst(cover, [
     /RACKING\s*:?\s*([A-Z0-9 #\-./+]+?(?:SYSTEM(?: FOR [A-Z ]+)?)?)(?=\s+ARRAY AREA|\s+UTILITY|\s+MSP|\n|$)/i
@@ -3857,7 +3857,7 @@ const LLM_SNAPSHOT_KEYS = new Set([
   'invMake','invModel','invQty','invOutputW',
   'pvMicroMake','pvMicroModel','pvMicroQty','pvMicroOutputW','inverterSettings',
   'batteryMake','batteryModel','batteryQty',
-  'roofMaterial','mounting',
+  'roofMaterial','roofMaterialSubtype','tileAttachmentMethod','mounting',
   'busRating','mainBreaker','pvBreaker','acDiscReq',
   'snow','deadLoad','roofRafterSpacing','roofRafterSpan','wind','permitPath',
   // Structural prescriptive-screen fields — evaluatePrescriptiveCriteria answers
