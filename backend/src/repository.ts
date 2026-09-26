@@ -3467,7 +3467,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   // ACCOUNT / METER WITH NO BILL ON FILE IS A NAMED WAIT (qc.ts WAITING_ON_BILL_ISSUE_TYPE): the
   // customer's bill carries them and nothing else does. The wait is shown, laned NEM, and does not
   // block the permit side; with a bill on file a missing value blocks again.
-  const waitingOnBill = customerBillOnFile(db, projectId) ? [] : missingCriticalAll.filter((label) => label === "Account" || label === "Meter");
+  const waitingOnBill: string[] = customerBillOnFile(db, projectId) ? [] : missingCriticalAll.filter((label) => label === "Account" || label === "Meter");
   const missingCritical = missingCriticalAll.filter((label) => !waitingOnBill.includes(label));
   // Safe client lookup (no throw) for the submitting-client gate.
   const submittingClientRow = project.clientId

@@ -1425,7 +1425,23 @@ export async function runCodeResearch(db: AppDb, payload: Partial<CodeResearchJo
     outputTokens: prov?.outputTokens,
   };
   if (research.provider === "stub") return { saved: false, reason: "stub LLM (no API key)", notes: research.notes };
-  if (!research.webGrounded) return { saved: false, reason: "not web-grounded — model memory is never stored as an edition", ...evidence, notes: String(research.notes || "").slice(0, 600) };
+  if (!research.webGrounded) {
+    // A TIMEOUT MUST NOT LEAVE THE AHJ WITH NO CODES. New-AHJ e2e (2026-09-26): Iowa City's full
+    // research died at the 180-300 s budget and nothing was stored — every code field read
+    // "not found". A transient failure (a timeout, an overloaded API, a cut-off answer) gets ONE
+    // lighter pass: editions only, the asked families, fewer searches, no page reads — and still
+    // only grounded, cited, quoted editions land (lightCodeResearch).
+    const failureNotes = String(research.notes || "");
+    if (TRANSIENT_RESEARCH_FAILURE.test(failureNotes) && llm.webLookup) {
+      const light = await lightCodeResearch(llm, { state, ahj, families });
+      if (light.profile) {
+        const saved = saveResearchedCodeProfile(db, light.profile, { ...(families?.length ? { families } : {}) });
+        return { saved: true, key: saved.key, confidence: saved.confidence, adoptedCodes: saved.adoptedCodes.length, light: true, lightKept: light.kept, lightDropped: light.dropped.slice(0, 6), fullFailure: failureNotes.slice(0, 300) };
+      }
+      return { saved: false, reason: `full research failed (${failureNotes.slice(0, 200)}); the lighter retry stored nothing: ${light.reason}`, ...evidence, lightDropped: light.dropped.slice(0, 6) };
+    }
+    return { saved: false, reason: "not web-grounded — model memory is never stored as an edition", ...evidence, notes: failureNotes.slice(0, 600) };
+  }
   if (!research.profile.adoptedCodes.length && !research.profile.adoptionModel) return { saved: false, reason: "research found no adopted codes", ...evidence };
   // The row the save would land on: the exact key, or — for an AHJ — the human-verified row its
   // name resolves to by fuzzy match ("City of Portland" -> or|portland), which the save refuses to
@@ -1440,6 +1456,87 @@ export async function runCodeResearch(db: AppDb, payload: Partial<CodeResearchJo
     return { saved: false, verified: true, proposals: after.length, newProposal: after.some((p) => !before.includes(p.fingerprint)), ...evidence };
   }
   return { saved: true, key: saved.key, confidence: saved.confidence, adoptedCodes: saved.adoptedCodes.length, ...evidence };
+}
+
+/** A full research that failed for a reason a lighter pass can survive (the budget, the API, a cut-off
+ *  answer) — not one that searched and found nothing, which a lighter pass would only repeat. */
+export const TRANSIENT_RESEARCH_FAILURE = /web search failed|timed?\s*out|timeout|aborted|overloaded|rate.?limit|\b(?:429|500|502|503|529)\b|ECONNRESET|socket hang up|truncated|max_tokens|did not parse/i;
+
+export const LIGHT_CODE_RESEARCH_SYSTEM = `You find which building-code EDITIONS one jurisdiction enforces TODAY for residential work. Nothing else: no design criteria, no amendments, no process.
+
+SEARCH the jurisdiction's own site (or, for a state, the state agency that adopts the codes) for its adopted-codes page or ordinance. Every entry must be backed by a page your searches returned, and you must quote the sentence on it that names the edition.
+
+Return ONLY JSON:
+{"adoptedCodes":[{"family":"residential|building|electrical|fire|energy|mechanical|plumbing","code":"<IRC|IBC|NEC|IFC|IECC|IMC|IPC|UPC or the state code's own name>","edition":"<year>","sourceUrl":"<page>","quote":"<the sentence naming the edition, verbatim>"}]}
+
+Omit a family rather than guess. An empty list is a correct answer when nothing citable is found.`;
+
+function normResultUrl(u: string): string {
+  return String(u || "").trim().replace(/#.*$/, "").replace(/\/+$/, "").toLowerCase();
+}
+
+/**
+ * THE LIGHTER PASS. One webLookup (3 searches, no page reads, a small answer); an edition is kept only
+ * when its URL is one the searches returned, its quote names the edition year, and its family is one
+ * that was asked (all, for the state layer). The profile it returns carries web-grounded provenance
+ * marked as the light pass, and goes through the same save (scope, merge, verified refusal).
+ */
+export async function lightCodeResearch(
+  llm: Pick<LLMProvider, "webLookup">,
+  input: { state: string; ahj: string; families?: CodeFamily[] },
+): Promise<{ profile: JurisdictionCodeProfile | null; kept: number; dropped: string[]; reason: string }> {
+  if (!llm.webLookup) return { profile: null, kept: 0, dropped: [], reason: "no web lookup available" };
+  const who = input.ahj.trim() ? `${input.ahj}, ${input.state}` : `the state of ${input.state} (the statewide codes)`;
+  const res = await llm.webLookup({
+    label: "researchJurisdictionCodes.light",
+    system: LIGHT_CODE_RESEARCH_SYSTEM,
+    user: `Jurisdiction: ${who}${input.families?.length ? `\nFamilies to answer: ${input.families.join(", ")}` : ""}`,
+    maxTokens: 2500,
+    maxSearches: 3,
+    readPages: false,
+    timeoutMs: 120_000,
+  });
+  if (res.error) return { profile: null, kept: 0, dropped: [], reason: `lookup failed: ${res.error.slice(0, 200)}` };
+  if (!res.groundedSearches) return { profile: null, kept: 0, dropped: [], reason: "no web search returned results" };
+  let parsed: { adoptedCodes?: unknown };
+  try {
+    const m = String(res.text || "").match(/```(?:json)?\s*([\s\S]*?)```/) ?? String(res.text || "").match(/(\{[\s\S]*\})/);
+    parsed = JSON.parse(m ? m[1] : String(res.text || "")) as { adoptedCodes?: unknown };
+  } catch {
+    return { profile: null, kept: 0, dropped: [], reason: "the answer did not parse" };
+  }
+  const seen = new Set((res.resultUrls ?? []).map(normResultUrl));
+  const dropped: string[] = [];
+  const codes: CodeEdition[] = [];
+  for (const raw of Array.isArray(parsed.adoptedCodes) ? parsed.adoptedCodes : []) {
+    if (!raw || typeof raw !== "object") continue;
+    const o = raw as Record<string, unknown>;
+    const family = isCodeFamily(String(o.family || "").trim().toLowerCase()) ? (String(o.family).trim().toLowerCase() as CodeFamily) : undefined;
+    const code = String(o.code || "").trim().slice(0, 24);
+    const edition = String(o.edition || "").match(/\d{4}/)?.[0] ?? "";
+    const sourceUrl = String(o.sourceUrl || "").trim().slice(0, 500);
+    const quote = String(o.quote || "").replace(/\s+/g, " ").trim().slice(0, 300);
+    const label = `${code} ${edition}`.trim() || "(unnamed)";
+    if (!family || !code || !edition) { dropped.push(`${label}: missing family/code/edition`); continue; }
+    if (input.families?.length && !input.families.includes(family)) { dropped.push(`${label}: ${family} was not asked`); continue; }
+    if (!sourceUrl || !seen.has(normResultUrl(sourceUrl))) { dropped.push(`${label}: its URL was not a page the searches returned`); continue; }
+    if (!quote.includes(edition)) { dropped.push(`${label}: the quote does not name ${edition}`); continue; }
+    codes.push({ family, code, edition, sourceUrl, quote });
+  }
+  if (!codes.length) return { profile: null, kept: 0, dropped, reason: dropped.length ? "every edition was dropped (uncited or unquoted)" : "no edition found" };
+  const profile: JurisdictionCodeProfile = {
+    key: "", state: input.state, ahj: input.ahj, confidence: "seeded",
+    adoptedCodes: codes, amendments: [], designCriteria: {}, prescriptive: {}, fireSetbacks: [],
+    citations: codes.map((c) => ({ label: `${c.code} ${c.edition} (light research)`, sourceUrl: c.sourceUrl! })),
+    updatedAt: "",
+    researchProvenance: {
+      webGrounded: true, method: "web_search",
+      notes: "Light retry after the full research failed (editions only, cited and quoted).",
+      at: nowIso(), searches: res.searches ?? res.groundedSearches, groundedSearches: res.groundedSearches,
+      ...(res.resultUrls?.length ? { resultUrls: res.resultUrls.slice(0, 20) } : {}),
+    },
+  };
+  return { profile, kept: codes.length, dropped, reason: "" };
 }
 
 /** CODE_RESEARCH=off stops every automatic jurisdiction lookup (full code research and the
@@ -1761,6 +1858,8 @@ export function ensureDesignCriteriaResearched(db: AppDb, state: string, ahj: st
   const dc = own?.profile.designCriteria ?? {};
   // A jurisdiction that publishes only pg(asd) (2024 IRC Table R301.2) has its ground snow answered.
   const snowAnswered = typeof dc.groundSnowLoadPsf === "number" || typeof dc.groundSnowLoadAsdPsf === "number";
+  // Answered criteria: nothing to ask. (The AHJ's placement rules ride this job — runDesignCriteriaResearch
+  // — so a NEW AHJ gets them; a row whose criteria were filled earlier is not re-queued for them alone.)
   if (snowAnswered && typeof dc.windSpeedMph === "number") return 0;
   const key = target.key;
   const fullAskedAt = inFlightCodeResearch.get(key);
@@ -1863,6 +1962,68 @@ export function mergeResearchedDesignCriteria(
   return { saved: true, filled, skipped, profileKey: key };
 }
 
+/** Stored placement-rule ids carry this prefix: the reviewer shows ONLY these as "AHJ rule on file"
+ *  callouts (a reference/import setback row keeps its own id and behaviour). */
+export const PLACEMENT_RULE_ID_PREFIX = "placement-research:";
+
+/**
+ * THE AHJ'S OWN PV PLACEMENT RULES ONTO ITS OWN ROW (pvPlacementRules.ts found and grounded them).
+ * Fire setbacks / access pathways / placement rules land in fireSetbacks — only when the row holds
+ * none (a human's or an import's rules are never replaced); local PV amendments are appended to
+ * amendments (deduped). Always seeded; never a human-verified row (resolveCriteriaWriteRow).
+ */
+export function saveResearchedPlacementRules(
+  db: AppDb,
+  target: { state: string; ahj: string },
+  rules: Array<{ kind: string; rule: string; sourceUrl: string; section?: string }>,
+): { saved: boolean; setbacks: number; amendments: number; reason?: string; profileKey: string } {
+  const resolved = resolveCriteriaWriteRow(db, target.state, target.ahj);
+  if (!resolved) return { saved: false, setbacks: 0, amendments: 0, reason: "no state / jurisdiction", profileKey: "" };
+  const key = resolved.key;
+  if (resolved.kind === "blocked_verified") return { saved: false, setbacks: 0, amendments: 0, reason: `profile is human-verified — ${resolved.message}`, profileKey: key };
+  if (!rules.length) return { saved: false, setbacks: 0, amendments: 0, reason: "no cited rule found", profileKey: key };
+  const base: JurisdictionCodeProfile = resolved.kind === "create" ? {
+    key: "", state: target.state, ahj: target.ahj, confidence: "seeded",
+    adoptedCodes: [], amendments: [], designCriteria: {}, prescriptive: {}, fireSetbacks: [], citations: [], updatedAt: "",
+  } : resolved.profile;
+  const at = nowIso();
+  const who = base.ahj || target.ahj;
+  const placement = rules.filter((r) => r.kind !== "local_amendment");
+  const local = rules.filter((r) => r.kind === "local_amendment");
+  const fireSetbacks = base.fireSetbacks.length ? base.fireSetbacks : placement.map((r, i) => ({
+    id: `${PLACEMENT_RULE_ID_PREFIX}${r.kind}:${i + 1}`,
+    description: r.rule,
+    codeReference: {
+      code: `${who} ${r.kind === "fire_setback" || r.kind === "access_pathway" ? "fire access rule" : "PV placement rule"}`,
+      section: r.section || "",
+      title: r.kind.replace(/_/g, " "),
+      adoptionScope: `${who}'s own published rule (seeded from its page — verify before citing as authoritative).`,
+      sourceUrl: r.sourceUrl,
+      note: "Looked up from the AHJ's own page; the rule is quoted, not checked against the plan.",
+    },
+  }));
+  const amendKey = (a: { code: string; section?: string; summary: string }) => `${a.code}|${a.section ?? ""}|${a.summary}`.toLowerCase();
+  const have = new Set(base.amendments.map(amendKey));
+  const newAmend = local.map((r) => ({ code: "Local PV amendment", section: r.section || undefined, summary: r.rule.slice(0, 400), sourceUrl: r.sourceUrl }))
+    .filter((a) => !have.has(amendKey(a)));
+  const addedSetbacks = base.fireSetbacks.length ? 0 : fireSetbacks.length;
+  if (!addedSetbacks && !newAmend.length) return { saved: false, setbacks: 0, amendments: 0, reason: "the row already holds placement rules; nothing new", profileKey: key };
+  // The citation carries no `kind` (the shared type names two kinds, and this module may not widen
+  // it); its label marks it, and it is deduped by label + URL.
+  const label = `PV placement / fire access rules (${who})`;
+  const citeKeys = new Set(base.citations.map((c) => `${c.label}|${c.sourceUrl}`.toLowerCase()));
+  const citations = [...base.citations];
+  for (const r of rules) {
+    const k = `${label}|${r.sourceUrl.slice(0, 500)}`.toLowerCase();
+    if (citeKeys.has(k)) continue;
+    citeKeys.add(k);
+    citations.push({ label, sourceUrl: r.sourceUrl.slice(0, 500), quote: r.rule.slice(0, 240), at });
+  }
+  upsert(db, { ...base, fireSetbacks, amendments: [...base.amendments, ...newAmend], citations }, { confidence: "seeded" });
+  addAuditLog(db, null, "system", "placement rules lookup", "code_profile.placement_rules_researched", { profileKey: key, setbacks: addedSetbacks, amendments: newAmend.length });
+  return { saved: true, setbacks: addedSetbacks, amendments: newAmend.length, profileKey: key };
+}
+
 /** The design_criteria_research job body. `provider` is a test seam. */
 export async function runDesignCriteriaResearch(
   db: AppDb,
@@ -1873,9 +2034,33 @@ export async function runDesignCriteriaResearch(
   const ahj = String(payload.ahj || "");
   const profileKey = String(payload.profileKey || "") || undefined;
   const llm = provider ?? (await import("./llm")).createLLMProvider();
-  if (!llm.researchDesignCriteria) return { saved: false, reason: "provider has no design-criteria lookup" };
+  // THE AHJ'S OWN PLACEMENT RULES ride the same job (it runs for every AHJ, a uniform-state one
+  // included — Waltham's access-path rule is Waltham's, whatever Massachusetts adopts). Best effort:
+  // a failed lookup never fails the criteria half.
+  const placementHalf = async (): Promise<Record<string, unknown>> => {
+    try {
+      const row = resolveCriteriaWriteRow(db, state, ahj);
+      if (!row || row.kind === "blocked_verified") return { skipped: "no writable row" };
+      if (row.kind !== "create" && row.profile.fireSetbacks.length) return { skipped: "placement rules already on file" };
+      if (!llm.webLookup) return { skipped: "no web lookup available" };
+      const { researchPlacementRules } = await import("./pvPlacementRules");
+      const found = await researchPlacementRules(llm, { ahj, state });
+      const saved = saveResearchedPlacementRules(db, { state, ahj }, found.rules);
+      return { ...saved, found: found.rules.length, webGrounded: found.webGrounded, ...(found.dropped.length ? { dropped: found.dropped.slice(0, 6) } : {}), ...(found.error ? { error: found.error.slice(0, 300) } : {}) };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300) };
+    }
+  };
+  const own = resolveCriteriaWriteRow(db, state, ahj);
+  const dcNow = own && own.kind !== "create" ? own.profile.designCriteria ?? {} : {};
+  const criteriaAnswered = (typeof dcNow.groundSnowLoadPsf === "number" || typeof dcNow.groundSnowLoadAsdPsf === "number") && typeof dcNow.windSpeedMph === "number";
+  if (criteriaAnswered || !llm.researchDesignCriteria) {
+    const placement = await placementHalf();
+    return { saved: false, reason: criteriaAnswered ? "design criteria already on file" : "provider has no design-criteria lookup", placement };
+  }
   const research = await llm.researchDesignCriteria({ state, ahj });
   const merged = mergeResearchedDesignCriteria(db, { state, ahj, profileKey }, research);
+  const placement = await placementHalf();
   // The lookup's own notes (truncated, pages read, what was dropped and why) reach the job result.
-  return { ...merged, webGrounded: research.webGrounded, found: research.values?.length ?? 0, notes: String(research.notes || "").slice(0, 1000) };
+  return { ...merged, webGrounded: research.webGrounded, found: research.values?.length ?? 0, notes: String(research.notes || "").slice(0, 1000), placement };
 }

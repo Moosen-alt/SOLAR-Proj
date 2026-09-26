@@ -117,6 +117,7 @@ export function buildReviewerReport(
   if (opts.pvWorksheet) findings.push(...pvWorksheetFindings(project, opts.pvWorksheet));
   findings.push(...serviceRatingConsistencyFindings(project, [String(project.parserSnapshot?.planSetExtractedText ?? ""), ...(opts.documentTexts ?? []).map((d) => d.text)].join("\n")));
   addPlanSetFindings(project, findings);
+  addPlacementRuleFindings(project, opts.codeContext, findings);
   addUtilityFindings(project, findings);
   addProfileFindings(project, profile, findings, opts.uploadedDocTypes ?? []);
   addPermitPathFindings(project, findings);
@@ -836,6 +837,51 @@ function addPlanSetFindings(project: ProjectRecord, findings: ReviewerFinding[])
       },
     ));
   }
+}
+
+/**
+ * THE AHJ'S OWN PLACEMENT RULES, SHOWN — NEVER CHECKED. Rules the placement lookup stored on the
+ * AHJ's profile (pvPlacementRules.ts; id prefix "placement-research:") are listed as a callout on a
+ * roof array: "AHJ rule on file: … confirm on the roof plan". Waltham's rejection (new-AHJ e2e,
+ * 2026-09-26) was its checklist item 11 — an access path clear of the incoming electrical service —
+ * and the gate had shown a green check for "fire access + escape pathways" because a FILE was
+ * attached. Nothing here reads the drawing, so the evidence is "weak" and the words say "confirm".
+ */
+function addPlacementRuleFindings(project: ProjectRecord, ctx: EffectiveCodeContext | undefined, findings: ReviewerFinding[]): void {
+  const rules = (ctx?.fireSetbacks ?? []).filter((r) => String(r.id || "").startsWith("placement-research:"));
+  if (!rules.length) return;
+  const kind = mountKindForProject(project);
+  if (kind !== "roof" && kind !== "unknown") return;
+  const who = project.ahj || ctx?.ahj || "The AHJ";
+  const lines = rules.slice(0, 6).map((r) => `"${r.description}"${r.codeReference?.section ? ` (${r.codeReference.section})` : ""}`);
+  findings.push(finding(
+    "reviewer.plan.ahj-placement-rules",
+    "callout",
+    "plan_set",
+    `${who}'s own PV placement / fire access rules — confirm the roof plan meets them`,
+    `AHJ rule${rules.length > 1 ? "s" : ""} on file (from ${who}'s own page; not checked against the drawing): ${lines.join("; ")}.`,
+    true,
+    {
+      cityFeedback: `Show on the roof/site plan that the array meets ${who}'s published placement and fire access rules: ${lines.join("; ")}.`,
+      designTeamAction: "Check each quoted rule against the roof plan (pathway widths and locations, ridge/eave setbacks, clearance from the electrical service) before submittal; these were read from the AHJ's page, not measured on the plan.",
+      evidenceNeeded: ["Roof plan with dimensioned pathways and setbacks", ...rules.slice(0, 3).map((r) => r.description.slice(0, 120))],
+      codeReferences: rules.slice(0, 4).map((r) => r.codeReference).filter((c): c is CodeReference => !!c),
+      evidenceStatus: "weak",
+      // The evidence is the AHJ's page, said as such — so the topic's plan-text evidence is not
+      // borrowed (attachEvidence) and nothing reads as "verified on the plan".
+      evidenceFound: rules.slice(0, 4).map((r) => ({
+        kind: "source_excerpt" as const,
+        label: `${who}'s rule (its own page) — not checked against the plan`,
+        source: r.codeReference?.sourceUrl || "",
+        excerpt: r.description.slice(0, 300),
+        confidence: "medium" as const,
+        pageHint: r.codeReference?.section || "",
+        screenshotPath: "",
+        verifier: "rule_engine" as const,
+        note: "Read from the AHJ's published page by the placement lookup; confirm the roof plan meets it.",
+      })),
+    },
+  ));
 }
 
 function addUtilityFindings(project: ProjectRecord, findings: ReviewerFinding[]): void {
