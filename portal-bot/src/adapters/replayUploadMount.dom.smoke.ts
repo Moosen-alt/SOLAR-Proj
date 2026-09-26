@@ -6,7 +6,7 @@
 // plan_set: Plan set (PDF) *" at ~174 s each, with <input type=file> present and UNTAGGED in the
 // failure capture (replay skeptic MF4).
 //
-// MUST-PASS: the slot mounts 1.5 s after the page — the file is attached to it, quickly.
+// MUST-PASS: the slot mounts 6 s after the page (well past every settle before the step) — the file is attached to it, quickly.
 // MUST-EXCLUDE: the page's only slot is labelled differently ("Site plan") — the step is skipped,
 //   named, within seconds, and the document goes to NO other slot.
 //
@@ -31,13 +31,13 @@ const pdf = path.join(dir, "plan-set.pdf");
 fs.writeFileSync(pdf, "%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n");
 
 const page = (label: string) => `<!doctype html><html><head><title>Apply</title></head><body>
-  <h1>Step 3: Documents</h1><div id="app"><div class="spinner">Loading…</div></div>
+  <h1>Step 3: Documents</h1><div id="app"><p><label for="notes">Notes</label><input id="notes"></p><div id="slot" class="spinner">Loading…</div></div>
   <script>
+    // The page's other controls are live at once; the upload widget mounts behind its own spinner.
     setTimeout(function () {
-      document.getElementById('app').innerHTML =
-        '<div class="form-group"><label for="doc1">${label}</label><input type="file" id="doc1" accept=".pdf"></div>'
-        + '<p><label for="notes">Notes</label><input id="notes"></p>';
-    }, 1500);
+      document.getElementById('slot').outerHTML =
+        '<div class="form-group"><label for="doc1">${label}</label><input type="file" id="doc1" accept=".pdf"></div>';
+    }, 6000);
   </script></body></html>`;
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
