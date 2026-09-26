@@ -3,6 +3,41 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## PER-JOB LOOKUP READS THE AGENCY'S PAGES ITSELF (2026-09-26, lookup-recall-2)
+
+New modules:
+- `agencyPageReader.ts`: our own polite GET. One try per URL, ≥ 10 s per host across the whole process, back-off after a refusal, 20 s timeout, 15 MB cap. It never fetches a sign-in page and keeps no cookies. It returns anchor text → absolute href, and PDF text through `pdfTables`.
+- `permitPlatformCatalog.ts`:
+  - Portal from the agency's own page. A vendor-host link is accepted directly. An own-domain link is accepted only when our read shows platform markers or a redirect onto a vendor host. One hop is allowed. Rule 5 applies to every candidate.
+  - Platform markers come from the page itself: ACA on a city domain counts, but a page that only links a platform does not.
+  - Public catalogs: the EnerGov `api/Home/Menu` (it needs the tenant headers) and the ACA search record types (modules taken from the tab-bar script).
+  - Solar record types come in the portal's own labels, each with its selecting condition. When the plan path can't choose, the lookup asks the operator.
+  - Prerequisites and code editions are quoted from pages we read.
+- `permitProcessLookup.ts` wires these in between part one and parts two/three:
+  - A portal resolved from the agency's page ranks above a model-cited one.
+  - The portal model call is skipped when the catalog names the types.
+  - The fee schedule and checklist excerpts go to documents/fees. A quote cited to one of our pages must be on it; a checklist quote is matched item by item.
+  - `acceptPortal` now accepts a platform page citing itself only when our read shows its markers (the Columbus shape).
+  - Tests: `backend/test/agencyPageRead.test.ts` (15 checks). Kills: `.probe/lookup-recall-2/kill.cjs`, 16/16 red.
+
+Dev-set eval (real web, real model; `.probe/lookup-recall-2/`, scored by `score.ts`; figures are found / WRONG / missing):
+
+| Set | Before | After | Notes |
+|---|---|---|---|
+| 5 prep AHJs, 56 items | 14 / 0 / 42 | 23 / 0 / 33 | Portal 2 → 5 of 5. Fees 0 → 2. Prerequisites 1 → 3. Iowa City's 2023 NEC found. A Carlsbad rerun with the checklist fix took documents from 0/7 to 6/7. |
+| 7 recall AHJs, 69 items | 16 / 2 / 50 | 19 / 3 / 47 | Before is a replay of after2's answers at the eba6fa0 doors. Clark, Evanston and Sacramento portals are now the aca-prod tenants. |
+
+The after WRONGs:
+- Lee: `aca.leegov.com`, the model's portal, went through the unchanged door; our read of it failed.
+- Sacramento: the $305 staff-report fee (the old WRONG).
+- Evanston: one document that is not a truth item.
+
+Open:
+- **The Anthropic credit balance ran out at 22:45 UTC during the eval** ("credit balance is too low"). The live server's lookups fail until it is topped up.
+- `documentFetch`'s wall check reads `<script>` text: "Storage access denied" in the ACA source reads as a wall. The reader re-asks on visible text; the fix belongs in `documentFetch` / `runAbort`.
+- Tigard's fee schedule is never reached (not linked from the pages read, and no search title named it).
+- EnerGov attachment types are not exposed logged out.
+
 ## PER-JOB LOOKUP ASKS THE ISSUING AGENCY; THE PORTAL IS ITS OWN STEP (2026-09-26)
 
 `permitProcessLookup.ts` (commits d5ab7f0, ef36887, af27c08, 3f2ab2c):
