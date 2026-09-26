@@ -342,6 +342,15 @@ await check("(o1) isOfficialAgencyHost (close F2): .gov / a US locality .us / th
     ["www.govpilot.com", ["Examplecity"]], ["comcast.com", ["Examplecity"]], ["library.municode.com", ["Examplecity"]], ["www.pattonboro.com", ["Northern Cambria Borough"]], ["public.mygov.us", ["Town of Venus"]],
     ["www.solarreviews.com", ["Examplecity"]], ["www.waltham-news.com", ["Waltham City"]], ["www.govoutreach.com", ["Examplecity"]]];
   for (const [h, n] of fail) assert.equal(cat.isOfficialAgencyHost(h, n), false, `not official: ${h}`);
+  // The state: another state's same-named place is not this agency; initials after "cityof".
+  assert.equal(cat.isOfficialAgencyHost("www.leecova.org", ["Lee County"], "FL"), false, "Lee County, Virginia is not Lee County, Florida");
+  assert.equal(cat.isOfficialAgencyHost("www.leegov.com", ["Lee County"], "FL"), true);
+  assert.equal(cat.isOfficialAgencyHost("www.clarkcountynv.gov", ["Clark County"], "NV"), true);
+  assert.equal(cat.isOfficialAgencyHost("www.co.marion.or.us", ["Marion County"], "IA"), false, "another state's locality domain");
+  assert.equal(cat.isOfficialAgencyHost("www.cityofgp.com", ["City of Grand Prairie"], "TX"), true, "initials after cityof");
+  assert.equal(cat.isOfficialAgencyHost("www.gp.com", ["City of Grand Prairie"], "TX"), false, "bare initials name nobody");
+  assert.equal(cat.isOfficialAgencyHost("www.gpco.com", ["City of Grand Prairie"], "TX"), false, "initials after a non-official affix name nobody");
+  assert.equal(cat.isOfficialAgencyHost("tigard.prod.govaccess.org", ["City of Tigard"], "OR"), false, "a CMS vendor's staging host");
 });
 
 await check("(c4) MUST-EXCLUDE (close F3): record-type look-alikes are not PV — solar hot water, a solar screen, remove-and-reinstall, panel removal, a wind turbine, a pool heater; MUST-PASS: the PV types beside them", () => {

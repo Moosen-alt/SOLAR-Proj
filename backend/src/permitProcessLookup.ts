@@ -511,10 +511,10 @@ const MAX_DOCS = 3;
  * ≤ 4 portal verifications incl. one hop, ≤ 2 proposed-portal checks, ≤ 3 catalog reads, ≤ 3 documents).
  */
 export async function readAgencyEvidence(reader: PageReader, input: {
-  ahj: string; agencyNames: string[]; citedUrls: string[]; agencyCitation?: string; resultUrls: string[]; resultTitles?: Record<string, string>; proposedPortals: string[];
+  ahj: string; state?: string; agencyNames: string[]; citedUrls: string[]; agencyCitation?: string; resultUrls: string[]; resultTitles?: Record<string, string>; proposedPortals: string[];
 }): Promise<AgencyEvidence> {
   const names = [input.ahj, ...input.agencyNames].filter(Boolean);
-  const official = (u: string) => { const h = portalHostOf(u); return Boolean(h) && isOfficialAgencyHost(h, names); };
+  const official = (u: string) => { const h = portalHostOf(u); return Boolean(h) && isOfficialAgencyHost(h, names, input.state); };
   const domOf = (u: string) => registrableDomain(portalHostOf(u));
   // THE AGENCY'S DOMAIN: where its cited agency answer lives; else the official domain the answer
   // cites most, preferring one that carries the AHJ's own name (a state agency's page is read only
@@ -551,7 +551,7 @@ export async function readAgencyEvidence(reader: PageReader, input: {
 
   // Documents: the fee schedule / checklist the agency's pages link, then the documents the answer
   // cites on official hosts; fee schedules first.
-  const docLinks = documentLinks(okPages, names);
+  const docLinks = documentLinks(okPages, names, input.state);
   // A search result on the agency's domain whose TITLE names its fee schedule / solar checklist (the
   // model saw it but its own fetch was refused — url_not_allowed / url_not_accessible).
   for (const [u, t] of Object.entries(input.resultTitles ?? {})) {
@@ -682,7 +682,7 @@ export async function runPermitProcessLookup(
     const agencyNames = [first.issuingAgency.value, ...first.permits.map((p) => p.issuingAgency.value)].filter((x): x is string => Boolean(x));
     const agencyCitation = first.issuingAgency.value ? first.issuingAgency.sourceUrl : first.permits.find((p) => p.issuingAgency.value)?.issuingAgency.sourceUrl;
     try {
-      ev = await readAgencyEvidence(reader, { ahj: input.ahj, agencyNames, citedUrls: cited.all, agencyCitation, resultUrls: p1.resultUrls, resultTitles: p1.resultTitles, proposedPortals: proposedPortals(p1json) });
+      ev = await readAgencyEvidence(reader, { ahj: input.ahj, state: input.state, agencyNames, citedUrls: cited.all, agencyCitation, resultUrls: p1.resultUrls, resultTitles: p1.resultTitles, proposedPortals: proposedPortals(p1json) });
     } catch (err) {
       logger.warn("permit-process", `agency page read failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -793,7 +793,7 @@ export async function runPermitProcessLookup(
       // The portal step's proposals: read (≤ 2) so a platform page citing itself is attested (R3).
       const pagesNow = [...platformPages];
       if (reader && grounded) {
-        for (const u of proposedPortals(parseJsonLoose(a.r.text)).filter((x) => !pagesNow.includes(x) && (isPermitPlatformUrl(x) || isOfficialAgencyHost(portalHostOf(x), [input.ahj, g0(groups)]))).slice(0, 2)) {
+        for (const u of proposedPortals(parseJsonLoose(a.r.text)).filter((x) => !pagesNow.includes(x) && (isPermitPlatformUrl(x) || isOfficialAgencyHost(portalHostOf(x), [input.ahj, g0(groups)], input.state))).slice(0, 2)) {
           const pg = await reader.read(u);
           if (detectPlatform(pg)) { pagesNow.push(pg.url, pg.finalUrl); ourSeen.push(pg.url, pg.finalUrl); platformReads.set(portalTenantKey(pg.url), pg); platformReads.set(portalTenantKey(pg.finalUrl), pg); }
         }

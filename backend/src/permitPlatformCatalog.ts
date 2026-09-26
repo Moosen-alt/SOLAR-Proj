@@ -1,11 +1,13 @@
 // THE PORTAL FROM THE AGENCY'S OWN PAGE, AND THE RECORD TYPE FROM THE PORTAL'S OWN CATALOG
 // (lookup-recall-2, 2026-09-26). Invariants for an UNKNOWN AHJ — no city is named in this file:
 //
-//   1. PORTAL RESOLVED FROM A PAGE WE READ. An agency page (official: a .gov/.us host, a gov/city/
-//      county domain, or the agency's own name in its domain) links an application portal. A link
-//      counts when its target is on a permit-software VENDOR's host (accela.com, tylerhost.net, …)
-//      — the link on the agency's own page attests the tenant — or on the agency's OWN domain AND
-//      our read of that target shows a permit platform (its markers, or a redirect onto a vendor
+//   1. PORTAL RESOLVED FROM A PAGE WE READ. An agency page (official: isOfficialAgencyHost — .gov,
+//      a <x>.<st>.us locality, or the agency's own domain) links an application portal. A link counts
+//      when its target is on a permit-software VENDOR's host (accela.com, tylerhost.net, …), its words
+//      or target path NAME an application portal (never a concern / 311 / parcel-viewer link, a
+//      vendor's own site, SolarAPP+), AND its tenant is this agency's (named by the tenant, the only
+//      one on the pages, or our read shows it) — or on the agency's OWN domain AND our read of that
+//      target shows a permit platform (its markers, or a redirect onto a vendor
 //      host). A same-domain page whose words name the portal ("Community Development Hub", "online
 //      portal") is followed ONE hop. Every candidate passes rule 5 (hostFitsTrackAndEntity on the
 //      permit track: never a utility / interconnection portal, never a help page or a document).
@@ -58,41 +60,50 @@ const US_STATES = new Set("al ak az ar ca co ct de fl ga hi id il in ia ks ky la
  *   - a government TLD (.gov / .mil), or a US locality domain (<x>.<st>.us: city.waltham.ma.us,
  *     co.marion.or.us) — never a bare .us (mygov.us is a vendor);
  *   - or the AGENCY'S OWN DOMAIN: once its official affixes are removed (cityof / townof / countyof /
- *     city / county / town / twp / boro / gov / co / ci, and a state's two letters), the label is exactly
- *     one of the name's distinctive keys, or its initials with a "gov" affix: cityofevanston.org,
- *     clarkcountynv.gov, leegov.com (lee + gov), icgov.org (Iowa City's initials + gov), tigard-or.gov.
+ *     city / county / town / twp / boro / gov / co / ci, and THIS job's state's two letters), the label
+ *     is exactly one of the name's distinctive keys, or its initials after a "gov" / "cityof" affix:
+ *     cityofevanston.org, clarkcountynv.gov, leegov.com (lee + gov), icgov.org (Iowa City's initials +
+ *     gov), cityofgp.com, tigard-or.gov. A same-named place in another state (leecova.org for Lee
+ *     County, FL) is not.
  * A vendor's host, a directory, a news or code-publishing site is not.
  */
-export function isOfficialAgencyHost(host: string, names: string[]): boolean {
+export function isOfficialAgencyHost(host: string, names: string[], state?: string): boolean {
   const h = String(host ?? "").toLowerCase().replace(/^www\./, "");
   if (!h || isPermitPlatformUrl(`https://${h}/`)) return false;
   if (/\.(?:gov|mil)$/.test(h)) return true;
   const us = /\.([a-z]{2})\.us$/.exec(h);
-  if (us && US_STATES.has(us[1])) return true;
+  if (us && US_STATES.has(us[1])) return !state || us[1] === String(state).toLowerCase();
   const label = registrableDomain(h).split(".")[0].replace(/-/g, "");
   const keys = nameKeys(names);
   const initials = names.map(initialsOf).filter(Boolean);
+  // A state's letters are stripped only when they are THIS job's state (leecova.org is Lee County,
+  // Virginia — not Lee County, Florida); with no state known, any state's.
+  const st2 = String(state ?? "").toLowerCase();
+  const isStateSuffix = (s: string) => (st2 ? s === st2 : US_STATES.has(s));
   // Strip affixes step by step; every intermediate form is a candidate for "the name itself".
   const forms = new Set<string>([label]);
+  const official = new Set<string>(); // forms reached by removing an official affix (cityof / gov …)
   let changed = true;
   while (changed) {
     changed = false;
     for (const f of [...forms]) {
-      const next: string[] = [];
+      const next: Array<[string, boolean]> = [];
       const pre = /^(cityof|townof|countyof|villageof|boroughof|townshipof|city|county|town|gov|co|ci)(.+)$/.exec(f);
-      if (pre) next.push(pre[2]);
-      const suf = /^(.+?)(city|county|town|township|twp|borough|boro|village|gov)$/.exec(f);
-      if (suf) next.push(suf[1]);
+      if (pre) next.push([pre[2], /of$|gov/.test(pre[1])]);
+      const suf = /^(.+?)(city|county|town|township|twp|borough|boro|village|gov|co)$/.exec(f);
+      if (suf) next.push([suf[1], suf[2] === "gov"]);
       const st = /^(.+?)([a-z]{2})$/.exec(f);
-      if (st && US_STATES.has(st[2]) && st[1].length >= 3) next.push(st[1]);
-      for (const n of next) if (n.length >= 2 && !forms.has(n)) { forms.add(n); changed = true; }
+      if (st && isStateSuffix(st[2]) && st[1].length >= 3) next.push([st[1], false]);
+      for (const [n, off] of next) {
+        if (off || official.has(f)) official.add(n);
+        if (n.length >= 2 && !forms.has(n)) { forms.add(n); changed = true; }
+      }
     }
   }
   if ([...forms].some((f) => keys.includes(f))) return true;
-  // Initials only with an explicit "gov" affix (icgov.org) — two letters alone name nobody.
-  const govStripped = /^(.+?)gov$|^gov(.+)$/.exec(label);
-  const core = govStripped ? (govStripped[1] ?? govStripped[2]) : "";
-  return Boolean(core) && initials.includes(core);
+  // Initials only after an explicit "gov" / "cityof" affix (icgov.org, cityofgp.com) — two letters
+  // alone name nobody.
+  return [...official].some((f) => initials.includes(f));
 }
 
 // ── Platform markers ──────────────────────────────────────────────────────────────────────
@@ -580,14 +591,14 @@ function feeRank(words: string, href: string, now = new Date().getFullYear()): n
 /** The fee schedule / checklist links on the agency's own pages (own domain or a document host it
  *  links), fee schedules first (the current year's solar / building schedule before the rest); an
  *  archived, prior-year or other-kind schedule is not one (classifyDocument). */
-export function documentLinks(pages: ReadPage[], names: string[]): Array<{ href: string; text: string; kind: "fees" | "checklist" }> {
+export function documentLinks(pages: ReadPage[], names: string[], state?: string): Array<{ href: string; text: string; kind: "fees" | "checklist" }> {
   const out: Array<{ href: string; text: string; kind: "fees" | "checklist" }> = [];
   for (const page of pages) {
     if (!page.ok || page.kind !== "html") continue;
     const dom = registrableDomain(portalHostOf(page.finalUrl));
     for (const l of page.links) {
       const host = portalHostOf(l.href);
-      if (!host || (registrableDomain(host) !== dom && !isOfficialAgencyHost(host, names))) continue;
+      if (!host || (registrableDomain(host) !== dom && !isOfficialAgencyHost(host, names, state))) continue;
       if (/translate|facebook|twitter|mailto|[?&]splash=|isexternal/i.test(l.href)) continue;
       const kind = classifyDocument(l.text, l.href);
       if (kind && !out.some((o) => o.href === l.href)) out.push({ href: l.href, text: l.text, kind });
