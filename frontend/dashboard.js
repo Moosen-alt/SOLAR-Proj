@@ -2367,12 +2367,18 @@ function feeFaceSourceHtml(line) {
   const url = httpUrl(line.sourceUrl);
   const link = url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(portalHostname(url) || url)}</a>` : "";
   if (line.feeUsd != null) {
+    // The server sends the schedule's URL whichever tier won the amount (it is a fact about the
+    // jurisdiction). So the link joins "Source:" ONLY when the schedule IS the source; beside an
+    // operator-entered actual, a learned median or an estimate it is drawn apart and says so —
+    // "Source: the portal's own fee screen · venus.gov" would be a false provenance claim.
+    const fromSchedule = line.source === "published_schedule";
     const parts = [
-      line.bracketLabel ? `line “${esc(line.bracketLabel)}”` : "",
+      fromSchedule && line.bracketLabel ? `line “${esc(line.bracketLabel)}”` : "",
       esc(FEE_SOURCE_TEXT[line.source] || line.source || ""),
-      link,
+      fromSchedule ? link : "",
     ].filter(Boolean);
-    return parts.length ? `<p class="fee-face-source" style="margin:2px 0;font-size:12px">Source: ${parts.join(" · ")}</p>` : "";
+    const aside = !fromSchedule && link ? ` <span class="muted">· Schedule on file: ${link} (not the source of this number)</span>` : "";
+    return parts.length || aside ? `<p class="fee-face-source" style="margin:2px 0;font-size:12px">${parts.length ? `Source: ${parts.join(" · ")}` : ""}${aside}</p>` : "";
   }
   const basis = String(line.basis || "").trim();
   if (!url && !basis) return "";

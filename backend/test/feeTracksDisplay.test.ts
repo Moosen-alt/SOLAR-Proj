@@ -103,6 +103,15 @@ const unresolved = {
   check("MUST-EXCLUDE: a fee with no URL draws no link, only its source in words", !/<a /.test(face(html)) && /Source: the portal's own fee screen/.test(words(face(html))));
 }
 
+for (const [source, confidence] of [["actual", "actual"], ["valuation_estimate", "estimated"], ["learned_history", "verified"]]) {
+  const VENUS = "https://www.cityofvenus.org/fees.pdf";
+  const html = lib.renderFeeSheetLine({ track: "permit", jurisdiction: "City of Venus", feeUsd: 160, source, confidence, paymentMethod: "portal", basis: "x", bracketLabel: "Solar Panel Permit (R)", sourceUrl: VENUS, charges: [] });
+  const src = /Source:[^<]*/.exec(face(html))?.[0] ?? "";
+  check(`MUST-EXCLUDE: a ${source} amount never names the schedule as its source (the link is drawn apart)`,
+    !/Source:[^<]*·\s*<a /.test(face(html)) && !/Solar Panel Permit \(R\)/.test(src) && /Schedule on file: <a href="https:\/\/www\.cityofvenus\.org\/fees\.pdf"[^>]*>[^<]*<\/a> \(not the source of this number\)/.test(face(html)),
+    face(html).slice(0, 400));
+}
+
 // ── TRACK CARD ─────────────────────────────────────────────────────────────────────────────
 const IC = "https://egov.iowa-city.org/energovprod/selfservice";
 const baseTrack = {
