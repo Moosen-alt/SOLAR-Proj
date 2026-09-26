@@ -1893,6 +1893,9 @@ function kbDesignCriteriaHtml(codeProfile) {
 function kbNotesHtml(notes, opts) {
   const scrubRedacted = (text) => {
     const M = '@@R@@';
+    // Only a segment that carries a placeholder is tidied: the punctuation cleanup below cut the
+    // trailing "-" off a checklist URL and a leading "- " off a list in token-free notes.
+    if (!/\[REDACTED_[A-Z]+\]/.test(String(text ?? ''))) return String(text ?? '').trim();
     return String(text ?? '')
       .replace(/(?:1-)?\[REDACTED_[A-Z]+\](?:[-.]\[REDACTED_[A-Z]+\])*/g, M)
       .replace(/\(\s*@@R@@\s*\)/g, '')
