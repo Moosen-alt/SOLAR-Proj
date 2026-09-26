@@ -5918,7 +5918,21 @@ export class RecipeAdapter extends BasePortalAdapter {
       let stableScans = 0;
       let prevSignature = "";
       for (;;) {
-        const raws = (await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage)) as Array<{ label?: string }>;
+        // A NAVIGATION IN FLIGHT IS NOT A VERDICT. The advance that opened this segment may
+        // still be navigating when the scan runs ("Execution context was destroyed"); the old
+        // catch below turned that into "no drift", the drift-seek never ran, and the next step
+        // timed out on the extra page it should have clicked through (accela/extra_readonly_page
+        // failed 1 run in 2). Settle and scan again within the budget; only a page that cannot
+        // be read at all by the deadline falls through to the old answer.
+        let raws: Array<{ label?: string }>;
+        try {
+          raws = (await this.page.$$eval(EXTRACT_SEL, extractFieldsInPage)) as Array<{ label?: string }>;
+        } catch (scanErr) {
+          if (Date.now() >= deadline) throw scanErr;
+          await this.settle(3000);
+          await sleep(300);
+          continue;
+        }
         const live = raws.map((r) => (r.label || "").trim().toLowerCase()).filter(Boolean);
         const matches = (want: string): boolean => {
           const w = want.toLowerCase();

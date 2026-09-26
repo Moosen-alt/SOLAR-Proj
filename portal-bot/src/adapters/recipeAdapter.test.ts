@@ -1347,6 +1347,33 @@ async function testImportedHelpersStayBehindTheChokepoint() {
     "every Enter comboboxFill presses comes after the implicit-submission refusal check");
 }
 
+// A NAVIGATION IN FLIGHT IS NOT A DRIFT VERDICT (accela/extra_readonly_page flaked 2 of 3). The
+// drift precheck's scan threw "Execution context was destroyed" while the advance was still
+// navigating, the catch answered "no drift", the drift-seek never clicked through the extra page,
+// and the next fill timed out. MUST-EXCLUDE: a scan that throws once and then reads a page with
+// none of the recorded fields -> drift is reported. MUST-PASS: a page that has them -> no drift.
+async function testDriftPrecheckRescansAfterANavigationError() {
+  const steps = [
+    { action: "fill", selector: { label: "First Name:" }, field: "homeownerFirstName", note: "First Name:" },
+    { action: "fill", selector: { label: "Last Name:" }, field: "homeownerLastName", note: "Last Name:" },
+    { action: "fill", selector: { label: "Business Name:" }, field: "installerCompanyName", note: "Business Name:" },
+    { action: "stopForReview" },
+  ] as RecipeStep[];
+  const run = async (labels: string[]) => {
+    const adapter = new RecipeAdapter(baseRecipe(steps), {}, {});
+    let calls = 0;
+    (adapter as unknown as { page: unknown }).page = {
+      $$eval: async () => { calls++; if (calls === 1) throw new Error("page.$$eval: Execution context was destroyed, most likely because of a navigation"); return labels.map((label) => ({ label })); },
+      url: () => "http://127.0.0.1/CitizenAccess/Cap/CapEdit.aspx",
+    };
+    return (adapter as unknown as { precheckPageDrift(i: number): Promise<string | null> }).precheckPageDrift(0);
+  };
+  const extra = await run(["Additional Details", "Parcel Summary", "Notes to reviewer"]);
+  assert.match(String(extra), /page drift/, `MUST-EXCLUDE: a scan that died mid-navigation was read as 'no drift': ${extra}`);
+  const contacts = await run(["First Name:", "Last Name:", "Business Name:"]);
+  assert.equal(contacts, null, "MUST-PASS: the recorded page is not drift");
+}
+
 // R1 / hard rule 5 inside replay: a goto that leaves the recipe's portal stops the run, named.
 async function testGotoLeavingThePortalStopsTheRun() {
   const cases: Array<{ name: string; scope: "ahj" | "utility"; portalUrl: string; to: string; allowed: boolean }> = [
@@ -1378,6 +1405,7 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["R4: a failure capture never waits for the control that failed to appear", testFailureCaptureDoesNotWaitForAnAbsentTarget],
   ["R1: no click/press/goto outside the replay chokepoint (static)", testNoRawActionOutsideTheChokepoint],
   ["R1: the overlay dismissor replay imports stays behind the chokepoint (static)", testImportedHelpersStayBehindTheChokepoint],
+  ["DRIFT: a scan that died mid-navigation is rescanned, never read as 'no drift'", testDriftPrecheckRescansAfterANavigationError],
   ["R1: a goto that leaves the recipe's portal stops the run, named (rule 5)", testGotoLeavingThePortalStopsTheRun],
   ["R2: each missing input of the final-submit gate keeps it unclicked", testFinalSubmitGateRefusesEachMissingInput],
   ["R2: a quiet page after the approved click is unknown, reported, never retried", testFinalSubmitQuietPageIsUnknownAndNotRetried],
