@@ -1632,9 +1632,10 @@ function routeFromHash() {
         if (state.selectedProjectId === id) { state.selectedProjectId = null; state.detail = null; }
         const gone = /not found|404/i.test(String(err && err.message || ""));
         navigate("#/dashboard");
-        showMessage(gone
+        // A toast, not showMessage: #message lives inside the project view, hidden on the dashboard.
+        showToast(gone
           ? "That project no longer exists or is not in your workspace."
-          : `Could not open that project: ${(err && err.message) || "unknown error"}`, gone ? "warning" : "error");
+          : `Could not open that project: ${(err && err.message) || "unknown error"}`, gone ? "warning" : "error", 9000);
       });
     } else {
       showPage("project");
