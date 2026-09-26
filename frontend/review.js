@@ -228,7 +228,7 @@ async function loadSubmissions() {
     $("subs").innerHTML = submissions.map((s) => `
       <div class="rv-sub" role="button" tabindex="0" data-submission="${esc(s.id)}">
         <span>${esc(s.ahj)}, ${esc(s.state)} · ${esc(s.workType.replace(/_/g, " "))}</span>
-        <span class="rv-muted">${plural(Number(s.blockers) || 0, "blocker", "blockers")} / ${plural(Number(s.findings) || 0, "finding", "findings")} ·${new Date(s.createdAt).toLocaleString()}</span>
+        <span class="rv-muted">${plural(Number(s.blockers) || 0, "blocker", "blockers")} / ${plural(Number(s.findings) || 0, "finding", "findings")} · ${new Date(s.createdAt).toLocaleString()}</span>
       </div>`).join("") || '<span class="rv-muted">No reviews yet.</span>';
     $("subs").querySelectorAll("[data-submission]").forEach((row) => {
       const open = () => window.open(`/api/review/submissions/${encodeURIComponent(row.dataset.submission)}?format=html`, "_blank");
