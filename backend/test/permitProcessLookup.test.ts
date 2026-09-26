@@ -23,6 +23,7 @@
 //   K13 a fetched page not counted as seen                     → (q1) fails.
 //   K14 a generic-only agency name kept                        → (a4) fails.
 //   K15 no documents/fees retry after an abort                 → (q5) fails.
+//   K16 a self-cited platform portal exempt from the seen check → (q6) fails.
 //
 // Run: npx tsx backend/test/permitProcessLookup.test.ts
 import "./_isolate"; // FIRST
@@ -329,6 +330,14 @@ await check("(q4) an aborted portal step keeps nothing and loses nothing else", 
   assert.equal(run.lookup!.issuingAgency.value, "Marion County");
 });
 
+await check("(q6) a portal citing its OWN page is kept only when that page was returned or opened — never a remembered platform URL", () => {
+  const platform = "https://aca-prod.accela.com/FERNHILL/Default.aspx";
+  const self = { value: platform, sourceUrl: platform, quote: "Welcome to the City of Fernhill Citizen Access portal" };
+  assert.equal(ppl.acceptPortal(self, [COUNTY]).value, null, "self-cited, never seen → not kept");
+  assert.match(String(ppl.acceptPortal(self, [COUNTY]).notFound), /not a page the search returned/);
+  assert.equal(ppl.acceptPortal(self, [COUNTY, "https://aca-prod.accela.com/FERNHILL/Cap/CapHome.aspx"]).value, platform, "its host was returned → kept");
+  assert.equal(ppl.acceptPortal({ value: ACA, sourceUrl: COUNTY, quote: "Apply online through Oregon ePermitting (aca-oregon.accela.com)" }, []).value, null, "no seen pages at all → nothing is a seen source");
+});
 await check("(q5) MUST-PASS: a documents/fees call that ABORTS while reading pages is retried once without page reading, and its cited answer is kept", async () => {
   let docsCalls = 0;
   const rec = recorder({

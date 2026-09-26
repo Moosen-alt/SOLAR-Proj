@@ -31,7 +31,7 @@
 // and then discarded.
 import type { CitedFact, LLMProvider, PermitFeeAnswer, PermitProcessDiscipline, PermitProcessLookup, PermitProcessPermitAnswer, WebLookupResult } from "../../shared/src/types";
 import type { AppDb } from "./db";
-import { hostFitsTrackAndEntity, isPermitPlatformUrl, portalHostOf } from "./portalChannel";
+import { hostFitsTrackAndEntity, portalHostOf } from "./portalChannel";
 import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor } from "./permitProcess";
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
@@ -120,10 +120,11 @@ export function acceptCited<T>(
   const quote = str(raw.quote).slice(0, 300);
   if (!/^https?:\/\//i.test(sourceUrl) || quote.length < 8) return notFound(`the ${opts.what} came without a source page and its words — not kept`);
   const host = portalHostOf(sourceUrl);
-  // A PORTAL may cite itself (its own entry page) when it is a known permit platform; anything else
-  // must be a page the search returned.
-  const selfCitedPortal = opts.what === "portal" && isPermitPlatformUrl(sourceUrl) && portalHostOf(String(value)) === host;
-  if (opts.seenUrls.length && !selfCitedPortal && !opts.seenUrls.some((u) => portalHostOf(u) === host)) {
+  // EVERY source — a portal citing its own entry page included — must be a page the search returned
+  // or the lookup opened (seenUrls carries both). The old exemption let a known-platform URL cite
+  // itself unseen, which is a door for a remembered URL ("aca.accela.com/<tenant>"); and an empty
+  // seen list is not a pass.
+  if (!opts.seenUrls.some((u) => portalHostOf(u) === host)) {
     return notFound(`the ${opts.what}'s source (${host}) is not a page the search returned — not kept`);
   }
   if (!opts.supports(value, quote)) return notFound(`the quoted words do not state the ${opts.what} ("${quote.slice(0, 80)}")`);
