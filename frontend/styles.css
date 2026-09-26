@@ -472,6 +472,7 @@ h1, h2, h3, p { margin: 0; }
 .brand { display: inline-flex; align-items: center; gap: 9px; text-decoration: none; color: inherit; }
 .brand-mark { flex: none; display: inline-flex; color: var(--primary); }
 .brand-mark svg { width: 26px; height: 26px; display: block; }
+.brand-mark img { width: 26px; height: 26px; display: block; object-fit: contain; }
 .brand-word { display: flex; flex-direction: column; line-height: 1; }
 .brand-name { font-size: 15px; font-weight: 800; letter-spacing: .01em; color: var(--foreground); }
 .brand-sub { font-size: 8.5px; font-weight: 700; letter-spacing: .26em; color: var(--muted-foreground); margin-top: 3px; }
