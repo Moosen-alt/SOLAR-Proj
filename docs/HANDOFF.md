@@ -33,7 +33,7 @@ The after WRONGs:
 - Evanston: one document that is not a truth item.
 
 Open:
-- **The Anthropic credit balance ran out at 22:45 UTC during the eval** ("credit balance is too low"). The live server's lookups fail until it is topped up.
+- **The Anthropic credit balance ran out at 22:33 (log time) during the eval** ("credit balance is too low"). The live server's lookups fail until it is topped up.
 - `documentFetch`'s wall check reads `<script>` text: "Storage access denied" in the ACA source reads as a wall. The reader re-asks on visible text; the fix belongs in `documentFetch` / `runAbort`.
 - Tigard's fee schedule is never reached (not linked from the pages read, and no search title named it).
 - EnerGov attachment types are not exposed logged out.
