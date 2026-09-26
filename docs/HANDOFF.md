@@ -19,7 +19,7 @@ Held-out real-web eval (7 AHJs, `.probe/lookup-recall/`, run then score with `sc
 - Fees: 0 → 0 of 7.
 - Agency, documents and fees WRONG: 1 → 0 each.
 
-The main loss is page-reading documents/fees calls aborting at 300 s (3 of 7). Jefferson (report only) now gives Marion County, separate, the City Hall prerequisite, form B-01S, $67.25 + 12% and $94 electrical; the portal was still not found. Spend ≤ $24.57 of the $25 cap. Next steps: portal host-equivalence (same vendor and tenant), splitting documents from fees, a fee source that is a current schedule.
+The main loss is page-reading documents/fees calls aborting at 300 s (3 of 7 in after2). The no-page retry recovered 2 of those (Lee, Grand Prairie); SLCo aborted twice. Jefferson (report only) now gives Marion County, separate, the City Hall prerequisite, form B-01S, $67.25 + 12% and $94 electrical; the portal was still not found. Spend ≤ $24.57 of the $25 cap. Next steps: portal host-equivalence (same vendor and tenant), splitting documents from fees, a fee source that is a current schedule.
 
 ## PRODUCTION RUNS PINNED; POWER-LOSS RECOVERY (2026-09-24)
 
