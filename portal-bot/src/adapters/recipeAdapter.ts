@@ -675,6 +675,25 @@ export class RecipeAdapter extends BasePortalAdapter {
   // Every uncertain outcome is a NEEDS-HUMAN refusal carrying what was seen, never a
   // silent no-op: an unknown must never read as fine.
   async reopenSuspendedFiling(applicationNumber: string): Promise<PortalStepResult> {
+    // THE NETWORK BACKSTOP COVERS THE CORRECTION REOPEN TOO (close2-safety caveat 2: its clicks
+    // ran with no backstop installed). Installed for the reopen's own clicks and REMOVED before
+    // this returns — the person clicks the portal's resubmit themselves in this page. A
+    // filing/payment abort turns the reopen into a named failure.
+    this.backstop = await installFilingBackstop(this.page, "correction reopen").catch(() => null);
+    this.backstopReported = 0;
+    try {
+      const r = await this.reopenSuspendedFilingImpl(applicationNumber);
+      await this.backstop?.dispose().catch(() => null);
+      const stop = this.backstopStop();
+      if (stop) return fail(`${stop} (The reopen then reported: ${String(r.message ?? "").slice(0, 300)})`, { ...(r.data ?? {}), needsHuman: true, driftWarnings: this.driftWarnings, guardRefusals: this.guardRefusals });
+      return r;
+    } finally {
+      await this.backstop?.dispose().catch(() => null);
+      this.backstop = null;
+    }
+  }
+
+  private async reopenSuspendedFilingImpl(applicationNumber: string): Promise<PortalStepResult> {
     const appNo = String(applicationNumber || "").trim();
     if (!this.page) return fail("Correction reopen: the portal is not open — login must run first.");
     if (!appNo) {

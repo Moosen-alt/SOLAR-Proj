@@ -53,6 +53,7 @@ const LANDING = `<!doctype html><html><body>${CHROME}
     <tr><td><a href="/app/333333">APP-333333</a></td><td>Suspended</td></tr>
     <tr><td><a href="/app/444444">APP-444444</a></td><td>Resubmitted</td></tr>
     <tr><td><a href="/app/555555">APP-555555</a></td><td>Suspended - Changes Needed From Customer</td></tr>
+    <tr><td><a href="/app/666666">APP-666666</a></td><td>Suspended - Changes Needed From Customer</td></tr>
   </tbody></table>
 </body></html>`;
 
@@ -129,9 +130,16 @@ const REOPENED_BROKEN = `<!doctype html><html><body>${CHROME}
   <a class="btn" href="/submitted" style="display:inline-block;height:26px;width:90px">Submit</a>
 </body></html>`;
 
+// The correction form's Begin whose page script ALSO posts a filing (close2-safety caveat 2: the
+// reopen's clicks ran with no network backstop installed).
+const SCRIPTED_BEGIN = projectPage("APP-666666", "/form/correction-666666", "/form/cancel").replace(
+  `href="/form/correction-666666"`, `href="/form/correction-666666" onclick="fetch('/api/SubmitApplication', {method:'POST', body:'x=1'})"`);
+const nonGet: string[] = [];
 const server = http.createServer((req, res) => {
   const u = req.url || "";
   hits.push(u);
+  if (req.method !== "GET" && req.method !== "HEAD") nonGet.push(u.split("?")[0]);
+  if (u.startsWith("/app/666666")) { res.writeHead(200, { "content-type": "text/html" }); return res.end(SCRIPTED_BEGIN); }
   res.writeHead(200, { "content-type": "text/html" });
   if (u.startsWith("/app/111681")) return res.end(projectPage("APP-111681", "/form/correction-111681", "/form/cancel"));
   if (u.startsWith("/app/1116")) return res.end(projectPage("APP-1116", "/form/correction-1116", "/form/cancel"));
@@ -276,6 +284,21 @@ check("a failed attach is explained on the result, not just counted as 0", () =>
   assert.ok((r7.driftWarnings as string[]).some((w) => /could not attach sld/i.test(w) && /one-line/i.test(w)),
     `driftWarnings: ${JSON.stringify(r7.driftWarnings)}`);
   assert.ok(!hits.some((h) => h.startsWith("/submitted")), "the wizard's own Submit control was clicked");
+});
+
+// ---------------------------------------------------------------------------
+// 8. THE NETWORK BACKSTOP COVERS THE REOPEN (close2-safety caveat 2): the correction form's
+//    Begin also fires a page-script POST to a filing endpoint. MUST-EXCLUDE: it never reaches
+//    the server, and the reopen stops NAMED (needs-human), not "reopened".
+// ---------------------------------------------------------------------------
+hits.length = 0;
+nonGet.length = 0;
+const r8 = await runCorrectionReopen(recipe, "APP-666666", {}, { headless: true });
+await new Promise((r) => setTimeout(r, 500));
+check("MUST-EXCLUDE a page-script filing POST during the reopen never reaches the server, and the reopen stops named", () => {
+  assert.deepEqual(nonGet, [], `non-GET requests the server received: ${nonGet.join(",")}`);
+  assert.equal(r8.ok, false, String(r8.message));
+  assert.match(String(r8.message), /STOPPED BY THE NETWORK BACKSTOP.*SubmitApplication/, `message: ${r8.message}`);
 });
 
 await new Promise<void>((r) => server.close(() => r()));
