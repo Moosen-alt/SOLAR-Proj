@@ -279,7 +279,7 @@ export function requiredDocuments(
     { docType: "sld", label: "Electrical one-line / SLD (rapid shutdown + NEC 705.12)", why: "Required for both the electrical permit and the utility NEM application.", lane: "permit", blocking: true },
     { docType: "structural", label: "Structural roof framing + attachment detail", why: "Required for the structural permit (framing, spacing, attachment).", lane: "permit", blocking: true },
     { docType: "module_spec", label: "PV module spec sheet", why: "AHJ + utility require the module cut sheet (listing/ratings).", lane: "permit", blocking: true },
-    { docType: "inverter_spec", label: "Inverter / microinverter spec sheet (UL 1741)", why: "Required by the AHJ and by PGE NEM (UL 1741-SB listing).", lane: "nem", blocking: true },
+    { docType: "inverter_spec", label: "Inverter / microinverter spec sheet (UL 1741)", why: `Required by the AHJ and by ${hasUtility ? `${(project.utility || "").trim()}'s` : "the utility's"} interconnection application (UL 1741-SB listing).`, lane: "nem", blocking: true },
     { docType: "labels", label: "Label / placard schedule", why: "Placard/label schedule (705.10 directory, RSD, disconnects) — usually a plan-set sheet.", lane: "permit", blocking: false },
   ];
 

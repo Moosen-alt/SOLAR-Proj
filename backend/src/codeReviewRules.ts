@@ -14,7 +14,7 @@ import {
 
 const oregonElectrical2023: CodeReference = {
   code: "2023 OESC / 2023 NEC",
-  section: "NEC Articles 690 and 705",
+  section: "Articles 690 and 705",
   title: "Solar PV and interconnected power production sources",
   adoptionScope: "Oregon electrical submittals; verify local adopted NEC cycle outside Oregon.",
   sourceUrl: "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",

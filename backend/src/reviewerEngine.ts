@@ -47,8 +47,28 @@ function finding(
   };
 }
 
+// Reader-facing names for the evidence topics. The topic KEY (siteRoofPlan, firePathway…) is
+// an internal identifier; it used to be printed as the evidence card's heading on the project
+// page ("siteRoofPlan absence check").
+const TOPIC_LABEL: Record<EvidenceTopic, string> = {
+  accountVerification: "Utility account",
+  meterPhoto: "Meter photo",
+  sld: "One-line / SLD",
+  siteRoofPlan: "Site / roof plan",
+  firePathway: "Fire access pathways",
+  roofFraming: "Roof framing",
+  rackingAttachment: "Racking / attachment",
+  structuralLoads: "Structural load criteria",
+  rapidShutdown: "Rapid shutdown",
+  labels: "PV labels / placards",
+  inverterSettings: "Inverter listing / settings",
+  batteryMode: "Battery operating mode",
+  utilityApproval: "Utility approval",
+  ownerAuthorization: "Owner authorization",
+};
+
 function evidenceSummary(check: ProjectEvidence): string {
-  if (!check.excerpts.length) return `No parsed ${check.topic} evidence was found.`;
+  if (!check.excerpts.length) return `No parsed ${TOPIC_LABEL[check.topic].toLowerCase()} evidence was found.`;
   return evidenceLines(check).join(" ");
 }
 
@@ -86,8 +106,11 @@ export function buildReviewerReport(
   const profile = findAhjProcessProfile(project);
   const findings: ReviewerFinding[] = [];
 
+  const standalone = isStandaloneReviewSubject(project);
   addCoreProjectFindings(project, findings);
-  addSubmittalDataFindings(project, findings);
+  // Valuation, homeowner email/phone and company assignment feed the portal APPLICATION; the
+  // standalone gate files nothing and its form has none of those fields.
+  if (!standalone) addSubmittalDataFindings(project, findings);
   findings.push(...evaluateDesignCodeFindings(project, profile, opts.codeContext, opts.uploadedDocTypes ?? [], opts.documentTexts ?? []));
   // Iowa City correction themes: the filed PV worksheet against the plan, and the one-line's
   // service ratings against the rest of the set (the package's own words, not parser notes).
@@ -142,6 +165,16 @@ export function buildReviewerReport(
   for (let i = 0; i < findings.length; i++) {
     if (!keep.has(findings[i])) { findings.splice(i, 1); i--; continue; }
     keep.delete(findings[i]); // a duplicate object reference must not survive twice
+  }
+  // On the standalone gate a utility-specific account / meter finding (PGE account, Pacific
+  // Power meter photo) asks for something the form cannot take — advisory there, never a blocker.
+  if (standalone) {
+    for (let i = 0; i < findings.length; i++) {
+      const key = dedupeKey(findings[i]);
+      if ((key === "topic:account" || key === "topic:meter") && findings[i].severity === "blocker") {
+        findings[i] = { ...findings[i], severity: "callout" };
+      }
+    }
   }
 
   // THE GATE AND THE PACKET ANSWER "WHICH PROCESS APPLIES?" WITH THE SAME PREDICATE
@@ -266,7 +299,7 @@ export function topicForFinding(finding: ReviewerFinding): EvidenceTopic | null 
 function evidenceFromTopic(projectId: string, check: ProjectEvidence): ReviewerFindingEvidence[] {
   const found = check.hits.map<ReviewerFindingEvidence>((hit) => ({
     kind: "source_excerpt",
-    label: `${check.topic} evidence`,
+    label: `${TOPIC_LABEL[check.topic]} evidence`,
     source: hit.sourceLabel,
     excerpt: hit.excerpt,
     confidence: check.confidence,
@@ -300,7 +333,7 @@ function evidenceFromTopic(projectId: string, check: ProjectEvidence): ReviewerF
 
   return [{
     kind: "absence_check",
-    label: `${check.topic} absence check`,
+    label: `${TOPIC_LABEL[check.topic]} — not found in the package`,
     source: "Parsed project package",
     excerpt: `No matching evidence found. Checked for: ${requirementsForTopic(check.topic).join(", ")}.`,
     confidence: "low",
@@ -585,7 +618,43 @@ export function renderReviewerReportHtml(project: ProjectRecord, report: Reviewe
 </html>`;
 }
 
+// THE STANDALONE PLAN REVIEW GATE (review.html) builds its project from a short form
+// (reviewSubjectToProject marks it status "review_only"). That form has no account / meter
+// fields and an OPTIONAL utility, so the pipeline's per-field blockers read there as 15
+// blockers the operator could not clear, one identical "Critical project field missing" card
+// per field. On the gate: the fields the form DOES ask for fold into one blocker that names
+// them; utility / account / meter are advisory (they belong to the interconnection filing, not
+// the plan review). The pipeline project is untouched — it never carries this status.
+export function isStandaloneReviewSubject(project: ProjectRecord): boolean {
+  return String((project as { status?: unknown }).status ?? "") === "review_only";
+}
+
+function addStandaloneCoreFindings(project: ProjectRecord, findings: ReviewerFinding[]): void {
+  const asked: Array<[string, string | number | null]> = [
+    ["applicant name", project.homeownerName],
+    ["site address", project.projectAddress],
+    ["jurisdiction (AHJ)", project.ahj],
+    ["DC size (kW)", project.systemSizeDcKw],
+    ["AC size (kW)", project.systemSizeAcKw],
+    ["interconnection", project.interconnectionMethod],
+  ];
+  const missing = asked.filter(([, v]) => v == null || v === "").map(([label]) => label);
+  if (missing.length) {
+    const list = missing.join(", ");
+    findings.push(finding("reviewer.core.fields", "blocker", "project_data",
+      missing.length === 1 ? "Project detail missing" : `${missing.length} project details missing`,
+      `Not filled in: ${list}.`, true,
+      { cityFeedback: `Fill in ${list} above and run the review again.`, evidenceNeeded: missing }));
+  }
+  if (!project.utility) {
+    findings.push(finding("reviewer.core.utility", "callout", "utility_nem", "Utility not given",
+      "Utility-specific interconnection checks were skipped.", true,
+      { cityFeedback: "Add the utility above to include its interconnection checks." }));
+  }
+}
+
 function addCoreProjectFindings(project: ProjectRecord, findings: ReviewerFinding[]): void {
+  if (isStandaloneReviewSubject(project)) { addStandaloneCoreFindings(project, findings); return; }
   const required: Array<[string, string | number | null, string]> = [
     ["homeowner", project.homeownerName, "Homeowner name missing."],
     ["address", project.projectAddress, "Service/project address missing."],

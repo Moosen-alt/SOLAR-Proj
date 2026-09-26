@@ -64,7 +64,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "firePathway absence check",
+          "label": "Fire access pathways — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: Dimensioned roof pathway, Ridge/eave/setback notes, AHJ/fire exception basis if used.",
           "confidence": "low",
@@ -120,7 +120,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "roofFraming absence check",
+          "label": "Roof framing — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: Rafter/truss type, Member size/spacing/span, Prescriptive worksheet or stamped engineering.",
           "confidence": "low",
@@ -176,7 +176,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "roofFraming absence check",
+          "label": "Roof framing — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: Rafter/truss type, Member size/spacing/span, Prescriptive worksheet or stamped engineering.",
           "confidence": "low",
@@ -216,7 +216,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "rackingAttachment absence check",
+          "label": "Racking / attachment — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: Racking/attachment detail, Attachment spacing table, Fastener/embedment and flashing notes.",
           "confidence": "low",
@@ -264,7 +264,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "labels absence check",
+          "label": "PV labels / placards — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: PV label schedule, Placard locations, Power source directory.",
           "confidence": "low",
@@ -344,7 +344,7 @@
       "codeReferences": [
         {
           "code": "2023 OESC / 2023 NEC",
-          "section": "NEC Articles 690 and 705",
+          "section": "Articles 690 and 705",
           "title": "Solar PV and interconnected power production sources",
           "adoptionScope": "Oregon electrical submittals; verify local adopted NEC cycle outside Oregon.",
           "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
@@ -402,7 +402,7 @@
       "codeReferences": [
         {
           "code": "2023 OESC / 2023 NEC",
-          "section": "NEC Articles 690 and 705",
+          "section": "Articles 690 and 705",
           "title": "Solar PV and interconnected power production sources",
           "adoptionScope": "Oregon electrical submittals; verify local adopted NEC cycle outside Oregon.",
           "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
@@ -569,7 +569,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "batteryMode absence check",
+          "label": "Battery operating mode — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: Battery model/quantity, Backup/non-backup mode, Export setting, Backup panel scope.",
           "confidence": "low",
@@ -643,7 +643,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "firePathway absence check",
+          "label": "Fire access pathways — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: Dimensioned roof pathway, Ridge/eave/setback notes, AHJ/fire exception basis if used.",
           "confidence": "low",
@@ -699,7 +699,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "roofFraming absence check",
+          "label": "Roof framing — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: Rafter/truss type, Member size/spacing/span, Prescriptive worksheet or stamped engineering.",
           "confidence": "low",
@@ -755,7 +755,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "roofFraming absence check",
+          "label": "Roof framing — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: Rafter/truss type, Member size/spacing/span, Prescriptive worksheet or stamped engineering.",
           "confidence": "low",
@@ -795,7 +795,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "rackingAttachment absence check",
+          "label": "Racking / attachment — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: Racking/attachment detail, Attachment spacing table, Fastener/embedment and flashing notes.",
           "confidence": "low",
@@ -843,7 +843,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "labels absence check",
+          "label": "PV labels / placards — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: PV label schedule, Placard locations, Power source directory.",
           "confidence": "low",
@@ -923,7 +923,7 @@
       "codeReferences": [
         {
           "code": "2023 OESC / 2023 NEC",
-          "section": "NEC Articles 690 and 705",
+          "section": "Articles 690 and 705",
           "title": "Solar PV and interconnected power production sources",
           "adoptionScope": "Oregon electrical submittals; verify local adopted NEC cycle outside Oregon.",
           "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
@@ -981,7 +981,7 @@
       "codeReferences": [
         {
           "code": "2023 OESC / 2023 NEC",
-          "section": "NEC Articles 690 and 705",
+          "section": "Articles 690 and 705",
           "title": "Solar PV and interconnected power production sources",
           "adoptionScope": "Oregon electrical submittals; verify local adopted NEC cycle outside Oregon.",
           "sourceUrl": "https://www.oregon.gov/bcd/codes-stand/pages/electrical.aspx",
@@ -1148,7 +1148,7 @@
       "evidenceFound": [
         {
           "kind": "absence_check",
-          "label": "batteryMode absence check",
+          "label": "Battery operating mode — not found in the package",
           "source": "Parsed project package",
           "excerpt": "No matching evidence found. Checked for: Battery model/quantity, Backup/non-backup mode, Export setting, Backup panel scope.",
           "confidence": "low",

@@ -392,7 +392,11 @@ function nextActionFor(status: SubmittalTrackStatus, channel: string, type: Subm
     ? " On Accela this electrical/renewable-energy permit is usually issued instantly once fees are paid and the final submit is clicked — watch for the approval email."
     : "";
   switch (status) {
-    case "not_started": return `Stage in ${channel}, submit manually, then record the number here.${accelaInstantNote}`;
+    // An unresolved channel arrives as "Unknown — verify on the AHJ site"; "Stage in Unknown"
+    // read as a broken template on the project page.
+    case "not_started": return /^\s*(unknown|$)/i.test(channel)
+      ? "Stage in the AHJ portal (not yet identified — verify it on the AHJ's website), submit manually, then record the number here."
+      : `Stage in ${channel}, submit manually, then record the number here.${accelaInstantNote}`;
     case "staged": return `Review the staged portal, submit manually, then mark it submitted below.${accelaInstantNote}`;
     case "submitted": return `Add the public status URL so the poller can track it to approval.${accelaInstantNote}`;
     case "in_review": return "Tracking — the poller is checking the portal for status changes.";
