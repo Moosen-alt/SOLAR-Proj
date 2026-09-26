@@ -602,7 +602,10 @@ console.log("\n6. THE RECORDER'S --real-run, END TO END on the replica: real wri
   } as never, undefined, { learningExcluded: true }).project;
   createPortalCredential(db, client.id, { portalType: "powerclerk", portalUrl: replica.entryUrl, username: B.portalUsername, password: B.portalPassword });
   saveProjectDocument(db, project.id, { docType: "sld", filename: DOCS.sld, contentType: "application/pdf", buffer: PDF });
-  saveProjectDocument(db, project.id, { docType: "site_plan", filename: DOCS.site_plan, contentType: "application/pdf", buffer: PDF });
+  // Distinct bytes per document: the store attaches a byte-identical upload under a second doc
+  // type ONCE (e333d62), so a site plan with the SLD's bytes would be dropped and the replica's
+  // attachments page would refuse to advance — a fixture artefact, not the mask.
+  saveProjectDocument(db, project.id, { docType: "site_plan", filename: DOCS.site_plan, contentType: "application/pdf", buffer: Buffer.concat([PDF, Buffer.from("% site plan")]) });
   const fill = (css: string, label: string, field: string, learn = "LEARN-TIME-VALUE"): RecipeStep => ({ action: "fill", phase: "fill", selector: { css, fallbacks: [{ label }] }, field, value: learn, note: label });
   const choose = (css: string, label: string, field: string, learn = ""): RecipeStep => ({ action: "select", phase: "fill", selector: { css, fallbacks: [{ label }] }, field, value: learn, note: label });
   const next = (): RecipeStep => ({ action: "click", phase: "fill", selector: { role: "button", name: "Next", exact: true, fallbacks: [{ css: "#btnNext" }] }, note: "advance: Next" });
