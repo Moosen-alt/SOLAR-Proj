@@ -2343,7 +2343,7 @@ details.cause-row[open] > summary { margin-bottom: 4px; }
 /* F22 — project page at 390: form rows wrap, and the file input / split selects stay inside. */
 .panel .form-row { flex-wrap: wrap; }
 .panel .form-row > label { min-width: min(200px, 100%); }
-.panel .form-row > label > select, .panel .form-row > label > input { display: block; width: 100%; margin-top: 4px; }
+.panel .form-row > label > select, .panel .form-row > label > input:not([type=checkbox], [type=radio]) { display: block; width: 100%; margin-top: 4px; }
 input[type=file], .kx-inline-tool-row select, #splitTarget, #inlineSplitTarget { max-width: 100%; min-width: 0; }
 .kx-inline-tool-row { flex-wrap: wrap; }
 

@@ -8656,6 +8656,7 @@ function renderUsersList() {
 
 function editUser(userId) {
   state.selectedUserId = userId;
+  userFormStatus("");
   const user = (state.users || []).find((u) => u.id === userId);
   if (!user) return;
   $("userId").value = user.id;
@@ -8679,12 +8680,23 @@ function syncUserRoleChoice(isNew) {
 
 function blankUserForm() {
   state.selectedUserId = null;
+  userFormStatus("");
   $("userId").value = "";
   $("u_name").value = "";
   $("u_email").value = "";
   syncUserRoleChoice(true);
   $("u_color").value = "#6366f1";
   renderUsersList();
+}
+
+// The Team modal is opened from the dashboard, where #message (inside the project view) is
+// hidden — so its outcome is written into the form's own status line.
+function userFormStatus(text, kind) {
+  const el = $("userFormStatus");
+  if (!el) return;
+  el.hidden = !text;
+  el.textContent = text || "";
+  el.className = "message" + (kind ? " " + kind : "");
 }
 
 async function saveUser(event) {
@@ -8695,7 +8707,7 @@ async function saveUser(event) {
     role: $("u_role").value,
     color: $("u_color").value,
   };
-  if (!payload.name || !payload.email) { showMessage("Name and email required.", "warning"); return; }
+  if (!payload.name || !payload.email) { userFormStatus("Name and email are required.", "warning"); return; }
   try {
     const userId = $("userId").value;
     if (userId) {
@@ -8705,13 +8717,13 @@ async function saveUser(event) {
       await loadUsers();
       // Keep the new member selected so a second Save edits them instead of adding a duplicate.
       if (created?.id) editUser(created.id);
-      showMessage("Added as an Operator. Change the role here to promote them.", "info");
+      userFormStatus("Added as an Operator. Change the role here to promote them.", "info");
       return;
     }
     await loadUsers();
-    showMessage("Saved.", "info");
+    userFormStatus("Saved.", "info");
   } catch (err) {
-    showMessage(err.message || "Save failed.", "error");
+    userFormStatus(err.message || "Save failed.", "error");
   }
 }
 
