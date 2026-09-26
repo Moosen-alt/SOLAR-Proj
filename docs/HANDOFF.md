@@ -59,6 +59,12 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   (aca-oregon on Pacific Power NEM still refused).
 - STANDING AUTHORIZATION (operator 2026-09-25): "yes to any other adjustments you have to make to get it functional how we want it" —
   functional adjustments and rule wording that match verified behaviour may proceed without a per-item ask; each one is logged here.
+- STANDING AUTHORIZATION, WIDENED (operator 2026-09-25 23:55): "parse anything you can and make it work, also change the rules as needed to
+  ensure functionality" — read every document (vision on image pages) rather than leave a form blank; change a product rule/predicate that blocks
+  the correct outcome, logging each as 'Rule adjusted (operator authorization 2026-09-25): ...' here. NEVER moves: hard rule 1 (no final submit,
+  no payment, no CAPTCHA/MFA by automation) and hard rule 2 (secrets never reach the model downstream).
+- PER-JOB LOOKUP (operator 2026-09-25 23:50): "It needs to look up the right stuff per job" — agency, permit structure, portal + record type,
+  documents/forms, fees and codes are looked up by the product for each new AHJ (cited, seeded), never hand-seeded per city.
 - KNOWLEDGE PRE-LOAD SPEND (prospect states): only AFTER the live research-accuracy evals pass
   (`.probe/jurisdiction/`): state layers for FL/TX/UT/CA (~$2) + the top 5 AHJs/utilities per state from
   `.probe/prospects/PREP-PLAN.md` §6 (~20 entities, ~$50), seeded, operator spot-verifies. Everything else is researched
