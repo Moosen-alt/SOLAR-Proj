@@ -19,6 +19,8 @@
 import "./_isolate"; // FIRST
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { REPO } from "./_isolate";
@@ -231,6 +233,59 @@ await check("(m5) MUST-EXCLUDE: the CLI dry run on a copy at an OLDER schema lea
   assert.equal((after.prepare("SELECT MAX(version) AS v FROM schema_meta").get() as { v: number }).v, newest, "--apply migrated the database");
   assert.equal((after.prepare("SELECT status FROM portal_recipes WHERE id = ?").get(drifted.id) as { status: string }).status, "needs_rerecord");
   after.close();
+});
+
+// ── close M5-real-schema: the dry run on a REAL pre-v35 database ─────────────────────────────
+// (m5) above only deleted the newest schema_meta row, so the copy still had every v35 column —
+// and a real .backup of production (schema v34, taken under the pinned server) made the dry run
+// throw "no such column: pr.recipe_id" and exit 1. This copy is lowered for real: the v35/v36
+// columns and tables are DROPPED, and the two production recipes carry their production ids.
+// KILL: select pr.recipe_id unconditionally in findDemotionEvent again → the dry run exits 1.
+await check("(m5-v34) MUST-PASS: the CLI dry run on a copy whose schema REALLY is v34 exits 0, prints RESTORE 6282e671 and 481c00f4, and leaves the file's sha1 and every row count unchanged; MUST-EXCLUDE: --apply is refused (exit 2) and writes nothing", () => {
+  const copy = path.join(path.dirname(String(process.env.AUTOPILOT_DB_PATH)), "restore-cli-v34.sqlite");
+  db.backupTo(copy);
+  const lower = new Database(copy);
+  lower.pragma("journal_mode = DELETE"); // one file: the sha1 below covers every byte the dry run could write
+  // LEGACY DATA, NOT THE THING UNDER TEST: production's two demoted NEM recipes by their ids.
+  lower.prepare("UPDATE portal_recipes SET id = ? WHERE id = ?").run("6282e671-0000-4000-8000-000000000001", gated.id);
+  lower.prepare("UPDATE portal_recipes SET id = ? WHERE id = ?").run("481c00f4-0000-4000-8000-000000000002", closed.id);
+  // Schema v34 for real: what migrations 35 and 36 added is not there.
+  lower.exec("DROP TABLE IF EXISTS portal_run_approvals; DROP TABLE IF EXISTS permit_process_lookups;");
+  for (const [table, column] of [["portal_runs", "recipe_id"], ["portal_runs", "recipe_version"], ["portal_runs", "runner"], ["portal_recipes", "flag_reason"], ["portal_recipes", "flagged_at"]]) {
+    lower.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+  }
+  lower.prepare("DELETE FROM schema_meta WHERE version >= 35").run();
+  lower.close();
+  const signature = () => {
+    const c = new Database(copy, { readonly: true });
+    const tables = (c.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((r) => r.name);
+    const out = {
+      sha1: crypto.createHash("sha1").update(fs.readFileSync(copy)).digest("hex"),
+      maxVersion: (c.prepare("SELECT MAX(version) AS v FROM schema_meta").get() as { v: number }).v,
+      runColumns: (c.prepare("PRAGMA table_info(portal_runs)").all() as Array<{ name: string }>).map((r) => r.name),
+      counts: Object.fromEntries(tables.map((t) => [t, (c.prepare(`SELECT COUNT(*) AS n FROM "${t}"`).get() as { n: number }).n])),
+      recipes: JSON.stringify(c.prepare("SELECT id, status, version FROM portal_recipes ORDER BY id").all()),
+    };
+    c.close();
+    return out;
+  };
+  const before = signature();
+  assert.equal(before.maxVersion, 34, "setup: the copy is not at v34");
+  assert.equal(before.runColumns.includes("recipe_id"), false, "setup: portal_runs still has the v35 recipe_id column");
+  const run = (...args: string[]) => spawnSync(process.execPath, [path.join(REPO, "node_modules/tsx/dist/cli.mjs"), path.join(REPO, "scripts/restore-demoted-recipes.ts"), ...args], {
+    env: { ...process.env, AUTOPILOT_DB_PATH: copy, ANTHROPIC_API_KEY: "" }, cwd: REPO, encoding: "utf8",
+  });
+  const dry = run();
+  assert.equal(dry.status, 0, `the dry run failed on a real v34 schema:\n${dry.stdout.slice(-600)}\n${dry.stderr.slice(-1200)}`);
+  assert.match(dry.stdout, /DRY RUN/);
+  assert.match(dry.stdout, /^RESTORE {2}6282e671 {2}utility Pacific Power \(OR\)/m, "PacifiCorp 6282e671 (document-gate demotion) is not planned for restore");
+  assert.match(dry.stdout, /^RESTORE {2}481c00f4 {2}utility Portland General Electric \(OR\)/m, "PGE 481c00f4 (closed-browser demotion) is not planned for restore");
+  assert.match(dry.stdout, new RegExp(`^keep demoted {2}${drifted.id.slice(0, 8)} `, "m"), "the drift demotion (Idaho Power) is not kept demoted");
+  assert.deepEqual(signature(), before, "the dry run wrote to the v34 database (file bytes or a row count changed)");
+  const refused = run("--apply");
+  assert.equal(refused.status, 2, `--apply on a v34 database was not refused:\n${refused.stdout}\n${refused.stderr}`);
+  assert.match(refused.stderr, /Refusing --apply: .* is at schema v34/);
+  assert.deepEqual(signature(), before, "a refused --apply wrote to the database");
 });
 
 await check("(g) DRY RUN writes nothing; --apply restores exactly the approved rows, disarmed, audited, and flags the unattributed one", () => {

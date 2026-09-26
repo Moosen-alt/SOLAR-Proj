@@ -99,8 +99,15 @@ export function findDemotionEvent(db: AppDb, recipe: Row): DemotionEvent | null 
     // trackless legacy run: only a '' recipe, and only when it is the sole recipe on its key
     return own === "" && siblingKeys <= 1;
   };
+  // THE DATABASE MAY BE OLDER THAN THIS CODE (close M5-real-schema). The dry run is for a .backup
+  // of production taken under the pinned server — schema v34, before migration v35 added
+  // portal_runs.recipe_id. Asking for the column there threw "no such column: pr.recipe_id" and
+  // the dry run exited 1. Its absence means no run recorded its recipe: every run is matched the
+  // legacy way (by the recipe it names), which is exactly what those runs need. Still readonly.
+  const runColumns = new Set(db.query<{ name: string }>("PRAGMA table_info(portal_runs)").map((c) => s(c.name)));
+  const recipeIdColumn = runColumns.has("recipe_id") ? "pr.recipe_id" : "NULL AS recipe_id";
   const runs = db.query<Row>(
-    `SELECT pr.id, pr.project_id, pr.permit_type, pr.started_at, pr.finished_at, pr.result_json, pr.recipe_id, p.state
+    `SELECT pr.id, pr.project_id, pr.permit_type, pr.started_at, pr.finished_at, pr.result_json, ${recipeIdColumn}, p.state
        FROM portal_runs pr LEFT JOIN projects p ON p.id = pr.project_id
       WHERE pr.status = 'failed'
         AND json_extract(pr.result_json, '$.actor') = 'RecipeAdapter'
