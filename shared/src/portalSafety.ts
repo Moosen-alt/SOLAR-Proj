@@ -631,14 +631,26 @@ export function portalSafetyFactory() {
     // icon on Accela would be refused — what its script does is the network backstop's question.
     const moves = submitsOrNavigatesInPage(el);
     if (moves) return `${shown} ${moves} — a dismisser never submits or navigates`;
-    // (i) CLOSE-ONLY: the control's label, aria-label or own id/class says it only closes
-    // (X, Close, Dismiss, No thanks; PowerClerk's #cpr-banner-dimiss-btn).
+    // (i) CLOSE-ONLY IS DECIDED BY WHAT A PERSON READS ON THE CONTROL — its visible label or
+    // aria-label (X, Close, Dismiss, No thanks, Cancel, an icon) — NEVER by its class. An
+    // ANSWER-shaped label is never close-only whatever its id or class says: Materialize's own
+    // documented modal gives the ANSWER "Agree" class modal-close, and the dismisser answered
+    // "Submit your application to the city?" through the class token (close2-safety checker:
+    // matForm / matFetch / matDelayed / matDelayedXhr). An id/class close token (PowerClerk's
+    // #cpr-banner-dimiss-btn, .btn-close, ExtJS x-tool-close) counts ONLY for a control with no
+    // label of its own — an icon.
     const cls = String(el.getAttribute("class") || "");
     const idAttr = String(el.getAttribute("id") || "");
     const aria = clean(el.getAttribute("aria-label"));
-    const closeOnly = /^(got it|dismiss|close|cancel|no thanks|no,? thanks|not now|skip|maybe later|later|×|x|✕|✖)$/i.test(label)
-      || /^(close|dismiss)\b/i.test(aria) || /\b(btn-close|x-tool-close)\b/.test(cls)
-      || /(^|[\s_-])(dismiss|dimiss|close)([\s_-]|$)/i.test(`${idAttr} ${cls}`);
+    const visibleText = clean(h.innerText || h.textContent || "");
+    const ANSWER = /^(ok|okay|yes|accept|accept all|accept all cookies|allow|allow all|allow cookies|agree|i agree|confirm|continue|proceed|i understand|understood|submit)\b[.!]?$/i;
+    const answer = ANSWER.test(label) || ANSWER.test(visibleText);
+    const CLOSE_WORDS = /^(got it|dismiss|close|cancel|no thanks|no,? thanks|not now|skip|maybe later|later|×|x|✕|✖)$/i;
+    const iconOnly = !label && !visibleText;
+    const closeOnly = !answer && (
+      CLOSE_WORDS.test(label)
+      || (/^(close|dismiss)\b/i.test(aria) && (!visibleText || CLOSE_WORDS.test(visibleText)))
+      || (iconOnly && (/\b(btn-close|x-tool-close)\b/.test(cls) || /(^|[\s_-])(dismiss|dimiss|close)([\s_-]|$)/i.test(`${idAttr} ${cls}`))));
     if (closeOnly) return "";
     // (ii) AN ANSWER (OK / Yes / Accept / Confirm / Continue / Proceed / I agree) is allowed ONLY
     // inside a container POSITIVELY identified as a cookie / consent / announcement banner — by
@@ -646,8 +658,7 @@ export function portalSafetyFactory() {
     // saying cookies / consent / what's new. Every other container is UNKNOWN, and an unknown
     // question is refused: "Are you ready to send your application to the city?" and "Your card
     // will be charged $450.00" both passed a word list that did not know those words.
-    const answer = /^(ok|okay|yes|accept|accept all|accept all cookies|allow|allow all|allow cookies|agree|i agree|confirm|continue|proceed|i understand|understood)\b[.!]?$/i.test(label);
-    if (!answer) return `${shown} is neither a close control nor an answer to a known banner — the dismisser does not click what it cannot identify`;
+    if (!answer) return `${shown} is neither a close control (by its label) nor an answer to a known banner — the dismisser does not click what it cannot identify`;
     const CONSENT_ATTR = /cookie|consent|gdpr|ccpa|onetrust|cookiebot|cybot|truste|osano|usercentrics|didomi|qc-cmp|cmp-?banner|cc-(window|banner)|privacy-?banner|announcement|whats-?new|what-?s-?new|new-?feature|release-?notes/i;
     let container: Element | null = null;
     let byAttr = false;
@@ -657,7 +668,18 @@ export function portalSafetyFactory() {
       if (CONSENT_ATTR.test(attrs)) { container = p; byAttr = true; break; }
     }
     if (!container) {
-      container = el.closest ? el.closest("[role=dialog], [role=alertdialog], dialog, .modal, [class*=modal], .popover, [class*=x-window], [class*=banner], [class*=notice], [class*=panel], [class*=confirm]") : null;
+      const DIALOGISH = "[role=dialog], [role=alertdialog], dialog, .modal, [class*=modal], .popover, [class*=x-window], [class*=banner], [class*=notice], [class*=panel], [class*=confirm]";
+      container = el.closest ? el.closest(DIALOGISH) : null;
+      // THE WHOLE DIALOG, NOT ITS FOOTER. "[class*=modal]" also matches Materialize/Bootstrap's
+      // .modal-footer / .modal-content: the nearest match held only the button, so the dialog's
+      // question ("Submit your application to the city?") was never read. Climb to the OUTERMOST
+      // DIALOG ancestor (a few levels, never past body/form/main; a layout "panel" or "banner"
+      // wrapping the whole page is not climbed into).
+      const MODALISH = "[role=dialog], [role=alertdialog], dialog, .modal, [class*=modal], [class*=x-window], .popover";
+      for (let p: Element | null = container ? container.parentElement : null, depth = 0; p && depth < 6; p = p.parentElement, depth++) {
+        if (/^(BODY|HTML|FORM|MAIN)$/.test(p.tagName)) break;
+        if (p.matches(MODALISH)) container = p;
+      }
       if (!container) {
         // The nearest fixed/sticky box the control sits in (a floating banner has no class name).
         for (let p: Element | null = el.parentElement; p && !/^(BODY|HTML)$/.test(p.tagName); p = p.parentElement) {
