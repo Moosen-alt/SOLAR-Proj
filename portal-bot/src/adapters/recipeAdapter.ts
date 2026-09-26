@@ -2175,7 +2175,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         || (wrap as HTMLElement | null)?.innerText
         || el.getAttribute("aria-label") || "").trim();
     }).catch(() => "") as string;
-    if (!actual) return null; // unlabelled control — nothing to contradict
+    // (An unlabelled control has no label to contradict — decided below, AFTER the fingerprint.)
 
     // A LABEL CAN BE SHORT AND STILL SAY SOMETHING, AND AN EMPTY SET ACCEPTS ANYTHING.
     //
@@ -2205,19 +2205,23 @@ export class RecipeAdapter extends BasePortalAdapter {
       const strong = tokens.filter((w) => w.length > 3);
       return new Set(strong.length ? strong : tokens);
     };
-    const a = words(recorded);
-    const b = words(actual);
-    if (!a.size || !b.size) return null;
-    for (const w of a) if (b.has(w)) return null; // they agree on something — accept it
+    // ONE predicate for "does a control's label agree with the recorded one?" — used by the
+    // label check below AND by the fingerprint re-anchor, so the two can never disagree about
+    // what "the same label" means. true = they share meaning, or there is nothing to contradict.
+    const agree = (recordedText: string, actualText: string): boolean => {
+    const a = words(recordedText);
+    const b = words(actualText);
+    if (!a.size || !b.size) return true;
+    for (const w of a) if (b.has(w)) return true; // they agree on something — accept it
     // HYPHENS SPLIT WHAT PEOPLE READ AS ONE WORD. "E-mail:" tokenizes to {mail} while the
     // recorded note says "email" — zero overlap, and a correctly-resolved control got
     // SKIPPED as unrelated (measured live: ACA's contact popup email). Compare against the
     // compacted form too, both directions, before calling two labels strangers.
     const compact = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const aCompact = compact(recorded);
-    const bCompact = compact(actual);
-    for (const w of a) if (bCompact.includes(w)) return null;
-    for (const w of b) if (aCompact.includes(w)) return null;
+    const aCompact = compact(recordedText);
+    const bCompact = compact(actualText);
+    for (const w of a) if (bCompact.includes(w)) return true;
+    for (const w of b) if (aCompact.includes(w)) return true;
     // AN ABBREVIATION IS NOT A CONTRADICTION, and admitting short tokens above made it look
     // like one. multiArray went red on a control labelled "Qty" whose step is noted "pv array
     // quantity": zero shared words, and "quantity" does not CONTAIN "qty", so a correct fill
@@ -2241,8 +2245,57 @@ export class RecipeAdapter extends BasePortalAdapter {
       for (const ch of hay) if (ch === needle[i] && ++i === needle.length) return true;
       return needle.length === 0;
     };
-    for (const w of a) if (w.length <= 4 && subsequence(w, bCompact)) return null;
-    for (const w of b) if (w.length <= 4 && subsequence(w, aCompact)) return null;
+    for (const w of a) if (w.length <= 4 && subsequence(w, bCompact)) return true;
+    for (const w of b) if (w.length <= 4 && subsequence(w, aCompact)) return true;
+    return false;
+    };
+
+    // A WRITE TO THE WRONG ELEMENT THAT READS BACK CLEAN (replay skeptic MF5). The label check
+    // below cannot see this: accela/relabelled's owner step recorded {label "E-mail:", id
+    // OwnerEdit_txtEmail, section "Property Owner"}; the owner's label became "Email Address:",
+    // so "E-mail:" resolved to the APPLICANT's box — the SAME label, so it agreed, the installer's
+    // email was overwritten, and the read-back from that same box agreed too. The recorded
+    // FINGERPRINT says which element was meant: when the resolved element's id AND name contradict
+    // it while the fingerprinted element is on the page (exactly one), and that element's own label
+    // or section still agrees with the recording, write THERE. An absent fingerprint element
+    // redirects nothing (ids_renamed), and a step with no fingerprint is unaffected.
+    const fp = (step as { fingerprint?: { id?: string; name?: string; section?: string } }).fingerprint;
+    if (fp && (fp.id || fp.name) && this.page && typeof this.page.locator === "function") {
+      const got = await el0.evaluate((el: Element) => ({ id: el.getAttribute("id") || "", name: el.getAttribute("name") || "" })).catch(() => null) as { id: string; name: string } | null;
+      const agreesById = !!fp.id && got?.id === fp.id;
+      const agreesByName = !!fp.name && got?.name === fp.name;
+      const contradicts = !!got && !agreesById && !agreesByName
+        && ((!!fp.id && !!got.id && got.id !== fp.id) || (!!fp.name && !!got.name && got.name !== fp.name));
+      if (contradicts) {
+        const target = fp.id
+          ? this.page.locator(`[id="${String(fp.id).replace(/["\\]/g, "\\$&")}"]`)
+          : this.page.locator(`[name="${String(fp.name).replace(/["\\]/g, "\\$&")}"]`);
+        const n = await target.count().catch(() => 0);
+        if (n === 1) {
+          const meant = await target.first().evaluate((el: Element) => {
+            const id = el.getAttribute("id");
+            const forLbl = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+            const wrap = el.closest("label");
+            const label = ((forLbl as HTMLElement | null)?.textContent || (wrap as HTMLElement | null)?.textContent || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+            const fs = el.closest("fieldset");
+            const legend = fs ? fs.querySelector("legend") : null;
+            const section = (legend && legend.textContent ? legend.textContent : "").replace(/\s+/g, " ").trim();
+            return { label, section };
+          }).catch(() => null) as { label: string; section: string } | null;
+          const sectionAgrees = !!fp.section && !!meant?.section && meant.section.toLowerCase() === String(fp.section).replace(/\s+/g, " ").trim().toLowerCase();
+          if (meant && (sectionAgrees || (meant.label && agree(recorded, meant.label)))) {
+            this.driftWarnings.push(
+              `step "${recorded.slice(0, 44)}" resolved onto #${(got!.id || got!.name).slice(0, 50)}, but the recorded control #${String(fp.id || fp.name).slice(0, 50)}${fp.section ? ` (${String(fp.section).slice(0, 30)})` : ""} is on the page — written there, not into the other box`,
+            );
+            return target.first();
+          }
+        }
+      }
+    }
+
+    if (!actual) return null; // unlabelled control — nothing to contradict
+    if (agree(recorded, actual)) return null;
+    const a = words(recorded);
 
     // They share nothing. Find the control the recipe actually meant — by scanning the
     // page's own label associations, the SAME mechanism that just detected the mismatch.
