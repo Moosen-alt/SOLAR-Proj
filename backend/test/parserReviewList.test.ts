@@ -37,10 +37,10 @@ same(PR.meterTargets({ source: undefined, vision: false, docsGiven: ["plan_set",
 same(PR.meterTargets({ source: undefined, vision: false, docsGiven: ["utility_bill"] }), ["meter", "ubMeterNumber"], "no provenance + no plan set given → it can only be the bill's");
 same(PR.meterTargets({ source: undefined, vision: true }), ["meter", "ubMeterNumber"]);
 // verbatim confirmation in the plan text: grouped digits count, near-misses do not
-assert.equal(PR.meterInText("UTILITY: SAMPLE POWER METER #151 198 589. ESID 1234", "151198589"), "151 198 589");
-assert.equal(PR.meterInText("METER NUMBER: 1786346", "1786346"), "1786346");
-assert.equal(PR.meterInText("METER NUMBER: 11786346", "1786346"), "", "a longer number containing the digits is not the meter");
-assert.equal(PR.meterInText("METER NUMBER: 1786347", "1786346"), "");
+assert.equal(PR.meterInText("UTILITY: SAMPLE POWER METER #123 456 789. ESID 1234", "123456789"), "123 456 789");
+assert.equal(PR.meterInText("METER NUMBER: 3141592", "3141592"), "3141592");
+assert.equal(PR.meterInText("METER NUMBER: 13141592", "3141592"), "", "a longer number containing the digits is not the meter");
+assert.equal(PR.meterInText("METER NUMBER: 3141593", "3141592"), "");
 assert.equal(PR.meterInText("METER 12345", "12345"), "", "too short to be a verbatim confirmation");
 ok("meter: provenance routes the reading; one compare predicate; verbatim plan-text confirmation");
 
@@ -201,11 +201,11 @@ const visionPass = (fields: Record<string, unknown>) => ({ kind: "vision", label
   const feet = PR.resolveReviewItems({ attached: ["plan_set", "structural_letter"], planText: planTextSF, passes: [textPass({ buildingHeightFeet: field(15, "structural_letter", "Roof Height 15 ft", 0.75) }, ["buildingHeightFeet"], { uncertainties: [{ field: "buildingHeightFeet", kind: "inferred", reason: "no grade-to-ridge height stated" }] })] });
   assert.ok(feet.resolved.some((x: { field: string; value: number }) => x.field === "buildingHeightFeet" && x.value === 15));
   // a flagged meter the cross-check already confirmed is RESOLVED; a mismatch is a CONFLICT; no verdict → unsure
-  const meterOk = PR.resolveReviewItems({ attached: ["plan_set", "meter_photo"], planText: planTextSF, meterVerdict: "DIGITS MATCH", passes: [textPass({ meter: field("5001415986", "plan_set", "UTILITY METER #5 001 415 986", 0.6) }, ["meter"])] });
+  const meterOk = PR.resolveReviewItems({ attached: ["plan_set", "meter_photo"], planText: planTextSF, meterVerdict: "DIGITS MATCH", passes: [textPass({ meter: field("5000000123", "plan_set", "UTILITY METER #5 000 000 123", 0.6) }, ["meter"])] });
   assert.ok(meterOk.resolved.some((x: { field: string; how: string }) => x.field === "meter" && /DIGITS MATCH/.test(x.how)));
-  const meterBad = PR.resolveReviewItems({ attached: ["plan_set", "meter_photo"], planText: planTextSF, meterVerdict: "MISMATCH. Plan 5001415986 vs UB/photo 5001415987.", passes: [textPass({ meter: field("5001415986", "plan_set", "UTILITY METER #5 001 415 986", 0.6) }, ["meter"])] });
+  const meterBad = PR.resolveReviewItems({ attached: ["plan_set", "meter_photo"], planText: planTextSF, meterVerdict: "MISMATCH. Plan 5000000123 vs UB/photo 5000000124.", passes: [textPass({ meter: field("5000000123", "plan_set", "UTILITY METER #5 000 000 123", 0.6) }, ["meter"])] });
   assert.ok(meterBad.conflicts.some((x: { field: string }) => x.field === "meter") && !meterBad.resolved.length);
-  const meterNone = PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, meterVerdict: "Plan meter parsed. UB or meter photo meter missing.", passes: [textPass({ meter: field("5001415986", "plan_set", "UTILITY METER #5 001 415 986", 0.6) }, ["meter"])] });
+  const meterNone = PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, meterVerdict: "Plan meter parsed. UB or meter photo meter missing.", passes: [textPass({ meter: field("5000000123", "plan_set", "UTILITY METER #5 000 000 123", 0.6) }, ["meter"])] });
   assert.ok(meterNone.unsure.some((x: { field: string }) => x.field === "meter"));
   // two documents agree + one confident reading → RESOLVED; one pass alone at 78% stays unsure
   const agree = PR.resolveReviewItems({ attached: ["plan_set", "utility_bill", "meter_photo"], planText: planTextSF, passes: [

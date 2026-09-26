@@ -45,7 +45,7 @@
   }
 
   /** The meter number as it appears VERBATIM in a document's text (digits possibly grouped
-   *  with spaces/hyphens, as plan sets print them: "METER #151 198 589"), or ''. Lets the
+   *  with spaces/hyphens, as plan sets print them: "METER #123 456 789"), or ''. Lets the
    *  page confirm a bill/photo meter against a plan set that prints it under a label the
    *  regex parser did not know and the model did not cite. Never invents: digits only. */
   function meterInText(text, meter) {

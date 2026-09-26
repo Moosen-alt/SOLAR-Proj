@@ -32,13 +32,13 @@ async function makePlanPdf(): Promise<Buffer> {
     "PV 0.0 COVER SHEET  JANE SAMPLE RESIDENCE  100 EXAMPLE RD SAMPLE CITY, MA 02100, USA",
     "PHOTOVOLTAIC SYSTEM SPECIFICATIONS:  SYSTEM SIZE: 4.300 KW DC 3.490 KW AC",
     "MODULE TYPE & AMOUNT: (10) Q.TRON BLK M-G2.C1+/AC - 430W  MICRO-INVERTER: (10) QCELLS Q.MI.349B-G1 (240V)",
-    "INTERCONNECTION METHOD: LOAD BREAKER  AHJ: SAMPLE CITY  UTILITY: SAMPLE POWER  UTILITY METER NUMBER: 1786346",
+    "INTERCONNECTION METHOD: LOAD BREAKER  AHJ: SAMPLE CITY  UTILITY: SAMPLE POWER  UTILITY METER NUMBER: 3141592",
     "SHEET INDEX  PV 0.0 COVER  PV 1.0 SITE PLAN  E 1.1 3-LINE DIAGRAM  E 1.2 NOTES",
     "SITE PLAN  ROOF #1  NOTE : ATTIC RUN - YES  ATTIC FAN - NO  SHUTDOWN - NO  MID CLAMPS 16",
     "RAFTER SIZE & SPACING - 2\"X10\" @ 16\" O.C.  Distributed Load 2.58 Per SqFt",
   ]);
   page([
-    "E 1.1 3-LINE DIAGRAM  UTILITY COMPANY - SAMPLE POWER  UTILITY METER# 1786346  EXISTING BI-DIRECTIONAL UTILITY METER",
+    "E 1.1 3-LINE DIAGRAM  UTILITY COMPANY - SAMPLE POWER  UTILITY METER# 3141592  EXISTING BI-DIRECTIONAL UTILITY METER",
     "POINT OF INTERCONNECT, LOAD BREAKER 20A/2P  EXISTING 240V/125A BUS BAR RATING, MAIN SERVICE PANEL  WITH A 100A MAIN BREAKER (N) PV BREAKER",
     "WIRE TAG  L1 L2 N G  PV MODULE RATING  INVERTER CHARACTERISTICS",
   ]);
@@ -60,8 +60,8 @@ const VISION = {
   fields: {
     owner: { value: "JANE SAMPLE", confidence: 0.97, evidence: { source: "utility_bill", sheet: "header", excerpt: "Service Provided To: JANE SAMPLE" } },
     utility: { value: "Sample Power", confidence: 0.96, evidence: { source: "utility_bill", sheet: "logo", excerpt: "SAMPLE POWER" } },
-    account: { value: "74020755802", confidence: 0.92, evidence: { source: "utility_bill", sheet: "header", excerpt: "Account Number: 7402 075 5802" } },
-    meter: { value: "1786346", confidence: 0.96, evidence: { source: "utility_bill", sheet: "meter table / faceplate", excerpt: "Meter Number 1786346 | SAMPLE ELECTRIC 1786346" } },
+    account: { value: "10000000001", confidence: 0.92, evidence: { source: "utility_bill", sheet: "header", excerpt: "Account Number: 1000 000 0001" } },
+    meter: { value: "3141592", confidence: 0.96, evidence: { source: "utility_bill", sheet: "meter table / faceplate", excerpt: "Meter Number 3141592 | SAMPLE ELECTRIC 3141592" } },
     state: { value: "MA", confidence: 0.97, evidence: { source: "utility_bill", sheet: "address", excerpt: "SAMPLE CITY MA 02100" } },
   },
   lowConfidenceFields: [],
@@ -76,7 +76,7 @@ const TEXT = {
     city: { value: "Sample City", confidence: 0.97, evidence: { source: "plan_set", sheet: "PV 0.0", excerpt: "SAMPLE CITY, MA 02100" } },
     state: { value: "MA", confidence: 0.97, evidence: { source: "plan_set", sheet: "PV 0.0", excerpt: "SAMPLE CITY, MA 02100" } },
     utility: { value: "Sample Power", confidence: 0.95, evidence: { source: "plan_set", sheet: "PV 0.0", excerpt: "UTILITY: SAMPLE POWER" } },
-    meter: { value: "1786346", confidence: 0.9, evidence: { source: "plan_set", sheet: "PV 0.0", excerpt: "UTILITY METER NUMBER: 1786346" } },
+    meter: { value: "3141592", confidence: 0.9, evidence: { source: "plan_set", sheet: "PV 0.0", excerpt: "UTILITY METER NUMBER: 3141592" } },
     dcKw: { value: 4.3, confidence: 0.96, evidence: { source: "plan_set", sheet: "PV 0.0", excerpt: "SYSTEM SIZE: 4.300 KW DC" } },
     acKw: { value: 3.49, confidence: 0.96, evidence: { source: "plan_set", sheet: "PV 0.0", excerpt: "3.490 KW AC" } },
     interco: { value: "Load-side breaker", confidence: 0.9, evidence: { source: "plan_set", sheet: "PV 0.0 / E 1.1", excerpt: "INTERCONNECTION METHOD: LOAD BREAKER" } },
@@ -173,7 +173,7 @@ try {
   check("both smart-read passes were called through the page", () => { assert.ok(calls.some((c) => c.endsWith("vision-extract")) && calls.some((c) => c.endsWith("llm-extract")), calls.join(",")); });
   check("no page errors", () => assert.deepEqual(pageErrors, []));
   check("1. meter: verdict recomputed after the passes — DIGITS MATCH from plan meter vs UB meter", () => {
-    assert.equal(out.planMeter, "1786346"); assert.equal(out.ubMeter, "1786346");
+    assert.equal(out.planMeter, "3141592"); assert.equal(out.ubMeter, "3141592");
     assert.equal(out.verdict, "DIGITS MATCH");
     assert.doesNotMatch(out.critical, /METER VERIFICATION/);
   });
