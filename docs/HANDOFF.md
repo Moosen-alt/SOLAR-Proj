@@ -135,6 +135,11 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   account number into backend/test/parserReviewList.test.ts, backend/test/parserReviewPage.dom.smoke.ts and a frontend/parser-review.js comment. Fixed at HEAD
   (b2e5537 and following), but the values remain in local history. No remote branch contains them (checked 2026-09-26). Scrub history (git filter-repo on
   those paths/strings) before pushing, or accept the risk explicitly.
+- PRODUCTION RE-PINNED 2026-09-26 ~09:27 MDT: 0c466bb -> 73d7ded (all four chains green at that exact commit in a fixed worktree; the two
+  chain failures seen first were worktree artifacts — no node_modules link, no .probe start file). Migrations v35 + v36 applied; 14 projects visible
+  before and after (21 rows); /health ok. Backup: backend/data/backups/autopilot-2026-09-26T15-22-19-730Z-before-repin-73d7ded9a.sqlite.
+  PORTAL_ALLOW_FINAL_SUBMIT=0 in .env (previous .env copy in backend/data/backups) — stays off until the final safety round is clean and rule 1 is
+  reworded with the operator. Script: node .probe/repin/repin.mjs <commit> [--dry-run|--rollback]. Rollback target: 0c466bb.
 - KNOWLEDGE PRE-LOAD SPEND (prospect states): only AFTER the live research-accuracy evals pass
   (`.probe/jurisdiction/`): state layers for FL/TX/UT/CA (~$2) + the top 5 AHJs/utilities per state from
   `.probe/prospects/PREP-PLAN.md` §6 (~20 entities, ~$50), seeded, operator spot-verifies. Everything else is researched
