@@ -3,6 +3,24 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## PER-JOB LOOKUP ASKS THE ISSUING AGENCY; THE PORTAL IS ITS OWN STEP (2026-09-26)
+
+`permitProcessLookup.ts` (commits d5ab7f0, ef36887, af27c08, 3f2ab2c):
+- Documents/fees and the portal are asked of the agency that issues each permit: top level, else the per-permit agencies (≤ 2 calls), else the AHJ. An agency every permit cites is lifted.
+- A prerequisite office ("City Hall first") is a cited `prerequisites[]` note, never the agency.
+- The portal is a grounded step with page reading, through one door (`acceptPortal`: cited plus `hostFitsTrackAndEntity`). PowerClerk is now refused in both parts.
+- Documents/fees read pages and retry once without them on an abort.
+- A portal can no longer cite itself unseen.
+- Bound: ≤ 8 calls, 44 searches, 12 fetches, 20 min.
+
+Held-out real-web eval (7 AHJs, `.probe/lookup-recall/`, run then score with `score.ts`): **the bar is not met.**
+- Portal: 2 → 3 correct of 7, but WRONG 1 → 3. Each WRONG is an agency-linked legacy or city host, e.g. `aca.accela.com/sacramento` against the truth's `aca-prod`.
+- Documents: 3 → 3 of 7.
+- Fees: 0 → 0 of 7.
+- Agency, documents and fees WRONG: 1 → 0 each.
+
+The main loss is page-reading documents/fees calls aborting at 300 s (3 of 7). Jefferson (report only) now gives Marion County, separate, the City Hall prerequisite, form B-01S, $67.25 + 12% and $94 electrical; the portal was still not found. Spend ≤ $24.57 of the $25 cap. Next steps: portal host-equivalence (same vendor and tenant), splitting documents from fees, a fee source that is a current schedule.
+
 ## PRODUCTION RUNS PINNED; POWER-LOSS RECOVERY (2026-09-24)
 
 **Production no longer runs from the dev tree.** Code runs from `.probe/prod-pinned` (a detached git
