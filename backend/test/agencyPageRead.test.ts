@@ -403,6 +403,10 @@ await check("(f4) MUST-PASS (close F4): Waltham's '$50 Solar Installation' — a
   assert.ok(!reader.quoteOnPage("Solar Installation $25", p.text), "$25 is another row's amount");
   assert.ok(!reader.quoteOnPage("Solar Installation $75", p.text), "$75 is printed nowhere on that row");
   assert.ok(reader.quoteOnPage("Solar Installation $50", "Electrical\nSolar Installation  Residential  $50\nService  $75"), "a PDF row's columns apart");
+  const multi = "Miscellaneous\nSolar Residential  $168  Solar Commercial  $331  Solar Water Heaters  $90";
+  assert.ok(!reader.quoteOnPage("Solar Residential $331", multi), "a multi-fee row: $331 belongs to Solar Commercial, not to Solar Residential");
+  assert.ok(reader.quoteOnPage("Solar Commercial $331", multi));
+  assert.ok(reader.quoteOnPage("Solar Residential $168", multi));
   assert.ok(!reader.quoteOnPage("site plan required", "A site plan showing the array location and setbacks is required for review."), "prose is never loosened");
   const texts = new Map([[ppl.pageKey(F), p.text]]);
   const ans = JSON.stringify({ permits: [{ discipline: "electrical", documents: { value: null }, fee: { value: { amountUsd: 50, basis: "flat", lines: [{ label: "Solar Installation", amountUsd: 50 }] }, sourceUrl: F, quote: "Residential ... Solar Installation $50" } }] });

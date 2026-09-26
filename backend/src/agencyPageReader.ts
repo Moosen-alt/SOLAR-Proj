@@ -292,7 +292,21 @@ export function quoteOnPage(quote: string, pageText: string): boolean {
   const rows = String(pageText ?? "").split("\n").filter((l) => /\s\|\s|\S {2,}\S/.test(l)).map(normaliseForQuote).filter((l) => l && l.length <= 300).map((l) => l.split(" "));
   const inOneRow = (seg: string) => {
     const toks = seg.replace(/\.$/, "").split(" ").filter(Boolean);
-    return rows.some((row) => { let i = 0; for (const t of row) if (t === toks[i]) i++; return i === toks.length; });
+    // Once the segment's words have started matching, a NUMBER on the row that is not the segment's
+    // next token ends the match: on "Solar Residential $168 Solar Commercial $331" the words
+    // "Solar Residential" own $168, never $331.
+    return rows.some((row) => {
+      for (let s = 0; s < row.length; s++) {
+        if (row[s] !== toks[0]) continue;
+        let i = 1;
+        for (let j = s + 1; j < row.length && i < toks.length; j++) {
+          if (row[j] === toks[i]) i++;
+          else if (/\d/.test(row[j])) break;
+        }
+        if (i === toks.length) return true;
+      }
+      return false;
+    });
   };
   return segs.every((s) => page.includes(s) || page.includes(s.replace(/\.$/, "")) || inOneRow(s));
 }

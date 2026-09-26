@@ -813,7 +813,8 @@ export async function runPermitProcessLookup(
       // still there — a schedule that 404s now was replaced (close F4: a FY25-26 PDF cited in FY26-27).
       if (reader && grounded) {
         const feeUrls = [...new Set(((parseJsonLoose(a.r.text)?.permits ?? []) as Array<Record<string, unknown>>)
-          .map((p) => str((p?.fee as Record<string, unknown> | undefined)?.sourceUrl)).filter((u) => /^https?:\/\//i.test(u)))]
+          .map((p) => p?.fee as Record<string, unknown> | undefined).filter((f) => f?.value != null)
+          .map((f) => str(f?.sourceUrl)).filter((u) => /^https?:\/\//i.test(u)))]
           .filter((u) => !pageTexts.has(pageKey(u)) && !gone.includes(pageKey(u))).slice(0, 2);
         for (const u of feeUrls) {
           const pg = await reader.read(u);
