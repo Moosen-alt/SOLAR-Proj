@@ -249,29 +249,24 @@ export function dcDcConverterEvidence(s: Record<string, unknown>, stringInverter
 // ── THE ESS INVERTER'S OWN OUTPUT CURRENT (AC-coupled battery on a micro system) ────────────
 // parser.html puts a micro system's make / model / per-unit amps into invMake / invModel /
 // invOutputW, and on a Tesla battery swaps in the Powerwall model while invOutputW keeps the
-// micro's amps when no battery kW was read. So invOutputW is ESS evidence ONLY when the inverter
-// fields positively name an ESS inverter that is not the micro and its amps are not the micro's —
-// "10 x 1.21 A + ESS 1.21 A" was filed for an Enphase IQ Battery 5P / a Powerwall 3. Otherwise the
-// ESS current is unknown and asked.
-const MICRO_MODEL = /\b(?:IQ\s?[678]\w*|DS3\w*|QS1\w*|HMS?-\w+|Q\.?MI\w*|M2[15]\d\w*|YC\d\w*)|micro/i;
-const ESS_INVERTER = /powerwall|battery|encharge|storage|\bess\b|hybrid|energy\s+(?:center|hub)|powerhub/i;
-const normModel = (v: unknown) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+// micro's amps when no battery kW was read — "10 x 1.21 A + ESS 1.21 A" was filed for an Enphase
+// IQ Battery 5P / a Powerwall 3. So the ESS current comes only from the operator's answer or ONE
+// battery's rated kW; otherwise it is unknown and asked.
 export function essOutputCurrent(s: Record<string, unknown>): { amps: number; source: string } | null {
   const str = (k: string) => String(s[k] ?? "").trim();
   const answered = str("iaPvEssOutputA") ? parseRating(str("iaPvEssOutputA")) : null;
   if (answered != null && answered > 0) return { amps: answered, source: `operator answer iaPvEssOutputA ${str("iaPvEssOutputA")}` };
+  // ONE battery (or no count stated): its rated kW / 240 V. MORE THAN ONE is ambiguous — the count can be
+  // expansion packs with no inverter (Powerwall 3 + DC expansion) or several inverters — so one unit's current
+  // is never filed for all of them; it becomes the question (skeptic 2026-09-26: 2 x Powerwall 3 filed as one).
   const kw = firstNumber(s.batteryOutputKw);
-  if (kw != null && kw > 0) return { amps: (kw * 1000) / 240, source: `batteryOutputKw ${kw} kW / 240 V` };
-  const invName = `${str("invMake")} ${str("invModel")}`.trim();
-  const invA = str("invOutputW") ? parseRating(str("invOutputW")) : null;
-  const microA = str("pvMicroOutputW") ? parseRating(str("pvMicroOutputW")) : null;
-  if (!invName || invA == null || !(invA > 0)) return null;
-  const sameAsMicro = normModel(str("invModel")) !== "" && normModel(str("invModel")) === normModel(str("pvMicroModel"));
-  const namesEss = ESS_INVERTER.test(invName) || (normModel(str("invModel")) !== "" && normModel(str("invModel")) === normModel(str("batteryModel")));
-  const microShaped = MICRO_MODEL.test(str("invModel"));
-  const microAmps = microA != null && Math.abs(invA - microA) < 0.005;
-  if (sameAsMicro || microShaped || !namesEss || microAmps) return null;
-  return { amps: invA, source: `ESS inverter ${invName} rated ${fmt(invA)} A` };
+  const qty = firstNumber(s.batteryQty);
+  if (kw != null && kw > 0 && (qty == null || qty <= 1)) return { amps: (kw * 1000) / 240, source: `batteryOutputKw ${kw} kW / 240 V (one battery)` };
+  // invOutputW is NEVER the ESS rating here: this current is only added on a MICRO system, and there
+  // parser.html stores the MICRO's own per-unit amps in invOutputW (and keeps them when it swaps a Powerwall
+  // into invMake/invModel). No guard on names or equal values made that safe (skeptic 2026-09-26), so the
+  // field is not read at all — an unknown ESS rating is the operator question, never a guess.
+  return null;
 }
 
 const LOAD_SIDE_ROW_IDS = ["B1a", "B1b", "B2", "B31", "B32", "B33", "B34", "B35", "B36"];

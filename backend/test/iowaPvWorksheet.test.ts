@@ -180,14 +180,27 @@ await check("(ess1) MUST-EXCLUDE the ESS current is never the micro's per-unit a
     assert.ok(r.questions.some((q) => q.key === "iaPvEssOutputA"), `${name}: the ESS question`);
   }
 });
-await check("(ess2) MUST-PASS the ESS inverter's own current: a Powerwall's rated amps, the battery kW, or the operator's answer", () => {
-  const pw = W({ ...PW3_MICRO_AMPS, invOutputW: "47.92" });
-  assert.equal(pw.values["p2.maxCircuitCurrent"], "60.02A", "10 x 1.21 + 47.92");
-  assert.match(pw.basis["p2.maxCircuitCurrent"], /ESS current from ESS inverter Tesla Powerwall 3 rated 47\.92 A/);
-  assert.equal(pw.values["p3.C.calc"], "(10 x 1.21 A + ESS 47.92 A) x 1.25 = 75.03 A -> 80 A OCPD (NEC 240.6(A))");
+await check("(ess2) MUST-PASS the ESS inverter's own current: ONE battery's rated kW, or the operator's answer", () => {
   assert.equal(W({ ...ENPHASE_5P, batteryOutputKw: "3.84" }).values["p2.maxCircuitCurrent"], "28.1A", "12.1 + 3840/240 = 28.1");
+  assert.equal(W({ ...ENPHASE_5P, batteryOutputKw: "3.84", batteryQty: "1" }).values["p2.maxCircuitCurrent"], "28.1A", "an explicit quantity of one files the same");
   assert.equal(W({ ...ENPHASE_5P, iaPvEssOutputA: "16" }).values["p2.maxCircuitCurrent"], "28.1A", "the operator's answer");
   assert.ok(!W({ ...ENPHASE_5P, iaPvEssOutputA: "16" }).questions.some((q) => q.key === "iaPvEssOutputA"));
+  const answered = W({ ...PW3_MICRO_AMPS, invOutputW: "47.92", iaPvEssOutputA: "47.92" });
+  assert.equal(answered.values["p3.C.calc"], "(10 x 1.21 A + ESS 47.92 A) x 1.25 = 75.03 A -> 80 A OCPD (NEC 240.6(A))", "the operator's answer drives the OCPD calc");
+});
+// Skeptic 2026-09-26 (MF2 look-alikes): on a micro system invOutputW holds the MICRO's amps even when a Powerwall
+// is swapped into invMake/invModel, and a per-unit battery kW is not the total when there is more than one battery.
+await check("(ess3) MUST-EXCLUDE invOutputW is never read as the ESS rating, and a per-unit kW is never filed for several batteries -> blank + the ESS question", () => {
+  for (const [name, over] of [
+    ["Powerwall named, invOutputW differs from pvMicroOutputW (the regex path)", { ...PW3_MICRO_AMPS, invOutputW: "47.92" }],
+    ["Powerwall named, invOutputW 1.35 while pvMicroOutputW 1.21", { ...PW3_MICRO_AMPS, invOutputW: "1.35" }],
+    ["two batteries at a per-unit 11.5 kW", { ...PW3_MICRO_AMPS, batteryOutputKw: "11.5", batteryQty: "2" }],
+    ["two Enphase 5P at 3.84 kW each", { ...ENPHASE_5P, batteryOutputKw: "3.84", batteryQty: "2" }],
+  ] as const) {
+    const r = W(over);
+    assert.equal(r.values["p2.maxCircuitCurrent"], "", `${name}: no circuit current filed`);
+    assert.ok(r.questions.some((q) => q.key === "iaPvEssOutputA"), `${name}: the ESS question is asked`);
+  }
 });
 // ── MF1: DC-DC converters come from the EQUIPMENT, never from prose ─────────────────────────
 const STRING_JOB = { ...BASE, invMake: "SynthInverter", invModel: "SI-7600", invQty: "1", invOutputW: "32", moduleVoc: "40", moduleVocTempCoeff: "-0.27", siteLowTempC: "-26", modulesPerString: "10",
