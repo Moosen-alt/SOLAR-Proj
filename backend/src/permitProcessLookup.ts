@@ -560,7 +560,9 @@ export async function readAgencyEvidence(reader: PageReader, input: {
   const docs = docPages.filter((d) => d.page.ok && d.page.text).map((d) => ({ ...d, excerpt: excerptFor(d.page, d.kind) })).filter((d) => d.excerpt);
 
   const prerequisites: CitedFact<string>[] = [];
-  for (const pg of [...okPages, ...docs.map((d) => d.page)]) {
+  // A fee schedule prices steps; its "plan review" / "registration" rows are not steps to take — the
+  // agency pages and the solar checklist are where a prerequisite is stated.
+  for (const pg of [...okPages, ...docs.filter((d) => d.kind === "checklist").map((d) => d.page)]) {
     for (const n of extractPrerequisites(pg)) if (!prerequisites.some((x) => x.quote === n.quote)) prerequisites.push({ value: n.value, sourceUrl: n.sourceUrl, quote: n.quote, origin: "lookup" });
   }
   let codes: CitedFact<string[]> | null = null;
