@@ -582,7 +582,7 @@ async function loadProjectDocuments() {
     listEl.innerHTML = docs.length
       ? docs.map((d) => `<div class="card" style="padding:6px 8px;display:flex;justify-content:space-between;align-items:center;gap:8px">
           <span style="font-size:13px"><strong>${esc(d.docType || "general")}</strong> · <a href="/api/projects/${esc(state.selectedProjectId)}/documents/${esc(d.id)}">${esc(d.originalFilename)}</a> <span class="muted">(${Math.max(1, Math.round(d.sizeBytes / 1024))} KB)</span></span>
-          <button class="danger" data-doc-del="${esc(d.id)}" style="font-size:11px">Delete</button></div>`).join("")
+          <button type="button" class="danger-button danger-button-sm" data-doc-del="${esc(d.id)}">Delete</button></div>`).join("")
       : '<p class="muted" style="font-size:12px">No documents uploaded yet.</p>';
     listEl.querySelectorAll("[data-doc-del]").forEach((b) => b.addEventListener("click", async () => {
       // Permanently removes the FILE from disk (only the append-only backup mirror
@@ -729,7 +729,7 @@ function renderPortalRecipes() {
           ${badge(r.status)}
           <button class="secondary" data-recipe-toggle-steps="${esc(r.id)}" style="font-size:11px">${state.expandedRecipeSteps[r.id] ? "Hide steps" : "View steps"}</button>
           <button class="secondary" data-recipe-rerecord="${esc(r.id)}" style="font-size:11px">Flag re-record</button>
-          <button class="danger" data-recipe-delete="${esc(r.id)}" style="font-size:11px">Delete</button>
+          <button type="button" class="danger-button danger-button-sm" data-recipe-delete="${esc(r.id)}">Delete</button>
         </div>
       </div>
       ${r.status === "complete" ? `
@@ -854,7 +854,7 @@ function renderAhjForms() {
         <div style="display:flex;gap:6px;align-items:center">
           <a class="secondary" href="/api/ahj-templates/${esc(r.id)}/pdf" target="_blank" rel="noopener" style="font-size:11px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;text-decoration:none">Blank PDF</a>
           <button class="secondary" data-form-remap="${esc(r.id)}" style="font-size:11px">Re-map</button>
-          <button class="danger" data-form-delete="${esc(r.id)}" style="font-size:11px">Delete</button>
+          <button type="button" class="danger-button danger-button-sm" data-form-delete="${esc(r.id)}">Delete</button>
         </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">${provBits.join('<span class="muted" style="font-size:11px">·</span>')}</div>
@@ -943,7 +943,7 @@ function renderSignatures() {
       </div>
       <div style="display:flex;gap:6px;align-items:center">
         ${r.isDefault ? "" : `<button class="secondary" data-sig-default="${esc(r.id)}" style="font-size:11px">Make default</button>`}
-        <button class="danger" data-sig-delete="${esc(r.id)}" style="font-size:11px">Delete</button>
+        <button type="button" class="danger-button danger-button-sm" data-sig-delete="${esc(r.id)}">Delete</button>
       </div>
     </div>`).join("");
   el.querySelectorAll("[data-sig-default]").forEach((b) => b.addEventListener("click", async () => {
@@ -1122,7 +1122,16 @@ function stageDetailChipHtml(project) {
   const raw = project && project.stageDetail;
   if (typeof raw !== "string" || !raw.trim()) return "";
   const detail = raw.trim();
-  return ` <span class="chip stage-detail-chip" title="Sub-stage recorded by the system: ${esc(detail)}">${esc(humanize(detail))}</span>`;
+  // "operator_override" only records that a person set the status by hand — it is not a stage
+  // anyone acts on, so it prints nothing (a BLOCKED row says Blocked instead, below).
+  // (isBlocked alone also covers an open correction, whose own sub-stage says more — so only
+  // the bare operator_override row is relabelled.)
+  const operatorBlock = detail === "operator_override" && !!project.isBlocked;
+  if (detail === "operator_override" && !operatorBlock) return "";
+  const label = operatorBlock
+    ? "Blocked"
+    : humanize(detail).replace(/\b(Qc|Nem|Ahj|Mfa)\b/g, (w) => w.toUpperCase());
+  return ` <span class="chip stage-detail-chip${operatorBlock ? " is-blocked" : ""}" title="Sub-stage recorded by the system: ${esc(detail)}">${esc(label)}</span>`;
 }
 
 // Stage pill + "Stage N of 5" progress for the table view.
@@ -1165,13 +1174,13 @@ function renderProjectTable() {
       : `<span class="muted">—</span>`;
     return `
     <tr data-project-id="${project.id}" class="${project.id === state.selectedProjectId ? "active" : ""}">
-      <td><strong>${esc(project.homeownerName || "Unnamed")}</strong><br><span class="muted">${esc(project.projectAddress || "No address")}</span>${project.clientName ? `<br><span class="muted" style="font-size:11px">🏢 ${esc(project.clientName)}</span>` : ""}</td>
-      <td>${assigneeHtml}</td>
-      <td>${stagePillHtml(project)}</td>
-      <td>${projectLaneStatusCell(project.latestPermitLabel, project.latestPermitOutcome, project.latestPermitCheckedAt, project.readyForIssue, "ready for issue")}</td>
-      <td>${projectLaneStatusCell(project.latestNemLabel, project.latestNemOutcome, project.latestNemCheckedAt, project.nemApproved, "NEM approved")}</td>
-      <td>${project.qcFailCount ? `<strong class="danger">${project.qcFailCount} fail</strong>` : "0 fail"}<br><span class="muted">${project.qcWarningCount ?? 0} warn</span></td>
-      <td>${project.pendingReviewCount ?? 0}</td>
+      <td class="project-cell"><strong>${esc(project.homeownerName || "Unnamed")}</strong><br><span class="muted">${esc(project.projectAddress || "No address")}</span>${project.clientName ? `<br><span class="muted" style="font-size:11px">🏢 ${esc(project.clientName)}</span>` : ""}</td>
+      <td data-label="Assignee">${assigneeHtml}</td>
+      <td data-label="Stage">${stagePillHtml(project)}</td>
+      <td data-label="Permit" class="lane-cell">${projectLaneStatusCell(project.latestPermitLabel, project.latestPermitOutcome, project.latestPermitCheckedAt, project.readyForIssue, "ready for issue")}</td>
+      <td data-label="NEM" class="lane-cell">${projectLaneStatusCell(project.latestNemLabel, project.latestNemOutcome, project.latestNemCheckedAt, project.nemApproved, "NEM approved")}</td>
+      <td data-label="QC" class="qc-cell">${project.qcFailCount ? `<strong class="danger">${project.qcFailCount} fail</strong>` : "0 fail"}<br><span class="muted">${project.qcWarningCount ?? 0} warn</span></td>
+      <td data-label="Review">${project.pendingReviewCount ?? 0}</td>
     </tr>`;
   }).join("");
   if (total > projects.length) {
@@ -1617,7 +1626,16 @@ function routeFromHash() {
   const [page, id] = hash.split("/");
   if (page === "project" && id) {
     if (state.selectedProjectId !== id || !state.detail) {
-      selectProject(id);
+      // A stale or foreign link (deleted project, another workspace's id) used to leave an
+      // uncaught "Project not found." and a blank page. Say so, and land on the dashboard.
+      selectProject(id).catch((err) => {
+        if (state.selectedProjectId === id) { state.selectedProjectId = null; state.detail = null; }
+        const gone = /not found|404/i.test(String(err && err.message || ""));
+        navigate("#/dashboard");
+        showMessage(gone
+          ? "That project no longer exists or is not in your workspace."
+          : `Could not open that project: ${(err && err.message) || "unknown error"}`, gone ? "warning" : "error");
+      });
     } else {
       showPage("project");
     }
@@ -1791,7 +1809,7 @@ function renderKnowledgeProfile(profile) {
         ${lastLearned ? `<span>🔄 Last learned ${esc(lastLearned)}</span>` : ""}
         ${sourceSummary ? `<span class="muted">Sources: ${esc(sourceSummary)}</span>` : ""}
       </div>
-      ${profile.portalName ? `<p style="margin:2px 0;font-size:12px"><strong>Portal:</strong> ${esc(profile.portalName)}${profile.portalUrl ? ` — <a href="${esc(profile.portalUrl)}" target="_blank" rel="noopener">${esc(profile.portalUrl)}</a>` : ""}</p>` : ""}
+      ${profile.portalName ? `<p style="margin:2px 0;font-size:12px"><strong>Portal:</strong> ${esc(profile.portalName)}${profile.portalUrl ? ` — <a href="${esc(profile.portalUrl)}" target="_blank" rel="noopener">${esc((() => { try { return new URL(profile.portalUrl).hostname.replace(/^www[.]/i, ""); } catch { return profile.portalUrl; } })())}</a>` : ""}</p>` : ""}
       ${docs.length ? `<p style="margin:4px 0;font-size:12px"><strong>Required docs (${docs.length}):</strong> ${esc(docs.join(" · "))}</p>` : `<p style="margin:4px 0;font-size:12px;color:var(--muted)">No required documents learned yet.</p>`}
       ${corrections.length ? `<div style="margin-top:4px;font-size:12px"><strong>Common corrections:</strong> <ul style="margin:2px 0 0 16px;padding:0">${corrections.map((c) => `<li>${esc(c.rootCause)}${c.count > 1 ? ` (×${c.count})` : ""}</li>`).join("")}</ul></div>` : ""}
       ${profile.notes ? kbNotesHtml(profile.notes) : ""}
@@ -1865,13 +1883,34 @@ function kbDesignCriteriaHtml(codeProfile) {
 
 // Notes are " | "-joined segments. Dedupe (older DBs may still carry repeats)
 // and render one bullet per segment instead of a wall of text.
-function kbNotesHtml(notes) {
+// SHARED KNOWLEDGE IS SHOWN TO EVERY TENANT, and the imported reference rows still carry the
+// importer's "[REDACTED_PHONE]" placeholders ("Combo Permit Call [REDACTED_PHONE] for fees").
+// Stripped HERE, at render — the stored rows are shared data and are not rewritten from the UI.
+// A segment that was only a placeholder disappears; the punctuation around one is tidied.
+// ONE place strips them (lifted by name into tests, so the scrub lives inside): pass
+// { segmentsOnly: true } to get the cleaned, de-duplicated segments instead of HTML.
+function kbNotesHtml(notes, opts) {
+  const scrubRedacted = (text) => {
+    const M = '@@R@@';
+    return String(text ?? '')
+      .replace(/(?:1-)?\[REDACTED_[A-Z]+\](?:[-.]\[REDACTED_[A-Z]+\])*/g, M)
+      .replace(/\(\s*@@R@@\s*\)/g, '')
+      .replace(/\(\s*@@R@@\s*,?\s*(?=\()/g, '')
+      .replace(/\(\s*@@R@@\s*,?\s*/g, '(')
+      .replace(/\s*[-–:]?\s*@@R@@/g, ' ')
+      .replace(/\(\s+/g, '(').replace(/\s+\)/g, ')').replace(/\(\)/g, '')
+      .replace(/\s+([,.;])/g, '$1')
+      .replace(/([,;])(?=[,;.])/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/^[\s\-–,;:.]+|[\s\-–,;:(]+$/g, '');
+  };
   const seen = new Set();
-  const segs = String(notes).split(" | ").map((s) => s.trim()).filter((s) => {
+  const segs = String(notes ?? "").split(" | ").map((s) => scrubRedacted(s)).filter((s) => {
     if (!s || seen.has(s.toLowerCase())) return false;
     seen.add(s.toLowerCase());
     return true;
   });
+  if (opts && opts.segmentsOnly) return segs;
   if (!segs.length) return "";
   if (segs.length === 1) return `<p style="margin:4px 0;font-size:12px;color:var(--muted)">${esc(segs[0])}</p>`;
   return `<div style="margin-top:4px;font-size:12px;color:var(--muted)"><strong>Notes:</strong><ul style="margin:2px 0 0 16px;padding:0">${segs.map((s) => `<li>${esc(s)}</li>`).join("")}</ul></div>`;
@@ -4163,6 +4202,12 @@ async function stageSubmittalTrack(type, btn, autoSubmit = false) {
 // ----- Autopilot: autonomous run to the single human-approval gate -----
 function applyAutopilotState(s) {
   if (!s) return;
+  // Server blocker details are whole sentences ending in a period; joining them with "; "
+  // printed ".;". One list, one final period. Local, because test harnesses lift this function.
+  const reasonList = (details) => {
+    const parts = (details || []).map((d) => String(d || "").trim().replace(/[.;\s]+$/, "")).filter(Boolean);
+    return parts.length ? `${parts.join("; ")}.` : "";
+  };
   // A late answer for a project the operator has already left must not paint this one.
   if (s.projectId && state.selectedProjectId && s.projectId !== state.selectedProjectId) return;
   state.autopilot = s;
@@ -4179,7 +4224,7 @@ function applyAutopilotState(s) {
     approveBtn.disabled = !s.canApprove;
     const approveOff = s.canApprove ? "" : (s.approveDisabledReason
       || (s.blockers && s.blockers.length
-        ? `Blocked: ${s.blockers.map((b) => b.detail).join("; ")}`
+        ? `Blocked: ${reasonList(s.blockers.map((b) => b.detail))}`
         : "Available once the project is staged to the portal review screen."));
     approveBtn.title = s.canApprove
       ? "Authorize and file. The system completes the portal submit (or you finish it in the portal)."
@@ -4223,11 +4268,12 @@ function applyAutopilotState(s) {
     const blockers = Array.isArray(s.blockers) ? s.blockers : [];
     let reason = "";
     if (!s.canApprove && blockers.length) {
-      reason = `Why ${String(s.stage || s.phase || "blocked").toLowerCase()}: ${blockers.map((b) => b.detail).filter(Boolean).join("; ")}`;
+      reason = `Why ${String(s.stage || s.phase || "blocked").toLowerCase()}: ${reasonList(blockers.map((b) => b.detail))}`;
     } else if (s.phase === "failed") {
       reason = `Autopilot failed: ${s.message || "no reason was recorded"}`;
     }
     reasonEl.textContent = reason;
+    reasonEl.title = reason; // the rail clamps it to two lines; the full list is also the red blocker card
     reasonEl.hidden = !reason;
   }
   // ONE PRIMARY ACTION. Once a project is in Track/Closeout, re-staging is not the next step,
@@ -4358,7 +4404,7 @@ async function startAutopilot() {
     await api(`/api/projects/${state.selectedProjectId}/autopilot/start`, { method: "POST", body: "{}" });
     const s = await pollAutopilot();
     if (s && s.phase === "awaiting_approval") showMessage("Staged to portal review. Verify, then click Approve & Submit to file.", "info");
-    else if (s && s.phase === "blocked") showMessage(`Autopilot blocked: ${s.blockers.map((b) => b.detail).join("; ")}`, "error");
+    else if (s && s.phase === "blocked") showMessage(`Autopilot blocked: ${(s.blockers || []).map((b) => String(b.detail || "").trim().replace(/[.;\s]+$/, "")).filter(Boolean).join("; ")}.`, "error");
     else if (s && s.phase === "failed") showMessage(s.message || "Staging failed — see the portal run.", "error");
   } catch (err) {
     showMessage(err.message || "Could not start autopilot.", "error");
@@ -5259,6 +5305,10 @@ function syncPermitForm() {
 // Staging will refuse without it" row is qc_status=warning, severity=error, and the panel read
 // "0 fail / 4 warn" over a staging blocker (demo S2b). Pure; lifted by boardGateTruth.test.ts.
 function qcVerdict(result) {
+  // A rule that PASSED is a pass whatever its severity — severity says how bad a failure of that
+  // rule would be ("blocker"), not that it failed. Escalating on severity alone printed every
+  // passing blocker rule as FAIL ("Homeowner name FAIL — Homeowner name present.").
+  if ((result && result.qcStatus) === "pass") return "pass";
   const severity = String((result && result.severity) || "").toLowerCase();
   if ((result && result.qcStatus) === "fail" || severity === "error" || severity === "blocker") return "fail";
   return (result && result.qcStatus) || "info";
@@ -5385,7 +5435,9 @@ function renderReview() {
     const context = [];
     if (item.llmSuggestedValue) context.push(`<strong>AI suggestion:</strong> ${esc(item.llmSuggestedValue)}`);
     if (item.parserValue && item.parserValue !== item.llmSuggestedValue) context.push(`<strong>Parser read:</strong> ${esc(item.parserValue)}`);
-    if (hint) context.push(`<span class="muted">${esc(hint)}</span>`);
+    // The hint is often already the tail of the notes sentence; printing it again read as a stutter.
+    const squash = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (hint && !squash(reviewNotesDisplay(item)).includes(squash(hint).slice(0, 24))) context.push(`<span class="muted">${esc(hint)}</span>`);
     return `
     <article class="item ${item.status === "pending" ? (isWarning ? "info" : "warning") : "pass"}">
       <div class="item-title"><strong>${esc(label)}</strong>${statusBadge(item.status)}</div>
@@ -5772,7 +5824,7 @@ function renderApplicationDocs() {
   const learnedDocs = (learned && learned.requiredDocuments) || [];
   const pid = state.selectedProjectId;
   const docsRequired = profile.requiresAhjApplication || profile.requiresPortalEntryOnly;
-  const profileNotes = (profile.notes || []).filter(Boolean);
+  const profileNotes = (profile.notes || []).flatMap((n) => kbNotesHtml(n, { segmentsOnly: true }));
   $("applicationDocs").innerHTML = `
     ${renderPermitPathPanel(pkg)}
     ${renderFilledForms(pid)}
@@ -7707,7 +7759,7 @@ async function loadClientCredentials(clientId) {
     const creds = data.credentials || [];
     list.innerHTML = creds.length
       ? creds.map((c) => `<div class="cred-row">
-          <div class="cred-row-text"><strong>${esc(c.portalType || "portal")}</strong><span class="cred-row-user">${esc(c.usernameReference)}${c.hasSecret ? ' <span class="cred-row-lock" title="Password stored encrypted">🔒</span>' : ""}</span></div>
+          <div class="cred-row-text"><strong>${esc(portalDisplayName(c.portalType, c.portalUrl))}</strong><span class="cred-row-user">${esc(c.usernameReference)}${c.hasSecret ? ' <span class="cred-row-lock" title="Password stored encrypted">🔒</span>' : ""}</span></div>
           <button type="button" class="danger-button cred-row-del" data-cred-del="${esc(c.id)}"><i data-lucide="trash-2"></i><span>Delete</span></button></div>`).join("")
       : '<p class="muted clients-creds-hint">No saved logins yet.</p>';
     if (window.lucide) window.lucide.createIcons();
@@ -7930,6 +7982,26 @@ function plPortalSlug(label) {
   return String(label || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "portal";
 }
 
+// A saved login's HUMAN name. The stored portalType ("accela_oregon") is a matching key the bot
+// and the chips compare on — it stays exactly as stored; only what the operator READS changes.
+// Order: a known portal's name -> vendor + place from the key -> the URL's hostname -> the key
+// in words. Never the raw key, never a full (often %2F-encoded) URL.
+const PORTAL_TYPE_NAMES = { accela_oregon: "Oregon ePermitting (Accela)", powerclerk_pge: "PowerClerk (PGE)" };
+const PORTAL_VENDOR_NAMES = { accela: "Accela", powerclerk: "PowerClerk", citizenserve: "CitizenServe", energov: "EnerGov", projectdox: "ProjectDox", opengov: "OpenGov", etrakit: "eTRAKiT", tyler: "Tyler" };
+function portalHostname(url) {
+  try { return url ? new URL(String(url)).hostname.replace(/^www\./i, "") : ""; } catch { return ""; }
+}
+function portalDisplayName(portalType, portalUrl) {
+  const key = String(portalType || "").trim().toLowerCase();
+  if (PORTAL_TYPE_NAMES[key]) return PORTAL_TYPE_NAMES[key];
+  const [vendor, ...rest] = key.split(/[_\-\s]+/).filter(Boolean);
+  if (vendor && PORTAL_VENDOR_NAMES[vendor]) {
+    const place = rest.length && rest.join(" ") !== "portal" ? ` (${humanize(rest.join(" "))})` : "";
+    return `${PORTAL_VENDOR_NAMES[vendor]}${place}`;
+  }
+  return portalHostname(portalUrl) || (key ? humanize(key) : "Portal");
+}
+
 async function openPortalLogins() {
   const client = plClient();
   const status = $("plStatus");
@@ -7994,10 +8066,10 @@ async function renderPortalLogins() {
   $("plList").innerHTML = creds.length
     ? creds.map((c) => `<div class="pl-cred-row">
         <div>
-          <div class="pl-cred-meta"><strong>${esc(c.portalType || "portal")}</strong> · ${esc(c.usernameReference)} ${c.hasSecret ? "🔒" : ""}</div>
-          ${c.portalUrl ? `<div class="pl-cred-url">${esc(c.portalUrl)}</div>` : ""}
+          <div class="pl-cred-meta"><strong>${esc(portalDisplayName(c.portalType, c.portalUrl))}</strong> · ${esc(c.usernameReference)} ${c.hasSecret ? "🔒" : ""}</div>
+          ${portalHostname(c.portalUrl) && portalHostname(c.portalUrl) !== portalDisplayName(c.portalType, c.portalUrl) ? `<div class="pl-cred-url">${esc(portalHostname(c.portalUrl))}</div>` : ""}
         </div>
-        <button class="danger" data-pl-del="${esc(c.id)}" style="font-size:11px">Delete</button>
+        <button type="button" class="danger-button danger-button-sm" data-pl-del="${esc(c.id)}">Delete</button>
       </div>`).join("")
     : '<p class="muted" style="font-size:12px">No saved logins yet. Pick a portal above to pre-fill, then enter the username and password.</p>';
   $("plList").querySelectorAll("[data-pl-del]").forEach((b) => b.addEventListener("click", async () => {
@@ -8019,6 +8091,8 @@ async function renderPortalLogins() {
 
 if ($("managePortalLoginsBtn")) $("managePortalLoginsBtn").addEventListener("click", openPortalLogins);
 if ($("closePortalLoginsBtn")) $("closePortalLoginsBtn").addEventListener("click", () => { $("portalLoginsModal").hidden = true; });
+// Backdrop click closes it, like every other modal (Esc is wired in installKeyboardShortcuts).
+if ($("portalLoginsModal")) $("portalLoginsModal").addEventListener("click", (e) => { if (e.target.id === "portalLoginsModal") $("portalLoginsModal").hidden = true; });
 if ($("plSaveBtn")) $("plSaveBtn").addEventListener("click", async () => {
   const client = plClient();
   if (!client) { $("plStatus").textContent = "No submitting client assigned."; return; }
@@ -8529,7 +8603,10 @@ async function loadTeamWorkload() {
 
 function renderTeamWorkload(workload) {
   if (!workload || workload.length === 0) {
-    $("teamWorkload").innerHTML = `<p class="muted">No team members configured. Add operators via the Team button.</p>`;
+    $("teamWorkload").innerHTML = `<div class="team-empty"><p class="muted">No team members yet. Add the people who work these projects to see their open work here.</p>
+      <button type="button" class="secondary" id="teamEmptyAddBtn"><i data-lucide="user-plus"></i><span>Add a team member</span></button></div>`;
+    $("teamEmptyAddBtn").addEventListener("click", () => { openUsersModal().then(() => blankUserForm()); });
+    if (window.lucide) window.lucide.createIcons();
     return;
   }
   $("teamWorkload").innerHTML = workload.map((w) => {
@@ -8583,9 +8660,20 @@ function editUser(userId) {
   $("userId").value = user.id;
   $("u_name").value = user.name;
   $("u_email").value = user.email;
+  syncUserRoleChoice(false);
   $("u_role").value = user.role;
   $("u_color").value = user.color;
   renderUsersList();
+}
+
+// A NEW member is always created as an Operator (users.ts createUser — creation is not an
+// elevation path). Offering "Admin" on the Add form saved an Operator and still said "Saved.",
+// so the choice is shut on a new member and opens once they exist (promotion is an edit).
+function syncUserRoleChoice(isNew) {
+  const admin = $("u_role")?.querySelector('option[value="admin"]');
+  if (admin) admin.disabled = !!isNew;
+  if (isNew && $("u_role")) $("u_role").value = "operator";
+  if ($("u_roleHint")) $("u_roleHint").hidden = !isNew;
 }
 
 function blankUserForm() {
@@ -8593,7 +8681,7 @@ function blankUserForm() {
   $("userId").value = "";
   $("u_name").value = "";
   $("u_email").value = "";
-  $("u_role").value = "operator";
+  syncUserRoleChoice(true);
   $("u_color").value = "#6366f1";
   renderUsersList();
 }
@@ -8612,7 +8700,12 @@ async function saveUser(event) {
     if (userId) {
       await api(`/api/users/${userId}`, { method: "PUT", body: JSON.stringify(payload) });
     } else {
-      await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
+      const created = await api("/api/users", { method: "POST", body: JSON.stringify(payload) });
+      await loadUsers();
+      // Keep the new member selected so a second Save edits them instead of adding a duplicate.
+      if (created?.id) editUser(created.id);
+      showMessage("Added as an Operator. Change the role here to promote them.", "info");
+      return;
     }
     await loadUsers();
     showMessage("Saved.", "info");
@@ -8985,13 +9078,14 @@ connectSse();
 // shortcuts (Esc and Ctrl/Cmd+K still work) so normal data entry is unaffected.
 // ---------------------------------------------------------------------------
 (function installKeyboardShortcuts() {
-  const MODAL_IDS = ["knowledgeModal", "customersModal", "clientsModal", "usersModal", "kpiModal"];
+  const MODAL_IDS = ["portalLoginsModal", "knowledgeModal", "customersModal", "clientsModal", "usersModal", "kpiModal"];
   const MODAL_CLOSERS = {
     knowledgeModal: () => $("closeKnowledgeBtn")?.click(),
     customersModal: () => $("closeCustomersBtn")?.click(),
     clientsModal: () => $("closeClientsBtn")?.click(),
     usersModal: () => $("closeUsersBtn")?.click(),
     kpiModal: () => $("closeKpiBtn")?.click(),
+    portalLoginsModal: () => $("closePortalLoginsBtn")?.click(),
   };
 
   const isTyping = (el) => {
@@ -9113,7 +9207,7 @@ async function createClientLink(kind) {
     } else {
       const portalType = $("cred_portalType").value.trim();
       const portalUrl = $("cred_portalUrl").value.trim();
-      if (!portalType || !portalUrl) throw new Error("Enter the portal type and URL below, then create the secure request. No password is needed here.");
+      if (!portalType || !portalUrl) throw new Error("Enter the portal name and URL below, then create the secure request. No password is needed here.");
       result = await api(`/api/clients/${clientId}/credential-requests`, { method: "POST", body: JSON.stringify({ portals: [{ portalType, portalUrl }] }) });
     }
     if (state.editingClientId !== clientId) return;
@@ -9125,3 +9219,41 @@ async function createClientLink(kind) {
 }
 $("clientTrackingLinkBtn")?.addEventListener("click", () => createClientLink("tracking"));
 $("clientCredentialLinkBtn")?.addEventListener("click", () => createClientLink("credentials"));
+
+// ---------------------------------------------------------------------------
+// MODAL FOCUS AND BACKGROUND. Opening a modal left focus on <body>, and Tab walked into the
+// page behind the overlay. Seven openers and closers each flip `hidden` their own way (buttons,
+// Esc, backdrop, after an await), so this does NOT hook any of them: one observer watches every
+// .modal's `hidden` attribute and derives the rest from what is actually on screen —
+//   - a modal appears: remember what had focus, move focus to its title (tabindex -1; no
+//     on-screen keyboard popping on a phone), and make the header + main `inert`;
+//   - the last modal disappears: drop `inert` and give focus back.
+// Because `inert` is recomputed from the modals' real state on every change, no missed closer
+// path can leave the page unclickable.
+// ---------------------------------------------------------------------------
+(function installModalFocus() {
+  if (typeof MutationObserver !== "function" || typeof document === "undefined") return;
+  const modals = Array.from(document.querySelectorAll(".modal"));
+  if (!modals.length) return;
+  const background = [document.querySelector("header.topbar"), document.querySelector("main.layout")].filter(Boolean);
+  let returnTo = null;
+  const openModals = () => modals.filter((m) => !m.hidden);
+  const sync = (changed) => {
+    const open = openModals();
+    for (const el of background) el.inert = open.length > 0;
+    if (changed && !changed.hidden) {
+      if (!returnTo || !document.contains(returnTo)) returnTo = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+      if (!changed.contains(document.activeElement)) {
+        const title = changed.querySelector(".modal-head h2");
+        if (title) { title.setAttribute("tabindex", "-1"); title.focus({ preventScroll: true }); }
+      }
+    } else if (!open.length) {
+      const back = returnTo;
+      returnTo = null;
+      if (back && document.contains(back) && typeof back.focus === "function") back.focus({ preventScroll: true });
+    }
+  };
+  const observer = new MutationObserver((records) => { for (const r of records) sync(r.target); });
+  for (const m of modals) observer.observe(m, { attributes: true, attributeFilter: ["hidden"] });
+  sync(null);
+})();

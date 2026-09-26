@@ -131,7 +131,7 @@
         </div>
       </details>
       <!-- THE single action. -->
-      <a class="button primary" href="/new-project"><i data-lucide="plus"></i><span>New project</span></a>
+      <a class="button primary new-project-btn" href="/new-project" title="New project"><i data-lucide="plus"></i><span>New project</span></a>
     </div>
   </header>
   <div id="toastContainer" style="position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none"></div>
@@ -282,8 +282,10 @@
       </div>
 
       <div id="pageTeam" hidden>
-        <div class="section-head subhead">
-          <h2>Team Workload</h2>
+        <!-- The page title (#listPageTitle) already reads "Team Workload"; this row carries only
+             what the title does not: what the cards count, and whether the numbers are live. -->
+        <div class="section-head subhead team-head">
+          <p class="muted team-head-note">Open projects, corrections and pending reviews for each team member.</p>
           <span id="workloadStatus" class="badge">syncing</span>
         </div>
         <div id="teamWorkload" class="team-workload">
@@ -950,10 +952,10 @@
 
   <!-- Knowledge & Learning Modal — KB, learning imports, and portal recipes,
        moved out of the project column to keep it focused. -->
-  <div id="knowledgeModal" class="modal" hidden>
+  <div id="knowledgeModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="knowledgeModalTitle">
     <div class="modal-card modal-card-wide">
       <div class="modal-head">
-        <h2>Knowledge &amp; Learning</h2>
+        <h2 id="knowledgeModalTitle">Knowledge &amp; Learning</h2>
         <button id="closeKnowledgeBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
       </div>
       <div class="modal-body modal-body-stack">
@@ -1043,11 +1045,15 @@
             <span id="recipesSummaryCount" class="muted" style="font-size:12px;font-weight:400"></span>
           </summary>
           <p class="muted" style="font-size:12px;margin:6px 0">Teach the bot a new AHJ or utility portal by recording it once, then it replays for future projects (always stopping before final submit). Admins can delete and re-record an incomplete one.</p>
-          <div class="section-note" style="font-size:12px">
+          <p class="section-note" style="font-size:12px">Record a portal from a project's <strong>Submit</strong> stage: open the project, then <em>Record this portal (teach the bot)</em>.</p>
+          <details class="fold recipes-cli-fold">
+            <summary>Advanced: record from the command line</summary>
+            <div class="section-note" style="font-size:12px">
             To record on the operator's machine:<br>
             <code style="font-size:11px">npm run portal:record -- --scope ahj --ahj "City of Bend" --state OR --url "&lt;portal url&gt;" --project &lt;projectId&gt; --profile ./.portal-profiles/&lt;name&gt;</code><br>
             Log in, complete the application up to (not including) final submit, then type <code>save</code>.
-          </div>
+            </div>
+          </details>
           <div id="portalRecipes" class="stack" style="margin-top:8px">
             <p class="muted">Loading…</p>
           </div>
@@ -1107,13 +1113,13 @@
   </div>
 
   <!-- Customers / Leads Modal -->
-  <div id="customersModal" class="modal" hidden>
+  <div id="customersModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="customersModalTitle">
     <div class="modal-card">
       <div class="modal-head">
-        <h2>Leads &amp; Customers</h2>
+        <h2 id="customersModalTitle">Leads &amp; Customers</h2>
         <button id="closeCustomersBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body split-modal-body">
         <div class="clients-list-pane">
           <div class="section-head">
             <h3>Contacts</h3>
@@ -1201,10 +1207,10 @@
     </div>
   </div>
 
-  <div id="clientsModal" class="modal" hidden>
+  <div id="clientsModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="clientsModalTitle">
     <div class="modal-card">
       <div class="modal-head">
-        <h2>Clients &amp; Contractor Licensing</h2>
+        <h2 id="clientsModalTitle">Clients &amp; Contractor Licensing</h2>
         <button id="closeClientsBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
       </div>
       <!-- Two columns: the client LIST, and the SELECTED client's editor. The editor pane holds
@@ -1313,7 +1319,7 @@
             <div class="cred-add">
               <div class="cred-add-title">Add a login</div>
               <div class="form-row">
-                <label>Portal type<input id="cred_portalType" placeholder="e.g. accela_oregon" /></label>
+                <label>Portal name<input id="cred_portalType" placeholder="e.g. Oregon ePermitting" /></label>
                 <label>Portal URL<input id="cred_portalUrl" placeholder="https://…" /></label>
               </div>
               <div class="form-row">
@@ -1333,10 +1339,10 @@
   </div>
 
   <!-- Portal logins (scoped to the open project's submitting client) -->
-  <div id="portalLoginsModal" class="modal" hidden>
+  <div id="portalLoginsModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="portalLoginsModalTitle">
     <div class="modal-card">
       <div class="modal-head">
-        <h2>Portal logins</h2>
+        <h2 id="portalLoginsModalTitle">Portal logins</h2>
         <button id="closePortalLoginsBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
       </div>
       <div class="modal-body modal-body-stack">
@@ -1349,7 +1355,7 @@
         <div style="border-top:1px solid var(--line);padding-top:12px">
           <h3 style="margin:0 0 8px">Add / update a login</h3>
           <div class="form-row">
-            <label>Portal<input id="pl_portalType" placeholder="e.g. accela_oregon" /></label>
+            <label>Portal name<input id="pl_portalType" placeholder="e.g. Oregon ePermitting" /></label>
             <label>Portal URL<input id="pl_portalUrl" placeholder="https://…" /></label>
           </div>
           <div class="form-row">
@@ -1366,13 +1372,13 @@
   </div>
 
   <!-- Team / Users Modal -->
-  <div id="usersModal" class="modal" hidden>
+  <div id="usersModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="usersModalTitle">
     <div class="modal-card">
       <div class="modal-head">
-        <h2>Team Members</h2>
+        <h2 id="usersModalTitle">Team Members</h2>
         <button id="closeUsersBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body split-modal-body">
         <div class="clients-list-pane">
           <div class="section-head">
             <h3>Operators</h3>
@@ -1394,6 +1400,7 @@
             </label>
             <label>Color<input id="u_color" type="color" value="#6366f1" /></label>
           </div>
+          <p id="u_roleHint" class="muted field-hint" hidden>New members start as Operator; promote them after saving.</p>
           <div class="actions">
             <button type="submit" class="primary"><i data-lucide="save"></i><span>Save</span></button>
           </div>
@@ -1403,13 +1410,13 @@
   </div>
 
   <!-- KPI Modal -->
-  <div id="kpiModal" class="modal" hidden>
+  <div id="kpiModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="kpiModalTitle">
     <div class="modal-card modal-wide">
       <div class="modal-head">
-        <h2>KPI Dashboard</h2>
-        <div class="actions">
-          <input id="kpiStart" type="date" />
-          <input id="kpiEnd" type="date" />
+        <h2 id="kpiModalTitle">KPI Dashboard</h2>
+        <div class="actions kpi-range">
+          <label>From<input id="kpiStart" type="date" /></label>
+          <label>To<input id="kpiEnd" type="date" /></label>
           <button id="refreshKpiBtn" class="secondary"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
           <button id="closeKpiBtn" class="secondary"><i data-lucide="x"></i><span>Close</span></button>
         </div>

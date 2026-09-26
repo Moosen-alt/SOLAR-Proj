@@ -617,7 +617,7 @@ p, .muted { color: var(--muted); }
 .review-actions {
   display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap;
 }
-.review-actions input[type="text"] { flex: 1; min-width: 120px; }
+.review-actions input:not([type]), .review-actions input[type="text"] { flex: 1 1 260px; min-width: 0; max-width: 100%; }
 
 /* --- Record this portal (stepped layout) --- */
 .record-steps { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -2244,3 +2244,170 @@ details.cause-row[open] > summary { margin-bottom: 4px; }
 /* A board chip the submit gate could still overrule (the list tier does not run the gate):
    dashed border (the fact is certain; only its precedence is not) — the title says why. */
 .board-card-action .chip.is-provisional { border-style: dashed; }
+
+/* ===========================================================================
+   UI AUDIT FIXES (2026-09-26, .probe/ui-audit/FIX-LIST.md). Ids name the fix.
+   =========================================================================== */
+
+/* F8 — ONE BASE FORM CONTROL. There was no rule for bare input/select/textarea, so every form
+   that did not style its own got the browser's 18-21px controls. :where() keeps this at ZERO
+   specificity: every existing scoped rule (.clients-modal-body input, .record-config select, …)
+   still wins, and only the unstyled controls pick this up. */
+:where(input:not([type=checkbox], [type=radio], [type=file], [type=color], [type=range], [type=submit], [type=button], [type=reset], [type=image], [type=hidden])),
+:where(select, textarea) {
+  font: inherit; font-size: var(--text-sm); color: var(--text);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 6px 9px; min-height: 34px; max-width: 100%;
+}
+:where(input[type=file]) { max-width: 100%; font: inherit; font-size: var(--text-sm); }
+
+/* F8 — Portal logins "Add / update a login": labels above their fields, fields fill the row. */
+#portalLoginsModal .form-row { gap: 10px; }
+#portalLoginsModal .form-row > label { display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: 0; font-size: 13px; }
+#portalLoginsModal .form-row input { width: 100%; min-width: 0; }
+#portalLoginsModal .form-row + .form-row { margin-top: 10px; }
+#portalLoginsModal .actions { justify-content: flex-start; margin-top: 12px; flex-wrap: wrap; }
+#portalLoginsModal .pl-cred-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+
+/* F42 — small destructive buttons in lists (were bare native buttons: 1.6:1 in dark, "De/le/te"). */
+.danger-button-sm { min-height: 30px; padding: 0 10px; font-size: 12px; white-space: nowrap; }
+
+/* F10 — the Team form's "new members start as Operator" hint. */
+.field-hint { margin: 0; font-size: 12px; }
+
+/* F7 — THE SPLIT MODAL (list column + editor), shared by Leads & Customers and Team. Same shape
+   as the Clients modal's own rules (.clients-modal-body, 97339ad) — kept separate so the Clients
+   block and its smoke are untouched. The list's scroll child is its .stack. */
+.split-modal-body { grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1 1 auto; }
+.split-modal-body [hidden] { display: none !important; }
+.split-modal-body button { white-space: nowrap; }
+/* …except a list row, which is a button holding a name: that wraps (a long lead name clipped). */
+.split-modal-body .clients-list-pane > .stack > button { white-space: normal; width: 100%; min-width: 0; overflow-wrap: anywhere; text-align: left; }
+.split-modal-body .clients-list-pane { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: 16px 14px 0; }
+.split-modal-body .clients-list-pane .section-head { padding: 0 2px 12px; margin: 0 0 10px; align-items: center; gap: 10px; flex: 0 0 auto; }
+.split-modal-body .clients-list-pane .section-head h3 { margin: 0; font-size: 15px; }
+.split-modal-body .clients-list-pane .section-head button { min-height: 32px; padding: 0 10px; }
+.split-modal-body .clients-list-pane > .form-row { flex: 0 0 auto; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+.split-modal-body .clients-list-pane > .stack { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 2px 16px; }
+.split-modal-body .clients-form-pane { min-width: 0; min-height: 0; overflow-y: auto; padding: 16px 20px 20px; }
+.split-modal-body .clients-form-pane > h3:first-of-type { margin-top: 0; }
+.split-modal-body label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; flex: 1 1 0; min-width: 0; }
+.split-modal-body input:not([type=checkbox], [type=radio], [type=color]),
+.split-modal-body select, .split-modal-body textarea { width: 100%; min-width: 0; box-sizing: border-box; min-height: 34px; padding: 6px 9px; color: var(--text); }
+.split-modal-body input[type=color] { width: 64px; min-height: 34px; padding: 2px; }
+.split-modal-body .clients-list-pane > .form-row > label { flex: 1 1 110px; }
+.split-modal-body .form-row { display: flex; gap: 10px; }
+.split-modal-body .actions { justify-content: flex-start; gap: 8px; flex-wrap: wrap; }
+
+/* F7 / phones — every modal gets the Clients modal's narrow-screen frame, and the split
+   modals stack their columns (list above, editor below) instead of a 42px-wide form. */
+@media (max-width: 720px) {
+  .modal { padding: 8px; }
+  .modal-card { max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px); }
+  .modal-head { padding: 12px 14px; }
+  .modal-head h2 { font-size: 16px; }
+  .modal-body-stack { padding: 14px; }
+  .split-modal-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .split-modal-body .clients-list-pane { border-right: 0; border-bottom: 1px solid var(--line); max-height: 34vh; padding: 12px 14px 0; }
+  .split-modal-body .clients-list-pane > .stack { padding-bottom: 12px; }
+  .split-modal-body .clients-form-pane { padding: 14px; }
+  .split-modal-body .clients-form-pane .form-row { flex-direction: column; gap: 10px; }
+  #portalLoginsModal .form-row { flex-direction: column; }
+}
+
+/* F30 — modal heads wrap (the KPI head carried a title, two dates and two buttons on one line),
+   and the KPI dates say what they are. */
+.modal-head { flex-wrap: wrap; gap: 10px; }
+.modal-head > .actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.kpi-range label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
+
+/* F6 — the project head at phone width: the title gets the full row, the Advanced fold drops
+   below it, and the client / logins line wraps instead of clipping to "C (". */
+@media (max-width: 700px) {
+  .detail-head { grid-template-columns: minmax(0, 1fr); }
+  .detail-head > .detail-more { justify-self: start; }
+  /* inline flow, so the fold marker, the client/assignee line, the logins count and "edit" wrap
+     as one sentence (a wrapping flex row stranded the marker on a line of its own) */
+  .head-meta > summary { display: block; white-space: normal; overflow: visible; }
+  .head-meta > summary > span { overflow: visible; margin-right: 6px; }
+  .head-meta > summary::before { margin-right: 6px; }
+}
+
+/* F21 — panel bodies had no inset: text and cards sat on the panel border. Every direct child
+   except the head gets the head's own side inset, and the last one a bottom inset. */
+.panel:not(.fee-panel) > :not(.section-head) { margin-inline: var(--space-4); }
+.panel:not(.fee-panel) > :not(.section-head):last-child { margin-bottom: var(--space-4); }
+.panel:not(.fee-panel) > .section-head + * { margin-top: var(--space-3); }
+
+/* F22 — project page at 390: form rows wrap, and the file input / split selects stay inside. */
+.panel .form-row { flex-wrap: wrap; }
+.panel .form-row > label { min-width: min(200px, 100%); }
+.panel .form-row > label > select, .panel .form-row > label > input { display: block; width: 100%; margin-top: 4px; }
+input[type=file], .kx-inline-tool-row select, #splitTarget, #inlineSplitTarget { max-width: 100%; min-width: 0; }
+.kx-inline-tool-row { flex-wrap: wrap; }
+
+/* F23 — the rail's "Why blocked" line repeats the red blocker card below it; two lines here,
+   the full text in its title and in the card. */
+.autopilot-reason { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+
+/* F20 — the build label ("· 87cf7df · uncommitted changes") pushed the nav to two rows below
+   1440px. It stays in the status's title everywhere; shown inline only on wide screens. */
+@media (max-width: 1439px) { .conn-status .build-label { display: none; } }
+
+/* F27 — Projects table: badges never break mid-word; QC counts on one line each; at phone
+   width each row is a card (the Project cell full width, the rest as labelled pairs). */
+.table-wrap .badge, .table-wrap .chip { white-space: nowrap; }
+.table-wrap .qc-cell { white-space: nowrap; }
+.stage-detail-chip.is-blocked { background: var(--tint-fail); color: var(--ink-fail); border-color: var(--edge-fail); }
+@media (max-width: 700px) {
+  #projectTableWrap table, #projectTableWrap tbody { display: block; }
+  #projectTableWrap thead { display: none; }
+  #projectTableWrap tr[data-project-id] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  #projectTableWrap tr[data-project-id] > td { display: block; padding: 0; border: 0; min-width: 0; }
+  #projectTableWrap tr[data-project-id] > td.project-cell { grid-column: 1 / -1; }
+  #projectTableWrap tr[data-project-id] > td[data-label]::before { content: attr(data-label); display: block; font-size: var(--text-xs); font-weight: 600; color: var(--muted); margin-bottom: 2px; }
+}
+
+/* F28 — the dashboard top bar at phone width: the brand keeps its own width, the actions keep
+   their spacing ("AUTOMATION" touched the refresh icon). */
+@media (max-width: 700px) {
+  .masthead { flex: 0 0 auto; margin-right: auto; }
+  .topbar-end { gap: 6px; }
+}
+/* Below 440px the brand, three icon buttons and "+ New project" do not fit one row (~395px of
+   content in 358px); the button keeps its + and its accessible name, and loses the words. */
+@media (max-width: 440px) {
+  .topbar-end .new-project-btn > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .topbar-end .new-project-btn { padding-inline: 10px; margin-left: 2px; }
+}
+
+/* F29 — Team Workload: the page title already names it; the row under it says what the cards
+   count. The cards and the empty state are inset from the panel edge. */
+.team-head { align-items: center; }
+.team-head-note { margin: 0; font-size: 13px; }
+.team-workload { padding: var(--space-4); }
+.team-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.team-empty p { margin: 0; }
+
+/* F40 — "How it flows": five stages, five columns (auto-fit laid them out 4 + 1), and the
+   Parser link reads as a link in the brand colour. */
+@media (min-width: 901px) { .flow-steps { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+.start-here-intro a { color: var(--primary); font-weight: 700; }
+/* F46 (S3) — stacked steps at phone width: no staircase indent, a rule between steps. */
+@media (max-width: 700px) {
+  .flow-steps li, .flow-steps li:first-child { border-left: none; padding: 10px 0; }
+  .flow-steps li + li { border-top: 1px solid var(--line); }
+}
+
+/* F41 — the CLI recipe recorder lives behind an Advanced fold. */
+.recipes-cli-fold { margin-top: 6px; }
+.recipes-cli-fold > summary { font-size: 12px; }
+
+/* F52 (S3) — Knowledge accordion titles sit left with their marker. */
+.kb-summary > span:first-child { margin-right: auto; }
+
+/* F47 (S3) — board column heads never wrap "5 · Closeout". */
+.stage-col-head { white-space: nowrap; }
+
+/* F39 — a modal moves focus to its title on open (tabindex -1): no ring on that programmatic focus. */
+.modal-head h2[tabindex="-1"]:focus { outline: none; box-shadow: none; }
