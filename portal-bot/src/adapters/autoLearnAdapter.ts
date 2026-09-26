@@ -3064,6 +3064,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (!this.page) return null;
     const present = await loginFormPresent(this.page).catch(() => false);
     if (!present) return null;
+    // Confirmed in the DOM itself: a visible password box (by type, or a pass-named/labelled
+    // box). Strictly true — a page that cannot answer (a test double whose locators match any
+    // selector) is not a login form.
+    const confirmed = await this.page.evaluate(() => Array.from(document.querySelectorAll("input")).some((i) =>
+      i.getBoundingClientRect().width > 0 && i.getBoundingClientRect().height > 0
+      && ((i.getAttribute("type") || "").toLowerCase() === "password"
+        || /pass/i.test(`${i.name} ${i.id} ${i.getAttribute("aria-label") || ""} ${(i.labels && i.labels[0] && i.labels[0].textContent) || ""}`)))).catch(() => false);
+    if (confirmed !== true) return null;
     const host = hostOfUrl(url) || "(unknown host)";
     if (this.midRunLoginHosts.has(host)) {
       this.debug?.event({ type: "login_midrun_repeat", page: pageCount, host });
