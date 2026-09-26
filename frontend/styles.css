@@ -1565,7 +1565,7 @@ kbd {
 /* --- Process map: PermitFlow beside NEMflow, which is the comparison the
        operator actually makes, rather than one above the other. --- */
 .process-map { display: flex; flex-direction: column; gap: var(--space-3); }
-.process-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: var(--space-3); align-items: start; }
+.process-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); gap: var(--space-3); align-items: start; }
 .process-lane { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); padding: var(--space-3); }
 .process-lane-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2); }
 .process-lane-head strong { display: block; font-size: var(--text-sm); }
@@ -2035,12 +2035,12 @@ kbd {
 /* ===========================================================================
    STAGE BODIES (UI batch C): grids for lists of short cards, folds with counts.
    =========================================================================== */
-#applicationDocs .app-doc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 8px; }
+#applicationDocs .app-doc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 8px; }
 #applicationDocs .app-doc-grid > .item { margin: 0; }
 /* The two track groups (utility NEM | AHJ permits) sit side by side instead of stacking
    full width; cards stack inside their group. The capture form is only open by default on
    a STAGED filing (where capturing the number is the next step) — trackCardHtml. */
-#submittalTracks { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; align-items: start; }
+#submittalTracks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 12px; align-items: start; }
 #submittalTracks > .track-group { min-width: 0; }
 #submittalTracks > .track-group + .track-group { margin-top: 0; }
 #submittalTracks > .track-group > article { margin: 0 0 8px; }
@@ -2320,6 +2320,7 @@ details.cause-row[open] > summary { margin-bottom: 4px; }
    and the KPI dates say what they are. */
 .modal-head { flex-wrap: wrap; gap: 10px; }
 .modal-head > .actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+@media (max-width: 720px) { .modal-head > .kpi-range { flex-basis: 100%; justify-content: flex-start; } }
 .kpi-range label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
 
 /* F6 — the project head at phone width: the title gets the full row, the Advanced fold drops
@@ -2342,6 +2343,7 @@ details.cause-row[open] > summary { margin-bottom: 4px; }
 
 /* F22 — project page at 390: form rows wrap, and the file input / split selects stay inside. */
 .panel .form-row { flex-wrap: wrap; }
+.panel .form-row + .actions { margin-top: 8px; } /* the Upload button sat on the full-width select */
 .panel .form-row > label { min-width: min(200px, 100%); }
 .panel .form-row > label > select, .panel .form-row > label > input:not([type=checkbox], [type=radio]) { display: block; width: 100%; margin-top: 4px; }
 input[type=file], .kx-inline-tool-row select, #splitTarget, #inlineSplitTarget { max-width: 100%; min-width: 0; }

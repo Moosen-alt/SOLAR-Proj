@@ -703,7 +703,7 @@ function renderPortalRecipes() {
   const recipes = state.portalRecipes || [];
   const countEl = $("recipesSummaryCount");
   if (countEl) countEl.textContent = recipes.length ? `${recipes.length} recorded` : "none yet";
-  if (!recipes.length) { el.innerHTML = '<p class="muted">No portal recipes yet. Record one with the command above.</p>'; return; }
+  if (!recipes.length) { el.innerHTML = '<p class="muted">No portal recipes yet. Record one from a project&rsquo;s Submit stage.</p>'; return; }
   const badge = (status) => {
     const map = { complete: "var(--success)", recording: "var(--warning)", needs_rerecord: "var(--danger)" };
     return `<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:${map[status] || "var(--info)"};color:#fff">${esc(humanize(status))}</span>`;
@@ -1804,8 +1804,8 @@ function renderKnowledgeProfile(profile) {
         ${kbConfidenceBadge(profile)}
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:12px;margin:4px 0 6px">
-        <span>📁 ${profile.projectCount} project(s)</span>
-        <span>⚠️ ${profile.correctionCount} correction(s)</span>
+        <span>📁 ${esc(String(Number(profile.projectCount) || 0))} project${Number(profile.projectCount) === 1 ? "" : "s"}</span>
+        <span>⚠️ ${esc(String(Number(profile.correctionCount) || 0))} correction${Number(profile.correctionCount) === 1 ? "" : "s"}</span>
         ${timeline ? `<span>📅 ${esc(timeline)}</span>` : ""}
         ${lastLearned ? `<span>🔄 Last learned ${esc(lastLearned)}</span>` : ""}
         ${sourceSummary ? `<span class="muted">Sources: ${esc(sourceSummary)}</span>` : ""}
