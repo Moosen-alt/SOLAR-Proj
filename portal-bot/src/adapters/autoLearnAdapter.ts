@@ -309,6 +309,34 @@ const REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review (all )?(your |the )?
 // Used both to (a) recognize a review/submit screen and (b) auto-check these required gates
 // before recording the submit. Deliberately narrow so it never matches a normal form toggle.
 const ACCEPT_TERMS = /\b(accept (the )?terms|terms (and|&) conditions|i agree\b|i understand\b|i acknowledge|acknowledge that|i certify|i attest|i confirm that|agree to the)\b/i;
+// ACCELA CITIZEN ACCESS BY ITS OWN DOM (B5): control ids only an ACA page carries. Read from the
+// extracted fields' selectors, so it costs no extra page read.
+const ACA_DOM_MARKER = /ctl00[_$]PlaceHolderMain|termAccept|actionBarBottom|ACADialogFrame|StreetNo4Search/i;
+
+function hostOf(url: string): string {
+  try { return new URL(url).host.toLowerCase(); } catch { return ""; }
+}
+
+/**
+ * THE ACA MODULE TO RE-ENTER (B8). Taken from the page we are on (…?module=Permitting), else the
+ * run's own entry URL, else "Building" — never hard-coded: Lee County files solar under
+ * module=Permitting (Permitting/Solar/NA/NA), and a Building re-entry there opens the wrong
+ * wizard. TabName follows its module when the source carried one.
+ */
+export function acaModuleQuery(...sources: Array<string | null | undefined>): string {
+  for (const src of sources) {
+    if (!src) continue;
+    try {
+      const u = new URL(src);
+      const mod = [...u.searchParams.entries()].find(([k]) => k.toLowerCase() === "module")?.[1];
+      if (!mod) continue;
+      const tab = [...u.searchParams.entries()].find(([k]) => k.toLowerCase() === "tabname")?.[1];
+      return `module=${encodeURIComponent(mod)}${tab ? `&TabName=${encodeURIComponent(tab)}` : ""}`;
+    } catch { /* not a URL */ }
+  }
+  return "module=Building";
+}
+
 function looksLikeReviewUrl(url: string): boolean {
   return /capconfirm|confirm\.aspx|\/review/i.test(url || "");
 }
@@ -3248,7 +3276,31 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // ---------------------------------------------------------------------------
 
   private isAcaUrl(url: string): boolean {
-    return /accela\.com|citizenaccess/i.test(url || "");
+    return /accela\.com|citizenaccess/i.test(url || "") || this.acaHosts.has(hostOf(url));
+  }
+
+  /** Hosts this run has positively identified as Accela Citizen Access by the page itself. */
+  private readonly acaHosts = new Set<string>();
+
+  /**
+   * IS THIS AN ACCELA CITIZEN ACCESS PAGE? By the host (accela.com / citizenaccess), or by the
+   * PAGE'S OWN MARKERS on any host (B5): Columbus runs ACA at portal.columbus.gov/permits, where
+   * the host test alone left every deterministic ACA pass off (disclaimer, work location, record
+   * type, contacts, attachment Save). A marker is an ACA-only control id the extraction already
+   * holds (ctl00$PlaceHolderMain…, …termAccept, actionBarBottom, ACADialogFrame,
+   * …StreetNo4Search) on an ASP.NET page (.aspx); once seen, the host counts for the rest of the
+   * run. A /Cap/ path alone is NOT enough — a non-ACA site can have one.
+   */
+  private isAcaPage(url: string, fields: ExtractedField[] = []): boolean {
+    if (this.isAcaUrl(url)) return true;
+    let pathname = "";
+    try { pathname = new URL(url).pathname; } catch { return false; }
+    if (!/\.aspx$/i.test(pathname)) return false;
+    const ids = (f: ExtractedField): string[] => [f.selector?.css, f.selector?.name, ...(f.selector?.fallbacks ?? []).map((fb) => (fb as { css?: string }).css)]
+      .map((s) => String(s ?? "")).filter(Boolean);
+    const marked = fields.some((f) => ids(f).some((s) => ACA_DOM_MARKER.test(s)));
+    if (marked) this.acaHosts.add(hostOf(url));
+    return marked;
   }
 
   /** The page's review reading with its step navigator cut, and the control labels that exist
@@ -3360,16 +3412,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return this.page.locator(ACA_CONTINUE_CSS).first();
   }
 
-  // Derive the Apply-flow entry URL (Building-module disclaimer) from any ACA page
-  // URL: /{instance}/Cap/CapHome.aspx → /{instance}/Cap/CapApplyDisclaimer.aspx.
-  // The learner only ever drives ACA for the PERMIT track (utilities are PowerClerk),
-  // so module=Building is the right wizard for both structural and electrical.
+  // Derive the Apply-flow entry URL (the module's disclaimer) from any ACA page URL:
+  // /{instance}/Cap/CapHome.aspx → /{instance}/Cap/CapApplyDisclaimer.aspx?module=…
+  // The MODULE comes from this page, else the run's entry URL (acaModuleQuery, B8) — Lee County
+  // files solar under Permitting, Columbus under Building; Building is only the last default.
   private acaApplyEntryUrl(url: string): string | null {
     try {
       const u = new URL(url);
       const m = u.pathname.match(/^(.*)\/Cap\/[^/]+$/i);
       if (!m) return null;
-      return `${u.origin}${m[1]}/Cap/CapApplyDisclaimer.aspx?module=Building`;
+      return `${u.origin}${m[1]}/Cap/CapApplyDisclaimer.aspx?${acaModuleQuery(url, this.startUrl)}`;
     } catch { return null; }
   }
 
@@ -3381,7 +3433,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // them. Detect by URL + the module's own captured control names, so an ACA build that
   // reuses these URLs for wizard steps is left to the planner rather than misdetected.
   private acaWrongModulePage(url: string, fields: ExtractedField[]): "records_home" | "record_detail" | null {
-    if (!this.isAcaUrl(url)) return null;
+    if (!this.isAcaPage(url, fields)) return null;
     let pathname = "";
     try { pathname = new URL(url).pathname.toLowerCase(); } catch { return null; }
     // The control's id is in selector.css only when it had no label: a LABELLED search box
@@ -4584,7 +4636,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         return { ...fail(steps, this.portalName, `Stopped: no field was filled for ${secs}s (budget ${Math.round(noProgressBudgetMs / 1000)}s, checked between pages) across ${pageCount} page(s) — the walk is not reaching a fillable page. Page trace: ${pageTrace.slice(-4).join(" | ") || "(none)"}`, null, pageCount, portalNotices), stopReason: "no_fill_progress" };
       }
 
-      const acaDeterministicAhead = this.isAcaUrl(url) && (
+      const acaDeterministicAhead = this.isAcaPage(url, fields) && (
         (this.acaWrongModulePage(url, fields) !== null && acaReentries < 2) ||
         (/CapApplyDisclaimer/i.test(url) && acaDisclaimerPasses < 3) ||
         (!workLocationHandled && (/WorkLocation/i.test(url) || /enter work site location/i.test(bodyText))) ||
@@ -4663,7 +4715,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // b8) ACCELA DETERMINISTIC PASSES (see the ACA section above) — each bails to the
       //     planner when its hooks don't match, and `continue` re-extracts whatever page
       //     the pass landed on.
-      if (this.isAcaUrl(url)) {
+      if (this.isAcaPage(url, fields)) {
         // Wrong-module drift: the records/search module is never part of the Apply
         // wizard — leave immediately (bounded), BEFORE the planner can operate on the
         // operator's real filings (Resume Application / Pay Fees Due / attachments).
@@ -5512,7 +5564,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         for (const m of up.missingRequired) if (!missingRequiredDocs.includes(m)) missingRequiredDocs.push(m);
         // ACA commits attachments only on the section's own Save (Continue Application
         // leaves them pending) — and each pending row needs its Description + Type first.
-        if (up.attached > 0 && this.isAcaUrl(url) && acaAttachmentSaves < 3) {
+        if (up.attached > 0 && this.isAcaPage(url, fields) && acaAttachmentSaves < 3) {
           acaAttachmentSaves++;
           const saved = await this.withPhaseTimeout(
             "attachment_save",
@@ -8776,18 +8828,26 @@ export async function clearPageOverlays(page: any): Promise<void> {
 // out portal drift.
 //
 // Derive the Apply entry from ANY page of the instance (the learner's own version only
-// worked from a /Cap/ URL, which Dashboard.aspx is not). module=Building is correct for both
-// structural and electrical: ACA drives permits through the Building module, and utilities
-// are PowerClerk, never this.
-export function acaApplyEntryFrom(url: string): string | null {
-  if (!/accela\.com|citizenaccess/i.test(url || "")) return null;
+// worked from a /Cap/ URL, which Dashboard.aspx is not).
+//
+// THE MODULE IS THE RECIPE'S, NOT "Building" (B8): taken from this page's URL, else the recipe's
+// entry URL (hint.entryUrl), and Building only when neither names one — Lee County files solar
+// under module=Permitting. AND ACA ON A CUSTOM DOMAIN (B5): Columbus runs it at
+// portal.columbus.gov/permits; hint.aca (the recipe was recorded on ACA — its platform, or an
+// entry at /Cap/Cap*.aspx) admits an .aspx page there that the host test would refuse.
+export function acaApplyEntryFrom(url: string, hint: { entryUrl?: string; aca?: boolean } = {}): string | null {
+  const acaHost = /accela\.com|citizenaccess/i.test(url || "");
   try {
     const u = new URL(url);
-    // The instance is the first path segment ("/oregon"), shared by /oregon/Dashboard.aspx
-    // and /oregon/Cap/CapHome.aspx alike.
-    const seg = u.pathname.split("/").filter(Boolean)[0];
-    if (!seg) return null;
-    return `${u.origin}/${seg}/Cap/CapApplyDisclaimer.aspx?module=Building`;
+    if (!acaHost && !(hint.aca === true && /\.aspx$/i.test(u.pathname))) return null;
+    // The instance is the path up to /Cap/ on a Cap page, else the first path segment
+    // ("/oregon", "/permits"), shared by /oregon/Dashboard.aspx and /oregon/Cap/CapHome.aspx.
+    const capAt = u.pathname.search(/\/Cap\//i);
+    const segs = u.pathname.split("/").filter(Boolean);
+    const instance = capAt >= 0 ? u.pathname.slice(0, capAt)
+      : segs.length > 1 ? `/${segs[0]}` : "";
+    if (!instance && acaHost) return null;
+    return `${u.origin}${instance}/Cap/CapApplyDisclaimer.aspx?${acaModuleQuery(url, hint.entryUrl)}`;
   } catch { return null; }
 }
 

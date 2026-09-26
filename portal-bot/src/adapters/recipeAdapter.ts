@@ -1402,7 +1402,12 @@ export class RecipeAdapter extends BasePortalAdapter {
       // same rather than hunting for a link that is on a different page.
       if (!succeeded && /^navigate to application/i.test(String(step.note ?? ""))) {
         const here = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
-        const entry = acaApplyEntryFrom(here);
+        // The recipe's own entry URL carries the module (Lee: Permitting) and marks the portal
+        // as ACA even on a custom domain (Columbus: portal.columbus.gov/permits) — B5/B8.
+        const entryUrl = String(this.recipe.steps.find((s) => s.action === "goto" && s.value)?.value ?? this.recipe.portalUrl ?? "");
+        const recordedOnAca = /accela/i.test(String(this.recipe.portalPlatform ?? ""))
+          || this.recipe.steps.some((s) => s.action === "goto" && /\/Cap\/Cap\w+\.aspx/i.test(String(s.value ?? "")));
+        const entry = acaApplyEntryFrom(here, { entryUrl, aca: recordedOnAca });
         if (entry) {
           const went = await this.guardedGoto(entry, "re-enter the Accela Apply flow", { waitUntil: "domcontentloaded", timeout: 30000 })
             .then(() => true).catch(() => false);
