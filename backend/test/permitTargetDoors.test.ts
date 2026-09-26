@@ -66,7 +66,9 @@ await check("MUST PASS: a PowerClerk URL on a COMBO track is refused (400) and N
   assert.ok(r, `the ${combo} track accepted a utility interconnection URL`);
   assert.equal(r!.status, 400);
   assert.match(r!.message, /Public status URL/);
-  assert.match(r!.message, /Utility net metering \(NEM\) \/ interconnection/, "the message must name the NEM track card");
+  // The utility card's TITLE now says what the program is (utilityFilingLookup) — "net metering"
+  // only where that is known — so the message names the card by where it sits, not a fixed title.
+  assert.match(r!.message, /utility interconnection track card \(the card under "Utility"\)/, "the message must name the utility track card");
   assert.doesNotMatch(r!.message, /target type/i, "must not point at a control that does not exist");
   assert.equal(targetsOf(p.id), 0, "a permit target was written with a utility URL");
   assert.equal(submissionsOf(p.id), 0, "a submission was recorded for a refused mark-submitted");

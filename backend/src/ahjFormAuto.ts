@@ -3,7 +3,8 @@ import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type OverlayField, type SignaturePlacement } from "./ahjForms";
-import { describePermitType, findApplicationProfile, permitStructureForProject } from "./applicationDocs";
+import { describePermitType, findApplicationProfile, permitStructureAnswer } from "./applicationDocs";
+import { ensureUtilityFilingLookedUp } from "./utilityFilingLookup";
 import { fetchPublicDocument } from "./documentFetch";
 import { logger } from "./logger";
 import { saveResearchedAhjProfile, knowledgeResearchHint, findKnowledgeForLearn } from "./knowledgeBase";
@@ -624,6 +625,12 @@ export async function ensureAhjFormsForProject(
   // PRESCRIPTIVE project researched a generic "building application", and a structural
   // blank whose filename says nothing satisfied it on every path. The kind travels with
   // the slot now.
+  // THE UTILITY'S FILING LOCATION rides this per-project research pass (fire-and-forget, once per
+  // utility, shared): where the interconnection application is filed and what the program is
+  // (utilityFilingLookup). Nothing here waits on it; the tracks read the stored row.
+  if (opts.allowResearch !== false) {
+    try { ensureUtilityFilingLookedUp(db, project, llm); } catch { /* best-effort */ }
+  }
   const needed = new Map<string, NeededAhjForm>();
   const want = (formType: string, applicationKind: "prescriptive" | "structural" | null = null): void => {
     const prior = needed.get(formType);
@@ -729,7 +736,7 @@ export async function ensureAhjFormTemplate(
   if (ahjProfile.requiresPortalEntryOnly) {
     // The structure every other surface resolved (tracks, packet) — never the bare profile's
     // "not yet confirmed" when a cited answer exists.
-    const pt = describePermitType(ahjProfile, { permitStructure: permitStructureForProject(project) });
+    const pt = describePermitType(ahjProfile, { answer: permitStructureAnswer(project) });
     return {
       status: "not_found",
       permitType: pt.callout,
@@ -774,7 +781,15 @@ export async function ensureAhjFormTemplate(
   // Always determine + surface the permit TYPE (combo vs separate BLD/ELE, and how
   // it's submitted), folding in what the search just learned — so even when no PDF
   // is found the operator is told what kind of permitting this AHJ uses.
-  const permitType = describePermitType(ahjProfile, { submissionMethod: research.submissionMethod, portalPlatform: research.portalPlatform, permitStructure: research.permitStructure });
+  //
+  // THE STRUCTURE IS THE ONE ANSWER (permitStructureAnswer). This search's own permitStructure is
+  // uncited model output: it printed "Separate building (BLD) + electrical (ELE) permits — both
+  // must be filed" for Iowa City and Venus (each files ONE solar permit) while the first result in
+  // the same response said "not yet confirmed". It is carried only as an unconfirmed lead.
+  const permitType = describePermitType(ahjProfile, {
+    submissionMethod: research.submissionMethod, portalPlatform: research.portalPlatform,
+    answer: permitStructureAnswer(project, { researched: research.permitStructure, researchedFrom: "the form search (uncited)" }),
+  });
 
   // Research candidates first (freshest), then any direct .pdf links carried by
   // the imported KB row — a spreadsheet-provided application link can rescue an

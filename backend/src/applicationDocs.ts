@@ -6,64 +6,207 @@ import type {
   ProjectRecord,
 } from "../../shared/src/types";
 import { nowIso } from "./time";
-import { findAhjProcessProfile, ahjProcessKnowledgeStatus } from "./processProfiles";
-import { describeCited, lookedUpPermitStructure, statePermitStructure } from "./permitProcess";
+import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, jurisdictionKind, jurisdictionKindsCompatible } from "./processProfiles";
+import { describeCited, permitProcessFor, statePermitStructure } from "./permitProcess";
 import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
 
-// Derive combo-vs-separate from the AHJ process knowledge when the static application
-// profile doesn't state it. Many Oregon AHJs (e.g. Beaverton) file SEPARATE building +
-// electrical permits, and that truth lives only in the process profile's notes/flags —
-// not in the generic portal-only application profile. Without this, those AHJs default
-// to "combo" and the electrical permit worksheet is never generated.
-function permitStructureFromAhjProcess(project: ProjectRecord): "separate" | "combo" | "unknown" {
+// ---------------------------------------------------------------------------
+// ONE PERMIT-STRUCTURE ANSWER (new-AHJ e2e, 2026-09-26: permit structure 0/5 right).
+//
+// Four surfaces answered "one combined permit, or separate building + electrical?" on their
+// own and contradicted each other on the same project: the tracks said "combo", the form
+// finder said "Separate building (BLD) + electrical (ELE) permits — both must be filed" from
+// its own uncited research, the email subject said "BLD, ELE Permit submittal" on all seven
+// jobs (unknown fell through to it), and describePermitType re-derived "separate" from two
+// spreadsheet flags. Truth on those jobs: Iowa City, Venus and Scottsdale file ONE permit;
+// Waltham files a fire review FIRST, then building, then wires.
+//
+// permitStructureAnswer is the only function that answers it. Strongest first:
+//   1. the per-job lookup's answer, cited (a source URL + the page's own words) — a person's
+//      VERIFIED lookup row first of all;
+//   2. a hand-written (human-curated) application profile — its explicit structure, or its
+//      naming of both a structural and an electrical application;
+//   3. the AHJ's seeded process profile, only where its note SAYS so in words, unhedged
+//      ("Looks like combo permit (?)" settles nothing);
+//   4. a CITED STATE RULE (Oregon: OAR 918-050-0180(2)) — for any jurisdiction of that state
+//      with no local answer above, except a hand-written profile with its own portal;
+//   5. UNKNOWN. Two spreadsheet flags, a synthesized profile naming both applications, the
+//      form finder's uncited research — each is a LEAD, carried as `hint`, never the answer.
+// "Separate — both must be filed" is said only at levels 1, 2 and 4. A prerequisite office
+// (a fire review, a zoning sign-off, a plan examination that "is not a permit") is its own
+// step, from the lookup's cited prerequisites, and is never the issuing agency.
+// ---------------------------------------------------------------------------
+export type PermitStructureLevel = "verified" | "cited" | "curated" | "reference" | "state_rule" | "unknown";
+export interface PermitPrerequisiteStep {
+  /** The step in the source's words ("Fire Prevention plan review before the building permit"). */
+  step: string;
+  sourceUrl: string;
+  quote: string;
+}
+export interface PermitStructureAnswer {
+  structure: "separate" | "combo" | "unknown";
+  level: PermitStructureLevel;
+  /** One line an operator reads: the answer and where it came from. */
+  basis: string;
+  sourceUrl: string;
+  quote: string;
+  /** An UNSETTLED lead ("the seeded profile flags both applications") — never shown as a fact. */
+  hint: string;
+  /** Steps at another office before (or beside) the filing, each cited. */
+  prerequisites: PermitPrerequisiteStep[];
+}
+
+const HEDGED = /\?|\blooks like\b|\bmaybe\b|\bmight\b|\bpossibly\b|\bprobably\b|\bnot sure\b|\bunclear\b|\bi think\b|\bseems\b/i;
+
+/** The seeded process profile's own WORDS about the structure — null when it says nothing, or
+ *  says it hedged. Flags are not words: see level 5 above. */
+function processNoteStructure(project: ProjectRecord): { structure: "separate" | "combo"; note: string } | { hedged: string } | null {
   const ahj = findAhjProcessProfile(project);
-  if (!ahj) return "unknown";
-  if (ahj.requiresElectricalPermitApplication && ahj.requiresBuildingPermitApplication) return "separate";
-  const notes = `${ahj.reviewerNotes} ${ahj.otherRequirements} ${ahj.submissionMethod}`.toLowerCase();
+  if (!ahj) return null;
+  const raw = `${ahj.reviewerNotes || ""} ${ahj.otherRequirements || ""} ${ahj.submissionMethod || ""}`;
+  const notes = raw.toLowerCase();
   // "Apply for solar and electrical separately" / "Electrical Trade permit" → separate.
   // Checked before combo so Beaverton's "…can go under one electric trade permit" (which
   // refers to folding the MPU into the electrical permit) doesn't mislabel it combo.
-  if ((/\bseparate(ly)?\b/.test(notes) && /electric/.test(notes)) || /electrical trade permit/.test(notes)) return "separate";
-  if (/\b(combined|combo)\b/.test(notes) || /one (single )?(combination|building) permit/.test(notes)) return "combo";
-  return "unknown";
+  let structure: "separate" | "combo" | null = null;
+  let sentence = "";
+  const sentences = raw.split(/(?<=[.;!?])\s+|\s{2,}|\n+/);
+  const find = (re: RegExp) => sentences.find((s) => re.test(s.toLowerCase())) || "";
+  if ((/\bseparate(ly)?\b/.test(notes) && /electric/.test(notes)) || /electrical trade permit/.test(notes)) {
+    structure = "separate";
+    sentence = find(/\bseparate(ly)?\b|electrical trade permit/);
+  } else if (/\b(combined|combo)\b/.test(notes) || /one (single )?(combination|building) permit/.test(notes)) {
+    structure = "combo";
+    sentence = find(/\b(combined|combo)\b|one (single )?(combination|building) permit/);
+  }
+  if (!structure) return null;
+  if (HEDGED.test(sentence)) return { hedged: `the seeded ${ahj.ahj} process note says "${sentence.trim().slice(0, 120)}" — hedged, not settled` };
+  return { structure, note: sentence.trim().slice(0, 200) };
 }
 
-/** Resolve a project's permit structure across all signals: static profile → AHJ process
- *  notes/flags → derived flags. Used for both the submittal tracks and doc generation. */
-export function permitStructureForProject(project: ProjectRecord): "separate" | "combo" | "unknown" {
-  return permitStructureWithBasis(project).structure;
+function citedPrerequisites(project: ProjectRecord): PermitPrerequisiteStep[] {
+  const lk = permitProcessFor(project);
+  const out: PermitPrerequisiteStep[] = [];
+  for (const p of lk?.prerequisites ?? []) {
+    const step = typeof p?.value === "string" ? p.value.trim() : "";
+    if (!step || !/^https?:\/\//i.test(String(p.sourceUrl || "")) || String(p.quote || "").trim().length < 8) continue;
+    if (!out.some((o) => o.step.toLowerCase() === step.toLowerCase())) out.push({ step, sourceUrl: String(p.sourceUrl), quote: String(p.quote).trim() });
+  }
+  return out;
 }
 
-/**
- * The permit structure AND the evidence it rests on, strongest first:
- *   1. a hand-written profile's explicit structure; 2. the AHJ's seeded process profile;
- *   3. the per-job lookup (permitProcess, cited, seeded); 4. a profile that names both a
- *   structural and an electrical application; 5. a CITED STATE RULE — Oregon: "Electrical
- *   components of a PV system require an electrical permit" (OAR 918-050-0180(2)), so every
- *   Oregon jurisdiction files a structural AND a separate electrical permit unless its own
- *   evidence says otherwise (B1); 6. a profile flag that only names a building application.
- * Step 5 sits ABOVE step 6 on purpose: "the profile mentions a building application" is a
- * derivation, not evidence of a combination permit, and in Oregon it filed ONE combo track
- * for a jurisdiction whose two old records were a -STR and an -ELEC.
- */
-export function permitStructureWithBasis(project: ProjectRecord): { structure: "separate" | "combo" | "unknown"; basis: string } {
+/** THE ONE ANSWER. `researched`: an uncited research pass's reading (the form finder's), which can
+ *  only ever become a hint. */
+export function permitStructureAnswer(
+  project: ProjectRecord,
+  opts: { researched?: "separate" | "combo" | "unknown" | null; researchedFrom?: string } = {},
+): PermitStructureAnswer {
+  const prerequisites = citedPrerequisites(project);
+  const settle = (structure: "separate" | "combo", level: PermitStructureLevel, basis: string, sourceUrl = "", quote = ""): PermitStructureAnswer =>
+    ({ structure, level, basis, sourceUrl, quote, hint: "", prerequisites });
+  const hints: string[] = [];
+
+  // 1. The per-job lookup, cited (or a person's verified row).
+  const lk = permitProcessFor(project);
+  const ps = lk?.permitStructure;
+  if (ps && (ps.value === "separate" || ps.value === "combo")) {
+    const verified = lk?.confidence === "verified";
+    if (verified || (/^https?:\/\//i.test(ps.sourceUrl || "") && (ps.quote || "").trim().length >= 8)) {
+      return settle(ps.value, verified ? "verified" : "cited",
+        verified ? `Permit structure: ${ps.value} — verified by a person${ps.sourceUrl ? `, ${ps.sourceUrl}` : ""}` : describeCited("Permit structure", ps),
+        ps.sourceUrl || "", ps.quote || "");
+    }
+    hints.push(`the per-job lookup said "${ps.value}" without a page and its words`);
+  }
+
+  // 2. A hand-written (human-curated) application profile.
   const profile = findApplicationProfile(project);
-  if (profile.permitStructure && profile.permitStructure !== "unknown") return { structure: profile.permitStructure, basis: `${profile.name} profile` };
-  const fromProcess = permitStructureFromAhjProcess(project);
-  if (fromProcess !== "unknown") return { structure: fromProcess, basis: "the AHJ's seeded process profile" };
-  const lookedUp = lookedUpPermitStructure(project);
-  if (lookedUp?.value) return { structure: lookedUp.value, basis: describeCited("Permit structure", lookedUp) };
-  if (profile.requiresStructuralApplication && profile.requiresElectricalApplication) return { structure: "separate", basis: `${profile.name} profile names both applications` };
-  // SCOPE: the state rule answers for a jurisdiction that files on the STATE's shared portal
-  // (Oregon ePermitting) — the generic Oregon fallback, or a profile whose method is ePermitting.
-  // A hand-written profile for a jurisdiction with its own portal (Portland DevHub) keeps its own
-  // answer; that is the AHJ's evidence, and changing it is a separate, per-AHJ decision.
-  const onStatewidePortal = profile.id === "oregon-generic-epermitting"
-    || /e-?permitting|accela/i.test(`${profile.submissionMethod ?? ""} ${profile.portalName ?? ""}`);
-  const stateRule = onStatewidePortal ? statePermitStructure(project) : null;
-  if (stateRule?.value) return { structure: stateRule.value, basis: describeCited("Permit structure", stateRule) };
-  if (profile.requiresAhjApplication || profile.requiresStructuralApplication) return { structure: "combo", basis: `${profile.name} profile names one building application` };
-  return { structure: "unknown", basis: "no evidence" };
+  const handWritten = applicationProfiles.includes(profile) && profile.id !== "oregon-generic-epermitting";
+  if (handWritten && profile.permitStructure && profile.permitStructure !== "unknown") {
+    return settle(profile.permitStructure, "curated", `Permit structure: ${profile.permitStructure} — the hand-written ${profile.name} profile${profile.sourceUrl ? `, ${profile.sourceUrl}` : ""}`, profile.sourceUrl);
+  }
+  if (handWritten && profile.requiresStructuralApplication && profile.requiresElectricalApplication) {
+    return settle("separate", "curated", `Permit structure: separate — the hand-written ${profile.name} profile names both a structural and an electrical application${profile.sourceUrl ? `, ${profile.sourceUrl}` : ""}`, profile.sourceUrl);
+  }
+
+  // 3. The seeded process profile's own words, unhedged.
+  const note = processNoteStructure(project);
+  if (note && "structure" in note) {
+    return settle(note.structure, "reference", `Permit structure: ${note.structure} — the operator's seeded process note for this AHJ ("${note.note}"), not confirmed on an agency page`, "", note.note);
+  }
+  if (note && "hedged" in note) hints.push(note.hedged);
+
+  // 4. A cited state rule — for any jurisdiction of the state with no local answer, except a
+  //    hand-written profile for a jurisdiction with its OWN portal (Portland DevHub, Salem PAC):
+  //    that profile is the AHJ's evidence and changing it is a per-AHJ decision.
+  //    Such a profile's AHJ still takes the state rule when its own seeded record flags an
+  //    electrical permit application (Salem: PAC portal, and the operator's filings there are a
+  //    building AND an electrical permit) — the cited rule settles what the flag only suggests.
+  const proc = findAhjProcessProfile(project);
+  const ownPortalProfile = handWritten && !/e-?permitting|accela/i.test(`${profile.submissionMethod ?? ""} ${profile.portalName ?? ""}`)
+    && !proc?.requiresElectricalPermitApplication;
+  const stateRule = ownPortalProfile ? null : statePermitStructure(project);
+  if (stateRule?.value) return settle(stateRule.value, "state_rule", describeCited("Permit structure", stateRule), stateRule.sourceUrl, stateRule.quote);
+
+  // 5. Unknown — with every lead named as a lead.
+  if (proc?.requiresBuildingPermitApplication && proc?.requiresElectricalPermitApplication) {
+    hints.push(`the seeded ${proc.ahj} process profile flags both a building and an electrical application (flags, not a statement that two permits are filed)`);
+  }
+  if (handWritten && (profile.requiresAhjApplication || profile.requiresStructuralApplication)) {
+    hints.push(`the ${profile.name} profile names one building application`);
+  }
+  if (opts.researched === "separate" || opts.researched === "combo") {
+    hints.push(`${opts.researchedFrom || "uncited research"} read it as ${opts.researched === "separate" ? "separate building + electrical permits" : "one combined permit"}`);
+  }
+  return {
+    structure: "unknown", level: "unknown",
+    basis: `Permit structure: not confirmed — no cited agency page, verified record or state rule says one permit or two${hints.length ? ` (unconfirmed leads: ${hints.join("; ")})` : ""}`,
+    sourceUrl: "", quote: "", hint: hints.join("; "), prerequisites,
+  };
+}
+
+/** Resolve a project's permit structure: permitStructureAnswer's structure. */
+export function permitStructureForProject(project: ProjectRecord): "separate" | "combo" | "unknown" {
+  return permitStructureAnswer(project).structure;
+}
+
+/** The permit structure AND the evidence it rests on (permitStructureAnswer, flattened). */
+export function permitStructureWithBasis(project: ProjectRecord): { structure: "separate" | "combo" | "unknown"; basis: string } {
+  const a = permitStructureAnswer(project);
+  return { structure: a.structure, basis: a.basis };
+}
+
+/** May this answer be printed as "both must be filed" / "one permit"? Levels 1, 2 and 4 only —
+ *  a seeded note is the operator's reference, stated as such. */
+export function permitStructureIsCitedOrVerified(a: Pick<PermitStructureAnswer, "level">): boolean {
+  return a.level === "verified" || a.level === "cited" || a.level === "curated" || a.level === "state_rule";
+}
+
+/** The one sentence every surface prints for the structure (tracks, form finder, package, email). */
+export function permitStructureSentence(a: PermitStructureAnswer): string {
+  const { core, pre } = permitStructureParts(a);
+  return `${core}.${pre}`;
+}
+function permitStructureParts(a: PermitStructureAnswer): { core: string; pre: string } {
+  const firm = permitStructureIsCitedOrVerified(a);
+  const where = a.level === "state_rule" ? "state rule" : a.level === "cited" ? "cited agency page" : a.level === "verified" ? "verified by a person"
+    : a.level === "curated" ? "hand-written AHJ profile" : "operator's seeded note — not confirmed on an agency page";
+  const core = a.structure === "separate"
+    ? (firm ? `Separate building (BLD) + electrical (ELE) permits — both must be filed (${where})` : `Separate building + electrical permits per the ${where}`)
+    : a.structure === "combo"
+      ? `One combined building + electrical permit (${where})`
+      : `One permit or separate building + electrical permits: not yet confirmed — verify on the AHJ site${a.hint ? ` (unconfirmed lead: ${a.hint})` : ""}`;
+  const pre = a.prerequisites.length ? ` FIRST, at another office: ${a.prerequisites.map((p) => p.step).join("; then ")}.` : "";
+  return { core, pre };
+}
+
+/** THE CODE-PROFILE AMENDMENT SURFACE (codeProfiles.ts — not this module's file): a state
+ *  amendment whose summary claims the permit structure ("Separate building (structural) and
+ *  electrical permits required") is a second answer to this question. The code panel should
+ *  replace such an amendment's claim with permitStructureSentence(permitStructureAnswer(project)). */
+export function amendmentClaimsPermitStructure(summary: string): boolean {
+  const s = String(summary || "").toLowerCase();
+  return /\bpermit/.test(s) && (/\bseparate\b[^.]{0,60}\belectrical\b|\bboth\b[^.]{0,40}\bbuilding\b[^.]{0,40}\belectrical\b|\bcombo\b|\bcombined\b[^.]{0,40}\bpermit\b/.test(s));
 }
 
 export const applicationProfiles: ApplicationRequirementProfile[] = [
@@ -333,21 +476,34 @@ function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequi
   const wantsElectricalApp = proc.requiresElectricalPermitApplication || proc.requiresElectricalStamp || /renewable energy app|electrical app/.test(notes);
   const wantsBuildingApp = proc.requiresBuildingPermitApplication;
   const wantsStructuralApp = proc.requiresStructuralStamp || /struct app|structural app/.test(notes) || wantsBuildingApp;
-  const wantsChecklist = proc.requiresSolarChecklist || /checklist/.test(notes) || project.state.toUpperCase() === "OR";
+  const oregon = project.state.toUpperCase() === "OR";
+  const wantsChecklist = proc.requiresSolarChecklist || /checklist/.test(notes) || oregon;
 
+  // THE OREGON TEMPLATE IS OREGON'S. "Solar application — PRESCRIPTIVE or STRUCTURAL", the
+  // "Renewable Energy (electrical)" application and the prescriptive checklist are Oregon's
+  // statewide vocabulary (OAR 918-050-0180, BCD 440-5952). Printed for Scottsdale and Santa Fe
+  // they stated an Oregon filing as that AHJ's requirement (new-AHJ e2e, 2026-09-26). Outside
+  // Oregon the lines are the AHJ's own, in neutral words, and say they come from the seeded
+  // flags — unless the per-job lookup found this AHJ's documents, which replace them.
   const requiredDocuments: string[] = [];
-  if (wantsStructuralApp || wantsChecklist) {
-    requiredDocuments.push("Solar application — PRESCRIPTIVE or STRUCTURAL (upload only the one that matches your path; never both)");
+  if (oregon) {
+    if (wantsStructuralApp || wantsChecklist) {
+      requiredDocuments.push("Solar application — PRESCRIPTIVE or STRUCTURAL (upload only the one that matches your path; never both)");
+    }
+    if (wantsElectricalApp) requiredDocuments.push("Renewable Energy (electrical) permit application");
+    if (wantsChecklist) requiredDocuments.push("Solar prescriptive checklist");
+  } else {
+    if (wantsStructuralApp) requiredDocuments.push("The AHJ's building permit application (seeded flag — confirm its name on the AHJ site)");
+    if (wantsElectricalApp) requiredDocuments.push("The AHJ's electrical permit application (seeded flag — confirm whether the AHJ files it separately)");
+    if (proc.requiresSolarChecklist) requiredDocuments.push("The AHJ's solar checklist (seeded flag — confirm it on the AHJ site)");
   }
-  if (wantsElectricalApp) requiredDocuments.push("Renewable Energy (electrical) permit application");
-  if (wantsChecklist) requiredDocuments.push("Solar prescriptive checklist");
   if (/mpu|panel upgrade|service upgrade/.test(notes)) requiredDocuments.push("Electrical permit application (when a main panel/service upgrade is in scope)");
   if (proc.requiresPlanSet) requiredDocuments.push("Plan set and specifications");
   // Single stamp authority: fires on the profile flag AND on this project's own
   // engineered path — previously a stamped-path project whose profile lacked the
   // flag got no stamped-plans line here.
   if (resolveStampRequirement(project, { processProfileRequiresStamp: proc.requiresStructuralStamp, jurisdictionLabel: proc.ahj }).required) {
-    requiredDocuments.push("PE-stamped structural plans + engineering letter (non-prescriptive path)");
+    requiredDocuments.push(oregon ? "PE-stamped structural plans + engineering letter (non-prescriptive path)" : "PE-stamped structural plans + engineering letter");
   }
   if (!requiredDocuments.length) requiredDocuments.push("Plan set and specifications");
 
@@ -356,9 +512,12 @@ function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequi
     : isEmail ? "Email"
     : (proc.submissionMethod || "Verify on the AHJ site");
 
-  const notesOut = [`Synthesized from the seeded ${proc.ahj} process profile.`];
-  if (proc.reviewerNotes) notesOut.push(proc.reviewerNotes);
-  if (proc.timeline) notesOut.push(`Typical timeline: ${proc.timeline}.`);
+  // A SEEDED NOTE IS A NOTE, NOT AN INSTRUCTION. Scottsdale's reads 'Select "Solar Systems/Green
+  // Including Commercial Solar Projects"' — the portal's real type is "Residential Solar" — and the
+  // manifest printed it as an imperative. It is labelled as the operator's unverified reference.
+  const notesOut = [`Synthesized from the seeded ${proc.ahj} process profile (operator reference sheet${proc.sourceSheet ? ` "${proc.sourceSheet}"` : ""}; not confirmed on an agency page).`];
+  if (proc.reviewerNotes) notesOut.push(`Seeded reference note (unverified): ${proc.reviewerNotes}`);
+  if (proc.timeline) notesOut.push(`Typical timeline (seeded): ${proc.timeline}.`);
 
   return {
     id: `process-${proc.ahj.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)}`,
@@ -379,11 +538,42 @@ function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequi
     // portal-entry-only; the acquisition research itself reports genuinely
     // PDF-less portals.
     requiresPortalEntryOnly: false,
-    permitStructure: wantsBuildingApp && wantsElectricalApp ? "separate" : "unknown",
+    // Flags are not a structure (permitStructureAnswer, level 5): two spreadsheet flags filed
+    // "separate — both must be filed" for Scottsdale, which files ONE Residential Solar permit.
+    permitStructure: "unknown",
     submissionMethod,
     requiredDocuments,
     notes: notesOut,
   };
+}
+
+/** THE PER-JOB LOOKUP'S DOCUMENTS, cited, when it found any — they replace a seeded or generic
+ *  document list (per-job research over a stale shipped profile). null when nothing was found. */
+function lookedUpDocuments(project: ProjectRecord): { documents: string[]; note: string } | null {
+  const lk = permitProcessFor(project);
+  const docs: string[] = [];
+  const sources: string[] = [];
+  for (const permit of lk?.permits ?? []) {
+    const d = permit.documents;
+    if (!d || !Array.isArray(d.value) || !d.value.length || !/^https?:\/\//i.test(d.sourceUrl || "")) continue;
+    const prefix = (lk?.permits?.length ?? 0) > 1 ? `${permit.label || permit.discipline}: ` : "";
+    for (const item of d.value) {
+      const line = `${prefix}${String(item).trim()}`;
+      if (String(item).trim() && !docs.includes(line)) docs.push(line);
+    }
+    if (!sources.includes(d.sourceUrl)) sources.push(d.sourceUrl);
+  }
+  if (!docs.length) return null;
+  return { documents: docs, note: `Required documents from the per-job lookup (seeded, cited): ${sources.join(", ")}.` };
+}
+
+/** Does this AHJ-side name (a project's AHJ, or a registry match term) name the project's
+ *  jurisdiction? Whole words, same kind (a county term never matches a city AHJ, nor the reverse). */
+function registryTermMatches(ahjName: string, term: string): boolean {
+  const name = ` ${ahjName.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+  const t = term.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (!t || !name.includes(` ${t} `)) return false;
+  return jurisdictionKindsCompatible(jurisdictionKind(ahjName), jurisdictionKind(term));
 }
 
 export function findApplicationProfile(project: ProjectRecord): ApplicationRequirementProfile {
@@ -395,18 +585,43 @@ export function findApplicationProfile(project: ProjectRecord): ApplicationRequi
   // requiresPortalEntryOnly:true flags that SKIP AHJ form acquisition entirely
   // (seen as "no documents pulled" on a WA county).
   const oregonProject = project.state.trim().toUpperCase() === "OR" || /\boregon\b/.test(haystack) || !project.state.trim();
-  const specific = oregonProject
+  // THE PROJECT'S AHJ decides which jurisdiction this is; its mailing city is consulted only when
+  // the AHJ field names no place (empty, or only department words). A substring test over
+  // "ahj + city" handed a Marion County project with a Salem address the CITY of Salem's PAC
+  // profile (array order) — the same county-vs-city confusion as Santa Fe (processProfiles).
+  const ahjName = String(project.ahj ?? "").trim();
+  const jurisdictionName = jurisdictionCore(ahjName) ? ahjName : String(project.city ?? "").trim();
+  const specific = oregonProject && jurisdictionName
     ? applicationProfiles.find((profile) =>
-        profile.id !== "oregon-generic-epermitting" && profile.matchJurisdictions.some((term) => haystack.includes(term)),
+        profile.id !== "oregon-generic-epermitting" && profile.matchJurisdictions.some((term) => registryTermMatches(jurisdictionName, term)),
       )
     : undefined;
   if (specific) return specific;
   // No hand-written profile — synthesize from the AHJ's seeded process knowledge so
   // we still pull the right forms for jurisdictions we have real data on.
+  const found = lookedUpDocuments(project);
   const synthesized = applicationProfileFromProcess(project);
-  if (synthesized) return synthesized;
+  if (synthesized) return found ? { ...synthesized, requiredDocuments: found.documents, notes: [found.note, ...synthesized.notes] } : synthesized;
   if (project.state.toUpperCase() === "OR" || /oregon/.test(haystack)) {
-    return applicationProfiles.find((profile) => profile.id === "oregon-generic-epermitting")!;
+    const generic = applicationProfiles.find((profile) => profile.id === "oregon-generic-epermitting")!;
+    return found ? { ...generic, requiredDocuments: found.documents, notes: [found.note, ...generic.notes] } : generic;
+  }
+  if (found) {
+    return {
+      id: "lookup-per-job",
+      name: `${project.ahj || "This AHJ"} (per-job lookup)`,
+      matchJurisdictions: [],
+      portalName: "Unknown",
+      sourceUrl: "",
+      requiresAhjApplication: false,
+      requiresStructuralApplication: false,
+      requiresElectricalApplication: false,
+      requiresPrescriptiveChecklist: false,
+      requiresBidSheet: false,
+      requiresPortalEntryOnly: false,
+      requiredDocuments: found.documents,
+      notes: [found.note],
+    };
   }
   return {
     id: "generic-unknown-ahj",
@@ -440,15 +655,16 @@ export interface PermitTypeInfo {
 // callout surface so the operator always knows what kind of permitting an AHJ uses.
 export function describePermitType(
   profile: ApplicationRequirementProfile,
-  learned: { submissionMethod?: string; portalPlatform?: string; permitStructure?: "combo" | "separate" | "unknown" } = {},
+  learned: { submissionMethod?: string; portalPlatform?: string; answer?: PermitStructureAnswer } = {},
 ): PermitTypeInfo {
-  // Structure — prefer an explicit profile value, then what research learned, then derive from flags.
-  let structure: PermitTypeInfo["structure"] = profile.permitStructure || "unknown";
-  if (structure === "unknown" && learned.permitStructure && learned.permitStructure !== "unknown") structure = learned.permitStructure;
-  if (structure === "unknown") {
-    if (profile.requiresStructuralApplication && profile.requiresElectricalApplication) structure = "separate";
-    else if (profile.requiresAhjApplication || profile.requiresStructuralApplication) structure = "combo";
-  }
+  // Structure — permitStructureAnswer's, and nothing else. This function used to re-derive it
+  // from the profile's flags and from whatever an uncited research pass said, which is how the
+  // form finder printed "both must be filed" beside tracks that said "combo". No answer passed
+  // = not confirmed.
+  const answer: PermitStructureAnswer = learned.answer ?? {
+    structure: "unknown", level: "unknown", basis: "Permit structure: not resolved", sourceUrl: "", quote: "", hint: "", prerequisites: [],
+  };
+  const structure: PermitTypeInfo["structure"] = answer.structure;
 
   // Submission method/platform.
   const blob = `${profile.portalName} ${(profile.notes || []).join(" ")} ${learned.submissionMethod || ""} ${learned.portalPlatform || ""}`.toLowerCase();
@@ -467,11 +683,8 @@ export function describePermitType(
     else submissionMethod = "Unknown — verify on the AHJ site";
   }
 
-  const structureLabel =
-    structure === "separate" ? "Separate building (BLD) + electrical (ELE) permits — both must be filed"
-    : structure === "combo" ? "Combined building + electrical permit (one permit)"
-    : "Combo vs separate BLD/ELE permits not yet confirmed — verify on the AHJ site";
-  const callout = `${structureLabel} — submitted via ${submissionMethod}.`;
+  const { core, pre } = permitStructureParts(answer);
+  const callout = `${core} — submitted via ${submissionMethod}.${pre}`;
   return { structure, submissionMethod, callout };
 }
 
@@ -500,12 +713,15 @@ export function buildSubmittalEmailDraft(
 ): SubmittalEmailDraft {
   const profile = findApplicationProfile(project);
   const isEmail = isEmailSubmittalProfile(profile, opts.learnedMethod, opts.learnedPlatform);
-  const permitType = describePermitType(profile, { submissionMethod: opts.learnedMethod, portalPlatform: opts.learnedPlatform });
+  const answer = permitStructureAnswer(project);
+  const permitType = describePermitType(profile, { submissionMethod: opts.learnedMethod, portalPlatform: opts.learnedPlatform, answer });
   const company = (opts.companyName || "").trim() || "Our company";
   const customer = (project.homeownerName || "Customer").trim();
   const addr = [project.projectAddress, [project.city, project.state, project.zip].filter(Boolean).join(", ")].filter(Boolean).join(", ");
-  // Subject reflects the permit structure: combo → "Permit submittal"; separate → "BLD, ELE Permit submittal".
-  const permitTag = permitType.structure === "combo" ? "Permit submittal" : "BLD, ELE Permit submittal";
+  // Subject reflects the ONE permit-structure answer: "BLD, ELE Permit submittal" only when two
+  // permits are settled; combo AND unknown → "Permit submittal". Unknown used to fall through to
+  // "BLD, ELE", which is how all seven new-AHJ jobs got it (three of them file one permit).
+  const permitTag = permitType.structure === "separate" ? "BLD, ELE Permit submittal" : "Permit submittal";
   const subject = `${company} - ${permitTag} - ${customer} - ${project.projectAddress || addr}`;
 
   const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
@@ -523,12 +739,14 @@ export function buildSubmittalEmailDraft(
 
   const docs = (profile.requiredDocuments && profile.requiredDocuments.length
     ? profile.requiredDocuments
-    : ["Building permit application", "Electrical permit application", "Plan set", "Equipment specifications"]
+    : [permitType.structure === "separate" ? "Building permit application" : "Permit application", ...(permitType.structure === "separate" ? ["Electrical permit application"] : []), "Plan set", "Equipment specifications"]
   ).map((d) => `  - ${d}`).join("\n");
 
   const intro = permitType.structure === "combo"
     ? "Please find attached the combined building + electrical permit submittal for the following residential rooftop solar PV project:"
-    : "Please find attached the building (BLD) and electrical (ELE) permit submittal for the following residential rooftop solar PV project:";
+    : permitType.structure === "separate"
+      ? "Please find attached the building (BLD) and electrical (ELE) permit submittal for the following residential rooftop solar PV project:"
+      : "Please find attached the permit submittal for the following residential rooftop solar PV project:";
   const body = [
     "Hello,",
     "",
@@ -600,13 +818,18 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
       ...(matched.notes || []),
     ],
   };
-  const structure = permitStructureForProject(project);
+  const answer = permitStructureAnswer(project);
+  const structure = answer.structure;
   const permitPath = resolvePermitPath(project);
   const hasMpu = applicationHasMpuScope(project);
   const missingFields = requiredProjectFields(project);
+  // The prescriptive-vs-structural pair exists where a prescriptive rooftop-PV path is on file:
+  // Oregon's statewide one, or a jurisdiction whose own limits were researched. Everywhere else
+  // resolvePermitPath says STANDARD REVIEW — one building application, no choice.
+  const oregonSplit = !permitPath.standardReview;
   const docs: GeneratedApplicationDocument[] = [
     buildCover(project, profile, client, permitPath),
-    buildManifest(project, profile, structure, permitPath, hasMpu),
+    buildManifest(project, profile, answer, permitPath, hasMpu),
   ];
 
   if (profile.requiresAhjApplication || profile.requiresPortalEntryOnly) docs.push(buildAhjWorksheet(project, profile, client));
@@ -617,7 +840,15 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
   // reduced fee). Engineered → structural application + collect PE-stamped plans +
   // structural letter (plan review, full fees). When the path is still unknown we emit
   // a chooser doc so the operator picks before anything is uploaded.
-  if (permitPath.path === "engineered") {
+  //
+  // THAT SPLIT IS OREGON'S (BCD 440-5952 / the B-01S vs B-01 pair). Outside Oregon the AHJ
+  // publishes its own building application; the package carries ONE building-side worksheet
+  // (plus the stamped-document collection when the plan set needs a PE stamp), never a
+  // prescriptive application or a "choose one of two" sheet the AHJ never published.
+  if (!oregonSplit) {
+    docs.push(buildStructuralWorksheet(project, profile, permitPath));
+    if (permitPath.path === "engineered" && permitPath.needsEngineeredDocs) docs.push(buildEngineeredDocCollection(project, permitPath));
+  } else if (permitPath.path === "engineered") {
     docs.push(buildStructuralWorksheet(project, profile, permitPath));
     docs.push(buildEngineeredDocCollection(project, permitPath));
   } else if (permitPath.path === "prescriptive") {
@@ -644,7 +875,7 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
     docs,
     missingFields,
     html: packageHtml(project, profile, docs, missingFields, client),
-    permitType: `${describePermitType(profile, { permitStructure: structure }).callout} ${permitPathCallout(permitPath)}`,
+    permitType: `${describePermitType(profile, { answer }).callout}${oregonSplit ? ` ${permitPathCallout(permitPath)}` : ""}`,
     // THE RESOLVED PATH, STRUCTURALLY — not only folded into permitType's prose.
     // The prescriptive and structural applications are mutually exclusive, so this one
     // decision picks which application the AHJ receives; until now it was only legible
@@ -714,7 +945,8 @@ function buildCover(project: ProjectRecord, profile: ApplicationRequirementProfi
       ].filter(Boolean).join("\n")
     : "Contractor: [assign client to populate]";
 
-  const pathLabel = permitPath.path === "prescriptive" ? "PRESCRIPTIVE (meets prescriptive code · no plan review · reduced fee)"
+  const pathLabel = permitPath.standardReview ? "STANDARD STRUCTURAL REVIEW (no prescriptive-vs-structural choice on file for this jurisdiction)"
+    : permitPath.path === "prescriptive" ? "PRESCRIPTIVE (meets prescriptive code · no plan review · reduced fee)"
     : permitPath.path === "engineered" ? "STRUCTURAL / ENGINEERED (non-prescriptive · plan review · full fees · PE stamp required)"
     : "NOT YET CONFIRMED — choose prescriptive vs engineered before uploading";
 
@@ -747,7 +979,7 @@ Operator notes:
 - Verify all required fields before legal submission.
 - Do not submit this package automatically.
 - Transfer worksheet values into official AHJ forms or portal fields where required.
-- Upload ONLY the application that matches the permit path above — never both.
+${permitPath.standardReview ? "- File the AHJ's own building application; its name and document list come from the AHJ, not from this sheet." : "- Upload ONLY the application that matches the permit path above — never both."}
 `,
   );
 }
@@ -755,20 +987,19 @@ Operator notes:
 function buildManifest(
   project: ProjectRecord,
   profile: ApplicationRequirementProfile,
-  structure: "separate" | "combo" | "unknown",
+  answer: PermitStructureAnswer,
   permitPath: PermitPathResolution,
   hasMpu: boolean,
 ): GeneratedApplicationDocument {
   const generatedDocs = profile.requiredDocuments.map((item) => `- ${item}`).join("\n");
-  const separate = structure === "separate";
-  const structureLine = separate
-    ? "Permit structure: SEPARATE building (BLD) + electrical (ELE) permits — file BOTH."
-    : structure === "combo"
-      ? "Permit structure: Combined building + electrical permit (one filing)."
-      : "Permit structure: verify combo vs separate on the AHJ site.";
+  const separate = answer.structure === "separate";
+  // The ONE answer's sentence and its basis — the same words the tracks and the form finder print.
+  const structureLine = `Permit structure: ${permitStructureSentence(answer)}\nBasis: ${answer.basis}`;
 
   // The application line is path-driven — upload exactly one.
-  const appLine = permitPath.path === "prescriptive"
+  const appLine = permitPath.standardReview
+    ? "- The AHJ's building permit application (standard structural review — one application, no prescriptive/structural choice)"
+    : permitPath.path === "prescriptive"
     ? "- Prescriptive solar application + checklist  ← UPLOAD THIS ONE (do NOT upload the structural application)"
     : permitPath.path === "engineered"
       ? "- Structural (non-prescriptive) application + PE-stamped plans + structural letter  ← UPLOAD THIS ONE (do NOT upload the prescriptive application)"
@@ -797,9 +1028,10 @@ Generated by Autopilot:
 - Cover sheet
 - Required document manifest
 ${profile.requiresAhjApplication || profile.requiresPortalEntryOnly ? "- AHJ / portal application worksheet" : ""}
-${permitPath.path === "engineered" ? "- Structural (non-prescriptive) application worksheet\n- Engineered document collection checklist (stamped plans + structural letter)" : ""}
-${permitPath.path === "prescriptive" ? "- Prescriptive solar application worksheet (with checklist)" : ""}
-${permitPath.path === "unknown" ? "- Permit-path chooser\n- Prescriptive application (draft)\n- Structural application (draft)" : ""}
+${permitPath.standardReview ? `- Building permit application worksheet${permitPath.needsEngineeredDocs ? "\n- Engineered document collection checklist (stamped plans + structural letter)" : ""}` : ""}
+${!permitPath.standardReview && permitPath.path === "engineered" ? "- Structural (non-prescriptive) application worksheet\n- Engineered document collection checklist (stamped plans + structural letter)" : ""}
+${!permitPath.standardReview && permitPath.path === "prescriptive" ? "- Prescriptive solar application worksheet (with checklist)" : ""}
+${!permitPath.standardReview && permitPath.path === "unknown" ? "- Permit-path chooser\n- Prescriptive application (draft)\n- Structural application (draft)" : ""}
 ${profile.requiresElectricalApplication || separate || hasMpu ? "- Electrical / Renewable-Energy application worksheet" : ""}
 ${hasMpu ? "- Electrical permit application is required because a main panel/service upgrade (MPU) is in scope" : ""}
 ${profile.requiresBidSheet ? "- Bid sheet worksheet" : ""}
@@ -853,6 +1085,18 @@ Electrical:
 // on the engineered path. Carries a banner that this is the application to upload and
 // that a PE-stamped plan set + structural letter must accompany it (collected below).
 function buildStructuralWorksheet(project: ProjectRecord, _profile: ApplicationRequirementProfile, permitPath: PermitPathResolution): GeneratedApplicationDocument {
+  if (permitPath.standardReview) {
+    // Outside a prescriptive-path jurisdiction there is ONE building application — no
+    // "non-prescriptive" framing, no "do NOT upload the prescriptive one".
+    const standard = buildStructuralWorksheet(project, _profile, { ...permitPath, standardReview: false, path: "engineered" });
+    return {
+      ...standard,
+      title: "Building Permit Application Worksheet",
+      markdown: standard.markdown
+        .replace(/^# .*$/m, "# Building Permit Application Worksheet")
+        .replace(/^> .*$/m, `> File the AHJ's own building permit application (standard structural review). ${permitPathCallout(permitPath)}`),
+    };
+  }
   const formName = namedApplicationForm(_profile, "engineered");
   const banner = permitPath.path === "engineered"
     ? `UPLOAD THIS APPLICATION (non-prescriptive): ${formName}. Do NOT upload the prescriptive application. This triggers plan review and full structural fees and requires a PE-stamped plan set + structural engineering letter.`

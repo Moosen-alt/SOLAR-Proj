@@ -192,25 +192,95 @@ function stateFrom(input: ProjectRecord | ParserPayload): string {
   return clean("state" in input ? input.state : input.state).toUpperCase();
 }
 
-function ahjFrom(input: ProjectRecord | ParserPayload): string {
-  const direct = clean("ahj" in input ? input.ahj : input.ahj);
-  const city = clean("city" in input ? input.city : input.city);
-  return [direct, city].filter(Boolean).join(" ");
+// ---------------------------------------------------------------------------
+// THE EXACT JURISDICTION (new-AHJ e2e, 2026-09-26).
+//
+// A project in UNINCORPORATED Santa Fe County, NM (ahj "Santa Fe County", mailing city
+// "Santa Fe") was handed the shipped CITY of Santa Fe profile: BLD + ELE by email, "drop
+// off at the City of Santa Fe Office", an Oregon-style document list — a different
+// government. The old scorer matched one haystack, `ahj + " " + city`, by substring and
+// token overlap; "santa fe" is inside "santa fe county santa fe", both profiles scored 137,
+// and the stable sort kept file order.
+//
+// Now: a jurisdiction is a KIND (county vs city/town) plus a CORE name. A name that says
+// "County"/"Co" never matches a profile name that does not, and a "City of"/"Town of" name
+// never matches a county. The project's AHJ decides; its mailing city is consulted only
+// when the AHJ field is empty — never when the AHJ names a county (an unincorporated
+// address carries the nearest city's name, which is exactly the Santa Fe shape). State
+// mismatch always loses (the state filter below).
+// ---------------------------------------------------------------------------
+export type JurisdictionKind = "county" | "city" | "unmarked";
+const STATE_TAIL = /\b(or|wa|ca|id|tx|nm|az|nj|fl|oh|sc|nc|ia|ma|pa|ut|co|nv|mi|il|ny|ga|va|md|mn|wi|mo|ok|ks|ne|ky|tn|al|ms|la|ar|in|de|ct|ri|vt|nh|me|mt|wy|sd|nd|hi|ak|wv|dc)\b\s*$/i;
+const DEPARTMENT_WORDS = new Set(["building", "buildings", "division", "department", "dept", "permit", "permits", "permitting", "planning",
+  "development", "services", "service", "inspection", "inspections", "community", "and", "the", "office", "safety", "codes", "code", "center"]);
+
+function stripParens(value: string): string {
+  // A balanced parenthetical is a note ("Burns (Harney County)"); an UNBALANCED one runs to
+  // the end ("Klamath County (zip code ending in 03 is county and 01 is city") — both go.
+  return value.replace(/\([^)]*\)/g, " ").replace(/\([^)]*$/, " ");
 }
 
-// Split a multi-jurisdiction AHJ name into its individual jurisdictions and strip a
-// trailing 2-letter state token + parentheticals, so a combined record like
-// "Marion Co/Hubbard OR/Keizer OR / Mount Angel / Salem / Gervais" matches a project
-// in "Keizer". Without this, a bare "Keizer" stub outscores the rich combined record.
-function jurisdictionNames(rawAhj: string): string[] {
-  const parts = rawAhj.split(/[/,;]+/).map((p) => p.trim()).filter(Boolean);
-  const names = new Set<string>();
+/** Parentheticals and a trailing state code removed, normalized. ", CO" after a comma is the
+ *  state; a bare trailing "Co" ("Marion Co") is the county abbreviation and stays. */
+function placeWords(name: string): string {
+  const noParen = stripParens(String(name ?? "")).replace(/,\s*[A-Za-z]{2}\.?\s*$/, " ");
+  const n = normalizeTokens(noParen);
+  const last = n.split(" ").pop() || "";
+  return last !== "co" && n.includes(" ") ? n.replace(STATE_TAIL, "").trim() : n;
+}
+
+/** "Santa Fe County" → county; "City of Santa Fe" → city; "Santa Fe" → unmarked. */
+export function jurisdictionKind(name: string): JurisdictionKind {
+  const n = ` ${placeWords(name)} `;
+  if (/ (county|co|parish) /.test(n)) return "county";
+  if (/ (city|town|village|borough|township|twp) /.test(n)) return "city";
+  return "unmarked";
+}
+
+/** The place name alone: kind words, "of", department words and a trailing state code removed. */
+export function jurisdictionCore(name: string): string {
+  const n = placeWords(name);
+  return n
+    .split(/\s+/)
+    .filter((w) => w && !["county", "co", "parish", "city", "town", "village", "borough", "township", "twp", "of"].includes(w) && !DEPARTMENT_WORDS.has(w))
+    .join(" ")
+    .trim();
+}
+
+/** May a project jurisdiction of kind `a` be the same government as a profile name of kind `b`? */
+export function jurisdictionKindsCompatible(project: JurisdictionKind, profile: JurisdictionKind): boolean {
+  if (project === "county") return profile === "county";
+  if (project === "city") return profile !== "county";
+  return true; // a bare project name ("Deschutes", "Keizer") may be either — scored below
+}
+
+// Split a multi-jurisdiction AHJ name into its individual jurisdictions, so a combined record
+// like "Marion Co/Hubbard OR/Keizer OR / Mount Angel / Salem / Gervais" matches a project in
+// "Keizer". Without this, a bare "Keizer" stub outscores the rich combined record. Each part
+// keeps its OWN kind ("Marion Co" is a county, "Keizer OR" is not).
+function jurisdictionNames(rawAhj: string): Array<{ core: string; kind: JurisdictionKind }> {
+  const parts = stripParens(rawAhj).split(/[/,;]+/).map((p) => p.trim()).filter(Boolean);
+  const out = new Map<string, { core: string; kind: JurisdictionKind }>();
   for (const part of parts) {
-    const noParen = part.replace(/\([^)]*\)/g, " ");
-    const norm = normalizeTokens(noParen).replace(/\b(or|wa|ca|id|tx|nm|az|nj|fl|oh|sc|nc)\b\s*$/i, "").trim();
-    if (norm) names.add(norm);
+    const core = jurisdictionCore(part);
+    if (core) out.set(`${core}|${jurisdictionKind(part)}`, { core, kind: jurisdictionKind(part) });
   }
-  return Array.from(names);
+  return Array.from(out.values());
+}
+
+/** The names the project's jurisdiction goes by: its AHJ; its mailing city ONLY when the AHJ
+ *  field is empty (see the header — an unincorporated address carries a city's name). */
+function projectJurisdictionNames(input: ProjectRecord | ParserPayload): Array<{ core: string; kind: JurisdictionKind }> {
+  const direct = clean("ahj" in input ? input.ahj : input.ahj);
+  const city = clean("city" in input ? input.city : input.city);
+  if (direct) return jurisdictionNames(direct);
+  return city ? jurisdictionNames(city).map((n) => ({ ...n, kind: n.kind === "county" ? n.kind : "city" as JurisdictionKind })) : [];
+}
+
+/** Whole-word containment: "west salem" contains "salem"; "salemtown" does not. */
+function containsWords(hay: string, needle: string): boolean {
+  if (!hay || !needle) return false;
+  return ` ${hay} `.includes(` ${needle} `);
 }
 
 // How much real, actionable data a profile carries — used as a tiebreak so a populated
@@ -234,29 +304,37 @@ function richness(profile: AhjProcessProfile): number {
 export function findAhjProcessProfile(input: ProjectRecord | ParserPayload): AhjProcessProfile | null {
   const profiles = loadProfiles();
   const state = stateFrom(input);
-  const haystack = normalizeTokens(ahjFrom(input));
-  if (!state || !haystack) return null;
+  const projectNames = projectJurisdictionNames(input);
+  if (!state || !projectNames.length) return null;
 
   const stateProfiles = profiles.filter((profile) => profile.state.toUpperCase() === state);
   const candidates: Array<{ profile: AhjProcessProfile; score: number; rich: number }> = [];
-  const hayTokens = new Set(tokens(haystack));
+  const hayTokens = new Set(projectNames.flatMap((n) => tokens(n.core)));
   for (const profile of stateProfiles) {
-    const ahj = normalizeTokens(profile.ahj);
-    if (!ahj) continue;
-    let score = 0;
-    if (haystack === ahj) score += 100;
-    if ((ahj.length > 5 && haystack.includes(ahj)) || (haystack.length > 5 && ahj.includes(haystack))) score += 70;
-    // Per-jurisdiction match for combined records: a project in "Keizer" should match
-    // the "…/Keizer OR/…" sub-name strongly even though the full string differs.
-    for (const name of jurisdictionNames(profile.ahj)) {
-      if (!name || name.length < 3) continue;
-      if (haystack === name) { score += 90; break; }
-      if (haystack.includes(name) || hayTokens.has(name)) score += 55;
+    const profileNames = jurisdictionNames(profile.ahj);
+    if (!profileNames.length) continue;
+    // Score by the BEST kind-compatible pairing of a project name with a profile sub-name.
+    // Kind-incompatible pairs score nothing — "Santa Fe" (a city's short name) is never the
+    // government of a project that names "Santa Fe County".
+    let best = 0;
+    for (const p of projectNames) {
+      for (const n of profileNames) {
+        if (!n.core || n.core.length < 3 || !jurisdictionKindsCompatible(p.kind, n.kind)) continue;
+        // Same kind outranks a bare-name pairing: an unmarked "Santa Fe" project prefers the
+        // unmarked/city "Santa Fe" profile over "Santa Fe County" at an otherwise equal score.
+        const sameKind = (p.kind === "county") === (n.kind === "county") ? 5 : 0;
+        let s = 0;
+        if (p.core === n.core) s = 100;
+        else if (containsWords(p.core, n.core) || containsWords(n.core, p.core)) s = 55;
+        if (s) best = Math.max(best, s + sameKind);
+      }
     }
-    for (const token of tokens(ahj)) {
+    if (!best) continue;
+    let score = best;
+    for (const token of new Set(profileNames.flatMap((n) => tokens(n.core)))) {
       if (hayTokens.has(token)) score += 12;
     }
-    if (score >= 24) candidates.push({ profile, score, rich: richness(profile) });
+    candidates.push({ profile, score, rich: richness(profile) });
   }
   if (!candidates.length) return null;
   candidates.sort((a, b) => b.score - a.score);
