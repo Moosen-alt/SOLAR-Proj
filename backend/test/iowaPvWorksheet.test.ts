@@ -163,6 +163,18 @@ await check("(e7) AC-coupled ESS on a micro system adds its inverter amps to the
   assert.equal(v["p2.maxCircuitCurrent"], "32.93A", "12.1 + 5000/240 = 32.93");
 });
 
+await check("(q1) an operator's answers to the worksheet questions reach the form (arrays, load-side row, DC-DC max voltage, unit current)", () => {
+  const none: Record<string, unknown> = { ...SHAPE23, iaPvArrayCount: "2" }; delete none.azimuth; delete none.tilt;
+  assert.equal(W(none).values["p2.arrays"], "2");
+  const odd = W({ ...SHAPE23, busRating: "150", iaPvLoadSideRow: "705.12(B)(3)(3)" }).values;
+  assert.equal(odd["p2.lsc.B33"], "X"); assert.equal(odd["p2.lsc.B32"], "");
+  const askRow = W({ ...SHAPE23, busRating: "150" }).questions.find((q) => q.key === "iaPvLoadSideRow");
+  assert.ok(askRow && askRow.options.length === 9, "the row question is multiple choice (answerable through intake)");
+  const se = W({ ...BASE, invMake: "SolarEdge", invModel: "SE7600H-US", invQty: "1", invOutputW: "32", iaPvDcDcMaxVoltage: "480" }).values;
+  assert.equal(se["p2.maxSystemVoltage"], "480 V DC");
+  const noA: Record<string, unknown> = { ...SHAPE23, iaPvUnitOutputA: "1.21" }; delete noA.pvMicroOutputW;
+  assert.equal(W(noA).values["p2.maxCircuitCurrent"], "12.1A");
+});
 await check("(p1) parse: one stated module Voc / Isc / temperature coefficient is read from the datasheet text; two disagreeing tables are left for review", async () => {
   const { supplementStructuralIntake } = await import("../src/structuralIntake");
   const base = { provider: "stub", fields: {}, lowConfidenceFields: [], notes: "" } as never;

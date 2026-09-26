@@ -241,6 +241,8 @@ export function serviceRatingStatements(text: string): { panel: RatingStatement[
       const i = m.index ?? 0;
       const before = t.slice(Math.max(0, i - 14), i);
       if (/\(N\)\s*$|\bNEW\s*$/i.test(before) || /^\(N\)|\bNEW\b/i.test(m[0])) continue;
+      // A combiner / sub-panel / load centre has its own bus: it is not the service's.
+      if (/\b(?:COMBINER|SUB[-\s]?PANEL|LOAD\s+CENT(?:ER|RE)|PV\s+PANEL|AC\s+PANEL|BACKUP|GATEWAY)\b/i.test(t.slice(Math.max(0, i - 40), i + m[0].length))) continue;
       const amps = Number(m.slice(1).find((g) => g) ?? NaN);
       if (amps >= 60 && amps <= 800) out[kind].push({ amps, quote: t.slice(Math.max(0, i - 25), i + m[0].length + 25).trim() });
     }

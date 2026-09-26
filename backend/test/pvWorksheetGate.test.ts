@@ -136,6 +136,8 @@ await check("(m2) MUST-EXCLUDE: agreeing ratings, a 225 A bus under a 200 A main
   assert.deepEqual(gate.serviceRatingConsistencyFindings(p, "(E) 200A MSP WITH 225A BUS AND 200A MAIN BREAKER"), []);
   assert.deepEqual(gate.serviceRatingConsistencyFindings(p, "MPU: REPLACE (E) 100A MSP WITH 200A MSP"), []);
   assert.deepEqual(gate.serviceRatingConsistencyFindings(p, "(N) 225A MSP ... (E) 200A MSP"), []);
+  assert.deepEqual(gate.serviceRatingConsistencyFindings(p, "COMBINER PANEL 125A BUS ... MSP 200A BUS RATING 200A"), [], "a combiner's bus is not the service's");
+  // Measured 2026-09-26: 0 fires on 48 Iowa City corpus plan-set texts and on both Roesler sets.
 });
 await check("(e2e) through the real path: upload -> extraction reads the worksheet -> the reviewer report carries the finding; an agreeing one carries none", async () => {
   const bad = make();

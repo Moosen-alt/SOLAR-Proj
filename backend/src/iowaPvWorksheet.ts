@@ -125,6 +125,8 @@ export function mountingPlaneCount(snapshot: Record<string, unknown>): { count: 
   return { count: null, basis: "no azimuth/tilt or per-array breakdown parsed" };
 }
 
+const LOAD_SIDE_ROW_OPTIONS = ["705.12(B)(1)(a)", "705.12(B)(1)(b)", "705.12(B)(2)", "705.12(B)(3)(1)", "705.12(B)(3)(2)", "705.12(B)(3)(3)", "705.12(B)(3)(4)", "705.12(B)(3)(5)", "705.12(B)(3)(6)"];
+
 export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   const s = (project.parserSnapshot ?? {}) as Record<string, unknown>;
   const str = (k: string) => String(s[k] ?? "").trim();
@@ -157,7 +159,9 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   set("p2.rsdNo", ground && !roof ? "X" : "", ground && !roof ? "derived: ground-mounted array not on or in a building (690.12 scope) — verify no PV circuits run on/in a building" : "");
 
   // ── arrays ─────────────────────────────────────────────────────────────────────────────
-  const planes = mountingPlaneCount(s);
+  // An operator's answer (the question below, written onto the project) settles an unknown.
+  const answeredArrays = n("iaPvArrayCount");
+  const planes = answeredArrays != null && answeredArrays > 0 ? { count: answeredArrays, basis: `operator answer (iaPvArrayCount ${answeredArrays})` } : mountingPlaneCount(s);
   set("p2.arrays", planes.count != null ? String(planes.count) : "", planes.basis);
   if (planes.count == null) ask("iaPvArrayCount", "How many arrays (distinct mounting planes) does this system have? (not the module count)");
 
@@ -170,7 +174,7 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
     : optimizer ? "derived: DC-DC converters (optimizers) on the plan set" : "no inverter topology parsed");
 
   // ── circuit current ────────────────────────────────────────────────────────────────────
-  const unitA = micro ? amps("pvMicroOutputW") : amps("invOutputW");
+  const unitA = (micro ? amps("pvMicroOutputW") : amps("invOutputW")) ?? amps("iaPvUnitOutputA");
   let circuitA: number | null = null;
   let circuitCalc = "";
   if (unitQty != null && unitA != null && unitQty > 0 && unitA > 0 && unitA < 100) {
@@ -179,7 +183,7 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
     // AC-coupled ESS on a micro system: its inverter's output adds to the circuit current.
     if (micro && battery) {
       const essA = str("invOutputW") && (str("invMake") || str("invModel")) ? amps("invOutputW")
-        : n("batteryOutputKw") != null ? (n("batteryOutputKw")! * 1000) / 240 : null;
+        : n("batteryOutputKw") != null ? (n("batteryOutputKw")! * 1000) / 240 : amps("iaPvEssOutputA");
       if (essA != null && essA > 0 && essA < 100) {
         circuitA += essA;
         circuitCalc = `${unitQty} x ${fmt(unitA)} A + ESS ${fmt(essA)} A = ${fmt(circuitA)} A`;
@@ -225,7 +229,10 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
     const cited = citedLoadSideRow(text);
     const main = amps("mainBreaker") ?? service;
     const intercoText = str("interco").toLowerCase();
-    if (cited.row) {
+    const answeredRow = citedLoadSideRow(str("iaPvLoadSideRow")).row;
+    if (answeredRow) {
+      set(`p2.lsc.${answeredRow}`, "X", `operator answer: ${str("iaPvLoadSideRow")}`);
+    } else if (cited.row) {
       set(`p2.lsc.${cited.row}`, "X", `the plan's own method: "${cited.quote}"`);
     } else if (/feeder|sub.?panel/.test(intercoText) && /\(B\)\(1\)\(([ab])\)/.test(str("iaPvFeederRow"))) {
       const r = /\(B\)\(1\)\(([ab])\)/.exec(str("iaPvFeederRow"))![1];
@@ -242,10 +249,10 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
         set("p2.lsc.B32", "X", `derived: ${bus} A x 1.2 - ${main} A = ${fmt(bus * 1.2 - main)} A >= ${pvBreaker != null ? `${pvBreaker} A PV breaker` : `${fmt(need)} A`} (705.12(B)(3)(2), 120% rule — PV breaker at the opposite end of the busbar from the main; confirm on the one-line)`);
       } else {
         basis["p2.lsc.B32"] = `neither busbar rule holds: 1.25 x ${fmt(circuitA)} + ${main} = ${fmt(need + main)} > ${bus}; ${bus} x 1.2 - ${main} = ${fmt(bus * 1.2 - main)} < ${fmt(Math.max(need, pvBreaker ?? 0))}`;
-        ask("iaPvLoadSideRow", "Neither the 100% nor the 120% busbar rule holds with the parsed ratings. Which 705.12(B)(3) subsection does the design use?");
+        ask("iaPvLoadSideRow", "Neither the 100% nor the 120% busbar rule holds with the parsed ratings. Which 705.12(B)(3) subsection does the design use?", LOAD_SIDE_ROW_OPTIONS);
       }
     } else {
-      ask("iaPvLoadSideRow", "Which 705.12(B) subsection does the load-side connection use? Bus, main or PV breaker ratings were not all parsed.");
+      ask("iaPvLoadSideRow", "Which 705.12(B) subsection does the load-side connection use? Bus, main or PV breaker ratings were not all parsed.", LOAD_SIDE_ROW_OPTIONS);
     }
   }
 
@@ -267,7 +274,11 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   const microMaxDc = n("pvMicroMaxDcInputV");
   let maxV: number | null = null;
   let partA = "";
-  if (optimizer) {
+  const dcdcAnswer = n("iaPvDcDcMaxVoltage");
+  if (optimizer && dcdcAnswer != null && dcdcAnswer > 0) {
+    maxV = dcdcAnswer;
+    set("p2.maxSystemVoltage", `${fmt(dcdcAnswer, 1)} V DC`, `operator answer: the DC-DC converter system's listed maximum (690.7(B)), ${str("iaPvDcDcMaxVoltage")}`);
+  } else if (optimizer) {
     ask("iaPvDcDcMaxVoltage", "DC-DC converters (optimizers) are installed, so 690.7(B) governs: what is the maximum string voltage the converter/inverter system is listed to hold?");
     set("p2.maxSystemVoltage", "", "DC-DC converter system: 690.7(B)(1)/(2) — the converter system's listed maximum, operator question");
   } else if (voc != null && low != null && perString != null && perString > 0) {
