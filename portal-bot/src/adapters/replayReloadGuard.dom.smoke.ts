@@ -7,6 +7,7 @@
 //
 // MUST-EXCLUDE: a POST that renders its result (no redirect), then a step that times out ->
 //   exactly ONE POST, and the run names why it did not reload.
+// MUST-EXCLUDE (close-mustfix P2): the same after a link answered 204 or a download -> one POST.
 // MUST-PASS: a GET page whose control times out may still be reloaded (it is served again).
 //
 // Run: npx tsx portal-bot/src/adapters/replayReloadGuard.dom.smoke.ts
@@ -32,10 +33,14 @@ const server = http.createServer((req, res) => {
     posts++;
     // The result renders IN PLACE — no redirect, so the document is a POST result.
     res.writeHead(200, { "content-type": "text/html" });
-    res.end("<!doctype html><html><body><h1>Parcel search results</h1><p>1 parcel found.</p></body></html>");
+    res.end(`<!doctype html><html><body><h1>Parcel search results</h1><p>1 parcel found.</p>
+      <a id="nc" href="/nocontent">Refresh status</a> <a id="dl" href="/receipt.pdf">Download receipt</a></body></html>`);
     return;
   }
   gets[url.pathname] = (gets[url.pathname] ?? 0) + 1;
+  // CLOSE-MUSTFIX P2: navigations that never replace the document.
+  if (url.pathname === "/nocontent") { res.writeHead(204); res.end(); return; }
+  if (url.pathname === "/receipt.pdf") { res.writeHead(200, { "content-type": "application/pdf", "content-disposition": "attachment; filename=receipt.pdf" }); res.end("%PDF-1.4 %%EOF"); return; }
   res.writeHead(200, { "content-type": "text/html" });
   res.end(`<!doctype html><html><head><title>Portal</title></head><body><h1>Step 2: Parcel</h1>
     <form method="post" action="/lookup"><label for="q">Parcel Number</label><input id="q" name="q">
@@ -53,7 +58,7 @@ const missing = { action: "click", selector: { css: "#does-not-exist", role: "bu
 const browser = await chromium.launch();
 try {
   const run = async (steps: RecipeStep[]) => {
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ acceptDownloads: true });
     ctx.setDefaultTimeout(3000);
     await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
     const page = await ctx.newPage();
@@ -74,6 +79,22 @@ try {
   ]);
   check("MUST-EXCLUDE: the POST is sent exactly once (the retry loop never re-sends it)", posts === 1, `POSTs=${posts} ${String(a.r.message).slice(0, 160)}`);
   check("MUST-EXCLUDE: the run names why it did not reload", /NOT RELOADED .*result of a POST/.test(a.warnings), `warnings=${a.warnings.slice(0, 300)}`);
+
+  // MUST-EXCLUDE (checker close-mustfix P2, bypassReload.probe.ts via=nc / via=dl): after the POST
+  // result, a link answered 204 and a download are navigation REQUESTS that never replace the
+  // document — the page on screen is still the POST result, so it is still never reloaded.
+  for (const via of ["nc", "dl"]) {
+    posts = 0;
+    const c = await run([
+      { action: "goto", value: `${base}/form`, note: "open" } as RecipeStep,
+      { action: "click", selector: { css: "#go", role: "button", name: "Look up parcel" }, note: "look up parcel" } as RecipeStep,
+      { action: "click", selector: { css: `#${via}`, role: "link" }, note: `link ${via}` } as RecipeStep,
+      missing,
+      { action: "stopForReview" } as RecipeStep,
+    ]);
+    check(`MUST-EXCLUDE via=${via}: a 204/download navigation does not make the POST result reloadable — exactly one POST`, posts === 1, `POSTs=${posts} ${String(c.r.message).slice(0, 160)}`);
+    check(`MUST-EXCLUDE via=${via}: the run names why it did not reload`, /NOT RELOADED .*result of a POST/.test(c.warnings), `warnings=${c.warnings.slice(0, 300)}`);
+  }
 
   // MUST-PASS: a GET page with the same timing-out step is reloaded.
   posts = 0;

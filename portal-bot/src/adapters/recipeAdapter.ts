@@ -523,17 +523,39 @@ export class RecipeAdapter extends BasePortalAdapter {
   /** The HTTP method of the request that produced the main frame's current document: "GET",
    *  "POST", or null when unknown (no listener, a fake page, nothing navigated yet). A redirect
    *  after a POST (303 -> GET) lands on a GET document. */
-  private lastDocumentMethod: string | null = null;
+  //
+  // THE COMMITTED DOCUMENT, NOT THE LAST REQUEST (checker close-mustfix P2). This was set on
+  // every main-frame navigation REQUEST — and a link answered 204, or a download
+  // (Content-Disposition: attachment), is a navigation request that never replaces the document:
+  // after a POST-rendered page, such a click read "GET" and the retry loop's reload re-sent the
+  // POST (bypass-reload.log: 2 POSTs). Now: only navigation RESPONSES that commit a document are
+  // kept (not 204/205, not a 3xx hop, not an attachment), and the method is the one whose URL is
+  // the page's current URL. A URL no committing response produced (a pushState) is unknown.
+  private navDocuments: Array<{ url: string; method: string }> = [];
+  private get lastDocumentMethod(): string | null {
+    const here = typeof this.page?.url === "function" ? String(this.page.url() ?? "").split("#")[0] : "";
+    if (!here) return null;
+    for (let i = this.navDocuments.length - 1; i >= 0; i--) {
+      if (this.navDocuments[i].url === here) return this.navDocuments[i].method || null;
+    }
+    return null;
+  }
   private documentMethodHooked = false;
   private hookDocumentMethod(): void {
-    const page = this.page as { on?: (ev: string, fn: (req: unknown) => void) => void; mainFrame?: () => unknown } | null;
+    const page = this.page as { on?: (ev: string, fn: (resp: unknown) => void) => void; mainFrame?: () => unknown } | null;
     if (this.documentMethodHooked || !page || typeof page.on !== "function" || typeof page.mainFrame !== "function") return;
     this.documentMethodHooked = true;
-    page.on("request", (req: unknown) => {
+    page.on("response", (resp: unknown) => {
       try {
-        const r = req as { isNavigationRequest: () => boolean; frame: () => unknown; method: () => string };
-        if (r.isNavigationRequest() && r.frame() === page.mainFrame!()) this.lastDocumentMethod = String(r.method() || "").toUpperCase() || null;
-      } catch { /* a request we cannot read leaves the method unknown for the next one */ }
+        const r = resp as { url: () => string; status: () => number; headers: () => Record<string, string>; request: () => { isNavigationRequest: () => boolean; frame: () => unknown; method: () => string } };
+        const req = r.request();
+        if (!req.isNavigationRequest() || req.frame() !== page.mainFrame!()) return;
+        const status = Number(r.status());
+        const cd = String((r.headers() || {})["content-disposition"] || "");
+        if (status === 204 || status === 205 || (status >= 300 && status < 400) || /\battachment\b/i.test(cd)) return;
+        this.navDocuments.push({ url: String(r.url() || "").split("#")[0], method: String(req.method() || "").toUpperCase() });
+        if (this.navDocuments.length > 60) this.navDocuments.shift();
+      } catch { /* a response we cannot read adds nothing: the method stays unknown */ }
     });
   }
   async uploadFiles(_project: ProjectRecord, _files: string[]): Promise<PortalStepResult> {
