@@ -477,7 +477,25 @@ export class RecipeAdapter extends BasePortalAdapter {
     // The project is what the review screen gets checked AGAINST — see verifyReviewScreen.
     // This parameter was received and discarded, which is precisely why replay never
     // verified its own work.
+    this.hookDocumentMethod();
     return this.runAll(project);
+  }
+
+  /** The HTTP method of the request that produced the main frame's current document: "GET",
+   *  "POST", or null when unknown (no listener, a fake page, nothing navigated yet). A redirect
+   *  after a POST (303 -> GET) lands on a GET document. */
+  private lastDocumentMethod: string | null = null;
+  private documentMethodHooked = false;
+  private hookDocumentMethod(): void {
+    const page = this.page as { on?: (ev: string, fn: (req: unknown) => void) => void; mainFrame?: () => unknown } | null;
+    if (this.documentMethodHooked || !page || typeof page.on !== "function" || typeof page.mainFrame !== "function") return;
+    this.documentMethodHooked = true;
+    page.on("request", (req: unknown) => {
+      try {
+        const r = req as { isNavigationRequest: () => boolean; frame: () => unknown; method: () => string };
+        if (r.isNavigationRequest() && r.frame() === page.mainFrame!()) this.lastDocumentMethod = String(r.method() || "").toUpperCase() || null;
+      } catch { /* a request we cannot read leaves the method unknown for the next one */ }
+    });
   }
   async uploadFiles(_project: ProjectRecord, _files: string[]): Promise<PortalStepResult> {
     return ok("Uploads are replayed inline within the recorded sequence.");
@@ -1194,8 +1212,9 @@ export class RecipeAdapter extends BasePortalAdapter {
             await this.guardedGoto(entryUrl, "return to the recipe's entry URL after a login redirect", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => null);
             await this.settle(8000);
           } else {
-            // Reload on timeout retries to recover from stale page state.
-            await this.page.reload({ waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => null);
+            // Reload on timeout retries to recover from stale page state — only a document that
+            // a GET produced (guardedReload refuses to re-send a POST).
+            await this.guardedReload("retry a timed-out step on a fresh copy of the page").catch(() => null);
             await this.settle(8000);
           }
           // A reload can bring the announcement/cookie banner straight back, and a timeout
@@ -3591,6 +3610,23 @@ export class RecipeAdapter extends BasePortalAdapter {
       this.guardRefusals.push(line);
       this.driftWarnings.push(line);
     }
+  }
+
+  /** Every reload in replay. A reload of a document that a POST produced RE-SENDS that POST: on
+   *  an ASP.NET portal every Continue is a full postback that renders the next page in place, and
+   *  on a portal whose filing renders its result without a redirect a reload files again (the
+   *  replay skeptic's modal probe: POSTs 2-4 were the retry loop's reloads). Only a document a GET
+   *  produced is reloaded; a POST result or an unknown method is left alone and named. */
+  private async guardedReload(why: string): Promise<boolean> {
+    this.hookDocumentMethod();
+    const method = this.lastDocumentMethod;
+    if (method !== "GET") {
+      const line = `NOT RELOADED (${why}): the page is ${method ? `the result of a ${method}` : "a document of unknown origin"} — a reload would re-send it`;
+      if (!this.driftWarnings.includes(line)) this.driftWarnings.push(line);
+      return false;
+    }
+    await this.page.reload({ waitUntil: "domcontentloaded", timeout: 15000 });
+    return true;
   }
 
   /** Every navigation in replay. */

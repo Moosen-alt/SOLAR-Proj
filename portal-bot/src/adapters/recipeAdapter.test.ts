@@ -1298,21 +1298,21 @@ async function testNoRawActionOutsideTheChokepoint() {
   const src = fs.readFileSync(new URL("./recipeAdapter.ts", import.meta.url), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .split(/\r?\n/).map((l) => l.replace(/\/\/.*$/, ""));
-  const helpers = ["guardedClick", "guardedPress", "guardedGoto"];
+  const helpers = ["guardedClick", "guardedPress", "guardedGoto", "guardedReload"];
   let inHelper = "";
   let depth = 0;
   const offenders: string[] = [];
   src.forEach((line, i) => {
-    const m = /^\s*private async (guardedClick|guardedPress|guardedGoto)\(/.exec(line);
+    const m = /^\s*private async (guardedClick|guardedPress|guardedGoto|guardedReload)\(/.exec(line);
     if (m && !inHelper) { inHelper = m[1]; depth = 0; }
     if (inHelper) {
       depth += (line.match(/{/g) ?? []).length - (line.match(/}/g) ?? []).length;
       if (depth <= 0 && /}\s*$/.test(line) && !m) { inHelper = ""; return; }
       return;
     }
-    if (/\.(click|dblclick|tap|press|goto)\(/.test(line)) offenders.push(`${i + 1}: ${line.trim().slice(0, 110)}`);
+    if (/\.(click|dblclick|tap|press|goto|reload)\(/.test(line)) offenders.push(`${i + 1}: ${line.trim().slice(0, 110)}`);
   });
-  assert.ok(helpers.every((h) => src.some((l) => l.includes(`private async ${h}(`))), "the three guarded helpers exist");
+  assert.ok(helpers.every((h) => src.some((l) => l.includes(`private async ${h}(`))), "the four guarded helpers exist");
   assert.deepEqual(offenders, [], `raw click/press/goto outside the chokepoint:\n${offenders.join("\n")}`);
 }
 
