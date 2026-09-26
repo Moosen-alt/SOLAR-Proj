@@ -15,6 +15,7 @@
 //   K2 citedStateSurcharge: accept a percentage from the basis/lines    → (s2) fails.
 //   K3 citedStateSurcharge: drop the state-maximum / consistency checks → (s3) fails.
 //   K4 buildPaymentQuote: no stateSurchargeNotice                       → (q1) fails.
+//   K5 feeBracketFields.evaluatorAgrees: compare the surcharged line total → (b1) fails.
 //
 // Run: npx tsx backend/test/lookupStateSurcharge.test.ts
 import "./_isolate"; // FIRST
@@ -89,6 +90,12 @@ await check("(s3) MUST-EXCLUDE: over the state's cited maximum, an inconsistent 
   const inconsistent = { ...ELECTRICAL_FEE, value: { ...ELECTRICAL_FEE.value!, lines: [ELECTRICAL_FEE.value!.lines[0], { label: "State surcharge", amountUsd: 30 }] } };
   assert.equal(ppl.citedStateSurcharge("OR", inconsistent), null, "$30 is not 12% of $94");
   assert.equal(ppl.citedStateSurcharge("WA", ELECTRICAL_FEE), null, "no cited surcharge rule for WA");
+});
+
+await check("(b1) MUST-PASS: a surcharged tier still computes this project's fee-tier quantity keys (the evaluator veto compares the bracket before its surcharge)", async () => {
+  const { feeBracketQuantityFields } = await import("../src/feeBracketFields");
+  const keys = Object.fromEntries(Object.entries(feeBracketQuantityFields(db, projectRow)).filter(([k]) => k.startsWith("feeBracketQuantity:")));
+  assert.deepEqual(keys, { "feeBracketQuantity:0-5": "0", "feeBracketQuantity:5.01-15": "1", "feeBracketQuantity:15.01-25": "0" }, JSON.stringify(keys));
 });
 
 const quote = quotes.buildPaymentQuote(db, projectRow, "permit");

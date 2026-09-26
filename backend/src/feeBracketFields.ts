@@ -118,7 +118,11 @@ function evaluatorAgrees(
   const resolution = feeForProject(db, project, FEE_BRACKET_TRACK);
   const line = resolution?.lines.find((l) => l.scheduleId === schedule.id);
   if (!line || line.feeUsd == null) return false;
-  if (line.feeUsd !== picked.feeUsd) return false;
+  // The line's fee carries the bracket's surcharges (a state surcharge stated by the agency's own
+  // source — close M3); the BRACKET's amount is the line before them. Comparing the surcharged
+  // total to the bare bracket vetoed every surcharged schedule, so no tier box was ever computed.
+  const lineBase = Math.round((line.feeUsd - (line.stateSurchargeUsd ?? 0) - (line.communitySurchargeUsd ?? 0)) * 100) / 100;
+  if (lineBase !== picked.feeUsd) return false;
   // The evaluator derives a label when the schedule printed none; compare only
   // when both sides actually have one, or a bounds-derived string would fail a
   // comparison it was never meant to answer.
