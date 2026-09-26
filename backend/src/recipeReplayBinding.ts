@@ -30,8 +30,16 @@
 //   R5 STATE VOCABULARY GUIDANCE (Oregon BCD, cited in permitProcess.STATE_PERMIT_RULES):
 //      Category of Construction = the structure type (never "Other"), Type of Work = Alteration
 //      for an existing building, and the "Other Category" free text is left empty.
+//   R6 FEE-TIER QUANTITY (close M1) — a kVA fee-tier box (feeBracketQuantity:<min>-<max>) is the
+//      SAME ROW when its numeric bounds agree with one of THIS project's tier keys (5.01-15 ≡ 5-15;
+//      an open lower bound ≡ 0): the step is rebound to this project's key. A BORROWED recipe's tier
+//      box that matches none of this project's tiers types BLANK (its recorded quantity was the
+//      donor project's size), never the donor's "1"; the step and its key are kept so the coverage
+//      check still reports a tier with no recorded box.
 import type { CitedFact, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { stateRulesFor } from "./permitProcess";
+import { feeBracketFieldKey, parseFeeBracketFieldKey, type FeeBracketBounds } from "../../portal-bot/src/feeBracketQuantity";
+import { parseBracketRow } from "./pdfTables";
 
 export interface ReplayBindingChange {
   index: number;
@@ -94,6 +102,26 @@ export function agencyCodeInCss(css: string): string {
   const m = /AppSpec[0-9A-F]+Edit_([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*?)_(?:ddl|txt|rdo|chk|cb|lbl|dt)_\d/.exec(css);
   return m ? m[1] : "";
 }
+/** Two kVA tiers are the same printed row when their bounds agree to the hundredth a fee table
+ *  prints between rows ("5.01 to 15" vs a table written 5–15); an open lower bound is 0. */
+export function sameFeeTier(a: FeeBracketBounds, b: FeeBracketBounds): boolean {
+  const close = (x: number, y: number) => Math.abs(x - y) <= 0.0101;
+  const maxEq = (a.maxKw == null && b.maxKw == null) || (a.maxKw != null && b.maxKw != null && close(a.maxKw, b.maxKw));
+  return maxEq && close(a.minKw ?? 0, b.minKw ?? 0);
+}
+/** The tier key a recorded kVA box label names ("…- 5.01kva through 15kva:" → 5.01-15), or "".
+ *  (feeBracketFields.feeBracketFieldForLabel's kVA arm; not imported — feeSchedules imports this
+ *  module, and feeBracketFields imports feeSchedules.) */
+function tierKeyForLabel(label: string): string {
+  if (!/kva/i.test(label)) return "";
+  try {
+    const p = parseBracketRow({ row: { page: 1, y: 0, cells: [label], xs: [0], height: 10 }, matched: [], label, money: [], continuations: [], section: "" } as never);
+    return feeBracketFieldKey(p.minKw ?? null, p.maxKw ?? null);
+  } catch {
+    return "";
+  }
+}
+const hasKey = (o: Record<string, string>, k: string) => Object.prototype.hasOwnProperty.call(o, k);
 const POSITIONAL_SERVICE_LIST = /cbListServices_\d+|rptAgency_ctl\d+/i;
 
 export function bindRecipeForReplay(input: {
@@ -123,6 +151,7 @@ export function bindRecipeForReplay(input: {
     && String(s.value ?? "").trim() && !/^other$/i.test(String(s.value ?? "").trim()) && /dwelling|family|residential/i.test(String(s.value)))?.value ?? "";
   const residentialSingle = /single|one|1\b|two|duplex|family|dwelling|sfd|residential/i.test(String(snapshot.structureDescription ?? snapshot.occupancy ?? snapshot.structureType ?? "residential"));
   let refusal: string | null = null;
+  let sawAgencyRow = false;
   const wantsCountyRow = /elec/i.test(String(input.borrowed?.discipline ?? input.track ?? ""));
 
   input.steps.forEach((original, index) => {
@@ -144,13 +173,19 @@ export function bindRecipeForReplay(input: {
     // R3 — the agency / jurisdiction row.
     const isAgencyRow = /data-al-row\s*=/.test(step.selector?.css ?? "") || /^address version:/i.test(note) || /^work location: select .*row/i.test(note);
     if (isAgencyRow) {
+      sawAgencyRow = true;
       if (input.borrowed) {
         if (!agencyName) {
           refusal = refusal ?? `the ${input.borrowed.learnedFor} recipe selects the issuing agency (its address-version row "${note.replace(/^address version:\s*/i, "").slice(0, 40)}"), and the agency that issues ${input.project.ahj}'s ${input.track ?? "permit"} permits is not known — the per-job lookup found none, so that selection cannot be bound to this project`;
         } else {
           const kind = agencyKind(agencyName);
           const livePrefers = wantsCountyRow ? "county" : "city";
-          if (kind && kind !== livePrefers) {
+          if (!kind) {
+            // Close M2: an agency that is neither a city nor a county ("Oregon Building Codes
+            // Division", "State of Oregon") cannot be matched to the city/county row the replay
+            // picks — borrowing would click the DONOR's row with nothing bound.
+            refusal = refusal ?? `${input.project.ahj}'s ${input.track ?? "permit"} permits are issued by ${agencyName}, which is neither a city nor a county, so the replay's address-version row (city or county) cannot be bound to it — borrowing the ${input.borrowed.learnedFor} recipe would select ${input.borrowed.learnedFor}'s agency row`;
+          } else if (kind !== livePrefers) {
             refusal = refusal ?? `${input.project.ahj}'s ${input.track ?? "permit"} permits are issued by ${agencyName} (a ${kind}), but the replay's live address-version ranking prefers the ${livePrefers.toUpperCase()} row for this discipline — it cannot yet be bound to the looked-up agency, so borrowing the ${input.borrowed.learnedFor} recipe could file with the wrong agency`;
           }
         }
@@ -202,6 +237,28 @@ export function bindRecipeForReplay(input: {
       }
     }
 
+    // R6 — the kVA fee-tier quantity box.
+    if (step.action === "fill" && step.field !== REPLAY_BLANK_FIELD) {
+      const recordedKey = step.field && parseFeeBracketFieldKey(step.field)
+        ? step.field
+        : (!step.field ? tierKeyForLabel(label) : "");
+      const recorded = recordedKey ? parseFeeBracketFieldKey(recordedKey) : null;
+      if (recorded && !hasKey(input.fieldValues, recordedKey)) {
+        const same = Object.keys(input.fieldValues).find((k) => {
+          const b = parseFeeBracketFieldKey(k);
+          return Boolean(b && sameFeeTier(b, recorded));
+        });
+        if (same) {
+          step = { ...step, field: same };
+          record("rebound", `fee-tier box bound to this project's tier ${same.replace(/^feeBracketQuantity:/, "")} (recorded as ${recordedKey.replace(/^feeBracketQuantity:/, "")})`);
+        } else if (input.borrowed) {
+          step = { ...step, field: recordedKey };
+          fieldValues[recordedKey] = "";
+          record("blanked", `fee-tier box ${recordedKey.replace(/^feeBracketQuantity:/, "")} matches none of this project's tiers — the recorded quantity was ${input.borrowed.learnedFor}'s project, so it is left blank for a person`);
+        }
+      }
+    }
+
     // R2 — project-specific free text.
     if (step.action === "fill" && step.field !== REPLAY_BLANK_FIELD) {
       const known = step.field && Object.prototype.hasOwnProperty.call(input.fieldValues, step.field);
@@ -222,6 +279,12 @@ export function bindRecipeForReplay(input: {
     originalIndex.push(index);
   });
 
+  // Close M2: a borrowed recipe with NO address-version step still files with SOME agency (the
+  // portal picks it from the donor's other choices); with this AHJ's issuing agency unknown there is
+  // nothing to check that choice against, so the borrow is refused rather than assumed.
+  if (input.borrowed && !sawAgencyRow && !agencyName) {
+    refusal = refusal ?? `the issuing agency for ${input.project.ahj}'s ${input.track ?? "permit"} permits is not known (the per-job lookup found none), and the ${input.borrowed.learnedFor} recipe has no agency row to bind — the agency it files with cannot be checked against this project`;
+  }
   return { steps, originalIndex, fieldValues, changes, refusal };
 }
 

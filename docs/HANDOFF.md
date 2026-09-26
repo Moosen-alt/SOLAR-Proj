@@ -115,6 +115,11 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 - Rule adjusted (operator authorization 2026-09-25): planner prompt — the kVA fee tier follows the AC rating (systemSizeAcKw), not DC;
   Category of Construction = the structure type and Type of Work = Alteration for an existing building (BCD guidance), never
   "Other"/"Solar"/"New". The replay binding applies the same guidance to recorded Oregon recipes.
+- Rule adjusted (operator authorization 2026-09-25, close M1/M2): a BORROWED recipe now needs this AHJ's issuing agency from the
+  per-job lookup even when the donor has no address-version row, and an agency that is neither a city nor a county (a state
+  division) refuses the borrow (named reason) — an AHJ with no lookup answer no longer borrows. The lookup's kVA tiers land with
+  their PRINTED lower bounds (5.01, 15.01); a recorded fee-tier box rebinds to this project's tier by numeric bounds, and a
+  borrowed box matching none of this project's tiers types blank (never the donor's quantity).
 - KNOWLEDGE PRE-LOAD SPEND (prospect states): only AFTER the live research-accuracy evals pass
   (`.probe/jurisdiction/`): state layers for FL/TX/UT/CA (~$2) + the top 5 AHJs/utilities per state from
   `.probe/prospects/PREP-PLAN.md` §6 (~20 entities, ~$50), seeded, operator spot-verifies. Everything else is researched

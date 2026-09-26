@@ -123,6 +123,13 @@ await check("(p2) MUST-EXCLUDE: a junk recipe saved on a help page does not make
 await check("(p3) MUST-PASS end-to-end: a first-time Oregon AHJ's STRUCTURAL stage resolves the statewide portal and replays the Coos Bay structural recipe (never the help page)", async () => {
   let replayed: string | null = null;
   fx.stubRunner(async (recipe) => { replayed = recipe.id; return { ok: true, finalSubmitClicked: false, steps: [{ ok: true, message: "reached review" }] }; });
+  // The per-job lookup found the issuing agency (close M2: a borrow with no known agency refuses).
+  pp.savePermitProcessLookup(db, {
+    state: "OR", ahj: AHJ, lookedUpAt: new Date().toISOString(),
+    issuingAgency: { value: AHJ, sourceUrl: "https://alderbrook.example.gov/permits", quote: "The City of Alderbrook issues building permits", origin: "lookup" },
+    permitStructure: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not searched" },
+    permits: [],
+  } as never);
   const projectId = fx.newProject({ ahj: AHJ, city: "Alderbrook", zip: "97350", utility: "Pacific Power" });
   assert.deepEqual(tracks.requiredTracks(repo.getProjectDetail(db, projectId).project), ["nem", "building", "electrical"]);
   await repo.prepareSubmission(db, projectId, "building");

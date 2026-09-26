@@ -155,6 +155,18 @@ await check("(r7) the target's own recorded record type wins over a donor's", ()
 });
 
 // ── end to end: the real prepareSubmission, browser stubbed ──────────────────────────────────
+// The per-job lookup's answer for Salem (close M2): a borrow binds the donor's agency choice to
+// THIS AHJ's issuing agency, so a borrow with no known agency is refused. Written through the real
+// lookup writer, as the lookup at project creation would.
+{
+  const pp = await import("../src/permitProcess");
+  pp.savePermitProcessLookup(db, {
+    state: "OR", ahj: "City of Salem", lookedUpAt: new Date().toISOString(),
+    issuingAgency: { value: "City of Salem", sourceUrl: "https://salem.example.gov/permits", quote: "The City of Salem issues building permits", origin: "lookup" },
+    permitStructure: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not searched" },
+    permits: [],
+  } as never);
+}
 const salemProject = () => fx.newProject({ ahj: "City of Salem", city: "Salem", zip: "97301" });
 
 await check("(s1) a Salem building stage replays the Coos Bay recipe, and the run records and shows whose it was", async () => {

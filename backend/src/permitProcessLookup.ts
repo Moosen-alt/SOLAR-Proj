@@ -26,6 +26,7 @@ import { isInformationalPageUrl, isPermitPlatformUrl, portalHostOf } from "./por
 import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup } from "./permitProcess";
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
+import { parseBracketRow } from "./pdfTables";
 
 export const PROCESS_LOOKUP_SYSTEM = `You look up how RESIDENTIAL ROOFTOP SOLAR PV permits are issued for ONE jurisdiction in the United States.
 Answer for the NAMED jurisdiction only (a same-named place in another county or state is a different place).
@@ -309,6 +310,19 @@ export function mergeWithEarlier(
   return { issuingAgency: keep(now.issuingAgency, earlier.issuingAgency), permitStructure: keep(now.permitStructure, earlier.permitStructure), permits };
 }
 
+/** The lower bound a printed tier label states ("5.01 to 15 kva" → 5.01), through the same bounds
+ *  grammar the fee-table reader and the portal-label binder use (pdfTables.parseBracketRow). */
+export function printedMinKva(label: string | undefined): number | null {
+  const text = str(label);
+  if (!text) return null;
+  try {
+    const parsed = parseBracketRow({ row: { page: 1, y: 0, cells: [text], xs: [0], height: 10 }, matched: [], label: text, money: [], continuations: [], section: "" } as never);
+    return typeof parsed.minKw === "number" && Number.isFinite(parsed.minKw) ? parsed.minKw : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * THE LOOKUP'S FEES LAND THROUGH THE FEE WRITE PATH. When a DIFFERENT agency issues the permits
  * (a county for a city), the AHJ's rows DELEGATE to that agency (collectedByProfileKey, sourced
@@ -334,8 +348,13 @@ export function applyLookupFees(db: AppDb, lookup: PermitProcessLookup): Array<{
     const fee = permit.fee;
     if (!fee.value) continue;
     const tiers = (fee.value as PermitFeeAnswer & { tiers?: Array<{ maxKva: number; amountUsd: number; label: string }> }).tiers ?? [];
+    // THE PRINTED LOWER BOUND, NOT THE PREVIOUS ROW'S UPPER ONE (close M1). "5.01 to 15 kva" is the
+    // row the agency's fee table and its portal's quantity box both print; writing its lower bound
+    // as 5 made this project's bracket keys (feeBracketQuantity:5-15) differ from the SAME row as a
+    // recorded recipe names it (5.01-15), so a borrowed recipe's recorded quantity replayed
+    // unbound. The previous row's upper bound is only the fallback for a label that prints none.
     const brackets = tiers.length
-      ? tiers.map((t, i) => ({ minKw: i === 0 ? 0 : tiers[i - 1].maxKva, maxKw: t.maxKva, feeUsd: t.amountUsd, label: t.label || `up to ${t.maxKva} kVA` }))
+      ? tiers.map((t, i) => ({ minKw: printedMinKva(t.label) ?? (i === 0 ? 0 : tiers[i - 1].maxKva), maxKw: t.maxKva, feeUsd: t.amountUsd, label: t.label || `up to ${t.maxKva} kVA` }))
       : [{ feeUsd: fee.value.amountUsd ?? fee.value.lines[0]?.amountUsd ?? NaN, label: fee.value.lines[0]?.label || fee.value.basis || `${permit.label} fee` }];
     const r = saveFeeSchedule(db, { state: lookup.state, ahj: owner, track: "permit", discipline: permit.discipline }, {
       found: true, reason: "", basis: tiers.length ? "system_kw" : "flat", brackets, sourceUrl: fee.sourceUrl, sourceQuote: fee.quote, sourceKind: "official",
