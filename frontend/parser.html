@@ -3856,6 +3856,9 @@ const LLM_SNAPSHOT_KEYS = new Set([
   'dcKw','acKw','interco','moduleMake','moduleModel','moduleWattage','moduleQty',
   'invMake','invModel','invQty','invOutputW',
   'pvMicroMake','pvMicroModel','pvMicroQty','pvMicroOutputW','inverterSettings',
+  // Iowa SFM PV worksheet (iowaPvWorksheet.ts): 690.7 max voltage needs the module datasheet's
+  // Voc / Isc / temperature coefficient and the site's design low; 690.8 needs the string length.
+  'moduleVoc','moduleIsc','moduleVocTempCoeff','pvMicroMaxDcInputV','modulesPerString','siteLowTempC','dwellingUnits','constructionCategory',
   'batteryMake','batteryModel','batteryQty',
   'roofMaterial','roofMaterialSubtype','tileAttachmentMethod','mounting',
   'busRating','mainBreaker','pvBreaker','acDiscReq',

@@ -1440,6 +1440,10 @@ SYSTEM / EQUIPMENT
 - invOutputW: string-inverter rated output CURRENT in amps (number; from datasheet/SLD)
 - pvMicroMake, pvMicroModel, pvMicroQty (number) — for MICROINVERTERS (e.g. Enphase, AP Systems). Use these instead of inv* when the system uses microinverters.
 - pvMicroOutputW: microinverter rated output CURRENT in amps per unit (number; from the micro datasheet)
+- moduleVoc (number, volts), moduleIsc (number, amps), moduleVocTempCoeff (number, %/°C, negative as printed, e.g. -0.27): the MODULE's open-circuit voltage, short-circuit current and Voc temperature coefficient, read from the module DATASHEET page of the plan set (when the SLD's module table disagrees with the datasheet, the DATASHEET wins and say so in notes — a table copied from an older set is common). Omit when no datasheet page states them.
+- pvMicroMaxDcInputV (number, volts): the microinverter's maximum DC input voltage from its datasheet. Omit if not stated.
+- modulesPerString (number): modules in series in the longest string (string inverters only; from the SLD string table). Omit for microinverters.
+- siteLowTempC (number, °C): the site's extreme minimum / ASHRAE design low temperature printed in the design criteria (convert °F to °C). Omit if the set does not state one — never estimate it.
 - inverterSettings: note grid-support listing / settings, e.g. "UL 1741 SB" or "UL 1741 SA, PCS profile" (needed for utility interconnection)
 - batteryMake, batteryModel, batteryQty (number)
 - roofMaterial (e.g. "Composition Shingle"), mounting (e.g. "Roof Mount"). A TILE roof is tile — never "shingle": write e.g. "Concrete Tile", "Clay S-Tile", "Flat Concrete Tile" exactly as the sheets say (a "concrete shake tile" is tile, not wood shake)

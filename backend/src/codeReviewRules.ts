@@ -132,7 +132,7 @@ function str(project: ProjectRecord, key: string): string {
 // Anything still ambiguous returns null, which routes to city.elec.load-side-calc-missing
 // ("ratings not readable") instead of a confident calculation on a fabricated figure. An
 // unknown must not read as a number.
-function parseRating(raw: string): number | null {
+export function parseRating(raw: string): number | null {
   const numbers = raw.match(/-?\d+(?:\.\d+)?/g);
   if (!numbers || numbers.length === 0) return null;
   if (numbers.length === 1) {
