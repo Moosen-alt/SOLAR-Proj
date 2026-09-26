@@ -178,6 +178,8 @@
     .ps-field > label,
     .ps-label { font-size: var(--text-xs); font-weight: 600; color: var(--muted); margin-bottom: 5px; }
     .ps-field > label .opt { font-weight: 400; }
+    /* A field the parse could not read and will not guess (the state, F31): asked for, visibly. */
+    .ps-field > input.needs-input { border-color: var(--destructive); background: var(--tint-fail); }
     /* Per-file hints. The 40-word paragraph that used to sit above all four
        uploads said one clause about each file; each clause now rides its own
        label, where it is read at the moment it applies and costs no block. */
@@ -440,7 +442,7 @@
         <div class="ps-field"><label for="owner">Homeowner name</label><input id="owner" /></div>
         <div class="ps-field"><label for="street">Project address</label><input id="street" /></div>
         <div class="ps-field"><label for="city">City</label><input id="city" /></div>
-        <div class="ps-field"><label for="state">State</label><input id="state" placeholder="e.g. OR" /></div>
+        <div class="ps-field"><label for="state">State</label><input id="state" placeholder="Two letters, e.g. TX" autocomplete="off" /></div>
         <div class="ps-field"><label for="zip">ZIP</label><input id="zip" /></div>
         <div class="ps-field"><label for="meter">Meter number</label><input id="meter" /></div>
         <div class="ps-field"><label for="account">Account number</label><input id="account" /></div>
@@ -826,6 +828,20 @@ const TESSERACT_PATHS = {
   corePath: '/vendor',   // picks tesseract-core-simd-lstm.wasm.js or tesseract-core-lstm.wasm.js
   langPath: '/vendor',   // eng.traineddata.gz (4.0.0_best_int, the LSTM-only default)
 };
+
+// Every US state + DC. The address regexes used to know only OR|WA|CA|ID|AZ|NV|UT, so an Iowa,
+// Massachusetts, Pennsylvania, Texas or New Mexico title block never matched — and the state then
+// fell back to "OR". Always used with a ZIP after it (`\s+\d{5}`): IN / OR / ME / OK are words too.
+const US_STATE_ALT = 'AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY';
+
+// An unread state is ASKED FOR, never assumed (F31). '' when a two-letter state is in the box.
+function stateAskFor(value){
+  const v = String(value || '').trim().toUpperCase();
+  if (new RegExp('^(?:' + US_STATE_ALT + ')$').test(v)) return '';
+  return v
+    ? `STATE "${v}" is not a US state code — enter the two-letter state (e.g. IA, MA, TX) before saving. Codes, fees and the utility all key on it.`
+    : 'STATE NOT READ from the documents — enter the two-letter state before saving. It is left blank on purpose, never assumed: codes, fees and the utility all key on it.';
+}
 
 const state = {
   planDoc:null,
@@ -1327,13 +1343,13 @@ function parseAddressBlock(all){
       .trim();
 
     const streetSuffix = '(?:AVE|AVENUE|ST|STREET|CT|COURT|TER|TERRACE|RD|ROAD|DR|DRIVE|LN|LANE|WAY|PL|PLACE|CIR|CIRCLE|BLVD|HWY|HIGHWAY)';
-    const strictMatches = [...s.matchAll(new RegExp('\\b(\\d{2,6}\\s+[A-Z0-9 .\\\'-]+?\\b' + streetSuffix + '\\b)\\s*,?\\s+([A-Z][A-Z .\\\'-]+),?\\s+(OR|WA|CA|ID|AZ|NV|UT)\\s+(\\d{5})(?:-\\d{4})?', 'ig'))];
+    const strictMatches = [...s.matchAll(new RegExp('\\b(\\d{2,6}\\s+[A-Z0-9 .\\\'-]+?\\b' + streetSuffix + '\\b)\\s*,?\\s+([A-Z][A-Z .\\\'-]+),?\\s+(' + US_STATE_ALT + ')\\s+(\\d{5})(?:-\\d{4})?', 'ig'))];
     if (strictMatches.length){
       const m = strictMatches[strictMatches.length - 1];
       return {street:title(m[1]), city:title(m[2]), state:m[3].toUpperCase(), zip:m[4]};
     }
 
-    const m = s.match(/(.+?)\s+([A-Z][A-Z .'\-]+),?\s+(OR|WA|CA|ID|AZ|NV|UT)\s+(\d{5})(?:-\d{4})?/i);
+    const m = s.match(new RegExp("(.+?)\\s+([A-Z][A-Z .'\\-]+),?\\s+(" + US_STATE_ALT + ")\\s+(\\d{5})(?:-\\d{4})?", 'i'));
     if (m) return {
       street:title(m[1]),
       city:title(m[2]),
@@ -1341,10 +1357,12 @@ function parseAddressBlock(all){
       zip:m[4]
     };
 
-    return {street:'', city:'', state:'OR', zip:''};
+    // No address read -> no state. An unread state stays blank and the operator is asked for it
+    // (stateAskFor); a default "OR" rode onto Iowa, Massachusetts and Texas jobs (UI audit F31).
+    return {street:'', city:'', state:'', zip:''};
   }
 
-  let owner='', street='', city='', state='OR', zip='', ahj='';
+  let owner='', street='', city='', state='', zip='', ahj='';
 
   // Preferred title-block parse: owner line, then street line, then city/state/zip line.
   // This avoids grabbing the later system description line when the cover sheet repeats the address.
@@ -1357,7 +1375,7 @@ function parseAddressBlock(all){
     for (let j=i+1; j<Math.min(lines.length, i+6); j++){
       const possibleStreet = lines[j];
       const possibleCity = lines[j+1] || '';
-      const cityMatch = possibleCity.match(/^([A-Z][A-Z .'-]+),?\s+(OR|WA|CA|ID|AZ|NV|UT)\s+(\d{5})(?:-\d{4})?/i);
+      const cityMatch = possibleCity.match(new RegExp("^([A-Z][A-Z .'-]+),?\\s+(" + US_STATE_ALT + ")\\s+(\\d{5})(?:-\\d{4})?", 'i'));
       if (/^\d{2,6}\s+[A-Z0-9]/i.test(possibleStreet) && cityMatch){
         street = title(possibleStreet);
         city = title(cityMatch[1]);
@@ -1370,7 +1388,7 @@ function parseAddressBlock(all){
   }
 
   // Best case: title block pattern with owner residence, address, city/state/zip.
-  const titleBlock = raw.match(/([A-Z][A-Z .'\-]{2,80}?)\s+RESIDENCE\s+(\d{2,6}\s+[A-Z0-9 .'\-]+?)\s+([A-Z][A-Z .'\-]+),?\s+(OR|WA|CA|ID|AZ|NV|UT)\s+(\d{5})(?:-\d{4})?/i);
+  const titleBlock = raw.match(new RegExp("([A-Z][A-Z .'\\-]{2,80}?)\\s+RESIDENCE\\s+(\\d{2,6}\\s+[A-Z0-9 .'\\-]+?)\\s+([A-Z][A-Z .'\\-]+),?\\s+(" + US_STATE_ALT + ")\\s+(\\d{5})(?:-\\d{4})?", 'i'));
   if (titleBlock && !street){
     owner = owner || cleanOwnerName(titleBlock[1]);
     street = title(titleBlock[2]);
@@ -1389,7 +1407,8 @@ function parseAddressBlock(all){
   }
 
   if (!street){
-    const addrLine = lines.find(l => /\d{2,6}\s+[A-Z0-9]/i.test(l) && /\b(OR|WA|CA|ID|AZ|NV|UT)\s+\d{5}/i.test(l));
+    const stateZip = new RegExp('\\b(' + US_STATE_ALT + ')\\s+\\d{5}', 'i');
+    const addrLine = lines.find(l => /\d{2,6}\s+[A-Z0-9]/i.test(l) && stateZip.test(l));
     if (addrLine){
       const parts = splitStreetCityStateZip(addrLine);
       street = parts.street;
@@ -1402,7 +1421,9 @@ function parseAddressBlock(all){
   // Generic fix when the street suffix got pushed into the city field due missing comma in title block.
   // Example: street = "5114 SW", city = "VW PT TER PORTLAND" should become 5114 SW VW PT TER / Portland.
   const knownOrCities = ['PORTLAND','BEAVERTON','LINCOLN CITY','LEBANON','JUNCTION CITY','SHERIDAN','SALEM','EUGENE','BEND','TIGARD','HILLSBORO','GRESHAM','MILWAUKIE','OREGON CITY','VANCOUVER'];
-  if (street && city){
+  // Oregon/Washington city names only mean something on an Oregon/Washington address
+  // ("SOUTH PORTLAND, ME" is a real city, not "South" + Portland).
+  if (street && city && (state === 'OR' || state === 'WA')){
     const cityUpper = city.toUpperCase().replace(/[^A-Z ]/g,' ').replace(/\s+/g,' ').trim();
     for (const known of knownOrCities){
       if (cityUpper !== known && cityUpper.endsWith(' ' + known)){
@@ -2066,7 +2087,7 @@ function parsePlanData(planDoc){
     owner:addr.owner,
     street:addr.street,
     city:addr.city,
-    state:addr.state || 'OR',
+    state:addr.state || '', // unread stays blank; stateAskFor asks the operator (F31)
     zip:addr.zip,
     meter,
     interco,
@@ -2591,7 +2612,7 @@ function parsePgeServiceAddress(rawText=''){
 
     let cityLine = '';
     for (let j=i+1; j<Math.min(lines.length, i+8); j++){
-      const m = lines[j].match(/([A-Z][A-Z .'-]+),?\s+(OR|WA|CA|ID|AZ|NV|UT)\s+\d{5}(?:-\d{4})?/i);
+      const m = lines[j].match(new RegExp("([A-Z][A-Z .'-]+),?\\s+(" + US_STATE_ALT + ")\\s+\\d{5}(?:-\\d{4})?", 'i'));
       if (m){ cityLine = m[0]; break; }
     }
 
@@ -2638,7 +2659,7 @@ function parseUBData(ubDoc){
 
   let service = /PGE|PORTLAND\s*GENERAL|PORTLANDGENERAL/i.test(`${text} ${utility}`) ? parsePgeServiceAddress(text) : '';
   if (!service) service = title(matchFirst(text, [
-    /Service address\s*[:#]?\s*(\d{2,6}\s+[A-Z0-9 .'\-]+?(?:\n|\s)+[A-Z][A-Z .'\-]+,?\s+(?:OR|WA|CA|ID|AZ|NV|UT)\s+\d{5}(?:-\d{4})?)/i,
+    new RegExp("Service address\\s*[:#]?\\s*(\\d{2,6}\\s+[A-Z0-9 .'\\-]+?(?:\\n|\\s)+[A-Z][A-Z .'\\-]+,?\\s+(?:" + US_STATE_ALT + ")\\s+\\d{5}(?:-\\d{4})?)", 'i'),
     /Service address\s*[:#]?\s*(\d{2,6}\s+[A-Z0-9 .'\-]+?)(?=\s+Service period|\s+Account|\n|$)/i
   ]));
 
@@ -4424,6 +4445,22 @@ async function runParse(){
     planWarning = 'The file in the plan-set slot does not look like a PV plan set — no system size or equipment schedule was found in it. Check that you uploaded the full plan set (a structural letter or spec sheet alone is not enough).';
   }
   if (planWarning) state.reviewFlags.push(planWarning);
+  // Asked AFTER the smart read, so a state it found is not flagged as unread.
+  const stateAsk = stateAskFor(getVal('state'));
+  if (stateAsk) state.reviewFlags.push(stateAsk);
+  const markState = () => {
+    const el = $('state');
+    if (!el) return;
+    const ask = stateAskFor(el.value);
+    el.classList.toggle('needs-input', Boolean(ask));
+    if (ask) el.setAttribute('aria-invalid', 'true'); else el.removeAttribute('aria-invalid');
+    el.title = ask;
+  };
+  markState();
+  if ($('state') && !$('state').dataset.askWired) {
+    $('state').dataset.askWired = '1';
+    $('state').addEventListener('input', markState); // the mark clears as soon as a state is typed
+  }
   setVal('reviewFlags', state.reviewFlags.join('\n'));
   state.parsedOnce = true;
   updateGroupSummaries();
@@ -4431,6 +4468,7 @@ async function runParse(){
     planWarning ? '⚠ Parsed — but the packet is INCOMPLETE.' : 'All done — your packet is ready to review.',
     `Documents read: ${docsIn.join(', ') || 'none'}.`,
     planWarning,
+    stateAsk,
     llmLine,
     finalPlan.moduleWattage ? `Module wattage parsed: ${finalPlan.moduleWattage}W.` : 'Module wattage missing.',
     getVal('account') ? `Account parsed: ${getVal('account')}.` : (state.ubDoc ? 'UB uploaded, but account not confidently parsed — enter visible account manually if needed.' : 'UB account missing or not uploaded.'),
