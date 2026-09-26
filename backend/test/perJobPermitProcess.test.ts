@@ -191,4 +191,14 @@ await check("(n6) a permit track never gains the mirror carve-out (rule 5)", () 
   assert.equal(f.code, "track_conflict");
 });
 
+// ── The permit planner's KB context never names the utility's portal (item 10) ──────────────
+await check("(k1) MUST-EXCLUDE: an AHJ row carrying the utility's PowerClerk is not handed to the PERMIT planner as its portal", async () => {
+  const autoLearn = await import("../src/autoLearn");
+  kb.saveResearchedAhjProfile(db, { state: "OR", ahj: "City of Pinecrest", utility: "Pacific Power" }, research("https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login") as never);
+  const ctx = autoLearn.buildLearnKbContext(db, project("City of Pinecrest") as never, { scopeType: "ahj", permitType: "structural" });
+  assert.doesNotMatch(ctx, /powerclerk/i, ctx.slice(0, 400));
+  kb.saveResearchedAhjProfile(db, { state: "OR", ahj: "City of Larchmont" }, research(ACA_OREGON) as never);
+  assert.match(autoLearn.buildLearnKbContext(db, project("City of Larchmont") as never, { scopeType: "ahj", permitType: "structural" }), /aca-oregon/, "MUST-PASS: the AHJ's own portal is named");
+});
+
 finish("per-job-permit-process");

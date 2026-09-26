@@ -133,61 +133,6 @@
       "evidenceStatus": "missing"
     },
     {
-      "id": "city.struct.stamped-engineering-missing",
-      "severity": "warning",
-      "category": "structural",
-      "title": "Engineered design with no stamped calculation attached",
-      "message": "The design relies on structural engineering, but no stamped/sealed engineering document is in the package.",
-      "cityFeedback": "Provide the wet- or digitally-stamped structural calculations or engineer's letter covering rafter size, spacing, clear span, and the PV attachment/point loads for this roof.",
-      "designTeamAction": "Obtain the sealed calculation package from the engineer of record before submittal — a review-block reference on the plan set is not the stamp, and strict jurisdictions (Portland among them) will issue a correction for it.",
-      "evidenceNeeded": [
-        "Stamped/sealed structural calculation or engineer's letter",
-        "Rafter size, spacing and clear span used in the calculation",
-        "PV dead load and attachment point loads"
-      ],
-      "codeReferences": [
-        {
-          "code": "ORSC / OSSC",
-          "section": "Oregon Prescriptive Rooftop-Mounted Solar PV Checklist",
-          "title": "Oregon prescriptive rooftop PV installation screening",
-          "adoptionScope": "Oregon residential and commercial prescriptive rooftop PV path.",
-          "sourceUrl": "https://www.washingtoncountyor.gov/lut/building-services/documents/solar-checklist/download?inline=",
-          "note": "Common screens include PV dead load, ground snow load, wind exposure, roof slope, and framing spacing/span evidence."
-        },
-        {
-          "code": "OSSC",
-          "section": "Table 2308.7.2(1)",
-          "title": "Rafter span tables used by Portland solar worksheet",
-          "adoptionScope": "Portland-style prescriptive rafter span review; useful baseline for Oregon AHJ review.",
-          "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download",
-          "note": "Show rafter size, spacing, species/grade, span, roof slope, and support conditions when using a prescriptive path."
-        },
-        {
-          "code": "IRC / ORSC",
-          "section": "R324.4.1",
-          "title": "Rooftop-mounted photovoltaic systems and roof loads",
-          "adoptionScope": "One- and two-family residential rooftop PV, subject to local amendments.",
-          "sourceUrl": "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning",
-          "note": "Roof structure, dead load, live load, and attachment assumptions must be shown clearly enough for review."
-        }
-      ],
-      "installerCallout": true,
-      "evidenceFound": [
-        {
-          "kind": "absence_check",
-          "label": "General source check",
-          "source": "Parsed project package",
-          "excerpt": "The design relies on structural engineering, but no stamped/sealed engineering document is in the package.",
-          "confidence": "low",
-          "pageHint": "",
-          "screenshotPath": "",
-          "verifier": "rule_engine",
-          "note": "Rule-generated callout. Human should verify the source package before forwarding."
-        }
-      ],
-      "evidenceStatus": "weak"
-    },
-    {
       "id": "city.struct.span-table-incomplete",
       "severity": "blocker",
       "category": "structural",
@@ -765,61 +710,6 @@
         }
       ],
       "evidenceStatus": "missing"
-    },
-    {
-      "id": "city.struct.stamped-engineering-missing",
-      "severity": "warning",
-      "category": "structural",
-      "title": "Engineered design with no stamped calculation attached",
-      "message": "The design relies on structural engineering, but no stamped/sealed engineering document is in the package.",
-      "cityFeedback": "Provide the wet- or digitally-stamped structural calculations or engineer's letter covering rafter size, spacing, clear span, and the PV attachment/point loads for this roof.",
-      "designTeamAction": "Obtain the sealed calculation package from the engineer of record before submittal — a review-block reference on the plan set is not the stamp, and strict jurisdictions (Portland among them) will issue a correction for it.",
-      "evidenceNeeded": [
-        "Stamped/sealed structural calculation or engineer's letter",
-        "Rafter size, spacing and clear span used in the calculation",
-        "PV dead load and attachment point loads"
-      ],
-      "codeReferences": [
-        {
-          "code": "ORSC / OSSC",
-          "section": "Oregon Prescriptive Rooftop-Mounted Solar PV Checklist",
-          "title": "Oregon prescriptive rooftop PV installation screening",
-          "adoptionScope": "Oregon residential and commercial prescriptive rooftop PV path.",
-          "sourceUrl": "https://www.washingtoncountyor.gov/lut/building-services/documents/solar-checklist/download?inline=",
-          "note": "Common screens include PV dead load, ground snow load, wind exposure, roof slope, and framing spacing/span evidence."
-        },
-        {
-          "code": "OSSC",
-          "section": "Table 2308.7.2(1)",
-          "title": "Rafter span tables used by Portland solar worksheet",
-          "adoptionScope": "Portland-style prescriptive rafter span review; useful baseline for Oregon AHJ review.",
-          "sourceUrl": "https://www.portland.gov/ppd/documents/solar-worksheet/download",
-          "note": "Show rafter size, spacing, species/grade, span, roof slope, and support conditions when using a prescriptive path."
-        },
-        {
-          "code": "IRC / ORSC",
-          "section": "R324.4.1",
-          "title": "Rooftop-mounted photovoltaic systems and roof loads",
-          "adoptionScope": "One- and two-family residential rooftop PV, subject to local amendments.",
-          "sourceUrl": "https://codes.iccsafe.org/content/IRC2021P1/chapter-3-building-planning",
-          "note": "Roof structure, dead load, live load, and attachment assumptions must be shown clearly enough for review."
-        }
-      ],
-      "installerCallout": true,
-      "evidenceFound": [
-        {
-          "kind": "absence_check",
-          "label": "General source check",
-          "source": "Parsed project package",
-          "excerpt": "The design relies on structural engineering, but no stamped/sealed engineering document is in the package.",
-          "confidence": "low",
-          "pageHint": "",
-          "screenshotPath": "",
-          "verifier": "rule_engine",
-          "note": "Rule-generated callout. Human should verify the source package before forwarding."
-        }
-      ],
-      "evidenceStatus": "weak"
     },
     {
       "id": "city.struct.span-table-incomplete",

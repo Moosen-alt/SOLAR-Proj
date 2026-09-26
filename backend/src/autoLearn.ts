@@ -42,7 +42,7 @@ import { formPurposeMismatch } from "./formPurpose";
 import { looksBotBlocked } from "./runAbort";
 import { id } from "./ids";
 import { knowledgeProfileKey, findKnowledgeForLearn, isVerifiedKnowledge } from "./knowledgeBase";
-import { hostFitsTrackAndEntity, type PortalUrlSource } from "./portalChannel";
+import { hostFitsTrackAndEntity, trackSafeUrl, type PortalUrlSource } from "./portalChannel";
 import { getCodeProfile } from "./codeProfiles";
 import { certifiedNamesForMake } from "./cecEquipment";
 import { recordDraftTouch, type DraftTouch } from "./draftLedger";
@@ -141,9 +141,17 @@ export function buildLearnKbContext(
     ] as const) {
       if (!profile) continue;
       const name = label === "Utility" ? profile.utility : profile.ahj;
+      // RULE 5 IN THE PROMPT TOO. City of Jefferson's learned AHJ row carries Pacific Power's
+      // PowerClerk portal (and its NEM documents); handed to the PERMIT planner as "Portal:", it told
+      // the model the permit files on the utility's portal. A portal line whose URL belongs to the
+      // other track's kind of portal is left out of this label's section.
+      const portalFits = !profile.portalUrl || Boolean(trackSafeUrl(label === "Utility" ? "nem" : "building", profile.portalUrl));
+      // …and only the entity this planner files with has a portal worth naming: a permit planner never
+      // files on the utility's portal, a NEM planner never on the AHJ's.
+      const isPrimary = label === (opts.scopeType === "ahj" ? "AHJ" : "Utility");
       const lines = [
         `${label}: ${name}${profile.state ? ` (${profile.state})` : ""} [KB confidence: ${profile.confidence}]`,
-        profile.portalName || profile.portalUrl ? `Portal: ${clip(profile.portalName, 80)} ${clip(profile.portalUrl, 120)}`.trim() : "",
+        isPrimary && portalFits && (profile.portalName || profile.portalUrl) ? `Portal: ${clip(profile.portalName, 80)} ${clip(profile.portalUrl, 120)}`.trim() : "",
         profile.requiredDocuments.length ? `Required docs: ${clip(profile.requiredDocuments.join("; "), 300)}` : "",
         // The primary scope's notes carry the judgment answers — give them the bigger cap.
         profile.notes ? `Notes: ${clip(profile.notes, label === (opts.scopeType === "ahj" ? "AHJ" : "Utility") ? 900 : 400)}` : "",

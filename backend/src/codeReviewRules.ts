@@ -707,9 +707,11 @@ export function evaluateDesignCodeFindings(
   // parser's own NEGATIVE sentences ("No PE stamp or sealed structural letter present"). A path the
   // shared resolver decided is the answer; the text signals speak only while it is undecided.
   const resolvedPath = resolvePermitPath(project).path;
-  const claimsEngineered = resolvedPath === "engineered" || (resolvedPath !== "prescriptive" && (
+  // The resolver only SUPPRESSES here (a resolved-prescriptive path owes no stamp); what raises the
+  // finding is unchanged — the path wording or the plan's own engineering signals.
+  const claimsEngineered = resolvedPath !== "prescriptive" && (
     pathWordingScope(str(project, "permitPath")) === "engineered"
-    || hasAny(all, [/stamped structural/i, /structural letter/i, /sealed by/i, /\bP\.?E\.?\b/, /engineering (calc|letter|review|analysis)/i])));
+    || hasAny(all, [/stamped structural/i, /structural letter/i, /sealed by/i, /\bP\.?E\.?\b/, /engineering (calc|letter|review|analysis)/i]));
   if (roofMounted && claimsEngineered && !hasStampedEngineering) {
     out.push(finding({
       id: "city.struct.stamped-engineering-missing",
