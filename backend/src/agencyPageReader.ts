@@ -103,7 +103,15 @@ export const defaultRawFetch: RawFetch = async (url, opts) => {
 // ── Politeness state, process-wide (every reader shares it) ─────────────────────────────
 const hostChain = new Map<string, Promise<unknown>>();
 const hostLast = new Map<string, number>();
-const backedOff = new Map<string, string>();
+const backedOff = new Map<string, { reason: string; at: number }>();
+/** A refusal backs a host off for an hour (the server is long-running: one transient 429 must not
+ *  silence a host for the life of the process), then it may be asked again — once. */
+export const BACK_OFF_MS = 60 * 60 * 1000;
+const isBackedOff = (host: string) => {
+  const b = backedOff.get(host);
+  if (b && Date.now() - b.at > BACK_OFF_MS) backedOff.delete(host);
+  return backedOff.has(host);
+};
 /** Tests only: forget the process-wide host state. */
 export function _resetPoliteness(): void { hostChain.clear(); hostLast.clear(); backedOff.clear(); }
 const REFUSED_REASON = /refus|challenge|captcha|no automated|robots|wall|HTTP 40[13]\b|HTTP 429\b/i;
@@ -129,7 +137,7 @@ export function createPageReader(opts: { fetch?: RawFetch; maxReads?: number; mi
     if (!host) return none(url, "not an http(s) URL");
     if (isLoginUrl(url)) return none(url, "a sign-in / registration page — never read");
     if (!opts.fetch && documentFetchDisabled()) return none(url, "document downloads are off on this installation (DOCUMENT_FETCH=off)");
-    if (backedOff.has(host)) return none(url, `${host} refused an earlier read (${backedOff.get(host)}) — backed off, not asked again`);
+    if (isBackedOff(host)) return none(url, `${host} refused an earlier read (${backedOff.get(host)?.reason}) — backed off, not asked again`);
     if (left <= 0) return none(url, "the lookup's page-read budget is spent");
     left--;
     // ONE HOST AT A TIME, >= minGap apart — chained per host, process-wide.
@@ -137,7 +145,7 @@ export function createPageReader(opts: { fetch?: RawFetch; maxReads?: number; mi
     const run = prev.catch(() => undefined).then(async () => {
       const wait = (hostLast.get(host) ?? 0) + minGap - Date.now();
       if (wait > 0 && minGap > 0) await sleep(wait);
-      if (backedOff.has(host)) return null;
+      if (isBackedOff(host)) return null;
       try {
         return await raw(url, { headers: o.headers, json: o.json, timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxBytes: opts.maxBytes ?? DEFAULT_MAX_BYTES });
       } finally {
@@ -148,7 +156,7 @@ export function createPageReader(opts: { fetch?: RawFetch; maxReads?: number; mi
     const got = await run;
     if (!got) return none(url, `${host} refused an earlier read — backed off`);
     if (!got.ok) {
-      if (REFUSED_REASON.test(got.reason) || [401, 403, 429].includes(got.status)) backedOff.set(host, got.reason.slice(0, 120));
+      if (REFUSED_REASON.test(got.reason) || [401, 403, 429].includes(got.status)) backedOff.set(host, { reason: got.reason.slice(0, 120), at: Date.now() });
       return { ...none(url, got.reason), status: got.status, finalUrl: got.finalUrl || url };
     }
     const finalUrl = got.finalUrl || url;

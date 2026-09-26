@@ -27,6 +27,13 @@ Dev-set eval (real web, real model; `.probe/lookup-recall-2/`, scored by `score.
 | 5 prep AHJs, 56 items | 14 / 0 / 42 | 23 / 0 / 33 | Portal 2 → 5 of 5. Fees 0 → 2. Prerequisites 1 → 3. Iowa City's 2023 NEC found. A Carlsbad rerun with the checklist fix took documents from 0/7 to 6/7. |
 | 7 recall AHJs, 69 items | 16 / 2 / 50 | 19 / 3 / 47 | Before is a replay of after2's answers at the eba6fa0 doors. Clark, Evanston and Sacramento portals are now the aca-prod tenants. |
 
+"After" is a single sample of a variable model run, and the recall set also LOST three items the before had:
+- SLCo: the portal is now missing.
+- Lee: the "Trades >> Solar" record type is now missing (the catalog of the model's `aca.leegov.com` couldn't be read).
+- Sacramento: the agency is now missing.
+
+Spend is ≈ $13.6 (after1, stopped for the grounding fix; after2 $11.48; after3 $0.78). Not live until production is re-pinned (`.probe/prod-pinned`). A host that refuses a read is backed off for one hour.
+
 The after WRONGs:
 - Lee: `aca.leegov.com`, the model's portal, went through the unchanged door; our read of it failed.
 - Sacramento: the $305 staff-report fee (the old WRONG).

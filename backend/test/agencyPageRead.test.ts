@@ -218,7 +218,7 @@ await check("(f2) a checklist quoted item by item is on the page though a PDF in
   assert.equal(cat.classifyDocument("Master Fee Schedule", "https://www.x.gov/fees"), "fees");
 });
 
-await check("(p1) politeness: one host is read >= the gap apart, other hosts are not held up; a refusal backs the host off (never asked again); a sign-in URL is never fetched and a redirect onto one is not read", async () => {
+await check("(p1) politeness: one host is read >= the gap apart, other hosts are not held up; a refusal backs the host off (never asked again within the back-off hour); a sign-in URL is never fetched and a redirect onto one is not read", async () => {
   const s = site({
     "https://a.example.gov/1": { text: "<p>one</p>" }, "https://a.example.gov/2": { text: "<p>two</p>" }, "https://b.example.gov/1": { text: "<p>b</p>" },
     "https://c.example.gov/1": { status: 403 }, "https://c.example.gov/2": { text: "<p>c2</p>" },
