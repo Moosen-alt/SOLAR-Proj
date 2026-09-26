@@ -282,7 +282,9 @@ function profileName(p) {
 }
 const httpUrl = (u) => (/^https?:\/\//i.test(String(u || "")) ? String(u) : "");
 const sourceLink = (u) => (httpUrl(u) ? ` <a href="${esc(httpUrl(u))}" target="_blank" rel="noopener">source</a>` : "");
-const humanKey = (k) => String(k).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+const KEY_WORDS = { kw: "kW", dc: "DC", ac: "AC", psf: "psf", mph: "mph", pv: "PV", ahj: "AHJ", nec: "NEC", ibc: "IBC", irc: "IRC", ifc: "IFC" };
+const humanKey = (k) => String(k).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/_/g, " ").toLowerCase()
+  .split(" ").map((w) => KEY_WORDS[w] || w).join(" ").replace(/^[a-z]/, (c) => c.toUpperCase());
 const plainValue = (v) => (v == null ? "" : typeof v === "object" ? Object.entries(v).filter(([, x]) => x !== "" && x != null).map(([k, x]) => `${humanKey(k)}: ${typeof x === "object" ? JSON.stringify(x) : x}`).join("; ") : String(v));
 
 // A readable table of what the operator is about to lock as human-verified.
