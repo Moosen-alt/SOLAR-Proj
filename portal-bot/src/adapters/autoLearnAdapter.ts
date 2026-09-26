@@ -21,7 +21,7 @@ import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
 import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../../shared/src/portalSafety";
 import { installFilingBackstop, withBackstopWindow, describeBackstopAbort } from "../filingBackstop";
-import { hostOfUrl, siteOfUrl } from "../siteOf";
+import { hostOfUrl, sameCredentialScope } from "../siteOf";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
 // having a human record it. Each page is scraped into a structured snapshot
@@ -1958,8 +1958,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private equipmentFillFailed = new Set<string>();
   /** The run's own credential (from login()); used mid-run only on the start URL's site. */
   private runCredential: { username: string; password: string } | undefined;
-  /** Site of the URL the run was opened at — the site the run's own credential belongs to. */
-  private startSite = "";
+  /** The URL the run was opened at — the run's own credential belongs to its host + first path
+   *  segment (sameCredentialScope, the backend's rule), not to its registrable domain. */
+  private startUrl = "";
   /** Hosts whose login form the MID-RUN login pass has already met this run (once per host). */
   private readonly midRunLoginHosts = new Set<string>();
 
@@ -2930,7 +2931,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       this.opened = opened;
       this.page = opened.page;
       this.runCredential = context.credential;
-      this.startSite = context.startUrl ? siteOfUrl(context.startUrl) : "";
+      this.startUrl = context.startUrl ? String(context.startUrl) : "";
 
       // Navigate to the portal entry URL so the learn loop starts on the application page.
       if (context.startUrl) {
@@ -3054,7 +3055,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     }
     const c = this.runCredential;
     if (!c || !c.username || !c.password) return null;
-    return this.startSite && siteOfUrl(url) === this.startSite ? c : null;
+    // HOST + FIRST PATH SEGMENT (checker close-mustfix L7 should-fix): by registrable domain the
+    // run's own Accela login (aca-prod.accela.com/SANDIEGO) was typed into any other city on
+    // accela.com. The backend's resolver matches this way; the no-resolver fallback now does too.
+    return this.startUrl && sameCredentialScope(url, this.startUrl) ? c : null;
   }
 
   /**
