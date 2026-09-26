@@ -22,7 +22,7 @@
 // and then discarded.
 import type { CitedFact, LLMProvider, PermitFeeAnswer, PermitProcessDiscipline, PermitProcessLookup, PermitProcessPermitAnswer } from "../../shared/src/types";
 import type { AppDb } from "./db";
-import { isInformationalPageUrl, portalHostOf } from "./portalChannel";
+import { isInformationalPageUrl, isPermitPlatformUrl, portalHostOf } from "./portalChannel";
 import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup } from "./permitProcess";
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
@@ -30,12 +30,12 @@ import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
 export const PROCESS_LOOKUP_SYSTEM = `You look up how RESIDENTIAL ROOFTOP SOLAR PV permits are issued for ONE jurisdiction in the United States.
 Answer for the NAMED jurisdiction only (a same-named place in another county or state is a different place).
 
-Find, with web search (and by opening the pages you found):
+Find, with web search (search several times with different queries: the city, its county building inspection, the state ePermitting pages, the portal's public records):
 1. issuingAgency — the agency that issues this jurisdiction's residential building/structural and electrical permits. A city without its own building program is often served by its COUNTY's building-inspection division or by the state; say which, exactly as the source names it (e.g. "Marion County").
 2. permitStructure — "separate" when a PV system needs a structural/building permit AND a separate electrical permit; "combo" when one permit covers both.
 3. permits — one entry per permit the job needs (discipline "structural", "electrical", or "combo"), each with:
    - portalUrl: the ONLINE PORTAL where that permit is APPLIED FOR (a citizen-access / permitting-system entry page). NEVER an information, help, FAQ or guide page, and NEVER a PDF.
-   - recordType: the permit/record type exactly as that portal or agency names it for residential solar (e.g. "Residential Structural").
+   - recordType: the RECORD TYPE selected when applying ONLINE on that portal (e.g. Accela's "Residential Structural"), as the portal or a public record on it shows it. A paper application FORM's title is NOT a record type — if you only find form titles, set recordType to null.
    - issuingAgency: the agency that issues THIS permit, when it differs by permit.
 
 Where answers may come from: the jurisdiction's own site; its county's building-inspection site; the state building agency; the permitting portal's public pages and public permit records.
@@ -89,27 +89,45 @@ export function acceptCited<T>(
   const quote = str(raw.quote).slice(0, 300);
   if (!/^https?:\/\//i.test(sourceUrl) || quote.length < 8) return notFound(`the ${opts.what} came without a source page and its words — not kept`);
   const host = portalHostOf(sourceUrl);
-  if (opts.seenUrls.length && !opts.seenUrls.some((u) => portalHostOf(u) === host)) {
+  // A PORTAL may cite itself (its own entry page) when it is a known permit platform; anything else
+  // must be a page the search returned.
+  const selfCitedPortal = opts.what === "portal" && isPermitPlatformUrl(sourceUrl) && portalHostOf(String(value)) === host;
+  if (opts.seenUrls.length && !selfCitedPortal && !opts.seenUrls.some((u) => portalHostOf(u) === host)) {
     return notFound(`the ${opts.what}'s source (${host}) is not a page the search returned — not kept`);
   }
   if (!opts.supports(value, quote)) return notFound(`the quoted words do not state the ${opts.what} ("${quote.slice(0, 80)}")`);
   return { value, sourceUrl, quote, origin: "lookup" };
 }
 
+// The DISTINCTIVE words of a name must be in the quote ("Marion" of "Marion County Public Works –
+// Building Inspection Division"); the generic organisational words need not be.
+const GENERIC_ORG_WORDS = new Set(["public", "works", "building", "inspection", "inspections", "division", "department", "dept", "services", "service",
+  "development", "community", "permit", "permits", "permitting", "office", "program", "codes", "code", "planning", "bureau", "agency", "government"]);
 const supportsName = (value: string, quote: string) => {
-  const w = words(value);
+  const w = words(value).filter((x) => !GENERIC_ORG_WORDS.has(x));
   const q = quote.toLowerCase();
-  return w.length > 0 && w.every((x) => q.includes(x));
+  const need = w.length ? w : words(value);
+  return need.length > 0 && need.every((x) => q.includes(x));
 };
 const supportsStructure = (value: string, quote: string) =>
   value === "separate"
-    ? /separate|electrical permit|also (?:need|require)|in addition|two permits|each (?:require|need)/i.test(quote)
+    ? /separate|electrical (?:\w+ ){0,3}permits?|also (?:need|require)|in addition|two permits|each (?:require|need)|both (?:a )?(?:structural|building)/i.test(quote)
     : /combin|combo|single permit|one permit|includes? (?:the )?electrical/i.test(quote);
 const supportsAmount = (fee: PermitFeeAnswer, quote: string) => {
   const amounts = [fee.amountUsd, ...fee.lines.map((l) => l.amountUsd)].filter((n): n is number => typeof n === "number" && Number.isFinite(n));
   if (!amounts.length) return false;
   const q = quote.replace(/,/g, "");
   return amounts.some((n) => q.includes(n.toFixed(2)) || q.includes(String(n)));
+};
+/** "Marion County (Marion County Public Works Building Inspection Division)" → "Marion County": the
+ *  agency's NAME, which is what an address grid, a fee key and a person read. */
+const agencyName = (v: unknown): string | null => {
+  let s = str(v).replace(/\s*\([^)]*\)\s*$/, "").replace(/\s+[–-]\s+.*$/, "").trim();
+  // "Marion County Building" / "Marion County Public Works Building Inspection" → "Marion County".
+  const tokens = s.split(/\s+/);
+  while (tokens.length > 1 && GENERIC_ORG_WORDS.has(tokens[tokens.length - 1].toLowerCase())) tokens.pop();
+  s = tokens.join(" ");
+  return s || null;
 };
 const asDiscipline = (v: unknown): PermitProcessDiscipline | null => {
   const s = str(v).toLowerCase();
@@ -129,7 +147,7 @@ export function parseProcessPart(text: string, seenUrls: string[], stopReason: s
     const why = truncated ? "the lookup's answer was cut off before it finished — not kept" : "the lookup returned no readable answer";
     return { issuingAgency: nf(why), permitStructure: nf(why), permits: [], problem: why };
   }
-  const issuingAgency = acceptCited<string>(json.issuingAgency as RawFact, { seenUrls, what: "issuing agency", coerce: (v) => str(v) || null, supports: supportsName });
+  const issuingAgency = acceptCited<string>(json.issuingAgency as RawFact, { seenUrls, what: "issuing agency", coerce: agencyName, supports: supportsName });
   const permitStructure = acceptCited<"separate" | "combo">(json.permitStructure as RawFact, {
     seenUrls, what: "permit structure", coerce: (v) => (/separ/i.test(str(v)) ? "separate" : /combo|combin/i.test(str(v)) ? "combo" : null), supports: supportsStructure,
   });
@@ -151,7 +169,7 @@ export function parseProcessPart(text: string, seenUrls: string[], stopReason: s
     permits.push({
       discipline,
       label: str(p.label) || discipline,
-      issuingAgency: acceptCited<string>(p.issuingAgency as RawFact, { seenUrls, what: "issuing agency", coerce: (v) => str(v) || null, supports: supportsName }),
+      issuingAgency: acceptCited<string>(p.issuingAgency as RawFact, { seenUrls, what: "issuing agency", coerce: agencyName, supports: supportsName }),
       portalUrl,
       recordType: acceptCited<string>(p.recordType as RawFact, { seenUrls, what: "record type", coerce: (v) => str(v) || null, supports: supportsName }),
       documents: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not looked up yet" },
@@ -200,6 +218,9 @@ export interface PermitProcessLookupRun {
   reason: string;
   lookup: PermitProcessLookup | null;
   calls: Array<{ part: string; grounded: number; stopReason: string | null; error?: string; pagesRead: number }>;
+  /** The model's raw answers and the URLs its searches returned — for offline re-scoring only
+   *  (never stored by the job). */
+  raw?: { process: string; documentsFees: string; processUrls: string[]; documentsFeesUrls: string[] };
 }
 
 /**
@@ -218,8 +239,16 @@ export async function runPermitProcessLookup(
   if (!llm.webLookup) return { saved: false, reason: "no web lookup available (no model key)", lookup: existing, calls };
 
   const where = `Jurisdiction: ${input.ahj}\nState: ${input.state}`;
-  const p1 = await llm.webLookup({ label: "permitProcessLookup.process", system: PROCESS_LOOKUP_SYSTEM, user: where, maxTokens: 6000, maxSearches: 6, readPages: true });
+  // Part one decides WHICH agency part two asks about, so an abort here is retried ONCE (an abort is
+  // transient; an answer that ran and found nothing is not retried).
+  const budgetMs = Math.max(300000, Number(process.env.PERMIT_PROCESS_LOOKUP_TIMEOUT_MS) || 0);
+  const askProcess = () => llm.webLookup!({ label: "permitProcessLookup.process", system: PROCESS_LOOKUP_SYSTEM, user: where, maxTokens: 8000, maxSearches: 8, readPages: false, timeoutMs: budgetMs });
+  let p1 = await askProcess();
   calls.push({ part: "process", grounded: p1.groundedSearches, stopReason: p1.stopReason, error: p1.error, pagesRead: p1.pagesRead });
+  if (p1.error && /abort|timeout|timed out|overloaded|5\d\d/i.test(p1.error)) {
+    p1 = await askProcess();
+    calls.push({ part: "process (retry)", grounded: p1.groundedSearches, stopReason: p1.stopReason, error: p1.error, pagesRead: p1.pagesRead });
+  }
   const ungrounded = (why: string) => ({ value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: why });
   const part1 = p1.groundedSearches > 0
     ? parseProcessPart(p1.text, p1.resultUrls, p1.stopReason)
@@ -232,7 +261,8 @@ export async function runPermitProcessLookup(
   const p2 = await llm.webLookup({
     label: "permitProcessLookup.documentsFees", system: DOCS_FEES_LOOKUP_SYSTEM,
     user: `Issuing agency: ${agency}\nFor permits in: ${input.ahj}, ${input.state}\nPermits: ${disciplines.join(", ")}\nSystem: ${str(input.dcKw) || "?"} kW DC, ${str(input.acKw) || "?"} kVA AC, permit path: ${str(input.permitPath) || "unknown"}`,
-    maxTokens: 6000, maxSearches: 5, readPages: true,
+    // Fewer searches and a longer budget than part one: this is the part a 180 s abort killed.
+    maxTokens: 8000, maxSearches: 6, readPages: false, timeoutMs: Math.max(300000, Number(process.env.PERMIT_PROCESS_LOOKUP_TIMEOUT_MS) || 0),
   });
   calls.push({ part: "documentsFees", grounded: p2.groundedSearches, stopReason: p2.stopReason, error: p2.error, pagesRead: p2.pagesRead });
   const part2 = p2.groundedSearches > 0 ? parseDocsFeesPart(p2.text, p2.resultUrls, p2.stopReason) : { byDiscipline: new Map(), problem: p2.error ?? "ungrounded" };
@@ -246,14 +276,37 @@ export async function runPermitProcessLookup(
     return df ? { ...p, documents: df.documents, fee: df.fee } : { ...p, documents: ungrounded(part2.problem || "not found"), fee: ungrounded(part2.problem || "not found") };
   });
   const notes = [part1.problem, part2.problem].filter(Boolean);
+  // A RE-RUN NEVER FORGETS A CITED ANSWER. Over an existing seeded row, a value this run could not
+  // establish (an aborted part, a search that came up empty) keeps the earlier cited answer.
+  const merged = mergeWithEarlier(existing, { issuingAgency: part1.issuingAgency, permitStructure: part1.permitStructure, permits });
   const res = savePermitProcessLookup(db, {
     state: input.state, ahj: input.ahj, lookedUpAt: new Date().toISOString(),
-    issuingAgency: part1.issuingAgency, permitStructure: part1.permitStructure, permits, notes,
+    issuingAgency: merged.issuingAgency, permitStructure: merged.permitStructure, permits: merged.permits, notes,
   });
   if (res.saved && res.lookup) {
     try { applyLookupFees(db, res.lookup); } catch (err) { logger.warn("permit-process", `fee landing failed: ${err instanceof Error ? err.message : String(err)}`); }
   }
-  return { saved: res.saved, reason: res.reason, lookup: res.lookup, calls };
+  return { saved: res.saved, reason: res.reason, lookup: res.lookup, calls, raw: { process: p1.text, documentsFees: p2.text, processUrls: p1.resultUrls, documentsFeesUrls: p2.resultUrls } };
+}
+
+function keep<T>(now: CitedFact<T>, before: CitedFact<T> | undefined): CitedFact<T> {
+  return now.value == null && before && before.value != null ? before : now;
+}
+export function mergeWithEarlier(
+  earlier: PermitProcessLookup | null,
+  now: { issuingAgency: CitedFact<string>; permitStructure: CitedFact<"separate" | "combo">; permits: PermitProcessPermitAnswer[] },
+): typeof now {
+  if (!earlier) return now;
+  const permits = now.permits.map((p) => {
+    const b = earlier.permits.find((e) => e.discipline === p.discipline);
+    if (!b) return p;
+    return {
+      ...p, issuingAgency: keep(p.issuingAgency, b.issuingAgency), portalUrl: keep(p.portalUrl, b.portalUrl),
+      recordType: keep(p.recordType, b.recordType), documents: keep(p.documents, b.documents), fee: keep(p.fee, b.fee),
+    };
+  });
+  for (const b of earlier.permits) if (!permits.some((p) => p.discipline === b.discipline)) permits.push(b);
+  return { issuingAgency: keep(now.issuingAgency, earlier.issuingAgency), permitStructure: keep(now.permitStructure, earlier.permitStructure), permits };
 }
 
 /**

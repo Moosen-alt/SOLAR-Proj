@@ -149,6 +149,18 @@ await check("(x6) a verified row is never overwritten by a lookup (hard rule 3)"
   assert.equal(pp.permitProcessFor(project("City of Dunmore"))?.issuingAgency.value, "City of Dunmore");
 });
 
+await check("(x7) a re-run whose part aborts never forgets an earlier cited answer; an agency name is its name", async () => {
+  await ppl.runPermitProcessLookup(db, stub(grounded(processAnswer({ issuingAgency: { value: "Marion County Public Works Building Inspection Division", sourceUrl: COUNTY, quote: "Marion County Building Inspection serves Alderbrook" } })), grounded(feesAnswer())), { state: "OR", ahj: "City of Elmstead" });
+  assert.equal(pp.permitProcessFor(project("City of Elmstead"))?.issuingAgency.value, "Marion County");
+  const aborted: WebLookupResult = { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: "Request was aborted." };
+  let asked = 0;
+  await ppl.runPermitProcessLookup(db, { webLookup: async () => { asked++; return aborted; } }, { state: "OR", ahj: "City of Elmstead", force: true });
+  assert.equal(asked, 3, "the aborted process part is retried once, then documents/fees are asked");
+  const lk = pp.permitProcessFor(project("City of Elmstead"))!;
+  assert.equal(lk.issuingAgency.value, "Marion County");
+  assert.equal(lk.permits.find((p) => p.discipline === "structural")?.fee.value?.amountUsd, 67.25);
+});
+
 if (failures) { console.error(`\n${failures} permitProcessLookup test(s) failed.`); process.exit(1); }
 console.log("\nAll permitProcessLookup tests passed.");
 process.exit(0);

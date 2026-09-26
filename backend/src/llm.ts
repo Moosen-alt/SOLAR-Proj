@@ -1989,7 +1989,10 @@ Rules:
   async webLookup(input: { label: string; system: string; user: string; maxTokens?: number; maxSearches?: number; readPages?: boolean; timeoutMs?: number }): Promise<WebLookupResult> {
     try {
       const web = await this.askWithWebSearch(input.label, input.system, input.user, input.maxTokens ?? WEB_RESEARCH_MAX_TOKENS,
-        input.maxSearches ?? 5, input.timeoutMs ?? webResearchBudgetMs(), input.readPages ? [designLookupFetchTool()] : []);
+        input.maxSearches ?? 5, input.timeoutMs ?? webResearchBudgetMs(), input.readPages ? [designLookupFetchTool()] : [],
+        // Every URL the searches returned: the caller checks each cited source against this list, and
+        // twelve searches return far more than the default 20.
+        400);
       return { text: web.text, groundedSearches: web.groundedSearches, stopReason: web.stopReason, resultUrls: web.resultUrls, pagesRead: web.fetches };
     } catch (err) {
       return { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: errMsg(err) };
@@ -2559,7 +2562,7 @@ Return ONLY JSON:
   // whether the JSON parsed and not from the bare search count.
   // `extraTools`: server tools offered beside web_search (only the design-criteria lookup passes one —
   // the capped web_fetch); empty for every other caller, whose request is unchanged.
-  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000, extraTools: Array<Record<string, unknown>> = []): Promise<{ text: string; searches: number; groundedSearches: number; fetches: number; stopReason: string | null; resultUrls: string[]; inputTokens?: number; outputTokens?: number; model: string }> {
+  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000, extraTools: Array<Record<string, unknown>> = [], resultUrlCap = 20): Promise<{ text: string; searches: number; groundedSearches: number; fetches: number; stopReason: string | null; resultUrls: string[]; inputTokens?: number; outputTokens?: number; model: string }> {
     // Hard timeout so a stalled web search can never hang the HTTP request (the
     // "Find official form" button would otherwise spin forever). On timeout we
     // abort the stream; callers catch and fall back (no URLs / model knowledge).
@@ -2592,7 +2595,7 @@ Return ONLY JSON:
       return {
         text: this.textOf(msg), searches, groundedSearches, fetches,
         stopReason: (msg as { stop_reason?: string | null }).stop_reason ?? null,
-        resultUrls: webSearchResultUrls(msg),
+        resultUrls: webSearchResultUrls(msg, resultUrlCap),
         inputTokens: typeof usage?.input_tokens === "number" ? usage.input_tokens : undefined,
         outputTokens: typeof usage?.output_tokens === "number" ? usage.output_tokens : undefined,
         model: MODEL,
