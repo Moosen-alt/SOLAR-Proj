@@ -119,6 +119,20 @@ await check("(i3) the plan's own method: a different row is flagged; a 2017 cita
   const odd = (await ids({ ...GOOD }, {}, { planText: "LOAD SIDE PER 705.12(B)(5)" })).find((x) => x.id === "city.elec.pvws-code-edition");
   assert.ok(odd && odd.severity === "callout"); assert.match(odd!.message, /705\.12\(B\)\(5\)/);
 });
+await check("(i4) the plan's method through its EDITION: a '2023 NEC 705.12(B)(2)' is the 120% row — a worksheet marking (B)(3)(2) is NOT told to change it; one marking Taps is", async () => {
+  const label = "WARNING INVERTER OUTPUT CONNECTION DO NOT RELOCATE THIS OVERCURRENT DEVICE 2023 NEC 705.12(B)(2)";
+  assert.deepEqual((await ids(GOOD, {}, { planText: label })).map((x) => x.id), [], "MUST-EXCLUDE: B32 on a 2023 (B)(2) plan raises nothing");
+  const taps = (await ids({ ...GOOD, rows: ["B2"] }, {}, { planText: label })).find((x) => x.id === "city.elec.pvws-interconnection-row-differs");
+  assert.ok(taps, "MUST-PASS: Taps marked against the plan's 120% method"); assert.match(taps!.message, /705\.12\(B\)\(3\)\(2\)/);
+});
+await check("(i5) an unsettled citation is named for a person, never used to contradict the worksheet", async () => {
+  const f = await ids(GOOD, { interco: "Load side" }, { planText: "PV INTERCONNECTION PER NEC 705.12(B)(2)" });
+  assert.ok(!f.some((x) => x.id === "city.elec.pvws-interconnection-row-differs"), f.map((x) => x.id).join(","));
+  const c = f.find((x) => x.id === "city.elec.pvws-code-edition"); assert.ok(c); assert.match(c!.message, /with no edition/);
+  const c23 = (await ids(GOOD, {}, { planText: "PER 2023 NEC 705.12(B)(3)" })).find((x) => x.id === "city.elec.pvws-code-edition");
+  assert.ok(c23); assert.match(c23!.message, /2023 NEC 705\.12\(B\)\(3\)/);
+  assert.deepEqual((await ids(GOOD, {}, { planText: "BUSBAR PER 705.12(B)(3)" })).map((x) => x.id), [], "a bare 2020 heading is not an edition problem");
+});
 await check("(a1) MUST-PASS: arrays = module count is named as such; MUST-EXCLUDE the plane count", async () => {
   const all = await ids({ ...GOOD, arrays: "10" });
   const f = all.find((x) => x.id === "city.elec.pvws-arrays");

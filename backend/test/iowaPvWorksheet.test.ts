@@ -189,6 +189,81 @@ await check("(ess2) MUST-PASS the ESS inverter's own current: a Powerwall's rate
   assert.equal(W({ ...ENPHASE_5P, iaPvEssOutputA: "16" }).values["p2.maxCircuitCurrent"], "28.1A", "the operator's answer");
   assert.ok(!W({ ...ENPHASE_5P, iaPvEssOutputA: "16" }).questions.some((q) => q.key === "iaPvEssOutputA"));
 });
+// ── MF1: DC-DC converters come from the EQUIPMENT, never from prose ─────────────────────────
+const STRING_JOB = { ...BASE, invMake: "SynthInverter", invModel: "SI-7600", invQty: "1", invOutputW: "32", moduleVoc: "40", moduleVocTempCoeff: "-0.27", siteLowTempC: "-26", modulesPerString: "10",
+  interco: "Load-side breaker", busRating: "200", mainBreaker: "200", pvBreaker: "40", serviceVoltage: "240V" };
+const RAIL_SHEET = "RAIL DATASHEET. INTEGRATED BONDING. SECURES AND BONDS MOST MICRO-INVERTERS AND OPTIMIZERS TO RAIL. CONNECTORS AND WIRES ROUTE UNDERNEATH.";
+await check("(dc1) MUST-EXCLUDE optimizer PROSE is not equipment: a rail sheet's marketing line, 'MLPE (microinverters or optimizers)', an RSD datasheet listing its optimizer sibling", () => {
+  const micro = W({ ...SHAPE23, electricalCalcText: "RAPID SHUTDOWN PER NEC 690.12 VIA MODULE LEVEL POWER ELECTRONICS (MICROINVERTERS OR OPTIMIZERS). GROUNDING ELECTRODE" });
+  assert.equal(micro.values["p2.dcdc"], "N/A"); assert.equal(micro.values["p2.maxSystemVoltage"], "51.2 V DC");
+  assert.ok(!micro.questions.some((q) => q.key === "iaPvDcDcMaxVoltage"));
+  for (const [name, over] of [
+    ["string + rapid-shutdown devices + a rail sheet", { ...STRING_JOB, mciMake: "SynthRSD", mciModel: "MCI-2", planSetExtractedText: `PV-3 ONE LINE. (10) SYNTHRSD MCI-2 RAPID SHUTDOWN DEVICES. ${RAIL_SHEET}` }],
+    ["string + an RSD family datasheet", { ...STRING_JOB, planSetExtractedText: "RSD DATASHEET: TS4-A-F (FIRE SAFETY), TS4-A-O (OPTIMIZATION), TS4-A-S (SAFETY) - SELECT THE VARIANT. RAPID SHUTDOWN DEVICE: (10) TS4-A-F" }],
+    ["string + 'works with optimizers' inverter sheet", { ...STRING_JOB, planSetExtractedText: "INVERTER DATASHEET. SPECIFICALLY DESIGNED TO WORK WITH POWER OPTIMIZERS. PAGE 3 POWER OPTIMIZER FOR NORTH AMERICA" }],
+  ] as const) {
+    const r = W(over);
+    assert.notEqual(r.values["p2.dcdc"], "Yes", name);
+    assert.equal(r.values["p2.maxSystemVoltage"], "455.1 V DC", `${name}: 40 x (1 + 0.0027 x 51) x 10 — the 690.7(A) value, not a DC-DC question`);
+    assert.ok(!r.questions.some((q) => q.key === "iaPvDcDcMaxVoltage"), name);
+    assert.match(r.basis["p2.dcdc"], /string inverter; no DC-DC converter/, name);
+  }
+});
+await check("(dc2) MUST-PASS optimizers in the EQUIPMENT: a SolarEdge inverter, an MLPE field, or an equipment-schedule line -> DC-DC Yes + the 690.7(B) question", () => {
+  for (const [name, over] of [
+    ["label: (qty) make model", { ...STRING_JOB, planSetExtractedText: "EQUIPMENT SCHEDULE. INVERTER: (1) SYNTHINVERTER SI-7600. OPTIMIZER: (10) TIGO TS4-A-O. RACKING: SYNTH RAIL" }],
+    ["qty new make label model", { ...STRING_JOB, planSetExtractedText: "(N) 10 SYNTH MODULES. 10 NEW SYNTHCO POWER OPTIMIZERS S440, MOUNTED ON THE BACK OF EACH MODULE." }],
+    ["(qty) model label", { ...STRING_JOB, electricalCalcText: "STRING OF (10) P401 OPTIMIZERS & (10) SYNTH-400 MODULES" }],
+    ["MLPE field", { ...STRING_JOB, mciMake: "Tigo", mciModel: "TS4-A-O" }],
+    ["SolarEdge inverter fields", { ...STRING_JOB, invMake: "SolarEdge", invModel: "SE7600H-US" }],
+  ] as const) {
+    const r = W(over);
+    assert.equal(r.values["p2.dcdc"], "Yes", name);
+    assert.equal(r.values["p2.maxSystemVoltage"], "", name);
+    assert.ok(r.questions.some((q) => q.key === "iaPvDcDcMaxVoltage"), name);
+    assert.match(r.basis["p2.dcdc"], /in the equipment — /, name);
+  }
+});
+
+// ── MF3: the 705.12(B) row through the EDITION it is cited under ─────────────────────────────
+const lscRows = (r: ReturnType<typeof W>) => Object.keys(r.values).filter((k) => k.startsWith("p2.lsc.") && r.values[k] === "X");
+await check("(lc1) MUST-PASS a citation maps through its edition and the plan's own facts: 2023 (B)(2) = 120%; untagged (B)(2) + a breaker/120% = 120%, + a tap = Taps; a 2017 shape tagged 2020 maps by shape", () => {
+  // bus 225 so the arithmetic alone would say (B)(3)(1): only the citation can give (B)(3)(2)
+  const r2023 = W({ ...SHAPE23, busRating: "225", labelsText: "WARNING INVERTER OUTPUT CONNECTION DO NOT RELOCATE THIS OVERCURRENT DEVICE 2023 NEC 705.12(B)(2) - STICKER AT MAIN PANEL" });
+  assert.deepEqual(lscRows(r2023), ["p2.lsc.B32"]); assert.match(r2023.basis["p2.lsc.B32"], /plan's own method: .*2023 NEC 705\.12\(B\)\(2\).*-> 705\.12\(B\)\(3\)\(2\) \(2020 NEC row\)/);
+  const untagged = W({ ...SHAPE23, busRating: "225", electricalCalcText: "BUSBAR: 120% RULE PER NEC 705.12(B)(2): 225 x 1.2 = 270 >= 200 + 20. GROUNDING ELECTRODE" });
+  assert.deepEqual(lscRows(untagged), ["p2.lsc.B32"]);
+  const tap = W({ ...SHAPE23, interco: "Load side tap", electricalCalcText: "PV CONNECTION PER NEC 705.12(B)(2). GROUNDING ELECTRODE" });
+  assert.deepEqual(lscRows(tap), ["p2.lsc.B2"]);
+  const t2020 = W({ ...SHAPE23, interco: "Load side tap", electricalCalcText: "PER 2020 NEC 705.12(B)(2) TAP CONDUCTORS SIZED PER 240.21(B)" });
+  assert.deepEqual(lscRows(t2020), ["p2.lsc.B2"]);
+  const mis = W({ ...SHAPE23, busRating: "225", electricalCalcText: "BACKFEED BREAKER PER 2020 NEC 705.12(B)(2)(3)(b) AT OPPOSITE END OF BUS" });
+  assert.deepEqual(lscRows(mis), ["p2.lsc.B32"], "a 2017 shape tagged 2020 maps by its shape");
+  // the tag is LOCAL: a spec sheet's 'NEC 2017' far away does not tag the plan's citation
+  const far = W({ ...SHAPE23, busRating: "225", planSetExtractedText: `RSD UNIT NEC 2017 COMPLIANT. ${"SPEC DATA ".repeat(12)} BACKFED PV BREAKER PER 705.12(B)(2)` });
+  assert.deepEqual(lscRows(far), ["p2.lsc.B32"]);
+  assert.equal(ws.loadSideCitation("2023 NEC 705.12(B)(2)").row, "B32");
+});
+await check("(lc2) MUST-EXCLUDE a 2023 (B)(2) is never the 2020 Taps row; an unsettled edition/method is a question, never a guess; several cited rows establish nothing alone", () => {
+  const r2023 = W({ ...SHAPE23, labelsText: "DO NOT RELOCATE THIS OVERCURRENT DEVICE 2023 NEC 705.12(B)(2)" });
+  assert.equal(r2023.values["p2.lsc.B2"], "");
+  const unsettled = W({ ...SHAPE23, interco: "Load side", electricalCalcText: "PV INTERCONNECTION PER NEC 705.12(B)(2). GROUNDING ELECTRODE" });
+  assert.deepEqual(lscRows(unsettled), [], "untagged (B)(2) with neither a tap nor a breaker");
+  const q = unsettled.questions.find((x) => x.key === "iaPvLoadSideRow");
+  assert.ok(q && q.options.length === 9); assert.match(q!.label, /with no edition/);
+  const other2023 = W({ ...SHAPE23, labelsText: "PER 2023 NEC 705.12(B)(3)" });
+  assert.deepEqual(lscRows(other2023), []);
+  assert.match(other2023.questions.find((x) => x.key === "iaPvLoadSideRow")!.label, /2023 NEC 705\.12\(B\)\(3\)/);
+  const notes = "GENERAL NOTES: BACKFEED PER 2020 NEC 705.12(B)(3)(2) OR 2020 NEC 705.12(B)(3)(3) AS APPLICABLE";
+  const both = W({ ...SHAPE23, electricalCalcText: notes }); // the ratings give (B)(3)(2), which the plan cites
+  assert.deepEqual(lscRows(both), ["p2.lsc.B32"]); assert.match(both.basis["p2.lsc.B32"], /one of the rows the plan cites/);
+  const neither = W({ ...SHAPE23, busRating: "225", electricalCalcText: notes }); // the ratings give (B)(3)(1), not cited
+  assert.deepEqual(lscRows(neither), []);
+  assert.match(neither.questions.find((x) => x.key === "iaPvLoadSideRow")!.label, /more than one 705\.12\(B\) subsection/);
+  const heading = W({ ...SHAPE23, electricalCalcText: "BUSBAR PER NEC 705.12(B)(3). GROUNDING ELECTRODE" });
+  assert.deepEqual(lscRows(heading), ["p2.lsc.B32"], "a bare (B)(3) heading lets the ratings pick the row");
+  assert.ok(!heading.questions.some((x) => x.key === "iaPvLoadSideRow"));
+});
 await check("(sv1) MUST-PASS service voltage is the line-to-line value however the plan orders it: 240/120V, 120/240V, 120/240 1PH -> 240; 120/208 3PH -> 208", () => {
   for (const [raw, want] of [["240/120V", "240"], ["120/240V", "240"], ["120/240 1PH", "240"], ["240V", "240"], ["120/208V 3PH", "208"], ["277/480Y", "480"]] as const) {
     assert.equal(W({ ...SHAPE23, serviceVoltage: raw }).values["p2.serviceVoltage"], want, raw);

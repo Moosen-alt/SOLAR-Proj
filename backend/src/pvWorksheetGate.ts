@@ -18,10 +18,12 @@
 // 2017 -> 2020 NEC numbering is mapped (705.12(A) supply side -> 705.11; 705.12(B)(2)(3)(a/b/c)
 // -> (B)(3)(1/2/3)) because both editions' texts are settled. The 2023-edition worksheet in
 // circulation is known only from a handwritten scan (an installer wrote "705.12(B)(5)" and a note
-// that the form's sections are not the 2023 NEC he uses); no 2023 row map is encoded from memory.
-// A plan citation that is not a 2020 row is reported as exactly that — for a person to map.
+// that the form's sections are not the 2023 NEC he uses); no 2023 row map is encoded from memory
+// beyond the ONE documented in iowaPvWorksheet.loadSideCitation ("2023 NEC 705.12(B)(2)" = the
+// 120% busbar method). The worksheet and this gate ask that one function, so they cannot
+// disagree. A plan citation that is not a 2020 row is reported as exactly that — for a person to map.
 import type { CodeReference, ProjectRecord, ReviewerFinding } from "../../shared/src/types";
-import { citedLoadSideRow, interconnectionSide, iowaPvWorksheetAnchorMisses, iowaPvWorksheetValues, mountingPlaneCount, serviceVoltageOf } from "./iowaPvWorksheet";
+import { interconnectionSide, loadSideCitation, iowaPvWorksheetAnchorMisses, iowaPvWorksheetValues, mountingPlaneCount, serviceVoltageOf } from "./iowaPvWorksheet";
 
 export interface FiledWorksheetReading {
   /** Text read in each value zone of the filed worksheet ("" when blank). */
@@ -72,26 +74,6 @@ const ROW_NAME: Record<string, string> = {
   B33: "705.12(B)(3)(3)", B34: "705.12(B)(3)(4)", B35: "705.12(B)(3)(5)", B36: "705.12(B)(3)(6)",
 };
 
-/** A plan citation in 2017 numbering, mapped to the 2020 row the Iowa worksheet prints. */
-export function map2017LoadSideRow(text: string): { row: string; quote: string } {
-  const t = String(text ?? "").replace(/\s+/g, " ");
-  const m = /705\.12\s*\(B\)\s*\(2\)\s*\(3\)\s*\(([abc])\)/i.exec(t);
-  if (!m) return { row: "", quote: "" };
-  return { row: ({ a: "B31", b: "B32", c: "B33" } as const)[m[1].toLowerCase() as "a" | "b" | "c"], quote: t.slice(Math.max(0, m.index - 30), m.index + m[0].length + 30).trim() };
-}
-
-/** A 705.12 citation in the plan text that is NOT a 2020-edition row (e.g. "705.12(B)(5)"). */
-export function nonEdition2020Citation(text: string): string {
-  const t = String(text ?? "");
-  for (const m of t.matchAll(/705\.12\s*\(B\)\s*\((\d)\)(?:\s*\((\w)\))?(?:\s*\((\w)\))?/gi)) {
-    const [whole, a, b, c] = m;
-    const ok = (a === "1" && /^[ab]$/i.test(b ?? "") && !c) || (a === "2" && !b) || (a === "3" && /^[1-6]$/.test(b ?? "") && !c)
-      || (a === "2" && b === "3" && /^[abc]$/i.test(c ?? "")); // 2017, mapped above
-    if (!ok) return whole.replace(/\s+/g, "");
-  }
-  return "";
-}
-
 const pvwsRef: CodeReference = {
   code: "NEC 2020 (as adopted by the State of Iowa)",
   section: "690.7, 690.8, 690.9, 705.11, 705.12",
@@ -126,6 +108,7 @@ export function pvWorksheetFindings(project: ProjectRecord, input: PvWorksheetGa
   const d = derived.values;
   const s = (project.parserSnapshot ?? {}) as Record<string, unknown>;
   const v = r.values;
+  const citation = loadSideCitation(input.planText ?? "", { interco: String(s.interco ?? project.interconnectionMethod ?? "") });
 
   // 1. CIRCUIT CURRENT = qty x per-unit A (+ ESS).
   const stated = num(v["p2.maxCircuitCurrent"]);
@@ -189,19 +172,20 @@ export function pvWorksheetFindings(project: ProjectRecord, input: PvWorksheetGa
         "Mark the one 705.12(B) subsection the design uses.", ["Busbar calculation on the one-line"]));
     }
     if (load && r.lscRows.length === 1) {
-      const planText = input.planText ?? "";
-      const cited = citedLoadSideRow(planText).row ? citedLoadSideRow(planText) : map2017LoadSideRow(planText);
-      if (cited.row && cited.row !== r.lscRows[0]) {
+      // Only an ESTABLISHED plan method (mapped through the edition it is cited under) can say the
+      // worksheet's row is wrong — a "2023 NEC 705.12(B)(2)" is the 120% method, not 2020 Taps.
+      const cited = citation;
+      if (cited.status === "established" && cited.row !== r.lscRows[0]) {
         out.push(finding("city.elec.pvws-interconnection-row-differs", "warning", "Worksheet 705.12(B) row differs from the plan's method",
           `The worksheet marks ${ROW_NAME[r.lscRows[0]]}; the plan set's own method is ${ROW_NAME[cited.row]} ("${cited.quote}").`,
           "Mark the subsection the one-line's calculation uses.", ["Busbar calculation on the one-line"]));
       }
     }
   }
-  const odd = nonEdition2020Citation(input.planText ?? "");
-  if (odd) {
+  const odd = [...citation.unmapped, ...citation.ambiguous];
+  if (odd.length) {
     out.push(finding("city.elec.pvws-code-edition", "callout", "Plan cites a 705.12 section that is not a 2020 NEC row",
-      `The plan set cites "${odd}", which is not a 705.12 subsection in the 2020 NEC the Iowa worksheet prints (it may be another edition's numbering). No automatic edition map is applied — confirm which 2020 row it corresponds to.`,
+      `The plan set cites ${odd.join("; ")}. The Iowa worksheet prints the 2020 NEC rows (another edition's numbering may differ). No automatic edition map is applied — confirm which 2020 row it corresponds to.`,
       "State the 2020-NEC subsection on the worksheet (the edition Iowa adopted), or note the edition the design used.", ["Code edition on the one-line"]));
   }
 

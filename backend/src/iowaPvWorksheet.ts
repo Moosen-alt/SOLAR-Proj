@@ -94,20 +94,96 @@ export function interconnectionSide(text: string): InterconnectionSide {
   return supply && load ? "both" : supply ? "supply" : load ? "load" : "unknown";
 }
 
-/** A 705.12(B) subsection the plan itself cites ("705.12(B)(3)(2)", "705.12(B)(2)(3)(b)" in
- *  2017 numbering is not mapped) -> the worksheet row id, or "". */
-export function citedLoadSideRow(text: string): { row: string; quote: string } {
+// ── THE PLAN'S OWN 705.12(B) METHOD, READ THROUGH THE EDITION IT IS CITED UNDER ──────────────
+// The worksheet prints the 2020 NEC rows. A plan's citation is mapped to one of them by its SHAPE
+// when the shape exists in only one edition, and by the EDITION TAG printed right before it
+// ("2023 NEC 705.12(B)(2)") when the shape means different things in different editions:
+//   (B)(1)(a|b), (B)(3)(1..6)  -> 2020 rows by shape (feeder a/b; busbar methods 1..6)
+//   (B)(2)(3)(a|b|c)           -> 2017 busbar methods -> 2020 (B)(3)(1/2/3) by shape — even when
+//                                 tagged "2020 NEC" (a corpus plan prints exactly that)
+//   bare (B)(2)                -> 2020: Taps (B2). 2023: the 120% busbar method (B32) — the ONE
+//                                 2023 mapping encoded here: the operator task statement
+//                                 (2026-09-26) and an Iowa City plan printing "2023 NEC
+//                                 705.12(B)(2)" on the 120% "do not relocate this overcurrent
+//                                 device" label on a backfed breaker. Untagged, it is read from the
+//                                 plan's own interconnection facts: a tap -> B2; a backfed breaker /
+//                                 120% / opposite-end / do-not-relocate -> B32; neither or both ->
+//                                 not established.
+//   anything else, and any other 2023-tagged shape -> NOT MAPPED (an operator question and the
+//                                 gate's edition callout) — no other 2023 row is encoded from memory.
+// The edition tag must be LOCAL (within a few words before the citation); a document-wide edition
+// is never assumed — spec sheets say "NEC 2017 compliant". Several DISTINCT rows cited in one set
+// (general notes listing (B)(3)(2) and (B)(3)(3)) establish nothing on their own.
+export type LoadSideCitationStatus = "established" | "multiple" | "ambiguous" | "unmapped" | "none";
+export interface LoadSideCitation {
+  status: LoadSideCitationStatus;
+  /** The established row (status "established"), else "". */
+  row: string;
+  /** Distinct established rows (status "multiple": more than one). */
+  rows: string[];
+  quote: string;
+  /** Why a citation is not mapped, naming it (for the operator question / the gate callout). */
+  unmapped: string[];
+  ambiguous: string[];
+}
+const LOAD_SIDE_2023: Record<string, string> = { "2": "B32" };
+const quoteAt = (t: string, i: number, len: number) => t.slice(Math.max(0, i - 30), i + len + 30).trim();
+
+export function loadSideCitation(text: string, opts: { interco?: string; edition?: "2020" } = {}): LoadSideCitation {
   const t = String(text ?? "").replace(/\s+/g, " ");
-  const m = /705\.12\s*\(B\)\s*\(([123])\)(?:\s*\(([1-6a-b])\))?/i.exec(t);
-  if (m) {
-    const quote = t.slice(Math.max(0, m.index - 30), m.index + m[0].length + 30).trim();
-    if (m[1] === "1" && /^[ab]$/i.test(m[2] ?? "")) return { row: `B1${m[2].toLowerCase()}`, quote };
-    if (m[1] === "2" && !m[2]) return { row: "B2", quote };
-    if (m[1] === "3" && /^[1-6]$/.test(m[2] ?? "")) return { row: `B3${m[2]}`, quote };
+  const interco = String(opts.interco ?? "");
+  const found: Array<{ row: string; quote: string }> = [];
+  const unmapped: string[] = [];
+  const ambiguous: string[] = [];
+  for (const m of t.matchAll(/705\.12\s*\(\s*B\s*\)((?:\s*\(\s*\w{1,2}\s*\)){1,3})/gi)) {
+    const i = m.index ?? 0;
+    const parts = [...m[1].matchAll(/\(\s*(\w{1,2})\s*\)/g)].map((p) => p[1].toLowerCase());
+    const cite = `705.12(B)${parts.map((p) => `(${p})`).join("")}`;
+    const quote = quoteAt(t, i, m[0].length);
+    const tag = opts.edition ?? (/(?:\b(20\d\d)\s*(?:NEC|N\.E\.C\.?|NATIONAL ELECTRICAL CODE)|\bNEC\s*\(?(20\d\d)\)?)\s*(?:ART(?:ICLE)?\.?\s*|SEC(?:TION)?\.?\s*|§\s*)?$/i.exec(t.slice(Math.max(0, i - 30), i))?.slice(1).find(Boolean) ?? "");
+    const [a, b, c] = parts;
+    let row = "";
+    // A bare 2020 HEADING ("705.12(B)(3)" = Busbars, "(B)(1)" = Feeders) names a family, not a row:
+    // it establishes nothing and is not an edition problem — the plan's ratings pick the row.
+    if (tag !== "2023" && parts.length === 1 && (a === "1" || a === "3")) continue;
+    if (tag === "2023") {
+      row = parts.length === 1 ? LOAD_SIDE_2023[a] ?? "" : "";
+      if (!row) { unmapped.push(`"2023 NEC ${cite}" — no 2023-to-2020 row map is encoded for it`); continue; }
+    } else if (a === "1" && /^[ab]$/.test(b ?? "") && !c) row = `B1${b}`;
+    else if (a === "3" && /^[1-6]$/.test(b ?? "") && !c) row = `B3${b}`;
+    else if (a === "2" && b === "3" && /^[abc]$/.test(c ?? "")) row = ({ a: "B31", b: "B32", c: "B33" } as const)[c as "a" | "b" | "c"];
+    else if (a === "2" && !b) {
+      if (tag === "2020") row = "B2";
+      else if (tag) { unmapped.push(`"${tag} NEC ${cite}" — not a 2020 row`); continue; }
+      else {
+        const near = t.slice(Math.max(0, i - 80), i + m[0].length + 80);
+        const tapEv = /\btaps?\b/i.test(near) || /\btap\b/i.test(interco);
+        const brkEv = /\b120\s*%|back.?fe(?:d|ed)|do not relocate|opposite end/i.test(near) || (!/\btap\b/i.test(interco) && /breaker|back.?fe/i.test(interco));
+        if (tapEv !== brkEv) row = tapEv ? "B2" : "B32";
+        else { ambiguous.push(`"${cite}" with no edition — 2020 (B)(2) is Taps, 2023 (B)(2) is the 120% busbar method, and the plan's interconnection does not settle which`); continue; }
+      }
+    } else {
+      if (parts.length) unmapped.push(`"${tag ? `${tag} NEC ` : ""}${cite}" — not a 705.12(B) row in the 2020 NEC the worksheet prints`);
+      continue;
+    }
+    found.push({ row, quote });
   }
+  const rows = [...new Set(found.map((f) => f.row))];
+  const base = { rows, unmapped, ambiguous };
+  if (rows.length === 1) return { ...base, status: "established", row: rows[0], quote: found[0].quote };
+  if (rows.length > 1) return { ...base, status: "multiple", row: "", quote: found.map((f) => f.quote).join(" | ") };
+  if (ambiguous.length) return { ...base, status: "ambiguous", row: "", quote: "" };
+  if (unmapped.length) return { ...base, status: "unmapped", row: "", quote: "" };
+  // No citation at all: the plan's own 120% wording is its stated method.
   const pct = /\b120\s*%\s*(?:rule|busbar|of (?:the )?bus)|\bbus(?:bar)?\s*(?:rating\s*)?x\s*1\.2\b|\bx\s*120\s*%/i.exec(t);
-  if (pct) return { row: "B32", quote: t.slice(Math.max(0, pct.index - 30), pct.index + pct[0].length + 30).trim() };
-  return { row: "", quote: "" };
+  if (pct) return { ...base, rows: ["B32"], status: "established", row: "B32", quote: quoteAt(t, pct.index, pct[0].length) };
+  return { ...base, status: "none", row: "", quote: "" };
+}
+
+/** The established row only ({row:"", ...} otherwise) — the single-answer view of loadSideCitation. */
+export function citedLoadSideRow(text: string, opts: { interco?: string; edition?: "2020" } = {}): { row: string; quote: string } {
+  const c = loadSideCitation(text, opts);
+  return c.status === "established" ? { row: c.row, quote: c.quote } : { row: "", quote: "" };
 }
 
 /** Distinct mounting planes (tilt/azimuth pairs) — never the module count. null = unknown. */
@@ -140,6 +216,36 @@ export function mountingPlaneCount(snapshot: Record<string, unknown>): { count: 
   return { count: null, basis: "no azimuth/tilt or per-array breakdown parsed" };
 }
 
+// ── DC-DC CONVERTERS (optimizers): read from the EQUIPMENT, never from prose ───────────────
+// "optimizer" anywhere in the joined plan text marked a Tesla string system DC-DC "Yes" because a
+// rail spec sheet says it "secures and bonds most micro-inverters and optimizers to rail", and a
+// micro system whose notes say "MLPE (microinverters or optimizers)" likewise. Evidence is now:
+//   - the inverter fields: a SolarEdge string inverter (SE... / make SolarEdge — its optimizers are
+//     part of the listed system), or an inverter/MLPE model field naming an optimizer;
+//   - an EQUIPMENT-SCHEDULE line in the text: an optimizer / DC-DC converter label followed by a
+//     separator or quantity and an optimizer MODEL ("OPTIMIZER: (20) SOLAREDGE S440"), or a quantity
+//     + model + label ("(20) TIGO TS4-A-O OPTIMIZERS"). A model token alone is not evidence (an RSD
+//     datasheet lists its optimizer siblings), nor is the word alone.
+const OPTIMIZER_MODEL = String.raw`(?:P\d{3,4}[A-Z]{0,3}|S\d{3,4}[A-Z]?|TS4-(?:A-|R-)?2?O|SUN2000-\d{3,4}W-P\w*)`;
+const OPTIMIZER_LABEL = String.raw`(?:(?:POWER|DC)\s+)?OPTIMI[SZ]ERS?|DC[-\s]?(?:TO[-\s]?)?DC\s+CONVERTERS?`;
+const MAKE_WORDS = String.raw`(?:[A-Z][A-Za-z.&-]*\s+){0,2}`;
+const SCHEDULE_LABEL_FIRST = new RegExp(String.raw`\b(?:${OPTIMIZER_LABEL})\s*(?:[:=|#-]|\(\s*\d{1,3}\s*\)|\bQTY\b)\s*(?:\(?\s*\d{1,3}\s*\)?\s*(?:x\s*)?)?${MAKE_WORDS}${OPTIMIZER_MODEL}\b`, "i");
+const SCHEDULE_QTY_FIRST = new RegExp(String.raw`(?:\(\s*\d{1,3}\s*\)|\b\d{1,3}\s*x)\s*${MAKE_WORDS}${OPTIMIZER_MODEL}\b[^.;]{0,30}?\b(?:${OPTIMIZER_LABEL})\b`, "i");
+// "8 NEW SOLAREDGE POWER OPTIMIZERS S440" / "(30) POWER OPTIMIZERS: S500" — quantity, label, model.
+const SCHEDULE_QTY_LABEL_MODEL = new RegExp(String.raw`(?:\(\s*\d{1,3}\s*\)|\b\d{1,3})\s+(?:NEW\s+|\(N\)\s*)?${MAKE_WORDS}(?:${OPTIMIZER_LABEL})\s*[,:=-]?\s*(?:MODEL\s*[:#]?\s*)?${OPTIMIZER_MODEL}\b`, "i");
+export function dcDcConverterEvidence(s: Record<string, unknown>, stringInverter: boolean): { present: boolean; basis: string } {
+  const str = (k: string) => String(s[k] ?? "").trim();
+  if (stringInverter && (/solaredge/i.test(str("invMake")) || /^SE\d/i.test(str("invModel")))) return { present: true, basis: `SolarEdge string inverter (${`${str("invMake")} ${str("invModel")}`.trim()})` };
+  for (const k of ["invModel", "mciMake", "mciModel"]) {
+    const v = str(k);
+    if (v && (new RegExp(String.raw`\b(?:${OPTIMIZER_LABEL})\b`, "i").test(v) || new RegExp(String.raw`^\s*${MAKE_WORDS}${OPTIMIZER_MODEL}\b`, "i").test(v))) return { present: true, basis: `${k} "${v}"` };
+  }
+  const t = [str("electricalCalcText"), str("labelsText"), str("planSetExtractedText")].join("\n").replace(/\s+/g, " ");
+  const m = SCHEDULE_LABEL_FIRST.exec(t) ?? SCHEDULE_QTY_FIRST.exec(t) ?? SCHEDULE_QTY_LABEL_MODEL.exec(t);
+  if (m) return { present: true, basis: `equipment line "${t.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20).trim()}"` };
+  return { present: false, basis: "" };
+}
+
 // ── THE ESS INVERTER'S OWN OUTPUT CURRENT (AC-coupled battery on a micro system) ────────────
 // parser.html puts a micro system's make / model / per-unit amps into invMake / invModel /
 // invOutputW, and on a Tesla battery swaps in the Powerwall model while invOutputW keeps the
@@ -168,6 +274,7 @@ export function essOutputCurrent(s: Record<string, unknown>): { amps: number; so
   return { amps: invA, source: `ESS inverter ${invName} rated ${fmt(invA)} A` };
 }
 
+const LOAD_SIDE_ROW_IDS = ["B1a", "B1b", "B2", "B31", "B32", "B33", "B34", "B35", "B36"];
 const LOAD_SIDE_ROW_OPTIONS = ["705.12(B)(1)(a)", "705.12(B)(1)(b)", "705.12(B)(2)", "705.12(B)(3)(1)", "705.12(B)(3)(2)", "705.12(B)(3)(3)", "705.12(B)(3)(4)", "705.12(B)(3)(5)", "705.12(B)(3)(6)"];
 
 export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
@@ -191,7 +298,8 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   // ── topology ───────────────────────────────────────────────────────────────────────────
   const micro = Boolean(str("pvMicroMake") || str("pvMicroModel"));
   const stringInv = !micro && Boolean(str("invMake") || str("invModel"));
-  const optimizer = /optimi[sz]er|\bTS4-A-O\b/i.test(`${str("invModel")} ${text}`) || (stringInv && /solaredge/i.test(str("invMake")));
+  const dcdc = dcDcConverterEvidence(s, stringInv);
+  const optimizer = dcdc.present;
   set("p2.standardString", stringInv ? "X" : "", stringInv ? "derived: a string inverter is listed and no microinverter" : micro ? "derived: microinverter system" : "no inverter parsed");
   set("p2.microArray", micro ? "X" : "", micro ? `derived: microinverters listed (${str("pvMicroMake")} ${str("pvMicroModel")})`.trim() : "derived: no microinverter listed");
 
@@ -217,8 +325,9 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   set("p2.numInverters", unitQty != null ? String(unitQty) : "", micro ? `pvMicroQty "${str("pvMicroQty")}"` : `invQty "${str("invQty")}"`);
   const battery = Boolean(str("batteryMake") || str("batteryModel") || (n("batteryQty") ?? 0) > 0);
   set("p2.battery", battery ? "Y" : "N", battery ? `battery listed (${str("batteryMake")} ${str("batteryModel")})`.trim() : "derived: no battery/ESS in the parsed plan set");
-  set("p2.dcdc", micro && !optimizer ? "N/A" : optimizer ? "Yes" : "", micro && !optimizer ? "derived: microinverter system, no DC-DC converter (optimizer) listed"
-    : optimizer ? "derived: DC-DC converters (optimizers) on the plan set" : "no inverter topology parsed");
+  set("p2.dcdc", micro && !optimizer ? "N/A" : optimizer ? "Yes" : "", micro && !optimizer ? "derived: microinverter system, no DC-DC converter (optimizer) in the equipment"
+    : optimizer ? `derived: DC-DC converters (optimizers) in the equipment — ${dcdc.basis}`
+    : stringInv ? "string inverter; no DC-DC converter (optimizer) in the inverter/MLPE fields or an equipment-schedule line — confirm on the one-line" : "no inverter topology parsed");
 
   // ── circuit current ────────────────────────────────────────────────────────────────────
   const unitA = (micro ? amps("pvMicroOutputW") : amps("invOutputW")) ?? amps("iaPvUnitOutputA");
@@ -275,14 +384,37 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   // 705.12(B) subsection: exactly one row, only on a load-side connection.
   for (const r of ["B1a", "B1b", "B2", "B31", "B32", "B33", "B34", "B35", "B36"]) set(`p2.lsc.${r}`, "", side === "load" ? "" : "not a load-side connection");
   if (side === "load") {
-    const cited = citedLoadSideRow(text);
+    const cited = loadSideCitation(text, { interco: str("interco") });
     const main = amps("mainBreaker") ?? service;
     const intercoText = str("interco").toLowerCase();
-    const answeredRow = citedLoadSideRow(str("iaPvLoadSideRow")).row;
+    // The operator's answer is one of the worksheet's own (2020) row labels.
+    const answeredRow = citedLoadSideRow(str("iaPvLoadSideRow"), { edition: "2020" }).row;
+    // The busbar arithmetic from the plan's bus / main / PV breaker (100% rule, then 120%).
+    const busbarRow = (): { row: string; why: string } | null => {
+      if (bus == null || main == null || circuitA == null) return null;
+      const need = 1.25 * circuitA;
+      if (need + main <= bus + 1e-9) return { row: "B31", why: `derived: 1.25 x ${fmt(circuitA)} A + ${main} A main = ${fmt(need + main)} A <= ${bus} A bus (705.12(B)(3)(1), 100% rule)` };
+      if (bus * 1.2 - main >= Math.max(need, pvBreaker ?? 0) - 1e-9) return { row: "B32", why: `derived: ${bus} A x 1.2 - ${main} A = ${fmt(bus * 1.2 - main)} A >= ${pvBreaker != null ? `${pvBreaker} A PV breaker` : `${fmt(need)} A`} (705.12(B)(3)(2), 120% rule — PV breaker at the opposite end of the busbar from the main; confirm on the one-line)` };
+      return { row: "", why: `neither busbar rule holds: 1.25 x ${fmt(circuitA)} + ${main} = ${fmt(need + main)} > ${bus}; ${bus} x 1.2 - ${main} = ${fmt(bus * 1.2 - main)} < ${fmt(Math.max(need, pvBreaker ?? 0))}` };
+    };
+    const rowLabel = (r: string) => LOAD_SIDE_ROW_OPTIONS[LOAD_SIDE_ROW_IDS.indexOf(r)] ?? r;
     if (answeredRow) {
       set(`p2.lsc.${answeredRow}`, "X", `operator answer: ${str("iaPvLoadSideRow")}`);
-    } else if (cited.row) {
-      set(`p2.lsc.${cited.row}`, "X", `the plan's own method: "${cited.quote}"`);
+    } else if (cited.status === "established") {
+      set(`p2.lsc.${cited.row}`, "X", `the plan's own method: "${cited.quote}" -> ${rowLabel(cited.row)} (2020 NEC row)`);
+    } else if (cited.status === "multiple") {
+      const d = busbarRow();
+      const names = cited.rows.map(rowLabel).join(", ");
+      if (d?.row && cited.rows.includes(d.row)) {
+        set(`p2.lsc.${d.row}`, "X", `${d.why} — one of the rows the plan cites (${names})`);
+      } else {
+        basis["p2.lsc.B32"] = `the plan cites several 705.12(B) rows (${names}) and its ratings do not single one out`;
+        ask("iaPvLoadSideRow", `The plan set cites more than one 705.12(B) subsection (${names}). Which one does this connection use?`, LOAD_SIDE_ROW_OPTIONS);
+      }
+    } else if (cited.status === "ambiguous" || cited.status === "unmapped") {
+      const why = [...cited.ambiguous, ...cited.unmapped].join("; ");
+      basis["p2.lsc.B32"] = `the plan's citation is not mapped to a 2020 row: ${why}`;
+      ask("iaPvLoadSideRow", `The plan cites ${why}. Which 2020-NEC 705.12(B) row does this connection use?`, LOAD_SIDE_ROW_OPTIONS);
     } else if (/feeder|sub.?panel/.test(intercoText) && /\(B\)\(1\)\(([ab])\)/.test(str("iaPvFeederRow"))) {
       const r = /\(B\)\(1\)\(([ab])\)/.exec(str("iaPvFeederRow"))![1];
       set(`p2.lsc.B1${r}`, "X", `operator answer: ${str("iaPvFeederRow")}`);
@@ -290,14 +422,11 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
       ask("iaPvFeederRow", "The PV connects on a feeder: which 705.12(B)(1) item applies — (a) or (b)?", ["705.12(B)(1)(a)", "705.12(B)(1)(b)"]);
     } else if (/\btap\b/.test(intercoText)) {
       set("p2.lsc.B2", "X", `interco "${str("interco")}" is a load-side tap -> 705.12(B)(2)`);
-    } else if (bus != null && main != null && circuitA != null) {
-      const need = 1.25 * circuitA;
-      if (need + main <= bus + 1e-9) {
-        set("p2.lsc.B31", "X", `derived: 1.25 x ${fmt(circuitA)} A + ${main} A main = ${fmt(need + main)} A <= ${bus} A bus (705.12(B)(3)(1), 100% rule)`);
-      } else if (bus * 1.2 - main >= Math.max(need, pvBreaker ?? 0) - 1e-9) {
-        set("p2.lsc.B32", "X", `derived: ${bus} A x 1.2 - ${main} A = ${fmt(bus * 1.2 - main)} A >= ${pvBreaker != null ? `${pvBreaker} A PV breaker` : `${fmt(need)} A`} (705.12(B)(3)(2), 120% rule — PV breaker at the opposite end of the busbar from the main; confirm on the one-line)`);
-      } else {
-        basis["p2.lsc.B32"] = `neither busbar rule holds: 1.25 x ${fmt(circuitA)} + ${main} = ${fmt(need + main)} > ${bus}; ${bus} x 1.2 - ${main} = ${fmt(bus * 1.2 - main)} < ${fmt(Math.max(need, pvBreaker ?? 0))}`;
+    } else if (busbarRow()) {
+      const d = busbarRow()!;
+      if (d.row) set(`p2.lsc.${d.row}`, "X", d.why);
+      else {
+        basis["p2.lsc.B32"] = d.why;
         ask("iaPvLoadSideRow", "Neither the 100% nor the 120% busbar rule holds with the parsed ratings. Which 705.12(B)(3) subsection does the design use?", LOAD_SIDE_ROW_OPTIONS);
       }
     } else {
