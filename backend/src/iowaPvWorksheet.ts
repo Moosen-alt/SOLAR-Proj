@@ -106,22 +106,22 @@ export function mountingPlaneCount(snapshot: Record<string, unknown>): { count: 
     const o = (a ?? {}) as Record<string, unknown>;
     return firstNumber(o.tilt) != null || firstNumber(o.azimuth) != null;
   }) : [];
+  const az = String(snapshot.azimuth ?? "").trim();
+  const tilt = String(snapshot.tilt ?? "").trim();
+  const azs = az ? az.split(/[\/,;&]|\band\b/).map((s) => s.trim()).filter(Boolean) : [];
+  const tilts = tilt ? tilt.split(/[\/,;&]|\band\b/).map((s) => s.trim()).filter(Boolean) : [];
+  const scalar = az || tilt ? Math.max(azs.length, tilts.length, 1) : null;
+  // Both are plane evidence; intake can derive a single pvArrays row from a slashed scalar
+  // ("180/ 90"), so the larger reading wins.
   if (oriented.length) {
-    list = oriented;
-    const keys = new Set((list as unknown[]).map((a) => {
+    const keys = new Set(oriented.map((a) => {
       const o = (a ?? {}) as Record<string, unknown>;
       return `${firstNumber(o.tilt) ?? "?"}/${firstNumber(o.azimuth) ?? "?"}`;
     }));
+    if (scalar != null && scalar > keys.size) return { count: scalar, basis: `azimuth "${az}" / tilt "${tilt}" -> ${scalar} plane(s)` };
     return { count: keys.size, basis: `pvArrays lists ${oriented.length} oriented array(s) on ${keys.size} distinct tilt/azimuth plane(s)` };
   }
-  const az = String(snapshot.azimuth ?? "").trim();
-  const tilt = String(snapshot.tilt ?? "").trim();
-  if (az || tilt) {
-    const azs = az ? az.split(/[\/,;&]|\band\b/).map((s) => s.trim()).filter(Boolean) : [];
-    const tilts = tilt ? tilt.split(/[\/,;&]|\band\b/).map((s) => s.trim()).filter(Boolean) : [];
-    const n = Math.max(azs.length, tilts.length, 1);
-    return { count: n, basis: `azimuth "${az}" / tilt "${tilt}" -> ${n} plane(s)` };
-  }
+  if (scalar != null) return { count: scalar, basis: `azimuth "${az}" / tilt "${tilt}" -> ${scalar} plane(s)` };
   return { count: null, basis: "no azimuth/tilt or per-array breakdown parsed" };
 }
 

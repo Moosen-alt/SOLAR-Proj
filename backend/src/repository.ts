@@ -133,6 +133,7 @@ import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { resolvePermitPath } from "./permitPath";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
+import type { PvWorksheetGateInput } from "./pvWorksheetGate";
 import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, resolvePermitPathForProject, recordApprovedDesignObservation, isStructuralPermitTrack } from "./codeProfiles";
 import { applyCachedVisionVerdicts } from "./reviewerVision";
 import { nowIso } from "./time";
@@ -187,7 +188,31 @@ export function buildReviewerReportFor(db: AppDb, project: ProjectRecord): Revie
   // The reviewer's plan-set requirement is about whether the package EXISTS; give it the
   // attached document types so it cannot block a project that has them.
   const uploadedDocTypes = Object.keys(projectDocsByType(db, project.id));
-  return buildReviewerReport(project, { codeContext, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id) });
+  return buildReviewerReport(project, { codeContext, uploadedDocTypes, documentTexts: designDocumentTexts(db, project.id), pvWorksheet: filedPvWorksheetInput(db, project) });
+}
+
+/** The newest filed PV worksheet read by position (project_documents.form_reading_json, written
+ *  at text extraction), with its upload time against the newest plan set's. undefined = none. */
+function filedPvWorksheetInput(db: AppDb, project: ProjectRecord): PvWorksheetGateInput | undefined {
+  try {
+    const ws = db.get<Row>(
+      "SELECT form_reading_json, uploaded_at FROM project_documents WHERE project_id = ? AND form_reading_json != '' ORDER BY uploaded_at DESC LIMIT 1",
+      [project.id],
+    );
+    if (!ws) return undefined;
+    const plan = db.get<Row>(
+      "SELECT MAX(uploaded_at) AS at FROM project_documents WHERE project_id = ? AND doc_type IN ('plan_set','combined_plan_set','full_plan_set','plan','plan_pdf','sld') AND COALESCE(source,'') != 'split'",
+      [project.id],
+    );
+    return {
+      reading: JSON.parse(text(ws.form_reading_json)) as PvWorksheetGateInput["reading"],
+      worksheetUploadedAt: text(ws.uploaded_at),
+      newestPlanUploadedAt: text(plan?.at),
+      planText: String(project.parserSnapshot?.planSetExtractedText ?? ""),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 // What each stored DOCUMENT says, one source per document — so a design-criteria conflict is

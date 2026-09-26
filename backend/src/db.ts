@@ -1018,6 +1018,9 @@ function migrate(db: AppDb): void {
   // reviewer gate's evidence engine so callouts check the ACTUAL plan sheets, not only
   // the parser snapshot. (Added after the CREATE above so fresh DBs migrate cleanly.)
   addColumnIfMissing(db, "project_documents", "extracted_text", "TEXT NOT NULL DEFAULT ''");
+  // A filed FORM read by position (the Iowa SFM PV worksheet: pvWorksheetGate.readFiledPvWorksheet),
+  // JSON. The text blob above loses the positions that say which value belongs to which box.
+  addColumnIfMissing(db, "project_documents", "form_reading_json", "TEXT NOT NULL DEFAULT ''");
 
   runVersionedMigrations(db);
 

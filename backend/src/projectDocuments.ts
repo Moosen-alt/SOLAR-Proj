@@ -42,6 +42,17 @@ async function extractDocumentText(db: AppDb, docId: string, storedPath: string)
   }
   db.run("UPDATE project_documents SET extracted_text = ? WHERE id = ?", [extracted || "[no text layer]", docId]);
   if (extracted) recordFeeSummaryIfPresent(db, docId, extracted);
+  if (extracted && /PHOTOVOLTAIC WORKSHEET/i.test(extracted) && /PV SYSTEM OVERVIEW/i.test(extracted)) await recordFiledWorksheetReading(db, docId, storedPath);
+}
+
+/** A filed Iowa SFM PV worksheet, read by position, for the gate (pvWorksheetGate). Only the
+ *  2020 edition's layout is read; anything else stores nothing. */
+async function recordFiledWorksheetReading(db: AppDb, docId: string, storedPath: string): Promise<void> {
+  try {
+    const { readFiledPvWorksheet } = await import("./pvWorksheetGate");
+    const reading = await readFiledPvWorksheet(new Uint8Array(fs.readFileSync(storedPath)));
+    if (reading) db.run("UPDATE project_documents SET form_reading_json = ? WHERE id = ?", [JSON.stringify(reading), docId]);
+  } catch { /* best effort: no reading, no worksheet findings */ }
 }
 
 // THE AUTHORITY ALREADY DID THE ARITHMETIC; READ IT WHILE THE TEXT IS IN HAND.

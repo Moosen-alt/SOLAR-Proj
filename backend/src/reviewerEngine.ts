@@ -1,5 +1,6 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, ReviewerReport } from "../../shared/src/types";
 import { evaluateDesignCodeFindings, mountKindForProject, isMlpeDesignForProject } from "./codeReviewRules";
+import { pvWorksheetFindings, serviceRatingConsistencyFindings, type PvWorksheetGateInput } from "./pvWorksheetGate";
 import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
 import { findApplicationProfile } from "./applicationDocs";
@@ -78,6 +79,8 @@ export function buildReviewerReport(
     uploadedDocTypes?: string[];
     /** Per-document text for the design-criteria rules (one source per document). */
     documentTexts?: DesignTextSource[];
+    /** A filed state PV worksheet read by position + upload times (pvWorksheetGate). */
+    pvWorksheet?: PvWorksheetGateInput;
   } = {},
 ): ReviewerReport {
   const profile = findAhjProcessProfile(project);
@@ -86,6 +89,10 @@ export function buildReviewerReport(
   addCoreProjectFindings(project, findings);
   addSubmittalDataFindings(project, findings);
   findings.push(...evaluateDesignCodeFindings(project, profile, opts.codeContext, opts.uploadedDocTypes ?? [], opts.documentTexts ?? []));
+  // Iowa City correction themes: the filed PV worksheet against the plan, and the one-line's
+  // service ratings against the rest of the set (the package's own words, not parser notes).
+  if (opts.pvWorksheet) findings.push(...pvWorksheetFindings(project, opts.pvWorksheet));
+  findings.push(...serviceRatingConsistencyFindings(project, [String(project.parserSnapshot?.planSetExtractedText ?? ""), ...(opts.documentTexts ?? []).map((d) => d.text)].join("\n")));
   addPlanSetFindings(project, findings);
   addUtilityFindings(project, findings);
   addProfileFindings(project, profile, findings, opts.uploadedDocTypes ?? []);
