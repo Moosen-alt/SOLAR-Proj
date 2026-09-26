@@ -18,6 +18,10 @@
 // MUST-PASS accelaContinue (Accela's mid-flow Continue Application in the same whole-page form)
 // and login (a Sign In form's Enter signs in).
 //
+// CLOSE3 SKEPTIC MF1: the scope is ALWAYS the page — MUST-EXCLUDE enterFormScope (a search box in
+// its own form, "Submit Application" elsewhere on the page); MUST-PASS enterFormScopeOk (the same
+// box with only Next / Save / Search and a step bar naming Review & Submit).
+//
 // Run: npx tsx portal-bot/src/adapters/replayEnterGuard.dom.smoke.ts
 import "../smokeArtifactDirs";
 import http from "node:http";
@@ -152,11 +156,26 @@ const PAGES: Record<string, string> = {
       <button type="submit" formaction="/search">Search</button><x-actions></x-actions></form>
     <script>customElements.define('x-actions', class extends HTMLElement { constructor(){ super(); const r = this.attachShadow({mode:'open'});
       r.innerHTML = '<button type="button">Submit Application</button>'; r.querySelector('button').addEventListener('click', () => fetch('/api/apply/42', {method:'POST', body:'x=1'})); } });</script>`,
+  // ---- CLOSE3 SKEPTIC MF1 (close3New.probe.ts enterFormScope, synthetic): a positively
+  // identified type=search box inside its OWN little form (a header site search, onsubmit=return
+  // false) on a mid-flow page that ALSO shows "Submit Application" outside that form, with a
+  // document keydown mapping Enter to it — 1 filing POST, ok=true, when the scope was the form.
+  enterFormScope: `<h1>Step 3: Project Details</h1><form role="search" method="get" action="/search" onsubmit="return false"><label for="q">Parcel Number</label><input type="search" id="q" name="q"></form>
+    <label for="nm">Contact Name</label><input id="nm"><button type="button" id="sb">Submit Application</button>
+    <script>document.getElementById("sb").addEventListener("click", () => { fetch("/api/apply/42", {method:"POST", body:"x=1"}).catch(()=>{}); });
+      document.addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("sb").click(); });</script>`,
+  // MUST-PASS: the same search box in its own form on a page whose other controls are only
+  // Next / Save / Search, and a step bar (nav) naming "Review & Submit" — the navigator is not
+  // something Enter reaches, form or no form.
+  enterFormScopeOk: `<h1>Step 3: Project Details</h1><nav><ol><li>Location</li><li><a href="#review">Review &amp; Submit</a></li></ol></nav>
+    <form role="search" method="post" action="/search"><label for="q">Parcel Number</label><input type="search" id="q" name="q"></form>
+    <label for="nm">Contact Name</label><input id="nm"><button type="button">Search</button> <button type="button">Save</button> <button type="button">Next</button>`,
 };
 // The rule each close3 MUST-EXCLUDE cell must be refused BY.
 const REASON: Record<string, RegExp> = {
   search: /positively identified/, accelaContinue: /positively identified/, enterNoForm: /positively identified/, shadowSubmit: /positively identified/,
   jsKeydownSearch: /form also holds "Submit Application"/, noFormFiles: /page also holds "Submit Application"/, hiddenSubmitter: /form also holds the hidden submitter "Submit Application"/,
+  enterFormScope: /page also holds "Submit Application"/,
   propDefaultOtherForm: /default button "Submit Application"/, customElementSubmit: /form also holds the custom-element button "Submit Application"/, shadowRootSubmit: /form also holds, inside a shadow root, "Submit Application"/,
 };
 const server = http.createServer((req, res) => {
@@ -203,7 +222,7 @@ const recipe = (m: string): PortalRecipe => ({
 
 const browser = await chromium.launch();
 try {
-  const MUST_PASS_POSTS: Record<string, string> = { searchBox: "/search", accelaContinueSearch: "/search", noFormSearchOk: "/search", login: "/Account/Login" };
+  const MUST_PASS_POSTS: Record<string, string> = { searchBox: "/search", accelaContinueSearch: "/search", noFormSearchOk: "/search", login: "/Account/Login", enterFormScopeOk: "/search" };
   for (const m of [...Object.keys(BUTTONS), ...Object.keys(PAGES)].filter((k) => !process.env.SMOKE_ONLY || process.env.SMOKE_ONLY.split(",").includes(k))) {
     const ctx = await browser.newContext();
     await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });

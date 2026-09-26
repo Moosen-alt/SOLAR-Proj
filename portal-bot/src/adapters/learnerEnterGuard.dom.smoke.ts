@@ -13,6 +13,9 @@
 //   "Submit Application".
 // MUST-PASS: a type=search box in a form whose only button is "Search" -> Enter pressed, POST
 //   /search, a press step recorded.
+// CLOSE3 SKEPTIC MF1: MUST-EXCLUDE enterFormScope (the box in its own form, "Submit Application"
+//   elsewhere on the page); MUST-PASS enterFormScopeOk (same box, only Search / Save Draft / Next,
+//   a step bar naming "Review and Submit").
 //
 // Run: npx tsx portal-bot/src/adapters/learnerEnterGuard.dom.smoke.ts
 import "../smokeArtifactDirs";
@@ -38,6 +41,17 @@ const PAGES: Record<string, string> = {
     <form method="post" action="/other"><label for="q">Find a parcel</label>
       <input id="q" name="q" type="search" onkeydown="if(event.key==='Enter'){event.preventDefault();this.form.requestSubmit(document.getElementById('f'));}">
       <button type="submit" formaction="/search">Search</button><button id="f" type="submit" formaction="/submit">Submit Application</button></form>`,
+  // CLOSE3 SKEPTIC MF1: a type=search box in its OWN small form; "Submit Application" sits outside
+  // that form and a document keydown maps Enter to it. The scope is the page, not the form.
+  enterFormScope: `<h1>Step 3: Project Details</h1><form role="search" method="post" action="/search" onsubmit="return false"><label for="q">Find a parcel</label><input type="search" id="q" name="q"></form>
+    <label for="nm">Contact Name</label><input id="nm"><button type="button" id="sb">Submit Application</button>
+    <script>document.getElementById("sb").addEventListener("click", () => { fetch("/api/apply/42", {method:"POST", body:"x=1"}).catch(()=>{}); });
+      document.addEventListener("keydown", (e) => { if (e.key === "Enter") document.getElementById("sb").click(); });</script>`,
+  // MUST-PASS: the same box, the page's other controls only Search / Save / Next, and a 7-step bar
+  // naming "Review and Submit" (EnerGov CSS prints it on every page) — not the review page.
+  enterFormScopeOk: `<nav aria-label="Application steps"><ol><li>Locations</li><li>Type</li><li>Contacts</li><li>More Info</li><li>Attachments</li><li>Signature</li><li>Review and Submit</li></ol></nav>
+    <h1>Step 3: Project Details</h1><form role="search" method="post" action="/search"><label for="q">Find a parcel</label><input type="search" id="q" name="q"></form>
+    <label for="nm">Contact Name</label><input id="nm"><button type="button">Search</button> <button type="button">Save Draft</button> <button type="button">Next</button>`,
   searchOnly: `<h1>Property Search</h1>
     <form method="post" action="/search"><label for="q">Find a parcel</label><input id="q" name="q" type="search">
       <button type="submit">Search</button></form>`,
@@ -76,7 +90,7 @@ try {
     await page.waitForTimeout(600);
     await ctx.close().catch(() => null);
     const pressSteps = steps.filter((s) => String(s.action) === "press").length;
-    if (m === "searchOnly") {
+    if (m === "searchOnly" || m === "enterFormScopeOk") {
       check(`MUST-PASS ${m}: the learner presses Enter in a type=search box (POST /search, a press step recorded)`, pressed === true && posts.join(",") === "/search" && pressSteps === 1,
         `pressed=${String(pressed)} POSTs=[${posts.join(",")}] pressSteps=${pressSteps}`);
     } else {

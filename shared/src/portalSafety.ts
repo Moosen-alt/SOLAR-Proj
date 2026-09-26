@@ -320,7 +320,30 @@ export function portalSafetyFactory() {
   const reviewPageInPage = (): boolean | undefined => {
     const d = (globalThis as { document?: Document }).document;
     if (!d || !d.body) return undefined;
-    return isReviewPageText(d.body.innerText || d.body.textContent || "");
+    return isReviewPageText(pageTextWithoutNavigatorInPage(d));
+  };
+
+  /**
+   * Runs IN THE PAGE: the page's laid-out text with its STEP NAVIGATOR cut (see
+   * terminalPageInPage). ONE reading for every "does this page name itself the review step"
+   * question: EnerGov CSS and PowerClerk list "Review and Submit" / "Review & Submit" in the step
+   * bar on EVERY page, so reading the whole body called step 1 the review page — Enter in a search
+   * box was then refused as "Enter in its form would submit it" (enterFormScopeOk), and a human's
+   * mid-flow click would be classed as the filing click. textContent is the fallback where layout
+   * is unavailable.
+   */
+  const pageTextWithoutNavigatorInPage = (d: Document): string => {
+    let pageText = d.body.innerText || d.body.textContent || "";
+    const navs = Array.from(d.querySelectorAll("nav, [role=navigation], [role=tablist], [aria-label*=step i], [class*=stepper], [class*=steps], [class*=stepNav], [class*=step-nav], [class*=progress]"))
+      .concat(Array.from(d.querySelectorAll("ol, ul")).filter((list) => {
+        const items = Array.from(list.children);
+        return items.length >= 3 && items.every((li) => ((li as HTMLElement).innerText || li.textContent || "").trim().length < 60);
+      }));
+    for (const el of navs) {
+      const t = ((el as HTMLElement).innerText || el.textContent || "").trim();
+      if (t) pageText = pageText.split(t).join(" \n ");
+    }
+    return pageText;
   };
 
   /**
@@ -340,17 +363,7 @@ export function portalSafetyFactory() {
   const terminalPageInPage = (): { reviewPage?: boolean; readOnlyPage?: boolean; filingControl?: string; terminal?: boolean } => {
     const d = (globalThis as { document?: Document }).document;
     if (!d || !d.body) return {};
-    let pageText = d.body.innerText || "";
-    const navs = Array.from(d.querySelectorAll("nav, [role=navigation], [role=tablist], [aria-label*=step i], [class*=stepper], [class*=steps], [class*=stepNav], [class*=step-nav], [class*=progress]"))
-      .concat(Array.from(d.querySelectorAll("ol, ul")).filter((list) => {
-        const items = Array.from(list.children);
-        return items.length >= 3 && items.every((li) => ((li as HTMLElement).innerText || "").trim().length < 60);
-      }));
-    for (const el of navs) {
-      const t = ((el as HTMLElement).innerText || "").trim();
-      if (t) pageText = pageText.split(t).join(" \n ");
-    }
-    const reviewPage = isReviewPageText(pageText);
+    const reviewPage = isReviewPageText(pageTextWithoutNavigatorInPage(d));
     const readOnlyPage = readOnlyPageInPage();
     const filing = Array.from(d.querySelectorAll("button, a, input[type=submit], input[type=button], input[type=image], [role=button], [role=link]"))
       .filter((el) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 2 && r.height > 2; })
@@ -835,8 +848,9 @@ export function portalSafetyFactory() {
    *      (enterIdentityInPage: role searchbox/combobox, type=search, aria-autocomplete,
    *      enterkeyhint/inputmode=search, a search landmark, a password form). Anything else —
    *      "Parcel Number", an unnamed text box — is refused by name.
-   *   2'. The scope is the box's form, or THE PAGE when there is no form (a document keydown can
-   *      map Enter to any control: checker's enterNoForm), minus the page's step navigator.
+   *   2'. The scope is THE PAGE, whether or not the box sits in a form (a document keydown can
+   *      map Enter to any control: checker's enterNoForm, and enterFormScope — a search box in
+   *      its own little form), minus the page's step navigator.
    *      SUBMITTERS count even when hidden (a display:none "Submit Application" is still what a
    *      script-set default clicks: scriptDefaultHidden); custom-element buttons (a tag with "-"
    *      and type=submit or role=button, read by their light-DOM text: shadowSubmit) and the
@@ -871,18 +885,25 @@ export function portalSafetyFactory() {
     if (form && reviewPage === true) return "this page names itself the review step — Enter in its form would submit it";
     const readOnlyPage = readOnlyPageInPage();
     const ctx: ControlContext = { reviewPage: reviewPage === false ? false : undefined, readOnlyPage };
-    const scope: ParentNode = form || document;
-    const where = form ? "form" : "page";
+    // THE SCOPE IS ALWAYS THE PAGE (close3 skeptic MF1, enterFormScope). A document keydown maps
+    // Enter to ANY control whatever form the box sits in: a type=search header box inside its
+    // OWN <form role=search onsubmit="return false"> pressed "Submit Application" outside that
+    // form (1 filing POST, ok=true). The form is a subset of the page, so the page is judged
+    // every time; the reason still names the form when the control is inside it.
+    const scope: ParentNode = document;
+    const whereOf = (c: Element): string => (form && (c === form || form.contains(c) || (c as HTMLInputElement).form === form) ? "form" : "page");
     const visible = (c: Element): boolean => {
       const r = c.getBoundingClientRect();
       const cs = getComputedStyle(c);
       return r.width > 1 && r.height > 1 && cs.display !== "none" && cs.visibility !== "hidden";
     };
-    // The page's step navigator is not something Enter reaches ("Review & Submit" in a step bar).
-    const inNavigator = (c: Element): boolean => !form && !!c.closest && !!c.closest("nav, [role=navigation], [role=tablist]");
+    // The page's step navigator is not something Enter reaches ("Review & Submit" in a step bar)
+    // — with or without a form around the box.
+    const inNavigator = (c: Element): boolean => !!c.closest && !!c.closest("nav, [role=navigation], [role=tablist]");
     const labelOf = (c: Element): string => clean(controlLabelInPage(c) || (c as HTMLElement).innerText || (c as HTMLInputElement).value || c.textContent || "");
-    const judge = (label: string, what = ""): string => {
+    const judge = (label: string, what: string, c: Element): string => {
       if (!label) return "";
+      const where = whereOf(c);
       if (isPayFee(label)) return `the ${where} also holds${what} "${label.slice(0, 50)}", which pays a fee — a page script can map Enter to it`;
       if (isSubmitIntent(label, ctx)) return `the ${where} also holds${what} "${label.slice(0, 50)}", which is submit-worded — a page script can map Enter to it`;
       return "";
@@ -898,7 +919,7 @@ export function portalSafetyFactory() {
       const submitter = (tag === "BUTTON" && (type === "" || type === "submit")) || (tag === "INPUT" && /^(submit|image)$/.test(type));
       const isControl = submitter || tag === "BUTTON" || (tag === "INPUT" && type === "button") || c.getAttribute("role") === "button" || tag === "A";
       if (!isControl || (!submitter && !visible(c)) || inNavigator(c)) continue;
-      const why = judge(labelOf(c), submitter && !visible(c) ? " the hidden submitter" : "");
+      const why = judge(labelOf(c), submitter && !visible(c) ? " the hidden submitter" : "", c);
       if (why) return why;
     }
     // Custom-element buttons and open shadow roots.
@@ -908,12 +929,12 @@ export function portalSafetyFactory() {
       const type = String(c.getAttribute("type") || "").toLowerCase();
       const role = String(c.getAttribute("role") || "").toLowerCase();
       if (type !== "submit" && role !== "button") continue;
-      const why = judge(labelOf(c), " the custom-element button");
+      const why = judge(labelOf(c), " the custom-element button", c);
       if (why) return why;
     }
     const walkShadow = (root: ShadowRoot, host: Element, depth: number): string => {
       for (const s of Array.from(root.querySelectorAll("button, input[type=submit], input[type=image], input[type=button], [role=button]"))) {
-        const why = judge(labelOf(s) || clean(host.textContent), ", inside a shadow root,");
+        const why = judge(labelOf(s) || clean(host.textContent), ", inside a shadow root,", host);
         if (why) return why;
       }
       if (depth < 4) {
