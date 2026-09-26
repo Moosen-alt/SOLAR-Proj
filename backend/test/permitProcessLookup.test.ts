@@ -21,6 +21,8 @@
 //   K11 a form title accepted as a record type                 → (q3) fails.
 //   K12 documents/fees without page reading                    → (q1) fails.
 //   K13 a fetched page not counted as seen                     → (q1) fails.
+//   K14 a generic-only agency name kept                        → (a4) fails.
+//   K15 no documents/fees retry after an abort                 → (q5) fails.
 //
 // Run: npx tsx backend/test/permitProcessLookup.test.ts
 import "./_isolate"; // FIRST
@@ -164,7 +166,7 @@ await check("(x7) a re-run whose part aborts never forgets an earlier cited answ
   const aborted: WebLookupResult = { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: "Request was aborted." };
   let asked = 0;
   await ppl.runPermitProcessLookup(db, { webLookup: async () => { asked++; return aborted; } }, { state: "OR", ahj: "City of Elmstead", force: true });
-  assert.equal(asked, 4, "the aborted process part is retried once, then the portal step and documents/fees are asked");
+  assert.equal(asked, 5, "the aborted process part is retried once, then the portal step, and documents/fees (retried once without page reading)");
   const lk = pp.permitProcessFor(project("City of Elmstead"))!;
   assert.equal(lk.issuingAgency.value, "Marion County");
   assert.equal(lk.permits.find((p) => p.discipline === "structural")?.fee.value?.amountUsd, 67.25);
@@ -325,6 +327,22 @@ await check("(q4) an aborted portal step keeps nothing and loses nothing else", 
   assert.equal(s.portalUrl.value, null);
   assert.equal(s.fee.value?.amountUsd, 67.25);
   assert.equal(run.lookup!.issuingAgency.value, "Marion County");
+});
+
+await check("(q5) MUST-PASS: a documents/fees call that ABORTS while reading pages is retried once without page reading, and its cited answer is kept", async () => {
+  let docsCalls = 0;
+  const rec = recorder({
+    process: grounded(processAnswer()),
+    docs: () => (++docsCalls === 1 ? { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: "Request was aborted." } : grounded(feesAnswer())),
+  });
+  const run = await ppl.runPermitProcessLookup(db, rec.llm, { state: "OR", ahj: "City of Nettlecombe" });
+  const d = rec.asked.filter((a) => /documentsFees$/.test(a.label));
+  assert.deepEqual(d.map((a) => a.readPages), [true, false]);
+  assert.equal(run.lookup!.permits.find((p) => p.discipline === "structural")?.fee.value?.amountUsd, 67.25);
+  // An answer that RAN and found nothing is not retried.
+  const rec2 = recorder({ process: grounded(processAnswer()), docs: grounded(JSON.stringify({ permits: [] })) });
+  await ppl.runPermitProcessLookup(db, rec2.llm, { state: "OR", ahj: "City of Oxbow" });
+  assert.equal(rec2.asked.filter((a) => /documentsFees$/.test(a.label)).length, 1);
 });
 
 if (failures) { console.error(`\n${failures} permitProcessLookup test(s) failed.`); process.exit(1); }

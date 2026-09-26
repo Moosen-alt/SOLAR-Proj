@@ -357,12 +357,14 @@ export interface PermitProcessLookupRun {
 
 /**
  * THE BOUND (per lookup, worst case). Calls: process 1 (+1 retry on an abort) + portal ≤ 2 + documents/
- * fees ≤ 2 = 6. Searches: 8 (+8) + 2×4 + 2×5 = 34. Page fetches (readPages): 2×3 + 2×3 = 12, each capped
- * at DESIGN_LOOKUP_MAX_PAGE_TOKENS. Time: the portal and documents/fees calls run CONCURRENTLY after
- * the process part, so wall time ≤ 2 × LOOKUP_PART_BUDGET_MS (process + retry) + one part budget =
- * 15 min at the 300 s default. Every call carries its own abort; an aborted/ungrounded call keeps
- * NOTHING (no search results → no value), so a timeout never saves a guess.
+ * fees ≤ 2 (+1 retry each on an abort, WITHOUT page reading) = 8. Searches: 8 (+8) + 2×4 + 2×5 (+2×5)
+ * = 44. Page fetches (readPages): 2×3 + 2×3 = 12, each capped at DESIGN_LOOKUP_MAX_PAGE_TOKENS. Time:
+ * the portal and documents/fees calls run CONCURRENTLY after the process part, so wall time ≤ 4 part
+ * budgets (process + retry, documents/fees + retry) = 20 min at the 300 s default. Every call carries
+ * its own abort; an aborted/ungrounded call keeps NOTHING (no search results → no value), so a
+ * timeout never saves a guess.
  */
+const ABORTED = /abort|timeout|timed out|overloaded|5\d\d/i;
 const PORTAL_SEARCHES = 4;
 const PORTAL_FETCHES = 3;
 const DOCS_SEARCHES = 5;
@@ -394,7 +396,7 @@ export async function runPermitProcessLookup(
   const askProcess = () => ask({ label: "permitProcessLookup.process", system: PROCESS_LOOKUP_SYSTEM, user: where, maxTokens: 8000, maxSearches: 8, readPages: false, timeoutMs: partBudgetMs() });
   let p1 = await askProcess();
   logCall("process", p1, { readPages: false });
-  if (p1.error && /abort|timeout|timed out|overloaded|5\d\d/i.test(p1.error)) {
+  if (p1.error && ABORTED.test(p1.error)) {
     p1 = await askProcess();
     logCall("process (retry)", p1, { readPages: false });
   }
@@ -412,7 +414,7 @@ export async function runPermitProcessLookup(
 
   // THE PORTAL IS ITS OWN GROUNDED STEP (reading the agency's pages), for the permits part one left
   // without a cited portal or record type; documents/fees read pages too. All run concurrently.
-  const tasks: Array<Promise<{ kind: "portal" | "docs"; agency: string; disciplines: PermitProcessDiscipline[]; r: WebLookupResult }>> = [];
+  const tasks: Array<Promise<{ kind: "portal" | "docs"; agency: string; disciplines: PermitProcessDiscipline[]; r: WebLookupResult; first?: WebLookupResult }>> = [];
   for (const g of groups) {
     const needPortal = g.disciplines.filter((d) => !byDiscipline.get(d)?.portalUrl.value || !byDiscipline.get(d)?.recordType.value);
     const head = `Issuing agency: ${g.agency}\nFor permits in: ${input.ahj}, ${input.state}`;
@@ -420,8 +422,14 @@ export async function runPermitProcessLookup(
       tasks.push(ask({ label: "permitProcessLookup.portal", system: PORTAL_LOOKUP_SYSTEM, user: `${head}\nPermits: ${needPortal.join(", ")}`, maxTokens: 6000, maxSearches: PORTAL_SEARCHES, readPages: true, maxFetches: PORTAL_FETCHES, timeoutMs: partBudgetMs() })
         .then((r) => ({ kind: "portal" as const, agency: g.agency, disciplines: needPortal, r })));
     }
-    tasks.push(ask({ label: "permitProcessLookup.documentsFees", system: DOCS_FEES_LOOKUP_SYSTEM, user: `${head}\nPermits: ${g.disciplines.join(", ")}\n${system}`, maxTokens: 8000, maxSearches: DOCS_SEARCHES, readPages: true, maxFetches: DOCS_FETCHES, timeoutMs: partBudgetMs() })
-      .then((r) => ({ kind: "docs" as const, agency: g.agency, disciplines: g.disciplines, r })));
+    // Reading fee-schedule PDFs can outrun the part budget (the recall eval: 3 of 7 aborted at 300 s);
+    // an ABORTED page-reading call is retried once without page reading — the lighter question that
+    // finished before — so reading pages never costs the answer the lookup used to get.
+    const askDocs = (readPages: boolean) => ask({ label: "permitProcessLookup.documentsFees", system: DOCS_FEES_LOOKUP_SYSTEM, user: `${head}\nPermits: ${g.disciplines.join(", ")}\n${system}`, maxTokens: 8000, maxSearches: DOCS_SEARCHES, readPages, ...(readPages ? { maxFetches: DOCS_FETCHES } : {}), timeoutMs: partBudgetMs() });
+    tasks.push(askDocs(true).then(async (first) => {
+      if (!(first.error && ABORTED.test(first.error))) return { kind: "docs" as const, agency: g.agency, disciplines: g.disciplines, r: first };
+      return { kind: "docs" as const, agency: g.agency, disciplines: g.disciplines, r: await askDocs(false), first };
+    }));
   }
   const answers = await Promise.all(tasks);
 
@@ -432,7 +440,8 @@ export async function runPermitProcessLookup(
   const prerequisites = [...part1.prerequisites];
   const raw = { process: p1.text, documentsFees: "", processUrls: p1.resultUrls, documentsFeesUrls: [] as string[], portal: "", portalUrls: [] as string[] };
   for (const a of answers) {
-    logCall(a.kind === "portal" ? "portal" : "documentsFees", a.r, { readPages: true, agency: a.agency });
+    if (a.first) logCall("documentsFees", a.first, { readPages: true, agency: a.agency });
+    logCall(a.kind === "portal" ? "portal" : a.first ? "documentsFees (retry, no page reading)" : "documentsFees", a.r, { readPages: !a.first, agency: a.agency });
     const grounded = a.r.groundedSearches > 0;
     if (a.kind === "portal") {
       raw.portal += (raw.portal ? "\n" : "") + a.r.text;
