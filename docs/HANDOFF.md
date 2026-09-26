@@ -106,6 +106,12 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 - Rule adjusted (operator authorization 2026-09-25): fee research waits for the per-job lookup when one is queued (the lookup re-triggers
   it knowing which agency charges), and a fuzzy fee-schedule match never bridges a CITY to a like-named COUNTY (City of Jefferson ≠
   Jefferson County) — a county collecting a city's fees is a sourced delegation row only.
+- Rule adjusted (operator authorization 2026-09-25, B8): "Engineered design with no stamped calculation" asks resolvePermitPath first —
+  never on a path RESOLVED prescriptive (text signals only while undecided; the Oregon golden now also shows it where the path
+  resolved engineered). The profile finding says "Oregon statewide profile applied" / "Per-job lookup applied" (callout) with the
+  packet's own predicate. Final-preview, installer-scope and prescriptive-upload reminders moved from findings to
+  finalSubmitGate.requirements; the locates callout needs digging. The code-basis finding is unchanged: at HEAD it compares electrical
+  (OESC 2021/NEC 2020 vs 2023 — TRUE per BCD), and ORSC is not compared.
 - Rule adjusted (operator authorization 2026-09-25): planner prompt — the kVA fee tier follows the AC rating (systemSizeAcKw), not DC;
   Category of Construction = the structure type and Type of Work = Alteration for an existing building (BCD guidance), never
   "Other"/"Solar"/"New". The replay binding applies the same guidance to recorded Oregon recipes.

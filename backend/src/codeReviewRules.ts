@@ -1,7 +1,7 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, StructureTypeFact } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS, packageShowsSld } from "./projectEvidence";
-import { pathWordingScope } from "./permitPath";
+import { pathWordingScope, resolvePermitPath } from "./permitPath";
 import {
   evaluateDesignCriteriaFindings,
   extractAttachmentSpacings,
@@ -702,8 +702,14 @@ export function evaluateDesignCodeFindings(
   // project. /engineer/i alone missed "Non-prescriptive" — the operator's own wording for a
   // TPO-roof job — which is exactly the case that needs a stamp. pathWordingScope reads that
   // as engineered; the plan-text signals below stay as the independent second route in.
-  const claimsEngineered = pathWordingScope(str(project, "permitPath")) === "engineered"
-    || hasAny(all, [/stamped structural/i, /structural letter/i, /sealed by/i, /\bP\.?E\.?\b/, /engineering (calc|letter|review|analysis)/i]);
+  // B8(a): ONE PREDICATE WITH permitPath. On City of Jefferson this fired "Engineered design with no
+  // stamped calculation" while the path had RESOLVED prescriptive — the text signals matched the
+  // parser's own NEGATIVE sentences ("No PE stamp or sealed structural letter present"). A path the
+  // shared resolver decided is the answer; the text signals speak only while it is undecided.
+  const resolvedPath = resolvePermitPath(project).path;
+  const claimsEngineered = resolvedPath === "engineered" || (resolvedPath !== "prescriptive" && (
+    pathWordingScope(str(project, "permitPath")) === "engineered"
+    || hasAny(all, [/stamped structural/i, /structural letter/i, /sealed by/i, /\bP\.?E\.?\b/, /engineering (calc|letter|review|analysis)/i])));
   if (roofMounted && claimsEngineered && !hasStampedEngineering) {
     out.push(finding({
       id: "city.struct.stamped-engineering-missing",

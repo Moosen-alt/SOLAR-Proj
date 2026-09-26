@@ -161,11 +161,18 @@ check("MUST STILL FIRE: a RAFTER roof missing span keeps the full demand (the Tr
   assert.ok(out.includes("city.struct.span-table-incomplete"), "rafters answer to the span tables");
 });
 
-check("a prescriptive package that MENTIONS an engineer still owes the stamp — but only as a warning", () => {
+// RULE ADJUSTED (operator authorization 2026-09-25, B8(a)): the gate asks the SAME predicate as the
+// permit path. A package whose path RESOLVED prescriptive does not owe a stamp because its text
+// mentions an engineer — on City of Jefferson the text signals matched the parser's own negative
+// sentence ("No PE stamp or sealed structural letter present").
+check("MUST-EXCLUDE: a package RESOLVED prescriptive that merely MENTIONS an engineer does not owe the stamp", () => {
   const mentions = { ...PRESCRIPTIVE, stampRecommendation: "sealed by a licensed P.E. if required" };
   const f = findingIn(["plan_set", "sld"], "city.struct.stamped-engineering-missing", mentions);
-  assert.ok(f, "a package invoking a P.E. without attaching one should still be called out");
-  assert.equal(f?.severity, "warning", "it did not declare the engineered path, so it is not a blocker");
+  assert.equal(f, undefined, "the path resolved prescriptive — one predicate with permitPath");
+});
+check("MUST-EXCLUDE: the parser's own negative sentence never reads as a claim of engineering", () => {
+  const negative = { ...PRESCRIPTIVE, structuralCalcText: "No PE stamp or sealed structural letter present; AHJ may require stamped structural review." };
+  assert.equal(findingIn(["plan_set", "sld"], "city.struct.stamped-engineering-missing", negative), undefined);
 });
 
 if (failures) { console.error(`\n${failures} stamped-engineering check(s) FAILED.`); process.exit(1); }

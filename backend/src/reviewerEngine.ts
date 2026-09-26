@@ -2,6 +2,8 @@ import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, 
 import { evaluateDesignCodeFindings, mountKindForProject, isMlpeDesignForProject } from "./codeReviewRules";
 import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
+import { findApplicationProfile } from "./applicationDocs";
+import { permitProcessFor } from "./permitProcess";
 import { evidenceForTopic, evidenceLines, fieldValue, requirementsForTopic, type EvidenceTopic, type ProjectEvidence } from "./projectEvidence";
 import { nowIso } from "./time";
 import { resolveValuation } from "./valuation";
@@ -135,13 +137,27 @@ export function buildReviewerReport(
     keep.delete(findings[i]); // a duplicate object reference must not survive twice
   }
 
+  // THE GATE AND THE PACKET ANSWER "WHICH PROCESS APPLIES?" WITH THE SAME PREDICATE
+  // (applicationDocs.findApplicationProfile + the per-job lookup). "No seeded AHJ process profile
+  // matched" while the packet had used the Oregon statewide profile read as a contradiction.
+  const appProfile = findApplicationProfile(project);
+  const looked = permitProcessFor(project);
+  const statewideApplied = appProfile.id === "oregon-generic-epermitting";
   if (!profile) {
     findings.push(finding(
       "reviewer.profile.missing",
-      "warning",
+      looked || statewideApplied ? "callout" : "warning",
       "ahj_profile",
-    "No seeded AHJ process profile matched",
-    "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal.",
+    looked
+      ? `Per-job lookup applied (seeded, cited); no hand-verified ${project.ahj || "AHJ"} profile on file`
+      : statewideApplied
+        ? `Oregon statewide profile applied; no ${project.ahj || "City"}-specific profile on file`
+        : "No seeded AHJ process profile matched",
+    looked
+      ? `${looked.issuingAgency.value ? `Issuing agency: ${looked.issuingAgency.value}. ` : ""}Permit structure: ${looked.permitStructure.value ?? "not found"}. Each answer carries its source; verify the not-found items before submittal.`
+      : statewideApplied
+        ? "The packet used the Oregon ePermitting statewide profile (separate structural + electrical permits, OAR 918-050-0180(2)); verify any local application, stamp or signature requirement."
+        : "Use generic AHJ docs and verify local application/stamp/signature requirements manually before submittal.",
     true,
     {
       cityFeedback: "The project jurisdiction/process requirements could not be matched to the seeded AHJ profile table. Provide confirmation of the AHJ, portal path, required applications, signature/stamp requirements, and utility sequencing before submission.",
@@ -151,22 +167,14 @@ export function buildReviewerReport(
   ));
   }
 
-  // Always "callout" — this is a process safety control, not a content deficiency.
-  // It is satisfied BY staging (automation stops at review), so it must never be
-  // a blocker that prevents staging from happening. See: deadlock audit check.
-  findings.push(finding(
-    "reviewer.submit.preview-required",
-    "callout",
-    "portal",
-    "Final AHJ preview is required",
-    "Do not rely on seeing only a submit button. The operator must see the actual AHJ/utility final-review page or generated final review packet, compare all fields/uploads, then manually click submit.",
-    false,
-    {
-      cityFeedback: "Automation may stage the package but may not complete legal submission. Final review requires visible AHJ/utility preview, uploaded file list, application fields, fees/acknowledgements, and manual human submit.",
-      designTeamAction: "Use the final review packet and portal preview to reconcile every field and upload before manual submit.",
-      evidenceNeeded: ["Visible portal final-review screen or internal final review packet", "Uploaded file list", "Application field summary", "Human submit confirmation"],
-    },
-  ));
+  // B8(d): BOILERPLATE REMINDERS ARE NOT FINDINGS. "Final AHJ preview is required", "Installer
+  // pre-submittal scope confirmation" and the prescriptive-path upload reminder are true of EVERY
+  // filing; listed beside real defects they read as defects of THIS project ("looks like you're
+  // calling them out for this project"). They live on the submit checklist (finalSubmitGate) —
+  // the final-preview control is still enforced by staging (automation stops at review).
+  const checklistOnly = new Set(["installer.scope-confirm", "reviewer.permit-path.prescriptive"]);
+  const moved = findings.filter((f) => checklistOnly.has(f.id));
+  for (let i = findings.length - 1; i >= 0; i--) if (checklistOnly.has(findings[i].id)) findings.splice(i, 1);
 
   const enrichedFindings = findings.map((item) => attachEvidence(project, profile, item));
 
@@ -184,6 +192,8 @@ export function buildReviewerReport(
         "Show internal final review packet when using mock/manual staging.",
         "Block final submit staging if blocker findings remain.",
         "Human must compare final portal fields, uploaded files, fees, and acknowledgements before clicking submit.",
+        "Final AHJ preview: see the actual AHJ/utility final-review page (never only a submit button), compare every field and upload, then submit by hand.",
+        ...moved.map((f) => `${f.title}: ${f.message}`),
       ],
     },
   };
@@ -984,7 +994,9 @@ function addInstallerCallouts(project: ProjectRecord, profile: AhjProcessProfile
       true,
     ));
   }
-  if (payload(project, "locateCalloutText") && !/no locate|not needed|not found/i.test(payload(project, "locateCalloutText"))) {
+  // A LOCATES CALLOUT ONLY WHEN THERE IS DIGGING. "No excavation — roof mount only" is the absence of
+  // the thing this warns about, and it was being listed as a finding.
+  if (payload(project, "locateCalloutText") && !/no locate|not needed|not found|no excavation|no trench|no digging|roof[- ]mount(?:ed)? only/i.test(payload(project, "locateCalloutText"))) {
     findings.push(finding("installer.locates", "callout", "installer", "Locates/utility coordination", payload(project, "locateCalloutText"), true));
   }
 
