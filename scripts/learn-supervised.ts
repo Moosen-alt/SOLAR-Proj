@@ -2,6 +2,7 @@
 //
 //   npm run learn:supervised -- --project <id-or-homeowner-name> [--track nem|building|electrical|combo]
 //   npm run learn:supervised -- --project "David Simmons" --dry-run
+//   npm run learn:supervised -- --project <id> --url https://egov.example.org/energovprod/selfservice#/home
 //
 // The machinery for this already existed and had no door. autoLearnPortal takes
 // `headless: false`, and autoLearnAdapter arms armHumanCaptureOnPage on every page it walks — so
@@ -26,6 +27,13 @@ const arg = (name: string): string => {
 const projectArg = arg("project");
 const trackArg = (arg("track") || "").toLowerCase();
 const dryRun = process.argv.includes("--dry-run");
+// --url: the portal to open, stated by the operator. Four of Monday's five portals have no KB
+// portal or only a stale one (Carlsbad and Iowa City have none; Columbus's seeded row is the old
+// ca.columbus.gov), so without this the script either exits or opens the wrong site. It is
+// judged by the SAME predicate the dashboard's auto-learn route uses (assertOperatorPortalUrlFits
+// -> portalChannel.hostFitsTrackAndEntity, CLAUDE.md rule 5): one question, one predicate.
+const urlGiven = process.argv.includes("--url");
+const urlArg = arg("url").trim();
 
 if (!projectArg) {
   console.error(`
@@ -33,6 +41,8 @@ Name the project:
   npm run learn:supervised -- --project <id-or-homeowner-name> [--track nem|building|electrical|combo]
 
   --track   which filing to learn. Omit for the permit side. "nem" learns the utility portal.
+  --url     the portal to open (overrides the KB/recipe URL). Refused when it does not fit the
+            track or the entity, exactly as the dashboard's auto-learn refuses it.
   --dry-run show what would be learned and where, and open nothing.
 `);
   process.exit(1);
@@ -92,7 +102,30 @@ const recipeUrl = safeForTrack(String((discipline
       ORDER BY updated_at DESC LIMIT 1`,
     [String(profile?.profileKey || "")],
   ))?.portal_url || ""));
-const portalUrl = recipeUrl || safeForTrack(String(profile?.portalUrl || ""));
+let portalUrl = recipeUrl || safeForTrack(String(profile?.portalUrl || ""));
+if (urlGiven) {
+  if (!/^https?:\/\/[^\s/]+/i.test(urlArg)) {
+    console.error(`\nREFUSED: --url needs an absolute http(s) portal URL (got ${JSON.stringify(urlArg)}).\n`);
+    process.exit(1);
+  }
+  const { assertOperatorPortalUrlFits, findAnyRecipeForProject } = await import("../backend/src/portalRecipes");
+  try {
+    // The project's own recipe for this key is not evidence for the URL being judged — the same
+    // exclusion the route applies.
+    const own = findAnyRecipeForProject(db, { scopeType: scope, state: project.state, ahj: project.ahj, utility: project.utility });
+    assertOperatorPortalUrlFits(db, {
+      track: scope === "utility" ? "nem" : "permit",
+      state: project.state,
+      name: scope === "utility" ? project.utility : project.ahj,
+      url: urlArg,
+      excludeRecipeIds: own ? [own.id] : [],
+    });
+  } catch (err) {
+    console.error(`\nREFUSED: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
+  portalUrl = urlArg;
+}
 
 console.log(`\n── SUPERVISED LEARN ─────────────────────────────────────────────`);
 console.log(`   project    ${project.homeownerName || project.id}  (${row.id.slice(0, 8)})`);
