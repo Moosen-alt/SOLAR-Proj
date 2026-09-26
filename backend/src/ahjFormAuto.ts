@@ -495,13 +495,21 @@ export interface EnsureFormResult {
   permitType?: string;
 }
 
-// Normalize the model's free-text platform label to a canonical platform + method.
-function canonicalPortal(research: AhjFormUrlResult): { platform: string; method: string } {
-  const blob = `${research.portalPlatform || ""} ${research.submissionMethod || ""} ${research.notes || ""}`.toLowerCase();
-  if (/projectdox|avolve/.test(blob)) return { platform: "ProjectDox", method: "online portal" };
-  if (/portland.*(portal|hub|devhub|development hub)/.test(blob)) return { platform: "Portland Portal", method: "online portal" };
-  if (/epermitting|accela|oregon.*permit/.test(blob)) return { platform: "Oregon ePermitting", method: "online portal" };
-  if (/email/.test(blob)) return { platform: "Email", method: "email" };
+// Normalize the model's STRUCTURED platform answer + the portal URL to a canonical platform + method.
+// Never a regex over its free-text notes: a note that DENIES a platform ("ProjectDox is STALE ...
+// replaced by EnerGov", "No Accela/ePermitting/ProjectDox portal applies here") stored ProjectDox for
+// Iowa City, Waltham, Northern Cambria, Corry and Venus in the shared knowledge base (new-AHJ e2e
+// test, 2026-09-26). Accela is "Oregon ePermitting" only on Oregon's own instance, never Lee County's.
+export function canonicalPortal(research: AhjFormUrlResult): { platform: string; method: string } {
+  const label = `${research.portalPlatform || ""} ${research.submissionMethod || ""}`.toLowerCase();
+  const method = String(research.submissionMethod || "").toLowerCase();
+  let host = "";
+  try { host = research.submittalPortalUrl ? new URL(research.submittalPortalUrl).hostname.toLowerCase() : ""; } catch { host = ""; }
+  if (/projectdox|avolve/.test(host) || /projectdox|avolve/.test(label)) return { platform: "ProjectDox", method: "online portal" };
+  if (host === "aca-oregon.accela.com" || /oregon\s*e-?permitting/.test(label)) return { platform: "Oregon ePermitting", method: "online portal" };
+  if (/(^|\.)accela\.com$/.test(host) || /\baccela\b|citizen access/.test(label)) return { platform: "Accela Citizen Access", method: "online portal" };
+  if (/portland.*(portal|hub|devhub|development hub)/.test(label)) return { platform: "Portland Portal", method: "online portal" };
+  if (!host && /\be-?mail\b/.test(method) && !/portal|online|in[- ]person/.test(method)) return { platform: "Email", method: "email" };
   return { platform: research.portalPlatform || "", method: research.submissionMethod || "" };
 }
 
