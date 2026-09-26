@@ -176,6 +176,36 @@ await check("(sv2) MUST-EXCLUDE a split-phase service is never filed as 120, a c
   assert.equal(W({ ...SHAPE23, serviceVoltage: "split phase" }).values["p2.serviceVoltage"], "");
 });
 
+await check("(vb1) MUST-EXCLUDE a Voc coefficient outside 0.05-1 %/C (mV/C, x100, a fraction) is unknown: blank + the coefficient question, never the Table fallback, never a 3166 V", () => {
+  for (const coeff of ["-136 mV/C", "-136 mV/°C", "-27", "-0.0027"]) {
+    const r = W({ ...SHAPE23, moduleVocTempCoeff: coeff });
+    assert.equal(r.values["p2.maxSystemVoltage"], "", coeff);
+    assert.equal(r.values["p3.A1"], "", coeff); assert.equal(r.values["p3.A2"], "", `${coeff}: a broken read is not 'no coefficient'`);
+    assert.equal(r.values["p3.A.calc"], "", coeff);
+    const q = r.questions.find((x) => x.key === "moduleVocTempCoeff");
+    assert.ok(q, `${coeff} asked`); assert.ok(q!.label.includes(coeff), "the question quotes the reading");
+    assert.doesNotMatch(Object.values(r.values).join("|"), /3166/);
+  }
+});
+await check("(vb2) MUST-EXCLUDE a computed max voltage above the micro's max DC input is never filed; the question names both numbers", () => {
+  const r = W({ ...SHAPE23, pvMicroMaxDcInputV: "48" }); // 51.2 V > 48 V
+  assert.equal(r.values["p2.maxSystemVoltage"], "");
+  assert.equal(r.values["p3.A1"], ""); assert.equal(r.values["p3.A.calc"], "");
+  const q = r.questions.find((x) => x.key === "iaPvMaxSystemVoltage");
+  assert.ok(q); assert.match(q!.label, /51\.2 V DC per micro input, ABOVE the microinverter's 48 V maximum DC input/);
+});
+await check("(vb3) MUST-EXCLUDE above 600 V on a one-/two-family dwelling is never filed; MUST-PASS the same string elsewhere, and an operator answer, are filed", () => {
+  const STR16 = { ...BASE, invMake: "SynthInverter", invModel: "SI-7600", invQty: "1", invOutputW: "32", moduleVoc: "40", siteLowTempC: "-26", modulesPerString: "16", interco: "Load-side breaker", busRating: "200", mainBreaker: "200", pvBreaker: "40" };
+  const r = W(STR16); // 40 x 1.21 x 16 = 774.4 V on an R-3 single-family
+  assert.equal(r.values["p2.maxSystemVoltage"], "");
+  const q = r.questions.find((x) => x.key === "iaPvMaxSystemVoltage");
+  assert.ok(q); assert.match(q!.label, /774\.4 V DC, ABOVE the 600 V maximum/);
+  const commercial = W({ ...STR16, dwellingUnits: "", constructionCategory: "B" });
+  assert.equal(commercial.values["p2.maxSystemVoltage"], "774.4 V DC", "no 600 V ceiling off a one-/two-family dwelling");
+  assert.equal(W({ ...STR16, iaPvMaxSystemVoltage: "580" }).values["p2.maxSystemVoltage"], "580 V DC", "the operator's answer settles the question");
+  assert.equal(W(SHAPE23).values["p2.maxSystemVoltage"], "51.2 V DC", "a sane value inside both bounds still files");
+});
+
 await check("(q1) an operator's answers to the worksheet questions reach the form (arrays, load-side row, DC-DC max voltage, unit current)", () => {
   const none: Record<string, unknown> = { ...SHAPE23, iaPvArrayCount: "2" }; delete none.azimuth; delete none.tilt;
   assert.equal(W(none).values["p2.arrays"], "2");

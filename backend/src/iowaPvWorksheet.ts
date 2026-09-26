@@ -151,6 +151,10 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   const basis: Record<string, string> = {};
   const questions: WorksheetQuestion[] = [];
   const set = (id: string, v: string, why: string) => { values[id] = v; basis[id] = why; };
+  // One- and two-family dwelling (page 3 location, and 690.7's 600 V ceiling for such dwellings).
+  const units = firstNumber(s.dwellingUnits);
+  const cat = String(s.constructionCategory ?? "").trim();
+  const oneTwo = (units != null && units >= 1 && units <= 2) || /\bR-?3\b|single[-\s]?family|two[-\s]?family|duplex/i.test(cat);
   const ask = (key: string, label: string, options: string[] = []) => {
     if (!questions.some((q) => q.key === key)) questions.push({ key, label, options, kind: "form-fact" });
   };
@@ -272,9 +276,6 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   }
 
   // ── page 3: location ───────────────────────────────────────────────────────────────────
-  const units = n("dwellingUnits");
-  const cat = str("constructionCategory");
-  const oneTwo = (units != null && units >= 1 && units <= 2) || /\bR-?3\b|single[-\s]?family|two[-\s]?family|duplex/i.test(cat);
   set("p3.loc12fam", onBuilding && oneTwo ? "X" : "", oneTwo ? `derived: ${units != null ? `${units} dwelling unit(s)` : `occupancy "${cat}"`}` : "dwelling units / occupancy not parsed");
   set("p3.locOther", "", "");
   set("p3.locNotBuilding", ground && !roof ? "X" : "", ground && !roof ? "derived: ground mount" : "");
@@ -283,14 +284,29 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   // ── Part A: 690.7 maximum voltage ──────────────────────────────────────────────────────
   for (const id of ["p3.A1", "p3.A2", "p3.A3", "p3.B1", "p3.B2"]) set(id, "", "");
   const voc = n("moduleVoc");
-  const beta = n("moduleVocTempCoeff");
+  const betaRaw = str("moduleVocTempCoeff");
+  const betaRead = n("moduleVocTempCoeff");
+  // SANITY BOUND: a crystalline or thin-film module's Voc coefficient is a few tenths of a percent
+  // per degree C. A value in mV/°C, or outside 0.05-1 %/°C, is a broken read (a wrong unit, a
+  // fraction, another column) — "-136 mV/C" computed and filed 3166 V for a micro input. It is
+  // UNKNOWN and asked, never used, and never silently replaced by the Table 690.7(A) factor (that
+  // path is for a datasheet that states no coefficient, not for one read wrong).
+  const betaBroken = betaRead != null && (/m\s*V/i.test(betaRaw) || Math.abs(betaRead) > 1 || Math.abs(betaRead) < 0.05);
+  const beta = betaBroken ? null : betaRead;
   const low = n("siteLowTempC");
   const perString = micro ? 1 : n("modulesPerString");
   const microMaxDc = n("pvMicroMaxDcInputV");
   let maxV: number | null = null;
   let partA = "";
   const dcdcAnswer = n("iaPvDcDcMaxVoltage");
-  if (optimizer && dcdcAnswer != null && dcdcAnswer > 0) {
+  const maxVAnswer = n("iaPvMaxSystemVoltage");
+  if (!optimizer && maxVAnswer != null && maxVAnswer > 0) {
+    // The operator's answer to the bound question below settles it.
+    set("p2.maxSystemVoltage", `${fmt(maxVAnswer, 1)} V DC`, `operator answer (iaPvMaxSystemVoltage ${str("iaPvMaxSystemVoltage")})`);
+  } else if (!optimizer && betaBroken) {
+    set("p2.maxSystemVoltage", "", `module Voc temperature coefficient "${betaRaw}" is outside the physical range (0.05-1 %/°C) — a broken read, not used; operator question`);
+    ask("moduleVocTempCoeff", `The module's Voc temperature coefficient reads "${betaRaw}", outside the physical range (0.05-1 %/°C, e.g. -0.27 %/°C). What is it, in %/°C, from the module datasheet?`);
+  } else if (optimizer && dcdcAnswer != null && dcdcAnswer > 0) {
     maxV = dcdcAnswer;
     set("p2.maxSystemVoltage", `${fmt(dcdcAnswer, 1)} V DC`, `operator answer: the DC-DC converter system's listed maximum (690.7(B)), ${str("iaPvDcDcMaxVoltage")}`);
   } else if (optimizer) {
@@ -310,12 +326,27 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
         set("p3.A2", "X", `derived: no temperature coefficient parsed; Table 690.7(A) factor ${f} at ${low} C`);
       }
     }
-    if (maxV != null && micro && microMaxDc != null) partA += ` per micro input (<= ${fmt(microMaxDc)} V micro max DC input${maxV > microMaxDc ? " — EXCEEDS the micro's max input" : ""})`;
+    if (maxV != null && micro && microMaxDc != null) partA += ` per micro input (<= ${fmt(microMaxDc)} V micro max DC input)`;
   } else if (micro && microMaxDc != null && voc == null) {
     maxV = microMaxDc;
     partA = `Microinverter listed maximum DC input ${fmt(microMaxDc)} V (module Voc not parsed; the micro's listing bounds each input)`;
   }
-  if (!optimizer) {
+  // SANITY BOUNDS on a computed value: above the micro's own maximum DC input (the module and micro
+  // cannot be paired, or an input is misread) or above 600 V on a one-/two-family dwelling (690.7's
+  // ceiling there) is never filed — it becomes a question naming the conflict.
+  let conflict = "";
+  if (!optimizer && maxV != null && micro && microMaxDc != null && maxV > microMaxDc + 1e-9) {
+    conflict = `the 690.7 calculation gives ${fmt(maxV, 1)} V DC per micro input, ABOVE the microinverter's ${fmt(microMaxDc)} V maximum DC input (${partA})`;
+  } else if (!optimizer && maxV != null && oneTwo && maxV > 600 + 1e-9) {
+    conflict = `the 690.7 calculation gives ${fmt(maxV, 1)} V DC, ABOVE the 600 V maximum for PV systems on one- and two-family dwellings (690.7) (${partA})`;
+  }
+  if (conflict) {
+    maxV = null; partA = "";
+    set("p2.maxSystemVoltage", "", `not filed: ${conflict} — operator question`);
+    for (const id of ["p3.A1", "p3.A2"]) set(id, "", "");
+    ask("iaPvMaxSystemVoltage", `Max system voltage conflict: ${conflict}. Check the module Voc, temperature coefficient, site low temperature and the module/inverter pairing — what is the maximum system voltage (V DC)?`);
+  }
+  if (!optimizer && !conflict && !betaBroken && !(maxVAnswer != null && maxVAnswer > 0)) {
     if (maxV != null) set("p2.maxSystemVoltage", `${fmt(maxV, 1)} V DC`, `derived: ${partA}`);
     else {
       set("p2.maxSystemVoltage", "", "module Voc, temperature coefficient/table, site low temperature" + (micro ? "" : " or modules per string") + " not all known — never the AC service voltage");
