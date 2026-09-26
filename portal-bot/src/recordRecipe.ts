@@ -122,7 +122,20 @@ export function createRecorderSink(
       // A secret <select> is the same: the chosen option (label or raw value) may bind, and
       // neither ever reaches the step — no value, and no option text in the note.
       const field = bindField(payload.value || "") || (payload.kind === "select" ? bindField(payload.rawValue || "") : undefined);
-      steps.push({ action: payload.kind === "select" ? "select" : "fill", selector: sel, ...fp, field, sensitive: true, optional: true, note: `SENSITIVE — ${field ? `bound to project field "${field}"` : "bind to credential/redacted field"} (no value stored). ${payload.label ?? ""}`.trim() });
+      // A SENSITIVE STEP KEEPS NO NUMBER-SHAPED TEXT in the parts that are stored. A label[for]
+      // that wraps a read-only span showing the STORED account number ("Account Number
+      // <span>5550001111</span>") made that number part of the field's accessible name, so it
+      // reached selector.name and the note (checker close-mustfix, bypass-label.log
+      // for-wraps-span). Digit runs of six or more are removed from the human-text parts (name,
+      // label, text, placeholder, note, fingerprint text); attribute keys (css, id, name) stay,
+      // because they are the replay's matching key and a customer's value is not an id.
+      const strip = (s: unknown): string => String(s ?? "").replace(/\d(?:[\s.\-/]?\d){5,}/g, " ").replace(/\s+/g, " ").trim();
+      const kept = { ...(sel as Record<string, unknown>) } as RecipeSelector & Record<string, unknown>;
+      for (const k of ["name", "label", "text", "placeholder"]) if (typeof kept[k] === "string") kept[k] = strip(kept[k]);
+      const fpKept = payload.fingerprint
+        ? { fingerprint: Object.fromEntries(Object.entries(payload.fingerprint).map(([k, v]) => [k, typeof v === "string" && k !== "id" && k !== "name" ? strip(v) : v])) as StepFingerprint }
+        : {};
+      steps.push({ action: payload.kind === "select" ? "select" : "fill", selector: kept, ...fpKept, field, sensitive: true, optional: true, note: `SENSITIVE — ${field ? `bound to project field "${field}"` : "bind to credential/redacted field"} (no value stored). ${strip(payload.label)}`.trim() });
     } else if (payload.kind === "fill") {
       const field = bindField(payload.value || "");
       steps.push(field ? { action: "fill", selector: sel, ...fp, field, note: payload.label } : { action: "fill", selector: sel, ...fp, value: payload.value, note: payload.label });

@@ -77,6 +77,7 @@ import {
 } from "../../../shared/src/portalSafety";
 import { commitField, installSettleProbe, waitForSettled } from "../settle";
 import { siteOfUrl } from "../siteOf";
+import { installFilingBackstop, withBackstopWindow, describeBackstopAbort, type FilingBackstop } from "../filingBackstop";
 
 // How long the drift precheck waits for an async-rendered form to paint before concluding
 // the replay is on the wrong page. PowerClerk's Ameren form reports zero inputs for several
@@ -482,7 +483,41 @@ export class RecipeAdapter extends BasePortalAdapter {
     // This parameter was received and discarded, which is precisely why replay never
     // verified its own work.
     this.hookDocumentMethod();
-    return this.runAll(project);
+    // THE NETWORK BACKSTOP for the whole replay (filingBackstop.ts). Installed here and REMOVED
+    // before this returns: the operator submits by hand in this same page after stopAtReview
+    // (armSubmitWatch), and a route left behind would abort the person's own filing.
+    this.backstop = await installFilingBackstop(this.page, "replay run").catch(() => null);
+    try {
+      const r = await this.runAll(project);
+      const stop = this.backstopStop();
+      // Every abort is reported (driftWarnings + guardRefusals, pushed by backstopStop); a
+      // filing/payment abort turns a run that "reached review" into a named failure.
+      if (stop && r.ok) return fail(stop, { ...(r.data ?? {}), driftWarnings: this.driftWarnings, guardRefusals: this.guardRefusals });
+      return r;
+    } finally {
+      await this.backstop?.dispose().catch(() => null);
+      this.backstop = null;
+    }
+  }
+
+  private backstop: FilingBackstop | null = null;
+  private backstopReported = 0;
+  /** Record every backstop abort not yet reported; the run-stopping reason when any of them was a
+   *  filing/payment request (the filing-URL rule), else "". A window abort (a dismisser click or
+   *  a terminal-page Enter fired a state-changing request — often a consent XHR) is reported and
+   *  the run goes on: nothing was sent. */
+  private backstopStop(): string {
+    const bs = this.backstop;
+    if (!bs) return "";
+    for (; this.backstopReported < bs.aborts.length; this.backstopReported++) {
+      const line = describeBackstopAbort(bs.aborts[this.backstopReported]);
+      this.guardRefusals.push(line);
+      this.driftWarnings.push(line);
+    }
+    const filing = bs.aborts.filter((a) => a.rule === "filing-url");
+    return filing.length
+      ? `STOPPED BY THE NETWORK BACKSTOP: the page tried to file or pay with no named approval for this run, and the request was aborted — ${describeBackstopAbort(filing[0])}. Nothing was sent. A step of this recipe (or a page script it triggered) is a filing control the word gates did not recognise; review the recipe before the next run.`
+      : "";
   }
 
   /** The HTTP method of the request that produced the main frame's current document: "GET",
@@ -879,6 +914,12 @@ export class RecipeAdapter extends BasePortalAdapter {
       if (ms >= 4000) slowSteps.push({ ...prevStep, ms });
     };
     for (let stepIdx = 0; stepIdx < this.recipe.steps.length; stepIdx++) {
+      // THE BACKSTOP ABORTED A FILING OR A PAYMENT: stop here, named. Carrying on would retry the
+      // step (or reload the entry URL) and serve the same filing control again.
+      {
+        const bsStop = this.backstopStop();
+        if (bsStop) return fail(bsStop, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: Math.max(0, stepIdx - 1), trace });
+      }
       const recordedStep = this.recipe.steps[stepIdx];
       this.currentStepIdx = stepIdx;
       const inArrayBlock = this.arrayBlockStart >= 0
@@ -1112,6 +1153,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       // deliberately cannot resolve at replay, precisely so the matcher gets its turn.
       let performed = false;
       for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
+        if (attempt > 0) {
+          const bsStop = this.backstopStop();
+          if (bsStop) return fail(bsStop, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: stepIdx, trace });
+        }
         try {
           const done = await this.executeStep(step, pastReview);
           if (done) executed++;
@@ -3717,6 +3762,10 @@ export class RecipeAdapter extends BasePortalAdapter {
   private async guardedClick(target: unknown, why: string, opts?: { timeout?: number; force?: boolean }, flags: { passThrough?: boolean; finalSubmitApproved?: boolean } = {}): Promise<void> {
     const reason = await this.guardAction({ kind: "click", target, why, ...flags });
     if (reason) throw new ReplayGuardRefusal(reason);
+    // THE APPROVED FINAL SUBMIT (and its confirm dialog) is the one click whose FILING request
+    // the backstop lets through — a named person approved this run and finalSubmitRefusalsNow()
+    // passed. A payment endpoint stays blocked even then.
+    if (flags.finalSubmitApproved) this.backstop?.allowApprovedFiling(20_000);
     await (target as { click: (o?: unknown) => Promise<void> }).click(opts);
   }
 
@@ -3727,6 +3776,17 @@ export class RecipeAdapter extends BasePortalAdapter {
       : target;
     const reason = await this.guardAction({ kind: "press", target: focused, key, why });
     if (reason) throw new ReplayGuardRefusal(reason);
+    // A BOT ENTER ON A REVIEW / TERMINAL PAGE has no business changing server state: whatever a
+    // page script maps it to, a state-changing request fired while it is in flight is aborted
+    // (the backstop's window rule).
+    if (/^(enter|numpadenter)$/i.test(key) && this.backstop) {
+      const ctx = await this.pageSafetyContext();
+      if (ctx.reviewPage === true || (ctx.readOnlyPage === true && !!ctx.filingControl)) {
+        await withBackstopWindow(this.page, "enter-window", `${why} on a ${ctx.reviewPage ? "review" : "read-only terminal"} page`,
+          () => (target as { press: (k: string) => Promise<void> }).press(key));
+        return;
+      }
+    }
     await (target as { press: (k: string) => Promise<void> }).press(key);
   }
 

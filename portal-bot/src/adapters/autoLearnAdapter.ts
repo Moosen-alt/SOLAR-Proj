@@ -20,6 +20,7 @@ import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
 import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../../shared/src/portalSafety";
+import { installFilingBackstop, withBackstopWindow, describeBackstopAbort } from "../filingBackstop";
 import { hostOfUrl, siteOfUrl } from "../siteOf";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
@@ -3161,11 +3162,27 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // after login — so credentials never enter the trace; saved into the run's debug bundle.
     await this.debug?.startTrace(this.page);
     let result: LearnResult | null = null;
+    // THE NETWORK BACKSTOP for the whole walk (filingBackstop.ts): a learn has no named approval,
+    // so no request of it may file or pay, whichever control or script fired it. Removed in the
+    // finally below, before anything hands this page to a person.
+    const backstop = await installFilingBackstop(this.page, "learn run").catch(() => null);
     try {
       // What discipline this run is filing. Held on the instance so the fill guard can refuse
       // a record type that contradicts it — the planner sees one page at a time and does not.
       this.permitDiscipline = String(project.permitType ?? "");
       result = await this.learnImpl(context, project);
+      // EVERY ABORT IS REPORTED, and a learn during which the page tried to file or pay is not a
+      // clean learn: the recipe it recorded contains the step that did it.
+      if (backstop && backstop.aborts.length) {
+        const lines = backstop.aborts.map(describeBackstopAbort);
+        for (const line of lines) this.debug?.event({ type: "backstop_abort", message: line });
+        const filing = backstop.aborts.filter((a) => a.rule === "filing-url");
+        result = {
+          ...result,
+          ...(filing.length ? { ok: false } : {}),
+          message: `${filing.length ? "STOPPED BY THE NETWORK BACKSTOP — the page tried to file or pay during the learn; the recorded steps must be reviewed before any replay. " : ""}${result.message} [${lines.join(" | ").slice(0, 600)}]`,
+        };
+      }
       return result;
     } catch (err) {
       // The thrown error is about to leave the adapter as a bare message — persist the stack
@@ -3177,6 +3194,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       });
       throw err;
     } finally {
+      await backstop?.dispose().catch(() => null);
       this.stopHeartbeat();
       await this.debug?.stopTrace(this.page);
       this.debug?.finalize({
@@ -7438,7 +7456,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         return false;
       }
     }
-    const pressed = await loc.press("Enter").then(() => true).catch(() => false);
+    // A bot Enter on a page that names itself the review step runs inside the backstop's window:
+    // any state-changing request it fires is aborted and reported (filingBackstop.ts).
+    const onReview = typeof this.page.evaluate === "function"
+      ? await this.page.evaluate((g: string) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ps = (globalThis as any)[g];
+        return !!(ps && typeof ps.reviewPageInPage === "function" && ps.reviewPageInPage() === true);
+      }, PORTAL_SAFETY_GLOBAL).catch(() => false) === true
+      : false;
+    const pressEnter = (): Promise<boolean> => loc.press("Enter").then(() => true).catch(() => false);
+    const pressed = onReview ? await withBackstopWindow(this.page, "enter-window", "learner Enter on a review page", pressEnter) : await pressEnter();
     if (!pressed) return false;
     await this.waitAfterClick(beforeUrl, await this.pageFingerprint(), this.tabCount()).catch(() => null);
     const afterSig = await advanceSignatureOf(this.page);
@@ -8414,15 +8442,20 @@ export async function dismissPageModals(
             out.refused.push(`dismisser refused ${sel}: ${refusal}`);
             continue;
           }
+          // THE BACKSTOP'S WINDOW RULE: a dismissal only hides something, so any state-changing
+          // request fired while this click is in flight — whatever the page's script does with
+          // it — is aborted and reported (filingBackstop.ts). Closed before this function returns,
+          // so the caller's next action (an ASP.NET postback) is never inside it.
           if (opts.click) {
-            const ok = await Promise.resolve(opts.click(loc, `dismiss an overlay (${sel.slice(0, 40)})`)).then(() => true).catch((e: unknown) => {
+            const ok = await withBackstopWindow(page, "dismisser-window", `dismiss ${sel.slice(0, 40)}`,
+              () => Promise.resolve(opts.click!(loc, `dismiss an overlay (${sel.slice(0, 40)})`))).then(() => true).catch((e: unknown) => {
               refusedKeys.add(key);
               out.refused.push(`dismisser refused ${sel}: ${String((e as Error)?.message ?? e).slice(0, 160)}`);
               return false;
             });
             if (!ok) continue;
           } else {
-            await loc.click({ timeout: 2000 }).catch(() => null);
+            await withBackstopWindow(page, "dismisser-window", `dismiss ${sel.slice(0, 40)}`, () => loc.click({ timeout: 2000 }).catch(() => null));
           }
           out.dismissed.push(sel);
           await smartWait(page, 400);

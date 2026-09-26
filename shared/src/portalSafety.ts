@@ -424,6 +424,73 @@ export function portalSafetyFactory() {
    * concatenated (a meter-number select would copy the meter numbers into the recipe), a
    * listbox/combobox's is its options, a textarea's is what was typed.
    */
+  /**
+   * Runs IN THE PAGE: does this aria-labelledby target RENDER THE WIDGET'S CURRENT SELECTION
+   * rather than label it? Generic, not select2/chosen-only (checker close-mustfix MF3: a plain ARIA
+   * combobox with aria-labelledby="lbl cur", #cur a sibling span showing the previously selected
+   * meter number, put that number in the recorded selector). Any one of:
+   *   1. PARTNER OF A NATIVE CONTROL the widget fronts: its id is "<stem>_label" / "-label" /
+   *      "_container" / "_display" / "_selection" / "_value" / "select2-<stem>-container", and
+   *      <stem> (or <stem>_input / _select / _focus) is a native select/input other than the field
+   *      — or a container holding both the field and such a native control (PrimeFaces' <id> div
+   *      around <id>_focus, <id>_input and <id>_label);
+   *   2. ITS TEXT IS THE FIELD'S VALUE: the field's own value / aria-valuetext / selected option,
+   *      or the value of a hidden native control right beside it;
+   *   3. THE ARIA 1.0 "label value" PAIR: the list also names a real label (label, legend,
+   *      heading) and this target is not one but a sibling element of the field (or of the
+   *      field's wrapper) — the pattern that labels a widget by its label AND its displayed value.
+   * The capture listener runs BEFORE the page updates the display, so rule 2 sees the PRIOR value
+   * in the display and an empty native control; rules 1 and 3 are structural and carry that case.
+   */
+  const isRenderedValueOf = (t: Element, field: Element, all: Element[]): boolean => {
+    if (!field || typeof field.matches !== "function") return false;
+    const FIELDISH = "select, textarea, input:not([type=submit]):not([type=button]):not([type=image]):not([type=reset]), [role=combobox], [role=listbox], [role=textbox], [role=searchbox], [role=spinbutton]";
+    if (!field.matches(FIELDISH)) return false;
+    const clean = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
+    const root = (field.getRootNode ? field.getRootNode() : null) as Document | ShadowRoot | null;
+    const byId = (id: string): Element | null => {
+      try { return root && (root as Document).getElementById ? (root as Document).getElementById(id) : (root ? root.querySelector(`#${CSS.escape(id)}`) : null); } catch { return null; }
+    };
+    const isNative = (e: Element | null): e is HTMLInputElement | HTMLSelectElement =>
+      !!e && e !== field && (e.tagName === "SELECT" || (e.tagName === "INPUT" && !/^(submit|button|image|reset|checkbox|radio|file)$/i.test(String((e as HTMLInputElement).type || ""))));
+    const nativeText = (e: HTMLInputElement | HTMLSelectElement): string[] => {
+      const out = [clean(e.value)];
+      if (e.tagName === "SELECT") for (const o of Array.from((e as HTMLSelectElement).selectedOptions || [])) out.push(clean(o.textContent));
+      return out.filter(Boolean);
+    };
+    // 1. partner of a native control
+    const id = String(t.getAttribute("id") || "");
+    const m = /^select2-(.+)-container$/.exec(id) || /^(.+?)[_-](label|container|display|selection|value|text)$/i.exec(id);
+    if (m) {
+      const stem = m[1];
+      for (const cand of [stem, `${stem}_input`, `${stem}_select`, `${stem}_focus`, `${stem}-input`]) {
+        const e = byId(cand);
+        if (isNative(e) && e !== field) return true;
+        if (e && cand === stem && e.contains(field) && e.contains(t) && e.querySelector("select, input[type=hidden]")) return true;
+      }
+    }
+    // 2. its text is the field's value
+    const text = clean(t.textContent);
+    if (text) {
+      const values: string[] = [];
+      const f = field as HTMLInputElement | HTMLSelectElement;
+      if (typeof f.value === "string") values.push(clean(f.value));
+      values.push(clean(field.getAttribute("aria-valuetext")));
+      if (field.tagName === "SELECT") for (const o of Array.from((field as HTMLSelectElement).selectedOptions || [])) values.push(clean(o.textContent));
+      for (const sib of [field.previousElementSibling, field.nextElementSibling]) {
+        if (isNative(sib) && (String((sib as HTMLInputElement).type || "").toLowerCase() === "hidden" || sib.tagName === "SELECT")) values.push(...nativeText(sib));
+      }
+      if (values.filter(Boolean).includes(text)) return true;
+    }
+    // 3. the "label value" pair
+    const POSITIVE = (e: Element): boolean => /^(LABEL|LEGEND|H[1-6]|CAPTION|TH|DT)$/.test(e.tagName) || e.getAttribute("role") === "heading";
+    if (!POSITIVE(t) && all.some((o) => o !== t && POSITIVE(o))) {
+      const parents = [field.parentElement, field.parentElement ? field.parentElement.parentElement : null].filter(Boolean);
+      if (t.parentElement && parents.includes(t.parentElement)) return true;
+    }
+    return false;
+  };
+
   const controlLabelInPage = (el: Element): string => {
     const clean = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
     const tag = el.tagName;
@@ -438,8 +505,10 @@ export function portalSafetyFactory() {
     // EVERY LABEL ROUTE STRIPS THE FIELD'S OWN TEXT (labelTextOf): aria-labelledby that points at
     // a widget's rendered selection (select2's "select2-<id>-container" — the CURRENT VALUE) or at
     // a container holding the field, a label[for] that wraps its own <select>, a wrapping label.
-    const labelledBy = clean(String(el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)
-      .map((id) => labelTextOf(byId(id), el)).join(" "));
+    const lbTargets = String(el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)
+      .map((id) => byId(id)).filter((t): t is Element => !!t);
+    const labelledBy = clean(lbTargets.filter((t) => !isRenderedValueOf(t, el, lbTargets))
+      .map((t) => labelTextOf(t, el)).join(" "));
     if (labelledBy) return labelledBy.slice(0, 120);
     const isField = tag === "SELECT" || tag === "TEXTAREA" || (tag === "INPUT" && !/^(submit|button|image|reset)$/.test(type));
     const id = el.getAttribute("id");
@@ -604,6 +673,10 @@ export function portalSafetyFactory() {
     const u = String(url ?? "");
     return !!u && (FINAL_SUBMIT_URL.test(u) || PAY_FEE_URL.test(u));
   };
+  const isPayRequestUrl = (url: string | null | undefined): boolean => {
+    const u = String(url ?? "");
+    return !!u && PAY_FEE_URL.test(u);
+  };
 
   /**
    * Runs IN THE PAGE: what an Enter key in this element would ACTIVATE by the form's implicit
@@ -716,6 +789,7 @@ export function portalSafetyFactory() {
     enterRefusalInPage,
     submitsOrNavigatesInPage,
     isSubmitOrPayRequestUrl,
+    isPayRequestUrl,
     isSubmitIntent,
     isPayFee,
     isFinalSubmitControl,
@@ -801,6 +875,24 @@ export const PORTAL_SAFETY_IN_PAGE_SOURCE =
  *  in the factory so the in-page implicit-submission question uses the same regexes.) */
 export function isSubmitOrPayRequestUrl(url: string | null | undefined): boolean {
   return impl.isSubmitOrPayRequestUrl(url);
+}
+
+/** A fee-payment endpoint only (never allowed, not even inside an approved final submit). */
+export function isPayRequestUrl(url: string | null | undefined): boolean {
+  return impl.isPayRequestUrl(url);
+}
+
+/**
+ * THE ONE "IS THIS REQUEST A FILING OR A PAYMENT?" QUESTION for request-level aborts: a method
+ * that can change server state (anything but GET / HEAD / OPTIONS) to a URL that reads as a
+ * filing or a fee payment. For a form POST the request URL IS the form action. The demo
+ * recorder's abort (scripts/demo-record-portal.ts) asks exactly this; the run backstop
+ * (portal-bot/src/filingBackstop.ts) asks it of every main-frame navigation.
+ */
+export function isFilingOrPaymentRequest(method: string | null | undefined, url: string | null | undefined): boolean {
+  const m = String(method ?? "").trim().toUpperCase();
+  if (!m || m === "GET" || m === "HEAD" || m === "OPTIONS") return false;
+  return isSubmitOrPayRequestUrl(url);
 }
 
 // ---------------------------------------------------------------------------------------------
