@@ -272,7 +272,7 @@ await check("(a4) MUST-EXCLUDE: an agency named only by generic words is NOT FOU
 await check("(q1) MUST-PASS: the portal step asks the ISSUING AGENCY, reads pages (bounded), and fills the portal + record type part one could not cite", async () => {
   const r = recorder({
     process: grounded(jeffersonShape()),
-    portal: grounded(portalAnswer({ value: ACA, sourceUrl: "https://permits.example-county-online.org/apply", quote: "Apply online through Oregon ePermitting" }), { resultUrls: [COUNTY], fetchedUrls: ["https://permits.example-county-online.org/apply"] }),
+    portal: grounded(portalAnswer({ value: ACA, sourceUrl: "https://permits.example-county-online.org/apply", quote: "Apply online through Oregon ePermitting" }), { resultUrls: [COUNTY], fetchedUrls: ["https://permits.example-county-online.org/apply", "https://aca-oregon.accela.com/oregon/Default.aspx"] }),
     docs: grounded(feesAnswer()),
   });
   const run = await ppl.runPermitProcessLookup(db, r.llm, { state: "OR", ahj: "City of Ivybank" });
@@ -293,10 +293,10 @@ await check("(q2) MUST-EXCLUDE: the portal door refuses a utility interconnectio
   const cases: Array<[string, Record<string, unknown>, RegExp]> = [
     ["utility portal", { value: "https://pacificpower.powerclerk.com/MvcAccount/Login", sourceUrl: COUNTY, quote: "Apply online through the PowerClerk portal" }, /utility|interconnection|permit \(AHJ\)/i],
     ["help page", { value: "https://www.oregon.gov/bcd/epermitting/help/records/pages/permit-for-solar.aspx", sourceUrl: COUNTY, quote: "Apply online: see the Oregon ePermitting portal help" }, /information page/],
-    ["uncited", { value: ACA, sourceUrl: "https://blog.solar-installer.example.com/oregon-permits", quote: "Apply online through Oregon ePermitting (aca-oregon.accela.com)" }, /not a page the search returned/],
+    ["uncited", { value: ACA, sourceUrl: "https://blog.solar-installer.example.com/oregon-permits", quote: "Apply online through Oregon ePermitting (aca-oregon.accela.com)" }, /not a page the search returned|never returned by the search/],
   ];
   for (const [name, portal, why] of cases) {
-    const r = recorder({ process: grounded(jeffersonShape()), portal: grounded(portalAnswer(portal), { resultUrls: [COUNTY, "https://www.oregon.gov/bcd/epermitting/help/records/pages/permit-for-solar.aspx"] }), docs: grounded(feesAnswer()) });
+    const r = recorder({ process: grounded(jeffersonShape()), portal: grounded(portalAnswer(portal), { resultUrls: [COUNTY, "https://www.oregon.gov/bcd/epermitting/help/records/pages/permit-for-solar.aspx", "https://pacificpower.powerclerk.com/MvcAccount/Login"] }), docs: grounded(feesAnswer()) });
     const run = await ppl.runPermitProcessLookup(db, r.llm, { state: "OR", ahj: `City of Juniper ${name}`, force: true });
     const s = run.lookup!.permits.find((p) => p.discipline === "structural")!;
     assert.equal(s.portalUrl.value, null, `${name}: ${s.portalUrl.value}`);
@@ -305,7 +305,7 @@ await check("(q2) MUST-EXCLUDE: the portal door refuses a utility interconnectio
   // The same door in part one: a PowerClerk URL offered by the process answer is refused too.
   const bad = JSON.parse(processAnswer());
   bad.permits[0].portalUrl = { value: "https://pacificpower.powerclerk.com/MvcAccount/Login", sourceUrl: COUNTY, quote: "Apply online through the PowerClerk portal" };
-  assert.equal(ppl.parseProcessPart(JSON.stringify(bad), [COUNTY], "end_turn").permits[0].portalUrl.value, null);
+  assert.equal(ppl.parseProcessPart(JSON.stringify(bad), [COUNTY, "https://pacificpower.powerclerk.com/MvcAccount/Login"], "end_turn").permits[0].portalUrl.value, null);
 });
 await check("(q3) MUST-EXCLUDE: a paper form's title is not a record type; the portal step never replaces a portal part one cited", async () => {
   const r = recorder({
@@ -334,7 +334,7 @@ await check("(q6) a portal citing its OWN page is kept only when that page was r
   const platform = "https://aca-prod.accela.com/FERNHILL/Default.aspx";
   const self = { value: platform, sourceUrl: platform, quote: "Welcome to the City of Fernhill Citizen Access portal" };
   assert.equal(ppl.acceptPortal(self, [COUNTY]).value, null, "self-cited, never seen → not kept");
-  assert.match(String(ppl.acceptPortal(self, [COUNTY]).notFound), /not a page the search returned/);
+  assert.match(String(ppl.acceptPortal(self, [COUNTY]).notFound), /not a page the search returned|never returned by the search/);
   assert.equal(ppl.acceptPortal(self, [COUNTY, "https://aca-prod.accela.com/FERNHILL/Cap/CapHome.aspx"]).value, platform, "its host was returned → kept");
   assert.equal(ppl.acceptPortal({ value: ACA, sourceUrl: COUNTY, quote: "Apply online through Oregon ePermitting (aca-oregon.accela.com)" }, []).value, null, "no seen pages at all → nothing is a seen source");
 });
@@ -352,6 +352,104 @@ await check("(q5) MUST-PASS: a documents/fees call that ABORTS while reading pag
   const rec2 = recorder({ process: grounded(processAnswer()), docs: grounded(JSON.stringify({ permits: [] })) });
   await ppl.runPermitProcessLookup(db, rec2.llm, { state: "OR", ahj: "City of Oxbow" });
   assert.equal(rec2.asked.filter((a) => /documentsFees$/.test(a.label)).length, 1);
+});
+
+// ── CLOSE of the recall skeptic's must-fixes: every saved amount printed; the portal's own host attested ──
+const cited = <T,>(value: T | null, sourceUrl = FEES, quote = "") => ({ value, sourceUrl, quote, origin: "lookup" as const });
+const feeLookup = (state: string, ahj: string, fee: ReturnType<typeof cited>) => ({
+  state, ahj, lookedUpAt: "", profileKey: "", confidence: "seeded",
+  issuingAgency: cited(null, ""), permitStructure: cited(null, ""), notes: [],
+  permits: [{ discipline: "structural", label: "Residential Structural", issuingAgency: cited(null, ""), portalUrl: cited(null, ""), recordType: cited(null, ""), documents: cited(null, ""), fee }],
+}) as never;
+await check("(f1) MUST-EXCLUDE: a fee is kept only when EVERY amount it carries is printed — an invented total, tier or computed line, a number inside a bigger one, a percentage", () => {
+  const sa = ppl.supportsAmount;
+  assert.equal(sa({ amountUsd: 999, basis: "flat", lines: [{ label: "Permit", amountUsd: 67.25 }] }, "Permit Fee $67.25"), false, "invented total beside a printed line");
+  assert.equal(sa({ amountUsd: 94, basis: "tier", lines: [{ label: "5.01 to 15", amountUsd: 94 }], tiers: [{ maxKva: 5, amountUsd: 79, label: "" }, { maxKva: 15, amountUsd: 94, label: "" }, { maxKva: 25, amountUsd: 7777, label: "" }] } as never, "5 kva or less $79.00 5.01 to 15 kva $94.00"), false, "invented tier");
+  assert.equal(sa({ amountUsd: 50, basis: "valuation", lines: [] }, "$5,001 to $50,000 | $176.00 for the first $5,000"), false, "50 is not in 5001 or 50000");
+  assert.equal(sa({ amountUsd: 319.16, basis: "base + per kW", lines: [{ label: "base", amountUsd: 100 }, { label: "$30 per kW x 7.2", amountUsd: 216 }, { label: "surcharge", amountUsd: 3.16 }] }, "Residential Solar Permit - base fee up to 20 kW $100.00 plus $30.00 per kW"), false, "a job-computed line");
+  assert.equal(sa({ amountUsd: 12, basis: "flat", lines: [] }, "State Surcharge of 12% $ 8.07"), false, "a percentage is not an amount");
+});
+await check("(f2) MUST-PASS: a total that is the sum of its printed lines, printed tiers, and a comma-grouped amount are kept", () => {
+  const sa = ppl.supportsAmount;
+  assert.equal(sa({ amountUsd: 75.32, basis: "flat", lines: [{ label: "(a) Permit Fee", amountUsd: 67.25 }, { label: "(b) State Surcharge of 12%", amountUsd: 8.07 }] }, "PERMIT FEES (a) Permit Fee $ 67.25 (b) State Surcharge of 12% $ 8.07 Total (a + b + c)"), true);
+  assert.equal(sa({ amountUsd: 94, basis: "tier", lines: [{ label: "5.01 to 15", amountUsd: 94 }], tiers: [{ maxKva: 5, amountUsd: 79, label: "" }, { maxKva: 15, amountUsd: 94, label: "" }] } as never, "5 kva or less $79.00 5.01 to 15 kva $94.00"), true);
+  assert.equal(sa({ amountUsd: 1250, basis: "flat", lines: [] }, "Solar permit $1,250.00"), true);
+});
+await check("(f3) MUST-EXCLUDE: the fee landing writes no flat bracket without a stated total, for a fee priced by valuation or a rate, or for a surcharge over several base lines", () => {
+  const land = (state: string, ahj: string, fee: ReturnType<typeof cited>) => ppl.applyLookupFees(db, feeLookup(state, ahj, fee)).find((r) => r.discipline === "structural")!;
+  const noTotal = land("NC", "Town of Ashgrove", cited({ amountUsd: null, basis: "remodel schedule", lines: [{ label: "Remodel $0 - $999.99", amountUsd: 23.32 }, { label: "$1,000 - $1,999.99", amountUsd: 28.62 }] }, FEES, "Remodel & Renovation $0 - $999.99 $23.32 $1,000 - $1,999.99 $28.62"));
+  assert.equal(noTotal.saved, false); assert.match(noTotal.reason, /no stated total/);
+  const rated = land("CO", "Town of Birchfield", cited({ amountUsd: 80, basis: "Table A", lines: [{ label: "first $2,000", amountUsd: 80 }] }, FEES, "$2,001 to $25,000 | $80.00 for the first $2,000 plus $8.00 for each additional $1,000"));
+  assert.equal(rated.saved, false); assert.match(rated.reason, /valuation or a rate/);
+  const twoBase = land("OR", "City of Cedarholt", cited({ amountUsd: 150.64, basis: "flat", lines: [{ label: "(a) Permit Fee", amountUsd: 67.25 }, { label: "(b) Plan Review", amountUsd: 67.25 }, { label: "(c) State Surcharge of 12%", amountUsd: 16.14 }] }, FEES, "(a) Permit Fee $ 67.25 (b) Plan Review $ 67.25 (c) State Surcharge of 12% $ 16.14 Total $ 150.64"));
+  assert.equal(twoBase.saved, false, "a total that may include the surcharge is never the bracket the evaluator adds it to");
+  for (const ahj of ["Town of Ashgrove", "Town of Birchfield", "City of Cedarholt"]) {
+    const st = ahj === "Town of Ashgrove" ? "NC" : ahj === "Town of Birchfield" ? "CO" : "OR";
+    assert.equal(fees.findFeeScheduleForProject(db, { state: st, ahj, utility: "" }, "permit", "structural"), null, `${ahj}: nothing landed`);
+  }
+});
+await check("(f4) MUST-PASS: a printed flat fee lands; with a cited surcharge the ONE printed base line is the bracket", () => {
+  const flat = ppl.applyLookupFees(db, feeLookup("NC", "Town of Dunmore", cited({ amountUsd: 75, basis: "trade permit fee", lines: [{ label: "Building", amountUsd: 75 }] }, FEES, "The following schedule of fees applies to all Trades ... Building - $75.00")));
+  assert.equal(flat.find((r) => r.discipline === "structural")?.saved, true, JSON.stringify(flat));
+  assert.equal(fees.findFeeScheduleForProject(db, { state: "NC", ahj: "Town of Dunmore", utility: "" }, "permit", "structural")?.brackets[0]?.feeUsd, 75);
+  const sur = ppl.applyLookupFees(db, feeLookup("OR", "City of Elmstead", cited({ amountUsd: 75.32, basis: "flat fee for prescriptive-path PV", lines: [{ label: "(a) Permit Fee", amountUsd: 67.25 }, { label: "(b) State Surcharge of 12%", amountUsd: 8.07 }] }, FEES, "PERMIT FEES (a) Permit Fee $ 67.25 (b) State Surcharge of 12% $ 8.07 Total (a + b + c)")));
+  assert.equal(sur.find((r) => r.discipline === "structural")?.saved, true, JSON.stringify(sur));
+  assert.equal(fees.findFeeScheduleForProject(db, { state: "OR", ahj: "City of Elmstead", utility: "" }, "permit", "structural")?.brackets[0]?.feeUsd, 67.25);
+});
+await check("(p1) MUST-EXCLUDE: a portal URL is kept only when ITS OWN host (and tenant, on a shared host) was returned or opened — never vouched for by an agency page's 'apply online'", async () => {
+  const quote = "Apply online through the Citizen Access portal.";
+  const madeUp = "https://aca-prod.accela.com/MADEUP/Default.aspx";
+  assert.equal(ppl.acceptPortal({ value: madeUp, sourceUrl: COUNTY, quote }, [COUNTY]).value, null, "platform host never seen");
+  assert.match(String(ppl.acceptPortal({ value: madeUp, sourceUrl: COUNTY, quote }, [COUNTY]).notFound), /never returned by the search/);
+  assert.equal(ppl.acceptPortal({ value: "https://permits.madeup-town.example.org/apply", sourceUrl: COUNTY, quote }, [COUNTY]).value, null, "a non-platform host never seen");
+  assert.equal(ppl.acceptPortal({ value: madeUp, sourceUrl: COUNTY, quote }, [COUNTY, "https://aca-prod.accela.com/OTHER/Default.aspx"]).value, null, "another tenant on the shared host");
+  assert.equal(ppl.acceptPortal({ value: madeUp, sourceUrl: COUNTY, quote: `Apply online (${madeUp})` }, [COUNTY]).value, null, "the host in the QUOTE is not attestation");
+  // End to end through the portal step.
+  const r = recorder({ process: grounded(jeffersonShape()), portal: grounded(portalAnswer({ value: madeUp, sourceUrl: COUNTY, quote }), { resultUrls: [COUNTY] }), docs: grounded(feesAnswer()) });
+  const run = await ppl.runPermitProcessLookup(db, r.llm, { state: "OR", ahj: "City of Foxley" });
+  assert.equal(run.lookup!.permits.find((p) => p.discipline === "structural")!.portalUrl.value, null);
+});
+await check("(p2) MUST-PASS: the same tenant on a shared host (any page, any case), and a city's own host, are attested", () => {
+  const quote = "Apply online through the Citizen Access portal.";
+  assert.equal(ppl.acceptPortal({ value: "https://aca-prod.accela.com/MADEUP/Default.aspx", sourceUrl: COUNTY, quote }, [COUNTY, "https://aca-prod.accela.com/madeup/Cap/CapHome.aspx?module=Building"]).value, "https://aca-prod.accela.com/MADEUP/Default.aspx");
+  assert.equal(ppl.acceptPortal({ value: "https://permits.goldmoor.example.org/CitizenAccess/", sourceUrl: COUNTY, quote }, [COUNTY, "https://permits.goldmoor.example.org/"]).value, "https://permits.goldmoor.example.org/CitizenAccess/");
+  // The agency's OWN seen page links a portal on the agency's own domain (the Summerfield/Guilford shape).
+  const guide = "https://www.hollowaycountync.example.gov/inspections/permit-guidance";
+  const own = "https://citizenaccess.hollowaycountync.example.gov/energov_prod/selfservice#/home";
+  assert.equal(ppl.acceptPortal({ value: own, sourceUrl: guide, quote: `All permits are to be applied for online utilizing the [Civic Access public portal](${own}).` }, [guide]).value, own);
+  assert.equal(ppl.registrableDomain("permits.co.marion.or.us"), "co.marion.or.us");
+  assert.equal(ppl.registrableDomain("www.co.marion.or.us"), "co.marion.or.us");
+});
+await check("(p3) MUST-EXCLUDE: the own-domain link is not a door for a vendor-hosted URL, an unseen citing page, or a link the quote does not carry", () => {
+  const guide = "https://www.hollowaycountync.example.gov/inspections/permit-guidance";
+  // A county page "quoting" a vendor-hosted tenant URL (the Clark CLARKCO shape): the model's word.
+  assert.equal(ppl.acceptPortal({ value: "https://aca-prod.accela.com/HOLLOWAY/Default.aspx", sourceUrl: guide, quote: "Apply online (https://aca-prod.accela.com/HOLLOWAY/Default.aspx)" }, [guide]).value, null);
+  assert.equal(ppl.acceptPortal({ value: "https://hollowayco-energovweb.tylerhost.net/apps/selfservice#/home", sourceUrl: guide, quote: "Apply at https://hollowayco-energovweb.tylerhost.net/apps/selfservice" }, [guide]).value, null);
+  // One tenant's page on a vendor's shared domain never vouches for another tenant's URL there.
+  const tenantA = "https://cityofa-energovweb.tylerhost.net/apps/selfservice";
+  assert.equal(ppl.acceptPortal({ value: "https://cityofb-energovweb.tylerhost.net/apps/selfservice#/home", sourceUrl: tenantA, quote: "Apply online at https://cityofb-energovweb.tylerhost.net/apps/selfservice#/home" }, [tenantA]).value, null);
+  // The citing page itself was never seen.
+  const own = "https://citizenaccess.hollowaycountync.example.gov/energov_prod/selfservice#/home";
+  assert.equal(ppl.acceptPortal({ value: own, sourceUrl: guide, quote: `Apply online (${own})` }, [COUNTY]).value, null);
+  // Same domain, but the quote never carries the link.
+  assert.equal(ppl.acceptPortal({ value: own, sourceUrl: guide, quote: "All permits are to be applied for online through the public portal." }, [guide]).value, null);
+  // A look-alike domain is another organisation.
+  assert.equal(ppl.acceptPortal({ value: "https://citizenaccess.hollowaycountync-permits.example.com/", sourceUrl: guide, quote: "Apply at https://citizenaccess.hollowaycountync-permits.example.com/" }, [guide]).value, null);
+});
+await check("(g1) the recall skeptic's test gaps: the PER-PERMIT agency door refuses a prerequisite office; no lift when one permit has no agency; at most 2 agency groups, every permit placed", () => {
+  const pre = JSON.parse(jeffersonShape());
+  pre.permits[0].issuingAgency = { value: "City of Fernhill", sourceUrl: CITY, quote: "Structural permits must be submitted to Fernhill City Hall first before going to the County." };
+  assert.equal(ppl.parseProcessPart(JSON.stringify(pre), [COUNTY, CITY], "end_turn").permits[0].issuingAgency.value, null);
+  const one = ppl.parseProcessPart(jeffersonShape(), [COUNTY, CITY], "end_turn");
+  one.permits[1].issuingAgency = { value: null, sourceUrl: "", quote: "", origin: "lookup" };
+  assert.equal(ppl.liftAgreedAgency(one.issuingAgency, one.permits).value, null);
+  const g = ppl.agenciesToAsk("City of Hazel", cited(null, ""), [
+    { discipline: "structural", issuingAgency: cited("Marion County", COUNTY) },
+    { discipline: "electrical", issuingAgency: cited("State Electrical Bureau", STATE_BCD) },
+    { discipline: "other", issuingAgency: cited("Fire District 3", COUNTY) },
+  ] as never, ["structural", "electrical", "other"]);
+  assert.ok(g.length <= ppl.MAX_AGENCY_GROUPS, JSON.stringify(g));
+  assert.deepEqual(g.flatMap((x) => x.disciplines).sort(), ["electrical", "other", "structural"]);
 });
 
 if (failures) { console.error(`\n${failures} permitProcessLookup test(s) failed.`); process.exit(1); }

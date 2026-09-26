@@ -31,7 +31,7 @@
 // and then discarded.
 import type { CitedFact, LLMProvider, PermitFeeAnswer, PermitProcessDiscipline, PermitProcessLookup, PermitProcessPermitAnswer, WebLookupResult } from "../../shared/src/types";
 import type { AppDb } from "./db";
-import { hostFitsTrackAndEntity, portalHostOf } from "./portalChannel";
+import { hostFitsTrackAndEntity, portalHostOf, portalTenantKey } from "./portalChannel";
 import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor } from "./permitProcess";
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
@@ -166,11 +166,46 @@ const supportsAgency = (value: string, quote: string) => supportsName(value, quo
 const supportsPrerequisite = (value: string, quote: string) =>
   (PREREQ_MARKER.test(quote) || ZONING_SIGNOFF.test(quote) || /\b(?:approv|sign[- ]?off|clearance)/i.test(quote)) && words(value).some((w) => quote.toLowerCase().includes(w));
 
+/** Hosts where ONE instance serves many agencies and the tenant is in the path or a query parameter. */
+const PATH_TENANTED_HOST = /(?:^|\.)(?:accela\.com|citizenserve\.com)$/i;
+/** Permit-software vendors' shared domains: a page there never vouches for a sibling URL. */
+const VENDOR_DOMAIN = /^(?:accela\.com|citizenserve\.com|tylerhost\.net|tylertech\.com|tylerportico\.com|opengov\.com|govwelltech\.com|viewpointcloud\.com|mygovernmentonline\.org|cityview\.com|powerclerk\.com|etrakit\.net|avolvecloud\.com|clariti\.com|iworq\.net|cloudpermit\.com|smartgovcommunity\.com)$/i;
+/** The organisation's domain of a host: the last two labels; a US locality domain (co.marion.or.us)
+ *  keeps four, a second-level ccTLD (x.co.uk) three. */
+export function registrableDomain(host: string): string {
+  const labels = str(host).toLowerCase().replace(/^www\./, "").split(".").filter(Boolean);
+  if (labels.length <= 2) return labels.join(".");
+  const tld = labels[labels.length - 1];
+  if (tld === "us" && labels.length >= 4 && /^[a-z]{2}$/.test(labels[labels.length - 2])) return labels.slice(-4).join(".");
+  if (/^[a-z]{2}$/.test(tld) && /^(?:co|com|gov|org|net|ac|govt)$/.test(labels[labels.length - 2])) return labels.slice(-3).join(".");
+  return labels.slice(-2).join(".");
+}
 /** ONE door for a portal URL, used by the process part and the portal step alike: cited (acceptCited:
  *  a real source the search/fetch returned, words that name it), SOMEWHERE AN APPLICATION IS FILED,
  *  and on the PERMIT track (rule 5, portalChannel.hostFitsTrackAndEntity: never a utility /
  *  interconnection portal, never a help/guide page or document). */
 export function acceptPortal(raw: RawFact, seenUrls: string[]): CitedFact<string> {
+  // THE PORTAL'S OWN HOST MUST BE ATTESTED (close MF2): a search result or a page the lookup opened
+  // on that host — on a path-tenanted host (one Accela / citizenserve instance serving many agencies)
+  // that same TENANT. A citing page that merely says "apply online" never vouches for a URL the model
+  // wrote itself (a remembered aca-prod.accela.com/<tenant> is exactly that).
+  // The one other attestation: the AGENCY'S OWN page (a seen source on the same organisation's
+  // domain, never a vendor's shared domain) quotes a link on that organisation's domain — a county
+  // page linking citizenaccess.<county>.gov. A vendor-hosted URL (aca-prod.accela.com/<tenant>,
+  // *.tylerhost.net) written into a county page's quote is the model's word, not the page's.
+  const claimed = str(raw?.value);
+  const host = portalHostOf(claimed);
+  if (host) {
+    const shared = PATH_TENANTED_HOST.test(host);
+    const sourceHost = portalHostOf(str(raw?.sourceUrl));
+    const ownDomainLink = !shared && !VENDOR_DOMAIN.test(registrableDomain(host)) && registrableDomain(host) === registrableDomain(sourceHost)
+      && str(raw?.quote).toLowerCase().includes(host) && seenUrls.some((u) => portalHostOf(u) === sourceHost);
+    const attested = ownDomainLink || seenUrls.some((u) => portalHostOf(u) === host && (!shared || portalTenantKey(u) === portalTenantKey(claimed)));
+    if (!attested) {
+      return { value: null, sourceUrl: str(raw?.sourceUrl), quote: str(raw?.quote).slice(0, 300), origin: "lookup",
+        notFound: `the portal ${claimed} was never returned by the search or opened by the lookup${shared ? " (that tenant on the shared host)" : ""} — not kept` };
+    }
+  }
   const portal = acceptCited<string>(raw, {
     seenUrls, what: "portal", coerce: (v) => (/^https?:\/\//i.test(str(v)) ? str(v) : null),
     // A portal's own page, or a page that names the portal's host.
@@ -204,12 +239,29 @@ const supportsStructure = (value: string, quote: string) =>
   value === "separate"
     ? /separate|electrical (?:\w+ ){0,3}permits?|also (?:need|require)|in addition|two permits|each (?:require|need)|both (?:a )?(?:structural|building)/i.test(quote)
     : /combin|combo|single permit|one permit|includes? (?:the )?electrical/i.test(quote);
-const supportsAmount = (fee: PermitFeeAnswer, quote: string) => {
-  const amounts = [fee.amountUsd, ...fee.lines.map((l) => l.amountUsd)].filter((n): n is number => typeof n === "number" && Number.isFinite(n));
-  if (!amounts.length) return false;
-  const q = quote.replace(/,/g, "");
-  return amounts.some((n) => q.includes(n.toFixed(2)) || q.includes(String(n)));
+/** Every number the quote PRINTS (commas dropped), whole tokens only — "$5,001" is 5001, never 50;
+ *  a percentage is not an amount. */
+export function printedAmounts(quote: string): number[] {
+  return [...quote.replace(/,/g, "").matchAll(/(?<![\d.])(\d+(?:\.\d+)?)(?![\d%]|\.\d|\s*%)/g)].map((m) => Number(m[1]));
+}
+/** EVERY AMOUNT KEPT IS PRINTED (close MF1): each line and each tier must be in the quote, and the
+ *  total must be printed too or be exactly the sum of its printed lines ($67.25 + $8.07). One printed
+ *  number never vouches for an invented one beside it (a job-computed $216 "per kW" line, a $50 the
+ *  quote does not carry). */
+export const supportsAmount = (fee: PermitFeeAnswer, quote: string) => {
+  const printed = printedAmounts(quote);
+  const has = (n: number) => printed.some((p) => Math.abs(p - n) < 0.005);
+  const lines = fee.lines.map((l) => l.amountUsd).filter((n): n is number => typeof n === "number" && Number.isFinite(n));
+  const tiers = ((fee as PermitFeeAnswer & { tiers?: Array<{ amountUsd: number }> }).tiers ?? []).map((t) => t.amountUsd);
+  const total = typeof fee.amountUsd === "number" && Number.isFinite(fee.amountUsd) ? fee.amountUsd : null;
+  if (total == null && !lines.length && !tiers.length) return false;
+  if (![...lines, ...tiers].every(has)) return false;
+  if (total != null && !has(total) && !(lines.length > 1 && Math.abs(lines.reduce((s, n) => s + n, 0) - total) < 0.01)) return false;
+  return true;
 };
+/** A fee priced by valuation or by a rate (per kW, per $1,000, per sq ft, "each additional") has no
+ *  flat amount — one printed row of it is never the job's fee. */
+const RATED_FEE = /valuation|project cost|construction cost|each additional|for the first \$|per\s+(?:kw|kilowatt|watt|sq|square|\$?1,?000|thousand|hour)|\/\s*kw\b|square\s*f(?:ee|oo)t|sq\.?\s*ft/i;
 /** "Marion County (Marion County Public Works Building Inspection Division)" → "Marion County": the
  *  agency's NAME, which is what an address grid, a fee key and a person read. */
 const agencyName = (v: unknown): string | null => {
@@ -599,12 +651,22 @@ export function applyLookupFees(db: AppDb, lookup: PermitProcessLookup): Array<{
     const surcharge = citedStateSurcharge(lookup.state, fee);
     // With a surcharge applied by the evaluator, a flat fee's bracket is the BASE line (the
     // surcharge's own line and a total that already includes it would count it twice).
-    const baseLine = fee.value.lines.find((l) => !SURCHARGE_WORDS.test(l.label ?? "") && typeof l.amountUsd === "number");
+    const baseLines = fee.value.lines.filter((l) => !SURCHARGE_WORDS.test(l.label ?? "") && typeof l.amountUsd === "number");
+    const baseLine = baseLines.length === 1 ? baseLines[0] : undefined;
+    // A FLAT bracket needs a stated total (supportsAmount: printed, or the sum of printed lines) and a
+    // fee that is not priced by valuation or a rate — never the first row of a table (close MF1).
+    // With a cited surcharge the evaluator adds it, so the bracket is the ONE printed base line; a
+    // total (which may already include the surcharge) would count it twice.
+    const flatUsd = surcharge ? (baseLine?.amountUsd ?? null) : fee.value.amountUsd;
+    if (!tiers.length && (flatUsd == null || RATED_FEE.test(`${fee.value.basis} ${fee.quote}`))) {
+      out.push({ discipline: permit.discipline, saved: false, reason: flatUsd == null ? "no stated total for this permit — not landed as a flat fee" : "priced by valuation or a rate — not a flat fee" });
+      continue;
+    }
     const brackets = tiers.length
       ? tiers.map((t, i) => ({ minKw: printedMinKva(t.label) ?? (i === 0 ? 0 : tiers[i - 1].maxKva), maxKw: t.maxKva, feeUsd: t.amountUsd, label: t.label || `up to ${t.maxKva} kVA` }))
       : [{
-        feeUsd: (surcharge && baseLine ? baseLine.amountUsd : null) ?? fee.value.amountUsd ?? fee.value.lines[0]?.amountUsd ?? NaN,
-        label: (surcharge && baseLine ? baseLine.label : "") || fee.value.lines[0]?.label || fee.value.basis || `${permit.label} fee`,
+        feeUsd: flatUsd as number,
+        label: (surcharge && baseLine ? baseLine.label : "") || fee.value.lines.find((l) => l.amountUsd === flatUsd)?.label || fee.value.basis || `${permit.label} fee`,
       }];
     const r = saveFeeSchedule(db, { state: lookup.state, ahj: owner, track: "permit", discipline: permit.discipline }, {
       found: true, reason: "", basis: tiers.length ? "system_kw" : "flat", brackets, sourceUrl: fee.sourceUrl, sourceQuote: fee.quote, sourceKind: "official",
