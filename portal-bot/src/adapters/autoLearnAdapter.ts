@@ -510,6 +510,11 @@ export const UPLOAD_LABEL_PATTERNS: Array<{ re: RegExp; docType: string }> = [
   // because that one's bare "worksheet" would otherwise swallow "transfer sheet" rows.
   { re: /transfer\s*sheet|application\s*transfer/i, docType: "application_transfer_sheet" },
   { re: /(interconnection|net\s*meter(ing)?|\bnem\b)\s*(application|agreement|form)/i, docType: "utility_application" },
+  // THE PV WORKSHEET (B7) before the generic checklist/worksheet row: Iowa City's REQUIRED card
+  // "Standard or Micro-Inverter Array …" IS the PV worksheet (walkthrough .probe/kin/ia), and the
+  // backend produces it as docType pv_worksheet (iowaPvWorksheet.ts). Inserted AFTER the first
+  // four rows so the combined-mode application slice (slice(0, 4)) is unchanged.
+  { re: /\b(pv|photovoltaic|solar)\s*worksheet|(standard|string)\s*or\s*micro[-\s]?inverter\s*array|micro[-\s]?inverter\s*array\s*(worksheet|form)?\s*$/i, docType: "pv_worksheet" },
   { re: /checklist|worksheet|eligibilit/i, docType: "solar_checklist" },
   { re: /(completed|signed|permit|solar)\s*application|application\s*(form|packet)/i, docType: "permit_application" },
   { re: /one[-\s]?line|single[-\s]?line|\bsld\b|electrical\s*(diagram|schematic|one)/i, docType: "sld" },
@@ -603,7 +608,26 @@ export function fileTypeAllowed(filePath: string, accept: string): boolean {
 // and it is exactly the failure the meter-photo note above records. Leave these empty so the
 // required-field sweep reports them and a human supplies the real file.
 const UPLOAD_NO_SUBSTITUTE = /insurance|invoice|\bw-?9\b|tax\s*form|voided\s*check|bank|volt\s*var|settings\s*(picture|photo|screenshot)|commissioning\s*(photo|report)|interconnection\s*agreement|signed\s*agreement/i;
-const EXACT_UPLOAD_TYPES = new Set(["building_application", "electrical_application", "permit_application", "solar_checklist", "structural_letter"]);
+const EXACT_UPLOAD_TYPES = new Set(["building_application", "electrical_application", "permit_application", "solar_checklist", "structural_letter", "pv_worksheet"]);
+
+/**
+ * A TYPED REQUIRED CARD THAT NAMES ITS DOCUMENT (B7). EnerGov CSS / DigEplan / ACA show one card
+ * per document type — "Manufacturer's Product Data/Spec", "Solar Roof Plan/Solar Site Plan",
+ * "Aerial/Site Plan", "Photovoltaic Plans" — and combined mode used to put the full plan set in
+ * every one of them. The spec card wants the spec sheets and nothing else (reported empty when
+ * we hold none); an aerial / site-plan card that is not the roof plan wants the site plan first.
+ * Roof-plan and plan-set cards keep the plan set (Iowa City: "all plan sheets as ONE file").
+ */
+export function typedCardDocTypes(label: string): { types: string[]; noSubstitute: boolean } | null {
+  const l = String(label || "");
+  if (/product\s*data|manufacturer'?s?\s*(product|spec|data|cut)|spec(ification)?\s*sheets?|\bdata\s*sheets?|cut\s*sheets?|equipment\s*spec/i.test(l)) {
+    return { types: ["module_spec", "inverter_spec", "battery_spec", "racking_spec"], noSubstitute: true };
+  }
+  if (/\baerial\b|site\s*plan|plot\s*plan/i.test(l) && !/roof\s*plan|plan\s*set|photovoltaic\s*plans|\bpv\s*plans/i.test(l)) {
+    return { types: ["site_plan", "plan_set"], noSubstitute: false };
+  }
+  return null;
+}
 
 export function exactUploadDocType(label: string): string | null {
   const type = UPLOAD_LABEL_PATTERNS.find(({ re }) => re.test(label))?.docType;
@@ -2522,6 +2546,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // receive the whole plan set when the filled form exists.
       for (const { re, docType } of UPLOAD_LABEL_PATTERNS.slice(0, 4)) {
         if (re.test(label) && fits(docType)) return { docType, file: this.docsByType[docType] };
+      }
+      // A typed card that names its document gets THAT document (B7): the spec card the spec
+      // sheets, never the plan set; an aerial/site-plan card the site plan first.
+      const card = typedCardDocTypes(label);
+      if (card) {
+        for (const docType of card.types) if (fits(docType)) return { docType, file: this.docsByType[docType] };
+        if (card.noSubstitute) {
+          this.debug?.event({ type: "upload_card_unmatched", label: label.slice(0, 60) });
+          return null;
+        }
       }
       for (const docType of ["plan_set", "combined_plan_set", "full_plan_set"]) {
         if (fits(docType)) return { docType, file: this.docsByType[docType] };
