@@ -4952,34 +4952,54 @@ function renderHistoricalFailures() {
   const missing = checklist.filter((item) => item.status === "missing").length;
   const review = checklist.filter((item) => item.status === "needs_review").length;
   $("historicalCounts").textContent = `${report.matchedProjectCount ?? 0} match / ${missing} missing`;
+  // HISTORY IS ABOUT OTHER PROJECTS (operator 2026-09-25: the panel "is confusing, looks like you're
+  // calling them out for this project not past ones"). Causes read as what went wrong ELSEWHERE,
+  // carry no severity badge, and each says whether THIS project has the evidence that prevents it —
+  // from the checklist row the API already links by sourceCauseSignature (older API: no link, no
+  // line — degrades to the cause alone).
+  const thisProjectLine = (cause) => {
+    const item = checklist.find((it) => it.sourceCauseSignature && it.sourceCauseSignature === cause.signature);
+    if (!item) return "";
+    const said = item.status === "present" ? "has the evidence for this"
+      : item.status === "missing" ? "is MISSING the evidence for this"
+      : item.status === "external" ? "gets this from the installer/homeowner"
+      : "needs a person to check this";
+    return `<p class="${item.status === "missing" ? "" : "muted"}"><strong>This project ${esc(said)}.</strong>${(item.evidence || []).length ? ` ${esc(item.evidence.join(", "))}` : ""}</p>`;
+  };
   $("historicalFailures").innerHTML = `
     <article class="item ${missing ? "warning" : "pass"}">
-      <div class="item-title"><span>Historical match</span>${statusBadge(report.dataConfidence)}</div>
+      <div class="item-title"><span>Similar past projects</span>${statusBadge(report.dataConfidence)}</div>
       <p>${esc(report.summaryLabel)}</p>
       <p class="muted">${esc((report.matchTags || []).slice(0, 12).join(", "))}</p>
     </article>
-    <article class="item ${rejectionCauses.some((cause) => cause.count > 0) ? "warning" : "info"}">
-      <div class="item-title"><span>Top rejection causes</span>${statusBadge(rejectionCauses.length)}</div>
+    <article class="item info">
+      <div class="item-title"><span>Rejections seen on similar past projects</span><span class="muted">${esc(String(rejectionCauses.length))}</span></div>
+      <p class="muted">What reviewers sent back on OTHER jobs like this one — not findings against this project. Each line says whether this project already has what prevents it.</p>
       ${rejectionCauses.length ? rejectionCauses.map((cause) => `
-        <details class="check-row cause-row ${esc(cause.severity || "callout")}">
-          <summary><strong>${esc(cause.title)}</strong> ${statusBadge(cause.severity || "callout")}
-            <span class="muted cause-count">${cause.count ? `${esc(String(cause.count))} prior record(s)` : "baseline rule"}</span></summary>
+        <details class="check-row cause-row callout">
+          <summary><strong>${esc(cause.title)}</strong>
+            <span class="muted cause-count">${cause.count ? `seen on ${esc(String(cause.count))} past record(s)` : "baseline rule"}</span></summary>
+          ${thisProjectLine(cause)}
           <p>${cause.count ? `<strong>${cause.count} prior record(s)</strong>` : "Baseline rule (no learned records yet)"}${cause.rootCause ? ` · ${esc(cause.rootCause)}` : ""}. ${esc(cause.requiredAction)}</p>
-          ${cause.sample ? `<p class="muted evidence-sample"><strong>Evidence:</strong> "${esc(String(cause.sample).slice(0, 280))}${String(cause.sample).length > 280 ? "…" : ""}"</p>` : `<p class="muted">No source excerpt — derived from a deterministic baseline rule.</p>`}
+          ${cause.sample ? `<p class="muted evidence-sample"><strong>From a past project's review:</strong> "${esc(String(cause.sample).slice(0, 280))}${String(cause.sample).length > 280 ? "…" : ""}"</p>` : `<p class="muted">No source excerpt — derived from a deterministic baseline rule.</p>`}
         </details>
       `).join("") : `<p class="muted">No rejection causes on record for this AHJ/utility yet.</p>`}
     </article>
     <article class="item ${missing ? "blocker" : review ? "warning" : "pass"}">
-      <div class="item-title"><span>Generated checklist</span>${statusBadge(`${missing} missing / ${review} review`)}</div>
+      <div class="item-title"><span>This project against those rejections</span>${statusBadge(`${missing} missing / ${review} review`)}</div>
       ${(() => {
         // Missing and needs-review rows are the act-on-it rows and stay open. Every other row
         // (present / external / …) is a settled claim and folds behind its COUNT.
         if (!checklist.length) return `<p class="muted">No checklist items generated.</p>`;
         const row = (item) => {
-          const label = item.status === "external" ? "Provided by installer/homeowner" : humanize(item.status);
+          // Worded about THIS project: "PRESENT: Missing roof framing evidence" read as a defect.
+          const label = item.status === "present" ? "This project has it"
+            : item.status === "missing" ? "This project is missing"
+            : item.status === "external" ? "Provided by installer/homeowner"
+            : "Check on this project";
           return `
         <div class="check-row ${esc(item.status)}">
-          <strong>${esc(label.toUpperCase())}: ${esc(item.title)}</strong>
+          <strong>${esc(label)}: ${esc(String(item.title || "").replace(/^missing\s+/i, ""))}</strong>
           <p>${esc(item.why)} ${esc(item.action)}</p>
           <p class="muted">${esc((item.evidence || []).join(", "))}</p>
         </div>`;
