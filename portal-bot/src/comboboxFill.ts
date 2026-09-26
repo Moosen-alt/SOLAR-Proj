@@ -23,6 +23,12 @@
 // so we accept the same here rather than importing the full types.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../shared/src/portalSafety";
+
+/** The last Enter this module declined to press, and why (a form whose default button files or
+ *  pays). Diagnostic only; "" when none. */
+export let lastComboboxEnterRefusal = "";
+
 const SEARCH_BOX_SELECTORS = [
   'input[role="combobox"]',
   'input[type="search"]',
@@ -585,7 +591,21 @@ export async function fillCustomCombobox(page: any, loc: any, value: string): Pr
   // touching — and press Enter, navigating the walk out of a half-filled form. Enter is only
   // ever for a box this widget owns.
   const typed = widgetSearch ? await widgetSearch.inputValue().catch(() => "") : "";
-  if (typed) await page.keyboard?.press("Enter").catch(() => {});
+  // ENTER IN A BOX INSIDE A FORM IS THAT FORM'S DEFAULT BUTTON (hard rule 1). A widget whose
+  // search box sits in a form whose default button files or pays must not press Enter in it —
+  // the same shared in-page question replay's gate asks. Unreadable -> no Enter.
+  if (typed) {
+    if (typeof page.evaluate === "function") await page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+    const refusal: string = typeof widgetSearch?.evaluate === "function"
+      ? String(await widgetSearch.evaluate((el: Element, g: string) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ps = (globalThis as any)[g];
+        return ps && typeof ps.implicitSubmitRefusalInPage === "function" ? ps.implicitSubmitRefusalInPage(el) : "the page's safety predicates are not installed";
+      }, PORTAL_SAFETY_GLOBAL).catch(() => "the box could not be read") ?? "")
+      : "the box could not be read";
+    if (refusal) { lastComboboxEnterRefusal = refusal; return false; }
+    await page.keyboard?.press("Enter").catch(() => {});
+  }
   return false;
 }
 

@@ -148,7 +148,7 @@ export function portalSafetyFactory() {
   // THE FILING CLICK ITSELF — narrower than SUBMIT_WORDS. A mid-flow "Submit Documents" or
   // "Submit for Review" is submit-worded (never captured) but is not the application's filing,
   // so it must not end a human's capture session.
-  const FINAL_SUBMIT_EXACT = /^(submit|submit application|submit & pay|submit and pay|submit now|submit my application|re-?submit|re-?submit application|re-?file|e-?file|e-?file application)$/i;
+  const FINAL_SUBMIT_EXACT = /^(submit|submit application|submit & pay|submit and pay|submit now|submit my application|re-?submit|re-?submit application|re-?file|e-?file|e-?file application|file|file now)$/i;
   const FINAL_SUBMIT_PHRASE = /\b(confirm submission|complete submission|file application|sign\s*(and|&)\s*(file|submit)|file\s+permit)\b/i;
 
   // SECRETS. Each alternative names a secret; the name-ish words after "account" are excluded
@@ -209,6 +209,9 @@ export function portalSafetyFactory() {
     const t = String(label ?? "");
     if (!t.trim()) return false;
     if (SUBMIT_WORDS.test(t)) return true;
+    // A control whose WHOLE label is "File" / "File now" files (a default button, a filing step).
+    // Only the whole label: "File Upload", "Select File" and "File Name" are attachment words.
+    if (/^\s*file(\s+now)?\s*[»›>→]*\s*$/i.test(t)) return true;
     if (CONTINUE_APPLICATION.test(t)) {
       const excused = !!ctx && ctx.reviewPage !== true && (ctx.readOnlyPage === false || ctx.formDataEntered === false);
       return !excused;
@@ -485,8 +488,61 @@ export function portalSafetyFactory() {
     return "";
   };
 
+  // Request-URL predicates (network recorder, implicit submission). Portal endpoints concatenate
+  // words ("SubmitApplication", "CompleteApplication"), so these have no trailing word boundary.
+  const FINAL_SUBMIT_URL = /(submit|finali[sz]e|completeapplication|fileapplication|continueapplication)/i;
+  const PAY_FEE_URL = /(payment|checkout|invoice|paymentus|payfee|placeorder)/i;
+  const isSubmitOrPayRequestUrl = (url: string | null | undefined): boolean => {
+    const u = String(url ?? "");
+    return !!u && (FINAL_SUBMIT_URL.test(u) || PAY_FEE_URL.test(u));
+  };
+
+  /**
+   * Runs IN THE PAGE: what an Enter key in this element would ACTIVATE by the form's implicit
+   * submission — the form's default button (the first submit button in tree order, which is what
+   * form.requestSubmit() and Enter use), or, with no button, the form's own action. null when Enter
+   * here submits nothing: not in a form, a textarea (newline), or a button (Enter activates the
+   * button itself, which the caller already judged).
+   *
+   * A recipe "press Enter" in a Parcel Number box whose form's only button is "Submit
+   * Application" FILES — the gate that read the focused box's label saw "Parcel Number" (replay
+   * skeptic, enter-probe.log). The default button is tagged data-al-default-submit="1" so the
+   * caller can judge it with its full click gate.
+   */
+  const implicitSubmitInPage = (el: Element | null | undefined): { label: string; action: string; tagged: boolean } | null => {
+    if (!el) return null;
+    const tag = el.tagName;
+    if (tag === "TEXTAREA" || tag === "BUTTON" || tag === "A" || tag === "SELECT") return null;
+    if (tag === "INPUT" && /^(submit|image|button|reset|checkbox|radio|file)$/i.test(String((el as HTMLInputElement).type || ""))) return null;
+    const form = (el as HTMLInputElement).form || (el.closest ? el.closest("form") : null);
+    if (!form) return null;
+    for (const old of Array.from(document.querySelectorAll("[data-al-default-submit]"))) old.removeAttribute("data-al-default-submit");
+    const btn = Array.from(form.elements).find((c) => (c.tagName === "BUTTON" && String((c as HTMLButtonElement).type || "submit").toLowerCase() === "submit")
+      || (c.tagName === "INPUT" && /^(submit|image)$/i.test(String((c as HTMLInputElement).type || "")))) as HTMLButtonElement | HTMLInputElement | undefined;
+    if (btn) {
+      btn.setAttribute("data-al-default-submit", "1");
+      const label = String(controlLabelInPage(btn) || (btn as HTMLElement).innerText || (btn as HTMLInputElement).value || "").replace(/\s+/g, " ").trim();
+      return { label, action: String(btn.formAction || form.action || ""), tagged: true };
+    }
+    return { label: "", action: String(form.action || ""), tagged: false };
+  };
+
+  /** Runs IN THE PAGE: would Enter in this element file or pay by implicit submission? The
+   *  reason, or "". For a widget that presses Enter with no chokepoint of its own (comboboxFill). */
+  const implicitSubmitRefusalInPage = (el: Element | null | undefined): string => {
+    const imp = implicitSubmitInPage(el);
+    if (!imp) return "";
+    if (isPayFee(imp.label)) return `Enter here activates "${imp.label.slice(0, 60)}", which pays a fee`;
+    if (isSubmitIntent(imp.label, null) || isFinalSubmitControl(imp.label, { reviewPage: true })) return `Enter here activates "${imp.label.slice(0, 60)}", which is submit-worded`;
+    if (isSubmitOrPayRequestUrl(imp.action)) return `Enter here submits the form to ${imp.action.slice(0, 80)}, a filing/payment endpoint`;
+    return "";
+  };
+
   return {
     dismissalRefusalInPage,
+    implicitSubmitInPage,
+    implicitSubmitRefusalInPage,
+    isSubmitOrPayRequestUrl,
     isSubmitIntent,
     isPayFee,
     isFinalSubmitControl,
@@ -568,13 +624,10 @@ export const PORTAL_SAFETY_IN_PAGE_SOURCE =
 // ("SubmitApplication", "CompleteApplication"), so these have no trailing word boundary.
 // ---------------------------------------------------------------------------------------------
 
-const FINAL_SUBMIT_URL = /(submit|finali[sz]e|completeapplication|fileapplication|continueapplication)/i;
-const PAY_FEE_URL = /(payment|checkout|invoice|paymentus|payfee|placeorder)/i;
-
-/** A request whose URL looks like a filing or a fee payment — flagged, never auto-fired. */
+/** A request whose URL looks like a filing or a fee payment — flagged, never auto-fired. (Built
+ *  in the factory so the in-page implicit-submission question uses the same regexes.) */
 export function isSubmitOrPayRequestUrl(url: string | null | undefined): boolean {
-  const u = String(url ?? "");
-  return !!u && (FINAL_SUBMIT_URL.test(u) || PAY_FEE_URL.test(u));
+  return impl.isSubmitOrPayRequestUrl(url);
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -72,7 +72,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import {
   classifySubmissionText, finalSubmitEnvAllows, finalSubmitRefusals, isFinalSubmitControl, isPayFee,
-  isRecipeShapeValid, isSubmitIntent, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE,
+  isRecipeShapeValid, isSubmitIntent, isSubmitOrPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE,
   type HealedStep, type RunApproval, type SubmissionOutcome,
 } from "../../../shared/src/portalSafety";
 import { commitField, installSettleProbe, waitForSettled } from "../settle";
@@ -3514,6 +3514,21 @@ export class RecipeAdapter extends BasePortalAdapter {
     return String(label ?? "");
   }
 
+  /** What Enter in this control would activate by implicit submission (shared in-page predicate),
+   *  tagging the default button data-al-default-submit. null when it submits nothing or cannot be
+   *  read. */
+  private async implicitSubmitOf(target: unknown): Promise<{ label: string; action: string; tagged: boolean } | null> {
+    const t = target as { evaluate?: (fn: unknown, arg: unknown) => Promise<unknown> } | null;
+    if (!t || typeof t.evaluate !== "function" || !this.page || typeof this.page.evaluate !== "function") return null;
+    await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+    const r = await t.evaluate((el: Element, g: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ps = (globalThis as any)[g];
+      return ps && typeof ps.implicitSubmitInPage === "function" ? ps.implicitSubmitInPage(el) : null;
+    }, PORTAL_SAFETY_GLOBAL).catch(() => null) as { label: string; action: string; tagged: boolean } | null;
+    return r && typeof r === "object" ? r : null;
+  }
+
   /**
    * May replay perform this action? Returns the refusal reason, or "" when allowed. Every
    * refusal is recorded (guardRefusals + driftWarnings) so a refused click that a caller's
@@ -3551,6 +3566,22 @@ export class RecipeAdapter extends BasePortalAdapter {
     }
     // A key press that is not Enter/Space cannot activate a control (Escape, Tab, arrows).
     if (intent.kind === "press" && !/^(enter|numpadenter|space| )$/i.test(String(intent.key ?? "Enter"))) return "";
+    // ENTER IN A TEXT BOX IS A CLICK ON THE FORM'S DEFAULT BUTTON. Implicit submission activates
+    // the first submit button of the form, whatever the focused box is called: a recipe's Enter
+    // in "Parcel Number" posted the form's "Submit Application" (replay skeptic, enter-probe.log).
+    // The default button is judged by the full click gate below; with no button, the form's action.
+    if (intent.kind === "press" && /^(enter|numpadenter)$/i.test(String(intent.key ?? "Enter"))) {
+      const imp = await this.implicitSubmitOf(intent.target);
+      if (imp?.tagged) {
+        const viaDefault = await this.guardAction({
+          kind: "click", target: this.page.locator('[data-al-default-submit="1"]').first(),
+          why: `${intent.why}: Enter activates the form's default button "${imp.label.slice(0, 40)}"`,
+        });
+        if (viaDefault) return viaDefault;
+      } else if (imp && isSubmitOrPayRequestUrl(imp.action)) {
+        return refuse(`Enter submits the form to ${imp.action.slice(0, 80)}, a filing/payment endpoint`);
+      }
+    }
     const label = await this.controlLabelOf(intent.target);
     // 1) Fees: never, in any mode, whatever the flag.
     if (isPayFee(label) || PAY_FEE_REPLAY_GATE.test(label)) return refuse(`"${label.slice(0, 60)}" pays a fee`);

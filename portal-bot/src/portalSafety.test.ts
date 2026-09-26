@@ -71,6 +71,8 @@ const SUBMIT_MUST_REFUSE = [
   // with "Resubmit"; a signature step files with "Sign and File"; "e-File", "File Permit".
   "Resubmit", "Resubmit Application", "Re-submit", "Refile", "Sign and File", "Sign & Submit", "e-File", "eFile",
   "File Permit", "File Permit Application",
+  // A control whose whole label is "File" (a form's default button, replay skeptic MF3).
+  "File", "File now", "File »",
 ];
 const SUBMIT_MUST_ALLOW = [
   "Next", "Continue", "Save and Continue", "Save & Next", "Proceed", "Next Step", "Save Draft", "Back",
