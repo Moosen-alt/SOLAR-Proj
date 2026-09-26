@@ -5,31 +5,45 @@
 // and a word list loses to the next wording (the close-mustfix checker filed through four dialog
 // shapes and three Enter shapes that each gate's list did not know). This layer does not care
 // which control fired or what it said. It watches the requests themselves, for the whole of a
-// learn or replay run, and aborts:
+// learn or replay run — EVERY request that is not GET/HEAD/OPTIONS, from EVERY frame (the main
+// frame, an iframe, a popup the context owns) and of EVERY resource type (a document navigation,
+// a form posted into an iframe, XHR, fetch, a beacon) — and aborts:
 //
-//   1. FILING-URL RULE: any top-level (main-frame) NAVIGATION whose method is not GET/HEAD/OPTIONS
-//      and whose URL — for a form POST, the form's action — reads as a filing or a fee payment
-//      (isFilingOrPaymentRequest, the same predicate the demo recorder's abort asks). A named
-//      approval opens a short window for a filing URL around THE approved final-submit click
-//      only; a payment URL is never allowed.
-//   2. WINDOW RULE (the invariant part): ANY request that is not GET/HEAD/OPTIONS — any URL, any
-//      frame, XHR and fetch included — fired while a bot action with no legitimate reason to
-//      change server state is in flight: an overlay DISMISSER click, and a bot Enter press on a
-//      page classified review/terminal. The window opens before the action and closes a short
-//      grace after it, BEFORE the caller's next action (so a following recipe click's ASP.NET
-//      postback is never caught in it).
+//   1. PAYMENT RULE: a request whose URL reads as a fee payment (isPayRequestUrl). Always, in any
+//      frame, of any type, even under a named approval: automation never pays.
+//   2. FILING-URL RULE: a request whose URL — for a form POST, the form's action — reads as a
+//      filing (isFilingOrPaymentRequest, the same predicate the demo recorder's abort asks). A
+//      named approval opens a short window around THE approved final-submit click only.
+//      (close2-safety checker: this rule once held for main-frame navigations only, and an
+//      iframe's "Continue", a form targeted at an iframe and a fetch POST each reached the server
+//      — iframePay, iframeSubmit, targetFramePay, xhrFile, xhrPay.) KNOWN COST, fail-closed: a
+//      legitimate mid-flow XHR whose URL happens to contain "submit" or "invoice" is aborted too,
+//      and the run stops NAMED — never silently.
+//   3. WINDOW RULE (the invariant part): ANY state-changing request fired while a bot action with
+//      no legitimate reason to change server state is in flight: an overlay DISMISSER click, and a
+//      bot Enter press on a page classified review/terminal. The window opens before the action
+//      and closes a short grace after it, BEFORE the caller's next action (so a following recipe
+//      click's ASP.NET postback is never caught in it).
+//   4. REVIEW-PAGE LOCKDOWN: at review nothing legitimate needs to post, so EVERY state-changing
+//      request is aborted (a) once the run has locked the page (replay's stopForReview step, the
+//      learner's atReview), and (b) whenever the page the request comes from is classified
+//      terminal by the SHARED in-page predicate (terminalPageInPage — the same one replay's click
+//      gate asks), read at the moment of the request, so a page script that posts a second after
+//      the review page loads is caught however fast the run is. Lifted only by the approved
+//      final submit's window (non-payment URLs) and by dispose() — the hand-off to a person.
 //
 // Every abort is recorded (origin + path only — never a query string, which can carry a
-// customer's data) so the run reports it; a filing-URL abort also stops a replay, named.
+// customer's data) so the run reports it; a filing, payment or lockdown abort also stops the run,
+// named (replay: backstopStop; learner: at the next page boundary and in its result).
 //
 // Installed at the CONTEXT level when the page has one, so a filing that opens in a popup is
 // covered too, and handed on with route.fallback() — never continue() — so a smoke's own
 // context.route fixture server still answers what this layer lets through.
 //
 // Known cost: Playwright disables the browser's HTTP cache while any route is installed.
-import { isFilingOrPaymentRequest, isPayRequestUrl } from "../../shared/src/portalSafety";
+import { isFilingOrPaymentRequest, isPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../shared/src/portalSafety";
 
-export type BackstopRule = "filing-url" | "dismisser-window" | "enter-window";
+export type BackstopRule = "filing-url" | "dismisser-window" | "enter-window" | "review-lockdown";
 
 export interface BackstopAbort {
   rule: BackstopRule;
@@ -44,11 +58,21 @@ export interface BackstopAbort {
 export interface FilingBackstop {
   readonly aborts: BackstopAbort[];
   /** Open a window in which every state-changing request is aborted. Returns its closer. */
-  openWindow(rule: Exclude<BackstopRule, "filing-url">, why: string): () => void;
-  /** THE approved final submit only: let a FILING url through for `ms`. Payment never. */
+  openWindow(rule: "dismisser-window" | "enter-window", why: string): () => void;
+  /** THE approved final submit only: let a FILING url (and the review lockdown) through for
+   *  `ms`. Payment never. */
   allowApprovedFiling(ms: number): void;
+  /** The run is at review: abort every state-changing request until dispose() hands the page to
+   *  a person. Sticky. */
+  lockReview(why: string): void;
+  /** Aborts that stop the run: filing, payment, review lockdown. */
+  stoppingAborts(): BackstopAbort[];
   dispose(): Promise<void>;
 }
+
+/** The rules whose abort stops the run by name (a window abort is reported, and the run goes on:
+ *  nothing was sent, and the dismissal / Enter was not a step of the recipe). */
+export const isStoppingAbort = (a: BackstopAbort): boolean => a.rule === "filing-url" || a.rule === "review-lockdown";
 
 const REGISTRY = new WeakMap<object, FilingBackstop>();
 
@@ -71,7 +95,7 @@ const whereOf = (url: string): string => {
 
 /** Run `fn` inside a window on this page's backstop (if one is installed), closing it `graceMs`
  *  after `fn` settles — before the caller's next action. */
-export async function withBackstopWindow<T>(page: unknown, rule: Exclude<BackstopRule, "filing-url">, why: string, fn: () => Promise<T>, graceMs = 600): Promise<T> {
+export async function withBackstopWindow<T>(page: unknown, rule: "dismisser-window" | "enter-window", why: string, fn: () => Promise<T>, graceMs = 600): Promise<T> {
   const bs = backstopFor(page);
   if (!bs) return fn();
   const close = bs.openWindow(rule, why);
@@ -81,6 +105,40 @@ export async function withBackstopWindow<T>(page: unknown, rule: Exclude<Backsto
     await new Promise((r) => setTimeout(r, graceMs));
     close();
   }
+}
+
+/** How long the lockdown waits for the requesting page to answer "are you terminal?". A page
+ *  blocked in a SYNCHRONOUS XHR cannot answer until this handler lets that XHR go — the timeout
+ *  breaks that wait. Unknown then falls back to the sticky lock (and the filing/payment rules,
+ *  which need no page read). */
+const TERMINAL_READ_TIMEOUT_MS = 1500;
+
+/** Read the shared terminal-page predicate in the page a request came from. true / false, or
+ *  null when it cannot be read (no frame: a service worker; a navigating or blocked page). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function requestPageIsTerminal(request: any): Promise<boolean | null> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let main: any = null;
+  try {
+    const frame = request.frame();
+    const pg = frame && typeof frame.page === "function" ? frame.page() : null;
+    main = pg && typeof pg.mainFrame === "function" ? pg.mainFrame() : frame;
+  } catch { return null; }
+  if (!main || typeof main.evaluate !== "function") return null;
+  const read = (async (): Promise<boolean | null> => {
+    await main.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+    const r = await main.evaluate((g: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ps = (globalThis as any)[g];
+      if (!ps || typeof ps.terminalPageInPage !== "function") return null;
+      const t = ps.terminalPageInPage();
+      return typeof t.terminal === "boolean" ? t.terminal : null;
+    }, PORTAL_SAFETY_GLOBAL).catch(() => null);
+    return typeof r === "boolean" ? r : null;
+  })();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<null>((r) => { timer = setTimeout(() => r(null), TERMINAL_READ_TIMEOUT_MS); });
+  try { return await Promise.race([read, timeout]); } finally { if (timer) clearTimeout(timer); }
 }
 
 /** Install the backstop for one learn/replay run. null when the page cannot route (a unit-test
@@ -98,9 +156,11 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
   if (!target) return null;
 
   const aborts: BackstopAbort[] = [];
-  const windows = new Map<number, { rule: Exclude<BackstopRule, "filing-url">; why: string }>();
+  const windows = new Map<number, { rule: "dismisser-window" | "enter-window"; why: string }>();
   let nextWindow = 1;
   let approvedFilingUntil = 0;
+  let locked = "";
+  let disposed = false;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handler = async (route: any, request: any): Promise<void> => {
@@ -110,29 +170,33 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
     if (method === "GET" || method === "HEAD" || method === "OPTIONS") { await route.fallback().catch(() => null); return; }
     let resourceType = "";
     try { resourceType = String(request.resourceType() || ""); } catch { /* keep "" */ }
-    // 2. WINDOW RULE: any state-changing request while a dismisser click / terminal Enter is in flight.
+    const abort = async (rule: BackstopRule, why: string): Promise<void> => {
+      aborts.push({ rule, method: method || "?", where: whereOf(url), why, resourceType });
+      await route.abort("blockedbyclient").catch(() => null);
+    };
+    const approved = Date.now() < approvedFilingUntil;
+    // 1. PAYMENT: never, in any frame, any type, whatever was approved.
+    if (isPayRequestUrl(url)) { await abort("filing-url", "a fee-payment endpoint — automation never pays"); return; }
+    // 2. FILING URL: only inside THE approved final submit's window.
+    if (isFilingOrPaymentRequest(method || "POST", url) && !approved) {
+      await abort("filing-url", `a filing endpoint, and no named approval covers this request (${label})`);
+      return;
+    }
+    // 3. WINDOW RULE: any state-changing request while a dismisser click / terminal Enter is in flight.
     const open = [...windows.values()];
     if (open.length) {
       const w = open[open.length - 1];
-      aborts.push({ rule: w.rule, method: method || "?", where: whereOf(url), why: w.why, resourceType });
-      await route.abort("blockedbyclient").catch(() => null);
+      await abort(w.rule, w.why);
       return;
     }
-    // 1. FILING-URL RULE: a top-level navigation that files or pays.
-    let topLevelNavigation = false;
-    try {
-      const frame = request.frame();
-      topLevelNavigation = !!request.isNavigationRequest() && !!frame && typeof frame.parentFrame === "function" && frame.parentFrame() === null;
-    } catch { topLevelNavigation = resourceType === "document"; }
-    if (topLevelNavigation && isFilingOrPaymentRequest(method || "POST", url)) {
-      const pay = isPayRequestUrl(url);
-      if (!pay && Date.now() < approvedFilingUntil) { await route.fallback().catch(() => null); return; }
-      aborts.push({
-        rule: "filing-url", method: method || "?", where: whereOf(url), resourceType,
-        why: pay ? "a fee-payment endpoint — automation never pays" : `a filing endpoint, and no named approval covers this request (${label})`,
-      });
-      await route.abort("blockedbyclient").catch(() => null);
-      return;
+    // 4. REVIEW-PAGE LOCKDOWN: the run locked it, or the requesting page reads as terminal now.
+    if (!approved) {
+      if (locked) { await abort("review-lockdown", locked); return; }
+      const terminal = await requestPageIsTerminal(request);
+      if (terminal === true && !disposed) {
+        await abort("review-lockdown", `the page this request came from is the review/terminal page (${label})`);
+        return;
+      }
     }
     await route.fallback().catch(() => null);
   };
@@ -148,10 +212,16 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
     allowApprovedFiling(ms: number) {
       approvedFilingUntil = Math.max(approvedFilingUntil, Date.now() + Math.max(0, Math.min(ms, 60_000)));
     },
+    lockReview(why: string) {
+      if (!locked) locked = `the run is at review (${String(why || label).slice(0, 100)}) — nothing legitimate posts from here until a person takes the page`;
+    },
+    stoppingAborts() { return aborts.filter(isStoppingAbort); },
     async dispose() {
+      disposed = true;
       if (REGISTRY.get(page) === bs) REGISTRY.delete(page);
       if (target !== page && REGISTRY.get(target) === bs) REGISTRY.delete(target);
       windows.clear();
+      locked = "";
       await target.unroute("**/*", handler).catch(() => null);
     },
   };
@@ -162,5 +232,8 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
 
 /** One line per abort, for a run's warnings. */
 export function describeBackstopAbort(a: BackstopAbort): string {
-  return `BACKSTOP ABORTED ${a.method} ${a.where} (${a.resourceType || "request"}): ${a.rule === "filing-url" ? a.why : `fired while ${a.rule === "dismisser-window" ? "an overlay dismisser click" : "a bot Enter on a review/terminal page"} was in flight (${a.why})`}`;
+  const what = a.rule === "filing-url" ? a.why
+    : a.rule === "review-lockdown" ? `REVIEW-PAGE LOCKDOWN — ${a.why}`
+      : `fired while ${a.rule === "dismisser-window" ? "an overlay dismisser click" : "a bot Enter on a review/terminal page"} was in flight (${a.why})`;
+  return `BACKSTOP ABORTED ${a.method} ${a.where} (${a.resourceType || "request"}): ${what}`;
 }

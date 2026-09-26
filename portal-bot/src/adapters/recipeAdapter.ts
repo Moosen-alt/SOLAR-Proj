@@ -489,10 +489,14 @@ export class RecipeAdapter extends BasePortalAdapter {
     this.backstop = await installFilingBackstop(this.page, "replay run").catch(() => null);
     try {
       const r = await this.runAll(project);
+      // Hand-off: the route comes off FIRST, then every abort up to that moment is counted (an
+      // abort between the last check and the hand-off is not lost).
+      await this.backstop?.dispose().catch(() => null);
       const stop = this.backstopStop();
       // Every abort is reported (driftWarnings + guardRefusals, pushed by backstopStop); a
-      // filing/payment abort turns a run that "reached review" into a named failure.
-      if (stop && r.ok) return fail(stop, { ...(r.data ?? {}), driftWarnings: this.driftWarnings, guardRefusals: this.guardRefusals });
+      // filing/payment/lockdown abort turns ANY ending — "reached review", or a step that then
+      // "did not advance" because its request was aborted — into the backstop's named failure.
+      if (stop) return fail(r.ok ? stop : `${stop} (The run then reported: ${String(r.message ?? "").slice(0, 300)})`, { ...(r.data ?? {}), driftWarnings: this.driftWarnings, guardRefusals: this.guardRefusals });
       return r;
     } finally {
       await this.backstop?.dispose().catch(() => null);
@@ -514,10 +518,12 @@ export class RecipeAdapter extends BasePortalAdapter {
       this.guardRefusals.push(line);
       this.driftWarnings.push(line);
     }
-    const filing = bs.aborts.filter((a) => a.rule === "filing-url");
-    return filing.length
-      ? `STOPPED BY THE NETWORK BACKSTOP: the page tried to file or pay with no named approval for this run, and the request was aborted — ${describeBackstopAbort(filing[0])}. Nothing was sent. A step of this recipe (or a page script it triggered) is a filing control the word gates did not recognise; review the recipe before the next run.`
-      : "";
+    const stopping = bs.stoppingAborts();
+    if (!stopping.length) return "";
+    const first = stopping[0];
+    return first.rule === "review-lockdown"
+      ? `STOPPED BY THE NETWORK BACKSTOP: the page tried to send a state-changing request while the run was at review, and it was aborted — ${describeBackstopAbort(first)}. Nothing was sent. At review nothing legitimate posts until a person takes the page; a step of this recipe (or a page script) acted on the review page.`
+      : `STOPPED BY THE NETWORK BACKSTOP: the page tried to file or pay with no named approval for this run, and the request was aborted — ${describeBackstopAbort(first)}. Nothing was sent. A step of this recipe (or a page script it triggered) is a filing control the word gates did not recognise; review the recipe before the next run.`;
   }
 
   /** The HTTP method of the request that produced the main frame's current document: "GET",
@@ -1018,6 +1024,9 @@ export class RecipeAdapter extends BasePortalAdapter {
           this.gapFilledPage = await this.pageIdentity().catch(() => "");
           break;
         }
+        // Past review only toward an APPROVED final submit: every state-changing request is now
+        // aborted except inside THE approved click's window (filingBackstop.ts).
+        this.backstop?.lockReview(`replay stopForReview before the approved final submit (${this.recipe.id})`);
         pastReview = true;
         continue;
       }
@@ -1592,6 +1601,11 @@ export class RecipeAdapter extends BasePortalAdapter {
     // it in. An earlier draft of this call sat above that loop and would have withdrawn the
     // warning on exactly the page the warning was about.
     this.dischargeCoveredWarning();
+    // THE REVIEW-PAGE LOCKDOWN (filingBackstop.ts): the run's last write to the page (the final
+    // re-assert and gap-fill above, which a portal autosaves on blur) is done. From here until
+    // fillApplication hands the page to a person (dispose), every state-changing request is
+    // aborted and stops the run, named.
+    this.backstop?.lockReview(`replay stopped at review (${this.recipe.id})`);
     const review = await this.verifyReviewScreen(project);
     return ok(
       `Replayed ${executed} recorded step(s); stopped at review.${review.summary}`,
@@ -3617,34 +3631,14 @@ export class RecipeAdapter extends BasePortalAdapter {
   private async pageSafetyContext(): Promise<{ reviewPage?: boolean; readOnlyPage?: boolean; filingControl?: string }> {
     if (!this.page || typeof this.page.evaluate !== "function") return {};
     await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+    // THE SHARED terminalPageInPage (portalSafety.ts): the same question the network backstop's
+    // review-page lockdown asks, so the click gate and the lockdown cannot disagree.
     const read = await this.page.evaluate((g: string) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ps = (globalThis as any)[g];
-      if (!ps) return {};
-      // THE PAGE, NOT ITS STEP NAVIGATOR. A wizard lists every step on every page ("Review &
-      // Submit" in PowerClerk's step bar, the SPA's stepper header), so the whole body names the
-      // review step on page one. The shared predicate reads the page's LAID-OUT text (innerText,
-      // so block boundaries stay word boundaries — a detached clone's text glues "Logout" to
-      // "Step 4: Review" and the review page stops naming itself) with the navigator's text cut.
-      // Deliberately NOT header/footer: a portal may put the page's own title in a <header>, and
-      // losing it would un-name a review page — the direction that files.
-      let pageText = document.body ? (document.body.innerText || "") : "";
-      const navs = Array.from(document.querySelectorAll("nav, [role=navigation], [role=tablist], [aria-label*=step i], [class*=stepper], [class*=steps], [class*=stepNav], [class*=step-nav], [class*=progress]"))
-        .concat(Array.from(document.querySelectorAll("ol, ul")).filter((list) => {
-          const items = Array.from(list.children);
-          return items.length >= 3 && items.every((li) => ((li as HTMLElement).innerText || "").trim().length < 60);
-        }));
-      for (const el of navs) {
-        const t = ((el as HTMLElement).innerText || "").trim();
-        if (t) pageText = pageText.split(t).join(" \n ");
-      }
-      const reviewPage = document.body ? ps.isReviewPageText(pageText) : undefined;
-      const readOnlyPage = ps.readOnlyPageInPage();
-      const filing = Array.from(document.querySelectorAll("button, a, input[type=submit], input[type=button], input[type=image], [role=button], [role=link]"))
-        .filter((el) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 2 && r.height > 2; })
-        .map((el) => String(ps.controlLabelInPage(el) || (el as HTMLElement).innerText || (el as HTMLInputElement).value || ""))
-        .find((t) => ps.isFinalSubmitControl(t, { reviewPage }));
-      return { reviewPage, readOnlyPage, filingControl: filing || "" };
+      if (!ps || typeof ps.terminalPageInPage !== "function") return {};
+      const t = ps.terminalPageInPage();
+      return { reviewPage: t.reviewPage, readOnlyPage: t.readOnlyPage, filingControl: t.filingControl };
     }, PORTAL_SAFETY_GLOBAL).catch(() => null) as { reviewPage?: boolean; readOnlyPage?: boolean; filingControl?: string } | null;
     return read && typeof read === "object" ? read : {};
   }

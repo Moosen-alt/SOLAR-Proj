@@ -20,7 +20,7 @@ import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
 import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../../shared/src/portalSafety";
-import { installFilingBackstop, withBackstopWindow, describeBackstopAbort } from "../filingBackstop";
+import { installFilingBackstop, withBackstopWindow, describeBackstopAbort, backstopFor, isStoppingAbort } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
@@ -3175,16 +3175,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // a record type that contradicts it — the planner sees one page at a time and does not.
       this.permitDiscipline = String(project.permitType ?? "");
       result = await this.learnImpl(context, project);
-      // EVERY ABORT IS REPORTED, and a learn during which the page tried to file or pay is not a
-      // clean learn: the recipe it recorded contains the step that did it.
+      // Hand-off first (the route comes off), then every abort up to that moment is counted.
+      await backstop?.dispose().catch(() => null);
+      // EVERY ABORT IS REPORTED, and a learn during which the page tried to file or pay (or post
+      // from the review page) is not a clean learn: the recipe it recorded contains the step
+      // that did it.
       if (backstop && backstop.aborts.length) {
         const lines = backstop.aborts.map(describeBackstopAbort);
         for (const line of lines) this.debug?.event({ type: "backstop_abort", message: line });
-        const filing = backstop.aborts.filter((a) => a.rule === "filing-url");
+        const filing = backstop.aborts.filter(isStoppingAbort);
         result = {
           ...result,
-          ...(filing.length ? { ok: false } : {}),
-          message: `${filing.length ? "STOPPED BY THE NETWORK BACKSTOP — the page tried to file or pay during the learn; the recorded steps must be reviewed before any replay. " : ""}${result.message} [${lines.join(" | ").slice(0, 600)}]`,
+          ...(filing.length ? { ok: false, stopReason: result.stopReason || "backstop_abort" } : {}),
+          message: `${filing.length ? "STOPPED BY THE NETWORK BACKSTOP — the page tried to file or pay (or post from the review page) during the learn; the recorded steps must be reviewed before any replay. " : ""}${result.message} [${lines.join(" | ").slice(0, 600)}]`,
         };
       }
       return result;
@@ -4336,6 +4339,15 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         break;
       }
       pageCount++;
+      // THE BACKSTOP ABORTED A FILING, A PAYMENT OR A REVIEW-PAGE POST: stop here, named. Walking
+      // on would drive the same page (and its filing control) again. learn() reports every abort.
+      {
+        const stopping = backstopFor(this.page)?.stoppingAborts() ?? [];
+        if (stopping.length) {
+          this.debug?.event({ type: "backstop_stop", page: pageCount, message: describeBackstopAbort(stopping[0]) });
+          return { ...fail(steps, this.portalName, `Stopped by the network backstop: ${describeBackstopAbort(stopping[0])}. Nothing was sent; the step (or page script) that fired it must be reviewed.`, null, pageCount, portalNotices), stopReason: "backstop_abort" };
+        }
+      }
       // Reset per-page label tracking so the planner sees a clean slate on each page —
       // PowerClerk reuses field labels ("Name", "Email", "Phone") across wizard steps and
       // passing stale labels from page N to page N+1 caused the planner to skip re-fills.
@@ -5899,6 +5911,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // re-applies whatever is lost.
         await this.verifyFillsLanded(appliedThisPage, { budgetMs: 25_000, requiredOnly: true }).catch(() => [] as string[]);
         reachedReview = true;
+        // THE REVIEW-PAGE LOCKDOWN (filingBackstop.ts): the learn's last write is done; nothing
+        // legitimate posts from here until the page is handed to a person.
+        backstopFor(this.page)?.lockReview("learner at review");
         break;
       }
 

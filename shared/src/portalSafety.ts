@@ -319,6 +319,43 @@ export function portalSafetyFactory() {
   };
 
   /**
+   * Runs IN THE PAGE: THE ONE "IS THIS PAGE TERMINAL?" QUESTION — does the page NAME itself the
+   * review step, is it read-only, and does it show a filing-shaped control. terminal = review, or
+   * read-only with a filing control. Asked by replay's click gate (pageSafetyContext) AND by the
+   * network backstop's review-page lockdown, so the two can never disagree about where review is.
+   * Unknown (no document) answers every question with undefined.
+   *
+   * THE PAGE, NOT ITS STEP NAVIGATOR. A wizard lists every step on every page ("Review & Submit"
+   * in PowerClerk's step bar, the SPA's stepper header), so the whole body names the review step
+   * on page one. The page's LAID-OUT text (innerText, so block boundaries stay word boundaries) is
+   * read with the navigator's text cut. Deliberately NOT header/footer: a portal may put the
+   * page's own title in a <header>, and losing it would un-name a review page — the direction
+   * that files.
+   */
+  const terminalPageInPage = (): { reviewPage?: boolean; readOnlyPage?: boolean; filingControl?: string; terminal?: boolean } => {
+    const d = (globalThis as { document?: Document }).document;
+    if (!d || !d.body) return {};
+    let pageText = d.body.innerText || "";
+    const navs = Array.from(d.querySelectorAll("nav, [role=navigation], [role=tablist], [aria-label*=step i], [class*=stepper], [class*=steps], [class*=stepNav], [class*=step-nav], [class*=progress]"))
+      .concat(Array.from(d.querySelectorAll("ol, ul")).filter((list) => {
+        const items = Array.from(list.children);
+        return items.length >= 3 && items.every((li) => ((li as HTMLElement).innerText || "").trim().length < 60);
+      }));
+    for (const el of navs) {
+      const t = ((el as HTMLElement).innerText || "").trim();
+      if (t) pageText = pageText.split(t).join(" \n ");
+    }
+    const reviewPage = isReviewPageText(pageText);
+    const readOnlyPage = readOnlyPageInPage();
+    const filing = Array.from(d.querySelectorAll("button, a, input[type=submit], input[type=button], input[type=image], [role=button], [role=link]"))
+      .filter((el) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 2 && r.height > 2; })
+      .map((el) => String(controlLabelInPage(el) || (el as HTMLElement).innerText || (el as HTMLInputElement).value || ""))
+      .find((t) => isFinalSubmitControl(t, { reviewPage }));
+    const filingControl = filing || "";
+    return { reviewPage, readOnlyPage, filingControl, terminal: reviewPage === true || (readOnlyPage === true && !!filingControl) };
+  };
+
+  /**
    * Runs IN THE PAGE: a form control's identity as a HUMAN sees it — attribute names plus the
    * text of its <label for> and its wrapping <label>. Never its value. The CVV that reached a
    * shared recipe as a literal had no telling attribute at all: Accela labels it with a plain
@@ -800,6 +837,7 @@ export function portalSafetyFactory() {
     readOnlyPageInPage,
     isReviewPageText,
     reviewPageInPage,
+    terminalPageInPage,
     fieldIdentityInPage,
     isPaymentElementInPage,
     controlRoleInPage,

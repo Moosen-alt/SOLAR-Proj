@@ -21,6 +21,16 @@
 //   humanAfterRun    — after fillApplication returns, the route is gone: a person's own filing
 //                      POST in the same page reaches the server (armSubmitWatch hands them it)
 //
+// CLOSE2-SAFETY (every frame, every resource type — skepticNew.probe.ts shapes, verbatim):
+// MUST-EXCLUDE (0 non-GET reaches the server, the run STOPS named, ok=false): iframePay,
+// iframeSubmit (a "Continue" inside an iframe posting to /payment/charge, /api/SubmitApplication),
+// targetFramePay (a form targeted at an iframe), xhrFile / xhrPay (fetch POST), beaconPay
+// (navigator.sendBeacon). MUST-PASS: iframePostOk (a subframe POST to /frame/save), iframeGetOk.
+// REVIEW-PAGE LOCKDOWN: toReview300 / toReview1500 (the review page's own script posts 0.3 s /
+// 1.5 s after it loads — aborted, named stop, and the person's own submit after hand-off goes
+// through), toSummary (a stop page that does not name itself review: the run's own lock), and the
+// learner's backstop on a review page (+ its hand-off).
+//
 // Run: npx tsx portal-bot/src/filingBackstop.dom.smoke.ts
 import "./smokeArtifactDirs";
 import http from "node:http";
@@ -53,6 +63,35 @@ const PAGES: Record<string, string> = {
   postback: `<h1>Step 3: Contacts</h1><label for="nm">Contact Name</label><input id="nm">
     <form id="hf" method="post" action="/Cap/CapEdit.aspx" style="display:none"><input name="a" value="1"></form>
     <a id="next" href="#" onclick="document.getElementById('hf').submit();return false;">Next</a>`,
+  // CLOSE2-SAFETY CHECKER (skepticNew.probe.ts, verbatim): filing/payment that is NOT a main-frame
+  // navigation. The iframe cells click "Continue" INSIDE iframe "payframe".
+  iframePay: `<h1>Step 3: Project Details</h1><label for="nm">Contact Name</label><input id="nm"><iframe name="payframe" src="/frame?k=pay" style="width:400px;height:120px"></iframe>`,
+  iframeSubmit: `<h1>Step 3: Project Details</h1><label for="nm">Contact Name</label><input id="nm"><iframe name="payframe" src="/frame?k=submit" style="width:400px;height:120px"></iframe>`,
+  targetFramePay: `<h1>Step 3: Project Details</h1><form id="pay" method="post" action="/checkout/pay" target="payframe"><input type="hidden" name="amt" value="450"></form>
+    <iframe name="payframe" style="width:10px;height:10px"></iframe><button type="button" id="go" onclick="document.getElementById('pay').submit()">Next</button>`,
+  xhrFile: `<h1>Step 3: Project Details</h1><button type="button" id="go">Next</button>
+    <script>document.getElementById('go').addEventListener('click', function(){ fetch('/SubmitApplication', {method:'POST', body:'x=1'}); });</script>`,
+  xhrPay: `<h1>Step 3: Project Details</h1><button type="button" id="go">Next</button>
+    <script>document.getElementById('go').addEventListener('click', function(){ fetch('/payment/charge', {method:'POST', body:'x=1'}); });</script>`,
+  beaconPay: `<h1>Step 3: Project Details</h1><button type="button" id="go">Next</button>
+    <script>document.getElementById('go').addEventListener('click', function(){ navigator.sendBeacon('/payment/charge', 'x=1'); });</script>`,
+  // MUST-PASS: a subframe POST to a non-filing URL mid-flow, and a subframe GET.
+  iframePostOk: `<h1>Step 3: Project Details</h1><iframe name="payframe" src="/frame?k=save" style="width:400px;height:120px"></iframe>`,
+  iframeGetOk: `<h1>Step 3: Project Details</h1><iframe name="payframe" src="/frame?k=get" style="width:400px;height:120px"></iframe>`,
+  // REVIEW-PAGE LOCKDOWN: the recipe's "Next" lands on a page that names itself the review step,
+  // whose own script posts (not filing-worded) a moment after it loads.
+  toReview300: `<h1>Step 4: Contacts</h1><a id="next" href="/review?d=300">Next</a>`,
+  toReview1500: `<h1>Step 4: Contacts</h1><a id="next" href="/review?d=1500">Next</a>`,
+  // ...and a stop page that does NOT name itself review (only the run's own lock knows), whose
+  // script keeps posting: before the lock it is mid-flow, after it nothing may leave.
+  toSummary: `<h1>Step 4: Contacts</h1><a id="next" href="/summary">Next</a>`,
+};
+const FRAME: Record<string, string> = {
+  pay: `<form method="post" action="/payment/charge"><button type="submit" id="fb">Continue</button></form>`,
+  submit: `<form method="post" action="/api/SubmitApplication"><button type="submit" id="fb">Continue</button></form>`,
+  get: `<a id="fb" href="/frame?k=done" role="button">Continue</a>`,
+  save: `<form method="post" action="/frame/save"><button type="submit" id="fb">Continue</button></form>`,
+  done: `<p>ok</p>`,
 };
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -65,6 +104,24 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/next") {
     res.writeHead(200, { "content-type": "text/html" });
     res.end("<!doctype html><html><body><h1>Step 4: Additional Information</h1><input id='x' aria-label='Notes'></body></html>");
+    return;
+  }
+  if (url.pathname === "/frame") {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(`<!doctype html><html><body>${FRAME[url.searchParams.get("k") || "done"] ?? ""}</body></html>`);
+    return;
+  }
+  if (url.pathname === "/review") {
+    const d = Number(url.searchParams.get("d") || "300");
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(`<!doctype html><html><body><h1>Step 5: Review and Submit</h1><p>Please review your application before submitting.</p>
+      <script>setTimeout(function(){ fetch('/apply/42', {method:'POST', body:'x=1'}).catch(function(){}); }, ${d});</script></body></html>`);
+    return;
+  }
+  if (url.pathname === "/summary") {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(`<!doctype html><html><body><h1>Step 5: Summary</h1><p>Your details.</p>
+      <script>setInterval(function(){ fetch('/keepalive', {method:'POST', body:'x=1'}).catch(function(){}); }, 10);</script></body></html>`);
     return;
   }
   const m = url.searchParams.get("m") || "postback";
@@ -129,6 +186,65 @@ try {
     });
     check("MUST-PASS postback: an ordinary postback POST reaches the server and the run advances", r.during.join(",") === "/Cap/CapEdit.aspx" && r.ok, `POSTs=[${r.during.join(",")}] ok=${r.ok} ${r.msg}`);
     check("MUST-PASS humanAfterRun: after the run, the backstop is gone — the person's own filing POST goes through", r.afterPosts.join(",") === "/SubmitApplication", `after=[${r.afterPosts.join(",")}]`);
+  }
+  // CLOSE2-SAFETY: every frame, every resource type. MUST-EXCLUDE: 0 non-GET reaches the server, the
+  // run STOPS named, ok=false.
+  const IN_FRAME = { action: "click", selector: { css: "#fb", frame: "payframe", name: "Continue" }, note: "advance: Continue" } as RecipeStep;
+  const GO = { action: "click", selector: { css: "#go", role: "button", name: "Next" }, note: "advance: Next" } as RecipeStep;
+  for (const [m, steps, endpoint] of [
+    ["iframePay", [IN_FRAME], "/payment/charge"], ["iframeSubmit", [IN_FRAME], "/api/SubmitApplication"],
+    ["targetFramePay", [GO], "/checkout/pay"], ["xhrFile", [GO], "/SubmitApplication"], ["xhrPay", [GO], "/payment/charge"],
+    ["beaconPay", [GO], "/payment/charge"],
+  ] as Array<[string, RecipeStep[], string]>) {
+    const r = await replay(m, steps);
+    check(`MUST-EXCLUDE ${m}: no non-GET request reaches the server`, r.during.length === 0, `POSTs=[${r.during.join(",")}] ${r.msg}`);
+    check(`MUST-EXCLUDE ${m}: the replay STOPS, named (${endpoint}), ok=false`, !r.ok && /STOPPED BY THE NETWORK BACKSTOP/.test(r.msg) && r.msg.includes(endpoint), `ok=${r.ok} ${r.msg}`);
+  }
+  {
+    const r = await replay("iframePostOk", [IN_FRAME]);
+    check("MUST-PASS iframePostOk: a subframe POST to a non-filing URL mid-flow reaches the server", r.during.join(",") === "/frame/save" && !/BACKSTOP/.test(r.refusals), `POSTs=[${r.during.join(",")}] refusals=${r.refusals || "(none)"}`);
+  }
+  {
+    const r = await replay("iframeGetOk", [IN_FRAME]);
+    check("MUST-PASS iframeGetOk: a subframe GET is never touched (no abort)", r.during.length === 0 && !/BACKSTOP/.test(r.refusals), `POSTs=[${r.during.join(",")}] refusals=${r.refusals || "(none)"}`);
+  }
+  // REVIEW-PAGE LOCKDOWN. The page's script posts 300 ms / 1500 ms after the review page loads.
+  const NEXT_LINK = { action: "click", selector: { css: "#next", role: "link", name: "Next" }, note: "advance: Next" } as RecipeStep;
+  for (const m of ["toReview300", "toReview1500"]) {
+    const r = await replay(m, [NEXT_LINK], async (page) => {
+      // After the hand-off: the person's own submit on the review page is NOT blocked.
+      await page.evaluate((u) => { const f = document.createElement("form"); f.method = "post"; f.action = u; document.body.appendChild(f); f.submit(); }, `${base}/SubmitApplication`);
+      await page.waitForTimeout(1200);
+    });
+    check(`MUST-EXCLUDE ${m}: the review page's own POST never reaches the server during the run`, !r.during.includes("/apply/42"), `POSTs=[${r.during.join(",")}] ${r.msg}`);
+    check(`MUST-EXCLUDE ${m}: it was aborted by the review-page lockdown, and the run STOPS named, ok=false`, /BACKSTOP ABORTED POST \S*\/apply\/42.*REVIEW-PAGE LOCKDOWN/.test(r.refusals) && !r.ok && /STOPPED BY THE NETWORK BACKSTOP/.test(r.msg), `ok=${r.ok} refusals=${r.refusals || "(none)"} ${r.msg}`);
+    check(`MUST-PASS ${m}: after the hand-off the person's own submit is NOT blocked`, r.afterPosts.includes("/SubmitApplication"), `after=[${r.afterPosts.join(",")}]`);
+  }
+  {
+    // THE RUN'S OWN LOCK: a stop page that does not name itself review, whose script keeps posting.
+    const r = await replay("toSummary", [NEXT_LINK]);
+    check("MUST-EXCLUDE toSummary: after the run locks the page at review, its POSTs are aborted (lockdown), ok=false named",
+      /BACKSTOP ABORTED POST \S*\/keepalive.*REVIEW-PAGE LOCKDOWN — the run is at review/.test(r.refusals) && !r.ok && /STOPPED BY THE NETWORK BACKSTOP/.test(r.msg), `ok=${r.ok} refusals=${r.refusals.slice(0, 300) || "(none)"} ${r.msg}`);
+  }
+  {
+    // THE LEARNER'S BACKSTOP on a review page: the page's own delayed POST is aborted; after
+    // dispose (the hand-off) a person's POST goes through.
+    const ctx = await browser.newContext();
+    await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
+    const page = await ctx.newPage();
+    const bs = await installFilingBackstop(page, "learn run");
+    posts.length = 0;
+    await page.goto(`${base}/review?d=300`);
+    await page.waitForTimeout(1200);
+    const during = posts.slice();
+    const lockdown = (bs?.aborts ?? []).filter((a) => a.rule === "review-lockdown").length;
+    await bs?.dispose();
+    await page.evaluate((u) => { const f = document.createElement("form"); f.method = "post"; f.action = u; document.body.appendChild(f); f.submit(); }, `${base}/SubmitApplication`);
+    await page.waitForTimeout(1000);
+    const after = posts.slice(during.length);
+    await ctx.close();
+    check("MUST-EXCLUDE learner on a review page: the page's own POST is aborted (lockdown)", during.length === 0 && lockdown >= 1, `POSTs=[${during.join(",")}] lockdownAborts=${lockdown}`);
+    check("MUST-PASS learner hand-off: after dispose the person's own submit goes through", after.includes("/SubmitApplication"), `after=[${after.join(",")}]`);
   }
   {
     // THE LEARNER'S DISMISSER (no chokepoint callback) with the learn run's backstop installed.
