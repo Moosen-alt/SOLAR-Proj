@@ -19,7 +19,7 @@ import { parseStreetName, parseStreetNumber, parseStreetLine, correctTruncatedAd
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
-import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../../shared/src/portalSafety";
+import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel } from "../../../shared/src/portalSafety";
 import { installFilingBackstop, withBackstopWindow, describeBackstopAbort, backstopFor, isStoppingAbort } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
 
@@ -47,6 +47,11 @@ import { hostOfUrl, sameCredentialScope } from "../siteOf";
 
 /** One portal contact: who is filing (applicant) or who owns the site (site contact). */
 export interface ContactIdentity {
+  /** THE E-SIGNATURE SIGNER — the client record's authorized signer ONLY (backend autoLearn reads
+   *  clients.authorized_signer_name; never the plan set, never another client). Empty = the typed
+   *  signature step PAUSES for the operator. Carried here because it is the filing contractor's
+   *  identity, and this is the object the learn runner already passes through. */
+  signerName?: string;
   firstName?: string;
   lastName?: string;
   email?: string;
@@ -291,7 +296,12 @@ const ACA_CONTINUE_CSS = 'a:has-text("Continue Application"), button:has-text("C
 // "will not be submitted until" acknowledgment gate). Portal-specific review behaviour (e.g. a
 // submit-intent button on a no-input page) is detected STRUCTURALLY, not by one portal's wording,
 // so this stays generic across never-seen portals.
-const REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review (all )?(your |the )?(information|application|details|entries)\b|please review|\(read-only\)|review and submit|review & submit|accept (the )?terms and conditions|will not be submitted until/i;
+// NOT "(Read-only)": Oregon ePermitting's Step 1 locks its picked Site Address / Parcel / Owner
+// sections "(Read-only)", and with "Continue Application »" on the page that made step 1 a review
+// page (b7494f3 fixed the shared reading; this is the learner's copy). And the walk reads these
+// against the page text with its STEP NAVIGATOR cut (portalSafety reviewTextInPage): EnerGov CSS
+// prints "Review and Submit" in the step bar on every one of its seven steps.
+const REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review (all )?(your |the )?(information|application|details|entries)\b|please review|review and submit|review & submit|accept (the )?terms and conditions|will not be submitted until/i;
 
 // Terms-acceptance / certification / acknowledgment checkboxes that gate a final submit.
 // Portal-agnostic: PowerClerk "Click to Accept Terms and Conditions" + "I understand that
@@ -3241,6 +3251,109 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     return /accela\.com|citizenaccess/i.test(url || "");
   }
 
+  /** The page's review reading with its step navigator cut, and the control labels that exist
+   *  only inside the navigator (portalSafety reviewTextInPage / navigatorOnlyControlLabelsInPage).
+   *  null = unreadable (a fake page) — the caller falls back to the whole body. */
+  private async pageReviewReading(): Promise<{ text: string; navOnly: string[] } | null> {
+    if (!this.page || typeof this.page.evaluate !== "function") return null;
+    await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+    const r = await this.page.evaluate((g: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ps = (globalThis as any)[g];
+      if (!ps || typeof ps.reviewTextInPage !== "function") return null;
+      return { text: String(ps.reviewTextInPage() || "").slice(0, 4000), navOnly: ps.navigatorOnlyControlLabelsInPage() as string[] };
+    }, PORTAL_SAFETY_GLOBAL).catch(() => null);
+    return r && typeof r.text === "string" ? r : null;
+  }
+
+  /** portalSafety signatureStepInPage on the current page (marks the controls data-al-sig). */
+  private async signatureStepHere(): Promise<{ kind: "typed" | "drawn" | ""; why: string; controls: Array<{ role: "consent" | "toggle" | "typed"; id: string; label: string; name: string; tag: string; type: string }> } | null> {
+    if (!this.page || typeof this.page.evaluate !== "function") return null;
+    await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+    return await this.page.evaluate((g: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ps = (globalThis as any)[g];
+      return ps && typeof ps.signatureStepInPage === "function" ? ps.signatureStepInPage() : null;
+    }, PORTAL_SAFETY_GLOBAL).catch(() => null);
+  }
+
+  /** Set only while completeTypedSignature runs: the fill guard refuses the signature controls
+   *  to everyone else (the planner, the rescan, the gap passes). */
+  private signaturePassActive = false;
+
+  /**
+   * COMPLETE A TYPED E-SIGNATURE with the client's authorized signer: switch on "type
+   * signature" when offered, type the signer into the consent-name and typed-signature boxes,
+   * read both back. Records the switch as a check and each box as a fill BOUND to
+   * authorizedSignerName with no literal. Returns the extracted-field indices of the controls
+   * so the planner's fills on them are dropped.
+   */
+  private async completeTypedSignature(signer: string, steps: RecipeStep[], fields: ExtractedField[]): Promise<{ ok: boolean; why: string; fieldIdx: Set<number> }> {
+    const page = this.page;
+    const fieldIdx = new Set<number>();
+    if (!page) return { ok: false, why: "no page", fieldIdx };
+    const selectorFor = (c: { id: string; label: string; name: string }): RecipeSelector => {
+      const labelFb = c.label ? [{ label: c.label }] : [];
+      if (c.id && /^[A-Za-z][\w-]*$/.test(c.id)) return { css: `#${c.id}`, ...(labelFb.length ? { fallbacks: labelFb } : {}) };
+      if (c.label) return { label: c.label };
+      if (c.name) return { css: `[name="${c.name.replace(/"/g, '\\"')}"]` };
+      return { css: "[data-al-sig]" };
+    };
+    // Which extracted fields are signature controls — by the mark the in-page reading left.
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i];
+      if (f.fieldType === "button" || f.fieldType === "select" || f.fieldType === "file") continue;
+      const loc = await this.locator(f.selector).catch(() => null);
+      const role = loc && typeof loc.evaluate === "function" ? await loc.evaluate((el: Element) => el.getAttribute("data-al-sig") || "", undefined, { timeout: 1500 }).catch(() => "") : "";
+      if (role) fieldIdx.add(i);
+    }
+    this.signaturePassActive = true;
+    try {
+      let sig = await this.signatureStepHere();
+      const toggle = sig?.controls.find((c) => c.role === "toggle");
+      if (toggle) {
+        const loc = page.locator("[data-al-sig=toggle]").first();
+        const on = await loc.evaluate((el: Element) => (el as HTMLInputElement).checked === true || el.getAttribute("aria-checked") === "true").catch(() => false);
+        if (!on) {
+          const isBox = toggle.tag === "input" && toggle.type === "checkbox";
+          const clicked = isBox
+            ? await loc.check({ timeout: 5000 }).then(() => true).catch(async () => loc.check({ timeout: 5000, force: true }).then(() => true).catch(() => false))
+            : await loc.click({ timeout: 5000 }).then(() => true).catch(() => false);
+          if (!clicked) return { ok: false, why: `the "${toggle.label || "type signature"}" option could not be switched on`, fieldIdx };
+          await page.waitForTimeout?.(400).catch(() => null);
+        }
+        steps.push(toggle.tag === "input" && toggle.type === "checkbox"
+          ? { action: "check", phase: "fill", selector: selectorFor(toggle), note: `e-signature: ${toggle.label || "enable type signature"}` }
+          : { action: "click", phase: "fill", selector: selectorFor(toggle), note: `e-signature: ${toggle.label || "enable type signature"}` });
+        // The typed box unlocks once the switch is on — read the page again.
+        sig = await this.signatureStepHere();
+      }
+      const boxes = (sig?.controls ?? []).filter((c) => c.role === "consent" || c.role === "typed");
+      if (!boxes.length) return { ok: false, why: "no box to type the signer's name into was found", fieldIdx };
+      for (const b of boxes) {
+        const loc = page.locator(`[data-al-sig=${b.role}]`).first();
+        await loc.waitFor?.({ state: "visible", timeout: 3000 }).catch(() => null);
+        const filled = await loc.fill(signer, { timeout: 5000 }).then(() => true).catch(() => false);
+        if (!filled) return { ok: false, why: `the signer's name could not be typed into "${b.label || b.role}"`, fieldIdx };
+        // Commit like a person: the change, then leave the box (EnerGov draws the typed name into
+        // the pad and marks the signature added on these).
+        await loc.evaluate((el: Element) => {
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "a" }));
+          (el as HTMLElement).blur();
+        }).catch(() => null);
+        const held = await loc.inputValue({ timeout: 2000 }).catch(() => "");
+        if (String(held).trim() !== signer) return { ok: false, why: `"${b.label || b.role}" did not hold the signer's name after typing`, fieldIdx };
+        steps.push({ action: "fill", phase: "fill", selector: selectorFor(b), field: "authorizedSignerName", note: `e-signature: ${b.role === "typed" ? "typed signature" : "signer name (consent)"}` });
+      }
+      this.debug?.event({ type: "signature_typed", boxes: boxes.length, toggle: Boolean(toggle) });
+      return { ok: true, why: "", fieldIdx };
+    } finally {
+      this.signaturePassActive = false;
+    }
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private acaContinueLocator(): any {
     if (!this.page) throw new Error("acaContinueLocator called before login() opened a page");
@@ -4420,12 +4533,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //               review markers ("Step N: Review", "review all information", /review URL).
       //   - DASHBOARD → no inputs, no submit-intent button, no review markers → only links.
       const hasFillable = fields.some((f) => f.fieldType !== "button");
-      const hasSubmitIntentBtn = fields.some((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label));
+      // THE STEP NAVIGATOR IS NOT THE PAGE. EnerGov CSS lists "Review and Submit" in its step bar
+      // on all seven steps (and PowerClerk "Review & Submit"): read whole, every step carried a
+      // review marker, and a clickable step item was a "submit" button. Read the page with the
+      // navigator cut, and drop controls that exist ONLY inside it — the shared reading
+      // (portalSafety reviewTextInPage / navigatorOnlyControlLabelsInPage). Unreadable (a fake page,
+      // no evaluate) falls back to the whole body, as before.
+      const reading = await this.pageReviewReading();
+      const reviewText = reading ? redactStatusText(reading.text) ?? "" : bodyText;
+      const navOnly = new Set(reading?.navOnly ?? []);
+      const hasSubmitIntentBtn = fields.some((f) => f.fieldType === "button" && SUBMIT_INTENT.test(f.label)
+        && !navOnly.has(String(f.label ?? "").replace(/\s+/g, " ").trim().toLowerCase()));
       // A terms/certification gate checkbox is a strong, portal-agnostic review-screen signal:
       // mid-flow form pages advance with "Next/Continue", not a terminal Submit alongside an
       // "Accept Terms and Conditions" / "I certify" attestation. Only checkboxes count.
       const hasAcceptTermsCheckbox = fields.some((f) => f.fieldType === "checkbox" && ACCEPT_TERMS.test(f.label));
-      const reviewSignals = REVIEW_MARKERS.test(bodyText) || looksLikeReviewUrl(url);
+      const reviewSignals = REVIEW_MARKERS.test(reviewText) || looksLikeReviewUrl(url);
       const isDashboard = !hasFillable && !hasSubmitIntentBtn && !reviewSignals;
       if (hasFillable) everFoundFillable = true;
 
@@ -4800,6 +4923,47 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         }
       } catch { /* best-effort — a page the planner sees without options is the status quo */ }
 
+      // b10) THE E-SIGNATURE STEP (operator ruling 2026-09-26: "This is fine. Push it to the
+      //      review page."). EnerGov CSS step 6 asks for a typed name "as consent to
+      //      electronically sign" + "Enable Type Signature", and its forward control is an
+      //      ordinary Next. The bot completes a TYPED signature with the client record's
+      //      authorized signer — never a name the planner picks, never another client's — and
+      //      walks on to the review step, where the Next-turned-Submit stays refused as always.
+      //      No signer on the client: PAUSE, named. A DRAWN signature (a pad, no way to type it —
+      //      Carlsbad) is a person's: stop here, named. Recorded with the name BOUND to
+      //      authorizedSignerName, never a literal.
+      let signatureFieldIdx = new Set<number>();
+      let signatureDone = false;
+      {
+        const sig = await this.signatureStepHere();
+        if (sig && sig.kind) {
+          this.debug?.event({ type: "signature_step", page: pageCount, kind: sig.kind, why: sig.why });
+          if (sig.kind === "drawn") {
+            return {
+              ...fail(steps, this.portalName, `Stopped at the signature step for a person: the portal asks for a DRAWN signature (${sig.why}). The bot does not draw a signature — sign in the browser, then review and submit. The recipe was recorded up to this page.`, "signature_drawn", pageCount, portalNotices),
+              stopReason: "signature_drawn",
+            };
+          }
+          const signer = String(this.contactIdentity.signerName ?? "").trim();
+          if (!signer) {
+            return {
+              ...fail(steps, this.portalName, `Paused at the e-signature step: the client record has no authorized signer name, so there is no one the bot may sign as. Add the authorized signer to the client (Clients > the company > Authorized signer) and run again, or sign in the browser. Nothing was typed into the signature.`, "signature_no_signer", pageCount, portalNotices),
+              stopReason: "signature_no_signer",
+            };
+          }
+          const done = await this.completeTypedSignature(signer, steps, fields);
+          if (!done.ok) {
+            return {
+              ...fail(steps, this.portalName, `Stopped at the e-signature step: ${done.why}. A person must sign in the browser, then review and submit.`, "signature_incomplete", pageCount, portalNotices),
+              stopReason: "signature_incomplete",
+            };
+          }
+          signatureFieldIdx = done.fieldIdx;
+          signatureDone = true;
+          recoveryHint = `${recoveryHint ? `${recoveryHint} ` : ""}The e-signature on this page is already complete (signed by the bot from the client record). Do NOT fill the signature name or the type-signature option. Advance with this page's Next.`;
+        }
+      }
+
       // c) Ask the planner what to do on this page. Attach a screenshot so it can SEE the
       //    section headings/layout (vision-assisted planning) — the reliable signal for which
       //    contact block is the customer vs the installer.
@@ -4810,6 +4974,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       } catch (err) {
         this.debug?.event({ type: "planner_error", page: pageCount, message: err instanceof Error ? err.message : String(err) });
         return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount, portalNotices);
+      }
+      // The signature controls are the signature pass's alone (the fill guard refuses them too).
+      if (signatureDone) {
+        const kept = (plan.fills ?? []).filter((fl) => !signatureFieldIdx.has(fl.selectorIndex));
+        if (kept.length !== (plan.fills ?? []).length) this.debug?.event({ type: "signature_planner_fill_dropped", page: pageCount, dropped: (plan.fills ?? []).length - kept.length });
+        plan = { ...plan, fills: kept };
+        // A signed step is not the end: it has no submit, and its Next leads to the review step.
+        // A planner "atReview" here would stop one page short of where the operator wants it.
+        if (plan.atReview && !hasSubmitIntentBtn) {
+          const next = typeof plan.advanceSelectorIndex === "number" ? plan.advanceSelectorIndex
+            : fields.findIndex((f) => f.fieldType === "button" && /^\s*(next|continue)\b/i.test(String(f.label ?? "")) && !f.disabled);
+          plan = { ...plan, atReview: false, finalSubmitSelectorIndex: undefined, ...(next >= 0 ? { advanceSelectorIndex: next } : {}) };
+          this.debug?.event({ type: "signature_step_not_review", page: pageCount });
+        }
       }
 
       // c2) STRUCTURAL REVIEW GUARD — the Accela "Continue Application" trap.
@@ -6943,6 +7121,17 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // unlisted plain-text. The planner is told to skip it but has been seen checking it anyway,
     // so refuse here regardless of the requested value — record no step, leave it unchecked.
     if (field.fieldType === "checkbox" && NOT_LISTED_CHECKBOX.test(field.label || "")) return null;
+
+    // DETERMINISTIC GUARD: THE E-SIGNATURE IS THE SIGNATURE PASS'S ALONE. A planner, a rescan or
+    // a gap pass typing into "type your name as consent to electronically sign" would sign the
+    // application as whoever it picked (the contact, the homeowner) — or sign at all when the
+    // client has no authorized signer. Only completeTypedSignature may touch these controls.
+    if (!this.signaturePassActive && (
+      ((field.fieldType === "text" || field.fieldType === "other") && isSignatureNameLabel(field.label))
+      || (isCheckable && isTypeSignatureToggleLabel(field.label)))) {
+      this.debug?.event({ type: "signature_fill_refused", label: String(field.label ?? "").slice(0, 60) });
+      return null;
+    }
 
     // DETERMINISTIC GUARD: WHICH PERMIT WE APPLY FOR IS NOT A PLANNER CHOICE.
     //

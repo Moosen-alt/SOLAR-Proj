@@ -72,7 +72,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import {
   classifySubmissionText, finalSubmitEnvAllows, finalSubmitRefusals, isFinalSubmitControl, isPayFee,
-  isRecipeShapeValid, isSubmitIntent, isSubmitOrPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE,
+  isRecipeShapeValid, isSignatureNameLabel, isSubmitIntent, isSubmitOrPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE,
   type HealedStep, type RunApproval, type SubmissionOutcome,
 } from "../../../shared/src/portalSafety";
 import { commitField, installSettleProbe, waitForSettled } from "../settle";
@@ -168,6 +168,14 @@ function isPaymentField(step: RecipeStep): boolean {
   if (step.action !== "fill" && step.action !== "select" && step.action !== "check") return false;
   const label = `${step.note ?? ""} ${step.field ?? ""} ${step.selector?.label ?? ""} ${step.selector?.name ?? ""}`;
   return PAYMENT_FIELD.test(label);
+}
+
+/** A recorded e-signature step: the learner's own (note "e-signature: ...") or any fill whose
+ *  label is the signer's-name box (portalSafety isSignatureNameLabel) — an older recipe may have
+ *  one bound to whatever the planner chose. Its value is ALWAYS the client's authorized signer. */
+function isSignatureStep(step: RecipeStep): boolean {
+  if (/^e-signature:/i.test(String(step.note ?? ""))) return true;
+  return step.action === "fill" && isSignatureNameLabel(`${step.selector?.label ?? ""}`);
 }
 
 function isFinalSubmitStep(step: RecipeStep): boolean {
@@ -478,6 +486,27 @@ export class RecipeAdapter extends BasePortalAdapter {
   async openSubmission(_project: ProjectRecord): Promise<PortalStepResult> {
     return ok("Recipe replay runs as a single ordered sequence; see fill step.");
   }
+  /** GAP-FILL NEVER SIGNS. On an e-signature step (portalSafety signatureStepInPage) the LLM
+   *  gap-fill is skipped: it would type whichever name it chose into "type your name as consent to
+   *  electronically sign". The recorded signature steps (bound to the authorized signer) are the
+   *  only way a signature is typed on replay. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  protected override async runGapFill(page: any): Promise<void> {
+    if (page && typeof page.evaluate === "function") {
+      await page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+      const kind = await page.evaluate((g: string) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ps = (globalThis as any)[g];
+        return ps && typeof ps.signatureStepInPage === "function" ? String(ps.signatureStepInPage().kind || "") : "";
+      }, PORTAL_SAFETY_GLOBAL).catch(() => "");
+      if (kind) {
+        this.driftWarnings.push(`gap-fill skipped on the e-signature step (${kind}) — only the recorded signer steps sign`);
+        return;
+      }
+    }
+    return super.runGapFill(page);
+  }
+
   async fillApplication(project: ProjectRecord): Promise<PortalStepResult> {
     // The project is what the review screen gets checked AGAINST — see verifyReviewScreen.
     // This parameter was received and discarded, which is precisely why replay never
@@ -1002,6 +1031,19 @@ export class RecipeAdapter extends BasePortalAdapter {
       // moments when whatever the page reveals is finally all present.
       if (step.action === "click" || step.action === "stopForReview") {
         await this.sweepUnrecordedUploads().catch(() => 0);
+      }
+
+      // THE E-SIGNATURE IS TYPED ONLY AS THE CLIENT'S AUTHORIZED SIGNER (operator ruling
+      // 2026-09-26). A recorded signature step is bound to authorizedSignerName; when this
+      // project's client names no signer there is no one to sign as — stop here, named, before
+      // anything is typed. Skipping it silently would leave the portal to refuse Next with a
+      // validation error the operator then has to decode.
+      if (isSignatureStep(step) && step.action === "fill" && !this.resolveValue(step).trim()) {
+        return {
+          ...fail(`Paused at the e-signature step: this client has no authorized signer name, so there is no one the bot may sign as ("${String(step.note ?? "").slice(0, 60)}"). Add the authorized signer to the client and run again, or sign in the browser. Nothing was typed into the signature.`,
+            { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: stepIdx, trace, needsHuman: true }),
+          pauseReason: "signature_no_signer",
+        };
       }
 
       // STOP AT THE CARD, EVERY TIME, IN EVERY MODE. Not a skip: the steps after this one are
@@ -1689,6 +1731,10 @@ export class RecipeAdapter extends BasePortalAdapter {
     if (this.isBatteryDeclaration(step) && /^(no|false|none|n)$/i.test(String(this.fieldValues.hasBattery ?? "").trim())) {
       return "No";
     }
+    // THE SIGNER IS THE CLIENT'S AUTHORIZED SIGNER, whatever key an older recipe bound the box
+    // to (a planner-chosen installerContactName would sign as the contact). Empty = runAll
+    // pauses before this step, named.
+    if (step.action === "fill" && isSignatureStep(step)) return String(this.fieldValues.authorizedSignerName ?? "").replace(/\s+/g, " ").trim();
     if (step.field) {
       // PREFER THE PORTAL'S OWN STRING for equipment models. The backend resolves
       // "<field>Certified" from the CEC list — the same list the portal builds its dropdown

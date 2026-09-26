@@ -332,18 +332,135 @@ export function portalSafetyFactory() {
    * mid-flow click would be classed as the filing click. textContent is the fallback where layout
    * is unavailable.
    */
-  const pageTextWithoutNavigatorInPage = (d: Document): string => {
-    let pageText = d.body.innerText || d.body.textContent || "";
-    const navs = Array.from(d.querySelectorAll("nav, [role=navigation], [role=tablist], [aria-label*=step i], [class*=stepper], [class*=steps], [class*=stepNav], [class*=step-nav], [class*=progress]"))
+  const stepNavigatorsInPage = (d: Document): Element[] =>
+    Array.from(d.querySelectorAll("nav, [role=navigation], [role=tablist], [aria-label*=step i], [class*=stepper], [class*=steps], [class*=stepNav], [class*=step-nav], [class*=progress]"))
       .concat(Array.from(d.querySelectorAll("ol, ul")).filter((list) => {
         const items = Array.from(list.children);
         return items.length >= 3 && items.every((li) => ((li as HTMLElement).innerText || li.textContent || "").trim().length < 60);
       }));
+  const pageTextWithoutNavigatorInPage = (d: Document): string => {
+    let pageText = d.body.innerText || d.body.textContent || "";
+    const navs = stepNavigatorsInPage(d);
     for (const el of navs) {
       const t = ((el as HTMLElement).innerText || el.textContent || "").trim();
       if (t) pageText = pageText.split(t).join(" \n ");
     }
     return pageText;
+  };
+
+  /**
+   * THE E-SIGNATURE STEP (EnerGov CSS step 6, operator ruling 2026-09-26: "This is fine. Push it
+   * to the review page."). The bot MAY complete a TYPED e-signature on the draft with the client
+   * record's authorized signer; a DRAWN signature is a person's. These are the ONE reading of
+   * "is this control the signer's name / the type-signature switch", used by the in-page
+   * detector below and by the learner's fill guard (nothing but the signature pass may type
+   * into one — a planner would put the contact's or the homeowner's name there).
+   *   - the name box: "Please type your name as consent to electronically sign this application"
+   *     (Iowa City), a typed-signature box (EnerGov #signatureTypedNameId). Deliberately NOT a bare
+   *     "Signature" label: that stays the planner's, as before.
+   *   - the switch: "Enable Type Signature".
+   */
+  const SIGNATURE_NAME_LABEL =
+    /consent\s+to\s+(electronically\s+)?sign|electronically\s+sign|electronic\s+signature|\be-?signature\b|\btyped?\s*signature\b|signature\s*typed|type\s+(in\s+)?your\s+(full[\s-]*)?name\b[^.]{0,40}\bsign/i;
+  const TYPE_SIGNATURE_TOGGLE = /\b(enable|use)\s+typed?\s+signature\b|\btype\s+(a|my|your)\s+signature\s+instead\b/i;
+  const isSignatureNameLabel = (label: string | null | undefined): boolean =>
+    !!label && SIGNATURE_NAME_LABEL.test(String(label)) && !TYPE_SIGNATURE_TOGGLE.test(String(label)) && !/\bdate\b/i.test(String(label));
+  const isTypeSignatureToggleLabel = (label: string | null | undefined): boolean => !!label && TYPE_SIGNATURE_TOGGLE.test(String(label));
+
+  /**
+   * Runs IN THE PAGE: is this an e-signature step, and can the bot complete it?
+   *   typed — a type-signature switch or typed-signature box is offered (Iowa City: the consent
+   *           name + "Enable Type Signature" + the typed box, which draws into the pad for you);
+   *           or only a consent-name box and no pad at all;
+   *   drawn — a signature pad (a visible <canvas> in a signature container) and NO way to type
+   *           it (Carlsbad: "Type in your full-name and draw your signature in the box below").
+   * Marks the controls data-al-sig="consent" | "toggle" | "typed" and returns each one's id /
+   * label / name for recording. "" = not a signature step. A pad on an ordinary page with no
+   * signature wording is not read as a signature step.
+   */
+  const signatureStepInPage = (): {
+    kind: "typed" | "drawn" | "";
+    why: string;
+    controls: Array<{ role: "consent" | "toggle" | "typed"; id: string; label: string; name: string; tag: string; type: string }>;
+  } => {
+    const d = (globalThis as { document?: Document }).document;
+    const none = { kind: "" as const, why: "", controls: [] };
+    if (!d || !d.body) return none;
+    for (const e of Array.from(d.querySelectorAll("[data-al-sig]"))) e.removeAttribute("data-al-sig");
+    const shown = (el: Element): boolean => {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      return r.width > 1 && r.height > 1 && cs.display !== "none" && cs.visibility !== "hidden";
+    };
+    const nameOf = (el: Element): string => String(controlLabelInPage(el) || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").replace(/\s+/g, " ").trim();
+    const idWords = (el: Element): string => `${el.id || ""} ${el.getAttribute("name") || ""}`.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_\-.[\]]+/g, " ");
+    const controls: Array<{ role: "consent" | "toggle" | "typed"; id: string; label: string; name: string; tag: string; type: string }> = [];
+    const take = (el: Element, role: "consent" | "toggle" | "typed"): void => {
+      if (el.getAttribute("data-al-sig")) return;
+      el.setAttribute("data-al-sig", role);
+      controls.push({ role, id: el.id || "", label: nameOf(el), name: el.getAttribute("name") || "", tag: el.tagName.toLowerCase(), type: String((el as HTMLInputElement).type || "").toLowerCase() });
+    };
+    // The switch: a checkbox / role=switch / button whose label says "Enable Type Signature".
+    for (const el of Array.from(d.querySelectorAll("input[type=checkbox], [role=switch], [role=checkbox], button"))) {
+      const label = nameOf(el) || String((el as HTMLElement).innerText || "").trim();
+      const styledOk = shown(el) || (el as HTMLInputElement).labels && Array.from((el as HTMLInputElement).labels || []).some(shown);
+      if (styledOk && isTypeSignatureToggleLabel(label)) take(el, "toggle");
+    }
+    // The name boxes (disabled ones count: EnerGov's typed box unlocks when the switch is on).
+    for (const el of Array.from(d.querySelectorAll("input:not([type]), input[type=text], textarea"))) {
+      if (!shown(el)) continue;
+      const label = nameOf(el);
+      const typedBox = /\btyped?\s*signature\b|signature\s*typed/i.test(`${label} ${idWords(el)}`);
+      if (typedBox) take(el, "typed");
+      else if (isSignatureNameLabel(label)) take(el, "consent");
+    }
+    // The pad: a visible canvas inside (or named as) a signature container.
+    const pad = Array.from(d.querySelectorAll("canvas")).find((c) => {
+      if (!shown(c)) return false;
+      for (let p: Element | null = c, i = 0; p && i < 5; p = p.parentElement, i++) {
+        if (/signature|sig-?pad|e-?sign/i.test(`${p.id || ""} ${typeof p.className === "string" ? p.className : ""} ${p.getAttribute("aria-label") || ""}`)) return true;
+      }
+      return false;
+    });
+    const hasToggle = controls.some((c) => c.role === "toggle");
+    const hasTyped = controls.some((c) => c.role === "typed");
+    const hasConsent = controls.some((c) => c.role === "consent");
+    if (!hasToggle && !hasTyped && !hasConsent && !pad) return none;
+    if (!hasToggle && !hasTyped && !hasConsent) {
+      // A pad alone is a signature step only when the page's own text says so.
+      const text = pageTextWithoutNavigatorInPage(d);
+      if (!/\bsign(ature)?\b/i.test(text)) return none;
+      return { kind: "drawn", why: "a signature pad (canvas) and no way to type the signature", controls };
+    }
+    if (pad && !hasToggle && !hasTyped) return { kind: "drawn", why: "a typed consent name AND a signature pad to draw in, with no type-signature option", controls };
+    return { kind: "typed", why: hasToggle ? "a type-signature option" : hasTyped ? "a typed-signature box" : "a typed consent name and no pad", controls };
+  };
+
+  /** Runs IN THE PAGE: the page's text with the step navigator cut (the reading reviewPageInPage
+   *  and terminalPageInPage judge), for a caller that applies its own wording on top. */
+  const reviewTextInPage = (): string => {
+    const d = (globalThis as { document?: Document }).document;
+    return d && d.body ? pageTextWithoutNavigatorInPage(d) : "";
+  };
+
+  /** Runs IN THE PAGE: the labels of VISIBLE controls that appear ONLY inside the step navigator
+   *  (a clickable "Review and Submit" step, never a button of the page itself). A label that also
+   *  names a control outside the navigator is not listed. Whitespace-collapsed, lower-cased. */
+  const navigatorOnlyControlLabelsInPage = (): string[] => {
+    const d = (globalThis as { document?: Document }).document;
+    if (!d || !d.body) return [];
+    const navs = stepNavigatorsInPage(d);
+    const inNav = new Set<string>();
+    const outside = new Set<string>();
+    for (const el of Array.from(d.querySelectorAll("a, button, [role=button], [role=link], [role=tab], input[type=submit], input[type=button]"))) {
+      const r = (el as HTMLElement).getBoundingClientRect();
+      if (r.width <= 2 || r.height <= 2) continue;
+      const names = [controlLabelInPage(el), (el as HTMLElement).innerText, (el as HTMLInputElement).value, el.getAttribute("aria-label")]
+        .map((s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase()).filter(Boolean);
+      const target = navs.some((n) => n.contains(el)) ? inNav : outside;
+      for (const n of names) target.add(n);
+    }
+    return Array.from(inNav).filter((l) => !outside.has(l));
   };
 
   /**
@@ -973,6 +1090,11 @@ export function portalSafetyFactory() {
     readOnlyPageInPage,
     isReviewPageText,
     reviewPageInPage,
+    reviewTextInPage,
+    navigatorOnlyControlLabelsInPage,
+    isSignatureNameLabel,
+    isTypeSignatureToggleLabel,
+    signatureStepInPage,
     terminalPageInPage,
     fieldIdentityInPage,
     isPaymentElementInPage,
@@ -993,6 +1115,8 @@ export const isSecretField = impl.isSecretField;
 export const isPaymentField = impl.isPaymentField;
 export const isAcceptTermsLabel = impl.isAcceptTermsLabel;
 export const isReviewPageText = impl.isReviewPageText;
+export const isSignatureNameLabel = impl.isSignatureNameLabel;
+export const isTypeSignatureToggleLabel = impl.isTypeSignatureToggleLabel;
 
 /** The minimum of a recorded step the form-data question needs. */
 export interface FormDataStep {

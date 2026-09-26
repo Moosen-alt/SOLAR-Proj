@@ -360,6 +360,23 @@ export function evaluateTrustGate(sig: TrustGateSignals): { trusted: boolean; bl
   return { trusted: blockers.length === 0, blockers };
 }
 
+/**
+ * WHO THE BOT MAY E-SIGN AS: the project's own client's authorized signer, read from the client
+ * row itself — never the plan set, never a contact name the parser found, never another client.
+ * "" when the project has no client or the client names no signer; the learner then PAUSES at a
+ * typed-signature step (operator ruling 2026-09-26: a typed e-signature on the draft is fine,
+ * the review step is where it stops).
+ */
+export function learnSignerName(db: AppDb, project: Pick<ProjectRecord, "clientId">): string {
+  if (!project.clientId) return "";
+  try {
+    const row = db.get<{ authorized_signer_name?: string | null }>("SELECT authorized_signer_name FROM clients WHERE id = ?", [project.clientId]);
+    return String(row?.authorized_signer_name ?? "").replace(/\s+/g, " ").trim();
+  } catch {
+    return "";
+  }
+}
+
 export function buildPortalPlanner(
   db: AppDb,
   project: ProjectRecord,
@@ -932,6 +949,10 @@ async function autoLearnPortalInner(
         zip: projectFields.zip || "",
       },
       contactIdentity: {
+        // THE E-SIGNATURE SIGNER comes from the CLIENT RECORD ONLY — its authorized signer, read
+        // here from the row, not from projectFields (which layers the plan-set snapshot under the
+        // client overlay). No signer = the typed signature step pauses for the operator.
+        signerName: learnSignerName(db, project),
         firstName: projectFields.installerFirstName || "",
         lastName: projectFields.installerLastName || projectFields.installerCompanyName || "",
         email: projectFields.installerEmail || "",
@@ -1240,8 +1261,14 @@ async function autoLearnPortalInner(
   });
 
   if (learn.pauseReason) {
+    // What the operator reads. An MFA/CAPTCHA is a "challenge"; the e-signature pauses
+    // (signature_no_signer / signature_drawn / signature_incomplete) are not, and the learner's
+    // own message already says what to do.
+    const pauseWhat = /^signature_/.test(learn.pauseReason)
+      ? `at the e-signature step (${learn.pauseReason}): ${String(learn.message || "").slice(0, 300)}`
+      : `on a ${learn.pauseReason} challenge — a human must complete it.`;
     if (protectComplete) {
-      return preserved("paused", learn.pauseReason, { accurate: false, confidence: "low", matches: [], issues: [] }, `Learning paused on a ${learn.pauseReason} challenge — a human must complete it.`);
+      return preserved("paused", learn.pauseReason, { accurate: false, confidence: "low", matches: [], issues: [] }, `Learning paused ${pauseWhat}`);
     }
     // A PAUSE IS THE LEAST INFORMATIVE OUTCOME THERE IS, and it was the one path allowed to
     // overwrite a deeper draft. Both failure paths below consult keepDeeperDraft; this one
@@ -1251,13 +1278,13 @@ async function autoLearnPortalInner(
     // avoids the reset entirely — no version bump, no wipe, nothing to roll back.
     if (keepDeeperDraft(`learning paused on a ${learn.pauseReason} challenge`)) {
       return preserved("paused", learn.pauseReason, { accurate: false, confidence: "low", matches: [], issues: [] },
-        `Learning paused on a ${learn.pauseReason} challenge — a human must complete it. Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
+        `Learning paused ${pauseWhat} Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
     }
     const stub = mkStub();
     savePortalRecipeSteps(db, stub.id, learn.steps, { status: "recording", notes: `Auto-learn paused: ${learn.pauseReason}. Resume manually.` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_paused", { scope: scopeType, pauseReason: learn.pauseReason });
-    emitDone(`Learning paused on a ${learn.pauseReason} challenge.`);
-    return finalize({ recipe: getPortalRecipe(db, stub.id), status: "paused", pauseReason: learn.pauseReason, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [], verification: { accurate: false, confidence: "low", matches: [], issues: [] }, message: `Learning paused on a ${learn.pauseReason} challenge — a human must complete it. The partial recipe was saved as a draft.` });
+    emitDone(`Learning paused ${pauseWhat}`);
+    return finalize({ recipe: getPortalRecipe(db, stub.id), status: "paused", pauseReason: learn.pauseReason, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [], verification: { accurate: false, confidence: "low", matches: [], issues: [] }, message: `Learning paused ${pauseWhat} The partial recipe was saved as a draft.` });
   }
 
   if (!learn.ok || !learn.steps.length) {
