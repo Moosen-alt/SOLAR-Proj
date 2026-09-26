@@ -290,8 +290,36 @@ const CHALLENGE_FRAME_HOSTS = [
   "/mfa",
   "/2fa",
   "/otp",
-  "verify",
 ];
+
+// IDENTITY-PROVIDER HOSTS ARE A CHALLENGE ONLY AS AN EMBEDDED FRAME, NEVER AS THE PAGE ITSELF.
+//
+// An Okta / Auth0 / Entra / Ping host in the MAIN frame is where an identifier-first login LIVES:
+// page 1 (email + Next) and page 2 (password + Verify) are both served from it. Counting the host
+// as a challenge there called a password page MFA before the password was typed, and the run
+// stopped one field short of a login it could have finished. The second factor on such a host is
+// recognised by what the PAGE says (detectSecondFactor), which also works on a custom identity
+// domain (Tyler's identity.tylerportico.com is Okta with no okta.com anywhere in its URL).
+const IDP_HOSTS = ["okta.com", "ping.identity", "pingone.com", "auth0.com", "microsoftonline.com"];
+
+// "verify" as a PATH SEGMENT, not a substring of the whole URL. The bare substring matched any
+// URL whose query carried the word — an OAuth authorize URL's redirect_uri or state routinely
+// does — and read a sign-in page as an MFA stop. Okta Classic's factor pages are /signin/verify/…,
+// which this still catches.
+const VERIFY_PATH = /(^|\/)verify(\/|$)/i;
+
+/** Is this frame URL a challenge? `isMain` = the top-level page (IdP hosts do not count there). */
+function challengeUrlHit(rawUrl: string, isMain: boolean): string | null {
+  const lower = String(rawUrl || "").toLowerCase();
+  if (!lower) return null;
+  const hit = CHALLENGE_FRAME_HOSTS.find((h) => lower.includes(h) && !(isMain && IDP_HOSTS.includes(h)));
+  if (hit) return hit;
+  try {
+    const u = new URL(rawUrl, "http://frame.invalid/");
+    if (VERIFY_PATH.test(u.pathname)) return "verify";
+  } catch { /* not a URL */ }
+  return null;
+}
 
 // Page titles that signal a challenge screen (checked before scraping body text).
 const CHALLENGE_TITLE = /captcha|verify|two.factor|2fa|authenticat|identity check|security check|are you human/i;
@@ -318,11 +346,16 @@ export async function detectChallengeFrame(page: Page | null | undefined): Promi
     const frames: Array<{ url: () => string }> = typeof (page as { frames?: () => unknown[] }).frames === "function"
       ? ((page as { frames: () => Array<{ url: () => string }> }).frames())
       : [];
+    let mainFrame: unknown = null;
+    try {
+      mainFrame = typeof (page as { mainFrame?: () => unknown }).mainFrame === "function"
+        ? (page as { mainFrame: () => unknown }).mainFrame()
+        : null;
+    } catch { mainFrame = null; }
     for (const frame of frames) {
       let url = "";
       try { url = typeof frame.url === "function" ? String(frame.url() ?? "") : ""; } catch { url = ""; }
-      const lower = url.toLowerCase();
-      const hit = CHALLENGE_FRAME_HOSTS.find((h) => lower.includes(h));
+      const hit = challengeUrlHit(url, mainFrame !== null && frame === mainFrame);
       if (hit) return `challenge frame detected (${hit})`;
     }
 
@@ -333,8 +366,8 @@ export async function detectChallengeFrame(page: Page | null | undefined): Promi
         .evaluateAll((els: Element[]) => els.map((el) => (el as HTMLIFrameElement).getAttribute("src") || ""))
         .catch(() => [] as string[]);
       for (const src of srcs) {
-        const lower = String(src).toLowerCase();
-        const hit = CHALLENGE_FRAME_HOSTS.find((h) => lower.includes(h));
+        // An <iframe> element is never the top-level page, so every host counts here.
+        const hit = challengeUrlHit(String(src), false);
         if (hit) return `challenge iframe src detected (${hit})`;
       }
     } catch { /* ignore */ }
@@ -360,6 +393,74 @@ export async function detectChallengeFrame(page: Page | null | undefined): Promi
     return null;
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SECOND-FACTOR SCREEN — recognised by what the page SAYS and HOLDS, not by its host.
+//
+// Okta Identity Engine's factor screens ("Get a verification email" / "Send me an email", "Get a
+// push notification", "Select an authenticator", "Enter a code") matched none of the challenge
+// patterns above, and Tyler's Okta sits on its own domain (identity.tylerportico.com), so the host
+// list never saw it either. The login poll then timed out into "the stored username/password was
+// likely rejected", the backend marked a GOOD credential stale, and staging refused it as locked
+// out (the portal-test-prep blocker B6).
+//
+// THE PASSWORD CLAUSE IS LOAD-BEARING. Okta's PASSWORD page carries "Verify with something else"
+// and a "Verify" button too, so factor wording alone is not a second factor: any visible password
+// box in any frame means this is still the password step (or a wrong-password re-render, which is
+// a failed login, not MFA). A page is a second-factor challenge only when it has factor wording or
+// a one-time-code field AND no password field at all. That is also what makes it safe to PARK on:
+// a person waiting at a page with no password box can never be asked to type the password.
+//
+// Returns a short reason, or "" — never throws. Reads only; types nothing and clicks nothing.
+// ---------------------------------------------------------------------------
+export const SECOND_FACTOR_TEXT_SOURCE = [
+  "select an authenticator", "choose an authenticator", "set up security methods",
+  "verify it'?s you with a security method", "verify with your (e-?mail|phone)",
+  "verify with something else", "send me an e-?mail", "get a verification e-?mail",
+  "we sent (you )?(an e-?mail|a code|a verification)", "enter (a|the|your) (verification |security |one[- ]time )?code",
+  "verification code", "one[- ]time (code|passcode|password)", "get a push notification",
+  "push notification (has been )?sent", "okta verify", "google authenticator", "authenticator app",
+  "security key or biometric", "answer (your|the) security question", "two[- ]factor", "2-step verification",
+  "multi[- ]factor", "approve the sign[- ]in", "check your (e-?mail|phone) for a code",
+].join("|");
+
+export async function detectSecondFactor(page: Page | null | undefined): Promise<string> {
+  if (!page || typeof (page as { frames?: unknown }).frames !== "function") return "";
+  try {
+    let wording = "";
+    let codeField = false;
+    for (const frame of page.frames()) {
+      const r = await frame.evaluate((src: string) => {
+        // Fully inline — no named helper (the __name note in waitForInteractiveControls).
+        const inputs = Array.from(document.querySelectorAll("input")) as HTMLInputElement[];
+        let password = false;
+        let code = false;
+        for (const el of inputs) {
+          const rect = el.getBoundingClientRect();
+          const st = getComputedStyle(el);
+          if (!(rect.width > 2 && rect.height > 2 && st.visibility !== "hidden" && st.display !== "none")) continue;
+          const type = (el.getAttribute("type") || "text").toLowerCase();
+          if (type === "password") { password = true; continue; }
+          const hay = [el.name, el.id, el.getAttribute("autocomplete"), el.getAttribute("aria-label"), el.getAttribute("placeholder")]
+            .filter(Boolean).join(" ");
+          if (/one-time-code|passcode|\botp\b|verification.?code|security.?code|mfa.?code|credentials\.passcode/i.test(hay)) code = true;
+        }
+        const text = String((document.body && (document.body as HTMLElement).innerText) || "").replace(/\s+/g, " ").slice(0, 6000);
+        const m = text.match(new RegExp(src, "i"));
+        return { password, code, wording: m ? m[0] : "" };
+      }, SECOND_FACTOR_TEXT_SOURCE).catch(() => null);
+      if (!r) continue;
+      if (r.password) return ""; // still the password step, in some frame — never a second factor
+      if (r.code) codeField = true;
+      if (r.wording && !wording) wording = r.wording;
+    }
+    if (wording) return `a second-factor screen ("${wording.slice(0, 50)}")${codeField ? " with a code field" : ""}`;
+    if (codeField) return "a second-factor screen (a one-time-code field and no password field)";
+    return "";
+  } catch {
+    return "";
   }
 }
 

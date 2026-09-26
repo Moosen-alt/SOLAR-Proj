@@ -13,7 +13,7 @@
 
 import type { Page, Frame, Locator } from "playwright";
 import type { RecipeSelector } from "../../../shared/src/types";
-import { detectChallengeFrame, sleep, smartWait, waitForElement } from "../safeAction";
+import { detectChallengeFrame, detectSecondFactor, sleep, smartWait, waitForElement } from "../safeAction";
 
 export interface Credential {
   username: string;
@@ -87,6 +87,9 @@ const SUBMIT_CANDIDATES: RecipeSelector[] = [
   { role: "link", name: "Log In" }, // Accela's login control is an <a>
   { role: "link", name: "Login" },
   { css: 'input[type="submit"], button[type="submit"]' },
+  // Okta's password step ("Verify with your password") submits with a bare "Verify". Exact, so
+  // "Verify with something else" — the factor picker, never ours — can never match it.
+  { role: "button", name: "Verify", exact: true },
   // Citizenserve's login control is <a href="javascript:ajaxLogin();">Submit</a> — no
   // "login" token anywhere on it (verified live). Generic submit-ish wording, checked after
   // the login-specific candidates so a page with both still prefers the explicit one.
@@ -142,6 +145,70 @@ const REVEAL_TRIGGERS: RecipeSelector[] = [
   // already signed in.
   { css: 'a[href*="login" i]:not([href*="logout" i]), a[id*="login" i]:not([id*="logout" i]), a[href*="signin" i], a[href*="account" i]:not([href*="logout" i]):not([href*="signout" i])' },
 ];
+
+/**
+ * CONTROLS A LOGIN NEVER CLICKS — whatever candidate list matched them.
+ *
+ * Tyler's sign-in (Okta, on identity.tylerportico.com) puts, beside its Email box and Next
+ * button: "Sign in with Google/Microsoft/Apple…" social buttons, "Keep me signed in", "Help",
+ * "Unlock account" and "Create an account"; its password page adds "Verify with something else",
+ * "Forgot password?" and "Back to sign in". The candidate lists are loose on purpose (a
+ * non-exact {role:button, name:"Sign In"} matches "Sign in with Google"; {name:"Continue"}
+ * matches "Continue with Google"; the href-based reveal matches Okta's /help/login), so a
+ * control is judged by what IT is, after it matched and before it is clicked:
+ *
+ *   - SOCIAL: a third-party consumer identity provider ("… with Google", an icon button named
+ *     only "Microsoft", Okta's `social-auth-*` buttons, `/sso/idps/` routing). Clicking one hands
+ *     the flow to a DIFFERENT identity — and the portal password could then be typed into that
+ *     provider's form (a secret to a third party; see thirdPartyIdentityHost for the backstop).
+ *   - ALWAYS: help, unlock, forgot/reset password, keep me signed in / remember me, "verify with
+ *     something else" (the factor picker — a second factor is a human's, rule 1), "back to sign
+ *     in", "trouble signing in". None of them ever advances a login.
+ *   - SIGN-UP: create an account / register / sign up — UNLESS the same control also offers the
+ *     login ("Login or Register" is Wilsonville's real reveal link and must keep working).
+ *   - Any checkbox or radio: "Keep me signed in" is one, and a login has no business ticking it.
+ *
+ * ONE vocabulary, passed as sources into every in-page check, so the reveal pass, the Next pick,
+ * the submit pick and the described-control pass cannot disagree about it.
+ */
+const SOCIAL_IDP_SOURCE = "\\b(with|using|via)\\s+(google|microsoft|apple|facebook|linkedin|github|twitter|amazon|yahoo|paypal)\\b|^(google|microsoft|apple|facebook|linkedin|github|twitter|amazon|yahoo|paypal)$";
+const NEVER_ALWAYS_SOURCE = "\\bhelp\\b|\\bunlock\\b|\\bforgot\\b|\\breset (your |my )?password\\b|\\bkeep me (signed|logged) in\\b|\\bremember me\\b|\\bstay signed in\\b|verify with something else|\\bback to (sign|log)[\\s-]?in\\b|\\btrouble (signing|logging)\\b|can'?t (sign|log)[\\s-]?in";
+const NEVER_SIGNUP_SOURCE = "\\bcreate (an |your |a new |new )?account\\b|\\bregist(er|ration)\\b|\\bsign[\\s-]?up\\b|\\bnew account\\b|\\benroll\\b";
+const LOGIN_WORD_SOURCE = "\\blog[\\s-]?(in|on)\\b|\\blogin\\b|\\blogon\\b|\\bsign[\\s-]?in\\b|\\bsignin\\b";
+const NEVER_HREF_SOURCE = "/sso/idps/|accounts\\.google\\.|facebook\\.com|appleid\\.apple\\.com|login\\.live\\.com|github\\.com/login|linkedin\\.com/oauth|/help(/|$)|/signin/(unlock|forgot|register)|/(register|signup|sign-up)(/|$)|forgot-?password|reset-?password";
+const NEVER_CLICK_PATTERNS = {
+  social: SOCIAL_IDP_SOURCE,
+  always: NEVER_ALWAYS_SOURCE,
+  signup: NEVER_SIGNUP_SOURCE,
+  login: LOGIN_WORD_SOURCE,
+  href: NEVER_HREF_SOURCE,
+};
+
+/** Why this matched control must never be clicked by a login, or "" when it may be. */
+async function neverClickReason(loc: Locator): Promise<string> {
+  try {
+    return await (loc as unknown as { evaluate: (fn: (el: Element, p: typeof NEVER_CLICK_PATTERNS) => string, arg: typeof NEVER_CLICK_PATTERNS) => Promise<string> })
+      .evaluate((el, p) => {
+        // Fully inline — no named helper (see the note in authenticatedSignalPresent).
+        const type = ((el as HTMLInputElement).type || "").toLowerCase();
+        if (el.tagName === "INPUT" && (type === "checkbox" || type === "radio")) return "a checkbox/radio";
+        const role = (el.getAttribute("role") || "").toLowerCase();
+        if (role === "checkbox" || role === "radio" || role === "switch") return "a checkbox/radio";
+        const name = String((el as HTMLElement).innerText || (el as HTMLInputElement).value || el.getAttribute("aria-label") || "")
+          .replace(/\s+/g, " ").trim();
+        const cls = String((el as HTMLElement).className || "");
+        const a = el.closest("a");
+        const href = String((a && a.getAttribute("href")) || el.getAttribute("href") || "").split(/[?#]/)[0];
+        if (new RegExp(p.social, "i").test(name) || /social-auth/i.test(cls)) return `a third-party sign-in ("${name.slice(0, 40)}")`;
+        if (new RegExp(p.href, "i").test(href)) return `an account-chore / identity-provider link (${href.slice(0, 60)})`;
+        if (new RegExp(p.always, "i").test(name)) return `an account-chore control ("${name.slice(0, 40)}")`;
+        if (new RegExp(p.signup, "i").test(name) && !new RegExp(p.login, "i").test(name)) return `a sign-up control ("${name.slice(0, 40)}")`;
+        return "";
+      }, NEVER_CLICK_PATTERNS);
+  } catch {
+    return "";
+  }
+}
 
 // Reveal triggers already clicked on a given page, so repeated reveal attempts walk to the
 // NEXT candidate instead of clicking the same dead control forever. Measured live on
@@ -544,9 +611,13 @@ async function isFillable(loc: Locator): Promise<boolean> {
 async function firstVisible(
   page: Page,
   candidates: RecipeSelector[],
-  opts: { fillable?: boolean } = {},
+  opts: { fillable?: boolean; clickable?: boolean } = {},
 ): Promise<Locator | null> {
   const scopes: Array<Page | Frame> = typeof page.frames === "function" ? page.frames() : [page];
+  // opts.clickable: the match is about to be CLICKED — skip anything on the never-click list
+  // (social sign-in, help, unlock, create-account, keep-me-signed-in…). See NEVER_CLICK_PATTERNS.
+  const ok = async (loc: Locator): Promise<boolean> =>
+    (!opts.fillable || await isFillable(loc)) && (!opts.clickable || !(await neverClickReason(loc)));
   for (const sel of candidates) {
     for (const scope of scopes) {
       try {
@@ -554,7 +625,7 @@ async function firstVisible(
         if (typeof sel.nth === "number") {
           const pinned = buildLocator(scope, sel);
           if (pinned && (await pinned.count()) > 0 && (await pinned.isVisible().catch(() => false))
-              && (!opts.fillable || await isFillable(pinned))) return pinned;
+              && await ok(pinned)) return pinned;
           continue;
         }
         const all = buildLocatorAll(scope, sel);
@@ -562,7 +633,7 @@ async function firstVisible(
         const total = await all.count();
         for (let i = 0; i < Math.min(total, MAX_CANDIDATE_SCAN); i++) {
           const nth = all.nth(i);
-          if (await nth.isVisible().catch(() => false) && (!opts.fillable || await isFillable(nth))) return nth;
+          if (await nth.isVisible().catch(() => false) && await ok(nth)) return nth;
         }
       } catch {
         // malformed selector or cross-origin frame — try the next scope/candidate
@@ -684,8 +755,16 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
     //
     // Duplicate ids and repeated controls are ordinary in server-rendered and Angular
     // portals. A candidate is exhausted only when every visible match has refused.
-    const triggers = await visibleMatches(page, sel, 4);
-    if (!triggers.length) { trail.push(`no-match ${key}`); continue; }
+    const matched = await visibleMatches(page, sel, 4);
+    // A match on the never-click list (a social "Sign in with Google", Okta's /help/login, "Unlock
+    // account", "Create an account") is not a reveal, whichever candidate caught it.
+    const triggers: Locator[] = [];
+    for (const m of matched) {
+      const why = await neverClickReason(m);
+      if (why) trail.push(`never-click ${key}: ${why}`);
+      else triggers.push(m);
+    }
+    if (!triggers.length) { trail.push(matched.length ? `only never-click matches ${key}` : `no-match ${key}`); continue; }
     tried.add(key);
     let clickedOne = false;
     for (let ti = 0; ti < triggers.length; ti++) {
@@ -818,10 +897,203 @@ export async function revealLoginForm(page: Page): Promise<boolean> {
   return false;
 }
 
+/**
+ * IS STEP 1 OF AN IDENTIFIER-FIRST LOGIN IN FRONT OF US? (the portal-test-prep blocker B2)
+ *
+ * Tyler's sign-in (Okta on identity.tylerportico.com, "Sign in to community access services")
+ * shows an Email box and a Next button and NO password box. loginFormPresent asks only "is a
+ * password box visible", so performLogin used to run the REVEAL pass first — and the reveal list
+ * would click Okta's "Sign in with Google/Microsoft…" (a non-exact {button, "Sign In"} match) or
+ * its /help/login link (the href catch-all) long before the two-step branch was ever reached.
+ * Whichever form that click led to was then filled with the portal's credential.
+ *
+ * So the identifier step is recognised BEFORE any reveal click: an identifier-shaped field from
+ * the specific candidate list, a next-step control that is not on the never-click list, sign-in
+ * wording, and no password box.
+ *
+ * preReveal adds one more condition, for the call made BEFORE the reveal pass: no worded reveal
+ * trigger (a "Log In" / "Sign In" link or button, never-click matches dropped, the Next control
+ * itself excluded) is visible. On Okta's page 1 every such match is a social / help / unlock /
+ * create-account control and drops out. On a LANDING page with a header "Log In" link and a
+ * newsletter Email + Subscribe box, the header link is still there — so the old order stands
+ * (reveal the real form first) and the username is never typed into the newsletter box.
+ */
+async function identifierFirstStep(
+  page: Page,
+  opts: { preReveal?: boolean } = {},
+): Promise<{ idField: Locator; nextCtl: Locator } | null> {
+  if (await loginFormPresent(page)) return null;
+  const idField = await firstVisible(page, USERNAME_CANDIDATES, { fillable: true });
+  if (!idField) return null;
+  const nextCtl = await firstVisible(page, NEXT_STEP_CANDIDATES, { clickable: true });
+  if (!nextCtl) return null;
+  if (!(await loginWordingPresent(page))) return null;
+  if (opts.preReveal && await wordedRevealTriggerVisible(page, nextCtl)) return null;
+  return { idField, nextCtl };
+}
+
+/** A worded REVEAL_TRIGGER (role + name) that a reveal pass would click, other than `except`. */
+async function wordedRevealTriggerVisible(page: Page, except: Locator): Promise<boolean> {
+  const exceptHandle = await except.elementHandle().catch(() => null);
+  for (const sel of REVEAL_TRIGGERS) {
+    if (!sel.role || !sel.name) continue;
+    for (const m of await visibleMatches(page, sel, 4)) {
+      if (exceptHandle) {
+        const same = await m.evaluate((el, other) => el === other, exceptHandle).catch(() => false);
+        if (same) continue;
+      }
+      if (!(await neverClickReason(m))) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * NEVER TYPE THE PORTAL'S CREDENTIAL INTO A THIRD PARTY'S SIGN-IN.
+ *
+ * The backstop to the never-click list: if any path ever lands the login on a consumer identity
+ * provider's own page (Google, Microsoft consumer, Apple, Facebook…), the portal's password is
+ * not typed there. A permit portal's credential belongs to the permit portal and its own identity
+ * host (identity.tylerportico.com is Tyler's — not on this list).
+ */
+const CONSUMER_IDP_HOST = /(^|\.)(google\.com|live\.com|appleid\.apple\.com|apple\.com|facebook\.com|github\.com|linkedin\.com|amazon\.com|yahoo\.com|twitter\.com|x\.com|paypal\.com)$/i;
+async function thirdPartyIdentityHost(loc: Locator | null): Promise<string> {
+  if (!loc) return "";
+  const host = await loc.evaluate(() => location.hostname).catch(() => "");
+  return host && CONSUMER_IDP_HOST.test(host) ? host : "";
+}
+function refusedThirdParty(host: string): LoginResult {
+  return {
+    ok: false,
+    status: "login_form_unrecognized",
+    message: `The login landed on ${host}, a third-party sign-in (a social identity provider), not this portal's own login. Nothing was typed there: the portal's credential is never entered into another company's sign-in. Record this portal's login manually.`,
+  };
+}
+
+export interface LoginOptions {
+  /** How long to hold the window open at a second-factor screen for a PERSON to complete it.
+   *  Omitted: PORTAL_PROFILE_WAIT_MS (default 15 min, kept under the run ceiling) when the
+   *  browser is HEADED, 0 when it is headless — nobody can complete a factor in a window no one
+   *  can see, so a headless run returns mfa_captcha at once, as it always has. */
+  parkMs?: number;
+  /** Told once when the run parks: the named reason and the bound. Never carries a credential. */
+  onPark?: (info: { reason: string; waitMs: number }) => void;
+}
+
+async function resolveParkMs(page: Page, opts: LoginOptions): Promise<number> {
+  if (typeof opts.parkMs === "number" && Number.isFinite(opts.parkMs)) return Math.max(0, opts.parkMs);
+  if (/^(off|0|false|no)$/i.test(String(process.env.PORTAL_LOGIN_PARK ?? "").trim())) return 0;
+  const ua = await (page as unknown as { evaluate: (fn: () => string) => Promise<string> })
+    .evaluate(() => navigator.userAgent).catch(() => "");
+  if (!ua || /headless/i.test(ua)) return 0;
+  // Read at CALL time (browser.ts reads PORTAL_PROFILE_WAIT_MS once at import).
+  const wait = Number(process.env.PORTAL_PROFILE_WAIT_MS ?? 15 * 60 * 1000);
+  // index.ts force-closes the browser at PORTAL_RUN_MAX_MS (default 25 min); a park that
+  // outlives it would be ended mid-wait with a confusing error, so leave room for the walk.
+  const ceiling = Math.max(60_000, Number(process.env.PORTAL_RUN_MAX_MS ?? 25 * 60_000));
+  const bounded = Math.min(Number.isFinite(wait) && wait > 0 ? wait : 15 * 60 * 1000, Math.max(30_000, ceiling - 5 * 60_000));
+  return Math.max(0, bounded);
+}
+
+/**
+ * IS A SESSION PROVEN? One predicate for the post-submit poll AND the second-factor park, so the
+ * two can never disagree about what "logged in" means.
+ *
+ * Order matters. A sign-out control is checked FIRST: a factor screen never has one, and a real
+ * post-login page that merely mentions "two-factor" (an account-settings banner) must not be read
+ * as a challenge. After that, a second-factor screen or a challenge vetoes the weaker proofs —
+ * Okta renders the full submitted username at the top of its factor pages with the password box
+ * gone, which submittedIdentityEchoed alone would read as a session.
+ */
+async function sessionProof(page: Page, loginUrl: string, username: string): Promise<string> {
+  if (await authenticatedSignalPresent(page)) return "a sign-out control is now present — a positive signed-in signal";
+  if (await detectSecondFactor(page)) return "";
+  if (await challengeBeyondPasswordStep(page)) return "";
+  const currentUrl: string = typeof page.url === "function" ? page.url() : "";
+  // Only a move to a non-login URL can prove anything; the shape check is the expensive half,
+  // so it is asked only once the cheap half has already agreed.
+  if (currentUrl !== loginUrl && !looksLikeLoginUrl(currentUrl) && !(await loginPageShape(page))) {
+    return "the portal moved off the login page to an application page";
+  }
+  // THE POSTBACK CASE: no URL move and no sign-out control we can see, because the portal
+  // authenticates in place and keeps sign-out inside a closed account menu. See
+  // submittedIdentityEchoed.
+  if (await submittedIdentityEchoed(page, username) && !(await loginFormPresent(page))) {
+    return "the password field is gone and the portal is now rendering the submitted account identifier as page text — a positive signed-in signal";
+  }
+  return "";
+}
+
+/**
+ * detectChallengeFrame, minus a READING on a page that still shows a password box.
+ *
+ * A structural hit (a CAPTCHA / MFA frame) always counts. A reading — the page title or visible
+ * text matched a challenge word — does not, while a password field is visible: that page is the
+ * password step (Okta's is headed "Verify with your password"; identity hosts title every page
+ * "… Authentication"), or its wrong-password re-render, which is a FAILED login and must stay
+ * one. Measured on the replica: without this, the poll read the password page's title during the
+ * 400 ms before the redirect as MFA — the good login stopped, the bad one parked.
+ * The same rule as step 4 (pre-fill), and it keeps the park's invariant: never on a password page.
+ */
+async function challengeBeyondPasswordStep(page: Page): Promise<string> {
+  const hit = await detectChallengeFrame(page);
+  if (!hit) return "";
+  if (/^challenge (page title|text) detected/.test(hit) && await loginFormPresent(page)) return "";
+  return hit;
+}
+
+/**
+ * A SECOND FACTOR IS A PERSON'S — SO WAIT FOR ONE, WITH THE WINDOW OPEN (the blocker B3).
+ *
+ * The run used to return mfa_captcha the moment a factor screen appeared, and index.ts's finally
+ * closed the browser — so on a headed supervised learn the operator never got to enter the code
+ * in the very window that asked for it, and every Tyler learn would end at its login.
+ *
+ * Now, on a headed run, it PARKS: it names the reason (console + onPark), then only WATCHES —
+ * never types a code, never presses "Send me an email" / "Send push", never picks a factor (rule
+ * 1) — until the SAME session proof the poll uses says the portal moved on, bounded by
+ * PORTAL_PROFILE_WAIT_MS. Only ever entered on a page with NO password box (detectSecondFactor's
+ * load-bearing clause), so the person at the window is never asked for the password; a wrong
+ * password re-renders the password box and stays a failed login.
+ */
+async function parkForSecondFactor(
+  page: Page,
+  reason: string,
+  username: string,
+  opts: LoginOptions,
+): Promise<LoginResult> {
+  const waitMs = await resolveParkMs(page, opts);
+  const why = `a second factor / verification challenge is waiting for a person (${reason}) — this is NOT a refused credential`;
+  if (!waitMs) {
+    return { ok: false, status: "mfa_captcha", message: `Login paused: ${why}. Complete it in a visible browser window, then retry.` };
+  }
+  const minutes = Math.max(1, Math.round(waitMs / 60_000));
+  const notice = `PAUSED — needs-human (mfa): ${why}. Complete it in the open browser window; waiting up to ${minutes} min. The bot does not type or request a code.`;
+  try { opts.onPark?.({ reason, waitMs }); } catch { /* a notifier must never change the outcome */ }
+  console.warn(`[login] ${notice}`);
+  const parkedAt: string = typeof page.url === "function" ? page.url() : "";
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    await sleep(1500);
+    if (typeof page.isClosed === "function" && page.isClosed()) break;
+    const proof = await sessionProof(page, parkedAt, username).catch(() => "");
+    if (proof) {
+      console.warn("[login] RESUMED — the second factor was completed in the window; continuing.");
+      return { ok: true, status: "logged_in", message: `Logged in after a person completed the second factor in the open window (${proof}).` };
+    }
+  }
+  return {
+    ok: false,
+    status: "mfa_captcha",
+    message: `Login paused: ${why}. The window was held open ${minutes} min for a person to complete it and the portal did not move on; retry once it is completed.`,
+  };
+}
+
 // The full login flow. Heuristic and portal-agnostic. Never logs credentials.
 export async function performLogin(
   page: Page,
   credential: Credential | undefined,
+  opts: LoginOptions = {},
 ): Promise<LoginResult> {
   try {
     // 0) Let the page settle — a single domcontentloaded fires before an MVC/SPA login
@@ -835,49 +1107,61 @@ export async function performLogin(
     if (!present && await authenticatedSignalPresent(page)) {
       return { ok: true, status: "already_authenticated", message: "Already signed in (a logout control is present) — using the existing session." };
     }
-    if (!present) present = await revealLoginForm(page);
+    // 1b) STEP 1 OF AN IDENTIFIER-FIRST LOGIN IS DECIDED BEFORE ANY REVEAL CLICK (B2) — see
+    //     identifierFirstStep. The reveal pass never runs on a page that is already the login.
+    let idFirst = present ? null : await identifierFirstStep(page, { preReveal: true });
+    if (!present && !idFirst) present = await revealLoginForm(page);
 
     // 2) No form yet. Give it a settle budget before concluding ANYTHING — a login box is
     //    routinely painted late (Momentum's Liferay login portlet renders after the page
     //    reports networkidle, which made the engine declare the portal formless). The budget
     //    is longer on a login-looking URL, where a form is all but guaranteed to arrive.
-    if (!present) {
+    //    A LATE-PAINTING identifier step (Okta's widget renders after load) is looked for on
+    //    every pass BEFORE the reveal runs again, for the same reason as 1b.
+    if (!present && !idFirst) {
       const onLoginUrl = looksLikeLoginUrl(typeof page.url === "function" ? page.url() : "");
       const deadline = Date.now() + (onLoginUrl ? 8000 : 4000);
-      while (!present && Date.now() < deadline) {
+      while (!present && !idFirst && Date.now() < deadline) {
         await smartWait(page, 1000);
         present = await loginFormPresent(page);
-        if (!present) present = await revealLoginForm(page);
+        if (!present) idFirst = await identifierFirstStep(page, { preReveal: true });
+        if (!present && !idFirst) present = await revealLoginForm(page);
       }
     }
 
     // 2b) IDENTIFIER-FIRST ("two-step") LOGIN. Some portals ask for the email alone, then
-    //     reveal the password after a Continue/Next click (OpenGov's portal, and most SSO
-    //     front doors). There is no password field yet, so the check above sees "no form"
-    //     and the run would stop one click short of the actual login. Deliberately tight, so
-    //     a public page's search box + Go button can never be mistaken for a login: it needs
+    //     reveal the password after a Continue/Next click (OpenGov's portal, Tyler's Okta, and
+    //     most SSO front doors). There is no password field yet, so the check above sees "no
+    //     form" and the run would stop one click short of the actual login. Deliberately tight,
+    //     so a public page's search box + Go button can never be mistaken for a login: it needs
     //     an identifier-shaped field from the specific candidate list (not the loose
-    //     adjacent-label fallback), a next-step control, AND login wording on the page/URL.
+    //     adjacent-label fallback), a next-step control that is not on the never-click list, AND
+    //     login wording on the page/URL.
     let identifierEntered = false;
     if (!present) {
-      const idField = await firstVisible(page, USERNAME_CANDIDATES, { fillable: true });
-      const nextCtl = idField ? await firstVisible(page, NEXT_STEP_CANDIDATES) : null;
-      if (idField && nextCtl) {
-        if (await loginWordingPresent(page)) {
-          if (!credential || !credential.username || !credential.password) {
-            return { ok: false, status: "no_credential", message: "This portal asks for the username first (two-step login) but no stored credential was found for this client/portal. Add the portal username + password under the client's logins, then retry." };
-          }
-          await waitForElement(idField);
-          await idField.fill(credential.username);
-          await nextCtl.click().catch(() => null);
-          // Wait for the password step to paint.
-          const deadline = Date.now() + 10000;
-          while (!present && Date.now() < deadline) {
-            await smartWait(page, 1000);
-            present = await loginFormPresent(page);
-          }
-          identifierEntered = present;
+      const step = idFirst ?? await identifierFirstStep(page);
+      if (step) {
+        if (!credential || !credential.username || !credential.password) {
+          return { ok: false, status: "no_credential", message: "This portal asks for the username first (two-step login) but no stored credential was found for this client/portal. Add the portal username + password under the client's logins, then retry." };
         }
+        const foreign = await thirdPartyIdentityHost(step.idField);
+        if (foreign) return refusedThirdParty(foreign);
+        await waitForElement(step.idField);
+        await step.idField.fill(credential.username);
+        await step.nextCtl.click().catch(() => null);
+        // Wait for the password step to paint — or for a SECOND FACTOR, which some identity
+        // providers ask for straight after the identifier (Okta with password-optional
+        // policies: "Verify with your email"). That is a person's to complete: park (B3).
+        const deadline = Date.now() + 10000;
+        while (!present && Date.now() < deadline) {
+          await smartWait(page, 1000);
+          present = await loginFormPresent(page);
+          if (!present) {
+            const factor = await detectSecondFactor(page);
+            if (factor) return await parkForSecondFactor(page, factor, credential.username, opts);
+          }
+        }
+        identifierEntered = present;
       }
     }
 
@@ -1012,7 +1296,14 @@ export async function performLogin(
     }
 
     // 4) A challenge already on the login page → stop for a human.
-    const preChallenge = await detectChallengeFrame(page);
+    //
+    //    A STRUCTURAL challenge (a CAPTCHA / MFA frame) stops, as it always has. A READING — the
+    //    page title or some visible text matched a challenge word — does NOT stop a page with a
+    //    fillable password box in front of us: that page is the password step. Okta's is headed
+    //    "Verify with your password"; an identity host titles its pages "Authentication"; a
+    //    stop there was a false stop one field short of the login (an uncertain reading must not
+    //    stop a legitimate step). If a real challenge follows the submit, the poll below sees it.
+    const preChallenge = await challengeBeyondPasswordStep(page);
     if (preChallenge) {
       return { ok: false, status: "mfa_captcha", message: `Login paused: ${preChallenge}. Complete verification in the browser, then retry.` };
     }
@@ -1023,6 +1314,12 @@ export async function performLogin(
     const userLoc = await findUsernameField(page);
     if (!userLoc && !identifierEntered) {
       return { ok: false, status: "no_username_field", message: "Found a password field but could not locate the username/email field — the portal layout is unusual. Record it manually." };
+    }
+    // Never on a third party's sign-in (see thirdPartyIdentityHost) — checked before EITHER
+    // field is typed, on the frame each field actually lives in.
+    {
+      const foreign = (await thirdPartyIdentityHost(userLoc)) || (await thirdPartyIdentityHost(await findPasswordField(page)));
+      if (foreign) return refusedThirdParty(foreign);
     }
     if (userLoc) {
       await waitForElement(userLoc);
@@ -1042,7 +1339,7 @@ export async function performLogin(
     //    <a href="javascript:ajaxLogin();">Submit</a>). If Enter also does nothing, the poll
     //    below reports it honestly rather than claiming a button was missing.
     const loginUrl: string = typeof page.url === "function" ? page.url() : "";
-    const submitLoc = await firstVisible(page, SUBMIT_CANDIDATES);
+    const submitLoc = await firstVisible(page, SUBMIT_CANDIDATES, { clickable: true });
     let submittedVia: "button" | "enter" = "button";
     if (submitLoc) {
       await waitForElement(submitLoc);
@@ -1089,29 +1386,19 @@ export async function performLogin(
     // logged_in on no evidence. That is the trade the incident demands — a false "logged in"
     // is banked as knowledge and spends LLM budget on a login form; a false "still on login"
     // is a line in the run log that names exactly what it could not prove.
+    //
+    // The proof itself lives in sessionProof, shared with the second-factor park. A SECOND
+    // FACTOR (detectSecondFactor — by what the page says and holds, so Tyler's Okta on its own
+    // domain is seen; B6) or a challenge frame is handed to parkForSecondFactor: a headed run
+    // waits there for a person, a headless one returns mfa_captcha at once — never the
+    // "credential likely rejected" timeout that marked a good login stale.
     const deadline = Date.now() + LOGIN_RESULT_TIMEOUT_MS;
     await smartWait(page, 2000); // let the first navigation/AJAX settle
     while (Date.now() < deadline) {
-      const postChallenge = await detectChallengeFrame(page);
-      if (postChallenge) {
-        return { ok: false, status: "mfa_captcha", message: `MFA/2FA required after login — pausing for human (${postChallenge}). Complete it in the browser window, then retry.` };
-      }
-      if (await authenticatedSignalPresent(page)) {
-        return { ok: true, status: "logged_in", message: "Logged in successfully (a sign-out control is now present — a positive signed-in signal)." };
-      }
-      const currentUrl: string = typeof page.url === "function" ? page.url() : "";
-      // Only a move to a non-login URL can prove anything; the shape check is the expensive
-      // half, so it is asked only once the cheap half has already agreed.
-      if (currentUrl !== loginUrl && !looksLikeLoginUrl(currentUrl) && !(await loginPageShape(page))) {
-        return { ok: true, status: "logged_in", message: "Logged in successfully (the portal moved off the login page to an application page)." };
-      }
-      // THE POSTBACK CASE: no URL move and no sign-out control we can see, because the portal
-      // authenticates in place and keeps sign-out inside a closed account menu. See
-      // submittedIdentityEchoed. The cheap half (one in-page text scan) is asked first, so a
-      // still-on-login page pays nothing for it.
-      if (await submittedIdentityEchoed(page, credential.username) && !(await loginFormPresent(page))) {
-        return { ok: true, status: "logged_in", message: "Logged in successfully (the password field is gone and the portal is now rendering the submitted account identifier as page text — a positive signed-in signal)." };
-      }
+      const proof = await sessionProof(page, loginUrl, credential.username);
+      if (proof) return { ok: true, status: "logged_in", message: `Logged in successfully (${proof}).` };
+      const challenge = (await detectSecondFactor(page)) || (await challengeBeyondPasswordStep(page));
+      if (challenge) return await parkForSecondFactor(page, challenge, credential.username, opts);
       await sleep(500);
     }
 
@@ -1347,7 +1634,7 @@ export async function accountAffordancePresent(page: Page): Promise<string> {
  */
 export async function markDescribedLoginControl(page: Page): Promise<string> {
   try {
-    return await (page as unknown as { evaluate: (fn: () => string) => Promise<string> }).evaluate(() => {
+    return await (page as unknown as { evaluate: (fn: (socialSrc: string) => string, arg: string) => Promise<string> }).evaluate((socialSrc) => {
       const LOGIN = /\blog[\s-]?in\b|\blogin\b|\bsign[\s-]?in\b|\bsignin\b|\bregister\b|\bmy account\b|\bnew account\b/i;
       const LOGOUT = /\blog[\s-]?out\b|\blogout\b|\bsign[\s-]?out\b|\bsignout\b/i;
       const vis = (el: Element): boolean => {
@@ -1404,6 +1691,11 @@ export async function markDescribedLoginControl(page: Page): Promise<string> {
         const menuHay = menuTexts.join(" ").replace(/\s+/g, " ").trim();
 
         if (!ownHay || !LOGIN.test(ownHay)) continue;
+        // A SOCIAL sign-in icon ("Sign in with Google" as the aria-label of a logo button) is
+        // described as a login and is not ours to click — the social half of NEVER_CLICK_PATTERNS,
+        // which the worded pass applies too. ONLY the social half: PermitTrax's tooltip "Click to
+        // Sign In / Register a New Account" names register and IS the reveal.
+        if (new RegExp(socialSrc, "i").test(ownHay) || /social-auth/i.test(String((el as HTMLElement).className || ""))) continue;
         const hay = `${ownHay} ${menuHay}`.trim();
         // A menu holding BOTH is a session menu; only skip when sign-out is all there is.
         if (LOGOUT.test(hay) && !LOGIN.test(hay.replace(LOGOUT, ""))) continue;
@@ -1412,7 +1704,7 @@ export async function markDescribedLoginControl(page: Page): Promise<string> {
         return hay.slice(0, 90);
       }
       return "";
-    });
+    }, SOCIAL_IDP_SOURCE);
   } catch {
     return "";
   }
