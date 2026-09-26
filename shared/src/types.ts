@@ -2598,7 +2598,7 @@ export interface LLMProvider {
   researchDesignCriteria?(input: { ahj: string; state: string }): Promise<DesignCriteriaResearchResult>;
   /** ONE web-grounded lookup with a caller-owned prompt (the per-job permit-process lookup,
    *  backend/src/permitProcessLookup.ts). Transport only: the caller parses and validates. */
-  webLookup?(input: { label: string; system: string; user: string; maxTokens?: number; maxSearches?: number; readPages?: boolean; timeoutMs?: number }): Promise<WebLookupResult>;
+  webLookup?(input: { label: string; system: string; user: string; maxTokens?: number; maxSearches?: number; readPages?: boolean; maxFetches?: number; timeoutMs?: number }): Promise<WebLookupResult>;
   /** LLM GENERAL PLAN REVIEW (hybrid review gate): Claude vision over rendered plan
    *  pages for ANY permit work type, grounded in the jurisdiction's adopted codes.
    *  Always advisory — the caller maps findings to category "ai_review", severity
@@ -3296,6 +3296,9 @@ export interface PermitProcessLookup {
   issuingAgency: CitedFact<string>;
   permitStructure: CitedFact<"separate" | "combo">;
   permits: PermitProcessPermitAnswer[];
+  /** Steps at ANOTHER office before or beside filing ("submit to City Hall first", a zoning
+   *  sign-off), each cited. Never the issuing agency. */
+  prerequisites?: CitedFact<string>[];
   /** Adopted codes the lookup found (display only; the gate reads jurisdiction_code_profiles). */
   codes?: CitedFact<string[]>;
   lookedUpAt: string;
@@ -3315,5 +3318,9 @@ export interface WebLookupResult {
   stopReason: string | null;
   resultUrls: string[];
   pagesRead: number;
+  /** Searches the model ran (with or without results) — for the cost line. */
+  searches?: number;
+  /** Pages the fetch tool returned (readPages): a lookup may cite a page it OPENED. */
+  fetchedUrls?: string[];
   error?: string;
 }

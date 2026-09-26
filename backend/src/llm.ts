@@ -778,6 +778,19 @@ export function designLookupFetchTool(): Record<string, unknown> {
   return { type: "web_fetch_20260209", name: "web_fetch", max_uses: DESIGN_LOOKUP_MAX_FETCHES, max_content_tokens: DESIGN_LOOKUP_MAX_PAGE_TOKENS };
 }
 
+/** The URLs of the pages the fetch tool actually returned (a web_fetch_result, not an error): a
+ *  lookup that reads pages may cite a page it OPENED, which is not always a search result. */
+export function webFetchResultUrls(msg: { content?: unknown }): string[] {
+  const blocks = Array.isArray(msg?.content) ? (msg.content as Array<Record<string, unknown> | null>) : [];
+  const urls: string[] = [];
+  for (const b of blocks) {
+    const c = b?.type === "web_fetch_tool_result" ? (b.content as { type?: string; url?: unknown } | null) : null;
+    const u = c?.type === "web_fetch_result" && typeof c.url === "string" ? c.url.trim() : "";
+    if (/^https?:\/\//i.test(u) && !urls.includes(u)) urls.push(u.slice(0, 300));
+  }
+  return urls;
+}
+
 /** Pages the fetch tool actually returned (a web_fetch_tool_result whose content is a result, not an
  *  error object). For the log line and the lookup's notes — grounding is still decided by search. */
 export function countWebFetches(msg: { content?: unknown }): number {
@@ -2010,14 +2023,20 @@ Rules:
   // so there is no model-memory fallback here.
   // PER-JOB PERMIT-PROCESS LOOKUP transport (permitProcessLookup.ts owns the prompt, the parse and
   // every validation). Its own timeout per call, so one aborted part loses one part, not all.
-  async webLookup(input: { label: string; system: string; user: string; maxTokens?: number; maxSearches?: number; readPages?: boolean; timeoutMs?: number }): Promise<WebLookupResult> {
+  async webLookup(input: { label: string; system: string; user: string; maxTokens?: number; maxSearches?: number; readPages?: boolean; maxFetches?: number; timeoutMs?: number }): Promise<WebLookupResult> {
     try {
+      // readPages: the capped web_fetch beside web_search (max_uses = maxFetches, default the
+      // design lookup's 3; each page capped at DESIGN_LOOKUP_MAX_PAGE_TOKENS).
+      const fetchTool = input.readPages ? [{ ...designLookupFetchTool(), max_uses: Math.max(1, Math.min(6, input.maxFetches ?? DESIGN_LOOKUP_MAX_FETCHES)) }] : [];
       const web = await this.askWithWebSearch(input.label, input.system, input.user, input.maxTokens ?? WEB_RESEARCH_MAX_TOKENS,
-        input.maxSearches ?? 5, input.timeoutMs ?? webResearchBudgetMs(), input.readPages ? [designLookupFetchTool()] : [],
+        input.maxSearches ?? 5, input.timeoutMs ?? webResearchBudgetMs(), fetchTool,
         // Every URL the searches returned: the caller checks each cited source against this list, and
         // twelve searches return far more than the default 20.
         400);
-      return { text: web.text, groundedSearches: web.groundedSearches, stopReason: web.stopReason, resultUrls: web.resultUrls, pagesRead: web.fetches };
+      return {
+        text: web.text, groundedSearches: web.groundedSearches, searches: web.searches, stopReason: web.stopReason, resultUrls: web.resultUrls, pagesRead: web.fetches,
+        fetchedUrls: web.fetchedUrls,
+      };
     } catch (err) {
       return { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: errMsg(err) };
     }
@@ -2586,7 +2605,7 @@ Return ONLY JSON:
   // whether the JSON parsed and not from the bare search count.
   // `extraTools`: server tools offered beside web_search (only the design-criteria lookup passes one —
   // the capped web_fetch); empty for every other caller, whose request is unchanged.
-  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000, extraTools: Array<Record<string, unknown>> = [], resultUrlCap = 20): Promise<{ text: string; searches: number; groundedSearches: number; fetches: number; stopReason: string | null; resultUrls: string[]; inputTokens?: number; outputTokens?: number; model: string }> {
+  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000, extraTools: Array<Record<string, unknown>> = [], resultUrlCap = 20): Promise<{ text: string; searches: number; groundedSearches: number; fetches: number; fetchedUrls: string[]; stopReason: string | null; resultUrls: string[]; inputTokens?: number; outputTokens?: number; model: string }> {
     // Hard timeout so a stalled web search can never hang the HTTP request (the
     // "Find official form" button would otherwise spin forever). On timeout we
     // abort the stream; callers catch and fall back (no URLs / model knowledge).
@@ -2617,7 +2636,7 @@ Return ONLY JSON:
       if (extraTools.length) logger.debug("llm", `  ${label} web_fetch`, { pagesRead: fetches });
       const usage = (msg as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
       return {
-        text: this.textOf(msg), searches, groundedSearches, fetches,
+        text: this.textOf(msg), searches, groundedSearches, fetches, fetchedUrls: webFetchResultUrls(msg),
         stopReason: (msg as { stop_reason?: string | null }).stop_reason ?? null,
         resultUrls: webSearchResultUrls(msg, resultUrlCap),
         inputTokens: typeof usage?.input_tokens === "number" ? usage.input_tokens : undefined,

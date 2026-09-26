@@ -12,6 +12,15 @@
 //   K3 runPermitProcessLookup: keep an ungrounded answer       → (x3) fails.
 //   K4 applyLookupFees: no delegation row                      → (m3) fails.
 //   K5 feeSchedules fuzzy fallback: bridge city to county      → (m4) fails.
+// Recall round (mechanised: .probe/lookup-recall/kill.mjs, each verified red):
+//   K6 no lift of an agreeing per-permit agency                → (a1) fails.
+//   K7 part two asked of 'top || ahj' (no per-agency groups)   → (a2) fails.
+//   K8 a prerequisite quote supports the agency                → (a3) fails.
+//   K9 no portal step                                          → (q1) fails.
+//   K10 portal door without the rule-5 track fit               → (q2) fails (PowerClerk kept).
+//   K11 a form title accepted as a record type                 → (q3) fails.
+//   K12 documents/fees without page reading                    → (q1) fails.
+//   K13 a fetched page not counted as seen                     → (q1) fails.
 //
 // Run: npx tsx backend/test/permitProcessLookup.test.ts
 import "./_isolate"; // FIRST
@@ -155,10 +164,154 @@ await check("(x7) a re-run whose part aborts never forgets an earlier cited answ
   const aborted: WebLookupResult = { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: "Request was aborted." };
   let asked = 0;
   await ppl.runPermitProcessLookup(db, { webLookup: async () => { asked++; return aborted; } }, { state: "OR", ahj: "City of Elmstead", force: true });
-  assert.equal(asked, 3, "the aborted process part is retried once, then documents/fees are asked");
+  assert.equal(asked, 4, "the aborted process part is retried once, then the portal step and documents/fees are asked");
   const lk = pp.permitProcessFor(project("City of Elmstead"))!;
   assert.equal(lk.issuingAgency.value, "Marion County");
   assert.equal(lk.permits.find((p) => p.discipline === "structural")?.fee.value?.amountUsd, 67.25);
+});
+
+// ── ASK THE AGENCY THAT ISSUES EACH PERMIT; THE PORTAL IS ITS OWN GROUNDED STEP (recall round) ──
+// A recording stub: routes by label, records every call's user text and readPages/maxFetches.
+type Asked = { label: string; user: string; readPages?: boolean; maxFetches?: number; maxSearches?: number };
+const recorder = (answers: { process: WebLookupResult; portal?: WebLookupResult | ((user: string) => WebLookupResult); docs?: WebLookupResult | ((user: string) => WebLookupResult) }) => {
+  const asked: Asked[] = [];
+  const none: WebLookupResult = { text: "{}", groundedSearches: 1, stopReason: "end_turn", resultUrls: [COUNTY], pagesRead: 0 };
+  return {
+    asked,
+    llm: {
+      webLookup: async (i: Asked) => {
+        asked.push({ label: i.label, user: i.user, readPages: i.readPages, maxFetches: i.maxFetches, maxSearches: i.maxSearches });
+        const pick = (a: WebLookupResult | ((u: string) => WebLookupResult) | undefined) => (typeof a === "function" ? a(i.user) : a ?? none);
+        if (/process$/.test(i.label)) return answers.process;
+        if (/portal$/.test(i.label)) return pick(answers.portal);
+        return pick(answers.docs);
+      },
+    },
+  };
+};
+const CITY = "https://www.fernhill.example.org/building";
+const STATE_BCD = "https://www.example-state.gov/bcd/electrical";
+const permitAgency = (value: string, url = COUNTY, quote = `${value} Building Inspection issues structural and electrical permits for Fernhill`) => ({ value, sourceUrl: url, quote });
+const jeffersonShape = (over: Record<string, unknown> = {}) => JSON.stringify({
+  // The top level names the CITY on a prerequisite quote: must not be kept as the agency.
+  issuingAgency: { value: "City of Fernhill", sourceUrl: CITY, quote: "Structural permits must be submitted to Fernhill City Hall first before going to the County." },
+  permitStructure: { value: "separate", sourceUrl: CITY, quote: "Solar needs a structural permit and a separate electrical permit" },
+  prerequisites: [{ value: "Submit structural permits to Fernhill City Hall first", sourceUrl: CITY, quote: "Structural permits must be submitted to Fernhill City Hall first before going to the County." }],
+  permits: [
+    { discipline: "structural", label: "Residential Structural", issuingAgency: permitAgency("Marion County"), portalUrl: { value: null, notFound: "search quota exhausted" }, recordType: { value: null } },
+    { discipline: "electrical", label: "Residential Electrical", issuingAgency: permitAgency("Marion County"), portalUrl: { value: null, notFound: "search quota exhausted" }, recordType: { value: null } },
+  ],
+  ...over,
+});
+const portalAnswer = (portal: Record<string, unknown>, rt: Record<string, unknown> = { value: "Residential Structural", sourceUrl: COUNTY, quote: "choose the record type Residential Structural" }) => JSON.stringify({
+  permits: [{ discipline: "structural", portalUrl: portal, recordType: rt }, { discipline: "electrical", portalUrl: portal, recordType: { value: null } }],
+});
+const docsUserAgency = (u: string) => /Issuing agency: (.*)/.exec(u)?.[1];
+
+await check("(a1) MUST-PASS: every permit cites the same agency and the top level found none → the top level is LIFTED, cited, and documents/fees are asked of it", async () => {
+  const r = recorder({ process: grounded(jeffersonShape()), docs: grounded(feesAnswer()) });
+  const run = await ppl.runPermitProcessLookup(db, r.llm, { state: "OR", ahj: "City of Fernhill" });
+  const lk = run.lookup!;
+  assert.equal(lk.issuingAgency.value, "Marion County", "lifted from the agreeing permits");
+  assert.equal(lk.issuingAgency.sourceUrl, COUNTY);
+  const docs = r.asked.filter((a) => /documentsFees$/.test(a.label));
+  assert.equal(docs.length, 1);
+  assert.equal(docsUserAgency(docs[0].user), "Marion County", "part two asked of the issuing agency, not the city");
+});
+await check("(a2) MUST-PASS: permits cite DIFFERENT agencies → one documents/fees call per agency, each for its own permit; no lift", async () => {
+  const split = JSON.parse(jeffersonShape());
+  split.permits[1].issuingAgency = { value: "Example State Building Codes Division", sourceUrl: STATE_BCD, quote: "The Example State Building Codes Division issues electrical permits for Fernhill" };
+  const r = recorder({
+    process: grounded(JSON.stringify(split), { resultUrls: [COUNTY, FEES, ACA, CITY, STATE_BCD] }),
+    docs: (u) => grounded(/Marion/.test(u)
+      ? JSON.stringify({ permits: [JSON.parse(feesAnswer()).permits[0]] })
+      : JSON.stringify({ permits: [JSON.parse(feesAnswer()).permits[1]] }), { resultUrls: [COUNTY, FEES, STATE_BCD] }),
+  });
+  const run = await ppl.runPermitProcessLookup(db, r.llm, { state: "OR", ahj: "City of Gorseby" });
+  const docs = r.asked.filter((a) => /documentsFees$/.test(a.label));
+  assert.deepEqual(docs.map((d) => docsUserAgency(d.user)).sort(), ["Example State", "Marion County"]);
+  assert.match(docs.find((d) => /Marion/.test(d.user))!.user, /Permits: structural$/m);
+  assert.match(docs.find((d) => /Example State/.test(d.user))!.user, /Permits: electrical$/m);
+  const lk = run.lookup!;
+  assert.equal(lk.issuingAgency.value, null, "two agencies: nothing lifted");
+  assert.equal(lk.permits.find((p) => p.discipline === "structural")?.fee.value?.amountUsd, 67.25);
+  assert.equal(lk.permits.find((p) => p.discipline === "electrical")?.fee.value?.amountUsd, 94);
+  assert.ok(r.asked.length <= 6, `bounded: ${r.asked.length} calls`);
+});
+await check("(a3) MUST-EXCLUDE: a prerequisite office is never the issuing agency — it lands as a cited prerequisite note", async () => {
+  const r = recorder({ process: grounded(jeffersonShape(), { resultUrls: [COUNTY, FEES, ACA, CITY] }), docs: grounded(feesAnswer()) });
+  const run = await ppl.runPermitProcessLookup(db, r.llm, { state: "OR", ahj: "City of Hollin" });
+  const lk = run.lookup!;
+  assert.notEqual(lk.issuingAgency.value, "City of Fernhill");
+  assert.ok(!r.asked.some((a) => /Issuing agency: City of Fernhill/.test(a.user)), "no part asked of the prerequisite office");
+  assert.equal(lk.prerequisites?.[0]?.sourceUrl, CITY);
+  assert.ok(lk.notes?.some((n) => /^Prerequisite: .*City Hall/.test(n)), JSON.stringify(lk.notes));
+  // Unit: the prerequisite reading, both directions.
+  const q = "Structural permits must be submitted to City Hall first before going to Marion County.";
+  assert.equal(ppl.namesOnlyAsPrerequisite("City Hall", q), true);
+  assert.equal(ppl.namesOnlyAsPrerequisite("Marion County", q), false, "the office it then goes to is the destination");
+  assert.equal(ppl.namesOnlyAsPrerequisite("Marion County", "Marion County Building Inspection issues permits for Fernhill"), false);
+  assert.equal(ppl.namesOnlyAsPrerequisite("Fernhill", "Obtain Fernhill zoning approval before applying."), true);
+});
+await check("(q1) MUST-PASS: the portal step asks the ISSUING AGENCY, reads pages (bounded), and fills the portal + record type part one could not cite", async () => {
+  const r = recorder({
+    process: grounded(jeffersonShape()),
+    portal: grounded(portalAnswer({ value: ACA, sourceUrl: "https://permits.example-county-online.org/apply", quote: "Apply online through Oregon ePermitting" }), { resultUrls: [COUNTY], fetchedUrls: ["https://permits.example-county-online.org/apply"] }),
+    docs: grounded(feesAnswer()),
+  });
+  const run = await ppl.runPermitProcessLookup(db, r.llm, { state: "OR", ahj: "City of Ivybank" });
+  const portal = r.asked.filter((a) => /portal$/.test(a.label));
+  assert.equal(portal.length, 1);
+  assert.equal(docsUserAgency(portal[0].user), "Marion County");
+  assert.equal(portal[0].readPages, true);
+  assert.ok((portal[0].maxFetches ?? 99) <= 3);
+  const s = run.lookup!.permits.find((p) => p.discipline === "structural")!;
+  assert.equal(s.portalUrl.value, ACA, "cited from a page the lookup OPENED");
+  assert.equal(s.recordType.value, "Residential Structural");
+  assert.equal(r.asked.find((a) => /process$/.test(a.label))?.readPages, false);
+  const d = r.asked.find((a) => /documentsFees$/.test(a.label))!;
+  assert.equal(d.readPages, true, "documents/fees may read fee-schedule pages");
+  assert.ok((d.maxFetches ?? 99) <= 3);
+});
+await check("(q2) MUST-EXCLUDE: the portal door refuses a utility interconnection portal, a help page, and an uncited URL", async () => {
+  const cases: Array<[string, Record<string, unknown>, RegExp]> = [
+    ["utility portal", { value: "https://pacificpower.powerclerk.com/MvcAccount/Login", sourceUrl: COUNTY, quote: "Apply online through the PowerClerk portal" }, /utility|interconnection|permit \(AHJ\)/i],
+    ["help page", { value: "https://www.oregon.gov/bcd/epermitting/help/records/pages/permit-for-solar.aspx", sourceUrl: COUNTY, quote: "Apply online: see the Oregon ePermitting portal help" }, /information page/],
+    ["uncited", { value: ACA, sourceUrl: "https://blog.solar-installer.example.com/oregon-permits", quote: "Apply online through Oregon ePermitting (aca-oregon.accela.com)" }, /not a page the search returned/],
+  ];
+  for (const [name, portal, why] of cases) {
+    const r = recorder({ process: grounded(jeffersonShape()), portal: grounded(portalAnswer(portal), { resultUrls: [COUNTY, "https://www.oregon.gov/bcd/epermitting/help/records/pages/permit-for-solar.aspx"] }), docs: grounded(feesAnswer()) });
+    const run = await ppl.runPermitProcessLookup(db, r.llm, { state: "OR", ahj: `City of Juniper ${name}`, force: true });
+    const s = run.lookup!.permits.find((p) => p.discipline === "structural")!;
+    assert.equal(s.portalUrl.value, null, `${name}: ${s.portalUrl.value}`);
+    assert.match(String(s.portalUrl.notFound), why, name);
+  }
+  // The same door in part one: a PowerClerk URL offered by the process answer is refused too.
+  const bad = JSON.parse(processAnswer());
+  bad.permits[0].portalUrl = { value: "https://pacificpower.powerclerk.com/MvcAccount/Login", sourceUrl: COUNTY, quote: "Apply online through the PowerClerk portal" };
+  assert.equal(ppl.parseProcessPart(JSON.stringify(bad), [COUNTY], "end_turn").permits[0].portalUrl.value, null);
+});
+await check("(q3) MUST-EXCLUDE: a paper form's title is not a record type; the portal step never replaces a portal part one cited", async () => {
+  const r = recorder({
+    process: grounded(processAnswer({ permits: [{ ...JSON.parse(processAnswer()).permits[0], recordType: { value: null } }, JSON.parse(processAnswer()).permits[1]] })),
+    portal: grounded(portalAnswer({ value: "https://other.accela.com/X", sourceUrl: COUNTY, quote: "Apply online at other.accela.com" }, { value: "B-01S Solar Prescriptive Installation Application", sourceUrl: COUNTY, quote: "B-01S Solar Prescriptive Installation Application" })),
+    docs: grounded(feesAnswer()),
+  });
+  const run = await ppl.runPermitProcessLookup(db, r.llm, { state: "OR", ahj: "City of Kestrel" });
+  const s = run.lookup!.permits.find((p) => p.discipline === "structural")!;
+  assert.equal(s.portalUrl.value, ACA, "part one's cited portal stays");
+  assert.equal(s.recordType.value, null);
+  assert.match(String(s.recordType.notFound), /form's title/);
+  const kept = ppl.acceptRecordType({ value: "Residential Electrical - Solar", sourceUrl: COUNTY, quote: "Apply for Permit - Residential Electrical - Solar" }, [COUNTY]);
+  assert.equal(kept.value, "Residential Electrical - Solar");
+});
+await check("(q4) an aborted portal step keeps nothing and loses nothing else", async () => {
+  const r = recorder({ process: grounded(jeffersonShape()), portal: { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: "Request was aborted." }, docs: grounded(feesAnswer()) });
+  const run = await ppl.runPermitProcessLookup(db, r.llm, { state: "OR", ahj: "City of Larchmere" });
+  const s = run.lookup!.permits.find((p) => p.discipline === "structural")!;
+  assert.equal(s.portalUrl.value, null);
+  assert.equal(s.fee.value?.amountUsd, 67.25);
+  assert.equal(run.lookup!.issuingAgency.value, "Marion County");
 });
 
 if (failures) { console.error(`\n${failures} permitProcessLookup test(s) failed.`); process.exit(1); }
