@@ -125,6 +125,28 @@
   // -------------------------------------------------------------------------
   // Fields a sealed structural letter governs when it and the plan set disagree.
   const STRUCTURAL_FIELDS = new Set(['snow', 'deadLoad', 'roofRafterSpacing', 'roofRafterSpan', 'wind', 'windSpeed', 'riskCategory', 'roofSlope', 'roofMaterial', 'attachmentSpacingIn', 'attachmentEdgeSpacingIn', 'lightFrame', 'roofLiveLoad', 'roofDeadLoad']);
+  // The sealed-source rule picks the letter over the plan set only for the SAME quantity. A
+  // reading qualified by a roof zone or exposure ("Zone 2n ... Attachments at 24 in O.C.",
+  // "exposed modules", "edge", "ridge") is a zone-specific value, not the whole-roof one the
+  // plan states; ground vs roof snow and ultimate vs ASD wind are different quantities too.
+  // Readings whose qualifiers differ are a CONFLICT naming both, never a resolution.
+  const QUANTITY_QUALIFIER = /\bZONES?\s*[:#]?\s*(\d[A-Z]?'?)|\b(NON[-\s]?EXPOSED|EXPOSED|EDGES?|RIDGES?|CORNERS?|EAVES?|HIPS?|PERIMETER|INTERIOR|RAKES?|GROUND\s+SNOW|(?:FLAT|SLOPED|ROOF|DESIGN)\s+(?:ROOF\s+)?SNOW|ULT(?:IMATE)?|V\s*ULT|NOMINAL|ASD|V\s*ASD)\b/gi;
+  function quantityContext(excerpt) {
+    const out = new Set();
+    for (const m of String(excerpt || '').matchAll(QUANTITY_QUALIFIER)) {
+      out.add(m[1] ? `ZONE ${m[1].toUpperCase()}` : m[2].toUpperCase().replace(/[-\s]+/g, ' ').replace(/^V ?/, '').replace(/^ULTIMATE$/, 'ULT').replace(/(EDGE|RIDGE|CORNER|EAVE|HIP|RAKE)S$/, '$1'));
+    }
+    return [...out].sort().join(', ');
+  }
+  /** The letter governs only when it and every other reading carry the same zone/exposure
+   *  qualifiers; returns '' when it may govern, else the conflict note naming the mismatch. */
+  function sealedSourceMismatch(letter, others) {
+    const lc = quantityContext(letter[0].excerpt);
+    const differ = [...letter.slice(1), ...others].filter((o) => quantityContext(o.excerpt) !== lc);
+    if (!differ.length) return '';
+    const say = (c) => (c ? `qualified by ${c}` : 'unqualified (whole roof)');
+    return `not the same quantity — the structural letter's reading is ${say(lc)}, ${differ.map((o) => `the ${where(o)} reading is ${say(quantityContext(o.excerpt))}`).join(', ')}; the sealed-source rule picks the letter only for the same quantity — confirm which value applies`;
+  }
   // Fields whose printed value IS the answer: a number read verbatim beside its label is
   // stated, not unsure. Each carries the label words the excerpt must show, so a lone
   // number in a calculation line ("MAX PV OCPD (200A x 120%) - 200 = 40A") never counts.
@@ -349,6 +371,8 @@
         const letterValues = [...new Set(letter.map((r) => String(r.value)))];
         if (letterValues.length === 1) {
           const others = rs.filter((r) => r.source !== 'structural_letter');
+          const mismatch = sealedSourceMismatch(letter, others);
+          if (mismatch) { pushConflict(field, rs, [mismatch, c.note ? clean(c.note) : ''].filter(Boolean).join(' — ')); continue; }
           resolved.push({ field, value: letter[0].value, how: `sealed structural letter governs the plan set (sealed-source rule): letter ${fmtReading(letter[0])} over ${others.map(fmtReading).join(', ') || 'the other reading'}`, evidence: letter[0] });
           done.add(field);
           continue;
@@ -433,6 +457,8 @@
         if (STRUCTURAL_FIELDS.has(field)) {
           const letter = rs.filter((r) => r.source === 'structural_letter');
           const lv = [...new Set(letter.map((r) => String(r.value)))];
+          const mismatch = lv.length === 1 ? sealedSourceMismatch(letter, rs.filter((r) => r.source !== 'structural_letter')) : '';
+          if (mismatch) { pushConflict(field, rs, [mismatch, reason].filter(Boolean).join(' — ')); continue; }
           if (lv.length === 1) { resolved.push({ field, value: letter[0].value, how: `sealed structural letter governs the plan set (sealed-source rule): letter ${fmtReading(letter[0])} over ${rs.filter((r) => r.source !== 'structural_letter').map(fmtReading).join(', ')}`, evidence: letter[0] }); done.add(field); continue; }
         }
         pushConflict(field, rs, reason);

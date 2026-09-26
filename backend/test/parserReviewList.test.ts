@@ -462,4 +462,39 @@ ok("no Oregon leakage: licence label by state, N/A dropped, identified-vs-unknow
   ok("owner close 3: a compound surname counts once — spouse pairs are CONFLICTs; reversed / comma / hyphenated / middle-initial forms still match");
 }
 
+// ---------------------------------------------------------------------------
+// 5 (close 3). Sealed-source rule: the letter governs the plan set only for the SAME quantity.
+// A zone- or exposure-qualified letter reading ("Zone 2n ... 24 in O.C.") is not the whole-roof
+// spacing the plan states — a CONFLICT naming both, never "letter 24 over 48".
+// ---------------------------------------------------------------------------
+{
+  const planSpacing = { value: 48, source: "plan_set", sheet: "PV 1.1", excerpt: `NEW PV ATTACHMENTS AT 4'-0" O.C.` };
+  const zoneLetter = { value: 24, source: "structural_letter", sheet: "p.3", excerpt: "Zone 2n ... Attachments at 24 in O.C. with 2 rails" };
+  const run = (conflicts: unknown[], fields: Record<string, unknown> = {}, low: string[] = []) => PR.resolveReviewItems({ attached: ["plan_set", "structural_letter"], planText: planTextSF, passes: [textPass(fields, low, { conflicts })] });
+  // MUST-EXCLUDE (model-reported conflict): plan 48 unqualified vs letter 24 in Zone 2n
+  const a = run([{ field: "attachmentSpacingIn", readings: [planSpacing, zoneLetter], note: "the letter limits exposed zones to 24 in" }]);
+  assert.ok(!a.resolved.some((x: { field: string }) => x.field === "attachmentSpacingIn"), "a zone-specific letter value must not replace the plan's general spacing");
+  const ac = a.conflicts.find((x: { field: string }) => x.field === "attachmentSpacingIn");
+  assert.ok(ac && /48/.test(ac.text) && /24/.test(ac.text) && /ZONE 2N/.test(ac.note) && /not the same quantity/.test(ac.note), "the conflict names both readings and the zone");
+  // MUST-EXCLUDE (flagged field, readings from two passes): an EXPOSED-module letter value
+  const b = PR.resolveReviewItems({ attached: ["plan_set", "structural_letter"], planText: planTextSF, passes: [
+    { kind: "text", label: "plan", docsGiven: ["plan_set"], response: { fields: { attachmentSpacingIn: field(48, "plan_set", `NEW PV ATTACHMENTS AT 4'-0" O.C.`, 0.6) }, lowConfidenceFields: ["attachmentSpacingIn"], notes: "" } },
+    { kind: "text", label: "letter", docsGiven: ["structural_letter"], response: { fields: { attachmentSpacingIn: field(24, "structural_letter", "Exposed modules: Attachments at 24 in O.C.", 0.6) }, lowConfidenceFields: [], notes: "" } },
+  ] });
+  assert.ok(!b.resolved.some((x: { field: string }) => x.field === "attachmentSpacingIn") && b.conflicts.some((x: { field: string }) => x.field === "attachmentSpacingIn" && /EXPOSED/.test(x.note)), "flagged path: an exposed-module letter value is a conflict too");
+  // ground snow vs roof snow are different quantities
+  const s = run([{ field: "snow", readings: [{ value: 30, source: "plan_set", excerpt: "GROUND SNOW LOAD 30 PSF" }, { value: 21, source: "structural_letter", excerpt: "Roof Snow Load 21 psf" }] }]);
+  assert.ok(!s.resolved.some((x: { field: string }) => x.field === "snow") && s.conflicts.some((x: { field: string }) => x.field === "snow"), "roof snow never replaces ground snow");
+  // MUST-PASS: the same quantity still goes to the sealed letter — unqualified over unqualified,
+  // the same zone on both sides, and the dead-load pair (asserted in section 3) keeps resolving
+  const u = run([{ field: "attachmentSpacingIn", readings: [planSpacing, { value: 32, source: "structural_letter", sheet: "p.3", excerpt: "Attachments at 32 in O.C. with 2 rails" }] }]);
+  const ur = u.resolved.find((x: { field: string }) => x.field === "attachmentSpacingIn");
+  assert.ok(ur && ur.value === 32 && /sealed-source rule/.test(ur.how), "an unqualified letter spacing still governs the plan's");
+  const z = run([{ field: "attachmentSpacingIn", readings: [{ value: 32, source: "plan_set", excerpt: "ZONE 2N ATTACHMENTS @ 32\" O.C." }, zoneLetter] }]);
+  assert.ok(z.resolved.some((x: { field: string }) => x.field === "attachmentSpacingIn" && x.value === 24), "the same zone on both sides is the same quantity");
+  const d = run([{ field: "deadLoad", readings: [{ value: 3, source: "structural_letter", sheet: "p.2", excerpt: "Dead Load 3.00 psf" }, { value: 2.58, source: "plan_set", sheet: "PV 1.1", excerpt: "Distributed Load (Total System Weight / Total Array Area) 2.58 Per SqFt" }] }]);
+  assert.ok(d.resolved.some((x: { field: string }) => x.field === "deadLoad" && x.value === 3), "letter dead load 3.00 still governs the plan's 2.58");
+  ok("sealed-source close 3: a zone/exposure-qualified letter reading is a CONFLICT, never a resolution; the same quantity still goes to the letter");
+}
+
 console.log(`\nparserReviewList: all ${passed} checks passed`);
