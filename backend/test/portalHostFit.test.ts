@@ -334,5 +334,32 @@ await check("(m3d) MUST-EXCLUDE: a reopen never replays a recipe whose host fit 
   assert.deepEqual(reopenCalls.map((c) => c.recipeId), [pac.id], `the NEM reopen did not replay the utility recipe: ${JSON.stringify(reopenCalls)}`);
 });
 
+// ── close MF3e: the FETCH-TIME track gate in resolveStatusText ───────────────────────────────
+// (m3a) goes through the sweep, whose own gate stops the target first — so it cannot see the gate
+// at the fetch. A permit check recorded directly (POST /api/projects/:id/permit-checks with
+// source 'public_url' and no status text → recordPermitStatusCheck) reaches resolveStatusText
+// with nothing in front of it.
+// KILL: resolveStatusText's `fetchUrl = text(target.portal_url)` → the utility host is fetched.
+await check("(m3e) MUST-EXCLUDE: recordPermitStatusCheck {targetId: a permit target bound to pacificorpnetmetering.powerclerk.com, source:'public_url'} never calls the public fetch; MUST-PASS: a permit target on aca-oregon is fetched", async () => {
+  const project = fx.newProject({ ahj: "City of Coos Bay", city: "Coos Bay", zip: "97420" });
+  // LEGACY DATA, NOT THE THING UNDER TEST: the door (createPermitCheckTarget) refuses a utility URL
+  // on a permit target today; production 99ea32c3 predates it, so the row is inserted as held.
+  const now = new Date().toISOString();
+  db.run(
+    `INSERT INTO permit_check_targets (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number, check_frequency_days, active, last_checked_at, next_check_at, latest_outcome, latest_status_label, notes, target_type, permit_type, portal_platform, tracking_url, created_at, updated_at)
+     VALUES ('tgt-mf3e-legacy', ?, 'City of Coos Bay', 'PowerClerk', ?, 'APP-111667', '', 7, 1, NULL, NULL, NULL, '', '', 'permit', 'building', 'powerclerk', '', ?, ?)`,
+    [project, PACIFICORP_NM, now, now],
+  );
+  fetches.length = 0;
+  await repo.recordPermitStatusCheck(db, project, { targetId: "tgt-mf3e-legacy", source: "public_url" });
+  assert.deepEqual(fetches, [], `a PERMIT status check fetched the utility portal: ${JSON.stringify(fetches)}`);
+  // MUST-PASS: a permit target on the AHJ's permit portal is fetched by the same call.
+  const ok = fx.newProject({ ahj: "City of Coos Bay", city: "Coos Bay", zip: "97420" });
+  const t = targetFor(ok, { targetType: "permit", portalUrl: ACA_OREGON, applicationNumber: "187-26-000306-STR" });
+  fetches.length = 0;
+  await repo.recordPermitStatusCheck(db, ok, { targetId: t, source: "public_url" });
+  assert.deepEqual(fetches, [ACA_OREGON], `the aca-oregon permit target was not fetched: ${JSON.stringify(fetches)}`);
+});
+
 repo.setStatusCheckSeamsForTests(null);
 finish("portal-host-fit");
