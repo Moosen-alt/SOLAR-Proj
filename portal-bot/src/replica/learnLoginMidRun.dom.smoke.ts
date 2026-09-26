@@ -56,7 +56,7 @@ const signInPicker = (inner: (r: LearnPlanRequest) => Promise<LearnPlanResponse>
   return inner(req);
 };
 
-interface Case { name: string; mode: AccelaLoginMode; start: "info" | "entry"; credential?: typeof CRED; resolver?: "none" | "host"; forceSignIn?: boolean; noProgressBudgetMs?: number }
+interface Case { name: string; mode: AccelaLoginMode; start: "info" | "segInfo" | "entry"; credential?: typeof CRED; resolver?: "none" | "host"; forceSignIn?: boolean; noProgressBudgetMs?: number }
 async function run(c: Case) {
   if (ONLY && !c.name.includes(ONLY)) return null;
   const replica = await startSyntheticReplica({ wizard: buildWizard("accela", "base"), credential: CRED, accelaLogin: c.mode });
@@ -66,7 +66,7 @@ async function run(c: Case) {
   try {
     const r = await learnPortal({
       portalName: `smoke ${c.name}`,
-      portalUrl: c.start === "info" ? `${replica.base}/info` : replica.entryUrl,
+      portalUrl: c.start === "info" ? `${replica.base}/info` : c.start === "segInfo" ? `${replica.base}/CitizenAccess/info` : replica.entryUrl,
       project,
       planner: c.forceSignIn ? signInPicker(inner) : inner,
       credential: c.credential,
@@ -93,14 +93,26 @@ async function run(c: Case) {
   }
 }
 
-// (a) MUST-PASS — the production shape: start on a non-portal page, meet Login.aspx mid-run.
+// (a) MUST-PASS — the production shape: start on a non-portal page, meet Login.aspx mid-run. With
+// no resolver the run's own credential is bound to the start URL's host + first path segment
+// (close-mustfix L7, the backend's rule), so the start page is inside the portal's /CitizenAccess.
 {
-  const x = await run({ name: "a-info-then-login", mode: "normal", start: "info", credential: CRED });
+  const x = await run({ name: "a-info-then-login", mode: "normal", start: "segInfo", credential: CRED });
   if (x) {
   check("(a) MUST-PASS started off-portal: the mid-run login ran ONCE with the stored credential, and the walk then filled the portal", x.logins.length === 1 && x.emptyLogins.length === 0 && x.portalValues.length >= 3,
     `logins=${x.logins.length} empty=${x.emptyLogins.length} values=${x.portalValues.length} stop=${x.r.stopReason} ${x.r.message.slice(0, 200)}`);
   check("(a) the credential appears nowhere in the steps, the message or the trace (bound by name)", !x.leaked);
   check("(a) no filing POST", x.submits === 0);
+  }
+}
+// (a) MUST-EXCLUDE (close-mustfix L7) — the same run started at /info, OUTSIDE the portal's first
+// path segment, with no resolver: the run's own credential is not the login for /CitizenAccess
+// (one Accela host serves every city by that segment) -> stops named, nothing typed.
+{
+  const x = await run({ name: "a-info-other-segment", mode: "normal", start: "info", credential: CRED });
+  if (x) {
+  check("(a) MUST-EXCLUDE the run's own credential is not typed outside its host + first path segment -> login_needed_no_credential, 0 login POSTs",
+    x.r.stopReason === "login_needed_no_credential" && x.logins.length === 0 && !x.leaked, `stop=${x.r.stopReason} logins=${x.logins.length} ${x.r.message.slice(0, 160)}`);
   }
 }
 // (a) MUST-PASS — a resolver bound to the host is asked for the login page's URL.
