@@ -2411,3 +2411,10 @@ input[type=file], .kx-inline-tool-row select, #splitTarget, #inlineSplitTarget {
 
 /* F39 — a modal moves focus to its title on open (tabindex -1): no ring on that programmatic focus. */
 .modal-head h2[tabindex="-1"]:focus { outline: none; box-shadow: none; }
+
+/* F54 (S3) — the Advanced fold at phone width: each label starts its own row ("Tools:" was
+   stranded at a line end) and the dividers become row breaks, so Delete Project sits alone last. */
+@media (max-width: 700px) {
+  .detail-more .step-actions > .actions-label { flex-basis: 100%; }
+  .detail-more .step-actions > .actions-divider { flex-basis: 100%; width: auto; height: 1px; margin: 4px 0; }
+}

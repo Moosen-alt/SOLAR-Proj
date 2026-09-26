@@ -3893,12 +3893,12 @@ function renderSubmitGate() {
               ${ev.named.length ? `<ul class="evidence-list">${ev.named.map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
               ${check.id === "ahj-form-mapping-verified" && (check.status === "blocker" || check.status === "warning") ? `<button type="button" class="secondary" style="font-size:12px;margin-top:4px" onclick="document.querySelector('.stage-accordion[data-stage-index=\\'1\\']')?.setAttribute('open','');document.getElementById('applicationDocs')?.scrollIntoView({behavior:'smooth'})">Go to App Docs → verify forms</button>` : ""}
               <details class="provenance">
-                <summary>${esc(check.ownerRole)} · ${esc(check.source)}</summary>
+                <summary>Owner: ${esc(check.ownerRole)}</summary>
                 <div class="provenance-body">
                   <p><strong>Owner:</strong> ${esc(check.ownerRole)}</p>
                   <p>${esc(check.requirement)}</p>
                   ${ev.rest.length ? `<ul class="evidence-list">${ev.rest.map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : ""}
-                  <p>${esc(check.source)}</p>
+                  <p class="muted">Source record: <span class="mono">${esc(check.source)}</span></p>
                 </div>
               </details>
             </article>`; };
@@ -3923,7 +3923,7 @@ function renderSubmitGate() {
         </ul>
       </article>
       <article class="submit-gate-focus">
-        <div class="item-title"><span>Focus Checks</span>${statusBadge(`${actionChecks.length} open | ${passes.length} passed`)}</div>
+        <div class="item-title"><span>Focus Checks</span>${statusBadge(`${actionChecks.length} open · ${passes.length} passed`)}</div>
         <div class="submit-gate-checks">
           ${actionChecks.length || passes.length ? `
             ${actionChecks.map(checkRow).join("")}
@@ -4801,10 +4801,10 @@ function renderLiveTestReadiness() {
             // COUNT rides in the always-visible summary, and the absence of any
             // evidence is never hidden (see the else branch): a DONE row whose
             // backing is missing must not read as a verified one.
-            ? `<details class="provenance"><summary>${esc(String(evidence.length))} evidence line${evidence.length === 1 ? "" : "s"} · ${esc(item.source)}</summary>
-                 <div class="provenance-body"><ul class="evidence-list">${evidence.map((line) => `<li>${esc(line)}</li>`).join("")}</ul></div>
+            ? `<details class="provenance"><summary>${esc(String(evidence.length))} evidence line${evidence.length === 1 ? "" : "s"}</summary>
+                 <div class="provenance-body"><ul class="evidence-list">${evidence.map((line) => `<li>${esc(line)}</li>`).join("")}</ul><p class="muted">Source record: <span class="mono">${esc(item.source)}</span></p></div>
                </details>`
-            : `<p class="muted readiness-noevidence">No evidence captured yet — nothing on file backs this row. <span class="mono">${esc(item.source)}</span></p>`}
+            : `<p class="muted readiness-noevidence">No evidence captured yet — nothing on file backs this row.</p>`}
         </div>`;
         }).join("")}
       </div>
@@ -4933,7 +4933,7 @@ function timelineEventCard(event) {
         <p class="timeline-meta">${esc(fmtDate(event.occurredAt))}</p>
         ${event.nextAction ? `<p><strong>Next:</strong> ${esc(event.nextAction)}</p>` : ""}
         <details class="provenance">
-          <summary>${esc(owner)} · ${esc(event.source || "source")}</summary>
+          <summary>Owner: ${esc(owner)}</summary>
           <div class="provenance-body">
             <p>${esc(fmtDate(event.occurredAt))} | ${esc(event.actor || "system")} | ${esc(event.source || "source")}</p>
             <p><strong>Owner:</strong> ${esc(owner)}</p>
@@ -5042,8 +5042,7 @@ function renderHistoricalFailures() {
   $("historicalFailures").innerHTML = `
     <article class="item ${missing ? "warning" : "pass"}">
       <div class="item-title"><span>Similar past projects</span>${statusBadge(report.dataConfidence)}</div>
-      <p>${esc(report.summaryLabel)}</p>
-      <p class="muted">${esc((report.matchTags || []).slice(0, 12).join(", "))}</p>
+      <p title="${esc((report.matchTags || []).length ? `Matched on: ${(report.matchTags || []).slice(0, 12).join(", ")}` : "")}">${esc(report.summaryLabel)}</p>
     </article>
     <article class="item info">
       <div class="item-title"><span>Rejections seen on similar past projects</span><span class="muted">${esc(String(rejectionCauses.length))}</span></div>
@@ -5854,8 +5853,7 @@ function renderApplicationDocs() {
     </article>` : ""}
     <div class="app-doc-grid">${(pkg.docs || []).map((doc) => `
       <article class="item ${doc.required ? "info" : "pass"}">
-        <div class="item-title"><span>${esc(doc.title)}</span>${statusBadge(doc.required ? "required" : "optional")}</div>
-        <p class="muted">${esc(doc.fileName)} | ${esc(doc.documentType)}</p>
+        <div class="item-title"><span title="${esc(doc.fileName)}">${esc(doc.title)}</span>${statusBadge(doc.required ? "required" : "optional")}</div>
       </article>
     `).join("")}</div>
   `;
@@ -8167,6 +8165,7 @@ function blankCustomerForm() {
   CUSTOMER_TEXT_FIELDS.forEach((f) => { const el = $("cu_" + f); if (el) el.value = ""; });
   $("cu_leadStage").value = "new_lead";
   $("commLogAddRow").hidden = true;
+  if ($("deleteCustomerBtn")) $("deleteCustomerBtn").hidden = true; // nothing saved to delete yet
   $("commLogList").innerHTML = `<p class="muted">Save the contact first to start logging communication.</p>`;
   customerFormStatus("");
   renderCustomersList();
@@ -8180,6 +8179,7 @@ async function editCustomer(id) {
   CUSTOMER_TEXT_FIELDS.forEach((f) => { const el = $("cu_" + f); if (el) el.value = c[f] || ""; });
   $("cu_leadStage").value = c.leadStage || "new_lead";
   $("commLogAddRow").hidden = false;
+  if ($("deleteCustomerBtn")) $("deleteCustomerBtn").hidden = false;
   customerFormStatus("");
   renderCustomersList();
   await loadCommunications(id);
