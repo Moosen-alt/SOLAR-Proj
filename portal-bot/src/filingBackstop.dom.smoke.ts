@@ -55,7 +55,7 @@ const PAGES: Record<string, string> = {
     <div class="cookie-banner" style="position:fixed;top:0;left:0;right:0;background:#eee;padding:8px;z-index:99"><p>This site uses cookies.</p>
       <button type="button" onclick="setTimeout(function(){fetch('/apply/42',{method:'POST',body:'x=1'}).catch(function(){});},0);this.parentElement.remove()">OK</button></div>`,
   terminalEnter: `<h1>Step 5: Review and Submit</h1><p>Please review your application before submitting.</p>
-    <label for="q">Search records</label><input id="q"
+    <label for="q">Search records</label><input id="q" type="search"
       onkeydown="if(event.key==='Enter'){setTimeout(function(){var f=document.createElement('form');f.method='post';f.action='/apply/42';document.body.appendChild(f);f.submit();},0);}">`,
   scriptFiling: `<h1>Step 3: Contacts</h1><label for="nm">Contact Name</label><input id="nm">
     <form id="hf" method="post" action="/SubmitApplication" style="display:none"><input name="a" value="1"></form>

@@ -3685,7 +3685,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ps = (globalThis as any)[g];
       return ps && typeof ps.enterRefusalInPage === "function" ? ps.enterRefusalInPage(el) : "the page's safety predicates are not installed";
-    }, PORTAL_SAFETY_GLOBAL).catch(() => "the control could not be read") ?? "");
+    }, PORTAL_SAFETY_GLOBAL).catch((e: unknown) => `the control could not be read (${String((e as Error)?.message ?? e).split("\n")[0].slice(0, 100)})`) ?? "");
   }
 
   /**

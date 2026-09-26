@@ -761,10 +761,26 @@ export function portalSafetyFactory() {
     // THAT button and cancels the browser's own implicit submission. The first submit was
     // "Search" and the declared default "Submit Application" on the checker's aspnetDefault
     // fixture — the exact markup WebForms emits, and Accela is WebForms.
-    for (let p: Element | null = el; p; p = p.parentElement) {
-      const code = `${p.getAttribute("onkeypress") || ""} ${p.getAttribute("onkeydown") || ""}`;
-      const m = /WebForm_FireDefaultButton\s*\(\s*event\s*,\s*['"]([^'"]+)['"]/.exec(code);
-      const id = m ? m[1] : (p.getAttribute("data-default-button") || p.getAttribute("data-defaultbutton") || "");
+    //
+    // READ AS THE BROWSER RUNS IT: the handler PROPERTY (String(p.onkeypress)) as well as the
+    // attribute, with any argument name, up through the document and the window. WebForms and
+    // page scripts set it after load — `pnl.onkeypress = function(e){ return
+    // WebForm_FireDefaultButton(e, 'btnFile') }` pointed Enter at a hidden "Submit Application"
+    // that an attribute-only read never saw (close2-safety checker, scriptDefaultHidden).
+    const handlerSource = (n: unknown): string => {
+      const o = n as { onkeypress?: unknown; onkeydown?: unknown; getAttribute?: (a: string) => string | null };
+      let s = "";
+      try { if (typeof o.getAttribute === "function") s += ` ${o.getAttribute("onkeypress") || ""} ${o.getAttribute("onkeydown") || ""}`; } catch { /* unreadable attribute */ }
+      try { if (o.onkeypress) s += ` ${String(o.onkeypress)}`; if (o.onkeydown) s += ` ${String(o.onkeydown)}`; } catch { /* unreadable property */ }
+      return s;
+    };
+    const chain: unknown[] = [];
+    for (let p: Node | null = el; p; p = p.parentNode) chain.push(p);
+    chain.push(globalThis);
+    for (const node of chain) {
+      const p = node as Element;
+      const m = /WebForm_FireDefaultButton\s*\(\s*[\w$.]+\s*,\s*['"]([^'"]+)['"]/.exec(handlerSource(node));
+      const id = m ? m[1] : (typeof p.getAttribute === "function" ? (p.getAttribute("data-default-button") || p.getAttribute("data-defaultbutton") || "") : "");
       if (!id) continue;
       const declared = document.getElementById(id);
       if (!declared) return { label: "", action: "", tagged: false, missingDefault: id.slice(0, 60) };
@@ -807,36 +823,107 @@ export function portalSafetyFactory() {
    *      mid-flow "Continue Application" on a fillable, non-review page stays excused;
    *   3. TERMINAL PAGE: on a page that names itself the review step, Enter in any form submits
    *      that form whatever its action says (checker's reviewNoButton: action /apply/42).
-   * Not in a form, and no declared default: "" (a page script is the network backstop's job).
+   *
+   * CLOSE3 — ENTER IS AN ALLOWLIST, and the scope is everything Enter can reach (two skeptic
+   * passes each found three new shapes a deny rule did not know):
+   *   0. The box must be POSITIVELY identified as a search / autocomplete / login control
+   *      (enterIdentityInPage: role searchbox/combobox, type=search, aria-autocomplete,
+   *      enterkeyhint/inputmode=search, a search landmark, a password form). Anything else —
+   *      "Parcel Number", an unnamed text box — is refused by name.
+   *   2'. The scope is the box's form, or THE PAGE when there is no form (a document keydown can
+   *      map Enter to any control: checker's enterNoForm), minus the page's step navigator.
+   *      SUBMITTERS count even when hidden (a display:none "Submit Application" is still what a
+   *      script-set default clicks: scriptDefaultHidden); custom-element buttons (a tag with "-"
+   *      and type=submit or role=button, read by their light-DOM text: shadowSubmit) and the
+   *      buttons inside open shadow roots count too.
    */
+  const enterIdentityInPage = (el: Element): string => {
+    const attr = (a: string): string => String(el.getAttribute(a) || "").trim().toLowerCase();
+    const role = attr("role");
+    if (role === "searchbox" || role === "combobox") return `role=${role}`;
+    const type = String((el as HTMLInputElement).type || "").toLowerCase();
+    if (el.tagName === "INPUT" && type === "search") return "type=search";
+    const ac = attr("aria-autocomplete");
+    if (ac && ac !== "none") return "aria-autocomplete";
+    if (attr("enterkeyhint") === "search" || attr("inputmode") === "search") return "a search keyboard hint";
+    if (el.closest && el.closest("[role=search], search")) return "a search landmark";
+    const form = ((el as HTMLInputElement).form || (el.closest ? el.closest("form") : null)) as HTMLFormElement | null;
+    if (form && el.tagName === "INPUT" && /^(text|email|password|tel)$/.test(type || "text") && form.querySelector("input[type=password]")) return "a login form";
+    return "";
+  };
+
   const enterRefusalInPage = (el: Element | null | undefined): string => {
     if (!el) return "the box could not be read";
+    const clean = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
     const own = implicitSubmitRefusalInPage(el);
     if (own) return own;
+    if (!enterIdentityInPage(el)) {
+      const name = clean(controlLabelInPage(el)).slice(0, 40) || "(unlabelled box)";
+      return `Enter is pressed only in a positively identified search, autocomplete or login box (role searchbox/combobox, type=search, aria-autocomplete, a search landmark, a password form) — "${name}" is none of these`;
+    }
     const form = ((el as HTMLInputElement).form || (el.closest ? el.closest("form") : null)) as HTMLFormElement | null;
-    if (!form) return "";
     const reviewPage = reviewPageInPage();
-    if (reviewPage === true) return "this page names itself the review step — Enter in its form would submit it";
+    if (form && reviewPage === true) return "this page names itself the review step — Enter in its form would submit it";
     const readOnlyPage = readOnlyPageInPage();
     const ctx: ControlContext = { reviewPage: reviewPage === false ? false : undefined, readOnlyPage };
+    const scope: ParentNode = form || document;
+    const where = form ? "form" : "page";
     const visible = (c: Element): boolean => {
       const r = c.getBoundingClientRect();
       const cs = getComputedStyle(c);
       return r.width > 1 && r.height > 1 && cs.display !== "none" && cs.visibility !== "hidden";
     };
+    // The page's step navigator is not something Enter reaches ("Review & Submit" in a step bar).
+    const inNavigator = (c: Element): boolean => !form && !!c.closest && !!c.closest("nav, [role=navigation], [role=tablist]");
+    const labelOf = (c: Element): string => clean(controlLabelInPage(c) || (c as HTMLElement).innerText || (c as HTMLInputElement).value || c.textContent || "");
+    const judge = (label: string, what = ""): string => {
+      if (!label) return "";
+      if (isPayFee(label)) return `the ${where} also holds${what} "${label.slice(0, 50)}", which pays a fee — a page script can map Enter to it`;
+      if (isSubmitIntent(label, ctx)) return `the ${where} also holds${what} "${label.slice(0, 50)}", which is submit-worded — a page script can map Enter to it`;
+      return "";
+    };
+    // Native and role controls. A SUBMITTER counts hidden; any other control counts when visible.
     const candidates = new Set<Element>();
-    for (const c of Array.from(form.elements)) candidates.add(c);
-    for (const c of Array.from(form.querySelectorAll("button, input[type=submit], input[type=image], input[type=button], [role=button], a[href*='doPostBack' i], a[onclick*='doPostBack' i], a[href*='DoPostBack']"))) candidates.add(c);
+    if (form) for (const c of Array.from(form.elements)) candidates.add(c);
+    for (const c of Array.from(scope.querySelectorAll("button, input[type=submit], input[type=image], input[type=button], [role=button], a[href*='doPostBack' i], a[onclick*='doPostBack' i], a[href*='DoPostBack']"))) candidates.add(c);
     for (const c of Array.from(candidates)) {
       if (c === el) continue;
       const tag = c.tagName;
       const type = String(c.getAttribute("type") || "").toLowerCase();
-      const isControl = tag === "BUTTON" || (tag === "INPUT" && /^(submit|image|button)$/.test(type)) || c.getAttribute("role") === "button" || tag === "A";
-      if (!isControl || !visible(c)) continue;
-      const label = String(controlLabelInPage(c) || (c as HTMLElement).innerText || (c as HTMLInputElement).value || "").replace(/\s+/g, " ").trim();
-      if (!label) continue;
-      if (isPayFee(label)) return `the form also holds "${label.slice(0, 50)}", which pays a fee — a page script can map Enter to it`;
-      if (isSubmitIntent(label, ctx)) return `the form also holds "${label.slice(0, 50)}", which is submit-worded — a page script can map Enter to it`;
+      const submitter = (tag === "BUTTON" && (type === "" || type === "submit")) || (tag === "INPUT" && /^(submit|image)$/.test(type));
+      const isControl = submitter || tag === "BUTTON" || (tag === "INPUT" && type === "button") || c.getAttribute("role") === "button" || tag === "A";
+      if (!isControl || (!submitter && !visible(c)) || inNavigator(c)) continue;
+      const why = judge(labelOf(c), submitter && !visible(c) ? " the hidden submitter" : "");
+      if (why) return why;
+    }
+    // Custom-element buttons and open shadow roots.
+    const all = Array.from(scope.querySelectorAll("*"));
+    for (const c of all) {
+      if (!c.tagName.includes("-") || inNavigator(c)) continue;
+      const type = String(c.getAttribute("type") || "").toLowerCase();
+      const role = String(c.getAttribute("role") || "").toLowerCase();
+      if (type !== "submit" && role !== "button") continue;
+      const why = judge(labelOf(c), " the custom-element button");
+      if (why) return why;
+    }
+    const walkShadow = (root: ShadowRoot, host: Element, depth: number): string => {
+      for (const s of Array.from(root.querySelectorAll("button, input[type=submit], input[type=image], input[type=button], [role=button]"))) {
+        const why = judge(labelOf(s) || clean(host.textContent), ", inside a shadow root,");
+        if (why) return why;
+      }
+      if (depth < 4) {
+        for (const e of Array.from(root.querySelectorAll("*"))) {
+          const sr = (e as Element).shadowRoot;
+          if (sr) { const why = walkShadow(sr, e, depth + 1); if (why) return why; }
+        }
+      }
+      return "";
+    };
+    for (const h of all) {
+      const sr = h.shadowRoot;
+      if (!sr || inNavigator(h)) continue;
+      const why = walkShadow(sr, h, 0);
+      if (why) return why;
     }
     return "";
   };
@@ -845,6 +932,7 @@ export function portalSafetyFactory() {
     dismissalRefusalInPage,
     implicitSubmitInPage,
     implicitSubmitRefusalInPage,
+    enterIdentityInPage,
     enterRefusalInPage,
     submitsOrNavigatesInPage,
     isSubmitOrPayRequestUrl,

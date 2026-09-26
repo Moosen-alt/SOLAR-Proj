@@ -89,6 +89,75 @@ const PAGES: Record<string, string> = {
   login: `<h1>Sign in to your account</h1>
     <form method="post" action="/Account/Login"><label for="q">User Name</label><input id="q" name="q">
       <label for="pw">Password</label><input id="pw" name="pw" type="password"><button type="submit">Sign In</button></form>`,
+  // ---- CLOSE3: ENTER IS AN ALLOWLIST. The bot presses Enter only in a POSITIVELY identified
+  // search / autocomplete / login box (role searchbox/combobox, type=search, aria-autocomplete,
+  // enterkeyhint/inputmode=search, a search landmark, a password form) whose form — or the page,
+  // with no form — holds no submit- or pay-worded control, counting hidden submitters, a
+  // script-set default button (the onkeypress PROPERTY), custom-element buttons and open shadow
+  // roots. "Parcel Number" boxes (search, accelaContinue, jsKeydown above) are now refused BY NAME.
+  // MUST-PASS: the same shapes with a positively identified box.
+  searchBox: `<h1>Step 2: Project Details</h1><form method="post" action="/other"><label for="q">Parcel Number</label><input id="q" name="q" type="search">
+    <button type="submit" formaction="/search">Search</button></form>`,
+  accelaContinueSearch: `<h1>Step 1: Work Location</h1>
+    <script>function __doPostBack(t, a) { var f = document.forms[0]; f.__EVENTTARGET.value = t; f.submit(); }</script>
+    <form method="post" action="/Cap/CapEdit.aspx"><input type="hidden" name="__EVENTTARGET">
+      <label for="st">Street Name</label><input id="st" name="st">
+      <label for="q">Parcel Number</label><input id="q" name="q" role="searchbox"> <input type="submit" value="Search" formaction="/search">
+      <a id="cont" href="javascript:__doPostBack('ctl00$PlaceHolderMain$actionBarBottom$btnContinue','')">Continue Application &raquo;</a>
+    </form>`,
+  noFormSearchOk: `<h1>Property Search</h1><label for="q">Parcel Number</label>
+    <input id="q" type="search" onkeydown="if(event.key==='Enter'){fetch('/search',{method:'POST',body:'q=1'});}">
+    <button type="button">Search</button> <button type="button">Next</button>`,
+  // THE CHECKER'S SHAPES (skepticNew.probe.ts, verbatim): each FILED and reported ok=true.
+  enterNoForm: `<h1>Step 3: Project Details</h1><label for="q">Parcel Number</label><input id="q" name="q">
+    <button type="button" id="sb">Submit Application</button>
+    <script>document.getElementById('sb').addEventListener('click', function(){ fetch('/api/apply/42', {method:'POST', body:'x=1'}); });
+      document.addEventListener('keydown', function(e){ if (e.key === 'Enter') document.getElementById('sb').click(); });</script>`,
+  scriptDefaultHidden: `<h1>Step 2: Project Details</h1>${FIRE_DEFAULT}<form method="post" action="/Cap/CapEdit.aspx"><div id="pnl">
+    <label for="q">Parcel Number</label><input id="q" name="q">
+    <input type="submit" name="btnSearch" value="Search">
+    <input type="submit" id="btnFile" name="btnFile" value="Submit Application" style="display:none"></div></form>
+    <script>document.getElementById('pnl').onkeypress = function(e){ return WebForm_FireDefaultButton(e, 'btnFile'); };</script>`,
+  shadowSubmit: `<h1>Step 3: Project Details</h1><form method="post" action="/apply/42"><label for="q">Parcel Number</label><input id="q" name="q">
+    <x-button type="submit">Submit Application</x-button></form>
+    <script>customElements.define('x-button', class extends HTMLElement { constructor(){ super(); const r = this.attachShadow({mode:'open'});
+      r.innerHTML = '<button part="b"><slot></slot></button>'; r.querySelector('button').addEventListener('click', () => this.closest('form').requestSubmit()); } });</script>`,
+  // ONE CELL PER SCOPE RULE, each with a POSITIVELY identified box so only that rule can refuse:
+  // the visible conservative rule, the page scope (no form), a hidden submitter, a default button
+  // set by script as a PROPERTY (pointing into another form), a custom-element button, an open
+  // shadow root.
+  jsKeydownSearch: `<h1>Step 2: Project Details</h1>
+    <form method="post" action="/other"><label for="q">Parcel Number</label>
+      <input id="q" name="q" type="search" onkeydown="if(event.key==='Enter'){event.preventDefault();this.form.requestSubmit(document.getElementById('f'));}">
+      <button type="submit" formaction="/search">Search</button><button id="f" type="submit" formaction="/submit">Submit Application</button></form>`,
+  noFormFiles: `<h1>Step 3: Project Details</h1><label for="q">Parcel Number</label><input id="q" type="search">
+    <button type="button" id="sb">Submit Application</button>
+    <script>document.getElementById('sb').addEventListener('click', function(){ fetch('/api/apply/42', {method:'POST', body:'x=1'}); });
+      document.addEventListener('keydown', function(e){ if (e.key === 'Enter') document.getElementById('sb').click(); });</script>`,
+  hiddenSubmitter: `<h1>Step 2: Project Details</h1>
+    <form method="post" action="/other"><label for="q">Parcel Number</label>
+      <input id="q" name="q" type="search" onkeydown="if(event.key==='Enter'){event.preventDefault();this.form.requestSubmit(document.getElementById('f'));}">
+      <button type="submit" formaction="/search">Search</button><button id="f" type="submit" formaction="/submit" style="display:none">Submit Application</button></form>`,
+  propDefaultOtherForm: `<h1>Step 2: Project Details</h1>${FIRE_DEFAULT}<form method="post" action="/other"><div id="pnl">
+    <label for="q">Parcel Number</label><input id="q" name="q" type="search">
+    <input type="submit" name="btnSearch" value="Search" formaction="/search"></div></form>
+    <form method="post" action="/submit" style="display:none"><input type="submit" id="btnFile" name="btnFile" value="Submit Application"></form>
+    <script>document.getElementById('pnl').onkeypress = function(e){ return WebForm_FireDefaultButton(e, 'btnFile'); };</script>`,
+  customElementSubmit: `<h1>Step 3: Project Details</h1><form method="post" action="/apply/42"><label for="q">Parcel Number</label><input id="q" name="q" type="search">
+    <x-button type="submit">Submit Application</x-button></form>
+    <script>customElements.define('x-button', class extends HTMLElement { constructor(){ super(); const r = this.attachShadow({mode:'open'});
+      r.innerHTML = '<button part="b"><slot></slot></button>'; r.querySelector('button').addEventListener('click', () => this.closest('form').requestSubmit()); } });</script>`,
+  shadowRootSubmit: `<h1>Step 3: Project Details</h1><form method="post" action="/other"><label for="q">Parcel Number</label>
+      <input id="q" name="q" type="search" onkeydown="if(event.key==='Enter'){event.preventDefault();document.querySelector('x-actions').shadowRoot.querySelector('button').click();}">
+      <button type="submit" formaction="/search">Search</button><x-actions></x-actions></form>
+    <script>customElements.define('x-actions', class extends HTMLElement { constructor(){ super(); const r = this.attachShadow({mode:'open'});
+      r.innerHTML = '<button type="button">Submit Application</button>'; r.querySelector('button').addEventListener('click', () => fetch('/api/apply/42', {method:'POST', body:'x=1'})); } });</script>`,
+};
+// The rule each close3 MUST-EXCLUDE cell must be refused BY.
+const REASON: Record<string, RegExp> = {
+  search: /positively identified/, accelaContinue: /positively identified/, enterNoForm: /positively identified/, shadowSubmit: /positively identified/,
+  jsKeydownSearch: /form also holds "Submit Application"/, noFormFiles: /page also holds "Submit Application"/, hiddenSubmitter: /form also holds the hidden submitter "Submit Application"/,
+  propDefaultOtherForm: /default button "Submit Application"/, customElementSubmit: /form also holds the custom-element button "Submit Application"/, shadowRootSubmit: /form also holds, inside a shadow root, "Submit Application"/,
 };
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -134,8 +203,8 @@ const recipe = (m: string): PortalRecipe => ({
 
 const browser = await chromium.launch();
 try {
-  const MUST_PASS_POSTS: Record<string, string> = { search: "/search", accelaContinue: "/search", login: "/Account/Login" };
-  for (const m of [...Object.keys(BUTTONS), ...Object.keys(PAGES)]) {
+  const MUST_PASS_POSTS: Record<string, string> = { searchBox: "/search", accelaContinueSearch: "/search", noFormSearchOk: "/search", login: "/Account/Login" };
+  for (const m of [...Object.keys(BUTTONS), ...Object.keys(PAGES)].filter((k) => !process.env.SMOKE_ONLY || process.env.SMOKE_ONLY.split(",").includes(k))) {
     const ctx = await browser.newContext();
     await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
     const page = await ctx.newPage();
@@ -146,6 +215,7 @@ try {
     let msg = "";
     try { const r = await adapter.fillApplication({} as ProjectRecord); ok = r.ok; msg = String(r.message).slice(0, 200); }
     catch (e) { msg = `threw ${String(e).slice(0, 160)}`; }
+    await page.waitForTimeout(300); // a script's fetch lands
     await ctx.close().catch(() => null);
     const refusals = adapter.guardRefusals.join(" | ");
     if (MUST_PASS_POSTS[m]) {
@@ -154,6 +224,7 @@ try {
       check(`MUST-EXCLUDE ${m}: no POST`, posts.length === 0, `POSTs=[${posts.join(",")}] ${msg}`);
       check(`MUST-EXCLUDE ${m}: a named refusal, and the run does not report success`,
         !ok && /(Enter|default button)/.test(refusals) && /replay safety gate refused/.test(msg), `ok=${ok} refusals=${refusals || "(none)"} msg=${msg}`);
+      if (REASON[m]) check(`MUST-EXCLUDE ${m}: refused by its own rule (${REASON[m].source})`, REASON[m].test(refusals), `refusals=${refusals || "(none)"}`);
     }
   }
 
