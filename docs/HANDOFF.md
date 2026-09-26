@@ -120,6 +120,12 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   division) refuses the borrow (named reason) — an AHJ with no lookup answer no longer borrows. The lookup's kVA tiers land with
   their PRINTED lower bounds (5.01, 15.01); a recorded fee-tier box rebinds to this project's tier by numeric bounds, and a
   borrowed box matching none of this project's tiers types blank (never the donor's quantity).
+- Rule adjusted (operator authorization 2026-09-25, close M3): a state surcharge may now land on a fee schedule WITHOUT a
+  fetched-document ledger when the per-job lookup's accepted fee QUOTE itself prints "state surcharge" and its percentage, the
+  percentage is within the state's cited maximum (STATE_PERMIT_RULES.surcharge, OR 12% per ORS 455.210) and any itemised
+  surcharge line is that percentage of the base (saveFeeSchedule opt citedStateSurcharge; basis prose alone never applies one).
+  A permit quote in a surcharge state whose priced line carries none now says "PLUS the state surcharge on the <agency>
+  <discipline> permit (up to 12%) — NOT included"; Jefferson-shaped result: $172.53 + that note on structural (truth $180.60).
 - KNOWLEDGE PRE-LOAD SPEND (prospect states): only AFTER the live research-accuracy evals pass
   (`.probe/jurisdiction/`): state layers for FL/TX/UT/CA (~$2) + the top 5 AHJs/utilities per state from
   `.probe/prospects/PREP-PLAN.md` §6 (~20 entities, ~$50), seeded, operator spot-verifies. Everything else is researched

@@ -46,6 +46,7 @@ import { text } from "./json";
 import { nowIso } from "./time";
 import { logger } from "./logger";
 import { batteryStatus, SERVICE_FEEDER_200A_LABEL, SERVICE_FEEDER_CHARGE_KIND } from "./batteryServiceFeeder";
+import { stateRulesFor } from "./permitProcess";
 
 type Row = Record<string, unknown>;
 
@@ -220,6 +221,10 @@ interface ScheduleFee {
    *  summed nowhere here, so it is read defensively like every other field the
    *  producer hands over. */
   charges: FeeChargeBreakdown[];
+  /** The priced permit lines that carry NO state surcharge ("Marion County structural"), read off
+   *  the producer's per-line split. Empty when every line carries one, or when the filing already
+   *  holds a surcharge charge of its own. See stateSurchargeNotice. */
+  surchargeGaps: string[];
 }
 
 const PAYMENT_METHODS: FeePaymentMethod[] = ["portal", "mailed_check", "none", "unknown"];
@@ -337,7 +342,40 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
     matchedName: text(r.matchedName).trim().slice(0, 200),
     reason: text(r.reason).trim().slice(0, 400),
     charges: normalizeCharges(r.charges),
+    surchargeGaps: surchargeGapsOf(r),
   };
+}
+
+/** Permit lines priced WITHOUT a state surcharge. A line whose own label says it already includes
+ *  surcharges, and a filing that holds any surcharge charge as its own item, are not gaps. */
+function surchargeGapsOf(r: Record<string, unknown>): string[] {
+  const lines = Array.isArray(r.lines) ? (r.lines as Array<Record<string, unknown>>) : [];
+  const charges = Array.isArray(r.charges) ? (r.charges as Array<Record<string, unknown>>) : [];
+  if (charges.some((c) => c && c.partOfLineFee !== true && /surcharge/i.test(`${text(c.kind)} ${text(c.label)}`))) return [];
+  const out: string[] = [];
+  for (const l of lines) {
+    if (!l || typeof l !== "object") continue;
+    const fee = Number(l.feeUsd);
+    if (l.feeUsd == null || !Number.isFinite(fee) || fee <= 0) continue;
+    if (l.stateSurchargeUsd != null) continue;
+    const lineCharges = Array.isArray(l.charges) ? (l.charges as Array<Record<string, unknown>>) : [];
+    if (lineCharges.some((c) => /surcharge/i.test(`${text(c?.kind)} ${text(c?.label)}`))) continue;
+    if (/\binclud(?:es?|ing)\b[^.;]{0,50}\bsurcharges?\b|\bsurcharges?\b[^.;]{0,20}\bincluded\b/i.test(text(l.bracketLabel))) continue;
+    out.push([text(l.authority).trim(), text(l.discipline).trim()].filter(Boolean).join(" ") || "permit");
+  }
+  return out.slice(0, 6);
+}
+
+/** THE STATE SURCHARGE THE QUOTE DOES NOT INCLUDE (close M3). A state that levies a surcharge on
+ *  permit fees (a cited STATE_PERMIT_RULES entry — Oregon's ORS 455.210, at most 12%) and a quoted
+ *  permit line that carries none: the amount is short by up to that percentage, and it must say so
+ *  instead of reading as a complete price. "" when nothing is missing. */
+export function stateSurchargeNotice(state: string, gaps: string[]): string {
+  if (!gaps.length) return "";
+  const rule = stateRulesFor(state).surcharge;
+  if (!rule || typeof rule.value !== "number") return "";
+  const pct = Math.round(rule.value * 1000) / 10;
+  return ` PLUS the state surcharge on the ${gaps.join(" and ")} permit${gaps.length > 1 ? "s" : ""} (up to ${pct}% of the permit fee — ${rule.quote.split(":")[0]}) — NOT included in this amount; confirm the surcharge with the agency.`;
 }
 
 /** The published schedule's answer for THIS project, or null if no schedule is
@@ -491,7 +529,8 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
       permitFeeBasis = `${who}'s published fee schedule${schedule.bracketLabel ? `, line "${schedule.bracketLabel}"` : ""}`
         + `${vouching}.`
         + `${schedule.bracketQuote ? ` Published as: "${schedule.bracketQuote}".` : ""}`
-        + `${schedule.sourceUrl ? ` ${schedule.sourceUrl}` : ""}`;
+        + `${schedule.sourceUrl ? ` ${schedule.sourceUrl}` : ""}`
+        + (track === "permit" ? stateSurchargeNotice(project.state, schedule.surchargeGaps) : "");
     } else {
       const est = estimatedFee(db, project, track);
       permitFeeUsd = est.fee;

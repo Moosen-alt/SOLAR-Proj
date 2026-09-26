@@ -23,7 +23,7 @@
 import type { CitedFact, LLMProvider, PermitFeeAnswer, PermitProcessDiscipline, PermitProcessLookup, PermitProcessPermitAnswer } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { isInformationalPageUrl, isPermitPlatformUrl, portalHostOf } from "./portalChannel";
-import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup } from "./permitProcess";
+import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor } from "./permitProcess";
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
 import { parseBracketRow } from "./pdfTables";
@@ -323,6 +323,35 @@ export function printedMinKva(label: string | undefined): number | null {
   }
 }
 
+const SURCHARGE_WORDS = /\bsurcharge/i;
+/**
+ * A STATE SURCHARGE THE AGENCY'S OWN SOURCE STATES (close M3: Marion County's E-01 prints "State
+ * surcharge (12% of permit fee)"; the answer held $94 + $11.28, the schedule dropped it, and the
+ * cited STATE_PERMIT_RULES surcharge was read nowhere). Applied only when ALL hold:
+ *   - the state has a cited surcharge rule, and the percentage is within its maximum;
+ *   - the fee's QUOTE (the words that passed acceptCited) itself prints a state surcharge AND its
+ *     percentage — the basis prose and the line labels alone never apply one;
+ *   - a surcharge line the answer itemised, if any, is that percentage of the base (±$0.02).
+ * Anything short of that is left to the quote's "state surcharge not included" note.
+ */
+export function citedStateSurcharge(state: string, fee: CitedFact<PermitFeeAnswer>): { percent: number; quote: string; sourceUrl: string } | null {
+  const rule = stateRulesFor(state).surcharge;
+  const max = typeof rule?.value === "number" ? rule.value * 100 : null;
+  if (max == null || !fee.value) return null;
+  const quote = str(fee.quote);
+  const m = /state\s+surcharge[^.;$]{0,40}?(\d+(?:\.\d+)?)\s*%|(\d+(?:\.\d+)?)\s*%[^.;$]{0,20}?state\s+surcharge/i.exec(quote);
+  if (!m) return null;
+  const percent = Number(m[1] ?? m[2]);
+  if (!Number.isFinite(percent) || percent <= 0 || percent > max + 1e-9) return null;
+  const lines = fee.value.lines ?? [];
+  const sLine = lines.find((l) => SURCHARGE_WORDS.test(l.label ?? ""));
+  if (sLine && typeof sLine.amountUsd === "number") {
+    const base = lines.filter((l) => l !== sLine && !SURCHARGE_WORDS.test(l.label ?? "")).reduce((sum, l) => sum + (typeof l.amountUsd === "number" ? l.amountUsd : 0), 0);
+    if (!(base > 0) || Math.abs(base * percent / 100 - sLine.amountUsd) > 0.02) return null;
+  }
+  return { percent, quote: m[0].trim(), sourceUrl: fee.sourceUrl };
+}
+
 /**
  * THE LOOKUP'S FEES LAND THROUGH THE FEE WRITE PATH. When a DIFFERENT agency issues the permits
  * (a county for a city), the AHJ's rows DELEGATE to that agency (collectedByProfileKey, sourced
@@ -353,13 +382,20 @@ export function applyLookupFees(db: AppDb, lookup: PermitProcessLookup): Array<{
     // as 5 made this project's bracket keys (feeBracketQuantity:5-15) differ from the SAME row as a
     // recorded recipe names it (5.01-15), so a borrowed recipe's recorded quantity replayed
     // unbound. The previous row's upper bound is only the fallback for a label that prints none.
+    const surcharge = citedStateSurcharge(lookup.state, fee);
+    // With a surcharge applied by the evaluator, a flat fee's bracket is the BASE line (the
+    // surcharge's own line and a total that already includes it would count it twice).
+    const baseLine = fee.value.lines.find((l) => !SURCHARGE_WORDS.test(l.label ?? "") && typeof l.amountUsd === "number");
     const brackets = tiers.length
       ? tiers.map((t, i) => ({ minKw: printedMinKva(t.label) ?? (i === 0 ? 0 : tiers[i - 1].maxKva), maxKw: t.maxKva, feeUsd: t.amountUsd, label: t.label || `up to ${t.maxKva} kVA` }))
-      : [{ feeUsd: fee.value.amountUsd ?? fee.value.lines[0]?.amountUsd ?? NaN, label: fee.value.lines[0]?.label || fee.value.basis || `${permit.label} fee` }];
+      : [{
+        feeUsd: (surcharge && baseLine ? baseLine.amountUsd : null) ?? fee.value.amountUsd ?? fee.value.lines[0]?.amountUsd ?? NaN,
+        label: (surcharge && baseLine ? baseLine.label : "") || fee.value.lines[0]?.label || fee.value.basis || `${permit.label} fee`,
+      }];
     const r = saveFeeSchedule(db, { state: lookup.state, ahj: owner, track: "permit", discipline: permit.discipline }, {
       found: true, reason: "", basis: tiers.length ? "system_kw" : "flat", brackets, sourceUrl: fee.sourceUrl, sourceQuote: fee.quote, sourceKind: "official",
       notes: `Per-job lookup (seeded): ${fee.value.basis}`.slice(0, 400),
-    });
+    }, surcharge ? { citedStateSurcharge: surcharge } : {});
     out.push({ discipline: permit.discipline, saved: r.saved, reason: r.reason ?? "" });
   }
   return out;

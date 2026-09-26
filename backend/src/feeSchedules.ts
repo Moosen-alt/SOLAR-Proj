@@ -957,7 +957,15 @@ export function saveFeeSchedule(
   db: AppDb,
   input: { state: string; ahj?: string; utility?: string; track: FeeTrack; discipline?: string },
   finding: FeeScheduleFinding,
-  opts: { corroborateAgainst?: FeeDocumentLedger } = {},
+  opts: {
+    corroborateAgainst?: FeeDocumentLedger;
+    /** A STATE SURCHARGE THE AGENCY'S OWN CITED SOURCE STATES (close M3). Passed only by the per-job
+     *  lookup's fee landing (permitProcessLookup.applyLookupFees), and only when the quote that passed
+     *  acceptCited itself prints the percentage and that percentage is within the state's cited
+     *  maximum (permitProcess.STATE_PERMIT_RULES.surcharge). Attached to every bracket whose label
+     *  does not already include surcharges; the read path keeps the 12% form it has always kept. */
+    citedStateSurcharge?: { percent: number; quote: string; sourceUrl: string };
+  } = {},
 ): FeeScheduleResearchOutcome {
   const track = input.track;
   const profileKey = feeScheduleProfileKey(input, track);
@@ -977,6 +985,14 @@ export function saveFeeSchedule(
   const brackets = opts.corroborateAgainst
     ? normalizeBrackets(corroborateBrackets({...finding, discipline}, opts.corroborateAgainst), { trusted: true })
     : normalizeBrackets(finding.brackets || [], {});
+  const cited = opts.citedStateSurcharge;
+  if (cited && cited.percent === 12 && clean(cited.quote) && /^https?:\/\//i.test(clean(cited.sourceUrl))) {
+    for (const b of brackets) {
+      if (!b.stateSurcharge && !feeIncludesSurcharges(`${b.label ?? ""}`)) {
+        b.stateSurcharge = { percent: cited.percent, quote: clean(cited.quote).slice(0, 300), sourceUrl: clean(cited.sourceUrl) };
+      }
+    }
+  }
   const sourceUrl = clean(finding.sourceUrl);
   const sourceQuote = clean(finding.sourceQuote);
   const status = finding.status === "conflicted" ? "conflicted" : "ok";
