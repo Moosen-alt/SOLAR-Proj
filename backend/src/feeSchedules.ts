@@ -953,6 +953,69 @@ function findingSummary(finding: FeeScheduleFinding): string {
  *  the cited source and found this number printed in it", and a caller that
  *  cannot produce the bytes it read has not done that. It is not a refusal — the
  *  fee still saves, as seeded, simply uncorroborated. */
+const US_STATE_NAMES = new Set([
+  "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware", "florida", "georgia", "hawaii",
+  "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan",
+  "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico", "new york",
+  "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina", "south dakota",
+  "tennessee", "texas", "utah", "vermont", "virginia", "washington", "west virginia", "wisconsin", "wyoming",
+]);
+
+/** The name that identifies a municipality in its own documents: "Corry City" -> "corry", "Town of
+ *  Venus" -> "venus", "Northern Cambria Borough" -> "northern cambria". A core that is a state's
+ *  name keeps its word ("Iowa City" stays "iowa city"; "Iowa" would match every Iowa document). */
+export function municipalityCore(ahj: string): string {
+  const full = String(ahj || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  const core = full
+    .replace(/^(?:the\s+)?(?:city|town|township|borough|village|county|municipality)\s+of\s+/, "")
+    .replace(/\s+(?:city|town|township|twp|borough|boro|village|county)$/, "")
+    .trim();
+  return US_STATE_NAMES.has(core) ? full.replace(/^(?:the\s+)?(?:city|town|township|borough|village|county)\s+of\s+/, "") : core;
+}
+
+/** A state government host (a state-issued schedule — New Mexico's CID permits for its counties). */
+function stateGovernmentHost(host: string, state: string): boolean {
+  const st = String(state || "").trim().toLowerCase();
+  if (!/^[a-z]{2}$/.test(st)) return false;
+  return host === `${st}.gov` || host.endsWith(`.${st}.gov`) || host.includes(`.state.${st}.us`);
+}
+
+/**
+ * Refusal reason when a PERMIT schedule's source never names the AHJ it is being saved for — the
+ * document retrieved from the cited URL (the ledger), else the URL and the quote. "" = acceptable.
+ * Exempt: a state government host (its schedule governs the state's jurisdictions).
+ */
+export function foreignMunicipalitySource(
+  input: { state: string; ahj?: string; track: FeeTrack },
+  sourceUrl: string,
+  sourceQuote: string,
+  finding: Pick<FeeScheduleFinding, "sources">,
+  ledger?: FeeDocumentLedger,
+): string {
+  if (input.track !== "permit") return "";
+  const core = municipalityCore(clean(input.ahj));
+  if (core.length < 3) return "";
+  let host = "";
+  let urlText = "";
+  try { const u = new URL(sourceUrl); host = u.hostname.toLowerCase(); urlText = decodeURIComponent(`${u.hostname}${u.pathname}`).toLowerCase(); } catch { urlText = sourceUrl.toLowerCase(); }
+  if (host && stateGovernmentHost(host, input.state)) return "";
+  const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const names = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").includes(core) || squash(s).includes(squash(core));
+  if (names(urlText) || names(sourceQuote)) return "";
+  for (const s of finding.sources ?? []) if (names(`${s.name ?? ""} ${s.sourceUrl ?? ""} ${s.sourceQuote ?? ""}`)) return "";
+  // A REFUSAL NEEDS POSITIVE EVIDENCE OF ANOTHER MUNICIPALITY: a host that is itself a named
+  // township / borough / city-of / town-of / village-of site — hfxtwppa.gov — and nothing (the URL,
+  // the quote, the finding's sources, the document we retrieved from that URL) naming this AHJ. A
+  // neutral host (icgov.org, a CDN, a code library) is never refused on silence: filters fail both
+  // ways, and a real schedule lost is a fee reported unknown.
+  if (!/(?:twp|township|borough|boro|cityof|townof|villageof|countyof)/.test(host.replace(/[^a-z]/g, ""))) return "";
+  const sameDoc = (u: string) => u === sourceUrl || u.replace(/[#?].*$/, "") === sourceUrl.replace(/[#?].*$/, "");
+  const docIdx = ledger ? ledger.evidence.findIndex((e) => sameDoc(e.url)) : -1;
+  if (docIdx >= 0 && names(String(ledger!.corpus[docIdx] ?? ""))) return "";
+  return `Refused: the cited schedule (${host || sourceUrl}) never names ${clean(input.ahj)} — not in its address, its quote, or ${docIdx >= 0 ? "the document we retrieved" : "its sources"}. `
+    + `It may be another municipality's schedule (Halifax Township's was cited for Corry). Find ${clean(input.ahj)}'s own schedule, or record the agency that collects its fees as a delegation.`;
+}
+
 export function saveFeeSchedule(
   db: AppDb,
   input: { state: string; ahj?: string; utility?: string; track: FeeTrack; discipline?: string },
@@ -1008,6 +1071,14 @@ export function saveFeeSchedule(
     const reason = `Refused: a fee needs both a source URL and the sentence it came from (url=${sourceUrl ? "yes" : "no"}, quote=${sourceQuote ? "yes" : "no"}).`;
     logger.warn("fees", "fee schedule refused — unsourced", { profileKey, track });
     return { ...base, found: false, reason, saved: false, refusedVerified: false, refusedConflicted: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
+  }
+  // ANOTHER MUNICIPALITY'S SCHEDULE IS NOT THIS ONE'S. New-AHJ e2e (2026-09-26): the stored fee for
+  // Corry PA ("Residential Solar Panels 1.5% of cost, min $200, max $1,000") came from hfxtwppa.gov —
+  // Halifax Township, Dauphin County. A delegation is exempt (sourced by the agency answer).
+  const foreign = collectedBy ? "" : foreignMunicipalitySource(input, sourceUrl, sourceQuote, finding, opts.corroborateAgainst);
+  if (foreign) {
+    logger.warn("fees", "fee schedule refused — another municipality's source", { profileKey, track, sourceUrl });
+    return { ...base, found: false, reason: foreign, saved: false, refusedVerified: false, refusedConflicted: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
   }
   // A DELEGATION IS THE ONE ROW WITH NOTHING TO EVALUATE, and it still had to
   // pass the sourcing rule above: naming another authority is a claim about the
@@ -1925,6 +1996,12 @@ THE LABEL IS THE PRINTED ROW, NOT A SENTENCE ABOUT IT — this is where real cha
 MANDATORY CHARGES FIRST, and mark "conditional" honestly. List the ones this jurisdiction levies on EVERY filing of this kind before the ones that apply only sometimes. The distinction is arithmetic, not emphasis: a charge marked conditional cannot be priced until a person confirms it applies, so a mandatory charge mis-marked conditional leaves every quote for this jurisdiction UNRESOLVED, and a conditional one mis-marked mandatory over-charges a real customer.
 
 THIS DOES NOT WIDEN WHICH PERMIT YOU ARE PRICING. The discipline scoping above still holds exactly as it did: "brackets" is still that one permit's table and nothing else. Charges that ride the OTHER discipline's filing are reported with "appliesTo" naming that filing, never folded into this one.
+
+TWO ROWS OF THE SAME AMOUNT ARE STILL TWO CHARGES. A schedule that prints "Solar Review - Residential | $168" and "Solar Permit - Residential | $168" bills BOTH: the permit row is the bracket, the review row is an ancillary plan_review charge. Reporting one of them under-quotes the job by half (new-AHJ test, 2026-09-26: Scottsdale's $336 was quoted as $168). Likewise a filing that passes through several offices — a fire prevention review, then the building permit, then a separate wires/electrical permit — carries each office's own fee: the fire review as an ancillary fire_review charge, the other discipline's permit NOT folded into this one.
+
+A FLAT FEE IS A COMPLETE ANSWER. "Solar Panel Permit (R) | $160" or a flat residential electrical-solar permit fee is basis "flat" with ONE bracket and that amount — do not return found:false because the schedule has no size brackets.
+
+A SCHEDULE HOSTED BY ANOTHER TOWN IS NOT THIS TOWN'S. A township, borough or city fee schedule surfaced by a search for a different place (a neighbouring township's PDF for a city) is that other municipality's: its name is in its header and its web address. Check the header before quoting; the save refuses a schedule whose document never names the AHJ you were asked about.
 
 "appliesTo" IS ARITHMETIC, NOT A LABEL. Leave it empty ONLY for a charge that is genuinely levied on EVERY permit in the filing — a percentage surcharge is the usual case, and the receipt above really does carry the state surcharge twice, once on each permit. A FLAT charge billed ONCE for the whole job (a single fire plan review, a single land use review) must NAME the filing it is billed with, because a flat charge left unattributed is charged again on every permit we price and the customer is quoted it twice.
 
@@ -2915,6 +2992,50 @@ export function parseValuationLadder(b: FeeBracket): ValuationLadder | null {
   return { baseUsd, aboveUsd, stepUsd, ratePerStepUsd, roundUp, quote: label };
 }
 
+/** A per-kW RATE formula read out of a bracket's own printed wording. */
+export interface KwRateFormula {
+  baseUsd: number;
+  ratePerKwUsd: number;
+  /** The rate is charged on the kW ABOVE this (0 = on every kW). */
+  aboveKw: number;
+  unit: "kW" | "kVA";
+  quote: string;
+}
+
+/**
+ * "$250.00 + $1.00 per kW" IS ARITHMETIC, NOT AN UNKNOWN. New-AHJ e2e (2026-09-26): FirstEnergy's
+ * Level 2 row was stored and the fee sheet said "unknown" for the job it applied to, because every
+ * formula row refuses. A formula whose parts are ALL printed resolves:
+ *   "$250.00 + $1.00 per kW"                     base + rate x kW
+ *   "$250.00 for first 25 kVA plus $6.25 per kVA" base + rate x (kVA over 25)
+ * Refused (null) — the refusal below stands — when a rate is charged on "additional"/"over"/
+ * "excess" units with no printed threshold (Coos County "$265 + $10 per add'l kva": above WHAT is
+ * not in the label), or when the printed base is not the bracket's own feeUsd (two readings of one
+ * schedule disagree — the ladder's rule).
+ */
+export function parseKwRateFormula(b: FeeBracket): KwRateFormula | null {
+  const label = String(b.label ?? "");
+  if (!label) return null;
+  const re = /\$\s*([\d,]+(?:\.\d+)?)\s*(?:for\s+(?:the\s+)?first\s+([\d.]+)\s*(kw|kva)\s*,?\s*)?(?:\+|plus)\s*\$\s*([\d,]+(?:\.\d+)?)\s*(?:\/|per|for\s+each|each)\s*(?:(?:additional|add'?l)\s+)?(kw|kva|kilowatts?)\b/i;
+  const m = re.exec(label);
+  if (!m) return null;
+  const num = (s: string) => Number(String(s).replace(/,/g, ""));
+  const baseUsd = num(m[1]);
+  const aboveKw = m[2] ? num(m[2]) : 0;
+  const ratePerKwUsd = num(m[4]);
+  if (![baseUsd, aboveKw, ratePerKwUsd].every(Number.isFinite) || ratePerKwUsd < 0 || aboveKw < 0) return null;
+  // "Additional" / "over" / "excess" units with no printed threshold: above what is not stated.
+  if (!m[2] && /\b(?:additional|add'?l|over|above|excess|in\s+excess)\b/i.test(label)) return null;
+  if (Math.abs(baseUsd - b.feeUsd) > 0.005) return null;
+  const unit = /kva/i.test(m[5]) ? "kVA" : "kW";
+  return { baseUsd, ratePerKwUsd, aboveKw, unit, quote: label };
+}
+
+export function evaluateKwRateFormula(f: KwRateFormula, kw: number | null): number | null {
+  if (kw == null || !Number.isFinite(kw) || kw < 0) return null;
+  return round2(f.baseUsd + f.ratePerKwUsd * Math.max(0, kw - f.aboveKw));
+}
+
 /** Walk one ladder for a valuation. Returns null when the valuation is not known. */
 export function evaluateValuationLadder(ladder: ValuationLadder, valuationUsd: number | null): number | null {
   if (valuationUsd == null || !Number.isFinite(valuationUsd)) return null;
@@ -3594,7 +3715,20 @@ function evaluateSchedule(
     // showed no charges block at all and no sign that anything was missing. So the ladder only
     // replaces the bracket's AMOUNT, and every rule below runs on it unchanged.
     let ladderFeeUsd: number | null = null;
-    if (bracketDescribesFormula(b.label)) {
+    // A per-kW rate formula whose parts are all printed (FirstEnergy Level 2 "$250.00 + $1.00 per
+    // kW"): computed on the system rating, then every rule below runs on it like a ladder's answer.
+    const kwFormula = bracketDescribesFormula(b.label) && schedule.basis !== "valuation" ? parseKwRateFormula(b) : null;
+    if (kwFormula) {
+      const computed = evaluateKwRateFormula(kwFormula, inputs.kw);
+      if (computed == null) {
+        return {
+          feeUsd: null, bracketLabel, bracketQuote, corroboration,
+          reason: `This fee is $${kwFormula.baseUsd.toFixed(2)} plus $${kwFormula.ratePerKwUsd.toFixed(2)} per ${kwFormula.unit}`
+            + `${kwFormula.aboveKw ? ` over ${kwFormula.aboveKw} ${kwFormula.unit}` : ""} — but this project has no system size yet. Record it and this resolves itself.`,
+        };
+      }
+      ladderFeeUsd = computed;
+    } else if (bracketDescribesFormula(b.label)) {
       const ladder = schedule.basis === "valuation" ? parseValuationLadder(b) : null;
       if (!ladder) {
         return {
@@ -3684,8 +3818,9 @@ function evaluateSchedule(
       ...serviceFeederCharges(schedule, eb, inputs),
     ];
     return { feeUsd: round2(eb.feeUsd + (stateSurchargeUsd ?? 0) + (communitySurchargeUsd ?? 0)), baseFeeUsd: feeIncludesSurcharges(`${b.label ?? ''} ${bracketQuote}`) ? undefined : eb.feeUsd, stateSurchargeUsd, communitySurchargeUsd, charges,
-      fromEstimatedValuation: ladderFeeUsd != null && inputs.valuationIsEstimate === true,
-      bracketLabel, bracketQuote: stateSurchargeUsd == null ? bracketQuote
+      fromEstimatedValuation: ladderFeeUsd != null && !kwFormula && inputs.valuationIsEstimate === true,
+      bracketLabel: kwFormula ? `${bracketLabel} (computed on ${inputs.kw} ${kwFormula.unit}${inputs.kwSource ? ` ${inputs.kwSource}` : ""}: $${eb.feeUsd.toFixed(2)})` : bracketLabel,
+      bracketQuote: stateSurchargeUsd == null ? bracketQuote
         : `${bracketQuote}; ${eb.stateSurcharge!.quote} (+$${stateSurchargeUsd.toFixed(2)})${communitySurchargeUsd == null ? '' : `; ${eb.communitySurcharge!.quote} (+$${communitySurchargeUsd.toFixed(2)})`}.`, corroboration, reason: "" };
   };
 
