@@ -31,7 +31,8 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 };
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const dashboard = fs.readFileSync(path.join(here, "..", "..", "frontend", "dashboard.js"), "utf8").replace(/\r\n/g, "\n");
+// DASHBOARD_JS_PATH points a kill run at a mutated copy (the live file is never edited to test).
+const dashboard = fs.readFileSync(process.env.DASHBOARD_JS_PATH || path.join(here, "..", "..", "frontend", "dashboard.js"), "utf8").replace(/\r\n/g, "\n");
 const { decideNextStep, compactNextStep } = await import("../src/nextStep");
 
 /** Lift a top-level `[async] function NAME(` or `const NAME = ` by bracket balance (submitSeam's lift). */
@@ -213,6 +214,19 @@ const words = (html: string): string => html.replace(/<[^>]+>/g, " ");
   check("MUST-PASS: a severity=error row counts as FAIL, never WARN (was '0 fail / 4 warn')", c.fails === 2 && c.warnings === 1, JSON.stringify(c));
   check("…and its badge is FAIL", lib.qcVerdict(rows[0]) === "fail");
   check("MUST-EXCLUDE: a severity=warning warning row stays a WARN; a pass stays a pass", lib.qcVerdict(rows[1]) === "warning" && lib.qcVerdict(rows[2]) === "pass");
+  // F5: severity is how bad a FAILURE of the rule would be, not a verdict. A blocker-severity
+  // rule that PASSED printed "Homeowner name FAIL — Homeowner name present." before qcVerdict
+  // checked qcStatus === "pass" first.
+  const passedBlockerRules = [
+    { qcStatus: "pass", severity: "blocker", ruleName: "Homeowner name", message: "Homeowner name present." },
+    { qcStatus: "pass", severity: "error", ruleName: "Required document", message: "PE letter attached." },
+  ];
+  check("MUST-EXCLUDE (F5): a PASSED rule of severity blocker / error is a pass, never FAIL",
+    passedBlockerRules.every((r) => lib.qcVerdict(r) === "pass"), JSON.stringify(passedBlockerRules.map((r) => lib.qcVerdict(r))));
+  const mixed = lib.qcCounts([...rows, ...passedBlockerRules]);
+  check("MUST-EXCLUDE (F5): …and neither is counted as a fail (still 2 fails / 1 warning)", mixed.fails === 2 && mixed.warnings === 1, JSON.stringify(mixed));
+  check("MUST-PASS (F5): the same blocker-severity rule that did NOT pass is a FAIL",
+    lib.qcVerdict({ ...passedBlockerRules[0], qcStatus: "warning" }) === "fail" && lib.qcVerdict({ ...passedBlockerRules[0], qcStatus: "fail" }) === "fail");
 }
 
 if (failures) { console.error(`\nboardGateTruth: ${failures} FAILED`); process.exit(1); }
