@@ -16,6 +16,7 @@
 //   K10 no per-host gap                         → (p1) fails.
 //   K11 contractor prerequisite without the contractor word → (n1) fails.
 //   K12 lookup without the reader wiring        → (i1) fails.
+//   K13 platform markers read from a page's links (no same-host rule) → (r5) fails.
 //
 // Run: npx tsx backend/test/agencyPageRead.test.ts
 import "./_isolate"; // FIRST
@@ -120,6 +121,18 @@ await check("(r4) MUST-EXCLUDE: look-alikes never resolve and are never even rea
   for (const never of ["powerclerk", "/help/", "transparency", ".pdf", "youtu"]) assert.ok(!read.some((u) => u.includes(never)), `never read: ${never} (${read.join(", ")})`);
   const { res: r2 } = await resolveOn({ [CENTER]: { text: fixture("agency-permit-center.html") } }, [CENTER]);
   assert.ok(!r2 || !/powerclerk|youtu|help/.test(r2.url), `no look-alike from the city page (${r2?.url})`);
+});
+
+await check("(r5) MUST-EXCLUDE: an own-domain page that merely LINKS a platform (an ACA record search, an eConnect link) is not itself the platform — the vendor tenant it links is the portal", async () => {
+  const PAGE = "https://www.cedarco.gov/dcd";
+  const ONLINE = "https://www.cedarco.gov/dcd/online-permitting";
+  const { res } = await resolveOn({
+    [PAGE]: { text: `<main><a href="${ONLINE}">Online Permit Portal</a></main>` },
+    [ONLINE]: { text: fixture("links-to-aca.html") },
+  }, [PAGE]);
+  assert.ok(res, "resolved");
+  assert.equal(res!.url, "https://aca-prod.accela.com/CEDARCO/Default.aspx", `the vendor tenant, not the page linking it (${res!.url})`);
+  assert.equal(cat.detectPlatform({ ...reader.parseHtml(fixture("links-to-aca.html"), ONLINE), ok: true, finalUrl: ONLINE }), null, "its markers are its own, not its links'");
 });
 
 await check("(c1) MUST-PASS/EXCLUDE: the EnerGov public menu -> the RESIDENTIAL solar types in the portal's own labels, each with its condition; commercial / non-PV types are not candidates; the plan path picks, else the operator is asked", () => {
