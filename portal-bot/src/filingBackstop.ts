@@ -54,7 +54,15 @@ const REGISTRY = new WeakMap<object, FilingBackstop>();
 
 /** The backstop installed on this page's run, or null (a page no run owns: human capture). */
 export function backstopFor(page: unknown): FilingBackstop | null {
-  return page && typeof page === "object" ? REGISTRY.get(page as object) ?? null : null;
+  if (!page || typeof page !== "object") return null;
+  const own = REGISTRY.get(page as object);
+  if (own) return own;
+  // A TAB THE RUN ADOPTED (a popup the learner switches this.page to) shares the context the
+  // backstop was installed on — its windows must still open, or the window rule is silently off.
+  try {
+    const ctx = typeof (page as { context?: unknown }).context === "function" ? (page as { context: () => unknown }).context() : null;
+    return ctx && typeof ctx === "object" ? REGISTRY.get(ctx as object) ?? null : null;
+  } catch { return null; }
 }
 
 const whereOf = (url: string): string => {
@@ -142,11 +150,13 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
     },
     async dispose() {
       if (REGISTRY.get(page) === bs) REGISTRY.delete(page);
+      if (target !== page && REGISTRY.get(target) === bs) REGISTRY.delete(target);
       windows.clear();
       await target.unroute("**/*", handler).catch(() => null);
     },
   };
   REGISTRY.set(page, bs);
+  if (target !== page) REGISTRY.set(target, bs);
   return bs;
 }
 

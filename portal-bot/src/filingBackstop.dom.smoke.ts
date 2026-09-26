@@ -147,6 +147,26 @@ try {
     check("MUST-EXCLUDE learner: the dismisser's script POST never reaches the server", posts.length === 0 && aborts >= 1, `POSTs=[${posts.join(",")}] aborts=${aborts}`);
     check("MUST-PASS learner: the cookie banner is still dismissed", left === 0 && d.dismissed.length > 0, `left=${left} dismissed=${d.dismissed.join(",")} refused=${d.refused.join(" | ")}`);
   }
+  {
+    // A TAB THE RUN ADOPTS (the learner switches this.page to a popup — PowerClerk opens its form
+    // in a new tab): the backstop was installed for the ORIGINAL page, and its window rule must
+    // still hold on the adopted one (backstopFor falls back to the shared context).
+    const ctx = await browser.newContext();
+    await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
+    const page = await ctx.newPage();
+    await page.goto(`${base}/form?m=postback`);
+    const bs = await installFilingBackstop(page, "learn run");
+    const [popup] = await Promise.all([ctx.waitForEvent("page"), page.evaluate((u) => { window.open(u, "_blank"); }, `${base}/form?m=dismisserScript`)]);
+    await popup.waitForLoadState("domcontentloaded");
+    posts.length = 0;
+    const d = await dismissPageModals(popup);
+    await popup.waitForTimeout(800);
+    const aborts = bs?.aborts.length ?? -1;
+    await bs?.dispose();
+    await ctx.close();
+    check("MUST-EXCLUDE adopted popup: the dismisser's script POST in a tab the run adopted never reaches the server", posts.length === 0 && aborts >= 1 && d.dismissed.length > 0,
+      `POSTs=[${posts.join(",")}] aborts=${aborts} dismissed=${d.dismissed.join(",")}`);
+  }
 } finally {
   await browser.close().catch(() => null);
   server.close();
