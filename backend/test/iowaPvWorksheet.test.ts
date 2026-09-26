@@ -163,6 +163,32 @@ await check("(e7) AC-coupled ESS on a micro system adds its inverter amps to the
   assert.equal(v["p2.maxCircuitCurrent"], "32.93A", "12.1 + 5000/240 = 32.93");
 });
 
+// parser.html's regex path on a micro + battery system: the micro's make/model/amps sit in
+// invMake/invModel/invOutputW, and a Tesla battery swaps in the Powerwall model while invOutputW
+// keeps the micro's 1.21 A when no battery kW was read.
+const ENPHASE_5P = { ...SHAPE23, batteryMake: "Enphase", batteryModel: "IQ Battery 5P", batteryQty: "1", invMake: "Enphase", invModel: "IQ8PLUS-72-2-US", invQty: "10", invOutputW: "1.21" };
+const PW3_MICRO_AMPS = { ...SHAPE23, batteryMake: "Tesla", batteryModel: "Powerwall 3", batteryQty: "1", invMake: "Tesla", invModel: "Powerwall 3", invQty: "1", invOutputW: "1.21" };
+await check("(ess1) MUST-EXCLUDE the ESS current is never the micro's per-unit amps (micro model in the inverter fields, or a Powerwall carrying the micro's 1.21 A) -> blank + the ESS question", () => {
+  for (const [name, over] of [["Enphase micro + IQ Battery 5P", ENPHASE_5P], ["micro + Powerwall 3 with the micro's amps", PW3_MICRO_AMPS],
+    ["micro + battery, invOutputW with no inverter named", { ...SHAPE23, batteryMake: "SynthStore", batteryModel: "SS-10", batteryQty: "1", invOutputW: "1.21" }],
+    ["micro + battery, an unnamed string-looking inverter", { ...SHAPE23, batteryMake: "SynthStore", batteryModel: "SS-10", batteryQty: "1", invMake: "Enphase", invModel: "IQ8M-72-2-US", invOutputW: "1.33" }]] as const) {
+    const r = W(over);
+    assert.equal(r.values["p2.maxCircuitCurrent"], "", `${name}: ${r.basis["p2.maxCircuitCurrent"]}`);
+    assert.notEqual(r.values["p2.maxCircuitCurrent"], "13.31A", name);
+    assert.equal(r.values["p2.minPvOcpd"], "20A", `${name}: falls back to the plan's PV breaker, not a computed OCPD`);
+    assert.match(r.basis["p2.minPvOcpd"], /no circuit current to check it against/, name);
+    assert.ok(r.questions.some((q) => q.key === "iaPvEssOutputA"), `${name}: the ESS question`);
+  }
+});
+await check("(ess2) MUST-PASS the ESS inverter's own current: a Powerwall's rated amps, the battery kW, or the operator's answer", () => {
+  const pw = W({ ...PW3_MICRO_AMPS, invOutputW: "47.92" });
+  assert.equal(pw.values["p2.maxCircuitCurrent"], "60.02A", "10 x 1.21 + 47.92");
+  assert.match(pw.basis["p2.maxCircuitCurrent"], /ESS current from ESS inverter Tesla Powerwall 3 rated 47\.92 A/);
+  assert.equal(pw.values["p3.C.calc"], "(10 x 1.21 A + ESS 47.92 A) x 1.25 = 75.03 A -> 80 A OCPD (NEC 240.6(A))");
+  assert.equal(W({ ...ENPHASE_5P, batteryOutputKw: "3.84" }).values["p2.maxCircuitCurrent"], "28.1A", "12.1 + 3840/240 = 28.1");
+  assert.equal(W({ ...ENPHASE_5P, iaPvEssOutputA: "16" }).values["p2.maxCircuitCurrent"], "28.1A", "the operator's answer");
+  assert.ok(!W({ ...ENPHASE_5P, iaPvEssOutputA: "16" }).questions.some((q) => q.key === "iaPvEssOutputA"));
+});
 await check("(sv1) MUST-PASS service voltage is the line-to-line value however the plan orders it: 240/120V, 120/240V, 120/240 1PH -> 240; 120/208 3PH -> 208", () => {
   for (const [raw, want] of [["240/120V", "240"], ["120/240V", "240"], ["120/240 1PH", "240"], ["240V", "240"], ["120/208V 3PH", "208"], ["277/480Y", "480"]] as const) {
     assert.equal(W({ ...SHAPE23, serviceVoltage: raw }).values["p2.serviceVoltage"], want, raw);

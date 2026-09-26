@@ -140,6 +140,34 @@ export function mountingPlaneCount(snapshot: Record<string, unknown>): { count: 
   return { count: null, basis: "no azimuth/tilt or per-array breakdown parsed" };
 }
 
+// ── THE ESS INVERTER'S OWN OUTPUT CURRENT (AC-coupled battery on a micro system) ────────────
+// parser.html puts a micro system's make / model / per-unit amps into invMake / invModel /
+// invOutputW, and on a Tesla battery swaps in the Powerwall model while invOutputW keeps the
+// micro's amps when no battery kW was read. So invOutputW is ESS evidence ONLY when the inverter
+// fields positively name an ESS inverter that is not the micro and its amps are not the micro's —
+// "10 x 1.21 A + ESS 1.21 A" was filed for an Enphase IQ Battery 5P / a Powerwall 3. Otherwise the
+// ESS current is unknown and asked.
+const MICRO_MODEL = /\b(?:IQ\s?[678]\w*|DS3\w*|QS1\w*|HMS?-\w+|Q\.?MI\w*|M2[15]\d\w*|YC\d\w*)|micro/i;
+const ESS_INVERTER = /powerwall|battery|encharge|storage|\bess\b|hybrid|energy\s+(?:center|hub)|powerhub/i;
+const normModel = (v: unknown) => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+export function essOutputCurrent(s: Record<string, unknown>): { amps: number; source: string } | null {
+  const str = (k: string) => String(s[k] ?? "").trim();
+  const answered = str("iaPvEssOutputA") ? parseRating(str("iaPvEssOutputA")) : null;
+  if (answered != null && answered > 0) return { amps: answered, source: `operator answer iaPvEssOutputA ${str("iaPvEssOutputA")}` };
+  const kw = firstNumber(s.batteryOutputKw);
+  if (kw != null && kw > 0) return { amps: (kw * 1000) / 240, source: `batteryOutputKw ${kw} kW / 240 V` };
+  const invName = `${str("invMake")} ${str("invModel")}`.trim();
+  const invA = str("invOutputW") ? parseRating(str("invOutputW")) : null;
+  const microA = str("pvMicroOutputW") ? parseRating(str("pvMicroOutputW")) : null;
+  if (!invName || invA == null || !(invA > 0)) return null;
+  const sameAsMicro = normModel(str("invModel")) !== "" && normModel(str("invModel")) === normModel(str("pvMicroModel"));
+  const namesEss = ESS_INVERTER.test(invName) || (normModel(str("invModel")) !== "" && normModel(str("invModel")) === normModel(str("batteryModel")));
+  const microShaped = MICRO_MODEL.test(str("invModel"));
+  const microAmps = microA != null && Math.abs(invA - microA) < 0.005;
+  if (sameAsMicro || microShaped || !namesEss || microAmps) return null;
+  return { amps: invA, source: `ESS inverter ${invName} rated ${fmt(invA)} A` };
+}
+
 const LOAD_SIDE_ROW_OPTIONS = ["705.12(B)(1)(a)", "705.12(B)(1)(b)", "705.12(B)(2)", "705.12(B)(3)(1)", "705.12(B)(3)(2)", "705.12(B)(3)(3)", "705.12(B)(3)(4)", "705.12(B)(3)(5)", "705.12(B)(3)(6)"];
 
 export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
@@ -196,16 +224,18 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   const unitA = (micro ? amps("pvMicroOutputW") : amps("invOutputW")) ?? amps("iaPvUnitOutputA");
   let circuitA: number | null = null;
   let circuitCalc = "";
+  let essSource = "";
   if (unitQty != null && unitA != null && unitQty > 0 && unitA > 0 && unitA < 100) {
     circuitA = unitQty * unitA;
     circuitCalc = `${unitQty} x ${fmt(unitA)} A = ${fmt(circuitA)} A`;
     // AC-coupled ESS on a micro system: its inverter's output adds to the circuit current.
     if (micro && battery) {
-      const essA = str("invOutputW") && (str("invMake") || str("invModel")) ? amps("invOutputW")
-        : n("batteryOutputKw") != null ? (n("batteryOutputKw")! * 1000) / 240 : amps("iaPvEssOutputA");
-      if (essA != null && essA > 0 && essA < 100) {
+      const ess = essOutputCurrent(s);
+      const essA = ess?.amps ?? null;
+      if (ess && essA != null && essA > 0 && essA < 100) {
         circuitA += essA;
         circuitCalc = `${unitQty} x ${fmt(unitA)} A + ESS ${fmt(essA)} A = ${fmt(circuitA)} A`;
+        essSource = `; ESS current from ${ess.source}`;
       } else {
         circuitA = null; circuitCalc = "";
         ask("iaPvEssOutputA", "What is the ESS (battery) inverter's rated continuous output current, in amps?");
@@ -213,7 +243,7 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
     }
   }
   if (circuitA == null && !questions.some((q) => q.key === "iaPvEssOutputA")) ask("iaPvUnitOutputA", "What is each inverter's rated continuous AC output current (amps, from its datasheet)?");
-  set("p2.maxCircuitCurrent", circuitA != null ? `${fmt(circuitA)}A` : "", circuitA != null ? `derived: ${circuitCalc} (qty x per-unit rated output current)` : "per-unit output current or quantity not parsed");
+  set("p2.maxCircuitCurrent", circuitA != null ? `${fmt(circuitA)}A` : "", circuitA != null ? `derived: ${circuitCalc} (qty x per-unit rated output current${essSource})` : "per-unit output current or quantity not parsed");
 
   // ── min PV OCPD ────────────────────────────────────────────────────────────────────────
   const minOcpd = circuitA != null ? nextStandardOcpd(circuitA * 1.25) : null;
