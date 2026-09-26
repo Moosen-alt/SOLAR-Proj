@@ -28,8 +28,10 @@
 //      request is aborted (a) once the run has locked the page (replay's stopForReview step, the
 //      learner's atReview), and (b) whenever the page the request comes from is classified
 //      terminal by the SHARED in-page predicate (terminalPageInPage — the same one replay's click
-//      gate asks), read at the moment of the request, so a page script that posts a second after
-//      the review page loads is caught however fast the run is. Lifted only by the approved
+//      gate asks), read at the moment of the request (a navigation request — a form POST — by
+//      the page's reading at its last load, since a navigating page cannot be asked), so a page
+//      script that posts a second after the review page loads is caught however fast the run
+//      is. Lifted only by the approved
 //      final submit's window (non-payment URLs) and by dispose() — the hand-off to a person.
 //
 // Every abort is recorded (origin + path only — never a query string, which can carry a
@@ -113,17 +115,10 @@ export async function withBackstopWindow<T>(page: unknown, rule: "dismisser-wind
  *  which need no page read). */
 const TERMINAL_READ_TIMEOUT_MS = 1500;
 
-/** Read the shared terminal-page predicate in the page a request came from. true / false, or
- *  null when it cannot be read (no frame: a service worker; a navigating or blocked page). */
+/** Read the shared terminal-page predicate in a page's main frame: true / false, or null when it
+ *  cannot be read (a navigating or blocked page). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function requestPageIsTerminal(request: any): Promise<boolean | null> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let main: any = null;
-  try {
-    const frame = request.frame();
-    const pg = frame && typeof frame.page === "function" ? frame.page() : null;
-    main = pg && typeof pg.mainFrame === "function" ? pg.mainFrame() : frame;
-  } catch { return null; }
+async function mainFrameIsTerminal(main: any): Promise<boolean | null> {
   if (!main || typeof main.evaluate !== "function") return null;
   const read = (async (): Promise<boolean | null> => {
     await main.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
@@ -139,6 +134,15 @@ async function requestPageIsTerminal(request: any): Promise<boolean | null> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<null>((r) => { timer = setTimeout(() => r(null), TERMINAL_READ_TIMEOUT_MS); });
   try { return await Promise.race([read, timeout]); } finally { if (timer) clearTimeout(timer); }
+}
+
+/** The page a request came from (its frame's page), or null (a service-worker request). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function pageOfRequest(request: any): any {
+  try {
+    const frame = request.frame();
+    return frame && typeof frame.page === "function" ? frame.page() : null;
+  } catch { return null; }
 }
 
 /** Install the backstop for one learn/replay run. null when the page cannot route (a unit-test
@@ -161,6 +165,38 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
   let approvedFilingUntil = 0;
   let locked = "";
   let disposed = false;
+  // A NAVIGATION REQUEST (a form POST) CANNOT BE ASKED LIVE: evaluating the page it is navigating
+  // waits for that navigation, which waits for this handler — every Accela postback stalled the
+  // full read timeout (measured: 9 postbacks x 1.5 s on the Accela replica). So each page's
+  // classification is also read on every load and on every live read, and a navigation request
+  // is judged by the page's last reading. A server-rendered page's review text is there at load;
+  // an SPA's posts are fetch/XHR, which are read live.
+  const lastReading = new WeakMap<object, boolean>();
+  const unwatch: Array<() => void> = [];
+  const watched = new WeakSet<object>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const refresh = (pg: any): void => {
+    if (disposed || !pg || typeof pg.mainFrame !== "function") return;
+    void mainFrameIsTerminal(pg.mainFrame()).then((v) => { if (typeof v === "boolean") lastReading.set(pg, v); }).catch(() => null);
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const watch = (pg: any): void => {
+    if (!pg || typeof pg !== "object" || watched.has(pg) || typeof pg.on !== "function") return;
+    watched.add(pg);
+    const onLoad = (): void => refresh(pg);
+    pg.on("domcontentloaded", onLoad);
+    pg.on("load", onLoad);
+    unwatch.push(() => { try { pg.off("domcontentloaded", onLoad); pg.off("load", onLoad); } catch { /* page gone */ } });
+    refresh(pg);
+  };
+  try {
+    if (ctx && typeof ctx.pages === "function" && typeof ctx.on === "function") {
+      for (const p of ctx.pages()) watch(p);
+      const onPage = (p: unknown): void => watch(p);
+      ctx.on("page", onPage);
+      unwatch.push(() => { try { ctx.off("page", onPage); } catch { /* context gone */ } });
+    } else watch(page);
+  } catch { /* no events (a double): live reads only */ }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handler = async (route: any, request: any): Promise<void> => {
@@ -192,7 +228,15 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
     // 4. REVIEW-PAGE LOCKDOWN: the run locked it, or the requesting page reads as terminal now.
     if (!approved) {
       if (locked) { await abort("review-lockdown", locked); return; }
-      const terminal = await requestPageIsTerminal(request);
+      const pg = pageOfRequest(request);
+      let navigation = true;
+      try { navigation = !!request.isNavigationRequest(); } catch { /* unknown: treat as navigation (no live read) */ }
+      let terminal: boolean | null = null;
+      if (navigation) terminal = pg ? lastReading.get(pg) ?? null : null;
+      else if (pg) {
+        terminal = await mainFrameIsTerminal(pg.mainFrame());
+        if (typeof terminal === "boolean") lastReading.set(pg, terminal);
+      }
       if (terminal === true && !disposed) {
         await abort("review-lockdown", `the page this request came from is the review/terminal page (${label})`);
         return;
@@ -222,6 +266,7 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
       if (target !== page && REGISTRY.get(target) === bs) REGISTRY.delete(target);
       windows.clear();
       locked = "";
+      for (const u of unwatch.splice(0)) u();
       await target.unroute("**/*", handler).catch(() => null);
     },
   };

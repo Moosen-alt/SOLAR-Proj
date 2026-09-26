@@ -26,7 +26,8 @@
 // iframeSubmit (a "Continue" inside an iframe posting to /payment/charge, /api/SubmitApplication),
 // targetFramePay (a form targeted at an iframe), xhrFile / xhrPay (fetch POST), beaconPay
 // (navigator.sendBeacon). MUST-PASS: iframePostOk (a subframe POST to /frame/save), iframeGetOk.
-// REVIEW-PAGE LOCKDOWN: toReview300 / toReview1500 (the review page's own script posts 0.3 s /
+// REVIEW-PAGE LOCKDOWN (run by filingBackstopReview.dom.smoke.ts, PART=review):
+// toReview300 / toReview1500 / toReviewForm (the review page's own script posts 0.3 s /
 // 1.5 s after it loads — aborted, named stop, and the person's own submit after hand-off goes
 // through), toSummary (a stop page that does not name itself review: the run's own lock), and the
 // learner's backstop on a review page (+ its hand-off).
@@ -41,6 +42,9 @@ import { dismissPageModals } from "./adapters/autoLearnAdapter";
 import { installFilingBackstop } from "./filingBackstop";
 
 delete process.env.PORTAL_ALLOW_FINAL_SUBMIT;
+// Two processes, one fixture: the review-page lockdown cells run as filingBackstopReview.dom.smoke.ts
+// (each file stays well inside the DOM runner's 600 s budget).
+const PART = process.env.BACKSTOP_SMOKE_PART === "review" ? "review" : "main";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -82,6 +86,7 @@ const PAGES: Record<string, string> = {
   // whose own script posts (not filing-worded) a moment after it loads.
   toReview300: `<h1>Step 4: Contacts</h1><a id="next" href="/review?d=300">Next</a>`,
   toReview1500: `<h1>Step 4: Contacts</h1><a id="next" href="/review?d=1500">Next</a>`,
+  toReviewForm: `<h1>Step 4: Contacts</h1><a id="next" href="/review?d=300&form=1">Next</a>`,
   // ...and a stop page that does NOT name itself review (only the run's own lock knows), whose
   // script keeps posting: before the lock it is mid-flow, after it nothing may leave.
   toSummary: `<h1>Step 4: Contacts</h1><a id="next" href="/summary">Next</a>`,
@@ -114,8 +119,13 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/review") {
     const d = Number(url.searchParams.get("d") || "300");
     res.writeHead(200, { "content-type": "text/html" });
+    // form=1: the script SUBMITS A FORM (a navigation POST, which the backstop cannot ask the page
+    // about live) instead of a fetch.
+    const post = url.searchParams.get("form") === "1"
+      ? "var f=document.createElement('form');f.method='post';f.action='/apply/42';document.body.appendChild(f);f.submit();"
+      : "fetch('/apply/42', {method:'POST', body:'x=1'}).catch(function(){});";
     res.end(`<!doctype html><html><body><h1>Step 5: Review and Submit</h1><p>Please review your application before submitting.</p>
-      <script>setTimeout(function(){ fetch('/apply/42', {method:'POST', body:'x=1'}).catch(function(){}); }, ${d});</script></body></html>`);
+      <script>setTimeout(function(){ ${post} }, ${d});</script></body></html>`);
     return;
   }
   if (url.pathname === "/summary") {
@@ -162,6 +172,7 @@ try {
     return { ok, msg, during, afterPosts, url, bannerLeft, refusals: adapter.guardRefusals.join(" | ") };
   };
 
+  if (PART === "main") {
   {
     const r = await replay("dismisserScript", [NEXT]);
     check("MUST-EXCLUDE dismisserScript: the cookie OK's script POST never reaches the server", r.during.length === 0, `POSTs=[${r.during.join(",")}] ${r.msg}`);
@@ -208,9 +219,11 @@ try {
     const r = await replay("iframeGetOk", [IN_FRAME]);
     check("MUST-PASS iframeGetOk: a subframe GET is never touched (no abort)", r.during.length === 0 && !/BACKSTOP/.test(r.refusals), `POSTs=[${r.during.join(",")}] refusals=${r.refusals || "(none)"}`);
   }
+  }
+  if (PART === "review") {
   // REVIEW-PAGE LOCKDOWN. The page's script posts 300 ms / 1500 ms after the review page loads.
   const NEXT_LINK = { action: "click", selector: { css: "#next", role: "link", name: "Next" }, note: "advance: Next" } as RecipeStep;
-  for (const m of ["toReview300", "toReview1500"]) {
+  for (const m of ["toReview300", "toReview1500", "toReviewForm"]) {
     const r = await replay(m, [NEXT_LINK], async (page) => {
       // After the hand-off: the person's own submit on the review page is NOT blocked.
       await page.evaluate((u) => { const f = document.createElement("form"); f.method = "post"; f.action = u; document.body.appendChild(f); f.submit(); }, `${base}/SubmitApplication`);
@@ -225,6 +238,32 @@ try {
     const r = await replay("toSummary", [NEXT_LINK]);
     check("MUST-EXCLUDE toSummary: after the run locks the page at review, its POSTs are aborted (lockdown), ok=false named",
       /BACKSTOP ABORTED POST \S*\/keepalive.*REVIEW-PAGE LOCKDOWN — the run is at review/.test(r.refusals) && !r.ok && /STOPPED BY THE NETWORK BACKSTOP/.test(r.msg), `ok=${r.ok} refusals=${r.refusals.slice(0, 300) || "(none)"} ${r.msg}`);
+  }
+  {
+    // MUST-PASS: A MID-FLOW POSTBACK IS NOT STALLED. A navigation POST cannot be asked about live
+    // (evaluating a navigating page waits for the navigation, which waits for the route): each
+    // Accela postback stalled the full 1.5 s read timeout until the page's load-time reading was
+    // used instead (learnLoginMidRun 112 s -> 190 s per case).
+    const ctx = await browser.newContext();
+    await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
+    const page = await ctx.newPage();
+    const bs = await installFilingBackstop(page, "learn run");
+    await page.goto(`${base}/form?m=postback`);
+    await page.waitForTimeout(300);
+    posts.length = 0;
+    const times: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      await page.goto(`${base}/form?m=postback`);
+      await page.waitForTimeout(200);
+      const t0 = Date.now();
+      await Promise.all([page.waitForNavigation({ timeout: 8000 }).catch(() => null), page.evaluate(() => { (document.getElementById("hf") as HTMLFormElement).submit(); })]);
+      times.push(Date.now() - t0);
+    }
+    const aborts = bs?.aborts.length ?? -1;
+    await bs?.dispose();
+    await ctx.close();
+    check("MUST-PASS postback latency: a mid-flow form POST (navigation) reaches the server unstalled (< 1 s each)",
+      posts.filter((p) => p === "/Cap/CapEdit.aspx").length === 3 && aborts === 0 && Math.max(...times) < 1000, `POSTs=[${posts.join(",")}] aborts=${aborts} ms=[${times.join(",")}]`);
   }
   {
     // THE LEARNER'S BACKSTOP on a review page: the page's own delayed POST is aborted; after
@@ -246,6 +285,8 @@ try {
     check("MUST-EXCLUDE learner on a review page: the page's own POST is aborted (lockdown)", during.length === 0 && lockdown >= 1, `POSTs=[${during.join(",")}] lockdownAborts=${lockdown}`);
     check("MUST-PASS learner hand-off: after dispose the person's own submit goes through", after.includes("/SubmitApplication"), `after=[${after.join(",")}]`);
   }
+  }
+  if (PART === "main") {
   {
     // THE LEARNER'S DISMISSER (no chokepoint callback) with the learn run's backstop installed.
     const ctx = await browser.newContext();
@@ -283,10 +324,11 @@ try {
     check("MUST-EXCLUDE adopted popup: the dismisser's script POST in a tab the run adopted never reaches the server", posts.length === 0 && aborts >= 1 && d.dismissed.length > 0,
       `POSTs=[${posts.join(",")}] aborts=${aborts} dismissed=${d.dismissed.join(",")}`);
   }
+  }
 } finally {
   await browser.close().catch(() => null);
   server.close();
 }
 if (failures) { console.error(`\n${failures} filing-backstop check(s) FAILED.`); process.exit(1); }
-console.log("\nAll filing-backstop checks passed (real Chromium).");
+console.log(`\nAll filing-backstop checks passed (real Chromium, part: ${PART}).`);
 process.exit(0);
