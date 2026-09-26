@@ -323,6 +323,7 @@
 :root[data-theme="dark"] .kpi-card.kpi-warn { background: var(--tint-warn); border-color: var(--edge-warn); }
 :root[data-theme="dark"] .item.blocker,
 :root[data-theme="dark"] .item.error,
+:root[data-theme="dark"] .item.fail,
 :root[data-theme="dark"] .submit-gate-check.blocker,
 :root[data-theme="dark"] .kpi-card.kpi-fail,
 :root[data-theme="dark"] .submit-blocker-note { background: var(--tint-fail); border-color: var(--edge-fail); color: var(--foreground); }
@@ -597,7 +598,9 @@ p, .muted { color: var(--muted); }
 .item.pass { background: var(--tint-pass); border-color: var(--edge-pass); }
 .item.info { background: var(--tint-info); border-color: var(--edge-info); }
 .item.warning { background: var(--tint-warn); border-color: var(--edge-warn); }
-.item.blocker, .item.error { background: var(--tint-fail); border-color: var(--edge-fail); }
+/* .item.fail is what a FAILED thing wears (a failed QC rule, a correction flagged or overdue, a
+   failed portal run, a teammate with overdue corrections): the failing colour, same as .blocker. */
+.item.blocker, .item.error, .item.fail { background: var(--tint-fail); border-color: var(--edge-fail); }
 
 /* --- Checklist rows (reviewer gate, live readiness, historical failures) --- */
 .check-row {
@@ -1905,8 +1908,8 @@ kbd {
    a failing group, so it gets the site's treatment: white card, red hairline,
    and a red rule along the top edge instead of a red wash — the site keeps the
    card light and lets the HEADING carry the alarm. */
-.item.blocker, .item.error { border-top: 2px solid var(--destructive); }
-.item.blocker > .item-title, .item.error > .item-title { color: var(--ink-fail); }
+.item.blocker, .item.error, .item.fail { border-top: 2px solid var(--destructive); }
+.item.blocker > .item-title, .item.error > .item-title, .item.fail > .item-title { color: var(--ink-fail); }
 .item.warning { border-top: 2px solid var(--warning); }
 /* .item.pass deliberately gets NO top rule. On the site the left-hand "Project
    checks" column is unadorned — ticks and text — and only the issue panel is

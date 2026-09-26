@@ -27,7 +27,11 @@ import type { AddressInfo } from "node:net";
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
-const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)));
+// TOPBAR_SMOKE_FRONTEND points a kill run at a mutated copy of frontend/ (never edit the live one to test).
+const FRONTEND = path.resolve(process.env.TOPBAR_SMOKE_FRONTEND || path.dirname(fileURLToPath(import.meta.url)));
+// What a real /health says about the running code (backend/src/buildInfo.ts). The label is the
+// widest thing the status element can hold, so the one-row nav checks run WITH it (F20).
+const BUILD_LABEL = "2026.09.26 · 0c466bb · pinned";
 const failures: string[] = [];
 const check = (ok: boolean, label: string, detail = ""): void => {
   if (ok) console.log(`  PASS  ${label}`);
@@ -44,7 +48,7 @@ const API_STUBS: Array<[RegExp, string]> = [
 const startServer = async (): Promise<{ base: string; close: () => Promise<void> }> => {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || "/", "http://localhost");
-    if (url.pathname === "/health") { res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}'); return; }
+    if (url.pathname === "/health") { res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, build: { label: BUILD_LABEL } })); return; }
     if (url.pathname.startsWith("/api/")) {
       const hit = API_STUBS.find(([re]) => re.test(url.pathname));
       if (!hit) { res.writeHead(404, { "content-type": "application/json" }).end('{"error":"not stubbed"}'); return; }
@@ -78,6 +82,17 @@ async function main(): Promise<void> {
         route.request().url().startsWith(base) ? route.continue() : route.abort());
       await page.goto(`${base}/#/dashboard`, { waitUntil: "load", timeout: 30000 });
       await page.waitForTimeout(500);
+      // The /health answer has landed before the bar is measured, so the nav checks below are
+      // measured WITH the build label in the top bar wherever it shows (F20).
+      await page.waitForFunction(() => document.getElementById("serviceStatus")?.classList.contains("conn-status--ok"), null, { timeout: 5000 }).catch(() => {});
+      const build = await page.evaluate(() => {
+        const el = document.getElementById("serviceStatus") as HTMLElement;
+        const lab = el.querySelector(".build-label") as HTMLElement | null;
+        return { ok: el.classList.contains("conn-status--ok"), title: el.title, text: lab?.textContent || "", shown: Boolean(lab && lab.getClientRects().length && getComputedStyle(lab).display !== "none") };
+      });
+      check(build.ok && build.title.includes(BUILD_LABEL), `/health's build label reaches the status element (title) at ${vp.w}px`, JSON.stringify(build));
+      if (vp.w >= 1440) check(build.shown && build.text.includes(BUILD_LABEL), `the build label is shown in the top bar at ${vp.w}px`, JSON.stringify(build));
+      else check(!build.shown, `the build label folds away below 1440px (${vp.w}px) — the nav gets the room`, JSON.stringify(build));
       const bar = await page.evaluate(() => {
         const tops = [...document.querySelectorAll(".primary-nav > *")].map((e) => Math.round(e.getBoundingClientRect().top));
         const sum = document.querySelector("#startHereGuide > summary") as HTMLElement;
@@ -95,6 +110,33 @@ async function main(): Promise<void> {
       check(pop.left >= 0 && pop.right <= pop.w && pop.top >= 0 && pop.bottom <= pop.h,
         `the opened "How it flows" popover is inside the ${vp.w}px viewport`, JSON.stringify(pop));
       if (vp.w === 1440) {
+        // .item.fail — a failed QC rule, a flagged/overdue correction, a failed portal run, a
+        // teammate with overdue corrections — rendered with NO colour at all (no rule matched the
+        // class). It now wears the failing colour, identical to .item.blocker, in light and dark,
+        // and stays distinct from .item.info / .item.warning (whose meaning is unchanged).
+        const tints = await page.evaluate(() => {
+          const host = document.createElement("div");
+          document.body.appendChild(host);
+          host.innerHTML = ["fail", "blocker", "info", "warning", "pass"].map((c) => `<article class="item ${c}" data-t="${c}"><div class="item-title"><span>x</span></div></article>`).join("");
+          const read = () => Object.fromEntries([...host.querySelectorAll("article")].map((a) => {
+            const s = getComputedStyle(a);
+            return [(a as HTMLElement).dataset.t, `${s.backgroundColor}|${s.borderTopColor}|${getComputedStyle(a.querySelector(".item-title")!).color}`];
+          }));
+          const root = document.documentElement;
+          const prev = root.getAttribute("data-theme");
+          root.setAttribute("data-theme", "light");
+          const light = read();
+          root.setAttribute("data-theme", "dark");
+          const dark = read();
+          if (prev == null) root.removeAttribute("data-theme"); else root.setAttribute("data-theme", prev);
+          host.remove();
+          return { light, dark };
+        });
+        for (const mode of ["light", "dark"] as const) {
+          const t = tints[mode] as Record<string, string>;
+          check(t.fail === t.blocker, `.item.fail wears the failing colour (${mode})`, JSON.stringify({ fail: t.fail, blocker: t.blocker }));
+          check(t.fail !== t.info && t.fail !== t.warning && t.fail !== t.pass, `.item.fail is distinct from info / warning / pass (${mode})`, JSON.stringify(t));
+        }
         // THE STATUS CORRECTION FORM inside "Advanced / override & tools" had no form styling: a
         // browser-default ~19px select, labels running inline. The real #statusOverrideWrap,
         // opened in place (no request is made — these are <details> toggles).
