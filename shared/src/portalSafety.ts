@@ -501,27 +501,97 @@ export function portalSafetyFactory() {
    * Accept, Confirm, a dialog's arbitrary first button — answers the dialog's QUESTION, so the
    * dialog's own text is read too: a question about submitting, filing or paying is refused.
    * Unknown (no element) refuses.
+   *
+   * INVARIANT (checker close-mustfix P1 — a word list lost to "send your application to the
+   * city", "your card will be charged", "By accepting you certify"): the dismisser clicks ONLY
+   * (i) a close-only control, or (ii) an answer-shaped control inside a container POSITIVELY
+   * identified as a cookie / consent / announcement banner — and in both cases never a control
+   * that submits, posts back or navigates. Everything else, including a control in no container
+   * at all, is unknown and refused.
    */
   const dismissalRefusalInPage = (el: Element | null | undefined): string => {
     if (!el) return "the control could not be read";
     const clean = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
     const h = el as HTMLElement;
     const label = clean(controlLabelInPage(el) || h.innerText || (el as HTMLInputElement).value || "");
+    const shown = `"${label.slice(0, 40) || "(unlabelled)"}"`;
     if (isPayFee(label)) return `"${label.slice(0, 60)}" pays a fee`;
     if (isSubmitIntent(label, null) || isFinalSubmitControl(label, { reviewPage: true })) return `"${label.slice(0, 60)}" is submit-worded`;
+    // (b) A DISMISSER NEVER SUBMITS OR NAVIGATES, whatever it is labelled. A dismissal only hides
+    // something; a control that sends a form, posts back or follows a link does more than that,
+    // and the page decides what (checker's panelOk / dialogSendYes: an OK and a Yes that were
+    // each a form's submit button, four filing POSTs per replay). Only SUBMITTERS count: a
+    // type=button inside ASP.NET's one whole-page <form method=post> is not one, or every close
+    // icon on Accela would be refused — what its script does is the network backstop's question.
+    const moves = submitsOrNavigatesInPage(el);
+    if (moves) return `${shown} ${moves} — a dismisser never submits or navigates`;
+    // (i) CLOSE-ONLY: the control's label, aria-label or own id/class says it only closes
+    // (X, Close, Dismiss, No thanks; PowerClerk's #cpr-banner-dimiss-btn).
     const cls = String(el.getAttribute("class") || "");
+    const idAttr = String(el.getAttribute("id") || "");
     const aria = clean(el.getAttribute("aria-label"));
-    const closeOnly = /^(got it|dismiss|close|cancel|no thanks|not now|skip|maybe later|later|×|x|✕)$/i.test(label)
-      || /^close$/i.test(aria) || /\b(btn-close|x-tool-close)\b/.test(cls);
+    const closeOnly = /^(got it|dismiss|close|cancel|no thanks|no,? thanks|not now|skip|maybe later|later|×|x|✕|✖)$/i.test(label)
+      || /^(close|dismiss)\b/i.test(aria) || /\b(btn-close|x-tool-close)\b/.test(cls)
+      || /(^|[\s_-])(dismiss|dimiss|close)([\s_-]|$)/i.test(`${idAttr} ${cls}`);
     if (closeOnly) return "";
-    const dlg = el.closest ? el.closest("[role=dialog], [role=alertdialog], dialog, .modal, [class*=modal], .popover, [class*=x-window]") : null;
-    if (!dlg) return "";
-    let text = clean((dlg as HTMLElement).innerText || dlg.textContent || "");
+    // (ii) AN ANSWER (OK / Yes / Accept / Confirm / Continue / Proceed / I agree) is allowed ONLY
+    // inside a container POSITIVELY identified as a cookie / consent / announcement banner — by
+    // its own attributes (id, class, aria-label: a consent framework's names), or by its text
+    // saying cookies / consent / what's new. Every other container is UNKNOWN, and an unknown
+    // question is refused: "Are you ready to send your application to the city?" and "Your card
+    // will be charged $450.00" both passed a word list that did not know those words.
+    const answer = /^(ok|okay|yes|accept|accept all|accept all cookies|allow|allow all|allow cookies|agree|i agree|confirm|continue|proceed|i understand|understood)\b[.!]?$/i.test(label);
+    if (!answer) return `${shown} is neither a close control nor an answer to a known banner — the dismisser does not click what it cannot identify`;
+    const CONSENT_ATTR = /cookie|consent|gdpr|ccpa|onetrust|cookiebot|cybot|truste|osano|usercentrics|didomi|qc-cmp|cmp-?banner|cc-(window|banner)|privacy-?banner|announcement|whats-?new|what-?s-?new|new-?feature|release-?notes/i;
+    let container: Element | null = null;
+    let byAttr = false;
+    for (let p: Element | null = el.parentElement, depth = 0; p && depth < 10; p = p.parentElement, depth++) {
+      if (/^(BODY|HTML|FORM|MAIN)$/.test(p.tagName)) break;
+      const attrs = `${p.getAttribute("id") || ""} ${p.getAttribute("class") || ""} ${p.getAttribute("aria-label") || ""}`;
+      if (CONSENT_ATTR.test(attrs)) { container = p; byAttr = true; break; }
+    }
+    if (!container) {
+      container = el.closest ? el.closest("[role=dialog], [role=alertdialog], dialog, .modal, [class*=modal], .popover, [class*=x-window], [class*=banner], [class*=notice], [class*=panel], [class*=confirm]") : null;
+      if (!container) {
+        // The nearest fixed/sticky box the control sits in (a floating banner has no class name).
+        for (let p: Element | null = el.parentElement; p && !/^(BODY|HTML)$/.test(p.tagName); p = p.parentElement) {
+          const pos = getComputedStyle(p).position;
+          if (pos === "fixed" || pos === "sticky") { container = p; break; }
+        }
+      }
+    }
+    if (!container) return `${shown} answers a question outside any container this code can identify — refused`;
+    let text = clean((container as HTMLElement).innerText || container.textContent || "");
     const own = clean(h.innerText || h.textContent || "");
     if (own) text = text.split(own).join(" ");
-    if (isPayFee(text)) return `"${label.slice(0, 40) || "(unlabelled)"}" answers a dialog about paying: "${text.slice(0, 80)}"`;
-    if (isSubmitIntent(text, null) || /\b(fil(e|ing)\s+(this|the|your|my)\b|cannot\s+be\s+undone)/i.test(text)) {
-      return `"${label.slice(0, 40) || "(unlabelled)"}" answers a dialog about filing: "${text.slice(0, 80)}"`;
+    // ANY FILING OR PAYING WORD VETOES THE BANNER, however it was identified.
+    if (isPayFee(text) || /\$\s*\d|\b(charged?|charges|debit(ed)?|fees?)\b/i.test(text)) return `${shown} answers a question about paying: "${text.slice(0, 80)}"`;
+    // ("Cookies are small text FILES" is every consent banner, so bare "file" is not a veto.)
+    if (isSubmitIntent(text, null) || /\b(submi(t|ts|tted|tting|ssion)|fil(e|ing)\s+(this|the|your|my|an?)\b|filed\b|(send|sent)\b[^.]{0,40}\b(city|county|agency|department|division|utility|application|permit|request)|certif|attest|under\s+penalt|cannot\s+be\s+undone|application)/i.test(text)) {
+      return `${shown} answers a question about filing: "${text.slice(0, 80)}"`;
+    }
+    const byText = /\bcookies?\b|\bconsent\b|what'?s\s+new|\bnew\s+feature/i.test(text) && text.length <= 600;
+    if (byAttr || byText) return "";
+    return `${shown} answers a question that is not a known cookie / consent / announcement banner: "${text.slice(0, 80)}"`;
+  };
+
+  /** Runs IN THE PAGE: would activating this control submit a form, post back or navigate? The
+   *  reason, or "". SUBMITTERS only: a <button> whose type is submit (or missing — the default)
+   *  inside a form, an input type=submit|image inside a form, a link with a real href, or any
+   *  href/onclick that calls __doPostBack / WebForm_DoPostBackWithOptions / requestSubmit /
+   *  .submit(). A type=button, a bare href="#" and javascript:void(0) are not. */
+  const submitsOrNavigatesInPage = (el: Element): string => {
+    const tag = el.tagName;
+    const type = String(el.getAttribute("type") || "").toLowerCase();
+    const link = el.closest ? el.closest("a[href]") : null;
+    const code = `${el.getAttribute("onclick") || ""} ${el.getAttribute("href") || ""} ${link ? `${link.getAttribute("onclick") || ""} ${link.getAttribute("href") || ""}` : ""}`;
+    if (/__doPostBack|WebForm_DoPostBack|requestSubmit|\.submit\s*\(/i.test(code)) return "posts the page back";
+    const form = (el as HTMLButtonElement).form || null;
+    if (tag === "BUTTON" && (type === "" || type === "submit") && form) return "is a submit button in a form";
+    if (tag === "INPUT" && (type === "submit" || type === "image") && form) return "is a submit button in a form";
+    if (link) {
+      const href = String(link.getAttribute("href") || "").trim();
+      if (href && !/^#/.test(href) && !/^javascript:\s*(void\s*\(\s*0\s*\)|;|false|undefined)?\s*;?\s*$/i.test(href)) return "is a link that navigates";
     }
     return "";
   };
