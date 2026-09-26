@@ -376,7 +376,14 @@ export function requiredApplicationDocs(
   // must not be told to attach applications nobody can name.
   if (!wantsBuilding && !wantsElectrical && !wantsChecklist) return worksheet ? [worksheet] : [];
 
-  const path = resolvePermitPath(project).path;
+  const pathResolution = resolvePermitPath(project);
+  const path = pathResolution.path;
+  // STANDARD REVIEW (outside a prescriptive-path jurisdiction — resolvePermitPath): ONE building
+  // application, no prescriptive-vs-structural pair, no "renewable-energy" vocabulary. Oregon's
+  // words printed for an Arizona or New Mexico AHJ stated an Oregon filing as that AHJ's
+  // requirement (new-AHJ e2e, 2026-09-26).
+  const standardReview = Boolean(pathResolution.standardReview);
+  const oregon = (project.state || "").trim().toUpperCase() === "OR";
   const where = (ctx.ahjLabel || project.ahj || "").trim() || "This AHJ";
   const named = (ctx.buildingApplicationName || "").trim();
   const permitWord = combo ? "combined building + electrical permit" : "building permit";
@@ -397,11 +404,14 @@ export function requiredApplicationDocs(
     // is how the two sides drift into disagreeing about which form the AHJ is owed.
     const kind = applicationKindForPath(path) ?? "";
     const label =
-      kind === "structural" ? "Structural (non-prescriptive) permit application, filled"
+      standardReview ? "Building permit application (the AHJ's own), filled"
+      : kind === "structural" ? "Structural (non-prescriptive) permit application, filled"
       : kind === "prescriptive" ? "Prescriptive solar permit application, filled"
       : "Building-side permit application (prescriptive or structural), filled";
     const why =
-      kind === "structural"
+      standardReview
+        ? `${where} files a ${permitWord}; its review is the standard structural (building) review — one building application, no prescriptive-vs-structural choice on file for this jurisdiction. File the AHJ's own building application.`
+      : kind === "structural"
         ? `${where} files a ${permitWord}, and this project resolved to the ENGINEERED (non-prescriptive) path — file ${named || "the AHJ's structural (standard building) permit application"}. The prescriptive one must NOT also go up; the AHJ takes exactly one.`
         : kind === "prescriptive"
           ? `${where} files a ${permitWord}, and this project resolved to the PRESCRIPTIVE path — file ${named || "the AHJ's prescriptive solar application"}. The structural one must NOT also go up; the AHJ takes exactly one.`
@@ -432,10 +442,10 @@ export function requiredApplicationDocs(
       // be able to satisfy both the building-side row and this one — that is the
       // exact shape of the failure this set exists to catch.
       label: portalOnly
-        ? "Electrical (renewable-energy) permit application — entered in the portal at staging"
-        : "Electrical (renewable-energy) permit application, filled",
+        ? `Electrical ${oregon ? "(renewable-energy) " : ""}permit application — entered in the portal at staging`
+        : `Electrical ${oregon ? "(renewable-energy) " : ""}permit application, filled`,
       why: (separate
-        ? `${where} files SEPARATE building and electrical permits, so the renewable-energy electrical application is required in addition to the building-side one — on either permit path, on every interconnection.${statute}`
+        ? `${where} files SEPARATE building and electrical permits, so the ${oregon ? "renewable-energy " : ""}electrical application is required in addition to the building-side one — on either permit path, on every interconnection.${statute}`
         : `${where}'s process profile records that an electrical permit application is required. Confirm it before filing.`) + (portalOnly ? portalNote : ""),
       lane: "permit",
       blocking: separate && !portalOnly,

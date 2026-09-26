@@ -24,6 +24,7 @@
 //   K6 utilityFilingLookup: acceptFilingUrl skips hostFitsTrackAndEntity              → (u2) fails.
 //   K7 utilityFilingLookup: unknown program labelled net metering                     → (u4) fails.
 //   K8 applicationDocs: Oregon template list outside Oregon                           → (j5) fails.
+//   K9 requiredDocuments: standard review ignored (Oregon row vocabulary everywhere)  → (j5b) fails.
 //
 // Run: npx tsx backend/test/newAhjTracks.test.ts
 import "./_isolate"; // FIRST
@@ -111,6 +112,17 @@ await check("(j5) MUST-EXCLUDE: Oregon's template document list never appears ou
   assert.match(docs, /building permit application/i);
   const or = appDocs.findApplicationProfile(project({ state: "OR", ahj: "City of Fernhollow", city: "Fernhollow", utility: "Portland General Electric" }));
   assert.match(or.requiredDocuments.join(" | "), /PRESCRIPTIVE or STRUCTURAL/);
+});
+await check("(j5b) MUST-EXCLUDE: the required application rows outside a prescriptive-path state carry no Oregon vocabulary; MUST-PASS: Oregon keeps it", async () => {
+  const { requiredApplicationDocs, applicationDocContext } = await import("../src/requiredDocuments");
+  const nmP = project({ ahj: "City of Pinon Mesa", city: "Pinon Mesa" });
+  const nm = requiredApplicationDocs(nmP, applicationDocContext(nmP)).map((r) => `${r.label} :: ${r.why}`).join(" | ");
+  assert.match(nm, /Building permit application \(the AHJ's own\)/, nm);
+  assert.doesNotMatch(nm, /non-prescriptive|renewable-energy|PRESCRIPTIVE path|ENGINEERED/i, nm);
+  const orP = project({ state: "OR", ahj: "City of Fernhollow", city: "Fernhollow", utility: "Portland General Electric", parserSnapshot: { permitPathOverride: "prescriptive" } });
+  const or = requiredApplicationDocs(orP, applicationDocContext(orP)).map((r) => r.label).join(" | ");
+  assert.match(or, /Prescriptive solar permit application/, or);
+  assert.match(or, /renewable-energy/, or);
 });
 await check("(j6) MUST-PASS: a seeded note is labelled as the operator's unverified reference, never printed as a bare instruction", () => {
   const notes = appDocs.findApplicationProfile(project({ ahj: "City of Pinon Mesa", city: "Pinon Mesa" })).notes;
