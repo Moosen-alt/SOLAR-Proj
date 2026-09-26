@@ -6,7 +6,7 @@
 // Engine on a CUSTOM identity domain — no okta.com anywhere):
 //   page 1  "Sign in to community access services": Email + Next + "Keep me signed in" + social
 //           "Sign in with Google/Microsoft/Apple" + Help + "Unlock account?" + "Create an account"
-//           (+ an ordinary footer link whose href says "account" — what the reveal's href
+//           (+ an ordinary header link whose href says "account" — what the reveal's href
 //           catch-all would have clicked first under the old order)
 //   page 2  "Verify with your password": Password + Verify + "Verify with something else" +
 //           "Forgot password?" + "Back to sign in"; the page title says "Authentication" and the
@@ -55,6 +55,11 @@ const IDP = "https://identity.portico-example.test";
 const TENANT = "https://tenant.energov-example.test";
 const AUTHORIZE = `${IDP}/oauth2/default/v1/authorize?client_id=0oaFAKEFAKE&response_type=code&scope=openid&state=abc123`
   + `&redirect_uri=${encodeURIComponent(`${TENANT}/apps/selfservice/verify-callback`)}`;
+// Variants of the same page: a title with no challenge word (the factor checks, so the factor is
+// recognised by what the PAGE holds and not by a title), and a password page carrying a real
+// CAPTCHA frame.
+const AUTHORIZE_PLAIN_TITLE = `${AUTHORIZE}&title=plain`;
+const AUTHORIZE_CAPTCHA = `${AUTHORIZE}&captcha=1`;
 
 // ---- trap accounting: any request here means a never-click control was followed ---------------
 const trapHits: string[] = [];
@@ -63,14 +68,14 @@ const TRAP_PAGE = (who: string) => `<!doctype html><html><head><title>${who} - S
   <label for="p">Password</label><input id="p" type="password"><button id="b">Sign In</button>
 </body></html>`;
 
-const OKTA_PAGE = `<!doctype html><html><head><title>Community Access Services - Authentication</title>
+const OKTA_PAGE = (title: string, captcha: boolean) => `<!doctype html><html><head><title>${title}</title>
 <style>body{font-family:sans-serif} .button{display:inline-block;padding:6px 12px;margin:4px;border:1px solid #888} .hide{display:none}</style>
 </head><body>
+<header><a href="https://www.portico-example.test/account-services">About community access accounts</a></header>
 <div id="okta-sign-in" class="auth-container main-container">
   <div class="okta-sign-in-header auth-header"><span>Community Access Services</span></div>
   <div class="auth-content"><div class="auth-content-inner" id="inner"></div></div>
 </div>
-<footer><a href="https://www.portico-example.test/account-services">About community access accounts</a></footer>
 <script>
   window.__clicks = [];
   document.addEventListener('click', function (e) {
@@ -112,6 +117,7 @@ const OKTA_PAGE = `<!doctype html><html><head><title>Community Access Services -
       '<h2 class="okta-form-title o-form-head">Verify with your password</h2>' +
       '<div class="identifier-container"><span class="identifier">' + who + '</span></div>' +
       (error ? '<div class="o-form-error-container" role="alert"><p>' + error + '</p></div>' : '') +
+      (${captcha ? "true" : "false"} ? '<iframe title="reCAPTCHA" src="https://www.google.com/recaptcha/api2/anchor?k=FAKE" width="304" height="78"></iframe>' : '') +
       '<div class="o-form-fieldset"><label for="input60">Password</label>' +
       '<input type="password" name="credentials.passcode" id="input60" autocomplete="current-password"></div>' +
       '<input class="button button-primary" type="submit" value="Verify" data-se="verify">' +
@@ -164,11 +170,16 @@ const TENANT_HOME = `<!doctype html><html><head><title>Community Development Hub
 async function routeReplicas(context: BrowserContext): Promise<void> {
   await context.route(`${IDP}/**`, async (route) => {
     const u = new URL(route.request().url());
-    if (u.pathname.startsWith("/oauth2/")) return route.fulfill({ contentType: "text/html", body: OKTA_PAGE });
+    if (u.pathname.startsWith("/oauth2/")) {
+      const title = u.searchParams.get("title") === "plain" ? "Community Access Services" : "Community Access Services - Authentication";
+      return route.fulfill({ contentType: "text/html", body: OKTA_PAGE(title, u.searchParams.get("captcha") === "1") });
+    }
     trapHits.push(`${u.host}${u.pathname}`);
     return route.fulfill({ contentType: "text/html", body: TRAP_PAGE(`trap ${u.pathname}`) });
   });
   await context.route(`${TENANT}/**`, (route) => route.fulfill({ contentType: "text/html", body: TENANT_HOME }));
+  // The reCAPTCHA widget frame: a real third-party frame, not a trap.
+  await context.route("https://www.google.com/**", (route) => route.fulfill({ contentType: "text/html", body: "<html><body>captcha</body></html>" }));
   for (const trapHost of ["https://accounts.google.com", "https://appleid.apple.com", "https://www.portico-example.test"]) {
     await context.route(`${trapHost}/**`, (route) => {
       const u = new URL(route.request().url());
@@ -302,7 +313,7 @@ await check("MUST-EXCLUDE: a WRONG password stays a failed login (still_on_login
 
 await check("MUST-EXCLUDE: a second factor on a HEADLESS run → mfa_captcha promptly, never the 'likely rejected' stale mark", async () => {
   const { context, page } = await freshPage();
-  await page.goto(AUTHORIZE);
+  await page.goto(AUTHORIZE_PLAIN_TITLE);
   const t0 = Date.now();
   const res = await performLogin(page, { username: USER, password: MFA_PW }); // defaults: headless → no park
   results.push(res.message);
@@ -316,9 +327,10 @@ await check("MUST-EXCLUDE: a second factor on a HEADLESS run → mfa_captcha pro
 await check("MUST-PASS (B3 park): the run waits at the factor with the window open, then continues when the PERSON completes it", async () => {
   trapHits.length = 0;
   const { context, page } = await freshPage();
-  await page.goto(AUTHORIZE);
+  await page.goto(AUTHORIZE_PLAIN_TITLE);
   let parked = null as null | { reason: string; waitMs: number };
   let typedIntoFactor = "";
+  let personActed = false;
   const res = await performLogin(page, { username: USER, password: MFA_PW }, {
     parkMs: 60_000,
     onPark: (info) => {
@@ -326,6 +338,7 @@ await check("MUST-PASS (B3 park): the run waits at the factor with the window op
       // The person at the window, a few seconds later. Before completing, prove the bot left the
       // factor screen alone: no code typed, no "Send me an email" pressed.
       setTimeout(() => {
+        personActed = true;
         void page.evaluate(() => {
           const w = window as unknown as { __emailRequested?: boolean; __operatorCompletesFactor: () => void };
           const code = document.querySelector("#code") as HTMLInputElement | null;
@@ -340,6 +353,9 @@ await check("MUST-PASS (B3 park): the run waits at the factor with the window op
   assert.ok(parked, "the run must announce the park (onPark)");
   assert.match(String(parked!.reason), /second-factor/i);
   assert.equal(res.status, "logged_in", `got ${res.status}: ${res.message}`);
+  // The session must be the PERSON's doing: Okta shows the full username on its factor page with
+  // the password box gone, which the identity-echo proof alone would read as a session.
+  assert.equal(personActed, true, "logged_in was declared before the person completed the factor");
   assert.match(res.message, /person completed the second factor/);
   assert.equal(typedIntoFactor, "", `the bot touched the factor screen: ${typedIntoFactor}`);
   assert.deepEqual(trapHits, []);
@@ -349,7 +365,7 @@ await check("MUST-PASS (B3 park): the run waits at the factor with the window op
 
 await check("MUST-EXCLUDE (B3 bound): a factor nobody completes ends as mfa_captcha after the bound — not a hang, not 'rejected'", async () => {
   const { context, page } = await freshPage();
-  await page.goto(AUTHORIZE);
+  await page.goto(AUTHORIZE_PLAIN_TITLE);
   const t0 = Date.now();
   const res = await performLogin(page, { username: USER, password: MFA_PW }, { parkMs: 4000 });
   results.push(res.message);
@@ -357,6 +373,18 @@ await check("MUST-EXCLUDE (B3 bound): a factor nobody completes ends as mfa_capt
   assert.match(res.message, /held open/);
   assert.doesNotMatch(res.message, REJECTED_MARKS_STALE);
   assert.ok(Date.now() - t0 < 30_000, `the park must be bounded (took ${Date.now() - t0} ms)`);
+  await context.close();
+});
+
+await check("MUST-EXCLUDE: a real CAPTCHA frame on the password page still stops before the password is typed", async () => {
+  // The page title is ALSO a challenge reading ("… Authentication"): the reading must not hide the frame.
+  const { context, page } = await freshPage();
+  await page.goto(AUTHORIZE_CAPTCHA);
+  const res = await performLogin(page, { username: USER, password: GOOD_PW });
+  results.push(res.message);
+  assert.equal(res.status, "mfa_captcha", `got ${res.status}: ${res.message}`);
+  assert.match(res.message, /recaptcha/i);
+  assert.equal(await page.locator("#input60").inputValue(), "", "the password was typed under an unsolved CAPTCHA");
   await context.close();
 });
 

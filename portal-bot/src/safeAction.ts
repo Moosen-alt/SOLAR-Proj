@@ -331,11 +331,20 @@ const CHALLENGE_TEXT = /captcha|i'?m not a robot|two.factor|2fa|authenticat|veri
 // string if a challenge is present (so the caller can stop for a human), else null.
 // Checks in order: page title (fast), frame URLs (structural), iframe src attributes,
 // visible body text. Never throws — detection failure returns null only after best effort.
-export async function detectChallengeFrame(page: Page | null | undefined): Promise<string | null> {
+//
+// opts.structuralOnly skips the two READINGS (title, visible text) and asks only the frame URLs /
+// iframe srcs. The login flow uses it on a page that still shows a password box, where a reading
+// is the password step talking ("Verify with your password", an "… Authentication" title) but a
+// CAPTCHA frame is still a CAPTCHA. Without it the title reading, checked first, returned before
+// the frames were ever looked at and hid a real CAPTCHA frame behind itself.
+export async function detectChallengeFrame(
+  page: Page | null | undefined,
+  opts: { structuralOnly?: boolean } = {},
+): Promise<string | null> {
   if (!page) return null;
   try {
     // 0) Page title — the fastest check; challenge pages almost always have a distinctive title.
-    try {
+    if (!opts.structuralOnly) try {
       const title = typeof (page as { title?: () => Promise<string> }).title === "function"
         ? await (page as { title: () => Promise<string> }).title().catch(() => "")
         : "";
@@ -371,6 +380,8 @@ export async function detectChallengeFrame(page: Page | null | undefined): Promi
         if (hit) return `challenge iframe src detected (${hit})`;
       }
     } catch { /* ignore */ }
+
+    if (opts.structuralOnly) return null;
 
     // 3) Visible challenge text fallback — only count a match that is actually VISIBLE. A
     //    hidden template / tooltip / aria string containing a keyword (e.g. "verification")

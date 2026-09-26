@@ -1036,10 +1036,12 @@ async function sessionProof(page: Page, loginUrl: string, username: string): Pro
  * The same rule as step 4 (pre-fill), and it keeps the park's invariant: never on a password page.
  */
 async function challengeBeyondPasswordStep(page: Page): Promise<string> {
-  const hit = await detectChallengeFrame(page);
-  if (!hit) return "";
-  if (/^challenge (page title|text) detected/.test(hit) && await loginFormPresent(page)) return "";
-  return hit;
+  // STRUCTURAL-ONLY on a password page — not "full detection, then drop a reading": the full
+  // detector returns its FIRST hit, and the title reading comes first, so a password page titled
+  // "… Authentication" that ALSO carried a real CAPTCHA frame would have hidden the frame and
+  // been filled and submitted (then read as a refused credential).
+  const passwordStep = await loginFormPresent(page);
+  return (await detectChallengeFrame(page, { structuralOnly: passwordStep })) ?? "";
 }
 
 /**
