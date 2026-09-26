@@ -144,11 +144,8 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   with autoSubmit=false). Trust M1 no longer blocks `PORTAL_ALLOW_FINAL_SUBMIT=1`; CLAUDE.md hard rule 1 still
   says NEVER and is to be reworded with the operator's OK (unchanged here).
 - KEEP-AND-FLAG is visible on the API (`flagReason`/`flaggedAt` on every recipe) and clearable
-  (`POST /api/portal-recipes/:id/clear-flag`, audited). The DASHBOARD does not render it yet
-  (frontend/dashboard.js was another workflow's file this round): in `renderPortalRecipes`, after
-  `${badge(r.status)}`, add `${r.flagReason ? `<span title="${esc(r.flagReason)}" style="...">Flagged — check the
-  run</span><button class="secondary" data-recipe-clear-flag="${esc(r.id)}">Clear flag</button>` : ""}` and wire the
-  button to `POST /api/portal-recipes/${id}/clear-flag`.
+  (`POST /api/portal-recipes/:id/clear-flag`, audited) — and, since W1 close 2, ON THE DASHBOARD: the recipe row
+  shows "Flagged for review" + the reason + date and a Clear flag button (611bd7b).
 - RESTORE SCRIPT (`scripts/restore-demoted-recipes.ts`): the dry run is READ-ONLY at the SQLite level (never
   openDatabase); `--apply` refuses a database below this build's schema. Order of operations: dry-run on a
   `.backup` copy any time; re-pin (the server migrates the live DB); THEN `--apply` on the live DB; then one
@@ -158,6 +155,21 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   fix its portal URL). Carried, not fixed: both lookups pass no discipline, so they resolve no AHJ recipe keyed
   structural/electrical/combo — the monitor scrapes AHJ portals only through '' rows.
 - Junk reference-import AHJ names ('OR portal', '1 - 5 DAYS', '2-5 days / REV …') no longer own or share a portal.
+
+**W1 close 2 landed (2026-09-26) — the close verifier's must-fixes (M1-jobs, M4-ui, M5-real-schema, M3-selectors, MF3e, MF4-class):**
+- FINAL SUBMIT: `POST /api/jobs` no longer carries a final-submit approval — a `prepare_submission` body there is
+  reduced to `{ track }` (68f6445). A forged job holding someone's live approval id used to claim it (verifier
+  probe P1) — that was the last item the verifier listed as blocking `PORTAL_ALLOW_FINAL_SUBMIT=1`; turning the
+  switch on is the operator's call. CLAUDE.md hard rule 1 still says NEVER — reword it with the operator's OK before turning the switch on.
+- RESTORE DRY RUN now works on a REAL `.backup` of production (schema v34): the script leaves out
+  `portal_runs.recipe_id` when the column is absent (4207fdc). Measured on a 2026-09-26 copy: exit 0, `RESTORE 6282e671`
+  and `RESTORE 481c00f4`, 2 of 77, `e9efa4a3` kept, file sha1 unchanged; `--apply` refused (exit 2, schema v34 < v36).
+  The order above is unchanged: re-pin first, then `--apply` on the migrated live DB, then one supervised replay each.
+- A human's mid-replay step edit — even ONE re-pointed selector — is now visible to the heal and the demotion (the
+  replay fingerprints the full steps; its own heal re-bases the fingerprint) (56a4730).
+- Sentence-shaped reference-import names claim no portal: a ':' label, 'N kW', 'submit'/'via email', or 10+ words
+  (ec0840c). Production: aae50fab (FIRE PERMIT: 3 kW …), e26e5b17 ('No permit required unless …') and 4ae9447c (a
+  COI note) own nothing now; a scan of the 216 portal rows rejects no real jurisdiction (`.probe/w1-close2/junkscan.log`).
 
 **Operator actions still open (2026-09-24):**
 - Oregon 36/25 psf minimum ground snow: the verified write (`PUT /api/code-profiles/verify`, payload in
