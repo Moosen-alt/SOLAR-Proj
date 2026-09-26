@@ -146,6 +146,12 @@ const baseTrack = {
   check("…'no online portal, paper' reaches the card with its 'researched — verify' chip", /No online application portal found — applications are dropped off in person/.test(words(html)) && /researched — verify/.test(html));
 }
 {
+  const led = lib.trackCardHtml({ ...baseTrack, channel: "x", structureBasis: "Permit structure: not confirmed — no cited agency page says one permit or two." });
+  const bare = lib.trackCardHtml({ ...baseTrack, channel: "x", structureBasis: "one Residential Solar permit (cited: https://www.scottsdaleaz.gov/permits)." });
+  check("the structure basis is shown once — never 'Permit structure: Permit structure:'",
+    (words(led).match(/Permit structure:/g) || []).length === 1 && /Permit structure: one Residential Solar permit/.test(words(bare)) && /href="https:\/\/www\.scottsdaleaz\.gov\/permits"/.test(bare));
+}
+{
   const html = lib.trackCardHtml({ ...baseTrack, nextAction: "FIRST, at another office: (1) Zoning [https://x.gov]. THEN: Stage it." });
   check("MUST-EXCLUDE: without a prerequisites list the next action keeps its FIRST… wording", /FIRST, at another office/.test(words(html)));
 }

@@ -4109,7 +4109,9 @@ function trackChannelHtml(t) {
   if (onFile && !channel.includes(onFile) && onFile !== portal) {
     lines.push(`<p class="muted track-channel-link" style="margin:0 0 4px">Link on file (not verified as the application portal): ${linkifyText(onFile)}</p>`);
   }
-  if (t.structureBasis) lines.push(`<p class="muted" style="margin:0 0 4px;font-size:12px">Permit structure: ${linkifyText(t.structureBasis)}</p>`);
+  // The server's basis line may already lead with its own "Permit structure:"; never say it twice.
+  const structure = String(t.structureBasis || "").trim();
+  if (structure) lines.push(`<p class="muted" style="margin:0 0 4px;font-size:12px">${/^permit structure\b/i.test(structure) ? "" : "Permit structure: "}${linkifyText(structure)}</p>`);
   return lines.join("");
 }
 
