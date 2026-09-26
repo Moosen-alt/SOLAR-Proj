@@ -69,7 +69,7 @@ import path from "node:path";
 import os from "node:os";
 import { checkStatusWithAdapter, runCorrectionReopen, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { portalAutomationDisabled, resolveHeadless } from "../../portal-bot/src/browser";
-import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, collectHealedSteps, persistHealedSteps, getPortalRecipe, portalEntityEvidence, recipeHostFit, findBorrowableRecipe, replayFailureBlamesRecipe, recipeShapeSignature, type BorrowedRecipeChoice } from "./portalRecipes";
+import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, collectHealedSteps, persistHealedSteps, getPortalRecipe, portalEntityEvidence, recipeHostFit, findBorrowableRecipe, replayFailureBlamesRecipe, recipeStepsSignature, type BorrowedRecipeChoice } from "./portalRecipes";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 // detectPlatform moved with the target INSERT into submittalTracks.ts's ensureCheckTarget.
 import { publicPermitStatusCheck } from "./publicPermitStatus";
@@ -8087,6 +8087,10 @@ export async function prepareSubmission(
       // THE REPLAY NEVER CARRIES ANOTHER PROJECT'S DATA (recipeReplayBinding): record links are
       // not replayed, project literals bind to THIS project, the agency row binds to the looked-up
       // agency, and state vocabulary guidance applies — on the own recipe AND a borrowed one.
+      // THE STEPS THIS REPLAY READ (trust skeptic M3, close M3-selectors) — fingerprinted before
+      // anything binds or runs them. A human step edit does not bump the version, so heals and the
+      // demotion are measured against every field of these steps, selectors included.
+      const replayStepsSig = recipeStepsSignature(recipe.steps ?? []);
       const replayFieldValues = resolveRecipeFieldValues(db, stagedProject, portalType);
       replayBinding = bindRecipeForReplay({
         steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: detail.project, fieldValues: replayFieldValues, track,
@@ -8143,12 +8147,10 @@ export async function prepareSubmission(
       // never carried them, so this block was dead code); both places are read.
       // Heals are reported against the steps the run EXECUTED; map each back to the stored step it
       // healed (a record-link step the binding dropped shifts every later index).
+      let stepsSigNow = replayStepsSig;
       const healed = collectHealedSteps(result)
         .map((h) => ({ ...h, stepIndex: replayBinding?.originalIndex[h.stepIndex] ?? -1 }))
         .filter((h) => h.stepIndex >= 0);
-      // THE SHAPE THIS REPLAY READ (trust skeptic M3): a human step edit does not bump the version,
-      // so heals and the demotion are measured against the steps as they were when the run began.
-      const replayShapeSig = recipeShapeSignature(recipe.steps);
       // A BORROWED RECIPE IS NEVER CHANGED BY ANOTHER ENTITY'S RUN. A heal on Salem's page is a
       // fact about Salem's page; written onto the Coos Bay recipe it would break Coos Bay. The
       // heals are recorded for the operator and discarded; drift stops the run (ruling).
@@ -8156,7 +8158,12 @@ export async function prepareSubmission(
         addAuditLog(db, projectId, "system", "portal staging", "portal.borrowed_recipe_heal_discarded", {
           runId, recipeId: recipe.id, learnedFor: borrowed.learnedFor, heals: healed.length,
         });
-      } else if (healed.length) persistHealedSteps(db, recipe.id, recipe.version, healed, { projectId, runId, expectedShapeSig: replayShapeSig });
+      } else if (healed.length) {
+        // The run's OWN heal rewrites a selector: from here on the recipe is "unchanged" when it
+        // is exactly what that heal wrote (a human edit before or after it still reads as changed).
+        const heal = persistHealedSteps(db, recipe.id, recipe.version, healed, { projectId, runId, expectedStepsSig: replayStepsSig });
+        if (heal.stepsSigAfter) stepsSigNow = heal.stepsSigAfter;
+      }
       // WHOSE FAULT WAS THE FAILURE? (operator ruling 2026-09-24: keep-and-flag.)
       //
       // This used to demote on /recipe step failed/i over EVERY step's message joined — with no
@@ -8188,7 +8195,7 @@ export async function prepareSubmission(
       const replayVerdict = replayFailed && !borrowed
         ? (() => {
           try {
-            return demoteOnReplayFailure(db, recipe.id, extractStageFailureMessage(result), recipe.version, { runId, projectId, expectedShapeSig: replayShapeSig });
+            return demoteOnReplayFailure(db, recipe.id, extractStageFailureMessage(result), recipe.version, { runId, projectId, expectedStepsSig: stepsSigNow });
           } catch {
             return null; /* best-effort: the run result stands */
           }

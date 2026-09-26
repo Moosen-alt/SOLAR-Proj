@@ -1,4 +1,5 @@
 import type { PortalRecipe, PortalRecipeStatus, ProjectRecord, RecipeStep } from "../../shared/src/types";
+import { createHash } from "node:crypto";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay } from "./clients";
 import type { AppDb } from "./db";
@@ -705,20 +706,32 @@ export function recipeStructureSignature(steps: RecipeStep[]): string {
 }
 
 /**
- * THE SHAPE A REPLAY READ — the ordered (action, field, note, terminal marker) of every step,
- * with NO selectors. This is what a replay's heal and demotion are measured against (trust
- * skeptic M3): the version guard cannot see a human step edit (savePortalRecipeSteps — the PUT
- * …/steps route and appendHumanPatchSteps — does not bump the version), so a step inserted
- * mid-replay shifted every index and the heal for "City" landed on "Owner". Selectors are left
- * out on purpose: a heal rewrites a selector, and a run that heals step 2 and then drifts at
- * step 7 must still demote — with selectors in the hash its own heal would read as "the recipe
- * changed" and spare it. A structural edit (insert, delete, reorder, retarget a field) changes
- * this; a repaired selector does not.
+ * THE STEPS A REPLAY READ — every field of every step, selectors included, as a canonical
+ * (sorted-key) serialization. This is what a replay's heal and demotion are measured against
+ * (trust skeptic M3, close M3-selectors): the version guard cannot see a human step edit
+ * (savePortalRecipeSteps — the PUT …/steps route and appendHumanPatchSteps — does not bump the
+ * version), so a step inserted mid-replay shifted every index and the heal for "City" landed on
+ * "Owner"; and a human who re-pointed ONE selector mid-replay had the heal overwrite the fix and
+ * the drift on the OLD selector demote the fixed recipe. So nothing is left out.
+ *
+ * A run's OWN heal also rewrites a selector — so the replay does not compare the demotion against
+ * the steps it started with once it has healed: persistHealedSteps returns the signature of the
+ * steps it WROTE (computed from what it wrote, never re-read — a re-read would absorb a human edit
+ * landing in the gap), and the demotion is measured against that. A run that heals step 2 and then
+ * drifts at step 7 still demotes; a human edit before or after the heal spares the recipe.
  */
-export function recipeShapeSignature(steps: RecipeStep[]): string {
-  const shape = (Array.isArray(steps) ? steps : []).map((step) =>
-    [step.action, step.field || "", step.note || "", step.isFinalSubmit === true ? "F" : ""].join("|"));
-  return fnv1a(shape.join("\n"));
+export function recipeStepsSignature(steps: RecipeStep[]): string {
+  const canonical = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(canonical);
+    if (v && typeof v === "object") {
+      return Object.fromEntries(Object.keys(v as Record<string, unknown>).sort()
+        .filter((k) => (v as Record<string, unknown>)[k] !== undefined)
+        .map((k) => [k, canonical((v as Record<string, unknown>)[k])]));
+    }
+    return v;
+  };
+  const text = JSON.stringify(canonical(Array.isArray(steps) ? steps : []));
+  return createHash("sha1").update(text).digest("hex").slice(0, 16);
 }
 
 // Cheap deterministic 32-bit hash (FNV-1a) — no crypto import needed for a fingerprint.
@@ -1017,10 +1030,11 @@ export function demoteOnReplayFailure(
   expectedVersion: number,
   ctx: {
     runId?: string | null; projectId?: string | null;
-    /** recipeShapeSignature of the steps the replay READ. A human step edit does not bump the
-     *  version (savePortalRecipeSteps), so the shape is compared too: drift on the old steps says
-     *  nothing about the edited recipe. */
-    expectedShapeSig?: string | null;
+    /** recipeStepsSignature of the steps as this replay last knew them — as it READ them, or as
+     *  its own heal WROTE them (persistHealedSteps' stepsSigAfter). A human step edit does not
+     *  bump the version (savePortalRecipeSteps), so the full steps are compared too: drift on the
+     *  old steps — even one re-pointed selector — says nothing about the edited recipe. */
+    expectedStepsSig?: string | null;
   } = {},
 ): { action: ReplayDemotionAction; attribution: ReplayFailureAttribution | null; reason: string; recipe: PortalRecipe } {
   const recipe = getPortalRecipe(db, recipeId);
@@ -1039,7 +1053,7 @@ export function demoteOnReplayFailure(
     audit("portal_recipe.demotion_skipped", { reason: "recipe changed during replay" });
     return { action: "version_changed", attribution: null, reason: "the recipe changed while the replay ran", recipe };
   }
-  if (ctx.expectedShapeSig && recipeShapeSignature(recipe.steps) !== ctx.expectedShapeSig) {
+  if (ctx.expectedStepsSig && recipeStepsSignature(recipe.steps) !== ctx.expectedStepsSig) {
     audit("portal_recipe.demotion_skipped", { reason: "recipe changed during replay (its steps were edited)" });
     return { action: "version_changed", attribution: null, reason: "the recipe's steps were edited while the replay ran", recipe };
   }
@@ -1127,11 +1141,17 @@ export function persistHealedSteps(
   healed: ReportedHeal[],
   ctx: {
     projectId?: string | null; runId?: string | null;
-    /** recipeShapeSignature of the steps the replay READ — a human step edit (no version bump)
-     *  shifts every index, and the heal must then be discarded, never landed on another step. */
-    expectedShapeSig?: string | null;
+    /** recipeStepsSignature of the steps the replay READ — a human step edit (no version bump)
+     *  may shift every index or re-point the very selector the heal measured; the heal must then
+     *  be discarded, never landed on the human's steps. */
+    expectedStepsSig?: string | null;
   } = {},
-): { applied: number[]; discarded: string | null } {
+): {
+  applied: number[]; discarded: string | null;
+  /** recipeStepsSignature of the steps this call WROTE (null when it wrote nothing) — what the
+   *  same run's demotion check must compare against, since its own heal changed a selector. */
+  stepsSigAfter: string | null;
+} {
   // (1) Disarm first — its own statement, outside the try.
   db.run("UPDATE portal_recipes SET auto_submit_enabled = 0 WHERE id = ?", [recipeId]);
   const audit = (action: string, details: Record<string, unknown>): void => {
@@ -1141,17 +1161,17 @@ export function persistHealedSteps(
   };
   const usable = (healed ?? []).filter((h) => h && h.performed === true && Number.isInteger(h.stepIndex) && h.stepIndex >= 0
     && (h.recipeVersion === undefined || h.recipeVersion === null || Number(h.recipeVersion) === expectedVersion));
-  if (!usable.length) return { applied: [], discarded: null };
-  const discard = (reason: string): { applied: number[]; discarded: string } => {
+  if (!usable.length) return { applied: [], discarded: null, stepsSigAfter: null };
+  const discard = (reason: string): { applied: number[]; discarded: string; stepsSigAfter: null } => {
     audit("recipe.heal_discarded", { reason, stepIndexes: usable.map((h) => h.stepIndex).slice(0, 20) });
-    return { applied: [], discarded: reason };
+    return { applied: [], discarded: reason, stepsSigAfter: null };
   };
   try {
     const row = db.get<Row>("SELECT version, steps_json, notes FROM portal_recipes WHERE id = ?", [recipeId]);
     if (!row) return discard("recipe no longer exists");
     if (Number(row.version ?? 0) !== expectedVersion) return discard("recipe changed during replay");
     const steps = parseJson<RecipeStep[]>(s(row.steps_json) || "[]", []);
-    if (ctx.expectedShapeSig && recipeShapeSignature(steps) !== ctx.expectedShapeSig) return discard("recipe changed during replay (its steps were edited)");
+    if (ctx.expectedStepsSig && recipeStepsSignature(steps) !== ctx.expectedStepsSig) return discard("recipe changed during replay (its steps were edited)");
     const applied: number[] = [];
     for (const h of usable) {
       const st = steps[h.stepIndex];
@@ -1164,14 +1184,17 @@ export function persistHealedSteps(
     }
     if (!applied.length) return discard("no reported heal matches its step (index/action)");
     const note = `[self-healed ${nowIso().slice(0, 10)}: step(s) ${applied.map((i) => i + 1).join(", ")} re-anchored — verify the next review screen]`;
+    // Written only over the exact steps text it read: a human save between the read and this
+    // statement (no version bump) makes it a no-op, and the heal is discarded.
+    const written = asJson(steps);
     db.run(
       `UPDATE portal_recipes SET steps_json = ?, structure_sig = ?, notes = ?, updated_at = ?
-        WHERE id = ? AND version = ?`,
-      [asJson(steps), recipeStructureSignature(steps), upsertRecipeNote(row.notes, "self-healed", note), nowIso(), recipeId, expectedVersion],
+        WHERE id = ? AND version = ? AND steps_json = ?`,
+      [written, recipeStructureSignature(steps), upsertRecipeNote(row.notes, "self-healed", note), nowIso(), recipeId, expectedVersion, s(row.steps_json)],
     );
     if (Number(db.get<{ n: number }>("SELECT changes() AS n")?.n ?? 0) === 0) return discard("recipe changed during replay");
     audit("recipe.self_healed", { stepIndexes: applied, steps: applied.map((i) => steps[i]?.note ?? steps[i]?.action).slice(0, 10) });
-    return { applied, discarded: null };
+    return { applied, discarded: null, stepsSigAfter: recipeStepsSignature(parseJson<RecipeStep[]>(written, [])) };
   } catch (err) {
     return discard(`heal write failed: ${err instanceof Error ? err.message.slice(0, 160) : String(err)}`);
   }

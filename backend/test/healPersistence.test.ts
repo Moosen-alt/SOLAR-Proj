@@ -157,7 +157,36 @@ await check("(m3b) MUST-PASS: a run that heals step 1 and then drifts at a later
   await repo.prepareSubmission(db, projectId);
   const row = fx.recipeRow(recipe.id);
   assert.equal((stepsOf(recipe.id)[1].selector as { name?: string }).name, "healed_city_1", "the heal was not persisted");
-  assert.equal(row.status, "needs_rerecord", "the run's own heal spared its drift (the shape guard is reading selectors)");
+  assert.equal(row.status, "needs_rerecord", "the run's own heal spared its drift (the demotion was measured against the steps the run started with, not what its own heal wrote)");
+});
+
+// ── close M3-selectors (probe P2a): a human re-points ONE selector mid-replay ─────────────────
+// Same action, field and note — only the selector moves — so a shape that leaves selectors out
+// cannot see it. KILL: repository/portalRecipes compare recipeShapeSignature-style (selector-free)
+// again, or drop the steps comparison in persistHealedSteps → the heal overwrites the human's fix.
+await check("(m3c) MUST-EXCLUDE (P2a): a heal measured on the OLD selector never lands on a step a human re-pointed mid-replay; discarded with a recipe.heal_discarded audit row", async () => {
+  const recipes = fx.recipes;
+  const STEPS: RecipeStep[] = [
+    { action: "fill", selector: { name: "owner" }, field: "homeownerName", value: "x", note: "Owner" } as RecipeStep,
+    { action: "fill", selector: { name: "city_old" }, field: "projectCity", value: "Portland", note: "City" } as RecipeStep,
+    fx.REVIEW, fx.FINAL,
+  ];
+  const recipe = fx.completeRecipe(STEPS);
+  const projectId = fx.newProject();
+  fx.stubRunner(async () => {
+    const edited = STEPS.map((st, i) => (i === 1 ? { ...st, selector: { name: "city_fixed_by_human" } } : st));
+    recipes.savePortalRecipeSteps(db, recipe.id, edited as RecipeStep[], { status: "complete" });
+    return okWithHeals([{ stepIndex: 1, recipeVersion: recipe.version, action: "fill", note: "City", selector: { name: "healed_from_old" }, performed: true }]);
+  });
+  await repo.prepareSubmission(db, projectId);
+  assert.equal(Number(fx.recipeRow(recipe.id).version), recipe.version, "premise: the steps writer does not bump the version");
+  const steps = stepsOf(recipe.id);
+  assert.equal((steps[1].selector as { name?: string }).name, "city_fixed_by_human", `the heal overwrote the human's edited selector: ${JSON.stringify(steps[1].selector)}`);
+  const run = fx.latestRun(projectId)!;
+  const discarded = auditsFor("recipe.heal_discarded", run.id);
+  assert.equal(discarded.length, 1, "the discarded heal left no audit row");
+  assert.match(JSON.parse(discarded[0].details).reason, /steps were edited/);
+  assert.equal(auditsFor("recipe.self_healed", run.id).length, 0, "a heal was recorded as applied");
 });
 
 repo.setRecipeStageRunnerForTests(null);

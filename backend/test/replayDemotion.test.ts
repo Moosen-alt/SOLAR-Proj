@@ -239,6 +239,37 @@ await check("(m3) MUST-EXCLUDE: drift on the OLD steps does not demote a recipe 
   assert.match(JSON.parse(skipped[0].details).reason, /steps were edited/);
 });
 
+// ── close M3-selectors (probe P2b): a human re-points ONE selector mid-replay ─────────────────
+// KILL: measure the demotion against a selector-free shape again → the fixed recipe is demoted.
+await check("(m3s) MUST-EXCLUDE (P2b): drift on the OLD selector does not demote a recipe a human re-pointed (selector only) during the replay", async () => {
+  const STEPS = [
+    { action: "fill", selector: { name: "owner" }, field: "homeownerName", value: "x", note: "Owner" },
+    { action: "fill", selector: { name: "city_old" }, field: "projectCity", value: "Portland", note: "City" },
+    fx.REVIEW, fx.FINAL,
+  ] as never[];
+  const recipe = fx.completeRecipe(STEPS);
+  const projectId = fx.newProject();
+  fx.stubRunner(async () => {
+    const edited = (STEPS as Array<Record<string, unknown>>).map((st, i) => (i === 1 ? { ...st, selector: { name: "city_fixed_by_human" } } : st));
+    recipes.savePortalRecipeSteps(db, recipe.id, edited as never, { status: "complete" });
+    return fx.failingStep("Recipe step failed (fill — City): locator.fill: Timeout 8000ms exceeded.");
+  });
+  await repo.prepareSubmission(db, projectId);
+  const row = fx.recipeRow(recipe.id);
+  assert.equal(Number(row.version), recipe.version, "premise: the steps writer does not bump the version");
+  assert.equal(row.status, "complete", "drift measured on the OLD selector demoted the human-fixed recipe");
+  const run = fx.latestRun(projectId)!;
+  const skipped = auditFor("portal_recipe.demotion_skipped", recipe.id, run.id);
+  assert.equal(skipped.length, 1, "the skipped demotion was not audited");
+  assert.match(JSON.parse(skipped[0].details).reason, /steps were edited/);
+  // MUST-PASS: the same drift with NO human edit still demotes (the fingerprint matches the DB).
+  const untouched = fx.completeRecipe(STEPS);
+  const p2 = fx.newProject();
+  fx.stubRunner(async () => fx.failingStep("Recipe step failed (fill — City): locator.fill: Timeout 8000ms exceeded."));
+  await repo.prepareSubmission(db, p2);
+  assert.equal(fx.recipeRow(untouched.id).status, "needs_rerecord", "drift on an untouched recipe no longer demotes (the replay's fingerprint does not match the stored steps)");
+});
+
 // ── the human door stays separate ────────────────────────────────────────────────────────────
 await check("the human's mark-for-re-record still demotes with no evidence, and is audited as a person's act", () => {
   const recipe = fx.completeRecipe();
