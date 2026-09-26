@@ -45,6 +45,12 @@ export function supplementStructuralIntake(result: ParserLlmExtraction, planText
     if (methods.length === 1) fields.tileAttachmentMethod = { value: methods[0].method, confidence: 0.9,
       evidence: { source: "plan_set", sheet: "Attachment detail", excerpt: methods[0].quote.slice(0, 200) } };
   }
+  // MODULE ELECTRICALS for NEC 690.7 (Iowa SFM worksheet max system voltage). Only when the
+  // text states ONE value (add() refuses conflicting sheets — a plan's SLD module table copied
+  // from an older set and the real datasheet disagree more often than not; that is review, not a pick).
+  add("moduleVoc", /\b(?:OPEN[-\s]CIRCUIT\s+VOLTAGE|V\s?OC)\s*(?:\(V\))?\s*[:=]?\s*(\d{2}(?:\.\d{1,2})?)\s*V\b/i, m => Number(m[1]));
+  add("moduleIsc", /\b(?:SHORT[-\s]CIRCUIT\s+CURRENT|I\s?SC)\s*(?:\(A\))?\s*[:=]?\s*(\d{1,2}(?:\.\d{1,2})?)\s*A\b/i, m => Number(m[1]));
+  add("moduleVocTempCoeff", /\bTEMPERATURE\s+COEFFICIENT\s+(?:OF\s+)?V\s?OC\s*(?:\(β\)|\(BETA\))?\s*[:=]?\s*(-\s?0?\.\d{1,3})\s*%\s*\/\s*°?\s*[CK]\b/i, m => Number(m[1].replace(/\s/g, "")));
   add("framingType", /\d+\s*"\s*[x×]\s*\d+\s*"\s*(TRUSS|RAFTER)\s*@\s*\d+/i, m => m[1].toLowerCase());
   add("roofRafterSpacing", /\d+\s*"\s*[x×]\s*\d+\s*"\s*(?:TRUSS|RAFTER)\s*@\s*(\d+)\s*"\s*O\.?\s*C/i, m => Number(m[1]));
   add("lightFrame", /\d+\s*"\s*[x×]\s*\d+\s*"\s*(?:TRUSS|RAFTER)\s*@\s*\d+/i, () => "yes");

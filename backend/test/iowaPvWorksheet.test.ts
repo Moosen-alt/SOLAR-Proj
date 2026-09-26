@@ -163,5 +163,16 @@ await check("(e7) AC-coupled ESS on a micro system adds its inverter amps to the
   assert.equal(v["p2.maxCircuitCurrent"], "32.93A", "12.1 + 5000/240 = 32.93");
 });
 
+await check("(p1) parse: one stated module Voc / Isc / temperature coefficient is read from the datasheet text; two disagreeing tables are left for review", async () => {
+  const { supplementStructuralIntake } = await import("../src/structuralIntake");
+  const base = { provider: "stub", fields: {}, lowConfidenceFields: [], notes: "" } as never;
+  const one = supplementStructuralIntake(base, "ELECTRICAL DATA (STC) OPEN-CIRCUIT VOLTAGE VOC 45.27 V SHORT-CIRCUIT CURRENT ISC 11.10 A TEMPERATURE COEFFICIENT OF VOC -0.27 %/K");
+  assert.equal(one.fields.moduleVoc?.value, 45.27);
+  assert.equal(one.fields.moduleIsc?.value, 11.1);
+  assert.equal(one.fields.moduleVocTempCoeff?.value, -0.27);
+  const two = supplementStructuralIntake(base, "PV05 MODULE TABLE VOC 48.96 V ... DATASHEET OPEN-CIRCUIT VOLTAGE VOC 45.27 V");
+  assert.equal(two.fields.moduleVoc, undefined, "stale table vs datasheet: a conflict, not a pick");
+});
+
 console.log(failures ? `iowaPvWorksheet: ${failures} FAILED, ${passed} passed` : `iowaPvWorksheet: ${passed}/${passed} passed`);
 if (failures) process.exit(1);
