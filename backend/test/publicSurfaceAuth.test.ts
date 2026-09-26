@@ -25,6 +25,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "public-surface-auth-"));
 process.env.AUTOPILOT_DB_PATH = path.join(tmpDir, "test.sqlite");
@@ -92,6 +93,32 @@ for (const s of PUBLIC_SURFACES) {
 check("MUST GATE: everything else still needs a session", () => {
   const leaked = MUST_STAY_GATED.filter((p) => allowsAnonymous(p));
   assert.deepEqual(leaked, [], `a carve-out is too broad and opened: ${JSON.stringify(leaked)}`);
+});
+
+// THE LOGGED-OUT PAGES' OWN ASSETS. Every public page links the brand mark and the vendored
+// Manrope font; gated, each 302'd to /login (broken logo on the sign-in screen, system font on the
+// credential drop box). Every real file under those two directories must open — read from disk so
+// a new brand asset cannot be forgotten.
+const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "frontend");
+const STATIC_ASSETS = [
+  ...fs.readdirSync(path.join(frontendDir, "assets", "brand")).map((f) => `/assets/brand/${f}`),
+  ...fs.readdirSync(path.join(frontendDir, "vendor")).map((f) => `/vendor/${f}`),
+  "/favicon.ico",
+];
+check(`MUST OPEN: every brand asset and vendored font (${STATIC_ASSETS.length}) loads logged out`, () => {
+  assert.ok(STATIC_ASSETS.some((p) => p.endsWith(".woff2")) && STATIC_ASSETS.some((p) => p.endsWith(".png")),
+    `expected the font and the logo among ${JSON.stringify(STATIC_ASSETS)}`);
+  const shut = STATIC_ASSETS.filter((p) => !allowsAnonymous(p));
+  assert.deepEqual(shut, [], `still redirected to /login: ${JSON.stringify(shut)}`);
+});
+check("MUST GATE: the asset carve-out reaches nothing past those two directories", () => {
+  const escapes = [
+    "/assets/brand/../../dashboard.html", "/vendor/../dashboard.html", "/vendor/..", "/vendor/%2e%2e/dashboard.html",
+    "/vendor/..%2fdashboard.html", "/assets/brand/sub/file.png", "/assets/x.png", "/assets/brand/", "/vendor/",
+    "/vendor/.env", "/vendor\\..\\dashboard.html", "/dashboard.js", "/vendorx/a.js", "/api/vendor/a.js",
+  ];
+  const leaked = escapes.filter((p) => allowsAnonymous(p));
+  assert.deepEqual(leaked, [], `the static carve-out opened: ${JSON.stringify(leaked)}`);
 });
 
 check("MUST GATE: the /api/public prefix is NOT open as a blanket", () => {

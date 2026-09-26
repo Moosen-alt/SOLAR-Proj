@@ -10,25 +10,13 @@
   <meta name="robots" content="noindex, nofollow">
   <meta name="referrer" content="no-referrer">
   <title>Project details · Keelix Automation</title>
-  <!-- /styles.css is one of the few paths open to a logged-out visitor
-       (openPaths in backend/src/auth.ts), which is why this public page can link
-       it when status.html and portal.html cannot. It carries the design tokens
-       and the control styles; everything below is this page's own layer. -->
+  <!-- /styles.css is open to a logged-out visitor (openPaths in backend/src/auth.ts). It
+       carries the design tokens, the control styles and the @font-face for the vendored
+       Manrope (frontend/vendor/manrope-*.woff2) — which a logged-out homeowner can now load
+       too: /vendor/<file> and /assets/brand/<file> are open (PUBLIC_STATIC_ASSET in auth.ts).
+       Until that, those requests 302'd to /login and this page leaned on a Google Fonts
+       link; it is gone, so the page makes no external request at all. -->
   <link rel="stylesheet" href="/styles.css" />
-  <!-- Manrope. styles.css above now carries an @font-face for the vendored
-       frontend/vendor/manrope-*.woff2 — AND IT CANNOT REACH THIS PAGE. /vendor/* is not
-       in `openPaths` (backend/src/auth.ts), so for a logged-out homeowner requireAuth
-       302s the font request to /login and the face never arrives. MEASURED on this very
-       page: a logged-out load requests /vendor/manrope-latin.woff2 and gets 302, then
-       gets the face from fonts.gstatic.com with 200 — three weights loaded.
-       So this CDN link is not a duplicate of the vendored copy, it is the only source
-       that reaches a customer, and removing it would silently drop this page to the
-       system stack. It stays until `/vendor/` is added to openPaths.
-       Either way the fallback stack in --font-sans holds every layout, so an offline
-       demo or a locked-down cloud still renders a complete page. -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     /* THE LOOK IS THE MARKETING SITE'S, deliberately: this is a page a homeowner
        opens from an email, so it carries the same signature as status.html and

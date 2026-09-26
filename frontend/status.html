@@ -10,30 +10,29 @@
   <meta name="robots" content="noindex, nofollow">
   <meta name="referrer" content="no-referrer">
   <title>Project status · Keelix Automation</title>
-  <!-- Manrope, the marketing site's typeface.
-       IT IS VENDORED NOW (frontend/vendor/manrope-*.woff2, wired by the @font-face
-       block at the top of styles.css) — AND THAT FILE CANNOT REACH THIS PAGE. /vendor/*
-       is not in `openPaths` (backend/src/auth.ts), so for a tokenized, logged-out
-       visitor requireAuth 302s the font request to /login and the face never arrives.
-       MEASURED, not assumed: a logged-out load requests /vendor/manrope-latin.woff2 and
-       gets 302, then gets the face from fonts.gstatic.com with 200.
-       So the CDN link below is what actually puts the brand typeface in front of a
-       homeowner, and it stays until `/vendor/` is added to openPaths — at which point
-       this page can carry its own @font-face and drop the external request.
-       Either way `display=swap` plus the system fallback in --font-sans keeps the old
-       promise: first paint is immediate and an offline demo still renders whole. -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
+    /* Manrope, VENDORED (frontend/vendor), the same two faces styles.css declares — copied, not
+       linked, because this page keeps its independence from styles.css (see below). A logged-out
+       visitor can load /vendor/<file> since PUBLIC_STATIC_ASSET opened it in backend/src/auth.ts;
+       before that the request 302'd to /login and this page leaned on Google Fonts. Now it makes
+       no external request, and the --font-sans fallback still holds every layout offline. */
+    @font-face {
+      font-family: "Manrope"; font-style: normal; font-weight: 200 800; font-display: swap;
+      src: url("/vendor/manrope-latin.woff2") format("woff2");
+      unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+    }
+    @font-face {
+      font-family: "Manrope"; font-style: normal; font-weight: 200 800; font-display: swap;
+      src: url("/vendor/manrope-latin-ext.woff2") format("woff2");
+      unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+    }
     /* PALETTE MATCHED BY VALUE to frontend/styles.css — not by reference, so these
        are hand-kept in step with the :root there. Same oklch values, same names.
 
        This page links no stylesheet on purpose. The old reason given here — that a
        sibling .css would bounce a logged-out client to /login — is only half true:
-       /styles.css is one of the five exempt `openPaths` in backend/src/auth.ts, so it
-       alone would load. Any OTHER sibling asset behind express.static genuinely does
-       302 (see the vendored-font note in the head). The reason that still holds is
+       /styles.css is one of the exempt `openPaths` in backend/src/auth.ts, so it
+       alone would load, and so do /vendor/ and /assets/brand/ files. The reason that still holds is
        independence: styles.css is a large shared surface under concurrent edit, and a
        tokenized page a customer opens from an email must not restyle itself because
        the operator dashboard changed.

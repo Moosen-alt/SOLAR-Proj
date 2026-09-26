@@ -258,13 +258,22 @@ export function me(db: AppDb, req: Request, res: Response): void {
   res.json({ enabled: AUTH_ENABLED, user: AUTH_ENABLED ? currentUser(db, req) : null });
 }
 
+/** Brand images and vendored fonts a logged-out page needs. A single file name, no leading dot. */
+export const PUBLIC_STATIC_ASSET = /^\/(?:assets\/brand|vendor)\/[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
+
 // Gate everything except the login page, auth endpoints, health, and static
 // assets needed to render the login screen. HTML → redirect; API → 401.
 export function requireAuth(db: AppDb) {
-  const openPaths = new Set(["/login", "/login.html", "/health", "/api/auth/login", "/styles.css"]);
+  const openPaths = new Set(["/login", "/login.html", "/health", "/api/auth/login", "/styles.css", "/favicon.ico"]);
   return (req: Request, res: Response, next: NextFunction) => {
     if (!AUTH_ENABLED) return next();
     if (openPaths.has(req.path) || req.path.startsWith("/api/auth/")) return next();
+    // The brand mark and the vendored Manrope font: static, non-tenant, and every logged-out page
+    // (login, intake, status, credentials, portal) links them. Gated, they 302'd to /login — a
+    // broken logo on the sign-in screen and the system font on the credential drop box. ONE path
+    // segment of plain file-name characters, so no `..`, no `%2e`, no backslash and no sub-folder
+    // can reach past these two directories through express.static.
+    if (PUBLIC_STATIC_ASSET.test(req.path)) return next();
     // Public client intake link (tokenized, no login) — the page and its API.
     if (req.path === "/intake" || req.path.startsWith("/api/intake/")) return next();
     // Public read-only client status page (tokenized, no login) — the page and its API.
