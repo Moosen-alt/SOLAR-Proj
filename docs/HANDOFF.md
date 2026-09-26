@@ -131,6 +131,10 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   the account number was not in it. Cause: the value filter only dropped WHOLE-value matches; the digest is prose added after it. Fixed in
   9193e97 (embedded redaction, separators ignored; kbLearnLookup test, kill-tested). Ships with the re-pin — until then no Stage on real portals.
   Follow-up: the gate workflow's F17 payload-scan test must cover EVERY prompt builder (planner, reviewer, vision, triage, correction agent).
+- BEFORE ANY PUSH of claude/busy-hopper-c2at3x (operator decision, found 2026-09-26): commits 0c19bd4..ac71ebe put REAL customer meter numbers and one
+  account number into backend/test/parserReviewList.test.ts, backend/test/parserReviewPage.dom.smoke.ts and a frontend/parser-review.js comment. Fixed at HEAD
+  (b2e5537 and following), but the values remain in local history. No remote branch contains them (checked 2026-09-26). Scrub history (git filter-repo on
+  those paths/strings) before pushing, or accept the risk explicitly.
 - KNOWLEDGE PRE-LOAD SPEND (prospect states): only AFTER the live research-accuracy evals pass
   (`.probe/jurisdiction/`): state layers for FL/TX/UT/CA (~$2) + the top 5 AHJs/utilities per state from
   `.probe/prospects/PREP-PLAN.md` §6 (~20 entities, ~$50), seeded, operator spot-verifies. Everything else is researched
