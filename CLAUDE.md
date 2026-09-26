@@ -41,7 +41,10 @@ AHJ documents → stage the portal application → human verifies + submits.
    downstream — stripped in `buildPortalPlanner`; sensitive fields bind by name, not
    literal. The one allowed read: INTAKE may read the customer's own document (bill,
    meter photo) to find the account/meter; nothing downstream re-sends the value and no
-   response is logged. (Operator wording, 2026-09-25; pinned by a payload-scan test.)
+   response is logged. (Operator wording, 2026-09-25.) A secret EMBEDDED in prose counts:
+   `redactSecretValues` scrubs account/meter digits (separators ignored) from every
+   planner field and the design digest (`kbLearnLookup` test). A payload scan across
+   EVERY prompt builder (reviewer, vision, triage, correction agent) is still to come.
 3. Human-verified knowledge is never auto-overwritten: `verified_at` set in
    `permit_utility_knowledge` (read ONLY via `isVerifiedKnowledge()` — NOT
    `confidence === "mixed"`, which an automatic seeded+learned merge also wrote),
@@ -50,7 +53,12 @@ AHJ documents → stage the portal application → human verifies + submits.
 4. Agent tools are narrow local handlers (no shell/network); agent data-update
    proposals require human approval (`/api/corrections/:id/apply`).
 5. A permit track must never resolve/launch a utility portal URL (PowerClerk)
-   and vice versa — see `permitSafeUrl` + track-scoped lookups in repository.ts.
+   and vice versa — ONE predicate, `portalChannel.hostFitsTrackAndEntity`, at every
+   door. The single carve-out (operator ruling 2026-09-25): where a utility takes its
+   interconnection application inside the CITY's permit portal (Utah munis, Austin
+   Energy…), the NEM track may use that host ONLY when that utility's own human-VERIFIED
+   KB record names it (same host and tenant) — never host-wide, never a seeded row,
+   never the AHJ's row. An information/help page is never a portal on either track.
 6. Tenant data never crosses orgs. New `/api/*` routes are DENY-BY-DEFAULT
    (`entitlementGate`); anything under `/api/projects/:id`, `/api/clients/:id`,
    `/api/customers/:id` inherits a scope guard automatically. A route at a NEW
