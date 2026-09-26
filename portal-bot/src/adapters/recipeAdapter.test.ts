@@ -1338,6 +1338,13 @@ async function testImportedHelpersStayBehindTheChokepoint() {
   assert.ok(firstCheck > 0, "the dismisser asks the shared in-page refusal question");
   assert.ok(clicks.every((i) => i > firstCheck), "every click in the dismisser comes after the refusal check");
   assert.ok(/if \(refusal\)/.test(body) && /opts\.click/.test(body), "a refusal skips the control, and a caller's chokepoint performs the click");
+  // comboboxFill (replay's selectWithFallback) presses Enter in a widget's search box: that Enter
+  // may only follow the shared implicit-submission question (replay skeptic MF3).
+  const combo = strip(fs.readFileSync(new URL("../comboboxFill.ts", import.meta.url), "utf8"));
+  const enters = [...combo.matchAll(/\.press\(\s*"Enter"/g)].map((m) => m.index ?? 0);
+  const asked = combo.indexOf("implicitSubmitRefusalInPage");
+  assert.ok(enters.length >= 1 && asked > 0 && enters.every((i) => i > asked && combo.slice(asked, i).includes("if (refusal)")),
+    "every Enter comboboxFill presses comes after the implicit-submission refusal check");
 }
 
 // R1 / hard rule 5 inside replay: a goto that leaves the recipe's portal stops the run, named.
