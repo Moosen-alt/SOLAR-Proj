@@ -212,7 +212,13 @@ const app = express();
 })();
 
 const db = await openDatabase();
-const frontendDir = path.resolve(process.cwd(), "frontend");
+// FRONTEND_DIR pins the dashboard WITH the backend (production 2026-09-27). The pinned server ran
+// 4bbd911's backend from .probe/prod-pinned but served frontend/ from the working directory — the
+// dev tree — so every frontend commit went live against the old backend: parser.html posted
+// scanned plan sets to /api/parser/plan-scan-extract, a route 4bbd911 does not have (404), and
+// the operator's plan sets were not read. start-prod-pinned.cmd sets FRONTEND_DIR to the pinned
+// checkout's frontend/; unset (dev, tests) it is the working directory's, as before.
+const frontendDir = process.env.FRONTEND_DIR ? path.resolve(process.env.FRONTEND_DIR) : path.resolve(process.cwd(), "frontend");
 const port = Number(process.env.PORT || 4173);
 // What code is running — from the EXECUTING code's own git commit (pinned production runs
 // .probe/prod-pinned with cwd = the live folder), computed once. See buildInfo.ts.
