@@ -315,17 +315,38 @@ export class FinalSubmitStop extends Error {
 // claim, burned on a refusal), but any other caller of stageWithRecipe was not. A runId whose
 // approved final submit was clicked — or refused at the gate while an approval was offered — is
 // burned for the life of this process, and the gate refuses it after that.
-const BURNED_APPROVED_RUNS = new Map<string, "clicked" | "refused">();
+//
+// CHECK AND CLAIM ARE ONE SYNCHRONOUS STEP (autosubmit-close MF-C). The burn was checked in
+// finalSubmitRefusalsNow(), then the click path AWAITED detectChallengeFrame, and only then burned
+// the runId — two runs started together with the same {approver, runId} both passed the check
+// before either burned it, and both filed (3/3). tryClaimApprovedRun is the only way onto the
+// approved click: it reads and sets in one turn of the event loop, before any await, so exactly one
+// of N concurrent runs holds the claim. "claimed" is a claim that has not clicked (yet — or ever: a
+// CAPTCHA/MFA stop after the claim); it is never reported as a click.
+export type ApprovedRunBurn = "claimed" | "clicked" | "refused";
+const BURNED_APPROVED_RUNS = new Map<string, ApprovedRunBurn>();
 export function burnApprovedRun(runId: string, how: "clicked" | "refused"): void {
   const id = String(runId || "").trim();
   if (!id) return;
   if (BURNED_APPROVED_RUNS.get(id) !== "clicked") BURNED_APPROVED_RUNS.set(id, how);
 }
-/** How this runId's approval was spent in this process, or null. */
-export function approvedRunBurn(runId: string): "clicked" | "refused" | null {
+/** How this runId's approval was spent (or is held) in this process, or null. */
+export function approvedRunBurn(runId: string): ApprovedRunBurn | null {
   const id = String(runId || "").trim();
   return id ? BURNED_APPROVED_RUNS.get(id) ?? null : null;
 }
+/** Claim this runId's approval for ONE approved final-submit click: true exactly once per runId per
+ *  process (a runId already claimed, clicked or refused -> false). Synchronous on purpose — call it
+ *  before any await on the click path. An empty runId can never be claimed. */
+export function tryClaimApprovedRun(runId: string): boolean {
+  const id = String(runId || "").trim();
+  if (!id || BURNED_APPROVED_RUNS.has(id)) return false;
+  BURNED_APPROVED_RUNS.set(id, "claimed");
+  return true;
+}
+const burnWords = (b: ApprovedRunBurn): string => b === "clicked" ? "it clicked a final submit"
+  : b === "claimed" ? "another run in this process claimed it for its final submit"
+    : "it was refused";
 
 /** One live progress line from a replay (options.onProgress): what the run is waiting on, never
  *  PII. index.ts StageOptions passes it through so a caller (the dashboard) can show it. */
@@ -4144,7 +4165,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     if (!may && !out.length) out.push("the final-submit gate refused this click");
     if (this.finalSubmitAttempted) out.push("the final submit was already attempted in this run");
     const burned = approvedRunBurn(ctx.runId);
-    if (burned && !this.finalSubmitAttempted) out.push(`this run's approval (runId ${ctx.runId.slice(0, 40)}) was already used in this process — it ${burned === "clicked" ? "clicked a final submit" : "was refused"}; one approval covers one filing attempt, a new run needs a new approval`);
+    if (burned && !this.finalSubmitAttempted) out.push(`this run's approval (runId ${ctx.runId.slice(0, 40)}) was already used in this process — ${burnWords(burned)}; one approval covers one filing attempt, a new run needs a new approval`);
     return out;
   }
 
@@ -4313,6 +4334,14 @@ export class RecipeAdapter extends BasePortalAdapter {
         // run re-passing the same {approver, runId} after the refusal (env flipped in between)
         // filed at this layer.
         if (this.options.runApproval) burnApprovedRun(String(this.options.runId ?? ""), "refused");
+        return false;
+      }
+      // THE CLAIM, IN THE SAME SYNCHRONOUS TURN AS THE CHECK ABOVE (MF-C): no await between
+      // finalSubmitRefusalsNow() and this line, so of N runs sharing one {approver, runId} exactly
+      // one gets past here. The loser is refused, named — never clicked.
+      if (!tryClaimApprovedRun(String(this.options.runId ?? ""))) {
+        const held = approvedRunBurn(String(this.options.runId ?? ""));
+        this.driftWarnings.push(`final submit NOT clicked — this run's approval (runId ${String(this.options.runId ?? "").slice(0, 40)}) was already used in this process — ${held ? burnWords(held) : "it could not be claimed"}; one approval covers one filing attempt, a new run needs a new approval`);
         return false;
       }
       // Trusted auto-submit: STRUCTURALLY detect a CAPTCHA/MFA challenge (iframe-based

@@ -398,6 +398,29 @@ if (want("burned")) {
   check("MUST-EXCLUDE burned: an approval refused once (env unset) does not file when re-passed with env 1 — 0 POSTs",
     refused.posts.length === 0 && after.posts.length === 0 && after.r.finalSubmitClicked === false, `${brief(refused)} || ${brief(after)}`);
 }
+if (want("concurrent")) {
+  // autosubmit-close MF-C: two runs started TOGETHER with the same {approver, runId}. The env is
+  // set once around both (stage() restores per call, which would race here).
+  const approval = { approver: "A. Operator", runId: "run-conc-1" };
+  const prev = process.env.PORTAL_ALLOW_FINAL_SUBMIT;
+  process.env.PORTAL_ALLOW_FINAL_SUBMIT = "1";
+  const before = requests.length;
+  let rs: Array<Record<string, unknown>> = [];
+  try {
+    rs = await Promise.all(["concA", "concB"].map((mode) => stageWithRecipe(recipeFor(mode), { id: `p-${mode}` } as ProjectRecord, {}, {}, [], {
+      autoSubmit: true, runApproval: approval, runId: approval.runId, headless: true,
+    }) as unknown as Promise<Record<string, unknown>>));
+    await new Promise((res) => setTimeout(res, 500));
+  } finally {
+    if (prev === undefined) delete process.env.PORTAL_ALLOW_FINAL_SUBMIT; else process.env.PORTAL_ALLOW_FINAL_SUBMIT = prev;
+  }
+  const posts = requests.slice(before).filter((p) => /\/apply\/submit$/.test(p.path));
+  const detail = `filing POSTs=${JSON.stringify(posts.map((p) => p.path))} clicked=${rs.map((r) => String(r.finalSubmitClicked)).join(",")} | ${rs.map((r) => msgOf(r).slice(0, 200)).join(" || ")}`;
+  check("MUST-EXCLUDE concurrent: two runs started together with ONE approval file at most once (exactly one filing POST, one run clicked)",
+    posts.length === 1 && rs.filter((r) => r.finalSubmitClicked === true).length === 1, detail);
+  check("concurrent: the other run is refused, named, and never reports a click",
+    rs.some((r) => r.finalSubmitClicked === false && /already used in this process/.test(JSON.stringify(r.steps ?? "") + msgOf(r))), detail);
+}
 
 console.log("\n9. autosubmit-close MF-B: telemetry fired by the Submit never takes the approved slot — the form's own request files");
 for (const mode of ["beaconFirst", "beaconCross", "keepaliveClick", "beaconModal"]) {

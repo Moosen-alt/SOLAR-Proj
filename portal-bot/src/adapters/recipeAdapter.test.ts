@@ -277,6 +277,32 @@ async function testFinalSubmitQuietPageIsUnknownAndNotRetried() {
   assert.match(String(review.message), /UNKNOWN — human must verify/);
 }
 
+// autosubmit-close MF-C MUST-EXCLUDE: two runs started TOGETHER in one process with the SAME
+// {approver, runId} file at most once. The burn used to be checked, then the click path awaited
+// the challenge probe, then burned — both runs passed the check before either burned (3/3 filed).
+// The claim is now one synchronous check-and-set before any await: exactly one run clicks, the
+// other is refused, named, and never reports a click. (Also: N=3 in one tick.)
+async function testConcurrentSameApprovalFilesAtMostOnce() {
+  const approval = approvedRun();
+  const flagged = { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep;
+  const runs = [0, 1, 2].map(() => {
+    const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
+    const adapter = new RecipeAdapter(baseRecipe([{ action: "stopForReview" }, flagged]), {}, {}, { ...approval, runApproval: { ...approval.runApproval } });
+    withFakePage(adapter, makeFakePage({ log, bodyText: CONFIRMATION }));
+    return { log, adapter };
+  });
+  const results = await withFinalSubmitEnv("1", () => Promise.all(runs.map((r) => r.adapter.fillApplication(fakeProject))));
+  const clicks = runs.reduce((n, r) => n + r.log.clicks.length, 0);
+  assert.equal(clicks, 1, `MUST-EXCLUDE: ${runs.length} concurrent runs sharing one approval clicked the final submit ${clicks} time(s) — at most once`);
+  assert.equal(runs.filter((r) => r.adapter.finalSubmitClicked).length, 1, "exactly one run reports the click");
+  for (const [i, r] of runs.entries()) {
+    if (r.adapter.finalSubmitClicked) continue;
+    assert.notEqual(results[i].data?.finalSubmitClicked, true, "a refused run never reports a click");
+    const warnings = JSON.stringify((results[i].data as { driftWarnings?: string[] } | undefined)?.driftWarnings ?? []);
+    assert.match(warnings, /final submit NOT clicked — this run's approval .* already used in this process/, `the loser is refused, named: ${warnings.slice(0, 300)}`);
+  }
+}
+
 // A flagged final submit must STILL never be clicked in guided-manual (autoSubmit off).
 async function testFlaggedFinalSubmitNotClickedWithoutAutoSubmit() {
   const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
@@ -1416,6 +1442,7 @@ const tests: Array<[string, () => Promise<void>]> = [
   ["R1: a goto that leaves the recipe's portal stops the run, named (rule 5)", testGotoLeavingThePortalStopsTheRun],
   ["R2: each missing input of the final-submit gate keeps it unclicked", testFinalSubmitGateRefusesEachMissingInput],
   ["R2: a quiet page after the approved click is unknown, reported, never retried", testFinalSubmitQuietPageIsUnknownAndNotRetried],
+  ["MF-C: runs started together with ONE approval file at most once (claim before any await)", testConcurrentSameApprovalFilesAtMostOnce],
   ["RESOLVE: a hidden-only primary falls through to the visible fallback", testHiddenPrimaryFallsThroughToVisibleFallback],
   ["RESOLVE: a visible-but-DISABLED primary falls through too", testDisabledOnlyPrimaryFallsThroughToFallback],
   ["RESOLVE: an ordinal fallback that lands on a hidden control retries unpinned", testOrdinalFallbackRetriesUnpinned],
