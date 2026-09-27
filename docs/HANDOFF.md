@@ -39,8 +39,26 @@ Operator: "there is no place to verify them. Can we just have it verify itself o
   "human-verified on <date>". A row verified by the script door (`markFeeScheduleVerified`, no
   org) shows its name to nobody; the 2026-09-27 backup holds 0 verified fee rows, so nothing
   needs a backfill today; (MF4) "matches the published schedule"
-  needs the printed row to name THIS permit (or be the exact bracket-label row) — "Plumbing
-  permit fee | $160.00" no longer badges a researched "Permit fee" $160.
+  needs the printed row to name THIS permit — "Plumbing permit fee | $160.00" no longer badges a
+  researched "Permit fee" $160.
+- **fees-close2 (the last skeptic's two must-fixes, 2026-09-27):** (badge, M1p) positive naming
+  only: the printed row AND the nearest heading above it on the page (now kept at corroboration
+  time as `FeeBracketCorroboration.heading`) must name this permit — solar/PV/photovoltaic for
+  building, renewable/solar/PV for electrical (a bare kVA row only under such a heading), an
+  interconnection/net-metering line for NEM; wind/generator/plumbing/solar-thermal/commercial…
+  in row or heading never earns it; the exact-label shortcut is gone. A row naming ANOTHER permit
+  is also no longer offered as the fee's "Published as" line (M8) — the basis warns instead.
+  Rows stored before this carry no heading and must self-name: on the 09-27 backup the fee sheet
+  is unchanged (42 lines, the same 2 badges — Salem's "Renewable Electrical Energy" rows).
+  (confirm, V1) **Confirm records what the person saw, bracket by bracket**:
+  `fee_bracket_verifications` holds (row, bracket label, amount) per line on the card and
+  (pointer row, hop target) per delegation; it never flips `fee_schedules.confidence/verified_at`.
+  A line reads verified only when its own bracket at its own amount is recorded (another job in
+  the same bracket at the same amount: verified; the row's other brackets: seeded). The script
+  door (`markFeeScheduleVerified`) still verifies a whole row. The dialog lists exactly the
+  items; the 409 now compares brackets and amounts too; research is refused over any row
+  carrying a person's record. **Restart the server after pulling** (the table is created at
+  start).
 - Still open from the same skeptic (not in fees-close): the Accela fee parser overstates when a
   credit line has no printed total and can sum a dated `$` figure from a later unknown section
   (`shared/src/portalFeeItems.ts`); two targets sharing one record URL each count the page
