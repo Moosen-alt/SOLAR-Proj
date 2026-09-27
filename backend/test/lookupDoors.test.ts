@@ -372,14 +372,27 @@ await check("(m4) lookup-close-6 MF1 — ONE record-type predicate (recordTypeBe
   const ra = await ppl.runPermitProcessLookup(db, llmOf(p1a, [PG2, countyModule]), { state: "IN", ahj: "City of Mergd", dcKw: "7", acKw: "6", force: true, reader: null });
   assert.equal(saved(ra, "structural").recordType.value, null, `a cited type beside NO saved portal is not kept (${saved(ra, "structural").recordType.value})`);
   assert.match(String(saved(ra, "structural").recordType.notFound), /no portal was kept/);
-  // …and even when an older door HAD saved it, the merge does not carry it beside this run's own portal.
-  pp.savePermitProcessLookup(db, { ...ra.lookup!, permits: ra.lookup!.permits.map((p) => (p.discipline === "structural" ? { ...p, recordType: { value: "Building Solar Photovoltaic Residential", sourceUrl: countyModule, quote: "Building Solar Photovoltaic Residential", origin: "lookup" } } : p)) } as never);
+  // …and even when an older door HAD saved it, the merge does not carry it beside this run's own portal; nor an
+  // earlier-only permit's type that had no portal (the combo row), while that permit itself is still carried.
+  const cm = (value: string | null, sourceUrl = PG2, quote = "City of Mergd issues building permits") => ({ value, sourceUrl, quote, origin: "lookup" as const, ...(value ? {} : { notFound: "x" }) });
+  pp.savePermitProcessLookup(db, { ...ra.lookup!, permits: [...ra.lookup!.permits.map((p) => (p.discipline === "structural" ? { ...p, recordType: { value: "Building Solar Photovoltaic Residential", sourceUrl: countyModule, quote: "Building Solar Photovoltaic Residential", origin: "lookup" } } : p)),
+    { discipline: "combo", label: "Solar (combo)", issuingAgency: cm("City of Mergd"), portalUrl: cm(null), recordType: cm("Building Solar Photovoltaic Residential", countyModule, "Building Solar Photovoltaic Residential"), documents: cm(null), fee: cm(null) }] } as never);
   const p1b = JSON.parse(shapeFor("Mergd", PG2, "City of Mergd", "City of Mergd", "City of Mergd"));
   p1b.permits[0].portalUrl = { value: own.ROOT, sourceUrl: PG2, quote: "City of Mergd Online Permits — apply online" };
-  const rb = await ppl.runPermitProcessLookup(db, llmOf(p1b, [PG2, own.ROOT]), { state: "IN", ahj: "City of Mergd", dcKw: "7", acKw: "6", force: true, reader: newReader(site({ ...own.pages, [PG2]: { text: html("<p>Building permits are applied for online.</p>") } }).fetch) });
+  // This run's part one ALSO cites the county-page type beside the city's own portal: it is no record type, so the
+  // portal step is still asked for the structural permit (the "is a record type still needed" question asks the one
+  // predicate; the catalog of CITYOFMERGD lists no solar type).
+  p1b.permits[0].recordType = { value: "Building Solar Photovoltaic Residential", sourceUrl: countyModule, quote: "Building Solar Photovoltaic Residential" };
+  stepAsked.length = 0;
+  const rb = await ppl.runPermitProcessLookup(db, llmWithStep(p1b, [PG2, own.ROOT, countyModule]), { state: "IN", ahj: "City of Mergd", dcKw: "7", acKw: "6", force: true, reader: newReader(site({ ...own.pages, [PG2]: { text: html("<p>Building permits are applied for online.</p>") } }).fetch) });
   const sb = saved(rb, "structural");
   assert.equal(sb.portalUrl.value, own.ROOT, `this run's own portal (${sb.portalUrl.notFound})`);
   assert.equal(sb.recordType.value, null, `S1d: the earlier type cited to MERGDCOUNTY's page is not carried beside CITYOFMERGD (${sb.recordType.value} @ ${sb.recordType.sourceUrl})`);
+  assert.ok(stepAsked.some((u) => /structural/.test(u)), `a type cited to another tenant's page leaves the record type still needed — the step is asked (asked: ${JSON.stringify(stepAsked)})`);
+  const combo = saved(rb, "combo");
+  assert.ok(combo, "the earlier-only combo permit is still carried (never forgets)");
+  assert.equal(combo.recordType.value, null, `an earlier-only permit's portal-less record type is not carried (${combo.recordType.value})`);
+  assert.match(String(combo.recordType.notFound), /had no portal/);
   // MUST-PASS: the issuing agency's own page names the type beside the saved portal — kept, cited to that page; the
   // portal's own public record too; another jurisdiction's .gov page, or the vendor's other tenant, never.
   const belongs = ppl.recordTypeBelongsToPortal;
