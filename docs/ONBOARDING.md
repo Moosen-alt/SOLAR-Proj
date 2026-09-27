@@ -993,7 +993,7 @@ unencrypted in `portal-profiles/` (§5).
 | `AUTH_SECRET` | Set it to its OWN stable value. It defaults to falling back to `SESSION_ENCRYPTION_KEY`, which means a key rotation logs every user out. |
 | `AUTOPILOT_DB_PATH` | Which database the scripts write to. Wrong value = silently provisioning into a scratch DB. |
 | `PORTAL_HEADLESS` | `false` on an operator desktop, so a human can clear a challenge in the visible browser. A headless server cannot complete a paused filing at all. |
-| `PORTAL_ALLOW_FINAL_SUBMIT` | Leave it unset. It is one half of the double gate on operator-delegated final submit and has no place in onboarding. |
+| `PORTAL_ALLOW_FINAL_SUBMIT` | Leave it unset during onboarding. It is one of three conditions on the bot clicking a portal's final submit (with a named person's approval of that exact run from Approve & auto-submit, and a recipe recorded through submit — `mayClickFinalSubmit`); the operator turns it on at the re-pin, never a new customer. Fees, CAPTCHA and MFA are never automated. |
 | `PUBLIC_BASE_URL` | The host the one-time credential link is built against (§5). Unset, the link comes back with an empty host and the customer cannot open it. |
 
 Scripts this runbook uses, in the order the seven days need them:

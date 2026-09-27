@@ -4220,7 +4220,7 @@ function trackCardHtml(t) {
       ? `<div style="margin:6px 0 4px" data-shot-wrap><a href="/api/projects/${esc(state.selectedProjectId)}/portal-runs/${esc(t.recipeId)}/review-screenshot" target="_blank" rel="noopener" title="Open the full-size capture"><img src="/api/projects/${esc(state.selectedProjectId)}/portal-runs/${esc(t.recipeId)}/review-screenshot" alt="Auto-captured portal page" class="review-shot" style="max-width:100%;border:1px solid var(--border);border-radius:var(--radius-sm)" data-shot-key="${esc(screenshotKey(state.selectedProjectId, t.recipeId, t.recipeStatus))}" onerror="window.__noteMissingReviewShot(this)" /></a><p class="muted" style="font-size:11px;margin:2px 0 0">${t.recipeStatus === "complete" ? "Portal review screen (auto-captured) — click for full size" : "Last captured page — recording not complete. If this is a login page, add this portal's login under “Manage logins” and re-stage."}</p></div>` : ""}
     <div class="track-actions">
       <button type="button" class="secondary" data-track-stage="${esc(t.type)}" title="Auto-fill this filing's portal up to the final review screen — you submit manually"><i data-lucide="bot"></i><span>Stage in portal</span></button>
-      <button type="button" class="secondary" data-track-approve="${esc(t.type)}" title="Hybrid: replay through the final application submit — only runs if you've trusted this portal for auto-submit, otherwise it stages to review. Never pays fees; stops for CAPTCHA/MFA."><i data-lucide="check-check"></i><span>Approve &amp; auto-submit</span></button>
+      <button type="button" class="secondary" data-track-approve="${esc(t.type)}" title="Your approval of THIS run lets the bot click the portal's application submit (needs the server switch PORTAL_ALLOW_FINAL_SUBMIT=1 and a recipe recorded through submit; otherwise it stages to review for you). Never pays fees; stops for CAPTCHA/MFA."><i data-lucide="check-check"></i><span>Approve &amp; auto-submit</span></button>
     </div>
     ${recipeBlock}
     <details class="track-submit"${t.status === "staged" ? " open" : ""}>
@@ -4276,7 +4276,7 @@ function renderSubmittalTracks() {
   });
   wrap.querySelectorAll("button[data-track-approve]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      if (!confirm("Approve & auto-submit this filing?\n\nIf you've trusted this portal, the bot will replay through the final application submit (never fee payment) and stop for any CAPTCHA/MFA. If the portal isn't trusted, it just stages to the review screen for you to submit.")) return;
+      if (!confirm("Approve & auto-submit this filing?\n\nThis is your approval of THIS run, recorded under your name: with the server's PORTAL_ALLOW_FINAL_SUBMIT switch on and a recipe recorded through submit, the bot clicks the portal's application submit (never fee payment) and stops for any CAPTCHA/MFA. If the switch is off or the recipe stops short, it stages to the review screen for you to submit.")) return;
       stageSubmittalTrack(btn.dataset.trackApprove, btn, true);
     });
   });
@@ -4355,7 +4355,7 @@ async function stageSubmittalTrack(type, btn, autoSubmit = false) {
     await loadSubmittalTracks();
     renderDetail();
     showMessage(job.result && job.result.status === "submitted"
-      ? `${humanize(type)} submitted via the trusted auto-submit (application submit only — no fees paid). Capture/verify the record number below.`
+      ? `${humanize(type)} submitted by the bot under your approval of this run (application submit only — no fees paid). Capture/verify the record number below.`
       : `${humanize(type)} staged to final review. Verify every field, then submit manually in the portal and capture the number here.`, "info");
   } catch (err) {
     showMessage(err.message || `Could not stage ${type}.`, "error");

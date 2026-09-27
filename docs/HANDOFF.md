@@ -191,7 +191,13 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   and CA. The bar is a supervised pilot we can actually run for them, and a 100-project customer after that.
 - FINAL SUBMIT: the operator wants to submit from the dashboard (Approve & Submit -> the bot clicks the portal's submit), so
   PORTAL_ALLOW_FINAL_SUBMIT stays on; it becomes acceptable only with the per-run approval gate (bot round R2 + W1 A2)
-  verified. CLAUDE.md hard rule 1 is to be reworded to match — with the operator's OK — once that gate is verified.
+  verified. RULING 2026-09-26 (operator: "I want it to be able to click submit when submit is clicked. So then it can just
+  run through them and then get the nem/permit number easy too."): CLAUDE.md hard rule 1 is REWORDED to the gate as built —
+  a named person's approval of exactly this run (Approve & auto-submit, claimed by id) + PORTAL_ALLOW_FINAL_SUBMIT=1 on the
+  process + a valid recipe shape with ONE terminal isFinalSubmit click after stopForReview (portalSafety.mayClickFinalSubmit /
+  repository.automaticSubmitRefusals). No code gate changed; fees / CAPTCHA / MFA stay NEVER. The button label is unchanged;
+  the dashboard wording that said "only runs if you've trusted this portal" now names the real gate (portal_recipes
+  .auto_submit_enabled is never consulted). The operator flips PORTAL_ALLOW_FINAL_SUBMIT=1 at the re-pin.
 - DEMO RECORDING ON PGE (operator ruling 2026-09-24, late): the operator AUTHORISES a supervised run on PGE's live PowerClerk with clearly
   test-labelled homeowner data, recorded on video with PII/account-header masking, for the offline demo; the operator deletes the draft(s)
   afterwards. Still: learn/replay to the REVIEW screen and stop, never submit, PORTAL_ALLOW_FINAL_SUBMIT unset for the session, operator present
@@ -214,7 +220,8 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 - STANDING AUTHORIZATION, WIDENED (operator 2026-09-25 23:55): "parse anything you can and make it work, also change the rules as needed to
   ensure functionality" — read every document (vision on image pages) rather than leave a form blank; change a product rule/predicate that blocks
   the correct outcome, logging each as 'Rule adjusted (operator authorization 2026-09-25): ...' here. NEVER moves: hard rule 1 (no final submit,
-  no payment, no CAPTCHA/MFA by automation) and hard rule 2 (secrets never reach the model downstream).
+  no payment, no CAPTCHA/MFA by automation) and hard rule 2 (secrets never reach the model downstream). (Rule 1's final-submit clause was
+  superseded by the operator's own 2026-09-26 ruling above — the per-run approval gate; payment / CAPTCHA / MFA remain NEVER.)
 - PER-JOB LOOKUP (operator 2026-09-25 23:50): "It needs to look up the right stuff per job" — agency, permit structure, portal + record type,
   documents/forms, fees and codes are looked up by the product for each new AHJ (cited, seeded), never hand-seeded per city.
 - PER-JOB PROCESS RECORD (2026-09-26, `backend/src/permitProcess.ts`, table `permit_process_lookups`, migration v36): one row per
@@ -302,8 +309,8 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 **W1 close stage landed (2026-09-25) — the two skeptics' must-fixes (trust M1-M7, resolution MF1-MF4):**
 - FINAL SUBMIT: an approval is bound to the request that minted it (claimed by id, before the first gate; a
   gate-refused run burns it, audited `portal.run_approval_claimed`; a request that named nobody is enqueued
-  with autoSubmit=false). Trust M1 no longer blocks `PORTAL_ALLOW_FINAL_SUBMIT=1`; CLAUDE.md hard rule 1 still
-  says NEVER and is to be reworded with the operator's OK (unchanged here).
+  with autoSubmit=false). Trust M1 no longer blocks `PORTAL_ALLOW_FINAL_SUBMIT=1`. (CLAUDE.md hard rule 1 was
+  reworded to this gate on 2026-09-26 with the operator's OK — see the rulings list above.)
 - KEEP-AND-FLAG is visible on the API (`flagReason`/`flaggedAt` on every recipe) and clearable
   (`POST /api/portal-recipes/:id/clear-flag`, audited) — and, since W1 close 2, ON THE DASHBOARD: the recipe row
   shows "Flagged for review" + the reason + date and a Clear flag button (611bd7b).
@@ -321,7 +328,7 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 - FINAL SUBMIT: `POST /api/jobs` no longer carries a final-submit approval — a `prepare_submission` body there is
   reduced to `{ track }` (68f6445). A forged job holding someone's live approval id used to claim it (verifier
   probe P1) — that was the last item the verifier listed as blocking `PORTAL_ALLOW_FINAL_SUBMIT=1`; turning the
-  switch on is the operator's call. CLAUDE.md hard rule 1 still says NEVER — reword it with the operator's OK before turning the switch on.
+  switch on is the operator's call. (CLAUDE.md hard rule 1 was reworded to this gate on 2026-09-26 with the operator's OK.)
 - RESTORE DRY RUN now works on a REAL `.backup` of production (schema v34): the script leaves out
   `portal_runs.recipe_id` when the column is absent (4207fdc). Measured on a 2026-09-26 copy: exit 0, `RESTORE 6282e671`
   and `RESTORE 481c00f4`, 2 of 77, `e9efa4a3` kept, file sha1 unchanged; `--apply` refused (exit 2, schema v34 < v36).
@@ -398,7 +405,8 @@ corrections close when the project truly finishes; demo/benchmark projects never
   and Approve refused on 3 staged NEM drafts that left required portal fields blank.
 - Production runs straight from this dev working tree: lazily imported modules load whatever is on disk
   at first use. Run production from a separate deploy checkout.
-- `.env` has `PORTAL_ALLOW_FINAL_SUBMIT=1`, contrary to hard rule 1's wording. Note: recorded recipes
+- `.env` has `PORTAL_ALLOW_FINAL_SUBMIT=1` — consistent with hard rule 1 since its 2026-09-26 rewording (the
+  switch is one of the three gate conditions; a named per-run approval is still required). Note: recorded recipes
   can never auto-submit anyway (the recorder's "submit/pay-like" note trips the fee gate first).
 - Fee schedules short of Oregon's 12% state surcharge: Tigard and Salem (receipts prove it); Lincoln City
   contradicts its receipt ($172.50 vs $250). Review items raised; schedules are never auto-changed.

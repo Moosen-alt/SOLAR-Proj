@@ -215,7 +215,7 @@ Without this, cookies are signed with `SESSION_ENCRYPTION_KEY`. **Never change `
 
 ### 4.3 Final submit
 
-`PORTAL_ALLOW_FINAL_SUBMIT=1` is set today. By the operator's ruling (HANDOFF, 2026-09-24) it **stays on** for dashboard Approve & Submit, and is acceptable only with the per-run approval gate verified on the running build.
+`PORTAL_ALLOW_FINAL_SUBMIT=1` is set today. By the operator's ruling (HANDOFF, 2026-09-24, confirmed 2026-09-26) it **stays on** for dashboard Approve & auto-submit. The switch alone submits nothing: the bot clicks a portal's final submit only when a named person approved exactly that run from the dashboard (the approval is claimed by id and burned if any gate refuses), this switch is on, AND the recipe has a valid shape with one terminal submit click after the review stop (`mayClickFinalSubmit` / `automaticSubmitRefusals`). The per-recipe "trusted for auto-submit" toggle is not part of the gate. Fees, CAPTCHA and MFA are never automated.
 
 preflight treats it as follows:
 
