@@ -124,12 +124,15 @@ await check("(x2) MUST-EXCLUDE: an agency whose quote does not name it is NOT FO
   assert.equal(r.issuingAgency.value, null);
   assert.match(String(r.issuingAgency.notFound), /do not state/);
 });
-await check("(x3) MUST-EXCLUDE: an ungrounded answer (no search results) keeps NOTHING — model memory is never stored", async () => {
-  const run = await ppl.runPermitProcessLookup(db, stub(grounded(processAnswer(), { groundedSearches: 0 }), grounded(feesAnswer(), { groundedSearches: 0 })), { state: "OR", ahj: "City of Birchport" });
+await check("(x3) MUST-EXCLUDE: an ungrounded answer (no search results) keeps NOTHING — model memory is never stored; with NO grounded part at all the run is an errored one (close-3 F1: no row, re-queued), and with one grounded part the ungrounded part's answer is still dropped", async () => {
+  await assert.rejects(ppl.runPermitProcessLookup(db, stub(grounded(processAnswer(), { groundedSearches: 0 }), grounded(feesAnswer(), { groundedSearches: 0 })), { state: "OR", ahj: "City of Birchport" }), /did not run: no part was grounded/);
+  assert.equal(pp.permitProcessFor(project("City of Birchport")), null, "no row from memory");
+  const run = await ppl.runPermitProcessLookup(db, stub(grounded(processAnswer(), { groundedSearches: 0 }), grounded(feesAnswer())), { state: "OR", ahj: "City of Birchport" });
   const lk = pp.permitProcessFor(project("City of Birchport"))!;
+  assert.equal(run.saved, true, "documents/fees was grounded: the run ran");
   assert.equal(lk.issuingAgency.value, null, JSON.stringify(run.calls));
   assert.equal(lk.permitStructure.value, null);
-  assert.ok(lk.permits.every((p) => p.fee.value === null && p.portalUrl.value === null));
+  assert.ok(lk.permits.every((p) => p.portalUrl.value === null), "nothing from the ungrounded process part");
 });
 await check("(x4) a truncated answer is NOT FOUND ('cut off'), and an aborted part loses only that part", async () => {
   const cut = processAnswer().slice(0, 200);
@@ -191,6 +194,27 @@ await check("(e1) MUST-EXCLUDE (close-2 item 6): a lookup whose EVERY call error
   const half = await ppl.runPermitProcessLookup(db, { webLookup: async () => (++n === 1 ? grounded(processAnswer()) : credit()) }, { state: "OR", ahj: "City of Rushbrook" });
   assert.equal(half.saved, true);
   assert.equal(half.lookup?.issuingAgency.value, "Marion County");
+});
+
+await check("(e4) MUST-EXCLUDE (close-3 F1): a run whose PROCESS part aborted twice while the portal and documents/fees parts answered '{}' (grounded searches, empty answers) is an errored run — it throws, writes no all-not-found row, and so re-queues; a process part refused once (a credit refusal is not retried) is the same; MUST-PASS: a run that RAN and found nothing (grounded, empty) is saved, and an earlier seeded row survives a later errored re-run", async () => {
+  const aborted: WebLookupResult = { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: "Request was aborted." };
+  const empty: WebLookupResult = { text: "{}", groundedSearches: 3, searches: 3, stopReason: "end_turn", resultUrls: [], pagesRead: 0 };
+  let k = 0;
+  await assert.rejects(ppl.runPermitProcessLookup(db, { webLookup: async (i: { label: string }) => { k++; return i.label.endsWith(".process") ? aborted : empty; } }, { state: "OR", ahj: "City of Partialmere" }), /did not run: the process part errored — Request was aborted/);
+  assert.equal(k, 4, "process + its retry, then the portal step and documents/fees (each asked once)");
+  assert.equal(pp.getPermitProcessLookup(db, "OR", "City of Partialmere"), null, "no all-not-found row");
+  const credit: WebLookupResult = { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: "400 credit balance is too low" };
+  await assert.rejects(ppl.runPermitProcessLookup(db, { webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? credit : empty) }, { state: "OR", ahj: "City of Partialmere" }), /the process part errored — 400 credit balance/);
+  assert.equal(pp.getPermitProcessLookup(db, "OR", "City of Partialmere"), null);
+  // Ran and found nothing: saved, all not found.
+  const ran = await ppl.runPermitProcessLookup(db, { webLookup: async () => empty }, { state: "OR", ahj: "City of Partialmere" });
+  assert.equal(ran.saved, true, ran.reason);
+  assert.equal(pp.getPermitProcessLookup(db, "OR", "City of Partialmere")?.issuingAgency.value, null);
+  // An earlier cited row is never forgotten by a later errored re-run.
+  await ppl.runPermitProcessLookup(db, stub(grounded(processAnswer()), grounded(feesAnswer())), { state: "OR", ahj: "City of Partialmere", force: true });
+  assert.equal(pp.permitProcessFor(project("City of Partialmere"))?.issuingAgency.value, "Marion County");
+  await assert.rejects(ppl.runPermitProcessLookup(db, { webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? aborted : empty) }, { state: "OR", ahj: "City of Partialmere", force: true }), /the process part errored/);
+  assert.equal(pp.permitProcessFor(project("City of Partialmere"))?.issuingAgency.value, "Marion County", "the seeded row stands");
 });
 
 await check("(e3) MUST-PASS (close-2 item 6): ensurePermitProcessLookedUp re-queues after a FAILED job; the 24 h dedupe holds only for a pending / running job or one that RAN (done)", async () => {

@@ -792,6 +792,7 @@ export async function runPermitProcessLookup(
   const ourSeen = ev?.seen ?? [];
   const pageTexts = ev?.pageTexts ?? new Map<string, string>();
   const gone = [...(ev?.gone ?? [])];
+  let groundedParts = grounded1 ? 1 : 0;
   for (const a of answers) {
     if (a.first) logCall("documentsFees", a.first, { readPages: true, agency: a.agency });
     logCall(a.kind === "portal" ? "portal" : a.first ? "documentsFees (retry, no page reading)" : "documentsFees", a.r, { readPages: !a.first, agency: a.agency });
@@ -800,6 +801,7 @@ export async function runPermitProcessLookup(
     // ran no search, and "no search" read as model memory and discarded the whole answer). Every value
     // is still cited to a page the search returned or we read, and a quote cited to our page must be ON it.
     const grounded = a.r.groundedSearches > 0 || (a.kind === "docs" && Boolean(pageBlock) && !a.r.error && Boolean(a.r.text));
+    if (grounded && !a.r.error) groundedParts++;
     if (a.kind === "portal") {
       raw.portal += (raw.portal ? "\n" : "") + a.r.text;
       raw.portalUrls.push(...seenOf(a.r));
@@ -897,6 +899,19 @@ export async function runPermitProcessLookup(
   // lookup that RAN and found nothing (calls that returned, however empty) is still saved.
   if (calls.length && calls.every((c) => c.error)) {
     throw new Error(`permit-process lookup for ${input.ahj} (${input.state}) did not run: every call errored — ${str(calls[0].error).slice(0, 200)}`);
+  }
+  // NOT SAVED WITHOUT A GROUNDED PART (close-3 F1). Part one decides which agency the later parts
+  // ask about; when it errored (twice, on an abort — or once, on a refusal) the other parts were
+  // asked blind, of the AHJ, with no page read, and their "{}" is not a lookup that ran: an errored
+  // run, thrown and re-queued, never an all-not-found row that would block the re-queue. Likewise a
+  // run in which NO part was grounded (no web search returned results and no page we read backed
+  // an answer) never ran in any sense that could be saved. A run that RAN and found nothing (a
+  // grounded part, however empty its answer) is still saved.
+  if (p1.error) {
+    throw new Error(`permit-process lookup for ${input.ahj} (${input.state}) did not run: the process part errored — ${str(p1.error).slice(0, 200)}`);
+  }
+  if (groundedParts === 0) {
+    throw new Error(`permit-process lookup for ${input.ahj} (${input.state}) did not run: no part was grounded (no web search returned results, no page was read) — nothing kept from memory`);
   }
   // A RE-RUN NEVER FORGETS A CITED ANSWER. Over an existing seeded row, a value this run could not
   // establish (an aborted part, a search that came up empty) keeps the earlier cited answer.
