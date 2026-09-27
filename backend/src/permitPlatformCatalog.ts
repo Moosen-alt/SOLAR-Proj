@@ -149,12 +149,18 @@ const PORTAL_TARGET_PATH = /selfservice|citizen-?access|\/energov|etrakit|\/cap\
 /** A DEEP LINK into another module of the agency's own platform tenant (close-2 V8: "Apply for a
  *  Business License Online" -> the city's ACA tenant, module=Licenses) is not the permit portal. */
 const NOT_PORTAL_PATH = /[?&]module=(?:licens\w*|enforcement|complaints?|business\w*|fire\w*|utilit\w*|tax\w*|animal\w*|health\w*|events?)\b/i;
+/** ONE predicate for "a deep link into another module of the agency's own tenant" — the resolver
+ *  (a page's link, a landing) and the portal door (a model-cited URL) both ask it (lookup-close-4:
+ *  a model citing the Licenses module was the door's sibling path without this guard). */
+export function linksAnotherModule(href: string): boolean {
+  return NOT_PORTAL_PATH.test(String(href ?? ""));
+}
 /** The path of a link target names an application portal (PORTAL_TARGET_PATH, or an ACA tenant
  *  on the shared host) and no other module. */
 function targetPathNamesPortal(href: string): boolean {
   let path = "";
   try { path = new URL(href).pathname; } catch { return false; }
-  if (NOT_PORTAL_PATH.test(href)) return false;
+  if (linksAnotherModule(href)) return false;
   return PORTAL_TARGET_PATH.test(path) || (/(?:^|\.)accela\.com$/i.test(portalHostOf(href)) && Boolean(portalTenantOf(href)));
 }
 /** Hosts on the vendor list that are never an AHJ's APPLICATION portal as a page link: a 311 / CRM
@@ -305,7 +311,7 @@ function candidatesOn(page: ReadPage, names: string[], typeNames: string[] = nam
       if (!named && !targetNamed) continue;
       // A deep link into another module of the tenant (module=Licenses) is not the permit portal,
       // whatever its words say.
-      if (NOT_PORTAL_PATH.test(link.href)) continue;
+      if (linksAnotherModule(link.href)) continue;
       if (tenantContradictsAgency(link.href, names, typeNames)) continue;
       if (wordsNameAnotherJurisdiction(link.text, names, typeNames)) continue;
       out.push({ link, page, vendor: true, score: (named ? 2 : 0) + (targetNamed ? 1 : 0) + (/selfservice\/[^/#?]+|accela\.com\/[^/]+\//i.test(link.href) ? 1 : 0) });
@@ -387,7 +393,7 @@ export async function resolvePortalFromPages(reader: PageReader, pages: ReadPage
         // title says "Accela Citizen Access" too) never falls through to the markers door below.
         const landedHost = portalHostOf(target.finalUrl);
         const landingOk = !isVendorRootOrMarketing(target.finalUrl) && !NEVER_PAGE_PORTAL_HOST.test(landedHost) && hostFitsTrackAndEntity("building", null, target.finalUrl, "research").fits
-          && !NOT_PORTAL_PATH.test(target.finalUrl)
+          && !linksAnotherModule(target.finalUrl)
           && !(/(?:^|\.)mapsonline\.net$/i.test(landedHost) && !/permit/i.test(`${c.link.text} ${target.finalUrl}`))
           && !tenantContradictsAgency(target.finalUrl, names, typeNames)
           && (targetPathNamesPortal(target.finalUrl) || landedPlatform === "accela" || landedPlatform === "energov");
@@ -398,7 +404,7 @@ export async function resolvePortalFromPages(reader: PageReader, pages: ReadPage
       // title only when the landing PATH names a portal too (a "Click2Gov" or "iWorQ" title on a
       // billing or concern page is that vendor's product, not the permit portal).
       const platform = landedPlatform && (landedPlatform !== "other" || targetPathNamesPortal(target.finalUrl) || PLATFORMISH_PATH.test(target.finalUrl)) ? landedPlatform : null;
-      if (platform && !NOT_PORTAL_PATH.test(target.finalUrl) && hostFitsTrackAndEntity("building", null, target.finalUrl, "research").fits) {
+      if (platform && !linksAnotherModule(target.finalUrl) && hostFitsTrackAndEntity("building", null, target.finalUrl, "research").fits) {
         return { url: target.finalUrl, platform, sourceUrl: c.page.finalUrl, quote: quoteOf(c.link, target.finalUrl), via: hop ? "one hop" : "own-domain portal (markers read)", portalPage: target };
       }
       // ONE HOP: an own-domain page the link's words name as the portal, which in turn links it.

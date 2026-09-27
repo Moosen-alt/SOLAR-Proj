@@ -36,7 +36,7 @@ import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stat
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
 import { parseBracketRow } from "./pdfTables";
-import { candidateNamedBy, chooseRecordType, classifyDocument, DOCUMENT_URL, staleOrOtherFeeSource, detectPlatform, documentLinks, excerptFor, extractCodeEditions, extractPrerequisites, isOfficialAgencyHost, platformOfUrl, readPortalCatalog, registrableDomain, resolvePortalFromPages, solarRecordTypeCandidates, tenantContradictsAgency, wordsNameAnotherJurisdiction, type PortalCatalog, type PortalResolution, type RecordTypeCandidate } from "./permitPlatformCatalog";
+import { candidateNamedBy, chooseRecordType, classifyDocument, DOCUMENT_URL, staleOrOtherFeeSource, detectPlatform, documentLinks, excerptFor, extractCodeEditions, extractPrerequisites, isOfficialAgencyHost, linksAnotherModule, platformOfUrl, readPortalCatalog, registrableDomain, resolvePortalFromPages, solarRecordTypeCandidates, tenantContradictsAgency, wordsNameAnotherJurisdiction, type PortalCatalog, type PortalResolution, type RecordTypeCandidate } from "./permitPlatformCatalog";
 import { createPageReader, feeLinePrintedTogether, quoteOnPage, type PageReader, type ReadPage } from "./agencyPageReader";
 import { documentFetchDisabled } from "./documentFetch";
 export { registrableDomain };
@@ -270,6 +270,11 @@ export function acceptPortalForPermit(raw: RawFact, source: PortalCandidateSourc
   if (!fit.fits) {
     const why = fit.code === "not_a_portal" ? `${portal.value} is an information page, not an application portal — not kept` : `${fit.reason} — not kept`;
     return { fact: { ...portal, value: null, notFound: why }, source, attestedBy: null };
+  }
+  // (a') A DEEP LINK INTO ANOTHER MODULE of the tenant (module=Licenses / Enforcement …, close-2 V8b)
+  // is not the permit portal, whoever cites it — the same predicate the page-read resolver asks.
+  if (linksAnotherModule(portal.value)) {
+    return { fact: { ...portal, value: null, notFound: `${portal.value} is a deep link into another module of the portal (licences / enforcement / business …), not where a permit is filed — not kept` }, source, attestedBy: null };
   }
   // (c) JURISDICTION TYPE against the issuer of THIS permit.
   const typeNames = (ctx.typeNames ?? []).filter(Boolean);

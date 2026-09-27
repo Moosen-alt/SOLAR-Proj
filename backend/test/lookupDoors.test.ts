@@ -139,6 +139,17 @@ await check("(d3) the door's other three questions on every source: rule 5 (a Po
   assert.equal(linked.fact.value, madeUp); assert.match(String(linked.attestedBy), /a page we read links it/);
   assert.equal(ppl.acceptPortalForPermit({ value: madeUp, sourceUrl: PG, quote: words }, "portal step", ctx([], [PG, "https://aca-prod.accela.com/exampleville/Cap/CapHome.aspx"])).attestedBy, "its tenant on the shared host was a search result / a page opened or read");
   assert.equal(ppl.acceptPortalForPermit({ value: madeUp, sourceUrl: PG, quote: words }, "portal step", ctx([], [PG, "https://aca-prod.accela.com/OTHER/Default.aspx"])).fact.value, null, "another tenant on the shared host attests nothing");
+  // V8b through the door (close-2): a model-cited deep link into the tenant's Licenses module is not the permit portal; the Building / Permitting module is.
+  const licences = "https://aca-prod.accela.com/EXAMPLEVILLE/Cap/CapHome.aspx?module=Licenses";
+  const v8 = ppl.acceptPortalForPermit({ value: licences, sourceUrl: PG, quote: words }, "portal step", ctx([], [PG, licences]));
+  assert.equal(v8.fact.value, null, "V8b: a Licenses-module deep link");
+  assert.match(String(v8.fact.notFound), /another module/);
+  for (const m of ["Building", "Permitting"]) {
+    const u = `https://aca-prod.accela.com/EXAMPLEVILLE/Cap/CapHome.aspx?module=${m}&TabName=Home`;
+    assert.equal(ppl.acceptPortalForPermit({ value: u, sourceUrl: PG, quote: words }, "portal step", ctx([], [PG, u])).fact.value, u, `the ${m} module is the portal`);
+  }
+  assert.equal(cat.linksAnotherModule(licences), true);
+  assert.equal(cat.linksAnotherModule("https://elam.cityofmadison.com/CitizenAccess/Cap/CapHome.aspx?module=Permitting&TabName=Home"), false, "Madison's Permitting module");
 });
 
 // ───────────────────────────── D2 — Salesforce, through the real lookup ─────────────────────────────
