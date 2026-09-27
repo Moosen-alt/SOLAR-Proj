@@ -1111,7 +1111,11 @@ export async function runPermitProcessLookup(
   // types); documents/fees read pages too. All run concurrently.
   const tasks: Array<Promise<{ kind: "portal" | "docs"; agency: string; disciplines: PermitProcessDiscipline[]; r: WebLookupResult; first?: WebLookupResult }>> = [];
   for (const g of groups) {
-    const needPortal = g.disciplines.filter((d) => !portalOf(d).value || !(recordFor.has(d) || citedRt(d, portalOf(d).value, byDiscipline.get(d)?.recordType)));
+    // "IS A PORTAL STILL NEEDED" IS THE ONE RECORD-TYPE QUESTION (close-6 MF1): a permit whose JUDGED
+    // portal has a record type — from that portal's catalog, or a cited type that belongs to it — needs
+    // no step; with no judged portal neither can hold, so the permit is asked (the old separate
+    // "portal known?" half was redundant, and the close-5 skeptic's V1 showed it could drift alone).
+    const needPortal = g.disciplines.filter((d) => !(recordFor.has(d) || citedRt(d, portalOf(d).value, byDiscipline.get(d)?.recordType)));
     const head = `Issuing agency: ${g.agency}\nFor permits in: ${input.ahj}, ${input.state}`;
     if (needPortal.length) {
       tasks.push(ask({ label: "permitProcessLookup.portal", system: PORTAL_LOOKUP_SYSTEM, user: `${head}\nPermits: ${needPortal.join(", ")}`, maxTokens: 6000, maxSearches: PORTAL_SEARCHES, readPages: true, maxFetches: PORTAL_FETCHES, timeoutMs: partBudgetMs() })
