@@ -12,9 +12,9 @@ the client "Pacific Power has approved the interconnection"; MF-B: a no-target r
 BOTH guards of the project-status writer — 'PTO Granted' → nem_approved, 'Permit Issued' → issued; MF-C: a NEM
 target polled 'Permit Issued' drafted "the city has issued the permit"). This round restores the D2 invariant
 ("nothing writes nem_approved from unknown provenance") as ONE predicate instead of fixing the classifier.
-Commits 769fc7d, ca1d591 (line endings), 1d62e29, f2fbbc6. Scratch `.probe/decisions-0926-final/` (kills.log,
-reg/summary.txt, probe-prod.log, unit2.log, smoke.log; kill worktree `wtk` — rmdir its node_modules junction
-before `git worktree remove`).
+Commits 769fc7d, ca1d591 (line endings), 1d62e29, f2fbbc6, 66ef1f7 (agreement changes no status), f478d01 + the
+HANDOFF follow-up. Scratch `.probe/decisions-0926-final/` (kills-66ef1f7.log, reg-final/summary.txt, probe-prod.log,
+unit2-66ef1f7.log, smoke-66ef1f7.log; the kill worktree `wtk` was removed after the run — junction first).
 
 - **The predicate** — `permitMonitor.readingMayFinishTrack(source, target, track)`: TRUE only when the reading
   is a portal poll (`portal` / `public_url`) or an operator's re-check (`manual`) against a target that EXISTS, is
@@ -30,9 +30,13 @@ before `git worktree remove`).
   monitor: reported status, unconfirmed") naming the reading (`parser_value = "<outcome>: <label>"`) and why it was
   not trusted. `updateProjectForPermitOutcome` also refuses a finishing outcome with `track === null` at its own
   door. The one exception is AGREEMENT: an untrusted reading that says what the target already holds (an AHJ email
-  confirming a permit the poll read as issued) is a confirmation — recorded as-is, finishes nothing new, notifies
-  nothing (the change gate). The `track` input / body field is wording only ("the utility's approval", so the
-  review item names the right portal) — never authority; the POST route's doc says so.
+  confirming a permit the poll read as issued) is a confirmation — its ROW is recorded as-is (so
+  `SELECT … WHERE source='email' AND outcome='nem_approved'` can be non-zero BY DESIGN; such a row finishes nothing
+  that was not already finished), but it reaches neither the project-status writer nor the handoff trigger
+  (`mayWriteStatus`, 66ef1f7 — the advisor caught a legacy email-written nem_approved target beside a project at
+  'submitted' being handed off by one more agreeing email) and notifies nothing (the change gate). The `track`
+  input / body field is wording only ("the utility's approval", so the review item names the right portal) —
+  never authority; the POST route's doc says so.
 - **The notifier** asks the SAME verdict on what the text said: `shouldNotifyClient(outcome, previous, provenance)`
   — the third argument is REQUIRED (an optional one fails open) — and `clientUpdateFor` refuses the other family
   at the wording door (MF-C). A correction is NOT provenance-gated: an AHJ's own correction email still tells the
@@ -53,10 +57,13 @@ before `git worktree remove`).
   KM6–KM12 with the kill as the red condition. Fixtures flipped to the fail-closed shape: withConditionsApproval
   MF1 ×3, statusIntegrity Scenario D (a NEM target's 'ready to issue' is unconfirmed), clientUpdateNotes
   (nem_approved worded on its own track).
-- **Kills 19/19 RED** (`kill.cjs`, kills.log): K1 source / K2 target-exists / K3 active / K4 kind check dropped;
-  K5 the notifier's gate; K6 the writer persists the raw classification; K7 the wording door's family check; K9
-  drift's refused-row clause; K10 the stale scan's re-read provenance; KM1, KM3, KM4, KM6–KM12 (the close-v
-  survivors) — every one now caught. Not killed (belt-and-braces, expected to survive): the writer's own
+- **Kills 25/25 RED at 66ef1f7** (`kill.cjs`, kills-66ef1f7.log): K1 source / K2 target-exists / K3 active / K4
+  kind check dropped; K5 the notifier's gate; K6 the writer persists the raw classification; K7 the wording door's
+  family check; K8 an agreeing untrusted reading reaching the project writer / handoff; K9 drift's refused-row
+  clause; K10 the stale scan's re-read provenance; KM1, KM3, KM4, KM6–KM12 (the close-v survivors); KM13–KM17 (the
+  close-v kills nobody had run — KM15 pinned through the real sweep with the public fetch seamed: a legacy
+  'permit'+'nem' target on a PowerClerk host is fetched, no track-host conflict; KM17 through the body-declared
+  track case's review-item wording). Not killed (belt-and-braces, expected to survive): the writer's own
   `track === null` guard, which the upstream refusal shadows.
 - **Operator-facing cost (P5), measured on a scratch copy of the production .backup** (probe-prod.log):
   target `712cdb55` (project `720b05f3`, at `issued`) is an active nem/nem target with NO portal URL whose newest
