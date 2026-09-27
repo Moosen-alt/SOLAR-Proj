@@ -666,6 +666,12 @@ export class RecipeAdapter extends BasePortalAdapter {
       // request was the one aborted). Every abort is still reported, and the result says which.
       if (this.finalSubmitClicked) return this.withApprovedClickBackstopNotes(r);
       const stop = this.backstopStop();
+      // A DIALOG WE DISMISSED CANCELLED THE APPROVED CLICK, AND THE PAGE POSTED ANYWAY (autosubmit-2
+      // MF-S3: an alert() cannot cancel its form) — the backstop aborted that POST. The run's own
+      // pause (fee_payment) and its "NOTHING was filed" stand, first; the abort is reported after.
+      if (stop && this.finalSubmitNothingSent && r.pauseReason) {
+        return { ...fail(`${String(r.message ?? "")} ${stop}`.trim(), { ...(r.data ?? {}), driftWarnings: this.driftWarnings, guardRefusals: this.guardRefusals }), pauseReason: r.pauseReason };
+      }
       // Every abort is reported (driftWarnings + guardRefusals, pushed by backstopStop); a
       // filing/payment/lockdown abort turns ANY ending — "reached review", or a step that then
       // "did not advance" because its request was aborted — into the backstop's named failure.

@@ -456,6 +456,13 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
           let message = "";
           try { type = String(dialog.type() || ""); message = String(dialog.message() || ""); } catch { /* unreadable: dismissed below */ }
           const fee = paymentDialogVerdict(message);
+          // A PAYS-NOW DIALOG CLOSES THE SLOT, WHATEVER ITS TYPE (autosubmit-2 MF-S3). Dismissing a
+          // confirm() cancels its form, but an alert() cannot: "Your card on file will be charged
+          // $150 when you submit." on a submit button was "dismissed", its form posted anyway, and the
+          // still-open slot admitted the filing. Closed BEFORE the dialog is answered, so the form's
+          // POST meets the filing-URL rule / review lock (aborted, nothing filed) and the adapter
+          // pauses fee_payment off approvedDialogs.
+          if (fee === "pays_now") closeSlot();
           let why = "";
           if (type === "prompt") why = "a prompt asks for input nobody approved";
           else if (fee === "pays_now") why = "it asks for a payment now — automation never pays";
