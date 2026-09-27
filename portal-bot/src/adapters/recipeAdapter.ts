@@ -76,7 +76,7 @@ import { sweepEmptyRequiredControls, type EmptyRequired } from "../requiredContr
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import {
-  classifySubmissionText, finalSubmitEnvAllows, finalSubmitRefusals, isFinalSubmitControl, isPayFee, isPaymentWordedText, mayClickFinalSubmit,
+  classifySubmissionText, finalSubmitEnvAllows, finalSubmitRefusals, isFinalSubmitControl, isPayFee, isPayNowDialogText, mayClickFinalSubmit,
   isRecipeShapeValid, isSignatureNameLabel, isSubmitIntent, isSubmitOrPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE,
   type HealedStep, type RunApproval, type SubmissionOutcome,
 } from "../../../shared/src/portalSafety";
@@ -4210,10 +4210,12 @@ export class RecipeAdapter extends BasePortalAdapter {
         }
         return texts.length ? { ...(found ?? {}), all: texts } : null;
       }).catch(() => null) as { ok?: string; text?: string; all?: string[]; blocked?: string } | null;
-      // ONE PREDICATE for "does this dialog speak of paying?" — the same one the native-dialog
-      // handler asks (portalSafety isPaymentWordedText; this was its own substring regex, where
-      // "feedback" read as a fee). Every visible dialog is asked, not only the one with an OK.
-      const payDialog = (modal?.all ?? []).find((t) => isPaymentWordedText(t));
+      // ONE PREDICATE for "does this dialog pay NOW?" — the same one the native-dialog handler asks
+      // (portalSafety isPayNowDialogText / paymentDialogVerdict; this was its own substring regex,
+      // where "feedback" read as a fee). A fee mentioned as deferred ("will be invoiced later")
+      // is not paying — the operator's ruling of 2026-09-27; "Pay $150 and submit?" is. Every
+      // visible dialog is asked, not only the one with an OK.
+      const payDialog = (modal?.all ?? []).find((t) => isPayNowDialogText(t));
       if (modal && payDialog) modal.blocked = payDialog.slice(0, 160);
       if (modal?.blocked) {
         this.finalSubmitOutcome = { verdict: "unknown", evidence: `payment dialog: ${modal.blocked.slice(0, 80)}` };

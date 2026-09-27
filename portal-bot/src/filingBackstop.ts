@@ -44,7 +44,7 @@
 // context.route fixture server still answers what this layer lets through.
 //
 // Known cost: Playwright disables the browser's HTTP cache while any route is installed.
-import { isFilingOrPaymentRequest, isPaymentWordedText, isPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../shared/src/portalSafety";
+import { isFilingOrPaymentRequest, isPayRequestUrl, paymentDialogVerdict, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../shared/src/portalSafety";
 
 export type BackstopRule = "filing-url" | "dismisser-window" | "enter-window" | "review-lockdown";
 
@@ -402,21 +402,26 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
         // application now?')` cancelled its own form and the approved run never filed (skeptic
         // confirmNative). While a listener is registered Playwright no longer auto-answers, so
         // this handler answers EVERY dialog it sees: accept a confirm / alert / beforeunload whose
-        // text speaks of no payment, while the slot is open and unused; dismiss a prompt (it asks
-        // for input nobody approved) and any payment-worded dialog (automation never pays) — the
-        // adapter reads approvedDialogs and pauses fee_payment.
+        // text pays nothing NOW, while the slot is open and unused; dismiss a prompt (it asks for
+        // input nobody approved) and any dialog that pays now — the adapter reads approvedDialogs
+        // and pauses fee_payment. FEE WORDING IS NOT PAYING (autosubmit-close, operator ruling
+        // 2026-09-27 "Yes, submit and then we can pay the fees later"): "Submit application? Fees
+        // will be invoiced later." is accepted; "Pay $150 and submit?" is not. ONE predicate,
+        // portalSafety paymentDialogVerdict — the DOM-modal reader in replay asks the same one.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const onDialog = async (dialog: any): Promise<void> => {
           let type = "";
           let message = "";
           try { type = String(dialog.type() || ""); message = String(dialog.message() || ""); } catch { /* unreadable: dismissed below */ }
+          const fee = paymentDialogVerdict(message);
           let why = "";
           if (type === "prompt") why = "a prompt asks for input nobody approved";
-          else if (isPaymentWordedText(message)) why = "it speaks of a payment — automation never pays";
+          else if (fee === "pays_now") why = "it asks for a payment now — automation never pays";
           else if (!(slot === s && slotLive())) why = "outside the approved click's slot";
           else if (!/^(confirm|alert|beforeunload)$/.test(type)) why = `an unknown dialog type "${type}"`;
           const accept = !why;
-          approvedDialogs.push({ type, message: message.slice(0, 200), action: accept ? "accepted" : "dismissed", why: accept ? "the approved click's own confirmation" : why });
+          approvedDialogs.push({ type, message: message.slice(0, 200), action: accept ? "accepted" : "dismissed",
+            why: accept ? (fee === "fee_deferred" ? "the approved click's own confirmation (a fee is mentioned as deferred / invoiced later — nothing is paid)" : "the approved click's own confirmation") : why });
           try { if (accept) await dialog.accept(); else await dialog.dismiss(); } catch { /* already answered / page gone */ }
         };
         pg.on("dialog", onDialog);

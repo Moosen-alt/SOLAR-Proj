@@ -26,7 +26,9 @@ import {
   finalSubmitRefusals,
   isFinalSubmitControl,
   isPayFee,
+  isPayNowDialogText,
   isPaymentField,
+  paymentDialogVerdict,
   isRecipeShapeValid,
   isReviewPageText,
   isSignatureNameBox,
@@ -349,6 +351,47 @@ await check("PAY MUST ALLOW (shared, page copy, and the replay gate)", () => {
     assert.ok(!isPayFee(l), `shared isPayFee("${l}") refuses an ordinary control`);
     assert.ok(!pageCopy.isPayFee(l), `page copy refuses "${l}"`);
     assert.ok(!PAY_FEE_REPLAY_GATE.test(l), `replay gate refuses "${l}"`);
+  }
+});
+
+// THE APPROVED SUBMIT'S CONFIRMATION (autosubmit-close, operator ruling 2026-09-27: "Yes, submit
+// and then we can pay the fees later"). paymentDialogVerdict is the ONE answer both doors ask (the
+// native-dialog handler in filingBackstop, the DOM-modal reader in replay): fee wording that is
+// informational / deferred is ACCEPTED; wording that pays NOW is dismissed; payment wording with no
+// deferral is dismissed (fail-closed). Adversarial pairs side by side.
+const DIALOG_PAYS_NOW = [
+  "Pay $150 and submit?", "Submit and pay $150 now?", "Your card on file will be charged $150",
+  "Your card will be charged.", "Proceed to payment?", "Continue to checkout", "Enter card details to continue",
+  "Pay invoice now?", "Payment is required to submit this application.", "You will be redirected to the payment page.",
+  "Submit application? You will be charged $75 after approval.",
+  // payment-worded, no deferral: fail-closed
+  "Submit application? A $150 permit fee applies.", "Fees are due on submission. Continue?", "Would you like to pay now or later?",
+];
+const DIALOG_FEE_DEFERRED = [
+  "Submit application? Fees will be invoiced later.", "A fee of $150 will be invoiced", "Fees will be assessed after review.",
+  "Submit? You will be billed.", "Fees are due at issuance.", "Submit now and pay later?", "You can pay the fee later.",
+  "Permit fees are payable upon permit issuance.", "You do not need to pay now; fees will be calculated after plan review.",
+  "No payment is required at this time.",
+];
+const DIALOG_NO_PAYMENT = [
+  "File this application now?", "Are you sure you want to submit this application?", "Submit this application?",
+  "Thanks for your feedback — submit?", "Leave this page? Changes you made may not be saved.",
+];
+await check("FEE CONFIRM: pays-now wording is dismissed, deferred fee wording accepted, no-payment accepted (shared + page copy)", () => {
+  const pc = pageCopy as unknown as { paymentDialogVerdict: (t: string) => string; isPayNowDialogText: (t: string) => boolean };
+  for (const t of DIALOG_PAYS_NOW) {
+    assert.equal(paymentDialogVerdict(t), "pays_now", `MUST-EXCLUDE "${t}" reads ${paymentDialogVerdict(t)} — it pays now`);
+    assert.equal(isPayNowDialogText(t), true, `isPayNowDialogText("${t}")`);
+    assert.equal(pc.paymentDialogVerdict(t), "pays_now", `page copy drifted on "${t}"`);
+  }
+  for (const t of DIALOG_FEE_DEFERRED) {
+    assert.equal(paymentDialogVerdict(t), "fee_deferred", `MUST-PASS "${t}" reads ${paymentDialogVerdict(t)} — the fee is deferred`);
+    assert.equal(isPayNowDialogText(t), false, `isPayNowDialogText("${t}")`);
+    assert.equal(pc.paymentDialogVerdict(t), "fee_deferred", `page copy drifted on "${t}"`);
+  }
+  for (const t of DIALOG_NO_PAYMENT) {
+    assert.equal(paymentDialogVerdict(t), "no_payment", `"${t}" reads ${paymentDialogVerdict(t)}`);
+    assert.equal(pc.paymentDialogVerdict(t), "no_payment", `page copy drifted on "${t}"`);
   }
 });
 

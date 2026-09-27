@@ -195,6 +195,62 @@ export function portalSafetyFactory() {
    *  the approved final submit's confirm dialogs (native and DOM): a payment-worded one is never
    *  accepted — automation never pays (portal-run-close-2 M3). Word-bounded: "feedback" is not a fee. */
   const isPaymentWordedText = (text: string | null | undefined): boolean => /\b(pay(s|ing|ment|ments|able)?|fees?|checkout|credit\s*card|debit\s*card|card\s*(number|holder)|charges?|charged)\b/i.test(String(text ?? ""));
+  /** THE ONE ANSWER TO "MAY THE APPROVED SUBMIT ACCEPT THIS CONFIRMATION?" (autosubmit-close,
+   *  operator ruling 2026-09-27: "Yes, submit and then we can pay the fees later"). Asked of every
+   *  dialog the approved final submit raises — a native confirm()/alert (filingBackstop's dialog
+   *  handler) and a DOM confirm modal (replay's outcome reader):
+   *    "no_payment"   — speaks of no payment: the click's own confirmation, accepted;
+   *    "fee_deferred" — mentions a fee only as informational / deferred ("Fees will be invoiced
+   *                     later", "assessed after review", "you will be billed", "due at issuance",
+   *                     "pay later"): accepted — filing now and paying later is what the operator
+   *                     approved; nothing is paid;
+   *    "pays_now"     — pays NOW ("Pay $150 and submit?", "your card will be charged", "proceed to
+   *                     payment", "checkout", "enter card"), OR speaks of payment with no deferral
+   *                     (fail-closed): dismissed, nothing filed, a fee_payment pause.
+   *  A pay-now marker wins over any deferral in the same text. The network backstop's
+   *  isPayRequestUrl stays the hard line under all of this: no payment request ever goes. */
+  // The deferral qualifiers a fee sentence can carry ("at issuance", "after review", "later").
+  const LATER_Q = "(later|separately|after|following|at\\s+(the\\s+)?(time\\s+of\\s+)?(permit\\s+)?(issuance|issue|approval|pickup|inspection)|upon\\s+(the\\s+)?(permit\\s+)?(issuance|issue|approval|review|pickup|inspection)|when\\s+(the\\s+)?(permit|application)\\s+is\\s+(issued|approved|reviewed))";
+  const PAY_NOW_DIALOG = new RegExp([
+    // The verb "pay" (never "payment"/"payable"), unless deferred right after it or later in
+    // its clause ("pay later", "pay at issuance", "pay the fee later").
+    "\\bpay(ing)?\\b(?!\\s+(later|at|upon|when|after|once)\\b)(?![^.?!]{0,30}\\blater\\b)",
+    // An amount to pay is always now ("Pay $150 later" is fail-closed), and so is "pay now"
+    // whatever else the text offers ("pay now or later?").
+    "\\bpay(ing)?\\s+(\\$|usd\\b|[0-9])",
+    "\\bpay(ing)?\\s+(now|today|immediately|online)\\b",
+    "\\b(proceed|continue|go|redirect(ed)?|taken)\\s+to\\s+(the\\s+)?(payment|checkout|pay)\\b",
+    "\\bcheck\\s*-?\\s*out\\b",
+    // A card being charged is a payment whenever it happens (automation never authorizes one).
+    "\\b(will\\s+be|is\\s+being|be|was|been|get|gets)\\s+charged\\b",
+    "\\bcharge\\s+(your|the|my)\\s+(card|account|credit)\\b",
+    "\\b(credit|debit)\\s*card\\b",
+    "\\bcard\\s*(number|holder|details|information|on\\s+file)\\b",
+    "\\benter\\s+(your\\s+)?(card|payment)\\b",
+    "\\bpayment\\s+(is\\s+)?(required|due)\\s+(now|today|before|to\\s+(submit|file|continue))\\b",
+    "\\bmake\\s+(a\\s+)?payment\\b",
+    "\\bsubmit\\s+(your\\s+)?payment\\b",
+  ].join("|"), "i");
+  const FEE_DEFERRED_DIALOG = new RegExp([
+    "\\binvoic(e|ed|es|ing)\\b",
+    "\\b(will\\s+be|be|are|is|get|gets)\\s+billed\\b",
+    "\\bbilled\\s+" + LATER_Q,
+    "\\b(assessed|calculated|determined|collected|due|payable|paid|pay)\\s+" + LATER_Q,
+    "\\bpay\\b[^.?!]{0,30}\\blater\\b",
+    "\\bno\\s+(charge|fee|fees|cost|payment)\\b",
+  ].join("|"), "i");
+  // A NEGATED pay ("you do not need to pay now") is a deferral, not the verb.
+  const NEGATED_PAY = /\b(no\s+need\s+to|(do|does|will|need)\s+not\s+(need\s+to\s+|have\s+to\s+)?|don'?t\s+(need|have)\s+to|not\s+(be\s+)?required\s+to|nothing\s+to)\s*pay\b/gi;
+  const paymentDialogVerdict = (text: string | null | undefined): "no_payment" | "fee_deferred" | "pays_now" => {
+    const raw = String(text ?? "");
+    const negated = raw.replace(NEGATED_PAY, " ") !== raw;
+    const t = raw.replace(NEGATED_PAY, " ");
+    if (PAY_NOW_DIALOG.test(t)) return "pays_now";
+    if (!negated && !isPaymentWordedText(raw) && !/\b(bill(ed|ing)?|invoic(e|ed|es|ing))\b/i.test(raw)) return "no_payment";
+    return negated || FEE_DEFERRED_DIALOG.test(t) ? "fee_deferred" : "pays_now";
+  };
+  /** Does this dialog pay NOW (or speak of payment with no deferral)? The boolean every door asks. */
+  const isPayNowDialogText = (text: string | null | undefined): boolean => paymentDialogVerdict(text) === "pays_now";
 
   // THE PAGE NAMES ITSELF THE REVIEW STEP. Deliberately narrower than "mentions review":
   // "Please review the terms and conditions" is an entry disclaimer, "Plan Review Fee" a fee line.
@@ -1389,6 +1445,8 @@ export function portalSafetyFactory() {
     isSubmitIntent,
     isPayFee,
     isPaymentWordedText,
+    paymentDialogVerdict,
+    isPayNowDialogText,
     isFinalSubmitControl,
     classifyRecordedClick,
     isSecretField,
@@ -1421,6 +1479,8 @@ const impl: PortalSafety = portalSafetyFactory();
 export const isSubmitIntent = impl.isSubmitIntent;
 export const isPayFee = impl.isPayFee;
 export const isPaymentWordedText = impl.isPaymentWordedText;
+export const paymentDialogVerdict = impl.paymentDialogVerdict;
+export const isPayNowDialogText = impl.isPayNowDialogText;
 export const isFinalSubmitControl = impl.isFinalSubmitControl;
 export const classifyRecordedClick = impl.classifyRecordedClick;
 export const isSecretField = impl.isSecretField;

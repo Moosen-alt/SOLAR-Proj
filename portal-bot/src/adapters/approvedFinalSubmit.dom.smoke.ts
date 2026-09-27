@@ -44,6 +44,15 @@
 //                 POST files EXACTLY ONCE, the record captured, finalSubmitRequestSent true.
 //   MUST-EXCLUDE  the same four: a beacon never takes the approved slot (every admitted request is the
 //                 filing), and none reaches a server (the review lock aborts it).
+//   MUST-EXCLUDE  concurrent: two runs started together with ONE {approver, runId} file at most once.
+//   MUST-EXCLUDE  popupPost: a second page of the context posting the filing endpoint while the slot is
+//                 open is aborted (the slot is bound to the clicked page).
+//   FEE CONFIRM   (operator 2026-09-27 "submit and then we can pay the fees later"): MUST-PASS
+//                 confirmFeeLater (native "Fees will be invoiced later.") / modalFeeLater (DOM modal "A fee
+//                 of $150 will be invoiced after review.") file once, the record captured; MUST-EXCLUDE
+//                 confirmPay / confirmCharged ("Your card on file will be charged $150") / modalPayNow
+//                 ("Submit and pay $150 now?"): 0 POSTs, pause fee_payment. (A mode name never carries
+//                 "invoice": isPayRequestUrl would abort its own /apply/submit URL.)
 //
 // Kill: mayClickFinalSubmit -> true (or finalSubmitRefusals -> []) turns the MUST-EXCLUDE env /
 // approval / shape cases red. filingBackstop slotAdmits -> true turns section 9 red.
@@ -101,6 +110,24 @@ const reviewBody = (mode: string): string => {
   }
   if (mode === "confirmPay") {
     return `${summary}<form method="post" action="/m/confirmPay/apply/submit"><button type="submit" id="btnSubmit" onclick="return confirm('Pay $150 and submit?')">Submit Application</button></form>`;
+  }
+  // autosubmit-close FEE CONFIRM (operator ruling 2026-09-27): fee wording that is deferred is
+  // accepted; wording that pays now is dismissed — native confirm() and DOM modal alike.
+  if (mode === "confirmFeeLater") {
+    return `${summary}<form method="post" action="/m/confirmFeeLater/apply/submit"><button type="submit" id="btnSubmit" onclick="return confirm('Submit application? Fees will be invoiced later.')">Submit Application</button></form>`;
+  }
+  if (mode === "confirmCharged") {
+    return `${summary}<form method="post" action="/m/confirmCharged/apply/submit"><button type="submit" id="btnSubmit" onclick="return confirm('Your card on file will be charged $150. Submit?')">Submit Application</button></form>`;
+  }
+  if (mode === "modalFeeLater" || mode === "modalPayNow") {
+    const words = mode === "modalFeeLater" ? "A fee of $150 will be invoiced after review. Submit this application?" : "Submit and pay $150 now?";
+    return `${summary}<form id="f" method="post" action="/m/${mode}/apply/submit"></form>
+      <button type="button" id="btnSubmit">Submit Application</button>
+      <div id="dlg" role="dialog" style="display:none;border:1px solid #000;padding:12px"><p>${words}</p><button type="button" id="dlgCancel">Cancel</button> <button type="button" id="dlgOk">OK</button></div>
+      <script>
+        document.getElementById("btnSubmit").addEventListener("click", function(){ document.getElementById("dlg").style.display = "block"; });
+        document.getElementById("dlgOk").addEventListener("click", function(){ document.getElementById("f").submit(); });
+      </script>`;
   }
   // A DOM confirm modal (role=dialog) whose OK posts the form — answered with its own approved slot.
   if (mode === "confirmModal") {
@@ -448,6 +475,22 @@ for (const mode of ["beaconFirst", "beaconCross", "keepaliveClick", "beaconModal
   // rules, and at review that is the sticky lock — aborted, reported, never a stop of the filing.
   check(`${mode}: the beacon met the review lock — no telemetry request reached any server during the run`,
     o.posts.every((p) => /\/apply\/submit$/.test(p.path)), brief(o));
+}
+
+console.log("\n11. autosubmit-close FEE CONFIRM: 'submit and pay the fees later' — deferred fee wording is accepted, paying now never");
+for (const mode of ["confirmFeeLater", "modalFeeLater"]) {
+  if (!want(mode)) continue;
+  const o = await stage(mode, "1", {});
+  check(`MUST-PASS ${mode}: the deferred-fee confirmation is accepted — EXACTLY ONE filing POST, nothing else`, filingPosts(o) === 1 && o.posts.length === 1, brief(o));
+  check(`MUST-PASS ${mode}: finalSubmitClicked, finalSubmitRequestSent, the record captured, accepted (ok, not paused)`,
+    o.r.finalSubmitClicked === true && o.r.finalSubmitRequestSent === true && o.r.capturedPermitNumber === RECORD && o.r.ok === true && !o.r.pauseReason, brief(o));
+}
+for (const mode of ["confirmCharged", "modalPayNow"]) {
+  if (!want(mode)) continue;
+  const o = await stage(mode, "1", {});
+  check(`MUST-EXCLUDE ${mode}: a confirmation that pays now is never accepted — 0 POSTs reach the portal`, o.posts.length === 0, brief(o));
+  check(`MUST-EXCLUDE ${mode}: PAUSED fee_payment, finalSubmitClicked false, finalSubmitRequestSent false, NOTHING filed`,
+    o.r.pauseReason === "fee_payment" && o.r.finalSubmitClicked === false && o.r.finalSubmitRequestSent === false && o.r.ok === false && /NOTHING was filed/.test(msgOf(o.r)), brief(o));
 }
 
 console.log("\n10. autosubmit-close MF-G: the approved slot is bound to the CLICKED page — a second page of the context never takes it");
