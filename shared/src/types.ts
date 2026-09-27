@@ -768,11 +768,24 @@ export interface HumanReviewItem {
   updatedAt: string;
 }
 
+/** How a correction's text relates to the text it was read from (corrections.source_text).
+ *  "items": the conditions / review comments read off a portal page (the page is sourceText).
+ *  "whole_text": a page was read but no such block was found — the whole text IS the correction,
+ *  and a screen showing it must say so. "not_extracted": entered as-is (a typed note, an email) or
+ *  stored before extraction existed — sourceText is "". */
+export type CorrectionExtraction = "items" | "whole_text" | "not_extracted";
+
 export interface CorrectionRecord {
   id: string;
   projectId: string;
   source: "email" | "portal" | "manual";
+  /** The correction itself — for a portal reading, what was read off the page, not the page. */
   correctionText: string;
+  /** The full text the correction was read from (the portal record page), kept as evidence. */
+  sourceText: string;
+  extraction: CorrectionExtraction;
+  /** The bucket in plain words, from the one label map (corrections.humanizeBucket). */
+  bucketLabel: string;
   correctionBucket: CorrectionBucket;
   rootCause: string;
   requiredAction: string;

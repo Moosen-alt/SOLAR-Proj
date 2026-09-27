@@ -2264,6 +2264,19 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       addColumnIfMissing(db, "llm_calls", "web_searches", "INTEGER");
     },
   },
+  {
+    version: 39,
+    name: "corrections_source_text",
+    up: (db) => {
+      // THE PAGE A CORRECTION WAS READ FROM, KEPT AS EVIDENCE (correction card round, 2026-09-27).
+      // A portal reading's correction_text is now what correctionExtract pulled off the record
+      // page — its conditions / review comments — and the full page text lands here, never
+      // discarded. '' = the correction was entered as-is (a typed note, an email) or predates this
+      // column; scripts/backfill-correction-text.ts re-extracts the old portal rows. The corrections
+      // CREATE block runs in the base schema, so this addColumnIfMissing comes after it.
+      addColumnIfMissing(db, "corrections", "source_text", "TEXT NOT NULL DEFAULT ''");
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

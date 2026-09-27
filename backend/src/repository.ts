@@ -98,6 +98,7 @@ import { recordTimelineSample, trackForTarget } from "./timelineSamples";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
 import { classifyCorrection, humanizeBucket, humanizeEnum } from "./corrections";
+import { extractCorrectionFromPage } from "./correctionExtract";
 import { parseCorrectionProposals, attachJurisdictionProposals } from "./correctionAgent";
 import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
@@ -380,6 +381,13 @@ export function mapCorrection(row: Row): CorrectionRecord {
     projectId: text(row.project_id),
     source: text(row.source) as CorrectionRecord["source"],
     correctionText: text(row.correction_text),
+    sourceText: text(row.source_text),
+    // Derived, not stored: the text was read off a page (source_text set) and either IS that page
+    // (nothing was found to extract) or is what was extracted from it.
+    extraction: !text(row.source_text).trim()
+      ? "not_extracted"
+      : text(row.correction_text).trim() === text(row.source_text).trim() ? "whole_text" : "items",
+    bucketLabel: humanizeBucket(text(row.correction_bucket)),
     correctionBucket: text(row.correction_bucket) as CorrectionRecord["correctionBucket"],
     rootCause: text(row.root_cause),
     requiredAction: text(row.required_action),
@@ -4983,8 +4991,26 @@ export function rerunQc(db: AppDb, projectId: string): ProjectDetail {
   return getProjectDetail(db, projectId);
 }
 
-export function addManualCorrection(db: AppDb, projectId: string, correctionText: string, source = "manual"): ProjectDetail {
+/**
+ * WHAT A CORRECTION'S TEXT IS. A portal record page is read for the correction itself — its
+ * conditions / review comments (correctionExtract) — and the page is kept whole as source_text,
+ * never discarded; when nothing is found the whole page stands and source_text equals it (which is
+ * how the record says it fell back). Anything else (a typed note, an email) is the correction as
+ * written, with no source_text. ONE text then feeds every write: correction_text, the classifier,
+ * the review item's excerpt (persistTriage's legacy match compares against it), learning, and the
+ * agent's job payload.
+ */
+function correctionFromReading(readText: string, isPortalPage: boolean): { correctionText: string; sourceText: string } {
+  if (!isPortalPage) return { correctionText: readText, sourceText: "" };
+  const reading = extractCorrectionFromPage(readText);
+  return { correctionText: reading.method === "items" ? reading.text : readText, sourceText: readText };
+}
+
+export function addManualCorrection(db: AppDb, projectId: string, submittedText: string, source = "manual"): ProjectDetail {
   const detail = getProjectDetail(db, projectId);
+  // A PORTAL page handed in through this door is read like the monitor's (correctionText below);
+  // a typed note or an email is the correction as written.
+  const { correctionText, sourceText } = correctionFromReading(submittedText, source === "portal");
   const classification = classifyCorrection(correctionText, detail.project);
   const correctionId = id();
   const ts = nowIso();
@@ -4992,14 +5018,15 @@ export function addManualCorrection(db: AppDb, projectId: string, correctionText
   db.transaction(() => {
     db.run(
       `INSERT INTO corrections (
-        id, project_id, source, correction_text, correction_bucket, root_cause, required_action,
+        id, project_id, source, correction_text, source_text, correction_bucket, root_cause, required_action,
         assigned_to, draft_response, human_approved, resubmitted, new_rule_recommended, created_at, closed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         correctionId,
         projectId,
         source,
         correctionText,
+        sourceText,
         classification.bucket,
         classification.rootCause,
         classification.requiredAction,
@@ -6291,24 +6318,27 @@ async function resolveStatusText(target: Row | null, rawStatusText: string, sour
 function insertMonitorCorrection(
   db: AppDb,
   project: ProjectRecord,
-  correctionText: string,
+  readText: string,
   monitorMessage: string,
   ts: string,
   source: CorrectionRecord["source"],
   origin: CorrectionReadingOrigin,
 ): string {
+  // A portal reading is the record PAGE; the correction is what that page asks for.
+  const { correctionText, sourceText } = correctionFromReading(readText, source === "portal");
   const classification = classifyCorrection(correctionText);
   const correctionId = id();
   db.run(
     `INSERT INTO corrections (
-      id, project_id, source, correction_text, correction_bucket, root_cause, required_action,
+      id, project_id, source, correction_text, source_text, correction_bucket, root_cause, required_action,
       assigned_to, draft_response, human_approved, resubmitted, new_rule_recommended, created_at, closed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       correctionId,
       project.id,
       source,
       correctionText,
+      sourceText,
       classification.bucket,
       classification.rootCause,
       classification.requiredAction,

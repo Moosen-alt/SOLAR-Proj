@@ -15,7 +15,7 @@ import type { AgentToolDef, CorrectionBucket, CorrectionReadingOrigin, Jurisdict
 import { createLLMProvider } from "./llm";
 import { getProjectDetail, applyCorrectionProposals } from "./repository";
 import { designNotesDigest } from "./autoLearn";
-import { humanizeBucket } from "./corrections";
+import { assigneeForBucket, humanizeBucket } from "./corrections";
 import { relearnCorrection, isLearningExcluded } from "./knowledgeBase";
 import { extractAhjRequiredCriteria } from "./designCriteria";
 import { ahjLooksLikeHostname, applyCorrectionCriterionToProfile, currentCriterionOnFile, nearestOtherCodeProfileRow, sameCriterionValue } from "./codeProfiles";
@@ -74,9 +74,18 @@ export async function triageCorrection(
   const tools: AgentToolDef[] = [
     {
       name: "get_correction",
-      description: "The raw correction/rejection text under review.",
+      description: "The correction/rejection under review. For a portal reading this is what was read off the record page — its conditions / review comments — not the page around them.",
       input_schema: { type: "object", properties: {} },
       handler: () => ({ kind: "text", text: input.correctionText.slice(0, 4000) }),
+    },
+    {
+      // The page the correction was read from (corrections.source_text) — record header, status,
+      // contacts, project description. Context the extracted correction no longer carries; read
+      // from the row by id (a narrow local handler, CLAUDE.md rule 4), never from the job payload.
+      name: "get_portal_record_text",
+      description: "The full portal record page the correction was read from (record header, status, contacts, project description), as context. Empty when the correction was not read off a portal page.",
+      input_schema: { type: "object", properties: {} },
+      handler: () => ({ kind: "text", text: portalRecordText(db, input.correctionId).slice(0, 4000) || "(none: this correction was not read off a portal page)" }),
     },
     {
       name: "get_project_summary",
@@ -184,7 +193,13 @@ export function persistTriage(
   // Upgrade the correction row's classification + draft (only fields the agent set).
   const sets: string[] = [];
   const args: string[] = [];
-  if (t.bucket) { sets.push("correction_bucket = ?"); args.push(t.bucket); }
+  // THE OWNER FOLLOWS THE BUCKET — one decision (corrections.assigneeForBucket). Refining the
+  // bucket without it left production 1fb3dc39 an A_we_fix "not a design deficiency" assigned to
+  // the designer the keyword pick had chosen off the page chrome.
+  if (t.bucket) {
+    sets.push("correction_bucket = ?"); args.push(t.bucket);
+    sets.push("assigned_to = ?"); args.push(assigneeForBucket(t.bucket));
+  }
   if (t.rootCause) { sets.push("root_cause = ?"); args.push(t.rootCause); }
   if (t.requiredAction) { sets.push("required_action = ?"); args.push(t.requiredAction); }
   if (t.draft) { sets.push("draft_response = ?"); args.push(t.draft); }
@@ -248,6 +263,15 @@ export function persistTriage(
 
 function safeProject(db: AppDb, projectId: string): ProjectRecord | null {
   try { return getProjectDetail(db, projectId).project; } catch { return null; }
+}
+
+/** The page text a portal correction was read from ("" for a correction entered as-is). */
+function portalRecordText(db: AppDb, correctionId: string): string {
+  try {
+    return String(db.get<{ source_text: string }>("SELECT source_text FROM corrections WHERE id = ?", [correctionId])?.source_text ?? "");
+  } catch {
+    return "";
+  }
 }
 
 function documentList(db: AppDb, projectId: string): Array<{ docType: string; filename: string }> {
