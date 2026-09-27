@@ -231,10 +231,12 @@ const httpUrl = (u: unknown): string => {
 
 /**
  * AGENCY A'S ANCHOR SITES in this job's lookup — the sites of the PAGES the lookup itself cited for A:
- *   - the source pages of every permit attributed to A (its own answer names A, else the AHJ-wide one
- *     does): issuingAgency / portalUrl / documents / fee — a notFound answer's page too (Michael's
- *     lookup read co.marion.or.us/PW/BuildingInspection for Marion County's portal and found none: the
- *     page is still Marion County's);
+ *   - the source pages of every permit whose OWN issuer answer names A: issuingAgency / portalUrl /
+ *     documents / fee — a notFound portal / documents / fee answer's page too (Michael's lookup read
+ *     co.marion.or.us/PW/BuildingInspection for Marion County's portal and found none: the page is
+ *     still Marion County's). A permit whose own issuer answer is notFound anchors NOTHING, even where
+ *     the AHJ-wide answer names A (agency-contain C4, "notFound never vouches" — the skeptic's S3: a
+ *     notFound answer sourced to Polk County's page made co.polk.or.us Fixture County's site);
  *   - the AHJ-wide issuingAgency's page, only when that answer NAMES A.
  * A DOCUMENT never anchors — not itself, not another document (the lookup citing Lane County's PDF as
  * the Oregon BCD's source is the error this rule refuses). And a site is removed — names only ever
@@ -264,7 +266,10 @@ export function agencyAnchorSites(project: Pick<ProjectRecord, "state" | "ahj">,
     const who = permitAgencyName(p, top);
     if (!who) continue;
     const sources = [p.issuingAgency, p.portalUrl, p.documents, p.fee].map((f) => httpUrl(f?.sourceUrl)).filter(Boolean);
-    if (sameAgencyName(who, agency)) sources.forEach(addPage);
+    // C4: only a permit whose OWN issuer answer names A vouches for its pages; one attributed to A only
+    // through the AHJ-wide answer (its own notFound) anchors nothing. (Its pages still REMOVE a site when
+    // the answer it is attributed to names another agency — below, unchanged.)
+    if (sameAgencyName(who, agency)) { if (answeredName(p.issuingAgency)) sources.forEach(addPage); }
     else for (const u of sources) others.add(siteOf(u));
   }
   if (answeredName(top)) {
