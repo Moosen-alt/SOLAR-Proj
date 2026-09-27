@@ -2451,6 +2451,38 @@ export interface ParserLlmExtraction {
    *  field ids that came from vision, and which pages were read (scannedPlanSet.ts). */
   visionFields?: string[];
   visionPages?: number[];
+  /** "vision" = the whole set was a scan; "hybrid" = a text set whose image-only pages (spec
+   *  sheets pasted in as pictures) were read by vision and merged under the text read. */
+  planReadMode?: "vision" | "hybrid";
+  /** What each vision page was taken to be (the page index read, or the position rule). */
+  visionPageRoles?: Array<{ page: number; kind: PlanSheetKind; sheet?: string; title?: string; rotate?: number }>;
+  /** Pages that were candidates but NOT read, and why (cap, byte budget, render failure). */
+  visionSkipped?: Array<{ page: number; reason: string }>;
+}
+
+/** What a plan-set page is, as the page-index read names it (scannedPlanSet.ts chooses the
+ *  vision pages from these). */
+export type PlanSheetKind =
+  | "cover" | "site_plan" | "roof_plan" | "attachment" | "structural" | "one_line" | "calcs" | "labels"
+  | "module_spec" | "inverter_spec" | "battery_spec" | "racking_spec" | "other_spec" | "certificate"
+  | "notes" | "other" | "blank";
+
+export interface PlanPageClass {
+  page: number;
+  /** Sheet number as printed (e.g. "PV-2"), when legible. */
+  sheet?: string;
+  /** Sheet title as printed, when legible. */
+  title?: string;
+  kind: PlanSheetKind;
+  /** Clockwise degrees that turn the sheet's drawing upright. */
+  rotate: 0 | 90 | 180 | 270;
+}
+
+/** The page-index read of a plan set: one entry per page image it was shown. */
+export interface PlanPageIndex {
+  pages: PlanPageClass[];
+  /** The set's own sheet index (cover sheet table), when one was legible. */
+  sheetIndex?: Array<{ sheet: string; title: string }>;
 }
 
 export interface ParserExtractionConflict {
@@ -2585,9 +2617,19 @@ export interface LLMProvider {
      *  the structural screen (loads, exposure, framing) and for stamp evidence. */
     structuralLetterText?: string;
     defaultState?: string;
-    /** A SCANNED plan set (no text layer): its key sheets as page images (backend scannedPlanSet.ts). */
-    planPageImages?: Array<{ page: number; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>;
+    /** A SCANNED plan set (no text layer): its key sheets as page images (backend scannedPlanSet.ts).
+     *  `label` names what the page was taken to be ("site plan, PV-2, rotated 90° upright"). */
+    planPageImages?: Array<{ page: number; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp"; label?: string }>;
+    /** "scan" (default) = the images ARE the plan set; "hybrid" = the set's text layer was read
+     *  separately and these are its image-only pages. */
+    planImageMode?: "scan" | "hybrid";
   }): Promise<ParserLlmExtraction>;
+  /** PAGE INDEX of a plan set from small page images: what each page is, its sheet number and
+   *  title, and how to turn it upright (scannedPlanSet.ts chooses the vision pages from it).
+   *  Optional so test doubles need not implement it — without it the position rule applies. */
+  classifyPlanPages?(input: {
+    pageImages: Array<{ page: number; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>;
+  }): Promise<PlanPageIndex>;
   /** Vision-based extraction from the actual document images — accurate for account/meter numbers that OCR mangles. */
   extractProjectFieldsFromImages(input: {
     images: { kind: "utility_bill" | "meter_photo" | "plan_page"; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }[];

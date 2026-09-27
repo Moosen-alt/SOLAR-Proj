@@ -2613,7 +2613,15 @@ app.post("/api/parser/llm-extract", asyncHandler(async (req, res) => {
   try {
     const result = await llm.extractProjectFields({ planText, utilityBillText, meterText, structuralLetterText, defaultState });
     const { supplementStructuralIntake } = await import("./structuralIntake");
-    const extraction = supplementStructuralIntake(result, planText);
+    let extraction = supplementStructuralIntake(result, planText);
+    // HYBRID PLAN SET: the parser page first posted the PDF to /api/parser/plan-scan-extract, which
+    // read the set's image-only pages (datasheets pasted in as pictures) by vision; that read rides
+    // back here and is merged UNDER this text read — the text wins every field it answered
+    // (scannedPlanSet.mergeImagePageRead validates the posted shape).
+    if (req.body?.planImageRead && typeof req.body.planImageRead === "object") {
+      const { mergeImagePageRead } = await import("./scannedPlanSet");
+      extraction = mergeImagePageRead(extraction, req.body.planImageRead);
+    }
     // WHICH COMPANY IS THIS? The prompt has always read the title-block installer and
     // always dropped it. Resolve it here, on the response the parser page already
     // waits for, so the (still required) client picker can fill itself instead of
@@ -2637,8 +2645,12 @@ app.post("/api/parser/llm-extract", asyncHandler(async (req, res) => {
 }));
 
 // IMAGE-ONLY PLAN SET (a scan with no text layer): the PDF itself is posted; its key sheets are
-// rendered and read by vision, capped (scannedPlanSet.ts). A plan set WITH a usable text layer
-// is refused here (409) — the text path reads it. The response names every vision-read field.
+// chosen by content, rendered and read by vision, capped (scannedPlanSet.ts). A plan set WITH a
+// text layer whose image-only pages (datasheets pasted in as pictures) hold fields the text cannot
+// reach is read the same way, those pages only: mode "hybrid", which the parser page posts back to
+// /api/parser/llm-extract as planImageRead so the text read stays authoritative. A text set with
+// no image-only page is refused here (409) — the text path reads it. The response names every
+// vision-read field.
 app.post(
   "/api/parser/plan-scan-extract",
   express.raw({ type: ["application/pdf", "application/octet-stream"], limit: process.env.DOC_UPLOAD_LIMIT || "100mb" }),
@@ -2650,7 +2662,10 @@ app.post(
     const { readPlanSetForExtraction } = await import("./scannedPlanSet");
     try {
       const read = await readPlanSetForExtraction(createLLMProvider(), bytes, { defaultState });
-      if (read.mode === "text" || !read.extraction) throw new HttpError(409, `This plan set has a text layer (${read.textChars} characters over ${read.pageCount} page(s)); the text parser reads it.`);
+      if (read.mode === "text" || !read.extraction) throw new HttpError(409, `This plan set has a text layer (${read.textChars} characters over ${read.pageCount} page(s)) and no image-only page; the text parser reads it.`);
+      // Hybrid: the image pages' read goes back to the parser page, which merges it under the text
+      // read (the text read resolves the client).
+      if (read.mode === "hybrid") { res.json(read.extraction satisfies ParserExtractionResponse); return; }
       // A name read off an IMAGE is not in any text layer: it may suggest a client, never pre-select one.
       let clientResolution: ClientResolution | undefined;
       try {

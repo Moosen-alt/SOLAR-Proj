@@ -266,6 +266,90 @@ export async function renderPdfPageToPng(pdfPath: string, page: number, scale = 
   }
 }
 
+/** How a page is rendered for a VISION read (scannedPlanSet.ts). */
+export interface VisionRenderOptions {
+  /** Longest edge of the output image, px. */
+  maxLongEdge: number;
+  /** Output area ceiling, px (the model downscales anything larger, so more buys nothing). */
+  maxPixels: number;
+  /** Never render above this scale (a tiny page must not become a huge upscale). Default 4. */
+  maxScale?: number;
+  /** Clockwise degrees applied AFTER rendering, to turn a sideways sheet upright. */
+  rotate?: 0 | 90 | 180 | 270;
+  /** JPEG quality 1-100 (default 85). Page images go as JPEG: a 3.6 MP scan as PNG runs to
+   *  several MB, over the per-image byte cap, where the same page as JPEG is ~1 MB. */
+  quality?: number;
+}
+
+export interface VisionRender {
+  page: number;
+  bytes: Buffer;
+  width: number;
+  height: number;
+  scale: number;
+  mimeType: "image/jpeg";
+}
+
+/** The scale that fits a `w` x `h` point page inside the vision limits. */
+export function visionRenderScale(w: number, h: number, opts: Pick<VisionRenderOptions, "maxLongEdge" | "maxPixels" | "maxScale">): number {
+  const longEdge = Math.max(1, w, h);
+  const area = Math.max(1, w * h);
+  return Math.max(0.05, Math.min(opts.maxScale ?? 4, opts.maxLongEdge / longEdge, Math.sqrt(opts.maxPixels / area)));
+}
+
+/** Open a PDF (bytes — nothing touches the disk cache) and render pages from it for a VISION
+ *  read: fitted to the model's image limits, turned upright, JPEG-encoded. One parse of the PDF
+ *  serves every page; call close() when done. */
+export async function openPdfForVisionRender(pdfBytes: Uint8Array): Promise<{
+  numPages: number;
+  render: (page: number, opts: VisionRenderOptions) => Promise<VisionRender>;
+  close: () => Promise<void>;
+}> {
+  const { createCanvas } = await import("@napi-rs/canvas" as string);
+  const pdfjs = await getPdfjs();
+  const quiet = <T>(fn: () => Promise<T>): Promise<T> => {
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      if (typeof args[0] === "string" && PDFJS_WARN_RE.test(args[0])) return;
+      origWarn.apply(console, args);
+    };
+    return fn().finally(() => { console.warn = origWarn; });
+  };
+  // pdfjs may detach the buffer it is given — hand it a copy.
+  const doc = await quiet(() => pdfjs.getDocument({ data: new Uint8Array(pdfBytes), useSystemFonts: true, disableWorker: true }).promise);
+  return {
+    numPages: doc.numPages,
+    render: (page, opts) => quiet(async () => {
+      const target = Math.min(Math.max(1, Math.floor(page)), doc.numPages);
+      const pdfPage = await doc.getPage(target);
+      const unit = pdfPage.getViewport({ scale: 1 });
+      const scale = visionRenderScale(unit.width, unit.height, opts);
+      const viewport = pdfPage.getViewport({ scale });
+      // floor, not ceil: the area must stay inside maxPixels (a sub-pixel sliver is all it costs).
+      const w = Math.max(1, Math.floor(viewport.width)), h = Math.max(1, Math.floor(viewport.height));
+      const canvas = createCanvas(w, h);
+      const ctx = canvas.getContext("2d");
+      // JPEG has no alpha: a transparent page background would encode black.
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, w, h);
+      await pdfPage.render({ canvasContext: ctx, viewport, canvas }).promise;
+      const rot = opts.rotate ?? 0;
+      let out = canvas;
+      if (rot === 90 || rot === 180 || rot === 270) {
+        const swap = rot !== 180;
+        out = createCanvas(swap ? h : w, swap ? w : h);
+        const octx = out.getContext("2d");
+        octx.translate(out.width / 2, out.height / 2);
+        octx.rotate((rot * Math.PI) / 180);
+        octx.drawImage(canvas, -w / 2, -h / 2);
+      }
+      const bytes: Buffer = out.toBuffer("image/jpeg", Math.max(1, Math.min(100, Math.round(opts.quality ?? 85))));
+      return { page: target, bytes, width: out.width, height: out.height, scale, mimeType: "image/jpeg" as const };
+    }),
+    close: async () => { try { await (doc as unknown as { destroy?: () => Promise<void> }).destroy?.(); } catch { /* best effort */ } },
+  };
+}
+
 // Top-level helper for the evidence-image endpoint: locate the plan set, pick
 // the page that backs this topic's evidence, and render it. Returns null when
 // there is no plan-set PDF or no page scores — the report then falls back to the

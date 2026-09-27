@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { performance } from "node:perf_hooks";
-import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition, WebLookupResult } from "../../shared/src/types";
+import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, PlanPageIndex, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition, WebLookupResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
@@ -1661,7 +1661,9 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
     structuralLetterText?: string;
     defaultState?: string;
     /** A SCANNED plan set (no text layer): its key sheets as page images (scannedPlanSet.ts caps them). */
-    planPageImages?: Array<{ page: number; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>;
+    planPageImages?: Array<{ page: number; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp"; label?: string }>;
+    /** "hybrid": the text layer was read separately; these are the set's image-only pages. */
+    planImageMode?: "scan" | "hybrid";
   }): Promise<ParserLlmExtraction> {
     const system = `You are an expert solar permit intake specialist. You read the raw extracted text of a residential solar project's documents and pull out every field a permit/interconnection application needs. The text comes from PDF extraction and OCR, so it may be noisy, out of order, or have character errors — use judgment and cross-check between documents.
 
@@ -1834,7 +1836,14 @@ Rules:
     if (input.planText?.trim()) parts.push(`=== PLAN_SET ===\n${planTextForExtraction(input.planText)}`);
     const pageImages = input.planPageImages ?? [];
     if (pageImages.length) {
-      parts.push(`=== PLAN_SET (SCANNED) ===\nThis plan set has NO text layer. The attached PLAN_SET PAGE images (pages ${pageImages.map((p) => p.page).join(", ")} of the set, chosen as its likely cover/title, site plan, one-line and spec sheets) ARE the plan set: read them as the PLAN_SET document. For every field, evidence.source is "plan_set" and evidence.sheet names the page ("page 3") and sheet label if legible. Read only what the images show; a sheet you were not shown is not "absent".`);
+      // What each image was taken to be (the page index read), so the model knows which sheet
+      // answers which field — e.g. the module Voc lives on the module datasheet page.
+      const roles = pageImages.some((p) => p.label) ? ` (${pageImages.map((p) => `page ${p.page}${p.label ? `: ${p.label}` : ""}`).join("; ")})` : "";
+      if (input.planImageMode === "hybrid") {
+        parts.push(`=== PLAN_SET (IMAGE-ONLY PAGES) ===\nThis plan set's TEXT layer is read separately. The attached PLAN_SET PAGE images are the set's pages that carry NO text layer — usually equipment datasheets or scans pasted into the PDF as pictures${roles}. Read every field these images state (module Voc / Isc / Voc temperature coefficient and listing agency from the module datasheet; the microinverter's or inverter's maximum DC input voltage and rated output current from its datasheet; anything else the images print). For every field, evidence.source is "plan_set" and evidence.sheet names the page ("page 7") and sheet label if legible. Report only what the images show; a field these pages do not state is simply omitted — never write that the plan set lacks it.`);
+      } else {
+        parts.push(`=== PLAN_SET (SCANNED) ===\nThis plan set has NO text layer. The attached PLAN_SET PAGE images (pages ${pageImages.map((p) => p.page).join(", ")} of the set${roles || ", chosen as its likely cover/title, site plan, one-line and spec sheets"}) ARE the plan set: read them as the PLAN_SET document. Pages were turned upright where the page index showed the sheet printed sideways. For every field, evidence.source is "plan_set" and evidence.sheet names the page ("page 3") and sheet label if legible. Read the small print of tables (roof description / array table, design criteria, wire and OCPD tables, electrical calculations) closely — per-plane module count, tilt and azimuth go in pvArrays. Read only what the images show; a sheet you were not shown is not "absent".`);
+      }
     }
     if (input.utilityBillText?.trim()) parts.push(`=== UTILITY_BILL ===\n${input.utilityBillText.slice(0, 8000)}`);
     if (input.meterText?.trim()) parts.push(`=== METER_PHOTO ===\n${input.meterText.slice(0, 2000)}`);
@@ -1860,7 +1869,7 @@ Rules:
     // re-send in 8 runs there). Long documents first, the question last.
     parts.push("=== END OF DOCUMENTS ===\nReturn ONLY the JSON object described in the system prompt.");
     const user = parts.join("\n\n");
-    const images = pageImages.map((p) => ({ label: `PLAN_SET PAGE ${p.page} image:`, base64: p.base64, mimeType: p.mimeType }));
+    const images = pageImages.map((p) => ({ label: `PLAN_SET PAGE ${p.page}${p.label ? ` (${p.label})` : ""} image:`, base64: p.base64, mimeType: p.mimeType }));
     const documentsSeen: Array<ParserFieldEvidence["source"]> = [
       ...(input.planText?.trim() || pageImages.length ? ["plan_set" as const] : []),
       ...(input.utilityBillText?.trim() ? ["utility_bill" as const] : []),
@@ -1892,6 +1901,50 @@ Rules:
       });
       return attempt("Could not parse LLM response (retry).");
     }
+  }
+
+  /** PAGE INDEX of a plan set from small page images (scannedPlanSet.ts picks the pages to read
+   *  from it and validates everything returned — page range, kinds, rotation, caps). Routed as
+   *  extractProjectFields (the `[pages]` suffix): same model and effort as the read it serves. An
+   *  unreadable answer is an EMPTY index, and the caller falls back to the position rule. */
+  async classifyPlanPages(input: {
+    pageImages: Array<{ page: number; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>;
+  }): Promise<PlanPageIndex> {
+    if (!input.pageImages.length) return { pages: [] };
+    const system = `You index the pages of a residential solar PERMIT PLAN SET from small images of every page. You do not extract project data; you say what each page IS so the right pages can be read at full resolution.
+
+For EVERY page image you are shown, return one entry. Use the sheet's own words: its title block (sheet number such as "PV-2" and sheet name) and, when the set has one, the SHEET INDEX table (usually on the cover). Where the print is too small, judge by what the drawing shows (a roof outline with module rectangles is a site/roof plan; boxes joined by conductors is a one-line; a manufacturer's datasheet layout is a spec sheet).
+
+kind — exactly one of:
+  cover          cover / title sheet, project data, system summary, sheet index, vicinity map
+  site_plan      site / plot plan, property lines, equipment locations (a site plan that also shows the modules on the roof is still site_plan)
+  roof_plan      roof plan / array layout / module layout per roof plane (no property-level site plan)
+  attachment     mounting / attachment / racking / flashing DETAILS, roof section
+  structural     framing plan, structural calculations, structural letter
+  one_line       single-line / three-line / electrical diagram
+  calcs          wire / conductor / OCPD sizing, voltage drop, electrical calculations, equipment schedule tables
+  labels         placards, warning labels, signage, directory
+  module_spec    PV MODULE (panel) datasheet
+  inverter_spec  inverter / MICROINVERTER / optimizer datasheet
+  battery_spec   battery / energy storage datasheet
+  racking_spec   racking / rail / attachment manufacturer datasheet
+  other_spec     any other equipment datasheet (combiner, disconnect, gateway, rapid shutdown device)
+  certificate    listing / UL / engineering certificate or letter
+  notes          general notes only
+  other          anything else
+  blank          blank or near-blank page
+rotate — the CLOCKWISE rotation (0, 90, 180 or 270) that turns the sheet's MAIN drawing and its body text upright. A sheet printed sideways on the page (text running bottom-to-top) needs 90; top-to-bottom needs 270; upside down needs 180. Judge by the drawing and its large text, not by a small block that is itself printed at another angle.
+
+Return ONLY JSON of this shape, no prose:
+{"pages":[{"page":<page number as labelled>,"sheet":"<sheet number as printed, or \\"\\">","title":"<sheet name as printed, max 60 characters, or \\"\\">","kind":"<kind>","rotate":<0|90|180|270>}],"sheetIndex":[{"sheet":"<number>","title":"<name>"}]}
+sheetIndex lists the set's own sheet index rows when one is legible; otherwise [].`;
+    const user = `The ${input.pageImages.length} page image(s) above are pages ${input.pageImages.map((p) => p.page).join(", ")} of one plan set, in order, each labelled with its page number. Return the JSON page index.`;
+    const images = input.pageImages.map((p) => ({ label: `PAGE ${p.page}:`, base64: p.base64, mimeType: p.mimeType }));
+    const text = await this.askLong("extractProjectFields[pages]", system, user, 8000, undefined, images);
+    const parsed = this.parseJson<{ pages?: unknown; sheetIndex?: unknown }>(text, {});
+    const pages = Array.isArray(parsed.pages) ? (parsed.pages as PlanPageIndex["pages"]) : [];
+    const sheetIndex = Array.isArray(parsed.sheetIndex) ? (parsed.sheetIndex as NonNullable<PlanPageIndex["sheetIndex"]>) : [];
+    return { pages, sheetIndex };
   }
 
   // Shared parser for both text and vision extraction results — captures

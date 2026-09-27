@@ -2772,6 +2772,32 @@ function fillProjectFields(plan){
   }
 }
 
+// ROOF PLANES FROM THE SMART READ. fillProjectFields writes roofPlanesField from the browser's
+// regex pre-parse only — a text-layer table it recognises. A scanned plan set has no text layer,
+// so a roof plan the vision read DID read (pvArrays: per-plane count, tilt, azimuth) never reached
+// this box, which then said "No roof planes parsed" over a roof plan that was read. The regex
+// planes, when there are any, stay; otherwise the smart read's planes are shown, and a roof/site
+// plan that was read but lists no per-plane table says exactly that.
+function renderRoofPlanesFromSmartRead(){
+  if ((state.planData?.roofPlanes || []).length) return;
+  const snap = state.llmSnapshot || {};
+  const arr = Array.isArray(snap.pvArrays) ? snap.pvArrays.filter(p => p && typeof p === 'object') : [];
+  const roofPage = (state.planReadRoles || []).find(r => r && (r.kind === 'site_plan' || r.kind === 'roof_plan'));
+  const where = roofPage ? ` (read by vision from page ${roofPage.page}${roofPage.sheet ? `, ${roofPage.sheet}` : ''})` : '';
+  const val = (x) => (x == null || x === '' ? '?' : x);
+  if (arr.length){
+    const count = (p) => p.quantity ?? p.moduleQuantity ?? p.modules;
+    const lines = arr.map((p, i) => `Roof #${i + 1}: ${val(count(p))} module(s), tilt ${val(p.tilt)}°, azimuth ${val(p.azimuth)}°`);
+    const total = arr.reduce((s, p) => s + (Number(count(p)) || 0), 0);
+    setVal('roofPlanesField', `${lines.join('\n')}\nTotal roof-plane modules${where}: ${total}`);
+    return;
+  }
+  if (roofPage){
+    const one = snap.tilt != null || snap.azimuth != null;
+    setVal('roofPlanesField', `The roof/site plan was read by vision from page ${roofPage.page}${roofPage.sheet ? ` (${roofPage.sheet})` : ''} but lists no per-plane table — ${one ? `one array: tilt ${val(snap.tilt)}°, azimuth ${val(snap.azimuth)}°` : 'no per-plane module count, tilt or azimuth was legible'}. Confirm the array layout on the sheet.`);
+  }
+}
+
 function fillUBFields(ub, meterPhoto){
   const planMeter = getVal('meter');
   let ubMeter = ub.meterRaw || '';
@@ -4093,18 +4119,21 @@ async function runLlmAssist(){
   // returns is named as a vision read in the review flags. Same rule as the server's
   // (scannedPlanSet.planTextIsNearEmpty): under 40 letters/digits per page is no text layer.
   let scanRead = false;
+  state.planReadRoles = [];
   const planChars = String(planText || '').replace(/---\s*(?:OCR\s+)?PAGE\s+\d+\s*---/gi, '').replace(/[^A-Za-z0-9]/g, '').length;
-  if (state.planFile && /pdf/i.test(`${state.planFile.type} ${state.planFile.name}`) && planChars < 40 * Math.max(1, state.planDoc?.pageCount || 1)){
+  const planIsPdf = Boolean(state.planFile && /pdf/i.test(`${state.planFile.type} ${state.planFile.name}`));
+  const planScanQuery = getVal('state') ? `?defaultState=${encodeURIComponent(getVal('state'))}` : '';
+  if (planIsPdf && planChars < 40 * Math.max(1, state.planDoc?.pageCount || 1)){
     setProgress(null, 'The plan set is a scan — reading its key sheets by image…');
     try {
-      const q = getVal('state') ? `?defaultState=${encodeURIComponent(getVal('state'))}` : '';
-      const resp = await fetch(`/api/parser/plan-scan-extract${q}`, { method:'POST', headers:{'Content-Type':'application/pdf'}, body: state.planFile });
+      const resp = await fetch(`/api/parser/plan-scan-extract${planScanQuery}`, { method:'POST', headers:{'Content-Type':'application/pdf'}, body: state.planFile });
       const v = await resp.json().catch(() => ({}));
       if (!resp.ok) throw Object.assign(new Error(v.error || `Request failed (${resp.status})`), { status: resp.status });
       if (v.provider === 'stub'){ authOff = true; }
       else {
         applyExtraction(v, applied, { vision: true, docsGiven: ['plan_set'] });
         if (v.clientResolution) await applyClientResolution(v.clientResolution);
+        state.planReadRoles = Array.isArray(v.visionPageRoles) ? v.visionPageRoles : [];
         state.reviewFlags.push(`Image-only plan set: read by VISION from pages ${(v.visionPages || []).join(', ')} — ${(v.visionFields || []).length ? `fields from vision: ${(v.visionFields || []).join(', ')}` : 'no field could be read'}. Verify each against the sheet.`);
         ranAny = true;
         scanRead = true;
@@ -4114,17 +4143,40 @@ async function runLlmAssist(){
     }
   }
 
+  // 1c) IMAGE-ONLY PAGES INSIDE A TEXT PLAN SET. Datasheets pasted into a vector PDF as pictures
+  // carry only their title block in the text layer, so the module Voc / Isc / temperature
+  // coefficient never reach the text pass. The SERVER decides which pages those are (one rule,
+  // scannedPlanSet.imageOnlyPages): 409 = none, 200 = their vision read, which rides along with
+  // the text pass below and is merged UNDER it there — the text read stays authoritative.
+  let planImageRead = null;
+  if (planIsPdf && !scanRead && planChars >= 40 * Math.max(1, state.planDoc?.pageCount || 1)){
+    setProgress(null, 'Checking the plan set for image-only pages (spec sheets pasted in as pictures)…');
+    try {
+      const resp = await fetch(`/api/parser/plan-scan-extract${planScanQuery}`, { method:'POST', headers:{'Content-Type':'application/pdf'}, body: state.planFile });
+      const v = await resp.json().catch(() => ({}));
+      if (resp.ok && v.provider !== 'stub' && v.planReadMode === 'hybrid' && (v.visionPages || []).length) planImageRead = v;
+      else if (!resp.ok && resp.status !== 409) state.reviewFlags.push(`The plan set's image-only pages could not be read by vision: ${v.error || `Request failed (${resp.status})`}. Check the datasheet values by hand.`);
+    } catch (e){
+      state.reviewFlags.push(`The plan set's image-only pages could not be read by vision: ${e.message}. Check the datasheet values by hand.`);
+    }
+  }
+
   // 2) Text pass on the plan set (and any docs) — fills the rest.
   if (haveText && !(scanRead && !utilityBillText.trim() && !meterText.trim() && !structuralLetterText.trim())){
     setProgress(null, 'Reading the plan set…');
     try {
       // A scan already read by vision sends no (empty) plan text to the text pass.
       const textPlan = scanRead ? '' : planText;
-      const t = await postJson('/api/parser/llm-extract', { planText: textPlan, utilityBillText, meterText, structuralLetterText, defaultState: getVal('state') || undefined });
+      const t = await postJson('/api/parser/llm-extract', { planText: textPlan, utilityBillText, meterText, structuralLetterText, defaultState: getVal('state') || undefined, ...(planImageRead && textPlan.trim() ? { planImageRead } : {}) });
       if (t.provider === 'stub'){ authOff = true; }
       else {
         const docsGiven = [textPlan.trim() ? 'plan_set' : '', utilityBillText.trim() ? 'utility_bill' : '', meterText.trim() ? 'meter_photo' : '', structuralLetterText.trim() ? 'structural_letter' : ''].filter(Boolean);
         applyExtraction(t, applied, { vision: false, docsGiven });
+        if (t.planReadMode === 'hybrid'){
+          state.planReadRoles = Array.isArray(t.visionPageRoles) ? t.visionPageRoles : [];
+          state.reviewFlags.push(`Image-only pages in the plan set: read by VISION from pages ${(t.visionPages || []).join(', ')} and merged under the text read — ${(t.visionFields || []).length ? `fields from vision: ${(t.visionFields || []).join(', ')}` : 'no field came from vision that the text had not answered'}. Verify each against the sheet.`);
+        }
+        planImageRead = null;
         // WHICH COMPANY IS THIS? The backend read the title-block installer off this same
         // response and said which client it points at. Only the TEXT pass carries it —
         // the vision pass sees bill/meter photos, not the plan set.
@@ -4135,6 +4187,14 @@ async function runLlmAssist(){
       if (e.status === 502) state.reviewFlags.push(`Smart read: ${e.message}`);
       else state.reviewFlags.push(`Smart read unavailable: ${e.message}. Used the basic text scan only.`);
     }
+  }
+  // The text pass never ran or failed: the image pages' read still stands on its own (nothing to
+  // merge under), labelled as vision like a scan's.
+  if (planImageRead){
+    applyExtraction(planImageRead, applied, { vision: true, docsGiven: ['plan_set'] });
+    state.planReadRoles = Array.isArray(planImageRead.visionPageRoles) ? planImageRead.visionPageRoles : [];
+    state.reviewFlags.push(`Image-only pages in the plan set: read by VISION from pages ${(planImageRead.visionPages || []).join(', ')} — ${(planImageRead.visionFields || []).length ? `fields from vision: ${(planImageRead.visionFields || []).join(', ')}` : 'no field could be read'}. The text pass did not run, so nothing was checked against the text layer. Verify each against the sheet.`);
+    ranAny = true;
   }
 
   if (authOff && !ranAny){
@@ -4375,6 +4435,7 @@ async function runParse(){
   // fast, accurate path and usually makes OCR unnecessary.
   setProgress(null, 'Reviewing the documents and pulling the details…');
   await runLlmAssist();
+  renderRoofPlanesFromSmartRead();
   setProgress(85, 'Putting it all together…');
 
   // OCR fallback — runs ONLY for bill/meter docs the AI did not capture (AI off, or a
