@@ -303,9 +303,13 @@ async function testPayFeeBlockedInAutoSubmit() {
   const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
   withFakePage(adapter, makeFakePage({ log, bodyText: CONFIRMATION }));
   const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
-  assert.equal(result.ok, true);
   assert.deepEqual(log.clicks, [], "PAY_FEE must be hard-blocked even in autoSubmit even if flagged final");
   assert.equal(result.data?.finalSubmitClicked, false);
+  // A PAUSE, NAMED (portal-run-close 8): this used to be skipped in silence and the approved run
+  // read ok, as an ordinary review stop — the operator who approved a filing heard nothing about
+  // the fee. Now the run pauses fee_payment for a person, nothing clicked.
+  assert.equal(result.ok, false, "an approved run whose final submit pays must not read as a clean stop");
+  assert.equal(result.pauseReason, "fee_payment");
 }
 
 // P0-4: an iframe-based CAPTCHA/MFA challenge on the final page must STOP the run
