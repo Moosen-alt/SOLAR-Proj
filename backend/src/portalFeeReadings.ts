@@ -35,7 +35,10 @@ import type { PortalFeeRecordReading, PortalFeeRecordSummary, ProjectRecord } fr
 import { readAccelaFeeSection, type PortalFeeReadResult } from "../../shared/src/portalFeeItems";
 import { trackKind, type TrackKind } from "./permitMonitor";
 import { trackSafeUrl } from "./portalChannel";
-import { detectPlatform, fetchRecordPageText } from "./publicPermitStatus";
+import { fetchRecordPageText } from "./publicPermitStatus";
+
+/** An Accela Citizen Access record detail page, on any host. */
+const ACA_RECORD_PAGE = /\/cap\/capdetail\.aspx/i;
 import { id } from "./ids";
 import { text } from "./json";
 import { nowIso } from "./time";
@@ -255,6 +258,23 @@ function pageNamesRecord(pageText: string, recordNumber: string): boolean {
   return !!want && pageText.replace(/[\s-]+/g, "").toUpperCase().includes(want);
 }
 
+/** READ EVERY FILED PERMIT RECORD'S FEES NOW — the fee panel's "Read the fee from the portal"
+ *  button, for when the weekly sweep has not reached a record yet. Same reader, same refusals,
+ *  same throttle on browser launches; only the once-per-20h re-read wait is skipped, because a
+ *  person asked. Sequential on purpose: one browser at a time. */
+export async function readProjectPortalFees(
+  db: AppDb,
+  project: Pick<ProjectRecord, "id" | "state" | "ahj" | "utility">,
+): Promise<Array<{ recordNumber: string; jurisdiction: string; status: string; skipped?: string }>> {
+  const out: Array<{ recordNumber: string; jurisdiction: string; status: string; skipped?: string }> = [];
+  for (const record of filedRecords(db, project.id, "permit")) {
+    const r = await readAndRecordPortalFees(db, project, record.targetId, { force: true })
+      .catch((err) => ({ status: "failed", skipped: err instanceof Error ? err.message.slice(0, 200) : "read failed" }));
+    out.push({ recordNumber: record.recordNumber, jurisdiction: record.jurisdiction, ...r });
+  }
+  return out;
+}
+
 /**
  * THE MONITOR'S HOOK: after a target's status is recorded, read that record's fees.
  * Never throws at the sweep (the caller also guards) and never touches the status.
@@ -275,8 +295,10 @@ export async function readAndRecordPortalFees(
   const record = filedRecords(db, project.id, track).find((f) => f.targetId === targetId);
   if (!record || !record.url) return { status: "skipped", skipped: "no track-safe record URL" };
   // ONLY THE RECORD'S OWN PAGE. A portal home or search URL is not a record; constructing a
-  // CapDetail link from a display number is a guess (Oregon's 4-part numbers do not map).
-  if (detectPlatform(record.url) !== "accela" || !/capdetail\.aspx/i.test(record.url)) {
+  // CapDetail link from a display number is a guess (Oregon's 4-part numbers do not map). Judged
+  // by the ACA record page's own path, not the host, so an Accela site on a city's own domain
+  // (…/CitizenAccess/Cap/CapDetail.aspx) is read the same way as aca-oregon.accela.com.
+  if (!ACA_RECORD_PAGE.test(record.url)) {
     return { status: "skipped", skipped: "not an Accela record-detail URL" };
   }
   if (!record.recordNumber) return { status: "skipped", skipped: "target has no record number" };

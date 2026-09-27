@@ -310,6 +310,29 @@ const badge = (html: string): string => /<span class="badge [^"]*">([^<]*)<\/spa
   check("7g. a partial read is drawn beside the researched amount and flagged as not the amount", /not the amount above/.test(face(partial)) && /\$360\.00/.test(face(partial)), words(face(partial)).slice(0, 500));
 }
 
+// ═══ 8. ON REQUEST: "Read the fee from the portal record" ════════════════════════════════════
+{
+  F.saveFeeSchedule(db, { state: "OR", ahj: "City of Askbay", track: "permit" }, finding({ brackets: [{ feeUsd: 150, label: "Solar PV permit" }] }));
+  const asked = mkProject("City of Askbay");
+  // An ACA site on the city's OWN domain — the record page is judged by its path, not the host.
+  const askUrl = "https://permits.askbay.example/CitizenAccess/Cap/CapDetail.aspx?Module=Building&capID1=26CAP&capID2=00000&capID3=000A1";
+  const askRecord = "BLD-26-00412";
+  const askTid = mkTarget(asked.id, askRecord, "City of Askbay", "building", askUrl);
+  plainPages.set(askUrl, page(askRecord, "Issued", feesElec));
+  // Read once already this hour — the button still reads (a person asked).
+  db.run(`INSERT INTO portal_fee_readings (id, project_id, target_id, track, source_kind, status, detail, attempted_at) VALUES ('seed-ask', ?, ?, 'permit', 'portal_record', 'not_loaded', 'x', ?)`, [asked.id, askTid, new Date().toISOString()]);
+  db.run("UPDATE permit_check_targets SET latest_outcome = 'issued' WHERE id = ?", [askTid]);
+  db.run("UPDATE portal_fee_readings SET record_outcome = 'issued' WHERE id = 'seed-ask'");
+  const results = await PF.readProjectPortalFees(db, asked);
+  const qa = buildPaymentQuote(db, R.getProjectDetail(db, asked.id).project, "permit");
+  check("8a. the on-request read reads every filed permit record now (custom-domain ACA, inside the 20h window)",
+    results.length === 1 && results[0].status === "read" && qa.permitFeeSource === "portal_record" && qa.permitFeeUsd === 179.2, JSON.stringify(results));
+  const liftCtl = (st: unknown) => new Function("state", `${lift("esc")}\n${lift("feeReadPortalControlHtml")}\nreturn feeReadPortalControlHtml();`)(st) as string;
+  const ctl = liftCtl({ detail: R.getProjectDetail(db, asked.id) });
+  check("8b. the fee panel offers the read where a filed permit record page exists", /data-fee-read-portal/.test(ctl) && /nothing is clicked or paid/.test(ctl), ctl.slice(0, 200));
+  check("8c. …and not where there is none", liftCtl({ detail: R.getProjectDetail(db, neighbour.id) }) === "");
+}
+
 R.setStatusCheckSeamsForTests(null);
 PF.setPortalFeeFetchForTests(null);
 db.close();

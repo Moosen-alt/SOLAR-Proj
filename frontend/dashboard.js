@@ -2638,6 +2638,7 @@ function renderFeeSheetPanel() {
         The portal's own fee checkout is always completed by a person — never by automation.
       </p>
       ${sheet.lines.map(renderFeeSheetLine).join("")}
+      ${feeReadPortalControlHtml()}
       <table class="fee-totals" style="font-size:12px;margin:4px 0;border-collapse:collapse;max-width:360px;width:100%">
         <tr><td style="padding:1px 14px 1px 0">Jurisdiction fees (permit + utility)</td><td style="text-align:right"><strong>${feeMoney(sheet.jurisdictionFeesUsd)}</strong></td></tr>
         <tr><td style="padding:1px 14px 1px 0">Our service fees${sheet.billingRequired ? " (per submission)" : ""}</td>
@@ -2677,6 +2678,44 @@ function renderFeeSheetPanel() {
   panel.querySelectorAll("button[data-fee-confirm]").forEach((btn) => {
     btn.addEventListener("click", () => confirmFeeLine(btn.dataset.feeConfirm, btn));
   });
+  panel.querySelectorAll("button[data-fee-read-portal]").forEach((btn) => {
+    btn.addEventListener("click", () => readPortalFees(btn));
+  });
+}
+
+// "READ THE FEE FROM THE PORTAL" — offered only where there is a filed permit record whose own
+// page we can read (an Accela record-detail link on an active permit target). The permit monitor
+// does this on its weekly sweep; this is the same read, now.
+function feeReadPortalControlHtml() {
+  const targets = (state.detail && Array.isArray(state.detail.permitCheckTargets)) ? state.detail.permitCheckTargets : [];
+  const readable = targets.filter((t) => t && t.active !== false && t.targetType === "permit"
+    && /\/cap\/capdetail\.aspx/i.test(`${t.trackingUrl || ""} ${t.portalUrl || ""}`));
+  if (!readable.length) return "";
+  return `<p class="fee-read-portal" style="margin:6px 0;font-size:12px">
+      <button class="secondary" style="font-size:12px" data-fee-read-portal="1">Read the fee from the portal record${readable.length === 1 ? "" : "s"}</button>
+      <span class="muted">Opens ${esc(String(readable.length))} filed record page${readable.length === 1 ? "" : "s"} and reads the Fees section — read-only; nothing is clicked or paid.</span>
+    </p>`;
+}
+
+async function readPortalFees(btn) {
+  const id = state.selectedProjectId;
+  if (!id) return;
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = "Reading the portal…";
+  try {
+    const res = await api(`/api/projects/${id}/fee-sheet/read-portal`, { method: "POST", body: "{}" });
+    if (state.selectedProjectId !== id) return;
+    state.feeSheet = res.feeSheet;
+    renderFeeSheetPanel();
+    const results = Array.isArray(res.results) ? res.results : [];
+    const read = results.filter((r) => r.status === "read").length;
+    showMessage(`Portal fee read: ${read} of ${results.length} record(s) read${read < results.length ? " — the rest say why on the fee card" : ""}.`, read === results.length ? "info" : "warning");
+  } catch (err) {
+    showMessage(`Portal fee read failed: ${err.message}`, "error");
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 // ONE-CLICK CONFIRM (operator 2026-09-27: "there is no place to verify them"). A person

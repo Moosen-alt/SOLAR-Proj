@@ -2800,6 +2800,20 @@ app.post("/api/projects/:id/fee-sheet/confirm", asyncHandler(async (req, res) =>
   res.json({ outcome, feeSheet: buildProjectFeeSheet(db, detail.project) });
 }));
 
+// READ THE PORTAL'S OWN FEE NOW (portalFeeReadings.readProjectPortalFees): every filed permit
+// record's public page, its Fees section read and stored with provenance — what the weekly
+// monitor sweep does, on request. READ-ONLY: a GET and a headless read that never clicks, so
+// nothing is paid (hard rule 1). What it reads is the portal's number, labelled "read from the
+// portal record", never "verified". Scoped by the /api/projects/:id guard.
+app.post("/api/projects/:id/fee-sheet/read-portal", asyncHandler(async (req, res) => {
+  const { readProjectPortalFees } = await import("./portalFeeReadings");
+  const { buildProjectFeeSheet } = await import("./submissionFees");
+  const detail = getProjectDetail(db, String(req.params.id));
+  const results = await readProjectPortalFees(db, detail.project);
+  addAuditLog(db, detail.project.id, "human", "dashboard", "fee.portal_read_requested", { results });
+  res.json({ results, feeSheet: buildProjectFeeSheet(db, getProjectDetail(db, detail.project.id).project) });
+}));
+
 // What the assigned client owes for this project: fees we ADVANCED and re-bill, kept apart
 // from our own service fee, because one is a pass-through and the other is revenue. Reads
 // only — unlike the payment-quote route below it, asking for an invoice never creates a row.
