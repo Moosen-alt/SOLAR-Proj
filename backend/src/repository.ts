@@ -6979,6 +6979,22 @@ function trackRunInFlight(db: AppDb, projectId: string, permitTypes: string[], e
 // working unchanged.
 export { selectAdapterActor, selectStagingActor, seedOutcomeToStageResult, resolvePortalChannel };
 
+/**
+ * The words of the portal-field refusal. The account / meter numbers come off the customer's bill:
+ * with no bill on file and nothing else missing, the NEM application is WAITING on it (qc.ts
+ * WAITING_ON_BILL_ISSUE_TYPE) — said as the wait, not as a record someone forgot to complete.
+ */
+export function portalFieldRefusal(missing: string[], billOnFile: boolean): { message: string; waitingOnBill: boolean } {
+  const billFields = missing.filter((f) => /account number|meter number/i.test(f));
+  const waitingOnBill = billFields.length > 0 && billFields.length === missing.length && !billOnFile;
+  return {
+    waitingOnBill,
+    message: waitingOnBill
+      ? `Interconnection (NEM) staging is waiting on the customer's utility bill — the ${billFields.map((f) => f.toLowerCase()).join(" and ")} are read from it. Upload the bill or send an intake request; the permit side is not held by this.`
+      : `Submission staging blocked: required portal field(s) missing — ${missing.join("; ")}. Complete the project record before staging.`,
+  };
+}
+
 function validatePortalFields(
   project: ProjectRecord,
   track: SubmittalTrackType | undefined,
@@ -7740,10 +7756,8 @@ export async function prepareSubmission(
   // before a Playwright session starts, surfacing a clear blocker to the operator.
   const missingPortalFields = validatePortalFields(detail.project, track, adapterActorName);
   if (missingPortalFields.length > 0) {
-    throw new HttpError(409,
-      `Submission staging blocked: required portal field(s) missing — ${missingPortalFields.join("; ")}. Complete the project record before staging.`,
-      { missingPortalFields },
-    );
+    const refusal = portalFieldRefusal(missingPortalFields, customerBillOnFile(db, detail.project.id));
+    throw new HttpError(409, refusal.message, { missingPortalFields, ...(refusal.waitingOnBill ? { waitingOnBill: true } : {}) });
   }
 
   // LAST GATE BEFORE ANY BROWSER OR PORTAL-URL RESEARCH. Every gate above has already given

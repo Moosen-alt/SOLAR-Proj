@@ -72,7 +72,10 @@ const project = (over: Partial<ProjectRecord> = {}): ProjectRecord => ({
 } as unknown as ProjectRecord);
 
 // The cited page, as a plain client retrieves it (line breaks, &nbsp;, a curly quote — the fold must survive them).
-setPlacementPageReaderForTests(async (url) => url === W_URL
+const MASS_URL = "https://www.mass.gov/doc/527-cmr-1-solar-summary/download";
+setPlacementPageReaderForTests(async (url) => url === MASS_URL
+  ? { ok: true, status: 200, text: "Massachusetts Comprehensive Fire Safety Code summary. Three-foot access path should, if possible, be clear of incoming electrical service." }
+  : url === W_URL
   ? { ok: true, status: 200, text: "<h2>Solar PV Checklist</h2><ol><li>Item 11. Three-foot access path should, if possible,\n be clear of&nbsp;incoming electrical service.</li></ol>" }
   : { ok: false, status: 404, text: "" });
 
@@ -85,6 +88,14 @@ await check("P5 MUST-EXCLUDE: a rule whose page does not carry the quote, or who
   ]);
   assert.deepEqual(r.rules.map((x) => x.rule), [W_RULE], JSON.stringify(r));
   assert.ok(r.dropped.some((d) => /quote not found/.test(d)) && r.dropped.some((d) => /not retrievable \(status 404\)/.test(d)), JSON.stringify(r.dropped));
+});
+
+await check("P6 MUST-EXCLUDE: a state page carrying the same sentence is not stored as Waltham's own rule (the page must name the AHJ)", async () => {
+  const r = await verifyPlacementQuotes([{ kind: "access_pathway", rule: W_RULE, sourceUrl: MASS_URL }], { ahj: "Waltham" });
+  assert.equal(r.rules.length, 0, JSON.stringify(r));
+  assert.ok(r.dropped.some((d) => /does not name Waltham/.test(d)), JSON.stringify(r.dropped));
+  const own = await verifyPlacementQuotes([{ kind: "access_pathway", rule: W_RULE, sourceUrl: W_URL }], { ahj: "Waltham City" });
+  assert.equal(own.rules.length, 1, "control: Waltham's own host names it");
 });
 
 await check("P3 MUST-PASS: the design-criteria job stores Waltham's rule on Waltham's row (a uniform state) and the reviewer shows it as a callout", async () => {

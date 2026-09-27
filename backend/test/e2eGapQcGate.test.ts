@@ -34,7 +34,7 @@ delete process.env.CLIENT_NOTIFICATIONS;
 const { openDatabase } = await import("../src/db");
 const { createClient } = await import("../src/clients");
 const { saveProjectDocument } = await import("../src/projectDocuments");
-const { createProject, getProjectDetail, getSubmitGateReport, documentPresenceLine, contractorLicenceForState, isCriticalReviewItem } = await import("../src/repository");
+const { createProject, getProjectDetail, getSubmitGateReport, documentPresenceLine, contractorLicenceForState, isCriticalReviewItem, portalFieldRefusal } = await import("../src/repository");
 const { runQcForProject, WAITING_ON_BILL_ISSUE_TYPE } = await import("../src/qc");
 const { evaluateBaselineRules } = await import("../src/baselineRules");
 
@@ -113,6 +113,17 @@ await check("W3 MUST-EXCLUDE: a different missing field (homeowner) still fails 
   db.run("UPDATE projects SET homeowner_name = '' WHERE id = ?", [pid]);
   const rec = getSubmitGateReport(db, pid).checks.find((c) => c.id === "single-project-record")!;
   assert.equal(rec.status, "blocker", JSON.stringify(rec.evidence));
+});
+
+await check("W4 MUST-PASS: the NEM portal-field refusal with no bill on file names the wait; with a bill, or another field missing, it does not", () => {
+  const wait = portalFieldRefusal(["Utility account number", "Meter number"], false);
+  assert.equal(wait.waitingOnBill, true);
+  assert.match(wait.message, /waiting on the customer's utility bill/i);
+  const withBill = portalFieldRefusal(["Utility account number", "Meter number"], true);
+  assert.equal(withBill.waitingOnBill, false, "a bill on file and still no account is a real gap");
+  assert.match(withBill.message, /required portal field\(s\) missing/);
+  const other = portalFieldRefusal(["Utility account number", "AC system size (kW)"], false);
+  assert.equal(other.waitingOnBill, false, "a missing plan-set field is not the customer's bill");
 });
 
 // ── D ──────────────────────────────────────────────────────────────────────────────────

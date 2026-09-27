@@ -100,7 +100,7 @@ export async function researchPlacementRules(
   });
   if (result.error) return { rules: [], dropped: [], webGrounded: false, error: result.error };
   const parsed = parsePlacementLookup(result, jurisdiction);
-  const checked = await verifyPlacementQuotes(parsed.rules);
+  const checked = await verifyPlacementQuotes(parsed.rules, jurisdiction);
   return { rules: checked.rules, dropped: [...parsed.dropped, ...checked.dropped], webGrounded: result.groundedSearches > 0 };
 }
 
@@ -126,6 +126,17 @@ export function setPlacementPageReaderForTests(fn: PlacementPageReader | null): 
   pageReaderForTests = fn;
 }
 
+const US_STATES = new Set(["alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan", "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico", "new york", "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont", "virginia", "washington", "west virginia", "wisconsin", "wyoming"]);
+
+/** The name a jurisdiction's own pages carry: "City of Scottsdale" -> "scottsdale", "Waltham City" ->
+ *  "waltham"; a core that is a state's name keeps its word ("Iowa City" stays "iowa city"). */
+export function jurisdictionCore(ahj: string): string {
+  const full = String(ahj || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim()
+    .replace(/^(?:the\s+)?(?:city|town|township|borough|village|county|municipality)\s+of\s+/, "");
+  const core = full.replace(/\s+(?:city|town|township|twp|borough|boro|village|county)$/, "").trim();
+  return US_STATES.has(core) ? full : core;
+}
+
 /** Letters, digits and % only, entities and typographic quotes/primes folded — so a quote survives
  *  the page's line breaks, &nbsp; and curly marks, and nothing else. */
 export function foldForQuote(value: string): string {
@@ -143,7 +154,11 @@ export function foldForQuote(value: string): string {
  * (plain HTTP, no browser) and a rule is kept only when its folded text appears in the page's.
  * A page we cannot retrieve keeps nothing: an unverifiable rule is an unknown, not a rule.
  */
-export async function verifyPlacementQuotes(rules: PlacementRule[]): Promise<{ rules: PlacementRule[]; dropped: string[] }> {
+export async function verifyPlacementQuotes(rules: PlacementRule[], jurisdiction?: { ahj: string }): Promise<{ rules: PlacementRule[]; dropped: string[] }> {
+  // THE PAGE MUST BE THIS AHJ'S. An official .gov page that carries the sentence is not enough — a
+  // state fire-code summary (mass.gov) would land on Waltham's row as "Waltham's own rule". The
+  // page's text or its host must name the jurisdiction.
+  const core = jurisdiction ? foldForQuote(jurisdictionCore(jurisdiction.ahj)) : "";
   const reader = pageReaderForTests ?? readPageText;
   const pages = new Map<string, { ok: boolean; text: string; status: number }>();
   const kept: PlacementRule[] = [];
@@ -158,6 +173,11 @@ export async function verifyPlacementQuotes(rules: PlacementRule[]): Promise<{ r
     if (!page.ok) { dropped.push(`page not retrievable (status ${page.status}) — "${r.rule.slice(0, 60)}" not stored: ${r.sourceUrl}`); continue; }
     const needle = foldForQuote(r.rule);
     if (needle.length < 12 || !page.text.includes(needle)) { dropped.push(`quote not found on the page we retrieved — "${r.rule.slice(0, 60)}": ${r.sourceUrl}`); continue; }
+    if (core.length >= 3) {
+      let host = "";
+      try { host = new URL(r.sourceUrl).hostname.toLowerCase().replace(/[^a-z0-9]/g, ""); } catch { host = ""; }
+      if (!page.text.includes(core) && !host.includes(core)) { dropped.push(`the page does not name ${jurisdiction!.ahj} — "${r.rule.slice(0, 60)}" is not stored as its rule: ${r.sourceUrl}`); continue; }
+    }
     kept.push(r);
   }
   return { rules: kept, dropped };
