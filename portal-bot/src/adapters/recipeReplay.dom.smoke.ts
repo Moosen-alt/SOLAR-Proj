@@ -14,7 +14,17 @@
 //      learn time — the whole point of a shared recipe.
 //   3. SAFETY. A step flagged isFinalSubmit must NOT be clicked without autoSubmit.
 //
+// A PRODUCTION-SHAPED BROWSER (autosubmit-close item 6). This smoke launched Chromium with no
+// __name shim, so extractFieldsInPage threw and replay's page-drift precheck was DEAD here from the
+// day it was written; the fixture's unassociated <label>s never had to match anything. c896ecb's
+// backstop reads each page's terminal classification on load (PORTAL_SAFETY_IN_PAGE_SOURCE, which
+// carries the shim), the precheck went live, and the fixture scored "0 of 6 recorded fields".
+// Production (browser.ts) shims every context, so the smoke now does too, and its labels are
+// associated with their boxes and read like the recorded notes — the precheck is exercised as
+// production runs it. smokeArtifactDirs keeps a hand run's failure screenshot out of data/.
+//
 // Run: npx tsx portal-bot/src/adapters/recipeReplay.dom.smoke.ts
+import "../smokeArtifactDirs";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { chromium } from "playwright";
@@ -35,12 +45,12 @@ const check = async (label: string, fn: () => void | Promise<void>): Promise<voi
 const PAGE = `<!doctype html><html><body>
   <h1>Step 1: General Info</h1>
   <input type="hidden" id="hfIsForNewContactAddress" value="x">
-  <label>First:</label><input type="text" id="txtFirstName">
-  <label>Address:</label><input type="text" id="txtAppStreetAdd1">
-  <label>Zip:</label><input type="text" id="txtZip">
-  <label>Job Category:</label><input type="text" id="txtJobCategory">
-  <label>Middle Name:</label><input type="text" id="txtMiddle">
-  <select id="ddlState"><option value="">--Select--</option><option value="OR">OR</option><option value="WA">WA</option></select>
+  <label for="txtFirstName">First Name</label><input type="text" id="txtFirstName">
+  <label for="txtAppStreetAdd1">Address</label><input type="text" id="txtAppStreetAdd1">
+  <label for="txtZip">Zip</label><input type="text" id="txtZip">
+  <label for="txtJobCategory">Job Category</label><input type="text" id="txtJobCategory">
+  <label for="txtMiddle">Middle Name</label><input type="text" id="txtMiddle">
+  <label for="ddlState">State</label><select id="ddlState"><option value="">--Select--</option><option value="OR">OR</option><option value="WA">WA</option></select>
   <a id="btnContinue" href="#" onclick="document.getElementById('done').textContent='ADVANCED';return false;"><span>Continue Application &raquo;</span></a>
   <a id="btnSubmit" href="#" onclick="document.getElementById('done').textContent='SUBMITTED';return false;"><span>Submit</span></a>
   <div id="done"></div>
@@ -86,7 +96,10 @@ const fieldValues = {
 };
 
 const browser = await chromium.launch();
-const page = await browser.newPage();
+const context = await browser.newContext();
+// The same identity shim browser.ts installs on every production context.
+await context.addInitScript({ content: "globalThis.__name = globalThis.__name || function (fn) { return fn; };" });
+const page = await context.newPage();
 
 const adapter = new RecipeAdapter(recipe, fieldValues, {}, { autoSubmit: false });
 (adapter as unknown as { page: unknown }).page = page;
@@ -106,6 +119,10 @@ const done = await page.locator("#done").textContent().catch(() => "");
 
 await check("replay completes against a real page", () => {
   assert.equal(result.ok, true, `replay failed: ${result.message ?? ""}`);
+});
+await check("the page-drift precheck ran on a production-shaped page and found the recorded fields (no drift warning)", () => {
+  const warnings = ((result.data as { driftWarnings?: string[] } | undefined)?.driftWarnings ?? []);
+  assert.ok(!warnings.some((w) => /page drift/i.test(w)), `drift warnings: ${JSON.stringify(warnings)}`);
 });
 await check("bound fields replay THIS project's data, never the learn-time literal", () => {
   assert.equal(firstName, "Wynema", `first name: got ${JSON.stringify(firstName)}`);
