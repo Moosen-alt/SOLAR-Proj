@@ -327,32 +327,20 @@ export function quoteOnPage(quote: string, pageText: string): boolean {
   // once with a newline (the same-line check) — the two strings' positions coincide.
   const lines = String(pageText ?? "").split("\n").map(normaliseForQuote).filter(Boolean);
   const page = lines.join(" ");
-  const pageNl = lines.join("\n");
   // A checklist quoted item by item ("☐ Site Plan • Roof Plan", "Coversheet - Drawings - Plat"):
   // each item is its own segment — a PDF's cells interleave other words between items (a link
   // label "info" after each), a web page a description under each — so the list is never
   // contiguous on the page, while every item still is.
   const segs = quoteSegments(quote);
   if (!segs.length || !page) return false;
-  // ON ONE LINE WITH ITS LABEL (close-3 MF1; lookup-close-4 D3 for the amount-first mirror): a
-  // segment found contiguously in the page text carries each dollar amount on the SAME LINE as the
-  // token right before it — "Solar Thermal $50" is not on "Solar Thermal" / "$50 Fence permit" (a
-  // line-join) — or, for a LEADING amount with nothing before it, as the token right after it
-  // ("$75 Solar Residential" is not on "Deck | $75" / "Solar Residential | $150"); a row quoted with
-  // its section header in front ("Solar Arrays / Roof Top Solar Array … $75.00") still is: the
-  // break sits between the header and the row's words, never beside the amount.
-  const inPage = (seg: string): boolean => {
-    const amounts = [...seg.matchAll(/\$\s?\d+(?:\.\d+)?/g)].map((m) => ({ at: m.index!, end: m.index! + m[0].length }));
-    for (let at = page.indexOf(seg); at >= 0; at = page.indexOf(seg, at + 1)) {
-      if (amounts.every((a) => {
-        const before = seg.slice(0, a.at).trimEnd();
-        if (before) return !pageNl.slice(at + before.length, at + a.at).includes("\n");
-        const after = seg.slice(a.end).trimStart();
-        return !after || !pageNl.slice(at + a.end, at + seg.length - after.length).includes("\n");
-      })) return true;
-    }
-    return false;
-  };
+  // CONTIGUITY ONLY. This door answers "are the quoted words on the page"; whether an AMOUNT is
+  // printed beside its label is the fee tie's question (feeLinePrintedTogether, below) and it is
+  // asked ONCE, by permitProcessLookup.tiedFee on every (label, amount) pair — close-3 MF1 and
+  // close-4 D3 had given this function its own same-line amount rule (the token before / after the
+  // amount), a second predicate for one closed question that the skeptic showed closed no hole the
+  // tie leaves open (lookup-close-5 MF3). A line-joined "$75 Solar Residential" on "Deck | $75" /
+  // "Solar Residential | $150" is refused at the tie, not here.
+  const inPage = (seg: string): boolean => page.includes(seg);
   // ONE ROW (close F4): a table row's words split across cells ("Solar Installation | Residential |
   // $50", a PDF row's columns) — the segment's tokens in order within ONE short line, CONTIGUOUS
   // inside a cell, skipping only whole cells that print no number, so an amount must be printed on

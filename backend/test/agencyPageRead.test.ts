@@ -723,7 +723,12 @@ await check("(f8) MUST-EXCLUDE (close-3 MF1): an amount belongs to the words rig
   assert.equal(q("Solar Residential ... $331"), false, "a lone amount after an ellipsis rejoins its label");
   assert.equal(q("$331"), false, "a lone amount never matches on its own");
   assert.equal(q("Solar Photovoltaic $75"), false, "A14");
-  assert.equal(reader.quoteOnPage("Solar Thermal $50", "Fees\nSolar Thermal\n$50 Fence permit\nSolar PV $150\n"), false, "A16 line-join: the amount is on the next line");
+  // A16 (a line-join: 'Solar Thermal' / '$50 Fence permit'): the WORDS are on the page, so the quote
+  // door passes it; whether $50 is printed beside 'Solar Thermal' is the fee tie's question, asked
+  // once, at the docs/fees door (lookup-close-5 MF3 — quoteOnPage no longer keeps its own amount rule).
+  const a16Page = "Fees\nSolar Thermal\n$50 Fence permit\nSolar PV $150\n";
+  assert.equal(reader.quoteOnPage("Solar Thermal $50", a16Page), true, "A16: the words are on the page (contiguity only)");
+  assert.equal(reader.feeLinePrintedTogether("Solar Thermal", 50, a16Page), false, "A16: the tie refuses the line-join");
   assert.equal(reader.quoteOnPage("Solar Thermal $50", "Fees\nSolar Thermal $50\nFence permit $25\n"), true, "the same words on one line");
   assert.deepEqual(reader.quoteSegments("Solar PV - Residential $75"), ["solar pv residential $75"]);
   assert.deepEqual(reader.quoteSegments("Residential ... Solar Installation $50"), ["solar installation $50"], "an ellipsis stands; a lone word attests nothing");

@@ -22,7 +22,7 @@
 //   4. PREREQUISITES AND CODES FROM THE WORDS ON A PAGE WE READ — each a sentence quoted verbatim.
 import type { PermitProcessDiscipline } from "../../shared/src/types";
 import type { PageLink, PageReader, ReadPage } from "./agencyPageReader";
-import { hostFitsTrackAndEntity, isPermitPlatformUrl, portalHostOf, portalTenantKey, portalTenantOf } from "./portalChannel";
+import { hostFitsTrackAndEntity, isPathTenantedHost, isPermitPlatformUrl, portalHostOf, portalTenantKey, portalTenantOf } from "./portalChannel";
 
 export type PermitPlatform = "energov" | "accela" | "other";
 
@@ -167,9 +167,8 @@ function targetPathNamesPortal(href: string): boolean {
  *  (GovOutreach), a parcel GIS viewer (PeopleGIS MapsOnline, unless the words name permits), and
  *  SolarAPP+ (where an approval is obtained; the permit is then filed in the city's own portal). */
 const NEVER_PAGE_PORTAL_HOST = /(?:^|\.)(?:govoutreach\.com|gosolarapp\.org|solarapp\.nrel\.gov)$/i;
-/** Hosts where ONE instance serves many agencies and the tenant is the first path segment
- *  (public.mygov.us/<city_st>/ is MyGov's). */
-const PATH_TENANT_HOST = /(?:^|\.)(?:accela\.com|citizenserve\.com|mygovernmentonline\.org|mygov\.us)$/i;
+// Hosts where ONE instance serves many agencies (the tenant in the path or a query parameter):
+// portalChannel.isPathTenantedHost — the ONE definition (lookup-close-5 MF2).
 /** Subdomain labels that name the vendor's product, not the tenant. */
 const GENERIC_TENANT_LABEL = /^(?:www|portal|portals|aca|aca-?prod|aca-?[a-z]+|energovweb|energov|css|selfservice|permits?|apps?|online|public|citizen|prod|web|secure)$/i;
 
@@ -180,7 +179,7 @@ export function isVendorRootOrMarketing(href: string): boolean {
   if (!host) return true;
   if (host === registrableDomain(host)) return true;
   if (/^(?:info|go|learn|blog|support|help|community|developers?|docs|marketing|resources|investors?|status|news)\./i.test(host)) return true;
-  if (PATH_TENANT_HOST.test(host) && !portalTenantOf(href)) return true;
+  if (isPathTenantedHost(host) && !portalTenantOf(href)) return true;
   return false;
 }
 /** The tenant a vendor URL names, as letters: the path tenant on a shared instance (LEECO), else the
@@ -188,7 +187,7 @@ export function isVendorRootOrMarketing(href: string): boolean {
 export function vendorTenantToken(href: string): string {
   const host = portalHostOf(href);
   if (!host) return "";
-  if (PATH_TENANT_HOST.test(host)) return portalTenantOf(href).replace(/[^a-z]/g, "");
+  if (isPathTenantedHost(host)) return portalTenantOf(href).replace(/[^a-z]/g, "");
   const sub = host.slice(0, Math.max(0, host.length - registrableDomain(host).length - 1));
   return sub.split(/[.]/).flatMap((l) => l.split(/-(?=energov|css|portal|selfservice|web|prod)/i)).filter((l) => l && !GENERIC_TENANT_LABEL.test(l)).join("").replace(/[^a-z]/gi, "").toLowerCase();
 }
@@ -238,7 +237,7 @@ const typesContradict = (found: Iterable<string>, own: Set<string>): boolean => 
 export function portalNameToken(href: string): string {
   const host = portalHostOf(href);
   if (!host) return "";
-  if (isPermitPlatformUrl(href) || PATH_TENANT_HOST.test(host)) return vendorTenantToken(href);
+  if (isPermitPlatformUrl(href) || isPathTenantedHost(host)) return vendorTenantToken(href);
   const dom = registrableDomain(host);
   const sub = host.slice(0, Math.max(0, host.length - dom.length - 1)).split(".").filter((l) => l && !GENERIC_TENANT_LABEL.test(l));
   return [...sub, dom.split(".")[0]].join("").replace(/[^a-z]/gi, "").toLowerCase();

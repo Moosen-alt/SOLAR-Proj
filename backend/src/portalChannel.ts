@@ -410,11 +410,38 @@ const PERMIT_PLATFORM_HOSTS = [
   "etrakit.net",
   "mygov.us",              // MyGov (public.mygov.us/<city_st>/) — TX / OK small cities
   "geocivix.com",          // Geocivix (<county>.geocivix.com) — Santa Fe County NM and others
+  // Vendors' marketing / hosting domains the lookup's portal door listed on its own (lookup-close-5
+  // MF2: two lists for one question — a page on a vendor's domain never vouches for a tenant).
+  "tylertech.com",         // Tyler Technologies (EnerGov's vendor)
+  "tylerportico.com",      // Tyler Portico (Tyler's hosted citizen services)
+  "govwelltech.com",       // GovWell
+  "cityview.com",          // CityView (Harris)
+  "clariti.com",           // Clariti
 ];
 export function isPermitPlatformUrl(url: string | null | undefined): boolean {
   const host = portalHostOf(url);
   if (!host) return false;
   return PERMIT_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+}
+/** ONE definition of "a host where ONE instance serves many agencies and the tenant is in the path
+ *  or a query parameter" (aca-prod.accela.com/<TENANT>, citizenserve's installationID,
+ *  mygovernmentonline.org/?agency=, public.mygov.us/<city_st>/): a page on such a host attests only
+ *  its OWN tenant (portalTenantKey), never a sibling's. The catalog's tenant token and the lookup's
+ *  portal door both ask this (lookup-close-5 MF2: they had two lists). */
+const PATH_TENANTED_HOSTS = ["accela.com", "citizenserve.com", "mygovernmentonline.org", "mygov.us"];
+export function isPathTenantedHost(host: string | null | undefined): boolean {
+  const h = String(host ?? "").toLowerCase().replace(/^www\./, "");
+  return Boolean(h) && PATH_TENANTED_HOSTS.some((d) => h === d || h.endsWith(`.${d}`));
+}
+/** ONE definition of "a VENDOR's domain" — a permit-software platform's or a utility
+ *  interconnection platform's — for the question "could this domain be the agency's own?": a link
+ *  on a vendor's domain is never the organisation's own-domain link (lookup-close-5 MF2: the door
+ *  kept a 17-host list beside the 22-host platform list, and geocivix / bsaonline fell between). */
+export function isVendorDomain(host: string | null | undefined): boolean {
+  const h = String(host ?? "").toLowerCase().replace(/^www\./, "");
+  if (!h) return false;
+  const asUrl = `https://${h}/`;
+  return isPermitPlatformUrl(asUrl) || isUtilityPlatformUrl(asUrl);
 }
 
 // ── Is this URL an APPLICATION PORTAL at all? ────────────────────────────────────────────
