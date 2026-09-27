@@ -212,24 +212,42 @@ export function portalSafetyFactory() {
   // The deferral qualifiers a fee sentence can carry ("at issuance", "after review", "later").
   const LATER_Q = "(later|separately|after|following|at\\s+(the\\s+)?(time\\s+of\\s+)?(permit\\s+)?(issuance|issue|approval|pickup|inspection)|upon\\s+(the\\s+)?(permit\\s+)?(issuance|issue|approval|review|pickup|inspection)|when\\s+(the\\s+)?(permit|application)\\s+is\\s+(issued|approved|reviewed))";
   const PAY_NOW_DIALOG = new RegExp([
-    // The verb "pay" (never "payment"/"payable"), unless deferred right after it or later in
-    // its clause ("pay later", "pay at issuance", "pay the fee later").
-    "\\bpay(ing)?\\b(?!\\s+(later|at|upon|when|after|once)\\b)(?![^.?!]{0,30}\\blater\\b)",
+    // The verb "pay" / "pays" (never "payment"/"payable"), unless deferred right after it or later
+    // in its clause ("pay later", "pay at issuance", "pay the fee later"). "Submitting PAYS the $150
+    // fee from your account" is paying (autosubmit-2 MF-S2: "pays" passed as fee_deferred).
+    "\\bpay(s|ing)?\\b(?!\\s+(later|at|upon|when|after|once)\\b)(?![^.?!]{0,30}\\blater\\b)",
     // An amount to pay is always now ("Pay $150 later" is fail-closed), and so is "pay now"
     // whatever else the text offers ("pay now or later?").
-    "\\bpay(ing)?\\s+(\\$|usd\\b|[0-9])",
-    "\\bpay(ing)?\\s+(now|today|immediately|online)\\b",
+    "\\bpay(s|ing)?\\s+(\\$|usd\\b|[0-9])",
+    "\\bpay(s|ing)?\\s+(now|today|immediately|online)\\b",
     "\\b(proceed|continue|go|redirect(ed)?|taken)\\s+to\\s+(the\\s+)?(payment|checkout|pay)\\b",
     "\\bcheck\\s*-?\\s*out\\b",
     // A card being charged is a payment whenever it happens (automation never authorizes one).
-    "\\b(will\\s+be|is\\s+being|be|was|been|get|gets)\\s+charged\\b",
-    "\\bcharge\\s+(your|the|my)\\s+(card|account|credit)\\b",
+    "\\b(will\\s+be|is|are|is\\s+being|be|was|were|been|get|gets)\\s+(automatically\\s+|immediately\\s+)?charged\\b",
+    "\\bcharged\\s+(to|against)\\b",
+    "\\bcharg(e|es|ing)\\s+(it\\s+)?(to\\s+)?(your|the|my)\\s+(\\w+\\s+)?(card|account|credit|bank)\\b",
     "\\b(credit|debit)\\s*card\\b",
     "\\bcard\\s*(number|holder|details|information|on\\s+file)\\b",
     "\\benter\\s+(your\\s+)?(card|payment)\\b",
     "\\bpayment\\s+(is\\s+)?(required|due)\\s+(now|today|before|to\\s+(submit|file|continue))\\b",
     "\\bmake\\s+(a\\s+)?payment\\b",
     "\\bsubmit\\s+(your\\s+)?payment\\b",
+    // MONEY LEAVING THE PAYER BY ITSELF (autosubmit-2 MF-S2): debited / deducted / withdrawn from an
+    // account, billed TO a card or account, an account or card on file, auto-pay, a payment that
+    // "will be processed" — whenever it happens, like a charged card. ("You will be billed" alone
+    // is still an invoice: deferred. "Withdrawn" needs money in its clause — "your draft will be
+    // withdrawn" is not paying.)
+    "\\bdebit(s|ed|ing)?\\b",
+    "\\bdeduct(s|ed|ing|ions?)?\\b",
+    "(\\$\\s?\\d|\\bfees?\\b|\\bamount\\b|\\bpayments?\\b|\\bfunds\\b)[^.?!;]{0,60}\\bwithdraw(n|s|al|ing)?\\b",
+    "\\bwithdraw(n|s|al|ing)?\\b[^.?!;]{0,40}\\b(account|card|balance|bank|funds|wallet)\\b",
+    "\\bbill(s|ed|ing)?\\s+(it\\s+)?(to|against)\\s+(your|the|my)\\s+(\\w+\\s+)?(card|account|credit|bank)\\b",
+    "\\bbill(s|ed|ing)?\\s+(your|the|my)\\s+(\\w+\\s+)?(card|account|bank)\\b",
+    "\\b(card|account)\\s+(will\\s+be|is|gets|shall\\s+be)\\s+(billed|debited|drafted)\\b",
+    "\\b(account|card|payment\\s+method|bank\\s+account)\\s+on\\s+file\\b",
+    "\\bauto[\\s-]?pay(ments?)?\\b",
+    "\\bpayments?\\s+(will\\s+be|is\\s+being|is|are|gets|shall\\s+be)\\s+(automatically\\s+)?(processed|taken|drafted)\\b",
+    "\\b(collected|taken|processed|drafted)\\s+(now|today|immediately|(on|at|upon|with|when\\s+you)\\s+(submi\\w*|filing|checkout))\\b",
   ].join("|"), "i");
   const FEE_DEFERRED_DIALOG = new RegExp([
     "\\binvoic(e|ed|es|ing)\\b",
@@ -239,7 +257,9 @@ export function portalSafetyFactory() {
     "\\bpay\\b[^.?!]{0,30}\\blater\\b",
     "\\bno\\s+(charge|fee|fees|cost|payment)\\b",
   ].join("|"), "i");
-  // A NEGATED pay ("you do not need to pay now") is a deferral, not the verb.
+  // A NEGATED pay ("you do not need to pay now") is a deferral, not the verb. It removes only ITS OWN
+  // words: a pays-now phrase anywhere else in the text still wins (autosubmit-2 MF-S2 — "You do not
+  // need to pay now - $150 will be debited on submit." read fee_deferred and was filed).
   const NEGATED_PAY = /\b(no\s+need\s+to|(do|does|will|need)\s+not\s+(need\s+to\s+|have\s+to\s+)?|don'?t\s+(need|have)\s+to|not\s+(be\s+)?required\s+to|nothing\s+to)\s*pay\b/gi;
   const paymentDialogVerdict = (text: string | null | undefined): "no_payment" | "fee_deferred" | "pays_now" => {
     const raw = String(text ?? "");
