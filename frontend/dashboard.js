@@ -450,16 +450,16 @@ function humanize(value) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// The classifier's stored approval labels (backend/src/permitMonitor.ts). "Reviewed by AHJ" is
-// deliberately NOT here: plan review done is not the permit — it stays the plain badge.
-const APPROVAL_LABELS = new Set([
-  "Approved with conditions",
-  "NEM / interconnection approved",
-  "Interconnection approved with conditions",
-  "NEM approved",
-]);
-
 function statusBadge(status) {
+  // The classifier's stored approval labels (backend/src/permitMonitor.ts). "Reviewed by AHJ" is
+  // deliberately NOT here: plan review done is not the permit — it stays the plain badge. Declared
+  // INSIDE the function: four tests lift statusBadge by itself out of this file.
+  const APPROVAL_LABELS = new Set([
+    "Approved with conditions",
+    "NEM / interconnection approved",
+    "Interconnection approved with conditions",
+    "NEM approved",
+  ]);
   // Count badges: color by zero vs non-zero so callers can pass a plain number.
   if (typeof status === "number") {
     const cls = status > 0 ? "badge-warning" : "badge-pass";
