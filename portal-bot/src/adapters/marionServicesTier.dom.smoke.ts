@@ -50,12 +50,18 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIX = path.join(here, "fixtures", "marionServices");
 const tierHtml = fs.readFileSync(path.join(FIX, "services.html"), "utf8");
-const pageHtml: Record<"tier" | "refused" | "nosfd", string> = {
+const pageHtml: Record<"tier" | "refused" | "nosfd" | "state", string> = {
   tier: tierHtml,
   refused: fs.readFileSync(path.join(FIX, "services-refused.html"), "utf8"),
   // The SAME page with Marion's "Single Family Dwelling" option removed — the by-meaning match must
   // then land nothing, not a neighbour.
   nosfd: tierHtml.replace(/<option[^>]*>\s*Single Family Dwelling\s*<\/option>/i, ""),
+  // A select whose recorded value is an option's VALUE attribute, not its text (Accela's contact
+  // dialog state list: <option value="TX">Texas</option>, the step bound to the 2-letter code).
+  // The native-select precheck must read values as well as texts, or "TX" is a "known negative".
+  state: `<!doctype html><html><head><title>State select</title></head><body>
+    <label for="st">State:</label> <select id="st"><option value="">--Select--</option><option value="OR">Oregon</option><option value="TX">Texas</option><option value="NM">New Mexico</option></select>
+    <a id="ctl00_PlaceHolderMain_actionBarBottom_btnContinue" href="javascript:void(0)"><span>Continue Application »</span></a></body></html>`,
 };
 if (pageHtml.nosfd === pageHtml.tier) throw new Error("fixture: the Single Family Dwelling option was not found to remove");
 
@@ -104,12 +110,13 @@ interface Outcome {
   result: { ok: boolean; message: string; pauseReason?: string; data?: Record<string, unknown> };
   boxes: Record<string, string>;
   coc: string;
+  state: string;
   continueClicks: number;
   url: string;
 }
 
 const browser = await chromium.launch();
-async function run(s: Scenario): Promise<Outcome> {
+async function run(s: Scenario, useRecipe: PortalRecipe = recipe): Promise<Outcome> {
   const ctx = await browser.newContext();
   ctx.setDefaultTimeout(8000);
   await ctx.route("**/*", (route) => (/^https?:\/\/127\.0\.0\.1:/.test(route.request().url()) ? route.continue() : route.abort()));
@@ -118,7 +125,7 @@ async function run(s: Scenario): Promise<Outcome> {
     document.addEventListener("click", (e) => { const a = e.target && e.target.closest ? e.target.closest("a") : null; if (a && /btnContinue/.test(a.id || "")) { const n = Number(sessionStorage.getItem("cc") || "0") + 1; sessionStorage.setItem("cc", String(n)); } }, true);` });
   const page: Page = await ctx.newPage();
   await page.goto(ENTRY);
-  const adapter = new RecipeAdapter(recipe, { __replayBlank: "", ...s.fieldValues }, {}, {});
+  const adapter = new RecipeAdapter(useRecipe, { __replayBlank: "", ...s.fieldValues }, {}, {});
   (adapter as unknown as { page: unknown }).page = page;
   const t0 = Date.now();
   let result: Outcome["result"];
@@ -130,11 +137,13 @@ async function run(s: Scenario): Promise<Outcome> {
     for (const [k, id] of Object.entries(ids)) out[k] = (document.getElementById(id) as HTMLInputElement | null)?.value ?? "(missing)";
     return out;
   }, BOX as unknown as Record<string, string>).catch(() => ({} as Record<string, string>));
-  const coc = await page.evaluate((id: string) => { const s = document.getElementById(id) as HTMLSelectElement | null; return s ? (s.options[s.selectedIndex]?.textContent || "").trim() : "(missing)"; }, COC).catch(() => "(unreadable)");
+  const selText = (id: string) => page.evaluate((sid: string) => { const s = document.getElementById(sid) as HTMLSelectElement | null; return s ? (s.options[s.selectedIndex]?.textContent || "").trim() : "(missing)"; }, id).catch(() => "(unreadable)");
+  const coc = await selText(COC);
+  const state = await selText("st");
   const continueClicks = await page.evaluate(() => Number(sessionStorage.getItem("cc") || "0")).catch(() => -1);
   const url = page.url();
   await ctx.close().catch(() => null);
-  return { ms, result, boxes, coc, continueClicks, url };
+  return { ms, result, boxes, coc, state, continueClicks, url };
 }
 const emptyExcept = (boxes: Record<string, string>, keep: string[]): boolean => Object.entries(boxes).every(([k, v]) => keep.includes(k) ? true : v === "");
 const say = (o: Outcome): string => `ms=${o.ms} ok=${String(o.result.ok)} pause=${String(o.result.pauseReason)} clicks=${o.continueClicks} boxes=${JSON.stringify(o.boxes)} coc=${JSON.stringify(o.coc)} msg=${o.result.message.slice(0, 260)} drift=${JSON.stringify((o.result.data?.driftWarnings as string[] | undefined)?.slice(0, 6))}`;
@@ -190,6 +199,20 @@ try {
     i.coc === "--Select--" || i.coc === "", say(i));
   check("  ...and the miss is reported, not silent", ((i.result.data?.driftWarnings as string[] | undefined) ?? []).some((w) => /Category of Construction/.test(w) && /landed nothing/.test(w)), say(i));
   check("F4: the select miss no longer costs the live 44 s (under 15 s on the captured page)", i.ms < 15000, `ms=${i.ms}`);
+
+  // ── F4/F5 MUST-PASS: a value-attribute match is not a "known negative" ───────────────────
+  const stateRecipe = {
+    ...recipe, id: "marion-smoke-state",
+    steps: [
+      { action: "goto", value: ENTRY, note: "entry url" },
+      { action: "select", selector: { label: "State:" }, note: "contact: state [applicant]", value: "TX" },
+      { action: "click", selector: { role: "link", name: "Continue Application »", exact: true }, note: "advance: Continue Application »" },
+      { action: "stopForReview" } as RecipeStep,
+    ],
+  } as unknown as PortalRecipe;
+  const j = await run({ name: "state by value", variant: "state", fieldValues: {} }, stateRecipe);
+  check("MUST-PASS F4/F5: a select bound to an option's VALUE attribute (\"TX\" → <option value=\"TX\">Texas</option>) still lands — never a known negative",
+    j.state === "Texas", say(j));
 } finally {
   await browser.close().catch(() => null);
   server.close();

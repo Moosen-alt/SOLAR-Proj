@@ -5365,11 +5365,17 @@ export class RecipeAdapter extends BasePortalAdapter {
   private async trySelect(loc: any, value: string, step: RecipeStep): Promise<{ selected: boolean; landedAs: string; how: "" | "meaning" | "known_negative" }> {
     const native = await this.isNativeSelect(loc);
     if (native && !(await this.optionsLookUnloaded(loc))) {
-      const options: string[] = await loc.evaluate((el: Element) => Array.from((el as HTMLSelectElement).options).map((o) => (o.textContent || "").replace(/\s+/g, " ").trim())).catch(() => [] as string[]);
+      // TEXT AND VALUE. selectOption(value) matches the option's VALUE attribute first, and a
+      // recorded state is bound to the 2-letter code Accela's contact dialog stores
+      // (<option value="TX">Texas</option>): a text-only read called "TX" a known negative.
+      const options: Array<{ value: string; text: string }> = await loc.evaluate((el: Element) => Array.from((el as HTMLSelectElement).options)
+        .map((o) => ({ value: String(o.value ?? ""), text: (o.textContent || "").replace(/\s+/g, " ").trim() }))).catch(() => [] as Array<{ value: string; text: string }>);
       const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
       const w = norm(value);
-      const real = options.filter((t) => t && !/^(please\s+)?select\.{0,3}$|^-+\s*select\s*-+$/i.test(t));
-      const direct = !!w && real.some((t) => norm(t) === w || norm(t).includes(w) || w.includes(norm(t)));
+      const placeholder = (t: string) => !t || /^(please\s+)?select\.{0,3}$|^-+\s*select\s*-+$/i.test(t);
+      const realOptions = options.filter((o) => !placeholder(o.text));
+      const real = realOptions.map((o) => o.text);
+      const direct = !!w && realOptions.some((o) => norm(o.value) === w || norm(o.text) === w || norm(o.text).includes(w) || w.includes(norm(o.text)));
       if (!direct && real.length) {
         const meaning = structureTypeMeaning(value);
         const label = this.stepLabel(step);

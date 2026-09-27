@@ -1,0 +1,27 @@
+  (artifacts of this hand-run smoke go to C:\Users\isobl\AppData\Local\Temp\smoke-artifacts-N2ArR2, not data/)
+  [timing] 12.913 kVA scenario: 10697 ms; slowSteps=[{"i":5,"action":"click","note":"advance: Continue Application »","ms":6613,"phases":{"persist-settle":315,"advance-settle":4885,"execute":5214,"failure-context":355}}]
+  ok   - MUST-PASS F1: 12.913 kVA → "5.01kva through 15kva" reads 1 and every other tier box is empty (wind untouched)
+  ok   - MUST-PASS F1: the run went on to the Continue (the tier was decided, not paused)
+  ok   - MUST-PASS F5: "1-1 or 2 Family Dwelling" landed Marion's "Single Family Dwelling" by meaning
+  ok   - MUST-EXCLUDE F2: the page without a banner still reads "no visible reason"
+  ok   - F1: the report says the tier was read from the page
+  ok   - MUST-PASS F1: 4.55 kVA → "5kva or less" = 1, the recorded 5.01–15 box empty
+  ok   - MUST-PASS F1: 20 kVA → "15.01kva through 25kva" = 1, the recorded 5.01–15 box empty
+  ok   - MUST-PASS F1: 30 kVA → "solar generation over 25 kva (enter total # of kva)" gets 30; the WIND 25.01–50 box stays empty
+  [timing] no-rating scenario: 4057 ms
+  ok   - MUST-EXCLUDE F1: no AC size → NO tier box typed
+  ok   - MUST-EXCLUDE F1: the Continue was NEVER clicked (0 clicks, URL unchanged)
+  ok   - MUST-EXCLUDE F1: the run PAUSES for a person (pauseReason fee_tier_undecided) with the named reason
+  ok   - MUST-EXCLUDE F1: a stored schedule that puts 12.913 kVA in another tier → nothing typed, Continue never clicked, paused
+  ok   - F1: a stored schedule that AGREES with the page ticks the same box
+  [timing] refused-page scenario: 10663 ms
+  ok   - MUST-PASS F2: the failure carries the portal's own words — 'Please select at least 1 electrical service for purchase'
+  ok   -   ...without the generic 'An error has occurred.' heading standing in for the message
+  [timing] no-SFD-option scenario (the select miss): 11709 ms; slowSteps=[{"i":5,"action":"click","note":"advance: Continue Application »","ms":7695,"phases":{"persist-settle":319,"reassert-blanks":1161,"advance-settle":4897,"execute":5227,"failure-context":309}}]
+  ok   - MUST-EXCLUDE F5: with "Single Family Dwelling" gone the select lands NOTHING — never Two Family / Manufactured / Townhouses / Small Home / Detached Accessory
+  ok   -   ...and the miss is reported, not silent
+  ok   - F4: the select miss no longer costs the live 44 s (under 15 s on the captured page)
+  FAIL - MUST-PASS F4/F5: a select bound to an option's VALUE attribute ("TX" → <option value="TX">Texas</option>) still lands — never a known negative
+         ms=6725 ok=false pause=undefined clicks=2 boxes={"le5":"(missing)","t5_15":"(missing)","t15_25":"(missing)","wind25_50":"(missing)","wind50_100":"(missing)","over25":"(missing)"} coc="(missing)" msg=Recipe step failed (click — advance: Continue Application »): the portal did not advance (it refused "advance: Continue Application »"). The portal gave no visible reason — check that page for a required field the recipe left blank. [url=http://127.0.0.1:59806 drift=["select \"contact: state [applicant]\" landed nothing though 4 option(s) were showing — wanted \"TX\", resolved <select id=\"st\" label=\"State:\" options=4 visible=true>, ITS OWN list offers \"--Select--\", \"Oregon\", \"Texas\", \"New Mexico\"","  ...how it resolved: level 0 label:\"State:\" -> count 1, visible=true, enabled=true, ACCEPTED"]
+
+1 marion-services-tier check(s) FAILED.
