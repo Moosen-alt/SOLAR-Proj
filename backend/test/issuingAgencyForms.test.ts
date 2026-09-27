@@ -89,7 +89,10 @@ const jefferson = {
   id: "jefferson-fixture", ahj: "City of Jefferson", state: "OR", city: "Jefferson", zip: "97352", utility: "Pacific Power",
   homeownerName: "Fixture Owner", projectAddress: "1 Fixture Rd SE, Jefferson, OR, 97352", systemSizeDcKw: 15.91, systemSizeAcKw: 12.9,
   parserSnapshot: { permitPathOverride: "prescriptive", homeownerPhone: "4580000000", mounting: "Roof Mount", structureDescription: "Single-family dwelling",
-    snow: 20, wind: "C", deadLoad: 1.28, lightFrame: "yes", roofRafterSpacing: "24", framingType: "truss", moduleQuantity: "37", moduleModel: "Q.TRON BLK M-G2.C1+/AC" },
+    snow: 20, wind: "C", windSpeed: "110", deadLoad: 1.28, lightFrame: "yes", roofRafterSpacing: "24", framingType: "truss", moduleQuantity: "37", moduleModel: "Q.TRON BLK M-G2.C1+/AC",
+    // Michael Sheridan's stated facts (the .backup copy), which answer every 5952 row but height.
+    gravityWindDesign: "yes", manufacturerInstallation: "yes", roofMaterial: "Composition Shingle", roofLayers: "1",
+    attachmentToFraming: "yes", attachmentSpacingIn: 48, attachmentsOutsideEdgeZone: "yes" },
 } as never;
 
 // Serve the public fixtures for their real URLs; count every download.
@@ -170,6 +173,8 @@ try {
   const b01sOut = await PDFDocument.load(fs.readFileSync(filledB!.outputPath!));
   check("A6 the B-01S carries the project's values", b01sOut.getForm().getTextField("Owner name").getText() === "Fixture Owner" && b01sOut.getForm().getTextField("Owner phone number").getText() === "(458) 000-0000");
   check("A6 roof-mounted Yes; the city's zoning groups untouched", b01sOut.getForm().getRadioGroup("undefined_3").getSelected() === "Yes_3" && b01sOut.getForm().getRadioGroup("undefined").getSelected() === undefined && b01sOut.getForm().getRadioGroup("undefined_2").getSelected() === undefined);
+  check("A6 the structure row (single-family) and the prescriptive attestation (every checklist row Yes) ticked Yes",
+    b01sOut.getForm().getRadioGroup("undefined_4").getSelected() === "Yes_4" && b01sOut.getForm().getRadioGroup("undefined_5").getSelected() === "Yes_5");
   const e01Out = await PDFDocument.load(fs.readFileSync(filledE!.outputPath!));
   check("A6 the E-01 ticks the kVA bracket the AC size falls in", e01Out.getForm().getTextField("501 to 15 kva").getText() === "1" && !e01Out.getForm().getTextField("5 kva or less").getText());
   check("A6 the E-01 description wraps across its two rows", Boolean(e01Out.getForm().getTextField("DESCRIPTION OF WORKRow2").getText()));
@@ -238,7 +243,44 @@ try {
     && JSON.stringify(buildApplicationDocumentPackage(plain).profile.requiredDocuments) === JSON.stringify(findApplicationProfile(plain).requiredDocuments));
   check("C4 and today's required rows (no agency named)", !reqDocs.documentInventory(db, plain).presence.some((p) => /County/.test(p.label)));
 
-  console.log(`issuingAgencyForms: ${passed} checks passed — one predicate at every door, agency-keyed acquisition with provenance, non-fillable never filled, packet names the issuing agency's forms`);
+  // ── D. THE BCD 5952 ON AN AGENCY-ISSUED JOB (Michael Sheridan's "janky" checklist) ─────────
+  // A checklist row stored BEFORE this change (unverified): the AHJ on "Building department:",
+  // the parser's bare phone digits, no value size (the blank's auto-size set 14-pt values).
+  const stored5952 = forms.loadStoredTemplates(db, "City of Jefferson", "OR").find((t) => t.formType === "solar_checklist")!;
+  check("D0 a new 5952 acquisition maps the department to the issuing agency and sizes its values", stored5952.def.overlayFields?.[0]?.source === "computed.buildingDepartment"
+    && stored5952.def.textFields["Phone number"] === "computed.homeownerPhone" && stored5952.def.fieldFontSizes?.["Property owner name"] === 10);
+  const oldDef = {
+    ...stored5952.def,
+    textFields: { ...stored5952.def.textFields, "Phone number": "snapshot.homeownerPhone" },
+    overlayFields: [{ source: "project.ahj", page: 0, x: 270, y: 693.82, size: 10 }],
+    fieldFontSizes: undefined,
+    recoverPrescriptiveCheckboxes: true,
+  };
+  const ctx5952 = forms.buildContext(db, jefferson);
+  const out5952 = path.join(temp, "old-5952.pdf");
+  await forms.fillLoadedForm(oldDef as never, stored5952.bytes, ctx5952, out5952);
+  const l5952 = await extractLabels(fs.readFileSync(out5952));
+  const dept = l5952.find((l) => l.page === 0 && Math.abs(l.y - 693.8) < 2 && l.x >= 269);
+  check("D1 'Building department:' names the agency that reviews the permit, not the city", dept?.str === "Marion County", JSON.stringify(dept));
+  check("D1 the owner's phone reads as a phone", l5952.some((l) => l.str === "(458) 000-0000") && !l5952.some((l) => l.str === "4580000000"));
+  const ownerValue = l5952.find((l) => l.str === "Fixture Owner");
+  check("D1 values print at the checklist's 10 pt, not the blank's 14-pt auto size", ownerValue != null && Math.abs(ownerValue.height - 10) < 0.6, JSON.stringify(ownerValue));
+  // Too wide for its box at 10 pt -> the blank's own fit, never clipped at the box edge.
+  const longName = "Fixture Contractor With An Exceptionally Long Registered Business Name Incorporated";
+  const out5952b = path.join(temp, "long-5952.pdf");
+  await forms.fillLoadedForm(stored5952.def, stored5952.bytes, { ...ctx5952, client: { ...ctx5952.client, installerCompanyName: longName } }, out5952b);
+  const longItem = (await extractLabels(fs.readFileSync(out5952b))).find((l) => l.str === longName);
+  check("D2 a value too wide at 10 pt keeps the fit size and stays inside its 270-pt box", longItem != null && longItem.height < 10 && longItem.width <= 270, JSON.stringify(longItem));
+  // The county application's prescriptive attestation reads the SAME answers the checklist prints.
+  check("D3 attestation Yes when every checklist row is Yes (height assumed Yes, as the 5952 prints it)", forms.resolveSource("computed.checklistAllYes", ctx5952) === "yes");
+  const tall = { ...(jefferson as object), parserSnapshot: { ...(jefferson as { parserSnapshot: object }).parserSnapshot, moduleHeightAboveRoof: "24" } } as never;
+  check("D3 attestation blank when the checklist's height row says No", forms.resolveSource("computed.checklistAllYes", forms.buildContext(db, tall)) === "");
+  check("D3 the structure row: single-family yes, a duplex blank (area/height unknown)", forms.resolveSource("computed.structureSfdOrAccessory", ctx5952) === "yes"
+    && forms.resolveSource("computed.structureSfdOrAccessory", { ...ctx5952, snapshot: { ...ctx5952.snapshot, structureDescription: "Two-family dwelling (duplex)" } }) === "");
+  const noLookup = { ...(jefferson as object), id: "nolookup-5952", ahj: "City of Nolookup" } as never;
+  check("D4 a job whose lookup names no agency keeps its own name on the department line", forms.resolveSource("computed.buildingDepartment", forms.buildContext(db, noLookup)) === "City of Nolookup");
+
+  console.log(`issuingAgencyForms: ${passed} checks passed — one predicate at every door, agency-keyed acquisition with provenance, non-fillable never filled, packet names the issuing agency's forms, the 5952 names the reviewing department`);
 } finally {
   globalThis.fetch = realFetch;
   db.close();

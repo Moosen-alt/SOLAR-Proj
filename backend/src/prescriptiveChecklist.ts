@@ -7,6 +7,7 @@ import type { PDFDocument } from "pdf-lib";
 import type { OverlayField } from "./ahjForms";
 import type { PrescriptiveCriterionKey, PrescriptiveLimitInputs } from "./permitPath";
 import { checkboxPlacement, type LabelItem } from "./formTextLayer";
+import { BCD_5952_TEXT_FIELDS, BCD_5952_VALUE_PT } from "./bcd5952Template";
 
 const canonical = (s: string): string => s.toLowerCase().replace(/[^a-z0-9. ]/g, " ").replace(/\s+/g, " ").trim();
 
@@ -38,6 +39,12 @@ export interface ChecklistRecovery {
   overlays: OverlayField[];
   omittedTextFields: string[];
   textFieldOverrides: Record<string, string>;
+  /** Stored overlay placements whose SOURCE is repaired at fill time, keyed by the overlay's index
+   *  in the stored map (never the map itself — verified maps never opt into recovery). */
+  overlaySourceOverrides?: Record<number, string>;
+  /** Value sizes for the checklist's text fields the stored map gave none (auto-size set 14-pt
+   *  values beside 10-11-pt labels). */
+  fieldFontSizes?: Record<string, number>;
 }
 
 /** Recover independent rows; compound answers use all their parsed facts. */
@@ -135,6 +142,23 @@ export function recoverBcd5952Checklist(
   if (textFields["Installation address"] === "project.projectAddress") textFieldOverrides["Installation address"] = "computed.streetAddress";
   // A mapper's guessed listing agency is not project evidence.
   textFieldOverrides["Listing agency"] = "snapshot.moduleListingAgency";
+  // The owner's phone as a phone ("(458) 329-4881"), not the parser's bare digits beside a
+  // contractor phone the client record already formats (Michael Sheridan's checklist, 2026-09-27).
+  if (textFields["Phone number"] === "snapshot.homeownerPhone") textFieldOverrides["Phone number"] = "computed.homeownerPhone";
+  // "Building department:" names the department that reviews the permit: the structural permit's
+  // cited issuing agency when it is not the AHJ (computed.buildingDepartment). Stored maps put the
+  // AHJ's own name on that line — "City of Jefferson" on a checklist Marion County reviews.
+  const deptLabel = items.find((i) => i.page === 0 && /^Building department:?$/i.test(i.str.trim()));
+  const overlaySourceOverrides: Record<number, string> = {};
+  if (deptLabel) {
+    existingOverlays.forEach((f, index) => {
+      if (f.source === "project.ahj" && f.page === deptLabel.page && Math.abs(f.y - deptLabel.y) < 3 && f.x > deptLabel.x) overlaySourceOverrides[index] = "computed.buildingDepartment";
+    });
+  }
+  // One value size for the checklist's data boxes (the blank declares auto-size, which set 14-pt
+  // values beside 10-11-pt labels); a map that sizes a field keeps its own size.
+  const fieldFontSizes: Record<string, number> = {};
+  for (const name of BCD_5952_TEXT_FIELDS) if (formFields.some((f) => f.getName() === name)) fieldFontSizes[name] = BCD_5952_VALUE_PT;
   // These four square widgets are text fields in the official PDF. Draw a
   // single X at the widget rather than placing a word inside the small square.
   const subchoices: Record<string, string> = {
@@ -155,5 +179,5 @@ export function recoverBcd5952Checklist(
         x: r.x + (r.width - 6) / 2, y: r.y + (r.height - 9) / 2 + 1, size: 9 });
     }
   }
-  return { recognized: true, overlays, omittedTextFields, textFieldOverrides };
+  return { recognized: true, overlays, omittedTextFields, textFieldOverrides, overlaySourceOverrides, fieldFontSizes };
 }

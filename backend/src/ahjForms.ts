@@ -19,7 +19,7 @@ import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired
 import {
   batteryStatus, SERVICE_FEEDER_CHARGE_KIND, SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
 } from "./batteryServiceFeeder";
-import type { ChecklistRecovery } from "./prescriptiveChecklist";
+import { BCD_5952_LIMITS, type ChecklistRecovery } from "./prescriptiveChecklist";
 import { bcdChecklistAnswers, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
 import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
 import { documentFetchDisabled } from "./documentFetch";
@@ -740,9 +740,24 @@ function computed(name: string, ctx: FillContext): string {
     // A county prescriptive application's structure row ("a single family dwelling … or accessory
     // building to a single-family dwelling"): yes only for those structure meanings; any other
     // structure depends on floor area / height the plan set does not state — blank.
-    case "prescriptiveStructureClause": {
+    // (Not named presc*: that prefix belongs to the criterion bridge above and would swallow it.)
+    case "structureSfdOrAccessory": {
       const meaning = structureMeaningOf(ctx.snapshot);
       return meaning === "single_family" || meaning === "accessory" ? "yes" : "";
+    }
+    // EVERY ROW THE STATE CHECKLIST PRINTS ANSWERS YES — the four independent rows at the form's
+    // printed limits and the five compound rows (bcdChecklistFacts, including the height row
+    // assumed Yes per the operator ruling of 2026-09-27). A county application's prescriptive
+    // attestation ("verify that the installation will meet OSSC 3111.4.8 and 3111.5") answers the
+    // same question, so it reads the same answers — never a second, stricter evaluator that leaves
+    // the attestation blank beside a checklist that says Yes to every row.
+    case "checklistAllYes": {
+      const rows = evaluatePrescriptiveCriteria(ctx.project, { ...(ctx.prescriptiveLimits || {}), ...BCD_5952_LIMITS });
+      const independent = ["snowLoad", "windExposure", "lightFrame", "deadLoad"].every((k) => rows.find((r) => r.key === k)?.answer === "Yes");
+      // The five printed rows only — truss/rafter and method 1/2 are "check one" sub-choices.
+      const answers = bcdChecklistAnswers(ctx.project);
+      const compound = ["designInstallation", "framing", "roofing", "heightFigures", "attachments"].every((k) => answers[k] === "Yes");
+      return independent && compound ? "yes" : "";
     }
     // Residential category of construction: a stated residential construction category, or a
     // structure description that means a dwelling (permitProcess.structureTypeMeaning).
@@ -1205,14 +1220,15 @@ export async function fillLoadedForm(
         }
       } catch { /* keep anchorFor null → use stored x/y */ }
     }
-    for (const field of def.overlayFields ?? []) {
+    for (const [index, field] of (def.overlayFields ?? []).entries()) {
       const page = pages[field.page];
       if (!page) continue;
       if (field.onlyIf) {
         const cond = resolveSource(field.onlyIf.source, ctx);
         if (!checkboxRuleChecked({ source: field.onlyIf.source, equals: field.onlyIf.equals }, cond)) continue;
       }
-      let text = resolveSource(field.source, ctx);
+      // A recognized checklist may repair a stored placement's SOURCE (never its map).
+      let text = resolveSource(checklist.overlaySourceOverrides?.[index] ?? field.source, ctx);
       if (!text) continue;
       const size = field.size ?? 9;
       if (field.maxWidth) {
@@ -1262,15 +1278,21 @@ export async function fillLoadedForm(
 
   const unmapped: string[] = [];
   let filled = 0;
+  // A fixed value size is a look, not a licence to overflow: a value too wide for its box at that
+  // size keeps the blank's own auto-size (fit), so it is never clipped at the box edge.
+  const sizingFont = await doc.embedFont(StandardFonts.Helvetica);
 
   for (const [fieldName, source] of Object.entries(def.textFields)) {
     if (checklist.omittedTextFields.includes(fieldName)) { unmapped.push(fieldName); continue; }
     if (!available.has(fieldName)) { unmapped.push(fieldName); continue; }
     try {
       const field = form.getTextField(fieldName);
-      field.setText(resolveSource(checklist.textFieldOverrides[fieldName] ?? source, ctx));
-      const fontSize = def.fieldFontSizes?.[fieldName];
-      if (fontSize && fontSize >= 6 && fontSize <= 16) field.setFontSize(fontSize);
+      const value = resolveSource(checklist.textFieldOverrides[fieldName] ?? source, ctx);
+      field.setText(value);
+      const fontSize = def.fieldFontSizes?.[fieldName] ?? checklist.fieldFontSizes?.[fieldName];
+      const boxWidth = field.acroField.getWidgets()[0]?.getRectangle().width ?? 0;
+      const fits = !value || !boxWidth || sizingFont.widthOfTextAtSize(value, fontSize ?? 0) <= boxWidth - 4;
+      if (fontSize && fontSize >= 6 && fontSize <= 16 && fits) field.setFontSize(fontSize);
       filled += 1;
     } catch {
       unmapped.push(fieldName);

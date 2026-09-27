@@ -75,11 +75,12 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
    // CITY's block ("If within a city you must submit application to the city for zoning
    // approval") — never filled by us.
    radioGroups.undefined_3={source:'computed.roofMounted',equals:'yes',option:'Yes_3'};
-   radioGroups.undefined_4={source:'computed.prescriptiveStructureClause',equals:'yes',option:'Yes_4'};
-   radioGroups.undefined_5={source:'computed.prescAllAnswer',equals:'Yes',option:'Yes_5'};
+   radioGroups.undefined_4={source:'computed.structureSfdOrAccessory',equals:'yes',option:'Yes_4'};
+   // The attestation reads the SAME answers the state checklist prints (computed.checklistAllYes).
+   radioGroups.undefined_5={source:'computed.checklistAllYes',equals:'yes',option:'Yes_5'};
    requiredFields['declared valuation']='computed.estimatedJobValue';
-   requiredFields['structure type (single-family dwelling or accessory building) for the requirement row']='computed.prescriptiveStructureClause';
-   requiredFields['every prescriptive criterion answered Yes (the OSSC 3111.4.8 / 3111.5 attestation row)']='computed.prescAllYes';
+   requiredFields['structure type (single-family dwelling or accessory building) for the requirement row']='computed.structureSfdOrAccessory';
+   requiredFields['every BCD 5952 checklist row answered Yes (the OSSC 3111.4.8 / 3111.5 attestation row)']='computed.checklistAllYes';
    // Certification signature (bottom left, Signature widget #1 at 32,106) with its Date box, and
    // the contractor block's Signature_2. The Signature field's OTHER widget is the owner-exempt
    // "Sign here" and is never stamped.
