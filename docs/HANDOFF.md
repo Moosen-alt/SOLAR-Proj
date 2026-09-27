@@ -28,6 +28,24 @@ Operator: "there is no place to verify them. Can we just have it verify itself o
   `recipeAdapter.verifyReviewScreen` (that file's owners); EnerGov fee pages have no captured
   shape; `publicPermitStatus.detectPlatform`'s `"/Cap/Cap"` check runs on a lowercased string
   and can never match (pre-existing; the fee reader matches `/cap/capdetail.aspx` itself).
+- **fees-close (the skeptic's four must-fixes):** (MF1) a REFUSED portal re-read changes nothing
+  about the stored reading — an in-review $99 can no longer turn "final" when the record is issued
+  and the re-read says "Loading..." (it is re-tried each sweep visit until a read succeeds);
+  (MF2) **Confirm vouches for the amount the person saw**: the click sends `feeUsd` + the line's
+  `confirmRows` (row ids with versions), and the server answers 409 "the fee changed since you
+  looked — reload and confirm again" if the amount or any row moved (400 if the body says
+  neither); (MF3) the verifier's **name is the confirming org's fact** — recorded with
+  `fee_schedules.verified_org_id`, shown only on that org's projects; everyone else reads
+  "human-verified on <date>". A row verified by the script door (`markFeeScheduleVerified`, no
+  org) shows its name to nobody; the 2026-09-27 backup holds 0 verified fee rows, so nothing
+  needs a backfill today; (MF4) "matches the published schedule"
+  needs the printed row to name THIS permit (or be the exact bracket-label row) — "Plumbing
+  permit fee | $160.00" no longer badges a researched "Permit fee" $160.
+- Still open from the same skeptic (not in fees-close): the Accela fee parser overstates when a
+  credit line has no printed total and can sum a dated `$` figure from a later unknown section
+  (`shared/src/portalFeeItems.ts`); two targets sharing one record URL each count the page
+  (double total); `pageNamesRecord` is a substring test (`BLD-26-0041` accepts a page for
+  `BLD-26-00412`).
 
 ## PER-JOB LOOKUP — LAST ROUND CLOSED; ITS KNOWN RESIDUE (2026-09-27, lookup-close-7)
 
