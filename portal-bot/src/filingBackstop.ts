@@ -343,7 +343,9 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
       // Reset, never added: each approved click (the submit, a confirm dialog's OK) covers one.
       closeSlot();
       if (disposed) return;
-      const clicked = opts && opts.page && typeof opts.page === "object" ? opts.page : null;
+      // Bound to the page the caller clicked on — by default the page this backstop was installed
+      // for, never "any page" (an unbound slot is how a completion page's POST took it).
+      const clicked = opts && opts.page && typeof opts.page === "object" ? opts.page : page;
       const span = Math.max(0, Math.min(ms, 60_000));
       const detachers: Array<() => void> = [];
       const s: Slot = { page: clicked, until: Date.now() + span, open: true, timer: null, detach: () => { for (const d of detachers.splice(0)) d(); } };

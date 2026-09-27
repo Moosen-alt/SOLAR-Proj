@@ -325,6 +325,56 @@ try {
       `POSTs=[${posts.join(",")}] aborts=${aborts} dismissed=${d.dismissed.join(",")}`);
   }
   }
+  if (PART === "main") {
+    // THE APPROVED SLOT IS BOUND TO THE CLICK (portal-run-close-2 M4, the skeptic's skSlot probe,
+    // direct): a review page whose Submit is a form method=GET to a completion page that POSTs
+    // 800 ms after it loads. With the slot open (no page named: it binds to the backstop's own
+    // page) the click's GET navigation closes the slot and the POST meets the lockdown. And a
+    // form POST still takes the slot: exactly one request admitted.
+    const seen: string[] = [];
+    const slotServer = http.createServer((req, res) => {
+      const url = new URL(req.url || "/", "http://127.0.0.1");
+      if (req.method !== "GET") seen.push(`${req.method} ${url.pathname}`);
+      res.writeHead(200, { "content-type": "text/html" });
+      if (url.pathname === "/review-get" || url.pathname === "/review-post") {
+        const method = url.pathname === "/review-get" ? "get" : "post";
+        res.end(`<!doctype html><html><body><h1>Step 5: Review and Submit</h1><p>Please review your application before submitting.</p><form method="${method}" action="/done"><button type="submit" id="go">Submit Application</button></form></body></html>`);
+        return;
+      }
+      if (url.pathname === "/done") {
+        res.end(`<!doctype html><html><body><h1>Application Received</h1><p>Your application has been submitted.</p><script>setTimeout(function(){ fetch("/track/completed", { method: "POST", body: "r=1" }).catch(function(){}); }, 800);</script></body></html>`);
+        return;
+      }
+      res.end("{}");
+    });
+    await new Promise<void>((r) => slotServer.listen(0, "127.0.0.1", () => r()));
+    const sbase = `http://127.0.0.1:${(slotServer.address() as { port: number }).port}`;
+    for (const shape of ["review-get", "review-post"] as const) {
+      const ctx = await browser.newContext();
+      await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
+      const page = await ctx.newPage();
+      const bs = await installFilingBackstop(page, "replay run");
+      await page.goto(`${sbase}/${shape}`);
+      await page.waitForTimeout(400);
+      bs?.lockReview("smoke at review");
+      seen.length = 0;
+      bs?.allowApprovedFiling(20_000);
+      await page.click("#go");
+      await page.waitForTimeout(2500);
+      const admitted = [...(bs?.approvedRequests ?? [])];
+      const navs = [...(bs?.approvedNavigations ?? [])];
+      await bs?.dispose();
+      await ctx.close();
+      if (shape === "review-get") {
+        check("MUST-EXCLUDE M4 slot: a GET-navigating approved click admits NOTHING — the completion page's later POST is aborted by the lockdown",
+          seen.length === 0 && admitted.length === 0 && navs.length === 1, `seen=${JSON.stringify(seen)} admitted=${JSON.stringify(admitted)} navs=${JSON.stringify(navs)}`);
+      } else {
+        check("MUST-PASS M4 slot: a form-POST approved click is admitted (exactly one request), the completion page's later POST is not",
+          seen.length === 1 && seen[0] === "POST /done" && admitted.length === 1, `seen=${JSON.stringify(seen)} admitted=${JSON.stringify(admitted)}`);
+      }
+    }
+    slotServer.close();
+  }
 } finally {
   await browser.close().catch(() => null);
   server.close();
