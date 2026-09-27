@@ -1052,8 +1052,10 @@ export function recordFeeVerification(
        (id, schedule_id, kind, bracket_label, fee_cents, collected_by_profile_key, verified_by, verified_org_id, verified_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
+      // The label is stored WHOLE: findFeeVerification compares the whole label, and a stored
+      // prefix would never read back as verified (and would collide on the unique index).
       id(), item.scheduleId, isDelegation ? "delegation" : "bracket",
-      isDelegation ? "" : String(item.bracketLabel ?? "").slice(0, 300),
+      isDelegation ? "" : String(item.bracketLabel ?? ""),
       isDelegation ? 0 : feeCents(item.feeUsd as number),
       isDelegation ? clean(item.collectedBy) : "",
       who, org, nowIso(),
@@ -1923,8 +1925,21 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
 //      shortcut is gone: it only ever helped a label that did NOT name this permit, because one
 //      that did passes rule 2 on its own;
 //   3. anything else — unsure — earns no badge, and the amount stays "provisional".
+// The same reading also decides what the quote may SAY about the row (corroborationVerdict): a
+// row that names only ANOTHER permit is not offered as this fee's "Published as" line (M8). That
+// is an accusation, so it is made only where the row names another permit and NOT this one — a
+// mixed row ("Solar and wind systems", a utility heading "Pacific Gas and Electric") withholds the
+// badge without accusing. Scope (commercial without residential) and discipline (an electrical
+// line on a row naming only the building permit) are decisive either way: the row names the
+// wrong permit even when it says "solar".
 // ---------------------------------------------------------------------------
-const OTHER_TRADE_RE = /\b(?:plumb(?:ing|er)?|mechanical|hvac|heating|furnace|boilers?|gas|sewer|septic|water\s+heaters?|hot\s+water|solar\s+thermal|thermal\s+solar|fire\s+(?:sprinklers?|alarms?|suppression)|sprinklers?|signs?|signage|fences?|fencing|demolition|demolish|wind|pools?|spas?|swimming|grading|excavation|driveways?|right[- ]of[- ]way|elevators?|mobile\s+homes?|manufactured\s+homes?|re-?roof(?:ing)?|roofing|occupancy|sidewalks?|tree|ev\s+charg\w*|electric\s+vehicles?|evse|commercial|non-?residential|multi-?family|industrial)\b/i;
+const OTHER_TRADE_RE = /\b(?:plumb(?:ing|er)?|mechanical|hvac|heating|furnace|boilers?|gas\s+(?:piping|pipe|lines?|permits?|appliances?|fitting|fireplaces?|meters?)|sewer|septic|water\s+heaters?|hot\s+water|solar\s+thermal|thermal\s+solar|fire\s+(?:sprinklers?|alarms?|suppression)|sprinklers?|signs?|signage|fences?|fencing|demolition|demolish|wind|pools?|spas?|swimming|grading|excavation|driveways?|right[- ]of[- ]way|elevators?|mobile\s+homes?|manufactured\s+homes?|re-?roof(?:ing)?|roofing|occupancy|sidewalks?|tree|ev\s+charg\w*|electric\s+vehicles?|evse)\b/i;
+/** Another SCOPE: decisive unless the text also names the residential scope ("Residential and
+ *  Small Commercial customers" is this job's scope too). */
+const OTHER_SCOPE_RE = /\b(?:commercial|non-?residential|multi-?family|industrial)\b/i;
+const RESIDENTIAL_RE = /\bresidential\b/i;
+/** "Solar" inside a solar-THERMAL phrase names no PV permit. */
+const SOLAR_THERMAL_PHRASE_RE = /\bsolar\s+(?:thermal|water(?:\s+heat\w*)?|hot\s+water|pool(?:\s+heat\w*)?|space\s+heat\w*|heat(?:ing|ers?)?)\b/gi;
 /** A standby generator is another permit on the PERMIT track; on NEM the customer's "generating
  *  facility" / "customer generator" IS the solar system, so the word is not excluded there. */
 const GENERATOR_RE = /\bgenerators?\b/i;
@@ -1938,9 +1953,13 @@ const BUILDING_WORD_RE = /\b(?:building|structural)\b/i;
 const HEADING_WALK_LIMIT = 80;
 
 /** THE NEAREST HEADING ABOVE A PRINTED ROW, on the same page: walking up from the row, table rows
- *  (a `$` amount or a `|` cell — column headers included) are skipped and the first plain line is
- *  the heading. A page change, the top of the document or the guard ends the walk with "" — no
- *  heading kept, and the row must then name its permit on its own. */
+ *  (a `$` amount, or two or more non-empty `|` cells — column headers included) are skipped and
+ *  the first line with a single non-empty cell and no amount is the heading. A single-cell line
+ *  is a heading even when the extractor kept empty cells beside it ("Wind generation systems | |"
+ *  — a merged heading cell): skipping it would walk up past it to the PREVIOUS table's heading and
+ *  file the wind row under "Renewable electrical energy systems". A page change, the top of the
+ *  document or the guard ends the walk with "" — no heading kept, and the row must then name its
+ *  permit on its own. */
 function printedHeadingAbove(documentLines: string[], rowIndex: number): string {
   const pageOf = (s: string): string => /^p(\d+)\s/i.exec(s)?.[1] ?? "";
   const page = pageOf(String(documentLines[rowIndex] ?? "").trim());
@@ -1950,8 +1969,9 @@ function printedHeadingAbove(documentLines: string[], rowIndex: number): string 
     walked++;
     if (pageOf(raw) !== page) return "";
     const body = raw.replace(/^p\d+\s+/i, "").trim();
-    if (!body || body.includes("|") || quotedAmounts(body).length) continue;
-    return clean(body).slice(0, 200);
+    const cells = body.split("|").map((c) => c.trim()).filter(Boolean);
+    if (cells.length !== 1 || quotedAmounts(body).length) continue;
+    return clean(cells[0]).slice(0, 200);
   }
   return "";
 }
@@ -1972,23 +1992,25 @@ export function corroborationVerdict(
   const row = clean(line.corroboration.matchedLine);
   if (!row) return "none";
   const text = `${row} ${clean(line.corroboration.heading)}`;
-  if (OTHER_TRADE_RE.test(text)) return "other_permit";
-  const named = (yes: boolean): CorroborationVerdict => (yes ? "names_permit" : "unnamed");
+  // "non-residential" names another scope; it is not the residential word.
+  const otherScope = OTHER_SCOPE_RE.test(text) && !RESIDENTIAL_RE.test(text.replace(/\bnon-?residential\b/gi, " "));
+  if (otherScope) return "other_permit";
+  const otherTrade = OTHER_TRADE_RE.test(text) || (track !== "nem" && GENERATOR_RE.test(text));
   if (track === "nem") {
+    // The utility's application: an interconnection / net-metering line names it, whatever else
+    // the row lists ("solar, wind, fuel cell") or the utility is called ("… Gas and Electric").
     if (INTERCONNECTION_RE.test(text)) return "names_permit";
-    return BUILDING_WORD_RE.test(text) || ELECTRICAL_WORD_RE.test(text) ? "other_permit" : "unnamed";
+    return otherTrade || BUILDING_WORD_RE.test(text) ? "other_permit" : "unnamed";
   }
-  if (GENERATOR_RE.test(text)) return "other_permit";
   const discipline = String(line.discipline ?? "");
-  if (discipline === "electrical") {
-    if (BUILDING_WORD_RE.test(text) && !ELECTRICAL_WORD_RE.test(text)) return "other_permit";
-    return named(PV_WORD_RE.test(text) || RENEWABLE_RE.test(text));
-  }
-  if (discipline === "structural") {
-    if (ELECTRICAL_WORD_RE.test(text) && !BUILDING_WORD_RE.test(text)) return "other_permit";
-    return named(PV_WORD_RE.test(text));
-  }
-  return named(PV_WORD_RE.test(text) || RENEWABLE_RE.test(text));
+  // Another discipline's permit is decisive even when the row says "solar".
+  if (discipline === "electrical" && BUILDING_WORD_RE.test(text) && !ELECTRICAL_WORD_RE.test(text)) return "other_permit";
+  if (discipline === "structural" && ELECTRICAL_WORD_RE.test(text) && !BUILDING_WORD_RE.test(text)) return "other_permit";
+  const pv = PV_WORD_RE.test(text.replace(SOLAR_THERMAL_PHRASE_RE, " "));
+  const namesThis = discipline === "structural" ? pv : pv || RENEWABLE_RE.test(text);
+  // Another trade AND this permit on one row/heading: no badge, and no accusation either.
+  if (otherTrade) return namesThis ? "unnamed" : "other_permit";
+  return namesThis ? "names_permit" : "unnamed";
 }
 
 /** DOES THIS LINE'S PRINTED ROW (WITH ITS HEADING) NAME THE PERMIT THE LINE PRICES? The one

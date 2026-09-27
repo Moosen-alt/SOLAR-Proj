@@ -31,6 +31,9 @@
 // 3 failures; 6a stays excluded — positive naming alone holds the wind row out).
 // Kill (fees-close2, skeptic M8): buildPaymentQuote ignores evidenceVerdict "other_permit" (the
 // plumbing row back under "Published as") -> 5g FAILS (measured: 1 failure).
+// Kill (no false accusation): on NEM, a trade word or "electric" read as another permit BEFORE
+// the interconnection test -> 6q, 6r, 6s FAIL. Kill (merged heading): a line with a "|" is never
+// a heading -> 6w FAILS (the wind row files under the renewable heading and badges).
 import "./_isolate";
 import fs from "node:fs";
 import os from "node:os";
@@ -364,6 +367,45 @@ registerFeeScheduleLookup(null);
     !named("5.01 to 15 kva | $210.00", "Wind generation systems", "electrical") && named("5.01 to 15 kva | $160.00", "Solar photovoltaic installations", "electrical")
       && !named("5.01 to 15 kva | $160.00", "", "electrical"));
   check("6p. the predicate: a standby-GENERATOR heading never earns the badge on the permit track", !named("Residential solar and generator | $150.00", "Generators", "electrical"));
+
+  // THE ACCUSATION IS MADE ONLY WHERE IT IS TRUE. "other_permit" makes the quote say the amount
+  // "may be the wrong permit's" (5g) — so a utility named "… Gas and Electric", a residential-and-
+  // commercial heading, the utility's own word "Electric", or a mixed "solar and wind" row must
+  // never read as another permit. Controls, then the M-shapes' verdicts.
+  const verdict = (matchedLine: string, heading: string, discipline: string, track: "permit" | "nem" = "permit") =>
+    F.corroborationVerdict({ corroboration: { corroborated: true, matchedLine, heading, sourceUrl: DOC, checkedAt: "", via: "http" }, bracketLabel: "", discipline } as never, track);
+  const v = {
+    pge: verdict("Interconnection application fee | $145.00", "Pacific Gas and Electric Company — Rule 21", "", "nem"),
+    nemRes: verdict("Net energy metering application | $0.00", "Residential and Small Commercial customers", "", "nem"),
+    rule21: verdict("Electric Rule 21 application | $145.00", "", "", "nem"),
+    nemMixed: verdict("Interconnection application (solar, wind, fuel cell) | $50.00", "", "", "nem"),
+    resCom: verdict("Residential/Commercial Solar PV permit | $250.00", "", ""),
+    mixed: verdict("5.01 to 15 kva | $160.00", "Solar and wind energy systems", "electrical"),
+    gasPipe: verdict("Gas piping permit | $120.00", "", ""),
+    m4: verdict("Commercial solar PV permit | $500.00", "", ""),
+    m5: verdict("Solar thermal system permit fee | $120.00", "", ""),
+    nonRes: verdict("Non-residential solar PV permit | $500.00", "", ""),
+  };
+  check("6q. MUST-PASS: NEM interconnection under 'Pacific Gas and Electric Company' names the permit (gas is a utility's name, not a trade)", v.pge === "names_permit", JSON.stringify(v));
+  check("6r. MUST-PASS: NEM net metering under 'Residential and Small Commercial customers' names the permit", v.nemRes === "names_permit" && v.nemMixed === "names_permit", JSON.stringify(v));
+  check("6s. MUST-EXCLUDE (no false accusation): 'Electric Rule 21 application' is unnamed, never 'another permit'", v.rule21 === "unnamed", JSON.stringify(v));
+  check("6t. MUST-PASS: 'Residential/Commercial Solar PV permit' names this permit (the residential scope is named)", v.resCom === "names_permit", JSON.stringify(v));
+  check("6u. a mixed 'Solar and wind' heading earns no badge and accuses nothing (unnamed); 'Gas piping' is another trade",
+    v.mixed === "unnamed" && v.gasPipe === "other_permit", JSON.stringify(v));
+  check("6v. MUST-EXCLUDE: commercial-only, non-residential and solar-THERMAL rows name another permit", v.m4 === "other_permit" && v.nonRes === "other_permit" && v.m5 === "other_permit", JSON.stringify(v));
+
+  // A HEADING THE EXTRACTOR KEPT WITH EMPTY CELLS BESIDE IT ("Wind generation systems | |") is
+  // still the heading — skipping it would walk up to the renewable table's heading and badge wind.
+  saveOn([
+    "p21 Renewable electrical energy systems",
+    "p21 5.01 to 15 kva | $133.56 | 7/1/2012",
+    "p21 Wind generation systems |  |",
+    "p21 Description | Fee | Effective",
+    "p21 5.01 to 15 kva | $210.00 | 7/1/2012",
+  ], { ahj: "Merged Windbay" }, "5.01 to 15 kva", 210, "electrical");
+  const merged = lineOf("m1p-merged", "Merged Windbay");
+  check("6w. MUST-EXCLUDE: a wind row under a merged-cell heading 'Wind generation systems |  |' does not badge, and that heading is the one stored",
+    merged.corroborated === false && storedCorr("Merged Windbay").heading === "Wind generation systems", JSON.stringify({ c: merged.corroborated, h: storedCorr("Merged Windbay").heading }));
 }
 
 registerFeeScheduleLookup(null);
