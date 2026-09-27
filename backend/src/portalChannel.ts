@@ -52,6 +52,31 @@ export function selectAdapterActor(hasRecipe: boolean, isAccela: boolean, isPowe
 // The hand-coded Accela/PowerClerk adapters are reachable ONLY as the legacy fallback when
 // auto-seed is disabled (PORTAL_AUTOSEED=0). Pure + exported so the precedence is unit-tested
 // without a browser/DB.
+/**
+ * THE URL A STAGE MAY LEARN ON when it has no complete recipe (operator 2026-09-27: "it should
+ * just start when I click Stage"). Candidates in trust order, each already FITTED by the caller
+ * (hostFitsTrackAndEntity): a learned profile's portal, the recipe's, a draft recording's, the
+ * track's own KB portal (utility for NEM, AHJ for permits), and — permit tracks only — the cited
+ * STATEWIDE portal (Oregon ePermitting), which is a genuine portal entry, not an info page.
+ * City of Jefferson (2026-09-27): no KB URL, no recipe, borrow refused -> the statewide URL was
+ * left out here, so Stage said "no portal automation" and never opened the learner.
+ * An AHJ info/landing page is never a candidate (the caller does not pass one).
+ */
+export function learnEntryUrl(c: {
+  track: string | null | undefined;
+  learnedProfileUrl?: string | null;
+  recipeUrl?: string | null;
+  draftUrl?: string | null;
+  utilityUrl?: string | null;
+  ahjUrl?: string | null;
+  statewideUrl?: string | null;
+}): string {
+  const s = (v: string | null | undefined): string => String(v ?? "").trim();
+  return s(c.learnedProfileUrl) || s(c.recipeUrl) || s(c.draftUrl)
+    || (c.track === "nem" ? s(c.utilityUrl) : (s(c.ahjUrl) || s(c.statewideUrl)))
+    || "";
+}
+
 export function selectStagingActor(opts: {
   hasRecipe: boolean;
   isRealPortal: boolean;
