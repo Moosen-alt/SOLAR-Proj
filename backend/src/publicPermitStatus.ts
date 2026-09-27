@@ -200,6 +200,23 @@ export async function fetchHtml(url: string): Promise<string | null> {
   }
 }
 
+/** THE WHOLE RECORD PAGE'S TEXT, not the status fragment extractVisibleText picks. The fee
+ *  reader (portalFeeReadings.ts) needs the page's Fees section, which sits far from the status
+ *  and which the status extractor's first-match selectors never reach. Read-only GET. */
+export async function fetchRecordPageText(url: string): Promise<string | null> {
+  const html = await fetchHtml(url);
+  if (html == null) return null;
+  try {
+    const { load } = await import("cheerio");
+    const $ = load(html);
+    $("script, style, noscript, iframe, svg").remove();
+    const text = $("body").text().replace(/[ \t\r]+/g, " ").replace(/\n\s*(?:\n\s*)+/g, "\n").trim();
+    return text ? text.slice(0, 60000) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function htmlToText(url: string): Promise<string | null> {
   const html = await fetchHtml(url);
   if (html == null) return null;

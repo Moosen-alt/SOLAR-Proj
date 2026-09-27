@@ -201,6 +201,7 @@ export const CONFIDENCE_NOTE: Record<string, string> = {
 
 const SOURCE_NOTE: Record<string, string> = {
   actual: "the portal's fee screen, entered by the operator",
+  portal_record: "the portal's own record, read automatically by the permit monitor (not person-checked)",
   published_schedule: "the jurisdiction's published fee schedule",
   learned_history: "the median of real fees we have seen here before",
   valuation_estimate: "a percentage of the project valuation",
@@ -388,9 +389,11 @@ export function renderFeeLine(
   }
   out.push(row("Schedule", line.sourceUrl || schedule?.sourceUrl || "— no source URL on file"));
   // A seeded amount a machine found printed in its cited schedule says so — never "verified".
-  out.push(row("Confidence", line.confidence === "seeded" && line.corroborated === true
-    ? "SEEDED, MATCHES THE PUBLISHED SCHEDULE — a machine found this line printed in the cited document; no person has confirmed it yet"
-    : CONFIDENCE_NOTE[line.confidence] || line.confidence));
+  out.push(row("Confidence", line.source === "portal_record"
+    ? "ACTUAL — the portal's own fee, READ AUTOMATICALLY off the filed record; no person has checked it"
+    : line.confidence === "seeded" && line.corroborated === true
+      ? "SEEDED, MATCHES THE PUBLISHED SCHEDULE — a machine found this line printed in the cited document; no person has confirmed it yet"
+      : CONFIDENCE_NOTE[line.confidence] || line.confidence));
   out.push(row("Who pays", agreement.whoPays || "NOT AGREED"));
   out.push(row("", wrap(feeResponsibilityProse(agreement.whoPays), 64, cont)));
   out.push(row("How", wrap(PAYMENT_METHOD_NOTE[line.paymentMethod] || line.paymentMethod, 64, cont)));

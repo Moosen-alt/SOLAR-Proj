@@ -1026,6 +1026,41 @@ function migrate(db: AppDb): void {
   addColumnIfMissing(db, "clients", "state_licenses_json", "TEXT NOT NULL DEFAULT '[]'");
   addColumnIfMissing(db, "clients", "partner_contacts_json", "TEXT NOT NULL DEFAULT '[]'");
 
+  // THE PORTAL'S OWN FEE, READ OFF THE FILED RECORD by the permit monitor (portalFeeReadings.ts):
+  // one row per (project, tracking target, source kind), kept apart from submission_payments'
+  // permit_fee_actual_usd — that column is what a PERSON typed and what invoices bill from, and a
+  // machine read never writes it. `status` 'read' carries amounts; any other status is WHY nothing
+  // was read and carries none (no fee invoiced yet is not a $0 fee). `excerpt` is the fee section
+  // only, digit runs masked — never the record page, which names the homeowner. The legacy
+  // idempotent idiom on purpose, not a versioned migration: concurrent rounds each adding "v39"
+  // would leave one of them silently unapplied on a database that ran the other.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS portal_fee_readings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      target_id TEXT NOT NULL DEFAULT '',
+      track TEXT NOT NULL DEFAULT 'permit',
+      source_kind TEXT NOT NULL DEFAULT 'portal_record',
+      record_number TEXT NOT NULL DEFAULT '',
+      jurisdiction TEXT NOT NULL DEFAULT '',
+      platform TEXT NOT NULL DEFAULT '',
+      source_url TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'read',
+      detail TEXT NOT NULL DEFAULT '',
+      total_usd REAL,
+      paid_usd REAL,
+      outstanding_usd REAL,
+      lines_json TEXT NOT NULL DEFAULT '[]',
+      excerpt TEXT NOT NULL DEFAULT '',
+      record_outcome TEXT NOT NULL DEFAULT '',
+      read_at TEXT NOT NULL DEFAULT '',
+      attempted_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_fee_readings_key
+      ON portal_fee_readings(project_id, target_id, source_kind);
+  `);
+
   runVersionedMigrations(db);
 
   seedBaselineRuleRows(db);

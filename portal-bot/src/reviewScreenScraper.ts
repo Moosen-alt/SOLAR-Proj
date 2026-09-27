@@ -4,6 +4,7 @@
 // Values are redacted (long digit runs masked) — never returns raw PII.
 
 import { redactStatusText } from "./safeAction";
+import { readReviewScreenFees, type PortalFeeReadResult } from "../../shared/src/portalFeeItems";
 import type { ProjectRecord } from "../../shared/src/types";
 
 export interface ReviewField {
@@ -334,4 +335,18 @@ export function compareReviewFields(
   bodyText = "",
 ): ReviewMismatch[] {
   return reviewComparison(reviewFields, project, bodyText).mismatches;
+}
+
+/**
+ * THE FEES A REVIEW SCREEN PRINTS, read with the ONE parser the permit monitor also uses
+ * (shared/src/portalFeeItems.ts) so the two doors cannot disagree about what a fee is. Read-only
+ * over what scrapeReviewScreen already returned: it never touches the page, and reading a fee is
+ * not paying it (hard rule 1). A review screen that prints no fee, or $0.00, comes back as a
+ * refusal — never a $0 fee.
+ *
+ * Wiring note: the recipe replay's review check (recipeAdapter.verifyReviewScreen) returns a
+ * fixed shape with no channel for this yet; the call belongs there, beside reviewComparison.
+ */
+export function reviewScreenFees(reviewFields: ReviewField[], bodyText = ""): PortalFeeReadResult {
+  return readReviewScreenFees(reviewFields.map((f) => ({ label: f.label, value: f.value })), bodyText);
 }

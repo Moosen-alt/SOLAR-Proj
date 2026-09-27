@@ -27,6 +27,7 @@ import { createRequire } from "node:module";
 import type { AppDb } from "./db";
 import type {
   FeeChargeBreakdown,
+  FeeComparison,
   FeeConfidence,
   FeePaymentMethod,
   PermitFeeSource,
@@ -47,6 +48,11 @@ import { nowIso } from "./time";
 import { logger } from "./logger";
 import { batteryStatus, SERVICE_FEEDER_200A_LABEL, SERVICE_FEEDER_CHARGE_KIND } from "./batteryServiceFeeder";
 import { stateRulesFor } from "./permitProcess";
+import { portalFeeSummary } from "./portalFeeReadings";
+
+/** The portal's own total for the filing — typed by a person ("actual") or read off the record
+ *  ("portal_record"). Either already contains every line the jurisdiction billed. */
+const isPortalFigure = (source: PermitFeeSource): boolean => source === "actual" || source === "portal_record";
 
 type Row = Record<string, unknown>;
 
@@ -108,18 +114,35 @@ function clientBilling(db: AppDb, clientId: string | null): ClientBilling {
   };
 }
 
+/** History sources a PERSON entered (typed off the portal's fee/review screen). Every other
+ *  source — a parsed billing summary (fee_summary:*), a portal record the monitor read
+ *  (portal_record) — is a machine's reading, and a median containing one is not "verified". */
+const PERSON_ENTERED_HISTORY = new Set(["operator", "portal_review"]);
+
 /** Median of real fees seen for this AHJ (permit track) / utility (nem track),
- *  fuzzy-matched so "City of Woodburn" learns from a "Woodburn" history row. */
+ *  fuzzy-matched so "City of Woodburn" learns from a "Woodburn" history row.
+ *
+ *  THIS PROJECT'S OWN PORTAL FIGURES ARE LEFT OUT. The ladder below the portal's number now
+ *  runs on every quote so the portal's figure can be shown BESIDE it ("researched $360 — the
+ *  portal's $415.20"); a median fed by the very figure it is compared with would compare the
+ *  number to itself. A parsed billing summary of its own (fee_summary:*) still counts — that is
+ *  how a project's own summary reaches its quote (feeSummary.ts). */
 function learnedFee(
   db: AppDb,
   project: ProjectRecord,
   track: "permit" | "nem",
-): { fee: number; samples: number; matchedName: string } | null {
+): { fee: number; samples: number; machineSamples: number; matchedName: string } | null {
   const wanted = track === "nem" ? project.utility : project.ahj;
   if (!wanted) return null;
-  const rows = db.query<Row>("SELECT state, ahj, utility, fee_usd FROM permit_fee_history WHERE track = ? AND source NOT LIKE 'receipt_component:%'", [track]);
+  const rows = db.query<Row>(
+    `SELECT state, ahj, utility, fee_usd, source FROM permit_fee_history
+      WHERE track = ? AND source NOT LIKE 'receipt_component:%'
+        AND NOT (COALESCE(project_id, '') = ? AND source IN ('operator', 'portal_review', 'portal_record'))`,
+    [track, project.id],
+  );
   const state = (project.state || "").trim().toUpperCase();
   const fees: number[] = [];
+  let machineSamples = 0;
   let matchedName = "";
   for (const row of rows) {
     const rowState = text(row.state).trim().toUpperCase();
@@ -127,13 +150,37 @@ function learnedFee(
     const name = track === "nem" ? text(row.utility) : text(row.ahj);
     if (knowledgeNameMatchScore(wanted, name) < 60) continue;
     const fee = Number(row.fee_usd);
-    if (Number.isFinite(fee) && fee >= 0) { fees.push(fee); matchedName = matchedName || name; }
+    if (Number.isFinite(fee) && fee >= 0) {
+      fees.push(fee);
+      if (!PERSON_ENTERED_HISTORY.has(text(row.source))) machineSamples++;
+      matchedName = matchedName || name;
+    }
   }
   if (!fees.length) return null;
   fees.sort((a, b) => a - b);
   const mid = Math.floor(fees.length / 2);
   const median = fees.length % 2 ? fees[mid] : (fees[mid - 1] + fees[mid]) / 2;
-  return { fee: round2(median), samples: fees.length, matchedName };
+  return { fee: round2(median), samples: fees.length, machineSamples, matchedName };
+}
+
+/** The portal's figure beside the researched one: both numbers and the difference. */
+function compareFees(
+  portalUsd: number,
+  portalSource: PermitFeeSource,
+  researched: { usd: number | null; source: PermitFeeSource; confidence: FeeConfidence },
+  shown: "portal" | "researched",
+  note: string,
+): FeeComparison {
+  return {
+    researchedUsd: researched.usd,
+    researchedSource: researched.source,
+    researchedConfidence: researched.confidence,
+    portalUsd: round2(portalUsd),
+    portalSource,
+    differenceUsd: researched.usd == null ? null : round2(portalUsd - researched.usd),
+    shown,
+    note,
+  };
 }
 
 // --- Published fee schedules (optional module) ------------------------------
@@ -497,18 +544,24 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
   let permitFeeBracketLabel: string | null = schedule?.bracketLabel ?? null;
   const permitFeeSourceUrl: string | null = schedule?.sourceUrl ?? null;
 
-  if (existing?.permitFeeActualUsd != null) {
-    permitFeeUsd = existing.permitFeeActualUsd;
-    permitFeeSource = "actual";
-    permitFeeConfidence = "actual";
-    permitFeeBasis = "Portal-calculated fee (entered from the portal's fee/review screen).";
-  } else {
+  // THE RESEARCHED LADDER RUNS ON EVERY QUOTE — learned history, then the published schedule,
+  // then the estimate — even when the portal's own figure is known, because that figure is
+  // shown BESIDE it ("researched $360.00; the portal's $415.20, $55.20 more"), never silently in
+  // its place. The portal's figure (typed by the operator, or read off the filed record) is
+  // applied on top of this, below.
+  {
     const learned = learnedFee(db, project, track);
     if (learned) {
       permitFeeUsd = learned.fee;
       permitFeeSource = "learned_history";
-      permitFeeConfidence = "verified";
-      permitFeeBasis = `Median of ${learned.samples} real fee(s) previously observed for ${learned.matchedName}.`;
+      // "verified" MEANS A PERSON (hard rule 3). A median of fees people typed off real portal
+      // screens is a number people stand behind; one that contains a MACHINE's reading (a parsed
+      // billing summary, a portal record the monitor read) is not, however real the money was.
+      permitFeeConfidence = learned.machineSamples ? "seeded" : "verified";
+      permitFeeBasis = `Median of ${learned.samples} real fee(s) previously observed for ${learned.matchedName}`
+        + (learned.machineSamples
+          ? ` (${learned.machineSamples === learned.samples ? "all" : `${learned.machineSamples} of them`} read automatically from portal records or billing summaries — no person has checked ${learned.machineSamples === 1 ? "it" : "them"}).`
+          : ".");
     } else if (schedule && schedule.feeUsd != null) {
       permitFeeUsd = schedule.feeUsd;
       permitFeeSource = "published_schedule";
@@ -581,6 +634,61 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
     }
   }
 
+  // ── THE PORTAL'S OWN FIGURE, ON TOP OF THE LADDER ─────────────────────────────────────────
+  const researched = { usd: permitFeeUsd, source: permitFeeSource, confidence: permitFeeConfidence };
+  const portalFeeRecords = portalFeeSummary(db, project.id, track);
+  let permitFeeComparison: FeeComparison | null = null;
+  // A READ LEADS THE LINE ONLY WHEN IT IS THE WHOLE TRACK, AND NOT A PARTIAL LIFECYCLE THAT
+  // UNDER-QUOTES. Every filed record read (complete), and either every record issued (final) or
+  // the read already reaching the researched figure — a record in review whose plan-review fee
+  // is invoiced and whose permit fee is not yet would otherwise print $99 as the "actual" of a
+  // $360 job, and somebody quotes a customer off this screen. Short of that it is shown BESIDE
+  // the researched number with both figures and the gap.
+  const portalRead = portalFeeRecords && portalFeeRecords.totalUsd != null ? portalFeeRecords.totalUsd : null;
+  const portalCovers = !!portalFeeRecords && portalFeeRecords.complete && portalRead != null
+    && (portalFeeRecords.final || researched.usd == null || portalRead >= researched.usd - 0.005);
+  const resetScheduleQualifiers = (): void => {
+    permitFeeCorroborated = false;
+    permitFeeEvidenceQuote = "";
+    permitFeeVerifiedBy = "";
+    permitFeeVerifiedAt = "";
+    // Kept as the fee-quantity fact it has always been beside an actual (a fact about the job's
+    // size in the jurisdiction's table), not as a claim about where the amount came from.
+    permitFeeBracketLabel = schedule?.bracketLabel ?? null;
+  };
+  if (existing?.permitFeeActualUsd != null) {
+    // A PERSON TYPED THE PORTAL'S FIGURE — it stands (rule 3: a machine read never overwrites a
+    // person's entry). A portal read that disagrees is on portalFeeRecords, drawn beside it.
+    permitFeeUsd = existing.permitFeeActualUsd;
+    permitFeeSource = "actual";
+    permitFeeConfidence = "actual";
+    permitFeeBasis = "Portal-calculated fee (entered from the portal's fee/review screen).";
+    resetScheduleQualifiers();
+    permitFeeComparison = compareFees(existing.permitFeeActualUsd, "actual", researched, "portal",
+      portalRead != null && portalFeeRecords?.complete && Math.abs(portalRead - existing.permitFeeActualUsd) > 0.005
+        ? `The portal record${portalFeeRecords.records.length === 1 ? "" : "s"} read $${portalRead.toFixed(2)} (${portalFeeRecords.provenance}) — not the figure entered; the entered figure stands until a person changes it.`
+        : "");
+  } else if (portalCovers && portalFeeRecords && portalRead != null) {
+    permitFeeUsd = portalRead;
+    permitFeeSource = "portal_record";
+    // The portal's own number — "actual" — read by a machine. Never "verified".
+    permitFeeConfidence = "actual";
+    permitFeeBasis = `The portal's own fee, ${portalFeeRecords.provenance}`
+      + (portalFeeRecords.final
+        ? "."
+        : ` — invoiced so far; ${portalFeeRecords.records.length === 1 ? "the record is" : "not every record is"} issued yet, so the jurisdiction may invoice more.`)
+      + " Read automatically; no person has checked it.";
+    resetScheduleQualifiers();
+    permitFeeComparison = compareFees(portalRead, "portal_record", researched, "portal", "");
+  } else if (portalFeeRecords && portalRead != null) {
+    // A PARTIAL READ: shown beside the researched number, never in its place.
+    const unread = portalFeeRecords.unread.map((u) => u.recordNumber || u.jurisdiction || "a record").join(", ");
+    permitFeeComparison = compareFees(portalRead, "portal_record", researched, "researched",
+      !portalFeeRecords.complete
+        ? `Read so far: $${portalRead.toFixed(2)} (${portalFeeRecords.provenance}); not yet read: ${unread}. The amount above stays the researched figure until every filed record is read.`
+        : `The portal has invoiced $${portalRead.toFixed(2)} so far (${portalFeeRecords.provenance}), below the researched figure, and the record is not issued yet — more may be invoiced. The amount above stays the researched figure.`);
+  }
+
   // A CONFLICT IS A FACT ABOUT THE JURISDICTION, NOT ABOUT WHICH TIER WON — so it
   // is prepended after the ladder, not inside one of its branches. A learned
   // median or an operator-entered actual is a better answer than either disputed
@@ -608,14 +716,17 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
       `INSERT INTO submission_payments
          (id, project_id, track, status, permit_fee_estimate_usd, permit_fee_actual_usd, service_fee_usd, total_usd, fee_basis, quoted_at, updated_at)
        VALUES (?, ?, ?, 'quoted', ?, NULL, ?, ?, ?, ?, ?)`,
-      [id(), project.id, track, permitFeeSource === "actual" ? null : permitFeeUsd, serviceFeeUsd, totalUsd ?? 0, permitFeeBasis, ts, ts],
+      // The ESTIMATE column holds what research says; a portal read is not an estimate, so beside
+      // one it keeps the researched figure (and permit_fee_actual_usd — a person's column — is
+      // never written from a machine read).
+      [id(), project.id, track, permitFeeSource === "actual" ? null : permitFeeSource === "portal_record" ? researched.usd : permitFeeUsd, serviceFeeUsd, totalUsd ?? 0, permitFeeBasis, ts, ts],
     );
   } else if (existing.status === "quoted") {
     db.run(
       `UPDATE submission_payments
          SET permit_fee_estimate_usd = ?, service_fee_usd = ?, total_usd = ?, fee_basis = ?, updated_at = ?
        WHERE id = ?`,
-      [permitFeeSource === "actual" ? existing.permitFeeEstimateUsd : permitFeeUsd, serviceFeeUsd, totalUsd ?? 0, permitFeeBasis, ts, existing.id],
+      [permitFeeSource === "actual" ? existing.permitFeeEstimateUsd : permitFeeSource === "portal_record" ? researched.usd : permitFeeUsd, serviceFeeUsd, totalUsd ?? 0, permitFeeBasis, ts, existing.id],
     );
   }
 
@@ -639,6 +750,8 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
     permitFeeEvidenceQuote,
     permitFeeVerifiedBy,
     permitFeeVerifiedAt,
+    permitFeeComparison,
+    portalFeeRecords,
     paymentMethod,
     serviceFeeUsd,
     totalUsd,
@@ -827,6 +940,8 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     confirmable: feeLineConfirmable(quote.permitFeeSource, quote.permitFeeConfidence),
     verifiedBy: quote.permitFeeVerifiedBy,
     verifiedAt: quote.permitFeeVerifiedAt,
+    comparison: quote.permitFeeComparison,
+    portalRecords: quote.portalFeeRecords,
     paymentMethod: quote.paymentMethod,
     serviceFeeUsd: quote.serviceFeeUsd,
     totalUsd: quote.totalUsd,
@@ -914,7 +1029,7 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
       // the sheet contradicting itself (the no-schedule battery note below already
       // stops at an actual — one question, one answer). Kind-specific on purpose:
       // every other unpriced charge keeps its unknown under an actual.
-      if (charge.kind === SERVICE_FEEDER_CHARGE_KIND && line.source === "actual") continue;
+      if (charge.kind === SERVICE_FEEDER_CHARGE_KIND && isPortalFigure(line.source)) continue;
       unknowns.push(`${who} also charges "${charge.label}" on this filing, and it is not priced. ${charge.reason}`);
     }
     // A BATTERY JOB'S SERVICES/FEEDERS <=200A LINE, WHEN NO SCHEDULE ITEMISED IT.
@@ -933,7 +1048,7 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     // portal's own total and already contains it.
     if (
       line.track === "permit"
-      && line.source !== "actual"
+      && !isPortalFigure(line.source)
       && batteryStatus(project.parserSnapshot as Record<string, unknown> | null | undefined) === "yes"
       && !(line.charges ?? []).some((c) => c.kind === SERVICE_FEEDER_CHARGE_KIND)
     ) {

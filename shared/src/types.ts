@@ -328,12 +328,71 @@ export type FeePaymentMethod = "portal" | "mailed_check" | "none" | "unknown";
  *  valuation heuristic, which knows nothing about the jurisdiction. */
 export type FeeConfidence = "actual" | "verified" | "seeded" | "estimated" | "unknown";
 
+/** "actual" is the portal's fee TYPED BY THE OPERATOR off its fee/review screen; "portal_record"
+ *  is the portal's fee READ AUTOMATICALLY off the filed record by the permit monitor. Both rank
+ *  as confidence "actual" (it is the portal's own number either way), and they stay two values
+ *  because who read it is a different fact: a machine read is never "verified". */
 export type PermitFeeSource =
   | "actual"
+  | "portal_record"
   | "learned_history"
   | "published_schedule"
   | "valuation_estimate"
   | "unknown";
+
+/** One filed record's fees, as the permit monitor last read them off the portal
+ *  (portal_fee_readings). */
+export interface PortalFeeRecordReading {
+  recordNumber: string;
+  jurisdiction: string;
+  /** "read" = the amounts are the portal's own; anything else is WHY nothing was read, and
+   *  carries no amount (a record with no fee invoiced yet is not a $0 fee). */
+  status: "read" | "not_loaded" | "none_invoiced" | "unreadable" | "wrong_record";
+  totalUsd: number | null;
+  paidUsd: number | null;
+  outstandingUsd: number | null;
+  lines: Array<{ label: string; amountUsd: number; status: "paid" | "outstanding" | "invoiced"; date: string }>;
+  sourceUrl: string;
+  /** When the amounts were read; "" when they never were. */
+  readAt: string;
+  attemptedAt: string;
+  /** The record's own status when read. Until it is issued the jurisdiction may invoice more. */
+  recordOutcome: string;
+  final: boolean;
+  detail: string;
+}
+
+/** Every filed record of one billing track, read or not. */
+export interface PortalFeeRecordSummary {
+  track: "permit" | "nem";
+  /** Every filed record of this track has a reading. Only then is the sum the track's fee. */
+  complete: boolean;
+  /** Sum over the records that were read; null when none was. */
+  totalUsd: number | null;
+  /** Every read record is issued — the fees are unlikely to grow. */
+  final: boolean;
+  records: PortalFeeRecordReading[];
+  /** Filed records with no reading, and why. */
+  unread: Array<{ recordNumber: string; jurisdiction: string; reason: string }>;
+  /** "read from the portal record 187-26-000309-STR on 2026-09-27 (+ …)". */
+  provenance: string;
+}
+
+/** THE PORTAL'S NUMBER BESIDE THE RESEARCHED ONE — never a silent replacement. */
+export interface FeeComparison {
+  /** What the published schedule / learned history / estimate says without the portal's number. */
+  researchedUsd: number | null;
+  researchedSource: PermitFeeSource;
+  researchedConfidence: FeeConfidence;
+  /** The portal's figure (read, or typed by the operator) this is compared with. */
+  portalUsd: number;
+  portalSource: PermitFeeSource;
+  /** portalUsd − researchedUsd; null when the researched figure is unknown. */
+  differenceUsd: number | null;
+  /** Which of the two the line shows as its amount. */
+  shown: "portal" | "researched";
+  note: string;
+}
 
 export interface SubmissionPaymentQuote {
   track: string;
@@ -364,6 +423,11 @@ export interface SubmissionPaymentQuote {
    *  published_schedule and its confidence "verified". */
   permitFeeVerifiedBy: string;
   permitFeeVerifiedAt: string;
+  /** The portal's figure beside the researched one, whenever a portal figure exists (read off
+   *  the record, or typed by the operator) — both numbers and the difference. */
+  permitFeeComparison: FeeComparison | null;
+  /** What the permit monitor has read off this track's filed records, complete or not. */
+  portalFeeRecords: PortalFeeRecordSummary | null;
   paymentMethod: FeePaymentMethod;
   serviceFeeUsd: number;
   totalUsd: number | null;
@@ -519,6 +583,9 @@ export interface ProjectFeeSheetLine {
    *  on the published_schedule tier. */
   verifiedBy: string;
   verifiedAt: string;
+  /** See SubmissionPaymentQuote.permitFeeComparison / portalFeeRecords. */
+  comparison: FeeComparison | null;
+  portalRecords: PortalFeeRecordSummary | null;
   paymentMethod: FeePaymentMethod;
   serviceFeeUsd: number;
   /** This track's client total, null whenever the jurisdiction fee is unknown. */

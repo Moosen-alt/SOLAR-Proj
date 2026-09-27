@@ -86,6 +86,7 @@ import { compactNextStep, decideNextStep, loadNextStepFacts } from "./nextStep";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient, parseStateLicenses } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
+import { readAndRecordPortalFees } from "./portalFeeReadings";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, lockedOutCredential } from "./portalCredentials";
 import { logger } from "./logger";
 import { selectAdapterActor, selectStagingActor, learnEntryUrl, resolvePortalChannel, seedOutcomeToStageResult, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack, hostFitsTrackAndEntity, scopeForTrack, trackSafeUrl, portalHostOf, type HostFit, type PortalUrlSource } from "./portalChannel";
@@ -1296,6 +1297,7 @@ export function deleteProject(db: AppDb, projectId: string): { deleted: true; pr
     db.run("DELETE FROM project_documents WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM project_intake_requests WHERE project_id = ?", [projectId]);
     db.run("DELETE FROM submission_payments WHERE project_id = ?", [projectId]);
+    db.run("DELETE FROM portal_fee_readings WHERE project_id = ?", [projectId]);
     // Keep permit_fee_history (learned real fees) but unlink the deleted project.
     db.run("UPDATE permit_fee_history SET project_id = NULL WHERE project_id = ?", [projectId]);
     // Communications may belong to a customer too — unlink rather than destroy correspondence.
@@ -6862,6 +6864,13 @@ export async function runDuePermitChecks(
       source,
       rawStatusText,
     });
+    // THE PORTAL'S OWN FEE, off the same filed record (portalFeeReadings.ts) — after the status
+    // is recorded and unable to change it: a failure here is logged and the sweep moves on.
+    if (source !== "mock") {
+      await readAndRecordPortalFees(db, detail.project, text(target.id)).catch((err) => {
+        logger.warn("monitor", "portal fee read failed — status unaffected", { projectId, targetId: text(target.id), err: err instanceof Error ? err.message : String(err) });
+      });
+    }
     touchProjectMetrics(db, projectId);
     projects.push(detail);
   }

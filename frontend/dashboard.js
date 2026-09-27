@@ -2105,6 +2105,8 @@ function money(v) {
 
 const FEE_SOURCE_LABELS = {
   actual: "portal-calculated (real fee)",
+  portal_record: "read from the portal record (automatic, not person-checked)",
+  published_schedule: "published fee schedule",
   learned_history: "learned from past submissions here",
   valuation_estimate: "estimate from valuation",
   unknown: "unknown — enter the portal fee",
@@ -2235,6 +2237,7 @@ function httpUrl(value) {
 
 const FEE_SOURCE_TEXT = {
   actual: "the portal's own fee screen, entered by the operator",
+  portal_record: "the portal's own record, read automatically",
   published_schedule: "the jurisdiction's published fee schedule",
   learned_history: "the median of real fees seen here before",
   valuation_estimate: "a percentage of the project valuation",
@@ -2263,11 +2266,19 @@ const FEE_CONFIDENCE = {
     label: "matches the published schedule",
     note: "A machine re-read the cited schedule and found this line printed in it. No person has confirmed it yet — Confirm it once you have looked.",
   },
+  // The portal's own number, READ AUTOMATICALLY off the filed record by the permit monitor. It
+  // is the portal's figure ("actual") and a machine read it — so never "verified".
+  portal_read: {
+    badge: "badge-pass",
+    label: "actual — read from the portal",
+    note: "The permit monitor read this off the portal's own record. A machine read it; no person has checked it.",
+  },
 };
 
 // WHICH FEE_CONFIDENCE ENTRY A LINE WEARS — the one predicate the card and the folded
 // summary both ask, so "matches the published schedule" cannot appear in one and not the other.
 function feeConfidenceKey(line) {
+  if (line && line.confidence === "actual" && line.source === "portal_record") return "portal_read";
   if (line && line.confidence === "seeded" && line.corroborated === true) return "schedule_match";
   return line && FEE_CONFIDENCE[line.confidence] ? line.confidence : "unknown";
 }
@@ -2407,12 +2418,56 @@ function feeFaceSourceHtml(line) {
     : ""}${basis ? `Why unknown: ${esc(basis)}` : ""}</p>`;
 }
 
+// THE PORTAL'S FIGURE BESIDE THE RESEARCHED ONE — both numbers and the gap, never a silent
+// swap. `shown` says which of the two the card's amount is: a portal read that is partial (not
+// every filed record read) or a lower bound (a record still in review, below research) is drawn
+// here and the amount above stays the researched figure. Every value escaped.
+function feeComparisonHtml(line) {
+  const c = line && line.comparison;
+  if (!c || c.portalUsd == null) return "";
+  const fmt = (v) => `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const portalWhat = c.portalSource === "portal_record" ? "Portal record, read automatically" : "Portal fee, entered by the operator";
+  const gap = c.differenceUsd == null
+    ? ""
+    : Math.abs(Number(c.differenceUsd)) < 0.005
+      ? " — the same as researched"
+      : ` — ${fmt(Math.abs(Number(c.differenceUsd)))} ${Number(c.differenceUsd) > 0 ? "more" : "less"} than researched`;
+  const researchedWhat = FEE_SOURCE_TEXT[c.researchedSource] || c.researchedSource || "research";
+  return `<div class="fee-compare" style="margin:4px 0;font-size:12px">
+      <div>${esc(portalWhat)}: <strong>${esc(fmt(c.portalUsd))}</strong>${esc(gap)}${c.shown === "researched" ? ` <span class="badge badge-warning">not the amount above</span>` : ""}</div>
+      <div>Researched: ${c.researchedUsd == null ? "unknown" : esc(fmt(c.researchedUsd))} <span class="muted">(${esc(researchedWhat)})</span></div>
+      ${c.note ? `<div>${esc(c.note)}</div>` : ""}
+    </div>`;
+}
+
+// WHAT THE PERMIT MONITOR READ OFF EACH FILED RECORD, one click away: the invoices it saw, when,
+// and — for a record it could not read — why (never a $0).
+function feePortalRecordsHtml(line) {
+  const s = line && line.portalRecords;
+  if (!s || !Array.isArray(s.records) || (!s.records.length && !(s.unread || []).length)) return "";
+  const fmt = (v) => `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const readRows = s.records.filter((r) => r && r.status === "read").map((r) => `<li>${esc(r.recordNumber || "(no number)")}${r.jurisdiction ? ` — ${esc(r.jurisdiction)}` : ""}: ${esc(fmt(r.totalUsd))} invoiced`
+    + `${r.paidUsd != null ? `, ${esc(fmt(r.paidUsd))} paid` : ""}${r.outstandingUsd ? `, ${esc(fmt(r.outstandingUsd))} outstanding` : ""}`
+    + ` · read ${esc(String(r.readAt || "").slice(0, 10))}${r.final ? "" : " · the record is not issued yet, so more may be invoiced"}`
+    + `${Array.isArray(r.lines) && r.lines.length ? `<ul>${r.lines.map((l) => `<li>${esc(l.label)} ${esc(l.date || "")}: ${esc(fmt(l.amountUsd))} (${esc(l.status)})</li>`).join("")}</ul>` : ""}</li>`);
+  const unreadRows = (s.unread || []).map((u) => `<li>${esc(u.recordNumber || u.jurisdiction || "a filed record")}: not read — ${esc(u.reason || "not read yet")}</li>`);
+  const readCount = readRows.length;
+  return `<details class="provenance fee-portal-records">
+      <summary>Read from the portal: ${esc(String(readCount))} of ${esc(String(readCount + unreadRows.length))} filed record${readCount + unreadRows.length === 1 ? "" : "s"}</summary>
+      <div class="provenance-body"><ul style="margin:2px 0;padding-left:18px">${[...readRows, ...unreadRows].join("")}</ul></div>
+    </details>`;
+}
+
 function renderFeeSheetLine(line) {
   const confKey = feeConfidenceKey(line);
   const conf = FEE_CONFIDENCE[confKey];
   // The printed schedule line behind a matched amount, on the card's face beside the number.
   const matchEvidence = confKey === "schedule_match" && line.evidenceQuote
     ? `<p class="fee-face-evidence" style="margin:2px 0;font-size:12px">Printed in the schedule as: “${esc(line.evidenceQuote)}”</p>`
+    : "";
+  // WHERE A PORTAL-READ AMOUNT CAME FROM, on the face: which record(s), and when.
+  const portalProvenance = confKey === "portal_read" && line.portalRecords && line.portalRecords.provenance
+    ? `<p class="fee-face-provenance" style="margin:2px 0;font-size:12px">The portal's own fee, ${esc(line.portalRecords.provenance)}${line.portalRecords.final ? "" : " — invoiced so far; more may be invoiced before the permit is issued"}.</p>`
     : "";
   // WHO VOUCHED — a person's name, only beside a person-verified schedule amount.
   const verifiedNote = line.confidence === "verified" && line.verifiedBy
@@ -2449,9 +2504,12 @@ function renderFeeSheetLine(line) {
         : `<p style="margin:2px 0;font-size:12px">${esc(FEE_PAYMENT_METHOD[line.paymentMethod] || line.paymentMethod || "")}</p>`}
       ${feeFaceSourceHtml(line)}
       ${matchEvidence}
+      ${portalProvenance}
       ${verifiedNote}
+      ${feeComparisonHtml(line)}
       ${confirmControl}
       ${renderFeeCharges(line)}
+      ${feePortalRecordsHtml(line)}
       <!-- The amount and how it is paid drive action, so they stay loud. Where
            the number came from is the product's core claim and is kept in full —
            one click away, not competing with the number itself. The confidence
@@ -2529,7 +2587,7 @@ function renderFeeSheetPanel() {
   // and the human-checkout rule — an unknown must never read as a final number because the
   // detail is one click away. Plain text built from sheet fields, escaped.
   const foldMoney = (v) => (v == null ? "UNKNOWN" : `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-  const FOLD_QUALIFIER = { actual: "actual", verified: "verified", seeded: "provisional", estimated: "estimate", unknown: "unknown", schedule_match: "matches published schedule" };
+  const FOLD_QUALIFIER = { actual: "actual", verified: "verified", seeded: "provisional", estimated: "estimate", unknown: "unknown", schedule_match: "matches published schedule", portal_read: "actual, read from portal" };
   const trackParts = sheet.lines.map((line) => {
     const name = line.track === "nem" ? "Utility" : "Permit";
     const q = FOLD_QUALIFIER[feeConfidenceKey(line)] || "unknown";
