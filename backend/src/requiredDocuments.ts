@@ -877,18 +877,33 @@ function requirementSkipReason(text: string, path: "prescriptive" | "engineered"
  * row print the same words the gate's presence rows mean.
  */
 export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): AgencyLineStatusOf {
-  const permitPath = resolvePermitPath(project).path;
-  let uploads: Record<string, string> = {};
-  try { uploads = uploadedSubmissionDocuments(db, project); } catch { uploads = {}; }
-  let filled: Record<string, string> = {};
-  try { filled = filledFormsByDocType(db, project.id, permitPath); } catch { filled = {}; }
-  let stored: ReturnType<typeof loadStoredTemplates> = [];
-  try { stored = loadStoredTemplates(db, project.ahj, project.state); } catch { stored = []; }
-  let blanks: ReturnType<typeof heldUnfillableAgencyBlanks> = [];
-  try { blanks = heldUnfillableAgencyBlanks(db, project); } catch { blanks = []; }
+  // Read on the FIRST line asked — a job whose lookup names no other agency (every QC run of every
+  // other project) never loads the template blobs for nothing.
+  let inventory: {
+    permitPath: "prescriptive" | "engineered" | "unknown";
+    uploads: Record<string, string>;
+    filled: Record<string, string>;
+    stored: ReturnType<typeof loadStoredTemplates>;
+    blanks: ReturnType<typeof heldUnfillableAgencyBlanks>;
+  } | null = null;
+  const read = () => {
+    if (inventory) return inventory;
+    const permitPath = resolvePermitPath(project).path;
+    let uploads: Record<string, string> = {};
+    try { uploads = uploadedSubmissionDocuments(db, project); } catch { uploads = {}; }
+    let filled: Record<string, string> = {};
+    try { filled = filledFormsByDocType(db, project.id, permitPath); } catch { filled = {}; }
+    let stored: ReturnType<typeof loadStoredTemplates> = [];
+    try { stored = loadStoredTemplates(db, project.ahj, project.state); } catch { stored = []; }
+    let blanks: ReturnType<typeof heldUnfillableAgencyBlanks> = [];
+    try { blanks = heldUnfillableAgencyBlanks(db, project); } catch { blanks = []; }
+    inventory = { permitPath, uploads, filled, stored, blanks };
+    return inventory;
+  };
   return (item) => {
     const types = item.docTypes;
     if (!types.length) return null;
+    const { permitPath, uploads, filled, stored, blanks } = read();
     if (types.some((t) => uploads[t])) return "attached";
     if (types.some((t) => filled[t])) return "filled";
     if (stored.some((t) => types.includes(t.formType || "permit_application") && !formContradictsPath(t.def.formName, permitPath, t.applicationKind))) return "on_file";
