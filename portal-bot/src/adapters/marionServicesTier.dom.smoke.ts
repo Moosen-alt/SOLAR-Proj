@@ -50,7 +50,24 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIX = path.join(here, "fixtures", "marionServices");
 const tierHtml = fs.readFileSync(path.join(FIX, "services.html"), "utf8");
-const pageHtml: Record<"tier" | "refused" | "nosfd" | "state", string> = {
+// SYNTHETIC SHAPES the captured page does not cover (the close skeptic's shapes.ts, live-run-jefferson-v):
+// tier labels printed in kW, a single un-tiered "Renewable energy" box, the tier as a <select>.
+const SP = "ctl00_PlaceHolderMain_AppSpecXEdit_OTHER_CO";
+const synth = (body: string): string => `<!doctype html><html><head><title>BuildingPermits.Test.gov</title></head><body>
+  <h2>Application Detail</h2>
+  <label for="${SP}_ddl_0_0">Category of Construction:</label> <select id="${SP}_ddl_0_0"><option>--Select--</option><option>Single Family Dwelling</option><option>Other</option></select>
+  ${body}
+  <label for="${SP}_txt_1_2">Additional Comments:</label> <input id="${SP}_txt_1_2" type="text">
+  <a id="ctl00_PlaceHolderMain_actionBarBottom_btnContinue" href="javascript:void(0)"><span>Continue Application »</span></a></body></html>`;
+const pageHtml: Record<"tier" | "refused" | "nosfd" | "state" | "kw" | "single" | "tierselect" | "unlabelled", string> = {
+  kw: synth(`<label for="${SP}_txt_0_26">Solar PV system 5 kW or less:</label> <input id="${SP}_txt_0_26" type="text">
+    <label for="${SP}_txt_0_27">Solar PV system 5.01 kW through 15 kW:</label> <input id="${SP}_txt_0_27" type="text">
+    <label for="${SP}_txt_0_28">Solar PV system 15.01 kW through 25 kW:</label> <input id="${SP}_txt_0_28" type="text">`),
+  single: synth(`<label for="${SP}_txt_0_27">Renewable energy systems (solar):</label> <input id="${SP}_txt_0_27" type="text">`),
+  // A box the page-reader cannot label (no unit in its text, no label[for]) — an OWN recipe whose
+  // stored schedule keyed it still types through its recorded selector: no false stop.
+  unlabelled: synth(`<span>Solar 5.01 to 15:</span> <input id="${SP}_txt_0_27" type="text">`),
+  tierselect: synth(`<label for="${SP}_ddl_0_9">Renewable energy for electrical systems:</label> <select id="${SP}_ddl_0_9"><option>--Select--</option><option>5kva or less</option><option>5.01kva through 15kva</option><option>15.01kva through 25kva</option></select>`),
   tier: tierHtml,
   refused: fs.readFileSync(path.join(FIX, "services-refused.html"), "utf8"),
   // The SAME page with Marion's "Single Family Dwelling" option removed — the by-meaning match must
@@ -113,6 +130,8 @@ interface Outcome {
   state: string;
   continueClicks: number;
   url: string;
+  /** Every text box and select on the page (synthetic shapes), by id: value / selected text. */
+  all: Record<string, string>;
 }
 
 const browser = await chromium.launch();
@@ -142,9 +161,30 @@ async function run(s: Scenario, useRecipe: PortalRecipe = recipe): Promise<Outco
   const state = await selText("st");
   const continueClicks = await page.evaluate(() => Number(sessionStorage.getItem("cc") || "0")).catch(() => -1);
   const url = page.url();
+  const all = await page.evaluate((prefix: string) => {
+    const out: Record<string, string> = {};
+    for (const el of Array.from(document.querySelectorAll("input[type=text], select")) as Array<HTMLInputElement | HTMLSelectElement>) {
+      if (!el.id || !el.id.startsWith(prefix) || /txt_1_2|ddl_0_0$/.test(el.id)) continue;
+      out[el.id.slice(prefix.length + 1)] = el.tagName === "SELECT" ? ((el as HTMLSelectElement).options[(el as HTMLSelectElement).selectedIndex]?.textContent || "").trim() : (el as HTMLInputElement).value;
+    }
+    return out;
+  }, SP).catch(() => ({} as Record<string, string>));
   await ctx.close().catch(() => null);
-  return { ms, result, boxes, coc, state, continueClicks, url };
+  return { ms, result, boxes, coc, state, continueClicks, url, all };
 }
+/** A recipe for a synthetic shape: the borrowed services segment with the given tier step. */
+const shapeRecipe = (id: string, tierStep: RecipeStep): PortalRecipe => ({
+  ...recipe, id,
+  steps: [
+    { action: "goto", value: ENTRY, note: "entry url" },
+    { action: "select", selector: { label: "Category of Construction:" }, note: "Category of Construction:", value: "Single Family Dwelling" },
+    tierStep,
+    { action: "click", selector: { role: "link", name: "Continue Application »", exact: true, fallbacks: [{ css: "#ctl00_PlaceHolderMain_actionBarBottom_btnContinue" }] }, note: "advance: Continue Application »" },
+    { action: "stopForReview" } as RecipeStep,
+  ],
+} as unknown as PortalRecipe);
+const KW_LABEL = "Solar PV system 5.01 kW through 15 kW:";
+const sayAll = (o: Outcome): string => `ms=${o.ms} ok=${String(o.result.ok)} pause=${String(o.result.pauseReason)} clicks=${o.continueClicks} all=${JSON.stringify(o.all)} msg=${o.result.message.slice(0, 300)} drift=${JSON.stringify((o.result.data?.driftWarnings as string[] | undefined)?.slice(0, 4))}`;
 const emptyExcept = (boxes: Record<string, string>, keep: string[]): boolean => Object.entries(boxes).every(([k, v]) => keep.includes(k) ? true : v === "");
 const say = (o: Outcome): string => `ms=${o.ms} ok=${String(o.result.ok)} pause=${String(o.result.pauseReason)} clicks=${o.continueClicks} boxes=${JSON.stringify(o.boxes)} coc=${JSON.stringify(o.coc)} msg=${o.result.message.slice(0, 260)} drift=${JSON.stringify((o.result.data?.driftWarnings as string[] | undefined)?.slice(0, 6))}`;
 
@@ -178,7 +218,45 @@ try {
   check("MUST-EXCLUDE F1: the run PAUSES for a person (pauseReason fee_tier_undecided) with the named reason",
     e.result.pauseReason === "fee_tier_undecided" && e.result.ok === false
       && /electrical services page needs one service line ticked and the kVA tier could not be decided/i.test(e.result.message)
-      && /no AC \(or DC\) system size/i.test(e.result.message), say(e));
+      && /no AC \(inverter\) rating/i.test(e.result.message), say(e));
+
+  // ── MF1 (close) MUST-EXCLUDE: AC absent, DC present → the tier is NOT decided on DC ──────
+  // The backend emits the AC rating only (feeTierRatingKw "") and the DC size beside it
+  // (feeTierDcKw) for the wording. On THIS project (12.913 AC / 15.91 DC) a DC-decided tier is
+  // "15.01kva through 25kva" — an over-billed permit, no pause.
+  const dc = await run({ name: "AC absent, DC 15.91", variant: "tier", fieldValues: { [FEE_TIER_RATING_FIELD]: "", feeTierDcKw: "15.91", [TIER_KEY]: "" } });
+  check("MUST-EXCLUDE MF1: AC absent / DC 15.91 → NO tier box typed (never '15.01kva through 25kva' by DC)", emptyExcept(dc.boxes, []), say(dc));
+  check("MUST-EXCLUDE MF1: ...the Continue was NEVER clicked", dc.continueClicks === 0, say(dc));
+  check("MUST-EXCLUDE MF1: ...paused fee_tier_undecided, and the reason names the missing AC and the DC size",
+    dc.result.pauseReason === "fee_tier_undecided"
+      && /the kVA tier could not be decided: the project has no AC \(inverter\) rating; DC is 15\.91 kW — confirm the AC size/.test(dc.result.message), say(dc));
+
+  // ── MF3 (close) MUST-PASS: tier labels printed in kW are read like kVA ─────────────────────
+  const kwPost = await run({ name: "kW labels, literal", variant: "kw", fieldValues: { [FEE_TIER_RATING_FIELD]: "20" } },
+    shapeRecipe("kw-post", { action: "fill", selector: { label: KW_LABEL }, note: KW_LABEL, value: "1" }));
+  check("MUST-PASS MF3: kW-labelled tiers, 20 kVA (recipe with the literal '1', no key) → '15.01 kW through 25 kW' = 1, the others empty, Continue reached",
+    kwPost.all.txt_0_28 === "1" && kwPost.all.txt_0_26 === "" && kwPost.all.txt_0_27 === "" && kwPost.continueClicks >= 1 && !kwPost.result.pauseReason, sayAll(kwPost));
+  const kwKeyed = await run({ name: "kW labels, keyed", variant: "kw", fieldValues: { [FEE_TIER_RATING_FIELD]: "20", [TIER_KEY]: "" } },
+    shapeRecipe("kw-keyed", { action: "fill", selector: { label: KW_LABEL }, note: KW_LABEL, field: TIER_KEY, value: "1" }));
+  check("MUST-PASS MF3: kW-labelled tiers, 20 kVA (recipe keyed 5.01-15, R6 blank) → '15.01 kW through 25 kW' = 1",
+    kwKeyed.all.txt_0_28 === "1" && kwKeyed.all.txt_0_27 === "" && kwKeyed.continueClicks >= 1 && !kwKeyed.result.pauseReason, sayAll(kwKeyed));
+
+  // ── MF2 (close) MUST-EXCLUDE: a recorded tier step that finds no tier box never clicks on ───
+  const tierStep: RecipeStep = { action: "fill", selector: { label: TIER_LABEL }, note: TIER_LABEL, field: TIER_KEY, value: "1" };
+  for (const [variant, what] of [["single", "a single un-tiered 'Renewable energy systems (solar)' box"], ["tierselect", "the tier as a <select>"]] as const) {
+    const o = await run({ name: variant, variant, fieldValues: { ...RATING, [TIER_KEY]: "" } }, shapeRecipe(`shape-${variant}`, tierStep));
+    check(`MUST-EXCLUDE MF2: ${what} → nothing typed or selected (never a guessed "1")`,
+      Object.values(o.all).every((v) => v === "" || v === "--Select--"), sayAll(o));
+    check(`MUST-EXCLUDE MF2: ${what} → the Continue was NEVER clicked, paused fee_tier_undecided with the no-box reason`,
+      o.continueClicks === 0 && o.result.pauseReason === "fee_tier_undecided"
+        && /the recorded kVA tier box was not found on this page and no kVA-labelled box could be read/.test(o.result.message), sayAll(o));
+  }
+  // MUST-PASS (no false stop): the provisional stop is withdrawn when the recorded box types the
+  // stored schedule's real quantity.
+  const own = await run({ name: "own recipe, unlabelled box, schedule 1", variant: "unlabelled", fieldValues: { ...RATING, [TIER_KEY]: "1" } },
+    shapeRecipe("own-unlabelled", { action: "fill", selector: { label: TIER_LABEL, fallbacks: [{ css: `#${SP}_txt_0_27` }] }, note: TIER_LABEL, field: TIER_KEY, value: "1" }));
+  check("MUST-PASS MF2: an own recipe whose schedule keyed the recorded box types it through its selector and goes on — no false stop",
+    own.all.txt_0_27 === "1" && own.continueClicks >= 1 && own.result.pauseReason !== "fee_tier_undecided", sayAll(own));
   const f = await run({ name: "schedule disagrees", variant: "tier", fieldValues: { ...RATING, "feeBracketQuantity:15.01-25": "1", [TIER_KEY]: "0", "feeBracketQuantity:-5": "0" } });
   check("MUST-EXCLUDE F1: a stored schedule that puts 12.913 kVA in another tier → nothing typed, Continue never clicked, paused",
     emptyExcept(f.boxes, []) && f.continueClicks === 0 && f.result.pauseReason === "fee_tier_undecided" && /stored fee schedule/i.test(f.result.message), say(f));

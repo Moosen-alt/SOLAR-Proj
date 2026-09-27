@@ -54,7 +54,7 @@ import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import type { FeeBracket, FeeScheduleRecord } from "./feeSchedules";
 import { feeForProject, findFeeScheduleForProject } from "./feeSchedules";
-import { FEE_TIER_RATING_FIELD, feeBracketFieldKey, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
+import { FEE_TIER_DC_FIELD, FEE_TIER_RATING_FIELD, feeBracketFieldKey, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
 import { SERVICE_FEEDER_200A_FIELD, isServiceFeeder200Label, serviceFeeder200Quantity } from "./batteryServiceFeeder";
 
 /** The project shape this needs — the same Pick feeForProject takes, so a caller
@@ -153,14 +153,24 @@ export function feeBracketQuantityFields(db: AppDb, project: FeeBracketProject):
 }
 
 /** THE RATING THE PAGE-READ TIER IS DECIDED ON (feeBracketQuantity.decideFeeTier, in the replay
- *  adapter). ALWAYS EMITTED — with or without a stored schedule — and "" when the project has no
- *  size: the adapter then refuses to guess the tier and pauses for a person. Live run 99baa5d0
- *  (City of Jefferson OR → Marion County's services page, no Marion schedule on file) had a
- *  12.913 kVA job and no way to say so to the page. The same ratingKw the schedule match uses,
- *  so the two can only ever disagree about the schedule, never about the number. */
+ *  adapter). ALWAYS EMITTED — with or without a stored schedule. Live run 99baa5d0 (City of
+ *  Jefferson OR → Marion County's services page, no Marion schedule on file) had a 12.913 kVA job
+ *  and no way to say so to the page.
+ *
+ *  AC ONLY — NOT ratingKw (close MF1). ratingKw falls back to DC because the schedule's PRICE
+ *  lookup wants the most reliably populated number; a TICK decided on DC is a guess, and on the
+ *  live project (12.913 AC / 15.91 DC) it is the wrong row — 15.01–25, an over-billed permit, no
+ *  pause. So the rating is "" when the project has no AC size, the adapter pauses
+ *  (fee_tier_undecided), and the DC size travels beside it ONLY so the pause can say "DC is
+ *  15.91 kW — confirm the AC size". The schedule evaluator (kvaBracketQuantityFields) is
+ *  unchanged; when it ticks a tier on DC the adapter still pauses on the missing AC. */
 function feeTierRatingField(project: FeeBracketProject): Record<string, string> {
-  const kw = ratingKw(project);
-  return { [FEE_TIER_RATING_FIELD]: kw == null ? "" : String(kw) };
+  const ac = Number(project.systemSizeAcKw);
+  const dc = Number(project.systemSizeDcKw);
+  return {
+    [FEE_TIER_RATING_FIELD]: Number.isFinite(ac) && ac > 0 ? String(ac) : "",
+    [FEE_TIER_DC_FIELD]: Number.isFinite(dc) && dc > 0 ? String(dc) : "",
+  };
 }
 
 /** THE BATTERY'S SERVICES/FEEDERS <=200A BOX — the same frozen-answer bug as the

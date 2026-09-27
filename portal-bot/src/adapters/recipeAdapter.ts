@@ -5,7 +5,10 @@ import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, 
 import { applyFormatHint } from "../formatHint";
 import { extractRecordNumber, pageConfirmsSubmission } from "../recordNumber";
 import { armHumanCaptureOnPage, HUMAN_SUBMIT_OBSERVED_NOTE } from "../humanCapture";
-import { feeBracketCoverage, feeBracketCoverageMessage, decideFeeTier, FEE_TIER_RATING_FIELD, parseFeeBracketFieldKey, readTierLabel, sameFeeTier, type TierBoxOnPage } from "../feeBracketQuantity";
+import { feeBracketCoverage, feeBracketCoverageMessage, decideFeeTier, FEE_TIER_DC_FIELD, FEE_TIER_RATING_FIELD, parseFeeBracketFieldKey, readTierLabel, sameFeeTier, TIER_UNIT_RE, type TierBoxOnPage } from "../feeBracketQuantity";
+
+/** The pause's reason when a recorded kVA tier step finds no tier box on its page (close MF2). */
+const FEE_TIER_NO_BOX_REASON = "the recorded kVA tier box was not found on this page and no kVA-labelled box could be read";
 import { collectPortalErrorBanner } from "../safeAction";
 import { structureTypeMeaning } from "../../../backend/src/permitProcess";
 
@@ -363,6 +366,9 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  disagrees…): set at the tier step, and the next advancing click PAUSES the run instead of
    *  clicking on into the portal's "Please select at least 1 electrical service" refusal. */
   private feeTierStop: string | null = null;
+  /** The step index whose "no tier box on this page" stop is PROVISIONAL (close MF2): withdrawn only
+   *  if that step then performs with a real quantity. -1 = none. */
+  private feeTierProvisionalAt = -1;
   /** The tier box this run ticked, per page identity (a second recorded tier step on the same page
    *  re-decides to the same box and types nothing twice). */
   private feeTierFilled = new Map<string, string>();
@@ -1389,6 +1395,13 @@ export class RecipeAdapter extends BasePortalAdapter {
           if (done) executed++;
           else skipped.push(String(step.note || step.action).slice(0, 70));
           performed = done;
+          // close MF2: a tier step that found no kVA box on its page stands under a provisional
+          // stop; it is withdrawn only here, when that very step typed its real quantity.
+          if (done && this.feeTierProvisionalAt === stepIdx && this.feeTierStop === FEE_TIER_NO_BOX_REASON) {
+            this.feeTierStop = null;
+            this.feeTierProvisionalAt = -1;
+            this.driftWarnings = this.driftWarnings.filter((m) => !m.startsWith(`kVA tier: ${FEE_TIER_NO_BOX_REASON}`));
+          }
           // The held-check distinguishes LANDED-THEN-LOST from NEVER-LANDED: only a
           // select that reported success is a candidate for "a re-render took it back".
           if (done && step.action === "select" && recordedStep?.field) this.landedSelectFields.add(String(recordedStep.field));
@@ -1565,7 +1578,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       // Mechanical" — the same wrong permit the guard above just refused, arriving through a
       // second door, and this one PATCHES THE RECIPE with it. If the type isn't offered, the
       // answer is a different jurisdiction, not a different permit.
-      if (!succeeded && !step.isFinalSubmit && !this.isRecordTypeStep(step) && this.arrayPass === 1 && process.env.RECIPE_SELF_HEAL !== "off") {
+      // NEVER HEAL A kVA TIER BOX either (close MF2): heal re-anchors by label score, and "5.01kva
+      // through 15kva" scores high against "15.01kva through 25kva" — a tier row must never hop to
+      // its neighbour by similarity. The tier is decided from the page's labels or not at all.
+      if (!succeeded && !step.isFinalSubmit && !this.isRecordTypeStep(step) && !this.isFeeTierStep(step) && this.arrayPass === 1 && process.env.RECIPE_SELF_HEAL !== "off") {
         // arrayPass === 1: heal re-anchors BY LABEL against the whole page with no row
         // concept, and a repeat-pass step's labels are bare copies ("Manufacturer") of
         // controls in OTHER sections — a heal here would write array N's value into the
@@ -5255,7 +5271,10 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  label is the portal's: label[for], then aria-label, then Accela's fieldname attribute. */
   private async readTierBoxes(): Promise<TierBoxOnPage[]> {
     if (!this.page || typeof this.page.evaluate !== "function") return [];
-    return await this.page.evaluate(() => {
+    // The unit gate is the leaf grammar's own (TIER_UNIT_RE: kVA AND kW, as pdfTables reads them —
+    // close MF3), handed in as source text because a page function cannot close over it.
+    return await this.page.evaluate((unitSrc: string) => {
+      const unit = new RegExp(unitSrc, "i");
       const out: Array<{ id: string; label: string }> = [];
       const inputs = Array.from(document.querySelectorAll("input:not([type]), input[type='text'], input[type='number'], input[type='tel']")) as HTMLInputElement[];
       for (const el of inputs) {
@@ -5271,25 +5290,42 @@ export class RecipeAdapter extends BasePortalAdapter {
         if (!label.trim()) label = el.getAttribute("aria-label") || el.getAttribute("fieldname") || "";
         if (!label.trim()) { const wrap = el.closest("label") as HTMLElement | null; if (wrap) label = wrap.innerText || ""; }
         label = label.replace(/\s+/g, " ").trim();
-        if (!label || !/k\s?va/i.test(label)) continue;
+        if (!label || !unit.test(label)) continue;
         out.push({ id, label });
       }
       return out;
-    }).catch(() => [] as TierBoxOnPage[]) as TierBoxOnPage[];
+    }, TIER_UNIT_RE.source).catch(() => [] as TierBoxOnPage[]) as TierBoxOnPage[];
   }
 
   /** true = the chosen box holds the value; false = nothing typed (feeTierStop set, or a second
    *  step for an already-ticked page); "normal" = this page prints no kVA box at all — the recorded
-   *  step takes its ordinary resolve/skip path. */
+   *  step takes its ordinary resolve path, UNDER A PROVISIONAL STOP (see below). */
   private async fillFeeTierFromPage(step: RecipeStep): Promise<boolean | "normal"> {
     const boxes = await this.readTierBoxes();
-    if (!boxes.length) return "normal";
+    if (!boxes.length) {
+      // A RECORDED TIER STEP THAT FINDS NO kVA-LABELLED BOX (close MF2). The recipe KNOWS this page
+      // needs a service line ticked; tier labels the grammar cannot read, a single un-tiered
+      // "Renewable energy systems (solar)" box that asks for a count, the tier as a <select> — each
+      // used to skip the step and click Continue into "Please select at least 1 electrical service
+      // for purchase". FAIL CLOSED: the stop is set now and withdrawn ONLY when this step then
+      // types a real quantity through its recorded box (an own recipe whose stored schedule keyed
+      // it). Every skip path — a blank R6 key, a refused literal, an optional skip — leaves it
+      // standing, and the pause-before-Continue fires. Never a guessed "1".
+      const v = String(this.resolveValue(step) ?? "").trim();
+      this.feeTierStop = FEE_TIER_NO_BOX_REASON;
+      this.feeTierProvisionalAt = this.currentStepIdx;
+      this.driftWarnings.push(`kVA tier: ${FEE_TIER_NO_BOX_REASON} ("${String(step.selector?.label || step.note || step.field || "tier box").replace(/:\s*$/, "").slice(0, 70)}")`);
+      if (!v || v === "0") { this.noteUnresolved(step); return false; }
+      return "normal";
+    }
     const ratingRaw = String(this.fieldValues[FEE_TIER_RATING_FIELD] ?? "").trim();
     const ratingNum = ratingRaw ? Number(ratingRaw) : NaN;
     const ratingKw = Number.isFinite(ratingNum) && ratingNum > 0 ? ratingNum : null;
+    const dcNum = Number(String(this.fieldValues[FEE_TIER_DC_FIELD] ?? "").trim() || NaN);
+    const dcKw = Number.isFinite(dcNum) && dcNum > 0 ? dcNum : null;
     const scheduleTierKey = Object.entries(this.fieldValues).find(([k, val]) => parseFeeBracketFieldKey(k) && String(val).trim() === "1")?.[0] ?? null;
     const stepLabel = String(step.selector?.label || step.note || step.field || "tier box").replace(/:\s*$/, "").slice(0, 70);
-    const decision = decideFeeTier({ boxes, ratingKw, scheduleTierKey });
+    const decision = decideFeeTier({ boxes, ratingKw, dcKw, scheduleTierKey });
     if (!decision.chosen) {
       this.feeTierStop = decision.reason;
       this.driftWarnings.push(`kVA tier NOT typed for "${stepLabel}": ${decision.reason}`);

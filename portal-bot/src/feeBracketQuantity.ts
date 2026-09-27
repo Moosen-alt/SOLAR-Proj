@@ -187,10 +187,15 @@ export function feeBracketCoverageMessage(coverage: FeeBracketCoverage): string 
 // table grammar on the shared spellings is pinned by backend/test/feeTierFromPage.test.ts.
 // ---------------------------------------------------------------------------
 
-/** THE RATING THE TIER IS DECIDED ON — the one number feeBracketFields.ratingKw computes (AC
- *  first, DC as the fallback), emitted into the replay's field values so the adapter asks the
- *  same question of the same number. "" when the project has no size at all. */
+/** THE RATING THE TIER IS DECIDED ON — the project's AC (inverter) rating ONLY, emitted into the
+ *  replay's field values by feeBracketFields. "" when the project has no AC size: a kVA tier
+ *  rates the inverter output, and a tier ticked on the DC size is a guess that can over-bill
+ *  (the live project 53266857 is 12.913 AC / 15.91 DC — a DC tick is the 15.01–25 row). The
+ *  stored schedule's own evaluator still falls back to DC for the PRICE; the TICK never does. */
 export const FEE_TIER_RATING_FIELD = "feeTierRatingKw";
+/** The project's DC size, beside the AC rating — ONLY for the pause's wording ("the project has
+ *  no AC (inverter) rating; DC is 15.91 kW — confirm the AC size"). Never decides a tier. */
+export const FEE_TIER_DC_FIELD = "feeTierDcKw";
 
 export type TierLabelKind = "solar" | "wind" | "other";
 
@@ -203,7 +208,14 @@ export interface TierLabelReading extends FeeBracketBounds {
 }
 
 const NUM = "(\\d+(?:[.,]\\d+)?)";
-const KVA = "\\s*k\\s?va\\b";
+// THE UNIT pdfTables.parseBracketRow reads (its UNIT): kVA, kW, kilowatts, kilovolt-amperes. A
+// portal that prints its tiers in kW ("Solar PV system 5.01 kW through 15 kW:") is the same tier
+// row; reading only kVA left such a box unkeyed at learn and unread at replay (close MF3). The \b
+// keeps "kWh" (a battery's energy, not a rating) out.
+const KVA = "\\s*(?:k\\s?va|kw|kilowatts?|kilovolt-?amp(?:ere)?s?)\\b";
+/** Does this text name a kVA/kW unit at all — the cheap gate before the bounds grammar, and the
+ *  same test the in-page tier-box reader applies (recipeAdapter.readTierBoxes). */
+export const TIER_UNIT_RE = /(?:k\s?va|kw|kilowatts?|kilovolt-?amp(?:ere)?s?)\b/i;
 const num = (t: string): number => Number(String(t).replace(",", "."));
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
@@ -213,7 +225,7 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
  *  the way a fee table prints the next row ("15.01 through 25" after "5.01 through 15"). */
 export function tierBoundsFromLabel(label: string): FeeBracketBounds | null {
   const text = String(label ?? "").replace(/\s+/g, " ").trim();
-  if (!text || !/k\s?va/i.test(text)) return null;
+  if (!text || !TIER_UNIT_RE.test(text)) return null;
   let m: RegExpExecArray | null;
   // "N kva or less" / "N kva or under" / "N kva and under" / "up to N kva" / "N kva or below"
   if ((m = new RegExp(`${NUM}${KVA}\\s*(?:or|and)\\s*(?:less|under|below|fewer)`, "i").exec(text))
@@ -249,7 +261,7 @@ export function tierLabelKind(label: string): TierLabelKind {
 
 /** "over 25 kva (enter total # of kva)" — the box takes the kVA number. */
 export function tierAsksForKva(label: string): boolean {
-  return /enter\s*(?:the\s*)?(?:total\s*)?(?:#|number|no\.?|amount)\s*(?:of\s*)?kva|total\s*(?:#|number)?\s*(?:of\s*)?kva|enter\s*(?:total\s*)?kva|kva\s*\(enter/i.test(String(label ?? ""));
+  return /enter\s*(?:the\s*)?(?:total\s*)?(?:#|number|no\.?|amount)\s*(?:of\s*)?(?:kva|kw\b)|total\s*(?:#|number)?\s*(?:of\s*)?(?:kva|kw\b)|enter\s*(?:total\s*)?(?:kva|kw\b)|(?:kva|kw)\s*\(enter/i.test(String(label ?? ""));
 }
 
 /** Everything the adapter needs to know about one printed tier box, from its label alone. */
@@ -299,7 +311,7 @@ export function kvaText(kw: number): string {
 /** DECIDE THE TIER FROM THE PAGE. Pure over (boxes, rating, stored schedule) so it is testable
  *  without a browser and its refusals are named:
  *    · no solar tier box on the page               → nothing to decide (not a tier page);
- *    · no rating on the project                     → NEVER guessed;
+ *    · no AC rating on the project                  → NEVER guessed (DC is never a stand-in);
  *    · the rating falls in no tier / in two tiers   → refused, both named;
  *    · a stored schedule's "1" disagrees with the page's own bounds → refused (the schedule is
  *      the PRICE check; two answers to "which row" is a stop, not a coin toss).
@@ -308,7 +320,10 @@ export function kvaText(kw: number): string {
  *  the same); a stored schedule's own "0" keys still replay through their recorded steps. */
 export function decideFeeTier(input: {
   boxes: TierBoxOnPage[];
+  /** The project's AC (inverter) rating. null = unknown → never decided (no DC fallback). */
   ratingKw: number | null;
+  /** The project's DC size — for the refusal's wording only; it never decides a tier. */
+  dcKw?: number | null;
   /** The stored schedule's ticked tier (the feeBracketQuantity:* key whose value is "1"), if any. */
   scheduleTierKey?: string | null;
 }): FeeTierDecision {
@@ -327,7 +342,14 @@ export function decideFeeTier(input: {
   if (!family.length) return { chosen: null, reason: "no solar kVA tier box could be read on this page (every box label was checked for kVA bounds)", family };
   const kw = input.ratingKw;
   if (kw == null || !Number.isFinite(kw) || kw <= 0) {
-    return { chosen: null, reason: `this project has no AC (or DC) system size to place in a tier, and the tier is never guessed — the page offers ${list()}`, family };
+    // AC ONLY (close MF1). A DC size is NOT a stand-in: the tier rates the inverter output, and on
+    // the live project the DC size sits one tier higher than the AC rating. Name it so the person
+    // who confirms the AC size sees what the project does carry.
+    const dc = input.dcKw;
+    const reason = dc != null && Number.isFinite(dc) && dc > 0
+      ? `the project has no AC (inverter) rating; DC is ${kvaText(dc)} kW — confirm the AC size`
+      : `the project has no AC (inverter) rating and no DC size either — confirm the AC size (the page offers ${list()})`;
+    return { chosen: null, reason, family };
   }
   const containing = family.filter((f) => (f.bounds.minKw == null || kw >= f.bounds.minKw) && (f.bounds.maxKw == null || kw <= f.bounds.maxKw));
   if (!containing.length) return { chosen: null, reason: `${kvaText(kw)} kVA falls in none of the tiers this page prints: ${list()}`, family };

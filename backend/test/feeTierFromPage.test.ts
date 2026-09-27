@@ -17,8 +17,13 @@
 //      MUST-EXCLUDE: no rating → nothing chosen, reason names it; a stored schedule that disagrees
 //      → nothing chosen; two containing tiers → nothing chosen; a page with no solar tier box →
 //      nothing chosen.
-//   4. feeBracketQuantityFields always emits feeTierRatingKw (AC first, DC fallback, "" when
-//      neither) — with or without a schedule on file.
+//   4. feeBracketQuantityFields always emits feeTierRatingKw — the AC rating ONLY, "" when the
+//      project has no AC size — and feeTierDcKw beside it (the pause's wording, never the tick),
+//      with or without a schedule on file. MUST-EXCLUDE (close MF1): AC absent, DC present → the
+//      rating is "" and the tier is NOT decided on DC (on the live project, 12.913 AC / 15.91 DC,
+//      a DC tick is "15.01kva through 25kva": an over-billed permit).
+//   5. kW labels (close MF3): "Solar PV system 5.01 kW through 15 kW:" reads 5.01–15 like kVA, as
+//      pdfTables.parseBracketRow reads it — in the agreement corpus, so the grammars cannot drift.
 //
 //   npx tsx backend/test/feeTierFromPage.test.ts
 import fs from "node:fs";
@@ -49,6 +54,8 @@ async function main(): Promise<void> {
   const { parseBracketRow } = await import("../src/pdfTables");
   const leaf = await import("../../portal-bot/src/feeBracketQuantity");
   const { tierBoundsFromLabel, tierLabelKind, tierAsksForKva, decideFeeTier, sameFeeTier, FEE_TIER_RATING_FIELD, feeBracketFieldKey } = leaf;
+  // The DC field's key as the adapter and the smoke read it (a literal, so a missing export cannot hide).
+  const FEE_TIER_DC_FIELD = "feeTierDcKw";
   const db = await openDatabase();
 
   let failures = 0;
@@ -82,6 +89,11 @@ async function main(): Promise<void> {
     feeBracketFieldForLabel(MARION.t5_15) === "feeBracketQuantity:5.01-15" && feeBracketFieldForLabel(MARION.le5) === "feeBracketQuantity:-5"
     && feeBracketFieldForLabel(MARION.over25) === "feeBracketQuantity:25.01-" && feeBracketFieldForLabel("5.01 KVA to 15 KVA") === "feeBracketQuantity:5.01-15",
     [MARION.t5_15, MARION.le5, MARION.over25].map(feeBracketFieldForLabel).join(" | "));
+  check("MUST-PASS kW labels read as tiers: 'Solar PV system 5.01 kW through 15 kW:' → 5.01–15, keyed feeBracketQuantity:5.01-15 at learn",
+    eq(tierBoundsFromLabel("Solar PV system 5.01 kW through 15 kW:"), { minKw: 5.01, maxKw: 15 }) && feeBracketFieldForLabel("Solar PV system 5.01 kW through 15 kW:") === "feeBracketQuantity:5.01-15"
+    && eq(tierBoundsFromLabel("Solar PV system 5 kW or less:"), { minKw: null, maxKw: 5 }) && tierLabelKind("Solar PV system 5 kW or less:") === "solar",
+    JSON.stringify(tierBoundsFromLabel("Solar PV system 5.01 kW through 15 kW:")));
+  check("MUST-EXCLUDE a kWh quantity is not a kW tier ('Battery storage 10 kWh or less:')", tierBoundsFromLabel("Battery storage 10 kWh or less:") === null, JSON.stringify(tierBoundsFromLabel("Battery storage 10 kWh or less:")));
   check("services/feeders <=200A still keys to its own family, never a kVA tier", feeBracketFieldForLabel("Services/feeders 200 amps or less:") === "feeLineQuantity:servicesFeeders200A");
 
   // ── 2. agreement with the PDF grammar wherever the PDF grammar reads a bound ────────────────
@@ -89,6 +101,8 @@ async function main(): Promise<void> {
     ...Object.values(MARION), "5.01 KVA to 15 KVA", "5 KVA or less", "15.01 KVA to 25 KVA", "25.01 KVA to 50 KVA",
     "Renewable energy systems 5 kva or less", "Renewable energy systems 5.01 to 15 kva", "Solar PV 15.01 kVA – 25 kVA",
     "Services or feeders 200 amps or less", "Limited energy",
+    // kW spellings (close MF3): the PDF grammar reads kW, so the portal grammar must too.
+    "Solar PV system 5.01 kW through 15 kW:", "Solar PV system 5 kW or less:", "Solar PV system 15.01 kW through 25 kW:", "PV systems 25 kW and above",
   ];
   let disagreements: string[] = [];
   for (const l of corpus) {
@@ -117,7 +131,13 @@ async function main(): Promise<void> {
   check("boundary: exactly 15 kVA is the 5.01–15 tier, 15.01 is the next (inclusive bounds, the way the table prints them)",
     decideFeeTier({ boxes, ratingKw: 15 }).chosen?.id === "t5_15" && decideFeeTier({ boxes, ratingKw: 15.01 }).chosen?.id === "t15_25");
   const d5 = decideFeeTier({ boxes, ratingKw: null });
-  check("MUST-EXCLUDE no rating → NOT guessed, the reason names it", d5.chosen === null && /no AC \(or DC\) system size/.test(d5.reason), JSON.stringify(d5.reason));
+  check("MUST-EXCLUDE no rating → NOT guessed, the reason names it", d5.chosen === null && /no AC \(inverter\) rating/.test(d5.reason), JSON.stringify(d5.reason));
+  const d5dc = decideFeeTier({ boxes, ratingKw: null, dcKw: 15.91 } as never);
+  check("MUST-EXCLUDE AC absent, DC 15.91 → NOT decided on DC; the reason names the missing AC and the DC size",
+    d5dc.chosen === null && d5dc.reason === "the project has no AC (inverter) rating; DC is 15.91 kW — confirm the AC size", JSON.stringify(d5dc));
+  const d5s = decideFeeTier({ boxes, ratingKw: null, dcKw: 15.91, scheduleTierKey: "feeBracketQuantity:15.01-25" } as never);
+  check("MUST-EXCLUDE AC absent + a stored schedule (evaluated on DC) → still the AC pause, never the schedule's tick",
+    d5s.chosen === null && /no AC \(inverter\) rating/.test(d5s.reason), JSON.stringify(d5s));
   const d6 = decideFeeTier({ boxes, ratingKw: 12.913, scheduleTierKey: "feeBracketQuantity:15.01-25" });
   check("MUST-EXCLUDE a stored schedule that puts the job in another tier → NOT typed, the disagreement named",
     d6.chosen === null && /stored fee schedule/.test(d6.reason) && /15.01–25/.test(d6.reason), JSON.stringify(d6.reason));
@@ -139,9 +159,13 @@ async function main(): Promise<void> {
   check("feeTierRatingKw = the AC size when present (no schedule on file for this AHJ)", fAc[FEE_TIER_RATING_FIELD] === "12.913", JSON.stringify(fAc));
   check("  ...and no bracket keys are invented without a schedule", Object.keys(fAc).every((k) => !k.startsWith("feeBracketQuantity:")), Object.keys(fAc).join(","));
   const fDc = feeBracketQuantityFields(db, { ...base, systemSizeAcKw: null, systemSizeDcKw: 15.91 });
-  check("feeTierRatingKw falls back to DC when AC is missing", fDc[FEE_TIER_RATING_FIELD] === "15.91", JSON.stringify(fDc));
+  check("MUST-EXCLUDE (close MF1) feeTierRatingKw does NOT fall back to DC: AC missing → \"\" (the tier pauses), DC travels as feeTierDcKw for the wording",
+    fDc[FEE_TIER_RATING_FIELD] === "" && fDc[FEE_TIER_DC_FIELD] === "15.91", JSON.stringify(fDc));
+  const fAc0 = feeBracketQuantityFields(db, { ...base, systemSizeAcKw: 0, systemSizeDcKw: 15.91 });
+  check("MUST-EXCLUDE AC 0 / DC 15.91 → rating \"\" (0 is not a rating)", fAc0[FEE_TIER_RATING_FIELD] === "" && fAc0[FEE_TIER_DC_FIELD] === "15.91", JSON.stringify(fAc0));
+  check("  ...and feeTierDcKw rides beside the AC rating when both are known", fAc[FEE_TIER_DC_FIELD] === "15.91", JSON.stringify(fAc));
   const fNone = feeBracketQuantityFields(db, { ...base, systemSizeAcKw: null, systemSizeDcKw: null });
-  check("feeTierRatingKw is \"\" (defined, empty) with no size — the adapter refuses to guess", fNone[FEE_TIER_RATING_FIELD] === "", JSON.stringify(fNone));
+  check("feeTierRatingKw is \"\" (defined, empty) with no size — the adapter refuses to guess", fNone[FEE_TIER_RATING_FIELD] === "" && fNone[FEE_TIER_DC_FIELD] === "", JSON.stringify(fNone));
 
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
