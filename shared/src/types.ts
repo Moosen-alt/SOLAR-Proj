@@ -360,6 +360,10 @@ export interface SubmissionPaymentQuote {
   /** The printed line that supports THIS amount (the schedule's bracketQuote), verbatim — ""
    *  when there is none, or when the amount is a sum no single published line states. */
   permitFeeEvidenceQuote: string;
+  /** Who verified the published schedule behind this amount, and when — "" unless the tier is
+   *  published_schedule and its confidence "verified". */
+  permitFeeVerifiedBy: string;
+  permitFeeVerifiedAt: string;
   paymentMethod: FeePaymentMethod;
   serviceFeeUsd: number;
   totalUsd: number | null;
@@ -411,6 +415,10 @@ export interface PublishedFeeResult {
   corroborated?: boolean;
   /** Research lands as "seeded"; only human review promotes it to "verified". */
   confidence?: "verified" | "seeded";
+  /** The person who verified it (every line, when the amount is a total) and when — only
+   *  meaningful beside confidence "verified"; "" / absent otherwise. */
+  verifiedBy?: string;
+  verifiedAt?: string;
   /** THE AMOUNT WAS COMPUTED FROM A GUESSED INPUT. A valuation-basis schedule (Portland's
    *  structural ladder: $540.78 for the first $25,000, $10.26 per $1,000 above it) is walked
    *  with the project's job valuation — and when the project carries none, with a per-watt
@@ -502,6 +510,15 @@ export interface ProjectFeeSheetLine {
   corroborated: boolean;
   /** The printed schedule line supporting this amount, verbatim; "" when there is none. */
   evidenceQuote: string;
+  /** A PERSON MAY CONFIRM THIS LINE: its amount is a researched ("seeded") published-schedule
+   *  figure. Confirming marks the schedule row(s) behind it human-verified under the signed-in
+   *  person's name (POST /api/projects/:id/fee-sheet/confirm) — the one place "verified" is
+   *  written from the dashboard. False on every other tier and grade. */
+  confirmable: boolean;
+  /** Who verified the schedule behind this amount and when; "" unless confidence is "verified"
+   *  on the published_schedule tier. */
+  verifiedBy: string;
+  verifiedAt: string;
   paymentMethod: FeePaymentMethod;
   serviceFeeUsd: number;
   /** This track's client total, null whenever the jurisdiction fee is unknown. */

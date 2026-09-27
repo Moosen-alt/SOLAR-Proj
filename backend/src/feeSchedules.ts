@@ -451,6 +451,10 @@ export interface ProjectFeeResolution {
    *  the cited document. Never a promotion: confidence stays 'seeded'. */
   corroborated: boolean;
   confidence: FeeConfidence;
+  /** The person(s) who verified every line of this total, and the latest time — "" while any
+   *  line is seeded. Written only by markFeeScheduleVerified (hard rule 3). */
+  verifiedBy?: string;
+  verifiedAt?: string;
   /** The AHJ/utility name the schedule is filed under (may differ from the
    *  project's spelling when the fuzzy fallback matched). */
   matchedName: string;
@@ -503,6 +507,16 @@ export interface FeeScheduleLine {
   valuationEstimated?: boolean;
   notes: string;
   scheduleId: string;
+  /** The DELEGATION row this line was reached through (the city's "the county collects the
+   *  electrical fee" pointer), when there is one. A person confirming this line vouches for the
+   *  hop as well as the county's number, so confirmFee verifies both rows — the line's grade is
+   *  the weaker of the two (see the hop's confidence rule), and verifying only the county's row
+   *  would leave the line "seeded" under the person who just checked it. */
+  delegatedFromScheduleId?: string;
+  /** Who verified the row this amount came from, and when — "" while it is seeded. A person's
+   *  name, set only by markFeeScheduleVerified (hard rule 3). */
+  verifiedBy?: string;
+  verifiedAt?: string;
   /** Populated when feeUsd is null. */
   reason: string;
   /** THIS LINE'S OWN BILL, ITEMISED — the permit, its surcharges, and every
@@ -904,6 +918,21 @@ export function markFeeScheduleVerified(
     [ts, clean(verifiedBy).slice(0, 120), ts, existing.id],
   );
   return getFeeSchedule(db, profileKey, track, discipline);
+}
+
+/** The same verification, addressed by the row's id — what a fee-sheet line carries
+ *  (FeeScheduleLine.scheduleId). null when no such row exists. */
+export function markFeeScheduleVerifiedById(db: AppDb, scheduleId: string, verifiedBy: string): FeeScheduleRecord | null {
+  const row = db.get<Row>("SELECT * FROM fee_schedules WHERE id = ?", [scheduleId]);
+  if (!row) return null;
+  const record = mapSchedule(row);
+  return markFeeScheduleVerified(db, record.profileKey, record.track, verifiedBy, record.discipline);
+}
+
+/** One stored row by id, or null. */
+export function getFeeScheduleById(db: AppDb, scheduleId: string): FeeScheduleRecord | null {
+  const row = db.get<Row>("SELECT * FROM fee_schedules WHERE id = ?", [scheduleId]);
+  return row ? mapSchedule(row) : null;
 }
 
 /** WHAT THE DISAGREEMENT ACTUALLY IS, in one readable line.
@@ -2852,7 +2881,7 @@ function resolveLine(
   // still the electrical permit even though it was read off the county's row,
   // and an undifferentiated row answering a discipline-specific ask answers AS
   // that discipline.
-  return { ...line, discipline: discipline || line.discipline };
+  return { ...line, discipline: discipline || line.discipline, ...(hop.collectedBy ? { delegatedFromScheduleId: raw.id } : {}) };
 }
 
 /** The one schedule, when there is exactly one. Never a choice between two. */
@@ -2948,6 +2977,11 @@ export function feeLinesForProject(
       valuationEstimated: evaluated.fromEstimatedValuation === true,
       notes: schedule.notes,
       scheduleId: schedule.id,
+      ...(hop.collectedBy ? { delegatedFromScheduleId: row.id } : {}),
+      // A hopped line is person-verified only when BOTH rows are (the grade rule above), so it
+      // names a verifier only then — the collecting row's verifier, whose number it is.
+      verifiedBy: hop.collectedBy && row.confidence !== "verified" ? "" : schedule.verifiedBy,
+      verifiedAt: hop.collectedBy && row.confidence !== "verified" ? "" : schedule.verifiedAt,
       reason: evaluated.reason,
       charges: evaluated.charges ?? [],
     });
@@ -4091,6 +4125,8 @@ function lineFor(
     valuationEstimated: evaluated.fromEstimatedValuation === true,
     notes: schedule.notes,
     scheduleId: schedule.id,
+    verifiedBy: schedule.verifiedBy,
+    verifiedAt: schedule.verifiedAt,
     reason: evaluated.reason,
     charges: evaluated.charges ?? [],
   };
@@ -4194,6 +4230,14 @@ function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<Project
     // The weakest confidence in the set: a verified line does not vouch for a
     // seeded one standing next to it in the same total.
     confidence: lines.some((l) => l.confidence === "seeded") ? "seeded" : "verified",
+    // WHO VOUCHED, only when every line is verified — the people named on the lines, once each.
+    // A total with one seeded line is nobody's verified number, so it names nobody.
+    verifiedBy: lines.some((l) => l.confidence === "seeded")
+      ? ""
+      : [...new Set(lines.map((l) => String(l.verifiedBy || "").trim()).filter(Boolean))].join(", "),
+    verifiedAt: lines.some((l) => l.confidence === "seeded")
+      ? ""
+      : lines.map((l) => String(l.verifiedAt || "")).filter(Boolean).sort().slice(-1)[0] ?? "",
     // Weakest link again: one line computed off a guessed valuation makes the whole total a
     // number to true up, however solid the rest of it is.
     valuationEstimated: lines.some((l) => l.valuationEstimated === true),

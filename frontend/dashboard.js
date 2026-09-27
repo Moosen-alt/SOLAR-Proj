@@ -2247,7 +2247,7 @@ const FEE_CONFIDENCE = {
   seeded: {
     badge: "badge-warning",
     label: "provisional — not verified",
-    note: "Research found this and nobody has checked it. Verify it against the jurisdiction's own published schedule before quoting a customer.",
+    note: "Research found this and nobody has checked it. Check it against the jurisdiction's own published schedule, then press Confirm fee, before quoting a customer.",
   },
   estimated: {
     badge: "badge-warning",
@@ -2414,6 +2414,15 @@ function renderFeeSheetLine(line) {
   const matchEvidence = confKey === "schedule_match" && line.evidenceQuote
     ? `<p class="fee-face-evidence" style="margin:2px 0;font-size:12px">Printed in the schedule as: “${esc(line.evidenceQuote)}”</p>`
     : "";
+  // WHO VOUCHED — a person's name, only beside a person-verified schedule amount.
+  const verifiedNote = line.confidence === "verified" && line.verifiedBy
+    ? `<p class="fee-face-verified" style="margin:2px 0;font-size:12px">Verified by ${esc(line.verifiedBy)}${line.verifiedAt ? ` on ${esc(String(line.verifiedAt).slice(0, 10))}` : ""} against the published schedule.</p>`
+    : "";
+  // THE ONE-CLICK CONFIRM, only where the server says a person may (a researched published-
+  // schedule amount). The click asks who is confirming before anything is written.
+  const confirmControl = line.confirmable === true
+    ? `<p class="fee-confirm" style="margin:4px 0"><button class="secondary" style="font-size:12px" data-fee-confirm="${esc(line.track)}" title="Mark the published schedule behind this fee as verified by you. Automation never changes a verified schedule afterwards.">Confirm fee — I checked it against the published schedule</button></p>`
+    : "";
   // Provisional and unknown fees carry the warning tone, so the card LOOKS unfinished.
   // Keyed on "is there a number" rather than `known`: an ESTIMATE is known:false now
   // (an estimate is not knowledge) but it still has a figure to act on — it warns, it
@@ -2440,6 +2449,8 @@ function renderFeeSheetLine(line) {
         : `<p style="margin:2px 0;font-size:12px">${esc(FEE_PAYMENT_METHOD[line.paymentMethod] || line.paymentMethod || "")}</p>`}
       ${feeFaceSourceHtml(line)}
       ${matchEvidence}
+      ${verifiedNote}
+      ${confirmControl}
       ${renderFeeCharges(line)}
       <!-- The amount and how it is paid drive action, so they stay loud. Where
            the number came from is the product's core claim and is kept in full —
@@ -2605,6 +2616,52 @@ function renderFeeSheetPanel() {
       </div>
       </details>
     </section>`;
+  panel.querySelectorAll("button[data-fee-confirm]").forEach((btn) => {
+    btn.addEventListener("click", () => confirmFeeLine(btn.dataset.feeConfirm, btn));
+  });
+}
+
+// ONE-CLICK CONFIRM (operator 2026-09-27: "there is no place to verify them"). A person
+// vouches for a researched fee; the server marks the published schedule behind it verified
+// under that person's name and nothing automated changes it afterwards. With sign-in on, the
+// name is the signed-in user (the server ignores anything sent); with it off, the person types
+// their name — "verified" on a fee means a named person checked it.
+async function confirmFeeLine(track, btn) {
+  const id = state.selectedProjectId;
+  if (!id) return;
+  const line = ((state.feeSheet && state.feeSheet.lines) || []).find((l) => l.track === track);
+  let auth = state.authMe;
+  if (!auth) {
+    try { auth = await api("/api/auth/me"); state.authMe = auth; } catch { auth = { enabled: false, user: null }; }
+  }
+  const what = `${(line && line.jurisdiction) || "this jurisdiction"}, ${money(line ? line.feeUsd : null)}`;
+  const lede = `Confirm the ${track === "nem" ? "interconnection" : "permit"} fee (${what})?\n\n`
+    + `You are saying you checked it against the jurisdiction's own published schedule`
+    + `${line && httpUrl(line.sourceUrl) ? ` (${httpUrl(line.sourceUrl)})` : ""}. It is recorded as VERIFIED under your name, `
+    + `and automation never changes a verified schedule afterwards.`;
+  let confirmedBy = "";
+  if (auth && auth.enabled) {
+    if (!confirm(`${lede}\n\nRecorded as: ${(auth.user && (auth.user.name || auth.user.email)) || "you"}`)) return;
+  } else {
+    let last = "";
+    try { last = localStorage.getItem("feeConfirmName") || ""; } catch { last = ""; }
+    const typed = window.prompt(`${lede}\n\nYour name (recorded as the person who verified it):`, last);
+    if (typed == null) return;
+    confirmedBy = String(typed).trim();
+    if (!confirmedBy) { showMessage("Enter your name to confirm a fee — a confirmation is a person vouching for it.", "warning"); return; }
+    try { localStorage.setItem("feeConfirmName", confirmedBy); } catch { /* per-viewer convenience only */ }
+  }
+  btn.disabled = true;
+  try {
+    const res = await api(`/api/projects/${id}/fee-sheet/confirm`, { method: "POST", body: JSON.stringify({ track, confirmedBy }) });
+    if (state.selectedProjectId !== id) return;
+    state.feeSheet = res.feeSheet;
+    renderFeeSheetPanel();
+    showMessage(`Fee confirmed — recorded as verified by ${res.outcome.confirmedBy}.`);
+  } catch (err) {
+    showMessage(`Confirm failed: ${err.message}`, "error");
+    btn.disabled = false;
+  }
 }
 
 // Friendly display labels for every canonical ProjectStatus (shared/src/types.ts).

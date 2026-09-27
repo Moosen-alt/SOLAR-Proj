@@ -2777,6 +2777,29 @@ app.get("/api/projects/:id/fee-sheet", asyncHandler(async (req, res) => {
   res.json({ feeSheet: buildProjectFeeSheet(db, detail.project) });
 }));
 
+// ONE-CLICK CONFIRM (operator 2026-09-27: "there is no place to verify them"). A person marks
+// the published schedule behind a researched fee line human-verified — the only dashboard door
+// to "verified" on a fee (hard rule 3). WHO comes from the session when auth is on, never the
+// body; with auth off it is the name the person typed, and a placeholder is refused
+// (feeConfirm.isConfirmingPerson). Scoped by the /api/projects/:id guard.
+app.post("/api/projects/:id/fee-sheet/confirm", asyncHandler(async (req, res) => {
+  const { confirmPublishedFee, isConfirmingPerson } = await import("./feeConfirm");
+  const { buildProjectFeeSheet } = await import("./submissionFees");
+  const detail = getProjectDetail(db, String(req.params.id));
+  const user = currentUser(db, req);
+  if (AUTH_ENABLED && !user) throw new HttpError(401, "Sign in to confirm a fee.");
+  // A signed-in account whose display name is a role ("Admin", the seeded first login) is
+  // recorded by its email, which names the person who holds it.
+  const confirmedBy = AUTH_ENABLED
+    ? String((user?.name && isConfirmingPerson(user.name) ? user.name : user?.email) || "").trim()
+    : String(req.body?.confirmedBy || "").trim();
+  const outcome = confirmPublishedFee(db, detail.project, String(req.body?.track || ""), confirmedBy);
+  addAuditLog(db, detail.project.id, "human", outcome.confirmedBy, "fee.schedule_confirmed", {
+    track: outcome.track, verified: outcome.verified, alreadyVerified: outcome.alreadyVerified,
+  });
+  res.json({ outcome, feeSheet: buildProjectFeeSheet(db, detail.project) });
+}));
+
 // What the assigned client owes for this project: fees we ADVANCED and re-bill, kept apart
 // from our own service fee, because one is a pass-through and the other is revenue. Reads
 // only — unlike the payment-quote route below it, asking for an invoice never creates a row.

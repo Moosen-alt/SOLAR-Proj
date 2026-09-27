@@ -209,6 +209,9 @@ interface ScheduleFee {
    *  person has vouched for the number. */
   corroborated: boolean;
   confidence: "verified" | "seeded";
+  /** Who verified it and when — "" unless confidence is "verified". */
+  verifiedBy: string;
+  verifiedAt: string;
   /** The amount was computed from a per-watt ESTIMATED valuation, not a contract figure. A
    *  different dimension from  again: that one grades the TABLE, this one the
    *  INPUT, and a perfect table walked on a guess still owes the operator a true-up. */
@@ -325,6 +328,7 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
   let paymentMethod: FeePaymentMethod | null = PAYMENT_METHODS.includes(declared) ? declared : null;
   if (!paymentMethod && usable && fee > 0 && MAILED_CHECK_RE.test(quote)) paymentMethod = "mailed_check";
 
+  const verified = text(r.confidence).trim().toLowerCase() === "verified";
   return {
     feeUsd: usable ? round2(fee) : null,
     bracketLabel: text(r.bracketLabel).trim().slice(0, 200) || null,
@@ -333,7 +337,10 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
     bracketQuote: text(r.bracketQuote).trim().slice(0, 400),
     corroborated: r.corroborated === true,
     // Research lands as seeded (safety rule 3); only a human promotes it.
-    confidence: text(r.confidence).trim().toLowerCase() === "verified" ? "verified" : "seeded",
+    confidence: verified ? "verified" : "seeded",
+    // A name beside a seeded row would read as a vouch nobody made — read only beside verified.
+    verifiedBy: verified ? text(r.verifiedBy).trim().slice(0, 120) : "",
+    verifiedAt: verified ? text(r.verifiedAt).trim().slice(0, 40) : "",
     // Defensive like everything else crossing this seam: anything that is not an explicit true
     // reads as "not an estimate", so a producer that has never heard of this field cannot make
     // a real published fee look like a guess.
@@ -456,6 +463,15 @@ function archivedNotice(project: ProjectRecord): string {
     + `${why ? ` Reason on file: "${why.length > 200 ? `${why.slice(0, 200).trimEnd()}…` : why}".` : ""} `;
 }
 
+/** MAY A PERSON CONFIRM THIS AMOUNT? The one answer, asked by the fee sheet (to draw the
+ *  Confirm control) and by feeConfirm.confirmPublishedFee (to refuse anything else): a
+ *  researched, unchecked ("seeded") amount read off a published schedule. An estimate rests on
+ *  a guessed valuation, not on the table a person would be vouching for; an actual, a learned
+ *  median and an already-verified row have nothing on the schedule left to confirm. */
+export function feeLineConfirmable(source: PermitFeeSource, confidence: FeeConfidence): boolean {
+  return source === "published_schedule" && confidence === "seeded";
+}
+
 /** Build (and persist, unless already paid/waived) the payment quote for a track. */
 export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?: string | null): SubmissionPaymentQuote {
   const track = billingTrack(trackInput);
@@ -476,6 +492,8 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
   // Set on the published_schedule tier only — see the note where it is assigned.
   let permitFeeCorroborated = false;
   let permitFeeEvidenceQuote = "";
+  let permitFeeVerifiedBy = "";
+  let permitFeeVerifiedAt = "";
   let permitFeeBracketLabel: string | null = schedule?.bracketLabel ?? null;
   const permitFeeSourceUrl: string | null = schedule?.sourceUrl ?? null;
 
@@ -532,8 +550,10 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
       // line is printed, the number computed from our guess is not.
       permitFeeCorroborated = schedule.corroborated && !schedule.valuationEstimated;
       permitFeeEvidenceQuote = schedule.bracketQuote;
+      permitFeeVerifiedBy = schedule.verifiedBy;
+      permitFeeVerifiedAt = schedule.verifiedAt;
       const vouching = schedule.confidence === "verified"
-        ? " (human-verified)"
+        ? ` (human-verified${schedule.verifiedBy ? ` by ${schedule.verifiedBy}` : ""}${schedule.verifiedAt ? ` on ${schedule.verifiedAt.slice(0, 10)}` : ""})`
         : permitFeeCorroborated
           ? " (matches the published schedule — CORROBORATED: a machine re-read the cited document and found this line printed in it; no person has confirmed it yet)"
           : schedule.corroborated
@@ -617,6 +637,8 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
     permitFeeConfidence,
     permitFeeCorroborated,
     permitFeeEvidenceQuote,
+    permitFeeVerifiedBy,
+    permitFeeVerifiedAt,
     paymentMethod,
     serviceFeeUsd,
     totalUsd,
@@ -802,6 +824,9 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     confidence: quote.permitFeeConfidence,
     corroborated: quote.permitFeeCorroborated,
     evidenceQuote: quote.permitFeeEvidenceQuote,
+    confirmable: feeLineConfirmable(quote.permitFeeSource, quote.permitFeeConfidence),
+    verifiedBy: quote.permitFeeVerifiedBy,
+    verifiedAt: quote.permitFeeVerifiedAt,
     paymentMethod: quote.paymentMethod,
     serviceFeeUsd: quote.serviceFeeUsd,
     totalUsd: quote.totalUsd,

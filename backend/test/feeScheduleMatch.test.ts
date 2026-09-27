@@ -135,6 +135,20 @@ const badge = (html: string): string => /<span class="badge [^"]*">([^<]*)<\/spa
   check("3i. the printed line and the jurisdiction are escaped", !/<img /.test(html) && !/<b>Coos/.test(html) && /&lt;img src=x/.test(html), face(html).slice(0, 300));
 }
 
+// ── 4. THE CONFIRM CONTROL (feeConfirm.test drives the route; this is the card) ─────────────
+{
+  check("4a. the sheet marks a seeded published-schedule line confirmable", permitLine.confirmable === true, JSON.stringify(permitLine.confirmable));
+  const html = lib.renderFeeSheetLine(permitLine);
+  check("4b. a confirmable line draws the Confirm control on the face, keyed by track", /<button[^>]*data-fee-confirm="permit"/.test(face(html)));
+  const actualLine = buildProjectFeeSheet(db, trued).lines.find((l) => l.track === "permit")!;
+  check("4c. an actual is not confirmable and draws no Confirm control", actualLine.confirmable === false && !/data-fee-confirm/.test(lib.renderFeeSheetLine(actualLine)));
+  const v = lib.renderFeeSheetLine({ ...permitLine, confidence: "verified", confirmable: false, verifiedBy: `<i>Jane</i>`, verifiedAt: "2026-09-27T20:00:00.000Z" });
+  check("4d. a person-verified line names the person (escaped) and draws no Confirm control",
+    /Verified by &lt;i&gt;Jane&lt;\/i&gt; on 2026-09-27/.test(face(v)) && !/data-fee-confirm/.test(v), face(v).slice(0, 400));
+  const s = lib.renderFeeSheetLine({ ...permitLine, corroborated: true, verifiedBy: "Jane" });
+  check("4e. MUST-EXCLUDE: a name never appears beside a line that is not person-verified", !/Verified by/.test(s));
+}
+
 registerFeeScheduleLookup(null);
 db.close();
 fs.rmSync(dir, { recursive: true, force: true });
