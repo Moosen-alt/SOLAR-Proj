@@ -114,6 +114,9 @@ const NON_OREGON: Juris[] = [
   { state: "AZ", city: "Saguaro Ridge", ahj: "City of Saguaro Ridge", utility: "Saguaro Ridge Power District" },
   { state: "MN", city: "Lakeshore", ahj: "City of Lakeshore", utility: "Lakeshore Energy" },
   { state: "IA", city: "Cedar Bluffs", ahj: "City of Cedar Bluffs", utility: "Cedar Bluffs Light & Power" },
+  // Florida's seeded state profile carries allowedWindExposures ["B","C","D"] — design-criteria data
+  // that used to switch baselineRules' "for the prescriptive path" screens on by itself.
+  { state: "FL", city: "Palmetto Shores", ahj: "City of Palmetto Shores", utility: "Palmetto Shores Electric" },
 ];
 const OREGON: Juris = { state: "OR", city: "Coos Bay", ahj: "City of Coos Bay", utility: "Pacific Power" };
 const pdf = (label: string): Buffer => Buffer.from(`%PDF-1.4\n% ${label}\n`, "utf8");
