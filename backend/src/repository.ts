@@ -88,7 +88,7 @@ import { clientStagingOverlay, getClient, parseStateLicenses } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, lockedOutCredential } from "./portalCredentials";
 import { logger } from "./logger";
-import { selectAdapterActor, selectStagingActor, resolvePortalChannel, seedOutcomeToStageResult, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack, hostFitsTrackAndEntity, scopeForTrack, trackSafeUrl, portalHostOf, type HostFit, type PortalUrlSource } from "./portalChannel";
+import { selectAdapterActor, selectStagingActor, learnEntryUrl, resolvePortalChannel, seedOutcomeToStageResult, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack, hostFitsTrackAndEntity, scopeForTrack, trackSafeUrl, portalHostOf, type HostFit, type PortalUrlSource } from "./portalChannel";
 import { isPortalPaused } from "./portalPause";
 // The ONE creator of permit_check_targets rows (extracted from markTrackSubmitted).
 // Direction matters: submittalTracks must never import repository — jobQueue statically
@@ -8206,14 +8206,20 @@ export async function prepareSubmission(
   // entry. Launching the learner there would burn a pass on a non-portal AND would turn every
   // mock/dev/smoke permit stage into a live browser run. To self-seed a permit portal, the operator
   // points the recorder at the real portal URL first (which yields a draftRecipe entry URL here).
-  const portalEntryUrl =
+  // ONE list (portalChannel.learnEntryUrl): fitted candidates, and for a permit track the cited
+  // statewide portal too (already fitted above as "statewide") — Jefferson's Stage found no entry
+  // and never opened the learner, although the lookup's agency files on Oregon ePermitting.
+  const portalEntryUrl = learnEntryUrl({
+    track,
     // Fitted, like every other candidate: a learned profile carrying the other track's portal
     // (or another entity's) is not a launchable entry for THIS stage.
-    permitSafeUrl(learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
-    (recipe && (recipe as { portalUrl?: string }).portalUrl) ||
-    (draftRecipe && draftRecipe.portalUrl) ||
-    (track === "nem" ? utilityPortalUrl : ahjPortalUrl) ||
-    "";
+    learnedProfileUrl: permitSafeUrl(learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl),
+    recipeUrl: recipe ? (recipe as { portalUrl?: string }).portalUrl : "",
+    draftUrl: draftRecipe ? draftRecipe.portalUrl : "",
+    utilityUrl: utilityPortalUrl,
+    ahjUrl: ahjPortalUrl,
+    statewideUrl: statewidePortalUrl,
+  });
   const hasLaunchablePortal = isRealPortal || Boolean(portalEntryUrl);
   // Capability registry: resolve the staging channel in one explicit decision. With the
   // API tier reserved (apiAvailable=false, no adapter) and no kill-switch wired yet
