@@ -243,6 +243,11 @@ interface StageOptions {
   // Lets platform adapters that host many tenants (PowerClerk: PGE, PacifiCorp…) land on
   // the right subdomain instead of a hardcoded default.
   loginUrl?: string;
+  // LIVE PROGRESS from a recipe replay (RecipeAdapter options.onProgress): every wait longer than
+  // ~10 s says what it is waiting on — "Opening the portal", "Waiting for the portal (error page,
+  // retrying… 1/3)", "Step 12/53: …". Non-PII. The live run 99baa5d0's operator watched a frozen
+  // login screen for three minutes; the dashboard needs this to say why. Recipe replays only.
+  onProgress?: (p: import("./adapters/recipeAdapter").RecipeProgress) => void;
 }
 
 // Headed, guided-manual staging leaves the browser OPEN at the review screen so the human
@@ -588,6 +593,7 @@ export async function stageWithRecipe(
   return browserLimiter(() => runAdapter(new RecipeAdapter(recipe, fieldValues, docsByType, {
     autoSubmit: options.autoSubmit, beforeUpload: options.beforeUpload,
     runApproval: options.runApproval ?? null, runId: options.runId,
+    onProgress: options.onProgress,
   }), project, files, options));
 }
 

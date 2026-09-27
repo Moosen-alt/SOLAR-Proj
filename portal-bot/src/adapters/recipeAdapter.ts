@@ -309,6 +309,15 @@ export class FinalSubmitStop extends Error {
   }
 }
 
+/** One live progress line from a replay (options.onProgress): what the run is waiting on, never
+ *  PII. index.ts StageOptions passes it through so a caller (the dashboard) can show it. */
+export interface RecipeProgress {
+  phase: "open" | "login" | "goto" | "step" | "wait";
+  message: string;
+  elapsedMs: number;
+  stepIndex?: number;
+}
+
 export class RecipeAdapter extends BasePortalAdapter {
   portalName: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -468,7 +477,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       runId?: string;
       /** Live progress for a dashboard: every wait longer than ~10 s says what it is waiting on
        *  (F3 — the operator watched a frozen login screen for three minutes). Non-PII. */
-      onProgress?: (p: { phase: "open" | "login" | "goto" | "step" | "wait"; message: string; elapsedMs: number; stepIndex?: number }) => void;
+      onProgress?: (p: RecipeProgress) => void;
     } = {},
   ) {
     super();
