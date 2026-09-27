@@ -814,6 +814,7 @@ await check("(r7) lookup-close-7 — R1 the record type's official arm is THIS a
     "https://www.peoplegis.com/products",
     "https://www.avolvesoftware.com/projectdox/",
     "https://www.fullcircletech.com/permiteyes/",
+    "https://university.centralsquare.com/etrakit-permits", // any host on a marketing domain: no tenant is hosted there
     "https://help.opengov.com/hc/en-us/articles/permits", // G0 (a marketing subdomain of a hosting domain)
     "https://support.citizenserve.com/portal/", // G1
   ];

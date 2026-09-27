@@ -3,6 +3,40 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## PER-JOB LOOKUP — LAST ROUND CLOSED; ITS KNOWN RESIDUE (2026-09-27, lookup-close-7)
+
+Seven rounds on the lookup's three doors ended here. close-7 closed the close-6 skeptic's three residues in the
+one definitions (commit 006c39c + the fixture/HANDOFF commits after it; scratch `.probe/lookup-close-7/`):
+- **R1** `recordTypeBelongsToPortal`'s "agency's own page" arm asks `permitPlatformCatalog.isAgencyOwnDomain`
+  (the name / name+state — `camdenmaine.gov`, `austintexas.gov` — / initials match on EVERY TLD, a locality `.us`
+  by its name label, a state's own label `in.gov`/`mn.gov`/`oregon.gov` only for a name that IS the state and only
+  on .gov) — never "any .gov". `isOfficialAgencyHost` keeps its any-.gov breadth for deciding which pages to READ.
+- **R2** a query-tenanted instance (bsaonline `uid`, citizenserve `installationID`, mygovernmentonline
+  `agency`/`JID`; MapsOnline's shared apps `/simplicity/`, `/peopleforms/` need `client`/`site_id`) with no tenant
+  parameter has NO tenant: `portalTenantKey` gives the root's key, so the door refuses it as the vendor's site.
+- **R3** marketing domains on the one platform list (`iworq.com`, `bsasoftware.com`, `centralsquare.com` — eTRAKiT
+  and aspgov.com's vendor —, `peoplegis.com`, `avolvesoftware.com`, `fullcircletech.com` — PermitEyes'), every host on
+  them is the vendor's own site; an accela.com instance is an `aca` first-label host only (`aca-prod`, `aca-oregon`,
+  `aca.oregon`, `aca3`), any other accela.com host is Accela's own site.
+- Measured: probe6v 14 BAD -> 6 of 41 (the six below); every prior probe's verdict lines identical to close-6-v's
+  (probe1 13/51, probe4 10/41, close-3 zz_adv 7/49, close-2-v zz_adv 5 + the expected F1 throw, probe5v 5/40, the
+  rest 0); rescore6 output identical (0 baseline flips, 12 saved record types, no cell moved). Kills: 24/24 RED
+  (`.probe/lookup-close-7/kill.cjs` / `kill.out`, own LF worktree; X2b, X4, X5 — green or skipped at close-6-v — among them). lookupDoors `(r7)` pins A1/A2/A6 out, A3 + Camden + a state issuer in, F3 out,
+  F2 in, G2/G4/G5/G6 + marketing subdomains out, G8-G10 + aca.oregon / citizenserve www6 / MapsOnline forms in.
+
+**Known residue — start here (one line each; probe ids in `.probe/lookup-close-7/probe6v.ts`, `quick1.ts`):**
+- B2: a record type cited to the accepted tenant's OTHER module page (`module=Licenses`) is kept — `linksAnotherModule` is never asked of a type's source.
+- G3: a vendor's third-party help centre (`opengov.zendesk.com`) cited with portal words is saved as a portal — not a vendor domain.
+- G7: Cloudpermit's shared `us.cloudpermit.com/login` (tenant chosen after login) is saved; same class: MGO's newer `mgoconnect.org` shared portal is not on the list at all.
+- H1: an unlisted tenant-formed host (`www.municipalonlinepayments.com/<tenant>/permits`) is attested host-wide by a sibling tenant's result.
+- I5: a TYPELESS AHJ name ("Marions") whose permits its same-named county issues gets no delegation row — declared design (typeless ~ typed).
+- I7: "Oregon Building Codes Division" is saved as the agency NAME "Oregon" (every word after the state is a department word; pre-existing since 5d8c5a4).
+- quick1 hostFit: `hostFitsTrackAndEntity` (KB-write / recipe / operator-URL / page-read doors) still says FITS for vendor marketing pages (tylertech, cityview, iworq.com, bsasoftware, centralsquare, success.accela.com) — only the lookup's `acceptPortalForPermit` asks `isVendorRootOrMarketing`; suites outside the lookup assert on bare vendor roots along that path.
+- Camden held-out (close-6-v): the correct electrical fee ('Residential … $60.00') was refused by the fee tie because the PDF's text order prints the amount far from its label — a recall loss (F10 / P6a class), never a wrong value.
+- close-7: MapsOnline's shared app segments are named (`simplicity`, `peopleforms`); any OTHER shared segment on www.mapsonline.net still reads as a town tenant.
+- close-7: marketing domains NOT added, on purpose: `granicus.com` (SmartGov / GovOutreach) and `civicplus.com` (CivicGov) host real agency pages as tenants (`mi-midland.civicplus.com/240/Permits`, `<city>.granicus.com` meeting video) — on the platform list those would be exempt from the information-page rule; `avolve.com` (the task's guess) is unconfirmed — Avolve's site is `avolvesoftware.com`; `safebuilt.com` (CommunityCore) also runs cities' outsourced building departments.
+- close-7: `isAgencyOwnDomain` recall edge — an agency whose domain carries neither its name, name+state, nor (on .gov, >= 3 letters) its initials (`lacity.org`, `ladbs.org`, `kcmo.gov`) is not "its own page", so a record type cited only there is dropped (a recall loss; no rescore cell moved).
+
 ## D2 CLOSED BY PROVENANCE, FAIL-CLOSED (2026-09-27, decisions-0926-final — the fourth and last D2 round)
 
 Three rounds (5f35a5f…2b8abff; e7431ee…41b4222) each closed a shape of the same defect: "a NEM-kind reading of
