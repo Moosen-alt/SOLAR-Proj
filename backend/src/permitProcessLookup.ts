@@ -1182,7 +1182,9 @@ export async function runPermitProcessLookup(
   }
   // A RE-RUN NEVER FORGETS A CITED ANSWER. Over an existing seeded row, a value this run could not
   // establish (an aborted part, a search that came up empty) keeps the earlier cited answer.
-  const merged = mergeWithEarlier(existing, { issuingAgency, permitStructure: part1.permitStructure, permits });
+  // The earlier row's portal goes through the ONE door with THIS run's issuer (mergeWithEarlier).
+  const merged = mergeWithEarlier(existing, { issuingAgency, permitStructure: part1.permitStructure, permits },
+    (d, earlierPortal) => acceptPortalForPermit({ value: earlierPortal.value, sourceUrl: earlierPortal.sourceUrl, quote: earlierPortal.quote }, "process part", doorContextFor(d, { seen: [], platformPages: [] })));
   const res = savePermitProcessLookup(db, {
     state: input.state, ahj: input.ahj, lookedUpAt: new Date().toISOString(),
     issuingAgency: merged.issuingAgency, permitStructure: merged.permitStructure, permits: merged.permits, notes,
@@ -1210,17 +1212,39 @@ export function lookupHasUnaskedPart(lookup: Pick<PermitProcessLookup, "permits"
 function keep<T>(now: CitedFact<T>, before: CitedFact<T> | undefined): CitedFact<T> {
   return now.value == null && before && before.value != null ? before : now;
 }
+/** What a re-run carries from the earlier row (lookup-close-5, the merge sibling of MF1). "Never
+ *  forgets" means a value THIS run could not establish; it never means a value this run's door
+ *  refuses, nor one another issuer's permit held:
+ *   - ANOTHER ISSUER: this run names the permit's agency and the earlier row named a different one
+ *     (sameAgencyName) — the earlier permit's portal, record type, documents and fee were that other
+ *     agency's, so nothing of it is carried (a city portal never sits beside the county's name).
+ *   - THE DOOR, ONCE MORE: the earlier portal is judged by acceptPortalForPermit with THIS run's
+ *     issuer (`judgePortal`); an OUTRIGHT refusal (rule 5, another module, the issuer's jurisdiction
+ *     type — a row an older door saved) is not carried and its reason is the saved notFound. Attestation
+ *     is not re-asked (it was earned when the value was saved; this run's search may simply not
+ *     return that host again).
+ *   - A RECORD TYPE IS ITS PORTAL'S: the earlier record type is carried only while the saved portal is
+ *     the earlier portal's tenant (or the earlier row had none) — never beside another portal. */
 export function mergeWithEarlier(
   earlier: PermitProcessLookup | null,
   now: { issuingAgency: CitedFact<string>; permitStructure: CitedFact<"separate" | "combo">; permits: PermitProcessPermitAnswer[] },
+  judgePortal: (d: PermitProcessDiscipline, earlierPortal: CitedFact<string>) => PortalDecision,
 ): typeof now {
   if (!earlier) return now;
   const permits = now.permits.map((p) => {
     const b = earlier.permits.find((e) => e.discipline === p.discipline);
     if (!b) return p;
+    if (p.issuingAgency.value && b.issuingAgency.value && !sameAgencyName(p.issuingAgency.value, b.issuingAgency.value)) return p;
+    let portalUrl = keep(p.portalUrl, b.portalUrl);
+    if (portalUrl === b.portalUrl && b.portalUrl.value) {
+      const dec = judgePortal(p.discipline, b.portalUrl);
+      if (OUTRIGHT_REFUSALS.has(dec.code)) portalUrl = { ...p.portalUrl, notFound: `the earlier row's ${dec.fact.notFound ?? "portal is refused"}` };
+    }
+    const earlierTenant = b.portalUrl.value ? portalTenantKey(b.portalUrl.value) : null;
+    const samePortal = !earlierTenant || (Boolean(portalUrl.value) && portalTenantKey(portalUrl.value!) === earlierTenant);
     return {
-      ...p, issuingAgency: keep(p.issuingAgency, b.issuingAgency), portalUrl: keep(p.portalUrl, b.portalUrl),
-      recordType: keep(p.recordType, b.recordType), documents: keep(p.documents, b.documents), fee: keep(p.fee, b.fee),
+      ...p, issuingAgency: keep(p.issuingAgency, b.issuingAgency), portalUrl,
+      recordType: samePortal ? keep(p.recordType, b.recordType) : p.recordType, documents: keep(p.documents, b.documents), fee: keep(p.fee, b.fee),
     };
   });
   for (const b of earlier.permits) if (!permits.some((p) => p.discipline === b.discipline)) permits.push(b);

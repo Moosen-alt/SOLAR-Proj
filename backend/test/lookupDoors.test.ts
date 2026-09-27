@@ -387,7 +387,9 @@ await check("(t2) MF3: ONE predicate for 'is the amount printed beside its label
     const ans = JSON.stringify({ permits: [{ discipline: "structural", documents: { value: null }, fee: { value: { amountUsd: total, basis: "flat", lines }, sourceUrl: FEES, quote } }] });
     return ppl.parseDocsFeesPart(ans, [FEES], "end_turn", texts).byDiscipline.get("structural")!.fee;
   };
-  for (const [page, quote, total] of [[feePage, "Solar Residential ... Commercial $331", 331], [feePage, "Solar Residential ... PV - Commercial $300", 300], [amountFirst, "$75 Solar Residential", 75]] as Array<[string, string, number]>) {
+  const proseLines = "Fees\nDeck permit fee: $75\nSolar Residential permit fee: $150\n";
+  assert.equal(reader.quoteOnPage("$75 Solar Residential", proseLines), true, "N1b: the words are on the page");
+  for (const [page, quote, total] of [[feePage, "Solar Residential ... Commercial $331", 331], [feePage, "Solar Residential ... PV - Commercial $300", 300], [amountFirst, "$75 Solar Residential", 75], [proseLines, "$75 Solar Residential", 75]] as Array<[string, string, number]>) {
     const f = door(page, quote, total, [{ label: "Solar Residential", amountUsd: total }]);
     assert.equal(f.value, null, `${quote}: refused at the door`);
     assert.match(String(f.notFound), /not printed beside its label/, `${quote}: by the tie`);
@@ -462,6 +464,49 @@ await check("(a1) MF4: ONE predicate 'is this cited agency the AHJ itself' (same
   assert.ok(outJ.some((x) => /delegation/.test(x.discipline) && x.saved), JSON.stringify(outJ));
   const jRows = fees.getFeeSchedulesForKey(db, fees.feeScheduleProfileKey({ state: "OR", ahj: "City of Jefferson" }, "permit"), "permit");
   assert.ok(jRows.length && jRows.every((x) => x.collectedByProfileKey === fees.feeScheduleProfileKey({ state: "OR", ahj: "Marion County Public Works Building Inspection Division" }, "permit")), JSON.stringify(jRows.map((x) => [x.discipline, x.collectedByProfileKey])));
+});
+
+await check("(m3) the merge sibling of MF1 MUST-EXCLUDE: a re-run's mergeWithEarlier ('never forgets a cited answer') neither restores a portal THIS run's door refuses outright (an older door saved the county tenant DENBYCOUNTY as the City's structural portal) nor its record type, nor carries the city's portal beside the COUNTY this run names as the electrical issuer; MUST-PASS: the same issuer and nothing found this run keeps the earlier portal and record type", async () => {
+  // B: the earlier row an older door saved.
+  const CITY = "https://www.cityofmergeby.example.gov"; const PG = `${CITY}/building`;
+  const DC = "https://aca-prod.accela.com/MERGEBYCOUNTY/Default.aspx";
+  const cited = (value: string | null, sourceUrl = PG, quote = "The City of Mergeby Building Department issues building permits") => ({ value, sourceUrl, quote, origin: "lookup" as const, ...(value ? {} : { notFound: "x" }) });
+  pp.savePermitProcessLookup(db, { state: "IN", ahj: "City of Mergeby", lookedUpAt: "2026-09-01T00:00:00.000Z", issuingAgency: cited("City of Mergeby"), permitStructure: cited("separate") as never, notes: [],
+    permits: [{ discipline: "structural", label: "Solar", issuingAgency: cited("City of Mergeby"), portalUrl: cited(DC, DC, "Apply online"), recordType: cited("Building Solar Photovoltaic Residential", DC, "Building Solar Photovoltaic Residential"), documents: cited(null), fee: cited(null) }] as never });
+  const pages = { [PG]: { text: html(`<p>The City of Mergeby Building Department issues building permits for solar installations.</p>`) } };
+  const p1 = { issuingAgency: { value: "City of Mergeby", sourceUrl: PG, quote: "The City of Mergeby Building Department issues building permits" }, permitStructure: { value: "separate", sourceUrl: PG, quote: "issues building permits" },
+    permits: [{ discipline: "structural", label: "Solar", issuingAgency: { value: "City of Mergeby", sourceUrl: PG, quote: "The City of Mergeby Building Department issues building permits" }, portalUrl: { value: DC, sourceUrl: DC, quote: "Apply online" }, recordType: { value: null } }] };
+  const llmOf = (x: unknown, urls: string[]) => ({ webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? g(JSON.stringify(x), urls) : g(JSON.stringify({ permits: [] }), [])) });
+  const rb = await ppl.runPermitProcessLookup(db, llmOf(p1, [PG, DC]), { state: "IN", ahj: "City of Mergeby", dcKw: "7", acKw: "6", force: true, reader: newReader(site(pages).fetch) });
+  const sb = saved(rb, "structural");
+  assert.equal(sb.portalUrl.value, null, `the earlier row's county tenant is not restored (${sb.portalUrl.value})`);
+  assert.match(String(sb.portalUrl.notFound), /earlier row's .*MERGEBYCOUNTY.*another jurisdiction's portal/, String(sb.portalUrl.notFound));
+  assert.equal(sb.recordType.value, null, `nor the county tenant's record type (${sb.recordType.value})`);
+  // A: the earlier row's electrical portal is the city's; this run names the COUNTY as the issuer.
+  const C2 = "https://www.merge-harbor.gov"; const PG2 = `${C2}/856/Permit-Center`; const APP2 = `${C2}/DocumentCenter/View/1/Electrical`;
+  const ACA2 = "https://aca-prod.accela.com/MERGEHARBOR/Default.aspx"; const CO2 = "https://www.mergeharborcounty.gov/building";
+  const pages2 = { [PG2]: { text: html(`<p>Building Inspections Division for building, mechanical, electrical, plumbing and fuel-gas inspections.</p><p><a href="${ACA2}">Apply online - Customer Self Service</a></p>`, "Permit Center") },
+    [CO2]: { text: html(`<p>Merge Harbor County Building Services issues electrical permits for the City of Merge Harbor.</p>`, "Building Services") } };
+  const ag = (value: string, sourceUrl: string, quote: string) => ({ value, sourceUrl, quote });
+  const topA = ag("City of Merge Harbor Building Inspections Division", PG2, "Building Inspections Division for building, mechanical, electrical, plumbing and fuel-gas inspections");
+  const firstA = { issuingAgency: topA, permitStructure: { value: "separate", sourceUrl: PG2, quote: "A separate Electrical Trade Permit" },
+    permits: [{ discipline: "structural", label: "Solar", issuingAgency: topA, portalUrl: { value: null }, recordType: { value: null } },
+      { discipline: "electrical", label: "Electrical", issuingAgency: ag("City of Merge Harbor Permit Center", APP2, "ELECTRICAL TRADE PERMIT APPLICATION City of Merge Harbor Permit Center"), portalUrl: { value: null }, recordType: { value: null } }] };
+  const input = { state: "SC", ahj: "City of Merge Harbor", dcKw: "7", acKw: "6", force: true };
+  const r1 = await ppl.runPermitProcessLookup(db, llmOf(firstA, [PG2, APP2, CO2]), { ...input, reader: newReader(site(pages2).fetch) });
+  assert.equal(saved(r1, "electrical").portalUrl.value, ACA2, "control: the city issues it -> the city's portal");
+  const countyA = { ...firstA, permits: [firstA.permits[0], { ...firstA.permits[1], issuingAgency: ag("Merge Harbor County Building Services", CO2, "Merge Harbor County Building Services issues electrical permits for the City of Merge Harbor") }] };
+  const r2 = await ppl.runPermitProcessLookup(db, llmOf(countyA, [PG2, APP2, CO2]), { ...input, reader: newReader(site(pages2).fetch) });
+  assert.equal(saved(r2, "electrical").issuingAgency.value, "Merge Harbor County");
+  assert.equal(saved(r2, "electrical").portalUrl.value, null, `the city's portal is not carried beside the county's name (${saved(r2, "electrical").portalUrl.value})`);
+  // MUST-PASS: the city again, and this run's page no longer links a portal — the earlier cited answer is kept.
+  const r3 = await ppl.runPermitProcessLookup(db, llmOf(firstA, [PG2, APP2, CO2]), { ...input, reader: newReader(site(pages2).fetch) });
+  assert.equal(saved(r3, "electrical").portalUrl.value, ACA2, "re-established by this run (control)");
+  const bare = { [PG2]: { text: html(`<p>Building Inspections Division for building, mechanical, electrical, plumbing and fuel-gas inspections.</p>`, "Permit Center") } };
+  const r4 = await ppl.runPermitProcessLookup(db, llmOf(firstA, [PG2, APP2]), { ...input, reader: newReader(site(bare).fetch) });
+  assert.ok(!(r4.lookup!.notes ?? []).some((n) => /^Portal \(electrical\): .*MERGEHARBOR/.test(n)), "this run did not find it itself");
+  assert.equal(saved(r4, "electrical").portalUrl.value, ACA2, `the same issuer, nothing found this run: the earlier portal is KEPT (${saved(r4, "electrical").portalUrl.notFound})`);
+  assert.equal(saved(r4, "structural").portalUrl.value, ACA2, "structural too");
 });
 
 if (failures) { console.error(`\n${failures} lookupDoors test(s) failed.`); process.exit(1); }
