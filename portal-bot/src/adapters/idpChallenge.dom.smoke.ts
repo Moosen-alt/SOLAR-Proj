@@ -286,6 +286,32 @@ await check("MUST-PASS / MUST-EXCLUDE a login reached past a payments link: the 
   await context.close();
 });
 
+await check("MUST-PASS / MUST-EXCLUDE a CAPTCHA on the login form HOLDS (a run that may hold): nothing typed under it; the person solves it and signs in; the run resumes logged_in", async () => {
+  const { context, page } = await at("/recaptcha-login");
+  let typedWhenParked = "(not parked)";
+  let parkReason = "";
+  const res = await performLogin(page, { username: USER, password: GOOD_PW }, {
+    parkMs: 30_000,
+    onPark: (info) => {
+      parkReason = info.reason;
+      // THE PERSON, two seconds later: what the bot left in the password box is read first; then
+      // they solve the CAPTCHA and sign in, and the portal moves on to the signed-in home.
+      setTimeout(() => {
+        void page.locator("[id='credentials.passcode']").inputValue().then((v) => { typedWhenParked = v; })
+          .catch(() => { typedWhenParked = "(unreadable)"; })
+          .then(() => page.goto(`${TENANT}/apps/selfservice#/home`)).catch(() => undefined);
+      }, 2000);
+    },
+  });
+  results.push(res.message);
+  assert.match(parkReason, /complete the MFA\/CAPTCHA in the open browser window/i);
+  assert.match(parkReason, /recaptcha/i);
+  assert.equal(typedWhenParked, "", `the bot typed under the CAPTCHA: "${typedWhenParked === "" ? "" : "(something)"}"`);
+  assert.equal(res.status, "logged_in", `got ${res.status}: ${res.message}`);
+  assert.match(res.message, /person completed/);
+  await context.close();
+});
+
 // ---- resolveParkMs ----------------------------------------------------------------------------
 await check("MUST-PASS resolveParkMs: an UNREADABLE page on a headed process still parks; a test double never does", async () => {
   const prev = process.env.PORTAL_HEADLESS;
