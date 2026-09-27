@@ -522,7 +522,8 @@ async function findInputByAdjacentLabel(page: Page, kind: "user" | "pass"): Prom
         .filter((e) => isVis(e) && re.test((e.textContent || "")) && (e.textContent || "").trim().length < 24);
       const inputs = (Array.from(document.querySelectorAll("input")) as HTMLInputElement[]).filter((e) => {
         const t = (e.getAttribute("type") || "text").toLowerCase();
-        if (!isVis(e)) return false;
+        if (!isVis(e) || e.disabled || e.readOnly) return false;
+        if (t !== "password" && /one-time-code|passcode|\botp\b|verification.?code|security.?code|mfa.?code/i.test([e.name, e.id, e.getAttribute("autocomplete"), e.getAttribute("aria-label"), e.getAttribute("placeholder")].filter(Boolean).join(" "))) return false;
         return k === "pass" ? (t === "password" || t === "text") : (t === "text" || t === "email" || t === "");
       });
       if (!labels.length || !inputs.length) return null;
@@ -614,7 +615,12 @@ async function isFillable(loc: Locator): Promise<boolean> {
       const tag = el.tagName.toLowerCase();
       if (tag === "textarea" || tag === "select") return true;
       if (tag === "input") {
-        const t = ((el as HTMLInputElement).getAttribute("type") || "text").toLowerCase();
+        const inp = el as HTMLInputElement;
+        if (inp.disabled || inp.readOnly) return false;
+        const t = (inp.getAttribute("type") || "text").toLowerCase();
+        // A one-time-code box is never a login box (idp-login skeptic MF1: Okta OIE names its code box credentials.passcode, which name*="pass" matched, and the password was typed there).
+        const hay = [inp.name, inp.id, inp.getAttribute("autocomplete"), inp.getAttribute("aria-label"), inp.getAttribute("placeholder")].filter(Boolean).join(" ");
+        if (t !== "password" && /one-time-code|passcode|\botp\b|verification.?code|security.?code|mfa.?code/i.test(hay)) return false;
         return !["checkbox", "radio", "button", "submit", "reset", "file", "image", "hidden"].includes(t);
       }
       return (el as HTMLElement).isContentEditable === true;
@@ -712,7 +718,7 @@ async function findInputBeforePassword(page: Page): Promise<Locator | null> {
   try {
     const idx = await (page as unknown as { evaluate: (fn: () => number) => Promise<number> }).evaluate(() => {
       const vis = (el: Element) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-      const inputs = (Array.from(document.querySelectorAll("input")) as HTMLInputElement[]).filter(vis);
+      const inputs = (Array.from(document.querySelectorAll("input")) as HTMLInputElement[]).filter((e) => vis(e) && !e.disabled && !e.readOnly);
       const pwAt = inputs.findIndex((e) => (e.getAttribute("type") || "").toLowerCase() === "password");
       if (pwAt <= 0) return -1;
       // Walk backwards to the nearest field a person would type an identifier into.

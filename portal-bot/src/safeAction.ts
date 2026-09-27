@@ -440,7 +440,7 @@ export async function loginBoxShowing(page: Page | null | undefined): Promise<bo
             const st = getComputedStyle(el);
             if (!(rect.width > 2 && rect.height > 2 && st.visibility !== "hidden" && st.display !== "none")) continue;
             const type = (el.getAttribute("type") || "text").toLowerCase();
-            if (type === "password") { password = true; continue; }
+            if (type === "password") { if (!el.disabled && !el.readOnly) password = true; continue; }
             if (!["text", "email", "tel", ""].includes(type)) continue;
             const ac = (el.getAttribute("autocomplete") || "").toLowerCase();
             const hay = [el.name, el.id, ac, el.getAttribute("aria-label"), el.getAttribute("placeholder")].filter(Boolean).join(" ");
@@ -604,7 +604,7 @@ export async function detectSecondFactor(page: Page | null | undefined): Promise
           const st = getComputedStyle(el);
           if (!(rect.width > 2 && rect.height > 2 && st.visibility !== "hidden" && st.display !== "none")) continue;
           const type = (el.getAttribute("type") || "text").toLowerCase();
-          if (type === "password") { password = true; continue; }
+          if (type === "password") { if (!el.disabled && !el.readOnly) password = true; continue; }
           const hay = [el.name, el.id, el.getAttribute("autocomplete"), el.getAttribute("aria-label"), el.getAttribute("placeholder")]
             .filter(Boolean).join(" ");
           if (/one-time-code|passcode|\botp\b|verification.?code|security.?code|mfa.?code|credentials\.passcode/i.test(hay)) code = true;

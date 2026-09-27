@@ -206,6 +206,40 @@ for (const [name, p, re] of [
 }
 
 // ---- performLogin ---------------------------------------------------------------------------
+// idp-login skeptic MF1b: an MFA code page that ALSO shows a visible but DISABLED password box.
+pages["/code-disabled-pw"] = () => pages["/code"]().replace("</form>", `<label for="dpw">Password</label><input id="dpw" type="password" disabled></form>`);
+// idp-login skeptic MF1: Okta OIE names its one-time-code box credentials.passcode (type=text,
+// autocomplete=one-time-code). Okta's "Verify with Google Authenticator" page shows the account and
+// a Verify submit - the remembered-identifier bypass typed the PASSWORD into the code box and
+// submitted it (3 of 3 at the round's tip). The password must never go into it, and Verify must not be clicked.
+pages["/ga"] = () => withScript(CHOOSER.replace(/\{\{IDENTIFIER\}\}/g, USER)
+  .replace(/Verify it's you with a security method/g, "Verify with Google Authenticator")
+  .replace("Select from the following options", "Enter the temporary code generated in your Google Authenticator app")
+  .replace("<ul data-se=\"authenticator-verify-list\">{{OPTIONS}}</ul>",
+    `<label for="credentials.passcode" id="credentials.passcode-label"><span>Enter code</span></label><input type="text" id="credentials.passcode" name="credentials.passcode" autocomplete="one-time-code" aria-labelledby="credentials.passcode-label" data-se="credentials.passcode"><input class="button button-primary" type="submit" value="Verify" data-type="save">`), "");
+await check("MUST-EXCLUDE the password is NEVER typed into Okta's one-time-code box (credentials.passcode), and Verify is not clicked", async () => {
+  const { context, page } = await at("/ga");
+  const res = await performLogin(page, { username: USER, password: GOOD_PW });
+  results.push(res.message);
+  assert.notEqual(res.status, "logged_in", `got ${res.status}: ${res.message}`);
+  const codeVals = await page.locator("input:not([type=password]):not([type=hidden])").evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value));
+  assert.ok(!codeVals.includes(GOOD_PW), `the password was typed into a code box: ${JSON.stringify(codeVals.map((v) => (v ? "<value>" : "")))}`);
+  assert.ok(!codeVals.includes(USER), "the username was typed into a code box");
+  const clicks = await page.evaluate(() => ((window as unknown as { __clicks?: string[] }).__clicks ?? []).join("|"));
+  assert.doesNotMatch(clicks, /verify/i, `Verify was clicked on the code page: ${clicks}`);
+  await context.close();
+});
+await check("MUST-EXCLUDE a code page with a visible DISABLED password box is still a challenge, and nothing is typed", async () => {
+  const { context, page } = await at("/code-disabled-pw");
+  const hit = await detectChallengeFrame(page);
+  assert.ok(hit, "the disabled password box made the code page read as a login");
+  const res = await performLogin(page, { username: USER, password: GOOD_PW });
+  results.push(res.message);
+  assert.notEqual(res.status, "logged_in", `got ${res.status}: ${res.message}`);
+  const vals = await page.locator("input:not([type=hidden])").evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value));
+  assert.ok(!vals.includes(GOOD_PW) && !vals.includes(USER), "a credential was typed on the code page");
+  await context.close();
+});
 await check("MUST-PASS the remembered-account password step: THIS credential's password is typed and Verify clicked → logged_in", async () => {
   const { context, page } = await at("/pw");
   const res = await performLogin(page, { username: USER, password: GOOD_PW });
