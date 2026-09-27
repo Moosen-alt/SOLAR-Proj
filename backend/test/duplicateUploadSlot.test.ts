@@ -38,7 +38,7 @@ save(distinct.id, "module_spec", "module sheet");
 save(distinct.id, "inverter_spec", "inverter sheet");
 
 check("(u1) MUST-EXCLUDE: a byte-identical upload is attached ONCE, under the first document type", () => {
-  const picked = sub.submissionDocumentsByType(db, repo.getProjectDetail(db, same.id).project);
+  const picked = sub.submissionDocumentsByType(db, repo.getProjectDetail(db, same.id).project, null);
   assert.ok(picked.module_spec, "the module spec is attached");
   assert.equal(picked.inverter_spec, undefined, "the same bytes must not go up a second time as the inverter spec");
 });
@@ -49,7 +49,7 @@ check("(u2) the inventory FLAGS the duplicate instead of calling it an ordinary 
   assert.match(row.via, /same file as module spec/);
 });
 check("(u3) MUST-PASS: two different files both attach", () => {
-  const picked = sub.submissionDocumentsByType(db, repo.getProjectDetail(db, distinct.id).project);
+  const picked = sub.submissionDocumentsByType(db, repo.getProjectDetail(db, distinct.id).project, null);
   assert.ok(picked.module_spec && picked.inverter_spec);
   assert.equal(req.documentInventory(db, repo.getProjectDetail(db, distinct.id).project).presence.find((p) => p.docType === "inverter_spec")?.via, "attached file");
 });

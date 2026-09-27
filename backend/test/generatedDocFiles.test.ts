@@ -65,7 +65,7 @@ console.log("\n1. THE PACKAGE BECOMES REAL PDF FILES");
 
 console.log("\n2. PRECEDENCE — GENERATED NEVER SHADOWS OFFICIAL, HUMAN OUTRANKS BOTH");
 {
-  const merged = submissionDocumentsByType(db, project);
+  const merged = submissionDocumentsByType(db, project, null);
   const generated = generatedDocFilesByType(project.id, pathOf(project));
   check("2a. the merged map now carries the generated docs", Object.keys(generated).every((k) => k in merged),
     JSON.stringify({ generated: Object.keys(generated), merged: Object.keys(merged) }));
@@ -79,7 +79,7 @@ console.log("\n2. PRECEDENCE — GENERATED NEVER SHADOWS OFFICIAL, HUMAN OUTRANK
      VALUES (?, ?, ?, ?, ?, 'upload', ?)`,
     [`up-${sharedKey}`, project.id, sharedKey, "human.pdf", humanFile, new Date().toISOString()],
   );
-  const merged2 = submissionDocumentsByType(db, project);
+  const merged2 = submissionDocumentsByType(db, project, null);
   check(`2b. THE RULE: a human upload of '${sharedKey}' outranks the generated file`,
     merged2[sharedKey] === humanFile, `${merged2[sharedKey]} vs ${generated[sharedKey]}`);
   check("2c. and the OTHER generated docs are still there — the upload displaced one key, not the family",
@@ -120,7 +120,7 @@ console.log("\n4. OWN KEYS, ONE RENDER, PATH-SCOPED (PLAN D2)");
   // official form held): every generated worksheet is packaged under its OWN key.
   const michael = mkCoos("prescriptive", "4a");
   await materializeGeneratedDocs(db, michael);
-  const pkg4a = submissionDocumentsByType(db, michael);
+  const pkg4a = submissionDocumentsByType(db, michael, null);
   const generated4a = Object.entries(pkg4a).filter(([, f]) => f.includes(`${path.sep}generated${path.sep}`));
   check("4a. MUST-PASS: no generated file sits under an official application key",
     generated4a.every(([k]) => !OFFICIAL.includes(k)), JSON.stringify(generated4a.map(([k, f]) => `${k} <- ${path.basename(f)}`)));
@@ -162,8 +162,8 @@ console.log("\n4. OWN KEYS, ONE RENDER, PATH-SCOPED (PLAN D2)");
   check("4c. MUST-EXCLUDE: the stale structural.pdf is DELETED by the prescriptive render", !fs.existsSync(staleStructural));
   check("4c. …and the stale engineered-docs.pdf with it", !fs.existsSync(staleEngineered));
   check("4c. …and neither is packaged",
-    !Object.values(submissionDocumentsByType(db, six)).some((f) => /structural\.pdf$|engineered-docs\.pdf$/.test(f)),
-    JSON.stringify(Object.values(submissionDocumentsByType(db, six)).map((f) => path.basename(f))));
+    !Object.values(submissionDocumentsByType(db, six, null)).some((f) => /structural\.pdf$|engineered-docs\.pdf$/.test(f)),
+    JSON.stringify(Object.values(submissionDocumentsByType(db, six, null)).map((f) => path.basename(f))));
   check("4c. …while the official fill in filled/<pid>/ is untouched (the prune stays inside generated/)", fs.existsSync(officialFill));
 
   // (4d) MUST-EXCLUDE, ec5c36d3-shaped: a PRESCRIPTIVE render's prescriptive-application.pdf is on
@@ -175,7 +175,7 @@ console.log("\n4. OWN KEYS, ONE RENDER, PATH-SCOPED (PLAN D2)");
   await materializeGeneratedDocs(db, ec5);
   check("4d. MUST-EXCLUDE: the stale prescriptive-application.pdf is DELETED by the engineered render", !fs.existsSync(stalePrescriptive));
   check("4d. …and the engineered render's own structural worksheet is held under its own key",
-    Boolean(submissionDocumentsByType(db, ec5).generated_structural_worksheet), JSON.stringify(Object.keys(submissionDocumentsByType(db, ec5))));
+    Boolean(submissionDocumentsByType(db, ec5, null).generated_structural_worksheet), JSON.stringify(Object.keys(submissionDocumentsByType(db, ec5, null))));
 
   // (4e) PATH-SCOPED READ: the permit path moves and nothing re-renders — the old render is stale
   // and packages nothing (the next staging/learn re-renders it before reading).

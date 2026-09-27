@@ -847,8 +847,10 @@ async function autoLearnPortalInner(
       await buildUtilityPackage(db, projectId, scopeType === "utility" ? "nem" : "permit").catch(() => null);
     }
     // Use the replay selection policy: filled applications are available, and
-    // the operator's explicit upload wins when both versions exist.
-    docsByType = submissionDocumentsByType(db, project);
+    // the operator's explicit upload wins when both versions exist. Scoped to the filing this
+    // learn records (docs-audit PLAN D3): no permit named = every AHJ document ("permit").
+    docsByType = submissionDocumentsByType(db, project,
+      scopeType === "utility" ? "nem" : ((learnTrackFor(input.discipline, input.permitType) ?? "permit") as Parameters<typeof submissionDocumentsByType>[2]));
   } catch {
     docsByType = {};
   }

@@ -136,6 +136,7 @@ import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEv
 import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
+import { disciplineFor } from "./docDiscipline";
 import { resolvePermitPath } from "./permitPath";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
 import type { PvWorksheetGateInput } from "./pvWorksheetGate";
@@ -5721,8 +5722,11 @@ export async function reopenCorrectionOnPortal(
   // 3) REVISED DOCUMENTS through the SAME resolver + attach-time gate replay uses:
   //    explicit uploads beat generated forms, wrong-path forms are filtered, and the
   //    gate re-reads the project's current path + selected file at the attach itself.
-  const docsByType = submissionDocumentsByType(db, detail.project);
-  const beforeUpload = uploadDocumentGuard(db, projectId, targetType !== "nem");
+  //    Scoped to THIS target's filing (docs-audit PLAN D3): a reopened building permit is
+  //    handed the building track's documents, never the utility bill or the electrical form.
+  const reopenFiling = trackForTarget(text(target.target_type), text(target.permit_type));
+  const docsByType = submissionDocumentsByType(db, detail.project, reopenFiling);
+  const beforeUpload = uploadDocumentGuard(db, projectId, { track: reopenFiling });
 
   // 4) Credential/session conventions shared with the learner/replay/monitor.
   const clientId = detail.project.clientId ?? "";
@@ -7272,9 +7276,15 @@ function validatePortalFields(
  * and this is the line that would have uploaded it, against Coos Bay's own printed
  * instruction: "Prescriptive path — upload ONLY the prescriptive application. Do NOT
  * also upload the structural application."
+ *
+ * AND IT IS TRACK-SCOPED (docs-audit PLAN D3): the gate below was track-scoped while these
+ * files were not, so Michael's electrical run carried the building checklist, the utility bill
+ * and the meter photo. The run is handed its own track's documents plus the shared plan-set
+ * family — docDiscipline.ts, the table stagingMissingDocuments reads too. `null` = a legacy
+ * trackless stage (every track), said explicitly.
  */
-export function packagedDocumentsByType(db: AppDb, project: ProjectRecord): Record<string, string> {
-  return submissionDocumentsByType(db, project);
+export function packagedDocumentsByType(db: AppDb, project: ProjectRecord, track: SubmittalTrackType | null): Record<string, string> {
+  return submissionDocumentsByType(db, project, track);
 }
 
 /**
@@ -7297,20 +7307,26 @@ export function packagedDocumentsByType(db: AppDb, project: ProjectRecord): Reco
  *    recipeDisciplineForTrack does (`building` → `structural`), on purpose, so the
  *    two sides cannot disagree.
  *
- * Only APPLICATION rows carry a discipline; the universal plan-set family carries
- * none and keeps the lane-only filter — every discipline needs the plan set.
+ * A row's discipline is its own when it carries one (the application rows, which know which
+ * permit owes them), else the docDiscipline.ts table's — the ONE docType → discipline answer
+ * the payload (packagedDocumentsByType) reads too (docs-audit PLAN D3). The PE-letter row
+ * (`structural_letter`) carries none, so it blocked the ELECTRICAL track of an engineered job
+ * (b0ab5169, ec5c36d3) over a document only the building permit files (V9); the table files it
+ * under structural. The universal plan-set family has no discipline and keeps the lane-only
+ * filter — every discipline needs the plan set.
  */
 export function stagingMissingDocuments(inventory: DocumentInventory, track?: SubmittalTrackType): DocPresence[] {
   const lane = track === "nem" ? "nem" : track ? "permit" : null;
   const discipline = track ? recipeDisciplineForTrack(track) : "";
   return inventory.missingBlocking.filter((d) => {
     if (!(lane == null || d.lane === lane || d.docType === "inverter_spec")) return false;
+    const rowDiscipline = d.discipline || disciplineFor(d.docType);
     // No discipline on the row (plan-set family), no track, or a track whose
     // discipline we cannot name ('permit'): lane is the whole filter.
-    if (!d.discipline || !discipline) return true;
+    if (!rowDiscipline || !discipline) return true;
     // A COMBINATION permit is one filing covering both trades — it owes everything.
-    if (discipline === "combo" || d.discipline === "combo") return true;
-    return d.discipline === discipline;
+    if (discipline === "combo" || rowDiscipline === "combo") return true;
+    return rowDiscipline === discipline;
   });
 }
 
@@ -7660,7 +7676,7 @@ export async function prepareSubmission(
   // so the adapters classify them by keyword); fall back to snapshot file paths.
   // What goes in that set — the filled-form merge, its precedence, and the permit-path
   // scoping that keeps the OTHER application out — is documented on the function.
-  const docsByType = packagedDocumentsByType(db, detail.project);
+  const docsByType = packagedDocumentsByType(db, detail.project, track ?? null);
   const packagedFiles = Object.values(docsByType);
   const files = packagedFiles.length > 0 ? packagedFiles : filesFromProject(detail.project.parserSnapshot);
 

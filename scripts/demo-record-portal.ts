@@ -513,7 +513,7 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
     ? { ...detail.project, parserSnapshot: { ...detail.project.parserSnapshot, ...overlay } }
     : detail.project;
   const fieldValues = resolveRecipeFieldValues(db, stagedProject, "utility");
-  const docsByType = submissionDocumentsByType(db, stagedProject);
+  const docsByType = submissionDocumentsByType(db, stagedProject, "nem");
   const boundCount = Object.values(fieldValues).filter((v) => String(v ?? "").trim()).length;
   console.log(`[demo-record] project ${projectId}: ${boundCount} non-empty bindings of ${Object.keys(fieldValues).length}; ${Object.keys(docsByType).length} document type(s)`);
 

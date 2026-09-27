@@ -361,12 +361,12 @@ buildFilledForm(filledOnly.id, "electrical_application", "Coos Bay Electrical Pe
 await check("learn and replay use the same explicit upload when a generated application also exists", () => {
   const project = mk("prescriptive");
   buildFilledForm(project.id, "electrical_application", "Electrical Permit Application.pdf");
-  const generated = submissionDocumentsByType(db, project as never).electrical_application;
+  const generated = submissionDocumentsByType(db, project as never, null).electrical_application;
   assert.ok(generated?.includes("tmpl-"), "the generated application is available before upload");
   attach(project.id, "electrical_application");
   const explicit = path.join(tmpDir, `${project.id}-electrical_application.pdf`);
-  assert.equal(submissionDocumentsByType(db, project as never).electrical_application, explicit);
-  assert.equal(packagedDocumentsByType(db, project as never).electrical_application, explicit);
+  assert.equal(submissionDocumentsByType(db, project as never, null).electrical_application, explicit);
+  assert.equal(packagedDocumentsByType(db, project as never, "electrical").electrical_application, explicit);
   assert.notEqual(explicit, generated);
 });
 
@@ -485,7 +485,7 @@ await check("A STALE STRUCTURAL FILL DOES NOT SATISFY THE PRESCRIPTIVE ROW", () 
 await check("…AND IT IS NOT PACKAGED FOR UPLOAD", () => {
   // The other half, and the one that actually reaches the jurisdiction: the packaging
   // expression prepareSubmission hands to the portal upload sweep.
-  const packaged = packagedDocumentsByType(db, flipped as never);
+  const packaged = packagedDocumentsByType(db, flipped as never, null);
   const stale = path.join(FILLED_ROOT, flipped.id, `tmpl-${structuralTemplateId}.pdf`);
   assert.ok(!Object.values(packaged).includes(stale),
     `the stale STRUCTURAL application was packaged for upload as ${JSON.stringify(Object.entries(packaged).find(([, f]) => f === stale))} — "Do NOT also upload the structural application"`);
@@ -510,7 +510,7 @@ await check("NO OVER-BLOCK: the same filled structural form DOES satisfy an ENGI
   assert.equal(row.applicationKind, "structural", "fixture premise");
   assert.equal(row.present, true, `the engineered path's own application was rejected: ${JSON.stringify(inv.missingBlocking.map((d) => d.label))}`);
   assert.match(row.via, /filled form/);
-  assert.equal(packagedDocumentsByType(db, onPath as never).building_application,
+  assert.equal(packagedDocumentsByType(db, onPath as never, "building").building_application,
     path.join(FILLED_ROOT, onPath.id, `tmpl-${structuralTemplateId}.pdf`),
     "…and it is the file that goes up");
 });
@@ -1123,7 +1123,7 @@ await check("wrong-path explicit uploads are rejected, including a path change d
   const proj = mk("engineered");
   attach(proj.id, "building_application");
   db.run("UPDATE project_documents SET original_filename = 'Non-Prescriptive Structural Application.pdf' WHERE project_id = ?", [proj.id]);
-  const file = submissionDocumentsByType(db, proj).building_application;
+  const file = submissionDocumentsByType(db, proj, null).building_application;
   assert.ok(file);
   const guard = uploadDocumentGuard(db, proj.id, true);
   assert.doesNotThrow(() => guard("building_application", file));
@@ -1131,7 +1131,7 @@ await check("wrong-path explicit uploads are rejected, including a path change d
   db.run("UPDATE projects SET parser_json = ? WHERE id = ?", [JSON.stringify(snap), proj.id]);
   assert.throws(() => guard("building_application", file), /changed|permit path/i);
   const changed = { ...proj, parserSnapshot: snap };
-  assert.equal(submissionDocumentsByType(db, changed).building_application, undefined);
+  assert.equal(submissionDocumentsByType(db, changed, null).building_application, undefined);
   assert.ok(documentInventory(db, changed).missingBlocking.some(d => d.docType === "building_application"));
 });
 await check("active board excludes archived projects while explicit history includes them", async () => {
