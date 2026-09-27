@@ -302,8 +302,16 @@ async function main(): Promise<void> {
   // gating the screen must not deafen the resolver to the plan set's own verdict.
   check("MUST EXCLUDE: a Florida plan set that says ENGINEERED still routes engineered",
     resolvePermitPath(otherState("FL", { permitPath: "engineered" })).path === "engineered");
-  check("MUST EXCLUDE: an operator override still wins in Florida",
-    resolvePermitPath(otherState("FL", { permitPathOverride: "prescriptive" })).path === "prescriptive");
+  // The override is Oregon's split too (61c0e20, e2e-gap close verifier MF1): "prescriptive"
+  // picked in Florida is SET ASIDE with a basis line and the job gets the standard structural
+  // review — it used to finalize the whole Oregon split on a non-Oregon job. An "engineered"
+  // override outside the split is still a stamped structural review.
+  const flPrescriptive = resolvePermitPath(otherState("FL", { permitPathOverride: "prescriptive" }));
+  check("MUST EXCLUDE: an operator 'prescriptive' override in Florida never finalizes Oregon's prescriptive path — standard review, and the basis says it was set aside",
+    flPrescriptive.path !== "prescriptive" && flPrescriptive.standardReview === true && /set aside/i.test(flPrescriptive.basis.join(" ")),
+    JSON.stringify({ path: flPrescriptive.path, standardReview: flPrescriptive.standardReview, basis: flPrescriptive.basis.join(" ").slice(0, 160) }));
+  check("MUST PASS: an operator 'engineered' override in Florida still routes engineered",
+    resolvePermitPath(otherState("FL", { permitPathOverride: "engineered" })).path === "engineered");
   check("MUST EXCLUDE: affirmative stamp language still routes engineered in Florida",
     resolvePermitPath(otherState("FL", { stampRecommendation: "Requires PE-stamped structural plans and a sealed engineering letter" })).path === "engineered");
 
