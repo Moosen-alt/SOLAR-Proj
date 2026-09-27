@@ -17,12 +17,18 @@
 //      seeded line "matches the published schedule" with the printed line and the link, never
 //      "verified"; an uncorroborated one keeps "provisional — not verified"; an estimate stays an
 //      estimate; everything interpolated is escaped.
-//   5. On the REAL schedule module: the badge needs a printed row naming THIS permit (or the
-//      schedule's row for exactly this bracket label); a row naming another trade — plumbing,
-//      mechanical, wind — never earns it (skeptic MF4: "Permit fee" $160 vs "Plumbing permit fee").
+//   5. On the REAL schedule module: the badge needs a printed row naming THIS permit; a row
+//      naming another trade — plumbing, mechanical, wind — never earns it (skeptic MF4: "Permit
+//      fee" $160 vs "Plumbing permit fee"), and an exact-label row earns it only when that label
+//      itself names this permit (fees-close2: "Residential permit", a bare "5 KVA or less" do not).
+//   6. The heading above the row (fees-close2, skeptic M1p): kept at corroboration time, stored,
+//      read with the row — a wind/plumbing/generator heading never earns it; a solar/renewable
+//      heading over a bare size row does. M2-M5, M9, M10 shapes as MUST-EXCLUDE with controls.
 // Kill: drop the flag at the seam (permitFeeCorroborated = false) -> section 1 and 3a FAIL.
-// Kill (MF4): resolutionFrom's corroborated back to `!!l.corroboration?.corroborated` -> 5a, 5e,
-// 5f FAIL (measured: 3 failures; 5b-5d pass either way, so they guard the gate's reach).
+// Kill (MF4 + fees-close2 positive naming): corroborationNamesThisPermit returns true for any
+// corroborated line -> 5a, 5c, 5d, 5e, 5f, 6a, 6e-6j, 6m, 6o, 6p FAIL (measured: 15 failures).
+// Kill (fees-close2 heading): corroborateBrackets records heading "" -> 6b, 6c, 6d FAIL (measured:
+// 3 failures; 6a stays excluded — positive naming alone holds the wind row out).
 import "./_isolate";
 import fs from "node:fs";
 import os from "node:os";
@@ -225,18 +231,114 @@ registerFeeScheduleLookup(null);
   const solar = lineFor("mf4-solar", "City of Solarbay");
   check("5b. MUST-PASS: a printed line naming the solar PV permit earns the badge", solar.corroborated === true && badge(lib.renderFeeSheetLine(solar)) === "matches the published schedule",
     JSON.stringify({ c: solar.corroborated, e: solar.evidenceQuote }));
+  // POSITIVE NAMING ONLY (fees-close2): the "exact bracket label" shortcut applies only when that
+  // label itself names this permit — "Residential permit" and a bare "5 KVA or less" name no solar
+  // permit, so being printed verbatim earns nothing. Unsure -> "provisional".
   save("City of Exactbay", "Residential permit", 180);
   const exact = lineFor("mf4-exact", "City of Exactbay");
-  check("5c. MUST-PASS: the schedule's line for EXACTLY this bracket label earns it", exact.corroborated === true, JSON.stringify({ c: exact.corroborated, e: exact.evidenceQuote }));
+  check("5c. MUST-EXCLUDE: the exact-label row 'Residential permit | $180.00' names no solar permit — no badge", exact.corroborated === false, JSON.stringify({ c: exact.corroborated, e: exact.evidenceQuote }));
   save("Kva County", "5 KVA or less", 135, "electrical");
   const kva = lineFor("mf4-kva", "Kva County");
-  check("5d. MUST-PASS: an exact-label kVA row ('5 KVA or less | $135.00') earns it", kva.corroborated === true && kva.feeUsd === 135, JSON.stringify({ f: kva.feeUsd, c: kva.corroborated, e: kva.evidenceQuote }));
+  check("5d. MUST-EXCLUDE: a bare kVA row with no heading naming solar ('5 KVA or less | $135.00') — no badge", kva.corroborated === false && kva.feeUsd === 135, JSON.stringify({ f: kva.feeUsd, c: kva.corroborated, e: kva.evidenceQuote }));
   save("City of Mechbay", "Mechanical permit", 90);
   const mech = lineFor("mf4-mech", "City of Mechbay");
   check("5e. MUST-EXCLUDE: a line naming another trade never earns it, even as the exact label", mech.corroborated === false, JSON.stringify({ c: mech.corroborated, e: mech.evidenceQuote }));
   save("Wind County", "5 KVA or less", 346, "electrical");
   const wind = lineFor("mf4-wind", "Wind County");
   check("5f. MUST-EXCLUDE: the WIND row carrying the solar bracket's label and fee never earns it", wind.corroborated === false, JSON.stringify({ c: wind.corroborated, e: wind.evidenceQuote }));
+}
+
+// ── 6. THE HEADING ABOVE THE ROW, AND POSITIVE NAMING (fees-close2; skeptic M1p) ──────────────
+// The production Tigard schedule prints a heading on its own line ("p21 Wind generation systems")
+// and bare size rows under it, each with a trailing date cell ("5.01 to 15 kva | $210.00 |
+// 7/1/2012"). The row alone names nothing; the HEADING says whose table it is. corroborateBrackets
+// keeps the nearest heading above the matched row on the same page (FeeBracketCorroboration.heading),
+// it survives the DB round-trip, and the badge reads row + heading: another trade in either never
+// earns it; the pair must NAME THIS PERMIT (solar/PV/photovoltaic for building; renewable/solar/PV
+// for electrical; interconnection for NEM).
+// Kill (fees-close2): corroborateBrackets records heading "" -> 6b, 6c, 6d FAIL (the renewable and
+// solar tables' bare rows lose their badge) while 6a stays excluded (positive naming alone holds it).
+{
+  const F = await import("../src/feeSchedules");
+  const DOC = "https://example.gov/tigardish.pdf";
+  const TIGARD_PROD = [
+    "p21 Electrical Permit Fees",
+    "p21 Description | Fee | Effective",
+    "p21 Wind generation systems",
+    "p21 5 kva or less | $90.00 | 7/1/2012",
+    "p21 5.01 to 15 kva | $210.00 | 7/1/2012",
+    "p21 Renewable electrical energy systems",
+    "p21 5 kva or less | $100.70 | 7/1/2012",
+    "p21 5.01 to 15 kva | $133.56 | 7/1/2012",
+    "p22 Solar photovoltaic systems",
+    "p22 Up to 10 kW | $175.00 | 7/1/2012",
+    "p22 Plumbing permits",
+    "p22 Solar water heater | $88.00 | 7/1/2012",
+  ];
+  const saveOn = (rows: string[], who: { ahj?: string; utility?: string; track?: "permit" | "nem" }, label: string, fee: number, discipline = "") => F.saveFeeSchedule(db,
+    { state: "OR", track: who.track ?? "permit", ...(who.ahj ? { ahj: who.ahj } : {}), ...(who.utility ? { utility: who.utility } : {}), ...(discipline ? { discipline } : {}) } as never, {
+      found: true, reason: "", basis: "flat", brackets: [{ feeUsd: fee, label }], notes: "", paymentMethod: "portal",
+      sourceUrl: DOC, sourceQuote: `${label} $${fee}`, sourceKind: "official",
+    } as never, { corroborateAgainst: { evidence: [{ url: DOC, via: "http", title: "Fee schedule", kind: "pdf" }], corpus: [rows.join("\n")] } as never });
+  const lineOf = (id: string, ahj: string, track: "permit" | "nem" = "permit") => buildProjectFeeSheet(db, mk(id, ahj)).lines.find((l) => l.track === track)!;
+  const storedCorr = (ahj: string) => JSON.parse(String(db.get<{ brackets_json: string }>("SELECT brackets_json FROM fee_schedules WHERE ahj = ?", [ahj])?.brackets_json ?? "[]"))[0]?.corroboration ?? {};
+  const show = (l: { feeUsd: number | null; corroborated: boolean; evidenceQuote: string }) => JSON.stringify({ f: l.feeUsd, c: l.corroborated, e: l.evidenceQuote });
+
+  saveOn(TIGARD_PROD, { ahj: "Windy Prodbay" }, "5.01 to 15 kva", 210, "electrical");
+  const wind = lineOf("m1p-wind", "Windy Prodbay");
+  check("6a. MUST-EXCLUDE (M1p): the production-shaped WIND row '5.01 to 15 kva | $210.00 | 7/1/2012' under 'Wind generation systems' does not badge",
+    wind.feeUsd === 210 && wind.corroborated === false, show(wind));
+  saveOn(TIGARD_PROD, { ahj: "Renew Prodbay" }, "5.01 to 15 kva", 133.56, "electrical");
+  const renew = lineOf("m1p-renew", "Renew Prodbay");
+  check("6b. MUST-PASS: the same production shape under 'Renewable electrical energy systems' badges (the heading names the permit)",
+    renew.feeUsd === 133.56 && renew.corroborated === true, show(renew));
+  check("6c. …the heading is stored with the bracket's corroboration and survives the DB read",
+    storedCorr("Renew Prodbay").heading === "Renewable electrical energy systems" && storedCorr("Windy Prodbay").heading === "Wind generation systems",
+    JSON.stringify([storedCorr("Renew Prodbay"), storedCorr("Windy Prodbay")]));
+  saveOn(TIGARD_PROD, { ahj: "Solar Prodbay" }, "Up to 10 kW", 175, "structural");
+  const solarRow = lineOf("m1p-solar", "Solar Prodbay");
+  check("6d. MUST-PASS: a bare size row under a SOLAR heading badges on the building track", solarRow.corroborated === true, show(solarRow));
+  saveOn(TIGARD_PROD, { ahj: "Thermal Prodbay" }, "Solar water heater", 88);
+  const thermal = lineOf("m1p-thermal", "Thermal Prodbay");
+  check("6e. MUST-EXCLUDE: 'Solar water heater' under a PLUMBING heading does not badge (the heading's trade wins)", thermal.corroborated === false, show(thermal));
+
+  const one = (ahj: string, rows: string[], label: string, fee: number, discipline = "") => { saveOn(rows, { ahj }, label, fee, discipline); return lineOf(`m-${ahj}`, ahj); };
+  const ev = one("City of Evbay", ["p3  EV charger electrical permit fee | $160.00", "p3  Solar PV permit fee | $250.00"], "Permit fee", 160, "electrical");
+  check("6f. MUST-EXCLUDE (M2): 'Permit fee' $160 paired with 'EV charger electrical permit fee' — generic electrical is not this permit", ev.corroborated === false, show(ev));
+  const shed = one("City of Shedbay", ["p3  Accessory building permit (shed) | $95.00", "p3  Building permit - solar | $210.00"], "Building permit", 95);
+  check("6g. MUST-EXCLUDE (M3): 'Building permit' $95 paired with 'Accessory building permit (shed)' — generic building is not this permit", shed.corroborated === false, show(shed));
+  const com = one("City of Combay", ["p3  Commercial solar PV permit | $500.00", "p3  Residential solar PV permit | $250.00"], "Solar PV permit", 500);
+  check("6h. MUST-EXCLUDE (M4): 'Commercial solar PV permit' does not badge a residential job's fee", com.corroborated === false, show(com));
+  const therm = one("City of Thermbay", ["p3  Solar thermal system permit fee | $120.00", "p3  Solar photovoltaic system permit fee | $250.00"], "system permit fee", 120);
+  check("6i. MUST-EXCLUDE (M5): 'Solar thermal system permit fee' is not a PV permit", therm.corroborated === false, show(therm));
+  const split = one("City of Splitbay", ["p3  Solar PV permit - structural | $210.00", "p3  Solar PV permit - electrical | $150.00"], "Solar PV permit", 210, "electrical");
+  check("6j. MUST-EXCLUDE (M10): an ELECTRICAL line paired with 'Solar PV permit - structural' does not badge", split.corroborated === false, show(split));
+  const splitE = one("City of Splitbay2", ["p3  Solar PV permit - structural | $210.00", "p3  Solar PV permit - electrical | $150.00"], "Solar PV permit - electrical", 150, "electrical");
+  check("6k. MUST-PASS: the ELECTRICAL line paired with 'Solar PV permit - electrical' badges", splitE.corroborated === true, show(splitE));
+  const bs = one("City of Bldgsolar", ["p3  Building permit (solar) | $210.00", "p3  Plumbing permit | $210.00"], "Building permit", 210, "structural");
+  check("6l. MUST-PASS: 'Building permit' paired with 'Building permit (solar)' on the building track badges", bs.corroborated === true, show(bs));
+
+  // NEM: an interconnection line, never a city's building-permit application.
+  saveOn(["p2  Building permit application fee | $150.00", "p2  Interconnection application fee | $100.00"], { utility: "Nembay Power", track: "nem" }, "Application fee", 150);
+  saveOn(["p2  Building permit application fee | $150.00", "p2  Interconnection application fee | $100.00"], { utility: "Nembay Power2", track: "nem" }, "Application fee", 100);
+  const nemOf = (id: string, utility: string) => {
+    db.run(`INSERT INTO projects (id, client_id, homeowner_name, state, ahj, utility, system_size_dc_kw, system_size_ac_kw, status, parser_json, created_at, updated_at)
+      VALUES (?, ?, 'Test Owner', 'OR', 'City of Nembay', ?, 4.2, 3.072, 'ready_to_stage', '{}', ?, ?)`, [id, client.id, utility, now, now]);
+    return buildProjectFeeSheet(db, { id, clientId: client.id, state: "OR", ahj: "City of Nembay", utility, systemSizeDcKw: 4.2, systemSizeAcKw: 3.072, totalExportKw: null, parserSnapshot: {} } as unknown as ProjectRecord)
+      .lines.find((l) => l.track === "nem")!;
+  };
+  const nemBad = nemOf("m9-bad", "Nembay Power");
+  check("6m. MUST-EXCLUDE (M9): NEM 'Application fee' $150 paired with 'Building permit application fee' does not badge", nemBad.feeUsd === 150 && nemBad.corroborated === false, show(nemBad));
+  const nemOk = nemOf("m9-ok", "Nembay Power2");
+  check("6n. MUST-PASS: NEM 'Application fee' $100 paired with 'Interconnection application fee' badges", nemOk.feeUsd === 100 && nemOk.corroborated === true, show(nemOk));
+
+  // THE PREDICATE ITSELF, on shapes the save path does not produce.
+  const named = (matchedLine: string, heading: string, discipline: string, track: "permit" | "nem" = "permit") =>
+    F.corroborationNamesThisPermit({ corroboration: { corroborated: true, matchedLine, heading, sourceUrl: DOC, checkedAt: "", via: "http" }, bracketLabel: "", discipline } as never, track);
+  check("6o. the predicate: a generic kVA row under a WIND heading is out, under a SOLAR heading is in, with no heading is out",
+    !named("5.01 to 15 kva | $210.00", "Wind generation systems", "electrical") && named("5.01 to 15 kva | $160.00", "Solar photovoltaic installations", "electrical")
+      && !named("5.01 to 15 kva | $160.00", "", "electrical"));
+  check("6p. the predicate: a standby-GENERATOR heading never earns the badge on the permit track", !named("Residential solar and generator | $150.00", "Generators", "electrical"));
 }
 
 registerFeeScheduleLookup(null);

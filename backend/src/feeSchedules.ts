@@ -227,6 +227,12 @@ export interface FeeBracketCorroboration {
    *  CO-OCCUR. This — not the row-level sourceQuote — is the sentence that may
    *  be shown beside this bracket's amount. */
   matchedLine: string;
+  /** THE NEAREST HEADING ABOVE THE MATCHED ROW, on the same page, as the extractor printed it
+   *  ("Wind generation systems") — "" / absent when the extractor kept none (and on rows stored
+   *  before fees-close2). Evidence of WHOSE table the row sits in: a bare "5.01 to 15 kva |
+   *  $210.00" names no permit, its heading does. Read by corroborationNamesThisPermit only; it
+   *  never changes which brackets corroborate. */
+  heading?: string;
   /** The document actually fetched and read, as the fetcher finally saw it. */
   sourceUrl: string;
   checkedAt: string;
@@ -637,9 +643,13 @@ function normalizeCorroboration(raw: unknown): FeeBracketCorroboration | undefin
   const matchedLine = clean(c.matchedLine).slice(0, 300);
   const sourceUrl = clean(c.sourceUrl).slice(0, 500);
   if (!matchedLine || !sourceUrl) return undefined;
+  // The heading rides the same trusted/untrusted rail as the claim itself (normalizeBrackets
+  // strips the whole corroboration on the untrusted path); kept here so the DB read keeps it.
+  const heading = clean(c.heading).slice(0, 200);
   return {
     corroborated: true,
     matchedLine,
+    ...(heading ? { heading } : {}),
     sourceUrl,
     checkedAt: clean(c.checkedAt).slice(0, 40),
     via: clean(c.via).toLowerCase() === "browser" ? "browser" : "http",
@@ -1660,13 +1670,17 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
 
   // openFeeDocument pushes to `evidence` and `corpus` in the same call, so the
   // two are index-parallel and a matched line can name the document it came off.
-  const lines: Array<{ raw: string; folded: string; doc: number }> = [];
+  // `row` is the index of the printed row in its document's lines — for a joined line, the index
+  // of the ROW half — so the heading above it can be read off the same page (printedHeadingAbove).
+  const lines: Array<{ raw: string; folded: string; doc: number; row: number }> = [];
+  const docLines: string[][] = [];
   ledger.corpus.forEach((body, doc) => {
     const documentLines = String(body ?? "").split("\n");
+    docLines[doc] = documentLines;
     for (const [index, line] of documentLines.entries()) {
       const raw = line.trim();
       if (!raw) continue;
-      lines.push({ raw, folded: matchKey(raw), doc });
+      lines.push({ raw, folded: matchKey(raw), doc, row: index });
       // Tigard prints one renewable-energy heading above three size rows.
       // Preserve that heading only for immediately consecutive kVA/price rows;
       // never carry it across another heading (especially the wind table).
@@ -1675,7 +1689,7 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
           const row = documentLines[index + offset]?.trim() ?? '';
           if (!/^(?:p\d+\s+)?(?:\d+(?:\.\d+)?\s+kva or less|\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?\s+kva)\s*\|\s*\$[\d,.]+$/i.test(row)) break;
           const joined = `${raw.replace(/^p\d+\s+/, '')} — ${row.replace(/^p\d+\s+/, '')}`;
-          lines.push({raw:joined,folded:matchKey(joined),doc});
+          lines.push({raw:joined,folded:matchKey(joined),doc,row:index + offset});
         }
       }
       // A two-line PV fee: its heading names the system, the immediately
@@ -1685,7 +1699,7 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
       if (/Photovoltaic\s*\(PV\)\s*Solar Panel System\s*$/i.test(raw)
         && /^(?:p\d+\s+)?Plan Review\s*&\s*Admin Fees\s*\|\s*\$[\d,.]+$/i.test(next)) {
         const joined = `${raw.replace(/^p\d+\s+/, '')} — ${next.replace(/^p\d+\s+/, '')}`;
-        lines.push({raw:joined,folded:matchKey(joined),doc});
+        lines.push({raw:joined,folded:matchKey(joined),doc,row:index + 1});
       }
     }
   });
@@ -1703,9 +1717,11 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
     const hitLine = lines.find((l) => feeOnLine(l.folded, b.feeUsd) && fragments.some((f) => l.folded.includes(f)));
     if (!hitLine) continue;
     const doc = ledger.evidence[hitLine.doc];
+    const heading = printedHeadingAbove(docLines[hitLine.doc] ?? [], hitLine.row);
     b.corroboration = {
       corroborated: true,
       matchedLine: hitLine.raw.slice(0, 300),
+      ...(heading ? { heading } : {}),
       sourceUrl: clean(doc?.url) || clean(finding.sourceUrl),
       checkedAt,
       via: doc?.via === "browser" ? "browser" : "http",
@@ -1747,29 +1763,56 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
 // fee sheet turns the rolled-up flag into a badge an operator reads as "a machine checked this",
 // and substring pairing let a researched "Permit fee" $160 wear it off the printed "Plumbing
 // permit fee | $160.00" — the label is inside that line and the fee is on it. So the BADGE asks a
-// narrower question of each line's printed row:
-//   1. a row naming ANOTHER trade (plumbing, mechanical, sign, fence, demolition, wind…) never
-//      earns it — not even as an exact label: the research then picked another trade's fee;
-//   2. otherwise the row must name THIS permit (solar / PV / electrical / building-structural,
-//      per the track and the line's discipline), or be the schedule's line for exactly this
-//      bracket label ("5 KVA or less | $135.00" for the bracket "5 KVA or less");
+// narrower question of each line's printed row AND the heading above it on the page (when the
+// extractor kept one — FeeBracketCorroboration.heading; fees-close2, skeptic M1p: Tigard prints
+// "Wind generation systems" on its own line over bare "5.01 to 15 kva | $210.00 | 7/1/2012" rows):
+//   1. ANOTHER trade or scope in the row or its heading (plumbing, mechanical, wind, generator,
+//      sign, solar thermal, commercial…) never earns it — not even as an exact label;
+//   2. the row + heading must POSITIVELY NAME THIS PERMIT: solar / PV / photovoltaic for the
+//      building (structural) permit; renewable-energy / solar / PV for the electrical permit (a
+//      kVA row earns it only under a heading that names solar or renewable energy); an
+//      interconnection / net-metering line for NEM. Generic words ("permit fee", "electrical",
+//      "building", "kVA", "application") name no permit. An electrical line on a row naming only
+//      the building permit (and vice versa) is another permit. The old "exact bracket label"
+//      shortcut is gone: it only ever helped a label that did NOT name this permit, because one
+//      that did passes rule 2 on its own;
 //   3. anything else — unsure — earns no badge, and the amount stays "provisional".
 // ---------------------------------------------------------------------------
-const OTHER_TRADE_RE = /\b(?:plumb(?:ing|er)?|mechanical|hvac|heating|furnace|boilers?|gas|sewer|septic|water\s+heaters?|fire\s+(?:sprinklers?|alarms?|suppression)|sprinklers?|signs?|signage|fences?|fencing|demolition|demolish|wind|pools?|spas?|swimming|grading|excavation|driveways?|right[- ]of[- ]way|elevators?|mobile\s+homes?|manufactured\s+homes?|re-?roof(?:ing)?|roofing|occupancy|sidewalks?|tree)\b/i;
-const PV_PERMIT_RE = /\b(?:solar|photovoltaics?|pv|renewable)\b/i;
-const ELECTRICAL_PERMIT_RE = /\b(?:electrical|electric|kva|kw)\b/i;
-const BUILDING_PERMIT_RE = /\b(?:building|structural)\b/i;
-const NEM_APPLICATION_RE = /\b(?:interconnect(?:ion)?|net[- ]?meter(?:ing)?|nem|generat(?:or|ing|ion)|distributed|application)\b/i;
+const OTHER_TRADE_RE = /\b(?:plumb(?:ing|er)?|mechanical|hvac|heating|furnace|boilers?|gas|sewer|septic|water\s+heaters?|hot\s+water|solar\s+thermal|thermal\s+solar|fire\s+(?:sprinklers?|alarms?|suppression)|sprinklers?|signs?|signage|fences?|fencing|demolition|demolish|wind|pools?|spas?|swimming|grading|excavation|driveways?|right[- ]of[- ]way|elevators?|mobile\s+homes?|manufactured\s+homes?|re-?roof(?:ing)?|roofing|occupancy|sidewalks?|tree|ev\s+charg\w*|electric\s+vehicles?|evse|commercial|non-?residential|multi-?family|industrial)\b/i;
+/** A standby generator is another permit on the PERMIT track; on NEM the customer's "generating
+ *  facility" / "customer generator" IS the solar system, so the word is not excluded there. */
+const GENERATOR_RE = /\bgenerators?\b/i;
+const PV_WORD_RE = /\b(?:solar|photovoltaics?|pv)\b/i;
+const RENEWABLE_RE = /\brenewable\b/i;
+const INTERCONNECTION_RE = /\b(?:interconnect(?:ion|ions|ing)?|net[- ]?(?:energy[- ])?meter(?:ing)?)\b/i;
+const ELECTRICAL_WORD_RE = /\belectric(?:al)?\b/i;
+const BUILDING_WORD_RE = /\b(?:building|structural)\b/i;
+/** Lines walked upward looking for a heading — a runaway guard only: the walk stops at the first
+ *  line that is not a table row, so a long table is walked whole and no heading is ever skipped. */
+const HEADING_WALK_LIMIT = 80;
 
-/** The row's own label: page prefix and trailing "| $amount" cells removed. */
-function printedRowLabel(row: string): string {
-  const withoutPage = String(row ?? "").trim().replace(/^p\d+\s+/i, "");
-  const cells = withoutPage.split("|").map((c) => c.trim()).filter((c) => c && !/^\$\s*[\d,]+(?:\.\d{1,2})?$/.test(c));
-  return cells.join(" ");
+/** THE NEAREST HEADING ABOVE A PRINTED ROW, on the same page: walking up from the row, table rows
+ *  (a `$` amount or a `|` cell — column headers included) are skipped and the first plain line is
+ *  the heading. A page change, the top of the document or the guard ends the walk with "" — no
+ *  heading kept, and the row must then name its permit on its own. */
+function printedHeadingAbove(documentLines: string[], rowIndex: number): string {
+  const pageOf = (s: string): string => /^p(\d+)\s/i.exec(s)?.[1] ?? "";
+  const page = pageOf(String(documentLines[rowIndex] ?? "").trim());
+  for (let i = rowIndex - 1, walked = 0; i >= 0 && walked < HEADING_WALK_LIMIT; i--) {
+    const raw = String(documentLines[i] ?? "").trim();
+    if (!raw) continue;
+    walked++;
+    if (pageOf(raw) !== page) return "";
+    const body = raw.replace(/^p\d+\s+/i, "").trim();
+    if (!body || body.includes("|") || quotedAmounts(body).length) continue;
+    return clean(body).slice(0, 200);
+  }
+  return "";
 }
 
-/** DOES THIS LINE'S PRINTED ROW NAME THE PERMIT THE LINE PRICES? The one predicate behind the
- *  "matches the published schedule" badge (resolutionFrom's `corroborated`). */
+/** DOES THIS LINE'S PRINTED ROW (WITH ITS HEADING) NAME THE PERMIT THE LINE PRICES? The one
+ *  predicate behind the "matches the published schedule" badge (resolutionFrom's `corroborated`).
+ *  Positive naming only; unsure is false. */
 export function corroborationNamesThisPermit(
   line: Pick<FeeScheduleLine, "corroboration" | "bracketLabel" | "discipline">,
   track: FeeTrack,
@@ -1777,17 +1820,20 @@ export function corroborationNamesThisPermit(
   if (!line.corroboration?.corroborated) return false;
   const row = clean(line.corroboration.matchedLine);
   if (!row) return false;
-  if (OTHER_TRADE_RE.test(row)) return false;
-  const rowLabel = matchKey(printedRowLabel(row));
-  const label = String(line.bracketLabel ?? "");
-  const labelKeys = [matchKey(label), matchKey(label.replace(/\$\s*[\d,]+(?:\.\d{1,2})?/g, " "))].filter(Boolean);
-  if (rowLabel && labelKeys.includes(rowLabel)) return true;
-  if (track === "nem") return NEM_APPLICATION_RE.test(row) || PV_PERMIT_RE.test(row);
-  if (PV_PERMIT_RE.test(row)) return true;
+  const text = `${row} ${clean(line.corroboration.heading)}`;
+  if (OTHER_TRADE_RE.test(text)) return false;
+  if (track === "nem") return INTERCONNECTION_RE.test(text);
+  if (GENERATOR_RE.test(text)) return false;
   const discipline = String(line.discipline ?? "");
-  if (discipline === "electrical") return ELECTRICAL_PERMIT_RE.test(row);
-  if (discipline === "structural") return BUILDING_PERMIT_RE.test(row);
-  return ELECTRICAL_PERMIT_RE.test(row) || BUILDING_PERMIT_RE.test(row);
+  if (discipline === "electrical") {
+    if (BUILDING_WORD_RE.test(text) && !ELECTRICAL_WORD_RE.test(text)) return false;
+    return PV_WORD_RE.test(text) || RENEWABLE_RE.test(text);
+  }
+  if (discipline === "structural") {
+    if (ELECTRICAL_WORD_RE.test(text) && !BUILDING_WORD_RE.test(text)) return false;
+    return PV_WORD_RE.test(text);
+  }
+  return PV_WORD_RE.test(text) || RENEWABLE_RE.test(text);
 }
 
 /** One line for the notes trail, in the operator's vocabulary. Says CORROBORATED
