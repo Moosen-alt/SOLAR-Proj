@@ -1718,6 +1718,57 @@ export function corroborateBrackets(finding: FeeScheduleFinding, ledger: FeeDocu
   return brackets;
 }
 
+// ---------------------------------------------------------------------------
+// "MATCHES THE PUBLISHED SCHEDULE" NEEDS THE SAME PERMIT, NOT JUST THE SAME WORDS (skeptic MF4).
+//
+// corroborateBrackets pairs a bracket's label and fee on one printed line by SUBSTRING. That is
+// right for what it feeds (the evidence line, surcharge attachment) and it stays as it is. But the
+// fee sheet turns the rolled-up flag into a badge an operator reads as "a machine checked this",
+// and substring pairing let a researched "Permit fee" $160 wear it off the printed "Plumbing
+// permit fee | $160.00" — the label is inside that line and the fee is on it. So the BADGE asks a
+// narrower question of each line's printed row:
+//   1. a row naming ANOTHER trade (plumbing, mechanical, sign, fence, demolition, wind…) never
+//      earns it — not even as an exact label: the research then picked another trade's fee;
+//   2. otherwise the row must name THIS permit (solar / PV / electrical / building-structural,
+//      per the track and the line's discipline), or be the schedule's line for exactly this
+//      bracket label ("5 KVA or less | $135.00" for the bracket "5 KVA or less");
+//   3. anything else — unsure — earns no badge, and the amount stays "provisional".
+// ---------------------------------------------------------------------------
+const OTHER_TRADE_RE = /\b(?:plumb(?:ing|er)?|mechanical|hvac|heating|furnace|boilers?|gas|sewer|septic|water\s+heaters?|fire\s+(?:sprinklers?|alarms?|suppression)|sprinklers?|signs?|signage|fences?|fencing|demolition|demolish|wind|pools?|spas?|swimming|grading|excavation|driveways?|right[- ]of[- ]way|elevators?|mobile\s+homes?|manufactured\s+homes?|re-?roof(?:ing)?|roofing|occupancy|sidewalks?|tree)\b/i;
+const PV_PERMIT_RE = /\b(?:solar|photovoltaics?|pv|renewable)\b/i;
+const ELECTRICAL_PERMIT_RE = /\b(?:electrical|electric|kva|kw)\b/i;
+const BUILDING_PERMIT_RE = /\b(?:building|structural)\b/i;
+const NEM_APPLICATION_RE = /\b(?:interconnect(?:ion)?|net[- ]?meter(?:ing)?|nem|generat(?:or|ing|ion)|distributed|application)\b/i;
+
+/** The row's own label: page prefix and trailing "| $amount" cells removed. */
+function printedRowLabel(row: string): string {
+  const withoutPage = String(row ?? "").trim().replace(/^p\d+\s+/i, "");
+  const cells = withoutPage.split("|").map((c) => c.trim()).filter((c) => c && !/^\$\s*[\d,]+(?:\.\d{1,2})?$/.test(c));
+  return cells.join(" ");
+}
+
+/** DOES THIS LINE'S PRINTED ROW NAME THE PERMIT THE LINE PRICES? The one predicate behind the
+ *  "matches the published schedule" badge (resolutionFrom's `corroborated`). */
+export function corroborationNamesThisPermit(
+  line: Pick<FeeScheduleLine, "corroboration" | "bracketLabel" | "discipline">,
+  track: FeeTrack,
+): boolean {
+  if (!line.corroboration?.corroborated) return false;
+  const row = clean(line.corroboration.matchedLine);
+  if (!row) return false;
+  if (OTHER_TRADE_RE.test(row)) return false;
+  const rowLabel = matchKey(printedRowLabel(row));
+  const label = String(line.bracketLabel ?? "");
+  const labelKeys = [matchKey(label), matchKey(label.replace(/\$\s*[\d,]+(?:\.\d{1,2})?/g, " "))].filter(Boolean);
+  if (rowLabel && labelKeys.includes(rowLabel)) return true;
+  if (track === "nem") return NEM_APPLICATION_RE.test(row) || PV_PERMIT_RE.test(row);
+  if (PV_PERMIT_RE.test(row)) return true;
+  const discipline = String(line.discipline ?? "");
+  if (discipline === "electrical") return ELECTRICAL_PERMIT_RE.test(row);
+  if (discipline === "structural") return BUILDING_PERMIT_RE.test(row);
+  return ELECTRICAL_PERMIT_RE.test(row) || BUILDING_PERMIT_RE.test(row);
+}
+
 /** One line for the notes trail, in the operator's vocabulary. Says CORROBORATED
  *  — never "verified", which belongs to a person (hard rule 3). */
 export function corroborationNotes(brackets: FeeBracket[]): string[] {
@@ -4224,9 +4275,10 @@ function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<Project
     // second permit does.
     bracketQuote: lines.length === 1 && !extra.length ? primary.bracketQuote : "",
     // Weakest link, like confidence: a total is corroborated only if every line
-    // in it was found printed. Still never a promotion — confidence below is
-    // decided separately and code never writes 'verified'.
-    corroborated: lines.length > 0 && lines.every((l) => !!l.corroboration?.corroborated),
+    // in it was found printed — on a row that names THIS permit, not another trade's
+    // (corroborationNamesThisPermit, skeptic MF4). Still never a promotion —
+    // confidence below is decided separately and code never writes 'verified'.
+    corroborated: lines.length > 0 && lines.every((l) => corroborationNamesThisPermit(l, track)),
     // The weakest confidence in the set: a verified line does not vouch for a
     // seeded one standing next to it in the same total.
     confidence: lines.some((l) => l.confidence === "seeded") ? "seeded" : "verified",

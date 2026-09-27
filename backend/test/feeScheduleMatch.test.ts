@@ -17,7 +17,12 @@
 //      seeded line "matches the published schedule" with the printed line and the link, never
 //      "verified"; an uncorroborated one keeps "provisional — not verified"; an estimate stays an
 //      estimate; everything interpolated is escaped.
+//   5. On the REAL schedule module: the badge needs a printed row naming THIS permit (or the
+//      schedule's row for exactly this bracket label); a row naming another trade — plumbing,
+//      mechanical, wind — never earns it (skeptic MF4: "Permit fee" $160 vs "Plumbing permit fee").
 // Kill: drop the flag at the seam (permitFeeCorroborated = false) -> section 1 and 3a FAIL.
+// Kill (MF4): resolutionFrom's corroborated back to `!!l.corroboration?.corroborated` -> 5a, 5e,
+// 5f FAIL (measured: 3 failures; 5b-5d pass either way, so they guard the gate's reach).
 import "./_isolate";
 import fs from "node:fs";
 import os from "node:os";
@@ -147,6 +152,56 @@ const badge = (html: string): string => /<span class="badge [^"]*">([^<]*)<\/spa
     /Verified by &lt;i&gt;Jane&lt;\/i&gt; on 2026-09-27/.test(face(v)) && !/data-fee-confirm/.test(v), face(v).slice(0, 400));
   const s = lib.renderFeeSheetLine({ ...permitLine, corroborated: true, verifiedBy: "Jane" });
   check("4e. MUST-EXCLUDE: a name never appears beside a line that is not person-verified", !/Verified by/.test(s));
+}
+
+// ── 5. THE BADGE NEEDS THE SAME PERMIT, ON THE REAL SCHEDULE MODULE (skeptic MF4) ───────────
+// corroborateBrackets pairs a bracket's label and fee on one printed line by SUBSTRING, so a
+// researched "Permit fee" $160 paired with the printed "Plumbing permit fee | $160.00" and the
+// sheet said "matches the published schedule" over a plumbing fee. The badge now also asks: does
+// the printed line name THIS permit (solar / PV / electrical / building per the track), or is it
+// the schedule's line for exactly this bracket label? A line naming another trade never earns it.
+registerFeeScheduleLookup(null);
+{
+  const F = await import("../src/feeSchedules");
+  const DOC = "https://example.gov/fees.pdf";
+  const corpus = [
+    "p3  Plumbing permit fee | $160.00",
+    "p3  Solar photovoltaic permit | $250.00",
+    "p3  Residential permit | $180.00",
+    "p3  Mechanical permit | $90.00",
+    "p8  Wind generation 5 KVA or less | $346.00",
+    "p8  5 KVA or less | $135.00",
+  ].join("\n");
+  const ledger = { evidence: [{ url: DOC, via: "http", title: "Fee schedule", kind: "pdf" }], corpus: [corpus] } as never;
+  const save = (ahj: string, label: string, fee: number, discipline = "") => F.saveFeeSchedule(db, { state: "OR", ahj, track: "permit", ...(discipline ? { discipline } : {}) } as never, {
+    found: true, reason: "", basis: "flat", brackets: [{ feeUsd: fee, label }], notes: "", paymentMethod: "portal",
+    sourceUrl: DOC, sourceQuote: `${label} $${fee}`, sourceKind: "official",
+  } as never, { corroborateAgainst: ledger });
+  const lineFor = (id: string, ahj: string) => buildProjectFeeSheet(db, mk(id, ahj)).lines.find((l) => l.track === "permit")!;
+  const stored = (ahj: string) => JSON.parse(String(db.get<{ brackets_json: string }>("SELECT brackets_json FROM fee_schedules WHERE ahj = ?", [ahj])?.brackets_json ?? "[]"))[0]?.corroboration?.corroborated === true;
+
+  save("City of Genericbay", "Permit fee", 160);
+  const generic = lineFor("mf4-generic", "City of Genericbay");
+  check("5a. MUST-EXCLUDE: 'Permit fee' $160 paired with 'Plumbing permit fee | $160.00' does NOT read 'matches the published schedule'",
+    generic.feeUsd === 160 && generic.corroborated === false && generic.confidence === "seeded" && badge(lib.renderFeeSheetLine(generic)) === "provisional — not verified",
+    JSON.stringify({ f: generic.feeUsd, c: generic.corroborated, conf: generic.confidence, e: generic.evidenceQuote }));
+  check("5a'. …the stored bracket's own pairing is left as it was (evidence only; the gate is the badge's)", stored("City of Genericbay"));
+  save("City of Solarbay", "Solar photovoltaic permit", 250);
+  const solar = lineFor("mf4-solar", "City of Solarbay");
+  check("5b. MUST-PASS: a printed line naming the solar PV permit earns the badge", solar.corroborated === true && badge(lib.renderFeeSheetLine(solar)) === "matches the published schedule",
+    JSON.stringify({ c: solar.corroborated, e: solar.evidenceQuote }));
+  save("City of Exactbay", "Residential permit", 180);
+  const exact = lineFor("mf4-exact", "City of Exactbay");
+  check("5c. MUST-PASS: the schedule's line for EXACTLY this bracket label earns it", exact.corroborated === true, JSON.stringify({ c: exact.corroborated, e: exact.evidenceQuote }));
+  save("Kva County", "5 KVA or less", 135, "electrical");
+  const kva = lineFor("mf4-kva", "Kva County");
+  check("5d. MUST-PASS: an exact-label kVA row ('5 KVA or less | $135.00') earns it", kva.corroborated === true && kva.feeUsd === 135, JSON.stringify({ f: kva.feeUsd, c: kva.corroborated, e: kva.evidenceQuote }));
+  save("City of Mechbay", "Mechanical permit", 90);
+  const mech = lineFor("mf4-mech", "City of Mechbay");
+  check("5e. MUST-EXCLUDE: a line naming another trade never earns it, even as the exact label", mech.corroborated === false, JSON.stringify({ c: mech.corroborated, e: mech.evidenceQuote }));
+  save("Wind County", "5 KVA or less", 346, "electrical");
+  const wind = lineFor("mf4-wind", "Wind County");
+  check("5f. MUST-EXCLUDE: the WIND row carrying the solar bracket's label and fee never earns it", wind.corroborated === false, JSON.stringify({ c: wind.corroborated, e: wind.evidenceQuote }));
 }
 
 registerFeeScheduleLookup(null);
