@@ -903,6 +903,9 @@ export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): Age
   return (item) => {
     const types = item.docTypes;
     if (!types.length) return null;
+    // RULE 1 (agency-apps-close2): a PDF the lookup cited that could not be confirmed as the agency's is
+    // never on file, never filled — whatever holds the slot, it is not this document.
+    if (item.form && !item.form.confirmed) return "cited_unconfirmed";
     const { permitPath, uploads, filled, stored, blanks } = read();
     if (types.some((t) => uploads[t])) return "attached";
     if (types.some((t) => filled[t])) return "filled";
@@ -944,7 +947,7 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
   let texts: string[] = [];
   // Items with a KNOWN slot (the issuing agency's list names its own slots) or a step at another
   // office (a prerequisite, settled by the operator's zoning answer — not a file).
-  const structured = new Map<string, { docTypes: string[]; prerequisite: boolean }>();
+  const structured = new Map<string, { docTypes: string[]; prerequisite: boolean; unconfirmed?: { agency: string } }>();
   const found = lookupRequiredList(project);
   // THE ISSUING AGENCY'S LIST (applicationDocsAgency.issuingAgencyDocumentList): where the lookup
   // cites another agency as a permit's issuer, the job's list names THAT agency's applications, the
@@ -952,10 +955,17 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
   let agencyList: ReturnType<typeof issuingAgencyDocumentList> = null;
   try { agencyList = issuingAgencyDocumentList(project, agencyListStatusResolver(db, project)); } catch { agencyList = null; }
   const addAgencyItems = (onlyUncovered: boolean): void => {
+    // "Uncovered" by the LOOKUP's own list — never by an agency line added a moment ago: each of the
+    // agency's forms for a track is its own line (two applications, two statuses — agency-apps-close2
+    // rule 2), and a cited-to-confirm PDF is named beside the agency's confirmed form (rule 1).
+    const lookupTexts = [...texts];
     for (const item of agencyList?.items ?? []) {
-      if (onlyUncovered && item.docTypes.length && texts.some((t) => requirementSlots(t).some((s) => item.docTypes.includes(s)))) continue;
+      if (onlyUncovered && item.docTypes.length && lookupTexts.some((t) => requirementSlots(t).some((s) => item.docTypes.includes(s)))) continue;
       texts.push(item.text);
-      structured.set(item.text, { docTypes: item.docTypes, prerequisite: item.role === "prerequisite" });
+      structured.set(item.text, {
+        docTypes: item.docTypes, prerequisite: item.role === "prerequisite",
+        ...(item.form && !item.form.confirmed ? { unconfirmed: { agency: String(item.agency || "") } } : {}),
+      });
     }
   };
   // A KNOWN list only: a hand-written profile, or the seeded process profile's own lines. The
@@ -1007,6 +1017,19 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
     if (known?.prerequisite) {
       const status = prerequisiteSettled(project.parserSnapshot);
       return { text, docTypes: [], present: status.settled, via: status.via || "not yet answered — asked on the project (zoning sign-off question)" };
+    }
+    // A PDF CITED BUT NOT CONFIRMED AS THE AGENCY'S (agency-apps-close2 rule 1) is never present — it is
+    // not the document in any slot. It blocks only as OWED: while nothing holds the track's slot it is
+    // missing; once the slot holds the agency's application (a confirmed form filled, an upload), it is
+    // set aside with the reason.
+    if (known?.unconfirmed) {
+      const agency = known.unconfirmed.agency || "the issuing agency";
+      const holder = known.docTypes.map((t) => presenceByType.get(t)).find((p) => p?.present);
+      const uploaded = known.docTypes.find((t) => uploads[t]);
+      if (holder || uploaded) {
+        return { text, docTypes: known.docTypes, present: false, via: "", skipped: `cited, not confirmed as ${agency}'s form — ${agency}'s application for this track is already ${holder?.via || (uploaded ? "attached" : "on file")}` };
+      }
+      return { text, docTypes: known.docTypes, present: false, via: `cited, not confirmed as ${agency}'s form — confirm it (or attach ${agency}'s own) before it is used` };
     }
     const skipped = requirementSkipReason(text, path, standardReview);
     const docTypes = known?.docTypes ?? requirementSlots(text);

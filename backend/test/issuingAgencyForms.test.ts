@@ -53,7 +53,12 @@ const check = (name: string, cond: unknown, detail = ""): void => {
 // The Jefferson lookup's shape (permit_process_lookups 'or|city of jefferson' on the .backup copy).
 const cited = (value: string | null, sourceUrl: string, quote: string) => ({ value, sourceUrl, quote, origin: "lookup" as const });
 const notFound = (why: string) => ({ value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: why });
-function saveCountyLookup(ahj: string, agency: string, buildingSource: string, extra: Record<string, unknown> = {}): void {
+// agencyPage: the page the lookup read for the permit's portal and found none — the real row carries
+// https://www.co.marion.or.us/PW/BuildingInspection on BOTH permits. It is the agency's anchor site
+// (agency-apps-close2 rule 1): without it a cited PDF is the agency's only citation and is listed to
+// confirm, never fetched.
+function saveCountyLookup(ahj: string, agency: string, buildingSource: string, extra: Record<string, unknown> = {}, agencyPage = "https://www.co.marion.or.us/PW/BuildingInspection"): void {
+  const portal = { ...notFound("none"), sourceUrl: agencyPage, quote: "Oregon ePermitting Website: Check permit status online and general information for individual permits" };
   const r = savePermitProcessLookup(db, {
     state: "OR", ahj, lookedUpAt: new Date().toISOString(),
     issuingAgency: notFound("not stated at the top level"),
@@ -62,14 +67,14 @@ function saveCountyLookup(ahj: string, agency: string, buildingSource: string, e
       {
         discipline: "structural", label: "Solar PV (Prescriptive) / Structural Permit",
         issuingAgency: cited(agency, buildingSource, `Prescriptive Solar Photovoltaic Installation Permit Application · ${agency} Public Works`),
-        portalUrl: notFound("none"), recordType: notFound("none"),
+        portalUrl: portal, recordType: notFound("none"),
         documents: { ...notFound("no list"), sourceUrl: "https://jeffersonoregon.org/planning-committee/", quote: "Structural permits must be submitted to City Hall first before going to the County." },
         fee: notFound("none"),
       },
       {
         discipline: "electrical", label: "Electrical Permit",
         issuingAgency: cited(agency, "https://jeffersonoregon.org/planning-committee/", `All Electrical and Plumbing permits are submitted to ${agency} Building and those forms can be found here.`),
-        portalUrl: notFound("none"), recordType: notFound("none"), documents: notFound("no list"), fee: notFound("none"),
+        portalUrl: portal, recordType: notFound("none"), documents: notFound("no list"), fee: notFound("none"),
       },
     ],
     notes: [],
@@ -205,7 +210,7 @@ try {
   const flatBytes = Buffer.from(await flat.save());
   const FLAT_URL = "https://www.co.fixture.or.us/forms/Solar%20Photovoltaic%20Permit%20Application.pdf";
   served.set(FLAT_URL, flatBytes);
-  saveCountyLookup("City of Fixtureville", "Fixture County", FLAT_URL);
+  saveCountyLookup("City of Fixtureville", "Fixture County", FLAT_URL, {}, "https://www.co.fixture.or.us/building");
   const fixtureville = { ...(jefferson as object), id: "fixtureville", ahj: "City of Fixtureville", city: "Fixtureville" } as never;
   check("B4 the lookup-cited PDF is named as the county's application", agencyMod.agencyApplicationForms(fixtureville, "building_application", "prescriptive").some((f) => f.origin === "cited" && f.sourceUrl === FLAT_URL));
   downloads = [];
