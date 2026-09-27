@@ -670,8 +670,10 @@ await check("(r6) MUST-EXCLUDE (close-2 item 5): an own-domain link is judged by
   const y3 = await own("Apply online", `${CITY2}/solar-apply`, { finalUrl: "https://app.gosolarapp.org/examplecity/apply", text: `<html><head><title>SolarAPP+</title></head><body>Apply</body></html>` });
   assert.equal(y3.res, null, `Y3 SolarAPP+ landing (got ${y3.res?.url})`);
   // A MapsOnline (PeopleGIS) link under portal words: the viewer, not a permit page (Y1).
-  const y1 = await resolveNamed({ [PAGE2]: { text: synthetic(`<p>Paper only.</p><a href="https://www.mapsonline.net/examplecity/index.html">Apply Online</a>`) } }, [PAGE2], ["City of Examplecity"]);
-  assert.equal(y1.res, null, `Y1 a MapsOnline viewer under portal words (got ${y1.res?.url})`);
+  for (const viewer of ["https://www.mapsonline.net/examplecity/index.html", "https://examplecity.mapsonline.net/index.html"]) {
+    const y1 = await resolveNamed({ [PAGE2]: { text: synthetic(`<p>Paper only.</p><a href="${viewer}">Apply Online</a>`) } }, [PAGE2], ["City of Examplecity"]);
+    assert.equal(y1.res, null, `Y1 a MapsOnline viewer under portal words (got ${y1.res?.url})`);
+  }
   const v8 = await resolveNamed({ [`${CITY2}/finance`]: { text: synthetic(`<a href="https://aca-prod.accela.com/EXAMPLECITY/Cap/CapHome.aspx?module=Licenses">Apply for a Business License Online</a>`) } }, [`${CITY2}/finance`], ["City of Examplecity"]);
   assert.equal(v8.res, null, `V8 licence-module deep link (got ${v8.res?.url})`);
   const v8b = await resolveNamed({ [`${CITY2}/finance`]: { text: synthetic(`<a href="https://aca-prod.accela.com/EXAMPLECITY/Cap/CapHome.aspx?module=Licenses">Apply Online</a>`) } }, [`${CITY2}/finance`], ["City of Examplecity"]);
@@ -733,12 +735,14 @@ await check("(p3) politeness (Y5 / Y6): a redirect onto another host starts THAT
 });
 
 await check("(y9) MUST-EXCLUDE (Y9): a CITED fee document that is a prior year's / archived is never read; MUST-PASS: a current one is; (Y8) a fee link on another STATE's locality domain is not this agency's; (Y13) a tenant read that shows the agency's name but no platform is not the portal; (Y7) a cited type naming a PATH picks the one candidate on it", async () => {
-  const s = site({ [PAGE2]: { text: synthetic(`<p>Apply in person.</p>`) }, [`${CITY2}/files/fee-schedule-fy2027.pdf`]: { contentType: "text/plain", text: "Building Permit Fees\nSolar  $75.00" }, [`${CITY2}/files/2018-fee-schedule.pdf`]: { contentType: "text/plain", text: "Solar  $10.00" } });
+  const IA_FEES = "https://www.co.marion.ia.us/files/fee-schedule.pdf";
+  const s = site({ [PAGE2]: { text: synthetic(`<p>Apply in person.</p><a href="${IA_FEES}">Fee Schedule</a>`) }, [`${CITY2}/files/fee-schedule-fy2027.pdf`]: { contentType: "text/plain", text: "Building Permit Fees\nSolar  $75.00" }, [`${CITY2}/files/2018-fee-schedule.pdf`]: { contentType: "text/plain", text: "Solar  $10.00" }, [IA_FEES]: { contentType: "text/plain", text: "Solar  $99.00" } });
   const r = newReader(s.fetch);
   await ppl.readAgencyEvidence(r, { ahj: "City of Examplecity", state: "OR", agencyNames: [], citedUrls: [PAGE2, `${CITY2}/files/2018-fee-schedule.pdf`, `${CITY2}/files/fee-schedule-fy2027.pdf`], resultUrls: [], proposedPortals: [] });
   const read = s.requests.map((q) => q.url);
   assert.ok(!read.some((u) => u.includes("2018-fee-schedule")), `Y9: the 2018 schedule was read (${read.join(", ")})`);
   assert.ok(read.some((u) => u.includes("fee-schedule-fy2027")), `the current schedule was read (${read.join(", ")})`);
+  assert.ok(!read.includes(IA_FEES), `Y8: an Oregon lookup read another state's locality-domain schedule (${read.join(", ")})`);
   // Y8: the job's state decides whose locality domain is official.
   const M = "https://www.co.marion.or.us/building";
   const pg = { url: M, finalUrl: M, ok: true, status: 200, kind: "html" as const, reason: "", ...reader.parseHtml(synthetic(`<a href="https://www.co.marion.ia.us/files/fee-schedule.pdf">Fee Schedule</a> <a href="https://www.co.marion.or.us/files/permit-fees.pdf">Permit Fees</a>`), M) };
