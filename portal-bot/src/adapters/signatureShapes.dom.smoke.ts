@@ -27,7 +27,8 @@
 //   names a signature) and on the certifyNoWord box (only the in-page mark says so): refused, the
 //   box stays empty. Switching the guard off makes this red.
 //
-// Run: npx tsx portal-bot/src/adapters/signatureShapes.dom.smoke.ts [variant,...]
+// Run: npx tsx portal-bot/src/adapters/signatureShapes.dom.smoke.ts [mf1|review|planner|variant,...]
+//      (signatureShapesReview / signatureShapesPlanner .dom.smoke.ts run the other two groups)
 import "../smokeArtifactDirs";
 import http from "node:http";
 import { chromium, type Page } from "playwright";
@@ -133,13 +134,26 @@ const readState = (pg: Page): Promise<St> => pg.evaluate(() => ({
   box: (document.getElementById("nm") as HTMLInputElement | null)?.value ?? null,
 })).catch((e) => ({ err: String(e) })) as Promise<St>;
 
-const which = (process.argv[2] || Object.keys(V).join(",")).split(",");
+// THREE RUNNER-SIZED FILES, ONE HARNESS. A learn on this wizard takes ~60 s; all 13 shapes with
+// both signers ran 25 min and the DOM runner (600 s per smoke) reported it as a hang. So this
+// file (no argument) runs the MF1 group; signatureShapesReview.dom.smoke.ts and
+// signatureShapesPlanner.dom.smoke.ts import it with their own group — each under 400 s.
+// Both signers run where the box IS a signature (the no-signer PAUSE is half the rule); the
+// review-page and planner shapes run once, with no signer (a false signature reading there
+// shows as a pause).
+export const GROUPS: Record<string, string[]> = {
+  mf1: ["certifyNoWord", "bareSignature", "certifierName"],
+  review: ["combinedReviewSign", "reviewNextStepsClass", "reviewMatStepper", "reviewEchoCanvas", "reviewEchoTyped"],
+  planner: ["contactsFullName", "applicantName", "pcEsigEmailText", "pcEsigEmailType"],
+};
+const BOTH_SIGNERS = new Set(["certifyNoWord", "bareSignature", "certifierName", "combinedReviewSign", "pcEsigEmailText", "pcEsigEmailType"]);
+const which = (process.argv[2] ? (GROUPS[process.argv[2]] ?? process.argv[2].split(",")) : GROUPS.mf1);
 const browser = await chromium.launch();
 try {
   for (const name of which) {
     const v = V[name];
     if (!v) { console.log(`?? ${name}`); continue; }
-    for (const signer of ["Dana Signer", ""]) {
+    for (const signer of BOTH_SIGNERS.has(name) ? ["Dana Signer", ""] : [""]) {
       const ctx = await browser.newContext();
       ctx.setDefaultTimeout(8000);
       await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
