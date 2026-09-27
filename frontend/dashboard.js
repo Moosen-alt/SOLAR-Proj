@@ -5838,8 +5838,11 @@ function renderFilledForms(projectId) {
  *      out with an application never attached.
  *   2. The replacement still read `pkg.missingDocuments || []`, so when the backend
  *      inventory THREW and left the list absent, the `|| []` manufactured an empty
- *      list and the pass-green "every required document is attached" printed over a
- *      computation that never ran — the same lie, reproduced by the error path.
+ *      list and the pass-green document all-clear printed over a computation that
+ *      never ran — the same lie, reproduced by the error path.
+ *   3. The all-clear itself said the documents were ATTACHED, when all it had checked
+ *      was the files on disk; what the portal received was never reported (docs-audit
+ *      PLAN D1). It now says "on file", and says the run does not yet report attachments.
  *
  * So the state we render comes from pkg.missingDocumentsStatus, NOT from the length
  * of the array (shared/src/types.ts: ApplicationDocumentPackage):
@@ -5918,20 +5921,22 @@ function documentVerdictHtml(pkg, formMissingFields = []) {
     docRow = `<div class="kx-docstate is-clear">
         <span class="kx-docstate-icon" aria-hidden="true">✓</span>
         <div class="kx-docstate-body">
-          <span class="kx-docstate-title">Every required document is attached${filledAtStaging.length ? " or filled at staging" : ""}</span>
-          <span class="kx-docstate-text">The required-document inventory ran against the real uploads and filled forms on disk and found nothing blocking missing${filledAtStaging.length ? " that you need to supply" : ""}.</span>
+          <span class="kx-docstate-title">Every required document is on file${filledAtStaging.length ? " or filled at staging" : ""}</span>
+          <span class="kx-docstate-text">The required-document inventory ran against the real uploads and filled forms on disk and found nothing blocking missing${filledAtStaging.length ? " that you need to supply" : ""}. On file is not the same as attached: staging attaches what the portal's upload slots ask for, and the run does not yet report what went up — check the portal's attachment list before you submit.</span>
         </div>
       </div>`;
   }
-  // FILLED AT STAGING — a required form whose template is on file: staging fills and attaches it,
-  // so it is not the operator's to attach (the gate's own "Filled at staging" line, the same
+  // FILLED AT STAGING — a required form whose template is on file: staging fills it, so it is not
+  // the operator's to supply (the gate's own "Filled at staging" line, the same
   // owedMissingDocuments answer). Named here so it neither reads as missing nor vanishes.
+  // ON FILE IS NOT ATTACHED (docs-audit PLAN D1): the fill puts a file on disk; whether it went
+  // up depends on the portal offering a slot that asks for it, and no run reports that yet.
   const filledRow = filledAtStaging.length
     ? `<div class="kx-docstate is-clear">
         <span class="kx-docstate-icon" aria-hidden="true">↻</span>
         <div class="kx-docstate-body">
           <span class="kx-docstate-title">${plural(filledAtStaging.length, "required form")} filled at staging</span>
-          <span class="kx-docstate-text">Not on disk yet, and nothing for you to attach: the form's template is on file, and staging fills it and attaches it to the filing.</span>
+          <span class="kx-docstate-text">Not on disk yet, and nothing for you to supply: the form's template is on file, and staging fills it and offers it to any portal upload slot that asks for it. The run does not yet report what went up — check the portal's attachment list before you submit.</span>
           <ul class="kx-docstate-list">${filledAtStaging.map((d) => `<li>${esc(d.label)}</li>`).join("")}</ul>
         </div>
       </div>`

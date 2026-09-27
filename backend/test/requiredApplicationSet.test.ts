@@ -662,7 +662,10 @@ await check("…WITHOUT being folded into missingFields, which four other things
 //   1. an all-clear printed out of missingFields alone, while a DOCUMENT was missing;
 //   2. an all-clear printed when the inventory never RAN, because `missingDocuments || []`
 //      turned "we did not ask" into "nothing is missing". Hence the status-based cases.
-const ALL_CLEAR = "Every required document is attached";
+//   3. (docs-audit PLAN D1) the all-clear said "attached" — a claim about the PORTAL — when the
+//      inventory only ever looks at files on disk, and no run records what it attached (V13, V16).
+//      The all-clear now says what the inventory checked: the documents are ON FILE.
+const ALL_CLEAR = "Every required document is on file";
 
 function loadDocumentVerdictHtml(): (pkg: unknown) => string {
   const src = fs.readFileSync(path.join(REPO, "frontend", "dashboard.js"), "utf8");
@@ -736,6 +739,39 @@ await check("…and everything interpolated into that card is esc()'d", () => {
   assert.ok(!html.includes("<script>") && !html.includes("<img src=x"),
     "raw markup reached innerHTML — esc() every interpolated value");
   assert.ok(html.includes("&lt;script&gt;"), "the escaped form should be what renders");
+});
+
+// ON FILE IS NOT ATTACHED (docs-audit PLAN D1). The card's all-clear used to read "Every required
+// document is attached" and the filled-at-staging row "staging fills it and attaches it to the
+// filing". Both describe the portal; the inventory reads files on disk, and no run records what it
+// attached (V13, V16 — none of the 27 runs awaiting a human submit lists its attachments).
+// KILL: restore the old copy in dashboard.js → (d1-x) FAILS.
+await check("(d1-p) MUST-PASS: a Michael-shaped all-clear (5952 filled at staging) says ON FILE and sends the operator to the portal's attachment list", () => {
+  const html = verdict({
+    missingFields: [],
+    missingDocumentsStatus: "resolved",
+    missingDocuments: [],
+    filledAtStagingDocuments: [{ docType: "solar_checklist", label: "BCD 440-5952 prescriptive checklist, filled", lane: "permit", why: "" }],
+  });
+  assert.ok(html.includes(`${ALL_CLEAR} or filled at staging`), `the all-clear must say "on file": ${html}`);
+  assert.match(html, /BCD 440-5952 prescriptive checklist, filled/, "the filled-at-staging form is still named");
+  assert.match(html, /does not yet report what went up/, "the card must say the run does not report attachments");
+  assert.match(html, /check the portal's attachment list before you submit/, "…and what the operator does instead");
+});
+
+await check("(d1-x) MUST-EXCLUDE: no document-card copy in dashboard.js claims a PORTAL attachment it cannot see", () => {
+  const src = fs.readFileSync(path.join(REPO, "frontend", "dashboard.js"), "utf8");
+  for (const claim of ["Every required document is attached", "attaches it to the filing"]) {
+    assert.ok(!src.toLowerCase().includes(claim.toLowerCase()),
+      `dashboard.js still says "${claim}" — the inventory checks files on disk, not what the portal received`);
+  }
+  for (const pkg of [
+    { missingFields: [], missingDocumentsStatus: "resolved", missingDocuments: [] },
+    { missingFields: [], missingDocumentsStatus: "resolved", missingDocuments: [], filledAtStagingDocuments: [{ docType: "solar_checklist", label: "Checklist", lane: "permit", why: "" }] },
+  ]) {
+    assert.doesNotMatch(verdict(pkg), /document is attached|attaches it to the filing|fills and attaches/i,
+      `a rendered card claims attachment: ${JSON.stringify(pkg)}`);
+  }
 });
 
 await check("…and the superseded all-clear sentence is gone from the file entirely", () => {
