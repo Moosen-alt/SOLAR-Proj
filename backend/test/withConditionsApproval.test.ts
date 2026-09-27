@@ -310,6 +310,12 @@ for (const shape of ["permit", ""] as const) {
     for (const t of required.filter((x) => x !== "nem")) assert.equal(isTrackDone(db, pid, t, required), false, `${t} finished by a NEM reading`);
     assert.equal(laneOf(pid).nemApproved, true, "the lane (through the check row's joined kind) did not read the approval");
     assert.equal(laneOf(pid).readyForIssue, false);
+    // The check row ALONE (no project status, no track verdict) puts the reading on the NEM lane:
+    // the JOINed target's kind (trackKind), not raw target_type, is what hasNemSignal reads.
+    const bare = R.computeLaneStatusSummary("submitted", R.getProjectDetail(db, pid).permitStatusChecks, []);
+    assert.equal(bare.nemApproved, true, "the check row's kind did not reach the NEM lane");
+    assert.equal(bare.latestNemOutcome, "nem_approved", `NEM lane: ${bare.latestNemOutcome}`);
+    assert.notEqual(bare.latestPermitOutcome, "nem_approved", "the utility's approval was read on the PERMIT lane");
     assert.ok(R.handoffBlockers(db, project).some((b) => /track not done/.test(b) && !/nem/.test(b)), R.handoffBlockers(db, project).join("; "));
     // The public page's NEM track says approved, and the permit track does not.
     const token = "tok-" + pid.slice(0, 8);
@@ -348,6 +354,25 @@ await check("MUST EXCLUDE (legacy permit shape target_type '' + permit_type 'bui
   assert.equal(projectStatus(pid), "issued");
   const required = requiredTracks(project);
   assert.ok(required.filter((x) => x !== "nem").some((t) => isTrackDone(db, pid, t, required)), "the blank-typed permit's issuance finished no permit track");
+});
+
+await check("MUST INCLUDE (fully blank legacy target '' + ''): a permit, drawn on by the single permit track's pool; its issuance finishes it", async () => {
+  // A combo-structure AHJ (unknown in ID -> one combo track), so the one untagged target is the pool.
+  const pid = R.createProject(db, {
+    owner: "Blank Pool Owner", state: "ID", dcKw: "8.4", acKw: "7.7", permitPath: "prescriptive",
+    street: "1 Pool Way", city: "Boise", zip: "83702", ahj: "City of Nowhere", utility: "Idaho Power",
+  } as never).project.id;
+  const project = R.getProjectDetail(db, pid).project;
+  const required = requiredTracks(project);
+  assert.deepEqual(required.filter((t) => t !== "nem"), ["combo"], `setup: ${required.join(",")}`);
+  const d = R.createPermitCheckTarget(db, pid, { jurisdiction: "City of Nowhere", portalName: "X", portalUrl: "", applicationNumber: "BLANK-1", permitType: "building", targetType: "permit" } as never);
+  const tid = targetIds(d).find((t) => t.permitType === "building")!.id;
+  db.run("UPDATE permit_check_targets SET target_type = '', permit_type = '' WHERE id = ?", [tid]);
+  db.run("UPDATE projects SET status = 'submitted' WHERE id = ?", [pid]);
+  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "manual", rawStatusText: "Record Status: Issued. Permit issued 09/09/2026. Download permit card." });
+  assert.equal(projectStatus(pid), "issued");
+  assert.equal(isTrackDone(db, pid, "combo", required), true, "the blank/blank target did not reach the permit track's pool");
+  assert.equal(isTrackDone(db, pid, "nem", required), false);
 });
 
 await check("MF3 (client wording): the other track is found by kind — a legacy-typed NEM filing still in review keeps 'That clears the permit side.'", async () => {
@@ -441,18 +466,23 @@ await check("MF1 (fallback, no target of the email's kind): a NEM email on a per
   const pid = mkMailProject("Nettie Probe", "79 Harbor View Rd");
   const permitTid = mkPermitTarget(pid);
   db.run("UPDATE projects SET status = 'submitted' WHERE id = ?", [pid]);
+  // A status-update email (the classifier's own label is the neutral "Status update"), whose words
+  // read as the utility's approval on the NEM track and as plan review on the permit track — so
+  // this case shows the email's TRACK deciding, not the classifier's bucket label (a nem_approval
+  // bucket carries "Status: NEM/interconnection approved" and would classify nem_approved on either).
   const run = await deliver(
-    "Pacific Power interconnection application APP-555002",
-    "Pacific Power has reviewed the interconnection application APP-555002 for Nettie Probe at 79 Harbor View Rd, Coos Bay, OR 97420. Status: Approved.",
+    "Interconnection application APP-555002",
+    "Status update for the interconnection application APP-555002 for Nettie Probe at 79 Harbor View Rd, Coos Bay, OR 97420: Review Complete.",
   );
   assert.equal(run.projectMatches, 1, JSON.stringify(run));
   assert.equal(run.matches[0].workflow, "nem");
+  assert.equal(run.matches[0].emailBucket, "status_update", `bucket ${run.matches[0].emailBucket}`);
   assert.equal(checksOn(permitTid, pid).length, 0, "filed on the permit target");
   assert.ok(!rawTarget(permitTid).latest_outcome);
   const noTarget = checksOn(null, pid);
   assert.equal(noTarget.length, 1, "no check row without a target");
   // Judged as the interconnection reading it is (the email's track), not as plan review.
-  assert.equal(noTarget[0].outcome, "nem_approved", `a utility's 'Approved' with no NEM target read as ${noTarget[0].outcome}`);
+  assert.equal(noTarget[0].outcome, "nem_approved", `a utility's 'Review Complete' with no NEM target read as ${noTarget[0].outcome}`);
   assert.ok(!["approved", "ready_for_issue", "issued"].includes(projectStatus(pid)), `project '${projectStatus(pid)}' from a utility email`);
   const project = R.getProjectDetail(db, pid).project;
   const required = requiredTracks(project);
