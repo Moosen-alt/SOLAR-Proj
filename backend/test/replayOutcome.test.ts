@@ -191,5 +191,28 @@ await check("(e2) a 'running' row whose runner pid is alive (maybe reused) holds
   await first;
 });
 
+await check("(f) a replay that STOPPED BEFORE the review page is paused_for_human in its own words — never awaiting_human_submit, never 'a challenge, nothing was staged'", async () => {
+  // Live run 191e45c8: Accela's attachments step recorded awaiting_human_submit ("stopped at review").
+  fx.completeRecipe();
+  const projectId = fx.newProject();
+  const before = projectStatus(projectId);
+  const stopped = 'Replayed 5 recorded step(s); STOPPED on "Step 2: Services > Attachments" — NOT the review page (the page does not read as the portal\'s review step, and none of the project\'s values are on it), so the application is NOT staged at review.';
+  fx.stubRunner(async () => ({
+    portalName: "stub", ok: true, finalSubmitClicked: false, pauseReason: "stopped_before_review",
+    steps: [{ ok: true, message: "Opened stub portal." }, { ok: true, message: stopped, pauseReason: "stopped_before_review" }],
+  }));
+  await repo.prepareSubmission(db, projectId);
+  const run = fx.latestRun(projectId)!;
+  assert.equal(run.status, "paused_for_human", `a stop before review was recorded ${run.status}`);
+  assert.equal(run.pause_reason, "stopped_before_review");
+  assert.match(String(run.error_message), /STOPPED on "Step 2: Services > Attachments" — NOT the review page/, "the run card does not say where it stopped");
+  const detail = String(db.get<{ stage_detail: string; current_stage: string }>("SELECT current_stage FROM projects WHERE id = ?", [projectId])?.current_stage);
+  assert.doesNotMatch(detail, /challenge|nothing was staged/i, `the stage line calls a stop before review a challenge: ${detail}`);
+  assert.match(detail, /STOPPED on "Step 2: Services > Attachments"/);
+  assert.equal(projectStatus(projectId), before, "a run that did not reach review advanced the project");
+  // ...and an MFA/CAPTCHA pause keeps its own sentence (it did stage nothing).
+  assert.match(repo.pausedRunSentence("mfa_captcha", {}), /verification challenge \(MFA\/CAPTCHA\) — nothing was staged/);
+});
+
 repo.setRecipeStageRunnerForTests(null);
 finish("replay-outcome");

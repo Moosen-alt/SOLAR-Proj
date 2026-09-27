@@ -542,9 +542,14 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
       [why(`Paused ${facts.reopenPause.startedAt.slice(0, 16).replace("T", " ")}`, "portalRuns")], null, facts.reopenPause.startedAt);
   }
   if (paused.length) {
+    // A replay that stopped BEFORE the review page left a draft on the portal: staging again would
+    // start a second one. The person finishes that page, continues to review, and submits there.
+    const beforeReview = paused[0].latestRun?.pauseReason === "stopped_before_review";
     return make("portal_paused", "me", "today",
-      `The ${trackList(paused)} portal run is paused for a person (${paused[0].latestRun?.pauseReason ?? "human input"}) — finish it in the open browser, then stage again.`,
-      paused.map((t) => why(`${TRACK_NAME[t.track]}: paused ${t.latestRun?.startedAt.slice(0, 16).replace("T", " ")}`, "portalRuns")),
+      beforeReview
+        ? `The ${trackList(paused)} portal run stopped before the portal's review page — finish that page in the open browser (every attachment listed), continue to review, verify and submit there, then record the confirmation.`
+        : `The ${trackList(paused)} portal run is paused for a person (${paused[0].latestRun?.pauseReason ?? "human input"}) — finish it in the open browser, then stage again.`,
+      paused.map((t) => why(`${TRACK_NAME[t.track]}: paused ${t.latestRun?.startedAt.slice(0, 16).replace("T", " ")}${t.latestRun?.errorMessage ? ` — ${t.latestRun.errorMessage.slice(0, 240)}` : ""}`, "portalRuns")),
       null, paused[0].latestRun?.startedAt);
   }
 
