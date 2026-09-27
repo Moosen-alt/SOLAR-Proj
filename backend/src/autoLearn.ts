@@ -1269,6 +1269,7 @@ async function autoLearnPortalInner(
     // own message already says what to do.
     const pauseWhat = /^signature_/.test(learn.pauseReason)
       ? `at the e-signature step (${learn.pauseReason}): ${String(learn.message || "").slice(0, 300)}`
+        + (learn.pauseReason === "signature_drawn" && !resolveHeadless(input.headless) ? " The browser is open at the signature step for you to sign." : "")
       : `on a ${learn.pauseReason} challenge — a human must complete it.`;
     if (protectComplete) {
       return preserved("paused", learn.pauseReason, { accurate: false, confidence: "low", matches: [], issues: [] }, `Learning paused ${pauseWhat}`);

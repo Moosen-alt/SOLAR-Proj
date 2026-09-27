@@ -734,7 +734,19 @@ export async function learnPortal(input: {
   noProgressBudgetMs?: number;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { credentialForUrl: input.credentialForUrl, noProgressBudgetMs: input.noProgressBudgetMs, maxPages: input.maxPages, budgetMs: input.budgetMs, docsByType: input.docsByType, beforeUpload: input.beforeUpload, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity, allowFinalSubmit: input.allowFinalSubmit, hasBattery: input.hasBattery, allowConsentAccept: input.allowConsentAccept });
+  // A PARK IS TOLD, NOT INFERRED. A second factor at login or a signature stop parks the run for
+  // a person; the reason reaches the debug bundle as an event and the dashboard as a progress
+  // message (phase "page" — the closed LearnProgress union is read by jobQueue's percent map),
+  // so a parked run no longer looks like a hung one. Never a credential, never a name.
+  const parkState: { last: { reason: string; waitMs: number } | null } = { last: null };
+  const onPark = (info: { reason: string; waitMs: number }): void => {
+    parkState.last = info;
+    try { adapter.debug?.event({ type: "parked", reason: String(info.reason ?? "").slice(0, 200), waitMs: info.waitMs }); } catch { /* diagnostics are best-effort */ }
+    try {
+      input.onProgress?.({ phase: "page", pageCount: 0, maxPages: input.maxPages ?? 18, message: `Paused for a person: ${String(info.reason ?? "").slice(0, 200)}` });
+    } catch { /* a notifier must never change the outcome */ }
+  };
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { credentialForUrl: input.credentialForUrl, noProgressBudgetMs: input.noProgressBudgetMs, maxPages: input.maxPages, budgetMs: input.budgetMs, docsByType: input.docsByType, beforeUpload: input.beforeUpload, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, onPark, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity, allowFinalSubmit: input.allowFinalSubmit, hasBattery: input.hasBattery, allowConsentAccept: input.allowConsentAccept });
   let tmpStatePath: string | undefined;
   let leaveOpen = false;
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it
@@ -799,7 +811,14 @@ export async function learnPortal(input: {
     // next stage's closePriorStagingBrowser) so the human can verify + submit — mirroring the
     // guided-manual replay. Only when the learn actually REACHED review AND we're headed (the human
     // is watching); a headless/server run or a learn that never reached review still closes.
-    leaveOpen = learnResult.reachedReview === true && !resolveHeadless(input.headless) && !!input.userDataDir;
+    // A DRAWN-SIGNATURE STOP is the same hand-off one page earlier (portal-run-close 6): the
+    // portal wants a person's hand on the pad, so the browser stays open for that person exactly
+    // as it does at review and at the second-factor park — closing it threw the walked draft away.
+    const parkedForSignature = learnResult.pauseReason === "signature_drawn";
+    leaveOpen = (learnResult.reachedReview === true || parkedForSignature) && !resolveHeadless(input.headless) && !!input.userDataDir;
+    if (leaveOpen && parkedForSignature) {
+      try { adapter.debug?.event({ type: "browser_left_open", why: "signature_drawn", parked: parkState.last?.reason ?? null }); } catch { /* best-effort */ }
+    }
     // Arm patch-by-demonstration on the browser being left open: the human finishing the
     // missed fields at review teaches the recipe those fields for every future project.
     if (leaveOpen && input.onHumanStep) {

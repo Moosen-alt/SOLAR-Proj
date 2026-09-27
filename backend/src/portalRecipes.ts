@@ -1363,6 +1363,12 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   dwellingUnits: "Dwelling units in the building (1 for a single-family house)",
   numberOfBuildings: "Buildings covered by this permit (1 unless the plans show more)",
   county: "County the project site is in",
+  // THE PARCEL HAS ITS OWN KEY (portal-run-close 7). The learner's ACA work-location pass
+  // records the parcel search bound to parcelNumber (the parser snapshot's key, "(no dashes)");
+  // without this entry the key was bindable only on a project whose snapshot happened to carry
+  // it, and the binder could never offer it to a frozen parcel literal. deadFieldBindings still
+  // flags the step for a project with NO parcel (the resolver emits the key only when present).
+  parcelNumber: "Assessor parcel number (APN) of the project site, as the county prints it",
   workDescription: "One-line scope of work for the permit application, derived from this project's own system size",
   accelaContactCode: "Accela contact/license lookup code",
   hasExistingSystem: "Whether an existing PV/storage system is already interconnected on site (Yes/No)",

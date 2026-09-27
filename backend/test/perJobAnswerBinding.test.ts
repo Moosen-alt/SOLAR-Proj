@@ -33,7 +33,7 @@ process.env.AUTOPILOT_AUTO_START = "0";
 
 const { openDatabase } = await import("../src/db");
 const { createProject, getProjectDetail } = await import("../src/repository");
-const { resolveRecipeFieldValues, deadFieldBindings } = await import("../src/portalRecipes");
+const { resolveRecipeFieldValues, deadFieldBindings, RECIPE_FIELD_DESCRIPTIONS } = await import("../src/portalRecipes");
 import type { RecipeStep } from "../../shared/src/types";
 const db = await openDatabase();
 
@@ -182,6 +182,26 @@ run("a record-level answer overrides the column read", () => {
   const detail = getProjectDetail(db, created.project.id);
   const project = { ...detail.project, ownershipModel: "ppa" };
   assert.equal(resolveRecipeFieldValues(db, project, "utility").ownershipModel, "PPA");
+});
+
+// ---------------------------------------------------------------------------
+// THE PARCEL HAS ITS OWN KEY (portal-run-close 7): the learner's ACA work-location pass binds
+// the parcel search to parcelNumber. The key is in the recipe dictionary (so it is bindable on
+// every learn and the binder can offer it), resolves from the parser snapshot when the project
+// has one, and a recipe bound to it is flagged dead for a project WITHOUT a parcel.
+// ---------------------------------------------------------------------------
+run("parcelNumber: in the recipe dictionary, resolved from the snapshot, flagged dead only when the project has none", () => {
+  assert.ok(typeof RECIPE_FIELD_DESCRIPTIONS.parcelNumber === "string" && /parcel/i.test(RECIPE_FIELD_DESCRIPTIONS.parcelNumber), "parcelNumber missing from RECIPE_FIELD_DESCRIPTIONS");
+  // The parcel lives in the parser snapshot (structuralIntake / the plan-set parser write it);
+  // the resolver reads it off the project record.
+  const created = createProject(db, { ...base } as never);
+  const project = getProjectDetail(db, created.project.id).project;
+  const fieldsWith = resolveRecipeFieldValues(db, { ...project, parserSnapshot: { parcelNumber: "10-10-10-10-101" } }, "ahj");
+  const fieldsWithout = resolveRecipeFieldValues(db, { ...project, parserSnapshot: {} }, "ahj");
+  assert.equal(fieldsWith.parcelNumber, "10-10-10-10-101", "the snapshot's parcel resolves");
+  const parcelStep: RecipeStep = { action: "fill", selector: { css: "input[id*='ParcelNo' i]" }, field: "parcelNumber", note: "work location: parcel number (no dashes)" };
+  assert.deepEqual(deadFieldBindings([parcelStep], fieldsWith), [], "bound and resolvable for a project with a parcel");
+  assert.equal(deadFieldBindings([parcelStep], fieldsWithout).length, 1, "flagged for a project without a parcel");
 });
 
 if (failures) { console.error(`\n${failures} per-job-answer-binding check(s) FAILED.`); process.exit(1); }

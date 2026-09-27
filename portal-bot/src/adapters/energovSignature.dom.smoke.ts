@@ -120,7 +120,12 @@ const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 const appUrl = (v: string) => `${base}/apps/selfservice?v=${v}#/permit/apply/12/0/1`;
 
 // Fill everything it is offered, the signature name with a WRONG name; tick every box; Next.
-const planner: LearnPlanner = async (req) => {
+// mode "atReviewOnSign": on the Signature step the planner claims atReview (a real planner
+// does, seeing "sign ... application" and no more form) — the run must still walk to step 7.
+// Labels the planner was offered, per page: the signature boxes must never be among them.
+const offered: string[][] = [];
+const mkPlanner = (mode: "" | "atReviewOnSign" = ""): LearnPlanner => async (req) => {
+  offered.push(req.fields.map((f) => String(f.label ?? "")));
   const fills: Array<{ selectorIndex: number; value: string; field?: string }> = [];
   req.fields.forEach((f, i) => {
     const l = String(f.label ?? "");
@@ -139,8 +144,10 @@ const planner: LearnPlanner = async (req) => {
   const submit = req.fields.findIndex((f) => f.fieldType === "button" && /^submit$/i.test(String(f.label ?? "").trim()));
   if (submit >= 0) return { fills: [], atReview: true, finalSubmitSelectorIndex: submit };
   const next = req.fields.findIndex((f) => f.fieldType === "button" && /^next$/i.test(String(f.label ?? "").trim()));
+  if (mode === "atReviewOnSign" && /electronically sign/i.test(req.bodyText)) return { fills, atReview: true, finalSubmitSelectorIndex: next >= 0 ? next : undefined };
   return { fills, atReview: false, ...(next >= 0 ? { advanceSelectorIndex: next } : {}) };
 };
+const planner = mkPlanner();
 
 const state = async (page: Page) => page.evaluate(() => {
   const s = (window as unknown as { __S: Record<string, unknown> }).__S;
@@ -154,9 +161,13 @@ const browser = await chromium.launch();
 let learnedSteps: RecipeStep[] = [];
 try {
   for (const run of [
-    { name: "iowa", variant: "iowa", signer: "Dana Signer" },
-    { name: "noSigner", variant: "iowa", signer: "" },
-    { name: "carlsbad", variant: "carlsbad", signer: "Dana Signer" },
+    { name: "iowa", variant: "iowa", signer: "Dana Signer", mode: "" as const },
+    { name: "noSigner", variant: "iowa", signer: "", mode: "" as const },
+    { name: "carlsbad", variant: "carlsbad", signer: "Dana Signer", mode: "" as const },
+    // KILL A (portal-run-close MF2): the planner claims atReview on the signed step 6. The
+    // override (a signed step's Next is not the end) must still walk to step 7 — and it must
+    // not fire on a page that itself reads as review (signatureShapes combinedReviewSign).
+    { name: "iowaAtReviewOnSign", variant: "iowa", signer: "Dana Signer", mode: "atReviewOnSign" as const },
   ]) {
     const ctx = await browser.newContext();
     ctx.setDefaultTimeout(8000);
@@ -164,7 +175,8 @@ try {
     const page = await ctx.newPage();
     await page.goto(appUrl(run.variant));
     posts.length = 0;
-    const adapter = new AutoLearnAdapter("EnerGov Signature Smoke", planner, { maxPages: 12, contactIdentity: { signerName: run.signer, lastName: "Contractor" } });
+    offered.length = 0;
+    const adapter = new AutoLearnAdapter("EnerGov Signature Smoke", mkPlanner(run.mode), { maxPages: 12, contactIdentity: { signerName: run.signer, lastName: "Contractor" } });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (adapter as any).page = page;
     let r: Awaited<ReturnType<AutoLearnAdapter["learn"]>> | null = null;
@@ -193,6 +205,12 @@ try {
         sigFills.length === 2 && sigFills.every((s) => s.field === "authorizedSignerName" && s.value === undefined) && !stepsJson.includes("Dana Signer")
           && learnedSteps.some((s) => s.action === "check" && /^e-signature:/.test(String(s.note ?? ""))),
         `sigFills=${JSON.stringify(sigFills)}`);
+      const sigOffered = offered.flat().filter((l) => /consent to electronically sign|type signature/i.test(l));
+      check("MUST-PASS iowa: the planner is never offered a signature box (one signer rule)", sigOffered.length === 0, `offered=${JSON.stringify(sigOffered)}`);
+    } else if (run.name === "iowaAtReviewOnSign") {
+      check("MUST-PASS iowaAtReviewOnSign (kill A): a planner atReview on the signed step 6 still advances to step 7 (reachedReview), signed as the client's signer",
+        st.step === 7 && saves === 6 && r?.reachedReview === true && st.consentName === "Dana Signer" && st.typedName === "Dana Signer",
+        `step=${String(st.step)} saves=${saves} reachedReview=${String(r?.reachedReview)} stop=${String(r?.stopReason)} ${msg}`);
     } else if (run.name === "noSigner") {
       check("MUST-EXCLUDE noSigner: PAUSED at step 6, named (signature_no_signer)",
         st.step === 6 && r?.pauseReason === "signature_no_signer" && r?.stopReason === "signature_no_signer" && /no authorized signer/.test(msg), `step=${String(st.step)} pause=${String(r?.pauseReason)} ${msg}`);
@@ -206,18 +224,28 @@ try {
   }
 
   // REPLAY the learned recipe (review stop appended), with and without a signer on the client.
-  const recipe = (): PortalRecipe => ({
+  // KILL C: an OLDER recipe whose signature boxes a planner bound to installerContactName, with
+  // no "e-signature:" note — replay's resolveValue must still type the client's signer there.
+  const oldBinding = (steps: RecipeStep[]): RecipeStep[] => steps.map((s) => (s.action === "fill" && /^e-signature:/.test(String(s.note ?? ""))
+    ? { ...s, field: "installerContactName", note: "signature name" } : s));
+  const recipe = (steps: RecipeStep[] = learnedSteps): PortalRecipe => ({
     id: "energov-sig", scopeType: "ahj", profileKey: "ia|iowa city|", state: "IA", ahj: "City of Iowa City", utility: "",
     portalPlatform: "energov", portalUrl: appUrl("iowa"), status: "complete", version: 1, createdBy: "smoke", createdAt: "", updatedAt: "", notes: "",
-    steps: [...learnedSteps.filter((s) => !s.isFinalSubmit), { action: "stopForReview" } as RecipeStep],
+    steps: [...steps.filter((s) => !s.isFinalSubmit), { action: "stopForReview" } as RecipeStep],
   } as unknown as PortalRecipe);
-  for (const rp of [{ name: "replay", values: { street: "410 E Washington St", valuation: "20000", dwellingUnits: "1", projectDescription: "Roof-mounted solar PV", installerCompanyName: "Test Solar Co", moduleMake: "Test Modules", installerContactName: "Casey Contact", authorizedSignerName: "Dana Signer" } as Record<string, string> }, { name: "replayNoSigner", values: { street: "410 E Washington St", valuation: "20000", dwellingUnits: "1", projectDescription: "Roof-mounted solar PV", installerCompanyName: "Test Solar Co", moduleMake: "Test Modules", installerContactName: "Casey Contact" } as Record<string, string> }]) {
+  const values = { street: "410 E Washington St", valuation: "20000", dwellingUnits: "1", projectDescription: "Roof-mounted solar PV", installerCompanyName: "Test Solar Co", moduleMake: "Test Modules", installerContactName: "Casey Contact", authorizedSignerName: "Dana Signer" } as Record<string, string>;
+  const { authorizedSignerName: _drop, ...valuesNoSigner } = values;
+  for (const rp of [
+    { name: "replay", values, steps: learnedSteps },
+    { name: "replayNoSigner", values: valuesNoSigner, steps: learnedSteps },
+    { name: "replayOldBinding", values, steps: oldBinding(learnedSteps) },
+  ]) {
     const ctx = await browser.newContext();
     ctx.setDefaultTimeout(8000);
     await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
     const page = await ctx.newPage();
     posts.length = 0;
-    const adapter = new RecipeAdapter(recipe(), rp.values, {}, {});
+    const adapter = new RecipeAdapter(recipe(rp.steps), rp.values, {}, {});
     (adapter as unknown as { page: unknown }).page = page;
     let res: { ok: boolean; message: string; pauseReason?: string } | null = null;
     try { res = await adapter.fillApplication({} as ProjectRecord); } catch (e) { res = { ok: false, message: `threw ${String(e).slice(0, 200)}` }; }
@@ -229,6 +257,10 @@ try {
     if (rp.name === "replay") {
       check("MUST-PASS replay: the recipe reaches review (step 7) signed as the client's signer",
         st.step === 7 && st.consentName === "Dana Signer" && st.typedName === "Dana Signer", `step=${String(st.step)} consent=${String(st.consentName)} typed=${String(st.typedName)} ok=${String(res?.ok)} ${String(res?.message).slice(0, 300)}`);
+    } else if (rp.name === "replayOldBinding") {
+      check("MUST-EXCLUDE replayOldBinding (kill C): a recipe that bound the signature to installerContactName still signs as the client's signer, never the contact",
+        st.step === 7 && st.consentName === "Dana Signer" && st.typedName === "Dana Signer" && st.consentName !== "Casey Contact",
+        `step=${String(st.step)} consent=${String(st.consentName)} typed=${String(st.typedName)} ok=${String(res?.ok)} ${String(res?.message).slice(0, 300)}`);
     } else {
       check("MUST-EXCLUDE replayNoSigner: paused at the signature step, named, nothing typed",
         !res?.ok && res?.pauseReason === "signature_no_signer" && /no authorized signer/.test(String(res?.message)) && st.step === 6 && st.consentBox === "" && (st.typedBox === "" || st.typedBox === null),

@@ -19,7 +19,7 @@ import { parseStreetName, parseStreetNumber, parseStreetLine, correctTruncatedAd
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
-import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel } from "../../../shared/src/portalSafety";
+import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, reviewSignals as sharedReviewSignals } from "../../../shared/src/portalSafety";
 import { installFilingBackstop, withBackstopWindow, describeBackstopAbort, backstopFor, isStoppingAbort } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
 
@@ -294,17 +294,12 @@ const CONTACT_CONTROL = /add new|select from account/i;
 // others (live-verified union from the hand-coded OregonEPermittingAdapter).
 const ACA_CONTINUE_CSS = 'a:has-text("Continue Application"), button:has-text("Continue Application"), input[type="submit"][value*="Continue Application" i]';
 
-// Markers that a page is the review/confirm step — portal-AGNOSTIC phrasing only (a generic
-// "Step N: Review", a read-only summary, a "please review" instruction, or a terms-acceptance /
-// "will not be submitted until" acknowledgment gate). Portal-specific review behaviour (e.g. a
-// submit-intent button on a no-input page) is detected STRUCTURALLY, not by one portal's wording,
-// so this stays generic across never-seen portals.
-// NOT "(Read-only)": Oregon ePermitting's Step 1 locks its picked Site Address / Parcel / Owner
-// sections "(Read-only)", and with "Continue Application »" on the page that made step 1 a review
-// page (b7494f3 fixed the shared reading; this is the learner's copy). And the walk reads these
-// against the page text with its STEP NAVIGATOR cut (portalSafety reviewTextInPage): EnerGov CSS
-// prints "Review and Submit" in the step bar on every one of its seven steps.
-const REVIEW_MARKERS = /\bstep\s*\d+\s*:?\s*review\b|review (all )?(your |the )?(information|application|details|entries)\b|please review|review and submit|review & submit|accept (the )?terms and conditions|will not be submitted until/i;
+// "IS THIS THE REVIEW PAGE" HAS ONE ANSWER: portalSafety.reviewSignals (the page text with its
+// step navigator cut, or a review URL). The learner used to keep its own REVIEW_MARKERS copy,
+// and the two disagreed on "please review and sign" — a combined confirm-and-sign page the
+// learner called review and the backstop did not, so the atReview override clicked its Next
+// (which FILED) and the review lockdown never fired (skeptic combinedReviewSign, 4 POSTs).
+// A terms-acceptance gate is a STRUCTURAL signal here (hasAcceptTermsCheckbox), not wording.
 
 // Terms-acceptance / certification / acknowledgment checkboxes that gate a final submit.
 // Portal-agnostic: PowerClerk "Click to Accept Terms and Conditions" + "I understand that
@@ -338,10 +333,6 @@ export function acaModuleQuery(...sources: Array<string | null | undefined>): st
     } catch { /* not a URL */ }
   }
   return "module=Building";
-}
-
-function looksLikeReviewUrl(url: string): boolean {
-  return /capconfirm|confirm\.aspx|\/review/i.test(url || "");
 }
 
 // host+pathname only (no query string) for debug artifacts — avoids leaking ids/tokens.
@@ -1144,7 +1135,7 @@ export function classifyTerminalSubmitPage(
   //    exit is "Save and Finish Later" permanently unlearnable, which is the silently-deleted
   //    feature this file has shipped before.
   if (!off("positive")) {
-    const reviewish = REVIEW_MARKERS.test(body);
+    const reviewish = sharedReviewSignals(body);
     const termsGate = fields.some((f) => f?.fieldType === "checkbox" && ACCEPT_TERMS.test(String(f.label ?? "")));
     const chosen = fields[candidate.index];
     const otherForward = buttons.filter((f) => {
@@ -2055,6 +2046,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       beforeUpload?: (docType: string, file: string) => void;
       uploadMode?: "split" | "combined";
       onProgress?: LearnProgressFn;
+      /** Told once when the run PARKS for a person — a second factor at login (loginFlow), or a
+       *  signature stop (a drawn signature, no authorized signer, a typed signature that did not
+       *  take): the named reason and how long the browser stays. Never carries a credential or
+       *  a name. index.ts turns it into a debug-bundle event and a progress message. */
+      onPark?: (info: { reason: string; waitMs: number }) => void;
       // Which deterministic policy-answer set applyPolicyDefaults may use.
       //   "residential_nem" — the standard-residential-NEM Yes/No answers (export
       //     capacity → No, UL 1741 lab certified → Yes). Correct for utility
@@ -3069,7 +3065,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // Log in via the shared, portal-agnostic login flow. It detects/reveals the login
       // form, fills it (known + unknown portals), verifies success, and stops on MFA.
       // Never logs credentials.
-      const result = await performLogin(this.page, context.credential);
+      const result = await performLogin(this.page, context.credential, { onPark: this.options.onPark });
       // Status + redacted message only — performLogin never returns credentials.
       this.debug?.event({ type: "login", status: result.status, startUrl: context.startUrl ? safeHostPath(context.startUrl) : null });
       // A LOGIN FAILURE MUST LEAVE BEHIND THE PAGE IT FAILED ON.
@@ -3169,7 +3165,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         stopReason: "login_needed_no_credential",
       };
     }
-    const res = await performLogin(this.page, cred);
+    const res = await performLogin(this.page, cred, { onPark: this.options.onPark });
     this.debug?.event({ type: "login_midrun", page: pageCount, host, status: res.status });
     if (res.status === "mfa_captcha") {
       return { ...fail(steps, this.portalName, `Stopped at ${host}'s login: ${res.message} A human must complete the MFA/CAPTCHA.`, "mfa_captcha", pageCount, notices), stopReason: "login_midrun_mfa" };
@@ -3369,6 +3365,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   /** Set only while completeTypedSignature runs: the fill guard refuses the signature controls
    *  to everyone else (the planner, the rescan, the gap passes). */
   private signaturePassActive = false;
+
+  /** Does the in-page reading (signatureStepInPage, run on this page) mark this control as a
+   *  signature control (data-al-sig)? Unreadable = false. */
+  private async isMarkedSignatureControl(field: ExtractedField): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    const loc = await this.locator(field.selector).catch(() => null);
+    if (!loc || typeof loc.evaluate !== "function") return false;
+    const role = await loc.evaluate((el: Element) => el.getAttribute("data-al-sig") || "", undefined, { timeout: 1500 }).catch(() => "");
+    return !!role;
+  }
 
   /**
    * COMPLETE A TYPED E-SIGNATURE with the client's authorized signer: switch on "type
@@ -4673,7 +4679,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // mid-flow form pages advance with "Next/Continue", not a terminal Submit alongside an
       // "Accept Terms and Conditions" / "I certify" attestation. Only checkboxes count.
       const hasAcceptTermsCheckbox = fields.some((f) => f.fieldType === "checkbox" && ACCEPT_TERMS.test(f.label));
-      const reviewSignals = REVIEW_MARKERS.test(reviewText) || looksLikeReviewUrl(url);
+      const reviewSignals = sharedReviewSignals(reviewText, url);
       const isDashboard = !hasFillable && !hasSubmitIntentBtn && !reviewSignals;
       if (hasFillable) everFoundFillable = true;
 
@@ -5063,7 +5069,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const sig = await this.signatureStepHere();
         if (sig && sig.kind) {
           this.debug?.event({ type: "signature_step", page: pageCount, kind: sig.kind, why: sig.why });
+          // A signature stop is a PARK: the person takes the visible browser (index.ts keeps it
+          // open on signature_drawn, as at review), and the dashboard/debug bundle hear why.
+          const park = (reason: string): void => { try { this.options.onPark?.({ reason, waitMs: 0 }); } catch { /* a notifier never changes the outcome */ } };
           if (sig.kind === "drawn") {
+            park(`signature_drawn: the portal asks for a DRAWN signature (${sig.why}) — a person signs in the browser`);
             return {
               ...fail(steps, this.portalName, `Stopped at the signature step for a person: the portal asks for a DRAWN signature (${sig.why}). The bot does not draw a signature — sign in the browser, then review and submit. The recipe was recorded up to this page.`, "signature_drawn", pageCount, portalNotices),
               stopReason: "signature_drawn",
@@ -5071,6 +5081,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           }
           const signer = String(this.contactIdentity.signerName ?? "").trim();
           if (!signer) {
+            park("signature_no_signer: the client record has no authorized signer — nothing was typed");
             return {
               ...fail(steps, this.portalName, `Paused at the e-signature step: the client record has no authorized signer name, so there is no one the bot may sign as. Add the authorized signer to the client (Clients > the company > Authorized signer) and run again, or sign in the browser. Nothing was typed into the signature.`, "signature_no_signer", pageCount, portalNotices),
               stopReason: "signature_no_signer",
@@ -5078,6 +5089,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           }
           const done = await this.completeTypedSignature(signer, steps, fields);
           if (!done.ok) {
+            park(`signature_incomplete: ${done.why}`);
             return {
               ...fail(steps, this.portalName, `Stopped at the e-signature step: ${done.why}. A person must sign in the browser, then review and submit.`, "signature_incomplete", pageCount, portalNotices),
               stopReason: "signature_incomplete",
@@ -5092,13 +5104,28 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // c) Ask the planner what to do on this page. Attach a screenshot so it can SEE the
       //    section headings/layout (vision-assisted planning) — the reliable signal for which
       //    contact block is the customer vs the installer.
+      //    THE PLANNER NEVER SEES A SIGNATURE BOX (one signer rule). The signature controls are
+      //    taken out of the request; the planner's indices are into that shorter list and are
+      //    mapped back here, so every consumer below still indexes `fields`.
       let plan: LearnPlanResponse;
       const planShot = await this.capturePlanScreenshot();
+      const visibleIdx = fields.map((_f, i) => i).filter((i) => !signatureFieldIdx.has(i));
+      const plannerFields = visibleIdx.length === fields.length ? fields : visibleIdx.map((i) => fields[i]);
       try {
-        plan = await this.planner({ url, pageTitle, fields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
+        plan = await this.planner({ url, pageTitle, fields: plannerFields, bodyText, alreadyFilledLabels, isDashboard, recoveryHint: recoveryHint || undefined, screenshotBase64: planShot });
       } catch (err) {
         this.debug?.event({ type: "planner_error", page: pageCount, message: err instanceof Error ? err.message : String(err) });
         return fail(steps, this.portalName, `Planner failed on page ${pageCount}: ${err instanceof Error ? err.message : String(err)}`, null, pageCount, portalNotices);
+      }
+      if (plannerFields !== fields) {
+        const back = (i: number | undefined): number | undefined => (typeof i === "number" && i >= 0 && i < visibleIdx.length ? visibleIdx[i] : undefined);
+        plan = {
+          ...plan,
+          fills: (plan.fills ?? []).map((fl) => ({ ...fl, selectorIndex: back(fl.selectorIndex) ?? -1 })).filter((fl) => fl.selectorIndex >= 0),
+          advanceSelectorIndex: back(plan.advanceSelectorIndex),
+          navigateSelectorIndex: back(plan.navigateSelectorIndex),
+          finalSubmitSelectorIndex: back(plan.finalSubmitSelectorIndex),
+        };
       }
       // The signature controls are the signature pass's alone (the fill guard refuses them too).
       if (signatureDone) {
@@ -5107,7 +5134,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         plan = { ...plan, fills: kept };
         // A signed step is not the end: it has no submit, and its Next leads to the review step.
         // A planner "atReview" here would stop one page short of where the operator wants it.
-        if (plan.atReview && !hasSubmitIntentBtn) {
+        // ONLY on a page that does not itself read as review (the ONE shared predicate): a
+        // combined "Please review and sign" page whose Next FILES kept its planner stop — the
+        // override turned it into a Next click and 4 filing POSTs reached the server (skeptic
+        // combinedReviewSign). There the run stops at review, signed, and the backstop locks
+        // the page down by the same reading.
+        if (plan.atReview && !hasSubmitIntentBtn && !reviewSignals) {
           const next = typeof plan.advanceSelectorIndex === "number" ? plan.advanceSelectorIndex
             : fields.findIndex((f) => f.fieldType === "button" && /^\s*(next|continue)\b/i.test(String(f.label ?? "")) && !f.disabled);
           plan = { ...plan, atReview: false, finalSubmitSelectorIndex: undefined, ...(next >= 0 ? { advanceSelectorIndex: next } : {}) };
@@ -7251,8 +7283,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // a gap pass typing into "type your name as consent to electronically sign" would sign the
     // application as whoever it picked (the contact, the homeowner) — or sign at all when the
     // client has no authorized signer. Only completeTypedSignature may touch these controls.
+    // The ONE predicate (portalSafety): the label names a signature box, or the in-page reading
+    // marked this control data-al-sig (a name box under an attesting statement, which a label
+    // alone cannot tell — signatureStepInPage stamps it on every page it reads).
     if (!this.signaturePassActive && (
-      ((field.fieldType === "text" || field.fieldType === "other") && isSignatureNameLabel(field.label))
+      ((field.fieldType === "text" || field.fieldType === "other") && (isSignatureNameLabel(field.label) || await this.isMarkedSignatureControl(field)))
       || (isCheckable && isTypeSignatureToggleLabel(field.label)))) {
       this.debug?.event({ type: "signature_fill_refused", label: String(field.label ?? "").slice(0, 60) });
       return null;
