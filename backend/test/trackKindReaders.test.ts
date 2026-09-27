@@ -26,7 +26,7 @@ const { ensureClientPortalToken, clientPortalPayload } = await import("../src/cl
 const { staleStatusClassifications } = await import("../src/permitMonitor");
 const { trackForTarget, milestoneFor } = await import("../src/timelineSamples");
 const { loadNextStepFacts } = await import("../src/nextStep");
-const { unfinishedUnattributedTargets, requiredTracks } = await import("../src/submittalTracks");
+const { unfinishedUnattributedTargets, requiredTracks, ensureCheckTarget } = await import("../src/submittalTracks");
 
 const db = await openDatabase();
 let failures = 0;
@@ -158,6 +158,57 @@ await check("KM12: unfinishedUnattributedTargets counts permits by trackKind —
   assert.equal(unfinishedUnattributedTargets(db, pid, tracks), 0, "the legacy 'permit'-typed NEM filing was counted as an unfinished permit");
   mkBlankPermit(pid);
   assert.equal(unfinishedUnattributedTargets(db, pid, tracks), 1, "the fully blank legacy permit was not counted");
+});
+
+await check("KM13: ensureCheckTarget matches an existing filing by NUMBER on trackKind — the legacy 'permit'+'nem' row is the NEM filing its number names (never the older typed NEM row by permit_type), and a blank '' + '' row is the permit its number names (never a duplicate)", () => {
+  const pid = mkProject("Identity Owner");
+  const project = R.getProjectDetail(db, pid).project;
+  const olderTypedNem = mkTarget(pid, { targetType: "nem", permitType: "nem", jurisdiction: "Pacific Power", applicationNumber: "APP-KM13-OLD" });
+  // The second NEM row cannot come through the door (it dedupes one NEM filing per project by
+  // permit_type) — it is the legacy split row as old data left it, written raw.
+  const legacy = `t-km13-${Math.random().toString(36).slice(2, 8)}`;
+  const later = new Date(Date.now() + 1000).toISOString();
+  db.run(
+    `INSERT INTO permit_check_targets (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number,
+       check_frequency_days, active, next_check_at, latest_status_label, notes, target_type, permit_type, portal_platform, tracking_url, created_at, updated_at)
+     VALUES (?, ?, 'Pacific Power', 'PowerClerk', '', 'APP-KM13-LEGACY', '', 7, 1, ?, '', '', 'permit', 'nem', 'unknown', '', ?, ?)`,
+    [legacy, pid, later, later, later],
+  );
+  const nem = ensureCheckTarget(db, project, { targetType: "nem", permitType: "nem", applicationNumber: "APP-KM13-LEGACY" });
+  assert.deepEqual([nem.created, nem.matchedOn, nem.targetId], [false, "application_number", legacy],
+    `the NEM filing APP-KM13-LEGACY resolved to ${nem.targetId === olderTypedNem ? "the OLDER typed NEM row (by permit_type)" : nem.created ? "a new row" : nem.targetId} via ${nem.matchedOn}`);
+  assert.equal(row(olderTypedNem).application_number, "APP-KM13-OLD", "the older NEM row's number was overwritten");
+  const blank = mkBlankPermit(pid, { applicationNumber: "187-26-KM13-STR" });
+  const permit = ensureCheckTarget(db, project, { targetType: "permit", permitType: "building", applicationNumber: "187-26-KM13-STR" });
+  assert.deepEqual([permit.created, permit.matchedOn, permit.targetId], [false, "application_number", blank],
+    `the permit 187-26-KM13-STR ${permit.created ? "was created AGAIN beside the blank legacy row" : `resolved to ${permit.targetId} via ${permit.matchedOn}`}`);
+});
+
+await check("KM16: a correction reopen scoped to the PERMIT track by wording finds ONE candidate when the other filing is a legacy 'permit'+'nem' NEM row — it is not a second permit candidate", async () => {
+  const pid = mkProject("Reopen Scope Owner");
+  const permitTid = mkPermit(pid, { applicationNumber: "187-26-000305-STR", portalUrl: "https://aca-oregon.accela.com/oregon/Cap/CapDetail.aspx" });
+  const legacy = `t-km16-${Math.random().toString(36).slice(2, 8)}`;
+  const now = new Date().toISOString();
+  db.run(
+    `INSERT INTO permit_check_targets (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number,
+       check_frequency_days, active, next_check_at, latest_status_label, notes, target_type, permit_type, portal_platform, tracking_url, created_at, updated_at)
+     VALUES (?, ?, 'Pacific Power', 'PowerClerk', 'https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login', 'APP-KM16-NEM', '', 7, 1, ?, '', '', 'permit', 'nem', 'powerclerk', '', ?, ?)`,
+    [legacy, pid, now, now, now],
+  );
+  // Permit wording, quoting no tracked number: the reopen scopes candidates by the correction's TRACK.
+  const corrected = R.addManualCorrection(db, pid, "The city's building plan reviewer returned the permit application: add the roof attachment detail and the structural calculations for the rafters before the building permit can proceed.");
+  const correctionId = corrected.corrections[0].id;
+  const runner = (async () => ({
+    ok: true, needsHuman: false, finalSubmitClicked: false, finalSubmitClickedByAutomation: false,
+    reopenedForm: "Correction Form", attachedDocs: 0, browserLeftOpen: false, message: "", offeredForms: [],
+  })) as never;
+  const reopened = await R.reopenCorrectionOnPortal(db, correctionId, { runner });
+  assert.equal(reopened.ok, true, `the reopen did not proceed: ${reopened.message}`);
+  assert.equal(Boolean((reopened as { needsHuman?: boolean }).needsHuman), false, `the reopen asked a human to pick between candidates: ${reopened.message}`);
+  const run = db.get<{ target_id?: string; details?: string }>("SELECT * FROM portal_runs WHERE project_id = ? ORDER BY rowid DESC LIMIT 1", [pid]);
+  assert.ok(run, "no portal run recorded");
+  assert.doesNotMatch(JSON.stringify(run), new RegExp(legacy), "the reopen ran against the legacy NEM filing");
+  assert.ok(row(permitTid).application_number === "187-26-000305-STR");
 });
 
 if (failures) { console.error(`\n${failures} trackKind-reader test(s) failed.`); process.exit(1); }

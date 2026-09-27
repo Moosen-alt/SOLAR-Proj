@@ -556,6 +556,25 @@ await check("KM15: the sweep judges a legacy 'permit'+'nem' target bound to a UT
   assert.equal(status(pid), "nem_approved");
 });
 
+await check("KM14: an operator's re-check (public_url, no text) against a legacy 'permit'+'nem' target on a PowerClerk host FETCHES the utility page (seamed) — the track-safe URL is judged by trackKind, and 'Approved' -> nem_approved", async () => {
+  const pid = mkProject("Recheck PowerClerk Owner");
+  mkPermit(pid);
+  const tid = mkTarget(pid, { targetType: "nem", permitType: "nem", jurisdiction: "Pacific Power", portalUrl: "https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login" });
+  db.run("UPDATE permit_check_targets SET target_type = 'permit' WHERE id = ?", [tid]);
+  const fetched: string[] = [];
+  R.setStatusCheckSeamsForTests({
+    checkStatus: async () => null,
+    publicCheck: async (url: string) => { fetched.push(url); return "Record Detail Application status: Approved. Interconnection application approved by the utility. Record Info Schedule"; },
+  });
+  try {
+    await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "public_url" });
+    await sleep(150);
+  } finally { R.setStatusCheckSeamsForTests(null); }
+  assert.ok(fetched.some((u) => /powerclerk\.com/.test(u)), `the utility page was never fetched (${JSON.stringify(fetched)}) — the re-check refused the URL as a utility host on a permit`);
+  assert.equal(row(tid).latest_outcome, "nem_approved", `the re-check read ${row(tid).latest_outcome} / ${row(tid).latest_status_label}`);
+  assert.equal(status(pid), "nem_approved");
+});
+
 server.close();
 if (failures) { console.error(`\n${failures} reading-provenance test(s) failed.`); process.exit(1); }
 console.log("\nAll reading-provenance tests passed.");
