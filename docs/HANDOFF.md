@@ -3,6 +3,80 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## D2 CLOSED BY PROVENANCE, FAIL-CLOSED (2026-09-27, decisions-0926-final — the fourth and last D2 round)
+
+Three rounds (5f35a5f…2b8abff; e7431ee…41b4222) each closed a shape of the same defect: "a NEM-kind reading of
+Approved = nem_approved" applied regardless of WHERE THE TEXT CAME FROM (the close-v skeptic's MF-A: an AHJ
+plan-review email that mentions the utility, bucketed nem by the mbox classifier, finished the NEM track and told
+the client "Pacific Power has approved the interconnection"; MF-B: a no-target reading with track null opened
+BOTH guards of the project-status writer — 'PTO Granted' → nem_approved, 'Permit Issued' → issued; MF-C: a NEM
+target polled 'Permit Issued' drafted "the city has issued the permit"). This round restores the D2 invariant
+("nothing writes nem_approved from unknown provenance") as ONE predicate instead of fixing the classifier.
+Commits 769fc7d, ca1d591 (line endings), 1d62e29, f2fbbc6. Scratch `.probe/decisions-0926-final/` (kills.log,
+reg/summary.txt, probe-prod.log, unit2.log, smoke.log; kill worktree `wtk` — rmdir its node_modules junction
+before `git worktree remove`).
+
+- **The predicate** — `permitMonitor.readingMayFinishTrack(source, target, track)`: TRUE only when the reading
+  is a portal poll (`portal` / `public_url`) or an operator's re-check (`manual`) against a target that EXISTS, is
+  ACTIVE, and whose `trackKind` IS the track the OUTCOME belongs to (`outcomeTrack`: nem_approved → nem; issued /
+  ready_for_issue / reviewed_by_ahj → permit; waiting / correction / needs_human_review → ungated). `email` (any
+  bucket, any workflow, heuristic or LLM classifier), `mock`, no target, an inactive target, a body-declared
+  `track`, the other track's family on this target — all FALSE. The classifier can mis-FILE an email; it can no
+  longer mis-FINISH a track.
+- **The writer** (`recordPermitStatusCheck`): the classifier's verdict (`read`) is what the text SAYS; what is
+  PERSISTED for a refused finishing reading is `needs_human_review` / `"Reported, unconfirmed"` on the check row
+  AND the target (the load-bearing half — `targetFinishedTrack` reads those, not the project status), the project
+  status untouched, and a `human_review_items` row (`field_name = permit_status_unconfirmed`, issue type "Permit
+  monitor: reported status, unconfirmed") naming the reading (`parser_value = "<outcome>: <label>"`) and why it was
+  not trusted. `updateProjectForPermitOutcome` also refuses a finishing outcome with `track === null` at its own
+  door. The one exception is AGREEMENT: an untrusted reading that says what the target already holds (an AHJ email
+  confirming a permit the poll read as issued) is a confirmation — recorded as-is, finishes nothing new, notifies
+  nothing (the change gate). The `track` input / body field is wording only ("the utility's approval", so the
+  review item names the right portal) — never authority; the POST route's doc says so.
+- **The notifier** asks the SAME verdict on what the text said: `shouldNotifyClient(outcome, previous, provenance)`
+  — the third argument is REQUIRED (an optional one fails open) — and `clientUpdateFor` refuses the other family
+  at the wording door (MF-C). A correction is NOT provenance-gated: an AHJ's own correction email still tells the
+  client "nothing for you to do yet", as before (disclosed decision).
+- **The client page** words the fixed label: "Update reported — we are confirming it with the utility /
+  jurisdiction" (`PUBLIC_CHECK_LABELS`), never the operator string, never the claimed approval.
+- **The stale scan** asks the predicate on the RE-READ too: a legacy email row (712cdb55's shape) is stale with
+  today's verdict "Reported, unconfirmed", not nem_approved; a provenance-refused row is CURRENT (the rules did
+  not move — `classificationDrift`).
+- **Tests** (both registered at the end of `backend:test:unit:2`, 5150 chars): `readingProvenance.test` — the
+  predicate's every arm; MUST-PASS through the real writer and the REAL sweep against a local portal page (typed
+  NEM polled 'Approved' → nem_approved + client note; a manual re-check against an active NEM target reading 'PTO
+  Granted'; a permit polled 'Approved with conditions' → approved with its label, then 'Issued'); MUST-EXCLUDE —
+  the previous skeptics' probe shapes through the real paths (probe-email A/B/I via `runEmailTracker` with the
+  classifier's bucket logged and irrelevant; probe-writer none-null and a body-declared track via the manual
+  writer; an inactive target; MF-C both ways through the writer and the sweep; an email on the right target; the
+  agreement exception; the stale scan; KM1 / KM3 / KM4). `trackKindReaders.test` pins the close-v survivors
+  KM6–KM12 with the kill as the red condition. Fixtures flipped to the fail-closed shape: withConditionsApproval
+  MF1 ×3, statusIntegrity Scenario D (a NEM target's 'ready to issue' is unconfirmed), clientUpdateNotes
+  (nem_approved worded on its own track).
+- **Kills 19/19 RED** (`kill.cjs`, kills.log): K1 source / K2 target-exists / K3 active / K4 kind check dropped;
+  K5 the notifier's gate; K6 the writer persists the raw classification; K7 the wording door's family check; K9
+  drift's refused-row clause; K10 the stale scan's re-read provenance; KM1, KM3, KM4, KM6–KM12 (the close-v
+  survivors) — every one now caught. Not killed (belt-and-braces, expected to survive): the writer's own
+  `track === null` guard, which the upstream refusal shadows.
+- **Operator-facing cost (P5), measured on a scratch copy of the production .backup** (probe-prod.log):
+  target `712cdb55` (project `720b05f3`, at `issued`) is an active nem/nem target with NO portal URL whose newest
+  row is an EMAIL reading (2026-09-21, bucket inspection_final_notice, stored reviewed_by_ahj by the old routing).
+  Under fail-closed NOTHING automatic moves it (no URL → no poll; 0 active email sources); it stays stale-marked
+  ("Being re-checked", today's verdict now "Reported, unconfirmed"). The stale panel's re-check as offered
+  (manual, no text) writes a "No status text" review row and no email. The "1 client email flips on a manual
+  re-check" side effect happens ONLY when a person re-checks the utility and pastes its words (or adds the
+  PowerClerk URL and polls): then nem_approved, NEM done, project nem_approved, one "Interconnection approved"
+  draft. That is the intended path — a human read the utility.
+- **Disclosed residue**: (1) the board card's `nemApproved` (`computeLaneStatusSummary`) still reads
+  `emailBucket === "nem_approval"` and the sniffed no-target check — a read-time DISPLAY signal the smoke pins
+  (`listWithNem.nemApproved`; `backend/src/smoke.ts` is outside this round's files); it writes nothing. (2) Under
+  fail-closed an AHJ email saying "permit issued" on a permit target no longer moves the project to issued either
+  — the poll or the operator's re-check does; email is a prompt to look, not a status. (3) `package.json` (one
+  line, the test registration) and `docs/HANDOFF.md` are the only files touched outside the owned list.
+- **What to verify live after pulling**: the human-review queue shows "Permit monitor: reported status,
+  unconfirmed" items only when an email/no-target reading claims an approval; a NEM target polled "Approved" on
+  PowerClerk still finishes the NEM track and sends the client update.
+
 ## COST LEAKS CLOSED; NO MODEL MOVED (2026-09-26, cost-leaks round, after model-routing)
 
 Operator: "ensure we're not leaking costs uneeded". The model-routing round (3573bda, de086b5)
