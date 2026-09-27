@@ -5110,7 +5110,9 @@ export async function draftLatestCorrectionResponse(db: AppDb, projectId: string
   try {
     const { createLLMProvider } = await import("./llm");
     const llm = createLLMProvider();
-    const result = await llm.draftResponse({ correctionText, project: detail.project });
+    // Draft against the STORED correction — for a portal page posted here, what was read off it
+    // (addManualCorrection), not the page — falling back to the text the caller passed.
+    const result = await llm.draftResponse({ correctionText: correction.correctionText || correctionText, project: detail.project });
     if (result.draft && result.draft.trim()) {
       db.run("UPDATE corrections SET draft_response = ? WHERE id = ?", [result.draft.trim(), correction.id]);
       addAuditLog(db, projectId, "system", "correction drafter", "correction.llm_draft", { correctionId: correction.id, confidence: result.confidence });
