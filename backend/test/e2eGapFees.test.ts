@@ -163,6 +163,19 @@ check("Z1 MUST-PASS: Eversource's published $0 is $0 on the fee sheet, not unkno
   assert.equal(nem.known, true);
 });
 
+check("Z2 MUST-PASS: a bill that names the operating company (Penelec, PA) reaches FirstEnergy's PA schedule", () => {
+  const res = FS.feeForProject(db, project({ utility: "Penelec" }), "nem");
+  assert.ok(res, "Penelec found no schedule — the fee sheet reads unknown");
+  assert.equal(res!.lines[0].feeUsd, 258);
+  assert.equal(FS.utilityParentName("Pennsylvania Electric Company"), "FirstEnergy");
+});
+
+check("Z3 MUST-EXCLUDE: the parent bridge never crosses states, and an unrelated utility is not bridged", () => {
+  assert.equal(FS.feeForProject(db, project({ state: "OH", utility: "Ohio Edison" }), "nem"), null, "an Ohio job read Pennsylvania's FirstEnergy schedule");
+  assert.equal(FS.feeForProject(db, project({ utility: "Duquesne Light" }), "nem"), null, "a non-FirstEnergy PA utility read FirstEnergy's schedule");
+  assert.equal(FS.utilityParentName("Duquesne Light"), "");
+});
+
 try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows keeps the sqlite handle */ }
 if (failures) {
   console.error(`\ne2eGapFees: ${failures} FAILED`);

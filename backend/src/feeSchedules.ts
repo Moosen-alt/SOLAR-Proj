@@ -2574,6 +2574,22 @@ export async function ensureFeeSchedulesResearched(
 // Resolving a stored schedule for a real project
 // ---------------------------------------------------------------------------
 
+/** Operating companies whose interconnection schedules their parent publishes, by the names a bill
+ *  prints. Deliberately short: a wrong parent is a wrong fee, and the state still has to match. */
+const UTILITY_PARENTS: Array<[RegExp, string]> = [
+  [/\b(?:penelec|pennsylvania\s+electric(?:\s+co(?:mpany)?)?|met-?ed|metropolitan\s+edison|penn\s+power|pennsylvania\s+power|west\s+penn\s+power|ohio\s+edison|toledo\s+edison|illuminating\s+co(?:mpany)?|jcp\s*&\s*l|jersey\s+central\s+power|mon\s+power|monongahela\s+power|potomac\s+edison)\b/i, "FirstEnergy"],
+  [/\b(?:nstar|western\s+massachusetts\s+electric|wmeco|connecticut\s+light\s+(?:and|&)\s+power|cl\s*&\s*p|public\s+service\s+(?:co(?:mpany)?\s+)?of\s+new\s+hampshire|psnh)\b/i, "Eversource"],
+  [/\b(?:massachusetts\s+electric|niagara\s+mohawk|narragansett\s+electric)\b/i, "National Grid"],
+  [/\b(?:northern\s+states\s+power|public\s+service\s+co(?:mpany)?\s+of\s+colorado|southwestern\s+public\s+service)\b/i, "Xcel Energy"],
+];
+
+/** The parent a bill's operating-company name files its schedule under ("" = none known). */
+export function utilityParentName(utility: string): string {
+  const u = clean(utility);
+  for (const [re, parent] of UTILITY_PARENTS) if (re.test(u) && !new RegExp(`\\b${parent}\\b`, "i").test(u)) return parent;
+  return "";
+}
+
 /** Exact profile-key hit first, then a state-scoped fuzzy fallback over the same
  *  track — the same precedence knowledgeBase uses. Without the fallback a
  *  project filed as "Coos Bay" misses a schedule stored as "City Of Coos Bay",
@@ -2616,6 +2632,16 @@ function findRawScheduleForProject(
   const wanted = track === "nem" ? clean(project.utility) : clean(project.ahj);
   if (!wanted) return null;
   const state = clean(project.state).toUpperCase();
+  // A BILL NAMES THE OPERATING COMPANY; THE SCHEDULE IS FILED UNDER THE PARENT. A Pennsylvania bill
+  // says "Penelec" / "Met-Ed" where research filed FirstEnergy's schedule, and the name score is 0
+  // — the fee sheet then read "unknown" beside a stored schedule (new-AHJ e2e, 2026-09-26). Asked
+  // under the parent too, SAME STATE ONLY (the rows below still refuse a state mismatch).
+  const parent = track === "nem" ? utilityParentName(wanted) : "";
+  if (parent) {
+    const viaParent = getFeeSchedule(db, feeScheduleProfileKey({ state, utility: parent }, track), track, discipline)
+      ?? (discipline ? getFeeSchedule(db, feeScheduleProfileKey({ state, utility: parent }, track), track, "") : null);
+    if (viaParent) return viaParent;
+  }
   const rows = db.query<Row>("SELECT * FROM fee_schedules WHERE track = ?", [track]);
   let best: { row: FeeScheduleRecord; score: number } | null = null;
   for (const row of rows) {
