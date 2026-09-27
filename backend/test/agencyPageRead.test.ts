@@ -656,6 +656,51 @@ await check("(f7) MUST-EXCLUDE (close-2 item 4): the row door matches a segment'
   assert.equal(reader.quoteOnPage("Solar Installation $500", "Fees\nSolar Installation | $50\n"), false);
 });
 
+await check("(f8) MUST-EXCLUDE (close-3 MF1): an amount belongs to the words right before it — a table row the model copied as two LINES ('Solar Residential\\n$331', CRLF too), a list-dash split ('Solar PV - Residential $75' where the page prints 'Deck - Residential | $75'), a bullet / bar split, a dropped one-word label ('Solar - Residential $75'), a lone amount, and a line-join ('Solar Thermal' / '$50 Fence') are all refused, through quoteOnPage AND the real docs/fees door; MUST-PASS: each row on its own words, the ellipsis-split Waltham row, the Hollis header-joined row, the Unicode-fraction documents and the ' - ' document list", () => {
+  const feePage = "Building Permit Fees\nSolar Residential | $168\nSolar Commercial | $331\nDeck - Residential | $75\nSolar PV - Residential | $150\nSolar PV - Commercial | $300\n";
+  const q = (quote: string) => reader.quoteOnPage(quote, feePage);
+  assert.equal(q("Solar Residential $168"), true, "A1 its own row");
+  assert.equal(q("Solar PV - Residential $150"), true, "A9 its own row, dash and all");
+  assert.equal(q("Solar Residential | $168"), true, "its own row quoted with the cell bar");
+  assert.equal(q("Solar Residential\n$168"), true, "its own row copied as two lines");
+  assert.equal(q("Solar Residential $331"), false, "A2 another row's amount");
+  assert.equal(q("Solar Residential\n$331"), false, "A3 a newline between label and amount");
+  assert.equal(q("Solar Residential\r\n$331"), false, "A4 CRLF");
+  assert.equal(q("Solar PV - Residential $75"), false, "A5 dash split: $75 is the deck row's");
+  assert.equal(q("Solar PV – Residential $75"), false, "A6 en dash");
+  assert.equal(q("Solar - Residential $75"), false, "A7 a one-word label piece is not dropped");
+  assert.equal(q("Solar Residential • $331"), false, "A8 bullet split");
+  assert.equal(q("Solar Residential | $331"), false, "bar split");
+  assert.equal(q("Solar Residential ... $331"), false, "a lone amount after an ellipsis rejoins its label");
+  assert.equal(q("$331"), false, "a lone amount never matches on its own");
+  assert.equal(q("Solar Photovoltaic $75"), false, "A14");
+  assert.equal(reader.quoteOnPage("Solar Thermal $50", "Fees\nSolar Thermal\n$50 Fence permit\nSolar PV $150\n"), false, "A16 line-join: the amount is on the next line");
+  assert.equal(reader.quoteOnPage("Solar Thermal $50", "Fees\nSolar Thermal $50\nFence permit $25\n"), true, "the same words on one line");
+  assert.deepEqual(reader.quoteSegments("Solar PV - Residential $75"), ["solar pv residential $75"]);
+  assert.deepEqual(reader.quoteSegments("Residential ... Solar Installation $50"), ["solar installation $50"], "an ellipsis stands; a lone word attests nothing");
+  assert.deepEqual(reader.quoteSegments("Site Plan - Roof Plan - Plat"), ["site plan", "roof plan"], "list items each their own segment; a lone word is not one");
+  // Through the REAL docs/fees door (the reviewer's A10 / A11 / A12).
+  const FEES = "https://www.examplecity.gov/DocumentCenter/View/9/Fee-Schedule-PDF";
+  const texts = new Map([[ppl.pageKey(FEES), feePage]]);
+  const ans = (quote: string, amt: number) => JSON.stringify({ permits: [{ discipline: "structural", documents: { value: null }, fee: { value: { amountUsd: amt, basis: "flat", lines: [{ label: "Solar Residential", amountUsd: amt }] }, sourceUrl: FEES, quote } }] });
+  const door = (quote: string, amt: number) => ppl.parseDocsFeesPart(ans(quote, amt), [FEES], "end_turn", texts).byDiscipline.get("structural")!.fee;
+  assert.equal(door("Solar Residential\n$331", 331).value, null, "A10 refused");
+  assert.match(String(door("Solar Residential\n$331", 331).notFound), /not on the fee's source page/);
+  assert.equal(door("Solar PV - Residential $75", 75).value, null, "A11 refused");
+  assert.equal(door("Solar Residential • $331", 331).value, null, "A8 refused at the door");
+  assert.equal(door("Solar Residential $168", 168).value?.amountUsd, 168, "A12 kept");
+  assert.equal(door("Solar PV - Residential | $150", 150).value?.amountUsd, 150, "its own row, bar and dash, kept");
+  // The MUST-PASS shapes of earlier rounds hold: Waltham's ellipsis row, Hollis's header-joined row and fraction documents, Fairfax's ' - ' list.
+  const waltham = reader.parseHtml(fixture("waltham-electrical-fees.html"), "https://www.city.waltham.ma.us/1290/Electrical-Fees").text;
+  assert.equal(reader.quoteOnPage("Residential ... Solar Installation $50", waltham), true, "Waltham");
+  assert.equal(reader.quoteOnPage("Solar Installation | $50", waltham), true, "Waltham with the cell bar");
+  assert.equal(reader.quoteOnPage("Solar Installation\n$50", waltham), true, "Waltham copied as two lines: the row door finds it");
+  assert.equal(reader.quoteOnPage("Solar Installation $25", waltham), false, "another row's amount");
+  assert.equal(reader.quoteOnPage("Solar Arrays / Roof Top Solar Array (excludes electrical fee)  $75.00  $200.00", fixture("hollis-building-fees.txt")), true, "Hollis header-joined row");
+  assert.equal(reader.quoteOnPage('1. Building permit application. 2. (2) 11" x 17" sets of detailed installation plans... 3. (2) 8½” x 11” NH Stamped Engineer statement... 4. (2) Detailed roof plan layouts of solar panels with any setbacks & pathway measurements clearly marked.', fixture("hollis-solar-requirements.txt")), true, "Hollis documents");
+  assert.equal(reader.quoteOnPage("First Submission - Fairfax Coversheet - Architectural/Structural Drawings - House Location Plat or Grading Plan Submission Record Number - Permit Authorization - Property Ownership Affidavit - License Exemption Affidavit", fixture("fairfax-solar-residential.txt")), true, "Fairfax ' - ' list");
+});
+
 await check("(r6) MUST-EXCLUDE (close-2 item 5): an own-domain link is judged by where it LANDS — a Click2Gov utility-billing page, iWorQ's concern-form landing (/portalhome), a MapsOnline viewer, the vendor's root (Y2), SolarAPP+ (Y3); a Business-License module deep link (V8); a link naming another jurisdiction is never read (Y4); MUST-PASS: a landing whose path names the permit portal, and an ACA tenant landing", async () => {
   const own = (words: string, href: string, landing: Served) => resolveNamed({ [PAGE2]: { text: synthetic(`<p>Building permit applications are accepted in person only.</p><a href="${href}">${words}</a>`) }, [href]: landing }, [PAGE2], ["City of Examplecity"]);
   const v5 = await own("Online Services", `https://secure.examplecity.gov/Click2GovCX/`, { text: `<html><head><title>Click2Gov Utility Billing - Customer Portal</title></head><body><h1>Pay your water bill</h1></body></html>` });

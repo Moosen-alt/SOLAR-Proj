@@ -288,22 +288,64 @@ export function normaliseForQuote(s: string): string {
     .replace(/(\d)\s*-\s*(?=\d)/g, "$1-").replace(/\s[-/]\s/g, " ")
     .replace(/[^a-z0-9$.%/-]+/g, " ").replace(/\$(\d+)\.00(?!\d)/g, "$$$1").replace(/\s+/g, " ").trim();
 }
+/** A dollar amount in a quote ("$75", "$ 0.00", "$1,234.50"). */
+const DOLLAR = /\$\s?\d/;
 /** The quote's SEGMENTS: an ellipsis, a table-cell bar, a bullet, a newline, or a list dash
  *  (" - " / " – " between words — never beside an amount, so "Solar - $50" keeps its amount with
- *  its words) each end one. */
-function quoteSegments(quote: string): string[] {
-  return String(quote ?? "").split(/\.{3}|…|\s\|\s|[☐☑☒□■▪•●◦·]|\r?\n|(?<![$\d])\s[-–—]\s(?![$\d])/).map(normaliseForQuote).filter((s) => s.split(" ").length >= 2 || /\d/.test(s));
+ *  its words) each end one.
+ *  AN AMOUNT BELONGS TO THE WORDS RIGHT BEFORE IT (close-3 MF1; the a9359cf rule). The split
+ *  never sets an amount free of its label: a piece that carries a dollar amount rejoins the piece
+ *  before it — across a newline (a table row copied as two lines: "Solar Residential\n$331"), a
+ *  list dash ("Solar PV - Residential $75"), a bar or a bullet — so the fee's segment includes its
+ *  label and must be found on ONE row with it. The one separator an amount-carrying piece with its
+ *  own words stands after is the ellipsis, the model's explicit "words omitted" mark
+ *  ("Residential ... Solar Installation $50" is the Waltham row). A LONE TOKEN never matches on its
+ *  own: a lone number / amount rejoins its neighbour whatever the separator, and a lone word
+ *  attests nothing (it is not a segment), so "Solar - Residential $75" is "Solar Residential $75". */
+export function quoteSegments(quote: string): string[] {
+  const parts = String(quote ?? "").split(/(\.{3}|…|\s\|\s|[☐☑☒□■▪•●◦·]|\r?\n|(?<![$\d])\s[-–—]\s(?![$\d]))/);
+  const merged: string[] = [];
+  let leadingLone = "";
+  for (let i = 0; i < parts.length; i += 2) {
+    const text = parts[i].trim();
+    if (!text) continue;
+    const sep = i ? parts[i - 1] : "";
+    const afterEllipsis = /^\s*(?:\.{3}|…)\s*$/.test(sep);
+    const lone = text.split(/\s+/).length === 1;
+    const rejoin = (DOLLAR.test(text) && !afterEllipsis) || (lone && /\d/.test(text));
+    if (rejoin && merged.length) { merged[merged.length - 1] += ` ${text}`; continue; }
+    if (rejoin && lone) { leadingLone = `${leadingLone} ${text}`.trim(); continue; }
+    merged.push(leadingLone ? `${leadingLone} ${text}` : text);
+    leadingLone = "";
+  }
+  return merged.map(normaliseForQuote).filter((s) => s.split(" ").length >= 2);
 }
 /** THE QUOTE IS ON THE PAGE WE READ: every segment (>= 2 words) of the quote occurs in the page
  *  text after normalisation. A quote we cannot find there is the model's word. */
 export function quoteOnPage(quote: string, pageText: string): boolean {
-  const page = normaliseForQuote(pageText);
+  // The page's lines normalised one by one, joined once with a space (the contiguity check) and
+  // once with a newline (the same-line check) — the two strings' positions coincide.
+  const lines = String(pageText ?? "").split("\n").map(normaliseForQuote).filter(Boolean);
+  const page = lines.join(" ");
+  const pageNl = lines.join("\n");
   // A checklist quoted item by item ("☐ Site Plan • Roof Plan", "Coversheet - Drawings - Plat"):
   // each item is its own segment — a PDF's cells interleave other words between items (a link
   // label "info" after each), a web page a description under each — so the list is never
   // contiguous on the page, while every item still is.
   const segs = quoteSegments(quote);
   if (!segs.length || !page) return false;
+  // ON ONE LINE WITH ITS LABEL (close-3 MF1): a segment found contiguously in the page text carries
+  // each dollar amount on the SAME LINE as the token right before it — "Solar Thermal $50" is not on
+  // "Solar Thermal" / "$50 Fence permit" (a line-join), while a row quoted with its section header
+  // in front ("Solar Arrays / Roof Top Solar Array … $75.00") still is: the break sits between the
+  // header and the row's words, never beside the amount.
+  const inPage = (seg: string): boolean => {
+    const amounts = [...seg.matchAll(/\$\s?\d/g)].map((m) => m.index!);
+    for (let at = page.indexOf(seg); at >= 0; at = page.indexOf(seg, at + 1)) {
+      if (amounts.every((a) => { const before = seg.slice(0, a).trimEnd(); return !before || !pageNl.slice(at + before.length, at + a).includes("\n"); })) return true;
+    }
+    return false;
+  };
   // ONE ROW (close F4): a table row's words split across cells ("Solar Installation | Residential |
   // $50", a PDF row's columns) — the segment's tokens in order within ONE short line, CONTIGUOUS
   // inside a cell, skipping only whole cells that print no number, so an amount must be printed on
@@ -337,5 +379,5 @@ export function quoteOnPage(quote: string, pageText: string): boolean {
       return false;
     });
   };
-  return segs.every((s) => page.includes(s) || page.includes(s.replace(/\.$/, "")) || inOneRow(s));
+  return segs.every((s) => inPage(s) || inPage(s.replace(/\.$/, "")) || inOneRow(s));
 }
