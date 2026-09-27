@@ -891,7 +891,7 @@ check("1k. and the approve button stays available (a later track still needs it)
       evidence: [
         "6/7 required documents present, 1 more filled from a stored template at staging.",
         "✓ Plan set (attached file)", "✓ Site plan (in plan set)", "✓ Single-line diagram (in plan set)", "✓ Module spec sheet (in plan set)",
-        "Filled at staging: Solar prescriptive checklist, filled — the form's template is on file; staging fills and attaches it",
+        "Filled at staging: Solar prescriptive checklist, filled — the form's template is on file; staging fills it and offers it to any upload slot that asks for it (check the portal's attachment list before submitting)",
         "Missing (advisory): <img src=x onerror=alert(1)> Fire access plan",
       ],
     };

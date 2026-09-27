@@ -3737,7 +3737,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       evidence: [
         `${docInventory.presence.filter((d) => d.present).length}/${docInventory.required.length} required documents present${gateDocs.filledAtStaging.length ? `, ${gateDocs.filledAtStaging.length} more filled from a stored template at staging` : ""}.`,
         ...docInventory.presence.filter((d) => d.present).slice(0, 4).map((d) => documentPresenceLine(d.label, d.via)),
-        ...gateDocs.filledAtStaging.map((d) => `Filled at staging: ${d.label} — the form's template is on file; staging fills and attaches it`),
+        ...gateDocs.filledAtStaging.map((d) => `Filled at staging: ${d.label} — the form's template is on file; staging fills it and offers it to any upload slot that asks for it (check the portal's attachment list before submitting)`),
         ...gateDocs.owed.map((d) => `MISSING (required): ${d.label} — ${d.why}`),
         ...docInventory.missingAdvisory.map((d) => `Missing (advisory): ${d.label}`),
       ],

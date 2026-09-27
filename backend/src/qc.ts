@@ -327,7 +327,7 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
         db.run(
           `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
            VALUES (?, ?, 'pass', ?, 'Required document', ?, 'info', ?)`,
-          [id(), projectId, `docs.${d.docType}`, `${d.label}: filled at staging${where} — the form's template is on file; staging fills and attaches it.`, createdAt],
+          [id(), projectId, `docs.${d.docType}`, `${d.label}: filled at staging${where} — the form's template is on file; staging fills it and offers it to any upload slot that asks for it (check the portal's attachment list before submitting).`, createdAt],
         );
       }
       for (const d of inv.missingAdvisory) {
