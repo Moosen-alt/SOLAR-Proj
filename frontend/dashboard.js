@@ -3610,6 +3610,34 @@ function appendDebugBundleLink(el, debugDirOrLatest) {
   el.appendChild(a);
 }
 
+// WHICH PERMIT AN AHJ AUTO-LEARN FILES. The route takes permitType ('structural' | 'electrical')
+// and keys the learned recipe's discipline off it; without it the recipe carried NO discipline and
+// the building track (recipeDisciplineForTrack('building') = 'structural') never found it. The
+// learner is also handed THAT permit's issuing agency (City of Jefferson: Marion County, both
+// permits) to pick the address row by. Default from the project's tracks: the building track when
+// there is one, else Electrical when the only permit track is electrical / a panel upgrade.
+function defaultLearnPermitType(tracks) {
+  const types = (Array.isArray(tracks) ? tracks : []).map((t) => String((t && t.type) || "")).filter((t) => t && t !== "nem");
+  if (types.includes("building")) return "structural";
+  if (types.some((t) => t === "electrical" || t === "mpu")) return "electrical";
+  return "structural";
+}
+// Show the permit picker for an AHJ recording only, defaulted from this project's tracks — unless
+// the operator already chose one for this project (the choice holds until another project opens).
+function syncRecordPermitType() {
+  const wrap = $("recordPermitWrap");
+  const sel = $("recordPermitType");
+  if (!wrap || !sel) return;
+  wrap.hidden = $("recordScope")?.value === "utility";
+  const pid = String(state.selectedProjectId || "");
+  if (sel.dataset.chosenFor !== pid) sel.value = defaultLearnPermitType(state.submittalTracks);
+  sel.dataset.syncedFor = pid;
+  if (!sel.dataset.bound) {
+    sel.dataset.bound = "1";
+    sel.addEventListener("change", () => { sel.dataset.chosenFor = sel.dataset.syncedFor || ""; });
+  }
+}
+
 // Auto-learn: the bot fills the portal to the review screen, records a recipe, and
 // verifies the fill — no human recording needed. Never submits (operator approves that).
 async function autoLearnPortalUI() {
@@ -3619,7 +3647,10 @@ async function autoLearnPortalUI() {
   const url = ($("recordPortalUrl")?.value || "").trim();
   if (!url) { showMessage("Paste the portal login/landing URL first (the field above).", "warning"); return; }
   const name = scope === "utility" ? (p.utility || "the utility") : (p.ahj || "the AHJ");
-  if (!confirm(`Auto-learn ${name}'s portal?\n\nThe bot will log in (using this client's stored credential), fill the application from the project data up to the review screen, and verify the fill. It will NOT submit — you approve the final submit with one click afterward. This opens a browser and may take a minute.`)) return;
+  // An AHJ learn names its permit (see defaultLearnPermitType); a utility (NEM) learn has none.
+  const permitType = scope === "ahj" ? ($("recordPermitType")?.value === "electrical" ? "electrical" : "structural") : undefined;
+  const permitWords = permitType === "electrical" ? "electrical" : "building (structural)";
+  if (!confirm(`Auto-learn ${name}'s portal${permitType ? ` for the ${permitWords} permit` : ""}?\n\nThe bot will log in (using this client's stored credential), fill the application from the project data up to the review screen, and verify the fill. It will NOT submit — you approve the final submit with one click afterward. This opens a browser and may take a minute.`)) return;
   const btn = $("autoLearnBtn");
   const statusEl = $("autoLearnStatus");
   if (btn) btn.disabled = true;
@@ -3628,7 +3659,7 @@ async function autoLearnPortalUI() {
     // Learning runs as a background job (202 + jobId) so a minutes-long browser pass can't
     // hit an HTTP/proxy timeout. SSE autolearn_progress events keep driving the bar;
     // poll the job for the terminal verdict (job.result carries the learn outcome).
-    const { jobId } = await api(`/api/projects/${p.id}/auto-learn`, { method: "POST", body: JSON.stringify({ scope, portalUrl: url }) });
+    const { jobId } = await api(`/api/projects/${p.id}/auto-learn`, { method: "POST", body: JSON.stringify(permitType ? { scope, portalUrl: url, permitType } : { scope, portalUrl: url }) });
     const learnJob = await waitForStagingJob(jobId);
     if (learnJob.status === "failed") {
       throw new Error(learnJob.error || "Auto-learn failed — download the debug bundle for details.");
@@ -4021,6 +4052,7 @@ async function loadSubmittalTracks() {
     state.submittalTracks = null;
   }
   updatePortalLoginsSummary();
+  syncRecordPermitType();
 }
 
 // Header chip: how many of this project's portals have a saved login. Best-effort.
@@ -8092,6 +8124,7 @@ if ($("knowledgeModal")) $("knowledgeModal").addEventListener("click", (e) => { 
 
 // Record-this-portal helper (Submit stage): rebuild the command live, copy, download .bat.
 if ($("recordScope")) $("recordScope").addEventListener("change", renderRecordPortal);
+if ($("recordScope")) $("recordScope").addEventListener("change", syncRecordPermitType);
 if ($("recordPortalUrl")) $("recordPortalUrl").addEventListener("input", () => { const el = $("recordCmdPreview"); if (el) el.textContent = buildRecordCommand(); });
 if ($("copyRecordCmdBtn")) $("copyRecordCmdBtn").addEventListener("click", copyRecordCommand);
 if ($("downloadRecordBatBtn")) $("downloadRecordBatBtn").addEventListener("click", downloadRecordBat);
