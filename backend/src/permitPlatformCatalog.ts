@@ -275,6 +275,18 @@ export function portalNameToken(href: string): string {
   const sub = host.slice(0, Math.max(0, host.length - dom.length - 1)).split(".").filter((l) => l && !GENERIC_TENANT_LABEL.test(l));
   return [...sub, dom.split(".")[0]].join("").replace(/[^a-z]/gi, "").toLowerCase();
 }
+/**
+ * THE AGENCY'S OWN PAGE OR DOCUMENT — whose URL it is, asked ONE way (agency-apps-close MF1): its
+ * host is the agency's own domain by name (isAgencyOwnDomain — any .gov / .<st>.us is not enough)
+ * AND its domain / tenant names no other TYPE of jurisdiction (tenantContradictsAgency:
+ * cityofmarion.org carries Marion County's name key but is the City of Marion's). Read by the lookup's
+ * record-type door (permitProcessLookup.recordTypeBelongsToPortal) and by the issuing agency's cited
+ * application PDFs (applicationDocsAgency.citedAgencyApplicationUrls).
+ */
+export function isAgencyOwnUrl(url: string, names: string[], state?: string, typeNames: string[] = names): boolean {
+  const host = portalHostOf(url);
+  return Boolean(host) && isAgencyOwnDomain(host, names, state) && !tenantContradictsAgency(url, names, typeNames);
+}
 export function tenantContradictsAgency(href: string, names: string[], typeNames: string[] = names): boolean {
   let t = portalNameToken(href);
   if (!t) return false;

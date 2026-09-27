@@ -25,7 +25,8 @@
 import type { CitedFact, ProjectRecord } from "../../shared/src/types";
 import { issuingAgencyFor, permitAnswerForTrack, permitProcessFor, structureTypeMeaning } from "./permitProcess";
 import { agencyNameKey, sameAgencyName } from "./permitProcessLookup";
-import { DOCUMENT_URL, isOfficialAgencyHost } from "./permitPlatformCatalog";
+import { DOCUMENT_URL, isAgencyOwnDomain, isAgencyOwnUrl, isOfficialAgencyHost, wordsNameAnotherJurisdiction } from "./permitPlatformCatalog";
+import { portalHostOf } from "./portalChannel";
 import { curatedFormSourcesFor } from "./curatedAhjForms";
 import { resolvePermitPath } from "./permitPath";
 
@@ -152,29 +153,59 @@ export function citedNameFitsTrack(name: string, track: FormTrack): boolean {
   return !electrical && /solar|photo-?voltaic|\bpv\b|building|structural/.test(n);
 }
 
-/** The application PDFs the per-job lookup CITES for this track's permit: any source URL on that
- *  permit's answers (and the AHJ-wide agency answer) that is a document on the agency's own
- *  official host and whose file name names this track's application. */
+const answeredName = (f: CitedFact<string> | null | undefined): f is CitedFact<string> & { value: string } =>
+  Boolean(f && typeof f.value === "string" && f.value.trim());
+
+/**
+ * The application PDFs the per-job lookup CITES for this track's permit — a PDF is the AGENCY'S only
+ * when it is on the agency's own domain (agency-apps-close MF1: any .gov and any in-state .<st>.us host
+ * passed, so the Oregon BCD was handed Linn County's electrical application and a county the city's).
+ *   - WHICH ANSWERS: this track's permits whose own agency answer is this agency (or names none — the
+ *     authority then rests on the AHJ-wide answer); the AHJ-wide answer's source only when that answer
+ *     NAMES this agency. A notFound answer, or one naming another agency, lends its source to no track.
+ *   - WHOSE DOMAIN: permitPlatformCatalog.isAgencyOwnUrl — the ONE ownership predicate the lookup's
+ *     record-type door asks (the agency's own domain by name, no other jurisdiction type in it):
+ *     co.marion.or.us for Marion County, oregon.gov for the Oregon BCD, pbcgov.org for Palm Beach
+ *     County. Another entity's government host (.gov / .mil / .<st>.us) or the AHJ's own domain is
+ *     never the agency's. A DOCUMENT HOST (a CDN, a code publisher, a PDF mirror) qualifies only as the
+ *     lookup's own citation for THIS permit's agency (the exact URL it cited for "who issues it").
+ *   - WHAT IT IS: its file name names this track's application and no other jurisdiction.
+ */
 export function citedAgencyApplicationUrls(project: Pick<ProjectRecord, "state" | "ahj">, authority: FormAuthority): string[] {
   if (!authority.issuedByOther || !authority.track) return [];
   const lk = permitProcessFor(project);
   if (!lk) return [];
-  const permits = (lk.permits ?? []).filter((p) => authority.track === "electrical" ? p.discipline === "electrical" : p.discipline === "structural" || p.discipline === "combo");
+  const track = authority.track;
+  const agency = authority.name;
+  const ahj = String(project.ahj ?? "").trim();
+  const namesAgency = (f: CitedFact<string> | null | undefined): boolean => answeredName(f) && sameAgencyName(f.value, agency);
+  const permits = (lk.permits ?? []).filter((p) => (track === "electrical" ? p.discipline === "electrical" : p.discipline === "structural" || p.discipline === "combo")
+    && (!answeredName(p.issuingAgency) || namesAgency(p.issuingAgency)));
+  const topIsAgency = namesAgency(lk.issuingAgency);
+  // The lookup's own citations for WHO ISSUES this permit, where they name this agency.
+  const agencyCitations = new Set([...permits.map((p) => p.issuingAgency), ...(topIsAgency ? [lk.issuingAgency] : [])]
+    .filter((f) => namesAgency(f)).map((f) => String(f?.sourceUrl ?? "").trim()).filter(Boolean));
   const urls: string[] = [];
   const consider = (u: unknown): void => {
     const url = String(u ?? "").trim();
     if (!/^https?:\/\//i.test(url) || !DOCUMENT_URL.test(url) || urls.includes(url)) return;
-    let host = "";
-    try { host = new URL(url).hostname; } catch { return; }
-    if (!isOfficialAgencyHost(host, [authority.name], project.state)) return;
-    if (!citedNameFitsTrack(fileNameOf(url), authority.track!)) return;
+    const host = portalHostOf(url);
+    if (!host) return;
+    const name = fileNameOf(url);
+    if (!citedNameFitsTrack(name, track) || wordsNameAnotherJurisdiction(name, [agency])) return;
+    if (!isAgencyOwnUrl(url, [agency], project.state)) {
+      // Another entity's government host, or the AHJ's own domain: never this agency's document.
+      if (isOfficialAgencyHost(host, []) || (ahj && isAgencyOwnDomain(host, [ahj], project.state))) return;
+      // A document host: only as the lookup's own citation for this permit's agency.
+      if (!agencyCitations.has(url)) return;
+    }
     urls.push(url);
   };
   for (const p of permits) {
     for (const f of [p.issuingAgency, p.documents, p.fee, p.recordType, p.portalUrl]) consider(f?.sourceUrl);
     for (const d of p.documents?.value ?? []) consider(d);
   }
-  consider(lk.issuingAgency?.sourceUrl);
+  if (topIsAgency) consider(lk.issuingAgency?.sourceUrl);
   return urls;
 }
 
