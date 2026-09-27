@@ -40,6 +40,7 @@ for (const k of ["BACKGROUND_WORKERS", "DOCUMENT_FETCH", "AHJ_FORM_DOWNLOADS", "
 // Notifications ON with no SMTP: the client note (project_notes) and the drafted communication are
 // OBSERVED, not inferred — an email that reaches neither is the whole point.
 process.env.CLIENT_NOTIFICATIONS = "1";
+process.env.AUTOPILOT_TEST_SEAMS = "1"; // the sweep's public fetch is seamed in section 5 (KM15) — no real host is touched
 for (const k of ["SMTP_HOST", "SMTP_FROM", "ANTHROPIC_API_KEY"]) delete process.env[k];
 
 const { openDatabase } = await import("../src/db");
@@ -294,6 +295,34 @@ await check("AGREEMENT is not news: an email saying what the poll already read (
   assert.equal(notes(pid).length, 1, "the agreeing email re-notified the client");
 });
 
+await check("AGREEMENT changes NO status: a legacy email-written nem_approved NEM target beside a project at 'submitted', one more email 'PTO Granted' -> row persisted, project stays submitted, no handoff, no note, no item", async () => {
+  const pid = mkProject("Legacy Agreement Owner");
+  const permitTid = mkPermit(pid);
+  const nemTid = mkNem(pid);
+  // The pre-round class of row: an email finished the NEM target under the old rules, and the permit is issued.
+  db.run("UPDATE permit_check_targets SET latest_outcome = 'nem_approved', latest_status_label = 'NEM / interconnection approved' WHERE id = ?", [nemTid]);
+  db.run("UPDATE permit_check_targets SET latest_outcome = 'issued', latest_status_label = 'Permit issued' WHERE id = ?", [permitTid]);
+  await R.recordPermitStatusCheck(db, pid, { targetId: nemTid, source: "email", rawStatusText: "Email bucket: nem_approval\nWorkflow: nem\nStatus: PTO Granted\nPermission to operate granted." });
+  await sleep(120);
+  assert.equal(checks(pid).filter((c) => c.target_id === nemTid).length, 1, "the agreeing email was not recorded");
+  assert.equal(row(nemTid).latest_outcome, "nem_approved", "the agreeing email changed the target");
+  assert.equal(status(pid), "submitted", `an agreeing email moved the project to '${status(pid)}'`);
+  assert.equal(db.query<{ id: string }>("SELECT id FROM project_notes WHERE project_id = ? AND note_type = 'handoff'", [pid]).length, 0, "an agreeing email handed the project off");
+  assert.deepEqual(notes(pid), []);
+  assert.deepEqual(items(pid), []);
+  // The same shape on the permit side: a legacy issued target, an email 'Permit issued', project still submitted.
+  const pid2 = mkProject("Legacy Agreement Permit");
+  const t2 = mkPermit(pid2);
+  mkNem(pid2);
+  db.run("UPDATE permit_check_targets SET latest_outcome = 'issued', latest_status_label = 'Permit issued' WHERE id = ?", [t2]);
+  await R.recordPermitStatusCheck(db, pid2, { targetId: t2, source: "email", rawStatusText: "Email bucket: permit_approval\nStatus: Permit issued\nYour permit has been issued. Download permit card." });
+  await sleep(120);
+  assert.equal(row(t2).latest_outcome, "issued");
+  assert.equal(status(pid2), "submitted", `an agreeing email moved the project to '${status(pid2)}'`);
+  assert.deepEqual(notes(pid2), []);
+  assert.deepEqual(items(pid2), []);
+});
+
 await check("the unconfirmed reading is CURRENT on the stale scan (no re-check offered as if the rules moved), and the client page words it", async () => {
   const pid = mkProject("Stale Scan Owner");
   mkPermit(pid);
@@ -504,6 +533,27 @@ await check("MUST EXCLUDE (real sweep, MF-C): a typed NEM target whose page says
   assert.equal(row(tid).latest_outcome, "nem_approved");
   assert.equal(status(pid), "nem_approved");
   assert.equal(notes(pid).length, 1, `notes: ${notes(pid).join(" | ")}`);
+});
+
+await check("KM15: the sweep judges a legacy 'permit'+'nem' target bound to a UTILITY host (PowerClerk) as the NEM filing it is — fetched (seamed, no real host), no track-host conflict, its 'Approved' -> nem_approved", async () => {
+  const pid = mkProject("Sweep PowerClerk Owner");
+  mkPermit(pid);
+  const tid = mkTarget(pid, { targetType: "nem", permitType: "nem", jurisdiction: "Pacific Power", portalUrl: "https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login" });
+  db.run("UPDATE permit_check_targets SET target_type = 'permit', next_check_at = '2020-01-01T00:00:00.000Z' WHERE id = ?", [tid]);
+  const fetched: string[] = [];
+  R.setStatusCheckSeamsForTests({
+    checkStatus: async () => null,
+    publicCheck: async (url: string) => { fetched.push(url); return "Record Detail Application status: Approved. Interconnection application approved by the utility. Record Info Schedule"; },
+  });
+  try {
+    await R.runDuePermitChecks(db, "nem");
+    await sleep(200);
+  } finally { R.setStatusCheckSeamsForTests(null); }
+  assert.ok(fetched.some((u) => /powerclerk\.com/.test(u)), `the utility page was never fetched (${JSON.stringify(fetched)}) — judged a permit filing bound to a utility host?`);
+  const conflict = db.query<{ details: string }>("SELECT details FROM audit_logs WHERE project_id = ? AND action = 'portal.track_host_conflict'", [pid]);
+  assert.equal(conflict.length, 0, `track-host conflict audited for the NEM filing: ${conflict.map((c) => c.details).join(" | ")}`);
+  assert.equal(row(tid).latest_outcome, "nem_approved", `the sweep read ${row(tid).latest_outcome}`);
+  assert.equal(status(pid), "nem_approved");
 });
 
 server.close();

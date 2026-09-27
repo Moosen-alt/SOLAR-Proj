@@ -6146,7 +6146,14 @@ export async function recordPermitStatusCheck(
       );
     }
 
-    updateProjectForPermitOutcome(db, detail.project.status, projectId, classification.outcome, classification.message, ts, track, input.targetId || null);
+    // ONLY A TRUSTED FINISHING READING TOUCHES THE PROJECT STATUS OR THE HANDOFF. A refused one is
+    // persisted as unconfirmed above and writes no status; an AGREEING untrusted one persists its
+    // row but is a confirmation — it changes no status either (a legacy email-written nem_approved
+    // target beside a project at 'submitted', then one more email saying "PTO Granted", must not
+    // reach the writer as "nem_approved on the NEM track" and hand the project off). Ungated
+    // outcomes (waiting / correction / needs_human_review) pass as they always did.
+    const mayWriteStatus = !writtenTrack || provenance.trusted;
+    if (mayWriteStatus) updateProjectForPermitOutcome(db, detail.project.status, projectId, classification.outcome, classification.message, ts, track, input.targetId || null);
     // AFTER the status write (so resolveCorrection sees the project already issued and does not
     // rewind it) and BEFORE the handoff check (an open correction is a handoff blocker, so the
     // same reading that finishes the scope can hand it off).
@@ -6161,7 +6168,7 @@ export async function recordPermitStatusCheck(
         recordNumber: input.permitNumber || text(target.permit_number) || input.applicationNumber || text(target.application_number),
       });
     }
-    triggerHandoffIfReady(db, projectId, ts);
+    if (mayWriteStatus) triggerHandoffIfReady(db, projectId, ts);
     // ONE ROW PER CHECK, ALWAYS — this is the per-check evidence trail, and it is the thing the
     // status-check gate above is allowed to suppress *because* this is not. `checkId` is null when
     // no row was written: an audit entry pointing at a permit_status_checks id that does not exist
