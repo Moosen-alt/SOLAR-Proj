@@ -527,10 +527,20 @@ export function issuingAgencyDocumentList(project: Pick<ProjectRecord, "state" |
  * requirementSlots.requirementTrack.
  */
 export function agencyListReplacesLine(list: AgencyDocumentList, line: string): boolean {
+  if (agencyListNamesDocument(list, line)) return true;
   const t = requirementTrack(line);
   if (!t) return false;
   if (t === "checklist") return list.decidesStateChecklist || list.items.some((i) => i.role === "checklist");
   return list.items.some((i) => i.role === "application" && i.track === t);
+}
+
+/** The line names, BY ITS URL, a PDF the agency list already carries as one of its application lines
+ *  (a confirmed form with its own status, or a cited PDF with its confirm warning) — the lookup's raw
+ *  document entry ("structural permit: https://…/Solar Permit Application.pdf"), which no slot can
+ *  hold and so read "missing" forever beside the line that says where that PDF stands. */
+export function agencyListNamesDocument(list: AgencyDocumentList, line: string): boolean {
+  const s = String(line ?? "");
+  return list.items.some((i) => i.role === "application" && Boolean(i.form?.sourceUrl) && s.includes(String(i.form!.sourceUrl)));
 }
 
 /** The operator's answer to the zoning question (bcdChecklistFacts.formFactQuestions), read as the

@@ -542,6 +542,11 @@ try {
   check("R2 after the fill: the filled one 'filled', the other still 'not yet on file' (never the slot's word)", /— filled$/.test(statusOf(cpFilled, /: Solar Photovoltaic Permit Application/)) && /— not yet on file/.test(statusOf(cpFilled, /: Building Permit Application/)), JSON.stringify(cpFilled));
   const cpJob = reqDocs.requiredListCheck(db, cp, reqDocs.documentInventory(db, cp)).items;
   check("R2 docs.complete: the filled form present, the unheld one missing", cpJob.some((i) => /: Solar Photovoltaic Permit Application — filled$/.test(i.text) && i.present) && cpJob.some((i) => /: Building Permit Application — not yet on file/.test(i.text) && !i.present && !i.skipped), JSON.stringify(cpJob.map((i) => [i.text.slice(0, 100), i.present])));
+  // The lookup's RAW document entry for a PDF the agency list already carries (with its own status, or
+  // its confirm warning) gives way to that line — a bare URL no slot can hold was missing forever.
+  check("R2 docs.complete: no bare-URL line for a form the agency list carries", !cpJob.some((i) => i.text.includes(T1) || i.text.includes(T2)), JSON.stringify(cpJob.map((i) => i.text.slice(0, 100))));
+  check("R2 the packet likewise", !cpFilled.some((l) => l.includes(T1) || l.includes(T2)) && !cpStatus().some((l) => l.includes(T1) || l.includes(T2)), JSON.stringify(cpStatus()));
+  check("R1g the same for a cited-to-confirm PDF (the City of Boulder's): its bare URL line gives way to the confirm line", !jtList().some((i) => i.text.includes(CITY_BOULDER)) && !packetList(jt).some((l) => l.includes(CITY_BOULDER)), JSON.stringify(packetList(jt)));
 
   assert.equal(failed.length, 0, `${failed.length} check(s) failed: ${failed.join(" | ")}`);
   console.log(`agencyFormsUniversal: ${passed} checks passed — a cited PDF is the agency's only on a site the lookup cited a page of the agency's on (no name creates an anchor), split agencies keep the city's own lines, every line's status is its own form's, and three held-out AHJs (FL / IA / TX) route to the right agency`);

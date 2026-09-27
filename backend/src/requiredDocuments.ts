@@ -48,7 +48,7 @@ import { applicationProfiles, findApplicationProfile, namedApplicationForm, perm
 import { normalizeAhjName, permitProcessFor, stateRulesFor } from "./permitProcess";
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import {
-  agencyApplicationForms, agencyListReplacesLine, issuingAgencyDocumentList, prerequisiteSettled, tracksIssuedByOther, TRACK_FORM_TYPES,
+  agencyApplicationForms, agencyListNamesDocument, agencyListReplacesLine, issuingAgencyDocumentList, prerequisiteSettled, tracksIssuedByOther, TRACK_FORM_TYPES,
   type AgencyApplicationForm, type AgencyLineStatus, type AgencyLineStatusOf, type FormTrack,
 } from "./applicationDocsAgency";
 import { filledApplicationForms, heldUnfillableAgencyBlanks } from "./ahjForms";
@@ -1015,7 +1015,8 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
   if (found.items.length) {
     source = "lookup";
     sourceLabel = `the per-job process lookup (cited: ${found.sourceUrl})`;
-    texts = found.items;
+    // A raw entry that IS one of the agency list's PDFs gives way to the agency's line for it.
+    texts = agencyList ? found.items.filter((t) => !agencyListNamesDocument(agencyList!, t)) : found.items;
     addAgencyItems(true);
   } else if (agencyList) {
     source = "lookup";
