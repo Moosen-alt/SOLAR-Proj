@@ -690,7 +690,7 @@ export function staleStatusClassifications(db: AppDb, projectIds: string[]): Sta
   const rows = db.query<Record<string, unknown>>(
     `SELECT c.id, c.project_id, c.target_id, c.source, c.outcome, c.status_label,
             c.raw_status_text, c.created_at,
-            t.target_type, t.permit_type, t.application_number, t.portal_url
+            t.target_type, t.permit_type, t.active, t.application_number, t.portal_url
        FROM permit_status_checks c
        JOIN permit_check_targets t ON t.id = c.target_id
       WHERE c.project_id IN (${placeholders})
@@ -699,11 +699,28 @@ export function staleStatusClassifications(db: AppDb, projectIds: string[]): Sta
   );
   const stale: StaleStatusReading[] = [];
   for (const row of rows) {
-    const drift = classificationDrift({
+    const reread = classificationDrift({
       outcome: String(row.outcome || ""),
       statusLabel: String(row.status_label || ""),
       rawStatusText: String(row.raw_status_text || ""),
     }, trackKind(String(row.target_type || ""), String(row.permit_type || "")));
+    // PROVENANCE APPLIES TO THE RE-READ TOO. "What today's rules say about this row" is what
+    // today's WRITER would persist for it, and the writer refuses a finishing outcome from an
+    // email, a retired target or the other track's family (readingMayFinishTrack). A legacy
+    // email row (production 712cdb55: an email filed on a NEM target under the old routing,
+    // stored reviewed_by_ahj) re-reads as nem_approved on the words alone — reporting THAT as
+    // "today's rules" told the operator a re-check would confirm an approval the writer would
+    // not accept from those words. The current verdict for such a row is "Reported, unconfirmed".
+    const family = outcomeTrack(reread.currentOutcome);
+    const provenance = family ? readingMayFinishTrack(String(row.source || ""), { active: row.active, target_type: row.target_type, permit_type: row.permit_type }, family) : { trusted: true as const };
+    const drift: StoredClassificationDrift = provenance.trusted
+      ? reread
+      : {
+          ...reread,
+          currentOutcome: "needs_human_review",
+          currentStatusLabel: UNCONFIRMED_READING_LABEL,
+          stale: reread.storedOutcome !== "needs_human_review" || reread.storedStatusLabel !== UNCONFIRMED_READING_LABEL,
+        };
     if (!drift.stale) continue;
     stale.push({
       ...drift,

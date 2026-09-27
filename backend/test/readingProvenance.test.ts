@@ -316,6 +316,24 @@ await check("the unconfirmed reading is CURRENT on the stale scan (no re-check o
   assert.equal(notes(pid).length, 1, `notes after the re-check: ${notes(pid).join(" | ")}`);
 });
 
+await check("a LEGACY email row (production 712cdb55's shape) is stale, and today's verdict for it is 'Reported, unconfirmed' — never nem_approved on the words alone", async () => {
+  const pid = mkProject("Legacy Row Owner");
+  mkPermit(pid);
+  const tid = mkNem(pid);
+  await R.recordPermitStatusCheck(db, pid, { targetId: tid, source: "email", rawStatusText: "Email bucket: nem_approval\nWorkflow: nem\nStatus: NEM / interconnection approved\nYour interconnection application is approved." });
+  // Stored under the OLD rules: an email filed on the NEM target read as plan review.
+  db.run("UPDATE permit_status_checks SET outcome = 'reviewed_by_ahj', status_label = 'Reviewed by AHJ' WHERE target_id = ?", [tid]);
+  db.run("UPDATE permit_check_targets SET latest_outcome = 'reviewed_by_ahj', latest_status_label = 'Reviewed by AHJ' WHERE id = ?", [tid]);
+  const legacy = staleStatusClassifications(db, [pid]);
+  assert.equal(legacy.length, 1, "a legacy email row stored under the old rules is not offered a re-check");
+  assert.deepEqual([legacy[0].source, legacy[0].storedOutcome, legacy[0].currentOutcome, legacy[0].currentStatusLabel], ["email", "reviewed_by_ahj", "needs_human_review", UNCONFIRMED_READING_LABEL],
+    `today's verdict for a legacy email row reads as ${legacy[0].currentOutcome} / ${legacy[0].currentStatusLabel}`);
+  // The same words from a TRUSTED source are today's nem_approved, and the scan says so.
+  db.run("UPDATE permit_status_checks SET source = 'manual' WHERE target_id = ?", [tid]);
+  const trusted = staleStatusClassifications(db, [pid]);
+  assert.equal(trusted[0]?.currentOutcome, "nem_approved", `a manual row's re-read: ${trusted[0]?.currentOutcome}`);
+});
+
 // ---------------------------------------------------------------------------------------------
 // 4. MUST-EXCLUDE — the EMAIL TRACKER, the previous skeptic's probe-email shapes through the real
 //    runEmailTracker. The classifier's bucket/workflow is LOGGED, not trusted: whatever it says,
