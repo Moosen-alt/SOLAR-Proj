@@ -1563,6 +1563,8 @@ export interface StoredTemplate {
   documentDate: string;
   documentStale: boolean;
   sourceUrl: string;
+  /** The stored blank's sha256 (field_map.sourceHash, stamped at store) — "" on rows stored before it. */
+  sourceHash: string;
   applicationKind: "prescriptive" | "structural" | null;
   /** The row's form_type ("" on rows stored before the column mattered). */
   formType: string;
@@ -1579,7 +1581,7 @@ type TemplateRow = { id: string; ahj_name: string; state: string; form_type?: st
 function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate | null {
   if (!row.pdf_blob) return null;
   const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
-  let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; radioGroups?: Record<string, { source: string; equals?: string; option: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean; requiredFields?: Record<string,string>; notes?: string; preserveInteractive?: boolean; fieldFontSizes?: Record<string,number> } = {};
+  let map: { formName?: string; sourceUrl?: string; sourceHash?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; radioGroups?: Record<string, { source: string; equals?: string; option: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean; requiredFields?: Record<string,string>; notes?: string; preserveInteractive?: boolean; fieldFontSizes?: Record<string,number> } = {};
   map = parseJson(row.field_map, {});
   const textFields = map.textFields || {};
   const overlayFields = map.overlayFields || [];
@@ -1614,6 +1616,7 @@ function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate 
     documentDate: String(row.document_date || ""),
     documentStale: isDocumentDateStale(String(row.document_date || "")),
     sourceUrl: String(row.source_url || map.sourceUrl || ""),
+    sourceHash: String(map.sourceHash || ""),
     applicationKind: storedApplicationKind(row),
     formType: String(row.form_type || ""),
     authority: String(row.ahj_name || ""),
@@ -1678,8 +1681,8 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string, opts:
 /** Blanks the ISSUING AGENCY holds for this project's tracks that cannot be filled (no usable
  *  map: a flat scan, or an AcroForm nothing mapped to). They are never reported "filled" — they are
  *  listed so the operator completes and attaches them by hand. */
-export function heldUnfillableAgencyBlanks(db: AppDb, project: Pick<ProjectRecord, "ahj" | "state">): Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; applicationKind: "prescriptive" | "structural" | null }> {
-  const out: Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; applicationKind: "prescriptive" | "structural" | null }> = [];
+export function heldUnfillableAgencyBlanks(db: AppDb, project: Pick<ProjectRecord, "ahj" | "state">): Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; sourceHash: string; applicationKind: "prescriptive" | "structural" | null }> {
+  const out: Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; sourceHash: string; applicationKind: "prescriptive" | "structural" | null }> = [];
   const others = tracksIssuedByOther(project);
   if (!others.length) return out;
   const rows = db.query<TemplateRow>(
@@ -1689,8 +1692,8 @@ export function heldUnfillableAgencyBlanks(db: AppDb, project: Pick<ProjectRecor
     for (const row of rows) {
       if (!TRACK_FORM_TYPES[other.track].includes(String(row.form_type || "")) || !rowStateOk(row, project.state) || !rowBelongsToAuthority(row.ahj_name, other.name)) continue;
       if (storedTemplateFromRow(row)) continue;
-      const map = parseJson<{ formName?: string }>(String(row.field_map || "{}"), {});
-      out.push({ templateId: row.id, formName: map.formName || row.original_filename, formType: String(row.form_type || ""), agency: other.name, sourceUrl: String(row.source_url || ""), applicationKind: storedApplicationKind(row) });
+      const map = parseJson<{ formName?: string; sourceHash?: string }>(String(row.field_map || "{}"), {});
+      out.push({ templateId: row.id, formName: map.formName || row.original_filename, formType: String(row.form_type || ""), agency: other.name, sourceUrl: String(row.source_url || ""), sourceHash: String(map.sourceHash || ""), applicationKind: storedApplicationKind(row) });
     }
   }
   return out;

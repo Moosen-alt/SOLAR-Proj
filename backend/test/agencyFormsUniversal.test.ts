@@ -2,11 +2,11 @@
 // BE UNIVERSAL"). The skeptic's three findings on the issuing-agency round, pinned with synthetic
 // lookups (no network, no model) and the public Marion / BCD blanks:
 //
-//   MF1 WHOSE FORM A CITED PDF IS — a PDF is the agency's only on the AGENCY'S OWN domain (the
-//       lookup's own ownership predicate, isAgencyOwnUrl: isAgencyOwnDomain + tenantContradictsAgency);
-//       another entity's .gov / .<st>.us host never qualifies, the AHJ's own domain never does, and a
-//       document host (a CDN) only when it IS the lookup's citation for that permit's agency. The
-//       top-level agency answer's source counts only for a track that same agency issues.
+//   MF1 WHOSE FORM A CITED PDF IS — superseded by RULE 1 below (agency-apps-close2): a PDF is the
+//       agency's only on one of its ANCHOR SITES (a site where the lookup cited a PAGE for that agency);
+//       a name match in the domain never qualifies it, another entity's host never does, the AHJ's own
+//       domain never does, a document host (a CDN) never does. The top-level agency answer's source
+//       counts only for a track that same agency issues.
 //   MF2 SPLIT AGENCIES — the agency list replaces the city's lines only for the TRACK the agency
 //       issues; the city's own lines stay; the county's zoning prerequisite only when the county
 //       issues the building permit.
@@ -14,6 +14,7 @@
 //       pending)", "held, not fillable", "not yet on file" otherwise; no claim at all without it.
 //   HELD-OUT — three AHJs in three other states (FL town / county, IA city issuing its own, TX
 //       unincorporated / county): routed to the right agency's domain and packet, foreign PDFs refused.
+//   RULE 1 — ANCHOR SITES and RULE 2 — PER-FORM STATUS (agency-apps-close2): see their sections.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -437,6 +438,7 @@ try {
   const FFX_CITY = "https://www.fairfaxva.gov/home/showpublisheddocument/1234/Residential%20Solar%20Building%20Permit%20Application.pdf";
   const FFX_CO = "https://www.fairfaxcounty.gov/landdevelopment/sites/landdevelopment/files/Assets/documents/pdf/Solar%20Building%20Permit%20Application.pdf";
   served.set(FFX_CITY, await acroPdf("City of Fairfax Residential Solar Building Permit Application"));
+  served.set(FFX_CO, await acroPdf("Fairfax County Solar Building Permit Application"));
   saveLookup("VA", "Town of Vienna", [
     { discipline: "structural", agency: "Fairfax County", src: FFX_PAGE, docs: [FFX_CITY, FFX_CO] },
     { discipline: "electrical", agency: "Fairfax County", src: FFX_PAGE },

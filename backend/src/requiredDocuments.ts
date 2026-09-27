@@ -49,9 +49,9 @@ import { normalizeAhjName, permitProcessFor, stateRulesFor } from "./permitProce
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import {
   agencyApplicationForms, agencyListReplacesLine, issuingAgencyDocumentList, prerequisiteSettled, tracksIssuedByOther, TRACK_FORM_TYPES,
-  type AgencyApplicationForm, type AgencyLineStatusOf, type FormTrack,
+  type AgencyApplicationForm, type AgencyLineStatus, type AgencyLineStatusOf, type FormTrack,
 } from "./applicationDocsAgency";
-import { heldUnfillableAgencyBlanks } from "./ahjForms";
+import { filledApplicationForms, heldUnfillableAgencyBlanks } from "./ahjForms";
 import { requirementSlots } from "./requirementSlots";
 
 export interface RequiredDocItem {
@@ -875,6 +875,14 @@ function requirementSkipReason(text: string, path: "prescriptive" | "engineered"
  * A step at another office (no slot) has no status here. Read by requiredListCheck (docs.complete)
  * and by the packet door (repository.assembleApplicationDocumentPackage), so the manifest and the QC
  * row print the same words the gate's presence rows mean.
+ *
+ * PER FORM (agency-apps-close2 rule 2 — the skeptic's M3: two Douglas County applications for one track,
+ * one held, and the SLOT's word printed on both). A line that names a specific form ("form") reads
+ * THAT form's template: the stored rows matched to it by source URL, then the blank's sha256 (a curated
+ * seed's hash), then its form name; "filled" only when a filled PDF of one of THOSE templates is on disk
+ * for this path (filledApplicationForms: off-path and orphaned fills dropped). An upload holds the whole
+ * slot and reads "attached" on every line of it — which form it is, only a person can say. The generic
+ * "<agency>'s application" line (no form named) keeps the slot's answer; so does the checklist line.
  */
 export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): AgencyLineStatusOf {
   // Read on the FIRST line asked — a job whose lookup names no other agency (every QC run of every
@@ -883,6 +891,7 @@ export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): Age
     permitPath: "prescriptive" | "engineered" | "unknown";
     uploads: Record<string, string>;
     filled: Record<string, string>;
+    filledTemplateIds: Set<string>;
     stored: ReturnType<typeof loadStoredTemplates>;
     blanks: ReturnType<typeof heldUnfillableAgencyBlanks>;
   } | null = null;
@@ -893,21 +902,42 @@ export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): Age
     try { uploads = uploadedSubmissionDocuments(db, project); } catch { uploads = {}; }
     let filled: Record<string, string> = {};
     try { filled = filledFormsByDocType(db, project.id, permitPath); } catch { filled = {}; }
+    const filledTemplateIds = new Set<string>();
+    try {
+      for (const f of filledApplicationForms(db, project.id, permitPath)) {
+        const id = f.filePath.replace(/^.*[\\/]/, "").replace(/\.pdf$/i, "");
+        if (id.startsWith("tmpl-")) filledTemplateIds.add(id.slice(5));
+      }
+    } catch { /* nothing filled yet */ }
     let stored: ReturnType<typeof loadStoredTemplates> = [];
     try { stored = loadStoredTemplates(db, project.ahj, project.state); } catch { stored = []; }
     let blanks: ReturnType<typeof heldUnfillableAgencyBlanks> = [];
     try { blanks = heldUnfillableAgencyBlanks(db, project); } catch { blanks = []; }
-    inventory = { permitPath, uploads, filled, stored, blanks };
+    inventory = { permitPath, uploads, filled, filledTemplateIds, stored, blanks };
     return inventory;
   };
+  const norm = (s: unknown) => String(s ?? "").trim().toLowerCase();
   return (item) => {
     const types = item.docTypes;
     if (!types.length) return null;
     // RULE 1 (agency-apps-close2): a PDF the lookup cited that could not be confirmed as the agency's is
     // never on file, never filled — whatever holds the slot, it is not this document.
     if (item.form && !item.form.confirmed) return "cited_unconfirmed";
-    const { permitPath, uploads, filled, stored, blanks } = read();
+    const { permitPath, uploads, filled, filledTemplateIds, stored, blanks } = read();
     if (types.some((t) => uploads[t])) return "attached";
+    const form = item.form;
+    if (form) {
+      // THIS form's templates: URL first, then the blank's hash, then the form's own name.
+      const isThisForm = (t: { formType: string; sourceUrl: string; sourceHash: string; formName: string }): boolean =>
+        types.includes(t.formType || "permit_application")
+        && ((Boolean(form.sourceUrl) && t.sourceUrl === form.sourceUrl) || (Boolean(form.sha) && t.sourceHash === form.sha) || (Boolean(norm(form.formName)) && norm(t.formName) === norm(form.formName)));
+      const mine = stored.filter((t) => isThisForm({ formType: t.formType, sourceUrl: t.sourceUrl, sourceHash: t.sourceHash, formName: t.def.formName }));
+      const myBlanks = blanks.filter((b) => isThisForm(b));
+      if (mine.some((t) => filledTemplateIds.has(t.templateId))) return "filled";
+      if (mine.some((t) => !formContradictsPath(t.def.formName, permitPath, t.applicationKind))) return "on_file";
+      if (myBlanks.some((b) => !formContradictsPath(b.formName, permitPath, b.applicationKind))) return "held_not_fillable";
+      return "not_on_file";
+    }
     if (types.some((t) => filled[t])) return "filled";
     if (stored.some((t) => types.includes(t.formType || "permit_application") && !formContradictsPath(t.def.formName, permitPath, t.applicationKind))) return "on_file";
     if (blanks.some((b) => types.includes(b.formType) && !formContradictsPath(b.formName, permitPath, b.applicationKind))) return "held_not_fillable";
@@ -947,7 +977,7 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
   let texts: string[] = [];
   // Items with a KNOWN slot (the issuing agency's list names its own slots) or a step at another
   // office (a prerequisite, settled by the operator's zoning answer — not a file).
-  const structured = new Map<string, { docTypes: string[]; prerequisite: boolean; unconfirmed?: { agency: string } }>();
+  const structured = new Map<string, { docTypes: string[]; prerequisite: boolean; unconfirmed?: { agency: string }; formStatus?: AgencyLineStatus }>();
   const found = lookupRequiredList(project);
   // THE ISSUING AGENCY'S LIST (applicationDocsAgency.issuingAgencyDocumentList): where the lookup
   // cites another agency as a permit's issuer, the job's list names THAT agency's applications, the
@@ -965,6 +995,8 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
       structured.set(item.text, {
         docTypes: item.docTypes, prerequisite: item.role === "prerequisite",
         ...(item.form && !item.form.confirmed ? { unconfirmed: { agency: String(item.agency || "") } } : {}),
+        // A line naming ONE form carries that form's own status (rule 2); docs.complete reads it.
+        ...(item.form?.confirmed && item.status ? { formStatus: item.status } : {}),
       });
     }
   };
@@ -1034,6 +1066,13 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
     const skipped = requirementSkipReason(text, path, standardReview);
     const docTypes = known?.docTypes ?? requirementSlots(text);
     if (skipped) return { text, docTypes, present: false, via: "", skipped };
+    // ONE FORM, ITS OWN ANSWER (agency-apps-close2 rule 2): a line naming a specific agency form is
+    // present only when THAT form is filled for this path, or the slot holds an upload — never because
+    // the slot holds the agency's OTHER form of the same track.
+    if (known?.formStatus) {
+      const st = known.formStatus;
+      return { text, docTypes, present: st === "filled" || st === "attached", via: st === "filled" ? "filled form" : st === "attached" ? "attached file" : "" };
+    }
     for (const t of docTypes) {
       const p = presenceByType.get(t);
       if (p?.present) return { text, docTypes, present: true, via: p.via || "attached" };

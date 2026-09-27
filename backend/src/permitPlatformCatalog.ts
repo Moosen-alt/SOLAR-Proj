@@ -280,8 +280,9 @@ export function portalNameToken(href: string): string {
  * host is the agency's own domain by name (isAgencyOwnDomain — any .gov / .<st>.us is not enough)
  * AND its domain / tenant names no other TYPE of jurisdiction (tenantContradictsAgency:
  * cityofmarion.org carries Marion County's name key but is the City of Marion's). Read by the lookup's
- * record-type door (permitProcessLookup.recordTypeBelongsToPortal) and by the issuing agency's cited
- * application PDFs (applicationDocsAgency.citedAgencyApplicationUrls).
+ * record-type door (permitProcessLookup.recordTypeBelongsToPortal). NOT by the issuing agency's cited
+ * application PDFs: a name cannot tell deschutes.org from pbcgov.org, so those are confirmed only on a
+ * site where the lookup cited a page for the agency (applicationDocsAgency.agencyAnchorSites).
  */
 export function isAgencyOwnUrl(url: string, names: string[], state?: string, typeNames: string[] = names): boolean {
   const host = portalHostOf(url);
