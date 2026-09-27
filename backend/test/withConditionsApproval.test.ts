@@ -51,7 +51,7 @@ const { openDatabase } = await import("../src/db");
 const R = await import("../src/repository");
 const { classifyPermitStatusText, classificationDrift, isNemApprovalOutcome, trackKind, staleStatusClassifications } = await import("../src/permitMonitor");
 const { publicCheckLabel, publicProjectStatusPayload, projectStatusHistory } = await import("../src/clientPortal");
-const { isTrackDone, requiredTracks } = await import("../src/submittalTracks");
+const { isTrackDone, requiredTracks, ensureCheckTarget } = await import("../src/submittalTracks");
 const { isClientFacingOutcome, clientUpdateFor } = await import("../src/clientUpdates");
 
 const db = await openDatabase();
@@ -299,6 +299,12 @@ await check("MF3 (creator): a target born with permitType 'nem' and no target ty
   assert.equal(rawTarget(t2.id).target_type, "nem");
   // And a PERMIT filing is still refused that URL (permitTargetDoors pins the message).
   assert.throws(() => R.createPermitCheckTarget(db, pid2, { jurisdiction: "X", portalName: "Y", portalUrl: POWERCLERK, applicationNumber: "APP-BORN-3", permitType: "building", targetType: "permit" } as never), /utility interconnection portal/);
+  // THE ONE CREATOR itself (every door passes through it): the split shape handed straight to it
+  // is still stored as the NEM filing it is.
+  const pid3 = mkProject("Born Nem Creator Owner");
+  const born = ensureCheckTarget(db, R.getProjectDetail(db, pid3).project, { targetType: "permit", permitType: "nem", applicationNumber: "APP-BORN-4" });
+  assert.equal(born.created, true);
+  assert.equal(rawTarget(born.targetId).target_type, "nem", "the creator wrote the split shape (permit + nem)");
 });
 
 for (const shape of ["permit", ""] as const) {
