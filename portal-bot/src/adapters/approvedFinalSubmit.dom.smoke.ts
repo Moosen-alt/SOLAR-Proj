@@ -37,8 +37,16 @@
 //                 never a re-click); burned (C1: one {approver, runId} files at most once per process,
 //                 and a refused one never files later).
 //
+//   autosubmit-close (auto-submit ON for 2026-09-29):
+//   MUST-PASS     beaconFirst (same-origin sendBeacon in onsubmit, GA4 form_submit) / beaconCross (a
+//                 cross-origin beacon) / keepaliveClick (fetch keepalive no-cors to an analytics host in
+//                 the Submit's onclick) / beaconModal (a beacon, then a DOM confirm): the form's filing
+//                 POST files EXACTLY ONCE, the record captured, finalSubmitRequestSent true.
+//   MUST-EXCLUDE  the same four: a beacon never takes the approved slot (every admitted request is the
+//                 filing), and none reaches a server (the review lock aborts it).
+//
 // Kill: mayClickFinalSubmit -> true (or finalSubmitRefusals -> []) turns the MUST-EXCLUDE env /
-// approval / shape cases red.
+// approval / shape cases red. filingBackstop slotAdmits -> true turns section 9 red.
 //
 //   npx tsx portal-bot/src/adapters/approvedFinalSubmit.dom.smoke.ts
 import "../smokeArtifactDirs";
@@ -56,6 +64,7 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 // The fixture portal. /m/<mode>/review is the review page; every non-GET request is recorded.
 // ---------------------------------------------------------------------------------------------
 const requests: Array<{ mode: string; method: string; path: string }> = [];
+let analyticsBase = "";
 const RECORD = "BLD-26-00123";
 const NAV = `<nav><a href="/account">My Account</a> <a href="/logout">Sign Out</a></nav>`;
 const page = (title: string, body: string): string => `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body>${NAV}${body}</body></html>`;
@@ -110,6 +119,27 @@ const reviewBody = (mode: string): string => {
   }
   if (mode === "payControl") {
     return `${summary}<form method="post" action="/m/payControl/apply/submit"><button type="submit" id="btnPay">Pay and Submit</button></form>`;
+  }
+  // autosubmit-close MF-B: TELEMETRY fired by the Submit BEFORE the form's own POST.
+  if (mode === "beaconFirst") {
+    // GA4 form_submit shape: a same-origin sendBeacon in onsubmit, then the form's POST navigation.
+    return `${summary}<form method="post" action="/m/beaconFirst/apply/submit" onsubmit="navigator.sendBeacon('/m/beaconFirst/collect', 'en=form_submit')"><button type="submit" id="btnSubmit">Submit Application</button></form>`;
+  }
+  if (mode === "beaconCross") {
+    return `${summary}<form method="post" action="/m/beaconCross/apply/submit" onsubmit="navigator.sendBeacon('${analyticsBase}/g/collect?en=form_submit', 'x')"><button type="submit" id="btnSubmit">Submit Application</button></form>`;
+  }
+  if (mode === "keepaliveClick") {
+    return `${summary}<form method="post" action="/m/keepaliveClick/apply/submit"><button type="submit" id="btnSubmit" onclick="fetch('${analyticsBase}/g/collect?en=click', { method: 'POST', keepalive: true, mode: 'no-cors', body: 'x' })">Submit Application</button></form>`;
+  }
+  if (mode === "beaconModal") {
+    // The Submit beacons, then opens a DOM confirm whose OK posts the form.
+    return `${summary}<form id="f" method="post" action="/m/beaconModal/apply/submit"></form>
+      <button type="button" id="btnSubmit">Submit Application</button>
+      <div id="dlg" role="dialog" style="display:none;border:1px solid #000;padding:12px"><p>Are you sure you want to submit this application?</p><button type="button" id="dlgCancel">Cancel</button> <button type="button" id="dlgOk">OK</button></div>
+      <script>
+        document.getElementById("btnSubmit").addEventListener("click", function(){ navigator.sendBeacon("${analyticsBase}/g/collect?en=click", "x"); document.getElementById("dlg").style.display = "block"; });
+        document.getElementById("dlgOk").addEventListener("click", function(){ document.getElementById("f").submit(); });
+      </script>`;
   }
   return `${summary}<form method="post" action="/m/${mode}/apply/submit"><button type="submit" id="btnSubmit">Submit Application</button></form>`;
 };
@@ -166,8 +196,18 @@ const server = http.createServer((req, res) => {
   if (rest === "review" || rest === "") { send(page("Review and Submit", reviewBody(mode))); return; }
   send(page("Not found", "<h1>Not found</h1>"));
 });
+// A second, CROSS-ORIGIN "analytics" host (localhost vs 127.0.0.1): every non-GET it receives is
+// recorded too, under mode "analytics".
+const analytics = http.createServer((req, res) => {
+  const url = new URL(req.url || "/", "http://localhost");
+  if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") requests.push({ mode: "analytics", method: String(req.method), path: `analytics:${url.pathname}` });
+  res.writeHead(204, { "access-control-allow-origin": "*" });
+  res.end();
+});
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+await new Promise<void>((r) => analytics.listen(0, "127.0.0.1", () => r()));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+analyticsBase = `http://localhost:${(analytics.address() as { port: number }).port}`;
 
 // ---------------------------------------------------------------------------------------------
 // Recipes and the run
@@ -359,7 +399,26 @@ if (want("burned")) {
     refused.posts.length === 0 && after.posts.length === 0 && after.r.finalSubmitClicked === false, `${brief(refused)} || ${brief(after)}`);
 }
 
+console.log("\n9. autosubmit-close MF-B: telemetry fired by the Submit never takes the approved slot — the form's own request files");
+for (const mode of ["beaconFirst", "beaconCross", "keepaliveClick", "beaconModal"]) {
+  if (!want(mode)) continue;
+  const o = await stage(mode, "1", {}, undefined, 800);
+  const m = msgOf(o.r);
+  check(`MUST-PASS ${mode}: the form's filing POST reaches the portal EXACTLY ONCE`, filingPosts(o) === 1, brief(o));
+  check(`MUST-PASS ${mode}: finalSubmitClicked, finalSubmitRequestSent, the record captured, accepted (ok, not paused)`,
+    o.r.finalSubmitClicked === true && o.r.finalSubmitRequestSent === true && o.r.capturedPermitNumber === RECORD && o.r.ok === true && !o.r.pauseReason, brief(o));
+  const steps = Array.isArray(o.r.steps) ? (o.r.steps as Array<{ data?: Record<string, unknown> }>) : [];
+  const admitted = steps.flatMap((s) => (Array.isArray(s?.data?.approvedRequests) ? (s.data!.approvedRequests as string[]) : []));
+  check(`MUST-EXCLUDE ${mode}: the beacon never takes the slot — every admitted request is the filing, none is telemetry`,
+    admitted.length > 0 && admitted.every((w) => /\/apply\/submit$/.test(w)) && !/collect/.test(m.replace(/BACKSTOP ABORTED[^|]*/g, "")), `admitted=${JSON.stringify(admitted)} ${m.slice(0, 400)}`);
+  // The call made (named in filingBackstop.slotAdmits): outside the slot a beacon meets the ordinary
+  // rules, and at review that is the sticky lock — aborted, reported, never a stop of the filing.
+  check(`${mode}: the beacon met the review lock — no telemetry request reached any server during the run`,
+    o.posts.every((p) => /\/apply\/submit$/.test(p.path)), brief(o));
+}
+
 server.close();
+analytics.close();
 if (failures) { console.error(`\n${failures} approved-final-submit check(s) FAILED.`); process.exit(1); }
 console.log("\nAll approved-final-submit checks passed (real Chromium, local fixture, the real stage path).");
 process.exit(0);

@@ -64,7 +64,9 @@ export interface FilingBackstop {
   openWindow(rule: "dismisser-window" | "enter-window", why: string): () => void;
   /** THE approved final submit only: open ONE slot, bound to the clicked page, that lets ONE
    *  state-changing request through — a FILING url, and past the review lockdown — within `ms`.
-   *  Payment never. The slot closes when that request goes, when the clicked page's main frame
+   *  Payment never, and never telemetry: only the clicked page's main-frame navigation (its form
+   *  submission) or a fetch/XHR to the clicked page's own origin takes the slot — a beacon (ping)
+   *  or a request to another origin meets the ordinary rules. The slot closes when that request goes, when the clicked page's main frame
    *  starts a navigation of its own (a GET: the click's own request was not state-changing, so
    *  there is nothing to admit) or loads a new document, or when `ms` runs out. Every later
    *  state-changing request (a page script's second POST, the completion page's on-load POST)
@@ -116,6 +118,11 @@ export function backstopFor(page: unknown): FilingBackstop | null {
 
 const whereOf = (url: string): string => {
   try { const u = new URL(url); return `${u.origin}${u.pathname}`; } catch { return String(url || "").split(/[?#]/)[0].slice(0, 200); }
+};
+
+/** scheme://host:port of a URL; "" when it has none (unparseable, about:, data:). */
+const originOf = (url: string): string => {
+  try { const o = new URL(url).origin; return o && o !== "null" ? o : ""; } catch { return ""; }
 };
 
 /** Run `fn` inside a window on this page's backstop (if one is installed), closing it `graceMs`
@@ -217,6 +224,38 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
     s.timer = null;
     s.detach();
   };
+  // TELEMETRY NEVER TAKES THE SLOT (autosubmit-close MF-B). The slot went to the FIRST
+  // state-changing request from the clicked page, and a GA4-style navigator.sendBeacon in the
+  // form's onsubmit, a cross-origin beacon, or a fetch(keepalive) to an analytics host in the
+  // Submit's onclick all fire BEFORE the form's own POST: the beacon took the approval, the filing
+  // was then aborted, nothing filed — and the run said the approved request went
+  // (finalSubmitRequestSent true, the backend would have recorded the filing). The slot now admits
+  // only what can be the click's filing:
+  //   - the clicked page's own MAIN-FRAME NAVIGATION (its form submission), whatever the host — a
+  //     form's action may live on another host, and a beacon or fetch is never a navigation;
+  //   - a fetch / XHR (or a subframe navigation) to the clicked page's OWN ORIGIN — an SPA's
+  //     filing call (extraSpa, confirmThenSpa);
+  //   - never a ping (sendBeacon, <a ping>), whatever its origin.
+  // Anything else meets the ordinary rules as if no slot were open — at review that is the sticky
+  // lock, so a beacon is ABORTED (reported after the approved click as "aborted N other
+  // state-changing request(s)", never a stop, never "the approved request").
+  // RESIDUAL, named: a SAME-origin fetch({keepalive}) / fetch({mode:'no-cors'}) is not visible to
+  // a route handler (Chromium sends no sec-fetch-mode to it and the resource type is "fetch"),
+  // so one fired before the filing would still take the slot — fail-closed: the filing is then
+  // aborted by the filing-URL rule / lockdown and the run reports the admitted URL, not a filing.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const slotAdmits = (request: any, pg: any, url: string, resourceType: string, navigation: boolean): boolean => {
+    if (resourceType === "ping") return false;
+    let mainFrame = false;
+    try { mainFrame = !!pg && typeof pg.mainFrame === "function" && request.frame() === pg.mainFrame(); } catch { mainFrame = false; }
+    if (navigation && mainFrame) return true;
+    // The clicked page's origin, read now (a pushState keeps it; a navigation away closed the slot).
+    // Unreadable -> not admitted (fail-closed: the filing is aborted, named, nothing claims it went).
+    let pageUrl = "";
+    try { pageUrl = pg && typeof pg.url === "function" ? String(pg.url() || "") : ""; } catch { pageUrl = ""; }
+    const origin = originOf(url);
+    return origin !== "" && origin === originOf(pageUrl);
+  };
   let locked = "";
   let disposed = false;
   // A NAVIGATION REQUEST (a form POST) CANNOT BE ASKED LIVE: evaluating the page it is navigating
@@ -282,13 +321,13 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
     // 1. PAYMENT: never, in any frame, any type, whatever was approved.
     if (isPayRequestUrl(url)) { await abort("filing-url", "a fee-payment endpoint — automation never pays"); return; }
     // The approved click's ONE request takes the slot (checked after the payment rule: a payment
-    // never uses it) — and only a request from the clicked page.
+    // never uses it) — and only a request from the clicked page that can BE the click's filing.
     let approved = false;
     if (slotLive()) {
       const pg = pageOfRequest(request);
-      if (!slot!.page || pg === slot!.page) {
-        let navigation = false;
-        try { navigation = !!request.isNavigationRequest(); } catch { /* unknown: not a navigation */ }
+      let navigation = false;
+      try { navigation = !!request.isNavigationRequest(); } catch { /* unknown: not a navigation */ }
+      if ((!slot!.page || pg === slot!.page) && slotAdmits(request, pg, url, resourceType, navigation)) {
         approved = true;
         approvedRequests.push(whereOf(url));
         approvedAdmissions.push({ where: whereOf(url), navigation });
