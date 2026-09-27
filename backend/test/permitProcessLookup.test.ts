@@ -50,7 +50,10 @@ const check = async (name: string, fn: () => void | Promise<void>) => {
   try { await fn(); console.log(`  ok   - ${name}`); } catch (e) { failures++; console.error(`  FAIL - ${name}\n         ${(e as Error).message}`); }
 };
 
-const COUNTY = "https://www.co.example-county.or.us/building/solar";
+// Marion County's OWN domain (co.marion.or.us): since lookup-close-7 R1 a record type is the agency's only when its
+// page is the agency's own domain by name — a locality .us that names another place (the old co.example-county.or.us)
+// is not Marion County's page, whatever its TLD.
+const COUNTY = "https://www.co.marion.or.us/building/solar";
 const FEES = "https://docs.example-countyfees.org/2026-fee-schedule.pdf";
 const ACA = "https://aca-oregon.accela.com/oregon/";
 const processAnswer = (over: Record<string, unknown> = {}) => JSON.stringify({
