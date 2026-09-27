@@ -20,8 +20,9 @@ one definitions (commit 006c39c + the fixture/HANDOFF commits after it; scratch 
   `aca.oregon`, `aca3`), any other accela.com host is Accela's own site.
 - Measured: probe6v 14 BAD -> 6 of 41 (the six below); every prior probe's verdict lines identical to close-6-v's
   (probe1 13/51, probe4 10/41, close-3 zz_adv 7/49, close-2-v zz_adv 5 + the expected F1 throw, probe5v 5/40, the
-  rest 0); rescore6 output identical (0 baseline flips, 12 saved record types, no cell moved). Kills: this round's 24/24 RED
-  (`.probe/lookup-close-7/kill.cjs` / `kill.out`, own LF worktree; X2b, X4, X5 — green or skipped at close-6-v — among them);
+  rest 0); rescore6 output identical (0 baseline flips, 12 saved record types, no cell moved). Kills: this round's 27/27 RED
+  (`.probe/lookup-close-7/kill.cjs`; `kill.out` 24 on lookupDoors, `kill-pageread.out` 3 on agencyPageRead `(r7)` — the
+  page-read resolver's side; own LF worktree; X2b, X4, X4b, X5 — green or skipped at close-6-v — among them);
   close-6's 65 re-run: 59 RED, the 6 whose lines moved SKIP, re-pointed in the same kill.cjs (K21r L6r L6br L7r L17r L9r)
   6/6 RED (`kill-close6.out`, `kill-repointed.out`; L17r went red only after the `(r7)` tenant-parameter pin was added).
   End checks at 48394e0 in a clean worktree: typecheck 0 errors; 32 suites run directly, all passed except the
@@ -36,6 +37,7 @@ one definitions (commit 006c39c + the fixture/HANDOFF commits after it; scratch 
 - H1: an unlisted tenant-formed host (`www.municipalonlinepayments.com/<tenant>/permits`) is attested host-wide by a sibling tenant's result.
 - I5: a TYPELESS AHJ name ("Marions") whose permits its same-named county issues gets no delegation row — declared design (typeless ~ typed).
 - I7: "Oregon Building Codes Division" is saved as the agency NAME "Oregon" (every word after the state is a department word; pre-existing since 5d8c5a4).
+- close-7 widened this one: the six marketing domains are now on the platform list, so at `hostFitsTrackAndEntity` they are "never an information page" too (an `iworq.com/help/…` or a `bsasoftware.com/…/guide.pdf` that the info-page rule used to refuse at the KB / recipe / operator doors now FITS there); the lookup's own door refuses them as the vendor's site.
 - quick1 hostFit: `hostFitsTrackAndEntity` (KB-write / recipe / operator-URL / page-read doors) still says FITS for vendor marketing pages (tylertech, cityview, iworq.com, bsasoftware, centralsquare, success.accela.com) — only the lookup's `acceptPortalForPermit` asks `isVendorRootOrMarketing`; suites outside the lookup assert on bare vendor roots along that path.
 - Camden held-out (close-6-v): the correct electrical fee ('Residential … $60.00') was refused by the fee tie because the PDF's text order prints the amount far from its label — a recall loss (F10 / P6a class), never a wrong value.
 - close-7: MapsOnline's shared app segments are named (`simplicity`, `peopleforms`); any OTHER shared segment on www.mapsonline.net still reads as a town tenant.

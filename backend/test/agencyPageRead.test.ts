@@ -301,6 +301,28 @@ await check("(m1) MUST-EXCLUDE (close MF1/MF2): a vendor link is not the portal 
   }
 });
 
+await check("(r7) lookup-close-7 (the page-read resolver's side of R2/R3 + close-6-v X4b): an agency page linking the vendor's OWN site with portal words — a marketing / help subdomain (help.opengov.com, support.citizenserve.com), a marketing domain (iworq.com, www.bsasoftware.com, www.centralsquare.com), Accela's non-ACA host (success.accela.com), a query-tenanted instance with no tenant parameter (bsaonline.com/MunicipalDirectory/, citizenserve with no installationID) — resolves NO portal; MUST-PASS: the same words on the city's own tenant link (bsaonline ?uid=, citizenserve installationID)", async () => {
+  const CITY_PAGE = "https://www.cityofvendpage.gov/building";
+  const vendorSites = [
+    "https://help.opengov.com/hc/en-us/articles/apply-online",
+    "https://support.citizenserve.com/portal/",
+    "https://iworq.com/permit-software/",
+    "https://www.bsasoftware.com/solutions/community-development/",
+    "https://www.centralsquare.com/products/etrakit",
+    "https://success.accela.com/s/article/permits",
+    "https://bsaonline.com/MunicipalDirectory/",
+    "https://www.citizenserve.com/Portal/PortalController?Action=showHomePage&ctzPagePrefix=Portal_",
+  ];
+  for (const u of vendorSites) {
+    const { res } = await resolveNamed({ [CITY_PAGE]: { text: synthetic(`<p>Building permits are applied for online.</p><a href="${u}">Apply online — online permit portal</a>`) } }, [CITY_PAGE], ["City of Vendpage"]);
+    assert.equal(res, null, `${u} is the vendor's own site (got ${res?.url})`);
+  }
+  for (const u of ["https://bsaonline.com/?uid=413", "https://www.citizenserve.com/Portal/PortalController?Action=showHomePage&ctzPagePrefix=Portal_&installationID=301"]) {
+    const { res } = await resolveNamed({ [CITY_PAGE]: { text: synthetic(`<p>Building permits are applied for online.</p><a href="${u.replace(/&/g, "&amp;")}">Apply online — online permit portal</a>`) } }, [CITY_PAGE], ["City of Vendpage"]);
+    assert.equal(res?.url, u, `MUST-PASS: the city's own tenant link (got ${res?.url})`);
+  }
+});
+
 await check("(m2) MUST-PASS: the portal from the agency's own page — Scottsdale SPUR (EnerGov on tylerhost, named by its target and tenant), Lee's eConnect (ACA tenant LEECO), Carlsbad's CSS and Iowa City's portal (own-domain link, read), Columbus's portal (own-domain frame, read), a unique unnamed tenant, and a tenant our read shows is this agency's", async () => {
   const S = "https://www.scottsdaleaz.gov/planning-development/permit-services";
   const sc = await resolveNamed({ [S]: { text: fixture("scottsdale-permit-services.html") } }, [S], ["City of Scottsdale"]);
