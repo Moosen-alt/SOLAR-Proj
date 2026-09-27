@@ -200,6 +200,12 @@ try {
     return b && !/Coos County/.test(b.label) && e && /Coos County/.test(e.label);
   })());
 
+  // The ENGINEERED path: the state checklist is not owed, and the city's checklist line does not
+  // survive the split either (the prescriptive checklist is the upload the AHJ forbids there).
+  const coosEng = job("coos-eng", "OR", "City of Coos Bay", { permitPathOverride: "engineered" });
+  const coosEngPacket = packetList(coosEng);
+  check("MF2 engineered split: the city's building application stays, no checklist line at all", coosEngPacket.some((l) => /^Solar application/.test(l)) && !coosEngPacket.some((l) => /checklist/i.test(l)), JSON.stringify(coosEngPacket));
+
   // Happy Valley: the city issues building, Clackamas County issues electrical.
   const CLACK_E = "https://www.clackamas.us/sites/default/files/building/Electrical%20Permit%20Application.pdf";
   saveLookup("OR", "City of Happy Valley", [

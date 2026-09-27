@@ -251,6 +251,9 @@ export interface AgencyDocumentList {
   agencies: string[];
   sourceUrl: string;
   items: AgencyListItem[];
+  /** The list decided the STATE checklist (Oregon: the BCD 440-5952 on the prescriptive path, none
+   *  on the engineered one), so the AHJ's own checklist line gives way to that decision either way. */
+  decidesStateChecklist: boolean;
 }
 
 /** A step at the CITY's office before the county takes the application: the lookup's cited
@@ -342,21 +345,23 @@ export function issuingAgencyDocumentList(project: Pick<ProjectRecord, "state" |
   const pre = cityPrerequisiteFor(project);
   if (pre) items.push({ text: pre.text + (pre.quote ? ` — "${pre.quote.slice(0, 160)}"` : ""), docTypes: [], role: "prerequisite", sourceUrl: pre.sourceUrl });
   const agencies = [...new Set(others.map((o) => o.name))];
-  return { agencies, sourceUrl: String(others[0].fact?.sourceUrl || ""), items };
+  return { agencies, sourceUrl: String(others[0].fact?.sourceUrl || ""), items, decidesStateChecklist: oregon };
 }
 
 /**
  * Does the agency list REPLACE this line of the AHJ's own required list (agency-apps-close MF2)?
  * Only the line for a TRACK another agency issues — that agency's own application(s) stand in for
- * the AHJ's — and the AHJ's checklist line where the list carries the state checklist (one
- * checklist, not two). The AHJ's own lines for the tracks it issues itself stay (Coos Bay's building
- * application where Coos County issues only the electrical permit), and so does every line that is
- * no application (plan set, specs, stamps). One vocabulary: requirementSlots.requirementTrack.
+ * the AHJ's — and the AHJ's checklist line where the list decided the state checklist (one
+ * checklist, not two, on the prescriptive path; none on the engineered path, where the prescriptive
+ * checklist is the upload the AHJ forbids). The AHJ's own lines for the tracks it issues itself stay
+ * (Coos Bay's building application where Coos County issues only the electrical permit), and so does
+ * every line that is no application (plan set, specs, stamps). One vocabulary:
+ * requirementSlots.requirementTrack.
  */
 export function agencyListReplacesLine(list: AgencyDocumentList, line: string): boolean {
   const t = requirementTrack(line);
   if (!t) return false;
-  if (t === "checklist") return list.items.some((i) => i.role === "checklist");
+  if (t === "checklist") return list.decidesStateChecklist || list.items.some((i) => i.role === "checklist");
   return list.items.some((i) => i.role === "application" && i.track === t);
 }
 
