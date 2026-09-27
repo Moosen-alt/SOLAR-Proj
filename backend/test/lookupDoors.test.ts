@@ -406,10 +406,12 @@ await check("(t2) MF3: ONE predicate for 'is the amount printed beside its label
 await check("(a1) MF4: ONE predicate 'is this cited agency the AHJ itself' (sameAgencyName) sees through a department suffix and trailing punctuation — the Charleston shape ('City of Charleston Permit Center /' for City of Charleston) saves NO fee delegation row and the electrical permit takes the SAME portal as the structural one, its agency saved as 'City of Charleston'; MUST-PASS: a genuine delegation (the county issues the city's permits — the Jefferson lift) still lands a collected-by row", async () => {
   const same = ppl.sameAgencyName;
   for (const [a, b] of [["City of Charleston Permit Center /", "City of Charleston"], ["City of Charleston Building Inspections Division", "City of Charleston"], ["Charleston Permit Center", "City of Charleston"], ["the City of Charleston, SC", "City of Charleston"],
-    ["Marion County Public Works Building Inspection Division", "Marion County"], ["Hollis", "Town of Hollis"], ["Waltham Wires Department", "Waltham City"], ["Iowa City Building Department", "Iowa City"], ["Examplecity Development Services", "City of Examplecity"]]) {
+    ["Marion County Public Works Building Inspection Division", "Marion County"], ["Hollis", "Town of Hollis"], ["Waltham Wires Department", "Waltham City"], ["Iowa City Building Department", "Iowa City"], ["Examplecity Development Services", "City of Examplecity"],
+    ["City of Venus", "Town of Venus"], ["Village of Elm", "Town of Elm"], ["City of Scottsdale Planning and", "City of Scottsdale"], ["Santa Fe County Building and", "Santa Fe County"]]) {
     assert.equal(same(a, b), true, `${a} ~ ${b}`);
   }
-  for (const [a, b] of [["Charleston County", "City of Charleston"], ["Marion County", "City of Jefferson"], ["State of MN", "City of Bemidji"], ["State Construction Industries Division", "Examplecounty"], ["City of Hampton", "City of Marion"], ["", "City of Marion"], ["Building Inspections Division", "City of Charleston"]]) {
+  for (const [a, b] of [["Charleston County", "City of Charleston"], ["Marion County", "City of Jefferson"], ["State of MN", "City of Bemidji"], ["State Construction Industries Division", "Examplecounty"], ["City of Hampton", "City of Marion"], ["", "City of Marion"], ["Building Inspections Division", "City of Charleston"],
+    ["Marion Township", "Town of Marion"], ["Marion Township", "Marion County"], ["Marion Parish", "City of Marion"]]) {
     assert.equal(same(a, b), false, `${a} !~ ${b}`);
   }
   assert.equal(ppl.agencyNameKey("City of Charleston Permit Center / Building Inspections Division"), "city of charleston");
@@ -435,6 +437,11 @@ await check("(a1) MF4: ONE predicate 'is this cited agency the AHJ itself' (same
   assert.equal(st.portalUrl.value, ACA, `structural: the city's own portal (${st.portalUrl.notFound})`);
   assert.equal(el.portalUrl.value, ACA, `electrical: the SAME portal — the cited agency is the city itself (${el.portalUrl.notFound})`);
   assert.ok((r.lookup!.notes ?? []).some((n) => /^Portal \(electrical\): .*CHARLESTONEXAMPLE.*jurisdiction type judged against City of Charleston-example$/.test(n)), JSON.stringify(r.lookup!.notes));
+  // The TYPELESS form ("Charleston-example Permit Center", as an application form prints it) is the city too.
+  const p1b = { ...p1, permits: [p1.permits[0], { ...p1.permits[1], issuingAgency: { value: "Charleston-example Permit Center", sourceUrl: APP, quote: "ELECTRICAL TRADE PERMIT APPLICATION Charleston-example Permit Center 2 George St" } }] };
+  const rb = await ppl.runPermitProcessLookup(db, { webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? g(JSON.stringify(p1b), [PG, APP]) : g(JSON.stringify({ permits: [] }), [])) }, { state: "SC", ahj: "City of Charleston-example", dcKw: "7", acKw: "6", force: true, reader: newReader(site(pages).fetch) });
+  assert.equal(saved(rb, "electrical").issuingAgency.value, "Charleston-example");
+  assert.equal(saved(rb, "electrical").portalUrl.value, ACA, `typeless: the same portal (${saved(rb, "electrical").portalUrl.notFound})`);
   const fees = await import("../src/feeSchedules");
   const cityKey = fees.feeScheduleProfileKey({ state: "SC", ahj: "City of Charleston-example" }, "permit");
   const rows = fees.getFeeSchedulesForKey(db, cityKey, "permit");

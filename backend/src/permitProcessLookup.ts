@@ -361,19 +361,25 @@ export function agencyNameKey(name: unknown): string {
 }
 /** ONE predicate for "is this cited agency THAT agency itself" (lookup-close-5, MF4): the keys are
  *  equal, or equal once the type affix is removed when exactly ONE side carries a type word
- *  ("Charleston Permit Center" is the City of Charleston). Two typed names that differ are two
- *  agencies (Charleston County is not the City of Charleston; Marion County is not the City of
- *  Jefferson — the delegation the fee rows carry). Read by issuedByPublisher (whose portal a permit
- *  takes) and applyLookupFees (whether the AHJ's fee row delegates to another authority) — a
- *  department suffix or a stray "/" must never turn the city's own fee into a phantom delegation. */
+ *  ("Charleston Permit Center" is the City of Charleston) or both carry a MUNICIPAL one (city / town /
+ *  village / borough — a municipality is never two of these, so "City of Venus" for the Town of Venus
+ *  is a spelling, not another agency). Two names typed county / township / parish against a
+ *  different type are two agencies (Charleston County is not the City of Charleston; Marion County
+ *  is not the City of Jefferson — the delegation the fee rows carry). Read by issuedByPublisher
+ *  (whose portal a permit takes) and applyLookupFees (whether the AHJ's fee row delegates to another
+ *  authority) — a department suffix or a stray "/" must never turn the city's own fee into a phantom
+ *  delegation. */
 export function sameAgencyName(a: unknown, b: unknown): boolean {
   const ka = agencyNameKey(a);
   const kb = agencyNameKey(b);
   if (!ka || !kb) return false;
   if (ka === kb) return true;
-  const typeRe = new RegExp(`^(?:${JURISDICTION_TYPE_WORDS}) of |\\b(?:${JURISDICTION_TYPE_WORDS})$`);
-  const typed = (k: string) => typeRe.test(k);
-  if (typed(ka) === typed(kb)) return false;
+  const typeOf = (k: string): string => new RegExp(`^(${JURISDICTION_TYPE_WORDS}) of `).exec(k)?.[1] ?? new RegExp(`\\b(${JURISDICTION_TYPE_WORDS})$`).exec(k)?.[1] ?? "";
+  const ta = typeOf(ka);
+  const tb = typeOf(kb);
+  const municipal = /^(?:city|town|village|borough)$/;
+  if (ta && tb && !(municipal.test(ta) && municipal.test(tb))) return false;
+  if (ta === tb) return false;
   const bare = (k: string) => k.replace(new RegExp(`^(?:${JURISDICTION_TYPE_WORDS}) of `), "").replace(new RegExp(` (?:${JURISDICTION_TYPE_WORDS})$`), "");
   return bare(ka) === bare(kb);
 }
