@@ -120,6 +120,12 @@ const reviewBody = (mode: string): string => {
   if (mode === "payControl") {
     return `${summary}<form method="post" action="/m/payControl/apply/submit"><button type="submit" id="btnPay">Pay and Submit</button></form>`;
   }
+  // autosubmit-close MF-G: the Submit opens a SECOND page (a popup / new tab) of the same context,
+  // and THAT page posts the filing endpoint while the approved slot is open. The clicked page itself
+  // sends nothing.
+  if (mode === "popupPost") {
+    return `${summary}<button type="button" id="btnSubmit" onclick="window.open('/m/popupPost/popup', '_blank')">Submit Application</button>`;
+  }
   // autosubmit-close MF-B: TELEMETRY fired by the Submit BEFORE the form's own POST.
   if (mode === "beaconFirst") {
     // GA4 form_submit shape: a same-origin sendBeacon in onsubmit, then the form's POST navigation.
@@ -158,6 +164,10 @@ const server = http.createServer((req, res) => {
   if (rest === "apply/done") {
     // A completion page reached by GET; its script posts on load and 800 ms later (M4).
     send(COMPLETION.replace("</body>", `<script>fetch("/m/${mode}/track/completed", { method: "POST", body: "r=1" }).catch(function(){}); setTimeout(function(){ fetch("/m/${mode}/track/late", { method: "POST", body: "r=2" }).catch(function(){}); }, 800);</script></body>`));
+    return;
+  }
+  if (rest === "popup") {
+    send(page("Processing", `<h1>Processing</h1><script>fetch("/m/${mode}/apply/submit", { method: "POST", body: "from=popup" }).catch(function(){});</script>`));
     return;
   }
   if (rest === "details") {
@@ -438,6 +448,15 @@ for (const mode of ["beaconFirst", "beaconCross", "keepaliveClick", "beaconModal
   // rules, and at review that is the sticky lock — aborted, reported, never a stop of the filing.
   check(`${mode}: the beacon met the review lock — no telemetry request reached any server during the run`,
     o.posts.every((p) => /\/apply\/submit$/.test(p.path)), brief(o));
+}
+
+console.log("\n10. autosubmit-close MF-G: the approved slot is bound to the CLICKED page — a second page of the context never takes it");
+if (want("popupPost")) {
+  const o = await stage("popupPost", "1", {}, undefined, 1200);
+  check("MUST-EXCLUDE popupPost: a filing POST from a popup / second tab while the slot is open is ABORTED — 0 POSTs reach the portal", o.posts.length === 0, brief(o));
+  check("MUST-EXCLUDE popupPost: finalSubmitRequestSent false, no record — nothing claims the popup's request was the approved one",
+    o.r.finalSubmitRequestSent === false && !o.r.capturedPermitNumber && o.r.ok === false, brief(o));
+  check("popupPost: the abort is reported (the filing-URL rule, no approval covers it)", /BACKSTOP ABORTED POST \S*\/m\/popupPost\/apply\/submit/.test(JSON.stringify(o.r.steps ?? "") + msgOf(o.r)), msgOf(o.r).slice(0, 400));
 }
 
 server.close();
