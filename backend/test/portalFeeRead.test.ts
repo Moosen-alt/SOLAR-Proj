@@ -110,7 +110,7 @@ const page = (record: string, status: string, fees: string) => `${head(record, s
 }
 
 // ═══ 2. THE SWEEP ════════════════════════════════════════════════════════════════════════════
-const { openDatabase } = await import("../src/db");
+const { openDatabase, DEFAULT_ORG_ID } = await import("../src/db");
 const R = await import("../src/repository");
 const F = await import("../src/feeSchedules");
 const PF = await import("../src/portalFeeReadings");
@@ -264,7 +264,7 @@ check("5a. a page that names a different record is refused (wrong_record), with 
 // ═══ 6. A CONFIRMED SCHEDULE IS UNTOUCHED BY A LATER READ ═══════════════════════════════════
 seedSplit("City of Confirmread", "Confirmread County");
 const conf = mkProject("City of Confirmread");
-confirmPublishedFee(db, conf, "permit", "Jane Operator");
+confirmPublishedFee(db, conf, "permit", "Jane Operator", DEFAULT_ORG_ID);
 const frozen = JSON.stringify(db.query("SELECT id, confidence, verified_by, verified_at, brackets_json, updated_at FROM fee_schedules WHERE ahj IN ('City of Confirmread','Confirmread County') ORDER BY id"));
 const confUrl = capUrl("CONFIRMREAD", "000C1");
 const confTid = mkTarget(conf.id, "187-26-000555-STR", "City of Confirmread", "building", confUrl);

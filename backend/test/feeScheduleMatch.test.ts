@@ -152,6 +152,11 @@ const badge = (html: string): string => /<span class="badge [^"]*">([^<]*)<\/spa
     /Verified by &lt;i&gt;Jane&lt;\/i&gt; on 2026-09-27/.test(face(v)) && !/data-fee-confirm/.test(v), face(v).slice(0, 400));
   const s = lib.renderFeeSheetLine({ ...permitLine, corroborated: true, verifiedBy: "Jane" });
   check("4e. MUST-EXCLUDE: a name never appears beside a line that is not person-verified", !/Verified by/.test(s));
+  // Another org's card: the server sends no name (skeptic MF3) — the face still says a person
+  // verified it, and when, without naming anyone.
+  const anon = lib.renderFeeSheetLine({ ...permitLine, confidence: "verified", confirmable: false, verifiedBy: "", verifiedAt: "2026-09-27T20:00:00.000Z" });
+  check("4f. a person-verified line with no name sent reads 'Human-verified on <date>' and names nobody",
+    /Human-verified on 2026-09-27 against the published schedule/.test(words(face(anon))) && !/Verified by/.test(anon), words(face(anon)).slice(0, 300));
 }
 
 // ── 5. THE BADGE NEEDS THE SAME PERMIT, ON THE REAL SCHEDULE MODULE (skeptic MF4) ───────────

@@ -2469,9 +2469,11 @@ function renderFeeSheetLine(line) {
   const portalProvenance = confKey === "portal_read" && line.portalRecords && line.portalRecords.provenance
     ? `<p class="fee-face-provenance" style="margin:2px 0;font-size:12px">The portal's own fee, ${esc(line.portalRecords.provenance)}${line.portalRecords.final ? "" : " — invoiced so far; more may be invoiced before the permit is issued"}.</p>`
     : "";
-  // WHO VOUCHED — a person's name, only beside a person-verified schedule amount.
-  const verifiedNote = line.confidence === "verified" && line.verifiedBy
-    ? `<p class="fee-face-verified" style="margin:2px 0;font-size:12px">Verified by ${esc(line.verifiedBy)}${line.verifiedAt ? ` on ${esc(String(line.verifiedAt).slice(0, 10))}` : ""} against the published schedule.</p>`
+  // WHO VOUCHED — beside a person-verified schedule amount only. The server sends the NAME only
+  // to the org whose person confirmed it (a person's identity is not shared knowledge); every
+  // other org reads "Human-verified" and the date.
+  const verifiedNote = line.confidence === "verified" && line.source === "published_schedule"
+    ? `<p class="fee-face-verified" style="margin:2px 0;font-size:12px">${line.verifiedBy ? `Verified by ${esc(line.verifiedBy)}` : "Human-verified"}${line.verifiedAt ? ` on ${esc(String(line.verifiedAt).slice(0, 10))}` : ""} against the published schedule.</p>`
     : "";
   // THE ONE-CLICK CONFIRM, only where the server says a person may (a researched published-
   // schedule amount). The click asks who is confirming before anything is written.

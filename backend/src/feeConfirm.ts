@@ -13,6 +13,9 @@
 //     project and billing track — the city's structural row AND the county's electrical row on
 //     a Coos Bay job, plus the city's "the county collects it" pointer that line was reached
 //     through (a person confirming "$160 to Coos County" vouches for the hop too).
+//   - WHOSE person is recorded too (the confirming org). fee_schedules is shared on purpose, the
+//     verified grade with it; the person's NAME is that org's fact and is shown only on its own
+//     projects — every other tenant reads "human-verified" + the date (skeptic MF3, rule 6).
 //   - ONLY a researched published-schedule amount (submissionFees.feeLineConfirmable). An
 //     actual, a learned median, an estimate or an already-verified total has nothing on the
 //     schedule for a person to confirm, and saying "confirmed" over it would be a false receipt.
@@ -43,7 +46,8 @@ export interface FeeConfirmOutcome {
   confirmedBy: string;
   /** Rows this confirmation moved to verified. */
   verified: Array<{ scheduleId: string; authority: string; discipline: string }>;
-  /** Rows that were already verified by someone (left exactly as they were). */
+  /** Rows that were already verified by someone (left exactly as they were). verifiedBy is ""
+   *  when that someone is another org's person. */
   alreadyVerified: Array<{ scheduleId: string; authority: string; discipline: string; verifiedBy: string }>;
 }
 
@@ -52,11 +56,16 @@ export function confirmPublishedFee(
   project: ProjectRecord,
   trackInput: string | null | undefined,
   confirmedBy: string,
+  /** The org of the person confirming (the route's requestScope). Recorded on every row it
+   *  verifies: the person's NAME is that org's fact and is shown only on its projects (MF3). */
+  confirmingOrgId: string,
 ): FeeConfirmOutcome {
   const who = String(confirmedBy ?? "").replace(/\s+/g, " ").trim();
   if (!isConfirmingPerson(who)) {
     throw new HttpError(400, "A fee is confirmed by a named person. Say who is confirming it — \"verified\" on a fee means a person checked it.");
   }
+  const orgId = String(confirmingOrgId ?? "").trim();
+  if (!orgId) throw new HttpError(400, "A confirmation records the confirming person's organisation — none was given.");
   const track = billingTrack(trackInput);
   const quote = buildPaymentQuote(db, project, track);
   if (!feeLineConfirmable(quote.permitFeeSource, quote.permitFeeConfidence)) {
@@ -81,10 +90,14 @@ export function confirmPublishedFee(
       const row = getFeeScheduleById(db, id);
       if (!row) continue;
       if (row.confidence === "verified") {
-        outcome.alreadyVerified.push({ scheduleId: id, authority: row.ahj || row.utility || authority, discipline: row.discipline || discipline, verifiedBy: row.verifiedBy });
+        // Another org's person is not named to this org — not in the response, not in its audit.
+        outcome.alreadyVerified.push({
+          scheduleId: id, authority: row.ahj || row.utility || authority, discipline: row.discipline || discipline,
+          verifiedBy: row.verifiedOrgId && row.verifiedOrgId === orgId ? row.verifiedBy : "",
+        });
         continue;
       }
-      markFeeScheduleVerifiedById(db, id, who);
+      markFeeScheduleVerifiedById(db, id, who, orgId);
       outcome.verified.push({ scheduleId: id, authority: row.ahj || row.utility || authority, discipline: row.discipline || discipline });
     }
   });

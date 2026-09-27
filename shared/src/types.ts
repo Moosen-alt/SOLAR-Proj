@@ -483,6 +483,9 @@ export interface PublishedFeeResult {
    *  meaningful beside confidence "verified"; "" / absent otherwise. */
   verifiedBy?: string;
   verifiedAt?: string;
+  /** The org(s) whose person verified the rows behind it ('' = none on record). The NAME above
+   *  is a tenant's fact: the quote shows it only on a project of that org (rule 6). */
+  verifiedOrgIds?: string[];
   /** THE AMOUNT WAS COMPUTED FROM A GUESSED INPUT. A valuation-basis schedule (Portland's
    *  structural ladder: $540.78 for the first $25,000, $10.26 per $1,000 above it) is walked
    *  with the project's job valuation — and when the project carries none, with a per-watt

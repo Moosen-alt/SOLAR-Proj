@@ -306,6 +306,9 @@ export interface FeeScheduleRecord {
   updatedAt: string;
   verifiedAt: string;
   verifiedBy: string;
+  /** The org whose person verified the row; '' when none is on record. verifiedBy is shown only
+   *  on that org's projects (submissionFees) — a person's identity is not shared knowledge. */
+  verifiedOrgId: string;
 }
 
 /** What a researcher reports back. `found:false` carries a reason so a caller
@@ -452,9 +455,13 @@ export interface ProjectFeeResolution {
   corroborated: boolean;
   confidence: FeeConfidence;
   /** The person(s) who verified every line of this total, and the latest time — "" while any
-   *  line is seeded. Written only by markFeeScheduleVerified (hard rule 3). */
+   *  line is seeded. Written only by markFeeScheduleVerified (hard rule 3). A NAME, so it is
+   *  shown only to the org(s) in verifiedOrgIds (submissionFees filters it per project). */
   verifiedBy?: string;
   verifiedAt?: string;
+  /** Every org whose person verified a row behind this total ('' = none on record); [] while
+   *  any line is seeded. */
+  verifiedOrgIds?: string[];
   /** The AHJ/utility name the schedule is filed under (may differ from the
    *  project's spelling when the fuzzy fallback matched). */
   matchedName: string;
@@ -517,6 +524,9 @@ export interface FeeScheduleLine {
    *  name, set only by markFeeScheduleVerified (hard rule 3). */
   verifiedBy?: string;
   verifiedAt?: string;
+  /** The org(s) whose person verified the row(s) behind this line — the collecting row and, on a
+   *  hopped line, the pointer row too. The name above is shown only to these. */
+  verifiedOrgIds?: string[];
   /** Populated when feeUsd is null. */
   reason: string;
   /** THIS LINE'S OWN BILL, ITEMISED — the permit, its surcharges, and every
@@ -836,6 +846,7 @@ function mapSchedule(row: Row): FeeScheduleRecord {
     updatedAt: text(row.updated_at),
     verifiedAt: text(row.verified_at),
     verifiedBy: text(row.verified_by),
+    verifiedOrgId: text(row.verified_org_id),
   };
 }
 
@@ -902,7 +913,11 @@ function followCollectedBy(
  *  pick one, and the brackets it would be vouching for are two tagged tables
  *  stapled together. Such a row stays conflicted and stays unquotable; the way
  *  to resolve it is to re-save the schedule a person picked (see
- *  FeeScheduleFinding.resolvesConflict). */
+ *  FeeScheduleFinding.resolvesConflict).
+ *
+ *  THE SCRIPT DOOR RECORDS NO ORG, so the name it writes is shown to NOBODY — every tenant reads
+ *  "human-verified" + the date (fail closed: a person's identity is not shared knowledge). The
+ *  dashboard's Confirm goes through markFeeScheduleVerifiedById, which requires the org. */
 export function markFeeScheduleVerified(
   db: AppDb,
   profileKey: string,
@@ -912,21 +927,27 @@ export function markFeeScheduleVerified(
 ): FeeScheduleRecord | null {
   const existing = getFeeSchedule(db, profileKey, track, discipline);
   if (!existing) return null;
-  const ts = nowIso();
-  db.run(
-    "UPDATE fee_schedules SET confidence = 'verified', verified_at = ?, verified_by = ?, updated_at = ? WHERE id = ?",
-    [ts, clean(verifiedBy).slice(0, 120), ts, existing.id],
-  );
+  writeVerified(db, existing.id, verifiedBy, "");
   return getFeeSchedule(db, profileKey, track, discipline);
 }
 
+function writeVerified(db: AppDb, scheduleId: string, verifiedBy: string, verifiedOrgId: string): void {
+  const ts = nowIso();
+  db.run(
+    "UPDATE fee_schedules SET confidence = 'verified', verified_at = ?, verified_by = ?, verified_org_id = ?, updated_at = ? WHERE id = ?",
+    [ts, clean(verifiedBy).slice(0, 120), clean(verifiedOrgId).slice(0, 120), ts, scheduleId],
+  );
+}
+
 /** The same verification, addressed by the row's id — what a fee-sheet line carries
- *  (FeeScheduleLine.scheduleId). null when no such row exists. */
-export function markFeeScheduleVerifiedById(db: AppDb, scheduleId: string, verifiedBy: string): FeeScheduleRecord | null {
+ *  (FeeScheduleLine.scheduleId) — and recording the ORG whose person confirmed it (required:
+ *  the name is shown only to that org). null when no such row exists. */
+export function markFeeScheduleVerifiedById(db: AppDb, scheduleId: string, verifiedBy: string, verifiedOrgId: string): FeeScheduleRecord | null {
   const row = db.get<Row>("SELECT * FROM fee_schedules WHERE id = ?", [scheduleId]);
   if (!row) return null;
-  const record = mapSchedule(row);
-  return markFeeScheduleVerified(db, record.profileKey, record.track, verifiedBy, record.discipline);
+  writeVerified(db, text(row.id), verifiedBy, verifiedOrgId);
+  const after = db.get<Row>("SELECT * FROM fee_schedules WHERE id = ?", [scheduleId]);
+  return after ? mapSchedule(after) : null;
 }
 
 /** One stored row by id, or null. */
@@ -2932,7 +2953,11 @@ function resolveLine(
   // still the electrical permit even though it was read off the county's row,
   // and an undifferentiated row answering a discipline-specific ask answers AS
   // that discipline.
-  return { ...line, discipline: discipline || line.discipline, ...(hop.collectedBy ? { delegatedFromScheduleId: raw.id } : {}) };
+  return {
+    ...line,
+    discipline: discipline || line.discipline,
+    ...(hop.collectedBy ? { delegatedFromScheduleId: raw.id, verifiedOrgIds: [...(line.verifiedOrgIds ?? []), raw.verifiedOrgId] } : {}),
+  };
 }
 
 /** The one schedule, when there is exactly one. Never a choice between two. */
@@ -3033,6 +3058,10 @@ export function feeLinesForProject(
       // names a verifier only then — the collecting row's verifier, whose number it is.
       verifiedBy: hop.collectedBy && row.confidence !== "verified" ? "" : schedule.verifiedBy,
       verifiedAt: hop.collectedBy && row.confidence !== "verified" ? "" : schedule.verifiedAt,
+      // Both rows' orgs on a hop: the name may be shown only where BOTH vouchers are that org's.
+      verifiedOrgIds: hop.collectedBy
+        ? (row.confidence !== "verified" ? [] : [schedule.verifiedOrgId, row.verifiedOrgId])
+        : [schedule.verifiedOrgId],
       reason: evaluated.reason,
       charges: evaluated.charges ?? [],
     });
@@ -4178,6 +4207,7 @@ function lineFor(
     scheduleId: schedule.id,
     verifiedBy: schedule.verifiedBy,
     verifiedAt: schedule.verifiedAt,
+    verifiedOrgIds: [schedule.verifiedOrgId],
     reason: evaluated.reason,
     charges: evaluated.charges ?? [],
   };
@@ -4290,6 +4320,10 @@ function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<Project
     verifiedAt: lines.some((l) => l.confidence === "seeded")
       ? ""
       : lines.map((l) => String(l.verifiedAt || "")).filter(Boolean).sort().slice(-1)[0] ?? "",
+    // …and every org behind those names ('' kept: a row with no org on record hides the name).
+    verifiedOrgIds: lines.some((l) => l.confidence === "seeded")
+      ? []
+      : [...new Set(lines.flatMap((l) => (l.verifiedOrgIds ?? [""]).map((o) => String(o ?? "").trim())))],
     // Weakest link again: one line computed off a guessed valuation makes the whole total a
     // number to true up, however solid the rest of it is.
     valuationEstimated: lines.some((l) => l.valuationEstimated === true),

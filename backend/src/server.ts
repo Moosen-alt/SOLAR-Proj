@@ -2793,7 +2793,9 @@ app.post("/api/projects/:id/fee-sheet/confirm", asyncHandler(async (req, res) =>
   const confirmedBy = AUTH_ENABLED
     ? String((user?.name && isConfirmingPerson(user.name) ? user.name : user?.email) || "").trim()
     : String(req.body?.confirmedBy || "").trim();
-  const outcome = confirmPublishedFee(db, detail.project, String(req.body?.track || ""), confirmedBy);
+  // The confirming person's ORG is recorded with the verification: their name is that org's fact
+  // and is shown only on its projects (every other tenant reads "human-verified" + the date).
+  const outcome = confirmPublishedFee(db, detail.project, String(req.body?.track || ""), confirmedBy, requestScope(db, req).orgId);
   addAuditLog(db, detail.project.id, "human", outcome.confirmedBy, "fee.schedule_confirmed", {
     track: outcome.track, verified: outcome.verified, alreadyVerified: outcome.alreadyVerified,
   });

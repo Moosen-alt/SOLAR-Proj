@@ -1063,6 +1063,15 @@ function migrate(db: AppDb): void {
 
   runVersionedMigrations(db);
 
+  // WHO VERIFIED A SHARED FEE ROW IS A TENANT'S FACT (skeptic MF3, 2026-09-27). fee_schedules is
+  // shared ON PURPOSE, and so is its "verified" grade — but verified_by is a person's name or
+  // email, and a person's identity is not shared knowledge (rule 6). The org whose person
+  // confirmed the row is recorded beside it, and the name is shown only on that org's projects;
+  // every other org reads "human-verified" + the date. '' = no org on record (the script door),
+  // which shows the name to nobody. After runVersionedMigrations because the table is created by
+  // v19; the legacy idempotent idiom on purpose (same reason as portal_fee_readings above).
+  addColumnIfMissing(db, "fee_schedules", "verified_org_id", "TEXT NOT NULL DEFAULT ''");
+
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
   seedTestInstaller(db);

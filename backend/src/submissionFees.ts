@@ -256,9 +256,11 @@ interface ScheduleFee {
    *  person has vouched for the number. */
   corroborated: boolean;
   confidence: "verified" | "seeded";
-  /** Who verified it and when — "" unless confidence is "verified". */
+  /** Who verified it and when — "" unless confidence is "verified". The NAME is a tenant's fact:
+   *  shown only when every org in verifiedOrgIds is the project's own (verifierNameFor). */
   verifiedBy: string;
   verifiedAt: string;
+  verifiedOrgIds: string[];
   /** The amount was computed from a per-watt ESTIMATED valuation, not a contract figure. A
    *  different dimension from  again: that one grades the TABLE, this one the
    *  INPUT, and a perfect table walked on a guess still owes the operator a true-up. */
@@ -388,6 +390,8 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
     // A name beside a seeded row would read as a vouch nobody made — read only beside verified.
     verifiedBy: verified ? text(r.verifiedBy).trim().slice(0, 120) : "",
     verifiedAt: verified ? text(r.verifiedAt).trim().slice(0, 40) : "",
+    // Absent/malformed reads as [ ] — which shows the name to nobody (fail closed).
+    verifiedOrgIds: verified && Array.isArray(r.verifiedOrgIds) ? (r.verifiedOrgIds as unknown[]).map((o) => text(o).trim().slice(0, 120)).slice(0, 8) : [],
     // Defensive like everything else crossing this seam: anything that is not an explicit true
     // reads as "not an estimate", so a producer that has never heard of this field cannot make
     // a real published fee look like a guess.
@@ -510,6 +514,20 @@ function archivedNotice(project: ProjectRecord): string {
     + `${why ? ` Reason on file: "${why.length > 200 ? `${why.slice(0, 200).trimEnd()}…` : why}".` : ""} `;
 }
 
+/** THE VERIFIER'S NAME, AS THIS PROJECT MAY SEE IT (skeptic MF3). fee_schedules is shared on
+ *  purpose — every tenant gets the verified amount and grade — but the name of the person who
+ *  confirmed it is the confirming org's fact (rule 6). It is shown, and persisted into this
+ *  project's submission_payments.fee_basis, only when EVERY org behind the verification is this
+ *  project's own org; otherwise "" and the quote says "human-verified" + the date. A row with no
+ *  org on record ('') names nobody. The fee sheet belongs to a project and a project to one org,
+ *  so the project's org is the viewer's (a superadmin reading across orgs sees it as that org). */
+export function verifierNameFor(db: AppDb, projectId: string, verifiedBy: string, verifiedOrgIds: string[]): string {
+  if (!verifiedBy || !verifiedOrgIds.length) return "";
+  const projectOrg = text(db.get<Row>("SELECT org_id FROM projects WHERE id = ?", [projectId])?.org_id).trim();
+  if (!projectOrg) return "";
+  return verifiedOrgIds.every((o) => o === projectOrg) ? verifiedBy : "";
+}
+
 /** MAY A PERSON CONFIRM THIS AMOUNT? The one answer, asked by the fee sheet (to draw the
  *  Confirm control) and by feeConfirm.confirmPublishedFee (to refuse anything else): a
  *  researched, unchecked ("seeded") amount read off a published schedule. An estimate rests on
@@ -603,10 +621,11 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
       // line is printed, the number computed from our guess is not.
       permitFeeCorroborated = schedule.corroborated && !schedule.valuationEstimated;
       permitFeeEvidenceQuote = schedule.bracketQuote;
-      permitFeeVerifiedBy = schedule.verifiedBy;
+      // The NAME only on the confirming org's projects; "human-verified" + the date to everyone.
+      permitFeeVerifiedBy = schedule.confidence === "verified" ? verifierNameFor(db, project.id, schedule.verifiedBy, schedule.verifiedOrgIds) : "";
       permitFeeVerifiedAt = schedule.verifiedAt;
       const vouching = schedule.confidence === "verified"
-        ? ` (human-verified${schedule.verifiedBy ? ` by ${schedule.verifiedBy}` : ""}${schedule.verifiedAt ? ` on ${schedule.verifiedAt.slice(0, 10)}` : ""})`
+        ? ` (human-verified${permitFeeVerifiedBy ? ` by ${permitFeeVerifiedBy}` : ""}${schedule.verifiedAt ? ` on ${schedule.verifiedAt.slice(0, 10)}` : ""})`
         : permitFeeCorroborated
           ? " (matches the published schedule — CORROBORATED: a machine re-read the cited document and found this line printed in it; no person has confirmed it yet)"
           : schedule.corroborated

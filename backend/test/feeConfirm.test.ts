@@ -14,7 +14,13 @@
 //   4. THE ROUTE: POST /api/projects/:id/fee-sheet/confirm on a real server with sign-in ON takes
 //      WHO from the session — a body-supplied name is ignored — returns 401 signed out, and 404
 //      for a project that does not exist (never 403).
+//   5. WHO VERIFIED IS THE CONFIRMING ORG'S FACT (skeptic MF3): the org is recorded with the
+//      verification; another org's card and its persisted submission_payments.fee_basis say
+//      "human-verified" + the date and never the name; another org's confirm outcome never names
+//      the first org's person; a two-org total and a no-org (script) row name nobody.
 // Kill: feeConfirm writes "human" instead of the person -> 1c and 4b FAIL.
+// Kill (MF3): verifierNameFor returns the name without the org comparison -> 5b, 5c, 5f, 5g FAIL
+// (measured: 4 failures).
 import "./_isolate";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -39,7 +45,7 @@ process.env.CODE_RESEARCH = "off";
 for (const k of ["CLIENT_NOTIFICATIONS", "BACKGROUND_WORKERS", "DOCUMENT_FETCH", "AHJ_FORM_DOWNLOADS", "FEE_RESEARCH"]) process.env[k] = "off";
 delete process.env.ANTHROPIC_API_KEY;
 
-const { openDatabase } = await import("../src/db");
+const { openDatabase, DEFAULT_ORG_ID } = await import("../src/db");
 const R = await import("../src/repository");
 const F = await import("../src/feeSchedules");
 const { buildProjectFeeSheet, recordActualPermitFee, feeLineConfirmable } = await import("../src/submissionFees");
@@ -84,12 +90,12 @@ check("1a. the researched split fee is seeded, from the schedule, $360, and conf
 // 2 (first half): the refusals write nothing.
 for (const who of ["", "  ", "dashboard", "System", "human", "operator"]) {
   let status = 0;
-  try { confirmPublishedFee(db, ann, "permit", who); } catch (err) { status = (err as { status?: number }).status ?? -1; }
+  try { confirmPublishedFee(db, ann, "permit", who, DEFAULT_ORG_ID); } catch (err) { status = (err as { status?: number }).status ?? -1; }
   check(`2a. "${who}" is not a person — refused 400`, status === 400, String(status));
 }
 check("2b. …and nothing was verified by a refused confirm", [...rows("City of Confirmbay"), ...rows("Confirm County")].every((r) => r.confidence === "seeded"));
 
-const outcome = confirmPublishedFee(db, ann, "permit", "Jane Operator");
+const outcome = confirmPublishedFee(db, ann, "permit", "Jane Operator", DEFAULT_ORG_ID);
 const city = rows("City of Confirmbay");
 const county = rows("Confirm County");
 check("1b. Confirm verified all three rows: city structural, the city's pointer, the county's electrical",
@@ -105,10 +111,10 @@ check("1d. the line now reads verified, names the person, and is no longer confi
 
 // 2 (second half): nothing-to-confirm refusals.
 const refused409 = (fn: () => unknown): number => { try { fn(); return 200; } catch (err) { return (err as { status?: number }).status ?? -1; } };
-check("2c. an already-verified line is refused 409", refused409(() => confirmPublishedFee(db, ann, "permit", "Jane Operator")) === 409);
+check("2c. an already-verified line is refused 409", refused409(() => confirmPublishedFee(db, ann, "permit", "Jane Operator", DEFAULT_ORG_ID)) === 409);
 const trued = mk("City of Confirmbay");
 recordActualPermitFee(db, trued, "permit", 412.5, "operator");
-check("2d. an operator-entered actual has nothing on the schedule to confirm — 409", refused409(() => confirmPublishedFee(db, trued, "permit", "Jane Operator")) === 409);
+check("2d. an operator-entered actual has nothing on the schedule to confirm — 409", refused409(() => confirmPublishedFee(db, trued, "permit", "Jane Operator", DEFAULT_ORG_ID)) === 409);
 check("2e. …and its line is not confirmable", permitLine(trued.id).confirmable === false);
 // The one predicate both doors ask (the sheet's control and confirmPublishedFee's refusal):
 // only a seeded published-schedule amount. An estimate walked on a guessed valuation is not.
@@ -131,6 +137,61 @@ check("3b. …the row's table and quote are byte-identical, and still verified b
   thawed.brackets_json === frozen.brackets_json && thawed.source_quote === frozen.source_quote && thawed.confidence === "verified" && thawed.verified_by === "Jane Operator");
 check("3c. isConfirmingPerson: a name passes, placeholders do not",
   isConfirmingPerson("Jane Operator") && isConfirmingPerson("jo@solar.example") && !isConfirmingPerson("Admin") && !isConfirmingPerson("x"));
+
+// ── 5. WHO VERIFIED IS THE CONFIRMING ORG'S FACT (skeptic MF3) ─────────────────────────────
+// fee_schedules is shared ON PURPOSE: every tenant quoting Tenantbay gets the verified amount. A
+// person's identity is not shared knowledge (rule 6): the verifier's NAME shows only on the
+// confirming org's projects; every other org reads "human-verified" + the date, and nothing
+// persisted into another org's rows carries the name. The audit row stays with the confirming
+// org's own project.
+const OTHER_ORG = "org-mf3-beta";
+db.run("INSERT OR IGNORE INTO orgs (id, name, edition, created_at) VALUES (?, ?, 'full', ?)", [OTHER_ORG, "Beta Solar", new Date().toISOString()]);
+const mkIn = (ahj: string, orgId: string) => R.createProject(db, {
+  owner: "Synthetic Owner", state: "OR", dcKw: "8.36", acKw: "7.68", street: "2 Test Way", city: "Testbay", zip: "97420", ahj, utility: "Test Power",
+} as never, orgId).project;
+const orgOf = (...ahjs: string[]) => db.query<{ verified_org_id: string }>(`SELECT verified_org_id FROM fee_schedules WHERE ahj IN (${ahjs.map(() => "?").join(",")})`, ahjs).map((r) => r.verified_org_id);
+{
+  seedSplit("City of Tenantbay", "Tenant County");
+  const mine = mkIn("City of Tenantbay", DEFAULT_ORG_ID);
+  confirmPublishedFee(db, mine, "permit", "Jane Operator", DEFAULT_ORG_ID);
+  check("5a. the confirming org is recorded with the verification, on every row it verified",
+    orgOf("City of Tenantbay", "Tenant County").length === 3 && orgOf("City of Tenantbay", "Tenant County").every((o) => o === DEFAULT_ORG_ID), JSON.stringify(orgOf("City of Tenantbay", "Tenant County")));
+  const theirs = mkIn("City of Tenantbay", OTHER_ORG);
+  const theirLine = permitLine(theirs.id);
+  check("5b. MUST-EXCLUDE: another org's card reads verified, 'human-verified' + the date, and never the name",
+    theirLine.confidence === "verified" && theirLine.verifiedBy === "" && /human-verified on \d{4}-\d{2}-\d{2}/.test(theirLine.basis) && !/Jane/.test(JSON.stringify(theirLine)),
+    JSON.stringify({ c: theirLine.confidence, v: theirLine.verifiedBy, b: theirLine.basis.slice(0, 200) }));
+  const theirStored = String(db.get<{ fee_basis: string }>("SELECT fee_basis FROM submission_payments WHERE project_id = ? AND track = 'permit'", [theirs.id])?.fee_basis ?? "");
+  check("5c. MUST-EXCLUDE: …and the other org's persisted quote row (submission_payments.fee_basis) carries no name",
+    /human-verified/.test(theirStored) && !/Jane/.test(theirStored), theirStored.slice(0, 200));
+  const mineLine = permitLine(mine.id);
+  check("5d. MUST-PASS: the confirming org's own card still names the person, and the date",
+    mineLine.verifiedBy === "Jane Operator" && /human-verified by Jane Operator on \d{4}-\d{2}-\d{2}/.test(mineLine.basis), mineLine.basis.slice(0, 200));
+
+  // A second org confirms a total one row of which the first org already verified: its outcome
+  // (the response, and its own audit trail) names nobody from the first org, and a total vouched
+  // for by two orgs' people names nobody on either card.
+  seedSplit("City of Mixbay", "Mix County");
+  const mixMine = mkIn("City of Mixbay", DEFAULT_ORG_ID);
+  const cityRow = rows("City of Mixbay").find((r) => r.discipline === "structural")!;
+  F.markFeeScheduleVerifiedById(db, String(cityRow.id), "Jane Operator", DEFAULT_ORG_ID);
+  const mixTheirs = mkIn("City of Mixbay", OTHER_ORG);
+  const mixOutcome = confirmPublishedFee(db, mixTheirs, "permit", "Bob Beta", OTHER_ORG);
+  check("5e. MUST-EXCLUDE: another org's confirm outcome does not name the first org's verifier",
+    mixOutcome.alreadyVerified.length === 1 && mixOutcome.alreadyVerified[0].verifiedBy === "" && !/Jane/.test(JSON.stringify(mixOutcome)), JSON.stringify(mixOutcome));
+  const mixA = permitLine(mixMine.id);
+  const mixB = permitLine(mixTheirs.id);
+  check("5f. a total vouched for by two orgs' people is verified and names nobody on either org's card",
+    mixA.confidence === "verified" && mixB.confidence === "verified" && mixA.verifiedBy === "" && mixB.verifiedBy === "" && !/Jane|Bob/.test(mixA.basis + mixB.basis),
+    JSON.stringify([mixA.verifiedBy, mixB.verifiedBy, mixA.basis.slice(0, 120)]));
+
+  // The script door (markFeeScheduleVerified) records no org — so it names nobody (fail closed).
+  F.saveFeeSchedule(db, { state: "OR", ahj: "City of Legacybay", track: "permit" }, finding({ brackets: [{ feeUsd: 120, label: "Solar PV installation permit" }] }));
+  F.markFeeScheduleVerified(db, F.feeScheduleProfileKey({ state: "OR", ahj: "City of Legacybay" }, "permit"), "permit", "Legacy Person");
+  const legacy = permitLine(mkIn("City of Legacybay", DEFAULT_ORG_ID).id);
+  check("5g. a row verified with no org on record is 'human-verified' and names nobody (fail closed)",
+    legacy.confidence === "verified" && legacy.verifiedBy === "" && !/Legacy Person/.test(legacy.basis) && /human-verified/.test(legacy.basis), legacy.basis.slice(0, 160));
+}
 
 // ── 4. THE ROUTE, sign-in ON ───────────────────────────────────────────────────────────────
 seedSplit("City of Routebay", "Route County");
