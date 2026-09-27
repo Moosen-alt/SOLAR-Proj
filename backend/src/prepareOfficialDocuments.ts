@@ -30,5 +30,7 @@ export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord
   // And the generated application package (transfer sheet, worksheets, prescriptive
   // application) becomes FILES the upload paths can attach — see generatedDocFiles.ts.
   // Additive: a render failure logs and staging proceeds on filled forms + uploads as before.
+  // The return value is not needed here: the render's own manifest is what every reader
+  // (submissionDocumentsByType) reads, keyed by the builder's doc id — never by filename.
   await materializeGeneratedDocs(db, project);
 }

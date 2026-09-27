@@ -44,6 +44,8 @@ const makePdf = (name: string, body: string): string => {
   return file;
 };
 const plan = makePdf("plan_set", "PLAN SET -- NEVER AN APPLICATION");
+const worksheet = makePdf("generated_electrical_worksheet", "INTERNAL WORKSHEET -- NEVER THE APPLICATION");
+const transferSheet = makePdf("application_transfer_sheet", "TRANSFER SHEET");
 const docs: Record<string, string> = { plan_set: plan };
 for (const [, docType] of CASES) docs[docType] = makePdf(docType, `LEARN ${docType}`);
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -70,6 +72,16 @@ try {
         assert.equal(pick(adapter(mode, { ...docs, [docType]: zip }), label), null);
       });
     }
+    // A GENERATED WORKSHEET IS NOT THE APPLICATION (docs-audit PLAN D2, operator decision OD-3).
+    // The backend now packages its internal worksheets under their own generated_* keys; an
+    // "<X> Permit Application" slot with only the worksheet held must stay empty and be reported.
+    check(`${mode}: an Electrical Permit Application slot with only the generated worksheet held stays EMPTY`, () => {
+      const held = { plan_set: plan, generated_electrical_worksheet: worksheet, application_transfer_sheet: transferSheet };
+      for (const required of [true, false]) {
+        assert.equal(pick(adapter(mode, held), "Electrical Permit Application", required), null);
+        assert.equal(pick(adapter(mode, held), "Building Permit Application", required), null);
+      }
+    });
     check(`${mode}: generic document control still takes the plan set`, () => {
       assert.equal(pick(adapter(mode, { plan_set: plan }), "Attach documents")?.docType, "plan_set");
     });
@@ -116,6 +128,22 @@ try {
       });
       assert.ok((await uploadedTexts()).every((text) => !text), "no plan bytes were uploaded");
     }
+
+    // OD-3 in the real browser: a REQUIRED "Electrical Permit Application" slot, and the run holds
+    // only the plan set and the internal electrical worksheet. Left empty, reported, nothing sent.
+    await page.setContent(`<!doctype html><html><body><div class="form-group">
+      <label for="ele">Electrical Permit Application</label><input id="ele" type="file" accept=".pdf" required></div></body></html>`);
+    const worksheetOnly = adapter(mode, { plan_set: plan, generated_electrical_worksheet: worksheet });
+    worksheetOnly.page = page;
+    const worksheetSteps: RecipeStep[] = [];
+    const worksheetResult = await worksheetOnly.performUploads(worksheetSteps, []);
+    const worksheetTexts = await uploadedTexts();
+    check(`${mode}: a required Electrical Permit Application slot receives neither the worksheet nor the plan set, and is reported`, () => {
+      assert.equal(worksheetResult.attached, 0);
+      assert.deepEqual(worksheetResult.missingRequired, ["Electrical Permit Application"]);
+      assert.deepEqual(worksheetSteps, []);
+      assert.ok(worksheetTexts.every((text) => !text), `bytes were uploaded: ${JSON.stringify(worksheetTexts)}`);
+    });
 
     await page.setContent(html());
     const learner = adapter(mode, docs);

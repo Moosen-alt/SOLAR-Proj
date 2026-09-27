@@ -8,16 +8,20 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 
 /** One selection policy for learning and replay. An explicitly uploaded document
- * takes precedence over a generated form of the same type. Generated forms are
- * filtered against the current project path before merging. */
+ * takes precedence over a filled form of the same type. Filled official forms are
+ * filtered against the current permit path before merging (filledFormsByDocType), and
+ * the generated package is read from its last render's manifest only when that render
+ * was made on the current permit path (generatedDocFilesByType) — its worksheets carry
+ * their own generated_* keys and never occupy an official form's key. */
 export function submissionDocumentsByType(db: AppDb, project: ProjectRecord): Record<string, string> {
   // Layering is one-directional and load-bearing (operator ruling 2026-09-21, "the bot can
   // attach them all"): the GENERATED package (transfer sheet, worksheets — rendered by
   // generatedDocFiles.ts) is the floor, the jurisdiction's own FILLED official forms outrank
   // it on any shared docType, and anything a person UPLOADED by hand outranks both.
+  const permitPath = resolvePermitPath(project).path;
   return {
-    ...generatedDocFilesByType(project.id),
-    ...filledFormsByDocType(db, project.id, resolvePermitPath(project).path),
+    ...generatedDocFilesByType(project.id, permitPath),
+    ...filledFormsByDocType(db, project.id, permitPath),
     ...uploadedSubmissionDocuments(db, project),
   };
 }
