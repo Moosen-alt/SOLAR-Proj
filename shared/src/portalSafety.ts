@@ -534,7 +534,10 @@ export function portalSafetyFactory() {
    * "sign", is part of a signature block. A checkbox or radio does not bound it either (the
    * attestation tick is one). Capped at twelve levels and `cap` characters.
    */
-  const SIGNATURE_BLOCK_RELATED = /\b(date|title|initials?)\b|sign/i;
+  // Word-bounded "sign": "Design firm" / "Assigned inspector" are unrelated contact fields and
+  // must bound the block (a bare substring let a design-professional section read up to an
+  // attestation above it).
+  const SIGNATURE_BLOCK_RELATED = /\b(date|title|initials?)\b|\b(e-?)?sign/i;
   const textAroundInPage = (el: Element, cap = 1500): string => {
     const clean = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
     const shownBox = (c: Element): boolean => {

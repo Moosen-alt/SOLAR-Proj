@@ -91,6 +91,8 @@ const PAGES: Record<string, string> = {
   "/sig-date": page(`${HEADER}<h2>Certification</h2><p>By typing your name below you are signing this application electronically.</p><div class="row"><div class="col"><label for="nm">Full name *</label> <input id="nm" type="text"></div><div class="col"><label for="dt">Date *</label> <input id="dt" type="text"></div></div><button type="button" id="next">Next</button>`),
   "/contact-certify": page(`${HEADER}<h2>Contacts</h2><div><label><input type="checkbox" id="ag"> I certify that the contact information provided is accurate</label></div><div><label for="nm">Full name *</label> <input id="nm" type="text"></div><div><label for="ph">Phone</label> <input id="ph" type="text"></div><button type="button" id="next">Next</button>`),
   "/contacts-below-attest": page(`${HEADER}<h2>Application</h2><section><p>I certify under penalty of perjury that the information in this application is true and correct.</p></section><section><h3>Primary Contact</h3><div><label for="nm">Full name *</label> <input id="nm" type="text"></div><div><label for="em">Email</label> <input id="em" type="text"></div></section><button type="button" id="next">Next</button>`),
+  // A design-professional section under an attesting one: "Design firm" is NOT signature-related (a bare "sign" substring read it so).
+  "/design-below-attest": page(`${HEADER}<h2>Application</h2><section><p>I certify under penalty of perjury that the information in this application is true and correct.</p></section><section><h3>Design Professional</h3><div><label for="nm">Full name *</label> <input id="nm" type="text"></div><div><label for="df">Design firm</label> <input id="df" type="text"></div></section><button type="button" id="next">Next</button>`),
   // A summary page with an attachment widget and NO review wording (a portal whose wording we do
   // not know, or an attachments-only step): the file input must not make it "fillable".
   "/review-plain": page(`${HEADER}<h2>Project Summary</h2>
@@ -197,7 +199,7 @@ try {
       check(`MUST-PASS M1 ${path}: a classed-div step bar listing "Review and Submit" is still cut — the form step is not review`, t.reviewPage === false && t.terminal === false, JSON.stringify(t));
     }
     // portal-run-close-2 M2: the statement around the box, in its own block.
-    for (const [path, want] of [["/sig-below", "typed"], ["/sig-above5", "typed"], ["/sig-date", "typed"], ["/contact-certify", ""], ["/contacts-below-attest", ""]] as const) {
+    for (const [path, want] of [["/sig-below", "typed"], ["/sig-above5", "typed"], ["/sig-date", "typed"], ["/contact-certify", ""], ["/contacts-below-attest", ""], ["/design-below-attest", ""]] as const) {
       const t = await terminal(path);
       check(`${want ? "MUST-EXCLUDE" : "MUST-PASS"} M2 ${path}: ${want ? "the name box is the typed signature step" : "the contact's name box is NOT a signature"}`, t.sig === want, JSON.stringify(t));
     }
