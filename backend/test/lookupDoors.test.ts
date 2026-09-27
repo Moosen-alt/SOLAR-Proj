@@ -321,13 +321,18 @@ await check("(m1) MF1 MUST-EXCLUDE (P1 / P1b): part one cites the COUNTY's ACA t
   const denby = acaSite("DENBYCOUNTY", SOLAR_TYPES);
   const p1 = JSON.parse(shapeFor("Denby", PG, "City of Denby", "City of Denby", "Denby County"));
   p1.permits[0].portalUrl = { value: denby.ROOT, sourceUrl: PG, quote: "Denby County Online Permits — apply online" };
+  // The close-5 skeptic's S1a: part one ALSO cites the record type read off that tenant's module page (a
+  // search result). With it, "is a portal still needed" is decided by the JUDGED portal alone (kill V1:
+  // needPortal on the raw cited portal + this cited type = the structural permit never re-asked).
+  p1.permits[0].recordType = { value: "Building Solar Photovoltaic Residential", sourceUrl: denby.MOD, quote: "Building Solar Photovoltaic Residential" };
   const pages = { ...denby.pages, [PG]: { text: html(`<p>Building permits for properties inside city limits are issued at City Hall on paper. Electrical permits are issued by Denby County.</p>`) } };
   stepAsked.length = 0;
-  const r = await ppl.runPermitProcessLookup(db, llmWithStep(p1, [PG, denby.ROOT]), { state: "IN", ahj: "City of Denby", dcKw: "7", acKw: "6", force: true, reader: newReader(site(pages).fetch) });
+  const r = await ppl.runPermitProcessLookup(db, llmWithStep(p1, [PG, denby.ROOT, denby.MOD]), { state: "IN", ahj: "City of Denby", dcKw: "7", acKw: "6", force: true, reader: newReader(site(pages).fetch) });
   const s = saved(r, "structural");
   assert.equal(s.portalUrl.value, null, `P1: the county tenant is refused (${s.portalUrl.value})`);
   assert.match(String(s.portalUrl.notFound), /another jurisdiction's portal/);
-  assert.equal(s.recordType.value, null, `P1: the county catalog's type must not be the city's record type (${s.recordType.value} @ ${s.recordType.sourceUrl})`);
+  assert.equal(s.recordType.value, null, `P1 / S1a: the county tenant's type must not be the city's record type (${s.recordType.value} @ ${s.recordType.sourceUrl})`);
+  assert.match(String(s.recordType.notFound), /no portal was kept/, `S1a: the reason names the one predicate (${s.recordType.notFound})`);
   assert.doesNotMatch(String(s.recordType.sourceUrl), /DENBYCOUNTY/i);
   assert.equal(s.recordTypeCandidates, undefined, `P1: no candidates from the refused tenant's catalog (${JSON.stringify(s.recordTypeCandidates)})`);
   assert.ok(!(r.reads ?? []).some((x) => /DENBYCOUNTY/i.test(x.url)), `P1: the refused tenant's pages were fetched: ${(r.reads ?? []).map((x) => x.url).join(", ")}`);
@@ -348,9 +353,131 @@ await check("(m1) MF1 MUST-EXCLUDE (P1 / P1b): part one cites the COUNTY's ACA t
   assert.ok((r2.lookup!.notes ?? []).some((n) => /^Portal \(structural\): .*CITYOFELSTON.* — from the process part; attested by its tenant on the shared host/.test(n)), JSON.stringify(r2.lookup!.notes));
 });
 
-await check("(m2) MF2 MUST-EXCLUDE (P5a-d): ONE definition of a path-tenanted host and of a vendor's domain (portalChannel.isPathTenantedHost / isVendorDomain) — another tenant's search result on public.mygov.us / mygovernmentonline.org attests nothing, and a vendor's marketing page on geocivix.com / bsaonline.com is never 'the agency's own page quoting a link on its own domain'; MUST-PASS: the same tenants when the search returned THEM", () => {
+await check("(m4) lookup-close-6 MF1 — ONE record-type predicate (recordTypeBelongsToPortal) decides EVERY source: MUST-EXCLUDE the close-5 skeptic's S1b (the PORTAL STEP cites the refused county tenant plus a type from its module page: nothing saved), S1d (the merge carries an earlier type cited to ANOTHER tenant's page beside this run's own portal: not carried; nor a portal-less earlier type), and a cited type beside NO saved portal; MUST-PASS: the issuing agency's OWN page naming the type beside the saved portal, and the portal's own public record", async () => {
+  // S1b: the portal step cites the county tenant with a record type from it; part one had nothing.
+  const PG = "https://www.cityofcorwinb.org/building"; const co = acaSite("CORWINBCOUNTY", SOLAR_TYPES);
+  const p1 = JSON.parse(shapeFor("Corwinb", PG, "City of Corwinb", "City of Corwinb", "Corwinb County"));
+  const step = { text: JSON.stringify({ permits: [{ discipline: "structural", portalUrl: { value: co.ROOT, sourceUrl: co.ROOT, quote: "Corwinb County Online Permits — Building Permit" }, recordType: { value: "Building Solar Photovoltaic Residential", sourceUrl: co.MOD, quote: "Building Solar Photovoltaic Residential" } }] }), urls: [co.ROOT, co.MOD] };
+  const llmOf = (x: unknown, urls: string[], st?: { text: string; urls: string[] }) => ({ webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? g(JSON.stringify(x), urls) : st && i.label.includes("portal") ? g(st.text, st.urls) : g(JSON.stringify({ permits: [] }), [])) });
+  const r = await ppl.runPermitProcessLookup(db, llmOf(p1, [PG], step), { state: "IN", ahj: "City of Corwinb", dcKw: "7", acKw: "6", force: true, reader: newReader(site({ ...co.pages, [PG]: { text: html("<p>Building permits for properties inside city limits are issued at City Hall on paper. Electrical permits are issued by Corwinb County.</p>") } }).fetch) });
+  const s = saved(r, "structural");
+  assert.equal(s.portalUrl.value, null, `S1b: the county tenant is refused (${s.portalUrl.value})`);
+  assert.equal(s.recordType.value, null, `S1b: the step's type from the refused tenant is not the city's record type (${s.recordType.value} @ ${s.recordType.sourceUrl})`);
+  assert.equal(s.recordTypeCandidates, undefined, JSON.stringify(s.recordTypeCandidates));
+  // S1d: the earlier row had NO portal and a type cited to MERGDCOUNTY's page; this run saves the city's own tenant (no solar type in its catalog).
+  const PG2 = "https://www.cityofmergd.org/building"; const own = acaSite("CITYOFMERGD", [["Building/Deck/NA/NA", "Building Deck"]]);
+  const p1a = JSON.parse(shapeFor("Mergd", PG2, "City of Mergd", "City of Mergd", "City of Mergd"));
+  const countyModule = "https://aca-prod.accela.com/MERGDCOUNTY/Cap/CapHome.aspx?module=Building";
+  p1a.permits[0].recordType = { value: "Building Solar Photovoltaic Residential", sourceUrl: countyModule, quote: "Building Solar Photovoltaic Residential" };
+  const ra = await ppl.runPermitProcessLookup(db, llmOf(p1a, [PG2, countyModule]), { state: "IN", ahj: "City of Mergd", dcKw: "7", acKw: "6", force: true, reader: null });
+  assert.equal(saved(ra, "structural").recordType.value, null, `a cited type beside NO saved portal is not kept (${saved(ra, "structural").recordType.value})`);
+  assert.match(String(saved(ra, "structural").recordType.notFound), /no portal was kept/);
+  // …and even when an older door HAD saved it, the merge does not carry it beside this run's own portal.
+  pp.savePermitProcessLookup(db, { ...ra.lookup!, permits: ra.lookup!.permits.map((p) => (p.discipline === "structural" ? { ...p, recordType: { value: "Building Solar Photovoltaic Residential", sourceUrl: countyModule, quote: "Building Solar Photovoltaic Residential", origin: "lookup" } } : p)) } as never);
+  const p1b = JSON.parse(shapeFor("Mergd", PG2, "City of Mergd", "City of Mergd", "City of Mergd"));
+  p1b.permits[0].portalUrl = { value: own.ROOT, sourceUrl: PG2, quote: "City of Mergd Online Permits — apply online" };
+  const rb = await ppl.runPermitProcessLookup(db, llmOf(p1b, [PG2, own.ROOT]), { state: "IN", ahj: "City of Mergd", dcKw: "7", acKw: "6", force: true, reader: newReader(site({ ...own.pages, [PG2]: { text: html("<p>Building permits are applied for online.</p>") } }).fetch) });
+  const sb = saved(rb, "structural");
+  assert.equal(sb.portalUrl.value, own.ROOT, `this run's own portal (${sb.portalUrl.notFound})`);
+  assert.equal(sb.recordType.value, null, `S1d: the earlier type cited to MERGDCOUNTY's page is not carried beside CITYOFMERGD (${sb.recordType.value} @ ${sb.recordType.sourceUrl})`);
+  // MUST-PASS: the issuing agency's own page names the type beside the saved portal — kept, cited to that page; the
+  // portal's own public record too; another jurisdiction's .gov page, or the vendor's other tenant, never.
+  const belongs = ppl.recordTypeBelongsToPortal;
+  const ctx = { names: ["City of Mergd"], typeNames: ["City of Mergd"], state: "IN" };
+  assert.equal(belongs({ value: "Residential Solar", sourceUrl: PG2, quote: "select Residential Solar in the portal" }, own.ROOT, ctx), true, "the agency's own page");
+  assert.equal(belongs({ value: "Residential Solar", sourceUrl: "https://aca-prod.accela.com/CITYOFMERGD/Cap/CapDetail.aspx?capID1=1", quote: "Residential Solar" }, own.ROOT, ctx), true, "a public record on the portal's own tenant");
+  assert.equal(belongs({ value: "Residential Solar", sourceUrl: "https://permits.mergdcounty.gov/solar", quote: "select Residential Solar" }, own.ROOT, ctx), false, "another jurisdiction's own domain");
+  assert.equal(belongs({ value: "Residential Solar", sourceUrl: PG2, quote: "Mergd County: select Residential Solar" }, own.ROOT, ctx), false, "the agency's page, but the words name another jurisdiction");
+  assert.equal(belongs({ value: "Residential Solar", sourceUrl: countyModule, quote: "Residential Solar" }, own.ROOT, ctx), false, "the vendor's other tenant");
+  assert.equal(belongs({ value: "Residential Solar", sourceUrl: PG2, quote: "select Residential Solar" }, null, ctx), false, "no portal saved");
+  assert.equal(belongs({ value: "Residential Solar", sourceUrl: "https://www.accela.com/solutions", quote: "Residential Solar" }, own.ROOT, ctx), false, "the vendor's site");
+  const p1c = JSON.parse(shapeFor("Mergd", PG2, "City of Mergd", "City of Mergd", "City of Mergd"));
+  p1c.permits[0].portalUrl = { value: own.ROOT, sourceUrl: PG2, quote: "City of Mergd Online Permits — apply online" };
+  p1c.permits[0].recordType = { value: "Residential Solar", sourceUrl: PG2, quote: "Choose the Residential Solar record when applying online" };
+  const rc = await ppl.runPermitProcessLookup(db, llmOf(p1c, [PG2, own.ROOT]), { state: "IN", ahj: "City of Mergd", dcKw: "7", acKw: "6", force: true, reader: newReader(site({ ...own.pages, [PG2]: { text: html("<p>Building permits are applied for online. Choose the Residential Solar record when applying online.</p>") } }).fetch) });
+  assert.equal(saved(rc, "structural").recordType.value, "Residential Solar", `MUST-PASS: the agency's own words about its portal (${saved(rc, "structural").recordType.notFound})`);
+  assert.equal(saved(rc, "structural").recordType.sourceUrl, PG2);
+  // A CITED TYPE STEERS THE CATALOG'S CHOICE ONLY WHEN IT BELONGS (close F5's candidateNamedBy): the city's own
+  // tenant lists two solar types and no plan path decides; a "Solar Prescriptive" cited to the COUNTY's module page
+  // must not pick one (the operator question stays), the same words on the city's own page do.
+  const PG3 = "https://www.cityofsteerx.org/building"; const two = acaSite("CITYOFSTEERX", [["Building/Solar/Prescriptive/NA", "Solar Prescriptive"], ["Building/Solar/Engineered/NA", "Solar Non Prescriptive"]]);
+  const countyMod3 = "https://aca-prod.accela.com/STEERXCOUNTY/Cap/CapHome.aspx?module=Building";
+  const steer = async (rtSource: string, rtQuote: string) => {
+    const p = JSON.parse(shapeFor("Steerx", PG3, "City of Steerx", "City of Steerx", "City of Steerx"));
+    p.permits[0].portalUrl = { value: two.ROOT, sourceUrl: PG3, quote: "City of Steerx Online Permits — apply online" };
+    p.permits[0].recordType = { value: "Solar Prescriptive", sourceUrl: rtSource, quote: rtQuote };
+    const r = await ppl.runPermitProcessLookup(db, llmOf(p, [PG3, two.ROOT, countyMod3]), { state: "IN", ahj: "City of Steerx", dcKw: "7", acKw: "6", force: true, reader: newReader(site({ ...two.pages, [PG3]: { text: html(`<p>Building permits are applied for online. ${rtQuote}</p>`) } }).fetch) });
+    return { s: saved(r, "structural"), notes: r.lookup!.notes ?? [] };
+  };
+  const foreign = await steer(countyMod3, "Solar Prescriptive");
+  assert.equal(foreign.s.recordType.value, null, `a type cited to the county's module page must not choose among the city's candidates (${foreign.s.recordType.value})`);
+  assert.equal((foreign.s.recordTypeCandidates ?? []).length, 2, "the city's own candidates stay");
+  assert.ok(foreign.notes.some((n) => /^Operator question: Which record type/.test(n)), `the operator question stays ${JSON.stringify(foreign.notes)}`);
+  const own3 = await steer(PG3, "Choose Solar Prescriptive for a prescriptive-path system");
+  assert.equal(own3.s.recordType.value, "Solar Prescriptive", `MUST-PASS: the agency's own words decide (${own3.s.recordType.notFound})`);
+  assert.match(own3.s.recordType.sourceUrl, /CITYOFSTEERX/, "in the PORTAL's words (its catalog's label and page)");
+});
+
+await check("(v1) lookup-close-6 MF4 — the door asks the ONE 'is this the vendor's own site' predicate (isVendorRootOrMarketing, the page-read resolver's): MUST-EXCLUDE the portal step citing www.tylertech.com/products/… / www.cityview.com/solutions/permitting / clariti / govwelltech / tylerportico.com (the search returned the page, the quote says 'online permit portal') and a shared instance naming no tenant; MUST-PASS a tenant URL on the same vendors (tylerhost.net EnerGov, <city>.portal.opengov.com, bsaonline ?uid=, mapsonline /<town>/) is kept", async () => {
+  const stepRun = async (ahj: string, PG: string, portal: string, portalSrc: string, quote: string, stepUrls: string[]) => {
+    const p1 = JSON.parse(shapeFor(ahj.replace(/^City of /, ""), PG, ahj, ahj, ahj));
+    const step = { text: JSON.stringify({ permits: [{ discipline: "structural", portalUrl: { value: portal, sourceUrl: portalSrc, quote }, recordType: { value: null } }, { discipline: "electrical", portalUrl: { value: portal, sourceUrl: portalSrc, quote }, recordType: { value: null } }] }), urls: stepUrls };
+    const r = await runCity(ahj, "IN", JSON.stringify(p1), PG, html(`<p>Building permits are issued by the ${ahj}.</p>`), step);
+    return { s: saved(r, "structural"), notes: r.lookup!.notes ?? [] };
+  };
+  const marketing = ["https://www.tylertech.com/products/enterprise-permitting-licensing", "https://www.cityview.com/solutions/permitting", "https://www.clariti.com/permitting-software", "https://www.govwelltech.com/permitting", "https://www.tylerportico.com/", "https://www.accela.com/solutions/civic-platform", "https://aca-prod.accela.com/", "https://portal.iworq.net/", "https://bsaonline.com/"];
+  for (const [i, u] of marketing.entries()) {
+    const PG = `https://www.cityofvend${i}.org/building`;
+    const { s } = await stepRun(`City of Vend${i}`, PG, u, u, "Apply online — online permit portal, citizen self service", [PG, u]);
+    assert.equal(s.portalUrl.value, null, `${u} is the vendor's own site, not a portal (kept as ${s.portalUrl.value})`);
+    // The parse-time door refuses it outright, so the saved not-found carries the reason (the notes list only a
+    // claim that reached finalPortal — the same as a rule-5 refusal at parse time).
+    assert.match(String(s.portalUrl.notFound), /vendor's own site/, `${u}: ${s.portalUrl.notFound}`);
+    assert.equal(channel.isVendorRootOrMarketing(u), true, u);
+    assert.equal(ppl.acceptPortalForPermit({ value: u, sourceUrl: u, quote: "online permit portal" }, "portal step", { seenUrls: [u] }).code, "vendor", u);
+  }
+  const tenants = ["https://tulsaok-energovweb.tylerhost.net/apps/selfservice", "https://salemma.portal.opengov.com/", "https://bsaonline.com/?uid=413", "https://www.mapsonline.net/westonma/online_permits/", "https://permiteyes.us/concord/loginuser.php", "https://portal.iworq.net/EAGLE/permits/600", "https://www.citizenserve.com/Portal/PortalController?Action=showHomePage&installationID=123", "https://www.mygovernmentonline.org/?agency=marion"];
+  for (const [i, u] of tenants.entries()) {
+    const PG = `https://www.cityoftenant${i}.org/building`;
+    const { s } = await stepRun(`City of Tenant${i}`, PG, u, PG, "Apply online for a building permit through the online permit portal", [PG, u]);
+    assert.equal(s.portalUrl.value, u, `MUST-PASS: a tenant on the vendor's host is kept (${s.portalUrl.notFound})`);
+    assert.equal(channel.isVendorRootOrMarketing(u), false, u);
+  }
+});
+
+await check("(m2) MF2 MUST-EXCLUDE (P5a-d): ONE definition of a path-tenanted host and of a vendor's domain (portalChannel.isPathTenantedHost / isVendorDomain) — another tenant's search result on public.mygov.us / mygovernmentonline.org attests nothing, and a vendor's marketing page on geocivix.com / bsaonline.com is never 'the agency's own page quoting a link on its own domain'; MUST-PASS: the same tenants when the search returned THEM", async () => {
   assert.equal(channel.isPathTenantedHost("public.mygov.us"), true); assert.equal(channel.isPathTenantedHost("www.mygovernmentonline.org"), true);
   assert.equal(channel.isPathTenantedHost("aca-prod.accela.com"), true); assert.equal(channel.isPathTenantedHost("egcss.charleston-sc.gov"), false);
+  // lookup-close-6 MF3: the real shared hosts the one definition lacked — iWorQ's bare shared instance (path), BS&A
+  // (?uid=), PermitEyes (/<town>/), PeopleGIS MapsOnline (/<town>/, ?client=) — as INSTANCE hosts: a subdomain-tenanted
+  // iWorQ instance (<tenant>.portal.iworq.net) and the vendors' own www hosts are not path-tenanted.
+  for (const h of ["portal.iworq.net", "bsaonline.com", "www.bsaonline.com", "permiteyes.us", "www.mapsonline.net", "www.citizenserve.com", "aca-oregon.accela.com", "aca3.accela.com"]) assert.equal(channel.isPathTenantedHost(h), true, h);
+  for (const h of ["hanover.portal.iworq.net", "eagle_permit.portal.iworq.net", "www.iworq.net", "www.accela.com", "accela.com", "tylerhost.net", "x-energovweb.tylerhost.net", "salemma.portal.opengov.com"]) assert.equal(channel.isPathTenantedHost(h), false, h);
+  assert.notEqual(channel.portalTenantKey("https://bsaonline.com/?uid=413"), channel.portalTenantKey("https://bsaonline.com/?uid=2695"), "?uid= names the BS&A tenant");
+  assert.notEqual(channel.portalTenantKey("https://www.mapsonline.net/simplicity/building_permits.php?client=melrosema"), channel.portalTenantKey("https://www.mapsonline.net/simplicity/building_permits.php?client=westonma"), "?client= names the MapsOnline tenant");
+  {
+    // R1 / R2 through the real resolver (the close-5 skeptic's probe5v-real): the portal step writes a sibling
+    // tenant attested only by another tenant's search result — not kept; the tenant itself returned — kept.
+    const stepRun = async (ahj: string, PG: string, portal: string, quote: string, stepUrls: string[]) => {
+      const p1 = JSON.parse(shapeFor(ahj.replace(/^(?:City|Town) of /, ""), PG, ahj, ahj, ahj));
+      const step = { text: JSON.stringify({ permits: [{ discipline: "structural", portalUrl: { value: portal, sourceUrl: PG, quote }, recordType: { value: null } }, { discipline: "electrical", portalUrl: { value: portal, sourceUrl: PG, quote }, recordType: { value: null } }] }), urls: stepUrls };
+      return saved(await runCity(ahj, "IN", JSON.stringify(p1), PG, html(`<p>Building permits are issued by the ${ahj}.</p>`), step), "structural");
+    };
+    const PGx = "https://www.townofmarionx.org/building";
+    const r1 = await stepRun("Town of Marionx", PGx, "https://portal.iworq.net/MARIONX/permits/600", "Apply online for a building permit", [PGx, "https://portal.iworq.net/PLAINFIELD/permits/600"]);
+    assert.equal(r1.portalUrl.value, null, `R1: PLAINFIELD's tenant attests nothing for MARIONX (${r1.portalUrl.value})`);
+    assert.match(String(r1.portalUrl.notFound), /that tenant on the shared host/);
+    const PGy = "https://www.townofmariony.org/building";
+    assert.equal((await stepRun("Town of Mariony", PGy, "https://portal.iworq.net/MARIONY/permits/600", "Apply online for a building permit", [PGy, "https://portal.iworq.net/MARIONY/permits/600"])).portalUrl.value, "https://portal.iworq.net/MARIONY/permits/600", "R1 mirror");
+    const PGb = "https://www.cityofbsax.org/building";
+    const r2 = await stepRun("City of Bsax", PGb, "https://bsaonline.com/?uid=9999", "Apply online for a building permit through BS&A Online", [PGb, "https://bsaonline.com/?uid=413"]);
+    assert.equal(r2.portalUrl.value, null, `R2: Otsego County's ?uid=413 attests nothing for ?uid=9999 (${r2.portalUrl.value})`);
+    assert.equal((await stepRun("City of Bsay", PGb, "https://bsaonline.com/?uid=9999", "Apply online for a building permit through BS&A Online", [PGb, "https://bsaonline.com/SiteSearch/BuildingDepartmentRecordSearch?uid=9999"])).portalUrl.value, "https://bsaonline.com/?uid=9999", "R2 MUST-PASS: a deeper page of the same BS&A tenant (the query names it; the path is a page) attests it");
+    assert.equal((await stepRun("City of Bsaz", PGb, "https://bsaonline.com/?uid=9999", "Apply online for a building permit through BS&A Online", [PGb, "https://bsaonline.com/?uid=9999"])).portalUrl.value, "https://bsaonline.com/?uid=9999", "R2 mirror");
+    const PGp = "https://www.townofpermx.org/building";
+    assert.equal((await stepRun("Town of Permx", PGp, "https://permiteyes.us/permx/loginuser.php", "Apply online for a building permit", [PGp, "https://permiteyes.us/concord/loginuser.php"])).portalUrl.value, null, "PermitEyes: Concord's tenant attests nothing for permx");
+    assert.equal((await stepRun("Town of Permy", PGp, "https://www.mapsonline.net/permyma/online_permits/", "Apply online for a building permit", [PGp, "https://www.mapsonline.net/westonma/online_permits/"])).portalUrl.value, null, "MapsOnline: Weston's tenant attests nothing for permyma");
+  }
   for (const v of ["geocivix.com", "bsaonline.com", "aca-prod.accela.com", "tylertech.com", "powerclerk.com"]) assert.equal(channel.isVendorDomain(v), true, v);
   for (const own of ["charleston-sc.gov", "cityofmarion.org", "co.marion.or.us"]) assert.equal(channel.isVendorDomain(own), false, own);
   const names = ["City of Marion"];
@@ -409,14 +536,73 @@ await check("(a1) MF4: ONE predicate 'is this cited agency the AHJ itself' (same
   const same = ppl.sameAgencyName;
   for (const [a, b] of [["City of Charleston Permit Center /", "City of Charleston"], ["City of Charleston Building Inspections Division", "City of Charleston"], ["Charleston Permit Center", "City of Charleston"], ["the City of Charleston, SC", "City of Charleston"],
     ["Marion County Public Works Building Inspection Division", "Marion County"], ["Hollis", "Town of Hollis"], ["Waltham Wires Department", "Waltham City"], ["Iowa City Building Department", "Iowa City"], ["Examplecity Development Services", "City of Examplecity"],
-    ["City of Venus", "Town of Venus"], ["Village of Elm", "Town of Elm"], ["City of Scottsdale Planning and", "City of Scottsdale"], ["Santa Fe County Building and", "Santa Fe County"]]) {
+    ["City of Venus", "Town of Venus"], ["Village of Elm", "Town of Elm"], ["City of Scottsdale Planning and", "City of Scottsdale"], ["Santa Fe County Building and", "Santa Fe County"],
+    // lookup-close-6 MF5: "<Type> of X" is "X <Type>" (a county site styles itself "County of Marin"; the product's AHJ is
+    // "Marin County"), and a consolidated "City and County of X" is X.
+    ["County of Marin", "Marin County"], ["County of Marin Community Development Agency", "Marin County"], ["Marin County", "County of Marin"], ["Township of Cherry Hill", "Cherry Hill Township"], ["Parish of Jefferson", "Jefferson Parish"],
+    ["Borough of State College", "State College Borough"], ["City and County of Denver", "Denver"], ["Denver", "City and County of Denver"], ["City and County of San Francisco", "San Francisco"], ["City and County of Denver Community Planning and Development", "Denver"],
+    ["City of Iowa City", "Iowa City"], ["Parish of Jefferson Department of Inspection & Code Enforcement", "Jefferson Parish"],
+    // MF6: the identity key sees through a department phrase joined by a connector.
+    ["City of Los Angeles Department of Building and Safety", "City of Los Angeles"], ["Santa Fe County Building and Zoning", "Santa Fe County"]]) {
     assert.equal(same(a, b), true, `${a} ~ ${b}`);
   }
   for (const [a, b] of [["Charleston County", "City of Charleston"], ["Marion County", "City of Jefferson"], ["State of MN", "City of Bemidji"], ["State Construction Industries Division", "Examplecounty"], ["City of Hampton", "City of Marion"], ["", "City of Marion"], ["Building Inspections Division", "City of Charleston"],
-    ["Marion Township", "Town of Marion"], ["Marion Township", "Marion County"], ["Marion Parish", "City of Marion"]]) {
+    ["Marion Township", "Town of Marion"], ["Marion Township", "Marion County"], ["Marion Parish", "City of Marion"],
+    // MUST-PASS delegations stay two agencies: a city vs its county of the same name (either styling), the Jefferson lift, Bemidji's state electrical, Idaho's DBS.
+    ["City of Marion", "Marion County"], ["Marion County", "City of Marion"], ["County of Marion", "City of Marion"], ["Marion County", "Marion Township"], ["Idaho Division of Building Safety", "City of Eagle"], ["Oregon Building Codes Division", "City of Jefferson"]]) {
     assert.equal(same(a, b), false, `${a} !~ ${b}`);
   }
-  assert.equal(ppl.agencyNameKey("City of Charleston Permit Center / Building Inspections Division"), "city of charleston");
+  assert.equal(ppl.agencyNameKey("City of Charleston Permit Center / Building Inspections Division"), "charleston city");
+  assert.equal(ppl.agencyNameKey("County of Marin Community Development Agency"), "marin county");
+  assert.equal(ppl.agencyNameKey("City and County of Denver"), "denver");
+  assert.equal(ppl.agencyNameKey("Idaho Division of Building Safety"), "idaho");
+  // MF6 (fba1e45's regression): the saved NAME is never truncated past a connector — "Idaho Division of Building Safety"
+  // (a genuine state delegation) and "City of Los Angeles Department of Building and Safety" stay whole; a dangling
+  // trailing connector ("Planning and") is a truncation and goes with the department words; a name made only of
+  // department words and connectors names nobody.
+  const nameOf = (v: string) => {
+    const PG = "https://www.example.gov/permits";
+    return ppl.parseProcessPart(JSON.stringify({ issuingAgency: { value: v, sourceUrl: PG, quote: `${v} issues electrical permits for this jurisdiction` }, permitStructure: { value: null }, permits: [] }), [PG], "end_turn").issuingAgency.value;
+  };
+  for (const [v, want] of [["Idaho Division of Building Safety", "Idaho Division of Building Safety"], ["City of Los Angeles Department of Building and Safety", "City of Los Angeles Department of Building and Safety"], ["Department of Building and Safety", null], ["Building Inspections Division", null],
+    ["City of Charleston Permit Center /", "City of Charleston"], ["City of Scottsdale Planning and", "City of Scottsdale"], ["Santa Fe County Building and", "Santa Fe County"], ["Minnesota Department of Labor and Industry", "Minnesota Department of Labor and Industry"],
+    ["State Electrical Board", "State Electrical Board"], ["Fort Collins Utilities", "Fort Collins Utilities"], ["Marion County Public Works Building Inspection Division", "Marion County"], ["Waltham Wires Department", "Waltham"], ["Oregon Building Codes Division", "Oregon"]] as Array<[string, string | null]>) {
+    assert.equal(nameOf(v), want, `"${v}" -> ${JSON.stringify(nameOf(v))}`);
+  }
+  // R5 through the real lookup: Idaho DBS issues the electrical permit — saved whole, the delegation keyed on the whole name.
+  const fees = await import("../src/feeSchedules");
+  {
+    const PG = "https://www.cityofeaglex.org/building";
+    const p1 = JSON.parse(shapeFor("Eaglex", PG, null, "City of Eaglex", "Idaho Division of Building Safety"));
+    const r = await runCity("City of Eaglex", "ID", JSON.stringify(p1), PG, html("<p>City of Eaglex issues building permits for properties inside city limits. Electrical permits are issued by Idaho Division of Building Safety.</p>"));
+    assert.equal(saved(r, "electrical").issuingAgency.value, "Idaho Division of Building Safety");
+    const rows = fees.getFeeSchedulesForKey(db, fees.feeScheduleProfileKey({ state: "ID", ahj: "City of Eaglex" }, "permit"), "permit");
+    assert.deepEqual(rows.filter((x) => x.collectedByProfileKey).map((x) => `${x.discipline} -> ${x.collectedByProfileKey}`), ["electrical -> id|idaho division of building safety|unknown"], JSON.stringify(rows.map((x) => [x.discipline, x.collectedByProfileKey])));
+  }
+  // R4 through the real lookup (MF5): Marin County, both permits citing "County of Marin Community Development Agency" — no phantom delegation.
+  {
+    const PG = "https://www.marincounty.gov/departments/cda/building";
+    const p1 = JSON.parse(shapeFor("Marin", PG, null, "County of Marin Community Development Agency", "County of Marin Community Development Agency"));
+    const r = await runCity("Marin County", "CA", JSON.stringify(p1), PG, html("<p>County of Marin Community Development Agency issues building permits for properties inside city limits. Electrical permits are issued by County of Marin Community Development Agency.</p>"));
+    assert.equal(saved(r, "structural").issuingAgency.value, "County of Marin");
+    assert.equal(r.lookup!.issuingAgency.value, "County of Marin", "MF7: the agreeing agencies are lifted through sameAgencyName");
+    const rows = fees.getFeeSchedulesForKey(db, fees.feeScheduleProfileKey({ state: "CA", ahj: "Marin County" }, "permit"), "permit");
+    assert.deepEqual(rows.filter((x) => x.collectedByProfileKey).map((x) => `${x.discipline} -> ${x.collectedByProfileKey}`), [], "R4: no phantom delegation from Marin County to County of Marin");
+  }
+  // MF7: liftAgreedAgency and agenciesToAsk decide sameness with the one predicate.
+  {
+    const cited = (value: string) => ({ value, sourceUrl: "https://www.example.gov/permits", quote: `${value} issues permits`, origin: "lookup" as const });
+    const nf = { value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: "x" };
+    const permits = [{ discipline: "structural", issuingAgency: cited("City of Venus") }, { discipline: "electrical", issuingAgency: cited("Town of Venus") }] as never;
+    assert.equal(ppl.liftAgreedAgency(nf, permits).value, "City of Venus", "City of Venus + Town of Venus agree");
+    assert.deepEqual(ppl.agenciesToAsk("Town of Venus", nf, permits, ["structural", "electrical"]).map((x) => [x.agency, x.disciplines]), [["City of Venus", ["structural", "electrical"]]], "one group");
+    const charleston = [{ discipline: "structural", issuingAgency: cited("City of Charleston Building Inspections Division") }, { discipline: "electrical", issuingAgency: cited("Charleston Permit Center") }] as never;
+    assert.equal(ppl.liftAgreedAgency(nf, charleston).value, "City of Charleston Building Inspections Division");
+    assert.equal(ppl.agenciesToAsk("City of Charleston", nf, charleston, ["structural", "electrical"]).length, 1);
+    const split = [{ discipline: "structural", issuingAgency: cited("City of Jefferson") }, { discipline: "electrical", issuingAgency: cited("Marion County") }] as never;
+    assert.equal(ppl.liftAgreedAgency(nf, split).value, null, "two agencies: no lift");
+    assert.equal(ppl.agenciesToAsk("City of Jefferson", nf, split, ["structural", "electrical"]).length, 2);
+  }
   // The Charleston shape through the real lookup (a reader resolving the city's own portal from its page).
   const CITY = "https://www.charleston-example.gov";
   const PG = `${CITY}/856/Permit-Center`;
@@ -448,7 +634,6 @@ await check("(a1) MF4: ONE predicate 'is this cited agency the AHJ itself' (same
   assert.equal(saved(rb, "electrical").issuingAgency.value, "Charleston-example");
   assert.equal(saved(rb, "electrical").portalUrl.value, ACA, `typeless: the same portal (${saved(rb, "electrical").portalUrl.notFound})`);
   assert.ok((rb.lookup!.notes ?? []).some((n) => /^Portal \(electrical\): .*CHARLESTONEXAMPLE.* — from the agency page \(our read\);/.test(n)), `typeless: THIS run took the publisher's portal for the electrical permit ${JSON.stringify(rb.lookup!.notes)}`);
-  const fees = await import("../src/feeSchedules");
   const cityKey = fees.feeScheduleProfileKey({ state: "SC", ahj: "City of Charleston-example" }, "permit");
   const rows = fees.getFeeSchedulesForKey(db, cityKey, "permit");
   assert.deepEqual(rows.filter((x) => x.collectedByProfileKey).map((x) => `${x.discipline} -> ${x.collectedByProfileKey}`), [], "MUST-EXCLUDE: no phantom delegation row for the city's own fee");

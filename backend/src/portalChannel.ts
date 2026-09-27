@@ -424,14 +424,57 @@ export function isPermitPlatformUrl(url: string | null | undefined): boolean {
   return PERMIT_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
 }
 /** ONE definition of "a host where ONE instance serves many agencies and the tenant is in the path
- *  or a query parameter" (aca-prod.accela.com/<TENANT>, citizenserve's installationID,
- *  mygovernmentonline.org/?agency=, public.mygov.us/<city_st>/): a page on such a host attests only
- *  its OWN tenant (portalTenantKey), never a sibling's. The catalog's tenant token and the lookup's
- *  portal door both ask this (lookup-close-5 MF2: they had two lists). */
-const PATH_TENANTED_HOSTS = ["accela.com", "citizenserve.com", "mygovernmentonline.org", "mygov.us"];
+ *  or a query parameter": a page on such a host attests only its OWN tenant (portalTenantKey), never
+ *  a sibling's. The catalog's tenant token and the lookup's portal door both ask this (lookup-close-5
+ *  MF2: they had two lists). The entries are the INSTANCE hosts (lookup-close-6 MF3: a domain-wide
+ *  entry would read a subdomain-tenanted instance's own pages as different tenants — iWorQ serves
+ *  both portal.iworq.net/<TENANT>/permits/600 and <tenant>.portal.iworq.net/…, and only the bare
+ *  shared host is path-tenanted), each with the public URL shape that shows it:
+ *    aca-prod / aca-oregon / aca3 … .accela.com/<TENANT>/      (never www.accela.com, the vendor's site)
+ *    www.citizenserve.com/Portal/PortalController?…&installationID=<n>
+ *    www.mygovernmentonline.org/?agency=<x> / ?JID=<n>
+ *    public.mygov.us/<city_st>/
+ *    bsaonline.com/?uid=413 (Otsego County, MI) / ?uid=2695 (Cape Canaveral)
+ *    permiteyes.us/<town>/loginuser.php (concord, bridgewater, easton …)
+ *    www.mapsonline.net/<town>/online_permits/ (westonma, orleansma …) and /simplicity/…?client=<town>
+ *    portal.iworq.net/<TENANT>/permits/600 (PLAINFIELD, EAGLE, DADE, HOKECOUNTY …) */
+const PATH_TENANTED_INSTANCES: RegExp[] = [
+  /^(?!www\.)[a-z0-9-]+(?:\.[a-z0-9-]+)*\.accela\.com$/,
+  /^(?:www\d*\.)?citizenserve\.com$/,
+  /^(?:www\.)?mygovernmentonline\.org$/,
+  /^public\.mygov\.us$/,
+  /^(?:www\.)?bsaonline\.com$/,
+  /^(?:www\.)?permiteyes\.us$/,
+  /^(?:www\.)?mapsonline\.net$/,
+  /^portal\.iworq\.net$/,
+];
 export function isPathTenantedHost(host: string | null | undefined): boolean {
   const h = String(host ?? "").toLowerCase().replace(/^www\./, "");
-  return Boolean(h) && PATH_TENANTED_HOSTS.some((d) => h === d || h.endsWith(`.${d}`));
+  return Boolean(h) && PATH_TENANTED_INSTANCES.some((re) => re.test(h));
+}
+/** The vendor's OWN site, never an agency's portal (lookup-close-6 MF4 — the page-read resolver
+ *  asked this and the lookup's door did not, so www.tylertech.com/products/… and
+ *  www.cityview.com/solutions/permitting were saved as a city's portal): the bare / www host of a
+ *  vendor's domain (www.accela.com, opengov.com, cityview.com), a marketing subdomain (info. / go. /
+ *  blog. …), or a shared instance that names no tenant in its path or query (aca-prod.accela.com/,
+ *  bsaonline.com/ — while bsaonline.com/?uid=413 and www.mapsonline.net/westonma/ name theirs). An
+ *  instance on its own subdomain (<city>-energovweb.tylerhost.net, salemma.portal.opengov.com) is
+ *  not. Asked of any URL; the callers ask it of vendor hosts (isVendorDomain). */
+export function isVendorRootOrMarketing(href: string | null | undefined): boolean {
+  const host = portalHostOf(href);
+  if (!host) return true;
+  if (/^(?:info|go|learn|blog|support|help|community|developers?|docs|marketing|resources|investors?|status|news)\./i.test(host)) return true;
+  if (isPathTenantedHost(host)) return portalTenantKey(href) === portalTenantKey(`https://${host}/`);
+  return host === registrableDomain(host);
+}
+/** The organisation's domain of a host (co.marion.or.us keeps four labels, x.co.uk three). */
+export function registrableDomain(host: string): string {
+  const labels = String(host ?? "").toLowerCase().replace(/^www\./, "").split(".").filter(Boolean);
+  if (labels.length <= 2) return labels.join(".");
+  const tld = labels[labels.length - 1];
+  if (tld === "us" && labels.length >= 4 && /^[a-z]{2}$/.test(labels[labels.length - 2])) return labels.slice(-4).join(".");
+  if (/^[a-z]{2}$/.test(tld) && /^(?:co|com|gov|org|net|ac|govt)$/.test(labels[labels.length - 2])) return labels.slice(-3).join(".");
+  return labels.slice(-2).join(".");
 }
 /** ONE definition of "a VENDOR's domain" — a permit-software platform's or a utility
  *  interconnection platform's — for the question "could this domain be the agency's own?": a link
@@ -484,10 +527,14 @@ export function isInformationalPageUrl(url: string | null | undefined): boolean 
  *  utility list that files applications, so never an information page. */
 const UTILITY_INTERCONNECTION_PLATFORM_HOSTS = ["powerclerk.com", "connectthegrid.com", "customerapplication.com"];
 
-/** Tenant identity of a portal URL: the first path segment plus any tenant-naming query parameter
- *  (citizenserve's installationID, an ACA agency code). Two URLs are the SAME TENANT only when
- *  host and all of these agree — the strict form used where a portal is UNLOCKED for a track. */
-const TENANT_QUERY_PARAMS = ["installationid", "agency", "agencycode", "tenant", "jurisdiction", "juris", "orgid", "cityid"];
+/** Tenant identity of a portal URL: the first path segment, or — when a tenant-naming query parameter
+ *  is present (citizenserve's installationID, BS&A's uid, an ACA agency code) — those parameters
+ *  alone, since the path is then a page of that tenant (bsaonline.com/?uid=413 and
+ *  bsaonline.com/SiteSearch/…?uid=413 are one tenant). Two URLs are the SAME TENANT only when host
+ *  and these agree — the strict form used where a portal is UNLOCKED for a track. */
+// uid (BS&A Online: bsaonline.com/?uid=413) and client (PeopleGIS: mapsonline.net/simplicity/…?client=
+// melrosema) name the tenant on those shared hosts (lookup-close-6 MF3).
+const TENANT_QUERY_PARAMS = ["installationid", "agency", "agencycode", "tenant", "jurisdiction", "juris", "orgid", "cityid", "jid", "uid", "client"];
 export function portalTenantKey(url: string | null | undefined): string {
   const raw = String(url ?? "").trim();
   const host = portalHostOf(raw);
@@ -496,7 +543,7 @@ export function portalTenantKey(url: string | null | undefined): string {
     const u = new URL(raw);
     const q: string[] = [];
     u.searchParams.forEach((v, k) => { if (TENANT_QUERY_PARAMS.includes(k.toLowerCase())) q.push(`${k.toLowerCase()}=${v.toLowerCase()}`); });
-    return `${host}/${portalTenantOf(raw)}?${q.sort().join("&")}`;
+    return `${host}/${q.length ? "" : portalTenantOf(raw)}?${q.sort().join("&")}`;
   } catch {
     return host;
   }

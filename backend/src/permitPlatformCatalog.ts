@@ -22,19 +22,13 @@
 //   4. PREREQUISITES AND CODES FROM THE WORDS ON A PAGE WE READ — each a sentence quoted verbatim.
 import type { PermitProcessDiscipline } from "../../shared/src/types";
 import type { PageLink, PageReader, ReadPage } from "./agencyPageReader";
-import { hostFitsTrackAndEntity, isPathTenantedHost, isPermitPlatformUrl, portalHostOf, portalTenantKey, portalTenantOf } from "./portalChannel";
+import { hostFitsTrackAndEntity, isPathTenantedHost, isPermitPlatformUrl, isVendorRootOrMarketing, portalHostOf, portalTenantKey, portalTenantOf, registrableDomain } from "./portalChannel";
+// registrableDomain and isVendorRootOrMarketing live in portalChannel (lookup-close-6 MF4: the
+// lookup's portal door asks "is this the vendor's own site?" too, so the ONE predicate sits beside
+// the host lists); re-exported here for the callers that import them from the catalog.
+export { isVendorRootOrMarketing, registrableDomain };
 
 export type PermitPlatform = "energov" | "accela" | "other";
-
-/** The organisation's domain of a host (co.marion.or.us keeps four labels, x.co.uk three). */
-export function registrableDomain(host: string): string {
-  const labels = String(host ?? "").toLowerCase().replace(/^www\./, "").split(".").filter(Boolean);
-  if (labels.length <= 2) return labels.join(".");
-  const tld = labels[labels.length - 1];
-  if (tld === "us" && labels.length >= 4 && /^[a-z]{2}$/.test(labels[labels.length - 2])) return labels.slice(-4).join(".");
-  if (/^[a-z]{2}$/.test(tld) && /^(?:co|com|gov|org|net|ac|govt)$/.test(labels[labels.length - 2])) return labels.slice(-3).join(".");
-  return labels.slice(-2).join(".");
-}
 
 const GENERIC_NAME_WORDS = new Set(["city", "county", "town", "village", "the", "of", "and", "department", "division", "building", "services", "community", "development", "public", "works", "inspection", "inspections", "permit", "permits", "office", "unincorporated", "township", "borough", "parish", "state", "government", "planning", "code", "codes", "enforcement", "regional", "agency"]);
 /** The distinctive keys of an agency's / AHJ's names: each non-generic word (>= 3 letters) and the
@@ -172,16 +166,6 @@ const NEVER_PAGE_PORTAL_HOST = /(?:^|\.)(?:govoutreach\.com|gosolarapp\.org|sola
 /** Subdomain labels that name the vendor's product, not the tenant. */
 const GENERIC_TENANT_LABEL = /^(?:www|portal|portals|aca|aca-?prod|aca-?[a-z]+|energovweb|energov|css|selfservice|permits?|apps?|online|public|citizen|prod|web|secure)$/i;
 
-/** The vendor's own site — its bare / www host (www.accela.com, opengov.com, gosolarapp.org), a
- *  marketing subdomain — or a shared instance with no tenant in the path (aca-prod.accela.com/). */
-export function isVendorRootOrMarketing(href: string): boolean {
-  const host = portalHostOf(href);
-  if (!host) return true;
-  if (host === registrableDomain(host)) return true;
-  if (/^(?:info|go|learn|blog|support|help|community|developers?|docs|marketing|resources|investors?|status|news)\./i.test(host)) return true;
-  if (isPathTenantedHost(host) && !portalTenantOf(href)) return true;
-  return false;
-}
 /** The tenant a vendor URL names, as letters: the path tenant on a shared instance (LEECO), else the
  *  subdomain's own labels ("cityofscottsdaleaz-energovweb" -> "cityofscottsdaleaz"). */
 export function vendorTenantToken(href: string): string {

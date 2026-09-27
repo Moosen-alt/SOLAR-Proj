@@ -31,7 +31,7 @@
 // and then discarded.
 import type { CitedFact, LLMProvider, PermitFeeAnswer, PermitProcessDiscipline, PermitProcessLookup, PermitProcessPermitAnswer, WebLookupResult } from "../../shared/src/types";
 import type { AppDb } from "./db";
-import { hostFitsTrackAndEntity, isInformationalPageUrl, isPathTenantedHost, isPermitPlatformUrl, isVendorDomain, portalHostOf, portalTenantKey, salesforceTenantKind, trackSafeUrl, type PortalEntity } from "./portalChannel";
+import { hostFitsTrackAndEntity, isInformationalPageUrl, isPathTenantedHost, isPermitPlatformUrl, isVendorDomain, isVendorRootOrMarketing, portalHostOf, portalTenantKey, salesforceTenantKind, trackSafeUrl, type PortalEntity } from "./portalChannel";
 import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor } from "./permitProcess";
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
@@ -220,12 +220,12 @@ export interface PortalDoorContext {
   /** This AHJ's KB evidence (verified rows) for rule 5's Salesforce carve-out and the verified-portal rule. */
   entity?: PortalEntity | null;
 }
-/** Why the door refused: OUTRIGHT — rule 5, a deep link into another module, the issuer's jurisdiction
- *  type — no further evidence changes it, so the caller neither reads that tenant's pages nor its
- *  catalog (lookup-close-5 MF1); or for want of evidence (unattested / uncited), which a later search
- *  result or a page we read may supply; or "none" (nothing claimed). */
-export type PortalRefusal = "rule5" | "module" | "type" | "unattested" | "uncited" | "none";
-export const OUTRIGHT_REFUSALS: ReadonlySet<PortalRefusal | "ok"> = new Set<PortalRefusal | "ok">(["rule5", "module", "type"]);
+/** Why the door refused: OUTRIGHT — rule 5, the vendor's own site, a deep link into another module,
+ *  the issuer's jurisdiction type — no further evidence changes it, so the caller neither reads that
+ *  tenant's pages nor its catalog (lookup-close-5 MF1); or for want of evidence (unattested / uncited),
+ *  which a later search result or a page we read may supply; or "none" (nothing claimed). */
+export type PortalRefusal = "rule5" | "vendor" | "module" | "type" | "unattested" | "uncited" | "none";
+export const OUTRIGHT_REFUSALS: ReadonlySet<PortalRefusal | "ok"> = new Set<PortalRefusal | "ok">(["rule5", "vendor", "module", "type"]);
 export interface PortalDecision {
   fact: CitedFact<string>;
   source: PortalCandidateSource;
@@ -249,6 +249,14 @@ export function acceptPortalForPermit(raw: RawFact, source: PortalCandidateSourc
     const fit = hostFitsTrackAndEntity("building", ctx.entity ?? null, url, "research");
     if (!fit.fits) {
       return refused("rule5", fit.code === "not_a_portal" ? `${url} is an information page, not an application portal — not kept` : `${fit.reason} — not kept`);
+    }
+    // (a'') THE VENDOR'S OWN SITE (lookup-close-6 MF4): a permit-software vendor's marketing page
+    // (www.tylertech.com/products/…, www.cityview.com/solutions/permitting — its words say "online
+    // permit portal") or a shared instance naming no tenant is nobody's application portal, whoever
+    // cites it — the same predicate the page-read resolver asks (isVendorRootOrMarketing). A platform
+    // host was exempt from the information-page rule, so nothing else asked this at the door.
+    if (isVendorDomain(host) && isVendorRootOrMarketing(url)) {
+      return refused("vendor", `${url} is the permit-software vendor's own site (its marketing / root page, or a shared instance naming no tenant), not an agency's application portal — not kept`);
     }
     // (a') A DEEP LINK INTO ANOTHER MODULE of the tenant (module=Licenses / Enforcement …, close-2
     // V8b) is not the permit portal, whoever cites it — the same predicate the page-read resolver asks.
@@ -304,6 +312,45 @@ export function acceptPortalForPermit(raw: RawFact, source: PortalCandidateSourc
 export function acceptPortal(raw: RawFact, seenUrls: string[], platformPages: string[] = [], entity: PortalEntity | null = null): CitedFact<string> {
   return acceptPortalForPermit(raw, "process part", { seenUrls, platformPages, entity }).fact;
 }
+/** THE ONE RECORD-TYPE PREDICATE (lookup-close-6 MF1): a record type is what is selected ON a
+ *  portal, so it belongs to the SAVED portal's tenant — and every source of one is judged by this,
+ *  whether the portal's own catalog, part one's cited type, the portal step's, the earlier row's
+ *  (mergeWithEarlier) or the "is a record type still needed" question. It holds only when a portal is
+ *  saved for the permit AND the type's source page is
+ *    - that portal's own tenant (the same host; on a path-tenanted host the same tenant): the
+ *      catalog's module page, a public record on it; or
+ *    - the ISSUING AGENCY'S OWN official page naming no other jurisdiction (its words about its
+ *      portal: "select Residential Solar") — never a vendor's host (another tenant's module page, the
+ *      vendor's site) and never a page whose domain or words name another jurisdiction.
+ *  Nothing holds with no saved portal: a county tenant's type beside a refused county portal
+ *  (the close-5 skeptic's S1a / S1b), or an earlier row's type beside this run's other portal (S1d),
+ *  is not the permit's record type. */
+export function recordTypeBelongsToPortal(
+  rt: Pick<CitedFact<string>, "value" | "sourceUrl" | "quote"> | null | undefined,
+  portalUrl: string | null | undefined,
+  ctx: { names?: string[]; typeNames?: string[]; state?: string } = {},
+): boolean {
+  if (!rt?.value) return false;
+  const portal = str(portalUrl);
+  const portalHost = portalHostOf(portal);
+  const source = str(rt.sourceUrl);
+  const sourceHost = portalHostOf(source);
+  if (!portalHost || !sourceHost) return false;
+  if (sourceHost === portalHost) return !isPathTenantedHost(portalHost) || portalTenantKey(source) === portalTenantKey(portal);
+  if (isVendorDomain(sourceHost) || isPathTenantedHost(sourceHost)) return false;
+  const names = (ctx.names ?? []).filter(Boolean);
+  const typeNames = (ctx.typeNames ?? names).filter(Boolean);
+  return isOfficialAgencyHost(sourceHost, names, ctx.state) && !tenantContradictsAgency(source, names, typeNames) && !wordsNameAnotherJurisdiction(str(rt.quote), names, typeNames);
+}
+/** The same, as the not-found a refused record type is saved with. */
+export function recordTypeForPortal(rt: CitedFact<string> | null, portalUrl: string | null | undefined, ctx: { names?: string[]; typeNames?: string[]; state?: string } = {}): CitedFact<string> | null {
+  if (!rt?.value || recordTypeBelongsToPortal(rt, portalUrl, ctx)) return rt;
+  const why = portalHostOf(str(portalUrl))
+    ? `the record type "${rt.value}" is cited to ${portalHostOf(rt.sourceUrl) || "no page"} — neither the saved portal's own tenant (${portalHostOf(str(portalUrl))}) nor the issuing agency's own page — not kept`
+    : `the record type "${rt.value}" is what is selected on a portal, and no portal was kept for this permit — not kept`;
+  // The refused citation's page is not the record type's source: the reason names it; the fact does not.
+  return { ...rt, value: null, sourceUrl: "", quote: "", notFound: why };
+}
 /** A record type in the portal's or agency's words; a paper FORM's title is not one. */
 const FORM_TITLE = /\b(?:form|application|checklist|worksheet|packet|affidavit)\b|\.pdf\b/i;
 export function acceptRecordType(raw: RawFact, seenUrls: string[]): CitedFact<string> {
@@ -346,41 +393,87 @@ export const supportsAmount = (fee: PermitFeeAnswer, quote: string) => {
 const RATED_FEE = /valuation|project cost|construction cost|each additional|for the first \$|per\s+(?:kw|kilowatt|watt|sq|square|\$?1,?000|thousand|hour)|\/\s*kw\b|square\s*f(?:ee|oo)t|sq\.?\s*ft/i;
 /** The words a DEPARTMENT adds to an agency's name ("Permit Center", "Building Inspections
  *  Division", "Development Services", "Planning & Zoning", "City Hall"): GENERIC_ORG_WORDS and the
- *  rest. ONE set, read by agencyName (the saved value) and sameAgencyName (the identity question). */
-const DEPARTMENT_WORDS = new Set([...GENERIC_ORG_WORDS, "center", "centre", "hall", "zoning", "land", "use", "engineering", "safety", "official", "officials", "inspector", "inspectors", "section", "unit", "team", "staff", "administration", "admin", "regulatory", "compliance", "review", "reviews", "and", "wires", "wire", "electrical", "electric", "mechanical", "plumbing"]);
+ *  rest. ONE set, read by agencyName (the saved value) and agencyNameKey (the identity question). */
+const DEPARTMENT_WORDS = new Set([...GENERIC_ORG_WORDS, "center", "centre", "hall", "zoning", "land", "use", "engineering", "safety", "official", "officials", "inspector", "inspectors", "section", "unit", "team", "staff", "administration", "admin", "regulatory", "compliance", "review", "reviews", "enforcement", "wires", "wire", "electrical", "electric", "mechanical", "plumbing"]);
+/** A connector joins a name to a department phrase ("Division OF Building Safety", "Building AND
+ *  Safety"). The saved NAME pops through "and" / "&" only between two department words ("Planning
+ *  and Development Services" is one phrase) and never through "of"; the identity KEY pops through any. */
+const CONNECTOR_WORDS = new Set(["of", "and", "&", "the", "for"]);
+const AND_WORDS = new Set(["and", "&"]);
 const JURISDICTION_TYPE_WORDS = "city|town|county|village|borough|township|parish";
+/**
+ * THE TRAILING DEPARTMENT PHRASE, ONE WAY (lookup-close-6 MF6 — fba1e45 popped "Idaho Division of
+ * Building Safety" to "Idaho Division of" and saved it). A dangling trailing connector is a
+ * truncation ("Santa Fe County Building and") and goes first; then the trailing department words go;
+ * a result that ends in a connector popped INTO a department phrase ("Idaho Division of |Building
+ * Safety|", "…Department of |Building and Safety|"):
+ *   - the saved NAME pops on through "and" / "&" only when the word before it is a department word
+ *     too ("Planning and Development Services" -> gone; "Regulation and Licensing" stays), never
+ *     through "of", and otherwise keeps the unstripped name (never a dangling "of" / "and", never a
+ *     state's bare name for its building division);
+ *   - the identity KEY pops through any connector and the phrase before it (a department phrase is
+ *     not identity: the City of Los Angeles Department of Building and Safety IS the City of Los
+ *     Angeles).
+ */
+function stripDepartmentPhrase(tokens: string[], through: boolean): string[] {
+  const low = tokens.map((t) => t.toLowerCase());
+  let end = low.length;
+  while (end > 1 && CONNECTOR_WORDS.has(low[end - 1])) end--;
+  const trimmed = end;
+  for (;;) {
+    while (end > 1 && DEPARTMENT_WORDS.has(low[end - 1])) end--;
+    if (!(end > 1 && CONNECTOR_WORDS.has(low[end - 1]))) break;
+    if (!through) {
+      if (!(AND_WORDS.has(low[end - 1]) && end > 2 && DEPARTMENT_WORDS.has(low[end - 2]))) return tokens.slice(0, trimmed);
+      end--;
+      continue;
+    }
+    while (end > 1 && CONNECTOR_WORDS.has(low[end - 1])) end--;
+  }
+  return tokens.slice(0, end);
+}
 /** The identity key of an agency's name: lower case, punctuation gone, a leading "the" and a
- *  trailing ", XX" state gone, and the TRAILING run of department words gone ("City of Charleston
- *  Permit Center /" -> "city of charleston"; "Marion County Public Works Building Inspection
- *  Division" -> "marion county"). The jurisdiction TYPE words stay: they are identity. */
+ *  trailing ", XX" state gone, the trailing department phrase gone (stripDepartmentPhrase, through
+ *  its connectors: "City of Charleston Permit Center /", "Marion County Public Works Building
+ *  Inspection Division"), and the jurisdiction type in ONE form (lookup-close-6 MF5: a county site
+ *  styles itself "County of Marin" and the product's AHJ is "Marin County"): "<type> of X" is
+ *  "X <type>" ("county of marin" -> "marin county", "township of cherry hill" -> "cherry hill
+ *  township", "city of iowa city" -> "iowa city"), and a consolidated "city and county of X" is X
+ *  ("city and county of denver" -> "denver"). The type word stays: it is identity. */
 export function agencyNameKey(name: unknown): string {
-  const tokens = str(name).toLowerCase().replace(/,\s*[a-z]{2}\.?\s*$/, "").replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
+  const tokens = str(name).toLowerCase().replace(/,\s*[a-z]{2}\.?\s*$/, "").replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
   if (tokens[0] === "the") tokens.shift();
-  while (tokens.length > 1 && DEPARTMENT_WORDS.has(tokens[tokens.length - 1])) tokens.pop();
-  return tokens.join(" ");
+  let k = stripDepartmentPhrase(tokens, true).join(" ");
+  k = k.replace(/^city and county of (.+)$/, "$1");
+  const m = new RegExp(`^(${JURISDICTION_TYPE_WORDS}) of (.+)$`).exec(k);
+  if (m) k = m[2].endsWith(` ${m[1]}`) ? m[2] : `${m[2]} ${m[1]}`;
+  return k;
 }
 /** ONE predicate for "is this cited agency THAT agency itself" (lookup-close-5, MF4): the keys are
- *  equal, or equal once the type affix is removed when exactly ONE side carries a type word
- *  ("Charleston Permit Center" is the City of Charleston) or both carry a MUNICIPAL one (city / town /
- *  village / borough — a municipality is never two of these, so "City of Venus" for the Town of Venus
- *  is a spelling, not another agency). Two names typed county / township / parish against a
- *  different type are two agencies (Charleston County is not the City of Charleston; Marion County
- *  is not the City of Jefferson — the delegation the fee rows carry). Read by issuedByPublisher
- *  (whose portal a permit takes) and applyLookupFees (whether the AHJ's fee row delegates to another
- *  authority) — a department suffix or a stray "/" must never turn the city's own fee into a phantom
- *  delegation. */
+ *  equal (one form per jurisdiction type — agencyNameKey), or equal once the type word is removed
+ *  when exactly ONE side carries one ("Charleston Permit Center" is the City of Charleston; a typeless
+ *  name beside a typed one is that agency — the design's caveat: "Charleston Permit Center" beside
+ *  "Charleston County" reads as the county too) or both carry a MUNICIPAL one (city / town / village /
+ *  borough — a municipality is never two of these, so "City of Venus" for the Town of Venus is a
+ *  spelling, not another agency). Two names typed county / township / parish against a different
+ *  type are two agencies (Charleston County is not the City of Charleston; Marion County is not the
+ *  City of Marion nor the City of Jefferson — the delegation the fee rows carry). Read by
+ *  issuedByPublisher (whose portal a permit takes), liftAgreedAgency / agenciesToAsk (which agencies
+ *  the parts ask), applyLookupFees (whether the AHJ's fee row delegates to another authority) and
+ *  mergeWithEarlier — a department suffix, a stray "/" or "County of X" for "X County" must never
+ *  turn the AHJ's own fee into a phantom delegation. */
 export function sameAgencyName(a: unknown, b: unknown): boolean {
   const ka = agencyNameKey(a);
   const kb = agencyNameKey(b);
   if (!ka || !kb) return false;
   if (ka === kb) return true;
-  const typeOf = (k: string): string => new RegExp(`^(${JURISDICTION_TYPE_WORDS}) of `).exec(k)?.[1] ?? new RegExp(`\\b(${JURISDICTION_TYPE_WORDS})$`).exec(k)?.[1] ?? "";
+  const typeOf = (k: string): string => new RegExp(`\\b(${JURISDICTION_TYPE_WORDS})$`).exec(k)?.[1] ?? "";
   const ta = typeOf(ka);
   const tb = typeOf(kb);
+  if (!ta && !tb) return false;
   const municipal = /^(?:city|town|village|borough)$/;
   if (ta && tb && !(municipal.test(ta) && municipal.test(tb))) return false;
-  if (ta === tb) return false;
-  const bare = (k: string) => k.replace(new RegExp(`^(?:${JURISDICTION_TYPE_WORDS}) of `), "").replace(new RegExp(` (?:${JURISDICTION_TYPE_WORDS})$`), "");
+  const bare = (k: string) => k.replace(new RegExp(` (?:${JURISDICTION_TYPE_WORDS})$`), "");
   return bare(ka) === bare(kb);
 }
 /** "Marion County (Marion County Public Works Building Inspection Division)" → "Marion County": the
@@ -388,13 +481,13 @@ export function sameAgencyName(a: unknown, b: unknown): boolean {
 const agencyName = (v: unknown): string | null => {
   let s = str(v).replace(/\s*\([^)]*\)\s*$/, "").replace(/\s+[–—\-/|]\s+.*$/, "").replace(/,.*$/, "").replace(/[\s/|:;.,\-–—]+$/, "").trim();
   // "Marion County Building" / "Marion County Public Works Building Inspection" / "City of
-  // Charleston Permit Center" → the name (DEPARTMENT_WORDS, the set sameAgencyName reads).
-  const tokens = s.split(/\s+/);
-  while (tokens.length > 1 && DEPARTMENT_WORDS.has(tokens[tokens.length - 1].toLowerCase())) tokens.pop();
-  s = tokens.join(" ");
-  // A name made only of generic words ("Building Inspections Division" → "Building") names NO
-  // agency: asking "Building" for documents/fees asks nobody. Not usable → NOT FOUND.
-  if (!words(s).some((w) => !GENERIC_ORG_WORDS.has(w))) return null;
+  // Charleston Permit Center" → the name (DEPARTMENT_WORDS, the set agencyNameKey reads); never
+  // through a connector ("Idaho Division of Building Safety" stays whole — MF6).
+  s = stripDepartmentPhrase(s.split(/\s+/), false).join(" ");
+  // A name made only of generic words ("Building Inspections Division" → "Building", "Department of
+  // Building and Safety") names NO agency: asking it for documents/fees asks nobody. Not usable →
+  // NOT FOUND.
+  if (!words(s).some((w) => !DEPARTMENT_WORDS.has(w) && !CONNECTOR_WORDS.has(w))) return null;
   return s || null;
 };
 const asDiscipline = (v: unknown): PermitProcessDiscipline | null => {
@@ -458,28 +551,29 @@ export function parsePortalPart(text: string, seenUrls: string[], stopReason: st
 export function liftAgreedAgency(top: CitedFact<string>, permits: PermitProcessPermitAnswer[]): CitedFact<string> {
   if (top.value || !permits.length) return top;
   if (!permits.every((p) => p.issuingAgency.value)) return top;
-  const names = new Set(permits.map((p) => normalizeAhjName(String(p.issuingAgency.value))));
-  if (names.size !== 1) return top;
+  // "Agree" is the ONE identity predicate (lookup-close-6 MF7: a key-equality copy here split
+  // "City of Venus" from "Town of Venus" and blocked the lift).
+  const first = permits[0].issuingAgency.value as string;
+  if (!permits.every((p) => sameAgencyName(p.issuingAgency.value, first))) return top;
   const { notFound: _nf, ...cited } = permits[0].issuingAgency;
   return { ...cited, origin: "lookup" };
 }
 
 /** WHO TO ASK for documents, fees and the portal: the top-level agency; else the per-permit cited
- *  agencies (one group per distinct agency, at most MAX_AGENCY_GROUPS — a permit with no cited
- *  agency, or beyond the cap, joins the largest group); else the AHJ itself. */
+ *  agencies (one group per distinct agency — sameAgencyName — at most MAX_AGENCY_GROUPS; a permit
+ *  with no cited agency, or beyond the cap, joins the largest group); else the AHJ itself. */
 export const MAX_AGENCY_GROUPS = 2;
 export function agenciesToAsk(ahj: string, top: CitedFact<string>, permits: Array<Pick<PermitProcessPermitAnswer, "discipline" | "issuingAgency">>, disciplines: PermitProcessDiscipline[]): Array<{ agency: string; disciplines: PermitProcessDiscipline[] }> {
   if (top.value) return [{ agency: top.value, disciplines }];
-  const groups = new Map<string, { agency: string; disciplines: PermitProcessDiscipline[] }>();
+  const groups: Array<{ agency: string; disciplines: PermitProcessDiscipline[] }> = [];
   for (const p of permits) {
     if (!p.issuingAgency.value) continue;
-    const k = normalizeAhjName(p.issuingAgency.value);
-    const g = groups.get(k) ?? { agency: p.issuingAgency.value, disciplines: [] };
+    let g = groups.find((x) => sameAgencyName(x.agency, p.issuingAgency.value));
+    if (!g) { g = { agency: p.issuingAgency.value, disciplines: [] }; groups.push(g); }
     g.disciplines.push(p.discipline);
-    groups.set(k, g);
   }
-  if (!groups.size) return [{ agency: ahj, disciplines }];
-  const ordered = [...groups.values()].sort((a, b) => b.disciplines.length - a.disciplines.length);
+  if (!groups.length) return [{ agency: ahj, disciplines }];
+  const ordered = [...groups].sort((a, b) => b.disciplines.length - a.disciplines.length);
   const kept = ordered.slice(0, MAX_AGENCY_GROUPS);
   const placed = new Set(kept.flatMap((g) => g.disciplines));
   for (const d of disciplines) if (!placed.has(d)) kept[0].disciplines.push(d);
@@ -995,8 +1089,16 @@ export async function runPermitProcessLookup(
       if (r.candidates.length) recordFor.set(d, r);
     }
   };
+  // A CITED RECORD TYPE COUNTS ONLY BESIDE THE PORTAL IT BELONGS TO (close-6 MF1): the one predicate,
+  // asked of part one's and the step's types wherever they steer a choice or answer "is a record type
+  // still needed" — a type read off another tenant's page never names a candidate of the saved portal.
+  const rtCtx = (d: PermitProcessDiscipline) => ({ names: issuer.namesFor(d), typeNames: issuer.typeNamesFor(d), state: input.state });
+  const citedRt = (d: PermitProcessDiscipline, portalUrl: string | null, ...facts: Array<CitedFact<string> | undefined>): string | null => {
+    for (const f of facts) if (f?.value && recordTypeBelongsToPortal(f, portalUrl, rtCtx(d))) return f.value;
+    return null;
+  };
   // THE CATALOG OF A PORTAL THE DOOR ACCEPTED (close-5 MF1): a refused tenant contributes nothing.
-  await fillRecordTypes(disciplines, (d) => portalOf(d).value ?? null, (d) => byDiscipline.get(d)?.recordType.value ?? null);
+  await fillRecordTypes(disciplines, (d) => portalOf(d).value ?? null, (d) => citedRt(d, portalOf(d).value, byDiscipline.get(d)?.recordType));
 
   // Pages we read for documents / fees, handed to that question verbatim (compact excerpts) — the
   // model may cite them, and a quote cited to one must be ON it (parseDocsFeesPart's page door).
@@ -1009,7 +1111,7 @@ export async function runPermitProcessLookup(
   // types); documents/fees read pages too. All run concurrently.
   const tasks: Array<Promise<{ kind: "portal" | "docs"; agency: string; disciplines: PermitProcessDiscipline[]; r: WebLookupResult; first?: WebLookupResult }>> = [];
   for (const g of groups) {
-    const needPortal = g.disciplines.filter((d) => !portalOf(d).value || !(recordFor.has(d) || byDiscipline.get(d)?.recordType.value));
+    const needPortal = g.disciplines.filter((d) => !portalOf(d).value || !(recordFor.has(d) || citedRt(d, portalOf(d).value, byDiscipline.get(d)?.recordType)));
     const head = `Issuing agency: ${g.agency}\nFor permits in: ${input.ahj}, ${input.state}`;
     if (needPortal.length) {
       tasks.push(ask({ label: "permitProcessLookup.portal", system: PORTAL_LOOKUP_SYSTEM, user: `${head}\nPermits: ${needPortal.join(", ")}`, maxTokens: 6000, maxSearches: PORTAL_SEARCHES, readPages: true, maxFetches: PORTAL_FETCHES, timeoutMs: partBudgetMs() })
@@ -1120,21 +1222,24 @@ export async function runPermitProcessLookup(
     return decided.get(d)!.fact;
   };
   // A portal that came from the model: its catalog too (when its platform is readable).
-  await fillRecordTypes(basePermits.map((p) => p.discipline), (d) => {
-    const p = basePermits.find((x) => x.discipline === d)!;
-    return finalPortal(p).value ?? null;
-  }, (d) => byDiscipline.get(d)?.recordType.value ?? portalFor.get(d)?.recordType.value ?? null);
+  const finalPortalOf = (d: PermitProcessDiscipline) => finalPortal(basePermits.find((x) => x.discipline === d)!).value ?? null;
+  await fillRecordTypes(basePermits.map((p) => p.discipline), finalPortalOf, (d) => citedRt(d, finalPortalOf(d), byDiscipline.get(d)?.recordType, portalFor.get(d)?.recordType));
   const questions: string[] = [];
   const permits: PermitProcessPermitAnswer[] = basePermits.map((p) => {
     const pf = portalFor.get(p.discipline);
     const df = docsFor.get(p.discipline);
     const portalUrl = finalPortal(p);
     const rc = recordFor.get(p.discipline);
-    const modelRecordType = p.recordType.value || !pf ? p.recordType : pf.recordType;
+    // EVERY RECORD-TYPE SOURCE THROUGH THE ONE PREDICATE (close-6 MF1): the model's cited type (part
+    // one's, else the step's) and the catalog's answer are each kept only beside the portal they
+    // belong to — with no portal saved there is no record type; a county tenant's type beside the
+    // city's portal (or beside a refused county portal) is not the city's.
+    const belongs = (rt: CitedFact<string> | null) => recordTypeForPortal(rt, portalUrl.value, rtCtx(p.discipline));
+    const modelRecordType = belongs(p.recordType.value || !pf ? p.recordType : pf.recordType) as CitedFact<string>;
     // THE ?? FALLTHROUGH (close F5): the catalog's answer is an object even when it chose nothing, so
     // a CITED record type (from whichever step) that names one candidate decides it here too.
     const namedByModel = rc && !rc.recordType?.value ? candidateNamedBy(rc.candidates, modelRecordType.value) : null;
-    const catalogRecordType: CitedFact<string> | null = namedByModel ? { value: namedByModel.label, sourceUrl: namedByModel.sourceUrl, quote: namedByModel.quote, origin: "lookup" } : rc?.recordType ?? null;
+    const catalogRecordType: CitedFact<string> | null = belongs(namedByModel ? { value: namedByModel.label, sourceUrl: namedByModel.sourceUrl, quote: namedByModel.quote, origin: "lookup" } : rc?.recordType ?? null);
     if (rc?.question && !namedByModel && !catalogRecordType?.value && !questions.includes(rc.question)) questions.push(rc.question);
     return {
       ...p,
@@ -1184,7 +1289,8 @@ export async function runPermitProcessLookup(
   // establish (an aborted part, a search that came up empty) keeps the earlier cited answer.
   // The earlier row's portal goes through the ONE door with THIS run's issuer (mergeWithEarlier).
   const merged = mergeWithEarlier(existing, { issuingAgency, permitStructure: part1.permitStructure, permits },
-    (d, earlierPortal) => acceptPortalForPermit({ value: earlierPortal.value, sourceUrl: earlierPortal.sourceUrl, quote: earlierPortal.quote }, "process part", doorContextFor(d, { seen: [], platformPages: [] })));
+    (d, earlierPortal) => acceptPortalForPermit({ value: earlierPortal.value, sourceUrl: earlierPortal.sourceUrl, quote: earlierPortal.quote }, "process part", doorContextFor(d, { seen: [], platformPages: [] })),
+    (d, earlierRecordType, portalUrl) => recordTypeBelongsToPortal(earlierRecordType, portalUrl, rtCtx(d)));
   const res = savePermitProcessLookup(db, {
     state: input.state, ahj: input.ahj, lookedUpAt: new Date().toISOString(),
     issuingAgency: merged.issuingAgency, permitStructure: merged.permitStructure, permits: merged.permits, notes,
@@ -1223,14 +1329,18 @@ function keep<T>(now: CitedFact<T>, before: CitedFact<T> | undefined): CitedFact
  *     type — a row an older door saved) is not carried and its reason is the saved notFound. Attestation
  *     is not re-asked (it was earned when the value was saved; this run's search may simply not
  *     return that host again).
- *   - A RECORD TYPE IS ITS PORTAL'S: the earlier record type is carried only while the saved portal is
- *     the earlier portal's tenant (or the earlier row had none) — never beside another portal. */
+ *   - A RECORD TYPE IS ITS PORTAL'S: the earlier record type is carried only when it belongs to the
+ *     portal the merged row saves (`belongs`: the ONE record-type predicate, recordTypeBelongsToPortal
+ *     — lookup-close-6 MF1: "or the earlier row had none" carried a type cited to another tenant's
+ *     page beside this run's own portal) — never beside another portal, never with none. */
 export function mergeWithEarlier(
   earlier: PermitProcessLookup | null,
   now: { issuingAgency: CitedFact<string>; permitStructure: CitedFact<"separate" | "combo">; permits: PermitProcessPermitAnswer[] },
   judgePortal: (d: PermitProcessDiscipline, earlierPortal: CitedFact<string>) => PortalDecision,
+  belongs: (d: PermitProcessDiscipline, earlierRecordType: CitedFact<string>, portalUrl: string | null) => boolean,
 ): typeof now {
   if (!earlier) return now;
+  const noType = (why: string): CitedFact<string> => ({ value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: why });
   const permits = now.permits.map((p) => {
     const b = earlier.permits.find((e) => e.discipline === p.discipline);
     if (!b) return p;
@@ -1240,22 +1350,25 @@ export function mergeWithEarlier(
       const dec = judgePortal(p.discipline, b.portalUrl);
       if (OUTRIGHT_REFUSALS.has(dec.code)) portalUrl = { ...p.portalUrl, notFound: `the earlier row's ${dec.fact.notFound ?? "portal is refused"}` };
     }
-    const earlierTenant = b.portalUrl.value ? portalTenantKey(b.portalUrl.value) : null;
-    const samePortal = !earlierTenant || (Boolean(portalUrl.value) && portalTenantKey(portalUrl.value!) === earlierTenant);
+    const carryType = !p.recordType.value && Boolean(b.recordType.value) && belongs(p.discipline, b.recordType, portalUrl.value);
     return {
       ...p, issuingAgency: keep(p.issuingAgency, b.issuingAgency), portalUrl,
-      recordType: samePortal ? keep(p.recordType, b.recordType) : p.recordType, documents: keep(p.documents, b.documents), fee: keep(p.fee, b.fee),
+      recordType: carryType ? b.recordType : p.recordType, documents: keep(p.documents, b.documents), fee: keep(p.fee, b.fee),
     };
   });
-  // A permit only the earlier row lists is carried too — through the same door (its portal and the
-  // record type in that portal's words are dropped on an outright refusal with this run's issuer).
+  // A permit only the earlier row lists is carried too — through the same doors (its portal and the
+  // record type in that portal's words are dropped on an outright refusal with this run's issuer; a
+  // record type that does not belong to its portal is dropped alone).
   for (const b of earlier.permits) {
     if (permits.some((p) => p.discipline === b.discipline)) continue;
     const dec = b.portalUrl.value ? judgePortal(b.discipline, b.portalUrl) : null;
     if (dec && OUTRIGHT_REFUSALS.has(dec.code)) {
-      const gone = { value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: `the earlier row's ${dec.fact.notFound ?? "portal is refused"}` };
+      const gone = noType(`the earlier row's ${dec.fact.notFound ?? "portal is refused"}`);
       const { recordTypeCandidates: _dropped, ...rest } = b;
       permits.push({ ...rest, portalUrl: gone, recordType: { ...gone, notFound: "the earlier row's record type was its refused portal's" } });
+    } else if (b.recordType.value && !belongs(b.discipline, b.recordType, b.portalUrl.value ?? null)) {
+      const { recordTypeCandidates: _dropped, ...rest } = b;
+      permits.push({ ...rest, recordType: noType(b.portalUrl.value ? "the earlier row's record type is not its portal's tenant's — not carried" : "the earlier row's record type had no portal — not carried") });
     } else permits.push(b);
   }
   return { issuingAgency: keep(now.issuingAgency, earlier.issuingAgency), permitStructure: keep(now.permitStructure, earlier.permitStructure), permits };
