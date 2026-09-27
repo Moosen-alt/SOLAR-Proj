@@ -2752,12 +2752,27 @@ async function confirmFeeLine(track, btn) {
   }
   btn.disabled = true;
   try {
-    const res = await api(`/api/projects/${id}/fee-sheet/confirm`, { method: "POST", body: JSON.stringify({ track, confirmedBy }) });
+    // WHAT THIS PERSON SAW — the amount in the dialog above and the schedule rows (with their
+    // versions) behind it. The server verifies only if that is still what stands, so a research
+    // pass that moved the fee between the look and the click cannot put this name on it.
+    const res = await api(`/api/projects/${id}/fee-sheet/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ track, confirmedBy, feeUsd: line ? line.feeUsd : null, scheduleRows: (line && Array.isArray(line.confirmRows)) ? line.confirmRows : [] }),
+    });
     if (state.selectedProjectId !== id) return;
     state.feeSheet = res.feeSheet;
     renderFeeSheetPanel();
     showMessage(`Fee confirmed — recorded as verified by ${res.outcome.confirmedBy}.`);
   } catch (err) {
+    if (err && err.details && err.details.changed) {
+      // The fee moved since the card was drawn: show what stands now, and let the person look again.
+      try {
+        const fresh = await api(`/api/projects/${id}/fee-sheet`);
+        if (state.selectedProjectId === id) { state.feeSheet = fresh.feeSheet; renderFeeSheetPanel(); }
+      } catch { /* the message below still says what happened */ }
+      showMessage(`Not confirmed: ${err.message} The fee card now shows what stands — check it and confirm again.`, "warning");
+      return;
+    }
     showMessage(`Confirm failed: ${err.message}`, "error");
     btn.disabled = false;
   }

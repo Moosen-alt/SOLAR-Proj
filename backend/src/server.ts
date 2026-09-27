@@ -2783,7 +2783,7 @@ app.get("/api/projects/:id/fee-sheet", asyncHandler(async (req, res) => {
 // body; with auth off it is the name the person typed, and a placeholder is refused
 // (feeConfirm.isConfirmingPerson). Scoped by the /api/projects/:id guard.
 app.post("/api/projects/:id/fee-sheet/confirm", asyncHandler(async (req, res) => {
-  const { confirmPublishedFee, isConfirmingPerson } = await import("./feeConfirm");
+  const { confirmPublishedFee, feeConfirmSeenFrom, isConfirmingPerson } = await import("./feeConfirm");
   const { buildProjectFeeSheet } = await import("./submissionFees");
   const detail = getProjectDetail(db, String(req.params.id));
   const user = currentUser(db, req);
@@ -2795,7 +2795,9 @@ app.post("/api/projects/:id/fee-sheet/confirm", asyncHandler(async (req, res) =>
     : String(req.body?.confirmedBy || "").trim();
   // The confirming person's ORG is recorded with the verification: their name is that org's fact
   // and is shown only on its projects (every other tenant reads "human-verified" + the date).
-  const outcome = confirmPublishedFee(db, detail.project, String(req.body?.track || ""), confirmedBy, requestScope(db, req).orgId);
+  // WHAT THE PERSON SAW (feeUsd + the line's confirmRows) is verified only if it still stands —
+  // 409 "the fee changed since you looked" otherwise; 400 when the body does not say.
+  const outcome = confirmPublishedFee(db, detail.project, String(req.body?.track || ""), confirmedBy, requestScope(db, req).orgId, feeConfirmSeenFrom(req.body));
   addAuditLog(db, detail.project.id, "human", outcome.confirmedBy, "fee.schedule_confirmed", {
     track: outcome.track, verified: outcome.verified, alreadyVerified: outcome.alreadyVerified,
   });

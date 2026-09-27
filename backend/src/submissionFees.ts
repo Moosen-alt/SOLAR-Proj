@@ -261,6 +261,9 @@ interface ScheduleFee {
   verifiedBy: string;
   verifiedAt: string;
   verifiedOrgIds: string[];
+  /** The fee_schedules rows behind this amount — each line's own row and the delegation row it
+   *  was reached through — read off the producer's per-line split. What a Confirm verifies. */
+  scheduleIds: string[];
   /** The amount was computed from a per-watt ESTIMATED valuation, not a contract figure. A
    *  different dimension from  again: that one grades the TABLE, this one the
    *  INPUT, and a perfect table walked on a guess still owes the operator a true-up. */
@@ -392,6 +395,7 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
     verifiedAt: verified ? text(r.verifiedAt).trim().slice(0, 40) : "",
     // Absent/malformed reads as [ ] — which shows the name to nobody (fail closed).
     verifiedOrgIds: verified && Array.isArray(r.verifiedOrgIds) ? (r.verifiedOrgIds as unknown[]).map((o) => text(o).trim().slice(0, 120)).slice(0, 8) : [],
+    scheduleIds: scheduleIdsOf(r),
     // Defensive like everything else crossing this seam: anything that is not an explicit true
     // reads as "not an estimate", so a producer that has never heard of this field cannot make
     // a real published fee look like a guess.
@@ -402,6 +406,20 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
     charges: normalizeCharges(r.charges),
     surchargeGaps: surchargeGapsOf(r),
   };
+}
+
+/** The schedule rows behind the amount: every line's own row and its delegation row, once each. */
+function scheduleIdsOf(r: Record<string, unknown>): string[] {
+  const lines = Array.isArray(r.lines) ? (r.lines as Array<Record<string, unknown>>) : [];
+  const out: string[] = [];
+  for (const l of lines) {
+    if (!l || typeof l !== "object") continue;
+    for (const raw of [l.scheduleId, l.delegatedFromScheduleId]) {
+      const sid = text(raw).trim().slice(0, 80);
+      if (sid && !out.includes(sid)) out.push(sid);
+    }
+  }
+  return out.slice(0, 16);
 }
 
 /** Permit lines priced WITHOUT a state surcharge. A line whose own label says it already includes
@@ -526,6 +544,24 @@ export function verifierNameFor(db: AppDb, projectId: string, verifiedBy: string
   const projectOrg = text(db.get<Row>("SELECT org_id FROM projects WHERE id = ?", [projectId])?.org_id).trim();
   if (!projectOrg) return "";
   return verifiedOrgIds.every((o) => o === projectOrg) ? verifiedBy : "";
+}
+
+/** THE ROWS A CONFIRM VOUCHES FOR, WITH THEIR VERSIONS (skeptic MF2) — the fee_schedules rows
+ *  behind this project's published-schedule amount (each line's row and the delegation row it was
+ *  reached through), each with its updated_at. ONE answer for both doors: the fee sheet draws it
+ *  beside the amount the person looks at (confirmRows), and confirmPublishedFee re-asks it at
+ *  click time and refuses unless the rows — and their versions — are the ones the person saw.
+ *  A version is part of the answer because research re-saves a row in place (same id): an unseen
+ *  bracket can move while the displayed amount stays the same. */
+export function feeConfirmRows(db: AppDb, project: ProjectRecord, track: "permit" | "nem"): Array<{ id: string; updatedAt: string }> {
+  const schedule = publishedScheduleFee(db, project, track);
+  if (!schedule || !schedule.scheduleIds.length) return [];
+  const out: Array<{ id: string; updatedAt: string }> = [];
+  for (const sid of schedule.scheduleIds) {
+    const row = db.get<Row>("SELECT id, updated_at FROM fee_schedules WHERE id = ?", [sid]);
+    if (row) out.push({ id: text(row.id), updatedAt: text(row.updated_at) });
+  }
+  return out;
 }
 
 /** MAY A PERSON CONFIRM THIS AMOUNT? The one answer, asked by the fee sheet (to draw the
@@ -957,6 +993,9 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     corroborated: quote.permitFeeCorroborated,
     evidenceQuote: quote.permitFeeEvidenceQuote,
     confirmable: feeLineConfirmable(quote.permitFeeSource, quote.permitFeeConfidence),
+    // What the Confirm click sends back with the amount it displayed (MF2) — the rows and their
+    // versions as they stand while the person is looking.
+    confirmRows: feeLineConfirmable(quote.permitFeeSource, quote.permitFeeConfidence) ? feeConfirmRows(db, project, track) : [],
     verifiedBy: quote.permitFeeVerifiedBy,
     verifiedAt: quote.permitFeeVerifiedAt,
     comparison: quote.permitFeeComparison,

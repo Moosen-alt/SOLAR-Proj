@@ -582,6 +582,12 @@ export interface ProjectFeeSheetLine {
    *  person's name (POST /api/projects/:id/fee-sheet/confirm) — the one place "verified" is
    *  written from the dashboard. False on every other tier and grade. */
   confirmable: boolean;
+  /** THE ROWS A CONFIRM WOULD VERIFY, WITH THEIR VERSIONS — the published-schedule rows behind
+   *  this amount (and the pointer row it was reached through), each with its updated_at. The
+   *  Confirm click sends these back with the amount it displayed; the server verifies only when
+   *  that amount on those row versions is still what stands (409 otherwise). [] unless
+   *  `confirmable`. */
+  confirmRows: Array<{ id: string; updatedAt: string }>;
   /** Who verified the schedule behind this amount and when; "" unless confidence is "verified"
    *  on the published_schedule tier. */
   verifiedBy: string;

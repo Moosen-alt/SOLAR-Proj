@@ -159,6 +159,36 @@ const badge = (html: string): string => /<span class="badge [^"]*">([^<]*)<\/spa
     /Human-verified on 2026-09-27 against the published schedule/.test(words(face(anon))) && !/Verified by/.test(anon), words(face(anon)).slice(0, 300));
 }
 
+// ── 4g. THE CONFIRM CLICK SENDS WHAT THE PERSON SAW (skeptic MF2; feeConfirm.test drives the
+// server side). The real confirmFeeLine, lifted with its browser surroundings stubbed.
+{
+  const calls: Array<{ path: string; body: unknown }> = [];
+  const messages: string[] = [];
+  const seenLine = { ...permitLine, feeUsd: 360, confirmRows: [{ id: "row-city", updatedAt: "2026-09-27T20:00:00.000Z" }, { id: "row-county", updatedAt: "2026-09-27T20:00:01.000Z" }] };
+  const st = { selectedProjectId: "p1", feeSheet: { lines: [seenLine] }, authMe: { enabled: true, user: { name: "Jane Operator" } } };
+  const apiStub = async (p: string, opts: { body?: string } = {}) => {
+    calls.push({ path: p, body: opts.body ? JSON.parse(opts.body) : null });
+    if (p.endsWith("/confirm")) {
+      const err = new Error("The fee changed since you looked — reload and confirm again.") as Error & { details?: unknown };
+      err.details = { changed: true };
+      throw err;
+    }
+    return { feeSheet: { lines: [{ ...seenLine, feeUsd: 440 }] } };
+  };
+  const src = [lift("money"), lift("httpUrl"), lift("confirmFeeLine")].join("\n\n");
+  // eslint-disable-next-line no-new-func
+  const confirmFeeLine = new Function("state", "api", "confirm", "window", "localStorage", "showMessage", "renderFeeSheetPanel",
+    `${src}\nreturn confirmFeeLine;`)(st, apiStub, () => true, { prompt: () => "Jane Operator" }, { getItem: () => "", setItem: () => undefined },
+    (m: string) => { messages.push(m); }, () => undefined) as (track: string, btn: { disabled: boolean }) => Promise<void>;
+  await confirmFeeLine("permit", { disabled: false });
+  const sent = calls.find((c) => c.path.endsWith("/confirm"))?.body as { feeUsd?: number; scheduleRows?: unknown } | undefined;
+  check("4g. the Confirm click sends the amount it displayed and the rows (with versions) behind it",
+    sent?.feeUsd === 360 && JSON.stringify(sent?.scheduleRows) === JSON.stringify(seenLine.confirmRows), JSON.stringify(sent));
+  check("4h. on 409 'changed since you looked' it reloads the sheet (now $440) and says so — it does not retry on its own",
+    calls.filter((c) => c.path.endsWith("/confirm")).length === 1 && calls.some((c) => /\/fee-sheet$/.test(c.path)) && (st.feeSheet.lines[0] as { feeUsd: number }).feeUsd === 440
+      && /changed since you looked/.test(messages.join(" ")), JSON.stringify({ calls: calls.map((c) => c.path), messages }));
+}
+
 // ── 5. THE BADGE NEEDS THE SAME PERMIT, ON THE REAL SCHEDULE MODULE (skeptic MF4) ───────────
 // corroborateBrackets pairs a bracket's label and fee on one printed line by SUBSTRING, so a
 // researched "Permit fee" $160 paired with the printed "Plumbing permit fee | $160.00" and the

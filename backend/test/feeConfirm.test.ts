@@ -18,7 +18,13 @@
 //      verification; another org's card and its persisted submission_payments.fee_basis say
 //      "human-verified" + the date and never the name; another org's confirm outcome never names
 //      the first org's person; a two-org total and a no-org (script) row name nobody.
+//   6. CONFIRM VOUCHES FOR THE AMOUNT THE PERSON SAW (skeptic MF2): the line carries the rows
+//      behind its amount with their versions (confirmRows); $360 seen and $440 standing -> 409
+//      "the fee changed since you looked", nothing verified; the same amount on a row re-saved
+//      since (an unseen bracket moved) -> 409; saying nothing about what was seen -> 400; what
+//      was seen still standing -> verified (control). The route: 4f (409) and 4g (400).
 // Kill: feeConfirm writes "human" instead of the person -> 1c and 4b FAIL.
+// Kill (MF2): skip the seen-vs-standing comparison in confirmPublishedFee -> 6c, 6d, 6e FAIL.
 // Kill (MF3): verifierNameFor returns the name without the org comparison -> 5b, 5c, 5f, 5g FAIL
 // (measured: 4 failures).
 import "./_isolate";
@@ -78,6 +84,8 @@ const mk = (ahj: string, acKw = "7.68") => R.createProject(db, {
 } as never).project;
 const rows = (ahj: string) => db.query<Record<string, unknown>>("SELECT id, discipline, confidence, verified_by, verified_at, brackets_json, source_quote, collected_by_profile_key FROM fee_schedules WHERE ahj = ? ORDER BY discipline", [ahj]);
 const permitLine = (projectId: string) => buildProjectFeeSheet(db, R.getProjectDetail(db, projectId).project).lines.find((l) => l.track === "permit")!;
+/** What the person SAW on the card — the amount and the rows behind it (section 6). */
+const seenOf = (line: { feeUsd: number | null; confirmRows?: Array<{ id: string; updatedAt: string }> }) => ({ feeUsd: line.feeUsd as number, scheduleRows: line.confirmRows ?? [] });
 
 // ── 1. CONFIRM A SPLIT FEE ─────────────────────────────────────────────────────────────────
 seedSplit("City of Confirmbay", "Confirm County");
@@ -90,12 +98,12 @@ check("1a. the researched split fee is seeded, from the schedule, $360, and conf
 // 2 (first half): the refusals write nothing.
 for (const who of ["", "  ", "dashboard", "System", "human", "operator"]) {
   let status = 0;
-  try { confirmPublishedFee(db, ann, "permit", who, DEFAULT_ORG_ID); } catch (err) { status = (err as { status?: number }).status ?? -1; }
+  try { confirmPublishedFee(db, ann, "permit", who, DEFAULT_ORG_ID, seenOf(before)); } catch (err) { status = (err as { status?: number }).status ?? -1; }
   check(`2a. "${who}" is not a person — refused 400`, status === 400, String(status));
 }
 check("2b. …and nothing was verified by a refused confirm", [...rows("City of Confirmbay"), ...rows("Confirm County")].every((r) => r.confidence === "seeded"));
 
-const outcome = confirmPublishedFee(db, ann, "permit", "Jane Operator", DEFAULT_ORG_ID);
+const outcome = confirmPublishedFee(db, ann, "permit", "Jane Operator", DEFAULT_ORG_ID, seenOf(before));
 const city = rows("City of Confirmbay");
 const county = rows("Confirm County");
 check("1b. Confirm verified all three rows: city structural, the city's pointer, the county's electrical",
@@ -111,10 +119,10 @@ check("1d. the line now reads verified, names the person, and is no longer confi
 
 // 2 (second half): nothing-to-confirm refusals.
 const refused409 = (fn: () => unknown): number => { try { fn(); return 200; } catch (err) { return (err as { status?: number }).status ?? -1; } };
-check("2c. an already-verified line is refused 409", refused409(() => confirmPublishedFee(db, ann, "permit", "Jane Operator", DEFAULT_ORG_ID)) === 409);
+check("2c. an already-verified line is refused 409", refused409(() => confirmPublishedFee(db, ann, "permit", "Jane Operator", DEFAULT_ORG_ID, seenOf(before))) === 409);
 const trued = mk("City of Confirmbay");
 recordActualPermitFee(db, trued, "permit", 412.5, "operator");
-check("2d. an operator-entered actual has nothing on the schedule to confirm — 409", refused409(() => confirmPublishedFee(db, trued, "permit", "Jane Operator", DEFAULT_ORG_ID)) === 409);
+check("2d. an operator-entered actual has nothing on the schedule to confirm — 409", refused409(() => confirmPublishedFee(db, trued, "permit", "Jane Operator", DEFAULT_ORG_ID, seenOf(before))) === 409);
 check("2e. …and its line is not confirmable", permitLine(trued.id).confirmable === false);
 // The one predicate both doors ask (the sheet's control and confirmPublishedFee's refusal):
 // only a seeded published-schedule amount. An estimate walked on a guessed valuation is not.
@@ -153,7 +161,7 @@ const orgOf = (...ahjs: string[]) => db.query<{ verified_org_id: string }>(`SELE
 {
   seedSplit("City of Tenantbay", "Tenant County");
   const mine = mkIn("City of Tenantbay", DEFAULT_ORG_ID);
-  confirmPublishedFee(db, mine, "permit", "Jane Operator", DEFAULT_ORG_ID);
+  confirmPublishedFee(db, mine, "permit", "Jane Operator", DEFAULT_ORG_ID, seenOf(permitLine(mine.id)));
   check("5a. the confirming org is recorded with the verification, on every row it verified",
     orgOf("City of Tenantbay", "Tenant County").length === 3 && orgOf("City of Tenantbay", "Tenant County").every((o) => o === DEFAULT_ORG_ID), JSON.stringify(orgOf("City of Tenantbay", "Tenant County")));
   const theirs = mkIn("City of Tenantbay", OTHER_ORG);
@@ -176,7 +184,7 @@ const orgOf = (...ahjs: string[]) => db.query<{ verified_org_id: string }>(`SELE
   const cityRow = rows("City of Mixbay").find((r) => r.discipline === "structural")!;
   F.markFeeScheduleVerifiedById(db, String(cityRow.id), "Jane Operator", DEFAULT_ORG_ID);
   const mixTheirs = mkIn("City of Mixbay", OTHER_ORG);
-  const mixOutcome = confirmPublishedFee(db, mixTheirs, "permit", "Bob Beta", OTHER_ORG);
+  const mixOutcome = confirmPublishedFee(db, mixTheirs, "permit", "Bob Beta", OTHER_ORG, seenOf(permitLine(mixTheirs.id)));
   check("5e. MUST-EXCLUDE: another org's confirm outcome does not name the first org's verifier",
     mixOutcome.alreadyVerified.length === 1 && mixOutcome.alreadyVerified[0].verifiedBy === "" && !/Jane/.test(JSON.stringify(mixOutcome)), JSON.stringify(mixOutcome));
   const mixA = permitLine(mixMine.id);
@@ -191,6 +199,62 @@ const orgOf = (...ahjs: string[]) => db.query<{ verified_org_id: string }>(`SELE
   const legacy = permitLine(mkIn("City of Legacybay", DEFAULT_ORG_ID).id);
   check("5g. a row verified with no org on record is 'human-verified' and names nobody (fail closed)",
     legacy.confidence === "verified" && legacy.verifiedBy === "" && !/Legacy Person/.test(legacy.basis) && /human-verified/.test(legacy.basis), legacy.basis.slice(0, 160));
+}
+
+// ── 6. CONFIRM VOUCHES FOR THE AMOUNT THE PERSON SAW (skeptic MF2) ─────────────────────────
+// Confirm used to re-resolve the quote at click time and verify whatever rows stood behind it
+// THEN: the person looked at $360, background research re-saved the county row, and the click
+// wrote "verified by Jane" onto $440 — an amount she never saw. The sheet line now carries the
+// rows behind its amount WITH their versions (confirmRows); the click sends the amount and rows it
+// displayed; the server verifies only if the quote standing now is that amount on those row
+// versions, else 409 "the fee changed since you looked — reload and confirm again".
+const statusOf = (fn: () => unknown): { status: number; message: string } => {
+  try { fn(); return { status: 200, message: "" }; } catch (err) { return { status: (err as { status?: number }).status ?? -1, message: (err as Error).message }; }
+};
+const tick = () => new Promise((r) => setTimeout(r, 5));
+{
+  seedSplit("City of Toctou", "Toctou County");
+  const p = mk("City of Toctou");
+  const seen = permitLine(p.id);
+  check("6a. a confirmable line carries the rows behind its amount, with their versions (city structural, the pointer, the county electrical)",
+    seen.feeUsd === 360 && Array.isArray(seen.confirmRows) && seen.confirmRows.length === 3 && seen.confirmRows.every((r) => r.id && r.updatedAt),
+    JSON.stringify(seen.confirmRows));
+  const silent = statusOf(() => confirmPublishedFee(db, p, "permit", "Jane Operator", DEFAULT_ORG_ID, undefined as never));
+  check("6b. a confirmation that does not say what was seen is refused (400) and writes nothing",
+    silent.status === 400 && [...rows("City of Toctou"), ...rows("Toctou County")].every((r) => r.confidence === "seeded"), JSON.stringify(silent));
+
+  // Background research re-saves the county row with new amounts before the click lands.
+  await tick();
+  F.saveFeeSchedule(db, { state: "OR", ahj: "Toctou County", track: "permit", discipline: "electrical" }, finding({
+    basis: "system_kw", brackets: [{ maxKw: 5, feeUsd: 150, label: "5 KVA or less" }, { minKw: 5.01, maxKw: 15, feeUsd: 240, label: "5.01 KVA to 15 KVA" }],
+    sourceUrl: COUNTY_PDF, sourceQuote: "5.01 KVA to 15 KVA | $240.00",
+  }));
+  const raced = statusOf(() => confirmPublishedFee(db, p, "permit", "Jane Operator", DEFAULT_ORG_ID, seenOf(seen)));
+  check("6c. MUST-EXCLUDE: $360 seen, $440 standing now -> 409 'the fee changed since you looked'",
+    raced.status === 409 && /changed since you looked/i.test(raced.message), JSON.stringify(raced));
+  check("6d. …and nothing was verified — no person's name on an amount they never saw",
+    [...rows("City of Toctou"), ...rows("Toctou County")].every((r) => r.confidence === "seeded" && r.verified_by === ""));
+
+  // Same displayed amount, but a row re-saved since the person looked (an UNSEEN bracket moved):
+  // the rows' versions differ, so the person has not seen what they would be vouching for.
+  const seen440 = permitLine(p.id);
+  await tick();
+  F.saveFeeSchedule(db, { state: "OR", ahj: "Toctou County", track: "permit", discipline: "electrical" }, finding({
+    basis: "system_kw", brackets: [{ maxKw: 5, feeUsd: 170, label: "5 KVA or less" }, { minKw: 5.01, maxKw: 15, feeUsd: 240, label: "5.01 KVA to 15 KVA" }],
+    sourceUrl: COUNTY_PDF, sourceQuote: "5.01 KVA to 15 KVA | $240.00",
+  }));
+  const unseen = statusOf(() => confirmPublishedFee(db, p, "permit", "Jane Operator", DEFAULT_ORG_ID, seenOf(seen440)));
+  check("6e. MUST-EXCLUDE: the same $440 but a row re-saved since the person looked (an unseen bracket moved) -> 409",
+    seen440.feeUsd === 440 && unseen.status === 409 && [...rows("Toctou County")].every((r) => r.confidence === "seeded"), JSON.stringify({ f: seen440.feeUsd, unseen }));
+
+  // CONTROL: the person reloads, sees what stands, confirms — verified.
+  const fresh = permitLine(p.id);
+  const ok = confirmPublishedFee(db, p, "permit", "Jane Operator", DEFAULT_ORG_ID, seenOf(fresh));
+  check("6f. MUST-PASS: the amount and row versions the person saw are the ones standing -> all three rows verified",
+    ok.verified.length === 3 && [...rows("City of Toctou"), ...rows("Toctou County")].every((r) => r.confidence === "verified" && r.verified_by === "Jane Operator")
+      && permitLine(p.id).feeUsd === 440 && permitLine(p.id).confidence === "verified",
+    JSON.stringify(ok.verified));
+  check("6g. a line that is not confirmable carries no rows to confirm", permitLine(p.id).confirmRows.length === 0);
 }
 
 // ── 4. THE ROUTE, sign-in ON ───────────────────────────────────────────────────────────────
@@ -231,7 +295,18 @@ try {
   check("4a. signed out: 401, and nothing verified", anon.status === 401 && read("SELECT 1 FROM fee_schedules WHERE ahj IN ('City of Routebay','Route County') AND confidence = 'verified'").length === 0, String(anon.status));
   const login = await fetch(`${BASE}/api/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "admin@fee.test", password: "fee-test-password-1" }) });
   const cookie = String(login.headers.get("set-cookie") || "").split(";")[0];
-  const res = await post(routed.id, { track: "permit", confirmedBy: "Mallory Forger" }, cookie);
+  // What the person SEES first: the sheet, its amount and the rows behind it (MF2).
+  const sheetRes = await fetch(`${BASE}/api/projects/${routed.id}/fee-sheet`, { headers: { cookie } });
+  const shown = ((await sheetRes.json()) as { feeSheet: { lines: Array<{ track: string; feeUsd: number; confirmRows: Array<{ id: string; updatedAt: string }> }> } }).feeSheet.lines.find((l) => l.track === "permit")!;
+  const stale = await post(routed.id, { track: "permit", feeUsd: shown.feeUsd + 80, scheduleRows: shown.confirmRows }, cookie);
+  const staleBody = await stale.json().catch(() => ({})) as { error?: string };
+  check("4f. MUST-EXCLUDE (MF2, the route): an amount other than the one standing -> 409 'changed since you looked', nothing verified",
+    stale.status === 409 && /changed since you looked/i.test(String(staleBody.error)) && read("SELECT 1 FROM fee_schedules WHERE ahj IN ('City of Routebay','Route County') AND confidence = 'verified'").length === 0,
+    `${stale.status} ${JSON.stringify(staleBody).slice(0, 160)}`);
+  const blind = await post(routed.id, { track: "permit" }, cookie);
+  check("4g. a confirm that does not say what was seen -> 400, nothing verified",
+    blind.status === 400 && read("SELECT 1 FROM fee_schedules WHERE ahj IN ('City of Routebay','Route County') AND confidence = 'verified'").length === 0, String(blind.status));
+  const res = await post(routed.id, { track: "permit", confirmedBy: "Mallory Forger", feeUsd: shown.feeUsd, scheduleRows: shown.confirmRows }, cookie);
   const body = await res.json().catch(() => ({})) as { outcome?: { confirmedBy?: string }; feeSheet?: { lines?: Array<{ track: string; confidence: string; verifiedBy: string }> } };
   const who = read("SELECT DISTINCT verified_by FROM fee_schedules WHERE ahj IN ('City of Routebay','Route County')").map((r) => r.verified_by);
   check("4b. signed in: WHO is the session's person, never the body's name",

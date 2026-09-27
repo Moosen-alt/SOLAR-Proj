@@ -264,7 +264,7 @@ check("5a. a page that names a different record is refused (wrong_record), with 
 // ═══ 6. A CONFIRMED SCHEDULE IS UNTOUCHED BY A LATER READ ═══════════════════════════════════
 seedSplit("City of Confirmread", "Confirmread County");
 const conf = mkProject("City of Confirmread");
-confirmPublishedFee(db, conf, "permit", "Jane Operator", DEFAULT_ORG_ID);
+{ const seenConf = buildProjectFeeSheet(db, conf).lines.find((l) => l.track === "permit")!; confirmPublishedFee(db, conf, "permit", "Jane Operator", DEFAULT_ORG_ID, { feeUsd: seenConf.feeUsd as number, scheduleRows: seenConf.confirmRows }); }
 const frozen = JSON.stringify(db.query("SELECT id, confidence, verified_by, verified_at, brackets_json, updated_at FROM fee_schedules WHERE ahj IN ('City of Confirmread','Confirmread County') ORDER BY id"));
 const confUrl = capUrl("CONFIRMREAD", "000C1");
 const confTid = mkTarget(conf.id, "187-26-000555-STR", "City of Confirmread", "building", confUrl);
