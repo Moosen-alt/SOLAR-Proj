@@ -257,6 +257,14 @@ try {
     shapeRecipe("own-unlabelled", { action: "fill", selector: { label: TIER_LABEL, fallbacks: [{ css: `#${SP}_txt_0_27` }] }, note: TIER_LABEL, field: TIER_KEY, value: "1" }));
   check("MUST-PASS MF2: an own recipe whose schedule keyed the recorded box types it through its selector and goes on — no false stop",
     own.all.txt_0_27 === "1" && own.continueClicks >= 1 && own.result.pauseReason !== "fee_tier_undecided", sayAll(own));
+  // MUST-EXCLUDE (live-run-jefferson-close skeptic MF1, shape A): the SAME own recipe on a project
+  // with NO AC rating — the stored schedule's evaluator fell back to DC and put its "1" on this
+  // key. The recorded box must not be typed on DC: nothing typed, Continue never clicked, the AC pause.
+  const ownDc = await run({ name: "own recipe, unlabelled box, AC absent, schedule on DC", variant: "unlabelled", fieldValues: { [FEE_TIER_RATING_FIELD]: "", feeTierDcKw: "15.91", [TIER_KEY]: "1" } },
+    shapeRecipe("own-unlabelled-dc", { action: "fill", selector: { label: TIER_LABEL, fallbacks: [{ css: `#${SP}_txt_0_27` }] }, note: TIER_LABEL, field: TIER_KEY, value: "1" }));
+  check("MUST-EXCLUDE MF1 (no-box path): AC absent, a DC-evaluated schedule '1' on the recorded box → nothing typed, the Continue NEVER clicked, paused with the AC wording",
+    ownDc.all.txt_0_27 === "" && ownDc.continueClicks === 0 && ownDc.result.pauseReason === "fee_tier_undecided"
+      && /the project has no AC \(inverter\) rating; DC is 15\.91 kW — confirm the AC size/.test(ownDc.result.message), sayAll(ownDc));
   const f = await run({ name: "schedule disagrees", variant: "tier", fieldValues: { ...RATING, "feeBracketQuantity:15.01-25": "1", [TIER_KEY]: "0", "feeBracketQuantity:-5": "0" } });
   check("MUST-EXCLUDE F1: a stored schedule that puts 12.913 kVA in another tier → nothing typed, Continue never clicked, paused",
     emptyExcept(f.boxes, []) && f.continueClicks === 0 && f.result.pauseReason === "fee_tier_undecided" && /stored fee schedule/i.test(f.result.message), say(f));

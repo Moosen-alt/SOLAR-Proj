@@ -5,7 +5,7 @@ import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, 
 import { applyFormatHint } from "../formatHint";
 import { extractRecordNumber, pageConfirmsSubmission } from "../recordNumber";
 import { armHumanCaptureOnPage, HUMAN_SUBMIT_OBSERVED_NOTE } from "../humanCapture";
-import { feeBracketCoverage, feeBracketCoverageMessage, decideFeeTier, FEE_TIER_DC_FIELD, FEE_TIER_RATING_FIELD, parseFeeBracketFieldKey, readTierLabel, sameFeeTier, TIER_UNIT_RE, type TierBoxOnPage } from "../feeBracketQuantity";
+import { feeBracketCoverage, feeBracketCoverageMessage, decideFeeTier, FEE_TIER_DC_FIELD, FEE_TIER_RATING_FIELD, kvaText, parseFeeBracketFieldKey, readTierLabel, sameFeeTier, TIER_UNIT_RE, type TierBoxOnPage } from "../feeBracketQuantity";
 
 /** The pause's reason when a recorded kVA tier step finds no tier box on its page (close MF2). */
 const FEE_TIER_NO_BOX_REASON = "the recorded kVA tier box was not found on this page and no kVA-labelled box could be read";
@@ -5360,6 +5360,20 @@ export class RecipeAdapter extends BasePortalAdapter {
       this.feeTierProvisionalAt = this.currentStepIdx;
       this.driftWarnings.push(`kVA tier: ${FEE_TIER_NO_BOX_REASON} ("${String(step.selector?.label || step.note || step.field || "tier box").replace(/:\s*$/, "").slice(0, 70)}")`);
       if (!v || v === "0") { this.noteUnresolved(step); return false; }
+      // AC ONLY, on this path too (live-run-jefferson-close skeptic MF1). The recorded box's value
+      // comes from the stored schedule, whose evaluator falls back to DC when the project has no AC
+      // rating — so with no AC it would tick the DC tier (td-only labels readTierBoxes cannot
+      // reach). No AC rating: nothing is typed, and the stop stands with the AC wording.
+      const acRaw = Number(String(this.fieldValues[FEE_TIER_RATING_FIELD] ?? "").trim() || NaN);
+      if (!(Number.isFinite(acRaw) && acRaw > 0)) {
+        const dcRaw = Number(String(this.fieldValues[FEE_TIER_DC_FIELD] ?? "").trim() || NaN);
+        this.feeTierStop = Number.isFinite(dcRaw) && dcRaw > 0
+          ? `the project has no AC (inverter) rating; DC is ${kvaText(dcRaw)} kW — confirm the AC size`
+          : "the project has no AC (inverter) rating and no DC size either — confirm the AC size";
+        this.driftWarnings.push(`kVA tier NOT typed: ${this.feeTierStop}`);
+        this.noteUnresolved(step);
+        return false;
+      }
       return "normal";
     }
     const ratingRaw = String(this.fieldValues[FEE_TIER_RATING_FIELD] ?? "").trim();
