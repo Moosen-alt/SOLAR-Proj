@@ -54,6 +54,17 @@
 //                 ("Submit and pay $150 now?"): 0 POSTs, pause fee_payment. (A mode name never carries
 //                 "invoice": isPayRequestUrl would abort its own /apply/submit URL.)
 //
+//   autosubmit-2 (the previous skeptic's shapes, verbatim):
+//   MUST-EXCLUDE  MF-S2 confirmNegatedDebit / confirmPaysNoNeed / modalNegatedDebit ("You do not need to pay
+//                 now - $150 will be debited on submit."; "No need to pay separately; submitting pays the
+//                 $150 fee…"): a negation never cancels a pays-now phrase — 0 POSTs, pause fee_payment.
+//   MUST-EXCLUDE  MF-S3 alertPay (a pays-now alert() on a submit button — an alert cannot cancel its
+//                 form): the slot closes, the form's POST is aborted — 0 POSTs, pause fee_payment.
+//   MUST-EXCLUDE  MF-S4 sameOriginFetchClick / iframeBeacon (a same-origin fetch in onclick; a tracking
+//                 form posted into an iframe): the request that took the window is NOT the filing —
+//                 finalSubmitRequestSent false, "did not reach the portal (a … request took the window)".
+//   MUST-PASS     imgPing (a GET pixel in onsubmit): files once, finalSubmitRequestSent true.
+//
 // Kill: mayClickFinalSubmit -> true (or finalSubmitRefusals -> []) turns the MUST-EXCLUDE env /
 // approval / shape cases red. filingBackstop slotAdmits -> true turns section 9 red.
 //
@@ -174,6 +185,27 @@ const reviewBody = (mode: string): string => {
         document.getElementById("dlgOk").addEventListener("click", function(){ document.getElementById("f").submit(); });
       </script>`;
   }
+  // autosubmit-2 (the skeptic's shapes, verbatim). MF-S2: a NEGATED pay beside money that leaves the
+  // payer on submit — native confirm() and DOM modal.
+  if (mode === "confirmNegatedDebit") return `${summary}<form method="post" action="/m/${mode}/apply/submit"><button type="submit" id="btnSubmit" onclick="return confirm('You do not need to pay now - $150 will be debited on submit.')">Submit Application</button></form>`;
+  if (mode === "confirmPaysNoNeed") return `${summary}<form method="post" action="/m/${mode}/apply/submit"><button type="submit" id="btnSubmit" onclick="return confirm('No need to pay separately; submitting pays the $150 fee from your account.')">Submit Application</button></form>`;
+  if (mode === "modalNegatedDebit") {
+    return `${summary}<form id="f" method="post" action="/m/${mode}/apply/submit"></form>
+      <button type="button" id="btnSubmit">Submit Application</button>
+      <div id="dlg" role="dialog" style="display:none;border:1px solid #000;padding:12px"><p>You do not need to pay now - $150 will be debited on submit.</p><button type="button" id="dlgCancel">Cancel</button> <button type="button" id="dlgOk">OK</button></div>
+      <script>
+        document.getElementById("btnSubmit").addEventListener("click", function(){ document.getElementById("dlg").style.display = "block"; });
+        document.getElementById("dlgOk").addEventListener("click", function(){ document.getElementById("f").submit(); });
+      </script>`;
+  }
+  // MF-S3: an alert() cannot cancel its form — a pays-now alert on a submit button.
+  if (mode === "alertPay") return `${summary}<form method="post" action="/m/${mode}/apply/submit"><button type="submit" id="btnSubmit" onclick="alert('Your card on file will be charged $150 when you submit.')">Submit Application</button></form>`;
+  // MF-S4: the request that takes the approved window is not the filing — a same-origin fetch in the
+  // Submit's onclick; a tracking form posted into a hidden iframe from onsubmit. (imgPing: a GET
+  // pixel in onsubmit — not state-changing, the form's POST still files.)
+  if (mode === "sameOriginFetchClick") return `${summary}<form method="post" action="/m/${mode}/apply/submit"><button type="submit" id="btnSubmit" onclick="fetch('/m/${mode}/analytics', { method: 'POST', body: 'e=click' }).catch(function(){})">Submit Application</button></form>`;
+  if (mode === "iframeBeacon") return `${summary}<iframe name="trk" src="about:blank" style="width:1px;height:1px"></iframe><form id="tf" method="post" action="/m/${mode}/track" target="trk"><input type="hidden" name="e" value="submit"></form><form method="post" action="/m/${mode}/apply/submit" onsubmit="document.getElementById('tf').submit()"><button type="submit" id="btnSubmit">Submit Application</button></form>`;
+  if (mode === "imgPing") return `${summary}<form method="post" action="/m/${mode}/apply/submit" onsubmit="new Image().src='/m/${mode}/pixel.gif?e=submit'"><button type="submit" id="btnSubmit">Submit Application</button></form>`;
   return `${summary}<form method="post" action="/m/${mode}/apply/submit"><button type="submit" id="btnSubmit">Submit Application</button></form>`;
 };
 
@@ -500,6 +532,41 @@ if (want("popupPost")) {
   check("MUST-EXCLUDE popupPost: finalSubmitRequestSent false, no record — nothing claims the popup's request was the approved one",
     o.r.finalSubmitRequestSent === false && !o.r.capturedPermitNumber && o.r.ok === false, brief(o));
   check("popupPost: the abort is reported (the filing-URL rule, no approval covers it)", /BACKSTOP ABORTED POST \S*\/m\/popupPost\/apply\/submit/.test(JSON.stringify(o.r.steps ?? "") + msgOf(o.r)), msgOf(o.r).slice(0, 400));
+}
+
+console.log("\n12. autosubmit-2 MF-S2: a negation never cancels money leaving the payer on submit — native confirm() and DOM modal");
+for (const mode of ["confirmNegatedDebit", "confirmPaysNoNeed", "modalNegatedDebit"]) {
+  if (!want(mode)) continue;
+  const o = await stage(mode, "1", {});
+  check(`MUST-EXCLUDE ${mode}: a confirmation that debits / pays on submit is never accepted — 0 POSTs reach the portal`, o.posts.length === 0, brief(o));
+  check(`MUST-EXCLUDE ${mode}: PAUSED fee_payment, finalSubmitClicked false, finalSubmitRequestSent false, NOTHING filed`,
+    o.r.pauseReason === "fee_payment" && o.r.finalSubmitClicked === false && o.r.finalSubmitRequestSent === false && o.r.ok === false && /NOTHING was filed/.test(msgOf(o.r)), brief(o));
+}
+
+console.log("\n13. autosubmit-2 MF-S3: a pays-now alert() cannot cancel its form — the approved slot closes, the form's POST never files");
+if (want("alertPay")) {
+  const o = await stage("alertPay", "1", {}, undefined, 800);
+  check("MUST-EXCLUDE alertPay: 0 POSTs reach the portal (the form's filing POST after a pays-now alert is aborted)", o.posts.length === 0, brief(o));
+  check("MUST-EXCLUDE alertPay: PAUSED fee_payment, finalSubmitClicked false, finalSubmitRequestSent false, no record, NOTHING filed",
+    o.r.pauseReason === "fee_payment" && o.r.finalSubmitClicked === false && o.r.finalSubmitRequestSent === false && o.r.ok === false && !o.r.capturedPermitNumber && /NOTHING was filed/.test(msgOf(o.r)), brief(o));
+}
+
+console.log("\n14. autosubmit-2 MF-S4: a request that takes the approved window but is not the filing is never reported as the filing");
+for (const [mode, kind] of [["sameOriginFetchClick", "fetch/XHR"], ["iframeBeacon", "subframe navigation"]] as const) {
+  if (!want(mode)) continue;
+  const o = await stage(mode, "1", {}, undefined, 800);
+  const m = msgOf(o.r);
+  check(`${mode}: the form's filing POST never reaches the portal (the window was taken; unchanged admission)`, filingPosts(o) === 0 && !o.r.capturedPermitNumber && o.r.ok === false, brief(o));
+  check(`MUST-EXCLUDE ${mode}: finalSubmitRequestSent FALSE — the admitted request is not the filing (the backend records "NO filing request reached the portal")`,
+    o.r.finalSubmitRequestSent === false, brief(o));
+  check(`MUST-EXCLUDE ${mode}: the run says the approved click's request did not reach the portal (a ${kind} request took the window), never that it went`,
+    new RegExp(`approved click's request did not reach the portal \\(a ${kind.replace("/", "\\/")} request to \\S+ took the window\\)`).test(m) && !/the approved click's request \(the clicked page's form submission\) went to/.test(m), m.slice(0, 600));
+}
+if (want("imgPing")) {
+  const o = await stage("imgPing", "1", {}, undefined, 800);
+  check("MUST-PASS imgPing: a GET pixel in onsubmit does not disturb the filing — EXACTLY ONE filing POST, nothing else", filingPosts(o) === 1 && o.posts.length === 1, brief(o));
+  check("MUST-PASS imgPing: finalSubmitClicked, finalSubmitRequestSent, the record captured, accepted (ok, not paused)",
+    o.r.finalSubmitClicked === true && o.r.finalSubmitRequestSent === true && o.r.capturedPermitNumber === RECORD && o.r.ok === true && !o.r.pauseReason, brief(o));
 }
 
 server.close();

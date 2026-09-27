@@ -368,16 +368,30 @@ const DIALOG_PAYS_NOW = [
   "Submit application? You will be charged $75 after approval.",
   // payment-worded, no deferral: fail-closed
   "Submit application? A $150 permit fee applies.", "Fees are due on submission. Continue?", "Would you like to pay now or later?",
+  // autosubmit-2 MF-S2 (the skeptic's shapes, verbatim): a NEGATION never cancels a pays-now phrase
+  // elsewhere in the text, and money leaving the payer by submission is paying whatever the verb.
+  "You do not need to pay now - $150 will be debited on submit.",
+  "No need to pay separately; submitting pays the $150 fee from your account.",
+  // the pays-now vocabulary, each beside a deferral or a negation that must not win
+  "Fees will be invoiced later; $25 will be deducted from your account today.",
+  "Permit fees are due at issuance. The $150 filing fee will be withdrawn from your bank account when you submit.",
+  "Submit? Your card will be billed $150.", "No payment is needed now. The $150 fee will be billed to your account on submission.",
+  "Fees will be invoiced later. Auto-pay is enabled for this account.",
+  "You don't have to pay anything today; the account on file covers the $150 fee.",
+  "No need to pay now. Your payment will be processed when you submit.",
 ];
 const DIALOG_FEE_DEFERRED = [
   "Submit application? Fees will be invoiced later.", "A fee of $150 will be invoiced", "Fees will be assessed after review.",
   "Submit? You will be billed.", "Fees are due at issuance.", "Submit now and pay later?", "You can pay the fee later.",
   "Permit fees are payable upon permit issuance.", "You do not need to pay now; fees will be calculated after plan review.",
   "No payment is required at this time.",
+  // "withdrawn" with no money in it is not paying (MF-S2's vocabulary is money leaving the payer).
+  "Fees will be invoiced later. An unsubmitted draft is withdrawn after 30 days.",
 ];
 const DIALOG_NO_PAYMENT = [
   "File this application now?", "Are you sure you want to submit this application?", "Submit this application?",
   "Thanks for your feedback — submit?", "Leave this page? Changes you made may not be saved.",
+  "Your draft will be withdrawn if you leave this page. Submit now?",
 ];
 await check("FEE CONFIRM: pays-now wording is dismissed, deferred fee wording accepted, no-payment accepted (shared + page copy)", () => {
   const pc = pageCopy as unknown as { paymentDialogVerdict: (t: string) => string; isPayNowDialogText: (t: string) => boolean };
@@ -425,6 +439,44 @@ await check("SIGNER RULE: perjury about contact data is not an attestation; a ro
   for (const [name, first, last] of [["Dana Signer", "Dana", "Signer"], ["Dana Q. Signer", "Dana", "Signer"], ["Dana Signer Jr.", "Dana", "Signer"], ["Signer, Dana", "Dana", "Signer"], ["Cher", "", ""], ["", "", ""]] as Array<[string, string, string]>) {
     assert.equal(splitSignerName(name, "first"), first, `splitSignerName(${JSON.stringify(name)}, first)`);
     assert.equal(splitSignerName(name, "last"), last, `splitSignerName(${JSON.stringify(name)}, last)`);
+  }
+});
+
+// THE SIGNING ACT'S SUBJECT AND TIME (autosubmit-2 MF-S1). "Sign below" / "consent to sign" counted on
+// their own, so a sentence about a THIRD PARTY's later / offline signing turned that party's name
+// boxes into the client's signature (the signer typed as the homeowner, at learn AND at replay). The
+// skeptic's shapes, verbatim (textAroundInPage reads the heading and the statement around the box).
+await check("SIGNING ACT (MF-S1): a third party's later / offline signing never makes a name box the client's signature; the applicant's own act still does", () => {
+  const pc = pageCopy as unknown as PortalSafety;
+  const HOMEOWNER = "Enter the homeowner exactly as shown on the utility bill. The homeowner will sign below once the utility approves. \n Homeowner";
+  const CUSTOMER = "The customer must consent to sign the interconnection agreement electronically; the utility will email it after approval. \n Customer";
+  const OWNER = "If the property owner is not the applicant, the owner must sign here on the printed authorization form (download below). \n Property Owner";
+  // MUST-PASS: the homeowner's / customer's / owner's names stay the planner's.
+  for (const [label, around] of [["First name *", HOMEOWNER], ["Last name *", HOMEOWNER], ["First Name *", CUSTOMER], ["Last Name *", CUSTOMER]] as Array<[string, string]>) {
+    assert.equal(signatureNamePartOf(label, around), "", `MUST-PASS signatureNamePartOf(${JSON.stringify(label)}) under ${JSON.stringify(around.slice(0, 50))} — a third party's later signing`);
+    assert.equal(pc.signatureNamePartOf(label, around), "", `page copy drifted on ${JSON.stringify(label)}`);
+    assert.equal(isSignatureNameBox(label, around), false, `isSignatureNameBox(${JSON.stringify(label)})`);
+  }
+  for (const [label, around] of [["Owner Name *", OWNER], ["Full name *", HOMEOWNER], ["Full name *", CUSTOMER], ["Applicant Name *", CUSTOMER], ["Full name *", OWNER]] as Array<[string, string]>) {
+    assert.equal(isSignatureNameBox(label, around), false, `MUST-PASS isSignatureNameBox(${JSON.stringify(label)}) under ${JSON.stringify(around.slice(0, 50))} wrongly reads as the client's signature`);
+    assert.equal(pc.isSignatureNameBox(label, around), false, `page copy drifted on ${JSON.stringify(label)}`);
+  }
+  // MUST-EXCLUDE: the applicant's own act of signing NOW is still a signature — a strong first-person
+  // act counts even beside a later clause, and "the owner" named as a capacity is not the signer.
+  const STRONG_PLUS_LATER = "By typing your name below you are signing this application electronically; the utility will email a copy after approval.";
+  for (const [label, around] of [
+    ["Signer Name *", STRONG_PLUS_LATER], ["Applicant Name *", "Please type your name as consent to electronically sign this application."],
+    ["Owner Name *", "By typing your name below you are signing as the property owner or the owner's authorized agent."],
+    ["Applicant Name *", "I consent to electronically sign this application."], ["Your legal name", "Sign below to consent."],
+    ["Full name *", "By typing your name below you are signing this application electronically. The homeowner will receive a copy by email."],
+  ] as Array<[string, string]>) {
+    assert.equal(isSignatureNameBox(label, around), true, `MUST-EXCLUDE isSignatureNameBox(${JSON.stringify(label)}) under ${JSON.stringify(around.slice(0, 50))} is no longer a signature`);
+    assert.equal(pc.isSignatureNameBox(label, around), true, `page copy drifted on ${JSON.stringify(label)}`);
+  }
+  for (const around of ["By typing your first and last name below you are signing this application electronically.", "Sign below.", STRONG_PLUS_LATER]) {
+    assert.equal(signatureNamePartOf("First name *", around), "first", `MUST-EXCLUDE First name under ${JSON.stringify(around.slice(0, 50))}`);
+    assert.equal(signatureNamePartOf("Last name *", around), "last", `MUST-EXCLUDE Last name under ${JSON.stringify(around.slice(0, 50))}`);
+    assert.equal(pc.signatureNamePartOf("First name *", around), "first", "page copy drifted");
   }
 });
 
