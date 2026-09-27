@@ -48,7 +48,7 @@ import { applicationProfiles, findApplicationProfile, namedApplicationForm, perm
 import { normalizeAhjName, permitProcessFor, stateRulesFor } from "./permitProcess";
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import {
-  agencyApplicationForms, agencyListNamesDocument, agencyListReplacesLine, issuingAgencyDocumentList, prerequisiteSettled, rowBelongsToAuthority, tracksIssuedByOther, TRACK_FORM_TYPES,
+  agencyApplicationForms, agencyListNamesDocument, agencyListReplacesLine, agencyRowAppliesToJob, anchorSitesOnce, issuingAgencyDocumentList, prerequisiteSettled, rowBelongsToAuthority, tracksIssuedByOther, TRACK_FORM_TYPES,
   type AgencyApplicationForm, type AgencyLineStatus, type AgencyLineStatusOf, type FormTrack,
 } from "./applicationDocsAgency";
 import { filledApplicationForms, heldUnfillableAgencyBlanks } from "./ahjForms";
@@ -917,6 +917,13 @@ export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): Age
     return inventory;
   };
   const norm = (s: unknown) => String(s ?? "").trim().toLowerCase();
+  // C1 (agency-contain): a NAME makes a stored row "this form" only when this job may use that row at all
+  // (agencyRowAppliesToJob) — one anchor-site read per agency, on first need.
+  const anchorsByAgency = new Map<string, () => ReadonlySet<string>>();
+  const anchorsFor = (agency: string) => {
+    if (!anchorsByAgency.has(agency)) anchorsByAgency.set(agency, anchorSitesOnce(project, agency));
+    return anchorsByAgency.get(agency)!;
+  };
   return (item) => {
     const types = item.docTypes;
     if (!types.length) return null;
@@ -930,11 +937,12 @@ export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): Age
       // THIS form's templates: URL first, then the blank's hash (both name the document itself, whoever
       // it is stored under), then the form's own name — a name only among the AGENCY's own rows (the
       // AHJ's own same-named application is not the agency's form).
-      const isThisForm = (t: { formType: string; sourceUrl: string; sourceHash: string; formName: string; owner: string }): boolean =>
+      const isThisForm = (t: { formType: string; sourceUrl: string; sourceHash: string; formName: string; owner: string; verified: boolean }): boolean =>
         types.includes(t.formType || "permit_application")
         && ((Boolean(form.sourceUrl) && t.sourceUrl === form.sourceUrl) || (Boolean(form.sha) && t.sourceHash === form.sha)
-          || (Boolean(norm(form.formName)) && norm(t.formName) === norm(form.formName) && Boolean(item.agency) && rowBelongsToAuthority(t.owner, String(item.agency))));
-      const mine = stored.filter((t) => isThisForm({ formType: t.formType, sourceUrl: t.sourceUrl, sourceHash: t.sourceHash, formName: t.def.formName, owner: t.authority }));
+          || (Boolean(norm(form.formName)) && norm(t.formName) === norm(form.formName) && Boolean(item.agency) && rowBelongsToAuthority(t.owner, String(item.agency))
+            && agencyRowAppliesToJob(project, String(item.agency), { sourceUrl: t.sourceUrl, sourceHash: t.sourceHash, verified: t.verified }, anchorsFor(String(item.agency)))));
+      const mine = stored.filter((t) => isThisForm({ formType: t.formType, sourceUrl: t.sourceUrl, sourceHash: t.sourceHash, formName: t.def.formName, owner: t.authority, verified: t.verified }));
       const myBlanks = blanks.filter((b) => isThisForm({ ...b, owner: b.agency }));
       if (mine.some((t) => filledTemplateIds.has(t.templateId))) return "filled";
       if (mine.some((t) => !formContradictsPath(t.def.formName, permitPath, t.applicationKind))) return "on_file";

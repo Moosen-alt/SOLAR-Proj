@@ -27,7 +27,7 @@ import { documentDateForPdf } from "./documentDate";
 import { bcd5952Template } from "./bcd5952Template";
 import { iowaPvWorksheetTemplate, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
-import { agencyApplicationForms, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
+import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
 
 // ---------------------------------------------------------------------------
 // Auto-acquire an AHJ's official permit PDF form: web-research the URL, download
@@ -928,10 +928,15 @@ export async function ensureIssuingAgencyForm(
   const label = track === "electrical" ? "electrical permit application" : `${want === "prescriptive" ? "prescriptive solar " : want === "structural" ? "structural (non-prescriptive) " : ""}permit application`;
   const cite = authority.fact?.sourceUrl ? ` (per-job lookup, cited: ${authority.fact.sourceUrl})` : "";
   const whose = `${agency} issues this permit for ${project.ahj}${cite}`;
-  const held = db.query<{ id: string; ahj_name: string; state: string; form_type: string; original_filename?: string; field_map?: string }>(
-    "SELECT id, ahj_name, state, form_type, original_filename, field_map FROM ahj_form_templates WHERE pdf_blob IS NOT NULL",
+  // "Already held" means held FOR THIS JOB (agency-contain C1): a row another city's lookup attributed to
+  // the agency, on a site this job's lookup does not anchor, is not this job's form — so it neither
+  // answers "exists" nor stops the agency's curated seed / this job's own cited form being fetched.
+  const anchors = anchorSitesOnce(project, agency);
+  const held = db.query<{ id: string; ahj_name: string; state: string; form_type: string; original_filename?: string; field_map?: string; source_url?: string }>(
+    "SELECT id, ahj_name, state, form_type, original_filename, field_map, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL",
   ).filter((r) => types.includes(String(r.form_type)) && (!r.state || String(r.state).toLowerCase() === String(project.state).toLowerCase())
-    && rowBelongsToAuthority(r.ahj_name, agency) && (!want || !storedApplicationKind(r) || storedApplicationKind(r) === want));
+    && rowBelongsToAuthority(r.ahj_name, agency) && (!want || !storedApplicationKind(r) || storedApplicationKind(r) === want)
+    && agencyRowAppliesToJob(project, agency, agencyRowProvenance(r), anchors));
   if (held.length) {
     const usable = loadStoredTemplates(db, agency, project.state, { ownOnly: true }).some((t) => held.some((h) => h.id === t.templateId));
     return usable

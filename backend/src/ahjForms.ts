@@ -24,6 +24,7 @@ import { bcdChecklistAnswers, bcd5952MissingFacts, bcd5952SnapshotAdditions } fr
 import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
 import { documentFetchDisabled } from "./documentFetch";
 import {
+  agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce,
   applicationKindForPath, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
   TRACK_FORM_TYPES, tracksIssuedByOther,
 } from "./applicationDocsAgency";
@@ -1655,19 +1656,30 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string, opts:
     "SELECT id, ahj_name, state, form_type, original_filename, pdf_blob, field_map, document_date, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL ORDER BY updated_at DESC",
   );
   let out: StoredTemplate[] = [];
+  const ownRows = new Map<string, TemplateRow>();
   for (const row of rows) {
     const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
     if (!rowAhj) continue;
     const nameMatches = rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle);
     if (!nameMatches || !rowStateOk(row, state)) continue;
     const t = storedTemplateFromRow(row);
-    if (t) out.push(t);
+    if (t) { out.push(t); ownRows.set(t.templateId, row); }
   }
   if (opts.ownOnly) return out;
   for (const other of tracksIssuedByOther({ state, ahj })) {
     const types = TRACK_FORM_TYPES[other.track];
+    // C1 THE AMPLIFIER (agency-contain): the agency's rows THIS job may use — curated, person-placed, or
+    // on a site this job's own lookup anchors (applicationDocsAgency.agencyRowAppliesToJob). A row of the
+    // agency's that the AHJ's name happens to contain ("Unincorporated Kestrel County") is held to the
+    // same answer: it is the agency's row whichever pass found it.
+    const anchors = anchorSitesOnce({ state, ahj }, other.name);
+    const applies = (row: TemplateRow): boolean => agencyRowAppliesToJob({ state, ahj }, other.name, agencyRowProvenance(row), anchors);
+    out = out.filter((t) => {
+      const own = ownRows.get(t.templateId);
+      return t.issuedBy || !own || !types.includes(t.formType) || !rowBelongsToAuthority(t.authority, other.name) || applies(own);
+    });
     const agency = rows
-      .filter((row) => types.includes(String(row.form_type || "")) && rowStateOk(row, state) && rowBelongsToAuthority(row.ahj_name, other.name))
+      .filter((row) => types.includes(String(row.form_type || "")) && rowStateOk(row, state) && rowBelongsToAuthority(row.ahj_name, other.name) && applies(row))
       .map((row) => storedTemplateFromRow(row, other.name))
       .filter((t): t is StoredTemplate => Boolean(t));
     if (!agency.length) continue;
@@ -1681,19 +1693,22 @@ export function loadStoredTemplates(db: AppDb, ahj: string, state: string, opts:
 /** Blanks the ISSUING AGENCY holds for this project's tracks that cannot be filled (no usable
  *  map: a flat scan, or an AcroForm nothing mapped to). They are never reported "filled" — they are
  *  listed so the operator completes and attaches them by hand. */
-export function heldUnfillableAgencyBlanks(db: AppDb, project: Pick<ProjectRecord, "ahj" | "state">): Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; sourceHash: string; applicationKind: "prescriptive" | "structural" | null }> {
-  const out: Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; sourceHash: string; applicationKind: "prescriptive" | "structural" | null }> = [];
+export function heldUnfillableAgencyBlanks(db: AppDb, project: Pick<ProjectRecord, "ahj" | "state">): Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; sourceHash: string; verified: boolean; applicationKind: "prescriptive" | "structural" | null }> {
+  const out: Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; sourceHash: string; verified: boolean; applicationKind: "prescriptive" | "structural" | null }> = [];
   const others = tracksIssuedByOther(project);
   if (!others.length) return out;
   const rows = db.query<TemplateRow>(
     "SELECT id, ahj_name, state, form_type, original_filename, pdf_blob, field_map, document_date, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL",
   );
   for (const other of others) {
+    // C1 (agency-contain): only the agency's rows THIS job may use (agencyRowAppliesToJob).
+    const anchors = anchorSitesOnce(project, other.name);
     for (const row of rows) {
       if (!TRACK_FORM_TYPES[other.track].includes(String(row.form_type || "")) || !rowStateOk(row, project.state) || !rowBelongsToAuthority(row.ahj_name, other.name)) continue;
+      if (!agencyRowAppliesToJob(project, other.name, agencyRowProvenance(row), anchors)) continue;
       if (storedTemplateFromRow(row)) continue;
-      const map = parseJson<{ formName?: string; sourceHash?: string }>(String(row.field_map || "{}"), {});
-      out.push({ templateId: row.id, formName: map.formName || row.original_filename, formType: String(row.form_type || ""), agency: other.name, sourceUrl: String(row.source_url || ""), sourceHash: String(map.sourceHash || ""), applicationKind: storedApplicationKind(row) });
+      const map = parseJson<{ formName?: string; sourceHash?: string; verified?: boolean }>(String(row.field_map || "{}"), {});
+      out.push({ templateId: row.id, formName: map.formName || row.original_filename, formType: String(row.form_type || ""), agency: other.name, sourceUrl: String(row.source_url || ""), sourceHash: String(map.sourceHash || ""), verified: map.verified === true, applicationKind: storedApplicationKind(row) });
     }
   }
   return out;

@@ -789,7 +789,7 @@ try {
   check("C2 once the seed answers, the seed is acquired", auE2.status === "acquired" && auE2.downloads.join() === E01_URL && JSON.stringify(marionElectrical()) === JSON.stringify([E01_URL]), JSON.stringify({ auE2, stored: marionElectrical() }));
 
   assert.equal(failed.length, 0, `${failed.length} check(s) failed: ${failed.join(" | ")}`);
-  console.log(`agencyFormsUniversal: ${passed} checks passed — a cited PDF is the agency's only on a site the lookup cited a page of the agency's on (no name creates an anchor), split agencies keep the city's own lines, every line's status is its own form's, and three held-out AHJs (FL / IA / TX) route to the right agency`);
+  console.log(`agencyFormsUniversal: ${passed} checks passed — a cited PDF is the agency's only on a site the lookup cited a page of the agency's on (no name creates an anchor), split agencies keep the city's own lines, every line's status is its own form's, three held-out AHJs (FL / IA / TX) route to the right agency, and containment holds (C1 a cited row applies only where the job's own lookup anchors its site; C2 a failed curated seed never falls through; C3 no other-state / state-for-county / county-for-state anchor; C4 notFound never vouches)`);
 } finally {
   globalThis.fetch = realFetch;
   db.close();

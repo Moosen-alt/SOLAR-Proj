@@ -301,6 +301,62 @@ export function agencyAnchorSites(project: Pick<ProjectRecord, "state" | "ahj">,
   return [...mine].filter(([site, urls]) => !others.has(site) && !urls.some(vetoed)).map(([site]) => site);
 }
 
+// ── WHICH OF AN AGENCY'S STORED ROWS THIS JOB MAY USE (agency-contain C1 — THE AMPLIFIER) ────────────
+// Operator decision 2026-09-27: a new AHJ's issuing-agency application is acquired FULLY AUTOMATICALLY,
+// accepting that a lookup whose right and wrong attributions look identical offline may store a wrong
+// agency's form. Not accepted: that one wrong row then spreads to EVERY city the agency issues for
+// (the skeptic's zzV3: Deschutes County's application stored under the BCD, filled and packaged for
+// Culver Two; Polk County's under Marion County, and the E-01 never fetched for a Jefferson-shaped job).
+export interface AgencyRowProvenance {
+  /** The row's source URL (the column, else field_map.sourceUrl); "" for an upload. */
+  sourceUrl: string;
+  /** field_map.sourceHash — the stored blank's sha256. */
+  sourceHash?: string;
+  /** field_map.verified === true — a person verified the map. */
+  verified?: boolean;
+}
+/** A stored ahj_form_templates row's provenance, as agencyRowAppliesToJob reads it. */
+export function agencyRowProvenance(row: { source_url?: string | null; field_map?: string | null }): AgencyRowProvenance {
+  let map: { sourceUrl?: unknown; sourceHash?: unknown; verified?: unknown } = {};
+  try { map = JSON.parse(String(row?.field_map || "{}")) ?? {}; } catch { map = {}; }
+  return { sourceUrl: String(row?.source_url || map.sourceUrl || ""), sourceHash: String(map.sourceHash || ""), verified: map.verified === true };
+}
+/** The job's anchor sites for an agency, computed on first use and kept (a caller reading many rows). */
+export function anchorSitesOnce(project: Pick<ProjectRecord, "state" | "ahj">, agency: string): () => ReadonlySet<string> {
+  let sites: Set<string> | null = null;
+  return () => {
+    if (!sites) sites = new Set(agencyAnchorSites(project, agency));
+    return sites;
+  };
+}
+/**
+ * THE ONE ANSWER to "may THIS job use this row stored under the issuing agency?" — read by the fill
+ * loader (ahjForms.loadStoredTemplates), the held-blank list (ahjForms.heldUnfillableAgencyBlanks),
+ * acquisition's "already held" check (ahjFormAuto.ensureIssuingAgencyForm) and the line-status
+ * resolver's name match (requiredDocuments.agencyListStatusResolver):
+ *   - the agency's CURATED seed (its source URL, or its blank's sha256, is one of curatedFormSourcesFor's)
+ *     applies to every city the agency issues for — Michael's B-01S / E-01;
+ *   - so does a row a PERSON placed: its map VERIFIED (PATCH /api/ahj-templates/:id/verify), or UPLOADED
+ *     under the agency's name (no http source URL — the upload route stores none; every automatic
+ *     acquisition stores the URL it fetched);
+ *   - any other row (acquired automatically from a PDF some lookup cited) applies ONLY where THIS job's
+ *     own lookup anchors the row's site — the same site rule acquisition used (agencyAnchorSites; never a
+ *     shared document host). What one city's lookup attributed to the agency stays that city's.
+ */
+export function agencyRowAppliesToJob(
+  project: Pick<ProjectRecord, "state" | "ahj">,
+  agency: string,
+  row: AgencyRowProvenance,
+  anchors: () => ReadonlySet<string> = anchorSitesOnce(project, agency),
+): boolean {
+  if (row.verified) return true;
+  const url = httpUrl(row.sourceUrl);
+  if (!url) return true;
+  const hash = String(row.sourceHash || "");
+  if (curatedFormSourcesFor(agency, project.state).some((s) => s.url === url || (Boolean(hash) && s.hash === hash))) return true;
+  return anchors().has(siteOf(url)) && !isSharedDocumentHost(portalHostOf(url));
+}
+
 /**
  * The application PDFs the per-job lookup CITES for this track's permit, split by rule 1:
  *   - WHICH ANSWERS: the permits of this track attributed to this agency (their own answer, else the
