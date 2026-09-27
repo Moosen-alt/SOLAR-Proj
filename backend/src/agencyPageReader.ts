@@ -310,18 +310,12 @@ export function quoteOnPage(quote: string, pageText: string): boolean {
   // that same row (never a number from another row, never another row's words' amount: "Solar
   // Installation $50" is not on "Solar Hot Water Installation | Residential | $50").
   // A ROW is a line whose cells are apart: " | " (an HTML table row, parseHtml) or a run of spaces (a
-  // PDF row, pdfText). A prose line is never loosened. A row is also read with its SECTION HEADER
-  // (the line before it) joined in front: "Solar Arrays" / "Roof Top Solar Array … $75".
-  const lines = String(pageText ?? "").split("\n");
-  const isRow = (l: string) => /\s\|\s|\S {2,}\S/.test(l);
-  const rows: string[][][] = [];
-  lines.forEach((l, i) => {
-    if (!isRow(l) || l.length > 300) return;
-    const cells = l.split(/\s\|\s| {2,}/).map(normaliseForQuote).filter(Boolean).map((c) => c.split(" "));
-    rows.push(cells);
-    const prev = normaliseForQuote(lines[i - 1] ?? "");
-    if (prev && prev.length <= 120 && !isRow(lines[i - 1])) rows.push([prev.split(" "), ...cells]);
-  });
+  // PDF row, pdfText). A prose line is never loosened. (A row quoted with its SECTION HEADER in
+  // front — "Solar Arrays / Roof Top Solar Array … $75.00" — is found by the whole-page check above:
+  // the page's lines are one string there, header and row adjacent.)
+  const rows: string[][][] = String(pageText ?? "").split("\n")
+    .filter((l) => /\s\|\s|\S {2,}\S/.test(l) && l.length <= 300)
+    .map((l) => l.split(/\s\|\s| {2,}/).map(normaliseForQuote).filter(Boolean).map((c) => c.split(" ")));
   const inOneRow = (seg: string) => {
     const toks = seg.replace(/\.$/, "").split(" ").filter(Boolean);
     return rows.some((cells) => {

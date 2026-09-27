@@ -652,6 +652,14 @@ await check("(r6) MUST-EXCLUDE (close-2 item 5): an own-domain link is judged by
   assert.equal(y3.res, null, `Y3 SolarAPP+ landing (got ${y3.res?.url})`);
   const v8 = await resolveNamed({ [`${CITY2}/finance`]: { text: synthetic(`<a href="https://aca-prod.accela.com/EXAMPLECITY/Cap/CapHome.aspx?module=Licenses">Apply for a Business License Online</a>`) } }, [`${CITY2}/finance`], ["City of Examplecity"]);
   assert.equal(v8.res, null, `V8 licence-module deep link (got ${v8.res?.url})`);
+  const v8b = await resolveNamed({ [`${CITY2}/finance`]: { text: synthetic(`<a href="https://aca-prod.accela.com/EXAMPLECITY/Cap/CapHome.aspx?module=Licenses">Apply Online</a>`) } }, [`${CITY2}/finance`], ["City of Examplecity"]);
+  assert.equal(v8b.res, null, `V8b the same deep link under portal words (got ${v8b.res?.url})`);
+  const v8c = await resolveNamed({ [PAGE2]: { text: synthetic(`<a href="https://aca-prod.accela.com/EXAMPLECITY/Cap/CapHome.aspx?module=Building">Apply Online</a>`) } }, [PAGE2], ["City of Examplecity"]);
+  assert.equal(v8c.res?.url, "https://aca-prod.accela.com/EXAMPLECITY/Cap/CapHome.aspx?module=Building", "MUST-PASS: the Building module deep link");
+  // A vendor's OTHER product on the city's own domain: its title carries the vendor's name and the
+  // landing path names no portal (OpenGov's budget / transparency product beside its permitting one).
+  const og = await own("Online Services", `${CITY2}/online-services`, { finalUrl: "https://secure.examplecity.gov/transparency/budget", text: `<html><head><title>OpenGov Budget & Transparency</title></head><body><h1>Where the money goes</h1></body></html>` });
+  assert.equal(og.res, null, `a vendor title on a non-portal landing path (got ${og.res?.url})`);
   const y4 = await resolveNamed({ [PAGE2]: { text: synthetic(`<p>Paper only.</p><a href="${CITY2}/othertown-portal">City of Othertown online permit portal</a>`) }, [`${CITY2}/othertown-portal`]: { text: fixture("aca-frame-wrapper.html"), finalUrl: "https://portal.othertown.gov/Permits/Default.aspx" } }, [PAGE2], ["City of Examplecity"]);
   assert.equal(y4.res, null, `Y4 another jurisdiction's own-domain link (got ${y4.res?.url})`);
   assert.ok(!y4.requests.some((q) => q.url.includes("othertown-portal")), "Y4: never read");
