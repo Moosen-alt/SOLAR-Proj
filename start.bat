@@ -62,6 +62,25 @@ if exist ".env" (
   )
 )
 
+REM THIS MACHINE'S PRODUCTION (2026-09-27): when the pinned deploy checkout exists, start the
+REM latest CHECKED release (.probe\release.txt) from it - never the working tree, which holds
+REM work in progress (a start from it ran half-finished files live on 2026-09-27). Other clones
+REM have no .probe\prod-pinned and keep the plain "npm start" below.
+if exist ".probe\prod-pinned\.git" if exist ".probe\start-latest.mjs" (
+  echo.
+  echo  Starting Solar Submission Autopilot - latest checked release, pinned
+  echo.
+  node ".probe\start-latest.mjs"
+  if errorlevel 1 (
+    echo.
+    echo  Start failed - see the messages above. Nothing else was changed.
+    pause
+    exit /b 1
+  )
+  start "" "http://localhost:%PORT%/dashboard.html"
+  exit /b 0
+)
+
 echo.
 echo  Starting Solar Submission Autopilot on http://localhost:%PORT%
 echo  (a server window will open - keep it open while testing)
