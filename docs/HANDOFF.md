@@ -3,6 +3,32 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## FEES VERIFY THEMSELVES WHERE A MACHINE CAN, AND A PERSON CONFIRMS IN ONE CLICK (2026-09-27, fees-verify)
+
+Operator: "there is no place to verify them. Can we just have it verify itself or something?"
+- A seeded fee a machine found printed in its cited schedule now reads **"matches the published
+  schedule"** (never "verified"); unmatched research still reads "provisional — not verified".
+- **Confirm fee** on a researched published-schedule line marks the schedule row(s) behind it
+  verified under the signed-in person (auth off: the typed name; placeholders refused).
+  `POST /api/projects/:id/fee-sheet/confirm`. Research never changes it afterwards.
+- The **permit monitor reads the portal's own fee** off each filed Accela record (the Fees
+  section, script-loaded — a headless read that never clicks), stored in `portal_fee_readings`,
+  shown as "actual — read from the portal" with "read from the portal record X on D" and the
+  researched number beside it. It leads the line only when every filed record of the track is
+  read and it is not a lower bound. **Read the fee from the portal record** on the fee panel
+  does the same read on request (`POST /api/projects/:id/fee-sheet/read-portal`).
+  Switches: `PORTAL_FEE_READ=off` (all reads), `PORTAL_FEE_BROWSER_READ=off` (headless half).
+- **Restart the backend after pulling** — the two routes 404 on a frozen backend while the
+  dashboard (read fresh) already draws the buttons.
+- **Verify live, once:** press "Read the fee from the portal record" on Ann Marineau
+  (1fb3dc39, 187-26-000309-STR + 194-26-001482-ELEC). Expect two records read, or a named
+  refusal per record on the card ("not read — …"). The loaded ACA Fees markup has never been
+  captured (only the "Loading..." placeholder); the parser fails closed on an unknown shape.
+- Open: review-screen fees (`reviewScreenScraper.reviewScreenFees`) are not wired into
+  `recipeAdapter.verifyReviewScreen` (that file's owners); EnerGov fee pages have no captured
+  shape; `publicPermitStatus.detectPlatform`'s `"/Cap/Cap"` check runs on a lowercased string
+  and can never match (pre-existing; the fee reader matches `/cap/capdetail.aspx` itself).
+
 ## PER-JOB LOOKUP — LAST ROUND CLOSED; ITS KNOWN RESIDUE (2026-09-27, lookup-close-7)
 
 Seven rounds on the lookup's three doors ended here. close-7 closed the close-6 skeptic's three residues in the
