@@ -68,7 +68,7 @@ try {
   check("the Record/Auto-learn section keeps every existing id and adds the permit picker", missing.length === 0, `missing: ${missing.join(", ")}`);
   const options = await page.evaluate(() => Array.from((document.getElementById("recordPermitType") as HTMLSelectElement | null)?.options ?? []).map((o) => [o.value, o.textContent?.trim()]));
   check("the picker offers Building (structural) and Electrical, valued as the route's permitType",
-    JSON.stringify(options) === JSON.stringify([["structural", "Building (structural)"], ["electrical", "Electrical"]]), JSON.stringify(options));
+    JSON.stringify(options) === JSON.stringify([["structural", "Building (structural)"], ["electrical", "Electrical"], ["", "Whole permit (combined)"]]), JSON.stringify(options));
 
   const bundle = [cut("defaultLearnPermitType"), cut("syncRecordPermitType"), cut("autoLearnPortalUI")].join("\n\n");
   type Probe = { body: Record<string, unknown> | null; url: string; hidden: boolean; value: string; confirmText: string };
@@ -114,7 +114,12 @@ try {
   const r = await run({ scope: "ahj", tracks: [{ type: "building" }], choose: "electrical", projectId: "p3", resync: true });
   check("MUST-EXCLUDE: a re-sync for the same project does not reset the operator's choice", r.body?.permitType === "electrical", JSON.stringify(r));
   const d = await run({ scope: "ahj", tracks: [], projectId: "p4" });
-  check("MUST-PASS: no tracks loaded → Building (structural)", d.body?.permitType === "structural", JSON.stringify(d));
+  check("MUST-PASS: no tracks loaded → the whole-permit learn sends NO permitType (every track finds the recipe)", Boolean(d.body) && !("permitType" in (d.body ?? {})) && d.value === "", JSON.stringify(d));
+  // agency-row skeptic MF: a COMBO-track project defaulted to "structural" and saved a recipe the combo
+  // track (discipline combo or "") never finds. It sends no permitType now.
+  const cb = await run({ scope: "ahj", tracks: [{ type: "combo" }, { type: "nem" }], projectId: "p6" });
+  check("MUST-EXCLUDE: a combo-track project never defaults to a split discipline — no permitType sent", Boolean(cb.body) && !("permitType" in (cb.body ?? {})) && cb.value === "", JSON.stringify(cb));
+  check("MUST-PASS: the whole-permit confirmation does not name a split permit", !/building (structural) permit|electrical permit/i.test(cb.confirmText), cb.confirmText.slice(0, 160));
   const u = await run({ scope: "utility", tracks: [{ type: "building" }, { type: "nem" }], projectId: "p5" });
   check("MUST-EXCLUDE: a utility (NEM) learn sends NO permitType", Boolean(u.body) && !("permitType" in (u.body ?? {})) && u.body?.scope === "utility", JSON.stringify(u));
   check("MUST-PASS: the permit picker is hidden for a utility recording, shown for an AHJ one", u.hidden === true && a.hidden === false, `utility hidden=${u.hidden} ahj hidden=${a.hidden}`);

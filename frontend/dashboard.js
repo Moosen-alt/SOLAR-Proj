@@ -3620,7 +3620,11 @@ function defaultLearnPermitType(tracks) {
   const types = (Array.isArray(tracks) ? tracks : []).map((t) => String((t && t.type) || "")).filter((t) => t && t !== "nem");
   if (types.includes("building")) return "structural";
   if (types.some((t) => t === "electrical" || t === "mpu")) return "electrical";
-  return "structural";
+  // No building / electrical / mpu track (a COMBO or single "permit" filing, or tracks not loaded):
+  // the whole-permit learn sends NO permitType, so the recipe keeps discipline "" and every track
+  // finds it through the legacy fallback. "structural" here saved a recipe the combo track never
+  // looks up (agency-row skeptic MF, measured on City of Waltham).
+  return "";
 }
 // Show the permit picker for an AHJ recording only, defaulted from this project's tracks — unless
 // the operator already chose one for this project (the choice holds until another project opens).
@@ -3648,7 +3652,8 @@ async function autoLearnPortalUI() {
   if (!url) { showMessage("Paste the portal login/landing URL first (the field above).", "warning"); return; }
   const name = scope === "utility" ? (p.utility || "the utility") : (p.ahj || "the AHJ");
   // An AHJ learn names its permit (see defaultLearnPermitType); a utility (NEM) learn has none.
-  const permitType = scope === "ahj" ? ($("recordPermitType")?.value === "electrical" ? "electrical" : "structural") : undefined;
+  const pick = $("recordPermitType")?.value;
+  const permitType = scope === "ahj" && (pick === "electrical" || pick === "structural") ? pick : undefined;
   const permitWords = permitType === "electrical" ? "electrical" : "building (structural)";
   if (!confirm(`Auto-learn ${name}'s portal${permitType ? ` for the ${permitWords} permit` : ""}?\n\nThe bot will log in (using this client's stored credential), fill the application from the project data up to the review screen, and verify the fill. It will NOT submit — you approve the final submit with one click afterward. This opens a browser and may take a minute.`)) return;
   const btn = $("autoLearnBtn");
