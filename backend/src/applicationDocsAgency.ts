@@ -277,12 +277,33 @@ export function cityPrerequisiteFor(project: Pick<ProjectRecord, "state" | "ahj"
   };
 }
 
+// ── A line's status: the inventory's, never "known by name" ────────────────────────────────
+/**
+ * Where a line's document stands (agency-apps-close MF3 — every agency line said "filled" when its
+ * form was merely KNOWN BY NAME, and the 5952 line unconditionally; the packet manifest and
+ * docs.complete printed it before anything was held). Answered by requiredDocuments.
+ * agencyListStatusResolver from the ONE inventory the fill and the gate already read.
+ */
+export type AgencyLineStatus = "attached" | "filled" | "on_file" | "held_not_fillable" | "not_on_file";
+export type AgencyLineStatusOf = (item: Pick<AgencyListItem, "docTypes" | "role" | "track" | "agency" | "sourceUrl">) => AgencyLineStatus | null;
+export const AGENCY_LINE_STATUS_TEXT: Record<AgencyLineStatus, string> = {
+  attached: "attached (uploaded)",
+  filled: "filled",
+  on_file: "on file (fill pending)",
+  held_not_fillable: "held, not fillable (complete by hand and attach)",
+  not_on_file: "not yet on file",
+};
+
 /**
  * THE JOB'S OWN LIST when another agency issues its permits: each issuing agency's application(s)
  * for the path, the state checklist where the path is prescriptive (Oregon's BCD 440-5952), and
  * the city's prerequisite step. null when every permit is the AHJ's own (today's behaviour).
+ *
+ * A line's STATUS comes from `statusOf` (requiredDocuments.agencyListStatusResolver — uploads, the
+ * filled files on disk for this path, the fill's own template list, the held-but-unfillable blanks).
+ * Without it (a caller with no database) a line names the document and claims nothing about it.
  */
-export function issuingAgencyDocumentList(project: Pick<ProjectRecord, "state" | "ahj"> & Partial<ProjectRecord>): AgencyDocumentList | null {
+export function issuingAgencyDocumentList(project: Pick<ProjectRecord, "state" | "ahj"> & Partial<ProjectRecord>, statusOf: AgencyLineStatusOf | null = null): AgencyDocumentList | null {
   const others = tracksIssuedByOther(project);
   if (!others.length) return null;
   let path: "prescriptive" | "engineered" | "unknown" = "unknown";
@@ -294,21 +315,27 @@ export function issuingAgencyDocumentList(project: Pick<ProjectRecord, "state" |
   } catch { /* path optional */ }
   const kind = standardReview ? null : applicationKindForPath(path);
   const items: AgencyListItem[] = [];
+  const add = (item: AgencyListItem): void => {
+    let status: AgencyLineStatus | null = null;
+    try { status = statusOf ? statusOf(item) : null; } catch { status = null; }
+    const obtain = status === "not_on_file" && item.role === "application" ? "; obtain the agency's blank" : "";
+    items.push(status ? { ...item, text: `${item.text} — ${AGENCY_LINE_STATUS_TEXT[status]}${obtain}` } : item);
+  };
   for (const o of others) {
     const discipline = o.track === "building" ? "structural (building)" : "electrical";
     const docTypes = [...TRACK_FORM_TYPES[o.track]];
     const forms = agencyApplicationForms(project, docTypes[0], o.track === "building" ? kind : null);
     if (forms.length) {
-      for (const f of forms) items.push({ text: `${o.name} (issues the ${discipline} permit): ${f.formName} — filled`, docTypes, role: "application", track: o.track, agency: o.name, sourceUrl: f.sourceUrl });
+      for (const f of forms) add({ text: `${o.name} (issues the ${discipline} permit): ${f.formName}`, docTypes, role: "application", track: o.track, agency: o.name, sourceUrl: f.sourceUrl });
     } else {
       const which = o.track === "building" && kind ? `${kind === "prescriptive" ? "prescriptive solar" : "structural (non-prescriptive)"} permit application` : `${discipline} permit application`;
-      items.push({ text: `${o.name} (issues the ${discipline} permit): ${o.name}'s ${which} — not yet on file; obtain the agency's blank`, docTypes, role: "application", track: o.track, agency: o.name, sourceUrl: String(o.fact?.sourceUrl || "") });
+      add({ text: `${o.name} (issues the ${discipline} permit): ${o.name}'s ${which}`, docTypes, role: "application", track: o.track, agency: o.name, sourceUrl: String(o.fact?.sourceUrl || "") });
     }
   }
   const oregon = String(project.state ?? "").trim().toUpperCase() === "OR";
   if (oregon && !standardReview && path !== "engineered") {
-    items.push({
-      text: `Oregon BCD 440-5952 prescriptive rooftop PV checklist — filled${path === "unknown" ? " (prescriptive path only)" : ""}`,
+    add({
+      text: `Oregon BCD 440-5952 prescriptive rooftop PV checklist${path === "unknown" ? " (prescriptive path only)" : ""}`,
       docTypes: ["solar_checklist"], role: "checklist", sourceUrl: "https://www.oregon.gov/bcd/Formslibrary/5952.pdf",
     });
   }

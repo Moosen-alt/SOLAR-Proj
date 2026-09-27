@@ -38,7 +38,7 @@ import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { projectDocsByType } from "./projectDocuments";
 import { duplicateUploads, uploadedSubmissionDocuments } from "./submissionDocuments";
-import { filledFormsByDocType, applicationKindForPath, loadStoredTemplates, formAllowedForPath } from "./ahjForms";
+import { filledFormsByDocType, applicationKindForPath, loadStoredTemplates, formAllowedForPath, formContradictsPath } from "./ahjForms";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
@@ -49,7 +49,7 @@ import { normalizeAhjName, permitProcessFor, stateRulesFor } from "./permitProce
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import {
   agencyApplicationForms, agencyListReplacesLine, issuingAgencyDocumentList, prerequisiteSettled, tracksIssuedByOther, TRACK_FORM_TYPES,
-  type AgencyApplicationForm, type FormTrack,
+  type AgencyApplicationForm, type AgencyLineStatusOf, type FormTrack,
 } from "./applicationDocsAgency";
 import { heldUnfillableAgencyBlanks } from "./ahjForms";
 import { requirementSlots } from "./requirementSlots";
@@ -860,6 +860,43 @@ function requirementSkipReason(text: string, path: "prescriptive" | "engineered"
   return "";
 }
 
+/**
+ * THE STATUS OF AN ISSUING-AGENCY LIST LINE (agency-apps-close MF3), read from the ONE inventory the
+ * fill and the gate already use — never from whether a form is known by name:
+ *   attached       — an upload holds the line's slot (present()'s first answer);
+ *   filled         — a filled file ON DISK for this path holds it (filledFormsByDocType: off-path
+ *                    and orphaned fills dropped — present()'s second answer);
+ *   on file        — the fill's own list (loadStoredTemplates) holds a template for the slot that
+ *                    the path does not contradict (formContradictsPath with the stored kind — the
+ *                    presence / packaging gate; on an unconfirmed path the fill waits for it);
+ *   held, not fillable — the issuing agency's blank is stored but nothing maps
+ *                    (heldUnfillableAgencyBlanks, the same list the fill reports needs_manual);
+ *   not yet on file — none of these.
+ * A step at another office (no slot) has no status here. Read by requiredListCheck (docs.complete)
+ * and by the packet door (repository.assembleApplicationDocumentPackage), so the manifest and the QC
+ * row print the same words the gate's presence rows mean.
+ */
+export function agencyListStatusResolver(db: AppDb, project: ProjectRecord): AgencyLineStatusOf {
+  const permitPath = resolvePermitPath(project).path;
+  let uploads: Record<string, string> = {};
+  try { uploads = uploadedSubmissionDocuments(db, project); } catch { uploads = {}; }
+  let filled: Record<string, string> = {};
+  try { filled = filledFormsByDocType(db, project.id, permitPath); } catch { filled = {}; }
+  let stored: ReturnType<typeof loadStoredTemplates> = [];
+  try { stored = loadStoredTemplates(db, project.ahj, project.state); } catch { stored = []; }
+  let blanks: ReturnType<typeof heldUnfillableAgencyBlanks> = [];
+  try { blanks = heldUnfillableAgencyBlanks(db, project); } catch { blanks = []; }
+  return (item) => {
+    const types = item.docTypes;
+    if (!types.length) return null;
+    if (types.some((t) => uploads[t])) return "attached";
+    if (types.some((t) => filled[t])) return "filled";
+    if (stored.some((t) => types.includes(t.formType || "permit_application") && !formContradictsPath(t.def.formName, permitPath, t.applicationKind))) return "on_file";
+    if (blanks.some((b) => types.includes(b.formType) && !formContradictsPath(b.formName, permitPath, b.applicationKind))) return "held_not_fillable";
+    return "not_on_file";
+  };
+}
+
 /** The per-job lookup's cited document list (every permit's, deduped), or []. */
 function lookupRequiredList(project: ProjectRecord): { items: string[]; sourceUrl: string } {
   const lookup = String(project.ahj || "").trim() ? permitProcessFor({ state: project.state, ahj: project.ahj }) : null;
@@ -898,7 +935,7 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
   // cites another agency as a permit's issuer, the job's list names THAT agency's applications, the
   // state checklist on the prescriptive path and the city's prerequisite step.
   let agencyList: ReturnType<typeof issuingAgencyDocumentList> = null;
-  try { agencyList = issuingAgencyDocumentList(project); } catch { agencyList = null; }
+  try { agencyList = issuingAgencyDocumentList(project, agencyListStatusResolver(db, project)); } catch { agencyList = null; }
   const addAgencyItems = (onlyUncovered: boolean): void => {
     for (const item of agencyList?.items ?? []) {
       if (onlyUncovered && item.docTypes.length && texts.some((t) => requirementSlots(t).some((s) => item.docTypes.includes(s)))) continue;

@@ -11,7 +11,7 @@ import { describeCited, permitProcessFor, statePermitStructure } from "./permitP
 import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
 // Functions only, called at run time: this module sits inside the permitProcessLookup ->
 // feeSchedules -> knowledgeBase -> applicationDocs import cycle (see applicationDocsAgency's header).
-import { agencyListReplacesLine, issuingAgencyDocumentList, type AgencyDocumentList } from "./applicationDocsAgency";
+import { agencyListReplacesLine, issuingAgencyDocumentList, type AgencyDocumentList, type AgencyLineStatusOf } from "./applicationDocsAgency";
 
 // ---------------------------------------------------------------------------
 // ONE PERMIT-STRUCTURE ANSWER (new-AHJ e2e, 2026-09-26: permit structure 0/5 right).
@@ -833,7 +833,14 @@ function applicationHasMpuScope(project: ProjectRecord): boolean {
   return /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/.test(text);
 }
 
-export function buildApplicationDocumentPackage(project: ProjectRecord, client: ClientRecord | null = null): ApplicationDocumentPackage {
+export function buildApplicationDocumentPackage(
+  project: ProjectRecord,
+  client: ClientRecord | null = null,
+  /** agencyStatus: each issuing-agency line's status from the inventory
+   *  (requiredDocuments.agencyListStatusResolver — the packet door passes it). Without it a line
+   *  names its document and claims nothing about it (agency-apps-close MF3). */
+  opts: { agencyStatus?: AgencyLineStatusOf | null } = {},
+): ApplicationDocumentPackage {
   const matched = findApplicationProfile(project);
   // SAY IT ON THE PACKET WHEN THE JURISDICTION KNOWLEDGE WAS NEVER READ.
   //
@@ -863,7 +870,7 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
   // applications, the state checklist on the prescriptive path and the city's prerequisite step —
   // never the generic fallback's "portal entry" line. Copied, never mutated.
   let agencyList: ReturnType<typeof issuingAgencyDocumentList> = null;
-  try { agencyList = issuingAgencyDocumentList(project); } catch { agencyList = null; }
+  try { agencyList = issuingAgencyDocumentList(project, opts.agencyStatus ?? null); } catch { agencyList = null; }
   const profile: ApplicationRequirementProfile = agencyList ? withIssuingAgencyList(withKnowledge, agencyList, project) : withKnowledge;
   const answer = permitStructureAnswer(project);
   const structure = answer.structure;

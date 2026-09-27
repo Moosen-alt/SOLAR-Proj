@@ -78,7 +78,7 @@ import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
 import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor } from "./permitProcess";
 import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
-import { documentInventory, owedMissingDocuments, type DocumentInventory, type DocPresence } from "./requiredDocuments";
+import { agencyListStatusResolver, documentInventory, owedMissingDocuments, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
 // shape as correctionAgent. getProjectList needs the rule table synchronously.
@@ -4782,7 +4782,8 @@ export function getApplicationDocumentPackage(db: AppDb, projectId: string): App
 function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
   const detail = getProjectDetail(db, projectId);
   const client = detail.project.clientId ? (() => { try { return getClient(db, detail.project.clientId!); } catch { return null; } })() : null;
-  const pkg = buildApplicationDocumentPackage(detail.project, client);
+  // Each issuing-agency line's status from the inventory the fill and the gate read (agency-apps-close MF3).
+  const pkg = buildApplicationDocumentPackage(detail.project, client, { agencyStatus: agencyListStatusResolver(db, detail.project) });
 
   // A MISSING DOCUMENT IS NOT A MISSING FIELD, AND THE PACKET SCREEN SAID IT WAS.
   //
