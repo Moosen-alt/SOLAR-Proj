@@ -216,7 +216,11 @@ pages["/ga"] = () => withScript(CHOOSER.replace(/\{\{IDENTIFIER\}\}/g, USER)
   .replace(/Verify it's you with a security method/g, "Verify with Google Authenticator")
   .replace("Select from the following options", "Enter the temporary code generated in your Google Authenticator app")
   .replace("<ul data-se=\"authenticator-verify-list\">{{OPTIONS}}</ul>",
-    `<label for="credentials.passcode" id="credentials.passcode-label"><span>Enter code</span></label><input type="text" id="credentials.passcode" name="credentials.passcode" autocomplete="one-time-code" aria-labelledby="credentials.passcode-label" data-se="credentials.passcode"><input class="button button-primary" type="submit" value="Verify" data-type="save">`), "");
+    `<label for="credentials.passcode" id="credentials.passcode-label"><span>Enter code</span></label><input type="text" id="credentials.passcode" name="credentials.passcode" autocomplete="one-time-code" aria-labelledby="credentials.passcode-label" data-se="credentials.passcode"><input class="button button-primary" type="submit" value="Verify" data-type="save">`),
+  // Catch the SUBMISSION itself (the page must not navigate away before the check reads it): what the
+  // code box held when the form was submitted, and that it was submitted at all.
+  "document.addEventListener('submit',function(e){e.preventDefault();var b=document.getElementById('credentials.passcode');"
+  + "sessionStorage.setItem('gaSubmitted', b ? (b.value ? 'VALUE:' + b.value.length : 'EMPTY') : 'NOBOX');},true);");
 await check("MUST-EXCLUDE the password is NEVER typed into Okta's one-time-code box (credentials.passcode), and Verify is not clicked", async () => {
   const { context, page } = await at("/ga");
   const res = await performLogin(page, { username: USER, password: GOOD_PW });
@@ -227,6 +231,8 @@ await check("MUST-EXCLUDE the password is NEVER typed into Okta's one-time-code 
   assert.ok(!codeVals.includes(USER), "the username was typed into a code box");
   const clicks = await page.evaluate(() => ((window as unknown as { __clicks?: string[] }).__clicks ?? []).join("|"));
   assert.doesNotMatch(clicks, /verify/i, `Verify was clicked on the code page: ${clicks}`);
+  const submitted = await page.evaluate(() => sessionStorage.getItem("gaSubmitted"));
+  assert.equal(submitted, null, `the code form was SUBMITTED (${submitted}) - automation worked an MFA box`);
   await context.close();
 });
 await check("MUST-EXCLUDE a code page with a visible DISABLED password box is still a challenge, and nothing is typed", async () => {
