@@ -265,16 +265,22 @@ check("5a. a page that names a different record is refused (wrong_record), with 
 seedSplit("City of Confirmread", "Confirmread County");
 const conf = mkProject("City of Confirmread");
 { const seenConf = buildProjectFeeSheet(db, conf).lines.find((l) => l.track === "permit")!; confirmPublishedFee(db, conf, "permit", "Jane Operator", DEFAULT_ORG_ID, { feeUsd: seenConf.feeUsd as number, scheduleRows: seenConf.confirmRows }); }
-const frozen = JSON.stringify(db.query("SELECT id, confidence, verified_by, verified_at, brackets_json, updated_at FROM fee_schedules WHERE ahj IN ('City of Confirmread','Confirmread County') ORDER BY id"));
+// The rows AND the person's bracket-grain records (fees-close2: a Confirm records what was on the
+// card in fee_bracket_verifications and never flips the rows themselves).
+const confirmedSnapshot = () => JSON.stringify([
+  db.query("SELECT id, confidence, verified_by, verified_at, brackets_json, updated_at FROM fee_schedules WHERE ahj IN ('City of Confirmread','Confirmread County') ORDER BY id"),
+  db.query("SELECT v.* FROM fee_bracket_verifications v JOIN fee_schedules s ON s.id = v.schedule_id WHERE s.ahj IN ('City of Confirmread','Confirmread County') ORDER BY v.id"),
+]);
+const frozen = confirmedSnapshot();
 const confUrl = capUrl("CONFIRMREAD", "000C1");
 const confTid = mkTarget(conf.id, "187-26-000555-STR", "City of Confirmread", "building", confUrl);
 statusText.set(confUrl, "Record 187-26-000555-STR: Record Status: Issued");
 plainPages.set(confUrl, page("187-26-000555-STR", "Issued", feesElec));
 due(confTid);
 await R.runDuePermitChecks(db, "permit");
-const thawed = JSON.stringify(db.query("SELECT id, confidence, verified_by, verified_at, brackets_json, updated_at FROM fee_schedules WHERE ahj IN ('City of Confirmread','Confirmread County') ORDER BY id"));
+const thawed = confirmedSnapshot();
 check("6a. the fee read happened", db.query("SELECT 1 FROM portal_fee_readings WHERE target_id = ? AND status = 'read'", [confTid]).length === 1);
-check("6b. …and the person-confirmed schedule rows are byte-identical, still verified by Jane Operator", thawed === frozen && /Jane Operator/.test(thawed), thawed.slice(0, 200));
+check("6b. …and the person-confirmed schedule rows and records are byte-identical, still verified by Jane Operator", thawed === frozen && /Jane Operator/.test(thawed), thawed.slice(0, 200));
 
 // ═══ 7. THE DASHBOARD'S REAL RENDERER ════════════════════════════════════════════════════════
 const dashboard = fs.readFileSync(process.env.DASHBOARD_JS_PATH || path.join(REPO, "frontend", "dashboard.js"), "utf8").replace(/\r\n/g, "\n");
