@@ -378,6 +378,30 @@ export interface PortalFeeRecordSummary {
   provenance: string;
 }
 
+/** ONE THING A PERSON'S CONFIRM VOUCHES FOR, as the fee card shows it (fees-close2, hard rule 3:
+ *  "verified" is a person vouching for exactly what they saw — never a bracket or an amount that
+ *  was not on their screen). */
+export interface FeeConfirmItem {
+  /** The fee_schedules row, and its version as the card was drawn (research re-saves in place). */
+  id: string;
+  updatedAt: string;
+  /** "bracket": this row's bracket at this amount. "delegation": this pointer row's "the other
+   *  authority collects this permit" hop. */
+  kind: "bracket" | "delegation";
+  /** Whose row it is ("Coos County"; the city on a delegation) and which permit. */
+  authority: string;
+  discipline: string;
+  /** The bracket and the amount as shown — "5.01 KVA to 15 KVA", 160. "" / null on a delegation. */
+  bracketLabel: string;
+  feeUsd: number | null;
+  /** On a delegation: the authority the pointer hops to (profile key, and its name for the eye). */
+  collectedBy: string;
+  collectedByAuthority: string;
+  /** Somebody already vouched for this item (or its row was verified whole): a Confirm leaves it
+   *  exactly as it is. */
+  verified: boolean;
+}
+
 /** THE PORTAL'S NUMBER BESIDE THE RESEARCHED ONE — never a silent replacement. */
 export interface FeeComparison {
   /** What the published schedule / learned history / estimate says without the portal's number. */
@@ -582,12 +606,12 @@ export interface ProjectFeeSheetLine {
    *  person's name (POST /api/projects/:id/fee-sheet/confirm) — the one place "verified" is
    *  written from the dashboard. False on every other tier and grade. */
   confirmable: boolean;
-  /** THE ROWS A CONFIRM WOULD VERIFY, WITH THEIR VERSIONS — the published-schedule rows behind
-   *  this amount (and the pointer row it was reached through), each with its updated_at. The
-   *  Confirm click sends these back with the amount it displayed; the server verifies only when
-   *  that amount on those row versions is still what stands (409 otherwise). [] unless
-   *  `confirmable`. */
-  confirmRows: Array<{ id: string; updatedAt: string }>;
+  /** WHAT A CONFIRM WOULD VERIFY, ITEM BY ITEM, WITH THE ROWS' VERSIONS — each line's bracket at
+   *  its amount (and the pointer hop it was reached through), exactly as this card shows them.
+   *  The Confirm dialog names these; the click sends them back with the amount it displayed; the
+   *  server records exactly these items (never a whole row) and only when they — amount, rows,
+   *  versions, brackets — are still what stands (409 otherwise). [] unless `confirmable`. */
+  confirmRows: FeeConfirmItem[];
   /** Who verified the schedule behind this amount and when; "" unless confidence is "verified"
    *  on the published_schedule tier. */
   verifiedBy: string;

@@ -170,7 +170,12 @@ const badge = (html: string): string => /<span class="badge [^"]*">([^<]*)<\/spa
 {
   const calls: Array<{ path: string; body: unknown }> = [];
   const messages: string[] = [];
-  const seenLine = { ...permitLine, feeUsd: 360, confirmRows: [{ id: "row-city", updatedAt: "2026-09-27T20:00:00.000Z" }, { id: "row-county", updatedAt: "2026-09-27T20:00:01.000Z" }] };
+  const dialogs: string[] = [];
+  const seenLine = { ...permitLine, feeUsd: 360, jurisdiction: "City of Coos Bay", confirmRows: [
+    { id: "row-city", updatedAt: "2026-09-27T20:00:00.000Z", kind: "bracket", authority: "City of Coos Bay", discipline: "structural", bracketLabel: "Solar PV installation permit", feeUsd: 200 },
+    { id: "row-pointer", updatedAt: "2026-09-27T20:00:00.500Z", kind: "delegation", authority: "City of Coos Bay", discipline: "electrical", bracketLabel: "", feeUsd: null, collectedBy: "or|coos county|unknown", collectedByAuthority: "Coos County" },
+    { id: "row-county", updatedAt: "2026-09-27T20:00:01.000Z", kind: "bracket", authority: "Coos County", discipline: "electrical", bracketLabel: "5.01 KVA to 15 KVA", feeUsd: 160 },
+  ] };
   const st = { selectedProjectId: "p1", feeSheet: { lines: [seenLine] }, authMe: { enabled: true, user: { name: "Jane Operator" } } };
   const apiStub = async (p: string, opts: { body?: string } = {}) => {
     calls.push({ path: p, body: opts.body ? JSON.parse(opts.body) : null });
@@ -184,12 +189,19 @@ const badge = (html: string): string => /<span class="badge [^"]*">([^<]*)<\/spa
   const src = [lift("money"), lift("httpUrl"), lift("confirmFeeLine")].join("\n\n");
   // eslint-disable-next-line no-new-func
   const confirmFeeLine = new Function("state", "api", "confirm", "window", "localStorage", "showMessage", "renderFeeSheetPanel",
-    `${src}\nreturn confirmFeeLine;`)(st, apiStub, () => true, { prompt: () => "Jane Operator" }, { getItem: () => "", setItem: () => undefined },
+    `${src}\nreturn confirmFeeLine;`)(st, apiStub, (m: string) => { dialogs.push(m); return true; }, { prompt: () => "Jane Operator" }, { getItem: () => "", setItem: () => undefined },
     (m: string) => { messages.push(m); }, () => undefined) as (track: string, btn: { disabled: boolean }) => Promise<void>;
   await confirmFeeLine("permit", { disabled: false });
   const sent = calls.find((c) => c.path.endsWith("/confirm"))?.body as { feeUsd?: number; scheduleRows?: unknown } | undefined;
   check("4g. the Confirm click sends the amount it displayed and the rows (with versions) behind it",
     sent?.feeUsd === 360 && JSON.stringify(sent?.scheduleRows) === JSON.stringify(seenLine.confirmRows), JSON.stringify(sent));
+  // THE DIALOG NAMES EXACTLY WHAT GETS VERIFIED (fees-close2): each line's authority, bracket and
+  // amount, and the hop — and says the other brackets of those schedules are NOT being verified.
+  const dialog = dialogs.join("\n");
+  check("4i. the Confirm dialog names each item a click would verify — 'Coos County — 5.01 KVA to 15 KVA — $160.00' — and the hop",
+    dialog.includes("City of Coos Bay — Solar PV installation permit — $200.00") && dialog.includes("Coos County — 5.01 KVA to 15 KVA — $160.00")
+      && /City of Coos Bay — its electrical permit is collected by Coos County/.test(dialog) && /only these/i.test(dialog),
+    dialog.slice(0, 600));
   check("4h. on 409 'changed since you looked' it reloads the sheet (now $440) and says so — it does not retry on its own",
     calls.filter((c) => c.path.endsWith("/confirm")).length === 1 && calls.some((c) => /\/fee-sheet$/.test(c.path)) && (st.feeSheet.lines[0] as { feeUsd: number }).feeUsd === 440
       && /changed since you looked/.test(messages.join(" ")), JSON.stringify({ calls: calls.map((c) => c.path), messages }));

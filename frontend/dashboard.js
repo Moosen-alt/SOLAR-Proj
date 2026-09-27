@@ -2478,7 +2478,7 @@ function renderFeeSheetLine(line) {
   // THE ONE-CLICK CONFIRM, only where the server says a person may (a researched published-
   // schedule amount). The click asks who is confirming before anything is written.
   const confirmControl = line.confirmable === true
-    ? `<p class="fee-confirm" style="margin:4px 0"><button class="secondary" style="font-size:12px" data-fee-confirm="${esc(line.track)}" title="Mark the published schedule behind this fee as verified by you. Automation never changes a verified schedule afterwards.">Confirm fee — I checked it against the published schedule</button></p>`
+    ? `<p class="fee-confirm" style="margin:4px 0"><button class="secondary" style="font-size:12px" data-fee-confirm="${esc(line.track)}" title="Mark the brackets and amounts on this card as verified by you — only those. Automation never changes a schedule a person has verified.">Confirm fee — I checked it against the published schedule</button></p>`
     : "";
   // Provisional and unknown fees carry the warning tone, so the card LOOKS unfinished.
   // Keyed on "is there a number" rather than `known`: an ESTIMATE is known:false now
@@ -2721,8 +2721,9 @@ async function readPortalFees(btn) {
 }
 
 // ONE-CLICK CONFIRM (operator 2026-09-27: "there is no place to verify them"). A person
-// vouches for a researched fee; the server marks the published schedule behind it verified
-// under that person's name and nothing automated changes it afterwards. With sign-in on, the
+// vouches for a researched fee; the server records exactly the brackets and amounts on this card
+// (never a whole schedule) as verified under that person's name, and nothing automated changes
+// those schedules afterwards. With sign-in on, the
 // name is the signed-in user (the server ignores anything sent); with it off, the person types
 // their name — "verified" on a fee means a named person checked it.
 async function confirmFeeLine(track, btn) {
@@ -2734,10 +2735,21 @@ async function confirmFeeLine(track, btn) {
     try { auth = await api("/api/auth/me"); state.authMe = auth; } catch { auth = { enabled: false, user: null }; }
   }
   const what = `${(line && line.jurisdiction) || "this jurisdiction"}, ${money(line ? line.feeUsd : null)}`;
+  // NAME EXACTLY WHAT GETS VERIFIED (fees-close2, hard rule 3): each bracket at its amount and each
+  // "collected by" hop on this card — and nothing else. A bracket of the same schedule that is not
+  // on this card (another size, another amount) stays unverified. Plain text in a native dialog.
+  const items = (line && Array.isArray(line.confirmRows)) ? line.confirmRows : [];
+  const itemText = (r) => (r.kind === "delegation"
+    ? `${r.authority || "this jurisdiction"} — its ${r.discipline ? `${r.discipline} ` : ""}permit is collected by ${r.collectedByAuthority || "another authority"}`
+    : `${r.authority || "this jurisdiction"} — ${r.bracketLabel || "(unlabelled line)"} — ${money(r.feeUsd)}`);
+  const toVerify = items.filter((r) => !r.verified).map((r) => `  • ${itemText(r)}`);
+  const already = items.filter((r) => r.verified).map((r) => `  • ${itemText(r)}`);
   const lede = `Confirm the ${track === "nem" ? "interconnection" : "permit"} fee (${what})?\n\n`
     + `You are saying you checked it against the jurisdiction's own published schedule`
-    + `${line && httpUrl(line.sourceUrl) ? ` (${httpUrl(line.sourceUrl)})` : ""}. It is recorded as VERIFIED under your name, `
-    + `and automation never changes a verified schedule afterwards.`;
+    + `${line && httpUrl(line.sourceUrl) ? ` (${httpUrl(line.sourceUrl)})` : ""}. Recorded as VERIFIED under your name — only these:\n`
+    + `${toVerify.join("\n") || "  • (nothing new)"}\n`
+    + `${already.length ? `Already verified (left as they are):\n${already.join("\n")}\n` : ""}`
+    + `\nOther brackets and amounts of these schedules are NOT verified by this. Automation never changes a schedule a person has verified.`;
   let confirmedBy = "";
   if (auth && auth.enabled) {
     if (!confirm(`${lede}\n\nRecorded as: ${(auth.user && (auth.user.name || auth.user.email)) || "you"}`)) return;
@@ -2752,9 +2764,10 @@ async function confirmFeeLine(track, btn) {
   }
   btn.disabled = true;
   try {
-    // WHAT THIS PERSON SAW — the amount in the dialog above and the schedule rows (with their
-    // versions) behind it. The server verifies only if that is still what stands, so a research
-    // pass that moved the fee between the look and the click cannot put this name on it.
+    // WHAT THIS PERSON SAW — the amount in the dialog above and the items (rows with their
+    // versions, brackets, amounts) behind it. The server records only those, and only if they are
+    // still what stands, so a research pass that moved the fee between the look and the click
+    // cannot put this name on it.
     const res = await api(`/api/projects/${id}/fee-sheet/confirm`, {
       method: "POST",
       body: JSON.stringify({ track, confirmedBy, feeUsd: line ? line.feeUsd : null, scheduleRows: (line && Array.isArray(line.confirmRows)) ? line.confirmRows : [] }),

@@ -1072,6 +1072,33 @@ function migrate(db: AppDb): void {
   // v19; the legacy idempotent idiom on purpose (same reason as portal_fee_readings above).
   addColumnIfMissing(db, "fee_schedules", "verified_org_id", "TEXT NOT NULL DEFAULT ''");
 
+  // "VERIFIED" IS A PERSON VOUCHING FOR EXACTLY WHAT THEY SAW (fees-close2, hard rule 3). The
+  // dashboard's Confirm records what was on the person's card — (schedule row, bracket label,
+  // amount) for each line, and (pointer row, the authority it hops to) for a delegation — and
+  // NEVER flips the whole fee_schedules row: a person who looked at "Coos County — 5.01 KVA to 15
+  // KVA — $160.00" has not looked at the row's "5 KVA or less" $135. A line reads verified only
+  // when its OWN bracket at its OWN amount is recorded here (feeSchedules.lineGrade); a row a
+  // person verified whole by the script door (fee_schedules.confidence/verified_at) still reads
+  // verified on every bracket. Shared with fee_schedules on purpose (the grade is pooled
+  // knowledge); the NAME is shown only to verified_org_id's projects (skeptic MF3). fee_cents is an
+  // exact integer so the identity key never rides a float. The legacy idempotent idiom, after
+  // runVersionedMigrations (fee_schedules is created by v19), for the reason noted above.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fee_bracket_verifications (
+      id TEXT PRIMARY KEY,
+      schedule_id TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'bracket',
+      bracket_label TEXT NOT NULL DEFAULT '',
+      fee_cents INTEGER NOT NULL DEFAULT 0,
+      collected_by_profile_key TEXT NOT NULL DEFAULT '',
+      verified_by TEXT NOT NULL,
+      verified_org_id TEXT NOT NULL DEFAULT '',
+      verified_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_fee_bracket_verifications_key
+      ON fee_bracket_verifications(schedule_id, kind, bracket_label, fee_cents, collected_by_profile_key);
+  `);
+
   seedBaselineRuleRows(db);
   seedInitialKnowledgeBase(db);
   seedTestInstaller(db);

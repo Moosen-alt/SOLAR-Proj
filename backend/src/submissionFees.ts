@@ -29,6 +29,7 @@ import type {
   FeeChargeBreakdown,
   FeeComparison,
   FeeConfidence,
+  FeeConfirmItem,
   FeePaymentMethod,
   PermitFeeSource,
   ProjectFeeSheet,
@@ -261,9 +262,11 @@ interface ScheduleFee {
   verifiedBy: string;
   verifiedAt: string;
   verifiedOrgIds: string[];
-  /** The fee_schedules rows behind this amount — each line's own row and the delegation row it
-   *  was reached through — read off the producer's per-line split. What a Confirm verifies. */
-  scheduleIds: string[];
+  /** WHAT A CONFIRM WOULD VERIFY, line by line — each line's bracket at its amount on its own
+   *  row, and the delegation hop it was reached through — read off the producer's per-line split
+   *  (fees-close2: a person vouches for exactly what was on the card, never a whole row).
+   *  feeConfirmRows adds the rows' versions. */
+  confirmTargets: ScheduleConfirmTarget[];
   /** The amount was computed from a per-watt ESTIMATED valuation, not a contract figure. A
    *  different dimension from  again: that one grades the TABLE, this one the
    *  INPUT, and a perfect table walked on a guess still owes the operator a true-up. */
@@ -395,7 +398,7 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
     verifiedAt: verified ? text(r.verifiedAt).trim().slice(0, 40) : "",
     // Absent/malformed reads as [ ] — which shows the name to nobody (fail closed).
     verifiedOrgIds: verified && Array.isArray(r.verifiedOrgIds) ? (r.verifiedOrgIds as unknown[]).map((o) => text(o).trim().slice(0, 120)).slice(0, 8) : [],
-    scheduleIds: scheduleIdsOf(r),
+    confirmTargets: confirmTargetsOf(r),
     // Defensive like everything else crossing this seam: anything that is not an explicit true
     // reads as "not an estimate", so a producer that has never heard of this field cannot make
     // a real published fee look like a guess.
@@ -408,15 +411,41 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
   };
 }
 
-/** The schedule rows behind the amount: every line's own row and its delegation row, once each. */
-function scheduleIdsOf(r: Record<string, unknown>): string[] {
+/** One item a Confirm would verify, before the row's version is read (feeConfirmRows). */
+type ScheduleConfirmTarget = Omit<FeeConfirmItem, "id" | "updatedAt" | "collectedBy"> & { scheduleId: string };
+
+/** THE ITEMS BEHIND THE AMOUNT, as the card shows them: every line's bracket at the line's amount
+ *  on its own row, and the delegation hop a hopped line was reached through — once each. A line
+ *  with no amount has nothing a person could have seen, so it contributes no bracket item (its
+ *  total is unknown and not confirmable anyway). `verified` is the producer's own per-piece grade
+ *  (FeeScheduleLine.bracketVouched / hopVouched) — the one predicate, not a second reading here. */
+function confirmTargetsOf(r: Record<string, unknown>): ScheduleConfirmTarget[] {
   const lines = Array.isArray(r.lines) ? (r.lines as Array<Record<string, unknown>>) : [];
-  const out: string[] = [];
+  const out: ScheduleConfirmTarget[] = [];
+  const seen = new Set<string>();
+  const push = (t: ScheduleConfirmTarget): void => {
+    const key = `${t.kind}|${t.scheduleId}|${t.bracketLabel}|${t.feeUsd ?? ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(t);
+  };
   for (const l of lines) {
     if (!l || typeof l !== "object") continue;
-    for (const raw of [l.scheduleId, l.delegatedFromScheduleId]) {
-      const sid = text(raw).trim().slice(0, 80);
-      if (sid && !out.includes(sid)) out.push(sid);
+    const discipline = text(l.discipline).trim().slice(0, 40);
+    const sid = text(l.scheduleId).trim().slice(0, 80);
+    const fee = l.feeUsd == null || l.feeUsd === "" ? NaN : Number(l.feeUsd);
+    if (sid && Number.isFinite(fee)) {
+      push({
+        scheduleId: sid, kind: "bracket", authority: text(l.authority).trim().slice(0, 200), discipline,
+        bracketLabel: text(l.bracketLabel), feeUsd: round2(fee), collectedByAuthority: "", verified: l.bracketVouched === true,
+      });
+    }
+    const pointer = text(l.delegatedFromScheduleId).trim().slice(0, 80);
+    if (pointer) {
+      push({
+        scheduleId: pointer, kind: "delegation", authority: text(l.hoppedFrom).trim().slice(0, 200), discipline,
+        bracketLabel: "", feeUsd: null, collectedByAuthority: text(l.authority).trim().slice(0, 200), verified: l.hopVouched === true,
+      });
     }
   }
   return out.slice(0, 16);
@@ -546,20 +575,27 @@ export function verifierNameFor(db: AppDb, projectId: string, verifiedBy: string
   return verifiedOrgIds.every((o) => o === projectOrg) ? verifiedBy : "";
 }
 
-/** THE ROWS A CONFIRM VOUCHES FOR, WITH THEIR VERSIONS (skeptic MF2) — the fee_schedules rows
- *  behind this project's published-schedule amount (each line's row and the delegation row it was
- *  reached through), each with its updated_at. ONE answer for both doors: the fee sheet draws it
- *  beside the amount the person looks at (confirmRows), and confirmPublishedFee re-asks it at
- *  click time and refuses unless the rows — and their versions — are the ones the person saw.
- *  A version is part of the answer because research re-saves a row in place (same id): an unseen
- *  bracket can move while the displayed amount stays the same. */
-export function feeConfirmRows(db: AppDb, project: ProjectRecord, track: "permit" | "nem"): Array<{ id: string; updatedAt: string }> {
+/** WHAT A CONFIRM VOUCHES FOR, ITEM BY ITEM, WITH THE ROWS' VERSIONS (skeptic MF2; fees-close2)
+ *  — each line's bracket at its amount and the delegation hop it was reached through, exactly as
+ *  the card shows them, each with its row's updated_at. ONE answer for both doors: the fee sheet
+ *  draws it beside the amount the person looks at (confirmRows — the dialog names every item), and
+ *  confirmPublishedFee re-asks it at click time and refuses unless the items — rows, versions,
+ *  brackets, amounts — are the ones the person saw, then records exactly those items. A version is
+ *  part of the answer because research re-saves a row in place (same id): an unseen bracket can
+ *  move while the displayed amount stays the same. */
+export function feeConfirmRows(db: AppDb, project: ProjectRecord, track: "permit" | "nem"): FeeConfirmItem[] {
   const schedule = publishedScheduleFee(db, project, track);
-  if (!schedule || !schedule.scheduleIds.length) return [];
-  const out: Array<{ id: string; updatedAt: string }> = [];
-  for (const sid of schedule.scheduleIds) {
-    const row = db.get<Row>("SELECT id, updated_at FROM fee_schedules WHERE id = ?", [sid]);
-    if (row) out.push({ id: text(row.id), updatedAt: text(row.updated_at) });
+  if (!schedule || !schedule.confirmTargets.length) return [];
+  const out: FeeConfirmItem[] = [];
+  for (const t of schedule.confirmTargets) {
+    const row = db.get<Row>("SELECT id, updated_at, collected_by_profile_key FROM fee_schedules WHERE id = ?", [t.scheduleId]);
+    if (!row) continue;
+    out.push({
+      id: text(row.id), updatedAt: text(row.updated_at), kind: t.kind, authority: t.authority, discipline: t.discipline,
+      bracketLabel: t.bracketLabel, feeUsd: t.feeUsd,
+      collectedBy: t.kind === "delegation" ? text(row.collected_by_profile_key) : "", collectedByAuthority: t.collectedByAuthority,
+      verified: t.verified,
+    });
   }
   return out;
 }

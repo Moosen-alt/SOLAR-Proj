@@ -522,17 +522,24 @@ export interface FeeScheduleLine {
   scheduleId: string;
   /** The DELEGATION row this line was reached through (the city's "the county collects the
    *  electrical fee" pointer), when there is one. A person confirming this line vouches for the
-   *  hop as well as the county's number, so confirmFee verifies both rows — the line's grade is
-   *  the weaker of the two (see the hop's confidence rule), and verifying only the county's row
-   *  would leave the line "seeded" under the person who just checked it. */
+   *  hop as well as the county's number, so a Confirm records both — the county's bracket at this
+   *  amount and the pointer's hop (fees-close2) — and the line's grade is the weaker of the two
+   *  (lineGrade): recording only the county's bracket would leave the line "seeded" under the
+   *  person who just checked it. */
   delegatedFromScheduleId?: string;
-  /** Who verified the row this amount came from, and when — "" while it is seeded. A person's
-   *  name, set only by markFeeScheduleVerified (hard rule 3). */
+  /** Who verified this line — its own bracket at its own amount (and, on a hop, the hop) — and
+   *  when; "" while it is seeded. People's names, written only by a person's Confirm
+   *  (recordFeeVerification) or the script door (markFeeScheduleVerified) — hard rule 3. */
   verifiedBy?: string;
   verifiedAt?: string;
-  /** The org(s) whose person verified the row(s) behind this line — the collecting row and, on a
-   *  hopped line, the pointer row too. The name above is shown only to these. */
+  /** The org(s) whose person verified the pieces of this line — its bracket and, on a hopped
+   *  line, the hop. The name above is shown only to these. */
   verifiedOrgIds?: string[];
+  /** Each piece on its own (lineGrade): this line's bracket at this amount is vouched for (or
+   *  its row was verified whole); on a hopped line, the hop is. What a Confirm dialog marks
+   *  "already verified" — the line's `confidence` is the two together. */
+  bracketVouched?: boolean;
+  hopVouched?: boolean;
   /** Populated when feeUsd is null. */
   reason: string;
   /** THIS LINE'S OWN BILL, ITEMISED — the permit, its surcharges, and every
@@ -925,9 +932,12 @@ function followCollectedBy(
  *  to resolve it is to re-save the schedule a person picked (see
  *  FeeScheduleFinding.resolvesConflict).
  *
+ *  THE WHOLE ROW, ON PURPOSE: this is the script door, for a person who read the whole table. The
+ *  dashboard's Confirm never comes here — it records what was on the person's card, bracket by
+ *  bracket (recordFeeVerification, fees-close2).
+ *
  *  THE SCRIPT DOOR RECORDS NO ORG, so the name it writes is shown to NOBODY — every tenant reads
- *  "human-verified" + the date (fail closed: a person's identity is not shared knowledge). The
- *  dashboard's Confirm goes through markFeeScheduleVerifiedById, which requires the org. */
+ *  "human-verified" + the date (fail closed: a person's identity is not shared knowledge). */
 export function markFeeScheduleVerified(
   db: AppDb,
   profileKey: string,
@@ -937,27 +947,157 @@ export function markFeeScheduleVerified(
 ): FeeScheduleRecord | null {
   const existing = getFeeSchedule(db, profileKey, track, discipline);
   if (!existing) return null;
-  writeVerified(db, existing.id, verifiedBy, "");
+  const ts = nowIso();
+  db.run(
+    "UPDATE fee_schedules SET confidence = 'verified', verified_at = ?, verified_by = ?, verified_org_id = '', updated_at = ? WHERE id = ?",
+    [ts, clean(verifiedBy).slice(0, 120), ts, existing.id],
+  );
   return getFeeSchedule(db, profileKey, track, discipline);
 }
 
-function writeVerified(db: AppDb, scheduleId: string, verifiedBy: string, verifiedOrgId: string): void {
-  const ts = nowIso();
-  db.run(
-    "UPDATE fee_schedules SET confidence = 'verified', verified_at = ?, verified_by = ?, verified_org_id = ?, updated_at = ? WHERE id = ?",
-    [ts, clean(verifiedBy).slice(0, 120), clean(verifiedOrgId).slice(0, 120), ts, scheduleId],
-  );
+// ---------------------------------------------------------------------------
+// "VERIFIED" AT THE GRAIN A PERSON SAW IT (fees-close2; skeptic V1, hard rule 3).
+//
+// The dashboard's Confirm used to flip every fee_schedules row behind a total to 'verified'. A
+// person who looked at a 7.68 kW job's card saw "Coos County — 5.01 KVA to 15 KVA — $160.00";
+// the county row also holds "5 KVA or less" $135, and every 4 kW job afterwards read "human-
+// verified by Jane" over a bracket and an amount that were never on her screen. So a Confirm now
+// records exactly the items on the card (db.ts fee_bracket_verifications):
+//   - 'bracket':    (schedule row, the line's bracket label, the line's amount) as shown;
+//   - 'delegation': (the pointer row a line was reached through, the authority it hops to).
+// A line reads verified only when its OWN bracket at its OWN amount is recorded — and, on a
+// hopped line, the hop too (lineGrade). The same bracket at another amount (a valuation ladder
+// walked for another job, a kW formula on another size) is another amount nobody saw. A row a
+// person verified WHOLE by the script door still reads verified on every bracket.
+// ---------------------------------------------------------------------------
+
+/** One thing a person verified, at the grain they saw it. */
+export interface FeeBracketVerification {
+  scheduleId: string;
+  kind: "bracket" | "delegation";
+  /** The line's bracket label as the card showed it; "" on a delegation. */
+  bracketLabel: string;
+  /** The line's amount as the card showed it; null on a delegation. */
+  feeUsd: number | null;
+  /** The authority (profile key) the pointer row hops to, as seen; "" on a bracket. */
+  collectedBy: string;
+  verifiedBy: string;
+  /** The org whose person verified it: the name is shown only to that org's projects (MF3). */
+  verifiedOrgId: string;
+  verifiedAt: string;
 }
 
-/** The same verification, addressed by the row's id — what a fee-sheet line carries
- *  (FeeScheduleLine.scheduleId) — and recording the ORG whose person confirmed it (required:
- *  the name is shown only to that org). null when no such row exists. */
-export function markFeeScheduleVerifiedById(db: AppDb, scheduleId: string, verifiedBy: string, verifiedOrgId: string): FeeScheduleRecord | null {
-  const row = db.get<Row>("SELECT * FROM fee_schedules WHERE id = ?", [scheduleId]);
-  if (!row) return null;
-  writeVerified(db, text(row.id), verifiedBy, verifiedOrgId);
-  const after = db.get<Row>("SELECT * FROM fee_schedules WHERE id = ?", [scheduleId]);
-  return after ? mapSchedule(after) : null;
+/** What a Confirm would verify / did verify: the identity of one item, without the who. */
+export type FeeVerificationItem = Pick<FeeBracketVerification, "scheduleId" | "kind" | "bracketLabel" | "feeUsd" | "collectedBy">;
+
+const feeCents = (usd: number): number => Math.round(usd * 100);
+
+function mapVerification(row: Row): FeeBracketVerification {
+  const kind = text(row.kind) === "delegation" ? "delegation" : "bracket";
+  return {
+    scheduleId: text(row.schedule_id),
+    kind,
+    bracketLabel: text(row.bracket_label),
+    feeUsd: kind === "bracket" ? Number(row.fee_cents) / 100 : null,
+    collectedBy: text(row.collected_by_profile_key),
+    verifiedBy: text(row.verified_by),
+    verifiedOrgId: text(row.verified_org_id),
+    verifiedAt: text(row.verified_at),
+  };
+}
+
+/** The person's record for exactly this item, or null. A bracket without a finite amount, or a
+ *  delegation without a target, is nothing anybody could have seen — null. */
+export function findFeeVerification(db: AppDb, item: FeeVerificationItem): FeeBracketVerification | null {
+  if (item.kind === "delegation") {
+    const target = clean(item.collectedBy);
+    if (!target) return null;
+    const row = db.get<Row>(
+      "SELECT * FROM fee_bracket_verifications WHERE schedule_id = ? AND kind = 'delegation' AND collected_by_profile_key = ? ORDER BY verified_at LIMIT 1",
+      [item.scheduleId, target],
+    );
+    return row ? mapVerification(row) : null;
+  }
+  if (item.feeUsd == null || !Number.isFinite(item.feeUsd)) return null;
+  const row = db.get<Row>(
+    "SELECT * FROM fee_bracket_verifications WHERE schedule_id = ? AND kind = 'bracket' AND bracket_label = ? AND fee_cents = ? ORDER BY verified_at LIMIT 1",
+    [item.scheduleId, String(item.bracketLabel ?? ""), feeCents(item.feeUsd)],
+  );
+  return row ? mapVerification(row) : null;
+}
+
+/** RECORD ONE ITEM A PERSON VERIFIED — the only writer of fee_bracket_verifications. Never
+ *  touches fee_schedules. An item somebody already verified is left exactly as it was (the first
+ *  person stands) and returned with recorded:false. The person and the org are required. */
+export function recordFeeVerification(
+  db: AppDb,
+  item: FeeVerificationItem,
+  verifiedBy: string,
+  verifiedOrgId: string,
+): { recorded: boolean; verification: FeeBracketVerification } | null {
+  const who = clean(verifiedBy).slice(0, 120);
+  const org = clean(verifiedOrgId).slice(0, 120);
+  if (!who || !org) return null;
+  if (!db.get<Row>("SELECT id FROM fee_schedules WHERE id = ?", [item.scheduleId])) return null;
+  const existing = findFeeVerification(db, item);
+  if (existing) return { recorded: false, verification: existing };
+  const isDelegation = item.kind === "delegation";
+  if (isDelegation ? !clean(item.collectedBy) : (item.feeUsd == null || !Number.isFinite(item.feeUsd))) return null;
+  db.run(
+    `INSERT INTO fee_bracket_verifications
+       (id, schedule_id, kind, bracket_label, fee_cents, collected_by_profile_key, verified_by, verified_org_id, verified_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id(), item.scheduleId, isDelegation ? "delegation" : "bracket",
+      isDelegation ? "" : String(item.bracketLabel ?? "").slice(0, 300),
+      isDelegation ? 0 : feeCents(item.feeUsd as number),
+      isDelegation ? clean(item.collectedBy) : "",
+      who, org, nowIso(),
+    ],
+  );
+  const verification = findFeeVerification(db, item);
+  return verification ? { recorded: true, verification } : null;
+}
+
+/** Does any person's record stand on this row? Such a row is not a starting point for research
+ *  (saveFeeSchedule refuses it exactly as it refuses a row verified whole). */
+export function scheduleHasPersonVerification(db: AppDb, scheduleId: string): boolean {
+  return !!db.get<Row>("SELECT 1 AS one FROM fee_bracket_verifications WHERE schedule_id = ? LIMIT 1", [scheduleId]);
+}
+
+/** Who vouched for one piece of a line: the row verified whole (script door), or the record. */
+interface FeeVouch { verifiedBy: string; verifiedAt: string; verifiedOrgId: string }
+const wholeRowVouch = (row: FeeScheduleRecord): FeeVouch | null =>
+  row.confidence === "verified" ? { verifiedBy: row.verifiedBy, verifiedAt: row.verifiedAt, verifiedOrgId: row.verifiedOrgId } : null;
+
+/** A LINE'S GRADE — the one answer for both line builders (feeLinesForProject and lineFor).
+ *  Verified only when the line's OWN bracket at its OWN amount is (or its row was verified
+ *  whole) and, on a hopped line, the pointer's hop is too: a verified pointer at a seeded table,
+ *  or a verified table reached through an unchecked pointer, is a seeded number. */
+function lineGrade(
+  db: AppDb,
+  schedule: FeeScheduleRecord,
+  pointer: FeeScheduleRecord | null,
+  bracketLabel: string,
+  feeUsd: number | null,
+): Pick<FeeScheduleLine, "confidence" | "verifiedBy" | "verifiedAt" | "verifiedOrgIds" | "bracketVouched" | "hopVouched"> {
+  const fromRecord = (v: FeeBracketVerification | null): FeeVouch | null => (v ? { verifiedBy: v.verifiedBy, verifiedAt: v.verifiedAt, verifiedOrgId: v.verifiedOrgId } : null);
+  const own = wholeRowVouch(schedule)
+    ?? fromRecord(findFeeVerification(db, { scheduleId: schedule.id, kind: "bracket", bracketLabel, feeUsd, collectedBy: "" }));
+  const hop = pointer
+    ? wholeRowVouch(pointer) ?? fromRecord(findFeeVerification(db, { scheduleId: pointer.id, kind: "delegation", bracketLabel: "", feeUsd: null, collectedBy: pointer.collectedByProfileKey }))
+    : null;
+  const pieces = { bracketVouched: !!own, ...(pointer ? { hopVouched: !!hop } : {}) };
+  if (!own || (pointer && !hop)) return { confidence: "seeded", verifiedBy: "", verifiedAt: "", verifiedOrgIds: [], ...pieces };
+  const vouches = hop ? [own, hop] : [own];
+  return {
+    ...pieces,
+    confidence: "verified",
+    verifiedBy: [...new Set(vouches.map((v) => clean(v.verifiedBy)).filter(Boolean))].join(", "),
+    verifiedAt: vouches.map((v) => clean(v.verifiedAt)).filter(Boolean).sort().slice(-1)[0] ?? "",
+    // Every org behind the vouch — the name is shown only where ALL of them are the project's own.
+    verifiedOrgIds: vouches.map((v) => clean(v.verifiedOrgId)),
+  };
 }
 
 /** One stored row by id, or null. */
@@ -1161,9 +1301,11 @@ export function saveFeeSchedule(
   const ts = nowIso();
 
   // HUMAN-VERIFIED IS NOT A STARTING POINT. Record what research found, in
-  // notes, and change nothing else — a person compares and decides.
-  if (existing && existing.confidence === "verified") {
-    const segment = `Research ${ts.slice(0, 10)} (NOT applied — row is human-verified): ${findingSummary({ ...finding, brackets })}`;
+  // notes, and change nothing else — a person compares and decides. A row a person
+  // confirmed ONE bracket of (fees-close2) is refused the same way: re-saving it
+  // would contradict what that person saw, however few of its brackets they saw.
+  if (existing && (existing.confidence === "verified" || scheduleHasPersonVerification(db, existing.id))) {
+    const segment = `Research ${ts.slice(0, 10)} (NOT applied — row is human-verified${existing.confidence === "verified" ? "" : " on a bracket a person confirmed"}): ${findingSummary({ ...finding, brackets })}`;
     db.run("UPDATE fee_schedules SET notes = ?, updated_at = ? WHERE id = ?", [mergeNotes(existing.notes, [segment]), ts, existing.id]);
     logger.info("fees", "research refused against human-verified fee schedule", { profileKey, track, discipline });
     return { ...base, reason: "Row is human-verified — finding recorded in notes, schedule unchanged.", saved: false, refusedVerified: true, refusedConflicted: false, schedule: getFeeSchedule(db, profileKey, track, discipline) };
@@ -2990,7 +3132,8 @@ function resolveLine(
   // The filing is the discipline ASKED FOR — an undifferentiated row answering a
   // structural ask is answering for the building permit, which bills no services
   // line — and only when nothing was asked does the row's own discipline stand.
-  const line = lineFor(db, project, track, hop.record, hoppedFrom, discipline || raw.discipline, inputs);
+  // The pointer row rides along on a hop: the line's grade is the weaker of the two (lineGrade).
+  const line = lineFor(db, project, track, hop.record, hoppedFrom, discipline || raw.discipline, inputs, hop.collectedBy ? raw : null);
   // A DANGLING HOP CLEARS THE ITEMISATION TOO. The charges on the line were read
   // off a row we have just decided does not answer for this project; leaving them
   // on it would print somebody else's bill beside a refusal.
@@ -3002,7 +3145,7 @@ function resolveLine(
   return {
     ...line,
     discipline: discipline || line.discipline,
-    ...(hop.collectedBy ? { delegatedFromScheduleId: raw.id, verifiedOrgIds: [...(line.verifiedOrgIds ?? []), raw.verifiedOrgId] } : {}),
+    ...(hop.collectedBy ? { delegatedFromScheduleId: raw.id } : {}),
   };
 }
 
@@ -3087,10 +3230,11 @@ export function feeLinesForProject(
       sourceQuote: schedule.sourceQuote,
       bracketQuote: evaluated.bracketQuote,
       ...(evaluated.corroboration ? { corroboration: evaluated.corroboration } : {}),
-      // A hopped line's confidence is the COLLECTING authority's, because the
-      // number is theirs. A verified pointer at a seeded table is still a
-      // seeded number, and the weaker of the two is the honest one to show.
-      confidence: hop.collectedBy && (row.confidence === "seeded" || schedule.confidence === "seeded") ? "seeded" : schedule.confidence,
+      // A hopped line's confidence is the WEAKER of the pointer and the collecting row — a
+      // verified pointer at a seeded table is still a seeded number — and each is graded at the
+      // grain a person saw it: this line's own bracket at this line's own amount (lineGrade,
+      // fees-close2). The name(s) and org(s) behind the vouch come with it.
+      ...lineGrade(db, schedule, hop.collectedBy ? row : null, evaluated.bracketLabel, evaluated.feeUsd),
       // A LADDER WALKED ON A GUESS IS AN ESTIMATE, whatever the schedule itself is worth. The
       // table can be verified and the arithmetic exact and the answer still only as good as the
       // valuation underneath — every $1,000 of that guess is another $10.26 here. It rides
@@ -3100,14 +3244,6 @@ export function feeLinesForProject(
       notes: schedule.notes,
       scheduleId: schedule.id,
       ...(hop.collectedBy ? { delegatedFromScheduleId: row.id } : {}),
-      // A hopped line is person-verified only when BOTH rows are (the grade rule above), so it
-      // names a verifier only then — the collecting row's verifier, whose number it is.
-      verifiedBy: hop.collectedBy && row.confidence !== "verified" ? "" : schedule.verifiedBy,
-      verifiedAt: hop.collectedBy && row.confidence !== "verified" ? "" : schedule.verifiedAt,
-      // Both rows' orgs on a hop: the name may be shown only where BOTH vouchers are that org's.
-      verifiedOrgIds: hop.collectedBy
-        ? (row.confidence !== "verified" ? [] : [schedule.verifiedOrgId, row.verifiedOrgId])
-        : [schedule.verifiedOrgId],
       reason: evaluated.reason,
       charges: evaluated.charges ?? [],
     });
@@ -4219,7 +4355,11 @@ function lineFor(
    *  services/feeders line (batteryServiceFeeder.ts). Required, not defaulted: a
    *  forgotten argument must be a compile error, not a silently dropped line. */
   filing: FeeDiscipline,
-  inputs?: FeeEvalInputs,
+  inputs: FeeEvalInputs | undefined,
+  /** The delegation row this line was reached through, or null — required, not defaulted, for
+   *  the same reason as `filing`: a hop forgotten here would grade the line off the collecting
+   *  row alone (fees-close2 unified this with feeLinesForProject's weaker-of-two rule). */
+  pointer: FeeScheduleRecord | null,
 ): FeeScheduleLine {
   const { kw, which } = inputs ? { kw: inputs.kw, which: inputs.kwSource } : systemRatingKw(project);
   // Only pay for the valuation walk when the schedule actually keys on it.
@@ -4245,15 +4385,14 @@ function lineFor(
     sourceQuote: schedule.sourceQuote,
     bracketQuote: evaluated.bracketQuote,
     ...(evaluated.corroboration ? { corroboration: evaluated.corroboration } : {}),
-    confidence: schedule.confidence,
+    // WHO VOUCHES, at the grain a person saw it (lineGrade) — the same answer as the sibling
+    // builder, or the two entry points disagree about the same number.
+    ...lineGrade(db, schedule, pointer, evaluated.bracketLabel, evaluated.feeUsd),
     // Same rule as the sibling builder above — both sites, or the two entry points disagree
     // about the same number depending on which one happened to ask.
     valuationEstimated: evaluated.fromEstimatedValuation === true,
     notes: schedule.notes,
     scheduleId: schedule.id,
-    verifiedBy: schedule.verifiedBy,
-    verifiedAt: schedule.verifiedAt,
-    verifiedOrgIds: [schedule.verifiedOrgId],
     reason: evaluated.reason,
     charges: evaluated.charges ?? [],
   };
