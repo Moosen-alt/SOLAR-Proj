@@ -20,9 +20,15 @@
 //      blank the reviewer sees, never the learn job's answer). Any other free-text literal that
 //      carries system figures (kW, watts, a "(19) Make Model" module count) is blanked.
 //   R3 AGENCY (the address-version / jurisdiction row) — bound to the issuing agency the per-job
-//      lookup found for THIS AHJ and track. A BORROWED recipe with no known agency, or whose
-//      live row preference (city row for structural, county row for electrical — the adapter's
-//      rankAddressVersions) contradicts the looked-up agency, REFUSES with a named reason.
+//      lookup found for THIS AHJ and track (fieldValues.issuingAgency). The replay re-ranks a
+//      live address-version step ([data-al-row]) by that agency (portal-bot addressVersion —
+//      the SAME issuingAgencyRow parse this file asks), so a borrowed recipe binds whenever the
+//      agency is a city or a county. A BORROWED recipe REFUSES, named, when the agency is
+//      unknown, is neither a city nor a county, names both (ambiguous), or when the step is a
+//      LITERAL recorded row (tr:has-text("CITY APPLICATIONS")…) the replay clicks as recorded and
+//      that row is the other kind. (Until 2026-09-27 the live ranking preferred CITY rows for
+//      structural and COUNTY rows for electrical whatever the agency, so a county-issued
+//      structural permit — City of Jefferson's — could only be refused.)
 //   R4 DONOR-AGENCY IDENTITY (borrowed, different agency) — CSS fallbacks naming the donor's
 //      agency code or a positional service-list index are stripped; a step whose only identity
 //      was such an id behind a bare answer ("Yes"/"No") is stripped (the required-field sweep
@@ -39,6 +45,7 @@
 import type { CitedFact, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { stateRulesFor } from "./permitProcess";
 import { feeBracketFieldKey, parseFeeBracketFieldKey, sameFeeTier, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
+import { issuingAgencyRow } from "../../portal-bot/src/addressVersion";
 export { sameFeeTier };
 
 export interface ReplayBindingChange {
@@ -79,7 +86,9 @@ const SYSTEM_FIGURES = /\b\d+(?:\.\d+)?\s*kW\b|\b\d{3}\s?W\b|\(\d+\)\s*[A-Za-z]/
 const labelOf = (s: RecipeStep): string => String(s.selector?.label || s.selector?.name || s.selector?.text || s.note || "").trim();
 const cssOf = (s: RecipeStep): string[] => [s.selector?.css ?? "", ...(s.selector?.fallbacks ?? []).map((f) => f.css ?? "")].filter(Boolean);
 
-/** "Marion County" → county; "City of Coos Bay" → city; otherwise unknown. */
+/** "Marion County" → county; "City of Coos Bay" → city; otherwise unknown. A NAME-kind filter for
+ *  fee-schedule matching (feeSchedules). R3's address-row question is asked of
+ *  portal-bot addressVersion.issuingAgencyRow — the parse the replay ranks the grid with. */
 export function agencyKind(name: string): "county" | "city" | "" {
   const n = String(name ?? "").toLowerCase();
   if (/\bcounty\b/.test(n)) return "county";
@@ -115,7 +124,7 @@ const POSITIONAL_SERVICE_LIST = /cbListServices_\d+|rptAgency_ctl\d+/i;
 export function bindRecipeForReplay(input: {
   steps: RecipeStep[];
   portalUrl?: string;
-  project: Pick<ProjectRecord, "state" | "ahj"> & { parserSnapshot?: Record<string, unknown> };
+  project: Pick<ProjectRecord, "state" | "ahj"> & { city?: string; parserSnapshot?: Record<string, unknown> };
   fieldValues: Record<string, string>;
   track: string | null | undefined;
   /** Set when the recipe was learned for ANOTHER entity (findBorrowableRecipe). */
@@ -140,7 +149,9 @@ export function bindRecipeForReplay(input: {
   const residentialSingle = /single|one|1\b|two|duplex|family|dwelling|sfd|residential/i.test(String(snapshot.structureDescription ?? snapshot.occupancy ?? snapshot.structureType ?? "residential"));
   let refusal: string | null = null;
   let sawAgencyRow = false;
-  const wantsCountyRow = /elec/i.test(String(input.borrowed?.discipline ?? input.track ?? ""));
+  // The agency as the address-version row reads it — the one parse (portal-bot addressVersion)
+  // the replay's live ranking asks too, so "will the replay rank by it" has one answer.
+  const agencyRow = issuingAgencyRow(agencyName, { city: input.project.city });
 
   input.steps.forEach((original, index) => {
     let step: RecipeStep = { ...original, selector: original.selector ? { ...original.selector, fallbacks: original.selector.fallbacks ? [...original.selector.fallbacks] : undefined } : original.selector };
@@ -166,16 +177,25 @@ export function bindRecipeForReplay(input: {
         if (!agencyName) {
           refusal = refusal ?? `the ${input.borrowed.learnedFor} recipe selects the issuing agency (its address-version row "${note.replace(/^address version:\s*/i, "").slice(0, 40)}"), and the agency that issues ${input.project.ahj}'s ${input.track ?? "permit"} permits is not known — the per-job lookup found none, so that selection cannot be bound to this project`;
         } else {
-          const kind = agencyKind(agencyName);
-          const livePrefers = wantsCountyRow ? "county" : "city";
-          if (!kind) {
+          const kind = agencyRow.kind;
+          // A LIVE address-version step is re-ranked on the page by fieldValues.issuingAgency
+          // (recipeAdapter.pickAddressVersionLive → addressVersion). A literal recorded row is
+          // clicked exactly as recorded, so its own kind must already be the agency's.
+          const liveRanked = /data-al-row\s*=/.test(step.selector?.css ?? "");
+          const literalCss = cssOf(step).join(" ");
+          const literalKind = /COUNTY APPLICATIONS/i.test(literalCss) ? "county" : /CITY APPLICATIONS/i.test(literalCss) ? "city" : "";
+          if (agencyRow.ambiguous) {
+            refusal = refusal ?? `${input.project.ahj}'s ${input.track ?? "permit"} permits are issued by "${agencyName}", which names both a city and a county, so the address-version row cannot be bound to one of them — borrowing the ${input.borrowed.learnedFor} recipe would guess the agency`;
+          } else if (!kind) {
             // Close M2: an agency that is neither a city nor a county ("Oregon Building Codes
             // Division", "State of Oregon") cannot be matched to the city/county row the replay
             // picks — borrowing would click the DONOR's row with nothing bound.
             refusal = refusal ?? `${input.project.ahj}'s ${input.track ?? "permit"} permits are issued by ${agencyName}, which is neither a city nor a county, so the replay's address-version row (city or county) cannot be bound to it — borrowing the ${input.borrowed.learnedFor} recipe would select ${input.borrowed.learnedFor}'s agency row`;
-          } else if (kind !== livePrefers) {
-            refusal = refusal ?? `${input.project.ahj}'s ${input.track ?? "permit"} permits are issued by ${agencyName} (a ${kind}), but the replay's live address-version ranking prefers the ${livePrefers.toUpperCase()} row for this discipline — it cannot yet be bound to the looked-up agency, so borrowing the ${input.borrowed.learnedFor} recipe could file with the wrong agency`;
+          } else if (!liveRanked && literalKind !== kind) {
+            refusal = refusal ?? `${input.project.ahj}'s ${input.track ?? "permit"} permits are issued by ${agencyName} (a ${kind}), but the ${input.borrowed.learnedFor} recipe's address-version step clicks a recorded ${literalKind ? `${literalKind.toUpperCase()} row` : "row"} that the replay does not re-rank — borrowing it could file with the wrong agency`;
           }
+          // Otherwise bound: the replay ranks the live grid by the agency and stops, named, if
+          // the grid offers no row naming it and its pick would be the other kind.
         }
       }
       if (agencyName) {

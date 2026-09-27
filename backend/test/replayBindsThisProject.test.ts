@@ -11,7 +11,9 @@
 // KILL TESTS (verified red by hand before the fix landed — the test was written first):
 //   K1 recipeReplayBinding R1: drop the record-link strip           → (x1) fails.
 //   K2 recipeReplayBinding R2: drop the project-literal binding     → (x2) fails.
-//   K3 recipeReplayBinding R3: drop the agency refusal              → (a1), (a2) fail.
+//   K3 recipeReplayBinding R3: drop the agency refusal              → (a1), (a2b), (a2c) fail.
+//   K3b recipeReplayBinding R3: the pre-agency-row "live ranking prefers CITY for structural"
+//       refusal restored                                            → (a2), (a2d) fail.
 //   K4 recipeReplayBinding R4: keep donor-agency fallbacks          → (a3) fails.
 //   K5 repository: run the recorded steps instead of the bound ones → (x1), (x2), (o1) fail.
 //
@@ -119,12 +121,51 @@ await check("(a1) MUST-EXCLUDE: a borrow whose agency the per-job lookup did not
   assert.ok(a, "the refusal is audited");
   assert.match(JSON.parse(a!.details).reason, /issuing agency .* not known/);
 });
-await check("(a2) MUST-EXCLUDE: a county-issued STRUCTURAL permit (Jefferson's shape) never replays the donor's city-row choice", async () => {
+// (a2) was a MUST-EXCLUDE until agency-row (2026-09-27): the replay's live ranking preferred the
+// CITY row for structural, so a county-issued structural permit could only be refused. The
+// replay now ranks the address grid by fieldValues.issuingAgency (portal-bot addressVersion), so
+// the borrow BINDS — the donor's row choice is never replayed, the agency's is. What still
+// refuses: an unknown agency (a1), neither/ambiguous (a2c, borrowedReplayFeeTierAgency g1), and a
+// LITERAL row the replay cannot re-rank that names the other kind (a2b).
+await check("(a2) MUST-PASS: a county-issued STRUCTURAL permit (Jefferson's shape) borrows, and the run is handed the agency to rank the address grid by", async () => {
   seedAgency("City of Cedarton", "Marion County");
   const r = await stageBuilding("City of Cedarton");
-  assert.equal(r.handed, null, "the donor's CITY Applications row would file with the wrong agency");
-  const a = fx.audits("portal.recipe_borrow_refused").find((x) => x.project_id === r.projectId);
-  assert.match(JSON.parse(a!.details).reason, /issued by Marion County \(a county\)/);
+  const refused = fx.audits("portal.recipe_borrow_refused").find((x) => x.project_id === r.projectId);
+  assert.equal(refused, undefined, `the borrow was refused: ${refused?.details}`);
+  assert.ok(r.handed, "the borrowed recipe drove the run");
+  assert.equal(r.handed!.values.issuingAgency, "Marion County", "the replay ranks the grid by the looked-up agency");
+  const row = r.handed!.steps.find((s) => /data-al-row/.test(String(s.selector?.css ?? "")));
+  assert.ok(row, "the agency row is still the LIVE re-ranked step (data-al-row), never the donor's literal row");
+  assert.match(String(row!.note), /issuing agency: Marion County/);
+  assert.ok(!(row!.selector?.fallbacks ?? []).some((f) => f.role === "link" && /^select$/i.test(String(f.name ?? ""))),
+    "a bare 'Select' fallback would click the first row whatever its agency");
+});
+const bindAgency = (agency: string | null, steps: RecipeStep[] = donorSteps(), city = "Cedarton") => binding.bindRecipeForReplay({
+  steps, project: { state: "OR", ahj: `City of ${city}`, city, parserSnapshot: {} }, fieldValues: {}, track: "building",
+  borrowed: { learnedFor: "City of Coos Bay", discipline: "structural" },
+  agency: agency ? { value: agency, sourceUrl: "", quote: "", origin: "lookup" } : null,
+});
+// The learner's no-grid fallback records a LITERAL row: tr:has-text("<KIND> APPLICATIONS").
+const literalRow = (kind: "CITY" | "COUNTY"): RecipeStep[] => donorSteps().map((s) => (/^address version:/.test(String(s.note))
+  ? { action: "click", selector: { css: `tr:has-text("${kind} APPLICATIONS") a:has-text("Select")`, fallbacks: [{ role: "link", name: "Select", exact: true }] }, note: "work location: select city/structural address row" } as RecipeStep
+  : s));
+await check("(a2b) MUST-EXCLUDE: a LITERAL city row (not re-ranked live) is still refused for a county agency; a literal county row binds", () => {
+  const cityLit = bindAgency("Marion County", literalRow("CITY"));
+  assert.ok(cityLit.refusal, "the literal CITY row would be clicked as recorded");
+  assert.match(cityLit.refusal!, /Marion County/);
+  assert.match(cityLit.refusal!, /CITY/);
+  assert.equal(bindAgency("Marion County", literalRow("COUNTY")).refusal, null);
+});
+await check("(a2c) MUST-EXCLUDE: an agency naming BOTH a city and a county is refused (ambiguous), never guessed", () => {
+  const b = bindAgency("City of Cedarton / Marion County");
+  assert.ok(b.refusal, "an ambiguous agency cannot be ranked by");
+  assert.match(b.refusal!, /both a city and a county/);
+});
+await check("(a2d) MUST-PASS: the same predicate as the replay — a city agency binds (named or bare), a county binds; unknown still refuses", () => {
+  assert.equal(bindAgency("City of Cedarton").refusal, null);
+  assert.equal(bindAgency("Cedarton").refusal, null, "a bare name equal to the project's city is that city (addressVersion.issuingAgencyRow)");
+  assert.equal(bindAgency("Marion County").refusal, null);
+  assert.match(String(bindAgency(null).refusal), /not known/);
 });
 await check("(a3) donor-agency ids are stripped for another agency, kept for the same agency", () => {
   const bind = (agency: string) => binding.bindRecipeForReplay({

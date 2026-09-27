@@ -8178,6 +8178,10 @@ export async function prepareSubmission(
     },
     gapFillPlanner,
     gapFillFields,
+    // The per-job lookup's issuing agency for THIS track, for a hand-coded adapter choosing
+    // between an address's jurisdiction rows (portal-bot addressVersion). A recipe replay reads
+    // the same answer from its bound field values (bindRecipeForReplay → issuingAgency).
+    issuingAgency: track && track !== "nem" ? (issuingAgencyFor(detail.project, track)?.value ?? null) : null,
     // Track-scoped portal URL so multi-tenant platform adapters (PowerClerk hosts PGE
     // AND PacifiCorp on different subdomains) log in to the RIGHT portal instead of a
     // hardcoded default. Already permit/utility scoped by the credentialUrl resolution.
