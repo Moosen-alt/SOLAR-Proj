@@ -309,7 +309,22 @@ await check("(m1) MUST-PASS: the merge keeps the TEXT value for every field the 
   assert.deepEqual((m.uncertainties ?? []).map((u) => u.field), ["moduleIsc"]);
   assert.equal(m.planReadMode, "hybrid");
   assert.deepEqual(m.visionPages, [7, 8]);
-  assert.match(m.notes, /^IMAGE-ONLY PAGES: pages 7, 8 of this plan set carry no text layer .*read by VISION and merged under the text read — the text layer stays authoritative.*Fields from vision: moduleIsc, moduleVocTempCoeff, pvMicroMaxDcInputV; .*\(busRating\), both readings are listed as conflicts\. text notes Image pages: only datasheets shown$/);
+  assert.match(m.notes, /^IMAGE-ONLY PAGES: pages 7, 8 of this plan set carry no text layer .*read by VISION and merged under the text read — the text layer stays authoritative.*Fields from vision: moduleIsc, moduleVocTempCoeff, pvMicroMaxDcInputV; .*\(busRating\), both readings are listed as conflicts\. A note below from the text read that these pages were unreadable describes the TEXT layer only\. text notes Image pages: only datasheets shown$/);
+});
+await check("(m3) a text value that only says 'not stated' is not an answer (the image page fills it); 'N/A' IS an answer; two wordings of a stamp verdict are not a conflict", async () => {
+  const t = {
+    provider: "claude" as const, lowConfidenceFields: [], notes: "",
+    fields: { inverterSettings: f("Not stated on plan set (no UL 1741 SA/SB listing note found)"), batteryMake: f("N/A"), acDiscReq: f("not required — micro trunk"), stampRecommendation: f("No PE stamp in the SIGNATURE & SEAL block") },
+  };
+  const i = { visionPages: [8], fields: { inverterSettings: f("UL 1741-SA, IEEE 1547", 0.9, "page 8"), batteryMake: f("SynthBattery", 0.6, "page 8"), acDiscReq: f("yes", 0.6, "page 8"), stampRecommendation: f("SIGNATURE & SEAL blank on pages 7-12", 0.8, "page 8") } };
+  const m = scan.mergeImagePageRead(t as never, i);
+  assert.equal(m.fields.inverterSettings.value, "UL 1741-SA, IEEE 1547");
+  assert.deepEqual(m.visionFields, ["inverterSettings"]);
+  assert.equal(m.fields.batteryMake.value, "N/A", "N/A stays");
+  assert.equal(m.fields.acDiscReq.value, "not required — micro trunk", "'not required' is an answer");
+  assert.equal(m.fields.stampRecommendation.value, "No PE stamp in the SIGNATURE & SEAL block");
+  assert.deepEqual((m.conflicts ?? []).map((c) => c.field).sort(), ["acDiscReq", "batteryMake"], "the stamp wording is not a conflict; the real disagreements are");
+  assert.match(m.notes, /The text read stated no value for inverterSettings \("not stated"\), so the image page's value is used\./);
 });
 await check("(m2) a malformed / empty image read changes nothing", async () => {
   for (const junk of [null, "x", 42, { fields: "no" }, { fields: {}, visionPages: [] }]) {

@@ -476,6 +476,13 @@ export async function readPlanSetForExtraction(
 // ---------------------------------------------------------------------------------------------
 
 const FIELD_ID = /^[A-Za-z][A-Za-z0-9_]{0,60}$/;
+/** A text value that only says the TEXT did not state it ("Not stated on plan set (no UL 1741 SA/SB
+ *  listing note found)" — the real text read of a set whose inverter datasheet was a picture) is
+ *  not an answer, and must not outrank an image page that states it. Narrow on purpose: "N/A",
+ *  "none" and "not required" ARE answers and stay authoritative. */
+const STATED_ABSENCE = /^\s*(?:not\s+(?:stated|shown|found|given|listed|provided|specified|legible|readable|visible)|unknown|illegible|unreadable)\b/i;
+/** Prose judgements: two wordings of the same verdict are not a disagreement. */
+const PROSE_FIELD = (key: string) => /Text$/.test(key) || key === "stampRecommendation";
 
 function sameValue(a: unknown, b: unknown): boolean {
   if (typeof a === "object" || typeof b === "object") return JSON.stringify(a) === JSON.stringify(b);
@@ -501,6 +508,7 @@ export function mergeImagePageRead(textRead: ParserLlmExtraction, imageRead: unk
   const visionFields: string[] = [];
   const conflicts: ParserExtractionConflict[] = [...(textRead.conflicts ?? [])];
   const disagreed: string[] = [];
+  const filledOverAbsence: string[] = [];
   for (const [key, entry] of Object.entries(irFields)) {
     if (!FIELD_ID.test(key) || !entry || typeof entry !== "object") continue;
     const e = entry as Partial<ParserExtractedField>;
@@ -511,9 +519,11 @@ export function mergeImagePageRead(textRead: ParserLlmExtraction, imageRead: unk
     const evidence = ev ? { source: "plan_set" as const, sheet: typeof ev.sheet === "string" ? ev.sheet.slice(0, 40) : undefined, excerpt: typeof ev.excerpt === "string" ? ev.excerpt.slice(0, 200) : undefined } : undefined;
     const confidence = typeof e.confidence === "number" && Number.isFinite(e.confidence) ? Math.max(0, Math.min(1, e.confidence)) : 0.5;
     const existing = fields[key];
-    if (existing && existing.value != null && existing.value !== "") {
+    const textSaysAbsent = Boolean(existing) && typeof existing.value === "string" && STATED_ABSENCE.test(existing.value);
+    if (textSaysAbsent) filledOverAbsence.push(key);
+    if (existing && existing.value != null && existing.value !== "" && !textSaysAbsent) {
       // Narrative blobs always differ in wording; only a stated value can disagree.
-      if (!/Text$/.test(key) && !sameValue(existing.value, value)) {
+      if (!PROSE_FIELD(key) && !sameValue(existing.value, value)) {
         disagreed.push(key);
         if (!conflicts.some((c) => c.field === key)) {
           const reading = (v: unknown, x: ParserExtractedField["evidence"] | undefined, where: string) => ({ value: (typeof v === "object" ? JSON.stringify(v) : v) as string | number, source: "plan_set" as const, sheet: x?.sheet ?? where, excerpt: x?.excerpt });
@@ -539,7 +549,7 @@ export function mergeImagePageRead(textRead: ParserLlmExtraction, imageRead: unk
     .slice(0, 200);
   if (!visionPages.length && !visionFields.length) return textRead;
   const imageNotes = typeof ir.notes === "string" ? ir.notes.trim().slice(0, 1500) : "";
-  const lead = `IMAGE-ONLY PAGES: page${visionPages.length === 1 ? "" : "s"} ${listPages(visionPages)} of this plan set carry no text layer (pictures in the PDF), so ${visionPages.length === 1 ? "it was" : "they were"} read by VISION and merged under the text read — the text layer stays authoritative wherever both answer.${describeSkipped(skipped)} ${visionFields.length ? `Fields from vision: ${visionFields.join(", ")}; verify each against the sheet.` : "No field came from vision that the text had not already answered."}${disagreed.length ? ` Where an image page disagrees with the text (${disagreed.join(", ")}), both readings are listed as conflicts.` : ""}`;
+  const lead = `IMAGE-ONLY PAGES: page${visionPages.length === 1 ? "" : "s"} ${listPages(visionPages)} of this plan set carry no text layer (pictures in the PDF), so ${visionPages.length === 1 ? "it was" : "they were"} read by VISION and merged under the text read — the text layer stays authoritative wherever both answer.${describeSkipped(skipped)} ${visionFields.length ? `Fields from vision: ${visionFields.join(", ")}; verify each against the sheet.` : "No field came from vision that the text had not already answered."}${filledOverAbsence.length ? ` The text read stated no value for ${filledOverAbsence.join(", ")} ("not stated"), so the image page's value is used.` : ""}${disagreed.length ? ` Where an image page disagrees with the text (${disagreed.join(", ")}), both readings are listed as conflicts.` : ""}${visionFields.length ? " A note below from the text read that these pages were unreadable describes the TEXT layer only." : ""}`;
   return {
     ...textRead,
     fields,
