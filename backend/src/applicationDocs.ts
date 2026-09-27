@@ -935,15 +935,14 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
 
 /** The packet profile with the issuing agency's list in front: the agency items, then the base
  *  profile's lines that name no application / checklist / worksheet / portal entry (the plan set,
- *  stamps). With every issued track's own application PDF known, the application is a filled PDF,
- *  so the profile stops claiming portal-entry-only. */
+ *  stamps). The profile's other flags are left as they are — whether a track's application is a
+ *  filled PDF or a portal entry is decided per row (requiredDocuments.requiredApplicationDocs, from
+ *  the agency's known forms), and the packet keeps whatever transfer sheet the profile builds. */
 function withIssuingAgencyList(profile: ApplicationRequirementProfile, list: AgencyDocumentList): ApplicationRequirementProfile {
   const kept = profile.requiredDocuments.filter((line) => !/application|checklist|worksheet|portal entry/i.test(line));
-  const formsKnown = list.items.filter((i) => i.role === "application").every((i) => !/not yet on file/.test(i.text));
   return {
     ...profile,
     requiredDocuments: [...list.items.map((i) => i.text), ...kept],
-    requiresPortalEntryOnly: formsKnown ? false : profile.requiresPortalEntryOnly,
     notes: [
       `The per-job lookup cites ${list.agencies.join(" and ")} as the agency that issues ${list.agencies.length > 1 ? "these permits" : "this job's permit(s)"}${list.sourceUrl ? ` (${list.sourceUrl})` : ""} — the applications listed are ${list.agencies.join(" / ")}'s own, filled from this project's values.`,
       ...(profile.notes || []),
