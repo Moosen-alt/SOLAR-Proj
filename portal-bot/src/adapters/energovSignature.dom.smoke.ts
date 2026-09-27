@@ -259,7 +259,7 @@ try {
         st.step === 7 && st.consentName === "Dana Signer" && st.typedName === "Dana Signer", `step=${String(st.step)} consent=${String(st.consentName)} typed=${String(st.typedName)} ok=${String(res?.ok)} ${String(res?.message).slice(0, 300)}`);
     } else if (rp.name === "replayOldBinding") {
       check("MUST-EXCLUDE replayOldBinding (kill C): a recipe that bound the signature to installerContactName still signs as the client's signer, never the contact",
-        st.step === 7 && st.consentName === "Dana Signer" && st.typedName === "Dana Signer" && st.consentName !== "Casey Contact",
+        st.step === 7 && st.consentName === "Dana Signer" && st.typedName === "Dana Signer",
         `step=${String(st.step)} consent=${String(st.consentName)} typed=${String(st.typedName)} ok=${String(res?.ok)} ${String(res?.message).slice(0, 300)}`);
     } else {
       check("MUST-EXCLUDE replayNoSigner: paused at the signature step, named, nothing typed",

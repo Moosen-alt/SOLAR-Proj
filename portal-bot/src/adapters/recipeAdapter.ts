@@ -175,7 +175,17 @@ function isPaymentField(step: RecipeStep): boolean {
  *  one bound to whatever the planner chose. Its value is ALWAYS the client's authorized signer. */
 function isSignatureStep(step: RecipeStep): boolean {
   if (/^e-signature:/i.test(String(step.note ?? ""))) return true;
-  return step.action === "fill" && isSignatureNameLabel(`${step.selector?.label ?? ""}`);
+  if (step.action !== "fill") return false;
+  // EVERY NAME THE STEP CARRIES FOR ITS BOX, not only selector.label: the learner records an
+  // id-addressed control as { css: "#consentName", fallbacks: [{ label }] }, so a recipe whose
+  // signature box a planner had bound to installerContactName passed this test by its (empty)
+  // top-level label and replay typed the CONTACT's name (portal-run-close kill C, red before
+  // this). A css/name id reads as words ("signatureTypedNameId" -> "signature Typed Name Id").
+  const sel = (step.selector ?? {}) as RecipeSelector & { fallbacks?: RecipeSelector[] };
+  const words = (s: unknown): string => String(s ?? "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[#_\-.[\]="']+/g, " ");
+  const names = [sel.label, sel.placeholder, sel.name, words(sel.css), ...(sel.fallbacks ?? []).map((f) => f.label ?? f.placeholder ?? words(f.css))]
+    .map((s) => String(s ?? "").trim()).filter(Boolean);
+  return names.some((n) => isSignatureNameLabel(n));
 }
 
 function isFinalSubmitStep(step: RecipeStep): boolean {
