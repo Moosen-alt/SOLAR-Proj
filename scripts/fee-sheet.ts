@@ -387,7 +387,10 @@ export function renderFeeLine(
     out.push(row("Filed under", `${schedule.matchedName}  (this project says "${line.jurisdiction}")`));
   }
   out.push(row("Schedule", line.sourceUrl || schedule?.sourceUrl || "— no source URL on file"));
-  out.push(row("Confidence", CONFIDENCE_NOTE[line.confidence] || line.confidence));
+  // A seeded amount a machine found printed in its cited schedule says so — never "verified".
+  out.push(row("Confidence", line.confidence === "seeded" && line.corroborated === true
+    ? "SEEDED, MATCHES THE PUBLISHED SCHEDULE — a machine found this line printed in the cited document; no person has confirmed it yet"
+    : CONFIDENCE_NOTE[line.confidence] || line.confidence));
   out.push(row("Who pays", agreement.whoPays || "NOT AGREED"));
   out.push(row("", wrap(feeResponsibilityProse(agreement.whoPays), 64, cont)));
   out.push(row("How", wrap(PAYMENT_METHOD_NOTE[line.paymentMethod] || line.paymentMethod, 64, cont)));

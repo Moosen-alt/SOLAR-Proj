@@ -351,6 +351,15 @@ export interface SubmissionPaymentQuote {
    *  project's bracket bills a 20 kW job at the 15 kVA rate. */
   permitFeeBracketLabel: string | null;
   permitFeeConfidence: FeeConfidence;
+  /** THE PUBLISHED SCHEDULE WAS RE-READ BY A MACHINE AND THIS AMOUNT'S LINE IS PRINTED IN IT —
+   *  label and fee on one row of the cited document. A qualifier on a `seeded` amount, never a
+   *  confidence of its own: the operator-facing words are "matches the published schedule", and
+   *  it NEVER reads "verified" (a person — hard rule 3). False on every tier but
+   *  published_schedule. */
+  permitFeeCorroborated: boolean;
+  /** The printed line that supports THIS amount (the schedule's bracketQuote), verbatim — ""
+   *  when there is none, or when the amount is a sum no single published line states. */
+  permitFeeEvidenceQuote: string;
   paymentMethod: FeePaymentMethod;
   serviceFeeUsd: number;
   totalUsd: number | null;
@@ -488,6 +497,11 @@ export interface ProjectFeeSheetLine {
   bracketLabel: string | null;
   sourceUrl: string | null;
   confidence: FeeConfidence;
+  /** See SubmissionPaymentQuote.permitFeeCorroborated — "matches the published schedule", a
+   *  machine check, never "verified". */
+  corroborated: boolean;
+  /** The printed schedule line supporting this amount, verbatim; "" when there is none. */
+  evidenceQuote: string;
   paymentMethod: FeePaymentMethod;
   serviceFeeUsd: number;
   /** This track's client total, null whenever the jurisdiction fee is unknown. */

@@ -2255,7 +2255,22 @@ const FEE_CONFIDENCE = {
     note: "A method, not a fact. Replace it with the portal-calculated fee from the fee/review screen.",
   },
   unknown: { badge: "badge-fail", label: "unknown", note: "" },
+  // A SEEDED amount a machine re-read the cited schedule for and found printed there (the
+  // server's `corroborated`). Not a confidence of its own — the rank, and the total's weakest-
+  // line grade, stay "seeded" — and NEVER the word "verified": that is a person (hard rule 3).
+  schedule_match: {
+    badge: "badge-info",
+    label: "matches the published schedule",
+    note: "A machine re-read the cited schedule and found this line printed in it. No person has confirmed it yet — Confirm it once you have looked.",
+  },
 };
+
+// WHICH FEE_CONFIDENCE ENTRY A LINE WEARS — the one predicate the card and the folded
+// summary both ask, so "matches the published schedule" cannot appear in one and not the other.
+function feeConfidenceKey(line) {
+  if (line && line.confidence === "seeded" && line.corroborated === true) return "schedule_match";
+  return line && FEE_CONFIDENCE[line.confidence] ? line.confidence : "unknown";
+}
 
 // `portal` deliberately does NOT restate the human-checkout safety rule — the
 // panel lede directly above every line already carries it, and stating it twice
@@ -2393,7 +2408,12 @@ function feeFaceSourceHtml(line) {
 }
 
 function renderFeeSheetLine(line) {
-  const conf = FEE_CONFIDENCE[line.confidence] || FEE_CONFIDENCE.unknown;
+  const confKey = feeConfidenceKey(line);
+  const conf = FEE_CONFIDENCE[confKey];
+  // The printed schedule line behind a matched amount, on the card's face beside the number.
+  const matchEvidence = confKey === "schedule_match" && line.evidenceQuote
+    ? `<p class="fee-face-evidence" style="margin:2px 0;font-size:12px">Printed in the schedule as: “${esc(line.evidenceQuote)}”</p>`
+    : "";
   // Provisional and unknown fees carry the warning tone, so the card LOOKS unfinished.
   // Keyed on "is there a number" rather than `known`: an ESTIMATE is known:false now
   // (an estimate is not knowledge) but it still has a figure to act on — it warns, it
@@ -2419,6 +2439,7 @@ function renderFeeSheetLine(line) {
         ? ""
         : `<p style="margin:2px 0;font-size:12px">${esc(FEE_PAYMENT_METHOD[line.paymentMethod] || line.paymentMethod || "")}</p>`}
       ${feeFaceSourceHtml(line)}
+      ${matchEvidence}
       ${renderFeeCharges(line)}
       <!-- The amount and how it is paid drive action, so they stay loud. Where
            the number came from is the product's core claim and is kept in full —
@@ -2497,10 +2518,10 @@ function renderFeeSheetPanel() {
   // and the human-checkout rule — an unknown must never read as a final number because the
   // detail is one click away. Plain text built from sheet fields, escaped.
   const foldMoney = (v) => (v == null ? "UNKNOWN" : `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-  const FOLD_QUALIFIER = { actual: "actual", verified: "verified", seeded: "provisional", estimated: "estimate", unknown: "unknown" };
+  const FOLD_QUALIFIER = { actual: "actual", verified: "verified", seeded: "provisional", estimated: "estimate", unknown: "unknown", schedule_match: "matches published schedule" };
   const trackParts = sheet.lines.map((line) => {
     const name = line.track === "nem" ? "Utility" : "Permit";
-    const q = FOLD_QUALIFIER[line.confidence] || "unknown";
+    const q = FOLD_QUALIFIER[feeConfidenceKey(line)] || "unknown";
     // A schedule on file that did not resolve is still UNKNOWN — but it is not "nothing found".
     if (line.feeUsd == null) return `${name} UNKNOWN${httpUrl(line.sourceUrl) ? " (schedule on file, not resolved)" : ""}`;
     if (line.paymentMethod === "none") return `${name}: no fee expected (${q})`;

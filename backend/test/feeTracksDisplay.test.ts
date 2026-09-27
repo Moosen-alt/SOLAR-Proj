@@ -45,7 +45,7 @@ const lift = (name: string): string => {
 };
 const NAMES = [
   "esc", "humanize", "fmtDate", "statusBadge", "httpUrl", "portalHostname", "feeMoney",
-  "FEE_SOURCE_TEXT", "FEE_CONFIDENCE", "FEE_PAYMENT_METHOD", "renderFeeCharges", "feeFaceSourceHtml", "renderFeeSheetLine",
+  "FEE_SOURCE_TEXT", "FEE_CONFIDENCE", "feeConfidenceKey", "FEE_PAYMENT_METHOD", "renderFeeCharges", "feeFaceSourceHtml", "renderFeeSheetLine",
   "TRACK_STATUS_CLASS", "TRACK_CHANNEL_BASIS", "linkifyText", "trackChannelHtml", "trackPrerequisitesHtml", "trackNextActionText",
   "trackCardHtml", "utilityGroupTitle", "renderSubmittalTracks",
 ];

@@ -473,6 +473,9 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
   let permitFeeSource: PermitFeeSource = "unknown";
   let permitFeeBasis = "";
   let permitFeeConfidence: FeeConfidence = "unknown";
+  // Set on the published_schedule tier only — see the note where it is assigned.
+  let permitFeeCorroborated = false;
+  let permitFeeEvidenceQuote = "";
   let permitFeeBracketLabel: string | null = schedule?.bracketLabel ?? null;
   const permitFeeSourceUrl: string | null = schedule?.sourceUrl ?? null;
 
@@ -521,11 +524,21 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
       // re-read the cited document and found this row printed in it; nobody has
       // signed off on the number (hard rule 3). Only a person moves a row to
       // 'verified', and nothing in this file may say otherwise.
+      //
+      // "MATCHES THE PUBLISHED SCHEDULE" is the operator-facing name for corroborated, and it
+      // travels as its own flag (permitFeeCorroborated) so the fee sheet can label the line
+      // with it instead of the bare "provisional" every unchecked research row wears. It is a
+      // statement about THIS AMOUNT, so a guessed-valuation walk does not earn it: the table
+      // line is printed, the number computed from our guess is not.
+      permitFeeCorroborated = schedule.corroborated && !schedule.valuationEstimated;
+      permitFeeEvidenceQuote = schedule.bracketQuote;
       const vouching = schedule.confidence === "verified"
         ? " (human-verified)"
-        : schedule.corroborated
-          ? " (researched and CORROBORATED against the cited document — still not human-verified)"
-          : " (researched, not yet human-verified)";
+        : permitFeeCorroborated
+          ? " (matches the published schedule — CORROBORATED: a machine re-read the cited document and found this line printed in it; no person has confirmed it yet)"
+          : schedule.corroborated
+            ? " (researched and CORROBORATED against the cited document — still not human-verified)"
+            : " (researched, not yet human-verified)";
       permitFeeBasis = `${who}'s published fee schedule${schedule.bracketLabel ? `, line "${schedule.bracketLabel}"` : ""}`
         + `${vouching}.`
         + `${schedule.bracketQuote ? ` Published as: "${schedule.bracketQuote}".` : ""}`
@@ -602,6 +615,8 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
     permitFeeSourceUrl,
     permitFeeBracketLabel,
     permitFeeConfidence,
+    permitFeeCorroborated,
+    permitFeeEvidenceQuote,
     paymentMethod,
     serviceFeeUsd,
     totalUsd,
@@ -785,6 +800,8 @@ export function buildProjectFeeSheet(db: AppDb, project: ProjectRecord): Project
     bracketLabel: quote.permitFeeBracketLabel,
     sourceUrl: quote.permitFeeSourceUrl,
     confidence: quote.permitFeeConfidence,
+    corroborated: quote.permitFeeCorroborated,
+    evidenceQuote: quote.permitFeeEvidenceQuote,
     paymentMethod: quote.paymentMethod,
     serviceFeeUsd: quote.serviceFeeUsd,
     totalUsd: quote.totalUsd,
