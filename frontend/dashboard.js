@@ -6576,27 +6576,52 @@ function reopenResultMessage(result) {
   return { text: `${r.message || "Correction reopen did not complete."}${driftText}`, kind: "error" };
 }
 
-function renderCorrections() {
-  const corrections = state.detail.corrections || [];
-  const projectStatus = (state.detail.project || {}).status || "";
-  $("corrections").innerHTML = corrections.length ? corrections.map((correction) => {
-    const triage = correctionTriage(correction.id);
-    // THE DESIGNER WAIT ENDS BY A PERSON SAYING SO. Offered only while the PROJECT is actually
-    // parked at waiting_on_designer (not merely because the bucket is a design one), and never
-    // driven by a document upload — an attached file is not evidence the revisions are done.
-    // Deliberately not gated on closedAt: an operator who closed the correction by hand while
-    // the project still waits would otherwise have no exit but the audited status override.
-    const awaitingDesigner = projectStatus === "waiting_on_designer" && correction.correctionBucket === "B_designer_fix";
-    return `
+// THE CORRECTION CARD LEADS WITH THE CORRECTION (operator 2026-09-27, "a bit cluttered"). It used
+// to title itself with the bucket enum title-cased ("A We Fix") and print the correction's text
+// raw — for a portal reading, the whole scraped record page. Now, in order: the correction itself
+// (what the backend's correctionExtract read off the page — conditions / review comments — kept
+// short), the required action, the root cause, the triage (proposals, checklist, apply), the
+// draft reply, and the page it was read from in a COLLAPSED <details>. Long text never renders
+// inline. The label is the backend's one map (CorrectionRecord.bucketLabel); humanize is only the
+// fallback for a backend started before that field existed (the live server runs a mixed version).
+// Pure — lifted by backend/test/correctionCardRender.test.ts. Every value is esc()'d.
+const CORRECTION_LEAD_CHARS = 280;
+
+function correctionCardHtml(correction, triage, projectStatus) {
+  const text = String(correction.correctionText || "");
+  const sourceText = String(correction.sourceText || "");
+  const extraction = correction.extraction || "not_extracted";
+  const clip = (s) => (s.length > CORRECTION_LEAD_CHARS ? `${s.slice(0, CORRECTION_LEAD_CHARS).trimEnd()}…` : s);
+  const items = extraction === "items" ? text.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+  const lead = items.length > 1
+    ? `<ul style="margin:2px 0 0 18px;padding:0">${items.slice(0, 5).map((l) => `<li>${esc(clip(l))}</li>`).join("")}</ul>${items.length > 5 ? `<p class="muted" style="font-size:11px;margin:2px 0">+${items.length - 5} more in the record text below.</p>` : ""}`
+    : `<p style="margin:2px 0">${esc(clip(items[0] || text))}</p>`;
+  const fellBack = extraction === "whole_text"
+    ? `<p class="muted" style="font-size:11px;margin:2px 0">No condition or review-comment block was found on the portal page, so the whole page text stands as the correction — its start is shown; the full text is below.</p>`
+    : "";
+  // THE EVIDENCE, collapsed: the page it was read from — or, for a row stored before extraction
+  // existed, its own long text (never printed inline in full).
+  const record = sourceText || (text.length > CORRECTION_LEAD_CHARS ? text : "");
+  const recordLabel = sourceText || correction.source === "portal" ? "Portal record text (as read)" : "Full correction text";
+  // THE DESIGNER WAIT ENDS BY A PERSON SAYING SO. Offered only while the PROJECT is actually
+  // parked at waiting_on_designer (not merely because the bucket is a design one), and never
+  // driven by a document upload — an attached file is not evidence the revisions are done.
+  // Deliberately not gated on closedAt: an operator who closed the correction by hand while
+  // the project still waits would otherwise have no exit but the audited status override.
+  const awaitingDesigner = projectStatus === "waiting_on_designer" && correction.correctionBucket === "B_designer_fix";
+  return `
     <article class="item ${correction.isOverdue ? "fail" : correction.closedAt ? "pass" : "info"}">
       <div class="item-title">
-        <span>${esc(humanize(correction.correctionBucket))}</span>
+        <span>${esc(correction.bucketLabel || humanize(correction.correctionBucket))}</span>
         <span>${correctionSlaBadge(correction)}</span>
         <span class="muted">${esc(fmtDate(correction.createdAt, true))}</span>
       </div>
-      <p>${esc(correction.requiredAction)}</p>
-      <p class="muted">${esc(correction.correctionText)}</p>
+      <div class="correction-lead" style="margin:4px 0 6px"><strong>Correction</strong>${lead}${fellBack}</div>
+      ${correction.requiredAction ? `<p style="margin:0 0 4px"><strong>Required action:</strong> ${esc(correction.requiredAction)}</p>` : ""}
+      ${correction.rootCause ? `<p class="muted" style="margin:0 0 4px"><strong>Root cause:</strong> ${esc(correction.rootCause)}</p>` : ""}
       ${correctionTriageHtml(correction, triage)}
+      ${correction.draftResponse ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px">Draft reply to the reviewer (review before sending)</summary><div style="white-space:pre-wrap;font-size:12px;margin-top:4px">${esc(correction.draftResponse)}</div></details>` : ""}
+      ${record ? `<details class="correction-record" style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">${esc(recordLabel)}</summary><div class="muted" style="white-space:pre-wrap;font-size:11px;max-height:240px;overflow:auto;margin-top:4px">${esc(record)}</div></details>` : ""}
       ${awaitingDesigner ? `
       <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="primary" data-revisions-received="${esc(correction.id)}" style="font-size:12px">Revisions received</button>
@@ -6608,7 +6633,14 @@ function renderCorrections() {
         <span class="muted" style="font-size:11px">Opens the SUSPENDED filing's own correction form (never a new application, never a cancel/withdraw) and stages revised docs — you review and click the portal's resubmit yourself.</span>
       </div>` : ""}
     </article>`;
-  }).join("") : `<p class="muted">No corrections recorded.</p>`;
+}
+
+function renderCorrections() {
+  const corrections = state.detail.corrections || [];
+  const projectStatus = (state.detail.project || {}).status || "";
+  $("corrections").innerHTML = corrections.length
+    ? corrections.map((correction) => correctionCardHtml(correction, correctionTriage(correction.id), projectStatus)).join("")
+    : `<p class="muted">No corrections recorded.</p>`;
 
   // Same endpoint the human-review panel posts to — one apply path, two places it can be
   // reached from. Handlers are bound per container, so neither double-fires.
