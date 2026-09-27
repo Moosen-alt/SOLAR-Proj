@@ -142,13 +142,16 @@ const readState = (pg: Page): Promise<St> => pg.evaluate(() => ({
 
 // THREE RUNNER-SIZED FILES, ONE HARNESS. A learn on this wizard takes ~60 s; all 13 shapes with
 // both signers ran 25 min and the DOM runner (600 s per smoke) reported it as a hang. So this
-// file (no argument) runs the MF1 group; signatureShapesReview.dom.smoke.ts and
+// file (no argument) runs the MF1 group (two shapes + kill B + the replay kill R — 558 s with
+// all three MF1 shapes, too close to the budget, so certifierName has its own file,
+// signatureShapesCertifier.dom.smoke.ts); signatureShapesReview.dom.smoke.ts and
 // signatureShapesPlanner.dom.smoke.ts import it with their own group — each under 400 s.
 // Both signers run where the box IS a signature (the no-signer PAUSE is half the rule); the
 // review-page and planner shapes run once, with no signer (a false signature reading there
 // shows as a pause).
 export const GROUPS: Record<string, string[]> = {
-  mf1: ["certifyNoWord", "bareSignature", "certifierName"],
+  mf1: ["certifyNoWord", "bareSignature"],
+  certifier: ["certifierName"],
   review: ["combinedReviewSign", "reviewNextStepsClass", "reviewMatStepper", "reviewEchoCanvas", "reviewEchoTyped"],
   planner: ["contactsFullName", "applicantName", "pcEsigEmailText", "pcEsigEmailType"],
 };
