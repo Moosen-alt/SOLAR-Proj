@@ -23,7 +23,12 @@
 //   6. A schedule a person confirmed is untouched by a later automated read.
 //   7. The dashboard's real renderer: "actual — read from the portal", provenance on the face,
 //      both numbers and the gap, everything escaped, never "verified".
+//   9. A REFUSED re-read (Loading..., wrong record) after a good read changes nothing about the
+//      stored reading — amount, outcome, finality — so an in-review $99 never turns "final" when
+//      the record is issued and the re-read fails; a successful re-read does update it (control).
 // Kill: the sweep's readAndRecordPortalFees call removed -> section 2 FAILS.
+// Kill (MF1): the refusal branch stamps record_outcome again (portalFeeReadings
+// recordPortalFeeReading) -> 9b-9h FAIL (measured: 7 failures).
 import "./_isolate";
 import fs from "node:fs";
 import os from "node:os";
@@ -331,6 +336,68 @@ const badge = (html: string): string => /<span class="badge [^"]*">([^<]*)<\/spa
   const ctl = liftCtl({ detail: R.getProjectDetail(db, asked.id) });
   check("8b. the fee panel offers the read where a filed permit record page exists", /data-fee-read-portal/.test(ctl) && /nothing is clicked or paid/.test(ctl), ctl.slice(0, 200));
   check("8c. …and not where there is none", liftCtl({ detail: R.getProjectDetail(db, neighbour.id) }) === "");
+}
+
+// ═══ 9. A REFUSED RE-READ CHANGES NOTHING (skeptic MF1, 2026-09-27) ══════════════════════════
+// A $99 read while the record was IN REVIEW is a lower bound. The record is then issued and the
+// re-read REFUSES (the Fees section only says "Loading...", the browser gives nothing back). The
+// refusal kept the $99 but stamped the reading's record_outcome "issued", and finality is derived
+// from record_outcome — so the in-review $99 became the "actual", final fee, fed learned history,
+// and dragged a neighbour's quote to $99. A refusal must change NOTHING about the stored reading
+// (amounts, outcome, finality); only a successful read of the same record updates it.
+{
+  F.saveFeeSchedule(db, { state: "OR", ahj: "City of Flipbay", track: "permit" }, finding({ brackets: [{ feeUsd: 300, label: "Solar PV permit" }] }));
+  const flip = mkProject("City of Flipbay");
+  const flipUrl = capUrl("FLIPBAY", "000F1");
+  const flipRecord = "187-26-000444-STR";
+  const flipTid = mkTarget(flip.id, flipRecord, "City of Flipbay", "building", flipUrl);
+  const fees99 = ["Print/View Summary Fees", "Fees", "Paid:", "Date\tInvoice Number\tAmount", "09/01/2026\t3300001\t$99.00", "Total paid fees: $99.00"].join("\n");
+  statusText.set(flipUrl, `Record ${flipRecord}: Record Status: In Review`);
+  plainPages.set(flipUrl, page(flipRecord, "In Review", fees99));
+  due(flipTid);
+  await R.runDuePermitChecks(db, "permit");
+  const flipQuote = () => buildPaymentQuote(db, R.getProjectDetail(db, flip.id).project, "permit");
+  const readingRow = () => db.get<Record<string, unknown>>("SELECT status, total_usd, record_outcome, read_at FROM portal_fee_readings WHERE target_id = ?", [flipTid]);
+  const inReview = readingRow();
+  check("9a. setup: in review, $99 read < researched $300 — the researched figure leads", flipQuote().permitFeeSource === "published_schedule" && flipQuote().permitFeeUsd === 300);
+
+  // Issued now; the re-read refuses: plain "Loading...", and the browser returns nothing.
+  statusText.set(flipUrl, `Record ${flipRecord}: Record Status: Issued`);
+  plainPages.set(flipUrl, page(flipRecord, "Issued", LOADING));
+  browserPages.delete(flipUrl);
+  due(flipTid);
+  await R.runDuePermitChecks(db, "permit");
+  const afterRefusal = readingRow();
+  const q9 = flipQuote();
+  check("9b. MUST-PASS: the refused re-read left the stored reading exactly as read (amount, outcome, read_at)",
+    afterRefusal?.total_usd === 99 && afterRefusal?.record_outcome === inReview?.record_outcome && afterRefusal?.record_outcome !== "issued" && afterRefusal?.read_at === inReview?.read_at,
+    JSON.stringify({ inReview, afterRefusal }));
+  check("9c. MUST-EXCLUDE: the in-review $99 is not 'final'", q9.portalFeeRecords?.final !== true, JSON.stringify(q9.portalFeeRecords?.records?.map((r) => [r.totalUsd, r.recordOutcome, r.final])));
+  check("9d. MUST-EXCLUDE: …and does not lead the line as the actual fee", !(q9.permitFeeSource === "portal_record" && q9.permitFeeUsd === 99) && q9.permitFeeUsd === 300, `${q9.permitFeeSource} ${q9.permitFeeUsd}`);
+  check("9e. MUST-EXCLUDE: …and feeds no learned history", db.query("SELECT 1 FROM permit_fee_history WHERE project_id = ?", [flip.id]).length === 0);
+  const flipNeighbour = mkProject("City of Flipbay");
+  const qfn = buildPaymentQuote(db, flipNeighbour, "permit");
+  check("9f. MUST-EXCLUDE: …so a neighbour's quote is not dragged to $99", qfn.permitFeeUsd === 300 && qfn.permitFeeSource === "published_schedule", `${qfn.permitFeeSource} ${qfn.permitFeeUsd}`);
+
+  // A REFUSAL OF ANOTHER KIND (the page names a different record) changes nothing either.
+  plainPages.set(flipUrl, page("187-26-000445-STR", "Issued", fees99.replace("$99.00", "$500.00").replace("$99.00", "$500.00")));
+  due(flipTid);
+  await R.runDuePermitChecks(db, "permit");
+  const afterWrong = readingRow();
+  check("9g. MUST-PASS: a wrong_record refusal after a good read leaves the reading's amount and outcome alone",
+    afterWrong?.status === "read" && afterWrong?.total_usd === 99 && afterWrong?.record_outcome === inReview?.record_outcome, JSON.stringify(afterWrong));
+
+  // CONTROL: a SUCCESSFUL read of the same record after issuance does update it — final, and it
+  // leads and feeds history. (Without this, "never update" would pass 9b–9g.)
+  plainPages.set(flipUrl, page(flipRecord, "Issued", ["Print/View Summary Fees", "Fees", "Paid:", "Date\tInvoice Number\tAmount",
+    "09/01/2026\t3300001\t$99.00", "10/02/2026\t3300002\t$241.00", "Total paid fees: $340.00"].join("\n")));
+  due(flipTid);
+  await R.runDuePermitChecks(db, "permit");
+  const qok = flipQuote();
+  check("9h. CONTROL: a successful read after issuance is final, leads the line as the portal's $340, and feeds history",
+    qok.portalFeeRecords?.final === true && qok.permitFeeSource === "portal_record" && qok.permitFeeUsd === 340
+      && db.query<{ fee_usd: number }>("SELECT fee_usd FROM permit_fee_history WHERE project_id = ?", [flip.id]).map((r) => r.fee_usd).join(",") === "340",
+    `${qok.permitFeeSource} ${qok.permitFeeUsd} final=${qok.portalFeeRecords?.final}`);
 }
 
 R.setStatusCheckSeamsForTests(null);

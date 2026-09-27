@@ -176,7 +176,16 @@ export function portalFeeSummary(db: AppDb, projectId: string, track: TrackKind)
 
 /** Upsert one record's reading. A refusal (nothing read) never overwrites an earlier READ —
  *  fees do not disappear, so a later "Loading..." or an unknown shape is our failure, not a
- *  refund — it only moves `attempted_at`. */
+ *  refund — it only moves `attempted_at`.
+ *
+ *  NOT EVEN THE RECORD'S OUTCOME (skeptic MF1, 2026-09-27). `record_outcome` on a read row is
+ *  the record's status WHEN THOSE AMOUNTS WERE READ, and finality is derived from it
+ *  (mapReading). A refused re-read after the record was issued used to stamp "issued" onto a $99
+ *  read while it was in review — the lower bound became the final "actual", fed learned history
+ *  and moved a neighbour's quote. Only a SUCCESSFUL read of the same record changes the amounts,
+ *  the outcome, or the finality. Consequence, on purpose: until a read succeeds, the stored
+ *  outcome still differs from the target's, so readAndRecordPortalFees keeps re-trying on each
+ *  sweep visit instead of waiting 20h (browser launches stay capped by takeBrowserRead). */
 export function recordPortalFeeReading(
   db: AppDb,
   input: {
@@ -192,7 +201,7 @@ export function recordPortalFeeReading(
   const r = input.result;
   if (!r.ok) {
     if (prior && text(prior.status) === "read") {
-      db.run("UPDATE portal_fee_readings SET attempted_at = ?, record_outcome = ? WHERE id = ?", [ts, input.recordOutcome, text(prior.id)]);
+      db.run("UPDATE portal_fee_readings SET attempted_at = ? WHERE id = ?", [ts, text(prior.id)]);
       return { changed: false, status: "read" };
     }
     if (prior) {
