@@ -882,8 +882,9 @@ Read the warnings before you run it:
 
 Once a recipe is complete, later projects in that jurisdiction replay it instead of learning
 again — for this customer and for every other. Final submit stays manual on a replay unless a
-human has explicitly marked that specific recipe as trusted for auto-submit, which is a
-separate deliberate decision and not part of onboarding.
+named person approves that exact run with Approve & auto-submit (and the server has
+`PORTAL_ALLOW_FINAL_SUBMIT=1`, and the recipe was recorded through the submit) — a separate,
+per-run decision, not part of onboarding. There is no per-recipe "trusted" arm.
 
 ---
 

@@ -352,10 +352,11 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   approval, now stale-marked ("Being re-checked"; today's rules: nem_approved). It has no portal URL, so no poll re-reads it; a
   manual re-check with that text moves the project to nem_approved and sends one "Interconnection approved" update (no handoff:
   building track not done + 1 open correction). Its process-map NEM lane reads "not captured" until then.
-- D3 (22e1cf4 + CLAUDE.md): hard rule 1 reworded — see the rulings list above. `.env` untouched; the operator flips
-  `PORTAL_ALLOW_FINAL_SUBMIT=1` at the re-pin. If `CLAUDE.md` shows as modified and uncommitted, commit it:
-  `git commit -m "Decisions 09-26 D3: CLAUDE.md hard rule 1 reworded to the per-run approval gate" -- CLAUDE.md`
-  (the automated session could not commit that file).
+- D3 (22e1cf4, CLAUDE.md in adf7553): hard rule 1 reworded — see the rulings list above. `.env` untouched (it reads
+  `PORTAL_ALLOW_FINAL_SUBMIT=0` on 2026-09-27); the operator flips it to 1 at the re-pin. The recipe list's dead
+  "Trust for one-click approve-submit" checkbox (it could only ever get the arm route's 409) and the step badge "trusted
+  auto-submit only" are gone (2026-09-27): each complete recipe names the gate instead (recipeFlagRender (e), kill: the
+  old markup restored -> red).
 - D4 (b7e153a): `scripts/delete-knowledge-rows.ts`. Dry run on the copy: 6 would be deleted, 0 refused. The operator runs, on the
   live DB after a backup (the script takes its own `.backup` beside the DB too):
   `npx tsx scripts/delete-knowledge-rows.ts --db backend/data/autopilot.sqlite --id 14f08770-8f64-48e2-83a2-f2789e955cd6 --id 46b361e8-cbc0-4a63-a736-bcbf8ef0527e --id 6421d290-36b9-45f8-b2c9-6f5edc63f973 --id 2ada1e43-38b7-4f48-a682-4576158472cd --id 7de2c252-6643-4ebc-a03c-dc3b148addeb --id f61c647d-05ed-4753-b9f9-8baa56a4c519 --apply`
@@ -366,9 +367,11 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   `npx tsx scripts/scrub-shared-knowledge-staff-names.ts --db backend/data/autopilot.sqlite --apply`.
   Jurisdiction desk staff (Megan Winner/Coburg, Vicki Russell/Oak Point, Debra, Heaven, Hazel, Nathan, Christine, Richard,
   Ray/Rebecca/Alice) are NOT touched — a separate question. "Approval letter will be given by Nic." (az|kingman) is left: ambiguous.
-- Open: the per-recipe "trusted for auto-submit" toggle (dashboard.js ~769) and the step badge "trusted auto-submit only" (~665)
-  still describe `auto_submit_enabled` as if it armed something — it is never consulted (dead UI). status.html colours
-  `reviewed_by_ahj` grey, so a permit's "Approved by the jurisdiction — with conditions" badge is grey; making it green is unasked.
+- Re-checked 2026-09-27 on a fresh `.backup` copy: the same 1 NEM target / 1 project / 1 client with an email; D4 dry run 6
+  would go, 0 refused (same child counts); D5 dry run 1064 scanned, the same 4 rows.
+- Open: status.html and portal.html colour by OUTCOME, and a permit's with-conditions approval is `reviewed_by_ahj` (as is a
+  plain permit "Approved", shown "Reviewed by the jurisdiction"), so its "Approved by the jurisdiction — with conditions" badge
+  is grey. Green would need a label-keyed colour (a second predicate) or a payload tone field — unasked, left for the operator.
 
 **Operator actions still open (2026-09-24):**
 - Oregon 36/25 psf minimum ground snow: the verified write (`PUT /api/code-profiles/verify`, payload in
@@ -436,8 +439,9 @@ corrections close when the project truly finishes; demo/benchmark projects never
   and Approve refused on 3 staged NEM drafts that left required portal fields blank.
 - Production runs straight from this dev working tree: lazily imported modules load whatever is on disk
   at first use. Run production from a separate deploy checkout.
-- `.env` has `PORTAL_ALLOW_FINAL_SUBMIT=1` — consistent with hard rule 1 since its 2026-09-26 rewording (the
-  switch is one of the three gate conditions; a named per-run approval is still required). Note: recorded recipes
+- `.env` has `PORTAL_ALLOW_FINAL_SUBMIT=0` (read 2026-09-27); the operator sets it to 1 at the re-pin — consistent
+  with hard rule 1 since its 2026-09-26 rewording (the switch is one of the three gate conditions; a named per-run
+  approval is still required). Note: recorded recipes
   can never auto-submit anyway (the recorder's "submit/pay-like" note trips the fee gate first).
 - Fee schedules short of Oregon's 12% state surcharge: Tigard and Salem (receipts prove it); Lincoln City
   contradicts its receipt ($172.50 vs $250). Review items raised; schedules are never auto-changed.

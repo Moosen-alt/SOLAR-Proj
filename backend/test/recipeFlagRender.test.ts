@@ -40,7 +40,7 @@ type Harness = {
   buttons: (attr: string) => FakeButton[];
 };
 
-function harness(recipes: unknown[], afterClear: unknown[] = []): Harness {
+function harness(recipes: unknown[], afterClear: unknown[] = [], expandedRecipeSteps: Record<string, boolean> = {}): Harness {
   const apiCalls: Array<{ path: string; method: string }> = [];
   const messages: string[] = [];
   const made = new Map<string, FakeButton[]>();
@@ -72,7 +72,7 @@ function harness(recipes: unknown[], afterClear: unknown[] = []): Harness {
     if (p === "/api/portal-recipes") return { recipes: listed };
     return {};
   };
-  const state: Record<string, unknown> = { portalRecipes: recipes };
+  const state: Record<string, unknown> = { portalRecipes: recipes, expandedRecipeSteps };
   // eslint-disable-next-line no-new-func
   const fns = new Function("state", "$", "api", "showMessage", "confirm",
     `${bundle}\nreturn { renderPortalRecipes };`,
@@ -132,6 +132,43 @@ await check("(d) the Clear flag button POSTs /api/portal-recipes/:id/clear-flag,
   ], `unexpected calls: ${JSON.stringify(h.apiCalls)}`);
   assert.doesNotMatch(text(h.el.innerHTML), /Flagged for review/, "the list was not re-rendered from the refetch");
   assert.equal(h.el.querySelectorAll("[data-recipe-clear-flag]").length, 0);
+});
+
+// (e) D3 (operator ruling 2026-09-26, "click submit when submit is clicked"): the recipe row names
+// the ONE gate — a named person's approval of this run + PORTAL_ALLOW_FINAL_SUBMIT=1 + a recipe
+// recorded through submit. portal_recipes.auto_submit_enabled is never consulted and the arm route
+// answers 409, so a "trust this portal" checkbox could only fail: MUST-EXCLUDE it, even for a
+// legacy row whose autoSubmitEnabled is still true.
+// KILL: restore the <input data-recipe-trust> label, or the "trusted auto-submit only" step badge.
+await check("(e) D3: a complete recipe names the per-run approval gate and offers no per-recipe trust arm (legacy arm set or not)", () => {
+  const steps = [
+    { action: "fill", selector: { label: "Applicant name" }, field: "applicantName" },
+    { action: "stopForReview" },
+    { action: "click", selector: { text: "Submit application" }, isFinalSubmit: true },
+  ];
+  const h = harness(
+    [recipe({ steps }), recipe({ id: "rcp-legacy", autoSubmitEnabled: true, steps })],
+    [],
+    { "rcp-1": true, "rcp-legacy": true },
+  );
+  h.render();
+  const html = h.el.innerHTML;
+  const t = text(html);
+  assert.equal(h.el.querySelectorAll("[data-recipe-trust]").length, 0, "a per-recipe trust checkbox is still rendered");
+  assert.doesNotMatch(html, /type="checkbox"/, "a checkbox is still on the recipe row");
+  assert.doesNotMatch(t, /Trust for one-click|trusted auto-submit|trusted this portal/i, `the row still describes a per-recipe arm: ${t.slice(0, 500)}`);
+  assert.equal(h.el.querySelectorAll("[data-recipe-submit-gate]").length, 2, "each complete recipe names the submit gate");
+  assert.match(t, /Approve auto-submit/, "the gate line does not name the per-run approval (Approve & auto-submit)");
+  assert.match(t, /PORTAL_ALLOW_FINAL_SUBMIT=1/, "the gate line does not name the server switch");
+  assert.match(t, /FINAL SUBMIT — a person, or the bot on a run you approved/, "the final-submit step badge does not name the per-run gate");
+  assert.ok(!h.apiCalls.some((c) => /auto-submit/.test(c.path)), "rendering called the auto-submit arm route");
+});
+
+await check("(e) MUST-KEEP: a recipe that is not complete still says it is not replayable, with no gate line", () => {
+  const h = harness([recipe({ status: "recording" })]);
+  h.render();
+  assert.match(text(h.el.innerHTML), /Not replayable until a complete recording is saved/);
+  assert.equal(h.el.querySelectorAll("[data-recipe-submit-gate]").length, 0);
 });
 
 if (failures) {

@@ -674,7 +674,7 @@ function recipeStepRowHtml(r, step, i) {
   const marker = step.action === "stopForReview"
     ? '<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--info);color:#fff">STOP — human reviews &amp; submits</span>'
     : isFinal
-      ? '<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--danger);color:#fff">FINAL SUBMIT — human-executed / trusted auto-submit only</span>'
+      ? '<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--danger);color:#fff" title="Clicked by a person, or by the bot only on a run a named person approved (Approve &amp; auto-submit) with PORTAL_ALLOW_FINAL_SUBMIT=1 on the server. Never pays fees.">FINAL SUBMIT — a person, or the bot on a run you approved</span>'
       : "";
   const data = step.sensitive
     ? `<em class="muted">sensitive — ${step.field ? `bound to project field <code>${esc(step.field)}</code>` : "no value stored"}</em>`
@@ -744,11 +744,12 @@ function renderPortalRecipes() {
           <button type="button" class="danger-button danger-button-sm" data-recipe-delete="${esc(r.id)}">Delete</button>
         </div>
       </div>
-      ${r.status === "complete" ? `
-        <label class="recipe-trust" title="Only enable if this recipe was recorded THROUGH the final application submit. Fee payment is never automated; CAPTCHA/MFA still stops for a human.">
-          <input type="checkbox" data-recipe-trust="${esc(r.id)}" ${r.autoSubmitEnabled ? "checked" : ""} />
-          Trust for one-click approve-submit (hybrid)
-        </label>` : '<div class="muted" style="font-size:11px;margin-top:4px">Not replayable until a complete recording is saved.</div>'}
+      ${r.status === "complete"
+        // NO PER-RECIPE ARM (operator rulings 2026-09-24 / 2026-09-26): portal_recipes.auto_submit_enabled
+        // is never consulted and PUT .../auto-submit refuses to arm (409), so a "trust this portal"
+        // checkbox here could only fail. The row names the gate that exists instead.
+        ? `<div class="recipe-trust" data-recipe-submit-gate="${esc(r.id)}" style="cursor:default">Final submit: only on a run a named person approves (Approve &amp; auto-submit on the filing), with PORTAL_ALLOW_FINAL_SUBMIT=1 on the server and this recipe recorded through the submit — otherwise it stages to review. Never pays fees; stops for CAPTCHA/MFA.</div>`
+        : '<div class="muted" style="font-size:11px;margin-top:4px">Not replayable until a complete recording is saved.</div>'}
       ${recipeFlagHtml(r)}
       ${stepsBlock(r)}
     </div>`).join("");
@@ -775,14 +776,6 @@ function renderPortalRecipes() {
       showMessage(err.message || "Could not save doc types.", "error");
       b.disabled = false;
     }
-  }));
-  el.querySelectorAll("[data-recipe-trust]").forEach((c) => c.addEventListener("change", async () => {
-    const id = c.getAttribute("data-recipe-trust");
-    if (c.checked && !confirm("Enable one-click auto-submit for this portal?\n\nOnly do this if the recipe was recorded through the final application submit. The bot will click the application submit on Approve — it never pays fees and still stops for CAPTCHA/MFA.")) {
-      c.checked = false; return;
-    }
-    try { await api(`/api/portal-recipes/${id}/auto-submit`, { method: "PUT", body: JSON.stringify({ enabled: c.checked }) }); await loadPortalRecipes(); }
-    catch (err) { showMessage(err.message || "Failed to update trust.", "error"); c.checked = !c.checked; }
   }));
   el.querySelectorAll("[data-recipe-delete]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm("Delete this portal recipe? The bot will fall back to manual until it is re-recorded.")) return;
