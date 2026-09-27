@@ -43,6 +43,8 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 
 const page = (body: string): string => `<!doctype html><html><body style="font:14px sans-serif;padding:16px">${body}</body></html>`;
 const HEADER = `<header><form role="search"><input type="search" name="globalSearch" placeholder="Search..."></form></header>`;
+const FORM_STEP = `<h2>Project</h2><label for="fn">Job description</label><input id="fn" type="text"><button type="button" id="next">Next</button>`;
+const SUMMARY_DL = `<dl><dt>Applicant</dt><dd>Desmond Yarrowby</dd><dt>Scope</dt><dd>7.2 kW roof PV</dd></dl>`;
 const PAGES: Record<string, string> = {
   // Step 2 of an Accela-shaped wizard: real inputs, and the advance is "Continue Application »".
   "/form": page(`${HEADER}<h2>Step 2: Project Information</h2>
@@ -85,6 +87,24 @@ const PAGES: Record<string, string> = {
   // nav of spans still cut on a FORM step.
   "/spa-header-form": page(`${HEADER}<div class="mat-horizontal-stepper-header-container"><div class="mat-stepper-header active">1 Contact</div><div class="mat-stepper-header">2 Site</div><div class="mat-stepper-header">3 Review and Submit</div></div><h2>Contact</h2><label for="fn">First name</label><input id="fn" type="text"><button type="button" id="next">Next</button>`),
   "/progress-spans-form": page(`${HEADER}<div class="progress wizard-progress"><span class="progress-step">1. Customer</span><span class="progress-step">2. Documents</span><span class="progress-step">3. Review &amp; Submit</span></div><h2>Customer</h2><label for="fn">First name</label><input id="fn" type="text"><button type="button" id="next">Next</button>`),
+  // TWO READINGS (hand close after portal-run-close-2's skeptic). MUST-PASS: six FORM-step bars
+  // the alike-items cut missed (the learn stopped at step 1 with the draft-save POST aborted).
+  "/bar-mixed-tags": page(`${HEADER}<div class="wizard-steps"><a class="step" href="#">1 Customer</a><a class="step" href="#">2 Project</a><span class="step">3 Documents</span><span class="step">4 Review and Submit</span></div>${FORM_STEP}`),
+  "/bar-caption": page(`${HEADER}<div class="wizard-steps"><div class="caption">Step 2 of 4</div><div class="step">1 Customer</div><div class="step">2 Project</div><div class="step">3 Documents</div><div class="step">4 Review and Submit</div></div>${FORM_STEP}`),
+  "/bar-two-div": page(`${HEADER}<div class="steps"><div class="step active">1 Application</div><div class="step">2 Review and Submit</div></div>${FORM_STEP}`),
+  "/bar-two-ol": page(`${HEADER}<ol class="steps"><li>1 Application</li><li>2 Review and Submit</li></ol>${FORM_STEP}`),
+  "/bar-help-link": page(`${HEADER}<div class="stepper-header"><div class="step">1 Customer</div><div class="step">2 Project</div><div class="step">3 Review and Submit</div><a href="#" class="help">Need help?</a></div>${FORM_STEP}`),
+  "/bar-separators": page(`${HEADER}<div class="progress-steps"><span class="s">Customer</span><span class="sep">&gt;</span><span class="s">Project</span><span class="sep">&gt;</span><span class="s">Review &amp; Submit</span></div>${FORM_STEP}`),
+  // …and a documents step with NO text box (a file input only): the bar's own active step says form.
+  "/bar-active-files-only": page(`${HEADER}<div class="wizard-steps"><div class="step">1 Customer</div><div class="step active">2 Documents</div><div class="step">3 Review and Submit</div></div><h2>Documents</h2><label for="up">Plan set</label><input id="up" type="file"><button type="button" id="next">Next</button>`),
+  // MUST-EXCLUDE: review steps whose title only a positive read, or only the narrow reading, keeps.
+  "/review-aria-tabpanel": page(`${HEADER}<div class="mat-stepper-horizontal"><div class="mat-horizontal-stepper-header-container" role="tablist"><div role="tab" aria-selected="false">1 Description</div><div role="tab" aria-selected="false">2 More Info</div><div role="tab" aria-selected="false">3 Review and Submit</div></div><div class="mat-horizontal-content-container"><div role="tabpanel" aria-label="Step 3: Review and Submit">${SUMMARY_DL}<div>Estimated fees: Total $78.00</div><button type="button" id="next">Next</button></div></div></div>`),
+  "/review-active-tab": page(`${HEADER}<div class="mat-stepper-horizontal"><div class="mat-horizontal-stepper-header-container" role="tablist"><div role="tab" aria-selected="false">1 Description</div><div role="tab" aria-selected="false">2 More Info</div><div role="tab" aria-selected="true">3 Review and Submit</div></div><div class="mat-horizontal-content-container"><div role="tabpanel">${SUMMARY_DL}<div>Estimated fees: Total $78.00</div><button type="button" id="next">Next</button></div></div></div>`),
+  "/review-aria-region": page(`${HEADER}<main><section aria-label="Review and Submit">${SUMMARY_DL}<button type="button" id="next">Next</button></section></main>`),
+  "/review-rows-same-class": page(`${HEADER}<div class="wizard-steps-body"><div class="line">Step 3: Review and Submit</div><div class="line">Applicant: Desmond Yarrowby</div><div class="line">Scope: 7.2 kW roof PV</div><div class="line">Total $78.00</div></div><button type="button" id="next">Next</button>`),
+  "/review-title-in-progress": page(`${HEADER}<div class="progress-panel"><div class="t">Step 4: Review</div><div class="t">Customer: Desmond Yarrowby</div><div class="t">System: 7.2 kW</div></div><button type="button" id="next">Next</button>`),
+  // …and a site menu's aria-current="page" is not the wizard's active step (it must not count as a form step).
+  "/review-rows-site-nav": page(`<nav class="site"><a href="#" aria-current="page">My Permits</a><a href="#">Help</a></nav>${HEADER}<div class="wizard-steps-content"><div class="step-title">Step 3: Review and Submit</div><div>Applicant: Desmond Yarrowby</div><div>Scope: 7.2 kW roof PV</div><div>Total $78.00</div></div><button type="button" id="next">Next</button>`),
   // THE STATEMENT AROUND THE BOX, IN ITS OWN BLOCK (portal-run-close-2 M2).
   "/sig-below": page(`${HEADER}<h2>Certification</h2><div><label for="nm">Type your full name *</label> <input id="nm" type="text"></div><p>By typing your name above you are signing this application electronically.</p><button type="button" id="next">Next</button>`),
   "/sig-above5": page(`${HEADER}<h2>Certification</h2><section class="card"><div class="body"><p>I certify under penalty of perjury that the information in this application is true and correct.</p></div></section><section class="card"><div class="body"><div class="row"><div class="col"><div class="field"><label for="nm">Type your full name *</label> <input id="nm" type="text"></div></div></div></div></section><button type="button" id="next">Next</button>`),
@@ -197,6 +217,16 @@ try {
     for (const path of ["/spa-header-form", "/progress-spans-form"]) {
       const t = await terminal(path);
       check(`MUST-PASS M1 ${path}: a classed-div step bar listing "Review and Submit" is still cut — the form step is not review`, t.reviewPage === false && t.terminal === false, JSON.stringify(t));
+    }
+    // Two readings + evidence (hand close after portal-run-close-2's skeptic).
+    for (const path of ["/bar-mixed-tags", "/bar-caption", "/bar-two-div", "/bar-two-ol", "/bar-help-link", "/bar-separators", "/bar-active-files-only"]) {
+      const t = await terminal(path);
+      check(`MUST-PASS two readings ${path}: a form step whose bar lists "Review and Submit" is not the review page (no false stop at step 1)`, t.reviewPage === false && t.terminal === false, JSON.stringify(t));
+    }
+    for (const path of ["/review-aria-tabpanel", "/review-active-tab", "/review-aria-region", "/review-rows-same-class", "/review-title-in-progress", "/review-rows-site-nav"]) {
+      const t = await terminal(path);
+      check(`MUST-EXCLUDE two readings ${path}: a review step named only by its panel, its active step, or a class-matched container is the review page (terminal), and its Next is not navigator-only`,
+        t.reviewPage === true && t.terminal === true && !t.navOnly.includes("next"), JSON.stringify(t));
     }
     // portal-run-close-2 M2: the statement around the box, in its own block.
     for (const [path, want] of [["/sig-below", "typed"], ["/sig-above5", "typed"], ["/sig-date", "typed"], ["/contact-certify", ""], ["/contacts-below-attest", ""], ["/design-below-attest", ""]] as const) {

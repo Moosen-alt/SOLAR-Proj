@@ -439,20 +439,98 @@ export function portalSafetyFactory() {
     }
     return barShaped(el);
   };
-  const stepNavigatorsInPage = (d: Document): Element[] => {
-    const bars = Array.from(d.querySelectorAll(BAR_CANDIDATES)).filter(isStepBar)
-      .concat(Array.from(d.querySelectorAll("ol, ul")).filter((list) => shortStepList(list) && isStepBar(list)));
-    return bars.filter((b) => !bars.some((o) => o !== b && o.contains(b)));
+  //
+  // TWO READINGS, AND EVIDENCE BREAKS THE TIE (hand close after portal-run-close-2's skeptic).
+  // isStepBar above now serves the signature reader's chrome skip only. For the REVIEW question,
+  // guessing which class-matched container is "the step bar" failed both ways across three
+  // rounds: the cut wide enough for every real bar (an <a>/<span> mix, a "Step 2 of 4" caption, a
+  // help link, chevron separators, a two-step bar) also swallowed a review step whose title is a
+  // div inside a "steps"/"stepper"/"progress" container (a learn filed: 3 POSTs), and the
+  // alike-items cut that kept that title stopped each of those FORM steps at step 1 (skeptic
+  // barSeparators / barMixedTags / barCaption / barHelpLink: the draft-save POST aborted by the
+  // review lockdown). So the page is read both ways:
+  //   WIDE   — every candidate with no fillable and (unless semantic) no heading, as at 2078e56;
+  //   NARROW — only a semantic nav / navigation / tablist, and a short <ol>/<ul> of steps.
+  // Both agree: that is the answer. Only NARROW names review — the words sit inside a
+  // class-matched container, and it takes positive evidence of a FORM step to call it one: a
+  // live fillable control on the page (readOnlyPageInPage false), or a bar that marks its active
+  // step and none of the active steps is review. With neither, it is the review page — the
+  // direction that cannot file. And whatever either reading says, the page IS review when a
+  // bar's ACTIVE step (aria-current / aria-selected / a whole "active"/"current" class token —
+  // not mat-stepper's "mat-step-label-active", which a non-linear stepper puts on every step) or
+  // a visible panel's own name (aria-label / aria-labelledby of a tabpanel, region, section,
+  // dialog, main or form) names the review step: mat-stepper's default review step carries its
+  // title nowhere else (skeptic reviewAriaTabpanel: 3 filing POSTs in a learn).
+  const wideBar = (el: Element): boolean => {
+    if (holdsFillable(el)) return false;
+    if (el.matches(BAR_SEMANTIC)) return true;
+    return !holdsHeading(el);
   };
-  const pageTextWithoutNavigatorInPage = (d: Document): string => {
+  const narrowBar = (el: Element): boolean => {
+    if (holdsFillable(el)) return false;
+    if (el.matches(BAR_SEMANTIC)) return true;
+    return el.matches("ol, ul") && shortStepList(el) && !holdsHeading(el);
+  };
+  const outermost = (els: Element[]): Element[] => {
+    const all = Array.from(new Set(els));
+    return all.filter((b) => !all.some((o) => o !== b && o.contains(b)));
+  };
+  const wideBarsInPage = (d: Document): Element[] => outermost(Array.from(d.querySelectorAll(BAR_CANDIDATES)).filter(wideBar)
+    .concat(Array.from(d.querySelectorAll("ol, ul")).filter((list) => shortStepList(list) && wideBar(list))));
+  const narrowBarsInPage = (d: Document): Element[] => outermost(Array.from(d.querySelectorAll(`${BAR_SEMANTIC}, ol, ul`)).filter(narrowBar));
+  const textWithout = (d: Document, navs: Element[]): string => {
     let pageText = d.body.innerText || d.body.textContent || "";
-    const navs = stepNavigatorsInPage(d);
     for (const el of navs) {
-      const t = ((el as HTMLElement).innerText || el.textContent || "").trim();
+      const t = textOf(el).trim();
       if (t) pageText = pageText.split(t).join(" \n ");
     }
     return pageText;
   };
+  const shownEl = (el: Element): boolean => {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    return r.width > 2 && r.height > 2 && cs.display !== "none" && cs.visibility !== "hidden";
+  };
+  const ACTIVE_STEP_ATTR = "[aria-current]:not([aria-current=false]), [aria-selected=true]";
+  const activeByClass = (el: Element): boolean => String(typeof el.className === "string" ? el.className : "").split(/\s+/)
+    .some((k) => /^(active|current|is-active|is-current|selected|is-selected)$/i.test(k));
+  // The texts of the steps a bar marks active (each short; a bar's own container is never one).
+  const activeStepTexts = (bars: Element[]): string[] => {
+    const out: string[] = [];
+    for (const b of bars) {
+      for (const it of Array.from(b.querySelectorAll("*"))) {
+        if (!it.matches(ACTIVE_STEP_ATTR) && !activeByClass(it)) continue;
+        const t = textOf(it).replace(/\s+/g, " ").trim();
+        if (t && t.length < 80) out.push(t);
+      }
+    }
+    return out;
+  };
+  const PANEL_NAMED = "[role=tabpanel], [role=region], [role=dialog], [role=main], section, main, form, [role=form]";
+  const panelNamesInPage = (d: Document): string[] => Array.from(d.querySelectorAll(PANEL_NAMED)).filter(shownEl).map((el) => {
+    const byId = String(el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)
+      .map((id) => { const n = d.getElementById(id); return n ? textOf(n) : ""; }).join(" ");
+    return `${el.getAttribute("aria-label") || ""} ${byId}`.replace(/\s+/g, " ").trim();
+  }).filter(Boolean);
+  const reviewReadingInPage = (d: Document): { review: boolean; text: string; navs: Element[] } => {
+    const url = (globalThis as { location?: { href?: string } }).location?.href;
+    const wide = wideBarsInPage(d);
+    const narrow = narrowBarsInPage(d);
+    const textWide = textWithout(d, wide);
+    const textNarrow = textWithout(d, narrow);
+    // Only a bar that LISTS the review step speaks for the step: a site menu's aria-current="page"
+    // ("My Permits") says nothing about where the wizard is, and must not count as a form step.
+    const active = activeStepTexts(outermost(wide.concat(narrow)).filter((b) => isReviewPageText(textOf(b))));
+    const named = active.concat(panelNamesInPage(d)).filter((t) => isReviewPageText(t));
+    // The positive read's words ride on the text, so a caller that applies its own wording
+    // (the learner's reviewTextInPage) reaches the same answer.
+    if (named.length) return { review: true, text: `${textNarrow} \n ${named.join(" \n ")}`, navs: narrow };
+    if (reviewSignals(textWide, url)) return { review: true, text: textWide, navs: wide };
+    if (!reviewSignals(textNarrow, url)) return { review: false, text: textWide, navs: wide };
+    const formEvidence = active.length > 0 || readOnlyPageInPage() === false;
+    return formEvidence ? { review: false, text: textWide, navs: wide } : { review: true, text: textNarrow, navs: narrow };
+  };
+  const pageTextWithoutNavigatorInPage = (d: Document): string => reviewReadingInPage(d).text;
 
   /**
    * THE E-SIGNATURE STEP (EnerGov CSS step 6, operator ruling 2026-09-26: "This is fine. Push it
@@ -677,7 +755,7 @@ export function portalSafetyFactory() {
   const navigatorOnlyControlLabelsInPage = (): string[] => {
     const d = (globalThis as { document?: Document }).document;
     if (!d || !d.body) return [];
-    const navs = stepNavigatorsInPage(d);
+    const navs = reviewReadingInPage(d).navs;
     const inNav = new Set<string>();
     const outside = new Set<string>();
     for (const el of Array.from(d.querySelectorAll("a, button, [role=button], [role=link], [role=tab], input[type=submit], input[type=button]"))) {
