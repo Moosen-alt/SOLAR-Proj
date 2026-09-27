@@ -702,6 +702,13 @@ try {
   served.set(KEST_E, await acroPdf("KESTREL COUNTY Electrical Permit Application"));
   const skEns2 = await ensureAgency(sk, "electrical_application");
   check("C1b with its own form served, Southkest acquires and holds it", skEns2.status === "acquired" && loaderUrls(sk).includes(KEST_E) && !loaderUrls(sk).includes(POLK_E), JSON.stringify({ skEns2, loader: loaderUrls(sk) }));
+  // C1b2 THE OTHER DOOR INTO THE LOADER: an AHJ whose name CONTAINS the agency's ("Unincorporated Kestrel
+  // County") finds the agency's rows by name containment, as its own. They are the agency's rows all the same:
+  // Kestrel's co.kestrel.or.us blank is not this job's when its lookup anchors another site for Kestrel.
+  saveLookup("OR", "Unincorporated Kestrel County", [{ discipline: "electrical", agency: "Kestrel County", src: "https://www.kestrel-permits.org/electrical", quote: "Electrical permits in unincorporated Kestrel County are issued by Kestrel County" }]);
+  const unk = job("c1-unk", "OR", "Unincorporated Kestrel County");
+  check("C1b2 (setup) the electrical track is Kestrel County's, and the AHJ's name contains the agency's", agencyMod.formAuthorityFor(unk, "electrical_application").name === "Kestrel County" && JSON.stringify(anchorsOf(unk, "Kestrel County")) === JSON.stringify(["kestrel-permits.org"]), JSON.stringify(anchorsOf(unk, "Kestrel County")));
+  check("C1b2 the name-containment pass never hands it a Kestrel row from a site its lookup does not anchor", !loaderUrls(unk).includes(KEST_E), JSON.stringify(loaderUrls(unk)));
   // C1c THE SKEPTIC'S zzV3 S1m: a Deschutes County blank under the BCD never reaches Culver Two, a BCD city
   // whose lookup cites only oregon.gov — neither as a held blank nor as a fillable form.
   const DES_E2 = "https://www.deschutes.org/sites/default/files/Electrical%20Permit%20Application.pdf";
