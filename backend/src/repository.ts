@@ -8741,7 +8741,13 @@ export async function prepareSubmission(
           capturedPermitNumber,
           capturedConfirmation,
           clicked ? ts : null,
-          clicked ? `automation (final submit approved by ${runApproval?.approver || "no recorded approver"})` : "",
+          // A CLICK THAT SENT NOTHING IS NOT A FILING BY AUTOMATION (portal-run-close-2 M3): the
+          // bot's network backstop reports whether the approved click's request reached the portal.
+          clicked
+            ? ((result as Record<string, unknown>).finalSubmitRequestSent === false
+              ? `automation clicked the approved final submit (approved by ${runApproval?.approver || "no recorded approver"}) — NO filing request reached the portal`
+              : `automation (final submit approved by ${runApproval?.approver || "no recorded approver"})`)
+            : "",
           evidenceDir,
           clicked
             // WHAT WAS FILED, WHEN, AND WHERE THE PROOF IS — on the record itself, so a

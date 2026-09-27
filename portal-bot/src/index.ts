@@ -519,10 +519,22 @@ async function runAdapter(
     // that person's own clicks.
     if (stepPause && options.headless === false && !!options.userDataDir) leaveBrowserOpen = true;
 
+    // DID THE APPROVED CLICK'S REQUEST REACH THE PORTAL? (portal-run-close-2 M3.) The network
+    // backstop's own record: true = a state-changing request was admitted in the approved slot or
+    // the clicked page navigated; false = the click sent nothing it saw (a native confirm()
+    // Playwright dismissed used to end exactly so, while finalSubmitClicked said true and the
+    // audit said "automation (final submit approved by …)"); null = no backstop to tell (a
+    // hand-coded adapter). finalSubmitClicked stays the CLICK's record — the duplicate guard keys
+    // on it, and a request by a channel the backstop cannot see (a WebSocket) would still be a
+    // filing — except where a dialog WE dismissed cancelled the click (then it is false).
+    const sentFlags = steps.map((s) => s?.data?.finalSubmitRequestSent).filter((v): v is boolean => typeof v === "boolean");
+    const finalSubmitRequestSent: boolean | null = sentFlags.length ? sentFlags.some(Boolean) : null;
+
     return {
       portalName: adapter.portalName,
       ok,
       finalSubmitClicked,
+      finalSubmitRequestSent,
       // Legacy field kept for older consumers; mirrors finalSubmitClicked.
       finalSubmitClickedByAutomation: finalSubmitClicked,
       // True when the staged browser is left open at the review screen for the human to

@@ -963,7 +963,7 @@ const PROJECT_OR_OUTCOME_FAILURE: Array<[RegExp, string]> = [
     "a document gate refused the upload — the project's documents, not the recipe"],
   [/is not offered here|matches \d+ of the types offered|address not in oregon epermitting|no value (was )?(supplied|provided|available)|missing (project|required) (data|value|field)|value dictionary does not define|project (data|record) (is )?missing|needs an answer/i,
     "the project is missing data this step needs (or asked for something this jurisdiction does not offer)"],
-  [/final submit clicked|after the submit click|final-submit click did not complete|final submit needs a human|final submit triggered a challenge|payment dialog|fees are never automated/i,
+  [/final submit clicked|after the submit click|final-submit click did not complete|final submit needs a human|final submit triggered a challenge|payment dialog|fees are never automated|the approved final submit/i,
     "the final-submit outcome needs a human to verify — that is a filing to check, not drift"],
   // TEXT THE PORTAL SAID ABOUT THE PROJECT never demotes (trust skeptic M2). The adapter's
   // advance step reports the portal's own validation message ("The portal says: Service Account

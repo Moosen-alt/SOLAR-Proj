@@ -76,7 +76,7 @@ import { sweepEmptyRequiredControls, type EmptyRequired } from "../requiredContr
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import {
-  classifySubmissionText, finalSubmitEnvAllows, finalSubmitRefusals, isFinalSubmitControl, isPayFee, mayClickFinalSubmit,
+  classifySubmissionText, finalSubmitEnvAllows, finalSubmitRefusals, isFinalSubmitControl, isPayFee, isPaymentWordedText, mayClickFinalSubmit,
   isRecipeShapeValid, isSignatureNameLabel, isSubmitIntent, isSubmitOrPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE,
   type HealedStep, type RunApproval, type SubmissionOutcome,
 } from "../../../shared/src/portalSafety";
@@ -309,6 +309,24 @@ export class FinalSubmitStop extends Error {
   }
 }
 
+// THE APPROVAL'S BURN STATE AT THE BOT LAYER (portal-run-close-2 C1). The skeptic re-passed ONE
+// {approver, runId} three times in one process: run 1 refused (env unset), run 2 FILED, run 3
+// FILED AGAIN. Production is protected by the backend's claimRunApproval (atomic, consumed at
+// claim, burned on a refusal), but any other caller of stageWithRecipe was not. A runId whose
+// approved final submit was clicked — or refused at the gate while an approval was offered — is
+// burned for the life of this process, and the gate refuses it after that.
+const BURNED_APPROVED_RUNS = new Map<string, "clicked" | "refused">();
+export function burnApprovedRun(runId: string, how: "clicked" | "refused"): void {
+  const id = String(runId || "").trim();
+  if (!id) return;
+  if (BURNED_APPROVED_RUNS.get(id) !== "clicked") BURNED_APPROVED_RUNS.set(id, how);
+}
+/** How this runId's approval was spent in this process, or null. */
+export function approvedRunBurn(runId: string): "clicked" | "refused" | null {
+  const id = String(runId || "").trim();
+  return id ? BURNED_APPROVED_RUNS.get(id) ?? null : null;
+}
+
 /** One live progress line from a replay (options.onProgress): what the run is waiting on, never
  *  PII. index.ts StageOptions passes it through so a caller (the dashboard) can show it. */
 export interface RecipeProgress {
@@ -453,6 +471,8 @@ export class RecipeAdapter extends BasePortalAdapter {
   finalSubmitOutcome: SubmissionOutcome | null = null;
   /** Set before the final-submit click is attempted: a run clicks it at most once. */
   private finalSubmitAttempted = false;
+  /** A native dialog we dismissed cancelled the approved click: nothing was sent (M3). */
+  private finalSubmitNothingSent = false;
   /** The recipe step index the loop is on — the final-submit gate's "is this the terminal step". */
   private currentStepIdx = -1;
   /** The step whose selector resolveLocator is resolving right now (for disambiguation). */
@@ -613,7 +633,9 @@ export class RecipeAdapter extends BasePortalAdapter {
     // (armSubmitWatch), and a route left behind would abort the person's own filing.
     this.backstop = await installFilingBackstop(this.page, "replay run").catch(() => null);
     try {
-      const r = await this.runAll(project);
+      const ran = await this.runAll(project);
+      // A dismissed dialog cancelled the approved click: the result says so in data too.
+      const r = this.finalSubmitNothingSent ? { ...ran, data: { ...(ran.data ?? {}), finalSubmitClicked: false, finalSubmitRequestSent: false } } : ran;
       // Hand-off: the route comes off FIRST, then every abort up to that moment is counted (an
       // abort between the last check and the hand-off is not lost).
       await this.backstop?.dispose().catch(() => null);
@@ -640,18 +662,33 @@ export class RecipeAdapter extends BasePortalAdapter {
     if (!bs) return r;
     this.backstopStop(); // pushes each unreported abort into driftWarnings + guardRefusals
     const notes: string[] = [];
-    if (!bs.approvedRequests.length) {
-      notes.push("the approved click sent no state-changing request that the network backstop let through — the filing request never reached the server");
-    } else {
-      notes.push(`the approved click's request went to ${bs.approvedRequests.join(", ")}`);
+    // WHAT WENT, IN WORDS THAT ARE TRUE (portal-run-close-2 M4). "The approved click's request"
+    // only for a NAVIGATION of the clicked page (its form's submission); a fetch/XHR admitted in
+    // the window is "a state-changing request in the approved window" — the backstop cannot tell
+    // it was the click's own. A GET navigation is a request that reached the server too, but not a
+    // state-changing one.
+    const sent = bs.approvedRequests.length > 0 || bs.approvedNavigations.length > 0;
+    for (const a of bs.approvedAdmissions) {
+      notes.push(a.navigation ? `the approved click's request (the clicked page's form submission) went to ${a.where}` : `a state-changing request in the approved window went to ${a.where}`);
     }
+    if (!bs.approvedAdmissions.length && bs.approvedNavigations.length) {
+      notes.push(`the approved click navigated the page by GET to ${bs.approvedNavigations.join(", ")} — no state-changing request was sent or admitted`);
+    }
+    if (!sent) {
+      notes.push("the approved click sent NO request the network backstop saw reach the portal (no state-changing request admitted, no navigation) — the filing request never reached the server");
+    }
+    const dialogs = bs.approvedDialogs.filter((d) => d.action === "accepted");
+    if (dialogs.length) notes.push(`accepted the click's own ${dialogs.map((d) => `${d.type} ("${d.message.slice(0, 60)}")`).join(", ")}`);
     const others = bs.aborts;
     if (others.length) {
-      notes.push(`the network backstop aborted ${others.length} other state-changing request(s) during/after it (${describeBackstopAbort(others[0])}) — only the approved click's own request was admitted`);
+      notes.push(`the network backstop aborted ${others.length} other state-changing request(s) during/after it (${describeBackstopAbort(others[0])}) — only one request in the approved click's slot was admitted`);
     }
     const line = `APPROVED FINAL SUBMIT: ${notes.join("; ")}.`;
-    if ((others.length || !bs.approvedRequests.length) && !this.driftWarnings.includes(line)) this.driftWarnings.push(line);
-    const data = { ...(r.data ?? {}), approvedRequests: [...bs.approvedRequests], backstopAborts: others.length, driftWarnings: this.driftWarnings, guardRefusals: this.guardRefusals };
+    if ((others.length || !sent) && !this.driftWarnings.includes(line)) this.driftWarnings.push(line);
+    const data = {
+      ...(r.data ?? {}), approvedRequests: [...bs.approvedRequests], approvedNavigations: [...bs.approvedNavigations],
+      finalSubmitRequestSent: sent, backstopAborts: others.length, driftWarnings: this.driftWarnings, guardRefusals: this.guardRefusals,
+    };
     return { ...r, message: `${String(r.message ?? "")} ${line}`.trim(), data };
   }
 
@@ -2872,65 +2909,6 @@ export class RecipeAdapter extends BasePortalAdapter {
     return filled;
   }
 
-  // FIX WHAT THE REJECTION BANNER NAMES, THEN SUBMIT AGAIN.
-  //
-  // The banner's field list carries per-page links. Each linked page gets the same two
-  // passes replay already trusts — gap-fill (fills required empties from real project data)
-  // and the unrecorded-upload sweep — then the wizard returns to its last page and Submit is
-  // clicked once more. Two rounds at most: a banner that will not shrink is a data problem,
-  // and the human gets it in the portal's own words rather than a third identical attempt.
-  private async repairFromRejectionBanner(): Promise<boolean> {
-    if (!this.page || typeof this.page.evaluate !== "function") return false;
-    for (let round = 0; round < 2; round++) {
-      // The links INSIDE the banner ("Page 3", "Page 7"), deduplicated by their text.
-      const banner = this.page.locator("div, section").filter({ hasText: /unable to submit|fix the errors below|missing required fields/i }).last();
-      const links = banner.locator("a");
-      const n = Math.min(await links.count().catch(() => 0), 8);
-      if (n === 0) return round > 0;
-      const seen = new Set<string>();
-      for (let k = 0; k < n; k++) {
-        const label = ((await links.nth(k).innerText().catch(() => "")) || "").trim();
-        if (!label || seen.has(label)) continue;
-        seen.add(label);
-        // Re-locate by text each time — the banner re-renders after every navigation.
-        const link = this.page.locator("a").filter({ hasText: new RegExp(`^\\s*${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`) }).last();
-        if (!(await link.count().catch(() => 0))) continue;
-        await this.guardedClick(link, `open the page the rejection names (${label.slice(0, 30)})`, { timeout: 8000 }).catch(() => null);
-        await smartWait(this.page, 2500);
-        this.driftWarnings.push(`submit rejected — repairing "${label}"`);
-        await this.runGapFill(this.page).catch(() => null);
-        await this.sweepUnrecordedUploads().catch(() => 0);
-      }
-      // Back to the last wizard page, where the Submit button lives.
-      const tabs = this.page.locator("[id^='page-header'], [role='tab'], .stepNav a");
-      const tabCount = await tabs.count().catch(() => 0);
-      if (tabCount > 0) {
-        await this.guardedClick(tabs.nth(tabCount - 1), "return to the last wizard page", { timeout: 8000 }).catch(() => null);
-        await smartWait(this.page, 2500);
-      }
-      const submit = this.page.getByRole("button", { name: /^\s*Submit\s*$/i })
-        .or(this.page.locator('input[type="submit"][value*="Submit" i]')).last();
-      if (!(await submit.count().catch(() => 0))) return round > 0;
-      // A SECOND CLICK OF THE FILING CONTROL. The shared gate is asked again, now — the
-      // one-per-run rule is waived only for this repair re-click of the SAME approved submit.
-      const again = this.finalSubmitRefusalsNow().filter((r) => !/already attempted/.test(r));
-      if (again.length) { this.driftWarnings.push(`repair re-submit NOT clicked — ${again.join("; ")}`); return false; }
-      await this.guardedClick(submit, "re-submit after repairing the rejection", { timeout: 10000 }, { finalSubmitApproved: true }).catch(() => null);
-      await smartWait(this.page, 4000);
-      const still = await this.page.evaluate(() => {
-        const vis = (e: Element) => { const r = (e as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-        for (const el of Array.from(document.querySelectorAll("div, section, [role='alert']"))) {
-          if (!vis(el)) continue;
-          const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
-          if (t && t.length <= 1500 && /unable to submit|fix the errors below|missing required fields/i.test(t)) return true;
-        }
-        return false;
-      }).catch(() => false);
-      if (!still) return true;
-    }
-    return true; // rounds exhausted — caller re-reads the banner and reports honestly
-  }
-
   // A VALUE IS NOT COMMITTED UNTIL THE PORTAL SAYS "Saved". PowerClerk autosaves per field
   // and re-renders from the SERVER's state: advance while "Saving..." is still up and the
   // re-render restores the old (empty) value. The operator watched exactly that — the
@@ -4069,7 +4047,9 @@ export class RecipeAdapter extends BasePortalAdapter {
     // THE APPROVED FINAL SUBMIT (and its confirm dialog) is the one click whose FILING request
     // the backstop lets through — a named person approved this run and finalSubmitRefusalsNow()
     // passed. A payment endpoint stays blocked even then.
-    if (flags.finalSubmitApproved) this.backstop?.allowApprovedFiling(20_000);
+    // The slot is bound to THIS page (portal-run-close-2 M4) and carries the native-dialog handler
+    // for the click (M3); see filingBackstop.allowApprovedFiling.
+    if (flags.finalSubmitApproved) this.backstop?.allowApprovedFiling(20_000, { page: this.page });
     await (target as { click: (o?: unknown) => Promise<void> }).click(opts);
   }
 
@@ -4163,6 +4143,8 @@ export class RecipeAdapter extends BasePortalAdapter {
     const out = may ? [] : finalSubmitRefusals(ctx);
     if (!may && !out.length) out.push("the final-submit gate refused this click");
     if (this.finalSubmitAttempted) out.push("the final submit was already attempted in this run");
+    const burned = approvedRunBurn(ctx.runId);
+    if (burned && !this.finalSubmitAttempted) out.push(`this run's approval (runId ${ctx.runId.slice(0, 40)}) was already used in this process — it ${burned === "clicked" ? "clicked a final submit" : "was refused"}; one approval covers one filing attempt, a new run needs a new approval`);
     return out;
   }
 
@@ -4188,26 +4170,55 @@ export class RecipeAdapter extends BasePortalAdapter {
       const modal = await this.page.evaluate(() => {
         const panels = Array.from(document.querySelectorAll(
           "[data-test-role='ai-screen-multi-page-progression-warning'], [data-test-role='ai-screen-nav-warning'], [role='dialog'], .modal.show, .modal[style*='display: block']"));
+        const texts: string[] = [];
+        let found: { ok: string; text: string } | null = null;
         for (const p of panels) {
           const r = (p as HTMLElement).getBoundingClientRect();
           if (!(r.width > 2 && r.height > 2)) continue;
           const text = ((p as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
-          if (/pay|fee|payment|checkout/i.test(text)) return { blocked: text.slice(0, 160) };
+          texts.push(text.slice(0, 400));
+          if (found) continue;
           for (const b of Array.from(p.querySelectorAll("button, a, [role='button']"))) {
             const t = ((b as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
             if (/^(ok|yes|confirm|continue|submit|proceed)$/i.test(t)) {
               (b as HTMLElement).setAttribute("data-al-modal-ok", "1");
-              return { ok: t, text: text.slice(0, 120) };
+              found = { ok: t, text: text.slice(0, 120) };
+              break;
             }
           }
         }
-        return null;
-      }).catch(() => null) as { ok?: string; text?: string; blocked?: string } | null;
+        return texts.length ? { ...(found ?? {}), all: texts } : null;
+      }).catch(() => null) as { ok?: string; text?: string; all?: string[]; blocked?: string } | null;
+      // ONE PREDICATE for "does this dialog speak of paying?" — the same one the native-dialog
+      // handler asks (portalSafety isPaymentWordedText; this was its own substring regex, where
+      // "feedback" read as a fee). Every visible dialog is asked, not only the one with an OK.
+      const payDialog = (modal?.all ?? []).find((t) => isPaymentWordedText(t));
+      if (modal && payDialog) modal.blocked = payDialog.slice(0, 160);
       if (modal?.blocked) {
         this.finalSubmitOutcome = { verdict: "unknown", evidence: `payment dialog: ${modal.blocked.slice(0, 80)}` };
+        const bsPay = this.backstop;
+        if (bsPay && !bsPay.approvedRequests.length && !bsPay.approvedNavigations.length) {
+          // Nothing reached the portal: the click only opened this dialog. Not a filing (M3).
+          bsPay.closeApprovedSlot();
+          this.finalSubmitClicked = false;
+          this.finalSubmitNothingSent = true;
+          throw new FinalSubmitStop(`The approved final submit's confirmation asks for a payment — fees are never automated, the dialog was not answered, and NOTHING was filed (no request reached the portal). A person pays and submits on the portal. (${modal.blocked.slice(0, 120)})`, "fee_payment");
+        }
         throw new FinalSubmitStop(`The submit raised a payment dialog — fees are never automated; a person pays and confirms the filing on the portal. (${modal.blocked.slice(0, 120)})`, "fee_payment");
       }
-      if (modal?.ok) {
+      // A MODAL IS ANSWERED ONLY WHILE THE FILING HAS NOT GONE (portal-run-close-2 C3). Its OK
+      // opens a fresh approved slot — which is right for the submit's own confirmation ("Are you
+      // sure you want to submit?", nothing sent yet), and wrong after the filing request reached
+      // the server: a "Take our survey? [Continue]" modal on the completion page would have been
+      // clicked with a slot open. After the filing, the slot is closed and no modal is clicked;
+      // the page's text (modal included) is still read below.
+      const bsNow = this.backstop;
+      const filingWent = !!bsNow && (bsNow.approvedRequests.length > 0 || bsNow.approvedNavigations.length > 0);
+      if (modal?.ok && filingWent) {
+        bsNow!.closeApprovedSlot();
+        const line = `a dialog after the filing request ("${(modal.text || "").slice(0, 60)}") — NOT clicked: the approved click's request already reached the portal`;
+        if (!this.driftWarnings.includes(line)) this.driftWarnings.push(line);
+      } else if (modal?.ok) {
         this.driftWarnings.push(`submit confirm dialog ("${(modal.text || "").slice(0, 60)}") — clicked ${modal.ok}`);
         await this.guardedClick(this.page.locator("[data-al-modal-ok='1']").first(), "the approved submit's confirm dialog", { timeout: 5000 }, { finalSubmitApproved: true }).catch(() => null);
         await smartWait(this.page, 2500);
@@ -4298,6 +4309,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       const refusals = this.finalSubmitRefusalsNow();
       if (refusals.length) {
         this.driftWarnings.push(`final submit NOT clicked — ${refusals.join("; ")}`);
+        // A REFUSED approval is spent too (C1): the backend burns it on a refusal, and a second
+        // run re-passing the same {approver, runId} after the refusal (env flipped in between)
+        // filed at this layer.
+        if (this.options.runApproval) burnApprovedRun(String(this.options.runId ?? ""), "refused");
         return false;
       }
       // Trusted auto-submit: STRUCTURALLY detect a CAPTCHA/MFA challenge (iframe-based
@@ -4309,6 +4324,11 @@ export class RecipeAdapter extends BasePortalAdapter {
       // AT MOST ONCE PER RUN. Marked before the click: a click that throws mid-way may still
       // have reached the portal, and the retry loop must never produce a second filing.
       this.finalSubmitAttempted = true;
+      // ONE APPROVAL, ONE FILING ATTEMPT — AT THIS LAYER TOO (portal-run-close-2 C1). The backend
+      // burns an approval when it is claimed, but any other caller of stageWithRecipe (a script,
+      // a retry that re-passes the same runId + approval) could file twice with it. The runId is
+      // burned here, before the click, for the life of this process.
+      burnApprovedRun(String(this.options.runId ?? ""), "clicked");
       try {
         await this.guardedClick(scoped, "the approved final submit", undefined, { finalSubmitApproved: true });
       } catch (err) {
@@ -4317,6 +4337,21 @@ export class RecipeAdapter extends BasePortalAdapter {
       this.finalSubmitClicked = true;
       // Let the portal settle, then verify we did not land on a challenge.
       await smartWait(this.page, 3000);
+      // A NATIVE DIALOG WE DISMISSED CANCELLED THE CLICK (portal-run-close-2 M3): a confirm()
+      // that speaks of paying ("Pay $150 and submit?"), or a prompt. Nothing was sent (the
+      // backstop admitted nothing and the page did not navigate) — this is a pause for a person,
+      // never a filing: finalSubmitClicked goes back to false so nothing downstream records one.
+      const dismissed = this.backstop?.approvedDialogs.find((d) => d.action === "dismissed");
+      if (dismissed && this.backstop && !this.backstop.approvedRequests.length && !this.backstop.approvedNavigations.length) {
+        this.finalSubmitClicked = false;
+        this.finalSubmitNothingSent = true;
+        const payment = /payment/.test(dismissed.why);
+        this.finalSubmitOutcome = { verdict: "unknown", evidence: `${dismissed.type} dialog dismissed: ${dismissed.message.slice(0, 80)}` };
+        throw new FinalSubmitStop(payment
+          ? `The approved final submit's confirmation asks for a payment ("${dismissed.message.slice(0, 100)}") — dismissed, automation never pays. NOTHING was filed (no request reached the portal); a person pays and submits on the portal.`
+          : `The approved final submit opened a ${dismissed.type} ("${dismissed.message.slice(0, 100)}") that was dismissed (${dismissed.why}). NOTHING was filed (no request reached the portal); a person completes the submit on the portal.`,
+        payment ? "fee_payment" : null);
+      }
       const postChallenge = await detectChallengeFrame(this.page);
       if (postChallenge) {
         this.finalSubmitOutcome = { verdict: "unknown", evidence: `challenge after the click: ${postChallenge}` };
@@ -4326,13 +4361,13 @@ export class RecipeAdapter extends BasePortalAdapter {
       // shared classifier: "accepted" only on positive evidence (a confirmation sentence or an
       // issued record number), "rejected" on the portal's refusal, and a quiet page "unknown" —
       // never "accepted because the page went quiet".
-      let outcome = await this.pollSubmissionOutcome();
-      if (outcome.verdict === "rejected") {
-        // THE BANNER IS A WORK LIST, NOT JUST A VERDICT. Each named page gets a gap-fill pass
-        // and an upload sweep, then the gate is asked AGAIN before Submit is clicked again.
-        const repaired = await this.repairFromRejectionBanner();
-        if (repaired) outcome = await this.pollSubmissionOutcome();
-      }
+      // A REJECTION STOPS FOR A PERSON (portal-run-close-2 C2). This used to "repair" the pages the
+      // portal's banner named and re-click getByRole('button', {name: /^Submit$/}) — NOT the
+      // recipe's flagged step, a control nobody recorded or approved — with a fresh approved slot:
+      // a second filing request on one approval. The named approval covered ONE click of ONE
+      // flagged control; after the portal refuses it, what to change and whether to file again is
+      // the person's call, in the portal's own words (the verdict's evidence below).
+      const outcome = await this.pollSubmissionOutcome();
       this.finalSubmitOutcome = outcome;
       if (outcome.verdict === "accepted") {
         await this.capturePageShot("SUBMITTED", true);

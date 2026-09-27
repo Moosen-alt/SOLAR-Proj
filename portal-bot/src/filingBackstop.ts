@@ -44,7 +44,7 @@
 // context.route fixture server still answers what this layer lets through.
 //
 // Known cost: Playwright disables the browser's HTTP cache while any route is installed.
-import { isFilingOrPaymentRequest, isPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../shared/src/portalSafety";
+import { isFilingOrPaymentRequest, isPaymentWordedText, isPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE } from "../../shared/src/portalSafety";
 
 export type BackstopRule = "filing-url" | "dismisser-window" | "enter-window" | "review-lockdown";
 
@@ -62,12 +62,31 @@ export interface FilingBackstop {
   readonly aborts: BackstopAbort[];
   /** Open a window in which every state-changing request is aborted. Returns its closer. */
   openWindow(rule: "dismisser-window" | "enter-window", why: string): () => void;
-  /** THE approved final submit only: let ONE state-changing request through — a FILING url, and
-   *  past the review lockdown — within `ms`. Payment never. Every later state-changing request
-   *  (a page script's second POST, the completion page's on-load POST) meets the ordinary rules. */
-  allowApprovedFiling(ms: number): void;
+  /** THE approved final submit only: open ONE slot, bound to the clicked page, that lets ONE
+   *  state-changing request through — a FILING url, and past the review lockdown — within `ms`.
+   *  Payment never. The slot closes when that request goes, when the clicked page's main frame
+   *  starts a navigation of its own (a GET: the click's own request was not state-changing, so
+   *  there is nothing to admit) or loads a new document, or when `ms` runs out. Every later
+   *  state-changing request (a page script's second POST, the completion page's on-load POST)
+   *  meets the ordinary rules. While the slot is open a native confirm()/alert/beforeunload on the
+   *  clicked page whose text speaks of no payment is ACCEPTED; a prompt, or a payment-worded
+   *  dialog, is dismissed and recorded. Outside a slot there is no dialog handler at all
+   *  (Playwright dismisses every dialog, as before). */
+  allowApprovedFiling(ms: number, opts?: { page?: unknown }): void;
+  /** Is an approved slot open and unused right now? */
+  approvedSlotOpen(): boolean;
+  /** Close the approved slot now (the filing request has gone, or a caller is done with it). */
+  closeApprovedSlot(): void;
   /** Where (origin + path) each request the approved window admitted went, in order. */
   readonly approvedRequests: string[];
+  /** Each admitted request: was it a NAVIGATION of the clicked page (a form submission — the
+   *  click's own request) or another state-changing request fired inside the approved window? */
+  readonly approvedAdmissions: Array<{ where: string; navigation: boolean }>;
+  /** The clicked page navigated (a GET document request) while the slot was open: a request DID
+   *  reach the server even though nothing state-changing was admitted. origin + path. */
+  readonly approvedNavigations: string[];
+  /** Every native dialog seen while a slot's dialog handler was installed, and what was done. */
+  readonly approvedDialogs: Array<{ type: string; message: string; action: "accepted" | "dismissed"; why: string }>;
   /** The run is at review: abort every state-changing request until dispose() hands the page to
    *  a person. Sticky. */
   lockReview(why: string): void;
@@ -166,15 +185,38 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
   const aborts: BackstopAbort[] = [];
   const windows = new Map<number, { rule: "dismisser-window" | "enter-window"; why: string }>();
   let nextWindow = 1;
-  let approvedFilingUntil = 0;
   // ONE REQUEST PER APPROVED CLICK. The window used to admit EVERY non-payment state-changing
   // request for 20 s, so a page script's second POST fired in the approved click's window reached
   // the server as if a person had approved it too (portal-run-close 8, approvedFinalSubmit smoke
   // 'extraPost'). A named approval covers the click's own request and nothing else. KNOWN COST,
   // fail-closed: a script POST that fires BEFORE the click's own request takes the slot and the
   // filing itself is aborted (named, nothing filed).
-  let approvedSlots = 0;
+  //
+  // THE SLOT IS BOUND TO THE CLICK (portal-run-close-2 M4). It was consumed by ANY first
+  // state-changing request, so when the click's own request was NOT state-changing (a form
+  // method=GET to the completion page; a button setting location.href) the completion page's
+  // on-load fetch(POST …/track/completed) took the slot, reached the server, and was reported as
+  // "the approved click's request" (skeptic getSubmit / jsNav). Now the slot admits a request
+  // only from the CLICKED page (any of its frames), and closes as soon as that page's main frame
+  // starts a GET navigation or loads a new document — the click's navigation is over, and
+  // whatever the next document posts is not what the person approved. Deliberately NOT
+  // framenavigated: Playwright fires it on pushState, and an SPA that pushes state and then
+  // posts the filing would lose its slot (a new false stop on a legitimate filing).
+  type Slot = { page: unknown; until: number; open: boolean; timer: ReturnType<typeof setTimeout> | null; detach: () => void };
+  let slot: Slot | null = null;
   const approvedRequests: string[] = [];
+  const approvedAdmissions: Array<{ where: string; navigation: boolean }> = [];
+  const approvedNavigations: string[] = [];
+  const approvedDialogs: Array<{ type: string; message: string; action: "accepted" | "dismissed"; why: string }> = [];
+  const slotLive = (): boolean => !!slot && slot.open && Date.now() < slot.until;
+  const closeSlot = (): void => {
+    const s = slot;
+    if (!s) return;
+    s.open = false;
+    if (s.timer) clearTimeout(s.timer);
+    s.timer = null;
+    s.detach();
+  };
   let locked = "";
   let disposed = false;
   // A NAVIGATION REQUEST (a form POST) CANNOT BE ASKED LIVE: evaluating the page it is navigating
@@ -215,7 +257,22 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
     let method = "";
     let url = "";
     try { method = String(request.method() || "").toUpperCase(); url = String(request.url() || ""); } catch { /* unreadable: fall through as not-GET */ }
-    if (method === "GET" || method === "HEAD" || method === "OPTIONS") { await route.fallback().catch(() => null); return; }
+    if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+      // The clicked page's main frame navigating by GET ends the approved click's slot: its own
+      // request was that navigation (nothing state-changing to admit), and the next document's
+      // posts are not the click's. The navigation itself reached the server — recorded.
+      if (method === "GET" && slotLive()) {
+        try {
+          const pg = pageOfRequest(request);
+          if (request.isNavigationRequest() && pg && pg === slot!.page && request.frame() === pg.mainFrame()) {
+            approvedNavigations.push(whereOf(url));
+            closeSlot();
+          }
+        } catch { /* unreadable: the slot keeps its other closers */ }
+      }
+      await route.fallback().catch(() => null);
+      return;
+    }
     let resourceType = "";
     try { resourceType = String(request.resourceType() || ""); } catch { /* keep "" */ }
     const abort = async (rule: BackstopRule, why: string): Promise<void> => {
@@ -225,9 +282,19 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
     // 1. PAYMENT: never, in any frame, any type, whatever was approved.
     if (isPayRequestUrl(url)) { await abort("filing-url", "a fee-payment endpoint — automation never pays"); return; }
     // The approved click's ONE request takes the slot (checked after the payment rule: a payment
-    // never uses it).
-    const approved = approvedSlots > 0 && Date.now() < approvedFilingUntil;
-    if (approved) { approvedSlots = 0; approvedRequests.push(whereOf(url)); }
+    // never uses it) — and only a request from the clicked page.
+    let approved = false;
+    if (slotLive()) {
+      const pg = pageOfRequest(request);
+      if (!slot!.page || pg === slot!.page) {
+        let navigation = false;
+        try { navigation = !!request.isNavigationRequest(); } catch { /* unknown: not a navigation */ }
+        approved = true;
+        approvedRequests.push(whereOf(url));
+        approvedAdmissions.push({ where: whereOf(url), navigation });
+        closeSlot();
+      }
+    }
     // 2. FILING URL: only inside THE approved final submit's window.
     if (isFilingOrPaymentRequest(method || "POST", url) && !approved) {
       await abort("filing-url", `a filing endpoint, and no named approval covers this request (${label})`);
@@ -269,17 +336,62 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
       return () => { windows.delete(id); };
     },
     approvedRequests,
-    allowApprovedFiling(ms: number) {
+    approvedAdmissions,
+    approvedNavigations,
+    approvedDialogs,
+    allowApprovedFiling(ms: number, opts?: { page?: unknown }) {
       // Reset, never added: each approved click (the submit, a confirm dialog's OK) covers one.
-      approvedSlots = 1;
-      approvedFilingUntil = Math.max(approvedFilingUntil, Date.now() + Math.max(0, Math.min(ms, 60_000)));
+      closeSlot();
+      if (disposed) return;
+      const clicked = opts && opts.page && typeof opts.page === "object" ? opts.page : null;
+      const span = Math.max(0, Math.min(ms, 60_000));
+      const detachers: Array<() => void> = [];
+      const s: Slot = { page: clicked, until: Date.now() + span, open: true, timer: null, detach: () => { for (const d of detachers.splice(0)) d(); } };
+      slot = s;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pg: any = clicked;
+      if (pg && typeof pg.on === "function" && typeof pg.off === "function") {
+        // A NEW DOCUMENT on the clicked page ends the click's slot (the belt to the GET-navigation
+        // braces above: a navigation the route never saw, e.g. a bfcache restore).
+        const onLoad = (): void => { if (slot === s) closeSlot(); };
+        pg.on("domcontentloaded", onLoad);
+        detachers.push(() => { try { pg.off("domcontentloaded", onLoad); } catch { /* page gone */ } });
+        // NATIVE DIALOGS DURING THE APPROVED CLICK (portal-run-close-2 M3). With no listener,
+        // Playwright DISMISSES every dialog: a Submit whose onclick is `return confirm('File this
+        // application now?')` cancelled its own form and the approved run never filed (skeptic
+        // confirmNative). While a listener is registered Playwright no longer auto-answers, so
+        // this handler answers EVERY dialog it sees: accept a confirm / alert / beforeunload whose
+        // text speaks of no payment, while the slot is open and unused; dismiss a prompt (it asks
+        // for input nobody approved) and any payment-worded dialog (automation never pays) — the
+        // adapter reads approvedDialogs and pauses fee_payment.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const onDialog = async (dialog: any): Promise<void> => {
+          let type = "";
+          let message = "";
+          try { type = String(dialog.type() || ""); message = String(dialog.message() || ""); } catch { /* unreadable: dismissed below */ }
+          let why = "";
+          if (type === "prompt") why = "a prompt asks for input nobody approved";
+          else if (isPaymentWordedText(message)) why = "it speaks of a payment — automation never pays";
+          else if (!(slot === s && slotLive())) why = "outside the approved click's slot";
+          else if (!/^(confirm|alert|beforeunload)$/.test(type)) why = `an unknown dialog type "${type}"`;
+          const accept = !why;
+          approvedDialogs.push({ type, message: message.slice(0, 200), action: accept ? "accepted" : "dismissed", why: accept ? "the approved click's own confirmation" : why });
+          try { if (accept) await dialog.accept(); else await dialog.dismiss(); } catch { /* already answered / page gone */ }
+        };
+        pg.on("dialog", onDialog);
+        detachers.push(() => { try { pg.off("dialog", onDialog); } catch { /* page gone */ } });
+      }
+      s.timer = setTimeout(() => { if (slot === s) closeSlot(); }, span);
     },
+    approvedSlotOpen() { return slotLive(); },
+    closeApprovedSlot() { closeSlot(); },
     lockReview(why: string) {
       if (!locked) locked = `the run is at review (${String(why || label).slice(0, 100)}) — nothing legitimate posts from here until a person takes the page`;
     },
     stoppingAborts() { return aborts.filter(isStoppingAbort); },
     async dispose() {
       disposed = true;
+      closeSlot();
       if (REGISTRY.get(page) === bs) REGISTRY.delete(page);
       if (target !== page && REGISTRY.get(target) === bs) REGISTRY.delete(target);
       windows.clear();

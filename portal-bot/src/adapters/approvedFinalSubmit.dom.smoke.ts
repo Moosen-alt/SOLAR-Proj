@@ -26,6 +26,17 @@
 //   MUST-EXCLUDE  feePage: the approved submit lands on a fee page -> pause fee_payment, 0 PAYMENT
 //                 POSTs (the one filing POST is the approved click's).
 //
+//   portal-run-close-2:
+//   MUST-PASS     confirmNative (a native confirm() on the Submit is ACCEPTED in the approved slot -> one
+//                 POST); confirmModal (a DOM modal's OK files once); getSubmit / jsNav (a GET-navigating
+//                 Submit: the record is captured from the GET completion page).
+//   MUST-EXCLUDE  confirmPay ('Pay $150 and submit?' dismissed -> 0 POSTs, pause fee_payment,
+//                 finalSubmitClicked false); unapprovedDialog (a confirm in an UNapproved run is dismissed);
+//                 getSubmit / jsNav (the completion page's on-load POSTs never take the slot -> 0 POSTs);
+//                 postFilingModal (C3: a modal after the filing is not clicked); rejected (C2: one POST,
+//                 never a re-click); burned (C1: one {approver, runId} files at most once per process,
+//                 and a refused one never files later).
+//
 // Kill: mayClickFinalSubmit -> true (or finalSubmitRefusals -> []) turns the MUST-EXCLUDE env /
 // approval / shape cases red.
 //
@@ -67,6 +78,32 @@ const reviewBody = (mode: string): string => {
         });
       </script>`;
   }
+  // portal-run-close-2 M4: the flagged Submit's own request is a GET (a form method=GET; a button
+  // setting location.href). The completion page's script POSTs on load and again 800 ms later.
+  if (mode === "getSubmit") {
+    return `${summary}<form method="get" action="/m/getSubmit/apply/done"><input type="hidden" name="go" value="1"><button type="submit" id="btnSubmit">Submit Application</button></form>`;
+  }
+  if (mode === "jsNav") {
+    return `${summary}<button type="button" id="btnSubmit" onclick="location.href='/m/jsNav/apply/done'">Submit Application</button>`;
+  }
+  // portal-run-close-2 M3: a NATIVE confirm() on the Submit (Playwright dismisses dialogs by default).
+  if (mode === "confirmNative") {
+    return `${summary}<form method="post" action="/m/confirmNative/apply/submit"><button type="submit" id="btnSubmit" onclick="return confirm('File this application now?')">Submit Application</button></form>`;
+  }
+  if (mode === "confirmPay") {
+    return `${summary}<form method="post" action="/m/confirmPay/apply/submit"><button type="submit" id="btnSubmit" onclick="return confirm('Pay $150 and submit?')">Submit Application</button></form>`;
+  }
+  // A DOM confirm modal (role=dialog) whose OK posts the form — answered with its own approved slot.
+  if (mode === "confirmModal") {
+    return `${summary}<form id="f" method="post" action="/m/confirmModal/apply/submit"></form>
+      <button type="button" id="btnSubmit">Submit Application</button>
+      <div id="dlg" role="dialog" style="display:none;border:1px solid #000;padding:12px"><p>Are you sure you want to submit this application?</p><button type="button" id="dlgCancel">Cancel</button> <button type="button" id="dlgOk">OK</button></div>
+      <script>
+        document.getElementById("btnSubmit").addEventListener("click", function(){ document.getElementById("dlg").style.display = "block"; });
+        document.getElementById("dlgCancel").addEventListener("click", function(){ document.getElementById("dlg").style.display = "none"; });
+        document.getElementById("dlgOk").addEventListener("click", function(){ document.getElementById("f").submit(); });
+      </script>`;
+  }
   if (mode === "captcha") {
     return `${summary}<iframe title="reCAPTCHA" src="/recaptcha/api2/anchor?k=fixture" width="304" height="78"></iframe>
       <form method="post" action="/m/captcha/apply/submit"><button type="submit" id="btnSubmit">Submit Application</button></form>`;
@@ -88,7 +125,29 @@ const server = http.createServer((req, res) => {
   const send = (html: string): void => { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(html); };
   if (url.pathname.startsWith("/recaptcha/")) { send("<!doctype html><html><body>captcha widget</body></html>"); return; }
   if (!mode) { send(page("Portal", "<h1>Home</h1>")); return; }
+  if (rest === "apply/done") {
+    // A completion page reached by GET; its script posts on load and 800 ms later (M4).
+    send(COMPLETION.replace("</body>", `<script>fetch("/m/${mode}/track/completed", { method: "POST", body: "r=1" }).catch(function(){}); setTimeout(function(){ fetch("/m/${mode}/track/late", { method: "POST", body: "r=2" }).catch(function(){}); }, 800);</script></body>`));
+    return;
+  }
+  if (rest === "details") {
+    // A mid-flow page whose Save asks a native confirm() before it posts (an UNapproved dialog).
+    send(page("Step 2: Details", `<h1>Step 2: Details</h1><label for="jv">Job value</label><input id="jv" type="text">
+      <button type="button" id="btnSave" onclick="if (confirm('Save your progress?')) { fetch('/m/${mode}/draft/save', { method: 'POST', body: 's=1' }); document.body.setAttribute('data-saved', '1'); }">Save progress</button>`));
+    return;
+  }
   if (req.method === "POST" && rest === "apply/submit") {
+    if (mode === "postFilingModal") {
+      // C3: the completion page opens a survey modal whose Continue would POST.
+      send(COMPLETION.replace("</body>", `<div role="dialog" style="border:1px solid #000;padding:12px"><p>Help us improve: take a short survey?</p><button type="button" id="svy" onclick="fetch('/m/postFilingModal/survey', { method: 'POST', body: 'v=1' })">Continue</button></div></body>`));
+      return;
+    }
+    if (mode === "rejected") {
+      // C2: the portal refuses the filing with a banner naming a page, and offers Submit again.
+      send(page("Review and Submit", `<div class="alert"><p>Unable to submit: fix the errors below.</p><a href="/m/rejected/review">Page 3</a></div>
+        <h1>Step 5: Review and Submit</h1><form method="post" action="/m/rejected/apply/submit"><button type="submit" id="btnSubmit2">Submit</button></form>`));
+      return;
+    }
     if (mode === "feePage") {
       send(page("Fees Due", `<h1>Fees Due</h1><p>Permit fee: $150.00</p>
         <form method="post" action="/m/feePage/payment/charge"><label for="cc">Card number</label>
@@ -124,20 +183,22 @@ const recipeFor = (mode: string, steps?: RecipeStep[]): PortalRecipe => ({
   ],
 } as PortalRecipe);
 
-const RUN = "run-approved-1";
-const APPROVAL = { approver: "A. Operator", runId: RUN };
+// ONE APPROVAL, ONE RUN (portal-run-close-2 C1): an approval burns at the bot layer when its run
+// clicks or is refused, so every stage gets its own runId (and, by default, an approval of it).
+let runSeq = 0;
 interface Outcome { r: Record<string, unknown>; posts: Array<{ method: string; path: string }>; ms: number }
-async function stage(mode: string, env: string | undefined, opts: { runApproval?: { approver: string; runId: string } | null; runId?: string }, steps?: RecipeStep[]): Promise<Outcome> {
+async function stage(mode: string, env: string | undefined, opts: { runApproval?: { approver: string; runId: string } | null; runId?: string }, steps?: RecipeStep[], lateMs = 300): Promise<Outcome> {
   // The switch is set on THIS process only, for this one run, and restored after.
   const prev = process.env.PORTAL_ALLOW_FINAL_SUBMIT;
   if (env === undefined) delete process.env.PORTAL_ALLOW_FINAL_SUBMIT; else process.env.PORTAL_ALLOW_FINAL_SUBMIT = env;
   const before = requests.length;
   const t0 = Date.now();
   try {
+    const runId = opts.runId ?? `run-${mode}-${++runSeq}`;
     const r = await stageWithRecipe(recipeFor(mode, steps), { id: `p-${mode}` } as ProjectRecord, {}, {}, [], {
-      autoSubmit: true, runApproval: opts.runApproval === undefined ? APPROVAL : opts.runApproval, runId: opts.runId ?? RUN, headless: true,
+      autoSubmit: true, runApproval: opts.runApproval === undefined ? { approver: "A. Operator", runId } : opts.runApproval, runId, headless: true,
     });
-    await new Promise((res) => setTimeout(res, 300)); // a late request is still counted
+    await new Promise((res) => setTimeout(res, lateMs)); // a late request is still counted
     return { r, posts: requests.slice(before).map(({ method, path }) => ({ method, path })), ms: Date.now() - t0 };
   } finally {
     if (prev === undefined) delete process.env.PORTAL_ALLOW_FINAL_SUBMIT; else process.env.PORTAL_ALLOW_FINAL_SUBMIT = prev;
@@ -183,7 +244,7 @@ const excludes: Array<{ name: string; env: string | undefined; opts: { runApprov
   { name: "env unset", env: undefined, opts: {} },
   { name: "env '0'", env: "0", opts: {} },
   { name: "approval for a different run", env: "1", opts: { runApproval: { approver: "A. Operator", runId: "run-approved-0" } } },
-  { name: "approval naming no approver", env: "1", opts: { runApproval: { approver: "  ", runId: RUN } } },
+  { name: "approval naming no approver", env: "1", opts: { runId: "run-no-approver", runApproval: { approver: "  ", runId: "run-no-approver" } } },
   { name: "no approval at all", env: "1", opts: { runApproval: null } },
   { name: "the flagged step is not last", env: "1", opts: {}, steps: () => [
     { action: "goto", value: `${base}/m/plain/review`, note: "open the review page" } as RecipeStep,
@@ -226,6 +287,76 @@ if (want("feePage")) {
   check("fee page after the approved submit: 0 PAYMENT POSTs (the Pay Now form is never sent)", payments.length === 0, brief(o));
   check("fee page after the approved submit: the approved click's one filing POST, nothing else", filingPosts(o) === 1 && o.posts.length === 1, brief(o));
   check("fee page after the approved submit: PAUSED fee_payment (the click is reported, never 'accepted')", o.r.pauseReason === "fee_payment" && o.r.finalSubmitClicked === true && o.r.ok === false, brief(o));
+}
+
+console.log("\n5. portal-run-close-2 M3: a NATIVE dialog on the approved click — accepted when it is the click's own confirmation, never a payment");
+if (want("confirmNative")) {
+  const o = await stage("confirmNative", "1", {});
+  check("MUST-PASS confirmNative: confirm('File this application now?') is accepted — EXACTLY ONE filing POST, nothing else", filingPosts(o) === 1 && o.posts.length === 1, brief(o));
+  check("MUST-PASS confirmNative: finalSubmitClicked, a request reached the portal, the record captured, not paused",
+    o.r.finalSubmitClicked === true && o.r.finalSubmitRequestSent === true && o.r.capturedPermitNumber === RECORD && !o.r.pauseReason && o.r.ok === true, brief(o));
+}
+if (want("confirmPay")) {
+  const o = await stage("confirmPay", "1", {});
+  check("MUST-EXCLUDE confirmPay: confirm('Pay $150 and submit?') is dismissed — 0 POSTs reach the portal", o.posts.length === 0, brief(o));
+  check("MUST-EXCLUDE confirmPay: PAUSED fee_payment, finalSubmitClicked false, finalSubmitRequestSent false (nothing downstream records a filing)",
+    o.r.pauseReason === "fee_payment" && o.r.finalSubmitClicked === false && o.r.finalSubmitRequestSent === false && o.r.ok === false, brief(o));
+  check("MUST-EXCLUDE confirmPay: the run says nothing was filed", /NOTHING was filed/.test(msgOf(o.r)), msgOf(o.r).slice(0, 400));
+}
+if (want("unapprovedDialog")) {
+  // No approval, no final submit: a mid-flow Save opens confirm('Save your progress?'). Outside an
+  // approved slot there is no dialog handler — Playwright dismisses it, as before this round.
+  const o = await stage("unapprovedDialog", undefined, { runApproval: null }, [
+    { action: "goto", value: `${base}/m/unapprovedDialog/details`, note: "open the details page" } as RecipeStep,
+    { action: "click", selector: { css: "#btnSave" }, note: "Save progress" } as RecipeStep,
+    { action: "stopForReview" } as RecipeStep,
+  ]);
+  check("MUST-EXCLUDE unapprovedDialog: a native confirm during an UNapproved run is dismissed — 0 POSTs", o.posts.length === 0 && o.r.finalSubmitClicked === false, brief(o));
+}
+if (want("confirmModal")) {
+  const o = await stage("confirmModal", "1", {});
+  check("MUST-PASS confirmModal: a DOM confirm modal's OK files — EXACTLY ONE filing POST, the record captured", filingPosts(o) === 1 && o.posts.length === 1 && o.r.capturedPermitNumber === RECORD && o.r.finalSubmitClicked === true, brief(o));
+}
+
+console.log("\n6. portal-run-close-2 M4: the approved slot is bound to the click — a GET-navigating Submit admits no page-script POST");
+for (const mode of ["getSubmit", "jsNav"]) {
+  if (!want(mode)) continue;
+  const o = await stage(mode, "1", {}, undefined, 2500);
+  check(`MUST-EXCLUDE ${mode}: 0 state-changing requests reach the portal (the completion page's on-load and late POSTs are aborted)`, o.posts.length === 0, brief(o));
+  check(`MUST-PASS ${mode}: the record number is captured from the GET completion page, clicked, a request (the navigation) reached the portal`,
+    o.r.capturedPermitNumber === RECORD && o.r.finalSubmitClicked === true && o.r.finalSubmitRequestSent === true, brief(o));
+  const m = msgOf(o.r);
+  check(`${mode}: the run never calls a page-script POST "the approved click's request"`, !/approved click's request/.test(m) && /navigated the page by GET/.test(m), m.slice(0, 500));
+}
+
+console.log("\n7. portal-run-close-2 C3 / C2: after the filing request, no dialog is answered and nothing is re-clicked");
+if (want("postFilingModal")) {
+  const o = await stage("postFilingModal", "1", {});
+  const m = msgOf(o.r);
+  const warn = JSON.stringify(o.r.steps ?? "");
+  check("C3 postFilingModal: exactly the one filing POST — the survey's Continue sends nothing", filingPosts(o) === 1 && o.posts.length === 1, brief(o));
+  check("C3 postFilingModal: the survey dialog after the filing is NOT clicked (named), the filing still accepted",
+    /NOT clicked: the approved click's request already reached the portal/.test(warn) && !/clicked Continue/.test(warn) && o.r.capturedPermitNumber === RECORD, m.slice(0, 400));
+}
+if (want("rejected")) {
+  const o = await stage("rejected", "1", {});
+  check("C2 rejected: the portal refused — ONE filing POST, never a second click of an unrecorded Submit", filingPosts(o) === 1 && o.posts.length === 1, brief(o));
+  check("C2 rejected: the run stops for a person (not ok), the portal's words reported", o.r.ok === false && /REFUSED/.test(msgOf(o.r)), brief(o));
+}
+
+console.log("\n8. portal-run-close-2 C1: one approval, one filing attempt — at the bot layer too");
+if (want("burned")) {
+  const approval = { approver: "A. Operator", runId: "run-burn-1" };
+  const first = await stage("plain", "1", { runId: "run-burn-1", runApproval: approval });
+  check("burned: the first approved run files once", filingPosts(first) === 1 && first.r.finalSubmitClicked === true, brief(first));
+  const again = await stage("plain", "1", { runId: "run-burn-1", runApproval: approval });
+  check("MUST-EXCLUDE burned: the SAME {approver, runId} re-passed after it filed — 0 POSTs, not clicked, named",
+    again.posts.length === 0 && again.r.finalSubmitClicked === false && /already used in this process/.test(msgOf(again.r) + JSON.stringify(again.r.steps ?? "")), brief(again));
+  const refusedApproval = { approver: "A. Operator", runId: "run-burn-2" };
+  const refused = await stage("plain", undefined, { runId: "run-burn-2", runApproval: refusedApproval });
+  const after = await stage("plain", "1", { runId: "run-burn-2", runApproval: refusedApproval });
+  check("MUST-EXCLUDE burned: an approval refused once (env unset) does not file when re-passed with env 1 — 0 POSTs",
+    refused.posts.length === 0 && after.posts.length === 0 && after.r.finalSubmitClicked === false, `${brief(refused)} || ${brief(after)}`);
 }
 
 server.close();
