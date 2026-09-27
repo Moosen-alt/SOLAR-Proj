@@ -40,8 +40,13 @@ const SUBMITTED_RE = /successfully submitted|application has been submitted|your
 const ACCELA_RE = /\b\d{2,4}-\d{2}-\d{4,7}-?[A-Z]{0,4}\b/;
 // PowerClerk assigns APP-######.
 const POWERCLERK_RE = /\bAPP-\d{4,8}\b/;
-// Anything explicitly LABELLED as the record/permit/application/confirmation number.
-const LABELLED_RE = /\b(?:record|permit|application|confirmation)\s*(?:no\.?|number|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{5,})\b/i;
+// Anything explicitly LABELLED as the record/permit/application/confirmation number. Global:
+// every labelled match is a candidate, in page order, and a candidate must carry a DIGIT.
+// Case-insensitive, the token class also matches plain WORDS — a completion page headed
+// "Application Received" above "Record Number: BLD-26-00123" was read as record "Received"
+// (the first match won), and "Permit Application" as "Application". A record number always
+// carries a digit; a word never is one (item 8 of portal-run-close, approvedFinalSubmit smoke).
+const LABELLED_RE = /\b(?:record|permit|application|confirmation)\s*(?:no\.?|number|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{5,})\b/gi;
 
 // Shapes that are NEVER a record number, however they are labelled. A completion page is
 // full of numbers — phone, ZIP+4, dates, dollar amounts, tracking of other kinds — and the
@@ -76,8 +81,9 @@ export function extractRecordNumber(bodyText: string): RecordNumberRead {
   if (accela) candidates.push({ value: accela[0], source: "accela" });
   const pc = text.match(POWERCLERK_RE);
   if (pc) candidates.push({ value: pc[0], source: "powerclerk" });
-  const labelled = text.match(LABELLED_RE);
-  if (labelled?.[1]) candidates.push({ value: labelled[1], source: "labelled" });
+  for (const m of text.matchAll(LABELLED_RE)) {
+    if (m[1] && /\d/.test(m[1])) candidates.push({ value: m[1], source: "labelled" });
+  }
 
   for (const candidate of candidates) {
     const value = candidate.value.trim();

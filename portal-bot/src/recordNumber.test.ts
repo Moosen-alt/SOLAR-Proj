@@ -78,6 +78,23 @@ check("a LABELLED but non-portal-specific number is reported for confirmation, n
   assert.equal(r.confidence, "low", "an unrecognised shape must not be written without a person");
 });
 
+// A HEADING ABOVE THE NUMBER. Case-insensitive, the labelled token class matched plain words:
+// "Application Received" (the page's own heading) was read as record "Received" and, the first
+// labelled match winning, the real "Record Number: BLD-26-00123" below it was never reached
+// (approvedFinalSubmit smoke, real Chromium: capturedPermitNumber "Received").
+check("MUST PASS: a completion page HEADED 'Application Received' yields the labelled number below it", () => {
+  const page = "Application Received\nThank you. Your application has been submitted.\nRecord Number: BLD-26-00123\nView your record";
+  const r = extractRecordNumber(page);
+  assert.equal(r.value, "BLD-26-00123", `read "${r.value}"`);
+  assert.equal(r.source, "labelled");
+});
+check("MUST EXCLUDE: a WORD after a record label is never the record number", () => {
+  for (const page of ["Application Received\nThank you for your submission.", "Permit Application\nSubmission complete.", "Application Submitted\nConfirmation Pending"]) {
+    const r = extractRecordNumber(page);
+    assert.equal(r.value, "", `"${page.split("\n")[0]}" read as record "${r.value}"`);
+  }
+});
+
 check("an empty or blank page reads as nothing at all", () => {
   assert.equal(extractRecordNumber("").value, "");
   assert.equal(extractRecordNumber("   \n  ").source, "none");
