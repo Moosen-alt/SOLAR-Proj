@@ -288,7 +288,10 @@ await check("(m1) MUST-EXCLUDE (close MF1/MF2): a vendor link is not the portal 
     ["a shared host with no tenant", `<a href="https://aca-prod.accela.com/">Citizen Access portal</a>`],
     ["a 311 CRM named like self-service", `<a href="https://user.govoutreach.com/examplecity/support.php">Citizen Self Service</a>`],
     ["SolarAPP+ (an approval, not the city's portal)", `<a href="https://app.gosolarapp.org/examplecity/apply">Apply online with SolarAPP+</a>`],
-    ["county page listing its cities' tenants", `<h2>Inside a city? Apply with your city</h2><ul><li><a href="https://aca-prod.accela.com/CITYA/Default.aspx">City A permit portal</a></li><li><a href="https://aca-prod.accela.com/CITYB/Default.aspx">City B permit portal</a></li></ul><h2>Unincorporated</h2><p><a href="https://aca-prod.accela.com/COUNTYX/Default.aspx">Apply online - County permit portal</a></p>`],
+    // Caught by the WORDS alone (the tenant is the city's, the target path names the portal):
+    ["a 311 request portal on the city's own OpenGov tenant", `<a href="https://examplecity.portal.opengov.com/">Citizen Request Portal (311)</a>`],
+    ["the assessor's parcel search on the city's own ACA tenant", `<a href="https://aca-prod.accela.com/EXAMPLECITY/Cap/CapHome.aspx?module=Building">Assessor Parcel Search</a>`],
+    ["county page listing its cities' tenants",`<h2>Inside a city? Apply with your city</h2><ul><li><a href="https://aca-prod.accela.com/CITYA/Default.aspx">City A permit portal</a></li><li><a href="https://aca-prod.accela.com/CITYB/Default.aspx">City B permit portal</a></li></ul><h2>Unincorporated</h2><p><a href="https://aca-prod.accela.com/COUNTYX/Default.aspx">Apply online - County permit portal</a></p>`],
   ];
   for (const [what, body] of shapes) {
     for (const names of [["City of Examplecity"], []]) {
