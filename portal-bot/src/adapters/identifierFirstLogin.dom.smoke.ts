@@ -160,6 +160,10 @@ const OKTA_PAGE = (title: string, captcha: boolean) => `<!doctype html><html><he
   window.__operatorCompletesFactor = function () { location.href = ${JSON.stringify(`${TENANT}/apps/selfservice#/home`)}; };
   setTimeout(page1, 250); // Okta's widget paints after load
 </script>
+<!-- PRODUCTION SHAPE (City of Tigard OR, 2026-09-27): every page Okta's sign-in widget serves on a
+     custom identity domain carries this hidden account-chooser frame on login.okta.com. Counting
+     the okta.com FRAME as a challenge stopped three supervised learns at the password step. -->
+<iframe id="account-chooser-iframe" data-se="account-chooser" class="hide" src="https://login.okta.com/discovery/iframe.html"></iframe>
 </body></html>`;
 
 const TENANT_HOME = `<!doctype html><html><head><title>Community Development Hub</title></head><body>
@@ -180,6 +184,8 @@ async function routeReplicas(context: BrowserContext): Promise<void> {
   await context.route(`${TENANT}/**`, (route) => route.fulfill({ contentType: "text/html", body: TENANT_HOME }));
   // The reCAPTCHA widget frame: a real third-party frame, not a trap.
   await context.route("https://www.google.com/**", (route) => route.fulfill({ contentType: "text/html", body: "<html><body>captcha</body></html>" }));
+  // Okta's hidden account-chooser frame (see OKTA_PAGE): an identity-provider frame, not a challenge.
+  await context.route("https://login.okta.com/**", (route) => route.fulfill({ contentType: "text/html", body: "<html><body></body></html>" }));
   for (const trapHost of ["https://accounts.google.com", "https://appleid.apple.com", "https://www.portico-example.test"]) {
     await context.route(`${trapHost}/**`, (route) => {
       const u = new URL(route.request().url());

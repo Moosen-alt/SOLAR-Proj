@@ -340,140 +340,222 @@ export async function safeAction(
   }
 }
 
-// Hosts/fragments that identify a CAPTCHA or MFA challenge iframe by src/URL.
-const CHALLENGE_FRAME_HOSTS = [
+// ---------------------------------------------------------------------------
+// A CHALLENGE IS NEVER A PASSWORD STEP — one predicate, three classes (production 2026-09-27,
+// City of Tigard OR: three supervised learns stopped in ~10 s at Okta's "Verify with your
+// password" page as "challenge frame detected (okta.com)", and the browser closed on the person).
+//
+//   CAPTCHA  — a widget a person must solve (reCAPTCHA / hCaptcha / Turnstile / Arkose frames, the
+//              "I'm not a robot" box, a "captcha" / "are you human" / "security check" reading).
+//              Always a challenge, whatever else the page holds: a password typed under an
+//              unsolved CAPTCHA is still a CAPTCHA the bot would be working around.
+//   MFA      — a second-factor frame or path (Duo, microsoft.com/mfa, /mfa /2fa /otp /verify) or a
+//              second-factor READING (title / visible text: "verify", "authenticat", "two-factor",
+//              "verification code", "enter the code", "approve the sign-in"…). A challenge ONLY
+//              where no login box is showing: a visible password box — or a visible identifier
+//              (username / email) box with no one-time-code box beside it — means THIS PAGE IS THE
+//              LOGIN, whatever its title, host or "Verify" wording says. Okta's password step is
+//              headed "Verify with your password" and titled "… | Verify with your password";
+//              identity hosts title every page "… Authentication".
+//   IDP HOST — okta.com, auth0.com, microsoftonline.com, pingone / ping.identity. NEVER a challenge
+//              by host, in ANY frame. The LOGIN lives there. Okta's sign-in widget serves every
+//              page (identifier, password, factor) with a hidden account-chooser frame at
+//              login.okta.com/discovery/iframe.html — also on a CUSTOM identity domain
+//              (identity.tylerportico.com is Okta: Tyler Portico fronts every EnerGov self-service
+//              portal on tylerhost.net and many city-hosted ones). Counting the host in a child
+//              frame stopped every such login at the password step before the password was typed.
+//              An IdP's second-factor page is recognised by what the page SAYS and HOLDS
+//              (detectSecondFactor below, and the MFA readings here), never by whose host it is.
+//
+// Every caller (the login flow, the learner's walk gate, the replay's final-submit check, the
+// hand-coded adapters) asks this one predicate, so they cannot disagree about a login page.
+// ---------------------------------------------------------------------------
+const CAPTCHA_FRAME_HOSTS = [
   "recaptcha",
   "hcaptcha",
   "turnstile",
   "challenges.cloudflare.com",
   "arkoselabs",
   "funcaptcha",
-  "duosecurity",
-  "duo.com",
-  "okta.com",
-  "ping.identity",
-  "pingone.com",
-  "auth0.com",
-  "microsoft.com/mfa",
-  "microsoftonline.com",
-  "/mfa",
-  "/2fa",
-  "/otp",
 ];
-
-// IDENTITY-PROVIDER HOSTS ARE A CHALLENGE ONLY AS AN EMBEDDED FRAME, NEVER AS THE PAGE ITSELF.
-//
-// An Okta / Auth0 / Entra / Ping host in the MAIN frame is where an identifier-first login LIVES:
-// page 1 (email + Next) and page 2 (password + Verify) are both served from it. Counting the host
-// as a challenge there called a password page MFA before the password was typed, and the run
-// stopped one field short of a login it could have finished. The second factor on such a host is
-// recognised by what the PAGE says (detectSecondFactor), which also works on a custom identity
-// domain (Tyler's identity.tylerportico.com is Okta with no okta.com anywhere in its URL).
-const IDP_HOSTS = ["okta.com", "ping.identity", "pingone.com", "auth0.com", "microsoftonline.com"];
-
-// "verify" as a PATH SEGMENT, not a substring of the whole URL. The bare substring matched any
-// URL whose query carried the word — an OAuth authorize URL's redirect_uri or state routinely
-// does — and read a sign-in page as an MFA stop. Okta Classic's factor pages are /signin/verify/…,
-// which this still catches.
+const MFA_FRAME_HOSTS = ["duosecurity", "duo.com", "microsoft.com/mfa"];
+// Read on the frame's path (+ hash route), never its query: an OAuth authorize URL routinely
+// carries a redirect_uri or state holding "/verify" or "/otp", and that is a sign-in page.
+const MFA_PATH_FRAGMENT = /\/(mfa|2fa|otp)/i;
+// "verify" as a PATH SEGMENT. Okta Classic's factor pages are /signin/verify/…, which this catches.
 const VERIFY_PATH = /(^|\/)verify(\/|$)/i;
 
-/** Is this frame URL a challenge? `isMain` = the top-level page (IdP hosts do not count there). */
-function challengeUrlHit(rawUrl: string, isMain: boolean): string | null {
-  const lower = String(rawUrl || "").toLowerCase();
-  if (!lower) return null;
-  const hit = CHALLENGE_FRAME_HOSTS.find((h) => lower.includes(h) && !(isMain && IDP_HOSTS.includes(h)));
-  if (hit) return hit;
+type ChallengeClass = "captcha" | "mfa";
+
+/** Is this frame URL a challenge, and of which class? Identity-provider hosts never are. */
+function challengeUrlHit(rawUrl: string): { cls: ChallengeClass; hit: string } | null {
+  const raw = String(rawUrl || "");
+  if (!raw) return null;
+  let hostPath = raw.toLowerCase();
+  let path = "";
   try {
-    const u = new URL(rawUrl, "http://frame.invalid/");
-    if (VERIFY_PATH.test(u.pathname)) return "verify";
-  } catch { /* not a URL */ }
+    const u = new URL(raw, "http://frame.invalid/");
+    hostPath = `${u.host}${u.pathname}${u.hash}`.toLowerCase();
+    path = `${u.pathname}${u.hash}`;
+  } catch { /* not a URL — read the raw string */ }
+  const captcha = CAPTCHA_FRAME_HOSTS.find((h) => hostPath.includes(h));
+  if (captcha) return { cls: "captcha", hit: captcha };
+  const mfa = MFA_FRAME_HOSTS.find((h) => hostPath.includes(h));
+  if (mfa) return { cls: "mfa", hit: mfa };
+  const frag = path.match(MFA_PATH_FRAGMENT);
+  if (frag) return { cls: "mfa", hit: frag[0].toLowerCase() };
+  if (VERIFY_PATH.test(path.split("#")[0] ?? "")) return { cls: "mfa", hit: "verify" };
   return null;
 }
 
-// Page titles that signal a challenge screen (checked before scraping body text).
-const CHALLENGE_TITLE = /captcha|verify|two.factor|2fa|authenticat|identity check|security check|are you human/i;
+// Page titles that signal a challenge screen, by class.
+const CAPTCHA_TITLE = /captcha|security check|are you human/i;
+const MFA_TITLE = /verify|two.factor|2fa|authenticat|identity check/i;
 
-// Visible challenge text fallback (covers no-iframe MFA prompts).
-const CHALLENGE_TEXT = /captcha|i'?m not a robot|two.factor|2fa|authenticat|verify your identity|verification code|one.time (code|password)|enter the code|approve the sign.in/i;
+// Visible challenge text (covers no-iframe prompts), by class.
+const CAPTCHA_TEXT = /captcha|i'?m not a robot/i;
+const MFA_TEXT = /two.factor|2fa|authenticat|verify your identity|verification code|one.time (code|password)|enter the code|approve the sign.in/i;
+
+/**
+ * IS A LOGIN BOX SHOWING? true = a visible password box in any frame, or a visible identifier
+ * (username / email) box with no visible one-time-code box in any frame. null = the page could
+ * not answer (a test double, a frame mid-navigation) — the caller then keeps the challenge
+ * (fail closed: an unreadable page never waves an MFA reading through). Reads only.
+ */
+export async function loginBoxShowing(page: Page | null | undefined): Promise<boolean | null> {
+  if (!page || typeof (page as { frames?: unknown }).frames !== "function") return null;
+  try {
+    let answered = false;
+    let identifier = false;
+    let code = false;
+    for (const frame of page.frames()) {
+      const r = await Promise.race([
+        frame.evaluate(() => {
+          // Fully inline — no named helper (the __name note in waitForInteractiveControls).
+          let password = false;
+          let ident = false;
+          let otp = false;
+          for (const el of Array.from(document.querySelectorAll("input")) as HTMLInputElement[]) {
+            const rect = el.getBoundingClientRect();
+            const st = getComputedStyle(el);
+            if (!(rect.width > 2 && rect.height > 2 && st.visibility !== "hidden" && st.display !== "none")) continue;
+            const type = (el.getAttribute("type") || "text").toLowerCase();
+            if (type === "password") { password = true; continue; }
+            if (!["text", "email", "tel", ""].includes(type)) continue;
+            const ac = (el.getAttribute("autocomplete") || "").toLowerCase();
+            const hay = [el.name, el.id, ac, el.getAttribute("aria-label"), el.getAttribute("placeholder")].filter(Boolean).join(" ");
+            if (/one-time-code|passcode|\botp\b|verification.?code|security.?code|mfa.?code|\bcode\b/i.test(hay)) { otp = true; continue; }
+            const key = `${el.name || ""} ${el.id || ""}`.toLowerCase().replace(/[^a-z ]/g, "");
+            if (ac === "username" || ac === "email" || type === "email"
+              || /(^| )(user ?name|userid|username|identifier|login ?(id|name)?|e?mail ?(address)?)( |$)/.test(key)) ident = true;
+          }
+          return { password, ident, otp };
+        }),
+        new Promise<null>((res) => setTimeout(() => res(null), 2500)),
+      ]).catch(() => null);
+      if (!r) continue;
+      answered = true;
+      if (r.password) return true;
+      if (r.ident) identifier = true;
+      if (r.otp) code = true;
+    }
+    if (!answered) return null;
+    return identifier && !code;
+  } catch {
+    return null;
+  }
+}
 
 // STRUCTURALLY detect a CAPTCHA/MFA challenge on the page. Returns a short reason
 // string if a challenge is present (so the caller can stop for a human), else null.
-// Checks in order: page title (fast), frame URLs (structural), iframe src attributes,
-// visible body text. Never throws — detection failure returns null only after best effort.
+// CAPTCHA first (frames, iframe srcs, title, visible text), then MFA — the MFA class only where
+// no login box is showing (see the note above). Never throws — detection failure returns null
+// only after best effort.
 //
-// opts.structuralOnly skips the two READINGS (title, visible text) and asks only the frame URLs /
+// opts.structuralOnly skips the READINGS (title, visible text) and asks only the frame URLs /
 // iframe srcs. The login flow uses it on a page that still shows a password box, where a reading
-// is the password step talking ("Verify with your password", an "… Authentication" title) but a
-// CAPTCHA frame is still a CAPTCHA. Without it the title reading, checked first, returned before
-// the frames were ever looked at and hid a real CAPTCHA frame behind itself.
+// is the password step talking but a CAPTCHA frame is still a CAPTCHA.
+//
+// Reason strings are read by callers: a text reading starts "challenge text detected" (the
+// learner's walk gate tolerates it on a field-rich page); a frame names what it hit.
 export async function detectChallengeFrame(
   page: Page | null | undefined,
   opts: { structuralOnly?: boolean } = {},
 ): Promise<string | null> {
   if (!page) return null;
   try {
-    // 0) Page title — the fastest check; challenge pages almost always have a distinctive title.
-    if (!opts.structuralOnly) try {
-      const title = typeof (page as { title?: () => Promise<string> }).title === "function"
-        ? await (page as { title: () => Promise<string> }).title().catch(() => "")
-        : "";
-      if (CHALLENGE_TITLE.test(title)) return `challenge page title detected ("${title.slice(0, 40)}")`;
-    } catch { /* ignore */ }
-
-    // 1) Inspect frame URLs (the structural signal — works even with no visible text).
+    // 1) Frame URLs (the structural signal — works even with no visible text) and iframe src
+    //    attributes (catches frames not yet navigated). Collected once, classified below.
+    const urls: Array<{ url: string; kind: "frame" | "iframe src" }> = [];
     const frames: Array<{ url: () => string }> = typeof (page as { frames?: () => unknown[] }).frames === "function"
       ? ((page as { frames: () => Array<{ url: () => string }> }).frames())
       : [];
-    let mainFrame: unknown = null;
-    try {
-      mainFrame = typeof (page as { mainFrame?: () => unknown }).mainFrame === "function"
-        ? (page as { mainFrame: () => unknown }).mainFrame()
-        : null;
-    } catch { mainFrame = null; }
     for (const frame of frames) {
       let url = "";
       try { url = typeof frame.url === "function" ? String(frame.url() ?? "") : ""; } catch { url = ""; }
-      const hit = challengeUrlHit(url, mainFrame !== null && frame === mainFrame);
-      if (hit) return `challenge frame detected (${hit})`;
+      if (url) urls.push({ url, kind: "frame" });
     }
-
-    // 2) Inspect iframe element src attributes (catches frames not yet navigated).
     try {
       const srcs: string[] = await (page as { locator: (s: string) => { evaluateAll: (fn: (e: Element[]) => string[]) => Promise<string[]> } })
         .locator("iframe")
         .evaluateAll((els: Element[]) => els.map((el) => (el as HTMLIFrameElement).getAttribute("src") || ""))
         .catch(() => [] as string[]);
-      for (const src of srcs) {
-        // An <iframe> element is never the top-level page, so every host counts here.
-        const hit = challengeUrlHit(String(src), false);
-        if (hit) return `challenge iframe src detected (${hit})`;
-      }
+      for (const src of srcs) if (src) urls.push({ url: String(src), kind: "iframe src" });
     } catch { /* ignore */ }
+    const hits = urls.map((u) => ({ ...u, h: challengeUrlHit(u.url) })).filter((u) => u.h);
+    const say = (u: { kind: string; h: { hit: string } | null }) => `challenge ${u.kind} detected (${u.h!.hit})`;
 
+    // 2) CAPTCHA — always a challenge.
+    const captchaFrame = hits.find((u) => u.h!.cls === "captcha");
+    if (captchaFrame) return say(captchaFrame);
+    const title = opts.structuralOnly ? "" : await (async () => {
+      try {
+        return typeof (page as { title?: () => Promise<string> }).title === "function"
+          ? String(await (page as { title: () => Promise<string> }).title().catch(() => "") ?? "")
+          : "";
+      } catch { return ""; }
+    })();
+    if (title && CAPTCHA_TITLE.test(title)) return `challenge page title detected ("${title.slice(0, 40)}")`;
+    if (!opts.structuralOnly && await visibleText(page, CAPTCHA_TEXT)) return "challenge text detected on page (captcha)";
+
+    // 3) MFA — a challenge only where no login box is showing. Asked lazily: most pages have no
+    //    MFA-class hit at all, and the login-box read walks every frame.
+    let loginBox: boolean | null | undefined;
+    const isLoginStep = async (): Promise<boolean> => {
+      if (loginBox === undefined) loginBox = await loginBoxShowing(page);
+      return loginBox === true;
+    };
+    const mfaFrame = hits.find((u) => u.h!.cls === "mfa");
+    if (mfaFrame && !(await isLoginStep())) return say(mfaFrame);
     if (opts.structuralOnly) return null;
-
-    // 3) Visible challenge text fallback — only count a match that is actually VISIBLE. A
-    //    hidden template / tooltip / aria string containing a keyword (e.g. "verification")
-    //    on a normal application form must NOT trigger a false MFA stop. Real no-iframe MFA
-    //    prompts render their challenge text visibly.
-    try {
-      const loc = (page as {
-        getByText: (r: RegExp) => {
-          count: () => Promise<number>;
-          nth: (i: number) => { isVisible: () => Promise<boolean> };
-        };
-      }).getByText(CHALLENGE_TEXT);
-      const n = await loc.count().catch(() => 0);
-      for (let i = 0; i < Math.min(n, 6); i++) {
-        const visible = await loc.nth(i).isVisible().catch(() => false);
-        if (visible) return "challenge text detected on page";
-      }
-    } catch { /* ignore */ }
+    if (title && MFA_TITLE.test(title) && !(await isLoginStep())) return `challenge page title detected ("${title.slice(0, 40)}")`;
+    // Visible challenge text fallback — only count a match that is actually VISIBLE. A hidden
+    // template / tooltip / aria string containing a keyword (e.g. "verification") on a normal
+    // application form must NOT trigger a false MFA stop. Real no-iframe MFA prompts render
+    // their challenge text visibly.
+    if (await visibleText(page, MFA_TEXT) && !(await isLoginStep())) return "challenge text detected on page";
 
     return null;
   } catch {
     return null;
   }
+}
+
+/** Is a match of `re` VISIBLE on the page (main document)? Never throws. */
+async function visibleText(page: Page, re: RegExp): Promise<boolean> {
+  try {
+    const loc = (page as unknown as {
+      getByText: (r: RegExp) => {
+        count: () => Promise<number>;
+        nth: (i: number) => { isVisible: () => Promise<boolean> };
+      };
+    }).getByText(re);
+    const n = await loc.count().catch(() => 0);
+    for (let i = 0; i < Math.min(n, 6); i++) {
+      if (await loc.nth(i).isVisible().catch(() => false)) return true;
+    }
+  } catch { /* ignore */ }
+  return false;
 }
 
 // ---------------------------------------------------------------------------

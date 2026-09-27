@@ -14,6 +14,7 @@
 import type { Page, Frame, Locator } from "playwright";
 import type { RecipeSelector } from "../../../shared/src/types";
 import { detectChallengeFrame, detectSecondFactor, sleep, smartWait, waitForElement } from "../safeAction";
+import { resolveHeadless } from "../browser";
 
 export interface Credential {
   username: string;
@@ -175,7 +176,13 @@ const SOCIAL_IDP_SOURCE = "\\b(with|using|via)\\s+(google|microsoft|apple|facebo
 const NEVER_ALWAYS_SOURCE = "\\bhelp\\b|\\bunlock\\b|\\bforgot\\b|\\breset (your |my )?password\\b|\\bkeep me (signed|logged) in\\b|\\bremember me\\b|\\bstay signed in\\b|verify with something else|\\bback to (sign|log)[\\s-]?in\\b|\\btrouble (signing|logging)\\b|can'?t (sign|log)[\\s-]?in";
 const NEVER_SIGNUP_SOURCE = "\\bcreate (an |your |a new |new )?account\\b|\\bregist(er|ration)\\b|\\bsign[\\s-]?up\\b|\\bnew account\\b|\\benroll\\b";
 const LOGIN_WORD_SOURCE = "\\blog[\\s-]?(in|on)\\b|\\blogin\\b|\\blogon\\b|\\bsign[\\s-]?in\\b|\\bsignin\\b";
-const NEVER_HREF_SOURCE = "/sso/idps/|accounts\\.google\\.|facebook\\.com|appleid\\.apple\\.com|login\\.live\\.com|github\\.com/login|linkedin\\.com/oauth|/help(/|$)|/signin/(unlock|forgot|register)|/(register|signup|sign-up)(/|$)|forgot-?password|reset-?password";
+// A LOGIN NEVER FOLLOWS A PAYMENT LINK (production 2026-09-27, City of Tigard OR). The reveal's
+// href catch-all (a[href*=login|account|signin]) clicked a link on the EnerGov self-service home
+// that led to Tyler PAYMENTS' sign-in (redirect_uri …/payments/checkout/signin-centralcallback):
+// the same Tyler identity, so the portal's credential would have signed in to the checkout app and
+// the learn would have started there. Rule 1 territory, and never the permit portal's login.
+const NEVER_PAY_HREF_SOURCE = "(^|/)(payments?|checkout|cart|billing|invoices?|pay)(/|$)|^https?://(www\\.)?(pay|payments?|checkout|billing)[.-]";
+const NEVER_HREF_SOURCE = `/sso/idps/|accounts\\.google\\.|facebook\\.com|appleid\\.apple\\.com|login\\.live\\.com|github\\.com/login|linkedin\\.com/oauth|/help(/|$)|/signin/(unlock|forgot|register)|/(register|signup|sign-up)(/|$)|forgot-?password|reset-?password|${NEVER_PAY_HREF_SOURCE}`;
 const NEVER_CLICK_PATTERNS = {
   social: SOCIAL_IDP_SOURCE,
   always: NEVER_ALWAYS_SOURCE,
@@ -200,7 +207,7 @@ async function neverClickReason(loc: Locator): Promise<string> {
         const a = el.closest("a");
         const href = String((a && a.getAttribute("href")) || el.getAttribute("href") || "").split(/[?#]/)[0];
         if (new RegExp(p.social, "i").test(name) || /social-auth/i.test(cls)) return `a third-party sign-in ("${name.slice(0, 40)}")`;
-        if (new RegExp(p.href, "i").test(href)) return `an account-chore / identity-provider link (${href.slice(0, 60)})`;
+        if (new RegExp(p.href, "i").test(href)) return `an account-chore / identity-provider / payment link (${href.slice(0, 60)})`;
         if (new RegExp(p.always, "i").test(name)) return `an account-chore control ("${name.slice(0, 40)}")`;
         if (new RegExp(p.signup, "i").test(name) && !new RegExp(p.login, "i").test(name)) return `a sign-up control ("${name.slice(0, 40)}")`;
         return "";
@@ -425,6 +432,17 @@ async function authenticatedSignalPresent(page: Page): Promise<boolean> {
           || el.getAttribute("title")
           || "",
         ).replace(/\s+/g, " ").trim();
+        // AN ACCOUNT MENU THAT SAYS IT HOLDS SIGN-OUT. Tyler EnerGov self-service keeps "Log Out"
+        // inside a CLOSED greeting dropdown whose visible toggle reads the person's name and is
+        // labelled "User dropdown menu to update profile, view invoices, or logout" — while the
+        // logged-out toggle is "Guest dropdown menu to login or register" (production
+        // 2026-09-27, City of Tigard: a person finished the login by hand in the open window and
+        // the run still said "no signed-in signal"). Read from the toggle's OWN label, only when
+        // that label names a menu/dropdown AND a sign-out, and never a sign-in/register menu.
+        const label = String(el.getAttribute("aria-label") || el.getAttribute("title") || "").replace(/\s+/g, " ").trim();
+        if (label && label.length < 140 && /\b(menu|dropdown)\b/i.test(label)
+          && /(log|sign)\s?-?\s?(out|off)\b/i.test(label)
+          && !/\b(log|sign)\s?-?\s?(in|on)\b|\blogin\b|\bregister\b|\bhow\b|\bhelp\b|\bfaq\b|\?/i.test(label)) return true;
         if (!text || text.length >= 30) continue;
         if (/\bhow\b|\bhelp\b|\bfaq\b|\?/i.test(text)) continue;
         if (/(log|sign)\s?-?\s?(out|off)\b/i.test(text)) return true;
@@ -932,6 +950,65 @@ async function identifierFirstStep(
   return { idField, nextCtl };
 }
 
+/**
+ * THE AUTHENTICATOR CHOOSER THAT OFFERS THE PASSWORD — select it (production 2026-09-27, City of
+ * Tigard OR, run eyg3).
+ *
+ * Okta Identity Engine, after the identifier (or straight away when it remembers the account),
+ * may ask "Verify it's you with a security method — Select from the following options" and list
+ * the authenticators the account may use FIRST: "Email" and "Password" (buttons labelled "Select
+ * Email." / "Select Password."). detectSecondFactor reads that heading as a factor screen, so the
+ * run parked where it held the answer in hand.
+ *
+ * Choosing "Password" is the LOGIN, not a second factor: it opens the password step the stored
+ * credential is for. So: on a page with NO password box that reads as an authenticator chooser,
+ * a control whose own name is exactly "Password" / "Select Password" is clicked — once per page
+ * state, never anything else. Email, phone, SMS, Okta Verify, security keys, security questions
+ * are never clicked (rule 1: a second factor is a person's), and a chooser with no Password
+ * option — the SECOND-factor list shown after a password — stays a park.
+ *
+ * Returns what was clicked, or "". Never types.
+ */
+const AUTHENTICATOR_CHOOSER_TEXT = /verify it'?s you with a security method|select (an|a) (authenticator|security method|verification method)|choose (an|a) (authenticator|security method|verification method)|select from the following options/i;
+const PASSWORD_AUTHENTICATOR_NAME = /^\s*(select\s+)?password\.?\s*$/i;
+const choosersClicked = new WeakMap<object, number>();
+async function choosePasswordAuthenticator(page: Page): Promise<string> {
+  try {
+    if (await loginFormPresent(page)) return "";
+    const clicks = choosersClicked.get(page as unknown as object) ?? 0;
+    if (clicks >= 2) return "";
+    const text = await (page as unknown as { evaluate: (fn: () => string) => Promise<string> })
+      .evaluate(() => String((document.body && (document.body as HTMLElement).innerText) || "").replace(/\s+/g, " ").slice(0, 4000))
+      .catch(() => "");
+    if (!AUTHENTICATOR_CHOOSER_TEXT.test(text)) return "";
+    for (const role of ["button", "link"] as const) {
+      for (const scope of (typeof page.frames === "function" ? page.frames() : [page]) as Array<Page | Frame>) {
+        const all = scope.getByRole(role, { name: PASSWORD_AUTHENTICATOR_NAME });
+        const n = await all.count().catch(() => 0);
+        for (let i = 0; i < Math.min(n, 4); i++) {
+          const c = all.nth(i);
+          if (!(await c.isVisible().catch(() => false))) continue;
+          if (await neverClickReason(c)) continue;
+          choosersClicked.set(page as unknown as object, clicks + 1);
+          await c.click({ timeout: 3000 }).catch(() => null);
+          return `the "Password" option of the identity provider's authenticator chooser`;
+        }
+      }
+    }
+  } catch { /* a chooser we cannot read is left to the park */ }
+  return "";
+}
+
+/** Wait (bounded) for a password box to paint after a click that should open one. */
+async function passwordBoxWithin(page: Page, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    await smartWait(page, 800);
+    if (await loginFormPresent(page)) return true;
+  }
+  return false;
+}
+
 /** A worded REVEAL_TRIGGER (role + name) that a reveal pass would click, other than `except`. */
 async function wordedRevealTriggerVisible(page: Page, except: Locator): Promise<boolean> {
   const exceptHandle = await except.elementHandle().catch(() => null);
@@ -980,12 +1057,20 @@ export interface LoginOptions {
   onPark?: (info: { reason: string; waitMs: number }) => void;
 }
 
-async function resolveParkMs(page: Page, opts: LoginOptions): Promise<number> {
+export async function resolveParkMs(page: Page, opts: LoginOptions): Promise<number> {
   if (typeof opts.parkMs === "number" && Number.isFinite(opts.parkMs)) return Math.max(0, opts.parkMs);
   if (/^(off|0|false|no)$/i.test(String(process.env.PORTAL_LOGIN_PARK ?? "").trim())) return 0;
-  const ua = await (page as unknown as { evaluate: (fn: () => string) => Promise<string> })
+  // A page with no browser context behind it is a test double: nobody is at its window.
+  if (typeof (page as unknown as { context?: unknown }).context !== "function") return 0;
+  const read = await (page as unknown as { evaluate: (fn: () => string) => Promise<unknown> })
     .evaluate(() => navigator.userAgent).catch(() => "");
-  if (!ua || /headless/i.test(ua)) return 0;
+  const ua = typeof read === "string" && /^Mozilla\//.test(read) ? read : "";
+  // AN UNREADABLE PAGE IS NOT A HEADLESS ONE. The park is decided right after a Next / Verify
+  // click, often while the page is navigating — the read then throws ("execution context was
+  // destroyed") and an empty answer used to mean "headless": no park, and the headed window the
+  // person was watching closed on them. With no reading, the process setting answers (browser.ts's
+  // resolveHeadless — the same one that launched the window).
+  if (ua ? /headless/i.test(ua) : resolveHeadless()) return 0;
   // Read at CALL time (browser.ts reads PORTAL_PROFILE_WAIT_MS once at import).
   const wait = Number(process.env.PORTAL_PROFILE_WAIT_MS ?? 15 * 60 * 1000);
   // index.ts force-closes the browser at PORTAL_RUN_MAX_MS (default 25 min); a park that
@@ -1064,31 +1149,66 @@ async function parkForSecondFactor(
   username: string,
   opts: LoginOptions,
 ): Promise<LoginResult> {
-  const waitMs = await resolveParkMs(page, opts);
-  const why = `a second factor / verification challenge is waiting for a person (${reason}) — this is NOT a refused credential`;
-  if (!waitMs) {
+  const why = `a second factor / verification challenge (MFA or CAPTCHA) is waiting for a person (${reason}) — this is NOT a refused credential`;
+  const parkedAt: string = typeof page.url === "function" ? page.url() : "";
+  const held = await holdForPerson(page, {
+    reason,
+    opts,
+    // The SAME session proof the poll uses: the person completed it when the portal moved on.
+    cleared: () => sessionProof(page, parkedAt, username).catch(() => ""),
+  });
+  if (held.status === "headless") {
     return { ok: false, status: "mfa_captcha", message: `Login paused: ${why}. Complete it in a visible browser window, then retry.` };
   }
-  const minutes = Math.max(1, Math.round(waitMs / 60_000));
-  const notice = `PAUSED — needs-human (mfa): ${why}. Complete it in the open browser window; waiting up to ${minutes} min. The bot does not type or request a code.`;
-  try { opts.onPark?.({ reason, waitMs }); } catch { /* a notifier must never change the outcome */ }
-  console.warn(`[login] ${notice}`);
-  const parkedAt: string = typeof page.url === "function" ? page.url() : "";
-  const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline) {
-    await sleep(1500);
-    if (typeof page.isClosed === "function" && page.isClosed()) break;
-    const proof = await sessionProof(page, parkedAt, username).catch(() => "");
-    if (proof) {
-      console.warn("[login] RESUMED — the second factor was completed in the window; continuing.");
-      return { ok: true, status: "logged_in", message: `Logged in after a person completed the second factor in the open window (${proof}).` };
-    }
+  if (held.status === "resumed") {
+    console.warn("[login] RESUMED — the second factor was completed in the window; continuing.");
+    return { ok: true, status: "logged_in", message: `Logged in after a person completed the second factor in the open window (${held.proof}).` };
   }
+  const minutes = Math.max(1, Math.round(held.waitMs / 60_000));
   return {
     ok: false,
     status: "mfa_captcha",
-    message: `Login paused: ${why}. The window was held open ${minutes} min for a person to complete it and the portal did not move on; retry once it is completed.`,
+    message: held.status === "closed"
+      ? `Login paused: ${why}. The browser window was closed before the portal moved on; retry once it can be completed.`
+      : `Login paused: ${why}. The window was held open ${minutes} min for a person to complete it and the portal did not move on; retry once it is completed.`,
   };
+}
+
+/**
+ * ONE HOLD FOR A PERSON — the login's second-factor / CAPTCHA park and the learner's mid-walk
+ * challenge gate both wait here, so "the run waits with the window open" means one thing.
+ *
+ * On a HEADED run (resolveParkMs > 0) it announces the park once (console + opts.onPark — the
+ * dashboard hears "Complete the MFA/CAPTCHA in the open browser window" through index.ts), then
+ * only WATCHES: every ~3 s it asks `cleared()` until that names a proof, the window is closed,
+ * or the bound (PORTAL_PROFILE_WAIT_MS, capped under the run ceiling) runs out. It never types,
+ * clicks, requests a code or picks a factor (rule 1): the person does all of that in the window.
+ * A HEADLESS run returns "headless" at once — nobody can complete anything in a window no one
+ * can see, so it pauses immediately, as it always has.
+ *
+ * NOT the drawn-signature stop: that one is a HAND-OFF (the run ends and index.ts leaves the
+ * window open for the person to sign and submit); this one RESUMES the run from where it was.
+ */
+export async function holdForPerson(
+  page: Page,
+  args: { reason: string; opts: LoginOptions; cleared: () => Promise<string>; pollMs?: number; maxWaitMs?: number },
+): Promise<{ status: "resumed" | "expired" | "closed" | "headless"; proof: string; waitMs: number }> {
+  let waitMs = await resolveParkMs(page, args.opts);
+  if (typeof args.maxWaitMs === "number") waitMs = Math.min(waitMs, Math.max(0, args.maxWaitMs));
+  if (!waitMs) return { status: "headless", proof: "", waitMs: 0 };
+  const minutes = Math.max(1, Math.round(waitMs / 60_000));
+  const notice = `PAUSED — needs-human (mfa): ${args.reason}. Complete the MFA/CAPTCHA in the open browser window; waiting up to ${minutes} min. The bot does not type or request a code.`;
+  try { args.opts.onPark?.({ reason: `mfa_captcha: complete the MFA/CAPTCHA in the open browser window — ${args.reason}`, waitMs }); } catch { /* a notifier must never change the outcome */ }
+  console.warn(`[login] ${notice}`);
+  const pollMs = Math.max(250, args.pollMs ?? 3000);
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+    if (typeof page.isClosed === "function" && page.isClosed()) return { status: "closed", proof: "", waitMs };
+    const proof = await args.cleared().catch(() => "");
+    if (proof) return { status: "resumed", proof, waitMs };
+  }
+  return { status: "expired", proof: "", waitMs };
 }
 
 // The full login flow. Heuristic and portal-agnostic. Never logs credentials.
@@ -1112,6 +1232,9 @@ export async function performLogin(
     // 1b) STEP 1 OF AN IDENTIFIER-FIRST LOGIN IS DECIDED BEFORE ANY REVEAL CLICK (B2) — see
     //     identifierFirstStep. The reveal pass never runs on a page that is already the login.
     let idFirst = present ? null : await identifierFirstStep(page, { preReveal: true });
+    // 1c) AN AUTHENTICATOR CHOOSER OFFERING THE PASSWORD (the identity provider remembered the
+    //     account) — also decided before any reveal click. See choosePasswordAuthenticator.
+    if (!present && !idFirst && await choosePasswordAuthenticator(page)) present = await passwordBoxWithin(page, 10000);
     if (!present && !idFirst) present = await revealLoginForm(page);
 
     // 2) No form yet. Give it a settle budget before concluding ANYTHING — a login box is
@@ -1127,6 +1250,7 @@ export async function performLogin(
         await smartWait(page, 1000);
         present = await loginFormPresent(page);
         if (!present) idFirst = await identifierFirstStep(page, { preReveal: true });
+        if (!present && !idFirst && await choosePasswordAuthenticator(page)) present = await passwordBoxWithin(page, 10000);
         if (!present && !idFirst) present = await revealLoginForm(page);
       }
     }
@@ -1154,11 +1278,14 @@ export async function performLogin(
         // Wait for the password step to paint — or for a SECOND FACTOR, which some identity
         // providers ask for straight after the identifier (Okta with password-optional
         // policies: "Verify with your email"). That is a person's to complete: park (B3).
-        const deadline = Date.now() + 10000;
+        let deadline = Date.now() + 10000;
         while (!present && Date.now() < deadline) {
           await smartWait(page, 1000);
           present = await loginFormPresent(page);
           if (!present) {
+            // The password may sit behind an authenticator chooser (Okta "Verify it's you with a
+            // security method": Email / Password) — selecting Password is the login, not a factor.
+            if (await choosePasswordAuthenticator(page)) { deadline = Math.max(deadline, Date.now() + 10000); continue; }
             const factor = await detectSecondFactor(page);
             if (factor) return await parkForSecondFactor(page, factor, credential.username, opts);
           }
@@ -1305,17 +1432,31 @@ export async function performLogin(
     //    "Verify with your password"; an identity host titles its pages "Authentication"; a
     //    stop there was a false stop one field short of the login (an uncertain reading must not
     //    stop a legitimate step). If a real challenge follows the submit, the poll below sees it.
+    //
+    //    A REAL challenge here (a CAPTCHA widget on the login form) PARKS on a headed run, like a
+    //    second factor after the submit: the window stays open for the person, who solves it and
+    //    signs in; the same session proof resumes the run. Nothing is typed under it — the
+    //    password is never entered beneath an unsolved CAPTCHA. Headless: paused at once.
     const preChallenge = await challengeBeyondPasswordStep(page);
-    if (preChallenge) {
-      return { ok: false, status: "mfa_captcha", message: `Login paused: ${preChallenge}. Complete verification in the browser, then retry.` };
-    }
+    if (preChallenge) return await parkForSecondFactor(page, `${preChallenge} on the login form — solve it and sign in`, credential.username, opts);
 
     // 5) Fill username + password (candidate lists first, adjacent-label scan as fallback).
     //    On a two-step login the identifier is already submitted and step 2 usually shows the
     //    password ALONE — so a missing username field there is expected, not a failure.
+    //
+    //    THE REMEMBERED IDENTIFIER. An identity provider that already knows the account (Okta
+    //    with "Keep me signed in", or a person who typed the email earlier in this profile) opens
+    //    straight on the password step: the identifier is RENDERED AS TEXT above a lone password
+    //    box ("SeamusEricson@…" / "Verify with your password"), and there is no username box to
+    //    fill. Proceed with the password only when the identifier shown is THIS credential's
+    //    username — a page remembering some other account never gets this portal's password.
     const userLoc = await findUsernameField(page);
     if (!userLoc && !identifierEntered) {
-      return { ok: false, status: "no_username_field", message: "Found a password field but could not locate the username/email field — the portal layout is unusual. Record it manually." };
+      if (await submittedIdentityEchoed(page, credential.username)) {
+        identifierEntered = true;
+      } else {
+        return { ok: false, status: "no_username_field", message: "Found a password field but could not locate the username/email field, and the page does not show this portal's stored username as the account being signed in — the portal layout is unusual, or the sign-in remembered a different account. Nothing was typed. Record it manually, or sign out of the other account in the browser." };
+      }
     }
     // Never on a third party's sign-in (see thirdPartyIdentityHost) — checked before EITHER
     // field is typed, on the frame each field actually lives in.

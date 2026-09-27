@@ -765,6 +765,9 @@ export async function learnPortal(input: {
   credentialForUrl?: (url: string) => { username: string; password: string } | null | undefined | Promise<{ username: string; password: string } | null | undefined>;
   /** No-fill-progress bound for the walk (default 360 s). */
   noProgressBudgetMs?: number;
+  /** How long a real MFA/CAPTCHA holds the run for a person (see AutoLearnAdapter options).
+   *  Omitted in production: headed = PORTAL_PROFILE_WAIT_MS under the run ceiling, headless = 0. */
+  parkMs?: number;
 }): Promise<import("./adapters/autoLearnAdapter").LearnResult> {
   const { AutoLearnAdapter } = await import("./adapters/autoLearnAdapter");
   // A PARK IS TOLD, NOT INFERRED. A second factor at login or a signature stop parks the run for
@@ -779,7 +782,7 @@ export async function learnPortal(input: {
       input.onProgress?.({ phase: "page", pageCount: 0, maxPages: input.maxPages ?? 18, message: `Paused for a person: ${String(info.reason ?? "").slice(0, 200)}` });
     } catch { /* a notifier must never change the outcome */ }
   };
-  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { credentialForUrl: input.credentialForUrl, noProgressBudgetMs: input.noProgressBudgetMs, maxPages: input.maxPages, budgetMs: input.budgetMs, docsByType: input.docsByType, beforeUpload: input.beforeUpload, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, onPark, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity, allowFinalSubmit: input.allowFinalSubmit, hasBattery: input.hasBattery, allowConsentAccept: input.allowConsentAccept });
+  const adapter = new AutoLearnAdapter(input.portalName, input.planner, { parkMs: input.parkMs, credentialForUrl: input.credentialForUrl, noProgressBudgetMs: input.noProgressBudgetMs, maxPages: input.maxPages, budgetMs: input.budgetMs, docsByType: input.docsByType, beforeUpload: input.beforeUpload, uploadMode: input.uploadMode, policyProfile: input.policyProfile, bindableFields: input.bindableFields, onProgress: input.onProgress, onPark, equipment: input.equipment, certifiedAliases: input.certifiedAliases, contactIdentity: input.contactIdentity, siteContactIdentity: input.siteContactIdentity, siteIdentity: input.siteIdentity, allowFinalSubmit: input.allowFinalSubmit, hasBattery: input.hasBattery, allowConsentAccept: input.allowConsentAccept });
   let tmpStatePath: string | undefined;
   let leaveOpen = false;
   // A browser left open by a prior guided-manual stage holds this profile's lock — close it

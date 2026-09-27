@@ -9,7 +9,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback, readClosedComboboxOptions } from "../comboboxFill";
 import { detectChallengeFrame, frameSelectorFor, readbackMatches, redactStatusText, safeAction, sleep, smartWait, waitForElement, waitForInteractiveControls } from "../safeAction";
 import { scrapeReviewScreen as scrapeReviewScreenShared } from "../reviewScreenScraper";
-import { performLogin, lastRevealTrail, loginFormPresent } from "./loginFlow";
+import { performLogin, lastRevealTrail, loginFormPresent, holdForPerson } from "./loginFlow";
 import { enterApplicationFlow, isExcludedEntryLabel, normalizeEntryLabel, chooseApplicationType } from "./applicationEntry";
 import { chooseProgram, offeredLabels, programSelector, scanProgramGroups, type ProgramGroup } from "./applicationProgram";
 import { planHiddenReveal, planLabelProxy } from "./revealHidden";
@@ -2020,6 +2020,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   /** The URL the run was opened at — the run's own credential belongs to its host + first path
    *  segment (sameCredentialScope, the backend's rule), not to its registrable domain. */
   private startUrl = "";
+  /** When the run's mid-walk challenge holds must end (set by the first hold; see the walk's
+   *  challenge gate). null = no hold yet. */
+  private walkParkDeadline: number | null = null;
   /** Hosts whose login form the MID-RUN login pass has already met this run (once per host). */
   private readonly midRunLoginHosts = new Set<string>();
 
@@ -2054,6 +2057,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
        *  take): the named reason and how long the browser stays. Never carries a credential or
        *  a name. index.ts turns it into a debug-bundle event and a progress message. */
       onPark?: (info: { reason: string; waitMs: number }) => void;
+      /** How long a real MFA/CAPTCHA holds the run for a person (loginFlow.holdForPerson): at the
+       *  login AND at the walk's challenge gate. Omitted = loginFlow.resolveParkMs (headed:
+       *  PORTAL_PROFILE_WAIT_MS under the run ceiling; headless: 0, paused at once). An explicit
+       *  number is for tests that play the person in a headless browser. */
+      parkMs?: number;
       // Which deterministic policy-answer set applyPolicyDefaults may use.
       //   "residential_nem" — the standard-residential-NEM Yes/No answers (export
       //     capacity → No, UL 1741 lab certified → Yes). Correct for utility
@@ -3068,7 +3076,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // Log in via the shared, portal-agnostic login flow. It detects/reveals the login
       // form, fills it (known + unknown portals), verifies success, and stops on MFA.
       // Never logs credentials.
-      const result = await performLogin(this.page, context.credential, { onPark: this.options.onPark });
+      const result = await performLogin(this.page, context.credential, { onPark: this.options.onPark, parkMs: this.options.parkMs });
       // Status + redacted message only — performLogin never returns credentials.
       this.debug?.event({ type: "login", status: result.status, startUrl: context.startUrl ? safeHostPath(context.startUrl) : null });
       // A LOGIN FAILURE MUST LEAVE BEHIND THE PAGE IT FAILED ON.
@@ -3168,7 +3176,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         stopReason: "login_needed_no_credential",
       };
     }
-    const res = await performLogin(this.page, cred, { onPark: this.options.onPark });
+    const res = await performLogin(this.page, cred, { onPark: this.options.onPark, parkMs: this.options.parkMs });
     this.debug?.event({ type: "login_midrun", page: pageCount, host, status: res.status });
     if (res.status === "mfa_captcha") {
       return { ...fail(steps, this.portalName, `Stopped at ${host}'s login: ${res.message} A human must complete the MFA/CAPTCHA.`, "mfa_captcha", pageCount, notices), stopReason: "login_midrun_mfa" };
@@ -4796,6 +4804,41 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const textOnly = /challenge text detected/i.test(challenge);
         const fillableCount = fields.filter((f) => f.fieldType !== "button").length;
         if (!textOnly || fillableCount <= 2) {
+          // THE PARK HOLDS THE WINDOW (production 2026-09-27, City of Tigard: "the screen just
+          //   closes on me"). On a HEADED run a real challenge met mid-walk does not end the run:
+          //   the browser stays open on it, the dashboard hears "Complete the MFA/CAPTCHA in the
+          //   open browser window" (onPark), and the walk WATCHES — never solves — until the
+          //   challenge is gone from the page or the portal has moved on, then re-reads the page and
+          //   carries on from where it was. One budget for every such hold in the run (the login's
+          //   bound), so a portal that keeps re-asking cannot hold a worker forever. Headless, a
+          //   closed window, or the bound spent: the paused outcome below, as before.
+          const page = this.page;
+          const parkedUrl = typeof page.url === "function" ? String(page.url() ?? "") : "";
+          const left = this.walkParkDeadline === null ? undefined : Math.max(0, this.walkParkDeadline - Date.now());
+          const held = left === 0 ? { status: "expired" as const, proof: "", waitMs: 0 } : await holdForPerson(page, {
+            reason: challenge,
+            opts: {
+              parkMs: this.options.parkMs,
+              onPark: (info) => {
+                if (this.walkParkDeadline === null) this.walkParkDeadline = Date.now() + info.waitMs;
+                this.debug?.event({ type: "challenge_park", page: pageCount, detail: challenge, waitMs: info.waitMs });
+                try { this.options.onPark?.(info); } catch { /* a notifier never changes the outcome */ }
+              },
+            },
+            maxWaitMs: left,
+            cleared: async () => {
+              const now = typeof page.url === "function" ? String(page.url() ?? "") : "";
+              if (now && parkedUrl && now !== parkedUrl) return "the portal moved on to another page";
+              const still = await detectChallengeFrame(page).catch(() => "unreadable");
+              return still ? "" : "the challenge is no longer on the page";
+            },
+          });
+          if (held.status === "resumed") {
+            this.debug?.event({ type: "challenge_resumed", page: pageCount, detail: held.proof });
+            lastFillProgressAt = Date.now();
+            await smartWait(page, 800);
+            continue;
+          }
           this.debug?.event({ type: "challenge_stop", page: pageCount, detail: challenge });
           return {
             ok: false,
