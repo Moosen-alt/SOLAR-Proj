@@ -59,6 +59,7 @@ export const LLM_TASKS = [
   "extractFields",
   "extractProjectFields",
   "extractProjectFieldsFromImages",
+  "classifyPlanPages",
   "classifyCorrection",
   "draftResponse",
   "visionExtract",
@@ -141,6 +142,7 @@ const UNMEASURED = "unmeasured — stays on the baseline model at the effort it 
 export const ROUTE_TABLE: Readonly<Record<LlmTask, RouteEntry>> = {
   extractProjectFields: { model: BASELINE_MODEL, effort: "high", advisor: null, evidence: "MEASURED 2026-09-26: opus-5 high 328/3/0 on 12 plan sets (wave 1+2), installer 108/108; opus-5-5 medium/high and sonnet-5 each lost fields (Voc/Isc drops, max_tokens truncation, stamp over-claim); Fable advisor 3.2x cost, no field it alone fixed" },
   extractProjectFieldsFromImages: { model: BASELINE_MODEL, effort: "high", evidence: UNMEASURED + " (bill/meter photos: rule 2's one intake read)" },
+  classifyPlanPages: { model: BASELINE_MODEL, effort: "low", evidence: "NEW 2026-09-27 (scannedPlanSet page index: what each scanned page is + its rotation). At high (inherited from extractProjectFields) one 16-page Iowa City scan ran 1,718 output tokens once and 8,000 + 16,000 truncated the next time (runaway thinking, ~$0.80, 300 s, then the position fallback); a page-kind label needs no deep reasoning" },
   extractFields: { model: BASELINE_MODEL, evidence: UNMEASURED },
   classifyCorrection: { model: BASELINE_MODEL, evidence: UNMEASURED },
   draftResponse: { model: BASELINE_MODEL, evidence: UNMEASURED },

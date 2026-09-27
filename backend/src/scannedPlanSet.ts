@@ -10,7 +10,9 @@
 // planPageImages). WHICH sheets is decided by CONTENT, not position: every page is rendered small
 // and one page-index read (llm.classifyPlanPages) names each page from its title block and the
 // set's sheet index — cover, site/roof plan, one-line, calcs, attachment detail, labels, module and
-// inverter datasheets — and how to turn it upright. Position picked pages 1, 2, 9 and 16 of a real
+// inverter datasheets. A second small read (llm.orientPlanPages) settles each chosen page's
+// orientation by COMPARISON — four turned copies, pick the upright one — because asked for an
+// angle, the index said "180" for sheets that were 90° sideways. Position picked pages 1, 2, 9 and 16 of a real
 // 16-page Iowa City scan and skipped the one-line, the calcs and both datasheets (28 fields
 // missing); the index picks the sheets that answer the intake. When the index names nothing usable
 // (no index read, or no key sheet identified) the POSITION rule is kept exactly as it was
@@ -330,6 +332,39 @@ async function readPageIndex(
   }
 }
 
+/** Small render for the orientation read (four turned copies of each chosen page). */
+const ORIENT_THUMB = { maxLongEdge: 640, maxPixels: 300_000, quality: 70 } as const;
+const QUARTER_TURNS = [0, 90, 180, 270] as const;
+
+/** Settle each chosen page's rotation by COMPARISON (llm.orientPlanPages): four turned copies of
+ *  each page, the reader names the upright one. Without a reader the pages keep what they have;
+ *  a failed read turns nothing (the page goes as scanned, as it always did). */
+async function orientChosen(
+  llm: Pick<LLMProvider, "orientPlanPages">, renderer: Renderer, chosen: PlanPageClass[],
+): Promise<PlanPageClass[]> {
+  if (typeof llm.orientPlanPages !== "function" || !chosen.length) return chosen;
+  const pages: Array<{ page: number; versions: Array<{ rotate: 0 | 90 | 180 | 270; base64: string; mimeType: "image/jpeg" }> }> = [];
+  for (const c of chosen) {
+    try {
+      const versions = [];
+      for (const rotate of QUARTER_TURNS) {
+        const img = await renderer.render(c.page, { ...ORIENT_THUMB, rotate });
+        versions.push({ rotate, base64: img.bytes.toString("base64"), mimeType: img.mimeType });
+      }
+      pages.push({ page: c.page, versions });
+    } catch { /* an unrenderable page keeps its rotation */ }
+  }
+  let answer: unknown;
+  try { answer = await llm.orientPlanPages({ pages }); } catch { return chosen.map((c) => ({ ...c, rotate: 0 })); }
+  const byPage = new Map<number, PlanPageClass["rotate"]>();
+  for (const a of Array.isArray(answer) ? answer : []) {
+    if (!a || typeof a !== "object") continue;
+    const page = Number((a as { page?: unknown }).page), rot = Number((a as { rotate?: unknown }).rotate);
+    if (Number.isInteger(page) && (QUARTER_TURNS as readonly number[]).includes(rot) && !byPage.has(page)) byPage.set(page, rot as PlanPageClass["rotate"]);
+  }
+  return chosen.map((c) => (byPage.has(c.page) ? { ...c, rotate: byPage.get(c.page)! } : c));
+}
+
 const listPages = (ps: number[]) => ps.join(", ");
 function describeSkipped(skipped: Array<{ page: number; reason: string }>): string {
   if (!skipped.length) return "";
@@ -342,7 +377,7 @@ function describeSkipped(skipped: Array<{ page: number; reason: string }>): stri
 /** Read a plan-set PDF: its text layer if it has one (plus, by vision, any image-only pages);
  *  otherwise its key sheets by vision. */
 export async function readPlanSetForExtraction(
-  llm: Pick<LLMProvider, "extractProjectFields" | "classifyPlanPages">,
+  llm: Pick<LLMProvider, "extractProjectFields" | "classifyPlanPages" | "orientPlanPages">,
   pdfBytes: Uint8Array,
   opts: { defaultState?: string; maxPages?: number; maxBytes?: number } = {},
 ): Promise<ScannedPlanRead> {
@@ -374,9 +409,11 @@ export async function readPlanSetForExtraction(
       const { index, failure } = await readPageIndex(llm, renderer, all);
       const choice = index ? choosePagesByContent(index, all, cap, "scan") : null;
       const positionCap = Math.min(POSITION_RULE_PAGES, cap);
-      const chosen: PlanPageClass[] = choice
+      const picked: PlanPageClass[] = choice
         ? choice.pages
         : selectKeySheetPages(pageCount, positionCap).map((page) => ({ page, kind: "other" as const, rotate: (index?.pages.find((p) => p.page === page)?.rotate ?? 0) as PlanPageClass["rotate"] }));
+      // A scan may be sideways or upside down: settle each chosen page upright before the read.
+      const chosen = await orientChosen(llm, renderer, picked);
       const { images, skipped: renderSkipped } = await renderChosen(renderer, chosen, Boolean(choice), byteBudget);
       const read = images.map((i) => i.page);
       const pages = [...read].sort((a, b) => a - b);

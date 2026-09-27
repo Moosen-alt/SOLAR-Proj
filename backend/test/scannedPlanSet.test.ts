@@ -179,6 +179,29 @@ await check("(c2) a sideways sheet is turned upright before it is read (the inde
   assert.ok(d.w <= scan.VISION_MAX_LONG_EDGE && d.w * d.h <= scan.VISION_MAX_PIXELS, "inside the model's image limits");
   assert.match(img.label ?? "", /turned 90° upright/);
 });
+await check("(c5) MUST-PASS: orientation is settled by COMPARISON — four turned copies of each chosen page — and only a valid answer turns a page; a failed read turns nothing", async () => {
+  const seen: Array<{ page: number; rotations: number[] }> = [];
+  const llm = fakeLlm(sixteenIndex()) as unknown as Record<string, unknown> & { calls: FakeInput[] };
+  llm.orientPlanPages = async (input: { pages: Array<{ page: number; versions: Array<{ rotate: number; base64: string }> }> }) => {
+    for (const p of input.pages) seen.push({ page: p.page, rotations: p.versions.map((v) => v.rotate) });
+    return [{ page: 2, rotate: 90 }, { page: 4, rotate: 45 }, { page: 99, rotate: 90 }, { page: 5, rotate: 270 }, "junk"];
+  };
+  await scan.readPlanSetForExtraction(llm as never, scan16);
+  assert.deepEqual(seen.map((s) => s.page).sort((a, b) => a - b), [1, 2, 3, 4, 5, 6, 7, 8], "every chosen page, once");
+  for (const s of seen) assert.deepEqual(s.rotations, [0, 90, 180, 270]);
+  const imgs = llm.calls[0].planPageImages ?? [];
+  const dims = async (pg: number) => jpegDims(imgs.find((i) => i.page === pg)!.base64);
+  assert.ok((await dims(2)).w > (await dims(2)).h, "page 2 turned 90");
+  assert.ok((await dims(5)).w > (await dims(5)).h, "page 5 turned 270");
+  assert.ok((await dims(4)).w < (await dims(4)).h, "a 45-degree answer turns nothing");
+  assert.ok((await dims(1)).w < (await dims(1)).h, "no answer, no turn");
+  // a failing orientation read: nothing turns, even where the index claimed a rotation
+  const llmF = fakeLlm(sixteenIndex(90)) as unknown as Record<string, unknown> & { calls: FakeInput[] };
+  llmF.orientPlanPages = async () => { throw new Error("upstream 529"); };
+  await scan.readPlanSetForExtraction(llmF as never, scan16);
+  const f2 = await jpegDims((llmF.calls[0].planPageImages ?? [])[1].base64);
+  assert.ok(f2.w < f2.h, "unrotated when the orientation read fails");
+});
 await check("(c3) an index that names no key sheet (all 'other' / blank) falls back to the unchanged position rule; a failing index read does too", async () => {
   const llmA = fakeLlm((pages) => ({ pages: pages.map((page) => ({ page, kind: page % 2 ? "other" : "blank", rotate: 0 })) }));
   const a = await scan.readPlanSetForExtraction(llmA as never, scan16);

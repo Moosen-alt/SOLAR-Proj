@@ -2474,7 +2474,7 @@ export interface PlanPageClass {
   /** Sheet title as printed, when legible. */
   title?: string;
   kind: PlanSheetKind;
-  /** Clockwise degrees that turn the sheet's drawing upright. */
+  /** Clockwise degrees that turn the sheet's drawing upright (set by the orientation read). */
   rotate: 0 | 90 | 180 | 270;
 }
 
@@ -2630,6 +2630,12 @@ export interface LLMProvider {
   classifyPlanPages?(input: {
     pageImages: Array<{ page: number; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>;
   }): Promise<PlanPageIndex>;
+  /** ORIENTATION of scanned pages by COMPARISON: each page is shown turned 0/90/180/270 degrees
+   *  and the reader names the version that reads upright (asking for an angle directly was wrong
+   *  on a real scan: "180" for sheets that were 90 degrees sideways). Optional like the index. */
+  orientPlanPages?(input: {
+    pages: Array<{ page: number; versions: Array<{ rotate: 0 | 90 | 180 | 270; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }> }>;
+  }): Promise<Array<{ page: number; rotate: number }>>;
   /** Vision-based extraction from the actual document images — accurate for account/meter numbers that OCR mangles. */
   extractProjectFieldsFromImages(input: {
     images: { kind: "utility_bill" | "meter_photo" | "plan_page"; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }[];

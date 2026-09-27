@@ -104,6 +104,8 @@ console.log("routing table");
 // What every call site sent BEFORE routing existed (read off llm.ts at 1f9762a). undefined = no effort sent.
 const EFFORT_BEFORE_ROUTING: Record<string, string | undefined> = {
   extractFields: undefined, extractProjectFields: "high", extractProjectFieldsFromImages: "high", classifyCorrection: undefined,
+  // classifyPlanPages did not exist before routing: it was BORN on the table at low (scannedPlanSet page index, 2026-09-27).
+  classifyPlanPages: "low",
   draftResponse: undefined, visionExtract: "high", reviewPlanSetGeneral: "high", synthesizeKnowledge: undefined,
   researchAhjRequirements: undefined, "researchAhjRequirements.fallback": "high", researchUtilityRequirements: undefined,
   "researchUtilityRequirements.fallback": "high", researchDesignCriteria: undefined, researchJurisdictionCodes: undefined,

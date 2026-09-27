@@ -1908,9 +1908,10 @@ Rules:
   }
 
   /** PAGE INDEX of a plan set from small page images (scannedPlanSet.ts picks the pages to read
-   *  from it and validates everything returned — page range, kinds, rotation, caps). Routed as
-   *  extractProjectFields (the `[pages]` suffix): same model and effort as the read it serves. An
-   *  unreadable answer is an EMPTY index, and the caller falls back to the position rule. */
+   *  from it and validates everything returned — page range, kinds, rotation, caps). Its own route
+   *  (modelRouting classifyPlanPages, effort low): inheriting extractProjectFields' high, one real
+   *  16-page scan ran away to 24k truncated output tokens. An unreadable answer is an EMPTY index,
+   *  and the caller falls back to the position rule. */
   async classifyPlanPages(input: {
     pageImages: Array<{ page: number; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>;
   }): Promise<PlanPageIndex> {
@@ -1937,18 +1938,35 @@ kind — exactly one of:
   notes          general notes only
   other          anything else
   blank          blank or near-blank page
-rotate — the CLOCKWISE rotation (0, 90, 180 or 270) that turns the sheet's MAIN drawing and its body text upright. A sheet printed sideways on the page (text running bottom-to-top) needs 90; top-to-bottom needs 270; upside down needs 180. Judge by the drawing and its large text, not by a small block that is itself printed at another angle.
+Pages may be scanned sideways or upside down; read them as they are (orientation is settled separately).
 
 Return ONLY JSON of this shape, no prose:
-{"pages":[{"page":<page number as labelled>,"sheet":"<sheet number as printed, or \\"\\">","title":"<sheet name as printed, max 60 characters, or \\"\\">","kind":"<kind>","rotate":<0|90|180|270>}],"sheetIndex":[{"sheet":"<number>","title":"<name>"}]}
+{"pages":[{"page":<page number as labelled>,"sheet":"<sheet number as printed, or \\"\\">","title":"<sheet name as printed, max 60 characters, or \\"\\">","kind":"<kind>"}],"sheetIndex":[{"sheet":"<number>","title":"<name>"}]}
 sheetIndex lists the set's own sheet index rows when one is legible; otherwise [].`;
     const user = `The ${input.pageImages.length} page image(s) above are pages ${input.pageImages.map((p) => p.page).join(", ")} of one plan set, in order, each labelled with its page number. Return the JSON page index.`;
     const images = input.pageImages.map((p) => ({ label: `PAGE ${p.page}:`, base64: p.base64, mimeType: p.mimeType }));
-    const text = await this.askLong("extractProjectFields[pages]", system, user, 8000, undefined, images);
+    const text = await this.askLong("classifyPlanPages", system, user, 8000, undefined, images);
     const parsed = this.parseJson<{ pages?: unknown; sheetIndex?: unknown }>(text, {});
     const pages = Array.isArray(parsed.pages) ? (parsed.pages as PlanPageIndex["pages"]) : [];
     const sheetIndex = Array.isArray(parsed.sheetIndex) ? (parsed.sheetIndex as NonNullable<PlanPageIndex["sheetIndex"]>) : [];
     return { pages, sheetIndex };
+  }
+
+  /** ORIENTATION by comparison (scannedPlanSet.ts validates the answer). Each page arrives four
+   *  times, turned 0/90/180/270 degrees clockwise; the model names the version that reads upright.
+   *  Asked for an angle instead, the page-index read said "180" for every page of a real scan
+   *  whose sheets were 90 degrees sideways. Same route as the page index (low effort). */
+  async orientPlanPages(input: {
+    pages: Array<{ page: number; versions: Array<{ rotate: 0 | 90 | 180 | 270; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }> }>;
+  }): Promise<Array<{ page: number; rotate: number }>> {
+    if (!input.pages.length) return [];
+    const system = `You settle the orientation of scanned plan-set pages. Each page is shown four times, labelled "PAGE n, turned D°" for D = 0, 90, 180, 270 (the scan turned D degrees clockwise). For each page pick the ONE version in which the sheet's main drawing and its body text read upright — lines of text run left to right, letters stand the right way up. Judge by the bulk of the text and the drawing's labels, not by one small block printed at another angle (title blocks often are).
+Return ONLY JSON, no prose: {"pages":[{"page":<n>,"rotate":<the D of the upright version>}]}`;
+    const images = input.pages.flatMap((p) => p.versions.map((v) => ({ label: `PAGE ${p.page}, turned ${v.rotate}°:`, base64: v.base64, mimeType: v.mimeType })));
+    const user = `Pages ${input.pages.map((p) => p.page).join(", ")}: for each, which turned version reads upright? Return the JSON.`;
+    const text = await this.askLong("classifyPlanPages[orient]", system, user, 4000, undefined, images);
+    const parsed = this.parseJson<{ pages?: unknown }>(text, {});
+    return Array.isArray(parsed.pages) ? (parsed.pages as Array<{ page: number; rotate: number }>) : [];
   }
 
   // Shared parser for both text and vision extraction results — captures
