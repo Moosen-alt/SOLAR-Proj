@@ -72,8 +72,20 @@ registerFeeScheduleLookup((_db, _p, track) => (track === "nem"
   ? { feeUsd: 0, sourceUrl: "https://pacificpower.example/tier1", confidence: "seeded", corroborated: false, bracketQuote: "", paymentMethod: "none" }
   : permitAnswer));
 
-// ── 1. THE SEAM CARRIES THE FLAG ───────────────────────────────────────────────────────────
+// ── 0. THE BADGE IS OFF BY DEFAULT (2026-09-27, before Tuesday) ─────────────────────────────
+// Until the "this printed row names this permit" reading survives its skeptic, a researched fee
+// stays "provisional" unless a person confirms it or the portal's own record is read. Every other
+// section of this file exercises the badge itself, with FEE_MATCH_BADGE=1.
 permitAnswer = { feeUsd: 135, bracketLabel: PRINTED, sourceUrl: SCHEDULE, confidence: "seeded", corroborated: true, bracketQuote: PRINTED, paymentMethod: "portal", matchedName: "Coos County" };
+delete process.env.FEE_MATCH_BADGE;
+const offProject = mk("match-off", "Coos County");
+const qOff = buildPaymentQuote(db, offProject, "permit");
+check("0a. MUST-EXCLUDE with FEE_MATCH_BADGE unset, a corroborated seeded fee is NOT badged",
+  qOff.permitFeeCorroborated === false && !/matches the published schedule|CORROBORATED/.test(qOff.permitFeeBasis), `${qOff.permitFeeCorroborated} ${qOff.permitFeeBasis}`);
+check("0b. …it reads researched / not yet human-verified, and is still seeded", /researched, not yet human-verified/.test(qOff.permitFeeBasis) && qOff.permitFeeConfidence === "seeded", qOff.permitFeeBasis);
+process.env.FEE_MATCH_BADGE = "1";
+
+// ── 1. THE SEAM CARRIES THE FLAG ───────────────────────────────────────────────────────────
 const matched = mk("match-1", "Coos County");
 const q = buildPaymentQuote(db, matched, "permit");
 check("1a. a corroborated seeded schedule amount is flagged on the quote", q.permitFeeCorroborated === true, JSON.stringify(q.permitFeeCorroborated));

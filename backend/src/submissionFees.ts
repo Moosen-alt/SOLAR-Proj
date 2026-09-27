@@ -696,7 +696,14 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
       // with it instead of the bare "provisional" every unchecked research row wears. It is a
       // statement about THIS AMOUNT, so a guessed-valuation walk does not earn it: the table
       // line is printed, the number computed from our guess is not.
-      permitFeeCorroborated = schedule.corroborated && !schedule.valuationEstimated;
+      // SWITCHED OFF BY DEFAULT (2026-09-27, before Tuesday's presentation): three skeptic rounds kept
+      // finding printed-row shapes where the machine's "this row names this permit" reading is wrong
+      // (a table heading on the column-label line, "Solar - Thermal", a wind interconnection line).
+      // Until that reading holds, a researched fee stays "provisional" until a PERSON confirms it
+      // (Confirm, bracket by bracket) or the portal's own record is read ("actual"). FEE_MATCH_BADGE=1
+      // turns the badge and the corroboration wording back on (the fee tests run with it on).
+      const matchBadgeOn = process.env.FEE_MATCH_BADGE === "1";
+      permitFeeCorroborated = matchBadgeOn && schedule.corroborated && !schedule.valuationEstimated;
       // A PRINTED ROW THAT NAMES ANOTHER PERMIT IS NOT THIS FEE'S PUBLISHED LINE (skeptic M8). The
       // only line printed at this amount being "Plumbing permit fee | $160.00" says the research
       // may have priced the wrong permit — so it is never offered as "Published as", and the
@@ -717,7 +724,7 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
         ? ` (human-verified${permitFeeVerifiedBy ? ` by ${permitFeeVerifiedBy}` : ""}${schedule.verifiedAt ? ` on ${schedule.verifiedAt.slice(0, 10)}` : ""})`
         : permitFeeCorroborated
           ? " (matches the published schedule — CORROBORATED: a machine re-read the cited document and found this line printed in it; no person has confirmed it yet)"
-          : schedule.corroborated
+          : matchBadgeOn && schedule.corroborated
             ? " (researched and CORROBORATED against the cited document — still not human-verified)"
             : " (researched, not yet human-verified)";
       permitFeeBasis = `${who}'s published fee schedule${schedule.bracketLabel ? `, line "${schedule.bracketLabel}"` : ""}`
