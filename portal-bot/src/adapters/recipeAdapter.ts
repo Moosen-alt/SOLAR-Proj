@@ -82,7 +82,7 @@ import {
 } from "../../../shared/src/portalSafety";
 import { commitField, installSettleProbe, waitForSettled } from "../settle";
 import { siteOfUrl } from "../siteOf";
-import { installFilingBackstop, withBackstopWindow, describeBackstopAbort, type FilingBackstop } from "../filingBackstop";
+import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, type FilingBackstop } from "../filingBackstop";
 
 // How long the drift precheck waits for an async-rendered form to paint before concluding
 // the replay is on the wrong page. PowerClerk's Ameren form reports zero inputs for several
@@ -3098,7 +3098,19 @@ export class RecipeAdapter extends BasePortalAdapter {
       }).filter(Boolean).slice(0, 10)).catch(() => [] as string[]);
   }
 
+  /** Every recorded step. A step that WRITES a value (fill / select / check / uncheck / upload)
+   *  runs inside an own-write window on the network backstop (autosubmit-close item 7): its
+   *  per-field autosave on a page that reads as review — PowerClerk's Terms checkbox, recorded
+   *  before stopForReview — is the write's commit, not the page posting on its own, and the
+   *  review lockdown's live reading let it through. Its filing/payment rules and the run's own
+   *  review lock (set at stopForReview) are untouched. Clicks, presses and gotos get no window. */
   private async executeStep(step: RecipeStep, pastReview: boolean): Promise<boolean> {
+    if (!RecipeAdapter.WRITE_ACTIONS.has(step.action) || !this.backstop) return this.executeStepInner(step, pastReview);
+    return withOwnWriteWindow(this.page, `recorded ${step.action}${step.note ? ` (${String(step.note).slice(0, 50)})` : ""}`, () => this.executeStepInner(step, pastReview));
+  }
+  private static readonly WRITE_ACTIONS: ReadonlySet<string> = new Set(["fill", "select", "check", "uncheck", "upload"]);
+
+  private async executeStepInner(step: RecipeStep, pastReview: boolean): Promise<boolean> {
     // AN ADDRESS-ROW STEP HAS NO SELECTOR WORTH TRYING, so do not spend 30 seconds proving
     // it. The generic pass records a marker that exists only during the learn click - by
     // design, so the matcher gets its turn - and Playwright treats a selector that resolves

@@ -90,6 +90,10 @@ const PAGES: Record<string, string> = {
   // ...and a stop page that does NOT name itself review (only the run's own lock knows), whose
   // script keeps posting: before the lock it is mid-flow, after it nothing may leave.
   toSummary: `<h1>Step 4: Contacts</h1><a id="next" href="/summary">Next</a>`,
+  // THE RUN'S OWN WRITE AT REVIEW (autosubmit-close item 7): the recipe checks a Terms box on the
+  // review page before stopForReview, and the box autosaves.
+  toReviewTerms: `<h1>Step 4: Contacts</h1><a id="next" href="/reviewTerms?to=autosave">Next</a>`,
+  toReviewTermsFile: `<h1>Step 4: Contacts</h1><a id="next" href="/reviewTerms?to=file">Next</a>`,
 };
 const FRAME: Record<string, string> = {
   pay: `<form method="post" action="/payment/charge"><button type="submit" id="fb">Continue</button></form>`,
@@ -126,6 +130,15 @@ const server = http.createServer((req, res) => {
       : "fetch('/apply/42', {method:'POST', body:'x=1'}).catch(function(){});";
     res.end(`<!doctype html><html><body><h1>Step 5: Review and Submit</h1><p>Please review your application before submitting.</p>
       <script>setTimeout(function(){ ${post} }, ${d});</script></body></html>`);
+    return;
+  }
+  if (url.pathname === "/reviewTerms") {
+    // autosubmit-close item 7: a review page with a Terms checkbox whose change handler POSTs
+    // (PowerClerk's per-field Autosave) — to a plain autosave URL, or to a filing endpoint.
+    const to = url.searchParams.get("to") === "file" ? "/SubmitApplication" : "/Project/Autosave";
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(`<!doctype html><html><body><h1>Step 5: Review and Submit</h1><p>Please review your application before submitting.</p>
+      <div><input type="checkbox" id="terms" onchange="fetch('${to}', {method:'POST', body:'terms=' + (this.checked ? 'on' : '')}).catch(function(){})"> <label for="terms">I accept the terms and conditions</label></div></body></html>`);
     return;
   }
   if (url.pathname === "/summary") {
@@ -232,6 +245,18 @@ try {
     check(`MUST-EXCLUDE ${m}: the review page's own POST never reaches the server during the run`, !r.during.includes("/apply/42"), `POSTs=[${r.during.join(",")}] ${r.msg}`);
     check(`MUST-EXCLUDE ${m}: it was aborted by the review-page lockdown, and the run STOPS named, ok=false`, /BACKSTOP ABORTED POST \S*\/apply\/42.*REVIEW-PAGE LOCKDOWN/.test(r.refusals) && !r.ok && /STOPPED BY THE NETWORK BACKSTOP/.test(r.msg), `ok=${r.ok} refusals=${r.refusals || "(none)"} ${r.msg}`);
     check(`MUST-PASS ${m}: after the hand-off the person's own submit is NOT blocked`, r.afterPosts.includes("/SubmitApplication"), `after=[${r.afterPosts.join(",")}]`);
+  }
+  {
+    // THE RUN'S OWN WRITE AT REVIEW (autosubmit-close item 7; the demoMaskReplica PowerClerk replay
+    // stopped here: its recorded "Accept Terms" check autosaved from the review page and the live
+    // lockdown aborted the commit). The write's own autosave passes; a filing-worded one never does.
+    const TERMS = { action: "check", selector: { css: "#terms", label: "I accept the terms and conditions" }, note: "I accept the terms and conditions" } as RecipeStep;
+    const ok = await replay("toReviewTerms", [NEXT_LINK, TERMS]);
+    check("MUST-PASS toReviewTerms: the recorded Terms check on the review page commits — its autosave POST reaches the server, the run reaches review ok, no abort",
+      ok.during.includes("/Project/Autosave") && ok.ok && !/BACKSTOP ABORTED/.test(ok.refusals), `ok=${ok.ok} POSTs=[${ok.during.join(",")}] refusals=${ok.refusals || "(none)"} ${ok.msg}`);
+    const bad = await replay("toReviewTermsFile", [NEXT_LINK, TERMS]);
+    check("MUST-EXCLUDE toReviewTermsFile: the same check whose handler posts a FILING endpoint is aborted (filing-URL rule), the run STOPS named",
+      !bad.during.includes("/SubmitApplication") && !bad.ok && /STOPPED BY THE NETWORK BACKSTOP/.test(bad.msg) && /SubmitApplication/.test(bad.msg), `ok=${bad.ok} POSTs=[${bad.during.join(",")}] ${bad.msg}`);
   }
   {
     // THE RUN'S OWN LOCK: a stop page that does not name itself review, whose script keeps posting.

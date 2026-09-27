@@ -20,7 +20,7 @@ import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
 import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, reviewSignals as sharedReviewSignals } from "../../../shared/src/portalSafety";
-import { installFilingBackstop, withBackstopWindow, describeBackstopAbort, backstopFor, isStoppingAbort } from "../filingBackstop";
+import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, backstopFor, isStoppingAbort } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
@@ -7143,7 +7143,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         if (!loc) continue;
         const res = await safeAction(
           groupLabel.slice(0, 40),
-          async () => { await loc.check({ timeout: 5000 }); },
+          // The learner's own write: its autosave passes the review lockdown's live reading (item 7).
+          async () => { await withOwnWriteWindow(this.page, `learner policy default (${groupLabel.slice(0, 40)})`, () => loc.check({ timeout: 5000 })); },
           { required: false },
         );
         if (!res.ok || res.message) continue;
@@ -7270,7 +7271,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     } catch { return "not-segmented"; }
   }
 
+  /** Every planned field write. It runs inside an own-write window on the network backstop
+   *  (autosubmit-close item 7): the write's own per-field autosave on a page that reads as review
+   *  (a Terms checkbox the planner checks at review, before lockReview) is the write's commit, not
+   *  the page posting on its own, and the lockdown's live reading lets it through. The filing /
+   *  payment rules and the sticky lock are untouched. */
   private async applyFill(
+    field: ExtractedField,
+    fillReq: { value: string; field?: string },
+    sensitive: boolean,
+  ): Promise<RecipeStep | null> {
+    return withOwnWriteWindow(this.page, `learner ${field.fieldType || "field"} write (${String(field.label ?? "").slice(0, 40)})`, () => this.applyFillInner(field, fillReq, sensitive));
+  }
+
+  private async applyFillInner(
     field: ExtractedField,
     fillReq: { value: string; field?: string },
     sensitive: boolean,

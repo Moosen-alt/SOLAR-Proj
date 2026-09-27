@@ -34,6 +34,9 @@
 //      script that posts a second after the review page loads is caught however fast the run
 //      is. Lifted only by the approved
 //      final submit's window (non-payment URLs) and by dispose() — the hand-off to a person.
+//      (b) exempts the RUN'S OWN recorded write on that page while it is in flight
+//      (withOwnWriteWindow: a fill / select / check whose per-field autosave posts — PowerClerk's
+//      Terms checkbox at review); (a), the filing-URL rule and payment never exempt anything.
 //
 // Every abort is recorded (origin + path only — never a query string, which can carry a
 // customer's data) so the run reports it; a filing, payment or lockdown abort also stops the run,
@@ -89,6 +92,15 @@ export interface FilingBackstop {
   readonly approvedNavigations: string[];
   /** Every native dialog seen while a slot's dialog handler was installed, and what was done. */
   readonly approvedDialogs: Array<{ type: string; message: string; action: "accepted" | "dismissed"; why: string }>;
+  /** THE RUN'S OWN WRITE is in flight on `page` (a recorded fill / select / check / upload of a
+   *  value the run decided). Until the returned closer runs, a state-changing request from that
+   *  page is that write's commit — a portal's per-field autosave — and is exempt from the review
+   *  lockdown's LIVE reading only (rule 4b). Payment, the filing-URL rule, the dismisser/Enter
+   *  windows and the run's sticky lock (4a) all still apply. */
+  openOwnWrite(page: unknown, why: string): () => void;
+  /** Where (origin + path) each request the own-write exemption let through on a terminal-reading
+   *  page went, in order — reported by the run. */
+  readonly ownWriteRequests: string[];
   /** The run is at review: abort every state-changing request until dispose() hands the page to
    *  a person. Sticky. */
   lockReview(why: string): void;
@@ -136,6 +148,22 @@ export async function withBackstopWindow<T>(page: unknown, rule: "dismisser-wind
   } finally {
     await new Promise((r) => setTimeout(r, graceMs));
     close();
+  }
+}
+
+/** Run the run's OWN recorded write `fn` with an own-write window open on this page's backstop (if
+ *  one is installed). The window stays open `graceMs` after `fn` settles — a portal's autosave can
+ *  be debounced past the write — but the caller is NOT held for it (a closer on a timer): a replay
+ *  of forty fills pays nothing. The sticky lock (lockReview) is unaffected by an open window. */
+export async function withOwnWriteWindow<T>(page: unknown, why: string, fn: () => Promise<T>, graceMs = 1500): Promise<T> {
+  const bs = backstopFor(page);
+  if (!bs) return fn();
+  const close = bs.openOwnWrite(page, why);
+  try {
+    return await fn();
+  } finally {
+    const t = setTimeout(close, Math.max(0, graceMs));
+    (t as { unref?: () => void }).unref?.();
   }
 }
 
@@ -256,6 +284,10 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
     const origin = originOf(url);
     return origin !== "" && origin === originOf(pageUrl);
   };
+  // THE RUN'S OWN WRITES in flight (openOwnWrite), each bound to the page it writes on.
+  const ownWrites = new Map<number, { page: unknown; why: string }>();
+  let nextOwnWrite = 1;
+  const ownWriteRequests: string[] = [];
   let locked = "";
   let disposed = false;
   // A NAVIGATION REQUEST (a form POST) CANNOT BE ASKED LIVE: evaluating the page it is navigating
@@ -359,6 +391,16 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
         if (typeof terminal === "boolean") lastReading.set(pg, terminal);
       }
       if (terminal === true && !disposed) {
+        // THE RUN'S OWN WRITE (autosubmit-close item 7): a recorded value written on a
+        // terminal-reading page — PowerClerk's Terms checkbox at review, its per-field Autosave
+        // POST — is that write's commit, not the page acting on its own. It passes; everything
+        // else a terminal page posts is still aborted.
+        const own = pg ? [...ownWrites.values()].find((w) => w.page === pg) : undefined;
+        if (own) {
+          ownWriteRequests.push(whereOf(url));
+          await route.fallback().catch(() => null);
+          return;
+        }
         await abort("review-lockdown", `the page this request came from is the review/terminal page (${label})`);
         return;
       }
@@ -429,6 +471,13 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
       }
       s.timer = setTimeout(() => { if (slot === s) closeSlot(); }, span);
     },
+    openOwnWrite(pg: unknown, why: string) {
+      const id = nextOwnWrite++;
+      // Bound to the page written on — by default the backstop's own page, never "any page".
+      ownWrites.set(id, { page: pg && typeof pg === "object" ? pg : page, why: String(why || "").slice(0, 120) });
+      return () => { ownWrites.delete(id); };
+    },
+    ownWriteRequests,
     approvedSlotOpen() { return slotLive(); },
     closeApprovedSlot() { closeSlot(); },
     lockReview(why: string) {
@@ -441,6 +490,7 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
       if (REGISTRY.get(page) === bs) REGISTRY.delete(page);
       if (target !== page && REGISTRY.get(target) === bs) REGISTRY.delete(target);
       windows.clear();
+      ownWrites.clear();
       locked = "";
       for (const u of unwatch.splice(0)) u();
       await target.unroute("**/*", handler).catch(() => null);
