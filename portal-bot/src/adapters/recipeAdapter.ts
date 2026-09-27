@@ -71,7 +71,7 @@ import { sweepEmptyRequiredControls, type EmptyRequired } from "../requiredContr
 import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import {
-  classifySubmissionText, finalSubmitEnvAllows, finalSubmitRefusals, isFinalSubmitControl, isPayFee,
+  classifySubmissionText, finalSubmitEnvAllows, finalSubmitRefusals, isFinalSubmitControl, isPayFee, mayClickFinalSubmit,
   isRecipeShapeValid, isSignatureNameLabel, isSubmitIntent, isSubmitOrPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE,
   type HealedStep, type RunApproval, type SubmissionOutcome,
 } from "../../../shared/src/portalSafety";
@@ -289,6 +289,18 @@ export class ReplayGuardRefusal extends Error {
   constructor(public readonly reason: string) {
     super(`replay safety gate refused: ${reason}`);
     this.name = "ReplayGuardRefusal";
+  }
+}
+
+/** THE APPROVED FINAL SUBMIT ENDED THE RUN — a pause for a person (a CAPTCHA/MFA challenge, a fee
+ *  the portal wants paid) or a verdict (the portal refused it, or said nothing a person can trust).
+ *  Typed so the step loop returns AT ONCE: never retried (the approved click is at most once, and a
+ *  "Timeout" inside the click's own error text used to trip the retry-and-reload path), never
+ *  healed, and a pause reaches the result as pauseReason instead of a "step failed". */
+export class FinalSubmitStop extends Error {
+  constructor(message: string, public readonly pauseReason: "mfa_captcha" | "fee_payment" | null) {
+    super(message);
+    this.name = "FinalSubmitStop";
   }
 }
 
@@ -551,6 +563,9 @@ export class RecipeAdapter extends BasePortalAdapter {
       // Hand-off: the route comes off FIRST, then every abort up to that moment is counted (an
       // abort between the last check and the hand-off is not lost).
       await this.backstop?.dispose().catch(() => null);
+      // AFTER THE APPROVED CLICK "Nothing was sent" is false: the filing went (or the click's own
+      // request was the one aborted). Every abort is still reported, and the result says which.
+      if (this.finalSubmitClicked) return this.withApprovedClickBackstopNotes(r);
       const stop = this.backstopStop();
       // Every abort is reported (driftWarnings + guardRefusals, pushed by backstopStop); a
       // filing/payment/lockdown abort turns ANY ending — "reached review", or a step that then
@@ -561,6 +576,29 @@ export class RecipeAdapter extends BasePortalAdapter {
       await this.backstop?.dispose().catch(() => null);
       this.backstop = null;
     }
+  }
+
+  /** The approved final submit was clicked: report every backstop abort (warnings + refusals) and
+   *  say on the result whether the click's own request reached the server and what else was
+   *  stopped. Never turns the run into "Nothing was sent". */
+  private withApprovedClickBackstopNotes(r: PortalStepResult): PortalStepResult {
+    const bs = this.backstop;
+    if (!bs) return r;
+    this.backstopStop(); // pushes each unreported abort into driftWarnings + guardRefusals
+    const notes: string[] = [];
+    if (!bs.approvedRequests.length) {
+      notes.push("the approved click sent no state-changing request that the network backstop let through — the filing request never reached the server");
+    } else {
+      notes.push(`the approved click's request went to ${bs.approvedRequests.join(", ")}`);
+    }
+    const others = bs.aborts;
+    if (others.length) {
+      notes.push(`the network backstop aborted ${others.length} other state-changing request(s) during/after it (${describeBackstopAbort(others[0])}) — only the approved click's own request was admitted`);
+    }
+    const line = `APPROVED FINAL SUBMIT: ${notes.join("; ")}.`;
+    if ((others.length || !bs.approvedRequests.length) && !this.driftWarnings.includes(line)) this.driftWarnings.push(line);
+    const data = { ...(r.data ?? {}), approvedRequests: [...bs.approvedRequests], backstopAborts: others.length, driftWarnings: this.driftWarnings, guardRefusals: this.guardRefusals };
+    return { ...r, message: `${String(r.message ?? "")} ${line}`.trim(), data };
   }
 
   private backstop: FilingBackstop | null = null;
@@ -1317,6 +1355,12 @@ export class RecipeAdapter extends BasePortalAdapter {
           break;
         } catch (err) {
           lastErr = err;
+          if (err instanceof FinalSubmitStop) {
+            closePrevStepTiming();
+            const base = fail(err.pauseReason ? err.message : `Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${err.message}`,
+              { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: stepIdx, trace, slowSteps, finalSubmitClicked: this.finalSubmitClicked, ...(err.pauseReason ? { needsHuman: true } : {}), pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
+            return err.pauseReason ? { ...base, pauseReason: err.pauseReason } : base;
+          }
           if (!failureContext) failureContext = await this.captureFailureContext(step, stepIdx).catch(() => "");
           const isTimeout = err instanceof Error && /timeout|TimeoutError/i.test(err.message);
           // A STRICT-MODE VIOLATION IS ALWAYS WORTH ONE MORE PASS, and it is not a timeout.
@@ -3985,17 +4029,23 @@ export class RecipeAdapter extends BasePortalAdapter {
     await waitForSettled(this.page, { timeoutMs }).catch(() => null);
   }
 
-  /** Why the final submit may NOT be clicked right now — the shared gate, asked at the click. */
+  /** Why the final submit may NOT be clicked right now — the shared gate, asked at the click.
+   *  THE GATE IS mayClickFinalSubmit (CLAUDE.md rule 1 names it): it decides; finalSubmitRefusals
+   *  only words the refusal. Replay used to ask finalSubmitRefusals alone, so the named gate had no
+   *  production caller and a kill of it proved nothing (portal-run-close 8). */
   private finalSubmitRefusalsNow(): string[] {
     const steps = this.recipe.steps;
     const last = steps.length - 1;
-    const out = finalSubmitRefusals({
+    const ctx = {
       envAllows: finalSubmitEnvAllows(process.env),
       runApproval: this.options.runApproval ?? null,
       runId: String(this.options.runId ?? ""),
       stepIsTerminalFlagged: this.currentStepIdx === last && isFinalSubmitStep(steps[last]),
       recipeShapeValid: isRecipeShapeValid(steps),
-    });
+    };
+    const may = mayClickFinalSubmit(ctx);
+    const out = may ? [] : finalSubmitRefusals(ctx);
+    if (!may && !out.length) out.push("the final-submit gate refused this click");
     if (this.finalSubmitAttempted) out.push("the final submit was already attempted in this run");
     return out;
   }
@@ -4037,7 +4087,10 @@ export class RecipeAdapter extends BasePortalAdapter {
         }
         return null;
       }).catch(() => null) as { ok?: string; text?: string; blocked?: string } | null;
-      if (modal?.blocked) throw new Error(`The submit raised a payment dialog — fees are never automated. (${modal.blocked.slice(0, 120)})`);
+      if (modal?.blocked) {
+        this.finalSubmitOutcome = { verdict: "unknown", evidence: `payment dialog: ${modal.blocked.slice(0, 80)}` };
+        throw new FinalSubmitStop(`The submit raised a payment dialog — fees are never automated; a person pays and confirms the filing on the portal. (${modal.blocked.slice(0, 120)})`, "fee_payment");
+      }
       if (modal?.ok) {
         this.driftWarnings.push(`submit confirm dialog ("${(modal.text || "").slice(0, 60)}") — clicked ${modal.ok}`);
         await this.guardedClick(this.page.locator("[data-al-modal-ok='1']").first(), "the approved submit's confirm dialog", { timeout: 5000 }, { finalSubmitApproved: true }).catch(() => null);
@@ -4046,8 +4099,42 @@ export class RecipeAdapter extends BasePortalAdapter {
       const body = String(await this.page.locator("body").innerText().catch(() => "") ?? "");
       last = classifySubmissionText(body);
       if (last.verdict !== "unknown") return last;
+      // A FEE PAGE BETWEEN THE SUBMIT AND THE COMPLETION PAGE. Nothing on it says the filing was
+      // accepted, and it offers a pay control or a card field: the portal wants a fee before it
+      // files (or finishes). Automation never pays — the network backstop aborts any payment
+      // request whatever — so this is a pause for a person, named, not fifteen seconds of polling
+      // and then "outcome unknown".
+      const pay = await this.paymentOnPage();
+      if (pay) {
+        this.finalSubmitOutcome = { verdict: "unknown", evidence: `fee page: ${pay}` };
+        await this.capturePageShot("FEE-PAGE", true).catch(() => null);
+        throw new FinalSubmitStop(`The approved final submit landed on a fee-payment page (${pay}) — automation never pays. A person pays on the portal and confirms the filing (and its record number) there.`, "fee_payment");
+      }
     }
     return last;
+  }
+
+  /** A visible pay control (its label read by the shared isPayFee) or a payment-card field on the
+   *  current page, named; "" when there is none or the page cannot be read. */
+  private async paymentOnPage(): Promise<string> {
+    if (!this.page || typeof this.page.evaluate !== "function") return "";
+    await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+    const found = await this.page.evaluate((g: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ps = (globalThis as any)[g];
+      if (!ps) return "";
+      const shown = (el: Element): boolean => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      for (const el of Array.from(document.querySelectorAll("button, a[href], [role='button'], input[type='submit'], input[type='button']"))) {
+        if (!shown(el)) continue;
+        const label = String(ps.controlLabelInPage(el) || (el as HTMLElement).innerText || (el as HTMLInputElement).value || "").replace(/\s+/g, " ").trim();
+        if (label && label.length <= 60 && ps.isPayFee(label)) return `"${label}"`;
+      }
+      for (const el of Array.from(document.querySelectorAll("input, select"))) {
+        if (shown(el) && ps.isPaymentElementInPage(el)) return "a payment-card field";
+      }
+      return "";
+    }, PORTAL_SAFETY_GLOBAL).catch(() => "");
+    return String(found || "");
   }
 
   // Click safety gate (P0-3 allowlist + P0-4 structural challenge detection).
@@ -4066,8 +4153,16 @@ export class RecipeAdapter extends BasePortalAdapter {
     const reanchored = await this.reanchorRecordNumberLink(step).catch(() => null);
     if (reanchored) scoped = reanchored;
 
-    // 1) Fee payment is NEVER automated — always blocked, even if (wrongly) flagged.
-    if (PAY_FEE_REPLAY_GATE.test(name)) return false;
+    // 1) Fee payment is NEVER automated — always blocked, even if (wrongly) flagged. A FLAGGED
+    //    final submit that pays ("Pay and Submit") under an approval that otherwise holds is a
+    //    PAUSE, named: the filing is staged at review and a person pays — it used to be skipped
+    //    in silence and the approved run read as an ordinary review stop.
+    if (PAY_FEE_REPLAY_GATE.test(name)) {
+      if (flaggedFinal && this.finalSubmitRefusalsNow().length === 0) {
+        throw new FinalSubmitStop(`The approved final submit "${name.slice(0, 60)}" pays a fee — automation never pays. Nothing was clicked; the application is staged at review for a person to pay and submit.`, "fee_payment");
+      }
+      return false;
+    }
 
     // 2) Anything past the review marker (autoSubmit territory) is hard-blocked unless
     //    it carries the explicit isFinalSubmit allowlist flag. This catches id/css-only
@@ -4093,7 +4188,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       // included) on the final page and bail to a human if present. Never solve/bypass.
       const challenge = await detectChallengeFrame(this.page);
       if (challenge) {
-        throw new Error(`Final submit needs a human: ${challenge}. Automation stopped without clicking.`);
+        throw new FinalSubmitStop(`Final submit needs a human: ${challenge}. Automation stopped without clicking.`, "mfa_captcha");
       }
       // AT MOST ONCE PER RUN. Marked before the click: a click that throws mid-way may still
       // have reached the portal, and the retry loop must never produce a second filing.
@@ -4101,7 +4196,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       try {
         await this.guardedClick(scoped, "the approved final submit", undefined, { finalSubmitApproved: true });
       } catch (err) {
-        throw new Error(`The approved final-submit click did not complete (${err instanceof Error ? err.message.slice(0, 160) : String(err)}) — NOT retried; a human must check whether the portal filed it.`);
+        throw new FinalSubmitStop(`The approved final-submit click did not complete (${err instanceof Error ? err.message.slice(0, 160) : String(err)}) — NOT retried; a human must check whether the portal filed it.`, null);
       }
       this.finalSubmitClicked = true;
       // Let the portal settle, then verify we did not land on a challenge.
@@ -4109,7 +4204,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       const postChallenge = await detectChallengeFrame(this.page);
       if (postChallenge) {
         this.finalSubmitOutcome = { verdict: "unknown", evidence: `challenge after the click: ${postChallenge}` };
-        throw new Error(`Final submit triggered a challenge after the click (${postChallenge}); pausing for human verification.`);
+        throw new FinalSubmitStop(`Final submit triggered a challenge after the click (${postChallenge}); pausing for human verification.`, "mfa_captcha");
       }
       // A CLICK THAT LANDED IS NOT A FILING THAT WAS ACCEPTED. Read the page through the ONE
       // shared classifier: "accepted" only on positive evidence (a confirmation sentence or an
@@ -4129,10 +4224,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
       if (outcome.verdict === "rejected") {
         await this.capturePageShot("REFUSED", true);
-        throw new Error(`Final submit clicked; the portal REFUSED the submission: ${String(outcome.evidence ?? "").slice(0, 300)}`);
+        throw new FinalSubmitStop(`Final submit clicked; the portal REFUSED the submission: ${String(outcome.evidence ?? "").slice(0, 300)}`, null);
       }
       await this.capturePageShot("UNCONFIRMED", true);
-      throw new Error("Final submit clicked; outcome unknown — human must verify. The page neither confirmed nor refused the filing; a quiet page is not an accepted application.");
+      throw new FinalSubmitStop("Final submit clicked; outcome unknown — human must verify. The page neither confirmed nor refused the filing; a quiet page is not an accepted application.", null);
     }
 
     // 5) Ordinary navigation/UI click (pre-review). Safe to perform.

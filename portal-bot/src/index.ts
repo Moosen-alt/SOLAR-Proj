@@ -502,7 +502,17 @@ async function runAdapter(
     // Leave the browser OPEN for the human ONLY when: this is a guided-manual run (no
     // autosubmit), it's headed (the human is watching), it staged cleanly to review, and we
     // have a userDataDir to track/close it by later. Otherwise fall through to close().
+    // A PAUSE IS TOLD, NOT DROPPED (portal-run-close 8). This read reviewResult.pauseReason only, and
+    // stopAtReview never carries one: replay's fill-step pauses — signature_no_signer, and the
+    // approved final submit's CAPTCHA (mfa_captcha) or fee page (fee_payment) — reached the backend
+    // as plain failures (and its recipe-demote classifier). The first step that paused names it.
+    const stepPause = steps.map((s) => (typeof s?.pauseReason === "string" ? s.pauseReason : "")).find(Boolean) || null;
     leaveBrowserOpen = !options.autoSubmit && options.headless === false && reviewResult.ok && !finalSubmitClicked && !!options.userDataDir;
+    // A PAUSED HEADED RUN KEEPS ITS WINDOW for the person the pause is for — the challenge to solve,
+    // the fee to pay, the signature to give — as the learner does at its park. The replay's network
+    // backstop is already off (fillApplication disposes it before returning), so nothing blocks
+    // that person's own clicks.
+    if (stepPause && options.headless === false && !!options.userDataDir) leaveBrowserOpen = true;
 
     return {
       portalName: adapter.portalName,
@@ -518,7 +528,7 @@ async function runAdapter(
       capturedRecordLink: captured?.recordLink || "",
       evidenceDir,
       outcomeShotPath,
-      pauseReason: reviewResult.pauseReason ?? null,
+      pauseReason: stepPause,
       internalFinalReviewPacketRequired: true,
       reviewerBlockerCount: options.reviewerReport?.findings.filter((f) => f.severity === "blocker").length ?? 0,
       steps,

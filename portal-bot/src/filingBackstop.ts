@@ -13,7 +13,8 @@
 //      frame, of any type, even under a named approval: automation never pays.
 //   2. FILING-URL RULE: a request whose URL — for a form POST, the form's action — reads as a
 //      filing (isFilingOrPaymentRequest, the same predicate the demo recorder's abort asks). A
-//      named approval opens a short window around THE approved final-submit click only.
+//      named approval admits ONE state-changing request in a short window after THE approved
+//      final-submit click (each approved click — the submit, its confirm dialog's OK — one).
 //      (close2-safety checker: this rule once held for main-frame navigations only, and an
 //      iframe's "Continue", a form targeted at an iframe and a fetch POST each reached the server
 //      — iframePay, iframeSubmit, targetFramePay, xhrFile, xhrPay.) KNOWN COST, fail-closed: a
@@ -61,9 +62,12 @@ export interface FilingBackstop {
   readonly aborts: BackstopAbort[];
   /** Open a window in which every state-changing request is aborted. Returns its closer. */
   openWindow(rule: "dismisser-window" | "enter-window", why: string): () => void;
-  /** THE approved final submit only: let a FILING url (and the review lockdown) through for
-   *  `ms`. Payment never. */
+  /** THE approved final submit only: let ONE state-changing request through — a FILING url, and
+   *  past the review lockdown — within `ms`. Payment never. Every later state-changing request
+   *  (a page script's second POST, the completion page's on-load POST) meets the ordinary rules. */
   allowApprovedFiling(ms: number): void;
+  /** Where (origin + path) each request the approved window admitted went, in order. */
+  readonly approvedRequests: string[];
   /** The run is at review: abort every state-changing request until dispose() hands the page to
    *  a person. Sticky. */
   lockReview(why: string): void;
@@ -163,6 +167,14 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
   const windows = new Map<number, { rule: "dismisser-window" | "enter-window"; why: string }>();
   let nextWindow = 1;
   let approvedFilingUntil = 0;
+  // ONE REQUEST PER APPROVED CLICK. The window used to admit EVERY non-payment state-changing
+  // request for 20 s, so a page script's second POST fired in the approved click's window reached
+  // the server as if a person had approved it too (portal-run-close 8, approvedFinalSubmit smoke
+  // 'extraPost'). A named approval covers the click's own request and nothing else. KNOWN COST,
+  // fail-closed: a script POST that fires BEFORE the click's own request takes the slot and the
+  // filing itself is aborted (named, nothing filed).
+  let approvedSlots = 0;
+  const approvedRequests: string[] = [];
   let locked = "";
   let disposed = false;
   // A NAVIGATION REQUEST (a form POST) CANNOT BE ASKED LIVE: evaluating the page it is navigating
@@ -210,9 +222,12 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
       aborts.push({ rule, method: method || "?", where: whereOf(url), why, resourceType });
       await route.abort("blockedbyclient").catch(() => null);
     };
-    const approved = Date.now() < approvedFilingUntil;
     // 1. PAYMENT: never, in any frame, any type, whatever was approved.
     if (isPayRequestUrl(url)) { await abort("filing-url", "a fee-payment endpoint — automation never pays"); return; }
+    // The approved click's ONE request takes the slot (checked after the payment rule: a payment
+    // never uses it).
+    const approved = approvedSlots > 0 && Date.now() < approvedFilingUntil;
+    if (approved) { approvedSlots = 0; approvedRequests.push(whereOf(url)); }
     // 2. FILING URL: only inside THE approved final submit's window.
     if (isFilingOrPaymentRequest(method || "POST", url) && !approved) {
       await abort("filing-url", `a filing endpoint, and no named approval covers this request (${label})`);
@@ -253,7 +268,10 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
       windows.set(id, { rule, why: String(why || "").slice(0, 120) });
       return () => { windows.delete(id); };
     },
+    approvedRequests,
     allowApprovedFiling(ms: number) {
+      // Reset, never added: each approved click (the submit, a confirm dialog's OK) covers one.
+      approvedSlots = 1;
       approvedFilingUntil = Math.max(approvedFilingUntil, Date.now() + Math.max(0, Math.min(ms, 60_000)));
     },
     lockReview(why: string) {
