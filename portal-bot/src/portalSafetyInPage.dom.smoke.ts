@@ -55,6 +55,21 @@ const PAGES: Record<string, string> = {
     <dl><dt>Job Description</dt><dd>Rooftop PV</dd></dl>
     <label><input type="checkbox" id="cert"> I certify that the information above is correct</label>
     <a href="#" id="cont" role="button" onclick="return false">Continue Application »</a>`),
+  // ONE REVIEW PREDICATE (portal-run-close MF2): a combined confirm-and-sign page — "Please
+  // review and sign" with a live consent box and a Next that files. The learner stops here and
+  // the backstop's lockdown reads the SAME answer: terminal (reviewPage true).
+  "/review-sign": page(`${HEADER}<ol class="steps"><li><a href="#">1 Description</a></li><li><a href="#">2 Confirm and Sign</a></li><li><a href="#">3 Review and Submit</a></li></ol>
+    <h2>Confirm and Sign</h2><p>Please review and sign. Permit type: Residential Solar. Valuation: $20,000.</p>
+    <label for="nm">Please type your name as consent to electronically sign this application *</label><input id="nm" type="text">
+    <button type="button" id="next">Next</button>`),
+  // THE NAVIGATOR IS THE BAR, NOT THE STEP (portal-run-close 3): Angular Material's mat-stepper
+  // wraps the step CONTENT; only its [role=tablist] header is a step bar. The review heading
+  // inside the content counts, and the page's own buttons are not "navigator-only".
+  "/stepper-review": page(`${HEADER}<div class="mat-stepper-horizontal"><div class="mat-horizontal-stepper-header-container" role="tablist"><div role="tab">1 Description</div><div role="tab">2 More Info</div><div role="tab">3 Review and Submit</div></div>
+    <div class="mat-horizontal-content-container"><h2>Review and Submit</h2><p>Estimated fees: Total $78.00</p><button type="button" id="next">Next</button></div></div>`),
+  // The same stepper on a FORM step: the bar's "Review and Submit" must not name the page review.
+  "/stepper-form": page(`${HEADER}<div class="mat-stepper-horizontal"><div class="mat-horizontal-stepper-header-container" role="tablist"><div role="tab">1 Description</div><div role="tab">2 More Info</div><div role="tab">3 Review and Submit</div></div>
+    <div class="mat-horizontal-content-container"><h2>More Info</h2><label for="mfr">Product Manufacturer Name</label><input id="mfr" type="text"><button type="button" id="next">Next</button></div></div>`),
   // A summary page with an attachment widget and NO review wording (a portal whose wording we do
   // not know, or an attachments-only step): the file input must not make it "fillable".
   "/review-plain": page(`${HEADER}<h2>Project Summary</h2>
@@ -134,6 +149,22 @@ try {
     const reviewRO = await p.evaluate(() => (globalThis as any).__portalSafety.readOnlyPageInPage());
     check("a form page is NOT read-only", formRO === false, `got ${formRO}`);
     check("a review page with a header search box and a certification tick IS read-only", reviewRO === true, `got ${reviewRO}`);
+
+    // ---- 2b. ONE review predicate + the navigator cut, as the backstop reads them -------------
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const terminal = async (path: string): Promise<any> => {
+      await p.goto(`${base}${path}`);
+      await p.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return p.evaluate(() => { const ps = (globalThis as any).__portalSafety; return { ...ps.terminalPageInPage(), navOnly: ps.navigatorOnlyControlLabelsInPage(), sig: ps.signatureStepInPage().kind }; });
+    };
+    const rs = await terminal("/review-sign");
+    check("MF2: a combined 'Please review and sign' page reads as the review page to the backstop (terminalPageInPage.reviewPage) — the learner stops on the same answer", rs.reviewPage === true, JSON.stringify(rs));
+    check("MF2: its live consent box is still the typed signature step (signed there, then the stop)", rs.sig === "typed", JSON.stringify(rs));
+    const sr = await terminal("/stepper-review");
+    check("navigator cut: a review heading INSIDE a mat-stepper container names the page review, and its Next is not navigator-only", sr.reviewPage === true && !sr.navOnly.includes("next"), JSON.stringify(sr));
+    const sf = await terminal("/stepper-form");
+    check("navigator cut: the stepper HEADER's 'Review and Submit' does not name a form step review", sf.reviewPage === false && sf.readOnlyPage === false, JSON.stringify(sf));
     await p.context().close();
   }
 

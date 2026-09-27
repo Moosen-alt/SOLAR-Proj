@@ -176,7 +176,9 @@ try {
     await page.goto(appUrl(run.variant));
     posts.length = 0;
     offered.length = 0;
-    const adapter = new AutoLearnAdapter("EnerGov Signature Smoke", mkPlanner(run.mode), { maxPages: 12, contactIdentity: { signerName: run.signer, lastName: "Contractor" } });
+    // A signature stop announces itself (opts.onPark) — how the dashboard / debug bundle hear it.
+    const parks: string[] = [];
+    const adapter = new AutoLearnAdapter("EnerGov Signature Smoke", mkPlanner(run.mode), { maxPages: 12, contactIdentity: { signerName: run.signer, lastName: "Contractor" }, onPark: (info) => { parks.push(info.reason); } });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (adapter as any).page = page;
     let r: Awaited<ReturnType<AutoLearnAdapter["learn"]>> | null = null;
@@ -220,7 +222,11 @@ try {
       check("MUST-EXCLUDE carlsbad: stopped at step 6 for a person (signature_drawn), named",
         st.step === 6 && r?.pauseReason === "signature_drawn" && /DRAWN signature/.test(msg), `step=${String(st.step)} pause=${String(r?.pauseReason)} ${msg}`);
       check("MUST-EXCLUDE carlsbad: the pad is never drawn on and no name is typed", st.drawn === false && st.consentBox === "", `drawn=${String(st.drawn)} consent=${String(st.consentBox)}`);
+      check("carlsbad: the stop is announced through onPark (signature_drawn), with no name in it",
+        parks.length === 1 && /^signature_drawn:/.test(parks[0]) && !/Dana Signer|Planner Person/.test(parks[0]), `parks=${JSON.stringify(parks)}`);
     }
+    if (run.name === "noSigner") check("noSigner: the pause is announced through onPark (signature_no_signer)", parks.length === 1 && /^signature_no_signer:/.test(parks[0]), `parks=${JSON.stringify(parks)}`);
+    if (run.name === "iowa") check("iowa: a completed signature is not a park", parks.length === 0, `parks=${JSON.stringify(parks)}`);
   }
 
   // REPLAY the learned recipe (review stop appended), with and without a signer on the client.
