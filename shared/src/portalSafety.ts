@@ -661,13 +661,43 @@ export function portalSafetyFactory() {
   // into the client's signer (auto-submit would file it).
   const SIGNING_ACT_TEXT =
     /by\s+(typing|entering|providing|printing)\s+(your|my)\s+(full\s+|first\s+and\s+last\s+|legal\s+)?name\b|\b(you|i)\s+(are|am)\s+(electronically\s+)?signing\b|consent\s+to\s+(electronically\s+)?sign|constitutes?\s+(your|an?|my|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\bserves?\s+as\s+(your|my|an?|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\bsign\s+(below|here)\b|\b(type|enter|print)\s+(your|my)\s+(full\s+|legal\s+|first\s+and\s+last\s+)?name\s+((below|here|above)\s+)?(to|as)\s+(sign|your\s+signature|an?\s+(electronic\s+)?signature)/i;
+  // WHO SIGNS, AND WHEN (autosubmit-2 MF-S1). "Sign below" / "consent to sign" counted on their own,
+  // so "The homeowner will sign below once the utility approves." above the homeowner's First / Last
+  // name, and "The customer must consent to sign the interconnection agreement electronically; the
+  // utility will email it after approval." above the customer's, made those boxes the CLIENT's
+  // signature — the authorized signer typed as the homeowner, at learn and at replay (auto-submit
+  // would file it). A signing act counts only as the applicant's own act, NOW, read SENTENCE BY
+  // SENTENCE:
+  //   - never when a THIRD PARTY is the subject of the signing verb — a homeowner / owner / customer /
+  //     utility (…) followed by an optional modal and "sign" / "consent to sign". The noun alone is
+  //     not it: "you are signing as the property owner or the owner's authorized agent" is the
+  //     applicant's act;
+  //   - the WEAK wordings ("sign below / here", "consent to sign", "e-signature", "Signature") never
+  //     in a sentence about a LATER or OFFLINE act ("will sign", "once … approves", "after approval",
+  //     "will email", a printed / downloaded form, DocuSign); the STRONG first-person act ("by typing
+  //     your name…", "you are signing", "constitutes your signature") still counts beside such a
+  //     clause — demoting it would hand a real signature box to the planner's contact (MF1).
+  const STRONG_SIGNING_ACT =
+    /by\s+(typing|entering|providing|printing)\s+(your|my)\s+(full\s+|first\s+and\s+last\s+|legal\s+)?name\b|\b(you|i)\s+(are|am)\s+(electronically\s+)?signing\b|constitutes?\s+(your|an?|my|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\bserves?\s+as\s+(your|my|an?|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\b(type|enter|print)\s+(your|my)\s+(full\s+|legal\s+|first\s+and\s+last\s+)?name\s+((below|here|above)\s+)?(to|as)\s+(sign|your\s+signature|an?\s+(electronic\s+)?signature)/i;
+  const THIRD_PARTY_SIGNS =
+    /\b(home\s*-?owners?|(property\s+)?owners?|customers?|utility|utilities|landlords?|tenants?|lenders?|spouses?|co-?applicants?|account\s*holders?|other\s+part(y|ies))('s|s')?\s+((must|will|shall|should|may|can|would|needs?\s+to|has\s+to|have\s+to|(is|are)\s+(required|asked|expected)\s+to|also|then|later)\s+)*(consent\s+to\s+)?(electronically\s+|e-?)?sign(s|ed|ing)?\b/i;
+  const LATER_OR_OFFLINE = new RegExp([
+    "\\b(will|shall|would)\\s+((later|then|also)\\s+)?(be\\s+)?(e-?)?sign(ed)?\\b", "\\bto\\s+be\\s+(e-?)?signed\\b",
+    "\\bonce\\s+(the\\s+)?(\\w+\\s+){0,2}(approves?|approved|issued|issues)\\b",
+    "\\b(after|upon|following)\\s+(the\\s+)?(\\w+\\s+)?(approval|approves|approved|issuance|issued)\\b", "\\blater\\b",
+    "\\bwill\\s+(e-?mail|send|mail|forward)\\b(?!\\s+(you\\s+)?(a\\s+)?(copy|confirmation|receipt))",
+    "\\bprint(ed)?\\s+(and|&)\\s+sign\\b", "\\bprinted\\s+(\\w+\\s+){0,2}(form|copy|document|agreement)\\b", "\\bdownload", "\\bwet[\\s-]+(ink\\s+)?signature\\b", "\\bin\\s+person\\b", "\\bnotari[sz]", "\\bdocu-?sign\\b",
+  ].join("|"), "i");
+  const signingActIn = (text: string | null | undefined, act: RegExp): boolean =>
+    String(text ?? "").split(/[.!?;\n]+/).some((s) => act.test(s) && !THIRD_PARTY_SIGNS.test(s) && (STRONG_SIGNING_ACT.test(s) || !LATER_OR_OFFLINE.test(s)));
   const ABOUT_THE_FILING ="\\b(application|permit|this\\s+(form|request|submission|document)|sign(s|ing|ed|ature)?)\\b";
+  // The certify / perjury half. The signing half (SIGNING_TEXT) is read through signingActIn (MF-S1).
   const ATTESTATION_TEXT = new RegExp([
     "\\bi\\s+(hereby\\s+)?(certify|attest|declare|swear|affirm|acknowledge and certify)\\b[^.]{0,200}\\b(application|permit|this\\s+(form|request|submission|document))\\b",
     "under\\s+(the\\s+)?penalt(y|ies)\\s+of\\s+perjury[^.]{0,200}" + ABOUT_THE_FILING,
     ABOUT_THE_FILING + "[^.]{0,200}under\\s+(the\\s+)?penalt(y|ies)\\s+of\\s+perjury",
-    SIGNING_TEXT.source,
   ].join("|"), "i");
+  const attestsIn = (text: string): boolean => ATTESTATION_TEXT.test(text) || signingActIn(text, SIGNING_TEXT);
   // A bare name box — the kind an attestation turns into a signature.
   const NAME_BOX_LABEL =
     /\b(type|print|enter)\s+(in\s+)?(your|my)\s+(full\s+|legal\s+)*name\b|\b(your|my)\s+(full\s+|legal\s+)+name\b|^\s*(full\s+|legal\s+)*name\s*(\*|:)?\s*$|\b(full|legal)\s+name\s+of\s+(the\s+)?(person|individual|party)\b/i;
@@ -690,8 +720,8 @@ export function portalSafetyFactory() {
     const { head, tail } = labelTail(t);
     if (SIGNATURE_LABEL_EXCLUDE.test(tail)) return false;
     const around = `${head}\n${String(textAbove ?? "")}`;
-    if ((NAME_BOX_LABEL.test(t) || NAME_BOX_LABEL.test(tail)) && ATTESTATION_TEXT.test(around)) return true;
-    return ROLE_NAME_BOX_LABEL.test(tail) && SIGNING_ACT_TEXT.test(around);
+    if ((NAME_BOX_LABEL.test(t) || NAME_BOX_LABEL.test(tail)) && attestsIn(around)) return true;
+    return ROLE_NAME_BOX_LABEL.test(tail) && signingActIn(around, SIGNING_ACT_TEXT);
   };
   // A SPLIT signature (MF-E d): "First name" / "Last name" under a SIGNING statement ("By typing
   // your first and last name below you are signing…") — the authorized signer's first / last name,
@@ -703,7 +733,7 @@ export function portalSafetyFactory() {
     if (!t) return "";
     const { head, tail } = labelTail(t);
     const part = FIRST_NAME_BOX.test(tail) ? "first" : LAST_NAME_BOX.test(tail) ? "last" : "";
-    return part && SIGNING_ACT_TEXT.test(`${head}\n${String(textAbove ?? "")}`) ? part : "";
+    return part && signingActIn(`${head}\n${String(textAbove ?? "")}`, SIGNING_ACT_TEXT) ? part : "";
   };
   /** The signer's first or last name for a split signature: the first token / the last token
    *  (a trailing Jr./Sr./II/III/IV/Esq. is not a last name; "Signer, Dana" reads last-first).

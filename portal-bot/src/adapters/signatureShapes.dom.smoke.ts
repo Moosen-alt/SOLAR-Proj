@@ -44,7 +44,7 @@
 // autosubmit-2 MF-S1 (group "thirdParty", signatureShapesThirdParty): homeownerSignBelow /
 // customerConsentDocusign / ownerNameSignHere — a THIRD PARTY's later / offline signing ("The homeowner
 // will sign below once the utility approves.") — MUST-PASS: the homeowner's / customer's / owner's
-// names stay the planner's (Test / Owner) with the client's signer on record, at learn and at replay.
+// names stay the planner's (Robin / Owner) with the client's signer on record, at learn and at replay.
 //
 // Run: npx tsx portal-bot/src/adapters/signatureShapes.dom.smoke.ts [mf1|review|planner|variant,...]
 //      (signatureShapesReview / signatureShapesPlanner .dom.smoke.ts run the other two groups)
@@ -121,7 +121,7 @@ const V: Record<string, V> = {
   contactsPerjuryAbove: { step2: `<h2>Contacts</h2><div><label><input type="checkbox" id="ag"> I certify under penalty of perjury that the contact information provided is true and correct</label></div><div><label for="nm">Full name *</label> <input id="nm" data-name type="text"></div><div><label for="ph">Phone</label> <input id="ph" type="text"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, nameBox: "contact" },
   contactsPerjuryOnlyName: { step2: `<h2>Emergency Contact</h2><div><label for="nm">Full name *</label> <input id="nm" data-name type="text"></div><p>I declare under penalty of perjury that the contact named above may be reached at any time.</p>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, nameBox: "contact" },
   // autosubmit-2 MF-S1 (the skeptic's shapes, verbatim) — a THIRD PARTY's later / offline signing: the
-  // homeowner's / customer's / owner's name boxes stay the planner's (Test / Owner), never the signer.
+  // homeowner's / customer's / owner's name boxes stay the planner's (Robin / Owner), never the signer.
   homeownerSignBelow: { step2: `<h2>Homeowner</h2><p>Enter the homeowner exactly as shown on the utility bill. The homeowner will sign below once the utility approves.</p><div><label for="fn">First name *</label> <input id="fn" data-name type="text"></div><div><label for="ln">Last name *</label> <input id="ln" data-name type="text"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, planner: "homeowner", nameBox: "thirdParty" },
   customerConsentDocusign: { step2: `<h2>Customer</h2><p>The customer must consent to sign the interconnection agreement electronically; the utility will email it after approval.</p><div><label for="fn">First Name *</label> <input id="fn" data-name type="text"></div><div><label for="ln">Last Name *</label> <input id="ln" data-name type="text"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, planner: "homeowner", nameBox: "thirdParty" },
   ownerNameSignHere: { step2: `<h2>Property Owner</h2><p>If the property owner is not the applicant, the owner must sign here on the printed authorization form (download below).</p><div><label for="nm">Owner Name *</label> <input id="nm" data-name type="text"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, planner: "homeowner", nameBox: "thirdParty" },
@@ -180,7 +180,9 @@ const mkPlanner = (mode: V["planner"]): LearnPlanner => async (req) => {
     if (!["button", "checkbox", "select", "file", "radio", "link"].includes(String(f.fieldType)) && !f.disabled) {
       // "homeowner" (MF-S1 shapes only): the homeowner's first / last / owner name, told apart from the
       // signer's; the default mode keeps "Casey Contact" for every name box (contactsFirstLast's check).
-      const homeowner: [string, string] | null = mode !== "homeowner" ? null : /first\s*name/i.test(l) ? ["homeownerFirstName", "Test"] : /last\s*name/i.test(l) ? ["homeownerLastName", "Owner"] : /owner\s*name/i.test(l) ? ["homeownerName", "Test Owner"] : null;
+      // "Robin", not "Test": "Test" is a word of the learn project's street ("1 Test St") and the
+      // learner's truncated-address correction (correctTruncatedAddressFill) expands it to the street.
+      const homeowner: [string, string] | null = mode !== "homeowner" ? null : /first\s*name/i.test(l) ? ["homeownerFirstName", "Robin"] : /last\s*name/i.test(l) ? ["homeownerLastName", "Owner"] : /owner\s*name/i.test(l) ? ["homeownerName", "Robin Owner"] : null;
       const [field, v] = homeowner ? homeowner : /email/i.test(l) ? ["homeownerEmail", "owner@example.test"] : /name|signature/i.test(l) && !/manufacturer|company/i.test(l) ? ["installerContactName", "Casey Contact"]
         : /company/i.test(l) ? ["installerCompanyName", "Test Solar Co"]
         : /description/i.test(l) ? ["projectDescription", "Roof-mounted solar PV"] : /comment/i.test(l) ? ["", "n/a"] : ["moduleMake", "Test Modules"];
@@ -301,10 +303,10 @@ try {
         // MF-S1: a THIRD PARTY's later / offline signing — its name boxes are the planner's, never the signer.
         const split = V[name].step2.includes('id="fn"');
         const signerTyped = [st.first, st.last, st.typedFirst, st.typedLast, st.typed, st.box].some((x) => /dana|signer/i.test(String(x ?? "")));
-        check(`MUST-PASS ${tag}: the ${split ? "homeowner's / customer's first / last" : "owner's"} name stays the planner's (${split ? "Test / Owner" : "Test Owner"}), never the client's signer, no e-signature step recorded, review reached, no pause`,
-          (split ? st.typedFirst === "Test" && st.typedLast === "Owner" : st.typed === "Test Owner") && !signerTyped && sigFills.length === 0
+        check(`MUST-PASS ${tag}: the ${split ? "homeowner's / customer's first / last" : "owner's"} name stays the planner's (${split ? "Robin / Owner" : "Robin Owner"}), never the client's signer, no e-signature step recorded, review reached, no pause`,
+          (split ? st.typedFirst === "Robin" && st.typedLast === "Owner" : st.typed === "Robin Owner") && !signerTyped && sigFills.length === 0
             && r?.reachedReview === true && !/^signature_/.test(String(r?.pauseReason ?? "")),
-          `sigFills=${JSON.stringify(sigFills)} ${detail}`);
+          `sigFills=${JSON.stringify(sigFills)} nameFills=${JSON.stringify((r?.steps ?? []).filter((s) => s.action === "fill" && /#(fn|ln|nm)\b/.test(JSON.stringify(s.selector))).map((s) => ({ sel: s.selector, field: s.field, value: (s as { value?: string }).value, note: s.note })))} ${detail}`);
       } else if (v.nameBox === "contact") {
         check(`MUST-PASS ${tag}: a plain name box is still the planner's (Casey Contact typed) and the run reaches review, no pause`,
           st.typed === "Casey Contact" && r?.reachedReview === true && !/^signature_/.test(String(r?.pauseReason ?? "")), detail);
@@ -494,7 +496,7 @@ try {
       { action: "stopForReview" } as RecipeStep,
     ];
     const recipe = { id: `sig-shapes-old-css-${name}`, scopeType: "ahj", profileKey: "ia|iowa city|", state: "IA", ahj: "City of Iowa City", utility: "", portalPlatform: "energov", portalUrl: url, status: "complete", version: 1, createdBy: "smoke", createdAt: "", updatedAt: "", notes: "", steps } as unknown as PortalRecipe;
-    const values = { projectDescription: "Roof-mounted solar PV", installerContactName: "Casey Contact", homeownerFirstName: "Test", homeownerLastName: "Owner", homeownerName: "Test Owner", authorizedSignerName: "Dana Signer" } as Record<string, string>;
+    const values = { projectDescription: "Roof-mounted solar PV", installerContactName: "Casey Contact", homeownerFirstName: "Robin", homeownerLastName: "Owner", homeownerName: "Robin Owner", authorizedSignerName: "Dana Signer" } as Record<string, string>;
     const tag = `replayOldCss ${name} signer="Dana Signer"`;
     const ctx = await browser.newContext();
     ctx.setDefaultTimeout(8000);
@@ -513,8 +515,8 @@ try {
     const sigWarn = ((res?.data?.driftWarnings as string[] | undefined) ?? []).filter((w) => /signature/i.test(w));
     const detail = `filingPOSTs=${filing.length} state=${JSON.stringify(st)} ok=${String(res?.ok)} pause=${String(res?.pauseReason)} sigWarn=${JSON.stringify(sigWarn).slice(0, 300)} msg=${String(res?.message).replace(/\s+/g, " ").slice(0, 240)}`;
     check(`${tag}: 0 filing requests reach the server`, filing.length === 0 && st.lastClicked !== true, detail);
-    check(`MUST-PASS ${tag}: the third party's ${split ? "first / last " : ""}name is typed as recorded (${split ? "Test / Owner" : "Test Owner"}), never re-read as the client's signature, review reached`,
-      (split ? st.typedFirst === "Test" && st.typedLast === "Owner" : st.typed === "Test Owner") && st.step === 3 && res?.ok === true && sigWarn.length === 0, detail);
+    check(`MUST-PASS ${tag}: the third party's ${split ? "first / last " : ""}name is typed as recorded (${split ? "Robin / Owner" : "Robin Owner"}), never re-read as the client's signature, review reached`,
+      (split ? st.typedFirst === "Robin" && st.typedLast === "Owner" : st.typed === "Robin Owner") && st.step === 3 && res?.ok === true && sigWarn.length === 0, detail);
   }
 } finally {
   await browser.close().catch(() => null);
