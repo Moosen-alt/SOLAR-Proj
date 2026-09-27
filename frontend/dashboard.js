@@ -6596,12 +6596,15 @@ function correctionCardHtml(correction, triage, projectStatus) {
   const lead = items.length > 1
     ? `<ul style="margin:2px 0 0 18px;padding:0">${items.slice(0, 5).map((l) => `<li>${esc(clip(l))}</li>`).join("")}</ul>${items.length > 5 ? `<p class="muted" style="font-size:11px;margin:2px 0">+${items.length - 5} more in the record text below.</p>` : ""}`
     : `<p style="margin:2px 0">${esc(clip(items[0] || text))}</p>`;
+  const clipped = text.length > CORRECTION_LEAD_CHARS;
   const fellBack = extraction === "whole_text"
-    ? `<p class="muted" style="font-size:11px;margin:2px 0">No condition or review-comment block was found on the portal page, so the whole page text stands as the correction — its start is shown; the full text is below.</p>`
+    ? `<p class="muted" style="font-size:11px;margin:2px 0">No condition or review-comment block was found on the portal page, so the whole page text stands as the correction${clipped ? " — its start is shown; the full text is below" : ""}.</p>`
     : "";
   // THE EVIDENCE, collapsed: the page it was read from — or, for a row stored before extraction
-  // existed, its own long text (never printed inline in full).
-  const record = sourceText || (text.length > CORRECTION_LEAD_CHARS ? text : "");
+  // existed, its own long text (never printed inline in full). Not repeated when the lead above
+  // already shows all of it.
+  const evidence = sourceText || text;
+  const record = evidence.trim() !== text.trim() || clipped ? evidence : "";
   const recordLabel = sourceText || correction.source === "portal" ? "Portal record text (as read)" : "Full correction text";
   // THE DESIGNER WAIT ENDS BY A PERSON SAYING SO. Offered only while the PROJECT is actually
   // parked at waiting_on_designer (not merely because the bucket is a design one), and never

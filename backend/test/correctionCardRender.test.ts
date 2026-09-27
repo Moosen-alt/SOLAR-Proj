@@ -112,6 +112,15 @@ check("NOTHING EXTRACTED: the card says the whole page stands, shows its start, 
   assert.ok(detailsBlocks(fell).some((d) => d.includes("Portal record text (as read)") && d.includes("Silverlight")));
 });
 
+check("A SHORT PAGE nothing was extracted from is shown once — no details repeating it", () => {
+  const short = "Record 187-26-000999-STR: Record Status: In Review/Addl Info Needed Record Info Payments Conditions Processing Status";
+  const html = correctionCardHtml(base({ correctionText: short, sourceText: short, extraction: "whole_text" }), null, "correction_triaged");
+  assert.ok(inline(html).includes(short), "the short page is not shown");
+  assert.match(inline(html), /No condition or review-comment block was found/);
+  assert.ok(!/its start is shown/.test(html), "a page shown in full claims only its start is shown");
+  assert.equal(detailsBlocks(html).filter((d) => d.includes("Portal record text")).length, 0, "the same short text is repeated in a details element");
+});
+
 check("AN OLD ROW (stored before extraction, long text, no source): clipped inline, whole text collapsed", () => {
   const old = correctionCardHtml(base({ correctionText: PAGE, sourceText: "", extraction: "not_extracted" }), null, "submitted");
   assert.ok(!inline(old).includes(PAGE), "the long stored text renders inline in full");
