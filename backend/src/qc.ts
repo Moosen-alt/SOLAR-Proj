@@ -5,10 +5,11 @@ import { id } from "./ids";
 import { parseJson } from "./json";
 import { fieldAliases, parserField } from "./normalize";
 import { logger } from "./logger";
-import { documentInventory, owedMissingDocuments } from "./requiredDocuments";
+import { documentInventory, owedMissingDocuments, requiredListCheck } from "./requiredDocuments";
 import { nowIso } from "./time";
 import type { ParserPayload, ProjectRecord, QcStatus, Severity, StageDetail } from "../../shared/src/types";
-import { resolveEffectiveCodeContext } from "./codeProfiles";
+import { getCodeProfile, resolveEffectiveCodeContext } from "./codeProfiles";
+import { resolvePermitPath } from "./permitPath";
 import { findKnowledgeForLearn } from "./knowledgeBase";
 import { ensureFeeSchedulesResearched } from "./feeSchedules";
 import { requiredTracks } from "./submittalTracks";
@@ -100,6 +101,27 @@ interface QcContext {
   ahj: string;
   state: string;
   payload: ParserPayload;
+  /** Memo: resolvePermitPath's standardReview for this job (see permitPathStandardReview). */
+  standardReview?: boolean;
+}
+
+/**
+ * OUTSIDE A SPLIT JURISDICTION THERE IS NO PATH TO CONFIRM (permitPath.ts, e2e-gap close
+ * 2026-09-26). "Confirm the permit path: prescriptive or engineered" was asked of a Minneapolis job
+ * and became its next step — Oregon's question. Resolved from the jurisdiction's own prescriptive
+ * limits when it has a code profile (a jurisdiction whose research names a prescriptive path keeps
+ * the question); read-only — never resolvePermitPathForProject, which enqueues research from inside
+ * QC's transaction.
+ */
+function permitPathStandardReview(ctx: QcContext): boolean {
+  if (ctx.standardReview !== undefined) return ctx.standardReview;
+  let standardReview = false;
+  try {
+    const limits = getCodeProfile(ctx.db, { state: ctx.state, ahj: ctx.ahj })?.prescriptive;
+    standardReview = resolvePermitPath({ state: ctx.state, ahj: ctx.ahj, parserSnapshot: ctx.payload } as never, { limits }).standardReview;
+  } catch { standardReview = false; }
+  ctx.standardReview = standardReview;
+  return standardReview;
 }
 
 // WAITING ON THE CUSTOMER'S BILL IS A WAIT, NOT A FAILURE.
@@ -177,6 +199,8 @@ function statusFor(check: Check, ctx: QcContext): QcStatus {
   }
 
   if (check.fieldName === "permitPath") {
+    // One building application, no prescriptive-or-engineered choice: nothing to confirm.
+    if (permitPathStandardReview(ctx)) return "pass";
     // Microinverter systems are always prescriptive path for residential; auto-pass.
     const hasMicro = Boolean(clean(payload.pvMicroModel) || clean(payload.pvMicroMake));
     const engineered = /engineer/i.test(value || "");
@@ -221,7 +245,11 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
       if (qcStatus === "warning") warningCount += 1;
 
       const waitingOnBill = qcStatus === "warning" && check.severity === "blocker" && BILL_FIELDS.has(check.fieldName);
-      const message = qcStatus === "pass" ? `${check.ruleName} present.` : waitingOnBill ? waitingOnBillMessage(check) : check.message;
+      const message = qcStatus === "pass"
+        ? (check.fieldName === "permitPath" && permitPathStandardReview(ctx)
+          ? "Permit path: standard structural review — this jurisdiction files one building application, so there is no path choice to confirm."
+          : `${check.ruleName} present.`)
+        : waitingOnBill ? waitingOnBillMessage(check) : check.message;
       db.run(
         `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -306,13 +334,41 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
         warningCount += 1;
         say("warning", "warning", d.docType, d.label, String(d.why || ""));
       }
-      if (!gateDocs.owed.length && !inv.missingAdvisory.length) {
+      // THE JOB'S OWN REQUIRED LIST, NOT THE UNIVERSAL SET (MF6, e2e-gap close 2026-09-26). This
+      // row passed with "Every document this filing needs for Waltham City is attached" while the
+      // city's cited six had none on file. PASS only when every item the AHJ's list names is
+      // attached; a missing item is named; an unknown list is said to be unknown — never
+      // "every document ... is attached" on a list nobody has confirmed.
+      const list = requiredListCheck(db, qcProject, inv);
+      const filledNote = gateDocs.filledAtStaging.length
+        ? ` Filled at staging from a stored template: ${gateDocs.filledAtStaging.map((d) => d.label).join("; ")}.`
+        : "";
+      if (list.source === "unknown") {
+        warningCount += 1;
+        db.run(
+          `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+           VALUES (?, ?, 'warning', 'docs.complete', 'Required documents', ?, 'warning', ?)`,
+          [id(), projectId,
+            `The list of documents this filing needs${where} is not yet confirmed — no cited per-job process lookup and no shipped profile names it. ${!gateDocs.owed.length && !inv.missingAdvisory.length ? "The universal set (plan set, site plan, SLD, specs) is attached; " : ""}confirm the AHJ's own submittal list before staging.${filledNote}`,
+            createdAt],
+        );
+      } else if (list.missing.length) {
+        warningCount += 1;
+        db.run(
+          `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+           VALUES (?, ?, 'warning', 'docs.complete', 'Required documents', ?, 'warning', ?)`,
+          [id(), projectId,
+            `Not every document on the required list${where} is attached (${list.missing.length} of ${list.items.length} missing, list from ${list.sourceLabel}): ${list.missing.map((m) => m.docTypes.length ? m.text : `${m.text} (no document slot holds this — attach it as an additional document)`).join("; ")}.${filledNote}`,
+            createdAt],
+        );
+      } else if (!gateDocs.owed.length && !inv.missingAdvisory.length) {
+        const applied = list.items.filter((i) => !i.skipped).length;
         db.run(
           `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
            VALUES (?, ?, 'pass', 'docs.complete', 'Required documents', ?, 'info', ?)`,
-          [id(), projectId, gateDocs.filledAtStaging.length
-            ? `Every document this filing needs${where} is attached, or filled at staging from a stored template (${gateDocs.filledAtStaging.map((d) => d.label).join("; ")}).`
-            : `Every document this filing needs${where} is attached.`, createdAt],
+          [id(), projectId,
+            `Every document on the required list${where} is attached (${applied} item${applied === 1 ? "" : "s"}, list from ${list.sourceLabel}).${filledNote}`,
+            createdAt],
         );
       }
     } catch (err) {

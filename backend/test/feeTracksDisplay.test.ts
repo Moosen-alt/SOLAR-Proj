@@ -47,7 +47,7 @@ const NAMES = [
   "esc", "humanize", "fmtDate", "statusBadge", "httpUrl", "portalHostname", "feeMoney",
   "FEE_SOURCE_TEXT", "FEE_CONFIDENCE", "FEE_PAYMENT_METHOD", "renderFeeCharges", "feeFaceSourceHtml", "renderFeeSheetLine",
   "TRACK_STATUS_CLASS", "TRACK_CHANNEL_BASIS", "linkifyText", "trackChannelHtml", "trackPrerequisitesHtml", "trackNextActionText",
-  "trackCardHtml", "renderSubmittalTracks",
+  "trackCardHtml", "utilityGroupTitle", "renderSubmittalTracks",
 ];
 const preamble = "const screenshotMisses = new Set(); const screenshotKey = (a, b, c) => `${a}:${b}:${c}`;";
 const code = `${preamble}\n${NAMES.map(lift).join("\n\n")}`;

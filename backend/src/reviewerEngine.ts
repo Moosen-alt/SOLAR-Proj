@@ -1042,11 +1042,35 @@ function addPermitPathFindings(project: ProjectRecord, findings: ReviewerFinding
   // and never the Oregon engineered-path demand for a PE package — the stamp, where the
   // jurisdiction's own rule wants one, is on the required-documents list already.
   if (path.standardReview) {
+    // A STAMPED structural review (the plan set / operator says engineered, outside a split
+    // jurisdiction): the stamped documents are owed, and the words stay the jurisdiction's — one
+    // building application, never "the structural one, not the prescriptive one".
+    if (path.needsEngineeredDocs) {
+      const haveStamp = hasStampedStructuralEvidence(project);
+      findings.push(finding(
+        "reviewer.permit-path.stamped-review",
+        haveStamp ? "callout" : "warning",
+        "structural",
+        haveStamp ? "Stamped structural review — stamped structural docs detected" : "Stamped structural review — collect stamped structural docs",
+        haveStamp
+          ? `${path.basis.join(" ")} A PE-stamped plan set / structural letter was detected in the uploads. Confirm the seal is current and on the structural sheets, then file them with the AHJ's building application.`
+          : `${path.basis.join(" ")} This submittal needs a PE-stamped plan set + structural engineering letter/calcs, which are NOT yet in the uploaded files. Collect them from the installer/engineer of record before submitting, and file them with the AHJ's building application.`,
+        true,
+        {
+          cityFeedback: "An engineered (stamped) structural design requires the PE-stamped structural plan set and the engineer's sealed letter/calcs with the building permit application.",
+          designTeamAction: haveStamp
+            ? "Verify the PE stamp is on the structural sheets and the engineering letter is sealed; attach both to the submittal."
+            : "Request the PE-stamped structural plans + structural engineering letter from the installer/engineer of record and attach them before staging.",
+          evidenceNeeded: path.requiredEngineeredDocs,
+        },
+      ));
+      return;
+    }
     findings.push(finding(
       "reviewer.permit-path.standard-review",
       "callout",
       "structural",
-      "Standard structural review (no prescriptive path on file)",
+      "Standard structural review (no prescriptive rooftop-PV path on file)",
       `${path.basis.join(" ")}`,
       true,
       {

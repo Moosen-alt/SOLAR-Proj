@@ -4207,6 +4207,16 @@ function trackCardHtml(t) {
   </article>`;
 }
 
+/** "Utility — <program>" from the utility track's own label; "interconnection" when the label
+ *  does not say (an older server, or a track that is not the utility's). Never "NEM" by default. */
+function utilityGroupTitle(utilityTracks) {
+  const label = String((utilityTracks && utilityTracks[0] && utilityTracks[0].label) || "");
+  const m = /^utility\s+(.+)$/i.exec(label.trim());
+  // The program name after " — " (e.g. "— Small PV Program") belongs to the card, not the group.
+  const phrase = m ? m[1].split(" — ")[0].trim() : "";
+  return `Utility — ${phrase || "interconnection"}`;
+}
+
 function renderSubmittalTracks() {
   const tracks = state.submittalTracks;
   const wrap = $("submittalTracks");
@@ -4225,11 +4235,15 @@ function renderSubmittalTracks() {
   const utility = tracks.filter((t) => t.category === "utility");
   const permits = tracks.filter((t) => t.category === "permit");
   const group = (title, list) => list.length
-    ? `<div class="track-group"><div class="track-group-head">${title}</div>${list.map(trackCardHtml).join("")}</div>`
+    ? `<div class="track-group"><div class="track-group-head">${esc(title)}</div>${list.map(trackCardHtml).join("")}</div>`
     : "";
-  // "Interconnection", not "Net Metering (NEM)": Texas (Oncor) and SRP jobs have no utility net
-  // metering; the card's own label says what the program is (new-AHJ e2e, gap 3).
-  wrap.innerHTML = group("Utility — interconnection", utility) + group("AHJ — Permit(s)", permits);
+  // THE UTILITY GROUP IS HEADED BY THE TRACK'S OWN PROGRAM (e2e-gap close, 2026-09-26): "Net
+  // Metering (NEM)" was hard-coded for every utility — Texas (Oncor) and SRP jobs have no utility
+  // net metering. The server's card label says what the program IS (utilityFilingLookup:
+  // "Utility net metering (NEM) / interconnection", "… interconnection + export credit (net
+  // billing …)", "… interconnection only …", or "… (net-metering program not yet confirmed)");
+  // the header repeats that phrase and falls back to the neutral "interconnection".
+  wrap.innerHTML = group(utilityGroupTitle(utility), utility) + group("AHJ — Permit(s)", permits);
 
   wrap.querySelectorAll("button[data-track-submit]").forEach((btn) => {
     btn.addEventListener("click", () => markSubmittalTrack(btn.dataset.trackSubmit));

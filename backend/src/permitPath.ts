@@ -328,9 +328,11 @@ export function resolveStampRequirement(
   //    structural review (outside Oregon, no prescriptive path on file) is not a demand for an
   //    Oregon-style PE package: the jurisdiction's own rule below decides the stamp there.
   const own = resolvePermitPath(project);
-  if (own.path === "engineered" && !own.standardReview) {
+  if (own.needsEngineeredDocs) {
     return done(true, "engineered_path",
-      "Non-prescriptive path: the AHJ requires a wet/digital PE stamp on the structural sheets and a sealed engineering letter.");
+      own.standardReview
+        ? "Stamped structural review: the plan set / operator calls for a wet/digital PE stamp on the structural sheets and a sealed engineering letter — file them with the AHJ's building application."
+        : "Non-prescriptive path: the AHJ requires a wet/digital PE stamp on the structural sheets and a sealed engineering letter.");
   }
 
   // 2. The jurisdiction's adopted rule. Unknown system size never fabricates a
@@ -356,7 +358,9 @@ export function resolveStampRequirement(
       `${where} process profile indicates a structural stamp/letter may be required. Confirm before submittal.`, true);
   }
 
-  return done(false, "none", "Prescriptive path with no jurisdiction stamp rule — no sealed structural letter needed.");
+  return done(false, "none", own.standardReview
+    ? "Standard structural review with no jurisdiction stamp rule — no sealed structural letter needed."
+    : "Prescriptive path with no jurisdiction stamp rule — no sealed structural letter needed.");
 }
 
 /**
@@ -376,12 +380,34 @@ export interface PermitPathOptions {
   limits?: PrescriptiveLimits;
 }
 
+/** Does the prescriptive-vs-engineered SPLIT (two applications, the AHJ takes one) exist for this
+ *  project's jurisdiction? Oregon's statewide one (ORSC / BCD 440-5952), or a jurisdiction whose OWN
+ *  cited research says it publishes a prescriptive rooftop-PV path. Everywhere else there is one
+ *  building-side application, and every consumer's Oregon vocabulary stays off the page. */
+export function prescriptiveSplitApplies(project: Pick<PermitPathInputs, "state">, limits: PrescriptiveLimits | undefined): boolean {
+  return usStateCode(project.state) === "OR" || limits?.hasPrescriptivePath === true;
+}
+
 export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOptions = {}): PermitPathResolution {
   const basis: string[] = [];
-  const finalize = (path: PermitPath, source: PermitPathResolution["source"], standardReview = false): PermitPathResolution => {
-    // A standard structural review asks for what THAT jurisdiction's rule asks for — not
-    // Oregon's engineered-path PE package. See `standardReview` above.
-    const engineeredPackage = path === "engineered" && !standardReview;
+  // THE STATE IS READ FIRST, BECAUSE EVERY BRANCH BELOW MUST CARRY IT (e2e-gap close, 2026-09-26).
+  // Steps 1-3 used to finalize "engineered" with standardReview=false regardless of state, so a
+  // PE-stamped plan set in Massachusetts, New Mexico, Pennsylvania, Arizona or Minnesota produced
+  // the whole Oregon split on every screen: "STRUCTURAL / ENGINEERED (non-prescriptive)", "Do NOT
+  // upload the prescriptive application", "Application to upload (mutually exclusive)", the gate's
+  // "prescriptive vs engineered", the reviewer's "upload ONLY the structural application", the
+  // form finder's "the PRESCRIPTIVE route". Outside a split jurisdiction an engineered / PE plan set
+  // is simply a STAMPED structural review: one building application, with the stamped documents.
+  const splitApplies = prescriptiveSplitApplies(project, opts.limits);
+  const finalize = (path: PermitPath, source: PermitPathResolution["source"], explicitStandardReview = false): PermitPathResolution => {
+    // Standard review: the explicit no-choice route (step 3.5), or ANY engineered verdict where the
+    // split does not exist — the operator's / the plan set's "engineered" then means "stamped", not
+    // "the structural one of two applications".
+    const standardReview = explicitStandardReview || (path === "engineered" && !splitApplies);
+    // The stamped package is demanded by Oregon's engineered path, and by a plan set / operator that
+    // SAYS engineered anywhere (a stamped structural review carries its stamp). The no-choice route
+    // (structural-screen) asks for what that jurisdiction's own rule asks for — see `standardReview`.
+    const engineeredPackage = path === "engineered" && (!standardReview || source === "parser" || source === "operator");
     return {
       path,
       source,
@@ -395,7 +421,7 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   // 1. Operator override — explicit dropdown choice is authoritative.
   const override = snap(project, "permitPathOverride").toLowerCase();
   if (/engineer|structural|non.?prescriptive/.test(override)) {
-    basis.push("Operator selected the engineered / non-prescriptive path.");
+    basis.push(splitApplies ? "Operator selected the engineered / non-prescriptive path." : "Operator selected the engineered (stamped structural) review.");
     return finalize("engineered", "operator");
   }
   if (/prescriptive/.test(override)) {
@@ -406,7 +432,7 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   // 2. Parser hint when it explicitly states the path.
   const hint = snap(project, "permitPath").toLowerCase();
   if (/engineer|non.?prescriptive/.test(hint)) {
-    basis.push("Parser identified an engineered / non-prescriptive permit path.");
+    basis.push(splitApplies ? "Parser identified an engineered / non-prescriptive permit path." : "The plan set identifies an engineered (stamped) structural design.");
     return finalize("engineered", "parser");
   }
 
@@ -463,7 +489,7 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
   // spelling it does not recognise is "" and resolves UNKNOWN below, which the gate blocks on.
   const stateCode = usStateCode(project.state);
   const stateUnrecognised = !stateCode && Boolean(clean(project.state));
-  const jurisdiction = opts.limits ?? {};
+  const jurisdiction: PrescriptiveLimits = opts.limits ?? {};
   // A STRAY LIMIT IS NOT A PRESCRIPTIVE PATH. Only the explicit hasPrescriptivePath flag —
   // which research sets by asking the question directly — says this jurisdiction publishes
   // one. Loose limit fragments do not: Florida's seeded state profile carries
@@ -494,8 +520,8 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
     basis.push(
       jurisdiction.hasPrescriptivePath === false
         ? `${where} publishes no prescriptive rooftop-PV path${jurisdiction.sourceUrl ? ` (${jurisdiction.sourceUrl})` : ""}, so rooftop PV goes through standard structural review.`
-        : `No prescriptive rooftop-PV path is on file for ${where} (the prescriptive-vs-engineered screen here is Oregon's ORSC / BCD 440-5952 and does not apply in ${stateCode}), so rooftop PV goes through the standard structural (building) review — no path choice to confirm.`,
-      `What that review needs: the roof framing + attachment detail, and a PE-sealed structural letter only if ${where}'s own rule requires one. If ${where} publishes a prescriptive path, choose it (Manual entry → Permit path).`,
+        : `No prescriptive rooftop-PV path is on file for ${where} (the screen encoded here is Oregon's ORSC / BCD 440-5952, which does not apply in ${stateCode}), so rooftop PV goes through the standard structural (building) review — one application, no path choice to confirm.`,
+      `What that review needs: the roof framing + attachment detail, and a PE-sealed structural letter only if ${where}'s own rule requires one. If ${where} publishes a prescriptive rooftop-PV route, choose it (Manual entry → Permit path).`,
     );
     return finalize("engineered", "structural-screen", true);
   }
@@ -829,6 +855,9 @@ export function pathWordingContradicts(scope: PathWordingScope, path: PermitPath
 
 /** One-line human callout summarizing the path + its fee/review implications. */
 export function permitPathCallout(res: PermitPathResolution): string {
+  if (res.standardReview && res.needsEngineeredDocs) {
+    return "Stamped structural review — the plan set / operator calls for an engineered (PE-stamped) structural design. File the AHJ's building application with the PE-stamped plan set and the sealed structural engineering letter/calcs attached; this jurisdiction publishes one building application (no simplified rooftop-PV route on file), so there is nothing else to choose.";
+  }
   if (res.standardReview) {
     return "Standard structural review — this jurisdiction has no prescriptive rooftop-PV path on file, so there is no prescriptive-vs-engineered choice to make. File its building/structural application with the roof framing + attachment detail; a PE-sealed letter only where its own rule requires one.";
   }

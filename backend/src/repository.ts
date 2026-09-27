@@ -3494,7 +3494,8 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   // for forms that are actually filled for this project's permit path. The "other"
   // application (prescriptive vs structural) is skipped, so an unverified off-path
   // template must NOT block the submit.
-  const gatePermitPath = resolvePermitPathForProject(db, project).path;
+  const gatePathResolution = resolvePermitPathForProject(db, project);
+  const gatePermitPath = gatePathResolution.path;
   // Read the STORED kind, exactly as buildFilledFormsForProject's fill gate does. With the
   // name alone, a stamped-structural blank whose filename claims neither kind counted as
   // "allowed" on a PRESCRIPTIVE project — so its unverified mapping blocked the submit
@@ -3595,19 +3596,37 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
     // engineered applications are mutually exclusive; the AHJ takes exactly one). This is a REAL
     // staging blocker: prepareSubmission throws 409 when the path is unknown, so surfacing it here
     // keeps the Prepare Submittal button honest (it was previously a hidden surprise-409 on click).
-    submitGateCheck({
-      id: "permit-path",
-      title: "Permit path confirmed (prescriptive vs engineered)",
-      lane: "permit",
-      status: gatePermitPath === "unknown" ? "blocker" : "pass",
-      ownerRole: "Permit Coordinator",
-      requirement: "The prescriptive and engineered (PE-stamped) permit applications are mutually exclusive and the AHJ accepts exactly one. The permit path must be confirmed before the AHJ permit can be staged.",
-      evidence: [gatePermitPath === "unknown" ? "Permit path not yet confirmed for this project." : `Permit path: ${gatePermitPath}.`],
-      nextAction: gatePermitPath === "unknown"
-        ? "Set the permit path on Manual entry → Permit path (prescriptive vs engineered) before staging the AHJ permit."
-        : "Permit path is confirmed.",
-      source: "permit.path",
-    }),
+    // OUTSIDE A SPLIT JURISDICTION THE CHECK SAYS WHAT THE REVIEW IS (e2e-gap close, 2026-09-26):
+    // "Permit path confirmed (prescriptive vs engineered) … mutually exclusive" PASSED on every MA /
+    // NM / PA / AZ / IA job — Oregon's sentence, stated as that AHJ's rule. There it is one building
+    // application: a standard structural review, or a stamped one when the plan set is engineered.
+    gatePathResolution.standardReview
+      ? submitGateCheck({
+        id: "permit-path",
+        title: gatePathResolution.needsEngineeredDocs ? "Permit path: stamped structural review" : "Permit path: standard structural review",
+        lane: "permit",
+        status: "pass",
+        ownerRole: "Permit Coordinator",
+        requirement: "This jurisdiction files one building-side application (no prescriptive rooftop-PV path on file), so there is no permit-path choice to confirm before staging.",
+        evidence: [gatePathResolution.needsEngineeredDocs
+          ? "Stamped structural review: the plan set / operator calls for an engineered structural design — the PE-stamped plan set and sealed structural letter are on the required-documents list."
+          : "Standard structural review: the AHJ's building application with the roof framing + attachment detail; a PE-sealed letter only where the jurisdiction's own rule requires one."],
+        nextAction: "Nothing to confirm — file the AHJ's own building application.",
+        source: "permit.path",
+      })
+      : submitGateCheck({
+        id: "permit-path",
+        title: "Permit path confirmed (prescriptive vs engineered)",
+        lane: "permit",
+        status: gatePermitPath === "unknown" ? "blocker" : "pass",
+        ownerRole: "Permit Coordinator",
+        requirement: "The prescriptive and engineered (PE-stamped) permit applications are mutually exclusive and the AHJ accepts exactly one. The permit path must be confirmed before the AHJ permit can be staged.",
+        evidence: [gatePermitPath === "unknown" ? "Permit path not yet confirmed for this project." : `Permit path: ${gatePermitPath}.`],
+        nextAction: gatePermitPath === "unknown"
+          ? "Set the permit path on Manual entry → Permit path (prescriptive vs engineered) before staging the AHJ permit."
+          : "Permit path is confirmed.",
+        source: "permit.path",
+      }),
     submitGateCheck({
       id: "qc-human-review",
       title: "Extraction QC and human review",

@@ -645,7 +645,7 @@ export async function ensureAhjFormsForProject(
   // looking for the right one of the two when the AHJ turns out to publish both.
   if (!needed.has("building_application") && !needed.has("permit_application")) {
     let baselineKind: "prescriptive" | "structural" | null = null;
-    try { baselineKind = applicationKindForPath(resolvePermitPath(project).path); } catch { /* path optional */ }
+    try { baselineKind = applicationKindForProject(project); } catch { /* path optional */ }
     want("permit_application", baselineKind);
   }
   try {
@@ -665,6 +665,18 @@ export async function ensureAhjFormsForProject(
     });
   }
   return { neededTypes: [...needed.keys()], needed: [...needed.values()], results };
+}
+
+/** WHICH of the two building-side applications a form search is for — and NONE where the split
+ *  does not exist. Outside Oregon (or a jurisdiction whose own research names a prescriptive path)
+ *  resolvePermitPath says standardReview: the AHJ publishes one building application, so the
+ *  search must not be told "find the STRUCTURAL one, not the prescriptive one" — that directive
+ *  told the Iowa City form finder its required Verification Form was "the PRESCRIPTIVE route — do
+ *  not submit it" (e2e-gap close, 2026-09-26). */
+export function applicationKindForProject(project: ProjectRecord): "prescriptive" | "structural" | null {
+  const res = resolvePermitPath(project);
+  if (res.standardReview) return null;
+  return applicationKindForPath(res.path);
 }
 
 // Ensure the AHJ has a usable stored form. Research → download → map → store.
@@ -687,7 +699,7 @@ export async function ensureAhjFormTemplate(
   // project, so a direct "find official form" click is path-aware too.
   let applicationKind = opts.applicationKind ?? null;
   if (!applicationKind && (formType === "building_application" || formType === "permit_application")) {
-    try { applicationKind = applicationKindForPath(resolvePermitPath(project).path); } catch { /* path optional */ }
+    try { applicationKind = applicationKindForProject(project); } catch { /* path optional */ }
   }
   const kindWord = applicationKind === "structural" ? "structural (non-prescriptive)" : applicationKind === "prescriptive" ? "prescriptive" : "";
   // Already have a fillable stored template of THIS form type for this AHJ?

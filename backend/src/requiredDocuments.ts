@@ -44,7 +44,7 @@ import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
 import { findKnowledgeForLearn } from "./knowledgeBase";
 import { HttpError } from "./httpError";
-import { findApplicationProfile, namedApplicationForm, permitStructureForProject } from "./applicationDocs";
+import { applicationProfiles, findApplicationProfile, namedApplicationForm, permitStructureForProject } from "./applicationDocs";
 import { normalizeAhjName, permitProcessFor, stateRulesFor } from "./permitProcess";
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 
@@ -430,7 +430,10 @@ export function requiredApplicationDocs(
       // a precise message with a vaguer one.
       blocking: separate && path !== "unknown" && !portalOnly,
       discipline: combo ? "combo" : "structural",
-      ...(kind ? { applicationKind: kind } : {}),
+      // No split, no kind: on a standard (or stamped) structural review there is ONE building
+      // application, so the form finder is not steered at "the structural one, not the
+      // prescriptive one" (the Iowa City form-finder wording, e2e-gap close 2026-09-26).
+      ...(kind && !standardReview ? { applicationKind: kind } : {}),
     });
   }
 
@@ -735,6 +738,146 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     missingBlocking: presence.filter((p) => !p.present && p.blocking),
     missingAdvisory: presence.filter((p) => !p.present && !p.blocking),
   };
+}
+
+// ---------------------------------------------------------------------------
+// THE JOB'S OWN REQUIRED LIST, CHECKED ITEM BY ITEM (e2e-gap close, 2026-09-26 — MF6).
+//
+// qc.ts's docs.complete row said "Every document this filing needs for Waltham City is attached"
+// on a job whose manifest listed the city's own cited six (workers-comp affidavit, waste-debris
+// form, CSL/HIC copy, two engineer letters, the Wires application) with none of them on file.
+// The row was true of the UNIVERSAL set the inventory tracks, and false of the list the AHJ
+// published. This reads the job's REQUIRED list — the per-job lookup's cited documents when it
+// has any, else a shipped profile's own list — maps each item to the document slot that would
+// hold it, and says which are not attached. An item no slot can hold is not attached either.
+// When neither source names a list, the answer is "not yet confirmed", never "every document".
+// ---------------------------------------------------------------------------
+
+export interface RequiredListItem {
+  text: string;
+  /** The slot(s) that would satisfy it; empty when nothing this product holds can. */
+  docTypes: string[];
+  present: boolean;
+  via: string;
+  /** Why the item does not apply to this job (the other permit path; entered in the portal). */
+  skipped?: string;
+}
+
+export interface RequiredListCheck {
+  source: "lookup" | "profile" | "unknown";
+  /** Where the list came from, for the operator ("the per-job lookup (cited: <url>)"). */
+  sourceLabel: string;
+  items: RequiredListItem[];
+  /** The items that apply and are not attached. */
+  missing: RequiredListItem[];
+}
+
+/** A requirement's prose -> the slot(s) that would hold it. Ordered specific-first; "" = none. */
+const REQUIREMENT_SLOT_PATTERNS: Array<{ re: RegExp; docTypes: string[] }> = [
+  { re: /electrical[\w\s/&()-]{0,40}application|renewable\s*energy[\w\s/&()-]{0,20}electrical|wires\s+(department\s+)?(permit\s+)?application/i, docTypes: ["electrical_application"] },
+  { re: /(building|structural)\s*(permit\s*)?application|solar application|building permit application/i, docTypes: ["building_application", "permit_application"] },
+  { re: /checklist|worksheet|eligibilit/i, docTypes: ["solar_checklist", "pv_worksheet"] },
+  { re: /(permit|completed|signed)\s*application|application\s*(form|packet)|^application\b/i, docTypes: ["permit_application", "building_application"] },
+  { re: /stamp|sealed|seal\b|engineer(ing|'s|ed)?\s+letter|structural\s+(letter|calc|analysis|certification|engineering)|pe\s+letter|letter\s+(stamped|from)\s+(by\s+)?an?\s+engineer/i, docTypes: ["structural_letter", "stamped_plans", "engineering_letter"] },
+  { re: /site\s*plan|plot\s*plan|roof\s*plan|site\/roof|fire\s*(access\s*)?pathway\s*plan|roof\s*layout/i, docTypes: ["site_plan"] },
+  { re: /single[-\s]?line|one[-\s]?line|three[-\s]?line|3[-\s]?line|\bsld\b|electrical\s+diagram|wiring\s+diagram/i, docTypes: ["sld"] },
+  { re: /inverter\s*(spec|data|cut|sheet)|micro-?inverter\s*(spec|data|sheet)/i, docTypes: ["inverter_spec"] },
+  { re: /module\s*(spec|data|cut|sheet)|panel\s*(spec|data|cut)\s*sheet|spec(ification)?\s*sheets?|data\s*sheets?|cut\s*sheets?|equipment\s+spec/i, docTypes: ["module_spec"] },
+  { re: /label|placard/i, docTypes: ["labels"] },
+  { re: /utility\s+bill|electric\s+bill|power\s+bill/i, docTypes: ["utility_bill"] },
+  { re: /meter\s+photo|photo\s+of\s+(the\s+)?meter/i, docTypes: ["meter_photo"] },
+  { re: /plan\s*set|construction\s+(documents|drawings|plans)|\bplans\b|drawings|full\s+set|set\s+of\s+plans|structural\s+plans/i, docTypes: ["plan_set", "combined_plan_set", "full_plan_set"] },
+];
+
+/** The slot(s) a requirement's prose would be held in — [] when this product holds no such slot. */
+export function requirementSlots(text: string): string[] {
+  const t = String(text || "").trim();
+  if (!t) return [];
+  const hit = REQUIREMENT_SLOT_PATTERNS.find((p) => p.re.test(t));
+  return hit ? hit.docTypes : [];
+}
+
+function requirementSkipReason(text: string, path: "prescriptive" | "engineered" | "unknown", standardReview: boolean): string {
+  const t = String(text || "").toLowerCase();
+  if (/portal\s+entry|entered\s+in\s+the\s+portal|transfer\s+into|do\s+not\s+upload\s+this\s+worksheet/.test(t)) return "entered in the portal at staging — nothing to attach";
+  if (!standardReview) {
+    // An item scoped to ONE of the two paths ("… on the non-prescriptive path", "PRESCRIPTIVE PATH →
+    // …", "prescriptive path only") does not apply on the other. An item naming both paths applies.
+    const engineeredOnly = /non-?\s*prescriptive\s+path/.test(t);
+    const prescriptiveOnly = /(?<!non-)(?<!non )prescriptive\s+path/.test(t);
+    if (engineeredOnly && !prescriptiveOnly && path === "prescriptive") return "engineered-path item; this project is prescriptive";
+    if (prescriptiveOnly && !engineeredOnly && path === "engineered") return "prescriptive-path item; this project is engineered";
+  }
+  return "";
+}
+
+/** The per-job lookup's cited document list (every permit's, deduped), or []. */
+function lookupRequiredList(project: ProjectRecord): { items: string[]; sourceUrl: string } {
+  const lookup = String(project.ahj || "").trim() ? permitProcessFor({ state: project.state, ahj: project.ahj }) : null;
+  const items: string[] = [];
+  let sourceUrl = "";
+  for (const permit of lookup?.permits ?? []) {
+    const docs = permit.documents;
+    if (!docs || !/^https?:\/\//i.test(String(docs.sourceUrl || ""))) continue;
+    for (const raw of docs.value ?? []) {
+      const text = String(raw || "").trim();
+      if (!text || items.some((i) => i.toLowerCase() === text.toLowerCase())) continue;
+      items.push(text);
+    }
+    if (!sourceUrl && (docs.value?.length ?? 0) > 0) sourceUrl = String(docs.sourceUrl);
+  }
+  return { items, sourceUrl };
+}
+
+/**
+ * The job's REQUIRED list, item by item. `inventory` is the same documentInventory the caller
+ * already built — the universal slots are read from its presence rows, and slots the inventory does
+ * not track (a utility bill, labels) from the uploads directly.
+ */
+export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: DocumentInventory): RequiredListCheck {
+  const pathResolution = resolvePermitPath(project);
+  const path = pathResolution.path;
+  const standardReview = Boolean(pathResolution.standardReview);
+  let source: RequiredListCheck["source"] = "unknown";
+  let sourceLabel = "";
+  let texts: string[] = [];
+  const found = lookupRequiredList(project);
+  if (found.items.length) {
+    source = "lookup";
+    sourceLabel = `the per-job process lookup (cited: ${found.sourceUrl})`;
+    texts = found.items;
+  } else {
+    let profile: ReturnType<typeof findApplicationProfile> | null = null;
+    try { profile = findApplicationProfile(project); } catch { profile = null; }
+    // A KNOWN list only: a hand-written profile, or the seeded process profile's own lines. The
+    // generic fallback SYNTHESIZES a list for an AHJ nobody has looked up — that is not a list the
+    // AHJ published, and the row must say so rather than pass on it.
+    if (profile && (profile.id.startsWith("process-") || (applicationProfiles.includes(profile) && profile.id !== "oregon-generic-epermitting"))) {
+      source = "profile";
+      sourceLabel = profile.id.startsWith("process-") ? `the seeded ${project.ahj || "AHJ"} process profile (not confirmed on an agency page)` : `the ${profile.name} profile`;
+      texts = profile.requiredDocuments.filter((t) => String(t || "").trim());
+    }
+  }
+  if (source === "unknown") return { source, sourceLabel: "", items: [], missing: [] };
+
+  const presenceByType = new Map<string, DocPresence>();
+  for (const p of inventory.presence) presenceByType.set(p.docType, p);
+  let uploads: Record<string, string> = {};
+  try { uploads = uploadedSubmissionDocuments(db, project); } catch { uploads = {}; }
+  const items: RequiredListItem[] = texts.map((text) => {
+    const skipped = requirementSkipReason(text, path, standardReview);
+    const docTypes = requirementSlots(text);
+    if (skipped) return { text, docTypes, present: false, via: "", skipped };
+    for (const t of docTypes) {
+      const p = presenceByType.get(t);
+      if (p?.present) return { text, docTypes, present: true, via: p.via || "attached" };
+      if (uploads[t]) return { text, docTypes, present: true, via: "attached file" };
+      // A sheet the inventory does not list as its own row may still be inside the plan set.
+      if (PLAN_SHEET_HINTS[t] && sheetInPlanSet(project, t, uploads)) return { text, docTypes, present: true, via: "in plan set" };
+    }
+    return { text, docTypes, present: false, via: "" };
+  });
+  return { source, sourceLabel, items, missing: items.filter((i) => !i.present && !i.skipped) };
 }
 
 /**

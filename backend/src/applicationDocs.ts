@@ -214,6 +214,28 @@ export function shippedProfileNeedsPerJobLookup(project: ProjectRecord): boolean
   return permitStructureAnswer(project).level === "unknown";
 }
 
+/**
+ * THE ONE PREDICATE FOR THE LOOKUP TRIGGER (e2e-gap close, 2026-09-26): is a shipped process
+ * profile AUTHORITATIVE for this AHJ — i.e. may the per-job lookup be skipped on its account?
+ * ensurePermitProcessLookedUp (permitProcessLookup.ts) today skips the lookup for ANY AHJ that has
+ * a seeded profile, so Santa Fe County's bare "In-person: appointment only" row kept the lookup
+ * from ever running. Authoritative = a shipped profile exists AND it answers the process (a
+ * hand-written profile, or a seeded row whose words settle the structure). The trigger's line
+ * becomes: `if (shippedProfileIsAuthoritative(project as never)) return false;`
+ */
+export function shippedProfileIsAuthoritative(project: ProjectRecord): boolean {
+  let hasProfile = false;
+  try { hasProfile = Boolean(findAhjProcessProfile(project)); } catch { hasProfile = false; }
+  if (!hasProfile) {
+    // A hand-written application profile (Portland, Marion County…) is authoritative on its own.
+    try {
+      const profile = findApplicationProfile(project);
+      return applicationProfiles.includes(profile) && profile.id !== "oregon-generic-epermitting";
+    } catch { return false; }
+  }
+  try { return !shippedProfileNeedsPerJobLookup(project); } catch { return false; }
+}
+
 /** THE CODE-PROFILE AMENDMENT SURFACE (codeProfiles.ts — not this module's file): a state
  *  amendment whose summary claims the permit structure ("Separate building (structural) and
  *  electrical permits required") is a second answer to this question. The code panel should
@@ -959,7 +981,10 @@ function buildCover(project: ProjectRecord, profile: ApplicationRequirementProfi
       ].filter(Boolean).join("\n")
     : "Contractor: [assign client to populate]";
 
-  const pathLabel = permitPath.standardReview ? "STANDARD STRUCTURAL REVIEW (no prescriptive-vs-structural choice on file for this jurisdiction)"
+  const pathLabel = permitPath.standardReview
+    ? (permitPath.needsEngineeredDocs
+      ? "STAMPED STRUCTURAL REVIEW (engineered design · PE-stamped plan set + sealed structural letter filed with the AHJ's building application)"
+      : "STANDARD STRUCTURAL REVIEW (one building application on file for this jurisdiction — nothing to choose between)")
     : permitPath.path === "prescriptive" ? "PRESCRIPTIVE (meets prescriptive code · no plan review · reduced fee)"
     : permitPath.path === "engineered" ? "STRUCTURAL / ENGINEERED (non-prescriptive · plan review · full fees · PE stamp required)"
     : "NOT YET CONFIRMED — choose prescriptive vs engineered before uploading";
@@ -1012,7 +1037,9 @@ function buildManifest(
 
   // The application line is path-driven — upload exactly one.
   const appLine = permitPath.standardReview
-    ? "- The AHJ's building permit application (standard structural review — one application, no prescriptive/structural choice)"
+    ? (permitPath.needsEngineeredDocs
+      ? "- The AHJ's building permit application, with the PE-stamped plan set + sealed structural letter attached (stamped structural review — one application)"
+      : "- The AHJ's building permit application (standard structural review — one application, no choice between two)")
     : permitPath.path === "prescriptive"
     ? "- Prescriptive solar application + checklist  ← UPLOAD THIS ONE (do NOT upload the structural application)"
     : permitPath.path === "engineered"
@@ -1030,7 +1057,7 @@ function buildManifest(
 Profile: ${profile.name}
 ${structureLine}
 
-## Application to upload (mutually exclusive)
+## ${permitPath.standardReview ? "Application to upload" : "Application to upload (mutually exclusive)"}
 ${appLine}
 
 > ${permitPathCallout(permitPath)}
@@ -1046,7 +1073,7 @@ ${permitPath.standardReview ? `- Building permit application worksheet${permitPa
 ${!permitPath.standardReview && permitPath.path === "engineered" ? "- Structural (non-prescriptive) application worksheet\n- Engineered document collection checklist (stamped plans + structural letter)" : ""}
 ${!permitPath.standardReview && permitPath.path === "prescriptive" ? "- Prescriptive solar application worksheet (with checklist)" : ""}
 ${!permitPath.standardReview && permitPath.path === "unknown" ? "- Permit-path chooser\n- Prescriptive application (draft)\n- Structural application (draft)" : ""}
-${profile.requiresElectricalApplication || separate || hasMpu ? "- Electrical / Renewable-Energy application worksheet" : ""}
+${profile.requiresElectricalApplication || separate || hasMpu ? `- ${electricalWorksheetTitle(project)}` : ""}
 ${hasMpu ? "- Electrical permit application is required because a main panel/service upgrade (MPU) is in scope" : ""}
 ${profile.requiresBidSheet ? "- Bid sheet worksheet" : ""}
 ${/PGE|PORTLAND GENERAL|PACIFIC|PACIFICORP/i.test(project.utility) ? "- Utility/NEM application worksheet" : ""}
@@ -1108,7 +1135,9 @@ function buildStructuralWorksheet(project: ProjectRecord, _profile: ApplicationR
       title: "Building Permit Application Worksheet",
       markdown: standard.markdown
         .replace(/^# .*$/m, "# Building Permit Application Worksheet")
-        .replace(/^> .*$/m, `> File the AHJ's own building permit application (standard structural review). ${permitPathCallout(permitPath)}`),
+        .replace(/^> .*$/m, `> File the AHJ's own building permit application (${permitPath.needsEngineeredDocs ? "stamped" : "standard"} structural review). ${permitPathCallout(permitPath)}`)
+        // The recursive build prints the raw path token; here it is the review, not one of two.
+        .replace(/^Permit path: .*$/m, `Permit path: ${permitPath.needsEngineeredDocs ? "stamped structural review (engineered design)" : "standard structural review"}`),
     };
   }
   const formName = namedApplicationForm(_profile, "engineered");
@@ -1145,14 +1174,23 @@ Stamp recommendation: ${yesNo(payload(project, "stampRecommendation"))}
   );
 }
 
+/** "Renewable-Energy" is Oregon's name for its electrical solar permit (OAR 918-050-0180). Outside
+ *  Oregon the worksheet is the AHJ's electrical permit application, in neutral words. */
+function electricalWorksheetTitle(project: Pick<ProjectRecord, "state">): string {
+  return String(project.state || "").trim().toUpperCase() === "OR"
+    ? "Electrical / Renewable-Energy Application Worksheet"
+    : "Electrical Permit Application Worksheet";
+}
+
 function buildElectricalWorksheet(project: ProjectRecord, _profile: ApplicationRequirementProfile, hasMpu: boolean): GeneratedApplicationDocument {
+  const title = electricalWorksheetTitle(project);
   return doc(
     "electrical",
-    "Electrical / Renewable-Energy Application Worksheet",
+    title,
     "electrical_application",
     true,
     "05-electrical-application-worksheet.md",
-    `# Electrical / Renewable-Energy Application Worksheet
+    `# ${title}
 
 ${commonProjectBlock(project)}
 
@@ -1227,8 +1265,9 @@ function buildEngineeredDocCollection(project: ProjectRecord, permitPath: Permit
     "04b-engineered-documents.md",
     `# Engineered Submittal — Stamped Plans & Structural Letter
 
-This project is on the NON-PRESCRIPTIVE (engineered) path, so the AHJ requires sealed
-structural documentation in addition to the structural application.
+${permitPath.standardReview
+    ? "This project's structural design is engineered (stamped), so the sealed structural documentation is filed with the AHJ's building permit application."
+    : "This project is on the NON-PRESCRIPTIVE (engineered) path, so the AHJ requires sealed\nstructural documentation in addition to the structural application."}
 
 Status: ${status}
 

@@ -278,11 +278,21 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
   // stay Oregon-gated — they are OAR 860-039 utility-program policy, not adopted
   // building-code data. Rule IDs keep their legacy "or-…" form for Oregon (blocker
   // gating, QC history, and the goldens key off them) and use "<state>-…" elsewhere.
-  const limits = ctx
+  // A LIMIT FRAGMENT IS NOT A PRESCRIPTIVE PATH (permitPath.ts says the same): Florida's seeded
+  // state profile carries allowedWindExposures ["B","C","D"] — correct design-criteria data that
+  // says nothing about a prescriptive PV path — and this file's screens printed "should be B or C
+  // or D for the prescriptive path" from it. Outside Oregon the screens run only where the
+  // jurisdiction's own research names a prescriptive path, or a NUMERIC structural limit (snow,
+  // dead load, spacing) is recorded for it — an exposure list alone is not a screen. A researched
+  // "publishes no prescriptive path" (false) switches every screen off.
+  const rawLimits = ctx
     ? ctx.prescriptive
     : isOregon
       ? { maxGroundSnowPsf: 70, maxPvDeadLoadPsf: 4.5, maxRafterSpacingIn: 24, allowedWindExposures: ["B", "C"], maxExportKwWithoutStudy: 25 }
       : {};
+  const screensApply = isOregon || rawLimits.hasPrescriptivePath === true
+    || (rawLimits.hasPrescriptivePath !== false && [rawLimits.maxGroundSnowPsf, rawLimits.maxPvDeadLoadPsf, rawLimits.maxRafterSpacingIn].some((v) => typeof v === "number"));
+  const limits = screensApply ? rawLimits : { ...(rawLimits.maxExportKwWithoutStudy != null ? { maxExportKwWithoutStudy: rawLimits.maxExportKwWithoutStudy } : {}) };
   const jurisLabel = ctx && !(state === "OR" || /oregon/i.test(ahj)) ? (ctx.ahj || ctx.state || "the jurisdiction") : "Oregon";
   const idPrefix = (ctx ? (ctx.state || "jurisdiction") : "OR").toLowerCase() === "or" ? "or" : (ctx?.state || "jurisdiction").toLowerCase();
   const prescriptiveIds = idPrefix === "or"
