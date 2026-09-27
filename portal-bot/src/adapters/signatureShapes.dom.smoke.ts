@@ -23,6 +23,8 @@
 //   echoes the signature as a pad image / a locked typed box) reach review, never signature_*.
 // MUST-PASS  pcEsigEmailText / pcEsigEmailType ("Customer Email for e-Signature", type=text / email):
 //   an EMAIL box — the planner's email lands, the signer's name never does, the walk goes on.
+// KILL R     replay of an OLDER recipe that bound the certifyNoWord box to installerContactName:
+//   the signer with one, a signature_no_signer pause without, never the contact (live reading).
 // KILL B     applyFill, called directly outside the signature pass on the bareSignature box (label
 //   names a signature) and on the certifyNoWord box (only the in-page mark says so): refused, the
 //   box stays empty. Switching the guard off makes this red.
@@ -33,6 +35,8 @@ import "../smokeArtifactDirs";
 import http from "node:http";
 import { chromium, type Page } from "playwright";
 import { AutoLearnAdapter, type ExtractedField, type LearnPlanner } from "./autoLearnAdapter";
+import { RecipeAdapter } from "./recipeAdapter";
+import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../../shared/src/types";
 
 delete process.env.PORTAL_ALLOW_FINAL_SUBMIT;
 
@@ -231,6 +235,51 @@ try {
       await ctx.close().catch(() => null);
       check(`KILL B ${name}: applyFill outside the signature pass is refused (no step, box empty); in-page reading=${String(sig?.kind)}`,
         step === null && held === "", `step=${JSON.stringify(step)} held=${JSON.stringify(held)} sig=${JSON.stringify(sig)}`);
+    }
+  }
+
+  // REPLAY OF AN OLDER RECIPE (kill R): learned before the one signer rule, the certifyNoWord box
+  // ("Type your full name" — an ordinary label; only the "I certify…" statement above makes it a
+  // signature) was recorded as a planner fill bound to installerContactName, with no e-signature
+  // note. Replay reads the control live with the learner's in-page reading: with a signer it
+  // types the CLIENT's signer, without one it PAUSES signature_no_signer, nothing typed.
+  // Never "Casey Contact". Switching replay's live check off makes this red.
+  if (which.includes("certifyNoWord")) {
+    const url = `${base}/apps/selfservice?v=certifyNoWord#/permit/apply/12`;
+    const oldSteps: RecipeStep[] = [
+      { action: "fill", phase: "fill", selector: { css: "#desc", label: "Description *" }, field: "projectDescription", note: "Description" },
+      { action: "click", phase: "advance", selector: { css: "#next", label: "Next" }, note: "advance: Next" },
+      { action: "fill", phase: "fill", selector: { css: "#nm", label: "Type your full name *" }, field: "installerContactName", note: "Type your full name" },
+      { action: "click", phase: "advance", selector: { css: "#next", label: "Next" }, note: "advance: Next" },
+      { action: "stopForReview" },
+    ] as unknown as RecipeStep[];
+    const recipe = { id: "sig-shapes-old", scopeType: "ahj", profileKey: "ia|iowa city|", state: "IA", ahj: "City of Iowa City", utility: "", portalPlatform: "energov", portalUrl: url, status: "complete", version: 1, createdBy: "smoke", createdAt: "", updatedAt: "", notes: "", steps: oldSteps } as unknown as PortalRecipe;
+    const withSigner = { projectDescription: "Roof-mounted solar PV", installerContactName: "Casey Contact", authorizedSignerName: "Dana Signer" } as Record<string, string>;
+    const { authorizedSignerName: _drop, ...noSigner } = withSigner;
+    for (const [tag, values] of [["replayOld signer=\"Dana Signer\"", withSigner], ["replayOld signer=\"\"", noSigner]] as const) {
+      const ctx = await browser.newContext();
+      ctx.setDefaultTimeout(8000);
+      await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
+      const pg = await ctx.newPage();
+      await pg.goto(url);
+      posts.length = 0;
+      const adapter = new RecipeAdapter(recipe, values, {}, {});
+      (adapter as unknown as { page: unknown }).page = pg;
+      let res: { ok: boolean; message: string; pauseReason?: string } | null = null;
+      try { res = await adapter.fillApplication({} as ProjectRecord); } catch (e) { res = { ok: false, message: `threw ${String(e).slice(0, 200)}` }; }
+      await pg.waitForTimeout(300);
+      const st = await readState(pg);
+      await ctx.close().catch(() => null);
+      const filing = posts.filter((p) => !/draft\/save/.test(p));
+      const detail = `filingPOSTs=${filing.length} state=${JSON.stringify(st)} ok=${String(res?.ok)} pause=${String(res?.pauseReason)} msg=${String(res?.message).replace(/\s+/g, " ").slice(0, 240)}`;
+      check(`${tag}: 0 filing requests reach the server`, filing.length === 0 && st.lastClicked !== true, detail);
+      if ((values as Record<string, string>).authorizedSignerName) {
+        check(`MUST-EXCLUDE (kill R) ${tag}: an older recipe bound to installerContactName signs as the CLIENT's signer on replay, never the contact`,
+          st.typed === "Dana Signer" && st.step === 3, detail);
+      } else {
+        check(`MUST-EXCLUDE (kill R) ${tag}: PAUSED signature_no_signer on replay, nothing typed`,
+          res?.ok !== true && res?.pauseReason === "signature_no_signer" && st.box === "" && st.step === 2, detail);
+      }
     }
   }
 } finally {

@@ -327,6 +327,9 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  that still needs one from a page that has just had one. */
   private gapFilledPage = "";
   private stoppedAtPayment = false;
+  /** Set by a fill step whose control the in-page reading marks as a signature box when this
+   *  client has no authorized signer: runAll pauses signature_no_signer right after it. */
+  private liveSignaturePause: string | null = null;
   private requiredFieldsSeen: string[] = [];
   private fieldsVerified: string[] = [];
   private fieldsUnverified: string[] = [];
@@ -515,6 +518,23 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
     }
     return super.runGapFill(page);
+  }
+
+  /** Does the in-page reading (portalSafety signatureStepInPage — the learner's own, run fresh on
+   *  this page) mark THIS control as a signer's name box (data-al-sig consent / typed)?
+   *  Unreadable = false: the recorded binding stands, as before this check existed. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async isLiveSignatureBox(scoped: any): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function" || !scoped || typeof scoped.evaluate !== "function") return false;
+    await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
+    const role = await scoped.evaluate((el: Element, g: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ps = (globalThis as any)[g];
+      if (!ps || typeof ps.signatureStepInPage !== "function") return "";
+      ps.signatureStepInPage();
+      return el.getAttribute("data-al-sig") || "";
+    }, PORTAL_SAFETY_GLOBAL, { timeout: 1500 }).catch(() => "");
+    return role === "consent" || role === "typed";
   }
 
   async fillApplication(project: ProjectRecord): Promise<PortalStepResult> {
@@ -1261,6 +1281,15 @@ export class RecipeAdapter extends BasePortalAdapter {
         }
         try {
           const done = await this.executeStep(step, pastReview);
+          if (this.liveSignaturePause !== null) {
+            const what = this.liveSignaturePause;
+            this.liveSignaturePause = null;
+            return {
+              ...fail(`Paused at the e-signature step: this client has no authorized signer name, so there is no one the bot may sign as ("${what}"). Add the authorized signer to the client and run again, or sign in the browser. Nothing was typed into the signature.`,
+                { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: stepIdx, trace, needsHuman: true }),
+              pauseReason: "signature_no_signer",
+            };
+          }
           if (done) executed++;
           else skipped.push(String(step.note || step.action).slice(0, 70));
           performed = done;
@@ -3151,7 +3180,21 @@ export class RecipeAdapter extends BasePortalAdapter {
       case "click":
         return this.executeClick(step, scoped, pastReview);
       case "fill": {
-        const v = this.resolveValue(step);
+        let v = this.resolveValue(step);
+        // THE ONE SIGNER RULE, READ LIVE (portal-run-close 1). isSignatureStep sees only what
+        // the recipe recorded; a box that is a signature only by the statement above it ("Type
+        // your full name" under "I certify under penalty of perjury…") has an ordinary label, and
+        // an older recipe learned before this rule may have it bound to installerContactName —
+        // replay would sign as the contact. The in-page reading the learner uses
+        // (signatureStepInPage, which marks the control data-al-sig) is asked about THIS control:
+        // a signature box takes the client's authorized signer or nobody.
+        if (!isSignatureStep(step) && await this.isLiveSignatureBox(scoped)) {
+          const signer = String(this.fieldValues.authorizedSignerName ?? "").replace(/\s+/g, " ").trim();
+          const what = String(step.selector?.label ?? step.note ?? "signature").slice(0, 60);
+          this.driftWarnings.push(`e-signature box read on the page ("${what}") on a step bound to ${step.field ? step.field : "a recorded literal"} — ${signer ? "typed as the client's authorized signer instead" : "no authorized signer, nothing typed"}`);
+          if (!signer) { this.liveSignaturePause = what; return false; }
+          v = signer;
+        }
         if (!v) { this.noteUnresolved(step); return false; }
         await waitForElement(scoped);
         // MASKED CONTROLS (Accela phone / zip): they keep their validation state from KEY

@@ -260,12 +260,18 @@ await check("isReviewPageText: the page NAMES itself the review step (MUST-MATCH
     // backstop's list disagreed on a combined confirm-and-sign page, which then FILED.
     "Confirm and Sign. Please review and sign. Permit type: Residential Solar.", "Review and Sign", "Review & Confirm",
     "Please review all information before you submit.", "Review the details below and submit",
+    "Review and Confirm\nPermit type: Residential Solar", "Please review and confirm your application.", "Review and certify",
     // The captured review page names itself AND carries locked sections: still the review page.
     "Step 4 : Review Site Address (Read-only) Parcel (Read-only) Owner (Read-only) Continue Application »"];
   const NOT = ["Please review the terms and conditions below", "I accept the terms and conditions", "Plan Review Fee", "Review Type",
     // A bare "please review" is the entry disclaimer's; a review noun in a heading is not the step.
     "Please review before continuing", "Plan Review Details", "Review Comments", "Review Status: In Review",
     "Step 2: Project Information", "Resubmittal Review Comments", "Reviewer", "", "Step 3: Documents",
+    // Mid-flow form pages: stock validation text and an address confirmation are not the review
+    // step (portal-run-close: the widened MF2 reading matched both, a new false stop on replay).
+    "Please review and correct the errors below.", "Please review and confirm your address before continuing.",
+    "Review and confirm the site address", "Please review and update your contact information",
+    "Please review and complete the required fields", "Review your answers below before continuing",
     // A locked section is not the page naming itself — Oregon ePermitting Step 1 after the address pick
     // (production false stop, City of Jefferson 2026-09-26), with the wizard bar listing Review and Pay Fees ahead.
     "Contact Information (Read-only)",

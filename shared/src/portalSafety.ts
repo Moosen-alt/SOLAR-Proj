@@ -205,11 +205,18 @@ export function portalSafetyFactory() {
   // marker to the learner and NOT to the backstop, so a combined confirm-and-sign page whose
   // Next FILED (skeptic combinedReviewSign) was signed, its planner stop overridden into a
   // Next click, and the backstop's review lockdown never fired — 4 filing POSTs. Now the
-  // learner reads reviewSignals() below; there is no second list. "Review and sign/confirm"
-  // and "please review and <verb>" name the step; a bare "please review" does not (the entry
+  // learner reads reviewSignals() below; there is no second list. "Review and sign / submit /
+  // file / certify / finish" names the step; a bare "please review" does not (the entry
   // disclaimer's "please review the terms").
+  // NOT "please review and <any verb>", NOT "review and confirm <anything>": a mid-flow form
+  // page says "Please review and correct the errors below" (stock validation text) and an
+  // address step says "Please review and confirm your address" — reading either as review
+  // makes replay refuse the ordinary Continue and the backstop lock the page down, the same
+  // production false stop as the "(Read-only)" marker. "Review and Confirm" counts only as a
+  // heading (end of line / sentence) or followed by the application / submission / permit /
+  // request it confirms.
   const REVIEW_PAGE =
-    /\bstep\s*\d+\s*[:.\-–—]?\s*review\b|\breview\s+(and|&)\s+(submit|sign|confirm|file|certify|finish)\b|\bplease\s+review\s+(and|&)\s+[a-z]|\breview\s+(all\s+(of\s+)?(your\s+|the\s+)?|(your|the)\s+)(application|information|details|entries|submission|answers)\b|\bwill\s+not\s+be\s+submitted\s+until\b/i;
+    /\bstep\s*\d+\s*[:.\-–—]?\s*review\b|\breview\s+(and|&)\s+(submit|sign|file|certify|finish)\b|\breview\s+(and|&)\s+confirm\b(?=\s*($|[\n.:!])|\s+(your|the|this)\s+(application|submission|permit|request)\b)|\breview\s+(all\s+(of\s+)?(your\s+|the\s+)?|(your|the)\s+)(application|information|details|entries|submission)\b|\bwill\s+not\s+be\s+submitted\s+until\b/i;
   const isReviewPageText = (text: string | null | undefined): boolean => REVIEW_PAGE.test(String(text ?? ""));
   /** A URL that names the review step: Accela's CapConfirm / Confirm.aspx, a "/review" path
    *  segment (bounded — "/reviewer", "/review-comments" are not it). */
