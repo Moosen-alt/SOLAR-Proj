@@ -104,7 +104,8 @@ try {
   flat.getForm().flatten();
   await fillLoadedForm({ ...def, fillMode: "overlay", textFields: {}, overlayFields: [] }, await flat.save(), ctx(passing), path.join(dir, "flat.pdf"));
   const flatMarks = (await extractLabels(fs.readFileSync(path.join(dir, "flat.pdf")))).filter((i) => i.str === "X");
-  assert.equal(flatMarks.length, 4, "a truly flat blank also recovers all four supported answers");
+  // 5 = the four supported answers + the module-height row, assumed Yes (operator ruling 2026-09-27).
+  assert.equal(flatMarks.length, 5, "a truly flat blank also recovers all four supported answers plus the assumed-Yes height row");
   for (const mark of flatMarks) {
     assert.ok(recovered.overlays.some((f) => f.source.endsWith("Yes") && Math.abs(mark.x - f.x) < 1.5 && Math.abs(mark.y - f.y) < 1.5),
       "flat fallback must land inside the same row's Yes box");
