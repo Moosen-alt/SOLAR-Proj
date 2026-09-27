@@ -557,6 +557,11 @@ await check("(m3) MUST-EXCLUDE (close-2 MF2): a same-named OTHER jurisdiction â€
   assert.equal(v1.res, null, `V1: the county's tenant is not the city's portal (got ${v1.res?.url})`);
   const v2 = await resolveNamed({ "https://www.co.marion.in.us/building": { text: synthetic(`<p>Inside the City of Marion? <a href="https://aca-prod.accela.com/CITYOFMARION/Default.aspx">City of Marion permit portal</a></p><p>Unincorporated: apply in person at the County Building.</p>`) } }, ["https://www.co.marion.in.us/building"], ["Marion County"]);
   assert.equal(v2.res, null, `V2: the city's tenant is not the county's portal (got ${v2.res?.url})`);
+  // Only the TENANT betrays it: "Apply Online" -> MARIONCOUNTY, the one tenant on the city's page (door 2).
+  const v1b = await resolveNamed({ "https://www.cityofmarion.org/building": { text: synthetic(`<p>Permits for property outside city limits: <a href="https://aca-prod.accela.com/MARIONCOUNTY/Default.aspx">Apply Online</a></p>`) } }, ["https://www.cityofmarion.org/building"], ["City of Marion"]);
+  assert.equal(v1b.res, null, `V1b: the county's tenant, unnamed in the words, is not the city's portal (got ${v1b.res?.url})`);
+  const v1c = await resolveNamed({ "https://www.cityofmarion.org/building": { text: synthetic(`<p><a href="https://aca-prod.accela.com/CITYOFMARION/Default.aspx">Apply Online</a></p>`) } }, ["https://www.cityofmarion.org/building"], ["City of Marion"]);
+  assert.equal(v1c.res?.url, "https://aca-prod.accela.com/CITYOFMARION/Default.aspx", "MUST-PASS: the city's own tenant");
   // The Jefferson shape: the AHJ is the city, the COUNTY issues its permits (both names are the lookup's).
   const ok = await resolveNamed({ "https://www.cityofmarion.org/building": { text: synthetic(`<p>Marion County issues our building permits: <a href="https://aca-prod.accela.com/MARIONCOUNTY/Default.aspx">Marion County Online Permits</a></p>`) } }, ["https://www.cityofmarion.org/building"], ["City of Marion", "Marion County"]);
   assert.equal(ok.res?.url, "https://aca-prod.accela.com/MARIONCOUNTY/Default.aspx", `the issuing county's portal is the city's (${ok.res?.url})`);
