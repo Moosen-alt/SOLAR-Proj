@@ -371,9 +371,15 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   project labels bind to THIS project's keys; a borrowed recipe binds its address-version row to the per-job looked-up agency or the
   borrow REFUSES (audited `portal.recipe_borrow_refused`); donor-agency ASI control ids / positional service-list indexes are dropped
   for another agency; heals map back through `originalIndex`.
-- OPEN (portal-bot, owned by the bot-close workflow): `recipeAdapter.pickAddressVersionLive` ranks CITY rows for structural and
-  COUNTY rows for electrical. Until it also prefers the row naming `fieldValues.issuingAgency` (now supplied), a borrow whose
-  looked-up agency contradicts that preference (City of Jefferson structural → Marion County) is REFUSED rather than risk the city row.
+- RESOLVED (agency-row, 2026-09-27): the address-version row is the looked-up ISSUING AGENCY's (portal-bot `addressVersion`
+  `rankAddressVersions` + `issuingAgencyRow`, one predicate) at every door — the replay (`fieldValues.issuingAgency`), the learner
+  (`siteIdentity.issuingAgency`, set by `autoLearnPortal` from `issuingAgencyFor(project, <learn's track>)`), the hand-coded Oregon
+  adapter (`StageOptions.issuingAgency`). A row is the agency's only when its own text names it ("COUNTY APPLICATIONS … MARION");
+  unknown / neither / ambiguous / unmatched agency → the city-structural / county-electrical convention, and the run log says so;
+  unmatched AND the convention's pick is the other kind → the door STOPS, named. The borrow refusal lifts for a city/county agency on a
+  live `[data-al-row]` step; it stays for unknown, neither, ambiguous, and a literal recorded row of the other kind. City of Jefferson
+  (live grid, run 99baa5d0 f004: both versions are "COUNTY APPLICATIONS … JEFFERSON MARION OR") now borrows the Coos Bay structural
+  recipe. The dashboard Auto-learn sends `permitType` (Building (structural) / Electrical picker, defaulted from the project's tracks).
 - Rule adjusted (operator authorization 2026-09-25 + operator answers 2026-09-26): a form fact no document states (roof layer count,
   module height per the BCD 5952 figures, structure description; a city's zoning sign-off when a COUNTY issues its permits) is an
   operator QUESTION through the existing portal-question/intake mechanism (`unansweredPortalQuestions` now includes
