@@ -684,8 +684,13 @@ function buildLocatorAll(pageOrFrame: Page | Frame, sel: RecipeSelector): Locato
 // Is a password field present? The reliable structural signal that we're on a login form.
 // Falls back to the adjacent-label scan for portals whose password box is not type=password
 // and carries no password-ish attribute (eTRAKiT's Telerik RadTextBox).
+//
+// FILLABLE, like findPasswordField (production 2026-09-27, City of Tigard, run eyg3): Okta's
+// authenticator chooser labels a BUTTON "Select Password." — getByLabel("Password") matched it,
+// so a page with no password box at all read as a login form, the run went on to its password
+// step and stopped there. A password box is something a password can be typed into.
 export async function loginFormPresent(page: Page): Promise<boolean> {
-  if (await firstVisible(page, PASSWORD_CANDIDATES)) return true;
+  if (await firstVisible(page, PASSWORD_CANDIDATES, { fillable: true })) return true;
   return (await findInputByAdjacentLabel(page, "pass")) !== null;
 }
 
@@ -1304,6 +1309,14 @@ export async function performLogin(
     if (!present) {
       if (await authenticatedSignalPresent(page)) {
         return { ok: true, status: "already_authenticated", message: "No login form present and a signed-in signal was found — using the existing session." };
+      }
+      // A SECOND FACTOR ALREADY IN FRONT OF US. An identity provider that remembers the account
+      // and its password can open straight on a factor screen (a second-factor chooser without a
+      // Password option, a code box, a push). That is a person's to complete — the same park as
+      // after a submit — never "a login form we could not recognise".
+      {
+        const factor = await detectSecondFactor(page);
+        if (factor) return await parkForSecondFactor(page, factor, credential?.username ?? "", opts);
       }
       const hereUrl: string = typeof page.url === "function" ? page.url() : "";
       const onLoginUrl = looksLikeLoginUrl(hereUrl);

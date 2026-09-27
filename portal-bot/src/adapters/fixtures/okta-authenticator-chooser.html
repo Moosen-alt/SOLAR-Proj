@@ -1,0 +1,26 @@
+<!doctype html><html><head>
+<!-- Built from a production capture (City of Tigard OR, Tyler Portico = Okta Identity Engine
+     sign-in widget 7.49, 2026-09-27, run eyg3 page-login-mfa_captcha): styles/classes/scripts
+     stripped, structure and attributes kept, the account's email replaced by {{IDENTIFIER}}. The
+     AUTHENTICATOR CHOOSER offering the account's first factors: Email and Password. The OPTIONS
+     placeholder is the list (the smoke also serves a second-factor variant with no Password). -->
+<meta charset="utf-8">
+<title>Tyler Portico Citizen | Verify it's you with a security method</title>
+<style>.hide{display:none} body{font-family:Roboto,sans-serif} li{list-style:none;margin:4px 0}</style>
+</head>
+<body>
+<div>
+<div id="okta-login-container" translate="no"><div><div><main id="okta-sign-in" data-se="auth-container main-container" lang="en" dir="ltr"><div><div><div>
+<div data-se="okta-sign-in-header auth-header "><h1 role="presentation" tabindex="-1"><img alt="Tyler Portico Citizen logo" data-se="auth-org-logo" width="40" height="40" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></h1></div>
+<div><form novalidate="" data-se="o-form" aria-live="polite"><div>
+<div class="hide"><div class="hide"></div></div>
+<div><div title="{{IDENTIFIER}}" data-se="identifier-container"><div data-se="identifier" translate="no"><span>{{IDENTIFIER}}</span></div></div></div>
+<div><div><h1 data-se="o-form-head" tabindex="-1">Verify it's you with a security method</h1></div></div>
+<div><div><p data-se="o-form-explain" tabindex="-1">Select from the following options</p></div></div>
+<div><ul data-se="authenticator-verify-list">{{OPTIONS}}</ul></div>
+<div><button role="link" type="button" data-se="cancel">Back to sign in</button></div>
+</div></form></div>
+</div></div></div></main></div></div></div>
+</div>
+<iframe id="account-chooser-iframe" data-se="account-chooser" class="hide" src="https://login.okta.com/discovery/iframe.html"></iframe>
+</body></html>
