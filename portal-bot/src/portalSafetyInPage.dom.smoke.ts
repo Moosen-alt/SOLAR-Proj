@@ -70,6 +70,27 @@ const PAGES: Record<string, string> = {
   // The same stepper on a FORM step: the bar's "Review and Submit" must not name the page review.
   "/stepper-form": page(`${HEADER}<div class="mat-stepper-horizontal"><div class="mat-horizontal-stepper-header-container" role="tablist"><div role="tab">1 Description</div><div role="tab">2 More Info</div><div role="tab">3 Review and Submit</div></div>
     <div class="mat-horizontal-content-container"><h2>More Info</h2><label for="mfr">Product Manufacturer Name</label><input id="mfr" type="text"><button type="button" id="next">Next</button></div></div>`),
+  // THE BAR, NEVER ITS WRAPPER (portal-run-close-2 M1): the review title is a DIV — no h1-h6 /
+  // legend — inside the stepper that wraps it (skeptic reviewStepperNoHeading: 3 filing POSTs).
+  "/stepper-review-div": page(`${HEADER}<div class="mat-stepper-horizontal"><div class="mat-horizontal-stepper-header-container" role="tablist"><div role="tab">1 Description</div><div role="tab">2 More Info</div><div role="tab">3 Review and Submit</div></div>
+    <div class="mat-horizontal-content-container"><div class="step-title">Step 3: Review and Submit</div><p>Please review your application before submitting.</p><p>Estimated fees: Total $78.00</p><button type="button" id="next">Next</button></div></div>`),
+  // …with no paragraph at all, and a header of classed divs (no tablist).
+  "/stepper-review-divonly": page(`${HEADER}<div class="mat-stepper-horizontal"><div class="mat-horizontal-stepper-header-container"><div class="mat-step-header">1 Description</div><div class="mat-step-header">2 More Info</div><div class="mat-step-header">3 Review and Submit</div></div>
+    <div class="mat-horizontal-content-container"><div class="step-title">Step 3: Review and Submit</div><div>Estimated fees: Total $78.00</div><button type="button" id="next">Next</button></div></div>`),
+  // …a leaf "steps" content container with a div title (no nested bar).
+  "/steps-content-div": page(`${HEADER}<div class="wizard-steps-content"><div class="step-title">Step 3: Review and Submit</div><p>Please review your application before submitting.</p></div><button type="button" id="next">Next</button>`),
+  // …and one whose rows are short divs (three or more lines, no paragraph): unlike its title, not a bar.
+  "/steps-content-rows": page(`${HEADER}<div class="wizard-steps-content"><div class="step-title">Step 3: Review and Submit</div><div>Applicant: Desmond Yarrowby</div><div>Scope: 7.2 kW roof PV</div><div>Total $78.00</div></div><button type="button" id="next">Next</button>`),
+  // MUST-PASS: the synthetic SPA's header (classed divs, no tablist) and a Bootstrap ".progress"
+  // nav of spans still cut on a FORM step.
+  "/spa-header-form": page(`${HEADER}<div class="mat-horizontal-stepper-header-container"><div class="mat-stepper-header active">1 Contact</div><div class="mat-stepper-header">2 Site</div><div class="mat-stepper-header">3 Review and Submit</div></div><h2>Contact</h2><label for="fn">First name</label><input id="fn" type="text"><button type="button" id="next">Next</button>`),
+  "/progress-spans-form": page(`${HEADER}<div class="progress wizard-progress"><span class="progress-step">1. Customer</span><span class="progress-step">2. Documents</span><span class="progress-step">3. Review &amp; Submit</span></div><h2>Customer</h2><label for="fn">First name</label><input id="fn" type="text"><button type="button" id="next">Next</button>`),
+  // THE STATEMENT AROUND THE BOX, IN ITS OWN BLOCK (portal-run-close-2 M2).
+  "/sig-below": page(`${HEADER}<h2>Certification</h2><div><label for="nm">Type your full name *</label> <input id="nm" type="text"></div><p>By typing your name above you are signing this application electronically.</p><button type="button" id="next">Next</button>`),
+  "/sig-above5": page(`${HEADER}<h2>Certification</h2><section class="card"><div class="body"><p>I certify under penalty of perjury that the information in this application is true and correct.</p></div></section><section class="card"><div class="body"><div class="row"><div class="col"><div class="field"><label for="nm">Type your full name *</label> <input id="nm" type="text"></div></div></div></div></section><button type="button" id="next">Next</button>`),
+  "/sig-date": page(`${HEADER}<h2>Certification</h2><p>By typing your name below you are signing this application electronically.</p><div class="row"><div class="col"><label for="nm">Full name *</label> <input id="nm" type="text"></div><div class="col"><label for="dt">Date *</label> <input id="dt" type="text"></div></div><button type="button" id="next">Next</button>`),
+  "/contact-certify": page(`${HEADER}<h2>Contacts</h2><div><label><input type="checkbox" id="ag"> I certify that the contact information provided is accurate</label></div><div><label for="nm">Full name *</label> <input id="nm" type="text"></div><div><label for="ph">Phone</label> <input id="ph" type="text"></div><button type="button" id="next">Next</button>`),
+  "/contacts-below-attest": page(`${HEADER}<h2>Application</h2><section><p>I certify under penalty of perjury that the information in this application is true and correct.</p></section><section><h3>Primary Contact</h3><div><label for="nm">Full name *</label> <input id="nm" type="text"></div><div><label for="em">Email</label> <input id="em" type="text"></div></section><button type="button" id="next">Next</button>`),
   // A summary page with an attachment widget and NO review wording (a portal whose wording we do
   // not know, or an attachments-only step): the file input must not make it "fillable".
   "/review-plain": page(`${HEADER}<h2>Project Summary</h2>
@@ -165,6 +186,21 @@ try {
     check("navigator cut: a review heading INSIDE a mat-stepper container names the page review, and its Next is not navigator-only", sr.reviewPage === true && !sr.navOnly.includes("next"), JSON.stringify(sr));
     const sf = await terminal("/stepper-form");
     check("navigator cut: the stepper HEADER's 'Review and Submit' does not name a form step review", sf.reviewPage === false && sf.readOnlyPage === false, JSON.stringify(sf));
+    // portal-run-close-2 M1: the bar, never its wrapper.
+    for (const path of ["/stepper-review-div", "/stepper-review-divonly", "/steps-content-div", "/steps-content-rows"]) {
+      const t = await terminal(path);
+      check(`MUST-EXCLUDE M1 ${path}: a review step whose title is a DIV inside a stepper/steps container names the page review (terminal), and its Next is not navigator-only`,
+        t.reviewPage === true && t.terminal === true && !t.navOnly.includes("next"), JSON.stringify(t));
+    }
+    for (const path of ["/spa-header-form", "/progress-spans-form"]) {
+      const t = await terminal(path);
+      check(`MUST-PASS M1 ${path}: a classed-div step bar listing "Review and Submit" is still cut — the form step is not review`, t.reviewPage === false && t.terminal === false, JSON.stringify(t));
+    }
+    // portal-run-close-2 M2: the statement around the box, in its own block.
+    for (const [path, want] of [["/sig-below", "typed"], ["/sig-above5", "typed"], ["/sig-date", "typed"], ["/contact-certify", ""], ["/contacts-below-attest", ""]] as const) {
+      const t = await terminal(path);
+      check(`${want ? "MUST-EXCLUDE" : "MUST-PASS"} M2 ${path}: ${want ? "the name box is the typed signature step" : "the contact's name box is NOT a signature"}`, t.sig === want, JSON.stringify(t));
+    }
     await p.context().close();
   }
 

@@ -70,6 +70,27 @@ const V: Record<string, V> = {
   // PowerClerk-style: where the utility sends its DocuSign — an email box, never a name box.
   pcEsigEmailText: { step2: `<h2>Customer Information</h2><p>The utility will send the interconnection agreement for signature through DocuSign.</p><div><label for="nm">Customer Email for e-Signature *</label> <input id="nm" data-name type="text"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, nameBox: "email" },
   pcEsigEmailType: { step2: `<h2>Customer Information</h2><div><label for="nm">Customer Email for e-Signature *</label> <input id="nm" data-name type="email"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, nameBox: "email" },
+  // portal-run-close-2 M2 — the statement read from the box's OWN BLOCK, before AND after it.
+  // MUST-EXCLUDE: the statement BELOW the box; the statement in a sibling <section> with the box
+  // five levels deep (section>div.body>div.row>div.col>div.field>input — ordinary Angular nesting).
+  sibBelow: { step2: `<h2>Certification</h2><div><label for="nm">Type your full name *</label> <input id="nm" data-name type="text"></div><p>By typing your name above you are signing this application electronically. I certify under penalty of perjury that I am the applicant or the applicant's authorized agent and that the information in this application is true and correct.</p>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, sigLabel: "Type your full name", nameBox: "signer" },
+  sibAbove5: { step2: `<h2>Certification</h2><section class="card"><div class="body"><p>I certify under penalty of perjury that I am the applicant or the applicant's authorized agent and that the information in this application is true and correct.</p></div></section><section class="card"><div class="body"><div class="row"><div class="col"><div class="field"><label for="nm">Type your full name *</label> <input id="nm" data-name type="text"></div></div></div></div></section>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, sigLabel: "Type your full name", nameBox: "signer" },
+  // MUST-PASS (no false signature): an "I certify the CONTACT information" tick above a contacts
+  // "Full name" (a phone box beside it); an "I agree to receive email updates" tick; an attesting
+  // section ABOVE a separate contacts section (Full name + Email) — the email box bounds the block.
+  contactUnderCertify: { step2: `<h2>Contacts</h2><div><label><input type="checkbox" id="ag"> I certify that the contact information provided is accurate</label></div><div><label for="nm">Full name *</label> <input id="nm" data-name type="text"></div><div><label for="ph">Phone</label> <input id="ph" type="text"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, nameBox: "contact" },
+  contactUnderAgree: { step2: `<h2>Contacts</h2><div><label><input type="checkbox" id="ag"> I agree to receive email updates about my application</label></div><div><label for="nm">Full name *</label> <input id="nm" data-name type="text"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, nameBox: "contact" },
+  contactsBelowAttest: { step2: `<h2>Application</h2><section><p>I certify under penalty of perjury that I am the applicant or the applicant's authorized agent and that the information in this application is true and correct.</p></section><section><h3>Primary Contact</h3><div><label for="nm">Full name *</label> <input id="nm" data-name type="text"></div><div><label for="em">Email</label> <input id="em" type="text"></div></section>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, nameBox: "contact" },
+  // MUST-PASS the other way: a paper-style signature block with a Date box beside the name box —
+  // the Date box is part of the signature block, it does not cut the statement off.
+  signBlockWithDate: { step2: `<h2>Certification</h2><p>By typing your name below you are signing this application electronically.</p><div class="row"><div class="col"><label for="nm">Full name *</label> <input id="nm" data-name type="text"></div><div class="col"><label for="dt">Date *</label> <input id="dt" type="text"></div></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, sigLabel: "Full name", nameBox: "signer" },
+  // portal-run-close-2 M1 — the step bar is cut, never the stepper that wraps the review step.
+  // MUST-EXCLUDE (a filing during a learn): the review title is a DIV (no h1-h6/legend) inside
+  // mat-stepper-horizontal; the same with no paragraph at all; a "wizard-steps-content" leaf with a
+  // div title. Next files to /apply/12 (no filing word); the naive planner would click it.
+  reviewStepperNoHeading: { step2: `<h2>More Info</h2><div><label for="nm">Product Manufacturer Name *</label> <input id="nm" data-name type="text"></div>`, review: `<div class="mat-stepper-horizontal"><div class="mat-horizontal-stepper-header-container" role="tablist"><div role="tab">1 Description</div><div role="tab">2 More Info</div><div role="tab">3 Review and Submit</div></div><div class="mat-horizontal-content-container"><div class="step-title">Step 3: Review and Submit</div><p>Please review your application before submitting.</p><p>Estimated fees: Total $78.00</p></div></div>`, lastBtn: "Next", lastUrl: "/api/energov/permit/apply/12", planner: "naive" },
+  reviewStepperDivOnly: { step2: `<h2>More Info</h2><div><label for="nm">Product Manufacturer Name *</label> <input id="nm" data-name type="text"></div>`, review: `<div class="mat-stepper-horizontal"><div class="mat-horizontal-stepper-header-container"><div class="mat-step-header">1 Description</div><div class="mat-step-header">2 More Info</div><div class="mat-step-header">3 Review and Submit</div></div><div class="mat-horizontal-content-container"><div class="step-title">Step 3: Review and Submit</div><div>Estimated fees: Total $78.00</div></div></div>`, lastBtn: "Next", lastUrl: "/api/energov/permit/apply/12", planner: "naive" },
+  reviewStepsContentDivTitle: { step2: `<h2>More Info</h2><div><label for="nm">Product Manufacturer Name *</label> <input id="nm" data-name type="text"></div>`, review: `<div class="wizard-steps-content"><div class="step-title">Step 3: Review and Submit</div><p>Please review your application before submitting.</p></div>`, lastBtn: "Next", lastUrl: "/api/energov/permit/apply/12", planner: "naive" },
 };
 
 const page = (v: V): string => `<!doctype html><html><head><title>Apply - Residential Solar</title></head><body>
@@ -154,15 +175,21 @@ export const GROUPS: Record<string, string[]> = {
   certifier: ["certifierName"],
   review: ["combinedReviewSign", "reviewNextStepsClass", "reviewMatStepper", "reviewEchoCanvas", "reviewEchoTyped"],
   planner: ["contactsFullName", "applicantName", "pcEsigEmailText", "pcEsigEmailType"],
+  // portal-run-close-2: signatureShapesAround / signatureShapesContacts / reviewStepperBar .dom.smoke.ts
+  around: ["sibBelow", "sibAbove5"],
+  contacts: ["contactUnderCertify", "contactUnderAgree", "contactsBelowAttest", "signBlockWithDate"],
+  reviewBar: ["reviewStepperNoHeading", "reviewStepperDivOnly", "reviewStepsContentDivTitle"],
 };
-const BOTH_SIGNERS = new Set(["certifyNoWord", "bareSignature", "certifierName", "combinedReviewSign", "pcEsigEmailText", "pcEsigEmailType"]);
+const BOTH_SIGNERS = new Set(["certifyNoWord", "bareSignature", "certifierName", "combinedReviewSign", "pcEsigEmailText", "pcEsigEmailType", "sibBelow", "sibAbove5", "contactUnderCertify"]);
+// A contact shape whose wrong direction is the CLIENT's signer typed in: run with a signer.
+const SIGNER_ONLY = new Set(["contactUnderAgree", "contactsBelowAttest", "signBlockWithDate"]);
 const which = (process.argv[2] ? (GROUPS[process.argv[2]] ?? process.argv[2].split(",")) : GROUPS.mf1);
 const browser = await chromium.launch();
 try {
   for (const name of which) {
     const v = V[name];
     if (!v) { console.log(`?? ${name}`); continue; }
-    for (const signer of BOTH_SIGNERS.has(name) ? ["Dana Signer", ""] : [""]) {
+    for (const signer of BOTH_SIGNERS.has(name) ? ["Dana Signer", ""] : SIGNER_ONLY.has(name) ? ["Dana Signer"] : [""]) {
       const ctx = await browser.newContext();
       ctx.setDefaultTimeout(8000);
       await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
@@ -285,6 +312,48 @@ try {
           st.typed === "Dana Signer" && st.step === 3, detail);
       } else {
         check(`MUST-EXCLUDE (kill R) ${tag}: PAUSED signature_no_signer on replay, nothing typed`,
+          res?.ok !== true && res?.pauseReason === "signature_no_signer" && st.box === "" && st.step === 2, detail);
+      }
+    }
+  }
+
+  // REPLAY OF A CSS-ONLY OLD RECIPE, STATEMENT BELOW (portal-run-close-2 M2, skeptic replayOldCss):
+  // {css:'#nm'} bound to installerContactName with no label and no e-signature note — only the
+  // live in-page reading can know the box is a signature, and it used to read only ABOVE it.
+  if (which.includes("sibBelow")) {
+    const url = `${base}/apps/selfservice?v=sibBelow#/permit/apply/12`;
+    const steps: RecipeStep[] = [
+      { action: "fill", phase: "fill", selector: { css: "#desc" }, field: "projectDescription", note: "Description" } as RecipeStep,
+      { action: "click", phase: "fill", selector: { css: "#next" }, note: "Next" } as RecipeStep,
+      { action: "fill", phase: "fill", selector: { css: "#nm" }, field: "installerContactName", note: "Type your full name" } as RecipeStep,
+      { action: "click", phase: "fill", selector: { css: "#next" }, note: "Next" } as RecipeStep,
+      { action: "stopForReview" } as RecipeStep,
+    ];
+    const recipe = { id: "sig-shapes-old-css-below", scopeType: "ahj", profileKey: "ia|iowa city|", state: "IA", ahj: "City of Iowa City", utility: "", portalPlatform: "energov", portalUrl: url, status: "complete", version: 1, createdBy: "smoke", createdAt: "", updatedAt: "", notes: "", steps } as unknown as PortalRecipe;
+    const withSigner = { projectDescription: "Roof-mounted solar PV", installerContactName: "Casey Contact", authorizedSignerName: "Dana Signer" } as Record<string, string>;
+    const { authorizedSignerName: _drop2, ...noSigner } = withSigner;
+    for (const [tag, values] of [["replayOldCss sibBelow signer=\"Dana Signer\"", withSigner], ["replayOldCss sibBelow signer=\"\"", noSigner]] as const) {
+      const ctx = await browser.newContext();
+      ctx.setDefaultTimeout(8000);
+      await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
+      const pg = await ctx.newPage();
+      await pg.goto(url);
+      posts.length = 0;
+      const adapter = new RecipeAdapter(recipe, values, {}, {});
+      (adapter as unknown as { page: unknown }).page = pg;
+      let res: { ok: boolean; message: string; pauseReason?: string } | null = null;
+      try { res = await adapter.fillApplication({} as ProjectRecord); } catch (e) { res = { ok: false, message: `threw ${String(e).slice(0, 200)}` }; }
+      await pg.waitForTimeout(300);
+      const st = await readState(pg);
+      await ctx.close().catch(() => null);
+      const filing = posts.filter((p) => !/draft\/save/.test(p));
+      const detail = `filingPOSTs=${filing.length} state=${JSON.stringify(st)} ok=${String(res?.ok)} pause=${String(res?.pauseReason)} msg=${String(res?.message).replace(/\s+/g, " ").slice(0, 240)}`;
+      check(`${tag}: 0 filing requests reach the server`, filing.length === 0 && st.lastClicked !== true, detail);
+      if ((values as Record<string, string>).authorizedSignerName) {
+        check(`MUST-EXCLUDE ${tag}: a css-only old step bound to installerContactName signs as the CLIENT's signer (statement BELOW the box), never the contact`,
+          st.typed === "Dana Signer" && st.step === 3, detail);
+      } else {
+        check(`MUST-EXCLUDE ${tag}: PAUSED signature_no_signer on replay, nothing typed`,
           res?.ok !== true && res?.pauseReason === "signature_no_signer" && st.box === "" && st.step === 2, detail);
       }
     }

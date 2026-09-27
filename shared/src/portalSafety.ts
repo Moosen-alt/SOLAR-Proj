@@ -191,6 +191,10 @@ export function portalSafetyFactory() {
   };
 
   const isPayFee = (label: string | null | undefined): boolean => !!label && PAY_FEE.test(String(label));
+  /** ONE question: does a DIALOG's text (a native confirm(), a DOM modal) speak of paying? Asked of
+   *  the approved final submit's confirm dialogs (native and DOM): a payment-worded one is never
+   *  accepted — automation never pays (portal-run-close-2 M3). Word-bounded: "feedback" is not a fee. */
+  const isPaymentWordedText = (text: string | null | undefined): boolean => /\b(pay(s|ing|ment|ments|able)?|fees?|checkout|credit\s*card|debit\s*card|card\s*(number|holder)|charges?|charged)\b/i.test(String(text ?? ""));
 
   // THE PAGE NAMES ITSELF THE REVIEW STEP. Deliberately narrower than "mentions review":
   // "Please review the terms and conditions" is an entry disclaimer, "Plan Review Fee" a fee line.
@@ -375,18 +379,71 @@ export function portalSafetyFactory() {
       return !/search/i.test(`${c.getAttribute("name") || ""} ${c.id || ""} ${c.getAttribute("placeholder") || ""} ${c.getAttribute("aria-label") || ""}`);
     });
   const holdsHeading = (el: Element): boolean => !!el.querySelector("h1, h2, h3, h4, h5, h6, legend");
+  //
+  // THE BAR, NEVER ITS WRAPPER (portal-run-close-2 M1). "No fillable and no heading" is the shape
+  // of a REVIEW PAGE too: it has no fillables by nature, and its title may be a <div
+  // class="step-title">Step 3: Review and Submit</div>. mat-stepper-horizontal wraps that content
+  // with its header, so the whole step was cut, the page did not read as review, the learner
+  // clicked the filing "Next" (skeptic reviewStepperNoHeading: 3 POSTs) and the backstop — which
+  // reads the same text — saw a non-terminal page. Two rules, both needed:
+  //   WRAPPER: a candidate that CONTAINS a step bar (the [role=tablist] header, the <ol> of short
+  //            steps, the stepper-header container) and ANY text outside it is a wrapper, never
+  //            cut — the nested bar is cut on its own and the step's content stays.
+  //   LEAF:    a class-matched candidate with no nested bar is cut only when it has a BAR'S
+  //            SHAPE: no fillable, no heading, no paragraph / definition list / table, at least
+  //            three lines (a wizard lists its steps) and every line short (step labels).
+  //            "wizard-steps-content" holding a div title and "Please review your application…"
+  //            is content, and so is a div title over one short line.
+  // A semantic nav / navigation / tablist keeps the old rule (no fillable; it may carry a
+  // hidden "Main menu" heading). Only the OUTERMOST bar is returned: its items' own texts, cut
+  // one by one, would also cut a page title that repeats a step's name ("Review and Submit").
+  const BAR_SEMANTIC = "nav, [role=navigation], [role=tablist]";
+  const BAR_CANDIDATES = `${BAR_SEMANTIC}, [aria-label*=step i], [class*=stepper], [class*=steps], [class*=stepNav], [class*=step-nav], [class*=step-header], [class*=progress]`;
+  const textOf = (el: Element): string => String((el as HTMLElement).innerText || el.textContent || "");
+  const shortStepList = (list: Element): boolean => {
+    const items = Array.from(list.children);
+    return items.length >= 3 && items.every((li) => textOf(li).trim().length < 60);
+  };
+  const barShaped = (el: Element): boolean => {
+    if (el.querySelector("p, dl, table")) return false;
+    const text = textOf(el);
+    if (text.length > 600) return false;
+    // The steps: its element children (through one wrapper), or its lines — inline <span> steps
+    // share one line ("1. Customer 2. Documents 3. Review & Submit"), block ones do not.
+    // And the steps are ALIKE: one tag, one class (a step's state — active / current / done — set
+    // aside). A review step's content is a title div, then rows unlike it.
+    const shown = (c: Element): boolean => textOf(c).trim() !== "";
+    let items = Array.from(el.children).filter(shown);
+    if (items.length === 1 && items[0].children.length >= 3) items = Array.from(items[0].children).filter(shown);
+    if (items.length < 3 || !items.every((c) => textOf(c).trim().length < 60)) return false;
+    const kind = (c: Element): string => `${c.tagName}.${String(typeof c.className === "string" ? c.className : "").split(/\s+/)
+      .filter((k) => k && !/^(is-|has-)|active|current|complete|done|selected|disabled|visited|focus|first|last|odd|even|todo|pending|upcoming/i.test(k)).sort().join(".")}`;
+    return items.every((c) => kind(c) === kind(items[0]));
+  };
+  const isBarItself = (el: Element): boolean => {
+    if (holdsFillable(el)) return false;
+    if (el.matches(BAR_SEMANTIC)) return true;
+    if (el.matches("ol, ul")) return shortStepList(el) && !holdsHeading(el);
+    return !holdsHeading(el) && barShaped(el);
+  };
   const isStepBar = (el: Element): boolean => {
     if (holdsFillable(el)) return false;
-    if (el.matches("nav, [role=navigation], [role=tablist]")) return true;
-    return !holdsHeading(el);
+    if (el.matches(BAR_SEMANTIC) || el.matches("ol, ul")) return isBarItself(el);
+    if (holdsHeading(el)) return false;
+    const inner = Array.from(el.querySelectorAll(`${BAR_CANDIDATES}, ol, ul`)).filter((c) => c !== el && isBarItself(c));
+    if (inner.length) {
+      // A wrapper: cut only when nothing but its bar(s) is inside.
+      let rest = textOf(el);
+      for (const n of inner) { const t = textOf(n).trim(); if (t) rest = rest.split(t).join(" "); }
+      return rest.trim() === "";
+    }
+    return barShaped(el);
   };
-  const stepNavigatorsInPage = (d: Document): Element[] =>
-    Array.from(d.querySelectorAll("nav, [role=navigation], [role=tablist], [aria-label*=step i], [class*=stepper], [class*=steps], [class*=stepNav], [class*=step-nav], [class*=progress]"))
-      .filter(isStepBar)
-      .concat(Array.from(d.querySelectorAll("ol, ul")).filter((list) => {
-        const items = Array.from(list.children);
-        return items.length >= 3 && items.every((li) => ((li as HTMLElement).innerText || li.textContent || "").trim().length < 60) && isStepBar(list);
-      }));
+  const stepNavigatorsInPage = (d: Document): Element[] => {
+    const bars = Array.from(d.querySelectorAll(BAR_CANDIDATES)).filter(isStepBar)
+      .concat(Array.from(d.querySelectorAll("ol, ul")).filter((list) => shortStepList(list) && isStepBar(list)));
+    return bars.filter((b) => !bars.some((o) => o !== b && o.contains(b)));
+  };
   const pageTextWithoutNavigatorInPage = (d: Document): string => {
     let pageText = d.body.innerText || d.body.textContent || "";
     const navs = stepNavigatorsInPage(d);
@@ -405,8 +462,10 @@ export function portalSafetyFactory() {
    * detector below and by the learner's fill guard (nothing but the signature pass may type
    * into one — a planner would put the contact's or the homeowner's name there).
    *   - the name box: "Please type your name as consent to electronically sign this application"
-   *     (Iowa City), a typed-signature box (EnerGov #signatureTypedNameId). Deliberately NOT a bare
-   *     "Signature" label: that stays the planner's, as before.
+   *     (Iowa City), a typed-signature box (EnerGov #signatureTypedNameId), and — since the ONE
+   *     SIGNER RULE below — a bare "Signature" / "Applicant Signature" label too, or a plain name
+   *     box whose own block carries a signing attestation (isSignatureNameBox + textAroundInPage).
+   *     None of these is the planner's any more: a planner would type a contact's name there.
    *   - the switch: "Enable Type Signature".
    */
   //
@@ -423,8 +482,9 @@ export function portalSafetyFactory() {
   //   isSignatureNameLabel(label)         — the label alone names it (replay's resolveValue and
   //                                         the fill guard have nothing but the label).
   //   isSignatureNameBox(label, above)    — the label is a name box ("type your full name",
-  //                                         "printed name", "full name") and the text ABOVE it
-  //                                         attests. The in-page reading uses this; the learner
+  //                                         "printed name", "full name") and the text AROUND it
+  //                                         in its own block (textAroundInPage) attests a
+  //                                         signature. The in-page reading uses this; the learner
   //                                         records such a box with an "e-signature:" note, which
   //                                         is how replay knows it again.
   const SIGNATURE_NAME_LABEL =
@@ -437,9 +497,15 @@ export function portalSafetyFactory() {
     if (!t) return false;
     return SIGNATURE_NAME_LABEL.test(t) && !TYPE_SIGNATURE_TOGGLE.test(t) && !SIGNATURE_LABEL_EXCLUDE.test(t);
   };
-  // The statement above a name box that makes typing into it a signature.
+  // The statement around a name box that makes typing into it a signature. ABOUT SIGNING, not any
+  // "I certify": "I certify that the contact information provided is accurate" above a contacts
+  // "Full name" made the contact box a signature box (skeptic contactUnderCertify: the client's
+  // signer typed as the contact, or a false pause signature_no_signer on a contacts page). An
+  // "I certify / attest / declare…" counts when the same sentence is about the APPLICATION /
+  // permit / this form / request / submission, or it is under penalty of perjury; the signing
+  // wordings (by typing your name, electronic signature, sign below…) count on their own.
   const ATTESTATION_TEXT =
-    /\bi\s+(hereby\s+)?(certify|attest|declare|swear|affirm|acknowledge and certify)\b|under\s+(the\s+)?penalt(y|ies)\s+of\s+perjury|by\s+(typing|entering|providing|printing)\s+(your|my)\s+(full\s+)?name\b|\bsign(ing|ed|s)?\s+(this\s+)?(application|form|document|agreement|permit|request)?\s*electronically|electronic(ally)?\s+sign|\be-?sign(ature|ing|ed)?\b|consent\s+to\s+(electronically\s+)?sign|constitutes?\s+(your|an?|my|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\b(your|my|applicant'?s?|owner'?s?|contractor'?s?)\s+(electronic\s+|typed\s+|digital\s+)?signature\b|(^|\n)\s*(e-?|electronic\s+|typed\s+|digital\s+)?signature\s*[:*]?\s*($|\n)|\bsign\s+(below|here)\b/i;
+    /\bi\s+(hereby\s+)?(certify|attest|declare|swear|affirm|acknowledge and certify)\b[^.]{0,200}\b(application|permit|this\s+(form|request|submission|document))\b|under\s+(the\s+)?penalt(y|ies)\s+of\s+perjury|by\s+(typing|entering|providing|printing)\s+(your|my)\s+(full\s+)?name\b|\bsign(ing|ed|s)?\s+(this\s+)?(application|form|document|agreement|permit|request)?\s*electronically|electronic(ally)?\s+sign|\be-?sign(ature|ing|ed)?\b|consent\s+to\s+(electronically\s+)?sign|constitutes?\s+(your|an?|my|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\b(your|my|applicant'?s?|owner'?s?|contractor'?s?)\s+(electronic\s+|typed\s+|digital\s+)?signature\b|(^|\n)\s*(e-?|electronic\s+|typed\s+|digital\s+)?signature\s*[:*]?\s*($|\n)|\bsign\s+(below|here)\b/i;
   // A bare name box — the kind an attestation turns into a signature.
   const NAME_BOX_LABEL =
     /\b(type|print|enter)\s+(in\s+)?(your|my)\s+(full\s+|legal\s+)*name\b|\b(your|my)\s+(full\s+|legal\s+)+name\b|^\s*(full\s+|legal\s+)*name\s*(\*|:)?\s*$|\b(full|legal)\s+name\s+of\s+(the\s+)?(person|individual|party)\b/i;
@@ -451,28 +517,67 @@ export function portalSafetyFactory() {
   };
   const isTypeSignatureToggleLabel = (label: string | null | undefined): boolean => !!label && TYPE_SIGNATURE_TOGGLE.test(String(label));
 
-  /** Runs IN THE PAGE: the text ABOVE a control within its own block — the preceding siblings
-   *  at up to four ancestor levels (nearest first, the block's heading included), capped. Never
-   *  the whole body: an "I certify" tick elsewhere on a contacts page must not turn a plain
-   *  "Full name" box into a signature. */
-  const textAboveInPage = (el: Element, cap = 900): string => {
+  /**
+   * Runs IN THE PAGE: the text AROUND a control within its OWN BLOCK — siblings before AND after
+   * it, ascending (nearest first), until the level whose parent also holds ANOTHER, UNRELATED
+   * fillable control: there only the siblings up to that control are read, and the reading
+   * stops. Never the whole contacts form: an "I certify" tick elsewhere must not turn a plain
+   * "Full name" box into a signature.
+   *
+   * portal-run-close-2 M2. This read "the preceding siblings at up to four ancestor levels", and
+   * was wrong both ways: a statement BELOW the box ("By typing your name above you are
+   * signing…", skeptic sibBelow) and one in a sibling <section> five levels up (sibAbove5,
+   * ordinary Angular nesting) were missed — the installer contact was typed into the signature
+   * box, at learn AND at replay — while a contacts step whose "I certify the contact information
+   * is accurate" tick sat two siblings above "Full name" became a signature box. RELATED controls
+   * do not bound the block: a Date / Title / Initials box, or any control whose label says
+   * "sign", is part of a signature block. A checkbox or radio does not bound it either (the
+   * attestation tick is one). Capped at twelve levels and `cap` characters.
+   */
+  const SIGNATURE_BLOCK_RELATED = /\b(date|title|initials?)\b|sign/i;
+  const textAroundInPage = (el: Element, cap = 1500): string => {
     const clean = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
+    const shownBox = (c: Element): boolean => {
+      const r = c.getBoundingClientRect();
+      const cs = getComputedStyle(c);
+      return r.width > 1 && r.height > 1 && cs.display !== "none" && cs.visibility !== "hidden";
+    };
+    const OTHER = "input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]):not([type=reset]):not([type=checkbox]):not([type=radio]):not([type=file]):not([type=search]), select, textarea";
+    // An unrelated fillable control inside `root` (other than the box itself)?
+    const unrelatedIn = (root: Element): boolean => {
+      const all = root.matches(OTHER) ? [root] : [];
+      return all.concat(Array.from(root.querySelectorAll(OTHER))).some((c) => {
+        if (c === el || c.contains(el) || !shownBox(c)) return false;
+        const label = String(controlLabelInPage(c) || c.getAttribute("aria-label") || c.getAttribute("placeholder") || `${c.id || ""} ${c.getAttribute("name") || ""}`);
+        return !SIGNATURE_BLOCK_RELATED.test(label);
+      });
+    };
     const bits: string[] = [];
     let total = 0;
+    const push = (t: string): void => { if (t && total < cap) { bits.push(t); total += t.length; } };
+    const body = el.ownerDocument ? el.ownerDocument.body : null;
     let node: Element | null = el;
-    for (let hops = 0; node && hops < 4 && total < cap; hops++) {
-      let sib: Element | null = node.previousElementSibling;
-      while (sib && total < cap) {
-        const t = clean((sib as HTMLElement).innerText || sib.textContent);
-        if (t) { bits.push(t); total += t.length; }
-        sib = sib.previousElementSibling;
+    for (let hops = 0; node && node.parentElement && hops < 12 && total < cap; hops++) {
+      const parent: Element = node.parentElement;
+      const bounded = unrelatedIn(parent);
+      // A wrapping <label>/<fieldset>'s own text (its statement) belongs to the box.
+      if (node !== el && (node.tagName === "LABEL" || node.tagName === "FIELDSET")) {
+        push(clean(Array.from(node.childNodes).filter((n) => n.nodeType === 3).map((n) => n.nodeValue).join(" ")));
       }
-      // A wrapping <label>'s own text (its statement) counts as above the box.
-      if (node.tagName === "LABEL" || node.tagName === "FIELDSET") {
-        const own = clean(Array.from(node.childNodes).filter((n) => n.nodeType === 3).map((n) => n.nodeValue).join(" "));
-        if (own) { bits.push(own); total += own.length; }
+      for (const dir of ["previousElementSibling", "nextElementSibling"] as const) {
+        let sib: Element | null = node[dir];
+        while (sib && total < cap) {
+          if (bounded && unrelatedIn(sib)) break;
+          // Not the page's chrome: a step bar listing "Signature", a site header or footer.
+          const chrome = /^(SCRIPT|STYLE|TEMPLATE|NOSCRIPT)$/.test(sib.tagName)
+            || sib.matches("nav, header, footer, [role=navigation], [role=banner], [role=contentinfo]")
+            || ((sib.matches(BAR_CANDIDATES) || (sib.matches("ol, ul") && shortStepList(sib))) && isStepBar(sib));
+          if (!chrome) push(clean((sib as HTMLElement).innerText || sib.textContent));
+          sib = sib[dir];
+        }
       }
-      node = node.parentElement;
+      if (bounded || parent.tagName === "FORM" || parent === body) break;
+      node = parent;
     }
     return bits.join(" \n ").slice(0, cap);
   };
@@ -528,7 +633,7 @@ export function portalSafetyFactory() {
       const label = nameOf(el);
       const typedBox = /\btyped?\s*signature\b|signature\s*typed/i.test(`${label} ${idWords(el)}`);
       if (typedBox) take(el, "typed");
-      else if (isSignatureNameBox(label, textAboveInPage(el))) take(el, "consent");
+      else if (isSignatureNameBox(label, textAroundInPage(el))) take(el, "consent");
     }
     // The pad: a visible canvas inside (or named as) a signature container.
     const pad = Array.from(d.querySelectorAll("canvas")).find((c) => {
@@ -1202,6 +1307,7 @@ export function portalSafetyFactory() {
     isPayRequestUrl,
     isSubmitIntent,
     isPayFee,
+    isPaymentWordedText,
     isFinalSubmitControl,
     classifyRecordedClick,
     isSecretField,
@@ -1218,7 +1324,7 @@ export function portalSafetyFactory() {
     isSignatureNameBox,
     isTypeSignatureToggleLabel,
     signatureStepInPage,
-    textAboveInPage,
+    textAroundInPage,
     terminalPageInPage,
     fieldIdentityInPage,
     isPaymentElementInPage,
@@ -1233,6 +1339,7 @@ const impl: PortalSafety = portalSafetyFactory();
 
 export const isSubmitIntent = impl.isSubmitIntent;
 export const isPayFee = impl.isPayFee;
+export const isPaymentWordedText = impl.isPaymentWordedText;
 export const isFinalSubmitControl = impl.isFinalSubmitControl;
 export const classifyRecordedClick = impl.classifyRecordedClick;
 export const isSecretField = impl.isSecretField;

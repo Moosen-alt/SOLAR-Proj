@@ -307,11 +307,15 @@ await check("ONE SIGNER RULE: a box whose label reads as signing / certifying / 
   const CERTIFY = "I certify under penalty of perjury that I am the applicant or the applicant's authorized agent and that the information in this application is true and correct.";
   const BY_TYPING = "By typing your name below you are signing this application electronically.";
   const HEREBY = "I hereby certify that I have read and examined this application and know the same to be true and correct.";
-  for (const [label, above] of [["Type your full name *", CERTIFY], ["Type your full name *", BY_TYPING], ["Full name *", HEREBY], ["Name", CERTIFY], ["Print your name", "Signature"], ["Your legal name", "Sign below to consent."]] as const) {
+  for (const [label, above] of [["Type your full name *", CERTIFY], ["Type your full name *", BY_TYPING], ["Full name *", HEREBY], ["Name", CERTIFY], ["Print your name", "Signature"], ["Your legal name", "Sign below to consent."],
+    // portal-run-close-2 M2: the statement BELOW the box counts (textAroundInPage reads both ways).
+    ["Type your full name *", "By typing your name above you are signing this application electronically."]] as const) {
     assert.ok(isSignatureNameBox(label, above), `"${label}" under "${above.slice(0, 30)}" is not a signature box`);
     assert.ok(pageCopy.isSignatureNameBox(label, above), `page copy: "${label}"`);
   }
-  for (const [label, above] of [["Full name *", "Company (account holder)"], ["Type your full name *", "Contacts"], ["Full name", ""], ["Applicant Name *", CERTIFY], ["Customer Email for e-Signature *", BY_TYPING], ["Name", "You certify by submitting."], ["Full name", "This is the signature page of the plan set."]] as const) {
+  for (const [label, above] of [["Full name *", "Company (account holder)"], ["Type your full name *", "Contacts"], ["Full name", ""], ["Applicant Name *", CERTIFY], ["Customer Email for e-Signature *", BY_TYPING], ["Name", "You certify by submitting."], ["Full name", "This is the signature page of the plan set."],
+    // portal-run-close-2 M2: an "I certify" that is not about signing the application (skeptic contactUnderCertify).
+    ["Full name *", "I certify that the contact information provided is accurate"], ["Full name *", "I agree to receive email updates about my application"]] as const) {
     assert.ok(!isSignatureNameBox(label, above), `"${label}" under "${above.slice(0, 30)}" wrongly reads as a signature box`);
     assert.ok(!pageCopy.isSignatureNameBox(label, above), `page copy: "${label}"`);
   }
