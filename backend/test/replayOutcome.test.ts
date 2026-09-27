@@ -210,6 +210,14 @@ await check("(f) a replay that STOPPED BEFORE the review page is paused_for_huma
   assert.doesNotMatch(detail, /challenge|nothing was staged/i, `the stage line calls a stop before review a challenge: ${detail}`);
   assert.match(detail, /STOPPED on "Step 2: Services > Attachments"/);
   assert.equal(projectStatus(projectId), before, "a run that did not reach review advanced the project");
+  // THE OPERATOR FINISHES IT BY HAND, THEN RECORDS IT: Capture Confirmation (the route's own
+  // function) must take the paused run — that record is what starts tracking the filing.
+  repo.captureConfirmation(db, String(run.id), { applicationNumber: "BLD-26-000123", submittedBy: "operator" });
+  assert.equal(fx.latestRun(projectId)!.status, "submitted", "the paused run was not recorded as filed");
+  const subs = db.query<{ status: string; application_number: string }>("SELECT status, application_number FROM submissions WHERE project_id = ?", [projectId]);
+  assert.ok(subs.some((s) => s.status === "submitted" && s.application_number === "BLD-26-000123"), `no submitted row carries the number: ${JSON.stringify(subs)}`);
+  const target = db.get<{ permit_number: string; active: number }>("SELECT permit_number, active FROM permit_check_targets WHERE project_id = ? AND active = 1", [projectId]);
+  assert.ok(target, "capturing the paused run's filing started no tracking target");
   // ...and an MFA/CAPTCHA pause keeps its own sentence (it did stage nothing).
   assert.match(repo.pausedRunSentence("mfa_captcha", {}), /verification challenge \(MFA\/CAPTCHA\) — nothing was staged/);
 });
