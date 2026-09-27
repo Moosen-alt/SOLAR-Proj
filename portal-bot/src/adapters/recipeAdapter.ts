@@ -456,6 +456,11 @@ export class RecipeAdapter extends BasePortalAdapter {
   /** Recorded uploads this run PERFORMED: the slot's recorded label and the file name the portal
    *  was handed. The read-back for an upload (see uploadSlotsHeld). */
   private uploadsPerformed: Array<{ label: string; fileName: string }> = [];
+  /** runs-finish item 4: how many of uploadsPerformed a commit click has confirmed (or an advance left behind). */
+  private uploadsSettledUpTo = 0;
+  /** runs-finish item 3: the run ended on a page NOT verified as the review page — where, in the
+   *  page's own words. stopAtReview then says so instead of "staged to the review screen". */
+  private stoppedBeforeReview = "";
   /** Policy-default steps whose control was absent when their turn came — re-tried once
    *  just before the page's advance, when a conditional section has had every chance to
    *  render. Cleared on each advance. */
@@ -801,6 +806,13 @@ export class RecipeAdapter extends BasePortalAdapter {
           ? `${this.portalName}: the approved final submit was clicked and the portal confirmed it (${String(outcome.evidence ?? "").slice(0, 80)}). CONFIRM the filing exists on the portal (list/record number). No fee payment was automated.`
           : `${this.portalName}: the approved final submit was CLICKED; outcome ${outcome.verdict.toUpperCase()} — human must verify on the portal before anything is clicked again.${outcome.evidence ? ` (${String(outcome.evidence).slice(0, 120)})` : ""} No fee payment was automated.`,
         { finalSubmitClicked: true, finalSubmitOutcome: outcome },
+      );
+    }
+    // Never "staged to the review screen" for a run that did not verifiably reach it (runs-finish 3).
+    if (this.stoppedBeforeReview) {
+      return ok(
+        `${HUMAN_REVIEW_MESSAGE} The recipe did NOT stage ${this.portalName} at its review screen — it ${this.stoppedBeforeReview} AUTOMATION HAS STOPPED.`,
+        { finalSubmitClicked: false, stoppedBeforeReview: true },
       );
     }
     return ok(
@@ -1310,6 +1322,8 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
       // Never advance while the portal is still saving — the commit signal is exact.
       if (step.action === "click") await this.timed("autosave-wait", () => this.waitForAutosaveCommitted());
+      // Nor while its loading mask is up ("Please wait..."): a click under it lands nowhere (runs-finish item 4).
+      if (step.action === "click") await this.timed("overlay-wait", () => this.waitForLoadingMaskClear(`"${String(step.note ?? "the click").slice(0, 50)}"`));
       // PERSIST SETTLE before an advancing click. PowerClerk autosaves each page (~3s) and
       // only commits fields on blur; advancing too soon saves a BLANK draft. If the prior
       // steps filled fields, wait for the autosave to settle before this click.
@@ -1724,6 +1738,13 @@ export class RecipeAdapter extends BasePortalAdapter {
         const ended = await this.sessionEndedBanner();
         return fail(`${ended ? `THE PORTAL ENDED THIS SESSION mid-run ("${ended}") — commonly a concurrent login with the same account (some portals allow exactly one session per user). The step failure below is the symptom, not the cause. ` : ""}Recipe step failed (${step.action}${step.note ? ` — ${step.note}` : ""}): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}${context}`, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, failedStepIndex: stepIdx, trace, slowSteps, requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, stoppedAtPayment: this.stoppedAtPayment, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
       }
+      // A COMMIT CLICK AFTER THIS PAGE'S UPLOADS (the attachment Save): the page must LIST the file
+      // before the run moves on (runs-finish item 4). An advance leaves the page's uploads behind.
+      if (performed && step.action === "click" && this.uploadsPerformed.length > this.uploadsSettledUpTo) {
+        const said = `${String(step.note ?? "")} ${String(step.selector?.name ?? step.selector?.text ?? "")}`;
+        if (/^advance\b/i.test(String(step.note ?? ""))) this.uploadsSettledUpTo = this.uploadsPerformed.length;
+        else if (/\b(save|upload|attach|commit)/i.test(said)) await this.timed("upload-commit", () => this.confirmUploadsListed(`"${String(step.note ?? "the save").slice(0, 50)}"`));
+      }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
       if (["fill", "select", "check", "uncheck", "press"].includes(step.action)) { prevWasInput = true; wroteToThisPage = true; }
@@ -1914,16 +1935,56 @@ export class RecipeAdapter extends BasePortalAdapter {
     // aborted and stops the run, named.
     this.backstop?.lockReview(`replay stopped at review (${this.recipe.id})`);
     const review = await this.verifyReviewScreen(project);
-    return ok(
-      `Replayed ${executed} recorded step(s); stopped at review.${review.summary}`,
-      {
-        executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport,
-        healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, slowSteps,
-        requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, stoppedAtPayment: this.stoppedAtPayment, pageShotDir: this.pageShotDir,
-        outcomeShotPath: this.outcomeShotPath,
-        reviewFieldsSeen: review.fieldsSeen, reviewFieldsConfirmed: review.confirmed, reviewMismatches: review.mismatches,
-      },
-    );
+    const data = {
+      executed, skipped, finalSubmitClicked: false, gapFill: this.gapFillReport,
+      healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, slowSteps,
+      requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, stoppedAtPayment: this.stoppedAtPayment, pageShotDir: this.pageShotDir,
+      outcomeShotPath: this.outcomeShotPath,
+      reviewFieldsSeen: review.fieldsSeen, reviewFieldsConfirmed: review.confirmed, reviewMismatches: review.mismatches,
+    };
+    // HONEST STATUS (runs-finish item 3). Live run 191e45c8 said "stopped at review" on Accela's
+    // attachments page with 0 of 5 project values found, and was recorded ready-to-submit. A run
+    // that ends on a page the shared reading says is NOT the review page, showing none of the
+    // project's values, pauses for a person, named — never "staged to the review screen".
+    const stop = !pastReview && !this.stoppedAtPayment ? await this.whereTheRunStopped(review.confirmed) : null;
+    if (stop) {
+      this.stoppedBeforeReview = stop.message;
+      return { ...ok(`Replayed ${executed} recorded step(s); ${stop.message}${review.summary}`, { ...data, stoppedBeforeReview: stop.where }), pauseReason: "stopped_before_review" };
+    }
+    return ok(`Replayed ${executed} recorded step(s); stopped at review.${review.summary}`, data);
+  }
+
+  /** WHERE DID THE RUN STOP, IF NOT AT REVIEW? (runs-finish item 3, the part that needs no wizard-
+   *  step reading.) null = at review, or cannot tell: the review check found this project's values
+   *  on the page, or the shared reading (terminalPageInPage, the backstop's own question) does not
+   *  say "not review" — a page that cannot be read (a unit-test double) keeps today's report.
+   *  Otherwise: the page is readable, is not the review page, and shows none of the project's
+   *  values — the run stopped before review, and says where in the page's own words. */
+  private async whereTheRunStopped(confirmed: number): Promise<{ where: string; message: string } | null> {
+    if (confirmed > 0) return null;
+    const at = await this.pageSafetyContext();
+    if (at.reviewPage !== false) return null;
+    // The page's own title for itself (Accela's "Step 2 : Services > Attachments"), else its heading —
+    // before pageLabelNow, whose "active" match can be the site banner ("Oregon ePermitting").
+    const titled = typeof this.page?.evaluate === "function" ? String(await this.page.evaluate(() => {
+      // A page-title element first, wherever it sits; headings only when there is none.
+      for (const sel of ["[class*='pagetitle' i], [class*='page-title' i]", "main h1, main h2, form h1, form h2", "h1, h2, legend"]) {
+        for (const el of Array.from(document.querySelectorAll(sel))) {
+          const r = el.getBoundingClientRect();
+          const t = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").replace(/\s+:/g, ":").trim();
+          if (r.width > 0 && r.height > 0 && t) return t.slice(0, 80);
+        }
+      }
+      return "";
+    }).catch(() => "")) : "";
+    const where = titled || (await this.pageLabelNow().catch(() => "")) || "the last page the recipe reached";
+    const refused = (await this.readPortalRefusal().catch(() => [] as string[])).slice(0, 3).map((t) => t.replace(/[.\s]+$/, ""));
+    return {
+      where,
+      message: `STOPPED on "${where}" — NOT the review page (the page does not read as the portal's review step, and none of the project's values are on it), so the application is NOT staged at review.`
+        + `${refused.length ? ` The portal says: ${refused.join(" | ")}.` : ""}`
+        + ` Next: in the portal, finish that page (check every attachment is listed and nothing is flagged required), continue to the review page, verify every field there, then submit. Nothing was filed.`,
+    };
   }
 
   /** Binding keys the planner invented that the dictionary does not define — reported once
@@ -3962,6 +4023,120 @@ export class RecipeAdapter extends BasePortalAdapter {
     return siteOfUrl(url);
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // runs-finish item 4: the portal's loading mask and the upload's commit.
+  // ---------------------------------------------------------------------------------------------
+
+  /** The portal's visible LOADING MASK right now, named ("" = none, or the page cannot be read):
+   *  a short "Please wait…" / "Loading…" / "Processing…" box that is POSITIONED (fixed/absolute,
+   *  itself or a near ancestor — Accela's ProcessLoading popup over the step bar), a page-covering
+   *  loading / overlay / mask element, or a large aria-busy region. Positioned on purpose: an
+   *  inline "Processing... Please wait." tip that a page leaves visible is not a mask, and must not
+   *  cost every click the whole wait. */
+  private async loadingMaskNow(): Promise<string> {
+    if (!this.page || typeof this.page.evaluate !== "function") return "";
+    await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null); // the __name shim
+    const found = await this.page.evaluate((stale: string[]) => {
+      const vw = Math.max(1, window.innerWidth || 1);
+      const vh = Math.max(1, window.innerHeight || 1);
+      const shown = (el: Element): DOMRect | null => {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 4 || r.height <= 4) return null;
+        // Not PARKED: a template placed at negative page coordinates (left:-9999px) is not a mask
+        // over anything. Merely scrolled out of view still counts — Accela's popup sits by the step
+        // bar while the click target is far down the page.
+        if (r.right + window.scrollX <= 0 || r.bottom + window.scrollY <= 0) return null;
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) return null;
+        return r;
+      };
+      const positioned = (el: Element): boolean => {
+        let p: Element | null = el;
+        for (let i = 0; p && i < 4; i++, p = p.parentElement) {
+          const pos = getComputedStyle(p).position;
+          if (pos === "fixed" || pos === "absolute") return true;
+        }
+        return false;
+      };
+      const MASK_TEXT = /^(please\s+wait|loading|processing|saving|uploading)\b[\s.…!]*$/i;
+      const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const t = String(n.nodeValue || "").replace(/\s+/g, " ").trim();
+        if (!t || t.length > 40 || !MASK_TEXT.test(t)) continue;
+        const el = n.parentElement;
+        const name = `"${t.slice(0, 30)}"`;
+        if (el && !stale.includes(name) && shown(el) && positioned(el)) return name;
+      }
+      for (const el of Array.from(document.querySelectorAll("[aria-busy=true], [class*=loading i], [class*=overlay i], [class*=mask i], [class*=blockui i], [id*=loading i], [id*=overlay i], [id*=mask i]"))) {
+        const r = shown(el);
+        if (!r || r.width * r.height < 0.25 * vw * vh) continue;
+        const name = `a page-covering ${el.getAttribute("aria-busy") === "true" ? "aria-busy region" : "loading overlay"}`;
+        if (!stale.includes(name) && (el.getAttribute("aria-busy") === "true" || positioned(el))) return name;
+      }
+      return "";
+    }, Array.from(this.staleMasks)).catch(() => "");
+    return String(found || "");
+  }
+
+  /** How long one click waits for a loading mask to clear. Static so a smoke can shorten it. */
+  static LOADING_MASK_WAIT_MS = 20_000;
+  /** Masks that outlasted a whole wait once this run: never waited on again (a permanently shown
+   *  "Loading..." must cost one bounded wait per run, never one per click). */
+  private staleMasks = new Set<string>();
+
+  /** WAIT OUT THE PORTAL'S LOADING MASK BEFORE AN ADVANCING OR COMMITTING CLICK (runs-finish item
+   *  4). Live run 191e45c8: the attachment Save and the Continue after it were clicked while
+   *  Accela's "Please wait..." was still up (the plan set at 100% in the widget, the table still
+   *  "No records found"); the advance landed nowhere and the run reported a review it never
+   *  reached. Bounded; the wait is noted when it happened, and a mask that never clears is named. */
+  private async waitForLoadingMaskClear(before: string, timeoutMs = RecipeAdapter.LOADING_MASK_WAIT_MS): Promise<void> {
+    const first = await this.loadingMaskNow();
+    if (!first) return;
+    const t0 = Date.now();
+    let still = first;
+    while (still && Date.now() - t0 < timeoutMs) {
+      await sleep(250);
+      still = await this.loadingMaskNow();
+    }
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    if (still) {
+      this.staleMasks.add(still);
+      this.driftWarnings.push(`the portal's loading mask ${still} was still up after ${secs}s before ${before} — clicked anyway, and not waited on again this run; check that page`);
+    } else this.agingNotes.push(`waited ${secs}s for the portal's loading mask ${first} to clear before ${before}`);
+  }
+
+  /** A COMMITTED UPLOAD IS ONE THE PAGE LISTS (runs-finish item 4). After a commit click (the
+   *  attachment Save) that follows this page's uploads, wait (bounded) for the page to list every
+   *  file the run handed it — the attachment table, not the widget. A file the page never lists is
+   *  named: the portal did not take it, and a person attaches it before submitting. */
+  private async confirmUploadsListed(after: string, timeoutMs = 20_000): Promise<void> {
+    const pending = this.uploadsPerformed.slice(this.uploadsSettledUpTo);
+    this.uploadsSettledUpTo = this.uploadsPerformed.length;
+    if (!pending.length || !this.page || typeof this.page.evaluate !== "function") return;
+    const names = Array.from(new Set(pending.map((u) => u.fileName).filter(Boolean)));
+    if (!names.length) return;
+    const t0 = Date.now();
+    let missing = names;
+    for (;;) {
+      await this.waitForLoadingMaskClear(`reading the attachment list after ${after}`, Math.max(0, timeoutMs - (Date.now() - t0)));
+      const listed = await this.page.evaluate((want: string[]) => {
+        // Listed = the name appears outside the upload widget's own file box: in the page text,
+        // not only as a file input's chosen value (which innerText never shows anyway).
+        const body = String(document.body?.innerText || "").toLowerCase();
+        return want.filter((n) => body.includes(String(n).toLowerCase()));
+      }, names).catch(() => null) as string[] | null;
+      if (Array.isArray(listed)) missing = names.filter((n) => !listed.includes(n));
+      if (!missing.length || Date.now() - t0 >= timeoutMs) break;
+      await sleep(400);
+    }
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    if (missing.length) {
+      this.driftWarnings.push(`after ${after} the portal's attachment list does not show ${missing.map((n) => `"${n}"`).join(", ")} (waited ${secs}s) — the upload may not have committed; attach it and click Save by hand before submitting`);
+    } else if (Date.now() - t0 >= 1000) {
+      this.agingNotes.push(`the portal listed ${names.map((n) => `"${n}"`).join(", ")} ${secs}s after ${after} — the upload committed`);
+    }
+  }
+
   /** Identity providers a portal login legitimately bounces through. Small on purpose. */
   private static readonly SSO_SITES = new Set([
     "microsoftonline.com", "b2clogin.com", "okta.com", "auth0.com", "onelogin.com", "pingidentity.com", "login.gov", "id.me",
@@ -4589,13 +4764,37 @@ export class RecipeAdapter extends BasePortalAdapter {
     }).catch(() => "") as Promise<string>;
   }
 
+  /** pageIdentity is "path|heading|ids": the same path and heading, and every visible control gone
+   *  where there were some. */
+  static controlsOnlyVanished(before: string, after: string): boolean {
+    const cut = (s: string): [string, string] => { const i = s.lastIndexOf("|"); return i < 0 ? [s, ""] : [s.slice(0, i), s.slice(i + 1)]; };
+    const [bPage, bIds] = cut(before);
+    const [aPage, aIds] = cut(after);
+    return bPage === aPage && bIds !== "" && aIds === "";
+  }
+  /** How long an advance check waits for vanished controls to come back (or the page to move). */
+  static VANISHED_CONTROLS_WAIT_MS = 6000;
+
   private async assertAdvanced(step: RecipeStep, beforeUrl: string, beforeFp: string, beforeEffect = ""): Promise<void> {
     // No identity means a mock/no-DOM page (the unit-test doubles) — assert nothing.
     if (!beforeFp) return;
+    const urlNow = (): string => (typeof this.page.url === "function" ? String(this.page.url() ?? "") : "");
     const moved = async (): Promise<boolean> => {
-      const url = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
-      if (url && url !== beforeUrl) return true;
-      const fp = await this.pageIdentity();
+      if (urlNow() && urlNow() !== beforeUrl) return true;
+      let fp = await this.pageIdentity();
+      // CONTROLS THAT MERELY VANISHED ARE NOT AN ADVANCE (runs-finish item 4). A postback hides the
+      // form under its "Please wait..." and brings the SAME page back: same path, same heading, no
+      // visible control where there were some. Wait a bounded moment for the page to show what it
+      // is; a page that stays empty is then read as today (moved), never as a false stop.
+      if (fp && RecipeAdapter.controlsOnlyVanished(beforeFp, fp)) {
+        const t0 = Date.now();
+        while (Date.now() - t0 < RecipeAdapter.VANISHED_CONTROLS_WAIT_MS) {
+          await sleep(250);
+          if (urlNow() && urlNow() !== beforeUrl) return true;
+          fp = await this.pageIdentity();
+          if (!fp || !RecipeAdapter.controlsOnlyVanished(beforeFp, fp)) break;
+        }
+      }
       return !!fp && fp !== beforeFp;
     };
 

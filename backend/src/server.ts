@@ -2894,6 +2894,9 @@ app.post("/api/projects/:id/prepare-submission", (req, res) => {
       } else if (run.status === "failed") {
         const why = run.errorMessage || "see the run log on the project for details";
         sseBroadcast({ type: "run_failed", projectId, message: `Portal run failed: ${why}` });
+      } else if (run.status === "paused_for_human" && run.errorMessage) {
+        // Any other pause (a stop before the review page, the kVA tier, a signer) says its own why.
+        sseBroadcast({ type: "run_paused", projectId, message: `Portal run paused for you: ${run.errorMessage}`, data: { pauseReason: run.pauseReason } });
       } else if (run.status === "awaiting_human_submit" || run.status === "paused_for_human") {
         sseBroadcast({ type: "run_complete", projectId, message: "Portal staged — verify and submit manually." });
       }

@@ -4592,7 +4592,9 @@ async function stageSubmittalTrack(type, btn, autoSubmit = false) {
     // An MFA/CAPTCHA pause staged NOTHING — the "staged to final review" success toast
     // would send the operator hunting for an application that doesn't exist.
     if (job.result && job.result.status === "paused_for_human") {
-      showMessage(`${humanize(type)} run paused at a ${job.result.pauseReason || "verification"} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`, "warning");
+      showMessage(job.result.message
+        ? `${humanize(type)} run paused for you: ${job.result.message}`
+        : `${humanize(type)} run paused at a ${job.result.pauseReason || "verification"} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`, "warning");
       await loadSubmittalTracks();
       renderDetail();
       return;
@@ -7500,7 +7502,9 @@ async function prepareSubmission() {
       return;
     }
     if (job.result && job.result.status === "paused_for_human") {
-      showMessage(`Portal run paused at a ${job.result.pauseReason || "verification"} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`, "warning");
+      showMessage(job.result.message
+        ? `Portal run paused for you: ${job.result.message}`
+        : `Portal run paused at a ${job.result.pauseReason || "verification"} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`, "warning");
       return;
     }
     state.detail = await api(`/api/projects/${state.selectedProjectId}`);

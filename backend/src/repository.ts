@@ -6926,6 +6926,17 @@ const FINAL_SUBMIT_CLICKED_MESSAGE =
  * A click is 'submitted' only on an explicit 'accepted' verdict; anything else is
  * 'submitted_unconfirmed' — an unknown never reads as reassurance.
  */
+/** WHAT A PAUSED RUN TELLS THE OPERATOR. Only an MFA/CAPTCHA pause staged nothing; every other
+ *  pause (the kVA tier, a signer, a stop before the review page) left a draft on the portal and
+ *  names why in its own step message — which this repeats, instead of calling it a "challenge". */
+export function pausedRunSentence(pauseReason: string, result: Record<string, unknown>): string {
+  if (pauseReason === "mfa_captcha") return "a verification challenge (MFA/CAPTCHA) — nothing was staged. Complete it in the open browser, then re-stage.";
+  const steps = Array.isArray(result.steps) ? (result.steps as Array<{ pauseReason?: unknown; message?: unknown }>) : [];
+  const own = steps.find((st) => st?.pauseReason === pauseReason)?.message;
+  const said = String(typeof own === "string" ? own : "").split("\n")[0].trim().slice(0, 600);
+  return `${pauseReason.replace(/_/g, " ")} — ${said || "see the run log on the project"}`;
+}
+
 export function derivePortalRunOutcome(result: Record<string, unknown>): {
   status: Exclude<StageRunStatus, "running" | "interrupted">;
   submissionStatus: "submitted" | "submitted_unconfirmed" | "paused_for_human" | "failed" | "awaiting_human_submit";
@@ -8791,7 +8802,7 @@ export async function prepareSubmission(
         `UPDATE portal_runs SET status = ?, finished_at = ?, error_message = ?, human_action_required = ?,
            screenshots_path = ?, logs_path = ?, result_json = ?, pause_reason = ?
          WHERE id = ?`,
-        [runStatus, nowIso(), failureMessage, 1,
+        [runStatus, nowIso(), failureMessage || (pauseReason ? pausedRunSentence(pauseReason, result) : ""), 1,
           // A FILE, never a folder: /portal-runs/:id/review-screenshot sendFile()s this column.
           outcomeShotPath,
           // logs_path: the learn-run debug bundle folder (set by the self-seed path) — links a
@@ -8840,7 +8851,7 @@ export async function prepareSubmission(
                 + ` (${outcome.submissionVerdict ?? "unknown"}). Verify on the portal whether it was filed before anything is staged or clicked again.`
                 + `${outcomeShotPath ? ` Page: ${outcomeShotPath}` : ""}`)
             : pauseReason
-              ? `${trackLabelText}${portalLabel} run PAUSED for a human at a ${pauseReason} challenge — nothing was staged. Complete the challenge in the open browser, then re-stage.`
+              ? `${trackLabelText}${portalLabel} run PAUSED for a human: ${pausedRunSentence(pauseReason, result)}`
               : adapterFailed
                 ? `${trackLabelText}${portalLabel} run FAILED before review — nothing was staged on the portal. ${failureMessage}`
                 : `${trackLabelText}${portalLabel} staged to final review only. Automation did not click final submit.${borrowedNote}`,
@@ -8859,7 +8870,7 @@ export async function prepareSubmission(
             ? `${trackLabelText}${portalLabel} submitted by automation (approved run)${capturedPermitNumber ? ` — record ${capturedPermitNumber}` : ""}. Tracking status.`
             : `${trackLabelText}${portalLabel}: final submit CLICKED by automation, not confirmed by the portal — verify on the portal before anything else.`)
           : pauseReason
-            ? `${trackLabelText}${portalLabel} run paused at a ${pauseReason} challenge — not staged. Complete it in the open browser, then re-stage.`
+            ? `${trackLabelText}${portalLabel} run paused: ${pausedRunSentence(pauseReason, result)}`
             : adapterFailed
               ? `${trackLabelText}${portalLabel} run failed — not staged. ${failureMessage}`
               : `${trackLabelText}${portalLabel} staged. Human must verify and submit manually.${borrowedNote}`,
