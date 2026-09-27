@@ -3701,6 +3701,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // a recovery re-entry re-runs this search and lands back on the county's default row,
     // and a latch held from the previous grid then leaves it there.
     this.addressRowChosen = false;
+    this.addressRowRefusal = null; // re-judged on this grid by the chooser below
     // RANKED FIRST — owner, city/ZIP and discipline together, recorded as a data-al-row
     // marker that replay re-ranks against ITS project's grid.
     //
