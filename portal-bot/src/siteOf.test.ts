@@ -9,6 +9,8 @@
 // the learner's fallback must actually ask it.
 //
 // Run: npx tsx portal-bot/src/siteOf.test.ts
+// Constructing the learner starts a debug bundle (LearnRunDebug.start) — keep it out of data/learn-runs.
+import "./smokeArtifactDirs";
 import assert from "node:assert/strict";
 import { sameCredentialScope } from "./siteOf";
 import { selectCredentialUrlsFor } from "../../backend/src/portalCredentials";

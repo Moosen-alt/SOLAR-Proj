@@ -106,6 +106,36 @@ check(`DISCOVERY: every learn-driving DOM smoke (${learnDriving.length} of ${smo
   assert.deepEqual(offenders, [], `these smokes can write into data/learn-runs when run by hand:\n           ${offenders.join("\n           ")}`);
 });
 
+// DISCOVERY (unit tests): a plain .test.ts that CONSTRUCTS the learner writes a debug bundle too
+// (LearnRunDebug.start runs in the constructor) and prunes data/learn-runs to its newest 20.
+// acaCustomDomain.test and typedUploadCards.test landed 20 fixture folders there on 2026-09-26
+// and pushed real bundles out. Such a test imports smokeArtifactDirs before the learner, or
+// points AUTOLEARN_RUN_DIR somewhere itself (autoLearnAdapter.test's scratch base).
+const CONSTRUCTS_LEARNER = /\bnew\s+AutoLearnAdapter\s*\(|\bLearnRunDebug\.start\s*\(|\blearnPortal\s*\(/;
+const OWN_RUN_DIR = /process\.env\.AUTOLEARN_RUN_DIR\s*=(?!=)/;
+const unitTests: string[] = [];
+const walkTests = (dir: string): void => {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) walkTests(full);
+    else if (/\.test\.ts$/.test(e.name)) unitTests.push(full);
+  }
+};
+walkTests(path.join(REPO, "portal-bot", "src"));
+const constructing = unitTests.filter((f) => CONSTRUCTS_LEARNER.test(fs.readFileSync(f, "utf8")));
+check(`DISCOVERY: every unit test that constructs the learner (${constructing.length} of ${unitTests.length}) keeps its debug bundle out of data/`, () => {
+  assert.ok(constructing.length >= 2, "found fewer than 2 learner-constructing tests — the discovery regex is broken");
+  const offenders: string[] = [];
+  for (const f of constructing) {
+    const src = fs.readFileSync(f, "utf8");
+    if (OWN_RUN_DIR.test(src)) continue;
+    const d = DEFAULTS_IMPORT.exec(src);
+    const l = LEARN_IMPORT.exec(src);
+    if (!d || (l && d.index > l.index)) offenders.push(path.relative(REPO, f));
+  }
+  assert.deepEqual(offenders, [], `these unit tests write into data/learn-runs:\n           ${offenders.join("\n           ")}`);
+});
+
 console.log(failures === 0
   ? `\nAll ${passes} smoke-artifact-dir checks passed.`
   : `\n${failures} of ${passes + failures} smoke-artifact-dir check(s) FAILED.`);

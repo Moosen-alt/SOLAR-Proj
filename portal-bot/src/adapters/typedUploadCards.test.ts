@@ -14,6 +14,8 @@
 //            worksheet the worksheet card is left empty, never the plan set or the inverter spec.
 //
 // Run: npx tsx portal-bot/src/adapters/typedUploadCards.test.ts
+// Constructing the learner starts a debug bundle (LearnRunDebug.start) — keep it out of data/learn-runs.
+import "../smokeArtifactDirs";
 import assert from "node:assert/strict";
 import { AutoLearnAdapter, type LearnPlanner } from "./autoLearnAdapter";
 

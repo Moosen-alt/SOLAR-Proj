@@ -15,6 +15,8 @@
 //            a non-.aspx page -> not ACA; a custom-domain page with no ACA hint -> no re-entry URL.
 //
 // Run: npx tsx portal-bot/src/adapters/acaCustomDomain.test.ts
+// Constructing the learner starts a debug bundle (LearnRunDebug.start) — keep it out of data/learn-runs.
+import "../smokeArtifactDirs";
 import assert from "node:assert/strict";
 import { AutoLearnAdapter, acaApplyEntryFrom, acaModuleQuery, type ExtractedField, type LearnPlanner } from "./autoLearnAdapter";
 
