@@ -696,14 +696,23 @@ export class RecipeAdapter extends BasePortalAdapter {
     // the window is "a state-changing request in the approved window" — the backstop cannot tell
     // it was the click's own. A GET navigation is a request that reached the server too, but not a
     // state-changing one.
-    const sent = bs.approvedRequests.length > 0 || bs.approvedNavigations.length > 0;
+    // SENT MEANS THE FILING WENT (autosubmit-2 MF-S4): an admitted request counts only when it IS the
+    // filing (bs.approvedAdmissions[].filing — the clicked page's main-frame form submission, or a
+    // fetch / XHR to a filing-shaped endpoint). A request that merely took the approved window (a
+    // same-origin analytics fetch, a subframe navigation) is named, never reported as the filing;
+    // the backend then records "NO filing request reached the portal" (repository submitted_by).
+    const sent = bs.approvedAdmissions.some((a) => a.filing) || bs.approvedNavigations.length > 0;
     for (const a of bs.approvedAdmissions) {
-      notes.push(a.navigation ? `the approved click's request (the clicked page's form submission) went to ${a.where}` : `a state-changing request in the approved window went to ${a.where}`);
+      if (a.filing) notes.push(a.navigation ? `the approved click's request (the clicked page's form submission) went to ${a.where}` : `a state-changing request in the approved window went to ${a.where}`);
+      else {
+        const kind = a.navigation ? (a.mainFrame ? "navigation" : "subframe navigation") : /^(fetch|xhr)$/i.test(a.resourceType) ? "fetch/XHR" : (a.resourceType || "state-changing");
+        notes.push(`the approved click's request did not reach the portal (a ${kind} request to ${a.where} took the window)`);
+      }
     }
     if (!bs.approvedAdmissions.length && bs.approvedNavigations.length) {
       notes.push(`the approved click navigated the page by GET to ${bs.approvedNavigations.join(", ")} — no state-changing request was sent or admitted`);
     }
-    if (!sent) {
+    if (!sent && !bs.approvedAdmissions.length) {
       notes.push("the approved click sent NO request the network backstop saw reach the portal (no state-changing request admitted, no navigation) — the filing request never reached the server");
     }
     const dialogs = bs.approvedDialogs.filter((d) => d.action === "accepted");

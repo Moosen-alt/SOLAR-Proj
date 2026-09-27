@@ -85,8 +85,11 @@ export interface FilingBackstop {
   /** Where (origin + path) each request the approved window admitted went, in order. */
   readonly approvedRequests: string[];
   /** Each admitted request: was it a NAVIGATION of the clicked page (a form submission — the
-   *  click's own request) or another state-changing request fired inside the approved window? */
-  readonly approvedAdmissions: Array<{ where: string; navigation: boolean }>;
+   *  click's own request) or another state-changing request fired inside the approved window?
+   *  `filing` (autosubmit-2 MF-S4): is it THE FILING — the clicked page's MAIN-frame navigation (its
+   *  form submission), or a fetch / XHR to a filing-shaped endpoint (isFilingOrPaymentRequest)? A
+   *  subframe navigation, or a fetch to any other URL, took the window but is not the filing. */
+  readonly approvedAdmissions: Array<{ where: string; navigation: boolean; mainFrame: boolean; resourceType: string; filing: boolean }>;
   /** The clicked page navigated (a GET document request) while the slot was open: a request DID
    *  reach the server even though nothing state-changing was admitted. origin + path. */
   readonly approvedNavigations: string[];
@@ -240,7 +243,7 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
   type Slot = { page: unknown; until: number; open: boolean; timer: ReturnType<typeof setTimeout> | null; detach: () => void };
   let slot: Slot | null = null;
   const approvedRequests: string[] = [];
-  const approvedAdmissions: Array<{ where: string; navigation: boolean }> = [];
+  const approvedAdmissions: Array<{ where: string; navigation: boolean; mainFrame: boolean; resourceType: string; filing: boolean }> = [];
   const approvedNavigations: string[] = [];
   const approvedDialogs: Array<{ type: string; message: string; action: "accepted" | "dismissed"; why: string }> = [];
   const slotLive = (): boolean => !!slot && slot.open && Date.now() < slot.until;
@@ -362,7 +365,16 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
       if ((!slot!.page || pg === slot!.page) && slotAdmits(request, pg, url, resourceType, navigation)) {
         approved = true;
         approvedRequests.push(whereOf(url));
-        approvedAdmissions.push({ where: whereOf(url), navigation });
+        // WHAT TOOK THE SLOT IS NOT ALWAYS THE FILING (autosubmit-2 MF-S4). Admission is unchanged
+        // (slotAdmits); the RECORD says whether the admitted request can be the filing: the clicked
+        // page's main-frame navigation, or a fetch / XHR to a filing-shaped URL. A same-origin
+        // fetch('/analytics') in the Submit's onclick, or a tracking form posted into a hidden
+        // iframe, took the window, the form's filing POST was then aborted — and the run reported
+        // "the approved click's request went" (finalSubmitRequestSent true).
+        let mainFrame = false;
+        try { mainFrame = !!pg && typeof pg.mainFrame === "function" && request.frame() === pg.mainFrame(); } catch { mainFrame = false; }
+        const filing = navigation ? mainFrame : isFilingOrPaymentRequest(method || "POST", url);
+        approvedAdmissions.push({ where: whereOf(url), navigation, mainFrame, resourceType, filing });
         closeSlot();
       }
     }
