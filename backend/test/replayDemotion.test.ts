@@ -66,6 +66,9 @@ await check("classifier: production messages land in the right family (MUST-PASS
     ["Recipe step failed (click — final submit: Submit (recorded, NOT clicked)): After the submit click the page neither confirmed nor rejected the filing", "not_recipe"],
     ["Recipe step failed (click — final submit): Final submit clicked; outcome unknown — human must verify.", "not_recipe"],
     ["Recipe step failed (check — record type): Record type \"Residential - Structural\" is not offered here — refusing to pick another permit type.", "not_recipe"],
+    // agency-row: the replay's named stop when the looked-up agency's address row is not on offer
+    // (recipeAdapter.pickAddressVersionLive) — the project's jurisdiction, never recipe drift.
+    ["Recipe step failed (click — address version: City Applications — issuing agency: Marion County (per-job lookup)): Address version: the issuing agency's row (Marion County) is not offered here — the issuing agency Marion County names none of this property's 2 version(s) (no COUNTY row naming MARION) — no row invented; ranked by the discipline convention (CITY APPLICATIONS for structural), whose pick is a CITY row while Marion County is a county. Refusing to file with the wrong agency: choose the row by hand, or correct the issuing agency on the per-job lookup.", "not_recipe"],
     ["Permit path changed or is unknown; upload stopped.", "not_recipe"],
     // the recipe — drift
     ["Recipe step failed (fill — Current meter number): locator.fill: Timeout 8000ms exceeded.", "recipe"],

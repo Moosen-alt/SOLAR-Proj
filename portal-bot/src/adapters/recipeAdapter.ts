@@ -3067,7 +3067,10 @@ export class RecipeAdapter extends BasePortalAdapter {
     // jurisdiction: clicking it files with an agency the lookup says does not issue this permit
     // (rule 5's entity clause). Stop, named — the same way an unoffered record type stops.
     if (preference.contradicts) {
-      const why = `Address version: ${preference.note} — refusing to file with the wrong agency. Choose the row by hand, or correct the issuing agency on the per-job lookup.`;
+      // Worded in the "is not offered here" family on purpose: the replay-failure classifier
+      // (portalRecipes.replayFailureBlamesRecipe) reads that as THIS project's jurisdiction, not
+      // recipe drift, so a correct stop never demotes the recipe or queues a re-learn.
+      const why = `Address version: the issuing agency's row (${issuingAgency}) is not offered here — ${preference.note}. Refusing to file with the wrong agency: choose the row by hand, or correct the issuing agency on the per-job lookup.`;
       this.driftWarnings.push(`address grid: ${preference.note}`.slice(0, 300));
       throw new Error(why);
     }

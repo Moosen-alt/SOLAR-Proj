@@ -134,6 +134,9 @@ try {
   const x2 = await replay("cityOnly", "structural", STRUCT_NOTE("Marion County"), { ...JEFF_VALUES, issuingAgency: "Marion County" });
   check("MUST-EXCLUDE replay: Marion County with only the city's version offered → NOTHING clicked", x2.picked === "", sayR(x2));
   check("MUST-EXCLUDE replay: ...and the run stops with the agency and the refused row named", !x2.ok && /Marion County/.test(`${x2.message} ${x2.drift.join(" ")}`) && /CITY/i.test(`${x2.message} ${x2.drift.join(" ")}`), sayR(x2));
+  // The stop is THIS project's jurisdiction, not recipe drift: worded in the family the replay
+  // classifier keeps the recipe on (portalRecipes.replayFailureBlamesRecipe; replayDemotion.test).
+  check("MUST-EXCLUDE replay: ...worded \"is not offered here\" so the stop never demotes the recipe", /is not offered here/.test(x2.message), sayR(x2));
 
   // ── THE LEARN DOOR (AutoLearnAdapter.chooseProjectAddressRow) ──────────────────────────────
   type Chooser = { page: unknown; chooseProjectAddressRow(steps: RecipeStep[]): Promise<boolean>; addressRowRefusal?: string | null };
