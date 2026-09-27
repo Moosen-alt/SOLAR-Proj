@@ -216,16 +216,31 @@ async function neutralizeOverlays(page: any): Promise<void> {
   } catch { /* mock page or no DOM — non-fatal */ }
 }
 
+/** How long ONE candidate's value read may take. A control that is on the page answers at once. */
+const GAP_READ_TIMEOUT_MS = 1500;
+
+/** Is this candidate an EMPTY control the gap-fill could fill? null = the recorded selector finds
+ *  nothing on the page (or the read fails) — not a candidate at all: nothing can be typed into a
+ *  control that is not there.
+ *
+ *  A WAIT FOR A CONTROL THAT NEVER APPEARS IS NOT A READ (runs-finish item 5). This called
+ *  inputValue() / isChecked() with Playwright's DEFAULT timeout (30 s — production sets none), so
+ *  every candidate whose selector resolves to nothing — a radio / checkbox the extractor names by
+ *  its neighbouring text, which getByLabel can never find — waited the whole 30 s. Live run
+ *  191e45c8: "save new contact" spent 60,063 ms in gap-fill (two such controls) and filled nothing.
+ *  Now: count() first (immediate), then a bounded read. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function isFieldEmpty(loc: any, fieldType: ExtractedField["fieldType"]): Promise<boolean> {
+async function isFieldEmpty(loc: any, fieldType: ExtractedField["fieldType"]): Promise<boolean | null> {
   try {
+    if (typeof loc.count === "function" && (await loc.count().catch(() => 0)) === 0) return null;
     if (fieldType === "checkbox" || fieldType === "radio") {
-      return !(await loc.isChecked().catch(() => false));
+      const checked = await loc.isChecked({ timeout: GAP_READ_TIMEOUT_MS }).catch(() => null);
+      return checked === null ? null : !checked;
     }
-    const v = await loc.inputValue().catch(() => "");
-    return !String(v ?? "").trim();
+    const v = await loc.inputValue({ timeout: GAP_READ_TIMEOUT_MS }).catch(() => null);
+    return v === null ? null : !String(v ?? "").trim();
   } catch {
-    return true;
+    return null;
   }
 }
 
@@ -273,13 +288,17 @@ export async function gapFillCurrentPage(
         !isSensitiveLabel(f.label) &&
         !isPayFee(f.label));
     if (candidates.length === 0) return out;
+    // NOTHING REQUIRED ON THE PAGE, NOTHING TO DO. The LLM call below is spent only on a REQUIRED
+    // empty control, so a page with no required control at all is answered here — before a single
+    // value is read.
+    if (!candidates.some((f) => f.required)) return out;
 
     // Keep only the still-empty controls (don't overwrite the adapter's deterministic fills).
     const empties: Array<{ field: ExtractedField; loc: unknown }> = [];
     for (const field of candidates) {
       const loc = buildLocator(page, field.selector);
       if (!loc) continue;
-      if (await isFieldEmpty(loc, field.fieldType)) empties.push({ field, loc });
+      if ((await isFieldEmpty(loc, field.fieldType)) === true) empties.push({ field, loc });
     }
     if (empties.length === 0) return out;
     // Only spend an LLM call when a REQUIRED field is still empty. Portal pages always
