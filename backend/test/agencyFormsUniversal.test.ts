@@ -557,6 +557,237 @@ try {
   check("R2 the packet likewise", !cpFilled.some((l) => l.includes(T1) || l.includes(T2)) && !cpStatus().some((l) => l.includes(T1) || l.includes(T2)), JSON.stringify(cpStatus()));
   check("R1g the same for a cited-to-confirm PDF (the City of Boulder's): its bare URL line gives way to the confirm line", !jtList().some((i) => i.text.includes(CITY_BOULDER)) && !packetList(jt).some((l) => l.includes(CITY_BOULDER)), JSON.stringify(packetList(jt)));
 
+  // ═══ CONTAINMENT (agency-contain; operator decision 2026-09-27) ════════════════════════════════════
+  // A new AHJ's issuing-agency application is acquired FULLY AUTOMATICALLY, and the risk of a wrong
+  // agency's form where the lookup's right and wrong attributions look identical offline is ACCEPTED.
+  // Not accepted: the AMPLIFIER (one wrong row spreading to every city the agency issues for — C1), a
+  // failed curated seed falling through to a cited neighbour (C2), another state's host / the state's site
+  // for a county / a county's site for the state (C3), a notFound answer vouching for a page (C4).
+  const catalog = await import("../src/permitPlatformCatalog");
+  const BCD = "Oregon Building Codes Division";
+  const stubMapper = {
+    mapAcroFormFields: async () => ({ textFields: { "Owner name": "project.homeownerName" }, checkboxes: {}, notes: "stub mapper" }),
+    mapFlatFormOverlay: async () => ({ fields: [], signatures: [], notes: "stub mapper" }),
+  } as never;
+  // What a real run with model mapping on does, minus the model: ensureIssuingAgencyForm with a mapper.
+  const ensureAgency = async (p: never, ft: string) => {
+    downloads = [];
+    const a = agencyMod.formAuthorityFor(p, ft);
+    const r = await auto.ensureIssuingAgencyForm(db, stubMapper, p, ft, a, ft === "electrical_application" ? null : "prescriptive", {});
+    return { status: r.status, message: String(r.message), downloads: [...downloads] };
+  };
+  const pj = (p: never) => p as unknown as { ahj: string; state: string };
+  const loaderUrls = (p: never) => forms.loadStoredTemplates(db, pj(p).ahj, pj(p).state).map((t) => t.sourceUrl);
+  const loaderIds = (p: never) => forms.loadStoredTemplates(db, pj(p).ahj, pj(p).state).map((t) => t.templateId);
+  const heldBlankUrls = (p: never) => forms.heldUnfillableAgencyBlanks(db, pj(p)).map((b) => b.sourceUrl);
+  const statusList = (p: never) => buildApplicationDocumentPackage(p, null, { agencyStatus: reqDocs.agencyListStatusResolver(db, p) }).profile.requiredDocuments;
+  const rowIdOf = (url: string) => db.get<{ id: string }>("SELECT id FROM ahj_form_templates WHERE source_url = ?", [url])?.id ?? "";
+  const anchorsOf = (p: never, agency: string) => agencyMod.agencyAnchorSites(p, agency);
+  const mappedMap = (formName: string, sourceUrl: string) => ({ formName, sourceUrl, fillMode: "acroform", textFields: { "Owner name": "project.homeownerName" }, checkboxes: {}, notes: "" });
+  const blankMap = (formName: string, sourceUrl: string) => ({ formName, sourceUrl, fillMode: "acroform", textFields: {}, checkboxes: {}, notes: "" });
+  const POLK_PAGE = "https://www.co.polk.or.us/cd/building";
+  const POLK_E = "https://www.co.polk.or.us/sites/default/files/Electrical%20Permit%20Application.pdf";
+  served.set(POLK_E, await acroPdf("POLK COUNTY Electrical Permit Application"));
+  const KEST_PAGE = "https://www.co.kestrel.or.us/building";
+
+  // ── C4 notFound NEVER VOUCHES (the skeptic's S3) ──────────────────────────────────────────────────
+  // The structural permit's OWN issuer answer is notFound (its source: Polk County's page); the top-level
+  // answer names Kestrel County on Kestrel's own page. The track is Kestrel's (formAuthorityFor, unchanged),
+  // but a notFound answer cited no page FOR Kestrel: co.polk.or.us is not Kestrel's site.
+  const POLK_B = "https://www.co.polk.or.us/sites/default/files/Solar%20Permit%20Application.pdf";
+  served.set(POLK_B, await acroPdf("POLK COUNTY Solar Permit Application"));
+  saveLookup("OR", "City of Southfix", [{ discipline: "structural", agency: null, src: POLK_PAGE, docs: [POLK_B] }],
+    cited("Kestrel County", KEST_PAGE, "Kestrel County administers the building program for Southfix"));
+  const sfx = job("c4-sfx", "OR", "City of Southfix");
+  check("C4 (setup) the building track is Kestrel County's through the top-level answer", agencyMod.formAuthorityFor(sfx, "building_application").name === "Kestrel County");
+  check("C4 a permit whose own issuer answer is notFound anchors nothing; the top-level answer's own page still does", JSON.stringify(anchorsOf(sfx, "Kestrel County")) === JSON.stringify(["co.kestrel.or.us"]), JSON.stringify(anchorsOf(sfx, "Kestrel County")));
+  await refusedEverywhere("C4 Polk's PDF on the notFound permit", sfx, "building_application", POLK_B, "Kestrel County");
+
+  // ── C3 NAMES ONLY REMOVE, INCLUDING STATE ─────────────────────────────────────────────────────────
+  // (i) The host's STATE, read from its structure only: a .us locality (co.<x>.<st>.us, <x>.<st>.us), a
+  // state's own .gov (oregon.gov, lni.wa.gov, bcd.state.or.us), a .gov label ending in a hyphenated code
+  // (tigard-or), a type word + code (harriscountytx) or a state's full name (bendoregon) — never a place
+  // named for a state (cityofwashington, portwashington, coloradosprings).
+  const hostState = (h: string) => (catalog as unknown as { hostStateOf?: (h: string) => { state: string; stateSite: boolean } | null }).hostStateOf?.(h);
+  const HOSTS: Array<[string, string | null, boolean]> = [
+    ["co.jefferson.or.us", "or", false], ["www.jeffersoncountyor.gov", "or", false], ["www.madras-or.gov", "or", false], ["www.bendoregon.gov", "or", false],
+    ["www.oregon.gov", "or", true], ["www.bcd.state.or.us", "or", true], ["lni.wa.gov", "wa", true], ["dli.mn.gov", "mn", true],
+    ["douglas.co.us", "co", false], ["www.elbertcounty-co.gov", "co", false], ["engineering.harriscountytx.gov", "tx", false], ["www.washingtoncountyor.gov", "or", false],
+    ["bouldercounty.gov", null, false], ["assets.bouldercounty.gov", null, false], ["jeffco.us", null, false], ["discover.pbcgov.org", null, false], ["www.houstontx.gov", null, false],
+    ["www.cityofwashington.gov", null, false], ["www.portwashington.gov", null, false], ["coloradosprings.gov", null, false], ["www.fairfaxva.gov", null, false], ["www.deschutes.org", null, false],
+  ];
+  for (const [h, st, site] of HOSTS) {
+    const got = hostState(h);
+    check(`C3 host state of ${h}: ${st ?? "none"}${site ? " (the state's own site)" : ""}`, st === null ? got === null : Boolean(got && got.state === st && got.stateSite === site), JSON.stringify(got));
+  }
+  // (ii) Another state's locality host never anchors (the skeptic's S2b: Colorado's Jefferson County, an
+  // Oregon county's site), nor a .gov carrying another state's name.
+  const JOR_PAGE = "https://www.co.jefferson.or.us/building";
+  const JOR_PDF = "https://www.co.jefferson.or.us/building/Solar%20Permit%20Application.pdf";
+  served.set(JOR_PDF, await acroPdf("Jefferson County OREGON Solar Permit Application"));
+  saveLookup("CO", "Town of Morrison", [{ discipline: "structural", agency: "Jefferson County", src: JOR_PAGE, quote: "Jefferson County Building issues solar permits", docs: [JOR_PDF] }]);
+  const mor = job("c3-mor", "CO", "Town of Morrison");
+  check("C3 an Oregon locality host never anchors Colorado's Jefferson County", !anchorsOf(mor, "Jefferson County").includes("co.jefferson.or.us"), JSON.stringify(anchorsOf(mor, "Jefferson County")));
+  await refusedEverywhere("C3 the Oregon county's PDF for Colorado's Jefferson County", mor, "building_application", JOR_PDF, "Jefferson County");
+  const JORG_PDF = "https://www.jeffersoncountyor.gov/building/Solar%20Photovoltaic%20Permit%20Application.pdf";
+  served.set(JORG_PDF, await acroPdf("Jefferson County OR Solar PV Permit Application"));
+  saveLookup("CO", "Town of Golden Two", [{ discipline: "structural", agency: "Jefferson County", src: "https://www.jeffersoncountyor.gov/building", docs: [JORG_PDF] }]);
+  await refusedEverywhere("C3 a .gov carrying another state's letters (jeffersoncountyor.gov) for Colorado's Jefferson County", job("c3-gd2", "CO", "Town of Golden Two"), "building_application", JORG_PDF, "Jefferson County");
+  // (iii) The state's own site never anchors a COUNTY's form (the skeptic's S4a / zzV4 s4a).
+  saveLookup("OR", "City of Eastfix", [
+    { discipline: "structural", agency: "Kestrel County", src: KEST_PAGE },
+    { discipline: "electrical", agency: "Kestrel County", src: "https://www.oregon.gov/bcd/jurisdictions/pages/kestrel-county.aspx", quote: "Kestrel County is the building official for Eastfix", docs: [BCD_E] },
+  ]);
+  const efx = job("c3-efx", "OR", "City of Eastfix");
+  check("C3 the state's site (oregon.gov) never anchors a county", JSON.stringify(anchorsOf(efx, "Kestrel County")) === JSON.stringify(["co.kestrel.or.us"]), JSON.stringify(anchorsOf(efx, "Kestrel County")));
+  await refusedEverywhere("C3 the state's electrical application for Kestrel County", efx, "electrical_application", BCD_E, "Kestrel County");
+  // (iv) A county's site never anchors a STATE agency — including a county site whose name carries no type
+  // (the skeptic's S1 / zzV4: deschutes.org, clackamas.us, multco.us — the county's PAGE cited for the BCD).
+  const S1_SHAPES: Array<[string, string, string]> = [
+    ["City of Sisters Two", "https://www.deschutes.org/cd/page/electrical-permits", "https://www.deschutes.org/sites/default/files/fileattachments/community_development/page/Electrical%20Permit%20Application.pdf"],
+    ["City of Estacada Two", "https://www.clackamas.us/building/electrical", CLACK_E],
+    ["City of Maywood Park Two", "https://www.multco.us/building/electrical-permits", "https://www.multco.us/file/Electrical%20Permit%20Application.pdf"],
+  ];
+  for (const [ahj, page, pdf] of S1_SHAPES) {
+    saveLookup("OR", ahj, [
+      { discipline: "structural", agency: ahj, src: `https://www.${ahj.replace(/^City of /, "").toLowerCase().replace(/ /g, "")}oregon.gov/building` },
+      { discipline: "electrical", agency: BCD, src: page, quote: `Electrical permits within ${ahj} are issued by the State of Oregon Building Codes Division`, docs: [pdf] },
+    ]);
+    const p = job(`c3-${ahj}`, "OR", ahj);
+    check(`C3 ${new URL(page).hostname} (a county's site, no type in its name) never anchors the state agency`, anchorsOf(p, BCD).length === 0, JSON.stringify(anchorsOf(p, BCD)));
+    await refusedEverywhere(`C3 the county's PDF under the BCD (${new URL(pdf).hostname})`, p, "electrical_application", pdf, BCD);
+  }
+  // Must-pass: the state agency on its OWN site; a place named for the state is not the state.
+  saveLookup("OR", "City of Culver Three", [
+    { discipline: "structural", agency: "City of Culver Three", src: "https://www.culverthree.gov/building" },
+    { discipline: "electrical", agency: BCD, src: "https://www.oregon.gov/bcd/pages/electrical.aspx", quote: "The BCD issues electrical permits in Culver Three", docs: [BCD_E] },
+  ]);
+  const cu3 = job("c3-cu3", "OR", "City of Culver Three");
+  check("C3 (must-pass) the BCD's own site anchors the BCD, and its PDF there is the BCD's application", JSON.stringify(anchorsOf(cu3, BCD)) === JSON.stringify(["oregon.gov"]) && urlsOf(cu3, "electrical_application", null).includes(BCD_E), JSON.stringify({ a: anchorsOf(cu3, BCD), u: urlsOf(cu3, "electrical_application", null) }));
+  saveLookup("WA", "City of Burlington Two", [{ discipline: "electrical", agency: LNI, src: "https://lni.wa.gov/licensing-permits/electrical/electrical-permits-fees-and-inspections/", docs: [LNI_OWN] }]);
+  check("C3 (must-pass) L&I's own site (lni.wa.gov) anchors L&I", urlsOf(job("c3-bur", "WA", "City of Burlington Two"), "electrical_application", null).includes(LNI_OWN), JSON.stringify(urlsOf(job("c3-bur", "WA", "City of Burlington Two"), "electrical_application", null)));
+  const CS_PDF = "https://coloradosprings.gov/files/Solar%20Permit%20Application.pdf";
+  saveLookup("CO", "Town of Manitou Two", [{ discipline: "structural", agency: "Colorado Springs Development Services", src: "https://coloradosprings.gov/development-services", docs: [CS_PDF] }]);
+  check("C3 (must-pass) 'Colorado Springs …' is a city named for the state, not the state: its own site anchors it", urlsOf(job("c3-man", "CO", "Town of Manitou Two"), "building_application").includes(CS_PDF), JSON.stringify(anchorsOf(job("c3-man", "CO", "Town of Manitou Two"), "Colorado Springs Development Services")));
+
+  // ── C1 THE AMPLIFIER ──────────────────────────────────────────────────────────────────────────────
+  // A NON-curated agency row (acquired from a cited PDF — not a curated seed, not person-verified, not a
+  // person's upload) applies to a job ONLY when that job's own lookup anchors the row's site.
+  // C1a THE ACCEPTED RISK STAYS AUTOMATIC: Northkest's lookup cites a Polk County PAGE on Kestrel County's
+  // electrical permit and Polk's PDF beside it (the skeptic's S2 — identical offline to a right one).
+  saveLookup("OR", "City of Northkest", [
+    { discipline: "structural", agency: "Kestrel County", src: KEST_PAGE },
+    { discipline: "electrical", agency: "Kestrel County", src: KEST_PAGE, docsSrc: POLK_PAGE, docs: [POLK_E] },
+  ]);
+  const nk = job("c1-nk", "OR", "City of Northkest");
+  const nkEns = await ensureAgency(nk, "electrical_application");
+  check("C1a (the accepted risk) Northkest's cited PDF is acquired automatically and stored under Kestrel County", nkEns.status === "acquired" && nkEns.downloads.join() === POLK_E && rowsWithSource(POLK_E).join() === "Kestrel County", JSON.stringify({ nkEns, rows: rowsWithSource(POLK_E) }));
+  check("C1a and it is Northkest's own form (its lookup anchors the row's site)", loaderUrls(nk).includes(POLK_E), JSON.stringify(loaderUrls(nk)));
+  // C1b ANOTHER CITY KESTREL ISSUES FOR, whose lookup anchors only Kestrel's own site, never gets that row.
+  const KEST_E = "https://www.co.kestrel.or.us/forms/Electrical%20Permit%20Application.pdf";
+  saveLookup("OR", "City of Southkest", [
+    { discipline: "structural", agency: "Kestrel County", src: KEST_PAGE },
+    { discipline: "electrical", agency: "Kestrel County", src: KEST_PAGE, docs: [KEST_E] },
+  ]);
+  const sk = job("c1-sk", "OR", "City of Southkest");
+  check("C1b the loader never hands Southkest a Kestrel row from a site its own lookup does not anchor", !loaderUrls(sk).includes(POLK_E), JSON.stringify(loaderUrls(sk)));
+  const skLine = () => statusOf(statusList(sk), /^Kestrel County \(issues the electrical permit\): Electrical Permit Application/);
+  check("C1b the status resolver's NAME match: Southkest's own same-named form is 'not yet on file', not the foreign row's 'on file'", /— not yet on file/.test(skLine()), skLine());
+  const skEns = await ensureAgency(sk, "electrical_application"); // its own form is not served yet
+  check("C1b acquisition never answers 'already stored' with the foreign row — it tries Southkest's own cited form", skEns.status !== "exists" && skEns.downloads.join() === KEST_E, JSON.stringify(skEns));
+  filledDirs.push("c1-sk");
+  const skFill = await forms.buildFilledFormsForProject(db, sk);
+  const polkRow = rowIdOf(POLK_E);
+  check("C1b the fill never fills the foreign row for Southkest", Boolean(polkRow) && !skFill.forms.some((f) => (f as { templateId?: string }).templateId === polkRow), JSON.stringify(skFill.forms.map((f) => [f.formName, f.status, (f as { templateId?: string }).templateId])));
+  served.set(KEST_E, await acroPdf("KESTREL COUNTY Electrical Permit Application"));
+  const skEns2 = await ensureAgency(sk, "electrical_application");
+  check("C1b with its own form served, Southkest acquires and holds it", skEns2.status === "acquired" && loaderUrls(sk).includes(KEST_E) && !loaderUrls(sk).includes(POLK_E), JSON.stringify({ skEns2, loader: loaderUrls(sk) }));
+  // C1c THE SKEPTIC'S zzV3 S1m: a Deschutes County blank under the BCD never reaches Culver Two, a BCD city
+  // whose lookup cites only oregon.gov — neither as a held blank nor as a fillable form.
+  const DES_E2 = "https://www.deschutes.org/sites/default/files/Electrical%20Permit%20Application.pdf";
+  auto.storeAhjFormTemplate(db, { ahjName: BCD, state: "OR", formType: "electrical_application", filename: "Electrical Permit Application.pdf", bytes: await acroPdf("DESCHUTES COUNTY Electrical Permit Application"), map: blankMap("Electrical Permit Application", DES_E2) } as never);
+  saveLookup("OR", "City of Culver Two", [
+    { discipline: "structural", agency: "City of Culver Two", src: "https://www.culvertwo.gov/building" },
+    { discipline: "electrical", agency: BCD, src: "https://www.oregon.gov/bcd/pages/electrical.aspx", quote: "The BCD issues electrical permits in Culver Two" },
+  ]);
+  const cu2 = job("c1-cu2", "OR", "City of Culver Two");
+  const cu2Line = () => statusOf(statusList(cu2), /^Oregon Building Codes Division \(issues the electrical permit\)/);
+  check("C1c (unfillable) the Deschutes blank is not Culver Two's held blank", !heldBlankUrls(cu2).includes(DES_E2), JSON.stringify(heldBlankUrls(cu2)));
+  downloads = [];
+  const cu2Ens = await auto.ensureAhjFormTemplate(db, noModel, cu2, "electrical_application", { allowResearch: false });
+  check("C1c acquisition never calls it Culver Two's 'stored but not fillable' form", cu2Ens.status === "not_found" && !/is stored/.test(cu2Ens.message), JSON.stringify(cu2Ens));
+  check("C1c the BCD line reads 'not yet on file', never 'held, not fillable'", /— not yet on file/.test(cu2Line()), cu2Line());
+  check("C1c the gate row does not name it as the blank to complete by hand", !reqDocs.documentInventory(db, cu2).presence.some((r) => r.docType === "electrical_application" && /completed by hand/.test(r.label)), JSON.stringify(reqDocs.documentInventory(db, cu2).presence.filter((r) => r.docType === "electrical_application")));
+  auto.storeAhjFormTemplate(db, { ahjName: BCD, state: "OR", formType: "electrical_application", filename: "Electrical Permit Application.pdf", bytes: await acroPdf("DESCHUTES COUNTY Electrical Permit Application"), map: mappedMap("Electrical Permit Application", DES_E2) } as never);
+  check("C1c (fillable) the loader never hands it to Culver Two", !loaderUrls(cu2).includes(DES_E2), JSON.stringify(loaderUrls(cu2)));
+  filledDirs.push("c1-cu2");
+  const cu2Fill = await forms.buildFilledFormsForProject(db, cu2);
+  check("C1c Culver Two's fill never fills it and its line never says 'filled' / 'on file'", !cu2Fill.forms.some((f) => f.status === "filled" && /Electrical/.test(f.formName)) && /— not yet on file/.test(cu2Line()), JSON.stringify({ fill: cu2Fill.forms.map((f) => [f.formName, f.status]), line: cu2Line() }));
+  // C1d (must-pass) CURATED rows apply to every city the agency issues for — Michael's B-01S / E-01, for a
+  // Marion city whose lookup anchors none of Marion's sites.
+  saveLookup("OR", "City of Stayton Two", [
+    { discipline: "structural", agency: "Marion County", src: "https://www.staytontwooregon.gov/building", quote: "Structural permits are submitted to Marion County" },
+    { discipline: "electrical", agency: "Marion County", src: "https://www.staytontwooregon.gov/building", quote: "Electrical permits are submitted to Marion County" },
+  ]);
+  const st2 = job("c1-st2", "OR", "City of Stayton Two");
+  check("C1d (must-pass) Marion County's curated B-01S and E-01 apply to a Marion city whose lookup anchors none of Marion's sites", anchorsOf(st2, "Marion County").length === 0 && loaderUrls(st2).includes(B01S_URL) && loaderUrls(st2).includes(E01_URL), JSON.stringify({ a: anchorsOf(st2, "Marion County"), l: loaderUrls(st2) }));
+  const st2Ens = await ensureAgency(st2, "building_application");
+  check("C1d (must-pass) and acquisition finds the B-01S already held (no download)", st2Ens.status === "exists" && st2Ens.downloads.length === 0, JSON.stringify(st2Ens));
+  // C1e (must-pass) A PERSON's rows apply everywhere: a blank the operator VERIFIED, and one the operator
+  // UPLOADED (the upload route stores no source URL; every automatic acquisition stores the URL it fetched).
+  const OSP_OTHER = "https://www.osprey-archive.org/forms/Solar%20Permit%20Application.pdf";
+  const ospRow = auto.storeAhjFormTemplate(db, { ahjName: "Osprey County", state: "OR", formType: "electrical_application", filename: "Electrical Permit Application.pdf", bytes: await acroPdf("Osprey County Electrical Permit Application"), map: mappedMap("Electrical Permit Application", OSP_OTHER) } as never);
+  saveLookup("OR", "City of Ospreyville", [{ discipline: "electrical", agency: "Osprey County", src: "https://www.co.osprey.or.us/building" }]);
+  const osp = job("c1-osp", "OR", "City of Ospreyville");
+  check("C1e (setup) an unverified cited row on a site the job does not anchor does not apply", !loaderIds(osp).includes(ospRow), JSON.stringify(loaderIds(osp)));
+  // The operator's PATCH /api/ahj-templates/:id/verify write (server.ts), as the route does it.
+  const vmap = JSON.parse(db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE id = ?", [ospRow])!.field_map);
+  vmap.verified = true; vmap.verifiedAt = new Date().toISOString();
+  db.run("UPDATE ahj_form_templates SET field_map = ?, updated_at = ? WHERE id = ?", [JSON.stringify(vmap), new Date().toISOString(), ospRow]);
+  check("C1e (must-pass) once a person VERIFIES it, it applies to every city Osprey issues for", loaderIds(osp).includes(ospRow), JSON.stringify(loaderIds(osp)));
+  // The upload route's own call (server.ts POST /api/ahj-templates/upload): sourceUrl "".
+  const upl = await auto.acquireFromBytes(db, stubMapper, { ahj: "Osprey County", state: "OR", formType: "building_application", formName: "Osprey County Solar Permit Application", bytes: await acroPdf("Osprey County Solar Permit Application"), sourceUrl: "" });
+  const uplRow = db.get<{ id: string }>("SELECT id FROM ahj_form_templates WHERE ahj_name = 'Osprey County' AND form_type = 'building_application'")?.id ?? "";
+  saveLookup("OR", "City of Ospreyton", [{ discipline: "structural", agency: "Osprey County", src: "https://www.ospreytonoregon.gov/building", quote: "Building permits are issued by Osprey County" }]);
+  check("C1e (must-pass) a blank a person UPLOADED under the agency applies where no site is anchored", upl.status === "acquired" && Boolean(uplRow) && anchorsOf(job("c1-ot", "OR", "City of Ospreyton"), "Osprey County").length === 0 && loaderIds(job("c1-ot", "OR", "City of Ospreyton")).includes(uplRow), JSON.stringify({ upl, uplRow, l: loaderIds(job("c1-ot", "OR", "City of Ospreyton")) }));
+  // C1f THE SKEPTIC'S zzV3 S7m: Polk County's application in Marion County's electrical slot (however it got
+  // there — C2 closes the door it came through) is not a Jefferson-shaped job's: the curated E-01 is fetched.
+  db.run("DELETE FROM ahj_form_templates WHERE ahj_name = 'Marion County' AND form_type = 'electrical_application'");
+  auto.storeAhjFormTemplate(db, { ahjName: "Marion County", state: "OR", formType: "electrical_application", filename: "Electrical Permit Application.pdf", bytes: await acroPdf("POLK COUNTY Electrical Permit Application"), map: mappedMap("Electrical Permit Application", POLK_E) } as never);
+  saveLookup("OR", "City of Jefferson Two", [
+    { discipline: "structural", agency: "Marion County", src: B01S_URL, quote: "Prescriptive Solar Photovoltaic Installation Permit Application · Marion County Public Works", pageSrc: "https://www.co.marion.or.us/PW/BuildingInspection", docsSrc: "https://jeffersontwooregon.org/planning-committee/" },
+    { discipline: "electrical", agency: "Marion County", src: "https://jeffersontwooregon.org/planning-committee/", quote: "All Electrical and Plumbing permits are submitted to Marion County Building", pageSrc: "https://www.co.marion.or.us/PW/BuildingInspection", docsSrc: "https://jeffersontwooregon.org/planning-committee/" },
+  ]);
+  const jf2 = job("c1-jf2", "OR", "City of Jefferson Two");
+  check("C1f Polk's row in Marion County's slot is not Jefferson Two's (its lookup anchors co.marion.or.us)", !loaderUrls(jf2).includes(POLK_E), JSON.stringify(loaderUrls(jf2)));
+  const jfE = await ensureAgency(jf2, "electrical_application");
+  check("C1f acquisition fetches the curated E-01 instead of 'already holding' Polk's", jfE.status === "acquired" && jfE.downloads.join() === E01_URL, JSON.stringify(jfE));
+  check("C1f and Jefferson Two's electrical application is the E-01", loaderUrls(jf2).includes(E01_URL) && !loaderUrls(jf2).includes(POLK_E), JSON.stringify(loaderUrls(jf2)));
+  // C1g (must-pass) Boulder County's own bouldercounty.gov row applies to a town whose lookup cites a
+  // bouldercounty.gov page — and not to one whose lookup anchors no Boulder County site.
+  saveLookup("CO", "Town of Lyons Two", [{ discipline: "structural", agency: "Boulder County", src: BOCO_PAGE }]);
+  check("C1g (must-pass) Boulder County's bouldercounty.gov row applies where the lookup cites a bouldercounty.gov page", loaderUrls(job("c1-ly2", "CO", "Town of Lyons Two")).includes(BOCO_OWN), JSON.stringify(loaderUrls(job("c1-ly2", "CO", "Town of Lyons Two"))));
+  saveLookup("CO", "Town of Erie Two", [{ discipline: "structural", agency: "Boulder County", src: "https://www.erietwo.gov/building", quote: "Building permits in Erie Two are issued by Boulder County" }]);
+  check("C1g and not where the lookup anchors no Boulder County site (a cited row, not curated or verified)", !loaderUrls(job("c1-er2", "CO", "Town of Erie Two")).includes(BOCO_OWN), JSON.stringify(loaderUrls(job("c1-er2", "CO", "Town of Erie Two"))));
+
+  // ── C2 NO FALLTHROUGH (the skeptic's S7 / S7m: Aumsville, the E-01 404, Polk's PDF next) ─────────────
+  db.run("DELETE FROM ahj_form_templates WHERE ahj_name = 'Marion County' AND form_type = 'electrical_application'");
+  const e01Bytes = served.get(E01_URL)!;
+  served.delete(E01_URL);
+  saveLookup("OR", "City of Aumsville Two", [
+    { discipline: "structural", agency: "Marion County", src: "https://www.co.marion.or.us/PW/BuildingInspection" },
+    { discipline: "electrical", agency: "Marion County", src: "https://www.co.marion.or.us/PW/BuildingInspection", docsSrc: POLK_PAGE, docs: [POLK_E] },
+  ]);
+  const au2 = job("c2-au2", "OR", "City of Aumsville Two");
+  check("C2 (setup) the seed and a cited neighbour are both candidates", JSON.stringify(agencyMod.agencyApplicationForms(au2, "electrical_application", null).map((f) => f.origin)) === JSON.stringify(["curated", "cited"]), JSON.stringify(agencyMod.agencyApplicationForms(au2, "electrical_application", null)));
+  const auE = await ensureAgency(au2, "electrical_application");
+  const marionElectrical = () => db.query<{ source_url: string }>("SELECT source_url FROM ahj_form_templates WHERE ahj_name = 'Marion County' AND form_type = 'electrical_application'").map((r) => r.source_url);
+  check("C2 the seed's failed fetch is a NAMED failure — the agency, the form, the URL, retry", auE.status === "not_found" && auE.message.includes(`Marion County's Marion County Renewable Electrical Energy Permit Application (E-01) could not be downloaded from ${E01_URL}`) && /retry/i.test(auE.message), auE.message);
+  check("C2 no cited candidate is tried in its place: Polk's PDF never fetched, nothing stored in Marion County's electrical slot", auE.downloads.join() === E01_URL && marionElectrical().length === 0, JSON.stringify({ auE, stored: marionElectrical() }));
+  served.set(E01_URL, e01Bytes);
+  const auE2 = await ensureAgency(au2, "electrical_application");
+  check("C2 once the seed answers, the seed is acquired", auE2.status === "acquired" && auE2.downloads.join() === E01_URL && JSON.stringify(marionElectrical()) === JSON.stringify([E01_URL]), JSON.stringify({ auE2, stored: marionElectrical() }));
+
   assert.equal(failed.length, 0, `${failed.length} check(s) failed: ${failed.join(" | ")}`);
   console.log(`agencyFormsUniversal: ${passed} checks passed — a cited PDF is the agency's only on a site the lookup cited a page of the agency's on (no name creates an anchor), split agencies keep the city's own lines, every line's status is its own form's, and three held-out AHJs (FL / IA / TX) route to the right agency`);
 } finally {
