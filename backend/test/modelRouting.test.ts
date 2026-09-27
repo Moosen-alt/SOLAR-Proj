@@ -333,6 +333,27 @@ await check("advisor on: beta header, advisor tool with caps, and its tokens lan
   });
 });
 
+await check("advisor on the lookup path: web_search AND the advisor tool go out together on the beta endpoint", async () => {
+  await withEnv({ AUTOPILOT_LLM_ADVISOR_WEBLOOKUP: "claude-fable-5-1" }, async () => {
+    captured = []; queue = [{ text: "{}" }];
+    const r = await provider.webLookup({ label: "permitProcessLookup.process", system: "Find the permit process.", user: "AHJ: Test City, AZ" });
+    assert.equal(r.error, undefined, `webLookup errored: ${r.error}`);
+    const c = calls()[0];
+    assert.ok(String(c.headers["anthropic-beta"] || "").includes("advisor-tool-2026-03-01"), "beta header missing");
+    const types = ((c.body.tools as Array<Record<string, unknown>>) ?? []).map((t) => t.type);
+    assert.ok(types.includes("web_search_20260209"), `web_search missing: ${types}`);
+    assert.ok(types.includes("advisor_20260301"), `advisor missing: ${types}`);
+    assert.equal(c.body.model, "claude-opus-5");
+  });
+  // ...and without the env, the lookup request is exactly what it was: no beta, no advisor, no effort.
+  captured = []; queue = [{ text: "{}" }];
+  await provider.webLookup({ label: "permitProcessLookup.process", system: "s", user: "u" });
+  const c = calls()[0];
+  assert.ok(!String(c.headers["anthropic-beta"] || "").includes("advisor"));
+  assert.deepEqual(((c.body.tools as Array<Record<string, unknown>>) ?? []).map((t) => t.type), ["web_search_20260209"]);
+  assert.equal(oc(c), undefined);
+});
+
 server.close();
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nmodelRouting: all passed");

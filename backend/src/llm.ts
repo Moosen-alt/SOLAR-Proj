@@ -1510,8 +1510,12 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
 
   // Larger budget than ask() — plan sets are dense and we want every field.
   private async askLong(label: string, systemPrompt: string, userMessage: string, maxTokens = 4096, format?: Anthropic.JSONOutputFormat,
-    images?: Array<{ label: string; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>): Promise<string> {
-    return (await this.askLongDetailed(label, systemPrompt, userMessage, maxTokens, format, images)).text;
+    images?: Array<{ label: string; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>,
+    /** Filled with the final stop reason when supplied (the intake retry reads it). */
+    info?: { stopReason?: string | null }): Promise<string> {
+    const r = await this.askLongDetailed(label, systemPrompt, userMessage, maxTokens, format, images);
+    if (info) info.stopReason = r.stopReason;
+    return r.text;
   }
 
   /** askLong, also reporting the final stop reason (the intake retry needs to know whether the
@@ -1808,11 +1812,12 @@ Rules:
     //   · a safety refusal — the same bytes refused the same way, paid for twice;
     //   · a 32000-token truncation — re-running it from 16000 repeats both calls for the same cap.
     const attempt = async (note: string) => {
-      const res = await this.askLongDetailed("extractProjectFields", system, user, 16000, undefined, images);
+      const info: { stopReason?: string | null } = {};
+      const text = await this.askLong("extractProjectFields", system, user, 16000, undefined, images, info);
       try {
-        return finalizeExtraction(this.normalizeExtraction(res.text, note), documentsSeen);
+        return finalizeExtraction(this.normalizeExtraction(text, note), documentsSeen);
       } catch (err) {
-        if (err instanceof LlmUnreadableResponseError) throw new LlmUnreadableResponseError(err.message, res.stopReason);
+        if (err instanceof LlmUnreadableResponseError) throw new LlmUnreadableResponseError(err.message, info.stopReason ?? null);
         throw err;
       }
     };
