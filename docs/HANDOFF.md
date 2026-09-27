@@ -339,6 +339,37 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   (ec0840c). Production: aae50fab (FIRE PERMIT: 3 kW …), e26e5b17 ('No permit required unless …') and 4ae9447c (a
   COI note) own nothing now; a scan of the 216 portal rows rejects no real jurisdiction (`.probe/w1-close2/junkscan.log`).
 
+**Decisions 09-26 landed (2026-09-26 evening) — the operator's five answers, built:**
+- D1 + D2 (5f35a5f): `classifyPermitStatusText(raw, track)` — track REQUIRED, `trackKind` now in permitMonitor.ts (clientPortal
+  re-exports); the writer passes the target's kind, drift judges with the same kind. "Approved with conditions" / "conditional
+  approval" has its OWN label on both tracks (permit `reviewed_by_ahj` / "Approved with conditions" → client "Approved by the
+  jurisdiction — with conditions"; NEM `nem_approved` / "Interconnection approved with conditions" → "Interconnection approved —
+  with conditions"). A NEM target's plain "Approved" / "review complete" is `nem_approved` (client-facing, finishes the NEM
+  track, feeds the handoff); a permit's stays `reviewed_by_ahj` → project 'approved'. ONE "is this NEM target approved"
+  predicate: `isNemApprovalOutcome` (= nem_approved) — the process map and next-step summary had counted the permit family and
+  OMITTED nem_approved. Measured on a 2026-09-26 production copy: 1 active NEM target at reviewed_by_ahj (`712cdb55`, project
+  `720b05f3` at 'issued', client has an email on file) — its newest reading is an EMAIL check of a real Pacific Power design
+  approval, now stale-marked ("Being re-checked"; today's rules: nem_approved). It has no portal URL, so no poll re-reads it; a
+  manual re-check with that text moves the project to nem_approved and sends one "Interconnection approved" update (no handoff:
+  building track not done + 1 open correction). Its process-map NEM lane reads "not captured" until then.
+- D3 (22e1cf4 + CLAUDE.md): hard rule 1 reworded — see the rulings list above. `.env` untouched; the operator flips
+  `PORTAL_ALLOW_FINAL_SUBMIT=1` at the re-pin. If `CLAUDE.md` shows as modified and uncommitted, commit it:
+  `git commit -m "Decisions 09-26 D3: CLAUDE.md hard rule 1 reworded to the per-run approval gate" -- CLAUDE.md`
+  (the automated session could not commit that file).
+- D4 (b7e153a): `scripts/delete-knowledge-rows.ts`. Dry run on the copy: 6 would be deleted, 0 refused. The operator runs, on the
+  live DB after a backup (the script takes its own `.backup` beside the DB too):
+  `npx tsx scripts/delete-knowledge-rows.ts --db backend/data/autopilot.sqlite --id 14f08770-8f64-48e2-83a2-f2789e955cd6 --id 46b361e8-cbc0-4a63-a736-bcbf8ef0527e --id 6421d290-36b9-45f8-b2c9-6f5edc63f973 --id 2ada1e43-38b7-4f48-a682-4576158472cd --id 7de2c252-6643-4ebc-a03c-dc3b148addeb --id f61c647d-05ed-4753-b9f9-8baa56a4c519 --apply`
+  (`4976aac7` ma|city of waltham|eversource, learned, project_count 1, is KEPT).
+- D5 (b3728d8, e091c05): the four company-staff clauses are out of `reference-ahj-processes.json`;
+  `scripts/scrub-shared-knowledge-staff-names.ts` applies the same name-bound replacements to the KB notes (dry run on the copy:
+  1064 rows scanned, 4 carry a clause — e431f014 f10c159e f85747a0 63b139ae). Operator:
+  `npx tsx scripts/scrub-shared-knowledge-staff-names.ts --db backend/data/autopilot.sqlite --apply`.
+  Jurisdiction desk staff (Megan Winner/Coburg, Vicki Russell/Oak Point, Debra, Heaven, Hazel, Nathan, Christine, Richard,
+  Ray/Rebecca/Alice) are NOT touched — a separate question. "Approval letter will be given by Nic." (az|kingman) is left: ambiguous.
+- Open: the per-recipe "trusted for auto-submit" toggle (dashboard.js ~769) and the step badge "trusted auto-submit only" (~665)
+  still describe `auto_submit_enabled` as if it armed something — it is never consulted (dead UI). status.html colours
+  `reviewed_by_ahj` grey, so a permit's "Approved by the jurisdiction — with conditions" badge is grey; making it green is unasked.
+
 **Operator actions still open (2026-09-24):**
 - Oregon 36/25 psf minimum ground snow: the verified write (`PUT /api/code-profiles/verify`, payload in
   `.probe/r3r-criteria-fix/verify-payload.json`) is NO LONGER BLOCKED by the snow-reading work: rounds 4-5 landed
