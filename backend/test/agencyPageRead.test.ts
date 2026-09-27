@@ -650,6 +650,9 @@ await check("(r6) MUST-EXCLUDE (close-2 item 5): an own-domain link is judged by
   assert.equal(y2.res, null, `Y2 vendor root landing (got ${y2.res?.url})`);
   const y3 = await own("Apply online", `${CITY2}/solar-apply`, { finalUrl: "https://app.gosolarapp.org/examplecity/apply", text: `<html><head><title>SolarAPP+</title></head><body>Apply</body></html>` });
   assert.equal(y3.res, null, `Y3 SolarAPP+ landing (got ${y3.res?.url})`);
+  // A MapsOnline (PeopleGIS) link under portal words: the viewer, not a permit page (Y1).
+  const y1 = await resolveNamed({ [PAGE2]: { text: synthetic(`<p>Paper only.</p><a href="https://www.mapsonline.net/examplecity/index.html">Apply Online</a>`) } }, [PAGE2], ["City of Examplecity"]);
+  assert.equal(y1.res, null, `Y1 a MapsOnline viewer under portal words (got ${y1.res?.url})`);
   const v8 = await resolveNamed({ [`${CITY2}/finance`]: { text: synthetic(`<a href="https://aca-prod.accela.com/EXAMPLECITY/Cap/CapHome.aspx?module=Licenses">Apply for a Business License Online</a>`) } }, [`${CITY2}/finance`], ["City of Examplecity"]);
   assert.equal(v8.res, null, `V8 licence-module deep link (got ${v8.res?.url})`);
   const v8b = await resolveNamed({ [`${CITY2}/finance`]: { text: synthetic(`<a href="https://aca-prod.accela.com/EXAMPLECITY/Cap/CapHome.aspx?module=Licenses">Apply Online</a>`) } }, [`${CITY2}/finance`], ["City of Examplecity"]);
