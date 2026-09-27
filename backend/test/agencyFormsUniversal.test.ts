@@ -542,6 +542,15 @@ try {
   check("R2 after the fill: the filled one 'filled', the other still 'not yet on file' (never the slot's word)", /— filled$/.test(statusOf(cpFilled, /: Solar Photovoltaic Permit Application/)) && /— not yet on file/.test(statusOf(cpFilled, /: Building Permit Application/)), JSON.stringify(cpFilled));
   const cpJob = reqDocs.requiredListCheck(db, cp, reqDocs.documentInventory(db, cp)).items;
   check("R2 docs.complete: the filled form present, the unheld one missing", cpJob.some((i) => /: Solar Photovoltaic Permit Application — filled$/.test(i.text) && i.present) && cpJob.some((i) => /: Building Permit Application — not yet on file/.test(i.text) && !i.present && !i.skipped), JSON.stringify(cpJob.map((i) => [i.text.slice(0, 100), i.present])));
+  // A form NAME is a key only among the agency's own rows: the AHJ's own same-named application (held
+  // because the agency holds none of this track) is not the agency's form.
+  const ELB_B = "https://www.elbertcounty-co.gov/documents/Building%20Permit%20Application.pdf";
+  saveLookup("CO", "Town of Kiowa", [{ discipline: "structural", agency: "Elbert County", src: "https://www.elbertcounty-co.gov/building", docs: [ELB_B] }]);
+  const kiowa = job("r2-kiowa", "CO", "Town of Kiowa");
+  auto.storeAhjFormTemplate(db, { ahjName: "Town of Kiowa", state: "CO", formType: "building_application", filename: "Building Permit Application.pdf", bytes: await acroPdf("Town of Kiowa Building Permit Application"),
+    map: { formName: "Building Permit Application", sourceUrl: "https://www.townofkiowa.gov/forms/Building%20Permit%20Application.pdf", fillMode: "acroform", textFields: { "Owner name": "project.homeownerName" }, checkboxes: {}, notes: "" } });
+  const kiowaList = buildApplicationDocumentPackage(kiowa, null, { agencyStatus: reqDocs.agencyListStatusResolver(db, kiowa) }).profile.requiredDocuments;
+  check("R2 the AHJ's own same-named form is not the agency's: Elbert County's line stays 'not yet on file'", urlsOf(kiowa, "building_application").includes(ELB_B) && /^Elbert County \(issues the structural \(building\) permit\): Building Permit Application — not yet on file/.test(statusOf(kiowaList, /^Elbert County/)), JSON.stringify(kiowaList));
   // The lookup's RAW document entry for a PDF the agency list already carries (with its own status, or
   // its confirm warning) gives way to that line — a bare URL no slot can hold was missing forever.
   check("R2 docs.complete: no bare-URL line for a form the agency list carries", !cpJob.some((i) => i.text.includes(T1) || i.text.includes(T2)), JSON.stringify(cpJob.map((i) => i.text.slice(0, 100))));
