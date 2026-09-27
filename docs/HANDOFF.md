@@ -38,7 +38,7 @@ and writes only what it appended. Live, same AHJ/track/discipline, real key, scr
 |---|---|---|
 | Corry City PA permit/electrical | $1.01, 7 turns, uncached input $0.62 (61%), cache_read flat at 7.5k | $0.49 (incl. $0.03 search fees the old figure omitted), 7 turns, uncached $0.00 (0%), cache_read 8.0k → 25.3k → 25.9k → 31.2k → 34.5k → 35.2k → 39.4k |
 | City of Jefferson OR permit/combo (prod ledger) | $1.14, 8 turns, uncached $0.65 (57%) | $0.55 (incl. $0.05), 8 turns, 0% uncached, cache_read 16.0k → … → 47.1k, growing every turn |
-| Iowa City IA nem | $0.60, 5 turns, uncached $0.35 (59%) | $0.32 (incl. $0.03), 3 turns, 0% uncached, cache_read 16.0k → 24.0k → 31.3k |
+| Iowa City IA nem | $0.60, 5 turns, uncached $0.35 (59%) | $0.32 (incl. $0.03), 3 turns, 0% uncached, cache_read 16.0k → 24.0k → 31.3k — NOT a clean pair: the before-run FOUND $125 (MidAmerican Level 1 PDF) and the after-run found nothing; the answer changed with the 33a9624/46372d8 authority-check prompt change (a no-cache control on the same track also found nothing), and turn counts vary with the web. The cache signature (0% uncached, cache_read growing) is the evidence in this row, not the dollars |
 | runToolAgent (synthetic 7-turn triage-shaped loop; prod triage was 57k uncached / 70% of $0.41) | — | $0.10, uncached 1%, cache_read 1.6k → 2.2k → 3.5k → 5.2k → 6.8k → 8.0k |
 
 Same turn count on the two permit tracks: −51% / −52% per track. Turn counts vary with the web,

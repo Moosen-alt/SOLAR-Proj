@@ -47,8 +47,10 @@ const queue: Scripted[] = [];
 const captured: Array<Record<string, unknown>> = [];
 const ev = (name: string, data: unknown) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
 function sse(s: Scripted, model: string): string {
-  // server_tool_use is on EVERY real message (SDK: ServerToolUsage | null): null = no server tool ran.
-  const usage = { input_tokens: 1000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, server_tool_use: null, ...(s.usage ?? {}) };
+  // On the REAL wire server_tool_use is OMITTED when no server tool ran (probed 2026-09-26; the SDK's
+  // `ServerToolUsage | null` type is not what arrives) — so the stub omits it unless a turn scripts one,
+  // and a completed call with no key must still record a KNOWN zero, never an unknown.
+  const usage = { input_tokens: 1000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, ...(s.usage ?? {}) };
   const out = [ev("message_start", { type: "message_start", message: { id: "msg_stub", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage } })];
   s.blocks.forEach((b, index) => {
     if (b.type === "text") {
@@ -251,10 +253,12 @@ await check("migration v38: llm_calls has web_searches after openDatabase", () =
   const cols = db.query<{ name: string }>("PRAGMA table_info(llm_calls)").map((c) => c.name);
   assert.ok(cols.includes("web_searches"), cols.join(","));
 });
-await check("webSearchRequestsOf reads usage.server_tool_use; key absent = undefined (unknown), null = 0 (no server tool ran), present 0 = 0", () => {
-  assert.equal(webSearchRequestsOf({ input_tokens: 1 }), undefined);
+await check("webSearchRequestsOf reads usage.server_tool_use; on a completed call the key is OMITTED when no search ran = known 0 (wire-probed 2026-09-26), null = 0, present N = N; only a non-usage object is unknown", () => {
+  assert.equal(webSearchRequestsOf({ input_tokens: 1 }), 0, "a real usage object without the key: the API omitted it because no server tool ran — a KNOWN zero (17 of 25 live rows had recorded NULL = unknown under the old rule)");
+  assert.equal(webSearchRequestsOf({ input_tokens: 1, output_tokens: 5 }), 0);
+  assert.equal(webSearchRequestsOf({}), undefined, "not a usage object at all (a stub with no tokens) stays unknown");
   assert.equal(webSearchRequestsOf(undefined), undefined);
-  assert.equal(webSearchRequestsOf({ input_tokens: 1, server_tool_use: null }), 0, "the API's null is a known zero, not an unknown");
+  assert.equal(webSearchRequestsOf({ input_tokens: 1, server_tool_use: null }), 0, "null is a known zero too");
   assert.equal(webSearchRequestsOf({ server_tool_use: { web_search_requests: 0 } }), 0);
   assert.equal(webSearchRequestsOf({ server_tool_use: { web_search_requests: 7 } }), 7);
   assert.equal(webSearchRequestsOf({ server_tool_use: { web_search_requests: "3" } }), 3);

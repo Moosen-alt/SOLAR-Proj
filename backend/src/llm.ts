@@ -284,12 +284,18 @@ export interface LlmCallRecord {
 }
 
 /** The web-search count a response reports. Read from usage (the billing source), not from content
- *  blocks: a search the server ran and billed is a search. The API sends `server_tool_use` on EVERY
- *  message (SDK: `ServerToolUsage | null`, non-optional) — null means no server tool ran, a KNOWN
- *  zero; only a usage object with no such key at all (a stub, a pre-v38 row) is unknown (undefined). */
+ *  blocks: a search the server ran and billed is a search. ON THE REAL WIRE `server_tool_use` IS
+ *  OMITTED when no server tool ran (probed 2026-09-26 on message_start + message_delta: create with
+ *  no tools, stream with no tools, stream WITH the web_search tool and no search — absent in all
+ *  three, present only on a turn that searched; the SDK type `ServerToolUsage | null` is not what
+ *  arrives). So a usage object WITHOUT the key is a KNOWN zero, and null likewise. Only a missing
+ *  or non-usage object (a stub with no usage at all) is unknown (undefined); a pre-v38 ledger row is
+ *  NULL by its own age, never re-read. Before this rule 17 of 25 live rows recorded NULL = "unknown". */
 export function webSearchRequestsOf(usage: unknown): number | undefined {
-  if (!usage || typeof usage !== "object" || !("server_tool_use" in usage)) return undefined;
-  const st = (usage as { server_tool_use: { web_search_requests?: unknown } | null }).server_tool_use;
+  if (!usage || typeof usage !== "object") return undefined;
+  const u = usage as { input_tokens?: unknown; output_tokens?: unknown; server_tool_use?: { web_search_requests?: unknown } | null };
+  if (!("server_tool_use" in u)) return "input_tokens" in u || "output_tokens" in u ? 0 : undefined;
+  const st = u.server_tool_use;
   if (st == null) return 0;
   if (typeof st !== "object") return undefined;
   const n = Number(st.web_search_requests);
