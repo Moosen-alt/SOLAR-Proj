@@ -69,11 +69,22 @@ function headerConditionNames(page: string): string[] {
 
 /** Split a row body into the condition's name and its description. */
 function nameAndDescription(body: string, headerNames: string[]): { name: string; description: string } {
-  // (a) A name the header printed, found in this row — the description follows its LAST
-  //     occurrence (Ivy's row prints "Sewer Recovery Sewer Recovery" before the description).
+  // (a) A name the header printed, found in this row — the description follows its FIRST
+  //     occurrence, skipping only a repeat printed back to back right after it (Ivy's row prints
+  //     "Sewer Recovery Sewer Recovery" before the description). NOT the last occurrence: a
+  //     description that repeats the name ("Sewer Recovery fee of $1,200 …; see Sewer Recovery
+  //     ordinance 12.4.") lost the fee and the requirement (correction-card skeptic MF2).
   for (const name of headerNames) {
-    const at = body.lastIndexOf(name);
-    if (at >= 0) return { name, description: body.slice(at + name.length).trim() };
+    const at = body.indexOf(name);
+    if (at < 0) continue;
+    let end = at + name.length;
+    for (;;) {
+      const rest = body.slice(end);
+      const lead = rest.length - rest.trimStart().length;
+      if (!rest.trimStart().startsWith(name)) break;
+      end += lead + name.length;
+    }
+    return { name, description: body.slice(end).trim() };
   }
   // (b) A phrase printed twice in a row (condition type and name are often the same words).
   const twice = /(?:^|\s)((?:[A-Za-z0-9&/'(),-]+\s){0,5}[A-Za-z0-9&/'(),-]+)\s\1/.exec(body);
@@ -104,7 +115,10 @@ function accelaConditionRows(page: string): { rows: string[]; total: number } {
   let m: RegExpExecArray | null;
   while ((m = re.exec(page))) {
     let body = page.slice(from, m.index).trim();
-    if (body.length > MAX_ROW_BODY) break; // past the list: this terminator belongs to something else
+    // Past the list, a terminator belongs to something else - so a long body ends the list. But the
+    // FIRST row, on a page whose header says it lists conditions, is that condition however long it
+    // is: a ~780-character floodplain requirement was dropped for the header's one-liner (skeptic MF3).
+    if (body.length > MAX_ROW_BODY && !(rows.length === 0 && total >= 1)) break;
     body = body.replace(GROUP_HEADER, "").replace(LEADING_STATUS, "").trim();
     const [, status, severity, date] = m;
     const { name, description } = nameAndDescription(body, names);
@@ -134,7 +148,19 @@ function reviewComments(page: string): string[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(page))) {
     let body = page.slice(m.index + m[0].length, m.index + m[0].length + MAX_COMMENT + 1);
-    const cut = SECTION_BOUNDARY.exec(body);
+    // A section word is a HEADING only when it is not the start of a numbered item ("3. Documents
+    // must be wet-stamped") and not followed by prose (a lowercase word): those are the reviewer's
+    // own sentences, and cutting there lost items 3 and 4 while the reading still said "items"
+    // (correction-card skeptic MF1). The tab strip after the block ("Inspections Fees Attachments")
+    // is still cut.
+    const boundary = new RegExp(SECTION_BOUNDARY.source, "g");
+    let cut: RegExpExecArray | null;
+    while ((cut = boundary.exec(body))) {
+      const before = body.slice(0, cut.index);
+      const after = body.slice(cut.index + cut[0].length);
+      if (/\d+[.)]\s*$/.test(before) || /^\s+[a-z]/.test(after)) continue;
+      break;
+    }
     if (cut) body = body.slice(0, cut.index);
     body = body.trim();
     if (body.length > MAX_COMMENT) body = `${body.slice(0, MAX_COMMENT).trimEnd()}…`;
@@ -152,6 +178,11 @@ export function extractCorrectionFromPage(pageText: string): PageCorrectionReadi
   const comments = reviewComments(page);
   if (!conditions.length && !comments.length) return { method: "whole_text", conditions, comments, text: page };
   const lines = [...conditions, ...comments];
+  // The header's one-liner is a NAME, not the condition's text: the correction says so on its own
+  // line - never a silent one-liner (correction-card skeptic MF3).
+  if (!rows.length && fallbackCondition) {
+    lines.splice(1, 0, "(The condition's full text could not be read here — see the portal record text.)");
+  }
   // A DENOMINATOR: the page lists more conditions than it printed (a paged list).
   if (rows.length && total > rows.length) {
     lines.push(`(The page lists ${total} conditions; ${rows.length} were read — the rest are on the portal record.)`);

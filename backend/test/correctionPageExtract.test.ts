@@ -351,6 +351,37 @@ await check("BACKFILL IDEMPOTENT: a second run has nothing to do", () => {
   assert.equal(applyCorrectionTextBackfill(db, again).corrections, 0);
 });
 
+// NO SILENT LOSS (correction-card skeptic MF1-MF3): the correction keeps every word the reviewer
+// wrote, or says where it stopped. Three shapes that each lost words at ebba269.
+await check("MF1 MUST-PASS: a numbered comment block keeps items that START with a section word ('3. Documents must…', '4. Fees for…')", () => {
+  const page = "Permit BLD-2026-0412 Residential Solar Status: Corrections Required Review Comments: 1. Provide rafter span table for the array area. "
+    + "2. Contact Pacific Power to confirm the meter location. 3. Documents must be wet-stamped by an Oregon PE. 4. Fees for re-review are due at resubmittal. Inspections Fees Attachments";
+  const r = extractCorrectionFromPage(page);
+  assert.equal(r.method, "items");
+  assert.match(r.text, /3\. Documents must be wet-stamped by an Oregon PE\./, r.text);
+  assert.match(r.text, /4\. Fees for re-review are due at resubmittal\./, r.text);
+  assert.doesNotMatch(r.text, /Inspections Fees Attachments/, "the tab strip after the block is still cut");
+});
+await check("MF2 MUST-PASS: a description that repeats the condition's name keeps everything before the repeat", () => {
+  const page = COOS_BAY_PAGE
+    .replace(/Condition: PERMIT OUTSTANDING/, "Condition: Sewer Recovery")
+    .replace(/PERMIT OUTSTANDING(?!Severity)[\s\S]*?(Applied \| Notice \| 12\/13\/2019)/, "Sewer Recovery Sewer Recovery fee of $$1,200 due before issuance; see Sewer Recovery ordinance 12.4.$1"); // "$$" = a literal $ in a replacement string
+  const r = extractCorrectionFromPage(page);
+  assert.match(r.text, /\$1,200 due before issuance/, r.text);
+  assert.match(r.text, /Sewer Recovery ordinance 12\.4/, r.text);
+});
+await check("MF3 MUST-PASS: a first condition row longer than 600 characters is kept, not replaced by the one-line header", () => {
+  const long = "Floodplain development permit required prior to issuance. " + "Provide an elevation certificate, a no-rise certification and the floodplain development permit number; ".repeat(8);
+  const page = COOS_BAY_PAGE.replace(/PERMIT OUTSTANDING(?!Severity)[\s\S]*?(Applied \| Notice \| 12\/13\/2019)/, `PERMIT OUTSTANDING PERMIT OUTSTANDING${long}$1`);
+  assert.ok(long.length > 600, "fixture premise: the row is longer than the old 600-character cap");
+  const r = extractCorrectionFromPage(page);
+  assert.match(r.text, /no-rise certification/, r.text.slice(0, 300));
+});
+await check("MF3 MUST-PASS: when a condition's text cannot be read (header only), the correction SAYS so — never a silent one-liner", () => {
+  const r = extractCorrectionFromPage(HEADER_ONLY);
+  assert.match(r.text, /full text .*(not|n't) (be )?read|see the portal record/i, r.text);
+});
+
 if (failures) { console.error(`\n${failures} correction page-extract test(s) FAILED.`); process.exit(1); }
 console.log("\nAll correction page-extract tests passed.");
 try { db.close(); } catch { /* fire-and-forget work may still hold the handle */ }
