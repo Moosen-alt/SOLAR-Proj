@@ -544,5 +544,192 @@ await check("(i3) end to end (close F5/F6/F4): the page-read portal goes only to
   assert.ok(s.requests.some((q) => q.url === OLD_FEES), "the cited schedule was read once");
 });
 
+// ── lookup-close-2 (the second skeptic's BROKEN verdict, 2026-09-26): MF1 / MF2 / MF3, the quote
+// door's recall, the landing-page rules, and the reviewer's untested kills (Y2-Y6, Y9). ───────
+// Real page texts: Fairfax County's solar-residential page (documents as ' - ' items), Hollis NH's
+// solar-requirements PDF ("8 ½” x 11”", "Current Codes 2020 NEC") and building-fees PDF ("Solar
+// Arrays" header over "Roof Top Solar Array … $75.00").
+const CITY2 = "https://www.examplecity.gov";
+const PAGE2 = `${CITY2}/building`;
+
+await check("(m3) MUST-EXCLUDE (close-2 MF2): a same-named OTHER jurisdiction — a City of Marion page linking 'Marion County Online Permits' (aca-prod/MARIONCOUNTY), a Marion County page linking 'City of Marion permit portal' (CITYOFMARION); MUST-PASS: the county's portal on the city page when the county ISSUES the city's permits; the type word never reads 'co' (LEECO)", async () => {
+  const v1 = await resolveNamed({ "https://www.cityofmarion.org/building": { text: synthetic(`<p>Building permits for properties inside city limits are issued at City Hall on paper.</p><p>For unincorporated property: <a href="https://aca-prod.accela.com/MARIONCOUNTY/Default.aspx">Marion County Online Permits</a></p>`) } }, ["https://www.cityofmarion.org/building"], ["City of Marion"]);
+  assert.equal(v1.res, null, `V1: the county's tenant is not the city's portal (got ${v1.res?.url})`);
+  const v2 = await resolveNamed({ "https://www.co.marion.in.us/building": { text: synthetic(`<p>Inside the City of Marion? <a href="https://aca-prod.accela.com/CITYOFMARION/Default.aspx">City of Marion permit portal</a></p><p>Unincorporated: apply in person at the County Building.</p>`) } }, ["https://www.co.marion.in.us/building"], ["Marion County"]);
+  assert.equal(v2.res, null, `V2: the city's tenant is not the county's portal (got ${v2.res?.url})`);
+  // The Jefferson shape: the AHJ is the city, the COUNTY issues its permits (both names are the lookup's).
+  const ok = await resolveNamed({ "https://www.cityofmarion.org/building": { text: synthetic(`<p>Marion County issues our building permits: <a href="https://aca-prod.accela.com/MARIONCOUNTY/Default.aspx">Marion County Online Permits</a></p>`) } }, ["https://www.cityofmarion.org/building"], ["City of Marion", "Marion County"]);
+  assert.equal(ok.res?.url, "https://aca-prod.accela.com/MARIONCOUNTY/Default.aspx", `the issuing county's portal is the city's (${ok.res?.url})`);
+  assert.equal(cat.tenantContradictsAgency("https://aca-prod.accela.com/MARIONCOUNTY/Default.aspx", ["City of Marion"]), true);
+  assert.equal(cat.tenantContradictsAgency("https://aca-prod.accela.com/CITYOFMARION/Default.aspx", ["Marion County"]), true);
+  assert.equal(cat.tenantContradictsAgency("https://aca-prod.accela.com/LEECO/Default.aspx", ["City of Lee"]), false, "'co' is never a type word");
+  assert.equal(cat.tenantContradictsAgency("https://cityofscottsdaleaz-energovweb.tylerhost.net/apps/selfservice", ["City of Scottsdale"]), false);
+  assert.equal(cat.tenantContradictsAgency("https://aca-prod.accela.com/MARIONCOUNTY/Default.aspx", ["Marion"]), false, "an AHJ name with no type word contradicts nothing");
+  assert.equal(cat.wordsNameAnotherJurisdiction("Marion County Online Permits", ["City of Marion"]), true);
+  assert.equal(cat.wordsNameAnotherJurisdiction("Marion County Online Permits", ["Marion County"]), false);
+  assert.equal(cat.wordsNameAnotherJurisdiction("City of Marion permit portal", ["Marion County"]), true);
+  assert.equal(cat.wordsNameAnotherJurisdiction("Iowa City permit portal", ["Iowa City"]), false);
+  assert.equal(cat.wordsNameAnotherJurisdiction("Fairfax County permit portal (PLUS)", ["Fairfax County"]), false);
+  assert.deepEqual([...cat.jurisdictionTypes(["City of Fernhill", "Marion County"])].sort(), ["city", "county"]);
+});
+
+await check("(c6) MUST-EXCLUDE (close-2 MF3): the description door — 'Residential Mechanical … solar water heating systems', 'Residential Re-Roof … if solar panels must be removed and reinstalled', a commercial-only solar type — offer no PV candidate; MUST-PASS: a description naming photovoltaic / solar panels does, and a real PV type beside a look-alike wins outright", () => {
+  const C = (types: Array<[string, string?]>) => ({ platform: "energov" as const, sourceUrl: "https://x-energovweb.tylerhost.net/apps/selfservice/api/Home/Menu", types: types.map(([l, d]) => ({ label: l, description: d ?? "", category: "Building" })) });
+  const labels = (types: Array<[string, string?]>) => cat.solarRecordTypeCandidates(C(types)).map((c) => c.label);
+  assert.deepEqual(labels([["Residential Mechanical", "Furnace, AC, heat pumps and solar water heating systems"]]), []);
+  assert.deepEqual(labels([["Residential Re-Roof", "Re-roofing. If solar panels must be removed and reinstalled, note it in the description."]]), []);
+  assert.deepEqual(labels([["Commercial Solar Photovoltaic"], ["Residential Electrical"]]), [], "a residential job never files the commercial type");
+  assert.deepEqual(labels([["Residential Solar Photovoltaic"], ["Residential Mechanical", "includes solar water heating"]]), ["Residential Solar Photovoltaic"]);
+  assert.deepEqual(labels([["Residential Building Permit", "Installing solar/photovoltaic/battery systems on residential property."], ["Residential Deck"]]), ["Residential Building Permit"], "a PV description supports the type");
+  assert.deepEqual(labels([["Residential Accessory", "Sheds, fences and solar panels (rooftop PV) on a dwelling"]]), ["Residential Accessory"]);
+  assert.equal(cat.descriptionNamesPv("Furnace, AC, heat pumps and solar water heating systems"), false);
+  assert.equal(cat.descriptionNamesPv("Rooftop solar panels and photovoltaic arrays"), true);
+  for (const l of ["Solar Module Repair / Replacement", "Solar Decommissioning", "Solar Lighting", "Solar Powered Sign", "Solar Attic Fan", "Solar Ready Construction", "Solar Farm"]) assert.deepEqual(labels([[l]]), [], `not PV: ${l}`);
+});
+
+await check("(f6) MUST-PASS (close-2 item 4): quotes that ARE on a page we read — Hollis's documents with '8 1/2\"' for the PDF's '8 ½”' (and with curly quotes), Hollis's fee row with its 'Solar Arrays' header joined, Fairfax's documents as ' - ' items; MUST-EXCLUDE: an amount not printed on that row, an item not on the page, the same quote against another page", () => {
+  const hollisSolar = fixture("hollis-solar-requirements.txt");
+  const hollisFees = fixture("hollis-building-fees.txt");
+  const fairfax = fixture("fairfax-solar-residential.txt");
+  const docsQ = '1. Building permit application. 2. (2) 11" x 17" sets of detailed installation plans... 3. (2) 8 1/2" x 11" NH Stamped Engineer statement... 4. (2) Detailed roof plan layouts of solar panels with any setbacks & pathway measurements clearly marked.';
+  assert.ok(reader.quoteOnPage(docsQ, hollisSolar), "ASCII fraction and straight quotes");
+  assert.ok(reader.quoteOnPage(docsQ.replace(/(\d)"/g, "$1”").replace("8 1/2", "8½"), hollisSolar), "curly quotes, attached fraction");
+  assert.ok(!reader.quoteOnPage(docsQ, fairfax), "the same words are not on another page");
+  assert.ok(!reader.quoteOnPage('1. Building permit application. 2. (2) 8 1/2" x 11" structural calculations stamped by a NH engineer', hollisSolar), "an item the page does not print");
+  const feeQ = "Solar Arrays / Roof Top Solar Array (excludes electrical fee)  $75.00  $200.00";
+  assert.ok(reader.quoteOnPage(feeQ, hollisFees), "the row with its section header joined");
+  assert.ok(reader.quoteOnPage("Roof Top Solar Array (excludes electrical fee)  $75.00  $200.00", hollisFees), "the row alone");
+  assert.ok(reader.quoteOnPage("Solar Arrays / Roof Top Solar Array (excludes electrical fee) $75", hollisFees), "$75 == $75.00");
+  assert.ok(!reader.quoteOnPage("Solar Arrays / Roof Top Solar $75", hollisFees), "a paraphrase that drops the row's words is not the row");
+  assert.ok(!reader.quoteOnPage("Solar Arrays / Roof Top Solar Array (excludes electrical fee) $85.00", hollisFees), "an amount not printed");
+  assert.ok(!reader.quoteOnPage("Solar Arrays / Roof Top Solar Array $50.00", hollisFees), "$50 is another row's amount");
+  assert.ok(!reader.quoteOnPage(feeQ, hollisSolar), "not on another page");
+  const fairfaxQ = "First Submission - Fairfax Coversheet - Architectural/Structural Drawings - House Location Plat or Grading Plan Submission Record Number - Permit Authorization - Property Ownership Affidavit - License Exemption Affidavit";
+  assert.ok(reader.quoteOnPage(fairfaxQ, fairfax), "each ' - ' item is on the page");
+  assert.ok(reader.quoteOnPage(fairfaxQ.replace(/ - /g, " – "), fairfax), "en-dash items");
+  assert.ok(!reader.quoteOnPage(`${fairfaxQ} - Structural Calculations Stamped by an Engineer`, fairfax), "an item not on the page");
+  assert.ok(!reader.quoteOnPage(fairfaxQ, hollisSolar), "not on another page");
+  assert.ok(!reader.quoteOnPage("Solar - $50", "Fees\nSolar Installation | $25\nFence | $50"), "a dash beside an amount keeps the amount with its words");
+  // Through the real docs/fees door, cited to the pages we read.
+  const SOLAR_PDF = "https://www.hollisnh.gov/DocumentCenter/View/398/Solarpermitrequirements-PDF";
+  const FEES_PDF = "https://www.hollisnh.gov/DocumentCenter/View/455/Building-Fees-PDF";
+  const texts = new Map([[ppl.pageKey(SOLAR_PDF), hollisSolar], [ppl.pageKey(FEES_PDF), hollisFees]]);
+  const ans = JSON.stringify({ permits: [{ discipline: "structural",
+    documents: { value: ["Building permit application", "(2) 11x17 sets of detailed installation plans", "(2) 8 1/2 x 11 NH stamped engineer statement", "(2) roof plan layouts with setbacks and pathways"], sourceUrl: SOLAR_PDF, quote: docsQ },
+    fee: { value: { amountUsd: 75, basis: "flat, residential roof-top solar array (excludes electrical fee)", lines: [{ label: "Roof Top Solar Array (excludes electrical fee)", amountUsd: 75 }] }, sourceUrl: FEES_PDF, quote: feeQ } }] });
+  const r = ppl.parseDocsFeesPart(ans, [SOLAR_PDF, FEES_PDF], "end_turn", texts).byDiscipline.get("structural")!;
+  assert.equal(r.documents.value?.length, 4, `documents kept (${r.documents.notFound})`);
+  assert.equal(r.fee.value?.amountUsd, 75, `fee kept (${r.fee.notFound})`);
+  const bad = JSON.parse(ans); bad.permits[0].fee.quote = "Solar Arrays / Roof Top Solar Array (excludes electrical fee) $85.00"; bad.permits[0].fee.value.amountUsd = 85; bad.permits[0].fee.value.lines[0].amountUsd = 85;
+  assert.equal(ppl.parseDocsFeesPart(JSON.stringify(bad), [SOLAR_PDF, FEES_PDF], "end_turn", texts).byDiscipline.get("structural")!.fee.value, null, "an unprinted amount is still refused");
+});
+
+await check("(f7) MUST-EXCLUDE (close-2 item 4): the row door matches a segment's words CONTIGUOUSLY inside a cell — 'Solar Installation $50' is not on 'Solar Hot Water Installation | Residential | $50', 'Solar $50' not on 'Solar Water Heater | $50'; MUST-PASS: the same words with a cell between them", () => {
+  assert.equal(reader.quoteOnPage("Solar Installation $50", "Fees\nSolar Hot Water Installation | Residential | $50\n"), false);
+  assert.equal(reader.quoteOnPage("Solar $50", "Fees\nSolar Water Heater | $50\n"), false);
+  assert.equal(reader.quoteOnPage("Solar Installation $50", "Fees\nSolar Installation | $25 | $50\n"), false, "$25 is between them");
+  assert.equal(reader.quoteOnPage("Solar Installation $50", "Fees\nSolar Installation | Residential | $50\n"), true);
+  assert.equal(reader.quoteOnPage("Solar Installation $500", "Fees\nSolar Installation | $50\n"), false);
+});
+
+await check("(r6) MUST-EXCLUDE (close-2 item 5): an own-domain link is judged by where it LANDS — a Click2Gov utility-billing page, iWorQ's concern-form landing (/portalhome), a MapsOnline viewer, the vendor's root (Y2), SolarAPP+ (Y3); a Business-License module deep link (V8); a link naming another jurisdiction is never read (Y4); MUST-PASS: a landing whose path names the permit portal, and an ACA tenant landing", async () => {
+  const own = (words: string, href: string, landing: Served) => resolveNamed({ [PAGE2]: { text: synthetic(`<p>Building permit applications are accepted in person only.</p><a href="${href}">${words}</a>`) }, [href]: landing }, [PAGE2], ["City of Examplecity"]);
+  const v5 = await own("Online Services", `https://secure.examplecity.gov/Click2GovCX/`, { text: `<html><head><title>Click2Gov Utility Billing - Customer Portal</title></head><body><h1>Pay your water bill</h1></body></html>` });
+  assert.equal(v5.res, null, `V5 Click2Gov billing (got ${v5.res?.url})`);
+  assert.equal(cat.detectPlatform({ ok: true, finalUrl: "https://secure.examplecity.gov/Click2GovCX/", title: "Click2Gov Utility Billing - Customer Portal", text: "Pay your water bill", links: [], html: "" }), null, "Click2Gov is not a permit platform");
+  const v6 = await own("Online Portal", `${CITY2}/portal`, { finalUrl: "https://examplecity.portal.iworq.net/portalhome/examplecity", text: `<html><head><title>iWorQ Portal</title></head><body><a href="/EXAMPLECITY/concern/1">Report a Concern</a></body></html>` });
+  assert.equal(v6.res, null, `V6 iWorQ concern landing (got ${v6.res?.url})`);
+  const v7 = await own("Online Portal", `${CITY2}/online-portal`, { finalUrl: "https://www.mapsonline.net/examplecity/index.html", text: `<html><head><title>MapsOnline</title></head><body>Parcel viewer</body></html>` });
+  assert.equal(v7.res, null, `V7 parcel viewer (got ${v7.res?.url})`);
+  const y2 = await own("Online Portal", `${CITY2}/apply-online`, { finalUrl: "https://www.accela.com/", text: `<html><head><title>Accela Citizen Access</title></head><body>Accela — Government software</body></html>` });
+  assert.equal(y2.res, null, `Y2 vendor root landing (got ${y2.res?.url})`);
+  const y3 = await own("Apply online", `${CITY2}/solar-apply`, { finalUrl: "https://app.gosolarapp.org/examplecity/apply", text: `<html><head><title>SolarAPP+</title></head><body>Apply</body></html>` });
+  assert.equal(y3.res, null, `Y3 SolarAPP+ landing (got ${y3.res?.url})`);
+  const v8 = await resolveNamed({ [`${CITY2}/finance`]: { text: synthetic(`<a href="https://aca-prod.accela.com/EXAMPLECITY/Cap/CapHome.aspx?module=Licenses">Apply for a Business License Online</a>`) } }, [`${CITY2}/finance`], ["City of Examplecity"]);
+  assert.equal(v8.res, null, `V8 licence-module deep link (got ${v8.res?.url})`);
+  const y4 = await resolveNamed({ [PAGE2]: { text: synthetic(`<p>Paper only.</p><a href="${CITY2}/othertown-portal">City of Othertown online permit portal</a>`) }, [`${CITY2}/othertown-portal`]: { text: fixture("aca-frame-wrapper.html"), finalUrl: "https://portal.othertown.gov/Permits/Default.aspx" } }, [PAGE2], ["City of Examplecity"]);
+  assert.equal(y4.res, null, `Y4 another jurisdiction's own-domain link (got ${y4.res?.url})`);
+  assert.ok(!y4.requests.some((q) => q.url.includes("othertown-portal")), "Y4: never read");
+  // MUST-PASS
+  const iw = await own("Apply online", `${CITY2}/apply`, { finalUrl: "https://examplecity.portal.iworq.net/EXAMPLECITY/permits/600", text: `<html><head><title>iWorQ Portal</title></head><body>Building Permit Application</body></html>` });
+  assert.equal(iw.res?.url, "https://examplecity.portal.iworq.net/EXAMPLECITY/permits/600", `an iWorQ permits landing (${iw.res?.url})`);
+  assert.equal(iw.res?.via, "redirect onto a vendor host");
+  const aca = await own("Online Permits", `${CITY2}/online-permits`, { finalUrl: "https://aca-prod.accela.com/EXAMPLECITY/Default.aspx", text: `<html><head><title>Welcome</title></head><body>Online permits</body></html>` });
+  assert.equal(aca.res?.url, "https://aca-prod.accela.com/EXAMPLECITY/Default.aspx", `an ACA tenant landing (${aca.res?.url})`);
+  const direct = await resolveNamed({ [PAGE2]: { text: synthetic(`<a href="https://portal.iworq.net/EXAMPLECITY/permits/600">Apply for a Building Permit Online</a>`) } }, [PAGE2], ["City of Examplecity"]);
+  assert.equal(direct.res?.url, "https://portal.iworq.net/EXAMPLECITY/permits/600", "V11: a direct iWorQ permit link");
+});
+
+await check("(r7) MUST-EXCLUDE (close-2 MF1): the page-read portal never goes to a permit whose cited issuing agency differs from the lookup's — the State CID's electrical permit cited on the COUNTY's own FAQ (F6b); MUST-PASS: the county's own permit gets it (F6a)", async () => {
+  const CO = "https://www.santafe-examplecounty.gov";
+  const PG = `${CO}/building/residential`;
+  const ACA = "https://aca-prod.accela.com/SFEXCO/Default.aspx";
+  const s = site({ [PG]: { text: `<html><head><title>Residential Development</title></head><body><main><p>The County issues the Development Permit. Electrical permits and inspections are issued by the State Construction Industries Division (CID).</p><p><a href="${ACA}">Apply online - County permit portal</a></p></main></body></html>` } });
+  const process1 = JSON.stringify({
+    issuingAgency: { value: "Examplecounty", sourceUrl: PG, quote: "The County issues the Development Permit." },
+    permitStructure: { value: "separate", sourceUrl: PG, quote: "Electrical permits and inspections are issued by the State Construction Industries Division (CID)." },
+    permits: [
+      { discipline: "structural", label: "Development", portalUrl: { value: null }, recordType: { value: null } },
+      { discipline: "electrical", label: "Electrical", issuingAgency: { value: "State Construction Industries Division", sourceUrl: PG, quote: "Electrical permits and inspections are issued by the State Construction Industries Division (CID)." }, portalUrl: { value: null }, recordType: { value: null } },
+    ],
+  });
+  const llm = { webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? g(process1, [PG]) : g(JSON.stringify({ permits: [] }), [])) };
+  const run = await ppl.runPermitProcessLookup(db, llm, { state: "NM", ahj: "Examplecounty", dcKw: "7", acKw: "6", force: true, reader: newReader(s.fetch) });
+  const st = run.lookup!.permits.find((p) => p.discipline === "structural")!;
+  const el = run.lookup!.permits.find((p) => p.discipline === "electrical")!;
+  assert.equal(st.portalUrl.value, ACA, `F6a: the county's permit gets the county portal (${st.portalUrl.notFound})`);
+  assert.notEqual(el.portalUrl.value, ACA, "F6b: the State's permit does not, though cited on the county's page");
+});
+
+await check("(p3) politeness (Y5 / Y6): a redirect onto another host starts THAT host's gap; the false-wall override holds a 2xx HTML page only when its visible words are long and not a wall", async () => {
+  const s = site({ "https://a.example.gov/go": { text: "<p>landed</p>", finalUrl: "https://b.example.gov/landing" }, "https://b.example.gov/other": { text: "<p>b</p>" } });
+  const r = newReader(s.fetch, 300);
+  await r.read("https://a.example.gov/go");
+  const t0 = Date.now();
+  await r.read("https://b.example.gov/other");
+  assert.ok(Date.now() - t0 >= 280, `Y5: b.example.gov was asked ${Date.now() - t0} ms after the redirect landed on it (>= 300 expected)`);
+  const long = `<html><body><main>${"<p>The Building Division issues permits for residential solar photovoltaic systems.</p>".repeat(12)}</main></body></html>`;
+  const refused = (text: string, status = 200, contentType = "text/html", reason = "x.gov refused an ordinary HTTP client (wall)") => ({ ok: false, status, contentType, text, finalUrl: "https://x.gov/p", reason });
+  assert.ok(reader.falseWallOverride(refused(long), "https://x.gov/p")?.ok, "MUST-PASS: a real page behind a script's wall words is held");
+  assert.equal(reader.falseWallOverride(refused("<html><body><p>Access denied. Please verify you are human to continue.</p></body></html>"), "https://x.gov/p"), null, "a short page is never held");
+  assert.equal(reader.falseWallOverride(refused(`<html><body><main><p>${"Checking your browser before accessing this site. Please verify you are human by completing the challenge. ".repeat(8)}</p></main></body></html>`), "https://x.gov/p"), null, "a wall in the visible words is never held");
+  assert.equal(reader.falseWallOverride(refused(long, 403), "https://x.gov/p"), null, "a 403 is never held");
+  assert.equal(reader.falseWallOverride(refused(long, 200, "text/html", "HTTP 200"), "https://x.gov/p"), null, "only the transport's own wall reading is overridden");
+});
+
+await check("(y9) MUST-EXCLUDE (Y9): a CITED fee document that is a prior year's / archived is never read; MUST-PASS: a current one is", async () => {
+  const s = site({ [PAGE2]: { text: synthetic(`<p>Apply in person.</p>`) }, [`${CITY2}/files/fee-schedule-fy2027.pdf`]: { contentType: "text/plain", text: "Building Permit Fees\nSolar  $75.00" }, [`${CITY2}/files/2018-fee-schedule.pdf`]: { contentType: "text/plain", text: "Solar  $10.00" } });
+  const r = newReader(s.fetch);
+  await ppl.readAgencyEvidence(r, { ahj: "City of Examplecity", state: "OR", agencyNames: [], citedUrls: [PAGE2, `${CITY2}/files/2018-fee-schedule.pdf`, `${CITY2}/files/fee-schedule-fy2027.pdf`], resultUrls: [], proposedPortals: [] });
+  const read = s.requests.map((q) => q.url);
+  assert.ok(!read.some((u) => u.includes("2018-fee-schedule")), `Y9: the 2018 schedule was read (${read.join(", ")})`);
+  assert.ok(read.some((u) => u.includes("fee-schedule-fy2027")), `the current schedule was read (${read.join(", ")})`);
+});
+
+await check("(i4) end to end (close-2 item 4): the code editions are quoted from a PDF we read ('Current Codes 2020 NEC' in a town's solar-requirements sheet), and documents quoted from it with '8 1/2\"' are kept", async () => {
+  const TOWN = "https://www.hollis-example.gov";
+  const BLDG = `${TOWN}/1268/Building-Code-Enforcement`;
+  const PDF = `${TOWN}/DocumentCenter/View/398/Solarpermitrequirements-PDF`;
+  const s = site({
+    [BLDG]: { text: synthetic(`<p>All building permit applications shall be submitted to the Building Department in person.</p><a href="${PDF}">Solar Permit Requirements (PDF)</a>`) },
+    [PDF]: { contentType: "text/plain", text: fixture("hollis-solar-requirements.txt") },
+  });
+  const process1 = JSON.stringify({
+    issuingAgency: { value: "Town of Hollis-example", sourceUrl: BLDG, quote: "All building permit applications shall be submitted to the Hollis-example Building Department in person." },
+    permitStructure: { value: null }, permits: [{ discipline: "structural", label: "Building", portalUrl: { value: null }, recordType: { value: null } }],
+  });
+  const docsQ = '1. Building permit application. 2. (2) 11" x 17" sets of detailed installation plans... 3. (2) 8 1/2" x 11" NH Stamped Engineer statement... 4. (2) Detailed roof plan layouts of solar panels with any setbacks & pathway measurements clearly marked.';
+  const llm = { webLookup: async (i: { label: string }) => {
+    if (i.label.endsWith(".process")) return g(process1, [BLDG]);
+    if (i.label.endsWith(".documentsFees")) return g(JSON.stringify({ permits: [{ discipline: "structural", documents: { value: ["Building permit application", "(2) 11x17 installation plans", "(2) 8 1/2 x 11 NH stamped engineer statement", "(2) roof plan layouts"], sourceUrl: PDF, quote: docsQ }, fee: { value: null } }] }), [], { groundedSearches: 0, searches: 0 });
+    return g(JSON.stringify({ permits: [] }), []);
+  } };
+  const run = await ppl.runPermitProcessLookup(db, llm, { state: "NH", ahj: "Town of Hollis-example", force: true, reader: newReader(s.fetch) });
+  assert.ok(run.lookup!.codes?.value?.includes("2020 NEC"), `codes from the PDF (${JSON.stringify(run.lookup!.codes)})`);
+  assert.equal(run.lookup!.codes?.sourceUrl, PDF);
+  const st = run.lookup!.permits.find((p) => p.discipline === "structural")!;
+  assert.equal(st.documents.value?.length, 4, `documents kept (${st.documents.notFound})`);
+});
+
 console.log(failures ? `\n${failures} agency page read test(s) FAILED` : "\nAll agency page read tests passed.");
 process.exit(failures ? 1 : 0);

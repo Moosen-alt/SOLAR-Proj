@@ -585,7 +585,9 @@ export async function readAgencyEvidence(reader: PageReader, input: {
     for (const n of extractPrerequisites(pg)) if (!prerequisites.some((x) => x.quote === n.quote)) prerequisites.push({ value: n.value, sourceUrl: n.sourceUrl, quote: n.quote, origin: "lookup" });
   }
   let codes: CitedFact<string[]> | null = null;
-  for (const pg of okPages) {
+  // The adopted editions are quoted from the agency's pages, then from the documents we read (a
+  // town's solar-requirements PDF prints "Current Codes 2020 NEC" — close-2 item 4).
+  for (const pg of [...okPages, ...docPages.map((d) => d.page).filter((p) => p.ok && p.text)]) {
     const c = extractCodeEditions(pg);
     if (c) { codes = { value: c.editions, sourceUrl: c.sourceUrl, quote: c.quote, origin: "lookup" }; break; }
   }
@@ -714,17 +716,18 @@ export async function runPermitProcessLookup(
   // THE PORTAL RESOLVED FROM THE AGENCY'S OWN PAGE (our read attests it) outranks a model-cited one;
   // its public catalog names the record type in the PORTAL'S words.
   const detPortal: CitedFact<string> | null = ev?.portal ? { value: ev.portal.url, sourceUrl: ev.portal.sourceUrl, quote: ev.portal.quote, origin: "lookup" } : null;
-  // ONLY FOR THE PERMITS ITS PUBLISHER ISSUES (close F6): the portal an agency's own page links is that
-  // agency's. A permit whose cited issuing agency is a DIFFERENT one (Santa Fe County's page vs the
-  // State's electrical permit, cited on the State's domain) does not get it — the portal step asks
-  // that agency.
-  const publisherDomain = ev?.portal ? registrableDomain(portalHostOf(ev.portal.sourceUrl)) : "";
+  // ONLY FOR THE PERMITS ITS PUBLISHER ISSUES (close F6, close-2 MF1): the portal an agency's own
+  // page links is that agency's. A permit whose cited issuing agency is a DIFFERENT one than the
+  // lookup's agency (Santa Fe County's page vs the State's electrical permit) does not get it,
+  // WHATEVER DOMAIN the citation sits on — the county's own FAQ is where "electrical permits are
+  // issued by the State CID" is printed — and with no top-level agency a cited agency is never
+  // assumed to be the publisher; the portal step asks that agency.
   const topAgency = issuingAgency.value ? normalizeAhjName(issuingAgency.value) : "";
   const issuedByPublisher = (d: PermitProcessDiscipline) => {
     const a = byDiscipline.get(d)?.issuingAgency;
     if (!a?.value) return true;
     if (topAgency && normalizeAhjName(a.value) === topAgency) return true;
-    return Boolean(publisherDomain) && registrableDomain(portalHostOf(a.sourceUrl)) === publisherDomain;
+    return false;
   };
   const detPortalFor = (d: PermitProcessDiscipline) => (detPortal && issuedByPublisher(d) ? detPortal : null);
   const portalOf = (d: PermitProcessDiscipline) => detPortalFor(d) ?? byDiscipline.get(d)?.portalUrl ?? null;
@@ -877,6 +880,14 @@ export async function runPermitProcessLookup(
     ...questions.map((q) => `Operator question: ${q}`),
     ...uniquePrereqs.map((x) => `Prerequisite: ${x.value} — ${x.sourceUrl}`),
   ];
+  // A LOOKUP THAT NEVER RAN IS NOT A RESULT (close-2 item 6): when EVERY call errored (an abort, a
+  // timeout, a credit/billing refusal, a 5xx), nothing is written — an all-not-found row would read
+  // as "looked up, nothing found" and block the re-queue for 24 h — and the job fails with the named
+  // error, so the queue retries it and ensurePermitProcessLookedUp re-queues on the next trigger. A
+  // lookup that RAN and found nothing (calls that returned, however empty) is still saved.
+  if (calls.length && calls.every((c) => c.error)) {
+    throw new Error(`permit-process lookup for ${input.ahj} (${input.state}) did not run: every call errored — ${str(calls[0].error).slice(0, 200)}`);
+  }
   // A RE-RUN NEVER FORGETS A CITED ANSWER. Over an existing seeded row, a value this run could not
   // establish (an aborted part, a search that came up empty) keeps the earlier cited answer.
   const merged = mergeWithEarlier(existing, { issuingAgency, permitStructure: part1.permitStructure, permits });
@@ -1035,8 +1046,10 @@ export async function ensurePermitProcessLookedUp(
     const jobQueue = await import("./jobQueue");
     if (!jobQueue.jobWorkerRunning()) return false;
     const key = `${str(project.state).toLowerCase()}|${normalizeAhjName(ahj)}`;
+    // The 24 h dedupe applies to a lookup that is pending / running or one that RAN (done); a job
+    // that FAILED (every call errored — close-2 item 6) is re-queued on the next trigger.
     const recent = db.get<{ id: string }>(
-      "SELECT id FROM job_queue WHERE job_type = 'permit_process_lookup' AND payload LIKE ? AND (status IN ('pending','running') OR created_at > ?) LIMIT 1",
+      "SELECT id FROM job_queue WHERE job_type = 'permit_process_lookup' AND payload LIKE ? AND (status IN ('pending','running') OR (status = 'done' AND created_at > ?)) LIMIT 1",
       [`%"lookupKey":${JSON.stringify(key)}%`, new Date(Date.now() - 24 * 3600 * 1000).toISOString()],
     );
     if (recent) return true;

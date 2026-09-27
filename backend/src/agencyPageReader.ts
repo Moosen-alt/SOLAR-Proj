@@ -67,21 +67,27 @@ export function isLoginUrl(url: string): boolean {
 }
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+/** A FALSE WALL ON A PAGE WE HOLD (measured 2026-09-26: Lee County's ACA Default.aspx answered
+ *  HTTP 200 with the real 88 KB page, and the shared wall predicate matched "Storage access denied"
+ *  inside one of its <script>s). Same predicate (looksBotBlocked), asked of the page's VISIBLE words
+ *  instead of its source; a challenge or a "no automated access" notice is never overridden, nor a
+ *  page whose visible words are a stub (<= 500 chars), nor anything but a 2xx HTML answer refused
+ *  by the transport's own "ordinary HTTP client" reading. Returns the page as held, or null. */
+export function falseWallOverride(d: { ok: boolean; status: number; contentType: string; text?: string; finalUrl?: string; reason: string }, url: string): { ok: true; status: number; contentType: string; text: string; finalUrl: string; reason: string } | null {
+  if (d.ok || !(d.status >= 200 && d.status < 300) || !d.text || !/html/i.test(d.contentType) || !/refused an ordinary HTTP client/i.test(d.reason)) return null;
+  const visible = parseHtml(d.text, d.finalUrl || url).text;
+  if (visible.length > 500 && !looksBotBlocked(visible)) {
+    return { ok: true, status: d.status, contentType: d.contentType, text: d.text, finalUrl: d.finalUrl || url, reason: `HTTP ${d.status} (a script's words tripped the wall check; the visible page is not a wall)` };
+  }
+  return null;
+}
 /** The production transport: pages through fetchPublicDocument (its refusal classifier, no browser);
  *  a JSON API call (the EnerGov public menu needs its tenant headers) through a plain GET. */
 export const defaultRawFetch: RawFetch = async (url, opts) => {
   if (!opts.headers && !opts.json) {
     const d = await fetchPublicDocument(url, { allowBrowser: false, timeoutMs: opts.timeoutMs, maxBytes: opts.maxBytes });
-    // A FALSE WALL ON A PAGE WE HOLD (measured 2026-09-26: Lee County's ACA Default.aspx answered
-    // HTTP 200 with the real 88 KB page, and the shared wall predicate matched "Storage access denied"
-    // inside one of its <script>s). Same predicate (looksBotBlocked), asked of the page's VISIBLE words
-    // instead of its source; a challenge or a "no automated access" notice is never overridden.
-    if (!d.ok && d.status >= 200 && d.status < 300 && d.text && /html/i.test(d.contentType) && /refused an ordinary HTTP client/i.test(d.reason)) {
-      const visible = parseHtml(d.text, d.finalUrl || url).text;
-      if (visible.length > 500 && !looksBotBlocked(visible)) {
-        return { ok: true, status: d.status, contentType: d.contentType, text: d.text, finalUrl: d.finalUrl || url, reason: `HTTP ${d.status} (a script's words tripped the wall check; the visible page is not a wall)` };
-      }
-    }
+    const held = falseWallOverride(d, url);
+    if (held) return held;
     return { ok: d.ok, status: d.status, contentType: d.contentType, bytes: d.bytes, text: d.text, finalUrl: d.finalUrl || url, reason: d.reason };
   }
   try {
@@ -270,40 +276,69 @@ export function parseHtml(html: string, pageUrl: string): { title: string; text:
   return { title, text, links, html: html.slice(0, HTML_CAP) };
 }
 
-/** Normalised for a quote check: lower case, one space, no punctuation but digits' own. */
+const FRACTIONS: Record<string, string> = { "½": "1/2", "¼": "1/4", "¾": "3/4", "⅓": "1/3", "⅔": "2/3", "⅛": "1/8", "⅜": "3/8", "⅝": "5/8", "⅞": "7/8" };
+/** Normalised for a quote check: lower case, one space, no punctuation but digits' own. The SAME
+ *  print in two spellings is one string (close-2 item 4): a Unicode fraction and its ASCII form
+ *  (8 ½” == 8 1/2"), curly and straight quote marks, × and x, "$75.00" and "$75", "5 - 15" and
+ *  "5-15"; a free-standing dash or slash between words is a separator, not a word. */
 export function normaliseForQuote(s: string): string {
-  return String(s ?? "").toLowerCase().replace(/[‘’“”]/g, "'").replace(/[–—]/g, "-")
-    .replace(/[^a-z0-9$.%/-]+/g, " ").replace(/\s+/g, " ").trim();
+  return String(s ?? "").toLowerCase()
+    .replace(/[½¼¾⅓⅔⅛⅜⅝⅞]/g, (f) => ` ${FRACTIONS[f]} `)
+    .replace(/[‘’“”″′]/g, "'").replace(/[–—]/g, "-").replace(/[×✕]/g, " x ")
+    .replace(/(\d)\s*-\s*(?=\d)/g, "$1-").replace(/\s[-/]\s/g, " ")
+    .replace(/[^a-z0-9$.%/-]+/g, " ").replace(/\$(\d+)\.00(?!\d)/g, "$$$1").replace(/\s+/g, " ").trim();
 }
-/** THE QUOTE IS ON THE PAGE WE READ: every ellipsis-separated segment (>= 2 words) of the quote
- *  occurs in the page text after normalisation. A quote we cannot find there is the model's word. */
+/** The quote's SEGMENTS: an ellipsis, a table-cell bar, a bullet, a newline, or a list dash
+ *  (" - " / " – " between words — never beside an amount, so "Solar - $50" keeps its amount with
+ *  its words) each end one. */
+function quoteSegments(quote: string): string[] {
+  return String(quote ?? "").split(/\.{3}|…|\s\|\s|[☐☑☒□■▪•●◦·]|\r?\n|(?<![$\d])\s[-–—]\s(?![$\d])/).map(normaliseForQuote).filter((s) => s.split(" ").length >= 2 || /\d/.test(s));
+}
+/** THE QUOTE IS ON THE PAGE WE READ: every segment (>= 2 words) of the quote occurs in the page
+ *  text after normalisation. A quote we cannot find there is the model's word. */
 export function quoteOnPage(quote: string, pageText: string): boolean {
   const page = normaliseForQuote(pageText);
-  // A checklist quoted item by item ("☐ Site Plan • Roof Plan"): each item is its own segment — a
-  // PDF's cells interleave other words between items (a link label "info" after each), so the list
-  // is never contiguous on the page, while every item still is.
-  const segs = String(quote ?? "").split(/\.{3}|…|\s\|\s|[☐☑☒□■▪•●◦·]/).map(normaliseForQuote).filter((s) => s.split(" ").length >= 2 || /\d/.test(s));
+  // A checklist quoted item by item ("☐ Site Plan • Roof Plan", "Coversheet - Drawings - Plat"):
+  // each item is its own segment — a PDF's cells interleave other words between items (a link
+  // label "info" after each), a web page a description under each — so the list is never
+  // contiguous on the page, while every item still is.
+  const segs = quoteSegments(quote);
   if (!segs.length || !page) return false;
   // ONE ROW (close F4): a table row's words split across cells ("Solar Installation | Residential |
-  // $50", a PDF row's columns) — the segment's tokens in order within ONE short line, each a whole
-  // token, so an amount must be printed on that same row (never a number from another row).
+  // $50", a PDF row's columns) — the segment's tokens in order within ONE short line, CONTIGUOUS
+  // inside a cell, skipping only whole cells that print no number, so an amount must be printed on
+  // that same row (never a number from another row, never another row's words' amount: "Solar
+  // Installation $50" is not on "Solar Hot Water Installation | Residential | $50").
   // A ROW is a line whose cells are apart: " | " (an HTML table row, parseHtml) or a run of spaces (a
-  // PDF row, pdfText). A prose line is never loosened.
-  const rows = String(pageText ?? "").split("\n").filter((l) => /\s\|\s|\S {2,}\S/.test(l)).map(normaliseForQuote).filter((l) => l && l.length <= 300).map((l) => l.split(" "));
+  // PDF row, pdfText). A prose line is never loosened. A row is also read with its SECTION HEADER
+  // (the line before it) joined in front: "Solar Arrays" / "Roof Top Solar Array … $75".
+  const lines = String(pageText ?? "").split("\n");
+  const isRow = (l: string) => /\s\|\s|\S {2,}\S/.test(l);
+  const rows: string[][][] = [];
+  lines.forEach((l, i) => {
+    if (!isRow(l) || l.length > 300) return;
+    const cells = l.split(/\s\|\s| {2,}/).map(normaliseForQuote).filter(Boolean).map((c) => c.split(" "));
+    rows.push(cells);
+    const prev = normaliseForQuote(lines[i - 1] ?? "");
+    if (prev && prev.length <= 120 && !isRow(lines[i - 1])) rows.push([prev.split(" "), ...cells]);
+  });
   const inOneRow = (seg: string) => {
     const toks = seg.replace(/\.$/, "").split(" ").filter(Boolean);
-    // Once the segment's words have started matching, a NUMBER on the row that is not the segment's
-    // next token ends the match: on "Solar Residential $168 Solar Commercial $331" the words
-    // "Solar Residential" own $168, never $331.
-    return rows.some((row) => {
-      for (let s = 0; s < row.length; s++) {
-        if (row[s] !== toks[0]) continue;
-        let i = 1;
-        for (let j = s + 1; j < row.length && i < toks.length; j++) {
-          if (row[j] === toks[i]) i++;
-          else if (/\d/.test(row[j])) break;
+    return rows.some((cells) => {
+      for (let ci = 0; ci < cells.length; ci++) {
+        for (let ti = 0; ti < cells[ci].length; ti++) {
+          if (cells[ci][ti] !== toks[0]) continue;
+          let i = 0; let c = ci; let t = ti;
+          while (c < cells.length && i < toks.length) {
+            if (t >= cells[c].length) { c++; t = 0; continue; }
+            if (cells[c][t] === toks[i]) { i++; t++; continue; }
+            // A mismatch inside a cell whose words started matching ends it; a whole cell may be
+            // skipped only when it prints no number.
+            if (t === 0 && !cells[c].some((x) => /\d/.test(x))) { c++; continue; }
+            break;
+          }
+          if (i === toks.length) return true;
         }
-        if (i === toks.length) return true;
       }
       return false;
     });

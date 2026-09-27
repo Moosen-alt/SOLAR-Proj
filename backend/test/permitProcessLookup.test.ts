@@ -161,16 +161,61 @@ await check("(x6) a verified row is never overwritten by a lookup (hard rule 3)"
   assert.equal(pp.permitProcessFor(project("City of Dunmore"))?.issuingAgency.value, "City of Dunmore");
 });
 
-await check("(x7) a re-run whose part aborts never forgets an earlier cited answer; an agency name is its name", async () => {
+await check("(x7) a re-run whose EVERY call errors writes nothing (close-2 item 6) and so never forgets the earlier cited answer; an agency name is its name", async () => {
   await ppl.runPermitProcessLookup(db, stub(grounded(processAnswer({ issuingAgency: { value: "Marion County Public Works Building Inspection Division", sourceUrl: COUNTY, quote: "Marion County Building Inspection serves Alderbrook" } })), grounded(feesAnswer())), { state: "OR", ahj: "City of Elmstead" });
   assert.equal(pp.permitProcessFor(project("City of Elmstead"))?.issuingAgency.value, "Marion County");
   const aborted: WebLookupResult = { text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: "Request was aborted." };
   let asked = 0;
-  await ppl.runPermitProcessLookup(db, { webLookup: async () => { asked++; return aborted; } }, { state: "OR", ahj: "City of Elmstead", force: true });
+  await assert.rejects(ppl.runPermitProcessLookup(db, { webLookup: async () => { asked++; return aborted; } }, { state: "OR", ahj: "City of Elmstead", force: true }), /every call errored.*Request was aborted/);
   assert.equal(asked, 5, "the aborted process part is retried once, then the portal step, and documents/fees (retried once without page reading)");
   const lk = pp.permitProcessFor(project("City of Elmstead"))!;
   assert.equal(lk.issuingAgency.value, "Marion County");
   assert.equal(lk.permits.find((p) => p.discipline === "structural")?.fee.value?.amountUsd, 67.25);
+});
+
+// ── close-2 item 6: a lookup that never ran is not a result ──────────────────────────────────
+await check("(e1) MUST-EXCLUDE (close-2 item 6): a lookup whose EVERY call errored (a credit refusal, an abort, a 5xx) saves NOTHING — no all-not-found row — and fails with the named error; MUST-PASS: a lookup that RAN and found nothing is saved", async () => {
+  const credit = (): WebLookupResult => ({ text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: "400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API.\"}}" });
+  await assert.rejects(ppl.runPermitProcessLookup(db, { webLookup: async () => credit() }, { state: "OR", ahj: "City of Quarrymoor" }), /did not run: every call errored.*credit balance is too low/);
+  assert.equal(pp.getPermitProcessLookup(db, "OR", "City of Quarrymoor"), null, "nothing was written");
+  const overloaded = (): WebLookupResult => ({ text: "", groundedSearches: 0, stopReason: null, resultUrls: [], pagesRead: 0, error: "529 overloaded_error" });
+  await assert.rejects(ppl.runPermitProcessLookup(db, { webLookup: async () => overloaded() }, { state: "OR", ahj: "City of Quarrymoor" }), /every call errored/);
+  assert.equal(pp.getPermitProcessLookup(db, "OR", "City of Quarrymoor"), null);
+  // Ran, found nothing: every call returned (an empty answer is an answer) — saved, all not found.
+  const empty = (): WebLookupResult => ({ text: "{}", groundedSearches: 1, stopReason: "end_turn", resultUrls: [COUNTY], pagesRead: 0 });
+  const run = await ppl.runPermitProcessLookup(db, { webLookup: async () => empty() }, { state: "OR", ahj: "City of Quarrymoor" });
+  assert.equal(run.saved, true, run.reason);
+  assert.equal(pp.getPermitProcessLookup(db, "OR", "City of Quarrymoor")?.issuingAgency.value, null);
+  // One part errored, another returned: saved with what returned (x4 / q4 cover the rest).
+  let n = 0;
+  const half = await ppl.runPermitProcessLookup(db, { webLookup: async () => (++n === 1 ? grounded(processAnswer()) : credit()) }, { state: "OR", ahj: "City of Rushbrook" });
+  assert.equal(half.saved, true);
+  assert.equal(half.lookup?.issuingAgency.value, "Marion County");
+});
+
+await check("(e3) MUST-PASS (close-2 item 6): ensurePermitProcessLookedUp re-queues after a FAILED job; the 24 h dedupe holds only for a pending / running job or one that RAN (done)", async () => {
+  const jq = await import("../src/jobQueue");
+  clearInterval(jq.startJobWorker(db)); // the worker flag stays; no tick ever runs
+  process.env.ANTHROPIC_API_KEY = "sk-ant-test-not-a-real-key";
+  const proj = { id: "no-such-project", state: "OR", ahj: "City of Rowanmere", parserSnapshot: {} };
+  const jobs = () => db.query<{ id: string; status: string }>("SELECT id, status FROM job_queue WHERE job_type = 'permit_process_lookup' AND payload LIKE '%rowanmere%' ORDER BY created_at");
+  try {
+    assert.equal(await ppl.ensurePermitProcessLookedUp(db, proj), true, "queued");
+    assert.equal(jobs().length, 1);
+    // Hold the job before the enqueue kick can claim it (this process holds no model key that works).
+    db.run("UPDATE job_queue SET status = 'running' WHERE id = ?", [jobs()[0].id]);
+    assert.equal(await ppl.ensurePermitProcessLookedUp(db, proj), true, "a running lookup is not queued twice");
+    assert.equal(jobs().length, 1);
+    db.run("UPDATE job_queue SET status = 'failed', error = 'permit-process lookup did not run: every call errored' WHERE id = ?", [jobs()[0].id]);
+    assert.equal(await ppl.ensurePermitProcessLookedUp(db, proj), true, "re-queued after the failure");
+    assert.equal(jobs().length, 2, "a FAILED job does not hold the 24 h dedupe");
+    db.run("UPDATE job_queue SET status = 'done' WHERE id = ?", [jobs()[1].id]);
+    assert.equal(await ppl.ensurePermitProcessLookedUp(db, proj), true, "a lookup that ran is deduped");
+    assert.equal(jobs().length, 2, "a DONE job within 24 h holds the dedupe");
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+    db.run("UPDATE job_queue SET status = 'failed' WHERE job_type = 'permit_process_lookup' AND status IN ('pending','running')");
+  }
 });
 
 // ── ASK THE AGENCY THAT ISSUES EACH PERMIT; THE PORTAL IS ITS OWN GROUNDED STEP (recall round) ──
