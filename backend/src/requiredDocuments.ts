@@ -47,6 +47,11 @@ import { HttpError } from "./httpError";
 import { applicationProfiles, findApplicationProfile, namedApplicationForm, permitStructureForProject } from "./applicationDocs";
 import { normalizeAhjName, permitProcessFor, stateRulesFor } from "./permitProcess";
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
+import {
+  agencyApplicationForms, issuingAgencyDocumentList, prerequisiteSettled, tracksIssuedByOther, TRACK_FORM_TYPES,
+  type AgencyApplicationForm, type FormTrack,
+} from "./applicationDocsAgency";
+import { heldUnfillableAgencyBlanks } from "./ahjForms";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -157,6 +162,22 @@ export interface ApplicationDocContext {
   knowledgeStatus?: "resolved" | "unavailable";
   /** Why the knowledge base could not be read. Set only alongside "unavailable". */
   knowledgeError?: string;
+  /**
+   * Per permit track, the OTHER agency the per-job lookup cites as that permit's issuer
+   * (applicationDocsAgency.formAuthorityFor) and the applications of that agency known BY NAME (a
+   * curated public seed, or a PDF the lookup cited), narrowed to the path. Absent for a track the
+   * AHJ issues itself — today's behaviour. When forms are known the row names them, and it is NOT
+   * portal-entry-only: a generic fallback profile's "no PDF exists" claim is contradicted by the
+   * agency's own published application.
+   */
+  issuingAgencies?: Partial<Record<FormTrack, IssuingAgencyForms>>;
+}
+
+export interface IssuingAgencyForms {
+  agency: string;
+  sourceUrl: string;
+  quote: string;
+  forms: AgencyApplicationForm[];
 }
 
 /** The application-family docTypes — the only keys a filled AHJ form may claim.
@@ -393,6 +414,23 @@ export function requiredApplicationDocs(
   // but stop blocking, and the `why` says exactly where the application actually lives.
   const portalOnly = Boolean(ctx.requiresPortalEntryOnly);
   const portalNote = ` NOTE: ${where} takes applications ONLY through its online portal — no application PDF exists to download or attach. The staged portal run enters these answers; nothing is owed as a file here.`;
+  // THE ISSUING AGENCY'S APPLICATION, NAMED AS ITS. Where the per-job lookup cites another agency
+  // as a track's issuer, that track's row names the agency and its own form(s); with a form known,
+  // the row is a filled PDF (not portal entry) — the agency published it.
+  const issuer = (track: FormTrack) => ctx.issuingAgencies?.[track];
+  const issuerWhy = (track: FormTrack, discipline: string): string => {
+    const i = issuer(track);
+    if (!i) return "";
+    const quote = i.quote ? ` ("${i.quote.slice(0, 160)}"${i.sourceUrl ? ` — ${i.sourceUrl}` : ""})` : i.sourceUrl ? ` (${i.sourceUrl})` : "";
+    return `The per-job lookup cites ${i.agency} as the agency that issues the ${discipline} permit for ${where}${quote} — so this is ${i.agency}'s own application, not ${where}'s. `;
+  };
+  const issuerLabel = (track: FormTrack, fallback: string): string => {
+    const i = issuer(track);
+    if (!i) return fallback;
+    if (i.forms.length) return `${i.agency}: ${i.forms.map((f) => f.formName.replace(new RegExp(`^${i.agency.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*`, "i"), "")).join(" / ")}, filled`;
+    return `${i.agency}'s ${fallback.charAt(0).toLowerCase()}${fallback.slice(1)}`;
+  };
+  const rowPortalOnly = (track: FormTrack): boolean => (issuer(track)?.forms.length ? false : portalOnly);
   const out: RequiredApplicationDoc[] = [];
 
   if (wantsBuilding) {
@@ -416,19 +454,22 @@ export function requiredApplicationDocs(
         : kind === "prescriptive"
           ? `${where} files a ${permitWord}, and this project resolved to the PRESCRIPTIVE path — file ${named || "the AHJ's prescriptive solar application"}. The structural one must NOT also go up; the AHJ takes exactly one.`
           : `${where} files a ${permitWord}, but the permit path is not confirmed. The prescriptive and structural applications are mutually exclusive — set the path (Manual entry → Permit path) so the right one is built.`;
+    const buildingPortalOnly = rowPortalOnly("building");
+    const buildingLabel = issuerLabel("building", label);
+    const buildingWhy = issuerWhy("building", combo ? "combined building + electrical" : "structural (building)") + why;
     out.push({
       docType: "building_application",
       // A blank whose name says neither "building" nor "structural" is stored
       // under the generic key by classifyFormType; accept it here so the row is
       // not demanding a file that already exists under another name.
       altDocTypes: ["permit_application"],
-      label: portalOnly ? `${label.replace(/, filled$/, "")} — entered in the portal at staging` : label,
-      why: portalOnly ? why + portalNote : why,
+      label: buildingPortalOnly ? `${buildingLabel.replace(/, filled$/, "")} — entered in the portal at staging` : buildingLabel,
+      why: buildingPortalOnly ? buildingWhy + portalNote : buildingWhy,
       lane: "permit",
       // An unconfirmed path is ALREADY a hard block at repository.ts (staging
       // refuses until the operator picks). Blocking here too would only replace
       // a precise message with a vaguer one.
-      blocking: separate && path !== "unknown" && !portalOnly,
+      blocking: separate && path !== "unknown" && !buildingPortalOnly,
       discipline: combo ? "combo" : "structural",
       // No split, no kind: on a standard (or stamped) structural review there is ONE building
       // application, so the form finder is not steered at "the structural one, not the
@@ -439,19 +480,21 @@ export function requiredApplicationDocs(
 
   if (wantsElectrical) {
     const statute = (project.state || "").trim().toUpperCase() === "OR" ? " (Oregon: OAR 918-050-0180.)" : "";
+    const electricalPortalOnly = rowPortalOnly("electrical");
+    const electricalLabel = issuerLabel("electrical", `Electrical ${oregon ? "(renewable-energy) " : ""}permit application, filled`);
     out.push({
       docType: "electrical_application",
       // DELIBERATELY NO `permit_application` ALIAS. One generic blank must never
       // be able to satisfy both the building-side row and this one — that is the
       // exact shape of the failure this set exists to catch.
-      label: portalOnly
-        ? `Electrical ${oregon ? "(renewable-energy) " : ""}permit application — entered in the portal at staging`
-        : `Electrical ${oregon ? "(renewable-energy) " : ""}permit application, filled`,
-      why: (separate
+      label: electricalPortalOnly
+        ? `${electricalLabel.replace(/, filled$/, "")} — entered in the portal at staging`
+        : electricalLabel,
+      why: issuerWhy("electrical", "electrical") + (separate
         ? `${where} files SEPARATE building and electrical permits, so the ${oregon ? "renewable-energy " : ""}electrical application is required in addition to the building-side one — on either permit path, on every interconnection.${statute}`
-        : `${where}'s process profile records that an electrical permit application is required. Confirm it before filing.`) + (portalOnly ? portalNote : ""),
+        : `${where}'s process profile records that an electrical permit application is required. Confirm it before filing.`) + (electricalPortalOnly ? portalNote : ""),
       lane: "permit",
-      blocking: separate && !portalOnly,
+      blocking: separate && !electricalPortalOnly,
       discipline: "electrical",
     });
   }
@@ -589,6 +632,20 @@ export function applicationDocContext(project: ProjectRecord): ApplicationDocCon
     ctx.requiresPrescriptiveChecklist = Boolean(profile.requiresPrescriptiveChecklist);
     ctx.requiresPortalEntryOnly = Boolean(profile.requiresPortalEntryOnly);
   } catch { /* the AHJ's own name for the form is a nicety, not a requirement */ }
+  // WHOSE APPLICATIONS (applicationDocsAgency.formAuthorityFor): a track the per-job lookup cites
+  // ANOTHER agency for carries that agency and its known forms, and the building-side name is the
+  // agency's own form's.
+  try {
+    const resolution = resolvePermitPath(project);
+    const kind = resolution.standardReview ? null : applicationKindForPath(resolution.path);
+    for (const other of tracksIssuedByOther(project)) {
+      const forms = agencyApplicationForms(project, TRACK_FORM_TYPES[other.track][0], other.track === "building" ? kind : null);
+      (ctx.issuingAgencies ??= {})[other.track] = {
+        agency: other.name, sourceUrl: String(other.fact?.sourceUrl || ""), quote: String(other.fact?.quote || ""), forms,
+      };
+      if (other.track === "building" && forms.length) ctx.buildingApplicationName = forms.map((f) => f.formName).join(" / ");
+    }
+  } catch { /* lookup optional — the AHJ's own forms apply */ }
   return ctx;
 }
 
@@ -680,6 +737,18 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
   }
   const docOpts = { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp, application };
   const baselineItems = requiredDocuments(project, docOpts);
+  // A HELD BUT UNFILLABLE AGENCY APPLICATION IS STILL REQUIRED — AS A FILE TO ATTACH. The row
+  // keeps blocking exactly as before; its words stop promising a fill that cannot happen.
+  try {
+    const blanks = heldUnfillableAgencyBlanks(db, project);
+    for (const item of baselineItems) {
+      const blank = blanks.find((b) => (b.formType === item.docType || (item.altDocTypes ?? []).includes(b.formType))
+        && (!item.applicationKind || !b.applicationKind || b.applicationKind === item.applicationKind));
+      if (!blank) continue;
+      item.label = `${item.label.replace(/, filled$/, "")}, completed by hand and attached`;
+      item.why += ` ${blank.agency}'s blank "${blank.formName}" is held but is not fillable — print it, complete it by hand, and attach it here.`;
+    }
+  } catch { /* wording only */ }
   try {
     const kb = findKnowledgeForLearn(db, { state: project.state, ahj: project.ahj, utility: project.utility });
     const reqs = kb.ahj?.requiredDocuments ?? [];
@@ -841,11 +910,31 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
   let source: RequiredListCheck["source"] = "unknown";
   let sourceLabel = "";
   let texts: string[] = [];
+  // Items with a KNOWN slot (the issuing agency's list names its own slots) or a step at another
+  // office (a prerequisite, settled by the operator's zoning answer — not a file).
+  const structured = new Map<string, { docTypes: string[]; prerequisite: boolean }>();
   const found = lookupRequiredList(project);
+  // THE ISSUING AGENCY'S LIST (applicationDocsAgency.issuingAgencyDocumentList): where the lookup
+  // cites another agency as a permit's issuer, the job's list names THAT agency's applications, the
+  // state checklist on the prescriptive path and the city's prerequisite step.
+  let agencyList: ReturnType<typeof issuingAgencyDocumentList> = null;
+  try { agencyList = issuingAgencyDocumentList(project); } catch { agencyList = null; }
+  const addAgencyItems = (onlyUncovered: boolean): void => {
+    for (const item of agencyList?.items ?? []) {
+      if (onlyUncovered && item.docTypes.length && texts.some((t) => requirementSlots(t).some((s) => item.docTypes.includes(s)))) continue;
+      texts.push(item.text);
+      structured.set(item.text, { docTypes: item.docTypes, prerequisite: item.role === "prerequisite" });
+    }
+  };
   if (found.items.length) {
     source = "lookup";
     sourceLabel = `the per-job process lookup (cited: ${found.sourceUrl})`;
     texts = found.items;
+    addAgencyItems(true);
+  } else if (agencyList) {
+    source = "lookup";
+    sourceLabel = `the per-job process lookup's issuing agenc${agencyList.agencies.length > 1 ? "ies" : "y"} (${agencyList.agencies.join(", ")}${agencyList.sourceUrl ? `, cited: ${agencyList.sourceUrl}` : ""})`;
+    addAgencyItems(false);
   } else {
     let profile: ReturnType<typeof findApplicationProfile> | null = null;
     try { profile = findApplicationProfile(project); } catch { profile = null; }
@@ -865,8 +954,13 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
   let uploads: Record<string, string> = {};
   try { uploads = uploadedSubmissionDocuments(db, project); } catch { uploads = {}; }
   const items: RequiredListItem[] = texts.map((text) => {
+    const known = structured.get(text);
+    if (known?.prerequisite) {
+      const status = prerequisiteSettled(project.parserSnapshot);
+      return { text, docTypes: [], present: status.settled, via: status.via || "not yet answered — asked on the project (zoning sign-off question)" };
+    }
     const skipped = requirementSkipReason(text, path, standardReview);
-    const docTypes = requirementSlots(text);
+    const docTypes = known?.docTypes ?? requirementSlots(text);
     if (skipped) return { text, docTypes, present: false, via: "", skipped };
     for (const t of docTypes) {
       const p = presenceByType.get(t);

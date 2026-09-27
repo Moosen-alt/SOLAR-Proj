@@ -29,7 +29,8 @@ try {
  assert.equal(resolveSource("computed.installerRole",{project,client:{},snapshot} as never),"");
  assert.equal(resolveSource("computed.installerRole",{project,client:{installerCompanyName:"Fixture Contractor"},snapshot:{...snapshot,installerRole:"owner"}} as never),"owner");
  assert.equal(template.def.checkboxes?.Contractor.equals,"contractor");
- // 5 = the four answered rows + the module-height row, assumed Yes when nothing states otherwise (operator ruling 2026-09-27, b15115f).
+ // 4 independent rows (snow, wind, light-frame, dead load) + the module-height row, assumed Yes when
+ // nothing states otherwise (operator ruling 2026-09-27, b15115f — this pin was still 4 after it).
  assert.equal(labels.filter(i=>i.str==="X").length,5);
  const map={...JSON.parse(row.field_map),verified:true};
  db.run("UPDATE ahj_form_templates SET field_map = ? WHERE id = ?",[JSON.stringify(map),row.id]);

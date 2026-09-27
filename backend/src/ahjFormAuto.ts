@@ -27,6 +27,7 @@ import { documentDateForPdf } from "./documentDate";
 import { bcd5952Template } from "./bcd5952Template";
 import { iowaPvWorksheetTemplate, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
+import { agencyApplicationForms, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
 
 // ---------------------------------------------------------------------------
 // Auto-acquire an AHJ's official permit PDF form: web-research the URL, download
@@ -140,6 +141,8 @@ export interface StoredFieldMap {
   fillMode: "acroform" | "overlay";
   textFields: Record<string, string>;
   checkboxes: Record<string, { source: string; equals?: string }>;
+  /** Well-formed Yes/No radio groups: select `option` when the rule holds (ahjForms.fillLoadedForm). */
+  radioGroups?: Record<string, { source: string; equals?: string; option: string }>;
   /** Coordinate placements (PDF points, bottom-left origin) for flat/scanned PDFs
    *  filled by vision-derived overlay. Used when fillMode === "overlay". */
   overlayFields?: OverlayField[];
@@ -701,6 +704,12 @@ export async function ensureAhjFormTemplate(
   if (!applicationKind && (formType === "building_application" || formType === "permit_application")) {
     try { applicationKind = applicationKindForProject(project); } catch { /* path optional */ }
   }
+  // WHOSE FORM THIS IS (applicationDocsAgency.formAuthorityFor — the one predicate). Where the
+  // per-job lookup cites ANOTHER agency as this track's issuer, the application is that agency's:
+  // acquired and stored under ITS name, from its own curated seed or the PDF the lookup cited —
+  // never a paid search under the city's name, never a KB profile written for the agency.
+  const authority = formAuthorityFor(project, formType);
+  if (authority.issuedByOther) return ensureIssuingAgencyForm(db, llm, project, formType, authority, applicationKind, { allowResearch: opts.allowResearch });
   const kindWord = applicationKind === "structural" ? "structural (non-prescriptive)" : applicationKind === "prescriptive" ? "prescriptive" : "";
   // Already have a fillable stored template of THIS form type for this AHJ?
   // (Per-type, so acquiring the checklist isn't skipped just because the
@@ -713,7 +722,7 @@ export async function ensureAhjFormTemplate(
   // once its structure resolves SEPARATE (building + electrical) — the same alias the inventory uses.
   const acceptedTypes = formType === "building_application" ? ["building_application", "permit_application"] : [formType];
   if (acceptedTypes.some((t) => hasStoredTemplateOfType(db, project.ahj, project.state, t, applicationKind))) {
-    const usable = loadStoredTemplates(db, project.ahj, project.state).some(t => {
+    const usable = loadStoredTemplates(db, project.ahj, project.state, { ownOnly: true }).some(t => {
       const type = db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type;
       return acceptedTypes.includes(String(type)) && (!applicationKind || !t.applicationKind || t.applicationKind === applicationKind)
         && (Object.keys(t.def.textFields || {}).length > 0 || Object.keys(t.def.checkboxes || {}).length > 0 || (t.def.overlayFields?.length ?? 0) > 0);
@@ -725,7 +734,7 @@ export async function ensureAhjFormTemplate(
 
   // Known public forms are free downloads; do not buy a search for a source we
   // already hold. An online application can still require a PDF attachment.
-  const curated = curatedFormSource(project, formType);
+  const curated = curatedFormSource(project, formType, applicationKind);
   const checklistUrl = project.state.toUpperCase() === "OR" && formType === "solar_checklist"
     && resolvePermitPath(project).path === "prescriptive" ? "https://www.oregon.gov/bcd/Formslibrary/5952.pdf" : "";
   if (curated || checklistUrl) {
@@ -882,6 +891,73 @@ export async function ensureAhjFormTemplate(
   };
 }
 
+/** A mapper that maps nothing: with research off, a cited agency PDF is still fetched and STORED
+ *  (never dropped), but no model is paid to map it — it lands as a blank to complete by hand. */
+const NO_MODEL_MAPPER = {
+  mapAcroFormFields: async () => ({ textFields: {}, checkboxes: {}, notes: "not mapped — model mapping is off on this run" }),
+  mapFlatFormOverlay: async () => ({ fields: [], signatures: [], notes: "not mapped — model mapping is off on this run" }),
+} as unknown as LLMProvider;
+
+/**
+ * THE ISSUING AGENCY'S APPLICATION for a track another agency issues (formAuthorityFor said so,
+ * citing the per-job lookup). Stored under the AGENCY's name — every city the agency issues for
+ * then finds it — with provenance (source URL, retrieved-at, the blank's sha256 in its map):
+ *
+ *   1. already held for the agency (kind-compatible) -> exists, or needs_manual when not fillable;
+ *   2. the agency's curated public seed (hash-locked, model-free map) -> fetched once;
+ *   3. an application PDF the lookup CITED on that permit (on the agency's own host, its file name
+ *      naming this track's application) -> fetched once, mapped by the existing pipeline;
+ *   4. otherwise not_found, naming the agency and the citation — never a paid web search under
+ *      the city's name and never a KB profile written for the agency.
+ * A human-verified map is never overwritten (acquireFromBytes' protected checks, hard rule 3).
+ */
+export async function ensureIssuingAgencyForm(
+  db: AppDb,
+  llm: LLMProvider,
+  project: ProjectRecord,
+  formType: string,
+  authority: FormAuthority,
+  applicationKind: "prescriptive" | "structural" | null,
+  opts: { allowResearch?: boolean } = {},
+): Promise<EnsureFormResult> {
+  const agency = authority.name;
+  const track = authority.track;
+  const want = track === "building" ? applicationKind : null;
+  const types = track ? TRACK_FORM_TYPES[track] : [formType];
+  const label = track === "electrical" ? "electrical permit application" : `${want === "prescriptive" ? "prescriptive solar " : want === "structural" ? "structural (non-prescriptive) " : ""}permit application`;
+  const cite = authority.fact?.sourceUrl ? ` (per-job lookup, cited: ${authority.fact.sourceUrl})` : "";
+  const whose = `${agency} issues this permit for ${project.ahj}${cite}`;
+  const held = db.query<{ id: string; ahj_name: string; state: string; form_type: string; original_filename?: string; field_map?: string }>(
+    "SELECT id, ahj_name, state, form_type, original_filename, field_map FROM ahj_form_templates WHERE pdf_blob IS NOT NULL",
+  ).filter((r) => types.includes(String(r.form_type)) && (!r.state || String(r.state).toLowerCase() === String(project.state).toLowerCase())
+    && rowBelongsToAuthority(r.ahj_name, agency) && (!want || !storedApplicationKind(r) || storedApplicationKind(r) === want));
+  if (held.length) {
+    const usable = loadStoredTemplates(db, agency, project.state, { ownOnly: true }).some((t) => held.some((h) => h.id === t.templateId));
+    return usable
+      ? { status: "exists", message: `${agency}'s own ${label} is stored — ${whose}.` }
+      : { status: "needs_manual", mappedFields: 0, message: `${agency}'s own ${label} is stored but is not fillable — ${whose}. Complete it by hand and attach it; it is required and has not been filled.` };
+  }
+  const candidates = agencyApplicationForms(project, formType, want);
+  if (!candidates.length) {
+    return { status: "not_found", message: `${whose}, but no ${label} of ${agency}'s is held, seeded or cited. Upload ${agency}'s blank (Find official form → upload); it has not been counted as present.` };
+  }
+  const tried: string[] = [];
+  for (const c of candidates) {
+    const bytes = await fetchPdf(c.sourceUrl);
+    if (!bytes) { tried.push(c.sourceUrl); continue; }
+    if (c.origin === "curated") {
+      const seed = curatedFormSource({ ahj: agency, state: project.state }, c.formType, want);
+      if (!seed || curatedFormMap(bytes, c.sourceUrl)?.source.hash !== seed.hash) {
+        return { status: "needs_manual", sourceUrl: c.sourceUrl, message: `${agency}'s official PDF has changed since its field map was checked. Review and re-map the new revision before filling it.` };
+      }
+    }
+    const mapper = c.origin === "cited" && opts.allowResearch === false ? NO_MODEL_MAPPER : llm;
+    const acquired = await acquireFromBytes(db, mapper, { ahj: agency, state: project.state, formType: c.formType, formName: c.formName, bytes, sourceUrl: c.sourceUrl, applicationKind: c.applicationKind });
+    return { ...acquired, message: `${acquired.message} (${whose}.)` };
+  }
+  return { status: "not_found", message: `${whose}, but ${agency}'s ${label} could not be downloaded (tried: ${tried.join(", ")}). Retry or upload the blank; it has not been counted as present.` };
+}
+
 // Shared acquisition: map a downloaded/uploaded blank PDF (AcroForm first, then
 // vision overlay for flat/scanned), store it, and report what happened.
 export async function acquireFromBytes(
@@ -916,7 +992,7 @@ export async function acquireFromBytes(
   // revision requires no model call and leaves every project fact dynamic.
   const bcd = bcd5952Template(bytes, sourceUrl);
   if (bcd) {
-    const protectedTemplate = loadStoredTemplates(db, ahj, state).find(t => t.verified &&
+    const protectedTemplate = loadStoredTemplates(db, ahj, state, { ownOnly: true }).find(t => t.verified &&
       db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type === "solar_checklist");
     if (protectedTemplate) return { status: "exists", message: "The verified BCD checklist map was retained.", formName: bcd.formName, sourceUrl };
     storeAhjFormTemplate(db, { ahjName: ahj, state, formType: "solar_checklist", filename: `${bcd.formName}.pdf`, bytes,
@@ -932,7 +1008,7 @@ export async function acquireFromBytes(
     if (String(state).trim().toUpperCase() !== "IA") {
       return { status: "needs_manual", sourceUrl, message: "This is the Iowa State Fire Marshal PV worksheet; it belongs to an Iowa jurisdiction. Select the matching authority before mapping it." };
     }
-    const protectedTemplate = loadStoredTemplates(db, ahj, state).find(t => t.verified &&
+    const protectedTemplate = loadStoredTemplates(db, ahj, state, { ownOnly: true }).find(t => t.verified &&
       db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type === PV_WORKSHEET_DOC_TYPE);
     if (protectedTemplate) return { status: "exists", message: "The verified PV worksheet map was retained.", formName: iaPv.formName, sourceUrl };
     storeAhjFormTemplate(db, { ahjName: ahj, state, formType: PV_WORKSHEET_DOC_TYPE, filename: `${iaPv.formName}.pdf`, bytes,

@@ -10,10 +10,30 @@ export const CURATED_AHJ_FORMS = [
   {ahj:"tigard",state:"OR",formType:"electrical_application",formName:"City of Tigard Electrical Permit Application",url:"https://www.tigard-or.gov/home/showpublisheddocument/44/637615268530600000",hash:"631bc73563f644c600b363c0f5f058b7a3d4eb8684551ac1e4a57a1a50fcb1b6",documentDate:"Rev 06/17/2015"},
   // The form only says "Revised 2025"; do not invent a month/day.
   {ahj:"coos bay",state:"OR",formType:"electrical_application",formName:"Coos County Electrical Permit Application",url:"https://co.coos.or.us/files/5bb0a81e5/electrical_permit.pdf",hash:"7ef28457e32b802f53e47ffd8a2494548cc11b60c839be780b2344217c6f2d0c",documentDate:"Revised 2025"},
+  // MARION COUNTY'S OWN APPLICATIONS — keyed to the ISSUING AGENCY, never to a city it issues for
+  // (applicationDocsAgency.formAuthorityFor). A City of Jefferson job reaches them because the
+  // per-job lookup cites Marion County as the issuer of both permits. Fetched once each on
+  // 2026-09-27 from co.marion.or.us (recorded in .probe/agency-apps/live-fetch/fetch-log.json);
+  // B-01S is the URL the lookup cited, E-01 was found on the county's forms listing. The B-01S
+  // prints no revision date; the E-01 footer prints only "06/20" — do not invent a day.
+  {ahj:"marion county",state:"OR",formType:"building_application",applicationKind:"prescriptive",formName:"Marion County Prescriptive Solar Photovoltaic Installation Permit Application (B-01S)",url:"https://www.co.marion.or.us/PW/BuildingInspection/Documents/B-01S%20Solar%20Prescriptive%20Installation%20Application%20Filleable.pdf",hash:"8c8daff4239868c9a156bcabf6e6690eb3677541b24c34ca7eec59bb8bd0a732",documentDate:""},
+  {ahj:"marion county",state:"OR",formType:"electrical_application",formName:"Marion County Renewable Electrical Energy Permit Application (E-01)",url:"https://www.co.marion.or.us/PW/BuildingInspection/Documents/E-01%20Renewable%20Energy%20Permit%20Application.pdf",hash:"bd723dfa527a18990d40ce9871ae20a8a31e5d9e85a383db610d69ed027948a4",documentDate:"06/20 (printed footer)"},
 ] as const;
-export function curatedFormSource(project: Pick<ProjectRecord,"ahj"|"state">,formType:string){
- const name=project.ahj.trim().toLowerCase().replace(/^city of\s+/,"");
- return CURATED_AHJ_FORMS.find(f=>f.ahj===name&&f.state===project.state.toUpperCase()&&f.formType===formType);
+type CuratedSource = (typeof CURATED_AHJ_FORMS)[number];
+const curatedKey = (ahj: string) => String(ahj ?? "").trim().toLowerCase().replace(/^city of\s+/,"");
+/** The seed's own application kind (the building side's two mutually exclusive forms), else null. */
+export function curatedApplicationKind(source: CuratedSource): "prescriptive" | "structural" | null {
+ return "applicationKind" in source ? source.applicationKind : null;
+}
+/** Every seed held for this authority (an AHJ, or the agency that issues its permits). */
+export function curatedFormSourcesFor(authority: string, state: string): CuratedSource[] {
+ const name=curatedKey(authority);
+ return CURATED_AHJ_FORMS.filter(f=>f.ahj===name&&f.state===String(state ?? "").trim().toUpperCase());
+}
+/** The seed for this authority + form type — and, on the building side, for the path's KIND: the
+ *  B-01S is the PRESCRIPTIVE application and must never be fetched for an engineered project. */
+export function curatedFormSource(project: Pick<ProjectRecord,"ahj"|"state">,formType:string,kind?:"prescriptive"|"structural"|null){
+ return curatedFormSourcesFor(project.ahj, project.state).find(f=>f.formType===formType&&(!kind||!curatedApplicationKind(f)||curatedApplicationKind(f)===kind));
 }
 export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
  const source=CURATED_AHJ_FORMS.find(f=>f.hash===createHash("sha256").update(bytes).digest("hex"));
@@ -32,7 +52,65 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
   "contractor CCB license":"client.ccbLicenseNumber",
  };
  if(source.formType==='electrical_application') requiredFields['owner email']='snapshot.homeownerEmail';
- if(source.ahj==='coos bay'){
+ const radioGroups:Record<string,{source:string;equals?:string;option:string}>={};
+ let notes="Review listed missing details and obtain required signatures before filing. Mapped operator signing dates are filled only when the matching saved signature is applied. Owner-installation signatures are not auto-filled. Fee entries use the current saved jurisdiction lookup; printed rates may be historical. Owner mailing/contact details require actual owner information.";
+ if(source.ahj==='marion county'){
+  // Field names read off each blank's AcroForm (backend/test/fixtures/marion-*.pdf). Every text
+  // field prints at 9 pt: the blanks declare auto-size (0 Tf), which set a 13-pt box's value at
+  // ~11 pt beside 8-pt labels.
+  delete requiredFields['construction category'];
+  if(source.formType==='building_application'){
+   Object.assign(textFields,{
+    'Owner name':'project.homeownerName','Owner phone number':'computed.homeownerPhone','Job site address':'computed.streetAddress',
+    City:'project.city',State:'project.state',ZIP:'project.zip',
+    Name:'project.homeownerName',Address:'snapshot.homeownerMailingAddress',City_2:'computed.homeownerMailingCity',State_2:'computed.homeownerMailingState',ZIP_2:'computed.homeownerMailingZip',
+    Phone:'computed.homeownerPhone',Email:'snapshot.homeownerEmail',
+    'Business name':'client.installerCompanyName',Address_2:'client.installerStreet',City_3:'client.installerCity',State_3:'client.installerState',ZIP_3:'client.installerZip',
+    Phone_2:'client.installerPhone',Email_2:'client.installerEmail','CCB license no':'client.ccbLicenseNumber','Print name':'computed.applicantSignerName',
+    'Valuation of the installation':'computed.estimatedJobValue',
+   });
+   // "This section must be completed": three Yes/No radio groups (options Yes_n / No_n). Only an
+   // affirmative fact ticks Yes; nothing here ever ticks No (a No answer means this is not the
+   // prescriptive application at all). The two ZONING groups and "Approved by / Date" are the
+   // CITY's block ("If within a city you must submit application to the city for zoning
+   // approval") — never filled by us.
+   radioGroups.undefined_3={source:'computed.roofMounted',equals:'yes',option:'Yes_3'};
+   radioGroups.undefined_4={source:'computed.prescriptiveStructureClause',equals:'yes',option:'Yes_4'};
+   radioGroups.undefined_5={source:'computed.prescAllAnswer',equals:'Yes',option:'Yes_5'};
+   requiredFields['declared valuation']='computed.estimatedJobValue';
+   requiredFields['structure type (single-family dwelling or accessory building) for the requirement row']='computed.prescriptiveStructureClause';
+   requiredFields['every prescriptive criterion answered Yes (the OSSC 3111.4.8 / 3111.5 attestation row)']='computed.prescAllYes';
+   // Certification signature (bottom left, Signature widget #1 at 32,106) with its Date box, and
+   // the contractor block's Signature_2. The Signature field's OTHER widget is the owner-exempt
+   // "Sign here" and is never stamped.
+   signatureFields.push({role:'applicant',page:0,x:36,y:109,width:168,height:18,dateX:229,dateY:113,dateSize:9,label:'Applicant certification signature'});
+   signatureFields.push({role:'applicant',page:0,x:368,y:207,width:200,height:20,label:'Contractor signature'});
+   notes="Marion County's own prescriptive application (the county issues the permit). The 'within a city' zoning block (top left: Local Zoning Approval, permission to submit directly, Approved by / Date) is completed by the CITY before the county takes the application — left blank. Permit fees: (a) and (b) are printed; the zoning-review line and total are left for the county. "+notes;
+  }else{
+   Object.assign(textFields,{
+    'Job site address':'computed.streetAddress',CityStateZip:'computed.cityStateZip','Project name':'project.homeownerName',
+    'DESCRIPTION OF WORKRow1':'computed.descriptionOfWorkLine1','DESCRIPTION OF WORKRow2':'computed.descriptionOfWorkLine2',
+    Name:'project.homeownerName',Address:'snapshot.homeownerMailingAddress','CityState ZIP':'snapshot.homeownerMailingCityStateZip',Phone:'computed.homeownerPhone',Email:'snapshot.homeownerEmail',
+    'Business name':'client.installerCompanyName','Contact name':'client.installerContactName',Address_2:'client.installerStreet',CityStateZIP:'client.installerCityStateZip',
+    Phone_2:'client.installerPhone',Email_2:'client.installerEmail','CCB License no':'client.ccbLicenseNumber','Electrical License no':'client.electricalLicenseNumber',
+    'Supervising Electrician License no':'client.electricianLicenseNumber','Print name of signing supervisor':'client.electricalSupervisorName',
+    // Solar rows only (the wind rows below them are another system). Qty is the kVA bracket the
+    // system's AC size falls in; the Total is the saved jurisdiction fee line, blank without one.
+    '5 kva or less':'computed.kvaTier5Qty','7900':'computed.electricalTier5Total',
+    '501 to 15 kva':'computed.kvaTier15Qty','9400':'computed.electricalTier15Total',
+    '1501 to 25 kva':'computed.kvaTier25Qty','15600':'computed.electricalTier25Total',
+    Subtotal:'computed.electricalSubtotal','State surcharge 12 of permit fee':'computed.electricalStateSurcharge','TOTAL PERMIT FEE':'computed.electricalTotalFee',
+   });
+   checkboxes.undefined={source:'computed.residentialCategory',equals:'residential'};
+   requiredFields['residential category of construction']='computed.residentialCategory';
+   requiredFields['owner mailing city/state/ZIP']='snapshot.homeownerMailingCityStateZip';
+   requiredFields['supervising electrician license']='client.electricianLicenseNumber';
+   requiredFields['electrical permit fee (the county schedule, when not on file)']='computed.electricalTotalFee';
+   signatureFields.push({role:'electrician',page:0,x:99,y:134,width:200,height:18,label:'Signature of signing supervisor'});
+   notes="Marion County's own renewable-energy electrical application (the county issues the permit). The property-owner installation signature/date is never auto-filled. Systems over 25 kVA need the per-kVA line and plans review — not filled. "+notes;
+  }
+  for (const key of Object.keys(textFields)) fieldFontSizes[key]=/Tier|electrical(Subtotal|State|Total)/.test(textFields[key])?8:9;
+ }else if(source.ahj==='coos bay'){
   Object.assign(textFields,{
    "Job site address":"computed.streetAddress",CityStateZIP:"computed.cityStateZip", "Project Name":"project.homeownerName",Parcel:"snapshot.parcelNumber",
    "DESCRIPTION OF WORKRow1":"computed.descriptionOfWork",Name:"project.homeownerName",Address:"snapshot.homeownerMailingAddress",CityStateZIP_2:"snapshot.homeownerMailingCityStateZip",Phone:"snapshot.homeownerPhone",Email:"snapshot.homeownerEmail",
@@ -121,6 +199,8 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
   at('lit:X',building?67:67,building?346:448,p,10); // property owner
   at('lit:X',building?84:84,building?269:319,p,10); // applicant
  }
- return {source,map:{formName:source.formName,sourceUrl,fillMode:source.ahj==='coos bay'?'acroform' as const:'overlay' as const,textFields,fieldFontSizes,checkboxes,overlayFields:fields,signatureFields,requiredFields,preserveInteractive:source.ahj==='coos bay',notes:"Review listed missing details and obtain required signatures before filing. Mapped operator signing dates are filled only when the matching saved signature is applied. Owner-installation signatures are not auto-filled. Fee entries use the current saved jurisdiction lookup; printed rates may be historical. Owner mailing/contact details require actual owner information."}};
+ const acro=source.ahj==='coos bay'||source.ahj==='marion county';
+ const kind=curatedApplicationKind(source);
+ return {source,map:{formName:source.formName,sourceUrl,fillMode:acro?'acroform' as const:'overlay' as const,textFields,fieldFontSizes,checkboxes,radioGroups,overlayFields:fields,signatureFields,requiredFields,preserveInteractive:acro,...(kind?{applicationKind:kind}:{}),notes}};
 }
 

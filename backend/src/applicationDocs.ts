@@ -9,6 +9,9 @@ import { nowIso } from "./time";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, jurisdictionKind, jurisdictionKindsCompatible } from "./processProfiles";
 import { describeCited, permitProcessFor, statePermitStructure } from "./permitProcess";
 import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
+// Functions only, called at run time: this module sits inside the permitProcessLookup ->
+// feeSchedules -> knowledgeBase -> applicationDocs import cycle (see applicationDocsAgency's header).
+import { issuingAgencyDocumentList, type AgencyDocumentList } from "./applicationDocsAgency";
 
 // ---------------------------------------------------------------------------
 // ONE PERMIT-STRUCTURE ANSWER (new-AHJ e2e, 2026-09-26: permit structure 0/5 right).
@@ -847,13 +850,21 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
   // this reaches the operator on the same screen the wrong list appears on. Copied,
   // never mutated: the registry profiles are module-level shared objects.
   const knowledge = ahjProcessKnowledgeStatus();
-  const profile: ApplicationRequirementProfile = knowledge.status === "resolved" ? matched : {
+  const withKnowledge: ApplicationRequirementProfile = knowledge.status === "resolved" ? matched : {
     ...matched,
     notes: [
       `WARNING — the AHJ process reference (jurisdiction requirements for 381 AHJs) could not be read, so this package was built WITHOUT this jurisdiction's own process knowledge. The profile below is a generic fallback; treat its document list as unverified and check the AHJ's requirements by hand before submitting. Cause: ${knowledge.error || "unknown"}`,
       ...(matched.notes || []),
     ],
   };
+  // THE ISSUING AGENCY'S FORMS ARE THE PACKET'S FORMS (operator finding 2026-09-27, City of
+  // Jefferson / Marion County: "still only just pulling that one doc"). Where the per-job lookup
+  // cites another agency as a permit's issuer, the packet's required list names that agency's own
+  // applications, the state checklist on the prescriptive path and the city's prerequisite step —
+  // never the generic fallback's "portal entry" line. Copied, never mutated.
+  let agencyList: ReturnType<typeof issuingAgencyDocumentList> = null;
+  try { agencyList = issuingAgencyDocumentList(project); } catch { agencyList = null; }
+  const profile: ApplicationRequirementProfile = agencyList ? withIssuingAgencyList(withKnowledge, agencyList) : withKnowledge;
   const answer = permitStructureAnswer(project);
   const structure = answer.structure;
   const permitPath = resolvePermitPath(project);
@@ -919,6 +930,24 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
     // see WHY it was decided or correct a wrong read without opening a document. The
     // screen renders path + source + basis and points at the existing override.
     permitPath: { path: permitPath.path, source: permitPath.source, basis: [...permitPath.basis] },
+  };
+}
+
+/** The packet profile with the issuing agency's list in front: the agency items, then the base
+ *  profile's lines that name no application / checklist / worksheet / portal entry (the plan set,
+ *  stamps). With every issued track's own application PDF known, the application is a filled PDF,
+ *  so the profile stops claiming portal-entry-only. */
+function withIssuingAgencyList(profile: ApplicationRequirementProfile, list: AgencyDocumentList): ApplicationRequirementProfile {
+  const kept = profile.requiredDocuments.filter((line) => !/application|checklist|worksheet|portal entry/i.test(line));
+  const formsKnown = list.items.filter((i) => i.role === "application").every((i) => !/not yet on file/.test(i.text));
+  return {
+    ...profile,
+    requiredDocuments: [...list.items.map((i) => i.text), ...kept],
+    requiresPortalEntryOnly: formsKnown ? false : profile.requiresPortalEntryOnly,
+    notes: [
+      `The per-job lookup cites ${list.agencies.join(" and ")} as the agency that issues ${list.agencies.length > 1 ? "these permits" : "this job's permit(s)"}${list.sourceUrl ? ` (${list.sourceUrl})` : ""} — the applications listed are ${list.agencies.join(" / ")}'s own, filled from this project's values.`,
+      ...(profile.notes || []),
+    ],
   };
 }
 

@@ -23,6 +23,10 @@ import type { ChecklistRecovery } from "./prescriptiveChecklist";
 import { bcdChecklistAnswers, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
 import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
 import { documentFetchDisabled } from "./documentFetch";
+import {
+  applicationKindForPath, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
+  TRACK_FORM_TYPES, tracksIssuedByOther, trackForFormType,
+} from "./applicationDocsAgency";
 
 /** Which of the two MUTUALLY EXCLUSIVE building-side applications a permit path calls
  *  for. THE single mapping from path → application kind; requiredApplicationDocs,
@@ -30,12 +34,10 @@ import { documentFetchDisabled } from "./documentFetch";
  *  filters all read it rather than each
  *  restating `path === "engineered" ? "structural" : ...`. "unknown" deliberately
  *  yields null: before the operator confirms the path we do not know which of the two
- *  the AHJ is owed, and guessing is the failure this whole module exists to stop. */
-export function applicationKindForPath(path: "prescriptive" | "engineered" | "unknown"): "prescriptive" | "structural" | null {
-  if (path === "prescriptive") return "prescriptive";
-  if (path === "engineered") return "structural";
-  return null;
-}
+ *  the AHJ is owed, and guessing is the failure this whole module exists to stop.
+ *  (Defined in applicationDocsAgency — the issuing-agency module names an agency's application
+ *  by kind without importing the fill engine — and re-exported here, where every gate reads it.) */
+export { applicationKindForPath, formApplicationKind } from "./applicationDocsAgency";
 
 // Classify an AHJ form by which mutually-exclusive solar application it is, from its
 // name/filename. A prescriptive and a structural application must NEVER both be filled
@@ -57,12 +59,7 @@ export function applicationKindForPath(path: "prescriptive" | "engineered" | "un
 // "prescriptive": the fill gate then built the structural application for prescriptive
 // projects and refused it for engineered ones, exactly inverted, on the one pair of
 // forms where being wrong means uploading the document the AHJ forbids.
-export function formApplicationKind(formName: string): "prescriptive" | "structural" | null {
-  const n = (formName || "").toLowerCase();
-  if (/structural|non[-\s]?prescriptive|engineered/.test(n)) return "structural";
-  if (/prescriptive/.test(n)) return "prescriptive";
-  return null;
-}
+// (formApplicationKind itself lives in applicationDocsAgency and is re-exported above.)
 
 /**
  * Does a form of this kind CONTRADICT the project's resolved permit path?
@@ -208,6 +205,10 @@ export interface AhjFormDefinition {
   textFields: Record<string, FieldSource>;
   // pdf AcroForm checkbox field name -> rule
   checkboxes?: Record<string, CheckboxRule>;
+  // pdf AcroForm RADIO GROUP name -> rule + the option selected when the rule holds. A well-formed
+  // Yes/No group (one group per question — Marion County's B-01S) is selected, never cleared: an
+  // unanswered question stays unanswered. (BCD 5952's malformed groups never come through here.)
+  radioGroups?: Record<string, CheckboxRule & { option: string }>;
   // overlay placements (used when fillMode === "overlay")
   overlayFields?: OverlayField[];
   // operator-signature image placements (applied to both fill modes)
@@ -454,6 +455,27 @@ function money(n: number): string {
   return n.toFixed(2);
 }
 
+/** "4583294881" / "+1 458.329.4881" -> "(458) 329-4881"; anything that is not a 10-digit US
+ *  number (an extension, a foreign number, a blank) is returned exactly as written. */
+export function formatUsPhone(raw: string): string {
+  const text = String(raw ?? "").trim();
+  if (!text || /[a-wyz]/i.test(text)) return text;
+  let d = text.replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
+  if (d.length !== 10) return text;
+  return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+}
+
+/** Split text into two lines of at most `width` characters on a word boundary; the second line
+ *  keeps the remainder (clipped by its own box only if the text is over two lines long). */
+function wrapTwoLines(text: string, width: number): [string, string] {
+  const t = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (t.length <= width) return [t, ""];
+  let cut = t.lastIndexOf(" ", width);
+  if (cut < width * 0.5) cut = width;
+  return [t.slice(0, cut).trim(), t.slice(cut).trim()];
+}
+
 /** THE BATTERY'S SERVICES/FEEDERS <=200A LINE ON AN ELECTRICAL APPLICATION.
  *
  *  Operator rule 2026-09-24 (batteryServiceFeeder.ts): a battery job on an
@@ -692,6 +714,56 @@ function computed(name: string, ctx: FillContext): string {
       return [ctx.client.installerCompanyName, ctx.client.ccbLicenseNumber ? `CCB ${ctx.client.ccbLicenseNumber}` : ""]
         .filter(Boolean)
         .join(" — ");
+    // THE BUILDING DEPARTMENT THAT REVIEWS THIS PERMIT: the agency the per-job lookup cites as the
+    // structural permit's issuer when that is not the AHJ (Marion County for a City of Jefferson
+    // job), else the AHJ. BCD 5952's "Building department:" line printed "City of Jefferson" on a
+    // checklist Marion County reviews (applicationDocsAgency.formAuthorityFor — the one predicate).
+    case "buildingDepartment":
+      return formAuthorityFor(ctx.project, "building_application").name || str(ctx.project.ahj);
+    // A 10-digit US number reads as one on a form: "(458) 329-4881", never "4583294881" beside a
+    // contractor phone the client record already formats. Anything else is left as written.
+    case "homeownerPhone":
+      return formatUsPhone(str(ctx.snapshot.homeownerPhone));
+    case "homeownerMailingCity":
+    case "homeownerMailingState":
+    case "homeownerMailingZip": {
+      const m = /^\s*(.+?),?\s+([A-Za-z]{2})\.?,?\s+(\d{5}(?:-\d{4})?)\s*$/.exec(str(ctx.snapshot.homeownerMailingCityStateZip));
+      if (!m) return "";
+      return name === "homeownerMailingCity" ? m[1].replace(/,\s*$/, "").trim() : name === "homeownerMailingState" ? m[2].toUpperCase() : m[3];
+    }
+    // Roof-mounted? From the parsed mounting text; blank when it says neither.
+    case "roofMounted": {
+      const m = str(ctx.snapshot.mounting).toLowerCase();
+      if (/ground|pole|carport|canopy/.test(m)) return "no";
+      return /roof/.test(m) ? "yes" : "";
+    }
+    // A county prescriptive application's structure row ("a single family dwelling … or accessory
+    // building to a single-family dwelling"): yes only for those structure meanings; any other
+    // structure depends on floor area / height the plan set does not state — blank.
+    case "prescriptiveStructureClause": {
+      const meaning = structureMeaningOf(ctx.snapshot);
+      return meaning === "single_family" || meaning === "accessory" ? "yes" : "";
+    }
+    // Residential category of construction: a stated residential construction category, or a
+    // structure description that means a dwelling (permitProcess.structureTypeMeaning).
+    case "residentialCategory": {
+      if (computed("constructionCategory", ctx) === "residential") return "residential";
+      const meaning = structureMeaningOf(ctx.snapshot);
+      return meaning === "single_family" || meaning === "two_family" || meaning === "townhouse" || meaning === "manufactured" ? "residential" : "";
+    }
+    // "1" on the renewable-energy row the system's kVA falls in — a fact of the system, whether or
+    // not a fee schedule is on file (the Total beside it is the fee line's, blank without one).
+    case "kvaTier5Qty": case "kvaTier15Qty": case "kvaTier25Qty": {
+      const tier = name === "kvaTier15Qty" ? "5to15" : name === "kvaTier25Qty" ? "15to25" : "le5";
+      return feeBracket(ctx) === tier ? "1" : "";
+    }
+    // A one-line description box holds ~60 characters at 9 pt; a form with two rows gets the
+    // description wrapped across them on a word boundary instead of clipped at the box edge.
+    case "descriptionOfWorkLine1":
+    case "descriptionOfWorkLine2": {
+      const [l1, l2] = wrapTwoLines(computed("descriptionOfWork", ctx), 62);
+      return name === "descriptionOfWorkLine1" ? l1 : l2;
+    }
     default:
       return "";
   }
@@ -1239,6 +1311,19 @@ export async function fillLoadedForm(
     }
   }
 
+  for (const [fieldName, rule] of Object.entries(def.radioGroups ?? {})) {
+    if (!available.has(fieldName)) { unmapped.push(fieldName); continue; }
+    try {
+      const group = form.getRadioGroup(fieldName);
+      if (!checkboxRuleChecked(rule, resolveSource(rule.source, ctx))) continue;
+      if (!group.getOptions().includes(rule.option)) { unmapped.push(fieldName); continue; }
+      group.select(rule.option);
+      filled += 1;
+    } catch {
+      unmapped.push(fieldName);
+    }
+  }
+
   // Flatten so the filled values are baked in and can't be edited in transit.
   try { if (!def.preserveInteractive) form.flatten(); else form.updateFieldAppearances(); } catch (error) {
     if (checklist.recognized) throw error;
@@ -1389,8 +1474,13 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
     const staleNote = stored.documentStale
       ? `This blank dates ITSELF "${stored.documentDate}" — over two years old. Re-check the AHJ's current forms page before filing, and if it prints a fee table, re-check that against the adopted schedule.`
       : "";
+    // WHOSE FORM IT IS, said on the result: a county application filled for a city job must read
+    // as the county's, never as the city's.
+    const issuerNote = stored.issuedBy
+      ? `${stored.issuedBy}'s own application — the per-job lookup cites ${stored.issuedBy} as the agency that issues this permit for ${project.ahj}.`
+      : "";
     const withNote = (message?: string): string | undefined =>
-      [message, staleNote].filter(Boolean).join(" ") || undefined;
+      [issuerNote, message, staleNote].filter(Boolean).join(" ") || undefined;
     try {
       const result = await fillLoadedForm(stored.def, stored.bytes, ctx, path.join(outDir, `${stored.def.id}.pdf`));
       forms.push({ ...result, ...dated, message: withNote(result.message), verified: stored.verified, templateId: stored.templateId });
@@ -1409,6 +1499,25 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
     }
   }
 
+  // THE ISSUING AGENCY'S BLANK THAT CANNOT BE FILLED IS STILL ITS REQUIRED APPLICATION. It is
+  // never reported "filled"; it is named, so the operator completes it by hand and attaches it.
+  // (Path-gated like every other form: an off-path application is simply not this job's.)
+  try {
+    for (const blank of heldUnfillableAgencyBlanks(db, project)) {
+      if (forms.some((f) => f.templateId === blank.templateId)) continue;
+      if (!formAllowedForPath(blank.formName, permitPath, blank.applicationKind)) continue;
+      forms.push({
+        formId: `tmpl-${blank.templateId}`,
+        formName: blank.formName,
+        status: "needs_manual",
+        message: `${blank.agency}'s own application (the agency that issues this permit for ${project.ahj}) is held but is not fillable — print it, complete it by hand, and attach it. It is required and has NOT been filled.`,
+        verified: false,
+        templateId: blank.templateId,
+        sourceUrl: blank.sourceUrl,
+      });
+    }
+  } catch { /* listing only — the required-document gate still names the missing application */ }
+
   return {
     projectId: project.id,
     ahj: project.ahj,
@@ -1424,55 +1533,143 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
 // `applicationKind` travels WITH the template, because the gates that read it (the fill
 // gate here, the submit gate in repository.ts) only ever held the form's NAME, and a name
 // is the weaker of the two answers — acquisition stamped what it went looking for.
-export function loadStoredTemplates(db: AppDb, ahj: string, state: string): Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean; documentDate: string; documentStale: boolean; sourceUrl: string; applicationKind: "prescriptive" | "structural" | null }> {
+export interface StoredTemplate {
+  def: AhjFormDefinition;
+  bytes: Uint8Array;
+  templateId: string;
+  verified: boolean;
+  documentDate: string;
+  documentStale: boolean;
+  sourceUrl: string;
+  applicationKind: "prescriptive" | "structural" | null;
+  /** The row's form_type ("" on rows stored before the column mattered). */
+  formType: string;
+  /** Whose form it is: the row's own ahj_name. */
+  authority: string;
+  /** Set when the row is loaded for a project because the per-job lookup cites THIS agency as the
+   *  issuer of a track the AHJ does not issue itself (applicationDocsAgency.formAuthorityFor). */
+  issuedBy: string;
+}
+
+type TemplateRow = { id: string; ahj_name: string; state: string; form_type?: string; original_filename: string; pdf_blob: Buffer | null; field_map: string; document_date: string; source_url: string };
+
+/** A stored row as a fillable definition; null when its map could fill nothing. */
+function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate | null {
+  if (!row.pdf_blob) return null;
+  const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
+  let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; radioGroups?: Record<string, { source: string; equals?: string; option: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean; requiredFields?: Record<string,string>; notes?: string; preserveInteractive?: boolean; fieldFontSizes?: Record<string,number> } = {};
+  map = parseJson(row.field_map, {});
+  const textFields = map.textFields || {};
+  const overlayFields = map.overlayFields || [];
+  const signatureFields = map.signatureFields || [];
+  const isOverlay = map.fillMode === "overlay" && overlayFields.length > 0;
+  const hasAcro = Object.keys(textFields).length > 0 || (map.checkboxes && Object.keys(map.checkboxes).length > 0);
+  // A form with only signature placements is still usable (signs the blank).
+  if (!isOverlay && !hasAcro && !signatureFields.length) return null;
+  return {
+    def: {
+      id: `tmpl-${row.id}`,
+      formName: map.formName || row.original_filename || `${row.ahj_name} form`,
+      matchJurisdictions: [rowAhj],
+      sourceUrl: map.sourceUrl || "",
+      version: "stored",
+      status: "verified",
+      fillMode: isOverlay ? "overlay" : "acroform",
+      textFields,
+      checkboxes: map.checkboxes || {},
+      radioGroups: map.radioGroups,
+      overlayFields,
+      signatureFields,
+      requiredFields: map.requiredFields,
+      preserveInteractive: map.preserveInteractive,
+      fieldFontSizes: map.fieldFontSizes,
+      notes: map.notes ? [map.notes] : undefined,
+      recoverPrescriptiveCheckboxes: map.verified !== true,
+    },
+    bytes: new Uint8Array(row.pdf_blob),
+    templateId: row.id,
+    verified: map.verified === true,
+    documentDate: String(row.document_date || ""),
+    documentStale: isDocumentDateStale(String(row.document_date || "")),
+    sourceUrl: String(row.source_url || map.sourceUrl || ""),
+    applicationKind: storedApplicationKind(row),
+    formType: String(row.form_type || ""),
+    authority: String(row.ahj_name || ""),
+    issuedBy,
+  };
+}
+
+const rowStateOk = (row: { state?: string }, state: string): boolean =>
+  !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
+
+/**
+ * The stored templates that apply to an AHJ's jobs — AND THE ISSUING AGENCY'S, where another
+ * agency issues one of its permits (the one question answered by
+ * applicationDocsAgency.formAuthorityFor; operator finding 2026-09-27: a City of Jefferson job
+ * held only the BCD checklist while Marion County, which issues both its permits, had
+ * applications of its own). Every door reads this one list — the fill
+ * (buildFilledFormsForProject), the staging-time fill forecast (missingFilledAtStaging), the
+ * submit gate's unverified-forms check (repository.ts) — so they cannot disagree about which forms
+ * a job has.
+ *
+ *  - The AHJ's own rows: name containment, as always (a job whose lookup names no other agency
+ *    gets exactly today's list).
+ *  - For each track another agency issues: that agency's rows of the track's form types, matched
+ *    by EXACT agency identity (never containment — "Jefferson County" is not the City of
+ *    Jefferson). When the agency holds one, it REPLACES the AHJ's own application of that track —
+ *    two electrical applications for one permit is the wrong filing — unless a person verified the
+ *    AHJ's own (hard rule 3: a human answer is never displaced by an automatic one).
+ *  - A state checklist / worksheet is no track's application and always stays the AHJ's.
+ *
+ * `ownOnly` answers "what does THIS authority hold" (acquisition's already-stored checks).
+ */
+export function loadStoredTemplates(db: AppDb, ahj: string, state: string, opts: { ownOnly?: boolean } = {}): StoredTemplate[] {
   const needle = (ahj || "").trim().toLowerCase();
   if (!needle) return [];
-  const rows = db.query<{ id: string; ahj_name: string; state: string; original_filename: string; pdf_blob: Buffer | null; field_map: string; document_date: string; source_url: string }>(
-    "SELECT id, ahj_name, state, original_filename, pdf_blob, field_map, document_date, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL ORDER BY updated_at DESC",
+  const rows = db.query<TemplateRow>(
+    "SELECT id, ahj_name, state, form_type, original_filename, pdf_blob, field_map, document_date, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL ORDER BY updated_at DESC",
   );
-  const out: Array<{ def: AhjFormDefinition; bytes: Uint8Array; templateId: string; verified: boolean; documentDate: string; documentStale: boolean; sourceUrl: string; applicationKind: "prescriptive" | "structural" | null }> = [];
+  let out: StoredTemplate[] = [];
   for (const row of rows) {
     const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
     if (!rowAhj) continue;
     const nameMatches = rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle);
-    const stateOk = !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
-    if (!nameMatches || !stateOk || !row.pdf_blob) continue;
-    let map: { formName?: string; sourceUrl?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean; requiredFields?: Record<string,string>; notes?: string; preserveInteractive?: boolean; fieldFontSizes?: Record<string,number> } = {};
-    map = parseJson(row.field_map, {});
-    const textFields = map.textFields || {};
-    const overlayFields = map.overlayFields || [];
-    const signatureFields = map.signatureFields || [];
-    const isOverlay = map.fillMode === "overlay" && overlayFields.length > 0;
-    const hasAcro = Object.keys(textFields).length > 0 || (map.checkboxes && Object.keys(map.checkboxes).length > 0);
-    // A form with only signature placements is still usable (signs the blank).
-    if (!isOverlay && !hasAcro && !signatureFields.length) continue;
-    out.push({
-      def: {
-        id: `tmpl-${row.id}`,
-        formName: map.formName || row.original_filename || `${row.ahj_name} form`,
-        matchJurisdictions: [rowAhj],
-        sourceUrl: map.sourceUrl || "",
-        version: "stored",
-        status: "verified",
-        fillMode: isOverlay ? "overlay" : "acroform",
-        textFields,
-        checkboxes: map.checkboxes || {},
-        overlayFields,
-        signatureFields,
-        requiredFields: map.requiredFields,
-        preserveInteractive: map.preserveInteractive,
-        fieldFontSizes: map.fieldFontSizes,
-        notes: map.notes ? [map.notes] : undefined,
-        recoverPrescriptiveCheckboxes: map.verified !== true,
-      },
-      bytes: new Uint8Array(row.pdf_blob),
-      templateId: row.id,
-      verified: map.verified === true,
-      documentDate: String(row.document_date || ""),
-      documentStale: isDocumentDateStale(String(row.document_date || "")),
-      sourceUrl: String(row.source_url || map.sourceUrl || ""),
-      applicationKind: storedApplicationKind(row),
-    });
+    if (!nameMatches || !rowStateOk(row, state)) continue;
+    const t = storedTemplateFromRow(row);
+    if (t) out.push(t);
+  }
+  if (opts.ownOnly) return out;
+  for (const other of tracksIssuedByOther({ state, ahj })) {
+    const types = TRACK_FORM_TYPES[other.track];
+    const agency = rows
+      .filter((row) => types.includes(String(row.form_type || "")) && rowStateOk(row, state) && rowBelongsToAuthority(row.ahj_name, other.name))
+      .map((row) => storedTemplateFromRow(row, other.name))
+      .filter((t): t is StoredTemplate => Boolean(t));
+    if (!agency.length) continue;
+    if (out.some((t) => !t.issuedBy && types.includes(t.formType) && t.verified)) continue;
+    out = out.filter((t) => t.issuedBy || !types.includes(t.formType));
+    for (const t of agency) if (!out.some((x) => x.templateId === t.templateId)) out.push(t);
+  }
+  return out;
+}
+
+/** Blanks the ISSUING AGENCY holds for this project's tracks that cannot be filled (no usable
+ *  map: a flat scan, or an AcroForm nothing mapped to). They are never reported "filled" — they are
+ *  listed so the operator completes and attaches them by hand. */
+export function heldUnfillableAgencyBlanks(db: AppDb, project: Pick<ProjectRecord, "ahj" | "state">): Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; applicationKind: "prescriptive" | "structural" | null }> {
+  const out: Array<{ templateId: string; formName: string; formType: string; agency: string; sourceUrl: string; applicationKind: "prescriptive" | "structural" | null }> = [];
+  const others = tracksIssuedByOther(project);
+  if (!others.length) return out;
+  const rows = db.query<TemplateRow>(
+    "SELECT id, ahj_name, state, form_type, original_filename, pdf_blob, field_map, document_date, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL",
+  );
+  for (const other of others) {
+    for (const row of rows) {
+      if (!TRACK_FORM_TYPES[other.track].includes(String(row.form_type || "")) || !rowStateOk(row, project.state) || !rowBelongsToAuthority(row.ahj_name, other.name)) continue;
+      if (storedTemplateFromRow(row)) continue;
+      const map = parseJson<{ formName?: string }>(String(row.field_map || "{}"), {});
+      out.push({ templateId: row.id, formName: map.formName || row.original_filename, formType: String(row.form_type || ""), agency: other.name, sourceUrl: String(row.source_url || ""), applicationKind: storedApplicationKind(row) });
+    }
   }
   return out;
 }
