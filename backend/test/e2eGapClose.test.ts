@@ -209,6 +209,25 @@ for (const j of NON_OREGON) {
   const qcPath = db.get<{ qc_status: string }>("SELECT qc_status FROM qc_results WHERE project_id = ? AND rule_id = 'critical.permit_path'", [orUnknown]);
   check("(m6) MUST-PASS Oregon: a job with no path signal is still asked to confirm its path", qcPath?.qc_status === "warning", textOf(qcPath));
 }
+// baselineRules: an exposure LIST alone (Florida's seeded ["B","C","D"]) is design-criteria data, not
+// a prescriptive path — the "for the prescriptive path" screens run only from a researched path or a
+// numeric structural limit; a researched "no prescriptive path" switches them all off.
+{
+  const { evaluateBaselineRules } = await import("../src/baselineRules");
+  const { buildCodeContext } = await import("../src/codeProfiles");
+  const ctxOf = (prescriptive: Record<string, unknown>) => buildCodeContext("FL", "City of Palmetto Shores", {
+    key: "fl|city of palmetto shores|unknown", state: "FL", ahj: "City of Palmetto Shores", confidence: "seeded",
+    adoptedCodes: [{ code: "NEC", edition: "2020" }], amendments: [], designCriteria: {}, prescriptive, fireSetbacks: [], citations: [], updatedAt: "",
+  } as never);
+  const payload = { ...COMPLETE, state: "FL", ahj: "City of Palmetto Shores", utility: "Palmetto Shores Electric", wind: "D", snow: "50" } as never;
+  const ids = (p: Record<string, unknown>) => evaluateBaselineRules(payload, ctxOf(p)).map((r) => r.ruleId);
+  check("(m8) MUST-EXCLUDE: an exposure list alone never raises a 'prescriptive wind exposure' screen outside Oregon",
+    !ids({ allowedWindExposures: ["B", "C"] }).some((id) => /prescriptive/.test(id)), ids({ allowedWindExposures: ["B", "C"] }).join(","));
+  check("(m8) MUST-PASS: a researched prescriptive path, or a numeric limit (Idaho's 40 psf), still runs the screens",
+    ids({ allowedWindExposures: ["B", "C"], hasPrescriptivePath: true }).includes("fl-prescriptive-wind-exposure") && ids({ maxGroundSnowPsf: 40 }).includes("fl-prescriptive-snow"));
+  check("(m8) MUST-EXCLUDE: a researched 'publishes no prescriptive path' switches every screen off",
+    !ids({ hasPrescriptivePath: false, maxGroundSnowPsf: 40, allowedWindExposures: ["B", "C"] }).some((id) => /prescriptive/.test(id)));
+}
 // A jurisdiction whose OWN research names a prescriptive path keeps the split (any state).
 {
   const r = resolvePermitPath({ state: "FL", ahj: "City of Palmetto Shores", parserSnapshot: { ...COMPLETE } } as never, { limits: { hasPrescriptivePath: true, maxRafterSpacingIn: 24 } });

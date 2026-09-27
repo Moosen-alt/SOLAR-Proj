@@ -74,11 +74,14 @@ await check("L0 MUST-PASS: the reference file is found with NO env override from
   const saved = process.env.CODE_PROFILE_REFERENCE_PATH;
   const foreign = fs.mkdtempSync(path.join(os.tmpdir(), "foreign-cwd-"));
   const cwd = process.cwd();
+  // A state whose row is NOT in the database answers from the reference file alone (the scorer's
+  // server seeded nothing, because the file was unreadable from its cwd).
+  db.run("DELETE FROM jurisdiction_code_profiles WHERE profile_key = ?", [CP.codeProfileKey({ state: "VA", ahj: "" })]);
   try {
     delete process.env.CODE_PROFILE_REFERENCE_PATH;
     process.chdir(foreign);
     CP.resetReferenceCacheForTests();
-    assert.equal(CP.stateAdoptionModel(db, "AZ")?.model, "local_adoption", "AZ's adoption model did not load from a foreign cwd");
+    assert.ok(CP.stateAdoptionModel(db, "VA"), "VA's adoption model did not load from the reference file from a foreign cwd");
     assert.equal(F.familyAdoptionModel(CP.stateAdoptionModel(db, "TX"), "electrical"), "statewide_minimum_local_amend");
   } finally {
     process.chdir(cwd);
@@ -207,11 +210,13 @@ await check("p0 MUST-PASS: the verified Oregon state row reads as before, and an
   assert.ok(!/not confirmed/.test(String(orsc.layerLabel)), "a uniform state's edition is the city's code by law — never 'not confirmed'");
 });
 await check("p1 MUST-EXCLUDE: a verify that sends the read back never stores layer / layerLabel / inheritedFrom", () => {
-  const read = CP.getCodeProfile(db, { state: "TX", ahj: VENORIA })!;
-  CP.saveVerifiedCodeProfile(db, read, "tester");
-  const stored = payloadOf("TX", VENORIA)!.adoptedCodes;
-  assert.ok(stored.every((c) => !c.layer && !c.layerLabel && !c.inheritedFrom), JSON.stringify(stored));
-  assert.ok(stored.some((c) => c.code === "NEC" && c.edition === "2020") && stored.some((c) => c.code === "IBC" && c.edition === "2021"), `a verify keeps what the person saw: ${JSON.stringify(stored)}`);
+  // A read WITH inherited entries (the state's NEC 2026 on a city with no local NEC).
+  const read = CP.getCodeProfile(db, { state: "TX", ahj: "City of Nolocal" })!;
+  assert.ok(read.adoptedCodes.some((c: Presented) => c.layer), "precondition: the read carries a layered entry");
+  CP.saveVerifiedCodeProfile(db, { ...read, ahj: "City of Nolocal" }, "tester");
+  const stored = payloadOf("TX", "City of Nolocal")!.adoptedCodes;
+  assert.ok(stored.length > 0 && stored.every((c) => !c.layer && !c.layerLabel && !c.inheritedFrom), JSON.stringify(stored));
+  assert.ok(stored.some((c) => c.code === "NEC" && c.edition === "2026"), `a verify keeps what the person saw: ${JSON.stringify(stored)}`);
 });
 
 if (failures) { console.error(`\ne2eGapCodeLayers: ${failures} FAILED`); process.exit(1); }
