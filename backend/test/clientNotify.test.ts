@@ -31,15 +31,25 @@ const run = async (label: string, fn: () => void | Promise<void>) => {
   }
 };
 
+// The third argument is the writer's readingMayFinishTrack verdict (D2 final round, 769fc7d) —
+// required, never optional. A trusted reading behaves as before; an untrusted one never tells a
+// client a track finished, and a correction is still news either way.
+const TRUSTED = { trusted: true } as const;
+const UNTRUSTED = { trusted: false, reason: "an email's approval (not a portal poll)" } as const;
 await run("shouldNotifyClient: only client-relevant outcomes, only on CHANGE", () => {
-  assert.equal(shouldNotifyClient("issued", ""), true);
-  assert.equal(shouldNotifyClient("issued", null), true);
-  assert.equal(shouldNotifyClient("issued", "reviewed_by_ahj"), true);
-  assert.equal(shouldNotifyClient("issued", "issued"), false, "no re-send on every poll");
-  assert.equal(shouldNotifyClient("nem_approved", "waiting"), true);
-  assert.equal(shouldNotifyClient("correction_flagged", ""), true);
-  assert.equal(shouldNotifyClient("waiting", ""), false, "waiting is not client-notify-worthy");
-  assert.equal(shouldNotifyClient("needs_human_review", ""), false);
+  assert.equal(shouldNotifyClient("issued", "", TRUSTED), true);
+  assert.equal(shouldNotifyClient("issued", null, TRUSTED), true);
+  assert.equal(shouldNotifyClient("issued", "reviewed_by_ahj", TRUSTED), true);
+  assert.equal(shouldNotifyClient("issued", "issued", TRUSTED), false, "no re-send on every poll");
+  assert.equal(shouldNotifyClient("nem_approved", "waiting", TRUSTED), true);
+  assert.equal(shouldNotifyClient("correction_flagged", "", TRUSTED), true);
+  assert.equal(shouldNotifyClient("waiting", "", TRUSTED), false, "waiting is not client-notify-worthy");
+  assert.equal(shouldNotifyClient("needs_human_review", "", TRUSTED), false);
+});
+await run("MUST-EXCLUDE shouldNotifyClient: an untrusted reading never tells the client a track finished; a correction is still news", () => {
+  assert.equal(shouldNotifyClient("issued", "", UNTRUSTED), false, "an email's 'issued' is not told to the client");
+  assert.equal(shouldNotifyClient("nem_approved", "waiting", UNTRUSTED), false, "an email's NEM approval is not told to the client");
+  assert.equal(shouldNotifyClient("correction_flagged", "", UNTRUSTED), true, "a correction from the AHJ's own email is still news");
 });
 
 const client = createClient(db, { companyName: "Notify Solar LLC", ccbLicenseNumber: "222222", businessEmail: "installer@notify.test", businessPhone: "555" });
