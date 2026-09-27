@@ -123,7 +123,10 @@ async function withFinalSubmitEnv<T>(value: string | undefined, fn: () => Promis
     if (prev === undefined) delete process.env.PORTAL_ALLOW_FINAL_SUBMIT; else process.env.PORTAL_ALLOW_FINAL_SUBMIT = prev;
   }
 }
-const APPROVED_RUN_R = { autoSubmit: true, runApproval: { approver: "A. Person", runId: "R" }, runId: "R" };
+// A FRESH run per use: an approval burns at the bot layer once its run clicks or is refused
+// (portal-run-close-2 C1), so one shared runId would be refused by every test after the first.
+let approvedSeq = 0;
+const approvedRun = (): { autoSubmit: true; runApproval: { approver: string; runId: string }; runId: string } => { const id = `R-${++approvedSeq}`; return { autoSubmit: true, runApproval: { approver: "A. Person", runId: id }, runId: id }; };
 const CONFIRMATION = "Your application has been successfully submitted. Record Number: 187-26-000309-STR";
 
 function baseRecipe(steps: RecipeStep[]): PortalRecipe {
@@ -217,7 +220,7 @@ async function testFlaggedFinalSubmitClickedInAutoSubmit() {
     { action: "stopForReview" },
     { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
+  const adapter = new RecipeAdapter(recipe, {}, {}, approvedRun());
   withFakePage(adapter, makeFakePage({ log, bodyText: CONFIRMATION }));
   const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
   assert.equal(result.ok, true, String(result.message));
@@ -231,15 +234,15 @@ async function testFlaggedFinalSubmitClickedInAutoSubmit() {
 async function testFinalSubmitGateRefusesEachMissingInput() {
   const flagged = { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep;
   const cases: Array<{ name: string; env: string | undefined; opts: Record<string, unknown>; steps: RecipeStep[] }> = [
-    { name: "autoSubmit:true with the env switch unset", env: undefined, opts: APPROVED_RUN_R, steps: [{ action: "stopForReview" }, flagged] },
+    { name: "autoSubmit:true with the env switch unset", env: undefined, opts: approvedRun(), steps: [{ action: "stopForReview" }, flagged] },
     { name: "autoSubmit:true, env 1, runApproval null", env: "1", opts: { autoSubmit: true, runApproval: null, runId: "R" }, steps: [{ action: "stopForReview" }, flagged] },
     { name: "autoSubmit:true, env 1, no approval option at all", env: "1", opts: { autoSubmit: true }, steps: [{ action: "stopForReview" }, flagged] },
     { name: "an approval for run R2 while in run R", env: "1", opts: { autoSubmit: true, runApproval: { approver: "A. Person", runId: "R2" }, runId: "R" }, steps: [{ action: "stopForReview" }, flagged] },
     { name: "an approval naming no approver", env: "1", opts: { autoSubmit: true, runApproval: { approver: " ", runId: "R" }, runId: "R" }, steps: [{ action: "stopForReview" }, flagged] },
-    { name: "env 'true' (only exactly 1 arms it)", env: "true", opts: APPROVED_RUN_R, steps: [{ action: "stopForReview" }, flagged] },
-    { name: "a flagged step that is not last", env: "1", opts: APPROVED_RUN_R, steps: [{ action: "stopForReview" }, flagged, { action: "waitFor" }] },
-    { name: "a flagged step not after stopForReview", env: "1", opts: APPROVED_RUN_R, steps: [{ action: "waitFor" }, flagged] },
-    { name: "two flagged steps", env: "1", opts: APPROVED_RUN_R, steps: [{ action: "stopForReview" }, flagged, flagged] },
+    { name: "env 'true' (only exactly 1 arms it)", env: "true", opts: approvedRun(), steps: [{ action: "stopForReview" }, flagged] },
+    { name: "a flagged step that is not last", env: "1", opts: approvedRun(), steps: [{ action: "stopForReview" }, flagged, { action: "waitFor" }] },
+    { name: "a flagged step not after stopForReview", env: "1", opts: approvedRun(), steps: [{ action: "waitFor" }, flagged] },
+    { name: "two flagged steps", env: "1", opts: approvedRun(), steps: [{ action: "stopForReview" }, flagged, flagged] },
   ];
   for (const c of cases) {
     const log: ActionLog = { clicks: [], fills: [], gotos: [], checks: 0 };
@@ -261,7 +264,7 @@ async function testFinalSubmitQuietPageIsUnknownAndNotRetried() {
     { action: "stopForReview" },
     { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
+  const adapter = new RecipeAdapter(recipe, {}, {}, approvedRun());
   withFakePage(adapter, makeFakePage({ log, bodyText: "Step 5: Record Issuance" }));
   const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
   assert.equal(result.ok, false, "an unconfirmed filing is not a clean run");
@@ -300,7 +303,7 @@ async function testPayFeeBlockedInAutoSubmit() {
     { action: "click", selector: { role: "button", name: "Pay Now" }, isFinalSubmit: true } as RecipeStep,
   ]);
   // Fully approved and armed: the fee gate must stop it on its own.
-  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
+  const adapter = new RecipeAdapter(recipe, {}, {}, approvedRun());
   withFakePage(adapter, makeFakePage({ log, bodyText: CONFIRMATION }));
   const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
   assert.deepEqual(log.clicks, [], "PAY_FEE must be hard-blocked even in autoSubmit even if flagged final");
@@ -321,7 +324,7 @@ async function testIframeChallengeStopsAutoSubmit() {
     { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
   ]);
   // Approved and armed, so the challenge check is what stops it.
-  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
+  const adapter = new RecipeAdapter(recipe, {}, {}, approvedRun());
   withFakePage(adapter, makeFakePage({
     log,
     frameUrls: ["https://www.google.com/recaptcha/api2/anchor?k=abc"],
@@ -457,7 +460,7 @@ async function testRenderReadinessNotOnFinalSubmit() {
     { action: "stopForReview" },
     { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
+  const adapter = new RecipeAdapter(recipe, {}, {}, approvedRun());
   const page = makeFakePage({ log, bodyText: CONFIRMATION });
   withFakePage(adapter, page);
   const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
@@ -546,7 +549,7 @@ async function testGapFillReportInFinalSubmitResult() {
     { action: "stopForReview" },
     { action: "click", selector: { css: "#ctl00_btnSubmit" }, isFinalSubmit: true } as RecipeStep,
   ]);
-  const adapter = new RecipeAdapter(recipe, {}, {}, APPROVED_RUN_R);
+  const adapter = new RecipeAdapter(recipe, {}, {}, approvedRun());
   withFakePage(adapter, makeFakePage({ log, bodyText: CONFIRMATION }));
   const result = await withFinalSubmitEnv("1", () => adapter.fillApplication(fakeProject));
   assert.equal(result.ok, true);

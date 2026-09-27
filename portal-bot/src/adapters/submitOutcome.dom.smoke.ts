@@ -83,11 +83,13 @@ async function run(mode: string, env: string | undefined, opts: Record<string, u
     if (prev === undefined) delete process.env.PORTAL_ALLOW_FINAL_SUBMIT; else process.env.PORTAL_ALLOW_FINAL_SUBMIT = prev;
   }
 }
-const approved = { autoSubmit: true, runApproval: { approver: "A. Person", runId: "R" }, runId: "R" };
+// A fresh run per stage: an approval burns at the bot layer once its run clicks or is refused (portal-run-close-2 C1).
+let approvedSeq = 0;
+const approvedRun = (): { autoSubmit: boolean; runApproval: { approver: string; runId: string }; runId: string } => { const id = `R-${++approvedSeq}`; return { autoSubmit: true, runApproval: { approver: "A. Person", runId: id }, runId: id }; };
 
 console.log("\n1. MUST-EXCLUDE: the env switch unset");
 {
-  const r = await run("accepted", undefined, approved);
+  const r = await run("accepted", undefined, approvedRun());
   check("autoSubmit + approval but PORTAL_ALLOW_FINAL_SUBMIT unset → no POST", r.posts.length === 0, `posts=${r.posts}`);
   check("finalSubmitClicked false", r.adapter.finalSubmitClicked === false);
 }
@@ -98,14 +100,14 @@ console.log("\n2. MUST-EXCLUDE: an approval for another run");
 }
 console.log("\n3. MUST-PASS: env 1 + this run's approval + terminal flagged step → one POST, accepted");
 {
-  const r = await run("accepted", "1", approved);
+  const r = await run("accepted", "1", approvedRun());
   check("exactly one filing POST", r.posts.length === 1, `posts=${r.posts}`);
   check("outcome accepted on positive evidence", r.adapter.finalSubmitOutcome?.verdict === "accepted", JSON.stringify(r.adapter.finalSubmitOutcome));
   check("the run is ok", r.result.ok === true, String(r.result.message).slice(0, 200));
 }
 console.log("\n4. A quiet page is UNKNOWN, never accepted");
 {
-  const r = await run("quiet", "1", approved);
+  const r = await run("quiet", "1", approvedRun());
   check("exactly one filing POST (never retried)", r.posts.length === 1, `posts=${r.posts}`);
   check("outcome unknown", r.adapter.finalSubmitOutcome?.verdict === "unknown", JSON.stringify(r.adapter.finalSubmitOutcome));
   check("the run stops for a human, saying so", r.result.ok === false && /outcome unknown — human must verify/.test(String(r.result.message)), String(r.result.message).slice(0, 200));
@@ -113,7 +115,7 @@ console.log("\n4. A quiet page is UNKNOWN, never accepted");
 }
 console.log("\n5. A refusal is REJECTED");
 {
-  const r = await run("rejected", "1", approved);
+  const r = await run("rejected", "1", approvedRun());
   check("outcome rejected", r.adapter.finalSubmitOutcome?.verdict === "rejected", JSON.stringify(r.adapter.finalSubmitOutcome));
   check("the run fails naming the refusal", r.result.ok === false && /REFUSED/.test(String(r.result.message)), String(r.result.message).slice(0, 200));
 }
