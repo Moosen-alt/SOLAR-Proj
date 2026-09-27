@@ -417,6 +417,9 @@ const PERMIT_PLATFORM_HOSTS = [
   "govwelltech.com",       // GovWell
   "cityview.com",          // CityView (Harris)
   "clariti.com",           // Clariti
+  // The listed platforms' MARKETING domains (lookup-close-7 R3) — on the one list so the door asks
+  // isVendorRootOrMarketing of them; see VENDOR_MARKETING_DOMAINS.
+  "iworq.com", "bsasoftware.com", "centralsquare.com", "peoplegis.com", "avolvesoftware.com", "fullcircletech.com",
 ];
 export function isPermitPlatformUrl(url: string | null | undefined): boolean {
   const host = portalHostOf(url);
@@ -438,20 +441,46 @@ export function isPermitPlatformUrl(url: string | null | undefined): boolean {
  *    permiteyes.us/<town>/loginuser.php (concord, bridgewater, easton …)
  *    www.mapsonline.net/<town>/online_permits/ (westonma, orleansma …) and /simplicity/…?client=<town>
  *    portal.iworq.net/<TENANT>/permits/600 (PLAINFIELD, EAGLE, DADE, HOKECOUNTY …) */
-const PATH_TENANTED_INSTANCES: RegExp[] = [
-  /^(?!www\.)[a-z0-9-]+(?:\.[a-z0-9-]+)*\.accela\.com$/,
-  /^(?:www\d*\.)?citizenserve\.com$/,
-  /^(?:www\.)?mygovernmentonline\.org$/,
-  /^public\.mygov\.us$/,
-  /^(?:www\.)?bsaonline\.com$/,
-  /^(?:www\.)?permiteyes\.us$/,
-  /^(?:www\.)?mapsonline\.net$/,
-  /^portal\.iworq\.net$/,
+// HOW each instance names its tenant (lookup-close-7 R2): "path" — the first path segment;
+// "query" — a tenant parameter ONLY (bsaonline uid, citizenserve installationID, mygovernmentonline
+// agency / JID): a URL with none has NO tenant, it is the vendor's shared site
+// (bsaonline.com/MunicipalDirectory/ lists every municipality); "path-or-query" — MapsOnline's
+// /<town>/ pages, and its shared apps (/simplicity/…?client=melrosema, /peopleforms/…?site_id=587)
+// whose path segment names no one.
+// ACA instances are the hosts with an 'aca' first label (aca-prod, aca-oregon, aca.oregon, aca3,
+// aca): any other accela.com host (success., developer.) is Accela's own site (lookup-close-7 R3).
+const SHARED_INSTANCES: Array<{ host: RegExp; tenant: "path" | "query" | "path-or-query"; sharedSegments?: string[] }> = [
+  { host: /^aca(?:\d+|-[a-z0-9-]+)?(?:\.[a-z0-9-]+)*\.accela\.com$/, tenant: "path" },
+  { host: /^(?:www\d*\.)?citizenserve\.com$/, tenant: "query" },
+  { host: /^(?:www\.)?mygovernmentonline\.org$/, tenant: "query" },
+  { host: /^public\.mygov\.us$/, tenant: "path" },
+  { host: /^(?:www\.)?bsaonline\.com$/, tenant: "query" },
+  { host: /^(?:www\.)?permiteyes\.us$/, tenant: "path" },
+  { host: /^(?:www\.)?mapsonline\.net$/, tenant: "path-or-query", sharedSegments: ["simplicity", "peopleforms"] },
+  { host: /^portal\.iworq\.net$/, tenant: "path" },
 ];
-export function isPathTenantedHost(host: string | null | undefined): boolean {
+function sharedInstanceOf(host: string | null | undefined) {
   const h = String(host ?? "").toLowerCase().replace(/^www\./, "");
-  return Boolean(h) && PATH_TENANTED_INSTANCES.some((re) => re.test(h));
+  return h ? SHARED_INSTANCES.find((i) => i.host.test(h)) ?? null : null;
 }
+export function isPathTenantedHost(host: string | null | undefined): boolean {
+  return Boolean(sharedInstanceOf(host));
+}
+/** Vendor domains whose tenants live ONLY on the named instance hosts above: every other host on
+ *  them is the vendor's own site (success.accela.com/s/article/…, developer.accela.com). */
+const INSTANCE_ONLY_DOMAINS = ["accela.com"];
+/** The vendors' MARKETING domains — no tenant is ever hosted on them, every page is the vendor's
+ *  own site (lookup-close-7 R3: the list carried the hosting domains only, so the door never asked
+ *  isVendorRootOrMarketing of iworq.com/permit-software/ or www.bsasoftware.com/solutions/…). Each
+ *  beside the listed platform it markets (confirmed by search / fetch, 2026-09-27). */
+const VENDOR_MARKETING_DOMAINS = [
+  "iworq.com",          // iWorQ (hosts on iworq.net)
+  "bsasoftware.com",    // BS&A Software (hosts on bsaonline.com)
+  "centralsquare.com",  // CentralSquare (eTRAKiT on etrakit.net / aspgov.com, Click2Gov on aspgov.com)
+  "peoplegis.com",      // PeopleGIS (MapsOnline / Simplicity on mapsonline.net)
+  "avolvesoftware.com", // Avolve (ProjectDox on avolvecloud.com)
+  "fullcircletech.com", // Full Circle Technologies (PermitEyes on permiteyes.us)
+];
 /** The vendor's OWN site, never an agency's portal (lookup-close-6 MF4 — the page-read resolver
  *  asked this and the lookup's door did not, so www.tylertech.com/products/… and
  *  www.cityview.com/solutions/permitting were saved as a city's portal): the bare / www host of a
@@ -465,7 +494,9 @@ export function isVendorRootOrMarketing(href: string | null | undefined): boolea
   if (!host) return true;
   if (/^(?:info|go|learn|blog|support|help|community|developers?|docs|marketing|resources|investors?|status|news)\./i.test(host)) return true;
   if (isPathTenantedHost(host)) return portalTenantKey(href) === portalTenantKey(`https://${host}/`);
-  return host === registrableDomain(host);
+  const dom = registrableDomain(host);
+  if (VENDOR_MARKETING_DOMAINS.includes(dom) || INSTANCE_ONLY_DOMAINS.includes(dom)) return true;
+  return host === dom;
 }
 /** The organisation's domain of a host (co.marion.or.us keeps four labels, x.co.uk three). */
 export function registrableDomain(host: string): string {
@@ -533,8 +564,9 @@ const UTILITY_INTERCONNECTION_PLATFORM_HOSTS = ["powerclerk.com", "connectthegri
  *  bsaonline.com/SiteSearch/…?uid=413 are one tenant). Two URLs are the SAME TENANT only when host
  *  and these agree — the strict form used where a portal is UNLOCKED for a track. */
 // uid (BS&A Online: bsaonline.com/?uid=413) and client (PeopleGIS: mapsonline.net/simplicity/…?client=
-// melrosema) name the tenant on those shared hosts (lookup-close-6 MF3).
-const TENANT_QUERY_PARAMS = ["installationid", "agency", "agencycode", "tenant", "jurisdiction", "juris", "orgid", "cityid", "jid", "uid", "client"];
+// melrosema) name the tenant on those shared hosts (lookup-close-6 MF3); site_id too (PeopleGIS forms:
+// mapsonline.net/peopleforms/mo4/index.php?site_id=587, lookup-close-7).
+const TENANT_QUERY_PARAMS = ["installationid", "agency", "agencycode", "tenant", "jurisdiction", "juris", "orgid", "cityid", "jid", "uid", "client", "site_id"];
 export function portalTenantKey(url: string | null | undefined): string {
   const raw = String(url ?? "").trim();
   const host = portalHostOf(raw);
@@ -543,7 +575,12 @@ export function portalTenantKey(url: string | null | undefined): string {
     const u = new URL(raw);
     const q: string[] = [];
     u.searchParams.forEach((v, k) => { if (TENANT_QUERY_PARAMS.includes(k.toLowerCase())) q.push(`${k.toLowerCase()}=${v.toLowerCase()}`); });
-    return `${host}/${q.length ? "" : portalTenantOf(raw)}?${q.sort().join("&")}`;
+    // On a query-tenanted instance a path segment names no one: no tenant parameter = no tenant
+    // (lookup-close-7 R2) — the key is the instance root's, the vendor's shared site.
+    const inst = sharedInstanceOf(host);
+    const seg = portalTenantOf(raw);
+    const pathTenant = !inst ? seg : inst.tenant === "query" || (inst.sharedSegments ?? []).includes(seg) ? "" : seg;
+    return `${host}/${q.length ? "" : pathTenant}?${q.sort().join("&")}`;
   } catch {
     return host;
   }

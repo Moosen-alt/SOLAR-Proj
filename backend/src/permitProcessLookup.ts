@@ -36,7 +36,7 @@ import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stat
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
 import { parseBracketRow } from "./pdfTables";
-import { candidateNamedBy, chooseRecordType, classifyDocument, DOCUMENT_URL, staleOrOtherFeeSource, detectPlatform, documentLinks, excerptFor, extractCodeEditions, extractPrerequisites, isOfficialAgencyHost, linksAnotherModule, platformOfUrl, readPortalCatalog, registrableDomain, resolvePortalFromPages, solarRecordTypeCandidates, tenantContradictsAgency, wordsNameAnotherJurisdiction, type PortalCatalog, type PortalResolution, type RecordTypeCandidate } from "./permitPlatformCatalog";
+import { candidateNamedBy, chooseRecordType, classifyDocument, DOCUMENT_URL, staleOrOtherFeeSource, detectPlatform, documentLinks, excerptFor, extractCodeEditions, extractPrerequisites, isAgencyOwnDomain, isOfficialAgencyHost, linksAnotherModule, platformOfUrl, readPortalCatalog, registrableDomain, resolvePortalFromPages, solarRecordTypeCandidates, tenantContradictsAgency, wordsNameAnotherJurisdiction, type PortalCatalog, type PortalResolution, type RecordTypeCandidate } from "./permitPlatformCatalog";
 import { createPageReader, feeLinePrintedTogether, quoteOnPage, type PageReader, type ReadPage } from "./agencyPageReader";
 import { documentFetchDisabled } from "./documentFetch";
 export { registrableDomain };
@@ -319,7 +319,8 @@ export function acceptPortal(raw: RawFact, seenUrls: string[], platformPages: st
  *  saved for the permit AND the type's source page is
  *    - that portal's own tenant (the same host; on a path-tenanted host the same tenant): the
  *      catalog's module page, a public record on it; or
- *    - the ISSUING AGENCY'S OWN official page naming no other jurisdiction (its words about its
+ *    - the ISSUING AGENCY'S OWN page — its own domain by name (isAgencyOwnDomain, every TLD: any
+ *      .gov is not enough, lookup-close-7 R1) — naming no other jurisdiction (its words about its
  *      portal: "select Residential Solar") — never a vendor's host (another tenant's module page, the
  *      vendor's site) and never a page whose domain or words name another jurisdiction.
  *  Nothing holds with no saved portal: a county tenant's type beside a refused county portal
@@ -340,7 +341,9 @@ export function recordTypeBelongsToPortal(
   if (isVendorDomain(sourceHost) || isPathTenantedHost(sourceHost)) return false;
   const names = (ctx.names ?? []).filter(Boolean);
   const typeNames = (ctx.typeNames ?? names).filter(Boolean);
-  return isOfficialAgencyHost(sourceHost, names, ctx.state) && !tenantContradictsAgency(source, names, typeNames) && !wordsNameAnotherJurisdiction(str(rt.quote), names, typeNames);
+  // THIS agency's own domain (lookup-close-7 R1) — never merely any .gov: another town's .gov page, or the
+  // state's page for a permit the city issues, is not where this portal's record type is named.
+  return isAgencyOwnDomain(sourceHost, names, ctx.state) && !tenantContradictsAgency(source, names, typeNames) && !wordsNameAnotherJurisdiction(str(rt.quote), names, typeNames);
 }
 /** The same, as the not-found a refused record type is saved with. */
 export function recordTypeForPortal(rt: CitedFact<string> | null, portalUrl: string | null | undefined, ctx: { names?: string[]; typeNames?: string[]; state?: string } = {}): CitedFact<string> | null {

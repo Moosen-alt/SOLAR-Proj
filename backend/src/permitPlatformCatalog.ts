@@ -67,13 +67,60 @@ export function isOfficialAgencyHost(host: string, names: string[], state?: stri
   if (/\.(?:gov|mil)$/.test(h)) return true;
   const us = /\.([a-z]{2})\.us$/.exec(h);
   if (us && US_STATES.has(us[1])) return !state || us[1] === String(state).toLowerCase();
-  const label = registrableDomain(h).split(".")[0].replace(/-/g, "");
+  return isAgencyOwnDomain(h, names, state);
+}
+const STATE_NAMES: Record<string, string> = { al: "alabama", ak: "alaska", az: "arizona", ar: "arkansas", ca: "california", co: "colorado", ct: "connecticut", de: "delaware", fl: "florida", ga: "georgia", hi: "hawaii", id: "idaho", il: "illinois", in: "indiana", ia: "iowa", ks: "kansas", ky: "kentucky", la: "louisiana", me: "maine", md: "maryland", ma: "massachusetts", mi: "michigan", mn: "minnesota", ms: "mississippi", mo: "missouri", mt: "montana", ne: "nebraska", nv: "nevada", nh: "new hampshire", nj: "new jersey", nm: "new mexico", ny: "new york", nc: "north carolina", nd: "north dakota", oh: "ohio", ok: "oklahoma", or: "oregon", pa: "pennsylvania", ri: "rhode island", sc: "south carolina", sd: "south dakota", tn: "tennessee", tx: "texas", ut: "utah", vt: "vermont", va: "virginia", wa: "washington", wv: "west virginia", wi: "wisconsin", wy: "wyoming", dc: "district of columbia" };
+/** A name that IS the state (its agency): "State of Minnesota", "Minnesota Department of Labor and
+ *  Industry", "Oregon Building Codes Division" — never a place named after it ("Iowa City", "Kansas
+ *  City", "Nevada County", "Washington Township": the state's name followed by a jurisdiction type). */
+function namesTheState(names: string[], st2: string): boolean {
+  const full = STATE_NAMES[st2];
+  if (!full) return false;
+  return names.some((n) => {
+    const s = String(n ?? "").toLowerCase().replace(/[^a-z\s]+/g, " ").replace(/\s+/g, " ").trim().replace(/^(?:the )?(?:state|commonwealth) of /, "");
+    if (s !== full && !s.startsWith(`${full} `)) return false;
+    return !/^(?:city|county|town|township|twp|village|borough|boro|parish)\b/.test(s.slice(full.length).trim());
+  });
+}
+/**
+ * THE AGENCY'S OWN DOMAIN (lookup-close-7 R1) — whose page it is, never merely "a government page":
+ * the organisation's domain label, once its official affixes are removed (cityof / townof / countyof /
+ * city / county / town / twp / boro / gov / co / ci, and THIS job's state's two letters or full name),
+ * is exactly one of the name's distinctive keys, or its initials after a "gov" / "cityof" affix — on
+ * EVERY TLD (.gov too: cityofplainfield.gov is not the City of Denby's). On a .gov host initials of
+ * three letters or more stand alone (nyc.gov). A US locality domain (ci.waltham.ma.us,
+ * co.marion.or.us) is judged by its name label, in this job's state. A state's own label (in.gov,
+ * mn.gov, oregon.gov, maine.gov) belongs only to a name that IS the state, and only on .gov / a
+ * state.<st>.us host — never to a city named after it (iowa.gov is not Iowa City's).
+ *   cityofevanston.org, clarkcountynv.gov, leegov.com (lee + gov), icgov.org, cityofgp.com,
+ *   tigard-or.gov, camdenmaine.gov, austintexas.gov. A same-named place in another state
+ *   (leecova.org for Lee County, FL) is not.
+ */
+export function isAgencyOwnDomain(host: string, names: string[], state?: string): boolean {
+  const h = String(host ?? "").toLowerCase().replace(/^www\./, "");
+  if (!h || isPermitPlatformUrl(`https://${h}/`)) return false;
+  const st2 = String(state ?? "").toLowerCase();
+  const gov = /\.(?:gov|mil)$/.test(h);
+  let label: string;
+  const us = /\.([a-z]{2})\.us$/.exec(h);
+  if (us && US_STATES.has(us[1])) {
+    if (st2 && us[1] !== st2) return false;
+    // <affix>.<name>.<st>.us: the labels before the state ("ci.waltham" -> "ciwaltham", "state").
+    label = h.slice(0, h.length - us[0].length).split(".").slice(-2).join("");
+    if (label === "state" || label.endsWith("state")) return namesTheState(names, us[1]);
+  } else {
+    label = registrableDomain(h).split(".")[0];
+  }
+  label = label.replace(/-/g, "");
+  // A state's own label: only the state, only on a government host.
+  const stateCode = Object.keys(STATE_NAMES).find((c) => label === c || label === STATE_NAMES[c].replace(/ /g, ""));
+  if (stateCode) return gov && (!st2 || st2 === stateCode) && namesTheState(names, stateCode);
   const keys = nameKeys(names);
   const initials = names.map(initialsOf).filter(Boolean);
-  // A state's letters are stripped only when they are THIS job's state (leecova.org is Lee County,
-  // Virginia — not Lee County, Florida); with no state known, any state's.
-  const st2 = String(state ?? "").toLowerCase();
+  // A state's letters / name are stripped only when they are THIS job's state (leecova.org is Lee
+  // County, Virginia — not Lee County, Florida); with no state known, any state's.
   const isStateSuffix = (s: string) => (st2 ? s === st2 : US_STATES.has(s));
+  const stateNames = (st2 ? [STATE_NAMES[st2] ?? ""] : Object.values(STATE_NAMES)).filter(Boolean).map((s) => s.replace(/ /g, ""));
   // Strip affixes step by step; every intermediate form is a candidate for "the name itself".
   const forms = new Set<string>([label]);
   const official = new Set<string>(); // forms reached by removing an official affix (cityof / gov …)
@@ -88,6 +135,7 @@ export function isOfficialAgencyHost(host: string, names: string[], state?: stri
       if (suf) next.push([suf[1], suf[2] === "gov"]);
       const st = /^(.+?)([a-z]{2})$/.exec(f);
       if (st && isStateSuffix(st[2]) && st[1].length >= 3) next.push([st[1], false]);
+      for (const sn of stateNames) if (f.endsWith(sn) && f.length - sn.length >= 3) next.push([f.slice(0, f.length - sn.length), false]);
       for (const [n, off] of next) {
         if (off || official.has(f)) official.add(n);
         if (n.length >= 2 && !forms.has(n)) { forms.add(n); changed = true; }
@@ -96,8 +144,9 @@ export function isOfficialAgencyHost(host: string, names: string[], state?: stri
   }
   if ([...forms].some((f) => keys.includes(f))) return true;
   // Initials only after an explicit "gov" / "cityof" affix (icgov.org, cityofgp.com) — two letters
-  // alone name nobody.
-  return [...official].some((f) => initials.includes(f));
+  // alone name nobody; on a .gov host three or more stand alone (nyc.gov).
+  if ([...official].some((f) => initials.includes(f))) return true;
+  return gov && [...forms].some((f) => f.length >= 3 && initials.includes(f));
 }
 
 // ── Platform markers ──────────────────────────────────────────────────────────────────────

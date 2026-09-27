@@ -730,6 +730,130 @@ await check("(m3) the merge sibling of MF1 MUST-EXCLUDE: a re-run's mergeWithEar
   assert.equal(saved(rc, "electrical").recordType.value, "Electrical Residential", "with its record type");
 });
 
+// ───────────────────────────── lookup-close-7: the close-6 skeptic's three residues ─────────────────────────────
+await check("(r7) lookup-close-7 — R1 the record type's official arm is THIS agency's own domain (isAgencyOwnDomain), never any .gov: MUST-EXCLUDE a type cited to another town's .gov page (A1 part one, A6 the portal step) or to the STATE's page for a city-issued permit (A2); MUST-PASS the agency's own page (A3), the Camden live case (camdenmaine.gov citing 'Building' / 'Electrical Permit' beside its iWorQ tenant), and a state-issued permit's type on the state's own domain. R2 a query-tenanted instance URL with no tenant parameter is the vendor's shared site (F3 bsaonline.com/MunicipalDirectory/) while F2 (SiteSearch/Permits?uid=413) is kept. R3 the vendors' MARKETING domains are on the one list (iworq.com, bsasoftware.com, centralsquare.com, peoplegis.com, avolvesoftware.com, fullcircletech.com) and only an ACA ('aca' label) host is an accela.com instance (success.accela.com is Accela's own site) — refused through the real resolver; MUST-PASS the tenant forms", async () => {
+  // ── R1 through the real lookup ──
+  const rtRun = async (tag: string, rtSource: string, rtQuote: string, viaStep = false) => {
+    const PG = `https://www.cityofdenby${tag}.gov/building`; const PORTAL = `https://cityofdenby${tag}.portal.opengov.com/`;
+    const p1 = JSON.parse(shapeFor(`Denby${tag}`, PG, `City of Denby${tag}`, `City of Denby${tag}`, `City of Denby${tag}`));
+    const rt = { value: "Residential Solar PV", sourceUrl: rtSource, quote: rtQuote };
+    const portal = { value: PORTAL, sourceUrl: PG, quote: `Apply online at ${PORTAL} — online permit portal` };
+    if (!viaStep) { p1.permits[0].portalUrl = portal; p1.permits[0].recordType = rt; }
+    const step = viaStep ? { text: JSON.stringify({ permits: [{ discipline: "structural", portalUrl: portal, recordType: rt }] }), urls: [PG, PORTAL, rtSource] } : undefined;
+    const llm = { webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? g(JSON.stringify(p1), viaStep ? [PG] : [PG, PORTAL, rtSource]) : step && i.label.includes("portal") ? g(step.text, step.urls) : g(JSON.stringify({ permits: [] }), [])) };
+    const r = await ppl.runPermitProcessLookup(db, llm, { state: "IN", ahj: `City of Denby${tag}`, dcKw: "7", acKw: "6", force: true, reader: newReader(site({ [PG]: { text: html(`<p>City of Denby${tag} issues building permits for properties inside city limits. Electrical permits are issued by City of Denby${tag}.</p>`) } }).fetch) });
+    return saved(r, "structural");
+  };
+  const a1 = await rtRun("xa", "https://www.cityofplainfieldz.gov/building-permits", "Select Residential Solar PV when applying online");
+  assert.equal(a1.portalUrl.value, "https://cityofdenbyxa.portal.opengov.com/", "A1 control: the city's own portal is saved");
+  assert.equal(a1.recordType.value, null, `A1: another city's .gov page is not the city's record type (${a1.recordType.value} @ ${a1.recordType.sourceUrl})`);
+  const a2 = await rtRun("xb", "https://www.in.gov/dhs/fire-and-building-safety/permits/", "Residential Solar PV");
+  assert.equal(a2.recordType.value, null, `A2: the STATE's page for a city-issued permit (${a2.recordType.value} @ ${a2.recordType.sourceUrl})`);
+  const a6 = await rtRun("xf", "https://www.plainfieldz.gov/building-permits", "Residential Solar PV", true);
+  assert.equal(a6.portalUrl.value, "https://cityofdenbyxf.portal.opengov.com/", "A6 control: the step's portal is saved");
+  assert.equal(a6.recordType.value, null, `A6: the portal step's type cited to another town's .gov page (${a6.recordType.value} @ ${a6.recordType.sourceUrl})`);
+  const a3 = await rtRun("xc", "https://www.cityofdenbyxc.gov/permits", "Select Residential Solar PV when applying online");
+  assert.equal(a3.recordType.value, "Residential Solar PV", `A3 MUST-PASS: the agency's own page (${(a3.recordType as { notFound?: string }).notFound})`);
+  // The Camden live case (lookup-close-6-v held-out, Town of Camden ME): the town's own page camdenmaine.gov names
+  // the portal's permit types beside its iWorQ SUBDOMAIN tenant — the domain is the town's name + the state's name.
+  {
+    const DEPT = "https://www.camdenmaine.gov/departments/planning___code_enforcement/index.php";
+    const IWQ = "https://camdenmepermit.portal.iworq.net/portalhome/camdenmepermit";
+    const Q = "Camden Permit Portal (Permit types include Building, Certificate of Occupancy, Electrical Permit, Home Occupation, Plumbing, Site Plan Review, Subdivision Amendment";
+    const p1 = {
+      issuingAgency: { value: null }, permitStructure: { value: "separate", sourceUrl: DEPT, quote: Q },
+      permits: [
+        { discipline: "structural", label: "Building", issuingAgency: { value: null }, portalUrl: { value: IWQ, sourceUrl: DEPT, quote: `${Q} — online permit portal` }, recordType: { value: "Building", sourceUrl: DEPT, quote: Q } },
+        { discipline: "electrical", label: "Electrical", issuingAgency: { value: null }, portalUrl: { value: IWQ, sourceUrl: DEPT, quote: `${Q} — online permit portal` }, recordType: { value: "Electrical Permit", sourceUrl: DEPT, quote: Q } },
+      ],
+    };
+    const llm = { webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? g(JSON.stringify(p1), [DEPT, IWQ]) : g(JSON.stringify({ permits: [] }), [])) };
+    const r = await ppl.runPermitProcessLookup(db, llm, { state: "ME", ahj: "Town of Camden", dcKw: "7", acKw: "6", force: true, reader: null });
+    for (const [d, want] of [["structural", "Building"], ["electrical", "Electrical Permit"]] as const) {
+      const s = saved(r, d);
+      assert.equal(s.portalUrl.value, IWQ, `Camden ${d}: the iWorQ subdomain tenant (${s.portalUrl.notFound})`);
+      assert.equal(s.recordType.value, want, `Camden MUST-PASS ${d}: the town's own page names the type (${(s.recordType as { notFound?: string }).notFound})`);
+      assert.equal(s.recordType.sourceUrl, DEPT);
+    }
+  }
+  // The predicate: the own-domain question on every TLD, with the name, the name + state, initials on .gov, a
+  // locality .us name label, and the state's own domains only for a name that IS the state.
+  const own = cat.isAgencyOwnDomain;
+  for (const [h, n, st] of [["www.camdenmaine.gov", "Town of Camden", "ME"], ["www.austintexas.gov", "City of Austin", "TX"], ["www.cityofdenby.gov", "City of Denby", "IN"], ["www.boston.gov", "City of Boston", "MA"], ["www.nyc.gov", "New York City", "NY"], ["www.ci.waltham.ma.us", "City of Waltham", "MA"], ["www.co.marion.or.us", "Marion County", "OR"], ["dli.mn.gov", "Minnesota Department of Labor and Industry", "MN"], ["www.oregon.gov", "Oregon Building Codes Division", "OR"], ["www.clarkcountynv.gov", "Clark County", "NV"], ["www.cityofevanston.org", "City of Evanston", "IL"]] as const) {
+    assert.equal(own(h, [n], st), true, `own domain: ${h} for ${n}`);
+  }
+  for (const [h, n, st] of [["www.cityofplainfieldz.gov", "City of Denby", "IN"], ["www.plainfieldz.gov", "City of Denby", "IN"], ["www.in.gov", "City of Denby", "IN"], ["www.iowa.gov", "City of Iowa City", "IA"], ["www.kansas.gov", "Kansas City", "KS"], ["www.ci.newton.ma.us", "City of Waltham", "MA"], ["www.co.marion.or.us", "Marion County", "IA"], ["www.camdenmaine.gov", "Town of Camden", "NJ"], ["www.maine.com", "Maine Electricians' Examining Board", "ME"], ["www.accela.com", "City of Accela", "CA"]] as const) {
+    assert.equal(own(h, [n], st), false, `not own domain: ${h} for ${n} (${st})`);
+  }
+  const belongs = ppl.recordTypeBelongsToPortal;
+  const ctx = { names: ["City of Denby"], typeNames: ["City of Denby"], state: "IN" };
+  const OWNP = "https://cityofdenby.portal.opengov.com/";
+  assert.equal(belongs({ value: "Residential Solar PV", sourceUrl: "https://www.cityofplainfieldz.gov/building-permits", quote: "Residential Solar PV" }, OWNP, ctx), false, "A1 at the predicate");
+  assert.equal(belongs({ value: "Residential Solar PV", sourceUrl: "https://www.in.gov/dhs/permits/", quote: "Residential Solar PV" }, OWNP, ctx), false, "A2 at the predicate");
+  assert.equal(belongs({ value: "Residential Solar PV", sourceUrl: "https://www.cityofdenby.gov/permits", quote: "Residential Solar PV" }, OWNP, ctx), true, "A3 at the predicate");
+  // A state-issued permit: the state's own domain is its own page (the portal on another state host).
+  const stCtx = { names: ["City of Bemidjiq", "Minnesota Department of Labor and Industry"], typeNames: ["Minnesota Department of Labor and Industry"], state: "MN" };
+  assert.equal(belongs({ value: "Solar PV Electrical", sourceUrl: "https://www.dli.mn.gov/business/electrical-contractors/electrical-permits", quote: "select Solar PV Electrical" }, "https://secure.doli.state.mn.us/epermits/", stCtx), true, "MUST-PASS: the issuing state's own page");
+
+  // ── R2 / R3 through the real resolver (the portal step cites the URL; the search returned it) ──
+  const stepRun = async (ahj: string, PG: string, portal: string, portalSrc: string, quote: string, stepUrls: string[]) => {
+    const p1 = JSON.parse(shapeFor(ahj.replace(/^City of /, ""), PG, ahj, ahj, ahj));
+    const step = { text: JSON.stringify({ permits: [{ discipline: "structural", portalUrl: { value: portal, sourceUrl: portalSrc, quote }, recordType: { value: null } }, { discipline: "electrical", portalUrl: { value: portal, sourceUrl: portalSrc, quote }, recordType: { value: null } }] }), urls: stepUrls };
+    return saved(await runCity(ahj, "IN", JSON.stringify(p1), PG, html(`<p>Building permits are issued by the ${ahj}.</p>`), step), "structural");
+  };
+  const vendorSites = [
+    "https://bsaonline.com/MunicipalDirectory/", // F3
+    "https://www.citizenserve.com/Portal/PortalController?Action=showHomePage&ctzPagePrefix=Portal_", // no installationID
+    "https://www.mygovernmentonline.org/apply/", // MGO's own page, no agency / JID
+    "https://www.mapsonline.net/simplicity/building_permits.php", // the shared app, no client
+    "https://iworq.com/permit-software/", // G4
+    "https://www.bsasoftware.com/solutions/community-development/", // G5
+    "https://www.centralsquare.com/products/etrakit", // G6
+    "https://success.accela.com/s/article/permits", // G2
+    "https://developer.accela.com/docs/permits",
+    "https://www.peoplegis.com/products",
+    "https://www.avolvesoftware.com/projectdox/",
+    "https://www.fullcircletech.com/permiteyes/",
+    "https://help.opengov.com/hc/en-us/articles/permits", // G0 (a marketing subdomain of a hosting domain)
+    "https://support.citizenserve.com/portal/", // G1
+  ];
+  for (const [i, u] of vendorSites.entries()) {
+    const PG = `https://www.cityofvendr${i}.org/building`;
+    const s = await stepRun(`City of Vendr${i}`, PG, u, u, "Apply online — online permit portal, citizen self service", [PG, u]);
+    assert.equal(s.portalUrl.value, null, `${u} is the vendor's own site, not a portal (kept as ${s.portalUrl.value})`);
+    assert.match(String(s.portalUrl.notFound), /vendor's own site/, `${u}: ${s.portalUrl.notFound}`);
+    assert.equal(channel.isVendorRootOrMarketing(u), true, u);
+  }
+  const tenants = [
+    "https://bsaonline.com/SiteSearch/Permits?uid=413", // F2
+    "https://www.citizenserve.com/Portal/PortalController?Action=showHomePage&ctzPagePrefix=Portal_&installationID=301",
+    "https://www6.citizenserve.com/Portal/PortalController?Action=showPermit&ctzPagePrefix=Portal_&installationID=211",
+    "https://www.mapsonline.net/simplicity/building_permits.php?client=melrosema",
+    "https://www.mapsonline.net/peopleforms/mo4/index.php?site_id=587",
+    "https://www.mapsonline.net/westonma/online_permits/",
+    "https://cityofvendq-energovweb.tylerhost.net/apps/selfservice#/home", // G8
+    "https://salemvendq.portal.opengov.com/", // G9
+    "https://aca-prod.accela.com/VENDQ/Default.aspx", // G10
+    "https://aca-oregon.accela.com/VENDR/Default.aspx",
+    "https://aca.oregon.accela.com/VENDS/Default.aspx",
+    "https://aca3.accela.com/VENDT/Default.aspx",
+    "https://camdenmepermit.portal.iworq.net/portalhome/camdenmepermit",
+  ];
+  for (const [i, u] of tenants.entries()) {
+    const PG = `https://www.cityoftenr${i}.org/building`;
+    const s = await stepRun(`City of Tenr${i}`, PG, u, PG, "Apply online for a building permit through the online permit portal", [PG, u]);
+    assert.equal(s.portalUrl.value, u, `MUST-PASS: a tenant on the vendor's host is kept (${s.portalUrl.notFound})`);
+    assert.equal(channel.isVendorRootOrMarketing(u), false, u);
+  }
+  // The one definition: 'aca' instance hosts only; a query-tenanted instance's path is no tenant.
+  for (const h of ["aca-prod.accela.com", "aca-oregon.accela.com", "aca.oregon.accela.com", "aca3.accela.com", "aca.accela.com"]) assert.equal(channel.isPathTenantedHost(h), true, h);
+  for (const h of ["success.accela.com", "developer.accela.com", "www.accela.com", "citizenaccess.accela.com"]) assert.equal(channel.isPathTenantedHost(h), false, h);
+  assert.equal(channel.portalTenantKey("https://bsaonline.com/MunicipalDirectory/"), channel.portalTenantKey("https://bsaonline.com/"), "no uid = no tenant");
+  assert.equal(channel.portalTenantKey("https://bsaonline.com/SiteSearch/Permits?uid=413"), channel.portalTenantKey("https://bsaonline.com/?uid=413"), "the uid alone names the tenant");
+  assert.notEqual(channel.portalTenantKey("https://www.mapsonline.net/westonma/online_permits/"), channel.portalTenantKey("https://www.mapsonline.net/"), "a MapsOnline path tenant");
+  for (const v of ["iworq.com", "bsasoftware.com", "centralsquare.com", "peoplegis.com", "avolvesoftware.com", "fullcircletech.com"]) assert.equal(channel.isVendorDomain(v), true, v);
+});
+
 if (failures) { console.error(`\n${failures} lookupDoors test(s) failed.`); process.exit(1); }
 console.log("\nAll lookupDoors tests passed.");
 process.exit(0);
