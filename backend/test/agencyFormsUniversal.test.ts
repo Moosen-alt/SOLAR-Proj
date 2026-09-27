@@ -56,7 +56,10 @@ const check = (name: string, cond: unknown, detail = ""): void => {
 // ── lookups ───────────────────────────────────────────────────────────────────────────────
 const cited = (value: string, sourceUrl: string, quote: string) => ({ value, sourceUrl, quote, origin: "lookup" as const });
 const notFound = (why: string, sourceUrl = "", quote = "") => ({ value: null, sourceUrl, quote, origin: "lookup" as const, notFound: why });
-type PermitSpec = { discipline: "structural" | "electrical" | "combo"; agency: string | null; src: string; quote?: string; docsSrc?: string; feeSrc?: string };
+// pageSrc: the page the lookup read for this permit's portal and found none (Michael's real lookup:
+// portalUrl notFound, sourceUrl https://www.co.marion.or.us/PW/BuildingInspection). docs: the
+// lookup's cited document list for the permit (its source is docsSrc, else src).
+type PermitSpec = { discipline: "structural" | "electrical" | "combo"; agency: string | null; src: string; quote?: string; docsSrc?: string; feeSrc?: string; pageSrc?: string; docs?: string[] };
 function saveLookup(state: string, ahj: string, permits: PermitSpec[], top: unknown = notFound("not stated at the top level")): void {
   const r = savePermitProcessLookup(db, {
     state, ahj, lookedUpAt: new Date().toISOString(), issuingAgency: top,
@@ -64,8 +67,10 @@ function saveLookup(state: string, ahj: string, permits: PermitSpec[], top: unkn
     permits: permits.map((p) => ({
       discipline: p.discipline, label: `${p.discipline} permit`,
       issuingAgency: p.agency ? cited(p.agency, p.src, p.quote ?? `${p.agency} issues ${p.discipline} permits for ${ahj}`) : notFound("no agency named", p.src),
-      portalUrl: notFound("none"), recordType: notFound("none"),
-      documents: notFound("no list", p.docsSrc ?? ""), fee: notFound("none", p.feeSrc ?? ""),
+      portalUrl: p.pageSrc ? notFound("no online portal named", p.pageSrc, "Check permit status online and general information for individual permits") : notFound("none"),
+      recordType: notFound("none"),
+      documents: p.docs ? { value: p.docs, sourceUrl: p.docsSrc ?? p.src, quote: "application forms", origin: "lookup" as const } : notFound("no list", p.docsSrc ?? ""),
+      fee: notFound("none", p.feeSrc ?? ""),
     })),
     notes: [],
   } as never);
@@ -151,26 +156,36 @@ try {
   saveLookup("OR", "City of Sublimity", [{ discipline: "structural", agency: "Marion County", src: "https://www.co.marion.or.us/PW/Building", docsSrc: CITY_MARION_PDF }]);
   check("MF1e a same-named city's domain is not the county's own", !urlsOf(job("sub-1", "OR", "City of Sublimity"), "building_application").includes(CITY_MARION_PDF));
 
-  // MF1f: a document host (a CDN) qualifies ONLY as the lookup's own citation for that permit's agency.
+  // MF1f: a document host (a CDN) never confirms — not even as the lookup's own citation for that
+  // permit's agency: the rule would need the agency's own page to link it, and that link cannot be
+  // verified offline, so it is refused (agency-apps-close2: the "CDN copy" must-exclude; the round
+  // before accepted it).
   const CDN_PDF = "https://cdnsm5-hosted.civiclive.com/UserFiles/Servers/Server_14/File/Building/Solar%20Photovoltaic%20Permit%20Application.pdf";
   saveLookup("OR", "City of Lakeside", [{ discipline: "structural", agency: "Coos County", src: CDN_PDF, quote: "Coos County Building Codes — Solar Photovoltaic Permit Application" }]);
-  check("MF1f a CDN PDF the lookup cites AS the agency's own words for that permit is the agency's", urlsOf(job("lk-1", "OR", "City of Lakeside"), "building_application").includes(CDN_PDF));
+  check("MF1f a CDN PDF the lookup cites AS the agency's own words is NOT confirmed as the agency's", !urlsOf(job("lk-1", "OR", "City of Lakeside"), "building_application").includes(CDN_PDF));
+  saveLookup("OR", "City of Lakeshore", [{ discipline: "structural", agency: "Coos County", src: CDN_PDF, quote: "Coos County Building Codes — Solar Photovoltaic Permit Application", pageSrc: "https://www.co.coos.or.us/building" }]);
+  check("MF1f nor when the agency's own page is cited too (the page's link to the CDN copy is not verified offline)", !urlsOf(job("lk-2", "OR", "City of Lakeshore"), "building_application").includes(CDN_PDF)
+    && agencyMod.unconfirmedAgencyApplicationForms(job("lk-2", "OR", "City of Lakeshore"), "building_application", "prescriptive").some((f) => f.sourceUrl === CDN_PDF));
   saveLookup("OR", "City of Bandon", [{ discipline: "structural", agency: "Coos County", src: "https://www.co.coos.or.us/building", docsSrc: CDN_PDF, feeSrc: "https://library.municode.com/or/coos_county/Building%20Permit%20Application.pdf" }]);
   const bandonUrls = urlsOf(job("bd-1", "OR", "City of Bandon"), "building_application");
   check("MF1f the same CDN PDF on another answer (not the agency's citation) is not", !bandonUrls.includes(CDN_PDF), JSON.stringify(bandonUrls));
   check("MF1f a code publisher's PDF is never an agency's application", !bandonUrls.some((u) => /municode/.test(u)));
 
-  // Positive: the agency's own .or.us host still qualifies (the round's Fixture County shape).
+  // Positive: the agency's own host qualifies when the lookup cited a PAGE of the agency's there (the
+  // round's Fixture County shape, with the page a real lookup carries).
   const OWN_PDF = "https://www.co.fixture.or.us/forms/Solar%20Photovoltaic%20Permit%20Application.pdf";
-  saveLookup("OR", "City of Owntown", [{ discipline: "structural", agency: "Fixture County", src: OWN_PDF }]);
-  check("MF1g the agency's own host still qualifies", urlsOf(job("own-1", "OR", "City of Owntown"), "building_application").includes(OWN_PDF));
-  // Michael's shape keeps both curated county applications.
+  saveLookup("OR", "City of Owntown", [{ discipline: "structural", agency: "Fixture County", src: OWN_PDF, pageSrc: "https://www.co.fixture.or.us/building" }]);
+  check("MF1g the agency's own host qualifies (a page of the agency's cited there)", urlsOf(job("own-1", "OR", "City of Owntown"), "building_application").includes(OWN_PDF));
+  // Michael's shape (permit_process_lookups 'or|city of jefferson' on the .backup copy, portal page included)
+  // keeps both curated county applications.
   saveLookup("OR", "City of Jefferson", [
-    { discipline: "structural", agency: "Marion County", src: B01S_URL, quote: "Prescriptive Solar Photovoltaic Installation Permit Application · Marion County Public Works" },
-    { discipline: "electrical", agency: "Marion County", src: "https://jeffersonoregon.org/planning-committee/", quote: "All Electrical and Plumbing permits are submitted to Marion County Building and those forms can be found here." },
+    { discipline: "structural", agency: "Marion County", src: B01S_URL, quote: "Prescriptive Solar Photovoltaic Installation Permit Application · Marion County Public Works", pageSrc: "https://www.co.marion.or.us/PW/BuildingInspection", docsSrc: "https://jeffersonoregon.org/planning-committee/", feeSrc: "https://jeffersonoregon.org/planning-committee/" },
+    { discipline: "electrical", agency: "Marion County", src: "https://jeffersonoregon.org/planning-committee/", quote: "All Electrical and Plumbing permits are submitted to Marion County Building and those forms can be found here.", pageSrc: "https://www.co.marion.or.us/PW/BuildingInspection", docsSrc: "https://jeffersonoregon.org/planning-committee/", feeSrc: "https://jeffersonoregon.org/planning-committee/" },
   ]);
   const jefferson = job("jeff-u", "OR", "City of Jefferson");
   check("MF1g Michael's shape: the B-01S and E-01 are Marion County's", urlsOf(jefferson, "building_application").includes(B01S_URL) && urlsOf(jefferson, "electrical_application", null).includes(E01_URL));
+  check("MF1g Michael's anchor is co.marion.or.us — the lookup's own Marion page; the city's jeffersonoregon.org is never Marion County's", JSON.stringify(agencyMod.agencyAnchorSites(jefferson, "Marion County")) === JSON.stringify(["co.marion.or.us"]),
+    JSON.stringify(agencyMod.agencyAnchorSites(jefferson, "Marion County")));
 
   // ═══ MF2 — SPLIT AGENCIES KEEP THE CITY'S OWN LINES ═══════════════════════════════════════════
   // Coos Bay: the city issues building itself, Coos County issues electrical.
@@ -184,7 +199,10 @@ try {
   check("MF2 the Coos Bay base profile names the city's building application", base.some((l) => /Solar application/.test(l)), JSON.stringify(base));
   const coosPacket = packetList(coos);
   check("MF2 the packet KEEPS the city's own building application", coosPacket.some((l) => /^Solar application — PRESCRIPTIVE or STRUCTURAL/.test(l)), JSON.stringify(coosPacket));
-  check("MF2 and ADDS Coos County's electrical application", coosPacket.some((l) => /^Coos County \(issues the electrical permit\): Electrical Permit Application/.test(l)), JSON.stringify(coosPacket));
+  // (The county's cited PDF has no county page beside it in this lookup, so it is listed as cited, to
+  // confirm — agency-apps-close2 rule 1; the county's application line is what MF2 pins.)
+  check("MF2 and ADDS Coos County's electrical application", coosPacket.some((l) => /^Coos County \(issues the electrical permit\): Coos County's electrical permit application/.test(l)), JSON.stringify(coosPacket));
+  check("MF2 (rule 1) the county's PDF with no county page cited is listed to confirm, not as the county's form", coosPacket.some((l) => /^Coos County \(issues the electrical permit\): cited: Electrical Permit Application\.pdf — confirm it is Coos County's form before it is used/.test(l)), JSON.stringify(coosPacket));
   check("MF2 the city's generic electrical line is replaced by the county's", !coosPacket.includes("Renewable Energy (electrical) permit application"));
   check("MF2 one checklist line, not two", coosPacket.filter((l) => /checklist/i.test(l)).length === 1, JSON.stringify(coosPacket));
   check("MF2 the plan set line stays", coosPacket.includes("Plan set and specifications"));
@@ -280,7 +298,7 @@ try {
   // Held but NOT fillable (a flat scan): never "filled", before or after a fill run.
   const FLAT_URL = "https://www.co.flat.or.us/forms/Solar%20Photovoltaic%20Permit%20Application.pdf";
   served.set(FLAT_URL, await flatPdf("Flat County Solar Photovoltaic Permit Application"));
-  saveLookup("OR", "City of Flatville", [{ discipline: "structural", agency: "Flat County", src: FLAT_URL }]);
+  saveLookup("OR", "City of Flatville", [{ discipline: "structural", agency: "Flat County", src: FLAT_URL, pageSrc: "https://www.co.flat.or.us/building" }]);
   const flatJob = repo.createProject(db, { owner: "Flat Owner", street: "1 Flat Rd", city: "Flatville", state: "OR", ahj: "City of Flatville", utility: "Pacific Power", dcKw: "8", acKw: "7", permitPathOverride: "prescriptive" } as never).project;
   filledDirs.push(flatJob.id);
   const flatBefore = repo.getApplicationDocumentPackage(db, flatJob.id).profile.requiredDocuments;
@@ -304,9 +322,13 @@ try {
   served.set(PBC_B, await acroPdf("Palm Beach County Solar Photovoltaic Permit Application"));
   served.set(PBC_E, await acroPdf("Palm Beach County Electrical Permit Application"));
   served.set(PBG_PDF, await acroPdf("City of Palm Beach Gardens Solar Permit Application"));
+  // (agency-apps-close2: the county's building page is on the lookup — the page a real lookup cites, as
+  // Michael's cites co.marion.or.us/PW/BuildingInspection. Without it the PDF is the county's only
+  // citation, the deschutes.org shape, and is listed to confirm: pinned in RULE 1 below.)
+  const PBC_PAGE = "https://discover.pbcgov.org/pzb/building/Pages/default.aspx";
   saveLookup("FL", "Town of Glen Ridge", [
-    { discipline: "structural", agency: "Palm Beach County", src: PBC_B, quote: "Palm Beach County Building Division — Solar Photovoltaic Permit Application", docsSrc: PBG_PDF, feeSrc: MUNI_PDF },
-    { discipline: "electrical", agency: "Palm Beach County", src: PBC_E, quote: "Palm Beach County Building Division — Electrical Permit Application" },
+    { discipline: "structural", agency: "Palm Beach County", src: PBC_B, quote: "Palm Beach County Building Division — Solar Photovoltaic Permit Application", docsSrc: PBG_PDF, feeSrc: MUNI_PDF, pageSrc: PBC_PAGE },
+    { discipline: "electrical", agency: "Palm Beach County", src: PBC_E, quote: "Palm Beach County Building Division — Electrical Permit Application", pageSrc: PBC_PAGE },
   ]);
   const glen = job("glen-1", "FL", "Town of Glen Ridge");
   const glenB = urlsOf(glen, "building_application", null);
@@ -344,7 +366,8 @@ try {
   const HOU_PDF = "https://www.houstontx.gov/planning/forms/Solar%20Permit%20Application.pdf";
   served.set(HC_B, await acroPdf("Harris County Residential Solar Permit Application"));
   served.set(HOU_PDF, await acroPdf("City of Houston Solar Permit Application"));
-  saveLookup("TX", "Cypress", [{ discipline: "structural", agency: "Harris County", src: HC_B, quote: "Harris County Engineering Department — Residential Solar Permit Application (unincorporated Harris County)", docsSrc: HOU_PDF }]);
+  const HC_PAGE = "https://engineering.harriscountytx.gov/Permits/Residential";
+  saveLookup("TX", "Cypress", [{ discipline: "structural", agency: "Harris County", src: HC_B, quote: "Harris County Engineering Department — Residential Solar Permit Application (unincorporated Harris County)", docsSrc: HOU_PDF, pageSrc: HC_PAGE }]);
   const cypress = job("cy-1", "TX", "Cypress");
   const cyUrls = urlsOf(cypress, "building_application", null);
   check("HELD-OUT TX: the county's own PDF (harriscountytx.gov) is Harris County's application; the City of Houston's is refused", cyUrls.includes(HC_B) && !cyUrls.includes(HOU_PDF), JSON.stringify(cyUrls));
@@ -354,8 +377,172 @@ try {
   const cyPacket = packetList(cypress);
   check("HELD-OUT TX: the packet names Harris County's application; no city zoning step for an unincorporated AHJ", cyPacket.some((l) => /^Harris County \(issues the structural \(building\) permit\): Residential Solar Permit Application/.test(l)) && !cyPacket.some((l) => /zoning approval/.test(l)), JSON.stringify(cyPacket));
 
+  // ═══ RULE 1 — ANCHOR SITES (agency-apps-close2; operator: "THIS NEEDS TO BE UNIVERSAL") ═══════════
+  // A cited application PDF is agency A's ONLY when its site (registrable domain) is one where the
+  // lookup cited a PAGE for A — A's permit's issuingAgency / portalUrl / documents / fee source, or the
+  // top-level answer's when it names A. A PDF never anchors (not itself, not another PDF). No name
+  // match creates an anchor; names only ever REMOVE one (the AHJ's own domain; a host naming another
+  // type of jurisdiction). A document host (CDN, code publisher, mirror) never anchors. Everything
+  // else the lookup cited is listed "cited: <file> — confirm it is <A>'s form before it is used":
+  // not acquired, not filled, blocking only while the track's application is owed.
+  const fileOf = (u: string) => decodeURIComponent(new URL(u).pathname.split("/").pop() || "");
+  const unconfirmedOf = (p: never, ft: string, want: "prescriptive" | "structural" | null = "prescriptive") => agencyMod.unconfirmedAgencyApplicationForms(p, ft, want).map((f) => f.sourceUrl);
+  const citedLine = (lines: string[], u: string, agency: string) => lines.find((l) => l.includes(`cited: ${fileOf(u)} — confirm it is ${agency}'s form before it is used`)) ?? "";
+  async function refusedEverywhere(label: string, p: never, ft: string, u: string, agency: string): Promise<void> {
+    const want = ft === "electrical_application" ? null : "prescriptive";
+    check(`${label}: not ${agency}'s application`, !urlsOf(p, ft, want).includes(u), JSON.stringify(urlsOf(p, ft, want)));
+    check(`${label}: listed as cited, to confirm`, unconfirmedOf(p, ft, want).includes(u) && Boolean(citedLine(packetList(p), u, agency)), JSON.stringify(packetList(p)));
+    downloads = [];
+    await auto.ensureAhjFormTemplate(db, noModel, p, ft, { allowResearch: false });
+    check(`${label}: never fetched, never stored`, !downloads.includes(u) && rowsWithSource(u).length === 0, JSON.stringify({ downloads, rows: rowsWithSource(u) }));
+  }
+
+  // R1a THE PREVIOUS SKEPTIC'S OREGON SHAPES — a state-issued permit (or another county's) whose only
+  // citation is a county's / a city's PDF, on hosts no ".gov" test catches.
+  const OR_SHAPES: Array<[string, string, "structural" | "electrical", string]> = [
+    ["City of Veneta", "Oregon Building Codes Division", "electrical", "https://www.lanecounty.org/UserFiles/Servers/Server_3585797/File/Electrical%20Permit%20Application.pdf"],
+    ["City of Sisters", "Oregon Building Codes Division", "electrical", "https://www.deschutes.org/sites/default/files/fileattachments/community_development/page/Electrical%20Permit%20Application.pdf"],
+    ["City of Scio", "Oregon Building Codes Division", "electrical", "https://www.co.linn.or.us/building/Electrical%20Permit%20Application.pdf"],
+    ["City of Estacada", "Oregon Building Codes Division", "electrical", "https://www.clackamas.us/sites/default/files/building/Electrical%20Permit%20Application.pdf"],
+    ["City of Maywood Park", "Oregon Building Codes Division", "electrical", "https://www.multco.us/file/Electrical%20Permit%20Application.pdf"],
+    ["City of Culver", "Jefferson County", "structural", "https://jeffersonoregon.org/wp-content/uploads/Solar%20Permit%20Application.pdf"],
+  ];
+  for (const [ahj, agency, discipline, u] of OR_SHAPES) {
+    served.set(u, await acroPdf(`${fileOf(u)} (${new URL(u).hostname})`));
+    saveLookup("OR", ahj, [{ discipline, agency, src: u, quote: `All ${discipline} permits are submitted to ${agency}` }]);
+    await refusedEverywhere(`R1a ${ahj} (${agency}, ${new URL(u).hostname})`, job(`r1a-${ahj}`, "OR", ahj), discipline === "electrical" ? "electrical_application" : "building_application", u, agency);
+  }
+
+  // R1b THE CITY OF BOULDER UNDER BOULDER COUNTY — the county's own page anchors bouldercounty.gov; the
+  // city's bouldercolorado.gov and ci.boulder.co.us PDFs are never the county's.
+  const BOCO_PAGE = "https://bouldercounty.gov/property-and-land/land-use/building/";
+  const BOCO_OWN = "https://assets.bouldercounty.gov/wp-content/uploads/2024/01/Solar%20Photovoltaic%20Permit%20Application.pdf";
+  const CITY_BOULDER = "https://bouldercolorado.gov/media/4411/download/Solar%20Permit%20Application.pdf";
+  const CITY_BOULDER_OLD = "https://www.ci.boulder.co.us/files/PDS/forms/Electrical%20Permit%20Application.pdf";
+  served.set(BOCO_OWN, await acroPdf("Boulder County Solar PV Permit Application"));
+  served.set(CITY_BOULDER, await acroPdf("City of Boulder Solar Permit Application"));
+  served.set(CITY_BOULDER_OLD, await acroPdf("City of Boulder Electrical Permit Application"));
+  saveLookup("CO", "Town of Jamestown", [
+    { discipline: "structural", agency: "Boulder County", src: BOCO_PAGE, docs: [CITY_BOULDER, BOCO_OWN] },
+    { discipline: "electrical", agency: "Boulder County", src: BOCO_PAGE, docs: [CITY_BOULDER_OLD] },
+  ]);
+  const jt = job("r1b-jt", "CO", "Town of Jamestown");
+  check("R1b the county's own PDF (assets.bouldercounty.gov, the page's site) is Boulder County's", JSON.stringify(urlsOf(jt, "building_application")) === JSON.stringify([BOCO_OWN]), JSON.stringify(urlsOf(jt, "building_application")));
+  await refusedEverywhere("R1b the City of Boulder's bouldercolorado.gov PDF", jt, "building_application", CITY_BOULDER, "Boulder County");
+  await refusedEverywhere("R1b the City of Boulder's ci.boulder.co.us PDF", jt, "electrical_application", CITY_BOULDER_OLD, "Boulder County");
+  check("R1b only the county's own blank was stored under Boulder County", rowsWithSource(BOCO_OWN).join() === "Boulder County" && db.query<{ n: number }>("SELECT COUNT(*) AS n FROM ahj_form_templates WHERE ahj_name = 'Boulder County'")[0].n === 1);
+
+  // R1c FAIRFAX: the City of Fairfax (fairfaxva.gov) under Fairfax County (fairfaxcounty.gov).
+  const FFX_PAGE = "https://www.fairfaxcounty.gov/landdevelopment/building-permits";
+  const FFX_CITY = "https://www.fairfaxva.gov/home/showpublisheddocument/1234/Residential%20Solar%20Building%20Permit%20Application.pdf";
+  const FFX_CO = "https://www.fairfaxcounty.gov/landdevelopment/sites/landdevelopment/files/Assets/documents/pdf/Solar%20Building%20Permit%20Application.pdf";
+  served.set(FFX_CITY, await acroPdf("City of Fairfax Residential Solar Building Permit Application"));
+  saveLookup("VA", "Town of Vienna", [
+    { discipline: "structural", agency: "Fairfax County", src: FFX_PAGE, docs: [FFX_CITY, FFX_CO] },
+    { discipline: "electrical", agency: "Fairfax County", src: FFX_PAGE },
+  ]);
+  const vie = job("r1c-vie", "VA", "Town of Vienna");
+  check("R1c Fairfax County's own PDF is its application", JSON.stringify(urlsOf(vie, "building_application")) === JSON.stringify([FFX_CO]), JSON.stringify(urlsOf(vie, "building_application")));
+  await refusedEverywhere("R1c the City of Fairfax's fairfaxva.gov PDF", vie, "building_application", FFX_CITY, "Fairfax County");
+
+  // R1d NAME-BLIND BOTH WAYS: the agency's PDF on a domain that NAMES the agency, with no page of the
+  // agency's cited anywhere, is not confirmed either — a county (Harris) and a state agency (the BCD).
+  const HC_ONLY = "https://engineering.harriscountytx.gov/Portals/0/Permits/Residential%20Solar%20Permit%20Application%202.pdf";
+  served.set(HC_ONLY, await acroPdf("Harris County Residential Solar Permit Application"));
+  saveLookup("TX", "Cypress Creek", [{ discipline: "structural", agency: "Harris County", src: HC_ONLY, quote: "Harris County Engineering Department — Residential Solar Permit Application" }]);
+  await refusedEverywhere("R1d a county's PDF on its own-named domain, cited alone (the builder's TX shape without a page)", job("r1d-cc", "TX", "Cypress Creek"), "building_application", HC_ONLY, "Harris County");
+  const BCD_E = "https://www.oregon.gov/bcd/Formslibrary/Electrical%20Permit%20Application.pdf";
+  served.set(BCD_E, await acroPdf("BCD Electrical Permit Application"));
+  saveLookup("OR", "City of Stateburg", [{ discipline: "electrical", agency: "Oregon Building Codes Division", src: BCD_E, quote: "Oregon Building Codes Division — Electrical Permit Application" }]);
+  await refusedEverywhere("R1d a state agency's PDF on its own-named domain, cited alone", job("r1d-sb", "OR", "City of Stateburg"), "electrical_application", BCD_E, "Oregon Building Codes Division");
+  saveLookup("OR", "City of Owntown Two", [{ discipline: "structural", agency: "Fixture County", src: OWN_PDF }]);
+  check("R1d the round's Owntown PDF with no page cited is not confirmed", !urlsOf(job("r1d-ow", "OR", "City of Owntown Two"), "building_application").includes(OWN_PDF));
+
+  // R1e NAMES ONLY REMOVE AN ANCHOR. (i) A page on the AHJ's OWN domain cited for the county never
+  // anchors the county (the city's page saying "submit to the county"): the city's PDF beside it is
+  // refused. (ii) A site the lookup cites for the AHJ's OWN permit is the AHJ's, whatever its name.
+  // (iii) A host naming another TYPE of jurisdiction never anchors a state agency.
+  const MB_PAGE = "https://www.millbrookoregon.gov/building";
+  const MB_PDF = "https://www.millbrookoregon.gov/forms/Solar%20Permit%20Application.pdf";
+  served.set(MB_PDF, await acroPdf("City of Millbrook Solar Permit Application"));
+  saveLookup("OR", "City of Millbrook", [{ discipline: "structural", agency: "Fixture County", src: MB_PAGE, quote: "Structural permits are submitted to Fixture County", docs: [MB_PDF] }]);
+  const mb = job("r1e-mb", "OR", "City of Millbrook");
+  check("R1e(i) the AHJ's own-domain page is not the county's anchor", !agencyMod.agencyAnchorSites(mb, "Fixture County").includes("millbrookoregon.gov"), JSON.stringify(agencyMod.agencyAnchorSites(mb, "Fixture County")));
+  await refusedEverywhere("R1e(i) the city's PDF beside the city's page", mb, "building_application", MB_PDF, "Fixture County");
+  const BH_OWN_PAGE = "https://www.bayharbor-info.org/building";
+  const BH_PDF = "https://www.bayharbor-info.org/files/Electrical%20Permit%20Application.pdf";
+  served.set(BH_PDF, await acroPdf("Bay Harbor Electrical Permit Application"));
+  saveLookup("OR", "City of Bay Harbor", [
+    { discipline: "structural", agency: "City of Bay Harbor", src: BH_OWN_PAGE, quote: "City of Bay Harbor issues building permits" },
+    { discipline: "electrical", agency: "Coos County", src: "https://www.bayharbor-info.org/electrical", quote: "Electrical permits are issued by Coos County", docs: [BH_PDF] },
+  ]);
+  const bh = job("r1e-bh", "OR", "City of Bay Harbor");
+  check("R1e(ii) a site the lookup cites for the AHJ's own permit is not the county's anchor", !agencyMod.agencyAnchorSites(bh, "Coos County").includes("bayharbor-info.org"), JSON.stringify(agencyMod.agencyAnchorSites(bh, "Coos County")));
+  await refusedEverywhere("R1e(ii) the AHJ-site PDF on the county's permit", bh, "electrical_application", BH_PDF, "Coos County");
+  const SKAGIT_NET = "https://www.skagitcounty.net/PlanningAndPermit/Documents/Electrical%20Permit%20Application.pdf";
+  const LNI_OWN = "https://lni.wa.gov/forms-publications/Electrical%20Permit%20Application%20F500-094-000.pdf";
+  const LNI = "Washington State Department of Labor & Industries";
+  served.set(SKAGIT_NET, await acroPdf("Skagit County Electrical Permit Application"));
+  served.set(LNI_OWN, await acroPdf("LNI Electrical Work Permit Application"));
+  saveLookup("WA", "City of Sedro-Woolley", [
+    { discipline: "structural", agency: "City of Sedro-Woolley", src: "https://www.sedro-woolley.gov/building" },
+    { discipline: "electrical", agency: LNI, src: "https://www.skagitcounty.net/PlanningAndPermit/electrical.htm", docs: [SKAGIT_NET, LNI_OWN] },
+  ]);
+  const sw = job("r1e-sw", "WA", "City of Sedro-Woolley");
+  check("R1e(iii) a county-named host never anchors the state agency", agencyMod.agencyAnchorSites(sw, LNI).length === 0, JSON.stringify(agencyMod.agencyAnchorSites(sw, LNI)));
+  await refusedEverywhere("R1e(iii) the county's PDF under the state agency", sw, "electrical_application", SKAGIT_NET, LNI);
+  check("R1e(iii) and the state's own PDF is not confirmed by its name either (lni.wa.gov: no page there)", !urlsOf(sw, "electrical_application", null).includes(LNI_OWN) && unconfirmedOf(sw, "electrical_application", null).includes(LNI_OWN));
+
+  // R1f MICHAEL'S REAL SHAPE, on an agency with no curated seed: the anchor is the lookup's own notFound
+  // portal answer's page (co.fixture.or.us/building); the city's pages (docs, fee, the electrical
+  // citation) are the city's.
+  const RS_PDF = "https://www.co.fixture.or.us/PW/Documents/Solar%20Prescriptive%20Installation%20Application.pdf";
+  const RS_CITY = "https://realshapeoregon.org/planning-committee/";
+  saveLookup("OR", "City of Realshape", [
+    { discipline: "structural", agency: "Fixture County", src: RS_PDF, quote: "Prescriptive Solar Photovoltaic Installation Permit Application · Fixture County Public Works", pageSrc: "https://www.co.fixture.or.us/PW/BuildingInspection", docsSrc: RS_CITY, feeSrc: RS_CITY },
+    { discipline: "electrical", agency: "Fixture County", src: RS_CITY, quote: "All Electrical permits are submitted to Fixture County Building", pageSrc: "https://www.co.fixture.or.us/PW/BuildingInspection", docsSrc: RS_CITY, feeSrc: RS_CITY },
+  ]);
+  const rs = job("r1f-rs", "OR", "City of Realshape");
+  check("R1f the anchor is exactly the county's site", JSON.stringify(agencyMod.agencyAnchorSites(rs, "Fixture County")) === JSON.stringify(["co.fixture.or.us"]), JSON.stringify(agencyMod.agencyAnchorSites(rs, "Fixture County")));
+  check("R1f the county's cited PDF on it is the county's application", urlsOf(rs, "building_application").includes(RS_PDF));
+
+  // R1g THE CITED LINE BLOCKS ONLY AS OWED: missing while the track's application is owed; set aside
+  // (skipped, with why) once a CONFIRMED form of that track satisfies the slot; never "filled".
+  const jtList = () => reqDocs.requiredListCheck(db, jt, reqDocs.documentInventory(db, jt)).items;
+  const citedItem = (items: ReturnType<typeof jtList>, u: string) => items.find((i) => i.text.includes(`cited: ${fileOf(u)}`));
+  check("R1g owed: the cited line is missing while no confirmed form fills the track", (() => { const i = citedItem(jtList(), CITY_BOULDER); return i && !i.present && !i.skipped; })(), JSON.stringify(jtList().map((i) => [i.text.slice(0, 90), i.present, i.skipped ?? ""])));
+  auto.storeAhjFormTemplate(db, { ahjName: "Boulder County", state: "CO", formType: "building_application", filename: "Solar Photovoltaic Permit Application.pdf", bytes: await acroPdf("Boulder County Solar PV Permit Application"),
+    map: { formName: "Solar Photovoltaic Permit Application", sourceUrl: BOCO_OWN, fillMode: "acroform", textFields: { "Owner name": "project.homeownerName" }, checkboxes: {}, notes: "" } });
+  filledDirs.push("r1b-jt");
+  await forms.buildFilledFormsForProject(db, jt);
+  const jtAfter = jtList();
+  const bocoLine = jtAfter.find((i) => /Boulder County \(issues the structural/.test(i.text) && !/cited:/.test(i.text));
+  check("R1g the county's confirmed form is filled and present", Boolean(bocoLine && /— filled$/.test(bocoLine.text) && bocoLine.present), JSON.stringify(bocoLine));
+  const setAside = citedItem(jtAfter, CITY_BOULDER);
+  check("R1g the cited city PDF is set aside (skipped), never present, never 'filled'", Boolean(setAside && !setAside.present && setAside.skipped && !/filled/.test(setAside.text)), JSON.stringify(setAside));
+  check("R1g the electrical track's cited PDF stays owed (nothing confirmed fills it)", (() => { const i = citedItem(jtAfter, CITY_BOULDER_OLD); return i && !i.present && !i.skipped; })());
+  check("R1g the gate row for the electrical track still blocks", (() => { const r = reqDocs.documentInventory(db, jt).presence.find((p) => p.docType === "electrical_application"); return r && r.blocking && !r.present; })());
+
+  // ═══ RULE 2 — PER-FORM STATUS (the skeptic's two-forms-one-track shape) ════════════════════════
+  const T1 = "https://www.douglas.co.us/documents/Solar%20Photovoltaic%20Permit%20Application.pdf";
+  const T2 = "https://www.douglas.co.us/documents/Building%20Permit%20Application.pdf";
+  saveLookup("CO", "Town of Castle Pines Village", [{ discipline: "structural", agency: "Douglas County", src: "https://www.douglas.co.us/building-division/", docs: [T1, T2] }]);
+  const cp = job("r2-cp", "CO", "Town of Castle Pines Village");
+  const cpStatus = () => buildApplicationDocumentPackage(cp, null, { agencyStatus: reqDocs.agencyListStatusResolver(db, cp) }).profile.requiredDocuments;
+  check("R2 (setup) both of Douglas County's applications are confirmed", urlsOf(cp, "building_application").length === 2, JSON.stringify(urlsOf(cp, "building_application")));
+  auto.storeAhjFormTemplate(db, { ahjName: "Douglas County", state: "CO", formType: "building_application", filename: "Solar Photovoltaic Permit Application.pdf", bytes: await acroPdf("Douglas County Solar PV Permit Application"),
+    map: { formName: "Solar Photovoltaic Permit Application", sourceUrl: T1, fillMode: "acroform", textFields: { "Owner name": "project.homeownerName" }, checkboxes: {}, notes: "" } });
+  const cpHeld = cpStatus();
+  check("R2 the held form: 'on file (fill pending)'; the other: 'not yet on file'", /— on file \(fill pending\)$/.test(statusOf(cpHeld, /: Solar Photovoltaic Permit Application/)) && /— not yet on file/.test(statusOf(cpHeld, /: Building Permit Application/)), JSON.stringify(cpHeld));
+  filledDirs.push("r2-cp");
+  await forms.buildFilledFormsForProject(db, cp);
+  const cpFilled = cpStatus();
+  check("R2 after the fill: the filled one 'filled', the other still 'not yet on file' (never the slot's word)", /— filled$/.test(statusOf(cpFilled, /: Solar Photovoltaic Permit Application/)) && /— not yet on file/.test(statusOf(cpFilled, /: Building Permit Application/)), JSON.stringify(cpFilled));
+  const cpJob = reqDocs.requiredListCheck(db, cp, reqDocs.documentInventory(db, cp)).items;
+  check("R2 docs.complete: the filled form present, the unheld one missing", cpJob.some((i) => /: Solar Photovoltaic Permit Application — filled$/.test(i.text) && i.present) && cpJob.some((i) => /: Building Permit Application — not yet on file/.test(i.text) && !i.present && !i.skipped), JSON.stringify(cpJob.map((i) => [i.text.slice(0, 100), i.present])));
+
   assert.equal(failed.length, 0, `${failed.length} check(s) failed: ${failed.join(" | ")}`);
-  console.log(`agencyFormsUniversal: ${passed} checks passed — a cited PDF is the agency's only on its own domain, split agencies keep the city's own lines, every line's status is the inventory's, and three held-out AHJs (FL / IA / TX) route to the right agency`);
+  console.log(`agencyFormsUniversal: ${passed} checks passed — a cited PDF is the agency's only on a site the lookup cited a page of the agency's on (no name creates an anchor), split agencies keep the city's own lines, every line's status is its own form's, and three held-out AHJs (FL / IA / TX) route to the right agency`);
 } finally {
   globalThis.fetch = realFetch;
   db.close();
