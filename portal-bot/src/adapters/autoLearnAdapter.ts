@@ -5922,7 +5922,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             await this.waitForDynamicFieldsSettle();
             await this.clearOverlays();
             const raws2 = await this.extractAllFrames(EXTRACT_SEL);
-            const postFields = raws2.map(toExtractedField);
+            // THE PLANNER NEVER SEES A SIGNATURE BOX — in the re-scan either (portal-run-close-2).
+            // The signed box's label was never "already filled", so after any other fill on the
+            // page (a Date box beside the signature) it read as newly revealed and the re-scan
+            // offered it to the planner (the fill guard still refused it; the planner must not
+            // be asked at all).
+            const signedLabels = new Set(Array.from(signatureFieldIdx).map((i) => fields[i]?.label).filter((l): l is string => !!l));
+            const postFields = raws2.map(toExtractedField).filter((f) => !(f.label && signedLabels.has(f.label))
+              && !((f.fieldType === "text" || f.fieldType === "other") && isSignatureNameLabel(f.label)));
             // Radio groups already answered this page: each option has a DIFFERENT label, so
             // after filling one option its siblings pass the label filter below and look
             // "newly revealed" — planning a fill on a sibling silently FLIPS the recorded
