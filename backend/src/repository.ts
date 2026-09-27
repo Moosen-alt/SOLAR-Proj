@@ -2851,7 +2851,9 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
   const permitCorrections = detail.corrections.filter((correction) => correction.source !== "email" || /permit|ahj|city|county|building|electrical|plan|site|revision/i.test(correction.correctionText));
   // Strong signals only — see classifyCorrectionTrack. An unclassified correction shows on
   // this lane AND the permit lane; a permit-record scrape shows on neither this one.
-  const nemCorrections = detail.corrections.filter((correction) => correctionOnTrack("nem", correction.correctionText, correction.rootCause, correction.requiredAction));
+  // The page a portal correction was read from (sourceText) is evidence of WHICH record it came
+  // off ("Record 187-26-000305-STR: ..."), so it stays in the track reading the extraction trimmed.
+  const nemCorrections = detail.corrections.filter((correction) => correctionOnTrack("nem", correction.correctionText, correction.sourceText, correction.rootCause, correction.requiredAction));
   const openPermitCorrections = permitCorrections.filter((correction) => !correction.closedAt && !correction.resubmitted);
   const openNemCorrections = nemCorrections.filter((correction) => !correction.closedAt && !correction.resubmitted);
   const hasPortalStaging = detail.portalRuns.some((run) => run.status === "awaiting_human_submit" || run.status === "submitted");
@@ -3476,7 +3478,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   const openCorrections = detail.corrections.filter((correction) => !correction.closedAt && !correction.resubmitted);
   // Strong signals only — see classifyCorrectionTrack. Unclassified still warns here (an
   // unknown is not an all-clear); a permit-record scrape no longer warns on the NEM lane.
-  const openNemCorrections = openCorrections.filter((correction) => correctionOnTrack("nem", correction.correctionText, correction.rootCause, correction.requiredAction));
+  const openNemCorrections = openCorrections.filter((correction) => correctionOnTrack("nem", correction.correctionText, correction.sourceText, correction.rootCause, correction.requiredAction));
   const criticalFields: Array<[string, unknown]> = [
     ["Homeowner", project.homeownerName],
     ["Service address", project.projectAddress],
@@ -5631,7 +5633,9 @@ export async function reopenCorrectionOnPortal(
     // had no way to say "I cannot tell", so every correction it did not read as NEM was
     // asserted to be a permit correction — and every correction it DID read as NEM was
     // usually just a plan set describing its own microinverters.
-    const blob = `${text(correction.correction_text)} ${text(correction.root_cause)} ${text(correction.required_action)}`;
+    // source_text is the page a portal correction was read from — the record header the extracted
+    // correction no longer carries is exactly the evidence read below, so it stays in.
+    const blob = `${text(correction.correction_text)} ${text(correction.source_text)} ${text(correction.root_cause)} ${text(correction.required_action)}`;
     // EVIDENCE BEATS CLASSIFICATION. A portal-scraped correction usually quotes the record
     // it came off ("Record 187-26-000305-STR: …"), and one of this project's own tracked
     // application numbers appearing verbatim in the text is not a signal to weigh — it names
@@ -5644,7 +5648,7 @@ export async function reopenCorrectionOnPortal(
       return app.length >= 6 && blob.includes(app);
     });
     const wantType = classifyCorrectionTrack(
-      text(correction.correction_text), text(correction.root_cause), text(correction.required_action),
+      text(correction.correction_text), text(correction.source_text), text(correction.root_cause), text(correction.required_action),
     );
     const scoped = quotedTargets.length === 1
       ? quotedTargets

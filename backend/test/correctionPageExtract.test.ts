@@ -261,6 +261,15 @@ await check("THE RECORD: the detail says how the text was read, with the plain l
   assert.equal(c.bucketLabel, humanizeBucket(c.correctionBucket));
 });
 
+await check("TRACK EVIDENCE: the page it was read from still says which record — a permit condition does not block the utility lane", () => {
+  // The extracted condition names no record ("Outstanding permit 187-M16-901 ..."); the page's
+  // "Record 187-26-000901-STR" header is what places it on the permit track, as it did before.
+  const steps = R.getProjectProcessMap(db, coosBayPid).lanes.flatMap((l) => l.steps);
+  const nem = steps.find((s) => s.id === "nem-corrections");
+  assert.ok(nem, "no nem-corrections step");
+  assert.notEqual(nem!.status, "blocked", `an Accela permit-record condition blocks the utility lane: ${nem!.summary}`);
+});
+
 await check("FALLBACK ON THE WRITE PATH: nothing to extract keeps the whole reading and reads 'whole_text'", async () => {
   const pid = mkProject();
   await R.recordPermitStatusCheck(db, pid, { targetId: mkTarget(pid), source: "public_url", rawStatusText: TAB_STRIP });
