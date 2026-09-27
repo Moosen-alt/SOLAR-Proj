@@ -71,6 +71,11 @@ export type { AddressVersion } from "../addressVersion";
 
 export class OregonEPermittingAdapter extends BasePortalAdapter {
   portalName = "Oregon ePermitting (Accela ACA)";
+  /** The per-job lookup's issuing agency for this track (runAdapter → setIssuingAgency). */
+  private issuingAgency: string | null = null;
+  setIssuingAgency(name: string | null): void {
+    this.issuingAgency = String(name ?? "").trim() || null;
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private page: any = null;
@@ -165,10 +170,7 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       const appTypePattern = isElectrical
         ? /Residential\s*-?\s*Electrical/i
         : /Residential\s*-?\s*Structural/i;
-      const preferred = isElectrical ? /COUNTY APPLICATIONS/i : /CITY APPLICATIONS/i;
-      const cityUpper = (project.city || "").toUpperCase();
       const zip = (project.zip || "").trim();
-      const surname = (project.homeownerName || "").trim().split(/\s+/).pop() || "";
 
       const selectRows = () => this.page.locator("tr").filter({ has: this.page.locator('a:has-text("Select")') });
 
@@ -204,13 +206,18 @@ export class OregonEPermittingAdapter extends BasePortalAdapter {
       for (let i = 0; i < rowCount; i++) {
         rowTexts.push(((await rows0.nth(i).innerText().catch(() => "")) || ""));
       }
-      const { ranked, rejected } = rankAddressVersions(rowTexts, {
-        city: project.city, zip, homeownerName: project.homeownerName, isElectrical,
+      // The looked-up issuing agency decides the row when known (addressVersion — one predicate
+      // with the learner and the replay); the discipline convention otherwise.
+      const { ranked, rejected, preference } = rankAddressVersions(rowTexts, {
+        city: project.city, zip, homeownerName: project.homeownerName, isElectrical, issuingAgency: this.issuingAgency,
       });
       if (ranked.length === 0) {
         return fail(`openSubmission: none of the ${rowCount} address result(s) are in `
           + `${project.city || "(no city)"} ${zip}. Refusing to open an application against another property. `
           + `Rows seen: ${rejected.slice(0, 4).join(" | ")}`);
+      }
+      if (preference.contradicts) {
+        return fail(`openSubmission: ${preference.note} — refusing to open an application with the wrong agency.`);
       }
 
       let chosen: { text: string; offered: string[]; ownerHit: boolean } | null = null;

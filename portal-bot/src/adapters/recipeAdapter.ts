@@ -3042,19 +3042,34 @@ export class RecipeAdapter extends BasePortalAdapter {
     // `recipe.discipline` is the field the learn stored for exactly this: "structural" on one
     // and "electrical" on the other.
     const wantsElectrical = /elec/i.test(String(this.fieldValues.permitType ?? ""))
-      || /elec/i.test(String(step.note ?? ""))
+      || /elec/i.test(String(step.note ?? "").replace(/\s+—\s+issuing agency:.*$/i, ""))
       || /elec/i.test(String(this.recipe.discipline ?? ""));
-    const { ranked, rejected } = rankAddressVersions(rows.map((r: { key: string; text: string }) => r.text), {
+    // THE LOOKED-UP ISSUING AGENCY DECIDES THE ROW when it is known (production 2026-09-27: City
+    // of Jefferson's permits are issued by Marion County; the discipline convention above would
+    // take the city's row for a structural filing). bindRecipeForReplay writes it into the field
+    // values for THIS project and track — the recipe's own recorded row means nothing here.
+    const issuingAgency = String(this.fieldValues.issuingAgency ?? "").trim();
+    const { ranked, rejected, preference } = rankAddressVersions(rows.map((r: { key: string; text: string }) => r.text), {
       city: this.fieldValues.city,
       zip: this.fieldValues.zip,
       homeownerName: this.fieldValues.homeownerName,
       isElectrical: wantsElectrical,
+      issuingAgency: issuingAgency || undefined,
     });
     // How many the grid offered, always — "which row did it pick" is unanswerable otherwise.
     this.agingNotes.push(`address grid: ${rows.length} result(s) offered for ${String(this.fieldValues.city ?? "(no city)")} ${String(this.fieldValues.zip ?? "")}`.slice(0, 140));
     if (ranked.length === 0) {
       this.driftWarnings.push(`address grid: none of ${rows.length} result(s) are in ${this.fieldValues.city ?? "(no city)"} ${this.fieldValues.zip ?? ""} — refusing to open an application against another property`);
       return false;
+    }
+    if (preference.note) this.agingNotes.push(`address version: ${preference.note}`.slice(0, 300));
+    // The agency's row is not on offer and the convention's pick is the OTHER kind of
+    // jurisdiction: clicking it files with an agency the lookup says does not issue this permit
+    // (rule 5's entity clause). Stop, named — the same way an unoffered record type stops.
+    if (preference.contradicts) {
+      const why = `Address version: ${preference.note} — refusing to file with the wrong agency. Choose the row by hand, or correct the issuing agency on the per-job lookup.`;
+      this.driftWarnings.push(`address grid: ${preference.note}`.slice(0, 300));
+      throw new Error(why);
     }
     const best = rows[ranked[0].index];
     const okClick = await this.guardedClick(this.page.locator(`[data-al-row="${best.key}"]`).first(), "select the ranked address version", { timeout: 12000 })
@@ -3070,7 +3085,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       });
     if (!okClick) return false;
     await smartWait(this.page, 2500);
-    this.agingNotes.push(`address version re-ranked live: ${(ranked[0].text.match(/(CITY|COUNTY|DEQ)\s+APPLICATIONS/i) || ["this property"])[0]}${rejected.length ? `, ${rejected.length} other propert${rejected.length === 1 ? "y" : "ies"} rejected` : ""}`);
+    this.agingNotes.push(`address version re-ranked live: ${(ranked[0].text.match(/(CITY|COUNTY|DEQ)\s+APPLICATIONS/i) || ["this property"])[0]}${preference.basis === "agency" ? ` (issuing agency ${issuingAgency})` : ""}${rejected.length ? `, ${rejected.length} other propert${rejected.length === 1 ? "y" : "ies"} rejected` : ""}`);
     return true;
   }
 

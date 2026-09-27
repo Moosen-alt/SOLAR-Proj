@@ -227,6 +227,10 @@ interface StageOptions {
   // missed, from real project data only. Resolved server-side; secrets already stripped.
   gapFillPlanner?: import("./adapters/autoLearnAdapter").LearnPlanner;
   gapFillFields?: Record<string, string>;
+  // The per-job lookup's issuing agency for this track (backend permitProcess.issuingAgencyFor),
+  // for a HAND-CODED adapter choosing between an address's jurisdiction rows. A recipe replay
+  // reads the same answer from its field values (issuingAgency, written by bindRecipeForReplay).
+  issuingAgency?: string | null;
   // THE OPERATOR SUBMITTED IN THE OPEN WINDOW — here is what the completion page said.
   // Fires only on a guided-manual run left open at review, when the human clicks the final
   // submit. portal-bot never writes to the database; it reports, and the caller decides
@@ -435,6 +439,7 @@ async function runAdapter(
     if (options.gapFillPlanner && options.gapFillFields && adapter.enableLlmGapFill) {
       adapter.enableLlmGapFill(options.gapFillPlanner, options.gapFillFields);
     }
+    if (adapter.setIssuingAgency) adapter.setIssuingAgency(options.issuingAgency ?? null);
 
     const loginResult = await adapter.login({
       storageStatePath: tmpStatePath,
@@ -745,7 +750,7 @@ export async function learnPortal(input: {
   siteContactIdentity?: import("./adapters/autoLearnAdapter").ContactIdentity;
   /** City/ZIP/owner + discipline, so an address-disambiguation grid can refuse a row that
    *  belongs to another property rather than guessing between them. */
-  siteIdentity?: { city?: string; zip?: string; homeownerName?: string; isElectrical?: boolean };
+  siteIdentity?: import("./addressVersion").SiteIdentity;
   /** Operator delegation: click the recorded final submit rather than leaving it for a human.
    *  Honoured only alongside PORTAL_ALLOW_FINAL_SUBMIT=1, checked at the click itself. */
   allowFinalSubmit?: boolean;

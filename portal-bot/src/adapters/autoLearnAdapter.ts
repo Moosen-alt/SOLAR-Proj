@@ -1,5 +1,5 @@
 import fs from "fs";
-import { rankAddressVersions } from "../addressVersion";
+import { preferredRowLabel, rankAddressVersions, type SiteIdentity } from "../addressVersion";
 import { imageToPdfBytes, pdfNameFor, shouldConvertToPdf } from "../imageToPdf";
 import path from "path";
 import type { Page, Frame } from "playwright";
@@ -1971,7 +1971,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   private bindableFields: Set<string>;
   // Who and where this project is, for choosing between versions of an address on a
   // disambiguation grid. Not fill data — identity used to REJECT another property's row.
-  private siteIdentity: { city?: string; zip?: string; homeownerName?: string; isElectrical?: boolean } | undefined;
+  private siteIdentity: SiteIdentity | undefined;
   // Operator delegation for the final submit, honoured only alongside PORTAL_ALLOW_FINAL_SUBMIT=1.
   private allowFinalSubmit = false;
   // Tri-state on purpose: false means the project SAYS there is no battery (guard it),
@@ -1987,6 +1987,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   finalSubmitUrl = "";
   // A grid is chosen once per run; re-choosing on a re-scrape would re-click the row.
   private addressRowChosen = false;
+  /** Set when the ranked chooser REFUSED the grid: the looked-up issuing agency names no row and
+   *  the convention's pick is the other kind of jurisdiction. Nothing may pick a row after that. */
+  private addressRowRefusal: string | null = null;
   /** One programme choice per run — a drawer re-opened later must not re-pick. */
   private programChosen = false;
   private equipment: Record<string, string>;
@@ -2074,7 +2077,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
        *  validation (byte-identical to the previous behaviour). */
       bindableFields?: string[];
       /** City/ZIP/owner of the project, so a row for someone else's property is refused. */
-      siteIdentity?: { city?: string; zip?: string; homeownerName?: string; isElectrical?: boolean };
+      siteIdentity?: SiteIdentity;
       /** Operator delegation: click the recorded final submit instead of leaving it. */
       allowFinalSubmit?: boolean;
       /** Whether the PROJECT says a battery exists. false = guard against declaring one. */
@@ -3689,7 +3692,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // city when known (the hand-coded adapter's live-verified logic). Other ACA builds
     // render a radio/checkbox per address row instead.
     const isElectrical = /elec/i.test(project.permitType ?? "");
-    const rowText = isElectrical ? "COUNTY APPLICATIONS" : "CITY APPLICATIONS";
+    // The looked-up issuing agency's kind of row when it is known (addressVersion — the same
+    // predicate the ranked chooser and the replay use), else the discipline convention.
+    const rowText = preferredRowLabel({ issuingAgency: this.siteIdentity?.issuingAgency, city: project.city, isElectrical });
     const cityUpper = (project.city || "").toUpperCase();
     let selected = false;
     // A FRESH SEARCH IS A FRESH GRID. The ranked chooser latches so it picks once per grid;
@@ -3710,6 +3715,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (await this.chooseProjectAddressRow(steps)) {
       selected = true;
       await page.waitForLoadState?.("networkidle", { timeout: 15000 }).catch(() => null);
+    } else if (this.addressRowRefusal) {
+      // Not the first Select either — that would be the same wrong agency, unranked.
+      return bail(`address row refused: ${this.addressRowRefusal}`.slice(0, 300));
     }
     const selectLinks = scope.getByRole("link", { name: /^Select$/i });
     if (!selected && await selectLinks.count().catch(() => 0)) {
@@ -3725,6 +3733,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // The ROW CONTEXT is baked into the recorded selector — a bare role/name "Select"
       // resolves to .first() at replay and silently files under the wrong jurisdiction.
       steps.push({ action: "click", phase: "fill", selector: { css: `tr:has-text("${rowText}") a:has-text("Select")`, fallbacks: [{ role: "link", name: "Select", exact: true }], ...inFrame }, note: `work location: select ${isElectrical ? "county/electrical" : "city/structural"} address row` });
+      // (The note is the DISCIPLINE key recipeDisciplineFromSteps reads — kept verbatim. The row
+      // this step clicks is the one its css names, which follows the issuing agency.)
       selected = true;
     } else if (!selected) {
       const pick = scope.locator("table input[type='radio'], table input[type='checkbox']").first();
@@ -5484,7 +5494,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             `It does not make forward progress — it re-opens or resets what is already open. ` +
             `Work with the form that is on the page NOW: fill its required fields, or click its Continue/Next button.`;
           if (process.env.AUTOLEARN_DEBUG === "1") console.error(`[learn] rejected a re-click of "${navLabelRaw}" (p${pageCount}).`);
-        } else if (navField && this.addressRowChosen && /^\s*select\s*$/i.test(navField.label || "")) {
+        } else if (navField && (this.addressRowChosen || this.addressRowRefusal) && /^\s*select\s*$/i.test(navField.label || "")) {
+          // (Or the chooser REFUSED this grid: no row names the looked-up issuing agency and the
+          // one on offer is the other kind of jurisdiction — a bare Select would file there.)
           // THE ADDRESS VERSION IS ALREADY CHOSEN — the ranked chooser picked this project's
           // row (owner + city + discipline). A bare row "Select" clicked after that RE-SELECTS
           // a jurisdiction and wipes the services panel: live on Marineau's structural learn,
@@ -6862,7 +6874,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   // outright; among this property's own versions, order is a hint (the operator's rule is that
   // one record often carries both disciplines).
   private async chooseProjectAddressRow(steps: RecipeStep[]): Promise<boolean> {
-    if (this.addressRowChosen || !this.siteIdentity) return false;
+    if (this.addressRowChosen || this.addressRowRefusal || !this.siteIdentity) return false;
     if (!this.page || typeof this.page.evaluate !== "function") return false;
     const id = this.siteIdentity;
     if (!id.city && !id.zip) return false; // nothing to verify identity against — don't guess
@@ -6892,11 +6904,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
 
     if (rows.length < 2) return false; // one row (or none) is not a choice
 
-    const { ranked, rejected } = rankAddressVersions(rows.map((r) => r.text), {
+    // The looked-up issuing agency for THIS learn's track decides the row when it is known
+    // (addressVersion: City of Jefferson's permits are Marion County's — the discipline
+    // convention would take the city's row for a structural learn).
+    const { ranked, rejected, preference } = rankAddressVersions(rows.map((r) => r.text), {
       city: id.city, zip: id.zip, homeownerName: id.homeownerName, isElectrical: id.isElectrical === true,
+      issuingAgency: id.issuingAgency ?? undefined,
     });
     if (ranked.length === 0) {
       this.debug?.event({ type: "address_row_refused", why: "no result is this project's property", rejected: rejected.slice(0, 3).join(" | ").slice(0, 200) });
+      return false;
+    }
+    if (preference.contradicts) {
+      // The agency's row is not on offer and the convention's pick is the OTHER kind of
+      // jurisdiction. A learn opens a real application: never against the wrong agency.
+      this.addressRowRefusal = preference.note;
+      this.debug?.event({ type: "address_row_refused", why: preference.note.slice(0, 300) });
       return false;
     }
     const best = rows[ranked[0].index];
@@ -6910,6 +6933,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       type: "address_row_chosen",
       // Jurisdiction words and whether the owner matched — never the address itself.
       jurisdiction: (ranked[0].text.match(/(CITY|COUNTY|DEQ)\s+APPLICATIONS/i) || [])[0] || "unlabelled",
+      basis: preference.basis,
+      agencyNote: preference.note.slice(0, 200),
       ownerMatched: ranked[0].ownerHit,
       considered: ranked.length,
       rejected: rejected.length,

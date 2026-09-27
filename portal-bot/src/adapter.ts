@@ -67,6 +67,10 @@ export interface PortalAdapter {
     planner: import("./adapters/autoLearnAdapter").LearnPlanner,
     projectFields: Record<string, string>,
   ): void;
+  /** The agency the per-job lookup says issues THIS track's permit ("Marion County"), for an
+   *  adapter that chooses between jurisdiction rows of one address (addressVersion). Optional;
+   *  null/absent = unknown, and the adapter keeps its discipline convention. */
+  setIssuingAgency?(name: string | null): void;
   /** Close the underlying browser/context and release the per-client userDataDir
    *  lock. MUST be called in a finally for every run/status-check so a second run
    *  for the same client+portal can launch. Always safe to call (idempotent, never
