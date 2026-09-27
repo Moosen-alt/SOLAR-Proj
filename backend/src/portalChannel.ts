@@ -494,9 +494,19 @@ export function isVendorRootOrMarketing(href: string | null | undefined): boolea
   if (!host) return true;
   if (/^(?:info|go|learn|blog|support|help|community|developers?|docs|marketing|resources|investors?|status|news)\./i.test(host)) return true;
   if (isPathTenantedHost(host)) return portalTenantKey(href) === portalTenantKey(`https://${host}/`);
+  if (isVendorOwnSiteHost(host)) return true;
+  return host === registrableDomain(host);
+}
+/** A host on which NO tenant is ever hosted: every host on a vendor's MARKETING domain, and every
+ *  host on an instance-only domain that is not one of its named instances (success.accela.com).
+ *  ONE answer for isVendorRootOrMarketing AND isInformationalPageUrl's platform exemption — the
+ *  exemption ("a platform's help pages are still on the platform that files") must never reach a
+ *  domain where nothing is filed (lookup-close-7-v MF1: putting the marketing domains on the platform
+ *  list made www.iworq.com/help/permits.pdf fit a permit track — rule 5's information-page clause). */
+function isVendorOwnSiteHost(host: string): boolean {
   const dom = registrableDomain(host);
-  if (VENDOR_MARKETING_DOMAINS.includes(dom) || INSTANCE_ONLY_DOMAINS.includes(dom)) return true;
-  return host === dom;
+  if (VENDOR_MARKETING_DOMAINS.includes(dom)) return true;
+  return INSTANCE_ONLY_DOMAINS.includes(dom) && !isPathTenantedHost(host);
 }
 /** The organisation's domain of a host (co.marion.or.us keeps four labels, x.co.uk three). */
 export function registrableDomain(host: string): string {
@@ -539,7 +549,8 @@ export function isInformationalPageUrl(url: string | null | undefined): boolean 
   const raw = String(url ?? "").trim();
   const host = portalHostOf(raw);
   if (!host) return false;
-  if (isPermitPlatformUrl(raw) || UTILITY_INTERCONNECTION_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) return false;
+  // The platform exemption stops at a vendor's own-site domain: nothing is filed there.
+  if ((isPermitPlatformUrl(raw) && !isVendorOwnSiteHost(host)) || UTILITY_INTERCONNECTION_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) return false;
   let pathname = "";
   try {
     pathname = decodeURIComponent(new URL(raw).pathname);

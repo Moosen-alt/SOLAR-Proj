@@ -782,7 +782,9 @@ await check("(r7) lookup-close-7 — R1 the record type's official arm is THIS a
   for (const [h, n, st] of [["www.camdenmaine.gov", "Town of Camden", "ME"], ["www.austintexas.gov", "City of Austin", "TX"], ["www.cityofdenby.gov", "City of Denby", "IN"], ["www.boston.gov", "City of Boston", "MA"], ["www.nyc.gov", "New York City", "NY"], ["www.ci.waltham.ma.us", "City of Waltham", "MA"], ["www.co.marion.or.us", "Marion County", "OR"], ["dli.mn.gov", "Minnesota Department of Labor and Industry", "MN"], ["www.oregon.gov", "Oregon Building Codes Division", "OR"], ["www.clarkcountynv.gov", "Clark County", "NV"], ["www.cityofevanston.org", "City of Evanston", "IL"]] as const) {
     assert.equal(own(h, [n], st), true, `own domain: ${h} for ${n}`);
   }
-  for (const [h, n, st] of [["www.cityofplainfieldz.gov", "City of Denby", "IN"], ["www.plainfieldz.gov", "City of Denby", "IN"], ["www.in.gov", "City of Denby", "IN"], ["www.iowa.gov", "City of Iowa City", "IA"], ["www.kansas.gov", "Kansas City", "KS"], ["www.ci.newton.ma.us", "City of Waltham", "MA"], ["www.co.marion.or.us", "Marion County", "IA"], ["www.camdenmaine.gov", "Town of Camden", "NJ"], ["www.maine.com", "Maine Electricians' Examining Board", "ME"], ["www.accela.com", "City of Accela", "CA"]] as const) {
+  for (const [h, n, st] of [["www.cityofplainfieldz.gov", "City of Denby", "IN"], ["www.plainfieldz.gov", "City of Denby", "IN"], ["www.in.gov", "City of Denby", "IN"], ["www.iowa.gov", "City of Iowa City", "IA"], ["www.kansas.gov", "Kansas City", "KS"], ["www.ci.newton.ma.us", "City of Waltham", "MA"], ["www.co.marion.or.us", "Marion County", "IA"], ["www.camdenmaine.gov", "Town of Camden", "NJ"], ["www.maine.com", "Maine Electricians' Examining Board", "ME"], ["www.accela.com", "City of Accela", "CA"],
+    // Two-letter initials never stand alone, on .gov or anywhere (lookup-close-7-v kill M16: 'S… F…' reading sf.gov as its own).
+    ["sf.gov", "City of Sioux Falls", "SD"], ["www.sf.gov", "Santa Fe County", "NM"], ["kc.gov", "Kansas City", "MO"]] as const) {
     assert.equal(own(h, [n], st), false, `not own domain: ${h} for ${n} (${st})`);
   }
   const belongs = ppl.recordTypeBelongsToPortal;
@@ -855,6 +857,17 @@ await check("(r7) lookup-close-7 — R1 the record type's official arm is THIS a
   // A tenant parameter names the tenant on ANY host — the path is then a page of that tenant (close-6 L17, re-pointed).
   assert.equal(channel.portalTenantKey("https://permits.cityofx.gov/Portal/PortalController?Action=showHomePage&installationID=5"), channel.portalTenantKey("https://permits.cityofx.gov/Search/Records?installationID=5"), "the tenant parameter alone keys the tenant");
   for (const v of ["iworq.com", "bsasoftware.com", "centralsquare.com", "peoplegis.com", "avolvesoftware.com", "fullcircletech.com"]) assert.equal(channel.isVendorDomain(v), true, v);
+  // RULE 5's information-page clause holds on the marketing domains (lookup-close-7-v MF1): the platform
+  // exemption is for a platform that FILES, and nothing is filed on a vendor's own site.
+  for (const u of ["https://www.iworq.com/help/permits.pdf", "https://www.bsasoftware.com/news/permits", "https://www.centralsquare.com/blog/x", "https://success.accela.com/help/permits.pdf", "https://www.peoplegis.com/guides/permits.pdf"]) {
+    assert.equal(channel.isInformationalPageUrl(u), true, `information page: ${u}`);
+    const fit = channel.hostFitsTrackAndEntity("building", null, u, "research");
+    assert.equal(fit.fits, false, `rule 5 information-page clause: ${u} fits the permit track`);
+  }
+  // MUST-PASS: a filing instance's own help / document paths keep the exemption.
+  for (const u of ["https://portal.iworq.net/PLAINFIELD/help/permits.pdf", "https://aca-prod.accela.com/CHINO/Help/guide.pdf", "https://camdenmepermit.portal.iworq.net/portalhome/camdenmepermit/help", "https://www.mapsonline.net/westonma/help/permits.pdf"]) {
+    assert.equal(channel.isInformationalPageUrl(u), false, `a filing instance's help path stays exempt: ${u}`);
+  }
 });
 
 if (failures) { console.error(`\n${failures} lookupDoors test(s) failed.`); process.exit(1); }
