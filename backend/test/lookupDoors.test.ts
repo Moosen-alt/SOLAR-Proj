@@ -439,9 +439,13 @@ await check("(a1) MF4: ONE predicate 'is this cited agency the AHJ itself' (same
   assert.ok((r.lookup!.notes ?? []).some((n) => /^Portal \(electrical\): .*CHARLESTONEXAMPLE.*jurisdiction type judged against City of Charleston-example$/.test(n)), JSON.stringify(r.lookup!.notes));
   // The TYPELESS form ("Charleston-example Permit Center", as an application form prints it) is the city too.
   const p1b = { ...p1, permits: [p1.permits[0], { ...p1.permits[1], issuingAgency: { value: "Charleston-example Permit Center", sourceUrl: APP, quote: "ELECTRICAL TRADE PERMIT APPLICATION Charleston-example Permit Center 2 George St" } }] };
-  const rb = await ppl.runPermitProcessLookup(db, { webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? g(JSON.stringify(p1b), [PG, APP]) : g(JSON.stringify({ permits: [] }), [])) }, { state: "SC", ahj: "City of Charleston-example", dcKw: "7", acKw: "6", force: true, reader: newReader(site(pages).fetch) });
+  // Its OWN key (state NC): over the SC row just saved, mergeWithEarlier ("a re-run never forgets a
+  // cited answer") carried the electrical portal forward, so this case passed with the publisher
+  // predicate killed (close-5 kill K25 stayed green). A fresh row answers only from this run.
+  const rb = await ppl.runPermitProcessLookup(db, { webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? g(JSON.stringify(p1b), [PG, APP]) : g(JSON.stringify({ permits: [] }), [])) }, { state: "NC", ahj: "City of Charleston-example", dcKw: "7", acKw: "6", force: true, reader: newReader(site(pages).fetch) });
   assert.equal(saved(rb, "electrical").issuingAgency.value, "Charleston-example");
   assert.equal(saved(rb, "electrical").portalUrl.value, ACA, `typeless: the same portal (${saved(rb, "electrical").portalUrl.notFound})`);
+  assert.ok((rb.lookup!.notes ?? []).some((n) => /^Portal \(electrical\): .*CHARLESTONEXAMPLE.* — from the agency page \(our read\);/.test(n)), `typeless: THIS run took the publisher's portal for the electrical permit ${JSON.stringify(rb.lookup!.notes)}`);
   const fees = await import("../src/feeSchedules");
   const cityKey = fees.feeScheduleProfileKey({ state: "SC", ahj: "City of Charleston-example" }, "permit");
   const rows = fees.getFeeSchedulesForKey(db, cityKey, "permit");
