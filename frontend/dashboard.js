@@ -3249,6 +3249,22 @@ function buildRecordCommand() {
   return parts.join(" ");
 }
 
+// THE PRESCRIPTIVE-VS-ENGINEERED CHOICE IS OREGON'S SPLIT (ORSC / BCD 440-5952). Everywhere else a
+// plan set is a standard structural review (a stamped design carries its stamp), so the Manual-entry
+// control offers no such choice there — the e2e-gap close verifier (2026-09-26) found the static
+// "mutually exclusive" hint and the "(prescriptive vs engineered)" label rendered on every project,
+// and an override picked there produced the Oregon split until permitPath.ts set it aside. One
+// function decides the label, the hint and whether the two options are live; the backend's own
+// flag (prescriptiveSplitApplies) can widen it to a jurisdiction whose cited process names a split.
+function permitPathChoice(project) {
+  const st = String(project?.state || "").trim().toUpperCase();
+  const snap = project?.parserSnapshot || {};
+  const split = st === "OR" || snap.prescriptiveSplitApplies === true || project?.prescriptiveSplitApplies === true;
+  return split
+    ? { enabled: true, label: "Permit path (prescriptive vs engineered)", hint: "Prescriptive and structural applications are mutually exclusive — only the matching one is generated and uploaded." }
+    : { enabled: false, label: "Permit path", hint: `${st || "This jurisdiction"} has no prescriptive-vs-engineered choice: the plan set is reviewed as a standard structural review (a stamped design carries its stamp). Auto-detect stays selected.` };
+}
+
 function renderRecordPortal() {
   if (!$("recordCmdPreview")) return;
   const p = state.detail?.project;
@@ -3377,6 +3393,16 @@ function renderRecordPortal() {
   setIfIdle("manualJobValue", snap.jobValue != null ? String(snap.jobValue) : "");
   setIfIdle("manualProjectType", snap.projectType != null ? String(snap.projectType) : "");
   setIfIdle("manualPermitPath", snap.permitPathOverride != null ? String(snap.permitPathOverride) : "");
+  {
+    const choice = permitPathChoice(p);
+    const pathSel = $("manualPermitPath");
+    if (pathSel) {
+      for (const opt of Array.from(pathSel.options || [])) if (opt.value) opt.disabled = !choice.enabled;
+      if (!choice.enabled && pathSel.value) pathSel.value = "";
+    }
+    if ($("manualPermitPathLabel")) $("manualPermitPathLabel").textContent = choice.label;
+    if ($("manualPermitPathHint")) $("manualPermitPathHint").textContent = choice.hint;
+  }
   setIfIdle("manualStructureType", snap.structureTypeOverride ? String(snap.structureTypeOverride) : "unknown");
   setIfIdle("manualHomeownerEmail", snap.homeownerEmail != null ? String(snap.homeownerEmail) : "");
   setIfIdle("manualHomeownerPhone", snap.homeownerPhone != null ? String(snap.homeownerPhone) : "");

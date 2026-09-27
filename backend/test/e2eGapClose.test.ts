@@ -350,6 +350,29 @@ console.log("\nHEADER — the utility group is headed by the track's own program
   check("(h6) the group head is esc()'d in renderSubmittalTracks", /track-group-head">\$\{esc\(title\)\}/.test(dashboard));
 }
 
+// ── (m9) THE OPERATOR OVERRIDE CARRIES THE STATE TOO (close verifier MF1). The Manual-entry control
+// exists on every project; picking "prescriptive" in Massachusetts produced the whole Oregon split
+// (path=prescriptive, standardReview=false, "upload ONLY the prescriptive application") until the
+// override was set aside outside the split. Resolver-level (the verifier's probe shape) and every
+// surface swept; Oregon's own override still wins.
+{
+  const ma = NON_OREGON[0];
+  // The override lives in the parser snapshot (permitPath.ts snap()), exactly as the Manual-entry save lands it.
+  const r = resolvePermitPath({ ...ma, parserSnapshot: { permitPathOverride: "prescriptive" } } as never);
+  check("(m9) MUST-EXCLUDE: override 'prescriptive' on a non-Oregon project resolves to a standard structural review, never the prescriptive path",
+    r.path !== "prescriptive" && r.standardReview === true && r.basis.some((b) => /set aside/.test(b)), textOf({ path: r.path, standardReview: r.standardReview, basis: r.basis }));
+  const pid = mk(ma, { permitPathOverride: "prescriptive" });
+  const s = surfaces(pid);
+  const offenders = Object.entries(s).filter(([, text]) => OREGON_SPLIT.test(text));
+  check(`(m9 sweep) MUST-EXCLUDE ${ma.state}: with the override set, no surface carries the split's words (${Object.keys(s).length} swept)`,
+    offenders.length === 0, offenders.map(([k, text]) => `${k}: ${hit(text)}`).join("\n     "));
+  const ro = resolvePermitPath({ ...OREGON, parserSnapshot: { permitPathOverride: "prescriptive" } } as never);
+  check("(m9 OR) MUST-PASS: Oregon's own 'prescriptive' override still wins", ro.path === "prescriptive" && ro.standardReview === false, textOf({ path: ro.path, standardReview: ro.standardReview }));
+  const re = resolvePermitPath({ ...ma, parserSnapshot: { permitPathOverride: "engineered" } } as never);
+  check("(m9 eng) MUST-PASS: override 'engineered' on a non-Oregon project is a stamped structural review (standard review, stamped package owed)",
+    re.path === "engineered" && re.standardReview === true && re.needsEngineeredDocs === true, textOf({ path: re.path, standardReview: re.standardReview, needs: re.needsEngineeredDocs }));
+}
+
 if (failures) { console.error(`\ne2eGapClose: ${failures} FAILED`); process.exit(1); }
 console.log("\ne2eGapClose: all checks passed");
 process.exit(0);

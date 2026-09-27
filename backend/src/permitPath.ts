@@ -425,8 +425,18 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
     return finalize("engineered", "operator");
   }
   if (/prescriptive/.test(override)) {
-    basis.push("Operator selected the prescriptive path.");
-    return finalize("prescriptive", "operator");
+    // THE OVERRIDE CARRIES THE STATE TOO (e2e-gap close verifier MF1): "prescriptive" is a choice
+    // only where the split exists. Outside it the control still exists on every project, so an
+    // operator who picks it in Massachusetts must not get the Oregon split — the choice is set
+    // aside with its reason and the resolution continues as for any other job there.
+    if (!splitApplies) {
+      // Worded without the split's own phrases ("prescriptive path", "prescriptive application"…): this
+      // line is printed on the package cover of a non-Oregon job, which must carry none of them.
+      basis.push(`Manual-entry permit path "prescriptive" set aside: ${usStateCode(project.state) || "this jurisdiction"} offers no such choice (that split is Oregon's ORSC / BCD 440-5952 rule) — reviewed as a standard structural review.`);
+    } else {
+      basis.push("Operator selected the prescriptive path.");
+      return finalize("prescriptive", "operator");
+    }
   }
 
   // 2. Parser hint when it explicitly states the path.
