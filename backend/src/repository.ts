@@ -4280,8 +4280,15 @@ function trackingNumbersForProject(db: AppDb, projectId: string): string[] {
  *   - no active target of that kind, or a workflow that names no single track ("both", "unknown")
  *     -> null: the reading is recorded as a check row with NO target. NEVER the other track's
  *     target, and never an inactive one (a retired filing is not this email's).
- * The caller passes the email's track alongside so a no-target reading is still judged as the
+ * The caller passes the email's track alongside so a no-target reading is still WORDED as the
  * filing it is about (recordPermitStatusCheck's `track` input).
+ *
+ * WHERE IT IS FILED IS NOT WHAT IT MAY WRITE (decisions-0926-final, fail-closed). An email is a
+ * third party's prose routed by a classifier, so whatever target this picks, the writer refuses
+ * every finishing outcome from it (readingMayFinishTrack: source email) — the row lands as
+ * "Reported, unconfirmed" with a human-review item, and a poll or an operator's re-check against
+ * the target is what finishes the track. The classifier's mistakes (an AHJ approval that mentions
+ * the utility bucketed nem) can therefore mis-FILE a reading, never mis-FINISH a track.
  */
 export function emailTrackTargetId(db: AppDb, projectId: string, workflow: string): { targetId: string | null; track: TrackKind | null } {
   const track: TrackKind | null = workflow === "permit" || workflow === "nem" ? workflow : null;
@@ -5991,7 +5998,7 @@ export async function recordPermitStatusCheck(
         reviewedByAhj: false,
         readyForIssue: false,
         issueFeeDue: false,
-        message: `Reported, unconfirmed: a ${source} reading says "${read.statusLabel}" (${read.outcome}), but ${provenance.trusted ? "" : provenance.reason}. `
+        message: `Reported, unconfirmed: a reading from ${source} says "${read.statusLabel}" (${read.outcome}), but ${provenance.trusted ? "" : provenance.reason}. `
           + `Confirm it on the ${writtenTrack === "nem" ? "utility's" : "jurisdiction's"} portal — a poll or a manual re-check against the filing's own active tracking target — before it counts.`,
       }
     : read;

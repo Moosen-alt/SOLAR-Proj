@@ -616,7 +616,15 @@ export function classificationDrift(stored: {
   const raw = String(stored.rawStatusText ?? "").trim();
   const storedOutcome = String(stored.outcome ?? "").trim();
   const storedStatusLabel = String(stored.statusLabel ?? "").trim();
-  if (!raw || !storedOutcome) {
+  // A ROW THE WRITER REFUSED ON PROVENANCE IS CURRENT. Its verdict came from readingMayFinishTrack
+  // (an email's approval, a no-target reading, the other track's family), not from the words —
+  // re-reading the same words under today's rules says "nem_approved" and always will, and that
+  // is not drift: today's writer would refuse it again. Marking it stale would offer a re-check
+  // as if the RULES had moved, and label the client page "being re-checked" for a reading whose
+  // own label already says it is unconfirmed. The remedy is the same either way: a real poll or
+  // manual re-check against the target, which writes a new row through the writer.
+  const refusedOnProvenance = storedOutcome === "needs_human_review" && storedStatusLabel === UNCONFIRMED_READING_LABEL;
+  if (!raw || !storedOutcome || refusedOnProvenance) {
     return {
       stale: false,
       storedOutcome,
