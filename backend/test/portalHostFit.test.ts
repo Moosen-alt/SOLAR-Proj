@@ -113,13 +113,38 @@ await check("(p2c) MUST-EXCLUDE (close-3 caveat C, rule 5 fails closed): a Sales
     assert.equal(channel.salesforceTenantKind(u), "utility", u);
     assert.equal(hostFitsTrackAndEntity("building", null, u, "research").code, "track_conflict", u);
   }
-  // Government agencies: a state agency's abbreviation (whole label, a state's letters beside it), permit / building / county / cityof words, a state's name.
-  for (const u of ["https://nmrld.my.site.com/s/electrical-permits", "https://nmrld.force.com/apply", "https://txtdlr.my.site.com/s/", "https://bcdor.my.site.com/s/", "https://nm-cid.my.site.com/s/", "https://cityofsantafe.my.site.com/s/", "https://elmcountypermits.my.site.com/s/", "https://newmexico-permits.force.com/s/", "https://buildingsafety.my.site.com/s/", "https://stateofnm.my.salesforce-sites.com/permits"]) {
+  // THE GOVERNMENT ALLOWLIST (lookup-close-4 D2): an explicit label (nmrld, txtdlr), a state code run
+  // together with a state agency's abbreviation (nm-cid -> nmcid), or a label ending in permits / permitting.
+  for (const u of ["https://nmrld.my.site.com/s/electrical-permits", "https://nmrld.force.com/apply", "https://txtdlr.my.site.com/s/", "https://nm-cid.my.site.com/s/", "https://orbcd.my.site.com/s/", "https://elmcountypermits.my.site.com/s/", "https://newmexico-permits.force.com/s/", "https://buildingpermits.my.site.com/s/", "https://elm-permitting.my.site.com/s/"]) {
     assert.equal(channel.salesforceTenantKind(u), "agency", u);
     assert.equal(channel.isUtilityPlatformUrl(u), false, u);
     assert.equal(hostFitsTrackAndEntity("building", null, u, "research").fits, true, `${u} must fit a permit track`);
     assert.equal(channel.isPermitPlatformUrl(u), false, "still no platform of either kind");
   }
+  // NO WORD SCORING (close-3-v MF2): a city's / building / state / county word, an abbreviation with the state's
+  // letters after it, or a utility word inside the run-together label names NO agency — refused, with the rule named.
+  const notAllowlisted = ["bcdor", "cityofsantafe", "buildingsafety", "stateofnm", "countyofmarin", "cityoflasvegas", "cityoftallahassee", "cityofelm-water",
+    "tricountyemc", "tri-county-emc", "jacksoncountyremc", "douglascountypud", "clallamcountypud", "snohomishcountypud", "dpl", "ohdpl", "newmexicogas", "texasgas", "washingtongas", "cityofelmgas", "cpsenergy", "ladwp", "smud", "lipa", "coned-permits", "abrld", "acidco"];
+  for (const t of notAllowlisted) {
+    const u = `https://${t}.my.site.com/s/`;
+    assert.notEqual(channel.salesforceTenantKind(u), "agency", `${t} is not on the allowlist`);
+    const fit = hostFitsTrackAndEntity("building", null, u, "research");
+    assert.equal(fit.code, "track_conflict", `${t} must not fit a permit track`);
+    assert.match(fit.reason, /rule 5 fails closed/, fit.reason);
+    assert.equal(hostFitsTrackAndEntity("nem", null, u).fits, true, `${t} still fits the NEM track`);
+  }
+  for (const t of ["tricountyemc", "douglascountypud", "coned-permits", "cpsenergy", "cityofelm-utilities"]) assert.equal(channel.salesforceTenantKind(`https://${t}.my.site.com/s/`), "utility", `${t} names a utility`);
+  for (const t of ["newmexicogas", "cityoflasvegas", "cityofsantafe", "dpl"]) assert.equal(channel.salesforceTenantKind(`https://${t}.my.site.com/s/`), "unknown", `${t}: no word scoring — unknown, refused with the rule named`);
+  // D2b: a human-VERIFIED KB row for THIS AHJ naming that host and tenant opens it — a seeded row, another
+  // AHJ's row, or another tenant on the host does not.
+  const sfCity = "https://cityofsantafe.my.site.com/s/permits";
+  const ahj = (verified: string[], own: string[] = verified): channel.PortalEntity => ({ scope: "ahj", state: "NM", name: "City of Santa Fe", ownPortals: own, verifiedPortals: verified, otherClaims: [] });
+  assert.equal(hostFitsTrackAndEntity("building", ahj(["https://cityofsantafe.my.site.com/s/"]), sfCity, "research").fits, true, "verified row names the host and tenant");
+  assert.match(hostFitsTrackAndEntity("building", ahj(["https://cityofsantafe.my.site.com/s/"]), sfCity, "research").reason, /human-verified record/);
+  assert.equal(hostFitsTrackAndEntity("building", ahj([], ["https://cityofsantafe.my.site.com/s/"]), sfCity, "research").code, "track_conflict", "a seeded row does not open it");
+  assert.equal(hostFitsTrackAndEntity("building", ahj(["https://cityofsantafe.my.site.com/other/"]), sfCity, "research").code, "track_conflict", "another tenant on the host does not");
+  assert.equal(hostFitsTrackAndEntity("building", { ...ahj([sfCity]), scope: "utility" }, sfCity, "research").code, "track_conflict", "a utility-scoped entity never opens it on the permit track");
+  assert.equal(hostFitsTrackAndEntity("building", ahj(["https://pge.my.site.com/s/"]), "https://pge.my.site.com/s/", "research").fits, true, "even a utility-worded tenant: a person said so (rule 3)");
   assert.equal(channel.salesforceTenantKind("https://aca-prod.accela.com/NMRLD/"), null, "not a Salesforce host");
   assert.equal(channel.isUtilityPlatformUrl("https://aca-prod.accela.com/ENTERGY/"), false, "the tenant rule is Salesforce-only");
 });
