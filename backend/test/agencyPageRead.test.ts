@@ -544,6 +544,22 @@ await check("(i3) end to end (close F5/F6/F4): the page-read portal goes only to
   assert.ok(s.requests.some((q) => q.url === OLD_FEES), "the cited schedule was read once");
 });
 
+await check("(i5) (Y10) the verify-read of cited fee schedules is bounded: three permits citing three unread schedules -> at most two are read", async () => {
+  const F = (n: number) => `${CITY}/home/showpublisheddocument/${n}/1`;
+  const s = site({ [CENTER]: { text: fixture("agency-permit-center.html") }, [F(1)]: { status: 404 }, [F(2)]: { status: 404 }, [F(3)]: { status: 404 } });
+  const fee = (n: number) => ({ value: { amountUsd: 10 * n, basis: "flat", lines: [{ label: "Solar", amountUsd: 10 * n }] }, sourceUrl: F(n), quote: `Solar $ ${10 * n}` });
+  const process1 = JSON.stringify({ issuingAgency: { value: "City of Alderbrook", sourceUrl: CENTER, quote: "The City of Alderbrook Permit Center issues building permits." }, permitStructure: { value: null },
+    permits: [{ discipline: "structural", label: "B", portalUrl: { value: null }, recordType: { value: null } }, { discipline: "electrical", label: "E", portalUrl: { value: null }, recordType: { value: null } }, { discipline: "other", label: "O", portalUrl: { value: null }, recordType: { value: null } }] });
+  const llm = { webLookup: async (i: { label: string }) => {
+    if (i.label.endsWith(".process")) return g(process1, [CENTER]);
+    if (i.label.endsWith(".documentsFees")) return g(JSON.stringify({ permits: [{ discipline: "structural", documents: { value: null }, fee: fee(1) }, { discipline: "electrical", documents: { value: null }, fee: fee(2) }, { discipline: "other", documents: { value: null }, fee: fee(3) }] }), [F(1), F(2), F(3)]);
+    return g(JSON.stringify({ permits: [] }), []);
+  } };
+  await ppl.runPermitProcessLookup(db, llm, { state: "OR", ahj: "City of Alderbrook", force: true, reader: newReader(s.fetch) });
+  const feeReads = s.requests.filter((q) => /showpublisheddocument\/[123]\//.test(q.url));
+  assert.equal(feeReads.length, 2, `Y10: ${feeReads.length} cited schedules read (${feeReads.map((q) => q.url).join(", ")})`);
+});
+
 // ── lookup-close-2 (the second skeptic's BROKEN verdict, 2026-09-26): MF1 / MF2 / MF3, the quote
 // door's recall, the landing-page rules, and the reviewer's untested kills (Y2-Y6, Y9). ───────
 // Real page texts: Fairfax County's solar-residential page (documents as ' - ' items), Hollis NH's
@@ -713,13 +729,34 @@ await check("(p3) politeness (Y5 / Y6): a redirect onto another host starts THAT
   assert.equal(reader.falseWallOverride(refused(long, 200, "text/html", "HTTP 200"), "https://x.gov/p"), null, "only the transport's own wall reading is overridden");
 });
 
-await check("(y9) MUST-EXCLUDE (Y9): a CITED fee document that is a prior year's / archived is never read; MUST-PASS: a current one is", async () => {
+await check("(y9) MUST-EXCLUDE (Y9): a CITED fee document that is a prior year's / archived is never read; MUST-PASS: a current one is; (Y8) a fee link on another STATE's locality domain is not this agency's; (Y13) a tenant read that shows the agency's name but no platform is not the portal; (Y7) a cited type naming a PATH picks the one candidate on it", async () => {
   const s = site({ [PAGE2]: { text: synthetic(`<p>Apply in person.</p>`) }, [`${CITY2}/files/fee-schedule-fy2027.pdf`]: { contentType: "text/plain", text: "Building Permit Fees\nSolar  $75.00" }, [`${CITY2}/files/2018-fee-schedule.pdf`]: { contentType: "text/plain", text: "Solar  $10.00" } });
   const r = newReader(s.fetch);
   await ppl.readAgencyEvidence(r, { ahj: "City of Examplecity", state: "OR", agencyNames: [], citedUrls: [PAGE2, `${CITY2}/files/2018-fee-schedule.pdf`, `${CITY2}/files/fee-schedule-fy2027.pdf`], resultUrls: [], proposedPortals: [] });
   const read = s.requests.map((q) => q.url);
   assert.ok(!read.some((u) => u.includes("2018-fee-schedule")), `Y9: the 2018 schedule was read (${read.join(", ")})`);
   assert.ok(read.some((u) => u.includes("fee-schedule-fy2027")), `the current schedule was read (${read.join(", ")})`);
+  // Y8: the job's state decides whose locality domain is official.
+  const M = "https://www.co.marion.or.us/building";
+  const pg = { url: M, finalUrl: M, ok: true, status: 200, kind: "html" as const, reason: "", ...reader.parseHtml(synthetic(`<a href="https://www.co.marion.ia.us/files/fee-schedule.pdf">Fee Schedule</a> <a href="https://www.co.marion.or.us/files/permit-fees.pdf">Permit Fees</a>`), M) };
+  assert.deepEqual(cat.documentLinks([pg], ["Marion County"], "OR").map((d) => d.text), ["Permit Fees"], "Y8: Iowa's Marion County schedule is not Oregon's");
+  assert.equal(cat.documentLinks([pg], ["Marion County"]).length, 2, "with no state known, either locality domain is official");
+  // Y13: two tenants, the read of one names the agency but shows no platform markers.
+  const TWO = `${CITY2}/permits`;
+  const plain = (agency: string) => `<html><head><title>Welcome</title></head><body><main><h1>${agency} Online Permits</h1></main></body></html>`;
+  const t = await resolveNamed({
+    [TWO]: { text: synthetic(`<a href="https://aca-prod.accela.com/ABC/Default.aspx">Permit portal</a> <a href="https://aca-prod.accela.com/XYZ/Default.aspx">Permit portal (new)</a>`) },
+    "https://aca-prod.accela.com/ABC/Default.aspx": { text: plain("City of Othertown") },
+    "https://aca-prod.accela.com/XYZ/Default.aspx": { text: plain("City of Examplecity") },
+  }, [TWO], ["City of Examplecity"]);
+  assert.equal(t.res, null, `Y13: a read without platform markers attests nothing (got ${t.res?.url})`);
+  // Y7: the cited type names a path, not a label.
+  const cands = cat.solarRecordTypeCandidates({ platform: "energov", sourceUrl: "u", types: [
+    { label: "BLDG Solar APP+ Permit (Residential < 38.4 Kwh)", description: "", category: "Building" },
+    { label: "BLDG Residential – Solar/Photovoltaic", description: "", category: "Building" },
+  ] });
+  assert.equal(cat.candidateNamedBy(cands, "Apply through SolarAPP+")?.path, "solarapp", "Y7: the path the cited type names");
+  assert.equal(cat.candidateNamedBy(cands, "the prescriptive path"), null, "no candidate on that path");
 });
 
 await check("(i4) end to end (close-2 item 4): the code editions are quoted from a PDF we read ('Current Codes 2020 NEC' in a town's solar-requirements sheet), and documents quoted from it with '8 1/2\"' are kept", async () => {
