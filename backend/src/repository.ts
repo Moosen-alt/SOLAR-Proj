@@ -79,6 +79,7 @@ import { findAhjProcessProfile } from "./processProfiles";
 import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor } from "./permitProcess";
 import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
 import { agencyListStatusResolver, documentInventory, owedMissingDocuments, type DocumentInventory, type DocPresence } from "./requiredDocuments";
+import { agencyListReplacesLine, issuingAgencyDocumentList } from "./applicationDocsAgency";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
 // shape as correctionAgent. getProjectList needs the rule table synchronously.
@@ -4856,10 +4857,16 @@ function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
       verifiedBy: learned.verifiedBy,
     };
     // Merge the learned required docs into the profile's list (dedup), and if the
-    // builder fell back to a generic profile, adopt the learned AHJ identity.
+    // builder fell back to a generic profile, adopt the learned AHJ identity. A learned line for a
+    // TRACK another agency issues does not come back behind that agency's own application — the
+    // same replacement the builder made (applicationDocsAgency.agencyListReplacesLine; agency-apps-close
+    // MF2 at the door: Michael's card re-grew the city's "portal entry" and generic checklist lines).
+    let agencyList: ReturnType<typeof issuingAgencyDocumentList> = null;
+    try { agencyList = issuingAgencyDocumentList(detail.project); } catch { agencyList = null; }
+    const learnedLines = learned.requiredDocuments.filter((line) => !agencyList || !agencyListReplacesLine(agencyList, line));
     pkg.profile = {
       ...pkg.profile,
-      requiredDocuments: Array.from(new Set([...pkg.profile.requiredDocuments, ...learned.requiredDocuments])),
+      requiredDocuments: Array.from(new Set([...pkg.profile.requiredDocuments, ...learnedLines])),
       portalName: pkg.profile.portalName || learned.portalName,
       sourceUrl: pkg.profile.sourceUrl || learned.portalUrl,
       name: /generic/i.test(pkg.profile.name) && learned.ahj

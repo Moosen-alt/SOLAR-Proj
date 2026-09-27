@@ -239,6 +239,13 @@ try {
   filledDirs.push(created.id);
   const doorList = () => repo.getApplicationDocumentPackage(db, created.id).profile.requiredDocuments;
   const statusOf = (lines: string[], re: RegExp) => lines.find((l) => re.test(l)) ?? "";
+  // MF2 AT THE DOOR: the project's birth learn wrote the base profile's lines to the KB, and the door
+  // merges learned lines back in — a learned line for a track the county issues must not return.
+  const doorPkg = repo.getApplicationDocumentPackage(db, created.id);
+  const learnedLines = doorPkg.learnedRequirements?.requiredDocuments ?? [];
+  check("MF2 (door fixture) the learned KB row carries the city's portal-entry and checklist lines", learnedLines.some((l) => /portal entry/i.test(l)) && learnedLines.some((l) => /checklist/i.test(l)), JSON.stringify(learnedLines));
+  check("MF2 at the door: no learned line for a track the county issues comes back (no portal entry, one checklist)", !doorPkg.profile.requiredDocuments.some((l) => /portal entry/i.test(l)) && doorPkg.profile.requiredDocuments.filter((l) => /checklist/i.test(l)).length === 1, JSON.stringify(doorPkg.profile.requiredDocuments));
+  check("MF2 at the door: learned lines that are no track's application stay", learnedLines.filter((l) => !agencyMod.agencyListReplacesLine(agencyMod.issuingAgencyDocumentList(created)!, l)).every((l) => doorPkg.profile.requiredDocuments.includes(l)));
   const before = doorList();
   check("MF3 before acquisition: the county's B-01S is 'not yet on file', never 'filled'", /— not yet on file/.test(statusOf(before, /B-01S/)) && !/— filled$/.test(statusOf(before, /B-01S/)), JSON.stringify(before));
   check("MF3 before acquisition: the E-01 likewise", /— not yet on file/.test(statusOf(before, /E-01/)));
