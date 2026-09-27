@@ -638,16 +638,85 @@ export function portalSafetyFactory() {
   // "I certify / attest / declare…" counts when the same sentence is about the APPLICATION /
   // permit / this form / request / submission, or it is under penalty of perjury; the signing
   // wordings (by typing your name, electronic signature, sign below…) count on their own.
-  const ATTESTATION_TEXT =
-    /\bi\s+(hereby\s+)?(certify|attest|declare|swear|affirm|acknowledge and certify)\b[^.]{0,200}\b(application|permit|this\s+(form|request|submission|document))\b|under\s+(the\s+)?penalt(y|ies)\s+of\s+perjury|by\s+(typing|entering|providing|printing)\s+(your|my)\s+(full\s+)?name\b|\bsign(ing|ed|s)?\s+(this\s+)?(application|form|document|agreement|permit|request)?\s*electronically|electronic(ally)?\s+sign|\be-?sign(ature|ing|ed)?\b|consent\s+to\s+(electronically\s+)?sign|constitutes?\s+(your|an?|my|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\b(your|my|applicant'?s?|owner'?s?|contractor'?s?)\s+(electronic\s+|typed\s+|digital\s+)?signature\b|(^|\n)\s*(e-?|electronic\s+|typed\s+|digital\s+)?signature\s*[:*]?\s*($|\n)|\bsign\s+(below|here)\b/i;
+  //
+  // PERJURY IS ABOUT SOMETHING (autosubmit-close MF-D). "Under penalty of perjury" used to count
+  // on its own, so "I certify under penalty of perjury that the CONTACT information provided is
+  // true and correct" above a contacts "Full name" typed the client's signer as the contact (or
+  // paused signature_no_signer on a contacts page), and "I declare under penalty of perjury that
+  // the contact named above may be reached…" below a lone "Full name" read as a signature. It now
+  // counts only when the same sentence is about the application / permit / this form / request /
+  // submission, or about signing.
+  //
+  // SIGNING_TEXT is the narrower half: the statement says that typing a name IS signing ("By
+  // typing your name below you are signing…", "electronic signature", "sign below"). An "Applicant
+  // Name" / "Signer Name" box is a signature box only under THAT (MF-E): under an "I certify the
+  // information in this application…" alone it is still the applicant's contact name.
+  const SIGNING_TEXT =
+    /by\s+(typing|entering|providing|printing)\s+(your|my)\s+(full\s+|first\s+and\s+last\s+|legal\s+)?name\b|\bsign(ing|ed|s)?\s+(this\s+)?(application|form|document|agreement|permit|request)?\s*electronically|electronic(ally)?\s+sign|\be-?sign(ature|ing|ed)?\b|consent\s+to\s+(electronically\s+)?sign|constitutes?\s+(your|an?|my|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\b(your|my|applicant'?s?|owner'?s?|contractor'?s?)\s+(electronic\s+|typed\s+|digital\s+)?signature\b|(^|\n)\s*(e-?|electronic\s+|typed\s+|digital\s+)?signature\s*[:*]?\s*($|\n)|\bsign\s+(below|here)\b/i;
+  const ABOUT_THE_FILING = "\\b(application|permit|this\\s+(form|request|submission|document)|sign(s|ing|ed|ature)?)\\b";
+  const ATTESTATION_TEXT = new RegExp([
+    "\\bi\\s+(hereby\\s+)?(certify|attest|declare|swear|affirm|acknowledge and certify)\\b[^.]{0,200}\\b(application|permit|this\\s+(form|request|submission|document))\\b",
+    "under\\s+(the\\s+)?penalt(y|ies)\\s+of\\s+perjury[^.]{0,200}" + ABOUT_THE_FILING,
+    ABOUT_THE_FILING + "[^.]{0,200}under\\s+(the\\s+)?penalt(y|ies)\\s+of\\s+perjury",
+    SIGNING_TEXT.source,
+  ].join("|"), "i");
   // A bare name box — the kind an attestation turns into a signature.
   const NAME_BOX_LABEL =
     /\b(type|print|enter)\s+(in\s+)?(your|my)\s+(full\s+|legal\s+)*name\b|\b(your|my)\s+(full\s+|legal\s+)+name\b|^\s*(full\s+|legal\s+)*name\s*(\*|:)?\s*$|\b(full|legal)\s+name\s+of\s+(the\s+)?(person|individual|party)\b/i;
+  // A ROLE's name box ("Applicant Name", "Signer Name", "Owner's Full Name") — a signature box only
+  // under a SIGNING statement (MF-E b/c).
+  const ROLE_NAME_BOX_LABEL =
+    /^\s*(applicant|owner|property\s+owner|signer|signatory|contractor|agent|authorized\s+(agent|signer|signatory|representative))('?s)?\s+(full\s+|legal\s+|printed\s+)?name\s*[*:]?\s*$/i;
+  // A label that WRAPS its statement ("<label><span>I certify … this application …</span><span>Full
+  // name *</span><input></label>", MF-E a): the box's own name is the label's last segment, the
+  // statement its head.
+  const labelTail = (t: string): { head: string; tail: string } => {
+    const parts = t.split(/(?<=[.!?:])\s*/).map((s) => s.trim()).filter(Boolean);
+    const tail = parts.length > 1 ? parts[parts.length - 1] : t;
+    return { head: parts.length > 1 ? parts.slice(0, -1).join(" ") : "", tail };
+  };
   const isSignatureNameBox = (label: string | null | undefined, textAbove?: string | null): boolean => {
     if (isSignatureNameLabel(label)) return true;
     const t = String(label ?? "").replace(/\s+/g, " ").trim();
-    if (!t || SIGNATURE_LABEL_EXCLUDE.test(t) || TYPE_SIGNATURE_TOGGLE.test(t)) return false;
-    return NAME_BOX_LABEL.test(t) && ATTESTATION_TEXT.test(String(textAbove ?? ""));
+    if (!t || TYPE_SIGNATURE_TOGGLE.test(t)) return false;
+    const { head, tail } = labelTail(t);
+    if (SIGNATURE_LABEL_EXCLUDE.test(tail)) return false;
+    const around = `${head}\n${String(textAbove ?? "")}`;
+    if ((NAME_BOX_LABEL.test(t) || NAME_BOX_LABEL.test(tail)) && ATTESTATION_TEXT.test(around)) return true;
+    return ROLE_NAME_BOX_LABEL.test(tail) && SIGNING_TEXT.test(around);
+  };
+  // A SPLIT signature (MF-E d): "First name" / "Last name" under a SIGNING statement ("By typing
+  // your first and last name below you are signing…") — the authorized signer's first / last name,
+  // never a contact's. "" = not a part of a signature.
+  const FIRST_NAME_BOX = /^\s*(first|given)\s*-?\s*name\s*[*:]?\s*$/i;
+  const LAST_NAME_BOX = /^\s*(last|sur|family)\s*-?\s*name\s*[*:]?\s*$/i;
+  const signatureNamePartOf = (label: string | null | undefined, textAbove?: string | null): "first" | "last" | "" => {
+    const t = String(label ?? "").replace(/\s+/g, " ").trim();
+    if (!t) return "";
+    const { head, tail } = labelTail(t);
+    const part = FIRST_NAME_BOX.test(tail) ? "first" : LAST_NAME_BOX.test(tail) ? "last" : "";
+    return part && SIGNING_TEXT.test(`${head}\n${String(textAbove ?? "")}`) ? part : "";
+  };
+  /** The signer's first or last name for a split signature: the first token / the last token
+   *  (a trailing Jr./Sr./II/III/IV/Esq. is not a last name; "Signer, Dana" reads last-first).
+   *  "" when the name cannot be split into two — the run pauses rather than guess. */
+  const splitSignerName = (name: string | null | undefined, part: "first" | "last"): string => {
+    const raw = String(name ?? "").replace(/\s+/g, " ").trim();
+    if (!raw) return "";
+    let first = "";
+    let last = "";
+    const comma = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (comma.length === 2 && !/^(jr|sr|ii|iii|iv|esq|phd|md)\.?$/i.test(comma[1])) {
+      last = comma[0];
+      first = comma[1].split(" ")[0];
+    } else {
+      const toks = raw.replace(/,/g, " ").split(" ").filter(Boolean);
+      while (toks.length > 2 && /^(jr|sr|ii|iii|iv|esq|phd|md)\.?$/i.test(toks[toks.length - 1])) toks.pop();
+      if (toks.length < 2) return "";
+      first = toks[0];
+      last = toks[toks.length - 1];
+    }
+    return part === "first" ? first : last;
   };
   const isTypeSignatureToggleLabel = (label: string | null | undefined): boolean => !!label && TYPE_SIGNATURE_TOGGLE.test(String(label));
 
@@ -671,7 +740,9 @@ export function portalSafetyFactory() {
   // Word-bounded "sign": "Design firm" / "Assigned inspector" are unrelated contact fields and
   // must bound the block (a bare substring let a design-professional section read up to an
   // attestation above it).
-  const SIGNATURE_BLOCK_RELATED = /\b(date|title|initials?)\b|\b(e-?)?sign/i;
+  // A first / last / middle name box is part of a split signature block (MF-E d), so the "Last
+  // name" box still reads the statement above its "First name" partner.
+  const SIGNATURE_BLOCK_RELATED = /\b(date|title|initials?)\b|\b(e-?)?sign|\b(first|last|middle|given|family|sur)\s*-?\s*name\b/i;
   const textAroundInPage = (el: Element, cap = 1500): string => {
     const clean = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
     const shownBox = (c: Element): boolean => {
@@ -733,12 +804,12 @@ export function portalSafetyFactory() {
   const signatureStepInPage = (): {
     kind: "typed" | "drawn" | "";
     why: string;
-    controls: Array<{ role: "consent" | "toggle" | "typed"; id: string; label: string; name: string; tag: string; type: string }>;
+    controls: Array<{ role: "consent" | "toggle" | "typed"; id: string; label: string; name: string; tag: string; type: string; part?: "first" | "last"; index: number }>;
   } => {
     const d = (globalThis as { document?: Document }).document;
     const none = { kind: "" as const, why: "", controls: [] };
     if (!d || !d.body) return none;
-    for (const e of Array.from(d.querySelectorAll("[data-al-sig]"))) e.removeAttribute("data-al-sig");
+    for (const e of Array.from(d.querySelectorAll("[data-al-sig]"))) { e.removeAttribute("data-al-sig"); e.removeAttribute("data-al-sig-i"); e.removeAttribute("data-al-sig-part"); }
     const shown = (el: Element): boolean => {
       const r = el.getBoundingClientRect();
       const cs = getComputedStyle(el);
@@ -746,11 +817,15 @@ export function portalSafetyFactory() {
     };
     const nameOf = (el: Element): string => String(controlLabelInPage(el) || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").replace(/\s+/g, " ").trim();
     const idWords = (el: Element): string => `${el.id || ""} ${el.getAttribute("name") || ""}`.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_\-.[\]]+/g, " ");
-    const controls: Array<{ role: "consent" | "toggle" | "typed"; id: string; label: string; name: string; tag: string; type: string }> = [];
-    const take = (el: Element, role: "consent" | "toggle" | "typed"): void => {
+    const controls: Array<{ role: "consent" | "toggle" | "typed"; id: string; label: string; name: string; tag: string; type: string; part?: "first" | "last"; index: number }> = [];
+    // Each control carries its own index (data-al-sig-i): a page with TWO boxes of one role (a
+    // split first / last signature) is filled box by box, never twice into the first.
+    const take = (el: Element, role: "consent" | "toggle" | "typed", part?: "first" | "last"): void => {
       if (el.getAttribute("data-al-sig")) return;
       el.setAttribute("data-al-sig", role);
-      controls.push({ role, id: el.id || "", label: nameOf(el), name: el.getAttribute("name") || "", tag: el.tagName.toLowerCase(), type: String((el as HTMLInputElement).type || "").toLowerCase() });
+      el.setAttribute("data-al-sig-i", String(controls.length));
+      if (part) el.setAttribute("data-al-sig-part", part);
+      controls.push({ role, id: el.id || "", label: nameOf(el), name: el.getAttribute("name") || "", tag: el.tagName.toLowerCase(), type: String((el as HTMLInputElement).type || "").toLowerCase(), ...(part ? { part } : {}), index: controls.length });
     };
     // The switch: a checkbox / role=switch / button whose label says "Enable Type Signature".
     for (const el of Array.from(d.querySelectorAll("input[type=checkbox], [role=switch], [role=checkbox], button"))) {
@@ -769,8 +844,21 @@ export function portalSafetyFactory() {
       if ((box.disabled || box.readOnly) && String(box.value ?? "").trim() !== "") continue;
       const label = nameOf(el);
       const typedBox = /\btyped?\s*signature\b|signature\s*typed/i.test(`${label} ${idWords(el)}`);
-      if (typedBox) take(el, "typed");
-      else if (isSignatureNameBox(label, textAroundInPage(el))) take(el, "consent");
+      if (typedBox) { take(el, "typed"); continue; }
+      const around = textAroundInPage(el);
+      // A <label> that WRAPS the box and its statement reads (capped) as the statement's head —
+      // "Full name *" falls off the end (MF-E a). The box's own name is then the nearest text
+      // before it inside that label.
+      let own = "";
+      const wrap = el.closest("label");
+      if (wrap && !wrap.getAttribute("for")) {
+        for (let s: ChildNode | null = el.previousSibling; s && !own; s = s.previousSibling) {
+          own = String(s.nodeType === 3 ? s.nodeValue : ((s as HTMLElement).innerText || s.textContent || "")).replace(/\s+/g, " ").trim();
+        }
+      }
+      if (isSignatureNameBox(label, around) || (own && isSignatureNameBox(own, around))) { take(el, "consent"); continue; }
+      const part = signatureNamePartOf(label, around) || (own ? signatureNamePartOf(own, around) : "");
+      if (part) take(el, "consent", part);
     }
     // The pad: a visible canvas inside (or named as) a signature container.
     const pad = Array.from(d.querySelectorAll("canvas")).find((c) => {
@@ -1461,6 +1549,8 @@ export function portalSafetyFactory() {
     navigatorOnlyControlLabelsInPage,
     isSignatureNameLabel,
     isSignatureNameBox,
+    signatureNamePartOf,
+    splitSignerName,
     isTypeSignatureToggleLabel,
     signatureStepInPage,
     textAroundInPage,
@@ -1491,6 +1581,8 @@ export const looksLikeReviewUrl = impl.looksLikeReviewUrl;
 export const reviewSignals = impl.reviewSignals;
 export const isSignatureNameLabel = impl.isSignatureNameLabel;
 export const isSignatureNameBox = impl.isSignatureNameBox;
+export const signatureNamePartOf = impl.signatureNamePartOf;
+export const splitSignerName = impl.splitSignerName;
 export const isTypeSignatureToggleLabel = impl.isTypeSignatureToggleLabel;
 
 /** The minimum of a recorded step the form-data question needs. */

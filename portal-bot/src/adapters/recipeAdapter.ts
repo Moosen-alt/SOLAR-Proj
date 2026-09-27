@@ -77,7 +77,7 @@ import { openPortal } from "../browser";
 import { selectWithFallback } from "../comboboxFill";
 import {
   classifySubmissionText, finalSubmitEnvAllows, finalSubmitRefusals, isFinalSubmitControl, isPayFee, isPayNowDialogText, mayClickFinalSubmit,
-  isRecipeShapeValid, isSignatureNameLabel, isSubmitIntent, isSubmitOrPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE,
+  isRecipeShapeValid, isSignatureNameLabel, isSubmitIntent, isSubmitOrPayRequestUrl, PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, splitSignerName,
   type HealedStep, type RunApproval, type SubmissionOutcome,
 } from "../../../shared/src/portalSafety";
 import { commitField, installSettleProbe, waitForSettled } from "../settle";
@@ -631,17 +631,19 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  this page) mark THIS control as a signer's name box (data-al-sig consent / typed)?
    *  Unreadable = false: the recorded binding stands, as before this check existed. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async isLiveSignatureBox(scoped: any): Promise<boolean> {
-    if (!this.page || typeof this.page.evaluate !== "function" || !scoped || typeof scoped.evaluate !== "function") return false;
+  private async liveSignatureBoxOf(scoped: any): Promise<{ part: "" | "first" | "last" } | null> {
+    if (!this.page || typeof this.page.evaluate !== "function" || !scoped || typeof scoped.evaluate !== "function") return null;
     await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
-    const role = await scoped.evaluate((el: Element, g: string) => {
+    const read = await scoped.evaluate((el: Element, g: string) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ps = (globalThis as any)[g];
       if (!ps || typeof ps.signatureStepInPage !== "function") return "";
       ps.signatureStepInPage();
-      return el.getAttribute("data-al-sig") || "";
+      return `${el.getAttribute("data-al-sig") || ""}|${el.getAttribute("data-al-sig-part") || ""}`;
     }, PORTAL_SAFETY_GLOBAL, { timeout: 1500 }).catch(() => "");
-    return role === "consent" || role === "typed";
+    const [role, part] = String(read || "").split("|");
+    if (role !== "consent" && role !== "typed") return null;
+    return { part: part === "first" || part === "last" ? part : "" };
   }
 
   async fillApplication(project: ProjectRecord): Promise<PortalStepResult> {
@@ -1963,7 +1965,12 @@ export class RecipeAdapter extends BasePortalAdapter {
     // THE SIGNER IS THE CLIENT'S AUTHORIZED SIGNER, whatever key an older recipe bound the box
     // to (a planner-chosen installerContactName would sign as the contact). Empty = runAll
     // pauses before this step, named.
-    if (step.action === "fill" && isSignatureStep(step)) return String(this.fieldValues.authorizedSignerName ?? "").replace(/\s+/g, " ").trim();
+    // A SPLIT signature step (signerNamePart) takes that part of the signer — "" when the name
+    // cannot be split, which pauses the run exactly like no signer at all (MF-E d).
+    if (step.action === "fill" && isSignatureStep(step)) {
+      const signer = String(this.fieldValues.authorizedSignerName ?? "").replace(/\s+/g, " ").trim();
+      return step.signerNamePart ? splitSignerName(signer, step.signerNamePart) : signer;
+    }
     // A PARCEL SEARCHED "(no dashes)" (the learner's ACA work-location pass, Lee County): the
     // same characters, dashes and spaces dropped — the way the learn searched it.
     if (step.action === "fill" && step.field && /\(no dashes\)/i.test(String(step.note ?? ""))) {
@@ -3351,10 +3358,13 @@ export class RecipeAdapter extends BasePortalAdapter {
         // replay would sign as the contact. The in-page reading the learner uses
         // (signatureStepInPage, which marks the control data-al-sig) is asked about THIS control:
         // a signature box takes the client's authorized signer or nobody.
-        if (!isSignatureStep(step) && await this.isLiveSignatureBox(scoped)) {
-          const signer = String(this.fieldValues.authorizedSignerName ?? "").replace(/\s+/g, " ").trim();
+        const live = isSignatureStep(step) ? null : await this.liveSignatureBoxOf(scoped);
+        if (live) {
+          const full = String(this.fieldValues.authorizedSignerName ?? "").replace(/\s+/g, " ").trim();
+          // A split signature box (First / Last name under a signing statement) takes that part.
+          const signer = live.part ? splitSignerName(full, live.part) : full;
           const what = String(step.selector?.label ?? step.note ?? "signature").slice(0, 60);
-          this.driftWarnings.push(`e-signature box read on the page ("${what}") on a step bound to ${step.field ? step.field : "a recorded literal"} — ${signer ? "typed as the client's authorized signer instead" : "no authorized signer, nothing typed"}`);
+          this.driftWarnings.push(`e-signature box read on the page ("${what}") on a step bound to ${step.field ? step.field : "a recorded literal"} — ${signer ? `typed as the client's authorized signer${live.part ? ` (${live.part} name)` : ""} instead` : full ? "the authorized signer's name cannot be split into first and last, nothing typed" : "no authorized signer, nothing typed"}`);
           if (!signer) { this.liveSignaturePause = what; return false; }
           v = signer;
         }

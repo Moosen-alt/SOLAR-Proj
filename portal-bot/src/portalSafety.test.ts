@@ -33,6 +33,8 @@ import {
   isReviewPageText,
   isSignatureNameBox,
   isSignatureNameLabel,
+  signatureNamePartOf,
+  splitSignerName,
   looksLikeReviewUrl,
   reviewSignals,
   isSecretField,
@@ -392,6 +394,37 @@ await check("FEE CONFIRM: pays-now wording is dismissed, deferred fee wording ac
   for (const t of DIALOG_NO_PAYMENT) {
     assert.equal(paymentDialogVerdict(t), "no_payment", `"${t}" reads ${paymentDialogVerdict(t)}`);
     assert.equal(pc.paymentDialogVerdict(t), "no_payment", `page copy drifted on "${t}"`);
+  }
+});
+
+// THE SIGNER RULE'S WORDING (autosubmit-close MF-D / MF-E): perjury counts only when it is about
+// the application / signing; a role's name box ("Applicant Name", "Signer Name") only under a
+// SIGNING statement; a split First / Last name signature takes the signer split, or nobody.
+await check("SIGNER RULE: perjury about contact data is not an attestation; a role name box needs a signing statement; split names", () => {
+  const CERT_APP = "I certify under penalty of perjury that the information in this application is true and correct.";
+  const SIGNING = "By typing your name below you are signing this application electronically.";
+  const pc = pageCopy as unknown as PortalSafety;
+  for (const [label, around, want] of [
+    ["Full name *", CERT_APP, true],
+    ["Full name *", "I certify under penalty of perjury that the contact information provided is true and correct", false],
+    ["Full name *", "I declare under penalty of perjury that the contact named above may be reached at any time.", false],
+    ["Full name *", "Under penalty of perjury, the undersigned declares this permit request is accurate.", true],
+    ["Signer Name *", SIGNING, true], ["Applicant Name *", SIGNING, true],
+    ["Applicant Name *", CERT_APP, false], ["Applicant Name *", "Who is applying for this permit?", false],
+    ["Signer Email *", SIGNING, false],
+    [`${CERT_APP} Full name *`, "", true],
+  ] as Array<[string, string, boolean]>) {
+    assert.equal(isSignatureNameBox(label, around), want, `isSignatureNameBox(${JSON.stringify(label)}, ${JSON.stringify(around.slice(0, 50))}) should be ${want}`);
+    assert.equal(pc.isSignatureNameBox(label, around), want, `page copy drifted on ${JSON.stringify(label)}`);
+  }
+  const SPLIT = "By typing your first and last name below you are signing this application electronically.";
+  assert.equal(signatureNamePartOf("First name *", SPLIT), "first");
+  assert.equal(signatureNamePartOf("Last name *", SPLIT), "last");
+  assert.equal(signatureNamePartOf("First name *", "Primary Contact"), "", "a contact's First name is not a signature part");
+  assert.equal(signatureNamePartOf("First name *", CERT_APP), "", "an attestation alone does not make First name a signature part");
+  for (const [name, first, last] of [["Dana Signer", "Dana", "Signer"], ["Dana Q. Signer", "Dana", "Signer"], ["Dana Signer Jr.", "Dana", "Signer"], ["Signer, Dana", "Dana", "Signer"], ["Cher", "", ""], ["", "", ""]] as Array<[string, string, string]>) {
+    assert.equal(splitSignerName(name, "first"), first, `splitSignerName(${JSON.stringify(name)}, first)`);
+    assert.equal(splitSignerName(name, "last"), last, `splitSignerName(${JSON.stringify(name)}, last)`);
   }
 });
 

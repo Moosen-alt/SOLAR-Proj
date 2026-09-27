@@ -3115,6 +3115,10 @@ export interface RecipeStep {
    *  safely stops at the review screen and never clicks final submit. */
   isFinalSubmit?: boolean;
   note?: string;
+  /** A SPLIT e-signature box (portalSafety signatureNamePartOf: "First name" / "Last name" under a
+   *  signing statement): the step types that part of the client's authorized signer
+   *  (splitSignerName), never the whole name, never a contact's. Only on signature steps. */
+  signerNamePart?: "first" | "last";
   /** See StepFingerprint — heal tie-break metadata captured at record time. */
   fingerprint?: StepFingerprint;
 }

@@ -19,7 +19,7 @@ import { parseStreetName, parseStreetNumber, parseStreetLine, correctTruncatedAd
 import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
-import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, reviewSignals as sharedReviewSignals } from "../../../shared/src/portalSafety";
+import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, reviewSignals as sharedReviewSignals, splitSignerName } from "../../../shared/src/portalSafety";
 import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, backstopFor, isStoppingAbort } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
 
@@ -3352,7 +3352,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   }
 
   /** portalSafety signatureStepInPage on the current page (marks the controls data-al-sig). */
-  private async signatureStepHere(): Promise<{ kind: "typed" | "drawn" | ""; why: string; controls: Array<{ role: "consent" | "toggle" | "typed"; id: string; label: string; name: string; tag: string; type: string }> } | null> {
+  private async signatureStepHere(): Promise<{ kind: "typed" | "drawn" | ""; why: string; controls: Array<{ role: "consent" | "toggle" | "typed"; id: string; label: string; name: string; tag: string; type: string; part?: "first" | "last"; index: number }> } | null> {
     if (!this.page || typeof this.page.evaluate !== "function") return null;
     await this.page.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE).catch(() => null);
     return await this.page.evaluate((g: string) => {
@@ -3383,7 +3383,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
    * authorizedSignerName with no literal. Returns the extracted-field indices of the controls
    * so the planner's fills on them are dropped.
    */
-  private async completeTypedSignature(signer: string, steps: RecipeStep[], fields: ExtractedField[]): Promise<{ ok: boolean; why: string; fieldIdx: Set<number> }> {
+  private async completeTypedSignature(signer: string, steps: RecipeStep[], fields: ExtractedField[]): Promise<{ ok: boolean; why: string; fieldIdx: Set<number>; noSigner?: boolean }> {
     const page = this.page;
     const fieldIdx = new Set<number>();
     if (!page) return { ok: false, why: "no page", fieldIdx };
@@ -3425,10 +3425,18 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
       const boxes = (sig?.controls ?? []).filter((c) => c.role === "consent" || c.role === "typed");
       if (!boxes.length) return { ok: false, why: "no box to type the signer's name into was found", fieldIdx };
+      // A SPLIT signature (First name / Last name under a signing statement, MF-E d) takes the
+      // signer's first and last name — and when the signer's name cannot be split, nobody's: the
+      // run pauses signature_no_signer before anything is typed.
+      if (boxes.some((b) => b.part && !splitSignerName(signer, b.part))) {
+        return { ok: false, why: `the client's authorized signer ("${signer.slice(0, 40)}") cannot be split into the first and last name this signature asks for`, fieldIdx, noSigner: true };
+      }
       for (const b of boxes) {
-        const loc = page.locator(`[data-al-sig=${b.role}]`).first();
+        // Box by box (its own data-al-sig-i), never "the first box of this role" twice.
+        const loc = page.locator(`[data-al-sig-i="${b.index}"]`).first();
+        const value = b.part ? splitSignerName(signer, b.part) : signer;
         await loc.waitFor?.({ state: "visible", timeout: 3000 }).catch(() => null);
-        const filled = await loc.fill(signer, { timeout: 5000 }).then(() => true).catch(() => false);
+        const filled = await loc.fill(value, { timeout: 5000 }).then(() => true).catch(() => false);
         if (!filled) return { ok: false, why: `the signer's name could not be typed into "${b.label || b.role}"`, fieldIdx };
         // Commit like a person: the change, then leave the box (EnerGov draws the typed name into
         // the pad and marks the signature added on these).
@@ -3439,8 +3447,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           (el as HTMLElement).blur();
         }).catch(() => null);
         const held = await loc.inputValue({ timeout: 2000 }).catch(() => "");
-        if (String(held).trim() !== signer) return { ok: false, why: `"${b.label || b.role}" did not hold the signer's name after typing`, fieldIdx };
-        steps.push({ action: "fill", phase: "fill", selector: selectorFor(b), field: "authorizedSignerName", note: `e-signature: ${b.role === "typed" ? "typed signature" : "signer name (consent)"}` });
+        if (String(held).trim() !== value) return { ok: false, why: `"${b.label || b.role}" did not hold the signer's name after typing`, fieldIdx };
+        steps.push(b.part
+          ? { action: "fill", phase: "fill", selector: selectorFor(b), field: "authorizedSignerName", signerNamePart: b.part, note: `e-signature: signer ${b.part} name (consent)` }
+          : { action: "fill", phase: "fill", selector: selectorFor(b), field: "authorizedSignerName", note: `e-signature: ${b.role === "typed" ? "typed signature" : "signer name (consent)"}` });
       }
       this.debug?.event({ type: "signature_typed", boxes: boxes.length, toggle: Boolean(toggle) });
       return { ok: true, why: "", fieldIdx };
@@ -5088,6 +5098,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             };
           }
           const done = await this.completeTypedSignature(signer, steps, fields);
+          if (!done.ok && done.noSigner) {
+            park(`signature_no_signer: ${done.why} — nothing was typed`);
+            return {
+              ...fail(steps, this.portalName, `Paused at the e-signature step: ${done.why}, so there is no name the bot may sign with. Correct the authorized signer on the client (first and last name) and run again, or sign in the browser. Nothing was typed into the signature.`, "signature_no_signer", pageCount, portalNotices),
+              stopReason: "signature_no_signer",
+            };
+          }
           if (!done.ok) {
             park(`signature_incomplete: ${done.why}`);
             return {

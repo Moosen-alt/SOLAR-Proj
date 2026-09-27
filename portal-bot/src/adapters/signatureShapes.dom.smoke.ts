@@ -29,6 +29,18 @@
 //   names a signature) and on the certifyNoWord box (only the in-page mark says so): refused, the
 //   box stays empty. Switching the guard off makes this red.
 //
+// autosubmit-close (auto-submit ON: no person at review, so a wrong name in a signature is FILED):
+// MUST-EXCLUDE (group "signer", signatureShapesSigner) sigLabelWrapSpan (the statement inside the
+//   <label> wrapping the box), signerNameLabel / applicantNameLabel ("Signer Name" / "Applicant Name"
+//   under a SIGNING statement): the CLIENT's signer or a signature_no_signer pause — at learn AND at
+//   replay of a css-only old recipe bound to the contact. Never "Casey Contact".
+// MUST-EXCLUDE (group "split", signatureShapesSplit) contactsFirstLast (First name / Last name under
+//   "By typing your first and last name below you are signing…"): "Dana" / "Signer" bound to
+//   authorizedSignerName with signerNamePart; no signer, or a name that cannot be split ("Cher"):
+//   signature_no_signer, nothing typed — at learn and at replay.
+// MUST-PASS  (group "split") contactsPerjuryAbove / contactsPerjuryOnlyName (perjury wording about
+//   CONTACT data): the contact's "Full name" stays the planner's.
+//
 // Run: npx tsx portal-bot/src/adapters/signatureShapes.dom.smoke.ts [mf1|review|planner|variant,...]
 //      (signatureShapesReview / signatureShapesPlanner .dom.smoke.ts run the other two groups)
 import "../smokeArtifactDirs";
@@ -47,7 +59,8 @@ const check = (label: string, ok: boolean, detail = ""): void => {
 };
 
 const STEPS = ["Description", "Sign", "Review and Submit"];
-type V = { step2: string; review: string; lastBtn: string; lastUrl: string; planner?: "atReviewOnSign" | "naive"; sigLabel?: string; nameBox?: "contact" | "signer" | "email" };
+type V = { step2: string; review: string; lastBtn: string; lastUrl: string; planner?: "atReviewOnSign" | "naive"; sigLabel?: string; nameBox?: "contact" | "signer" | "email" | "split" };
+const CERT = "I certify under penalty of perjury that I am the applicant or the applicant's authorized agent and that the information in this application is true and correct.";
 const REVIEW = `<h2>Review and Submit</h2><p>Total fees $78.00</p>`;
 const SUBMIT = "/api/energov/permit/submit";
 const V: Record<string, V> = {
@@ -91,6 +104,17 @@ const V: Record<string, V> = {
   reviewStepperNoHeading: { step2: `<h2>More Info</h2><div><label for="nm">Product Manufacturer Name *</label> <input id="nm" data-name type="text"></div>`, review: `<div class="mat-stepper-horizontal"><div class="mat-horizontal-stepper-header-container" role="tablist"><div role="tab">1 Description</div><div role="tab">2 More Info</div><div role="tab">3 Review and Submit</div></div><div class="mat-horizontal-content-container"><div class="step-title">Step 3: Review and Submit</div><p>Please review your application before submitting.</p><p>Estimated fees: Total $78.00</p></div></div>`, lastBtn: "Next", lastUrl: "/api/energov/permit/apply/12", planner: "naive" },
   reviewStepperDivOnly: { step2: `<h2>More Info</h2><div><label for="nm">Product Manufacturer Name *</label> <input id="nm" data-name type="text"></div>`, review: `<div class="mat-stepper-horizontal"><div class="mat-horizontal-stepper-header-container"><div class="mat-step-header">1 Description</div><div class="mat-step-header">2 More Info</div><div class="mat-step-header">3 Review and Submit</div></div><div class="mat-horizontal-content-container"><div class="step-title">Step 3: Review and Submit</div><div>Estimated fees: Total $78.00</div></div></div>`, lastBtn: "Next", lastUrl: "/api/energov/permit/apply/12", planner: "naive" },
   reviewStepsContentDivTitle: { step2: `<h2>More Info</h2><div><label for="nm">Product Manufacturer Name *</label> <input id="nm" data-name type="text"></div>`, review: `<div class="wizard-steps-content"><div class="step-title">Step 3: Review and Submit</div><p>Please review your application before submitting.</p></div>`, lastBtn: "Next", lastUrl: "/api/energov/permit/apply/12", planner: "naive" },
+  // autosubmit-close MF-E (auto-submit ON: no person at review, a wrong name is FILED) — signature
+  // boxes the rule missed, where the planner typed the installer contact "Casey Contact":
+  // (a) the statement inside the <label> that wraps the box; (b) "Signer Name" and (c) "Applicant
+  // Name" under a SIGNING statement; (d) a split First / Last name signature.
+  sigLabelWrapSpan: { step2: `<h2>Certification</h2><div class="field"><label><span class="stmt">${CERT}</span> <span class="lbl">Full name *</span> <input id="nm" data-name type="text"></label></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, sigLabel: "Full name", nameBox: "signer" },
+  signerNameLabel: { step2: `<h2>Certification</h2><p>By typing your name below you are signing this application electronically.</p><div><label for="nm">Signer Name *</label> <input id="nm" data-name type="text"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, sigLabel: "Signer Name", nameBox: "signer" },
+  applicantNameLabel: { step2: `<h2>Certification</h2><p>By typing your name below you are signing this application electronically.</p><div><label for="nm">Applicant Name *</label> <input id="nm" data-name type="text"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, sigLabel: "Applicant Name", nameBox: "signer" },
+  contactsFirstLast: { step2: `<h2>Certification</h2><p>By typing your first and last name below you are signing this application electronically.</p><div><label for="fn">First name *</label> <input id="fn" data-name type="text"></div><div><label for="ln">Last name *</label> <input id="ln" data-name type="text"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, sigLabel: "name", nameBox: "split" },
+  // autosubmit-close MF-D — perjury about the CONTACT data: still the planner's contact.
+  contactsPerjuryAbove: { step2: `<h2>Contacts</h2><div><label><input type="checkbox" id="ag"> I certify under penalty of perjury that the contact information provided is true and correct</label></div><div><label for="nm">Full name *</label> <input id="nm" data-name type="text"></div><div><label for="ph">Phone</label> <input id="ph" type="text"></div>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, nameBox: "contact" },
+  contactsPerjuryOnlyName: { step2: `<h2>Emergency Contact</h2><div><label for="nm">Full name *</label> <input id="nm" data-name type="text"></div><p>I declare under penalty of perjury that the contact named above may be reached at any time.</p>`, review: REVIEW, lastBtn: "Submit", lastUrl: SUBMIT, nameBox: "contact" },
 };
 
 const page = (v: V): string => `<!doctype html><html><head><title>Apply - Residential Solar</title></head><body>
@@ -110,6 +134,9 @@ function render(){
     if (S.step === 2) {
       var n = document.getElementById("nm"); window.__typed = n ? n.value : null;
       if (n && !n.value.trim()) { document.getElementById("err").textContent = "Name is required."; return; }
+      var fn = document.getElementById("fn"), ln = document.getElementById("ln");
+      if (fn || ln) { window.__typedFirst = fn ? fn.value : null; window.__typedLast = ln ? ln.value : null; }
+      if ((fn && !fn.value.trim()) || (ln && !ln.value.trim())) { document.getElementById("err").textContent = "First and last name are required."; return; }
       if (V.lastUrl && V.step2.indexOf("Confirm and Sign") >= 0) { S.lastClicked = true; fetch(V.lastUrl, { method: "POST", body: "x=1" }).then(function(){ S.step = 3; render(); }); return; }
     }
     if (S.step === 3) { S.lastClicked = true; fetch(V.lastUrl, { method: "POST", body: "x=1" }).catch(function(){}); return; }
@@ -154,11 +181,15 @@ const mkPlanner = (mode: V["planner"]): LearnPlanner => async (req) => {
   return { fills, atReview: false, ...(next >= 0 ? { advanceSelectorIndex: next } : {}) };
 };
 
-type St = { step?: number; lastClicked?: boolean; typed?: string | null; box?: string | null; err?: string };
+type St = { step?: number; lastClicked?: boolean; typed?: string | null; box?: string | null; typedFirst?: string | null; typedLast?: string | null; first?: string | null; last?: string | null; err?: string };
 const readState = (pg: Page): Promise<St> => pg.evaluate(() => ({
   ...(window as unknown as { __S: Record<string, unknown> }).__S,
   typed: (window as unknown as { __typed?: string }).__typed ?? null,
   box: (document.getElementById("nm") as HTMLInputElement | null)?.value ?? null,
+  typedFirst: (window as unknown as { __typedFirst?: string }).__typedFirst ?? null,
+  typedLast: (window as unknown as { __typedLast?: string }).__typedLast ?? null,
+  first: (document.getElementById("fn") as HTMLInputElement | null)?.value ?? null,
+  last: (document.getElementById("ln") as HTMLInputElement | null)?.value ?? null,
 })).catch((e) => ({ err: String(e) })) as Promise<St>;
 
 // THREE RUNNER-SIZED FILES, ONE HARNESS. A learn on this wizard takes ~60 s; all 13 shapes with
@@ -179,17 +210,22 @@ export const GROUPS: Record<string, string[]> = {
   around: ["sibBelow", "sibAbove5"],
   contacts: ["contactUnderCertify", "contactUnderAgree", "contactsBelowAttest", "signBlockWithDate"],
   reviewBar: ["reviewStepperNoHeading", "reviewStepperDivOnly", "reviewStepsContentDivTitle"],
+  // autosubmit-close: signatureShapesSigner / signatureShapesSplit .dom.smoke.ts
+  signer: ["sigLabelWrapSpan", "signerNameLabel", "applicantNameLabel"],
+  split: ["contactsFirstLast", "contactsPerjuryAbove", "contactsPerjuryOnlyName"],
 };
-const BOTH_SIGNERS = new Set(["certifyNoWord", "bareSignature", "certifierName", "combinedReviewSign", "pcEsigEmailText", "pcEsigEmailType", "sibBelow", "sibAbove5", "contactUnderCertify"]);
+const BOTH_SIGNERS = new Set(["certifyNoWord", "bareSignature", "certifierName", "combinedReviewSign", "pcEsigEmailText", "pcEsigEmailType", "sibBelow", "sibAbove5", "contactUnderCertify", "sigLabelWrapSpan", "signerNameLabel", "applicantNameLabel"]);
 // A contact shape whose wrong direction is the CLIENT's signer typed in: run with a signer.
-const SIGNER_ONLY = new Set(["contactUnderAgree", "contactsBelowAttest", "signBlockWithDate"]);
+const SIGNER_ONLY = new Set(["contactUnderAgree", "contactsBelowAttest", "signBlockWithDate", "contactsPerjuryAbove", "contactsPerjuryOnlyName"]);
+// A split signature: a signer to split, no signer, and one that cannot be split ("Cher").
+const SPLIT_SIGNERS: Record<string, string[]> = { contactsFirstLast: ["Dana Signer", "", "Cher"] };
 const which = (process.argv[2] ? (GROUPS[process.argv[2]] ?? process.argv[2].split(",")) : GROUPS.mf1);
 const browser = await chromium.launch();
 try {
   for (const name of which) {
     const v = V[name];
     if (!v) { console.log(`?? ${name}`); continue; }
-    for (const signer of BOTH_SIGNERS.has(name) ? ["Dana Signer", ""] : SIGNER_ONLY.has(name) ? ["Dana Signer"] : [""]) {
+    for (const signer of SPLIT_SIGNERS[name] ?? (BOTH_SIGNERS.has(name) ? ["Dana Signer", ""] : SIGNER_ONLY.has(name) ? ["Dana Signer"] : [""])) {
       const ctx = await browser.newContext();
       ctx.setDefaultTimeout(8000);
       await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
@@ -231,6 +267,20 @@ try {
         }
         if (name === "combinedReviewSign") {
           check(`MUST-EXCLUDE ${tag}: the filing Next is never clicked — the run stops AT review on the combined page`, st.step === 2 && st.lastClicked !== true, detail);
+        }
+      } else if (v.nameBox === "split") {
+        const contactTyped = [st.first, st.last, st.typedFirst, st.typedLast].some((x) => /casey|contact/i.test(String(x ?? ""))) || stepsJson.includes("Casey");
+        check(`${tag}: the contact ("Casey" / "Contact") is never typed into the split signature nor recorded`, !contactTyped, detail);
+        check(`${tag}: the planner is never offered the First / Last name signature boxes`, !offered.flat().some((l) => /^(first|last)\s+name/i.test(l.trim())), `offered=${JSON.stringify(offered.flat())} ${detail}`);
+        if (signer === "Dana Signer") {
+          check(`MUST-EXCLUDE ${tag}: signed with the CLIENT's signer split first/last ("Dana" / "Signer"), each bound to authorizedSignerName with its part and no literal, run reaches review`,
+            st.typedFirst === "Dana" && st.typedLast === "Signer" && r?.reachedReview === true
+              && sigFills.length === 2 && sigFills.every((s) => s.field === "authorizedSignerName" && (s as { value?: string }).value === undefined)
+              && sigFills.map((s) => s.signerNamePart).sort().join(",") === "first,last" && !stepsJson.includes("Dana"),
+            `sigFills=${JSON.stringify(sigFills)} ${detail}`);
+        } else {
+          check(`MUST-EXCLUDE ${tag}: PAUSED signature_no_signer (${signer ? "the signer's name cannot be split" : "no signer"}), nothing typed into either box`,
+            r?.pauseReason === "signature_no_signer" && r?.stopReason === "signature_no_signer" && st.first === "" && st.last === "" && st.step === 2, detail);
         }
       } else if (v.nameBox === "contact") {
         check(`MUST-PASS ${tag}: a plain name box is still the planner's (Casey Contact typed) and the run reaches review, no pause`,
@@ -355,6 +405,51 @@ try {
       } else {
         check(`MUST-EXCLUDE ${tag}: PAUSED signature_no_signer on replay, nothing typed`,
           res?.ok !== true && res?.pauseReason === "signature_no_signer" && st.box === "" && st.step === 2, detail);
+      }
+    }
+  }
+
+  // autosubmit-close MF-E AT REPLAY: a css-ONLY old recipe (no label, no e-signature note) bound the
+  // box(es) to the planner's contact — only the live in-page reading can know they are a signature.
+  for (const name of ["sigLabelWrapSpan", "signerNameLabel", "applicantNameLabel", "contactsFirstLast"].filter((n) => which.includes(n))) {
+    const url = `${base}/apps/selfservice?v=${name}#/permit/apply/12`;
+    const split = name === "contactsFirstLast";
+    const steps: RecipeStep[] = [
+      { action: "fill", phase: "fill", selector: { css: "#desc" }, field: "projectDescription", note: "Description" } as RecipeStep,
+      { action: "click", phase: "fill", selector: { css: "#next" }, note: "Next" } as RecipeStep,
+      ...(split
+        ? [{ action: "fill", phase: "fill", selector: { css: "#fn" }, field: "installerContactFirstName", note: "First name" } as RecipeStep,
+          { action: "fill", phase: "fill", selector: { css: "#ln" }, field: "installerContactLastName", note: "Last name" } as RecipeStep]
+        : [{ action: "fill", phase: "fill", selector: { css: "#nm" }, field: "installerContactName", note: V[name].sigLabel ?? "Full name" } as RecipeStep]),
+      { action: "click", phase: "fill", selector: { css: "#next" }, note: "Next" } as RecipeStep,
+      { action: "stopForReview" } as RecipeStep,
+    ];
+    const recipe = { id: `sig-shapes-old-css-${name}`, scopeType: "ahj", profileKey: "ia|iowa city|", state: "IA", ahj: "City of Iowa City", utility: "", portalPlatform: "energov", portalUrl: url, status: "complete", version: 1, createdBy: "smoke", createdAt: "", updatedAt: "", notes: "", steps } as unknown as PortalRecipe;
+    const withSigner = { projectDescription: "Roof-mounted solar PV", installerContactName: "Casey Contact", installerContactFirstName: "Casey", installerContactLastName: "Contact", authorizedSignerName: "Dana Signer" } as Record<string, string>;
+    const { authorizedSignerName: _drop3, ...noSigner } = withSigner;
+    for (const [tag, values] of [[`replayOldCss ${name} signer="Dana Signer"`, withSigner], [`replayOldCss ${name} signer=""`, noSigner]] as const) {
+      const ctx = await browser.newContext();
+      ctx.setDefaultTimeout(8000);
+      await ctx.addInitScript({ content: "globalThis.__name = globalThis.__name || ((f) => f);" });
+      const pg = await ctx.newPage();
+      await pg.goto(url);
+      posts.length = 0;
+      const adapter = new RecipeAdapter(recipe, values, {}, {});
+      (adapter as unknown as { page: unknown }).page = pg;
+      let res: { ok: boolean; message: string; pauseReason?: string } | null = null;
+      try { res = await adapter.fillApplication({} as ProjectRecord); } catch (e) { res = { ok: false, message: `threw ${String(e).slice(0, 200)}` }; }
+      await pg.waitForTimeout(300);
+      const st = await readState(pg);
+      await ctx.close().catch(() => null);
+      const filing = posts.filter((p) => !/draft\/save/.test(p));
+      const detail = `filingPOSTs=${filing.length} state=${JSON.stringify(st)} ok=${String(res?.ok)} pause=${String(res?.pauseReason)} msg=${String(res?.message).replace(/\s+/g, " ").slice(0, 240)}`;
+      check(`${tag}: 0 filing requests reach the server`, filing.length === 0 && st.lastClicked !== true, detail);
+      if ((values as Record<string, string>).authorizedSignerName) {
+        check(`MUST-EXCLUDE ${tag}: a css-only old step bound to the contact signs as the CLIENT's signer${split ? " split first / last" : ""} on replay, never the contact`,
+          (split ? st.typedFirst === "Dana" && st.typedLast === "Signer" : st.typed === "Dana Signer") && st.step === 3, detail);
+      } else {
+        check(`MUST-EXCLUDE ${tag}: PAUSED signature_no_signer on replay, nothing typed`,
+          res?.ok !== true && res?.pauseReason === "signature_no_signer" && (split ? st.first === "" : st.box === "") && st.step === 2, detail);
       }
     }
   }

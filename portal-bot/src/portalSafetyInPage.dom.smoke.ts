@@ -113,6 +113,22 @@ const PAGES: Record<string, string> = {
   "/contacts-below-attest": page(`${HEADER}<h2>Application</h2><section><p>I certify under penalty of perjury that the information in this application is true and correct.</p></section><section><h3>Primary Contact</h3><div><label for="nm">Full name *</label> <input id="nm" type="text"></div><div><label for="em">Email</label> <input id="em" type="text"></div></section><button type="button" id="next">Next</button>`),
   // A design-professional section under an attesting one: "Design firm" is NOT signature-related (a bare "sign" substring read it so).
   "/design-below-attest": page(`${HEADER}<h2>Application</h2><section><p>I certify under penalty of perjury that the information in this application is true and correct.</p></section><section><h3>Design Professional</h3><div><label for="nm">Full name *</label> <input id="nm" type="text"></div><div><label for="df">Design firm</label> <input id="df" type="text"></div></section><button type="button" id="next">Next</button>`),
+  // autosubmit-close MF-D / MF-E: perjury about CONTACT data is not a signature; a statement the
+  // label wraps, a "Signer Name" / "Applicant Name" under a SIGNING statement, and a split First /
+  // Last name signature are.
+  "/sig-label-wrap-span": page(`${HEADER}<h2>Certification</h2><div class="field"><label><span class="stmt">I certify under penalty of perjury that the information in this application is true and correct.</span><span class="lbl">Full name *</span><input id="nm" type="text"></label></div><div><label for="em">Email</label><input id="em" type="text"></div><button type="button" id="next">Next</button>`),
+  // …the same with a statement long enough that the label reading is capped before "Full name *".
+  "/sig-label-wrap-long": page(`${HEADER}<h2>Certification</h2><div class="field"><label><span class="stmt">I certify under penalty of perjury that I am the applicant or the applicant's authorized agent and that the information in this application is true and correct.</span> <span class="lbl">Full name *</span> <input id="nm" type="text"></label></div><button type="button" id="next">Next</button>`),
+  "/sig-signer-name": page(`${HEADER}<h2>Certification</h2><p>By typing your name below you are signing this application electronically.</p><div><label for="nm">Signer Name *</label><input id="nm" type="text"></div><button type="button" id="next">Next</button>`),
+  "/sig-applicant-name": page(`${HEADER}<h2>Certification</h2><p>By typing your name below you are signing this application electronically.</p><div><label for="nm">Applicant Name *</label><input id="nm" type="text"></div><button type="button" id="next">Next</button>`),
+  "/applicant-name-certify-only": page(`${HEADER}<h2>Applicant</h2><p>I certify that the information in this application is true and correct.</p><div><label for="nm">Applicant Name *</label><input id="nm" type="text"></div><button type="button" id="next">Next</button>`),
+  "/applicant-name-plain": page(`${HEADER}<h2>Applicant</h2><p>Who is applying for this permit?</p><div><label for="nm">Applicant Name *</label><input id="nm" type="text"></div><button type="button" id="next">Next</button>`),
+  "/sig-first-last": page(`${HEADER}<h2>Certification</h2><p>By typing your first and last name below you are signing this application electronically.</p><div><label for="fn">First name *</label><input id="fn" type="text"></div><div><label for="ln">Last name *</label><input id="ln" type="text"></div><button type="button" id="next">Next</button>`),
+  "/contacts-first-last": page(`${HEADER}<h2>Primary Contact</h2><div><label for="fn">First name *</label><input id="fn" type="text"></div><div><label for="ln">Last name *</label><input id="ln" type="text"></div><div><label for="em">Email</label><input id="em" type="text"></div><button type="button" id="next">Next</button>`),
+  "/contacts-perjury-above": page(`${HEADER}<h2>Contacts</h2><div><label><input type="checkbox" id="ag"> I certify under penalty of perjury that the contact information provided is true and correct</label></div><div><label for="nm">Full name *</label> <input id="nm" type="text"></div><div><label for="ph">Phone</label> <input id="ph" type="text"></div><button type="button" id="next">Next</button>`),
+  "/contacts-perjury-only-name": page(`${HEADER}<h2>Emergency Contact</h2><div><label for="nm">Full name *</label> <input id="nm" type="text"></div><p>I declare under penalty of perjury that the contact named above may be reached at any time.</p><button type="button" id="next">Next</button>`),
+  "/sig-above3-perjury": page(`${HEADER}<h2>Certification</h2><div class="body"><p>I certify under penalty of perjury that I am the applicant or the applicant's authorized agent and that the information in this application is true and correct.</p><div class="row"><div class="field"><label for="nm">Type your full name *</label> <input id="nm" type="text"></div></div></div><button type="button" id="next">Next</button>`),
+  "/sig-name-of-signer": page(`${HEADER}<h2>Certification</h2><p>I certify under penalty of perjury that the information in this application is true and correct.</p><div><label for="nm">Name of person signing *</label><input id="nm" type="text"></div><button type="button" id="next">Next</button>`),
   // A summary page with an attachment widget and NO review wording (a portal whose wording we do
   // not know, or an attachments-only step): the file input must not make it "fillable".
   "/review-plain": page(`${HEADER}<h2>Project Summary</h2>
@@ -232,6 +248,24 @@ try {
     for (const [path, want] of [["/sig-below", "typed"], ["/sig-above5", "typed"], ["/sig-date", "typed"], ["/contact-certify", ""], ["/contacts-below-attest", ""], ["/design-below-attest", ""]] as const) {
       const t = await terminal(path);
       check(`${want ? "MUST-EXCLUDE" : "MUST-PASS"} M2 ${path}: ${want ? "the name box is the typed signature step" : "the contact's name box is NOT a signature"}`, t.sig === want, JSON.stringify(t));
+    }
+    // autosubmit-close MF-D / MF-E: which boxes the signer rule marks (role + split part), per page.
+    const marks = async (path: string): Promise<{ sig: string; ctl: string[] }> => {
+      await p.goto(`${base}${path}`);
+      await p.evaluate(PORTAL_SAFETY_IN_PAGE_SOURCE);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return p.evaluate(() => { const s = (globalThis as any).__portalSafety.signatureStepInPage(); return { sig: s.kind, ctl: s.controls.map((c: { id: string; role: string; part?: string }) => `${c.id}:${c.role}${c.part ? `:${c.part}` : ""}`) }; });
+    };
+    for (const [path, want, ctl] of [
+      ["/sig-label-wrap-span", "typed", ["nm:consent"]], ["/sig-label-wrap-long", "typed", ["nm:consent"]], ["/sig-signer-name", "typed", ["nm:consent"]], ["/sig-applicant-name", "typed", ["nm:consent"]],
+      ["/sig-first-last", "typed", ["fn:consent:first", "ln:consent:last"]],
+      ["/sig-above3-perjury", "typed", ["nm:consent"]], ["/sig-name-of-signer", "typed", ["nm:consent"]],
+      ["/applicant-name-certify-only", "", []], ["/applicant-name-plain", "", []], ["/contacts-first-last", "", []],
+      ["/contacts-perjury-above", "", []], ["/contacts-perjury-only-name", "", []],
+    ] as const) {
+      const t = await marks(path);
+      check(`${want ? "MUST-EXCLUDE" : "MUST-PASS"} signer rule ${path}: ${want ? `the signature box(es) ${ctl.join(", ")} — the client's signer, never the planner's contact` : "the contact's name box is NOT a signature"}`,
+        t.sig === want && JSON.stringify(t.ctl) === JSON.stringify(ctl), JSON.stringify(t));
     }
     await p.context().close();
   }
