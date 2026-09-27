@@ -104,7 +104,9 @@ await check("MUST-PASS: --apply runs the real save path, states first, at most 2
       order.push(input.ahj ? "ahj" : "state");
       await new Promise((r) => setTimeout(r, 30));
       inFlight--;
-      const codes: CodeEdition[] = [{ family: "residential", code: "IRC", edition: "2021", sourceUrl: "https://example.gov/codes" }];
+      // A city's page is on the CITY's host: an entry cited to the state layer's own host is the
+      // state's rule and is not stored on the city (codeProfiles.scopeResearchToLayer).
+      const codes: CodeEdition[] = [{ family: "residential", code: "IRC", edition: "2021", sourceUrl: input.ahj ? `https://${input.ahj.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.example.gov/codes` : "https://example.gov/codes" }];
       return {
         provider: "claude" as const, webGrounded: true, needsHumanVerification: true as const, notes: "",
         profile: blank(input.state, input.ahj, { adoptedCodes: codes, researchProvenance: { webGrounded: true, method: "web_search" as const, at: new Date().toISOString(), searches: 3, groundedSearches: 2 } }),
@@ -140,7 +142,7 @@ await check("MUST-PASS: an AHJ in a state with no adoption model is pending_stat
       return {
         provider: "claude" as const, webGrounded: true, needsHumanVerification: true as const, notes: "",
         profile: blank(input.state, input.ahj, {
-          adoptedCodes: [{ family: "residential", code: "IRC", edition: input.ahj ? "2021" : "2018", sourceUrl: "https://zb.example.gov" }],
+          adoptedCodes: [{ family: "residential", code: "IRC", edition: input.ahj ? "2021" : "2018", sourceUrl: input.ahj ? "https://waitfirst.zb.example.gov" : "https://zb.example.gov" }],
           ...(input.ahj ? {} : { adoptionModel: { model: "local_adoption" as const } }),
           researchProvenance: { webGrounded: true, method: "web_search" as const, at: new Date().toISOString(), searches: 3, groundedSearches: 2 },
         }),

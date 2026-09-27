@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AppDb } from "./db";
 import type {
   ApprovedDesignObservation,
@@ -233,8 +234,20 @@ interface ReferenceFile {
   stateAdoptions?: ReferenceStateAdoption[];
 }
 
+// MODULE-RELATIVE, NOT CWD-RELATIVE (e2e-gap close, 2026-09-26). The reference file was resolved
+// against process.cwd(); the e2e scorer's scratch server ran from a private cwd, so the file was
+// unreadable, every state's adoption model came back undefined, and `inheritAdoptedCodes` fell to
+// its "unknown model → the state's" branch: Scottsdale read Arizona's 2024 IFC as its fire code and
+// Venus read Texas's 2012 IRC floor as its residential code (P15 ifcSetback, P11 ircIbc). Same
+// resolution processProfiles.ts already uses for its own reference file. The env override stays
+// exclusive; the cwd form is a last resort for a checkout that moved the file.
+const codeProfilesModuleDir = path.dirname(fileURLToPath(import.meta.url));
 function referencePath(): string {
-  return path.resolve(process.env.CODE_PROFILE_REFERENCE_PATH || path.join(process.cwd(), "backend/data/reference-code-profiles.json"));
+  const explicit = (process.env.CODE_PROFILE_REFERENCE_PATH || "").trim();
+  if (explicit) return path.resolve(explicit);
+  const moduleRelative = path.resolve(codeProfilesModuleDir, "..", "data", "reference-code-profiles.json");
+  if (fs.existsSync(moduleRelative)) return moduleRelative;
+  return path.resolve(process.cwd(), "backend/data/reference-code-profiles.json");
 }
 
 function loadReference(): ReferenceFile | null {
@@ -313,16 +326,44 @@ function attributedEntry(c: CodeEdition): boolean {
  * An AHJ with NO row reads through this too (ownCodes []): a local-adoption family then reads as
  * no data, never as the state's floor.
  */
+/** READ-TIME ONLY: which layer an inherited entry is, said on the entry so no consumer can present
+ *  a state default as the city's adopted code (e2e-gap close, 2026-09-26 — MF2/MF3). Declared here:
+ *  shared/src/types.ts is not this module's to widen. Stripped by every write (upsert, proposals). */
+export type CodeEditionLayer = "state_uniform" | "state_minimum" | "state_default";
+export type PresentedCodeEdition = CodeEdition & { layer?: CodeEditionLayer; layerLabel?: string };
+
+function stateLayerLabel(layer: CodeEditionLayer, state: string, ahj: string): string {
+  const st = state || "the state";
+  const who = ahj || "this jurisdiction";
+  if (layer === "state_uniform") return `${st} statewide edition (adopted uniformly — ${who} cannot adopt its own)`;
+  if (layer === "state_minimum") return `State default (${st} statewide minimum) — ${who}'s own adoption not confirmed`;
+  return `State default — ${who} not confirmed`;
+}
+
+/** The hosts the state layer itself cites (its statute, its adopting agency). An AHJ entry sourced
+ *  from one of them states the STATE's rule, not a local adoption (Venus: the Texas statute's
+ *  "IRC as it existed May 1, 2012" stored as the city's residential code). */
+function stateLayerHosts(stateCodes: CodeEdition[]): Set<string> {
+  return new Set(stateCodes.map((s) => hostOf(s.sourceUrl)).filter(Boolean));
+}
+
 export function inheritAdoptedCodes(
   stateCodes: CodeEdition[],
   ownCodes: CodeEdition[],
   model: JurisdictionAdoptionModel | undefined,
-  opts: { ownVerified?: boolean } = {},
-): CodeEdition[] {
+  opts: { ownVerified?: boolean; state?: string; ahj?: string } = {},
+): PresentedCodeEdition[] {
   const fam = (c: CodeEdition) => codeFamilyOf(c);
   const personStated = (c: CodeEdition) => !!opts.ownVerified || c.origin === "operator";
+  const stateHosts = stateLayerHosts(stateCodes);
+  // A CITED LOCAL EDITION WINS ITS FAMILY (MF2/MF3 b): beside a cited 2021 IBC, an uncited or
+  // state-sourced research entry for the same family is not shown as the city's code.
+  const citedFamilies = new Set<CodeFamily>();
+  for (const c of ownCodes) { const f = fam(c); if (f && citedLocalAdoption(c, stateCodes)) citedFamilies.add(f); }
   const keptOwnFamilies = new Set<CodeFamily>();
-  const out: CodeEdition[] = [];
+  const out: PresentedCodeEdition[] = [];
+  const asState = (s: CodeEdition, layer: CodeEditionLayer): PresentedCodeEdition =>
+    ({ ...s, inheritedFrom: "state", layer, ...(opts.ahj ? { layerLabel: stateLayerLabel(layer, opts.state || "", opts.ahj) } : {}) });
   for (const c of ownCodes) {
     const f = fam(c);
     if (!f) { out.push(c); continue; }
@@ -335,16 +376,26 @@ export function inheritAdoptedCodes(
     // a quote that does not state the edition, or the state's own source).
     if (m === "statewide_minimum_local_amend" && researchOwnedEntry(c) && !personStated(c) && stateCodes.some((s) => fam(s) === f)
       && !citedLocalAdoption(c, stateCodes)) continue;
+    if (researchOwnedEntry(c) && !personStated(c)) {
+      // THE STATE'S OWN SOURCE IS THE STATE'S RULE. A machine-owned AHJ entry cited to a state-layer
+      // host is the floor / the statute read as the city's code — never the city's edition. In a
+      // local-adoption family it is dropped (the floor is not the city's edition; showing it reads an
+      // unknown as an answer); elsewhere the state's own entry stands in, labelled as the state's.
+      const host = hostOf(c.sourceUrl);
+      if (host && stateHosts.has(host)) continue;
+      // Beside a cited local edition, an uncited research entry of the same family is not shown.
+      if (citedFamilies.has(f) && !citedLocalAdoption(c, stateCodes)) continue;
+    }
     out.push(c);
     keptOwnFamilies.add(f);
   }
   for (const s of stateCodes) {
     const f = fam(s);
-    if (!f) { if (!ownCodes.length) out.push({ ...s, inheritedFrom: "state" }); continue; }
+    if (!f) { if (!ownCodes.length) out.push(asState(s, "state_default")); continue; }
     const m = familyAdoptionModel(model, f);
     if (m === "local_adoption") continue;
     if (keptOwnFamilies.has(f)) continue;
-    out.push({ ...s, inheritedFrom: "state" });
+    out.push(asState(s, m === "statewide_uniform" ? "state_uniform" : m === "statewide_minimum_local_amend" ? "state_minimum" : "state_default"));
   }
   return out;
 }
@@ -428,13 +479,16 @@ export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string 
   // own edition (it reads "no adopted-code data" for its local families, exactly as it would with
   // a stamp-only row). Only the state-level read (no AHJ asked) returns the state row whole.
   const model = base?.adoptionModel ?? stateAdoptionModel(db, exact?.state || text(input.state));
+  const layerOpts = { state: (exact?.state || base?.state || text(input.state)).toUpperCase(), ahj: String(input.ahj || "").trim() };
   if (!exact) {
     if (!base || !String(input.ahj || "").trim()) return base;
-    return { ...base, ...(model ? { adoptionModel: model } : {}), adoptedCodes: inheritAdoptedCodes(base.adoptedCodes, [], model) };
+    return { ...base, ...(model ? { adoptionModel: model } : {}), adoptedCodes: inheritAdoptedCodes(base.adoptedCodes, [], model, layerOpts) };
   }
   const ownVerified = exact.confidence === "verified";
   if (!base) {
-    const own = inheritAdoptedCodes([], exact.adoptedCodes, model, { ownVerified });
+    // The reference's state layer still says whose source is the state's, even before a state row exists.
+    const refCodes = referenceStateAdoption(exact.state)?.adoptedCodes ?? [];
+    const own = inheritAdoptedCodes(refCodes, exact.adoptedCodes, model, { ownVerified, ...layerOpts }).filter((c) => !c.inheritedFrom);
     return own.length === exact.adoptedCodes.length ? exact : { ...exact, adoptedCodes: own };
   }
   // Which layer supplied each criteria / limit field (the merged confidence below is the weaker of
@@ -455,7 +509,7 @@ export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string 
     ...exact,
     fieldSources,
     confidence: exact.confidence === "verified" && base.confidence === "verified" ? "verified" : "seeded",
-    adoptedCodes: inheritAdoptedCodes(base.adoptedCodes, exact.adoptedCodes, model, { ownVerified }),
+    adoptedCodes: inheritAdoptedCodes(base.adoptedCodes, exact.adoptedCodes, model, { ownVerified, ...layerOpts }),
     // State-level facts: the state row's (the AHJ row never carries them).
     ...(model ? { adoptionModel: model } : {}),
     ...(base.upcoming?.length ? { upcoming: base.upcoming } : {}),
@@ -524,7 +578,9 @@ function upsert(db: AppDb, profile: JurisdictionCodeProfile, opts: { confidence:
   const adoptionModel = adoptionModelOf(profile.adoptionModel) ?? adoptionModelOf(priorPayload.adoptionModel);
   const upcoming = upcomingOf(profile.upcoming) ?? upcomingOf(priorPayload.upcoming);
   const payload = JSON.stringify({
-    adoptedCodes: (profile.adoptedCodes ?? []).map(({ inheritedFrom: _read, ...c }) => c),
+    // Read-time presentation (inheritedFrom, layer, layerLabel) never lands in a row: a verify
+    // through the PUT route sends the read back, and "not confirmed" must not be stored as a fact.
+    adoptedCodes: (profile.adoptedCodes ?? []).map(({ inheritedFrom: _read, layer: _l, layerLabel: _ll, ...c }: PresentedCodeEdition) => c),
     amendments: profile.amendments ?? [],
     designCriteria: profile.designCriteria ?? {},
     prescriptive: profile.prescriptive ?? {},
@@ -652,17 +708,31 @@ function scopeResearchToLayer(db: AppDb, profile: JurisdictionCodeProfile, asked
   if (!String(profile.ahj || "").trim()) return { ...profile, adoptedCodes };
   const model = stateAdoptionModel(db, profile.state);
   const scope = askedFamilies?.length ? askedFamilies : model ? ahjResearchFamilies(model) : undefined;
+  // THE STATE'S OWN SOURCE IS NOT A LOCAL ADOPTION (MF2/MF3 b). An AHJ research that read the state
+  // statute / the state agency's page and returned the state's floor as the city's edition (Venus:
+  // the Texas statute's "IRC as it existed May 1, 2012") is the state layer restated — never stored
+  // on the city's row, where it would sit beside the city's cited 2021 IBC as its residential code.
+  let stateHosts = new Set<string>();
+  try {
+    const stateRow = db.get<Row>("SELECT payload_json FROM jurisdiction_code_profiles WHERE profile_key = ?", [codeProfileKey({ state: profile.state, ahj: "" })]);
+    const stateCodes = stateRow ? mapRow({ ...stateRow, profile_key: "" }).adoptedCodes : [];
+    stateHosts = stateLayerHosts([...stateCodes, ...(referenceStateAdoption(profile.state)?.adoptedCodes ?? [])]);
+  } catch { stateHosts = new Set<string>(); }
   const uniform: string[] = [];
   const unasked: string[] = [];
+  const stateSourced: string[] = [];
   adoptedCodes = adoptedCodes.filter((c) => {
     const f = codeFamilyOf(c);
     if (!f) return true;
     if (familyAdoptionModel(model, f) === "statewide_uniform") { uniform.push(editionLabel(c)); return false; }
     if (scope && !scope.includes(f)) { unasked.push(editionLabel(c)); return false; }
+    const host = hostOf(c.sourceUrl);
+    if (host && stateHosts.has(host)) { stateSourced.push(`${editionLabel(c)} (${host})`); return false; }
     return true;
   });
   if (uniform.length) logger.info("code-profiles", `${profile.state}/${profile.ahj}: dropped ${uniform.join(", ")} — the state adopts ${uniform.length === 1 ? "that family" : "those families"} uniformly; the AHJ reads the state's edition`);
   if (unasked.length) logger.info("code-profiles", `${profile.state}/${profile.ahj}: dropped ${unasked.join(", ")} — outside the families this research was asked for (${scope!.join(", ") || "none"}); the AHJ reads the state's edition there`);
+  if (stateSourced.length) logger.info("code-profiles", `${profile.state}/${profile.ahj}: dropped ${stateSourced.join(", ")} — cited to the STATE layer's own source, so it states the state's rule, not a local adoption`);
   const { adoptionModel: _a, upcoming: _u, ...rest } = profile;
   return { ...rest, adoptedCodes };
 }
@@ -871,7 +941,12 @@ export function buildCodeContext(state: string, ahj: string, profile: Jurisdicti
       // standing in? The difference is the whole claim being made.
       const isModelDefault = !profile?.adoptedCodes?.length;
       const basis = edition.basedOn ? `, built on the ${edition.basedOn}` : "";
-      const inherited = edition.inheritedFrom === "state" && ahj ? ` — ${state}'s statewide edition` : "";
+      // An inherited entry says WHICH layer it is (state_uniform = the city's code by law;
+      // state_minimum / state_default = a state default the city has not confirmed).
+      const presented = edition as PresentedCodeEdition;
+      const inherited = edition.inheritedFrom === "state" && ahj
+        ? (presented.layerLabel ? ` — ${presented.layerLabel}` : ` — ${state}'s statewide edition`)
+        : "";
       if (!isModelDefault && (basis || inherited)) {
         return {
           code: `${edition.edition} ${edition.code}`.trim(),
@@ -1048,7 +1123,7 @@ export function proposeEditionUpdate(db: AppDb, verifiedRow: JurisdictionCodePro
   const fingerprint = fingerprintOf(key, changes);
   const proposal: JurisdictionEditionProposal = {
     profileKey: key, state: verifiedRow.state, ahj: verifiedRow.ahj, fingerprint, source, createdAt: nowIso(), changes,
-    proposedCodes: (found.adoptedCodes ?? []).map(({ inheritedFrom: _r, ...c }) => c),
+    proposedCodes: (found.adoptedCodes ?? []).map(({ inheritedFrom: _r, layer: _l, layerLabel: _ll, ...c }: PresentedCodeEdition) => c),
     ...(found.adoptionModel ? { adoptionModel: found.adoptionModel } : {}),
     ...(found.upcoming?.length ? { upcoming: found.upcoming } : {}),
   };
