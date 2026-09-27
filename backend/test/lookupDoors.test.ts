@@ -507,6 +507,29 @@ await check("(m3) the merge sibling of MF1 MUST-EXCLUDE: a re-run's mergeWithEar
   assert.ok(!(r4.lookup!.notes ?? []).some((n) => /^Portal \(electrical\): .*MERGEHARBOR/.test(n)), "this run did not find it itself");
   assert.equal(saved(r4, "electrical").portalUrl.value, ACA2, `the same issuer, nothing found this run: the earlier portal is KEPT (${saved(r4, "electrical").portalUrl.notFound})`);
   assert.equal(saved(r4, "structural").portalUrl.value, ACA2, "structural too");
+  // C: a permit ONLY the earlier row lists (combo, the county tenant) is carried through the same door;
+  // MUST-PASS: an earlier-only permit whose portal the door does not refuse outright is carried whole.
+  const C3 = "https://www.cityofcombeby.example.gov"; const PG3 = `${C3}/building`;
+  const CC = "https://aca-prod.accela.com/COMBEBYCOUNTY/Default.aspx"; const OWN = "https://aca-prod.accela.com/COMBEBY/Default.aspx";
+  const q3 = "The City of Combeby Building Department issues building permits";
+  const c3 = (value: string | null, sourceUrl = PG3, quote = q3) => ({ value, sourceUrl, quote, origin: "lookup" as const, ...(value ? {} : { notFound: "x" }) });
+  pp.savePermitProcessLookup(db, { state: "IN", ahj: "City of Combeby", lookedUpAt: "2026-09-01T00:00:00.000Z", issuingAgency: c3("City of Combeby"), permitStructure: c3("combo") as never, notes: [],
+    permits: [
+      { discipline: "combo", label: "Solar", issuingAgency: c3("City of Combeby"), portalUrl: c3(CC, CC, "Apply online"), recordType: c3("Building Solar Photovoltaic Residential", CC, "Building Solar Photovoltaic Residential"), recordTypeCandidates: [{ label: "Building Solar Photovoltaic Residential", condition: "", sourceUrl: CC, quote: "Building Solar Photovoltaic Residential" }], documents: c3(null), fee: c3(null) },
+      { discipline: "electrical", label: "Electrical", issuingAgency: c3("City of Combeby"), portalUrl: c3(OWN, OWN, "Apply online"), recordType: c3("Electrical Residential", OWN, "Electrical Residential"), documents: c3(null), fee: c3(null) },
+    ] as never });
+  const pages3 = { [PG3]: { text: html(`<p>${q3} for solar installations.</p>`) } };
+  const p3 = { issuingAgency: { value: "City of Combeby", sourceUrl: PG3, quote: q3 }, permitStructure: { value: "separate", sourceUrl: PG3, quote: "issues building permits" },
+    permits: [{ discipline: "structural", label: "Solar", issuingAgency: { value: "City of Combeby", sourceUrl: PG3, quote: q3 }, portalUrl: { value: null }, recordType: { value: null } }] };
+  const rc = await ppl.runPermitProcessLookup(db, llmOf(p3, [PG3]), { state: "IN", ahj: "City of Combeby", dcKw: "7", acKw: "6", force: true, reader: newReader(site(pages3).fetch) });
+  const combo = saved(rc, "combo");
+  assert.ok(combo, "the earlier-only permit is still carried (never forgets)");
+  assert.equal(combo.portalUrl.value, null, `its county tenant is not carried (${combo.portalUrl.value})`);
+  assert.match(String(combo.portalUrl.notFound), /earlier row's .*COMBEBYCOUNTY.*another jurisdiction's portal/);
+  assert.equal(combo.recordType.value, null, "nor the county tenant's record type");
+  assert.equal((combo.recordTypeCandidates ?? []).length, 0, "nor its candidates");
+  assert.equal(saved(rc, "electrical").portalUrl.value, OWN, "MUST-PASS: an earlier-only permit the door does not refuse is carried");
+  assert.equal(saved(rc, "electrical").recordType.value, "Electrical Residential", "with its record type");
 });
 
 if (failures) { console.error(`\n${failures} lookupDoors test(s) failed.`); process.exit(1); }

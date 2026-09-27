@@ -1247,7 +1247,17 @@ export function mergeWithEarlier(
       recordType: samePortal ? keep(p.recordType, b.recordType) : p.recordType, documents: keep(p.documents, b.documents), fee: keep(p.fee, b.fee),
     };
   });
-  for (const b of earlier.permits) if (!permits.some((p) => p.discipline === b.discipline)) permits.push(b);
+  // A permit only the earlier row lists is carried too — through the same door (its portal and the
+  // record type in that portal's words are dropped on an outright refusal with this run's issuer).
+  for (const b of earlier.permits) {
+    if (permits.some((p) => p.discipline === b.discipline)) continue;
+    const dec = b.portalUrl.value ? judgePortal(b.discipline, b.portalUrl) : null;
+    if (dec && OUTRIGHT_REFUSALS.has(dec.code)) {
+      const gone = { value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: `the earlier row's ${dec.fact.notFound ?? "portal is refused"}` };
+      const { recordTypeCandidates: _dropped, ...rest } = b;
+      permits.push({ ...rest, portalUrl: gone, recordType: { ...gone, notFound: "the earlier row's record type was its refused portal's" } });
+    } else permits.push(b);
+  }
   return { issuingAgency: keep(now.issuingAgency, earlier.issuingAgency), permitStructure: keep(now.permitStructure, earlier.permitStructure), permits };
 }
 
