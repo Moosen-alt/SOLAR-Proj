@@ -1314,9 +1314,13 @@ export async function performLogin(
       // and its password can open straight on a factor screen (a second-factor chooser without a
       // Password option, a code box, a push). That is a person's to complete — the same park as
       // after a submit — never "a login form we could not recognise".
+      //
+      // Only on a page that is not itself an application: no login action has been taken here, so
+      // a public form that merely MENTIONS "a verification code will be emailed" must still reach
+      // the no-login-required path below, never a park.
       {
         const factor = await detectSecondFactor(page);
-        if (factor) return await parkForSecondFactor(page, factor, credential?.username ?? "", opts);
+        if (factor && !(await applicationShapedForm(page))) return await parkForSecondFactor(page, factor, credential?.username ?? "", opts);
       }
       const hereUrl: string = typeof page.url === "function" ? page.url() : "";
       const onLoginUrl = looksLikeLoginUrl(hereUrl);

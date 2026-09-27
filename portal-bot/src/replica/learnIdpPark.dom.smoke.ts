@@ -171,11 +171,12 @@ const fields: Record<string, string> = {
 };
 const project = { id: "smoke-idp", ahj: "City of Fernhollow", state: "OR", city: "Fernhollow", zip: "97499", address: "4127 Larkspur Ln, Fernhollow, OR 97499", projectAddress: "4127 Larkspur Ln, Fernhollow, OR 97499", homeownerName: "Harriet Quillfeather" } as unknown as ProjectRecord;
 
-interface Case { name: string; mode: Mode; parkMs?: number; person?: "approvePush" | "solveCaptcha" }
+interface Case { name: string; mode: Mode; parkMs?: number; person?: "approvePush" | "solveCaptcha"; personAfterMs?: number }
 async function run(c: Case) {
   if (ONLY && !c.name.includes(ONLY)) return null;
   reset(c.mode);
   const progress: string[] = [];
+  const timed: Array<{ t: number; m: string }> = [];
   let parkedAt = 0;
   let personActedAt = 0;
   const t0 = Date.now();
@@ -193,21 +194,24 @@ async function run(c: Case) {
     onProgress: (p) => {
       const m = String(p.message ?? "");
       progress.push(m);
+      timed.push({ t: Date.now(), m });
       if (/Paused for a person/.test(m) && !parkedAt) {
         parkedAt = Date.now();
-        // THE PERSON, three seconds later: approves the push on their phone / solves the CAPTCHA.
+        // THE PERSON, a few seconds later: approves the push on their phone / solves the CAPTCHA.
         if (c.person) setTimeout(() => {
           personActedAt = Date.now();
           if (c.person === "approvePush") void fetch(`${IDP()}/approve`, { method: "POST" }).catch(() => undefined);
           if (c.person === "solveCaptcha") st.captchaSolved = true;
-        }, 3000);
+        }, c.personAfterMs ?? 3000);
       }
     },
   });
   const secs = (Date.now() - t0) / 1000;
   const everywhere = JSON.stringify({ steps: r.steps, message: r.message, trace: r.pageTrace, progress });
   console.log(`   [${c.name}] ${secs.toFixed(1)}s ok=${r.ok} review=${!!r.reachedReview} pause=${r.pauseReason ?? "-"} stop=${r.stopReason ?? "-"} applyPosts=${st.applyPosts.length} pwPosts=${st.pwPosts} approved=${st.approved}\n      msg: ${String(r.message).slice(0, 300)}\n      parked: ${progress.filter((m) => /Paused/.test(m)).join(" | ").slice(0, 300)}`);
-  return { r, secs, progress, parkedAt, personActedAt, leaked: everywhere.includes(PASSWORD), posted: st.applyPosts[st.applyPosts.length - 1] ?? {} };
+  // What the dashboard showed WHILE the person was being waited for.
+  const duringHold = timed.filter((x) => parkedAt && x.t >= parkedAt && (!personActedAt || x.t < personActedAt)).map((x) => x.m);
+  return { r, secs, progress, duringHold, parkedAt, personActedAt, leaked: everywhere.includes(PASSWORD), posted: st.applyPosts[st.applyPosts.length - 1] ?? {} };
 }
 
 try {
@@ -242,8 +246,12 @@ try {
     }
   }
   {
-    const x = await run({ name: "captchaHeld", mode: "captcha", parkMs: 60_000, person: "solveCaptcha" });
+    // The person takes 12 s, so the learner's 5 s progress heartbeat chimes during the hold.
+    const x = await run({ name: "captchaHeld", mode: "captcha", parkMs: 60_000, person: "solveCaptcha", personAfterMs: 12_000 });
     if (x) {
+      check("captchaHeld: while held, the dashboard keeps saying why — every progress line is the park, and the heartbeat repeats it (waiting — Ns)",
+        x.duringHold.length >= 2 && x.duringHold.every((m) => /^Paused for a person: .*complete the MFA\/CAPTCHA in the open browser window/i.test(m)) && x.duringHold.some((m) => /\(waiting — \d+s\)$/.test(m)),
+        `duringHold=${JSON.stringify(x.duringHold).slice(0, 400)}`);
       check("captchaHeld MUST-PASS: a CAPTCHA mid-walk HOLDS the walk; once the person solves it the walk continues and reaches review",
         x.parkedAt > 0 && x.r.reachedReview === true && x.posted.fn === "Harriet" && x.personActedAt > 0,
         `parked=${x.parkedAt > 0} review=${x.r.reachedReview} posted=${JSON.stringify(x.posted)} ${x.r.message.slice(0, 200)}`);

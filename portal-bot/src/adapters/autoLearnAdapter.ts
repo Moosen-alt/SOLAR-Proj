@@ -3213,9 +3213,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       const elapsedMs = Date.now() - this.lastProgressAtMs;
       if (elapsedMs < 5000) return; // only chime once a step has been quiet a while
       const secs = Math.round(elapsedMs / 1000);
-      const base = this.lastProgress.message.replace(/\s*\(still working[^)]*\)\s*$/, "");
+      const base = this.lastProgress.message.replace(/\s*\((still working|waiting)[^)]*\)\s*$/, "");
+      const how = /^Paused for a person/.test(base) ? "waiting" : "still working";
       try {
-        this.onProgress({ ...this.lastProgress, elapsedMs, heartbeat: true, message: `${base} (still working — ${secs}s)` });
+        this.onProgress({ ...this.lastProgress, elapsedMs, heartbeat: true, message: `${base} (${how} — ${secs}s)` });
       } catch { /* progress sink must never break the run */ }
     }, 5000);
     if (typeof (this.hbTimer as { unref?: () => void }).unref === "function") (this.hbTimer as { unref?: () => void }).unref!();
@@ -4823,6 +4824,11 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 if (this.walkParkDeadline === null) this.walkParkDeadline = Date.now() + info.waitMs;
                 this.debug?.event({ type: "challenge_park", page: pageCount, detail: challenge, waitMs: info.waitMs });
                 try { this.options.onPark?.(info); } catch { /* a notifier never changes the outcome */ }
+                // The 5 s heartbeat re-emits the LAST progress: make the park that message, or the
+                // dashboard's "Complete the MFA/CAPTCHA…" is overwritten by "Reading page N…"
+                // within seconds. The next real progress (after the resume) replaces it.
+                this.lastProgress = { ...(this.lastProgress ?? { phase: "page" as const, pageCount, maxPages: this.maxPages }), message: `Paused for a person: ${String(info.reason ?? "").slice(0, 200)}` };
+                this.lastProgressAtMs = Date.now();
               },
             },
             maxWaitMs: left,

@@ -119,6 +119,13 @@ const tenantPages: Record<string, () => string> = {
     <header><a id="link-Greetings" class="btn dropdown-toggle" role="button" aria-expanded="false" href="" aria-label="Guest dropdown menu to login or register"> Guest <span class="caret"></span></a>
     <ul class="dropdown-menu" style="display:none"><li><a id="link-LoginUnderGreetings" href="">Log In</a></li></ul>
     <a href="/help/account-faq" title="How to log out of your account">How to log out</a></header><h1>Welcome</h1></body></html>`,
+  // A PUBLIC application form (no accounts at all — Gilbert's shape) whose instructions mention a
+  // verification code: no login action was taken, so it must never read as a second factor.
+  "/public-form": () => `<!doctype html><html><head><title>Solar Permit Request</title></head><body>
+    <h1>Solar Permit Request</h1><p>After you submit, a verification code will be emailed to you to confirm your request.</p>
+    <label for="a">Permit Number</label><input id="a" name="permitNumber"><label for="b">Located at</label><input id="b" name="locatedAt">
+    <label for="c">First Name</label><input id="c" name="firstName"><label for="d">Last Name</label><input id="d" name="lastName">
+    <label for="e">Phone</label><input id="e" name="phone"><button type="submit">Submit Request</button></body></html>`,
   // A logged-out home whose real "Log In" renders LATE (Angular), with a Tyler Payments link whose
   // href says account/login sitting there first — what the reveal's href catch-all clicked in
   // production (run q3zu landed on the PAYMENTS app's sign-in).
@@ -273,6 +280,14 @@ await check("MUST-EXCLUDE the Guest menu (\"to login or register\") and a \"How 
   const res = await performLogin(page, { username: USER, password: GOOD_PW });
   results.push(res.message);
   assert.notEqual(res.status, "already_authenticated", `got ${res.status}: ${res.message}`);
+  await context.close();
+});
+
+await check("MUST-EXCLUDE a public application form that MENTIONS a verification code is not a second factor → no_login_required", async () => {
+  const { context, page } = await at("/public-form", TENANT);
+  const res = await performLogin(page, { username: USER, password: GOOD_PW });
+  results.push(res.message);
+  assert.equal(res.status, "no_login_required", `got ${res.status}: ${res.message}`);
   await context.close();
 });
 
