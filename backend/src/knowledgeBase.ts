@@ -26,6 +26,7 @@ import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles"
 import { nowIso } from "./time";
 import { logger } from "./logger";
 import { inferPlatform, isRecognizedPlatform, looksLikeBareUrl } from "./portalPlatformRules";
+import { isUtilityPlatformUrl } from "./portalChannel";
 
 type Row = Record<string, unknown>;
 
@@ -432,6 +433,23 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
       portalPlatform: clean(facts.portalPlatform) || (isRecognizedPlatform(platform) ? platform : facts.portalPlatform),
     };
   }
+  // RULE 5 AT THE KB WRITE (close-2 item 7): an AHJ-KEYED row never carries a UTILITY portal. The
+  // learn path used to stamp PGE's PowerClerk login onto every (ahj, utility) row a PGE project
+  // touched ("or|city of tigard|portland general electric" -> pgenm.powerclerk.com), and the
+  // permit track then had to be guarded against its own knowledge base. Every importer and every
+  // learn path funnel through here, so this is the one seam: the utility portal (its URL and the
+  // name / platform that describe it) is moved to the UTILITY's own row (state, "", utility) —
+  // verified rows there still fill blanks only — or dropped when no utility is named.
+  if (clean(facts.ahj) && isUtilityPlatformUrl(clean(facts.portalUrl))) {
+    const utilityPortal = { portalUrl: clean(facts.portalUrl), portalName: clean(facts.portalName), portalPlatform: clean(facts.portalPlatform) };
+    facts = { ...facts, portalUrl: "", portalName: "", portalPlatform: "" };
+    if (clean(facts.utility)) {
+      upsertKnowledge(db, {
+        state: facts.state, ahj: "", utility: facts.utility, ...utilityPortal,
+        sources: facts.sources, confidence: facts.confidence === "mixed" ? "learned" : facts.confidence,
+      });
+    }
+  }
   const key = profileKey(facts);
   const ts = nowIso();
   const existing = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
@@ -803,32 +821,43 @@ function projectDocs(project: ProjectRecord): string[] {
   return [...docs];
 }
 
-function portalFromProject(project: ProjectRecord): { portalName: string; portalUrl: string } {
+/** The AHJ's portal a project's profiles name (the process profile's submission method, the
+ *  application profile's portal and source URL), and — separately — the UTILITY's interconnection
+ *  portal for the utilities whose entry URL is known here. The two never share a row (close-2
+ *  item 7): the AHJ half lands on the (ahj, utility) row, the utility half on (state, "", utility). */
+function portalFromProject(project: ProjectRecord): { portalName: string; portalUrl: string; utilityPortal: { portalName: string; portalUrl: string } | null } {
   const appProfile = findApplicationProfile(project);
   const process = findAhjProcessProfile(project);
-  let portalName = process?.submissionMethod || appProfile.portalName || "";
-  let portalUrl = appProfile.sourceUrl || "";
+  const portalName = process?.submissionMethod || appProfile.portalName || "";
+  const portalUrl = appProfile.sourceUrl || "";
+  let utilityPortal: { portalName: string; portalUrl: string } | null = null;
   if (/PGE|PORTLAND GENERAL/i.test(project.utility)) {
-    portalName = portalName || "PowerClerk";
     // The interconnection application lives behind the PowerClerk login, NOT on the public
     // resource-library landing page. Seed the real portal-ENTRY URL so the universal self-seed
     // (auto-learn) launches against the actual form instead of an info page it can never fill.
     // Same value the hand-coded PowerClerk adapter targets (powerClerk.ts PGE_LOGIN_URL).
-    portalUrl = "https://pgenm.powerclerk.com/MvcAccount/Login";
+    utilityPortal = { portalName: "PowerClerk", portalUrl: "https://pgenm.powerclerk.com/MvcAccount/Login" };
   }
   if (/PACIFIC|PACIFICORP/i.test(project.utility)) {
-    portalName = "Pacific Power Customer Generation Portal";
     // PacifiCorp (Pacific Power / Rocky Mountain Power) customer generation runs on a PowerClerk
     // tenant — the application form is behind this login, NOT the pacificpower.net marketing page.
     // Seed the real portal-ENTRY URL (mirrors the PGE block above) so the universal self-seed
     // (auto-learn) launches the actual form. portalCredentials.ts aliases the marketing hosts to this.
-    portalUrl = "https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login";
+    utilityPortal = { portalName: "Pacific Power Customer Generation Portal", portalUrl: "https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login" };
   }
-  return { portalName, portalUrl };
+  return { portalName, portalUrl, utilityPortal };
 }
 
 export function learnFromProject(db: AppDb, project: ProjectRecord, eventType = "project.saved"): PermitUtilityKnowledgeProfile | null {
   const portal = portalFromProject(project);
+  // The utility's interconnection portal lands on the UTILITY's own row — never on the AHJ-keyed
+  // row below (upsertKnowledge refuses it there too).
+  if (portal.utilityPortal && clean(project.utility) && !isLearningExcluded(db, project.id)) {
+    upsertKnowledge(db, {
+      state: project.state, ahj: "", utility: project.utility, ...portal.utilityPortal,
+      sources: [learnedSource("learned_project", "Saved project parser snapshot")], confidence: "learned",
+    });
+  }
   const profile = upsertProjectKnowledge(
     db,
     project.id,

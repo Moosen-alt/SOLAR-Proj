@@ -229,20 +229,26 @@ const asyncHandler =
     handler(req, res, next).catch(next);
   };
 
-// Turn raw Anthropic SDK errors into clean, actionable messages for the UI.
+// Turn raw Anthropic SDK errors into clean, actionable messages for the UI. Each one is marked
+// OPERATOR-FACING (details.operatorFacing) so the 5xx error handler at the bottom of this file
+// shows it instead of its generic "Internal error" (close-2 item 8: "credit balance is too low →
+// add credits" used to be written here and then replaced before it reached the dashboard). The
+// fallback carries the SDK's first line only, with any key-shaped token scrubbed; a stack never.
+const OPERATOR_FACING = { operatorFacing: true } as const;
 function normalizeLlmError(err: unknown): HttpError {
   const status = (err as { status?: number })?.status;
   const raw = (err as { message?: string })?.message || String(err);
   if (status === 401 || /authentication_error|invalid x-api-key/i.test(raw)) {
-    return new HttpError(502, "Claude rejected the API key (401). Set a valid, active ANTHROPIC_API_KEY in your .env (it must start with 'sk-ant-'). A placeholder or expired key will be rejected — AI-assist stays off and the parser uses regex/OCR only.");
+    return new HttpError(502, "Claude rejected the API key (401). Set a valid, active ANTHROPIC_API_KEY in your .env (it must start with 'sk-ant-'). A placeholder or expired key will be rejected — AI-assist stays off and the parser uses regex/OCR only.", OPERATOR_FACING);
   }
   if (status === 429 || /rate_limit/i.test(raw)) {
-    return new HttpError(502, "Claude is rate-limited (429). Wait a moment and try again.");
+    return new HttpError(502, "Claude is rate-limited (429). Wait a moment and try again.", OPERATOR_FACING);
   }
   if (/credit|billing|insufficient|quota/i.test(raw)) {
-    return new HttpError(502, "Claude rejected the request: your Anthropic account has no credit/billing. The API key is valid, but you must add credits at console.anthropic.com → Settings → Billing before AI-assist can run. Until then the parser uses regex/OCR only.");
+    return new HttpError(502, "Claude rejected the request: your Anthropic account has no credit/billing (\"credit balance is too low\"). The API key is valid, but you must add credits at console.anthropic.com → Settings → Billing before AI-assist can run. Until then the parser uses regex/OCR only.", OPERATOR_FACING);
   }
-  return new HttpError(502, `AI-assist failed: ${raw.slice(0, 200)}`);
+  const firstLine = raw.split(/\r?\n/)[0].replace(/sk-ant-[A-Za-z0-9_-]+/g, "sk-ant-…").slice(0, 200);
+  return new HttpError(502, `AI-assist failed: ${firstLine}`, OPERATOR_FACING);
 }
 
 // CORS: when ALLOWED_ORIGINS is set (comma-separated), restrict to those origins
@@ -3161,8 +3167,12 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   // 5xx are real bugs — print a copy-pasteable block. 4xx are client errors — one line.
   if (httpError.status >= 500) logErrorBlock("http", err, { route: `${req.method} ${req.path}`, status: httpError.status });
   else logger.warn("http", `${httpError.status} ${req.method} ${req.path}`, { reason: httpError.message });
+  // A 5xx whose message was WRITTEN FOR THE OPERATOR (normalizeLlmError: "add credits", "rate-
+  // limited", "rejected the API key") reaches the dashboard as written; the generic line stands in
+  // only when no safe message exists (an uncaught Error's message may carry a path or a stack).
+  const operatorFacing = err instanceof HttpError && httpError.details?.operatorFacing === true;
   res.status(httpError.status).json({
-    error: httpError.status >= 500 ? "Internal error. Details are in the server log." : httpError.message,
+    error: httpError.status >= 500 && !operatorFacing ? "Internal error. Details are in the server log." : httpError.message,
     details: httpError.details,
   });
 });

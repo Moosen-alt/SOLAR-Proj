@@ -289,20 +289,37 @@ const UTILITY_PLATFORM_HOSTS = [
   "coned.com",         // Con Edison (NY)
   "psegliny.com",      // PSEG Long Island (NY)
   "pseg.com",          // PSE&G (NJ)
-  // Salesforce Experience Cloud. Several utilities run their interconnection intake as a
-  // Salesforce community (<utility>.my.site.com, <utility>.force.com) — the NEM catalog found
-  // no KB row for them and a permit track would have waved one through. RISK, recorded: an AHJ
-  // that genuinely files permits through a Salesforce community would now be refused on the
-  // permit track; none is in the KB today (checked 2026-09-24), and rule 5 fails closed.
-  "force.com",
-  "my.site.com",
 ];
+// Salesforce Experience Cloud (<tenant>.my.site.com, <tenant>.force.com) is a PLATFORM, not a
+// utility: several utilities run their interconnection intake as a Salesforce community, and so
+// do STATE agencies (New Mexico's Regulation & Licensing Department takes electrical permits at
+// nmrld.my.site.com). The whole domain used to be on the utility list, which refused the State's
+// permit portal on the permit track (close-2 item 9). A Salesforce site is a utility host only
+// when its TENANT is a known utility — its label names a utility brand from the list above or
+// carries a utility word — or its path names an interconnection / net-metering application.
+const SALESFORCE_SITE = /(?:^|\.)(?:my\.site\.com|force\.com)$/i;
+const UTILITY_WORD = /utilit|energy|electric|power|light|\bgas\b|coop|\bpud\b|\bemc\b|\bnem\b/i;
+const UTILITY_BRAND_LABELS = UTILITY_PLATFORM_HOSTS.map((h) => h.replace(/\.[a-z.]+$/, "")).filter((l) => l.length >= 3);
+const INTERCONNECTION_PATH = /interconnect|net-?meter|\bnem\b|customer-?generation|distributed-?generation/i;
+function salesforceSiteIsUtility(url: string, host: string): boolean {
+  if (!SALESFORCE_SITE.test(host)) return false;
+  const tenant = host.replace(SALESFORCE_SITE, "").split(".").filter((l) => l && !/^(?:www|portal|portals|site|sites|community)$/i.test(l)).join("-");
+  const label = tenant.replace(/[^a-z0-9]+/gi, " ");
+  const parts = label.split(" ").filter(Boolean);
+  // A brand names the tenant when it IS one of its labels ("pge", "sce") or, for a brand of four
+  // letters or more, when the run-together tenant contains it ("rockymountainpower-nem").
+  if (UTILITY_WORD.test(label) || UTILITY_BRAND_LABELS.some((b) => parts.includes(b) || (b.length >= 4 && tenant.replace(/[^a-z0-9]+/gi, "").includes(b)))) return true;
+  let path = "";
+  try { path = new URL(url).pathname; } catch { path = ""; }
+  return INTERCONNECTION_PATH.test(path);
+}
 export function isUtilityPlatformUrl(url: string | null | undefined): boolean {
   // Match on the HOST only. A substring test over the whole URL would flag an AHJ portal
   // whose path merely mentions a utility (".../permits?utility=pge.com/..."), and would
   // also let a lookalike domain ("notpge.com.evil.test") slip past a naive check.
   const host = portalHostOf(url) || String(url || "").toLowerCase();
-  return UTILITY_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+  if (UTILITY_PLATFORM_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) return true;
+  return salesforceSiteIsUtility(String(url ?? ""), host);
 }
 
 // ── Permit-platform host knowledge (the OTHER direction of rule 5) ──────────────────────
@@ -332,6 +349,8 @@ const PERMIT_PLATFORM_HOSTS = [
   "aspgov.com",
   "gosolarapp.org",        // SolarAPP+ — an AHJ permit, never an interconnection
   "etrakit.net",
+  "mygov.us",              // MyGov (public.mygov.us/<city_st>/) — TX / OK small cities
+  "geocivix.com",          // Geocivix (<county>.geocivix.com) — Santa Fe County NM and others
 ];
 export function isPermitPlatformUrl(url: string | null | undefined): boolean {
   const host = portalHostOf(url);

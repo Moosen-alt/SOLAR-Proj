@@ -73,6 +73,22 @@ await check("(p2) NEM track: an AHJ permit portal never fits; utility portals an
   }
 });
 
+await check("(p2b) close-2 item 9: MyGov and Geocivix are permit platforms; a STATE agency's Salesforce Experience site (nmrld.my.site.com) fits the permit track, while a utility's Salesforce tenant (a utility word, a known brand, an interconnection path) is still refused there", () => {
+  for (const u of ["https://public.mygov.us/venus_tx/", "https://santafecounty.geocivix.com/secure/", "https://nmrld.my.site.com/s/electrical-permits", "https://nmrld.force.com/apply"]) {
+    assert.equal(hostFitsTrackAndEntity("building", null, u).fits, true, `${u} must fit a permit track`);
+  }
+  for (const u of ["https://public.mygov.us/venus_tx/", "https://santafecounty.geocivix.com/secure/"]) {
+    assert.equal(hostFitsTrackAndEntity("nem", null, u).code, "track_conflict", `${u} is a permit platform: it must not fit the NEM track`);
+  }
+  for (const u of ["https://acme-utility.my.site.com/s/interconnection", "https://acme.force.com/nem", "https://pge.my.site.com/s/", "https://rockymountainpower.force.com/apply", "https://acme-electric.my.site.com/s/", "https://acme.my.site.com/s/net-metering-application"]) {
+    assert.equal(hostFitsTrackAndEntity("building", null, u).code, "track_conflict", `${u} must not fit a permit track`);
+    assert.equal(hostFitsTrackAndEntity("nem", null, u).fits, true, `${u} must fit the NEM track`);
+  }
+  assert.equal(channel.isPermitPlatformUrl("https://www.mygov.us/"), true);
+  assert.equal(channel.isPermitPlatformUrl("https://nmrld.my.site.com/s/"), false, "a Salesforce site is no platform of either kind by default");
+  assert.equal(channel.isUtilityPlatformUrl("https://nmrld.my.site.com/s/"), false);
+});
+
 await check("(p3) same portal: host, and the tenant of a path-tenanted host", () => {
   assert.equal(samePortal(ACA_OREGON, "https://aca-oregon.accela.com/OREGON/Cap/CapHome.aspx?module=Building"), true);
   assert.equal(samePortal("https://aca-prod.accela.com/CHINO/Login.aspx", "https://aca-prod.accela.com/SANDIEGO/Default.aspx"), false);
