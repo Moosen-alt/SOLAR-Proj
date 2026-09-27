@@ -256,6 +256,10 @@ interface ScheduleFee {
    *  check, and a different dimension from `confidence` — it never means a
    *  person has vouched for the number. */
   corroborated: boolean;
+  /** The producer's reading of what its printed evidence row names (feeSchedules
+   *  corroborationVerdict): "other_permit" means the row names another permit and must not be
+   *  offered as this fee's published line. Anything unrecognised reads "none". */
+  evidenceVerdict: "names_permit" | "other_permit" | "unnamed" | "none";
   confidence: "verified" | "seeded";
   /** Who verified it and when — "" unless confidence is "verified". The NAME is a tenant's fact:
    *  shown only when every org in verifiedOrgIds is the project's own (verifierNameFor). */
@@ -391,6 +395,7 @@ function normalizeScheduleResult(raw: unknown): ScheduleFee | null {
     sourceQuote: quote,
     bracketQuote: text(r.bracketQuote).trim().slice(0, 400),
     corroborated: r.corroborated === true,
+    evidenceVerdict: (["names_permit", "other_permit", "unnamed"] as const).find((v) => v === text(r.evidenceVerdict)) ?? "none",
     // Research lands as seeded (safety rule 3); only a human promotes it.
     confidence: verified ? "verified" : "seeded",
     // A name beside a seeded row would read as a vouch nobody made — read only beside verified.
@@ -692,7 +697,19 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
       // statement about THIS AMOUNT, so a guessed-valuation walk does not earn it: the table
       // line is printed, the number computed from our guess is not.
       permitFeeCorroborated = schedule.corroborated && !schedule.valuationEstimated;
-      permitFeeEvidenceQuote = schedule.bracketQuote;
+      // A PRINTED ROW THAT NAMES ANOTHER PERMIT IS NOT THIS FEE'S PUBLISHED LINE (skeptic M8). The
+      // only line printed at this amount being "Plumbing permit fee | $160.00" says the research
+      // may have priced the wrong permit — so it is never offered as "Published as", and the
+      // basis says so instead. A row that names nothing (a bare size row) is still shown, marked.
+      const evidenceOtherPermit = schedule.evidenceVerdict === "other_permit";
+      permitFeeEvidenceQuote = evidenceOtherPermit ? "" : schedule.bracketQuote;
+      const evidenceClause = evidenceOtherPermit
+        ? " The only line the machine found printed at this amount in the cited schedule names ANOTHER permit (another trade, scope or discipline), so it is not offered as this fee's published line — this amount may be the wrong permit's; check the schedule before quoting."
+        : schedule.bracketQuote
+          ? schedule.evidenceVerdict === "unnamed"
+            ? ` Printed as: "${schedule.bracketQuote}" — that line does not itself name this permit; check which table it sits in.`
+            : ` Published as: "${schedule.bracketQuote}".`
+          : "";
       // The NAME only on the confirming org's projects; "human-verified" + the date to everyone.
       permitFeeVerifiedBy = schedule.confidence === "verified" ? verifierNameFor(db, project.id, schedule.verifiedBy, schedule.verifiedOrgIds) : "";
       permitFeeVerifiedAt = schedule.verifiedAt;
@@ -705,7 +722,7 @@ export function buildPaymentQuote(db: AppDb, project: ProjectRecord, trackInput?
             : " (researched, not yet human-verified)";
       permitFeeBasis = `${who}'s published fee schedule${schedule.bracketLabel ? `, line "${schedule.bracketLabel}"` : ""}`
         + `${vouching}.`
-        + `${schedule.bracketQuote ? ` Published as: "${schedule.bracketQuote}".` : ""}`
+        + evidenceClause
         + `${schedule.sourceUrl ? ` ${schedule.sourceUrl}` : ""}`
         + (track === "permit" ? stateSurchargeNotice(project.state, schedule.surchargeGaps) : "");
     } else {

@@ -29,6 +29,8 @@
 // corroborated line -> 5a, 5c, 5d, 5e, 5f, 6a, 6e-6j, 6m, 6o, 6p FAIL (measured: 15 failures).
 // Kill (fees-close2 heading): corroborateBrackets records heading "" -> 6b, 6c, 6d FAIL (measured:
 // 3 failures; 6a stays excluded — positive naming alone holds the wind row out).
+// Kill (fees-close2, skeptic M8): buildPaymentQuote ignores evidenceVerdict "other_permit" (the
+// plumbing row back under "Published as") -> 5g FAILS (measured: 1 failure).
 import "./_isolate";
 import fs from "node:fs";
 import os from "node:os";
@@ -258,6 +260,17 @@ registerFeeScheduleLookup(null);
   save("Wind County", "5 KVA or less", 346, "electrical");
   const wind = lineFor("mf4-wind", "Wind County");
   check("5f. MUST-EXCLUDE: the WIND row carrying the solar bracket's label and fee never earns it", wind.corroborated === false, JSON.stringify({ c: wind.corroborated, e: wind.evidenceQuote }));
+
+  // THE EVIDENCE LINE, NOT ONLY THE BADGE (skeptic M8): a row naming ANOTHER permit is never offered
+  // as this fee's published line — the basis says the research may have priced the wrong permit.
+  // A row that names nothing is still shown, marked; a row naming this permit is "Published as".
+  check("5g. MUST-EXCLUDE (M8): the plumbing row is not presented as the fee's published source; the basis warns instead",
+    !/Plumbing/i.test(generic.basis + generic.evidenceQuote) && /names ANOTHER permit/.test(generic.basis) && /wrong permit/.test(generic.basis),
+    JSON.stringify({ e: generic.evidenceQuote, b: generic.basis.slice(0, 400) }));
+  check("5h. a row naming no permit is shown MARKED ('Printed as … does not itself name this permit')",
+    /Printed as: "p8 5 KVA or less \| \$135\.00" — that line does not itself name this permit/.test(kva.basis) && !/Published as/.test(kva.basis), kva.basis.slice(0, 300));
+  check("5i. MUST-PASS: a row naming this permit is still 'Published as' it",
+    /Published as: "p3 Solar photovoltaic permit \| \$250\.00"/.test(solar.basis), solar.basis.slice(0, 300));
 }
 
 // ── 6. THE HEADING ABOVE THE ROW, AND POSITIVE NAMING (fees-close2; skeptic M1p) ──────────────

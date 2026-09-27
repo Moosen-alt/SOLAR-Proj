@@ -459,10 +459,14 @@ export interface ProjectFeeResolution {
   /** True only when EVERY line was found printed — label and fee on one row — in
    *  the cited document. Never a promotion: confidence stays 'seeded'. */
   corroborated: boolean;
+  /** What the printed evidence says about the permit (corroborationVerdict), the WORST across the
+   *  lines: "other_permit" when any line's row names another trade/scope/discipline — the quote
+   *  must then not offer that row as this fee's published line (skeptic M8). */
+  evidenceVerdict?: CorroborationVerdict;
   confidence: FeeConfidence;
   /** The person(s) who verified every line of this total, and the latest time — "" while any
-   *  line is seeded. Written only by markFeeScheduleVerified (hard rule 3). A NAME, so it is
-   *  shown only to the org(s) in verifiedOrgIds (submissionFees filters it per project). */
+   *  line is seeded. Written only by a person's Confirm or the script door (hard rule 3). A NAME,
+   *  so it is shown only to the org(s) in verifiedOrgIds (submissionFees filters it per project). */
   verifiedBy?: string;
   verifiedAt?: string;
   /** Every org whose person verified a row behind this total ('' = none on record); [] while
@@ -1952,6 +1956,41 @@ function printedHeadingAbove(documentLines: string[], rowIndex: number): string 
   return "";
 }
 
+/** WHAT A LINE'S PRINTED EVIDENCE ROW (WITH ITS HEADING) SAYS ABOUT THE PERMIT IT PRICES:
+ *   "names_permit" — it positively names this permit (the badge);
+ *   "other_permit" — it names ANOTHER trade, scope or discipline (the research may have priced the
+ *                    wrong permit: never offered as this fee's published line — skeptic M8);
+ *   "unnamed"      — it names no permit at all (a bare size row, a generic "Permit fee");
+ *   "none"         — no corroborated row. */
+export type CorroborationVerdict = "names_permit" | "other_permit" | "unnamed" | "none";
+
+export function corroborationVerdict(
+  line: Pick<FeeScheduleLine, "corroboration" | "bracketLabel" | "discipline">,
+  track: FeeTrack,
+): CorroborationVerdict {
+  if (!line.corroboration?.corroborated) return "none";
+  const row = clean(line.corroboration.matchedLine);
+  if (!row) return "none";
+  const text = `${row} ${clean(line.corroboration.heading)}`;
+  if (OTHER_TRADE_RE.test(text)) return "other_permit";
+  const named = (yes: boolean): CorroborationVerdict => (yes ? "names_permit" : "unnamed");
+  if (track === "nem") {
+    if (INTERCONNECTION_RE.test(text)) return "names_permit";
+    return BUILDING_WORD_RE.test(text) || ELECTRICAL_WORD_RE.test(text) ? "other_permit" : "unnamed";
+  }
+  if (GENERATOR_RE.test(text)) return "other_permit";
+  const discipline = String(line.discipline ?? "");
+  if (discipline === "electrical") {
+    if (BUILDING_WORD_RE.test(text) && !ELECTRICAL_WORD_RE.test(text)) return "other_permit";
+    return named(PV_WORD_RE.test(text) || RENEWABLE_RE.test(text));
+  }
+  if (discipline === "structural") {
+    if (ELECTRICAL_WORD_RE.test(text) && !BUILDING_WORD_RE.test(text)) return "other_permit";
+    return named(PV_WORD_RE.test(text));
+  }
+  return named(PV_WORD_RE.test(text) || RENEWABLE_RE.test(text));
+}
+
 /** DOES THIS LINE'S PRINTED ROW (WITH ITS HEADING) NAME THE PERMIT THE LINE PRICES? The one
  *  predicate behind the "matches the published schedule" badge (resolutionFrom's `corroborated`).
  *  Positive naming only; unsure is false. */
@@ -1959,23 +1998,7 @@ export function corroborationNamesThisPermit(
   line: Pick<FeeScheduleLine, "corroboration" | "bracketLabel" | "discipline">,
   track: FeeTrack,
 ): boolean {
-  if (!line.corroboration?.corroborated) return false;
-  const row = clean(line.corroboration.matchedLine);
-  if (!row) return false;
-  const text = `${row} ${clean(line.corroboration.heading)}`;
-  if (OTHER_TRADE_RE.test(text)) return false;
-  if (track === "nem") return INTERCONNECTION_RE.test(text);
-  if (GENERATOR_RE.test(text)) return false;
-  const discipline = String(line.discipline ?? "");
-  if (discipline === "electrical") {
-    if (BUILDING_WORD_RE.test(text) && !ELECTRICAL_WORD_RE.test(text)) return false;
-    return PV_WORD_RE.test(text) || RENEWABLE_RE.test(text);
-  }
-  if (discipline === "structural") {
-    if (ELECTRICAL_WORD_RE.test(text) && !BUILDING_WORD_RE.test(text)) return false;
-    return PV_WORD_RE.test(text);
-  }
-  return PV_WORD_RE.test(text) || RENEWABLE_RE.test(text);
+  return corroborationVerdict(line, track) === "names_permit";
 }
 
 /** One line for the notes trail, in the operator's vocabulary. Says CORROBORATED
@@ -4494,6 +4517,8 @@ function resolutionFrom(lines: FeeScheduleLine[], track: FeeTrack): Omit<Project
     // (corroborationNamesThisPermit, skeptic MF4). Still never a promotion —
     // confidence below is decided separately and code never writes 'verified'.
     corroborated: lines.length > 0 && lines.every((l) => corroborationNamesThisPermit(l, track)),
+    evidenceVerdict: (["other_permit", "unnamed", "names_permit", "none"] as const)
+      .find((v) => lines.some((l) => corroborationVerdict(l, track) === v)) ?? "none",
     // The weakest confidence in the set: a verified line does not vouch for a
     // seeded one standing next to it in the same total.
     confidence: lines.some((l) => l.confidence === "seeded") ? "seeded" : "verified",
