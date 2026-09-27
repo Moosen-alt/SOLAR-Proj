@@ -401,12 +401,13 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
   - MF4: `deleteKnowledgeRows.test (f)` — a used row (real path: createProject → learnFromProject → project_count) refused
     without `--force` (exit 2, sha1 unchanged), deleted with it; the skeptic's K6 now goes red.
   - README's safety paragraph words final submit as rule 1 does.
-  - Kills (`.probe/decisions-0926-close/kill.cjs`, kill worktree at bb4f85f; logs `kills-7d07091.log` + `kills-bb4f85f.log`),
-    10/10 RED: KA email on the newest target again; KB the no-target fallback ignoring the email's track; KC the lane's
-    'approved' clause back; KD the project-status writer on raw target_type; KE outcomeFinishesTrack on raw target_type; KF the
-    check-row mapping on raw target_type; KG otherTrackOutcome by raw target_type; KH the creator's normalisation dropped; KJ the
-    track pool by raw target_type; KI the project_count refusal dropped. KB/KF/KJ survived the first cut (each assertion was
-    satisfied by another clause) and were sharpened in bb4f85f.
+  - Kills (`.probe/decisions-0926-close/kill.cjs`; logs `kills-7d07091.log`, `kills-bb4f85f.log`, `kills-687dba4.log`,
+    `kills-final-KH.log`), 11/11 RED: KA email on the newest target again; KB the no-target fallback ignoring the email's
+    track; KC the lane's 'approved' clause back; KD the project-status writer on raw target_type; KE outcomeFinishesTrack on raw
+    target_type; KF the check-row mapping on raw target_type; KG otherTrackOutcome by raw target_type; KH the creator's
+    normalisation dropped; KJ the track pool by raw target_type; KL the add-target door's rule-5 kind raw again; KI the
+    project_count refusal dropped. KB/KF/KJ survived the first cut and KH the third (each assertion was satisfied by another
+    clause or door) and were sharpened in bb4f85f / 93ff731.
   - Smoke shape measured after the fix (`probe-smoke-lane.test.ts`): the NEM PTO email on a project with one untyped permit
     target is now a NO-target `nem_approved` check (the permit target is no longer written); `listWithNem.nemApproved` holds from
     BOTH the email match (bucket nem_approval) and the word-sniffed no-target check. Pre-existing and unchanged: a no-target check
