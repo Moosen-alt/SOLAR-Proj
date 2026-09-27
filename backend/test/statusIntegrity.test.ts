@@ -358,8 +358,12 @@ try {
   await readStatus(p6, "nem", READY_FOR_ISSUE);
   await check("fixture: a NEM reading of 'ready to issue' text never WRITES the permit status", () => {
     assert.equal(statusOf(p6), "submitted");
-    const nemOutcome = db.get<Row>("SELECT latest_outcome FROM permit_check_targets WHERE id = ?", [targetFor(p6, "nem")]);
-    assert.equal(String(nemOutcome?.latest_outcome), "ready_for_issue", "the NEM target itself holds ready_for_issue");
+    // decisions-0926-final: the permit family (ready_for_issue) on a NEM filing is not that
+    // filing's outcome — readingMayFinishTrack refuses it, so the NEM target holds the reading
+    // as "Reported, unconfirmed" (needs_human_review) for a person, never ready_for_issue.
+    const nemOutcome = db.get<Row>("SELECT latest_outcome, latest_status_label FROM permit_check_targets WHERE id = ?", [targetFor(p6, "nem")]);
+    assert.equal(String(nemOutcome?.latest_outcome), "needs_human_review", "the NEM target itself holds the permit family's outcome");
+    assert.equal(String(nemOutcome?.latest_status_label), "Reported, unconfirmed");
   });
   await readStatus(p6, "combo", READY_FOR_ISSUE);
   await check("fixture: the combo permit's reading puts the project at ready_for_issue", () => {

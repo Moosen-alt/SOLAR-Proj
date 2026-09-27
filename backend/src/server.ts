@@ -1963,6 +1963,15 @@ app.post("/api/projects/:id/research-ahj", asyncHandler(async (req, res) => {
   }
 }));
 
+// THE MANUAL WRITER. The body is passed through as recordPermitStatusCheck's input, so
+// `targetId`, `source`, `rawStatusText`, `applicationNumber`, `permitNumber` AND `track` are all
+// body fields. `track` carries NO authority: it only words the classification of a reading that
+// has no target. What may write a track status (nem_approved / ready_for_issue / issued /
+// approved) is decided by provenance — permitMonitor.readingMayFinishTrack: a manual or portal
+// reading against an ACTIVE target whose own kind is the outcome's track. A body that names a
+// track and no target, or a `source` of "email", gets a needs_human_review row and a human-review
+// item, never a status. (A re-check offered by the stale panel below is exactly the trusted shape:
+// targetId + source public_url / manual.)
 app.post("/api/projects/:id/permit-checks", asyncHandler(async (req, res) => {
   res.status(201).json(await recordPermitStatusCheck(db, String(req.params.id), req.body || {}));
 }));

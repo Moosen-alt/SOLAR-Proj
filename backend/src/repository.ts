@@ -126,7 +126,11 @@ import {
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
 import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
-import { classificationDrift, classifyPermitStatusText, isAuthWallText, isNemApprovalOutcome, nextCheckIso, shouldRecordStatusCheck, trackKind, type TrackKind } from "./permitMonitor";
+import {
+  classificationDrift, classifyPermitStatusText, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack,
+  readingMayFinishTrack, shouldRecordStatusCheck, trackKind, UNCONFIRMED_READING_LABEL,
+  type PermitStatusClassification, type ReadingProvenance, type TrackKind,
+} from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
@@ -5915,12 +5919,16 @@ export async function recordPermitStatusCheck(
   projectId: string,
   input: {
     targetId?: string | null;
-    /** THE READING'S TRACK WHEN THERE IS NO TARGET to say — the email tracker passes the email's
-     *  own workflow so a utility's approval email filed with no NEM target on the project is still
-     *  judged as the interconnection reading it is (never as plan review). Honoured ONLY when
-     *  `targetId` is absent: a target's own kind (trackKind) always wins. Omitted with no target:
-     *  provenance unknown — classified as a permit reading, and the project-status writer treats
-     *  it as neither track (the behaviour every manual project-level check has always had). */
+    /** THE READING'S TRACK WHEN THERE IS NO TARGET to say — WORDING ONLY, NEVER AUTHORITY. The
+     *  email tracker passes the email's own workflow so a utility's approval email filed with no
+     *  NEM target is at least CLASSIFIED as the interconnection reading it is (its label and the
+     *  human-review item say "interconnection approved", not "plan review"). Honoured only when
+     *  `targetId` is absent: a target's own kind (trackKind) always wins. It never lets the reading
+     *  write a track status: with no target, readingMayFinishTrack refuses every finishing outcome
+     *  whatever this says (the POST /api/projects/:id/permit-checks route passes the request body
+     *  straight through, so this IS a body field — a caller declaring `track: "nem"` gets a
+     *  human-review item, not nem_approved). Omitted with no target: classified as a permit
+     *  reading, refused the same way. */
     track?: TrackKind | null;
     source?: PermitCheckSource;
     rawStatusText?: string;
@@ -5947,13 +5955,46 @@ export async function recordPermitStatusCheck(
   // tracker's workflow), else null = unknown provenance, classified as a permit reading and never
   // guessed into the utility's queue.
   const track: TrackKind | null = target ? trackKind(text(target.target_type), text(target.permit_type)) : (input.track ?? null);
-  const classification = classifyPermitStatusText(rawStatusText, track ?? "permit");
+  // WHAT THE TEXT SAYS — the classifier's verdict on the words. Not yet what gets written.
+  const read = classifyPermitStatusText(rawStatusText, track ?? "permit");
   // Previous outcome/label BEFORE this check updates the target — the client is notified only
   // when the outcome actually CHANGES (never re-sent on every poll of a settled status), and the
   // same pair decides whether this check is a row at all. Both must be read here, above the
   // UPDATE below that overwrites them.
   const previousOutcome = target ? text(target.latest_outcome) : "";
   const previousStatusLabel = target ? text(target.latest_status_label) : "";
+  // PROVENANCE, FAIL-CLOSED (decisions-0926-final). A finishing/positive outcome (outcomeTrack:
+  // nem_approved -> nem; issued / ready_for_issue / reviewed_by_ahj -> permit) is WRITTEN — check
+  // row, target, project status, track finish, handoff, client update — only when
+  // readingMayFinishTrack says the reading came from the portal or an operator's re-check, against
+  // a target that exists, is active, and is a filing of the track that outcome belongs to. Every
+  // other reading of such an outcome — an email of any bucket/workflow (the classifier's
+  // reliability is irrelevant here), a no-target reading, a body-declared track, the other track's
+  // family on this target — is PERSISTED as needs_human_review / "Reported, unconfirmed" with a
+  // human-review item naming the reading and the reason, and reaches no client. Three skeptics
+  // found this defect in three shapes; the persisted outcome is the load-bearing half, because
+  // targetFinishedTrack reads permit_status_checks and latest_outcome, not the project status.
+  //
+  // THE ONE EXCEPTION IS AGREEMENT: an untrusted reading that says what the target ALREADY holds
+  // (an AHJ email confirming a permit the poll already read as issued) is a confirmation, not
+  // news — it finishes nothing that was not finished, the change gate below sends nothing, and
+  // demoting it would downgrade a verified status to "unconfirmed" until the next poll.
+  const writtenTrack = outcomeTrack(read.outcome);
+  const provenance: ReadingProvenance = writtenTrack ? readingMayFinishTrack(source, target, writtenTrack) : { trusted: true };
+  const confirmsKnown = Boolean(target) && previousOutcome === read.outcome;
+  const refused = !provenance.trusted && !confirmsKnown;
+  const classification: PermitStatusClassification = refused
+    ? {
+        outcome: "needs_human_review",
+        statusLabel: UNCONFIRMED_READING_LABEL,
+        confidence: read.confidence,
+        reviewedByAhj: false,
+        readyForIssue: false,
+        issueFeeDue: false,
+        message: `Reported, unconfirmed: a ${source} reading says "${read.statusLabel}" (${read.outcome}), but ${provenance.trusted ? "" : provenance.reason}. `
+          + `Confirm it on the ${writtenTrack === "nem" ? "utility's" : "jurisdiction's"} portal — a poll or a manual re-check against the filing's own active tracking target — before it counts.`,
+      }
+    : read;
   // A HISTORY OF CHANGES, NOT A LOG OF LOOKUPS.
   //
   // This table was written on every CHECK. A permit sitting in "In review" for three weeks got a
@@ -6015,6 +6056,30 @@ export async function recordPermitStatusCheck(
         recordNumber: input.permitNumber || text(target?.permit_number) || input.applicationNumber || text(target?.application_number),
         readingSource: source,
       });
+    } else if (recordCheck && refused) {
+      // THE REFUSED READING'S OWN ROW — issue_type names it, parser_value carries what the text
+      // said (outcome + label), notes carry why it was not trusted. This is the item an operator
+      // resolves by re-checking the portal (which writes a trusted row through this same
+      // function); nothing else moves the track. Distinct from the generic status-review row
+      // below so the queue shows a reported approval as what it is, not as "needs review".
+      db.run(
+        `INSERT INTO human_review_items
+          (id, project_id, issue_type, field_name, parser_value, llm_suggested_value, source_excerpt, status, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id(),
+          projectId,
+          "Permit monitor: reported status, unconfirmed",
+          "permit_status_unconfirmed",
+          `${read.outcome}: ${read.statusLabel}`.slice(0, 400),
+          "",
+          rawStatusText.slice(0, 800),
+          "pending",
+          classification.message,
+          ts,
+          ts,
+        ],
+      );
     } else if (recordCheck && classification.outcome === "needs_human_review") {
       db.run(
         `INSERT INTO human_review_items
@@ -6143,10 +6208,14 @@ export async function recordPermitStatusCheck(
   // CLIENT UPDATE — after the transaction committed. Fire-and-forget: sends (or drafts,
   // when SMTP is unconfigured) a plain-language email to the submitting client with the
   // new status + their read-only status link, and records it in the CRM timeline.
-  if (shouldNotifyClient(classification.outcome, previousOutcome)) {
+  // THE NOTIFIER ASKS THE SAME PROVENANCE PREDICATE, on what the text SAID (`read`), not on the
+  // demoted row: a reading this function refused to write is refused here for the same reason,
+  // by the same verdict, so the two doors cannot disagree. (Passing the persisted outcome instead
+  // would make this gate dead code — it would only ever see needs_human_review.)
+  if (shouldNotifyClient(read.outcome, previousOutcome, provenance)) {
     void notifyClientOfStatusChange(db, detail.project, {
-      outcome: classification.outcome,
-      statusLabel: classification.statusLabel,
+      outcome: read.outcome,
+      statusLabel: read.statusLabel,
       // The writer's ONE track (trackKind), never raw target_type: the wording's "which side
       // moved / what is still outstanding" must agree with what was just written.
       targetType: track ?? "permit",
@@ -6360,6 +6429,14 @@ function updateProjectForPermitOutcome(
   const update = (status: ProjectRecord["status"], stage: string, detail: StageDetail) => {
     db.run("UPDATE projects SET status = ?, current_stage = ?, stage_detail = ?, updated_at = ? WHERE id = ?", [status, stage, detail, ts, projectId]);
   };
+  // UNKNOWN PROVENANCE WRITES NO TRACK STATUS. With track null, isNem and isPermit below are BOTH
+  // false, so every guarded branch would be open — "PTO Granted" with no target wrote nem_approved,
+  // "Permit Issued" wrote issued, "Approved pending payment" wrote ready_for_issue (decisions-0926
+  // close-v skeptic MF-B). recordPermitStatusCheck already refuses such a reading upstream
+  // (readingMayFinishTrack: no target -> needs_human_review), so a finishing outcome never arrives
+  // here with a null track; this guard states the invariant at the door itself, so the writer is
+  // closed even if a new caller reaches it directly.
+  if (track === null && outcomeTrack(outcome)) return;
 
 /** Statuses a "still in review" reading may advance to "submitted".
  *

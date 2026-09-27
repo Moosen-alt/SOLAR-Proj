@@ -40,7 +40,7 @@ import { text } from "./json";
 export const BRAND = (process.env.BRAND_NAME || "Keelix").trim() || "Keelix";
 import { id } from "./ids";
 import { nowIso } from "./time";
-import { isNemApprovalOutcome, trackKind } from "./permitMonitor";
+import { isNemApprovalOutcome, outcomeTrack, trackKind } from "./permitMonitor";
 
 export interface ClientUpdateContext {
   /** "permit" | "nem" — which track moved. */
@@ -137,6 +137,14 @@ export function clientUpdateFor(
   outcome: string,
   ctx: ClientUpdateContext,
 ): ClientUpdate | null {
+  // THE OUTCOME'S FAMILY MUST BE THIS TRACK'S. "Permit issued" on the NEM track's target, or
+  // "interconnection approved" on a permit's, is not an update about this filing — it is a
+  // reading a person must look at (the writer records it as unconfirmed and raises a
+  // human-review item). Wording it here would tell the client the city issued a permit because a
+  // utility page said "issued". The same family half of the provenance predicate the writer and
+  // shouldNotifyClient ask (outcomeTrack), asked again at the wording door.
+  const family = outcomeTrack(outcome);
+  if (family && family !== trackKind(String(ctx.targetType || ""), "")) return null;
   const ahj = text(project.ahj) || "the jurisdiction";
   const utility = text(project.utility) || "the utility";
   const ref = text(ctx.permitNumber) || text(ctx.applicationNumber);

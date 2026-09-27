@@ -157,6 +157,8 @@ const mkNemTarget = (pid: string): string => {
 const targetRow = (tid: string) => db.get<{ latest_outcome: string; latest_status_label: string }>("SELECT latest_outcome, latest_status_label FROM permit_check_targets WHERE id = ?", [tid])!;
 const projectStatus = (pid: string): string => String(db.get<{ status: string }>("SELECT status FROM projects WHERE id = ?", [pid])!.status);
 const anyNemApprovedRow = (pid: string): number => Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM permit_status_checks WHERE project_id = ? AND outcome = 'nem_approved'", [pid])?.n ?? 0);
+/** Human-review items a provenance refusal wrote (decisions-0926-final: the writer's fail-closed row). */
+const unconfirmedItems = (pid: string): number => Number(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM human_review_items WHERE project_id = ? AND field_name = 'permit_status_unconfirmed' AND status = 'pending'", [pid])?.n ?? 0);
 
 await check("MUST EXCLUDE (permit): a PERMIT target reading 'Approved' never writes nem_approved and never finishes the NEM track", async () => {
   const pid = mkProject("Permit Approved Owner");
@@ -445,8 +447,13 @@ await check("MF1 (permit email): filed on the PERMIT target although the NEM tar
   assert.equal(run.matches[0].workflow, "permit");
   assert.equal(checksOn(nemTid, pid).length, 0, "the AHJ's email was filed on the NEM target");
   assert.ok(!rawTarget(nemTid).latest_outcome, `NEM target written: ${rawTarget(nemTid).latest_outcome}`);
-  assert.equal(rawTarget(permitTid).latest_outcome, "reviewed_by_ahj");
-  assert.equal(projectStatus(pid), "approved");
+  // decisions-0926-final (fail-closed): an EMAIL reading never writes a track status — the
+  // permit target holds it as "Reported, unconfirmed" for a person, the project stays where it
+  // was, and a human-review item names the reading (readingProvenance.test pins the whole shape).
+  assert.equal(checksOn(permitTid, pid).length, 1, "the AHJ's email was not filed on the permit target");
+  assert.equal(rawTarget(permitTid).latest_outcome, "needs_human_review", `an email wrote ${rawTarget(permitTid).latest_outcome} on the permit target`);
+  assert.equal(projectStatus(pid), "submitted", `project '${projectStatus(pid)}' from an email`);
+  assert.equal(unconfirmedItems(pid), 1, "no human-review item for the unconfirmed email reading");
   assert.equal(anyNemApprovedRow(pid), 0, "an AHJ approval email wrote nem_approved");
   const project = R.getProjectDetail(db, pid).project;
   assert.equal(isTrackDone(db, pid, "nem", requiredTracks(project)), false, "an AHJ approval email finished the NEM track");
@@ -469,11 +476,17 @@ await check("MF1 (NEM email): filed on the NEM target although the permit target
   assert.equal(run.matches[0].workflow, "nem");
   assert.equal(checksOn(permitTid, pid).length, 0, "the utility's email was filed on the permit target");
   assert.ok(!rawTarget(permitTid).latest_outcome, `permit target written: ${rawTarget(permitTid).latest_outcome}`);
-  assert.equal(rawTarget(nemTid).latest_outcome, "nem_approved");
-  assert.equal(projectStatus(pid), "nem_approved");
+  // decisions-0926-final (fail-closed): the utility's OWN approval email is filed on the NEM
+  // target but finishes nothing — it is "Reported, unconfirmed" until a poll or a manual re-check
+  // against that target reads the approval on the portal.
+  assert.equal(checksOn(nemTid, pid).length, 1, "the utility's email was not filed on the NEM target");
+  assert.equal(rawTarget(nemTid).latest_outcome, "needs_human_review", `an email wrote ${rawTarget(nemTid).latest_outcome} on the NEM target`);
+  assert.equal(projectStatus(pid), "submitted", `project '${projectStatus(pid)}' from an email`);
+  assert.equal(anyNemApprovedRow(pid), 0, "a utility email wrote a nem_approved check row");
+  assert.equal(unconfirmedItems(pid), 1, "no human-review item for the unconfirmed email reading");
   const project = R.getProjectDetail(db, pid).project;
   const required = requiredTracks(project);
-  assert.equal(isTrackDone(db, pid, "nem", required), true);
+  assert.equal(isTrackDone(db, pid, "nem", required), false, "an email finished the NEM track");
   for (const t of required.filter((x) => x !== "nem")) assert.equal(isTrackDone(db, pid, t, required), false);
 });
 
@@ -496,9 +509,15 @@ await check("MF1 (fallback, no target of the email's kind): a NEM email on a per
   assert.ok(!rawTarget(permitTid).latest_outcome);
   const noTarget = checksOn(null, pid);
   assert.equal(noTarget.length, 1, "no check row without a target");
-  // Judged as the interconnection reading it is (the email's track), not as plan review.
-  assert.equal(noTarget[0].outcome, "nem_approved", `a utility's 'Review Complete' with no NEM target read as ${noTarget[0].outcome}`);
-  assert.ok(!["approved", "ready_for_issue", "issued"].includes(projectStatus(pid)), `project '${projectStatus(pid)}' from a utility email`);
+  // decisions-0926-final (fail-closed): a NO-target reading writes no track status whatever
+  // track the email declared — persisted "Reported, unconfirmed", the project untouched. The
+  // email's track still WORDS the human-review item: it names the interconnection approval it
+  // read (nem_approved), not plan review, so a person knows which portal to check.
+  assert.equal(noTarget[0].outcome, "needs_human_review", `a no-target utility email wrote ${noTarget[0].outcome}`);
+  assert.equal(projectStatus(pid), "submitted", `project '${projectStatus(pid)}' from a no-target utility email`);
+  const item = db.get<{ parser_value: string }>("SELECT parser_value FROM human_review_items WHERE project_id = ? AND field_name = 'permit_status_unconfirmed'", [pid]);
+  assert.ok(item, "no human-review item for the no-target reading");
+  assert.match(String(item!.parser_value), /^nem_approved:/, `the item words the reading as ${item!.parser_value}, not as the interconnection approval the email is`);
   const project = R.getProjectDetail(db, pid).project;
   const required = requiredTracks(project);
   assert.equal(isTrackDone(db, pid, "nem", required), false, "no NEM target exists, so no track finished");

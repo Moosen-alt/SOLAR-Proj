@@ -54,7 +54,9 @@ const token = ensureClientPortalToken(db, client.id);
 // ── the voice ────────────────────────────────────────────────────────────────────────────
 await check("THE POINT: every update says whether anything is needed from the client", () => {
   for (const outcome of ["issued", "ready_for_issue", "nem_approved", "correction_flagged"]) {
-    const u = clientUpdateFor(db, project, outcome, { targetType: "permit" })!;
+    // On its OWN track: the wording door refuses the other family (decisions-0926-final —
+    // nem_approved on a permit target is a human-review item, not a note).
+    const u = clientUpdateFor(db, project, outcome, { targetType: outcome === "nem_approved" ? "nem" : "permit" })!;
     assert.ok(u, `no wording for ${outcome}`);
     assert.ok(u.action.trim().length > 0, `${outcome} has no action line — that is the line that makes it a note`);
     assert.match(u.action, /nothing|you|your/i, `${outcome}'s action line does not address the reader: ${u.action}`);

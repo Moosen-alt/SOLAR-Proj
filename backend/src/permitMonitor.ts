@@ -45,6 +45,76 @@ export function isNemApprovalOutcome(outcome: string | null | undefined): boolea
   return String(outcome || "").trim() === NEM_APPROVAL_OUTCOME;
 }
 
+// ---------------------------------------------------------------------------
+// PROVENANCE: WHICH READINGS MAY FINISH A TRACK (decisions-0926-final, the fourth and last D2 round).
+//
+// Three skeptics found the same defect in three shapes: the rule "a NEM-kind reading of 'Approved'
+// is nem_approved" was applied regardless of WHERE THE TEXT CAME FROM. An AHJ's plan-review email
+// that merely mentioned the utility was bucketed nem by the mbox classifier and finished the NEM
+// track; a no-target reading with no declared track opened both guards of the project-status
+// writer and wrote nem_approved / issued / ready_for_issue from nothing; a NEM target polled
+// "Permit Issued" drafted the client "the city has issued the permit".
+//
+// The answer is ONE predicate, asked at the writer AND at the client notifier, and it is about
+// provenance, not words: a reading may write a track's finishing/positive status ONLY when it came
+// from the portal (a poll, or an operator's re-check against a target) on a target that EXISTS, is
+// ACTIVE, and whose kind IS the track that status belongs to. Everything else — an email of any
+// bucket or workflow (heuristic or LLM classifier), a reading with no target, a track a request
+// body declared — is recorded as `needs_human_review` with a human-review item naming the reading
+// and why it was not trusted, and is never client-facing. The classifier's reliability becomes
+// irrelevant: it can only ever route an email to a human.
+// ---------------------------------------------------------------------------
+
+/** The outcomes that write a track's status (project status / track finish / client update), and
+ *  WHICH track each one belongs to. Everything else (waiting, correction_flagged,
+ *  needs_human_review, no_change) is ungated news about a filing, not a finish. */
+export function outcomeTrack(outcome: string | null | undefined): TrackKind | null {
+  switch (String(outcome || "").trim()) {
+    case NEM_APPROVAL_OUTCOME: return "nem";
+    case "issued":
+    case "ready_for_issue":
+    case "reviewed_by_ahj": return "permit";
+    default: return null;
+  }
+}
+
+export type ReadingProvenance = { trusted: true } | { trusted: false; reason: string };
+
+/** The sources that are US reading the portal — a sweep's poll (portal / public_url) or an
+ *  operator's re-check against a target (manual). `email` is a third party's prose routed by a
+ *  classifier; `mock` is no evidence at all. Neither may finish a track. */
+const TRUSTED_READING_SOURCES: ReadonlySet<string> = new Set(["portal", "public_url", "manual"]);
+
+/**
+ * MAY THIS READING WRITE `track`'S STATUS? The one provenance predicate.
+ *
+ * `target` is the permit_check_targets row the reading was recorded against (null = no target),
+ * `track` is the track the OUTCOME belongs to (outcomeTrack), never the reading's declared or
+ * body-supplied track — a declared track is wording for the classifier, not authority.
+ */
+export function readingMayFinishTrack(
+  source: string,
+  target: { active?: unknown; target_type?: unknown; permit_type?: unknown } | null | undefined,
+  track: TrackKind | null,
+): ReadingProvenance {
+  if (!track) return { trusted: false, reason: "the outcome names no track" };
+  if (!TRUSTED_READING_SOURCES.has(String(source || "").trim())) {
+    return { trusted: false, reason: `the reading came from ${String(source || "an unknown source")}, not from the portal or an operator's re-check against a target` };
+  }
+  if (!target) return { trusted: false, reason: "the reading is attached to no tracking target" };
+  if (Number(target.active ?? 0) !== 1) return { trusted: false, reason: "the tracking target is inactive (a retired filing)" };
+  const kind = trackKind(String(target.target_type || ""), String(target.permit_type || ""));
+  if (kind !== track) {
+    return { trusted: false, reason: `the outcome belongs to the ${track} track but the target is a ${kind} filing` };
+  }
+  return { trusted: true };
+}
+
+/** The ONE stored label for a reading recorded under provenance refusal: `needs_human_review` with
+ *  this label. Fixed (not "Unverified: <label>") so the client page can word it (clientPortal
+ *  PUBLIC_CHECK_LABELS) instead of passing an operator string through to a customer. */
+export const UNCONFIRMED_READING_LABEL = "Reported, unconfirmed";
+
 // "ADDL INFO NEEDED" IS A REVIEWER'S CORRECTION REQUEST. Oregon ePermitting (Accela) abbreviates
 // it, and the record status reads "In Review/Addl Info Needed" — which matched waitingPattern's
 // "in review" and was reported as "In review" at 0.72 while Coos Bay's building reviewer sat on

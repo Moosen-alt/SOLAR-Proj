@@ -33,7 +33,7 @@ import type {
 } from "../../shared/src/types";
 import { formatProjectAddress } from "./clientNotifier";
 import { getProjectDetail } from "./repository";
-import { publishedReadingFreshness, trackKind, type TrackKind } from "./permitMonitor";
+import { publishedReadingFreshness, trackKind, UNCONFIRMED_READING_LABEL, type TrackKind } from "./permitMonitor";
 import { logger } from "./logger";
 
 /**
@@ -207,6 +207,14 @@ const PUBLIC_CHECK_LABELS = new Map<string, PublicCheckWording>([
   ["needs_human_review::needs human review", {
     permit: "Waiting on us — reading the jurisdiction's latest update",
     nem: "Waiting on us — reading the utility's latest update",
+  }],
+  // A reading the writer refused to trust (permitMonitor.readingMayFinishTrack: an email's
+  // approval, a no-target reading, the other track's family on this filing) — stored as
+  // needs_human_review with the fixed UNCONFIRMED_READING_LABEL. The client is told an update was
+  // reported and that we are confirming it; never what it claimed.
+  [`needs_human_review::${UNCONFIRMED_READING_LABEL.toLowerCase()}`, {
+    permit: "Update reported — we are confirming it with the jurisdiction",
+    nem: "Update reported — we are confirming it with the utility",
   }],
 ]);
 

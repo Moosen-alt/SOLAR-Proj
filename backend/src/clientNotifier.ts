@@ -34,10 +34,21 @@ import { BRAND, clientUpdateFor, clientUpdateEmailBody, isClientFacingOutcome, r
 import { addAuditLog } from "./audit";
 import { text } from "./json";
 import { logger } from "./logger";
+import { outcomeTrack, type ReadingProvenance } from "./permitMonitor";
 
-export function shouldNotifyClient(outcome: string, previousOutcome: string | null | undefined): boolean {
+/**
+ * `provenance` is REQUIRED, not an optional trailing argument (CLAUDE.md: an omitted one fails
+ * open). It is the writer's own readingMayFinishTrack verdict on this reading — the SAME predicate
+ * that decided whether the track status was written — so a reading the writer refused (an email's
+ * approval, a no-target reading, the other track's family on this target) is refused here for the
+ * same reason, and a client is never told what the project was not. Only the finishing family
+ * (outcomeTrack != null) is provenance-gated: a correction from an AHJ's own email is still news
+ * the client hears ("nothing for you to do yet"), as it always was.
+ */
+export function shouldNotifyClient(outcome: string, previousOutcome: string | null | undefined, provenance: ReadingProvenance): boolean {
   // Derived from clientUpdates.ts, never a second copy — see CLIENT_FACING_OUTCOMES there.
   if (!isClientFacingOutcome(outcome)) return false;
+  if (outcomeTrack(outcome) && !provenance.trusted) return false;
   // Only on a CHANGE — the monitor re-checks every few days and must not re-send
   // "permit issued" on every poll of an already-issued permit.
   return outcome !== (previousOutcome || "");
