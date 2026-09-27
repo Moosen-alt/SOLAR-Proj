@@ -237,6 +237,49 @@ export function stateRulesFor(state: string | null | undefined): StatePermitRule
   return STATE_PERMIT_RULES[String(state ?? "").trim().toUpperCase()] ?? {};
 }
 
+// ── R5 vocabulary BY MEANING ─────────────────────────────────────────────────────────────
+// The guidance says Category of Construction = the STRUCTURE TYPE (BCD: "the structure type the
+// system is being installed to"). Each agency prints that type in its own words: Coos Bay's list
+// says "1-1 or 2 Family Dwelling", Marion County's says "Single Family Dwelling" (with "Two Family
+// Dwelling", "Manufactured Dwelling", "Townhouses", "Small Home", "Detached Accessory Structure"
+// beside it). Live run 99baa5d0 (2026-09-27): the replay binding rewrote the borrowed step to Coos
+// Bay's wording, Marion's select "landed nothing though 8 option(s) were showing", and an LLM
+// gap-fill (14 s, 939 tokens) picked Single Family Dwelling. The MEANING is what the two lists
+// share; this names it so the adapter can land the select without the LLM — and never on a
+// neighbour that merely shares a word ("Two Family Dwelling", "Manufactured Dwelling").
+export type StructureTypeMeaning =
+  | "single_family"      // a one- or two-family dwelling: the roof a residential PV system goes on
+  | "two_family"         // a duplex named on its own (not the one-or-two-family option)
+  | "manufactured"       // manufactured / mobile / modular dwelling
+  | "townhouse"
+  | "accessory"          // detached accessory structure, garage, shed, ADU
+  | "small_home"         // Oregon's small home / tiny home category
+  | "multi_family"
+  | "commercial"
+  | "other";
+
+/** The structure type an option's (or a recorded value's) wording means, or null when it names no
+ *  structure type at all ("--Select--", "Other"). Exclusions are read first: "Manufactured
+ *  Dwelling" and "Two Family Dwelling" both contain "dwelling", and "Townhouses" is residential —
+ *  none of them is a single-family roof. */
+export function structureTypeMeaning(text: string): StructureTypeMeaning | null {
+  const t = String(text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!t || /^-*\s*select\s*-*$/.test(t) || /^please select/.test(t) || /^other$/.test(t)) return null;
+  if (/manufactured|mobile home|modular|\bmfg\b/.test(t)) return "manufactured";
+  if (/town ?house|town ?home|row ?house/.test(t)) return "townhouse";
+  if (/accessory|detached (garage|shed|structure|building)|\badu\b|\bgarage\b|\bshed\b|carport/.test(t)) return "accessory";
+  if (/small home|tiny (home|house)/.test(t)) return "small_home";
+  if (/multi[- ]?family|apartment|condominium|\bcondo\b|three or more|3\+? (or more )?famil|\bmulti[- ]?unit/.test(t)) return "multi_family";
+  if (/commercial|industrial|\bmixed[- ]use\b|non[- ]?residential/.test(t)) return "commercial";
+  // The one-or-two-family option: "1-1 or 2 Family Dwelling", "One and Two Family", "1 & 2 Family",
+  // "Residential - 1 & 2 Family", "Single Family Dwelling", "Single-Family Residence", "SFD", "SFR".
+  if (/\bsingle[- ]?family\b|\bsingle[- ]dwelling\b|\bsfd\b|\bsfr\b|\bone[- ]family\b/.test(t)) return "single_family";
+  if (/\b(1|one)\b[^a-z0-9]{0,6}(and|&|or|\/|-|,)[^a-z0-9]{0,4}\b(2|two)\b[^a-z]{0,4}family/.test(t)) return "single_family";
+  if (/\b(2|two)[- ]family\b|\bduplex\b/.test(t)) return "two_family";
+  if (/\bresidential\b|\bdwelling\b|\bhouse\b|\bhome\b/.test(t)) return "other";
+  return null;
+}
+
 // ── Consumers' questions ─────────────────────────────────────────────────────────────────
 const answered = <T>(f: CitedFact<T> | null | undefined): f is CitedFact<T> & { value: T } =>
   Boolean(f) && f!.value !== null && f!.value !== undefined && !(typeof f!.value === "string" && !String(f!.value).trim());

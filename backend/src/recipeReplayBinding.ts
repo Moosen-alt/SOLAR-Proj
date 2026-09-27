@@ -38,8 +38,8 @@
 //      check still reports a tier with no recorded box.
 import type { CitedFact, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { stateRulesFor } from "./permitProcess";
-import { feeBracketFieldKey, parseFeeBracketFieldKey, type FeeBracketBounds } from "../../portal-bot/src/feeBracketQuantity";
-import { parseBracketRow } from "./pdfTables";
+import { feeBracketFieldKey, parseFeeBracketFieldKey, sameFeeTier, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
+export { sameFeeTier };
 
 export interface ReplayBindingChange {
   index: number;
@@ -102,24 +102,12 @@ export function agencyCodeInCss(css: string): string {
   const m = /AppSpec[0-9A-F]+Edit_([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*?)_(?:ddl|txt|rdo|chk|cb|lbl|dt)_\d/.exec(css);
   return m ? m[1] : "";
 }
-/** Two kVA tiers are the same printed row when their bounds agree to the hundredth a fee table
- *  prints between rows ("5.01 to 15" vs a table written 5–15); an open lower bound is 0. */
-export function sameFeeTier(a: FeeBracketBounds, b: FeeBracketBounds): boolean {
-  const close = (x: number, y: number) => Math.abs(x - y) <= 0.0101;
-  const maxEq = (a.maxKw == null && b.maxKw == null) || (a.maxKw != null && b.maxKw != null && close(a.maxKw, b.maxKw));
-  return maxEq && close(a.minKw ?? 0, b.minKw ?? 0);
-}
 /** The tier key a recorded kVA box label names ("…- 5.01kva through 15kva:" → 5.01-15), or "".
- *  (feeBracketFields.feeBracketFieldForLabel's kVA arm; not imported — feeSchedules imports this
- *  module, and feeBracketFields imports feeSchedules.) */
+ *  The ONE portal-label grammar (feeBracketQuantity.tierBoundsFromLabel) — the same reading the
+ *  replay adapter makes of the live page and feeBracketFields makes of a recorded label. */
 function tierKeyForLabel(label: string): string {
-  if (!/kva/i.test(label)) return "";
-  try {
-    const p = parseBracketRow({ row: { page: 1, y: 0, cells: [label], xs: [0], height: 10 }, matched: [], label, money: [], continuations: [], section: "" } as never);
-    return feeBracketFieldKey(p.minKw ?? null, p.maxKw ?? null);
-  } catch {
-    return "";
-  }
+  const b = tierBoundsFromLabel(label);
+  return b ? feeBracketFieldKey(b.minKw, b.maxKw) : "";
 }
 const hasKey = (o: Record<string, string>, k: string) => Object.prototype.hasOwnProperty.call(o, k);
 const POSITIONAL_SERVICE_LIST = /cbListServices_\d+|rptAgency_ctl\d+/i;

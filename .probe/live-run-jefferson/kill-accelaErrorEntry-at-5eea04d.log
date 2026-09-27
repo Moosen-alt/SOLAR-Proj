@@ -1,0 +1,14 @@
+  (artifacts of this hand-run smoke go to C:\Users\isobl\AppData\Local\Temp\smoke-artifacts-PnxjcO, not data/)
+  [timing] Error.aspx-first entry: 32004 ms to the end of the run; 31242 ms from the start of the run to the first application page (Work Location); slowSteps=[{"i":0,"action":"goto","note":"entry url","ms":31004}]
+  ok   - MUST-PASS F3: the replay gets past Accela's Error.aspx landing and fills the Work Location page
+  FAIL - MUST-PASS F3: the entry step is under 15 s (live: 50.9 s; the page's own refresh alone is 20 s)
+         ms=32004 firstAppPage=31242 ok=true url=http://127.0.0.1:50578/oregon/Cap/WorkLocation.aspx?Module=Building street=953 msg=Replayed 3 recorded step(s); stopped at review. Review screen checked against the project: 1 field(s) read, 0 project value(s) confirmed present, no mismatch. slow=[{"i":0,"action":"goto","note":"entry url","ms":31004}] notes=[] progress=[]
+  FAIL - MUST-PASS F3: the error landing is NAMED in the run's notes
+         ms=32004 firstAppPage=31242 ok=true url=http://127.0.0.1:50578/oregon/Cap/WorkLocation.aspx?Module=Building street=953 msg=Replayed 3 recorded step(s); stopped at review. Review screen checked against the project: 1 field(s) read, 0 project value(s) confirmed present, no mismatch. slow=[{"i":0,"action":"goto","note":"entry url","ms":31004}] notes=[] progress=[]
+  FAIL - MUST-PASS F3: the wait reported progress ("Waiting for the portal…")
+         ms=32004 firstAppPage=31242 ok=true url=http://127.0.0.1:50578/oregon/Cap/WorkLocation.aspx?Module=Building street=953 msg=Replayed 3 recorded step(s); stopped at review. Review screen checked against the project: 1 field(s) read, 0 project value(s) confirmed present, no mismatch. slow=[{"i":0,"action":"goto","note":"entry url","ms":31004}] notes=[] progress=[]
+  [timing] plain entry (dashboard first time): 13512 ms; first application page at 12728 ms
+  ok   - MUST-PASS plain: a normal entry still reaches the Work Location page
+  ok   - MUST-EXCLUDE F3: an entry page that is not an error page is not re-fetched (one Dashboard GET before Apply)
+
+3 accela-error-entry check(s) FAILED.

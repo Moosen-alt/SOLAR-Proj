@@ -5,7 +5,9 @@ import { BasePortalAdapter, HUMAN_REVIEW_MESSAGE, ok, fail, type PortalContext, 
 import { applyFormatHint } from "../formatHint";
 import { extractRecordNumber, pageConfirmsSubmission } from "../recordNumber";
 import { armHumanCaptureOnPage, HUMAN_SUBMIT_OBSERVED_NOTE } from "../humanCapture";
-import { feeBracketCoverage, feeBracketCoverageMessage } from "../feeBracketQuantity";
+import { feeBracketCoverage, feeBracketCoverageMessage, decideFeeTier, FEE_TIER_RATING_FIELD, parseFeeBracketFieldKey, readTierLabel, sameFeeTier, type TierBoxOnPage } from "../feeBracketQuantity";
+import { collectPortalErrorBanner } from "../safeAction";
+import { structureTypeMeaning } from "../../../backend/src/permitProcess";
 
 // A RECORDED ANSWER THAT DESCRIBES A PROJECT OR A PERSON BELONGS TO THAT PROJECT.
 //
@@ -84,7 +86,7 @@ import { installFilingBackstop, withBackstopWindow, describeBackstopAbort, type 
 // seconds after its URL loads; judging it on the first DOM read failed whole runs.
 const DRIFT_SETTLE_MS = Math.max(2000, Number(process.env.RECIPE_DRIFT_SETTLE_MS ?? 15000));
 import { redactCaptureText, readbackMatches, detectChallengeFrame, frameSelectorFor, hasNumericValidationError, scanStatusFromBody, RETRY_BACKOFF_MS, sleep, smartWait, toBareNumber, waitForElement, waitForInteractiveControls } from "../safeAction";
-import { performLogin } from "./loginFlow";
+import { performLogin, portalErrorPage } from "./loginFlow";
 import { chooseCorrectionForm, correctionFormSelector, isRefusal, scanProjectForms, type ProjectFormRow } from "./correctionForm";
 import { type ExtractedField, EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom, acaApplyEntryFrom, advanceSignatureOf } from "./autoLearnAdapter";
 import { tagUploadControls } from "./autoLearnAdapter";
@@ -357,6 +359,25 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  as recipe drift, which is the wrong person to send to fix it. A missing value is a
    *  DATA gap: real, worth reporting, and owned by whoever fills the project in. */
   private unresolvedFields: string[] = [];
+  /** F1 — the kVA tier could NOT be decided from the page (no rating, two tiers, a schedule that
+   *  disagrees…): set at the tier step, and the next advancing click PAUSES the run instead of
+   *  clicking on into the portal's "Please select at least 1 electrical service" refusal. */
+  private feeTierStop: string | null = null;
+  /** The tier box this run ticked, per page identity (a second recorded tier step on the same page
+   *  re-decides to the same box and types nothing twice). */
+  private feeTierFilled = new Map<string, string>();
+  /** Wall-clock marks of the phases before the first recorded step (open, goto, login) — the part
+   *  of a run the trace never covered (live run 99baa5d0 spent ~3 min there with no evidence). */
+  private phaseTimings: Array<{ phase: string; ms: number; note?: string }> = [];
+  /** F4 — the waits inside the CURRENT step, by name (ms), reported on a slow step. */
+  private stepPhases: Record<string, number> = {};
+  private async timed<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    const t = Date.now();
+    try { return await fn(); } finally {
+      const ms = Date.now() - t;
+      if (ms >= 300) this.stepPhases[name] = (this.stepPhases[name] ?? 0) + ms;
+    }
+  }
   /** Where this run's page screenshots go, and how many were written. Replay only ever
    *  photographed FAILURES, so every page that filled "successfully" was invisible — and
    *  the two worst bugs of this session (the homeowner's details written into the
@@ -439,6 +460,9 @@ export class RecipeAdapter extends BasePortalAdapter {
       runApproval?: RunApproval | null;
       /** The run this replay IS. The approval must name exactly this run. */
       runId?: string;
+      /** Live progress for a dashboard: every wait longer than ~10 s says what it is waiting on
+       *  (F3 — the operator watched a frozen login screen for three minutes). Non-PII. */
+      onProgress?: (p: { phase: "open" | "login" | "goto" | "step" | "wait"; message: string; elapsedMs: number; stepIndex?: number }) => void;
     } = {},
   ) {
     super();
@@ -469,6 +493,7 @@ export class RecipeAdapter extends BasePortalAdapter {
   }
 
   async login(context: PortalContext): Promise<PortalStepResult> {
+    const tStart = Date.now();
     try {
       const opened = await openPortal({
         userDataDir: context.userDataDir,
@@ -479,16 +504,29 @@ export class RecipeAdapter extends BasePortalAdapter {
       });
       this.opened = opened;
       this.page = opened.page;
+      // F3 — THE PHASES BEFORE THE FIRST RECORDED STEP ARE TIMED AND REPORTED. Live run 99baa5d0
+      // ran 3 min 20 s from its start to its first page shot and the result carried nothing about
+      // where that went (browser open, portal goto, login); the operator watched a login screen
+      // that never said what it was waiting on. Each phase is a progress line for the dashboard
+      // and a number in the login step's data.
+      const mark = (phase: string, started: number, note?: string) => { this.phaseTimings.push({ phase, ms: Date.now() - started, ...(note ? { note } : {}) }); };
+      mark("open browser", tStart);
+      this.progress("open", "Browser open — going to the portal", Date.now() - tStart);
       if (this.recipe.portalUrl) {
-        await this.guardedGoto(this.recipe.portalUrl, "open the recipe's portal");
+        const tGoto = Date.now();
+        await this.withProgress("goto", "Opening the portal", () => this.guardedGoto(this.recipe.portalUrl!, "open the recipe's portal", { waitUntil: "domcontentloaded", timeout: 30000 }));
+        const stuck = await this.recoverFromPortalErrorPage(this.recipe.portalUrl, "open the recipe's portal");
         await smartWait(this.page);
+        mark("portal goto", tGoto, stuck ? "error page not left" : undefined);
       }
 
       // Log in via the shared, portal-agnostic login flow. It detects/reveals the login
       // form, fills it (known + unknown portals), verifies success, and stops on MFA.
       // When the persistent session is still valid there's no form and it's a no-op.
       // Never logs credentials.
-      const login = await performLogin(this.page, context.credential);
+      const tLogin = Date.now();
+      const login = await this.withProgress("login", "Signing in to the portal", () => performLogin(this.page, context.credential));
+      mark("login", tLogin, login.status);
       if (login.status === "mfa_captcha") {
         return { ok: false, message: login.message, pauseReason: "mfa_captcha" };
       }
@@ -499,9 +537,10 @@ export class RecipeAdapter extends BasePortalAdapter {
         return fail(`${this.portalName}: ${login.message}`);
       }
 
-      return ok(`Opened ${this.portalName}. ${login.message}`);
+      this.progress("login", "Signed in — starting the recipe", Date.now() - tStart);
+      return ok(`Opened ${this.portalName}. ${login.message}`, { phaseTimings: this.phaseTimings, msToRecipeStart: Date.now() - tStart });
     } catch (err) {
-      return fail(`Recipe login failed: ${err instanceof Error ? err.message : String(err)}`);
+      return fail(`Recipe login failed: ${err instanceof Error ? err.message : String(err)}`, { phaseTimings: this.phaseTimings });
     }
   }
 
@@ -1046,16 +1085,21 @@ export class RecipeAdapter extends BasePortalAdapter {
       .filter(({ s2 }) => /^array1[A-Z]/.test(String(s2.field ?? "")));
     this.arrayBlockStart = arrayBound.length ? arrayBound[0].i : -1;
     this.arrayBlockEnd = arrayBound.length ? arrayBound[arrayBound.length - 1].i : -1;
-    const slowSteps: Array<{ i: number; action: string; note: string; ms: number }> = [];
+    const slowSteps: Array<{ i: number; action: string; note: string; ms: number; phases?: Record<string, number> }> = [];
     // Timed from the TOP of the next iteration rather than the bottom of this one: the loop
     // body has a dozen `continue` paths (skips, policy defaults, drift), and a bottom-of-loop
     // timer would silently miss exactly the steps most likely to be slow.
     let prevStart = 0;
     let prevStep: { i: number; action: string; note: string } | null = null;
     const closePrevStepTiming = (): void => {
-      if (!prevStep) return;
-      const ms = Date.now() - prevStart;
-      if (ms >= 4000) slowSteps.push({ ...prevStep, ms });
+      if (prevStep) {
+        const ms = Date.now() - prevStart;
+        // F4 — WHERE A SLOW STEP'S SECONDS WENT. "save new contact 75.6 s" told the operator a
+        // number and nothing about which wait ate it; the phases (autosave wait, settle, gap-fill,
+        // the click itself, the advance's settle ladder, the page shot…) are the answer.
+        if (ms >= 4000) slowSteps.push({ ...prevStep, ms, ...(Object.keys(this.stepPhases).length ? { phases: { ...this.stepPhases } } : {}) });
+      }
+      this.stepPhases = {};
     };
     for (let stepIdx = 0; stepIdx < this.recipe.steps.length; stepIdx++) {
       // THE BACKSTOP ABORTED A FILING OR A PAYMENT: stop here, named. Carrying on would retry the
@@ -1098,7 +1142,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       // Sweep before leaving a page (an advancing click) and before review: those are the
       // moments when whatever the page reveals is finally all present.
       if (step.action === "click" || step.action === "stopForReview") {
-        await this.sweepUnrecordedUploads().catch(() => 0);
+        await this.timed("upload-sweep", () => this.sweepUnrecordedUploads().catch(() => 0));
       }
 
       // THE E-SIGNATURE IS TYPED ONLY AS THE CLIENT'S AUTHORIZED SIGNER (operator ruling
@@ -1160,13 +1204,27 @@ export class RecipeAdapter extends BasePortalAdapter {
         continue;
       }
 
+      // F1 — THE kVA TIER COULD NOT BE DECIDED: never click on into the portal's refusal. Checked
+      // BEFORE the autosave wait, the settle and the LLM gap-fill (which would otherwise get a shot
+      // at the tier box with no AC size — the guess this exists to forbid). The run pauses for a
+      // person with the reason named; a headed run keeps its window (runAdapter: a step pause).
+      if (this.feeTierStop && step.action === "click" && this.isAdvancingClick(step)) {
+        closePrevStepTiming();
+        const why = this.feeTierStop;
+        await this.capturePageShot("FEE-TIER-UNDECIDED", true).catch(() => null);
+        return {
+          ...fail(`Paused before "${String(step.note ?? "the advance").slice(0, 44)}": the electrical services page needs one service line ticked and the kVA tier could not be decided: ${why}. Nothing was clicked — tick the tier box in the browser (or add the system's AC size to the project and re-stage) and continue from there.`,
+            { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: stepIdx, trace, slowSteps, needsHuman: true, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath }),
+          pauseReason: "fee_tier_undecided",
+        };
+      }
       // Never advance while the portal is still saving — the commit signal is exact.
-      if (step.action === "click") await this.waitForAutosaveCommitted();
+      if (step.action === "click") await this.timed("autosave-wait", () => this.waitForAutosaveCommitted());
       // PERSIST SETTLE before an advancing click. PowerClerk autosaves each page (~3s) and
       // only commits fields on blur; advancing too soon saves a BLANK draft. If the prior
       // steps filled fields, wait for the autosave to settle before this click.
       if (step.action === "click" && prevWasInput) {
-        await this.settle(8000);
+        await this.timed("persist-settle", () => this.settle(8000));
         // Number.isFinite (not ||) so an explicit AUTOLEARN_SAVE_SETTLE_MS=0 disables the wait.
         //
         // THE PORTAL'S OWN COMMIT SIGNAL BEATS A GUESSED SLEEP. When the page carries an
@@ -1177,12 +1235,12 @@ export class RecipeAdapter extends BasePortalAdapter {
         // stands in full, because there is nothing exact to wait on.
         const indicatorCommitted = await this.autosaveIndicatorCommitted();
         const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS);
-        await sleep(Number.isFinite(settleMs) ? settleMs : indicatorCommitted ? 300 : 3000);
+        await this.timed("persist-sleep", () => sleep(Number.isFinite(settleMs) ? settleMs : indicatorCommitted ? 300 : 3000));
         // Now that the recipe's fills have committed (blurred + autosaved), let the LLM gap-fill
         // any REQUIRED field the recipe didn't cover — from real project data only. Run it AFTER
         // the persist-settle so the LLM reads a stable page; the advancing click that follows is
         // the commit window for the gap-filled values. No-op when gap-fill is not enabled.
-        await this.runGapFill(this.page);
+        await this.timed("gap-fill", () => this.withProgress("wait", "Checking the page for required fields the recipe missed", () => this.runGapFill(this.page), stepIdx));
         this.gapFilledPage = await this.pageIdentity().catch(() => "");
         prevWasInput = false;
       }
@@ -1279,7 +1337,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         // we have a step for. Bounded to three, once, so a page that genuinely cannot be
         // filled does not loop — and reported, because a value that needs re-asserting is a
         // portal quirk the operator should know about.
-        const blanks = await this.reassertBlanksOnce(pastReview);
+        const blanks = await this.timed("reassert-blanks", () => this.reassertBlanksOnce(pastReview));
         // WHICH PAGE IT WAS BLANK ON. "Name, Company, Address, Email, Phone" told an operator
         // five field names and nothing about where to look — and those five labels repeat
         // across a wizard's contact blocks, so the list could not distinguish "the customer
@@ -1295,7 +1353,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         }
         // PHOTOGRAPH THE FINISHED PAGE. Same moment as the sweep above: everything the
         // recipe will put on this page is on it, and the next click leaves it for good.
-        await this.capturePageShot(await currentPageLabel());
+        await this.timed("page-shot", async () => this.capturePageShot(await currentPageLabel()));
       }
 
       let lastErr: unknown;
@@ -1318,7 +1376,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           if (bsStop) return fail(bsStop, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: stepIdx, trace });
         }
         try {
-          const done = await this.executeStep(step, pastReview);
+          const done = await this.timed("execute", () => this.withProgress("step", `Step ${stepIdx + 1}/${this.recipe.steps.length}: ${String(step.note ?? step.action).slice(0, 60)}`, () => this.executeStep(step, pastReview), stepIdx));
           if (this.liveSignaturePause !== null) {
             const what = this.liveSignaturePause;
             this.liveSignaturePause = null;
@@ -1361,7 +1419,7 @@ export class RecipeAdapter extends BasePortalAdapter {
               { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: stepIdx, trace, slowSteps, finalSubmitClicked: this.finalSubmitClicked, ...(err.pauseReason ? { needsHuman: true } : {}), pageShotDir: this.pageShotDir, outcomeShotPath: this.outcomeShotPath });
             return err.pauseReason ? { ...base, pauseReason: err.pauseReason } : base;
           }
-          if (!failureContext) failureContext = await this.captureFailureContext(step, stepIdx).catch(() => "");
+          if (!failureContext) failureContext = await this.timed("failure-context", () => this.captureFailureContext(step, stepIdx).catch(() => ""));
           const isTimeout = err instanceof Error && /timeout|TimeoutError/i.test(err.message);
           // A STRICT-MODE VIOLATION IS ALWAYS WORTH ONE MORE PASS, and it is not a timeout.
           //
@@ -3076,6 +3134,13 @@ export class RecipeAdapter extends BasePortalAdapter {
       this.agingNotes.push(`skipped "${String(step.note ?? step.field ?? "battery step").slice(0, 48)}" — this project has no battery`);
       return true; // not a failure: the section does not apply to this filing
     }
+    // F1 — A kVA TIER BOX IS DECIDED FROM THE PAGE'S OWN LABELS, not from the recorded selector:
+    // the recorded label is the DONOR agency's spelling and the recorded box is the DONOR job's
+    // tier. See fillFeeTierFromPage.
+    if (step.action === "fill" && this.isFeeTierStep(step)) {
+      const verdict = await this.fillFeeTierFromPage(step);
+      if (verdict !== "normal") return verdict;
+    }
     // A POPUP LEFT OPEN BY THE LAST STEP MUST NOT SHADOW THIS ONE.
     //
     // Replay had no Escape anywhere in it; the learner has nine. Same asymmetry that
@@ -3213,14 +3278,32 @@ export class RecipeAdapter extends BasePortalAdapter {
       scoped = await this.narrowToOne(scoped, step);
     }
     switch (step.action) {
-      case "goto":
-        await this.guardedGoto(this.resolveValue(step), `recipe goto${step.note ? ` (${String(step.note).slice(0, 40)})` : ""}`);
+      case "goto": {
+        // F3 — DOMCONTENTLOADED, NOT LOAD. Live run 99baa5d0: the entry goto was answered with
+        // Accela's Error.aspx, blank, whose subresources never finished — `load` waited out its
+        // budget on a page nobody could use, then the interactive-controls wait burned 12 s more
+        // on a page with no controls (50.9 s for step 0). The document is enough to READ the page;
+        // an error landing is then recognised at once and re-entered (recoverFromPortalErrorPage),
+        // and only a real page is given the controls wait.
+        const target = this.resolveValue(step);
+        const why = `recipe goto${step.note ? ` (${String(step.note).slice(0, 40)})` : ""}`;
+        await this.withProgress("goto", `Opening ${String(step.note ?? "the recipe's page").slice(0, 40)}`, () => this.guardedGoto(target, why, { waitUntil: "domcontentloaded", timeout: 30000 }));
+        const landedOnError = await this.recoverFromPortalErrorPage(target, why);
         await smartWait(this.page);
         // A recorded goto lands on a fresh section that a Vue/SPA portal may still be mounting.
         // Wait until an interactive control is up so the next step's fill targets a bound input
-        // (best-effort; never skips — the retry/reload loop still recovers a genuine miss).
-        await waitForInteractiveControls(this.page);
+        // (best-effort; never skips — the retry/reload loop still recovers a genuine miss). Not on
+        // an error page that could not be left: there is nothing to wait for there. And only the
+        // FULL budget when the next step types into something: a dashboard (Accela's has links and
+        // no inputs) burned the whole 12 s on every entry (measured 12.7 s on the replica) before
+        // a click whose own locator wait covers its target anyway.
+        if (!landedOnError) {
+          const next = this.recipe.steps[this.currentStepIdx + 1];
+          const nextTypes = !!next && ["fill", "select", "check", "uncheck", "upload", "press"].includes(String(next.action));
+          await this.withProgress("wait", "Waiting for the page's controls to appear", () => waitForInteractiveControls(this.page, nextTypes ? undefined : 3000));
+        }
         return true;
+      }
       case "click":
         return this.executeClick(step, scoped, pastReview);
       case "fill": {
@@ -3428,13 +3511,17 @@ export class RecipeAdapter extends BasePortalAdapter {
             return false;
           }
         }
-        if (!selected) selected = await selectWithFallback(this.page, scoped, v);
+        if (!selected) {
+          const r = await this.trySelect(scoped, v, step);
+          selected = r.selected;
+          if (selected && r.how === "meaning") landedAs = r.landedAs;
+        }
         // A MANUFACTURER dropdown lists CEC certified names, not the plan set's wording.
         // Retry the certified aliases before giving up — the learner has always done this,
         // and without it a select lands nothing, returns false, and is SKIPPED silently.
         if (!selected && this.isManufacturerStep(step)) {
           for (const alt of equipmentMakeCandidates(v).slice(1)) {
-            selected = await selectWithFallback(this.page, scoped, alt);
+            selected = (await this.trySelect(scoped, alt, step)).selected;
             if (selected) {
               landedAs = alt;
               this.driftWarnings.push(`manufacturer "${v}" matched the portal's certified name "${alt}"`);
@@ -3475,10 +3562,14 @@ export class RecipeAdapter extends BasePortalAdapter {
                 (el: Element, cssId: string) => `#${el.getAttribute("id") || ""}` === cssId, step.selector.css,
               ).catch(() => false);
               if (!same) {
-                selected = await selectWithFallback(this.page, relox.first(), v);
+                {
+                  const r = await this.trySelect(relox.first(), v, step);
+                  selected = r.selected;
+                  if (selected && r.how === "meaning") landedAs = r.landedAs;
+                }
                 if (!selected && this.isManufacturerStep(step)) {
                   for (const alt of equipmentMakeCandidates(v).slice(1)) {
-                    selected = await selectWithFallback(this.page, relox.first(), alt);
+                    selected = (await this.trySelect(relox.first(), alt, step)).selected;
                     if (selected) { landedAs = alt; this.driftWarnings.push(`manufacturer "${v}" matched the portal's certified name "${alt}"`); break; }
                   }
                 }
@@ -4372,7 +4463,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     // legitimately leave the page as it was, and failing those would break working replays
     // (the Accela replay smoke caught exactly that). Note it and move on; precheckPageDrift
     // remains the backstop if this really was a desync.
-    let blockers = await collectValidationErrorsFrom(this.page).catch(() => [] as string[]);
+    let blockers = await this.readPortalRefusal();
     // IS THIS STEP AN ADVANCE? The recorder answers that: the learner marks a page advance
     // "advance: <button>" and gives in-page actions their own wording ("compute totals:
     // Calculate", "contacts: continue"). For a step the recorder called an advance, a page
@@ -4410,13 +4501,12 @@ export class RecipeAdapter extends BasePortalAdapter {
     // the next section is still rendering, then try clearing an overlay and clicking once
     // more — an announcement modal ate every click of a diagnostic probe for fourteen
     // iterations without it ever noticing.
-    for (let i = 0; i < ADVANCE_SETTLE_TRIES && !(await moved()); i++) await sleep(ADVANCE_SETTLE_MS);
+    await this.timed("advance-settle", async () => { for (let i = 0; i < ADVANCE_SETTLE_TRIES && !(await moved()); i++) await sleep(ADVANCE_SETTLE_MS); });
     if (await moved()) return;
-    await this.dismissModalsGuarded();
-    await clearPageOverlays(this.page).catch(() => null);
+    await this.timed("advance-overlays", async () => { await this.dismissModalsGuarded(); await clearPageOverlays(this.page).catch(() => null); });
     const again = await this.resolveLocator(step.selector).catch(() => null);
-    if (again && typeof again.click === "function") await this.guardedClick(again, "retry an advance that did not move", { timeout: 8000 }).catch(() => null);
-    for (let i = 0; i < ADVANCE_SETTLE_TRIES && !(await moved()); i++) await sleep(ADVANCE_SETTLE_MS);
+    if (again && typeof again.click === "function") await this.timed("advance-retry-click", () => this.guardedClick(again, "retry an advance that did not move", { timeout: 8000 }).catch(() => null));
+    await this.timed("advance-settle", async () => { for (let i = 0; i < ADVANCE_SETTLE_TRIES && !(await moved()); i++) await sleep(ADVANCE_SETTLE_MS); });
     if (await moved()) {
       this.driftWarnings.push(`advance "${String(step.note ?? "click").slice(0, 44)}" needed an overlay dismissed before it took`);
       return;
@@ -4424,7 +4514,7 @@ export class RecipeAdapter extends BasePortalAdapter {
 
     // Still refused. Report the PORTAL'S OWN words — "Meter Number: This field is required."
     // is worth more to an operator than any drift percentage we could compute.
-    blockers = await collectValidationErrorsFrom(this.page).catch(() => blockers);
+    blockers = (await this.timed("refusal-read", () => this.readPortalRefusal())) || blockers;
     const said = blockers.length
       ? ` The portal says: ${blockers.slice(0, 6).join(" | ")}`
       : " The portal gave no visible reason — check that page for a required field the recipe left blank.";
@@ -5127,6 +5217,235 @@ export class RecipeAdapter extends BasePortalAdapter {
       this.driftWarnings.push(COVERED_CONTROL_WARNING);
       return false;
     } catch { return false; /* a diagnostic must never fail a run */ }
+  }
+
+  // ── F1: THE kVA TIER FROM THE PAGE ────────────────────────────────────────────────────────
+  //
+  // Live run 99baa5d0 (City of Jefferson OR, 2026-09-27): the Coos Bay electrical recipe borrowed
+  // onto MARION COUNTY's services page, 12.913 kVA AC, no Marion fee schedule on file. The
+  // recorded "5.01kva through 15kva" box was left BLANK (R6, rightly: the donor's "1" is the donor
+  // job's tier) and the run clicked Continue into "Please select at least 1 electrical service for
+  // purchase". Every tier box prints its own bounds in its label, and the project's rating is
+  // known (feeTierRatingKw — the same number the fee evaluator uses): the box to tick is decidable
+  // from the page WITHOUT a schedule. A stored schedule, when there is one, must AGREE.
+  //
+  // What may never happen here: a guess. No rating, a rating in two tiers or in none, a schedule
+  // that disagrees, a box that does not keep what it was given — all leave every tier box alone
+  // and set feeTierStop, and the next advancing click pauses the run for a person.
+
+  /** A recorded fill whose key is a fee-tier key, or whose label reads as a (non-wind) kVA tier. */
+  private isFeeTierStep(step: RecipeStep): boolean {
+    if (step.action !== "fill") return false;
+    const label = String(step.selector?.label || step.note || "");
+    const read = readTierLabel(label);
+    if (read?.kind === "wind") return false;
+    if (step.field && parseFeeBracketFieldKey(step.field)) return true;
+    return !!read;
+  }
+
+  /** A click that leaves the page: the recorder's "advance:" wording, or a Continue/Next control. */
+  private isAdvancingClick(step: RecipeStep): boolean {
+    const note = String(step.note ?? "");
+    if (/^advance\b/i.test(note)) return true;
+    const name = `${step.selector?.name ?? ""} ${step.selector?.text ?? ""} ${note}`;
+    return /\bcontinue\b|\bnext\b|save (and|&) continue/i.test(name) && !/add new|add contact|search|lookup|calculate/i.test(name);
+  }
+
+  /** Every visible text box on the page whose own label carries a kVA bound, by control id. The
+   *  label is the portal's: label[for], then aria-label, then Accela's fieldname attribute. */
+  private async readTierBoxes(): Promise<TierBoxOnPage[]> {
+    if (!this.page || typeof this.page.evaluate !== "function") return [];
+    return await this.page.evaluate(() => {
+      const out: Array<{ id: string; label: string }> = [];
+      const inputs = Array.from(document.querySelectorAll("input:not([type]), input[type='text'], input[type='number'], input[type='tel']")) as HTMLInputElement[];
+      for (const el of inputs) {
+        if (el.disabled || el.readOnly) continue;
+        const r = el.getBoundingClientRect();
+        const st = window.getComputedStyle(el);
+        if (!(r.width > 0 && r.height > 0) || st.display === "none" || st.visibility === "hidden") continue;
+        const id = el.id || "";
+        if (!id) continue;
+        let label = "";
+        const lab = document.querySelector(`label[for="${(window as unknown as { CSS: { escape: (s: string) => string } }).CSS.escape(id)}"]`) as HTMLElement | null;
+        if (lab) label = lab.innerText || lab.textContent || "";
+        if (!label.trim()) label = el.getAttribute("aria-label") || el.getAttribute("fieldname") || "";
+        if (!label.trim()) { const wrap = el.closest("label") as HTMLElement | null; if (wrap) label = wrap.innerText || ""; }
+        label = label.replace(/\s+/g, " ").trim();
+        if (!label || !/k\s?va/i.test(label)) continue;
+        out.push({ id, label });
+      }
+      return out;
+    }).catch(() => [] as TierBoxOnPage[]) as TierBoxOnPage[];
+  }
+
+  /** true = the chosen box holds the value; false = nothing typed (feeTierStop set, or a second
+   *  step for an already-ticked page); "normal" = this page prints no kVA box at all — the recorded
+   *  step takes its ordinary resolve/skip path. */
+  private async fillFeeTierFromPage(step: RecipeStep): Promise<boolean | "normal"> {
+    const boxes = await this.readTierBoxes();
+    if (!boxes.length) return "normal";
+    const ratingRaw = String(this.fieldValues[FEE_TIER_RATING_FIELD] ?? "").trim();
+    const ratingNum = ratingRaw ? Number(ratingRaw) : NaN;
+    const ratingKw = Number.isFinite(ratingNum) && ratingNum > 0 ? ratingNum : null;
+    const scheduleTierKey = Object.entries(this.fieldValues).find(([k, val]) => parseFeeBracketFieldKey(k) && String(val).trim() === "1")?.[0] ?? null;
+    const stepLabel = String(step.selector?.label || step.note || step.field || "tier box").replace(/:\s*$/, "").slice(0, 70);
+    const decision = decideFeeTier({ boxes, ratingKw, scheduleTierKey });
+    if (!decision.chosen) {
+      this.feeTierStop = decision.reason;
+      this.driftWarnings.push(`kVA tier NOT typed for "${stepLabel}": ${decision.reason}`);
+      this.noteUnresolved(step);
+      return false;
+    }
+    const chosen = decision.chosen;
+    const chosenLabel = chosen.label.replace(/:\s*$/, "").slice(0, 70);
+    const pageKey = (await this.pageIdentity().catch(() => "")) || "page";
+    const loc = this.page.locator(`[id="${chosen.id}"]`).first();
+    await waitForElement(loc);
+    const current = String((await loc.inputValue().catch(() => "")) ?? "");
+    if (current !== chosen.value) {
+      await loc.fill(chosen.value, { timeout: FILL_TIMEOUT_MS });
+      await this.commitAndSettle(loc);
+    }
+    const held = String((await loc.inputValue().catch(() => "")) ?? "");
+    if (held !== chosen.value) {
+      this.feeTierStop = `typed "${chosen.value}" into "${chosenLabel}" and the box did not keep it (it reads "${held}")`;
+      this.driftWarnings.push(`kVA tier NOT held: ${this.feeTierStop}`);
+      this.noteUnresolved(step);
+      return false;
+    }
+    this.feeTierStop = null;
+    if (!this.fieldsVerified.includes(chosenLabel)) this.fieldsVerified.push(chosenLabel);
+    if (this.feeTierFilled.get(pageKey) !== chosen.id) {
+      this.feeTierFilled.set(pageKey, chosen.id);
+      this.agingNotes.push(`kVA tier read from the page: ${ratingRaw} kVA → "${chosenLabel}" = ${chosen.value}${scheduleTierKey ? " (the stored fee schedule agrees)" : " (no fee schedule needed — the page prints its own bounds)"}`);
+      const recorded = readTierLabel(stepLabel);
+      if (recorded && !sameFeeTier(recorded, chosen.bounds)) {
+        this.agingNotes.push(`the recorded box "${stepLabel}" is not this project's tier — "${chosenLabel}" was ticked instead, and the recorded box was left empty`);
+      }
+      // The constructor's coverage warning ("this job's bracket has NO box in the recorded recipe")
+      // was written for a run that could only type into recorded boxes. The box was found on the
+      // page: withdraw it, on both channels it was posted to.
+      const stale = (m: string) => /has NO box in the recorded recipe/.test(m);
+      if (this.driftWarnings.some(stale) || this.gapFillReport.reportedMissing.some(stale)) {
+        this.driftWarnings = this.driftWarnings.filter((m) => !stale(m));
+        this.gapFillReport.reportedMissing = this.gapFillReport.reportedMissing.filter((m) => !stale(m));
+        this.agingNotes.push(`the "no box in the recorded recipe" warning is withdrawn — the tier box was read off the page and ticked`);
+      }
+    }
+    return true;
+  }
+
+  /** F2 — THE PORTAL'S OWN WORDS: the generic validation reader plus the WebForms/Accela banner
+   *  families it does not know (safeAction.collectPortalErrorBanner). Banner first: it is the
+   *  portal's sentence, and "An error has occurred. Please select at least 1 electrical service for
+   *  purchase" is worth more than any field-level echo. */
+  private async readPortalRefusal(): Promise<string[]> {
+    const banner = await collectPortalErrorBanner(this.page).catch(() => [] as string[]);
+    const generic = await collectValidationErrorsFrom(this.page).catch(() => [] as string[]);
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const t of [...banner, ...generic]) {
+      const line = String(t).replace(/\s+/g, " ").trim();
+      const key = line.toLowerCase();
+      if (!line || seen.has(key)) continue;
+      seen.add(key);
+      out.push(line);
+    }
+    return out.slice(0, 20);
+  }
+
+  /** F4/F5 — BEFORE SPENDING selectOption's TIMEOUTS on a native select, read its loaded list
+   *  once. An exact/contains candidate (what selectWithFallback would land) → let it run. Nothing
+   *  direct, but the wanted value and exactly ONE option share a STRUCTURE-TYPE MEANING (R5:
+   *  Category of Construction = the structure type; "1-1 or 2 Family Dwelling" ≡ Marion's "Single
+   *  Family Dwelling"; permitProcess.structureTypeMeaning) → land that option here, by label.
+   *  Nothing at all on a LOADED list → the known negative costs no timeouts (live: 44 s on one
+   *  select). An unloaded or non-native control takes the old path unchanged. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async trySelect(loc: any, value: string, step: RecipeStep): Promise<{ selected: boolean; landedAs: string; how: "" | "meaning" | "known_negative" }> {
+    const native = await this.isNativeSelect(loc);
+    if (native && !(await this.optionsLookUnloaded(loc))) {
+      const options: string[] = await loc.evaluate((el: Element) => Array.from((el as HTMLSelectElement).options).map((o) => (o.textContent || "").replace(/\s+/g, " ").trim())).catch(() => [] as string[]);
+      const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+      const w = norm(value);
+      const real = options.filter((t) => t && !/^(please\s+)?select\.{0,3}$|^-+\s*select\s*-+$/i.test(t));
+      const direct = !!w && real.some((t) => norm(t) === w || norm(t).includes(w) || w.includes(norm(t)));
+      if (!direct && real.length) {
+        const meaning = structureTypeMeaning(value);
+        const label = this.stepLabel(step);
+        const wantsStructure = meaning === "single_family" || /category of construction|structure type|building type|type of structure|occupancy/i.test(label);
+        if (meaning && wantsStructure) {
+          const same = real.filter((t) => structureTypeMeaning(t) === meaning);
+          if (same.length === 1) {
+            const landed = await loc.selectOption({ label: same[0] }, { timeout: 5000 }).then(() => true).catch(() => false);
+            if (landed) {
+              this.agingNotes.push(`select "${label}" landed "${same[0]}" by MEANING — wanted "${value}" (the structure type in this agency's own words; state guidance R5), no LLM`);
+              return { selected: true, landedAs: same[0], how: "meaning" };
+            }
+          } else if (same.length > 1) {
+            this.driftWarnings.push(`select "${label}": ${same.length} options mean "${meaning}" (${same.map((s) => JSON.stringify(s)).join(", ")}) — none chosen`);
+          }
+        }
+        return { selected: false, landedAs: value, how: "known_negative" };
+      }
+    }
+    const selected = await selectWithFallback(this.page, loc, value);
+    return { selected, landedAs: value, how: "" };
+  }
+
+  /** F3 — AN ERROR LANDING IS RECOGNISED AT ONCE AND RE-ENTERED, not waited out. Accela answers a
+   *  request it cannot serve with its own Error.aspx (blank; it refreshes itself to the dashboard
+   *  some 20 s later — the operator's recording, f001→f002). Give the portal's own redirect a short
+   *  grace, then go back to `target` ourselves; three tries inside a bounded budget, every one
+   *  reported as progress so the dashboard says "Waiting for the portal (error page, retrying…)"
+   *  instead of freezing. Returns true when the page is STILL an error page after the budget (the
+   *  caller then skips the controls wait; the next step's failure carries the context). */
+  private async recoverFromPortalErrorPage(target: string, why: string): Promise<boolean> {
+    if (!this.page || typeof this.page.evaluate !== "function") return false;
+    const GRACE_MS = 3000;
+    const TRIES = 3;
+    const started = Date.now();
+    let err = await portalErrorPage(this.page);
+    if (!err) return false;
+    this.agingNotes.push(`entry landed on ${err} — re-entered ${String(target).replace(/^https?:\/\//, "").slice(0, 60)} without waiting it out`);
+    for (let attempt = 1; attempt <= TRIES && err; attempt++) {
+      this.progress("wait", `Waiting for the portal (error page, retrying… ${attempt}/${TRIES})`, Date.now() - started);
+      // The portal's own redirect first (cheap, and it keeps whatever state the portal wanted).
+      const before = String(this.page.url?.() ?? "");
+      const deadline = Date.now() + GRACE_MS;
+      while (Date.now() < deadline) {
+        await sleep(250);
+        if (String(this.page.url?.() ?? "") !== before) break;
+      }
+      err = await portalErrorPage(this.page);
+      if (!err) break;
+      await this.guardedGoto(target, `${why} — re-enter after the portal's error page`, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
+      err = await portalErrorPage(this.page);
+    }
+    if (err) {
+      this.driftWarnings.push(`the portal kept answering with ${err} for ${Math.round((Date.now() - started) / 1000)}s (${TRIES} re-entries) — the next step runs against it`);
+      return true;
+    }
+    this.agingNotes.push(`recovered from the portal's error page in ${Math.round((Date.now() - started) / 1000)}s`);
+    return false;
+  }
+
+  /** A progress line for the dashboard (options.onProgress); never throws, never carries PII. */
+  private progress(phase: "open" | "login" | "goto" | "step" | "wait", message: string, elapsedMs: number, stepIndex?: number): void {
+    const sink = this.options.onProgress;
+    if (!sink) return;
+    try { sink({ phase, message: message.slice(0, 200), elapsedMs, ...(stepIndex != null ? { stepIndex } : {}) }); } catch { /* a progress sink must never break a run */ }
+  }
+
+  /** Run `work` while reporting progress every 10 s until it finishes (F3: a wait longer than ten
+   *  seconds says what it is waiting on instead of freezing the dashboard). */
+  private async withProgress<T>(phase: "open" | "login" | "goto" | "step" | "wait", what: string, work: () => Promise<T>, stepIndex?: number): Promise<T> {
+    const started = Date.now();
+    this.progress(phase, what, 0, stepIndex);
+    const timer = this.options.onProgress
+      ? setInterval(() => this.progress(phase, `${what} (still waiting — ${Math.round((Date.now() - started) / 1000)}s)`, Date.now() - started, stepIndex), 10_000)
+      : null;
+    try { return await work(); } finally { if (timer) clearInterval(timer); }
   }
 
   /** Record a step that had no value in the project to give it. */

@@ -1937,6 +1937,38 @@ export async function detectErrorPage(page: Page): Promise<string> {
 }
 
 /**
+ * THE PORTAL'S OWN ERROR PAGE, MET DURING ENTRY. Live run 99baa5d0 (Oregon ePermitting, 2026-09-27):
+ * the recipe's entry goto (Dashboard.aspx) was answered with aca-oregon.accela.com/oregon/
+ * Error.aspx?ErrorId=… — Accela's own error page, BLANK, tab still loading — and the run spent
+ * 50.9 s on it: `load` waited on a page that never finished, then the interactive-controls wait
+ * burned its budget on a page with no controls. A blank error page says none of detectErrorPage's
+ * words; its URL does. So this reads BOTH: an error-shaped URL (…/Error.aspx, /error, /oops,
+ * ?ErrorId=), or detectErrorPage's block wording (extended with "technical difficulties" / "an
+ * error has occurred" / "unexpected error"), on a page with no more than a handful of controls.
+ * Returns a short description, or "" for a page that is not an error page — and a real
+ * application page (inputs, selects) is never one, whatever its URL says.
+ */
+export async function portalErrorPage(page: Page): Promise<string> {
+  try {
+    const url = typeof page.url === "function" ? String(page.url() ?? "") : "";
+    const errorUrl = /\/error(?:page)?\.(?:aspx|html?|php|jsp)\b|\/(?:error|oops|unavailable|maintenance)(?:\/|$|\?)|[?&]errorid=/i.test(url);
+    const shape = await (page as unknown as { evaluate: (fn: () => { controls: number; words: string; blank: boolean }) => Promise<{ controls: number; words: string; blank: boolean }> }).evaluate(() => {
+      const WORDS = /technical difficulties|an error has occurred|error has occurred|unexpected error|something went wrong|request could not be satisfied|service unavailable|temporarily unavailable|under maintenance|bad gateway|server error|runtime error|we('re| are) sorry/i;
+      const controls = document.querySelectorAll("input:not([type=hidden]), select, textarea, button, [role=button]").length;
+      const text = ((document.body?.innerText || "") + " " + (document.title || "")).replace(/\s+/g, " ").trim();
+      const m = WORDS.exec(text);
+      return { controls, words: m ? m[0] : "", blank: text.replace(/[^a-z]/gi, "").length < 20 };
+    }).catch(() => ({ controls: 99, words: "", blank: false }));
+    if (shape.controls > 6) return "";
+    if (errorUrl) return `the portal's error page (${url.replace(/^https?:\/\//, "").slice(0, 60)}${shape.words ? `: "${shape.words}"` : shape.blank ? ", blank" : ""})`;
+    if (shape.words) return `the portal's error page ("${shape.words}")`;
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+/**
  * IS THIS A PERMIT PORTAL AT ALL, OR JUST A PAGE THE URL POINTS AT?
  *
  * Bulk-reading the fleet's login-failure captures found several stored URLs that do not

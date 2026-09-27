@@ -114,6 +114,75 @@ function isTimeout(err: unknown): boolean {
   return err instanceof Error && /timeout|TimeoutError/i.test(err.message);
 }
 
+// THE PORTAL'S OWN WORDS, FROM THE BANNER FAMILIES THE GENERIC VALIDATION READER DOES NOT KNOW.
+//
+// Live run 99baa5d0 (Oregon ePermitting, 2026-09-27): the page said "An error has occurred. Please
+// select at least 1 electrical service for purchase" in Accela's message bar
+// (#messageSpan > .ACA_Message_Error > #messageSpanContent) and the run reported "The portal gave
+// no visible reason". collectValidationErrorsFrom (autoLearnAdapter) reads the MVC/Bootstrap
+// families — [class*="error-message"] is case-sensitive and never matches ACA_Message_Error — so
+// this reads the ASP.NET WebForms / Accela ones beside it: the message bar, the per-field
+// ACA_ErrorMessageLabel spans (empty unless the field failed), the validation summary, and the
+// role=alert family again for portals that use it. Case-INSENSITIVE on the class families.
+//
+// The generic heading ("An error has occurred.") is dropped when a specific line follows it, so
+// the failure reads "The portal says: Please select at least 1 electrical service for purchase"
+// and not the heading alone. Hidden elements are never read (Accela renders empty, hidden error
+// indicators beside every field).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function collectPortalErrorBanner(page: any): Promise<string[]> {
+  if (!page || typeof page.evaluate !== "function") return [];
+  try {
+    const raw = await page.evaluate((): string[] => {
+      const out: string[] = [];
+      const visible = (el: Element): boolean => {
+        const h = el as HTMLElement;
+        if (!h) return false;
+        const st = window.getComputedStyle(h);
+        if (st.display === "none" || st.visibility === "hidden") return false;
+        const r = h.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const sels = [
+        "#messageSpanContent", ".ACA_Message_Error", "[class*='Message_Error' i]", "[class*='MessageError' i]",
+        ".ACA_ErrorMessageLabel", "[class*='ErrorMessageLabel' i]", "[id*='ValidationSummary' i]", "[class*='validation-summary' i]",
+        "[class*='ErrorMessage' i]:not([class*='Label' i])", "[role='alert']", "[aria-live='assertive']", ".alert-danger", ".error-summary",
+      ];
+      const seen = new Set<Element>();
+      for (const sel of sels) {
+        let els: Element[] = [];
+        try { els = Array.from(document.querySelectorAll(sel)); } catch { continue; }
+        for (const el of els) {
+          if (seen.has(el) || !visible(el)) continue;
+          // An outer container whose text is only its inner banner would duplicate it; keep the
+          // innermost element that carries the text.
+          seen.add(el);
+          const t = ((el as HTMLElement).innerText || "").replace(/\r/g, "").trim();
+          if (t) out.push(t);
+        }
+      }
+      return out.slice(0, 40);
+    }) as string[];
+    const lines: string[] = [];
+    const seen = new Set<string>();
+    const GENERIC = /^(an )?error has occurred\.?$|^error:?$|^please correct the (following )?errors?\.?:?$/i;
+    for (const block of raw) {
+      for (const line of String(block).split(/\n+/)) {
+        const t = line.replace(/\s+/g, " ").trim();
+        if (!t || t.length < 4 || t.length > 400) continue;
+        const key = t.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        lines.push(t);
+      }
+    }
+    const specific = lines.filter((l) => !GENERIC.test(l));
+    return (specific.length ? specific : lines).slice(0, 20);
+  } catch {
+    return [];
+  }
+}
+
 // SPA-aware navigation wait. `networkidle` hangs indefinitely on portals that fire
 // continuous background requests (React/Angular polling). This resolves on
 // `domcontentloaded` (fast) and then races networkidle against a short ceiling so

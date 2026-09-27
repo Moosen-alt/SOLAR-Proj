@@ -54,8 +54,7 @@ import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import type { FeeBracket, FeeScheduleRecord } from "./feeSchedules";
 import { feeForProject, findFeeScheduleForProject } from "./feeSchedules";
-import { parseBracketRow } from "./pdfTables";
-import { feeBracketFieldKey } from "../../portal-bot/src/feeBracketQuantity";
+import { FEE_TIER_RATING_FIELD, feeBracketFieldKey, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
 import { SERVICE_FEEDER_200A_FIELD, isServiceFeeder200Label, serviceFeeder200Quantity } from "./batteryServiceFeeder";
 
 /** The project shape this needs — the same Pick feeForProject takes, so a caller
@@ -149,7 +148,19 @@ export function feeBracketQuantityFields(db: AppDb, project: FeeBracketProject):
   return {
     ...kvaBracketQuantityFields(db, project),
     ...serviceFeederQuantityFields(project),
+    ...feeTierRatingField(project),
   };
+}
+
+/** THE RATING THE PAGE-READ TIER IS DECIDED ON (feeBracketQuantity.decideFeeTier, in the replay
+ *  adapter). ALWAYS EMITTED — with or without a stored schedule — and "" when the project has no
+ *  size: the adapter then refuses to guess the tier and pauses for a person. Live run 99baa5d0
+ *  (City of Jefferson OR → Marion County's services page, no Marion schedule on file) had a
+ *  12.913 kVA job and no way to say so to the page. The same ratingKw the schedule match uses,
+ *  so the two can only ever disagree about the schedule, never about the number. */
+function feeTierRatingField(project: FeeBracketProject): Record<string, string> {
+  const kw = ratingKw(project);
+  return { [FEE_TIER_RATING_FIELD]: kw == null ? "" : String(kw) };
 }
 
 /** THE BATTERY'S SERVICES/FEEDERS <=200A BOX — the same frozen-answer bug as the
@@ -233,27 +244,19 @@ function kvaBracketQuantityFields(db: AppDb, project: FeeBracketProject): Record
  *  county schedule reads "5.01 KVA to 15 KVA" — different strings, identical
  *  bounds, and any string comparison between them is a coin toss.
  *
- *  The bounds grammar this needs already exists and is already tested against
- *  both spellings: pdfTables.parseBracketRow. It takes a visual PDF row, so the
- *  label is handed to it as a synthetic ONE-CELL row. Only minKw/maxKw are read
- *  back: `unparsed` will always complain that the row carries no dollar amount,
- *  because a portal's field label is a question and not a fee line, and that
- *  complaint is about the fee reader we are not borrowing. */
+ *  The bounds grammar is the ONE portal-label grammar (feeBracketQuantity.
+ *  tierBoundsFromLabel — the replay adapter reads the live page with it, and it
+ *  cannot import the PDF table reader). Its agreement with pdfTables.parseBracketRow
+ *  on the shared spellings is pinned by feeTierFromPage.test. */
 export function feeBracketFieldForLabel(label: string): string {
   const text = String(label ?? "").trim();
   if (!text) return "";
   // The services/feeders <=200A row first, and as its own key family: it is a
-  // count, not a size bracket, and parseBracketRow must never be asked to read
+  // count, not a size bracket, and the tier grammar must never be asked to read
   // "200 amps" as a bound. The two recognisers are disjoint — the services one
   // refuses any label carrying "kva" — so the order only saves a parse.
   if (isServiceFeeder200Label(text)) return SERVICE_FEEDER_200A_FIELD;
-  const parsed = parseBracketRow({
-    row: { page: 1, y: 0, cells: [text], xs: [0], height: 10 },
-    matched: [],
-    label: text,
-    money: [],
-    continuations: [],
-    section: "",
-  });
-  return feeBracketFieldKey(parsed.minKw ?? null, parsed.maxKw ?? null);
+  const parsed = tierBoundsFromLabel(text);
+  if (!parsed) return "";
+  return feeBracketFieldKey(parsed.minKw, parsed.maxKw);
 }
