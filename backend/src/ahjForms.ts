@@ -1514,9 +1514,18 @@ export function storedApplicationKind(row: { original_filename?: string; field_m
  *  which contradicts nothing and therefore filters nothing. */
 function permitPathForProjectId(db: AppDb, projectId: string): "prescriptive" | "engineered" | "unknown" {
   try {
-    const row = db.get<{ parser_json?: string }>("SELECT parser_json FROM projects WHERE id = ?", [projectId]);
+    // EVERY field resolvePermitPath reads, not the snapshot alone. Since the prescriptive split
+    // became Oregon's (0d6ebe3 / 61c0e20) a project with no state resolves "unknown" and a
+    // "prescriptive" override is set aside — so a snapshot-only record made every Oregon
+    // prescriptive job "unknown" here, and autoLearn's upload sweep (projectId only) packaged the
+    // stale STRUCTURAL fill Coos Bay forbids ("Do NOT also upload the structural application").
+    const row = db.get<{ parser_json?: string; state?: string | null; ahj?: string | null; system_size_dc_kw?: number | null }>(
+      "SELECT parser_json, state, ahj, system_size_dc_kw FROM projects WHERE id = ?", [projectId]);
     if (!row) return "unknown";
-    return resolvePermitPath({ parserSnapshot: parseJson(String(row.parser_json || "{}"), {}) } as ProjectRecord).path;
+    return resolvePermitPath({
+      parserSnapshot: parseJson(String(row.parser_json || "{}"), {}),
+      state: row.state ?? "", ahj: row.ahj ?? "", systemSizeDcKw: row.system_size_dc_kw ?? null,
+    } as ProjectRecord).path;
   } catch {
     return "unknown";
   }
