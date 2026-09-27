@@ -46,6 +46,20 @@ import { hostFitsTrackAndEntity, trackSafeUrl, type PortalUrlSource } from "./po
 import { getCodeProfile } from "./codeProfiles";
 import { certifiedNamesForMake } from "./cecEquipment";
 import { recordDraftTouch, type DraftTouch } from "./draftLedger";
+import { issuingAgencyFor } from "./permitProcess";
+
+/** The submittal track an AHJ learn files, from the recipe discipline it will be keyed under
+ *  (authoritative — the value the recipe lookup asks for), else the requested permit type.
+ *  null = no permit named: issuingAgencyFor then answers with the AHJ-wide agency. */
+function learnTrackFor(discipline: string | undefined, permitType: "structural" | "electrical" | undefined): string | null {
+  const d = String(discipline ?? "").trim().toLowerCase();
+  if (d === "electrical") return "electrical";
+  if (d === "structural") return "building";
+  if (d === "combo") return "combo";
+  if (permitType === "electrical") return "electrical";
+  if (permitType === "structural") return "building";
+  return null;
+}
 
 export interface AutoLearnResult {
   recipe: PortalRecipe;
@@ -1063,6 +1077,12 @@ async function autoLearnPortalInner(
         zip: project.zip,
         homeownerName: project.homeownerName,
         isElectrical: /elec/i.test(String(input.permitType ?? "")),
+        // THE AGENCY THAT ISSUES THIS LEARN'S PERMIT (the per-job lookup, permitProcess): the
+        // address-version grid is ranked by it (portal-bot addressVersion), not by Coos Bay's
+        // city-structural / county-electrical convention. Production 2026-09-27: City of
+        // Jefferson's permits are Marion County's. AHJ scope only — an interconnection portal
+        // has no permit agency. null = unknown, and the learner keeps the convention.
+        issuingAgency: scopeType === "utility" ? null : (issuingAgencyFor(project, learnTrackFor(input.discipline, input.permitType))?.value ?? null),
       },
       onProgress: input.onProgress,
       onHumanStep,
