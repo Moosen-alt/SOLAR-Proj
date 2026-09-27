@@ -25,7 +25,7 @@
 import type { CitedFact, ProjectRecord } from "../../shared/src/types";
 import { issuingAgencyFor, permitAnswerForTrack, permitProcessFor, structureTypeMeaning } from "./permitProcess";
 import { agencyNameKey, sameAgencyName } from "./permitProcessLookup";
-import { DOCUMENT_URL, isAgencyOwnDomain, jurisdictionTypes, nameKeys, portalNameToken, wordsNameAnotherJurisdiction } from "./permitPlatformCatalog";
+import { DOCUMENT_URL, hostStateOf, isAgencyOwnDomain, jurisdictionTypes, nameKeys, portalNameToken, stateAgencyOf, wordsNameAnotherJurisdiction } from "./permitPlatformCatalog";
 import { isPathTenantedHost, isVendorDomain, portalHostOf, portalTenantOf, registrableDomain } from "./portalChannel";
 import { curatedFormSourcesFor } from "./curatedAhjForms";
 import { resolvePermitPath } from "./permitPath";
@@ -247,7 +247,12 @@ const httpUrl = (u: unknown): string => {
  *   - the AHJ's own domain (isAgencyOwnDomain by the AHJ's name, unless the host names a type the AHJ
  *     is not: co.marion.or.us is never the City of Marion's): the city's page saying "submit to the
  *     county" is the city's (jeffersonoregon.org);
- *   - a host naming a jurisdiction type A is not (hostNamesAnotherType).
+ *   - a host naming a jurisdiction type A is not (hostNamesAnotherType);
+ *   - (agency-contain C3) a host carrying ANOTHER STATE (co.jefferson.or.us, jeffersoncountyor.gov for
+ *     Colorado's Jefferson County); the state's own site (oregon.gov) for a county / a city; and, for an
+ *     agency that IS the state (stateAgencyOf: "Oregon Building Codes Division"), any host but the
+ *     state's own site — a county's site with no type in its name (deschutes.org, clackamas.us,
+ *     multco.us) is never the state agency's.
  */
 export function agencyAnchorSites(project: Pick<ProjectRecord, "state" | "ahj">, agency: string): string[] {
   const lk = permitProcessFor(project);
@@ -278,10 +283,19 @@ export function agencyAnchorSites(project: Pick<ProjectRecord, "state" | "ahj">,
     else if (u) others.add(siteOf(u));
   }
   // Any one page of a site failing a veto removes the site (fail-closed).
+  const jobState = String(project.state ?? "").trim().toLowerCase();
+  const agencyTyped = jurisdictionTypes([agency]).size > 0;
+  const agencyState = stateAgencyOf(agency);
   const vetoed = (url: string): boolean => {
     const host = portalHostOf(url);
     if (isSharedDocumentHost(host)) return true;
     if (ahj && !sameAgencyName(ahj, agency) && isAgencyOwnDomain(host, [ahj], project.state) && !hostNamesAnotherType(url, ahj)) return true;
+    // C3 NAMES ONLY REMOVE, INCLUDING STATE (agency-contain): the host's state, read from its structure
+    // (permitPlatformCatalog.hostStateOf), against the job's state and the agency's KIND, both directions.
+    const hs = hostStateOf(host);
+    if (hs && jobState && hs.state !== jobState) return true; // another state's host (co.jefferson.or.us for Colorado)
+    if (hs?.stateSite && agencyTyped) return true; // the state's own site is never a county's / a city's (oregon.gov)
+    if (agencyState && !hs?.stateSite) return true; // the state's agency lives only on the state's site (deschutes.org is not the BCD's)
     return hostNamesAnotherType(url, agency);
   };
   return [...mine].filter(([site, urls]) => !others.has(site) && !urls.some(vetoed)).map(([site]) => site);

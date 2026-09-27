@@ -82,6 +82,76 @@ function namesTheState(names: string[], st2: string): boolean {
     return !/^(?:city|county|town|township|twp|village|borough|boro|parish)\b/.test(s.slice(full.length).trim());
   });
 }
+/** A domain label that IS a state's own ("oregon", "wa", "newyork") — the state code, or "". */
+function stateCodeOfLabel(label: string): string {
+  const l = String(label ?? "").toLowerCase().replace(/-/g, "");
+  return Object.keys(STATE_NAMES).find((c) => l === c || l === STATE_NAMES[c].replace(/ /g, "")) ?? "";
+}
+/** A `.us` locality domain's labels before `.<st>.us` name the STATE itself (bcd.state.or.us). */
+const isStateLocalityLabel = (label: string): boolean => label === "state" || label.endsWith("state");
+
+// ── WHICH STATE A HOST / AN AGENCY NAMES (agency-contain C3) ──────────────────────────────────────
+// Read ONLY to REMOVE an anchor site (applicationDocsAgency.agencyAnchorSites) — a name never creates one.
+const STATE_NAMES_LONGEST_FIRST: Array<[string, string]> = Object.entries(STATE_NAMES)
+  .map(([c, n]) => [c, n.replace(/ /g, "")] as [string, string]).sort((a, b) => b[1].length - a[1].length);
+/** What may precede a state's name in a label that is a PLACE named for the state, not the state: the
+ *  City of Washington (cityofwashington), Port Washington, Fort / Mount / Lake / New / North … */
+const PLACE_PREFIX = /(?:of|port|fort|ft|mount|mt|lake|new|north|south|east|west)$/;
+/**
+ * WHICH STATE A HOST NAMES — read from the host's STRUCTURE, never from a guess about a place — and
+ * whether it is that state's OWN site:
+ *   - a US locality domain `<…>.<st>.us` (co.jefferson.or.us, douglas.co.us); the state's own site when
+ *     the label before the state is "state" (bcd.state.or.us);
+ *   - a .gov / .mil whose registrable label IS a state (oregon.gov; lni.wa.gov and dli.mn.gov by their
+ *     registrable wa.gov / mn.gov): the state's own site;
+ *   - a .gov label ending in a hyphenated state code (tigard-or, elbertcounty-co), a jurisdiction type +
+ *     a state code (harriscountytx, washingtoncountyor), or a state's full name after a place name
+ *     (bendoregon, polkcountyiowa) — never after "…of" or a place prefix (cityofwashington,
+ *     portwashington: places named for a state).
+ * null when the host names no state (bouldercounty.gov, pbcgov.org, houstontx.gov, deschutes.org,
+ * jeffco.us) — the safe answer, since this only ever removes.
+ */
+export function hostStateOf(host: string): { state: string; stateSite: boolean } | null {
+  const h = String(host ?? "").toLowerCase().replace(/^www\./, "");
+  if (!h) return null;
+  const us = /\.([a-z]{2})\.us$/.exec(h);
+  if (us && US_STATES.has(us[1])) {
+    return { state: us[1], stateSite: isStateLocalityLabel(h.slice(0, h.length - us[0].length).split(".").slice(-2).join("")) };
+  }
+  if (!/\.(?:gov|mil)$/.test(h)) return null;
+  const raw = registrableDomain(h).split(".")[0];
+  const label = raw.replace(/-/g, "");
+  const own = stateCodeOfLabel(label);
+  if (own) return { state: own, stateSite: true };
+  const hyphen = /-([a-z]{2})$/.exec(raw);
+  if (hyphen && US_STATES.has(hyphen[1])) return { state: hyphen[1], stateSite: false };
+  const typed = /(?:county|city|parish|township|twp|town|borough|boro|village)([a-z]{2})$/.exec(label);
+  if (typed && US_STATES.has(typed[1])) return { state: typed[1], stateSite: false };
+  for (const [code, name] of STATE_NAMES_LONGEST_FIRST) {
+    if (label.length > name.length && label.endsWith(name) && !PLACE_PREFIX.test(label.slice(0, label.length - name.length))) return { state: code, stateSite: false };
+  }
+  return null;
+}
+/** What follows a state's name when the name is a PLACE named for the state (Colorado Springs, Virginia
+ *  Beach, Iowa Falls), not the state's agency. */
+const PLACE_CONTINUATION = /^(?:springs?|beach|falls|heights|park|hills?|valley|lakes?|junction|center|centre|grove|harbou?r|point|rapids|creek|gap|bluffs?|mills?|landing|ridge|shores?)\b/;
+/**
+ * The state an agency's name IS — its own agency ("Oregon Building Codes Division", "Washington State
+ * Department of Labor & Industries", "State of Minnesota") — as a state code, or "" (namesTheState over
+ * every state). Never a jurisdiction (a type word anywhere: "Iowa City", "Nevada County") nor a place
+ * named for the state ("Colorado Springs Development Services", "Virginia Beach Permits").
+ */
+export function stateAgencyOf(name: string): string {
+  const n = String(name ?? "");
+  if (!n.trim() || jurisdictionTypes([n]).size) return "";
+  const s = n.toLowerCase().replace(/[^a-z\s]+/g, " ").replace(/\s+/g, " ").trim().replace(/^the /, "").replace(/^(?:state|commonwealth) of /, "");
+  for (const code of Object.keys(STATE_NAMES)) {
+    if (!namesTheState([s], code)) continue;
+    if (PLACE_CONTINUATION.test(s.slice(STATE_NAMES[code].length).trim())) continue;
+    return code;
+  }
+  return "";
+}
 /**
  * THE AGENCY'S OWN DOMAIN (lookup-close-7 R1) — whose page it is, never merely "a government page":
  * the organisation's domain label, once its official affixes are removed (cityof / townof / countyof /
@@ -107,13 +177,13 @@ export function isAgencyOwnDomain(host: string, names: string[], state?: string)
     if (st2 && us[1] !== st2) return false;
     // <affix>.<name>.<st>.us: the labels before the state ("ci.waltham" -> "ciwaltham", "state").
     label = h.slice(0, h.length - us[0].length).split(".").slice(-2).join("");
-    if (label === "state" || label.endsWith("state")) return namesTheState(names, us[1]);
+    if (isStateLocalityLabel(label)) return namesTheState(names, us[1]);
   } else {
     label = registrableDomain(h).split(".")[0];
   }
   label = label.replace(/-/g, "");
   // A state's own label: only the state, only on a government host.
-  const stateCode = Object.keys(STATE_NAMES).find((c) => label === c || label === STATE_NAMES[c].replace(/ /g, ""));
+  const stateCode = stateCodeOfLabel(label);
   if (stateCode) return gov && (!st2 || st2 === stateCode) && namesTheState(names, stateCode);
   const keys = nameKeys(names);
   const initials = names.map(initialsOf).filter(Boolean);
