@@ -35,8 +35,16 @@ AHJ documents → stage the portal application → human verifies + submits.
 
 ## Hard safety rules (never regress these)
 
-1. Automation NEVER clicks final submit, NEVER pays portal fees, NEVER solves
-   CAPTCHA/MFA. Recorded as steps (`isFinalSubmit:true`), executed by a human.
+1. Automation NEVER pays portal fees and NEVER solves CAPTCHA/MFA. The portal's
+   final submit (recorded as a step, `isFinalSubmit:true`) is clicked by a human,
+   OR by automation only under the one gate (operator ruling 2026-09-26, "click
+   submit when submit is clicked"): a named person's approval of exactly THIS run
+   (Approve & auto-submit, claimed by id, burned if any gate refuses) AND
+   `PORTAL_ALLOW_FINAL_SUBMIT=1` on the process AND a valid recipe shape with ONE
+   terminal `isFinalSubmit` click after stopForReview — `mayClickFinalSubmit`
+   (shared/src/portalSafety.ts) / `automaticSubmitRefusals` (repository.ts), the
+   single answer at every door. `portal_recipes.auto_submit_enabled` is never
+   authority. Without that approval, automation never files.
 2. Secrets (passwords, account/meter numbers, SSN, ESI/SA ids) never reach the LLM
    downstream — stripped in `buildPortalPlanner`; sensitive fields bind by name, not
    literal. The one allowed read: INTAKE may read the customer's own document (bill,
