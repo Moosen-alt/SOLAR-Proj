@@ -8607,7 +8607,14 @@ export async function prepareSubmission(
       // path then fabricates MOCK-/CONF- permit numbers staff would trust. Stop and
       // surface the actionable blocker instead.
       const where = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
-      const msg = `No portal automation is available for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
+      // The portal may be KNOWN and a recording found for it, refused on purpose (production
+      // 2026-09-27, City of Jefferson building: the Coos Bay recording would pick the city row
+      // where Marion County issues). "No portal automation is available" then reads as a missing
+      // URL and sends the operator to re-paste one that is already there — say the real reason.
+      const refused = borrowDecisionReason.startsWith("borrow refused: ") ? borrowDecisionReason.slice("borrow refused: ".length) : "";
+      const msg = refused
+        ? `No recording exists yet for ${where}'s ${track} permit${ownPortalUrl ? ` on ${portalHostOf(ownPortalUrl) || ownPortalUrl}` : ""}, and the recording learned elsewhere on that portal was not reused: ${refused}. Nothing was opened. This permit needs one supervised learn or recording for its issuing agency; then re-stage.`
+        : `No portal automation is available for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
       result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
     } else {
       // The mock stands in ONLY when there is no real portal AND auto-seed is off —
