@@ -647,13 +647,21 @@ export function portalSafetyFactory() {
   // counts only when the same sentence is about the application / permit / this form / request /
   // submission, or about signing.
   //
-  // SIGNING_TEXT is the narrower half: the statement says that typing a name IS signing ("By
-  // typing your name below you are signing…", "electronic signature", "sign below"). An "Applicant
-  // Name" / "Signer Name" box is a signature box only under THAT (MF-E): under an "I certify the
-  // information in this application…" alone it is still the applicant's contact name.
+  // SIGNING_TEXT is the signing half of the attestation ("By typing your name below you are
+  // signing…", "electronic signature", "sign below"). An "Applicant Name" / "Signer Name" box, and a
+  // split First / Last name, are signature boxes only under the STRICT signing act below
+  // (SIGNING_ACT_TEXT, MF-E): under an "I certify the information in this application…" alone, or a
+  // mention of e-signature as a later process, they are still the contact's names.
   const SIGNING_TEXT =
     /by\s+(typing|entering|providing|printing)\s+(your|my)\s+(full\s+|first\s+and\s+last\s+|legal\s+)?name\b|\bsign(ing|ed|s)?\s+(this\s+)?(application|form|document|agreement|permit|request)?\s*electronically|electronic(ally)?\s+sign|\be-?sign(ature|ing|ed)?\b|consent\s+to\s+(electronically\s+)?sign|constitutes?\s+(your|an?|my|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\b(your|my|applicant'?s?|owner'?s?|contractor'?s?)\s+(electronic\s+|typed\s+|digital\s+)?signature\b|(^|\n)\s*(e-?|electronic\s+|typed\s+|digital\s+)?signature\s*[:*]?\s*($|\n)|\bsign\s+(below|here)\b/i;
-  const ABOUT_THE_FILING = "\\b(application|permit|this\\s+(form|request|submission|document)|sign(s|ing|ed|ature)?)\\b";
+  // THE STRICT HALF, for a ROLE's name box and a split First / Last name: the statement must say
+  // that typing the name HERE is the act of signing. A mention of e-signature as a later process —
+  // PowerClerk's "the utility will send the interconnection agreement for e-signature through
+  // DocuSign" above the CUSTOMER's First / Last Name — must never turn the homeowner's name boxes
+  // into the client's signer (auto-submit would file it).
+  const SIGNING_ACT_TEXT =
+    /by\s+(typing|entering|providing|printing)\s+(your|my)\s+(full\s+|first\s+and\s+last\s+|legal\s+)?name\b|\b(you|i)\s+(are|am)\s+(electronically\s+)?signing\b|consent\s+to\s+(electronically\s+)?sign|constitutes?\s+(your|an?|my|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\bserves?\s+as\s+(your|my|an?|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\bsign\s+(below|here)\b|\b(type|enter|print)\s+(your|my)\s+(full\s+|legal\s+|first\s+and\s+last\s+)?name\s+((below|here|above)\s+)?(to|as)\s+(sign|your\s+signature|an?\s+(electronic\s+)?signature)/i;
+  const ABOUT_THE_FILING ="\\b(application|permit|this\\s+(form|request|submission|document)|sign(s|ing|ed|ature)?)\\b";
   const ATTESTATION_TEXT = new RegExp([
     "\\bi\\s+(hereby\\s+)?(certify|attest|declare|swear|affirm|acknowledge and certify)\\b[^.]{0,200}\\b(application|permit|this\\s+(form|request|submission|document))\\b",
     "under\\s+(the\\s+)?penalt(y|ies)\\s+of\\s+perjury[^.]{0,200}" + ABOUT_THE_FILING,
@@ -683,7 +691,7 @@ export function portalSafetyFactory() {
     if (SIGNATURE_LABEL_EXCLUDE.test(tail)) return false;
     const around = `${head}\n${String(textAbove ?? "")}`;
     if ((NAME_BOX_LABEL.test(t) || NAME_BOX_LABEL.test(tail)) && ATTESTATION_TEXT.test(around)) return true;
-    return ROLE_NAME_BOX_LABEL.test(tail) && SIGNING_TEXT.test(around);
+    return ROLE_NAME_BOX_LABEL.test(tail) && SIGNING_ACT_TEXT.test(around);
   };
   // A SPLIT signature (MF-E d): "First name" / "Last name" under a SIGNING statement ("By typing
   // your first and last name below you are signing…") — the authorized signer's first / last name,
@@ -695,7 +703,7 @@ export function portalSafetyFactory() {
     if (!t) return "";
     const { head, tail } = labelTail(t);
     const part = FIRST_NAME_BOX.test(tail) ? "first" : LAST_NAME_BOX.test(tail) ? "last" : "";
-    return part && SIGNING_TEXT.test(`${head}\n${String(textAbove ?? "")}`) ? part : "";
+    return part && SIGNING_ACT_TEXT.test(`${head}\n${String(textAbove ?? "")}`) ? part : "";
   };
   /** The signer's first or last name for a split signature: the first token / the last token
    *  (a trailing Jr./Sr./II/III/IV/Esq. is not a last name; "Signer, Dana" reads last-first).
@@ -833,6 +841,7 @@ export function portalSafetyFactory() {
       const styledOk = shown(el) || (el as HTMLInputElement).labels && Array.from((el as HTMLInputElement).labels || []).some(shown);
       if (styledOk && isTypeSignatureToggleLabel(label)) take(el, "toggle");
     }
+    const parts: Array<{ el: Element; part: "first" | "last" }> = [];
     // The name boxes (disabled ones count: EnerGov's typed box unlocks when the switch is on).
     // NOT AN ECHO: a locked box that already holds a name is the review page showing the
     // signature back (skeptic reviewEchoTyped: "Type Signature" disabled, value "Dana Signer"
@@ -858,7 +867,13 @@ export function portalSafetyFactory() {
       }
       if (isSignatureNameBox(label, around) || (own && isSignatureNameBox(own, around))) { take(el, "consent"); continue; }
       const part = signatureNamePartOf(label, around) || (own ? signatureNamePartOf(own, around) : "");
-      if (part) take(el, "consent", part);
+      if (part) parts.push({ el, part });
+    }
+    // A SPLIT signature is a FIRST and a LAST name box, and the page's only way to sign: a lone
+    // "Last name", or First / Last name boxes on a page that already has a signature box (a contact
+    // block read past it), stay the planner's.
+    if (!controls.some((c) => c.role === "consent" || c.role === "typed") && parts.some((x) => x.part === "first") && parts.some((x) => x.part === "last")) {
+      for (const x of parts) take(x.el, "consent", x.part);
     }
     // The pad: a visible canvas inside (or named as) a signature container.
     const pad = Array.from(d.querySelectorAll("canvas")).find((c) => {
