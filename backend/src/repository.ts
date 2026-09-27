@@ -5858,7 +5858,11 @@ export function createPermitCheckTarget(
 ): ProjectDetail {
   const detail = getProjectDetail(db, projectId);
   const frequency = Math.max(1, Math.floor(Number(input.checkFrequencyDays || 7)));
-  const targetType = input.targetType === "nem" ? "nem" : "permit";
+  // The ONE answer to "what track is this target" (trackKind): `{permitType:'nem'}` with no target
+  // type is a NEM filing at this door too — the rule-5 refusal below used to read the raw
+  // (defaulted 'permit') type and refuse that filing's own PowerClerk URL as "a utility portal on a
+  // permit", while the row it would have written was the split shape MF3 removes.
+  const targetType: "permit" | "nem" = trackKind(input.targetType ?? "", input.permitType ?? "");
   // RULE 5 AT THE DOOR. This form accepted a PacifiCorp PowerClerk URL as a PERMIT target
   // (production row 99ea32c3 on 1fb3dc39, duplicating that project's NEM target), and every
   // later consumer — the permit monitor, the correction reopen, the knowledge learner below —
@@ -5900,6 +5904,7 @@ export function createPermitCheckTarget(
     );
     // Unchanged on purpose: the portal this target names is the same fact to learn whether the
     // row was inserted or updated, so the knowledge event keeps its original type.
+    // (learnFromPermitTarget reads jurisdiction/portal fields only — never the target type.)
     learnFromPermitTarget(db, detail.project, input);
   });
   return getProjectDetail(db, projectId);
@@ -6565,14 +6570,14 @@ export async function runDuePermitChecks(
 ): Promise<{ checked: number; projects: ProjectDetail[] }> {
   const now = nowIso();
   // Kind by trackKind (the ONE answer), judged in JS rather than a raw `target_type = ?` filter
-  // that would poll a legacy 'permit'-typed NEM filing in the permit sweep.
+  // that would poll a legacy 'permit'-typed NEM filing in the permit sweep. The 50-per-sweep cap
+  // is applied AFTER the kind filter, as the SQL LIMIT was, so a kind-scoped sweep still gets 50.
   const targets = db.query<Row>(
     `SELECT * FROM permit_check_targets
      WHERE active = 1 AND (next_check_at IS NULL OR next_check_at <= ?)
-     ORDER BY next_check_at ASC, created_at ASC
-     LIMIT 50`,
+     ORDER BY next_check_at ASC, created_at ASC`,
     [now],
-  ).filter((row) => targetType === "all" || trackKind(text(row.target_type), text(row.permit_type)) === targetType);
+  ).filter((row) => targetType === "all" || trackKind(text(row.target_type), text(row.permit_type)) === targetType).slice(0, 50);
   const projects: ProjectDetail[] = [];
   for (const target of targets) {
     const projectId = text(target.project_id);

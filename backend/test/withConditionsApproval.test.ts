@@ -290,6 +290,15 @@ await check("MF3 (creator): a target born with permitType 'nem' and no target ty
   const t = targetIds(d).find((x) => x.permitType === "nem")!;
   assert.equal(t.targetType, "nem");
   assert.equal(rawTarget(t.id).target_type, "nem", "the split shape (permit + nem) was written by the API door");
+  // The door's own rule-5 check judges by the same kind: this NEM filing's PowerClerk URL is
+  // accepted (it used to be refused as "a utility portal on a permit"), and the row is nem.
+  const POWERCLERK = "https://pacificorpnetmetering.powerclerk.com/MvcProjects/ProjectDetails";
+  const pid2 = mkProject("Born Nem Url Owner");
+  const d2 = R.createPermitCheckTarget(db, pid2, { jurisdiction: "Pacific Power", portalName: "PowerClerk", portalUrl: POWERCLERK, applicationNumber: "APP-BORN-2", permitType: "nem" } as never);
+  const t2 = targetIds(d2).find((x) => x.permitType === "nem")!;
+  assert.equal(rawTarget(t2.id).target_type, "nem");
+  // And a PERMIT filing is still refused that URL (permitTargetDoors pins the message).
+  assert.throws(() => R.createPermitCheckTarget(db, pid2, { jurisdiction: "X", portalName: "Y", portalUrl: POWERCLERK, applicationNumber: "APP-BORN-3", permitType: "building", targetType: "permit" } as never), /utility interconnection portal/);
 });
 
 for (const shape of ["permit", ""] as const) {

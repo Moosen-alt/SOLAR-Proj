@@ -372,6 +372,47 @@ not say which snow load it is (a roof snow 25 would false-block a correct Pg 36 
 - Open: status.html and portal.html colour by OUTCOME, and a permit's with-conditions approval is `reviewed_by_ahj` (as is a
   plain permit "Approved", shown "Reviewed by the jurisdiction"), so its "Approved by the jurisdiction — with conditions" badge
   is grey. Green would need a label-keyed colour (a second predicate) or a payload tone field — unasked, left for the operator.
+- **Skeptic's must-fixes closed (2026-09-27, e7431ee + 7d07091; scratch `.probe/decisions-0926-close/`):**
+  - MF1 (was shipping): `runEmailTracker` filed EVERY inbound email on the project's NEWEST target, so with D2 an AHJ
+    plan-review approval landing on a NEM target created later read `nem_approved` (NEM track done, project nem_approved,
+    client told the utility approved). Now `emailTrackTargetId`: the email's own workflow picks the newest ACTIVE target of
+    that KIND (trackKind); none of that kind, or workflow "both"/"unknown" → a check row with NO target, judged on the email's
+    track (`recordPermitStatusCheck({ track })`, honoured only without a target) — never the other track's target. The
+    `email.project_matched` audit row names `targetId`/`track`. 720b05f3's shape is now safe: 0 active email sources today.
+  - MF2: `computeLaneStatusSummary` no longer counts project `'approved'` (a PERMIT-written status) as nemApproved. Smoke's
+    `listWithNem.nemApproved` still holds — from `latestNemEmail` (bucket `nem_approval`) and the sniffed no-target NEM check.
+  - MF3: the writer derives `track` ONCE (trackKind) and every downstream reader asks trackKind, never raw `target_type`
+    (project-status writer + its SQL, notify, outcomeFinishesTrack/targetFinishedTrack/milestoneFor, the track pool,
+    unattributed targets, otherTrackOutcome, trackForTarget, both `permit_status_checks` JOINs (now select `t.permit_type`),
+    correction reopen, trackSafeUrl at the fetch and the sweep, clientPortal, nextStep, stale scan). ALSO `ensureCheckTarget`
+    (the one creator) stores `target_type = trackKind(...)`, so `{permitType:'nem'}` with no target type is born `nem`. Both
+    legacy shapes are MUST-EXCLUDE through the real writer in `withConditionsApproval.test` (19/19). The add-target door
+    (`createPermitCheckTarget`) judges its rule-5 refusal by the same kind, so `{permitType:'nem'}` + a PowerClerk URL with
+    no target type is accepted as the NEM filing it is (it was refused as "a utility portal on a permit"); a permit filing is
+    still refused that URL (permitTargetDoors). `runDuePermitChecks` applies its 50-per-sweep cap AFTER the kind filter.
+    `timelineSamples.ts` and `nextStep.ts` carry one-line trackKind changes (outside the round's file list, inside the
+    one-predicate mandate). Not touched: `submissionFees.ts:669` (`target_type = ?` for a fee portal URL — unowned).
+  - DECISION to disclose (MF1's fallback): a utility email of a known NEM workflow on a project with NO NEM target is recorded
+    as a no-target reading judged on the NEM track — so a plain "Approved" / "Review Complete" utility email now writes project
+    `nem_approved` and (CLIENT_NOTIFICATIONS on) sends the "Interconnection approved" update, where before it became
+    `reviewed_by_ahj` (a permit status from a utility email) and told the client nothing. The NEM track is NOT finished (no
+    target), so no handoff. The more conservative option the mandate offered (a human-review item, no status write) was not
+    taken; tests ran with notifications off, so the send itself is unexercised.
+  - MF4: `deleteKnowledgeRows.test (f)` — a used row (real path: createProject → learnFromProject → project_count) refused
+    without `--force` (exit 2, sha1 unchanged), deleted with it; the skeptic's K6 now goes red.
+  - README's safety paragraph words final submit as rule 1 does.
+  - Kills (`.probe/decisions-0926-close/kill.cjs`, kill worktree at bb4f85f; logs `kills-7d07091.log` + `kills-bb4f85f.log`),
+    10/10 RED: KA email on the newest target again; KB the no-target fallback ignoring the email's track; KC the lane's
+    'approved' clause back; KD the project-status writer on raw target_type; KE outcomeFinishesTrack on raw target_type; KF the
+    check-row mapping on raw target_type; KG otherTrackOutcome by raw target_type; KH the creator's normalisation dropped; KJ the
+    track pool by raw target_type; KI the project_count refusal dropped. KB/KF/KJ survived the first cut (each assertion was
+    satisfied by another clause) and were sharpened in bb4f85f.
+  - Smoke shape measured after the fix (`probe-smoke-lane.test.ts`): the NEM PTO email on a project with one untyped permit
+    target is now a NO-target `nem_approved` check (the permit target is no longer written); `listWithNem.nemApproved` holds from
+    BOTH the email match (bucket nem_approval) and the word-sniffed no-target check. Pre-existing and unchanged: a no-target check
+    row carries no track column, so both lanes sniff it (the classifier's "final inspection" message also reads as a permit
+    signal) — the permit lane's latestPermitOutcome shows nem_approved there as it did before, when the check sat on the permit
+    target. Persisting the declared track on `permit_status_checks` needs a db.ts migration (out of this round's files).
 
 **Operator actions still open (2026-09-24):**
 - Oregon 36/25 psf minimum ground snow: the verified write (`PUT /api/code-profiles/verify`, payload in
