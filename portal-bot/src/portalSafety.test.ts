@@ -29,6 +29,10 @@ import {
   isPaymentField,
   isRecipeShapeValid,
   isReviewPageText,
+  isSignatureNameBox,
+  isSignatureNameLabel,
+  looksLikeReviewUrl,
+  reviewSignals,
   isSecretField,
   isSubmitIntent,
   isSubmitOrPayRequestUrl,
@@ -252,9 +256,15 @@ await check("'Continue Application' is allowed ONLY when the page is KNOWN filla
 await check("isReviewPageText: the page NAMES itself the review step (MUST-MATCH / MUST-NOT)", () => {
   const MUST = ["Step 3: Review", "Step 4 - Review", "STEP 3 : REVIEW", "Review and Submit", "Review & Submit",
     "Review your application", "Review all of the information below", "Your form will not be submitted until you click Submit",
+    // ONE review predicate (portal-run-close MF2): the learner's "please review" marker and the
+    // backstop's list disagreed on a combined confirm-and-sign page, which then FILED.
+    "Confirm and Sign. Please review and sign. Permit type: Residential Solar.", "Review and Sign", "Review & Confirm",
+    "Please review all information before you submit.", "Review the details below and submit",
     // The captured review page names itself AND carries locked sections: still the review page.
     "Step 4 : Review Site Address (Read-only) Parcel (Read-only) Owner (Read-only) Continue Application »"];
   const NOT = ["Please review the terms and conditions below", "I accept the terms and conditions", "Plan Review Fee", "Review Type",
+    // A bare "please review" is the entry disclaimer's; a review noun in a heading is not the step.
+    "Please review before continuing", "Plan Review Details", "Review Comments", "Review Status: In Review",
     "Step 2: Project Information", "Resubmittal Review Comments", "Reviewer", "", "Step 3: Documents",
     // A locked section is not the page naming itself — Oregon ePermitting Step 1 after the address pick
     // (production false stop, City of Jefferson 2026-09-26), with the wizard bar listing Review and Pay Fees ahead.
@@ -263,6 +273,44 @@ await check("isReviewPageText: the page NAMES itself the review step (MUST-MATCH
   for (const t of MUST) { assert.ok(isReviewPageText(t), `"${t}" is not a review page`); assert.ok(pageCopy.isReviewPageText(t), `page copy: "${t}"`); }
   for (const t of NOT) { assert.ok(!isReviewPageText(t), `"${t}" wrongly reads as a review page`); assert.ok(!pageCopy.isReviewPageText(t), `page copy: "${t}"`); }
 });
+await check("reviewSignals: the page text OR a bounded review URL; '/reviewer' and '/review-comments' are not it", () => {
+  for (const u of ["https://aca.example.gov/Cap/CapConfirm.aspx?x=1", "https://p.example.gov/apply/12/review", "https://p.example.gov/apply/review/", "https://p.example.gov/Confirm.aspx", "https://p.example.gov/app/review?step=7", "https://p.example.gov/app/review.aspx"]) {
+    assert.ok(looksLikeReviewUrl(u), `"${u}" should read as a review URL`); assert.ok(pageCopy.looksLikeReviewUrl(u), `page copy: "${u}"`);
+  }
+  for (const u of ["https://p.example.gov/reviewer/queue", "https://p.example.gov/plan-review-comments", "https://p.example.gov/apply/review-comments", "https://p.example.gov/apply/12", ""]) {
+    assert.ok(!looksLikeReviewUrl(u), `"${u}" wrongly reads as a review URL`); assert.ok(!pageCopy.looksLikeReviewUrl(u), `page copy: "${u}"`);
+  }
+  assert.ok(reviewSignals("Contacts", "https://p.example.gov/apply/12/review"), "URL alone");
+  assert.ok(reviewSignals("Please review and sign", "https://p.example.gov/apply/12"), "text alone");
+  assert.ok(!reviewSignals("Contacts", "https://p.example.gov/apply/12"), "neither");
+  assert.equal(pageCopy.reviewSignals("Please review and sign", ""), true, "page copy agrees");
+});
+
+await check("ONE SIGNER RULE: a box whose label reads as signing / certifying / attesting is a signature box (MUST-MATCH / MUST-NOT)", () => {
+  // MUST-EXCLUDE (from the planner): the skeptic's shapes and the e-signature wordings.
+  const SIG = ["Applicant Signature *", "Signature of applicant", "Signature", "Full name of person certifying *", "Electronic Signature (type full legal name) *",
+    "Please type your name as consent to electronically sign this application *", "e-Signature", "Typed Signature", "Type Signature", "Printed Name", "Name (print)",
+    "Name of person attesting", "Owner's signature", "Contractor signs here", "Sign here"];
+  // MUST-PASS (stays the planner's): a contact's name, a signer's email/title/date, an attachment.
+  const NOT = ["Full name", "Applicant Name", "Owner Name", "Contact Name", "Name *", "Customer Email for e-Signature *", "Signer Email", "Date Signed", "Signature Date",
+    "Signer Title", "Title of person signing", "Upload signed authorization form", "Attach signature page", "Signed copy of the agreement", "Enable Type Signature",
+    "Type your signature instead", "Authorized Signer Name", "Witness signature", "Initials", "Contractor Certification Number", "Applicant Phone", "Signature Type"];
+  for (const t of SIG) { assert.ok(isSignatureNameLabel(t), `"${t}" is not read as a signature box`); assert.ok(pageCopy.isSignatureNameLabel(t), `page copy: "${t}"`); }
+  for (const t of NOT) { assert.ok(!isSignatureNameLabel(t), `"${t}" wrongly reads as a signature box`); assert.ok(!pageCopy.isSignatureNameLabel(t), `page copy: "${t}"`); }
+  // A NAME box becomes a signature box only under an attesting statement.
+  const CERTIFY = "I certify under penalty of perjury that I am the applicant or the applicant's authorized agent and that the information in this application is true and correct.";
+  const BY_TYPING = "By typing your name below you are signing this application electronically.";
+  const HEREBY = "I hereby certify that I have read and examined this application and know the same to be true and correct.";
+  for (const [label, above] of [["Type your full name *", CERTIFY], ["Type your full name *", BY_TYPING], ["Full name *", HEREBY], ["Name", CERTIFY], ["Print your name", "Signature"], ["Your legal name", "Sign below to consent."]] as const) {
+    assert.ok(isSignatureNameBox(label, above), `"${label}" under "${above.slice(0, 30)}" is not a signature box`);
+    assert.ok(pageCopy.isSignatureNameBox(label, above), `page copy: "${label}"`);
+  }
+  for (const [label, above] of [["Full name *", "Company (account holder)"], ["Type your full name *", "Contacts"], ["Full name", ""], ["Applicant Name *", CERTIFY], ["Customer Email for e-Signature *", BY_TYPING], ["Name", "You certify by submitting."], ["Full name", "This is the signature page of the plan set."]] as const) {
+    assert.ok(!isSignatureNameBox(label, above), `"${label}" under "${above.slice(0, 30)}" wrongly reads as a signature box`);
+    assert.ok(!pageCopy.isSignatureNameBox(label, above), `page copy: "${label}"`);
+  }
+});
+
 await check("recordingHasFormData: fills/selects/checks count; a terms tick and clicks do not", () => {
   assert.equal(recordingHasFormData([]), false);
   assert.equal(recordingHasFormData([{ action: "click", selector: { name: "Next" } }]), false);

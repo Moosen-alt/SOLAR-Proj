@@ -199,9 +199,27 @@ export function portalSafetyFactory() {
   // the review page refused the ordinary "Continue Application »" on a production replay
   // (City of Jefferson, 2026-09-26). The captured review page (CapConfirm) says "Step 4 : Review"
   // itself; dropping the marker changed no verdict on the 94 captured replica pages.
+  //
+  // THE ONE REVIEW QUESTION (portal-run-close MF2). The learner's own REVIEW_MARKERS and this
+  // regex answered "is this the review page" differently: "Please review and sign" was a review
+  // marker to the learner and NOT to the backstop, so a combined confirm-and-sign page whose
+  // Next FILED (skeptic combinedReviewSign) was signed, its planner stop overridden into a
+  // Next click, and the backstop's review lockdown never fired — 4 filing POSTs. Now the
+  // learner reads reviewSignals() below; there is no second list. "Review and sign/confirm"
+  // and "please review and <verb>" name the step; a bare "please review" does not (the entry
+  // disclaimer's "please review the terms").
   const REVIEW_PAGE =
-    /\bstep\s*\d+\s*[:.\-–—]?\s*review\b|\breview\s+(and|&)\s+submit\b|\breview\s+(all\s+)?(of\s+)?(your|the)\s+(application|information|details|entries|submission)\b|\bwill\s+not\s+be\s+submitted\s+until\b/i;
+    /\bstep\s*\d+\s*[:.\-–—]?\s*review\b|\breview\s+(and|&)\s+(submit|sign|confirm|file|certify|finish)\b|\bplease\s+review\s+(and|&)\s+[a-z]|\breview\s+(all\s+(of\s+)?(your\s+|the\s+)?|(your|the)\s+)(application|information|details|entries|submission|answers)\b|\bwill\s+not\s+be\s+submitted\s+until\b/i;
   const isReviewPageText = (text: string | null | undefined): boolean => REVIEW_PAGE.test(String(text ?? ""));
+  /** A URL that names the review step: Accela's CapConfirm / Confirm.aspx, a "/review" path
+   *  segment (bounded — "/reviewer", "/review-comments" are not it). */
+  const REVIEW_URL = /capconfirm|confirm\.aspx|\/review(?=[/?#.]|$)/i;
+  const looksLikeReviewUrl = (url: string | null | undefined): boolean => REVIEW_URL.test(String(url ?? ""));
+  /** THE review signal the learner's page classification, its atReview override, replay's click
+   *  gate and the network backstop all read: the page's text (navigator cut) names the review
+   *  step, or its URL does. */
+  const reviewSignals = (text: string | null | undefined, url?: string | null): boolean =>
+    isReviewPageText(text) || looksLikeReviewUrl(url);
 
   /**
    * Submit-, file- or commit-worded. "Continue Application" — Accela's advance, which FILES on
@@ -320,7 +338,7 @@ export function portalSafetyFactory() {
   const reviewPageInPage = (): boolean | undefined => {
     const d = (globalThis as { document?: Document }).document;
     if (!d || !d.body) return undefined;
-    return isReviewPageText(pageTextWithoutNavigatorInPage(d));
+    return reviewSignals(pageTextWithoutNavigatorInPage(d), (globalThis as { location?: { href?: string } }).location?.href);
   };
 
   /**
@@ -332,11 +350,35 @@ export function portalSafetyFactory() {
    * mid-flow click would be classed as the filing click. textContent is the fallback where layout
    * is unavailable.
    */
+  //
+  // A NAVIGATOR IS A STEP BAR, NOT THE STEP (portal-run-close 3). Angular Material's
+  // mat-stepper (class "mat-stepper-horizontal") wraps the step CONTENT as well as its header,
+  // and a [class*=stepper|steps|progress] cut swallowed the whole step: a review page whose
+  // heading sat inside a "wizard-steps-content" container read as an ordinary form page (its
+  // text gone), and every button inside counted as navigator-only (skeptic reviewNextStepsClass:
+  // 3 filing POSTs). A candidate is cut only when it holds no fillable control (a site-wide
+  // search box does not count, as in readOnlyPageInPage) and — unless it is a semantic
+  // nav/navigation/tablist, which may carry a hidden "Main menu" heading — no heading. The
+  // nested header ([role=tablist], the <ol class=steps>) is matched on its own by the same
+  // querySelectorAll, so the bar is still cut while its content is not.
+  const FILLABLE_IN_NAV = "input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]):not([type=reset]):not([type=search]), select, textarea, [contenteditable=true]";
+  const holdsFillable = (el: Element): boolean =>
+    Array.from(el.querySelectorAll(FILLABLE_IN_NAV)).some((c) => {
+      if (c.closest("[role=search], form[role=search]")) return false;
+      return !/search/i.test(`${c.getAttribute("name") || ""} ${c.id || ""} ${c.getAttribute("placeholder") || ""} ${c.getAttribute("aria-label") || ""}`);
+    });
+  const holdsHeading = (el: Element): boolean => !!el.querySelector("h1, h2, h3, h4, h5, h6, legend");
+  const isStepBar = (el: Element): boolean => {
+    if (holdsFillable(el)) return false;
+    if (el.matches("nav, [role=navigation], [role=tablist]")) return true;
+    return !holdsHeading(el);
+  };
   const stepNavigatorsInPage = (d: Document): Element[] =>
     Array.from(d.querySelectorAll("nav, [role=navigation], [role=tablist], [aria-label*=step i], [class*=stepper], [class*=steps], [class*=stepNav], [class*=step-nav], [class*=progress]"))
+      .filter(isStepBar)
       .concat(Array.from(d.querySelectorAll("ol, ul")).filter((list) => {
         const items = Array.from(list.children);
-        return items.length >= 3 && items.every((li) => ((li as HTMLElement).innerText || li.textContent || "").trim().length < 60);
+        return items.length >= 3 && items.every((li) => ((li as HTMLElement).innerText || li.textContent || "").trim().length < 60) && isStepBar(list);
       }));
   const pageTextWithoutNavigatorInPage = (d: Document): string => {
     let pageText = d.body.innerText || d.body.textContent || "";
@@ -360,12 +402,73 @@ export function portalSafetyFactory() {
    *     "Signature" label: that stays the planner's, as before.
    *   - the switch: "Enable Type Signature".
    */
+  //
+  // ONE SIGNER RULE (portal-run-close MF1, operator ruling: a typed signature is completed with
+  // the CLIENT RECORD's authorized signer, never invented, never a contact's or installer's
+  // name). A box is a SIGNATURE box when its label, or the statement above it, reads as
+  // signing, certifying, attesting or e-signing: "Applicant Signature", "Signature of owner",
+  // "Full name of person certifying", "Type your full name" under "I certify under penalty of
+  // perjury…" / "By typing your name below you are signing…". The skeptic's probe typed the
+  // installer contact ("Casey Contact") into all three of those shapes, because only the
+  // e-signature WORDING was recognised. A box the wording names an EMAIL, phone, date, title
+  // or attachment ("Customer Email for e-Signature") is never a signature box: the signer's
+  // name was typed into PowerClerk's DocuSign email box.
+  //   isSignatureNameLabel(label)         — the label alone names it (replay's resolveValue and
+  //                                         the fill guard have nothing but the label).
+  //   isSignatureNameBox(label, above)    — the label is a name box ("type your full name",
+  //                                         "printed name", "full name") and the text ABOVE it
+  //                                         attests. The in-page reading uses this; the learner
+  //                                         records such a box with an "e-signature:" note, which
+  //                                         is how replay knows it again.
   const SIGNATURE_NAME_LABEL =
-    /consent\s+to\s+(electronically\s+)?sign|electronically\s+sign|electronic\s+signature|\be-?signature\b|\btyped?\s*signature\b|signature\s*typed|type\s+(in\s+)?your\s+(full[\s-]*)?name\b[^.]{0,40}\bsign/i;
+    /consent\s+to\s+(electronically\s+)?sign|electronically\s+sign|electronic\s+signature|\be-?signature\b|\btyped?\s*signature\b|signature\s*typed|type\s+(in\s+)?your\s+(full[\s-]*)?name\b[^.]{0,40}\bsign|\bsignature\b|\bsign\s+here\b|\b(name|person|party|individual|applicant|owner|contractor|agent|representative)\b[^.]{0,30}\b(certif(y|ying|ies|ier)|attest(s|ing)?|declar(es|ing|ant)|sign(s|ing|ee)?)\b|\b(certif(ying|ier)|attesting|signing|signatory|declarant)\b[^.]{0,30}\bname\b|\bprint(ed)?\s+name\b|\bname\s*\(\s*print(ed)?\s*\)/i;
+  // A label that names something ELSE about the signature — never the signer's own name box.
+  const SIGNATURE_LABEL_EXCLUDE = /\b(date|e-?mail|phone|fax|title|upload|attach(ment)?|file|initials?|witness|notary|required\?)\b|\bsign(ed)?\s+(copy|form|document|agreement|letter)\b|\bsignature\s+(page|line|block|form|required|date|type|method|style)\b/i;
   const TYPE_SIGNATURE_TOGGLE = /\b(enable|use)\s+typed?\s+signature\b|\btype\s+(a|my|your)\s+signature\s+instead\b/i;
-  const isSignatureNameLabel = (label: string | null | undefined): boolean =>
-    !!label && SIGNATURE_NAME_LABEL.test(String(label)) && !TYPE_SIGNATURE_TOGGLE.test(String(label)) && !/\bdate\b/i.test(String(label));
+  const isSignatureNameLabel = (label: string | null | undefined): boolean => {
+    const t = String(label ?? "").replace(/\s+/g, " ").trim();
+    if (!t) return false;
+    return SIGNATURE_NAME_LABEL.test(t) && !TYPE_SIGNATURE_TOGGLE.test(t) && !SIGNATURE_LABEL_EXCLUDE.test(t);
+  };
+  // The statement above a name box that makes typing into it a signature.
+  const ATTESTATION_TEXT =
+    /\bi\s+(hereby\s+)?(certify|attest|declare|swear|affirm|acknowledge and certify)\b|under\s+(the\s+)?penalt(y|ies)\s+of\s+perjury|by\s+(typing|entering|providing|printing)\s+(your|my)\s+(full\s+)?name\b|\bsign(ing|ed|s)?\s+(this\s+)?(application|form|document|agreement|permit|request)?\s*electronically|electronic(ally)?\s+sign|\be-?sign(ature|ing|ed)?\b|consent\s+to\s+(electronically\s+)?sign|constitutes?\s+(your|an?|my|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\b(your|my|applicant'?s?|owner'?s?|contractor'?s?)\s+(electronic\s+|typed\s+|digital\s+)?signature\b|(^|\n)\s*(e-?|electronic\s+|typed\s+|digital\s+)?signature\s*[:*]?\s*($|\n)|\bsign\s+(below|here)\b/i;
+  // A bare name box — the kind an attestation turns into a signature.
+  const NAME_BOX_LABEL =
+    /\b(type|print|enter)\s+(in\s+)?(your|my)\s+(full\s+|legal\s+)*name\b|\b(your|my)\s+(full\s+|legal\s+)+name\b|^\s*(full\s+|legal\s+)*name\s*(\*|:)?\s*$|\b(full|legal)\s+name\s+of\s+(the\s+)?(person|individual|party)\b/i;
+  const isSignatureNameBox = (label: string | null | undefined, textAbove?: string | null): boolean => {
+    if (isSignatureNameLabel(label)) return true;
+    const t = String(label ?? "").replace(/\s+/g, " ").trim();
+    if (!t || SIGNATURE_LABEL_EXCLUDE.test(t) || TYPE_SIGNATURE_TOGGLE.test(t)) return false;
+    return NAME_BOX_LABEL.test(t) && ATTESTATION_TEXT.test(String(textAbove ?? ""));
+  };
   const isTypeSignatureToggleLabel = (label: string | null | undefined): boolean => !!label && TYPE_SIGNATURE_TOGGLE.test(String(label));
+
+  /** Runs IN THE PAGE: the text ABOVE a control within its own block — the preceding siblings
+   *  at up to four ancestor levels (nearest first, the block's heading included), capped. Never
+   *  the whole body: an "I certify" tick elsewhere on a contacts page must not turn a plain
+   *  "Full name" box into a signature. */
+  const textAboveInPage = (el: Element, cap = 900): string => {
+    const clean = (s: unknown): string => String(s ?? "").replace(/\s+/g, " ").trim();
+    const bits: string[] = [];
+    let total = 0;
+    let node: Element | null = el;
+    for (let hops = 0; node && hops < 4 && total < cap; hops++) {
+      let sib: Element | null = node.previousElementSibling;
+      while (sib && total < cap) {
+        const t = clean((sib as HTMLElement).innerText || sib.textContent);
+        if (t) { bits.push(t); total += t.length; }
+        sib = sib.previousElementSibling;
+      }
+      // A wrapping <label>'s own text (its statement) counts as above the box.
+      if (node.tagName === "LABEL" || node.tagName === "FIELDSET") {
+        const own = clean(Array.from(node.childNodes).filter((n) => n.nodeType === 3).map((n) => n.nodeValue).join(" "));
+        if (own) { bits.push(own); total += own.length; }
+      }
+      node = node.parentElement;
+    }
+    return bits.join(" \n ").slice(0, cap);
+  };
 
   /**
    * Runs IN THE PAGE: is this an e-signature step, and can the bot complete it?
@@ -407,12 +510,18 @@ export function portalSafetyFactory() {
       if (styledOk && isTypeSignatureToggleLabel(label)) take(el, "toggle");
     }
     // The name boxes (disabled ones count: EnerGov's typed box unlocks when the switch is on).
+    // NOT AN ECHO: a locked box that already holds a name is the review page showing the
+    // signature back (skeptic reviewEchoTyped: "Type Signature" disabled, value "Dana Signer"
+    // on the review step ended the run signature_incomplete instead of reaching review). A
+    // locked EMPTY box is still a step (EnerGov's typed box before the switch).
     for (const el of Array.from(d.querySelectorAll("input:not([type]), input[type=text], textarea"))) {
       if (!shown(el)) continue;
+      const box = el as HTMLInputElement;
+      if ((box.disabled || box.readOnly) && String(box.value ?? "").trim() !== "") continue;
       const label = nameOf(el);
       const typedBox = /\btyped?\s*signature\b|signature\s*typed/i.test(`${label} ${idWords(el)}`);
       if (typedBox) take(el, "typed");
-      else if (isSignatureNameLabel(label)) take(el, "consent");
+      else if (isSignatureNameBox(label, textAboveInPage(el))) take(el, "consent");
     }
     // The pad: a visible canvas inside (or named as) a signature container.
     const pad = Array.from(d.querySelectorAll("canvas")).find((c) => {
@@ -427,9 +536,13 @@ export function portalSafetyFactory() {
     const hasConsent = controls.some((c) => c.role === "consent");
     if (!hasToggle && !hasTyped && !hasConsent && !pad) return none;
     if (!hasToggle && !hasTyped && !hasConsent) {
-      // A pad alone is a signature step only when the page's own text says so.
+      // A pad alone is a signature step only when the page's own text says so — and never on
+      // the page that names itself the review step: there the pad is the signature ECHOED
+      // (skeptic reviewEchoCanvas), and the run must reach review, not stop signature_drawn.
+      // A person signs on the review page anyway when the portal wants a drawn one there.
       const text = pageTextWithoutNavigatorInPage(d);
       if (!/\bsign(ature)?\b/i.test(text)) return none;
+      if (reviewSignals(text, (globalThis as { location?: { href?: string } }).location?.href)) return none;
       return { kind: "drawn", why: "a signature pad (canvas) and no way to type the signature", controls };
     }
     if (pad && !hasToggle && !hasTyped) return { kind: "drawn", why: "a typed consent name AND a signature pad to draw in, with no type-signature option", controls };
@@ -480,7 +593,7 @@ export function portalSafetyFactory() {
   const terminalPageInPage = (): { reviewPage?: boolean; readOnlyPage?: boolean; filingControl?: string; terminal?: boolean } => {
     const d = (globalThis as { document?: Document }).document;
     if (!d || !d.body) return {};
-    const reviewPage = isReviewPageText(pageTextWithoutNavigatorInPage(d));
+    const reviewPage = reviewSignals(pageTextWithoutNavigatorInPage(d), (globalThis as { location?: { href?: string } }).location?.href);
     const readOnlyPage = readOnlyPageInPage();
     const filing = Array.from(d.querySelectorAll("button, a, input[type=submit], input[type=button], input[type=image], [role=button], [role=link]"))
       .filter((el) => { const r = (el as HTMLElement).getBoundingClientRect(); return r.width > 2 && r.height > 2; })
@@ -1089,12 +1202,16 @@ export function portalSafetyFactory() {
     isAcceptTermsLabel,
     readOnlyPageInPage,
     isReviewPageText,
+    looksLikeReviewUrl,
+    reviewSignals,
     reviewPageInPage,
     reviewTextInPage,
     navigatorOnlyControlLabelsInPage,
     isSignatureNameLabel,
+    isSignatureNameBox,
     isTypeSignatureToggleLabel,
     signatureStepInPage,
+    textAboveInPage,
     terminalPageInPage,
     fieldIdentityInPage,
     isPaymentElementInPage,
@@ -1115,7 +1232,10 @@ export const isSecretField = impl.isSecretField;
 export const isPaymentField = impl.isPaymentField;
 export const isAcceptTermsLabel = impl.isAcceptTermsLabel;
 export const isReviewPageText = impl.isReviewPageText;
+export const looksLikeReviewUrl = impl.looksLikeReviewUrl;
+export const reviewSignals = impl.reviewSignals;
 export const isSignatureNameLabel = impl.isSignatureNameLabel;
+export const isSignatureNameBox = impl.isSignatureNameBox;
 export const isTypeSignatureToggleLabel = impl.isTypeSignatureToggleLabel;
 
 /** The minimum of a recorded step the form-data question needs. */
