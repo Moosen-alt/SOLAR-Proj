@@ -904,9 +904,10 @@ const NO_MODEL_MAPPER = {
  * then finds it — with provenance (source URL, retrieved-at, the blank's sha256 in its map):
  *
  *   1. already held for the agency (kind-compatible) -> exists, or needs_manual when not fillable;
- *   2. the agency's curated public seed (hash-locked, model-free map) -> fetched once;
- *   3. an application PDF the lookup CITED on that permit (on the agency's own host, its file name
- *      naming this track's application) -> fetched once, mapped by the existing pipeline;
+ *   2. the agency's curated public seed (hash-locked, model-free map) -> fetched once; when it cannot
+ *      be fetched, a named failure to retry — no cited PDF is tried in its place (agency-contain C2);
+ *   3. an application PDF the lookup CITED on that permit (on one of the agency's anchor sites, its
+ *      file name naming this track's application) -> fetched once, mapped by the existing pipeline;
  *   4. otherwise not_found, naming the agency and the citation — never a paid web search under
  *      the city's name and never a KB profile written for the agency.
  * A human-verified map is never overwritten (acquireFromBytes' protected checks, hard rule 3).
@@ -944,6 +945,12 @@ export async function ensureIssuingAgencyForm(
   const tried: string[] = [];
   for (const c of candidates) {
     const bytes = await fetchPdf(c.sourceUrl);
+    // C2 NO FALLTHROUGH (agency-contain): the agency's CURATED seed is its form. A failed fetch (a 404, the
+    // network) is a named failure to retry — never a reason to take the next cited PDF instead (the
+    // skeptic's S7: Marion County's E-01 404'd and Polk County's application was stored as Marion's).
+    if (!bytes && c.origin === "curated") {
+      return { status: "not_found", sourceUrl: c.sourceUrl, message: `${agency}'s ${c.formName} could not be downloaded from ${c.sourceUrl} — retry. ${whose}; no other PDF was tried in its place, and it has not been counted as present.` };
+    }
     if (!bytes) { tried.push(c.sourceUrl); continue; }
     if (c.origin === "curated") {
       const seed = curatedFormSource({ ahj: agency, state: project.state }, c.formType, want);
