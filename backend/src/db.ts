@@ -2227,6 +2227,30 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    version: 37,
+    name: "utility_filing_lookups",
+    up: (db) => {
+      // WHERE A UTILITY TAKES ITS INTERCONNECTION APPLICATION (new-AHJ e2e gap 3, 2026-09-26). One
+      // row per (state|utility): filing location + program type (net metering / export credit /
+      // interconnection only), each cited (backend/src/utilityFilingLookup.ts). SHARED knowledge,
+      // like permit_process_lookups. Created HERE, not lazily at first use: creating it inside a
+      // read (computeNextStep) broke the "reads write nothing" invariant (nextStep.test).
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS utility_filing_lookups (
+          profile_key TEXT PRIMARY KEY,
+          state TEXT NOT NULL DEFAULT '',
+          utility TEXT NOT NULL DEFAULT '',
+          confidence TEXT NOT NULL DEFAULT 'seeded',
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          looked_up_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          verified_at TEXT,
+          verified_by TEXT
+        );
+      `);
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

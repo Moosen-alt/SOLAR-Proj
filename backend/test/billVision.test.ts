@@ -33,6 +33,7 @@ const { createClient } = await import("../src/clients");
 const { createProject, updateProject } = await import("../src/repository");
 const { saveProjectDocument } = await import("../src/projectDocuments");
 const { fillAccountFieldsFromDocuments } = await import("../src/billVision");
+const { runQcForProject } = await import("../src/qc");
 
 const db = await openDatabase();
 let failures = 0;
@@ -61,8 +62,13 @@ const qcAccount = (id: string): string =>
 // A 1x1 PNG is enough: the extractor is injected, so what is under test is the plumbing and
 // the refusals, not the model's eyesight.
 const PNG_1PX = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
-const attachBill = (projectId: string): unknown =>
+// A bill landing re-runs QC in the app (the stage-step job on upload); the test does it directly.
+// With NO bill on file a missing account is a named wait (warning); with the bill on file and the
+// value still missing it is a real failure — the rule from 5d55127 that these checks lean on.
+const attachBill = (projectId: string): void => {
   saveProjectDocument(db, projectId, { filename: "bill.png", docType: "utility_bill", contentType: "image/png", buffer: PNG_1PX, source: "upload" });
+  runQcForProject(db, projectId);
+};
 
 // Dependency injection (the function takes the provider): no module patching, no network.
 // The stub COUNTS calls — "did we pay for a vision call" is itself under test.
@@ -91,8 +97,9 @@ let filledId = "";
 await run("MUST PASS: a missing account is filled from the bill via the real key, the column, and QC", async () => {
   const id = (filledId = mkProject());
   assert.equal(columns(id).account_number, "", "precondition: no account on the project");
-  assert.equal(qcAccount(id), "fail", "precondition: QC blocks on the missing account");
+  assert.equal(qcAccount(id), "warning", "precondition: with no bill on file the missing account is a named wait, not a failure");
   attachBill(id);
+  assert.equal(qcAccount(id), "fail", "precondition: with the bill on file and nothing read yet, QC blocks on the missing account");
   const llm = stubLlm(realAnswer("65564191-0014"));
   const written = await fillAccountFieldsFromDocuments(db, llm as never, id);
   assert.equal(llm.calls, 1);

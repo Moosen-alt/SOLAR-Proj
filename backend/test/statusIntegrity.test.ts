@@ -125,6 +125,16 @@ const FIXTURE = {
   packetReadinessText: "READY - Plan set\nREADY - Utility bill\nREADY - Module spec\nREADY - Inverter spec",
 };
 
+// A missing account with NO bill on file is a named wait (warning), not a QC failure (5d55127).
+// The checks below need a FAILING edit, so the bill goes on file first: with it there and the
+// value still missing, QC fails — something read the document and could not find the number.
+const attachBill = (pid: string): void => {
+  saveProjectDocument(db, pid, {
+    docType: "utility_bill", filename: "bill.pdf", contentType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.4\n% status integrity utility bill\n", "utf8"), source: "upload",
+  });
+};
+
 const passingProject = (owner: string): string => {
   const pid = R.createProject(db, { clientId: client.id, owner, ...FIXTURE } as never).project.id;
   createdIds.push(pid);
@@ -417,6 +427,7 @@ try {
     assert.equal(statusOf(p9), "blocked", `status=${statusOf(p9)}`);
   });
   // A FAILING edit is news QC would normally write (qc_failed) — still not over an operator hold.
+  attachBill(p9);
   R.updateProject(db, p9, { account: "" });
   const item9 = db.get<Row>(
     "SELECT id FROM human_review_items WHERE project_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1", [p9]);
@@ -476,6 +487,7 @@ try {
     assert.equal(String(row(p10).stage_detail), "reviewer_gate_approved", `stage_detail=${row(p10).stage_detail}`);
     assert.equal(String(row(p10).current_stage), String(ready.current_stage));
   });
+  attachBill(p10);
   R.updateProject(db, p10, { account: "" });
   await check("8b. MUST PASS: a FAILING re-QC on ready_to_stage still drops it to qc_failed", () => {
     assert.equal(statusOf(p10), "qc_failed");

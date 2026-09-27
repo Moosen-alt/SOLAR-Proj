@@ -58,22 +58,8 @@ export function utilityFilingKey(state: string, utility: string): string {
   return `${str(state).toLowerCase()}|${normalizeUtilityName(utility)}`;
 }
 
-// ── Store (lazy table — the same pattern as credentialRequests / portalQuestionBank) ──────────
-function ensureTable(db: AppDb): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS utility_filing_lookups (
-      profile_key TEXT PRIMARY KEY,
-      state TEXT NOT NULL DEFAULT '',
-      utility TEXT NOT NULL DEFAULT '',
-      confidence TEXT NOT NULL DEFAULT 'seeded',
-      payload_json TEXT NOT NULL DEFAULT '{}',
-      looked_up_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      verified_at TEXT,
-      verified_by TEXT
-    )
-  `);
-}
+// ── Store: the utility_filing_lookups table is created by db.ts migration v37 (never lazily
+// here — a CREATE TABLE inside a read path broke the "reads write nothing" invariant). ──────────
 
 function rowToLookup(row: Record<string, unknown> | undefined | null): UtilityFilingLookup | null {
   if (!row) return null;
@@ -94,7 +80,6 @@ function rowToLookup(row: Record<string, unknown> | undefined | null): UtilityFi
 export function getUtilityFilingLookup(db: AppDb, state: string, utility: string): UtilityFilingLookup | null {
   if (!normalizeUtilityName(utility)) return null;
   try {
-    ensureTable(db);
     return rowToLookup(db.get<Record<string, unknown>>("SELECT * FROM utility_filing_lookups WHERE profile_key = ?", [utilityFilingKey(state, utility)]));
   } catch {
     return null;
@@ -108,7 +93,6 @@ export function saveUtilityFilingLookup(
   opts: { verifiedBy?: string } = {},
 ): { saved: boolean; reason: string; lookup: UtilityFilingLookup | null } {
   if (!normalizeUtilityName(input.utility)) return { saved: false, reason: "no utility name", lookup: null };
-  ensureTable(db);
   const key = utilityFilingKey(input.state, input.utility);
   const existing = db.get<Record<string, unknown>>("SELECT * FROM utility_filing_lookups WHERE profile_key = ?", [key]);
   const wantsVerified = input.confidence === "verified" && Boolean(opts.verifiedBy);

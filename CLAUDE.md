@@ -88,7 +88,10 @@ allowlist (401) and the licensing gate (403), so they cannot desync.
 
 **Shared knowledge is shared ON PURPOSE**: `permit_utility_knowledge`,
 `jurisdiction_code_profiles`, `ahj_form_templates`, `portal_recipes`,
-`cec_equipment`. An AHJ's portal quirk learned once should help every tenant —
+`cec_equipment`, `permit_process_lookups` (per-AHJ process, migration v36),
+`utility_filing_lookups` (where each utility takes its interconnection
+application, migration v37 — created there, never lazily: a CREATE TABLE inside a
+read path breaks the "reads write nothing" invariant that `nextStep.test` pins). An AHJ's portal quirk learned once should help every tenant —
 that pooled knowledge is the product's core asset. Only
 `historical_failure_examples` (raw correction excerpts: homeowner names/addresses)
 is org-scoped — by its OWN `org_id` column (migration v31; most rows have no
