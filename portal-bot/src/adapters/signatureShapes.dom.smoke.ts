@@ -112,6 +112,8 @@ const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 
 // Labels the planner was offered, per page (the signature box must never be among them).
 const offered: string[][] = [];
+// The certifyNoWord recipe as the learner records it (signer run) — replay starts from it.
+let learnedCertify: RecipeStep[] = [];
 const mkPlanner = (mode: V["planner"]): LearnPlanner => async (req) => {
   offered.push(req.fields.map((f) => String(f.label ?? "")));
   const fills: Array<{ selectorIndex: number; value: string; field?: string }> = [];
@@ -180,6 +182,7 @@ try {
       const msg = String(r?.message ?? threw).replace(/\s+/g, " ").slice(0, 240);
       const detail = `filingPOSTs=${filing.length} [${filing.join(",")}] state=${JSON.stringify(st)} ok=${String(r?.ok)} review=${String(r?.reachedReview)} stop=${String(r?.stopReason ?? r?.pauseReason)} msg=${msg}`;
       const stepsJson = JSON.stringify(r?.steps ?? []);
+      if (name === "certifyNoWord" && signer && r?.steps) learnedCertify = r.steps as RecipeStep[];
       const sigFills = (r?.steps ?? []).filter((s) => s.action === "fill" && /^e-signature:/.test(String(s.note ?? "")));
       const sigOffered = v.sigLabel ? offered.flat().filter((l) => l.toLowerCase().includes(v.sigLabel!.toLowerCase())) : [];
       // Whatever the shape: nothing files, and the contact's name never signs.
@@ -246,13 +249,14 @@ try {
   // Never "Casey Contact". Switching replay's live check off makes this red.
   if (which.includes("certifyNoWord")) {
     const url = `${base}/apps/selfservice?v=certifyNoWord#/permit/apply/12`;
-    const oldSteps: RecipeStep[] = [
-      { action: "fill", phase: "fill", selector: { css: "#desc", label: "Description *" }, field: "projectDescription", note: "Description" },
-      { action: "click", phase: "advance", selector: { css: "#next", label: "Next" }, note: "advance: Next" },
-      { action: "fill", phase: "fill", selector: { css: "#nm", label: "Type your full name *" }, field: "installerContactName", note: "Type your full name" },
-      { action: "click", phase: "advance", selector: { css: "#next", label: "Next" }, note: "advance: Next" },
-      { action: "stopForReview" },
-    ] as unknown as RecipeStep[];
+    // The learned recipe with its signature step turned into what a pre-rule learn recorded: the
+    // planner's fill of an ordinary-looking box, bound to installerContactName, no e-signature note.
+    const oldSteps: RecipeStep[] = learnedCertify.filter((st) => !st.isFinalSubmit).map((st) => (st.action === "fill" && /^e-signature:/.test(String(st.note ?? ""))
+      ? { ...st, selector: { css: "#nm", label: "Type your full name *" } as RecipeStep["selector"], field: "installerContactName", note: "Type your full name" }
+      : st));
+    oldSteps.push({ action: "stopForReview" } as RecipeStep);
+    check("replayOld: the learned certifyNoWord recipe carries one signature step to turn into an old binding",
+      learnedCertify.filter((st) => /^e-signature:/.test(String(st.note ?? ""))).length === 1, JSON.stringify(learnedCertify).slice(0, 400));
     const recipe = { id: "sig-shapes-old", scopeType: "ahj", profileKey: "ia|iowa city|", state: "IA", ahj: "City of Iowa City", utility: "", portalPlatform: "energov", portalUrl: url, status: "complete", version: 1, createdBy: "smoke", createdAt: "", updatedAt: "", notes: "", steps: oldSteps } as unknown as PortalRecipe;
     const withSigner = { projectDescription: "Roof-mounted solar PV", installerContactName: "Casey Contact", authorizedSignerName: "Dana Signer" } as Record<string, string>;
     const { authorizedSignerName: _drop, ...noSigner } = withSigner;
