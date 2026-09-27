@@ -57,14 +57,17 @@ unit2-66ef1f7.log, smoke-66ef1f7.log; the kill worktree `wtk` was removed after 
   KM6–KM12 with the kill as the red condition. Fixtures flipped to the fail-closed shape: withConditionsApproval
   MF1 ×3, statusIntegrity Scenario D (a NEM target's 'ready to issue' is unconfirmed), clientUpdateNotes
   (nem_approved worded on its own track).
-- **Kills 25/25 RED at 66ef1f7** (`kill.cjs`, kills-66ef1f7.log): K1 source / K2 target-exists / K3 active / K4
-  kind check dropped; K5 the notifier's gate; K6 the writer persists the raw classification; K7 the wording door's
-  family check; K8 an agreeing untrusted reading reaching the project writer / handoff; K9 drift's refused-row
-  clause; K10 the stale scan's re-read provenance; KM1, KM3, KM4, KM6–KM12 (the close-v survivors); KM13–KM17 (the
-  close-v kills nobody had run — KM15 pinned through the real sweep with the public fetch seamed: a legacy
-  'permit'+'nem' target on a PowerClerk host is fetched, no track-host conflict; KM17 through the body-declared
-  track case's review-item wording). Not killed (belt-and-braces, expected to survive): the writer's own
-  `track === null` guard, which the upstream refusal shadows.
+- **Kills 25/25 RED** (`kill.cjs`, kills-66ef1f7.log: 22/25 at 66ef1f7, then KM13 / KM14 / KM16 — which SURVIVED
+  there — pinned in e80a8ae and re-run red): K1 source / K2 target-exists / K3 active / K4 kind check dropped; K5
+  the notifier's gate; K6 the writer persists the raw classification; K7 the wording door's family check; K8 an
+  agreeing untrusted reading reaching the project writer / handoff; K9 drift's refused-row clause; K10 the stale
+  scan's re-read provenance; KM1, KM3, KM4, KM6–KM12 (the close-v survivors); KM13–KM17 (the close-v kills nobody
+  had run — KM13 ensureCheckTarget's number match on trackKind, where the raw fallback resolved to the OLDER typed
+  NEM row and overwrote its number; KM14 the re-check's track-safe URL; KM15 through the real sweep with the public
+  fetch seamed: a legacy 'permit'+'nem' target on a PowerClerk host is fetched, no track-host conflict; KM16 the
+  correction reopen's candidate scope; KM17 through the body-declared track case's review-item wording). Not
+  killed (belt-and-braces, expected to survive): the writer's own `track === null` guard, which the upstream
+  refusal shadows. Regression at 66ef1f7 (the last src change): 26/26 suites green (reg-final/summary.txt).
 - **Operator-facing cost (P5), measured on a scratch copy of the production .backup** (probe-prod.log):
   target `712cdb55` (project `720b05f3`, at `issued`) is an active nem/nem target with NO portal URL whose newest
   row is an EMAIL reading (2026-09-21, bucket inspection_final_notice, stored reviewed_by_ahj by the old routing).
