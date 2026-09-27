@@ -89,6 +89,41 @@ await check("(p2b) close-2 item 9: MyGov and Geocivix are permit platforms; a ST
   assert.equal(channel.isUtilityPlatformUrl("https://nmrld.my.site.com/s/"), false);
 });
 
+await check("(p2c) MUST-EXCLUDE (close-3 caveat C, rule 5 fails closed): a Salesforce Experience site is NOT a permit portal by default — every plausible utility tenant, listed or not (entergy, eversource, dte, nationalgrid, fpl, srp, pnm, xcel, evergy, aep, tep …), and an unknown tenant are refused on the permit track; MUST-PASS: a tenant that positively names a government agency (nmrld, txtdlr, cityof…, …permits, a state's name) fits; the NEM track is unchanged", () => {
+  const utilities = ["entergy", "eversource", "dte", "nationalgrid", "fpl", "srp", "pnm", "xcel", "evergy", "aep", "tep", "pge", "rockymountainpower", "duke-energy", "nvenergy", "dominionenergy", "acme-utility", "acme-electric", "buildingenergy", "coned", "pseg", "puget-sound-energy"];
+  for (const t of utilities) {
+    for (const u of [`https://${t}.my.site.com/s/`, `https://${t}.force.com/apply`, `https://${t}.my.salesforce-sites.com/`]) {
+      assert.equal(channel.isUtilityPlatformUrl(u), true, `${u} is a utility host`);
+      assert.equal(hostFitsTrackAndEntity("building", null, u, "research").code, "track_conflict", `${u} must not fit a permit track`);
+      assert.equal(hostFitsTrackAndEntity("nem", null, u).fits, true, `${u} still fits the NEM track`);
+    }
+  }
+  // Unknown tenants: no agency word, no utility word — refused (fails closed), with a reason that says so.
+  for (const t of ["acme", "acidco", "portal-x", "customer-portal", "sfc", "abrld"]) {
+    const u = `https://${t}.my.site.com/s/`;
+    assert.equal(channel.salesforceTenantKind(u), "unknown", `${t} names nobody`);
+    assert.equal(channel.isUtilityPlatformUrl(u), true, `${u} is refused on the permit track by default`);
+    const fit = hostFitsTrackAndEntity("building", null, u, "research");
+    assert.equal(fit.code, "track_conflict");
+    assert.match(fit.reason, /names no government agency/, fit.reason);
+    assert.equal(hostFitsTrackAndEntity("nem", null, u).fits, true);
+  }
+  // An interconnection path on any tenant, and a utility word beside an agency word, are utility.
+  for (const u of ["https://cityofelm.my.site.com/s/interconnection", "https://nmpermits.force.com/net-metering-application", "https://cityofelm-utilities.my.site.com/s/", "https://austinenergy.my.site.com/s/"]) {
+    assert.equal(channel.salesforceTenantKind(u), "utility", u);
+    assert.equal(hostFitsTrackAndEntity("building", null, u, "research").code, "track_conflict", u);
+  }
+  // Government agencies: a state agency's abbreviation (whole label, a state's letters beside it), permit / building / county / cityof words, a state's name.
+  for (const u of ["https://nmrld.my.site.com/s/electrical-permits", "https://nmrld.force.com/apply", "https://txtdlr.my.site.com/s/", "https://bcdor.my.site.com/s/", "https://nm-cid.my.site.com/s/", "https://cityofsantafe.my.site.com/s/", "https://elmcountypermits.my.site.com/s/", "https://newmexico-permits.force.com/s/", "https://buildingsafety.my.site.com/s/", "https://stateofnm.my.salesforce-sites.com/permits"]) {
+    assert.equal(channel.salesforceTenantKind(u), "agency", u);
+    assert.equal(channel.isUtilityPlatformUrl(u), false, u);
+    assert.equal(hostFitsTrackAndEntity("building", null, u, "research").fits, true, `${u} must fit a permit track`);
+    assert.equal(channel.isPermitPlatformUrl(u), false, "still no platform of either kind");
+  }
+  assert.equal(channel.salesforceTenantKind("https://aca-prod.accela.com/NMRLD/"), null, "not a Salesforce host");
+  assert.equal(channel.isUtilityPlatformUrl("https://aca-prod.accela.com/ENTERGY/"), false, "the tenant rule is Salesforce-only");
+});
+
 await check("(p3) same portal: host, and the tenant of a path-tenanted host", () => {
   assert.equal(samePortal(ACA_OREGON, "https://aca-oregon.accela.com/OREGON/Cap/CapHome.aspx?module=Building"), true);
   assert.equal(samePortal("https://aca-prod.accela.com/CHINO/Login.aspx", "https://aca-prod.accela.com/SANDIEGO/Default.aspx"), false);

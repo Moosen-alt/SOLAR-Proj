@@ -290,28 +290,62 @@ const UTILITY_PLATFORM_HOSTS = [
   "psegliny.com",      // PSEG Long Island (NY)
   "pseg.com",          // PSE&G (NJ)
 ];
-// Salesforce Experience Cloud (<tenant>.my.site.com, <tenant>.force.com) is a PLATFORM, not a
-// utility: several utilities run their interconnection intake as a Salesforce community, and so
-// do STATE agencies (New Mexico's Regulation & Licensing Department takes electrical permits at
-// nmrld.my.site.com). The whole domain used to be on the utility list, which refused the State's
-// permit portal on the permit track (close-2 item 9). A Salesforce site is a utility host only
-// when its TENANT is a known utility — its label names a utility brand from the list above or
-// carries a utility word — or its path names an interconnection / net-metering application.
-const SALESFORCE_SITE = /(?:^|\.)(?:my\.site\.com|force\.com)$/i;
-const UTILITY_WORD = /utilit|energy|electric|power|light|\bgas\b|coop|\bpud\b|\bemc\b|\bnem\b/i;
+// Salesforce Experience Cloud (<tenant>.my.site.com, <tenant>.force.com, <tenant>.my.salesforce-
+// sites.com) is a PLATFORM, not a utility: several utilities run their interconnection intake as a
+// Salesforce community, and so do STATE agencies (New Mexico's Regulation & Licensing Department
+// takes electrical permits at nmrld.my.site.com). The whole domain used to be on the utility list,
+// which refused the State's permit portal on the permit track (close-2 item 9); close-2 then
+// admitted every tenant that named no LISTED utility, which let entergy / eversource / dte /
+// nationalgrid / fpl / srp / pnm / xcel / evergy / aep / tep fit the permit track (close-3 caveat C).
+// FAIL CLOSED (rule 5): a Salesforce site is NOT a permit portal by default. It fits the permit
+// track ONLY when its tenant label positively names a government agency — a state agency's
+// abbreviation (rld, dli, bcd, cid, lni, tdlr …, whole label, an optional state's two letters
+// beside it), "permit" / "building" / "county" / "cityof" / "townof" / "stateof" / a state's name —
+// AND names no utility word / brand; its path must not name an interconnection application. An
+// unknown tenant is refused there (a not-found), never launched: utilities outnumber agencies on
+// this platform and the repo cannot list every utility brand. The NEM track is untouched
+// (trackSafeUrl on the NEM track asks only isPermitPlatformUrl).
+const SALESFORCE_SITE = /(?:^|\.)(?:my\.site\.com|force\.com|salesforce-sites\.com)$/i;
+const UTILITY_WORD = /utilit|energy|electric|power|light|coop|edison|hydro/i;
+const UTILITY_WORD_PART = /^(?:gas|pud|emc|nem|rec|elec|nrg|pwr|util|utility|utilities|solar|interconnect(?:ion)?)$/i;
 const UTILITY_BRAND_LABELS = UTILITY_PLATFORM_HOSTS.map((h) => h.replace(/\.[a-z.]+$/, "")).filter((l) => l.length >= 3);
 const INTERCONNECTION_PATH = /interconnect|net-?meter|\bnem\b|customer-?generation|distributed-?generation/i;
-function salesforceSiteIsUtility(url: string, host: string): boolean {
-  if (!SALESFORCE_SITE.test(host)) return false;
-  const tenant = host.replace(SALESFORCE_SITE, "").split(".").filter((l) => l && !/^(?:www|portal|portals|site|sites|community)$/i.test(l)).join("-");
-  const label = tenant.replace(/[^a-z0-9]+/gi, " ");
-  const parts = label.split(" ").filter(Boolean);
+/** State building / licensing / labour agencies' abbreviations, as a WHOLE tenant label (never a
+ *  substring: "acidco" carries "cid" and names no agency), with an optional state's two letters
+ *  beside it (nmrld, txtdlr, bcd-or). */
+const STATE_AGENCY_ABBREV = /^([a-z]{2})?(rld|dli|dlcd|bcd|cid|lni|tdlr|dbpr|dopl|dcbs|dlr|dol|dob|dbi|dpor|dcra|dsps|dolir|dllr|dpl|osfm|dcp|dcd|dsd|dpd|bsd|bcb)([a-z]{2})?$/i;
+const US_STATE_CODES = new Set("al ak az ar ca co ct de fl ga hi id il in ia ks ky la me md ma mi mn ms mo mt ne nv nh nj nm ny nc nd oh ok or pa ri sc sd tn tx ut vt va wa wv wi wy dc".split(" "));
+const US_STATE_NAMES = /alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|newhampshire|newjersey|newmexico|newyork|northcarolina|northdakota|ohio|oklahoma|oregon|pennsylvania|rhodeisland|southcarolina|southdakota|tennessee|texas|utah|vermont|virginia|washington|westvirginia|wisconsin|wyoming/i;
+const AGENCY_PART = /^(?:e?permit(?:s|ting)?|building(?:s|codes?|dept|department|safety)?|county|gov|govt|government|planning|codes?|licensing|inspections?|construction)$/i;
+const AGENCY_RUN = /cityof|townof|countyof|villageof|boroughof|townshipof|stateof|permit|building|county|parish/i;
+/** What a Salesforce Experience site's tenant names: a utility (word, brand, or an interconnection
+ *  path), a government agency, or nothing we can read (unknown). null for any other host. */
+export function salesforceTenantKind(url: string | null | undefined): "utility" | "agency" | "unknown" | null {
+  const raw = String(url ?? "");
+  const host = portalHostOf(raw) || raw.toLowerCase();
+  if (!SALESFORCE_SITE.test(host)) return null;
+  const tenant = host.replace(SALESFORCE_SITE, "").split(".").filter((l) => l && !/^(?:www|my|portal|portals|site|sites|community|secure|public)$/i.test(l)).join("-");
+  const parts = tenant.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const run = parts.join("");
   // A brand names the tenant when it IS one of its labels ("pge", "sce") or, for a brand of four
   // letters or more, when the run-together tenant contains it ("rockymountainpower-nem").
-  if (UTILITY_WORD.test(label) || UTILITY_BRAND_LABELS.some((b) => parts.includes(b) || (b.length >= 4 && tenant.replace(/[^a-z0-9]+/gi, "").includes(b)))) return true;
+  if (UTILITY_WORD.test(run) || parts.some((p) => UTILITY_WORD_PART.test(p)) || UTILITY_BRAND_LABELS.some((b) => parts.includes(b) || (b.length >= 4 && run.includes(b)))) return "utility";
   let path = "";
-  try { path = new URL(url).pathname; } catch { path = ""; }
-  return INTERCONNECTION_PATH.test(path);
+  try { path = new URL(raw).pathname; } catch { path = ""; }
+  if (INTERCONNECTION_PATH.test(path)) return "utility";
+  // The optional two letters beside the abbreviation must be a state's (nmrld, bcdor) — "abrld" is not.
+  const abbrev = (p: string) => {
+    const m = STATE_AGENCY_ABBREV.exec(p);
+    return Boolean(m) && [m![1], m![3]].every((s) => !s || US_STATE_CODES.has(s.toLowerCase()));
+  };
+  if (parts.some((p) => abbrev(p) || AGENCY_PART.test(p)) || AGENCY_RUN.test(run) || US_STATE_NAMES.test(run)) return "agency";
+  return "unknown";
+}
+function salesforceSiteIsUtility(url: string, host: string): boolean {
+  if (!SALESFORCE_SITE.test(host)) return false;
+  // Fails closed: only a tenant that positively names a government agency is not treated as a
+  // utility interconnection host on the permit track.
+  return salesforceTenantKind(url) !== "agency";
 }
 export function isUtilityPlatformUrl(url: string | null | undefined): boolean {
   // Match on the HOST only. A substring test over the whole URL would flag an AHJ portal
@@ -563,11 +597,14 @@ export function hostFitsTrackAndEntity(
         reason: `${host} is an AHJ permit portal, and this is a ${trackName} filing — a permit-platform portal opens on the NEM track only when ${entity.name || "the utility"}'s own human-VERIFIED record names that exact portal (host and tenant)`,
       };
     }
+    const sf = scope === "ahj" ? salesforceTenantKind(value) : null;
     return {
       fits: false,
       code: "track_conflict",
       reason: scope === "ahj"
-        ? `${host} is a utility interconnection portal, and this is a ${trackName} filing`
+        ? sf === "unknown"
+          ? `${host} is a Salesforce site whose tenant names no government agency — not a permit portal unless a person confirms it (rule 5 fails closed), and this is a ${trackName} filing`
+          : `${host} is a utility interconnection portal, and this is a ${trackName} filing`
         : `${host} is an AHJ permit portal, and this is a ${trackName} filing`,
     };
   }
