@@ -2251,6 +2251,19 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       `);
     },
   },
+  {
+    version: 38,
+    name: "llm_calls_web_searches",
+    up: (db) => {
+      // WEB-SEARCH FEES IN THE LEDGER (cost-leaks round, 2026-09-26). Server-side web search bills
+      // $10 per 1,000 searches on top of tokens; every cost figure before this column ignored it
+      // (about $0.30-0.60 per new AHJ). Written from usage.server_tool_use.web_search_requests by
+      // llm.ts (runOnce) and feeSchedules.ts (per research turn). NULL = the response reported no
+      // count (or the row predates this column): unknown stays unknown, nothing is backfilled.
+      // addColumnIfMissing runs AFTER the table's CREATE block (v33), as the migration order requires.
+      addColumnIfMissing(db, "llm_calls", "web_searches", "INTEGER");
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the

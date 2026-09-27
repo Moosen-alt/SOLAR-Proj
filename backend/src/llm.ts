@@ -278,6 +278,54 @@ export interface LlmCallRecord {
   error?: string;
   /** The model that answered. Implicit before LLM-6, so a model change silently re-priced history. */
   model?: string;
+  /** Server-side web searches this call ran (usage.server_tool_use.web_search_requests) — billed at
+   *  $10 per 1,000 on top of tokens. undefined = the response reported nothing (unknown stays unknown). */
+  webSearches?: number;
+}
+
+/** The web-search count a response reports, or undefined when it reports none. Read from usage
+ *  (the billing source), not from content blocks: a search the server ran and billed is a search. */
+export function webSearchRequestsOf(usage: unknown): number | undefined {
+  const st = (usage as { server_tool_use?: { web_search_requests?: unknown } | null } | null | undefined)?.server_tool_use;
+  if (!st || typeof st !== "object") return undefined;
+  const n = Number(st.web_search_requests);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
+}
+
+/** MULTI-TURN HISTORY IS CACHED FROM THE LAST TURN, NOT JUST THE SYSTEM PROMPT.
+ *
+ *  Both tool loops (runToolAgent below; feeSchedules.claudeFeeScheduleResearcher) re-send the whole
+ *  growing conversation on every turn with a breakpoint on the system prompt only. Measured (prod +
+ *  new-AHJ e2e, 2026-09-26): fee-research input grew 17k → 42k per turn while cache_read stayed flat
+ *  at the 7.5k system prompt — 57-75% of a track's spend was history re-billed at full price; triage
+ *  was 57k uncached across 9 turns. The one exception was any turn whose assistant message carried
+ *  a server-side web search (the API inserts its own write after those results), which is why some
+ *  turns read `in=2` and the rest paid in full: a cache entry is only READ from a breakpoint that can
+ *  look back to it, and the open_document / local-tool turns had none.
+ *
+ *  The prompt-caching guide's multi-turn pattern: put the breakpoint on the LAST content block of
+ *  the most recently appended turn. Each request then reads the entire prior conversation from the
+ *  previous turn's write and writes only what this turn appended. The marker MOVES: every earlier
+ *  block is stripped (max 4 breakpoints per request; a marker is not part of the cached bytes, so
+ *  moving it invalidates nothing). Only the two loop callers use this; single-turn calls keep their
+ *  system-only breakpoint.
+ *
+ *  ACCURACY-NEUTRAL BY CONSTRUCTION: this changes nothing but cache_control fields. Turn 1's user
+ *  message stays a plain string (there is no prior turn to reuse, and turn 2's marker covers it), so
+ *  the request body differs from the unmarked one ONLY in cache_control (costLeaks.test pins that). */
+export function placeHistoryCacheBreakpoint<M extends { role: string; content: unknown }>(messages: M[]): M[] {
+  for (const m of messages) {
+    if (!Array.isArray(m.content)) continue;
+    for (const block of m.content as Array<Record<string, unknown>>) {
+      if (block && typeof block === "object" && "cache_control" in block) delete block.cache_control;
+    }
+  }
+  const last = messages[messages.length - 1];
+  if (last && Array.isArray(last.content) && last.content.length) {
+    const block = last.content[last.content.length - 1] as Record<string, unknown>;
+    if (block && typeof block === "object") block.cache_control = { type: "ephemeral" };
+  }
+  return messages;
 }
 
 const LLM_CALL_LOG_MAX = 400;
@@ -1289,6 +1337,8 @@ export class ClaudeLLMProvider implements LLMProvider {
       cacheRead: u?.cache_read_input_tokens || undefined,
       cacheWrite: u?.cache_creation_input_tokens || undefined,
       stop: msg.stop_reason,
+      // Web-search fees ($10/1000) were invisible in every cost figure before this column existed.
+      webSearches: webSearchRequestsOf(u),
     });
     // THE ADVISOR IS ITS OWN LINE. With the advisor tool, top-level usage is the EXECUTOR's alone
     // (checked against the measured runs: it equals the sum of the non-advisor iterations); the
@@ -3320,7 +3370,8 @@ Rules:
               ...(outputConfigFor(t) ? { output_config: outputConfigFor(t) } : {}),
               system: this.cachedSystem(input.system),
               tools: apiTools,
-              messages,
+              // The growing history reads from the previous turn's cache (see placeHistoryCacheBreakpoint).
+              messages: placeHistoryCacheBreakpoint(messages),
             })
             .finalMessage(),
         );

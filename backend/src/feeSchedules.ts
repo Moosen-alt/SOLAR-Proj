@@ -78,7 +78,9 @@ import {
 // through LLMProvider. "Invisible and expensive" is the pair that makes a cost
 // regression unfindable, so every turn now files the same record instrument()
 // files, under a label that names the jurisdiction.
-import { recordLlmCall, sanitizeApiKey } from "./llm";
+import { placeHistoryCacheBreakpoint, recordLlmCall, sanitizeApiKey, webSearchRequestsOf } from "./llm";
+import { routeFor } from "./modelRouting";
+import { getPermitProcessLookup } from "./permitProcess";
 import { logger } from "./logger";
 import { agencyKind } from "./recipeReplayBinding";
 import { id } from "./ids";
@@ -415,6 +417,10 @@ export interface FeeScheduleResearchOutcome {
   schedule: FeeScheduleRecord | null;
   /** What research actually said, saved or not. */
   finding: FeeScheduleFinding | null;
+  /** Set when NO research ran because the answer was already held: "lookup_fee_landed" = the per-job
+   *  permit-process lookup had already landed a cited fee for this AHJ + discipline (its row is
+   *  `schedule`). Distinct from found:false so a skip can never read as a miss. */
+  skipped?: "lookup_fee_landed";
 }
 
 export interface ProjectFeeResolution {
@@ -2161,7 +2167,13 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
     disciplineAsk,
   ].filter(Boolean).join("\n");
 
-  const model = process.env.AUTOPILOT_LLM_MODEL || "claude-opus-5";
+  // THE ROUTING TABLE, same as every other task (modelRouting.ROUTE_TABLE.researchFeeSchedule).
+  // Before this the file read AUTOPILOT_LLM_MODEL directly and sent no effort: had the global
+  // switch moved to Opus 5.5 this loop alone would have run at that model's medium default while
+  // every other task was pinned to high. Effort is sent only when the route names one — on the
+  // baseline the route omits it, so the request body carries no output_config (today's bytes).
+  const route = routeFor("researchFeeSchedule");
+  const model = route.model;
   const timeoutMs = feeResearchTimeoutMs();
   const controller = new AbortController();
   let timedOut = false;
@@ -2203,6 +2215,7 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
             model,
             max_tokens: FEE_RESEARCH_MAX_ANSWER_TOKENS,
             thinking: { type: "adaptive" },
+            ...(route.effort ? { output_config: { effort: route.effort } } : {}),
             ...(containerId ? { container: containerId } : {}),
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             tools: [WEB_SEARCH_TOOL, OPEN_DOCUMENT_TOOL] as any,
@@ -2214,7 +2227,10 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
             // the codebase not doing it. It clears the 512-token Opus 5 minimum on
             // its own (see the MODEL note in llm.ts).
             system: [{ type: "text", text: FEE_RESEARCH_SYSTEM, cache_control: { type: "ephemeral" } }],
-            messages,
+            // AND THE HISTORY IS CACHED TOO. The system breakpoint alone left every prior turn
+            // re-billed at full price (57-75% of a track's spend, measured); the moving breakpoint
+            // on the last block of the last turn reads it all back at 0.1x (llm.ts explains).
+            messages: placeHistoryCacheBreakpoint(messages),
           },
           { signal: controller.signal },
         )
@@ -2233,11 +2249,15 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
         cacheRead: msg.usage?.cache_read_input_tokens ?? undefined,
         cacheWrite: msg.usage?.cache_creation_input_tokens ?? undefined,
         stop: msg.stop_reason,
+        webSearches: webSearchRequestsOf(msg.usage),
       });
       containerId = msg.container?.id ?? containerId;
 
       const text = msg.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("\n");
-      if (text.trim()) { raw = text; lastStop = clean(msg.stop_reason); }
+      // The LAST stop is the one that explains an empty answer: a refusal returns no text at
+      // all, and it must not read as "publishes nothing" (see `refused` below).
+      lastStop = clean(msg.stop_reason);
+      if (text.trim()) raw = text;
       // The assistant turn goes back VERBATIM — thinking blocks, server-side
       // web_search results and all. Reconstructing it would drop the search
       // results the model is reasoning from.
@@ -2339,8 +2359,15 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
           : []),
       ]);
     }
+    // A SAFETY-CLASSIFIER DECLINE IS NOT A SCHEDULE READ EITHER. It comes back with no text at all,
+    // so without this it parsed to {} and read as "no usable fee schedule" — the same channel as an
+    // honest miss. Named here, never re-sent: the classifier refuses the same bytes the same way,
+    // and the 24h research backoff is the only retry a miss of any kind gets.
+    const refused = lastStop === "refusal";
     if (!finding.found && !finding.reason) {
-      finding.reason = truncated
+      finding.reason = refused
+        ? `The model's safety classifier DECLINED this research request (stop_reason refusal) — no answer was produced. This is a declined REQUEST, not a finding that ${input.track === "nem" ? "this utility" : "this jurisdiction"} publishes no fee. Enter the schedule by hand from the published fee page, or reword the target name and re-run.`
+        : truncated
         ? "The research reply was CUT OFF at the token ceiling (stop_reason max_tokens) and its JSON could not be parsed — this is a truncated ANSWER, not a finding that this jurisdiction publishes no schedule. Re-run; if it recurs the ask is returning more than one reply can hold."
         : exhausted
           ? `Research ran out of room — it hit ${exhausted} before producing an answer. Re-run, or enter the schedule by hand from the jurisdiction's fee page.`
@@ -2377,6 +2404,39 @@ export const claudeFeeScheduleResearcher: FeeScheduleResearcher = async (input, 
   }
 };
 
+/** The fee schedule the per-job permit-process lookup landed for this AHJ + discipline, when it
+ *  did: a row the production lookup resolves (delegation hop included) that prices something
+ *  (brackets, not conflicted) and whose source URL is a fee citation on the lookup's OWN saved row
+ *  (shared/src/types PermitProcessLookup.permits[].fee.sourceUrl). The URL match is the key on
+ *  purpose — the landing's note wording belongs to another module and is not a contract.
+ *  Read-only. Exported for the test. */
+export function lookupLandedPermitFee(
+  db: AppDb,
+  project: Pick<ProjectRecord, "state" | "ahj">,
+  discipline: FeeDiscipline,
+): { schedule: FeeScheduleRecord; summary: string } | null {
+  const ahj = clean(project.ahj);
+  if (!ahj) return null;
+  let lookup: ReturnType<typeof getPermitProcessLookup>;
+  try { lookup = getPermitProcessLookup(db, clean(project.state), ahj); } catch { return null; }
+  if (!lookup) return null;
+  const citedFeeUrls = new Set(
+    lookup.permits
+      .filter((p) => p.fee?.value != null && clean(p.fee.sourceUrl))
+      .map((p) => clean(p.fee.sourceUrl).toLowerCase()),
+  );
+  if (!citedFeeUrls.size) return null;
+  let schedule: FeeScheduleRecord | null;
+  try { schedule = findFeeScheduleForProject(db, { state: project.state, ahj: project.ahj, utility: "" }, "permit", discipline); } catch { return null; }
+  if (!schedule || schedule.status === "conflicted" || !schedule.brackets.length) return null;
+  if (!citedFeeUrls.has(clean(schedule.sourceUrl).toLowerCase())) return null;
+  const b = schedule.brackets;
+  const summary = b.length === 1 && b[0].minKw == null && b[0].maxKw == null
+    ? `flat $${b[0].feeUsd}${b[0].label ? ` — ${b[0].label}` : ""}`
+    : `${b.length} bracket${b.length === 1 ? "" : "s"}, ${schedule.basis}`;
+  return { schedule, summary };
+}
+
 /** Research this jurisdiction's/utility's published fee schedule and store it
  *  as a 'seeded' row. Always returns a structured outcome — a caller can tell
  *  "charges nothing" (found, flat $0) from "could not find out" (found:false),
@@ -2394,6 +2454,23 @@ export async function researchFeeSchedule(
       found: false, saved: false, refusedVerified: false, refusedConflicted: false, profileKey, track, schedule: null, finding: null,
       reason: track === "nem" ? "utility is required to research a NEM fee schedule." : "ahj is required to research a permit fee schedule.",
     };
+  }
+  // THE PER-JOB LOOKUP ALREADY BOUGHT THIS ANSWER. A new AHJ's job runs permitProcessLookup
+  // (documents/fees part, ~$0.25) AND, queued at QC before that lookup finished, a fee_research
+  // pass for the same permit (up to twelve web-grounded turns, $0.60-3.03 measured) — the two
+  // researched the same fee twice on five of seven e2e projects. When the lookup has landed a
+  // CITED fee for this AHJ + discipline (applyLookupFees → fee_schedules, the row's source URL
+  // being the lookup's own citation), the pass is skipped with a named reason; the fee sheet
+  // shows the lookup's fee and its source. NEM is untouched (the lookup never prices utilities),
+  // and a lookup that landed no fee for this discipline (rated, valuation-priced, not found)
+  // still researches. Read-only over the lookup's saved row — nothing here edits it.
+  if (track === "permit") {
+    const landed = lookupLandedPermitFee(db, { state: input.state, ahj: input.ahj ?? "" }, feeDiscipline(input.discipline));
+    if (landed) {
+      const reason = `Skipped — no research ran: the per-job permit-process lookup already landed a cited ${landed.schedule.discipline || "permit"} fee for ${subject} (${landed.summary}) from ${landed.schedule.sourceUrl}; the fee sheet shows that fee and its source.`;
+      logger.info("fees", "fee research skipped — the per-job lookup already landed this fee", { profileKey, track, discipline: input.discipline || "(any)", sourceUrl: landed.schedule.sourceUrl });
+      return { found: true, saved: false, refusedVerified: false, refusedConflicted: false, profileKey, track, schedule: landed.schedule, finding: null, skipped: "lookup_fee_landed", reason };
+    }
   }
   // Seed the search with what the KB already holds — several permit_utility_knowledge
   // rows carry the AHJ's own fee-page URL in their notes, which is the page we want.

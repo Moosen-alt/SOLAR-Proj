@@ -48,8 +48,8 @@
 // invalid advisor pairing is REFUSED with a warning and the table's own value is used — a typo in an
 // env var must never become a 400 on a live intake.
 //
-// No imports beyond the logger: llm.ts imports this, and feeSchedules.ts can (deferred, see
-// routeFor("researchFeeSchedule")) without closing any cycle.
+// No imports beyond the logger: llm.ts imports this, and feeSchedules.ts does too
+// (routeFor("researchFeeSchedule")) without closing any cycle.
 import { logger } from "./logger";
 
 export type LlmEffort = "low" | "medium" | "high" | "xhigh";
@@ -165,7 +165,7 @@ export const ROUTE_TABLE: Readonly<Record<LlmTask, RouteEntry>> = {
   mapAcroFormFields: { model: BASELINE_MODEL, effort: "high", evidence: UNMEASURED },
   mapFlatFormOverlay: { model: BASELINE_MODEL, effort: "high", evidence: UNMEASURED },
   runToolAgent: { model: BASELINE_MODEL, effortFromCaller: true, evidence: UNMEASURED + " (effort is the agent caller's, default medium)" },
-  researchFeeSchedule: { model: BASELINE_MODEL, evidence: UNMEASURED + " (feeSchedules.ts builds its own client and does not ask this module yet — deferred)" },
+  researchFeeSchedule: { model: BASELINE_MODEL, evidence: UNMEASURED + " (feeSchedules.claudeFeeScheduleResearcher builds its own client but reads THIS route for model + effort; no truth set has scored it on any other model — the most expensive call in the system, measure before moving it)" },
 };
 
 /** What a call runs on, fully resolved. `effort` undefined means "send no effort" and only ever

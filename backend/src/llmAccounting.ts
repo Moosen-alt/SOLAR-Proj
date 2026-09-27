@@ -53,6 +53,8 @@ export interface PersistedLlmCall {
   cacheWrite?: number;
   stop?: string | null;
   error?: string;
+  /** Server-side web searches (migration v38). undefined/NULL = the response reported none — unknown, not zero. */
+  webSearches?: number;
 }
 
 const intOrNull = (n: unknown): number | null => (typeof n === "number" && Number.isFinite(n) ? Math.round(n) : null);
@@ -64,8 +66,8 @@ export function persistLlmCall(rec: PersistedLlmCall): void {
   try {
     const ctx = context.getStore();
     store.run(
-      `INSERT INTO llm_calls (at, label, model, in_tok, out_tok, cache_read, cache_write, ms, stop, error, project_id, job_id, org_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO llm_calls (at, label, model, in_tok, out_tok, cache_read, cache_write, ms, stop, error, project_id, job_id, org_id, web_searches)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         new Date(Number.isFinite(rec.at) ? rec.at : Date.now()).toISOString(),
         String(rec.label || "").slice(0, 200),
@@ -75,6 +77,7 @@ export function persistLlmCall(rec: PersistedLlmCall): void {
         rec.stop == null ? null : String(rec.stop).slice(0, 40),
         rec.error == null ? null : String(rec.error).slice(0, 500),
         ctx?.projectId || null, ctx?.jobId || null, ctx?.orgId || null,
+        intOrNull(rec.webSearches),
       ],
     );
   } catch { /* accounting is best-effort — never break the caller */ }
@@ -102,6 +105,12 @@ export const PRICE_PER_MTOK: Readonly<Record<string, { input: number; output: nu
 };
 const CACHE_WRITE_MULTIPLIER = 1.25;
 
+/** Server-side web search: $10 per 1,000 searches (claude-api pricing, 2026-09-26), on top of the
+ *  tokens the results add. Web FETCH carries no per-use fee. Counted from llm_calls.web_searches
+ *  (migration v38): a NULL there means the call reported nothing — unknown, not free — and calls
+ *  made before the column existed are not backfilled. */
+export const WEB_SEARCH_USD_PER_1000 = 10;
+
 /** count_tokens is free: it is recorded (it proves the planner budget was measured) but costs nothing. */
 const FREE_LABEL = /\.countTokens$/;
 
@@ -110,7 +119,7 @@ export function priceKeyForModel(model: string): string {
   return String(model || "").trim().replace(/-\d{8}$/, "");
 }
 
-export function estimateLlmCallCostUsd(row: { label: string; model: string; in_tok: number | null; out_tok: number | null; cache_read: number | null; cache_write: number | null }): number | null {
+export function estimateLlmCallCostUsd(row: { label: string; model: string; in_tok: number | null; out_tok: number | null; cache_read: number | null; cache_write: number | null; web_searches?: number | null }): number | null {
   if (FREE_LABEL.test(row.label)) return 0;
   const price = PRICE_PER_MTOK[priceKeyForModel(row.model)];
   if (!price) return null;
@@ -118,7 +127,8 @@ export function estimateLlmCallCostUsd(row: { label: string; model: string; in_t
   return tok(row.in_tok) * price.input
     + tok(row.out_tok) * price.output
     + tok(row.cache_read) * price.cacheRead
-    + tok(row.cache_write) * price.input * CACHE_WRITE_MULTIPLIER;
+    + tok(row.cache_write) * price.input * CACHE_WRITE_MULTIPLIER
+    + ((row.web_searches ?? 0) / 1000) * WEB_SEARCH_USD_PER_1000;
 }
 
 export interface LlmUsageLine {
@@ -131,6 +141,8 @@ export interface LlmUsageLine {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** Server-side web searches the line's calls reported (NULL rows count 0 here; see webSearchesUnknown). */
+  webSearches: number;
   /** null when any call in the line is unpriced (unknown model). */
   estimatedCostUsd: number | null;
 }
@@ -145,6 +157,11 @@ export interface ProjectLlmUsage {
   cacheWriteTokens: number;
   /** Share of prompt tokens served from cache: cacheRead / (input + cacheRead + cacheWrite). */
   cacheHitRate: number | null;
+  /** Web searches reported across every call, billed at $10 per 1,000 inside estimatedCostUsd. */
+  webSearches: number;
+  /** Calls that reported no search count (recorded before migration v38, or a response without
+   *  usage.server_tool_use): their search fees are NOT in the estimate — unknown, not zero. */
+  webSearchesUnknown: number;
   estimatedCostUsd: number | null;
   unpricedCalls: number;
   byLabel: LlmUsageLine[];
@@ -158,21 +175,23 @@ const round4 = (n: number) => Math.round(n * 10_000) / 10_000;
 /** Per-label calls, tokens and ESTIMATED cost for ONE project. Scoping is the caller's: the
  *  route sits under /api/projects/:id and inherits that path's tenant scope guard. */
 export function llmUsageForProject(db: AppDb, projectId: string): ProjectLlmUsage {
-  const rows = db.query<{ at: string; label: string; model: string; in_tok: number | null; out_tok: number | null; cache_read: number | null; cache_write: number | null; error: string | null }>(
-    "SELECT at, label, model, in_tok, out_tok, cache_read, cache_write, error FROM llm_calls WHERE project_id = ? ORDER BY at",
+  const rows = db.query<{ at: string; label: string; model: string; in_tok: number | null; out_tok: number | null; cache_read: number | null; cache_write: number | null; web_searches: number | null; error: string | null }>(
+    "SELECT at, label, model, in_tok, out_tok, cache_read, cache_write, web_searches, error FROM llm_calls WHERE project_id = ? ORDER BY at",
     [projectId],
   );
   const lines = new Map<string, LlmUsageLine & { unpriced: number; cost: number }>();
+  let webSearchesUnknown = 0;
   for (const r of rows) {
     const label = String(r.label || "").replace(/#[^#]*$/, "");
     const key = `${label}\u0000${r.model}`;
-    const line = lines.get(key) ?? { label, model: r.model, calls: 0, errors: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: null, unpriced: 0, cost: 0 };
+    const line = lines.get(key) ?? { label, model: r.model, calls: 0, errors: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, webSearches: 0, estimatedCostUsd: null, unpriced: 0, cost: 0 };
     line.calls++;
     if (r.error) line.errors++;
     line.inputTokens += r.in_tok ?? 0;
     line.outputTokens += r.out_tok ?? 0;
     line.cacheReadTokens += r.cache_read ?? 0;
     line.cacheWriteTokens += r.cache_write ?? 0;
+    if (r.web_searches == null) webSearchesUnknown++; else line.webSearches += r.web_searches;
     const cost = estimateLlmCallCostUsd(r);
     if (cost == null) line.unpriced++; else line.cost += cost;
     lines.set(key, line);
@@ -193,11 +212,13 @@ export function llmUsageForProject(db: AppDb, projectId: string): ProjectLlmUsag
     cacheReadTokens,
     cacheWriteTokens,
     cacheHitRate: promptTokens ? round4(cacheReadTokens / promptTokens) : null,
+    webSearches: sum((l) => l.webSearches),
+    webSearchesUnknown,
     estimatedCostUsd: unpricedCalls ? null : round4([...lines.values()].reduce((s, l) => s + l.cost, 0)),
     unpricedCalls,
     byLabel,
     firstCallAt: rows[0]?.at ?? null,
     lastCallAt: rows[rows.length - 1]?.at ?? null,
-    note: "Estimated at list price; web-search fees not included. Calls made before accounting existed, and background calls with no project, are not attributed here.",
+    note: `Estimated at list price, web searches at $${WEB_SEARCH_USD_PER_1000} per 1,000${webSearchesUnknown ? ` (${webSearchesUnknown} call(s) reported no search count — their search fees are not in the estimate)` : ""}. Calls made before accounting existed, and background calls with no project, are not attributed here.`,
   };
 }
