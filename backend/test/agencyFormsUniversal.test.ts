@@ -789,7 +789,7 @@ try {
   check("C2 (setup) the seed and a cited neighbour are both candidates", JSON.stringify(agencyMod.agencyApplicationForms(au2, "electrical_application", null).map((f) => f.origin)) === JSON.stringify(["curated", "cited"]), JSON.stringify(agencyMod.agencyApplicationForms(au2, "electrical_application", null)));
   const auE = await ensureAgency(au2, "electrical_application");
   const marionElectrical = () => db.query<{ source_url: string }>("SELECT source_url FROM ahj_form_templates WHERE ahj_name = 'Marion County' AND form_type = 'electrical_application'").map((r) => r.source_url);
-  check("C2 the seed's failed fetch is a NAMED failure — the agency, the form, the URL, retry", auE.status === "not_found" && auE.message.includes(`Marion County's Marion County Renewable Electrical Energy Permit Application (E-01) could not be downloaded from ${E01_URL}`) && /retry/i.test(auE.message), auE.message);
+  check("C2 the seed's failed fetch is a NAMED failure — the agency, the form, the URL, retry", auE.status === "not_found" && auE.message.includes(`Marion County's Marion County Renewable Electrical Energy Permit Application (E-01) could not be downloaded from ${E01_URL} - retry`), auE.message);
   check("C2 no cited candidate is tried in its place: Polk's PDF never fetched, nothing stored in Marion County's electrical slot", auE.downloads.join() === E01_URL && marionElectrical().length === 0, JSON.stringify({ auE, stored: marionElectrical() }));
   served.set(E01_URL, e01Bytes);
   const auE2 = await ensureAgency(au2, "electrical_application");

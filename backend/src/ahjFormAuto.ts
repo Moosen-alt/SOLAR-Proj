@@ -954,7 +954,7 @@ export async function ensureIssuingAgencyForm(
     // network) is a named failure to retry — never a reason to take the next cited PDF instead (the
     // skeptic's S7: Marion County's E-01 404'd and Polk County's application was stored as Marion's).
     if (!bytes && c.origin === "curated") {
-      return { status: "not_found", sourceUrl: c.sourceUrl, message: `${agency}'s ${c.formName} could not be downloaded from ${c.sourceUrl} — retry. ${whose}; no other PDF was tried in its place, and it has not been counted as present.` };
+      return { status: "not_found", sourceUrl: c.sourceUrl, message: `${agency}'s ${c.formName} could not be downloaded from ${c.sourceUrl} - retry. ${whose}; no other PDF was tried in its place, and it has not been counted as present.` };
     }
     if (!bytes) { tried.push(c.sourceUrl); continue; }
     if (c.origin === "curated") {
