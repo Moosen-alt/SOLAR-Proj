@@ -334,15 +334,22 @@ export function quoteOnPage(quote: string, pageText: string): boolean {
   // contiguous on the page, while every item still is.
   const segs = quoteSegments(quote);
   if (!segs.length || !page) return false;
-  // ON ONE LINE WITH ITS LABEL (close-3 MF1): a segment found contiguously in the page text carries
-  // each dollar amount on the SAME LINE as the token right before it — "Solar Thermal $50" is not on
-  // "Solar Thermal" / "$50 Fence permit" (a line-join), while a row quoted with its section header
-  // in front ("Solar Arrays / Roof Top Solar Array … $75.00") still is: the break sits between the
-  // header and the row's words, never beside the amount.
+  // ON ONE LINE WITH ITS LABEL (close-3 MF1; lookup-close-4 D3 for the amount-first mirror): a
+  // segment found contiguously in the page text carries each dollar amount on the SAME LINE as the
+  // token right before it — "Solar Thermal $50" is not on "Solar Thermal" / "$50 Fence permit" (a
+  // line-join) — or, for a LEADING amount with nothing before it, as the token right after it
+  // ("$75 Solar Residential" is not on "Deck | $75" / "Solar Residential | $150"); a row quoted with
+  // its section header in front ("Solar Arrays / Roof Top Solar Array … $75.00") still is: the
+  // break sits between the header and the row's words, never beside the amount.
   const inPage = (seg: string): boolean => {
-    const amounts = [...seg.matchAll(/\$\s?\d/g)].map((m) => m.index!);
+    const amounts = [...seg.matchAll(/\$\s?\d+(?:\.\d+)?/g)].map((m) => ({ at: m.index!, end: m.index! + m[0].length }));
     for (let at = page.indexOf(seg); at >= 0; at = page.indexOf(seg, at + 1)) {
-      if (amounts.every((a) => { const before = seg.slice(0, a).trimEnd(); return !before || !pageNl.slice(at + before.length, at + a).includes("\n"); })) return true;
+      if (amounts.every((a) => {
+        const before = seg.slice(0, a.at).trimEnd();
+        if (before) return !pageNl.slice(at + before.length, at + a.at).includes("\n");
+        const after = seg.slice(a.end).trimStart();
+        return !after || !pageNl.slice(at + a.end, at + seg.length - after.length).includes("\n");
+      })) return true;
     }
     return false;
   };
@@ -380,4 +387,48 @@ export function quoteOnPage(quote: string, pageText: string): boolean {
     });
   };
   return segs.every((s) => inPage(s) || inPage(s.replace(/\.$/, "")) || inOneRow(s));
+}
+
+// ── THE FEE TIE: a quoted (label, amount) pair is PRINTED TOGETHER (lookup-close-4, D3) ────────
+// Four patch rounds on the quote door each closed one shape and left its mirror open (a label-first
+// line-join, then an amount-first one; a dash split, then an ellipsis split). ONE question now: is
+// this label's amount the one printed BESIDE these label words? Judged on the TEXT the answer is
+// checked against — the page we read when we hold it, else the quote itself with the model's
+// elisions ("...") as line breaks — by ONE rule, label-first and amount-first alike:
+//   the amount and every label word must sit on the SAME LINE (a table row; cells may intervene:
+//   "Solar Installation | Residential | $50"), with no newline in either direction and no elision
+//   inside the pair. A page is split on newlines ONLY (a PDF's dot leaders "Solar ....... $75" are
+//   print, not elision; the model's "..." is turned into a newline by the caller).
+// WHICH LABEL WORDS: every word of the label that the text prints anywhere (a word the text never
+// prints is the model's paraphrase — "(minimum charge)" for "min-$200.00" — and cannot be tied
+// either way), and at least one such word; the amount itself, and glue words (of / the / per …),
+// are not label words. So "Solar Residential" + $331 on a page printing "Solar Residential | $168"
+// and "Solar Commercial | $331" is refused ("residential" is printed, and not on $331's line), and
+// so is "$75 Solar Residential" on "Deck | $75" / "Solar Residential | $150"; while "Solar
+// Installation" + $50 on "$50 | Solar Installation", the Hollis header-joined row and Fairfax's
+// "10.Solar Energy (Ch. 61-1-3(d)23)  $ 0.00" are tied. RESIDUE (named, not closed): a label
+// whose distinguishing word the page never prints ("Solar Residential" on a page that prints only
+// "Solar Commercial | $331") ties on its remaining words — the quote-on-page door and the label
+// mismatch are what a reviewer sees there.
+const GLUE_WORD = /^(?:a|an|the|of|or|and|to|for|per|in|on|at|by|with|is|are|be|ea\.?|each)$/;
+const MONEY_TOKEN = /^\$?\d+(?:\.\d+)?$/;
+const groupingCommasDropped = (s: string) => String(s ?? "").replace(/(\d),(?=\d{3}(?!\d))/g, "$1");
+/** The amounts a normalised line prints: "$75", "$75.00" -> "$75", "$ 0.00", "min-$200", "1250" (a
+ *  bare number in a table), "$75.00." at a sentence's end — never a percentage, never the digits
+ *  inside a bigger number. */
+const printsAmount = (line: string, amountUsd: number): boolean =>
+  [...line.matchAll(/(?:^|[^a-z0-9.])\$?\s?(\d+(?:\.\d+)?)(?!\d|\.\d|\s*%)/g)].some((m) => Math.abs(Number(m[1]) - amountUsd) < 0.005);
+/** `word` printed in `line` as a whole word (alphanumeric boundaries: "solar" is in "10.solar"). */
+const hasWord = (line: string, word: string): boolean =>
+  new RegExp(`(?:^|[^a-z0-9])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:$|[^a-z0-9])`).test(line);
+export function feeLinePrintedTogether(label: string, amountUsd: number, text: string): boolean {
+  if (!Number.isFinite(amountUsd)) return false;
+  const lines = groupingCommasDropped(text).split(/\r?\n/).map(normaliseForQuote).filter(Boolean);
+  if (!lines.length) return false;
+  const words = normaliseForQuote(groupingCommasDropped(label)).split(" ")
+    .filter((w) => /[a-z0-9]/.test(w) && !GLUE_WORD.test(w))
+    .filter((w) => !(MONEY_TOKEN.test(w) && Math.abs(Number(w.replace(/^\$/, "")) - amountUsd) < 0.005));
+  const printed = [...new Set(words)].filter((w) => lines.some((l) => hasWord(l, w)));
+  if (!printed.length) return false;
+  return lines.some((l) => printsAmount(l, amountUsd) && printed.every((w) => hasWord(l, w)));
 }

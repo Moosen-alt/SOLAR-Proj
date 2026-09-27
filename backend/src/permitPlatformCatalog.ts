@@ -224,8 +224,21 @@ const typesContradict = (found: Iterable<string>, own: Set<string>): boolean => 
  *  City of Marion, "cityofmarion" for Marion County). The AHJ's own distinctive keys are taken out
  *  of the run-together token first (close-3, the reviewer's E1): "georgetowntx" is Georgetown's
  *  tenant, not a town's; "middletown", "foxborough", "hillsborough" name no type. */
+/** The name a portal URL carries: the vendor tenant on a vendor host; on any other host the
+ *  organisation's own domain label with its subdomain labels ("elam.cityofmadison.com" ->
+ *  "elamcityofmadison", "permits.marioncounty.gov" -> "permitsmarioncounty", "co.marion.or.us" ->
+ *  "co") — so a same-named other jurisdiction's OWN domain reads like its vendor tenant
+ *  (lookup-close-4 D1c). */
+export function portalNameToken(href: string): string {
+  const host = portalHostOf(href);
+  if (!host) return "";
+  if (isPermitPlatformUrl(href) || PATH_TENANT_HOST.test(host)) return vendorTenantToken(href);
+  const dom = registrableDomain(host);
+  const sub = host.slice(0, Math.max(0, host.length - dom.length - 1)).split(".").filter((l) => l && !GENERIC_TENANT_LABEL.test(l));
+  return [...sub, dom.split(".")[0]].join("").replace(/[^a-z]/gi, "").toLowerCase();
+}
 export function tenantContradictsAgency(href: string, names: string[], typeNames: string[] = names): boolean {
-  let t = vendorTenantToken(href);
+  let t = portalNameToken(href);
   if (!t) return false;
   for (const k of nameKeys(names).sort((a, b) => b.length - a.length)) t = t.split(k).join(" ");
   const found: string[] = [];
