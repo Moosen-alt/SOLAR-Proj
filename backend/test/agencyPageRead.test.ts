@@ -597,6 +597,55 @@ await check("(m3) MUST-EXCLUDE (close-2 MF2): a same-named OTHER jurisdiction �
   assert.deepEqual([...cat.jurisdictionTypes(["City of Fernhill", "Marion County"])].sort(), ["city", "county"]);
 });
 
+await check("(m4) MUST-EXCLUDE (close-3 MF2): the type set is the AHJ's OWN — a City of Marion page ('building permits on paper at City Hall; electrical permits are issued by Marion County') linking 'Marion County Online Permits' (MARIONCOUNTY) gives the city's structural permit NO portal, and the mirror (Marion County AHJ, the city cited for electrical) gives the county's permit no CITYOFMARION; the resolver refuses a tenant that contradicts typeNames even when names carry both types; MUST-PASS: the Jefferson shape end to end (every permit cites the county -> lifted -> the county's tenant is the portal), Bemidji's SmartGov tenant, and a type word INSIDE the name (Georgetown, Middletown, Foxborough, Hillsborough …) contradicts nothing", async () => {
+  const ACA_CO = "https://aca-prod.accela.com/MARIONCOUNTY/Default.aspx";
+  const ACA_CITY = "https://aca-prod.accela.com/CITYOFMARION/Default.aspx";
+  const CITYPG = "https://www.cityofmarion.org/building";
+  const COPG = "https://www.co.marion.in.us/building";
+  const cityHtml = synthetic(`<p>Building permits for properties inside city limits are issued at City Hall on paper. Electrical permits are issued by Marion County.</p><p>For unincorporated property and county permits: <a href="${ACA_CO}">Marion County Online Permits</a></p>`);
+  const shape = (pg: string, top: string, structural: string, electrical: string) => JSON.stringify({
+    issuingAgency: { value: top, sourceUrl: pg, quote: `${top} issues building permits for properties inside city limits.` },
+    permitStructure: { value: "separate", sourceUrl: pg, quote: `Electrical permits are issued by ${electrical}.` },
+    permits: [
+      { discipline: "structural", label: "Building", issuingAgency: { value: structural, sourceUrl: pg, quote: `${structural} issues building permits for properties inside city limits.` }, portalUrl: { value: null }, recordType: { value: null } },
+      { discipline: "electrical", label: "Electrical", issuingAgency: { value: electrical, sourceUrl: pg, quote: `Electrical permits are issued by ${electrical}.` }, portalUrl: { value: null }, recordType: { value: null } },
+    ],
+  });
+  const llmFor = (process1: string, pg: string) => ({ webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? g(process1, [pg]) : g(JSON.stringify({ permits: [] }), [])) });
+  // B1: the city issues building (paper); the county is ONE permit's cited agency.
+  const b1 = await ppl.runPermitProcessLookup(db, llmFor(shape(CITYPG, "City of Marion", "City of Marion", "Marion County"), CITYPG), { state: "IN", ahj: "City of Marion", dcKw: "7", acKw: "6", force: true, reader: newReader(site({ [CITYPG]: { text: cityHtml } }).fetch) });
+  const b1s = b1.lookup!.permits.find((p) => p.discipline === "structural")!;
+  assert.equal(b1s.portalUrl.value, null, `B1: the city's structural permit takes no portal (got ${b1s.portalUrl.value})`);
+  assert.ok(!(b1.lookup!.notes ?? []).some((n) => /Portal resolved/.test(n)), "B1: the county's tenant is never resolved as the city's portal");
+  assert.notEqual(b1.lookup!.permits.find((p) => p.discipline === "electrical")!.portalUrl.value, ACA_CO, "B1: nor handed to the electrical permit from the city's page (its own agency's portal step answers that)");
+  // B3: the mirror — Marion County AHJ, the city cited for electrical only, its tenant linked.
+  const coHtml = synthetic(`<p>Unincorporated county building permits: apply in person at the County Building. Inside the City of Marion, electrical permits are issued by the City of Marion.</p><p><a href="${ACA_CITY}">City of Marion permit portal</a></p>`);
+  const b3 = await ppl.runPermitProcessLookup(db, llmFor(shape(COPG, "Marion County", "Marion County", "City of Marion"), COPG), { state: "IN", ahj: "Marion County", dcKw: "7", acKw: "6", force: true, reader: newReader(site({ [COPG]: { text: coHtml } }).fetch) });
+  assert.equal(b3.lookup!.permits.find((p) => p.discipline === "structural")!.portalUrl.value, null, "B3: the county's structural permit takes no CITYOFMARION");
+  // MUST-PASS, the Jefferson shape: every permit cites the county, the top level found none -> lifted -> the county's tenant on the city's page is the portal of both.
+  const jHtml = synthetic(`<p>Marion County issues our building and electrical permits.</p><p><a href="${ACA_CO}">Marion County Online Permits</a></p>`);
+  const j = await ppl.runPermitProcessLookup(db, llmFor(JSON.stringify({ ...JSON.parse(shape(CITYPG, "Marion County", "Marion County", "Marion County")), issuingAgency: { value: null } }), CITYPG), { state: "IN", ahj: "City of Marion", dcKw: "7", acKw: "6", force: true, reader: newReader(site({ [CITYPG]: { text: jHtml } }).fetch) });
+  assert.equal(j.lookup!.issuingAgency.value, "Marion County", "lifted");
+  for (const d of ["structural", "electrical"] as const) assert.equal(j.lookup!.permits.find((p) => p.discipline === d)!.portalUrl.value, ACA_CO, `Jefferson shape: the issuing county's portal serves the ${d} permit`);
+  // The resolver itself: names carry both types (keys), typeNames only the city's -> refused; both -> admitted.
+  const pageCo = { url: CITYPG, finalUrl: CITYPG, ok: true, status: 200, kind: "html" as const, reason: "HTTP 200", ...reader.parseHtml(synthetic(`<a href="${ACA_CO}">Marion County Online Permits</a>`), CITYPG) };
+  assert.equal(await cat.resolvePortalFromPages(newReader(site({}).fetch), [pageCo], { names: ["City of Marion", "Marion County"], typeNames: ["City of Marion"] }), null, "typeNames = the city alone: the county tenant is refused");
+  assert.equal((await cat.resolvePortalFromPages(newReader(site({}).fetch), [pageCo], { names: ["City of Marion", "Marion County"], typeNames: ["City of Marion", "Marion County"] }))?.url, ACA_CO, "the issuing county in typeNames: admitted");
+  assert.equal(cat.tenantContradictsAgency(ACA_CO, ["City of Marion", "Marion County"], ["City of Marion"]), true);
+  assert.equal(cat.tenantContradictsAgency(ACA_CO, ["City of Marion", "Marion County"]), false, "no typeNames: names carry both types");
+  assert.equal(cat.wordsNameAnotherJurisdiction("Marion County Online Permits", ["City of Marion", "Marion County"], ["City of Marion"]), true);
+  // Bemidji's SmartGov tenant, and a type word inside the name.
+  const bemidji = "https://ci-bemidji-mn.smartgovcommunity.com/Public/Home?_conv=1";
+  assert.equal(cat.tenantContradictsAgency(bemidji, ["City of Bemidji", "State of MN"], ["City of Bemidji"]), false);
+  assert.equal(cat.tenantNamesAgency(bemidji, ["City of Bemidji", "State of MN"], ["City of Bemidji"]), true);
+  for (const [name, href] of [["City of Georgetown", "https://georgetowntx-energovweb.tylerhost.net/apps/selfservice"], ["City of Middletown", "https://aca-prod.accela.com/MIDDLETOWN/Default.aspx"], ["Town of Foxborough", "https://aca-prod.accela.com/FOXBOROUGH/Default.aspx"], ["Town of Hillsborough", "https://aca-prod.accela.com/HILLSBOROUGH/Default.aspx"], ["Village of Tarrytown", "https://aca-prod.accela.com/TARRYTOWN/Default.aspx"], ["City of Scottsdale", "https://cityofscottsdaleaz-energovweb.tylerhost.net/apps/selfservice"], ["Lee County", "https://aca-prod.accela.com/LEECO/Default.aspx"], ["Iowa City", "https://aca-prod.accela.com/IOWACITY/Default.aspx"]]) {
+    assert.equal(cat.tenantContradictsAgency(href, [name]), false, `${name}: its own tenant contradicts nothing`);
+    assert.equal(cat.tenantNamesAgency(href, [name]), true, `${name}: its own tenant names it`);
+  }
+  assert.equal(cat.tenantContradictsAgency("https://aca-prod.accela.com/GEORGETOWNCOUNTY/Default.aspx", ["City of Georgetown"]), true, "the same-named county still contradicts the city");
+  assert.equal(cat.tenantContradictsAgency("https://aca-prod.accela.com/CITYOFGEORGETOWN/Default.aspx", ["Georgetown County"]), true);
+});
+
 await check("(c6) MUST-EXCLUDE (close-2 MF3): the description door — 'Residential Mechanical … solar water heating systems', 'Residential Re-Roof … if solar panels must be removed and reinstalled', a commercial-only solar type — offer no PV candidate; MUST-PASS: a description naming photovoltaic / solar panels does, and a real PV type beside a look-alike wins outright", () => {
   const C = (types: Array<[string, string?]>) => ({ platform: "energov" as const, sourceUrl: "https://x-energovweb.tylerhost.net/apps/selfservice/api/Home/Menu", types: types.map(([l, d]) => ({ label: l, description: d ?? "", category: "Building" })) });
   const labels = (types: Array<[string, string?]>) => cat.solarRecordTypeCandidates(C(types)).map((c) => c.label);

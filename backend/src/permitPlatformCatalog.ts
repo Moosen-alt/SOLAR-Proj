@@ -189,9 +189,9 @@ export function vendorTenantToken(href: string): string {
 /** The tenant NAMES this agency: it contains one of the name's distinctive keys (a key under 5
  *  letters must BE the tenant, give or take an official affix / a state's letters: "leeco",
  *  "cityoflee" — "san" never names "sandag"). */
-export function tenantNamesAgency(href: string, names: string[]): boolean {
+export function tenantNamesAgency(href: string, names: string[], typeNames: string[] = names): boolean {
   const t = vendorTenantToken(href);
-  if (!t || tenantContradictsAgency(href, names)) return false;
+  if (!t || tenantContradictsAgency(href, names, typeNames)) return false;
   return nameKeys(names).some((k) => (k.length >= 5 ? t.includes(k) : new RegExp(`^(?:cityof|townof|countyof|villageof|co|ci)?${k}(?:co|county|city|town|twp|gov|[a-z]{2})?$`).test(t)));
 }
 // ── A SAME-NAMED OTHER JURISDICTION (close-2 MF2) ─────────────────────────────────────────
@@ -200,6 +200,13 @@ export function tenantNamesAgency(href: string, names: string[]): boolean {
 // them apart; the JURISDICTION-TYPE word can: a type word in the link's words or the tenant token
 // that contradicts every type the AHJ's own names carry is another jurisdiction. "co" is never read
 // as a type (LEECO is Lee County's tenant and would be "City of Lee"'s too).
+// WHOSE TYPES (close-3 MF2): `typeNames` is the AHJ's OWN name and the agency that issues ITS
+// permits as a whole (the top-level / lifted agency) — never the cited agency of ONE permit. A city
+// page saying "electrical permits are issued by Marion County" must not widen the City of Marion to
+// {city, county} and admit MARIONCOUNTY as the city's own portal: the county's portal belongs to
+// the county's permit alone (issuedByPublisher). `names` (every name, for the distinctive keys)
+// and `typeNames` (for the types) are therefore separate inputs; a caller with one set passes it
+// for both.
 const TYPE_WORD = /\b(township|twp|county|city|town|borough|boro|village|parish)\b/gi;
 const canonType = (w: string) => ({ twp: "township", boro: "borough" }[w.toLowerCase()] ?? w.toLowerCase());
 /** The jurisdiction types the AHJ's (and its issuing agencies') names carry: {"city"} for
@@ -214,20 +221,23 @@ const typesContradict = (found: Iterable<string>, own: Set<string>): boolean => 
   return f.size > 0 && own.size > 0 && ![...f].some((t) => own.has(t));
 };
 /** The vendor tenant token names another TYPE of jurisdiction than the AHJ ("marioncounty" for
- *  City of Marion, "cityofmarion" for Marion County). */
-export function tenantContradictsAgency(href: string, names: string[]): boolean {
-  const t = vendorTenantToken(href);
+ *  City of Marion, "cityofmarion" for Marion County). The AHJ's own distinctive keys are taken out
+ *  of the run-together token first (close-3, the reviewer's E1): "georgetowntx" is Georgetown's
+ *  tenant, not a town's; "middletown", "foxborough", "hillsborough" name no type. */
+export function tenantContradictsAgency(href: string, names: string[], typeNames: string[] = names): boolean {
+  let t = vendorTenantToken(href);
   if (!t) return false;
+  for (const k of nameKeys(names).sort((a, b) => b.length - a.length)) t = t.split(k).join(" ");
   const found: string[] = [];
   for (const m of t.matchAll(/(township|twp|county|city|town|borough|boro|village|parish)/g)) found.push(m[1]);
-  return typesContradict(found, jurisdictionTypes(names));
+  return typesContradict(found, jurisdictionTypes(typeNames));
 }
 /** The link's words name ANOTHER jurisdiction ("Other Township online permit portal", "City of
  *  Hampton permits" on a county page listing its cities' portals) — or the same name with another
  *  TYPE ("Marion County Online Permits" on the City of Marion's page). */
-export function wordsNameAnotherJurisdiction(text: string, names: string[]): boolean {
+export function wordsNameAnotherJurisdiction(text: string, names: string[], typeNames: string[] = names): boolean {
   const own = new Set(names.flatMap((n) => String(n ?? "").toLowerCase().split(/[^a-z]+/)).filter(Boolean));
-  const ownTypes = jurisdictionTypes(names);
+  const ownTypes = jurisdictionTypes(typeNames);
   const found: Array<{ name: string; type: string }> = [];
   for (const m of String(text ?? "").matchAll(/\b(city|town|township|county|borough|village|parish) of ((?:[A-Z][a-zA-Z'.-]+)(?: [A-Z][a-zA-Z'.-]+)?)/gi)) found.push({ name: m[2], type: m[1] });
   for (const m of String(text ?? "").matchAll(/\b((?:[A-Z][a-zA-Z'.-]+)(?: [A-Z][a-zA-Z'.-]+)?) (Township|County|City|Borough|Village|Parish)\b/gi)) found.push({ name: m[1], type: m[2] });
@@ -264,7 +274,7 @@ interface Candidate { link: PageLink; page: ReadPage; score: number; vendor: boo
  *     a host that is never an application portal (GovOutreach 311, SolarAPP+, a MapsOnline viewer).
  * Whether the TENANT is this agency's is decided in resolvePortalFromPages.
  */
-function candidatesOn(page: ReadPage, names: string[]): Candidate[] {
+function candidatesOn(page: ReadPage, names: string[], typeNames: string[] = names): Candidate[] {
   if (!page.ok || page.kind !== "html") return [];
   const pageDom = registrableDomain(portalHostOf(page.finalUrl));
   const out: Candidate[] = [];
@@ -283,11 +293,11 @@ function candidatesOn(page: ReadPage, names: string[]): Candidate[] {
       // A deep link into another module of the tenant (module=Licenses) is not the permit portal,
       // whatever its words say.
       if (NOT_PORTAL_PATH.test(link.href)) continue;
-      if (tenantContradictsAgency(link.href, names)) continue;
-      if (wordsNameAnotherJurisdiction(link.text, names)) continue;
+      if (tenantContradictsAgency(link.href, names, typeNames)) continue;
+      if (wordsNameAnotherJurisdiction(link.text, names, typeNames)) continue;
       out.push({ link, page, vendor: true, score: (named ? 2 : 0) + (targetNamed ? 1 : 0) + (/selfservice\/[^/#?]+|accela\.com\/[^/]+\//i.test(link.href) ? 1 : 0) });
     } else if (ownDomain && (named || (host !== portalHostOf(page.finalUrl) && PLATFORMISH_PATH.test(link.href)))) {
-      if (wordsNameAnotherJurisdiction(link.text, names)) continue;
+      if (wordsNameAnotherJurisdiction(link.text, names, typeNames)) continue;
       out.push({ link, page, vendor: false, score: (named ? 2 : 0) + (host !== portalHostOf(page.finalUrl) ? 1 : 0) + (PLATFORMISH_PATH.test(link.href) ? 1 : 0) });
     }
   }
@@ -314,16 +324,20 @@ function pageNamesAgency(page: ReadPage, names: string[]): boolean {
  *   3. we read it and it shows the platform's markers AND this agency's name.
  * Otherwise it is not the portal (a county page listing its cities' tenants resolves nothing).
  * `names`: the AHJ's and the issuing agency's names ([] = only doors 2 and the own-domain read).
+ * `typeNames`: the names whose jurisdiction TYPES a tenant / link must not contradict (close-3 MF2:
+ * the AHJ and the agency issuing its permits as a whole — never one permit's cited agency); `names`
+ * when omitted.
  */
-export async function resolvePortalFromPages(reader: PageReader, pages: ReadPage[], opts: { maxVerify?: number; names?: string[] } = {}): Promise<PortalResolution | null> {
+export async function resolvePortalFromPages(reader: PageReader, pages: ReadPage[], opts: { maxVerify?: number; names?: string[]; typeNames?: string[] } = {}): Promise<PortalResolution | null> {
   let verifyLeft = opts.maxVerify ?? 4;
   const names = (opts.names ?? []).filter(Boolean);
+  const typeNames = (opts.typeNames ?? names).filter(Boolean);
   const vendorHit = (c: Candidate, hop: boolean, via?: PortalResolution["via"], portalPage?: ReadPage): PortalResolution =>
     ({ url: c.link.href, platform: platformOfUrl(c.link.href) ?? (portalPage ? detectPlatform(portalPage) : null) ?? "other", sourceUrl: c.page.finalUrl, quote: quoteOf(c.link), via: via ?? (hop ? "one hop" : "vendor link"), ...(portalPage ? { portalPage } : {}) });
   const tryCandidates = async (cands: Candidate[], hop: boolean): Promise<PortalResolution | null> => {
     const byScore = (a: Candidate, b: Candidate) => b.score - a.score;
     const vendors = cands.filter((c) => c.vendor).sort(byScore);
-    const named = vendors.find((c) => tenantNamesAgency(c.link.href, names));
+    const named = vendors.find((c) => tenantNamesAgency(c.link.href, names, typeNames));
     if (named) return vendorHit(named, hop);
     const own = await tryOwnDomain(cands.filter((c) => !c.vendor).sort(byScore), hop);
     if (own) return own;
@@ -362,7 +376,7 @@ export async function resolvePortalFromPages(reader: PageReader, pages: ReadPage
         const landingOk = !isVendorRootOrMarketing(target.finalUrl) && !NEVER_PAGE_PORTAL_HOST.test(landedHost) && hostFitsTrackAndEntity("building", null, target.finalUrl, "research").fits
           && !NOT_PORTAL_PATH.test(target.finalUrl)
           && !(/(?:^|\.)mapsonline\.net$/i.test(landedHost) && !/permit/i.test(`${c.link.text} ${target.finalUrl}`))
-          && !tenantContradictsAgency(target.finalUrl, names)
+          && !tenantContradictsAgency(target.finalUrl, names, typeNames)
           && (targetPathNamesPortal(target.finalUrl) || landedPlatform === "accela" || landedPlatform === "energov");
         if (landingOk) return { url: target.finalUrl, platform: platformOfUrl(target.finalUrl) ?? landedPlatform ?? "other", sourceUrl: c.page.finalUrl, quote: quoteOf(c.link, target.finalUrl), via: "redirect onto a vendor host", portalPage: target };
         continue;
@@ -376,13 +390,13 @@ export async function resolvePortalFromPages(reader: PageReader, pages: ReadPage
       }
       // ONE HOP: an own-domain page the link's words name as the portal, which in turn links it.
       if (!hop && PORTAL_LINK_WORDS.test(c.link.text)) {
-        const next = await tryCandidates(candidatesOn(target, names).filter((n) => n.vendor || portalHostOf(n.link.href) !== portalHostOf(target.finalUrl)), true);
+        const next = await tryCandidates(candidatesOn(target, names, typeNames).filter((n) => n.vendor || portalHostOf(n.link.href) !== portalHostOf(target.finalUrl)), true);
         if (next) return next;
       }
     }
     return null;
   };
-  return tryCandidates(pages.flatMap((p) => candidatesOn(p, names)), false);
+  return tryCandidates(pages.flatMap((p) => candidatesOn(p, names, typeNames)), false);
 }
 
 // ── Catalogs ──────────────────────────────────────────────────────────────────────────────

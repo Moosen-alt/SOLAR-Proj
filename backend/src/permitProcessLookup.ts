@@ -512,8 +512,13 @@ const MAX_DOCS = 3;
  */
 export async function readAgencyEvidence(reader: PageReader, input: {
   ahj: string; state?: string; agencyNames: string[]; citedUrls: string[]; agencyCitation?: string; resultUrls: string[]; resultTitles?: Record<string, string>; proposedPortals: string[];
+  /** The names whose jurisdiction TYPE a linked tenant must not contradict (close-3 MF2): the AHJ
+   *  and the agency that issues its permits as a whole (top-level or lifted) — never one permit's
+   *  cited agency. The AHJ alone when omitted. */
+  typeNames?: string[];
 }): Promise<AgencyEvidence> {
   const names = [input.ahj, ...input.agencyNames].filter(Boolean);
+  const typeNames = [...new Set([input.ahj, ...(input.typeNames ?? [])].filter(Boolean))];
   const official = (u: string) => { const h = portalHostOf(u); return Boolean(h) && isOfficialAgencyHost(h, names, input.state); };
   const domOf = (u: string) => registrableDomain(portalHostOf(u));
   // THE AGENCY'S DOMAIN: where its cited agency answer lives; else the official domain the answer
@@ -537,7 +542,7 @@ export async function readAgencyEvidence(reader: PageReader, input: {
   const pages = await Promise.all(pageUrls.map((u) => reader.read(u)));
   const okPages = pages.filter((p) => p.ok && p.kind === "html");
 
-  const portal = okPages.length ? await resolvePortalFromPages(reader, okPages, { names }) : null;
+  const portal = okPages.length ? await resolvePortalFromPages(reader, okPages, { names, typeNames }) : null;
   const platformPages: string[] = [];
   const platformReads = new Map<string, ReadPage>();
   const notePlatform = (pg: ReadPage) => { platformPages.push(pg.url, pg.finalUrl); platformReads.set(portalTenantKey(pg.url), pg); platformReads.set(portalTenantKey(pg.finalUrl), pg); };
@@ -683,8 +688,13 @@ export async function runPermitProcessLookup(
     const cited = citedSourceUrls(p1json);
     const agencyNames = [first.issuingAgency.value, ...first.permits.map((p) => p.issuingAgency.value)].filter((x): x is string => Boolean(x));
     const agencyCitation = first.issuingAgency.value ? first.issuingAgency.sourceUrl : first.permits.find((p) => p.issuingAgency.value)?.issuingAgency.sourceUrl;
+    // THE TYPE SET IS THE AHJ'S OWN (close-3 MF2): the AHJ, and the agency that issues its permits as
+    // a WHOLE (the top-level answer, or the one every permit agrees on) — never the cited agency of
+    // one permit, which would widen "City of Marion" to {city, county} the moment the electrical
+    // permit cites Marion County and let MARIONCOUNTY pass as the city's own portal.
+    const wholeAgency = liftAgreedAgency(first.issuingAgency, first.permits).value;
     try {
-      ev = await readAgencyEvidence(reader, { ahj: input.ahj, state: input.state, agencyNames, citedUrls: cited.all, agencyCitation, resultUrls: p1.resultUrls, resultTitles: p1.resultTitles, proposedPortals: proposedPortals(p1json) });
+      ev = await readAgencyEvidence(reader, { ahj: input.ahj, state: input.state, agencyNames, citedUrls: cited.all, agencyCitation, resultUrls: p1.resultUrls, resultTitles: p1.resultTitles, proposedPortals: proposedPortals(p1json), typeNames: wholeAgency ? [input.ahj, wholeAgency] : [input.ahj] });
     } catch (err) {
       logger.warn("permit-process", `agency page read failed: ${err instanceof Error ? err.message : String(err)}`);
     }
