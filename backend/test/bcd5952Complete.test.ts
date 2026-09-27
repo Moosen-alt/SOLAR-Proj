@@ -13,7 +13,8 @@
 // KILL TESTS (verified red by hand before the fix landed):
 //   K1 intakeRequests: drop formFactIntakeQuestions                    → (q1) fails.
 //   K2 bcdChecklistFacts.bcd5952SnapshotAdditions: drop the client map → (f2) fails.
-//   K3 bcdChecklistAnswers: ignore moduleHeightFiguresCompliant         → (q2) fails.
+//   K3 bcdChecklistAnswers: ignore moduleHeightFiguresCompliant         → (q1 explicit No) + (q2) fail.
+//   K5 bcdChecklistAnswers: unknown height blank instead of assumed Yes  → (q1 assumed Yes) fails.
 //   K4 moduleListing: accept a vision answer its quote does not support → (v2) fails.
 //
 // Run: npx tsx backend/test/bcd5952Complete.test.ts
@@ -59,13 +60,18 @@ await check("(q1) MUST-PASS: an Oregon comp-shingle job with no layer count, hei
   const p = make();
   const qs = await intake.unansweredPortalQuestions(db, p);
   const keys = qs.map((q) => q.key);
-  for (const k of ["roofLayers", "moduleHeightFiguresCompliant", "structureDescription"]) assert.ok(keys.includes(k), `${k} not asked: ${keys.join(",")}`);
+  for (const k of ["roofLayers", "structureDescription"]) assert.ok(keys.includes(k), `${k} not asked: ${keys.join(",")}`);
+  assert.ok(!keys.includes("moduleHeightFiguresCompliant"), "the module-height row is assumed Yes (operator ruling 2026-09-27), not asked");
   assert.equal(facts.bcdChecklistAnswers(p).roofing, "", "unknown layers stay blank until answered, never a guess");
+  assert.equal(facts.bcdChecklistAnswers(p).heightFigures, "Yes", "unknown module height is assumed Yes, never a blank row");
+  assert.equal(facts.bcdChecklistAnswers(make({ moduleHeightAboveRoof: "20" })).heightFigures, "No", "a stated height over 18 in still answers No");
+  assert.equal(facts.bcdChecklistAnswers(make({ moduleHeightFiguresCompliant: "No" })).heightFigures, "No", "an explicit No still wins");
 });
 
 await check("(q2) MUST-PASS: the operator's answers land on the project and every row they settle fills", async () => {
   const p = make();
-  await intake.answerPortalQuestions(db, p.id, { roofLayers: "1", moduleHeightFiguresCompliant: "Yes", structureDescription: "Single-family dwelling" });
+  // The height row is assumed Yes and is not an open question any more (operator ruling 2026-09-27).
+  await intake.answerPortalQuestions(db, p.id, { roofLayers: "1", structureDescription: "Single-family dwelling" });
   const after = reload(p.id);
   const a = facts.bcdChecklistAnswers(after);
   assert.equal(a.roofing, "Yes");

@@ -38,10 +38,16 @@ export function bcdChecklistAnswers(project: ProjectRecord): Record<string, Answ
   // operator's single answer to that statement (moduleHeightFiguresCompliant — an intake
   // question) settles it; otherwise both stated facts must.
   const heightAnswer = flag("moduleHeightFiguresCompliant");
+  // ASSUMED YES WHEN NOTHING SAYS OTHERWISE (operator ruling 2026-09-27, "just assume yes"): a
+  // blank height row shipped on Michael Sheridan's checklist because no document states the
+  // standoff and nobody had answered the intake question. A stated height over 18 in, or an
+  // explicit "No" to either fact or to the question, still answers No; only the UNKNOWN case
+  // is assumed. The question is no longer asked as a blocker (formFactIntakeQuestions).
+  const heightFacts = all(max("moduleHeightAboveRoof", 18), flag("moduleFiguresCompliant"));
   const facts: Record<string, Fact> = {
     designInstallation: all(flag("gravityWindDesign"), flag("manufacturerInstallation")),
     framing: any(truss, rafter), truss, rafter, roofing,
-    heightFigures: heightAnswer !== null ? heightAnswer : all(max("moduleHeightAboveRoof", 18), flag("moduleFiguresCompliant")),
+    heightFigures: heightAnswer !== null ? heightAnswer : heightFacts === false ? false : true,
     attachments: any(method1, method2), method1, method2,
   };
   return Object.fromEntries(Object.entries(facts).map(([k, v]) => [k, v === true ? "Yes" : v === false ? "No" : ""]));
@@ -99,9 +105,8 @@ export function formFactQuestions(
     if ((family === "composition" || family === "wood") && !has("roofLayers")) {
       out.push({ key: "roofLayers", label: `How many layers of roofing are on the ${roof} roof?`, options: ["1", "2", "3 or more"], kind: "form-fact" });
     }
-    if (!has("moduleHeightFiguresCompliant") && !(has("moduleHeightAboveRoof") && has("moduleFiguresCompliant"))) {
-      out.push({ key: "moduleHeightFiguresCompliant", label: "Are the modules 18 inches or less above the roof surface, installed per the BCD 5952 figures?", options: ["Yes", "No"], kind: "form-fact" });
-    }
+    // The module-height row is assumed Yes when unknown (operator ruling 2026-09-27) — not asked.
+    // An explicit answer stored under moduleHeightFiguresCompliant (from an earlier intake) still wins.
     if (!has("structureDescription")) {
       out.push({ key: "structureDescription", label: "What structure is the array installed on?", options: STRUCTURE_DESCRIPTION_OPTIONS, kind: "form-fact" });
     }

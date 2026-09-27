@@ -57,7 +57,9 @@ try {
     roofLayers: 2, moduleFiguresCompliant: "yes" };
   const answers = (s: Record<string, unknown>) => bcdChecklistAnswers(ctx(s).project);
   assert.equal(answers(complete).attachments, "Yes", "48 in away from edges + 24 in at edges is supported");
-  assert.equal(answers({ ...complete, moduleFiguresCompliant: "" }).heightFigures, "", "height is not figure compliance");
+  assert.equal(answers({ ...complete, moduleFiguresCompliant: "" }).heightFigures, "Yes", "an unknown figure-compliance fact is assumed Yes (operator ruling 2026-09-27), never a blank row");
+  assert.equal(answers({ ...complete, moduleFiguresCompliant: "no" }).heightFigures, "No", "an explicit No still answers No");
+  assert.equal(answers({ ...complete, moduleHeightAboveRoof: 20 }).heightFigures, "No", "a stated height over 18 in still answers No");
   assert.equal(answers({ ...complete, roofLayers: "" }).roofing, "");
   assert.equal(answers({ ...complete, roofLayers: 3 }).roofing, "No");
   assert.notEqual(answers({ ...complete, windSpeed: 111 }).attachments, "Yes", "C exposure attachment cap is 110, not generic 120");
@@ -82,7 +84,8 @@ try {
     assert.equal(filled.getForm().getFields().length, 0, "production output remains flattened");
     const text = await extractLabels(fs.readFileSync(out));
     const marks = text.filter((i) => i.str === "X");
-    assert.equal(marks.length, expected.filter(Boolean).length, name);
+    // +1: the module-height row is assumed Yes whenever nothing states otherwise (operator ruling 2026-09-27).
+    assert.equal(marks.length, expected.filter(Boolean).length + 1, `${name} (incl. the assumed-Yes height row)`);
     expected.forEach((answer, row) => {
       const simple = recovered.overlays.filter(f => f.source.startsWith("computed.presc"));
       const pair = simple.slice(row * 2, row * 2 + 2);
