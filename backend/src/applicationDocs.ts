@@ -11,7 +11,7 @@ import { describeCited, permitProcessFor, statePermitStructure } from "./permitP
 import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
 // Functions only, called at run time: this module sits inside the permitProcessLookup ->
 // feeSchedules -> knowledgeBase -> applicationDocs import cycle (see applicationDocsAgency's header).
-import { issuingAgencyDocumentList, type AgencyDocumentList } from "./applicationDocsAgency";
+import { agencyListReplacesLine, issuingAgencyDocumentList, type AgencyDocumentList } from "./applicationDocsAgency";
 
 // ---------------------------------------------------------------------------
 // ONE PERMIT-STRUCTURE ANSWER (new-AHJ e2e, 2026-09-26: permit structure 0/5 right).
@@ -864,7 +864,7 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
   // never the generic fallback's "portal entry" line. Copied, never mutated.
   let agencyList: ReturnType<typeof issuingAgencyDocumentList> = null;
   try { agencyList = issuingAgencyDocumentList(project); } catch { agencyList = null; }
-  const profile: ApplicationRequirementProfile = agencyList ? withIssuingAgencyList(withKnowledge, agencyList) : withKnowledge;
+  const profile: ApplicationRequirementProfile = agencyList ? withIssuingAgencyList(withKnowledge, agencyList, project) : withKnowledge;
   const answer = permitStructureAnswer(project);
   const structure = answer.structure;
   const permitPath = resolvePermitPath(project);
@@ -934,17 +934,25 @@ export function buildApplicationDocumentPackage(project: ProjectRecord, client: 
 }
 
 /** The packet profile with the issuing agency's list in front: the agency items, then the base
- *  profile's lines that name no application / checklist / worksheet / portal entry (the plan set,
- *  stamps). The profile's other flags are left as they are — whether a track's application is a
- *  filled PDF or a portal entry is decided per row (requiredDocuments.requiredApplicationDocs, from
- *  the agency's known forms), and the packet keeps whatever transfer sheet the profile builds. */
-function withIssuingAgencyList(profile: ApplicationRequirementProfile, list: AgencyDocumentList): ApplicationRequirementProfile {
-  const kept = profile.requiredDocuments.filter((line) => !/application|checklist|worksheet|portal entry/i.test(line));
+ *  profile's lines the list does not replace (agency-apps-close MF2 — applicationDocsAgency.
+ *  agencyListReplacesLine): a line for a TRACK another agency issues gives way to that agency's own
+ *  application, the AHJ's checklist line to the state checklist the list carries; the AHJ's own
+ *  lines for the tracks it issues itself stay (Coos Bay's building application where Coos County
+ *  issues only the electrical permit), and so do the plan set, specs and stamps. The profile's other
+ *  flags are left as they are — whether a track's application is a filled PDF or a portal entry is
+ *  decided per row (requiredDocuments.requiredApplicationDocs, from the agency's known forms), and
+ *  the packet keeps whatever transfer sheet the profile builds. */
+function withIssuingAgencyList(profile: ApplicationRequirementProfile, list: AgencyDocumentList, project: ProjectRecord): ApplicationRequirementProfile {
+  const kept = profile.requiredDocuments.filter((line) => !agencyListReplacesLine(list, line));
+  const tracks = (agency: string): string => {
+    const t = [...new Set(list.items.filter((i) => i.role === "application" && i.agency === agency).map((i) => i.track === "electrical" ? "electrical" : "structural (building)"))];
+    return t.length ? `the ${t.join(" and ")} permit${t.length > 1 ? "s" : ""}` : "a permit";
+  };
   return {
     ...profile,
     requiredDocuments: [...list.items.map((i) => i.text), ...kept],
     notes: [
-      `The per-job lookup cites ${list.agencies.join(" and ")} as the agency that issues ${list.agencies.length > 1 ? "these permits" : "this job's permit(s)"}${list.sourceUrl ? ` (${list.sourceUrl})` : ""} — the applications listed are ${list.agencies.join(" / ")}'s own, filled from this project's values.`,
+      `The per-job lookup cites ${list.agencies.map((a) => `${a} as the agency that issues ${tracks(a)}`).join(", and ")}${list.sourceUrl ? ` (${list.sourceUrl})` : ""} — those applications are listed as that agency's own; ${project.ahj || "the AHJ"}'s own lines stay for any permit it issues itself.`,
       ...(profile.notes || []),
     ],
   };

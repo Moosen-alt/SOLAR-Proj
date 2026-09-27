@@ -29,6 +29,7 @@ import { DOCUMENT_URL, isAgencyOwnDomain, isAgencyOwnUrl, isOfficialAgencyHost, 
 import { portalHostOf } from "./portalChannel";
 import { curatedFormSourcesFor } from "./curatedAhjForms";
 import { resolvePermitPath } from "./permitPath";
+import { requirementTrack } from "./requirementSlots";
 
 export type FormTrack = "building" | "electrical";
 
@@ -242,6 +243,8 @@ export interface AgencyListItem {
   docTypes: string[];
   role: "application" | "checklist" | "prerequisite";
   track?: FormTrack;
+  /** The issuing agency whose application this is (role "application"). */
+  agency?: string;
   sourceUrl: string;
 }
 export interface AgencyDocumentList {
@@ -251,15 +254,18 @@ export interface AgencyDocumentList {
 }
 
 /** A step at the CITY's office before the county takes the application: the lookup's cited
- *  prerequisites, else — where a COUNTY issues for a CITY — the zoning approval every such county
- *  application asks the city for, with the lookup's own words when one of its quotes says so. */
+ *  prerequisites, else — where a COUNTY issues a CITY's building permit — the zoning approval every
+ *  such county application asks the city for, with the lookup's own words when one of its quotes
+ *  says so. */
 export function cityPrerequisiteFor(project: Pick<ProjectRecord, "state" | "ahj">): { text: string; sourceUrl: string; quote: string } | null {
   const lk = permitProcessFor(project);
   const ahj = String(project.ahj ?? "").trim();
   const cited = (lk?.prerequisites ?? []).find((p) => typeof p?.value === "string" && p.value.trim() && /^https?:\/\//i.test(String(p.sourceUrl || "")) && String(p.quote || "").trim().length >= 8);
   if (cited) return { text: `${ahj} first: ${String(cited.value).trim()}`, sourceUrl: String(cited.sourceUrl), quote: String(cited.quote).trim() };
-  const others = tracksIssuedByOther(project);
-  const county = others.find((o) => /\bcounty\b/i.test(o.name));
+  // Only where the county issues the BUILDING permit (agency-apps-close MF2): the zoning block is on
+  // the county's building application. Where the city issues its own building permit (Coos Bay,
+  // Happy Valley — the county only the electrical), its zoning review is its own permit's.
+  const county = tracksIssuedByOther(project).find((o) => o.track === "building" && /\bcounty\b/i.test(o.name));
   if (!county || !/^(city|town|village) of\b/i.test(ahj)) return null;
   // Display selection only (which of the lookup's own cited quotes to show beside the step).
   const facts = [lk?.issuingAgency, ...(lk?.permits ?? []).flatMap((p) => [p.issuingAgency, p.documents])].filter(Boolean) as CitedFact<unknown>[];
@@ -293,10 +299,10 @@ export function issuingAgencyDocumentList(project: Pick<ProjectRecord, "state" |
     const docTypes = [...TRACK_FORM_TYPES[o.track]];
     const forms = agencyApplicationForms(project, docTypes[0], o.track === "building" ? kind : null);
     if (forms.length) {
-      for (const f of forms) items.push({ text: `${o.name} (issues the ${discipline} permit): ${f.formName} — filled`, docTypes, role: "application", track: o.track, sourceUrl: f.sourceUrl });
+      for (const f of forms) items.push({ text: `${o.name} (issues the ${discipline} permit): ${f.formName} — filled`, docTypes, role: "application", track: o.track, agency: o.name, sourceUrl: f.sourceUrl });
     } else {
       const which = o.track === "building" && kind ? `${kind === "prescriptive" ? "prescriptive solar" : "structural (non-prescriptive)"} permit application` : `${discipline} permit application`;
-      items.push({ text: `${o.name} (issues the ${discipline} permit): ${o.name}'s ${which} — not yet on file; obtain the agency's blank`, docTypes, role: "application", track: o.track, sourceUrl: String(o.fact?.sourceUrl || "") });
+      items.push({ text: `${o.name} (issues the ${discipline} permit): ${o.name}'s ${which} — not yet on file; obtain the agency's blank`, docTypes, role: "application", track: o.track, agency: o.name, sourceUrl: String(o.fact?.sourceUrl || "") });
     }
   }
   const oregon = String(project.state ?? "").trim().toUpperCase() === "OR";
@@ -310,6 +316,21 @@ export function issuingAgencyDocumentList(project: Pick<ProjectRecord, "state" |
   if (pre) items.push({ text: pre.text + (pre.quote ? ` — "${pre.quote.slice(0, 160)}"` : ""), docTypes: [], role: "prerequisite", sourceUrl: pre.sourceUrl });
   const agencies = [...new Set(others.map((o) => o.name))];
   return { agencies, sourceUrl: String(others[0].fact?.sourceUrl || ""), items };
+}
+
+/**
+ * Does the agency list REPLACE this line of the AHJ's own required list (agency-apps-close MF2)?
+ * Only the line for a TRACK another agency issues — that agency's own application(s) stand in for
+ * the AHJ's — and the AHJ's checklist line where the list carries the state checklist (one
+ * checklist, not two). The AHJ's own lines for the tracks it issues itself stay (Coos Bay's building
+ * application where Coos County issues only the electrical permit), and so does every line that is
+ * no application (plan set, specs, stamps). One vocabulary: requirementSlots.requirementTrack.
+ */
+export function agencyListReplacesLine(list: AgencyDocumentList, line: string): boolean {
+  const t = requirementTrack(line);
+  if (!t) return false;
+  if (t === "checklist") return list.items.some((i) => i.role === "checklist");
+  return list.items.some((i) => i.role === "application" && i.track === t);
 }
 
 /** The operator's answer to the zoning question (bcdChecklistFacts.formFactQuestions), read as the

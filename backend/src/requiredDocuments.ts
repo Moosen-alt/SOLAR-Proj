@@ -48,10 +48,11 @@ import { applicationProfiles, findApplicationProfile, namedApplicationForm, perm
 import { normalizeAhjName, permitProcessFor, stateRulesFor } from "./permitProcess";
 import { namesPvWorksheet, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import {
-  agencyApplicationForms, issuingAgencyDocumentList, prerequisiteSettled, tracksIssuedByOther, TRACK_FORM_TYPES,
+  agencyApplicationForms, agencyListReplacesLine, issuingAgencyDocumentList, prerequisiteSettled, tracksIssuedByOther, TRACK_FORM_TYPES,
   type AgencyApplicationForm, type FormTrack,
 } from "./applicationDocsAgency";
 import { heldUnfillableAgencyBlanks } from "./ahjForms";
+import { requirementSlots } from "./requirementSlots";
 
 export interface RequiredDocItem {
   /** project_documents.doc_type this maps to (or a synthetic key for path docs). */
@@ -841,30 +842,9 @@ export interface RequiredListCheck {
   missing: RequiredListItem[];
 }
 
-/** A requirement's prose -> the slot(s) that would hold it. Ordered specific-first; "" = none. */
-const REQUIREMENT_SLOT_PATTERNS: Array<{ re: RegExp; docTypes: string[] }> = [
-  { re: /electrical[\w\s/&()-]{0,40}application|renewable\s*energy[\w\s/&()-]{0,20}electrical|wires\s+(department\s+)?(permit\s+)?application/i, docTypes: ["electrical_application"] },
-  { re: /(building|structural)\s*(permit\s*)?application|solar application|building permit application/i, docTypes: ["building_application", "permit_application"] },
-  { re: /checklist|worksheet|eligibilit/i, docTypes: ["solar_checklist", "pv_worksheet"] },
-  { re: /(permit|completed|signed)\s*application|application\s*(form|packet)|^application\b/i, docTypes: ["permit_application", "building_application"] },
-  { re: /stamp|sealed|seal\b|engineer(ing|'s|ed)?\s+letter|structural\s+(letter|calc|analysis|certification|engineering)|pe\s+letter|letter\s+(stamped|from)\s+(by\s+)?an?\s+engineer/i, docTypes: ["structural_letter", "stamped_plans", "engineering_letter"] },
-  { re: /site\s*plan|plot\s*plan|roof\s*plan|site\/roof|fire\s*(access\s*)?pathway\s*plan|roof\s*layout/i, docTypes: ["site_plan"] },
-  { re: /single[-\s]?line|one[-\s]?line|three[-\s]?line|3[-\s]?line|\bsld\b|electrical\s+diagram|wiring\s+diagram/i, docTypes: ["sld"] },
-  { re: /inverter\s*(spec|data|cut|sheet)|micro-?inverter\s*(spec|data|sheet)/i, docTypes: ["inverter_spec"] },
-  { re: /module\s*(spec|data|cut|sheet)|panel\s*(spec|data|cut)\s*sheet|spec(ification)?\s*sheets?|data\s*sheets?|cut\s*sheets?|equipment\s+spec/i, docTypes: ["module_spec"] },
-  { re: /label|placard/i, docTypes: ["labels"] },
-  { re: /utility\s+bill|electric\s+bill|power\s+bill/i, docTypes: ["utility_bill"] },
-  { re: /meter\s+photo|photo\s+of\s+(the\s+)?meter/i, docTypes: ["meter_photo"] },
-  { re: /plan\s*set|construction\s+(documents|drawings|plans)|\bplans\b|drawings|full\s+set|set\s+of\s+plans|structural\s+plans/i, docTypes: ["plan_set", "combined_plan_set", "full_plan_set"] },
-];
-
-/** The slot(s) a requirement's prose would be held in — [] when this product holds no such slot. */
-export function requirementSlots(text: string): string[] {
-  const t = String(text || "").trim();
-  if (!t) return [];
-  const hit = REQUIREMENT_SLOT_PATTERNS.find((p) => p.re.test(t));
-  return hit ? hit.docTypes : [];
-}
+// requirementSlots lives in the leaf module ./requirementSlots (applicationDocs reads it too; this module
+// imports applicationDocs, so the vocabulary cannot live here without a cycle). Re-exported for callers.
+export { requirementSlots };
 
 function requirementSkipReason(text: string, path: "prescriptive" | "engineered" | "unknown", standardReview: boolean): string {
   const t = String(text || "").toLowerCase();
@@ -926,6 +906,18 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
       structured.set(item.text, { docTypes: item.docTypes, prerequisite: item.role === "prerequisite" });
     }
   };
+  // A KNOWN list only: a hand-written profile, or the seeded process profile's own lines. The
+  // generic fallback SYNTHESIZES a list for an AHJ nobody has looked up — that is not a list the
+  // AHJ published, and the row must say so rather than pass on it.
+  const knownProfile = (): { label: string; lines: string[] } | null => {
+    let profile: ReturnType<typeof findApplicationProfile> | null = null;
+    try { profile = findApplicationProfile(project); } catch { profile = null; }
+    if (!profile || !(profile.id.startsWith("process-") || (applicationProfiles.includes(profile) && profile.id !== "oregon-generic-epermitting"))) return null;
+    return {
+      label: profile.id.startsWith("process-") ? `the seeded ${project.ahj || "AHJ"} process profile (not confirmed on an agency page)` : `the ${profile.name} profile`,
+      lines: profile.requiredDocuments.filter((t) => String(t || "").trim()),
+    };
+  };
   if (found.items.length) {
     source = "lookup";
     sourceLabel = `the per-job process lookup (cited: ${found.sourceUrl})`;
@@ -935,16 +927,21 @@ export function requiredListCheck(db: AppDb, project: ProjectRecord, inventory: 
     source = "lookup";
     sourceLabel = `the per-job process lookup's issuing agenc${agencyList.agencies.length > 1 ? "ies" : "y"} (${agencyList.agencies.join(", ")}${agencyList.sourceUrl ? `, cited: ${agencyList.sourceUrl}` : ""})`;
     addAgencyItems(false);
+    // SPLIT AGENCIES (agency-apps-close MF2): the agency's list replaces the AHJ's lines only for the
+    // TRACK that agency issues. The AHJ's own known lines for the tracks it issues itself stay — Coos
+    // Bay's building application where Coos County issues only the electrical permit.
+    const own = knownProfile();
+    const kept = own ? own.lines.filter((l) => !agencyListReplacesLine(agencyList!, l)) : [];
+    if (own && kept.length) {
+      sourceLabel += ` and ${own.label}`;
+      texts.push(...kept);
+    }
   } else {
-    let profile: ReturnType<typeof findApplicationProfile> | null = null;
-    try { profile = findApplicationProfile(project); } catch { profile = null; }
-    // A KNOWN list only: a hand-written profile, or the seeded process profile's own lines. The
-    // generic fallback SYNTHESIZES a list for an AHJ nobody has looked up — that is not a list the
-    // AHJ published, and the row must say so rather than pass on it.
-    if (profile && (profile.id.startsWith("process-") || (applicationProfiles.includes(profile) && profile.id !== "oregon-generic-epermitting"))) {
+    const own = knownProfile();
+    if (own) {
       source = "profile";
-      sourceLabel = profile.id.startsWith("process-") ? `the seeded ${project.ahj || "AHJ"} process profile (not confirmed on an agency page)` : `the ${profile.name} profile`;
-      texts = profile.requiredDocuments.filter((t) => String(t || "").trim());
+      sourceLabel = own.label;
+      texts = own.lines;
     }
   }
   if (source === "unknown") return { source, sourceLabel: "", items: [], missing: [] };
