@@ -527,7 +527,7 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
   const byProject = new Map<string, ClientPortalTrack[]>();
   for (const t of targets) {
     const pid = String(t.project_id);
-    const type = String(t.target_type || "permit");
+    const type = trackKind(String(t.target_type || ""), String(t.permit_type || "")); // the ONE answer
     const list = byProject.get(pid) || [];
     const applicationNumber = String(t.application_number || "");
     const filing = filingByKey.get(filingKey(pid, applicationNumber));

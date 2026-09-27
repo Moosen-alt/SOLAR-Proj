@@ -12,6 +12,9 @@
 //   K1 applyKnowledgeDeletions: delete the parent before the children → (b) throws under FK.
 //   K2 planKnowledgeDeletions: drop the verified_at refusal → (c) red.
 //   K3 CLI: open the dry run read-write and run apply → (a) sha1 changes.
+//   K4 planKnowledgeDeletions: drop the project_count > 0 refusal → (f) red (the skeptic's K6,
+//      which survived before (f) existed: the used row is made by the REAL write path —
+//      createProject → learnFromProject → knowledge_events.project_id → project_count).
 // Run: npx tsx backend/test/deleteKnowledgeRows.test.ts
 import "./_isolate"; // FIRST
 import assert from "node:assert/strict";
@@ -33,6 +36,7 @@ delete process.env.ANTHROPIC_API_KEY;
 
 const { openDatabase } = await import("../src/db");
 const KB = await import("../src/knowledgeBase");
+const { createProject } = await import("../src/repository");
 const { id: newId } = await import("../src/ids");
 const { nowIso } = await import("../src/time");
 
@@ -50,16 +54,21 @@ assert.equal(KB.importSeededAhjKnowledge(db, { state: "ID", ahj: "City of Hillsb
 assert.equal(KB.importSeededAhjKnowledge(db, { state: "OR", ahj: "1 5 days", sourceLabel: "test", notes: "junk" }), "imported");
 assert.equal(KB.importSeededAhjKnowledge(db, { state: "MA", ahj: "City of Waltham", sourceLabel: "test", notes: "bystander" }), "imported");
 KB.saveVerifiedAhjProfile(db, { state: "TX", ahj: "City of Verified", notes: "a coordinator checked this", verifiedBy: "test-user" });
+// A USED row, through the real write path: a project for that AHJ (no utility, so the key is the
+// AHJ-only one) → learnFromProject → a knowledge_events row with project_id → project_count 1.
+createProject(db, { owner: "Used Owner", street: "1 Served Way", city: "Boise", state: "ID", zip: "83702", ahj: "City of Used", utility: "", dcKw: "7.0" } as never);
 
 const keyOf = (state: string, ahj: string): string => KB.knowledgeProfileKey({ state, ahj, utility: "" });
-const rowByKey = (key: string): { id: string; verified_at: string | null } =>
-  db.get<{ id: string; verified_at: string | null }>("SELECT id, verified_at FROM permit_utility_knowledge WHERE profile_key = ?", [key])!;
+const rowByKey = (key: string): { id: string; verified_at: string | null; project_count: number } =>
+  db.get<{ id: string; verified_at: string | null; project_count: number }>("SELECT id, verified_at, project_count FROM permit_utility_knowledge WHERE profile_key = ?", [key])!;
 const JUNK_A = rowByKey(keyOf("ID", "City of Hillsboro Electronic"));
 const JUNK_B = rowByKey(keyOf("OR", "1 5 days"));
 const BYSTANDER = rowByKey(keyOf("MA", "City of Waltham"));
 const VERIFIED = rowByKey(keyOf("TX", "City of Verified"));
-assert.ok(JUNK_A?.id && JUNK_B?.id && BYSTANDER?.id && VERIFIED?.id, "seed rows exist");
+const USED = rowByKey(keyOf("ID", "City of Used"));
+assert.ok(JUNK_A?.id && JUNK_B?.id && BYSTANDER?.id && VERIFIED?.id && USED?.id, "seed rows exist");
 assert.ok(VERIFIED.verified_at, "the verified row carries verified_at");
+assert.ok(Number(USED.project_count) >= 1 && !USED.verified_at, `the used row: project_count ${USED.project_count}, verified_at ${USED.verified_at}`);
 
 // Child rows for JUNK_A in every referencing table (what 46b361e8 carries on production).
 const keyA = keyOf("ID", "City of Hillsboro Electronic");
@@ -92,6 +101,7 @@ const counts = (): Record<string, number> => {
     out.rowB = Number((ro.prepare("SELECT COUNT(*) AS n FROM permit_utility_knowledge WHERE id = ?").get(JUNK_B.id) as { n: number }).n);
     out.bystander = Number((ro.prepare("SELECT COUNT(*) AS n FROM permit_utility_knowledge WHERE id = ?").get(BYSTANDER.id) as { n: number }).n);
     out.verified = Number((ro.prepare("SELECT COUNT(*) AS n FROM permit_utility_knowledge WHERE id = ?").get(VERIFIED.id) as { n: number }).n);
+    out.used = Number((ro.prepare("SELECT COUNT(*) AS n FROM permit_utility_knowledge WHERE id = ?").get(USED.id) as { n: number }).n);
     return out;
   } finally { ro.close(); }
 };
@@ -171,6 +181,21 @@ await check("(e) --force deletes the verified row (the operator's explicit overr
   const r = run("--id", VERIFIED.id, "--apply", "--force");
   assert.equal(r.code, 0, r.out);
   assert.equal(counts().verified, 0);
+});
+
+await check("(f) a row that has SERVED a project is refused without --force (exit 2, nothing written) and deleted with it", () => {
+  const before = counts();
+  const h0 = sha1();
+  const refused = run("--id", USED.id, "--apply");
+  assert.equal(refused.code, 2, refused.out);
+  assert.match(refused.out, /REFUSE\s+\S+.*has served 1 project\(s\)/, refused.out);
+  assert.match(refused.out, /nothing written/i);
+  assert.equal(sha1(), h0, "a refused apply of a used row still wrote");
+  assert.deepEqual(counts(), before);
+  assert.equal(counts().used, 1);
+  const forced = run("--id", USED.id, "--apply", "--force");
+  assert.equal(forced.code, 0, forced.out);
+  assert.equal(counts().used, 0, "--force did not delete the used row");
 });
 
 if (failures) { console.error(`\n${failures} delete-knowledge-rows test(s) failed.`); process.exit(1); }

@@ -40,7 +40,7 @@ import { text } from "./json";
 export const BRAND = (process.env.BRAND_NAME || "Keelix").trim() || "Keelix";
 import { id } from "./ids";
 import { nowIso } from "./time";
-import { isNemApprovalOutcome } from "./permitMonitor";
+import { isNemApprovalOutcome, trackKind } from "./permitMonitor";
 
 export interface ClientUpdateContext {
   /** "permit" | "nem" — which track moved. */
@@ -70,12 +70,15 @@ export interface ClientUpdate {
  *  implying the whole job is done. Returns "" when there is no other track. */
 function otherTrackOutcome(db: AppDb, projectId: string, thisType: string): string {
   const want = thisType === "nem" ? "permit" : "nem";
-  const row = db.get<{ latest_outcome?: string }>(
-    `SELECT latest_outcome FROM permit_check_targets
-      WHERE project_id = ? AND target_type = ? AND active = 1
-      ORDER BY last_checked_at DESC LIMIT 1`,
-    [projectId, want],
-  );
+  // Kind by trackKind — the ONE "what track is this target" answer — judged in JS: a raw
+  // `target_type = ?` filter missed a legacy 'permit'-typed NEM filing, so a permit's "issued"
+  // update told the client the install could be scheduled while that interconnection was open.
+  const row = db.query<{ latest_outcome?: string; target_type?: string; permit_type?: string }>(
+    `SELECT latest_outcome, target_type, permit_type FROM permit_check_targets
+      WHERE project_id = ? AND active = 1
+      ORDER BY last_checked_at DESC`,
+    [projectId],
+  ).find((r) => trackKind(text(r.target_type), text(r.permit_type)) === want);
   return text(row?.latest_outcome);
 }
 

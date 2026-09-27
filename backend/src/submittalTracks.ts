@@ -27,7 +27,7 @@ import { findApplicationProfile, describePermitType, permitStructureAnswer, perm
 import { findAhjProcessProfile, jurisdictionKind, jurisdictionKindsCompatible } from "./processProfiles";
 import { recipeProfileKey } from "./portalRecipes";
 import { detectPlatform } from "./publicPermitStatus";
-import { NEM_APPROVAL_OUTCOME, isNemApprovalOutcome } from "./permitMonitor";
+import { NEM_APPROVAL_OUTCOME, isNemApprovalOutcome, trackKind } from "./permitMonitor";
 import { HttpError } from "./httpError";
 import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, trackSafeUrl } from "./portalChannel";
 import { permitAnswerForTrack, permitProcessFor } from "./permitProcess";
@@ -265,11 +265,20 @@ export function trackPermitTypes(track: SubmittalTrackType): string[] {
  *  - an outcome counts ONLY on a target of its own kind. A utility target whose text happened
  *    to classify as "issued", or a permit target reading "nem_approved", has not finished that
  *    track — the same rule updateProjectForPermitOutcome applies before it writes a status.
+ *
+ * `targetKind` is the target's KIND — trackKind(target_type, permit_type), the ONE answer — never
+ * raw target_type: a legacy row typed '' or 'permit' beside permit_type 'nem' is the NEM filing
+ * the writer classifies it as, and its approval must finish the NEM track (not stay "in review").
  */
-export function outcomeFinishesTrack(track: SubmittalTrackType, outcome: PermitCheckOutcome | string | null, targetType: string): boolean {
+export function outcomeFinishesTrack(track: SubmittalTrackType, outcome: PermitCheckOutcome | string | null, targetKind: string): boolean {
   // isNemApprovalOutcome: the ONE "is this NEM target approved" predicate (permitMonitor.ts).
-  if (track === "nem") return targetType === "nem" && isNemApprovalOutcome(outcome);
-  return targetType === "permit" && outcome === "issued";
+  if (track === "nem") return targetKind === "nem" && isNemApprovalOutcome(outcome);
+  return targetKind === "permit" && outcome === "issued";
+}
+
+/** The target row's kind — trackKind, the ONE answer (never raw target_type). */
+function kindOf(target: Row): "permit" | "nem" {
+  return trackKind(s(target.target_type), s(target.permit_type));
 }
 
 /**
@@ -289,8 +298,7 @@ export function outcomeFinishesTrack(track: SubmittalTrackType, outcome: PermitC
  */
 function targetFinishedTrack(db: AppDb, track: SubmittalTrackType, target: Row): boolean {
   const done = track === "nem" ? NEM_APPROVAL_OUTCOME : "issued";
-  const targetType = s(target.target_type);
-  if (!outcomeFinishesTrack(track, done, targetType)) return false; // wrong kind of target
+  if (!outcomeFinishesTrack(track, done, kindOf(target))) return false; // wrong kind of target
   const latest = s(target.latest_outcome);
   if (latest === "correction_flagged") return false;
   if (latest === done) return true;
@@ -322,7 +330,7 @@ function trackTargets(db: AppDb, projectId: string, track: SubmittalTrackType, r
   const own = tagged(track);
   const kind = targetTypeFor(track);
   const claimed = new Set([...required, track].flatMap(trackPermitTypes));
-  const pool = active.filter((r) => s(r.target_type) === kind && !claimed.has(s(r.permit_type)));
+  const pool = active.filter((r) => kindOf(r) === kind && !claimed.has(s(r.permit_type)));
   const poolDemand = [...new Set([...required, track])].filter((t) => targetTypeFor(t) === kind && !tagged(t)).length;
   return { own, pool, poolDemand };
 }
@@ -452,7 +460,8 @@ export function unfinishedTracks(db: AppDb, projectId: string, tracks: readonly 
 export function unfinishedUnattributedTargets(db: AppDb, projectId: string, tracks: readonly SubmittalTrackType[]): number {
   if (tracks.filter((t) => targetTypeFor(t) === "permit").length < 2) return 0;
   const claimed = new Set(tracks.flatMap(trackPermitTypes));
-  const active = db.query<Row>("SELECT * FROM permit_check_targets WHERE project_id = ? AND active = 1 AND target_type = 'permit'", [projectId]);
+  // Permit KIND by trackKind (kindOf), not a raw `target_type = 'permit'` filter.
+  const active = db.query<Row>("SELECT * FROM permit_check_targets WHERE project_id = ? AND active = 1", [projectId]).filter((r) => kindOf(r) === "permit");
   return active.filter((r) => !claimed.has(s(r.permit_type)) && !targetFinishedTrack(db, "permit", r)).length;
 }
 
@@ -897,8 +906,12 @@ export function ensureCheckTarget(
 ): EnsureCheckTargetResult {
   const ts = nowIso();
   const track = input.track;
-  const targetType: "permit" | "nem" = input.targetType ?? (track ? targetTypeFor(track) : "permit");
-  const permitType = (input.permitType ?? (track ?? (targetType === "nem" ? "nem" : ""))).trim();
+  const permitType = (input.permitType ?? (track ?? ((input.targetType ?? (track ? targetTypeFor(track) : "permit")) === "nem" ? "nem" : ""))).trim();
+  // THE ROW IS BORN WITH ITS KIND — trackKind of what the door said, so `permit_type: 'nem'` with
+  // no (or a 'permit') target type is stored as the NEM filing it is. Every reader judges rows by
+  // trackKind anyway (older rows and raw writes cannot be trusted); this stops the split shape
+  // being written at all through any door (decisions-0926 skeptic MF3).
+  const targetType: "permit" | "nem" = trackKind(input.targetType ?? (track ? targetTypeFor(track) : "permit"), permitType);
   const applicationNumber = (input.applicationNumber || "").trim();
   const permitNumber = (input.permitNumber || "").trim();
   const trackingUrl = (input.trackingUrl || "").trim();
@@ -914,7 +927,7 @@ export function ensureCheckTarget(
   let existing: Row | undefined;
   if (mine.length) {
     existing = candidates.find((row) => {
-      if (s(row.target_type) !== targetType) return false;
+      if (kindOf(row) !== targetType) return false;
       const theirs = [s(row.application_number).trim(), s(row.permit_number).trim()].filter(Boolean);
       return theirs.some((t) => mine.includes(t));
     });

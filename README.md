@@ -34,8 +34,11 @@ payments.
 
 ## Safety (never regress)
 
-Automation never clicks final submit, never pays portal fees, never solves
-CAPTCHA/MFA; secrets never reach the LLM; human-verified knowledge is never
+Automation never pays portal fees and never solves CAPTCHA/MFA. The portal's
+final submit is clicked by a human, or by automation only under the one gate
+(`mayClickFinalSubmit`: a named person's approval of exactly that run, plus
+`PORTAL_ALLOW_FINAL_SUBMIT=1` on the process, plus a valid recipe shape);
+secrets never reach the LLM; human-verified knowledge is never
 auto-overwritten. See `CLAUDE.md`.
 
 ## Test suites

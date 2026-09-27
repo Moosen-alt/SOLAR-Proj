@@ -126,7 +126,7 @@ import {
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
 import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
-import { classificationDrift, classifyPermitStatusText, isAuthWallText, isNemApprovalOutcome, nextCheckIso, shouldRecordStatusCheck, trackKind } from "./permitMonitor";
+import { classificationDrift, classifyPermitStatusText, isAuthWallText, isNemApprovalOutcome, nextCheckIso, shouldRecordStatusCheck, trackKind, type TrackKind } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
@@ -409,7 +409,9 @@ function mapPermitTarget(row: Row): PermitCheckTarget {
     latestOutcome: row.latest_outcome == null ? null : (text(row.latest_outcome) as PermitCheckOutcome),
     latestStatusLabel: text(row.latest_status_label),
     notes: text(row.notes),
-    targetType: (row.target_type === "nem" ? "nem" : "permit") as "permit" | "nem",
+    // ONE answer to "what track is this target": trackKind, so a legacy row (blank or 'permit'
+    // target_type beside permit_type 'nem') is the NEM filing the writer already judges it as.
+    targetType: trackKind(text(row.target_type), text(row.permit_type)),
     // WHICH permit this track is ('building' | 'electrical' | 'combo' | 'nem'). Carried because
     // both client-facing surfaces name the trade from it; without it a project with separate
     // structural and electrical permits shows two identical rows.
@@ -426,7 +428,9 @@ function mapPermitStatusCheck(row: Row): PermitStatusCheck {
     id: text(row.id),
     projectId: text(row.project_id),
     targetId: row.target_id == null ? null : text(row.target_id),
-    targetType: text(row.target_type),
+    // The joined target's kind by trackKind (the ONE answer — `t.target_type, t.permit_type` in
+    // the SELECT); blank when the check has no target, which hasNemSignal then word-sniffs.
+    targetType: row.target_type == null && row.permit_type == null ? "" : trackKind(text(row.target_type), text(row.permit_type)),
     source: text(row.source) as PermitCheckSource,
     rawStatusText: text(row.raw_status_text),
     statusLabel: text(row.status_label),
@@ -1027,9 +1031,13 @@ export function computeLaneStatusSummary(
     || trackDone.permit
     || permitChecks.some((check) => check.readyForIssue || check.outcome === "ready_for_issue" || check.outcome === "issued")
     || Boolean(latestPermitEmail && (latestPermitEmail.emailBucket === "permit_approval" || latestPermitEmail.emailBucket === "inspection_final_notice"));
+  // NOT projectStatus === "approved": only a PERMIT reading writes that status (reviewed_by_ahj
+  // on a permit target -> project 'approved'), so counting it here was a second "is NEM
+  // approved" predicate that said yes to a permit's plan-review approval (decisions-0926
+  // skeptic MF2). The NEM lane answers through isNemApprovalOutcome on its own checks, the
+  // NEM track's done verdict, the project's NEM-earned statuses, and the utility's own email.
   const nemApproved =
-    projectStatus === "approved"
-    || projectStatus === "nem_approved"
+    projectStatus === "nem_approved"
     || projectStatus === "handoff_ready"
     || trackDone.nem
     || nemChecks.some((check) => isNemApprovalOutcome(check.outcome))
@@ -1122,7 +1130,7 @@ export function getProjectList(
   const emailsByProject = new Map<string, ReturnType<typeof mapEmailProjectMatch>[]>();
   if (pageIds.length) {
     const placeholders = pageIds.map(() => "?").join(",");
-    for (const r of db.query<Row>(`SELECT c.*, t.target_type FROM permit_status_checks c LEFT JOIN permit_check_targets t ON t.id = c.target_id WHERE c.project_id IN (${placeholders}) ORDER BY c.created_at DESC`, pageIds)) {
+    for (const r of db.query<Row>(`SELECT c.*, t.target_type, t.permit_type FROM permit_status_checks c LEFT JOIN permit_check_targets t ON t.id = c.target_id WHERE c.project_id IN (${placeholders}) ORDER BY c.created_at DESC`, pageIds)) {
       const pid = text(r.project_id);
       const arr = checksByProject.get(pid) ?? [];
       if (arr.length < 50) { arr.push(mapPermitStatusCheck(r)); checksByProject.set(pid, arr); }
@@ -1204,7 +1212,7 @@ export function getProjectDetail(db: AppDb, projectId: string): ProjectDetail {
       .query<Row>("SELECT * FROM permit_check_targets WHERE project_id = ? ORDER BY active DESC, created_at DESC", [projectId])
       .map(mapPermitTarget),
     permitStatusChecks: db
-      .query<Row>("SELECT c.*, t.target_type FROM permit_status_checks c LEFT JOIN permit_check_targets t ON t.id = c.target_id WHERE c.project_id = ? ORDER BY c.created_at DESC LIMIT 50", [projectId])
+      .query<Row>("SELECT c.*, t.target_type, t.permit_type FROM permit_status_checks c LEFT JOIN permit_check_targets t ON t.id = c.target_id WHERE c.project_id = ? ORDER BY c.created_at DESC LIMIT 50", [projectId])
       .map(mapPermitStatusCheck),
     emailProjectMatches: db
       .query<Row>("SELECT * FROM email_project_matches WHERE project_id = ? ORDER BY created_at DESC LIMIT 50", [projectId])
@@ -4252,9 +4260,31 @@ function trackingNumbersForProject(db: AppDb, projectId: string): string[] {
     .filter(Boolean);
 }
 
-function firstPermitTargetId(db: AppDb, projectId: string): string | null {
-  const row = db.get<Row>("SELECT id FROM permit_check_targets WHERE project_id = ? ORDER BY active DESC, created_at DESC LIMIT 1", [projectId]);
-  return row ? text(row.id) : null;
+/**
+ * WHICH TRACKING TARGET AN INBOUND EMAIL IS FILED ON — the target of the email's OWN track.
+ *
+ * This used to be "the project's newest target, whoever sent the email" (firstPermitTargetId).
+ * With the classifier reading the TARGET's track, an AHJ plan-review approval landing on a NEM
+ * target created later read nem_approved: the NEM track finished, the project said the utility
+ * had approved the interconnection, and the client was told so (decisions-0926 skeptic MF1;
+ * production project 720b05f3 has exactly that shape — NEM target newest beside two permits).
+ *
+ * The email classifier already says which workflow the message is about
+ * (message.record.workflow: "permit" | "nem" | "both" | "unknown"), so:
+ *   - "permit" -> the newest ACTIVE permit-kind target; "nem" -> the newest ACTIVE NEM-kind target
+ *     (kind by trackKind — the ONE answer to "what track is this target", never raw target_type);
+ *   - no active target of that kind, or a workflow that names no single track ("both", "unknown")
+ *     -> null: the reading is recorded as a check row with NO target. NEVER the other track's
+ *     target, and never an inactive one (a retired filing is not this email's).
+ * The caller passes the email's track alongside so a no-target reading is still judged as the
+ * filing it is about (recordPermitStatusCheck's `track` input).
+ */
+export function emailTrackTargetId(db: AppDb, projectId: string, workflow: string): { targetId: string | null; track: TrackKind | null } {
+  const track: TrackKind | null = workflow === "permit" || workflow === "nem" ? workflow : null;
+  if (!track) return { targetId: null, track: null };
+  const rows = db.query<Row>("SELECT id, target_type, permit_type FROM permit_check_targets WHERE project_id = ? AND active = 1 ORDER BY created_at DESC", [projectId]);
+  const own = rows.find((row) => trackKind(text(row.target_type), text(row.permit_type)) === track);
+  return { targetId: own ? text(own.id) : null, track };
 }
 
 function extractTrackingNumber(raw: string, labels: RegExp[]): string {
@@ -4441,11 +4471,13 @@ export async function runEmailTracker(
         }
 
         const before = getProjectDetail(db, match.project.id);
-        const targetId = firstPermitTargetId(db, match.project.id);
+        // THE EMAIL'S OWN TRACK picks the target (emailTrackTargetId) — never the project's newest.
+        const filing = emailTrackTargetId(db, match.project.id, text(message.record.workflow));
         const applicationNumber = extractTrackingNumber(message.rawSearchText, [/\b(?:application|app|record)\s*(?:number|#|no\.?)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i]);
         const permitNumber = extractTrackingNumber(message.rawSearchText, [/\bpermit\s*(?:number|#|no\.?)?\s*[:#-]?\s*([A-Z0-9-]{4,})/i]);
         const updated = await recordPermitStatusCheck(db, match.project.id, {
-          targetId,
+          targetId: filing.targetId,
+          track: filing.track,
           source: "email",
           rawStatusText: emailStatusText(message),
           applicationNumber,
@@ -4489,6 +4521,10 @@ export async function runEmailTracker(
           sourceLabel,
           bucket: message.record.type,
           workflow: message.record.workflow,
+          // Where the reading was filed: the email's own track's target, or none (no target of
+          // that kind on this project, or a workflow naming no single track).
+          targetId: filing.targetId,
+          track: filing.track,
           confidence: match.confidence,
           reason: match.reason,
           statusCheckId: statusCheck?.id || null,
@@ -5534,7 +5570,7 @@ export async function reopenCorrectionOnPortal(
   );
   const describe = (t: Row) => ({
     targetId: text(t.id),
-    targetType: text(t.target_type) === "nem" ? "nem" : "permit",
+    targetType: trackKind(text(t.target_type), text(t.permit_type)),
     applicationNumber: text(t.application_number),
     portalName: text(t.portal_name),
     portalUrl: text(t.portal_url),
@@ -5576,7 +5612,7 @@ export async function reopenCorrectionOnPortal(
       ? quotedTargets
       : wantType === "unclassified"
         ? []
-        : targets.filter((t) => text(t.target_type) === wantType || (wantType === "permit" && text(t.target_type) !== "nem"));
+        : targets.filter((t) => trackKind(text(t.target_type), text(t.permit_type)) === wantType);
     if (scoped.length === 1) target = scoped[0];
     else {
       return surfaceNeedsHuman(
@@ -5594,7 +5630,7 @@ export async function reopenCorrectionOnPortal(
     );
   }
 
-  const targetType: "permit" | "nem" = text(target.target_type) === "nem" ? "nem" : "permit";
+  const targetType: "permit" | "nem" = trackKind(text(target.target_type), text(target.permit_type));
   const scopeType: "ahj" | "utility" = targetType === "nem" ? "utility" : "ahj";
   const applicationNumber = text(target.application_number);
 
@@ -5874,6 +5910,13 @@ export async function recordPermitStatusCheck(
   projectId: string,
   input: {
     targetId?: string | null;
+    /** THE READING'S TRACK WHEN THERE IS NO TARGET to say — the email tracker passes the email's
+     *  own workflow so a utility's approval email filed with no NEM target on the project is still
+     *  judged as the interconnection reading it is (never as plan review). Honoured ONLY when
+     *  `targetId` is absent: a target's own kind (trackKind) always wins. Omitted with no target:
+     *  provenance unknown — classified as a permit reading, and the project-status writer treats
+     *  it as neither track (the behaviour every manual project-level check has always had). */
+    track?: TrackKind | null;
     source?: PermitCheckSource;
     rawStatusText?: string;
     applicationNumber?: string;
@@ -5889,12 +5932,17 @@ export async function recordPermitStatusCheck(
   const source = input.source || "manual";
   const rawStatusText = await resolveStatusText(target, input.rawStatusText || "", source);
   // THE TARGET'S TRACK decides what its words mean: a utility's "Approved" is the interconnection
-  // approval (nem_approved), a jurisdiction's is plan review done (reviewed_by_ahj). trackKind so a
-  // legacy target with a blank target_type and permit_type 'nem' is judged as the NEM filing it
-  // is. A project-level check with no target is a PERMIT reading: an unknown track is never
-  // guessed into the utility's queue, and nothing writes nem_approved from unknown provenance.
-  const track = target ? trackKind(text(target.target_type), text(target.permit_type)) : "permit";
-  const classification = classifyPermitStatusText(rawStatusText, track);
+  // approval (nem_approved), a jurisdiction's is plan review done (reviewed_by_ahj). ONE ANSWER,
+  // trackKind (a legacy target with a blank or 'permit' target_type and permit_type 'nem' is the
+  // NEM filing it is), derived HERE ONCE and handed to everything downstream — the project-status
+  // writer, the track finish, the client update — which used to re-read raw target_type and
+  // disagree with the classifier (decisions-0926 skeptic MF3: such a target read "Approved" as
+  // nem_approved and then the project stayed 'submitted', or read "Permit Issued" and the project
+  // went 'issued' from a utility filing). With no target: the caller's declared track (the email
+  // tracker's workflow), else null = unknown provenance, classified as a permit reading and never
+  // guessed into the utility's queue.
+  const track: TrackKind | null = target ? trackKind(text(target.target_type), text(target.permit_type)) : (input.track ?? null);
+  const classification = classifyPermitStatusText(rawStatusText, track ?? "permit");
   // Previous outcome/label BEFORE this check updates the target — the client is notified only
   // when the outcome actually CHANGES (never re-sent on every poll of a settled status), and the
   // same pair decides whether this check is a row at all. Both must be read here, above the
@@ -5931,7 +5979,7 @@ export async function recordPermitStatusCheck(
     )
     : null;
   const baselineStale = newestRow
-    ? classificationDrift({ outcome: text(newestRow.outcome), statusLabel: text(newestRow.status_label), rawStatusText: text(newestRow.raw_status_text) }, track).stale
+    ? classificationDrift({ outcome: text(newestRow.outcome), statusLabel: text(newestRow.status_label), rawStatusText: text(newestRow.raw_status_text) }, track ?? "permit").stale
     : false;
   const recordCheck = shouldRecordStatusCheck(
     target ? { outcome: previousOutcome, statusLabel: previousStatusLabel, stale: baselineStale } : null,
@@ -6021,7 +6069,7 @@ export async function recordPermitStatusCheck(
       );
     }
 
-    updateProjectForPermitOutcome(db, detail.project.status, projectId, classification.outcome, classification.message, ts, text(target?.target_type), input.targetId || null);
+    updateProjectForPermitOutcome(db, detail.project.status, projectId, classification.outcome, classification.message, ts, track, input.targetId || null);
     // AFTER the status write (so resolveCorrection sees the project already issued and does not
     // rewind it) and BEFORE the handoff check (an open correction is a handoff blocker, so the
     // same reading that finishes the scope can hand it off).
@@ -6094,7 +6142,9 @@ export async function recordPermitStatusCheck(
     void notifyClientOfStatusChange(db, detail.project, {
       outcome: classification.outcome,
       statusLabel: classification.statusLabel,
-      targetType: text(target?.target_type) || "permit",
+      // The writer's ONE track (trackKind), never raw target_type: the wording's "which side
+      // moved / what is still outstanding" must agree with what was just written.
+      targetType: track ?? "permit",
       // The jurisdiction's own reference. Without these the client update reads "has issued the
       // permit." with nothing they can quote back to the AHJ — the whole point of the sentence is
       // that they can look it up themselves. Optional on the signature, so omitting them
@@ -6127,7 +6177,7 @@ async function resolveStatusText(target: Row | null, rawStatusText: string, sour
   // Rule 5 both ways at the fetch (resolution skeptic MF3): a permit target bound to a utility
   // host (production 99ea32c3: permit, APP-111667, pacificorpnetmetering.powerclerk.com) is not
   // fetched, and a NEM target bound to an AHJ permit platform is not either.
-  const fetchUrl = target ? trackSafeUrl(text(target.target_type) === "nem" ? "nem" : "permit", text(target.portal_url)) : "";
+  const fetchUrl = target ? trackSafeUrl(trackKind(text(target.target_type), text(target.permit_type)), text(target.portal_url)) : "";
   if ((source === "public_url" || source === "portal") && target && fetchUrl) {
     // Try the platform-aware public fetcher (Accela capID URL, EnerGov CSS API,
     // SolarAPP+, or generic HTML strip). Passes application/permit numbers so
@@ -6296,7 +6346,10 @@ function updateProjectForPermitOutcome(
   outcome: PermitCheckOutcome,
   message: string,
   ts: string,
-  targetType?: string,
+  /** The reading's track as the writer derived it ONCE (trackKind of the target; the caller's
+   *  declared track for a no-target reading); null = unknown provenance (a project-level check
+   *  with no target and no declared track), which is neither side. */
+  track: TrackKind | null,
   targetId?: string | null,
 ): void {
   const update = (status: ProjectRecord["status"], stage: string, detail: StageDetail) => {
@@ -6329,13 +6382,14 @@ const MONITOR_WAITING_MAY_ADVANCE = new Set(["awaiting_human_submit", "submitted
   const waitingWouldRewindAnotherTrack = (): boolean => {
     if (currentStatus !== "approved" && currentStatus !== "ready_for_issue") return false;
     if (!isPermit) return true;
-    return Boolean(db.get<Row>(
-      `SELECT id FROM permit_check_targets
-        WHERE project_id = ? AND active = 1 AND id <> ? AND target_type = 'permit'
-          AND latest_outcome IN ('reviewed_by_ahj', 'ready_for_issue', 'issued')
-        LIMIT 1`,
+    // Kind by trackKind (the one answer), judged in JS — a raw `target_type = 'permit'` filter
+    // would count a legacy 'permit'-typed NEM filing as a permit holding the status.
+    return db.query<Row>(
+      `SELECT target_type, permit_type FROM permit_check_targets
+        WHERE project_id = ? AND active = 1 AND id <> ?
+          AND latest_outcome IN ('reviewed_by_ahj', 'ready_for_issue', 'issued')`,
       [projectId, targetId || ""],
-    ));
+    ).some((row) => trackKind(text(row.target_type), text(row.permit_type)) === "permit");
   };
 
   // Track-aware guard: a NEM (utility) target must NEVER drive the project to a PERMIT
@@ -6343,8 +6397,11 @@ const MONITOR_WAITING_MAY_ADVANCE = new Set(["awaiting_human_submit", "submitted
   // Likewise a PERMIT target must not set nem_approved. This prevents a utility approval
   // from masquerading as a permit issuance (and vice-versa). Handoff readiness is derived
   // from the per-target outcomes in triggerHandoffIfReady, which is already track-aware.
-  const isNem = targetType === "nem";
-  const isPermit = targetType === "permit";
+  // `track` is the writer's ONE derivation (trackKind) — this used to test raw target_type,
+  // so a 'permit'-typed target with permit_type 'nem' was classified as NEM and then written
+  // as a permit here.
+  const isNem = track === "nem";
+  const isPermit = track === "permit";
 
   // ONE FILING'S GOOD NEWS DOES NOT CLEAR ANOTHER FILING'S CORRECTION.
   //
@@ -6397,7 +6454,7 @@ const MONITOR_WAITING_MAY_ADVANCE = new Set(["awaiting_human_submit", "submitted
     if (currentStatus === "awaiting_human_submit") {
       // The one advance a human did not gesture for. Audited so it is never invisible.
       addAuditLog(db, projectId, "system", "permit monitor", "project.submitted_on_portal_evidence", {
-        from: currentStatus, targetType, message,
+        from: currentStatus, targetType: track, message,
       });
     }
   } else if (outcome === "needs_human_review") {
@@ -6507,16 +6564,15 @@ export async function runDuePermitChecks(
   targetType: "permit" | "nem" | "all" = "all",
 ): Promise<{ checked: number; projects: ProjectDetail[] }> {
   const now = nowIso();
-  const typeFilter = targetType === "all" ? "" : "AND target_type = ?";
-  const params: string[] = targetType === "all" ? [now] : [now, targetType];
+  // Kind by trackKind (the ONE answer), judged in JS rather than a raw `target_type = ?` filter
+  // that would poll a legacy 'permit'-typed NEM filing in the permit sweep.
   const targets = db.query<Row>(
     `SELECT * FROM permit_check_targets
      WHERE active = 1 AND (next_check_at IS NULL OR next_check_at <= ?)
-       ${typeFilter}
      ORDER BY next_check_at ASC, created_at ASC
      LIMIT 50`,
-    params,
-  );
+    [now],
+  ).filter((row) => targetType === "all" || trackKind(text(row.target_type), text(row.permit_type)) === targetType);
   const projects: ProjectDetail[] = [];
   for (const target of targets) {
     const projectId = text(target.project_id);
@@ -6528,8 +6584,8 @@ export async function runDuePermitChecks(
     //      ANY learned portal are auto-scanned, not just the two hardcoded platforms.
     //   2. Legacy hardcoded platform profiles (Accela / PowerClerk storage-state blobs).
     let rawStatusText: string | undefined;
-    const targetType = text(target.target_type); // "permit" | "nem"
-    const track = targetType === "nem" ? "nem" : "permit";
+    const targetType = trackKind(text(target.target_type), text(target.permit_type)); // "permit" | "nem" — the ONE answer
+    const track = targetType;
     // ── WHOSE PORTAL? (resolution skeptic MF3: the same two-way predicate the stage uses) ──
     // The target's own URLs are judged by the TRACK half of rule 5, both ways: a permit target
     // bound to a utility host (production 99ea32c3) and a NEM target bound to an AHJ permit

@@ -27,6 +27,7 @@ import { id } from "./ids";
 import { text } from "./json";
 import { isLearningExcluded, knowledgeProfileKey, recomputeTimelineFromSamples } from "./knowledgeBase";
 import { outcomeFinishesTrack, SUBMITTAL_TRACK_TYPES, trackPermitTypes } from "./submittalTracks";
+import { trackKind } from "./permitMonitor";
 import { nowIso } from "./time";
 
 type Row = Record<string, unknown>;
@@ -37,7 +38,9 @@ export type SampleTrack = SubmittalTrackType | "permit";
 
 /** Which track a tracking target speaks for — the same permit_type families isTrackDone uses. */
 export function trackForTarget(targetType: string, permitType: string): SampleTrack {
-  if (targetType === "nem") return "nem";
+  // trackKind: the ONE "what track is this target" answer (a blank or 'permit' target_type
+  // beside permit_type 'nem' is the NEM filing), never raw target_type.
+  if (trackKind(targetType, permitType) === "nem") return "nem";
   const tagged = SUBMITTAL_TRACK_TYPES.find((t) => t !== "nem" && trackPermitTypes(t).includes(permitType));
   return tagged ?? "permit";
 }
@@ -87,7 +90,8 @@ export function recordTimelineSample(
 ): boolean {
   if (!target) return false; // no target = no track = nothing to measure against
   if (isLearningExcluded(db, project.id)) return false;
-  const targetType = text(target.target_type);
+  // The target's KIND (trackKind) is what milestoneFor / outcomeFinishesTrack judge — the one answer.
+  const targetType = trackKind(text(target.target_type), text(target.permit_type));
   const track = trackForTarget(targetType, text(target.permit_type));
   const milestone = milestoneFor(track, targetType, reading.outcome);
   if (!milestone) return false;

@@ -634,7 +634,8 @@ export function staleStatusClassifications(db: AppDb, projectIds: string[]): Sta
       checkId: String(row.id || ""),
       checkedAt: String(row.created_at || ""),
       source: String(row.source || ""),
-      targetType: String(row.target_type || ""),
+      // The target's kind by trackKind (the ONE answer), the same kind the drift above was judged with.
+      targetType: trackKind(String(row.target_type || ""), String(row.permit_type || "")),
       permitType: String(row.permit_type || ""),
       applicationNumber: String(row.application_number || ""),
       hasPortalUrl: Boolean(String(row.portal_url || "").trim()),

@@ -61,6 +61,7 @@ import type {
 } from "../../shared/src/types";
 import { stageForStatus } from "./projectStage";
 import { isTrackDone, requiredTracks, trackPermitTypes } from "./submittalTracks";
+import { trackKind } from "./permitMonitor";
 import { parseJson } from "./json";
 import { billingTrack } from "./submissionFees";
 import {
@@ -340,7 +341,7 @@ export function loadNextStepFacts(db: AppDb, projects: ProjectRecord[]): Map<str
       // pool) an untagged target of this kind that no required track claims.
       const claimed = new Set(tracksRequired.flatMap(trackPermitTypes));
       const ownsTarget = (r: Row): boolean => family.includes(s(r.permit_type))
-        || (s(r.target_type) === kind && !claimed.has(s(r.permit_type)));
+        || (trackKind(s(r.target_type), s(r.permit_type)) === kind && !claimed.has(s(r.permit_type)));
       const targetEvidence = (numberedTargets.get(pid) ?? []).some(ownsTarget);
       return {
         track,
