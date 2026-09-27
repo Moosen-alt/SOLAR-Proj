@@ -33,7 +33,7 @@ import type {
 } from "../../shared/src/types";
 import { formatProjectAddress } from "./clientNotifier";
 import { getProjectDetail } from "./repository";
-import { publishedReadingFreshness } from "./permitMonitor";
+import { publishedReadingFreshness, trackKind, type TrackKind } from "./permitMonitor";
 import { logger } from "./logger";
 
 /**
@@ -105,13 +105,10 @@ export interface ClientPortalTrack {
  * and whose permit_type is 'nem' — a page calling one filing "Utility interconnection" and
  * then saying the jurisdiction is reviewing it.
  */
-export type TrackKind = "nem" | "permit";
-
-export function trackKind(targetType: string, permitType: string): TrackKind {
-  const type = String(targetType || "").trim().toLowerCase();
-  const permit = String(permitType || "").trim().toLowerCase();
-  return type === "nem" || permit === "nem" ? "nem" : "permit";
-}
+// The predicate itself lives in permitMonitor.ts (the classifier is track-aware since the
+// 2026-09-26 ruling and needs it first; clientPortal already imports permitMonitor, so the
+// reverse import would be a cycle). Re-exported here so every wording caller keeps one name.
+export { trackKind, type TrackKind };
 
 /**
  * What to call one filing track on a client's page.
@@ -184,10 +181,18 @@ const PUBLIC_CHECK_LABELS = new Map<string, PublicCheckWording>([
   // Waiting on THEM — and "them" is the utility on an interconnection, the jurisdiction on a permit.
   ["waiting::in review", { permit: "In review by the jurisdiction", nem: "In review by the utility" }],
   ["reviewed_by_ahj::reviewed by ahj", { permit: "Reviewed by the jurisdiction", nem: "Reviewed by the utility" }],
+  // APPROVED WITH CONDITIONS GETS ITS OWN WORDS on both tracks (operator ruling 2026-09-26) —
+  // never folded into "Reviewed by …". The permit key is a per-track pair only for a LEGACY nem
+  // row (the classifier now writes nem_approved for a utility's conditional approval).
+  ["reviewed_by_ahj::approved with conditions", {
+    permit: "Approved by the jurisdiction — with conditions",
+    nem: "Approved by the utility — with conditions",
+  }],
   ["ready_for_issue::ready for issue", "Approved — ready for issue"],
   ["ready_for_issue::ready for issue - fee/payment needed", "Approved — fee due before issue"],
   ["issued::permit issued", "Permit issued"],
   ["nem_approved::nem / interconnection approved", "Interconnection approved"],
+  ["nem_approved::interconnection approved with conditions", "Interconnection approved — with conditions"],
   // Waiting on US. Never phrased as something the client must do — a correction and an intake
   // shortfall are both our work, and telling a client to act on one is a wrong instruction.
   ["correction_flagged::correction flagged", "Correction requested — we are on it"],

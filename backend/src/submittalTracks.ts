@@ -27,6 +27,7 @@ import { findApplicationProfile, describePermitType, permitStructureAnswer, perm
 import { findAhjProcessProfile, jurisdictionKind, jurisdictionKindsCompatible } from "./processProfiles";
 import { recipeProfileKey } from "./portalRecipes";
 import { detectPlatform } from "./publicPermitStatus";
+import { NEM_APPROVAL_OUTCOME, isNemApprovalOutcome } from "./permitMonitor";
 import { HttpError } from "./httpError";
 import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, trackSafeUrl } from "./portalChannel";
 import { permitAnswerForTrack, permitProcessFor } from "./permitProcess";
@@ -266,7 +267,8 @@ export function trackPermitTypes(track: SubmittalTrackType): string[] {
  *    track — the same rule updateProjectForPermitOutcome applies before it writes a status.
  */
 export function outcomeFinishesTrack(track: SubmittalTrackType, outcome: PermitCheckOutcome | string | null, targetType: string): boolean {
-  if (track === "nem") return targetType === "nem" && outcome === "nem_approved";
+  // isNemApprovalOutcome: the ONE "is this NEM target approved" predicate (permitMonitor.ts).
+  if (track === "nem") return targetType === "nem" && isNemApprovalOutcome(outcome);
   return targetType === "permit" && outcome === "issued";
 }
 
@@ -286,7 +288,7 @@ export function outcomeFinishesTrack(track: SubmittalTrackType, outcome: PermitC
  * on rowid, i.e. insertion order.
  */
 function targetFinishedTrack(db: AppDb, track: SubmittalTrackType, target: Row): boolean {
-  const done = track === "nem" ? "nem_approved" : "issued";
+  const done = track === "nem" ? NEM_APPROVAL_OUTCOME : "issued";
   const targetType = s(target.target_type);
   if (!outcomeFinishesTrack(track, done, targetType)) return false; // wrong kind of target
   const latest = s(target.latest_outcome);
@@ -360,9 +362,11 @@ export function isTrackDone(db: AppDb, projectId: string, track: SubmittalTrackT
 // newest reading that isTrackDone did not accept — the wrong kind of target, or one pooled
 // target that cannot finish two tracks — is a filing still under review, not a finished track.
 function statusFromOutcome(outcome: PermitCheckOutcome | null): SubmittalTrackStatus | null {
+  // The NEM approval (isNemApprovalOutcome) sits with "issued" here on purpose: done is decided
+  // by isTrackDone above, so an approval that did not finish the track is a filing in review.
+  if (isNemApprovalOutcome(outcome)) return "in_review";
   switch (outcome) {
     case "issued":
-    case "nem_approved":
       return "in_review";
     case "ready_for_issue":
       return "ready_for_issue";

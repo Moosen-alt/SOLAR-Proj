@@ -12,6 +12,39 @@ export interface PermitStatusClassification {
   message: string;
 }
 
+/**
+ * WHICH TRACK A TRACKING TARGET IS ON — "nem" (the utility's interconnection queue) or "permit"
+ * (the jurisdiction's). ONE predicate, defined here beside the classifier that needs it and
+ * re-exported by clientPortal.ts for the wording layer: a second copy that tested only
+ * target_type would disagree with the row's own name on a legacy target whose target_type is
+ * blank and whose permit_type is 'nem'. An unknown track is a PERMIT — never guessed into the
+ * utility's queue.
+ */
+export type TrackKind = "nem" | "permit";
+
+export function trackKind(targetType: string, permitType: string): TrackKind {
+  const type = String(targetType || "").trim().toLowerCase();
+  const permit = String(permitType || "").trim().toLowerCase();
+  return type === "nem" || permit === "nem" ? "nem" : "permit";
+}
+
+/**
+ * IS THIS NEM TARGET APPROVED? The one outcome that means the utility approved the
+ * interconnection — the same answer for the lane summary, the process map, the timeline, the
+ * tracks panel, the handoff and the client update. Before this there were five copies and they
+ * disagreed: two counted reviewed_by_ahj / ready_for_issue / issued on a NEM target as approved
+ * and did NOT count nem_approved (a real "PTO granted" was not an approval while a plain
+ * "Approved" was); the tracks panel and handoff counted only nem_approved. The classifier now
+ * reads a NEM target's "Approved" as nem_approved (operator ruling 2026-09-26), so the outcome
+ * that finishes the track is the outcome the classifier writes, and there is nothing to
+ * approximate with the permit family any more.
+ */
+export const NEM_APPROVAL_OUTCOME: PermitCheckOutcome = "nem_approved";
+
+export function isNemApprovalOutcome(outcome: string | null | undefined): boolean {
+  return String(outcome || "").trim() === NEM_APPROVAL_OUTCOME;
+}
+
 // "ADDL INFO NEEDED" IS A REVIEWER'S CORRECTION REQUEST. Oregon ePermitting (Accela) abbreviates
 // it, and the record status reads "In Review/Addl Info Needed" — which matched waitingPattern's
 // "in review" and was reported as "In review" at 0.72 while Coos Bay's building reviewer sat on
@@ -38,8 +71,17 @@ const issuedPattern =
 const nemApprovalPattern =
   /\b(pto granted|permission to operate|net metering approved|customer generation approved|(?:interconnection|nem)(?:\s+\w+){0,3}\s+approved|approved(?:\s+\w+){0,3}\s+(?:interconnection|nem)|authorization to (?:install|interconnect|operate))\b/i;
 
+// "APPROVED WITH CONDITIONS" IS ITS OWN STATE (operator ruling 2026-09-26: "should the
+// with-conditions case get its own label? Yes, for both."). An agency that approves subject to
+// conditions has approved — the outcome is the track's approval — but the client is told about the
+// conditions in the badge and the history line, instead of the reading being folded into
+// "Reviewed by the jurisdiction". Checked AHEAD of reviewedPattern, which would otherwise take it
+// on the word "approved".
+const conditionalApprovalPattern =
+  /\b(approved with conditions|conditional(?:ly)? approv(?:al|ed))\b/i;
+
 const reviewedPattern =
-  /\b(review complete|plan review complete|approved|approved with conditions|reviewed by ahj|reviewed and approved|passed review|application approved)\b/i;
+  /\b(review complete|plan review complete|approved|reviewed by ahj|reviewed and approved|passed review|application approved)\b/i;
 
 // NAMED REVIEW STAGES ARE STILL "THE AGENCY IS REVIEWING IT". Portals rarely print the
 // tidy phrase "under review" — they print the name of the desk the file is sitting on.
@@ -168,15 +210,37 @@ export function isAuthWallText(rawStatusText: string): boolean {
 // a record reading "Addl Info Needed" (correction_flagged) or "In Review" (waiting) — and a
 // floodplain condition stops a permit whatever its review status says. The classification
 // (outcome / label / confidence) is unchanged; only the message carries it.
-export function classifyPermitStatusText(rawStatusText: string): PermitStatusClassification {
-  const result = classifyStatusOnly(rawStatusText);
+//
+// `track` IS REQUIRED, never an optional trailing argument (which would default to some kind and
+// be wrong half the time, silently). The same words mean different things on the two tracks: a
+// utility's "Approved" IS the interconnection approval (nem_approved — client-facing, finishes
+// the NEM track, feeds the handoff), where a jurisdiction's "Approved" is plan review done with
+// the permit still to be issued (reviewed_by_ahj). Operator ruling 2026-09-26 on the utility
+// "Approved" that showed grey as "Reviewed by the utility": "count as approved? Yes". Every
+// caller has the target row in hand — pass trackKind(target_type, permit_type); a caller with no
+// target passes "permit" and says why.
+export function classifyPermitStatusText(rawStatusText: string, track: TrackKind): PermitStatusClassification {
+  const result = classifyStatusOnly(rawStatusText, track);
   const condition = recordConditionOf(rawStatusText);
   return condition
     ? { ...result, message: `${result.message} The record also carries a condition: "${condition}".` }
     : result;
 }
 
-function classifyStatusOnly(rawStatusText: string): PermitStatusClassification {
+/** The NEM track's approval reading — one shape for the plain and the with-conditions case. */
+function nemApproved(statusLabel: string, confidence: number, message: string): PermitStatusClassification {
+  return {
+    outcome: NEM_APPROVAL_OUTCOME,
+    statusLabel,
+    confidence,
+    reviewedByAhj: true,
+    readyForIssue: false,
+    issueFeeDue: false,
+    message,
+  };
+}
+
+function classifyStatusOnly(rawStatusText: string, track: TrackKind): PermitStatusClassification {
   const stated = extractStatedStatus(rawStatusText);
   // Keep the full text when the portal states nothing — that is the old behaviour, and the
   // only behaviour available for portals that render status as prose.
@@ -220,15 +284,11 @@ function classifyStatusOnly(rawStatusText: string): PermitStatusClassification {
   }
 
   if (nemApprovalPattern.test(text)) {
-    return {
-      outcome: "nem_approved",
-      statusLabel: "NEM / interconnection approved",
-      confidence: 0.94,
-      reviewedByAhj: true,
-      readyForIssue: false,
-      issueFeeDue: false,
-      message: "Utility NEM / interconnection approval detected. Your submission scope is complete — hand off to installer for final inspection scheduling.",
-    };
+    return nemApproved(
+      "NEM / interconnection approved",
+      0.94,
+      "Utility NEM / interconnection approval detected. Your submission scope is complete — hand off to installer for final inspection scheduling.",
+    );
   }
 
   if (readyForIssuePattern.test(text)) {
@@ -243,7 +303,38 @@ function classifyStatusOnly(rawStatusText: string): PermitStatusClassification {
     };
   }
 
+  // The with-conditions case, on either track: the approval outcome for the track, with its OWN
+  // stored label (a matching key — clientPortal's PUBLIC_CHECK_LABELS words it for the client).
+  if (conditionalApprovalPattern.test(text)) {
+    if (track === "nem") {
+      return nemApproved(
+        "Interconnection approved with conditions",
+        0.9,
+        "Utility approved the interconnection WITH CONDITIONS. Read the conditions on the record before handing off — they may name work owed before permission to operate.",
+      );
+    }
+    return {
+      outcome: "reviewed_by_ahj",
+      statusLabel: "Approved with conditions",
+      confidence: 0.86,
+      reviewedByAhj: true,
+      readyForIssue: false,
+      issueFeeDue: false,
+      message: "AHJ approved the application WITH CONDITIONS. Read the conditions on the record; the permit still has to be issued.",
+    };
+  }
+
   if (reviewedPattern.test(text)) {
+    // A UTILITY'S "APPROVED" IS THE APPROVAL. There is no issuance step after a utility approves an
+    // interconnection application (PTO comes after the install), so on the NEM track this reading
+    // is the track's terminal outcome, never a grey "reviewed".
+    if (track === "nem") {
+      return nemApproved(
+        "NEM / interconnection approved",
+        0.88,
+        "Utility review reads as approved — the interconnection application is approved. Your submission scope on this track is complete.",
+      );
+    }
     return {
       outcome: "reviewed_by_ahj",
       statusLabel: "Reviewed by AHJ",
@@ -451,7 +542,7 @@ export function classificationDrift(stored: {
   outcome?: string | null;
   statusLabel?: string | null;
   rawStatusText?: string | null;
-}): StoredClassificationDrift {
+}, track: TrackKind): StoredClassificationDrift {
   const raw = String(stored.rawStatusText ?? "").trim();
   const storedOutcome = String(stored.outcome ?? "").trim();
   const storedStatusLabel = String(stored.statusLabel ?? "").trim();
@@ -464,7 +555,10 @@ export function classificationDrift(stored: {
       currentStatusLabel: storedStatusLabel,
     };
   }
-  const current = classifyPermitStatusText(raw);
+  // THE SAME KIND THE WRITER USED. The row was classified as its target's track; judged as the
+  // other one, every NEM row would read stale (its "Approved" is nem_approved on the NEM track
+  // and reviewed_by_ahj on the permit track) or none would.
+  const current = classifyPermitStatusText(raw, track);
   return {
     stale: current.outcome !== storedOutcome || current.statusLabel !== storedStatusLabel,
     storedOutcome,
@@ -531,7 +625,7 @@ export function staleStatusClassifications(db: AppDb, projectIds: string[]): Sta
       outcome: String(row.outcome || ""),
       statusLabel: String(row.status_label || ""),
       rawStatusText: String(row.raw_status_text || ""),
-    });
+    }, trackKind(String(row.target_type || ""), String(row.permit_type || "")));
     if (!drift.stale) continue;
     stale.push({
       ...drift,

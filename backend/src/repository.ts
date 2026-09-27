@@ -126,7 +126,7 @@ import {
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
 import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
-import { classificationDrift, classifyPermitStatusText, isAuthWallText, nextCheckIso, shouldRecordStatusCheck } from "./permitMonitor";
+import { classificationDrift, classifyPermitStatusText, isAuthWallText, isNemApprovalOutcome, nextCheckIso, shouldRecordStatusCheck, trackKind } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
 import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
@@ -1032,7 +1032,7 @@ export function computeLaneStatusSummary(
     || projectStatus === "nem_approved"
     || projectStatus === "handoff_ready"
     || trackDone.nem
-    || nemChecks.some((check) => check.outcome === "nem_approved")
+    || nemChecks.some((check) => isNemApprovalOutcome(check.outcome))
     || Boolean(latestNemEmail && latestNemEmail.emailBucket === "nem_approval");
 
   return {
@@ -1405,7 +1405,10 @@ function operationDrafts(db: AppDb, detail: ProjectDetail): OperationStepDraft[]
   ].filter((value) => value == null || value === "").length;
   const packageReady = applicationDocs.missingFields.length === 0 && reviewerBlockers === 0 && learnedHistoricalBlockers === 0 && qcFails === 0 && pendingCritical === 0;
   const latestPermit = detail.permitStatusChecks[0];
-  const hasNemApproval = detail.permitStatusChecks.some((check) => /nem|interconnection|pto|utility/i.test(`${check.statusLabel}\n${check.rawStatusText}`) && ["reviewed_by_ahj", "ready_for_issue", "issued"].includes(check.outcome));
+  // ONE predicate for "is this NEM target approved" (isNemApprovalOutcome) on the NEM lane's own
+  // checks (hasNemSignal: the target's type, the word sniff only for legacy untyped rows). This
+  // used to sniff words and count the PERMIT family of outcomes while omitting nem_approved.
+  const hasNemApproval = detail.permitStatusChecks.some((check) => hasNemSignal(check) && isNemApprovalOutcome(check.outcome));
   const hasCorrections = detail.corrections.length > 0;
   const openCorrectionCount = detail.corrections.filter((correction) => !correction.closedAt && !correction.resubmitted).length + pendingCorrections;
   const hasPortalStaging = detail.portalRuns.some((run) => run.status === "awaiting_human_submit" || run.status === "submitted");
@@ -2833,7 +2836,9 @@ export function getProjectProcessMap(db: AppDb, projectId: string): ProjectProce
   const openNemCorrections = nemCorrections.filter((correction) => !correction.closedAt && !correction.resubmitted);
   const hasPortalStaging = detail.portalRuns.some((run) => run.status === "awaiting_human_submit" || run.status === "submitted");
   const permitApproved = project.status === "ready_for_issue" || project.status === "issued" || permitChecks.some((check) => check.readyForIssue || check.outcome === "issued");
-  const nemApproved = utilityApprovalEvidence.present || nemChecks.some((check) => ["reviewed_by_ahj", "ready_for_issue", "issued"].includes(check.outcome)) || nemEmails.some((email) => email.emailBucket === "nem_approval");
+  // isNemApprovalOutcome — the one "is this NEM target approved" answer (permitMonitor.ts). The
+  // permit family (reviewed_by_ahj / ready_for_issue / issued) on a NEM target is not an approval.
+  const nemApproved = utilityApprovalEvidence.present || nemChecks.some((check) => isNemApprovalOutcome(check.outcome)) || nemEmails.some((email) => email.emailBucket === "nem_approval");
   const docsReady = applicationDocs.missingFields.length === 0 && applicationDocs.docs.length > 0;
   const upstreamClear = qcFails === 0 && pendingCritical === 0 && reviewerBlockers.length === 0 && learnedHistoricalBlockers.length === 0 && docsReady;
 
@@ -3884,7 +3889,7 @@ function timelineSeverityForOperation(status: OperationStepStatus): ProjectTimel
 function timelineSeverityForPermit(outcome: PermitCheckOutcome): ProjectTimelineEvent["severity"] {
   if (outcome === "correction_flagged") return "blocker";
   if (outcome === "needs_human_review" || outcome === "waiting") return "warning";
-  if (outcome === "ready_for_issue" || outcome === "issued" || outcome === "reviewed_by_ahj") return "pass";
+  if (outcome === "ready_for_issue" || outcome === "issued" || outcome === "reviewed_by_ahj" || isNemApprovalOutcome(outcome)) return "pass";
   return "info";
 }
 
@@ -5883,7 +5888,13 @@ export async function recordPermitStatusCheck(
 
   const source = input.source || "manual";
   const rawStatusText = await resolveStatusText(target, input.rawStatusText || "", source);
-  const classification = classifyPermitStatusText(rawStatusText);
+  // THE TARGET'S TRACK decides what its words mean: a utility's "Approved" is the interconnection
+  // approval (nem_approved), a jurisdiction's is plan review done (reviewed_by_ahj). trackKind so a
+  // legacy target with a blank target_type and permit_type 'nem' is judged as the NEM filing it
+  // is. A project-level check with no target is a PERMIT reading: an unknown track is never
+  // guessed into the utility's queue, and nothing writes nem_approved from unknown provenance.
+  const track = target ? trackKind(text(target.target_type), text(target.permit_type)) : "permit";
+  const classification = classifyPermitStatusText(rawStatusText, track);
   // Previous outcome/label BEFORE this check updates the target — the client is notified only
   // when the outcome actually CHANGES (never re-sent on every poll of a settled status), and the
   // same pair decides whether this check is a row at all. Both must be read here, above the
@@ -5920,7 +5931,7 @@ export async function recordPermitStatusCheck(
     )
     : null;
   const baselineStale = newestRow
-    ? classificationDrift({ outcome: text(newestRow.outcome), statusLabel: text(newestRow.status_label), rawStatusText: text(newestRow.raw_status_text) }).stale
+    ? classificationDrift({ outcome: text(newestRow.outcome), statusLabel: text(newestRow.status_label), rawStatusText: text(newestRow.raw_status_text) }, track).stale
     : false;
   const recordCheck = shouldRecordStatusCheck(
     target ? { outcome: previousOutcome, statusLabel: previousStatusLabel, stale: baselineStale } : null,

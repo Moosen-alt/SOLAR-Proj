@@ -51,14 +51,14 @@ const page = (status: string): string =>
 // ---------------------------------------------------------------------------------------------
 await check("MUST PASS: Accela's 'Addl Info Needed' is a correction request, with or without 'In Review/'", () => {
   for (const s of ["In Review/Addl Info Needed", "Addl Info Needed", "Add'l Info Needed", "Additional Info Requested", "Info Requested"]) {
-    const c = classifyPermitStatusText(page(s));
+    const c = classifyPermitStatusText(page(s), "permit");
     assert.equal(c.outcome, "correction_flagged", `"${s}" -> ${c.outcome} / ${c.statusLabel}`);
   }
 });
 
 await check("MUST PASS: a bare stated 'Issued' / 'Finaled' is an issued permit", () => {
   for (const s of ["Issued", "Finaled"]) {
-    const c = classifyPermitStatusText(page(s));
+    const c = classifyPermitStatusText(page(s), "permit");
     assert.equal(c.outcome, "issued", `"${s}" -> ${c.outcome} / ${c.statusLabel}`);
   }
 });
@@ -72,16 +72,18 @@ await check("MUST EXCLUDE: neighbouring Accela statuses keep their verdicts", ()
     ["App Submitted", "waiting", "In review"],
     ["Ready to Issue", "ready_for_issue", "Ready for issue"],
     ["Permit Issued", "issued", "Permit issued"],
-    ["Approved with Conditions", "reviewed_by_ahj", "Reviewed by AHJ"],
+    // Its own label since 2026-09-26 (operator: "with-conditions gets its own label, for both").
+    ["Approved with Conditions", "reviewed_by_ahj", "Approved with conditions"],
+    ["Approved", "reviewed_by_ahj", "Reviewed by AHJ"],
   ];
   for (const [s, outcome, label] of expected) {
-    const c = classifyPermitStatusText(page(s));
+    const c = classifyPermitStatusText(page(s), "permit");
     assert.deepEqual([c.outcome, c.statusLabel], [outcome, label], `"${s}"`);
   }
 });
 
 await check("MUST EXCLUDE: 'issued' / 'final' in page prose is not this record's status", () => {
-  const prose = classifyPermitStatusText("Permits issued by the city expire after 180 days. Final fees are listed on the fee schedule.");
+  const prose = classifyPermitStatusText("Permits issued by the city expire after 180 days. Final fees are listed on the fee schedule.", "permit");
   assert.notEqual(prose.outcome, "issued", `prose -> ${prose.outcome}`);
 });
 

@@ -249,7 +249,10 @@ export async function extractVisibleText(html: string): Promise<string | null> {
 // ---------------------------------------------------------------------------
 /** Try every applicable public (unauthenticated) check strategy for the given
  *  portal URL and application/permit numbers. Returns the raw status text to
- *  feed into classifyPermitStatusText(), or null if nothing useful was found. */
+ *  feed into classifyPermitStatusText(text, track) — the caller
+ *  (repository.recordPermitStatusCheck) passes the TARGET's track, since the
+ *  same "Approved" is the interconnection approval on a NEM target and plan
+ *  review done on a permit target — or null if nothing useful was found. */
 export async function publicPermitStatusCheck(
   portalUrl: string,
   applicationNumbers: string[],

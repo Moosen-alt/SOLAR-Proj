@@ -64,7 +64,7 @@ const STILL_IN_REVIEW = [
 ];
 
 check("THE HEADLINE: the live record is NOT reported as 'In review'", () => {
-  const c = classifyPermitStatusText(LIVE);
+  const c = classifyPermitStatusText(LIVE, "permit");
   assert.notEqual(c.outcome, "waiting",
     `the real stalled permit still reads as review-in-progress: ${c.outcome} / "${c.statusLabel}"`);
   assert.doesNotMatch(c.statusLabel, /^In review$/i,
@@ -72,20 +72,20 @@ check("THE HEADLINE: the live record is NOT reported as 'In review'", () => {
 });
 
 check("MUST FLAG: every 'the agency needs something from us' wording", () => {
-  const missed = ACTION_NEEDED.filter((t) => classifyPermitStatusText(t).outcome === "waiting");
+  const missed = ACTION_NEEDED.filter((t) => classifyPermitStatusText(t, "permit").outcome === "waiting");
   assert.deepEqual(missed, [], `still reported as review-in-progress: ${JSON.stringify(missed, null, 1)}`);
 });
 
 check("MUST KEEP: genuine in-review wordings, including ones containing 'intake'", () => {
   // The fix must not swing the other way. "Intake Complete - routed to plan review" contains both
   // "intake" and a word from the new pattern's neighbourhood, and it IS in review.
-  const broken = STILL_IN_REVIEW.filter((t) => classifyPermitStatusText(t).outcome !== "waiting");
+  const broken = STILL_IN_REVIEW.filter((t) => classifyPermitStatusText(t, "permit").outcome !== "waiting");
   assert.deepEqual(broken, [],
     `real in-review statuses were flagged as needing action: ${JSON.stringify(broken, null, 1)}`);
 });
 
 check("the classification says WHAT is wanted, not just that something is", () => {
-  const c = classifyPermitStatusText(LIVE);
+  const c = classifyPermitStatusText(LIVE, "permit");
   assert.match(String(c.message || ""), /intake|requirement|before|applicant/i,
     `the operator needs to know it is stalled on us: ${c.message}`);
 });
@@ -96,7 +96,7 @@ check("MUST SURFACE: a parcel condition / hold is reported, not silently dropped
   // ASSERT THE PORTAL'S OWN WORDS, not a word that also appears in our message. The first
   // version matched /outstanding/ — which our own "requirements are outstanding at intake" text
   // satisfies — so it passed while the condition was being dropped entirely.
-  const c: Record<string, unknown> = classifyPermitStatusText(LIVE) as never;
+  const c: Record<string, unknown> = classifyPermitStatusText(LIVE, "permit") as never;
   const message = String((c as { message?: string }).message || "");
   assert.match(message, /187-M16-213/,
     `the parcel condition never reached the operator — it must quote the record: ${message}`);
@@ -104,7 +104,7 @@ check("MUST SURFACE: a parcel condition / hold is reported, not silently dropped
 });
 
 check("MUST NOT: a record with no condition does not invent one", () => {
-  const c: Record<string, unknown> = classifyPermitStatusText("Record Status: Permit Issued") as never;
+  const c: Record<string, unknown> = classifyPermitStatusText("Record Status: Permit Issued", "permit") as never;
   assert.equal((c as { outcome?: string }).outcome, "issued");
   assert.doesNotMatch(JSON.stringify(c).toLowerCase(), /outstanding permit|parcel condition/,
     "a clean record was reported as carrying a condition");

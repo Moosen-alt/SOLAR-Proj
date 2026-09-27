@@ -450,6 +450,15 @@ function humanize(value) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// The classifier's stored approval labels (backend/src/permitMonitor.ts). "Reviewed by AHJ" is
+// deliberately NOT here: plan review done is not the permit — it stays the plain badge.
+const APPROVAL_LABELS = new Set([
+  "Approved with conditions",
+  "NEM / interconnection approved",
+  "Interconnection approved with conditions",
+  "NEM approved",
+]);
+
 function statusBadge(status) {
   // Count badges: color by zero vs non-zero so callers can pass a plain number.
   if (typeof status === "number") {
@@ -458,6 +467,9 @@ function statusBadge(status) {
   }
   const label = humanize(status ?? "unknown");
   if (status === "handoff_ready") return `<span class="badge badge-pass">${esc(label)}</span>`;
+  // The monitor's own approval labels (permitMonitor.ts), as the lane cells and track rows pass
+  // them: an approval — with or without conditions — is a pass, not a plain grey badge.
+  if (APPROVAL_LABELS.has(String(status))) return `<span class="badge badge-pass">${esc(label)}</span>`;
   if (status === "approved" || status === "edited" || status === "nem_approved") return `<span class="badge badge-pass">${esc(label)}</span>`;
   if (status === "issued" || status === "ready_for_issue") return `<span class="badge badge-info">${esc(label)}</span>`;
   if (status === "correction_received" || status === "correction_triaged" || status === "pending") return `<span class="badge badge-warning">${esc(label)}</span>`;

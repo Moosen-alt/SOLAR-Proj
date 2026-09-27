@@ -647,14 +647,14 @@ await check("PRECONDITION: the stored row holds a verdict today's rules disagree
   )!;
   assert.match(stored.raw_status_text, /Intake Requirements Needed/i,
     "the fixture's stored text is not the stalled-at-intake record this is about");
-  const today = classifyPermitStatusText(stored.raw_status_text);
+  const today = classifyPermitStatusText(stored.raw_status_text, "permit");
   assert.notEqual(`${today.outcome}::${today.statusLabel}`, `${stored.outcome}::${stored.status_label}`,
     "TODAY's classifier agrees with the stored row, so there is no staleness to detect and every "
     + "assertion below would pass without the fix");
   // And the drift helper itself says so, in the same terms the operator surface reports.
   const drift = classificationDrift({
     outcome: stored.outcome, statusLabel: stored.status_label, rawStatusText: stored.raw_status_text,
-  });
+  }, "permit");
   assert.equal(drift.stale, true);
   assert.equal(drift.storedStatusLabel, "In review");
   assert.equal(drift.currentStatusLabel, "Action needed before review");
@@ -1428,18 +1428,25 @@ await check("A NEM FILING IS NOT REVIEWED BY A JURISDICTION — every branch, bo
   // jurisdiction-flavoured wording would sail through a list written by hand.
   const samples = [IN_REVIEW, INTAKE_NEEDED, ISSUED,
     "Record Status: Approved. Plan review complete.",
+    "Record Status: Approved with Conditions",
     "Record Status: Ready for Issue. Fees due.",
     CORRECTION, NEM_APPROVED, ""];
+  // THE CLASSIFIER IS TRACK-AWARE (2026-09-26): the same text is classified ONCE PER KIND and each
+  // kind's wording is judged on its own classification — the pair the page actually stores.
   for (const raw of samples) {
-    const c = classifyPermitStatusText(raw);
-    const nem = publicCheckLabel(c.outcome, c.statusLabel, "nem");
-    const permit = publicCheckLabel(c.outcome, c.statusLabel, "permit");
+    const cn = classifyPermitStatusText(raw, "nem");
+    const cp = classifyPermitStatusText(raw, "permit");
+    const nem = publicCheckLabel(cn.outcome, cn.statusLabel, "nem");
+    const permit = publicCheckLabel(cp.outcome, cp.statusLabel, "permit");
     assert.doesNotMatch(nem, /jurisdiction|\bAHJ\b/i,
       `an interconnection application reads "${nem}" — it is reviewed by the UTILITY, and no `
       + "jurisdiction is involved in it at all");
     assert.doesNotMatch(permit, /\butility\b/i,
       `a building permit reads "${permit}" — the utility does not review permits`);
-    assert.ok(nem && permit, `${c.outcome}::${c.statusLabel} produced no wording at all`);
+    assert.ok(nem && permit, `${cn.outcome}::${cn.statusLabel} / ${cp.outcome}::${cp.statusLabel} produced no wording at all`);
+    // And a legacy NEM row classified under the old permit-only rules still reads as the utility's.
+    const legacy = publicCheckLabel(cp.outcome, cp.statusLabel, "nem");
+    assert.doesNotMatch(legacy, /jurisdiction|\bAHJ\b/i, `legacy nem row reads "${legacy}"`);
   }
   // The two states a stalled filing actually sits in, named explicitly: same stored key, two
   // reviewers.
@@ -1479,15 +1486,18 @@ await check("NO OPERATOR JARGON REACHES THE CLIENT PAGE", () => {
   ];
   const samples = [IN_REVIEW, INTAKE_NEEDED, ISSUED,
     "Record Status: Approved. Plan review complete.",
+    "Record Status: Approved with Conditions",
     "Record Status: Ready for Issue. Fees due.",
     CORRECTION,
     NEM_APPROVED,
     ""]; // the no-text branch
   const seen = new Set<string>();
   for (const raw of samples) {
-    const c = classifyPermitStatusText(raw);
-    seen.add(`${c.outcome}::${c.statusLabel}`);
+    // Classified once per kind — the classifier is track-aware, and each kind's wording is judged
+    // on the pair that kind's target would actually store.
     for (const kind of ["permit", "nem"] as const) {
+      const c = classifyPermitStatusText(raw, kind);
+      seen.add(`${c.outcome}::${c.statusLabel}`);
       const words = publicCheckLabel(c.outcome, c.statusLabel, kind);
       for (const [pattern, why] of JARGON) {
         assert.doesNotMatch(words, pattern,

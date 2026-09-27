@@ -29,27 +29,27 @@ check("the stated status is pulled out of the page", () => {
 });
 
 check("THE REGRESSION: a freshly filed permit is not a correction", () => {
-  const c = classifyPermitStatusText(SUBMITTED);
+  const c = classifyPermitStatusText(SUBMITTED, "permit");
   assert.notEqual(c.outcome, "correction_flagged", `classified as ${c.outcome} — the "Additional Information" heading again`);
   assert.equal(c.outcome, "waiting");
 });
 
 check("an issued permit still reads as issued", () => {
-  assert.equal(classifyPermitStatusText(ISSUED).outcome, "issued");
+  assert.equal(classifyPermitStatusText(ISSUED, "permit").outcome, "issued");
 });
 
 check("a REAL correction is still caught, stated in the status field", () => {
-  const c = classifyPermitStatusText("Permit/Application 1: Record Status: Corrections Required Expiration Date: 01/01/2027");
+  const c = classifyPermitStatusText("Permit/Application 1: Record Status: Corrections Required Expiration Date: 01/01/2027", "permit");
   assert.equal(c.outcome, "correction_flagged");
 });
 
 check("a portal with no status field still falls back to scanning the prose", () => {
-  const c = classifyPermitStatusText("Your application has been reviewed and corrections are required before we can proceed.");
+  const c = classifyPermitStatusText("Your application has been reviewed and corrections are required before we can proceed.", "permit");
   assert.equal(c.outcome, "correction_flagged");
 });
 
 check("empty text is still an explicit needs-review, not a silent pass", () => {
-  assert.equal(classifyPermitStatusText("").outcome, "needs_human_review");
+  assert.equal(classifyPermitStatusText("", "permit").outcome, "needs_human_review");
 });
 
 // A LOGIN PAGE IS NOT A STATUS.
@@ -63,7 +63,7 @@ const POWERCLERK_LOGIN = "‌ PowerClerk Log In Username: Password: Log In Forgo
 check("THE REGRESSION: PowerClerk's login page is recognised as an auth wall", () => {
   assert.equal(isAuthWallText(POWERCLERK_LOGIN), true);
   // …and it classifies as needs-review, which is exactly why recording it was a downgrade.
-  assert.equal(classifyPermitStatusText(POWERCLERK_LOGIN).outcome, "needs_human_review");
+  assert.equal(classifyPermitStatusText(POWERCLERK_LOGIN, "permit").outcome, "needs_human_review");
 });
 
 check("a generic vendor sign-in page is caught too", () => {
@@ -97,20 +97,20 @@ for (const text of [
   "Application Received",
 ]) {
   check(`MUST PASS: "${text.slice(0, 34)}…" reads as WAITING, not a human interruption`, () => {
-    assert.equal(classifyPermitStatusText(text).outcome, "waiting");
+    assert.equal(classifyPermitStatusText(text, "permit").outcome, "waiting");
   });
 }
 
 check("MUST EXCLUDE: an ISSUED permit still wins over the broadened review vocabulary", () => {
-  assert.equal(classifyPermitStatusText("Plan Review complete — Permit issued 9/14/2026").outcome, "issued");
+  assert.equal(classifyPermitStatusText("Plan Review complete — Permit issued 9/14/2026", "permit").outcome, "issued");
 });
 
 check("MUST EXCLUDE: corrections still win over it — that one IS a person's job", () => {
-  assert.equal(classifyPermitStatusText("Plan Review: corrections required, see review comments").outcome, "correction_flagged");
+  assert.equal(classifyPermitStatusText("Plan Review: corrections required, see review comments", "permit").outcome, "correction_flagged");
 });
 
 check("MUST EXCLUDE: 'Intake Requirements Needed' still escalates — the city is waiting on US", () => {
-  assert.notEqual(classifyPermitStatusText("Intake Requirements Needed").outcome, "waiting");
+  assert.notEqual(classifyPermitStatusText("Intake Requirements Needed", "permit").outcome, "waiting");
 });
 
 check("a portal LOGIN page is an auth wall, never a status", () => {

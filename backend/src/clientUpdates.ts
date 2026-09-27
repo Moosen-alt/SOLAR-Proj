@@ -40,6 +40,7 @@ import { text } from "./json";
 export const BRAND = (process.env.BRAND_NAME || "Keelix").trim() || "Keelix";
 import { id } from "./ids";
 import { nowIso } from "./time";
+import { isNemApprovalOutcome } from "./permitMonitor";
 
 export interface ClientUpdateContext {
   /** "permit" | "nem" — which track moved. */
@@ -78,7 +79,10 @@ function otherTrackOutcome(db: AppDb, projectId: string, thisType: string): stri
   return text(row?.latest_outcome);
 }
 
-const DONE_OUTCOMES = new Set(["issued", "nem_approved", "approved"]);
+// The permit side's done outcomes; the NEM side answers through isNemApprovalOutcome — the one
+// "is this NEM target approved" predicate (permitMonitor.ts), never a second list here.
+const DONE_OUTCOMES = new Set(["issued", "approved"]);
+const isDoneOutcome = (outcome: string): boolean => DONE_OUTCOMES.has(outcome) || isNemApprovalOutcome(outcome);
 
 /**
  * "the electrical permit" when we know, plain "the permit" when we do not. Never a guess: naming
@@ -137,7 +141,7 @@ export function clientUpdateFor(
   const whichApplication = applicationPhrase(text(ctx.permitType));
   const refPhrase = ref ? `, reference ${ref}` : "";
   const other = otherTrackOutcome(db, project.id, ctx.targetType);
-  const otherDone = DONE_OUTCOMES.has(other);
+  const otherDone = isDoneOutcome(other);
   const hasOther = Boolean(other);
 
   switch (outcome) {
