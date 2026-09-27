@@ -6,6 +6,7 @@ import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult,
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
+import { routeFor, taskForLabel, takeAdvisorSlot, describeRoutes, BASELINE_MODEL, type LlmEffort, type LlmTask, type ResolvedRoute, type AdvisorConfig } from "./modelRouting";
 import { lookupCecInverter, lookupCecModuleMake } from "./cecEquipment";
 import { planTextForExtraction } from "./structuralIntake";
 import type { CodeResearchProvenance } from "./codeProfiles";
@@ -16,7 +17,63 @@ import type { CodeResearchProvenance } from "./codeProfiles";
 // sampling params, no prefills, no thinking:{disabled}. Prompt-cache minimum
 // also drops 1024→512 tokens, so mid-size system prompts start caching.
 // NOTE: claude-opus-5 draws from a SEPARATE rate-limit bucket than Opus 4.x.
-const MODEL = process.env.AUTOPILOT_LLM_MODEL || "claude-opus-5";
+//
+// PER-TASK ROUTING (2026-09-26): there is no longer one MODEL constant. Every call asks
+// modelRouting.routeFor(task) for its model, effort and (opt-in) advisor; the shipped table keeps
+// every task on claude-opus-5 at the effort it sent before, and cites the measurement for each.
+// This is only the label a record falls back to when a caller does not name its model.
+const fallbackRecordModel = (): string => (process.env.AUTOPILOT_LLM_MODEL || BASELINE_MODEL).trim();
+
+/** A safety classifier declined the request (HTTP 200, stop_reason "refusal"). A NAMED failure: its
+ *  content is not an answer, empty or otherwise, and re-sending the same bytes to the same model is
+ *  refused the same way — callers must not read it as "nothing found" and must not retry it as-is. */
+export class LlmRefusalError extends Error {
+  readonly label: string;
+  readonly model: string;
+  readonly category: string | null;
+  constructor(label: string, model: string, category: string | null) {
+    super(`${label}: the model's safety classifier declined this request${category ? ` (category: ${category})` : ""} — no answer was produced`);
+    this.name = "LlmRefusalError";
+    this.label = label;
+    this.model = model;
+    this.category = category;
+  }
+}
+
+/** The model returned a response that could not be read as the JSON the route asked for. */
+export class LlmUnreadableResponseError extends Error {
+  /** The final stop reason: "max_tokens" here means the output ran into the budget's 2x ceiling. */
+  readonly stopReason: string | null;
+  constructor(message: string, stopReason: string | null) {
+    super(message);
+    this.name = "LlmUnreadableResponseError";
+    this.stopReason = stopReason;
+  }
+}
+
+/** What one request is sent with — the route, or its refusal fallback. */
+interface CallTarget {
+  model: string;
+  effort?: LlmEffort;
+  advisor: AdvisorConfig | null;
+}
+
+const ADVISOR_BETA = "advisor-tool-2026-03-01";
+/** Appended to the user turn ONLY when the advisor is on. Without a nudge the consult rate is the
+ *  fragile variable (cost-optimization guide); every measured advisor config carried one. */
+const ADVISOR_NUDGE = "\n\n(Before you write the final answer, consult the advisor once about the point where the sources conflict or where your reading is least certain.)";
+
+/** output_config from a target's effort plus an optional response format; undefined when empty so a
+ *  route that names no effort sends exactly the bytes it sent before routing existed. */
+function outputConfigFor(t: CallTarget, format?: Anthropic.JSONOutputFormat): { effort?: LlmEffort; format?: Anthropic.JSONOutputFormat } | undefined {
+  const oc = { ...(t.effort ? { effort: t.effort } : {}), ...(format ? { format } : {}) };
+  return Object.keys(oc).length ? oc : undefined;
+}
+
+/** The advisor tool definition for a target (the API rejects max_tokens < 1024). */
+function advisorToolFor(a: AdvisorConfig): Record<string, unknown> {
+  return { type: "advisor_20260301", name: "advisor", model: a.model, max_uses: a.maxUses, max_tokens: Math.max(1024, a.maxTokens) };
+}
 
 // Does the (possibly truncated) response text contain a complete, parseable JSON object?
 // Used by the max_tokens retry: when the JSON block finished before the cap and only
@@ -231,7 +288,7 @@ const llmCallLog: LlmCallRecord[] = [];
 // to drive the real surface — a mock log would prove the mock. Production writes still
 // arrive solely via instrument().
 export function recordLlmCall(rec: LlmCallRecord): void {
-  const withModel: LlmCallRecord = { ...rec, model: rec.model || MODEL };
+  const withModel: LlmCallRecord = { ...rec, model: rec.model || fallbackRecordModel() };
   llmCallLog.push(withModel);
   if (llmCallLog.length > LLM_CALL_LOG_MAX) llmCallLog.splice(0, llmCallLog.length - LLM_CALL_LOG_MAX);
   // LLM-6: the ring buffer dies with the process; the ledger does not. Best-effort and
@@ -706,6 +763,20 @@ export function isTransientLlmError(err: unknown): boolean {
   return /overloaded|rate.?limit|\b429\b|\b5\d\d\b|timeout|timed out|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|network|fetch failed|stream (error|ended)/i.test(m);
 }
 
+/** Should instrument()'s OWN retry loop re-send this call?
+ *
+ *  Not a client TIMEOUT. The SDK arms its timeout around the fetch until response headers and then
+ *  retries a timed-out request itself (maxRetries 5, read in node_modules/@anthropic-ai/sdk client.js).
+ *  So by the time an APIConnectionTimeoutError reaches us it has already been sent six times, and on a
+ *  non-streaming call each of those may have been generated — and billed — server-side before the
+ *  headers arrived. Retrying it three more times here multiplied a stalled call to 24 attempts.
+ *  Everything else isTransientLlmError accepts is still retried: an in-stream overload (Gilbert, no
+ *  status, never seen by the SDK's retry) and 429/5xx (not billed). */
+export function shouldWrapperRetry(err: unknown): boolean {
+  if (err instanceof Anthropic.APIConnectionTimeoutError || (err as { name?: string })?.name === "APIConnectionTimeoutError") return false;
+  return isTransientLlmError(err);
+}
+
 // ---------------------------------------------------------------------------
 // Web-grounded research: one budget, one "no web" prompt, one URL scrub.
 // ---------------------------------------------------------------------------
@@ -1109,13 +1180,43 @@ export class ClaudeLLMProvider implements LLMProvider {
   // Generic in the message type so a `client.messages.parse()` call keeps its
   // `parsed_output` through the wrapper — every existing caller is unaffected
   // (T infers to Anthropic.Message).
+  //
+  // ROUTED (2026-09-26): `route` says which model/effort/advisor the call runs on; `exec` builds the
+  // request from the CallTarget it is handed, so a refusal fallback can re-run it on another model.
+  // A REFUSAL IS THROWN as LlmRefusalError (after one fallback attempt when the route has one and the
+  // category is not reasoning_extraction) — before this, its empty content flowed on to the parser,
+  // read as "no JSON", and the intake retry paid to be refused a second time.
   private async instrument<T extends Anthropic.Message>(
     label: string,
+    route: ResolvedRoute,
     meta: Record<string, unknown>,
-    exec: () => Promise<T>,
+    exec: (t: CallTarget) => Promise<T>,
+  ): Promise<T> {
+    const primary: CallTarget = { model: route.model, ...(route.effort ? { effort: route.effort } : {}), advisor: route.advisor };
+    const msg = await this.runOnce(label, primary, meta, exec);
+    if (msg.stop_reason !== "refusal") return msg;
+    const category = (msg as { stop_details?: { category?: string | null } }).stop_details?.category ?? null;
+    const fb = route.refusalFallback;
+    if (fb && category !== "reasoning_extraction") {
+      logger.warn("llm", `↻ ${label} refused on ${route.model} — retrying once on ${fb.model}`, { category });
+      const second = await this.runOnce(label, { model: fb.model, ...(fb.effort ? { effort: fb.effort } : {}), advisor: null }, { ...meta, refusalFallback: true }, exec);
+      if (second.stop_reason !== "refusal") return second;
+      throw new LlmRefusalError(label, fb.model, (second as { stop_details?: { category?: string | null } }).stop_details?.category ?? category);
+    }
+    throw new LlmRefusalError(label, route.model, category);
+  }
+
+  /** One logical request: the transient-retry loop, the log line and the ledger row(s). */
+  private async runOnce<T extends Anthropic.Message>(
+    label: string,
+    target: CallTarget,
+    metaIn: Record<string, unknown>,
+    exec: (t: CallTarget) => Promise<T>,
   ): Promise<T> {
     const t0 = performance.now();
     const at = Date.now();
+    const MODEL = target.model;
+    const meta: Record<string, unknown> = { ...metaIn, ...(target.effort ? { effort: target.effort } : {}), ...(target.advisor ? { advisor: target.advisor.model } : {}) };
     logger.debug("llm", `→ ${label}`, { model: MODEL, ...meta });
     let msg: T;
     // A TRANSIENT FAILURE INSIDE A STREAM DOES NOT REACH THE SDK'S RETRY.
@@ -1135,15 +1236,18 @@ export class ClaudeLLMProvider implements LLMProvider {
     // Bounded and narrow: only the errors a retry can actually fix, never a bad request or
     // an auth failure, and logged each time so a run that survived a burst says so.
     let lastErr: unknown;
+    // One advisor slot per logical request (not per transient retry); past the process ceiling the
+    // call runs on the executor alone rather than failing.
+    const sent: CallTarget = target.advisor && !takeAdvisorSlot() ? { ...target, advisor: null } : target;
     for (let attempt = 0; attempt <= TRANSIENT_RETRY_DELAYS_MS.length; attempt++) {
       try {
-        msg = await exec();
+        msg = await exec(sent);
         if (attempt > 0) logger.info("llm", `✓ ${label} recovered after ${attempt} retry(ies)`, { ...meta });
         lastErr = undefined;
         break;
       } catch (err) {
         lastErr = err;
-        if (attempt >= TRANSIENT_RETRY_DELAYS_MS.length || !isTransientLlmError(err)) break;
+        if (attempt >= TRANSIENT_RETRY_DELAYS_MS.length || !shouldWrapperRetry(err)) break;
         const wait = TRANSIENT_RETRY_DELAYS_MS[attempt];
         logger.warn("llm", `↻ ${label} transient failure — retrying in ${wait}ms`, { ...meta, attempt: attempt + 1, err: errMsg(err) });
         await new Promise((r) => setTimeout(r, wait));
@@ -1186,7 +1290,49 @@ export class ClaudeLLMProvider implements LLMProvider {
       cacheWrite: u?.cache_creation_input_tokens || undefined,
       stop: msg.stop_reason,
     });
+    // THE ADVISOR IS ITS OWN LINE. With the advisor tool, top-level usage is the EXECUTOR's alone
+    // (checked against the measured runs: it equals the sum of the non-advisor iterations); the
+    // advisor's sub-inference is billed at ITS model's price and arrives only in usage.iterations.
+    // Without this row a Fable consult ($10/$50) would be invisible spend.
+    const iters = (u as { iterations?: Array<{ type?: string; model?: string; input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }> | null } | undefined)?.iterations;
+    const adv = Array.isArray(iters) ? iters.filter((i) => i?.type === "advisor_message") : [];
+    if (adv.length) {
+      const sum = (k: "input_tokens" | "output_tokens" | "cache_read_input_tokens" | "cache_creation_input_tokens") => adv.reduce((s, i) => s + (Number(i[k]) || 0), 0);
+      const advModel = String(adv[0].model || sent.advisor?.model || "");
+      logger.info("llm", `  ${label} advisor consulted`, { model: advModel, consults: adv.length, inTok: sum("input_tokens"), outTok: sum("output_tokens") });
+      recordLlmCall({
+        at, label: `${label}.advisor`, model: advModel, ms: 0,
+        inTok: sum("input_tokens"), outTok: sum("output_tokens"),
+        cacheRead: sum("cache_read_input_tokens") || undefined, cacheWrite: sum("cache_creation_input_tokens") || undefined,
+        stop: `consults:${adv.length}`,
+      });
+    }
     return msg;
+  }
+
+  /** Stream one request, adding the advisor tool (beta) when the target carries one. The beta
+   *  message is structurally a superset of Message for everything this file reads (content blocks
+   *  by type, usage, stop_reason). */
+  private streamFinal(t: CallTarget, params: Anthropic.MessageStreamParams, options?: { signal?: AbortSignal }): Promise<Anthropic.Message> {
+    if (!t.advisor) return this.client.messages.stream(params, options).finalMessage();
+    const tools = [...((params.tools as unknown[] | undefined) ?? []), advisorToolFor(t.advisor)];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.client.beta.messages.stream({ ...(params as any), tools, betas: [ADVISOR_BETA] }, options).finalMessage() as unknown as Promise<Anthropic.Message>;
+  }
+
+  /** Append the advisor nudge to a user turn — only when the advisor is on. */
+  private withAdvisorNudge<C extends string | Anthropic.Messages.ContentBlockParam[]>(t: CallTarget, content: C): C {
+    if (!t.advisor) return content;
+    if (typeof content === "string") return (content + ADVISOR_NUDGE) as C;
+    return [...content, { type: "text" as const, text: ADVISOR_NUDGE.trim() }] as C;
+  }
+
+  /** The route for a label this file calls the model under. A label with no route is a programming
+   *  error (modelRouting.test scans this file for every literal label). */
+  private routeOf(label: string, task?: LlmTask): ResolvedRoute {
+    const t = task ?? taskForLabel(label);
+    if (!t) throw new Error(`no model route for call label "${label}" — add it to modelRouting.LLM_TASKS`);
+    return routeFor(t);
   }
 
   // Concatenate every text block (more robust than first-block-only: web search
@@ -1242,6 +1388,7 @@ export class ClaudeLLMProvider implements LLMProvider {
   private async countPlannerPrompt(label: string, systemPrompt: string, userMessage: string): Promise<void> {
     if (this.plannerPromptCounted) return;
     this.plannerPromptCounted = true;
+    const MODEL = this.routeOf(label).model;
     const startedAt = Date.now();
     const t0 = performance.now();
     try {
@@ -1296,26 +1443,28 @@ export class ClaudeLLMProvider implements LLMProvider {
   // answer is checked or escalated downstream can afford a weaker first pass; a
   // route whose answer is acted on unverified cannot — so callers name it, and
   // anything that says nothing keeps exactly the behaviour it had.
+  //
+  // ROUTED: the effort a route runs at now lives in modelRouting.ROUTE_TABLE (lookupInverterSpec's
+  // "low" moved there with its measurement), so the table is the one place a route's effort is named.
   private async ask(
     label: string,
     systemPrompt: string,
     userMessage: string,
     format?: Anthropic.JSONOutputFormat,
-    effort?: "low" | "medium" | "high" | "xhigh",
   ): Promise<string> {
-    const outputConfig = { ...(effort ? { effort } : {}), ...(format ? { format } : {}) };
-    const msg = await this.instrument(label, { chars: userMessage.length, ...(format ? { schema: true } : {}), ...(effort ? { effort } : {}) }, () =>
-      this.client.messages
+    const msg = await this.instrument(label, this.routeOf(label), { chars: userMessage.length, ...(format ? { schema: true } : {}) }, (t) => {
+      const oc = outputConfigFor(t, format);
+      return this.client.messages
         .stream({
-          model: MODEL,
+          model: t.model,
           max_tokens: 2048,
           thinking: { type: "adaptive" },
-          ...(Object.keys(outputConfig).length ? { output_config: outputConfig } : {}),
+          ...(oc ? { output_config: oc } : {}),
           system: this.cachedSystem(systemPrompt),
           messages: [{ role: "user", content: userMessage }],
         })
-        .finalMessage(),
-    );
+        .finalMessage();
+    });
     return this.textOf(msg);
   }
 
@@ -1362,6 +1511,13 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
   // Larger budget than ask() — plan sets are dense and we want every field.
   private async askLong(label: string, systemPrompt: string, userMessage: string, maxTokens = 4096, format?: Anthropic.JSONOutputFormat,
     images?: Array<{ label: string; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>): Promise<string> {
+    return (await this.askLongDetailed(label, systemPrompt, userMessage, maxTokens, format, images)).text;
+  }
+
+  /** askLong, also reporting the final stop reason (the intake retry needs to know whether the
+   *  output already ran into the 2x ceiling — re-sending that from the top repeats both calls). */
+  private async askLongDetailed(label: string, systemPrompt: string, userMessage: string, maxTokens = 4096, format?: Anthropic.JSONOutputFormat,
+    images?: Array<{ label: string; base64: string; mimeType: "image/png" | "image/jpeg" | "image/webp" }>): Promise<{ text: string; stopReason: string | null }> {
     // Page images (a scanned plan set with no text layer) go BEFORE the text, each labelled.
     const content: string | Anthropic.Messages.ContentBlockParam[] = images?.length
       ? [
@@ -1372,21 +1528,22 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
           { type: "text" as const, text: userMessage },
         ]
       : userMessage;
+    const route = this.routeOf(label);
     const run = (budget: number) =>
-      this.instrument(label, { chars: userMessage.length, maxTokens: budget, effort: "high", ...(images?.length ? { images: images.length } : {}), ...(format ? { schema: true } : {}) }, () =>
-        this.client.messages
-          .stream({
-            model: MODEL,
-            max_tokens: budget,
-            thinking: { type: "adaptive" },
-            // Plan sets are dense, multi-section reasoning — give the model room to reason.
-            // `format`, when supplied, constrains decoding to the route's JSON schema.
-            output_config: { effort: "high", ...(format ? { format } : {}) },
-            system: this.cachedSystem(systemPrompt),
-            messages: [{ role: "user", content }],
-          })
-          .finalMessage(),
-      );
+      this.instrument(label, route, { chars: userMessage.length, maxTokens: budget, ...(images?.length ? { images: images.length } : {}), ...(format ? { schema: true } : {}) }, (t) => {
+        const oc = outputConfigFor(t, format);
+        return this.streamFinal(t, {
+          model: t.model,
+          max_tokens: budget,
+          thinking: { type: "adaptive" },
+          // Plan sets are dense, multi-section reasoning — give the model room to reason (the
+          // route table holds "high" for every askLong task). `format`, when supplied, constrains
+          // decoding to the route's JSON schema.
+          ...(oc ? { output_config: oc } : {}),
+          system: this.cachedSystem(systemPrompt),
+          messages: [{ role: "user", content: this.withAdvisorNudge(t, content) }],
+        });
+      });
     let msg = await run(maxTokens);
     // Truncated output is usually unparseable JSON → a silently empty result. Retry once
     // at 2× — but only when the clipped text really is unusable: a response whose JSON
@@ -1395,7 +1552,7 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
     if (msg.stop_reason === "max_tokens" && !hasCompleteJsonBlock(this.textOf(msg))) {
       msg = await run(maxTokens * 2);
     }
-    return this.textOf(msg);
+    return { text: this.textOf(msg), stopReason: msg.stop_reason ?? null };
   }
 
   // Like askLong, but with a page SCREENSHOT prepended (vision-assisted planning). The model
@@ -1403,15 +1560,15 @@ Set confidence (0-1) for each field. Return only valid JSON.`;
   // list corroborates it. Used by planPortalFields when a screenshot is available.
   private async askLongWithImage(label: string, systemPrompt: string, userMessage: string, imageBase64: string, mimeType: "image/png" | "image/jpeg" | "image/webp", maxTokens = 4096, format?: Anthropic.JSONOutputFormat): Promise<string> {
     const run = (budget: number) =>
-      this.instrument(label, { chars: userMessage.length, maxTokens: budget, effort: "xhigh", image: true, ...(format ? { schema: true } : {}) }, () =>
+      this.instrument(label, this.routeOf(label), { chars: userMessage.length, maxTokens: budget, image: true, ...(format ? { schema: true } : {}) }, (t) =>
         this.client.messages
           .stream({
-            model: MODEL,
+            model: t.model,
             max_tokens: budget,
             thinking: { type: "adaptive" },
             // The vision-assisted planner is the hardest "see and reason" step (read the live
-            // layout, reconcile it with the field list, decide each fill) — run it at xhigh.
-            output_config: { effort: "xhigh", ...(format ? { format } : {}) },
+            // layout, reconcile it with the field list, decide each fill) — its route runs it at xhigh.
+            ...(outputConfigFor(t, format) ? { output_config: outputConfigFor(t, format) } : {}),
             system: this.cachedSystem(systemPrompt),
             messages: [{
               role: "user",
@@ -1628,6 +1785,14 @@ Rules:
     // and 6.4s, then extracted cleanly in 88s — i.e. a fast failure is transient, not a
     // property of the document. The retry is bounded at one so a genuinely unparseable
     // response still surfaces promptly rather than doubling the wait repeatedly.
+    // THE TURN ENDS WITH THE ASK, NOT WITH THE LAST DOCUMENT. Without this the user turn ended on raw
+    // document text (a structural letter's last line, "=== METER_PHOTO === ..."), and on corpus-0924
+    // P02 claude-opus-5 CONTINUED the document instead of answering — 3 of 3 attempts, 6 calls,
+    // ~$2.10, zero fields. Measured 2026-09-26 (.probe/model-routing/measure-parser, o5-high-endmark):
+    // P02 27/27 with it; on six more sets (P01 P05 P10 P13 P15 P16) field-for-field identical to the
+    // baseline (168/3/0, installer 54/54), every set in ONE call (baseline: 1 unreadable-response
+    // re-send in 8 runs there). Long documents first, the question last.
+    parts.push("=== END OF DOCUMENTS ===\nReturn ONLY the JSON object described in the system prompt.");
     const user = parts.join("\n\n");
     const images = pageImages.map((p) => ({ label: `PLAN_SET PAGE ${p.page} image:`, base64: p.base64, mimeType: p.mimeType }));
     const documentsSeen: Array<ParserFieldEvidence["source"]> = [
@@ -1636,19 +1801,29 @@ Rules:
       ...(input.meterText?.trim() ? ["meter_photo" as const] : []),
       ...(input.structuralLetterText?.trim() ? ["structural_letter" as const] : []),
     ];
+    //
+    // WHAT IS RETRIED (2026-09-26). Only an UNREADABLE RESPONSE that did not already run into the
+    // 2x ceiling. Before, the catch re-sent on ANY throw, so it also re-sent:
+    //   · an API error instrument() had already retried (and the SDK before it) — up to 4 more attempts;
+    //   · a safety refusal — the same bytes refused the same way, paid for twice;
+    //   · a 32000-token truncation — re-running it from 16000 repeats both calls for the same cap.
+    const attempt = async (note: string) => {
+      const res = await this.askLongDetailed("extractProjectFields", system, user, 16000, undefined, images);
+      try {
+        return finalizeExtraction(this.normalizeExtraction(res.text, note), documentsSeen);
+      } catch (err) {
+        if (err instanceof LlmUnreadableResponseError) throw new LlmUnreadableResponseError(err.message, res.stopReason);
+        throw err;
+      }
+    };
     try {
-      return finalizeExtraction(this.normalizeExtraction(
-        await this.askLong("extractProjectFields", system, user, 16000, undefined, images),
-        "Could not parse LLM response.",
-      ), documentsSeen);
+      return await attempt("Could not parse LLM response.");
     } catch (err) {
+      if (!(err instanceof LlmUnreadableResponseError) || err.stopReason === "max_tokens") throw err;
       logger.warn("llm", "extractProjectFields response unreadable — retrying once", {
-        err: err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120),
+        err: err.message.slice(0, 120),
       });
-      return finalizeExtraction(this.normalizeExtraction(
-        await this.askLong("extractProjectFields", system, user, 16000, undefined, images),
-        "Could not parse LLM response (retry).",
-      ), documentsSeen);
+      return attempt("Could not parse LLM response (retry).");
     }
   }
 
@@ -1676,7 +1851,7 @@ Rules:
       // unactionable "could not parse". Redacted and capped — this text can contain
       // project data.
       const sample = String(raw || "").trim().slice(0, 200).replace(/\b\d[\d-]{6,}\b/g, "[redacted]") || "(empty response)";
-      throw new Error(`${parseFailNote} The model's response could not be read as JSON — the document was NOT parsed. Response began: ${sample}`);
+      throw new LlmUnreadableResponseError(`${parseFailNote} The model's response could not be read as JSON — the document was NOT parsed. Response began: ${sample}`, null);
     }
 
     const fields: ParserLlmExtraction["fields"] = {};
@@ -1757,13 +1932,13 @@ CRITICAL accuracy rules:
     }
     content.push({ type: "text", text: `${input.defaultState ? `(Default state if ambiguous: ${input.defaultState})\n` : ""}Extract the fields now as specified.` });
 
-    const msg = await this.instrument("extractProjectFieldsFromImages", { images: input.images.length, effort: "high" }, () =>
+    const msg = await this.instrument("extractProjectFieldsFromImages", this.routeOf("extractProjectFieldsFromImages"), { images: input.images.length }, (t) =>
       this.client.messages.create({
-        model: MODEL,
+        model: t.model,
         // Headroom: adaptive thinking shares the output budget, so leave room for the JSON answer.
         max_tokens: 3500,
         thinking: { type: "adaptive" },
-        output_config: { effort: "high" },
+        ...(outputConfigFor(t) ? { output_config: outputConfigFor(t) } : {}),
         system: this.cachedSystem(system),
         messages: [{ role: "user", content }],
       }),
@@ -1801,12 +1976,12 @@ Return JSON: {"bucket": "<bucket>", "confidence": 0.0-1.0, "notes": "<brief reas
       notes: "Parse error — review manually",
     };
     try {
-      const msg = await this.instrument("classifyCorrection", { schema: true }, () =>
+      const msg = await this.instrument("classifyCorrection", this.routeOf("classifyCorrection"), { schema: true }, (t) =>
         this.client.messages.parse({
-          model: MODEL,
+          model: t.model,
           max_tokens: 2048,
           thinking: { type: "adaptive" },
-          output_config: { format: zodOutputFormat(correctionClassificationSchema) },
+          output_config: { ...(t.effort ? { effort: t.effort } : {}), format: zodOutputFormat(correctionClassificationSchema) },
           system: this.cachedSystem(system),
           messages: [{ role: "user", content: `${ctx}Correction text:\n${input.correctionText}` }],
         }),
@@ -1833,13 +2008,13 @@ Return JSON: {"draft": "<response text>", "confidence": 0.0-1.0}`;
   }
 
   async visionExtract(input: { imageBase64: string; mimeType: "image/png" | "image/jpeg" | "image/webp"; prompt: string }): Promise<Record<string, unknown>> {
-    const msg = await this.instrument("visionExtract", { effort: "high", image: true }, () =>
+    const msg = await this.instrument("visionExtract", this.routeOf("visionExtract"), { image: true }, (t) =>
       this.client.messages.create({
-        model: MODEL,
+        model: t.model,
         // Headroom: adaptive thinking shares the output budget.
         max_tokens: 4096,
         thinking: { type: "adaptive" },
-        output_config: { effort: "high" },
+        ...(outputConfigFor(t) ? { output_config: outputConfigFor(t) } : {}),
         messages: [{
           role: "user",
           content: [
@@ -1903,12 +2078,12 @@ ${input.codeSummary || "No adopted-code data available — cite current model co
 
 Applicant facts:\n${factLines || "(none provided)"}\n\nExtracted plan text (may be partial):\n${(input.extractedText || "").slice(0, 6000) || "(none)"}\n\nPerform the pre-review now.`,
     });
-    const msg = await this.instrument("reviewPlanSetGeneral", { effort: "high", image: input.pageImagesBase64.length > 0, pages: input.pageImagesBase64.length }, () =>
+    const msg = await this.instrument("reviewPlanSetGeneral", this.routeOf("reviewPlanSetGeneral"), { image: input.pageImagesBase64.length > 0, pages: input.pageImagesBase64.length }, (t) =>
       this.client.messages.create({
-        model: MODEL,
+        model: t.model,
         max_tokens: 4096,
         thinking: { type: "adaptive" },
-        output_config: { effort: "high" },
+        ...(outputConfigFor(t) ? { output_config: outputConfigFor(t) } : {}),
         system: this.cachedSystem(system),
         messages: [{ role: "user", content: userParts }],
       }),
@@ -2003,6 +2178,9 @@ Rules:
         webGrounded = true;
       }
     } catch (err) {
+      // A refusal is not "search unreachable": the same request re-asked from memory is refused the
+      // same way (or answers what the web pass would not). Surface it; do not pay for a second call.
+      if (err instanceof LlmRefusalError) throw err;
       logger.warn("llm", "researchAhjRequirements web search failed — falling back to model knowledge", { err: errMsg(err) });
     }
     if (!webGrounded) {
@@ -2049,7 +2227,9 @@ Rules:
         input.maxSearches ?? 5, input.timeoutMs ?? webResearchBudgetMs(), fetchTool,
         // Every URL the searches returned: the caller checks each cited source against this list, and
         // twelve searches return far more than the default 20.
-        400);
+        400,
+        // Every webLookup label (the caller's own, e.g. "permitProcessLookup.process") routes as ONE task.
+        "webLookup");
       return {
         text: web.text, groundedSearches: web.groundedSearches, searches: web.searches, stopReason: web.stopReason, resultUrls: web.resultUrls, pagesRead: web.fetches,
         fetchedUrls: web.fetchedUrls, resultTitles: web.resultTitles,
@@ -2141,7 +2321,7 @@ Rules:${stateLayer ? `
     }
     let parsed: Raw = {};
     let webGrounded = false;
-    let evidence: { searches: number; groundedSearches: number; resultUrls: string[]; inputTokens?: number; outputTokens?: number; model: string; stopReason?: string | null } = { searches: 0, groundedSearches: 0, resultUrls: [], model: MODEL };
+    let evidence: { searches: number; groundedSearches: number; resultUrls: string[]; inputTokens?: number; outputTokens?: number; model: string; stopReason?: string | null } = { searches: 0, groundedSearches: 0, resultUrls: [], model: this.routeOf("researchJurisdictionCodes").model };
     let failure = "";
     try {
       const web = await this.askWithWebSearch("researchJurisdictionCodes", system, userMsg, CODE_RESEARCH_MAX_TOKENS, 6, webResearchBudgetMs());
@@ -2316,6 +2496,7 @@ Rules:
         webGrounded = true;
       }
     } catch (err) {
+      if (err instanceof LlmRefusalError) throw err; // see researchAhjRequirements
       logger.warn("llm", "researchUtilityRequirements web search failed — falling back to model knowledge", { err: errMsg(err) });
     }
     if (!webGrounded) {
@@ -2594,8 +2775,8 @@ Return ONLY JSON:
     ];
     let parsed: Partial<PortalFillVerification> = {};
     try {
-      const msg = await this.instrument("verifyPortalFillVision", { effort: "high", image: true, schema: true }, () =>
-        this.client.messages.create({ model: MODEL, max_tokens: 3072, thinking: { type: "adaptive" }, output_config: { effort: "high", format: PORTAL_FILL_VERIFICATION_FORMAT }, system: this.cachedSystem(system), messages: [{ role: "user", content: user }] }),
+      const msg = await this.instrument("verifyPortalFillVision", this.routeOf("verifyPortalFillVision"), { image: true, schema: true }, (t) =>
+        this.client.messages.create({ model: t.model, max_tokens: 3072, thinking: { type: "adaptive" }, output_config: outputConfigFor(t, PORTAL_FILL_VERIFICATION_FORMAT)!, system: this.cachedSystem(system), messages: [{ role: "user", content: user }] }),
       );
       const raw = this.textOf(msg);
       parsed = this.readStructured(raw, portalFillVerificationSchema, "verifyPortalFillVision")
@@ -2622,29 +2803,33 @@ Return ONLY JSON:
   // whether the JSON parsed and not from the bare search count.
   // `extraTools`: server tools offered beside web_search (only the design-criteria lookup passes one —
   // the capped web_fetch); empty for every other caller, whose request is unchanged.
-  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000, extraTools: Array<Record<string, unknown>> = [], resultUrlCap = 20): Promise<{ text: string; searches: number; groundedSearches: number; fetches: number; fetchedUrls: string[]; stopReason: string | null; resultUrls: string[]; resultTitles: Record<string, string>; inputTokens?: number; outputTokens?: number; model: string }> {
+  private async askWithWebSearch(label: string, systemPrompt: string, userMessage: string, maxTokens = 1024, maxUses = 3, timeoutMs = 45000, extraTools: Array<Record<string, unknown>> = [], resultUrlCap = 20, task?: LlmTask): Promise<{ text: string; searches: number; groundedSearches: number; fetches: number; fetchedUrls: string[]; stopReason: string | null; resultUrls: string[]; resultTitles: Record<string, string>; inputTokens?: number; outputTokens?: number; model: string }> {
     // Hard timeout so a stalled web search can never hang the HTTP request (the
     // "Find official form" button would otherwise spin forever). On timeout we
     // abort the stream; callers catch and fall back (no URLs / model knowledge).
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const route = this.routeOf(label, task);
+    let answeredBy = route.model;
     try {
-      const msg = await this.instrument(label, { chars: userMessage.length, maxTokens, webSearch: maxUses, timeoutMs, ...(extraTools.length ? { extraTools: extraTools.map((t) => String(t.name)) } : {}) }, () =>
-        this.client.messages
-          .stream(
-            {
-              model: MODEL,
-              max_tokens: maxTokens,
-              thinking: { type: "adaptive" },
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              tools: [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }, ...extraTools] as any,
-              system: this.cachedSystem(systemPrompt),
-              messages: [{ role: "user", content: userMessage }],
-            },
-            { signal: controller.signal },
-          )
-          .finalMessage(),
-      );
+      const msg = await this.instrument(label, route, { chars: userMessage.length, maxTokens, webSearch: maxUses, timeoutMs, ...(extraTools.length ? { extraTools: extraTools.map((t) => String(t.name)) } : {}) }, (t) => {
+        answeredBy = t.model;
+        const oc = outputConfigFor(t);
+        return this.streamFinal(
+          t,
+          {
+            model: t.model,
+            max_tokens: maxTokens,
+            thinking: { type: "adaptive" },
+            ...(oc ? { output_config: oc } : {}),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            tools: [{ type: "web_search_20260209", name: "web_search", max_uses: maxUses }, ...extraTools] as any,
+            system: this.cachedSystem(systemPrompt),
+            messages: [{ role: "user", content: this.withAdvisorNudge(t, userMessage) }],
+          },
+          { signal: controller.signal },
+        );
+      });
       const { searches, groundedSearches } = summarizeWebSearch(msg);
       if (groundedSearches) logger.debug("llm", `  ${label} web_search ran`, { queries: searches, withResults: groundedSearches });
       else if (!searches) logger.warn("llm", `  ${label} returned without running a single web search — its answer is model memory`);
@@ -2659,7 +2844,7 @@ Return ONLY JSON:
         resultTitles: webSearchResultTitles(msg, resultUrlCap),
         inputTokens: typeof usage?.input_tokens === "number" ? usage.input_tokens : undefined,
         outputTokens: typeof usage?.output_tokens === "number" ? usage.output_tokens : undefined,
-        model: MODEL,
+        model: answeredBy,
       };
     } finally {
       clearTimeout(timer);
@@ -2702,6 +2887,7 @@ Notes:
 
     let parsed: { outputCurrentA?: number; outputVa?: number; confidence?: string; notes?: string } = {};
     let source = "model knowledge";
+    let refused = false;
     if (model) {
       try {
         // EFFORT "low", AND THE ESCALATION BELOW IS WHY IT IS SAFE.
@@ -2718,12 +2904,15 @@ Notes:
         // 1538000): unset/default 933 output tokens, high 924, medium 721, low 531.
         // Every model returned the SAME amps/VA at all four settings. 43% fewer
         // output tokens for an identical answer on the cases we could check.
-        parsed = this.parseJson(await this.ask("lookupInverterSpec", system, `Model / part number: ${model}`, undefined, "low"), {});
-      } catch { parsed = {}; }
+        // (The "low" now lives in modelRouting.ROUTE_TABLE.lookupInverterSpec, with this measurement.)
+        parsed = this.parseJson(await this.ask("lookupInverterSpec", system, `Model / part number: ${model}`), {});
+      } catch (err) { parsed = {}; refused = err instanceof LlmRefusalError; }
 
       // Web fallback when knowledge is unsure/unknown — search the manufacturer datasheet
-      // AND the part number, with more uses for an exhaustive look.
-      if (parsed.outputCurrentA == null || parsed.confidence === "low") {
+      // AND the part number, with more uses for an exhaustive look. Not after a REFUSAL: the same
+      // question re-asked with a search is declined the same way; the nameplate derivation below
+      // is correct by construction and costs nothing.
+      if (!refused && (parsed.outputCurrentA == null || parsed.confidence === "low")) {
         try {
           const web = await this.askWithWebSearch(
             "lookupInverterSpec.web",
@@ -3003,12 +3192,12 @@ Rules:
 
     let raw = "";
     try {
-      const msg = await this.instrument("mapFlatFormOverlay", { pages: input.pages.length, effort: "high", schema: true }, () =>
+      const msg = await this.instrument("mapFlatFormOverlay", this.routeOf("mapFlatFormOverlay"), { pages: input.pages.length, schema: true }, (t) =>
         this.client.messages.create({
-          model: MODEL,
+          model: t.model,
           max_tokens: 4096,
           thinking: { type: "adaptive" },
-          output_config: { effort: "high", format: OVERLAY_MAP_FORMAT },
+          output_config: outputConfigFor(t, OVERLAY_MAP_FORMAT)!,
           system: this.cachedSystem(system),
           messages: [{ role: "user", content }],
         }),
@@ -3093,7 +3282,8 @@ Rules:
   // ---------------------------------------------------------------------------
   async runToolAgent(input: AgentRunInput): Promise<AgentRunResult> {
     const maxIterations = Math.max(1, Math.min(input.maxIterations ?? 12, 20));
-    const effort = input.effort ?? "medium";
+    // The agent caller names the effort (default medium, as before); the route supplies the model.
+    const route = routeFor("runToolAgent", { callerEffort: input.effort ?? "medium" });
     const toolByName = new Map(input.tools.map((t) => [t.name, t]));
     // STRICT TOOL USE. `classify_correction` and `report_finding` set a bucket / a
     // severity that the operator then acts on, and `propose_data_update` writes a
@@ -3114,19 +3304,27 @@ Rules:
     let stopReason: string | null = null;
 
     for (; iterations < maxIterations; iterations++) {
-      const msg = await this.instrument(`${input.label}#${iterations + 1}`, { tools: apiTools.length, effort }, () =>
-        this.client.messages
-          .stream({
-            model: MODEL,
-            max_tokens: 4096,
-            thinking: { type: "adaptive" },
-            output_config: { effort },
-            system: this.cachedSystem(input.system),
-            tools: apiTools,
-            messages,
-          })
-          .finalMessage(),
-      );
+      let msg: Anthropic.Message;
+      try {
+        msg = await this.instrument(`${input.label}#${iterations + 1}`, route, { tools: apiTools.length }, (t) =>
+          this.client.messages
+            .stream({
+              model: t.model,
+              max_tokens: 4096,
+              thinking: { type: "adaptive" },
+              ...(outputConfigFor(t) ? { output_config: outputConfigFor(t) } : {}),
+              system: this.cachedSystem(input.system),
+              tools: apiTools,
+              messages,
+            })
+            .finalMessage(),
+        );
+      } catch (err) {
+        // The agent's contract predates LlmRefusalError: a refusal stops it cleanly with
+        // stopReason "refusal" (a named outcome its callers already branch on), not a throw.
+        if (err instanceof LlmRefusalError) return { provider: "claude", finalText, iterations: iterations + 1, hitIterationCap: false, stopReason: "refusal" };
+        throw err;
+      }
       stopReason = msg.stop_reason;
       finalText = this.textOf(msg) || finalText;
 
@@ -3196,7 +3394,11 @@ export function createLLMProvider(): LLMProvider {
   if (!/^sk-ant-/.test(apiKey)) {
     logger.warn("llm", `ANTHROPIC_API_KEY does not start with "sk-ant-" — it may be malformed (Claude calls will likely 401)`, { chars: apiKey.length });
   }
-  logger.info("llm", "Claude provider ready", { model: MODEL });
+  // The routing table, once: every task on the baseline says so in one line; anything an env var
+  // moved (or an advisor switched on) is listed by name so a changed route is never silent.
+  const routes = describeRoutes();
+  const moved = routes.filter((r) => r.source !== "table/table" && r.source !== "table/omitted" || r.advisor);
+  logger.info("llm", "Claude provider ready", { baseline: BASELINE_MODEL, tasks: routes.length, routedElsewhere: moved.length ? moved : "none" });
   return new ClaudeLLMProvider(apiKey);
 }
 

@@ -84,30 +84,40 @@ export function persistLlmCall(rec: PersistedLlmCall): void {
 // Estimated cost
 // ---------------------------------------------------------------------------
 
-/** USD per million tokens, LIST price, first-party API. ESTIMATES: cache reads and 5-minute
- *  cache writes use the standard 0.1× / 1.25× input multipliers, and server-side web-search
- *  fees are not counted. A model not listed here prices as UNKNOWN (null), never as $0 —
- *  an unknown must not read as reassurance. Keyed by exact model id: a new model has to be
- *  added here on purpose, or its spend reads as unpriced. */
-const PRICE_PER_MTOK: Record<string, { input: number; output: number }> = {
-  "claude-opus-5": { input: 5, output: 25 },
-  "claude-sonnet-5": { input: 2, output: 10 },
-  "claude-haiku-4-5": { input: 1, output: 5 },
+/** USD per million tokens, LIST price, first-party API (claude-api skill models.md /
+ *  model-migration.md, 2026-09-26). ESTIMATES: 5-minute cache writes use the standard 1.25× input
+ *  multiplier, and server-side web-search fees are not counted. Cache READS are priced PER MODEL:
+ *  the discount is no longer one multiplier — Opus 5.5 reads at 0.05× ($0.20) and Fable 5.1 at
+ *  0.025× ($0.25), against 0.1× for the rest. A model not listed here prices as UNKNOWN (null),
+ *  never as $0 — an unknown must not read as reassurance. Keyed by EXACT model id (a dated
+ *  snapshot suffix is stripped first): "claude-opus-5-5" must never price as "claude-opus-5" —
+ *  the measurement runner's prefix match did exactly that and under-reported Opus 5.5 by 25%.
+ *  Every model modelRouting can route to must be priced here (modelRouting.test holds them together). */
+export const PRICE_PER_MTOK: Readonly<Record<string, { input: number; output: number; cacheRead: number }>> = {
+  "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5 },
+  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2 },
+  "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2 },
+  "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1 },
+  "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25 },
 };
-const CACHE_READ_MULTIPLIER = 0.1;
 const CACHE_WRITE_MULTIPLIER = 1.25;
 
 /** count_tokens is free: it is recorded (it proves the planner budget was measured) but costs nothing. */
 const FREE_LABEL = /\.countTokens$/;
 
+/** "claude-haiku-4-5-20251001" -> "claude-haiku-4-5". Exact match otherwise — never a prefix. */
+export function priceKeyForModel(model: string): string {
+  return String(model || "").trim().replace(/-\d{8}$/, "");
+}
+
 export function estimateLlmCallCostUsd(row: { label: string; model: string; in_tok: number | null; out_tok: number | null; cache_read: number | null; cache_write: number | null }): number | null {
   if (FREE_LABEL.test(row.label)) return 0;
-  const price = PRICE_PER_MTOK[row.model];
+  const price = PRICE_PER_MTOK[priceKeyForModel(row.model)];
   if (!price) return null;
   const tok = (n: number | null) => (n ?? 0) / 1_000_000;
   return tok(row.in_tok) * price.input
     + tok(row.out_tok) * price.output
-    + tok(row.cache_read) * price.input * CACHE_READ_MULTIPLIER
+    + tok(row.cache_read) * price.cacheRead
     + tok(row.cache_write) * price.input * CACHE_WRITE_MULTIPLIER;
 }
 
