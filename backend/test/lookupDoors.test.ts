@@ -852,6 +852,8 @@ await check("(r7) lookup-close-7 — R1 the record type's official arm is THIS a
   assert.equal(channel.portalTenantKey("https://bsaonline.com/MunicipalDirectory/"), channel.portalTenantKey("https://bsaonline.com/"), "no uid = no tenant");
   assert.equal(channel.portalTenantKey("https://bsaonline.com/SiteSearch/Permits?uid=413"), channel.portalTenantKey("https://bsaonline.com/?uid=413"), "the uid alone names the tenant");
   assert.notEqual(channel.portalTenantKey("https://www.mapsonline.net/westonma/online_permits/"), channel.portalTenantKey("https://www.mapsonline.net/"), "a MapsOnline path tenant");
+  // A tenant parameter names the tenant on ANY host — the path is then a page of that tenant (close-6 L17, re-pointed).
+  assert.equal(channel.portalTenantKey("https://permits.cityofx.gov/Portal/PortalController?Action=showHomePage&installationID=5"), channel.portalTenantKey("https://permits.cityofx.gov/Search/Records?installationID=5"), "the tenant parameter alone keys the tenant");
   for (const v of ["iworq.com", "bsasoftware.com", "centralsquare.com", "peoplegis.com", "avolvesoftware.com", "fullcircletech.com"]) assert.equal(channel.isVendorDomain(v), true, v);
 });
 

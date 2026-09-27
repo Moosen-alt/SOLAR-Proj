@@ -20,8 +20,13 @@ one definitions (commit 006c39c + the fixture/HANDOFF commits after it; scratch 
   `aca.oregon`, `aca3`), any other accela.com host is Accela's own site.
 - Measured: probe6v 14 BAD -> 6 of 41 (the six below); every prior probe's verdict lines identical to close-6-v's
   (probe1 13/51, probe4 10/41, close-3 zz_adv 7/49, close-2-v zz_adv 5 + the expected F1 throw, probe5v 5/40, the
-  rest 0); rescore6 output identical (0 baseline flips, 12 saved record types, no cell moved). Kills: 24/24 RED
-  (`.probe/lookup-close-7/kill.cjs` / `kill.out`, own LF worktree; X2b, X4, X5 — green or skipped at close-6-v — among them). lookupDoors `(r7)` pins A1/A2/A6 out, A3 + Camden + a state issuer in, F3 out,
+  rest 0); rescore6 output identical (0 baseline flips, 12 saved record types, no cell moved). Kills: this round's 24/24 RED
+  (`.probe/lookup-close-7/kill.cjs` / `kill.out`, own LF worktree; X2b, X4, X5 — green or skipped at close-6-v — among them);
+  close-6's 65 re-run: 59 RED, the 6 whose lines moved SKIP, re-pointed in the same kill.cjs (K21r L6r L6br L7r L17r L9r)
+  6/6 RED (`kill-close6.out`, `kill-repointed.out`; L17r went red only after the `(r7)` tenant-parameter pin was added).
+  End checks at 48394e0 in a clean worktree: typecheck 0 errors; 32 suites run directly, all passed except the
+  pre-existing `requiredApplicationSet` (fails at close-6 too); `backend:test:unit:2` EXIT 0 (last banner
+  "All trackKind-reader tests passed."); smoke passed. lookupDoors `(r7)` pins A1/A2/A6 out, A3 + Camden + a state issuer in, F3 out,
   F2 in, G2/G4/G5/G6 + marketing subdomains out, G8-G10 + aca.oregon / citizenserve www6 / MapsOnline forms in.
 
 **Known residue — start here (one line each; probe ids in `.probe/lookup-close-7/probe6v.ts`, `quick1.ts`):**
