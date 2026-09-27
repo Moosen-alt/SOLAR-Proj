@@ -55,8 +55,11 @@ today's bytes; effort `high` pinned the moment it resolves elsewhere).
 
 **L3 — web-search fees are in the ledger.** `llm_calls.web_searches` (migration v38) from
 `usage.server_tool_use.web_search_requests`, $10 per 1,000 in `estimateLlmCallCostUsd` and the
-project page's usage roll-up (`webSearches`, `webSearchesUnknown`). NULL = the call reported no
-count: unknown, not $0; nothing backfilled. This ADDS ~$0.03–0.30 of previously invisible spend
+project page's usage roll-up (`webSearches`, `webSearchesUnknown`). The API sends
+`usage.server_tool_use` on every message (`null` when no server tool ran — a known 0, recorded
+as 0); NULL in the ledger means the row predates v38 or the call reported nothing: unknown, not
+$0; nothing backfilled. Verified on a copy of a v36 database: ALTER adds the column, 150
+pre-existing rows stay NULL. This ADDS ~$0.03–0.30 of previously invisible spend
 per research call to every figure (the Corry track above: $0.03 of its $0.49).
 
 **L4 — one job does not buy the same permit fee twice.** `researchFeeSchedule` skips a permit

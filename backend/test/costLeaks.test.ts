@@ -47,7 +47,8 @@ const queue: Scripted[] = [];
 const captured: Array<Record<string, unknown>> = [];
 const ev = (name: string, data: unknown) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
 function sse(s: Scripted, model: string): string {
-  const usage = { input_tokens: 1000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, ...(s.usage ?? {}) };
+  // server_tool_use is on EVERY real message (SDK: ServerToolUsage | null): null = no server tool ran.
+  const usage = { input_tokens: 1000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, server_tool_use: null, ...(s.usage ?? {}) };
   const out = [ev("message_start", { type: "message_start", message: { id: "msg_stub", type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage } })];
   s.blocks.forEach((b, index) => {
     if (b.type === "text") {
@@ -250,9 +251,10 @@ await check("migration v38: llm_calls has web_searches after openDatabase", () =
   const cols = db.query<{ name: string }>("PRAGMA table_info(llm_calls)").map((c) => c.name);
   assert.ok(cols.includes("web_searches"), cols.join(","));
 });
-await check("webSearchRequestsOf reads usage.server_tool_use; absent = undefined (unknown), present 0 = 0", () => {
+await check("webSearchRequestsOf reads usage.server_tool_use; key absent = undefined (unknown), null = 0 (no server tool ran), present 0 = 0", () => {
   assert.equal(webSearchRequestsOf({ input_tokens: 1 }), undefined);
   assert.equal(webSearchRequestsOf(undefined), undefined);
+  assert.equal(webSearchRequestsOf({ input_tokens: 1, server_tool_use: null }), 0, "the API's null is a known zero, not an unknown");
   assert.equal(webSearchRequestsOf({ server_tool_use: { web_search_requests: 0 } }), 0);
   assert.equal(webSearchRequestsOf({ server_tool_use: { web_search_requests: 7 } }), 7);
   assert.equal(webSearchRequestsOf({ server_tool_use: { web_search_requests: "3" } }), 3);
@@ -266,11 +268,11 @@ await check("cost arithmetic: tokens + $10 per 1,000 searches; a NULL count adds
   assert.equal(estimateLlmCallCostUsd(base), tokensOnly);
   assert.equal(estimateLlmCallCostUsd({ ...base, label: "planPortalFields.countTokens", web_searches: 5 }), 0);
 });
-await check("both call paths record the count: the fee loop's turn with a search count, the agent turn with an explicit 0, and NULL when the response reported none", () => {
+await check("both call paths record the count: the fee loop's searching turn 2, every other real turn a known 0 (server_tool_use null), never NULL", () => {
   const feeRows = rowsLike("researchFeeSchedule[permit:OR:Cache Probe City]%");
-  assert.deepEqual(feeRows.map((r) => r.web_searches), [2, null, null]);
+  assert.deepEqual(feeRows.map((r) => r.web_searches), [2, 0, 0]);
   const agentRows = rowsLike("runTriage#%");
-  assert.deepEqual(agentRows.map((r) => r.web_searches), [null, 0, null, null]);
+  assert.deepEqual(agentRows.map((r) => r.web_searches), [0, 0, 0, 0]);
 });
 await check("llmUsageForProject: searches summed into the estimate, unknown rows counted, the note names the rate", () => {
   const pid = "cost-leaks-project";

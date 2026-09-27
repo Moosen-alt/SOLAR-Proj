@@ -283,11 +283,15 @@ export interface LlmCallRecord {
   webSearches?: number;
 }
 
-/** The web-search count a response reports, or undefined when it reports none. Read from usage
- *  (the billing source), not from content blocks: a search the server ran and billed is a search. */
+/** The web-search count a response reports. Read from usage (the billing source), not from content
+ *  blocks: a search the server ran and billed is a search. The API sends `server_tool_use` on EVERY
+ *  message (SDK: `ServerToolUsage | null`, non-optional) — null means no server tool ran, a KNOWN
+ *  zero; only a usage object with no such key at all (a stub, a pre-v38 row) is unknown (undefined). */
 export function webSearchRequestsOf(usage: unknown): number | undefined {
-  const st = (usage as { server_tool_use?: { web_search_requests?: unknown } | null } | null | undefined)?.server_tool_use;
-  if (!st || typeof st !== "object") return undefined;
+  if (!usage || typeof usage !== "object" || !("server_tool_use" in usage)) return undefined;
+  const st = (usage as { server_tool_use: { web_search_requests?: unknown } | null }).server_tool_use;
+  if (st == null) return 0;
+  if (typeof st !== "object") return undefined;
   const n = Number(st.web_search_requests);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
 }
@@ -1355,6 +1359,7 @@ export class ClaudeLLMProvider implements LLMProvider {
         inTok: sum("input_tokens"), outTok: sum("output_tokens"),
         cacheRead: sum("cache_read_input_tokens") || undefined, cacheWrite: sum("cache_creation_input_tokens") || undefined,
         stop: `consults:${adv.length}`,
+        webSearches: 0, // the advisor never searches; a known zero, not an unknown
       });
     }
     return msg;
@@ -1460,6 +1465,7 @@ export class ClaudeLLMProvider implements LLMProvider {
         ms: Math.round(performance.now() - t0),
         inTok: whole.input_tokens,
         outTok: 0,
+        webSearches: 0, // count_tokens never searches; a known zero, not an unknown
       });
       logger.info("llm", "planner prompt measured (once per process)", {
         label, promptTokens: whole.input_tokens, systemTokens: systemOnly.input_tokens,
