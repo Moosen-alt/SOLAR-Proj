@@ -261,13 +261,47 @@ export function portalSafetyFactory() {
   // words: a pays-now phrase anywhere else in the text still wins (autosubmit-2 MF-S2 — "You do not
   // need to pay now - $150 will be debited on submit." read fee_deferred and was filed).
   const NEGATED_PAY = /\b(no\s+need\s+to|(do|does|will|need)\s+not\s+(need\s+to\s+|have\s+to\s+)?|don'?t\s+(need|have)\s+to|not\s+(be\s+)?required\s+to|nothing\s+to)\s*pay\b/gi;
+  // FAIL CLOSED ON MONEY, CLAUSE BY CLAUSE (autosubmit-close-2 skeptic: ~20 shapes FILED — "$150 is due
+  // now.", "Total due: $150.00.", "Your balance will be reduced by $150 when you submit.", "Pagar $150 y
+  // enviar?", and a deferral or a negation anywhere winning over a pays-now clause elsewhere). A clause
+  // that mentions MONEY — an amount, or any word for paying, owing or moving money — is accepted only when
+  // IT defers the money (FEE_DEFERRED_DIALOG) and nothing in it takes money now, at the click, or from an
+  // account (MONEY_TAKEN). Every money clause must pass; the first that does not is pays_now, whatever the
+  // other clauses say. A negated pay ("you do not need to pay now", "no payment is required") is removed
+  // from its clause first, and what remains of that clause is judged on its own.
+  const CLAUSE_BREAK = /[.?!;](?=\s|$)|\n+|\s[-–—]\s/;
+  const MONEY_MENTION = new RegExp([
+    "[$€£]\\s?\\d", "\\b\\d[\\d,]*(\\.\\d{1,2})?\\s*(usd|dollars?)\\b", "\\busd\\b",
+    "\\b(pay\\w*|pag(ar|o|ue)|fees?|charges?|charged|charging|bill(s|ed|ing)?|invoic\\w*|debit\\w*|deduct\\w*|funds?|refund\\w*|card|bank|ach|e-?check|remit\\w*|checkout|transaction|wallet|escrow|balance|costs?|price|purchas\\w*|deposit\\w*|money|amount)\\b",
+    "\\bdue\\s+(now|today|immediately)\\b", "\\btaken\\s+from\\b", "\\b(from|to|on)\\s+(your|the|my)\\s+(\\w+\\s+)?(account|card|bank)\\b",
+  ].join("|"), "i");
+  const MONEY_TAKEN = new RegExp([
+    "\\b(now|today|immediately|instantly|right\\s+away|at\\s+this\\s+time)\\b",
+    "\\b(on|upon|at|with|by)\\s+(submi\\w*|filing|clicking|checkout|continuing|proceeding)\\b",
+    "\\b(when|once|as)\\s+(you\\s+)?(submit|file|click|continue|proceed)\\w*\\b",
+    "\\b(before|to)\\s+(you\\s+)?(submit|file|continue|proceed)\\w*\\b",
+    "\\b(card|bank|ach|e-?check|wallet|escrow|account)\\b",
+    "\\b(debit\\w*|deduct\\w*|withdraw\\w*|charged|charging|remit\\w*|draw(n|s)?|reduc\\w*|purchas\\w*|authoriz\\w*|hold|taken\\s+from)\\b",
+    "\\bcomplet\\w*\\s+(your\\s+|the\\s+)?(purchase|payment|order|transaction)\\b",
+  ].join("|"), "i");
+  // "Submit now" is the click's own timing, not the money's ("Submit now and pay later?").
+  const SUBMIT_NOW = /\b(submit|file|send|continue|proceed|apply)\w*\s+(it\s+|this(\s+application)?\s+|the\s+application\s+|your\s+application\s+)?(now|today)\b/gi;
+  const NEGATED_PAY_NOW = new RegExp(`(${NEGATED_PAY.source})(\\s+(anything|any\\s+fees?))?(\\s+(now|today|at\\s+this\\s+time|yet|here))?`, "gi");
+  const NEGATED_MONEY = /\b(no\s+(charge|fee|fees|cost|payment|payments)(\s+(is|are|will\s+be))?(\s+(required|due|needed|necessary|owed|collected|charged))?(\s+(now|today|at\s+this\s+time|yet|here))?|free\s+of\s+charge|at\s+no\s+(cost|charge))/gi;
   const paymentDialogVerdict = (text: string | null | undefined): "no_payment" | "fee_deferred" | "pays_now" => {
     const raw = String(text ?? "");
-    const negated = raw.replace(NEGATED_PAY, " ") !== raw;
-    const t = raw.replace(NEGATED_PAY, " ");
+    // A negation removes only its own words ("no payment is required now"); the rest is still judged.
+    const t = raw.replace(NEGATED_PAY, " ").replace(NEGATED_MONEY, " ");
     if (PAY_NOW_DIALOG.test(t)) return "pays_now";
-    if (!negated && !isPaymentWordedText(raw) && !/\b(bill(ed|ing)?|invoic(e|ed|es|ing))\b/i.test(raw)) return "no_payment";
-    return negated || FEE_DEFERRED_DIALOG.test(t) ? "fee_deferred" : "pays_now";
+    let spoke = t !== raw;
+    for (const clause of raw.split(CLAUSE_BREAK)) {
+      const rest = clause.replace(NEGATED_PAY_NOW, " ").replace(NEGATED_MONEY, " ");
+      if (rest !== clause) spoke = true;
+      if (!MONEY_MENTION.test(rest)) continue;
+      if (!FEE_DEFERRED_DIALOG.test(rest) || MONEY_TAKEN.test(rest.replace(SUBMIT_NOW, " "))) return "pays_now";
+      spoke = true;
+    }
+    return spoke ? "fee_deferred" : "no_payment";
   };
   /** Does this dialog pay NOW (or speak of payment with no deferral)? The boolean every door asks. */
   const isPayNowDialogText = (text: string | null | undefined): boolean => paymentDialogVerdict(text) === "pays_now";

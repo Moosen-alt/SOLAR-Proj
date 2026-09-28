@@ -379,6 +379,17 @@ const DIALOG_PAYS_NOW = [
   "Fees will be invoiced later. Auto-pay is enabled for this account.",
   "You don't have to pay anything today; the account on file covers the $150 fee.",
   "No need to pay now. Your payment will be processed when you submit.",
+  // autosubmit-close-2 skeptic (verbatim; every one FILED at the fixture's server): an amount with no pay
+  // word was "no payment"; a negation or a deferral anywhere beat a pays-now clause elsewhere.
+  "$150 is due now. Submit application?", "Total due: $150.00. Submit?", "Amount due today: $150. Continue?",
+  "Your balance will be reduced by $150 when you submit. Continue?", "The amount will be taken from your account on submission. OK?",
+  "Pagar $150 y enviar?", "A $150 hold will be placed on your card. Submit?", "Submitting will draw $150 from your escrow account. Continue?",
+  "Clicking OK completes your purchase of the $150 permit. Continue?", "$150 is due now.", "Your balance will be reduced by $150 when you submit.",
+  "Total due: $150.00. Submit this application?", "$150 is due now. Continue?", "Total due: $150.00. Continue?",
+  "You do not need to pay now. Your balance will be reduced by $150 on submit.", "No payment is needed now; $150 is due on submission.",
+  "No need to pay later - the fee is paid when you submit.", "Permit fees will be invoiced later; a $25 convenience fee applies now. Submit?",
+  "Fees will be invoiced later. Total due now: $25.", "There is no charge today. Total due at submission: $150.",
+  "Fees will be billed later. $25 will come out of your account now.", "Your permit fee will be invoiced. Submitting authorizes a $25 charge today.",
 ];
 const DIALOG_FEE_DEFERRED = [
   "Submit application? Fees will be invoiced later.", "A fee of $150 will be invoiced", "Fees will be assessed after review.",
@@ -387,6 +398,10 @@ const DIALOG_FEE_DEFERRED = [
   "No payment is required at this time.",
   // "withdrawn" with no money in it is not paying (MF-S2's vocabulary is money leaving the payer).
   "Fees will be invoiced later. An unsubmitted draft is withdrawn after 30 days.",
+  // The clause reading must not turn the operator's ruling into false stops: an amount that is invoiced,
+  // the click's own "submit now", a negation standing alone.
+  "A fee of $150.00 will be invoiced after review.", "Submit application now? Permit fees ($150) are due at issuance.",
+  "There is no charge to submit this application.", "No payment is required now; the permit fee will be invoiced after plan review.",
 ];
 const DIALOG_NO_PAYMENT = [
   "File this application now?", "Are you sure you want to submit this application?", "Submit this application?",
