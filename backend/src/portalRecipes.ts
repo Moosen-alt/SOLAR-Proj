@@ -790,35 +790,42 @@ export function stampCompanyAttestations(steps: RecipeStep[], clientId: string |
   return (steps ?? []).map((st) => (isCompanyAttestationStep(st) && !st.companyFactOf ? { ...st, companyFactOf: stamp } : st));
 }
 
-/** A licence number as a comparable token (and its bare digits when a board prefix leads: "ROC 444222"
- *  and "444222" are one licence). A form must carry a digit and be long enough to identify something —
- *  "Yes", "1", "12" are never licences. */
-function licenceNumberForms(value: string): string[] {
+/** A licence number as a comparable token: upper-cased, separators dropped. A token must carry a digit
+ *  and be long enough to identify something — "Yes", "1", "12" are never licences. */
+function licenceToken(value: string): string {
   const full = String(value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  const out: string[] = [];
-  if (full.length >= 4 && /\d/.test(full)) out.push(full);
+  return full.length >= 4 && /\d/.test(full) ? full : "";
+}
+/** The forms a LICENCE ON FILE is recognised in: its full token, and its bare digits when a board
+ *  prefix leads ("ROC 444222" is also typed "444222"). Only the licence side is expanded — a recorded
+ *  value is compared by its full token, so a parcel "R700888" never collides with a CCB "700888". */
+function licenceOnFileForms(number: string): string[] {
+  const full = licenceToken(number);
+  if (!full) return [];
   const bare = full.replace(/^[A-Z]+/, "");
-  if (bare !== full && bare.length >= 5 && /\d/.test(bare)) out.push(bare);
-  return out;
+  return bare !== full && bare.length >= 5 && /\d/.test(bare) ? [full, bare] : [full];
 }
 export const LICENCE_LITERAL_OPERATOR_ITEM = "company licence — the recorded answer was the learn company's own licence number, so the shared recipe leaves this box for a person";
 /**
  * THE LEARN COMPANY'S LICENCE NEVER STAYS A LITERAL (licences skeptic L1 — the operator's "infinity
- * license on kin projects"). A recorded fill / select whose value equals ANY licence the learn job's
+ * license on kin projects"). A recorded free-text FILL whose value equals ANY licence the learn job's
  * client holds — any state, any kind, the named columns and the typed entries, compared normalised —
  * is that company's number, whatever the box is called ("ROC #", "TECL #", "Reg. No."). The binder
  * had its chance to bind it to this job's key; what is still a literal is withheld (value dropped,
  * step.operatorItem named — never the value itself), the same shape as
- * withholdCompanyIdentityLiterals. Run where the learn client is known: the auto-learn binding pass
- * (every save path) and the human-patch merge.
+ * withholdCompanyIdentityLiterals. A SELECT is closed vocabulary and stays recipeReplayBinding R8's:
+ * a licence OPTION is stamped with the learn company and replays only on that company's own jobs.
+ * Run where the learn client is known: the auto-learn binding pass (every save path) and the
+ * human-patch merge.
  */
 export function withholdClientLicenceLiterals(steps: RecipeStep[], licenceNumbers: string[]): { steps: RecipeStep[]; withheld: number } {
-  const known = new Set((licenceNumbers ?? []).flatMap(licenceNumberForms));
+  const known = new Set((licenceNumbers ?? []).flatMap(licenceOnFileForms));
   if (!known.size) return { steps: steps ?? [], withheld: 0 };
   let withheld = 0;
   const out = (steps ?? []).map((st) => {
-    if (!st || (st.action !== "fill" && st.action !== "select") || st.field || st.sensitive || !String(st.value ?? "").trim()) return st;
-    if (!licenceNumberForms(String(st.value)).some((f) => known.has(f))) return st;
+    if (!st || st.action !== "fill" || st.field || st.sensitive || !String(st.value ?? "").trim()) return st;
+    const token = licenceToken(String(st.value));
+    if (!token || !known.has(token)) return st;
     withheld++;
     const next: RecipeStep = { ...st, operatorItem: LICENCE_LITERAL_OPERATOR_ITEM };
     delete next.value;

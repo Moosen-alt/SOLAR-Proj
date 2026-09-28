@@ -180,6 +180,17 @@ function licenceEntries(client: Record<string, unknown>, state: string): Licence
     state, kind: (LICENCE_KIND_SET.has(l.kind) ? l.kind : "") as LicenceKind | "", typedKind: l.kind, number: l.number,
     expires: l.expires ?? "", holder: l.holder ?? "", column: false,
   }));
+  // A NAMED COLUMN'S EXPIRY / HOLDER CAN LIVE ON ITS TYPED TWIN. The BCD electrical and supervising-
+  // electrician columns carry no expiry, and each licence kind now has its own expiry key — so an
+  // Oregon "Electrical License Expiration" box reads the electrical licence's date, never the CCB's.
+  // The operator supplies it by adding the same number (with its date) under Clients → State licences:
+  // a typed OR entry of the column's kind and number lends the column its expiry / holder.
+  for (const col of columns) {
+    const twin = typed.find((t) => t.kind === col.kind && t.number && normNumber(t.number) === normNumber(col.number));
+    if (!twin) continue;
+    if (!col.expires && twin.expires) col.expires = twin.expires;
+    if (!col.holder && twin.holder) col.holder = twin.holder;
+  }
   // A PLACEHOLDER IS NOT A LICENCE (leak-fix-portal P7, companyFacts.looksLikePlaceholderIdentifier —
   // the one placeholder predicate): "TEST-160001", "XXX-0000", "0000" is never offered to any door
   // (the submit gate, the form fill, the cover sheet, the portal overlay). The entry stays, with no

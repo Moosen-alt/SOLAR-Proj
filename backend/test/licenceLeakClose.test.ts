@@ -155,7 +155,6 @@ await check("MUST-PASS: a literal equal to ANY licence of the learn client (any 
     { action: "fill", selector: { label: "Number:" }, value: N.txEc },
     { action: "fill", selector: { label: "Number:" }, value: "55501" },            // bare digits of "TECL 55501"
     { action: "fill", selector: { label: "ID" }, value: "roc-444-222" },          // separators ignored
-    { action: "select", selector: { label: "Qualifier" }, value: N.azCon },
     { action: "fill", selector: { label: "Reference" }, value: N.orCcb },         // Oregon's CCB on any portal
   ] as RecipeStep[];
   const out = recipes.withholdClientLicenceLiterals(steps, numbersAlpha);
@@ -173,6 +172,12 @@ await check("MUST-EXCLUDE: portal vocabulary, short values, a bound step and ano
     { action: "fill", selector: { label: "Qty" }, value: "12" },
     { action: "fill", selector: { label: "Number:" }, value: "44422" },
     { action: "fill", selector: { label: "CSL #" }, field: "constructionSupervisorLicenseNumber" },
+    // A value is compared by its FULL token: a parcel that merely ends in the CCB's digits is not the CCB.
+    { action: "fill", selector: { label: "Parcel" }, value: `R${N.orCcb}` },
+    // A SELECT is closed vocabulary — a licence OPTION stays R8's (stamped, replayed only for the
+    // company that recorded it), never blanked for everyone at learn.
+    { action: "select", selector: { label: "Licenses:" }, value: `ZZ Elec State ES ${N.orElectrician}` },
+    { action: "select", selector: { label: "Qualifier" }, value: N.azCon },
   ] as RecipeStep[];
   const out = recipes.withholdClientLicenceLiterals(steps, numbersAlpha);
   assert.equal(out.withheld, 0, JSON.stringify(out.steps));
@@ -380,6 +385,21 @@ await check("MUST-PASS: the resolver answers each expiry from its own licence (M
     assert.ok(Object.prototype.hasOwnProperty.call(fv(noCslMa, "building"), k), `${k} is always present`);
   }
 });
+await check("MUST-PASS (Oregon): the BCD / supervising-electrician columns take their expiry from a typed twin (same number) — MUST-EXCLUDE: never the CCB's date", () => {
+  const twin = clients.createClient(db, {
+    companyName: "Twin Test Solar", ccbLicenseNumber: "700610", ccbExpiration: "2027-03-31", electricalLicenseNumber: "C6100",
+    electricianLicenseNumber: "6100S", electricalSupervisorName: "Tess Twin",
+    stateLicenses: [{ state: "OR", kind: "electrical_contractor", number: "C 6100", expires: "2027-09-30" }, { state: "OR", kind: "master_electrician", number: "6100S", expires: "2028-02-29" }],
+  });
+  const v = fv(mk(twin.id, "OR"), "electrical");
+  assert.equal(v.electricalLicenseNumber, "C6100", "the column is still the number filed");
+  assert.equal(v.electricalLicenseExpiration, "2027-09-30");
+  assert.equal(v.electricianLicenseExpiration, "2028-02-29");
+  assert.equal(v.electricalSupervisorName, "Tess Twin");
+  const noTwin = fv(alphaOr, "electrical");
+  assert.equal(noTwin.electricalLicenseExpiration, "", "no electrical expiry on file — blank, never the CCB's 2027-03-31");
+  assert.equal(noTwin.ccbExpiration, "2027-03-31");
+});
 
 // =============================================================================================
 section("L4  one licence number is never drawn into two generic placements on a flat PDF");
@@ -494,6 +514,11 @@ await check("MUST-PASS: the metro / city licence is filed on an Oregon job and b
     assert.ok(!forms.buildContext(db, p).client.metroCityLicenseNumber, `${p.state} form context`);
   }
   assert.equal(forms.buildContext(db, alphaOr).client.metroCityLicenseNumber, N.metro);
+});
+await check("MUST-PASS: the resolver's own metro gate — a metro number reaching the dictionary another way (the parser snapshot) is still blank off Oregon", () => {
+  const detail = repo.getProjectDetail(db, alphaMa.id).project;
+  const withSnap = { ...detail, parserSnapshot: { ...(detail.parserSnapshot ?? {}), metroCityLicenseNumber: "SNAP-METRO-9" } } as ProjectRecord;
+  assert.equal(recipes.resolveRecipeFieldValues(db, withSnap, "accela", "building").metroCityLicenseNumber, "");
 });
 await check("MUST-PASS: a project with NO recorded state emits no licence at all (unknown, never Oregon's)", () => {
   assert.equal(clients.licenceJobState(""), "");
