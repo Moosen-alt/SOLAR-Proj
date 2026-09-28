@@ -3,7 +3,7 @@ import type { LLMProvider } from "../../shared/src/types";
 import { logger } from "./logger";
 import { nowIso } from "./time";
 import { parseJson } from "./json";
-import { buildFieldMapForPdf, documentDateForPdf, fetchPdf, sha256, storeAhjFormTemplate, type StoredFieldMap } from "./ahjFormAuto";
+import { buildFieldMapForPdf, documentDateForPdf, fetchPdf, sha256, storeAhjFormTemplate, VerifiedTemplateRefusal, type StoredFieldMap } from "./ahjFormAuto";
 import { isVerifiedKnowledge, knowledgeResearchHint } from "./knowledgeBase";
 import { startPersistentSchedule } from "./schedulerState";
 
@@ -134,29 +134,38 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
     // refreshed row would keep answering "is this current" with the old form's
     // revision line, or with nothing at all.
     const documentDate = await documentDateForPdf(bytes);
-    storeAhjFormTemplate(db, {
-      ahjName: row.ahj_name,
-      state: row.state,
-      formType: row.form_type,
-      filename: `${formName}.pdf`,
-      bytes,
-      documentDate,
-      map: {
-        formName,
-        sourceUrl: map.sourceUrl,
-        fillMode: newMap ? "acroform" : (live.fillMode || "overlay"),
-        textFields: newMap?.textFields || live.textFields || {},
-        checkboxes: newMap?.checkboxes || live.checkboxes || {},
-        overlayFields: live.overlayFields,
-        signatureFields: live.signatureFields,
-        // The blanks named for the operator belong to the revision that was mapped.
-        operatorItems: newMap ? newMap.operatorItems : live.operatorItems,
-        verified: false,
-        notes: `Refreshed ${nowIso()} — the AHJ revised this form.` +
-          (wasVerified ? ` The PREVIOUS mapping was human-verified and has been carried over as a starting point, but the revision may have moved fields — RE-VERIFY before any real submit.` :
-            (newMap ? " Fields re-mapped from the new revision." : " Form changed; previous overlay mapping carried over — re-verify.")),
-      },
-    });
+    try {
+      storeAhjFormTemplate(db, {
+        ahjName: row.ahj_name,
+        state: row.state,
+        formType: row.form_type,
+        filename: `${formName}.pdf`,
+        bytes,
+        documentDate,
+        // THIS row's own revision: the one waiver of the store's verified-slot refusal. Should the
+        // slot resolve to a DIFFERENT verified row, the store still refuses it.
+        refreshOfRowId: row.id,
+        map: {
+          formName,
+          sourceUrl: map.sourceUrl,
+          fillMode: newMap ? "acroform" : (live.fillMode || "overlay"),
+          textFields: newMap?.textFields || live.textFields || {},
+          checkboxes: newMap?.checkboxes || live.checkboxes || {},
+          overlayFields: live.overlayFields,
+          signatureFields: live.signatureFields,
+          // The blanks named for the operator belong to the revision that was mapped.
+          operatorItems: newMap ? newMap.operatorItems : live.operatorItems,
+          verified: false,
+          notes: `Refreshed ${nowIso()} — the AHJ revised this form.` +
+            (wasVerified ? ` The PREVIOUS mapping was human-verified and has been carried over as a starting point, but the revision may have moved fields — RE-VERIFY before any real submit.` :
+              (newMap ? " Fields re-mapped from the new revision." : " Form changed; previous overlay mapping carried over — re-verify.")),
+        },
+      });
+    } catch (err) {
+      if (!(err instanceof VerifiedTemplateRefusal)) throw err;
+      logger.warn("ahj-forms", `Refresh of ${row.ahj_name} (${row.state}) "${formName}" was not stored: ${err.message}`);
+      continue;
+    }
     if (wasVerified) {
       logger.warn("ahj-forms", `${row.ahj_name} (${row.state}) "${formName}" was HUMAN-VERIFIED and the AHJ revised it — mapping carried over but demoted to unverified. Re-verify before submitting.`);
     }

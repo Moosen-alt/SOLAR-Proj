@@ -32,7 +32,7 @@ import { documentDateForPdf } from "./documentDate";
 import { bcd5952Template } from "./bcd5952Template";
 import { iowaPvWorksheetTemplate, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
-import { sanitizePlacements } from "./formFieldChecks";
+import { sanitizePlacements, signatureStandIns } from "./formFieldChecks";
 import type { LabelItem } from "./formTextLayer";
 import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
 
@@ -275,11 +275,32 @@ export function markTemplateFeeTableFound(db: AppDb, templateId: string, found =
   db.run("UPDATE ahj_form_templates SET fee_table_found = ?, updated_at = ? WHERE id = ?", [found ? 1 : 0, nowIso(), templateId]);
 }
 
+/**
+ * A STORE THAT WOULD REPLACE A HUMAN-VERIFIED MAP, REFUSED (hard rule 3). storeAhjFormTemplate throws
+ * this instead of writing; `result` is the acquisition's answer ("exists", the HUMAN-VERIFIED
+ * message). An acquisition door returns it; a door that does not catch it fails loudly and writes
+ * nothing (409 at a route edge).
+ */
+export class VerifiedTemplateRefusal extends HttpError {
+  constructor(public readonly result: EnsureFormResult) { super(409, result.message); }
+}
+
 // Insert or replace a stored AHJ form template. Dedupes on (ahj_name, state, form_type).
+//
+// THE ONE CHOKEPOINT FOR RULE 3: the row this store would ACTUALLY replace (templateSlot, after the
+// form's own name re-types it) is checked here, by the same predicate every acquisition door asks
+// up front (verifiedSlotRefusal / verifiedStoreRefusal). A human-verified row is never overwritten:
+// the store throws VerifiedTemplateRefusal and touches nothing. The one waiver is the 60-day refresh
+// re-storing THAT SAME ROW from its own source URL (refreshOfRowId): the AHJ revised the PDF, so the
+// verified mapping is carried over and demoted to unverified (ahjFormRefresh).
 export function storeAhjFormTemplate(
   db: AppDb,
   input: {
     ahjName: string; state: string; formType: string; filename: string; bytes: Uint8Array; map: StoredFieldMap;
+    /** ONLY the 60-day refresh: the id of the row it re-fetched. A verified map in the slot is
+     *  replaced (carried over, demoted) only when the slot IS that row; any other verified row is
+     *  still refused. */
+    refreshOfRowId?: string;
     /** Which building-side application this blank is, when the caller KNOWS (it went
      *  looking for the prescriptive one). Stamped onto the field map, and part of the
      *  storage key for building_application so the two mutually-exclusive blanks do
@@ -296,9 +317,11 @@ export function storeAhjFormTemplate(
     feeTableFound?: boolean;
   },
 ): string {
+  const slot = templateSlot(db, input);
+  const refusal = verifiedRowRefusal(slot, { ahj: input.ahjName, formName: storeFormName(input), sourceUrl: String(input.map?.sourceUrl || "") });
+  if (refusal && !(input.refreshOfRowId && slot.existing?.id === input.refreshOfRowId)) throw new VerifiedTemplateRefusal(refusal);
   const now = nowIso();
   const blob = Buffer.from(input.bytes);
-  const slot = templateSlot(db, input);
   input.formType = slot.formType;
   const existing = slot.existing;
   const applicationKind = slot.applicationKind;
@@ -399,28 +422,52 @@ export function templateSlot(
   return { formType, existing, applicationKind: claimedKind ?? inheritedKind };
 }
 
+/** What a store input calls its blank, for a person: the map's form name, else the filename. */
+const storeFormName = (input: { filename: string; map?: { formName?: string } }): string =>
+  String(input.map?.formName || "").trim() || String(input.filename || "").replace(/\.pdf$/i, "");
+
 /**
- * A HUMAN-VERIFIED MAP IS NEVER OVERWRITTEN BY AN ACQUISITION (hard rule 3). The row this blank
- * would replace (templateSlot — the store's own answer) carries map.verified: the new blank is not
- * stored over it, and the result says why and what a person does instead. null when the slot is
- * free or holds an unverified map. (The 60-day refresh is a different door on purpose: an AHJ's
- * revised PDF demotes a verified map to unverified and carries the mapping over — ahjFormRefresh.)
+ * THE ONE PREDICATE (hard rule 3): does the row in this slot carry a HUMAN-VERIFIED map? Then the
+ * new blank is not stored over it, and the answer says why and what a person does instead. null
+ * when the slot is free or holds an unverified map.
+ */
+function verifiedRowRefusal(
+  slot: ReturnType<typeof templateSlot>,
+  who: { ahj: string; formName: string; sourceUrl: string },
+): EnsureFormResult | null {
+  const map = slot.existing ? parseJson<{ verified?: boolean; formName?: string }>(String(slot.existing.field_map || "{}"), {}) : null;
+  if (!map || map.verified !== true) return null;
+  const held = map.formName || String(slot.existing?.original_filename || "").replace(/\.pdf$/i, "") || `${who.ahj} ${slot.formType.replace(/_/g, " ")}`;
+  return {
+    status: "exists", formName: held, sourceUrl: who.sourceUrl, mappedFields: 0,
+    message: `${who.ahj}'s ${slot.formType.replace(/_/g, " ")} slot holds a HUMAN-VERIFIED field map ("${held}"), so ${who.formName} was not stored over it and was not mapped. The verified form is kept exactly as confirmed; to replace it, mark it unverified first, then upload again.`,
+  };
+}
+
+/**
+ * Would storeAhjFormTemplate refuse THIS store input? Asked with the store's own input shape (its
+ * real filename, map.formName, map.sourceUrl, applicationKind), so it resolves the very row the
+ * store would replace. For a door that wants to skip work (a model call, a download) before storing.
+ */
+export function verifiedStoreRefusal(db: AppDb, input: Parameters<typeof templateSlot>[1]): EnsureFormResult | null {
+  return verifiedRowRefusal(templateSlot(db, input), { ahj: input.ahjName, formName: storeFormName(input), sourceUrl: String(input.map?.sourceUrl || "") });
+}
+
+/**
+ * A HUMAN-VERIFIED MAP IS NEVER OVERWRITTEN BY AN ACQUISITION (hard rule 3). The acquisition's shape
+ * of verifiedStoreRefusal: acquireFromBytes stores `${formName}.pdf` with this formName / sourceUrl /
+ * kind, so this is the slot its store would replace. (The 60-day refresh is a different door on
+ * purpose: an AHJ's revised PDF demotes a verified map to unverified and carries the mapping over —
+ * ahjFormRefresh, storeAhjFormTemplate's refreshOfRowId.)
  */
 export function verifiedSlotRefusal(
   db: AppDb,
   input: { ahj: string; state: string; formType: string; formName: string; sourceUrl: string; applicationKind?: "prescriptive" | "structural" | null },
 ): EnsureFormResult | null {
-  const slot = templateSlot(db, {
+  return verifiedStoreRefusal(db, {
     ahjName: input.ahj, state: input.state, formType: input.formType, filename: `${input.formName}.pdf`,
     map: { formName: input.formName, sourceUrl: input.sourceUrl }, applicationKind: input.applicationKind ?? null,
   });
-  const map = slot.existing ? parseJson<{ verified?: boolean; formName?: string }>(String(slot.existing.field_map || "{}"), {}) : null;
-  if (!map || map.verified !== true) return null;
-  const held = map.formName || String(slot.existing?.original_filename || "").replace(/\.pdf$/i, "") || `${input.ahj} ${slot.formType.replace(/_/g, " ")}`;
-  return {
-    status: "exists", formName: held, sourceUrl: input.sourceUrl, mappedFields: 0,
-    message: `${input.ahj}'s ${slot.formType.replace(/_/g, " ")} slot holds a HUMAN-VERIFIED field map ("${held}"), so ${input.formName} was not stored over it and was not mapped. The verified form is kept exactly as confirmed; to replace it, mark it unverified first, then upload again.`,
-  };
 }
 
 /** The row write for storeAhjFormTemplate: an UPDATE of the slot's row, else an INSERT. */
@@ -1160,6 +1207,13 @@ export async function acquireFromBytes(
   },
 ): Promise<EnsureFormResult> {
   const { ahj, state, formType, formName, bytes, sourceUrl, retrievedAt } = input;
+  // EVERY STORE BELOW GOES THROUGH THE ONE CHOKEPOINT: storeAhjFormTemplate refuses a slot a person
+  // verified, keyed on the row it would actually replace, and that refusal is this acquisition's
+  // answer ("exists", HUMAN-VERIFIED). Anything else it throws still throws.
+  const store = (args: Parameters<typeof storeAhjFormTemplate>[1]): EnsureFormResult | null => {
+    try { storeAhjFormTemplate(db, args); return null; }
+    catch (err) { if (err instanceof VerifiedTemplateRefusal) return err.result; throw err; }
+  };
   const curated = curatedFormMap(bytes, sourceUrl);
   if (curated) {
     if (!curatedFormSource({ahj, state}, curated.source.formType)) {
@@ -1168,7 +1222,8 @@ export async function acquireFromBytes(
     const protectedRow = db.query<{field_map:string}>("SELECT field_map FROM ahj_form_templates WHERE lower(ahj_name)=lower(?) AND lower(state)=lower(?) AND form_type=?", [ahj,state,curated.source.formType])
       .some(row => { try { return JSON.parse(row.field_map).verified === true; } catch { return false; } });
     if (protectedRow) return {status:"exists",message:"The verified official form map was retained.",formName:curated.source.formName,sourceUrl};
-    storeAhjFormTemplate(db,{ahjName:ahj,state,formType:curated.source.formType,filename:curated.source.formName+".pdf",bytes,documentDate:curated.source.documentDate,retrievedAt,map:curated.map});
+    const refusedCurated = store({ahjName:ahj,state,formType:curated.source.formType,filename:curated.source.formName+".pdf",bytes,documentDate:curated.source.documentDate,retrievedAt,map:curated.map});
+    if (refusedCurated) return refusedCurated;
     return {status:"acquired",message:"Downloaded and mapped the exact official revision. Review missing details and signatures in the filled copy before filing.",formName:curated.source.formName,sourceUrl,mappedFields:Object.keys(curated.map.textFields).length+curated.map.overlayFields.length};
   }
   // The actual bytes outrank a research title claiming that this checklist
@@ -1179,8 +1234,9 @@ export async function acquireFromBytes(
     const protectedTemplate = loadStoredTemplates(db, ahj, state, { ownOnly: true }).find(t => t.verified &&
       db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type === "solar_checklist");
     if (protectedTemplate) return { status: "exists", message: "The verified BCD checklist map was retained.", formName: bcd.formName, sourceUrl };
-    storeAhjFormTemplate(db, { ahjName: ahj, state, formType: "solar_checklist", filename: `${bcd.formName}.pdf`, bytes,
+    const refusedBcd = store({ ahjName: ahj, state, formType: "solar_checklist", filename: `${bcd.formName}.pdf`, bytes,
       applicationKind: "prescriptive", documentDate: "2024-05-01", retrievedAt, map: bcd });
+    if (refusedBcd) return refusedBcd;
     return { status: "acquired", message: "Stored the official BCD 5952 checklist with the exact-revision field map. It is a checklist only; separate applications remain separate requirements. Preview before filing.", formName: bcd.formName, sourceUrl, mappedFields: Object.keys(bcd.textFields).length };
   }
 
@@ -1195,8 +1251,9 @@ export async function acquireFromBytes(
     const protectedTemplate = loadStoredTemplates(db, ahj, state, { ownOnly: true }).find(t => t.verified &&
       db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type === PV_WORKSHEET_DOC_TYPE);
     if (protectedTemplate) return { status: "exists", message: "The verified PV worksheet map was retained.", formName: iaPv.formName, sourceUrl };
-    storeAhjFormTemplate(db, { ahjName: ahj, state, formType: PV_WORKSHEET_DOC_TYPE, filename: `${iaPv.formName}.pdf`, bytes,
+    const refusedIa = store({ ahjName: ahj, state, formType: PV_WORKSHEET_DOC_TYPE, filename: `${iaPv.formName}.pdf`, bytes,
       applicationKind: null, retrievedAt, map: iaPv });
+    if (refusedIa) return refusedIa;
     return { status: "acquired", message: "Stored the Iowa SFM PV worksheet (2020 NEC) with its label-anchored field map. Values come from the project's parsed fields and written-out calculations; unknowns stay blank and are listed. Preview before filing.", formName: iaPv.formName, sourceUrl, mappedFields: iaPv.overlayFields.length };
   }
 
@@ -1214,7 +1271,7 @@ export async function acquireFromBytes(
   // A HUMAN-VERIFIED MAP IS NEVER OVERWRITTEN (hard rule 3). Every store below replaces the row in
   // this blank's slot (storeAhjFormTemplate — one per agency/state/form type, building by kind); an
   // upload or a download landing on a slot a person verified is refused before any model call, and
-  // checked again just before each store (a person may verify while the model runs).
+  // the store itself refuses again (a person may verify while the model runs) — the same predicate.
   const refusedUpFront = verifiedSlotRefusal(db, { ahj, state, formType, formName, sourceUrl, applicationKind });
   if (refusedUpFront) return refusedUpFront;
 
@@ -1238,15 +1295,14 @@ export async function acquireFromBytes(
         && Math.abs(w.rect.y - p.y) <= 30 && Math.abs(w.rect.x - p.x) <= w.rect.width + 30));
     // The kept placements pass the SAME map checks as the widgets, together with them (a placed
     // "I, ___" and a Print Name widget under one signature are one signer; a placed cost row beside
-    // a Total widget is not the Total; a placed licence holder is not the applicant).
-    const joint = sanitizePlacements({ widgets: acro.fields, items: acro.labels, state, textFields: acro.textFields, checkboxes: acro.checkboxes, placements: offWidget });
+    // a Total widget is not the Total; a placed licence holder is not the applicant). The vision
+    // pass's signature lines ride along as stand-in signature widgets: they separate two blocks.
+    const joint = sanitizePlacements({ widgets: [...acro.fields, ...signatureStandIns(signatureFields)], items: acro.labels, state, textFields: acro.textFields, checkboxes: acro.checkboxes, placements: offWidget });
     const hybrid = joint.placements;
     const textFields = joint.textFields;
     const operatorItems = [...acro.operatorItems, ...joint.operatorItems, ...(overlay?.operatorItems ?? [])];
     const notes = [acro.notes, ...joint.notes].filter(Boolean).join(" ");
-    const refused = verifiedSlotRefusal(db, { ahj, state, formType, formName, sourceUrl, applicationKind });
-    if (refused) return refused;
-    storeAhjFormTemplate(db, {
+    const refused = store({
       ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
       map: {
         formName, sourceUrl, fillMode: "acroform", textFields, checkboxes: joint.checkboxes, signatureFields, notes,
@@ -1254,6 +1310,7 @@ export async function acquireFromBytes(
         ...(operatorItems.length ? { operatorItems } : {}),
       },
     });
+    if (refused) return refused;
     const mappedCount = Object.keys(textFields).length + Object.keys(joint.checkboxes).length;
     return { status: "acquired", message: `Acquired and mapped ${formName} (${mappedCount} field(s) of ${acro.fieldCount}${hybrid.length ? ` + ${hybrid.length} printed blank(s) with no field` : ""}${signatureFields.length ? `, ${signatureFields.length} signature line(s)` : ""}). It will be auto-filled for ${ahj}.`, formName, sourceUrl, mappedFields: mappedCount + hybrid.length };
   }
@@ -1265,21 +1322,22 @@ export async function acquireFromBytes(
   // placements if there are any, signature lines if only those, else needs_manual.
 
   // No AcroForm fields — flat/scanned. Use the vision overlay placements, checked by the same map
-  // rules as widgets against the page's own text (signature lines, the cost table's Total).
+  // rules as widgets against the page's own text (signature lines, the cost table's Total). A SCANNED
+  // form has no text layer, so the signature lines the vision pass found stand in as signature
+  // widgets — without them nothing separates the owner's block from the contractor's below it.
   if (overlay && overlay.overlayFields.length) {
     let labels: LabelItem[] = [];
     try { labels = await (await import("./formTextLayer")).extractLabels(bytes); } catch { labels = []; }
-    const flat = sanitizePlacements({ widgets: [], items: labels, state, textFields: {}, checkboxes: {}, placements: overlay.overlayFields });
+    const flat = sanitizePlacements({ widgets: signatureStandIns(signatureFields), items: labels, state, textFields: {}, checkboxes: {}, placements: overlay.overlayFields });
     const placed = flat.placements;
     const operatorItems = [...flat.operatorItems, ...overlay.operatorItems];
-    const refused = verifiedSlotRefusal(db, { ahj, state, formType, formName, sourceUrl, applicationKind });
-    if (refused) return refused;
     if (placed.length) {
-      storeAhjFormTemplate(db, {
+      const refused = store({
         ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
         map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, overlayFields: placed, signatureFields, notes: `Vision-mapped flat form (${placed.length} placements, ${signatureFields.length} signature line(s)). ${[overlay.notes, ...flat.notes].filter(Boolean).join(" ")} VERIFY the filled PDF — coordinate placement is approximate; re-map if anything is off.`,
           ...(operatorItems.length ? { operatorItems } : {}) },
       });
+      if (refused) return refused;
       return { status: "acquired", message: `Acquired ${formName} (flat PDF) and vision-mapped ${placed.length} placement(s)${signatureFields.length ? ` + ${signatureFields.length} signature line(s)` : ""}. Verify the filled output and re-map if needed.`, formName, sourceUrl, mappedFields: placed.length };
     }
     overlay.operatorItems = operatorItems;
@@ -1287,13 +1345,12 @@ export async function acquireFromBytes(
 
   // No data fields, but signatures alone are still useful (signs the blank).
   if (signatureFields.length) {
-    const refused = verifiedSlotRefusal(db, { ahj, state, formType, formName, sourceUrl, applicationKind });
-    if (refused) return refused;
-    storeAhjFormTemplate(db, {
+    const refused = store({
       ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
       map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, signatureFields, notes: `No fillable data fields, but ${signatureFields.length} signature line(s) detected. The blank is stored; your signature will be stamped. Fill the rest by hand.`,
         ...(overlay?.operatorItems.length ? { operatorItems: overlay.operatorItems } : {}) },
     });
+    if (refused) return refused;
     return { status: "acquired", message: `Stored ${formName} with ${signatureFields.length} signature line(s) mapped. Data fields must be filled by hand.`, formName, sourceUrl, mappedFields: signatureFields.length };
   }
 
@@ -1303,12 +1360,11 @@ export async function acquireFromBytes(
   const unmappedWhy = acro
     ? `${acro.fieldCount} fillable field(s) found, but none could be mapped to project data${acro.notes ? ` (${acro.notes})` : ""}`
     : "Flat/scanned PDF — vision mapping found no placeable fields";
-  const refusedBlank = verifiedSlotRefusal(db, { ahj, state, formType, formName, sourceUrl, applicationKind });
-  if (refusedBlank) return refusedBlank;
-  storeAhjFormTemplate(db, {
+  const refusedBlank = store({
     ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
     map: { formName, sourceUrl, fillMode: acro ? "acroform" : "overlay", textFields: {}, checkboxes: {}, notes: `${unmappedWhy}. Stored as the blank for manual completion.` },
   });
+  if (refusedBlank) return refusedBlank;
   return {
     status: "needs_manual",
     message: acro

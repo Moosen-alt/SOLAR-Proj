@@ -142,15 +142,60 @@ export function signerNamingRole(w: PlacedWidget): "declarant" | "printName" | n
   return null;
 }
 
-/** Where signatures go on each page: signature widgets and every printed "Signature…" line,
- *  whatever its length ("Signature of Property Owner or Authorized Agent as required by …" is a
- *  signature line too). A line that also names the PRINT NAME ("Print Name / Signature") is the
- *  print-name box's own caption, not a line between two blocks, so it is not an anchor. */
+/** The page's printed text as VISUAL LINES: text runs on one page whose baselines sit within 2.5pt,
+ *  joined left to right. A PDF splits a line into runs anywhere (a font change, a justified gap), so
+ *  what a line STARTS with is read off the joined line, never off a run. */
+function visualLines(items: LabelItem[]): Array<{ page: number; y: number; text: string }> {
+  const lines: Array<{ page: number; y: number; parts: LabelItem[] }> = [];
+  for (const it of [...items].sort((a, b) => (a.page - b.page) || (b.y - a.y) || (a.x - b.x))) {
+    const line = lines.find((l) => l.page === it.page && Math.abs(l.y - it.y) < 2.5);
+    if (line) line.parts.push(it); else lines.push({ page: it.page, y: it.y, parts: [it] });
+  }
+  return lines.map((l) => ({
+    page: l.page, y: l.y,
+    text: l.parts.sort((a, b) => a.x - b.x).map((p) => p.str).join(" ").replace(/_{2,}/g, " ").replace(/\s+/g, " ").trim(),
+  }));
+}
+
+/** The words a signature line may carry BEFORE "Signature" ("Owner's Signature", "Contractor /
+ *  Agent Signature", "Property Owner or Authorized Agent Signature"): whose signature it is, at most
+ *  three of them, joined by or / and / & / slashes. A closed list on purpose — prose that mentions a
+ *  signature ("I understand my signature below is made under oath") is never a signature line. */
+const SIGNER_PREFIX_WORDS = new Set(["owner", "owners", "homeowner", "homeowners", "property", "applicant", "applicants", "contractor", "contractors", "agent", "agents", "authorized", "authorised"]);
+const PREFIX_CONNECTORS = new Set(["or", "and"]);
+
+/** Does this printed line START with "Signature" (optionally after a short signer prefix)? */
+export function isSignatureLine(text: string): boolean {
+  const t = String(text || "").replace(/_{2,}/g, " ").trim();
+  const at = /\bsignature\b/i.exec(t);
+  if (!at) return false;
+  const prefix = t.slice(0, at.index);
+  if (!/^[A-Za-z'’`\s/&-]*$/.test(prefix)) return false;
+  const words = prefix.toLowerCase().replace(/['’`]s\b/g, "s").split(/[^a-z]+/).filter(Boolean);
+  const roles = words.filter((w) => !PREFIX_CONNECTORS.has(w));
+  return roles.length <= 3 && roles.every((w) => SIGNER_PREFIX_WORDS.has(w));
+}
+
+/** Where signatures go on each page: signature widgets (a vision pass's signature placement stands
+ *  in as one — signatureStandIns) and every printed line that STARTS with "Signature", whatever its
+ *  length ("Signature of Property Owner or Authorized Agent as required by …"). A line that also
+ *  names the PRINT NAME ("Signature / Print Name") is the print-name box's own caption, not a line
+ *  between two blocks, so it is not an anchor. */
 export function signatureAnchors(widgets: PlacedWidget[], items: LabelItem[]): Array<{ page: number; y: number }> {
   const out: Array<{ page: number; y: number }> = [];
   for (const w of widgets) if (/signature/i.test(w.type) && w.rect && w.page != null) out.push({ page: w.page, y: w.rect.y });
-  for (const i of items) if (/\bsignature\b/i.test(i.str) && !PRINT_NAME.test(i.str)) out.push({ page: i.page, y: i.y });
+  for (const l of visualLines(items)) if (isSignatureLine(l.text) && !PRINT_NAME.test(l.text)) out.push({ page: l.page, y: l.y });
   return out;
+}
+
+/** A vision pass's signature placements as stand-in signature WIDGETS, so a scanned form with no text
+ *  layer still has its signature lines to separate two blocks (signatureAnchors reads this shape).
+ *  The name is a sentinel no real widget carries; it is bound to nothing. */
+export function signatureStandIns(signatures: ReadonlyArray<{ page: number; x: number; y: number; width: number; height: number }> | undefined): PlacedWidget[] {
+  return (signatures ?? []).map((s, i) => ({
+    name: `\u0000signature#${i}`, type: "PDFSignature", page: s.page,
+    rect: { x: s.x, y: s.y, width: s.width, height: s.height },
+  }));
 }
 
 /**
@@ -158,11 +203,15 @@ export function signatureAnchors(widgets: PlacedWidget[], items: LabelItem[]): A
  * its signer at most twice: ONE "I, ___" declarant and ONE Print Name. So a pair is exactly one
  * declarant with one Print Name — two Print Names (the owner's and the contractor's, side by side
  * or stacked) are two signers, and so are two declarants (an owner's "I, ___ authorize" and an
- * applicant's "I, ___ certify"). A declarant and a Print Name are in one block when they are on
- * the same page, stacked within 120pt, their HORIZONTAL ranges overlap (side-by-side blocks never
- * pair), and no printed signature line lies between them. Each widget is in at most one pair, the
- * nearest first. A pair bound to DIFFERENT sources is returned — the fill cannot know which person
- * is right (who the agent is is the operator's decision).
+ * applicant's "I, ___ certify").
+ *
+ * A declarant pairs with the NEAREST Print Name BELOW it on the same page (within 120pt), wherever it
+ * sits across the page — a right-column Print Name on the signature row under a left-hand "I, ___"
+ * is the same signer — so long as the two are NOT ON THE SAME ROW (their vertical ranges do not
+ * overlap: side-by-side boxes on one row are two blocks) and no SIGNATURE LINE lies between them (a
+ * printed line that starts with "Signature", or a signature widget). Each widget is in at most one
+ * pair, the nearest first. A pair bound to DIFFERENT sources is returned — the fill cannot know
+ * which person is right (who the agent is is the operator's decision).
  */
 export function signerNameConflicts(
   widgets: PlacedWidget[], textFields: Record<string, string>, items: LabelItem[],
@@ -172,17 +221,19 @@ export function signerNameConflicts(
   const printNames = bound.filter((w) => signerNamingRole(w) === "printName");
   if (!declarants.length || !printNames.length) return [];
   const anchors = signatureAnchors(widgets, items);
-  const overlapX = (a: WidgetRect, b: WidgetRect): boolean => Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 0;
+  const centerX = (r: WidgetRect): number => r.x + r.width / 2;
   const candidates: Array<{ d: PlacedWidget; p: PlacedWidget; dist: number }> = [];
-  for (const d of declarants) for (const p of printNames) {
-    if (d.page !== p.page || !overlapX(d.rect!, p.rect!)) continue;
-    const [hi, lo] = d.rect!.y >= p.rect!.y ? [d, p] : [p, d];
-    const dist = hi.rect!.y - lo.rect!.y;
-    if (dist > 120) continue;
-    const gapTop = hi.rect!.y;                        // bottom of the higher widget
-    const gapBottom = lo.rect!.y + lo.rect!.height;   // top of the lower widget
+  for (const d of declarants) {
+    const nearest = printNames
+      // BELOW and not on the same row: the Print Name's top is at or under the declarant's bottom.
+      .filter((p) => p.page === d.page && p.rect!.y + p.rect!.height <= d.rect!.y && d.rect!.y - p.rect!.y <= 120)
+      .map((p) => ({ p, dist: d.rect!.y - p.rect!.y, dx: Math.abs(centerX(d.rect!) - centerX(p.rect!)) }))
+      .sort((a, b) => (a.dist - b.dist) || (a.dx - b.dx))[0];
+    if (!nearest) continue;
+    const gapTop = d.rect!.y;                                          // bottom of the declarant
+    const gapBottom = nearest.p.rect!.y + nearest.p.rect!.height;      // top of the Print Name
     if (anchors.some((s) => s.page === d.page && s.y < gapTop && s.y > gapBottom)) continue;
-    candidates.push({ d, p, dist });
+    candidates.push({ d, p: nearest.p, dist: nearest.dist });
   }
   candidates.sort((a, b) => a.dist - b.dist);
   const used = new Set<string>();
@@ -207,28 +258,10 @@ export function placementOnWidget(p: { page: number; x: number; y: number }, wid
     && p.y >= w.rect.y - 8 && p.y <= w.rect.y + w.rect.height + 8);
 }
 
-// ---- A licence section, read off the page --------------------------------------------------------
+// ---- "Not Applicable" is the operator's call ------------------------------------------------------
 
-const LICENCE_SECTION_WORDS = /\blicen[cs]|\bregistration\b|\bregistered\b|construction\s+supervisor|\bHIC\b|\bCSL\b/i;
-
-/**
- * Is this box inside a LICENCE section? The printed line naming the licence nearest the box — on
- * its own row or within 40pt above it (the section's heading line) — is returned; "" when only the
- * widget's own name / captions name a licence; null when nothing near it does.
- */
-export function licenceSectionLine(w: PlacedWidget, items: LabelItem[]): string | null {
-  const own = `${w.name} ${w.caption || ""} ${w.captions?.left || ""} ${w.captions?.right || ""} ${w.captions?.above || ""}`;
-  if (w.rect && w.page != null) {
-    const r = w.rect;
-    const mid = r.y + r.height / 2;
-    const near = items
-      .filter((i) => i.page === w.page && i.y >= r.y - 4 && i.y <= r.y + r.height + 40
-        && LICENCE_SECTION_WORDS.test(i.str) && !/\bnot\s*applicable\b/i.test(i.str))
-      .sort((a, b) => Math.abs(a.y - mid) - Math.abs(b.y - mid))[0];
-    if (near) return near.str.replace(/_{2,}/g, " ").replace(/\s+/g, " ").replace(/[:\s]+$/, "").trim().slice(0, 90);
-  }
-  return LICENCE_SECTION_WORDS.test(own) ? "" : null;
-}
+/** The operator item for a constant "Not Applicable" tick the mapper returned and the product removed. */
+export const NOT_APPLICABLE_ITEM = "Not Applicable box left unticked — tick it by hand only if it truly applies";
 
 // ---- The workers' compensation affidavit, read off the page ---------------------------------------
 
@@ -244,13 +277,8 @@ const WORKERS_COMP = /workers['’`]?\s*comp/i;
 export function workersCompAffidavitItem(items: LabelItem[]): OperatorItem | null {
   // One visual line per (page, baseline within 2.5pt), read left to right — a heading split into
   // runs ("Workers' Compensation Insurance" + "Affidavit") is still one line.
-  const lines: Array<{ page: number; y: number; parts: LabelItem[] }> = [];
-  for (const it of [...items].sort((a, b) => (a.page - b.page) || (b.y - a.y) || (a.x - b.x))) {
-    const line = lines.find((l) => l.page === it.page && Math.abs(l.y - it.y) < 2.5);
-    if (line) line.parts.push(it); else lines.push({ page: it.page, y: it.y, parts: [it] });
-  }
-  for (const l of lines) {
-    const text = l.parts.sort((a, b) => a.x - b.x).map((p) => p.str).join(" ").replace(/_{2,}/g, " ").replace(/\s+/g, " ").trim();
+  for (const l of visualLines(items)) {
+    const text = l.text;
     if (!WORKERS_COMP.test(text) || !/\baffidavit\b/i.test(text)) continue;
     const printed = text.length > 90 ? `${text.slice(0, 87).trimEnd()}…` : text;
     return { label: `Workers' compensation affidavit — the form asks for one ("${printed}", page ${l.page + 1}): attach the signed affidavit and answer it by hand; the product never ticks or signs it` };
@@ -258,8 +286,9 @@ export function workersCompAffidavitItem(items: LabelItem[]): OperatorItem | nul
   return null;
 }
 
-/** Does an operator item already name the workers' compensation affidavit? */
-export const namesWorkersComp = (label: string): boolean => WORKERS_COMP.test(label);
+/** Does an operator item already name the workers' compensation AFFIDAVIT? Both words: an item for a
+ *  carrier or policy box ("Workers' Comp Insurance Carrier") is not the affidavit requirement. */
+export const namesWorkersComp = (label: string): boolean => WORKERS_COMP.test(label) && /\baffidavit\b/i.test(label);
 
 // ---- Vision placements pass the same map checks as widgets ----------------------------------------
 
@@ -325,6 +354,7 @@ export interface MapSanitizeResult {
 /**
  * The deterministic half of the mapping rules, applied to what the model returned:
  *  - a workers'-comp / affidavit box is never bound (an operator item instead);
+ *  - a constant "Not Applicable" tick is never kept, wherever it sits (an operator item instead);
  *  - a licence-holder NAME slot never binds to the applicant signer; the Oregon CCB never binds on
  *    another state's form (buildContext also blanks it at fill time);
  *  - in a cost table (a Total-captioned valuation slot exists) the valuation source keeps only the
@@ -354,13 +384,12 @@ export function sanitizeAcroMap(input: {
       notes.push(`"${name}" attests an attached document; not ticked (source was ${rule.source}).`);
       continue;
     }
-    // "Not Applicable" ticked as a CONSTANT beside a LICENCE section is a guess that a state licence
-    // requirement does not apply to any job — an operator / legal call, never the mapper's. It is
-    // left unticked AND named. Elsewhere ("Historic district: Not Applicable") the map stands.
-    const section = rule.source.startsWith("lit:") && /\bnot\s*applicable\b/i.test(text) ? licenceSectionLine(w, input.items) : null;
-    if (section != null) {
+    // "Not Applicable" ticked as a CONSTANT is a guess that a requirement (a state licence section, a
+    // district review) does not apply to ANY job — an operator / legal call, never the mapper's. EVERY
+    // one is left unticked and named; which section it sits in is not read off the layout.
+    if (rule.source.startsWith("lit:") && /\bnot\s*applicable\b/i.test(text)) {
       delete checkboxes[name];
-      operatorItems.push({ field: name, label: `${section || widgetLabel(w)} — Not Applicable (not ticked: whether this licence section applies to the job is the operator's call)` });
+      operatorItems.push({ field: name, label: NOT_APPLICABLE_ITEM });
       notes.push(`"${name}" (Not Applicable) was not ticked: whether it applies is the operator's call.`);
     }
   }

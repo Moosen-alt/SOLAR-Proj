@@ -89,7 +89,7 @@ const { createProject, getProjectDetail } = await import("../src/repository");
 const { createClient } = await import("../src/clients");
 const { ClaudeLLMProvider, FLAT_FORM_OVERLAY_MAX_TOKENS } = await import("../src/llm");
 const { inspectPlacedFields, buildContext, fillLoadedForm, loadStoredTemplates, buildFilledFormsForProject, resolveSource } = await import("../src/ahjForms");
-const { acquireFromBytes, buildFieldMapForPdf, fieldSourcesForState, remapStoredTemplate, storeAhjFormTemplate } = await import("../src/ahjFormAuto");
+const { acquireFromBytes, buildFieldMapForPdf, fieldSourcesForState, remapStoredTemplate, storeAhjFormTemplate, VerifiedTemplateRefusal } = await import("../src/ahjFormAuto");
 const { extractLabels } = await import("../src/formTextLayer");
 const db = await openDatabase();
 const provider = new ClaudeLLMProvider("sk-ant-stub-key");
@@ -484,8 +484,9 @@ console.log("\nB8. RE-MAP — an unverified stored map re-maps from its blob; a 
 // fix restored (the commit message records every kill).
 // =============================================================================================
 const {
-  signerNameConflicts, sanitizeAcroMap, widgetLabel, operatorItemLabels, workersCompAffidavitItem,
+  signerNameConflicts, sanitizeAcroMap, widgetLabel, operatorItemLabels, workersCompAffidavitItem, namesWorkersComp, isSignatureLine, NOT_APPLICABLE_ITEM,
 } = await import("../src/formFieldChecks");
+const { storedTemplateIsVerified } = await import("../src/jurisdictionHarvest");
 type Painter = { page: PDFPage; t: (s: string, x: number, y: number) => void; box: (name: string, x: number, y: number, w: number, h?: number, maxLength?: number) => void; tick: (name: string, x: number, y: number) => void; line: (x: number, y: number, w: number) => void };
 /** A generated one-page blank: printed text, text boxes (optionally with a maxLength), check boxes. */
 async function blankOf(paint: (p: Painter) => void, opts: { widgets?: boolean } = {}): Promise<Uint8Array> {
@@ -552,7 +553,7 @@ console.log("\nB-2. ONE SIGNER, ONE NAME — only ONE declarant with ONE Print N
     box("Contractor Print Name", 320, 496, 240); t("Print Name", 322, 486);
     t("Owner Signature", 42, 460); t("Contractor Signature", 322, 460);
   });
-  await check("MUST-PASS (kills the overlap rule): a declarant and a Print Name side by side at one height never pair", async () => {
+  await check("MUST-PASS (kills the same-row rule): a declarant and a Print Name side by side at one height never pair", async () => {
     assert.deepEqual(await conflictsOf(L4, { "Owner Declarant": "project.homeownerName", "Contractor Print Name": "computed.applicantSignerName" }), []);
   });
   // L5 — a declarant and a Print Name stacked, overlapping, 56pt apart, separated ONLY by a long
@@ -582,6 +583,63 @@ console.log("\nB-2. ONE SIGNER, ONE NAME — only ONE declarant with ONE Print N
   });
   await check("MUST-EXCLUDE: bound to ONE source, the same 7b pair is no conflict", async () => {
     assert.deepEqual(await conflictsOf(W7b, { NAME: "computed.applicantSignerName", "Print Name": "computed.applicantSignerName" }), []);
+  });
+  // forms-fill-3 (skeptic P1) — the declaration starts "I, ___" at the LEFT; the Print Name box sits
+  // in the RIGHT column of the signature row below it ("Signature ____ | Print Name ____"). One signer;
+  // their horizontal ranges do not overlap, which the previous round took for two blocks.
+  const P1 = await blankOf(({ t, box }) => {
+    t("OWNER / AUTHORIZED AGENT DECLARATION", 40, 640);
+    t("I,", 40, 600); box("Declarant", 50, 596, 200, 13); t(", as Owner/Authorized Agent, hereby declare that the statements", 255, 597);
+    t("and information on the foregoing application are true and accurate.", 40, 585);
+    box("Print Name", 330, 555, 230, 13);
+    t("Signature", 42, 545); t("Print Name", 332, 545);
+  });
+  await check("MUST-EXCLUDE (skeptic P1): a left \"I, ___\" and a right-column Print Name on the signature row below, bound to two people, are FLAGGED", async () => {
+    const got = await conflictsOf(P1, { Declarant: "computed.applicantSignerName", "Print Name": "project.homeownerName" });
+    assert.equal(got.length, 1, JSON.stringify(got));
+    assert.deepEqual(got[0].fields, ["Declarant", "Print Name"]);
+  });
+  // forms-fill-3 (skeptic P2) — the Waltham 7b pair with declaration prose that MENTIONS a signature
+  // between them. Prose is not a signature line: only a line that STARTS with "Signature" is.
+  const P2 = await blankOf(({ t, box }) => {
+    t("I,", 40, 700); box("NAME", 50, 696, 300, 13); t(", as Owner/Authorized Agent", 360, 697);
+    t("hereby declare that the statements are true; I understand my signature below is made under oath.", 40, 680);
+    box("Print Name", 40, 650, 400, 13); t("Print Name", 42, 638);
+    t("Signature of Owner/Agent", 40, 610);
+  });
+  await check("MUST-EXCLUDE (skeptic P2): prose that mentions \"signature\" between the declarant and the Print Name does not separate them — FLAGGED", async () => {
+    const got = await conflictsOf(P2, { NAME: "computed.applicantSignerName", "Print Name": "project.homeownerName" });
+    assert.equal(got.length, 1, JSON.stringify(got));
+    assert.deepEqual(got[0].fields, ["NAME", "Print Name"]);
+  });
+  await check("a signature LINE starts with \"Signature\", optionally after at most three signer words; prose that mentions one is not a line", () => {
+    for (const s of ["Signature", "Signature of Owner/Agent", LONG_OWNER_SIG, "Owner's Signature", "Contractor / Agent Signature:", "Owner or Authorized Agent Signature"]) assert.ok(isSignatureLine(s), s);
+    // A four-word prefix is past the cap: not read as a separator (the pair is flagged — the safe side).
+    for (const s of ["I understand my signature below is made under oath.", "my signature below is made under oath", "hereby declare; signature required", "Date of Signature", "The owner and contractor must provide a signature", "Property Owner or Authorized Agent Signature"]) assert.ok(!isSignatureLine(s), s);
+  });
+  // One declarant over a row with the OWNER's and the CONTRACTOR's Print Names side by side, each
+  // bound to its own person: the declarant pairs with the Print Name under it (nearest, then the one
+  // straight below), which is the same person — no conflict.
+  const OVER2 = await blankOf(({ t, box }) => {
+    t("I,", 40, 600); box("Owner Declarant", 50, 596, 230, 13); t(", as owner, authorize the contractor below.", 290, 597);
+    box("Owner Print Name", 40, 555, 240); t("Print Name", 42, 545);
+    box("Contractor Print Name", 320, 555, 240); t("Print Name", 322, 545);
+    t("Owner Signature", 42, 515); t("Contractor Signature", 322, 515);
+  });
+  await check("MUST-PASS: a declarant over side-by-side Owner / Contractor Print Names, each bound to its own person, is not flagged", async () => {
+    assert.deepEqual(await conflictsOf(OVER2, { "Owner Declarant": "project.homeownerName", "Owner Print Name": "project.homeownerName", "Contractor Print Name": "computed.applicantSignerName" }), []);
+  });
+  // P1 at the FILL door: an unverified stored map writes neither name, and names the pair.
+  storeAhjFormTemplate(db, { ahjName: "Town of Right Column", state: "MA", formType: "permit_application", filename: "Right Column.pdf", bytes: P1,
+    map: { formName: "Right Column", sourceUrl: "", fillMode: "acroform", preserveInteractive: true, textFields: { Declarant: "computed.applicantSignerName", "Print Name": "project.homeownerName" }, checkboxes: {}, notes: "" } as never });
+  const rc = loadStoredTemplates(db, "Town of Right Column", "MA")[0];
+  const rcOut = outPath("right-column");
+  const rcRes = await fillLoadedForm(rc.def, rc.bytes, ctxFor(maJob), rcOut);
+  await check("MUST-EXCLUDE at the fill door (skeptic P1): neither the org's signer nor the homeowner is written; the pair is named for the operator", async () => {
+    const f = await readFields(rcOut);
+    assert.equal(textOf(f, "Declarant"), "");
+    assert.equal(textOf(f, "Print Name"), "");
+    assert.ok((rcRes.operatorItems ?? []).some((i) => /^I, ___.* \/ Print Name \(one signature, bound to different people/.test(i)), (rcRes.operatorItems ?? []).join(" | "));
   });
   // The fill door: the L1 blank as an UNVERIFIED stored map — both printed names are written.
   storeAhjFormTemplate(db, { ahjName: "Town of Two Signers", state: "MA", formType: "permit_application", filename: "Two Signers.pdf", bytes: L1,
@@ -667,6 +725,73 @@ console.log("\n(a) RULE 3. AN ACQUISITION NEVER OVERWRITES A HUMAN-VERIFIED MAP"
     assert.equal(db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE id = ?", [presId])!.field_map, presBefore);
     assert.equal(db.query("SELECT id FROM ahj_form_templates WHERE lower(ahj_name) = lower(?)", ["Town of Two Kinds"]).length, 2);
   });
+
+  // forms-fill-3: THE ONE CHOKEPOINT. storeAhjFormTemplate itself refuses the row it would ACTUALLY
+  // replace, whatever door called it.
+  const rowOf = (id: string) => db.get<{ field_map: string; updated_at: string; pdf_blob: Buffer }>("SELECT field_map, updated_at, pdf_blob FROM ahj_form_templates WHERE id = ?", [id])!;
+  const storeOrRefusal = (args: Parameters<typeof storeAhjFormTemplate>[1]): { id: string } | { refused: InstanceType<typeof VerifiedTemplateRefusal> } => {
+    try { return { id: storeAhjFormTemplate(db, args) }; }
+    catch (err) { if (err instanceof VerifiedTemplateRefusal) return { refused: err }; throw err; }
+  };
+  // Skeptic A1: two building-side rows, the PRESCRIPTIVE one unverified and inserted first, the
+  // STRUCTURAL one verified; a kind-less blank arrives from the structural row's own source URL.
+  const U = "https://example.test/structural.pdf";
+  storeAhjFormTemplate(db, { ahjName: "Town of Harvest", state: "MA", formType: "building_application", filename: "Prescriptive Solar Application.pdf", bytes: BLANK, applicationKind: "prescriptive",
+    map: { formName: "Prescriptive Solar Application", sourceUrl: "https://example.test/pres.pdf", fillMode: "overlay", textFields: {}, checkboxes: {}, notes: "" } as never });
+  const sid = storeAhjFormTemplate(db, { ahjName: "Town of Harvest", state: "MA", formType: "building_application", filename: "Structural Building Application.pdf", bytes: BLANK, applicationKind: "structural",
+    map: { formName: "Structural Building Application", sourceUrl: U, fillMode: "acroform", textFields: { "Name Print": "project.homeownerName" }, checkboxes: {}, notes: "" } as never });
+  verify(sid);
+  const sBefore = rowOf(sid);
+  const harvested = { ahjName: "Town of Harvest", state: "MA", formType: "building_application", filename: "Building Permit Application.pdf", map: { formName: "Building Permit Application", sourceUrl: U } };
+  await check("A1: the harvest's predicate (storedTemplateIsVerified) answers about the row the store would replace — the VERIFIED structural one", () => {
+    assert.equal(storedTemplateIsVerified(db, harvested), true);
+  });
+  const a1 = storeOrRefusal({ ...harvested, bytes: otherBlank, map: { ...harvested.map, fillMode: "overlay", textFields: {}, checkboxes: {}, notes: "harvested" } as never });
+  await check("MUST-EXCLUDE (skeptic A1): the store itself refuses — \"exists\", HUMAN-VERIFIED — and the verified structural row is untouched", () => {
+    assert.ok("refused" in a1, "the store overwrote a human-verified row");
+    assert.equal(a1.refused.result.status, "exists");
+    assert.match(a1.refused.result.message, /HUMAN-VERIFIED/);
+    const after = rowOf(sid);
+    assert.equal(after.field_map, sBefore.field_map);
+    assert.equal(after.updated_at, sBefore.updated_at);
+    assert.ok(Buffer.compare(Buffer.from(after.pdf_blob), Buffer.from(sBefore.pdf_blob)) === 0, "blob replaced");
+    assert.equal(db.query("SELECT id FROM ahj_form_templates WHERE lower(ahj_name) = lower(?)", ["Town of Harvest"]).length, 2);
+  });
+  // A RE-TYPED store: the caller says permit_application, the form's own name says electrical — the
+  // row it would replace is the verified ELECTRICAL row.
+  const eid = storeAhjFormTemplate(db, { ahjName: "Town of Retype", state: "MA", formType: "electrical_application", filename: "Electrical Permit Application.pdf", bytes: BLANK,
+    map: { ...STALE_MAP, formName: "Electrical Permit Application", textFields: { "Name Print": "project.homeownerName" } } as never });
+  verify(eid);
+  const eBefore = rowOf(eid);
+  const retyped = storeOrRefusal({ ahjName: "Town of Retype", state: "MA", formType: "permit_application", filename: "Electrical Permit Application.pdf", bytes: otherBlank,
+    map: { formName: "Electrical Permit Application", sourceUrl: "", fillMode: "acroform", textFields: { Applicant: "computed.applicantSignerName" }, checkboxes: {}, notes: "" } as never });
+  await check("MUST-EXCLUDE: a store RE-TYPED by the form's own name onto a verified electrical row is refused, the row untouched", () => {
+    assert.ok("refused" in retyped, "the re-typed store overwrote a human-verified row");
+    assert.match(retyped.refused.result.message, /electrical application slot holds a HUMAN-VERIFIED/);
+    assert.equal(rowOf(eid).field_map, eBefore.field_map);
+    assert.equal(rowOf(eid).updated_at, eBefore.updated_at);
+  });
+  captured.length = 0;
+  const retypedUpload = await acquireFromBytes(db, provider, { ahj: "Town of Retype", state: "MA", formType: "permit_application", formName: "Electrical Permit Application", bytes: otherBlank, sourceUrl: "" });
+  await check("the same re-typed blank as an UPLOAD: \"exists\" before any model call, the verified row untouched", () => {
+    assert.equal(retypedUpload.status, "exists", retypedUpload.message);
+    assert.equal(captured.length, 0, `${captured.length} model call(s)`);
+    assert.equal(rowOf(eid).field_map, eBefore.field_map);
+  });
+  // The ONE waiver: the 60-day refresh re-storing THAT SAME ROW (the AHJ revised the PDF) demotes it;
+  // naming any other row waives nothing.
+  const wrongWaiver = storeOrRefusal({ ahjName: "Town of Retype", state: "MA", formType: "electrical_application", filename: "Electrical Permit Application.pdf", bytes: otherBlank, refreshOfRowId: sid,
+    map: { formName: "Electrical Permit Application", sourceUrl: "", fillMode: "acroform", textFields: {}, checkboxes: {}, notes: "" } as never });
+  await check("MUST-EXCLUDE: a refresh naming a DIFFERENT row is still refused", () => {
+    assert.ok("refused" in wrongWaiver);
+    assert.equal(rowOf(eid).field_map, eBefore.field_map);
+  });
+  const ownWaiver = storeOrRefusal({ ahjName: "Town of Retype", state: "MA", formType: "electrical_application", filename: "Electrical Permit Application.pdf", bytes: otherBlank, refreshOfRowId: eid,
+    map: { formName: "Electrical Permit Application", sourceUrl: "", fillMode: "acroform", textFields: { "Name Print": "project.homeownerName" }, checkboxes: {}, notes: "refreshed" } as never });
+  await check("MUST-PASS: the refresh re-storing its OWN row replaces it, demoted to unverified", () => {
+    assert.ok("id" in ownWaiver && ownWaiver.id === eid, JSON.stringify(ownWaiver));
+    assert.equal(JSON.parse(rowOf(eid).field_map).verified, false);
+  });
 }
 
 console.log("\n(b) THE WORKERS' COMPENSATION AFFIDAVIT IS READ OFF THE PAGE — whatever the model returned");
@@ -706,24 +831,60 @@ console.log("\n(b) THE WORKERS' COMPENSATION AFFIDAVIT IS READ OFF THE PAGE — 
   await check("MUST-EXCLUDE: a form whose items already name the affidavit gets no second item (the stale Waltham fill: one WC line)", () => {
     assert.equal(items.filter((i) => /workers['’]?\s*comp/i.test(i)).length, 1, items.join(" | "));
   });
+  // forms-fill-3: an item for a workers' comp CARRIER box is not the affidavit — it must not hide the
+  // page's printed affidavit requirement.
+  await check("namesWorkersComp needs the AFFIDAVIT too: a carrier / policy item is not it", () => {
+    assert.equal(namesWorkersComp("Workers' Comp Insurance Carrier (no data on file for this job)"), false);
+    assert.equal(namesWorkersComp("Signed Workers' Compensation Affidavit Attached (a document attestation — attach it and tick by hand)"), true);
+  });
+  const carrier = await blankOf(({ t, box }) => {
+    box("Owner Name", 40, 720, 250); t("Owner Name", 42, 710);
+    box("Workers Comp Insurance Carrier", 40, 680, 250); t("Workers' Comp Insurance Carrier", 42, 670);
+    t("A Workers' Compensation Affidavit must be attached to this application.", 42, 640);
+  });
+  storeAhjFormTemplate(db, { ahjName: "Town of Carrier", state: "MA", formType: "permit_application", filename: "Carrier Application.pdf", bytes: carrier,
+    map: { formName: "Carrier Application", sourceUrl: "", fillMode: "acroform", preserveInteractive: true, textFields: { "Owner Name": "project.homeownerName", "Workers Comp Insurance Carrier": "client.workersCompCarrier" }, checkboxes: {}, notes: "" } as never });
+  const carrierTmpl = loadStoredTemplates(db, "Town of Carrier", "MA")[0];
+  const carrierRes = await fillLoadedForm(carrierTmpl.def, carrierTmpl.bytes, ctxFor(maJob), outPath("carrier"));
+  await check("MUST-PASS: a workers' comp CARRIER item does not suppress the page's printed affidavit requirement", () => {
+    const got = carrierRes.operatorItems ?? [];
+    assert.ok(got.some((i) => /workers['’]?\s*comp/i.test(i) && !/affidavit/i.test(i)), `the fixture must carry a carrier item: ${got.join(" | ")}`);
+    assert.ok(got.some((i) => /^Workers' compensation affidavit — the form asks for one/.test(i)), got.join(" | "));
+  });
 }
 
-console.log("\n(c) \"NOT APPLICABLE\" IS LEFT ONLY INSIDE A LICENCE SECTION — and named when it is");
+console.log("\n(c) \"NOT APPLICABLE\" IS NEVER TICKED AS A CONSTANT — every one removed, every one named");
 {
-  const naBlank = await blankOf(({ t, tick }) => {
-    t("5.1 Construction Supervisor License (CSL)", 42, 700); t("Not Applicable", 402, 700); tick("NA CSL", 470, 698);
+  // forms-fill-3: the base behaviour. Which section a box sits in is not read off the layout (the
+  // previous round's 40pt window kept a tick on the heading row and under a heading 70pt up).
+  const naBlank = await blankOf(({ t, tick, box }) => {
+    t("SECTION 5: CONSTRUCTION SERVICES", 42, 740); t("Not Applicable", 402, 740); tick("NA Heading Row", 470, 738);
+    t("5.1 Construction Supervisor License (CSL)", 42, 724);
+    t("5.2 Home Improvement Contractor", 42, 700); t("Not Applicable", 402, 700); tick("NA CSL", 470, 698);
+    t("SECTION 6 - LICENSED CONTRACTOR", 42, 660);
+    box("Company", 40, 635, 250); t("Company Name", 42, 625);
+    box("Address", 40, 610, 250); t("Business Address", 42, 600);
+    t("Not Applicable (owner-builder)", 42, 590); tick("NA Contractor", 200, 588);
     t("SECTION 8 - HISTORIC DISTRICT", 42, 560);
     t("Historic District review", 42, 540); t("Not Applicable", 402, 540); tick("NA Historic", 470, 538);
+    t("Historic district applies", 42, 520); tick("Historic Yes", 200, 518);
   });
   const got = await inspectPlacedFields(naBlank);
-  const res = sanitizeAcroMap({ widgets: got.fields, items: got.labels, state: "MA", textFields: {}, checkboxes: { "NA CSL": { source: "lit:X" }, "NA Historic": { source: "lit:X" } } });
-  await check("MUST-PASS: a constant Not Applicable tick beside a licence section is removed AND named with the section's line", () => {
-    assert.equal(res.checkboxes["NA CSL"], undefined);
-    assert.ok(res.operatorItems.some((i) => i.field === "NA CSL" && /^5\.1 Construction Supervisor License \(CSL\) — Not Applicable \(not ticked/.test(i.label)), JSON.stringify(res.operatorItems));
+  const NA = ["NA Heading Row", "NA CSL", "NA Contractor", "NA Historic"];
+  const res = sanitizeAcroMap({ widgets: got.fields, items: got.labels, state: "MA", textFields: {},
+    checkboxes: { ...Object.fromEntries(NA.map((n) => [n, { source: "lit:X" }])), "Historic Yes": { source: "lit:X" } } });
+  await check("MUST-PASS: EVERY constant Not Applicable tick is removed — the heading row, a licence row, 70pt under a licence heading, a district review", () => {
+    for (const n of NA) assert.equal(res.checkboxes[n], undefined, n);
   });
-  await check("MUST-EXCLUDE: a Not Applicable tick with no licence section near it stands as mapped", () => {
-    assert.deepEqual(res.checkboxes["NA Historic"], { source: "lit:X" });
-    assert.ok(!res.operatorItems.some((i) => i.field === "NA Historic"));
+  await check("each removed tick is a named operator item on its own box: \"Not Applicable box left unticked — tick it by hand only if it truly applies\"", () => {
+    for (const n of NA) assert.ok(res.operatorItems.some((i) => i.field === n && i.label === NOT_APPLICABLE_ITEM), `${n}: ${JSON.stringify(res.operatorItems)}`);
+    assert.equal(NOT_APPLICABLE_ITEM, "Not Applicable box left unticked — tick it by hand only if it truly applies");
+    // Four boxes, one label: each told apart by its box.
+    assert.equal(operatorItemLabels(res.operatorItems).filter((l) => l.startsWith(NOT_APPLICABLE_ITEM)).length, 4);
+  });
+  await check("MUST-EXCLUDE: a constant tick on a box that is not Not Applicable stands as mapped", () => {
+    assert.deepEqual(res.checkboxes["Historic Yes"], { source: "lit:X" });
+    assert.ok(!res.operatorItems.some((i) => i.field === "Historic Yes"));
   });
 }
 
@@ -841,6 +1002,50 @@ console.log("\n(e) VISION PLACEMENTS PASS THE SAME MAP CHECKS AS WIDGETS (licenc
     assert.deepEqual(flatOverlays.filter((o) => o.source === "computed.estimatedJobValue").map((o) => o.label), ["Estimated Cost Total"]);
     assert.ok(!flatOverlays.some((o) => o.label === "Licence Holder" && o.source === "computed.applicantSignerName"), JSON.stringify(flatOverlays));
     assert.ok(flatOverlays.some((o) => o.label === "Owner Name" && o.source === "project.homeownerName"));
+  });
+  // forms-fill-3 (skeptic E1): a SCANNED form — no text layer at all, lines only. The owner's "I, ___
+  // authorize" block and, below the owner's signature line the vision pass FOUND, the contractor's
+  // Print Name: two people, correctly bound. The vision signature lines stand in as signature widgets.
+  const sig = (role: string, x: number, y: number, label: string) => ({ role, page: 0, nx: x / 612, ny: 1 - y / 792, widthFrac: 0.35, heightFrac: 0.03, dateNx: null, dateNy: null, label });
+  const twoBlocks = {
+    fields: [
+      place("project.homeownerName", 55, 703, "I, ___, as owner of the property, authorize the contractor"),
+      place("computed.applicantSignerName", 55, 623, "Contractor Print Name"),
+    ],
+    signatures: [sig("owner", 55, 663, "Owner Signature"), sig("contractor", 55, 593, "Contractor Signature")],
+    notes: "stub vision",
+  };
+  const scanned = await blankOf(({ line }) => { line(50, 700, 250); line(50, 660, 250); line(50, 620, 250); line(50, 590, 250); }, { widgets: false });
+  visionReply = JSON.stringify(twoBlocks);
+  const scannedAcq = await acquireFromBytes(db, provider, { ahj: "Town of Scanned", state: "MA", formType: "permit_application", formName: "Scanned Application", bytes: scanned, sourceUrl: "" });
+  const scannedMap = JSON.parse(db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE lower(ahj_name) = lower(?)", ["Town of Scanned"])!.field_map);
+  await check("MUST-PASS (skeptic E1): on a SCANNED form the found signature line separates the owner's block from the contractor's — both names kept, no one-signer item", () => {
+    assert.equal(scannedAcq.status, "acquired", scannedAcq.message);
+    const placed = (scannedMap.overlayFields ?? []).map((o: { label?: string; source: string }) => `${o.label} <- ${o.source}`);
+    assert.deepEqual(placed, [
+      "I, ___, as owner of the property, authorize the contractor <- project.homeownerName",
+      "Contractor Print Name <- computed.applicantSignerName",
+    ]);
+    assert.ok(!(scannedMap.operatorItems ?? []).some((i: { label: string }) => /one signer/.test(i.label)), JSON.stringify(scannedMap.operatorItems));
+  });
+  // The same scanned page with NO signature line found between the two: one block, two people — flagged.
+  visionReply = JSON.stringify({ ...twoBlocks, signatures: [sig("contractor", 55, 593, "Contractor Signature")] });
+  await acquireFromBytes(db, provider, { ahj: "Town of Scanned One", state: "MA", formType: "permit_application", formName: "Scanned Application", bytes: scanned, sourceUrl: "" });
+  const oneMap = JSON.parse(db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE lower(ahj_name) = lower(?)", ["Town of Scanned One"])!.field_map);
+  await check("MUST-EXCLUDE: the scanned pair with no signature line between them is still one signer — both dropped and named", () => {
+    assert.ok(!(oneMap.overlayFields ?? []).some((o: { label?: string }) => /^I,|Contractor Print Name/.test(String(o.label))), JSON.stringify(oneMap.overlayFields));
+    assert.ok((oneMap.operatorItems ?? []).some((i: { label: string }) => /one signer/.test(i.label)), JSON.stringify(oneMap.operatorItems));
+  });
+  // The AcroForm branch: the same two blocks as vision placements beside a widget-bearing form.
+  const acroScanned = await blankOf(({ box, line }) => { box("Permit Number", 40, 760, 200); line(50, 700, 250); line(50, 660, 250); line(50, 620, 250); line(50, 590, 250); });
+  acroReply = JSON.stringify({ textFields: [{ name: "Permit Number", source: "operator:Permit Number" }], checkboxes: [], notes: "stub mapper" });
+  visionReply = JSON.stringify(twoBlocks);
+  await acquireFromBytes(db, provider, { ahj: "Town of Scanned Acro", state: "MA", formType: "permit_application", formName: "Scanned Acro Application", bytes: acroScanned, sourceUrl: "" });
+  const acroMap = JSON.parse(db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE lower(ahj_name) = lower(?)", ["Town of Scanned Acro"])!.field_map);
+  await check("MUST-PASS (AcroForm branch): the vision signature line separates the two placed blocks there too — both names kept", () => {
+    const placed = (acroMap.overlayFields ?? []).map((o: { label?: string; source: string }) => `${o.label} <- ${o.source}`);
+    assert.ok(placed.includes("I, ___, as owner of the property, authorize the contractor <- project.homeownerName"), JSON.stringify(acroMap));
+    assert.ok(placed.includes("Contractor Print Name <- computed.applicantSignerName"), JSON.stringify(acroMap));
   });
 }
 
