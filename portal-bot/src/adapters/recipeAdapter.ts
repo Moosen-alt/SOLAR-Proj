@@ -5108,7 +5108,15 @@ export class RecipeAdapter extends BasePortalAdapter {
       const text = (document.body?.innerText || "").replace(/\s+/g, " ");
       let h = 0;
       for (let i = 0; i < text.length; i++) { h = ((h << 5) - h + text.charCodeAt(i)) | 0; }
-      return `${shown}|${options}|${rows}|${text.length}:${h}|${vals.slice(0, 4000)}`;
+      // AND THE DIALOGS: a contact section's "Select from Account" / "Add New" opens its form in an
+      // iframe, and a dialog's Continue closes it — neither touches the main page's inputs, rows or
+      // text, so both read as "changed nothing" (live Corvallis electrical recipe, 2026-09-28).
+      // Which frames are showing, and what they show (the path, no query), is the effect.
+      const dialogs = (Array.from(document.querySelectorAll("iframe")) as HTMLIFrameElement[])
+        .filter((f) => { const fr = f.getBoundingClientRect(); return fr.width > 0 && fr.height > 0; })
+        .map((f) => `${f.getAttribute("name") || f.id || ""}@${String(f.getAttribute("src") || "").split("?")[0]}`)
+        .join(",");
+      return `${shown}|${options}|${rows}|${text.length}:${h}|${dialogs}|${vals.slice(0, 4000)}`;
     }).catch(() => "") as Promise<string>;
   }
 

@@ -396,6 +396,8 @@ console.log("\nH. MUST PASS: replaying the saved shape (account prefill, phone o
     /Casey Contact/.test(h.card) && /Fernhollow Solar LLC/.test(h.card) && /permits@fernhollow\.example/.test(h.card) && !/Robin|Resident|robin@example\.com|9 Elm/.test(h.card),
     `card=${h.card} data=${h.data.slice(0, 300)}`);
   check("H: the run says the dialog was made one identity", /made ONE identity/.test(h.data), h.data.slice(0, 300));
+  check("H: opening / saving the dialog is an in-page action the run SAW (no 'changed nothing on the page' drift, no 'did not advance')",
+    !/changed nothing on the page|did not advance/.test(h.data), h.data.slice(0, 600));
   const hx = await replayOn("/Cap/Other/CapEdit.aspx", "Contact3_9490");
   check("H MUST EXCLUDE: a section whose heading names no identity replays exactly as recorded (the prefill stays)",
     /Robin Resident/.test(hx.card) && !/made ONE identity/.test(hx.data), `card=${hx.card}`);
