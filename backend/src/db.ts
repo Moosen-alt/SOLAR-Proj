@@ -830,6 +830,10 @@ function migrate(db: AppDb): void {
   // portal_platform is auto-detected from portal_url (accela, energov, projectdox, etc.)
   // and drives the public HTTP status-check strategy in publicPermitStatus.ts.
   addColumnIfMissing(db, "permit_check_targets", "portal_platform", "TEXT NOT NULL DEFAULT ''");
+  // WHAT A RUNNING JOB IS DOING RIGHT NOW (jobQueue.noteJobProgress): JSON {label, since} — the automatic
+  // chain names its step ("Checking the AHJ's required official forms…") so the project page shows it
+  // working rather than "blocked" while a six-minute form search runs (operator 2026-09-28).
+  addColumnIfMissing(db, "job_queue", "progress_note", "TEXT NOT NULL DEFAULT ''");
   // project-level user assignment
   addColumnIfMissing(db, "projects", "assigned_user_id", "TEXT");
   // link a project back to the customer/lead it came from

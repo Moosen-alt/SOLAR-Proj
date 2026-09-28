@@ -39,6 +39,24 @@ export interface StageStepOutcome {
   reason: string;
 }
 
+/** What each step of the chain says it is doing while it runs (jobQueue.noteJobProgress → the
+ *  project page's progress line). The forms step is the long one: a never-seen AHJ's search took
+ *  six minutes on 2026-09-28 while the page read "blocked". */
+export const STAGE_STEP_LABELS = {
+  split: "Splitting the plan set into its sheets…",
+  read_bill: "Reading the utility bill…",
+  qc: "Running QC…",
+  acquire_forms: "Checking the AHJ's required official forms…",
+  build_docs: "Building the AHJ / NEM document package…",
+  reviewer_gate: "Running the reviewer gate and the historical check…",
+} as const;
+
+export interface StageStepOptions {
+  /** Called as each step starts, with its STAGE_STEP_LABELS sentence (the worker writes it to the
+   *  job row; a test may collect it). Never awaited; a throw here does not stop the chain. */
+  onStep?: (label: string) => void;
+}
+
 /**
  * Enqueue the auto chain for a project, deduped: a project with a PENDING stage_step job does
  * not get a second one (re-saving a project three times must not build the packet three times).
@@ -74,10 +92,13 @@ export function enqueueStageSteps(db: AppDb, projectId: string): boolean {
  * Run every LOCAL step the project's current stage calls for, in order, stopping the moment a
  * step fails to advance. The worker calls this; a test may call it directly.
  */
-export async function processStageStep(db: AppDb, projectId: string): Promise<StageStepOutcome> {
+export async function processStageStep(db: AppDb, projectId: string, opts: StageStepOptions = {}): Promise<StageStepOutcome> {
   const ran: string[] = [];
   const status = (): string =>
     String(db.get<{ status?: string }>("SELECT status FROM projects WHERE id = ?", [projectId])?.status ?? "");
+  const step = (key: keyof typeof STAGE_STEP_LABELS): void => {
+    try { opts.onStep?.(STAGE_STEP_LABELS[key]); } catch { /* a progress note never stops the chain */ }
+  };
 
   if (!autoStageStepsEnabled()) return { ran, stoppedAt: status(), reason: "AUTO_STAGE_STEPS is off." };
 
@@ -103,6 +124,7 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
         )?.n ?? 0)
       : 0;
     if (planSet && splitNewer === 0) {
+      step("split");
       try {
         const { buildUtilityPackage } = await import("./docSplitter");
         const pkg = await buildUtilityPackage(db, projectId, "all");
@@ -134,6 +156,7 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   // untouched — the extractor refuses passwords and SSNs, and nothing here writes over a
   // value that is already present.
   if (chainOwned) {
+    step("read_bill");
     try {
       const { fillAccountFieldsFromDocuments } = await import("./billVision");
       const { createLLMProvider } = await import("./llm");
@@ -177,6 +200,7 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   };
   const qcOwned = status() === "parsed" || status() === "qc_failed";
   if (qcOwned || (chainOwned && await docsNewerThanQc())) {
+    step("qc");
     const { rerunQc } = await import("./repository");
     rerunQc(db, projectId, qcOwned ? {} : { holdStatusOnNewBillOnlyFails: true });
     ran.push("qc");
@@ -194,6 +218,7 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   // chain now runs the same acquisition seam, so a new AHJ's first project pulls its forms on
   // the way to ready_to_stage instead of waiting for a human to wonder why nothing built.
   if (status() === "qc_passed") {
+    step("acquire_forms");
     try {
       const { getProjectDetail } = await import("./repository");
       const { prepareOfficialDocuments } = await import("./prepareOfficialDocuments");
@@ -205,6 +230,7 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
         project: projectId, err: err instanceof Error ? err.message : String(err),
       });
     }
+    step("build_docs");
     const { getApplicationDocumentPackage } = await import("./repository");
     const { addAuditLog } = await import("./audit");
     const pkg = getApplicationDocumentPackage(db, projectId);
@@ -231,6 +257,7 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   // report. Neither writes projects.status: the reviewer verdict writer (repository) owns
   // stage_detail from here, exactly as it did when a human clicked.
   if (status() === "ready_to_stage") {
+    step("reviewer_gate");
     const { getReviewerReportWithVision, getHistoricalFailureReport } = await import("./repository");
     await getReviewerReportWithVision(db, projectId);
     ran.push("reviewer_gate");
