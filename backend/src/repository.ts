@@ -8154,7 +8154,14 @@ export async function prepareSubmission(
       const permitTracks = required.filter((t) => t !== "nem");
       const label = (t: string): string => (t === "combo" || t === "permit" ? "combination" : t === "mpu" ? "service-upgrade (MPU)" : t);
       const issuers = permitTracks.map((t) => ({ track: t, issuer: trackIssuer(detail.project, t).name }));
-      const said = issuers.map((x, i) => (i === 0 ? `the ${label(x.track)} permit is issued by ${x.issuer}` : `the ${label(x.track)} by ${x.issuer}`)).join(", ");
+      // One clause per issuing agency: "the building permit is issued by City of Newberg, the
+      // electrical by Yamhill County"; "the building and electrical permits are issued by Marion County".
+      const byIssuer = new Map<string, string[]>();
+      for (const x of issuers) byIssuer.set(x.issuer, [...(byIssuer.get(x.issuer) ?? []), label(x.track)]);
+      const said = [...byIssuer.entries()].map(([issuer, labels], i) => {
+        const names = labels.length > 1 ? `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}` : labels[0];
+        return i === 0 ? `the ${names} permit${labels.length > 1 ? "s are" : " is"} issued by ${issuer}` : `the ${names} by ${issuer}`;
+      }).join(", ");
       addAuditLog(db, projectId, "system", "submit gate", "portal.trackless_split_refused", {
         tracks: issuers, split: splitTracks,
       });

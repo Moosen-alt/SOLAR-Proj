@@ -520,6 +520,10 @@ await check("(g1) a TRACKLESS stage on a split-issuer project is refused (409) n
   assert.equal(launches.length, 0, "a learner launched");
   assert.ok(!fx.latestRun(id), "a run row was recorded");
   assert.ok(!db.get("SELECT id FROM submissions WHERE project_id = ?", [id]), "a submission row was recorded");
+  // One agency issuing every permit (Jefferson's shape, (b1)'s cited lookup): one clause.
+  const cedar = fx.newProject({ ahj: "City of Cedarton", city: "Cedarton", zip: "97352" });
+  await assert.rejects(stageSelfSeed(cedar), (err: { status?: number; message?: string }) =>
+    err.status === 409 && /Stage each permit from its track card — the building and electrical permits are issued by Alder County\./.test(String(err.message)));
   // MUST-PASS: the building track stages from its card as before (the city's recipe, (s3)).
   await stageSelfSeed(id, "building");
   assert.equal(fx.latestRun(id)?.recipe_id, cityStructural.id);
