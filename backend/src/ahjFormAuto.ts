@@ -3,7 +3,7 @@ import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type OverlayField, type SignaturePlacement } from "./ahjForms";
-import { describePermitType, findApplicationProfile, permitStructureAnswer, permitStructureForProject } from "./applicationDocs";
+import { describePermitType, findApplicationProfile, permitStructureAnswer } from "./applicationDocs";
 import { ensureUtilityFilingLookedUp } from "./utilityFilingLookup";
 import { documentFetchDisabled, fetchPublicDocument } from "./documentFetch";
 import { logger } from "./logger";
@@ -29,6 +29,8 @@ import { iowaPvWorksheetTemplate, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorkshee
 import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
 import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
 import { isRefusal, PAGE_READ_MIN_GAP_MS, type PageReader } from "./agencyPageReader";
+// Its own line (not beside the applicationDocs import above): forms-fill rewrites the ahjForms import next to it.
+import { permitStructureForProject } from "./applicationDocs";
 import { applicationFormLinks, classifyApplicationDocument, documentSlugWords, isAhjFormsSite, DOCUMENT_URL, type ApplicationDiscipline } from "./permitPlatformCatalog";
 import { isUtilityPlatformUrl, portalHostOf, registrableDomain } from "./portalChannel";
 
