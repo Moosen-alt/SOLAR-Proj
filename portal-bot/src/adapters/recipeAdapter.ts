@@ -83,6 +83,7 @@ import { rankAddressVersions } from "../addressVersion";
 import { isCompanyIdentityLabel } from "../../../shared/src/companyFacts";
 import { licenceKeyForLabel } from "../../../shared/src/licenceKinds";
 import { labelWords } from "../../../shared/src/portalSafety";
+import { batteryControlKind, batteryControlOfStep, batteryDeclarationAnswer, parseHasBattery } from "../../../shared/src/batteryControls";
 import { imageToPdfBytes, shouldConvertToPdf } from "../imageToPdf";
 import { removeUploadStaging, uploadPayloadFor, type PreparedUpload } from "./uploadPayload";
 import { attachmentTypeFor, isDocumentTypeList } from "./attachmentTypes";
@@ -2130,7 +2131,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     if (!/\bcapacity\b|kwh/i.test(label)) return "";
     // Stated where the value is produced, not only in skipForNoBattery: a project declared
     // WITHOUT storage must never have a capacity filed for it, whatever else is in scope.
-    if (/^(no|false|none|n)$/i.test(String(this.fieldValues.hasBattery ?? "").trim())) return "";
+    if (this.projectHasBattery() === false) return "";
     // essKwh is the canonical key normalize.ts derives; batteryCapacityKwh is what the
     // parser itself emits. Both reach fieldValues through resolveRecipeFieldValues' snapshot
     // passthrough, and the raw key is the fallback for a snapshot that never went through
@@ -2147,8 +2148,21 @@ export class RecipeAdapter extends BasePortalAdapter {
     // once told the utility a Powerwall's capacity as fact about a job with no storage.
     // Leaving it blank is not the alternative either — the portal marks it required, and it
     // was this run's only blank on PGE.
-    if (this.isBatteryDeclaration(step) && /^(no|false|none|n)$/i.test(String(this.fieldValues.hasBattery ?? "").trim())) {
-      return "No";
+    //
+    // AND THE MIRROR IMAGE: a recipe learned on a job WITHOUT a battery records "No" on that
+    // same question, and replaying that literal onto a job WITH one files a storage system as
+    // absent — the utility then never sees the specs it needs. So the declaration takes THIS
+    // project's answer in the control's own vocabulary (shared batteryDeclarationAnswer: the
+    // recorded option list's Yes/No when it carries one, the literal otherwise; a recorded
+    // answer that already agrees is kept, so a portal's "None" stays "None"). Unknown replays
+    // as recorded.
+    {
+      const hasBattery = this.projectHasBattery();
+      if (hasBattery !== undefined && this.isBatteryDeclaration(step)) {
+        const recorded = step.field ? String(this.fieldValues[step.field] ?? "") : String(step.value ?? "");
+        const answer = batteryDeclarationAnswer(hasBattery, (step as { options?: unknown[] }).options, recorded);
+        if (answer !== null) return answer;
+      }
     }
     // THE SIGNER IS THE CLIENT'S AUTHORIZED SIGNER, whatever key an older recipe bound the box
     // to (a planner-chosen installerContactName would sign as the contact). Empty = runAll
@@ -2965,31 +2979,46 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  a rating; a declaration is a bare storage noun, and a checkbox is always a declaration
    *  because there is nothing else a checkbox could be. */
   private isBatteryDeclaration(step: RecipeStep): boolean {
-    const label = `${step.note ?? ""} ${step.field ?? ""}`;
-    if (!/\bbatter(y|ies)\b|\benergy storage\b|\bess\b|\bstorage\b/i.test(label)) return false;
-    // An UPLOAD is never the yes/no battery question — "upload battery_spec: Battery Specification
-    // Sheet" is a battery's document (skeptic eb36a8f MF1: it read as a declaration, so the no-battery
-    // skip never fired and a datasheet went up on a no-battery filing).
-    if (step.action === "upload") return false;
-    if (step.action === "check" || step.action === "uncheck") return true;
-    const SPEC = /capacity|kwh|kw\b|\bah\b|manufacturer|model|make|quantity|\bqty\b|\bsize\b|rating|voltage|efficiency|round-?trip|state of charge|serial|nameplate|inverter/i;
-    return !SPEC.test(label);
+    return this.batteryKindOf(step) === "declaration";
+  }
+
+  /** THE ONE PREDICATE (shared batteryControls — the learner's fill guard asks the same
+   *  function): the recorded label, read as the control the action implies. An UPLOAD is never
+   *  the yes/no battery question — "upload battery_spec: Battery Specification Sheet" is a
+   *  battery's document (skeptic eb36a8f MF1: it read as a declaration, so the no-battery skip
+   *  never fired and a datasheet went up on a no-battery filing) — the predicate calls a file a
+   *  spec. */
+  private batteryKindOf(step: RecipeStep): ReturnType<typeof batteryControlKind> {
+    const label = `${step.selector?.label ?? ""} ${step.note ?? ""} ${step.field ?? ""}`;
+    return batteryControlKind(label, { control: batteryControlOfStep(step), options: (step as { options?: unknown[] }).options });
+  }
+
+  /** The project's hasBattery, read the one way (shared parseHasBattery): false = no battery,
+   *  true = battery, undefined = silence, which replays as recorded. */
+  private projectHasBattery(): boolean | undefined {
+    return parseHasBattery(this.fieldValues.hasBattery);
   }
 
   private skipForNoBattery(step: RecipeStep): boolean {
-    const raw = String(this.fieldValues.hasBattery ?? "").trim();
-    if (!/^(no|false|none|n)$/i.test(raw)) return false; // unknown or yes → replay as recorded
-    const label = `${step.note ?? ""} ${step.field ?? ""}`;
+    if (this.projectHasBattery() !== false) return false; // unknown or yes → replay as recorded
+    const kind = this.batteryKindOf(step);
     // "Wattsmart Battery Program?" is a PROGRAM question answered No, not a spec — answering
-    // it is correct and skipping it would leave a required question blank.
-    if (/program\b/i.test(label)) return false;
+    // it is correct and skipping it would leave a required question blank. A MENTION (an
+    // acknowledgment citing the battery requirements) replays as recorded too.
+    if (kind === null || kind === "program" || kind === "mention") return false;
     // NEITHER IS THE QUESTION "IS THERE A BATTERY". Live on PGE: the recipe's "Energy Storage"
     // step was skipped for a job with no battery, and the portal then reported "Energy
     // Storage" as a REQUIRED FIELD LEFT BLANK — the run's only blank. Not having a battery is
-    // the answer to that question, not a reason to leave it unanswered. A declaration gets
-    // answered; only the SPECS of a battery that does not exist are skipped.
-    if (this.isBatteryDeclaration(step)) return false;
-    return /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
+    // the answer to that question, not a reason to leave it unanswered. A select/fill
+    // declaration is executed and resolveValue answers it No.
+    //
+    // A DECLARING CHECKBOX is the one declaration whose No answer is "leave it alone": a
+    // recorded `check` on "This system includes battery storage" executed on a no-battery job
+    // is the Ivy incident (the tick that revealed the Powerwall fields) reintroduced by replay —
+    // which it was, between the declaration commit and this one: isBatteryDeclaration said
+    // "declaration" for every check step and skipForNoBattery then executed it.
+    if (kind === "declaration") return step.action === "check";
+    return true; // a spec of a battery that does not exist
   }
 
   // A SLOT THAT ONLY EXISTS AT REPLAY CAN ONLY BE FILLED AT REPLAY.
@@ -3391,7 +3420,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       );
     }
     if (this.skipForNoBattery(step)) {
-      this.agingNotes.push(`skipped "${String(step.note ?? step.field ?? "battery step").slice(0, 48)}" — this project has no battery`);
+      const what = String(step.note ?? step.field ?? "battery step").slice(0, 48);
+      this.agingNotes.push(step.action === "check"
+        ? `left "${what}" unchecked — this project has no battery, and unchecked is that answer`
+        : `skipped "${what}" — this project has no battery`);
       return true; // not a failure: the section does not apply to this filing
     }
     // F1 — A kVA TIER BOX IS DECIDED FROM THE PAGE'S OWN LABELS, not from the recorded selector:

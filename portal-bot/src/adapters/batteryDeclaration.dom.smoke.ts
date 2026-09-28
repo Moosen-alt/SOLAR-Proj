@@ -35,6 +35,7 @@ const PAGE = `<!doctype html><html><head><style>body{font:14px sans-serif;paddin
   <input id="cap" />
   <label for="bmake">Battery Manufacturer</label>
   <select id="bmake"><option>Select...</option><option>Tesla</option></select>
+  <label><input type="checkbox" id="inc"> This system includes battery storage</label>
 </body></html>`;
 
 const server = http.createServer((_q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end(PAGE); });
@@ -60,21 +61,23 @@ const recipe = {
 // an assertion against 13.5 could not tell that apart from replaying the learn roof's.
 const run = async (
   values: Record<string, string>,
-): Promise<{ ess: string; cap: string; make: string; blanks: string[] }> => {
+  which: PortalRecipe = recipe,
+): Promise<{ ess: string; cap: string; make: string; inc: boolean; blanks: string[] }> => {
   const browser = await chromium.launch();
   const context = await browser.newContext();
   await context.addInitScript("globalThis.__name = globalThis.__name || function (fn) { return fn; };");
   const page = await context.newPage();
   await page.goto(url);
-  const a = new RecipeAdapter(recipe, values, {}, { autoSubmit: false });
+  const a = new RecipeAdapter(which, values, {}, { autoSubmit: false });
   (a as unknown as { page: unknown }).page = page;
   await a.fillApplication({} as never);
   const ess = await page.locator("#ess").inputValue().catch(() => "");
   const cap = await page.locator("#cap").inputValue().catch(() => "");
   const make = await page.locator("#bmake").inputValue().catch(() => "");
+  const inc = await page.locator("#inc").isChecked().catch(() => false);
   const blanks = (await sweepEmptyRequiredControls(page)).empty.map((e) => e.name);
   await browser.close();
-  return { ess, cap, make, blanks };
+  return { ess, cap, make, inc, blanks };
 };
 
 // The no-battery project is given a capacity ANYWAY. A stale essKwh on a project whose
@@ -138,6 +141,40 @@ console.log(`   un-normalised -> Energy Storage=${JSON.stringify(raw.ess)} capac
 check("...and the raw parser key works too, for a snapshot that never went through normalize",
   /^yes$/i.test(raw.ess) && raw.cap === "27",
   `ess=${JSON.stringify(raw.ess)} cap=${JSON.stringify(raw.cap)}`);
+
+// THE MIRROR IMAGE (battery-question, 2026-09-28). A recipe learned on a job WITHOUT a battery
+// records the same question as "No" — and nothing else of the section, because that learn never
+// revealed it. Replaying that literal onto a job WITH a battery would file the storage system
+// as absent. The declaration takes THIS project's answer on both sides.
+const learnedOnNoBattery = {
+  ...recipe, id: "bd2",
+  steps: [{ action: "select", phase: "fill", field: "", note: "Energy Storage", value: "No", selector: { css: "#ess" } }] as unknown as RecipeStep[],
+} as unknown as PortalRecipe;
+const mirror = await run({ hasBattery: "Yes", essKwh: "27" }, learnedOnNoBattery);
+console.log(`   recorded No, battery job -> Energy Storage=${JSON.stringify(mirror.ess)}`);
+check("THE MIRROR: a recipe that recorded No answers Yes on a job that has a battery",
+  /^yes$/i.test(mirror.ess), `Energy Storage=${JSON.stringify(mirror.ess)} — the utility was told there is no storage`);
+const mirrorNo = await run({ hasBattery: "No" }, learnedOnNoBattery);
+check("...and still No on a job without one",
+  /^no$/i.test(mirrorNo.ess), `Energy Storage=${JSON.stringify(mirrorNo.ess)}`);
+
+// THE IVY TICK, REPLAYED. A recipe learned on a battery job records `check` on the declaring
+// checkbox. On a no-battery job that box stays unchecked — unchecked IS the No answer — and
+// the specs behind it stay blank; on a battery job it is ticked as recorded.
+const withCheckbox = {
+  ...recipe, id: "bd3",
+  steps: [
+    { action: "check", phase: "fill", note: "This system includes battery storage", selector: { css: "#inc" } },
+    { action: "fill", phase: "fill", field: "", note: "Energy Storage Capacity of Battery (kWh)", value: "13.5", selector: { css: "#cap" } },
+  ] as unknown as RecipeStep[],
+} as unknown as PortalRecipe;
+const tickNo = await run({ hasBattery: "No", essKwh: "27" }, withCheckbox);
+console.log(`   recorded tick, no battery -> checked=${tickNo.inc} capacity=${JSON.stringify(tickNo.cap)}`);
+check("A RECORDED DECLARING TICK is left unchecked on a no-battery job (the Ivy incident, replay side)",
+  tickNo.inc === false && tickNo.cap === "", `checked=${tickNo.inc} capacity=${JSON.stringify(tickNo.cap)}`);
+const tickYes = await run({ hasBattery: "Yes", essKwh: "27" }, withCheckbox);
+check("...and ticked as recorded on a battery job, with this roof's capacity",
+  tickYes.inc === true && tickYes.cap === "27", `checked=${tickYes.inc} capacity=${JSON.stringify(tickYes.cap)}`);
 
 server.close();
 if (failures) { console.error(`\n${failures} battery-declaration check(s) FAILED.`); process.exit(1); }

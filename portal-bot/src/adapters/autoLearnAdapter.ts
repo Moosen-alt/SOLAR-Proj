@@ -20,6 +20,7 @@ import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
 import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, reviewSignals as sharedReviewSignals, splitSignerName } from "../../../shared/src/portalSafety";
+import { BATTERY_DECLARATION_QUESTION, batteryControlKind, batteryDeclarationAnswer } from "../../../shared/src/batteryControls";
 import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, backstopFor, isStoppingAbort, drainOwnWrites, unsavedAtReviewWarning, portalOwnCallsBlockedAtReview, reviewBlockedCallsLine } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
 import { attachmentTypeFor, isDocumentTypeList, isPlanSetDocType } from "./attachmentTypes";
@@ -6693,6 +6694,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           pageFillCount++;
           appliedThisPage.push(ps.applied);
         }
+        // d3c) BATTERY-DECLARATION PASS — the storage question answered from project data when
+        //      the planner left it at its placeholder (see applyBatteryDeclaration). Before the
+        //      required sweep (d4b), so an answered question is not swept as a miss.
+        for (const bd of await this.applyBatteryDeclaration(alreadyFilledLabels)) {
+          steps.push(bd.step);
+          pageFillCount++;
+          appliedThisPage.push(bd.applied);
+        }
       }
 
       // d1) PERSIST SETTLE (ADAPTIVE). Portals like PowerClerk autosave each page's fields via
@@ -7392,7 +7401,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
    * "Select..." placeholder), so a portal that already carries an answer is left alone.
    */
   private async applyPolicySelect(
-    policy: { question: RegExp; answer: "Yes" | "No"; enforce?: boolean },
+    // `kind` names the pass in the recorded note ("policy default" unless told otherwise): replay
+    // reads a "policy default:" note as a conditional question it may skip when not asked, so a
+    // pass answering PROJECT DATA (the battery declaration) records under its own name.
+    policy: { question: RegExp; answer: "Yes" | "No"; enforce?: boolean; kind?: string },
     alreadyFilledLabels: string[],
   ): Promise<{ step: RecipeStep; applied: AppliedFill } | null> {
     if (!this.page || typeof this.page.evaluate !== "function") return null;
@@ -7442,7 +7454,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         phase: "fill",
         selector,
         value: found.optionText,
-        note: `policy default: ${groupLabel} → ${policy.answer}`,
+        note: `${policy.kind ?? "policy default"}: ${groupLabel} → ${policy.answer}`,
       },
       applied: {
         selector,
@@ -7453,6 +7465,33 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         required: true,
       },
     };
+  }
+
+  /** THE STORAGE QUESTION IS PROJECT DATA, ANSWERED WHETHER OR NOT THE PLANNER GOT TO IT.
+   *
+   *  The fill-pass guard (applyFillInner) corrects a planner's answer to the declaration; this
+   *  answers it when the planner offered nothing — a required "Energy Storage" [Select…, Yes, No]
+   *  left at its placeholder is the PGE required miss by another route. Same mechanics as a
+   *  policy select (unanswered or contradicting → the answer; enforce, because a planner's other
+   *  pick is exactly what the project data overrules), recorded under its own name so replay
+   *  treats it as the declaration it is, not as a skippable policy question. Only when the
+   *  project SAYS (hasBattery true/false) — silence stays the planner's. Native, labelled
+   *  <select>s only. The question regex is anchored to the WHOLE label (a section titled
+   *  "Energy Storage" holds the specs and their Yes/No siblings too, and the policy walk also
+   *  reads section text — batteryQuestion.dom.smoke pins that the first Yes/No select in such a
+   *  section is never taken). A radio group whose options are the bare "Yes"/"No" carries the
+   *  question in its group text, not on the option, and an input-backed widget is not a
+   *  <select> — neither is read here (named gap); the planner's fill through applyFillInner
+   *  covers those. */
+  private async applyBatteryDeclaration(alreadyFilledLabels: string[]): Promise<Array<{ step: RecipeStep; applied: AppliedFill }>> {
+    if (this.hasBattery === undefined) return [];
+    const picked = await this.applyPolicySelect(
+      { question: BATTERY_DECLARATION_QUESTION, answer: this.hasBattery ? "Yes" : "No", enforce: true, kind: "battery declaration" },
+      alreadyFilledLabels,
+    ).catch(() => null);
+    if (!picked) return [];
+    this.debug?.event({ type: "battery_declaration_answered", label: picked.applied.label.slice(0, 70), answer: picked.applied.expected, planner: "none" });
+    return [picked];
   }
 
   // A DISAMBIGUATION GRID IS A CHOICE ABOUT WHOSE PROPERTY WE ARE FILING ON.
@@ -7934,7 +7973,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     fillReq: { value: string; field?: string },
     sensitive: boolean,
   ): Promise<RecipeStep | null> {
-    const value = fillReq.value ?? "";
+    // `let`: the battery-declaration guard below may correct the planner's answer from project
+    // data, and the correction is written back to fillReq so the caller's AppliedFill.expected
+    // (read from fillReq.value after this returns) verifies the value that actually went in.
+    let value = fillReq.value ?? "";
     const isCheckable = field.fieldType === "checkbox" || field.fieldType === "radio";
     const action: RecipeStep["action"] =
       field.fieldType === "select" ? "select" : isCheckable ? "check" : "fill";
@@ -8010,29 +8052,58 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     //
     // The planner is given hasBattery and still got it wrong, so this cannot be a prompt: a
     // declaration about what EXISTS on the roof is project data, never a judgement call.
-    // Guarded only when the project explicitly says No — unknown stays the planner's call.
-    if (this.hasBattery === false) {
+    // Guarded only when the project says No or Yes — unknown stays the planner's call.
+    //
+    // LIVE ON PGE (2026-09-28, two supervised learns, hasBattery "No"): the planner decided the
+    // REQUIRED select "Energy Storage" → "No" — the right answer — and this guard refused it as a
+    // battery SPEC, four times per run (battery_spec_refused label="Energy Storage"), so page 7
+    // ended with required_never_filled ["Energy Storage"]: a required miss at review, and a
+    // recipe that could never be trusted. The guard's regex knew the storage WORDS and not what
+    // the control ASKS. THE ONE PREDICATE (shared batteryControls — replay asks it too):
+    //   SPEC        asks for a value OF the battery (make/model/capacity/quantity/…): on a
+    //               no-battery job REFUSED — never invented; on a battery job the planner fills
+    //               it from the project's battery fields.
+    //   DECLARATION asks WHETHER there is one (bare "Energy Storage", a Yes/No select, "Will
+    //               energy storage be installed?", a declaring checkbox): takes the PROJECT's
+    //               answer — No here, Yes on a battery job — whatever the planner said.
+    //   PROGRAM     "Will you be participating in the Wattsmart Battery Program?" is required of
+    //               every applicant, battery or not — never refused (PacifiCorp rejected a
+    //               filing by name when it was left blank), never forced.
+    if (this.hasBattery !== undefined) {
       const label = field.label || "";
-      const declaresBattery = /\b(includes?|has|with)\b[^.]{0,40}\b(batter(y|ies)|energy storage|\bess\b|storage system)\b/i.test(label)
-        || /^\s*(battery|energy)\s*storage\b/i.test(label);
-      if (field.fieldType === "checkbox" && declaresBattery) {
-        this.debug?.event({ type: "battery_declaration_refused", label: label.slice(0, 70) });
-        return null;
-      }
-      // And never invent the specifications of equipment that is not there. If the box got
-      // ticked some other way, the fields it reveals still go unanswered rather than fabricated.
-      //
-      // A PROGRAM question is not a specification. "Will you be participating in the Wattsmart
-      // Battery Program?" asks about a utility programme and is REQUIRED of every applicant,
-      // battery or not — refusing it left it blank and PacifiCorp rejected the submission for
-      // it by name. The replay guard already carried this exemption; this one did not, which
-      // is how a guard against inventing data became a guard against answering a question.
-      const isProgramQuestion = /\bprogram\b/i.test(label);
-      const isBatterySpec = !isProgramQuestion
-        && /\bbatter(y|ies)\b|\benergy storage\b|\bess\b|round-?trip|state of charge/i.test(label);
-      if (isBatterySpec && field.fieldType !== "checkbox") {
+      const kind = batteryControlKind(label, { control: field.fieldType, options: field.options });
+      if (kind === "spec" && this.hasBattery === false) {
+        // Never invent the specifications of equipment that is not there. If the declaration got
+        // answered Yes some other way, the fields it reveals still go blank rather than fabricated.
         this.debug?.event({ type: "battery_spec_refused", label: label.slice(0, 70) });
         return null;
+      }
+      if (kind === "declaration") {
+        if (isCheckable) {
+          // A declaring checkbox / radio option on a no-battery job stays unselected — that IS the
+          // No answer (the Ivy tick, refused). On a battery job a declaring CHECKBOX is ticked; a
+          // radio OPTION's own label is not the question (p006 offers "Addition of energy storage
+          // ONLY to an existing net metering system" as an application type), so a radio is never
+          // forced to Yes — the planner's pick stands.
+          if (this.hasBattery === false) {
+            this.debug?.event({ type: "battery_declaration_refused", label: label.slice(0, 70) });
+            return null;
+          }
+          if (field.fieldType === "checkbox" && !/^(true|yes|on|1|checked)$/i.test(value.trim())) {
+            this.debug?.event({ type: "battery_declaration_answered", label: label.slice(0, 70), answer: "checked", planner: value.trim() ? "corrected" : "none" });
+            value = "true";
+            fillReq.value = value;
+          }
+        } else {
+          const answer = batteryDeclarationAnswer(this.hasBattery, field.options, value);
+          if (answer !== null && answer !== value) {
+            this.debug?.event({ type: "battery_declaration_answered", label: label.slice(0, 70), answer, planner: value.trim() ? "corrected" : "none" });
+            value = answer;
+            fillReq.value = value;
+          } else if (answer !== null) {
+            this.debug?.event({ type: "battery_declaration_answered", label: label.slice(0, 70), answer, planner: "agreed" });
+          }
+        }
       }
     }
 
@@ -8338,7 +8409,18 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       }
       return Array.from(out).slice(0, 20);
     }).catch(() => [] as string[]);
-    return Array.isArray(labels) ? labels : [];
+    const all = Array.isArray(labels) ? labels : [];
+    // A BATTERY SPEC ON A NO-BATTERY JOB IS BLANK BY DESIGN, like a sensitive field: the fill
+    // guard refuses to invent it, so counting it as a required miss would block the trust gate on
+    // every no-battery job forever, over boxes a portal only enforces once storage is declared.
+    // The same predicate the guard uses — a DECLARATION ("Energy Storage") left blank is still a
+    // miss, and so is a programme question; only the specs of a battery that does not exist drop.
+    if (this.hasBattery !== false) return all;
+    const kept = all.filter((l) => batteryControlKind(l, { control: "text" }) !== "spec");
+    if (kept.length !== all.length) {
+      this.debug?.event({ type: "battery_spec_blank_by_design", labels: all.filter((l) => !kept.includes(l)).slice(0, 8) });
+    }
+    return kept;
   }
 
   // Read each applied fill back; re-apply once if it didn't hold; return the labels of REQUIRED

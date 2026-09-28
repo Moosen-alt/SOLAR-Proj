@@ -27,6 +27,7 @@ import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
 import { perJobAnswerKeyFor, perJobControlOfField } from "../../shared/src/perJobQuestions";
+import { parseHasBattery } from "../../shared/src/batteryControls";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
 import { resolveHeadless } from "../../portal-bot/src/browser";
 import { compareReviewFields, utilityIdentifiersEnteredBySteps } from "../../portal-bot/src/reviewScreenScraper";
@@ -1212,12 +1213,8 @@ async function autoLearnPortalInner(
       allowFinalSubmit: input.allowFinalSubmit === true, allowConsentAccept: input.allowConsentAccept,
       // Only an explicit "no battery" arms the guard. An unknown stays the planner's call —
       // silence about a battery is not the same as the project stating there isn't one.
-      hasBattery: (() => {
-        const raw = String((project.parserSnapshot as Record<string, unknown> | undefined)?.hasBattery ?? "").trim();
-        if (/^(no|false|none|n)$/i.test(raw)) return false;
-        if (/^(yes|true|y)$/i.test(raw)) return true;
-        return undefined;
-      })(),
+      // The one tri-state parse (shared batteryControls) the learner and replay read too.
+      hasBattery: parseHasBattery((project.parserSnapshot as Record<string, unknown> | undefined)?.hasBattery),
       siteIdentity: {
         city: project.city,
         zip: project.zip,
