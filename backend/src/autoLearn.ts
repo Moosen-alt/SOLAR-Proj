@@ -1303,6 +1303,11 @@ async function autoLearnPortalInner(
     createdBy: input.createdBy || "auto-learn",
     // Claims this discipline's own row instead of resetting the AHJ's other one.
     discipline: learnDiscipline,
+    // THE ROW THIS LEARN PROTECTS IS THE ROW IT WRITES (dry run 2026-09-28, B9): findAnyRecipeForProject
+    // above resolved this entity's recipe (exact key, else the name/identity alias). Without this the
+    // recorder's own exact-key lookup missed a "Pacific Power" recipe for a "PacifiCorp" project and
+    // inserted a duplicate shared recipe beside it.
+    existingRecipeId: existingRecipe?.id ?? null,
   });
 
   if (learn.pauseReason) {

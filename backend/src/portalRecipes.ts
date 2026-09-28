@@ -26,6 +26,7 @@ import { planSetDisconnectPart, standardDisconnectConflicts } from "./baselineRu
 import { clientCompanyFactFields } from "./clients";
 import { COMPANY_IDENTIFIER_KEY, companyFactStamp, isCompanyAttestationStep, isCompanyIdentityLabel, looksLikePlaceholderIdentifier } from "../../shared/src/companyFacts";
 import { usStateCode } from "./permitPath";
+import { provablyDifferentUtility, sameUtilityEntity } from "./utilityIdentity";
 import { labelWords } from "../../shared/src/portalSafety";
 import { mountAdjective, mountKindForProject } from "./codeReviewRules";
 
@@ -222,7 +223,14 @@ function findRecipeByNameAlias(
     // Never cross states — a same-named utility in another state is a different portal.
     const rowState = s(row.state);
     if (!rowState || rowState.toLowerCase() !== s(input.state).trim().toLowerCase()) continue;
-    const score = knowledgeNameMatchScore(wanted, s(input.scopeType === "utility" ? row.utility : row.ahj));
+    // The one utility identity first (utilityIdentity — "PacifiCorp" IS "Pacific Power" in Oregon,
+    // which the fuzzy scorer scores 0; "Pacific Gas and Electric" is provably not), then the fuzzy score.
+    const utilityScope = input.scopeType === "utility";
+    const score = utilityScope && sameUtilityEntity(input.state, wanted, s(row.utility))
+      ? 100
+      : utilityScope && provablyDifferentUtility(input.state, wanted, s(row.utility))
+        ? 0
+        : knowledgeNameMatchScore(wanted, s(utilityScope ? row.utility : row.ahj));
     if (score >= NAME_ALIAS_MIN_SCORE && (!best || score > best.score)) best = { row, score };
   }
   return best ? mapRecipe(best.row) : null;
@@ -606,7 +614,15 @@ export function findBorrowableRecipe(
 // the steps so the admin re-records cleanly (used for "delete & re-record").
 export function startPortalRecording(
   db: AppDb,
-  input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; portalPlatform?: string; portalUrl?: string; createdBy?: string; discipline?: string },
+  input: {
+    scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; portalPlatform?: string; portalUrl?: string; createdBy?: string; discipline?: string;
+    /** The row the CALLER already resolved as this entity's recipe (autoLearn: findAnyRecipeForProject,
+     *  the same answer it protects a trusted recipe by). Reset in place instead of the exact-key row —
+     *  a learn under a variant spelling ("PacifiCorp" vs the recipe's "Pacific Power") must write the
+     *  row it resolved, not insert a duplicate shared recipe beside it (dry run 2026-09-28, B9). Ignored
+     *  unless that row is this scope, this state, and this discipline (or a legacy '' row). */
+    existingRecipeId?: string | null;
+  },
 ): PortalRecipe {
   const scopeType = input.scopeType === "utility" ? "utility" : "ahj";
   if (scopeType === "ahj" && !s(input.ahj).trim()) throw new HttpError(400, "ahj is required for an AHJ recipe.");
@@ -621,7 +637,21 @@ export function startPortalRecording(
   // that claims a discipline, so the existing recipe is upgraded in place rather than
   // orphaned beside a duplicate.
   const discipline = scopeType === "utility" ? "" : s(input.discipline);
-  const existing = db.get<Row>(
+  // A wrong-row reset is worse than a duplicate: the resolved row is taken only when it is
+  // provably this recipe's slot — same scope, same state, same (or legacy) discipline.
+  const resolved = s(input.existingRecipeId)
+    ? db.get<Row>("SELECT * FROM portal_recipes WHERE id = ?", [s(input.existingRecipeId)])
+    : undefined;
+  const resolvedFits = Boolean(resolved)
+    && s(resolved!.scope_type) === scopeType
+    && s(resolved!.state).trim().toLowerCase() === s(input.state).trim().toLowerCase() && Boolean(s(input.state).trim())
+    && (s(resolved!.discipline) === discipline || s(resolved!.discipline) === "");
+  // A legacy '' row resolved while ITS key already holds this discipline's own row: that row is the
+  // slot (adopting the legacy one would collide on UNIQUE(profile_key, discipline)).
+  const resolvedSlot = resolvedFits && s(resolved!.discipline) !== discipline
+    ? db.get<Row>("SELECT * FROM portal_recipes WHERE profile_key = ? AND discipline = ?", [s(resolved!.profile_key), discipline]) ?? resolved
+    : resolvedFits ? resolved : undefined;
+  const existing = resolvedSlot ?? db.get<Row>(
     `SELECT * FROM portal_recipes WHERE profile_key = ? AND (discipline = ? OR discipline = '')
       ORDER BY CASE WHEN discipline = ? THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
     [key, discipline, discipline],

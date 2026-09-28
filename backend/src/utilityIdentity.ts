@@ -35,6 +35,36 @@ export function knownPowerClerkUtility(input: { state?: unknown; utility?: unkno
   if (PORTLAND_GENERAL_NAME.test(name) && st === "OR") return "portland_general";
   return null;
 }
+/**
+ * ARE THESE TWO NAMES THE SAME UTILITY, HERE? True only when both resolve to the same known
+ * identity in this state (a parent company and its operating brands — "PacifiCorp" = "Pacific
+ * Power" in Oregon; "PGE" = "Portland General Electric" in Oregon). An unknown name, an unknown
+ * state, or a state the identity does not serve is NOT a match: not provable is not the same.
+ *
+ * Why it exists (dry run 2026-09-28, B9): the plan set said "UTILITY: PACIFICORP", the KB and every
+ * recipe say "Pacific Power", and the name scorer (knowledgeNameMatchScore) scores that pair 0 —
+ * "power" is a stopword and neither contains the other. So the recipe, KB, fee and filing-lookup
+ * keys forked by spelling. The alias fallbacks (portalRecipes.findRecipeByNameAlias, the KB's
+ * findKnowledgeByName) ask this BEFORE the fuzzy score; an exact key still wins over both.
+ */
+export function sameUtilityEntity(state: unknown, a: unknown, b: unknown): boolean {
+  const ia = knownPowerClerkUtility({ state, utility: a });
+  return ia !== null && ia === knownPowerClerkUtility({ state, utility: b });
+}
+
+/**
+ * PROVABLY NOT the same utility, here: in this (known) state one name IS a known identity and the
+ * other is not that identity. The fuzzy scorer strips "gas", "electric" and "power" as stopwords, so
+ * "Pacific Gas and Electric" vs "Pacific Power" scored 65 — a California PG&E job resolved PacifiCorp's
+ * KB row. A known identity's names are anchored (PACIFICORP_NAME / PORTLAND_GENERAL_NAME); a name the
+ * identity does not recognise is not that utility. Unknown state, or neither name known: false — the
+ * fuzzy scorer's question, not this one.
+ */
+export function provablyDifferentUtility(state: unknown, a: unknown, b: unknown): boolean {
+  const ia = knownPowerClerkUtility({ state, utility: a });
+  const ib = knownPowerClerkUtility({ state, utility: b });
+  return (ia !== null || ib !== null) && ia !== ib;
+}
 export const isPacifiCorp = (input: { state?: unknown; utility?: unknown }): boolean => knownPowerClerkUtility(input) === "pacificorp";
 export const isPortlandGeneral = (input: { state?: unknown; utility?: unknown }): boolean => knownPowerClerkUtility(input) === "portland_general";
 
