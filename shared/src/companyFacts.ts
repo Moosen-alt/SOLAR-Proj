@@ -9,14 +9,21 @@
 // (portal-bot recipeAdapter.looksLikeProjectData), the save-time guard (portalRecipes
 // savePortalRecipeSteps) and the replay binder (recipeReplayBinding R8).
 import { labelWords } from "./portalSafety";
+import { kindForSlot } from "./licenceKinds";
 
 /** A label naming a fact about the INSTALLER COMPANY (read after splitting control ids into words:
  *  "WCStrNum" -> "WC Str Num"). */
 export const COMPANY_IDENTITY_LABEL = /\b(?:insur\w*|polic(?:y|ies)|bond(?:ed|ing|s)?|surety|workers?'?\s*comp\w*|registr\w*|hic|csl|ccb|ubi|licen[cs]\w*|title|web\s*site|website|supervis\w*|master|journeyman|contractor|installer|company|business|firm|ein|tax\s*id|str?\s+(?:num(?:ber)?|no|name|nm))\b/i;
 
-/** Read a recorded label (or control id) as words, then ask whether it names a company fact. */
+/** Read a recorded label (or control id) as words, then ask whether it names a company fact. A
+ *  LICENCE SLOT is always one — whatever the portal calls it ("CSL #", "HIC Reg #", "EC Lic",
+ *  "Reg. No."): licenceKinds.kindForSlot, the one "which licence does this label name" predicate, is
+ *  asked here too, so the replay guard (recipeAdapter.looksLikeProjectData) and the save-time guard
+ *  (portalRecipes.withholdCompanyIdentityLiterals) give ONE answer. */
 export function isCompanyIdentityLabel(label: string | null | undefined): boolean {
-  return COMPANY_IDENTITY_LABEL.test(labelWords(String(label ?? "")));
+  const raw = String(label ?? "");
+  const words = labelWords(raw);
+  return COMPANY_IDENTITY_LABEL.test(words) || kindForSlot(raw) !== null || kindForSlot(words) !== null;
 }
 
 /** A company ATTESTATION a check/select answers: workers' comp, employees, sole proprietor /

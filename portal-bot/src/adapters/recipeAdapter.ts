@@ -65,7 +65,11 @@ export function looksLikeProjectData(label: string, value: string): boolean {
   // though "category" sits near words we treat as project data elsewhere.
   // A COMPANY'S OWN FACTS are somebody's data too (leak sweep 2026-09-28): insurer, policy, bond,
   // workers' comp, HIC/CSL/CCB/UBI registrations, website, title, supervising/master electrician,
-  // the contractor's street number/name — one predicate (shared companyFacts).
+  // the contractor's street number/name — one predicate (shared companyFacts). A LICENCE SLOT is
+  // one whatever the portal calls it — "CSL #", "HIC Reg #", "CCB #", "EC Lic" name no licence word
+  // PROJECT_DATA_LABEL knows, and a licence recorded on company A's job must never replay on
+  // company B's: isCompanyIdentityLabel asks the one slot predicate (kindForSlot) too, and a
+  // company fact always wins over the taxonomy words.
   const companyFact = isCompanyIdentityLabel(l);
   if (TAXONOMY_LABEL.test(l) && !PROJECT_DATA_LABEL.test(l) && !companyFact) return false;
   if (PROJECT_DATA_LABEL.test(l) || companyFact) return true;

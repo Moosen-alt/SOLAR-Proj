@@ -87,7 +87,8 @@ import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 import { compactNextStep, decideNextStep, loadNextStepFacts } from "./nextStep";
 import { correctionHoldScope, criticalFieldHoldScope, findingHoldScope, GATE_TRACKS, scopeHoldsTrack, tracksHeld, type GateHoldScope } from "./gateScope";
 import { addAuditLog } from "./audit";
-import { clientStagingOverlay, contractorLicenceForState, getClient } from "./clients";
+import { clientLicenceRow, clientStagingOverlay, contractorLicenceForState, getClient, namedColumnsState } from "./clients";
+import { planSetLicenceWarning } from "./clientMatch";
 import { assertSubmissionPaid } from "./submissionFees";
 import { readAndRecordPortalFees } from "./portalFeeReadings";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, lockedOutCredential } from "./portalCredentials";
@@ -3496,10 +3497,21 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   const waitingOnBill: string[] = customerBillOnFile(db, projectId) ? [] : missingCriticalAll.filter((label) => label === "Account" || label === "Meter");
   const missingCritical = missingCriticalAll.filter((label) => !waitingOnBill.includes(label));
   // Safe client lookup (no throw) for the submitting-client gate.
-  const submittingClientRow = project.clientId
-    ? db.get<Row>("SELECT company_name, legal_business_name, ccb_license_number, electrical_license_number, license_state, state_licenses_json FROM clients WHERE id = ?", [project.clientId])
-    : null;
+  const submittingClientRow = project.clientId ? clientLicenceRow(db, project.clientId) : null;
   const licence = submittingClientRow ? contractorLicenceForState(submittingClientRow, project.state) : null;
+  // OUTSIDE OREGON THE LICENCE IS THE PERMIT'S: each permit track asks licenceFor (the answer the
+  // fill and the portal overlay read) for the licence it takes — a client holding three MA licences
+  // is not "no licence on file" because the question was asked without a track.
+  const licenceByTrack = submittingClientRow && licence && !licence.oregon
+    ? (() => { try { return requiredTracks(project).filter((t) => t !== "nem"); } catch { return [] as string[]; } })()
+      .map((t) => ({ track: t, answer: contractorLicenceForState(submittingClientRow, project.state, t) }))
+    : [];
+  const licenceMissingTracks = licenceByTrack.filter((t) => !t.answer.number);
+  const licenceNamedState = submittingClientRow ? namedColumnsState(submittingClientRow) : "OR";
+  // THE PLAN SET'S LICENCE BELONGS TO ANOTHER COMPANY (clientMatch.planSetLicenceWarning): a warning,
+  // never a switch — the assignment is the operator's.
+  let planSetLicenceDoubt = "";
+  try { planSetLicenceDoubt = planSetLicenceWarning(db, project) ?? ""; } catch { planSetLicenceDoubt = ""; }
   const permitLane = processMap.lanes.find((lane) => lane.key === "permit");
   const nemLane = processMap.lanes.find((lane) => lane.key === "nem");
   const blockedPermitSteps = (permitLane?.steps || []).filter((step) => step.status === "blocked");
@@ -3581,7 +3593,9 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       // for a CCB number (new-AHJ e2e, 2026-09-26), and an unknown requirement stays a warning.
       title: licence?.oregon ? "Submitting client & CCB" : "Submitting client & contractor licence",
       lane: "intake",
-      status: !submittingClientRow ? "blocker" : licence!.number ? "pass" : licence!.oregon ? "blocker" : "warning",
+      status: !submittingClientRow ? "blocker"
+        : licence!.oregon ? (licence!.number ? (planSetLicenceDoubt ? "warning" : "pass") : "blocker")
+        : licenceByTrack.length && !licenceMissingTracks.length && !planSetLicenceDoubt ? "pass" : "warning",
       ownerRole: "Intake Coordinator",
       requirement: licence?.oregon || !submittingClientRow
         ? "A submitting client with a CCB/contractor license must be assigned, so the filing uses the correct contractor — never default or another client's info."
@@ -3590,15 +3604,27 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         ? ["No submitting client assigned to this project."]
         : [
             `Client: ${String(submittingClientRow.company_name || submittingClientRow.legal_business_name || "(unnamed)")}`,
-            licence!.number ? `${licence!.label}: ${licence!.number}` : licence!.oregon ? "No CCB license on file." : `No contractor licence for ${licence!.state || "this state"} on file.`,
+            ...(licence!.oregon
+              ? [licence!.number ? `${licence!.label}: ${licence!.number}`
+                : licenceNamedState !== "OR" ? `No CCB license on file (the named licence columns are ${licenceNamedState}'s, per the client's licence state).` : "No CCB license on file."]
+              : licenceByTrack.length
+                ? licenceByTrack.slice(0, 3).map(({ track: t, answer: a }) => a.number
+                  ? `${t} permit: ${a.label} ${a.number}`
+                  : `${t} permit: ${a.reason || `no ${licence!.state} licence on file`}`)
+                // No permit track could be read: the trackless answer, candidates named — never
+                // "none on file" for a client that holds several.
+                : [licence!.number ? `${licence!.label}: ${licence!.number}` : licence!.candidates.length ? `Several ${licence!.state} licences on file: ${licence!.candidates.join("; ")}` : `No contractor licence for ${licence!.state || "this state"} on file.`]),
+            ...(planSetLicenceDoubt ? [planSetLicenceDoubt] : []),
           ],
       nextAction: !submittingClientRow
         ? "Assign the submitting client in the project header before staging."
-        : licence!.number
-          ? "Verified — this client's contractor info will be used on the filing."
+        : planSetLicenceDoubt
+          ? "Confirm the project is assigned to the right company — the plan set's title-block licence is another client's. Reassign the client in the project header if it is."
           : licence!.oregon
-            ? "Add the client's CCB license number in the Clients tab."
-            : `Confirm which contractor licence ${licence!.state || "the state"} and ${project.ahj || "the AHJ"} require on the application, and add it to the client's state licences in the Clients tab.`,
+            ? (licence!.number ? "Verified — this client's contractor info will be used on the filing." : "Add the client's CCB license number in the Clients tab.")
+            : !licenceMissingTracks.length && licenceByTrack.length
+              ? "Verified — this client's licence for each permit will be used on the filing."
+              : `Confirm which contractor licence ${licence!.state || "the state"} and ${project.ahj || "the AHJ"} require on the ${licenceMissingTracks.map((t) => t.track).join(" / ") || "permit"} application, and add it (with its type) to the client's state licences in the Clients tab.`,
       source: "project.client",
     }),
     submitGateCheck({
@@ -8340,7 +8366,9 @@ export async function prepareSubmission(
   // Overlay the linked client's contractor/licensing identity onto the project
   // snapshot the adapters read, so submissions use authoritative client data
   // (CCB#, electrical license, installer company) instead of hardcoded names.
-  const overlay = clientStagingOverlay(db, detail.project.clientId, portalType);
+  // The licence keys are THIS track's in THIS state (clients.licenceOverlay) — never Oregon's CCB
+  // on another state's filing.
+  const overlay = clientStagingOverlay(db, detail.project.clientId, portalType, { state: String(detail.project.state ?? ""), track: track ?? null });
   const stagedProject = Object.keys(overlay).length > 0
     ? { ...detail.project, parserSnapshot: { ...detail.project.parserSnapshot, ...overlay } }
     : detail.project;
@@ -8367,6 +8395,7 @@ export async function prepareSubmission(
         // The permit/AHJ application lists differ by discipline - the TRACK carries it
         // (electrical files the electrical application; building/combo file structural).
         permitType: isNemTrack ? undefined : (track === "electrical" ? "electrical" : "structural"),
+        track: track ?? null,
       });
       gapFillPlanner = built.planner;
       gapFillFields = built.projectFields;
@@ -8642,7 +8671,7 @@ export async function prepareSubmission(
       // anything binds or runs them. A human step edit does not bump the version, so heals and the
       // demotion are measured against every field of these steps, selectors included.
       const replayStepsSig = recipeStepsSignature(recipe.steps ?? []);
-      const replayFieldValues = resolveRecipeFieldValues(db, stagedProject, portalType);
+      const replayFieldValues = resolveRecipeFieldValues(db, stagedProject, portalType, track ?? null);
       replayBinding = bindRecipeForReplay({
         steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: detail.project, fieldValues: replayFieldValues, track,
         borrowed: borrowed ? { learnedFor: borrowed.learnedFor, discipline: borrowed.discipline } : null,

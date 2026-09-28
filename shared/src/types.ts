@@ -267,9 +267,44 @@ export interface ClientRecord {
 export interface ClientStateLicense {
   /** Two-letter issuing state. */
   state: string;
-  /** What the licence is, e.g. "electrical_contractor", "contractor", "solar_contractor". */
+  /** What the licence is: a canonical LicenceKind (shared/src/licenceKinds.ts — parseStateLicenses
+   *  normalises "EC", "CSL", "HIC", "general contractor"… to one). "" = a stored free-text kind no
+   *  canonical kind matched; such a licence is never offered to a slot (it is named instead). */
   kind: string;
   number: string;
+  /** YYYY-MM-DD when the licence expires ("" / absent = not on file). */
+  expires?: string;
+  /** The PERSON a person licence belongs to (master / supervising electrician, construction
+   *  supervisor) — the name a "licence holder" slot takes. Absent = not on file. */
+  holder?: string;
+}
+
+/** What a licence IS — the one vocabulary the fill, the portal overlay and the submit gate use to
+ *  answer "which number goes in this slot". The list with labels is LICENCE_KINDS
+ *  (shared/src/licenceKinds.ts). business_registration is NEVER offered as a contractor licence. */
+export type LicenceKind =
+  | "contractor"
+  | "electrical_contractor"
+  | "construction_supervisor"
+  | "home_improvement_contractor"
+  | "solar_contractor"
+  | "master_electrician"
+  | "business_registration";
+
+/** The answer to "which licence goes in this slot" (clients.licenceFor). number "" = none on file of
+ *  the kind the slot needs, or the choice is ambiguous — never another kind's, state's or company's. */
+export interface LicenceAnswer {
+  number: string;
+  kind: LicenceKind | "";
+  state: string;
+  /** How a person reads it: "CCB", "MA construction supervisor licence"… */
+  label: string;
+  expires: string;
+  holder: string;
+  /** Why the number is "" (for the operator item / gate evidence); "" when a number was found. */
+  reason: string;
+  /** When ambiguous: the licences it could have been, labelled ("MA construction supervisor licence CS-…"). */
+  candidates: string[];
 }
 
 export interface ClientPartnerContact {

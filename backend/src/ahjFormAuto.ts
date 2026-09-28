@@ -4,8 +4,9 @@ import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, inspectPlacedFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type InspectedField, type OverlayField, type SignaturePlacement } from "./ahjForms";
 import {
-  attestsAttachedDocument, OREGON_CCB_SOURCE, placementOnWidget, sanitizeAcroMap, STATE_LICENCE_SOURCE, type OperatorItem,
+  attestsAttachedDocument, OREGON_CCB_SOURCE, placementOnWidget, sanitizeAcroMap, STATE_LICENCE_SOURCE, typedLicenceSource, type OperatorItem,
 } from "./formFieldChecks";
+import { LICENCE_KINDS, licenceKindWords } from "../../shared/src/licenceKinds";
 import { parseJson } from "./json";
 import { HttpError } from "./httpError";
 import { describePermitType, findApplicationProfile, permitStructureAnswer } from "./applicationDocs";
@@ -101,6 +102,14 @@ const EXISTING_SYSTEM_SOURCES: string[] = [
   "snapshot.combinedAcKw  (combined new + existing size, kW AC)",
 ];
 
+// The typed licence sources: THIS job's state's licence of each kind (number, expiry; the holder's
+// name for a person licence). Names only reach the mapper — never a number (hard rule 2).
+const TYPED_LICENCE_SOURCES: string[] = LICENCE_KINDS.filter((k) => k.kind !== "business_registration").flatMap((k) => [
+  `${typedLicenceSource(k.kind)}  (THIS job's state's ${licenceKindWords(k.kind)} NUMBER — for a slot that names it${k.kind === "construction_supervisor" ? ', e.g. "Construction Supervisor License", "CSL #"' : k.kind === "home_improvement_contractor" ? ', e.g. "HIC Registration Number"' : k.kind === "electrical_contractor" ? ', e.g. "Electrical Contractor License"' : k.kind === "master_electrician" ? ', e.g. "Supervising / Master Electrician License"' : ""})`,
+  `${typedLicenceSource(k.kind, "expires")}  (that licence's EXPIRATION date)`,
+  ...(k.person ? [`${typedLicenceSource(k.kind, "holder")}  (the NAME of the person who holds that licence — for a "Licensed ${k.kind === "construction_supervisor" ? "Construction Supervisor" : "Electrician"}" name blank)`] : []),
+]);
+
 // The project-data sources the field mapper may target. Mirrors resolveSource()
 // scopes in ahjForms.ts. Kept explicit so the LLM only maps to real fields.
 export const AVAILABLE_FIELD_SOURCES: string[] = [
@@ -138,7 +147,9 @@ export const AVAILABLE_FIELD_SOURCES: string[] = [
   // supervisor licence slot). The CCB source is Oregon's only — fieldSourcesForState drops it from
   // any other state's mapping, and buildContext blanks it at fill time.
   'client.ccbLicenseNumber  (OREGON CCB contractor licence number — Oregon forms ONLY)',
-  `${STATE_LICENCE_SOURCE}  (the contractor licence number on file for THIS job's state — the one source for a state licence / registration NUMBER slot; blank when none is on file)`,
+  `${STATE_LICENCE_SOURCE}  (the contractor licence THIS job's permit takes in THIS job's state — for a licence / registration NUMBER slot that does NOT say which licence; blank when none is on file)`,
+  // LICENCES BY KIND (clients.licenceFor): a slot that NAMES its licence binds that kind's source.
+  ...TYPED_LICENCE_SOURCES,
   // The operator valuation (resolveValuation, the 2026-09-21 ruling) and the plan set's parcel number
   // existed in the fill path but were never OFFERED to the mapper, so Waltham's estimated-cost
   // table and parcel blank stayed empty.

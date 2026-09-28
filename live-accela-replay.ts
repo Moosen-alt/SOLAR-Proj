@@ -44,11 +44,12 @@ if (!recipe) {
   process.exit(1);
 }
 
-const overlay = clientStagingOverlay(db, project.clientId, portalType);
+const licenceTrack = discipline === "electrical" ? "electrical" : "building";
+const overlay = clientStagingOverlay(db, project.clientId, portalType, { state: String(project.state ?? ""), track: licenceTrack });
 const stagedProject = Object.keys(overlay).length > 0
   ? { ...project, parserSnapshot: { ...project.parserSnapshot, ...overlay } }
   : project;
-const fieldValues = resolveRecipeFieldValues(db, stagedProject, portalType);
+const fieldValues = resolveRecipeFieldValues(db, stagedProject, portalType, licenceTrack);
 const docsByType = projectDocsByType(db, projectId);
 const credential = project.clientId
   ? (getDecryptedCredentialByUrl(db, project.clientId, recipe.portalUrl) ?? undefined)

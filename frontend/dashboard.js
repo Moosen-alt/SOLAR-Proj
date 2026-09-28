@@ -8265,6 +8265,102 @@ const CLIENT_TEXT_FIELDS = [
   "businessZip", "businessPhone", "businessEmail", "authorizedSignerName", "authorizedSignerTitle", "notes",
 ];
 
+// ----- State licences (Clients editor) -----
+// THE ONE KIND LIST (shared/src/licenceKinds.ts LICENCE_KINDS): kind, label, and whether it is a
+// PERSON's licence (carries a holder's name). backend/test/licencesByType.test.ts fails on drift.
+const LICENCE_KIND_OPTIONS = [
+  { kind: "contractor", label: "Contractor (general / building / residential)", person: false },
+  { kind: "electrical_contractor", label: "Electrical contractor", person: false },
+  { kind: "construction_supervisor", label: "Construction supervisor", person: true },
+  { kind: "home_improvement_contractor", label: "Home improvement contractor", person: false },
+  { kind: "solar_contractor", label: "Solar contractor", person: false },
+  { kind: "master_electrician", label: "Master / supervising electrician", person: true },
+  { kind: "business_registration", label: "Business registration (not a contractor licence)", person: false },
+];
+
+/** The editor's rows for one client, straight from what the server stored. */
+function stateLicencesFromClient(client) {
+  const list = client && Array.isArray(client.stateLicenses) ? client.stateLicenses : [];
+  return list.map((l) => ({
+    state: String(l.state || ""), kind: String(l.kind || ""), number: String(l.number || ""),
+    expires: String(l.expires || ""), holder: String(l.holder || ""),
+  }));
+}
+
+function licenceKindIsPerson(kind) {
+  return LICENCE_KIND_OPTIONS.some((k) => k.kind === kind && k.person);
+}
+
+/** One licence row. Every stored value goes through esc(); a kind the list does not know is kept
+ *  and shown so it is never silently changed. */
+function stateLicenceRowHtml(lic, idx) {
+  const known = LICENCE_KIND_OPTIONS.some((k) => k.kind === lic.kind);
+  const options = LICENCE_KIND_OPTIONS.map((k) => `<option value="${esc(k.kind)}"${k.kind === lic.kind ? " selected" : ""}>${esc(k.label)}</option>`).join("");
+  const unknownOption = !known && lic.kind ? `<option value="${esc(lic.kind)}" selected>${esc(lic.kind)} - pick a type</option>` : "";
+  const blankOption = !lic.kind ? `<option value="" selected>Type...</option>` : "";
+  const person = licenceKindIsPerson(lic.kind);
+  return `<div class="state-licence-row" data-sl-row="${idx}">
+      <input data-sl="state" data-idx="${idx}" maxlength="2" placeholder="ST" aria-label="State" value="${esc(lic.state)}" />
+      <select data-sl="kind" data-idx="${idx}" aria-label="Licence type">${blankOption}${unknownOption}${options}</select>
+      <input data-sl="number" data-idx="${idx}" placeholder="Licence number" aria-label="Licence number" value="${esc(lic.number)}" />
+      <input data-sl="expires" data-idx="${idx}" type="date" aria-label="Expires" value="${esc(lic.expires)}" />
+      <input data-sl="holder" data-idx="${idx}" placeholder="${person ? "Holder name" : "Holder: person licences"}" aria-label="Holder" value="${esc(lic.holder)}"${person ? "" : " disabled"} />
+      <button type="button" class="danger-button" data-remove-sl="${idx}" aria-label="Remove licence"><i data-lucide="x"></i><span>Remove</span></button>
+    </div>`;
+}
+
+/** The rows as the API takes them, and what is wrong with any half-filled row. An untouched new
+ *  row is dropped; a row with a number but no state or type is an error, never silently dropped. */
+function stateLicencesPayload(drafts) {
+  const list = [];
+  const errors = [];
+  (drafts || []).forEach((d, i) => {
+    const st = String(d.state || "").trim().toUpperCase();
+    const number = String(d.number || "").trim();
+    const kind = String(d.kind || "").trim();
+    const expires = String(d.expires || "").trim();
+    const holder = String(d.holder || "").trim();
+    if (!st && !number && !kind && !expires && !holder) return;
+    const isState = st.length === 2 && st.split("").every((c) => c >= "A" && c <= "Z");
+    if (!isState) errors.push(`State licence row ${i + 1}: the state must be two letters, e.g. MA.`);
+    else if (!number) errors.push(`State licence row ${i + 1}: the licence number is missing.`);
+    else if (!kind) errors.push(`State licence row ${i + 1}: pick the licence type.`);
+    else list.push({ state: st, kind, number, ...(expires ? { expires } : {}), ...(holder ? { holder } : {}) });
+  });
+  return { list, errors };
+}
+
+/** THE SAVE NEVER WIPES LICENCES: stateLicenses goes out only as the editor's FULL list, and only
+ *  when that list was loaded from THIS client (updateClient is a partial update — no key, no write). */
+function withStateLicences(payload, drafts, loadedFor, clientId) {
+  if (loadedFor !== clientId) return payload;
+  return { ...payload, stateLicenses: stateLicencesPayload(drafts).list };
+}
+
+function renderStateLicences() {
+  const wrap = $("stateLicencesList");
+  if (!wrap) return;
+  const drafts = state.stateLicencesDraft || [];
+  wrap.innerHTML = drafts.length
+    ? drafts.map(stateLicenceRowHtml).join("")
+    : `<p class="muted">No state licences yet. Add one row per licence: state, type, number.</p>`;
+  wrap.querySelectorAll("[data-sl]").forEach((el) => {
+    el.addEventListener(el.tagName === "SELECT" ? "change" : "input", () => {
+      const row = state.stateLicencesDraft[Number(el.dataset.idx)];
+      if (!row) return;
+      row[el.dataset.sl] = el.value;
+      if (el.dataset.sl === "kind") renderStateLicences();
+    });
+  });
+  wrap.querySelectorAll("[data-remove-sl]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.stateLicencesDraft.splice(Number(btn.dataset.removeSl), 1);
+      renderStateLicences();
+    });
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
 function clientFormStatus(message, kind) {
   const el = $("clientFormStatus");
   if (!message) { el.hidden = true; el.textContent = ""; return; }
@@ -8292,7 +8388,7 @@ function renderClientsList() {
   list.innerHTML = state.clients.map((client) => `
     <button type="button" class="client-row${client.id === state.editingClientId ? " active" : ""}" data-client-id="${esc(client.id)}">
       <strong>${esc(client.companyName || client.legalBusinessName || "Unnamed")}</strong>
-      <span class="muted">${esc(client.ccbLicenseNumber ? "CCB " + client.ccbLicenseNumber : "No CCB on file")}</span>
+      <span class="muted">${esc(client.ccbLicenseNumber ? "CCB " + client.ccbLicenseNumber : "No CCB on file")}${esc((client.stateLicenses || []).length ? ` · ${client.stateLicenses.length} state licence${client.stateLicenses.length === 1 ? "" : "s"}` : "")}</span>
     </button>
   `).join("");
   list.querySelectorAll("[data-client-id]").forEach((btn) => {
@@ -8353,6 +8449,10 @@ function blankClientForm() {
   CLIENT_TEXT_FIELDS.forEach((field) => { const el = $("c_" + field); if (el) el.value = ""; });
   state.portalIdentitiesDraft = [];
   renderPortalIdentities();
+  // A new client: its licence list starts empty and IS the list saved with it.
+  state.stateLicencesDraft = [];
+  state.stateLicencesLoadedFor = "";
+  renderStateLicences();
   clientFormStatus("");
   if ($("clientCredentials")) $("clientCredentials").hidden = true;
   renderClientsList();
@@ -8397,6 +8497,10 @@ function editClient(clientId) {
     portalType: i.portalType, installerCompanyLabel: i.installerCompanyLabel, installerContactCode: i.installerContactCode, notes: i.notes,
   }));
   renderPortalIdentities();
+  // The editor holds THIS client's full stored list; only a list loaded here is ever saved back.
+  state.stateLicencesDraft = stateLicencesFromClient(client);
+  state.stateLicencesLoadedFor = clientId;
+  renderStateLicences();
   clientFormStatus("");
   loadClientCredentials(clientId);
   renderClientsList();
@@ -8439,7 +8543,7 @@ function renderPortalIdentities() {
 function collectClientPayload() {
   const payload = { portalIdentities: state.portalIdentitiesDraft || [] };
   CLIENT_TEXT_FIELDS.forEach((field) => { payload[field] = $("c_" + field)?.value ?? ""; });
-  return payload;
+  return withStateLicences(payload, state.stateLicencesDraft, state.stateLicencesLoadedFor, $("clientId").value || "");
 }
 
 async function saveClient(event) {
@@ -8447,6 +8551,11 @@ async function saveClient(event) {
   const payload = collectClientPayload();
   if (!payload.companyName && !payload.legalBusinessName) {
     clientFormStatus("Company name (or legal business name) is required.", "error");
+    return;
+  }
+  const licenceProblems = "stateLicenses" in payload ? stateLicencesPayload(state.stateLicencesDraft).errors : [];
+  if (licenceProblems.length) {
+    clientFormStatus(licenceProblems[0], "error");
     return;
   }
   try {
@@ -8722,6 +8831,11 @@ if ($("plSaveBtn")) $("plSaveBtn").addEventListener("click", async () => {
   } catch (err) { $("plStatus").textContent = err.message || "Save failed."; }
 });
 
+$("addStateLicenceBtn")?.addEventListener("click", () => {
+  state.stateLicencesDraft = state.stateLicencesDraft || [];
+  state.stateLicencesDraft.push({ state: "", kind: "", number: "", expires: "", holder: "" });
+  renderStateLicences();
+});
 $("addPortalIdentityBtn").addEventListener("click", () => {
   state.portalIdentitiesDraft = state.portalIdentitiesDraft || [];
   state.portalIdentitiesDraft.push({ portalType: "powerclerk_pge", installerCompanyLabel: "", installerContactCode: "", notes: "" });

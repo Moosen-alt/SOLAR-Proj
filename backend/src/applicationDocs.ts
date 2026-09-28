@@ -13,6 +13,13 @@ import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStamp
 // feeSchedules -> knowledgeBase -> applicationDocs import cycle (see applicationDocsAgency's header).
 import { agencyListReplacesLine, issuingAgencyDocumentList, type AgencyDocumentList, type AgencyLineStatusOf } from "./applicationDocsAgency";
 import { knownPowerClerkUtility } from "./utilityIdentity";
+// Functions only (same cycle): the licences a document lists are licenceFor's (clients.ts).
+import { licenceJobState, stateLicenceLines } from "./clients";
+
+/** The job's LICENCES are Oregon's (the named CCB / electrical columns): the one licence-state answer,
+ *  clients.licenceJobState ("Oregon" is OR; a blank state is OR, the legacy convention). Not F4's
+ *  "is this an Oregon project" (usStateCode, blank = unknown) — that asks which profiles apply. */
+const isOregonJob = (project: Pick<ProjectRecord, "state">): boolean => licenceJobState(project.state) === "OR";
 
 // ---------------------------------------------------------------------------
 // ONE PERMIT-STRUCTURE ANSWER (new-AHJ e2e, 2026-09-26: permit structure 0/5 right).
@@ -1037,8 +1044,11 @@ function buildCover(project: ProjectRecord, profile: ApplicationRequirementProfi
         client.businessAddress ? `Address: ${client.businessAddress}, ${client.businessCity}, ${client.businessState} ${client.businessZip}` : "",
         client.businessPhone ? `Phone: ${client.businessPhone}` : "",
         client.businessEmail ? `Email: ${client.businessEmail}` : "",
-        client.ccbLicenseNumber ? `CCB: ${client.ccbLicenseNumber}` : "",
-        client.electricalLicenseNumber ? `Electrical license: ${client.electricalLicenseNumber}` : "",
+        // A LICENCE IS A STATE'S (clients.licenceFor): Oregon's CCB / electrical licence on an Oregon
+        // job, exactly as before; elsewhere the licences the client holds in THAT state, by type.
+        ...(isOregonJob(project)
+          ? [client.ccbLicenseNumber ? `CCB: ${client.ccbLicenseNumber}` : "", client.electricalLicenseNumber ? `Electrical license: ${client.electricalLicenseNumber}` : ""]
+          : stateLicenceLines(client, project.state)),
         client.authorizedSignerName ? `Authorized signer: ${client.authorizedSignerName}${client.authorizedSignerTitle ? `, ${client.authorizedSignerTitle}` : ""}` : "",
       ].filter(Boolean).join("\n")
     : "Contractor: [assign client to populate]";
@@ -1148,7 +1158,9 @@ ${profile.notes.map((note) => `- ${note}`).join("\n")}
 
 function buildAhjWorksheet(project: ProjectRecord, profile: ApplicationRequirementProfile, client: ClientRecord | null): GeneratedApplicationDocument {
   const contractorLine = client
-    ? `${client.legalBusinessName || client.companyName} | CCB: ${client.ccbLicenseNumber || "[verify]"} | Elec: ${client.electricalLicenseNumber || "[verify]"} | Contact: ${client.contactName || client.authorizedSignerName || "[verify]"}`
+    ? (isOregonJob(project)
+      ? `${client.legalBusinessName || client.companyName} | CCB: ${client.ccbLicenseNumber || "[verify]"} | Elec: ${client.electricalLicenseNumber || "[verify]"} | Contact: ${client.contactName || client.authorizedSignerName || "[verify]"}`
+      : `${client.legalBusinessName || client.companyName} | ${stateLicenceLines(client, project.state).join(" | ") || `${String(project.state || "").toUpperCase()} licence: [verify — none on file]`} | Contact: ${client.contactName || client.authorizedSignerName || "[verify]"}`)
     : "[assign client]";
 
   return doc(
@@ -1454,7 +1466,8 @@ function packageHtml(
     : "";
   const companyPhone = client ? escapeHtml(client.businessPhone || client.phone) : "";
   const companyEmail = client ? escapeHtml(client.businessEmail || client.contactEmail) : "";
-  const ccb = client ? escapeHtml(client.ccbLicenseNumber) : "";
+  const ccb = client && isOregonJob(project) ? escapeHtml(client.ccbLicenseNumber) : "";
+  const stateLicences = client && !isOregonJob(project) ? stateLicenceLines(client, project.state) : [];
 
   const logoHtml = client?.logoBase64
     ? `<img src="data:${escapeHtml(client.logoMime)};base64,${client.logoBase64}" alt="${companyName} logo" style="max-height:64px;max-width:200px;object-fit:contain" />`
@@ -1468,6 +1481,7 @@ function packageHtml(
           ${companyAddress ? `<div>${companyAddress}</div>` : ""}
           ${companyPhone || companyEmail ? `<div>${[companyPhone, companyEmail].filter(Boolean).join(" &nbsp;·&nbsp; ")}</div>` : ""}
           ${ccb ? `<div>CCB #${ccb}</div>` : ""}
+          ${stateLicences.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}
         </div>
       </div>`
     : "";

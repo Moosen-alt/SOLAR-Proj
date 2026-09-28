@@ -508,11 +508,11 @@ async function recordInto(work: string, cleanups: Array<() => Promise<unknown> |
   // ── 5. The project, its bindings and its documents — the staging path's own calls ──
   const detail = getProjectDetail(db, projectId);
   // A UTILITY track, like the NEM staging path (prepareSubmission passes the portal type).
-  const overlay = clientStagingOverlay(db, detail.project.clientId, "utility");
+  const overlay = clientStagingOverlay(db, detail.project.clientId, "utility", { state: String(detail.project.state ?? ""), track: "nem" });
   const stagedProject = Object.keys(overlay).length > 0
     ? { ...detail.project, parserSnapshot: { ...detail.project.parserSnapshot, ...overlay } }
     : detail.project;
-  const fieldValues = resolveRecipeFieldValues(db, stagedProject, "utility");
+  const fieldValues = resolveRecipeFieldValues(db, stagedProject, "utility", "nem");
   const docsByType = submissionDocumentsByType(db, stagedProject, "nem");
   const boundCount = Object.values(fieldValues).filter((v) => String(v ?? "").trim()).length;
   console.log(`[demo-record] project ${projectId}: ${boundCount} non-empty bindings of ${Object.keys(fieldValues).length}; ${Object.keys(docsByType).length} document type(s)`);

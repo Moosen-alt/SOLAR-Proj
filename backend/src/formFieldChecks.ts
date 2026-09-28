@@ -14,6 +14,10 @@
 // ---------------------------------------------------------------------------
 
 import type { CaptionSide, LabelItem, WidgetCaptions, WidgetRect } from "./formTextLayer";
+import type { LicenceKind } from "../../shared/src/types";
+import { kindForSlot, LICENCE_KIND_SET, LICENCE_KINDS } from "../../shared/src/licenceKinds";
+
+const PERSON_KINDS: ReadonlySet<string> = new Set(LICENCE_KINDS.filter((k) => k.person).map((k) => k.kind));
 
 /** A form widget with where it sits and what is printed around it (inspectFormFields). */
 export interface PlacedWidget {
@@ -116,6 +120,63 @@ export function isLicenceHolderSlot(text: string | undefined): boolean {
 /** The licence sources a mapped slot may bind. ccbLicenseNumber is Oregon's CCB number. */
 export const STATE_LICENCE_SOURCE = "client.stateContractorLicense";
 export const OREGON_CCB_SOURCE = "client.ccbLicenseNumber";
+/** client.stateLicence.<kind> — THIS job's state's licence of that kind (number); .expires / .holder. */
+export const TYPED_LICENCE_PREFIX = "client.stateLicence.";
+export const typedLicenceSource = (kind: LicenceKind, field: "number" | "expires" | "holder" = "number"): string =>
+  `${TYPED_LICENCE_PREFIX}${kind}${field === "number" ? "" : `.${field}`}`;
+
+/** What a licence source asks for: a kind (or "generic" — the licence the form's permit takes) and
+ *  which part (number / expiry / holder). null for a source that is not a licence. `oregonCcb` marks
+ *  client.ccbLicenseNumber / ccbExpiration, which on a form are Oregon's CCB and nothing else. */
+export interface LicenceSourceRef { kind: LicenceKind | "generic"; field: "number" | "expires" | "holder"; oregonCcb?: boolean }
+const NAMED_LICENCE_SOURCES: Record<string, LicenceSourceRef> = {
+  [STATE_LICENCE_SOURCE]: { kind: "generic", field: "number" },
+  [OREGON_CCB_SOURCE]: { kind: "contractor", field: "number", oregonCcb: true },
+  "client.ccbExpiration": { kind: "contractor", field: "expires", oregonCcb: true },
+  "client.electricalLicenseNumber": { kind: "electrical_contractor", field: "number" },
+  "client.electricianLicenseNumber": { kind: "master_electrician", field: "number" },
+  "client.electricalSupervisorName": { kind: "master_electrician", field: "holder" },
+  "client.constructionSupervisorLicenseNumber": { kind: "construction_supervisor", field: "number" },
+  "client.constructionSupervisorLicenseExpiration": { kind: "construction_supervisor", field: "expires" },
+  "client.homeImprovementLicenseNumber": { kind: "home_improvement_contractor", field: "number" },
+  "client.homeImprovementLicenseExpiration": { kind: "home_improvement_contractor", field: "expires" },
+};
+export function licenceSourceRef(source: string | undefined): LicenceSourceRef | null {
+  const src = String(source ?? "");
+  if (NAMED_LICENCE_SOURCES[src]) return NAMED_LICENCE_SOURCES[src];
+  if (!src.startsWith(TYPED_LICENCE_PREFIX)) return null;
+  const [kind, field] = src.slice(TYPED_LICENCE_PREFIX.length).split(".");
+  if (!LICENCE_KIND_SET.has(kind)) return null;
+  if (field && field !== "expires" && field !== "holder") return null;
+  return { kind: kind as LicenceKind, field: (field || "number") as LicenceSourceRef["field"] };
+}
+
+/** A "licence holder" NAME slot ("Licensed Construction Supervisor:") — not one that also asks for
+ *  the number ("Licensed Construction Supervisor / License Number"). */
+export function isLicenceHolderNameSlot(text: string | undefined): boolean {
+  const t = String(text || "").replace(/([a-z])([A-Z])/g, "$1 $2");
+  return isLicenceHolderSlot(t) && !/licen[cs]e\s*(?:number|no\b|#)|registration\s*(?:number|no\b|#)|\bnumber\b/i.test(t);
+}
+
+/**
+ * THE SLOT'S PRINTED CAPTION NAMES ITS LICENCE (unverified maps). A licence source bound to a slot
+ * whose caption names ANOTHER kind is read as the caption's kind — "HIC Registration Number" bound
+ * to the construction-supervisor source takes the HIC number; a holder NAME slot bound to a number
+ * source takes the holder. A caption that names no kind ("License Number") leaves the source as
+ * bound. The name is read only when the widget has no caption (names are often shifted). Returns
+ * the effective ref, or null when the source is not a licence source.
+ */
+export function slotLicenceRef(w: Pick<PlacedWidget, "name" | "caption">, source: string): { ref: LicenceSourceRef; overridden: boolean } | null {
+  const ref = licenceSourceRef(source);
+  if (!ref) return null;
+  const printed = String(w.caption || "").trim() || w.name;
+  const slot = kindForSlot(printed);
+  let out = ref;
+  if (slot && slot !== "generic" && slot !== ref.kind) out = { kind: slot, field: ref.field };
+  // A PERSON's licence named on a holder NAME slot takes the person, never the number.
+  if (out.field === "number" && out.kind !== "generic" && PERSON_KINDS.has(out.kind) && isLicenceHolderNameSlot(printed)) out = { ...out, field: "holder" };
+  return { ref: out, overridden: out.kind !== ref.kind || out.field !== ref.field };
+}
 
 // ---- B5: estimated cost / valuation --------------------------------------------------------------
 
@@ -402,9 +463,24 @@ export function sanitizeAcroMap(input: {
       continue;
     }
     if (source === "computed.applicantSignerName" && (isLicenceHolderSlot(w.name) || isLicenceHolderSlot(w.caption))) {
+      // The holder of the licence the caption names, when it names one; else the operator's.
+      const kind = kindForSlot(String(w.caption || "").trim() || w.name);
+      if (kind === "construction_supervisor" || kind === "master_electrician") {
+        textFields[name] = typedLicenceSource(kind, "holder");
+        notes.push(`"${name}" is a licence holder's slot; bound to the ${kind.replace(/_/g, " ")} licence's holder, not the applicant signer.`);
+        continue;
+      }
       delete textFields[name];
       operatorItems.push({ field: name, label: `${widgetLabel(w)} (the licence holder's name)` });
       notes.push(`"${name}" is a licence holder's slot; the applicant signer is not the licence holder, so it was left for the operator.`);
+      continue;
+    }
+    // THE PRINTED CAPTION NAMES THE LICENCE (slotLicenceRef, the fill's own rule): a licence source
+    // of another kind is rebound to the caption's kind.
+    const slot = slotLicenceRef(w, source);
+    if (slot?.overridden && slot.ref.kind !== "generic") {
+      textFields[name] = typedLicenceSource(slot.ref.kind, slot.ref.field);
+      notes.push(`"${name}" prints "${widgetLabel(w)}"; its licence source was rebound to ${textFields[name]}.`);
       continue;
     }
     if (source === OREGON_CCB_SOURCE && !oregon) {

@@ -5661,6 +5661,16 @@ function buildSystemPayload() {
   for (const k of Object.keys(payload)) {
     if (payload[k] === '' || payload[k] === null || (typeof payload[k] === 'number' && Number.isNaN(payload[k]))) delete payload[k];
   }
+  // THE PLAN SET'S TITLE-BLOCK LICENCE, KEPT AS A REFERENCE (never a fill value). An OBJECT on
+  // purpose: the recipe value map skips objects, so a plan set's printed number — possibly another
+  // company's — can never be bound into a portal field or a form. The backend reads it to name the
+  // number beside a blank licence slot and to warn when it is another client's
+  // (clientMatch.planSetLicenceWarning).
+  const sc = state.suggestedClient || {};
+  const printedLicences = ['contractorCcb', 'contractorElectricalLicense'].map((k) => clean(sc[k])).filter(Boolean);
+  if (printedLicences.length || clean(sc.contractorCompany)) {
+    payload.planSetInstaller = { companyName: clean(sc.contractorCompany), licences: printedLicences };
+  }
   return payload;
 }
 

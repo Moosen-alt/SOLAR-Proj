@@ -1282,6 +1282,11 @@
           </div>
           <label>Insurance carrier<input id="c_insuranceCarrier" /></label>
 
+          <h3>State licences</h3>
+          <p class="muted">One row per licence this company holds, by state and type. The bot puts each number only in the slot that asks for that type, in that state &mdash; never another state's or another company's. Oregon's CCB / electrical / supervising-electrician numbers stay in the fields above.</p>
+          <div id="stateLicencesList" class="stack compact"></div>
+          <button type="button" id="addStateLicenceBtn" class="secondary"><i data-lucide="plus"></i><span>Add state licence</span></button>
+
           <h3>Business address</h3>
           <label>Address<input id="c_businessAddress" /></label>
           <div class="form-row">

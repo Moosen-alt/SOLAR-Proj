@@ -86,7 +86,7 @@ const replay = (steps: RecipeStep[], fieldValues: Record<string, string>, extra:
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 section("P1  a Job Value / Valuation box takes the declared valuation, never the contract price");
 const valued = project({ jobValue: "51866.60", clientId: alpha.id });
-const valuedFields = PR.resolveRecipeFieldValues(db, valued, "AHJ");
+const valuedFields = PR.resolveRecipeFieldValues(db, valued, "AHJ", null);
 
 await check("MUST-PASS: the resolver emits declaredValuation = the operator formula (40% of 51,866.60 = 20,747)", () => {
   assert.equal(valuedFields.declaredValuation, "20747");
@@ -97,7 +97,7 @@ await check("MUST-PASS: it is the SAME number the PDF application files (compute
 });
 await check("MUST-PASS: the key is ALWAYS present — a job with nothing to compute from resolves it blank, never absent", () => {
   const bare = project({ dcKw: "", acKw: "" });
-  const f = PR.resolveRecipeFieldValues(db, bare, "AHJ");
+  const f = PR.resolveRecipeFieldValues(db, bare, "AHJ", null);
   assert.ok(Object.prototype.hasOwnProperty.call(f, "declaredValuation"), "declaredValuation missing");
   assert.equal(f.declaredValuation, "");
 });
@@ -283,7 +283,7 @@ const evidenceProject = project({
   acDiscReq: "yes", lightFrame: "yes", gravityWindDesign: "yes", manufacturerInstallation: "yes",
   batteryModel: "", clientId: alpha.id,
 });
-const evidenceFields = PR.resolveRecipeFieldValues(db, evidenceProject, "utility");
+const evidenceFields = PR.resolveRecipeFieldValues(db, evidenceProject, "utility", null);
 const yn = (label: string, value = "Yes", note?: string): RecipeStep => ({ action: "select", selector: { label }, value, note: note ?? label });
 await check("MUST-PASS: meter-access / manual-operable questions are NOT bound to acDiscReq / lightFrame by value", () => {
   assert.equal(evidenceFields.acDiscReq, "yes", "fixture: the evidence flag is in the dictionary");
@@ -339,7 +339,7 @@ const { updateClient } = await import("../src/clients");
 updateClient(db, alpha.id, { standardDisconnectMake: "Eaton", standardDisconnectModel: "DG221URB" });
 const discProject = (snap: P) => project({ clientId: alpha.id, state: "OR", utility: "Pacific Power", city: "Coos Bay", zip: "97420", street: "10 Bay St", ahj: "City of Coos Bay", ...snap });
 const disc = (p: ReturnType<typeof project>) => {
-  const f = PR.resolveRecipeFieldValues(db, p, "utility");
+  const f = PR.resolveRecipeFieldValues(db, p, "utility", null);
   return [f.disconnectMake, f.disconnectModel, f.disconnectMakeModel];
 };
 const qcRules = (pid: string): string[] => db.query<{ rule_id: string }>("SELECT rule_id FROM qc_results WHERE project_id = ?", [pid]).map((r) => r.rule_id);
@@ -387,7 +387,7 @@ await check("MUST-EXCLUDE: the dates that were right stay right (contractor lice
   assert.equal(PR.dateFieldForLiteral("Estimated Commissioning Date", "08/08/2026"), "estimatedCommissioningDate");
 });
 const addition = project({ clientId: alpha.id, existingSystem: "yes", existingDcKw: "4.2", existingPtoDate: "2021-03-15" });
-const additionFields = PR.resolveRecipeFieldValues(db, addition, "utility");
+const additionFields = PR.resolveRecipeFieldValues(db, addition, "utility", null);
 await check("MUST-PASS: exact value equality wins before the label rule — the existing PTO literal binds to the existing PTO, not today", () => {
   assert.equal(additionFields.existingPtoDateUs, "03/15/2021");
   assert.equal(additionFields.existingPtoDateIso, "2021-03-15");
@@ -407,12 +407,12 @@ await check("MUST-PASS: the company-fact keys come from THIS job's client, alway
   assert.equal(additionFields.insuranceCarrier, "Acme Mutual Test");
   assert.equal(additionFields.installerStreetNumber, "808");
   assert.equal(additionFields.installerStreetName, "SE Test Dr Ste 3-337");
-  const other = PR.resolveRecipeFieldValues(db, project({ clientId: beta.id }), "utility");
+  const other = PR.resolveRecipeFieldValues(db, project({ clientId: beta.id }), "utility", null);
   for (const k of ["insuranceExpiration", "bondExpiration", "insuranceCarrier", "bondCarrier"]) {
     assert.ok(Object.prototype.hasOwnProperty.call(other, k), `${k} absent`);
     assert.equal(other[k], "", `${k} leaked across companies: ${other[k]}`);
   }
-  const noClient = PR.resolveRecipeFieldValues(db, project({}), "utility");
+  const noClient = PR.resolveRecipeFieldValues(db, project({}), "utility", null);
   assert.equal(noClient.installerStreetNumber, "");
   assert.ok(Object.prototype.hasOwnProperty.call(noClient, "bondExpiration"));
 });
@@ -453,8 +453,22 @@ await check("MUST-PASS: the save guard never persists an unbound company-identit
   assert.equal(saved.steps[4].value, "Solar", "MUST-EXCLUDE: a portal constant");
   assert.equal(saved.steps[5].value, "General Liability", "MUST-EXCLUDE: a closed-vocabulary select is the attestation rule's, not the literal guard's");
 });
+await check("MUST-PASS (one predicate with licences-by-type): a licence slot named only by abbreviation is company identity at BOTH the save guard and the replay guard", () => {
+  // COMPANY_IDENTITY_LABEL alone reads none of these; licenceKinds.kindForSlot does, and
+  // isCompanyIdentityLabel asks it — so the save guard withholds what the replay guard refuses.
+  for (const l of ["EC Lic #", "Reg #", "Lic No", "ElecLicNo"]) {
+    assert.equal(isCompanyIdentityLabel(l), true, `${l} is not company identity`);
+    assert.equal(looksLikeProjectData(l, "55501"), true, `replay would type the learn company's licence under "${l}"`);
+  }
+  const abbrev = PR.startPortalRecording(db, { scopeType: "ahj", state: "MA", ahj: "City of Abbrevton", portalUrl: "https://permits.abbrevton.example/", createdBy: "test" });
+  const saved = PR.savePortalRecipeSteps(db, abbrev.id, [
+    { action: "fill", selector: { label: "EC Lic #" }, value: "EC-55501", note: "EC Lic #" },
+  ], { status: "recording" });
+  assert.equal(saved.steps[0].value, undefined, "the save guard kept the learn company's licence literal");
+  assert.ok(!db.get<{ steps_json: string }>("SELECT steps_json FROM portal_recipes WHERE id = ?", [abbrev.id])!.steps_json.includes("EC-55501"));
+});
 await check("MUST-PASS: a human patch binds a company fact the client has on file, and withholds one it has not", () => {
-  const fields = PR.resolveRecipeFieldValues(db, addition, "AHJ");
+  const fields = PR.resolveRecipeFieldValues(db, addition, "AHJ", null);
   const r = PR.appendHumanPatchSteps(db, rec.id, [
     { action: "fill", selector: { label: "Insurance Carrier" }, value: "Acme Mutual Test", note: "human-patch: Insurance Carrier" },
     { action: "fill", selector: { label: "Bond Number" }, value: "B-99999", note: "human-patch: Bond Number" },
@@ -505,7 +519,9 @@ await check("MUST-EXCLUDE: on the SAME company's job the stamped attestations re
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 section("P7  a placeholder licence / docket is never filed; the ICC docket is Illinois's");
 const { looksLikePlaceholderIdentifier } = await import("../../shared/src/companyFacts");
-const gamma = createClient(db, { companyName: "Gamma Placeholder Test", docketNumber: "TEST-160001", ccbLicenseNumber: "XXX-0000", electricalLicenseNumber: "EL123456MA" });
+// licenseState IL: the named licence columns are the state licenseState names (licences-by-type,
+// clients.licenceFor) — so these are Illinois's numbers and the IL job below reads them.
+const gamma = createClient(db, { companyName: "Gamma Placeholder Test", docketNumber: "TEST-160001", ccbLicenseNumber: "XXX-0000", electricalLicenseNumber: "EL123456MA", licenseState: "IL" });
 const delta = createClient(db, { companyName: "Delta Docket Test", docketNumber: "D-2024-0457", electricalLicenseNumber: "ZZ48213" });
 const il = { state: "IL", city: "Springfield", zip: "62701", street: "1 Capitol Ave", ahj: "City of Springfield", utility: "Ameren Illinois" };
 await check("MUST-PASS/EXCLUDE: the placeholder predicate", () => {
@@ -514,7 +530,7 @@ await check("MUST-PASS/EXCLUDE: the placeholder predicate", () => {
 });
 await check("MUST-PASS: a placeholder docket / licence resolves BLANK (key present) and QC names the field on the client record", () => {
   const p = project({ ...il, clientId: gamma.id });
-  const f = PR.resolveRecipeFieldValues(db, p, "utility");
+  const f = PR.resolveRecipeFieldValues(db, p, "utility", null);
   assert.ok(Object.prototype.hasOwnProperty.call(f, "docketNumber"));
   assert.equal(f.docketNumber, "", `filed ${f.docketNumber}`);
   assert.ok(!Object.values(f).includes("XXX-0000"), "the placeholder licence reached the dictionary");
@@ -524,9 +540,26 @@ await check("MUST-PASS: a placeholder docket / licence resolves BLANK (key prese
   const msg = db.query<{ message: string }>("SELECT message FROM qc_results WHERE project_id = ? AND rule_id LIKE 'client.placeholder%'", [p.id]).map((r) => r.message).join(" ");
   assert.ok(!msg.includes("TEST-160001") && !msg.includes("XXX-0000"), "QC printed the value");
 });
+await check("MUST-PASS: the licence answer itself (clients.licenceFor — the gate, the form fill, the cover sheet) never offers a placeholder, and names it without the value", async () => {
+  // Pinned on its own: the overlay filter and the resolver blanking each hide the other, and
+  // neither covers a door that asks licenceFor directly (ahjForms typed/generic sources, the gate).
+  const { clientLicenceRow, contractorLicenceForState, licenceFor, stateLicenceLines } = await import("../src/clients");
+  const row = clientLicenceRow(db, gamma.id);
+  const ccb = licenceFor(row, "IL", "contractor");
+  assert.equal(ccb.number, "", "a placeholder contractor licence was offered");
+  assert.match(ccb.reason, /placeholder/);
+  assert.ok(!ccb.reason.includes("XXX-0000"), "the reason printed the value");
+  assert.equal(licenceFor(row, "IL", { track: "building" }).number, "", "the generic building slot took the placeholder");
+  assert.equal(licenceFor(row, "IL", "electrical_contractor").number, "EL123456MA", "MUST-EXCLUDE: a real licence on the same client");
+  assert.ok(!stateLicenceLines(row, "IL").some((l) => l.includes("XXX-0000")), "the cover sheet lists the placeholder");
+  const orPlaceholder = createClient(db, { companyName: "Omicron Placeholder CCB", ccbLicenseNumber: "TEST-0001" });
+  const gate = contractorLicenceForState(clientLicenceRow(db, orPlaceholder.id), "OR");
+  assert.equal(gate.number, "", "the Oregon gate passed on a placeholder CCB");
+  assert.match(gate.reason, /CCB on the client record looks like a test \/ placeholder/);
+});
 await check("MUST-PASS: the docket is filed only on an Illinois job; elsewhere it is present but blank", () => {
-  assert.equal(PR.resolveRecipeFieldValues(db, project({ ...il, clientId: delta.id }), "utility").docketNumber, "D-2024-0457");
-  const orJob = PR.resolveRecipeFieldValues(db, project({ clientId: delta.id }), "utility");
+  assert.equal(PR.resolveRecipeFieldValues(db, project({ ...il, clientId: delta.id }), "utility", null).docketNumber, "D-2024-0457");
+  const orJob = PR.resolveRecipeFieldValues(db, project({ clientId: delta.id }), "utility", null);
   assert.ok(Object.prototype.hasOwnProperty.call(orJob, "docketNumber"));
   assert.equal(orJob.docketNumber, "");
   assert.ok(!qcRules(project({ clientId: gamma.id }).id).includes("client.placeholder-identifier.docket_number"), "MUST-EXCLUDE: a non-IL job is not told about the docket");
@@ -540,17 +573,17 @@ const roof = project({ mounting: "Roof Mount" });
 const unknownMount = project({});
 const legacyGround = project({ mountType: "Ground" });
 await check("MUST-PASS: a ground-mount job is described as ground-mounted on the portal AND on the PDF", () => {
-  assert.match(PR.resolveRecipeFieldValues(db, ground, "AHJ").workDescription, /^Ground-mounted residential solar PV system, 8 kW DC/);
+  assert.match(PR.resolveRecipeFieldValues(db, ground, "AHJ", null).workDescription, /^Ground-mounted residential solar PV system, 8 kW DC/);
   assert.match(dwork(ground), /^Install ground-mounted photovoltaic solar system/);
   assert.equal(resolveSource("computed.roofMounted", buildContext(db, ground)), "no", "fixture: the same form's roof question");
-  assert.match(PR.resolveRecipeFieldValues(db, legacyGround, "AHJ").workDescription, /^Ground-mounted/, "the mountType fallback");
+  assert.match(PR.resolveRecipeFieldValues(db, legacyGround, "AHJ", null).workDescription, /^Ground-mounted/, "the mountType fallback");
 });
 await check("MUST-PASS: an unknown mount gets NO adjective — never a default 'roof-mounted'", () => {
-  assert.match(PR.resolveRecipeFieldValues(db, unknownMount, "AHJ").workDescription, /^Residential solar PV system, 8 kW DC \/ 7\.6 kW AC$/);
+  assert.match(PR.resolveRecipeFieldValues(db, unknownMount, "AHJ", null).workDescription, /^Residential solar PV system, 8 kW DC \/ 7\.6 kW AC$/);
   assert.match(dwork(unknownMount), /^Install photovoltaic solar system/);
 });
 await check("MUST-EXCLUDE: a roof-mount job still reads roof-mounted", () => {
-  assert.match(PR.resolveRecipeFieldValues(db, roof, "AHJ").workDescription, /^Roof-mounted residential solar PV system/);
+  assert.match(PR.resolveRecipeFieldValues(db, roof, "AHJ", null).workDescription, /^Roof-mounted residential solar PV system/);
   assert.match(dwork(roof), /^Install roof-mounted photovoltaic solar system/);
 });
 await check("MUST-PASS/EXCLUDE: replay keeps Type of Work = New for a ground mount; an existing roof is still an Alteration", () => {

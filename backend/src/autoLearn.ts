@@ -397,9 +397,12 @@ export function learnSignerName(db: AppDb, project: Pick<ProjectRecord, "clientI
 export function buildPortalPlanner(
   db: AppDb,
   project: ProjectRecord,
-  opts: { portalType: string; scopeType?: "ahj" | "utility"; permitType?: "structural" | "electrical" },
+  opts: { portalType: string; scopeType?: "ahj" | "utility"; permitType?: "structural" | "electrical"; track?: string | null },
 ): { planner: (req: LearnPlanRequest) => Promise<LearnPlanResponse>; projectFields: Record<string, string> } {
-  const fieldValues = resolveRecipeFieldValues(db, project, opts.portalType);
+  // The filing this planner fills — the licence keys answer "the licence THIS permit takes".
+  const track = opts.track !== undefined ? opts.track
+    : opts.scopeType === "utility" ? "nem" : learnTrackFor(undefined, opts.permitType);
+  const fieldValues = resolveRecipeFieldValues(db, project, opts.portalType, track);
   const projectFields: Record<string, string> = {};
   // SAFETY RULE 2: secrets never reach the LLM. Two layers:
   // (a) KEY filter — broad, not exact-name: parser-snapshot alias keys spread into
@@ -824,12 +827,16 @@ async function autoLearnPortalInner(
   if (scopeType === "utility" && !(project.utility || "").trim()) throw new HttpError(400, "Project has no utility to key the recipe on.");
 
   const portalType = scopeType === "utility" ? "utility" : "AHJ";
+  // The filing this learn records: NEM, or the permit its discipline / permit type names (null =
+  // not named). Every value map below is resolved for it — the licence keys depend on it.
+  const learnTrack = scopeType === "utility" ? "nem" : learnTrackFor(input.discipline, input.permitType);
   // Secrets are stripped inside buildPortalPlanner — they never reach the LLM; the adapter
   // binds account/meter deterministically from the encrypted credential store.
   const { planner, projectFields } = buildPortalPlanner(db, project, {
     portalType,
     scopeType,
     permitType: input.permitType,
+    track: learnTrack,
   });
 
   // Credential lookup (B11): the portal's URL decides FIRST (host + first path segment), then
@@ -1072,7 +1079,7 @@ async function autoLearnPortalInner(
       // but empty TODAY still binds — replay fills it for the project that has it, and the
       // required-field sweep reports the blank rather than the recipe hiding it.
       bindableFields: Array.from(new Set([
-        ...Object.keys(resolveRecipeFieldValues(db, project, portalType)),
+        ...Object.keys(resolveRecipeFieldValues(db, project, portalType, learnTrack)),
         ...Object.keys(RECIPE_FIELD_DESCRIPTIONS),
       ])),
       // Identity for the address-disambiguation grid: which city/ZIP this project is in, whose
@@ -1519,7 +1526,7 @@ async function autoLearnPortalInner(
   // model) and used to inject `exportLimiting`. A step bound to a learn-only key passes a
   // check against this map and still resolves to "" on every replay — the precise hole that
   // makes a recipe trusted and non-functional. resolveRecipeFieldValues IS the replay map.
-  const replayFields = resolveRecipeFieldValues(db, project, portalType);
+  const replayFields = resolveRecipeFieldValues(db, project, portalType, learnTrack);
   const deadBindings = deadFieldBindings(boundSteps, replayFields);
   if (deadBindings.length) {
     verification.issues.push(
@@ -1620,7 +1627,7 @@ async function autoLearnPortalInner(
       // replay recipe in memory (same steps/url) without touching the DB.
       const baseRecipe: PortalRecipe = stub ? getPortalRecipe(db, stub.id) : { ...existingRecipe!, portalUrl: portalUrl || existingRecipe!.portalUrl };
       const recipeForReplay: PortalRecipe = { ...baseRecipe, steps: boundSteps };
-      const replayFieldValues = resolveRecipeFieldValues(db, project, portalType);
+      const replayFieldValues = resolveRecipeFieldValues(db, project, portalType, learnTrack);
       // A REPLAY THAT CANNOT LOG IN IS NOT A TEST OF THE RECIPE.
       //
       // This call passed neither the credential, nor the browser profile, nor the portal's

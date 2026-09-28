@@ -109,11 +109,16 @@ await check("F2 MUST-PASS: the job's own company gets its own electrician (signa
   assert.equal(forms.resolveSource("computed.electricianSignerName", ctx), "Sam Sparksworth");
 });
 
-await check("F2 MUST-EXCLUDE: another company's job never loads that electrician (OR or UT), and prints its OWN supervisor", () => {
+await check("F2 MUST-EXCLUDE: another company's job never loads that electrician (OR or UT), and prints its OWN supervisor — in the state that supervisor is licensed", () => {
   for (const job of [betaJob, betaUtah]) {
     const ctx = forms.buildContext(db, job);
     assert.equal(ctx.signatures?.electrician, undefined, `${job.state}: another company's electrician signature was loaded`);
-    assert.equal(forms.resolveSource("computed.electricianSignerName", ctx), "Bea Voltaire");
+    const signer = forms.resolveSource("computed.electricianSignerName", ctx);
+    assert.ok(!/Sam Sparksworth/.test(signer), `${job.state}: another company's electrician was printed`);
+    // The supervisor column is a STATE licence's holder (licences-by-type, clients.licenceFor): Beta
+    // names no licenseState, so it is Oregon's supervising electrician — printed on Beta's Oregon job,
+    // and NOT on its Utah job, where Beta has no Utah master electrician on file (blank, never a guess).
+    assert.equal(signer, job.state === "OR" ? "Bea Voltaire" : "", `${job.state}: the job's own company's supervisor in that state`);
     assert.equal(ctx.signatures?.applicant?.name, "Ada Submitter", "the applicant is whoever submits — the org's, on every company's job");
   }
 });

@@ -956,6 +956,10 @@ tbody tr:hover, tbody tr.active { background: var(--tint-select); }
 .form-row { display: flex; gap: 10px; }
 .portal-identity-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 6px; align-items: center; margin-bottom: 6px; }
 .portal-identity-row .danger-button { padding: 6px 8px; }
+/* State licences: state | type | number | expires | holder | remove. Fields shrink with the pane. */
+.state-licence-row { display: grid; grid-template-columns: 56px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: 6px; align-items: center; margin-bottom: 6px; }
+.state-licence-row input, .state-licence-row select { min-width: 0; width: 100%; }
+.state-licence-row .danger-button { padding: 6px 8px; }
 
 /* --- Clients & Contractor Licensing: list column + selected-client editor -----------------
    Scoped to .clients-modal-body; the Customers and Users modals share .modal-body /
@@ -1031,6 +1035,11 @@ tbody tr:hover, tbody tr.active { background: var(--tint-select); }
   .clients-modal-body .form-row { flex-direction: column; gap: 10px; }
   .clients-modal-body .portal-identity-row { grid-template-columns: minmax(0, 1fr); }
   .clients-modal-body .portal-identity-row .danger-button { justify-self: end; }
+  .clients-modal-body .state-licence-row { grid-template-columns: 56px minmax(0, 1fr); }
+  .clients-modal-body .state-licence-row .danger-button { justify-self: end; grid-column: 2; }
+}
+@media (min-width: 721px) and (max-width: 1180px) {
+  .clients-modal-body .state-licence-row { grid-template-columns: 56px minmax(0, 1fr) minmax(0, 1fr) auto; }
 }
 
 /* Learned-evidence excerpt shown under historical rejection causes */
