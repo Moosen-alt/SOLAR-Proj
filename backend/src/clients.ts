@@ -332,6 +332,19 @@ export function licenceOverlay(client: LicenceClient, job: { state: string; trac
   };
 }
 
+/** Every contractor/person licence the client holds in `state`, labelled ("MA construction
+ *  supervisor licence: CS-…"), for a document that lists them — through licenceFor, so a cover sheet
+ *  names the same numbers the forms and the portal get. Never a business registration. */
+export function stateLicenceLines(client: LicenceClient, state: string): string[] {
+  const kinds: LicenceKind[] = ["contractor", "construction_supervisor", "home_improvement_contractor", "electrical_contractor", "solar_contractor", "master_electrician"];
+  const out: string[] = [];
+  for (const kind of kinds) {
+    const a = licenceFor(client, state, kind);
+    if (a.number) out.push(`${a.label}: ${a.number}`);
+  }
+  return out;
+}
+
 /** licenceOverlay for a project's client, read by id (every key "" when there is no client). */
 export function licenceOverlayForClient(db: AppDb, clientId: string | null | undefined, job: { state: string; track: string | null }): Record<LicenceOverlayKey, string> {
   return licenceOverlay(clientLicenceRow(db, clientId), job);

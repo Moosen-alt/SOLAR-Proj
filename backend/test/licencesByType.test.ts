@@ -510,6 +510,17 @@ await check("curated Oregon forms (Coos Bay / Marion E-01 / Marion B-01S) fill t
   assert.ok(licenceFields >= 5, `only ${licenceFields} licence fields were checked`);
 });
 
+console.log("\n   the package cover sheet names the same licences (Oregon unchanged)");
+await check("an MA job's cover sheet lists the MA licences by type — never 'CCB: <Oregon number>'; an OR job's still reads CCB", async () => {
+  const { buildApplicationDocumentPackage } = await import("../src/applicationDocs");
+  const text = (p: { id: string }) => buildApplicationDocumentPackage(repo.getProjectDetail(db, p.id).project, clients.getClient(db, harbor.id)).docs.map((d) => d.markdown).join("\n");
+  const ma = text(maJobA);
+  assert.ok(ma.includes(`MA construction supervisor licence: ${N.maCsl}`) && ma.includes(`MA electrical contractor licence: ${N.maEc}`), ma.slice(0, 600));
+  assert.ok(!ma.includes(N.orCcb) && !ma.includes(N.orBcd), "an Oregon number on an MA cover sheet");
+  const or = text(orJobA);
+  assert.ok(or.includes(`CCB: ${N.orCcb}`) && or.includes(`Electrical license: ${N.orBcd}`));
+});
+
 // =============================================================================================
 console.log("\nTHE SUBMIT GATE — per permit track, and the plan set's licence");
 const gateCheck = (p: { id: string }) => repo.getSubmitGateReport(db, p.id).checks.find((c) => c.id === "submitting-client")!;
@@ -538,6 +549,14 @@ await check("MUST-EXCLUDE: a plan set printing the project's OWN licence raises 
   const foreign = mk(keel.id, "MA", { planSetInstaller: { companyName: "Elsewhere", licences: ["HIC-ELSEWHERE-9"] } });
   assert.equal(cm.planSetLicenceWarning(db, repo.getProjectDetail(db, foreign.id).project), null, "another tenant's company must never be named");
   assert.ok(foreignOrgCo.id);
+});
+await check("MUST-EXCLUDE: the plan set's printed licence is never a fill value — not in the portal value map, not in any form slot", () => {
+  const v = fv(keelShift, "building");
+  assert.ok(!JSON.stringify(v).includes(N.maCsl), "the plan-set licence reached the recipe value map");
+  assert.equal(typeof repo.getProjectDetail(db, keelShift.id).project.parserSnapshot?.planSetInstaller, "object", "kept as an object (value maps skip objects)");
+  const parserPage = fs.readFileSync(path.join(REPO, "frontend", "parser.html"), "utf8");
+  const build = parserPage.slice(parserPage.indexOf("function buildSystemPayload()"), parserPage.indexOf("function buildSystemPayload()") + 9000);
+  assert.match(build, /payload\.planSetInstaller = \{ companyName: clean\(sc\.contractorCompany\), licences: printedLicences \}/, "the parser page persists the title-block licence as an object");
 });
 await check("an EIN-shaped plan-set number is never a licence reference", () => {
   assert.deepEqual(cm.planSetPrintedLicences({ planSetInstaller: { licences: ["42-0845774", N.maCsl] } }), [N.maCsl]);
