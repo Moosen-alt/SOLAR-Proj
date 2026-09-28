@@ -6,7 +6,7 @@ import type {
   ProjectRecord,
 } from "../../shared/src/types";
 import { nowIso } from "./time";
-import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, jurisdictionKind, jurisdictionKindsCompatible } from "./processProfiles";
+import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, registryTermMatches } from "./processProfiles";
 import { describeCited, permitProcessFor, statePermitStructure } from "./permitProcess";
 import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
 // Functions only, called at run time: this module sits inside the permitProcessLookup ->
@@ -606,14 +606,8 @@ function lookedUpDocuments(project: ProjectRecord): { documents: string[]; note:
   return { documents: docs, note: `Required documents from the per-job lookup (seeded, cited): ${sources.join(", ")}.` };
 }
 
-/** Does this AHJ-side name (a project's AHJ, or a registry match term) name the project's
- *  jurisdiction? Whole words, same kind (a county term never matches a city AHJ, nor the reverse). */
-function registryTermMatches(ahjName: string, term: string): boolean {
-  const name = ` ${ahjName.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
-  const t = term.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  if (!t || !name.includes(` ${t} `)) return false;
-  return jurisdictionKindsCompatible(jurisdictionKind(ahjName), jurisdictionKind(term));
-}
+// registryTermMatches (whole words, same kind) lives in processProfiles, beside the kind helpers it
+// uses — ahjForms' built-in registry asks the same question and cannot import this module (cycle).
 
 export function findApplicationProfile(project: ProjectRecord): ApplicationRequirementProfile {
   const haystack = `${project.ahj} ${project.city} ${project.state}`.toLowerCase();

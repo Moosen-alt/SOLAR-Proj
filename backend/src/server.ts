@@ -592,7 +592,9 @@ app.delete("/api/clients/:id/portal-credentials/:credId", (req, res) => {
 // --- AHJ PDF forms (fetch official form, fill, attach) ---
 app.get("/api/ahj-forms", (req, res) => {
   const ahj = String(req.query.ahj || "").trim();
-  const matches = ahj ? matchingForms(ahj) : ahjFormRegistry;
+  // A registry form belongs to ONE state: asking by AHJ name needs the state too (a blank state
+  // matches nothing — "Portland" alone does not say which Portland).
+  const matches = ahj ? matchingForms({ ahj, state: String(req.query.state || "") }) : ahjFormRegistry;
   res.json({
     forms: matches.map((def) => ({
       id: def.id,
@@ -632,7 +634,7 @@ app.post("/api/ahj-forms/:formId/detect-signatures", asyncHandler(async (req, re
 app.post("/api/ahj-forms/inspect", asyncHandler(async (req, res) => {
   const url = String(req.body?.url || "").trim();
   if (!url) throw new HttpError(400, "url is required.");
-  const def = { id: "inspect", formName: "inspect", matchJurisdictions: [], sourceUrl: url, version: "", status: "verified" as const, textFields: {} };
+  const def = { id: "inspect", formName: "inspect", state: "", matchJurisdictions: [], sourceUrl: url, version: "", status: "verified" as const, textFields: {} };
   const bytes = await fetchFormTemplate(def);
   const result = await inspectFormFields(bytes);
   res.json(result);

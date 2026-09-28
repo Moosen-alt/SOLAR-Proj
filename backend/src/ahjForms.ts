@@ -12,7 +12,8 @@ import { loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
 import { resolveValuation } from "./valuation";
 import { parseJson } from "./json";
-import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
+import { resolvePermitPath, evaluatePrescriptiveCriteria, usStateCode, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
+import { registryTermMatches } from "./processProfiles";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
 import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
@@ -196,7 +197,12 @@ export interface SignaturePlacement {
 export interface AhjFormDefinition {
   id: string;
   formName: string;
-  matchJurisdictions: string[]; // lowercase substrings matched against project.ahj
+  /** The two-letter state whose agency publishes this form (usStateCode). REQUIRED: a registry form
+   *  matches a project only in its own state — "Portland" names a city in OR, ME, TX, CT, MI and TN,
+   *  and Portland, Oregon's electrical application was filled with Oregon fees and an Oregon CCB for
+   *  South Portland, Maine. "" (a stored row with no state) matches nothing in the registry. */
+  state: string;
+  matchJurisdictions: string[]; // whole-word, kind-compatible terms matched against project.ahj (registryTermMatches)
   sourceUrl: string; // verified URL of the blank fillable PDF
   version: string;
   status: "verified" | "unverified_template";
@@ -230,6 +236,7 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
   {
     id: "portland-electrical-renewable-energy",
     formName: "City of Portland — Electrical Renewable Energy Permit Application",
+    state: "OR",
     matchJurisdictions: ["portland", "city of portland"],
     sourceUrl: "https://www.portland.gov/ppd/documents/electrical-renewable-energy-permit-application/download",
     version: "2024",
@@ -1072,10 +1079,19 @@ async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: Fil
   return drawn;
 }
 
-export function matchingForms(ahj: string): AhjFormDefinition[] {
-  const needle = (ahj || "").toLowerCase();
-  if (!needle) return [];
-  return ahjFormRegistry.filter((def) => def.matchJurisdictions.some((m) => needle.includes(m)));
+/**
+ * The built-in registry forms for THIS project's jurisdiction. Two gates, both required:
+ *  - STATE: usStateCode(project.state) must equal the form's own state. A blank or unrecognised
+ *    state matches nothing — an unknown state is not Oregon (or anywhere else).
+ *  - NAME: whole words of the AHJ, kind-compatible (registryTermMatches — the same test the
+ *    application-profile registry uses). The old `ahj.includes("portland")` substring put Portland,
+ *    Oregon's electrical application on South Portland, Maine.
+ */
+export function matchingForms(project: { ahj?: string | null; state?: string | null }): AhjFormDefinition[] {
+  const ahj = String(project.ahj ?? "").trim();
+  const state = usStateCode(project.state);
+  if (!ahj || !state) return [];
+  return ahjFormRegistry.filter((def) => def.state === state && def.matchJurisdictions.some((m) => registryTermMatches(ahj, m)));
 }
 
 // SSRF guard: an AHJ form URL comes from operator input (/api/ahj-forms/inspect), so a
@@ -1547,7 +1563,7 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
     } catch { /* best-effort: the row stays blank and the fill note names it */ }
   }
   const permitPath = resolvePermitPath(project).path;
-  const defs = matchingForms(project.ahj).filter((d) => d.status === "verified");
+  const defs = matchingForms(project).filter((d) => d.status === "verified");
   const ctx = buildContext(db, project);
   const outDir = path.join(FILLED_DIR, project.id);
 
@@ -1734,6 +1750,7 @@ function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate 
     def: {
       id: `tmpl-${row.id}`,
       formName: map.formName || row.original_filename || `${row.ahj_name} form`,
+      state: usStateCode(row.state),
       matchJurisdictions: [rowAhj],
       sourceUrl: map.sourceUrl || "",
       version: "stored",
