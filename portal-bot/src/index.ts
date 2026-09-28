@@ -735,7 +735,7 @@ export async function learnPortal(input: {
   uploadMode?: "split" | "combined";
   // Which deterministic policy-answer set the learner may apply ("residential_nem" for
   // utility NEM portals, "none" for AHJ/permit portals). See AutoLearnAdapter options.
-  policyProfile?: "residential_nem" | "none";
+  policyProfile?: "residential_nem" | "permit_standard" | "none";
   // Field keys a REPLAY can resolve. Passed through so the learner refuses to record a
   // binding that could never fill on a future project.
   bindableFields?: string[];

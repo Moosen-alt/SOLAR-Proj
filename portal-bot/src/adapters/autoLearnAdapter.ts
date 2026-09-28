@@ -366,7 +366,9 @@ const RECORD_TYPE_LABEL = /^\s*(residential|commercial)\s*[-–—]\s*\S/i;
 // always solar, so the specify box is always the same answer.
 const OTHER_SPECIFY_VALUE = "Solar";
 
-const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enforce?: boolean }> = [
+// `scope`: "nem" (the default) applies on utility interconnection learns (profile residential_nem);
+// "permit" applies on AHJ/permit learns (profile permit_standard). A policy never crosses scopes.
+const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enforce?: boolean; scope?: "nem" | "permit" }> = [
   { question: /do you propose to limit the export capacity/i, answer: "No" },
   // HYPHENS COUNT. Ameren Illinois asks "Is the inverter lab-certified as that term is
   // defined in the Illinois Distributed Generation Interconnection Standard?" — hyphenated,
@@ -408,6 +410,11 @@ const POLICY_RADIO_DEFAULTS: Array<{ question: RegExp; answer: "Yes" | "No"; enf
   // means a human answer or project data always wins. If a job DOES use one, expect extra
   // required fields to appear and be reported by the required-field sweep.
   { question: /meter\s*collar\s*(adapter|adaptor)?/i, answer: "No" },
+  // PERMIT PORTALS. DRONE INSPECTION CONSENT (operator ruling 2026-09-28, City of Corvallis: "The City
+  // regularly uses drones to perform required inspections. I consent to drone inspection(s) for this
+  // project." — "can be yes"; the learn picked No and the operator corrected it mid-run). enforce: a
+  // planner's No is corrected.
+  { question: /consent\s+to\s+drone|drones?\b.{0,60}\binspections?\b|drone\s+inspection/i, answer: "Yes", enforce: true, scope: "permit" },
 ];
 
 // Sensitive field labels whose literal value must NEVER be stored in a recorded step.
@@ -1966,7 +1973,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   readonly debug: LearnRunDebug | null;
 
   // See constructor options.policyProfile.
-  private policyProfile: "residential_nem" | "none";
+  private policyProfile: "residential_nem" | "permit_standard" | "none";
   /** Field keys a replay can resolve; empty means "do not validate". */
   private bindableFields: Set<string>;
   // Who and where this project is, for choosing between versions of an address on a
@@ -2070,7 +2077,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       //     decide. Right for AHJ/permit portals and non-standard projects.
       // Default "residential_nem" preserves prior behavior for direct constructor users;
       // the backend passes the scope-appropriate profile explicitly.
-      policyProfile?: "residential_nem" | "none";
+      policyProfile?: "residential_nem" | "permit_standard" | "none";
       // Equipment identity for the deterministic PV-spec pass: inverterMake,
       // inverterModel, moduleMake, moduleModel. Portals list equipment under
       // certified names ("AP Systems" → "Altenergy Power System"), so these are
@@ -6846,12 +6853,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
    * "Select..." placeholder), so a portal that already carries an answer is left alone.
    */
   private async applyPolicySelect(
-    policy: { question: RegExp; answer: "Yes" | "No" },
+    policy: { question: RegExp; answer: "Yes" | "No"; enforce?: boolean },
     alreadyFilledLabels: string[],
   ): Promise<{ step: RecipeStep; applied: AppliedFill } | null> {
     if (!this.page || typeof this.page.evaluate !== "function") return null;
     const found = await this.page.evaluate(
-      (args: { qSource: string; answer: string }) => {
+      (args: { qSource: string; answer: string; enforce: boolean }) => {
         const norm = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
         const question = new RegExp(args.qSource, "i");
         const wanted = args.answer.trim().toLowerCase();
@@ -6864,19 +6871,22 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           if (!question.test(own) && !question.test(norm(grp?.textContent || ""))) continue;
           const current = norm(sel.options[sel.selectedIndex]?.textContent || "");
           const placeholder = !current || /^(please\s+)?select\.{0,3}$/i.test(current);
-          if (!placeholder) return { answered: true as const };
+          // ENFORCE (as on the radio path): a planner's other pick is corrected to the policy answer
+          // (the Corvallis drone-consent select was left at "No"); a matching value is answered.
+          if (!placeholder && (!args.enforce || current.toLowerCase() === wanted)) return { answered: true as const };
           const match = Array.from(sel.options).find((o) => norm(o.textContent).toLowerCase() === wanted);
           if (!match || !id) return null;
           return { id, optionText: norm(match.textContent), label: own || norm(grp?.textContent || "").slice(0, 80) };
         }
         return null;
       },
-      { qSource: policy.question.source, answer: policy.answer },
+      { qSource: policy.question.source, answer: policy.answer, enforce: !!policy.enforce },
     ).catch(() => null) as { answered?: true; id?: string; optionText?: string; label?: string } | null;
 
     if (!found || found.answered || !found.id || !found.optionText) return null;
     const groupLabel = (found.label || `policy:${policy.answer}`).slice(0, 80);
-    if (alreadyFilledLabels.includes(groupLabel)) return null;
+    // An enforced policy corrects a control the planner already filled this page.
+    if (!policy.enforce && alreadyFilledLabels.includes(groupLabel)) return null;
     const selector: RecipeSelector = { css: `#${found.id}` };
     const loc = await this.locator(selector);
     if (!loc) return null;
@@ -7171,9 +7181,10 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Policy answers are DOMAIN policy (standard residential NEM), not universal truths —
     // never force them on a portal the caller didn't opt into (AHJ/permit portals,
     // non-standard projects). The planner + project data answer instead.
-    if (this.policyProfile !== "residential_nem") return out;
+    if (this.policyProfile === "none") return out;
     if (!this.page || typeof this.page.evaluate !== "function") return out;
-    for (const policy of POLICY_RADIO_DEFAULTS) {
+    const wantScope = this.policyProfile === "permit_standard" ? "permit" : "nem";
+    for (const policy of POLICY_RADIO_DEFAULTS.filter((p) => (p.scope ?? "nem") === wantScope)) {
       try {
         const target = await this.page.evaluate(
           (args: { qSource: string; answer: string; enforce: boolean }) => {

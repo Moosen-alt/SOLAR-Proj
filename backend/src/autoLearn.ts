@@ -1059,7 +1059,7 @@ async function autoLearnPortalInner(
       policyProfile:
         process.env.PORTAL_POLICY_DEFAULTS === "off" || process.env.PORTAL_POLICY_DEFAULTS === "0"
           ? "none"
-          : scopeType === "utility" ? "residential_nem" : "none",
+          : scopeType === "utility" ? "residential_nem" : "permit_standard",
       // The keys a REPLAY can resolve. The planner picks the field each fill binds to, and
       // a key that exists only in the planner's richer map (or one it invents outright)
       // fills "" forever. Handing the adapter the replay map stops a dead binding being
