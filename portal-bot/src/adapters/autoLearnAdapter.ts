@@ -5333,6 +5333,9 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           // the contractor address underneath — a mixed contact on the review screen
           // (live Coos Bay). Owning the whole step closes that window.
           let anyFilled = false;
+          // Whether this visit DID anything (recorded a step). A revisit that finds every section
+          // already settled falls straight through to the planner instead of burning a page.
+          const stepsAtStart = steps.length;
           // Whether every section on this page is the pass's to settle. A look-up section (Corvallis
           // Step 4's Licensed Professional: a CCB look-up, no Add New) or a section the pass could
           // not fill is NOT — then "Continue Application" is left for after the planner's turn,
@@ -5394,13 +5397,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             await this.closeAcaDialog();
           }
           this.openContactRole = null;
-          if (anyFilled && !allHandled) {
+          if (anyFilled && !allHandled && steps.length > stepsAtStart) {
             // The planner takes the rest of this page (the look-up); the sections the pass filled
             // are refused to it (acaFilledSectionControls), the optional ones too.
             this.debug?.event({ type: "aca_contacts_left_to_planner", page: pageCount, why: "a section on this page is not the pass's to fill (a look-up, or one it could not fill)" });
             continue;
           }
-          if (anyFilled) {
+          if (anyFilled && (allHandled || steps.length > stepsAtStart)) {
             // CLEAR THE LINGERING MODAL FIRST. ACA leaves the saved dialog's iframe in the
             // DOM and its overlay swallows the next click — that is how the Continue below
             // silently missed, handing the page back to the planner mid-modal to overwrite
