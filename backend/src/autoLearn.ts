@@ -26,7 +26,7 @@ import fs from "node:fs";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
-import { perJobAnswerKeyFor } from "../../shared/src/perJobQuestions";
+import { perJobAnswerKeyFor, perJobControlOfField } from "../../shared/src/perJobQuestions";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
 import { resolveHeadless } from "../../portal-bot/src/browser";
 import { compareReviewFields, utilityIdentifiersEnteredBySteps } from "../../portal-bot/src/reviewScreenScraper";
@@ -570,7 +570,11 @@ export function buildPortalPlanner(
         if (target && (target.fieldType === "select" || target.fieldType === "text" || target.fieldType === "other")) {
           const hasOptions = Array.isArray(target.options) && target.options.length > 0;
           // The control's own label — the text the save-time binder reads back off the recorded step.
-          const perJobKey = perJobAnswerKeyFor(String(target.label ?? ""), hasOptions ? { options: target.options } : { answer: f.value });
+          // Decided from the CONTROL (its kind and the portal's options), never the planner's pick; a
+          // text box's own answer is the only evidence it has (and it never carries the ownership model).
+          const perJobKey = perJobAnswerKeyFor(String(target.label ?? ""), hasOptions
+            ? { control: perJobControlOfField(target), options: target.options }
+            : { control: perJobControlOfField(target), answer: f.value });
           if (perJobKey) return { selectorIndex: f.index, value: String(fieldValues[perJobKey] ?? "").trim(), field: perJobKey };
         }
         return { selectorIndex: f.index, value: f.value, field: f.field };

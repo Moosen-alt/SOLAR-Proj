@@ -28,7 +28,7 @@ import { COMPANY_IDENTIFIER_KEY, companyFactStamp, isCompanyAttestationStep, isC
 import { usStateCode } from "./permitPath";
 import { labelWords } from "../../shared/src/portalSafety";
 import { mountAdjective, mountKindForProject } from "./codeReviewRules";
-import { DISCONNECT_DISTANCE_QUESTION, perJobAnswerKeyFor, perJobQuestionText } from "../../shared/src/perJobQuestions";
+import { DISCONNECT_DISTANCE_QUESTION, perJobAnswerKeyFor, perJobQuestionText, perJobStepEvidence } from "../../shared/src/perJobQuestions";
 
 type Row = Record<string, unknown>;
 
@@ -2517,7 +2517,7 @@ export function convertLiteralsToBoundFields(
     // job) and never whichever parser flag happened to hold "yes". ONE predicate with the question
     // bank, the replay binder, the planner and the stage gate (shared/src/perJobQuestions); it acts
     // only when the recorded answer speaks that key's vocabulary.
-    const perJobKey = perJobAnswerKeyFor(perJobQuestionText(step), { answer: String(step.value ?? "") });
+    const perJobKey = perJobAnswerKeyFor(perJobQuestionText(step), perJobStepEvidence(step));
     if (perJobKey) {
       bound.push({ value: step.value as string, field: perJobKey, note: step.note });
       const next: RecipeStep = { ...step, field: perJobKey };

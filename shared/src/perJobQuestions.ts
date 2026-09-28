@@ -117,21 +117,83 @@ export function perJobQuestionText(step: { selector?: { label?: string } | null;
 }
 
 /**
+ * WHAT KIND OF CONTROL ASKS THE QUESTION — a dropdown ("select"), a radio / choice group or a custom
+ * picker that offers options ("choice"), or a free-text box ("text"). Every door says which; null
+ * (a checkbox, a button, anything else) never binds.
+ */
+export type PerJobControl = "select" | "choice" | "text";
+
+/** A recorded step's control: a `select` step is a dropdown, a `fill` step a text box. */
+export function perJobControlOfStep(step: { action?: string | null }): PerJobControl | null {
+  if (step.action === "select") return "select";
+  if (step.action === "fill") return "text";
+  return null;
+}
+
+/** A learn page's field (autoLearnAdapter's fieldType): a custom "other" control that offers
+ *  options is a choice; one that offers none is typed into, like a text box. */
+export function perJobControlOfField(field: { fieldType?: string | null; options?: unknown[] | null }): PerJobControl | null {
+  const t = String(field.fieldType ?? "");
+  if (t === "select") return "select";
+  if (t === "radio") return "choice";
+  if (t === "text") return "text";
+  if (t === "other") return Array.isArray(field.options) && field.options.length ? "choice" : "text";
+  return null;
+}
+
+/** The evidence a RECORDED step carries (its control, its frozen answer, and the option list a
+ *  recorder stored beside it, when it did) — the save-time and replay binders read the same. */
+export function perJobStepEvidence(step: { action?: string | null; value?: string | null }): PerJobEvidence {
+  const raw = (step as { options?: unknown }).options;
+  return {
+    control: perJobControlOfStep(step),
+    answer: String(step.value ?? ""),
+    options: Array.isArray(raw) ? raw.map((o) => String(o ?? "")) : null,
+  };
+}
+
+export interface PerJobEvidence {
+  control: PerJobControl | null;
+  answer?: string | null;
+  options?: Array<string | null | undefined> | null;
+}
+
+/** THE OWNERSHIP MODEL IS ABOUT THE SYSTEM: its wording must speak of owning / financing / leasing
+ *  it ("Will the System be Customer-Owned or Third-Party Owned?", "Who owns the system?", "Ownership
+ *  type", "Is the system leased or owned?") — "Applicant is a third party?" asks about a PERSON. */
+const OWNERSHIP_SUBJECT = /\bown(?:ed|er|ers|ership|s)?\b|financ|\bleas(?:e|ed|ing)\b|\bppa\b|power\s?purchase/i;
+/** ...and never an identity / contact box for the owner, the financier or the applicant ("Third
+ *  Party Owner Company Name", "Name of financing company", "Leasing company name", "Applicant ..."). */
+const NOT_THE_OWNERSHIP_MODEL = /\bnames?\b|\baddress\b|\bphone\b|\be-?mail\b|\bcontact\b|\bapplicant\b|\bsubmitter\b|\brequest[eo]r\b|\bagent\b|\brepresentative\b/i;
+
+/**
  * THE ONE PREDICATE: the person-answered per-job key this control asks for, or null.
  *
  * `text` is the control's own wording. The rule acts only when the WINNING per-job rule binds to a
- * person-answered key AND the evidence speaks that key's vocabulary: a recorded / planned answer
- * that is not blank must be one of its words, and a dropdown's options (placeholders aside) must
- * offer at least one. No evidence at all (a blank recorded answer) is accepted — a blank frozen
- * into a per-job control still belongs to the job.
+ * person-answered key AND the evidence speaks that key's vocabulary:
+ *   - the CONTROL must be named (a checkbox / button / unknown control never binds);
+ *   - the ownership model binds only a dropdown or choice group — never a free-text box (a name box
+ *     would be typed "PPA") — and only when the question is about the SYSTEM's ownership;
+ *   - a recorded / planned answer that is not blank must be one of the key's words;
+ *   - a BLANK answer is accepted only on a dropdown / choice group (a blank frozen into a per-job
+ *     select still belongs to the job) — a blank text box is evidence of nothing;
+ *   - a control's options (placeholders aside) must offer at least one of the key's words.
  */
-export function perJobAnswerKeyFor(text: string, evidence: { answer?: string | null; options?: Array<string | null | undefined> | null } = {}): PerJobAnswerKey | null {
+export function perJobAnswerKeyFor(text: string, evidence: PerJobEvidence): PerJobAnswerKey | null {
   const rule = perJobRuleFor(text);
   if (!rule || !isPerJobAnswerKey(rule.binding)) return null;
   const key = rule.binding;
+  const control = evidence?.control ?? null;
+  if (!control) return null;
+  if (key === "ownershipModel") {
+    if (control === "text") return null;
+    const t = String(text ?? "");
+    if (!OWNERSHIP_SUBJECT.test(t) || NOT_THE_OWNERSHIP_MODEL.test(t)) return null;
+  }
   const vocab = ANSWER_VOCABULARY[key];
   const answer = vocabNorm(String(evidence.answer ?? ""));
   if (answer && !vocab.test(answer)) return null;
+  if (!answer && control === "text") return null;
   const options = (evidence.options ?? []).map((o) => String(o ?? "").trim()).filter((o) => o && !PLACEHOLDER_OPTION.test(o));
   if (options.length && !options.some((o) => vocab.test(vocabNorm(o)))) return null;
   return key;

@@ -66,7 +66,7 @@ import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
 import { companyFactStamp, isCompanyAttestationStep } from "../../shared/src/companyFacts";
 import { mountKindForProject } from "./codeReviewRules";
 import { licenceKeyForLabel, licenceKindWords } from "../../shared/src/licenceKinds";
-import { isPerJobAnswerKey, perJobAnswerKeyFor, perJobQuestionText } from "../../shared/src/perJobQuestions";
+import { isPerJobAnswerKey, perJobAnswerKeyFor, perJobQuestionText, perJobStepEvidence } from "../../shared/src/perJobQuestions";
 export { sameFeeTier };
 
 export interface ReplayBindingChange {
@@ -349,7 +349,7 @@ export function bindRecipeForReplay(input: {
     // blank — and the stage gate (repository.prepareSubmission) asks the question before that.
     if ((step.action === "fill" || step.action === "select") && !step.field && !step.sensitive
         && !/^\s*policy default\s*:/i.test(note)) {
-      const perJobKey = perJobAnswerKeyFor(perJobQuestionText(step), { answer: String(step.value ?? "") });
+      const perJobKey = perJobAnswerKeyFor(perJobQuestionText(step), perJobStepEvidence(step));
       if (perJobKey) {
         const was = String(step.value ?? "").trim();
         step = { ...step, field: perJobKey };

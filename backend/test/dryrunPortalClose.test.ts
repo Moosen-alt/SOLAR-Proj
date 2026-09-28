@@ -174,6 +174,100 @@ await check("(B2 learn) the planner's ownership pick is replaced by the job's an
   assert.deepEqual({ value: answered[0].value, field: answered[0].field }, { value: "PPA", field: "ownershipModel" }, "the job's own answer is filed, in the portal's wording");
 });
 
+await check("(B2 tighten) the ownership model binds only a dropdown/choice about the SYSTEM's ownership: never a text box, never a blank text box, never 'is the applicant a third party' — at save, replay and the planner", async () => {
+  const { perJobAnswerKeyFor } = await import("../../shared/src/perJobQuestions");
+  // MUST-EXCLUDE: free-text identity boxes the ownership rule's words hit ("third party", "financ",
+  // "leas"). Blank (the learn left it empty) and filled — a text box never carries ownershipModel.
+  const NAME_BOXES = ["Third Party Owner Company Name", "Name of financing company", "Leasing company name"];
+  const nameStep = (label: string, value: string): RecipeStep => ({ action: "fill", selector: { label }, value, note: label } as RecipeStep);
+  // MUST-EXCLUDE: a question about a PERSON, whose options happen to speak the ownership vocabulary.
+  const APPLICANT_Q = "Applicant is a third party?";
+  const applicantStep = (): RecipeStep => ({ action: "select", selector: { label: APPLICANT_Q }, value: "Third Party", note: APPLICANT_Q } as RecipeStep);
+  // MUST-EXCLUDE: a free-text box whose words ARE about the system's ownership (no name/contact word
+  // to excuse it) — only the control rule stops "PPA" being typed there; and a BLANK text box on the
+  // disconnect question — a blank typed box is evidence of nothing (only a select's blank binds).
+  const OWNER_TEXT = "Third-party owner (if the system is leased)";
+  const DISCONNECT_Q = "Is your AC disconnect within 10 feet of the utility meter?";
+  const excluded: RecipeStep[] = [
+    ...NAME_BOXES.flatMap((l) => [nameStep(l, ""), nameStep(l, "Example Solar Finance LLC")]),
+    applicantStep(),
+    nameStep(OWNER_TEXT, ""),
+    nameStep(OWNER_TEXT, "Third Party"),
+    nameStep(DISCONNECT_Q, ""),
+    // Whether a PARTY is a third party — no owning / financing / leasing word, no identity word either.
+    { action: "select", selector: { label: "Is the interconnection customer a third party?" }, value: "Third Party", note: "Is the interconnection customer a third party?" } as RecipeStep,
+    // A name asked through a DROPDOWN (a financier picker) left blank: a select, but not the model.
+    { action: "select", selector: { label: "Leasing company name" }, value: "", note: "Leasing company name" } as RecipeStep,
+  ];
+  // MUST-PASS: PacifiCorp's select (recorded answer, and recorded BLANK), rewordings of the same
+  // system-ownership question, and — the base's own behaviour — a yes/no disconnect answer typed
+  // into a text box still binds disconnectWithin10ft.
+  const ownSelect = (label: string, value: string): RecipeStep => ({ action: "select", selector: { label }, value, note: label } as RecipeStep);
+  const passed: Array<[RecipeStep, string]> = [
+    [ownershipStep(), "ownershipModel"],
+    [ownSelect("Who owns the system?", "Third Party"), "ownershipModel"],
+    [ownSelect("Ownership type", "Lease"), "ownershipModel"],
+    [ownSelect("Is the system leased or owned?", "Leased"), "ownershipModel"],
+    [nameStep(DISCONNECT_Q, "Yes"), "disconnectWithin10ft"],
+  ];
+  const saved = recipes.convertLiteralsToBoundFields([...excluded, ...passed.map(([s]) => s)], { homeownerName: "Pat Example" });
+  const replayed = bindRecipeForReplay({ steps: [...excluded, ...passed.map(([s]) => s)], project: { state: "OR", ahj: "Coos Bay", parserSnapshot: {} }, fieldValues: {}, track: "nem", borrowed: null, agency: null });
+  for (const [door, steps] of [["save", saved.steps], ["replay", replayed.steps]] as const) {
+    excluded.forEach((s, i) => {
+      assert.ok(!["ownershipModel", "systemConfiguration", "disconnectWithin10ft"].includes(String(steps[i].field ?? "")),
+        `MUST-EXCLUDE (${door}): "${s.note}" = "${s.value}" (${s.action}) was bound to ${steps[i].field}`);
+      assert.equal(steps[i].value ?? "", s.value ?? "", `MUST-EXCLUDE (${door}): "${s.note}" lost its recorded answer`);
+    });
+    passed.forEach(([s, key], j) => {
+      const got = steps[excluded.length + j];
+      assert.equal(got.field, key, `MUST-PASS (${door}): "${s.note}" = "${s.value}" was not bound to ${key}: ${JSON.stringify(got)}`);
+      assert.equal(got.value, undefined, `MUST-PASS (${door}): "${s.note}" still carries the learn job's answer`);
+    });
+  }
+  // The stage gate reads the replay's binding: none of the excluded controls opens a question.
+  assert.deepEqual(openPerJobQuestions(bindRecipeForReplay({ steps: excluded, project: { state: "OR", ahj: "Coos Bay", parserSnapshot: {} }, fieldValues: {}, track: "nem", borrowed: null, agency: null }).steps, {}), [],
+    "an identity text box or the applicant question would hold the stage for an ownership answer");
+  // MUST-PASS (replay): a BLANK frozen into PacifiCorp's ownership SELECT still belongs to the job
+  // (the save binder only rebinds recorded literals; R10 reads the blank too).
+  const blankSelect = bindRecipeForReplay({ steps: [ownSelect(OWNERSHIP_Q, "")], project: { state: "OR", ahj: "Coos Bay", parserSnapshot: {} }, fieldValues: {}, track: "nem", borrowed: null, agency: null }).steps[0];
+  assert.equal(blankSelect.field, "ownershipModel", `MUST-PASS (replay): a blank ownership select was not bound: ${JSON.stringify(blankSelect)}`);
+
+  // THE PLANNER (learn + replay gap-fill): a name box keeps the planner's text — never the job's
+  // "PPA" typed into it — and the applicant question keeps its pick; PacifiCorp's select still binds.
+  const projectId = fx.newProject();
+  db.run("UPDATE projects SET ownership_model = 'ppa' WHERE id = ?", [projectId]);
+  const req = {
+    url: "https://pacificorpnetmetering.powerclerk.com/MvcProjects/EditProject", pageTitle: "Generating Facility",
+    bodyText: "", alreadyFilledLabels: [], isDashboard: false,
+    fields: [
+      ...NAME_BOXES.map((label) => ({ label, fieldType: "text" })),
+      { label: APPLICANT_Q, fieldType: "select", options: ["Select...", "Third Party", "Customer"] },
+      { label: OWNER_TEXT, fieldType: "text" },
+      { label: OWNERSHIP_Q, fieldType: "select", options: ["Select...", "Customer-Owned", "Third-Party Owned"] },
+    ],
+  };
+  nextPlan = { fills: [
+    { index: 0, value: "", field: null },
+    { index: 1, value: "Example Solar Finance LLC", field: null },
+    { index: 2, value: "", field: null },
+    { index: 3, value: "Customer", field: null },
+    { index: 4, value: "", field: null },
+    { index: 5, value: "Customer-Owned", field: null },
+  ] };
+  const project = repo.getProjectDetail(db, projectId).project;
+  const { planner } = autoLearn.buildPortalPlanner(db, project, { portalType: "utility", scopeType: "utility", track: "nem" });
+  const fills = (await planner(req as never)).fills;
+  for (let i = 0; i < 5; i++) {
+    assert.notEqual(fills[i].field, "ownershipModel", `MUST-EXCLUDE (planner): "${req.fields[i].label}" was bound to ownershipModel`);
+    assert.equal(fills[i].value, nextPlan.fills[i].value, `MUST-EXCLUDE (planner): "${req.fields[i].label}" was given "${fills[i].value}", not the planner's own answer`);
+  }
+  assert.deepEqual({ value: fills[5].value, field: fills[5].field }, { value: "PPA", field: "ownershipModel" }, "MUST-PASS (planner): PacifiCorp's ownership select files the job's answer");
+
+  // The predicate itself names its control: none named, nothing binds.
+  assert.equal(perJobAnswerKeyFor(OWNERSHIP_Q, { control: null, answer: "Customer-Owned" }), null);
+  assert.equal(perJobAnswerKeyFor(OWNERSHIP_Q, { control: "select", options: ["Customer-Owned", "Third-Party Owned"] }), "ownershipModel");
+});
+
 await check("(B2 gate) a stage whose recipe asks an unanswered ownership question stops before any browser, naming it; answered, it replays the job's answer", async () => {
   const projectId = fx.newProject();
   fx.completeRecipe([...fx.fills(4), ownershipStep(), fx.REVIEW, fx.FINAL]);
