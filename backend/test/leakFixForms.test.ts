@@ -174,5 +174,50 @@ await check("F4 mbox learner MUST-PASS: the state named in a state position, and
   assert.equal(inferMboxPortal("Accela Citizen Access record", "FL"), "Accela");
 });
 
+// ---------------------------------------------------------------------------------------------
+// F7 — the packet never renders the pass-green all-clear over an application set nobody knows.
+// The REAL documentVerdictHtml, lifted from dashboard.js with the esc/plural it closes over.
+// ---------------------------------------------------------------------------------------------
+const fs = await import("node:fs");
+const path = await import("node:path");
+const { REPO } = await import("./_isolate");
+const verdict = ((): (pkg: unknown) => string => {
+  const src = fs.readFileSync(path.join(REPO, "frontend", "dashboard.js"), "utf8");
+  const cut = (name: string) => {
+    const at = src.indexOf(`function ${name}(`);
+    assert.ok(at > -1, `${name} is gone from dashboard.js`);
+    let depth = 0;
+    const i = src.indexOf("{", at);
+    for (let j = i; j < src.length; j++) {
+      if (src[j] === "{") depth++;
+      else if (src[j] === "}" && --depth === 0) return src.slice(at, j + 1);
+    }
+    throw new Error(`unbalanced braces reading ${name}`);
+  };
+  return new Function(`${[cut("esc"), cut("plural"), cut("documentVerdictHtml")].join("\n\n")}\nreturn documentVerdictHtml;`)() as (pkg: unknown) => string;
+})();
+const ALL_CLEAR = "Every required document is on file";
+const UNKNOWN = "Which permit application(s) City of Nowhere Test requires is not known — nothing here has checked.";
+
+await check("F7 MUST-EXCLUDE: nothing known about the AHJ's applications -> no all-clear, an 'is not known' row, no pass-green doc row", () => {
+  const html = verdict({ missingFields: [], missingDocumentsStatus: "resolved", missingDocuments: [], applicationSetUnknown: UNKNOWN });
+  assert.ok(!html.includes(ALL_CLEAR), "the all-clear printed over an unanswered question");
+  assert.match(html, /is not known/);
+  assert.match(html, /kx-docstate is-unknown/);
+  assert.ok(html.includes("City of Nowhere Test"), "the row names the AHJ (the inventory's own sentence)");
+});
+
+await check("F7: with documents missing too, the unknown row is shown beside them", () => {
+  const html = verdict({ missingFields: [], missingDocumentsStatus: "resolved", missingDocuments: [{ docType: "sld", label: "SLD", why: "x" }], applicationSetUnknown: UNKNOWN });
+  assert.match(html, /NOT in the packet/);
+  assert.match(html, /is not known/);
+});
+
+await check("F7 MUST-PASS: a known, complete AHJ still gets the all-clear", () => {
+  const html = verdict({ missingFields: [], missingDocumentsStatus: "resolved", missingDocuments: [] });
+  assert.ok(html.includes(ALL_CLEAR));
+  assert.doesNotMatch(html, /is not known/);
+});
+
 console.log(`\nleakFixForms: ${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);

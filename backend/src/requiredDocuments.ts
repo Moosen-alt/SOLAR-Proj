@@ -205,6 +205,10 @@ export interface DocumentInventory {
   presence: DocPresence[];
   missingBlocking: DocPresence[];
   missingAdvisory: DocPresence[];
+  /** Set when the application set is EMPTY because nothing is known about this AHJ (structure
+   *  unknown, no flags, no cited documents, no KB list, no issuing agency): the sentence the packet
+   *  and the gate show instead of an all-clear. Advisory — it never blocks (NO SIGNAL, NO DEMAND). */
+  applicationSetUnknown?: string;
 }
 
 function snap(project: ProjectRecord, key: string): string {
@@ -785,6 +789,22 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     }
   } catch { /* KB optional */ }
   const required = [...baselineItems, ...kbItems];
+  // NOTHING KNOWN IS NOT NOTHING OWED (leak sweep unknown-as-fact-unknown-ahj-green-all-clear). NO
+  // SIGNAL, NO DEMAND keeps an unnamed application from BLOCKING — but an empty application set
+  // because nobody knows this AHJ rendered the pass-green "Every required document is on file"
+  // (Waltham MA: building + wires, in person). Said here, once, for the packet and the gate.
+  let applicationSetUnknown: string | undefined;
+  try {
+    const flags = application.processFlags ?? {};
+    const anyFlag = Boolean(flags.requiresBuildingPermitApplication || flags.requiresElectricalPermitApplication || flags.requiresSolarChecklist);
+    const citedDocs = (permitProcessFor(project)?.permits ?? []).some((p) =>
+      Array.isArray(p.documents?.value) && p.documents!.value.length > 0 && /^https?:\/\//i.test(String(p.documents?.sourceUrl || "")));
+    if (!requiredApplicationDocs(project, application).length && (application.permitStructure ?? "unknown") === "unknown"
+      && !anyFlag && !citedDocs && !kbItems.length && !application.issuingAgencies) {
+      const where = (project.ahj || "").trim() || "this AHJ";
+      applicationSetUnknown = `Which permit application(s) ${where} requires is not known — no cited agency page, person-verified record, state rule or seeded process profile names them, so nothing here demands one and nothing here has checked. Find ${where}'s own application form(s) and attach them before submitting.`;
+    }
+  } catch { /* the lookups are optional; an error here leaves the verdict as it was */ }
   // A doc type whose upload was the SAME FILE as another's (submissionDocuments.duplicateUploads) is
   // attached once, under the first type. Its row is FLAGGED rather than silently satisfied or
   // silently blocking: one datasheet can legitimately cover both (an AC module's sheet includes its
@@ -824,6 +844,7 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
     presence,
     missingBlocking: presence.filter((p) => !p.present && p.blocking),
     missingAdvisory: presence.filter((p) => !p.present && !p.blocking),
+    ...(applicationSetUnknown ? { applicationSetUnknown } : {}),
   };
 }
 

@@ -300,5 +300,30 @@ await check("F5 MUST-PASS: Oregon (state rule: separate) keeps 'the building and
   assert.match(u.meaning, /building and electrical side is cleared|still in review|clears the permit side/, u.meaning);
 });
 
+// ---------------------------------------------------------------------------------------------
+// F7 — an application set that is empty because NOTHING is known about the AHJ is said, never an
+// all-clear: the inventory names it, the packet carries it, the gate warns (never blocks).
+// ---------------------------------------------------------------------------------------------
+const neverSeen = project(beta.id, { state: "GA", city: "Nowhereton", zip: "30060", ahj: "City of Nowhereton", utility: "Georgia Power" });
+await check("F7 MUST-EXCLUDE: a never-seen AHJ's packet says which applications it needs is NOT KNOWN; the gate warns", () => {
+  const inv = documentInventory(db, neverSeen);
+  assert.match(String(inv.applicationSetUnknown), /City of Nowhereton requires is not known/);
+  const pkg = R.getApplicationDocumentPackage(db, neverSeen.id);
+  assert.equal(pkg.missingDocumentsStatus, "resolved");
+  assert.match(String(pkg.applicationSetUnknown), /is not known/);
+  const gate = R.getSubmitGateReport(db, neverSeen.id).checks.find((c) => c.id === "document-inventory")!;
+  assert.notEqual(gate.status, "pass", "an unanswered application set read as a pass");
+  assert.ok((gate.evidence ?? []).some((e: string) => /^NOT KNOWN: .*is not known/.test(e)), JSON.stringify(gate.evidence));
+  // NO SIGNAL, NO DEMAND: the unknown itself owes nothing (this fixture's plan-set files are simply absent).
+  assert.ok(!inv.missingBlocking.some((d) => /application|checklist/.test(d.docType)), JSON.stringify(inv.missingBlocking.map((d) => d.docType)));
+});
+
+await check("F7 MUST-PASS: an AHJ whose structure IS known (Oregon's state rule) carries no 'not known' line", () => {
+  assert.equal(documentInventory(db, alphaJob).applicationSetUnknown, undefined);
+  assert.equal(R.getApplicationDocumentPackage(db, alphaJob.id).applicationSetUnknown, undefined);
+});
+
 console.log(`\nleakFixFormsDb: ${passed} passed, ${failures} failed`);
-if (failures) process.exit(1);
+// Exit explicitly: the gate report on a never-seen state queues background code research, whose
+// timer would otherwise keep this process alive after the last check.
+process.exit(failures ? 1 : 0);

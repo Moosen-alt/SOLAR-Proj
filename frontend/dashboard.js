@@ -6169,6 +6169,18 @@ function documentVerdictHtml(pkg, formMissingFields = [], agencyComputedFields =
   const missingDocs = inventoryResolved ? (pkg.missingDocuments || []) : [];
   const filledAtStaging = inventoryResolved ? (pkg.filledAtStagingDocuments || []) : [];
   const acquiredAtStaging = inventoryResolved ? (pkg.acquiredAtStagingDocuments || []) : [];
+  // WHICH APPLICATION(S) THIS AHJ REQUIRES IS NOT KNOWN (pkg.applicationSetUnknown, the inventory's
+  // own sentence): an advisory row in the "could not determine" style — never pass-green.
+  const unknownApps = inventoryResolved && pkg.applicationSetUnknown ? String(pkg.applicationSetUnknown) : "";
+  const unknownAppsRow = unknownApps
+    ? `<div class="kx-docstate is-unknown">
+        <span class="kx-docstate-icon" aria-hidden="true">?</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">Which permit application(s) this AHJ requires is not known</span>
+          <span class="kx-docstate-text">${esc(unknownApps)}</span>
+        </div>
+      </div>`
+    : "";
 
   // What the operator can do about a blank, said truthfully: nothing waits on it (no gate reads these
   // fields), and QC / Human Review cannot fill a form field — the project record or the form can.
@@ -6243,7 +6255,11 @@ function documentVerdictHtml(pkg, formMissingFields = [], agencyComputedFields =
           <span class="kx-docstate-text">These are files, not fields. The submittal is incomplete until each one is attached.</span>
           <ul class="kx-docstate-list">${missingDocs.map((d) => `<li>${esc(d.label)}<span class="kx-docstate-why"> — ${esc(d.why)}</span></li>`).join("")}</ul>
         </div>
-      </div>`;
+      </div>${unknownAppsRow}`;
+  } else if (unknownAppsRow) {
+    // NOTHING KNOWN IS NOT NOTHING OWED: an application set that is empty because nobody knows this
+    // AHJ is never rendered as the all-clear (leak sweep, 2026-09-28).
+    docRow = unknownAppsRow;
   } else {
     docRow = `<div class="kx-docstate is-clear">
         <span class="kx-docstate-icon" aria-hidden="true">✓</span>

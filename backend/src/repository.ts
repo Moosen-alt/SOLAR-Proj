@@ -3393,7 +3393,7 @@ export function documentPresenceLine(label: string, via: string): string {
 // away left the document check a WARNING whose advisory document was named nowhere (e6b3afde —
 // the count line and 4 present lines filled the cap first). Those lines are never capped; the
 // rest share the cap. Order is kept, so the count line stays first.
-const GATE_EVIDENCE_NAMES_A_DOCUMENT = /^(Filled at staging:|Stage downloads and fills it:|MISSING \(required\):|Missing \(advisory\):)/;
+const GATE_EVIDENCE_NAMES_A_DOCUMENT = /^(Filled at staging:|Stage downloads and fills it:|MISSING \(required\):|Missing \(advisory\):|NOT KNOWN:)/;
 
 /** How Stage gets a form it acquires itself, in words (the gate's evidence line). */
 function acquisitionSentence(a: StageAcquiredForm | undefined): string {
@@ -3765,18 +3765,24 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       id: "document-inventory",
       title: "Required documents attached",
       lane: gateDocs.owed.some((d) => d.lane === "nem") && !gateDocs.owed.some((d) => d.lane === "permit") ? "nem" : "permit",
-      status: gateDocs.owed.length ? "blocker" : docInventory.missingAdvisory.length || gateDocs.acquiredAtStaging.length ? "warning" : "pass",
+      // An application set nobody knows is a WARNING (seen, never blocking) — never "pass".
+      status: gateDocs.owed.length ? "blocker" : docInventory.missingAdvisory.length || gateDocs.acquiredAtStaging.length || docInventory.applicationSetUnknown ? "warning" : "pass",
       ownerRole: "Permit Ops",
       requirement: "Every required submittal document must be attached as a file (or identified in the uploaded plan set) before staging — the AHJ rejects incomplete packages.",
       evidence: [
         `${docInventory.presence.filter((d) => d.present).length}/${docInventory.required.length} required documents present${gateDocs.filledAtStaging.length ? `, ${gateDocs.filledAtStaging.length} more filled from a stored template at staging` : ""}${gateDocs.acquiredAtStaging.length ? `, ${gateDocs.acquiredAtStaging.length} more downloaded and filled by Stage` : ""}.`,
+        // Never dropped by the evidence cap ("NOT KNOWN:" names a document question, like MISSING):
+        // the count above is of a set that may not include the AHJ's applications at all.
+        ...(docInventory.applicationSetUnknown ? [`NOT KNOWN: ${docInventory.applicationSetUnknown}`] : []),
         ...docInventory.presence.filter((d) => d.present).slice(0, 4).map((d) => documentPresenceLine(d.label, d.via)),
         ...gateDocs.filledAtStaging.map((d) => `Filled at staging: ${d.label} — the form's template is on file; staging fills it and offers it to any upload slot that asks for it (check the portal's attachment list before submitting)`),
         ...gateDocs.acquiredAtStaging.map((d) => `Stage downloads and fills it: ${d.label} — ${acquisitionSentence(gateDocs.acquiredVia.get(d))}`),
         ...gateDocs.owed.map((d) => `MISSING (required): ${d.label} — ${d.why}`),
         ...docInventory.missingAdvisory.map((d) => `Missing (advisory): ${d.label}`),
       ],
-      nextAction: gateDocs.owed.length
+      nextAction: !gateDocs.owed.length && !docInventory.missingAdvisory.length && docInventory.applicationSetUnknown
+        ? docInventory.applicationSetUnknown
+        : gateDocs.owed.length
         ? `Missing before staging: ${gateDocs.owed
             .map((d) => `${d.docType === "structural_letter" && d.why ? `${d.label} (${d.why})` : d.label} — ${owedDocumentAction(d)}`)
             .join("; ")}.`
@@ -4858,8 +4864,11 @@ function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
   // screen beside a gate that said "filled at staging" (e6b3afde, 29cd57b5). prepareSubmission's
   // post-fill check stays on the raw inventory — the fill has already run there.
   try {
-    const gateDocs = owedMissingDocuments(db, detail.project, documentInventory(db, detail.project));
+    const inventory = documentInventory(db, detail.project);
+    const gateDocs = owedMissingDocuments(db, detail.project, inventory);
     const row = (d: DocPresence) => ({ docType: d.docType, label: d.label, lane: d.lane, why: d.why });
+    // Nothing known about this AHJ's applications: the packet says so instead of an all-clear.
+    if (inventory.applicationSetUnknown) pkg.applicationSetUnknown = inventory.applicationSetUnknown;
     pkg.missingDocuments = gateDocs.owed.map(row);
     pkg.filledAtStagingDocuments = gateDocs.filledAtStaging.map(row);
     pkg.acquiredAtStagingDocuments = gateDocs.acquiredAtStaging.map((d) => ({
