@@ -876,7 +876,7 @@ const OTHER_SUBJECT = /rebate|incentive|\bprograms?\b|enroll|\bcredits?\b|\bsrec
  *  "wire" / "wiring" counts ONLY in a permit phrase: "wiring permit", "wiring application", "electrical
  *  wiring". A "Sample Wiring Diagram", a "wire transfer" or a "wire fraud" notice is no application
  *  (forms-find close: a bare \bwir(e|ing)\b stored a wiring DIAGRAM as the AHJ's electrical application). */
-export const WIRING_PERMIT_PHRASE = /\bwiring[\s_-]+(?:permits?|applications?)\b|\belectrical[\s_-]+wiring\b/i;
+export const WIRING_PERMIT_PHRASE = /\bwir(?:e|ing)[\s_-]+(?:permits?|applications?)\b|\belectrical[\s_-]+wiring\b/i;
 /** The electrical permit's words — "Wiring Permit Application" is an ELECTRICAL application. */
 const ELECTRICAL_APP_WORDS = new RegExp(`electric|\\bele\\b|${WIRING_PERMIT_PHRASE.source}`, "i");
 /** The building permit's words. */
@@ -968,9 +968,11 @@ export function headDiscipline(head: string): ApplicationDiscipline {
 export function namesCombinedApplication(text: string): boolean {
   const slugs: string[] = [];
   const rest = String(text ?? "").replace(/https?:\/\/\S+/gi, (u) => { slugs.push(documentSlugWords(u)); return " "; });
+  // The WHOLE name decides (forms-find converge: the harvest and this re-type must read the same text —
+  // a head-only reading took "Residential Permit Application - Electrical" as the building side's).
   return [...slugs, rest].some((n) => {
-    const head = applicationHeadPhrase(n.replace(/_+|(?<=\w)-(?=\w)/g, " "));
-    return head != null && headDiscipline(head) === "combined";
+    const name = n.replace(/_+|(?<=\w)-(?=\w)/g, " ");
+    return applicationHeadPhrase(name) != null && headDiscipline(name) === "combined";
   });
 }
 /** The words a document's own URL carries: its last path segment, extension and separators dropped
@@ -1001,25 +1003,26 @@ export function classifyApplicationDocument(words: string, href: string): { disc
   const names = [String(words ?? ""), documentSlugWords(href)].map((n) => n.replace(/\s+/g, " ").trim()).filter(Boolean);
   const w = names.join(" ");
   if (!APPLICATION_WORDS.test(w)) return null;
-  const anchored = names.map(applicationHeadPhrase).filter((h): h is string => h != null);
-  if (!anchored.length) return null;
-  // A name with no anchor beside an anchored one ("Download" / "Residential" + ".../Application") is
-  // read whole, up to its scope — it can name the job's work, and it can exclude.
-  const heads = [...anchored, ...names.filter((n) => applicationHeadPhrase(n) == null).map(unanchoredHead).filter(Boolean)];
-  // The document TYPE and rule 5 on the whole name; WHICH PERMIT on its head.
+  // A name that says it is an application (its anchor); the others (a bare "Download" link text) may
+  // still exclude or name the work below — every test reads WHOLE names.
+  const anchoredNames = names.filter((n) => applicationHeadPhrase(n) != null);
+  if (!anchoredNames.length) return null;
+  // FORMS-FIND CONVERGE (2026-09-28): every test reads the WHOLE name — an excluded department, trade,
+  // subject or discipline word ANYWHERE excludes, and the permit is read from the same text the store's
+  // re-type (classifyFormType) reads. The head-only reading admitted "Building Permit Application - Sign",
+  // "Residential Permit Application - Plumbing" and took "… - Electrical" as the building side's. A
+  // real application whose title lists another trade in its scope is MISSED — never a wrong form.
   if (FEE_LINK.test(w) || NOT_A_FORM.test(w) || UTILITY_APPLICATION.test(w)) return null;
-  if (!heads.some((h) => JOB_APP_WORDS.test(h))) return null;
-  for (const h of heads) {
-    if (NOT_A_BUILD_PERMIT.test(h) || OTHER_DEPARTMENT.test(h) || OTHER_SUBJECT.test(h)) return null;
-    if (OTHER_TRADE.test(h) && !TRADE_RESCUE.test(h)) return null;
-  }
+  if (!JOB_APP_WORDS.test(w)) return null;
+  if (NOT_A_BUILD_PERMIT.test(w) || OTHER_DEPARTMENT.test(w) || OTHER_SUBJECT.test(w)) return null;
+  if (OTHER_TRADE.test(w) && !TRADE_RESCUE.test(w)) return null;
   // A COMMERCIAL-only application is not a residential solar job's form (one naming both is).
   if (/commercial/i.test(w) && !/residential|dwelling/i.test(w)) return null;
-  // Which permit: the anchored heads decide (a bare link text or an opaque slug says nothing of it).
+  // Which permit: the anchored names decide (a bare link text or an opaque slug says nothing of it).
   // (Two names disagreeing, building vs electrical, read as electrical — the store's precedence.)
-  const named = anchored.map(headDiscipline);
+  const named = anchoredNames.map(headDiscipline);
   const discipline: ApplicationDiscipline = named.includes("combined") ? "combined" : named.includes("electrical") ? "electrical"
-    : named.includes("building") ? "building" : headDiscipline(heads.join(" "));
+    : named.includes("building") ? "building" : headDiscipline(w);
   let score = 1;
   if (/residential|dwelling|single[- ]family|one[- ]?(?:and|&)[- ]?two[- ]family/i.test(w)) score += 3;
   if (/solar|photo-?voltaic|\bpv\b/i.test(w)) score += 3;

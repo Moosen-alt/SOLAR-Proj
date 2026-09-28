@@ -218,18 +218,21 @@ try {
   // Real applications whose titles list their scope were MISSED once a department / trade word anywhere in
   // the title excluded them; a subject in the head ("Solar Rebate", "Right-of-Way Construction", "Sewer
   // Building") was TAKEN because a job word stood beside it.
+  // FORMS-FIND CONVERGE: every test reads the WHOLE name again, so a title whose scope lists another
+  // department / trade / subject is a MISSED form (fail-safe) — never a wrong one ("Building Permit
+  // Application - Sign" was stored as the building blank when only the head was read).
   const H_PASS: Array<[string, string]> = [
-    ["Residential Building Permit Application (includes solar, roofing, decks)", "building"],
     ["Electrical Permit Application - Solar PV", "electrical"],
     ["Building Permit Application: new construction, additions, alterations", "building"],
-    ["Residential Building Permit Application (Additions, Alterations, Decks, Sheds)", "building"],
-    ["Building Permit Application - Residential (New Homes, Additions, Decks, Pools)", "building"],
-    ["Electrical Permit Application (Solar, Generators, Pools, Spas)", "electrical"],
-    ["Building Permit Application - One & Two Family Dwellings (incl. re-roofing, siding)", "building"],
-    ["Building Permit Application (Health Department sign-off required)", "building"],
-    ["Residential Building Permit Application - Historic District", "building"],
-    ["Electrical Permit Application for Solar and Fire Alarm", "electrical"],
+    ["Residential Building Permit Application (new homes, additions, alterations)", "building"],
     ["Application for Electrical Wiring Permit", "electrical"],
+    ["Wire Permit Application", "electrical"],
+    ["Residential Wire Permit Application", "electrical"],
+    ["Residential Permit Application - Electrical", "electrical"],
+    ["Residential Application for Electrical Permit", "electrical"],
+    // The store's re-type reads the whole name "electrical" — the harvest must agree, or the building slot
+    // takes an electrical form and the re-typed store lands on the electrical row (skeptic R1c).
+    ["Building Permit Application - Electrical", "electrical"],
     // A town's own name before the head is not a subject ("Beach", "Park", "Services" are places / departments there).
     ["Palm Beach County Residential Building Permit Application", "building"],
     ["Oak Park Residential Application", "general"],
@@ -241,7 +244,14 @@ try {
     const got = catalog.classifyApplicationDocument(name, dc(name.replace(/[^A-Za-z0-9]+/g, "-")));
     check(`H UNIT MUST-PASS "${name}" is a ${discipline} application`, got?.discipline === discipline, JSON.stringify(got));
   }
-  for (const name of ["Solar Rebate Application", "Right-of-Way Construction Permit Application", "Sewer Building Permit Application", "Deck Building Permit Application",
+  for (const name of [
+    // CONVERGE regressions the head-only reading took: another subject / trade in the scope.
+    "Building Permit Application - Sign", "Residential Permit Application - Plumbing", "Residential Application for Plumbing Permit",
+    "Building Permit Application for Swimming Pools",
+    // ...and the fail-safe MISSES this trade accepts: a real application whose scope names another trade.
+    "Residential Building Permit Application (includes solar, roofing, decks)", "Building Permit Application (Health Department sign-off required)",
+    "Electrical Permit Application for Solar and Fire Alarm",
+    "Solar Rebate Application", "Right-of-Way Construction Permit Application", "Sewer Building Permit Application", "Deck Building Permit Application",
     "Solar Fire Department Permit Application", "Residential Solar Rebate Application", "Solar Access Permit Application", "Building Demolition Permit Application",
     "Building Occupancy Permit Application", "Electric Service Application", "Application for Electric Service", "Street Construction Permit Application",
     "Sidewalk Construction Permit Application", "Driveway Construction Permit Application", "Stormwater Construction Permit Application",
@@ -518,7 +528,7 @@ try {
     ["Building Sewer Permit Application", "Building-Sewer-Permit-Application"],
     ["Right-of-Way Construction Permit Application", "Right-of-Way-Construction-Permit-Application"],
     ["Electric Service Application", "Electric-Service-Application"],
-    ["Residential Building Permit Application (Additions, Alterations, Decks, Sheds)", "Residential-Building-Permit-Application"],
+    ["Residential Building Permit Application (new homes, additions, alterations)", "Residential-Building-Permit-Application"],
   ];
   const hpUrl = (slug: string) => `${HP}/DocumentCenter/View/${1600 + hpLinks.findIndex((l) => l[1] === slug)}/${slug}`;
   serveHtml(`${HP}/forms`, civicPage("Applications", hpLinks.map(([text, slug]) => [hpUrl(slug).slice(HP.length), text])));
