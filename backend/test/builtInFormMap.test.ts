@@ -172,6 +172,25 @@ try {
     assert.equal(setStoredTemplateVerified(db, "no-such-row", true), false);
   });
 
+  await check("MUST-EXCLUDE: on a VERIFIED 5952 map, recovery adds the answer marks but repairs nothing a person confirmed", async () => {
+    // A person's verified map with choices the unverified-map repairs would rewrite: the City box from
+    // project.state, a literal listing agency, and a square filled with a word.
+    const snapshot = { snow: 20, wind: "C", deadLoad: 2, lightFrame: "yes", framingType: "truss", roofRafterSpacing: 24 };
+    const project = { id: "fixture", homeownerName: "Test Owner", ahj: "Fixture Town", city: "Fixture", state: "OR", zip: "97000", projectAddress: "1 Test Way", parserSnapshot: snapshot };
+    const truss = "Preengineered trusses are spaced less than or equal to 24 inches on center oc or";
+    const def = { id: "bcd-verified", formName: "BCD 5952", matchJurisdictions: [], sourceUrl: "", version: "stored", status: "verified",
+      fillMode: "acroform", recoverPrescriptiveCheckboxes: true, unverifiedMap: false,
+      textFields: { "State  Oregon": "project.state", "Listing agency": "lit:UL", [truss]: "lit:Y" } } as never;
+    const out = path.join(tmpDir, "verified-map.pdf");
+    const result = await fillLoadedForm(def, bcdBytes, { project, client: {}, snapshot } as never, out);
+    const text = (await extractLabels(fs.readFileSync(out))).map((i) => i.str);
+    assert.ok(text.includes("UL"), "the verified literal listing agency is kept");
+    assert.ok(text.includes("OR") && !text.includes("Fixture"), "the verified City-box source is not re-sourced");
+    assert.ok(text.includes("Y"), "the square the verified map fills is filled as written");
+    assert.ok(!(result.unmappedRequested ?? []).includes(truss), "a verified map's own square is not dropped");
+    assert.ok(text.filter((s) => s === "X").length >= 5, "the answers are still recovered");
+  });
+
   console.log(`\nbuiltInFormMap: all ${passed} checks passed`);
 } finally {
   db.close();

@@ -1518,8 +1518,10 @@ export async function fillLoadedForm(
     const [{ extractLabels }, { recoverBcd5952Checklist, BCD_5952_LIMITS }] = await Promise.all([
       import("./formTextLayer"), import("./prescriptiveChecklist"),
     ]);
+    // A human-verified stored map (unverifiedMap === false) is filled as written: its answers are
+    // recovered, its map is not repaired (hard rule 3).
     checklist = recoverBcd5952Checklist(doc, await extractLabels(templateBytes), def.overlayFields,
-      def.textFields, Object.values(def.checkboxes ?? {}).map((r) => r.source));
+      def.textFields, Object.values(def.checkboxes ?? {}).map((r) => r.source), { repairMap: def.unverifiedMap !== false });
     // A checklist's printed thresholds control its answers, even when a cached
     // project evaluation used different jurisdiction limits. Do not mutate ctx.
     // (Oregon's own form: its printed limits over Oregon's — never "jurisdiction only".)

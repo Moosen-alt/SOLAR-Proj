@@ -2,7 +2,8 @@
 // contains the Yes widgets for FIVE different questions. Selecting an option
 // would clear other rows. Recover only independently supported answers as
 // overlays after flattening, using widget rectangles (or row-specific labels
-// for flat copies). This is a runtime repair for UNVERIFIED stored maps only.
+// for flat copies). The answers are recovered on every stored copy; the MAP
+// repairs below run for UNVERIFIED stored maps only (repairMap).
 import type { PDFDocument } from "pdf-lib";
 import type { OverlayField } from "./ahjForms";
 import type { PrescriptiveCriterionKey, PrescriptiveLimitInputs } from "./permitPath";
@@ -40,21 +41,29 @@ export interface ChecklistRecovery {
   omittedTextFields: string[];
   textFieldOverrides: Record<string, string>;
   /** Stored overlay placements whose SOURCE is repaired at fill time, keyed by the overlay's index
-   *  in the stored map (never the map itself — verified maps never opt into recovery). */
+   *  in the stored map (never the map itself — and never on a verified map: repairMap). */
   overlaySourceOverrides?: Record<number, string>;
   /** Value sizes for the checklist's text fields the stored map gave none (auto-size set 14-pt
    *  values beside 10-11-pt labels). */
   fieldFontSizes?: Record<string, number>;
 }
 
-/** Recover independent rows; compound answers use all their parsed facts. */
+/** Recover independent rows; compound answers use all their parsed facts.
+ *
+ *  `repairMap` (default true): also repair the known stale-mapper errors in the MAP — a re-sourced
+ *  text field, the department overlay, value sizes, and dropping a square a mapper filled with a word.
+ *  A HUMAN-VERIFIED map passes false (dry-run 2026-09-28 B6): it is filled exactly as a person
+ *  confirmed it (hard rule 3), and recovery only ADDS the Yes/No marks it does not answer — never a
+ *  mark for a square the verified map itself fills. */
 export function recoverBcd5952Checklist(
   doc: PDFDocument,
   items: LabelItem[],
   existingOverlays: OverlayField[] = [],
   textFields: Record<string, string> = {},
   checkboxSources: string[] = [],
+  opts: { repairMap?: boolean } = {},
 ): ChecklistRecovery {
+  const repairMap = opts.repairMap !== false;
   const empty = (): ChecklistRecovery => ({ recognized: false, overlays: [], omittedTextFields: [], textFieldOverrides: {} });
   const text = items.map((i) => i.str).join(" ");
   if (!/440-5952\s*\(5\/24\/COM\)/i.test(text)
@@ -130,7 +139,7 @@ export function recoverBcd5952Checklist(
   // A stale mapper put the WORD Yes into the rafter square based only on
   // spacing; the printed statement also requires code-exception compliance.
   const omittedTextFields = Object.entries(textFields).filter(([name, source]) =>
-    /^computed\.presc/.test(source)
+    repairMap && /^computed\.presc/.test(source)
     && /^(Preengineered trusses are spaced|Rafters are spaced)/i.test(name)
     && formFields.some((f) => f.getName() === name && f.acroField.getWidgets().some((w) => {
       const r = w.getRectangle(); return r.width <= 14 && r.height <= 14;
@@ -168,6 +177,8 @@ export function recoverBcd5952Checklist(
   };
   for (const [name, key] of Object.entries(subchoices)) {
     if (!recognizedRows.has(key.startsWith("method") ? "attachments" : "framing")) continue;
+    // A verified map that fills this square answers it itself.
+    if (!repairMap && textFields[name] !== undefined) continue;
     const field = formFields.find(f => f.getName() === name);
     if (!field) continue;
     if (!omittedTextFields.includes(name)) omittedTextFields.push(name);
@@ -179,5 +190,6 @@ export function recoverBcd5952Checklist(
         x: r.x + (r.width - 6) / 2, y: r.y + (r.height - 9) / 2 + 1, size: 9 });
     }
   }
+  if (!repairMap) return { recognized: true, overlays, omittedTextFields, textFieldOverrides: {}, overlaySourceOverrides: {}, fieldFontSizes: {} };
   return { recognized: true, overlays, omittedTextFields, textFieldOverrides, overlaySourceOverrides, fieldFontSizes };
 }
