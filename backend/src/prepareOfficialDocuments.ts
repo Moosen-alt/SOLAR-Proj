@@ -18,7 +18,8 @@ const COOLDOWN_MS = 24 * 60 * 60 * 1000;
  *   - "unknown-path"    the permit path is not confirmed: nothing acquired or filled. */
 export interface OfficialDocumentsPreparation {
   acquisition: "full" | "within-cooldown" | "failed" | "off" | "unknown-path";
-  results: Array<{ formType: string; status: string; message: string }>;
+  /** sourceUrl: the PDF a download was attempted from, when one was. */
+  results: Array<{ formType: string; status: string; message: string; sourceUrl?: string }>;
 }
 
 /** Prepare actual applications before learn/stage assembles upload paths.
@@ -55,16 +56,19 @@ export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord
     try {
       const out = await ensureAhjFormsForProject(db, createLLMProvider(), project,
         open ? { allowResearch: research } : { allowResearch: false, allowMapping: research });
-      results = out.results.map((r) => ({ formType: r.formType, status: r.status, message: r.message }));
+      results = out.results.map((r) => ({ formType: r.formType, status: r.status, message: r.message, ...(r.sourceUrl ? { sourceUrl: r.sourceUrl } : {}) }));
     } catch {
       acquisition = "failed";
       logger.warn("official-documents", "Form acquisition failed; filling available stored templates. Missing-document gates remain active.", { projectId: project.id });
     }
     // SAY WHAT IS STILL MISSING. The live incident was a Stage that quietly went on without the
-    // county's forms; the required-document gates still block, and the log names which ones.
+    // county's forms; the required-document gates still block, and the log names which ones. Inside
+    // the cooldown a not_found with no source is "nothing free to fetch, research is throttled" — not
+    // a failure to act on (its message's "use Find official form" is the manual retry), so it is info.
     const stillMissing = results.filter((r) => r.status === "not_found" || r.status === "needs_manual");
+    const actionable = acquisition === "within-cooldown" ? stillMissing.filter((r) => r.status === "needs_manual" || r.sourceUrl) : stillMissing;
     if (stillMissing.length) {
-      logger.warn("official-documents", `Official form(s) not on file after ${acquisition === "full" ? "acquisition" : "the no-research pass (inside the 24h cooldown)"}: ${stillMissing.map((r) => `${r.formType}: ${r.status}`).join("; ")}`,
+      logger[actionable.length ? "warn" : "info"]("official-documents", `Official form(s) not on file after ${acquisition === "full" ? "acquisition" : "the no-research pass (inside the 24h cooldown)"}: ${stillMissing.map((r) => `${r.formType}: ${r.status}`).join("; ")}`,
         { projectId: project.id, detail: stillMissing.map((r) => r.message).join(" | ").slice(0, 1200) });
     }
   }
