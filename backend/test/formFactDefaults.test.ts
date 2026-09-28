@@ -171,8 +171,26 @@ try {
     ["accessory dwelling unit", "MODULES MOUNTED ON ACCESSORY DWELLING UNIT  SITE PLAN", ACC, ACC],
     ["shed / barn", "PAT EXAMPLE RESIDENCE  PV ARRAY ON (N) SHED", ACC, ACC],
     ["duplex", "PAT EXAMPLE DUPLEX  UNITS: 2  ARRAY ON ROOF", DUP, DUP],
-    ["two-family", "TWO-FAMILY DWELLING  PV-1", DUP, DUP],
     ["townhouse", "PAT EXAMPLE TOWNHOUSE  PV ON ROOF", TOWN, TOWN],
+    // Round-1 skeptic probes: ordinary scope-of-work wording for an array on a detached building.
+    ["scope: PV SYSTEM ON A DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  SCOPE: INSTALL (N) 7.2 KW PV SYSTEM ON A DETACHED GARAGE", ACC, ACC],
+    ["SOLAR MODULES ON THE ROOF OF AN EXISTING DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  INSTALLATION OF 18 SOLAR MODULES ON THE ROOF OF AN EXISTING DETACHED GARAGE", ACC, ACC],
+    ["PHOTOVOLTAIC SYSTEM ON DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  PHOTOVOLTAIC SYSTEM ON DETACHED GARAGE", ACC, ACC],
+    ["ROOFTOP SOLAR ON DETACHED SHOP", "PAT EXAMPLE RESIDENCE  ROOFTOP SOLAR ON DETACHED SHOP", ACC, ACC],
+    ["ROOF MOUNTED PV ON DETACHED GARAGE", "PAT EXAMPLE RESIDENCE  ROOF MOUNTED PV ON DETACHED GARAGE", ACC, ACC],
+    ["ARRAY LOCATED ON EXISTING POLE BARN", "PAT EXAMPLE RESIDENCE  ARRAY LOCATED ON EXISTING POLE BARN", ACC, ACC],
+    ["a later un-negated accessory phrase still counts", "PAT EXAMPLE RESIDENCE  NO PV ON (E) SHED  (N) PV ARRAY ON (E) DETACHED GARAGE", ACC, ACC],
+    // Another building BESIDE the work (never "single-family" — asked). The real OR shape (cf1c56aa):
+    // a roof label and module count on the garage, a GARAGE SYSTEM label, a trench.
+    ["real shape: GARAGE ROOF #2 (07) / GARAGE SYSTEM- / MAIN HOUSE SYSTEM- / 22-ft trench", "PAT EXAMPLE RESIDENCE  PV-1 SITE PLAN  ROOF #1 (05) EXAMPLE EX-440 SLOPE: 25 AZIM.: 180  GARAGE ROOF #2 (07) EXAMPLE EX-440 SLOPE: 27 AZIM.: 199  ROOF #3 (05) EXAMPLE EX-440  ROOF #01 ROOF #02 ROOF #03 ~22'-0\" TRENCH TO BE 24\" DEEP  GARAGE SYSTEM- MAIN HOUSE SYSTEM-", "", ""],
+    ["GARAGE ROOF #2 (07) alone", "PAT EXAMPLE RESIDENCE  GARAGE ROOF #2 (07) EXAMPLE EX-440", "", ""],
+    ["GARAGE SYSTEM label alone", "PAT EXAMPLE RESIDENCE  GARAGE SYSTEM- 38.40A", "", ""],
+    ["a module count beside a shed", "PAT EXAMPLE RESIDENCE  (E) SHED (N) 12 MODULES", "", ""],
+    ["a detached-garage roof plan with a module count", "PAT EXAMPLE RESIDENCE  PV-2 ROOF PLAN - DETACHED GARAGE  (N) 16 MODULES", "", ""],
+    ["a trench beside the detached garage", "PAT EXAMPLE RESIDENCE  DETACHED GARAGE  (N) TRENCH 120 FT TO MAIN HOUSE  ARRAY ON ROOF", "", ""],
+    ["a trench run to a barn", "PAT EXAMPLE RESIDENCE  (N) PV ARRAY  ~80 FT TRENCH FROM MAIN HOUSE TO (E) BARN", "", ""],
+    ["arrays on two buildings", "PAT EXAMPLE RESIDENCE  (N) PV ARRAY ON DETACHED GARAGE  (N) PV ARRAY ON MAIN HOUSE", "", ""],
+    ["an ADU beside the ruling's words is still asked", "PAT EXAMPLE RESIDENCE  (N) PV ARRAY ON DETACHED ADU", "", ""],
     ["manufactured home", "PAT EXAMPLE RESIDENCE  THIS PROJECT IS A MANUFACTURED HOME (HUD) ON A PERMANENT FOUNDATION", MFG, "defer"],
     ["an attached garage is the house", "PAT EXAMPLE RESIDENCE  (N) PV ARRAY ON ATTACHED GARAGE", SF, SF],
     ["dwelling units 1, no words", "PV-1 COVER SHEET", "", ""],
@@ -187,6 +205,30 @@ try {
     ["R-2 occupancy is asked", "OCCUPANCY: R-2  RESIDENCE", "", ""],
     ["an ADU merely named is asked", "PAT EXAMPLE RESIDENCE  (E) ADU", "", ""],
     ["a code title is not a manufactured home", "PAT EXAMPLE RESIDENCE  CODES: OREGON MANUFACTURED DWELLING INSTALLATION SPECIALTY CODE", SF, "defer"],
+    // Round-1 skeptic probes: a house array is never derived as an accessory building.
+    ["SHED ROOF is a roof shape", "PAT EXAMPLE RESIDENCE  (N) PV MODULES ON SHED ROOF  3/12 PITCH", SF, SF],
+    ["SHED DORMER is a roof shape", "PAT EXAMPLE RESIDENCE  ARRAY ON SHED DORMER", SF, SF],
+    ["SHOP DRAWING is not a building", "PAT EXAMPLE RESIDENCE  MODULES AT SHOP DRAWING STAGE", SF, SF],
+    ["a negation never derives: NO MODULES ON SHOP", "PAT EXAMPLE RESIDENCE  PV ARRAY ON HOUSE ROOF  NOTE: NO MODULES ON SHOP", SF, SF],
+    ["a negation never derives: NO PV ON (E) SHED", "PAT EXAMPLE RESIDENCE  (N) PV ARRAY ON (E) ROOF  NO PV ON (E) SHED", SF, SF],
+    ["an ATTACHED GARAGE roof label is the house", "PAT EXAMPLE RESIDENCE  ATTACHED GARAGE ROOF #2 (07) EXAMPLE EX-440", SF, SF],
+    // Site-plan labels read off the real OR plan sets (names replaced): drawn, not the work.
+    ["site plan: DRIVEWAY GARAGE MAIN HOUSE ARRAY LOCATION", "PAT EXAMPLE RESIDENCE  ROOF #1 (10) EXAMPLE EX-410  DRIVEWAY GARAGE MAIN HOUSE ARRAY LOCATION", SF, SF],
+    ["site plan: MAIN HOUSE SHED DECK", "PAT EXAMPLE RESIDENCE  ROOF #1 (14) EXAMPLE EX-440  DRIVEWAY MAIN HOUSE SHED DECK", SF, SF],
+    ["site plan: CARPORT SHED SHED, a trench to the service pole elsewhere", `PAT EXAMPLE RESIDENCE  ROOF #1 (23) EXAMPLE EX-410  PROPERTY LINE CARPORT SHED SHED FRONT OF HOUSE 100 EXAMPLE AVE EXISTING POLE  ${"NOTES ".repeat(20)} 1-1/4" PVC PIPE ~42 FEET APPROX TRENCH TO BE 24" DEEP`, SF, SF],
+    ["site plan: a garage label after a roof spec", "PAT EXAMPLE RESIDENCE  MAIN HOUSE ROOF #2 (05) EXAMPLE EX-440 SLOPE: 19 AZIM.: 86 GARAGE NW EXAMPLE AVE", SF, SF],
+    ["site plan: (E) DETACHED STRUCTURE (E) FENCE", "PAT EXAMPLE RESIDENCE  (E) PATIO (TYP.) (E) DETACHED STRUCTURE (E) FENCE (E) GATE (E) (16) EXAMPLE MODULES", SF, SF],
+    // Round-1 skeptic probes: MULTI_UNIT is an exclusion filter; a positive duplex / townhouse
+    // answer takes only the building's own word ("DUPLEX", a singular "TOWNHOUSE").
+    ["two-family words alone are asked (only DUPLEX answers duplex)", "TWO-FAMILY DWELLING  PV-1", "", ""],
+    ["IRC title: ONE- AND TWO-FAMILY DWELLINGS", "PAT EXAMPLE RESIDENCE  APPLICABLE CODES: 2021 INTERNATIONAL RESIDENTIAL CODE FOR ONE- AND TWO-FAMILY DWELLINGS", "", ""],
+    ["IRC title without hyphens", "PAT EXAMPLE RESIDENCE  CODE: IRC ONE AND TWO FAMILY DWELLING CODE", "", ""],
+    ["MA code title 780 CMR", "PAT EXAMPLE RESIDENCE  780 CMR 51.00 ONE- AND TWO-FAMILY DWELLINGS 9TH EDITION", "", ""],
+    ["BATTERY UNITS: 2", "PAT EXAMPLE RESIDENCE  BATTERY UNITS: 2  EXAMPLE IQ 5P", "", ""],
+    ["QTY 2 UNITS", "PAT EXAMPLE RESIDENCE  AC DISCONNECT QTY 2 UNITS", "", ""],
+    ["IRC scope: ... AND TOWNHOUSES", "PAT EXAMPLE RESIDENCE  R101.2 SCOPE: DETACHED ONE- AND TWO-FAMILY DWELLINGS AND TOWNHOUSES", "", ""],
+    ["a plural TOWNHOUSES code section is not a townhouse", "PAT EXAMPLE RESIDENCE  SEE R302.2 TOWNHOUSES", "", ""],
+    ["a DUPLEX RECEPTACLE is not a duplex", "PAT EXAMPLE RESIDENCE  (N) GFCI DUPLEX RECEPTACLE AT INVERTER", "", ""],
   ];
   await check("(S1) the derivation table — the server (structureDescriptionOf) and the page (ParserReview.structureBasis, the SAME file) answer alike", () => {
     const bad: string[] = [];
@@ -202,9 +244,50 @@ try {
     if (agency.structureDescriptionOf({ dwellingUnits: "2" }).value !== DUP) bad.push("dwellingUnits 2 -> duplex");
     if (agency.structureDescriptionOf({ dwellingUnits: 3 }).value !== "") bad.push("dwellingUnits 3 -> asked");
     if (agency.structureDescriptionOf({ planSetExtractedText: "PAT EXAMPLE RESIDENCE  (N) PV ARRAY ON GARAGE", dwellingUnits: 1 }).value !== "") bad.push("an ambiguous garage is not answered by the unit count");
+    // A parsed unit count that disagrees with the words is a question, both ways; two-unit words
+    // other than DUPLEX do not become a duplex by agreeing with a count.
+    if (agency.structureDescriptionOf({ planSetExtractedText: "PAT EXAMPLE RESIDENCE  PV-1", dwellingUnits: 2 }).value !== "") bad.push("RESIDENCE + 2 dwelling units -> asked");
+    if (agency.structureDescriptionOf({ planSetExtractedText: "PAT EXAMPLE DUPLEX  PV-1", dwellingUnits: 1 }).value !== "") bad.push("DUPLEX + 1 dwelling unit -> asked");
+    if (agency.structureDescriptionOf({ planSetExtractedText: "PAT EXAMPLE DUPLEX  PV-1", dwellingUnits: 2 }).value !== DUP) bad.push("DUPLEX + 2 dwelling units -> duplex");
+    if (agency.structureDescriptionOf({ planSetExtractedText: "PAT EXAMPLE RESIDENCE  PV-1", dwellingUnits: 1 }).value !== SF) bad.push("RESIDENCE + 1 dwelling unit -> single-family");
+    if (agency.structureDescriptionOf({ planSetExtractedText: "TWO-FAMILY DWELLING  PV-1", dwellingUnits: 2 }).value !== "") bad.push("TWO-FAMILY words + 2 units -> still asked (the words are ambiguous)");
+    // The plan-set READ never answers over ambiguous text (the page stores what it derives, and the
+    // server takes the stored answer first): a read of the real garage shape as single-family is asked.
+    const realGarage = TABLE.find((r) => r[0].startsWith("real shape"))![1];
+    for (const v of [SF, ACC]) {
+      const r = PR.structureBasis(realGarage, { reading: { value: v, excerpt: "MAIN HOUSE" } });
+      if (r.option !== "" || !/confirm which building carries the array/.test(r.basis)) bad.push(`a read of ${v} answered over the ambiguous garage shape: ${JSON.stringify(r)}`);
+    }
+    if (PR.structureBasis("PAT EXAMPLE RESIDENCE  (N) PV ARRAY ON GARAGE", { reading: { value: SF } }).option !== "") bad.push("a read answered over an undifferentiated garage");
     // The basis quotes only the words that decided it — never the homeowner's name beside them.
     const basis = agency.structureDescriptionOf({ planSetExtractedText: "PAT EXAMPLE RESIDENCE" }).basis;
     if (/PAT|EXAMPLE/.test(basis) || !/"RESIDENCE"/.test(basis)) bad.push(`basis carries more than the deciding words: ${basis}`);
+    assert.deepEqual(bad, []);
+  });
+
+  await check("(S10) one question, one predicate: where the structure abstains for another building beside the work, the page's numberOfBuildings evidence names the same words (and stays UNSURE); a single-family basis never claims 'no other building' over a named one", () => {
+    const bad: string[] = [];
+    let besideRows = 0;
+    for (const [name, text] of TABLE) {
+      const beside = PR.outbuildingBesideWork(text) as string;
+      const sb = PR.structureBasis(text, {});
+      if (beside) {
+        besideRows++;
+        if (sb.option !== "") bad.push(`${name}: answered ${sb.option} beside ${beside}`);
+        const ose = PR.otherStructureEvidence(text) as string;
+        if (!ose.includes(beside)) bad.push(`${name}: the numberOfBuildings evidence does not name "${beside}": ${ose}`);
+      }
+      const named = /\b(?:GARAGE|SHEDS?|BARNS?|CARPORTS?|DETACHED\s+STRUCTURE|ADU|WORKSHOP|OUTBUILDING)\b/i.test(text.replace(/\bSHED\s+(?:ROOF|DORMER)\b/gi, ""));
+      if (sb.option === SF && named && /names no other building/.test(sb.basis)) bad.push(`${name}: the basis claims no other building: ${sb.basis}`);
+    }
+    if (besideRows < 7) bad.push(`only ${besideRows} rows reached the beside predicate`);
+    // Through the page's own review list: the real garage shape leaves numberOfBuildings UNSURE,
+    // quoting the same words the structure's basis quotes.
+    const realGarage = TABLE.find((r) => r[0].startsWith("real shape"))![1];
+    const items = PR.resolveReviewItems({ attached: ["plan_set"], planText: realGarage, passes: [{ kind: "text", label: "text", docsGiven: ["plan_set"], response: { fields: { numberOfBuildings: { value: 1, confidence: 0.55, evidence: { source: "plan_set", sheet: "PV-1", excerpt: "MAIN HOUSE" } } }, lowConfidenceFields: ["numberOfBuildings"], notes: "" } }] });
+    const nu = items.unsure.find((x: { field: string }) => x.field === "numberOfBuildings");
+    if (!nu || !/GARAGE ROOF #2/.test(nu.why)) bad.push(`numberOfBuildings is not UNSURE on "GARAGE ROOF #2": ${JSON.stringify(nu)}`);
+    if (!/GARAGE ROOF #2/.test(PR.structureBasis(realGarage, {}).basis)) bad.push("the structure basis does not quote GARAGE ROOF #2");
     assert.deepEqual(bad, []);
   });
 
@@ -233,6 +316,7 @@ try {
   const GARAGE = ["PAT EXAMPLE RESIDENCE", "SITE PLAN", "(N) PV ARRAY ON (E) DETACHED GARAGE"];
   const SHED_DRAWN = ["PAT EXAMPLE RESIDENCE", "SITE PLAN (E) SHED  EXISTING DETACHED GARAGE", "(N) PV ARRAY ON (E) ROOF"];
   const NO_EVIDENCE = ["PV-1 COVER SHEET", "SCALE: NTS"];
+  const REAL_GARAGE = ["PAT EXAMPLE RESIDENCE", "PV-1 SITE PLAN  ROOF #1 (05) EXAMPLE EX-440", "GARAGE ROOF #2 (07) EXAMPLE EX-440 SLOPE: 27", "ROOF #01 ROOF #02 ~22 FT TRENCH TO BE 24 IN DEEP", "GARAGE SYSTEM- MAIN HOUSE SYSTEM-"];
   const coosBytes = fs.readFileSync(path.join(REPO, "backend/test/fixtures/coos-electrical.pdf"));
   const e01Bytes = fs.readFileSync(path.join(REPO, "backend/test/fixtures/marion-e-01.pdf"));
   const b01sBytes = fs.readFileSync(path.join(REPO, "backend/test/fixtures/marion-b-01s.pdf"));
@@ -286,7 +370,7 @@ try {
     assert.ok(!(await askedKeys(p.id)).includes("structureDescription"));
     const f = await fillAll(p, "s3");
     assert.match(f.printed, /Accessory building \(garage\/shed\)/);
-    assert.match(String(f.r5952.message), /Structure: Accessory building \(garage\/shed\) — from the plan set \(the plan set reads "ARRAY ON \(E\) DETACHED GARAGE"; operator ruling 2026-09-28\)/);
+    assert.match(String(f.r5952.message), /Structure: Accessory building \(garage\/shed\) — from the plan set \(the plan set reads "PV ARRAY ON \(E\) DETACHED GARAGE"; operator ruling 2026-09-28\)/);
     assert.ok(!f.coosSfd, "an accessory building is not a single-family dwelling");
     assert.equal(f.b01sSfdOrAccessory, "Yes_4", "Marion B-01S admits an accessory building");
   });
@@ -308,6 +392,15 @@ try {
     assert.equal(agency.structureDescriptionOf(reload(p.id).parserSnapshot).source, "answer");
     assert.ok(!(await askedKeys(p.id)).includes("structureDescription"));
     assert.equal(forms.resolveSource("snapshot.structureDescription", forms.buildContext(db, reload(p.id))), ACC);
+  });
+
+  await check("(S11) MUST-EXCLUDE: the real OR garage shape (GARAGE ROOF #2 with its module count, GARAGE SYSTEM-, a trench) through the real upload -> ASKED, the 5952 box blank, no structure note", async () => {
+    const p = await withPlanSet(REAL_GARAGE);
+    assert.equal(agency.structureDescriptionOf(p.parserSnapshot).value, "");
+    assert.match(agency.structureDescriptionOf(p.parserSnapshot).basis, /GARAGE ROOF #2/);
+    assert.ok((await askedKeys(p.id)).includes("structureDescription"), "asked when another building sits beside the work");
+    assert.equal(forms.resolveSource("snapshot.structureDescription", forms.buildContext(db, p)), "");
+    assert.doesNotMatch(String((await fill5952(p.id, "s11")).message), /Structure: Single-family/);
   });
 
   await check("(S6) MUST-EXCLUDE: an explicit answer ALWAYS wins over the plan set, and clearing it hands the answer back", async () => {
@@ -365,6 +458,11 @@ try {
     const disagree = buildPayload({ planDoc: { text: RESIDENCE.join("\n") }, llmStructureReading: { value: ACC, excerpt: "ARRAY ON BARN ROOF" } });
     assert.equal(disagree.structureFromPlan, "");
     assert.match(String(disagree.structureFromPlanBasis), /confirm which building carries the array/);
+    // A read never answers over ambiguous text: the real garage shape read as single-family is stored
+    // as a question, so the server (which takes the stored answer first) asks it too.
+    const overAmbiguous = buildPayload({ planDoc: { text: REAL_GARAGE.join("\n") }, llmStructureReading: { value: SF, excerpt: "MAIN HOUSE" } });
+    assert.equal(overAmbiguous.structureFromPlan, "");
+    assert.match(String(overAmbiguous.structureFromPlanBasis), /GARAGE ROOF #2/);
     const readOnly = buildPayload({ planDoc: { text: NO_EVIDENCE.join("\n") }, llmStructureReading: { value: "single-family dwelling", excerpt: "" } });
     assert.equal(readOnly.structureFromPlan, SF, "the read's answer alone, in the option vocabulary");
     // Nothing parsed -> nothing sent (a re-save without a parse never wipes an earlier derivation);
