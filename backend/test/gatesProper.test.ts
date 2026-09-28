@@ -231,6 +231,9 @@ await check("C2", "one predicate: scopes by category — structural->building si
   assert.deepEqual(holds("city.struct.design-criteria-conflict", "structural"), ["building", "combo", "permit"]);
   assert.deepEqual(holds("city.elec.service-rating-mismatch", "electrical"), ["nem", "electrical", "combo", "permit", "mpu"]);
   assert.deepEqual(holds("city.elec.rapid-shutdown-missing", "electrical"), ["electrical", "combo", "permit", "mpu"]);
+  // (skeptic MF1) a value BOTH applications carry — the system size, the equipment — holds every filing.
+  assert.deepEqual(holds("city.elec.dc-size-mismatch", "electrical"), [...scope.GATE_TRACKS]);
+  assert.deepEqual(holds("city.elec.equipment-specs-incomplete", "electrical"), [...scope.GATE_TRACKS]);
   assert.deepEqual(holds("reviewer.utility.meter-mismatch", "utility_nem"), ["nem"]);
   assert.deepEqual(holds("city.fire.pathways-missing", "plan_set"), ["building", "combo", "permit"]);
   // MUST-EXCLUDE: anything the predicate does not recognise holds every filing, and a null track is always held.
@@ -482,6 +485,42 @@ await check("C1", "MUST-PASS (the production recording path): a draft staged NOW
   }
   const s = getAutopilotState(db, pid);
   assert.doesNotMatch(String(s.approveDisabledReason), /went up without/, String(s.approveDisabledReason));
+});
+// (skeptic MF2) a RECORDED draft is judged by its record even for a form Stage fills from a stored
+// template — a template stored after the draft (templates are shared across jobs) is not "carried".
+const recordedDraftWithLateTemplates = async (carried: string[]): Promise<{ pid: string; runId: string }> => {
+  const pid = await jeffersonJob();
+  const runId = mkRun(pid, "awaiting_human_submit", "electrical", new Date(Date.now() - 3600_000).toISOString());
+  db.run("UPDATE portal_runs SET result_json = ? WHERE id = ?", [JSON.stringify({ actor: "RecipeAdapter", ok: true, packagedDocTypes: carried }), runId]);
+  db.run("UPDATE projects SET status = 'awaiting_human_submit', stage_detail = 'staged_for_review' WHERE id = ?", [pid]);
+  served.set(B01S_URL, fixturePdf("marion-b-01s.pdf"));
+  served.set(E01_URL, fixturePdf("marion-e-01.pdf"));
+  const { ensureAhjFormsForProject } = await import("../src/ahjFormAuto");
+  const { createLLMProvider } = await import("../src/llm");
+  await ensureAhjFormsForProject(db, createLLMProvider(), repo.getProjectDetail(db, pid).project); // stores the templates; fills nothing here
+  if (!db.get("SELECT id FROM ahj_form_templates WHERE ahj_name = 'Marion County'")) throw new Error("fixture: the Marion templates were not stored");
+  return { pid, runId };
+};
+const gapsOf = (pid: string, runId: string) => repo.draftDocumentGaps(db, repo.getProjectDetail(db, pid).project, db.get("SELECT * FROM portal_runs WHERE id = ?", [runId])!, "electrical");
+await check("C1", "KILL (skeptic MF2): a recorded draft handed no E-01 is refused when the E-01 template arrived after it and is not yet filled on this project", async () => {
+  const { pid, runId } = await recordedDraftWithLateTemplates(["plan_set", "sld"]);
+  assert.ok(gapsOf(pid, runId).some((g) => /E-01/.test(g.label)), JSON.stringify(gapsOf(pid, runId)));
+  assert.equal(getAutopilotState(db, pid).canApprove, false, String(getAutopilotState(db, pid).approveDisabledReason));
+});
+await check("C1", "MUST-PASS (skeptic MF2): the same draft whose record carried the E-01 is not refused for it", async () => {
+  const { pid, runId } = await recordedDraftWithLateTemplates(["plan_set", "sld", "electrical_application"]);
+  assert.ok(!gapsOf(pid, runId).some((g) => /E-01/.test(g.label)), JSON.stringify(gapsOf(pid, runId)));
+});
+// (skeptic MF1) the real path: a separate-permit job whose project DC contradicts the plan set's modules.
+await check("C2", "KILL (real path, skeptic MF1): a WRONG DC size still refuses the BUILDING permit's stage — the building application prints the size", async () => {
+  if (!marionSaved) { saveMarionLookup("City of Jefferson"); marionSaved = true; }
+  const pid = mkProject({ ...JEFFERSON, dcKw: "12.0" });
+  saveProjectDocument(db, pid, { docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n% dc mismatch plan set\n", "utf8"), source: "upload" });
+  assert.ok(requiredTracks(repo.getProjectDetail(db, pid).project).includes("building"), "fixture: not a separate-permit job");
+  const f = findingOf(pid, "city.elec.dc-size-mismatch");
+  assert.equal(f?.severity, "blocker", `fixture: the DC mismatch did not fire as a blocker (${f?.severity})`);
+  const refusal = await reviewerRefusal(pid, "building");
+  assert.ok(refusal && refusal.some((t) => /DC/i.test(t)), `building stage not refused by the DC mismatch: ${refusal}`);
 });
 await check("C1", "KILL: an archived project neither stages nor approves", async () => {
   const pid = await jeffersonJob();

@@ -55,6 +55,8 @@ export function tracksHeld(scope: GateHoldScope): SubmittalTrackType[] {
 const ELECTRICAL_PERMIT_ONLY = /rapid-shutdown|\.labels|labels-missing|pvws-|ess\.details/i;
 // Fire access pathways are a building / fire review item.
 const FIRE = /\bfire\b|fire[.-]|pathway/i;
+// Findings about a value every application carries: the system size and the equipment it is made of.
+const BOTH_APPLICATIONS = /dc-size|ac-size|system-size|module-count|equipment-specs/i;
 
 /**
  * THE SCOPE OF A REVIEWER FINDING, from its id and category. The id wins where it names the
@@ -70,6 +72,11 @@ export function findingHoldScope(f: Pick<ReviewerFinding, "id" | "category">): G
   const core = /^reviewer\.core\.([a-z]+)$/.exec(id);
   if (core) return criticalFieldHoldScope(core[1]);
   if (FIRE.test(id)) return "building";
+  // A VALUE BOTH APPLICATIONS CARRY (skeptic gates-proper MF1): a wrong DC size or incomplete
+  // equipment specs is filed as "electrical", but the building application prints the system size
+  // (and the valuation computed from it) and the module data too — so it holds every filing, the
+  // same answer a MISSING DC gets (criticalFieldHoldScope).
+  if (BOTH_APPLICATIONS.test(id)) return "all";
   switch (f.category) {
     case "structural": return "building";
     case "electrical": return ELECTRICAL_PERMIT_ONLY.test(id) ? "electrical" : "electrical+nem";

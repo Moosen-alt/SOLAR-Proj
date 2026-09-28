@@ -7475,6 +7475,13 @@ export function draftDocumentGaps(
     if (!d.present && !produced.has(d)) { out.push({ label: d.label, onFileNow: false }); continue; }
     if (d.via === "in plan set") continue; // the plan set carries it
     if (carried && nowPackaged) {
+      // A FORM THE STAGING FILL MAKES FROM A STORED TEMPLATE, not filled here yet, is judged against
+      // the RECORD alone (skeptic gates-proper MF2): nothing on disk can speak for it, and a template
+      // stored after the draft (by another job — templates are shared) must not read as "carried".
+      if (!d.present && produced.has(d)) {
+        if (!keys.some((k) => carried.includes(k))) out.push({ label: d.label, onFileNow: true });
+        continue;
+      }
       const packagedKeys = keys.filter((k) => nowPackaged.has(k));
       if (packagedKeys.length && !packagedKeys.some((k) => carried.includes(k))) out.push({ label: d.label, onFileNow: true });
       continue;
