@@ -851,7 +851,12 @@ export function shouldWrapperRetry(err: unknown): boolean {
  *  and env override findAhjFormUrl already used (AHJ_FORM_LOOKUP_TIMEOUT_MS, kept for
  *  compatibility); WEB_RESEARCH_TIMEOUT_MS is the name that says what it covers. */
 export function webResearchBudgetMs(): number {
-  return Math.max(45000, Number(process.env.WEB_RESEARCH_TIMEOUT_MS) || Number(process.env.AHJ_FORM_LOOKUP_TIMEOUT_MS) || 180000);
+  // 240 s: the fee researcher's budget for the same kind of call (feeSchedules.FEE_RESEARCH_CLIENT_TIMEOUT_MS,
+  // not imported — feeSchedules imports this module). findAhjFormUrl's comment claimed to match it at
+  // 180 s and did not: on a never-seen AHJ (2026-09-28) its searches measured 59–176 s and the first
+  // aborted at 180,012 ms, which threw away the search-result URLs already received and shortened the
+  // AHJ's cooldown claim to an hour. Still env-overridable, never below the old 45 s floor.
+  return Math.max(45000, Number(process.env.WEB_RESEARCH_TIMEOUT_MS) || Number(process.env.AHJ_FORM_LOOKUP_TIMEOUT_MS) || 240000);
 }
 
 /** Output budget for the research siblings. Their outputs measured 4.7-5.8k tokens; at the old
@@ -3144,8 +3149,9 @@ Rules:
       // A GROUNDED SEARCH NEEDS A GROUNDED BUDGET. This ran on askWithWebSearch's 45-second
       // default while making up to three web searches, and on City of Salem it aborted at
       // 45,016ms — after which the harvest reported "research found no forms page", a claim
-      // about the jurisdiction rather than about us. The fee researcher already uses 240s for
-      // the same kind of call (FEE_RESEARCH_CLIENT_TIMEOUT_MS); this matches it and stays
+      // about the jurisdiction rather than about us. The fee researcher uses 240s for the same
+      // kind of call (FEE_RESEARCH_CLIENT_TIMEOUT_MS); webResearchBudgetMs matches it (it said so
+      // at 180s and did not — one Beaverton search aborted at 180,012 ms) and stays
       // env-overridable for a machine on a slower link.
       const budgetMs = webResearchBudgetMs();
       // 1024 was the signature default and far too small for this call: with the budget fixed it

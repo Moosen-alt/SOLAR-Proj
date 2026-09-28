@@ -696,6 +696,7 @@ app.post("/api/projects/:id/find-ahj-form", asyncHandler(async (req, res) => {
   const llm = createLLMProvider();
   let ensure;
   let additional: Array<{ formType: string; status: string; message: string }> = [];
+  let joined: { since: string } | undefined;
   try {
     if (explicitType) {
       // Operator asked for one specific form type — honor it exactly.
@@ -703,15 +704,20 @@ app.post("/api/projects/:id/find-ahj-form", asyncHandler(async (req, res) => {
     } else {
       // Default: acquire the AHJ's FULL needed set (application(s) + any
       // required checklist, per process profile + KB required docs).
+      // A click while the chain's own search is running JOINS that search (ahjFormAuto's in-flight
+      // registry) instead of paying for a second one; the audit says so.
       const { ensureAhjFormsForProject } = await import("./ahjFormAuto");
       const all = await ensureAhjFormsForProject(db, llm, detail.project);
       ensure = all.results[0] ?? { status: "not_found" as const, message: "No forms needed/found." };
       additional = all.results.slice(1).map((r) => ({ formType: r.formType, status: r.status, message: r.message }));
+      joined = all.joined;
     }
   } catch (err) {
     throw normalizeLlmError(err);
   }
-  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", formFindAuditDetails(detail.project.ahj, ensure, additional));
+  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", {
+    ...formFindAuditDetails(detail.project.ahj, ensure, additional), via: "find-button", ...(joined ? { joinedPassStartedAt: joined.since } : {}),
+  });
   const filled = await buildFilledFormsForProject(db, detail.project);
   res.json({ ensure, additional, filled });
 }));

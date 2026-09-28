@@ -67,6 +67,8 @@ import { parseJson } from "./json";
 import { billingTrack } from "./submissionFees";
 import { findingHoldScope, gateCheckDefaultScope, scopeHoldsTrack, tracksHeld } from "./gateScope";
 import { issuingAuthorityForTrack } from "./applicationDocsAgency";
+import { parseJobProgressNote } from "./jobProgress";
+import { startedAtLabel } from "./formAcquisitionPlan";
 import {
   buildReviewerReportFor,
   getProjectDetail,
@@ -230,7 +232,10 @@ export interface NextStepFacts {
   utility: string;
   operatorHold: { reason: string; since: string | null } | null;
   openCorrections: CorrectionRecord[];
-  jobInFlight: { jobType: string; since: string } | null;
+  /** step: what the job says it is doing right now (job_queue.progress_note — the automatic chain
+   *  names each step), so the banner can show "Checking the AHJ's required official forms… (started
+   *  HH:MM)" instead of a bare "running". */
+  jobInFlight: { jobType: string; since: string; step?: { label: string; since: string } } | null;
   tracks: TrackFacts[];
   /** The newest correction-reopen run, when it paused for a person and a correction is still open. */
   reopenPause: RunLite | null;
@@ -328,14 +333,17 @@ export function loadNextStepFacts(db: AppDb, projects: ProjectRecord[]): Map<str
   // read as "nothing to do" forever, so the real blockers show again once it is that old.
   const chainFreshSince = new Date(Date.now() - AUTO_CHAIN_FRESH_MS).toISOString();
   for (const r of db.query<Row>(
-    `SELECT project_id, created_at, started_at FROM job_queue
+    `SELECT project_id, created_at, started_at, status, progress_note FROM job_queue
       WHERE project_id IN (${ph}) AND job_type = 'stage_step'
         AND ((status = 'pending' AND created_at >= ?) OR (status = 'running' AND COALESCE(started_at, created_at) >= ?))
       ORDER BY created_at ASC`,
     [...ids, chainFreshSince, chainFreshSince],
   )) {
     // Staging/autopilot in flight keeps its own (more specific) wording.
-    if (!jobs.has(s(r.project_id))) jobs.set(s(r.project_id), { jobType: "stage_step", since: s(r.created_at) });
+    if (jobs.has(s(r.project_id))) continue;
+    // The step the RUNNING chain is on (its own progress note); a queued one has not started a step.
+    const note = s(r.status) === "running" ? parseJobProgressNote(r.progress_note) : null;
+    jobs.set(s(r.project_id), { jobType: "stage_step", since: s(r.created_at), ...(note ? { step: note } : {}) });
   }
   const qcFails = groupBy(
     db.query<Row>(`SELECT project_id, rule_name, message FROM qc_results WHERE project_id IN (${ph}) AND qc_status = 'fail' ORDER BY created_at DESC`, ids),
@@ -622,11 +630,15 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
 
   // 4. Automation is already doing the next thing.
   if (facts.jobInFlight) {
+    // The step the chain is on, as a why line ("Checking the AHJ's required official forms… (started
+    // HH:MM UTC)") — a six-minute form search on a never-seen AHJ otherwise reads as nothing happening
+    // (operator 2026-09-28: "it looks like its getting lost finding the forms").
+    const step = facts.jobInFlight.step;
     return make("automation_running", "nobody", "waiting",
       facts.jobInFlight.jobType === "stage_step"
         ? "Preparing this project automatically — splitting the plan set, reading the bill, running QC and finding/filling the official forms. Nothing to do until it finishes."
         : `${facts.jobInFlight.jobType === "autopilot" ? "Autopilot" : "Staging"} is running — nothing to do until it finishes.`,
-      [], null, facts.jobInFlight.since);
+      step ? [why(`${step.label} (${startedAtLabel(step.since)})`)] : [], null, facts.jobInFlight.since);
   }
 
   // 5. The newest staging attempt for a track failed AND no draft of it sits on the portal. A

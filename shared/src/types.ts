@@ -1274,6 +1274,9 @@ export interface ApplicationDocumentPackage {
     why: string;
     via: "curated" | "cited" | "research";
     sourceUrl: string;
+    /** The form research pass for this AHJ/path is running RIGHT NOW (started at `since`): the
+     *  App Docs panel says so and holds its "Find missing official forms" button until it ends. */
+    inFlight?: { since: string };
   }>;
   html: string;
   /** When the knowledge base has a learned profile for this AHJ, its real

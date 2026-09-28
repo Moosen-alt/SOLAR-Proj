@@ -81,7 +81,7 @@ import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
 import { researchWithFittedUrl } from "./researchedPortalUrl";
 import { bindRecipeForReplay, describeReplayBinding, openPerJobQuestions } from "./recipeReplayBinding";
 import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
-import type { StageAcquiredForm } from "./formAcquisitionPlan";
+import { startedAtLabel, type StageAcquiredForm } from "./formAcquisitionPlan";
 import { agencyListReplacesLine, issuingAgencyDocumentList } from "./applicationDocsAgency";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
@@ -3413,6 +3413,9 @@ const GATE_EVIDENCE_NAMES_A_DOCUMENT = /^(Filled at staging:|Stage downloads and
 /** How Stage gets a form it acquires itself, in words (the gate's evidence line). */
 function acquisitionSentence(a: StageAcquiredForm | undefined): string {
   if (!a) return "Stage acquires it before it counts";
+  // The search is running NOW (formAcquisitionPlan's in-flight registry): said as such — never "find
+  // the official form or upload the blank" over a search that is finding it.
+  if (a.inFlight) return `Stage is searching for it now (${startedAtLabel(a.inFlight.since)}) — the form research for ${a.authority} is in flight; when it finishes this row says what it found`;
   if (a.via === "research") return `no free copy is on file; Stage's form research runs for ${a.authority} (the 24h cooldown is open) — if it finds nothing, Stage stops and says so`;
   return `${a.authority}'s ${a.via === "curated" ? "published form (a checked, hash-locked copy)" : "application PDF the per-job lookup cites"} is downloaded from ${a.sourceUrl} and filled before Stage counts — if the download fails, Stage stops and says so`;
 }
@@ -4917,6 +4920,7 @@ function assembleApplicationDocumentPackage(db: AppDb, projectId: string) {
       why: acquisitionSentence(gateDocs.acquiredVia.get(d)),
       via: gateDocs.acquiredVia.get(d)?.via ?? "curated",
       sourceUrl: gateDocs.acquiredVia.get(d)?.sourceUrl ?? "",
+      ...(gateDocs.acquiredVia.get(d)?.inFlight ? { inFlight: gateDocs.acquiredVia.get(d)!.inFlight } : {}),
     }));
     pkg.missingDocumentsStatus = "resolved";
   } catch (err) {

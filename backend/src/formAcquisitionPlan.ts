@@ -94,6 +94,48 @@ export function acquisitionCooldownOpen(db: AppDb, key: string): boolean {
   return !prior || Date.now() - Number(prior.attempted_at) >= FORM_ACQUISITION_COOLDOWN_MS;
 }
 
+// ── The form research pass in flight (single flight) ────────────────────────────────────
+// ONE search per AHJ/path at a time, and every door knows it is running. The chain's automatic
+// pass claims the 24h cooldown BEFORE it awaits (so retries / simultaneous projects do not amplify
+// paid research) — and from that instant the gate read "research closed" and told the operator to
+// "find the official form (App Docs → Find missing official forms) or upload the blank" while the
+// search it named was in flight (City of Beaverton, 2026-09-28: the operator clicked Find twice, and
+// three passes — six searches, 727 s of model time — ran at once, all writing the same KB profile).
+// The claim cannot distinguish "claimed, search in flight" from "claimed, search finished"; this
+// registry can. In-process, like recentFormFetchFailures: the job worker and the routes share the
+// process, and a restart forgets an entry that no longer exists anyway.
+//   - ensureAhjFormsForProject REGISTERS a research pass here (same tick as the claim, before its
+//     first await) and JOINS one already in flight instead of starting another;
+//   - stageAcquiresForm reports the form as acquired-at-staging with `inFlight` while the key is
+//     present, so the gate / App Docs / QC say "Stage is searching for it now — started HH:MM",
+//     never "find it or upload the blank".
+export interface FormResearchInFlight {
+  /** ISO time the pass started. */
+  since: string;
+  /** The project whose pass this is (a joiner for the same project takes its result verbatim). */
+  projectId: string;
+  promise: Promise<unknown>;
+}
+const researchInFlight = new Map<string, FormResearchInFlight>();
+/** The research pass running for this scope key, or null. */
+export function formResearchInFlight(key: string): FormResearchInFlight | null {
+  return researchInFlight.get(key) ?? null;
+}
+/** Register a research pass for `key` until `promise` settles (either way). Synchronous: call it
+ *  in the same tick as the cooldown claim so no gate read sees "claimed but not in flight". */
+export function trackFormResearch(key: string, projectId: string, promise: Promise<unknown>): FormResearchInFlight {
+  const entry: FormResearchInFlight = { since: new Date().toISOString(), projectId, promise };
+  researchInFlight.set(key, entry);
+  const clear = (): void => { if (researchInFlight.get(key) === entry) researchInFlight.delete(key); };
+  void promise.then(clear, clear);
+  return entry;
+}
+/** "started HH:MM UTC" for an in-flight pass (the operator's clock is the server's, in UTC). */
+export function startedAtLabel(sinceIso: string): string {
+  const d = new Date(sinceIso);
+  return Number.isNaN(d.getTime()) ? "started just now" : `started ${d.toISOString().slice(11, 16)} UTC`;
+}
+
 export interface StageAcquisition {
   path: "prescriptive" | "engineered" | "unknown";
   /** Stage acquires anything at all (a confirmed path, downloads on). */
@@ -276,6 +318,9 @@ export interface StageAcquiredForm {
   sourceUrl: string;
   /** Whose form: the issuing agency, or the AHJ. */
   authority: string;
+  /** Set when the research pass for this AHJ/path is running RIGHT NOW (formResearchInFlight):
+   *  the gate says "Stage is searching for it now — started HH:MM", never "find it or upload it". */
+  inFlight?: { since: string };
 }
 
 /**
@@ -320,6 +365,11 @@ export function stageAcquiresForm(
   if (acceptedFormTypesFor(project, formType).some((t) => hasStoredTemplateOfType(db, project.ahj, project.state, t, applicationKind))) return null;
   const free = ownFreeFormSource(project, formType, applicationKind);
   if (free) return recentFormFetchFailure(free.url) ? null : { via: "curated", sourceUrl: free.url, authority: project.ahj };
+  // THE SEARCH IS RUNNING NOW. Read before the cooldown switch: the pass claimed the cooldown before
+  // it awaited, so `researchOpen` is false for the whole pass — this is the one reading that tells
+  // "claimed, in flight" from "claimed, finished".
+  const running = formResearchInFlight(acquisitionScopeKey(project, acq.path));
+  if (running) return { via: "research", sourceUrl: "", authority: project.ahj, inFlight: { since: running.since } };
   if (acq.researchOpen && !findApplicationProfile(project).requiresPortalEntryOnly) return { via: "research", sourceUrl: "", authority: project.ahj };
   return null;
 }
