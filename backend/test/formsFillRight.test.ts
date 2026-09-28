@@ -380,6 +380,10 @@ visionReply = JSON.stringify({
   fields: [
     // ON the "Telephone" widget (x=325, y=600): the AcroForm fill covers it — dropped.
     { source: "client.installerEmail", page: 0, nx: 325 / 612, ny: 1 - 600 / 792, size: 9, maxWidthFrac: null, label: "Email Address" },
+    // ON the "Company Name" widget, which the AcroForm map leaves UNMAPPED (x=45, y=444): a widget is
+    // there, so the value belongs in the widget or nowhere — dropped (only the widget test can drop it;
+    // the kill K6a showed the placement above is also caught by the same-source-beside-its-widget rule).
+    { source: "client.installerCompanyName", page: 0, nx: 45 / 612, ny: 1 - 444 / 792, size: 9, maxWidthFrac: null, label: "Company Name" },
     // At the widget-less "Map Number" blank (x=325, y=313): kept as an overlay.
     { source: "snapshot.parcelNumber", page: 1, nx: 325 / 612, ny: 1 - 313 / 792, size: 9, maxWidthFrac: null, label: "Map Number" },
     // A printed blank no source answers.
@@ -409,7 +413,7 @@ await check("B6: the vision pass streams with a multi-page ceiling (not the 4096
   assert.equal(body.stream, true);
   assert.ok(Number(body.max_tokens) >= 16000 && Number(body.max_tokens) === FLAT_FORM_OVERLAY_MAX_TOKENS, String(body.max_tokens));
 });
-await check("B6: only the placement where NO widget is was kept (the one on the \"Telephone\" widget was dropped)", () => {
+await check("B6: only the placement where NO widget is was kept (those on the \"Telephone\" and unmapped \"Company Name\" widgets were dropped)", () => {
   assert.equal(acquired.status, "acquired", acquired.message);
   assert.equal(storedMap.fillMode, "acroform");
   assert.deepEqual((storedMap.overlayFields ?? []).map((o: { source: string }) => o.source), ["snapshot.parcelNumber"]);
