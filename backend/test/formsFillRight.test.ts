@@ -1048,13 +1048,16 @@ console.log("\n(e) VISION PLACEMENTS PASS THE SAME MAP CHECKS AS WIDGETS (licenc
     assert.ok(!(oneMap.overlayFields ?? []).some((o: { label?: string }) => /^I,|Contractor Print Name/.test(String(o.label))), JSON.stringify(oneMap.overlayFields));
     assert.ok((oneMap.operatorItems ?? []).some((i: { label: string }) => /one signer/.test(i.label)), JSON.stringify(oneMap.operatorItems));
   });
-  // The AcroForm branch: the same two blocks as vision placements beside a widget-bearing form.
-  const acroScanned = await blankOf(({ box, line }) => { box("Permit Number", 40, 760, 200); line(50, 700, 250); line(50, 660, 250); line(50, 620, 250); line(50, 590, 250); });
-  acroReply = JSON.stringify({ textFields: [{ name: "Permit Number", source: "operator:Permit Number" }], checkboxes: [], notes: "stub mapper" });
+  // The AcroForm branch: the same two blocks as vision placements beside a widget-bearing form (one
+  // widget, bound to a real source, so the map is stored by the AcroForm branch — fillMode acroform).
+  const acroScanned = await blankOf(({ box, line }) => { box("Job Address", 40, 760, 200); line(50, 700, 250); line(50, 660, 250); line(50, 620, 250); line(50, 590, 250); });
+  acroReply = JSON.stringify({ textFields: [{ name: "Job Address", source: "computed.fullAddress" }], checkboxes: [], notes: "stub mapper" });
   visionReply = JSON.stringify(twoBlocks);
   await acquireFromBytes(db, provider, { ahj: "Town of Scanned Acro", state: "MA", formType: "permit_application", formName: "Scanned Acro Application", bytes: acroScanned, sourceUrl: "" });
   const acroMap = JSON.parse(db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE lower(ahj_name) = lower(?)", ["Town of Scanned Acro"])!.field_map);
   await check("MUST-PASS (AcroForm branch): the vision signature line separates the two placed blocks there too — both names kept", () => {
+    assert.equal(acroMap.fillMode, "acroform", "the fixture must go through the AcroForm branch");
+    assert.equal(acroMap.textFields["Job Address"], "computed.fullAddress");
     const placed = (acroMap.overlayFields ?? []).map((o: { label?: string; source: string }) => `${o.label} <- ${o.source}`);
     assert.ok(placed.includes("I, ___, as owner of the property, authorize the contractor <- project.homeownerName"), JSON.stringify(acroMap));
     assert.ok(placed.includes("Contractor Print Name <- computed.applicantSignerName"), JSON.stringify(acroMap));
