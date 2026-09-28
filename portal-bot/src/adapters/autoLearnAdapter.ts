@@ -22,6 +22,7 @@ import { armHumanCaptureOnPage } from "../humanCapture";
 import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, reviewSignals as sharedReviewSignals, splitSignerName } from "../../../shared/src/portalSafety";
 import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, backstopFor, isStoppingAbort } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
+import { attachmentTypeFor, isDocumentTypeList, isPlanSetDocType } from "./attachmentTypes";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
 // having a human record it. Each page is scraped into a structured snapshot
@@ -4120,10 +4121,23 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     // Row layout differs across ACA builds (table rows on some, divs on others), so work
     // from the CONTROLS themselves rather than a row structure. The document-Type select
     // is the section's signature: it is the only select whose options are document types
-    // ("Plans - Structural", "Plans - Electrical", …).
-    const typePrefs = isElectrical
-      ? [/plans?\s*[-–—]?\s*electrical/i, /electrical/i, /plans?\b/i]
-      : [/plans?\s*[-–—]?\s*structural/i, /structural/i, /plans?\b/i];
+    // ("Plans - Structural", "Plans - Electrical", …; Corvallis numbers them: "01 Plans").
+    // WHICH select and WHICH option are attachmentTypes.ts's answers — the same ones the replay
+    // reads (typeOptionsOf / pendingAttachmentRow / the owed rows), so the two cannot disagree.
+    // A private regex here missed Corvallis's "01 Plans" (live 2026-09-28): no Type was chosen, the
+    // Save was refused, and a person picked it by hand.
+    const discipline = isElectrical ? "electrical" : "structural";
+    // The document this page's row carries: this page's upload (the plan set in combined mode).
+    const rowDoc = (() => {
+      const docs: string[] = [];
+      for (let i = steps.length - 1; i >= 0; i--) {
+        const s = steps[i];
+        if (s.action === "goto" || (s.action === "click" && /^advance\b/i.test(String(s.note ?? "")))) break;
+        if (s.action === "upload" && s.docType) docs.push(String(s.docType));
+      }
+      return docs.find(isPlanSetDocType) ? "plan_set" : (docs[0] ?? "plan_set");
+    })();
+    const collapse = (t: string) => String(t ?? "").replace(/\s+/g, " ").trim();
     const readOptions = async (sel: { evaluate?: unknown }): Promise<Array<{ v: string; t: string }>> => {
       // Best-effort: a locator with no .evaluate (older runtime / stub page) throws
       // SYNCHRONOUSLY, which .catch() cannot absorb — and this pass must never abort a run.
@@ -4142,13 +4156,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     for (let i = 0; i < selCount; i++) {
       const sel = allSelects.nth(i);
       const opts = await readOptions(sel);
-      const isDocType = opts.some((o) => /plans?\s*[-–—]/i.test(o.t)) || opts.some((o) => /^(plans|calculations|photos?|forms?)\b/i.test(o.t));
-      if (!isDocType) continue;
+      if (!isDocumentTypeList(opts.map((o) => o.t))) continue;
       sawTypeSelect = true;
       const current = String((await sel.inputValue().catch(() => "")) ?? "").trim();
       if (current) continue;
-      let pick: { v: string; t: string } | undefined;
-      for (const re of typePrefs) { pick = opts.find((o) => o.v && re.test(o.t)); if (pick) break; }
+      // The option's TEXT is the answer; its VALUE is what selectOption takes (Corvallis:
+      // "ACA USERS - DS BLD RES::01 Plans" for "01 Plans").
+      const want = attachmentTypeFor(rowDoc, opts.map((o) => o.t), { discipline });
+      const pick = want ? opts.find((o) => o.v && collapse(o.t) === want) : undefined;
       if (!pick) continue; // no sensible option — leave it for the human rather than guess
       if (await sel.selectOption(pick.v).then(() => true).catch(() => false)) {
         typeSet++;

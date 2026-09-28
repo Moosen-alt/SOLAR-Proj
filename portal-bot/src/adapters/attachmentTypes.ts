@@ -106,7 +106,7 @@ export function attachmentTypeFor(docType: string, options: string[], opts: { di
   const t = String(docType || "").toLowerCase();
   if (isPlanSetDocType(t)) {
     const trade = /elec/i.test(String(opts.discipline ?? "")) ? "electrical" : "structural";
-    return first(new RegExp(`^plans?\\s*[-–—:]\\s*${trade}\\b`, "i"), new RegExp(`^${trade}\\s+(plans?|drawings?)\\b`, "i"))
+    return first(new RegExp(`^plans?\\s*[-–—:]?\\s*${trade}\\b`, "i"), new RegExp(`^${trade}\\s+(plans?|drawings?)\\b`, "i"))
       ?? plansGeneric()
       // Anything else that names plans — the learner's last resort before this module existed.
       ?? first(/\bplans?\b/i, /\bdrawings?\b/i)
