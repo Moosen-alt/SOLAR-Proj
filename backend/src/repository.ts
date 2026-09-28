@@ -8989,11 +8989,11 @@ export async function prepareSubmission(
       // stage neither borrows nor falls back to this host.
       const notServed = replayFailed ? notServedInResult(result) : null;
       if (notServed) {
-        const where = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
+        const where = track === "nem" ? (portalProject.utility || "this utility") : (portalProject.ahj || "this AHJ");
         const host = portalHostOf(String(recipe.portalUrl ?? "")) || String(recipe.portalUrl ?? "");
         try {
           recordPortalNotServed(db, {
-            scopeType: track === "nem" ? "utility" : "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility,
+            scopeType: track === "nem" ? "utility" : "ahj", state: portalProject.state, ahj: portalProject.ahj, utility: portalProject.utility,
             discipline: trackDiscipline, portalUrl: String(recipe.portalUrl ?? ""), quote: notServed, projectId, recipeId: borrowed ? null : recipe.id,
           });
         } catch (e) {
