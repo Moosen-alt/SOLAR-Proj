@@ -2015,12 +2015,24 @@ function fieldNameTokens(field: string): string[] {
   for (const w of words) for (const t of (FIELD_TOKEN_SYNONYMS[w] ?? [w])) out.add(t);
   return [...out];
 }
+// A TOKEN IS A WORD, NOT A SUBSTRING (leak sweep 2026-09-28). acDiscReq's token "ac" matched inside
+// "ACcessible", so "Is the meter socket accessible 24/7?" = Yes was bound to the parser's
+// disconnect-is-shown flag. A token hits only as a whole word (a plural "s" allowed).
+const escapeRe = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function labelHasToken(text: string, token: string): boolean {
+  return new RegExp(`(?:^|[^a-z0-9])${escapeRe(token)}s?(?![a-z0-9])`, "i").test(text);
+}
+/** Does the control's label name this field (a whole-word token hit)? */
+export function labelNamesField(label: string, field: string): boolean {
+  const text = String(label || "").toLowerCase();
+  return fieldNameTokens(field).some((t) => labelHasToken(text, t));
+}
 export function disambiguateByLabel(label: string, candidates: string[]): string | null {
   const text = String(label || "").toLowerCase();
   if (!text.trim() || candidates.length < 2) return null;
   const scored = candidates.map((c) => {
     const toks = fieldNameTokens(c);
-    const hit = toks.filter((t) => text.includes(t));
+    const hit = toks.filter((t) => labelHasToken(text, t));
     return { c, n: hit.length, extra: toks.length - hit.length };
   });
   const best = Math.max(...scored.map((x) => x.n));
@@ -2056,7 +2068,7 @@ export function labelRulesOutAllCandidates(label: string, candidates: string[]):
   const text = String(label || "").toLowerCase();
   const words = text.split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !LABEL_STOPWORDS.has(w));
   if (new Set(words).size < 3) return false; // too thin to conclude anything
-  return candidates.every((c) => fieldNameTokens(c).every((t) => !text.includes(t)));
+  return candidates.every((c) => fieldNameTokens(c).every((t) => !labelHasToken(text, t)));
 }
 
 // Steps bound to a field name the project data does not define. The LLM planner CHOOSES
@@ -2085,6 +2097,28 @@ export function deadFieldBindings(steps: RecipeStep[], projectFields: Record<str
   return out;
 }
 
+// PARSER QC / EVIDENCE SCALARS ARE NOT PORTAL ANSWERS (leak sweep 2026-09-28). Every parser scalar
+// reaches the dictionary, including the QC evidence flags — acDiscReq ("is a lockable disconnect
+// SHOWN on the plan set": "yes", or prose like "60A non-fusible blade-type…"), lightFrame,
+// gravityWindDesign, the *Compliant / attachment* screens. A portal's "Is the meter socket
+// accessible 24/7?" = Yes matched acDiscReq's "yes" by VALUE and was bound to it, so every later job
+// answered a meter-access question with its disconnect evidence. They never enter the binder's index.
+const PARSER_EVIDENCE_KEYS = new Set([
+  "acDiscReq", "lightFrame", "gravityWindDesign", "manufacturerInstallation", "attachmentToFraming",
+  "attachmentsOutsideEdgeZone", "attachmentSpacingIn", "attachmentEdgeSpacingIn", "stampRecommendation", "permitPath",
+]);
+export function isParserEvidenceKey(key: string): boolean {
+  return PARSER_EVIDENCE_KEYS.has(key) || /(?:Text|Compliant|Recommendation)$/.test(key);
+}
+/** A bare Yes/No answer: it names nothing, so a value match alone never binds it. */
+const YES_NO_LITERAL = /^(?:yes|no|y|n|true|false)$/i;
+/** The learner's standing policy answers ("policy default: <question> -> Yes") stay literals. */
+const POLICY_DEFAULT_NOTE = /^\s*policy default\s*:/i;
+/** THE disconnect-to-meter distance question ("Is your disconnect within 10 feet of the utility
+ *  meter?", "Are the AC disconnect(s) … within the state's required distance of the meter?") — one
+ *  predicate, shared with the portal question bank (portalQuestionBank per-job:disconnect-10ft). */
+export const DISCONNECT_DISTANCE_QUESTION = /disconnect[^?]{0,80}\bwithin\s*(?:10|ten)\b|disconnect[^?]{0,80}\bwithin\s+(?:the\s+)?(?:state'?s?\s+)?required\s+distance|\bwithin\s*(?:10|ten)\s*(?:feet|ft)\b[^?]{0,60}\bdisconnect/i;
+
 export function convertLiteralsToBoundFields(
   steps: RecipeStep[],
   projectFields: Record<string, string>,
@@ -2092,10 +2126,12 @@ export function convertLiteralsToBoundFields(
   const norm = (v: string): string => String(v || "").toLowerCase().replace(/\s+/g, " ").trim();
 
   // value -> the project field key(s) holding exactly that value. Skip very short values
-  // (<2 chars) and the volatile todayDate helper — not stable identifying data.
+  // (<2 chars) and the volatile todayDate helper — not stable identifying data — and the parser's
+  // QC/evidence scalars (isParserEvidenceKey), which are never a portal's answer.
   const valueToFields = new Map<string, string[]>();
   for (const [key, raw] of Object.entries(projectFields)) {
     if (key === "todayDate") continue;
+    if (isParserEvidenceKey(key)) continue;
     const nv = norm(raw);
     if (nv.length < 2) continue;
     const arr = valueToFields.get(nv) ?? [];
@@ -2109,6 +2145,9 @@ export function convertLiteralsToBoundFields(
   const out = steps.map((step) => {
     const bindable = (step.action === "fill" || step.action === "select") && !!step.value && !step.field && !step.sensitive;
     if (!bindable) return step;
+    // A STANDING POLICY ANSWER IS A LITERAL ON PURPOSE ("policy default: Are the AC disconnect(s)…
+    // -> Yes"): the operator's answer for every job, never a value to rebind to project data.
+    if (POLICY_DEFAULT_NOTE.test(String(step.note ?? ""))) return step;
     // A DATE never matches by value (todayDate is skipped above as volatile), so it would
     // otherwise stay frozen and replay a stale — eventually PAST — date onto a live
     // application. Rebind it by the control's label to a field recomputed every replay.
@@ -2141,8 +2180,26 @@ export function convertLiteralsToBoundFields(
       delete next.value;
       return next;
     }
+    const labelText = `${step.selector?.label ?? ""} ${step.note ?? ""}`;
+    const yesNo = YES_NO_LITERAL.test(String(step.value ?? "").trim());
+    // THE DISCONNECT-DISTANCE QUESTION HAS ITS OWN KEY — the per-job answer (intake asks it when a
+    // recipe binds it), never whichever parser flag happened to hold "yes".
+    if (yesNo && DISCONNECT_DISTANCE_QUESTION.test(labelText)) {
+      bound.push({ value: step.value as string, field: "disconnectWithin10ft", note: step.note });
+      const next: RecipeStep = { ...step, field: "disconnectWithin10ft" };
+      delete next.value;
+      return next;
+    }
     const matches = valueToFields.get(norm(step.value as string));
     if (!matches || matches.length === 0) return step; // portal-specific literal — keep as-is
+    // A BARE YES/NO NAMES NOTHING: a value match alone is coincidence ("No" is this project's
+    // hasBattery and also the answer to "Will the facility interconnect to a switchgear?"). It binds
+    // only when the control's own label names the field (a whole-word token hit); otherwise it is
+    // kept as recorded and reported, never bound and never a blocker.
+    if (yesNo && matches.length === 1 && !labelNamesField(labelText, matches[0])) {
+      portalConstants.push({ value: step.value as string, note: `${String(step.note ?? "").slice(0, 60)} (a bare Yes/No matched ${matches[0]} by value only — kept as recorded)` });
+      return step;
+    }
     if (matches.length === 1) {
       bound.push({ value: step.value as string, field: matches[0], note: step.note });
       // Replace the frozen literal with a reusable binding (resolveValue() at replay reads

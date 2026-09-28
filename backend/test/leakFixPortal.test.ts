@@ -268,5 +268,62 @@ await check("MUST-PASS: the v40 cleanup clears foreign tenants from learned/seed
   assert.deepEqual(again.keptVerified, ["t|verified"]);
 });
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+section("P3  a Yes/No site question never binds to a parser QC/evidence flag");
+// The dictionary a learn binds against, with the parser's evidence flags in it (the real shape).
+const evidenceProject = project({
+  acDiscReq: "yes", lightFrame: "yes", gravityWindDesign: "yes", manufacturerInstallation: "yes",
+  batteryModel: "", clientId: alpha.id,
+});
+const evidenceFields = PR.resolveRecipeFieldValues(db, evidenceProject, "utility");
+const yn = (label: string, value = "Yes", note?: string): RecipeStep => ({ action: "select", selector: { label }, value, note: note ?? label });
+await check("MUST-PASS: meter-access / manual-operable questions are NOT bound to acDiscReq / lightFrame by value", () => {
+  assert.equal(evidenceFields.acDiscReq, "yes", "fixture: the evidence flag is in the dictionary");
+  const r = PR.convertLiteralsToBoundFields([
+    yn("Is the meter socket accessible 24/7?"),
+    yn("Please indicate if the AC disconnect(s) for this installation are manually operable"),
+    yn("Is the structure conventional light-frame construction?"),
+  ], evidenceFields);
+  for (const s of r.steps) {
+    assert.ok(!s.field || !PR.isParserEvidenceKey(s.field), `${s.note} bound to ${s.field}`);
+    assert.equal(s.value, "Yes", `${s.note} lost its recorded answer`);
+  }
+  assert.equal(r.ambiguous.length, 0, "a coincidental value match must not become a blocker");
+});
+await check("MUST-PASS: the disconnect-distance question binds to disconnectWithin10ft (both wordings)", () => {
+  const r = PR.convertLiteralsToBoundFields([
+    yn("Is your disconnect within 10 feet of the utility meter?"),
+    yn("Are the AC disconnect(s) for this installation within the states required distance of the meter?"),
+  ], evidenceFields);
+  assert.deepEqual(r.steps.map((s) => s.field), ["disconnectWithin10ft", "disconnectWithin10ft"]);
+  assert.ok(r.steps.every((s) => s.value === undefined));
+});
+await check("MUST-EXCLUDE: a policy-default step stays a literal; the question bank reads the same predicate", async () => {
+  const r = PR.convertLiteralsToBoundFields([
+    yn("Are the AC disconnect(s) for this installation within the states required distance of the meter?", "Yes", "policy default: Are the AC disconnect(s) for this installation within the states required distan -> Yes"),
+    yn("Is the meter socket accessible 24/7?", "Yes", "policy default: Is the meter socket accessible 24/7? -> Yes"),
+  ], evidenceFields);
+  assert.deepEqual(r.steps.map((s) => [s.field, s.value]), [[undefined, "Yes"], [undefined, "Yes"]]);
+  const { QUESTION_CLASSIFIER_RULES } = await import("../src/portalQuestionBank");
+  const rule = QUESTION_CLASSIFIER_RULES.find((x) => x.id === "per-job:disconnect-10ft")!;
+  assert.ok(rule.re.test("Are the AC disconnect(s) for this installation within the states required distance of the meter?"));
+  assert.ok(!rule.re.test("Is the meter within 10 feet of the service panel?"), "a meter-only distance is not the disconnect question");
+});
+await check("MUST-PASS: a bare Yes/No matching ONE field by value alone is kept as recorded and reported, never bound", () => {
+  const r = PR.convertLiteralsToBoundFields([yn("Is the meter socket accessible 24/7?", "Yes")], { hasBattery: "Yes", homeownerName: "Pat Example" });
+  assert.equal(r.steps[0].field, undefined, `bound to ${r.steps[0].field}`);
+  assert.equal(r.steps[0].value, "Yes");
+  assert.equal(r.portalConstants.length, 1, "the kept literal is not reported");
+});
+await check("MUST-EXCLUDE: a Yes/No whose label names its field still binds (Energy Storage -> hasBattery); tokens are whole words", () => {
+  const r = PR.convertLiteralsToBoundFields([yn("Energy Storage", "No")], { hasBattery: "No", homeownerName: "Pat Example" });
+  assert.equal(r.steps[0].field, "hasBattery");
+  assert.equal(PR.labelNamesField("Is the meter socket accessible 24/7?", "acDiscReq"), false, "'ac' matched inside 'accessible'");
+  assert.equal(PR.labelNamesField("AC Disconnect Required", "acDiscReq"), true);
+  // A non-Yes/No literal still binds on a unique value match, exactly as before.
+  const n = PR.convertLiteralsToBoundFields([{ action: "fill", selector: { label: "Customer" }, value: "Pat Example" }], { homeownerName: "Pat Example" });
+  assert.equal(n.steps[0].field, "homeownerName");
+});
+
 console.log(`\n${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);
