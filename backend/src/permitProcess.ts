@@ -404,10 +404,16 @@ export interface StatewideEvidence {
   url?: string;
   /** The cited fact itself, when the evidence is one (a lookup's portal answer). */
   fact?: CitedFact<string>;
+  /** A PERSON said it (a human-verified knowledge-base row — isVerifiedKnowledge). Verified
+   *  evidence decides outright (hard rule 3, the precedence fitUrl gives a verified row). */
+  verified?: boolean;
 }
 export type StatewideDecision =
-  | { url: string; basis: CitedFact<string>; withheld?: undefined; evidence: StatewideEvidence[] }
-  | { url: null; withheld: string; basis?: undefined; evidence: StatewideEvidence[] };
+  | { url: string; basis: CitedFact<string>; withheld?: undefined; because?: undefined; evidence: StatewideEvidence[] }
+  /** `because`: "elsewhere" = something on file says this AHJ files ELSEWHERE; "unknown" = nothing on
+   *  file either way. Only "elsewhere" refuses a stored / researched statewide URL
+   *  (statewideEvidence.statewideUrlRefusal) — an unknown AHJ recovers through research. */
+  | { url: null; withheld: string; because: "elsewhere" | "unknown"; basis?: undefined; evidence: StatewideEvidence[] };
 
 /** The portal a refused lookup answer NAMED: the structured `claimed`, else (rows saved before it
  *  existed) the URL in the door's own "the portal <url> was never returned by the search…" words.
@@ -512,14 +518,19 @@ export function statewidePortalFor(
   // 3. Everything the database knows (knowledge-base rows, recipes, stored logins, the hand-written
   //    profile, the agency that issues this permit) — gathered by the caller.
   items.push(...(opts.evidence ?? []));
-  const elsewhere = items.filter((e) => e.kind === "elsewhere");
+  // A PERSON'S ANSWER DECIDES OUTRIGHT (hard rule 3 — the precedence fitUrl gives a verified row):
+  // when any evidence is human-verified, only the verified evidence decides. Salem's verified row
+  // says "OR E-permitting"; a hand-written profile's "PAC Portal" words never outrank it.
+  const verifiedItems = items.filter((e) => e.verified);
+  const deciding = verifiedItems.length ? verifiedItems : items;
+  const elsewhere = deciding.filter((e) => e.kind === "elsewhere");
   if (elsewhere.length) {
     return {
-      url: null, evidence: items,
+      url: null, evidence: items, because: "elsewhere",
       withheld: `${name} is not assumed for ${ahj}: ${elsewhere.slice(0, 2).map((e) => e.detail).join("; ")}. A person confirms ${ahj}'s portal (save it on the AHJ's knowledge-base profile) and re-stages.`,
     };
   }
-  const onState = items.find((e) => e.kind === "statewide");
+  const onState = deciding.find((e) => e.kind === "statewide");
   if (onState) {
     const basis: CitedFact<string> = onState.fact && answered(onState.fact)
       ? { ...onState.fact, value: rule.value }
@@ -527,7 +538,7 @@ export function statewidePortalFor(
     return { url: rule.value, basis, evidence: items };
   }
   return {
-    url: null, evidence: items,
+    url: null, evidence: items, because: "unknown",
     withheld: `Unknown: nothing on file says ${ahj} files on ${name} (no per-job lookup portal, seeded or hand-written process, knowledge-base row, recipe or issuing agency names it). A person confirms ${ahj}'s portal (save it on the AHJ's knowledge-base profile) and re-stages.`,
   };
 }

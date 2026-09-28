@@ -30,8 +30,8 @@ import { detectPlatform } from "./publicPermitStatus";
 import { NEM_APPROVAL_OUTCOME, isNemApprovalOutcome, trackKind } from "./permitMonitor";
 import { HttpError } from "./httpError";
 import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, trackSafeUrl } from "./portalChannel";
-import { classifyChannelWords, normalizeAhjName, permitAnswerForTrack, permitChannelLabel, permitProcessFor, statewidePortalFor } from "./permitProcess";
-import { statewideEvidenceFor } from "./statewideEvidence";
+import { classifyChannelWords, normalizeAhjName, permitAnswerForTrack, permitChannelLabel, permitProcessFor } from "./permitProcess";
+import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
 
 /** Words that claim the statewide portal ("Oregon ePermitting", "OR E-permitting") with no URL —
  *  on a learned row, often the generic fallback's own words laundered in (portal-truth D2/D4). */
@@ -247,10 +247,7 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   }
   // THE STATEWIDE PORTAL, ONLY ON EVIDENCE (portal-truth D1) — the same decision the stage makes, so
   // the card and the stage can never disagree. Withheld → the card falls through to what is known.
-  const statewide = statewidePortalFor(project, track, {
-    processProfileMethod: findAhjProcessProfile(project)?.submissionMethod ?? null,
-    evidence: statewideEvidenceFor(db, project, track),
-  });
+  const statewide = statewideDecisionFor(db, project, track);
   if (statewide && statewide.url !== null && trackSafeUrl(track, statewide.url)) {
     const cited = statewide.basis.origin === "lookup";
     return {
@@ -269,7 +266,10 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   if (kb) {
     const verified = s(kb.verified_at).trim() !== "";
     const url = s(kb.portal_url).trim();
-    const safeUrl = url && trackSafeUrl(track, url) && !isInformationalPageUrl(url) ? url : "";
+    // A statewide URL on a row, for an AHJ whose evidence says it files elsewhere, is not shown as
+    // its portal — the stage refuses it too (statewideUrlRefusal, the one predicate; D1).
+    const safeUrl = url && trackSafeUrl(track, url) && !isInformationalPageUrl(url)
+      && (verified || !statewideUrlRefusal(db, project, track, url, statewide)) ? url : "";
     // A resolved URL is labelled by its host; the row's own words (which, on a learned row, can be
     // the generic fallback's "Oregon ePermitting") never earn the statewide label (D4).
     const words = s(kb.submission_method).trim() || s(kb.portal_name).trim();

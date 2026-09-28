@@ -76,9 +76,9 @@ import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier
 import { publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
 import type { DesignTextSource } from "./designCriteria";
-import { findAhjProcessProfile } from "./processProfiles";
-import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, isStatewidePortalUrl } from "./permitProcess";
-import { statewideEvidenceFor } from "./statewideEvidence";
+import { describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, isStatewidePortalUrl } from "./permitProcess";
+import { statewideDecisionFor, statewideUrlRefusal } from "./statewideEvidence";
+import { researchWithFittedUrl } from "./researchedPortalUrl";
 import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
 import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import type { StageAcquiredForm } from "./formAcquisitionPlan";
@@ -743,28 +743,11 @@ export async function researchAndSaveUtility(
 }
 
 /**
- * A RESEARCHED URL IS SAVED TO THE KB ONLY WHEN IT FITS (hostFitsTrackAndEntity). Research that
- * disagrees with the track, with a portal a person verified, or lands on another entity's portal
- * was already refused for THIS stage — but saving it as the entity's seeded row made it the
- * entity's own claim, and the NEXT stage launched it unconfirmed. The rest of the research
- * (documents, steps, notes) is still saved; the URL is left out with a note saying why. The
- * returned research is untouched, so the caller still sees (and reports) what was found.
+ * A RESEARCHED URL IS SAVED TO THE KB ONLY WHEN IT FITS — the one write door, shared with the form
+ * search (researchedPortalUrl.ts: hostFitsTrackAndEntity, and for a permit the statewide portal
+ * refused for an AHJ whose evidence says it files elsewhere — statewideUrlRefusal).
  */
-export function researchWithFittedUrl<T extends { portalUrl: string; notes: string }>(
-  db: AppDb,
-  track: "permit" | "nem",
-  entity: { state?: string; name?: string },
-  research: T,
-): T {
-  const url = String(research.portalUrl || "").trim();
-  if (!url) return research;
-  const fit = hostFitsTrackAndEntity(track, portalEntityEvidence(db, { scope: scopeForTrack(track), state: entity.state, name: entity.name }), url, "research");
-  if (fit.fits) return research;
-  addAuditLog(db, null, "system", "kb research", "knowledge.researched_url_not_saved", {
-    track, state: entity.state ?? "", entity: entity.name ?? "", url, code: fit.code, reason: fit.reason,
-  });
-  return { ...research, portalUrl: "", notes: `${research.notes || ""} [researched portal not saved: ${url} — ${fit.reason}]`.trim() };
-}
+export { researchWithFittedUrl };
 
 // Update an existing project from a (re-)parsed payload. Merges the new fields
 // over the existing parser snapshot — so a re-parse of a corrected plan set
@@ -8017,11 +8000,27 @@ export async function prepareSubmission(
     recipeHostFit(track, portalEntityEvidence(db, { ...hostEntityInput, excludeRecipeIds: [r.id] }), r);
   /** Why candidate URLs were refused on this stage — the operator reads these if nothing fits. */
   const refusedUrls: Array<{ url: string; source: string; code: string; reason: string }> = [];
+  // PORTAL-TRUTH D1 AT EVERY READ (statewideEvidence.statewideUrlRefusal — the predicate the research
+  // write doors ask too): a stored / learned / researched URL on the STATEWIDE host is not served
+  // when this AHJ's own evidence says it files elsewhere. The statewide fallback below is D1's own
+  // answer, and an operator's URL is judged at its route. The decision is read once per stage.
+  let statewideDecisionMemo: ReturnType<typeof statewideDecisionFor> | undefined;
+  const statewideDecision = () => (statewideDecisionMemo === undefined ? (statewideDecisionMemo = statewideDecisionFor(db, detail.project, track)) : statewideDecisionMemo);
   const fitUrl = (url: string | null | undefined, source: PortalUrlSource): string => {
     const value = String(url ?? "").trim();
     if (!value) return "";
     const fit = hostFitsTrackAndEntity(track, hostEntity, value, source);
-    if (fit.fits) return value;
+    if (fit.fits) {
+      const refusal = scopeForTrack(track) === "ahj" && source !== "statewide" && source !== "operator" && isStatewidePortalUrl(detail.project.state, value)
+        ? statewideUrlRefusal(db, detail.project, track, value, statewideDecision())
+        : "";
+      if (!refusal) return value;
+      if (!refusedUrls.some((r) => r.url === value)) {
+        refusedUrls.push({ url: value, source, code: "statewide_elsewhere", reason: refusal });
+        addAuditLog(db, projectId, "system", "submit gate", "portal.statewide_url_refused", { track: track ?? "permit", url: value, source, reason: refusal.slice(0, 600) });
+      }
+      return "";
+    }
     if (!refusedUrls.some((r) => r.url === value)) refusedUrls.push({ url: value, source, code: fit.code, reason: fit.reason });
     return "";
   };
@@ -8164,11 +8163,7 @@ export async function prepareSubmission(
   let statewidePortalUrl = "";
   let statewideBasis = "";
   if (track !== "nem" && !ahjPortalUrl && !draftRecipe) {
-    const process = findAhjProcessProfile(detail.project);
-    const statewide = statewidePortalFor(detail.project, track, {
-      processProfileMethod: process?.submissionMethod ?? null,
-      evidence: statewideEvidenceFor(db, detail.project, track),
-    });
+    const statewide = statewideDecision();
     if (statewide && statewide.url !== null) {
       statewidePortalUrl = permitSafeUrl(statewide.url, "statewide");
       statewideBasis = describeCited("Statewide portal", statewide.basis);

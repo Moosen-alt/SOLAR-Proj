@@ -6,9 +6,11 @@
 // Every source is the AHJ's OWN (or, for a permit another agency issues, THAT agency's own):
 //   - the hand-written registry profile (a person wrote it for this jurisdiction);
 //   - the seeded process profile (the operator's reference sheet);
-//   - knowledge-base rows for this exact AHJ — their URLs only: a learned row's portal NAME is
-//     often the generic fallback's own words ("Oregon ePermitting") laundered into the row, and
-//     must never vouch for the fallback that wrote it;
+//   - knowledge-base rows for this exact AHJ — their URLs; a learned row's portal NAME is often the
+//     generic fallback's own words ("Oregon ePermitting") laundered into the row, and must never
+//     vouch for the fallback that wrote it. A PERSON-VERIFIED row's words are its person's answer
+//     (Salem: "OR E-permitting", no URL) and are read through classifyChannelWords; every verified
+//     row's evidence is marked `verified` and decides outright (statewidePortalFor, hard rule 3);
 //   - recipes keyed to this AHJ (a recipe the statewide portal REFUSED — "not served here" —
 //     says "elsewhere");
 //   - the client's stored logins naming this AHJ's own tenant (aca-prod.accela.com/CORVALLIS);
@@ -18,12 +20,30 @@ import type { ProjectRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { registryApplicationProfileFor } from "./applicationDocs";
 import { findAhjProcessProfile } from "./processProfiles";
-import { ahjNameCore, classifyChannelWords, isStatewidePortalUrl, issuingAgencyFor, normalizeAhjName, permitProcessFor, statewidePortalName, type StatewideEvidence } from "./permitProcess";
+import { ahjNameCore, classifyChannelWords, isStatewidePortalUrl, issuingAgencyFor, normalizeAhjName, permitProcessFor, statewidePortalFor, statewidePortalName, type StatewideDecision, type StatewideEvidence } from "./permitProcess";
 import { isInformationalPageUrl, isPathTenantedHost, portalHostOf, portalTenantOf, trackSafeUrl } from "./portalChannel";
+import { isVerifiedKnowledge } from "./knowledgeBase";
 import { NOT_SERVED_FLAG_PREFIX } from "../../shared/src/portalNotServed";
 
 type Row = Record<string, unknown>;
 const s = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v)).trim();
+
+/** A submission method that names only the generic online channel ("online portal", "Online", "web
+ *  portal") says nothing about WHICH portal — classifyChannelWords would read its bare "portal" as
+ *  another system's, flipping a verified "OR E-permitting" + "online portal" row to "elsewhere". */
+const GENERIC_ONLINE_METHOD = /^\W*(?:on[\s-]?line|web|internet|electronic(?:ally)?)?\W*(?:portal|submittal|submission|application)?\W*$/i;
+
+/** WHAT A PERSON-VERIFIED ROW'S WORDS SAY about the statewide portal: its portal name and its
+ *  submission method, each through classifyChannelWords (a generic-online method is neutral).
+ *  Either saying "elsewhere" is elsewhere; else either saying "statewide" is statewide. */
+function verifiedRowWords(state: string, name: string, method: string, ownNames: string[]): { verdict: "statewide" | "elsewhere" | "neutral"; words: string } {
+  const parts = [
+    { words: name, verdict: name ? classifyChannelWords(state, name, ownNames) : "neutral" as const },
+    { words: method, verdict: method && !GENERIC_ONLINE_METHOD.test(method) ? classifyChannelWords(state, method, ownNames) : "neutral" as const },
+  ];
+  const hit = parts.find((p) => p.verdict === "elsewhere") ?? parts.find((p) => p.verdict === "statewide");
+  return hit ? { verdict: hit.verdict, words: hit.words } : { verdict: "neutral", words: "" };
+}
 
 
 /** Evidence about ONE jurisdiction name. `who` prefixes each detail ("issuing agency Marion County: "). */
@@ -58,18 +78,26 @@ function evidenceForName(db: AppDb | null, state: string, ahj: string, city: str
   }
   if (!db) return out;
   const key = normalizeAhjName(ahj);
-  // 3. Knowledge-base rows for this exact jurisdiction name (same state) — URLs only.
+  // 3. Knowledge-base rows for this exact jurisdiction name (same state) — URLs; and a PERSON-
+  //    VERIFIED row's words too (its person's answer), every verified item marked `verified`.
   try {
     const mine = db.query<Row>(
-      "SELECT ahj, portal_url, portal_name, confidence, verified_at FROM permit_utility_knowledge WHERE ahj IS NOT NULL AND ahj != '' AND lower(state) = lower(?)",
+      "SELECT ahj, portal_url, portal_name, submission_method, confidence, verified_at FROM permit_utility_knowledge WHERE ahj IS NOT NULL AND ahj != '' AND lower(state) = lower(?)",
       [state],
     ).filter((x) => normalizeAhjName(s(x.ahj)) === key);
     for (const r of mine) {
+      const verified = isVerifiedKnowledge(r);
+      const how = verified ? "verified" : s(r.confidence) || "stored";
       for (const u of [s(r.portal_url), s(r.portal_name)]) {
         if (!/^https?:\/\//i.test(u) || !portalHostOf(u) || isInformationalPageUrl(u) || !trackSafeUrl("building", u)) continue;
         const onState = isStatewidePortalUrl(state, u);
-        const how = r.verified_at ? "verified" : s(r.confidence) || "stored";
-        out.push({ kind: onState ? "statewide" : "elsewhere", source: `${label}knowledge-base row (${how})`, url: u, detail: `${label}a ${how} knowledge-base row names ${u}` });
+        out.push({ kind: onState ? "statewide" : "elsewhere", source: `${label}knowledge-base row (${how})`, url: u, detail: `${label}a ${how} knowledge-base row names ${u}`, ...(verified ? { verified: true } : {}) });
+      }
+      if (verified) {
+        const said = verifiedRowWords(state, /^https?:\/\//i.test(s(r.portal_name)) ? "" : s(r.portal_name), s(r.submission_method), [ahj, s(r.ahj)]);
+        if (said.verdict !== "neutral") {
+          out.push({ kind: said.verdict, source: `${label}knowledge-base row (verified)`, detail: `${label}a person's verified knowledge-base row says "${said.words.slice(0, 120)}"`, verified: true });
+        }
       }
     }
   } catch { /* table missing on an old schema */ }
@@ -129,4 +157,48 @@ export function statewideEvidenceFor(
     out.push(...evidenceForName(db, state, agency, "", track, `issuing agency ${agency}`, null));
   }
   return out;
+}
+
+/** THE STATEWIDE DECISION for this project's track — the collector, the AHJ's own seeded process
+ *  method and statewidePortalFor, in ONE place: the stage, the track card and the stored-URL gate
+ *  below all ask this, so none can disagree. null = the state has no statewide portal. */
+export function statewideDecisionFor(
+  db: AppDb | null,
+  project: Pick<ProjectRecord, "state" | "ahj" | "city"> & { clientId?: string | null },
+  track: string | null | undefined,
+): StatewideDecision | null {
+  return statewidePortalFor(project, track, {
+    processProfileMethod: findAhjProcessProfile(project as never)?.submissionMethod ?? null,
+    evidence: statewideEvidenceFor(db, project, track),
+  });
+}
+
+/**
+ * A STORED / LEARNED / RESEARCHED URL ON THE STATEWIDE HOST FOR AN AHJ THAT FILES ELSEWHERE — the
+ * one predicate (portal-truth D1, at every door). The reason it is refused, or "" when it is not.
+ *
+ * Corvallis again: with D1 withholding the fallback, cold-start research answered the statewide
+ * portal, saved it into the city's knowledge-base row, and the NEXT stage served it from that row
+ * (or the learned profile) before D1 was ever asked. So a statewide URL from any source but D1
+ * itself (and a person) is judged by D1's evidence: refused when that evidence says this AHJ (or the
+ * agency issuing its permit) files ELSEWHERE — never written into the AHJ's row, never served.
+ * NOT refused when a person's verified row says the statewide portal (the evidence then decides
+ * "statewide"), nor when NOTHING is on file ("unknown"): research is how such an AHJ recovers
+ * (Josephine County). Gated on "elsewhere", never on "withheld". Reads only.
+ */
+export function statewideUrlRefusal(
+  db: AppDb | null,
+  project: Pick<ProjectRecord, "state" | "ahj" | "city"> & { clientId?: string | null },
+  track: string | null | undefined,
+  url: string | null | undefined,
+  decision?: StatewideDecision | null,
+): string {
+  const u = s(url);
+  if (!u || !isStatewidePortalUrl(project.state, u)) return "";
+  const d = decision === undefined ? statewideDecisionFor(db, project, track) : decision;
+  if (!d || d.url !== null || d.because !== "elsewhere") return "";
+  const ahj = s(project.ahj) || "this AHJ";
+  const name = statewidePortalName(project.state) || "the statewide portal";
+  const why = d.evidence.filter((e) => e.kind === "elsewhere" && (e.verified || !d.evidence.some((x) => x.verified))).slice(0, 1).map((e) => e.detail).join("");
+  return `${portalHostOf(u)} is ${name}, and what is on file says ${ahj} files elsewhere${why ? ` (${why.slice(0, 200)})` : ""} — a stored, learned or researched statewide URL is not taken over that; a person confirms ${ahj}'s portal`;
 }

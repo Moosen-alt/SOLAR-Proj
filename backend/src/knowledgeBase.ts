@@ -21,6 +21,7 @@ import { DEFAULT_ORG_ID } from "./db";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text } from "./json";
 import { FALLBACK_PROFILE_IDS, findApplicationProfile } from "./applicationDocs";
+import { classifyChannelWords, isStatewidePortalUrl } from "./permitProcess";
 import { usStateCode } from "./permitPath";
 import { enrichMboxLearningWithLlm, stripUrlsFromModelMemory } from "./llm";
 import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles";
@@ -2571,16 +2572,25 @@ export function knowledgeResearchHint(
   ].slice(0, 5);
   // The same filter as the learn planner's KB block: this text goes to a model too (llm research).
   const notes = clean(learnSafeNotes(profile.notes)).slice(0, 700);
+  // A STATEWIDE PORTAL NAMED ONLY IN WORDS is not asserted (portal-truth D1). Learned rows carry the
+  // generic fallback's own "Oregon ePermitting" laundered in (City of Beaverton, Seaside, Willamina),
+  // and "Known portal: Oregon ePermitting" steered research straight back to the statewide portal
+  // for a city that files on its own. Omitted — at read; the row is untouched — unless a PERSON
+  // verified the row or the row itself holds a statewide URL. Judged under the asking state and the
+  // row's own (a row filed under the wrong state still carries Oregon's words).
+  const statewideWordsOnly = !isVerifiedKnowledge(profile) && !looksLikeBareUrl(clean(profile.portalName)) && [input.state, profile.state].some((st) =>
+    classifyChannelWords(st, profile!.portalName) === "statewide" && !isStatewidePortalUrl(st, profile!.portalUrl));
+  const portalName = statewideWordsOnly ? "" : profile.portalName;
   const text = [
     `Our internal knowledge base already has a ${scope === "ahj" ? "jurisdiction" : "utility"} record for "${name}"${profile.state ? ` (${profile.state})` : ""} [confidence: ${profile.confidence}]:`,
-    profile.portalName ? `- Known portal: ${profile.portalName}` : "",
+    portalName ? `- Known portal: ${portalName}` : "",
     profile.portalUrl ? `- Known portal URL: ${profile.portalUrl}` : "",
     profile.requiredDocuments.length ? `- Known required documents: ${profile.requiredDocuments.slice(0, 12).join("; ")}` : "",
     notes ? `- Notes: ${notes}` : "",
     "Treat this as a STARTING POINT for your search — confirm against the official site (it may be stale) and fill the gaps.",
   ].filter(Boolean).join("\n").slice(0, 1400);
   // A record with only a name adds nothing worth prompting with.
-  if (!profile.portalName && !profile.portalUrl && !profile.requiredDocuments.length && !notes) return null;
+  if (!portalName && !profile.portalUrl && !profile.requiredDocuments.length && !notes) return null;
   return { text, pdfUrls };
 }
 

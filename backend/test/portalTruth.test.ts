@@ -467,4 +467,140 @@ await check("(d4-e3) MUST-PASS: a city whose lookup found its permits on the sta
   assert.match(blank.channel, /^Unknown/, blank.channel);
 });
 
+// ── D1 AT EVERY DOOR (round 2): the statewide URL from research / the KB / a learned profile ─────
+// The skeptic rebuilt Corvallis on a snapshot copy: D1 withheld the fallback, cold-start research
+// answered aca-oregon, researchWithFittedUrl → saveResearchedAhjProfile wrote it into the city's row,
+// and the next stage served it from the KB read before D1 was asked (the incident, with D1
+// bypassed). And a person-verified "OR E-permitting" row (Salem) was outranked by a hand-written
+// profile's words. statewideEvidence.statewideUrlRefusal is the one predicate, gated on
+// "elsewhere" (never on "withheld": an AHJ with nothing on file recovers through research).
+const forms = await import("../src/ahjFormAuto");
+/** A lookup citing the AHJ as its own permits' issuer (so a borrow can bind — B4 — and "served"
+ *  is observable as a replay), with `portalUrl` as this track's portal answer. */
+const lookupWith = (ahj: string, portalUrl: CitedFact<string>) => {
+  const agency = cite(ahj, `https://www.${ahj.toLowerCase().replace(/[^a-z]/g, "")}.example.gov/building`, `The ${ahj} issues building and electrical permits`);
+  pp.savePermitProcessLookup(db, {
+    state: "OR", ahj, lookedUpAt: new Date().toISOString(), issuingAgency: agency, permitStructure: nf(),
+    permits: (["structural", "electrical"] as const).map((d) => ({ discipline: d, label: d, issuingAgency: agency, portalUrl, recordType: nf(), documents: nf(), fee: nf() })),
+  } as never);
+};
+/** An AHJ whose lookup NAMED its own portal and did not keep it — Corvallis's evidence. */
+const namesOwnPortal = (ahj: string, host: string) => lookupWith(ahj, { value: null, sourceUrl: `https://www.${host}/building`, quote: `Apply online at www.${host}.`, origin: "lookup",
+  notFound: `the portal https://www.${host} was never returned by the search, opened by the lookup, or linked by a page we read — not kept` });
+/** An AHJ whose lookup found no portal at all, and named none — nothing on file either way. */
+const namesNoPortal = (ahj: string) => lookupWith(ahj, nf("no portal named on the pages read"));
+const statewideResearch = () => ({ ...research(ACA_OREGON), portalName: "", portalPlatform: "Accela", requiredDocuments: ["Plan set"] });
+const refusedAudits = (projectId: string) => fx.audits("portal.statewide_url_refused").filter((x) => x.project_id === projectId).map((x) => JSON.parse(x.details) as { url: string; source: string; reason: string });
+
+await check("(d1-r1) MUST-EXCLUDE (the skeptic's Corvallis rebuild): a KB row holding the statewide URL, for an AHJ whose lookup named its own portal, is not served — no borrow onto the statewide host, the refusal audited and named; the card does not show it either", async () => {
+  const ahj = "City of Corvane";
+  namesOwnPortal(ahj, "corvanepermits.example");
+  // The row as the bypassed door wrote it (the real research writer, as researchAndSaveAhj called it).
+  kb.saveResearchedAhjProfile(db, { state: "OR", ahj }, statewideResearch() as never);
+  assert.equal(kbRow(ahj)!.portal_url, ACA_OREGON, "fixture: the row holds the statewide URL");
+  const r = await stageBuilding(ahj, "Corvane");
+  assert.equal(r.replayed, null, "the statewide donor recipe drove the run — the KB row's statewide URL was served");
+  const refused = refusedAudits(r.projectId);
+  assert.ok(refused.length, "the refusal is audited");
+  assert.equal(refused[0].url, ACA_OREGON);
+  assert.match(refused[0].reason, /corvanepermits\.example/, refused[0].reason);
+  assert.equal(r.taken, null, "the statewide fallback was taken");
+  const card = cardFor(r.projectId, "building");
+  assert.doesNotMatch(card.channel, /aca-oregon/, card.channel);
+});
+await check("(d1-r2) MUST-PASS: a KB row holding the statewide URL for an AHJ with nothing saying it files elsewhere is served (borrowed onto)", async () => {
+  const ahj = "City of Brightwater";
+  namesNoPortal(ahj);
+  kb.saveResearchedAhjProfile(db, { state: "OR", ahj }, statewideResearch() as never);
+  const r = await stageBuilding(ahj, "Brightwater");
+  assert.deepEqual(refusedAudits(r.projectId), []);
+  assert.equal(r.replayed, donor.id, "the AHJ's own statewide row lends its portal to the borrow");
+});
+await check("(d1-w1) MUST-EXCLUDE the write: cold-start research answering the statewide portal for an AHJ that files elsewhere is never written (researchWithFittedUrl)", () => {
+  const ahj = "City of Corvane Heights";
+  namesOwnPortal(ahj, "corvaneheights.example");
+  const fitted = repo.researchWithFittedUrl(db, "permit", { state: "OR", name: ahj }, statewideResearch());
+  assert.equal(fitted.portalUrl, "", "the statewide URL survived the door");
+  assert.match(fitted.notes, /researched portal not saved: https:\/\/aca-oregon\.accela\.com\/oregon\/ — .*files elsewhere/, fitted.notes);
+  kb.saveResearchedAhjProfile(db, { state: "OR", ahj }, fitted as never);
+  assert.equal(kbRow(ahj)!.portal_url, "");
+  const audit = fx.audits("knowledge.researched_url_not_saved").map((x) => JSON.parse(x.details) as { entity: string; code: string }).find((x) => x.entity === ahj);
+  assert.equal(audit?.code, "statewide_elsewhere");
+});
+await check("(d1-w2) MUST-PASS (Josephine County's recovery): with NOTHING on file, research's statewide answer is written — and served by the next stage", async () => {
+  const ahj = "City of Josewood";
+  namesNoPortal(ahj);
+  assert.equal(evidence.statewideDecisionFor(db, { state: "OR", ahj, city: "Josewood" }, null)?.because, "unknown", "fixture: nothing on file either way");
+  const fitted = repo.researchWithFittedUrl(db, "permit", { state: "OR", name: ahj }, statewideResearch());
+  assert.equal(fitted.portalUrl, ACA_OREGON, "an unknown AHJ's research was refused — the gate is on 'withheld', not 'elsewhere'");
+  kb.saveResearchedAhjProfile(db, { state: "OR", ahj }, fitted as never);
+  assert.equal(kbRow(ahj)!.portal_url, ACA_OREGON);
+  const r = await stageBuilding(ahj, "Josewood");
+  assert.equal(r.replayed, donor.id);
+});
+await check("(d1-w3) MUST-EXCLUDE the form search's write (learnAhjPortalFromResearch, no check at all before): the statewide portal for an AHJ that files elsewhere is not written, nor a platform named from its host; MUST-PASS for an AHJ with nothing on file", () => {
+  const search = (ahj: string) => ({ provider: "claude", formName: "", candidateUrls: [], formType: "building_application", confidence: "medium", notes: "",
+    submittalPortalUrl: `${ACA_OREGON}Default.aspx`, portalPlatform: "Accela", submissionMethod: "online portal", ahj } as never);
+  const project = (ahj: string) => ({ state: "OR", ahj } as never);
+  const elsewhere = "City of Corvane Falls";
+  namesOwnPortal(elsewhere, "corvanefalls.example");
+  forms.learnAhjPortalFromResearch(db, project(elsewhere), search(elsewhere));
+  const row = kbRow(elsewhere);
+  assert.equal(row?.portal_url ?? "", "", `portal_url: ${row?.portal_url}`);
+  assert.doesNotMatch(row?.portal_name ?? "", /Oregon ePermitting/, `portal_name: ${row?.portal_name}`);
+  const unknown = "City of Josewood Falls";
+  forms.learnAhjPortalFromResearch(db, project(unknown), search(unknown));
+  assert.equal(kbRow(unknown)?.portal_url, `${ACA_OREGON}Default.aspx`);
+});
+await check("(d1-h1) the research hint: MUST-EXCLUDE 'Known portal: Oregon ePermitting' from a non-verified row's words with no statewide URL; MUST-PASS a row holding the statewide URL, a person's verified row, another system's name", () => {
+  const now = new Date().toISOString();
+  const insert = (ahj: string, portalName: string, portalUrl: string, verified = false) => db.run(
+    `INSERT INTO permit_utility_knowledge (id, profile_key, state, ahj, utility, portal_name, portal_url, required_documents_json, confidence, sources_json, notes, first_seen_at, last_learned_at, updated_at, verified_at)
+     VALUES (?, ?, 'OR', ?, '', ?, ?, '["Plan set"]', ?, '[]', '', ?, ?, ?, ?)`,
+    [`hint-${ahj}`, kb.knowledgeProfileKey({ state: "OR", ahj, utility: "" }), ahj, portalName, portalUrl, verified ? "mixed" : "learned", now, now, now, verified ? now : null]);
+  const hint = (ahj: string) => String(kb.knowledgeResearchHint(db, { state: "OR", ahj }, "ahj")?.text ?? "");
+  insert("City of Launderby", "Oregon ePermitting (Accela)", "");
+  const laundered = hint("City of Launderby");
+  assert.doesNotMatch(laundered, /Known portal/, laundered);
+  assert.match(laundered, /City of Launderby/, "the rest of the row (its documents) still steers the search");
+  const beforeRow = kbRow("City of Launderby")!;
+  assert.equal(beforeRow.portal_name, "Oregon ePermitting (Accela)", "reads never write");
+  insert("City of Statewell", "Oregon ePermitting", ACA_OREGON);
+  assert.match(hint("City of Statewell"), /Known portal: Oregon ePermitting/);
+  insert("City of Verimont", "OR E-permitting", "", true);
+  assert.match(hint("City of Verimont"), /Known portal: OR E-permitting/);
+  insert("City of Tylerton", "Tyler EnerGov Citizen Self Service", "");
+  assert.match(hint("City of Tylerton"), /Known portal: Tyler EnerGov/);
+});
+await check("(d1-v1) MUST-PASS (Salem's shape): a person's verified row naming the statewide portal in WORDS, with no URL, decides — over another source's 'elsewhere' — and the stage takes it", async () => {
+  // Pure: a verified 'statewide' outranks a hand-written profile's 'PAC Portal' (Salem's registry words).
+  const pure = pp.statewidePortalFor({ state: "OR", ahj: "City of Salmonberry" }, "building", { evidence: [
+    { kind: "elsewhere", source: "hand-written profile \"City of Salmonberry PAC Solar Array\"", detail: "the hand-written profile says \"PAC Portal\"" },
+    { kind: "statewide", source: "knowledge-base row (verified)", detail: "a person's verified knowledge-base row says \"OR E-permitting\"", verified: true },
+  ] });
+  assert.equal(pure?.url, ACA_OREGON, String(pure?.withheld));
+  const ahj = "City of Salmonberry";
+  namesOwnPortal(ahj, "salmonberrypermits.example"); // a non-verified source saying elsewhere
+  kb.saveVerifiedAhjProfile(db, { state: "OR", ahj, portalName: "OR E-permitting", verifiedBy: "test" });
+  const ev = evidence.statewideEvidenceFor(db, { state: "OR", ahj, city: "Salmonberry" }, "building");
+  assert.ok(ev.some((e) => e.kind === "statewide" && e.verified && /OR E-permitting/.test(e.detail)), JSON.stringify(ev));
+  const r = await stageBuilding(ahj, "Salmonberry");
+  assert.equal(r.withheld, null, `withheld: ${r.withheld?.reason}`);
+  assert.ok(r.taken, "the person's verified answer is taken");
+});
+await check("(d1-v2) MUST-PASS: a verified 'OR E-permitting' with a generic 'online portal' method is still statewide; MUST-EXCLUDE: a verified row naming another system withholds — over a non-verified statewide row, whose URL is then refused at the read", async () => {
+  const ahj = "City of Genericton";
+  kb.saveVerifiedAhjProfile(db, { state: "OR", ahj, portalName: "OR E-permitting", submissionMethod: "online portal", verifiedBy: "test" });
+  const d = evidence.statewideDecisionFor(db, { state: "OR", ahj, city: "Genericton" }, "building");
+  assert.equal(d?.url, ACA_OREGON, String(d?.withheld));
+  const other = "City of Tylerbrook";
+  kb.saveVerifiedAhjProfile(db, { state: "OR", ahj: other, portalName: "Tyler EnerGov Citizen Self Service", verifiedBy: "test" });
+  kb.saveResearchedAhjProfile(db, { state: "OR", ahj: other, utility: "Pacific Power" }, statewideResearch() as never);
+  const w = evidence.statewideDecisionFor(db, { state: "OR", ahj: other, city: "Tylerbrook" }, "building");
+  assert.equal(w?.url, null);
+  assert.equal(w?.because, "elsewhere");
+  assert.match(String(w?.withheld), /Tyler EnerGov/);
+  assert.match(evidence.statewideUrlRefusal(db, { state: "OR", ahj: other, city: "Tylerbrook" }, "building", ACA_OREGON), /files elsewhere/);
+});
+
 finish("portal-truth");

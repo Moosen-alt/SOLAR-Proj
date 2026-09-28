@@ -14,6 +14,7 @@ import { ensureUtilityFilingLookedUp } from "./utilityFilingLookup";
 import { fetchPublicDocument } from "./documentFetch";
 import { logger } from "./logger";
 import { saveResearchedAhjProfile, knowledgeResearchHint, findKnowledgeForLearn } from "./knowledgeBase";
+import { researchedUrlRefusal } from "./researchedPortalUrl";
 import { findAhjProcessProfile } from "./processProfiles";
 import { applicationDocContext, requiredApplicationDocs } from "./requiredDocuments";
 import { renderPdfPageToPng } from "./pageImages";
@@ -733,9 +734,15 @@ export function canonicalPortal(research: AhjFormUrlResult): { platform: string;
 
 // Persist the discovered submittal portal/platform/requirements so the record-portal
 // training step pre-fills the portal URL for a new AHJ and future projects reuse it.
-function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research: AhjFormUrlResult): void {
+export function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research: AhjFormUrlResult): void {
   if (!project.ahj || !project.state) return;
-  const { platform, method } = canonicalPortal(research);
+  // THE ONE RESEARCH WRITE DOOR (researchedPortalUrl.researchedUrlRefusal): this used to save the
+  // searched portal with no check at all, so the statewide portal an Oregon search leans toward was
+  // written into the row of an AHJ whose own evidence says it files elsewhere (Corvallis), and the
+  // next stage served it. A refused URL is not written — and names no platform from its host.
+  const refused = researchedUrlRefusal(db, "permit", { state: project.state, name: project.ahj }, research.submittalPortalUrl);
+  const portalUrl = refused ? "" : String(research.submittalPortalUrl || "");
+  const { platform, method } = canonicalPortal({ ...research, submittalPortalUrl: portalUrl });
   // THE FORMS PAGE IS KEPT (Waltham: the search's "why" was dropped, so nobody could see where it
   // looked). In ONE place — its own note segment (formsPageUrl below), never in the free-text notes —
   // and only when it is on the AHJ's own site (isAhjFormsSite, the predicate the harvest reads it
@@ -743,7 +750,7 @@ function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research:
   // carrying nothing else writes no row at all (forms-find skeptic F1). It steers the next search
   // through knowledgeResearchHint.
   const formsPageUrl = research.formsPageUrl && isAhjFormsSite(portalHostOf(research.formsPageUrl), [project.ahj], project.state) ? research.formsPageUrl : "";
-  if (!platform && !method && !research.submittalPortalUrl && !formsPageUrl) return;
+  if (!platform && !method && !portalUrl && !formsPageUrl) return;
   const notes = [
     research.submittalRequirements ? `Submittal requirements: ${research.submittalRequirements}` : "",
     research.notes || "",
@@ -752,7 +759,7 @@ function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research:
     saveResearchedAhjProfile(db, { state: project.state, ahj: project.ahj }, {
       provider: "claude",
       portalName: platform || "",
-      portalUrl: research.submittalPortalUrl || "",
+      portalUrl: portalUrl,
       portalPlatform: platform || "",
       submissionMethod: method || "",
       requiredDocuments: [], commonCorrections: [], submissionSteps: [], tips: [],
