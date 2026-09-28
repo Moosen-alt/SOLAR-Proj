@@ -248,6 +248,7 @@ try {
     "Grading and Construction Permit Application", "Excavation Construction Permit Application", "Residential Transfer Station Permit Application",
     "Residential Mooring Permit Application", "Residential Beach Sticker Application", "Electric Vehicle Charging Station Permit Application",
     "Solar Easement Application", "Residential Solar Fee Waiver Application", "Solar Incentive Program Application",
+    "Residential Solar Program Application", "Solar Program Enrollment Application", "Community Solar Enrollment Application", "Solar Renewable Energy Credit Application",
     // Rule 5 reads the WHOLE name: a utility's form named in the scope is still never taken.
     "Electrical Permit Application - Utility Interconnection"]) {
     const got = catalog.classifyApplicationDocument(name, dc(name.replace(/[^A-Za-z0-9]+/g, "-")));

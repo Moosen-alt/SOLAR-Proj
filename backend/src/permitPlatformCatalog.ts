@@ -859,12 +859,13 @@ const UTILITY_APPLICATION = /interconnect|net[- ]?meter|\butility\b/i;
  *  names one of these is another permit or program, whatever job word stands beside it — "Solar Rebate
  *  Application", "Right-of-Way Construction Permit Application", "Sewer Building Permit Application",
  *  "Building Demolition / Occupancy Permit Application", "Electric Service Application" (a municipal
- *  utility's), "EV Charging Station Permit Application". Never rescued by solar / residential /
+ *  utility's), "EV Charging Station Permit Application", a utility's / the town's solar PROGRAM,
+ *  enrollment or credit application. Never rescued by solar / residential /
  *  construction / building / electrical. A word that is also a common PLACE name is read only in its
  *  subject sense ("Beach Sticker", never "Palm Beach"; "Parking", never "Oak Park"): the head can carry
  *  the town's own name. "service" is singular (an electric / water service), never a department's
  *  "Inspectional Services". */
-const OTHER_SUBJECT = /rebate|incentive|\bloans?\b|waiver|subscription|\baccess\b|accessory|easement|sewer|\bwater\b|stormwater|drainage|\bservice\b|\bstations?\b|right[- ]of[- ]way|\brow\b|encroach|\bstreets?\b|sidewalk|\bcurb|driveway|grading|excavat|trench|demolition|\bdemo\b|occupancy|\bsigns?\b|\bfences?\b|\bpools?\b|\btrees?\b|mooring|\bbeach\s+(?:stickers?|pass(?:es)?|permits?|parking|access)|sticker|parking|\btrash\b|recycl|snow ?plow|snow removal|\bplowing\b|low[- ]voltage|\bevents?\b|\bfood\b|liquor|alcohol|\balarms?\b|animal|\bdogs?\b|kennel|cemetery|library|recreation|subdivision|land use|flood|\bdocks?\b|\bpiers?\b|shellfish|\bfilm|noise|parade|solicit/i;
+const OTHER_SUBJECT = /rebate|incentive|\bprograms?\b|enroll|\bcredits?\b|\bsrecs?\b|\bloans?\b|waiver|subscription|\baccess\b|accessory|easement|sewer|\bwater\b|stormwater|drainage|\bservice\b|\bstations?\b|right[- ]of[- ]way|\brow\b|encroach|\bstreets?\b|sidewalk|\bcurb|driveway|grading|excavat|trench|demolition|\bdemo\b|occupancy|\bsigns?\b|\bfences?\b|\bpools?\b|\btrees?\b|mooring|\bbeach\s+(?:stickers?|pass(?:es)?|permits?|parking|access)|sticker|parking|\btrash\b|recycl|snow ?plow|snow removal|\bplowing\b|low[- ]voltage|\bevents?\b|\bfood\b|liquor|alcohol|\balarms?\b|animal|\bdogs?\b|kennel|cemetery|library|recreation|subdivision|land use|flood|\bdocks?\b|\bpiers?\b|shellfish|\bfilm|noise|parade|solicit/i;
 // WHICH PERMIT AN APPLICATION IS FOR — a POSITIVE test first (forms-find skeptic F2, 2026-09-28).
 // Rejecting only KNOWN-bad names let ANY "<X> Permit Application" through as the generic blank
 // (Burn, HVAC, Roofing, Deck, Well, Blasting, Oil Burner, Fire Protection, Wood Stove, Septic,
