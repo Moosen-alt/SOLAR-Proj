@@ -255,6 +255,227 @@ await check("C2", "KILL (real path): a missing account number holds only the uti
   assert.ok(heldIds("nem").includes("single-project-record"), `NEM held by: ${heldIds("nem").join(", ")}`);
 });
 
+// ── C1 ─────────────────────────────────────────────────────────────────────────────────
+// Michael Sheridan's shape (City of Jefferson; the per-job lookup cites Marion County as the issuer of
+// both permits; Marion's B-01S / E-01 are curated, hash-locked seeds). Before Stage fetched them, the
+// gate held both permit filings with "Attach or split out ... (B-01S), filled; ... (E-01), filled".
+const { savePermitProcessLookup } = await import("../src/permitProcess");
+const { prepareOfficialDocuments } = await import("../src/prepareOfficialDocuments");
+const { archiveProject } = await import("../src/projectArchive");
+const { owedMissingDocuments, documentInventory } = await import("../src/requiredDocuments");
+const plan = await import("../src/formAcquisitionPlan");
+const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..", "..");
+const fixturePdf = (name: string) => fs.readFileSync(path.join(REPO, "backend/test/fixtures", name));
+const B01S_URL = "https://www.co.marion.or.us/PW/BuildingInspection/Documents/B-01S%20Solar%20Prescriptive%20Installation%20Application%20Filleable.pdf";
+const E01_URL = "https://www.co.marion.or.us/PW/BuildingInspection/Documents/E-01%20Renewable%20Energy%20Permit%20Application.pdf";
+const B5952_URL = "https://www.oregon.gov/bcd/Formslibrary/5952.pdf";
+const MARION_PAGE = "https://www.co.marion.or.us/PW/BuildingInspection";
+// No network: public fixtures for their real URLs, nothing else answers; every download is counted.
+const realFetch = globalThis.fetch;
+let downloads: string[] = [];
+const served = new Map<string, Buffer>();
+globalThis.fetch = (async (url: string | URL) => {
+  const u = String(url);
+  downloads.push(u);
+  const body = served.get(u);
+  if (!body) return new Response("not found", { status: 404 });
+  return new Response(body, { headers: { "Content-Type": "application/pdf" } });
+}) as typeof fetch;
+const citedFact = (value: string, sourceUrl: string, quote: string) => ({ value, sourceUrl, quote, origin: "lookup" as const });
+const notFoundFact = (why: string, sourceUrl = "", quote = "") => ({ value: null, sourceUrl, quote, origin: "lookup" as const, notFound: why });
+function saveMarionLookup(ahj: string): void {
+  const permit = (discipline: "structural" | "electrical", src: string, quote: string) => ({
+    discipline, label: `${discipline} permit`,
+    issuingAgency: citedFact("Marion County", src, quote),
+    portalUrl: notFoundFact("no online portal named", MARION_PAGE, "Check permit status online and general information for individual permits"),
+    recordType: notFoundFact("none"), documents: notFoundFact("no list", "https://jeffersonoregon.org/planning-committee/"), fee: notFoundFact("none"),
+  });
+  const r = savePermitProcessLookup(db, {
+    state: "OR", ahj, lookedUpAt: new Date().toISOString(), issuingAgency: notFoundFact("not stated at the top level"),
+    permitStructure: citedFact("separate", B01S_URL, "separate building and electrical permits"),
+    permits: [
+      permit("structural", B01S_URL, "Prescriptive Solar Photovoltaic Installation Permit Application · Marion County Public Works"),
+      permit("electrical", "https://jeffersonoregon.org/planning-committee/", "All Electrical and Plumbing permits are submitted to Marion County Building and those forms can be found here."),
+    ],
+    notes: [],
+  } as never);
+  if (!(r as { saved?: boolean }).saved) throw new Error(`fixture: the lookup for ${ahj} was not saved`);
+}
+const JEFFERSON = { ahj: "City of Jefferson", city: "Jefferson", zip: "97352", utility: "Pacific Power", permitPath: "PRESCRIPTIVE" };
+let marionSaved = false;
+/** A Jefferson job with its plan set on file and NO Marion County form stored. */
+const jeffersonJob = async (): Promise<string> => {
+  if (!marionSaved) { saveMarionLookup("City of Jefferson"); marionSaved = true; }
+  db.run("DELETE FROM ahj_form_templates WHERE ahj_name = 'Marion County'");
+  const pid = mkProject(JEFFERSON);
+  saveProjectDocument(db, pid, { docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n% jefferson plan set\n", "utf8"), source: "upload" });
+  return pid;
+};
+const docCheck = (pid: string) => repo.getSubmitGateReport(db, pid).checks.find((c) => c.id === "document-inventory")!;
+const heldByMarion = (pid: string): string[] => (docCheck(pid).holds ?? []).map((h) => h.label).filter((l) => /Marion County/.test(l));
+
+await check("C1", "KILL (real path): Marion's curated B-01S / E-01, not yet fetched, hold neither permit filing — the gate says Stage downloads and fills them", async () => {
+  const pid = await jeffersonJob();
+  const doc = docCheck(pid);
+  assert.deepEqual(heldByMarion(pid), [], `held by: ${JSON.stringify(doc.holds)}`);
+  const lines = doc.evidence.filter((l) => /^Stage downloads and fills it: Marion County/.test(l));
+  assert.equal(lines.length, 2, doc.evidence.join(" | "));
+  // From the county's own published forms (the acquisition's plan: curated seeds, by URL).
+  const project = repo.getProjectDetail(db, pid).project;
+  const owed = owedMissingDocuments(db, project, documentInventory(db, project));
+  const urls = [...owed.acquiredVia.values()].map((a) => `${a.via} ${a.sourceUrl}`);
+  assert.ok(urls.includes(`curated ${B01S_URL}`) && urls.includes(`curated ${E01_URL}`), urls.join(" | "));
+  const s = getAutopilotState(db, pid);
+  assert.ok(!/Marion County/.test(String(s.stageDisabledReason)), `Stage held by Marion's forms: ${s.stageDisabledReason}`);
+});
+await check("C1", "KILL (real path, reads write nothing): the look-ahead does not create or claim the acquisition cooldown", async () => {
+  const pid = await jeffersonJob();
+  const before = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'ahj_form_acquisition_attempts'")?.n;
+  const rows = before ? db.get<{ n: number }>("SELECT COUNT(*) AS n FROM ahj_form_acquisition_attempts")?.n : 0;
+  repo.getSubmitGateReport(db, pid);
+  getAutopilotState(db, pid);
+  const after = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'ahj_form_acquisition_attempts'")?.n;
+  assert.equal(after, before, "a read created the cooldown table");
+  if (after) assert.equal(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM ahj_form_acquisition_attempts")?.n, rows, "a read claimed a cooldown");
+});
+await check("C1", "MUST-PASS (real path): Stage then really gets them — prepareOfficialDocuments downloads and fills both, and the owed list stays clear", async () => {
+  const pid = await jeffersonJob();
+  served.set(B01S_URL, fixturePdf("marion-b-01s.pdf"));
+  served.set(E01_URL, fixturePdf("marion-e-01.pdf"));
+  served.set(B5952_URL, fixturePdf("bcd-5952-2024.pdf"));
+  downloads = [];
+  await prepareOfficialDocuments(db, repo.getProjectDetail(db, pid).project);
+  assert.ok(downloads.includes(B01S_URL) && downloads.includes(E01_URL), downloads.join(", "));
+  const doc = docCheck(pid);
+  assert.deepEqual(heldByMarion(pid), []);
+  assert.ok(!doc.evidence.some((l) => /^Stage downloads and fills it: Marion County/.test(l)), "after Stage they are on file, not 'to be downloaded'");
+});
+await check("C1", "MUST-EXCLUDE: a curated URL that failed in the last 6 hours is NOT counted — it holds, worded 'find the official form or upload the blank'", async () => {
+  const pid = await jeffersonJob();
+  served.delete(E01_URL);
+  plan.noteFormFetchFailure(E01_URL); // what fetchPdf records on a 404
+  try {
+    const held = (docCheck(pid).holds ?? []).find((h) => /E-01/.test(h.label));
+    assert.ok(held, `E-01 not held: ${JSON.stringify(docCheck(pid).holds)}`);
+    assert.match(String(held!.action), /find the official form .* or upload the blank/);
+    assert.doesNotMatch(docCheck(pid).nextAction, /Attach or split out the missing/);
+    const s = getAutopilotState(db, pid);
+    assert.match(String(s.stageDisabledReason), /E-01[^·]*find the official form/);
+  } finally { plan.clearFormFetchFailure(E01_URL); served.set(E01_URL, fixturePdf("marion-e-01.pdf")); }
+});
+await check("C1", "MUST-EXCLUDE (the hard line): when Stage's download fails, prepareSubmission's post-fill count still refuses, naming the form", async () => {
+  const pid = await jeffersonJob();
+  served.delete(E01_URL);
+  try {
+    let err: unknown = null;
+    try { await repo.prepareSubmission(db, pid, "electrical", false); } catch (e) { err = e; }
+    assert.ok(err instanceof HttpError && err.status === 409, `not refused: ${err instanceof Error ? err.message : err}`);
+    const missing = ((err as InstanceType<typeof HttpError>).details as { missingDocuments?: Array<{ label: string }> })?.missingDocuments ?? [];
+    assert.ok(missing.some((m) => /E-01/.test(m.label)), `refusal: ${(err as Error).message}`);
+    assert.match((err as Error).message, /find the official form/);
+  } finally { plan.clearFormFetchFailure(E01_URL); served.set(E01_URL, fixturePdf("marion-e-01.pdf")); }
+});
+// A separate-permit Oregon AHJ with no curated or cited source (Lincoln City's own shape — f7d7af7e /
+// b0ab5169): only research can find its applications.
+const RESEARCH_ONLY = { ahj: "City of Lincoln City", city: "Lincoln City", zip: "97367", utility: "Pacific Power", permitPath: "PRESCRIPTIVE" };
+let researchLookupSaved = false;
+const researchOnlyJob = (): string => {
+  if (!researchLookupSaved) {
+    // The AHJ's structure: separate building + electrical permits (a cited lookup), the city its own issuer.
+    savePermitProcessLookup(db, {
+      state: "OR", ahj: RESEARCH_ONLY.ahj, lookedUpAt: new Date().toISOString(), issuingAgency: citedFact("City of Lincoln City", "https://www.lincolncity.org/building", "The City of Lincoln City Building Division issues building and electrical permits"),
+      permitStructure: citedFact("separate", "https://www.lincolncity.org/building", "separate building and electrical permits are required"),
+      permits: [], notes: [],
+    } as never);
+    researchLookupSaved = true;
+  }
+  db.exec("CREATE TABLE IF NOT EXISTS ahj_form_acquisition_attempts (scope_key TEXT PRIMARY KEY, attempted_at INTEGER NOT NULL)");
+  db.run("DELETE FROM ahj_form_acquisition_attempts WHERE scope_key LIKE 'or|city of lincoln city|%'", []);
+  const pid = mkProject(RESEARCH_ONLY);
+  saveProjectDocument(db, pid, { docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n% lincoln plan set\n", "utf8"), source: "upload" });
+  const rows = documentInventory(db, repo.getProjectDetail(db, pid).project).missingBlocking.filter((d) => /permit application/i.test(d.label));
+  if (!rows.length) throw new Error(`fixture: no blocking application row for ${RESEARCH_ONLY.ahj}: ${JSON.stringify(docCheck(pid).evidence)}`);
+  return pid;
+};
+const heldApplications = (pid: string) => (docCheck(pid).holds ?? []).filter((h) => /permit application/i.test(h.label));
+await check("C1", "MUST-EXCLUDE: no key, no seed, no citation — the AHJ's applications still hold, worded 'find the official form or upload the blank'", () => {
+  delete process.env.ANTHROPIC_API_KEY;
+  const pid = researchOnlyJob();
+  const held = heldApplications(pid);
+  assert.ok(held.length >= 1, `nothing held: ${JSON.stringify(docCheck(pid))}`);
+  assert.ok(held.every((h) => /find the official form/.test(String(h.action))), JSON.stringify(held));
+});
+await check("C1", "KILL: research available and the 24h cooldown open — Stage researches them, so staging is not held before it (the post-fill 409 decides)", () => {
+  process.env.ANTHROPIC_API_KEY = "sk-test-never-sent";
+  try {
+    const pid = researchOnlyJob();
+    assert.deepEqual(heldApplications(pid), [], JSON.stringify(docCheck(pid).holds));
+    assert.ok(docCheck(pid).evidence.some((l) => /^Stage downloads and fills it: .*form research/.test(l)), docCheck(pid).evidence.join(" | "));
+  } finally { delete process.env.ANTHROPIC_API_KEY; }
+});
+await check("C1", "MUST-EXCLUDE: research available but the cooldown CLOSED (researched < 24h ago) — they hold again", () => {
+  process.env.ANTHROPIC_API_KEY = "sk-test-never-sent";
+  try {
+    const pid = researchOnlyJob();
+    db.exec("CREATE TABLE IF NOT EXISTS ahj_form_acquisition_attempts (scope_key TEXT PRIMARY KEY, attempted_at INTEGER NOT NULL)");
+    db.run("INSERT OR REPLACE INTO ahj_form_acquisition_attempts(scope_key, attempted_at) VALUES (?, ?)", [plan.acquisitionScopeKey(repo.getProjectDetail(db, pid).project, "prescriptive"), Date.now()]);
+    assert.ok(heldApplications(pid).length >= 1, JSON.stringify(docCheck(pid).holds));
+  } finally { delete process.env.ANTHROPIC_API_KEY; }
+});
+await check("C1", "MUST-EXCLUDE: a document a person supplies (the PE letter on the engineered path) is still owed, worded 'attach it or split it out'", () => {
+  const pid = mkProject({ permitPath: "ENGINEERED", ahj: "City of Gatesville", city: "Gatesville", zip: "97000", utility: "Pacific Power" });
+  const letter = (docCheck(pid).holds ?? []).find((h) => /PE-stamped|structural letter/i.test(h.label));
+  assert.ok(letter, JSON.stringify(docCheck(pid).holds));
+  assert.match(String(letter!.action), /attach it or split it out/);
+});
+
+// Approve judges a DRAFT by what it carried — never by the look-ahead, never by the disk now.
+await check("C1", "KILL (real path): a draft staged BEFORE the Marion E-01 existed is not approvable once the E-01 is on file — 're-stage to attach it'", async () => {
+  const pid = await jeffersonJob();
+  mkRun(pid, "awaiting_human_submit", "electrical", new Date(Date.now() - 3600_000).toISOString());
+  db.run("UPDATE projects SET status = 'awaiting_human_submit', stage_detail = 'staged_for_review' WHERE id = ?", [pid]);
+  served.set(B01S_URL, fixturePdf("marion-b-01s.pdf"));
+  served.set(E01_URL, fixturePdf("marion-e-01.pdf"));
+  await prepareOfficialDocuments(db, repo.getProjectDetail(db, pid).project); // the forms arrive AFTER the draft
+  const s = getAutopilotState(db, pid);
+  assert.equal(s.canApprove, false, "a draft that went up without the E-01 read as complete");
+  assert.match(String(s.approveDisabledReason), /went up without [^—]*E-01[^—]*— it is on file now: re-stage to attach it/);
+  assert.doesNotMatch(String(s.approveDisabledReason), /Attach or split out/);
+});
+await check("C1", "MUST-PASS: a draft staged AFTER the forms were on file is approvable (no false stop on a legacy draft)", async () => {
+  const pid = await jeffersonJob();
+  served.set(B01S_URL, fixturePdf("marion-b-01s.pdf"));
+  served.set(E01_URL, fixturePdf("marion-e-01.pdf"));
+  await prepareOfficialDocuments(db, repo.getProjectDetail(db, pid).project);
+  mkRun(pid, "awaiting_human_submit", "electrical", new Date(Date.now() + 1000).toISOString());
+  db.run("UPDATE projects SET status = 'awaiting_human_submit', stage_detail = 'staged_for_review' WHERE id = ?", [pid]);
+  const s = getAutopilotState(db, pid);
+  assert.ok(!/went up without/.test(String(s.approveDisabledReason)), `refused: ${s.approveDisabledReason}`);
+});
+await check("C1", "KILL: a draft's recorded payload decides — a run handed no E-01 is refused even though it is on file now; one handed it is not", async () => {
+  const pid = await jeffersonJob();
+  served.set(B01S_URL, fixturePdf("marion-b-01s.pdf"));
+  served.set(E01_URL, fixturePdf("marion-e-01.pdf"));
+  await prepareOfficialDocuments(db, repo.getProjectDetail(db, pid).project);
+  const runId = mkRun(pid, "awaiting_human_submit", "electrical", new Date(Date.now() + 1000).toISOString());
+  db.run("UPDATE projects SET status = 'awaiting_human_submit', stage_detail = 'staged_for_review' WHERE id = ?", [pid]);
+  db.run("UPDATE portal_runs SET result_json = ? WHERE id = ?", [JSON.stringify({ actor: "RecipeAdapter", ok: true, packagedDocTypes: ["plan_set", "sld"] }), runId]);
+  assert.match(String(getAutopilotState(db, pid).approveDisabledReason), /went up without [^;]*E-01/);
+  db.run("UPDATE portal_runs SET result_json = ? WHERE id = ?", [JSON.stringify({ actor: "RecipeAdapter", ok: true, packagedDocTypes: ["plan_set", "sld", "electrical_application"] }), runId]);
+  assert.ok(!/went up without/.test(String(getAutopilotState(db, pid).approveDisabledReason)), String(getAutopilotState(db, pid).approveDisabledReason));
+});
+await check("C1", "KILL: an archived project neither stages nor approves", async () => {
+  const pid = await jeffersonJob();
+  mkRun(pid, "awaiting_human_submit", "nem", new Date().toISOString());
+  db.run("UPDATE projects SET status = 'awaiting_human_submit', stage_detail = 'staged_for_review' WHERE id = ?", [pid]);
+  archiveProject(db, pid, "test: archived");
+  const s = getAutopilotState(db, pid);
+  assert.equal(s.canStage, false, String(s.stageDisabledReason));
+  assert.equal(s.canApprove, false);
+  assert.match(String(s.approveDisabledReason), /archived/);
+});
+globalThis.fetch = realFetch;
+
 // ── summary ────────────────────────────────────────────────────────────────────────────
 console.log("");
 for (const [section, r] of Object.entries(results)) console.log(`  ${section}: ${r.ok}/${r.ok + r.fail} passed`);
