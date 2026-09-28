@@ -1719,12 +1719,14 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     // declares lands in "unverifiable", not "leaked". The question bank found them by reading
     // the recipe instead of the run (see docs/HANDOFF.md, 2026-09-12).
     //
-    // Parsed where the plan set states them; EMPTY where it does not, so the field surfaces as
-    // an intake question instead of filing somebody else's house.
-    existingBuildingArea: String(snapshotFlat.existingBuildingArea ?? "").trim(),
-    buildingHeightFeet: String(snapshotFlat.buildingHeightFeet ?? "").trim(),
-    buildingHeightInches: String(snapshotFlat.buildingHeightInches ?? "").trim(),
-    numberOfStories: String(snapshotFlat.numberOfStories ?? "").trim(),
+    // Parsed where the plan set states them — never another house's. Where it does not, "0"
+    // (operator ruling 2026-09-27, Michael Sheridan's Marion building page refused three blanks:
+    // "Just put 0's there, that's what we do normally"): a rooftop retrofit's permit geometry is
+    // entered as 0 by the operators themselves, and a blank only stops the filing.
+    existingBuildingArea: String(snapshotFlat.existingBuildingArea ?? "").trim() || "0",
+    buildingHeightFeet: String(snapshotFlat.buildingHeightFeet ?? "").trim() || "0",
+    buildingHeightInches: String(snapshotFlat.buildingHeightInches ?? "").trim() || "0",
+    numberOfStories: String(snapshotFlat.numberOfStories ?? "").trim() || "0",
     // Defaults that are facts about a ROOFTOP RETROFIT rather than about a project: adding
     // panels to an existing roof creates no new building area, and the permit covers the one
     // house the array sits on. The plan set overrides both whenever it says otherwise.
