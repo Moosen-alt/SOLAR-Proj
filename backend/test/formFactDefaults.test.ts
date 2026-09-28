@@ -67,6 +67,27 @@
 //   K-S26 trench reach unbounded (any trench anywhere in the set)          -> S1 FAILS.
 //   K-S27 a system/array label may cross "(N)" filler                      -> S1, S4, S10 FAIL.
 //   K-S28 the single-family basis names no other structure (unchecked claim) -> S10 FAILS.
+//   (Round 3 retires the "beside the work" shapes as deciders: K-S12, K-S26, K-S27 no longer apply —
+//   the other-building gate asks on the word alone; the phrase is only quoted, K-S45.)
+//   Round-3 convergence (each RED, restored GREEN, 2026-09-28; harness applies the mutation to the
+//   source, runs this file, restores the bytes):
+//   K-S29 SHOP dropped from the family                                     -> S1 S2 S10 FAIL.
+//   K-S30 the NON-/NOT-ATTACHED guard dropped                              -> S1, S10 FAIL.
+//   K-S31 a plan-set read answers alone again (accessory / duplex / ...)   -> S1, S7 FAIL.
+//   K-S32 a townhouse answered again                                       -> S1 FAILS.
+//   K-S33 a duplex skips the other-building gate                           -> S1, S10 FAIL.
+//   K-S34 numberOfBuildings' evidence reads its own (pre-round-3) word list -> S10 FAILS.
+//   K-S35 numberOfBuildings' evidence: one capped pass, attached garage first -> S10 FAILS.
+//   K-S36 the basis list drifts from the family (a read word not named)    -> S2, S10 FAIL.
+//   K-S37 the server takes a stored single-family answer over a named building -> S7 FAILS.
+//   K-S38 a unit count answers over an ambiguous text                      -> S1 FAILS.
+//   K-S39 the manufactured verdict answers again                           -> S1 FAILS.
+//   K-S40 MAIN HOUSE taken as the single-family word                       -> S1 FAILS.
+//   K-S41 the ground mount dropped from the family                         -> S1, S10 FAIL.
+//   K-S42 the attached-garage clause dropped from the basis                -> S10 FAILS.
+//   K-S43 a bare ACCESSORY word no longer counts                           -> S1, S10 FAIL.
+//   K-S44 a bare DETACHED word no longer counts                            -> S1, S10 FAIL.
+//   K-S45 the beside phrase no longer quoted in the structure basis        -> S7 S10 S11 FAIL.
 import "./_isolate"; // FIRST
 import { REPO } from "./_isolate";
 import assert from "node:assert/strict";
@@ -265,6 +286,7 @@ try {
     ["NON-ATTACHED GARAGE", "PAT EXAMPLE RESIDENCE  (N) PV ARRAY ON NON-ATTACHED GARAGE", "", ""],
     ["NOT ATTACHED GARAGE", "PAT EXAMPLE RESIDENCE  NOT ATTACHED GARAGE ROOF (07)", "", ""],
     ["an attached garage AND a garage elsewhere", "PAT EXAMPLE RESIDENCE  ATTACHED GARAGE  GARAGE ROOF (07)", "", ""],
+    ["an attached garage named before three other buildings", "PAT EXAMPLE RESIDENCE  (E) ATTACHED GARAGE  (E) SHED  (E) BARN  (E) CARPORT", "", ""],
     // Round 3: every word of the family counts, wherever it sits.
     ["a bare ACCESSORY word", "PAT EXAMPLE RESIDENCE  RACKING ACCESSORY KIT", "", ""],
     ["a bare DETACHED word", "PAT EXAMPLE RESIDENCE  (E) DETACHED  (N) PV ARRAY ON (E) ROOF", "", ""],
@@ -389,13 +411,17 @@ try {
       if (words.length && sb.option !== ACC) {
         wordRows++;
         if (sb.option !== "") bad.push(`${name}: answered ${sb.option} over ${words.join(", ")}`);
-        const ose = PR.otherStructureEvidence(text) as string;
+        // The items the evidence NAMES (each `WORD ("…context…")`), the quoted context set aside — a
+        // word merely inside another item's context is not named.
+        const ose = (PR.otherStructureEvidence(text) as string).replace(/ \("…[\s\S]*?…"\)/g, "");
         for (const w of words.slice(0, 3)) {
           if (!ose.includes(w)) bad.push(`${name}: the numberOfBuildings evidence does not name "${w}": ${ose}`);
           if (!sb.basis.includes(w)) bad.push(`${name}: the structure basis does not name "${w}": ${sb.basis}`);
         }
       }
       if ((sb.option === SF || sb.option === DUP) && (named || !sb.basis.includes(CHECKED))) bad.push(`${name}: ${sb.option} over a named building, or its basis does not say what was checked: ${sb.basis}`);
+      // "names no garage" is never said over an attached one without naming it.
+      if ((sb.option === SF || sb.option === DUP) && /\bATTACHED\s+GARAGE/i.test(text) && !/garage is called ATTACHED \(the house\)/.test(sb.basis)) bad.push(`${name}: the basis does not name the attached garage it read as the house: ${sb.basis}`);
     }
     if (wordRows < 30) bad.push(`only ${wordRows} rows reached the other-building gate`);
     // Through the page's own review list: the real garage shape leaves numberOfBuildings UNSURE,
