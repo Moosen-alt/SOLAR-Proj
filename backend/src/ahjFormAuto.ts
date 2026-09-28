@@ -608,7 +608,10 @@ export async function ensureAhjFormsForProject(
   db: AppDb,
   llm: LLMProvider,
   project: ProjectRecord,
-  opts: { allowResearch?: boolean } = {},
+  /** allowMapping: may a CITED agency PDF be mapped by the model when research is off? Defaults to
+   *  allowResearch. Stage's no-research pass inside the cooldown sets it from the process's research
+   *  switch (prepareOfficialDocuments) — one mapping per cited form, never a search. */
+  opts: { allowResearch?: boolean; allowMapping?: boolean } = {},
 ): Promise<{ neededTypes: string[]; needed: NeededAhjForm[]; results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }> }> {
   // WHAT THIS PROJECT MUST FILE DECIDES WHAT WE GO AND FETCH.
   //
@@ -664,7 +667,7 @@ export async function ensureAhjFormsForProject(
     results.push({
       formType: item.formType,
       applicationKind: item.applicationKind,
-      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind, allowResearch: opts.allowResearch })),
+      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind, allowResearch: opts.allowResearch, allowMapping: opts.allowMapping })),
     });
   }
   return { neededTypes: [...needed.keys()], needed: [...needed.values()], results };
@@ -688,7 +691,7 @@ export async function ensureAhjFormTemplate(
   llm: LLMProvider,
   project: ProjectRecord,
   formType = "permit_application",
-  opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean } = {},
+  opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean; allowMapping?: boolean } = {},
 ): Promise<EnsureFormResult> {
   // THE UTILITY'S FILING LOCATION rides every per-project form-research pass — the pipeline's
   // (ensureAhjFormsForProject) and the operator's "Find official form" — fire-and-forget, once per
@@ -709,7 +712,7 @@ export async function ensureAhjFormTemplate(
   // acquired and stored under ITS name, from its own curated seed or the PDF the lookup cited —
   // never a paid search under the city's name, never a KB profile written for the agency.
   const authority = formAuthorityFor(project, formType);
-  if (authority.issuedByOther) return ensureIssuingAgencyForm(db, llm, project, formType, authority, applicationKind, { allowResearch: opts.allowResearch });
+  if (authority.issuedByOther) return ensureIssuingAgencyForm(db, llm, project, formType, authority, applicationKind, { allowResearch: opts.allowResearch, allowMapping: opts.allowMapping });
   const kindWord = applicationKind === "structural" ? "structural (non-prescriptive)" : applicationKind === "prescriptive" ? "prescriptive" : "";
   // Already have a fillable stored template of THIS form type for this AHJ?
   // (Per-type, so acquiring the checklist isn't skipped just because the
@@ -919,7 +922,7 @@ export async function ensureIssuingAgencyForm(
   formType: string,
   authority: FormAuthority,
   applicationKind: "prescriptive" | "structural" | null,
-  opts: { allowResearch?: boolean } = {},
+  opts: { allowResearch?: boolean; allowMapping?: boolean } = {},
 ): Promise<EnsureFormResult> {
   const agency = authority.name;
   const track = authority.track;
@@ -979,7 +982,9 @@ export async function ensureIssuingAgencyForm(
         return { status: "needs_manual", sourceUrl: c.sourceUrl, message: `${agency}'s official PDF has changed since its field map was checked. Review and re-map the new revision before filling it.` };
       }
     }
-    const mapper = c.origin === "cited" && opts.allowResearch === false ? NO_MODEL_MAPPER : llm;
+    // A cited PDF is mapped by the model unless mapping is off (it follows research unless the caller
+    // says otherwise — Stage's no-research pass inside the cooldown still maps when research is allowed).
+    const mapper = c.origin === "cited" && !(opts.allowMapping ?? opts.allowResearch !== false) ? NO_MODEL_MAPPER : llm;
     const acquired = await acquireFromBytes(db, mapper, { ahj: agency, state: project.state, formType: c.formType, formName: c.formName, bytes, sourceUrl: c.sourceUrl, applicationKind: c.applicationKind });
     return { ...acquired, message: `${acquired.message} (${whose}.)` };
   }
