@@ -705,7 +705,10 @@ app.post("/api/projects/:id/find-ahj-form", asyncHandler(async (req, res) => {
   } catch (err) {
     throw normalizeLlmError(err);
   }
-  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", { status: ensure.status, formName: ensure.formName || "", ahj: detail.project.ahj, permitType: ensure.permitType || "", additional: additional.map((a) => `${a.formType}:${a.status}`) });
+  // THE WHY IS KEPT (Waltham: the audit said "not_found" and nothing else, so nobody could see what
+  // the search found, read or could not run). The message carries the forms page read, the links
+  // tried and "the form search could not run" — AHJ facts, never project values.
+  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", { status: ensure.status, formName: ensure.formName || "", ahj: detail.project.ahj, permitType: ensure.permitType || "", message: String(ensure.message || "").slice(0, 2000), lookupFailed: Boolean((ensure as { lookupFailed?: boolean }).lookupFailed), sourceUrl: (ensure as { sourceUrl?: string }).sourceUrl || "", additional: additional.map((a) => `${a.formType}:${a.status}`), additionalMessages: additional.map((a) => `${a.formType}: ${String(a.message || "").slice(0, 600)}`) });
   const filled = await buildFilledFormsForProject(db, detail.project);
   res.json({ ensure, additional, filled });
 }));

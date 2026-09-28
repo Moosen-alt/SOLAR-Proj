@@ -28,6 +28,9 @@ import { bcd5952Template } from "./bcd5952Template";
 import { iowaPvWorksheetTemplate, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
 import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
+import { PAGE_READ_MIN_GAP_MS, type PageReader } from "./agencyPageReader";
+import { applicationFormLinks, classifyApplicationDocument, documentSlugWords, isAgencyOwnDomain, isAhjFormsSite, DOCUMENT_URL, type ApplicationDiscipline } from "./permitPlatformCatalog";
+import { isUtilityPlatformUrl, portalHostOf, registrableDomain } from "./portalChannel";
 
 // ---------------------------------------------------------------------------
 // Auto-acquire an AHJ's official permit PDF form: web-research the URL, download
@@ -525,6 +528,20 @@ export interface EnsureFormResult {
   mappedFields?: number;
   /** Human callout of the permit TYPE for this AHJ (combo vs separate BLD/ELE, submission method). */
   permitType?: string;
+  /** TRUE when the form SEARCH could not run (llm.findAhjFormUrl lookupFailed: an abort, a timeout,
+   *  unparseable output) and nothing else produced the form — "we could not look", never "this AHJ
+   *  has no form". Stage releases its 24h cooldown claim on it (prepareOfficialDocuments). */
+  lookupFailed?: boolean;
+}
+
+/** Where the forms page is read from, and how gently: the reader (default: the per-job lookup's
+ *  reader switches — defaultLookupReader — with a budget of two pages, shared by every form type of
+ *  one pass so a forms page is read once) and the gap before a download from a host we just asked
+ *  (default PAGE_READ_MIN_GAP_MS). Tests inject both. */
+export interface FormsPageOptions {
+  reader?: PageReader | null;
+  minGapMs?: number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 // Normalize the model's STRUCTURED platform answer + the portal URL to a canonical platform + method.
@@ -556,6 +573,10 @@ function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research:
     research.formsPageUrl ? `Forms page: ${research.formsPageUrl}` : "",
     research.notes || "",
   ].filter(Boolean).join(" · ");
+  // THE FORMS PAGE IS KEPT (Waltham: the search's "why" was dropped, so nobody could see where it
+  // looked). As its own note segment, and only when it is on the AHJ's own site (the same predicate
+  // the harvest reads it under) — it steers the next search through knowledgeResearchHint.
+  const formsPageUrl = research.formsPageUrl && isAhjFormsSite(portalHostOf(research.formsPageUrl), [project.ahj], project.state) ? research.formsPageUrl : "";
   try {
     saveResearchedAhjProfile(db, { state: project.state, ahj: project.ahj }, {
       provider: "claude",
@@ -567,8 +588,131 @@ function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research:
       confidence: research.confidence,
       notes,
       needsHumanVerification: true,
+      formsPageUrl,
     });
   } catch { /* non-fatal */ }
+}
+
+// ── THE AHJ'S OWN APPLICATION, FOUND WITHOUT ANOTHER MODEL CALL (Waltham, 2026-09-28) ─────────────
+// The search named City of Waltham's forms page (/1289/Applications) and received its document
+// links in the raw results, but the only candidates were the model's own list — empty — so a public
+// "Residential Application" (/DocumentCenter/View/4313/…, application/pdf) was reported as no form.
+// Two deterministic widenings, no extra LLM spend, both through the catalog's document predicates
+// (permitPlatformCatalog.classifyApplicationDocument — DOCUMENT_URL, FEE_LINK, OTHER_FEE_KIND):
+//   (b) the forms page research returned, read ONCE through the lookup's polite page reader, when it
+//       is on the AHJ's own site (isAhjFormsSite) — its links on that site only (applicationFormLinks);
+//   (a) the search results the call received, on the forms page's domain or the AHJ's own domain
+//       (isAgencyOwnDomain — a search returns other towns' forms too).
+// A utility host is never a candidate (rule 5), and fetchPdf still decides what is a PDF.
+export const APPLICATION_FORM_TYPES = ["permit_application", "building_application", "electrical_application"];
+const MAX_PAGE_CANDIDATES = 3;
+const MAX_SEARCH_CANDIDATES = 2;
+interface FormCandidate {
+  url: string;
+  /** The words that name it: the link's text or the search result's title ("" for the model's list). */
+  label: string;
+  origin: "research" | "forms-page" | "search-result" | "kb";
+  discipline?: ApplicationDiscipline;
+}
+/** May an application of this discipline be THIS slot's primary blank? An electrical-only
+ *  application is never the building-side / generic blank; the electrical slot takes only an
+ *  electrical (or a combined building + electrical) one. */
+export function disciplineFitsSlot(discipline: ApplicationDiscipline, formType: string): boolean {
+  if (formType === "electrical_application") return discipline === "electrical" || discipline === "combined";
+  return discipline !== "electrical";
+}
+/** A URL that is never this slot's application whoever proposed it: a utility host (rule 5), and —
+ *  for an application slot — a document whose own name says fee schedule / agenda / minutes /
+ *  newsletter (an opaque URL says nothing and is left to fetchPdf, as before). */
+export function neverTheApplication(url: string, formType: string): boolean {
+  if (isUtilityPlatformUrl(url)) return true;
+  if (!APPLICATION_FORM_TYPES.includes(formType)) return false;
+  const slug = documentSlugWords(url);
+  return Boolean(slug) && /fee schedule|schedule of fees|fee table|master fee|agenda|minutes|newsletter/i.test(slug);
+}
+/** The process-wide last request per host made by this module's harvest (go gently: >= the gap
+ *  between two requests to one host, after the forms page read too). */
+const formHostLastAt = new Map<string, number>();
+async function politeGap(url: string, fp: FormsPageOptions): Promise<void> {
+  const host = portalHostOf(url);
+  const gap = fp.minGapMs ?? PAGE_READ_MIN_GAP_MS;
+  const wait = (formHostLastAt.get(host) ?? 0) + gap - Date.now();
+  if (host && gap > 0 && wait > 0) await (fp.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(wait);
+}
+function noteHostHit(url: string): void {
+  const host = portalHostOf(url);
+  if (host) formHostLastAt.set(host, Date.now());
+}
+/** The reader for forms pages when none is injected: the per-job lookup's switches (a model key,
+ *  PERMIT_LOOKUP_PAGE_READ, DOCUMENT_FETCH), two pages. Null = no page is read. */
+export async function defaultFormsPageReader(): Promise<PageReader | null> {
+  try {
+    const { defaultLookupReader } = await import("./permitProcessLookup");
+    return defaultLookupReader(2);
+  } catch {
+    return null;
+  }
+}
+async function harvestApplicationCandidates(
+  project: ProjectRecord,
+  formType: string,
+  applicationKind: "prescriptive" | "structural" | null,
+  research: AhjFormUrlResult,
+  fp: FormsPageOptions,
+): Promise<{ candidates: FormCandidate[]; note: string }> {
+  if (!APPLICATION_FORM_TYPES.includes(formType)) return { candidates: [], note: "" };
+  const names = [project.ahj].filter(Boolean);
+  // The other of the two building-side applications is not this one (the same test the KB links pass).
+  const kindOk = (label: string, url: string) => {
+    const k = formApplicationKind(`${url} ${label}`);
+    return !(k && applicationKind && k !== applicationKind);
+  };
+  const rank = (a: { discipline: ApplicationDiscipline; score: number }, b: { discipline: ApplicationDiscipline; score: number }) =>
+    Number(disciplineFitsSlot(b.discipline, formType)) - Number(disciplineFitsSlot(a.discipline, formType)) || b.score - a.score;
+  const notes: string[] = [];
+  const fromPage: FormCandidate[] = [];
+  let formsDomain = "";
+  const page = String(research.formsPageUrl || "");
+  if (page) {
+    const host = portalHostOf(page);
+    if (!isAhjFormsSite(host, names, project.state)) {
+      notes.push(`The forms page the search named (${page}) is not on ${project.ahj}'s own site, so it was not read.`);
+    } else if (DOCUMENT_URL.test(page)) {
+      notes.push(`The search named a document (${page}) as the forms page; it was not read as a page.`);
+    } else {
+      const reader = fp.reader !== undefined ? fp.reader : await defaultFormsPageReader();
+      if (!reader) {
+        notes.push(`The forms page ${page} was not read (page reading is off on this installation), so its links were not checked.`);
+      } else {
+        await politeGap(page, fp);
+        const read = await reader.read(page);
+        noteHostHit(page);
+        if (read.finalUrl) noteHostHit(read.finalUrl);
+        if (!read.ok || read.kind !== "html") {
+          notes.push(`The forms page ${page} could not be read (${read.reason || read.kind}), so its links were not checked — not a finding about ${project.ahj}.`);
+        } else {
+          formsDomain = registrableDomain(portalHostOf(read.finalUrl) || host);
+          const links = applicationFormLinks([read], names, project.state).filter((l) => kindOk(l.text, l.href)).sort(rank);
+          for (const l of links.slice(0, MAX_PAGE_CANDIDATES)) fromPage.push({ url: l.href, label: l.text, origin: "forms-page", discipline: l.discipline });
+          notes.push(links.length
+            ? `Read the forms page ${page}: ${links.length} permit application link(s) on ${project.ahj}'s site.`
+            : `Read the forms page ${page}: no permit application document is linked on it.`);
+        }
+      }
+    }
+  }
+  const fromSearch: Array<FormCandidate & { score: number; discipline: ApplicationDiscipline }> = [];
+  for (const r of research.searchResults ?? []) {
+    const host = portalHostOf(r.url);
+    if (!host || isUtilityPlatformUrl(r.url) || fromPage.some((c) => c.url === r.url)) continue;
+    if (!((formsDomain && registrableDomain(host) === formsDomain) || isAgencyOwnDomain(host, names, project.state))) continue;
+    const doc = classifyApplicationDocument(r.title, r.url);
+    if (!doc || !kindOk(r.title, r.url)) continue;
+    fromSearch.push({ url: r.url, label: r.title, origin: "search-result", ...doc });
+  }
+  fromSearch.sort(rank);
+  if (fromSearch.length) notes.push(`${fromSearch.length} search result(s) on ${project.ahj}'s site name a permit application.`);
+  return { candidates: [...fromPage, ...fromSearch.slice(0, MAX_SEARCH_CANDIDATES).map(({ score: _s, ...c }) => c)], note: notes.join(" ") };
 }
 
 // Classify a downloaded PDF into a form_type from its name/URL, so one research
@@ -642,7 +786,7 @@ export async function ensureAhjFormsForProject(
    *  skipRecentlyFailed: do not re-fetch a curated/cited/checklist URL whose download failed within
    *  FORM_FETCH_RETRY_MS (recentFormFetchFailure) — set ONLY by Stage's pass inside the cooldown; the
    *  operator's "Find missing official forms" (server find-ahj-form) never sets it. */
-  opts: { allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean } = {},
+  opts: { allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean; formsPage?: FormsPageOptions } = {},
 ): Promise<{ neededTypes: string[]; needed: NeededAhjForm[]; results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }> }> {
   // WHAT THIS PROJECT MUST FILE DECIDES WHAT WE GO AND FETCH.
   //
@@ -694,11 +838,15 @@ export async function ensureAhjFormsForProject(
     if (resolvePermitPath(project).path !== "engineered" && (kb.ahj?.requiredDocuments || []).some((d) => /checklist|worksheet/i.test(d))) want("solar_checklist");
   } catch { /* KB optional */ }
   const results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }> = [];
+  // ONE reader for every form type of this pass (its cache reads a forms page once) — created only
+  // when research may run; with research off no forms page is ever named, so none is read.
+  let formsPage: FormsPageOptions | undefined = opts.formsPage;
+  if (opts.allowResearch !== false && formsPage?.reader === undefined) formsPage = { ...(formsPage ?? {}), reader: await defaultFormsPageReader() };
   for (const item of needed.values()) {
     results.push({
       formType: item.formType,
       applicationKind: item.applicationKind,
-      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind, allowResearch: opts.allowResearch, allowMapping: opts.allowMapping, skipRecentlyFailed: opts.skipRecentlyFailed })),
+      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind, allowResearch: opts.allowResearch, allowMapping: opts.allowMapping, skipRecentlyFailed: opts.skipRecentlyFailed, formsPage })),
     });
   }
   return { neededTypes: [...needed.keys()], needed: [...needed.values()], results };
@@ -722,7 +870,7 @@ export async function ensureAhjFormTemplate(
   llm: LLMProvider,
   project: ProjectRecord,
   formType = "permit_application",
-  opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean } = {},
+  opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean; formsPage?: FormsPageOptions } = {},
 ): Promise<EnsureFormResult> {
   // THE UTILITY'S FILING LOCATION rides every per-project form-research pass — the pipeline's
   // (ensureAhjFormsForProject) and the operator's "Find official form" — fire-and-forget, once per
@@ -730,6 +878,11 @@ export async function ensureAhjFormTemplate(
   // filed and what the program is. Nothing here waits on it; the tracks read the stored row.
   if (opts.allowResearch !== false) {
     try { ensureUtilityFilingLookedUp(db, project, llm); } catch { /* best-effort */ }
+    // AND THE AHJ'S OWN PROCESS (Waltham had no permit_process_lookups row: the lookup shipped after
+    // its one QC, and QC was its only trigger). The same trigger QC uses — enqueued once per AHJ with
+    // no lookup row and no process profile, deduped for 24h, a no-op without a model key or a running
+    // job worker. Fire-and-forget; nothing here waits on it.
+    void import("./permitProcessLookup").then((m) => m.ensurePermitProcessLookedUp(db, project)).catch(() => undefined);
   }
   // WHICH of the two building-side applications this call is for. Given by the caller
   // (the required set decided it from the permit path); otherwise resolved from the
@@ -850,20 +1003,41 @@ export async function ensureAhjFormTemplate(
     answer: permitStructureAnswer(project, { researched: research.permitStructure, researchedFrom: "the form search (uncited)" }),
   });
 
-  // Research candidates first (freshest), then any direct .pdf links carried by
-  // the imported KB row — a spreadsheet-provided application link can rescue an
-  // AHJ whose site the search couldn't crack (link may also just be stale).
-  const candidateUrls = [...new Set([...research.candidateUrls, ...(kbHint?.pdfUrls || [])])];
+  // Research candidates first (freshest), then the AHJ's own forms page and the search results
+  // (harvestApplicationCandidates — deterministic, no model call), then any direct .pdf links carried
+  // by the imported KB row — a spreadsheet-provided application link can rescue an AHJ whose site
+  // the search couldn't crack (link may also just be stale). A utility host is never a candidate
+  // (rule 5); a fee schedule / agenda named as such never an application.
+  const fp = opts.formsPage ?? {};
+  const harvest = await harvestApplicationCandidates(project, formType, applicationKind, research, fp);
+  const candidates: FormCandidate[] = [];
+  const addCandidate = (c: FormCandidate) => {
+    if (neverTheApplication(c.url, formType) || candidates.some((x) => x.url === c.url)) return;
+    candidates.push(c);
+  };
+  for (const url of research.candidateUrls) addCandidate({ url, label: "", origin: "research" });
+  for (const c of harvest.candidates) addCandidate(c);
+  for (const url of kbHint?.pdfUrls || []) addCandidate({ url, label: "", origin: "kb" });
+  const candidateUrls = candidates.map((c) => c.url);
+  const harvestNote = harvest.note ? ` ${harvest.note}` : "";
+  // "WE COULD NOT LOOK" IS NOT "THERE IS NO FORM" (Waltham, 09-25: the search aborted at its 180s
+  // budget and Stage reported "No downloadable PDF form was found" — then held the 24h cooldown).
+  const couldNotRun = research.lookupFailed
+    ? `The form search could not run: ${research.lookupError || "the web-search call failed"} — not a finding about ${project.ahj}. Nothing has been counted as present; the next Stage searches again (or use Find official form).`
+    : "";
 
   if (!candidateUrls.length) {
     const portalNote = research.submittalPortalUrl
       ? ` Submittal portal: ${research.submittalPortalUrl}${research.portalPlatform ? ` (${research.portalPlatform})` : ""} — it's pre-filled on the record/training step.`
       : "";
     const reqNote = research.submittalRequirements ? ` Requirements: ${research.submittalRequirements}` : "";
+    if (research.lookupFailed) {
+      return { status: "not_found", lookupFailed: true, permitType: permitType.callout, message: `${couldNotRun}${harvestNote}${portalNote}${reqNote} Permitting type: ${permitType.callout}` };
+    }
     return {
       status: "not_found",
       permitType: permitType.callout,
-      message: `Permitting type: ${permitType.callout}${research.notes ? ` ${research.notes}` : ` No downloadable PDF form was found for ${project.ahj} — submit through the method above.`}${portalNote}${reqNote}`,
+      message: `Permitting type: ${permitType.callout}${research.notes ? ` ${research.notes}` : ` No downloadable PDF form was found for ${project.ahj} — submit through the method above.`}${harvestNote}${portalNote}${reqNote}`,
     };
   }
 
@@ -872,24 +1046,40 @@ export async function ensureAhjFormTemplate(
   // classify each by name/URL, and store each under its own form_type slot.
   // Everything acquired is stored + learned, so the next project under this
   // AHJ skips the search entirely.
-  const downloads: Array<{ url: string; bytes: Uint8Array; type: string }> = [];
+  const downloads: Array<{ url: string; bytes: Uint8Array; type: string; label: string; found: boolean }> = [];
   const seenHashes = new Set<string>();
   const storedTypes = new Set<string>();
-  for (const url of candidateUrls) {
+  for (const c of candidates) {
     if (downloads.length >= 4) break;
+    const url = c.url;
+    // A document WE found (the forms page / a search result) is named by its own words: it is this
+    // slot's primary blank only when its discipline fits, and it is fetched as an extra only for a
+    // slot nothing downloaded yet fills — never a wasted request to the AHJ's host. And gently.
+    const found = c.origin === "forms-page" || c.origin === "search-result";
+    const words = found ? `${c.label} ${documentSlugWords(url)}` : "";
+    if (found) {
+      if (!downloads.length && c.discipline && !disciplineFitsSlot(c.discipline, formType)) continue;
+      if (downloads.length) {
+        const t = classifyFormType(`${url} ${words}`, formType);
+        if (t === formType || downloads.some((d) => d.type === t)) continue;
+      }
+      await politeGap(url, fp);
+    }
     const bytes = await fetchPdf(url);
+    if (found) noteHostHit(url);
     if (!bytes) continue;
     const hash = sha256(bytes);
     if (seenHashes.has(hash)) continue;
     seenHashes.add(hash);
-    const type = downloads.length === 0 ? formType : classifyFormType(`${url} ${research.formName || ""}`, formType);
-    downloads.push({ url, bytes, type });
+    const type = downloads.length === 0 ? formType : classifyFormType(`${url} ${found ? words : research.formName || ""}`, formType);
+    downloads.push({ url, bytes, type, label: found ? c.label : "", found });
   }
   if (!downloads.length) {
     return {
       status: "not_found",
       permitType: permitType.callout,
-      message: `Permitting type: ${permitType.callout} Found candidate links for ${project.ahj} but none returned a valid PDF (link rot or login-gated). Upload the blank PDF to proceed. Tried: ${candidateUrls.join(", ")}`,
+      ...(research.lookupFailed ? { lookupFailed: true } : {}),
+      message: `${couldNotRun ? `${couldNotRun} ` : ""}Permitting type: ${permitType.callout} Found candidate links for ${project.ahj} but none returned a valid PDF (link rot or login-gated). Upload the blank PDF to proceed. Tried: ${candidateUrls.join(", ")}${harvestNote}`,
     };
   }
 
@@ -905,15 +1095,19 @@ export async function ensureAhjFormTemplate(
     // The kind comes from the blank's OWN name/URL, never from what we went looking
     // for: a name that claims neither is a jurisdiction's single generic form, and
     // stamping our search intent on it would be inventing evidence.
-    const dlName = dl.type === formType && research.formName ? research.formName : "";
+    // A blank WE found is named by its own words (the AHJ's link text / the result's title), never
+    // by the model's formName for a different document.
+    const dlName = dl.found ? dl.label : dl.type === formType && research.formName ? research.formName : "";
     const dlKind = formApplicationKind(`${dl.url} ${dlName}`);
     const slot = `${dl.type}|${dlKind || ""}`;
     const type = storedTypes.has(slot) || (dl.type !== formType && hasStoredTemplateOfType(db, project.ahj, project.state, dl.type, dlKind)) ? "" : dl.type;
     if (!type) continue;
     storedTypes.add(slot);
-    const formName = type === formType && research.formName
-      ? research.formName
-      : `${project.ahj} ${type.replace(/_/g, " ")}`;
+    const formName = dl.found && dl.label.trim()
+      ? dl.label.trim().slice(0, 120)
+      : type === formType && research.formName
+        ? research.formName
+        : `${project.ahj} ${type.replace(/_/g, " ")}`;
     const acquired = await acquireFromBytes(db, llm, { ahj: project.ahj, state: project.state, formType: type, formName, bytes: dl.bytes, sourceUrl: dl.url, applicationKind: dlKind });
     if (!primary) primary = acquired;
     else extraMessages.push(`Also stored ${type.replace(/_/g, " ")}: ${acquired.message}`);

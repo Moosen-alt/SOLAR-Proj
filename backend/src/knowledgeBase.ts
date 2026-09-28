@@ -1879,10 +1879,17 @@ function researchProvenance(research: ResearchProvenanceFlag, sourceLabel: strin
 export function saveResearchedAhjProfile(
   db: AppDb,
   input: { state: string; ahj: string; utility?: string },
-  research: AhjResearchResult & ResearchProvenanceFlag,
+  research: AhjResearchResult & ResearchProvenanceFlag & {
+    /** The AHJ's forms / applications page the form search named (ahjFormAuto — already checked to
+     *  be on the AHJ's own site). Kept as its OWN note segment ("Forms page: <url>"), so it merges
+     *  and dedupes by segment and steers the next search (knowledgeResearchHint). */
+    formsPageUrl?: string;
+  },
 ): PermitUtilityKnowledgeProfile {
   const provenance = researchProvenance(research, "AI AHJ research");
   const scrub = (s: string): string => (provenance.modelMemory ? stripUrlsFromModelMemory(s) : s);
+  const formsPageSegment = research.formsPageUrl && /^https?:\/\//i.test(research.formsPageUrl) && !provenance.modelMemory
+    ? `Forms page: ${research.formsPageUrl}` : "";
   const noteParts = [
     "AI-researched AHJ profile — verify against the official site before relying on it.",
     provenance.note,
@@ -1902,7 +1909,8 @@ export function saveResearchedAhjProfile(
     requiredDocuments: research.requiredDocuments.map(scrub).filter(Boolean),
     sources: [provenance.source],
     confidence: "seeded",
-    notes: noteParts.join(" "),
+    // The research blob stays one segment (unchanged); the forms page is a segment of its own.
+    notes: [noteParts.join(" "), formsPageSegment].filter(Boolean).join(" | "),
   };
   return upsertKnowledge(db, facts, {
     eventType: "ahj.ai_researched",

@@ -22,7 +22,7 @@
 //   4. PREREQUISITES AND CODES FROM THE WORDS ON A PAGE WE READ — each a sentence quoted verbatim.
 import type { PermitProcessDiscipline } from "../../shared/src/types";
 import type { PageLink, PageReader, ReadPage } from "./agencyPageReader";
-import { hostFitsTrackAndEntity, isPathTenantedHost, isPermitPlatformUrl, isVendorRootOrMarketing, portalHostOf, portalTenantKey, portalTenantOf, registrableDomain } from "./portalChannel";
+import { hostFitsTrackAndEntity, isPathTenantedHost, isPermitPlatformUrl, isUtilityPlatformUrl, isVendorRootOrMarketing, portalHostOf, portalTenantKey, portalTenantOf, registrableDomain } from "./portalChannel";
 // registrableDomain and isVendorRootOrMarketing live in portalChannel (lookup-close-6 MF4: the
 // lookup's portal door asks "is this the vendor's own site?" too, so the ONE predicate sits beside
 // the host lists); re-exported here for the callers that import them from the catalog.
@@ -830,6 +830,97 @@ export function documentLinks(pages: ReadPage[], names: string[], state?: string
     }
   }
   return out.sort((a, b) => Number(b.kind === "fees") - Number(a.kind === "fees") || (a.kind === "fees" ? feeRank(b.text, b.href) - feeRank(a.text, a.href) : 0));
+}
+
+// ── The AHJ's own blank PERMIT APPLICATION on a page we read (form acquisition, 2026-09-28) ─────
+// The sibling of classifyDocument / documentLinks for one more question: "which document the AHJ's
+// own forms page links (or a search result on its own site) is the blank permit APPLICATION?" City
+// of Waltham, MA: research named https://www.city.waltham.ma.us/1289/Applications, the page links
+// "Residential Application" -> /DocumentCenter/View/4313/Residential-Application (application/pdf),
+// and nothing read the page — the model's own list was empty, so Stage reported "no form found".
+// The same predicates as the fee / checklist door: DOCUMENT_URL (a document, not a page), FEE_LINK
+// (a fee schedule), OTHER_FEE_KIND / JOB_FEE_KIND (another permit kind, unless the words also name
+// the building / electrical / solar work). Words are the link's (or result title's) words plus the
+// document's own slug (its last path segment) — never the folders above it.
+const APPLICATION_WORDS = /\bapplications?\b|\bpermit\s+(?:form|request)\b/i;
+/** A document ABOUT applying (a checklist, a guide, instructions, a handout) or a publication —
+ *  never the blank form itself. A checklist that names an application is still a checklist. */
+const NOT_A_FORM = /checklist|guide|handout|brochure|\bfaqs?\b|instruction|how[- ]to|bulletin|newsletter|agenda|minutes|annual report|press release|polic(?:y|ies)|flyer|presentation|\bnotice\b|\bsample\b|\bexample\b/i;
+/** An application, but not for a permit to build: tax / assessor forms ("Residential Exemption
+ *  Application"), employment, boards and commissions, licences and registrations, rentals, bids —
+ *  and a utility's interconnection / net-metering application (rule 5: never on a permit track). */
+const NOT_A_BUILD_PERMIT = /assessor|abatement|exemption|\btax(?:es)?\b|excise|employment|\bjobs?\b|appointment|\bboards?\b|committee|commission|public records|records request|rental|vendor|\bbids?\b|\bgrants?\b|voter|raffle|yard sale|block party|hawker|peddler|licen[cs]|registration|certificat|scholarship|volunteer|interconnect|net[- ]?meter|\butility\b/i;
+/** Another TRADE's or activity's permit (beside OTHER_FEE_KIND's list) — rescued, like a fee
+ *  schedule, when the words also name the building / electrical / solar work (JOB_FEE_KIND):
+ *  "Building, Plumbing & Gas Permit Application" is this job's form, "Plumbing Permit Application" is not. */
+const OTHER_TRADE = /plumbing|\bgas\b|mechanical|sheet ?metal|demolition|\bpools?\b|\bfences?\b|\btents?\b|dumpster|occupancy|variance|special permit|site plan|conservation|wetland|historic/i;
+export type ApplicationDiscipline = "electrical" | "building" | "combined" | "general";
+/** The words a document's own URL carries: its last path segment, extension and separators dropped
+ *  ("/DocumentCenter/View/4313/Residential-Application" -> "Residential Application"). */
+export function documentSlugWords(href: string): string {
+  try {
+    const seg = decodeURIComponent(new URL(href).pathname).split("/").filter(Boolean).pop() ?? "";
+    return seg.replace(/\.[a-z0-9]{2,5}$/i, "").replace(/[-_+.]+/g, " ").trim();
+  } catch {
+    return "";
+  }
+}
+/**
+ * A blank permit APPLICATION document, by the words naming it and its URL — or null. `discipline`
+ * says which permit it is for (an electrical-only application is never the building-side blank);
+ * `score` ranks a residential / solar / building application above a generic one. Never a fee
+ * schedule, a checklist / guide / handout, an agenda / minutes / newsletter, another permit kind's
+ * application, a commercial-only one, a tax / licence / utility application, or a page.
+ */
+export function classifyApplicationDocument(words: string, href: string): { discipline: ApplicationDiscipline; score: number } | null {
+  if (!DOCUMENT_URL.test(String(href ?? ""))) return null;
+  const w = `${String(words ?? "")} ${documentSlugWords(href)}`.replace(/\s+/g, " ").trim();
+  if (!APPLICATION_WORDS.test(w)) return null;
+  if (FEE_LINK.test(w) || NOT_A_FORM.test(w) || NOT_A_BUILD_PERMIT.test(w)) return null;
+  if ((OTHER_FEE_KIND.test(w) || OTHER_TRADE.test(w)) && !JOB_FEE_KIND.test(w)) return null;
+  // A COMMERCIAL-only application is not a residential solar job's form (one naming both is).
+  if (/commercial/i.test(w) && !/residential|dwelling/i.test(w)) return null;
+  const electrical = /electric|\bele\b/i.test(w);
+  const building = /building|structural|\bbld\b/i.test(w);
+  const discipline: ApplicationDiscipline = electrical && building ? "combined" : electrical ? "electrical" : building ? "building" : "general";
+  let score = 1;
+  if (/residential|dwelling|single[- ]family|one[- ]?(?:and|&)[- ]?two[- ]family/i.test(w)) score += 3;
+  if (/solar|photo-?voltaic|\bpv\b/i.test(w)) score += 3;
+  if (/building|construction/i.test(w)) score += 2;
+  if (/\bpermit\b/i.test(w)) score += 1;
+  return { discipline, score };
+}
+/**
+ * The permit APPLICATION documents an AHJ's OWN page links, best first. Only a page on the AHJ's
+ * own site is read for them (isOfficialAgencyHost — the agency-page predicate documentLinks uses —
+ * and never a state's own site for a local AHJ), and only a link on THAT page's registrable domain
+ * is taken: an off-site link (another town's form, a vendor), and a utility host (rule 5), never.
+ */
+export function applicationFormLinks(pages: ReadPage[], names: string[], state?: string): Array<{ href: string; text: string; discipline: ApplicationDiscipline; score: number }> {
+  const out: Array<{ href: string; text: string; discipline: ApplicationDiscipline; score: number }> = [];
+  for (const page of pages) {
+    if (!page.ok || page.kind !== "html") continue;
+    const pageHost = portalHostOf(page.finalUrl);
+    if (!isAhjFormsSite(pageHost, names, state)) continue;
+    const dom = registrableDomain(pageHost);
+    for (const l of page.links) {
+      const host = portalHostOf(l.href);
+      if (!host || registrableDomain(host) !== dom || isUtilityPlatformUrl(l.href)) continue;
+      if (/translate|facebook|twitter|mailto|[?&]splash=|isexternal/i.test(l.href)) continue;
+      const doc = classifyApplicationDocument(l.text, l.href);
+      if (doc && !out.some((o) => o.href === l.href)) out.push({ href: l.href, text: l.text, ...doc });
+    }
+  }
+  return out.sort((a, b) => b.score - a.score);
+}
+/** A site whose forms page may be read for THIS AHJ's application: an official agency host
+ *  (isOfficialAgencyHost), never a permit / utility platform, and never a STATE's own site for a
+ *  local AHJ (a state's forms are not the city's). */
+export function isAhjFormsSite(host: string, names: string[], state?: string): boolean {
+  if (!host || isUtilityPlatformUrl(`https://${host}/`) || !isOfficialAgencyHost(host, names, state)) return false;
+  const hs = hostStateOf(host);
+  if (hs && state && hs.state !== String(state).toLowerCase()) return false;
+  return !(hs?.stateSite && !names.some((n) => stateAgencyOf(n)));
 }
 const FEE_LINE = /solar|photo-?voltaic|\bpv\b|renewable|\bkva\b|\bkw\b|surcharge|electrical permit|minor work/i;
 const DOC_LINE = /required|submit|plan|site|diagram|spec|checklist|form|application|upload|attach|stamp|seal|engineer|calculation|drawing/i;

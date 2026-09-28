@@ -1,8 +1,8 @@
 import type { AppDb } from "./db";
-import type { ProjectRecord } from "../../shared/src/types";
+import type { LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { buildFilledFormsForProject } from "./ahjForms";
 import { materializeGeneratedDocs } from "./generatedDocFiles";
-import { ensureAhjFormsForProject } from "./ahjFormAuto";
+import { ensureAhjFormsForProject, type FormsPageOptions } from "./ahjFormAuto";
 import { createLLMProvider } from "./llm";
 import { resolvePermitPath } from "./permitPath";
 import { logger } from "./logger";
@@ -18,8 +18,20 @@ const COOLDOWN_MS = 24 * 60 * 60 * 1000;
  *   - "unknown-path"    the permit path is not confirmed: nothing acquired or filled. */
 export interface OfficialDocumentsPreparation {
   acquisition: "full" | "within-cooldown" | "failed" | "off" | "unknown-path";
-  /** sourceUrl: the PDF a download was attempted from, when one was. */
-  results: Array<{ formType: string; status: string; message: string; sourceUrl?: string }>;
+  /** sourceUrl: the PDF a download was attempted from, when one was. lookupFailed: the form search
+   *  for that slot could not run (not a finding about the AHJ). */
+  results: Array<{ formType: string; status: string; message: string; sourceUrl?: string; lookupFailed?: boolean }>;
+  /** TRUE when this pass claimed the cooldown and then RELEASED it because a form search could not
+   *  run — the next Stage searches again. */
+  cooldownReleased?: boolean;
+}
+
+/** Injected by tests (no network, no key): the model, whether research may run, the forms page
+ *  reader and its politeness gap. Production passes nothing. */
+export interface OfficialDocumentsDeps {
+  llm?: LLMProvider;
+  research?: boolean;
+  formsPage?: FormsPageOptions;
 }
 
 /** Prepare actual applications before learn/stage assembles upload paths.
@@ -42,29 +54,44 @@ export interface OfficialDocumentsPreparation {
  * research is allowed on this process (allowMapping): mapping it once is not repeated research, and
  * storing it unmapped would leave a hand-complete blank that no later pass re-maps.
  * Manual "Find official form" remains an explicit retry that bypasses the cooldown altogether. */
-export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord): Promise<OfficialDocumentsPreparation> {
+export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord, deps: OfficialDocumentsDeps = {}): Promise<OfficialDocumentsPreparation> {
   const permitPath = resolvePermitPath(project).path;
   if (permitPath === "unknown") return { acquisition: "unknown-path", results: [] };
   let acquisition: OfficialDocumentsPreparation["acquisition"] = "off";
   let results: OfficialDocumentsPreparation["results"] = [];
+  let cooldownReleased = false;
   if (process.env.AHJ_FORM_DOWNLOADS !== "off") {
     db.exec(`CREATE TABLE IF NOT EXISTS ahj_form_acquisition_attempts (
       scope_key TEXT PRIMARY KEY, attempted_at INTEGER NOT NULL)`);
     const key = `${project.state}|${project.ahj}|${permitPath}`.trim().toLowerCase();
     const prior = db.get<{ attempted_at: number }>("SELECT attempted_at FROM ahj_form_acquisition_attempts WHERE scope_key = ?", [key]);
-    const research = process.env.AHJ_FORM_RESEARCH !== "off" && Boolean(process.env.ANTHROPIC_API_KEY);
+    const research = deps.research ?? (process.env.AHJ_FORM_RESEARCH !== "off" && Boolean(process.env.ANTHROPIC_API_KEY));
     const open = !prior || Date.now() - prior.attempted_at >= COOLDOWN_MS;
-    if (open) db.run("INSERT INTO ahj_form_acquisition_attempts(scope_key, attempted_at) VALUES (?, ?) ON CONFLICT(scope_key) DO UPDATE SET attempted_at = excluded.attempted_at", [key, Date.now()]);
+    const claimedAt = Date.now();
+    if (open) db.run("INSERT INTO ahj_form_acquisition_attempts(scope_key, attempted_at) VALUES (?, ?) ON CONFLICT(scope_key) DO UPDATE SET attempted_at = excluded.attempted_at", [key, claimedAt]);
     acquisition = open ? "full" : "within-cooldown";
     try {
-      const out = await ensureAhjFormsForProject(db, createLLMProvider(), project,
+      const out = await ensureAhjFormsForProject(db, deps.llm ?? createLLMProvider(), project,
         // Inside the cooldown, a form URL that failed in the last 6h is not fetched again
         // (ahjFormAuto.recentFormFetchFailure — go gently; the operator's Find retries it now).
-        open ? { allowResearch: research } : { allowResearch: false, allowMapping: research, skipRecentlyFailed: true });
-      results = out.results.map((r) => ({ formType: r.formType, status: r.status, message: r.message, ...(r.sourceUrl ? { sourceUrl: r.sourceUrl } : {}) }));
+        open ? { allowResearch: research, formsPage: deps.formsPage } : { allowResearch: false, allowMapping: research, skipRecentlyFailed: true, formsPage: deps.formsPage });
+      results = out.results.map((r) => ({ formType: r.formType, status: r.status, message: r.message, ...(r.sourceUrl ? { sourceUrl: r.sourceUrl } : {}), ...(r.lookupFailed ? { lookupFailed: true } : {}) }));
     } catch {
       acquisition = "failed";
       logger.warn("official-documents", "Form acquisition failed; filling available stored templates. Missing-document gates remain active.", { projectId: project.id });
+    }
+    // A SEARCH THAT COULD NOT RUN RELEASES THE CLAIM (Waltham, 09-25: the one Stage search aborted at
+    // its 180s budget, and the claim it made before awaiting held the AHJ's research shut for 24h —
+    // "we could not look" became a day of "no form"). The claim is still made BEFORE the await
+    // (retries and simultaneous projects must not amplify paid research); it is handed back only when
+    // a slot's search could not run, and only if it is still OURS (restored to the prior attempt, or
+    // removed when there was none). A search that ran and found nothing keeps the cooldown.
+    if (open && results.some((r) => r.lookupFailed)) {
+      if (prior) db.run("UPDATE ahj_form_acquisition_attempts SET attempted_at = ? WHERE scope_key = ? AND attempted_at = ?", [prior.attempted_at, key, claimedAt]);
+      else db.run("DELETE FROM ahj_form_acquisition_attempts WHERE scope_key = ? AND attempted_at = ?", [key, claimedAt]);
+      cooldownReleased = db.get<{ attempted_at: number }>("SELECT attempted_at FROM ahj_form_acquisition_attempts WHERE scope_key = ?", [key])?.attempted_at !== claimedAt;
+      logger.warn("official-documents", `The form search could not run for ${project.ahj}; the 24h cooldown claim was released so the next Stage searches again.`,
+        { projectId: project.id, detail: results.filter((r) => r.lookupFailed).map((r) => `${r.formType}: ${r.message}`).join(" | ").slice(0, 800) });
     }
     // SAY WHAT IS STILL MISSING. The live incident was a Stage that quietly went on without the
     // county's forms; the required-document gates still block, and the log names which ones. Inside
@@ -84,5 +111,5 @@ export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord
   // The return value is not needed here: the render's own manifest is what every reader
   // (submissionDocumentsByType) reads, keyed by the builder's doc id — never by filename.
   await materializeGeneratedDocs(db, project);
-  return { acquisition, results };
+  return { acquisition, results, ...(cooldownReleased ? { cooldownReleased } : {}) };
 }
