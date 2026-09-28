@@ -19,8 +19,8 @@ AHJ documents → stage the portal application → human verifies + submits.
 - `npm run smoke` — full end-to-end on a scratch DB. Must stay green.
 - `npm run backend:test:unit` / `npm run portal:test:unit` — unit suites (chained
   `&&`, so the FIRST failure stops the chain — later tests may not have run).
-  `backend:test:unit` ends by running `backend:test:unit:2`; register NEW backend
-  tests at the end of `:2`. The first script hit cmd.exe's 8191-char limit on
+  `backend:test:unit` ends by running `backend:test:unit:2`, which ends by running
+  `backend:test:unit:3`; register NEW backend tests at the end of `:3`. The first script hit cmd.exe's 8191-char limit on
   Windows ("The command line is too long." — nothing runs, and the exit is 1).
 - `npm run portal:test:dom` — every real-Chromium smoke, each in its own process
   (`scripts/run-dom-smokes.ts`). Discovers `*.dom.smoke.ts` from disk, so a new one
