@@ -4199,7 +4199,11 @@ export class RecipeAdapter extends BasePortalAdapter {
     const discipline = this.filingIsElectrical() ? "electrical" : "structural";
     const r = await this.chooseTypeOnEmptyRow((texts) => attachmentTypeFor(docType, texts, { discipline }), RecipeAdapter.UNTYPED_ROW_WAIT_MS, `no recorded Type for ${docType}`);
     const doc = docType.replace(/_/g, " ");
-    if (r.status === "no-row") return;
+    if (r.status === "no-row") {
+      // A shown document-type row that already HOLDS a Type still demands one on every owed row.
+      if ((await this.documentTypeSelects()).some((s) => s.visible && !!s.chosenText)) this.rowsTypedByDocument.add(commitStep);
+      return;
+    }
     this.rowsTypedByDocument.add(commitStep);
     if (r.status === "chosen") {
       this.agingNotes.push(`the recorded attachment row for the ${doc} has no Type step — chose "${r.pick}" by the document from the portal's own list`);
