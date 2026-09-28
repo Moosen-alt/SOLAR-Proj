@@ -79,6 +79,9 @@ export interface AutopilotState {
   /** Required portal fields left blank though the project HAS the value — an engine gap,
    *  never the operator's data problem. */
   gapEngineUnfilled: string[];
+  /** What the person taking the staged review page must know before submitting (dryrun-0928
+   *  B3 / B14): answers the portal may not have saved; the portal's own calls held back. */
+  reviewHandoffNotes: string[];
   /** Why Approve & Submit is disabled, in words (null when canApprove). */
   approveDisabledReason: string | null;
   /** S8 — may "Stage portals · Autopilot" start a run? False with a reason when the project is
@@ -217,6 +220,11 @@ function blockersFromHttpError(err: HttpError): AutopilotBlocker[] {
   if (d.permitPathUnknown) out.push({ code: "permit_path", detail: "Confirm the permit path (prescriptive vs engineered)." });
   if (d.needsClient) out.push({ code: "needs_client", detail: "Assign the submitting client whose CCB/license belongs on the filing." });
   if (d.needsCcb) out.push({ code: "needs_ccb", detail: "Submitting client has no CCB license number on file." });
+  // A per-job question the portal asks and only a person can answer for this job (ownership,
+  // behind-the-meter, disconnect distance) — named, so the operator knows what to answer (B2).
+  for (const q of (Array.isArray(d.unansweredPortalQuestions) ? d.unansweredPortalQuestions : []) as Array<{ label?: string; key?: string }>) {
+    out.push({ code: "portal_question", detail: `Answer the portal's question for this job: "${String(q.label ?? q.key ?? "a per-job question")}" (portal questions on the project, or the intake link).` });
+  }
   if (out.length === 0) out.push({ code: "blocked", detail: err.message });
   return out;
 }
@@ -263,7 +271,7 @@ function awaitingPortalRun(db: AppDb, projectId: string, track?: SubmittalTrackT
 
 // Review-screen mismatches + gap-fill lists from a portal_run's result_json (the reader lives
 // in nextStep.ts so the next-step rule table and this panel read the same lists).
-function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[]; gapEngineUnfilled: string[] } {
+function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[]; gapEngineUnfilled: string[]; reviewHandoffNotes: string[] } {
   return reviewInfoFromResultJson(run?.result_json);
 }
 
@@ -284,7 +292,7 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
   const run = latestPortalRun(db, projectId);
   const facts = loadFullNextStepFacts(db, projectId);
   const nextStep = decideNextStep(facts);
-  const noReview = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[], gapEngineUnfilled: [] as string[] };
+  const noReview = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[], gapEngineUnfilled: [] as string[], reviewHandoffNotes: [] as string[] };
 
   const job = db.get<Row>(
     "SELECT * FROM job_queue WHERE project_id = ? AND job_type = 'autopilot' ORDER BY created_at DESC LIMIT 1",
@@ -685,6 +693,20 @@ export async function runAutopilotSegmentA(
       if (err instanceof HttpError && err.status === 409) {
         const blockers = blockersFromHttpError(err).map((b) => ({ ...b, detail: `${t}: ${b.detail}` }));
         addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { track: t, blockers });
+        // A PER-JOB PORTAL QUESTION HOLDS ONLY THE TRACK WHOSE RECIPE ASKS IT (dryrun-0928 B2). The
+        // stage gate refuses before a browser opens when THIS track's recipe asks who owns the system
+        // (or behind-the-meter / disconnect distance) and the job has not answered — a fact about that
+        // one filing, not a project-wide gate. requiredTracks lists NEM first, so returning here left
+        // the building/electrical permits unstaged. Recorded like a failed stage (the stageOutcome path
+        // below) and the run goes on to the next track. Only that gate sets unansweredPortalQuestions.
+        const perJobQuestions = (err.details as { unansweredPortalQuestions?: unknown } | undefined)?.unansweredPortalQuestions;
+        if (Array.isArray(perJobQuestions) && perJobQuestions.length) {
+          trackBlockers.push(...blockers);
+          logger.warn("autopilot", "Segment A: this track's portal asks a per-job question the job has not answered — holding this track, staging the rest", {
+            project: projectId, track: t, ms: `${Math.round(performance.now() - t0)}ms`, questions: perJobQuestions.length,
+          });
+          continue;
+        }
         logger.warn("autopilot", "Segment A blocked at a gate", { project: projectId, track: t, ms: `${Math.round(performance.now() - t0)}ms`, blockers: blockers.length, reasons: blockers.map((b) => b.code).slice(0, 5) });
         // A project-wide gate (QC, reviewer, documents) blocks every remaining track
         // too — stop rather than re-running the same refusal per track.

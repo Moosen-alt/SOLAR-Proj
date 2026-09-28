@@ -171,9 +171,29 @@ export interface ReviewComparison {
  * A live run made this concrete — reviewFieldsSeen: 4, zero mismatches — and one fixture fix
  * away it would have claimed the top rung on four fields of boilerplate.
  */
+/**
+ * WHICH UTILITY IDENTIFIERS THIS FILING TYPED (dryrun-0928 B8). The account / meter checks ran on
+ * every filing whatever it was, so every Accela PERMIT review said "VERIFY BEFORE SUBMITTING —
+ * meterNumber" (a permit application has no meter field), and the account's last four were
+ * "confirmed" from digits Accela rendered itself. The review page is checked for an identifier
+ * only when THIS filing entered it — so it is a REQUIRED argument, never an optional trailing one:
+ * a default of "check" keeps the bug, a default of "skip" silently drops the NEM check.
+ */
+export interface UtilityIdentifiersEntered {
+  accountNumber: boolean;
+  meterNumber: boolean;
+}
+
+/** What a recipe's own steps typed: an identifier is "entered" when a step is bound to its key. */
+export function utilityIdentifiersEnteredBySteps(steps: Array<{ field?: string | null }> | null | undefined): UtilityIdentifiersEntered {
+  const bound = (key: string) => (steps ?? []).some((s) => String(s?.field ?? "") === key);
+  return { accountNumber: bound("accountNumber"), meterNumber: bound("meterNumber") };
+}
+
 export function reviewComparison(
   reviewFields: ReviewField[],
   project: ProjectRecord,
+  entered: UtilityIdentifiersEntered,
   bodyText = "",
 ): ReviewComparison {
   const mismatches: ReviewMismatch[] = [];
@@ -284,8 +304,10 @@ export function reviewComparison(
   checkText("homeownerName", project.homeownerName, ["name", "owner", "applicant", "customer", "contact"]);
   checkText("projectAddress", (project.projectAddress ?? "").split(",")[0], ["address", "street", "site", "location", "premise", "service"]);
   checkDigits("systemSizeDcKw", project.systemSizeDcKw, ["size", "kw", "kva", "dc", "capacity", "nameplate", "rating", "system"]);
-  checkDigits("accountNumber", project.accountNumber, ["account"], { last4: true });
-  checkDigits("meterNumber", project.meterNumber, ["meter"], { last4: true });
+  // A utility identifier is looked for only when THIS filing typed it (B8): a skipped check is not
+  // compared and not confirmed — digits the portal printed for its own reasons prove nothing.
+  if (entered.accountNumber) checkDigits("accountNumber", project.accountNumber, ["account"], { last4: true });
+  if (entered.meterNumber) checkDigits("meterNumber", project.meterNumber, ["meter"], { last4: true });
 
   // NOT A REVIEW SCREEN IS NOT A WRONG APPLICATION.
   //
@@ -332,9 +354,10 @@ export function reviewComparison(
 export function compareReviewFields(
   reviewFields: ReviewField[],
   project: ProjectRecord,
+  entered: UtilityIdentifiersEntered,
   bodyText = "",
 ): ReviewMismatch[] {
-  return reviewComparison(reviewFields, project, bodyText).mismatches;
+  return reviewComparison(reviewFields, project, entered, bodyText).mismatches;
 }
 
 /**

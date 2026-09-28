@@ -157,6 +157,7 @@ import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
 import { ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
 import { enqueueStageSteps } from "./autoStageSteps";
 import type { ClientResolution, ParserExtractionResponse, SubmittalTrackType } from "../../shared/src/types";
+import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
 
 const app = express();
 
@@ -1766,8 +1767,7 @@ app.put("/api/portal-recipes/:id/auto-submit", (req, res) => {
   const enabled = req.body?.enabled === true || String(req.body?.enabled) === "true";
   if (enabled) {
     throw new HttpError(409,
-      "Recipes are no longer armed for auto-submit. A final submit happens only in a run a named person approves: "
-      + "use Approve & Submit on the filing (with PORTAL_ALLOW_FINAL_SUBMIT=1 on the server). Nothing was changed.",
+      `Recipes are no longer armed for auto-submit. ${FINAL_SUBMIT_GATE_SENTENCE} Nothing was changed.`,
       { noStandingArm: true, recipeId: recipe.id });
   }
   db.run("UPDATE portal_recipes SET auto_submit_enabled = 0, updated_at = ? WHERE id = ?", [new Date().toISOString(), recipe.id]);

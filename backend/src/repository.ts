@@ -77,7 +77,7 @@ import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES
 import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
 import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor } from "./permitProcess";
-import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
+import { bindRecipeForReplay, describeReplayBinding, openPerJobQuestions } from "./recipeReplayBinding";
 import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import type { StageAcquiredForm } from "./formAcquisitionPlan";
 import { agencyListReplacesLine, issuingAgencyDocumentList } from "./applicationDocsAgency";
@@ -91,7 +91,8 @@ import { clientLicenceRow, clientStagingOverlay, contractorLicenceForState, getC
 import { planSetLicenceWarning } from "./clientMatch";
 import { assertSubmissionPaid } from "./submissionFees";
 import { readAndRecordPortalFees } from "./portalFeeReadings";
-import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, lockedOutCredential } from "./portalCredentials";
+import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, listPortalCredentials, lockedOutCredential } from "./portalCredentials";
+import { annotateDraft, buildDraftTouch, recordDraftTouch } from "./draftLedger";
 import { logger } from "./logger";
 import { selectAdapterActor, selectStagingActor, learnEntryUrl, resolvePortalChannel, seedOutcomeToStageResult, isAutoSeedDisabled, recipeDisciplineFromSteps, disciplineConflictsWithTrack, recipeDisciplineForTrack, hostFitsTrackAndEntity, scopeForTrack, trackSafeUrl, portalHostOf, type HostFit, type PortalUrlSource } from "./portalChannel";
 import { isPortalPaused } from "./portalPause";
@@ -8604,6 +8605,39 @@ export async function prepareSubmission(
       + "Submit (or discard) the staged draft first if it needs to be replaced.",
       { track: first, permitNumber: null, submittedAt: null, stagedMeanwhile });
   }
+  // A PER-JOB QUESTION THE JOB HAS NOT ANSWERED STOPS THE STAGE HERE — BEFORE A BROWSER OPENS
+  // (dryrun-0928 B2). The recipe about to replay asks who owns the system (or whether it is behind
+  // the meter / the disconnect distance), the answer is THIS job's, and no document states it. The
+  // live PacifiCorp recipe filed the learn job's "Customer-Owned" on every job; the replay binder
+  // (R10) now binds that control to the job's key, and an unanswered key would replay a blank — so
+  // the question is asked first, named, the way the question bank lists it for intake. Same
+  // predicate as the bank, the binders and the planner (shared/src/perJobQuestions).
+  if (recipe && runActorLabel === "RecipeAdapter" && !channelDecision.blocked
+      && !recipeTrackConflict && !recipeEntityMisfit && !recipeDisciplineConflict) {
+    let open: Array<{ key: string; label: string }> = [];
+    try {
+      const gateValues = resolveRecipeFieldValues(db, stagedProject, portalType, track ?? null);
+      const gateBinding = bindRecipeForReplay({
+        steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: detail.project, fieldValues: gateValues, track,
+        borrowed: borrowed ? { learnedFor: borrowed.learnedFor, discipline: borrowed.discipline } : null,
+        agency: issuingAgencyFor(detail.project, track),
+      });
+      open = openPerJobQuestions(gateBinding.steps, { ...gateValues, ...gateBinding.fieldValues });
+    } catch (err) {
+      // The replay path binds the same steps again inside the run below and records its own failure.
+      logger.warn("prepare-submission", `per-job question check could not read the recipe: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (open.length) {
+      addAuditLog(db, projectId, "system", "submit gate", "portal.per_job_question_open", {
+        track: track ?? "permit", recipeId: recipe.id, questions: open,
+      });
+      throw new HttpError(409,
+        `Staging paused before opening the portal: ${portalLabel} asks ${open.length === 1 ? "a question" : `${open.length} questions`} only a person can answer for this job — `
+        + `${open.map((q) => `"${q.label}"`).join("; ")}. The recorded answer belonged to another job, so it is never replayed; `
+        + "answer it under the project's portal questions (or send the intake link), then stage again. Nothing was opened.",
+        { unansweredPortalQuestions: open, track: track ?? "permit", recipeId: recipe.id });
+    }
+  }
   let result: Record<string, unknown>;
   // What the replay-failure classifier decided about the recipe, for the run's own message.
   let replayVerdictNote = "";
@@ -8622,6 +8656,25 @@ export async function prepareSubmission(
     runId, projectId, portalProfileId: safePortalProfileId, startedAt: ts, permitType: track ?? "permit",
     actor: runActorLabel, recipeId: recipe?.id ?? null, recipeVersion: recipe?.version ?? null,
   });
+  // EVERY STAGING BROWSER LAUNCH IS A POSSIBLE DRAFT ON A REAL ACCOUNT, WRITTEN DOWN BEFORE IT OPENS
+  // (dryrun-0928 B11). Only the learn and the benchmark wrote the draft ledger, so a clean project's
+  // building and electrical replays left two drafts on Oregon ePermitting that the list a company is
+  // handed for cleanup never showed. Written at each launch below — not at the run row, since several
+  // branches after it open nothing (kill-switch, host/entity/discipline conflicts) — and a headed
+  // retry is a second browser, so a second row. The learn path writes its own (autoLearnPortal).
+  const ledgerStagingLaunch = (purpose: string, url: string): void => {
+    try {
+      recordDraftTouch(buildDraftTouch({
+        portalUrl: url, projectId, purpose,
+        note: resolvedAutoSubmit
+          ? `an approved run (named approval, run ${runId}) — may be FILED, not only drafted`
+          : `staging stops at review; automation never submits it (run ${runId})`,
+        credentials: clientId ? listPortalCredentials(db, clientId) : [],
+      }));
+    } catch (err) {
+      logger.warn("prepare-submission", `draft ledger row not written: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   try {
     if (channelDecision.blocked) {
       // Kill-switch tripped: surface a manual handoff and drive NO automation.
@@ -8699,6 +8752,7 @@ export async function prepareSubmission(
       }
       const boundRecipe = { ...recipe, steps: replayBinding.steps };
       const boundValues = { ...replayFieldValues, ...replayBinding.fieldValues };
+      ledgerStagingLaunch(`staging replay (${track ?? "permit"} track, run ${runId})`, String(recipe.portalUrl || credentialUrl || ""));
       result = await recipeStageRunner(boundRecipe, stagedProject, boundValues, docsByType, files, stageOptions);
 
       // A BOT WALL MUST NOT BLOCK A FILING — RETRY WITH A REAL WINDOW.
@@ -8721,6 +8775,7 @@ export async function prepareSubmission(
           projectId, portal: portalLabel,
         });
         try {
+          ledgerStagingLaunch(`staging replay (${track ?? "permit"} track, run ${runId}) — headed retry, a second browser; may leave a second draft`, String(recipe.portalUrl || credentialUrl || ""));
           const headedResult = await recipeStageRunner(
             boundRecipe, stagedProject, boundValues, docsByType, files,
             { ...stageOptions, headless: false },
@@ -8907,8 +8962,10 @@ export async function prepareSubmission(
         }
       }
     } else if (runActorLabel === "OregonEPermittingAdapter") {
+      ledgerStagingLaunch(`staging, hand-coded Oregon ePermitting adapter (${track ?? "permit"} track, run ${runId})`, credentialUrl);
       result = await stageWithAccela(stagedProject, files, stageOptions);
     } else if (runActorLabel === "PowerClerkAdapter") {
+      ledgerStagingLaunch(`staging, hand-coded PowerClerk adapter (${track ?? "permit"} track, run ${runId})`, credentialUrl);
       result = await stageWithPowerClerk(stagedProject, files, stageOptions);
     } else if (runActorLabel === "NoAdapter" || autoSeedEnabled) {
       // Nothing REAL to drive: no recorded recipe and either no adapter for this real
@@ -8967,6 +9024,13 @@ export async function prepareSubmission(
     const evidenceDir = String((result as Record<string, unknown>).evidenceDir
       ?? (result as Record<string, unknown>).debugDir ?? "").trim();
     const outcomeShotPath = String((result as Record<string, unknown>).outcomeShotPath ?? "").trim();
+    // THE DRAFT THIS RUN LEFT, NAMED (dryrun-0928 B11): the reference portal-bot read off the review
+    // page's URL (PowerClerk's ProjectId) goes on the draft ledger beside the launch row, and stays in
+    // result_json. A URL with no record key (an Accela wizard page) is recorded as the page link only.
+    const draftRef = (result as { draftReference?: { link?: string; id?: string } }).draftReference;
+    if (!clicked && draftRef && (draftRef.id || draftRef.link)) {
+      annotateDraft(projectId, String(draftRef.id || draftRef.link), `${track ?? "permit"} staging run ${runId}${draftRef.id ? " — the portal's own reference" : " — review page link (its URL carries no record key)"}`);
+    }
     // WHICH RECIPE DROVE THIS RUN, AND WHO IT WAS LEARNED FOR — on the run row (result_json), in
     // the stage line and on the submission, so the operator reviewing the staged application
     // knows it was filled from another jurisdiction's recipe.

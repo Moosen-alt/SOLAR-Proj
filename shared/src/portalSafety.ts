@@ -1914,3 +1914,16 @@ export function finalSubmitRefusals(ctx: FinalSubmitContext | null | undefined):
 export function mayClickFinalSubmit(ctx: FinalSubmitContext | null | undefined): boolean {
   return finalSubmitRefusals(ctx).length === 0;
 }
+
+/**
+ * THE ONE SENTENCE that describes the final-submit gate above, for every learn / stage message a
+ * person reads (dryrun-0928 B10). A learn's success message used to end "Final submit stays manual
+ * unless you opt this portal into trusted auto-submit" — a per-portal opt-in the operator rulings
+ * of 2026-09-24 / 2026-09-26 removed (PUT /api/portal-recipes/:id/auto-submit refuses to arm, 409),
+ * so the text contradicted hard rule 1 and sent an operator into a refusal. The same words as the
+ * dashboard's recipe row (frontend/dashboard.js data-recipe-submit-gate) and the 409 itself.
+ */
+export const FINAL_SUBMIT_GATE_SENTENCE =
+  "Final submit happens only in a run a named person approves (Approve & auto-submit on the filing), "
+  + "with PORTAL_ALLOW_FINAL_SUBMIT=1 on the server; otherwise a person clicks it. Fees are never paid, "
+  + "and CAPTCHA/MFA always stops for a person.";

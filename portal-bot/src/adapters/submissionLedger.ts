@@ -174,7 +174,10 @@ export function cleanRecordLink(raw: string): string {
     // IsToShowInspection is the inspections view toggle Accela puts on the record link the
     // operator actually copies out of the browser. Inspections are the phase AFTER issuance,
     // so it is worth carrying rather than filtering away.
-    const KEEP = /^(capid|capid1|capid2|capid3|module|tabname|agencycode|istoshowinspection|id|recordid|permitnumber|applicationid|appid|caseid|number)$/i;
+    // PowerClerk's ProjectId / ProgramId / FormId identify the record too (dryrun-0928 B11): a bare
+    // /MvcProjects/EditProject reaches nothing. ONE list — recipeAdapter.captureSubmissionConfirmation
+    // and the draft reference (draftReferenceFromUrl) read links through this function.
+    const KEEP = /^(capid|capid1|capid2|capid3|module|tabname|agencycode|istoshowinspection|id|recordid|permitnumber|applicationid|appid|caseid|number|projectid|programid|formid)$/i;
     const kept = new URLSearchParams();
     u.searchParams.forEach((v, k) => { if (KEEP.test(k)) kept.append(k, v); });
     const q = kept.toString();
@@ -182,4 +185,32 @@ export function cleanRecordLink(raw: string): string {
   } catch {
     return raw;
   }
+}
+
+/** Query parameters that NAME a specific application (never a page, a tab, an agency or a flag). */
+const DRAFT_ID_PARAM = /^(projectid|capid|recordid|applicationid|appid|caseid|permitnumber)$/i;
+/** Accela spreads its record key over capID1..3 — joined, it is the temporary record's key. */
+const ACCELA_CAP_PARTS = ["capid1", "capid2", "capid3"];
+
+/**
+ * THE DRAFT A STAGING RUN LEFT, AS THE PORTAL NAMES IT (dryrun-0928 B11) — read off the review
+ * page's own URL, never by navigating the open review window anywhere (it is the one a person
+ * submits in). `link` is the URL through cleanRecordLink (identifiers only, never session material);
+ * `id` is the application's own key when the URL carries one — PowerClerk's ProjectId, an Accela
+ * capID1-3 — and "" otherwise. An Accela wizard page (CapEdit.aspx?stepNumber=…&Module=Building)
+ * carries none: its draft is found by host, account, time and run, and nothing claims otherwise.
+ */
+export function draftReferenceFromUrl(raw: string): { link: string; id: string } {
+  const link = cleanRecordLink(String(raw ?? ""));
+  if (!/^https?:/i.test(link)) return { link: "", id: "" };
+  let id = "";
+  try {
+    const u = new URL(link);
+    const params = new Map<string, string>();
+    u.searchParams.forEach((v, k) => { if (!params.has(k.toLowerCase())) params.set(k.toLowerCase(), v.trim()); });
+    const cap = ACCELA_CAP_PARTS.map((k) => params.get(k) ?? "").filter(Boolean);
+    if (cap.length === ACCELA_CAP_PARTS.length) id = cap.join("-");
+    if (!id) for (const [k, v] of params) { if (DRAFT_ID_PARAM.test(k) && v) { id = v; break; } }
+  } catch { /* an unparseable link carries no key */ }
+  return { link, id: id.slice(0, 80) };
 }

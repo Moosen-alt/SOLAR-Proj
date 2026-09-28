@@ -60,6 +60,43 @@ export function recordDraftTouch(touch: DraftTouch): void {
   }
 }
 
+/**
+ * THE ROW FOR ANY RUN ABOUT TO OPEN A LIVE PORTAL — a learn, a staging replay, its headed retry, a
+ * hand-coded staging adapter (dryrun-0928 B11: only the learn and the benchmark wrote the ledger,
+ * so the building and electrical replays of a clean project left two drafts on Oregon ePermitting
+ * that the list handed to a company for cleanup did not show).
+ *
+ * Secrets-safe by construction: the account is the credential store's username REFERENCE (the
+ * non-secret half kept in the clear), never a decrypted username or password, and no field value is
+ * copied in. A host miss with exactly ONE stored login mirrors getDecryptedCredentialAny (that login
+ * is unambiguously the account the draft sits under); more than one and no host match leaves the
+ * account empty — an empty account beats a guessed one in a cleanup ledger.
+ */
+export function buildDraftTouch(input: {
+  portalUrl: string;
+  projectId: string;
+  purpose: string;
+  note?: string;
+  /** The client's stored logins — the API view, which never carries a secret. */
+  credentials: Array<{ portalUrl: string; usernameReference: string }>;
+}): DraftTouch {
+  let host = "";
+  try { host = new URL(input.portalUrl).hostname.toLowerCase(); } catch { host = ""; }
+  const hit = input.credentials.find((c) => {
+    try { return new URL(c.portalUrl).hostname.toLowerCase() === host; } catch { return false; }
+  });
+  const account = hit?.usernameReference ?? (input.credentials.length === 1 ? input.credentials[0].usernameReference : "");
+  return {
+    at: new Date().toISOString(),
+    host,
+    portalUrl: input.portalUrl,
+    account: String(account ?? ""),
+    projectId: input.projectId,
+    purpose: input.purpose,
+    ...(input.note ? { note: input.note } : {}),
+  };
+}
+
 /** Attach a portal-assigned reference to the most recent touch for a project, if we learn one later. */
 export function annotateDraft(projectId: string, portalReference: string, note?: string): void {
   if (!projectId || !portalReference) return;

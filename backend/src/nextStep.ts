@@ -102,8 +102,8 @@ function gapUnfilledDespiteDataFrom(data: Record<string, unknown> | undefined): 
 }
 
 /** Review-screen comparison + gap-fill lists from a portal_run's result_json. */
-export function reviewInfoFromResultJson(resultJson: unknown): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[]; gapEngineUnfilled: string[] } {
-  const empty = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[], gapEngineUnfilled: [] as string[] };
+export function reviewInfoFromResultJson(resultJson: unknown): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[]; gapEngineUnfilled: string[]; reviewHandoffNotes: string[] } {
+  const empty = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[], gapEngineUnfilled: [] as string[], reviewHandoffNotes: [] as string[] };
   if (!resultJson) return empty;
   try {
     const result = JSON.parse(String(resultJson)) as Record<string, unknown>;
@@ -116,6 +116,9 @@ export function reviewInfoFromResultJson(resultJson: unknown): { reviewMismatche
     let reviewAccurate: boolean | null = null;
     const gapMissing = new Set<string>(gapMissingFrom(result));
     const gapEngineGaps = new Set<string>(gapUnfilledDespiteDataFrom(result));
+    // What the person taking the review page must know (dryrun-0928 B3 / B14): unsaved answers, the
+    // portal's own calls the lockdown held back. Its OWN list — never folded into the mismatches.
+    const handoffNotes = new Set<string>();
     for (const step of steps) {
       const data = step.data as Record<string, unknown> | undefined;
       if (!data) continue;
@@ -125,12 +128,13 @@ export function reviewInfoFromResultJson(resultJson: unknown): { reviewMismatche
       }
       for (const f of gapMissingFrom(data)) gapMissing.add(f);
       for (const f of gapUnfilledDespiteDataFrom(data)) gapEngineGaps.add(f);
+      if (Array.isArray(data.reviewHandoffNotes)) for (const n of data.reviewHandoffNotes) if (typeof n === "string" && n.trim()) handoffNotes.add(n.trim());
     }
     if (!reviewMismatches.length && Array.isArray(result.reviewMismatches)) {
       reviewMismatches = result.reviewMismatches as ReviewMismatch[];
       reviewAccurate = typeof result.reviewAccurate === "boolean" ? result.reviewAccurate : null;
     }
-    return { reviewMismatches, reviewAccurate, gapFillMissing: Array.from(gapMissing).slice(0, 20), gapEngineUnfilled: Array.from(gapEngineGaps).slice(0, 20) };
+    return { reviewMismatches, reviewAccurate, gapFillMissing: Array.from(gapMissing).slice(0, 20), gapEngineUnfilled: Array.from(gapEngineGaps).slice(0, 20), reviewHandoffNotes: Array.from(handoffNotes).slice(0, 6) };
   } catch { /* ignore parse errors */ }
   return empty;
 }

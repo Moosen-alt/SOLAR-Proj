@@ -54,6 +54,10 @@
 //      kind's key for THIS job ("CSL Number" bound to the generic ccbLicenseNumber takes this client's
 //      construction supervisor licence) — or replays BLANK, named for a person, when the kind has no
 //      key or this client holds none. Never another kind's number.
+//   R10 PER-JOB QUESTIONS (dryrun-0928 B2) — an unbound fill/select whose label asks a person-answered
+//      per-job question (ownership, system configuration, disconnect distance — the one predicate,
+//      shared/src/perJobQuestions) in that key's vocabulary binds to the key: the job's own answer, or
+//      a blank the stage gate asks about first. Never the learn job's frozen answer.
 import type { CitedFact, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { stateRulesFor } from "./permitProcess";
 import { feeBracketFieldKey, parseFeeBracketFieldKey, sameFeeTier, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
@@ -62,6 +66,7 @@ import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
 import { companyFactStamp, isCompanyAttestationStep } from "../../shared/src/companyFacts";
 import { mountKindForProject } from "./codeReviewRules";
 import { licenceKeyForLabel, licenceKindWords } from "../../shared/src/licenceKinds";
+import { isPerJobAnswerKey, perJobAnswerKeyFor, perJobQuestionText, perJobStepEvidence } from "../../shared/src/perJobQuestions";
 export { sameFeeTier };
 
 export interface ReplayBindingChange {
@@ -336,6 +341,23 @@ export function bindRecipeForReplay(input: {
       }
     }
 
+    // R10 — a PER-JOB question (ownership / system configuration / disconnect distance) frozen as a
+    // literal in an EXISTING recipe answers from THIS job's key, never the learn job's answer
+    // (dryrun-0928 B2: the live PacifiCorp recipe replays "Customer-Owned" at its ownership select
+    // on every job). The one predicate (shared/src/perJobQuestions), in its key's vocabulary only;
+    // the operator's standing "policy default:" answers stay as recorded. An unanswered key replays
+    // blank — and the stage gate (repository.prepareSubmission) asks the question before that.
+    if ((step.action === "fill" || step.action === "select") && !step.field && !step.sensitive
+        && !/^\s*policy default\s*:/i.test(note)) {
+      const perJobKey = perJobAnswerKeyFor(perJobQuestionText(step), perJobStepEvidence(step));
+      if (perJobKey) {
+        const was = String(step.value ?? "").trim();
+        step = { ...step, field: perJobKey };
+        delete step.value;
+        record("rebound", `a per-job question ("${label.slice(0, 50)}") answered from this job's ${perJobKey}${was ? `, not the recorded "${was.slice(0, 30)}" (the learn job's answer)` : ""}`);
+      }
+    }
+
     // R2 — project-specific free text.
     if (step.action === "fill" && step.field !== REPLAY_BLANK_FIELD) {
       const known = step.field && Object.prototype.hasOwnProperty.call(input.fieldValues, step.field);
@@ -363,6 +385,27 @@ export function bindRecipeForReplay(input: {
     refusal = refusal ?? `the issuing agency for ${input.project.ahj}'s ${input.track ?? "permit"} permits is not known (the per-job lookup found none), and the ${input.borrowed.learnedFor} recipe has no agency row to bind — the agency it files with cannot be checked against this project`;
   }
   return { steps, originalIndex, fieldValues, changes, refusal };
+}
+
+/**
+ * THE STAGE GATE'S QUESTION (dryrun-0928 B2): the person-answered per-job questions this replay
+ * would reach with no answer for THIS job — every fill/select bound (after bindRecipeForReplay) to
+ * an ownership / configuration / disconnect key whose value is empty. Staging asks them BEFORE a
+ * browser opens; the replay never files a blank there silently, and never another job's answer.
+ * One entry per key. An optional step does not hold the stage.
+ */
+export function openPerJobQuestions(steps: RecipeStep[], fieldValues: Record<string, string>): Array<{ key: string; label: string }> {
+  const out: Array<{ key: string; label: string }> = [];
+  const seen = new Set<string>();
+  for (const s of steps) {
+    if (s.action !== "fill" && s.action !== "select") continue;
+    if (s.optional || !isPerJobAnswerKey(s.field)) continue;
+    const key = String(s.field);
+    if (String(fieldValues[key] ?? "").trim() || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ key, label: String(s.selector?.label || s.note || key).replace(/\s+/g, " ").trim().slice(0, 140) });
+  }
+  return out;
 }
 
 /** One operator-readable line for the run message. */

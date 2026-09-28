@@ -989,7 +989,8 @@ export class PowerClerkAdapter extends BasePortalAdapter {
       // so the structured scrape alone can miss them — the body fallback confirms presence.
       const reviewFields = await scrapeReviewScreen(this.page).catch(() => []);
       const reviewBody = (await this.page.locator("body").innerText().catch(() => "")).slice(0, 20000);
-      const reviewMismatches = compareReviewFields(reviewFields, project, reviewBody);
+      // This adapter types both the account and the meter number (its customer page) — both checked (B8).
+      const reviewMismatches = compareReviewFields(reviewFields, project, { accountNumber: true, meterNumber: true }, reviewBody);
 
       return ok(HUMAN_REVIEW_MESSAGE, {
         projectId: project.id,

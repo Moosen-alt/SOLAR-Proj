@@ -14,8 +14,10 @@
 //      deterministically (fast, no LLM cost) via the existing RecipeAdapter.
 //
 // Safety: the learner never clicks final submit / resubmit / fee payment / CAPTCHA /
-// MFA. The final-submit button is recorded (isFinalSubmit) for the allowlist but only
-// ever executed later under the explicit per-portal trusted-auto-submit opt-in. A
+// MFA. The final-submit button is recorded (isFinalSubmit) so a replay knows where the
+// filing click is; it is clicked only under the one gate (portalSafety.mayClickFinalSubmit /
+// FINAL_SUBMIT_GATE_SENTENCE — a named person's approval of that run AND
+// PORTAL_ALLOW_FINAL_SUBMIT=1); there is no per-portal opt-in. A
 // low-confidence or unverified pass is left as a draft for human review, never trusted.
 // ---------------------------------------------------------------------------
 
@@ -23,9 +25,11 @@ import path from "node:path";
 import fs from "node:fs";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
+import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
+import { perJobAnswerKeyFor, perJobControlOfField } from "../../shared/src/perJobQuestions";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
 import { resolveHeadless } from "../../portal-bot/src/browser";
-import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
+import { compareReviewFields, utilityIdentifiersEnteredBySteps } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredentialForPortal, getDecryptedCredentialByUrl, listPortalCredentials, nearestStoredLogins, recordLoginOutcome } from "./portalCredentials";
@@ -45,7 +49,8 @@ import { knowledgeProfileKey, findKnowledgeForLearn, isVerifiedKnowledge, learnS
 import { hostFitsTrackAndEntity, trackSafeUrl, type PortalUrlSource } from "./portalChannel";
 import { getCodeProfile } from "./codeProfiles";
 import { certifiedNamesForMake } from "./cecEquipment";
-import { recordDraftTouch, type DraftTouch } from "./draftLedger";
+import { annotateDraft, buildDraftTouch, recordDraftTouch, type DraftTouch } from "./draftLedger";
+import { draftReferenceFromUrl } from "../../portal-bot/src/adapters/submissionLedger";
 import { issuingAgencyFor } from "./permitProcess";
 import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
 
@@ -384,6 +389,40 @@ export function evaluateTrustGate(sig: TrustGateSignals): { trusted: boolean; bl
  * typed-signature step (operator ruling 2026-09-26: a typed e-signature on the draft is fine,
  * the review step is where it stops).
  */
+/**
+ * WHAT A TRUSTED LEARN SAYS IT CHECKED — WITH THE DENOMINATOR (dryrun-0928 B10).
+ *
+ * The learn's result message and its recipe note used to read "verified (high confidence)" and
+ * end with an invitation to "opt this portal into trusted auto-submit". Both were false:
+ *   - the per-portal opt-in no longer exists (operator rulings 2026-09-24 / 2026-09-26 — the arm
+ *     route refuses with 409), so the words contradicted hard rule 1; the ONE sentence that
+ *     describes the real gate (portalSafety.FINAL_SUBMIT_GATE_SENTENCE) replaces them;
+ *   - the verifiers read only the page the run ended on. On PowerClerk that is the last wizard
+ *     page, so "high confidence" was about 3 attestation fields out of 101 recorded fills across
+ *     10 pages. The words now say how many fields were checked, of how many, on how many pages.
+ * The note keeps its leading "Auto-learned and verified (<confidence> confidence) on N page(s)."
+ * EXACTLY — it is a matching key (scripts/rekey-recipe.ts notesSayVerified and its tests).
+ * Pure, exported for the unit test.
+ */
+export function trustedLearnWording(input: {
+  confidence: string;
+  /** Fields the verifier compared (verification.matches.length) and how many of them matched. */
+  fieldsChecked: number;
+  fieldsMatched: number;
+  /** Recorded fill / select / check steps across the whole walk. */
+  recordedFills: number;
+  pageCount: number;
+  scopeType: "ahj" | "utility";
+  bindingNote: string;
+}): { note: string; message: string; done: string } {
+  const checked = `${input.fieldsChecked} field(s) checked on the final page (${input.fieldsMatched} matched) of ${input.recordedFills} recorded fill(s) across ${input.pageCount} page(s)`;
+  return {
+    note: `Auto-learned and verified (${input.confidence} confidence) on ${input.pageCount} page(s).${input.bindingNote} The verifier read the final page only: ${checked}. ${FINAL_SUBMIT_GATE_SENTENCE}`,
+    message: `Portal learned: ${checked} (verifier confidence: ${input.confidence}) — the earlier pages were not re-read, so review them before submitting. The recipe is trusted and will replay on future ${input.scopeType === "utility" ? "utility" : "AHJ"} projects. ${FINAL_SUBMIT_GATE_SENTENCE}`,
+    done: `Learning complete — recipe trusted (${input.fieldsChecked} field(s) checked on the final page of ${input.pageCount}).`,
+  };
+}
+
 export function learnSignerName(db: AppDb, project: Pick<ProjectRecord, "clientId">): string {
   if (!project.clientId) return "";
   try {
@@ -520,6 +559,24 @@ export function buildPortalPlanner(
         if (target && (target.fieldType === "text" || target.fieldType === "other") && rebindsToValuation(String(target.label ?? ""), f.field)) {
           return { selectorIndex: f.index, value: projectFields[DECLARED_VALUATION_FIELD] ?? "", field: DECLARED_VALUATION_FIELD };
         }
+        // A PER-JOB QUESTION IS NEVER THE PLANNER'S PICK (dryrun-0928 B2). The prompt tells it every
+        // required dropdown MUST be answered, so with the job's ownership unanswered it chose
+        // "Customer-Owned" — and the learn froze that guess into a shared recipe. The one predicate
+        // (shared/src/perJobQuestions, the question bank's rule) decides the question from the
+        // control's own words and the portal's options; the job's answer is filed (the resolver's
+        // value, which renders the portal wording), or nothing — the box is left for a person and the
+        // run reports it as a required miss, which keeps the recipe from auto-trust. Same planner
+        // feeds replay gap-fill, so neither door guesses.
+        if (target && (target.fieldType === "select" || target.fieldType === "text" || target.fieldType === "other")) {
+          const hasOptions = Array.isArray(target.options) && target.options.length > 0;
+          // The control's own label — the text the save-time binder reads back off the recorded step.
+          // Decided from the CONTROL (its kind and the portal's options), never the planner's pick; a
+          // text box's own answer is the only evidence it has (and it never carries the ownership model).
+          const perJobKey = perJobAnswerKeyFor(String(target.label ?? ""), hasOptions
+            ? { control: perJobControlOfField(target), options: target.options }
+            : { control: perJobControlOfField(target), answer: f.value });
+          if (perJobKey) return { selectorIndex: f.index, value: String(fieldValues[perJobKey] ?? "").trim(), field: perJobKey };
+        }
         return { selectorIndex: f.index, value: f.value, field: f.field };
       }),
       advanceSelectorIndex: plan.advanceIndex,
@@ -600,27 +657,16 @@ export function buildLearnDraftTouch(input: {
   credentials: Array<{ portalUrl: string; usernameReference: string }>;
 }): DraftTouch | null {
   if ((input.createdBy || "") === "learn-benchmark") return null;
-  let host = "";
-  try { host = new URL(input.portalUrl).hostname.toLowerCase(); } catch { host = ""; }
-  const hit = input.credentials.find((c) => {
-    try { return new URL(c.portalUrl).hostname.toLowerCase() === host; } catch { return false; }
-  });
-  // A host miss with exactly ONE stored login mirrors getDecryptedCredentialAny: when a
-  // single credential is all the client has, it is unambiguous which account the draft
-  // will sit under. More than one and no host match means we honestly don't know — an
-  // empty account beats a guessed one in a cleanup ledger.
-  const account = hit?.usernameReference ?? (input.credentials.length === 1 ? input.credentials[0].usernameReference : "");
-  return {
-    at: new Date().toISOString(),
-    host,
+  // The one row builder (draftLedger.buildDraftTouch) — staging launches write through it too.
+  return buildDraftTouch({
     portalUrl: input.portalUrl,
-    account: String(account ?? ""),
     projectId: input.projectId,
+    credentials: input.credentials,
     // The replay self-test re-runs the LIVE portal in a fresh session, so one learn can
     // mint a SECOND draft — the purpose says so up front, mirroring the benchmark's.
     purpose: input.selfTestEnabled ? "auto-learn +selftest (up to 2 drafts)" : "auto-learn",
     note: `learn walks to the review screen and stops; never submitted (createdBy: ${input.createdBy || "unknown"})`,
-  };
+  });
 }
 
 // ── Test seams (AUTOPILOT_TEST_SEAMS=1 only): the browser learn and the LLM provider ──────────
@@ -1146,6 +1192,8 @@ async function autoLearnPortalInner(
     }
     if (!headlessForAttempt) {
     logger.info("auto-learn", "portal refused a headless browser — retrying with a real window", { portal: portalUrl });
+    // A SECOND BROWSER IS A SECOND POSSIBLE DRAFT (dryrun-0928 B11): its own ledger row, before it opens.
+    if (draftTouch) recordDraftTouch({ ...draftTouch, at: new Date().toISOString(), purpose: `${draftTouch.purpose} (headed retry — a second browser; may leave a second draft)` });
     try {
       const retried = await browserLimiter(runLearn);
       // Keep the retry only if it actually got further; a second refusal should not erase
@@ -1156,6 +1204,15 @@ async function autoLearnPortalInner(
       }
     } catch { /* the headless result stands */ }
     }
+  }
+  // THE LEARN'S DRAFT, NAMED (dryrun-0928 B11). The ledger row above says a draft may exist; the page
+  // the learn stopped on names it when its URL carries the portal's key (PowerClerk's ProjectId).
+  // Read through the one identifier filter; an Accela wizard URL names none and nothing claims one.
+  if (draftTouch && learn?.applicationUrl) {
+    try {
+      const ref = draftReferenceFromUrl(String(learn.applicationUrl));
+      if (ref.id || ref.link) annotateDraft(projectId, ref.id || ref.link, ref.id ? "auto-learn draft — the portal's own reference, read off the page the learn stopped on" : "auto-learn draft — the page the learn stopped on (its URL carries no record key)");
+    } catch { /* the ledger row stands without a reference */ }
   }
 
   // NEAR-MISS credential diagnosis. "No stored credential was found" is technically
@@ -1204,8 +1261,15 @@ async function autoLearnPortalInner(
   // every planner/verifier Claude call this run: latency, tokens, cache hits, stop_reason) and
   // result.json (the outcome + verification signals). Diagnostics only — never fails the learn.
   const debugDir = learn.debugDir ?? null;
+  // WHAT THE PERSON AT THE REVIEW PAGE MUST KNOW (dryrun-0928 B3 / B14): answers the portal may not
+  // have saved, and the portal's own background calls the lockdown held back — carried into EVERY
+  // outcome's message, since the learn's own message is not what the operator reads.
+  const handoffNotes = (learn.reviewHandoffNotes ?? []).filter(Boolean);
   const finalize = (r: Omit<AutoLearnResult, "debugDir">): AutoLearnResult => {
-    const result: AutoLearnResult = { ...r, debugDir };
+    const withNotes = handoffNotes.length && !handoffNotes.every((n) => String(r.message ?? "").includes(n))
+      ? { ...r, message: `${r.message} ${handoffNotes.join(" ")}` }
+      : r;
+    const result: AutoLearnResult = { ...withNotes, debugDir };
     if (debugDir) {
       try {
         fs.writeFileSync(path.join(debugDir, "llm-calls.json"), JSON.stringify({
@@ -1432,7 +1496,8 @@ async function autoLearnPortalInner(
   // The deterministic check returns a single "reviewScreen" SENTINEL when it could read
   // nothing — that is an honest "couldn't read", NOT a per-field mismatch, so don't let it
   // masquerade as one or veto trust.
-  const allDetMismatches = compareReviewFields(learn.reviewScreen.fields, project, reviewBody);
+  // A utility identifier is checked only when this learn typed it (B8): the learn's own bindings.
+  const allDetMismatches = compareReviewFields(learn.reviewScreen.fields, project, utilityIdentifiersEnteredBySteps(learn.steps), reviewBody);
   const isUnreadableSentinel = allDetMismatches.length === 1 && allDetMismatches[0].field === "reviewScreen";
   // Exclude sensitive fields (accountNumber, meterNumber) from trust-gating: they're bound at
   // replay from the credential store, so a portal that masks them on the review screen must
@@ -1710,6 +1775,16 @@ async function autoLearnPortalInner(
     }, `Portal was filled and staged, but this pass did not verify cleanly (${verification.issues.slice(0, 2).join("; ") || "low confidence"}).`);
   }
   stub = stub ?? mkStub();
+  // What this learn checked, with its denominator, and the one sentence for the submit gate (B10).
+  const trustedWords = trustedLearnWording({
+    confidence: String(verification.overallConfidence),
+    fieldsChecked: verification.matches.length,
+    fieldsMatched: verification.matches.filter((m) => m.ok).length,
+    recordedFills: substantiveSteps,
+    pageCount: learn.pageCount ?? 0,
+    scopeType,
+    bindingNote,
+  });
   // DEPTH ON THIS PATH IS GUARDED IN THE WRITER, NOT HERE. This is the third and last place
   // that can bury a deeper draft — a run that reached review, filled four fields and failed
   // the trust gate lands here as "recording" and used to overwrite a 60-step draft — but the
@@ -1720,7 +1795,7 @@ async function autoLearnPortalInner(
   savePortalRecipeSteps(db, stub.id, boundSteps, {
     status: trusted ? "complete" : "recording",
     notes: trusted
-      ? `Auto-learned and verified (${verification.overallConfidence} confidence) on ${learn.pageCount} page(s).${bindingNote} Final submit recorded for the trusted-submit allowlist; never auto-clicked unless the operator opts in.`
+      ? trustedWords.note
       : `Auto-learned but NOT verified — review the captured fill and confirm before trusting.${bindingNote} Issues: ${verification.issues.join("; ") || "low confidence"}.`,
   });
   // The recipe row + steps now exist — route captured human fixes into it, and flush any
@@ -1842,7 +1917,7 @@ async function autoLearnPortalInner(
     scope: scopeType, pageCount: learn.pageCount, confidence: verification.overallConfidence, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [],
   });
 
-  emitDone(trusted ? "Learning complete — recipe verified and trusted." : "Learning complete — recipe saved as a draft pending your verification.");
+  emitDone(trusted ? trustedWords.done : "Learning complete — recipe saved as a draft pending your verification.");
   return finalize({
     recipe: getPortalRecipe(db, stub.id),
     status: trusted ? "trusted" : "draft",
@@ -1856,7 +1931,7 @@ async function autoLearnPortalInner(
       issues: verification.issues,
     },
     message: (trusted
-      ? `Portal learned and verified (${verification.overallConfidence} confidence). The recipe is trusted and will replay on future ${scopeType === "utility" ? "utility" : "AHJ"} projects. Final submit stays manual unless you opt this portal into trusted auto-submit.`
+      ? trustedWords.message
       : `Portal learned but needs your verification — open the captured fill and confirm it's correct before it's trusted. ${verification.issues.length ? "Flags: " + verification.issues.slice(0, 3).join("; ") : ""}`)
       + (learn.reachedReview && !resolveHeadless(input.headless)
         ? " The browser is open at the review screen — any field you fill or fix by hand there is recorded into the recipe automatically (patch-by-demonstration)."
