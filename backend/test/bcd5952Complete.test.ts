@@ -155,6 +155,25 @@ await check("(v3) listingAgencyFromText reads the marks and ignores a page with 
   assert.equal(facts.listingAgencyFromText("Rev 00 PV MODULE / INV SPECIFICATION SHEET").agency, "");
 });
 
+// THE OWNER'S MAILING ADDRESS (operator ruling 2026-09-27, Michael's Marion B-01S / E-01 printed the
+// owner Address and City/State/ZIP blank): the installation address unless the project records another.
+await check("(m1) MUST-PASS: no mailing address on file -> the owner's mailing address is the installation address, on every door", () => {
+  const ctx = forms.buildContext(db, make());
+  assert.equal(forms.resolveSource("snapshot.homeownerMailingAddress", ctx), "5 Test Ln");
+  assert.equal(forms.resolveSource("snapshot.homeownerMailingCityStateZip", ctx), "Maple Hollow, OR 97352");
+  assert.equal(forms.resolveSource("computed.homeownerMailingCity", ctx), "Maple Hollow");
+  assert.equal(forms.resolveSource("computed.homeownerMailingState", ctx), "OR");
+  assert.equal(forms.resolveSource("computed.homeownerMailingZip", ctx), "97352");
+});
+await check("(m2) MUST-EXCLUDE: a mailing address on file (even a partial one) is never replaced or mixed with the site's", () => {
+  const p = make();
+  const own = forms.buildContext(db, { ...p, parserSnapshot: { ...(p.parserSnapshot ?? {}), homeownerMailingAddress: "PO Box 12", homeownerMailingCityStateZip: "Salem, OR 97301" } } as never);
+  assert.equal(forms.resolveSource("snapshot.homeownerMailingAddress", own), "PO Box 12");
+  assert.equal(forms.resolveSource("computed.homeownerMailingCity", own), "Salem");
+  const partial = forms.buildContext(db, { ...p, parserSnapshot: { ...(p.parserSnapshot ?? {}), homeownerMailingAddress: "PO Box 12" } } as never);
+  assert.equal(forms.resolveSource("snapshot.homeownerMailingCityStateZip", partial), "", "a partial mailing address is not completed with the site's city");
+});
+
 if (failures) { console.error(`\n${failures} bcd5952Complete test(s) failed.`); process.exit(1); }
 console.log("\nAll bcd5952Complete tests passed.");
 process.exit(0);

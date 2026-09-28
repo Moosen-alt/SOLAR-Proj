@@ -838,7 +838,7 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
       publishedElectricalBrackets = sched.brackets;
     }
   } catch { /* no schedule module or unreadable row — the printed ladder stands */ }
-  return {
+  const ctx: FillContext = {
     project,
     client,
     publishedElectricalBrackets,
@@ -856,6 +856,19 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     signatures: loadDefaultSignaturesByRole(db, projectOrgId(db, project.id)),
     prescriptiveLimits,
   };
+  // THE OWNER'S MAILING ADDRESS IS THE INSTALLATION ADDRESS unless the project records another
+  // (operator ruling 2026-09-27, Michael Sheridan's Marion B-01S / E-01: "this will just be the
+  // install address"). Only when NO mailing address is on file — a parsed or entered one (even a
+  // partial one) is never mixed with the site's.
+  if (!str(ctx.snapshot.homeownerMailingAddress) && !str(ctx.snapshot.homeownerMailingCityStateZip)) {
+    const street = computed("streetAddress", ctx);
+    const cityStateZip = computed("cityStateZip", ctx);
+    if (street && str(ctx.project.city) && str(ctx.project.zip)) {
+      ctx.snapshot.homeownerMailingAddress = street;
+      ctx.snapshot.homeownerMailingCityStateZip = cityStateZip;
+    }
+  }
+  return ctx;
 }
 
 /** The module datasheet's extracted text (the listing agency is read from it — never from the
