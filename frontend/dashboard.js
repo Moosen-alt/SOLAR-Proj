@@ -6187,8 +6187,22 @@ function documentVerdictHtml(pkg, formMissingFields = []) {
         </div>
       </div>`
     : "";
+  // DOWNLOADED AT STAGING (gates-proper C1) — a required form nobody has fetched yet that Stage
+  // downloads (the issuing agency's published form, a cited PDF) or researches, and fills, before it
+  // counts. Not the operator's to attach; if the download fails, Stage says so and stops.
+  const acquiredAtStaging = inventoryResolved ? (pkg.acquiredAtStagingDocuments || []) : [];
+  const acquiredRow = acquiredAtStaging.length
+    ? `<div class="kx-docstate is-clear">
+        <span class="kx-docstate-icon" aria-hidden="true">⤓</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">${plural(acquiredAtStaging.length, "required form")} downloaded and filled by Stage</span>
+          <span class="kx-docstate-text">Nothing for you to attach: Stage fetches the official blank and fills it before it counts the documents. If a download fails, Stage stops and names the form — then use Find missing official forms or upload the blank.</span>
+          <ul class="kx-docstate-list">${acquiredAtStaging.map((d) => `<li>${esc(d.label)}<span class="kx-docstate-why"> — ${esc(d.why)}</span></li>`).join("")}</ul>
+        </div>
+      </div>`
+    : "";
 
-  return `<div class="stack">${fieldRow}${docRow}${filledRow}</div>`;
+  return `<div class="stack">${fieldRow}${docRow}${filledRow}${acquiredRow}</div>`;
 }
 
 // THE PERMIT PATH, ITS EVIDENCE, AND THE OVERRIDE — on the project screen.

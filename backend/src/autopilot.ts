@@ -30,13 +30,12 @@ import { HttpError } from "./httpError";
 import { addAuditLog } from "./audit";
 import { logger } from "./logger";
 import { nowIso } from "./time";
-import { getProjectDetail, rerunQc, captureConfirmation, stagingMissingDocuments } from "./repository";
-import { documentInventory, owedMissingDocuments, type DocumentInventory } from "./requiredDocuments";
+import { getProjectDetail, rerunQc, captureConfirmation, draftDocumentGaps } from "./repository";
 import { parseJson } from "./json";
 import type { NextStep, ProjectRecord, StageDetail, SubmittalTrackType } from "../../shared/src/types";
 import { requiredTracks, SUBMITTAL_TRACK_TYPES, trackPermitTypes } from "./submittalTracks";
 import { stageForStatus } from "./projectStage";
-import { decideNextStep, gateBlockerHoldsTrack, loadFullNextStepFacts, reviewInfoFromResultJson, reviewerBlockerList, reviewerBlockersFor, stagingFailedFor, type NextStepFacts, type ReviewMismatch } from "./nextStep";
+import { decideNextStep, gateBlockerHoldsTrack, loadFullNextStepFacts, reviewInfoFromResultJson, reviewerBlockerList, reviewerBlockersFor, stagingFailedFor, withoutCodeResearch, type NextStepFacts, type ReviewMismatch } from "./nextStep";
 import { portalAutomationDisabled } from "../../portal-bot/src/browser";
 // STATIC, and the synchrony is load-bearing (see maybeResumeAutopilot). No load-time cycle:
 // jobQueue reaches this module only through the worker's dynamic import() in processNextJob,
@@ -194,10 +193,11 @@ export function gateBlockersForTracks(
     if (!held.length) continue;
     if (!b.holds) { out.push({ id: b.id, nextAction: b.nextAction, tracks: held }); continue; }
     const perTrack = held.map((t) => ({ t, items: b.holds!.filter((h) => t === null || h.tracks.includes(t)) }));
-    const lead = b.id === "document-inventory" ? "Attach or split out the missing document(s)" : b.nextAction.replace(/[.\s]+$/, "");
+    // A document names its own fix (find the form / upload the blank vs attach / split out).
+    const lead = b.id === "document-inventory" ? "Missing before staging" : b.nextAction.replace(/[.\s]+$/, "");
     out.push({
       id: b.id,
-      nextAction: `${lead} — ${perTrack.map((x) => `${x.t ?? "this"} filing: ${x.items.map((h) => h.label).join("; ")}`).join(" · ")}`,
+      nextAction: `${lead} — ${perTrack.map((x) => `${x.t ?? "this"} filing: ${x.items.map((h) => (h.action ? `${h.label} (${h.action})` : h.label)).join("; ")}`).join(" · ")}`,
       tracks: held,
     });
   }
@@ -315,7 +315,11 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
   const stageGateBlockers = stillToStage.length ? gateBlockersForTracks(db, project, facts.gate, stillToStage) : [];
   const heldTracks = new Set(stageGateBlockers.flatMap((b) => b.tracks));
   const freeTracks = stillToStage.filter((t) => !heldTracks.has(t));
-  const stageDisabledReason = facts.operatorHold
+  // AN ARCHIVED PROJECT FILES NOTHING (gates-proper C1 false-clear c): its next step already says
+  // "nothing is asked of anyone", and an enabled Stage / Approve beside that is a contradiction.
+  const stageDisabledReason = facts.archived
+    ? "The project is archived — nothing is staged or filed from it. Restore it from the archive first."
+    : facts.operatorHold
     ? `Blocked by an operator (${facts.operatorHold.reason}) — lift the block before staging.`
     : jobInFlight || facts.jobInFlight
       ? "A staging / autopilot run is already in flight — wait for it to finish."
@@ -399,16 +403,27 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
     // button and runAutopilotApproval ask the same filter): a structural conflict refused
     // approval of a staged UTILITY draft (88647deb). No draft / an unknown track: every blocker.
     const blockers = reviewerBlockersFor(facts.reviewerBlockers ?? reviewerBlockerList(db, project), awaitingRun ? awaitingTrack : null);
-    const IN_THE_FILING = new Set(["document-inventory", "qc-human-review"]);
+    // WHAT IS IN THE FILING: the QC data (the gate's qc-human-review check, for this draft's track)
+    // and the documents THIS DRAFT CARRIED (repository.draftDocumentGaps — its recorded payload, never
+    // the pre-Stage look-ahead nor what is on disk now: Michael's electrical draft went up before the
+    // Marion E-01 existed, and the fix is to re-stage, not to "attach"; gates-proper C1).
     const filingGateBlockers = awaitingRun
-      ? gateBlockersForTracks(db, project, facts.gate, [awaitingTrack]).filter((b) => IN_THE_FILING.has(b.id))
+      ? gateBlockersForTracks(db, project, facts.gate, [awaitingTrack]).filter((b) => b.id === "qc-human-review")
       : [];
+    const draftGaps = awaitingRun ? withoutCodeResearch(() => draftDocumentGaps(db, project, awaitingRun, awaitingTrack)) : [];
+    const draftWord = awaitingTrack ? `${awaitingTrack} ` : "";
     const approveRefusals = [
+      facts.archived ? "the project is archived — restore it first" : "",
       !awaitingRun ? "no staged portal run is awaiting a submit" : "",
       blockers.length ? `the reviewer gate lists ${blockers.length} blocker(s)` : "",
       awaitingFacts && stagingFailedFor(awaitingFacts) ? `the ${awaitingFacts.track} staging run failed before the review screen` : "",
       reviewInfo.gapFillMissing.length ? `${reviewInfo.gapFillMissing.length} required portal field(s) have no project data — add them and re-stage` : "",
       filingGateBlockers.length ? `the submit gate is blocked: ${filingGateBlockers.map((b) => b.nextAction.replace(/[.\s]+$/, "")).join("; ")}` : "",
+      draftGaps.length
+        ? `the staged ${draftWord}draft went up without ${draftGaps.map((g) => g.label).join("; ")} — ${draftGaps.every((g) => g.onFileNow)
+          ? "it is on file now: re-stage to attach it"
+          : "get it on file (App Docs → Find missing official forms, or attach it), then re-stage to attach it"}`
+        : "",
     ].filter(Boolean).map((r) => r.replace(/[.\s]+$/, ""));
     const canApprove = approveRefusals.length === 0;
     // A sibling track that failed is not a reason to refuse THIS draft — it is said, not gated.

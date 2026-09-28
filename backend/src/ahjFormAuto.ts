@@ -2,10 +2,10 @@ import crypto from "node:crypto";
 import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
-import { inspectFormFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type OverlayField, type SignaturePlacement } from "./ahjForms";
+import { inspectFormFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, type OverlayField, type SignaturePlacement } from "./ahjForms";
 import { describePermitType, findApplicationProfile, permitStructureAnswer } from "./applicationDocs";
 import { ensureUtilityFilingLookedUp } from "./utilityFilingLookup";
-import { documentFetchDisabled, fetchPublicDocument } from "./documentFetch";
+import { fetchPublicDocument } from "./documentFetch";
 import { logger } from "./logger";
 import { saveResearchedAhjProfile, knowledgeResearchHint, findKnowledgeForLearn } from "./knowledgeBase";
 import { findAhjProcessProfile } from "./processProfiles";
@@ -27,7 +27,14 @@ import { documentDateForPdf } from "./documentDate";
 import { bcd5952Template } from "./bcd5952Template";
 import { iowaPvWorksheetTemplate, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
-import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
+import { formAuthorityFor, type FormAuthority } from "./applicationDocsAgency";
+import {
+  acceptedFormTypes, applicationKindForProject, clearFormFetchFailure, hasStoredTemplateOfType, issuingAgencyFormPlan, noteFormFetchFailure,
+  ownFreeFormSource, recentFormFetchFailure, type EnsureFormResult,
+} from "./formAcquisitionPlan";
+// The acquisition's pre-fetch predicates live in formAcquisitionPlan.ts — the ONE answer the pre-Stage
+// gate reads too (gates-proper C1). Re-exported so every existing caller of this module keeps working.
+export { applicationKindForProject, hasStoredTemplateOfType, type EnsureFormResult } from "./formAcquisitionPlan";
 
 // ---------------------------------------------------------------------------
 // Auto-acquire an AHJ's official permit PDF form: web-research the URL, download
@@ -199,8 +206,8 @@ export async function fetchPdf(url: string): Promise<Uint8Array | null> {
     const buf = got.bytes;
     const type = got.contentType || "";
     // %PDF magic, or a pdf content-type. Guard against HTML error pages.
-    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) { recentFormFetchFailures.delete(url); return buf; }
-    if (type.includes("pdf") && buf.length > 1000) { recentFormFetchFailures.delete(url); return buf; }
+    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) { clearFormFetchFailure(url); return buf; }
+    if (type.includes("pdf") && buf.length > 1000) { clearFormFetchFailure(url); return buf; }
     // The link answered — with a login page, a "moved" notice or a CMS 200 error page. That is
     // a different repair from a wall (fix the link, not the browser), so it is said differently.
     logger.warn("ahj-forms", "a form link answered, but not with a PDF", {
@@ -224,23 +231,9 @@ export async function fetchPdf(url: string): Promise<Uint8Array | null> {
 // says so ("tried <when>, retry after <when>"). Every other door — the full pass once the cooldown
 // opens, and the operator's explicit "Find missing official forms" — never consults it. Per URL, not
 // per AHJ: every city a county issues for fetches the county's one URL. In-process: a restart forgets
-// it, which costs at most one extra fetch. A success clears the URL.
-export const FORM_FETCH_RETRY_MS = 6 * 60 * 60 * 1000;
-const recentFormFetchFailures = new Map<string, number>();
-function noteFormFetchFailure(url: string): void {
-  // Nothing was sent with downloads switched off — that is not a failure of the URL.
-  if (documentFetchDisabled()) return;
-  const now = Date.now();
-  for (const [u, at] of recentFormFetchFailures) if (now - at >= FORM_FETCH_RETRY_MS) recentFormFetchFailures.delete(u);
-  recentFormFetchFailures.set(url, now);
-}
-/** "tried <when>, retry after <when>" when `url` failed within FORM_FETCH_RETRY_MS, else null. */
-export function recentFormFetchFailure(url: string): string | null {
-  const at = recentFormFetchFailures.get(url);
-  if (at == null || Date.now() - at >= FORM_FETCH_RETRY_MS) return null;
-  const when = (ms: number) => `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
-  return `tried ${when(at)}, retry after ${when(at + FORM_FETCH_RETRY_MS)}`;
-}
+// it, which costs at most one extra fetch. A success clears the URL. The map lives in
+// formAcquisitionPlan.ts (gates-proper C1), so the pre-Stage gate reads the same record.
+export { FORM_FETCH_RETRY_MS, recentFormFetchFailure } from "./formAcquisitionPlan";
 
 /** Record that this blank carried a fee table we harvested. Written by the
  *  fee-harvest side, which owns the reading; storage owns only the flag. */
@@ -517,16 +510,6 @@ export async function buildOverlayMapForPdf(
   return { overlayFields, signatureFields, notes: mapped.notes };
 }
 
-export interface EnsureFormResult {
-  status: "exists" | "acquired" | "needs_manual" | "not_found";
-  message: string;
-  formName?: string;
-  sourceUrl?: string;
-  mappedFields?: number;
-  /** Human callout of the permit TYPE for this AHJ (combo vs separate BLD/ELE, submission method). */
-  permitType?: string;
-}
-
 // Normalize the model's STRUCTURED platform answer + the portal URL to a canonical platform + method.
 // Never a regex over its free-text notes: a note that DENIES a platform ("ProjectDox is STALE ...
 // replaced by EnerGov", "No Accela/ePermitting/ProjectDox portal applies here") stored ProjectDox for
@@ -585,39 +568,11 @@ export function classifyFormType(nameOrUrl: string, fallback: string): string {
   return fallback;
 }
 
-// Does this AHJ already have a stored template of THIS form type? (Same fuzzy
-// name containment as loadStoredTemplates, narrowed by form_type.)
-//
-// `applicationKind` narrows further, and is what stops the two mutually-exclusive
-// building-side applications from being treated as one holding. Asking "do we have a
-// building_application?" answered YES off the STRUCTURAL blank for a project on the
-// PRESCRIPTIVE path — so acquisition of the prescriptive one was skipped forever and
-// the project went on believing its application was in hand. A row that makes no kind
-// claim still counts for either: a jurisdiction with one generic application genuinely
-// has what both paths need, and demanding a second blank there would be the
-// over-blocking mirror of the same mistake.
-export function hasStoredTemplateOfType(
-  db: AppDb,
-  ahj: string,
-  state: string,
-  formType: string,
-  applicationKind?: "prescriptive" | "structural" | null,
-): boolean {
-  const needle = (ahj || "").trim().toLowerCase();
-  if (!needle) return false;
-  const rows = db.query<{ ahj_name: string; state: string; original_filename?: string; field_map?: string }>(
-    "SELECT ahj_name, state, original_filename, field_map FROM ahj_form_templates WHERE pdf_blob IS NOT NULL AND form_type = ?",
-    [formType],
-  );
-  return rows.some((row) => {
-    const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
-    const stateOk = !row.state || !state || String(row.state).toLowerCase() === String(state).toLowerCase();
-    if (!rowAhj || !stateOk || !(rowAhj === needle || needle.includes(rowAhj) || rowAhj.includes(needle))) return false;
-    if (!applicationKind) return true;
-    const rowKind = storedApplicationKind(row);
-    return !rowKind || rowKind === applicationKind;
-  });
-}
+// Does this AHJ already have a stored template of THIS form type? — formAcquisitionPlan
+// .hasStoredTemplateOfType (re-exported above). `applicationKind` narrows further, and is what stops
+// the two mutually-exclusive building-side applications from being treated as one holding: asking
+// "do we have a building_application?" answered YES off the STRUCTURAL blank for a project on the
+// PRESCRIPTIVE path, so acquisition of the prescriptive one was skipped forever.
 
 /** The full set of forms this AHJ needs for a residential solar submission —
  *  the main application(s) plus any required checklist — acquired in one pass.
@@ -704,17 +659,10 @@ export async function ensureAhjFormsForProject(
   return { neededTypes: [...needed.keys()], needed: [...needed.values()], results };
 }
 
-/** WHICH of the two building-side applications a form search is for — and NONE where the split
- *  does not exist. Outside Oregon (or a jurisdiction whose own research names a prescriptive path)
- *  resolvePermitPath says standardReview: the AHJ publishes one building application, so the
- *  search must not be told "find the STRUCTURAL one, not the prescriptive one" — that directive
- *  told the Iowa City form finder its required Verification Form was "the PRESCRIPTIVE route — do
- *  not submit it" (e2e-gap close, 2026-09-26). */
-export function applicationKindForProject(project: ProjectRecord): "prescriptive" | "structural" | null {
-  const res = resolvePermitPath(project);
-  if (res.standardReview) return null;
-  return applicationKindForPath(res.path);
-}
+// WHICH of the two building-side applications a form search is for — and NONE where the split does
+// not exist — is formAcquisitionPlan.applicationKindForProject (re-exported above): outside Oregon
+// resolvePermitPath says standardReview, and the search must not be told "find the STRUCTURAL one,
+// not the prescriptive one" (the Iowa City form finder, e2e-gap close 2026-09-26).
 
 // Ensure the AHJ has a usable stored form. Research → download → map → store.
 export async function ensureAhjFormTemplate(
@@ -754,7 +702,7 @@ export async function ensureAhjFormTemplate(
   // The building-side row accepts the generic application blank (requiredDocuments' altDocTypes):
   // an AHJ whose one stored application is filed as "permit_application" has its building-side form
   // once its structure resolves SEPARATE (building + electrical) — the same alias the inventory uses.
-  const acceptedTypes = formType === "building_application" ? ["building_application", "permit_application"] : [formType];
+  const acceptedTypes = acceptedFormTypes(formType);
   if (acceptedTypes.some((t) => hasStoredTemplateOfType(db, project.ahj, project.state, t, applicationKind))) {
     const usable = loadStoredTemplates(db, project.ahj, project.state, { ownOnly: true }).some(t => {
       const type = db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type;
@@ -768,11 +716,11 @@ export async function ensureAhjFormTemplate(
 
   // Known public forms are free downloads; do not buy a search for a source we
   // already hold. An online application can still require a PDF attachment.
-  const curated = curatedFormSource(project, formType, applicationKind);
-  const checklistUrl = project.state.toUpperCase() === "OR" && formType === "solar_checklist"
-    && resolvePermitPath(project).path === "prescriptive" ? "https://www.oregon.gov/bcd/Formslibrary/5952.pdf" : "";
-  if (curated || checklistUrl) {
-    const url = curated?.url || checklistUrl;
+  // formAcquisitionPlan.ownFreeFormSource — the same answer the pre-Stage gate reads.
+  const free = ownFreeFormSource(project, formType, applicationKind);
+  const curated = free?.curated ?? null;
+  if (free) {
+    const url = free.url;
     // Inside the cooldown, a URL that failed recently is not fetched again (recentFormFetchFailure).
     const recent = opts.skipRecentlyFailed ? recentFormFetchFailure(url) : null;
     if (recent) return { status: "not_found", sourceUrl: url, message: `The official form at ${url} was not fetched again: its download failed recently (${recent}) and Stage does not retry it inside the 24h cooldown. Find missing official forms retries it now; it has not been counted as present.` };
@@ -958,57 +906,19 @@ export async function ensureIssuingAgencyForm(
   applicationKind: "prescriptive" | "structural" | null,
   opts: { allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean } = {},
 ): Promise<EnsureFormResult> {
-  const agency = authority.name;
-  const track = authority.track;
-  const want = track === "building" ? applicationKind : null;
-  const types = track ? TRACK_FORM_TYPES[track] : [formType];
-  const label = track === "electrical" ? "electrical permit application" : `${want === "prescriptive" ? "prescriptive solar " : want === "structural" ? "structural (non-prescriptive) " : ""}permit application`;
-  const cite = authority.fact?.sourceUrl ? ` (per-job lookup, cited: ${authority.fact.sourceUrl})` : "";
-  const whose = `${agency} issues this permit for ${project.ahj}${cite}`;
-  // "Already held" means held FOR THIS JOB (agency-contain C1): a row another city's lookup attributed to
-  // the agency, on a site this job's lookup does not anchor, is not this job's form — so it neither
-  // answers "exists" nor stops the agency's curated seed / this job's own cited form being fetched.
-  const anchors = anchorSitesOnce(project, agency);
-  const agencyRows = db.query<{ id: string; ahj_name: string; state: string; form_type: string; original_filename?: string; field_map?: string; source_url?: string }>(
-    "SELECT id, ahj_name, state, form_type, original_filename, field_map, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL",
-  ).filter((r) => types.includes(String(r.form_type)) && (!r.state || String(r.state).toLowerCase() === String(project.state).toLowerCase())
-    && rowBelongsToAuthority(r.ahj_name, agency) && (!want || !storedApplicationKind(r) || storedApplicationKind(r) === want));
-  const held = agencyRows.filter((r) => agencyRowAppliesToJob(project, agency, agencyRowProvenance(r), anchors));
-  // THE SLOT IS SHARED, THE VERDICT IS NOT (agency-contain skeptic MF-1). A stored row this job's lookup
-  // does not anchor is "not this job's form" — but it is still the ONE row the agency's slot keeps
-  // (storeAhjFormTemplate: one per agency/state/form type, building by kind), written by the county's own
-  // research or another city's lookup. Storing this job's cited PDF would overwrite it in place, and every
-  // job filed under the agency's name would then fill THIS job's citation. A cited form never replaces a
-  // stored one; the agency's curated seed (its real form) still may.
-  const occupiedBy = agencyRows.filter((r) => !held.includes(r));
-  if (held.length) {
-    const usable = loadStoredTemplates(db, agency, project.state, { ownOnly: true }).some((t) => held.some((h) => h.id === t.templateId));
-    return usable
-      ? { status: "exists", message: `${agency}'s own ${label} is stored — ${whose}.` }
-      : { status: "needs_manual", mappedFields: 0, message: `${agency}'s own ${label} is stored but is not fillable — ${whose}. Complete it by hand and attach it; it is required and has not been filled.` };
-  }
-  const candidates = agencyApplicationForms(project, formType, want);
-  if (!candidates.length) {
-    return { status: "not_found", message: `${whose}, but no ${label} of ${agency}'s is held, seeded or cited. Upload ${agency}'s blank (Find official form → upload); it has not been counted as present.` };
-  }
+  // THE STEPS BEFORE ANY DOWNLOAD are formAcquisitionPlan.issuingAgencyFormPlan — held for THIS job
+  // (agency-contain C1) / not fillable / nothing seeded or cited; per candidate, a cited PDF whose
+  // slot another row occupies (MF-1: a cited form never replaces a stored one), and a URL that failed
+  // recently (a curated seed stops — C2 no fallthrough; a cited one is skipped). The pre-Stage gate
+  // reads the same plan (gates-proper C1), so what it says Stage will download is what Stage does.
+  const plan = issuingAgencyFormPlan(db, project, formType, authority, applicationKind, { skipRecentlyFailed: opts.skipRecentlyFailed });
+  const { agency, label, whose, want } = plan;
+  if (plan.settled) return plan.settled;
   const tried: string[] = [];
-  for (const c of candidates) {
-    const taken = c.origin === "cited"
-      ? occupiedBy.find((r) => String(r.form_type) === c.formType
-        && (c.formType !== "building_application" || !storedApplicationKind(r) || storedApplicationKind(r) === (c.applicationKind ?? want)))
-      : undefined;
-    if (taken) {
-      let from = String(taken.source_url || "");
-      try { from = from ? new URL(from).hostname : "an upload"; } catch { /* keep the raw value */ }
-      return { status: "not_found", sourceUrl: c.sourceUrl, message: `${agency}'s ${label} slot already holds a form from ${from} that this job's lookup does not cite, so the form cited for ${project.ahj} (${c.sourceUrl}) was not stored over it. ${whose}. Check which is ${agency}'s current form and upload it (Find official form → upload); it has not been counted as present.` };
-    }
-    // Inside the cooldown, a URL that failed recently is not fetched again (recentFormFetchFailure) —
-    // and a curated seed skipped so is the same C2 stop as a failed one: no cited PDF in its place.
-    const recent = opts.skipRecentlyFailed ? recentFormFetchFailure(c.sourceUrl) : null;
-    if (recent && c.origin === "curated") {
-      return { status: "not_found", sourceUrl: c.sourceUrl, message: `${agency}'s ${c.formName} was not fetched again from ${c.sourceUrl}: its download failed recently (${recent}) and Stage does not retry it inside the 24h cooldown. ${whose}; no other PDF was tried in its place, and it has not been counted as present. Find missing official forms retries it now.` };
-    }
-    if (recent) { tried.push(`${c.sourceUrl} (not fetched again: ${recent})`); continue; }
+  for (const step of plan.steps) {
+    if (step.stop) return step.stop;
+    if (step.skip) { tried.push(step.skip); continue; }
+    const c = step.c;
     const bytes = await fetchPdf(c.sourceUrl);
     // C2 NO FALLTHROUGH (agency-contain): the agency's CURATED seed is its form. A failed fetch (a 404, the
     // network) is a named failure to retry — never a reason to take the next cited PDF instead (the

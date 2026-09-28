@@ -6,8 +6,10 @@ import { ensureAhjFormsForProject } from "./ahjFormAuto";
 import { createLLMProvider } from "./llm";
 import { resolvePermitPath } from "./permitPath";
 import { logger } from "./logger";
-
-const COOLDOWN_MS = 24 * 60 * 60 * 1000;
+// The cooldown key, the research switch and the downloads switch are formAcquisitionPlan's — the
+// same answers the pre-Stage gate reads (gates-proper C1), so the gate and Stage cannot disagree
+// about whether this Stage will acquire a form.
+import { acquisitionCooldownOpen, acquisitionScopeKey, formDownloadsOn, formResearchAllowed } from "./formAcquisitionPlan";
 
 /** What Stage's acquisition did, for the caller that wants to say so (every current caller may
  *  ignore it). `acquisition`:
@@ -47,13 +49,12 @@ export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord
   if (permitPath === "unknown") return { acquisition: "unknown-path", results: [] };
   let acquisition: OfficialDocumentsPreparation["acquisition"] = "off";
   let results: OfficialDocumentsPreparation["results"] = [];
-  if (process.env.AHJ_FORM_DOWNLOADS !== "off") {
+  if (formDownloadsOn()) {
+    const key = acquisitionScopeKey(project, permitPath);
+    const research = formResearchAllowed();
+    const open = acquisitionCooldownOpen(db, key);
     db.exec(`CREATE TABLE IF NOT EXISTS ahj_form_acquisition_attempts (
       scope_key TEXT PRIMARY KEY, attempted_at INTEGER NOT NULL)`);
-    const key = `${project.state}|${project.ahj}|${permitPath}`.trim().toLowerCase();
-    const prior = db.get<{ attempted_at: number }>("SELECT attempted_at FROM ahj_form_acquisition_attempts WHERE scope_key = ?", [key]);
-    const research = process.env.AHJ_FORM_RESEARCH !== "off" && Boolean(process.env.ANTHROPIC_API_KEY);
-    const open = !prior || Date.now() - prior.attempted_at >= COOLDOWN_MS;
     if (open) db.run("INSERT INTO ahj_form_acquisition_attempts(scope_key, attempted_at) VALUES (?, ?) ON CONFLICT(scope_key) DO UPDATE SET attempted_at = excluded.attempted_at", [key, Date.now()]);
     acquisition = open ? "full" : "within-cooldown";
     try {

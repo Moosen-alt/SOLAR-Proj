@@ -462,7 +462,9 @@ const GATE_BLOCKER_ASK: Record<string, string> = {
   "permit-path": "confirm the permit path (prescriptive vs engineered)",
   "qc-human-review": "QC failures or pending review items",
   "permit-requirements": "the designer has to clear the reviewer findings",
-  "document-inventory": "required document(s) are missing — attach or split them out",
+  // The fix is per document (find the form / upload the blank, or attach / split out) — it rides
+  // in the check's nextAction, the `why` line; the headline names only the problem.
+  "document-inventory": "required document(s) are missing",
 };
 
 const TRACK_NAME: Record<SubmittalTrackType, string> = {

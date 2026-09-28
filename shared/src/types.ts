@@ -1182,6 +1182,19 @@ export interface ApplicationDocumentPackage {
     lane: "permit" | "nem";
     why: string;
   }>;
+  /**
+   * Required forms Stage DOWNLOADS (or researches) and fills itself before it counts
+   * (owedMissingDocuments' `acquiredAtStaging`, gates-proper C1) — held out of missingDocuments
+   * and named here with how Stage gets each one. Set alongside missingDocumentsStatus === "resolved".
+   */
+  acquiredAtStagingDocuments?: Array<{
+    docType: string;
+    label: string;
+    lane: "permit" | "nem";
+    why: string;
+    via: "curated" | "cited" | "research";
+    sourceUrl: string;
+  }>;
   html: string;
   /** When the knowledge base has a learned profile for this AHJ, its real
    *  required-document list + portal (so the PM isn't relying on the generic fallback). */

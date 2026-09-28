@@ -330,6 +330,15 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
           [id(), projectId, `docs.${d.docType}`, `${d.label}: filled at staging${where} — the form's template is on file; staging fills it and offers it to any upload slot that asks for it (check the portal's attachment list before submitting).`, createdAt],
         );
       }
+      // Stage downloads (or researches) and fills it before it counts (gates-proper C1) — said as a
+      // pass row, never "not attached — staging will refuse without it".
+      for (const d of gateDocs.acquiredAtStaging) {
+        db.run(
+          `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+           VALUES (?, ?, 'pass', ?, 'Required document', ?, 'info', ?)`,
+          [id(), projectId, `docs.${d.docType}`, `${d.label}: Stage downloads and fills it${where} (${gateDocs.acquiredVia.get(d)?.via === "research" ? "form research on the open cooldown" : `from ${gateDocs.acquiredVia.get(d)?.sourceUrl || "its published source"}`}) — if the download fails, Stage stops and names it.`, createdAt],
+        );
+      }
       for (const d of inv.missingAdvisory) {
         warningCount += 1;
         say("warning", "warning", d.docType, d.label, String(d.why || ""));
