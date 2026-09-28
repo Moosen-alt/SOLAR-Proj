@@ -1051,6 +1051,9 @@ export interface SubmittalTrack {
   recipeId?: string;
   /** The scope type used to look up the recipe — "ahj" or "utility". */
   recipeScopeType?: "ahj" | "utility";
+  /** How this track is filed, as a kind (submittalTracks.channelKindOf). in_person / email / mail =
+   *  a person delivers the packet outside this tool — shown as a bold banner, never grey text. */
+  channelKind?: "portal" | "in_person" | "email" | "mail" | "unknown";
   /** No recipe of its own: the recipe this project's LAST run of this track borrowed (another entity's,
    *  same portal — portalRecipes.findBorrowableRecipe), read from that run's result. null = none used. */
   borrowedRecipe?: { recipeId: string; recipeVersion: number | null; learnedFor: string; recordType: string; portalHost: string; lastUsedAt: string } | null;

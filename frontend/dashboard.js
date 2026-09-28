@@ -4385,6 +4385,22 @@ function linkifyText(text) {
   return out + esc(s.slice(last));
 }
 
+// FILED OUTSIDE THIS TOOL (operator 09-28: "City of Waltham only does in-person permit submission ...
+// ensure they're bold enough to know, same with email submissions as it will require us to go outside
+// of the submission tool"). A bold, coloured banner on the card — never the grey "Channel:" line alone.
+const OFF_TOOL_CHANNEL = {
+  in_person: { title: "IN-PERSON SUBMISSION", what: "This jurisdiction does not take this filing online. The bot prepares and fills the packet; a person must deliver it at the counter — outside this tool." },
+  email: { title: "EMAIL SUBMISSION", what: "This filing is sent by email, not through a portal. The bot prepares and fills the packet; a person must email it — outside this tool — then record the confirmation here." },
+  mail: { title: "SUBMISSION BY MAIL", what: "This filing is mailed. The bot prepares and fills the packet; a person must print and mail it — outside this tool." },
+};
+function offToolChannelHtml(t) {
+  const k = OFF_TOOL_CHANNEL[t.channelKind];
+  if (!k) return "";
+  return `<div role="note" style="margin:0 0 8px;padding:8px 10px;border:2px solid var(--warning);border-left-width:6px;border-radius:6px;background:rgba(245,158,11,0.10)">
+    <strong style="font-size:14px;letter-spacing:.02em">⚠ ${esc(k.title)}</strong>
+    <div style="font-size:12px;margin-top:2px">${esc(k.what)}</div></div>`;
+}
+
 function trackChannelHtml(t) {
   const channel = String(t.channel || "");
   const basis = TRACK_CHANNEL_BASIS[t.channelBasis];
@@ -4480,6 +4496,7 @@ function trackCardHtml(t) {
       <span>${esc(t.label)}</span>
       ${statusBadge(t.statusLabel)}
     </div>
+    ${offToolChannelHtml(t)}
     ${trackChannelHtml(t)}
     ${trackPrerequisitesHtml(t)}
     <p style="margin:0 0 6px;font-size:12px">→ ${linkifyText(trackNextActionText(t))}</p>

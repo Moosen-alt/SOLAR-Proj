@@ -227,6 +227,29 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   return { channel: "Unknown — verify on the AHJ site", basis: "unknown", portalUrl: "" };
 }
 
+/** HOW THIS TRACK IS FILED, AS A KIND (operator 09-28: "City of Waltham only does in-person permit
+ *  submission ... ensure they're bold enough to know, same with email submissions as it will require
+ *  us to go outside of the submission tool"). ONE answer, read from the channel resolution: a portal
+ *  URL on file is a portal; otherwise the channel's own words decide in-person / email / mail; else
+ *  unknown. "offTool" = a person must deliver the packet outside this tool. */
+export type TrackChannelKind = "portal" | "in_person" | "email" | "mail" | "unknown";
+export function channelKindOf(res: { channel: string; portalUrl: string }): TrackChannelKind {
+  if (res.portalUrl) return "portal";
+  const t = String(res.channel || "");
+  // A guess is not a finding: "unknown — likely in-person ..." / "not yet identified" stay unknown.
+  if (/^\s*unknown\b/i.test(t) || /\bnot yet identified\b/i.test(t)) return "unknown";
+  // A portal named or linked (a URL, a platform name, "portal", "online") and not negated is a portal —
+  // "Oregon ePermitting (Accela)", "PowerClerk", a Tyler EnerGov self-service link, "Portland DevHub".
+  const negated = /\bno online\b|\bno (?:application )?portal\b|\bnot (?:online|through a portal)\b/i.test(t);
+  // "online" only as FILING online — Waltham's "permit fees payable online" is paying, not filing.
+  if (!negated && (/https?:\/\//i.test(t) || /\b(?:portal|accela|epermitting|energov|powerclerk|devhub|iworq|citizenserve|etrakit|opengov|self[\s-]?service)\b/i.test(t)
+    || /\bonline (?:application|submi\w*|filing|permit(?:ting)? (?:system|application))\b|\b(?:apply|submit(?:ted)?|file[ds]?) online\b/i.test(t))) return "portal";
+  if (/\bin[\s-]?person\b|\bdrop(?:ped)?[\s-]?off\b|\bover[\s-]the[\s-]counter\b|\bat the counter\b|\bwalk[\s-]?in\b|\bpaper (?:application|submi\w*|drop)/i.test(t)) return "in_person";
+  if (/\be-?mail(?:ed|ing)?\b|\b[\w.+-]+@[\w-]+\.[\w.-]+\b/i.test(t)) return "email";
+  if (/\b(?:by|via|through the) (?:us )?(?:postal )?mail\b|\bmail(?:ed)? to\b|\bpostal\b/i.test(t)) return "mail";
+  return "unknown";
+}
+
 /** A tracking target's portal_name: the found portal's host, else the channel without its
  *  evidence parenthetical — a name, not the card's sentence. */
 function targetPortalName(track: SubmittalTrackType, project: ProjectRecord, db: AppDb | null): string {
@@ -645,6 +668,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       category,
       channel,
       channelBasis: resolved.basis,
+      channelKind: channelKindOf(resolved),
       ...(category === "permit" ? { structureBasis: answer.basis, prerequisites } : {}),
       status,
       // The portal's own words — unless they say "issued" of a track isTrackDone did not accept
