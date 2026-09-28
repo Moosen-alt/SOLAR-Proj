@@ -22,7 +22,9 @@ const NOT_SERVED_PATTERNS: RegExp[] = [
   /\b(?:this|the)\s+(?:address|location|parcel|property|site)(?:\s+(?:you\s+(?:have\s+)?(?:entered|selected|provided)|provided|selected|entered))?\s+(?:is|lies|falls|was)\s+(?:not\s+(?:with)?in|outside(?:\s+of)?)\s+(?:the|our|this|its)\s+(?:[a-z']+\s+){0,3}(?:jurisdiction|service\s+area|city\s+limits)\b/i,
   // "Corvallis is not a participating jurisdiction", "This jurisdiction does not participate in Oregon ePermitting".
   /\bnot\s+a\s+participating\s+(?:jurisdiction|agency|municipality|city|county|community)\b/i,
-  /\b(?:jurisdiction|agency|municipality|city|county)\s+(?:is|does)\s+not\s+participat(?:e|ing)\s+(?:in|with|on)\b/i,
+  // …only about THIS system — never a rebate / battery program ("The city does not participate in
+  // the Wattsmart Battery program" is a program answer on a utility page, not a refusal).
+  /\b(?:jurisdiction|agency|municipality|city|county)\s+(?:is|does)\s+not\s+participat(?:e|ing)\s+(?:in|with|on)\s+(?:this|the|our)?\s*(?:[a-z-]+\s+){0,3}(?:portal|system|site|e-?\s?permitting)\b/i,
   // "The county does not issue building permits for this address."
   /\bdoes\s+not\s+(?:issue|process|accept)\s+(?:[a-z]+\s+){0,2}(?:permits?|applications?)\s+for\s+this\s+(?:address|location|parcel|property|site)\b/i,
   // "This address is not served by this agency."

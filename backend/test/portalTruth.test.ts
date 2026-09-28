@@ -248,6 +248,7 @@ await check("(d5-p1) the one predicate: MUST-PASS the refusals of THIS address /
     "No records were returned for this search.", "No permits found for this record.", "Your search returned no results.",
     "Online services are not available between 11 PM and 1 AM.", "For addresses outside our jurisdiction, contact the county.",
     "This property is outside the floodplain boundary.", "Building Services | Planning Services | Contact us", "",
+    "The city does not participate in the Wattsmart Battery program.", "No, I will not be participating in the battery program.",
   ]) assert.equal(notServed.portalSaysNotServed(t), null, `must NOT refuse: ${t}`);
 });
 
