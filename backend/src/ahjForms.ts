@@ -731,12 +731,17 @@ function computed(name: string, ctx: FillContext): string {
       const base = computed('electricalBaseFee', ctx);
       return base && feeBracket(ctx) === tier ? name.endsWith('Qty') ? '1' : base : '';
     }
+    // THE STRUCTURE ANSWER, ONE PREDICATE (applicationDocsAgency.structureMeaningOf — dry run
+    // 2026-09-28, B5). These two read constructionCategory alone while residentialCategory and
+    // structureSfdOrAccessory read the structure description, so one job printed "single-family
+    // dwelling" on the 5952 and "Still needs: construction category" on the county electrical form.
     case "singleFamilyCategory":
-      return /^single[- ]family(?: dwelling)?$/i.test(str(ctx.snapshot.constructionCategory).trim()) ? "yes" : "";
+      return structureMeaningOf(ctx.snapshot) === "single_family" ? "yes" : "";
     case "constructionCategory": {
+      // An explicit "Other" (with its description) is the operator's own answer — read first.
       const v = str(ctx.snapshot.constructionCategory || ctx.snapshot.occupancyType).trim();
       if (/^other$/i.test(v)) return str(ctx.snapshot.constructionCategoryOther).trim() ? "other" : "";
-      return /^(?:single[- ]family(?: dwelling)?|1[- ]and[- ]2[- ]family|one[- ]and[- ]two[- ]family|R-?3)$/i.test(v) ? "residential" : "";
+      return structureMeaningOf(ctx.snapshot) === "single_family" ? "residential" : "";
     }
     case "declaredValuation":
     case "estimatedJobValue": {

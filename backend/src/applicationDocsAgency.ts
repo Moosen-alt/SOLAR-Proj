@@ -628,9 +628,23 @@ export function prerequisiteSettled(snapshot: Record<string, unknown> | undefine
   return { settled: false, via: "" };
 }
 
-/** Structure-type facts the county applications ask, read through permitProcess.structureTypeMeaning
- *  (ONE vocabulary for what a structure description means). */
+/** THE ONE STRUCTURE PREDICATE: what this project's structure answer means, read through
+ *  permitProcess.structureTypeMeaning (ONE vocabulary for what a structure description means).
+ *  Every form's structure / construction-category source asks this (ahjForms computed
+ *  singleFamilyCategory, constructionCategory, residentialCategory, structureSfdOrAccessory; the
+ *  Iowa PV worksheet) — dry run 2026-09-28, B5: the operator's portal-question answer lands in
+ *  structureDescription, the Coos County electrical form read only constructionCategory, and it
+ *  shipped "Still needs: construction category" beside a 5952 that printed "single-family dwelling".
+ *
+ *  The first NON-EMPTY answer wins (structureDescription, then constructionCategory, then
+ *  occupancyType): an edit path that writes "" must fall through, not answer "nothing". An
+ *  occupancy CLASSIFICATION ("R-3" — the one- and two-family dwelling group, which the vocabulary
+ *  already files as single_family) is read here, on the project's own fact, and deliberately NOT
+ *  added to structureTypeMeaning — that vocabulary also matches portal <select> option labels. */
 export function structureMeaningOf(snapshot: Record<string, unknown> | undefined): ReturnType<typeof structureTypeMeaning> {
   const s = snapshot ?? {};
-  return structureTypeMeaning(String(s.structureDescription ?? s.constructionCategory ?? s.occupancyType ?? ""));
+  const answer = [s.structureDescription, s.constructionCategory, s.occupancyType]
+    .map((v) => String(v ?? "").trim()).find(Boolean) ?? "";
+  if (/^r-?3$/i.test(answer)) return "single_family";
+  return structureTypeMeaning(answer);
 }
