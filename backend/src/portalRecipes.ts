@@ -20,6 +20,7 @@ import { sameRecordType } from "./permitProcess";
 import { parseStreetNumber, parseStreetName, parseStreetLine } from "../../portal-bot/src/addressParse";
 import { feeBracketFieldForLabel, feeBracketQuantityFields } from "./feeBracketFields";
 import { FEE_BRACKET_FIELD_PREFIX } from "../../portal-bot/src/feeBracketQuantity";
+import { filingValuationText } from "./valuation";
 
 type Row = Record<string, unknown>;
 
@@ -1370,6 +1371,12 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   // flags the step for a project with NO parcel (the resolver emits the key only when present).
   parcelNumber: "Assessor parcel number (APN) of the project site, as the county prints it",
   workDescription: "One-line scope of work for the permit application, derived from this project's own system size",
+  // THE VALUE FOR EVERY JOB VALUE / VALUATION / ESTIMATED COST BOX (leak sweep 2026-09-28). The
+  // operator's valuation formula (valuation.ts: 40% of contract + battery adders), whole dollars —
+  // the same figure the PDF application carries. jobValue / contractAmount are the CONTRACT price.
+  declaredValuation: "THE value for a Job Value / Valuation / Estimated Cost / Construction Value box: the declared valuation (operator formula, 40% of contract + battery adders) — the same number the PDF application states. NEVER the contract price.",
+  jobValue: "The CONTRACT price the client pays — only for a box explicitly labelled contract price/amount; NEVER a Job Value / Valuation / Estimated Cost box (that is declaredValuation)",
+  contractAmount: "The CONTRACT price the client pays (alias of jobValue) — only for a box explicitly labelled contract price/amount; never a valuation box",
   accelaContactCode: "Accela contact/license lookup code",
   hasExistingSystem: "Whether an existing PV/storage system is already interconnected on site (Yes/No)",
   existingSystemSizeDcKw: "EXISTING (already interconnected) system DC size in kilowatts",
@@ -1750,6 +1757,11 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
       const size = [dc ? `${dc} kW DC` : "", ac ? `${ac} kW AC` : ""].filter(Boolean).join(" / ");
       return `${mount} residential solar PV system, ${size}`;
     })(),
+    // THE VALUATION A JOB VALUE / VALUATION / ESTIMATED COST BOX TAKES — the operator's formula of
+    // the contract (filingValuationText → resolveValuation), the SAME whole-dollar figure the PDF
+    // application files. ALWAYS emitted, "" when nothing can be computed: a box bound here then
+    // replays blank and is named, never the recorded contract.
+    declaredValuation: filingValuationText(snapshot as never, project.systemSizeDcKw),
     ...dateFields(),
     // EXPORT LIMITING. Derived here, not only in the learner's planner map: a step that
     // BINDS to this key must resolve at REPLAY time, and it used to exist only at learn

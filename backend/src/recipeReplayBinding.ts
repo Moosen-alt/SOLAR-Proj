@@ -42,10 +42,15 @@
 //      box that matches none of this project's tiers types BLANK (its recorded quantity was the
 //      donor project's size), never the donor's "1"; the step and its key are kept so the coverage
 //      check still reports a tier with no recorded box.
+//   R7 VALUATION (leak sweep 2026-09-28) — a Job Value / Valuation / Estimated Cost box bound to the
+//      contract price (jobValue / contractAmount) or frozen as a figure binds to THIS project's
+//      declaredValuation (the operator formula the PDF application files). A contract-price box keeps
+//      the contract.
 import type { CitedFact, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { stateRulesFor } from "./permitProcess";
 import { feeBracketFieldKey, parseFeeBracketFieldKey, sameFeeTier, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
 import { issuingAgencyRow } from "../../portal-bot/src/addressVersion";
+import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
 export { sameFeeTier };
 
 export interface ReplayBindingChange {
@@ -265,6 +270,18 @@ export function bindRecipeForReplay(input: {
           record("blanked", `fee-tier box ${recordedKey.replace(/^feeBracketQuantity:/, "")} matches none of this project's tiers — the recorded quantity was ${input.borrowed.learnedFor}'s project, so it is left blank for a person`);
         }
       }
+    }
+
+    // R7 — a Job Value / Valuation / Estimated Cost box takes THIS project's declared valuation
+    // (valuation.ts: the operator formula, the figure the PDF files), never the contract price the
+    // learn run bound (jobValue / contractAmount — both complete Coos Bay recipes' "Job Value($):")
+    // and never a frozen figure. A box labelled contract price keeps the contract.
+    if (step.action === "fill" && step.field !== REPLAY_BLANK_FIELD && hasKey(input.fieldValues, DECLARED_VALUATION_FIELD)
+        && rebindsToValuation(`${label} ${note}`, step.field)) {
+      const was = step.field ? `the contract price (${step.field})` : "a recorded figure";
+      step = { ...step, field: DECLARED_VALUATION_FIELD };
+      delete step.value;
+      record("rebound", `valuation box bound to this project's declared valuation, not ${was}`);
     }
 
     // R2 — project-specific free text.

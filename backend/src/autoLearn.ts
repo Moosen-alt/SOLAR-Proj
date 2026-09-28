@@ -47,6 +47,7 @@ import { getCodeProfile } from "./codeProfiles";
 import { certifiedNamesForMake } from "./cecEquipment";
 import { recordDraftTouch, type DraftTouch } from "./draftLedger";
 import { issuingAgencyFor } from "./permitProcess";
+import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
 
 /** The submittal track an AHJ learn files, from the recipe discipline it will be keyed under
  *  (authoritative — the value the recipe lookup asks for), else the requested permit type.
@@ -505,7 +506,17 @@ export function buildPortalPlanner(
       screenshotBase64: req.screenshotBase64,
     });
     return {
-      fills: plan.fills.map((f) => ({ selectorIndex: f.index, value: f.value, field: f.field })),
+      // A JOB VALUE BOX TAKES THE VALUATION, NOT THE CONTRACT (leak sweep 2026-09-28): whatever the
+      // planner chose for a box whose label asks for the work's valuation (the contract keys, or a
+      // typed figure), the learn draft files — and the recipe records — the declared valuation.
+      fills: plan.fills.map((f) => {
+        const target = req.fields[f.index];
+        // A free-text box only: a valuation RANGE select ("$10,001 – $25,000") keeps its option.
+        if (target && (target.fieldType === "text" || target.fieldType === "other") && rebindsToValuation(String(target.label ?? ""), f.field)) {
+          return { selectorIndex: f.index, value: projectFields[DECLARED_VALUATION_FIELD] ?? "", field: DECLARED_VALUATION_FIELD };
+        }
+        return { selectorIndex: f.index, value: f.value, field: f.field };
+      }),
       advanceSelectorIndex: plan.advanceIndex,
       navigateSelectorIndex: plan.navigateIndex,
       finalSubmitSelectorIndex: plan.finalSubmitIndex,
