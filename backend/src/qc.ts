@@ -6,6 +6,7 @@ import { parseJson } from "./json";
 import { fieldAliases, parserField } from "./normalize";
 import { logger } from "./logger";
 import { documentInventory, owedMissingDocuments, requiredListCheck } from "./requiredDocuments";
+import { startedAtLabel } from "./formAcquisitionPlan";
 import { nowIso } from "./time";
 import type { ParserPayload, ProjectRecord, QcStatus, Severity, StageDetail } from "../../shared/src/types";
 import { getCodeProfile, resolveEffectiveCodeContext } from "./codeProfiles";
@@ -358,7 +359,7 @@ export function runQcForProject(db: AppDb, projectId: string, options: QcRunOpti
         db.run(
           `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
            VALUES (?, ?, 'pass', ?, 'Required document', ?, 'info', ?)`,
-          [id(), projectId, `docs.${d.docType}`, `${d.label}: Stage downloads and fills it${where} (${gateDocs.acquiredVia.get(d)?.via === "research" ? "form research on the open cooldown" : `from ${gateDocs.acquiredVia.get(d)?.sourceUrl || "its published source"}`}) — if the download fails, Stage stops and names it.`, createdAt],
+          [id(), projectId, `docs.${d.docType}`, `${d.label}: Stage downloads and fills it${where} (${gateDocs.acquiredVia.get(d)?.inFlight ? `the form research is running now, ${startedAtLabel(gateDocs.acquiredVia.get(d)!.inFlight!.since)}` : gateDocs.acquiredVia.get(d)?.via === "research" ? "form research on the open cooldown" : `from ${gateDocs.acquiredVia.get(d)?.sourceUrl || "its published source"}`}) — if the download fails, Stage stops and names it.`, createdAt],
         );
       }
       for (const d of inv.missingAdvisory) {

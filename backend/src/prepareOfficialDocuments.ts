@@ -2,10 +2,11 @@ import type { AppDb } from "./db";
 import type { LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { buildFilledFormsForProject } from "./ahjForms";
 import { materializeGeneratedDocs } from "./generatedDocFiles";
-import { ensureAhjFormsForProject, type FormsPageOptions } from "./ahjFormAuto";
+import { ensureAhjFormsForProject, formFindAuditDetails, type FormsPageOptions } from "./ahjFormAuto";
 import { createLLMProvider } from "./llm";
 import { resolvePermitPath } from "./permitPath";
 import { logger } from "./logger";
+import { addAuditLog } from "./audit";
 // The cooldown key, the research switch and the downloads switch are formAcquisitionPlan's — the
 // same answers the pre-Stage gate reads (gates-proper C1), so the gate and Stage cannot disagree
 // about whether this Stage will acquire a form.
@@ -26,6 +27,9 @@ export interface OfficialDocumentsPreparation {
   /** TRUE when this pass claimed the 24h cooldown and then SHORTENED it to LOOKUP_FAILED_RETRY_MS
    *  because a form search could not run — a Stage after that back-off searches again. */
   cooldownReleased?: boolean;
+  /** This pass did not search: it joined the research pass already running for the AHJ/path
+   *  (started at `since`) and took its result (ahjFormAuto.ensureAhjFormsForProject). */
+  joined?: { since: string };
 }
 
 /** Injected by tests (no network, no key): the model, whether research may run, the forms page
@@ -67,6 +71,7 @@ export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord
   let acquisition: OfficialDocumentsPreparation["acquisition"] = "off";
   let results: OfficialDocumentsPreparation["results"] = [];
   let cooldownReleased = false;
+  let joined: { since: string } | undefined;
   if (formDownloadsOn()) {
     // The ONE cooldown key and "is it open" answer the pre-Stage gate reads too (formAcquisitionPlan).
     const key = acquisitionScopeKey(project, permitPath);
@@ -78,11 +83,28 @@ export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord
     if (open) db.run("INSERT INTO ahj_form_acquisition_attempts(scope_key, attempted_at) VALUES (?, ?) ON CONFLICT(scope_key) DO UPDATE SET attempted_at = excluded.attempted_at", [key, claimedAt]);
     acquisition = open ? "full" : "within-cooldown";
     try {
+      // NO AWAIT BETWEEN THE CLAIM ABOVE AND THIS CALL: ensureAhjFormsForProject registers a research
+      // pass in flight in its first synchronous segment (formAcquisitionPlan.trackFormResearch), so a
+      // gate read never sees the cooldown claimed with no search running — that reading is what told
+      // the operator to "find the official form or upload the blank" while the chain was finding it.
       const out = await ensureAhjFormsForProject(db, deps.llm ?? createLLMProvider(), project,
         // Inside the cooldown, a form URL that failed in the last 6h is not fetched again
         // (ahjFormAuto.recentFormFetchFailure — go gently; the operator's Find retries it now).
         open ? { allowResearch: research, formsPage: deps.formsPage } : { allowResearch: false, allowMapping: research, skipRecentlyFailed: true, formsPage: deps.formsPage });
       results = out.results.map((r) => ({ formType: r.formType, status: r.status, message: r.message, ...(r.sourceUrl ? { sourceUrl: r.sourceUrl } : {}), ...(r.lookupFailed ? { lookupFailed: true } : {}) }));
+      joined = out.joined;
+      // THE AUTOMATIC PASS LEAVES THE SAME TRAIL THE BUTTON DOES. The operator's "Find missing official
+      // forms" writes an ahj_form.find audit (server find-ahj-form); the chain's and Stage's passes left
+      // one log line, so the project's audit trail showed the operator's clicks and nothing from the
+      // pass that had already run — "getting lost", from the operator's seat. Same details, same action,
+      // and `via` says which door; AHJ facts only, never project values.
+      if (out.results.length) {
+        const [first, ...rest] = out.results;
+        addAuditLog(db, project.id, "system", "ahj form acquisition", "ahj_form.find", {
+          ...formFindAuditDetails(project.ahj, first, rest.map((r) => ({ formType: r.formType, status: r.status, message: r.message }))),
+          via: "stage", acquisition, ...(out.joined ? { joinedPassStartedAt: out.joined.since } : {}),
+        });
+      }
     } catch {
       acquisition = "failed";
       logger.warn("official-documents", "Form acquisition failed; filling available stored templates. Missing-document gates remain active.", { projectId: project.id });
@@ -119,5 +141,5 @@ export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord
   // The return value is not needed here: the render's own manifest is what every reader
   // (submissionDocumentsByType) reads, keyed by the builder's doc id — never by filename.
   await materializeGeneratedDocs(db, project);
-  return { acquisition, results, ...(cooldownReleased ? { cooldownReleased } : {}) };
+  return { acquisition, results, ...(cooldownReleased ? { cooldownReleased } : {}), ...(joined ? { joined } : {}) };
 }

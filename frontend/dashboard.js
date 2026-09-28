@@ -6117,9 +6117,25 @@ function bcd5952ClauseNotes(form) {
   return notes.length ? `<p class="muted bcd-clauses">${esc(`Compound rows — the clause each Yes came from: ${notes.join("; ")}.`)}</p>` : "";
 }
 
+// THE SEARCH IS RUNNING NOW: the packet's acquiredAtStagingDocuments carry `inFlight` while the form
+// research pass for this AHJ/path runs (backend formAcquisitionPlan's in-flight registry — the chain's
+// automatic pass or an earlier click). The card says so and holds the Find button: a click mid-search
+// used to start a second, identical six-minute search (Beaverton, 09-28: three passes at once).
+function formResearchInFlight() {
+  const rows = (state.applicationDocs && state.applicationDocs.acquiredAtStagingDocuments) || [];
+  const row = rows.find((d) => d && d.inFlight && d.inFlight.since);
+  if (!row) return null;
+  const t = new Date(row.inFlight.since);
+  const started = Number.isNaN(t.getTime()) ? "" : ` (started ${t.toISOString().slice(11, 16)} UTC)`;
+  return { since: row.inFlight.since, text: `Checking the AHJ's required official forms…${started}` };
+}
+
 function renderFilledForms(projectId) {
   const ff = state.filledForms;
   if (!ff) return "";
+  const searching = formResearchInFlight();
+  const findBtnAttrs = searching ? " disabled" : "";
+  const findStatus = searching ? esc(searching.text) : "";
   if (ff.error) {
     return `<article class="item warning"><div class="item-title"><span>Official AHJ PDF form</span>${statusBadge("error")}</div><p>${esc(ff.error)}</p></article>`;
   }
@@ -6146,18 +6162,18 @@ function renderFilledForms(projectId) {
       <div class="item-title"><span>Official AHJ PDF form</span>${statusBadge("none on file")}</div>
       <p>No filled PDF form for <strong>${esc(ff.ahj || "this AHJ")}</strong> yet. Find the AHJ's official permit PDF, map its fields, and fill it — or upload the blank PDF yourself if it can't be found (e.g. the AHJ is online-only).</p>
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px">
-        <button type="button" id="findAhjFormBtn" class="secondary"><i data-lucide="search"></i><span>Find official form</span></button>
+        <button type="button" id="findAhjFormBtn" class="secondary"${findBtnAttrs}><i data-lucide="search"></i><span>Find official form</span></button>
         <label class="secondary" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--line);border-radius:6px">
           <i data-lucide="upload"></i><span>Upload blank PDF</span>
           <input id="uploadAhjFormInput" type="file" accept="application/pdf" style="display:none">
         </label>
-        <span id="findAhjFormStatus" class="muted" style="font-size:12px"></span>
+        <span id="findAhjFormStatus" class="muted" style="font-size:12px">${findStatus}</span>
       </div>
     </article>`;
   }
-  const acquisitionControls = `<article class="item info"><button type="button" id="findAhjFormBtn" class="secondary">Find missing official forms</button>
+  const acquisitionControls = `<article class="item info"><button type="button" id="findAhjFormBtn" class="secondary"${findBtnAttrs}>Find missing official forms</button>
     <label class="secondary" style="margin-left:8px">Upload blank PDF<input id="uploadAhjFormInput" type="file" accept="application/pdf" style="display:none"></label>
-    <span id="findAhjFormStatus" class="muted"></span></article>`;
+    <span id="findAhjFormStatus" class="muted">${findStatus}</span></article>`;
   return acquisitionControls + forms.map((f) => {
     const ok = f.status === "filled";
     // "skipped" = the OTHER application for this permit path (prescriptive vs structural).

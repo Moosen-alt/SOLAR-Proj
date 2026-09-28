@@ -37,8 +37,8 @@ import { sanitizePlacements, signatureStandIns } from "./formFieldChecks";
 import type { LabelItem } from "./formTextLayer";
 import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
 import {
-  acceptedFormTypes, acceptedFormTypesFor, applicationKindForProject, clearFormFetchFailure, hasStoredTemplateOfType, issuingAgencyFormPlan, noteFormFetchFailure,
-  ownFreeFormSource, recentFormFetchFailure, type EnsureFormResult,
+  acceptedFormTypes, acceptedFormTypesFor, acquisitionScopeKey, applicationKindForProject, clearFormFetchFailure, formResearchInFlight, hasStoredTemplateOfType, issuingAgencyFormPlan, noteFormFetchFailure,
+  ownFreeFormSource, recentFormFetchFailure, trackFormResearch, type EnsureFormResult,
 } from "./formAcquisitionPlan";
 // The acquisition's pre-fetch predicates live in formAcquisitionPlan.ts — the ONE answer the pre-Stage
 // gate reads too (gates-proper C1). Re-exported so every existing caller of this module keeps working.
@@ -954,6 +954,16 @@ export interface NeededAhjForm {
   applicationKind: "prescriptive" | "structural" | null;
 }
 
+export interface AhjFormsPass {
+  neededTypes: string[];
+  needed: NeededAhjForm[];
+  results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }>;
+  /** Set when this call did not search: it JOINED the research pass already running for the same
+   *  AHJ/path (formAcquisitionPlan.formResearchInFlight) and took its result — a door that arrives
+   *  mid-search waits for that search instead of starting another. */
+  joined?: { since: string };
+}
+
 export async function ensureAhjFormsForProject(
   db: AppDb,
   llm: LLMProvider,
@@ -965,7 +975,35 @@ export async function ensureAhjFormsForProject(
    *  FORM_FETCH_RETRY_MS (recentFormFetchFailure) — set ONLY by Stage's pass inside the cooldown; the
    *  operator's "Find missing official forms" (server find-ahj-form) never sets it. */
   opts: { allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean; formsPage?: FormsPageOptions } = {},
-): Promise<{ neededTypes: string[]; needed: NeededAhjForm[]; results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }> }> {
+): Promise<AhjFormsPass> {
+  // ONE SEARCH PER AHJ/PATH AT A TIME (formAcquisitionPlan's in-flight registry). Every door — the
+  // automatic chain, Stage, the operator's "Find missing official forms" — comes through here, and
+  // three of them ran the same six-search pass at once on the operator's first new AHJ (City of
+  // Beaverton, 2026-09-28: the gate said "find the official form" while the chain was finding it, so
+  // the operator clicked Find, twice). A pass that may research REGISTERS itself in the same tick the
+  // cooldown was claimed (no await before trackFormResearch — a gate read never sees "claimed but not
+  // in flight"); ANY pass arriving while one runs JOINS it: the same project takes that pass's result
+  // verbatim, another project with the same AHJ/path waits for it and then runs its own FREE pass,
+  // which answers "exists" off whatever the search just stored (never another project's needed set).
+  const key = acquisitionScopeKey(project, resolvePermitPath(project).path);
+  const running = formResearchInFlight(key);
+  if (running) {
+    const theirs = await (running.promise as Promise<AhjFormsPass>).then((r) => r, () => null);
+    if (theirs && running.projectId === project.id) return { ...theirs, joined: { since: running.since } };
+    const mine = await runAhjFormsPass(db, llm, project, { ...opts, allowResearch: false, allowMapping: opts.allowMapping ?? opts.allowResearch !== false });
+    return { ...mine, joined: { since: running.since } };
+  }
+  const pass = runAhjFormsPass(db, llm, project, opts);
+  if (opts.allowResearch !== false) trackFormResearch(key, project.id, pass);
+  return pass;
+}
+
+async function runAhjFormsPass(
+  db: AppDb,
+  llm: LLMProvider,
+  project: ProjectRecord,
+  opts: { allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean; formsPage?: FormsPageOptions },
+): Promise<AhjFormsPass> {
   // WHAT THIS PROJECT MUST FILE DECIDES WHAT WE GO AND FETCH.
   //
   // This used to be the constant ["permit_application"], which is why a
