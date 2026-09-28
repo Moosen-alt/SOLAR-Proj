@@ -29,6 +29,9 @@
 //        (the company's name) is cleared.
 //   MUST EXCLUDE
 //     G. A dialog whose section names no identity is left exactly as filled.
+//   REPLAY
+//     H. The recipe shape the live run saved (Select from Account -> the account prefill -> only
+//        the phone recorded -> Continue) replays as the COMPANY; an unknown section replays as recorded.
 //
 //   npx tsx portal-bot/src/adapters/contactIdentity.dom.smoke.ts
 import "../smokeArtifactDirs"; // artifact dirs default to a temp folder, never data/
