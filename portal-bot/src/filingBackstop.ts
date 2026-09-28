@@ -114,7 +114,17 @@ export interface FilingBackstop {
 
 /** The rules whose abort stops the run by name (a window abort is reported, and the run goes on:
  *  nothing was sent, and the dismissal / Enter was not a step of the recipe). */
-export const isStoppingAbort = (a: BackstopAbort): boolean => a.rule === "filing-url" || a.rule === "review-lockdown";
+//
+// A REVIEW-LOCKDOWN ABORT STOPS THE RUN ONLY WHEN IT COULD HAVE BEEN A FILING: a document request (the
+// review page submitting a form — the shape of a page that files by itself) or a filing- / payment-
+// shaped URL. A background call the page's scripts make at review — a third-party tracker (live,
+// Oregon ePermitting's CapConfirm: ec.walkme.com/event/tell, postEvent), the portal's own read-only
+// page method (CapConfirm.aspx/DisplayRequiredLicenseProfessionalType), a keepalive — is STILL ABORTED
+// (nothing reaches the server) and reported, but it does not fail a run that reached review: live run
+// 3eaa1231 (Michael Sheridan's building permit) was marked failed at the review page for exactly those.
+// Operator ruling 2026-09-26: false stops on legitimate steps are bugs; the network block is the line.
+export const isStoppingAbort = (a: BackstopAbort): boolean => a.rule === "filing-url"
+  || (a.rule === "review-lockdown" && (/^document$/i.test(String(a.resourceType || "")) || isFilingOrPaymentRequest(a.method, a.where)));
 
 const REGISTRY = new WeakMap<object, FilingBackstop>();
 
