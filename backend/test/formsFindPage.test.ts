@@ -134,6 +134,8 @@ try {
     ["Building/Electrical Permit Application", dc("Combo"), "combined"],
     ["", dc("Residential-Building-Permit-Application"), "building"],
     ["Application for Building Permit - Residential and Commercial", dc("App"), "building"],
+    // A form that names who may pull it is still the form ("licen[cs]" once excluded every "Licensed").
+    ["Building Permit Application – Licensed Contractors", dc("Licensed"), "building"],
   ];
   for (const [words, href, discipline] of pass) {
     const got = catalog.classifyApplicationDocument(words, href);
@@ -340,6 +342,17 @@ try {
     { formsPage: { reader: createPageReader({ minGapMs: 0 }), minGapMs: 10_000, sleep: async (ms: number) => { sleeps.push(ms); } } });
   check("G1 the application is acquired after one wait of ~10s following the page read", g1.status === "acquired" && sleeps.length === 1 && sleeps[0] > 9_000 && sleeps[0] <= 10_000,
     JSON.stringify({ g1: g1.status, sleeps, requested }));
+  // The model's own link on the host whose forms page was just read waits the gap too.
+  const GM = "https://www.gentlemodel.ma.us";
+  const GM_APP = `${GM}/DocumentCenter/View/802/Residential-Application`;
+  serveHtml(`${GM}/forms`, civicPage("Forms", []));
+  servePdf(GM_APP, await acroPdf("GENTLEMODEL Residential Application"));
+  researchFor.set("Town of Gentlemodel", { formsPageUrl: `${GM}/forms`, candidateUrls: [GM_APP] });
+  const sleeps2: number[] = [];
+  const g2 = await auto.ensureAhjFormTemplate(db, llm, mkJob("Town of Gentlemodel", "Gentlemodel"), "permit_application",
+    { formsPage: { reader: createPageReader({ minGapMs: 0 }), minGapMs: 10_000, sleep: async (ms: number) => { sleeps2.push(ms); } } });
+  check("G1 the model's own link on the just-read host also waits ~10s", g2.status === "acquired" && sleeps2.length === 1 && sleeps2[0] > 9_000 && sleeps2[0] <= 10_000,
+    JSON.stringify({ g2: g2.status, sleeps2 }));
 
   // ═══ T1 A SEARCH THAT COULD NOT RUN — reported as such, and the cooldown claim is released ═══════
   const T = "https://www.timeoutville.ma.us";

@@ -1073,7 +1073,7 @@ export async function ensureAhjFormTemplate(
     const url = c.url;
     // A document WE found (the forms page / a search result) is named by its own words: it is this
     // slot's primary blank only when its discipline fits, and it is fetched as an extra only for a
-    // slot nothing downloaded yet fills — never a wasted request to the AHJ's host. And gently.
+    // slot nothing downloaded yet fills — never a wasted request to the AHJ's host.
     const found = c.origin === "forms-page" || c.origin === "search-result";
     const words = found ? `${c.label} ${documentSlugWords(url)}` : "";
     if (found) {
@@ -1082,8 +1082,10 @@ export async function ensureAhjFormTemplate(
         const t = classifyFormType(`${url} ${words}`, formType);
         if (t === formType || downloads.some((d) => d.type === t)) continue;
       }
-      await politeGap(url, fp);
     }
+    // AND GENTLY, whoever proposed the URL: a download from a host this module just asked (the forms
+    // page read, a found document) waits the gap — the model's own link on the forms page's host too.
+    await politeGap(url, fp);
     const bytes = await fetchPdf(url);
     if (found) noteHostHit(url);
     if (!bytes) continue;

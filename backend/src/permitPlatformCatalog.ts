@@ -849,7 +849,7 @@ const NOT_A_FORM = /checklist|guide|handout|brochure|\bfaqs?\b|instruction|how[-
 /** An application, but not for a permit to build: tax / assessor forms ("Residential Exemption
  *  Application"), employment, boards and commissions, licences and registrations, rentals, bids —
  *  and a utility's interconnection / net-metering application (rule 5: never on a permit track). */
-const NOT_A_BUILD_PERMIT = /assessor|abatement|exemption|\btax(?:es)?\b|excise|employment|\bjobs?\b|appointment|\bboards?\b|committee|commission|public records|records request|rental|vendor|\bbids?\b|\bgrants?\b|voter|raffle|yard sale|block party|hawker|peddler|licen[cs]|registration|certificat|scholarship|volunteer|interconnect|net[- ]?meter|\butility\b/i;
+const NOT_A_BUILD_PERMIT = /assessor|abatement|exemption|\btax(?:es)?\b|excise|employment|\bjobs?\b|appointment|\bboards?\b|committee|commission|public records|records request|rental|vendor|\bbids?\b|\bgrants?\b|voter|raffle|yard sale|block party|hawker|peddler|\blicen[cs](?:e|es|ing)\b|registration|certificat|scholarship|volunteer|interconnect|net[- ]?meter|\butility\b/i;
 /** Another TRADE's or activity's permit (beside OTHER_FEE_KIND's list) — rescued, like a fee
  *  schedule, when the words also name the building / electrical / solar work (JOB_FEE_KIND):
  *  "Building, Plumbing & Gas Permit Application" is this job's form, "Plumbing Permit Application" is not. */
