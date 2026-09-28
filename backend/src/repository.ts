@@ -7626,6 +7626,302 @@ function kbRowRank(row: { state?: string; ahj?: string; verified_at?: string | n
   return rank;
 }
 
+/**
+ * WHICH PORTAL, WHICH RECIPE, FOR THIS STAGE — the resolution prepareSubmission runs after its gates:
+ * the learned profile and platform, the own recipe (discipline-checked), the entity evidence and the
+ * one host predicate (hostFitsTrackAndEntity) every candidate URL is judged by, the KB / fuzzy /
+ * per-job-lookup / draft / statewide candidates, the entity's OWN portal, and the shared-portal
+ * borrow. Moved out of prepareSubmission unchanged (split-issuer, 2026-09-28) so it can be asked
+ * without a browser and without the staging gates — the tests and the base-parity replay call it.
+ * Writes only the audit rows it always wrote (a legacy recipe skipped, a borrow refused / taken).
+ */
+export function resolveStagePortal(db: AppDb, input: {
+  projectId: string;
+  project: ProjectRecord;
+  track: SubmittalTrackType | undefined;
+  /** The portal_profiles row's type ("mock" when none). */
+  portalType: string;
+  isRealPortal: boolean;
+}) {
+  const { projectId, project, track, portalType, isRealPortal } = input;
+  // Platform-driven adapter reuse: a new AHJ on a KNOWN platform (e.g. City of Lafayette
+  // on Accela/Oregon ePermitting) reuses that platform's hand-coded adapter even if its
+  // portal_type isn't the canonical one — only the entry URL + login differ. The platform
+  // comes from the learned KB profile. Gated on a real portal profile so mock/dev is
+  // unaffected.
+  const learnedProfile = isRealPortal
+    ? findLearnedProfileForProject(db, { state: project.state, ahj: project.ahj, utility: project.utility })
+    : null;
+  const platform = String(learnedProfile?.portalPlatform ?? "").toLowerCase();
+  // PLATFORM FALLBACK FROM URL: portal_platform is empty on many learned/seeded KB rows
+  // (nothing backfills it), and an empty platform used to dead-end dispatch as NoAdapter
+  // even when the row's portal_url plainly identifies the platform (live: City of Salem
+  // carried the aca-oregon.accela.com URL with a blank platform). Sniff the URL only when
+  // the platform column is empty — an explicit value always wins.
+  const platformUrlHint = String((learnedProfile as { portalUrl?: string } | null)?.portalUrl ?? "").toLowerCase();
+  const isAccela = portalType === "accela_oregon"
+    || (isRealPortal && (platform.includes("accela") || (!platform && /accela\.com|citizenaccess/.test(platformUrlHint))));
+  const isPowerClerk = portalType === "powerclerk_pge"
+    || (isRealPortal && (platform.includes("powerclerk") || (!platform && /powerclerk\.com/.test(platformUrlHint))));
+  // Recipe replay is the FIRST-LINE (universal) path: if an admin has recorded a complete recipe
+  // for this AHJ (or its utility), replay it — even on a known platform (PowerClerk/Accela). The
+  // hand-coded platform adapters are the FALLBACK when no recipe exists. The lookup is track-
+  // scoped so a NEM stage never picks up an AHJ permit recipe (and vice-versa).
+  // Which permit discipline this track files under - the recipe key's second dimension.
+  const trackDiscipline = recipeDisciplineForTrack(track);
+  let recipe = track === "nem"
+    // NEM stages against the utility's recorded recipe.
+    ? findCompleteRecipeForProject(db, { scopeType: "utility", state: project.state, utility: project.utility })
+    // Permit tracks replay ONLY an AHJ-scoped recipe — never a utility (NEM) recipe, which is a
+    // different portal and form. No AHJ recipe → self-seed / hand-coded fallback, not a wrong-track replay.
+    : findCompleteRecipeForProject(db, { scopeType: "ahj", state: project.state, ahj: project.ahj, utility: project.utility, discipline: trackDiscipline });
+  // LEGACY-ROW DISCIPLINE CHECK. Recipes are keyed per AHJ per discipline, but rows
+  // recorded before that dimension existed carry discipline '' and are accepted as a
+  // fallback. If such a row was actually learned for the OTHER discipline, its steps pick
+  // the wrong jurisdiction row and record type — so drop it here rather than replaying it.
+  // Dropping (instead of refusing the stage) is the unlock: with no recipe in hand the
+  // dispatch falls through to the universal learner, which now seeds THIS discipline's own
+  // recipe. Refusing left the second discipline able to neither replay nor self-seed.
+  let droppedLegacyRecipeDiscipline: "electrical" | "structural" | null = null;
+  if (recipe && trackDiscipline && !recipe.discipline) {
+    try {
+      const learnedFor = recipeDisciplineFromSteps(getPortalRecipe(db, recipe.id).steps);
+      if (disciplineConflictsWithTrack(learnedFor, track)) {
+        droppedLegacyRecipeDiscipline = learnedFor;
+        addAuditLog(db, projectId, "system", "submit gate", "portal.discipline_recipe_skipped", {
+          track: track ?? "permit", recipeId: recipe.id, learnedFor,
+        });
+        recipe = null;
+      }
+    } catch { /* unreadable steps — leave the recipe in place for the gate below */ }
+  }
+
+  // ── WHOSE PORTAL? (rule 5, both ways, and the entity) ────────────────────────────────────
+  // Every URL this stage could launch, and the recipe it could replay, is judged by ONE
+  // predicate — hostFitsTrackAndEntity — against what the shared tables say about THIS
+  // project's own utility (NEM) or AHJ (permit). A permit track never gets a utility portal and
+  // a NEM track never gets a permit portal; a URL or recipe for entity X is never used for Y; and
+  // where a person verified the entity's portal, nothing stored or researched that disagrees is
+  // launched. Evidence: a ComEd project staged with the PGE recipe (fe12ed81); Tigard researched
+  // to Accela against its verified EnerGov row; a Tigard KB row carrying PGE's PowerClerk.
+  const hostEntityInput = {
+    scope: scopeForTrack(track),
+    state: project.state,
+    name: track === "nem" ? project.utility : project.ahj,
+  };
+  const hostEntity = portalEntityEvidence(db, hostEntityInput);
+  // A recipe is judged on the OTHER evidence — never on its own row, or a mis-keyed recipe would
+  // vouch for its own wrong host.
+  const judgeRecipe = (r: { id: string; portalUrl?: string; steps?: import("../../shared/src/types").RecipeStep[] }) =>
+    recipeHostFit(track, portalEntityEvidence(db, { ...hostEntityInput, excludeRecipeIds: [r.id] }), r);
+  /** Why candidate URLs were refused on this stage — the operator reads these if nothing fits. */
+  const refusedUrls: Array<{ url: string; source: string; code: string; reason: string }> = [];
+  const fitUrl = (url: string | null | undefined, source: PortalUrlSource): string => {
+    const value = String(url ?? "").trim();
+    if (!value) return "";
+    const fit = hostFitsTrackAndEntity(track, hostEntity, value, source);
+    if (fit.fits) return value;
+    if (!refusedUrls.some((r) => r.url === value)) refusedUrls.push({ url: value, source, code: fit.code, reason: fit.reason });
+    return "";
+  };
+  // The own recipe: its entry URL and every portal it navigates to. A TRACK conflict keeps the
+  // existing gate below (flag for re-record, stop); an entity/platform misfit stops the run
+  // without touching the recipe — it is valid for whichever entity it was learned on.
+  let recipeTrackConflict: (HostFit & { url: string }) | null = null;
+  let recipeEntityMisfit: (HostFit & { url: string }) | null = null;
+  if (recipe) {
+    const fit = judgeRecipe(recipe);
+    if (!fit.fits) {
+      if (fit.code === "track_conflict") recipeTrackConflict = fit;
+      else recipeEntityMisfit = fit;
+    }
+  }
+
+  // Resolve stored credentials for session-expired auto-login. Passed
+  // in-memory to the adapter; never logged. Falls back gracefully when
+  // no credential has been stored for this client+portal combination.
+  //
+  // Lookup chain (the operator may store a credential keyed by any of these):
+  //   1. exact portal_type (the canonical "accela_oregon"/"powerclerk_pge")
+  //   2. portal URL hostname — covers credentials saved via the per-project
+  //      "Manage logins" panel, whose portal_type is a channel-derived slug
+  //      (e.g. "oregon_epermitting_accela") that won't equal the canonical type.
+  //   3. the client's single credential when unambiguous.
+  // Resolve the portal's login URL for the hostname match: learned KB profile,
+  // recorded recipe, else the built-in applicationDocs sourceUrl.
+  //
+  // RESOLVED HERE, BEFORE THE FIELD GATE (pure DB reads — no browser, no research): the
+  // shared-portal reuse below needs the AHJ's OWN portal to match a recipe to, and the field
+  // gate needs to know whether a recipe will drive the run.
+  // The fallback URL MUST be scoped to the track so a NEM stage never matches the AHJ
+  // permit credential (and vice-versa). learnedProfile/recipe are already track-scoped
+  // above; the applicationDocs sourceUrl is AHJ-scoped, so only use it for permit tracks.
+  // For the NEM track, the fallback URL is the UTILITY's portal URL from the KB
+  // (e.g. Pacific Power → pacificpower.net), never the AHJ permit portal.
+  let utilityPortalUrl = "";
+  let ahjPortalUrl = "";
+  const projectState = (project.state || "").trim().toLowerCase();
+  if (track === "nem" && project.utility) {
+    // "OR the name IS a url": reference imports have twice filed the portal link in
+    // portal_name with portal_url empty (Tigard, Douglas County) — same fallback as the
+    // knowledgeBase mapper, kept in SQL because this exact-key read bypasses the mapper.
+    // EVERY row for the utility, best first — the utility-keyed row (no AHJ), this state, a
+    // verified row — and the first candidate that FITS wins. LIMIT 1 used to take whichever row
+    // SQLite returned first, which could be an AHJ row carrying that AHJ's permit portal.
+    const utilRows = db.query<{ portal_url?: string; portal_name?: string; state?: string; ahj?: string; verified_at?: string | null }>(
+      `SELECT portal_url, portal_name, state, ahj, verified_at FROM permit_utility_knowledge
+        WHERE utility = ? AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%')`,
+      [project.utility],
+    ).sort((a, b) => kbRowRank(a, projectState, true) - kbRowRank(b, projectState, true));
+    for (const row of utilRows) {
+      utilityPortalUrl = [String(row.portal_url ?? ""), String(row.portal_name ?? "")]
+        .map((u) => fitUrl(/^https?:\/\/\S+$/i.test(u.trim()) ? u.trim() : "", "kb")).find(Boolean) ?? "";
+      if (utilityPortalUrl) break;
+    }
+  } else if (track !== "nem" && project.ahj) {
+    // A human-verified AHJ in the KB may carry a portal URL even without a required-documents list,
+    // so a permit self-seed can launch from it (mirrors the NEM utility-URL lookup). This is a real
+    // portal ENTRY, unlike the applicationDocs sourceUrl (an AHJ info page), so it gates the gate.
+    // BOTH columns, chosen in JS — because the KB sweep (2026-09-21) found every shape at once:
+    // the reference import files the AHJ link in portal_NAME (71 rows), the learn path parks the
+    // UTILITY's PowerClerk on AHJ-side rows (23 rows), and Happy Valley had both inverted in one
+    // row (EnerGov in name, PowerClerk in url). The rule: for a PERMIT lookup, take the first
+    // candidate that is an http URL and FITS the track and this AHJ — url column first, then name.
+    // Every row for the AHJ name, best first (this state, verified): the same name in another
+    // state is another city (the KB has "City of Tigard" in OR, AL, AR and WA).
+    const ahjRows = db.query<{ portal_url?: string; portal_name?: string; state?: string; ahj?: string; verified_at?: string | null }>(
+      `SELECT portal_url, portal_name, state, ahj, verified_at FROM permit_utility_knowledge
+        WHERE ahj = ? AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%')`,
+      [project.ahj],
+    ).filter((r) => !projectState || !String(r.state ?? "").trim() || String(r.state).trim().toLowerCase() === projectState)
+      .sort((a, b) => kbRowRank(a, projectState, false) - kbRowRank(b, projectState, false));
+    for (const row of ahjRows) {
+      ahjPortalUrl = [String(row.portal_url ?? ""), String(row.portal_name ?? "")]
+        .map((u) => fitUrl(/^https?:\/\/\S+$/i.test(u.trim()) ? u.trim() : "", "kb")).find(Boolean) ?? "";
+      if (ahjPortalUrl) break;
+    }
+  }
+  // Fuzzy fallback: the exact-name lookups above miss imported KB rows keyed by
+  // legal names ("Portland General Electric") when the project says "PGE". Same
+  // resolver the auto-learn planner uses — state-filtered token/acronym matching.
+  if (track === "nem" ? !utilityPortalUrl : !ahjPortalUrl) {
+    const fuzzy = findKnowledgeForLearn(db, {
+      state: project.state,
+      ahj: track !== "nem" ? project.ahj : undefined,
+      utility: track === "nem" ? project.utility : undefined,
+    });
+    if (track === "nem") utilityPortalUrl = fitUrl(fuzzy.utility?.portalUrl, "kb");
+    else ahjPortalUrl = fitUrl(fuzzy.ahj?.portalUrl, "kb");
+  }
+  // THE PER-JOB LOOKUP'S PORTAL for this track's permit (cited, seeded) — judged like research
+  // (a verified portal for the AHJ outranks it; an information page never fits). The statewide
+  // portal is not taken here: that answer is the statewide fallback below, labelled as such.
+  if (track !== "nem" && !ahjPortalUrl) {
+    const looked = permitAnswerForTrack(project, track)?.portalUrl.value ?? "";
+    const statewideHost = portalHostOf(stateRulesFor(project.state).statewidePortal?.value ?? "");
+    if (looked && portalHostOf(looked) !== statewideHost) ahjPortalUrl = fitUrl(looked, "research");
+  }
+  // A draft/recording recipe (not yet promoted to "complete") still carries the entry URL the
+  // operator — or a prior auto-learn pass — pointed the recorder at. Recover it so the universal
+  // self-seed can launch the right portal even before any recipe is verified. Track-scoped exactly
+  // like the complete-recipe lookup above (NEM → utility key; permit → AHJ only, never utility).
+  const draftRecipeRaw = track === "nem"
+    ? findAnyRecipeForProject(db, { scopeType: "utility", state: project.state, utility: project.utility })
+    : findAnyRecipeForProject(db, { scopeType: "ahj", state: project.state, ahj: project.ahj, utility: project.utility, discipline: trackDiscipline });
+  // A draft whose portals do not fit (a Tigard draft that navigates to Accela) lends no URL.
+  const draftFit = draftRecipeRaw ? judgeRecipe(draftRecipeRaw) : null;
+  const draftRecipe = draftRecipeRaw && draftFit?.fits ? draftRecipeRaw : null;
+  if (draftRecipeRaw && draftFit && !draftFit.fits) {
+    refusedUrls.push({ url: draftFit.url || String(draftRecipeRaw.portalUrl ?? ""), source: "recipe", code: draftFit.code, reason: draftFit.reason });
+  }
+  // A PERMIT track must never launch a utility platform (PowerClerk etc.), a NEM track never a
+  // permit portal, and neither a portal that belongs to another entity. A learned profile /
+  // recipe / KB row matched via the project's UTILITY (or AHJ) can carry the other track's URL —
+  // every candidate goes through fitUrl so resolution falls through to a real source instead of
+  // stopping at the track/host-conflict guard below.
+  const permitSafeUrl = (url: string | null | undefined, source: PortalUrlSource = "kb"): string => fitUrl(url, source);
+  // Statewide-portal fallback: an Oregon AHJ with no portal URL of its own whose process
+  // profile files through e-permitting/Accela uses the shared Oregon ePermitting portal
+  // (one Accela instance for all subscribed jurisdictions — only the jurisdiction field
+  // differs), instead of failing with "no portal URL known".
+  //
+  // B2 (2026-09-25): the fallback no longer needs a seeded process profile that says
+  // "e-permitting". City of Jefferson had none, so its permit tracks resolved no portal of their
+  // own, never borrowed, and launched BCD's help page instead. permitProcess.statewidePortalFor
+  // answers from the per-job lookup first (this AHJ files on the statewide portal / on a
+  // DIFFERENT portal → no fallback), then from the cited state rule when nothing says otherwise.
+  // A person's verified portal for the AHJ still outranks it (fitUrl → hostFitsTrackAndEntity).
+  let statewidePortalUrl = "";
+  let statewideBasis = "";
+  if (track !== "nem" && !ahjPortalUrl && !draftRecipe) {
+    const process = findAhjProcessProfile(project);
+    const statewide = statewidePortalFor(project, track, { processProfileMethod: process?.submissionMethod ?? null });
+    if (statewide) {
+      statewidePortalUrl = permitSafeUrl(statewide.url, "statewide");
+      statewideBasis = describeCited("Statewide portal", statewide.basis);
+    }
+  }
+  // The AHJ's / utility's OWN portal, from its own evidence only — never from a borrowed recipe.
+  const ownPortalUrl =
+    permitSafeUrl(learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
+    (recipe && !recipeTrackConflict && !recipeEntityMisfit ? String(recipe.portalUrl ?? "") : "") ||
+    (draftRecipe ? String(draftRecipe.portalUrl ?? "") : "") ||
+    (track === "nem" ? utilityPortalUrl : (ahjPortalUrl || statewidePortalUrl)) ||
+    "";
+
+  // ── SHARED-PORTAL REUSE (portalRecipes.findBorrowableRecipe; operator ruling 2026-09-24) ──
+  // No complete recipe of its own → a complete recipe learned for ANOTHER entity on the SAME
+  // portal, SAME record type and discipline may replay here. Recorded on the run, shown to the
+  // operator, never demoted or healed by this project's run, and the run stops at review.
+  let borrowed: BorrowedRecipeChoice | null = null;
+  let borrowDecisionReason = "";
+  if (!recipe && !recipeEntityMisfit && !recipeTrackConflict && track) {
+    try {
+      const decision = findBorrowableRecipe(db, {
+        track, state: project.state, ahj: project.ahj, utility: project.utility,
+        targetPortalUrl: ownPortalUrl, targetSource: ownPortalUrl && ownPortalUrl === statewidePortalUrl ? "statewide" : "kb", entity: hostEntity,
+        targetRecordType: lookedUpRecordType(project, track)?.value ?? "",
+      });
+      borrowDecisionReason = decision.reason;
+      // B4: A BORROWED RECIPE MUST BIND TO THIS PROJECT, or it is not borrowed. Every agency /
+      // jurisdiction selection binds from the target's per-job answer (never the donor's literal);
+      // a selection that cannot be bound refuses the borrow with the named reason.
+      if (decision.choice) {
+        const probe = bindRecipeForReplay({
+          steps: decision.choice.recipe.steps ?? [], portalUrl: decision.choice.recipe.portalUrl,
+          project: project, fieldValues: {}, track,
+          borrowed: { learnedFor: decision.choice.learnedFor, discipline: decision.choice.discipline },
+          agency: issuingAgencyFor(project, track),
+        });
+        if (probe.refusal) {
+          addAuditLog(db, projectId, "system", "submit gate", "portal.recipe_borrow_refused", {
+            track, recipeId: decision.choice.recipe.id, learnedFor: decision.choice.learnedFor, reason: probe.refusal,
+          });
+          borrowDecisionReason = `borrow refused: ${probe.refusal}`;
+          decision.choice = null;
+        }
+      }
+      if (decision.choice) {
+        borrowed = decision.choice;
+        recipe = decision.choice.recipe;
+        addAuditLog(db, projectId, "system", "submit gate", "portal.recipe_borrowed", {
+          track, recipeId: borrowed.recipe.id, recipeVersion: borrowed.recipe.version,
+          learnedFor: borrowed.learnedFor, learnedForState: borrowed.learnedForState,
+          portalHost: borrowed.portalHost, recordType: borrowed.recordType, discipline: borrowed.discipline,
+        });
+      }
+    } catch (err) {
+      logger.warn("prepare-submission", `shared-portal recipe lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return {
+    learnedProfile, platform, isAccela, isPowerClerk, trackDiscipline, recipe, droppedLegacyRecipeDiscipline,
+    hostEntity, recipeTrackConflict, recipeEntityMisfit, refusedUrls, permitSafeUrl,
+    utilityPortalUrl, ahjPortalUrl, draftRecipe, statewidePortalUrl, statewideBasis, ownPortalUrl,
+    borrowed, borrowDecisionReason,
+  };
+}
+
 export async function prepareSubmission(
   db: AppDb, projectId: string, track?: SubmittalTrackType, autoSubmit?: boolean, allowFinalSubmit?: boolean,
   /** The approval THIS request minted (Approve & Submit). Omitted by the job handler: the running
@@ -7960,277 +8256,15 @@ export async function prepareSubmission(
   let portalLabel = isRealPortal
     ? (portalProfile?.portal_name || portalType)
     : "Mock portal";
-  // Platform-driven adapter reuse: a new AHJ on a KNOWN platform (e.g. City of Lafayette
-  // on Accela/Oregon ePermitting) reuses that platform's hand-coded adapter even if its
-  // portal_type isn't the canonical one — only the entry URL + login differ. The platform
-  // comes from the learned KB profile. Gated on a real portal profile so mock/dev is
-  // unaffected.
-  const learnedProfile = isRealPortal
-    ? findLearnedProfileForProject(db, { state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility })
-    : null;
-  const platform = String(learnedProfile?.portalPlatform ?? "").toLowerCase();
-  // PLATFORM FALLBACK FROM URL: portal_platform is empty on many learned/seeded KB rows
-  // (nothing backfills it), and an empty platform used to dead-end dispatch as NoAdapter
-  // even when the row's portal_url plainly identifies the platform (live: City of Salem
-  // carried the aca-oregon.accela.com URL with a blank platform). Sniff the URL only when
-  // the platform column is empty — an explicit value always wins.
-  const platformUrlHint = String((learnedProfile as { portalUrl?: string } | null)?.portalUrl ?? "").toLowerCase();
-  const isAccela = portalType === "accela_oregon"
-    || (isRealPortal && (platform.includes("accela") || (!platform && /accela\.com|citizenaccess/.test(platformUrlHint))));
-  const isPowerClerk = portalType === "powerclerk_pge"
-    || (isRealPortal && (platform.includes("powerclerk") || (!platform && /powerclerk\.com/.test(platformUrlHint))));
-  // Recipe replay is the FIRST-LINE (universal) path: if an admin has recorded a complete recipe
-  // for this AHJ (or its utility), replay it — even on a known platform (PowerClerk/Accela). The
-  // hand-coded platform adapters are the FALLBACK when no recipe exists. The lookup is track-
-  // scoped so a NEM stage never picks up an AHJ permit recipe (and vice-versa).
-  // Which permit discipline this track files under - the recipe key's second dimension.
-  const trackDiscipline = recipeDisciplineForTrack(track);
-  let recipe = track === "nem"
-    // NEM stages against the utility's recorded recipe.
-    ? findCompleteRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
-    // Permit tracks replay ONLY an AHJ-scoped recipe — never a utility (NEM) recipe, which is a
-    // different portal and form. No AHJ recipe → self-seed / hand-coded fallback, not a wrong-track replay.
-    : findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility, discipline: trackDiscipline });
-  // LEGACY-ROW DISCIPLINE CHECK. Recipes are keyed per AHJ per discipline, but rows
-  // recorded before that dimension existed carry discipline '' and are accepted as a
-  // fallback. If such a row was actually learned for the OTHER discipline, its steps pick
-  // the wrong jurisdiction row and record type — so drop it here rather than replaying it.
-  // Dropping (instead of refusing the stage) is the unlock: with no recipe in hand the
-  // dispatch falls through to the universal learner, which now seeds THIS discipline's own
-  // recipe. Refusing left the second discipline able to neither replay nor self-seed.
-  let droppedLegacyRecipeDiscipline: "electrical" | "structural" | null = null;
-  if (recipe && trackDiscipline && !recipe.discipline) {
-    try {
-      const learnedFor = recipeDisciplineFromSteps(getPortalRecipe(db, recipe.id).steps);
-      if (disciplineConflictsWithTrack(learnedFor, track)) {
-        droppedLegacyRecipeDiscipline = learnedFor;
-        addAuditLog(db, projectId, "system", "submit gate", "portal.discipline_recipe_skipped", {
-          track: track ?? "permit", recipeId: recipe.id, learnedFor,
-        });
-        recipe = null;
-      }
-    } catch { /* unreadable steps — leave the recipe in place for the gate below */ }
-  }
-
-  // ── WHOSE PORTAL? (rule 5, both ways, and the entity) ────────────────────────────────────
-  // Every URL this stage could launch, and the recipe it could replay, is judged by ONE
-  // predicate — hostFitsTrackAndEntity — against what the shared tables say about THIS
-  // project's own utility (NEM) or AHJ (permit). A permit track never gets a utility portal and
-  // a NEM track never gets a permit portal; a URL or recipe for entity X is never used for Y; and
-  // where a person verified the entity's portal, nothing stored or researched that disagrees is
-  // launched. Evidence: a ComEd project staged with the PGE recipe (fe12ed81); Tigard researched
-  // to Accela against its verified EnerGov row; a Tigard KB row carrying PGE's PowerClerk.
-  const hostEntityInput = {
-    scope: scopeForTrack(track),
-    state: detail.project.state,
-    name: track === "nem" ? detail.project.utility : detail.project.ahj,
-  };
-  const hostEntity = portalEntityEvidence(db, hostEntityInput);
-  // A recipe is judged on the OTHER evidence — never on its own row, or a mis-keyed recipe would
-  // vouch for its own wrong host.
-  const judgeRecipe = (r: { id: string; portalUrl?: string; steps?: import("../../shared/src/types").RecipeStep[] }) =>
-    recipeHostFit(track, portalEntityEvidence(db, { ...hostEntityInput, excludeRecipeIds: [r.id] }), r);
-  /** Why candidate URLs were refused on this stage — the operator reads these if nothing fits. */
-  const refusedUrls: Array<{ url: string; source: string; code: string; reason: string }> = [];
-  const fitUrl = (url: string | null | undefined, source: PortalUrlSource): string => {
-    const value = String(url ?? "").trim();
-    if (!value) return "";
-    const fit = hostFitsTrackAndEntity(track, hostEntity, value, source);
-    if (fit.fits) return value;
-    if (!refusedUrls.some((r) => r.url === value)) refusedUrls.push({ url: value, source, code: fit.code, reason: fit.reason });
-    return "";
-  };
-  // The own recipe: its entry URL and every portal it navigates to. A TRACK conflict keeps the
-  // existing gate below (flag for re-record, stop); an entity/platform misfit stops the run
-  // without touching the recipe — it is valid for whichever entity it was learned on.
-  let recipeTrackConflict: (HostFit & { url: string }) | null = null;
-  let recipeEntityMisfit: (HostFit & { url: string }) | null = null;
-  if (recipe) {
-    const fit = judgeRecipe(recipe);
-    if (!fit.fits) {
-      if (fit.code === "track_conflict") recipeTrackConflict = fit;
-      else recipeEntityMisfit = fit;
-    }
-  }
-
-  // Resolve stored credentials for session-expired auto-login. Passed
-  // in-memory to the adapter; never logged. Falls back gracefully when
-  // no credential has been stored for this client+portal combination.
-  //
-  // Lookup chain (the operator may store a credential keyed by any of these):
-  //   1. exact portal_type (the canonical "accela_oregon"/"powerclerk_pge")
-  //   2. portal URL hostname — covers credentials saved via the per-project
-  //      "Manage logins" panel, whose portal_type is a channel-derived slug
-  //      (e.g. "oregon_epermitting_accela") that won't equal the canonical type.
-  //   3. the client's single credential when unambiguous.
-  // Resolve the portal's login URL for the hostname match: learned KB profile,
-  // recorded recipe, else the built-in applicationDocs sourceUrl.
-  //
-  // RESOLVED HERE, BEFORE THE FIELD GATE (pure DB reads — no browser, no research): the
-  // shared-portal reuse below needs the AHJ's OWN portal to match a recipe to, and the field
-  // gate needs to know whether a recipe will drive the run.
   const clientId = detail.project.clientId ?? "";
-  // The fallback URL MUST be scoped to the track so a NEM stage never matches the AHJ
-  // permit credential (and vice-versa). learnedProfile/recipe are already track-scoped
-  // above; the applicationDocs sourceUrl is AHJ-scoped, so only use it for permit tracks.
-  // For the NEM track, the fallback URL is the UTILITY's portal URL from the KB
-  // (e.g. Pacific Power → pacificpower.net), never the AHJ permit portal.
-  let utilityPortalUrl = "";
-  let ahjPortalUrl = "";
-  const projectState = (detail.project.state || "").trim().toLowerCase();
-  if (track === "nem" && detail.project.utility) {
-    // "OR the name IS a url": reference imports have twice filed the portal link in
-    // portal_name with portal_url empty (Tigard, Douglas County) — same fallback as the
-    // knowledgeBase mapper, kept in SQL because this exact-key read bypasses the mapper.
-    // EVERY row for the utility, best first — the utility-keyed row (no AHJ), this state, a
-    // verified row — and the first candidate that FITS wins. LIMIT 1 used to take whichever row
-    // SQLite returned first, which could be an AHJ row carrying that AHJ's permit portal.
-    const utilRows = db.query<{ portal_url?: string; portal_name?: string; state?: string; ahj?: string; verified_at?: string | null }>(
-      `SELECT portal_url, portal_name, state, ahj, verified_at FROM permit_utility_knowledge
-        WHERE utility = ? AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%')`,
-      [detail.project.utility],
-    ).sort((a, b) => kbRowRank(a, projectState, true) - kbRowRank(b, projectState, true));
-    for (const row of utilRows) {
-      utilityPortalUrl = [String(row.portal_url ?? ""), String(row.portal_name ?? "")]
-        .map((u) => fitUrl(/^https?:\/\/\S+$/i.test(u.trim()) ? u.trim() : "", "kb")).find(Boolean) ?? "";
-      if (utilityPortalUrl) break;
-    }
-  } else if (track !== "nem" && detail.project.ahj) {
-    // A human-verified AHJ in the KB may carry a portal URL even without a required-documents list,
-    // so a permit self-seed can launch from it (mirrors the NEM utility-URL lookup). This is a real
-    // portal ENTRY, unlike the applicationDocs sourceUrl (an AHJ info page), so it gates the gate.
-    // BOTH columns, chosen in JS — because the KB sweep (2026-09-21) found every shape at once:
-    // the reference import files the AHJ link in portal_NAME (71 rows), the learn path parks the
-    // UTILITY's PowerClerk on AHJ-side rows (23 rows), and Happy Valley had both inverted in one
-    // row (EnerGov in name, PowerClerk in url). The rule: for a PERMIT lookup, take the first
-    // candidate that is an http URL and FITS the track and this AHJ — url column first, then name.
-    // Every row for the AHJ name, best first (this state, verified): the same name in another
-    // state is another city (the KB has "City of Tigard" in OR, AL, AR and WA).
-    const ahjRows = db.query<{ portal_url?: string; portal_name?: string; state?: string; ahj?: string; verified_at?: string | null }>(
-      `SELECT portal_url, portal_name, state, ahj, verified_at FROM permit_utility_knowledge
-        WHERE ahj = ? AND ((portal_url IS NOT NULL AND portal_url != '') OR portal_name LIKE 'http%')`,
-      [detail.project.ahj],
-    ).filter((r) => !projectState || !String(r.state ?? "").trim() || String(r.state).trim().toLowerCase() === projectState)
-      .sort((a, b) => kbRowRank(a, projectState, false) - kbRowRank(b, projectState, false));
-    for (const row of ahjRows) {
-      ahjPortalUrl = [String(row.portal_url ?? ""), String(row.portal_name ?? "")]
-        .map((u) => fitUrl(/^https?:\/\/\S+$/i.test(u.trim()) ? u.trim() : "", "kb")).find(Boolean) ?? "";
-      if (ahjPortalUrl) break;
-    }
-  }
-  // Fuzzy fallback: the exact-name lookups above miss imported KB rows keyed by
-  // legal names ("Portland General Electric") when the project says "PGE". Same
-  // resolver the auto-learn planner uses — state-filtered token/acronym matching.
-  if (track === "nem" ? !utilityPortalUrl : !ahjPortalUrl) {
-    const fuzzy = findKnowledgeForLearn(db, {
-      state: detail.project.state,
-      ahj: track !== "nem" ? detail.project.ahj : undefined,
-      utility: track === "nem" ? detail.project.utility : undefined,
-    });
-    if (track === "nem") utilityPortalUrl = fitUrl(fuzzy.utility?.portalUrl, "kb");
-    else ahjPortalUrl = fitUrl(fuzzy.ahj?.portalUrl, "kb");
-  }
-  // THE PER-JOB LOOKUP'S PORTAL for this track's permit (cited, seeded) — judged like research
-  // (a verified portal for the AHJ outranks it; an information page never fits). The statewide
-  // portal is not taken here: that answer is the statewide fallback below, labelled as such.
-  if (track !== "nem" && !ahjPortalUrl) {
-    const looked = permitAnswerForTrack(detail.project, track)?.portalUrl.value ?? "";
-    const statewideHost = portalHostOf(stateRulesFor(detail.project.state).statewidePortal?.value ?? "");
-    if (looked && portalHostOf(looked) !== statewideHost) ahjPortalUrl = fitUrl(looked, "research");
-  }
-  // A draft/recording recipe (not yet promoted to "complete") still carries the entry URL the
-  // operator — or a prior auto-learn pass — pointed the recorder at. Recover it so the universal
-  // self-seed can launch the right portal even before any recipe is verified. Track-scoped exactly
-  // like the complete-recipe lookup above (NEM → utility key; permit → AHJ only, never utility).
-  const draftRecipeRaw = track === "nem"
-    ? findAnyRecipeForProject(db, { scopeType: "utility", state: detail.project.state, utility: detail.project.utility })
-    : findAnyRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility, discipline: trackDiscipline });
-  // A draft whose portals do not fit (a Tigard draft that navigates to Accela) lends no URL.
-  const draftFit = draftRecipeRaw ? judgeRecipe(draftRecipeRaw) : null;
-  const draftRecipe = draftRecipeRaw && draftFit?.fits ? draftRecipeRaw : null;
-  if (draftRecipeRaw && draftFit && !draftFit.fits) {
-    refusedUrls.push({ url: draftFit.url || String(draftRecipeRaw.portalUrl ?? ""), source: "recipe", code: draftFit.code, reason: draftFit.reason });
-  }
-  // A PERMIT track must never launch a utility platform (PowerClerk etc.), a NEM track never a
-  // permit portal, and neither a portal that belongs to another entity. A learned profile /
-  // recipe / KB row matched via the project's UTILITY (or AHJ) can carry the other track's URL —
-  // every candidate goes through fitUrl so resolution falls through to a real source instead of
-  // stopping at the track/host-conflict guard below.
-  const permitSafeUrl = (url: string | null | undefined, source: PortalUrlSource = "kb"): string => fitUrl(url, source);
-  // Statewide-portal fallback: an Oregon AHJ with no portal URL of its own whose process
-  // profile files through e-permitting/Accela uses the shared Oregon ePermitting portal
-  // (one Accela instance for all subscribed jurisdictions — only the jurisdiction field
-  // differs), instead of failing with "no portal URL known".
-  //
-  // B2 (2026-09-25): the fallback no longer needs a seeded process profile that says
-  // "e-permitting". City of Jefferson had none, so its permit tracks resolved no portal of their
-  // own, never borrowed, and launched BCD's help page instead. permitProcess.statewidePortalFor
-  // answers from the per-job lookup first (this AHJ files on the statewide portal / on a
-  // DIFFERENT portal → no fallback), then from the cited state rule when nothing says otherwise.
-  // A person's verified portal for the AHJ still outranks it (fitUrl → hostFitsTrackAndEntity).
-  let statewidePortalUrl = "";
-  let statewideBasis = "";
-  if (track !== "nem" && !ahjPortalUrl && !draftRecipe) {
-    const process = findAhjProcessProfile(detail.project);
-    const statewide = statewidePortalFor(detail.project, track, { processProfileMethod: process?.submissionMethod ?? null });
-    if (statewide) {
-      statewidePortalUrl = permitSafeUrl(statewide.url, "statewide");
-      statewideBasis = describeCited("Statewide portal", statewide.basis);
-    }
-  }
-  // The AHJ's / utility's OWN portal, from its own evidence only — never from a borrowed recipe.
-  const ownPortalUrl =
-    permitSafeUrl(learnedProfile && (learnedProfile as { portalUrl?: string }).portalUrl) ||
-    (recipe && !recipeTrackConflict && !recipeEntityMisfit ? String(recipe.portalUrl ?? "") : "") ||
-    (draftRecipe ? String(draftRecipe.portalUrl ?? "") : "") ||
-    (track === "nem" ? utilityPortalUrl : (ahjPortalUrl || statewidePortalUrl)) ||
-    "";
-
-  // ── SHARED-PORTAL REUSE (portalRecipes.findBorrowableRecipe; operator ruling 2026-09-24) ──
-  // No complete recipe of its own → a complete recipe learned for ANOTHER entity on the SAME
-  // portal, SAME record type and discipline may replay here. Recorded on the run, shown to the
-  // operator, never demoted or healed by this project's run, and the run stops at review.
-  let borrowed: BorrowedRecipeChoice | null = null;
-  let borrowDecisionReason = "";
-  if (!recipe && !recipeEntityMisfit && !recipeTrackConflict && track) {
-    try {
-      const decision = findBorrowableRecipe(db, {
-        track, state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility,
-        targetPortalUrl: ownPortalUrl, targetSource: ownPortalUrl && ownPortalUrl === statewidePortalUrl ? "statewide" : "kb", entity: hostEntity,
-        targetRecordType: lookedUpRecordType(detail.project, track)?.value ?? "",
-      });
-      borrowDecisionReason = decision.reason;
-      // B4: A BORROWED RECIPE MUST BIND TO THIS PROJECT, or it is not borrowed. Every agency /
-      // jurisdiction selection binds from the target's per-job answer (never the donor's literal);
-      // a selection that cannot be bound refuses the borrow with the named reason.
-      if (decision.choice) {
-        const probe = bindRecipeForReplay({
-          steps: decision.choice.recipe.steps ?? [], portalUrl: decision.choice.recipe.portalUrl,
-          project: detail.project, fieldValues: {}, track,
-          borrowed: { learnedFor: decision.choice.learnedFor, discipline: decision.choice.discipline },
-          agency: issuingAgencyFor(detail.project, track),
-        });
-        if (probe.refusal) {
-          addAuditLog(db, projectId, "system", "submit gate", "portal.recipe_borrow_refused", {
-            track, recipeId: decision.choice.recipe.id, learnedFor: decision.choice.learnedFor, reason: probe.refusal,
-          });
-          borrowDecisionReason = `borrow refused: ${probe.refusal}`;
-          decision.choice = null;
-        }
-      }
-      if (decision.choice) {
-        borrowed = decision.choice;
-        recipe = decision.choice.recipe;
-        addAuditLog(db, projectId, "system", "submit gate", "portal.recipe_borrowed", {
-          track, recipeId: borrowed.recipe.id, recipeVersion: borrowed.recipe.version,
-          learnedFor: borrowed.learnedFor, learnedForState: borrowed.learnedForState,
-          portalHost: borrowed.portalHost, recordType: borrowed.recordType, discipline: borrowed.discipline,
-        });
-      }
-    } catch (err) {
-      logger.warn("prepare-submission", `shared-portal recipe lookup failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
+  // WHICH PORTAL, WHICH RECIPE (resolveStagePortal): learned profile -> own recipe -> entity evidence
+  // and the one host predicate -> KB / lookup / draft / statewide candidates -> the own portal -> borrow.
+  const stagePortal = resolveStagePortal(db, { projectId, project: detail.project, track, portalType, isRealPortal });
+  const {
+    learnedProfile, platform, isAccela, isPowerClerk, trackDiscipline, recipe, droppedLegacyRecipeDiscipline,
+    hostEntity, recipeTrackConflict, recipeEntityMisfit, refusedUrls, permitSafeUrl,
+    utilityPortalUrl, ahjPortalUrl, draftRecipe, statewidePortalUrl, ownPortalUrl, borrowed, borrowDecisionReason,
+  } = stagePortal;
 
   // Precedence: recipe (universal, first-line) → hand-coded platform adapter → mock.
   const adapterActorName = selectAdapterActor(Boolean(recipe), isAccela, isPowerClerk);
