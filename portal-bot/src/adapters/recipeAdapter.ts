@@ -10,6 +10,7 @@ import { feeBracketCoverage, feeBracketCoverageMessage, decideFeeTier, FEE_TIER_
 /** The pause's reason when a recorded kVA tier step finds no tier box on its page (close MF2). */
 const FEE_TIER_NO_BOX_REASON = "the recorded kVA tier box was not found on this page and no kVA-labelled box could be read";
 import { collectPortalErrorBanner } from "../safeAction";
+import { SERVICE_FEEDER_200A_FIELD, SERVICE_FEEDER_400A_FIELD, isServiceFeeder200Label, isServiceFeeder400Label } from "../../../shared/src/serviceLineLabels";
 import { structureTypeMeaning } from "../../../backend/src/permitProcess";
 
 // A RECORDED ANSWER THAT DESCRIBES A PROJECT OR A PERSON BELONGS TO THAT PROJECT.
@@ -434,6 +435,8 @@ export class RecipeAdapter extends BasePortalAdapter {
   /** The tier box this run ticked, per page identity (a second recorded tier step on the same page
    *  re-decides to the same box and types nothing twice). */
   private feeTierFilled = new Map<string, string>();
+  /** Pages whose service-line boxes were already read (fillUnrecordedServiceBoxes). */
+  private serviceBoxesRead = new Set<string>();
   /** Wall-clock marks of the phases before the first recorded step (open, goto, login) — the part
    *  of a run the trace never covered (live run 99baa5d0 spent ~3 min there with no evidence). */
   private phaseTimings: Array<{ phase: string; ms: number; note?: string }> = [];
@@ -5969,6 +5972,8 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  step for an already-ticked page); "normal" = this page prints no kVA box at all — the recorded
    *  step takes its ordinary resolve path, UNDER A PROVISIONAL STOP (see below). */
   private async fillFeeTierFromPage(step: RecipeStep): Promise<boolean | "normal"> {
+    // The service-line rows print on the same fee-items page as the kVA tier (F1b).
+    await this.fillUnrecordedServiceBoxes().catch(() => null);
     const boxes = await this.readTierBoxes();
     if (!boxes.length) {
       // A RECORDED TIER STEP THAT FINDS NO kVA-LABELLED BOX (close MF2). The recipe KNOWS this page
@@ -6051,6 +6056,73 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
     }
     return true;
+  }
+
+  /** F1b — A SERVICE-LINE QUANTITY BOX THE RECIPE NEVER RECORDED is read off the page.
+   *
+   *  Live City of Corvallis electrical learn, 2026-09-28: the fee-items page prints "Service 0-200
+   *  amps (qty)" beside the kVA row, the planner filled the kVA row and left the service box at the
+   *  page's own 0 — so the recipe saved from that run has NO step for it, and every replay would
+   *  leave it 0 on a job whose plan set upgrades the service. The kVA tier is already decided from
+   *  the page's own labels (F1); the service rows sit on the same page, and the label grammar is the
+   *  ONE the backend binds recorded boxes with (shared serviceLineLabels). So, once per page that
+   *  carries a recorded kVA tier step: every visible text box whose own label names a services
+   *  tier this recipe has NO bound step for is typed with THIS project's count
+   *  (fieldValues — batteryServiceFeeder.serviceLineQuantities). A count nobody knows ("") types
+   *  nothing and says so; a recorded, bound step answers for its own box. */
+  private async fillUnrecordedServiceBoxes(): Promise<void> {
+    if (!this.page || typeof this.page.evaluate !== "function") return;
+    const pageKey = (await this.pageIdentity().catch(() => "")) || "page";
+    if (this.serviceBoxesRead.has(pageKey)) return;
+    this.serviceBoxesRead.add(pageKey);
+    const recorded = new Set(this.recipe.steps.map((s) => String(s.field ?? "")).filter(Boolean));
+    const boxes = await this.page.evaluate(() => {
+      const out: Array<{ id: string; label: string }> = [];
+      const inputs = Array.from(document.querySelectorAll("input:not([type]), input[type='text'], input[type='number'], input[type='tel']")) as HTMLInputElement[];
+      for (const el of inputs) {
+        if (el.disabled || el.readOnly) continue;
+        const r = el.getBoundingClientRect();
+        const st = window.getComputedStyle(el);
+        if (!(r.width > 0 && r.height > 0) || st.display === "none" || st.visibility === "hidden") continue;
+        const id = el.id || "";
+        if (!id) continue;
+        let label = "";
+        const lab = document.querySelector(`label[for="${(window as unknown as { CSS: { escape: (s: string) => string } }).CSS.escape(id)}"]`) as HTMLElement | null;
+        if (lab) label = lab.innerText || lab.textContent || "";
+        if (!label.trim()) label = el.getAttribute("aria-label") || el.getAttribute("fieldname") || "";
+        if (!label.trim()) { const wrap = el.closest("label") as HTMLElement | null; if (wrap) label = wrap.innerText || ""; }
+        label = label.replace(/\s+/g, " ").trim();
+        if (!label || label.length > 160 || !/servic/i.test(label)) continue;
+        out.push({ id, label });
+      }
+      return out;
+    }).catch(() => [] as Array<{ id: string; label: string }>) as Array<{ id: string; label: string }>;
+    for (const box of Array.isArray(boxes) ? boxes : []) {
+      const key = isServiceFeeder200Label(box.label) ? SERVICE_FEEDER_200A_FIELD : isServiceFeeder400Label(box.label) ? SERVICE_FEEDER_400A_FIELD : "";
+      if (!key || recorded.has(key)) continue;
+      const label = box.label.replace(/:\s*$/, "").slice(0, 70);
+      if (!Object.prototype.hasOwnProperty.call(this.fieldValues, key)) continue; // an older backend: no count at all
+      const value = String(this.fieldValues[key] ?? "").trim();
+      if (!value) {
+        this.driftWarnings.push(`"${label}": this project's service-line count is not known (no parsed service scope or battery answer) — left as the page shows it; confirm before submitting`);
+        continue;
+      }
+      const loc = this.page.locator(`[id="${box.id}"]`).first();
+      const current = String((await loc.inputValue().catch(() => "")) ?? "").trim();
+      if (current === value) {
+        if (!this.fieldsVerified.includes(label)) this.fieldsVerified.push(label);
+        continue;
+      }
+      const typed = await loc.fill(value, { timeout: FILL_TIMEOUT_MS }).then(() => true).catch(() => false);
+      if (typed) await this.commitAndSettle(loc);
+      const held = String((await loc.inputValue().catch(() => "")) ?? "").trim();
+      if (held === value) {
+        if (!this.fieldsVerified.includes(label)) this.fieldsVerified.push(label);
+        this.agingNotes.push(`service line read from the page: "${label}" = ${value} (the recipe recorded no step for this box; the count is this project's)`);
+      } else {
+        this.driftWarnings.push(`"${label}": typed this project's service-line count ${value} and the box did not keep it (it reads "${held}") — set it by hand before submitting`);
+      }
+    }
   }
 
   /** F2 — THE PORTAL'S OWN WORDS: the generic validation reader plus the WebForms/Accela banner

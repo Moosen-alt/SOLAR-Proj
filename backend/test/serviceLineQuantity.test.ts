@@ -100,6 +100,8 @@ async function main(): Promise<void> {
     "Number of services 0-200 amps",
     // the Oregon wording is untouched
     "Services or feeders: 200 amps or less",
+    // Oregon ePermitting's Marion County services page (fieldname attributes, live capture 2026-09-27)
+    "Services 200 amps or less",
   ];
   for (const l of MUST_PASS_200) check(`MUST PASS <=200A: ${JSON.stringify(l)}`, feeBracketFieldForLabel(l) === SERVICE_FEEDER_200A_FIELD, feeBracketFieldForLabel(l));
   const MUST_PASS_400 = [
@@ -108,6 +110,7 @@ async function main(): Promise<void> {
     "Services or feeders: 201 amps to 400 amps",
     "Services or feeders 201 to 400 amps",
     "Service/Feeder 201-400A",
+    "Services 201 to 400 amps", // Marion County's row
   ];
   for (const l of MUST_PASS_400) check(`MUST PASS 201-400A (its OWN key): ${JSON.stringify(l)}`, feeBracketFieldForLabel(l) === SERVICE_FEEDER_400A_FIELD, feeBracketFieldForLabel(l));
   const MUST_EXCLUDE_BOTH = [
@@ -125,6 +128,12 @@ async function main(): Promise<void> {
     "Service 0-200 amps / 201-400 amps / 401-600 amps (qty)",
     "Services or feeders: 200 amps or less / 201-400 amps / 401-600 amps",
     "Service or feeder 400 amps or more",
+    // Marion County's other rows on the same page
+    "Services 401 to 599 amps", "Services 600 amps", "Services 601 amps to 1,000 amps", "Services over 1,000 amps or volts",
+    "Temp services 200 amps or less", "Temp services 201 amps to 400 amps", "Service reconnect only",
+    "Each manufactured home or modular dwelling service", "Branch circuits with service or feeder each circuit",
+    // a plural that is still a site fact
+    "Services size 200 amps or less", "Services (existing) 200 amps or less",
   ];
   for (const l of MUST_EXCLUDE_BOTH) {
     const k = feeBracketFieldForLabel(l);
