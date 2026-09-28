@@ -284,7 +284,9 @@ export function iowaPvWorksheetValues(project: ProjectRecord): IowaPvWorksheet {
   const set = (id: string, v: string, why: string) => { values[id] = v; basis[id] = why; };
   // One- and two-family dwelling (page 3 location, and 690.7's 600 V ceiling for such dwellings).
   const units = firstNumber(s.dwellingUnits);
-  const cat = String(s.constructionCategory ?? "").trim();
+  // The parsed category, or the occupancy group when the category is blank ("R-3" is the one- and
+  // two-family group — exactly this row).
+  const cat = String(s.constructionCategory || s.occupancyType || "").trim();
   // The structure answer through the ONE structure predicate (structureMeaningOf, B5) — the
   // operator's portal-question answer lands in structureDescription, which this never read.
   const structure = structureMeaningOf(s);
