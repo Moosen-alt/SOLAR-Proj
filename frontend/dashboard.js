@@ -6136,6 +6136,7 @@ function documentVerdictHtml(pkg, formMissingFields = [], agencyComputedFields =
   const inventoryResolved = pkg.missingDocumentsStatus === "resolved";
   const missingDocs = inventoryResolved ? (pkg.missingDocuments || []) : [];
   const filledAtStaging = inventoryResolved ? (pkg.filledAtStagingDocuments || []) : [];
+  const acquiredAtStaging = inventoryResolved ? (pkg.acquiredAtStagingDocuments || []) : [];
 
   // What the operator can do about a blank, said truthfully: nothing waits on it (no gate reads these
   // fields), and QC / Human Review cannot fill a form field — the project record or the form can.
@@ -6215,7 +6216,7 @@ function documentVerdictHtml(pkg, formMissingFields = [], agencyComputedFields =
     docRow = `<div class="kx-docstate is-clear">
         <span class="kx-docstate-icon" aria-hidden="true">✓</span>
         <div class="kx-docstate-body">
-          <span class="kx-docstate-title">Every required document is on file${filledAtStaging.length ? " or filled at staging" : ""}</span>
+          <span class="kx-docstate-title">Every required document is on file${filledAtStaging.length || acquiredAtStaging.length ? " or made by Stage itself" : ""}</span>
           <span class="kx-docstate-text">The required-document inventory ran against the real uploads and filled forms on disk and found nothing blocking missing${filledAtStaging.length ? " that you need to supply" : ""}. On file is not the same as attached: staging attaches what the portal's upload slots ask for, and the run does not yet report what went up — check the portal's attachment list before you submit.</span>
         </div>
       </div>`;
@@ -6238,7 +6239,7 @@ function documentVerdictHtml(pkg, formMissingFields = [], agencyComputedFields =
   // DOWNLOADED AT STAGING (gates-proper C1) — a required form nobody has fetched yet that Stage
   // downloads (the issuing agency's published form, a cited PDF) or researches, and fills, before it
   // counts. Not the operator's to attach; if the download fails, Stage says so and stops.
-  const acquiredAtStaging = inventoryResolved ? (pkg.acquiredAtStagingDocuments || []) : [];
+  // (acquiredAtStaging is read above, beside filledAtStaging.)
   const acquiredRow = acquiredAtStaging.length
     ? `<div class="kx-docstate is-clear">
         <span class="kx-docstate-icon" aria-hidden="true">⤓</span>
