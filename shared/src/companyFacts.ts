@@ -41,7 +41,7 @@ export interface CompanyFactStepLike {
   selector?: { label?: string; name?: string; text?: string } | null;
 }
 /** Is this closed-vocabulary step (a check / select) one company's answer about itself? A select
- *  whose chosen option carries a licence number ("HC Elec State ES 11774") under a licence label is
+ *  whose chosen option carries a licence number ("ZZ Elec State ES 40404") under a licence label is
  *  one company's licence. */
 export function isCompanyAttestationStep(step: CompanyFactStepLike | null | undefined): boolean {
   if (!step || step.isFinalSubmit) return false;

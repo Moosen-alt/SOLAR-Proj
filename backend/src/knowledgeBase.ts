@@ -145,6 +145,41 @@ export function looksLikeCredentialNote(segment: string): boolean {
   return CREDENTIAL_LABEL.test(s) || USER_PASS_PAIR.test(s) || HANDLE_AMP_SECRET.test(s) || HANDLE_SPACE_SECRET.test(s);
 }
 
+/** A shared row's notes as ANY reader is served them: every credential-shaped segment
+ *  (looksLikeCredentialNote — the write guard's own predicate) dropped. Byte-identical when clean. */
+export function servedKnowledgeNotes(notes: string): string {
+  const raw = String(notes ?? "");
+  if (!raw) return raw;
+  const segs = raw.split(" | ");
+  if (!segs.some((seg) => looksLikeCredentialNote(seg.trim()))) return raw;
+  return segs.filter((seg) => !looksLikeCredentialNote(seg.trim())).join(" | ");
+}
+
+/**
+ * THE ONE-TIME CLEANUP OF A CREDENTIAL ALREADY SITTING IN A SHARED NOTE (migration v42, forms skeptic
+ * K1 — rule 2). The write guard (noteSegments) only runs when a row is written, so a row seeded before
+ * it — one unverified row carried a plaintext "<handle> & <password>" pair — kept it in the shared
+ * knowledge base every org can read. Drops the credential-shaped segments from UNVERIFIED rows only:
+ * a human-verified row is never auto-rewritten (rule 3, isVerifiedKnowledge) — its notes are filtered
+ * when served (servedKnowledgeNotes) and it is counted for the operator. Never logs a segment or a
+ * row's text. Idempotent.
+ */
+export function purgeCredentialNoteSegments(db: AppDb): { cleaned: string[]; keptVerified: string[] } {
+  const cleaned: string[] = [];
+  const keptVerified: string[] = [];
+  const rows = db.query<{ id: string; notes: string | null; verified_at: string | null }>(
+    "SELECT id, notes, verified_at FROM permit_utility_knowledge WHERE notes IS NOT NULL AND notes <> ''");
+  for (const row of rows) {
+    const notes = String(row.notes ?? "");
+    const next = servedKnowledgeNotes(notes);
+    if (next === notes) continue;
+    if (isVerifiedKnowledge(row)) { keptVerified.push(row.id); continue; }
+    db.run("UPDATE permit_utility_knowledge SET notes = ? WHERE id = ?", [next, row.id]);
+    cleaned.push(row.id);
+  }
+  return { cleaned, keptVerified };
+}
+
 // ---------------------------------------------------------------------------------------------
 // WHAT A LEARN PLANNER MAY READ FROM A SHARED NOTE (leak sweep company-leak-5). The KB is shared
 // across every company on purpose — but its notes were written from ONE company's sheets, and they
@@ -480,7 +515,10 @@ function mapKnowledge(row: Row): PermitUtilityKnowledgeProfile {
     verifiedAt: text(row.verified_at).trim() || null,
     verifiedBy: text(row.verified_by),
     sources: parseJson<KnowledgeSource[]>(text(row.sources_json), []),
-    notes: text(row.notes),
+    // Served WITHOUT a credential-shaped segment (rule 2): a shared row written before the write guard
+    // existed — or a human-verified one the v42 cleanup may not touch (rule 3) — never shows a
+    // password to any reader (GET /api/knowledge-base is readable by every org).
+    notes: servedKnowledgeNotes(text(row.notes)),
     firstSeenAt: text(row.first_seen_at),
     lastLearnedAt: text(row.last_learned_at),
     updatedAt: text(row.updated_at),

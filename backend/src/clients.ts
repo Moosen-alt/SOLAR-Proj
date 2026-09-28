@@ -536,8 +536,8 @@ export function clientCompanyFactFields(db: AppDb, clientId: string | null | und
   out.insuranceExpiration = s(row.insurance_expiry).trim();
   out.bondCarrier = s(row.bond_carrier).trim();
   out.bondExpiration = s(row.bond_expiry).trim();
-  // The street LINE (before the first comma), split at its house number: "808 SE Chkalov Dr Ste 3-337"
-  // -> "808" + "SE Chkalov Dr Ste 3-337". No leading number: the whole line is the street name.
+  // The street LINE (before the first comma), split at its house number: "123 SE Example Ave Ste 4-567"
+  // -> "123" + "SE Example Ave Ste 4-567". No leading number: the whole line is the street name.
   const line = s(row.business_address).split(",")[0].replace(/\s+/g, " ").trim();
   const m = /^(\d+[A-Za-z]?(?:-\d+)?)\s+(.+)$/.exec(line);
   out.installerStreetNumber = m ? m[1] : "";

@@ -246,11 +246,19 @@ export function channelKindOf(res: { channel: string; portalUrl: string }): Trac
   // platform word further along made the whole track read "portal", so no in-person banner showed.
   // Tested before the platform words; a negated clause ("no in-person submittals") is not one.
   const inPerson = /\bin[\s-]?person\b|\bdrop(?:ped)?[\s-]?off\b|\bover[\s-]the[\s-]counter\b|\bat the counter\b|\bwalk[\s-]?in\b|\bpaper (?:application|submi\w*|drop)/i;
-  if (inPerson.test(t) && !/\b(?:no|not)\s+(?:accepted\s+)?(?:in[\s-]?person|walk[\s-]?in|drop[\s-]?off)\b/i.test(t)) return "in_person";
+  // READ CLAUSE BY CLAUSE (forms skeptic note 1): an in-person clause that REFUSES in-person ("In-person
+  // submittals are not accepted; apply online", "Paper applications are no longer accepted — apply
+  // online", "the permit counter is closed") is not an in-person channel at all; one that ALLOWS it
+  // beside another channel ("Apply online; in-person drop off also accepted") does not outrank the
+  // portal — it is only the fallback when no portal is named.
+  const clauses = t.split(/[;.\n|]+|\s[—–-]\s/).map((c) => c.trim()).filter(Boolean);
+  const refusesInPerson = (c: string): boolean => /\bnot\s+(?:be\s+)?accepted\b|\bno\s+longer\b|\bclosed\b|\b(?:no|not)\s+(?:accepted\s+)?(?:in[\s-]?person|walk[\s-]?in|drop[\s-]?off)\b/i.test(c);
+  const inPersonClauses = clauses.filter((c) => inPerson.test(c) && !refusesInPerson(c));
+  if (inPersonClauses.some((c) => !/\balso\s+accepted\b/i.test(c))) return "in_person";
   // "online" only as FILING online — Waltham's "permit fees payable online" is paying, not filing.
   if (!negated && (/https?:\/\//i.test(t) || /\b(?:portal|accela|epermitting|energov|powerclerk|devhub|iworq|citizenserve|etrakit|opengov|self[\s-]?service)\b/i.test(t)
     || /\bonline (?:application|submi\w*|filing|permit(?:ting)? (?:system|application))\b|\b(?:apply|submit(?:ted)?|file[ds]?) online\b/i.test(t))) return "portal";
-  if (/\bin[\s-]?person\b|\bdrop(?:ped)?[\s-]?off\b|\bover[\s-]the[\s-]counter\b|\bat the counter\b|\bwalk[\s-]?in\b|\bpaper (?:application|submi\w*|drop)/i.test(t)) return "in_person";
+  if (inPersonClauses.length) return "in_person";
   if (/\be-?mail(?:ed|ing)?\b|\b[\w.+-]+@[\w-]+\.[\w.-]+\b/i.test(t)) return "email";
   if (/\b(?:by|via|through the) (?:us )?(?:postal )?mail\b|\bmail(?:ed)? to\b|\bpostal\b/i.test(t)) return "mail";
   return "unknown";

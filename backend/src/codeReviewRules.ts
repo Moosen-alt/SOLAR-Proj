@@ -1,7 +1,7 @@
 import type { AhjProcessProfile, CodeReference, ProjectRecord, ReviewerFinding, ReviewerFindingEvidence, StructureTypeFact } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { FIRE_PATHWAY_PATTERNS, packageShowsSld } from "./projectEvidence";
-import { pathWordingScope, resolvePermitPath } from "./permitPath";
+import { pathWordingScope, resolvePermitPath, usStateCode } from "./permitPath";
 import { classifyRoofCovering, statedRoofDeadLoads, tileAttachmentFromText, tileAttachmentMethodOf, TILE_MIN_ROOF_DEAD_LOAD_PSF } from "./roofCovering";
 import {
   evaluateDesignCriteriaFindings,
@@ -189,12 +189,11 @@ function hasAny(text: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(text));
 }
 
-function isOregon(project: ProjectRecord, profile: AhjProcessProfile | null): boolean {
-  // A known non-Oregon state is never Oregon: the name fallback ("Salem", "Portland",
-  // "Washington County") is for a project with no state, not for Massachusetts or Maine.
-  const st = String(project.state || "").trim().toUpperCase();
-  if (st && st !== "OR") return false;
-  return st === "OR" || profile?.state.toUpperCase() === "OR" || /oregon|portland|clackamas|washington county|hillsboro|salem/i.test(project.ahj);
+// "IS THIS OREGON" IS THE PROJECT'S STATE, NOTHING ELSE (leak-fix-forms F4, forms skeptic note 3):
+// usStateCode(state) === "OR". A blank state is UNKNOWN — never Oregon guessed from a place name
+// ("Salem", "Portland", "Washington County" exist in many states) or from a profile row.
+function isOregon(project: ProjectRecord, _profile: AhjProcessProfile | null): boolean {
+  return usStateCode(project.state) === "OR";
 }
 
 // IS THIS ON A ROOF? Everything downstream hangs on the answer: fire access pathways, roof

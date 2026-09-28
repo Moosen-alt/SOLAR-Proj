@@ -480,7 +480,7 @@ await check("MUST-PASS: a human patch binds a company fact the client has on fil
 });
 const attestations: RecipeStep[] = [
   { action: "check", selector: { label: "I am a sole proprietor or partnership and have no employees working for me in any capacity" }, value: "true", note: "I am a sole proprietor or partnership and have no employees" },
-  { action: "select", selector: { label: "Licenses:" }, value: "HC Elec State ES 11774", note: "Licenses:" },
+  { action: "select", selector: { label: "Licenses:" }, value: "ZZ Elec State ES 40404", note: "Licenses:" },
   { action: "check", selector: { label: "A liability insurance policy" }, value: "true", note: "A liability insurance policy" },
   { action: "check", selector: { label: "Yes, I'm a contractor for this project" }, value: "true", note: "Yes, I'm a contractor for this project" },
 ];
@@ -512,21 +512,22 @@ await check("MUST-PASS: on ANOTHER company's job a stamped attestation is left f
 await check("MUST-EXCLUDE: on the SAME company's job the stamped attestations replay; an unstamped one never does", () => {
   const learned = [...PR.stampCompanyAttestations(attestations.slice(0, 2), alpha.id), attestations[2]];
   const onAlpha = replay(learned, {}, { project: { state: "MA", ahj: "City of Testford", clientId: alpha.id } });
-  assert.deepEqual(onAlpha.steps.map((s) => s.value), ["true", "HC Elec State ES 11774"]);
+  assert.deepEqual(onAlpha.steps.map((s) => s.value), ["true", "ZZ Elec State ES 40404"]);
   assert.equal(onAlpha.changes.filter((c) => c.kind === "stripped").length, 1, "the unstamped liability-insurance check must be left for a person");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 section("P7  a placeholder licence / docket is never filed; the ICC docket is Illinois's");
 const { looksLikePlaceholderIdentifier } = await import("../../shared/src/companyFacts");
-// licenseState IL: the named licence columns are the state licenseState names (licences-by-type,
-// clients.licenceFor) — so these are Illinois's numbers and the IL job below reads them.
-const gamma = createClient(db, { companyName: "Gamma Placeholder Test", docketNumber: "TEST-160001", ccbLicenseNumber: "XXX-0000", electricalLicenseNumber: "EL123456MA", licenseState: "IL" });
+// The named columns are OREGON's always (fixer-10 L5 — licenseState never moves them), so Illinois's
+// numbers are TYPED IL licences; the columns carry the same placeholder so QC names the column too.
+const gamma = createClient(db, { companyName: "Gamma Placeholder Test", docketNumber: "TEST-160001", ccbLicenseNumber: "XXX-0000", electricalLicenseNumber: "EL123456MA",
+  stateLicenses: [{ state: "IL", kind: "contractor", number: "XXX-0000" }, { state: "IL", kind: "electrical_contractor", number: "EL123456MA" }] });
 const delta = createClient(db, { companyName: "Delta Docket Test", docketNumber: "D-2024-0457", electricalLicenseNumber: "ZZ48213" });
 const il = { state: "IL", city: "Springfield", zip: "62701", street: "1 Capitol Ave", ahj: "City of Springfield", utility: "Ameren Illinois" };
 await check("MUST-PASS/EXCLUDE: the placeholder predicate", () => {
   for (const v of ["TEST-160001", "test_1", "Placeholder", "XXX-0000", "0000"]) assert.equal(looksLikePlaceholderIdentifier(v), true, v);
-  for (const v of ["EL123456MA", "ZZ48213", "D-2024-0457", "223344", "ES 11774", ""]) assert.equal(looksLikePlaceholderIdentifier(v), false, v);
+  for (const v of ["EL123456MA", "ZZ48213", "D-2024-0457", "223344", "ES 40404", ""]) assert.equal(looksLikePlaceholderIdentifier(v), false, v);
 });
 await check("MUST-PASS: a placeholder docket / licence resolves BLANK (key present) and QC names the field on the client record", () => {
   const p = project({ ...il, clientId: gamma.id });

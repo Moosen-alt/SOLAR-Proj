@@ -187,11 +187,12 @@ await check("Oregon unchanged: the named columns (CCB / BCD electrical / supervi
   const gate = clients.contractorLicenceForState(harborRow, "OR");
   assert.equal(gate.number, N.orCcb); assert.equal(gate.oregon, true); assert.equal(gate.label, "CCB");
 });
-await check("ONE licence-state answer (clients.licenceJobState): a spelled-out 'Oregon' is OR at every licence door; blank is OR; 'Massachusetts' is MA", () => {
+await check("ONE licence-state answer (clients.licenceJobState): a spelled-out 'Oregon' is OR at every licence door; blank is UNKNOWN; 'Massachusetts' is MA", () => {
   // project.state is stored as the parser/intake wrote it (normalize.ts does not code it), and a
   // spelled-out state read as "OREGON" named no licence on file: the gate blocked, the CCB went blank.
   assert.equal(clients.licenceJobState("Oregon"), "OR");
-  assert.equal(clients.licenceJobState(""), "OR");
+  // A BLANK state is unknown — no state's licences, never Oregon's by default (fixer-10).
+  assert.equal(clients.licenceJobState(""), "");
   assert.equal(clients.licenceJobState("Massachusetts"), "MA");
   assert.equal(L(harborRow, "Oregon", "contractor").number, N.orCcb);
   const gate = clients.contractorLicenceForState(harborRow, "Oregon");
@@ -215,10 +216,10 @@ await check("TWO COMPANIES: Keel's MA job never gets Harborline's numbers, thoug
   assert.match(L(null, "MA", "construction_supervisor").reason, /no client/);
   assert.equal(L({}, "OR", "contractor").number, "", "an empty row is no client (no default client, ever)");
 });
-await check("licenseState moves the named columns to that state (and off Oregon)", () => {
+await check("the named columns are OREGON's ALWAYS — licenseState never moves them (licences skeptic L5)", () => {
   const ia = { electrical_license_number: "EL111111MA", license_state: "IA" };
-  assert.equal(L(ia, "IA", { track: "electrical" }).number, "EL111111MA");
-  assert.equal(L(ia, "OR", "electrical_contractor").number, "");
+  assert.equal(L(ia, "IA", { track: "electrical" }).number, "", "a named column is never another state's licence");
+  assert.equal(L(ia, "OR", "electrical_contractor").number, "EL111111MA", "the named column stays Oregon's");
 });
 await check("two different numbers of ONE kind in one state are ambiguous (named), never the first silently", () => {
   const two = { state_licenses_json: JSON.stringify([{ state: "MA", kind: "EC", number: "EC-1" }, { state: "MA", kind: "EC", number: "EC-2" }]) };
@@ -259,7 +260,9 @@ await check("WA electrical job: ccbLicenseNumber = the WA electrical contractor 
   const v = fv(waJobA, "electrical");
   assert.equal(v.ccbLicenseNumber, N.waEc);
   assert.equal(v.electricalLicenseNumber, N.waEc);
-  assert.ok(!JSON.stringify(v).includes(N.waContractor));
+  // The WA contractor registration only in its OWN typed key (contractorLicenseNumber, fixer-10 L1) —
+  // never the generic key or an electrical key on an electrical filing.
+  for (const [k, val] of Object.entries(v)) if (val === N.waContractor) assert.ok(k === "contractorLicenseNumber", `${k} carries the WA contractor registration`);
   assert.equal(fv(waJobA, "building").ccbLicenseNumber, N.waContractor);
 });
 await check("Oregon job unchanged: the named columns on every track", () => {

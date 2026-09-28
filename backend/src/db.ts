@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database, { type Database as DB, type Statement } from "better-sqlite3";
 import { baselineRuleDefinitions } from "./baselineRules";
-import { knowledgeProfileKey, purgeForeignKnownTenantPortals, seedInitialKnowledgeBase } from "./knowledgeBase";
+import { knowledgeProfileKey, purgeCredentialNoteSegments, purgeForeignKnownTenantPortals, seedInitialKnowledgeBase } from "./knowledgeBase";
 import { attachLlmCallStore } from "./llmAccounting";
 
 /**
@@ -2391,6 +2391,21 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       const r = purgeForeignKnownTenantPortals(db);
       if (r.cleared.length || r.docsTrimmed.length || r.keptVerified.length) {
         console.log(`[db] v41: cleared ${r.cleared.length} foreign PowerClerk portal(s), trimmed ${r.docsTrimmed.length} row(s) of foreign utility documents, left ${r.keptVerified.length} verified row(s) alone`);
+      }
+    },
+  },
+  {
+    version: 42,
+    name: "purge_credential_note_segments",
+    up: (db) => {
+      // A PASSWORD NEVER SITS IN A SHARED NOTE (rule 2; forms skeptic K1, 2026-09-28). The write guard
+      // only runs on a write, so a row seeded before it kept a plaintext login pair every org could read
+      // on the knowledge-base page. Drops credential-shaped segments (knowledgeBase.looksLikeCredentialNote)
+      // from UNVERIFIED rows only — a human-verified row is never auto-rewritten (rule 3); its notes are
+      // filtered when served. Counts only in the log — never a segment. The password must still be rotated.
+      const r = purgeCredentialNoteSegments(db);
+      if (r.cleaned.length || r.keptVerified.length) {
+        console.log(`[db] v42: dropped credential-shaped note segment(s) from ${r.cleaned.length} unverified knowledge row(s); ${r.keptVerified.length} verified row(s) left for a person (filtered when served)`);
       }
     },
   },

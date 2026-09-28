@@ -2429,6 +2429,12 @@ export function filledApplicationForms(db: AppDb, projectId: string, permitPath?
   // Resolved here when the caller didn't pass one, so EVERY consumer is covered —
   // including ones that only have a projectId in hand (autoLearn's upload sweep).
   const resolvedPath = permitPath ?? permitPathForProjectId(db, projectId);
+  // The project as the registry matches it (ahj + state) — read once, for the registry guard below.
+  let projectMatch: { ahj: string; state: string } = { ahj: "", state: "" };
+  try {
+    const row = db.get<{ ahj?: string | null; state?: string | null }>("SELECT ahj, state FROM projects WHERE id = ?", [projectId]);
+    projectMatch = { ahj: String(row?.ahj ?? ""), state: String(row?.state ?? "") };
+  } catch { /* no row: no registry form matches */ }
   const out: FilledApplicationForm[] = [];
   for (const f of files) {
     const formId = f.replace(/\.pdf$/, "");
@@ -2454,6 +2460,11 @@ export function filledApplicationForms(db: AppDb, projectId: string, permitPath?
     } else {
       const def = ahjFormRegistry.find((d) => d.id === formId);
       if (!def) continue; // same rule for a registry id the code no longer carries
+      // A REGISTRY FORM COUNTS ONLY WHILE IT STILL MATCHES THE PROJECT (forms skeptic note 2): the
+      // same "is this form the project's" question matchingForms answers when the form is filled
+      // (state + AHJ, whole word). A Portland OR fill left on disk from before the registry carried a
+      // state, or from before the project's state/AHJ was corrected, never rides another job's packet.
+      if (!matchingForms(projectMatch).some((d) => d.id === def.id)) continue;
       formName = def.formName || "";
       const name = formName.toLowerCase();
       if (/electrical/.test(name)) docType = "electrical_application";
