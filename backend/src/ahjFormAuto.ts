@@ -1087,10 +1087,13 @@ export async function ensureAhjFormTemplate(
       }
     }
     // AND GENTLY, whoever proposed the URL: a download from a host this module just asked (the forms
-    // page read, a found document) waits the gap — the model's own link on the forms page's host too.
+    // page read, any earlier download) waits the gap — the model's own link on the forms page's host too.
+    // EVERY request is recorded on its host, whoever proposed it and whether or not it returned a PDF
+    // (skeptic F3: only a FOUND document was recorded, so a failed model link on the same host was
+    // followed at once by the next request — the gap was measured from the forms page read).
     await politeGap(url, fp);
     const bytes = await fetchPdf(url);
-    if (found) noteHostHit(url);
+    noteHostHit(url);
     if (!bytes) continue;
     const hash = sha256(bytes);
     if (seenHashes.has(hash)) continue;

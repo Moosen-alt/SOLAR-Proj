@@ -74,9 +74,12 @@ await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 const realFetch = globalThis.fetch;
 let requested: string[] = [];
+/** Every request with the REAL clock time it was made (the F3 real-clock gap check). */
+const requestedAt: Array<{ url: string; at: number }> = [];
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const u = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
   requested.push(u.toString());
+  requestedAt.push({ url: u.toString(), at: Date.now() });
   const r = await realFetch(`${base}/${u.host}${u.pathname}${u.search}`, { signal: init?.signal ?? undefined });
   // A fresh Response (url ""), so the fetchers resolve links against the URL they asked for.
   return new Response(await r.arrayBuffer(), { status: r.status, headers: { "content-type": r.headers.get("content-type") || "" } });
@@ -476,6 +479,32 @@ try {
     { formsPage: { reader: createPageReader({ minGapMs: 0 }), minGapMs: 10_000, sleep: async (ms: number) => { sleeps2.push(ms); } } });
   check("G1 the model's own link on the just-read host also waits ~10s", g2.status === "acquired" && sleeps2.length === 1 && sleeps2[0] > 9_000 && sleeps2[0] <= 10_000,
     JSON.stringify({ g2: g2.status, sleeps2 }));
+
+  // ═══ F3 GO GENTLY ON THE REAL CLOCK — every request is measured from the LAST one to that host ═══════
+  // G1/G2 inject a sleep that never advances Date.now(), so they cannot see WHICH request the gap was
+  // measured from. Here the clock is real (no injected sleep, a 300 ms gap): the forms page is read, the
+  // model's own link on that host is fetched and answers with HTML (no PDF — not "found"), then the
+  // application the page links is fetched. Each request must wait the gap after the one BEFORE it —
+  // not after the forms page read (skeptic F3: a failed model link was never recorded on its host).
+  const RC = "https://www.realclockton.ma.us";
+  const RC_MODEL = `${RC}/DocumentCenter/View/1200/Old-Form`;
+  const RC_APP = `${RC}/DocumentCenter/View/1201/Residential-Application`;
+  serveHtml(`${RC}/forms`, civicPage("Forms", [[RC_APP.slice(RC.length), "Residential Application"]]));
+  serveHtml(RC_MODEL, "<html><body><h1>Document Center</h1><p>This document has been removed.</p></body></html>");
+  servePdf(RC_APP, await acroPdf("REALCLOCKTON Residential Application"));
+  researchFor.set("Town of Realclockton", { formsPageUrl: `${RC}/forms`, candidateUrls: [RC_MODEL] });
+  const GAP = 300;
+  requestedAt.length = 0;
+  const f3 = await auto.ensureAhjFormTemplate(db, llm, mkJob("Town of Realclockton", "Realclockton"), "permit_application",
+    { formsPage: { reader: createPageReader({ minGapMs: 0 }), minGapMs: GAP } });
+  const rcAt = (u: string) => requestedAt.find((r) => r.url === u)?.at ?? NaN;
+  const rcOrder = requestedAt.filter((r) => r.url.startsWith(RC)).map((r) => r.url);
+  check("F3 (setup) the forms page, the model's link, then the application — in that order, and the application is stored",
+    f3.status === "acquired" && f3.sourceUrl === RC_APP && JSON.stringify(rcOrder) === JSON.stringify([`${RC}/forms`, RC_MODEL, RC_APP]), JSON.stringify({ f3: f3.status, rcOrder }));
+  check("F3 the model's link waited the gap after the forms page read (real clock)", rcAt(RC_MODEL) - rcAt(`${RC}/forms`) >= GAP - 10,
+    JSON.stringify({ gapMs: rcAt(RC_MODEL) - rcAt(`${RC}/forms`) }));
+  check("F3 MUST-PASS the application waited the gap after the model's FAILED link — the last request to that host", rcAt(RC_APP) - rcAt(RC_MODEL) >= GAP - 10,
+    JSON.stringify({ gapMs: rcAt(RC_APP) - rcAt(RC_MODEL) }));
 
   // ═══ T1 A SEARCH THAT COULD NOT RUN — reported as such, and the cooldown claim is released ═══════
   const T = "https://www.timeoutville.ma.us";
