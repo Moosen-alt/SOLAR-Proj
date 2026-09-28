@@ -142,7 +142,8 @@ import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE } from 
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { disciplineFor } from "./docDiscipline";
-import { resolvePermitPath } from "./permitPath";
+import { resolvePermitPath, usStateCode } from "./permitPath";
+import { bcd5952FailedRows } from "./bcdChecklistFacts";
 import { buildReviewerReport, renderReviewerReportHtml } from "./reviewerEngine";
 import type { PvWorksheetGateInput } from "./pvWorksheetGate";
 import { resolveEffectiveCodeContext, ensureCodeProfilesResearched, resolvePermitPathForProject, recordApprovedDesignObservation, isStructuralPermitTrack } from "./codeProfiles";
@@ -3533,6 +3534,9 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   // template must NOT block the submit.
   const gatePathResolution = resolvePermitPathForProject(db, project);
   const gatePermitPath = gatePathResolution.path;
+  // The rows of this job's BCD 5952 that answer No (bcdChecklistFacts — the list the fill note and
+  // the permit-path screen read). Oregon's checklist only; read for the permit-path check below.
+  const prescriptiveChecklistNo = usStateCode(project.state) === "OR" ? bcd5952FailedRows(project).map((f) => f.clause) : [];
   // Read the STORED kind, exactly as buildFilledFormsForProject's fill gate does. With the
   // name alone, a stamped-structural blank whose filename claims neither kind counted as
   // "allowed" on a PRESCRIPTIVE project — so its unverified mapping blocked the submit
@@ -3676,13 +3680,21 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         id: "permit-path",
         title: "Permit path confirmed (prescriptive vs engineered)",
         lane: "permit",
-        status: gatePermitPath === "unknown" ? "blocker" : "pass",
+        // A PRESCRIPTIVE path whose own BCD 5952 answers a row No (an operator's explicit choice — the
+        // screen itself routes such a job engineered, permitPath.ts) is said, never staged silently:
+        // the checklist says a No row may not be submitted on the prescriptive path (dry-run B4).
+        status: gatePermitPath === "unknown" ? "blocker" : gatePermitPath === "prescriptive" && prescriptiveChecklistNo.length ? "warning" : "pass",
         ownerRole: "Permit Coordinator",
         requirement: "The prescriptive and engineered (PE-stamped) permit applications are mutually exclusive and the AHJ accepts exactly one. The permit path must be confirmed before the AHJ permit can be staged.",
-        evidence: [gatePermitPath === "unknown" ? "Permit path not yet confirmed for this project." : `Permit path: ${gatePermitPath}.`],
+        evidence: [
+          gatePermitPath === "unknown" ? "Permit path not yet confirmed for this project." : `Permit path: ${gatePermitPath}.`,
+          ...(gatePermitPath === "prescriptive" ? prescriptiveChecklistNo.map((clause) => `BCD 5952 ${clause}`) : []),
+        ],
         nextAction: gatePermitPath === "unknown"
           ? "Set the permit path on Manual entry → Permit path (prescriptive vs engineered) before staging the AHJ permit."
-          : "Permit path is confirmed.",
+          : gatePermitPath === "prescriptive" && prescriptiveChecklistNo.length
+            ? "The prescriptive path was chosen, but this job's BCD 5952 answers a row No — and the checklist says a No row may not be submitted on the prescriptive path. Confirm with the AHJ, change the design (e.g. re-space the attachments), or choose the engineered path."
+            : "Permit path is confirmed.",
         source: "permit.path",
         // prepareSubmission asks the path only off the NEM lane.
         ...(gatePermitPath === "unknown" ? { holds: [{ label: "Permit path not confirmed", tracks: tracksHeld("permit") }] } : {}),

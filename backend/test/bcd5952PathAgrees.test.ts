@@ -90,6 +90,17 @@ try {
     assert.equal(r.path, "prescriptive");
     assert.equal(r.source, "operator");
   });
+
+  await check("(p7) MUST-PASS: prescriptive chosen over a 5952 No row is SAID on the gate (a warning naming the clause); a clean prescriptive job passes", () => {
+    const gateOf = (over: Record<string, string>) => repo.getSubmitGateReport(db, make(over).id).checks.find((c) => c.id === "permit-path")!;
+    const chosen = gateOf({ permitPathOverride: "prescriptive" });
+    assert.equal(chosen.status, "warning");
+    assert.match(chosen.evidence.join(" | "), /BCD 5952 attachment method compliance: No/);
+    assert.match(chosen.nextAction, /may not be submitted on the prescriptive path/);
+    const clean = gateOf({ attachmentSpacingIn: "24" });
+    assert.equal(clean.status, "pass", clean.evidence.join(" | "));
+    assert.doesNotMatch(clean.evidence.join(" | "), /BCD 5952/);
+  });
 } finally {
   db.close();
   fs.rmSync(tmp, { recursive: true, force: true });
