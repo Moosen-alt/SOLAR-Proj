@@ -556,6 +556,16 @@ console.log("\nB-2. ONE SIGNER, ONE NAME — only ONE declarant with ONE Print N
   await check("MUST-PASS (kills the same-row rule): a declarant and a Print Name side by side at one height never pair", async () => {
     assert.deepEqual(await conflictsOf(L4, { "Owner Declarant": "project.homeownerName", "Contractor Print Name": "computed.applicantSignerName" }), []);
   });
+  // R5 (forms-fill-3 skeptic) — TALL stacked boxes whose rows overlap by 2pt (22pt boxes, 20pt apart:
+  // 49 of 1952 stacked neighbour pairs in real AcroForms overlap like this). Still ONE signer's block.
+  const R5 = await blankOf(({ t, box }) => {
+    t("I,", 40, 626); box("Declarant Tall", 50, 620, 250, 22); t(", certify the information above is true.", 310, 626);
+    box("Print Name Tall", 50, 600, 250, 22); t("Print Name", 52, 590);
+  });
+  await check("MUST-EXCLUDE (R5): a declarant and the Print Name under it in 22pt boxes 20pt apart, bound to two people, is flagged", async () => {
+    const got = await conflictsOf(R5, { "Declarant Tall": "computed.applicantSignerName", "Print Name Tall": "project.homeownerName" });
+    assert.equal(got.length, 1, JSON.stringify(got));
+  });
   // L5 — a declarant and a Print Name stacked, overlapping, 56pt apart, separated ONLY by a long
   // signature caption.
   const L5 = await blankOf(({ t, box }) => {

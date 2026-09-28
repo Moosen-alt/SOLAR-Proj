@@ -225,8 +225,9 @@ export function signerNameConflicts(
   const candidates: Array<{ d: PlacedWidget; p: PlacedWidget; dist: number }> = [];
   for (const d of declarants) {
     const nearest = printNames
-      // BELOW and not on the same row: the Print Name's top is at or under the declarant's bottom.
-      .filter((p) => p.page === d.page && p.rect!.y + p.rect!.height <= d.rect!.y && d.rect!.y - p.rect!.y <= 120)
+      // BELOW and not on the same row: the Print Name's CENTRE is under the declarant's bottom — tall
+      // boxes on stacked rows may overlap by a point or two (22pt boxes 20pt apart; forms-fill-3 R5).
+      .filter((p) => p.page === d.page && p.rect!.y + p.rect!.height / 2 < d.rect!.y && d.rect!.y - p.rect!.y <= 120)
       .map((p) => ({ p, dist: d.rect!.y - p.rect!.y, dx: Math.abs(centerX(d.rect!) - centerX(p.rect!)) }))
       .sort((a, b) => (a.dist - b.dist) || (a.dx - b.dx))[0];
     if (!nearest) continue;
