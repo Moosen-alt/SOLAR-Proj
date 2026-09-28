@@ -1765,10 +1765,14 @@ export class RecipeAdapter extends BasePortalAdapter {
         const said = `${String(step.note ?? "")} ${String(step.selector?.name ?? step.selector?.text ?? "")}`;
         if (/^advance\b/i.test(String(step.note ?? ""))) this.uploadsSettledUpTo = this.uploadsPerformed.length;
         else if (/\b(save|upload|attach|commit)/i.test(said)) {
-          await this.timed("upload-commit", () => this.confirmUploadsListed(`"${String(step.note ?? "the save").slice(0, 50)}"`));
+          // Only a LEARNER-STAMPED attachment Save is a place the committed list is known to show the
+          // file; any other save-worded click (a form's "Save and continue", a portal with no list
+          // grid) gets a warning, never the final-submit refusal (skeptic eb36a8f N1).
+          const stampedRow = this.recordedAttachmentRow(stepIdx);
+          await this.timed("upload-commit", () => this.confirmUploadsListed(`"${String(step.note ?? "the save").slice(0, 50)}"`, !!stampedRow));
           // THE DOCUMENTS THE FILING OWES (docs plan D7): the same recorded row takes each owed
           // document the recording never uploaded — one row per document, then this same commit.
-          const row = !pastReview ? this.recordedAttachmentRow(stepIdx) : null;
+          const row = !pastReview ? stampedRow : null;
           if (row) await this.timed("owed-attachments", () => this.attachOwedDocuments(row, step));
         }
       }
@@ -2879,6 +2883,10 @@ export class RecipeAdapter extends BasePortalAdapter {
   private isBatteryDeclaration(step: RecipeStep): boolean {
     const label = `${step.note ?? ""} ${step.field ?? ""}`;
     if (!/\bbatter(y|ies)\b|\benergy storage\b|\bess\b|\bstorage\b/i.test(label)) return false;
+    // An UPLOAD is never the yes/no battery question — "upload battery_spec: Battery Specification
+    // Sheet" is a battery's document (skeptic eb36a8f MF1: it read as a declaration, so the no-battery
+    // skip never fired and a datasheet went up on a no-battery filing).
+    if (step.action === "upload") return false;
     if (step.action === "check" || step.action === "uncheck") return true;
     const SPEC = /capacity|kwh|kw\b|\bah\b|manufacturer|model|make|quantity|\bqty\b|\bsize\b|rating|voltage|efficiency|round-?trip|state of charge|serial|nameplate|inverter/i;
     return !SPEC.test(label);
@@ -4164,7 +4172,7 @@ export class RecipeAdapter extends BasePortalAdapter {
   private async attachOwedDocuments(row: { upload: RecipeStep; desc: RecipeStep | null; type: RecipeStep | null }, commitStep: RecipeStep): Promise<void> {
     if (!this.page || typeof this.page.evaluate !== "function") return;
     const recorded = new Set(this.recipe.steps.filter((s) => s.action === "upload" && s.docType).map((s) => String(s.docType)));
-    const owed = (this.options.owedAttachments ?? []).filter((o) => o && o.docType && !recorded.has(o.docType) && !this.owedAttempted.has(o.docType));
+    const owed = (this.options.owedAttachments ?? []).filter((o) => o && o.docType && o.docType !== "__unreadable__" && !recorded.has(o.docType) && !this.owedAttempted.has(o.docType));
     if (!owed.length) return;
     const at = await this.pageSafetyContext();
     if (at.reviewPage === true) return; // the review page is never written to (acfcd99 rule 4b)
@@ -4296,7 +4304,7 @@ export class RecipeAdapter extends BasePortalAdapter {
   private settleOwedLedger(): void {
     const recorded = new Set(this.recipe.steps.filter((s) => s.action === "upload" && s.docType).map((s) => String(s.docType)));
     for (const o of this.options.owedAttachments ?? []) {
-      if (!o?.docType || recorded.has(o.docType) || this.attachmentLedger.some((e) => e.docType === o.docType)) continue;
+      if (!o?.docType || o.docType === "__unreadable__" || recorded.has(o.docType) || this.attachmentLedger.some((e) => e.docType === o.docType)) continue;
       const label = String(o.label || o.docType).replace(/\s+/g, " ").trim();
       this.attachmentLedger.push({ docType: o.docType, label, status: "not attached", detail: "the run passed no attachment row that could carry it" });
       this.driftWarnings.push(`NOT ATTACHED: ${label} — the run passed no attachment row that could carry it. Attach it by hand on the portal's attachment step before submitting.`);
@@ -4389,7 +4397,7 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  attachment Save) that follows this page's uploads, wait (bounded) for the page to list every
    *  file the run handed it — the attachment table, not the widget. A file the page never lists is
    *  named: the portal did not take it, and a person attaches it before submitting. */
-  private async confirmUploadsListed(after: string, timeoutMs = RecipeAdapter.ATTACH_LIST_WAIT_MS): Promise<void> {
+  private async confirmUploadsListed(after: string, stampedRow: boolean, timeoutMs = RecipeAdapter.ATTACH_LIST_WAIT_MS): Promise<void> {
     const pending = this.uploadsPerformed.slice(this.uploadsSettledUpTo);
     this.uploadsSettledUpTo = this.uploadsPerformed.length;
     if (!pending.length || !this.page || typeof this.page.evaluate !== "function") return;
@@ -4411,12 +4419,16 @@ export class RecipeAdapter extends BasePortalAdapter {
     // WHAT THE LIST CONFIRMED, BY DOCUMENT (skeptic 13985c6 S1): an upload handed to the control is not a
     // committed one — the approved final submit refuses while a recorded upload is unconfirmed, and the
     // owed pass never starts on a row whose own Save was not confirmed.
+    // Only a learner-stamped attachment Save marks a document unconfirmed (N1); a list that does show
+    // it clears the mark either way.
     for (const u of pending) {
       if (!u.docType) continue;
-      if (missing.includes(u.fileName)) this.unconfirmedDocTypes.add(u.docType);
-      else this.unconfirmedDocTypes.delete(u.docType);
+      if (!missing.includes(u.fileName)) this.unconfirmedDocTypes.delete(u.docType);
+      else if (stampedRow) this.unconfirmedDocTypes.add(u.docType);
     }
-    if (missing.length) {
+    if (missing.length && !stampedRow) {
+      this.driftWarnings.push(`after ${after} the upload of ${missing.map((n) => `"${n}"`).join(", ")} was NOT CONFIRMED on a committed attachment list (waited ${secs}s; this save is not a recorded attachment row, so the list may simply look different) — look at the portal's attachments before submitting`);
+    } else if (missing.length) {
       this.driftWarnings.push(`after ${after} the portal's attachment list does not show ${missing.map((n) => `"${n}"`).join(", ")} (waited ${secs}s) — the upload may not have committed; attach it and click Save by hand before submitting`);
     } else if (Date.now() - t0 >= 1000) {
       this.agingNotes.push(`the portal listed ${names.map((n) => `"${n}"`).join(", ")} ${secs}s after ${after} — the upload committed`);
@@ -4684,16 +4696,19 @@ export class RecipeAdapter extends BasePortalAdapter {
     // does not upload must be ATTACHED or ALREADY LISTED on the portal before the approved click.
     {
       const recorded = new Set(steps.filter((s) => s.action === "upload" && s.docType).map((s) => String(s.docType)));
-      const missing = (this.options.owedAttachments ?? []).filter((o) => o?.docType && !recorded.has(o.docType)
+      const missing = (this.options.owedAttachments ?? []).filter((o) => o?.docType && o.docType !== "__unreadable__" && !recorded.has(o.docType)
         && !this.attachmentLedger.some((e) => e.docType === o.docType && e.status !== "not attached"));
       if (missing.length) out.push(`${missing.length} owed document(s) not attached on the portal (${missing.map((o) => String(o.label || o.docType).slice(0, 60)).join("; ")})`);
       // ...and a document the RECORDING uploads counts only if this run actually uploaded it (skeptic
       // 21d2502 g: a skipped recorded upload — the plan set — was covered by no gate at all).
-      // Only a recorded upload this filing CAN make — its file is on hand and no rule skips it (skeptic
-      // 13985c6 S4: a battery spec recorded on a battery job, replayed on a job with none, refused every
-      // approved submit — PowerClerk NEM included — and burned the approval).
-      const skipped = Array.from(new Set(steps.filter((s) => s.action === "upload" && s.docType && this.docsByType[String(s.docType)]
+      // A recorded upload a RULE skips is not missing (skeptic 13985c6 S4: a battery spec on a
+      // no-battery job — skipForNoBattery, which now fires for uploads). One whose file is simply not
+      // on hand IS missing (skeptic eb36a8f MF1: a required SLD with no file let the approved submit
+      // through): it is refused, never exempted.
+      const skipped = Array.from(new Set(steps.filter((s) => s.action === "upload" && s.docType
         && !this.skipForNoBattery(s) && !this.uploadedDocTypes.has(String(s.docType))).map((s) => String(s.docType))));
+      // ...and a required-document list the backend could not read refuses (skeptic eb36a8f MF2).
+      if ((this.options.owedAttachments ?? []).some((o) => o?.docType === "__unreadable__")) out.push("the required-document list for this filing could not be read");
       if (skipped.length) out.push(`the recording's upload of ${skipped.join(", ")} did not happen this run`);
       // ...and one whose Save was followed by a list check that never showed it is not confirmed (S1).
       const unconfirmed = Array.from(this.unconfirmedDocTypes);

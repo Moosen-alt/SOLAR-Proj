@@ -357,6 +357,7 @@ console.log("\nI. MUST-EXCLUDE (skeptic 21d2502 MF1): an ORDINARY form page — 
   (adapter as unknown as { page: unknown }).page = page;
   const result = await adapter.fillApplication({} as ProjectRecord);
   await page.waitForTimeout(500);
+  const formRefusals = (adapter as unknown as { finalSubmitRefusalsNow: () => string[] }).finalSubmitRefusalsNow();
   await page.context().close();
   const ledger = ((result.data ?? {}) as { attachmentLedger?: Array<{ docType: string; status: string; detail: string }> }).attachmentLedger ?? [];
   const saves = formSaves.map((b) => { try { return JSON.parse(b); } catch { return {}; } });
@@ -364,6 +365,9 @@ console.log("\nI. MUST-EXCLUDE (skeptic 21d2502 MF1): an ORDINARY form page — 
   check("the form was saved ONCE, with its own description, type and the PLAN SET — never the E-01",
     saves.length === 1 && saves[0].desc === "Install roof-mounted PV" && saves[0].workType === "Alteration" && /Plan_Set_Fixture/.test(saves[0].planFile), JSON.stringify(saves));
   check("the E-01 is named NOT ATTACHED (no attachment row carried it)", ledger.length === 1 && ledger[0].status === "not attached", JSON.stringify(ledger));
+  // (skeptic eb36a8f N1) a form's own Save is not a recorded attachment row: a list check there warns,
+  // never marks the plan set unconfirmed for the final-submit refusal.
+  check("MUST-EXCLUDE a form page's Save never yields a 'never showed plan_set' refusal", !formRefusals.some((r) => /never showed plan_set/.test(r)), JSON.stringify(formRefusals));
 }
 
 console.log("\nJ. (skeptic 13985c6 S1/S2) the recorded plan set's Save is SILENTLY refused — its pending row stays with 'File: <name>'");
@@ -411,13 +415,37 @@ console.log("\nM. (S4) a recorded upload a rule skips never refuses the approved
   const steps = recipeSteps("Plans - Electrical");
   const withBattery: RecipeStep[] = [...steps.slice(0, 5), { action: "upload", selector: { css: '[data-al-upl="f0"]' }, docType: "battery_spec", viaFileChooser: false, note: "upload battery_spec: Battery Specification Sheet", optional: true }, ...steps.slice(5)];
   const page = await newPage();
-  const adapter = new RecipeAdapter(recipeOf(withBattery), { hasBattery: "No" }, { plan_set: DOCS.plan_set }, {});
+  // The spec IS on hand (skeptic eb36a8f MF1): the skip must come from the no-battery rule, not a missing file.
+  const adapter = new RecipeAdapter(recipeOf(withBattery), { hasBattery: "No" }, { plan_set: DOCS.plan_set, battery_spec: pdfAt("Battery_Spec_Fixture.pdf") }, {});
   (adapter as unknown as { page: unknown }).page = page;
   await adapter.fillApplication({} as ProjectRecord);
   const refusals = (adapter as unknown as { finalSubmitRefusalsNow: () => string[] }).finalSubmitRefusalsNow();
   await page.context().close();
-  check("no 'did not happen' / 'never showed' refusal for a battery spec on a job with no battery (no file on hand)",
-    !refusals.some((r) => /did not happen|never showed/.test(r)), JSON.stringify(refusals));
+  check("no 'did not happen' / 'never showed' refusal for a battery spec on a job with no battery (file on hand, rule skips it)",
+    !refusals.some((r) => /did not happen|never showed/.test(r)) && !rows.some((r) => /Battery_Spec/.test(r.name)), JSON.stringify({ refusals, rows }));
+}
+
+console.log("\nN. (skeptic eb36a8f MF1) a REQUIRED recorded upload whose file is not on hand refuses the approved submit");
+{
+  rows = []; types = TYPES_REAL;
+  const steps = recipeSteps("Plans - Electrical");
+  const withSld: RecipeStep[] = [...steps.slice(0, 5), { action: "upload", selector: { css: '[data-al-upl="f0"]' }, docType: "single_line_diagram", viaFileChooser: false, note: "upload single_line_diagram: Single Line Diagram" }, ...steps.slice(5)];
+  const page = await newPage();
+  const adapter = new RecipeAdapter(recipeOf(withSld), {}, { plan_set: DOCS.plan_set }, {});
+  (adapter as unknown as { page: unknown }).page = page;
+  await adapter.fillApplication({} as ProjectRecord);
+  const refusals = (adapter as unknown as { finalSubmitRefusalsNow: () => string[] }).finalSubmitRefusalsNow();
+  await page.context().close();
+  check("MUST-EXCLUDE the missing single-line diagram is refused, never exempted", refusals.some((r) => /upload of single_line_diagram did not happen/.test(r)), JSON.stringify(refusals));
+}
+
+console.log("\nO. (skeptic eb36a8f MF2) a required-document list the backend could not read refuses the approved submit");
+{
+  rows = []; types = TYPES_REAL;
+  const o = await replay("unreadable-list", "Plans - Electrical", [{ docType: "__unreadable__", label: "the required-document list could not be read" }],
+    { plan_set: DOCS.plan_set });
+  check("MUST-EXCLUDE refused on the unreadable list, and the sentinel is never uploaded or ledgered as a document",
+    o.refusals.some((r) => /required-document list for this filing could not be read/.test(r)) && o.rows.length === 1 && o.ledger.length === 0, JSON.stringify({ refusals: o.refusals, rows: o.rows, ledger: o.ledger }));
 }
 
 await browser.close();

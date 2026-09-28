@@ -667,7 +667,14 @@ app.get("/api/projects/:id/filled-forms/:formId", (req, res) => {
     } catch { /* fall through to the generic name */ }
   }
   base = (base || "permit-application").replace(/\.pdf$/i, "");
-  const safeName = `${base} - filled.pdf`.replace(/[^A-Za-z0-9 ()._-]+/g, "_");
+  // The homeowner's name in the file name (operator 2026-09-28: "save it with the HO name in it") —
+  // several jobs' "Residential Application - filled.pdf" otherwise collide in one Downloads folder.
+  let homeowner = "";
+  try {
+    const row = db.get<{ homeowner_name?: string }>("SELECT homeowner_name FROM projects WHERE id = ?", [String(req.params.id)]);
+    homeowner = String(row?.homeowner_name ?? "").normalize("NFKD").replace(/\p{M}/gu, "").replace(/['’]/g, "").replace(/[^A-Za-z0-9 .-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
+  } catch { /* the name is a convenience, never the download */ }
+  const safeName = `${base} - filled${homeowner ? ` - ${homeowner}` : ""}.pdf`.replace(/[^A-Za-z0-9 ()._-]+/g, "_");
   res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
   res.type("application/pdf").sendFile(file);
 });

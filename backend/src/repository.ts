@@ -7323,7 +7323,9 @@ export function packagedDocumentsByType(db: AppDb, project: ProjectRecord, track
 export function owedAttachmentsFor(db: AppDb, project: ProjectRecord, docsByType: Record<string, string>): Array<{ docType: string; label: string }> {
   const out: Array<{ docType: string; label: string }> = [];
   let items: Array<{ text: string; docTypes: string[]; present: boolean }> = [];
-  try { items = requiredListCheck(db, project, documentInventory(db, project)).items as typeof items; } catch { return []; }
+  // An unreadable list never reads as "nothing owed" (skeptic eb36a8f MF2): a sentinel the approved
+  // final submit refuses on (recipeAdapter.finalSubmitRefusalsNow).
+  try { items = requiredListCheck(db, project, documentInventory(db, project)).items as typeof items; } catch { return [{ docType: "__unreadable__", label: "the required-document list could not be read" }]; }
   for (const it of items) {
     if (!it?.present || !Array.isArray(it.docTypes)) continue;
     const docType = it.docTypes.find((t) => docsByType[t] && t !== "plan_set" && !/^generated_/.test(t));
@@ -8238,7 +8240,8 @@ export async function prepareSubmission(
     runApproval: resolvedAutoSubmit ? runApproval : null,
     runId,
     // THE DOCUMENTS THIS FILING OWES beyond the plan set (docs plan D7) - permit tracks only.
-    owedAttachments: track && track !== "nem" ? owedAttachmentsFor(db, detail.project, docsByType) : [],
+    // A trackless (legacy) stage still gets the list (skeptic eb36a8f MF2) - only the NEM track owes none.
+    owedAttachments: track === "nem" ? [] : owedAttachmentsFor(db, detail.project, docsByType),
     // Operator-delegated submit for the HAND-CODED adapters: the same decision. With no recipe
     // (the hand-coded and self-seed paths) the decision refuses, so this is false there.
     allowFinalSubmit: allowFinalSubmit === true && resolvedAutoSubmit,
