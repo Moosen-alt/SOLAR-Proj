@@ -11,6 +11,7 @@ import { decryptStorageState } from "./cryptoStorage";
 import { resolveHeadless } from "./browser";
 import { HUMAN_REVIEW_MESSAGE } from "./adapter";
 import { clearReviewOpen, markReviewOpen } from "./reviewSession";
+import { draftReferenceFromUrl } from "./adapters/submissionLedger";
 
 // One shared cap across EVERY browser-launching path — recipe replay, hand-coded staging, AND the
 // auto-learn self-seed. Each Playwright instance is ~200 MB; >2-3 concurrently OOMs/crashes Chromium.
@@ -538,6 +539,20 @@ async function runAdapter(
     const sentFlags = steps.map((s) => s?.data?.finalSubmitRequestSent).filter((v): v is boolean => typeof v === "boolean");
     const finalSubmitRequestSent: boolean | null = sentFlags.length ? sentFlags.some(Boolean) : null;
 
+    // THE DRAFT THIS RUN LEFT, AS THE PORTAL NAMES IT (dryrun-0928 B11). A run that stopped at review
+    // left a draft on a real account; its reference is read off the page it stopped on — its URL, by
+    // the one identifier filter (submissionLedger.draftReferenceFromUrl) — so the draft ledger can
+    // name it (PowerClerk's ProjectId). Never by navigating: this window is the one a person submits
+    // in. An Accela wizard URL carries no record key, and the reference then says so (id "").
+    let draftReference: { link: string; id: string } | null = null;
+    if (reviewResult.ok && !finalSubmitClicked) {
+      try {
+        const pg = (adapter as unknown as { page?: { url?: () => string } | null }).page;
+        const here = pg && typeof pg.url === "function" ? String(pg.url() ?? "") : "";
+        if (here) draftReference = draftReferenceFromUrl(here);
+      } catch { /* a page we cannot read names no draft */ }
+    }
+
     return {
       portalName: adapter.portalName,
       ok,
@@ -551,6 +566,7 @@ async function runAdapter(
       capturedPermitNumber: captured?.permitNumber || "",
       capturedConfirmationNumber: captured?.confirmationNumber || "",
       capturedRecordLink: captured?.recordLink || "",
+      ...(draftReference && draftReference.link ? { draftReference } : {}),
       evidenceDir,
       outcomeShotPath,
       pauseReason: stepPause,

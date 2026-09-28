@@ -84,6 +84,7 @@ import { labelWords } from "../../../shared/src/portalSafety";
 import { imageToPdfBytes, shouldConvertToPdf } from "../imageToPdf";
 import { removeUploadStaging, uploadPayloadFor, type PreparedUpload } from "./uploadPayload";
 import { attachmentTypeFor } from "./attachmentTypes";
+import { cleanRecordLink } from "./submissionLedger";
 import { exactUploadDocType, fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
 import { reviewComparison, scrapeReviewScreen as scrapeReviewScreenShared, utilityIdentifiersEnteredBySteps, type ReviewMismatch } from "../reviewScreenScraper";
 import { sweepEmptyRequiredControls, type EmptyRequired } from "../requiredControlSweep";
@@ -892,18 +893,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       // (capId/agency/auth tickets) that would persist session material in the stored run
       // result and won't work when clicked later anyway.
       const rawUrl = typeof this.page.url === "function" ? String(this.page.url() ?? "") : "";
-      let recordLink = rawUrl;
-      try {
-        const u = new URL(rawUrl);
-        // ProjectId/ProgramId identify the record, not the session — dropping them made the
-        // stored link useless (a bare /MvcProjects/EditProject reaches nothing). Same rule
-        // as cleanRecordLink: keep identifiers, drop everything else.
-        const KEEP = /^(projectid|programid|formid|capid1|capid2|capid3|module|tabname|agencycode|id|recordid)$/i;
-        const kept = new URLSearchParams();
-        u.searchParams.forEach((v, k) => { if (KEEP.test(k)) kept.append(k, v); });
-        const q = kept.toString();
-        recordLink = u.origin + u.pathname + (q ? `?${q}` : "");
-      } catch { /* keep raw */ }
+      // ProjectId/ProgramId identify the record, not the session — dropping them made the stored
+      // link useless (a bare /MvcProjects/EditProject reaches nothing). ONE list: cleanRecordLink
+      // (these two lists disagreed until dryrun-0928 B11).
+      const recordLink = cleanRecordLink(rawUrl);
       const submitted = pageConfirmsSubmission(bodyText);
       if (permitNumber || submitted) {
         return ok(`Captured submission confirmation${permitNumber ? `: ${permitNumber}` : ""}.`, {

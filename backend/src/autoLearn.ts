@@ -49,7 +49,8 @@ import { knowledgeProfileKey, findKnowledgeForLearn, isVerifiedKnowledge, learnS
 import { hostFitsTrackAndEntity, trackSafeUrl, type PortalUrlSource } from "./portalChannel";
 import { getCodeProfile } from "./codeProfiles";
 import { certifiedNamesForMake } from "./cecEquipment";
-import { recordDraftTouch, type DraftTouch } from "./draftLedger";
+import { annotateDraft, buildDraftTouch, recordDraftTouch, type DraftTouch } from "./draftLedger";
+import { draftReferenceFromUrl } from "../../portal-bot/src/adapters/submissionLedger";
 import { issuingAgencyFor } from "./permitProcess";
 import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
 
@@ -652,27 +653,16 @@ export function buildLearnDraftTouch(input: {
   credentials: Array<{ portalUrl: string; usernameReference: string }>;
 }): DraftTouch | null {
   if ((input.createdBy || "") === "learn-benchmark") return null;
-  let host = "";
-  try { host = new URL(input.portalUrl).hostname.toLowerCase(); } catch { host = ""; }
-  const hit = input.credentials.find((c) => {
-    try { return new URL(c.portalUrl).hostname.toLowerCase() === host; } catch { return false; }
-  });
-  // A host miss with exactly ONE stored login mirrors getDecryptedCredentialAny: when a
-  // single credential is all the client has, it is unambiguous which account the draft
-  // will sit under. More than one and no host match means we honestly don't know — an
-  // empty account beats a guessed one in a cleanup ledger.
-  const account = hit?.usernameReference ?? (input.credentials.length === 1 ? input.credentials[0].usernameReference : "");
-  return {
-    at: new Date().toISOString(),
-    host,
+  // The one row builder (draftLedger.buildDraftTouch) — staging launches write through it too.
+  return buildDraftTouch({
     portalUrl: input.portalUrl,
-    account: String(account ?? ""),
     projectId: input.projectId,
+    credentials: input.credentials,
     // The replay self-test re-runs the LIVE portal in a fresh session, so one learn can
     // mint a SECOND draft — the purpose says so up front, mirroring the benchmark's.
     purpose: input.selfTestEnabled ? "auto-learn +selftest (up to 2 drafts)" : "auto-learn",
     note: `learn walks to the review screen and stops; never submitted (createdBy: ${input.createdBy || "unknown"})`,
-  };
+  });
 }
 
 // ── Test seams (AUTOPILOT_TEST_SEAMS=1 only): the browser learn and the LLM provider ──────────
@@ -1198,6 +1188,8 @@ async function autoLearnPortalInner(
     }
     if (!headlessForAttempt) {
     logger.info("auto-learn", "portal refused a headless browser — retrying with a real window", { portal: portalUrl });
+    // A SECOND BROWSER IS A SECOND POSSIBLE DRAFT (dryrun-0928 B11): its own ledger row, before it opens.
+    if (draftTouch) recordDraftTouch({ ...draftTouch, at: new Date().toISOString(), purpose: `${draftTouch.purpose} (headed retry — a second browser; may leave a second draft)` });
     try {
       const retried = await browserLimiter(runLearn);
       // Keep the retry only if it actually got further; a second refusal should not erase
@@ -1208,6 +1200,15 @@ async function autoLearnPortalInner(
       }
     } catch { /* the headless result stands */ }
     }
+  }
+  // THE LEARN'S DRAFT, NAMED (dryrun-0928 B11). The ledger row above says a draft may exist; the page
+  // the learn stopped on names it when its URL carries the portal's key (PowerClerk's ProjectId).
+  // Read through the one identifier filter; an Accela wizard URL names none and nothing claims one.
+  if (draftTouch && learn?.applicationUrl) {
+    try {
+      const ref = draftReferenceFromUrl(String(learn.applicationUrl));
+      if (ref.id || ref.link) annotateDraft(projectId, ref.id || ref.link, ref.id ? "auto-learn draft — the portal's own reference, read off the page the learn stopped on" : "auto-learn draft — the page the learn stopped on (its URL carries no record key)");
+    } catch { /* the ledger row stands without a reference */ }
   }
 
   // NEAR-MISS credential diagnosis. "No stored credential was found" is technically

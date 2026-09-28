@@ -201,4 +201,62 @@ await check("(B2 gate) a stage whose recipe asks an unanswered ownership questio
   assert.equal(launched!.values.ownershipModel, "Third-Party Owned");
 });
 
+// ═══ B11 ════════════════════════════════════════════════════════════════════════════════════
+const { readDraftLedger } = await import("../src/draftLedger");
+const { draftReferenceFromUrl } = await import("../../portal-bot/src/adapters/submissionLedger");
+const rowsFor = (projectId: string) => readDraftLedger().filter((r) => r.projectId === projectId);
+
+await check("(B11 ref) the draft reference is read by the one identifier filter: PowerClerk's ProjectId yes, an Accela wizard URL none", () => {
+  const pc = draftReferenceFromUrl("https://pacificorpnetmetering.powerclerk.com/MvcProjects/EditProject?ProjectId=TESTPROJ0001&NewProject=1&sessionToken=abc");
+  assert.equal(pc.id, "TESTPROJ0001");
+  assert.doesNotMatch(pc.link, /sessionToken|NewProject/i, `session material kept in the link: ${pc.link}`);
+  assert.match(pc.link, /ProjectId=TESTPROJ0001/, "the record's own key must survive in the link");
+  const accela = draftReferenceFromUrl("https://aca-oregon.accela.com/oregon/Cap/CapEdit.aspx?stepNumber=3&pageNumber=1&isRenewal=false&Module=Building");
+  assert.equal(accela.id, "", "an Accela wizard URL carries no record key — none may be invented");
+  assert.match(accela.link, /^https:\/\/aca-oregon\.accela\.com\/oregon\/Cap\/CapEdit\.aspx\?Module=Building$/, accela.link);
+  const cap = draftReferenceFromUrl("https://aca-oregon.accela.com/oregon/Cap/CapDetail.aspx?Module=Building&capID1=26TMP&capID2=00000&capID3=00123&agencyCode=COOS_BAY");
+  assert.equal(cap.id, "26TMP-00000-00123");
+});
+
+await check("(B11 ledger) every staging browser launch writes a draft-ledger row before it opens; a headed retry writes a second; the draft's reference is recorded", async () => {
+  // Launch 1: a replay that reaches review on a PowerClerk-shaped page.
+  const a = fx.newProject();
+  fx.completeRecipe();
+  let seenLedgerAtLaunch = -1;
+  fx.stubRunner(async () => {
+    seenLedgerAtLaunch = rowsFor(a).length; // the row must exist BEFORE the browser runs
+    return { portalName: "stub", ok: true, finalSubmitClicked: false, pauseReason: null, steps: [{ ok: true, message: "staged" }],
+      draftReference: { link: "https://pacificorpnetmetering.powerclerk.com/MvcProjects/EditProject?ProjectId=TESTPROJ0002", id: "TESTPROJ0002" } };
+  });
+  await repo.prepareSubmission(db, a);
+  const aRows = rowsFor(a);
+  assert.equal(seenLedgerAtLaunch, 1, `the ledger row was not written before the launch (saw ${seenLedgerAtLaunch})`);
+  assert.equal(aRows.filter((r) => /^staging replay/.test(r.purpose)).length, 1, JSON.stringify(aRows));
+  assert.equal(aRows[0].host, "permits.portland.example");
+  assert.ok(aRows.some((r) => r.purpose === "annotation" && r.portalReference === "TESTPROJ0002"), `the draft's reference was not recorded: ${JSON.stringify(aRows)}`);
+  // No secret ever lands in the ledger: the account is a username reference or empty.
+  assert.doesNotMatch(JSON.stringify(aRows), /1234567890|987654321|password/i, "an account/meter number or a password reached the ledger");
+
+  // Launch 2 + 3: a portal that refuses the headless browser, retried headed — two browsers, two rows.
+  const prevHeadless = process.env.PORTAL_HEADLESS;
+  process.env.PORTAL_HEADLESS = "true";
+  const b = fx.newProject();
+  let calls = 0;
+  fx.stubRunner(async () => {
+    calls++;
+    if (calls === 1) return { portalName: "stub", ok: false, finalSubmitClicked: false, pauseReason: null, message: "403 Forbidden — Access Denied", steps: [{ ok: false, message: "403 Forbidden — Access Denied" }] };
+    return { portalName: "stub", ok: true, finalSubmitClicked: false, pauseReason: null, steps: [{ ok: true, message: "staged" }],
+      draftReference: { link: "https://aca-oregon.accela.com/oregon/Cap/CapEdit.aspx?Module=Building", id: "" } };
+  });
+  await repo.prepareSubmission(db, b);
+  if (prevHeadless === undefined) delete process.env.PORTAL_HEADLESS; else process.env.PORTAL_HEADLESS = prevHeadless;
+  assert.equal(calls, 2, "setup: the headed retry did not fire");
+  const bRows = rowsFor(b);
+  assert.equal(bRows.filter((r) => /^staging replay/.test(r.purpose)).length, 2, `one row per browser launch expected: ${JSON.stringify(bRows.map((r) => r.purpose))}`);
+  assert.ok(bRows.some((r) => /headed retry/.test(r.purpose)), "the second row must say it is the headed retry");
+  const bRef = bRows.find((r) => r.purpose === "annotation");
+  assert.equal(bRef?.portalReference, "https://aca-oregon.accela.com/oregon/Cap/CapEdit.aspx?Module=Building", "an Accela draft is recorded by its page link");
+  assert.match(String(bRef?.note), /no record key/, "and the row says it carries no record key");
+});
+
 finish("dryrun portal close");
