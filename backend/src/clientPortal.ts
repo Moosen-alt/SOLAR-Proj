@@ -35,6 +35,19 @@ import { formatProjectAddress } from "./clientNotifier";
 import { getProjectDetail } from "./repository";
 import { publishedReadingFreshness, trackKind, UNCONFIRMED_READING_LABEL, type TrackKind } from "./permitMonitor";
 import { logger } from "./logger";
+import { clientFacingPermitType, clientPermitStructure } from "./clientUpdates";
+
+/** The job's confirmed permit structure, asked only for a 'combo' target (the one label it changes)
+ *  and once per project per page. An unreadable project is NOT confirmed. */
+function structureFor(db: AppDb, projectId: string, permitType: string, cache: Map<string, { combo: boolean }>): { combo: boolean } {
+  if (String(permitType || "").trim().toLowerCase() !== "combo") return { combo: false };
+  let s = cache.get(projectId);
+  if (!s) {
+    try { s = clientPermitStructure(getProjectDetail(db, projectId).project); } catch { s = { combo: false }; }
+    cache.set(projectId, s);
+  }
+  return s;
+}
 
 /**
  * PLAIN ENGLISH FOR EVERY STATUS, not most of them.
@@ -123,10 +136,13 @@ export { trackKind, type TrackKind };
  * electrical permit, the page must not say. The application number is displayed beside it and
  * carries the jurisdiction's own suffix.
  */
-export function trackLabel(targetType: string, permitType: string): string {
+export function trackLabel(targetType: string, permitType: string, structure: { combo: boolean } = { combo: false }): string {
   // No "(NEM)": a client reads that as jargon, and "interconnection" already says which filing it is.
   if (trackKind(targetType, permitType) === "nem") return "Utility interconnection";
-  switch ((permitType || "").trim().toLowerCase()) {
+  // 'combo' is named a COMBINATION permit only when the job's structure confirms it
+  // (clientUpdates.clientPermitStructure — the email's own answer); an unconfirmed structure's
+  // default 'combo' track is just "Permit".
+  switch (clientFacingPermitType(permitType || "", structure).trim().toLowerCase()) {
     case "electrical": return "Electrical permit";
     // The fee layer calls this "structural" and permit_type calls it "building"; they are the
     // same trade. "Building permit" is the phrase a client will recognise.
@@ -353,6 +369,7 @@ export function projectStatusHistory(db: AppDb, projectId: string, limit = 12): 
   );
 
   const built: Array<{ targetId: string; entry: ClientPortalHistoryEntry }> = [];
+  const structures = new Map<string, { combo: boolean }>();
   const lastStateByTarget = new Map<string, string>();
   // Oldest first, so "the first row of a run" is the row that actually recorded the change.
   for (const row of rows.slice().reverse()) {
@@ -366,7 +383,7 @@ export function projectStatusHistory(db: AppDb, projectId: string, limit = 12): 
       targetId: targetKey,
       entry: {
         at: String(row.created_at || ""),
-        label: trackLabel(String(row.target_type || ""), String(row.permit_type || "")),
+        label: trackLabel(String(row.target_type || ""), String(row.permit_type || ""), structureFor(db, clean, String(row.permit_type || ""), structures)),
         applicationNumber: String(row.application_number || row.target_application_number || ""),
         statusLabel: publicCheckLabel(outcome, rawLabel, trackKind(String(row.target_type || ""), String(row.permit_type || ""))),
         outcome,
@@ -533,6 +550,7 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
   const freshnessOf = publishedReadingFreshness(db, ids);
 
   const byProject = new Map<string, ClientPortalTrack[]>();
+  const structures = new Map<string, { combo: boolean }>();
   for (const t of targets) {
     const pid = String(t.project_id);
     const type = trackKind(String(t.target_type || ""), String(t.permit_type || "")); // the ONE answer
@@ -545,7 +563,7 @@ export function clientPortalPayload(db: AppDb, token: string): ClientPortalPaylo
       ? filing.confirmationNumber : "";
     list.push({
       type,
-      label: trackLabel(type, String(t.permit_type || "")),
+      label: trackLabel(type, String(t.permit_type || ""), structureFor(db, pid, String(t.permit_type || ""), structures)),
       // The badge says who the next move belongs to, not just what the queue is called. An
       // operator-facing "Action needed before review" on a client's page reads as THEIR action
       // when the action is ours — see publicCheckLabel. And WHO is holding it depends on the
@@ -642,7 +660,7 @@ export function publicProjectStatusPayload(db: AppDb, token: string): PublicProj
       // "Building/electrical permit", so a project with separate structural and electrical
       // permits showed two identical rows here even after the portal was fixed — the operator
       // hit it by clicking the link in a real update email. One function, both surfaces.
-      label: trackLabel(t.targetType, String(t.permitType || "")),
+      label: trackLabel(t.targetType, String(t.permitType || ""), clientPermitStructure(p)),
       // ...and the same WORDING rule, which this page did not have at all: it shipped
       // latestStatusLabel raw, so Coos Bay's "Action needed before review" reached a client as an
       // instruction to them when the action is ours. The badge is one span; the ownership of the

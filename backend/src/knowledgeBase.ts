@@ -21,6 +21,7 @@ import { DEFAULT_ORG_ID } from "./db";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text } from "./json";
 import { findApplicationProfile } from "./applicationDocs";
+import { usStateCode } from "./permitPath";
 import { enrichMboxLearningWithLlm, stripUrlsFromModelMemory } from "./llm";
 import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles";
 import { nowIso } from "./time";
@@ -123,10 +124,67 @@ const CREDENTIAL_LABEL =
 const USER_PASS_PAIR =
   /[\w.+-]+@[\w-]+\.[a-z]{2,}\s+(?=\S{6,})(?=\S*[a-z])(?=\S*[A-Z])(?=\S*\d)\S+/;
 
+// A LOGIN HANDLE AND ITS PASSWORD, NOTHING ELSE (leak sweep company-leak-5, 2026-09-28). A shared
+// row carried "<Handle> & <password>" — no label, no email — and neither test above saw it. Both
+// shapes below are anchored to the WHOLE segment (an optional short "Accela login:" label first),
+// so prose never matches: the second token must be one unbroken token of 6+ characters with no
+// parentheses (a fee line's "(5-15kVA)" has them).
+//   "<handle> & <secret>": the secret carries a letter AND a digit or a password symbol, and is not
+//     an email ("Contact & permits@city.gov" is a contact; "Solar & Battery-Storage" is a scope).
+//   "<handle> <secret>": the handle looks like a login (CamelCase, a digit, "_" or "."), the secret
+//     is lower + upper + digit — "Model IQ8Plus-72" is a model line, not a login.
+const HANDLE_AMP_SECRET =
+  /^\s*(?:[^:|]{1,40}:\s*)?[A-Za-z][\w.@+-]{2,63}\s*&\s*(?![\w.+-]+@[\w-]+\.[\w.-]+\s*$)(?=[^\s()]{6,}\s*$)(?=[^\s()]*[A-Za-z])(?=[^\s()]*[\d!#$%^&*?~+=@])[^\s()]+\s*$/;
+const HANDLE_SPACE_SECRET =
+  /^\s*(?:[^:|]{1,40}:\s*)?(?=[A-Za-z][\w.+-]*(?:[a-z][A-Z]|\d|_|\.))[A-Za-z][\w.+-]{2,63}\s+(?=[^\s()]{6,}\s*$)(?=[^\s()]*[a-z])(?=[^\s()]*[A-Z])(?=[^\s()]*\d)[^\s()]+\s*$/;
+
 /** True when a note segment looks like it carries a credential rather than portal knowledge. */
 export function looksLikeCredentialNote(segment: string): boolean {
   const s = String(segment ?? "");
-  return CREDENTIAL_LABEL.test(s) || USER_PASS_PAIR.test(s);
+  return CREDENTIAL_LABEL.test(s) || USER_PASS_PAIR.test(s) || HANDLE_AMP_SECRET.test(s) || HANDLE_SPACE_SECRET.test(s);
+}
+
+// ---------------------------------------------------------------------------------------------
+// WHAT A LEARN PLANNER MAY READ FROM A SHARED NOTE (leak sweep company-leak-5). The KB is shared
+// across every company on purpose — but its notes were written from ONE company's sheets, and they
+// carry that company's facts: "Operator credential stored for this portal.", its login usernames and
+// emails, its licence numbers ("metro license # <n>"). Handed to another company's learn planner as
+// AHJ context, the planner could type the first company's licence into the second company's filing,
+// and a login pair reached the model (hard rule 2). The row stays as it is (shared knowledge, and
+// rule 3 for verified rows); what leaves for the model is filtered here, segment by segment.
+// ---------------------------------------------------------------------------------------------
+const LOGIN_FACT = /\bcredentials?\b[^|]{0,40}\b(stored|on file|saved)\b|«pw»|\b(user\s*-?\s*name|user\s*id|log\s*-?\s*in|logon|sign\s*-?\s*in|pw|pwd|password|pass)\s*[:=]/i;
+/** A login label directly followed by the email it logs in with ("User name <email>", "Login - <email>").
+ *  Never the bare word: "…/Login/Index" in a portal URL and "only the login differs per AHJ" are knowledge. */
+const LOGIN_EMAIL = /\b(user\s*-?\s*name|username|user\s*id|log\s*-?\s*in|logon|sign\s*-?\s*in)\s*(?:[:=-]\s*|\s+(?:is\s+)?)[\w.+-]+@[\w-]+\.[a-z]{2,}/i;
+/** "<handle> & <email>" — a username paired with the login email, the whole segment. */
+const HANDLE_AMP_EMAIL = /^\s*(?:[^:|]{1,40}:\s*)?[A-Za-z][\w.+-]{2,63}\s*&\s*[\w.+-]+@[\w-]+\.[\w.-]+\s*$/;
+/** A licence / registration NUMBER after its label ("metro license # 12345", "CCB# 123456",
+ *  "License No. C1234"). The label stays (the AHJ asks for that licence); the number is the
+ *  job's company's own and comes from the job's client, never from a shared note. */
+const LICENCE_NUMBER = /\b((?:licen[cs]e|lic\.|registration|reg\.?|ccb|cslb|hic)\s*(?:no\.?|number|num\.?|#)?\s*[:#]?\s*)([A-Z]{0,4}-?\d{3,}[A-Z]?)\b/gi;
+
+/** One shared note segment is another company's fact (a login, a stored credential) — never sent to a model. */
+export function isCompanyLoginSegment(segment: string): boolean {
+  const s = String(segment ?? "");
+  return looksLikeCredentialNote(s) || LOGIN_FACT.test(s) || HANDLE_AMP_EMAIL.test(s) || LOGIN_EMAIL.test(s);
+}
+
+/** A licence / registration number in shared prose, replaced by a pointer to the job's own company
+ *  (the label stays — the AHJ asking for that licence is knowledge; the number is one company's). */
+export function redactLicenceNumbers(text: string): string {
+  return String(text ?? "").replace(LICENCE_NUMBER, (_m, label: string) => `${label}[the job's company's own number]`);
+}
+
+/** The shared notes as a learn planner may read them: credential / login segments dropped, licence
+ *  numbers replaced by a pointer to the job's own company. " | "-joined segments in, the same out. */
+export function learnSafeNotes(notes: string): string {
+  return String(notes ?? "")
+    .split(" | ")
+    .map((seg) => seg.trim())
+    .filter((seg) => seg && !isCompanyLoginSegment(seg))
+    .map((seg) => redactLicenceNumbers(seg))
+    .join(" | ");
 }
 
 // Notes are stored as " | "-joined segments. Split before merging so dedupe
@@ -1251,22 +1309,35 @@ function inferAhj(value: string): string {
   return titleCase(raw);
 }
 
-function inferPortal(value: string): string {
+function inferPortal(value: string, state: string): string {
   if (/powerclerk/i.test(value)) return "PowerClerk";
   if (/devhub/i.test(value)) return "DevHub";
   if (/projectdox/i.test(value)) return "ProjectDox";
   if (/energov/i.test(value)) return "EnerGov";
-  if (/aca|accela/i.test(value)) return "Accela";
+  // Whole words: a bare "aca" substring matched "vacation", "academy" and "Placa".
+  if (/\baca\b|\baccela\b/i.test(value)) return "Accela";
   if (/mygov/i.test(value)) return "MyGov";
-  if (/epermitting|e-permitting|accela/i.test(value)) return "Oregon ePermitting";
+  // An e-permitting portal is OREGON's ePermitting only in Oregon (usStateCode — the one "is this
+  // Oregon" answer). Elsewhere it is the jurisdiction's own online portal.
+  if (/\be-?permitting\b/i.test(value)) return usStateCode(state) === "OR" ? "Oregon ePermitting" : "Online e-permitting portal";
   if (/development direct/i.test(value)) return "Development Direct";
   return "";
 }
 
+/** Test hooks for the mbox learner's state / portal inference (pure). */
+export function inferMboxState(value: string, ahj: string, utility: string): string { return inferState(value, ahj, utility); }
+export function inferMboxPortal(value: string, state: string): string { return inferPortal(value, state); }
+
 function inferState(value: string, ahj: string, utility: string): string {
   const stateMatch = value.match(/\b(AK|AL|AR|AZ|CA|CO|FL|GA|ID|IL|MA|MD|MI|MN|MO|NC|NJ|NM|NV|NY|OH|OR|PA|SC|TN|TX|UT|VA|WA|WI)\b/);
   if (stateMatch) return stateMatch[1].toUpperCase();
-  if (/portland|clackamas|washington county|hillsboro|salem|oregon/i.test(`${ahj}\n${value}`)) return "OR";
+  // A PLACE NAME IS NOT A STATE. "Portland", "Salem", "Washington County" and a town named Oregon
+  // exist in several states (ME, MA, PA, WI, IL, OH…); guessing Oregon from them filed another
+  // state's email under Oregon's knowledge. Only the state's own name, in a state position
+  // ("Salem, Oregon", "State of Oregon", "Oregon 97301"), says Oregon. Otherwise: unknown.
+  if (/,\s*oregon\b|\bstate of oregon\b|\boregon\s+9[78]\d{3}\b/i.test(`${ahj}\n${value}`)) return "OR";
+  // (The utility line is a separate sweep finding — PacifiCorp / Pacific Power serve more than
+  // Oregon — left to its own round.)
   if (/pacific power|pacificorp|pge|portland general/i.test(utility)) return "OR";
   if (/srp|aps|unisource|maricopa|pinal|phoenix|tucson/i.test(`${utility}\n${ahj}\n${value}`)) return "AZ";
   if (/fpl|duke energy|miami|tampa|orange county|broward/i.test(`${utility}\n${ahj}\n${value}`)) return "FL";
@@ -1402,8 +1473,8 @@ function buildMboxLearningRecord(input: {
   const bucket = classifyMboxBucket(input.combined);
   const utility = input.defaults.utility || inferUtility(input.combined);
   const jurisdiction = input.defaults.ahj || inferAhj(input.combined);
-  const portalName = inferPortal(input.combined);
   const state = input.defaults.state || inferState(input.combined, jurisdiction, utility);
+  const portalName = inferPortal(input.combined, state);
   const taxonomy = correctionTaxonomy(input.combined, bucket.bucket);
   const sample = redactSample(`${input.subject}\n${input.from}\n${input.combined}`);
   const record: MboxExtractedLearningRecord = {
@@ -2336,7 +2407,8 @@ export function knowledgeResearchHint(
       (`${profile.notes} ${profile.portalUrl}`.match(/https?:\/\/[^\s"'<>)\]]+\.pdf\b[^\s"'<>)\]]*/gi) || []).map((u) => u.trim()),
     ),
   ].slice(0, 5);
-  const notes = clean(profile.notes).slice(0, 700);
+  // The same filter as the learn planner's KB block: this text goes to a model too (llm research).
+  const notes = clean(learnSafeNotes(profile.notes)).slice(0, 700);
   const text = [
     `Our internal knowledge base already has a ${scope === "ahj" ? "jurisdiction" : "utility"} record for "${name}"${profile.state ? ` (${profile.state})` : ""} [confidence: ${profile.confidence}]:`,
     profile.portalName ? `- Known portal: ${profile.portalName}` : "",

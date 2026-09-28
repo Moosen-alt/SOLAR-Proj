@@ -15,11 +15,12 @@ import {
 } from "./formFieldChecks";
 import { namesWorkersComp, workersCompAffidavitItem } from "./formFieldChecks";
 import { HttpError } from "./httpError";
-import { loadDefaultSignaturesByRole } from "./signatures";
+import { isLicenceHolderRole, loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
 import { resolveValuation } from "./valuation";
 import { parseJson } from "./json";
-import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
+import { resolvePermitPath, evaluatePrescriptiveCriteria, usStateCode, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
+import { registryTermMatches } from "./processProfiles";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
 import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
@@ -203,7 +204,12 @@ export interface SignaturePlacement {
 export interface AhjFormDefinition {
   id: string;
   formName: string;
-  matchJurisdictions: string[]; // lowercase substrings matched against project.ahj
+  /** The two-letter state whose agency publishes this form (usStateCode). REQUIRED: a registry form
+   *  matches a project only in its own state — "Portland" names a city in OR, ME, TX, CT, MI and TN,
+   *  and Portland, Oregon's electrical application was filled with Oregon fees and an Oregon CCB for
+   *  South Portland, Maine. "" (a stored row with no state) matches nothing in the registry. */
+  state: string;
+  matchJurisdictions: string[]; // whole-word, kind-compatible terms matched against project.ahj (registryTermMatches)
   sourceUrl: string; // verified URL of the blank fillable PDF
   version: string;
   status: "verified" | "unverified_template";
@@ -243,6 +249,7 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
   {
     id: "portland-electrical-renewable-energy",
     formName: "City of Portland — Electrical Renewable Energy Permit Application",
+    state: "OR",
     matchJurisdictions: ["portland", "city of portland"],
     sourceUrl: "https://www.portland.gov/ppd/documents/electrical-renewable-energy-permit-application/download",
     version: "2024",
@@ -394,6 +401,9 @@ export interface FillContext {
   // (loaded in buildContext) — the presc* sources must screen against the SAME
   // limits QC's baseline rules use, not always the Oregon defaults.
   prescriptiveLimits?: PrescriptiveLimitInputs;
+  /** Evaluate the presc* sources against prescriptiveLimits ALONE (no Oregon defaults) — every job
+   *  whose state is not Oregon, including an unknown state (buildContext). */
+  prescriptiveJurisdictionOnly?: boolean;
   // The jurisdiction's PUBLISHED electrical fee brackets, when one is on file. Loaded in
   // buildContext so renewableFee can prefer a schedule somebody researched over the ladder
   // printed on the form we happen to have a copy of. See renewableFee.
@@ -608,7 +618,7 @@ function prescriptiveComputed(name: string, ctx: FillContext): string {
   if (!m) return "";
   const key = m[1][0].toLowerCase() + m[1].slice(1);
   const variant = m[2];
-  const rows = (ctx.prescriptive ??= evaluatePrescriptiveCriteria(ctx.project, ctx.prescriptiveLimits || {}));
+  const rows = (ctx.prescriptive ??= evaluatePrescriptiveCriteria(ctx.project, ctx.prescriptiveLimits || {}, { jurisdictionOnly: ctx.prescriptiveJurisdictionOnly === true }));
   let answer: string;
   if (key === "all") {
     // Overall verdict: Yes only when EVERY row affirmatively passes; No as soon
@@ -768,9 +778,11 @@ function computed(name: string, ctx: FillContext): string {
       // line under the authorized signature.
       return ctx.signatures?.applicant?.name ?? "";
     case "electricianSignerName":
-      // Typed name on the stored electrician signature; falls back to the
-      // supervisor name from the client profile when no sig image is stored.
-      return ctx.signatures?.electrician?.name ?? ctx.client.electricalSupervisorName ?? "";
+      // THE JOB'S COMPANY'S electrician, and only theirs: the typed name on that company's own
+      // electrician signature (buildContext loads licence-holder signatures by project.clientId),
+      // else the supervisor on that company's own record. Never the org's — an org-level default
+      // printed one company's supervising electrician on another company's application.
+      return ctx.signatures?.electrician?.name || ctx.client.electricalSupervisorName || "";
     case "descriptionOfWork": {
       const s = ctx.snapshot;
       const qty = str(s["moduleQuantity"] ?? s["module_quantity"]);
@@ -906,7 +918,11 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
   if (!licence.oregon) { delete client.ccbLicenseNumber; delete client.ccbExpiration; }
   // Per-AHJ prescriptive limits (same jurisdiction code profile QC screens on),
   // so the presc* checkbox sources answer against this AHJ's actual thresholds.
-  // Only concrete values override; anything missing keeps the Oregon defaults.
+  // IN OREGON only concrete values override and anything missing keeps Oregon's defaults. OUTSIDE
+  // Oregon (or with no recognised state) the jurisdiction's own limits are the ONLY limits: a row it
+  // never published answers [verify] — a Utah job's "meets the prescriptive criteria" box was ticked
+  // against Oregon's 70 psf (leak sweep wrong-kind-prescriptive-oregon-limits-any-state).
+  const prescriptiveJurisdictionOnly = usStateCode(project.state) !== "OR";
   const prescriptiveLimits: PrescriptiveLimitInputs = {};
   try {
     const p = resolveEffectiveCodeContext(db, project.state, project.ahj).prescriptive || {};
@@ -914,7 +930,11 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     if (p.maxPvDeadLoadPsf != null) prescriptiveLimits.maxPvDeadLoadPsf = p.maxPvDeadLoadPsf;
     if (p.maxRafterSpacingIn != null) prescriptiveLimits.maxRafterSpacingIn = p.maxRafterSpacingIn;
     if (p.allowedWindExposures?.length) prescriptiveLimits.allowedWindExposures = p.allowedWindExposures;
-  } catch { /* profile data optional — Oregon defaults apply */ }
+    if (prescriptiveJurisdictionOnly) {
+      if (p.maxWindSpeedMphExpB != null) prescriptiveLimits.maxWindSpeedMphExpB = p.maxWindSpeedMphExpB;
+      if (p.maxWindSpeedMphExpC != null) prescriptiveLimits.maxWindSpeedMphExpC = p.maxWindSpeedMphExpC;
+    }
+  } catch { /* profile data optional — Oregon: its defaults apply; elsewhere: every row [verify] */ }
   // The jurisdiction's own published electrical brackets, if anybody has researched them. Read
   // through the SAME discipline-aware lookup the fee sheet and the invoice use, so the PDF and
   // the quote cannot disagree. Absent is the ordinary case and costs nothing: renewableFee then
@@ -947,9 +967,11 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     } as Record<string, unknown>,
     // The signature stamped on a permit form comes from the org that OWNS the
     // project — this runs from background jobs with no request, so it can't be
-    // taken from a session.
-    signatures: loadDefaultSignaturesByRole(db, projectOrgId(db, project.id)),
+    // taken from a session. A LICENCE HOLDER's line (electrician, contractor) is the
+    // job's COMPANY's (project.clientId) and nobody else's — see signatures.ts.
+    signatures: loadDefaultSignaturesByRole(db, projectOrgId(db, project.id), String(project.clientId ?? "")),
     prescriptiveLimits,
+    prescriptiveJurisdictionOnly,
   };
   // THE OWNER'S MAILING ADDRESS IS THE INSTALLATION ADDRESS unless the project records another
   // (operator ruling 2026-09-27, Michael Sheridan's Marion B-01S / E-01: "this will just be the
@@ -1032,6 +1054,19 @@ async function trimSignatureMargins(bytes: Uint8Array, mime: string): Promise<{ 
   }
 }
 
+/**
+ * THE LICENCE-HOLDER LINES THIS FORM LEAVES UNSIGNED, NAMED FOR THE OPERATOR. A licence holder's
+ * signature is the job's company's (signatures.ts); when that company has none on file, the line is
+ * left empty — no image, no date — and this names it, so it reads as work owed, not as done.
+ * One entry per role, whose words say where to fix it.
+ */
+export function unsignedLicenceHolderLines(def: AhjFormDefinition, ctx: FillContext): string[] {
+  const sigs = ctx.signatures ?? {};
+  const company = String(ctx.client.installerCompanyName || ctx.client.companyName || "").trim() || "this job's company";
+  const roles = Array.from(new Set((def.signatureFields ?? []).map((pl) => pl.role).filter((r) => isLicenceHolderRole(r) && !sigs[r])));
+  return roles.map((role) => `${role === "electrician" ? "Electrician" : "Contractor"} signature — no ${role} signature on file for ${company}; the line is left unsigned (sign it by hand, or add ${company}'s ${role} signature under Signatures and rebuild)`);
+}
+
 async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: FillContext): Promise<number> {
   const placements = def.signatureFields ?? [];
   const sigs = ctx.signatures ?? {};
@@ -1095,10 +1130,19 @@ async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: Fil
   return drawn;
 }
 
-export function matchingForms(ahj: string): AhjFormDefinition[] {
-  const needle = (ahj || "").toLowerCase();
-  if (!needle) return [];
-  return ahjFormRegistry.filter((def) => def.matchJurisdictions.some((m) => needle.includes(m)));
+/**
+ * The built-in registry forms for THIS project's jurisdiction. Two gates, both required:
+ *  - STATE: usStateCode(project.state) must equal the form's own state. A blank or unrecognised
+ *    state matches nothing — an unknown state is not Oregon (or anywhere else).
+ *  - NAME: whole words of the AHJ, kind-compatible (registryTermMatches — the same test the
+ *    application-profile registry uses). The old `ahj.includes("portland")` substring put Portland,
+ *    Oregon's electrical application on South Portland, Maine.
+ */
+export function matchingForms(project: { ahj?: string | null; state?: string | null }): AhjFormDefinition[] {
+  const ahj = String(project.ahj ?? "").trim();
+  const state = usStateCode(project.state);
+  if (!ahj || !state) return [];
+  return ahjFormRegistry.filter((def) => def.state === state && def.matchJurisdictions.some((m) => registryTermMatches(ahj, m)));
 }
 
 // SSRF guard: an AHJ form URL comes from operator input (/api/ahj-forms/inspect), so a
@@ -1356,7 +1400,8 @@ export async function fillLoadedForm(
       def.textFields, Object.values(def.checkboxes ?? {}).map((r) => r.source));
     // A checklist's printed thresholds control its answers, even when a cached
     // project evaluation used different jurisdiction limits. Do not mutate ctx.
-    checklistCtx = { ...ctx, prescriptive: undefined,
+    // (Oregon's own form: its printed limits over Oregon's — never "jurisdiction only".)
+    checklistCtx = { ...ctx, prescriptive: undefined, prescriptiveJurisdictionOnly: false,
       prescriptiveLimits: { ...ctx.prescriptiveLimits, ...BCD_5952_LIMITS } };
   }
   const drawChecklist = async (): Promise<number> => {
@@ -1410,7 +1455,12 @@ export async function fillLoadedForm(
   const notes = printedFeeNote
     ? (def.notes ?? []).map((n) => n.split(CURATED_SAVED_FEE_NOTE).map((s) => s.trim()).filter(Boolean).join(" "))
     : (def.notes ?? []);
+  // A licence-holder line with no signature on file for THIS job's company stays unsigned, and is
+  // named as the operator's item (listed with the blanks, so the form reads "needs details").
+  const unsignedLines = unsignedLicenceHolderLines(def, ctx);
+  missingRequired.push(...unsignedLines);
   const completionMessage = [checklistMessage, operatorMissing.length ? `Still needs: ${operatorMissing.join("; ")}.` : "",
+    unsignedLines.length ? `Left unsigned: ${unsignedLines.join("; ")}.` : "",
     officeMissing.length ? `From the planning / land-use office (when it applies): ${officeMissing.join("; ")}.` : "",
     agencyMissing.length ? `Left for the agency to compute: ${agencyMissing.join("; ")}.` : "",
     printedFeeNote, ...notes].filter(Boolean).join(" ") || undefined;
@@ -1760,7 +1810,7 @@ export async function buildFilledFormsForProject(db: AppDb, project: ProjectReco
     } catch { /* best-effort: the row stays blank and the fill note names it */ }
   }
   const permitPath = resolvePermitPath(project).path;
-  const defs = matchingForms(project.ahj).filter((d) => d.status === "verified");
+  const defs = matchingForms(project).filter((d) => d.status === "verified");
   const ctx = buildContext(db, project);
   const outDir = path.join(FILLED_DIR, project.id);
 
@@ -1947,6 +1997,7 @@ function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate 
     def: {
       id: `tmpl-${row.id}`,
       formName: map.formName || row.original_filename || `${row.ahj_name} form`,
+      state: usStateCode(row.state),
       matchJurisdictions: [rowAhj],
       sourceUrl: map.sourceUrl || "",
       version: "stored",

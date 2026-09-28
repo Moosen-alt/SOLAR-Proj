@@ -465,6 +465,36 @@ function fuzzyCodeRow(db: AppDb, input: { state?: string; ahj?: string }): Row |
   return best && best.score >= 60 ? best.row : null;
 }
 
+/**
+ * WHOSE IS THIS PRESCRIPTIVE LIMIT, AND IS IT CONFIRMED? (leak sweep, 2026-09-28: the shipped
+ * state-level "PE stamp commonly required over ~10 kW" notes for CA, MA and AZ were stored as hard
+ * engineerStampOverKwDc numbers and refused staging in every AHJ of those states, worded
+ * "<AHJ> requires".) A limit is CONFIRMED when a person verified the layer that supplied it, or it
+ * sits on the AHJ's OWN row and that row cites a public source (the prescriptive sourceUrl, a
+ * citation URL, or a field-specific citation such as an applied AHJ correction). A state-layer seeded
+ * value, or an AHJ value with no source, is a note.
+ */
+export function codeLimitProvenance(
+  db: AppDb,
+  input: { state?: string; ahj?: string },
+  field: keyof PrescriptiveLimits,
+): { value: PrescriptiveLimits[keyof PrescriptiveLimits] | undefined; confirmed: boolean; layer: "ahj" | "state" | "none"; state: string } {
+  const merged = getCodeProfile(db, input);
+  const value = merged?.prescriptive?.[field];
+  if (!merged || value === undefined) return { value: undefined, confirmed: false, layer: "none", state: text(input.state) };
+  const src = merged.fieldSources?.[`prescriptive.${field}`] ?? { ahj: merged.ahj, state: merged.state, confidence: merged.confidence };
+  const layer: "ahj" | "state" = text(src.ahj) ? "ahj" : "state";
+  if (src.confidence === "verified") return { value, confirmed: true, layer, state: merged.state };
+  if (layer !== "ahj") return { value, confirmed: false, layer, state: merged.state };
+  // The AHJ's OWN row (ownCodeProfileRow — exact key, then the same fuzzy match), not the merge:
+  // merged citations carry the state row's too.
+  const own = ownCodeProfileRow(db, text(input.state), text(input.ahj))?.profile ?? null;
+  const isUrl = (u: unknown) => /^https?:\/\//i.test(text(u));
+  const cited = Boolean(own && (isUrl(own.prescriptive?.sourceUrl)
+    || own.citations.some((c) => isUrl(c.sourceUrl) || text(c.field).includes(String(field)))));
+  return { value, confirmed: cited, layer, state: merged.state };
+}
+
 export function getCodeProfile(db: AppDb, input: { state?: string; ahj?: string }): JurisdictionCodeProfile | null {
   const exactRow = input.ahj
     ? db.get<Row>("SELECT * FROM jurisdiction_code_profiles WHERE profile_key = ?", [codeProfileKey({ state: input.state, ahj: input.ahj })]) ??

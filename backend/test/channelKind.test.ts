@@ -24,6 +24,12 @@ const cases: Array<[string, string, string]> = [
   ["Unknown — verify on the AHJ site", "", "unknown"],
   // Paying online is not filing online; "no online portal" is a negation.
   ["No online application portal found — applications must be dropped off in person (per-job lookup; verify on the AHJ site)", "", "in_person"],
+  // An in-person clause beats a platform word later in the same seeded method (Bernalillo County, NM).
+  ["BPA: In person EPA: Bernalillo County accela (seeded AHJ profile — verify)", "", "in_person"],
+  // …and outside Oregon an Accela instance is named neutrally, still a portal.
+  ["Accela Citizen Access (online portal) (seeded AHJ profile — verify)", "", "portal"],
+  // A negated in-person clause is not an in-person channel.
+  ["Accela portal only — no in-person submittals", "", "portal"],
 ];
 let failures = 0;
 for (const [channel, portalUrl, want] of cases) {

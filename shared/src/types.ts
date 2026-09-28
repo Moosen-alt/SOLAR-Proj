@@ -1166,6 +1166,13 @@ export interface ApplicationDocumentPackage {
    * that array to carry a sentinel would change what every existing reader means.
    */
   missingDocumentsStatus?: "resolved" | "unavailable";
+  /**
+   * Set (alongside "resolved") when the AHJ's APPLICATION set is empty because NOTHING is known about
+   * it — structure unknown, no flags, no cited documents (requiredDocuments.documentInventory). The
+   * packet renders it as an advisory "which application(s) <AHJ> requires is not known" row and
+   * NEVER the pass-green all-clear: an unasked question is not an answered one.
+   */
+  applicationSetUnknown?: string;
   /** Why the inventory could not be computed, for the operator. Set only alongside
    *  missingDocumentsStatus === "unavailable". */
   missingDocumentsError?: string;

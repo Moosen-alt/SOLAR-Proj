@@ -29,7 +29,7 @@
 import type { AppDb } from "./db";
 import { readXlsx, type SheetData } from "./xlsxRead";
 import { createPortalCredential, updatePortalCredential, listPortalCredentials } from "./portalCredentials";
-import { importSeededAhjKnowledge } from "./knowledgeBase";
+import { importSeededAhjKnowledge, isCompanyLoginSegment, redactLicenceNumbers } from "./knowledgeBase";
 import { inferPlatform, isRecognizedPlatform } from "./portalPlatformRules";
 
 // Sheets that are not portal lists: valuation calculators, contractor-license
@@ -230,8 +230,20 @@ export function extractPortalRows(sheet: SheetData): ExtractedPortalRow[] {
       || (portalUrl ? `${state} portal` : `${state} filing`);
     const platform = portalUrl ? inferPlatform(portalUrl) : "";
 
-    // Notes: descriptive, NO secrets. Strip credential tokens defensively.
-    const notes = blob
+    // Notes: descriptive, NO secrets, NO company login facts — they land in the SHARED knowledge base
+    // every company's learn planner reads. A CELL that carries the password, the login username, a
+    // security answer or any credential shape (knowledgeBase: looksLikeCredentialNote /
+    // isCompanyLoginSegment — the write guard's own predicates) is left out whole, whatever the
+    // company's password looks like; PASSWORD_RE only knows one family, and a "<handle> & <password>"
+    // cell reached a shared row that way (leak sweep company-leak-5). The token scrubs below stay as
+    // a second line.
+    const noteCells = cells.filter((c) => !(
+      (password && c.includes(password))
+      || (username && c.toLowerCase().includes(username.toLowerCase()))
+      || SECQ_RE.test(c) || /USR ?NM[:=]|PSWRD[:=]/i.test(c)
+      || isCompanyLoginSegment(c)
+    ));
+    const notes = redactLicenceNumbers(noteCells.join(" | "))
       .replace(PASSWORD_RE, "«pw»")
       .replace(/USR ?NM[:=]\s*\S+/gi, "")
       .replace(/PSWRD[:=]\s*\S+/gi, "")
@@ -347,7 +359,9 @@ export function importPortalProcessesWorkbook(
           r.platform ? `Portal platform: ${r.platform}` : "",
           r.mfaEmailCode ? "Login emails a one-time code at login on a new device — HUMAN-CAPTURE step, not autonomous." : "",
           r.contact ? `Contact: ${r.contact}` : "",
-          r.username ? "Operator credential stored for this portal." : "",
+          // NOT "Operator credential stored for this portal.": that is THIS company's fact (its
+          // login lives on its own portal_credentials row), and in the shared row it told every
+          // other company a credential was on file for them.
           r.notes ? `Sheet note: ${r.notes}` : "",
         ].filter(Boolean);
         const res = opts.dryRun

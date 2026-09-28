@@ -241,6 +241,12 @@ export function channelKindOf(res: { channel: string; portalUrl: string }): Trac
   // A portal named or linked (a URL, a platform name, "portal", "online") and not negated is a portal —
   // "Oregon ePermitting (Accela)", "PowerClerk", a Tyler EnerGov self-service link, "Portland DevHub".
   const negated = /\bno online\b|\bno (?:application )?portal\b|\bnot (?:online|through a portal)\b/i.test(t);
+  // AN IN-PERSON CLAUSE WINS (leak sweep, 2026-09-28): Bernalillo County's seeded method reads "BPA: In
+  // person EPA: Bernalillo County accela" — the building permit is filed at the counter, and the
+  // platform word further along made the whole track read "portal", so no in-person banner showed.
+  // Tested before the platform words; a negated clause ("no in-person submittals") is not one.
+  const inPerson = /\bin[\s-]?person\b|\bdrop(?:ped)?[\s-]?off\b|\bover[\s-]the[\s-]counter\b|\bat the counter\b|\bwalk[\s-]?in\b|\bpaper (?:application|submi\w*|drop)/i;
+  if (inPerson.test(t) && !/\b(?:no|not)\s+(?:accepted\s+)?(?:in[\s-]?person|walk[\s-]?in|drop[\s-]?off)\b/i.test(t)) return "in_person";
   // "online" only as FILING online — Waltham's "permit fees payable online" is paying, not filing.
   if (!negated && (/https?:\/\//i.test(t) || /\b(?:portal|accela|epermitting|energov|powerclerk|devhub|iworq|citizenserve|etrakit|opengov|self[\s-]?service)\b/i.test(t)
     || /\bonline (?:application|submi\w*|filing|permit(?:ting)? (?:system|application))\b|\b(?:apply|submit(?:ted)?|file[ds]?) online\b/i.test(t))) return "portal";
