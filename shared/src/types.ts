@@ -2334,6 +2334,19 @@ export interface SubmitGateCheck {
   evidence: string[];
   nextAction: string;
   source: string;
+  /** A BLOCKER's items and the filings each one holds (backend/src/gateScope.ts — the one answer
+   *  the gate, Stage, Approve and prepareSubmission read). Absent = the blocker holds every filing
+   *  (an unknown never clears). */
+  holds?: SubmitGateHold[];
+}
+
+/** One blocking item of a gate check and the tracks whose filing it holds. */
+export interface SubmitGateHold {
+  label: string;
+  tracks: SubmittalTrackType[];
+  /** What to do about it, when it differs from the check's nextAction (the document check's
+   *  "Find official form or upload the blank" vs "attach"). */
+  action?: string;
 }
 
 export interface SubmitGateReport {

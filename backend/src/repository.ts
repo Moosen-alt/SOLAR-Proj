@@ -84,6 +84,7 @@ import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
 // shape as correctionAgent. getProjectList needs the rule table synchronously.
 import { compactNextStep, decideNextStep, loadNextStepFacts } from "./nextStep";
+import { correctionHoldScope, criticalFieldHoldScope, findingHoldScope, GATE_TRACKS, scopeHoldsTrack, tracksHeld, type GateHoldScope } from "./gateScope";
 import { addAuditLog } from "./audit";
 import { clientStagingOverlay, getClient, parseStateLicenses } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
@@ -3574,6 +3575,10 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
           ? `Waiting on the customer's utility bill for the ${waitingOnBill.join(" and ").toLowerCase()} number — upload it or send an intake request. The permit side can proceed.`
           : "Use this record as the source for every form, portal, and tracker.",
       source: "project.fields",
+      // Each missing field holds only the filings that ask for it — the scope prepareSubmission's
+      // own field gate uses (gateScope.criticalFieldHoldScope): an account number never holds the
+      // AHJ permit, the AHJ never holds the utility's application.
+      ...(missingCritical.length ? { holds: missingCritical.map((label) => ({ label: `Missing: ${label}`, tracks: tracksHeld(criticalFieldHoldScope(label)) })) } : {}),
     }),
     submitGateCheck({
       id: "submitting-client",
@@ -3657,6 +3662,8 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
           ? "Set the permit path on Manual entry → Permit path (prescriptive vs engineered) before staging the AHJ permit."
           : "Permit path is confirmed.",
         source: "permit.path",
+        // prepareSubmission asks the path only off the NEM lane.
+        ...(gatePermitPath === "unknown" ? { holds: [{ label: "Permit path not confirmed", tracks: tracksHeld("permit") }] } : {}),
       }),
     submitGateCheck({
       id: "qc-human-review",
@@ -3697,6 +3704,15 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       ],
       nextAction: reviewerBlockers.length || learnedHistoricalBlockers.length ? "Clear AHJ blocker callouts and learned historical gaps before staging." : reviewerWarnings.length || historicalMissing.length || blockedPermitSteps.length ? "Confirm warnings and checklist gaps with evidence." : "PermitFlow requirements are clear.",
       source: "requirements.reviewer.history",
+      // Each finding holds only the filings it is about (gateScope.findingHoldScope: a structural
+      // conflict holds the building permit, not the utility's application nor the separate
+      // electrical permit); a learned pattern by its own words (historicalBlockerScope).
+      ...(reviewerBlockers.length || learnedHistoricalBlockers.length ? {
+        holds: [
+          ...reviewerBlockers.map((f) => ({ label: f.title, tracks: tracksHeld(findingHoldScope(f)) })),
+          ...learnedHistoricalBlockers.map((item) => ({ label: `Historical blocker: ${item.title}`, tracks: tracksHeld(historicalBlockerScope(historicalReport, item)) })),
+        ],
+      } : {}),
     }),
     submitGateCheck({
       id: "ahj-nem-docs",
@@ -3754,6 +3770,14 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
             ? `All required documents are attached; staging fills the rest from stored templates: ${gateDocs.filledAtStaging.map((d) => d.label).join("; ")}.`
             : "All required documents are attached.",
       source: "documents.inventory",
+      // Each owed document holds the filings prepareSubmission's own filter says carry it
+      // (stagingMissingDocuments: lane, then discipline) — asked here once, for every track.
+      ...(gateDocs.owed.length ? {
+        holds: gateDocs.owed.map((d) => ({
+          label: d.label,
+          tracks: GATE_TRACKS.filter((t) => stagingMissingDocuments({ ...docInventory, missingBlocking: [d] }, t).length > 0),
+        })),
+      } : {}),
     }),
     submitGateCheck({
       id: "nem-preflight",
@@ -5573,6 +5597,14 @@ export function classifyCorrectionTrack(...parts: Array<string | null | undefine
 export function correctionOnTrack(want: "permit" | "nem", ...parts: Array<string | null | undefined>): boolean {
   const track = classifyCorrectionTrack(...parts);
   return track === want || track === "unclassified";
+}
+
+/** WHICH FILINGS A LEARNED HISTORICAL BLOCKER HOLDS (gates-proper C2): its own words and its
+ *  cause's, classified by classifyCorrectionTrack (strong signals only) — an unclassified item
+ *  holds every filing. The gate's permit-requirements check and prepareSubmission ask this. */
+export function historicalBlockerScope(report: HistoricalFailureReport, item: HistoricalFailureReport["checklist"][number]): GateHoldScope {
+  const cause = report.topRejectionCauses.find((c) => c.signature === item.sourceCauseSignature);
+  return correctionHoldScope(classifyCorrectionTrack(item.title, item.why, item.action, cause?.title, cause?.rootCause, cause?.requiredAction));
 }
 
 export async function reopenCorrectionOnPortal(
@@ -7640,11 +7672,16 @@ export async function prepareSubmission(
   // pending item hold staging?" let the gate go green while this 409 still refused.
   const pendingCount = detail.humanReviewItems.filter(isCriticalReviewItem).length;
   const reviewerReport = buildReviewerReportFor(db, detail.project);
-  const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker");
+  // ONLY THE FINDINGS THAT HOLD THIS FILING (gateScope — the answer the gate, Stage and Approve
+  // read): a structural conflict does not refuse the utility's application or the separate
+  // electrical permit. A trackless stage (null) is held by every finding.
+  const reviewerBlockers = reviewerReport.findings.filter((finding) => finding.severity === "blocker"
+    && scopeHoldsTrack(findingHoldScope(finding), track ?? null));
   const historicalReport = buildHistoricalFailureReport(db, projectId, null);
   const learnedHistoricalMissing = historicalReport.checklist.filter((item) => {
     const cause = historicalReport.topRejectionCauses.find((candidate) => candidate.signature === item.sourceCauseSignature);
-    return item.status === "missing" && Boolean(cause && cause.count > 0 && cause.severity === "blocker");
+    return item.status === "missing" && Boolean(cause && cause.count > 0 && cause.severity === "blocker")
+      && scopeHoldsTrack(historicalBlockerScope(historicalReport, item), track ?? null);
   });
   if (failCount > 0 || pendingCount > 0 || reviewerBlockers.length > 0 || learnedHistoricalMissing.length > 0) {
     throw new HttpError(409, "Submission staging blocked until QC failures, required human review items, and AHJ reviewer gate blockers are resolved.", {

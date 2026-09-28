@@ -143,6 +143,118 @@ await check("C3", "MUST-EXCLUDE: EXISTING stated twice with different amps still
   assert.equal(f[0].severity, "blocker");
 });
 
+// ── C2 ─────────────────────────────────────────────────────────────────────────────────
+// A structural design-criteria conflict (plan set vs structural letter — designCriteriaDocuments'
+// own MUST-PASS shape) held the utility's application and the approval of a staged NEM draft.
+const { getAutopilotState, runAutopilotApproval, gateBlockersForTracks } = await import("../src/autopilot");
+const { computeNextStep, loadFullNextStepFacts } = await import("../src/nextStep");
+const { requiredTracks } = await import("../src/submittalTracks");
+const { HttpError } = await import("../src/httpError");
+const scope = await import("../src/gateScope");
+const PLAN = ["STRUCTURAL NOTES:", "1. GROUND SNOW LOAD = 20 PSF", "2. WIND SPEED = 110 MPH", "3. EXPOSURE CATEGORY = C", "ROOF MOUNT PV ARRAY"];
+const LETTER = ["Structural analysis for the rooftop PV array.", "Design wind speed, Vult: 95 mph (3-sec gust)", "Wind exposure category: B", "Ground snow load, Pg : 28 psf"];
+const mkRun = (pid: string, status: string, permitType: string, startedAt: string): string => {
+  const runId = `run-gp-${++seq}`;
+  db.run(
+    `INSERT INTO portal_runs (id, project_id, portal_profile_id, run_type, status, started_at, error_message,
+       human_action_required, screenshots_path, logs_path, result_json, permit_type)
+     VALUES (?, ?, NULL, 'prepare_submit', ?, ?, '', 0, '', '', ?, ?)`,
+    [runId, pid, status, startedAt, JSON.stringify({ actor: "RecipeAdapter", ok: true }), permitType],
+  );
+  return runId;
+};
+const structuralConflictProject = async (): Promise<string> => {
+  const pid = mkProject();
+  await uploadTextPdf(pid, "plan_set", PLAN);
+  await uploadTextPdf(pid, "structural_letter", LETTER);
+  const f = findingOf(pid, "city.struct.design-criteria-conflict");
+  if (!f || f.severity !== "blocker") throw new Error(`fixture: the structural conflict did not fire as a blocker (${f?.severity})`);
+  return pid;
+};
+/** The 409 prepareSubmission raises for reviewer findings on this track, or null when it raised none. */
+const reviewerRefusal = async (pid: string, track: "nem" | "building" | "electrical" | "combo"): Promise<string[] | null> => {
+  try { await prepareSubmission(pid, track); return null; } catch (err) {
+    if (err instanceof HttpError && err.status === 409) {
+      const d = (err.details ?? {}) as Record<string, unknown>;
+      const titles = Array.isArray(d.reviewerBlockers) ? d.reviewerBlockers.map(String) : [];
+      return titles.length ? titles : null;
+    }
+    return null; // any other refusal (documents, adapter) is not the reviewer gate's
+  }
+};
+const prepareSubmission = (pid: string, track: "nem" | "building" | "electrical" | "combo") => repo.prepareSubmission(db, pid, track, false);
+const permitTrackOf = (pid: string): "building" | "combo" => (requiredTracks(repo.getProjectDetail(db, pid).project).includes("combo") ? "combo" : "building");
+
+await check("C2", "KILL (real path): a structural conflict does not hold the NEM track — Stage names only the permit filing and says NEM can go alone", async () => {
+  const pid = await structuralConflictProject();
+  const s = getAutopilotState(db, pid);
+  assert.ok(s.stageDisabledReason, "the permit filing is still held");
+  assert.doesNotMatch(s.stageDisabledReason!.split(":")[0], /\bnem\b/, s.stageDisabledReason!);
+  assert.match(s.stageDisabledReason!, /nem track\(s\) can be staged on their own/);
+});
+await check("C2", "KILL (real path): prepareSubmission's NEM stage is not refused by the structural finding", async () => {
+  const pid = await structuralConflictProject();
+  const refusal = await reviewerRefusal(pid, "nem");
+  assert.ok(!refusal || !refusal.some((t) => /Design criteria conflict/.test(t)), `NEM refused by: ${refusal?.join(", ")}`);
+});
+await check("C2", "MUST-EXCLUDE (real path): the building-side stage IS still refused by the structural finding", async () => {
+  const pid = await structuralConflictProject();
+  const refusal = await reviewerRefusal(pid, permitTrackOf(pid));
+  assert.ok(refusal && refusal.some((t) => /Design criteria conflict/.test(t)), `not refused: ${refusal}`);
+});
+await check("C2", "KILL (real path): a staged NEM draft is approvable over a structural finding — panel, Approve button and approval route agree", async () => {
+  const pid = await structuralConflictProject();
+  const combo = mkRun(pid, "awaiting_human_submit", permitTrackOf(pid), "2026-09-20T09:00:00.000Z");
+  repo.captureConfirmation(db, combo, { applicationNumber: "APP-GP-1", confirmationNumber: "C-GP-1", submittedBy: "test operator" });
+  mkRun(pid, "awaiting_human_submit", "nem", "2026-09-20T10:00:00.000Z");
+  db.run("UPDATE projects SET status = 'awaiting_human_submit', stage_detail = 'staged_for_review' WHERE id = ?", [pid]);
+  const s = getAutopilotState(db, pid);
+  assert.equal(s.canApprove, true, `refused: ${s.approveDisabledReason}`);
+  const step = computeNextStep(db, pid);
+  assert.equal(step.key, "staged_awaiting_submit", step.headline);
+  assert.equal(step.button?.id, "approveSubmitBtn", "the next step hides Approve");
+  let err: unknown = null;
+  try { await runAutopilotApproval(db, pid, { approverName: "Test Approver", track: "nem" }); } catch (e) { err = e; }
+  assert.ok(!(err instanceof HttpError && /reviewer gate still has blockers/.test(err.message)), `approval route refused: ${err instanceof Error ? err.message : err}`);
+});
+await check("C2", "MUST-EXCLUDE (real path): a staged building-side draft is NOT approvable over the same finding", async () => {
+  const pid = await structuralConflictProject();
+  mkRun(pid, "awaiting_human_submit", permitTrackOf(pid), "2026-09-20T10:00:00.000Z");
+  db.run("UPDATE projects SET status = 'awaiting_human_submit', stage_detail = 'staged_for_review' WHERE id = ?", [pid]);
+  const s = getAutopilotState(db, pid);
+  assert.equal(s.canApprove, false);
+  assert.match(String(s.approveDisabledReason), /reviewer gate/);
+  await assert.rejects(runAutopilotApproval(db, pid, { approverName: "Test Approver", track: permitTrackOf(pid) }), /reviewer gate still has blockers/);
+});
+await check("C2", "one predicate: scopes by category — structural->building side, electrical->electrical + NEM (not rapid shutdown), utility->NEM, unknown->all", () => {
+  const holds = (id: string, category: string) => scope.tracksHeld(scope.findingHoldScope({ id, category } as never));
+  assert.deepEqual(holds("city.struct.design-criteria-conflict", "structural"), ["building", "combo", "permit"]);
+  assert.deepEqual(holds("city.elec.service-rating-mismatch", "electrical"), ["nem", "electrical", "combo", "permit", "mpu"]);
+  assert.deepEqual(holds("city.elec.rapid-shutdown-missing", "electrical"), ["electrical", "combo", "permit", "mpu"]);
+  assert.deepEqual(holds("reviewer.utility.meter-mismatch", "utility_nem"), ["nem"]);
+  assert.deepEqual(holds("city.fire.pathways-missing", "plan_set"), ["building", "combo", "permit"]);
+  // MUST-EXCLUDE: anything the predicate does not recognise holds every filing, and a null track is always held.
+  assert.deepEqual(holds("reviewer.plan.site", "plan_set"), [...scope.GATE_TRACKS]);
+  assert.deepEqual(holds("something.new", "ai_review"), [...scope.GATE_TRACKS]);
+  assert.deepEqual(holds("reviewer.core.dc", "project_data"), [...scope.GATE_TRACKS]);
+  assert.equal(scope.scopeHoldsTrack("building", null), true);
+});
+await check("C2", "KILL (real path): a missing account number holds only the utility filing (the scope prepareSubmission's own field gate uses)", async () => {
+  const pid = mkProject({ account: "" });
+  // A bill on file makes the missing account a blocker, not the "waiting on the bill" warning.
+  saveProjectDocument(db, pid, { docType: "utility_bill", filename: "bill.pdf", contentType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n% bill\n", "utf8"), source: "upload" });
+  const gateReport = repo.getSubmitGateReport(db, pid);
+  const spr = gateReport.checks.find((c) => c.id === "single-project-record")!;
+  assert.equal(spr.status, "blocker", spr.nextAction);
+  assert.deepEqual(spr.holds?.map((h) => h.tracks), [["nem"]]);
+  const facts = loadFullNextStepFacts(db, pid);
+  const project = repo.getProjectDetail(db, pid).project;
+  const heldIds = (t: "nem" | "building" | "combo") => gateBlockersForTracks(db, project, facts.gate, [t]).map((b) => b.id);
+  assert.ok(!heldIds(permitTrackOf(pid)).includes("single-project-record"), `the permit filing is held by: ${heldIds(permitTrackOf(pid)).join(", ")}`);
+  // MUST-EXCLUDE: the utility filing IS held by it.
+  assert.ok(heldIds("nem").includes("single-project-record"), `NEM held by: ${heldIds("nem").join(", ")}`);
+});
+
 // ── summary ────────────────────────────────────────────────────────────────────────────
 console.log("");
 for (const [section, r] of Object.entries(results)) console.log(`  ${section}: ${r.ok}/${r.ok + r.fail} passed`);
