@@ -65,6 +65,10 @@ export function kindForSlot(text: string | undefined | null): LicenceKind | "gen
   if (/home\s+improvement|\bhic\b/.test(t)) return "home_improvement_contractor";
   // A supervising / master electrician is a PERSON's licence — "Electrical Supervisor" included.
   if (/\belectrician\b|\belectrical\s+supervisor\b|\bsupervising\s+electric/.test(t)) return "master_electrician";
+  // THE CCB NAMES ITS LICENCE OUTRIGHT (Oregon's Construction Contractors Board — the contractor
+  // licence), read BEFORE the trade words: an "Electrical Contractor CCB #" box asks for the electrical
+  // contractor's CCB number, never the BCD electrical licence.
+  if (/\bccb\b/.test(t)) return "contractor";
   if (/business\s+(licen[cs]e|lic\b|registration)|secretary\s+of\s+state|\bubi\b/.test(t)) return "business_registration";
   // TECL = Texas Electrical Contractor Licence.
   if (/\belectrical\b.*\b(licen[cs]e|lic|contractor|registration|no|number)\b|\belectrical\s+contractor|\belec\b\.?\s*lic|\bec\s*(licen[cs]e|lic|#|no\b|number)|\btecl\b/.test(t)) return "electrical_contractor";

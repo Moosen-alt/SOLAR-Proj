@@ -303,6 +303,8 @@ await check("MUST-PASS (Oregon, no false stop): CCB / generic / electrical label
     ["License Number", N.orCcb, "ccbLicenseNumber"],
     ["Electrical License #", N.orBcd, "electricalLicenseNumber"],
     ["Supervising Electrician License #", N.orElectrician, "electricianLicenseNumber"],
+    // A box that names the CCB asks for the CCB, whatever trade it sits under.
+    ["Electrical Contractor CCB #", N.orCcb, "ccbLicenseNumber"],
   ];
   for (const [label, value, want] of cases) {
     const r = bindOne(label, value, v);
@@ -332,8 +334,9 @@ await check("MUST-EXCLUDE (replay binding R9): a generic label, an Oregon CCB la
   const generic = { action: "fill", selector: { label: "License Number" }, field: "ccbLicenseNumber", note: "x" } as RecipeStep;
   const ccb = { action: "fill", selector: { label: "CCB #" }, field: "ccbLicenseNumber", note: "x" } as RecipeStep;
   const holder = { action: "fill", selector: { label: "Supervising Electrician Name" }, field: "electricalSupervisorName", note: "x" } as RecipeStep;
-  const b = replayBind(alphaOr, "electrical", [generic, ccb, holder]);
-  assert.deepEqual(b.steps.map((s) => s.field), ["ccbLicenseNumber", "ccbLicenseNumber", "electricalSupervisorName"]);
+  const elecCcb = { action: "fill", selector: { label: "Electrical Contractor CCB #" }, field: "ccbLicenseNumber", note: "x" } as RecipeStep;
+  const b = replayBind(alphaOr, "electrical", [generic, ccb, holder, elecCcb]);
+  assert.deepEqual(b.steps.map((s) => s.field), ["ccbLicenseNumber", "ccbLicenseNumber", "electricalSupervisorName", "ccbLicenseNumber"]);
   assert.equal(b.changes.length, 0, JSON.stringify(b.changes));
 });
 await check("MUST-PASS (the replay adapter itself): 'CSL Number' bound to ccbLicenseNumber types the CSL — never the EC or the contractor number", async () => {
