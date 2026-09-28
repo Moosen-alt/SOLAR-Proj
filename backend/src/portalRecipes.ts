@@ -1434,6 +1434,15 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   installerStreet: "Installer company street address only",
   installerCityStateZip: "Installer company city, state, zip (no street)",
   installerContactName: "Installer contact person full name",
+  // The contact person's parts and the company's address parts, each its own key: a contact dialog
+  // asks them in separate boxes (Accela: First / Last, City / State / Zip). Catalogued so a box bound
+  // to one stays BINDABLE on a job whose client happens to lack the value today (bindableFields),
+  // rather than freezing the learn job's literal.
+  installerFirstName: "Installer contact person first (given) name only",
+  installerLastName: "Installer contact person last (family) name only",
+  installerCity: "Installer company city (its own box)",
+  installerState: "Installer company state, 2-letter (its own box)",
+  installerZip: "Installer company zip/postal code (its own box)",
   // A LICENCE IS A STATE'S AND A PERMIT'S (clients.licenceOverlay). Oregon: the CCB. Elsewhere the
   // contractor licence THIS permit takes in the job's state — never Oregon's CCB.
   ccbLicenseNumber: "Contractor license number for THIS job's state and permit (Oregon: the CCB number; elsewhere the state's contractor licence this permit takes)",

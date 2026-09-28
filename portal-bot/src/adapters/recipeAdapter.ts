@@ -11,6 +11,7 @@ import { feeBracketCoverage, feeBracketCoverageMessage, decideFeeTier, FEE_TIER_
 const FEE_TIER_NO_BOX_REASON = "the recorded kVA tier box was not found on this page and no kVA-labelled box could be read";
 import { collectPortalErrorBanner } from "../safeAction";
 import { SERVICE_FEEDER_200A_FIELD, SERVICE_FEEDER_400A_FIELD, isServiceFeeder200Label, isServiceFeeder400Label } from "../../../shared/src/serviceLineLabels";
+import { contactFieldKind, contactKeyFor, contactRoleOfStep, type ContactFieldKind, type ContactRole, type ContactTrack } from "../../../shared/src/contactRoles";
 import { structureTypeMeaning } from "../../../backend/src/permitProcess";
 
 // A RECORDED ANSWER THAT DESCRIBES A PROJECT OR A PERSON BELONGS TO THAT PROJECT.
@@ -437,6 +438,8 @@ export class RecipeAdapter extends BasePortalAdapter {
   private feeTierFilled = new Map<string, string>();
   /** Pages whose service-line boxes were already read (fillUnrecordedServiceBoxes). */
   private serviceBoxesRead = new Set<string>();
+  /** The contact section whose dialog is open (trackContactBlock), or null. */
+  private contactBlock: { role: ContactRole | null } | null = null;
   /** Wall-clock marks of the phases before the first recorded step (open, goto, login) — the part
    *  of a run the trace never covered (live run 99baa5d0 spent ~3 min there with no evidence). */
   private phaseTimings: Array<{ phase: string; ms: number; note?: string }> = [];
@@ -3272,6 +3275,9 @@ export class RecipeAdapter extends BasePortalAdapter {
   private static readonly WRITE_ACTIONS: ReadonlySet<string> = new Set(["fill", "select", "check", "uncheck", "upload"]);
 
   private async executeStepInner(step: RecipeStep, pastReview: boolean): Promise<boolean> {
+    // ONE CONTACT, ONE IDENTITY at replay (see trackContactBlock) — before the step runs, so a
+    // dialog Continue is preceded by the dialog made the section identity.
+    await this.trackContactBlock(step).catch(() => null);
     // AN ADDRESS-ROW STEP HAS NO SELECTOR WORTH TRYING, so do not spend 30 seconds proving
     // it. The generic pass records a marker that exists only during the learn click - by
     // design, so the matcher gets its turn - and Playwright treats a selector that resolves
@@ -5160,7 +5166,16 @@ export class RecipeAdapter extends BasePortalAdapter {
     // the live portal: PacifiCorp refuses silently, so six advances "left the page
     // unchanged" and were all waved through as in-page actions. Requiring EVERY click to
     // move the page is too strong and broke the Accela replay smoke outright.
-    const isAdvance = /^advance\b/i.test(String(step.note ?? "").trim());
+    // A CONTACT DIALOG IS NOT A PAGE. The learner records a planner's click on a section's opener
+    // ("Select from Account", "Add New", "Edit") and a dialog's own "Continue" as "advance: …"
+    // (live City of Corvallis electrical, 2026-09-28) — but opening, paging and saving a dialog in
+    // its iframe never changes the MAIN page's identity, so every replay of that recipe stopped at
+    // "the portal did not advance". A step that targets a dialog frame, or that opens a contact
+    // section's dialog, is an in-page action; the main page's own advance ("Continue Application")
+    // is still held to moving.
+    const words = `${step.selector?.name ?? ""} ${step.selector?.text ?? ""} ${step.selector?.label ?? ""} ${step.note ?? ""}`;
+    const dialogStep = !!step.selector?.frame || /\b(?:add new|select from account|edit)\b/i.test(words);
+    const isAdvance = /^advance\b/i.test(String(step.note ?? "").trim()) && !dialogStep;
     if (!blockers.length && !isAdvance) {
       // ASK THE SECOND QUESTION BEFORE GIVING UP ON THE ANSWER. The page did not move; did
       // anything happen at all? A total that filled, a row that appeared, an option list that
@@ -6056,6 +6071,108 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
     }
     return true;
+  }
+
+  /** ONE CONTACT, ONE IDENTITY — AT REPLAY. The replay twin of the learner's dialog guard
+   *  (autoLearnAdapter.enforceContactDialogIdentity). R10 (recipeReplayBinding) can only rebind
+   *  steps that EXIST; the Corvallis electrical recipe saved on 2026-09-28 opens the Applicant
+   *  dialog through Select from Account, whose account contact PREFILLS the homeowner's name,
+   *  address and e-mail, and records only the phone — so the replay would save the same mix.
+   *
+   *  So: a main-page click on a contact section's opener (Add New / Select from Account / Edit)
+   *  opens a block whose identity is the section's (the step's role mark, its ACA control id, its
+   *  recorded heading — shared contactRoles.contactRoleOfStep); any other main-page step closes it.
+   *  Before the block's dialog Continue/Save is clicked, every name / business / address / e-mail /
+   *  phone box in that dialog is set to THIS project's value for the section's identity, and a box
+   *  still holding the other identity's value for a part this identity lacks is cleared. A block
+   *  whose section says nothing is left exactly as recorded. */
+  private async trackContactBlock(step: RecipeStep): Promise<void> {
+    const frame = step.selector?.frame;
+    const words = `${step.selector?.name ?? ""} ${step.selector?.text ?? ""} ${step.selector?.label ?? ""} ${step.note ?? ""}`;
+    const track: ContactTrack = this.recipe.scopeType === "utility" ? "nem" : "permit";
+    if (!frame) {
+      if (step.action === "click" && /\b(?:add new|select from account|edit|add (?:a |new )?contact)\b/i.test(words)) {
+        this.contactBlock = { role: contactRoleOfStep(step, { track }) };
+      } else if (step.action !== "waitFor") {
+        this.contactBlock = null;
+      }
+      return;
+    }
+    if (step.action === "click" && this.contactBlock?.role && /\b(?:continue|save|submit|ok)\b/i.test(words)) {
+      await this.enforceReplayContactDialog(frame, this.contactBlock.role).catch(() => 0);
+    }
+  }
+
+  private async enforceReplayContactDialog(frameName: string, role: ContactRole): Promise<number> {
+    const page = this.page;
+    if (!page || typeof page.frame !== "function") return 0;
+    const frame = page.frame({ name: frameName });
+    if (!frame || typeof frame.evaluate !== "function") return 0;
+    const boxes = await frame.evaluate(() => {
+      // NO named functions in here (keepNames → __name).
+      const out: Array<{ id: string; label: string; tag: string; value: string; text: string }> = [];
+      const els = Array.from(document.querySelectorAll("input:not([type]), input[type='text'], input[type='email'], input[type='tel'], select")) as Array<HTMLInputElement | HTMLSelectElement>;
+      for (const el of els) {
+        if (el.disabled || (el as HTMLInputElement).readOnly) continue;
+        const r = el.getBoundingClientRect();
+        const st = window.getComputedStyle(el);
+        if (!(r.width > 0 && r.height > 0) || st.display === "none" || st.visibility === "hidden") continue;
+        const id = el.id || "";
+        if (!id) continue;
+        let label = "";
+        const lab = document.querySelector(`label[for="${(window as unknown as { CSS: { escape: (s: string) => string } }).CSS.escape(id)}"]`) as HTMLElement | null;
+        if (lab) label = lab.innerText || lab.textContent || "";
+        if (!label.trim()) label = el.getAttribute("aria-label") || el.getAttribute("title") || "";
+        label = label.replace(/\s+/g, " ").trim();
+        if (!label) continue;
+        const isSelect = el.tagName === "SELECT";
+        const text = isSelect ? String(((el as HTMLSelectElement).options[(el as HTMLSelectElement).selectedIndex] || { textContent: "" }).textContent || "").trim() : "";
+        out.push({ id, label, tag: isSelect ? "select" : "input", value: String(el.value || ""), text });
+      }
+      return out;
+    }).catch(() => [] as Array<{ id: string; label: string; tag: string; value: string; text: string }>);
+    const kinds = (Array.isArray(boxes) ? boxes : [])
+      .map((b) => ({ ...b, kind: contactFieldKind(b.label) }))
+      .filter((b): b is typeof b & { kind: ContactFieldKind } => b.kind !== null);
+    if (new Set(kinds.map((b) => b.kind)).size < 2) return 0;
+    const other: ContactRole = role === "company" ? "owner" : "company";
+    const norm = (kind: ContactFieldKind, s: string) => kind === "phone" ? s.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "")
+      : kind === "zip" ? s.replace(/\D/g, "").slice(0, 5)
+      : s.toLowerCase().replace(/[^a-z0-9@.]/g, "");
+    const holds = (kind: ContactFieldKind, b: { value: string; text: string }, v: string) =>
+      [b.value, b.text].some((x) => x.trim() && norm(kind, x) === norm(kind, v));
+    let fixed = 0;
+    for (const b of kinds) {
+      const key = contactKeyFor(role, b.kind);
+      const want = key ? String(this.fieldValues[key] ?? "").trim() : "";
+      const otherKey = contactKeyFor(other, b.kind);
+      const otherVal = otherKey ? String(this.fieldValues[otherKey] ?? "").trim() : "";
+      const loc = frame.locator(`[id="${b.id}"]`).first();
+      if (!want) {
+        if (b.tag !== "select" && otherVal && holds(b.kind, b, otherVal)) {
+          if (await loc.fill("", { timeout: FILL_TIMEOUT_MS }).then(() => true).catch(() => false)) fixed++;
+        }
+        continue;
+      }
+      if (holds(b.kind, b, want)) continue;
+      let ok = false;
+      if (b.tag === "select") {
+        ok = await loc.selectOption(want).then(() => true).catch(async () => loc.selectOption({ label: want }).then(() => true).catch(() => false));
+      } else if (b.kind === "phone" || b.kind === "zip") {
+        // Masked boxes validate KEYSTROKES (the learner's typeMasked).
+        const typed = b.kind === "zip" ? want.replace(/\D/g, "").slice(0, 5) || want : want;
+        await loc.fill("", { timeout: FILL_TIMEOUT_MS }).catch(() => null);
+        ok = await loc.pressSequentially(typed, { delay: 25 }).then(() => true).catch(() => false);
+      } else {
+        ok = await loc.fill(want, { timeout: FILL_TIMEOUT_MS }).then(() => true).catch(() => false);
+      }
+      if (ok) { fixed++; await loc.blur?.().catch(() => null); }
+    }
+    if (fixed) {
+      const who = role === "company" ? "the filing company" : "the property owner";
+      this.agingNotes.push(`contact dialog made ONE identity (${who}) before its Continue: ${fixed} box(es) set to this project's ${who} (the recorded fills or the portal's prefill held another identity's values)`);
+    }
+    return fixed;
   }
 
   /** F1b — A SERVICE-LINE QUANTITY BOX THE RECIPE NEVER RECORDED is read off the page.

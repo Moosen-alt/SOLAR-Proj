@@ -34,9 +34,10 @@
 import "../smokeArtifactDirs"; // artifact dirs default to a temp folder, never data/
 import http from "node:http";
 import { chromium, type Page } from "playwright";
-import type { RecipeStep } from "../../../shared/src/types";
+import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../../shared/src/types";
 import { planContactSections, contactKeyRole } from "../../../shared/src/contactRoles";
 import { AutoLearnAdapter, EXTRACT_SEL, toExtractedField, type ContactIdentity, type ExtractedField, type LearnPlanner } from "./autoLearnAdapter";
+import { RecipeAdapter } from "./recipeAdapter";
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -331,6 +332,49 @@ console.log("\nG. MUST EXCLUDE: a dialog whose section names no identity is left
   const fixed = await a.enforceContactDialogIdentity(fields, steps, 4, url, "ACADialogFrame");
   check("G: nothing corrected, nothing recorded, and the reason is said", fixed === 0 && steps.length === 0 && (await dlgValue("txtAppFullName")) === "Robin Resident" && events.some((e) => e.type === "contact_identity_unknown"),
     `fixed=${fixed} steps=${steps.length} full=${await dlgValue("txtAppFullName")}`);
+}
+
+// ── H. THE REPLAY of the recipe the live run saved: Select from Account → the account's prefill →
+//       only the phone recorded → Continue. R10 has nothing to rebind; the replay's dialog guard
+//       must make the dialog the company's before the recorded Continue. ────────────────────────
+console.log("\nH. MUST PASS: replaying the saved shape (account prefill, phone only) files the COMPANY, never the mix");
+{
+  const fv: Record<string, string> = {
+    installerContactName: COMPANY.fullName!, installerCompanyName: COMPANY.companyName!, installerFirstName: COMPANY.firstName!, installerLastName: COMPANY.lastName!,
+    installerStreet: COMPANY.street!, installerCity: COMPANY.city!, installerState: COMPANY.state!, installerZip: COMPANY.zip!,
+    installerEmail: COMPANY.email!, installerPhone: COMPANY.phone!,
+    homeownerName: OWNER.fullName!, homeownerEmail: OWNER.email!, homeownerPhone: OWNER.phone!, street: OWNER.street!, city: OWNER.city!, state: OWNER.state!, zip: OWNER.zip!,
+  };
+  const replayOn = async (path: string, key: string): Promise<{ card: string; data: string }> => {
+    const url = `${base}${path}`;
+    const steps: RecipeStep[] = [
+      { action: "goto", value: url, note: "entry url" },
+      { action: "click", selector: { role: "link", name: "Select from Account", exact: true, fallbacks: [{ css: `#ctl00_PlaceHolderMain_${key}Edit_btnSelectFromAccount` }] }, note: "advance: Select from Account" },
+      { action: "fill", selector: { label: "Contact Phone:", frame: "ACADialogFrame" }, field: "installerPhone", note: "Contact Phone:" },
+      { action: "click", selector: { role: "button", name: "Continue", frame: "ACADialogFrame" }, note: "advance: Continue" },
+      { action: "stopForReview" } as RecipeStep,
+    ];
+    const recipe = {
+      id: "contact-replay", scopeType: "ahj", profileKey: "or|city of fernhollow|", state: "OR", ahj: "City of Fernhollow", utility: "",
+      portalPlatform: "accela", portalUrl: url, status: "complete", version: 1, createdBy: "smoke", createdAt: "", updatedAt: "", notes: "", discipline: "electrical", steps,
+    } as unknown as PortalRecipe;
+    await page.goto(url);
+    const adapter = new RecipeAdapter(recipe, { __replayBlank: "", ...fv }, {}, {});
+    (adapter as unknown as { page: unknown }).page = page;
+    let data = "";
+    try { const r = await adapter.fillApplication({} as ProjectRecord); data = JSON.stringify(r.data ?? {}) + String(r.message ?? ""); }
+    catch (e) { data = `threw ${String(e).slice(0, 200)}`; }
+    if (process.env.SMOKE_DEBUG) console.log("   [debug]", data.slice(-900));
+    return { card: await cardText(key), data };
+  };
+  const h = await replayOn("/Cap/CapEdit.aspx", "Applicant_9479");
+  check("H: the saved Applicant is the COMPANY's contact — no homeowner name, address or e-mail",
+    /Casey Contact/.test(h.card) && /Fernhollow Solar LLC/.test(h.card) && /permits@fernhollow\.example/.test(h.card) && !/Robin|Resident|robin@example\.com|9 Elm/.test(h.card),
+    `card=${h.card} data=${h.data.slice(0, 300)}`);
+  check("H: the run says the dialog was made one identity", /made ONE identity/.test(h.data), h.data.slice(0, 300));
+  const hx = await replayOn("/Cap/Other/CapEdit.aspx", "Contact3_9490");
+  check("H MUST EXCLUDE: a section whose heading names no identity replays exactly as recorded (the prefill stays)",
+    /Robin Resident/.test(hx.card) && !/made ONE identity/.test(hx.data), `card=${hx.card}`);
 }
 
 await browser.close();
