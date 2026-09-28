@@ -88,7 +88,7 @@ async function main(): Promise<void> {
   if (!row) { console.error(`Demo project ${t.projectId} not found.`); return; }
   const detail = getProjectDetail(db, row.id);
   const scope = recipe.scopeType === "utility" ? "utility" : "AHJ";
-  const fieldValues = resolveRecipeFieldValues(db, detail.project, scope);
+  const fieldValues = resolveRecipeFieldValues(db, detail.project, scope, recipe.scopeType === "utility" ? "nem" : null);
   const cred = getDecryptedCredentialByUrl(db, CLIENT, recipe.portalUrl || "") ?? undefined;
 
   bar(`▶  ${t.title}`);

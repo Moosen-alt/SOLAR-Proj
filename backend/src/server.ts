@@ -1811,7 +1811,9 @@ app.delete("/api/portal-pauses/:id", (req, res) => {
 app.get("/api/projects/:id/staging-field-values", (req, res) => {
   const detail = getProjectDetail(db, String(req.params.id));
   const portalType = String(req.query.portalType || "");
-  res.json({ fieldValues: resolveRecipeFieldValues(db, detail.project, portalType) });
+  // The filing being recorded (the licence keys are that permit's): ?track=building|electrical|combo|nem.
+  const track = typeof req.query.track === "string" && req.query.track.trim() ? req.query.track.trim() : null;
+  res.json({ fieldValues: resolveRecipeFieldValues(db, detail.project, portalType, track) });
 });
 // Launch a headed portal-record session on this machine. The recorder
 // (portal-bot/src/recordRecipe.ts) opens a Playwright browser AND blocks on
@@ -1928,7 +1930,8 @@ app.post("/api/portal-recipes/:id/suggest-bindings", asyncHandler(async (req, re
     try {
       const detail = getProjectDetail(db, projectId);
       const portalType = String(req.body?.portalType || "");
-      fieldValues = resolveRecipeFieldValues(db, detail.project, portalType);
+      const track = typeof req.body?.track === "string" && req.body.track.trim() ? String(req.body.track).trim() : null;
+      fieldValues = resolveRecipeFieldValues(db, detail.project, portalType, track);
     } catch { /* proceed with empty map; all suggestions will be null */ }
   }
   const unbound = steps

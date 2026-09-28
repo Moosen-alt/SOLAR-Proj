@@ -6,12 +6,15 @@ import { PDFDocument, PDFName, PDFRadioGroup, StandardFonts, rgb } from "pdf-lib
 import type { ProjectRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
-import { clientStagingOverlay, contractorLicenceForClient } from "./clients";
+import { clientLicenceRow, clientStagingOverlay, kindForSlot, licenceFor, type LicenceClient } from "./clients";
+import type { LicenceAnswer } from "../../shared/src/types";
+import { requiredTracks } from "./submittalTracks";
+import { planSetLicenceWarning, planSetPrintedLicences } from "./clientMatch";
 import type { CaptionSide, LabelItem, WidgetCaptions, WidgetRect } from "./formTextLayer";
 import {
-  attestsAttachedDocument, contactShapeRefusal, isLicenceHolderSlot, isTotalRow, isValuationSlot, operatorItemLabels,
-  OREGON_CCB_SOURCE, signerNameConflicts, STATE_LICENCE_SOURCE, widgetContactKind, widgetLabel,
-  type OperatorItem, type PlacedWidget,
+  attestsAttachedDocument, contactShapeRefusal, isLicenceHolderSlot, isTotalRow, isValuationSlot, licenceSourceRef, operatorItemLabels,
+  OREGON_CCB_SOURCE, signerNameConflicts, slotLicenceRef, STATE_LICENCE_SOURCE, TYPED_LICENCE_PREFIX, widgetContactKind, widgetLabel,
+  type LicenceSourceRef, type OperatorItem, type PlacedWidget,
 } from "./formFieldChecks";
 import { HttpError } from "./httpError";
 import { loadDefaultSignaturesByRole } from "./signatures";
@@ -33,7 +36,7 @@ import { documentFetchDisabled } from "./documentFetch";
 import {
   agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce,
   applicationKindForPath, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
-  TRACK_FORM_TYPES, tracksIssuedByOther,
+  TRACK_FORM_TYPES, trackForFormType, tracksIssuedByOther,
 } from "./applicationDocsAgency";
 
 /** Which of the two MUTUALLY EXCLUSIVE building-side applications a permit path calls
@@ -234,6 +237,10 @@ export interface AhjFormDefinition {
    *  signature, a licence holder is not the applicant) re-run at fill on these; a human-verified
    *  map is what a person confirmed and is filled as written (hard rule 3). Never persisted. */
   unverifiedMap?: boolean;
+  /** Runtime-only: the permit this form is for — "building" / "electrical" from its form type
+   *  (applicationDocsAgency.trackForFormType), "permit" for a generic permit application, null when
+   *  the form names none. A generic licence source resolves by it. Never persisted. */
+  formTrack?: string | null;
 }
 
 // The registry. Seed with verified forms as field maps are confirmed via the
@@ -249,6 +256,7 @@ export const ahjFormRegistry: AhjFormDefinition[] = [
     // This is a flat (non-AcroForm) PDF; values are drawn at coordinates derived
     // from the form's own label baselines (US Letter, 612x792, y from bottom).
     fillMode: "overlay",
+    formTrack: "electrical",
     textFields: {},
     overlayFields: [
       // Type of work + Category of construction: mark "Other" and write "Solar"
@@ -401,6 +409,27 @@ export interface FillContext {
   // blank's own hash) — set per form by fillLoadedForm, never shared across forms. The electrical*
   // fee sources fall back to it only where no saved electrical fee line is on file.
   printedFeeLadder?: PrintedFeeLadder | null;
+  // THIS PROJECT'S CLIENT'S LICENCES (clients.licenceFor — the one answer). Set by buildContext;
+  // absent on a hand-built context, where the client.* keys are read as given.
+  licences?: FillLicences;
+  // The track of the form being filled (applicationDocsAgency.trackForFormType of its form type) —
+  // set per form by fillLoadedForm; a generic licence source resolves by it.
+  formTrack?: string | null;
+}
+
+/** The licence book a fill reads: the project's own client only (null = no client). */
+export interface FillLicences {
+  client: LicenceClient;
+  state: string;
+  companyName: string;
+  /** The project's permit tracks (submittalTracks.requiredTracks, minus NEM) — a generic slot on a
+   *  form whose own track is unknown resolves by the project's single permit track when it has one. */
+  projectTracks: string[];
+  /** The plan set's printed title-block licence numbers (snapshot.planSetInstaller), a REFERENCE
+   *  for the operator only — never filled into anything. */
+  planSetLicences: string[];
+  /** "the plan set's licence belongs to <other company>…" when it does (clientMatch). */
+  planSetWarning: string;
 }
 
 function str(v: unknown): string {
@@ -877,8 +906,12 @@ export function resolveSource(source: FieldSource, ctx: FillContext): string {
   switch (scope) {
     case "project":
       return str((ctx.project as unknown as Record<string, unknown>)[key]);
-    case "client":
-      return str(ctx.client[key]);
+    case "client": {
+      // A typed licence source / the generic state licence resolve through clients.licenceFor (the
+      // one answer) for this form's track; everything else is the overlay key as given.
+      const lic = ctx.licences ? licenceSourceValue(source, ctx) : null;
+      return lic ?? str(ctx.client[key]);
+    }
     case "snapshot":
       return str(ctx.snapshot[key]);
     case "computed":
@@ -888,21 +921,69 @@ export function resolveSource(source: FieldSource, ctx: FillContext): string {
   }
 }
 
+/** The generic licence's track for the form being filled: the form's own track (its form type);
+ *  a generic permit application takes the project's combo filing when it has one, else the
+ *  building side; a form with no track takes the project's single permit track, else unknown. */
+function fillLicenceTrack(ctx: FillContext): string | null {
+  const ft = String(ctx.formTrack ?? "");
+  if (ft === "building" || ft === "electrical" || ft === "combo") return ft;
+  const tracks = ctx.licences?.projectTracks ?? [];
+  if (ft === "permit") return tracks.includes("combo") ? "combo" : "building";
+  return tracks.length === 1 ? tracks[0] : null;
+}
+
+/** The licence answer a licence source asks for, on this fill (null for a source that is not one). */
+export function licenceAnswerFor(ref: LicenceSourceRef, ctx: FillContext): LicenceAnswer | null {
+  const L = ctx.licences;
+  if (!L) return null;
+  return ref.kind === "generic"
+    ? licenceFor(L.client, L.state, { track: fillLicenceTrack(ctx) })
+    : licenceFor(L.client, L.state, ref.kind);
+}
+
+/** A typed licence source (client.stateLicence.<kind>[.expires|.holder]) or the generic state
+ *  licence, resolved by licenceFor; null for every other source (read from the overlay as given). */
+function licenceSourceValue(source: string, ctx: FillContext): string | null {
+  if (source !== STATE_LICENCE_SOURCE && !source.startsWith(TYPED_LICENCE_PREFIX)) return null;
+  const ref = licenceSourceRef(source);
+  if (!ref) return "";
+  const a = licenceAnswerFor(ref, ctx);
+  if (!a) return null;
+  return ref.field === "expires" ? (a.number ? a.expires : "") : ref.field === "holder" ? a.holder : a.number;
+}
+
 export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
   // Reuse the same client overlay the portal adapters get, so PDF and portal
   // stay consistent. portalType "" yields licensing fields without a specific
-  // installer identity.
-  const client = clientStagingOverlay(db, project.clientId, "");
-  // A LICENCE IS A STATE'S. The overlay carries the client's Oregon CCB number for every job, and a
-  // stored map bound it to City of Waltham's MASSACHUSETTS construction-supervisor licence slot
-  // ("License Number" = 223690). The form fill offers instead the licence on file for THIS job's
-  // state, through the one predicate the submit gate reads (clients.contractorLicenceForState); the
-  // CCB number and its expiry resolve only on an Oregon job. None on file for the state = "" (the
-  // fill names it for the operator) — never another state's number.
-  const licence = contractorLicenceForClient(db, project.clientId, project.state);
-  if (licence.number) client.stateContractorLicense = licence.number;
+  // installer identity. The licence keys are THIS job's state's (clients.licenceOverlay): on an
+  // Oregon job exactly the named columns as before; elsewhere the state's own licences.
+  const client = clientStagingOverlay(db, project.clientId, "", { state: String(project.state ?? ""), track: null });
+  // A LICENCE IS A STATE'S AND A SLOT'S. The overlay carried the client's Oregon CCB number for
+  // every job, and a stored map bound it to City of Waltham's MASSACHUSETTS construction-supervisor
+  // licence slot. On a FORM, client.ccbLicenseNumber / ccbExpiration are Oregon's CCB and nothing
+  // else (the source says so to the mapper), so they resolve only on an Oregon job. The typed
+  // sources (client.stateLicence.<kind>) and the generic client.stateContractorLicense resolve per
+  // form through clients.licenceFor — the answer the submit gate and the portal overlay read. None
+  // of the needed kind on file = "" (the fill names it for the operator) — never another kind's,
+  // state's or company's number.
+  const licenceClient = clientLicenceRow(db, project.clientId);
+  const st = String(project.state ?? "").trim().toUpperCase();
+  if (st && st !== "OR") { delete client.ccbLicenseNumber; delete client.ccbExpiration; }
+  let projectTracks: string[] = [];
+  try { projectTracks = requiredTracks(project).filter((t) => t !== "nem"); } catch { projectTracks = []; }
+  const planSetLicences = planSetPrintedLicences(project.parserSnapshot);
+  let planSetWarning = "";
+  try { planSetWarning = planSetLicenceWarning(db, project) ?? ""; } catch { planSetWarning = ""; }
+  const licences: FillLicences = {
+    client: licenceClient, state: st || "OR",
+    companyName: String(licenceClient?.company_name || licenceClient?.legal_business_name || ""),
+    projectTracks, planSetLicences, planSetWarning,
+  };
+  // The generic licence for a fill with no form in hand (bcd5952SnapshotAdditions and callers that
+  // read the overlay directly); a form resolves it again for its own track (resolveSource).
+  const generic = licenceFor(licenceClient, licences.state, { track: projectTracks.length === 1 ? projectTracks[0] : null });
+  if (generic.number) client.stateContractorLicense = generic.number;
   else delete client.stateContractorLicense;
-  if (!licence.oregon) { delete client.ccbLicenseNumber; delete client.ccbExpiration; }
   // Per-AHJ prescriptive limits (same jurisdiction code profile QC screens on),
   // so the presc* checkbox sources answer against this AHJ's actual thresholds.
   // Only concrete values override; anything missing keeps the Oregon defaults.
@@ -935,6 +1016,7 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
   const ctx: FillContext = {
     project,
     client,
+    licences,
     publishedElectricalBrackets,
     publishedFeeLines: feeForProject(db, project, "permit")?.lines,
     // Parsed/operator values win; beneath them, BCD 5952 facts another record already answers
@@ -1324,6 +1406,9 @@ export async function fillLoadedForm(
   // caller's shared one, and a blank without a ladder never inherits another form's.
   const printedFeeLadder = curatedPrintedFees(templateBytes);
   if (printedFeeLadder || ctx.printedFeeLadder) ctx = { ...ctx, printedFeeLadder };
+  // THIS FORM'S TRACK — a generic licence source resolves by it (fillLicenceTrack). Per form, on a
+  // copy: the caller's context is shared across every form of the package.
+  if (def.formTrack !== undefined || ctx.formTrack !== undefined) ctx = { ...ctx, formTrack: def.formTrack ?? null };
   const doc = await PDFDocument.load(templateBytes, { ignoreEncryption: true });
   let checklist: ChecklistRecovery = { recognized: false, overlays: [], omittedTextFields: [], textFieldOverrides: {} };
   let checklistCtx = ctx;
@@ -1382,15 +1467,39 @@ export async function fillLoadedForm(
   // named that no source can answer — zoning, setbacks, flood zone…); every check below adds what it
   // refuses or cannot answer, so no blank on the form is silent.
   const operatorItems: OperatorItem[] = [...(def.operatorItems ?? [])];
+  // THE PLAN SET NAMES ANOTHER COMPANY'S LICENCE (clientMatch.planSetLicenceWarning): said on every
+  // filled form, never acted on — the job's company is the operator's call.
+  if (ctx.licences?.planSetWarning) operatorItems.push({ label: ctx.licences.planSetWarning });
   const jobState = String(ctx.project?.state ?? "").trim().toUpperCase();
+  /** The plan set's printed licence as a REFERENCE for a blank licence slot — never filled. */
+  const planSetHint = (): string => {
+    const printed = ctx.licences?.planSetLicences ?? [];
+    if (!printed.length) return "";
+    const company = ctx.licences?.companyName || "this client";
+    return `; the plan set prints ${printed.join(" / ")} — add it to ${company}'s licences under Clients if it is theirs`;
+  };
+  /** A licence slot left blank, named with WHY (clients.licenceFor's reason) and the plan-set hint. */
+  const licenceItem = (label: string, ref: LicenceSourceRef): OperatorItem | null => {
+    const a = licenceAnswerFor(ref, ctx);
+    if (!a) return null;
+    if (ref.field === "holder") return { label: `${label} (the licence holder's name — ${a.number ? `no holder's name is on file for the ${a.label} ${a.number}` : a.reason || "no holder on file"}; add it under Clients or enter it by hand${planSetHint()})` };
+    if (a.candidates.length) return { label: `${label} (${a.reason} — enter the right one by hand)` };
+    const reason = ref.kind === "generic" && /^no \w+ contractor licence on file/.test(a.reason) ? a.reason.replace(/ on file/, " on file for this client") : `${a.reason || "none on file"} for this client`;
+    return { label: `${label} (${reason}${planSetHint()})` };
+  };
   /** A mapped DATA source that resolved empty on this job. computed.* rows are blank by design on
    *  many forms (a fee tier this system is not in), so only the data scopes and the computed
    *  answers a person supplies (who signs, the valuation) are named. */
-  const emptyItem = (label: string, source: string): OperatorItem | null => {
-    if (source === STATE_LICENCE_SOURCE) return { label: `${label} (no ${jobState || "state"} contractor licence on file for this client)` };
-    if (source === OREGON_CCB_SOURCE && jobState && jobState !== "OR") {
+  const emptyItem = (label: string, source: string, ref?: LicenceSourceRef | null): OperatorItem | null => {
+    if (source === OREGON_CCB_SOURCE && jobState && jobState !== "OR" && (!ref || ref.oregonCcb)) {
       return { label: `${label} (an Oregon CCB number is not a ${jobState} licence — enter the ${jobState} licence by hand, or re-map this form)` };
     }
+    const licRef = ref ?? licenceSourceRef(source);
+    if (licRef && ctx.licences) {
+      const item = licenceItem(label, licRef);
+      if (item) return item;
+    }
+    if (source === STATE_LICENCE_SOURCE) return { label: `${label} (no ${jobState || "state"} contractor licence on file for this client)` };
     if (/^(project|snapshot|client)\./.test(source) || ["computed.applicantSignerName", "computed.estimatedJobValue", "computed.declaredValuation"].includes(source)) {
       return { label: `${label} (no data on file for this job)` };
     }
@@ -1430,6 +1539,16 @@ export async function fillLoadedForm(
       const overlaySource = checklist.overlaySourceOverrides?.[index] ?? field.source;
       let text = resolveSource(overlaySource, ctx);
       const printed = String(field.label ?? "").trim();
+      // The printed label names its licence (unverified maps) — the same rule as a widget's caption.
+      let overlayRef: LicenceSourceRef | null = null;
+      if (def.unverifiedMap && printed && ctx.licences) {
+        const slot = slotLicenceRef({ name: "", caption: printed }, overlaySource);
+        if (slot?.overridden) {
+          overlayRef = slot.ref;
+          const a = licenceAnswerFor(slot.ref, ctx);
+          text = !a ? "" : slot.ref.field === "expires" ? (a.number ? a.expires : "") : slot.ref.field === "holder" ? a.holder : a.number;
+        }
+      }
       // Placements carrying the form's printed label get the same checks a widget does: never an
       // attestation of an attached document, never a value the wrong shape for its box, and a data
       // value that is empty on this job is named rather than silently skipped.
@@ -1438,7 +1557,7 @@ export async function fillLoadedForm(
         continue;
       }
       if (!text) {
-        const item = printed ? emptyItem(printed, overlaySource) : null;
+        const item = printed ? emptyItem(printed, overlaySource, overlayRef) : null;
         if (item) operatorItems.push(item);
         continue;
       }
@@ -1518,6 +1637,40 @@ export async function fillLoadedForm(
     }
   }
 
+  // WHICH LICENCE EACH SLOT TAKES (unverified maps): the slot's printed caption names its licence and
+  // outranks a bound licence source of another kind (formFieldChecks.slotLicenceRef); a holder NAME
+  // slot takes the licence's holder. Resolved once, before anything is written, so the duplicate
+  // check below can see every licence slot on the form. A verified map is filled as written (rule 3).
+  const slotResolution = new Map<string, { value: string; ref: LicenceSourceRef | null; generic: boolean }>();
+  for (const [fieldName, source] of Object.entries(def.textFields)) {
+    const effectiveSource = checklist.textFieldOverrides[fieldName] ?? source;
+    let value = resolveSource(effectiveSource, ctx);
+    let ref = licenceSourceRef(effectiveSource);
+    if (def.unverifiedMap && ref && ctx.licences) {
+      const slot = slotLicenceRef(widgetOf(fieldName), effectiveSource);
+      if (slot?.overridden) {
+        ref = slot.ref;
+        const a = licenceAnswerFor(slot.ref, ctx);
+        value = !a ? "" : ref.field === "expires" ? (a.number ? a.expires : "") : ref.field === "holder" ? a.holder : a.number;
+      }
+    }
+    slotResolution.set(fieldName, { value, ref, generic: ref?.kind === "generic" });
+  }
+  // ONE LICENCE NUMBER, ONE SLOT. Two licence slots a form prints for DIFFERENT licences (Waltham:
+  // the construction supervisor's "License Number" and the home-improvement contractor's
+  // "Registration Number", both captioned without their kind) must never both carry one number. A
+  // number the generic source chose that another licence slot on this form also carries is left
+  // blank and named — the slot that named its licence keeps it.
+  const dupLicenceBlocked = new Map<string, string>();
+  if (def.unverifiedMap) {
+    const numberSlots = [...slotResolution.entries()].filter(([, r]) => r.ref && r.ref.field === "number" && r.value.trim());
+    for (const [fieldName, r] of numberSlots) {
+      if (!r.generic) continue;
+      const others = numberSlots.filter(([n, o]) => n !== fieldName && o.value.trim().toUpperCase() === r.value.trim().toUpperCase());
+      if (others.length) dupLicenceBlocked.set(fieldName, others.map(([n]) => widgetLabel(widgetOf(n))).join(", "));
+    }
+  }
+
   for (const [fieldName, source] of Object.entries(def.textFields)) {
     if (checklist.omittedTextFields.includes(fieldName)) { unmapped.push(fieldName); continue; }
     if (!available.has(fieldName)) { unmapped.push(fieldName); continue; }
@@ -1527,15 +1680,29 @@ export async function fillLoadedForm(
     try {
       const field = form.getTextField(fieldName);
       const effectiveSource = checklist.textFieldOverrides[fieldName] ?? source;
-      const value = resolveSource(effectiveSource, ctx);
+      const resolved = slotResolution.get(fieldName);
+      let value = resolved?.value ?? resolveSource(effectiveSource, ctx);
+      const licRef = resolved?.ref ?? null;
+      if (dupLicenceBlocked.has(fieldName)) {
+        const a = licRef ? licenceAnswerFor(licRef, ctx) : null;
+        operatorItems.push({ field: fieldName, label: `${label} (the same licence number as ${dupLicenceBlocked.get(fieldName)} — this slot asks for a different licence${a?.label ? ` than the ${a.label}` : ""}; enter it by hand)` });
+        continue;
+      }
       if (value && attestsAttachedDocument(`${widget.name} ${widget.caption ?? ""}`)) {
         operatorItems.push({ field: fieldName, label: `${label} (an attestation — attach the document and complete by hand)` });
         continue;
       }
       if (def.unverifiedMap && value && effectiveSource === "computed.applicantSignerName"
         && (isLicenceHolderSlot(widget.name) || isLicenceHolderSlot(widget.caption))) {
-        operatorItems.push({ field: fieldName, label: `${label} (the licence holder's name — the applicant signer is not the licence holder)` });
-        continue;
+        // A LICENCE HOLDER IS NOT THE APPLICANT: the slot takes the holder of the licence its caption
+        // names, when one is on file; otherwise it is left for the operator, named.
+        const kind = kindForSlot(String(widget.caption || "").trim() || widget.name);
+        const holder = kind && kind !== "generic" ? (licenceAnswerFor({ kind, field: "holder" }, ctx)?.holder ?? "") : "";
+        if (!holder) {
+          operatorItems.push({ field: fieldName, label: `${label} (the licence holder's name — the applicant signer is not the licence holder)` });
+          continue;
+        }
+        value = holder;
       }
       // THE SHAPE GUARD: an email box never takes a value with no "@", a phone box never takes one
       // with "@". Keyed on the printed caption, so a box named "Telephone" but captioned "Email
@@ -1546,7 +1713,7 @@ export async function fillLoadedForm(
         continue;
       }
       if (!value.trim()) {
-        const item = emptyItem(label, effectiveSource);
+        const item = emptyItem(label, effectiveSource, licRef);
         if (item) operatorItems.push({ field: fieldName, ...item });
       }
       field.setText(value);
@@ -1865,6 +2032,13 @@ export interface StoredTemplate {
 
 type TemplateRow = { id: string; ahj_name: string; state: string; form_type?: string; original_filename: string; pdf_blob: Buffer | null; field_map: string; document_date: string; source_url: string };
 
+/** A stored form's permit track, from its form type (applicationDocsAgency.trackForFormType — the one
+ *  answer): the generic permit application is "permit" (the project's combo filing, else building). */
+function storedFormTrack(formType: string): string | null {
+  if (formType === "permit_application") return "permit";
+  return trackForFormType(formType);
+}
+
 /** A stored row as a fillable definition; null when its map could fill nothing. */
 function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate | null {
   if (!row.pdf_blob) return null;
@@ -1899,6 +2073,7 @@ function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate 
       recoverPrescriptiveCheckboxes: map.verified !== true,
       operatorItems: Array.isArray(map.operatorItems) ? map.operatorItems : undefined,
       unverifiedMap: map.verified !== true,
+      formTrack: storedFormTrack(String(row.form_type || "")),
     },
     bytes: new Uint8Array(row.pdf_blob),
     templateId: row.id,

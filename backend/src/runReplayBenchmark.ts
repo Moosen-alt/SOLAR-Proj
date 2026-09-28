@@ -327,7 +327,7 @@ async function main(): Promise<void> {
       const recipe = getPortalRecipe(db, String(c.row.id));
       if (!recipe) throw new Error(`recipe ${String(c.row.id)} could not be loaded`);
       const portalType = scopeType === "utility" ? "utility" : "AHJ";
-      const fieldValues = resolveRecipeFieldValues(db, project, portalType);
+      const fieldValues = resolveRecipeFieldValues(db, project, portalType, scopeType === "utility" ? "nem" : (/electric/i.test(c.key) ? "electrical" : null));
       // THE OPTIONS PRODUCTION PASSES, not a bare { headless }. Without `credential` the
       // adapter reached the login page and reported "no stored credential was found for
       // this client/portal" — while the dry run listed that very credential as ok, because

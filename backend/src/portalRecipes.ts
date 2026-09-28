@@ -1,7 +1,7 @@
 import type { PortalRecipe, PortalRecipeStatus, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { createHash } from "node:crypto";
 import { addAuditLog } from "./audit";
-import { clientStagingOverlay } from "./clients";
+import { clientStagingOverlay, kindForSlot, licenceOverlayForClient } from "./clients";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { id } from "./ids";
@@ -1343,13 +1343,19 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   installerStreet: "Installer company street address only",
   installerCityStateZip: "Installer company city, state, zip (no street)",
   installerContactName: "Installer contact person full name",
-  ccbLicenseNumber: "CCB (contractor) license number",
-  ccbExpiration: "CCB (contractor) license EXPIRATION date — when the licence runs out, not today's date",
-  electricalLicenseNumber: "Electrical contractor license number",
+  // A LICENCE IS A STATE'S AND A PERMIT'S (clients.licenceOverlay). Oregon: the CCB. Elsewhere the
+  // contractor licence THIS permit takes in the job's state — never Oregon's CCB.
+  ccbLicenseNumber: "Contractor license number for THIS job's state and permit (Oregon: the CCB number; elsewhere the state's contractor licence this permit takes)",
+  ccbExpiration: "Contractor license EXPIRATION date (the licence in ccbLicenseNumber) — when the licence runs out, not today's date",
+  electricalLicenseNumber: "Electrical contractor license number (THIS job's state)",
+  constructionSupervisorLicenseNumber: "Construction Supervisor License (CSL) number — Massachusetts-style construction supervisor licence, THIS job's state",
+  constructionSupervisorLicenseExpiration: "Construction Supervisor License EXPIRATION date — when that licence runs out",
+  homeImprovementLicenseNumber: "Home Improvement Contractor (HIC) registration number, THIS job's state",
+  homeImprovementLicenseExpiration: "Home Improvement Contractor registration EXPIRATION date",
   docketNumber: "ICC/state docket number for the installer's DG certification (Illinois Part 468)",
   metroCityLicenseNumber: "Metro or city business license number",
-  electricalSupervisorName: "Supervising electrician full name",
-  electricianLicenseNumber: "Supervising electrician license number",
+  electricalSupervisorName: "Supervising / master electrician full name (the holder of electricianLicenseNumber)",
+  electricianLicenseNumber: "Supervising / master electrician (personal) license number, THIS job's state",
   authorizedSignerName: "Authorized signer or representative full name",
   authorizedSignerTitle: "Authorized signer's title",
   powerclerkExistingContact: "PowerClerk existing contact ID code",
@@ -1445,7 +1451,14 @@ export function dateFieldForLiteral(label: string, value: string): string | null
   // Checked BEFORE the future-date rule on purpose: "Licence Valid Through Date" carries both
   // an expiry word and nothing else, while a label like "Expiration of the estimated schedule"
   // does not exist. Expiry is the more specific reading wherever both could fire.
-  if (EXPIRY_DATE_LABEL.test(text)) return LICENCE_CONTEXT.test(text) ? "ccbExpiration" : null;
+  if (EXPIRY_DATE_LABEL.test(text)) {
+    // WHICH licence expires: the slot's own words (kindForSlot, the one slot predicate) — a CSL or
+    // HIC expiry has its own key; any other licence expiry is the contractor licence's.
+    const kind = kindForSlot(text);
+    if (kind === "construction_supervisor") return "constructionSupervisorLicenseExpiration";
+    if (kind === "home_improvement_contractor") return "homeImprovementLicenseExpiration";
+    return LICENCE_CONTEXT.test(text) ? "ccbExpiration" : null;
+  }
   if (FUTURE_DATE_LABEL.test(text)) return isUs ? "estimatedCommissioningDate" : "estimatedCommissioningDateIso";
   // A signature/application date is "today", not a future estimate.
   return isUs ? "todayDateUs" : "todayDate";
@@ -1519,7 +1532,13 @@ function certifiedModelFields(
   return out;
 }
 
-export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, portalType: string): Record<string, string> {
+/**
+ * `track` is the filing this run is for ("building" / "electrical" / "combo" / "mpu" / "nem"; null
+ * when the caller cannot say). REQUIRED on purpose: the licence keys answer "the licence THIS permit
+ * takes in THIS state" (clients.licenceOverlay), and a caller that forgets the track must decide to
+ * pass null — which makes a generic licence key blank when several licences could fit.
+ */
+export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, portalType: string, track: string | null): Record<string, string> {
   const snapshot = project.parserSnapshot || {};
   const snapshotFlat: Record<string, string> = {};
   for (const [k, v] of Object.entries(snapshot)) {
@@ -1899,7 +1918,14 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     putEs("exportMode", es.exportMode);
   }
 
-  const overlay = project.clientId ? clientStagingOverlay(db, project.clientId, portalType) : {};
+  const job = { state: String(project.state ?? ""), track };
+  const overlay = project.clientId ? clientStagingOverlay(db, project.clientId, portalType, job) : {};
+  // EVERY LICENCE KEY IS PRESENT, "" WHERE NOTHING OF THE NEEDED KIND IS ON FILE — including a job
+  // with no client. A recipe step bound to a key the dictionary defines replays that key's value,
+  // blank included; a key the dictionary LACKS falls back to the step's recorded literal, and a
+  // literal licence is the LEARN company's (recipes are shared across companies and orgs). So a
+  // licence never comes from the snapshot or a recording — only from THIS project's client.
+  const licenceKeys = licenceOverlayForClient(db, project.clientId, job);
 
   // Derive split installer first/last from the full installer contact name (mirrors the
   // homeowner split above). The overlay only provides a full `installerContactName`, so a
@@ -1933,7 +1959,7 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   // that gets no keys replays its recorded literal exactly as it does today, and
   // an unbound literal is visible in a way a computed 0 is not.
   const feeBrackets = feeBracketQuantityFields(db, project);
-  const merged = { ...snapshotFlat, ...equipment, ...existingSys, ...projectFields, ...overlay, ...installerSplit, ...certifiedModels, ...feeBrackets };
+  const merged: Record<string, string> = { ...snapshotFlat, ...equipment, ...existingSys, ...projectFields, ...overlay, ...licenceKeys, ...installerSplit, ...certifiedModels, ...feeBrackets };
   // A WHOLE-PHONE VALUE IS TYPED INTO A MASKED BOX VERBATIM. A number stored E.164
   // ("+15414042243") fed to a "(###) ###-####" mask keeps its first ten digits —
   // "(154) 140-4224" — and drops the last one: a valid-looking phone belonging to nobody,

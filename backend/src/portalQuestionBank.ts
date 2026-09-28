@@ -454,7 +454,7 @@ export function questionsForProject(db: AppDb, project: ProjectRecord): TrackPor
     // portalType here only feeds the client overlay's identity match inside the
     // resolver (falls back to the legal business name when it misses) — the
     // platform string is the closest honest value without re-running channel dispatch.
-    const fields = resolveRecipeFieldValues(db, project, recipe.portalPlatform || "");
+    const fields = resolveRecipeFieldValues(db, project, recipe.portalPlatform || "", track === "nem" ? "nem" : (project.permitType === "electrical" ? "electrical" : "building"));
     const perJob = extractPortalQuestions(db, recipe).filter((q) => q.classification === "per-job");
     const answered: TrackPortalQuestions["answered"] = [];
     const unanswered: PortalQuestion[] = [];
