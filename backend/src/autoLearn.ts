@@ -28,7 +28,7 @@ import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/t
 import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
 import { resolveHeadless } from "../../portal-bot/src/browser";
-import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
+import { compareReviewFields, utilityIdentifiersEnteredBySteps } from "../../portal-bot/src/reviewScreenScraper";
 import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/adapters/autoLearnAdapter";
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredentialForPortal, getDecryptedCredentialByUrl, listPortalCredentials, nearestStoredLogins, recordLoginOutcome } from "./portalCredentials";
@@ -1464,7 +1464,8 @@ async function autoLearnPortalInner(
   // The deterministic check returns a single "reviewScreen" SENTINEL when it could read
   // nothing — that is an honest "couldn't read", NOT a per-field mismatch, so don't let it
   // masquerade as one or veto trust.
-  const allDetMismatches = compareReviewFields(learn.reviewScreen.fields, project, reviewBody);
+  // A utility identifier is checked only when this learn typed it (B8): the learn's own bindings.
+  const allDetMismatches = compareReviewFields(learn.reviewScreen.fields, project, utilityIdentifiersEnteredBySteps(learn.steps), reviewBody);
   const isUnreadableSentinel = allDetMismatches.length === 1 && allDetMismatches[0].field === "reviewScreen";
   // Exclude sensitive fields (accountNumber, meterNumber) from trust-gating: they're bound at
   // replay from the credential store, so a portal that masks them on the review screen must
