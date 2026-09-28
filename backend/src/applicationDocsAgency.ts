@@ -40,6 +40,23 @@ export const TRACK_FORM_TYPES: Record<FormTrack, readonly string[]> = {
   electrical: ["electrical_application"],
 };
 
+/** A submittal track's form track: the building / combination / single permit files the building-side
+ *  application; the electrical and panel-upgrade permits the electrical one; the NEM track neither. */
+export function formTrackForSubmittalTrack(track: string | null | undefined): FormTrack | null {
+  if (track === "electrical" || track === "mpu") return "electrical";
+  if (track === "building" || track === "combo" || track === "permit") return "building";
+  return null;
+}
+
+/** WHO ISSUES THIS PERMIT TRACK — formAuthorityFor, asked for the track's own application. The name
+ *  every "waiting on / staged for / approved by" line uses (nextStep), never the AHJ re-derived. */
+export function issuingAuthorityForTrack(project: Pick<ProjectRecord, "state" | "ahj">, track: string | null | undefined): string {
+  const formTrack = formTrackForSubmittalTrack(track);
+  const ahj = String(project?.ahj ?? "").trim();
+  if (!formTrack) return ahj;
+  return formAuthorityFor(project, TRACK_FORM_TYPES[formTrack][0]).name || ahj;
+}
+
 export function trackForFormType(formType: string): FormTrack | null {
   if (TRACK_FORM_TYPES.building.includes(formType)) return "building";
   if (TRACK_FORM_TYPES.electrical.includes(formType)) return "electrical";
