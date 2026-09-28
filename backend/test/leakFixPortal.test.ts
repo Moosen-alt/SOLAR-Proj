@@ -6,6 +6,14 @@
 //
 //   P1 a portal Job Value / Valuation box takes the declared valuation (the PDF's number), never the
 //      contract price.
+//   P2 PacifiCorp's / Portland General's PowerClerk is only ever THAT utility's portal (one
+//      state-gated identity; KB write seam; NEM host gate; v40 cleanup).
+//   P3 a Yes/No site question never binds to a parser QC/evidence flag.
+//   P4 the plan set's AC disconnect beats the client's standard part; a contradiction is blank + named.
+//   P5 a recorded date keeps its meaning (existing-system dates; insurance / bond expiries).
+//   P6 a company's identity and attestations never travel in a shared recipe.
+//   P7 a placeholder licence / docket is never filed; the ICC docket is Illinois's.
+//   P8 the scope of work names the mount the plan set states, and none when it states none.
 //
 // Driven through the real write paths (createProject, createClient) on a scratch DB; no network,
 // no API key.
