@@ -17,6 +17,8 @@
 //                              stopForReview — the save reaches the server, no "may not be saved".
 //   MUST-PASS  replayStuck  — the replay on a page whose save never completes: the hand-off says the
 //                              answers MAY NOT BE SAVED.
+// B11 — the real stage path (stageWithRecipe → runAdapter) reports the draft's reference read off
+// the review page's URL: PowerClerk's ProjectId when present; the page link and NO id otherwise.
 // B14 — the review page's own load-time PageMethod (Accela's CapConfirm DisplayRequired…) is still
 // aborted, and the hand-off now names it.
 //   MUST-PASS  replayOwnCall   — a same-origin POST at load: aborted, the run stays ok, and the
@@ -29,6 +31,7 @@ import http from "node:http";
 import { chromium } from "playwright";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { RecipeAdapter } from "./adapters/recipeAdapter";
+import { stageWithRecipe } from "./index";
 import { drainOwnWrites, installFilingBackstop, withOwnWriteWindow } from "./filingBackstop";
 
 delete process.env.PORTAL_ALLOW_FINAL_SUBMIT;
@@ -105,7 +108,8 @@ const server = http.createServer((req, res) => {
   }
   // The page before review: a "Next" link to wherever the cell says.
   const to = url.searchParams.get("to") || "/reviewBatch";
-  res.end(`<!doctype html><html><head><title>Portal</title></head><body><h1>Step 4: Contacts</h1><a id="next" href="${to}">Next</a></body></html>`);
+  // The signed-in chrome the real stage path's login step looks for (approvedFinalSubmit's NAV).
+  res.end(`<!doctype html><html><head><title>Portal</title></head><body><nav><a href="/account">My Account</a> <a href="/logout">Sign Out</a></nav><h1>Step 4: Contacts</h1><a id="next" href="${to}">Next</a></body></html>`);
 });
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -203,6 +207,19 @@ try {
   {
     const r = await replay("/confirm?tp=1", []);
     check("B14 MUST-EXCLUDE replayTracker: only a third-party tracker was held back — no hand-off line", r.ok && !/were blocked/.test(r.handoff) && r.otherPosts.length === 0, `ok=${r.ok} other=[${r.otherPosts}] ${r.handoff.slice(0, 300)}`);
+  }
+
+  // ── B11, the real stage path (index.ts runAdapter): the draft's reference off the review URL ──
+  {
+    const staged = await stageWithRecipe(recipe("/confirm?tp=1&ProjectId=TESTPROJ9&NewProject=1", []), { id: "p-drain" } as ProjectRecord, {}, {}, [], { headless: true });
+    const ref = staged.draftReference as { link?: string; id?: string } | undefined;
+    check("B11 MUST-PASS stage path: a run stopped at review reports the draft's own key (ProjectId) read off its URL",
+      staged.ok === true && ref?.id === "TESTPROJ9" && /ProjectId=TESTPROJ9/.test(String(ref?.link)) && !/NewProject|tp=/.test(String(ref?.link)),
+      JSON.stringify({ ok: staged.ok, ref, msg: [String(staged.message ?? ""), ...((staged.steps as Array<{ message?: unknown }> | undefined) ?? []).map((s) => String(s?.message ?? ""))].join(" | ").slice(0, 600) }));
+    const plain = await stageWithRecipe(recipe("/confirm?tp=1", []), { id: "p-drain-2" } as ProjectRecord, {}, {}, [], { headless: true });
+    const plainRef = plain.draftReference as { link?: string; id?: string } | undefined;
+    check("B11 MUST-EXCLUDE stage path: a review URL with no record key reports the page link and NO invented id",
+      plain.ok === true && plainRef?.id === "" && /\/confirm$/.test(String(plainRef?.link)), JSON.stringify({ ok: plain.ok, plainRef }));
   }
 } finally {
   await browser.close().catch(() => null);
