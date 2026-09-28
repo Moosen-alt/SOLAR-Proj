@@ -735,15 +735,28 @@ export function portalSafetyFactory() {
     /by\s+(typing|entering|providing|printing)\s+(your|my)\s+(full\s+|first\s+and\s+last\s+|legal\s+)?name\b|\b(you|i)\s+(are|am)\s+(electronically\s+)?signing\b|constitutes?\s+(your|an?|my|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\bserves?\s+as\s+(your|my|an?|the)\s+(legal\s+|electronic\s+|digital\s+)?signature|\b(type|enter|print)\s+(your|my)\s+(full\s+|legal\s+|first\s+and\s+last\s+)?name\s+((below|here|above)\s+)?(to|as)\s+(sign|your\s+signature|an?\s+(electronic\s+)?signature)/i;
   const THIRD_PARTY_SIGNS =
     /\b(home\s*-?owners?|(property\s+)?owners?|customers?|utility|utilities|landlords?|tenants?|lenders?|spouses?|co-?applicants?|account\s*holders?|other\s+part(y|ies))('s|s')?\s+((must|will|shall|should|may|can|would|needs?\s+to|has\s+to|have\s+to|(is|are)\s+(required|asked|expected)\s+to|also|then|later)\s+)*(consent\s+to\s+)?(electronically\s+|e-?)?sign(s|ed|ing)?\b/i;
+  // THE SIGNING ITSELF is later or offline — never a later DELIVERY (autosubmit-close-2 skeptic: "Please
+  // sign below and the permit will be emailed to you after approval." and "I consent to sign this
+  // application electronically, and I understand the utility will email the agreement after approval."
+  // are the applicant signing NOW; demoting them handed the signature box to the planner's contact).
   const LATER_OR_OFFLINE = new RegExp([
     "\\b(will|shall|would)\\s+((later|then|also)\\s+)?(be\\s+)?(e-?)?sign(ed)?\\b", "\\bto\\s+be\\s+(e-?)?signed\\b",
-    "\\bonce\\s+(the\\s+)?(\\w+\\s+){0,2}(approves?|approved|issued|issues)\\b",
-    "\\b(after|upon|following)\\s+(the\\s+)?(\\w+\\s+)?(approval|approves|approved|issuance|issued)\\b", "\\blater\\b",
-    "\\bwill\\s+(e-?mail|send|mail|forward)\\b(?!\\s+(you\\s+)?(a\\s+)?(copy|confirmation|receipt))",
+    "\\bsign(ed|ing)?\\s+(it\\s+|this\\s+|them\\s+)?(later|afterwards?|at\\s+(a\\s+)?later)\\b",
     "\\bprint(ed)?\\s+(and|&)\\s+sign\\b", "\\bprinted\\s+(\\w+\\s+){0,2}(form|copy|document|agreement)\\b", "\\bdownload", "\\bwet[\\s-]+(ink\\s+)?signature\\b", "\\bin\\s+person\\b", "\\bnotari[sz]", "\\bdocu-?sign\\b",
   ].join("|"), "i");
+  // WHOSE ACT (autosubmit-close-2 skeptic, MF-S1's spec): the subject blacklist above needs noun + modal +
+  // "sign" back to back, and "The homeowner, not the installer, must sign below.", "Property owner: sign
+  // here.", "Homeowner to sign below…", "The person named on the utility account must sign below.", "Sign
+  // below (homeowner)." got past it — our signer typed into the homeowner's boxes. A sentence that names
+  // a THIRD PARTY and has no first person (you / I) and no agent capacity ("the owner or the owner's
+  // authorized agent", "the applicant") is that party's act, not ours.
+  const THIRD_PARTY_NOUN = /\b(home\s*-?owners?|(property\s+)?owners?|customers?|utility|utilities|landlords?|lessors?|lessees?|tenants?|lenders?|spouses?|co-?applicants?|account\s*holders?|property\s+managers?|trustees?|other\s+part(y|ies)|person\s+named)\b/i;
+  const FIRST_PERSON = /\b(you|your|i|my|me)\b/i;
+  const AGENT_CAPACITY = /\b(agent|authori[sz]ed|representative|applicant|permittee)\b/i;
   const signingActIn = (text: string | null | undefined, act: RegExp): boolean =>
-    String(text ?? "").split(/[.!?;\n]+/).some((s) => act.test(s) && !THIRD_PARTY_SIGNS.test(s) && (STRONG_SIGNING_ACT.test(s) || !LATER_OR_OFFLINE.test(s)));
+    String(text ?? "").split(/[.!?;\n]+/).some((s) => act.test(s) && !THIRD_PARTY_SIGNS.test(s)
+      && !(THIRD_PARTY_NOUN.test(s) && !FIRST_PERSON.test(s) && !AGENT_CAPACITY.test(s))
+      && (STRONG_SIGNING_ACT.test(s) || !LATER_OR_OFFLINE.test(s)));
   const ABOUT_THE_FILING ="\\b(application|permit|this\\s+(form|request|submission|document)|sign(s|ing|ed|ature)?)\\b";
   // The certify / perjury half. The signing half (SIGNING_TEXT) is read through signingActIn (MF-S1).
   const ATTESTATION_TEXT = new RegExp([

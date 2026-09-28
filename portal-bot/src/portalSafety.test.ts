@@ -493,6 +493,30 @@ await check("SIGNING ACT (MF-S1): a third party's later / offline signing never 
     assert.equal(signatureNamePartOf("Last name *", around), "last", `MUST-EXCLUDE Last name under ${JSON.stringify(around.slice(0, 50))}`);
     assert.equal(pc.signatureNamePartOf("First name *", around), "first", "page copy drifted");
   }
+  // autosubmit-close-2 skeptic, verbatim. REGRESSION (a later DELIVERY is not a later signing): the
+  // applicant signing NOW stays a signature — else the installer contact is typed as the e-signature.
+  for (const [label, around] of [
+    ["Applicant Name *", "I consent to sign this application electronically, and I understand the utility will email the interconnection agreement after approval."],
+    ["Full name *", "Sign below and we will send your permit once it is issued."],
+  ] as Array<[string, string]>) {
+    assert.equal(isSignatureNameBox(label, around), true, `MUST-EXCLUDE (regression) isSignatureNameBox(${JSON.stringify(label)}) under ${JSON.stringify(around.slice(0, 60))}`);
+    assert.equal(pc.isSignatureNameBox(label, around), true, "page copy drifted");
+  }
+  const EMAILED = "Please sign below and the permit will be emailed to you after approval.";
+  assert.equal(signatureNamePartOf("First name *", EMAILED), "first", "MUST-EXCLUDE (regression) First name under a later delivery");
+  assert.equal(signatureNamePartOf("Last name *", EMAILED), "last", "MUST-EXCLUDE (regression) Last name under a later delivery");
+  // THE SUBJECT: a third party named with no first person and no agent capacity is that party's act.
+  for (const around of ["The utility customer of record must sign below.", "The homeowner, not the installer, must sign below.",
+    "The person named on the utility account must sign below.", "The lessor / property manager must sign below.", "Homeowner: please sign below."]) {
+    assert.equal(signatureNamePartOf("First name *", around), "", `MUST-PASS First name under ${JSON.stringify(around)} is that party's, not our signer's`);
+    assert.equal(pc.signatureNamePartOf("Last name *", around), "", "page copy drifted");
+  }
+  for (const [label, around] of [["Owner Name *", "Property owner: sign here."], ["Full name *", "Homeowner to sign below at the time of inspection."],
+    ["Full name *", "Homeowner: please sign below."], ["Full name *", "Sign below (homeowner)."], ["Full name *", "The utility sends the homeowner an e-signature request."],
+    ["Full name *", "Homeowner e-signature"]] as Array<[string, string]>) {
+    assert.equal(isSignatureNameBox(label, around), false, `MUST-PASS isSignatureNameBox(${JSON.stringify(label)}) under ${JSON.stringify(around)} is that party's name box`);
+    assert.equal(pc.isSignatureNameBox(label, around), false, "page copy drifted");
+  }
 });
 
 // ---------------------------------------------------------------------------------------------
