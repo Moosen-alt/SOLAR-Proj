@@ -93,13 +93,29 @@ function hasMpuScope(project: ProjectRecord): boolean {
   return /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/.test(text);
 }
 
-// Some AHJs fold the MPU into the electrical/combination permit (e.g. Beaverton:
-// "alteration (MPU, et cetera) can go under one electric trade permit"). When the AHJ
-// note says so, the MPU does NOT get its own track. Otherwise it does, so it's tracked.
-function mpuFoldedIntoElectrical(project: ProjectRecord): boolean {
+// THE MPU RIDES ON THE ELECTRICAL PERMIT (operator ruling 2026-09-28, City of Corvallis: the main
+// panel upgrade went on the electrical permit as its "Service 0-200 amps" line — "not a separate
+// permit"). The upgrade is filed with the job's electrical (or combination) permit unless the AHJ's
+// own process notes say it needs a permit of its own:
+//   - a separate / second / additional / another electrical permit or application for it (Wasco Co
+//     "mpu need to fill out separate epa", Hillsboro "two epas if you have an mpu");
+//   - or an electrical permit "required for" / "pulled for" the MPU where this job files ONE
+//     combination permit (Santa Fe "mpu requires electrical permit to be pulled", Wylie "if mpu pull
+//     an electrical") — a job that already files its own electrical permit carries it there.
+// A note that says it goes "under one electric trade permit" (Beaverton), or that negates the
+// separate permit, keeps it on the electrical permit. Read per note segment, so a negation or an MPU
+// mention in another sentence never borrows this one's words.
+const MPU_WORDS = /\bmpu\b|panel upgrade|service upgrade|service change/;
+function mpuNeedsOwnPermit(project: ProjectRecord, electricalFiledSeparately: boolean): boolean {
   const ahj = findAhjProcessProfile(project);
-  const notes = `${ahj?.reviewerNotes || ""} ${ahj?.otherRequirements || ""}`.toLowerCase();
-  return /\bmpu\b|panel upgrade|alteration/.test(notes) && /under one (electric|combination)|one electric trade permit|on (the )?electric(al)? (trade )?(permit|form)/.test(notes);
+  const notes = `${ahj?.reviewerNotes || ""} | ${ahj?.otherRequirements || ""}`.toLowerCase();
+  return notes.split(/[.;|\n]+/).some((segment) => {
+    if (!MPU_WORDS.test(segment)) return false;
+    if (/under one (electric|combination)|one electric trade permit/.test(segment)) return false;
+    if (/\b(?:not|no|never|without|doesn'?t|don'?t)\b[^,]{0,30}\b(?:separate|second|additional|another|own)\b/.test(segment)) return false;
+    if (/\b(?:separate|second|additional|another|two|its own)\s+(?:electric(?:al)?\s+)?(?:permits?|applications?|apps?|epas?)\b/.test(segment)) return true;
+    return !electricalFiledSeparately && /\b(?:requires?|required|need(?:s|ed)?|pull(?:ed)?)\b[^,]{0,30}\belectric(?:al)?\b/.test(segment);
+  });
 }
 
 /** Map a permit track to the permit_check_targets.target_type used by the poller. */
@@ -126,16 +142,16 @@ export function requiredTracks(project: ProjectRecord): SubmittalTrackType[] {
   // two permit tracks instead of one mislabelled "combo".
   // THE ONE ANSWER (permitStructureAnswer): "separate" only when a cited page, a person, a
   // hand-written profile, the operator's own unhedged note or a cited state rule says so.
-  if (permitStructureAnswer(project).structure === "separate") {
+  const separate = permitStructureAnswer(project).structure === "separate";
+  if (separate) {
     tracks.push("building", "electrical");
   } else {
     tracks.push("combo");
   }
 
-  // A main panel / service upgrade gets its OWN tracked permit when it's in scope and
-  // the AHJ doesn't fold it into the electrical/combination permit. Not every project
-  // has one — it only appears when the bot detects MPU scope.
-  if (hasMpuScope(project) && !mpuFoldedIntoElectrical(project)) {
+  // A main panel / service upgrade in scope is filed on the electrical/combination permit; it
+  // gets its OWN tracked permit only when the AHJ says it needs one (mpuNeedsOwnPermit).
+  if (hasMpuScope(project) && mpuNeedsOwnPermit(project, separate)) {
     tracks.push("mpu");
   }
   return tracks;
