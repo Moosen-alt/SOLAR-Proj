@@ -1545,7 +1545,8 @@ export async function fillLoadedForm(
   // material was parsed read as "it filled metal roofing" (bcdChecklistFacts.bcd5952MissingFacts).
   const unresolvedChecklistRows = checklist.recognized ? bcd5952MissingFacts(ctx.project).map((m) => m.missing) : [];
   // A ROW THAT ANSWERS NO IS SAID, WITH ITS CLAUSE (bcdChecklistFacts.bcd5952FailedRows — the list the
-  // permit-path screen reads too): the form itself says a No row may not go on the prescriptive path.
+  // submit gate's permit-path warning reads too): the form itself says a No row may not go on the
+  // prescriptive path.
   const failedChecklistRows = checklist.recognized ? bcd5952FailedRows(ctx.project).map((f) => f.clause) : [];
   const checklistMessage = checklist.recognized
     ? "BCD 5952: filled independently supported answers. Review the completed PDF before filing."
