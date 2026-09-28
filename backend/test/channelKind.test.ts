@@ -30,6 +30,18 @@ const cases: Array<[string, string, string]> = [
   ["Accela Citizen Access (online portal) (seeded AHJ profile — verify)", "", "portal"],
   // A negated in-person clause is not an in-person channel.
   ["Accela portal only — no in-person submittals", "", "portal"],
+  // THE IN-PERSON CLAUSE IS READ ON ITS OWN (forms skeptic note 1, fixer-10 K2): a clause that refuses
+  // in-person — "not accepted", "no longer", "closed" — is no in-person channel, and one that allows it
+  // ALSO ("also accepted") never outranks the online filing it sits beside.
+  ["In-person submittals are not accepted; apply online", "", "portal"],
+  ["Paper applications are no longer accepted — apply online", "", "portal"],
+  ["The permit counter is closed to walk-in submittals; submit online through the portal", "", "portal"],
+  ["Apply online; in-person drop off also accepted", "", "portal"],
+  // MUST-EXCLUDE: an in-person clause that neither refuses nor merely allows stays in person; with
+  // no portal named, an "also accepted" in-person clause is still the channel.
+  ["In-person only", "", "in_person"],
+  ["Drop off at the permit counter; applications are not accepted by email", "", "in_person"],
+  ["Walk-in submittals also accepted at the counter", "", "in_person"],
 ];
 let failures = 0;
 for (const [channel, portalUrl, want] of cases) {
