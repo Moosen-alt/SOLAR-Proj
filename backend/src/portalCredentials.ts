@@ -231,6 +231,14 @@ const HOSTNAME_ALIASES: Record<string, string[]> = {
   "www.portlandgeneral.com": ["pgenm.powerclerk.com", "portlandgeneral.com"],
 };
 
+/** The known aliases of a host (lowercase, "www." kept as stored) — THE one alias list: the
+ *  credential resolver reads it, and so does permitProcess.isStatewidePortalUrl (aca.oregon.gov and
+ *  epermitting.oregon.gov ARE Oregon ePermitting's aca-oregon.accela.com). */
+export function hostAliasesOf(host: string): string[] {
+  const h = String(host ?? "").toLowerCase();
+  return [...(HOSTNAME_ALIASES[h] ?? []), ...(HOSTNAME_ALIASES[h.replace(/^www\./, "")] ?? [])];
+}
+
 function hostsMatch(a: string, b: string): boolean {
   if (a === b) return true;
   if (a.endsWith(`.${b}`) || b.endsWith(`.${a}`)) return true;

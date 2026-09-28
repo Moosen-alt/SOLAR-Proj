@@ -72,7 +72,9 @@ function seedLookup(ahj: string, agency: string) {
     permitStructure: { value: "separate", sourceUrl: COUNTY_PAGE, quote: "a structural permit and a separate electrical permit", origin: "lookup" },
     permits: [{
       discipline: "electrical", label: "Residential Electrical", issuingAgency: cite(agency),
-      portalUrl: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not searched" },
+      // The county's page names the statewide portal (portal-truth D1: the statewide fallback is
+      // taken only on evidence that this permit files there — never on "nothing says otherwise").
+      portalUrl: { value: ACA, sourceUrl: COUNTY_PAGE, quote: "Apply online through Oregon ePermitting (aca-oregon.accela.com)", origin: "lookup" },
       recordType: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not searched" },
       documents: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not searched" },
       fee: { value: { amountUsd: 94, basis: "tier 5.01-15 kVA", lines: [{ label: "5.01 to 15 kva", amountUsd: 94 }], tiers: TIERS } as never,

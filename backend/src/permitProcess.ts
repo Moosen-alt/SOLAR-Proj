@@ -32,6 +32,7 @@ import type {
   ProjectRecord,
 } from "../../shared/src/types";
 import type { AppDb } from "./db";
+import { hostAliasesOf } from "./portalCredentials";
 
 // ── Keys ────────────────────────────────────────────────────────────────────────────────
 /** "City of Jefferson, OR" / "city of  jefferson" → "city of jefferson". A trailing state code
@@ -152,6 +153,8 @@ export interface StatePermitRules {
   permitStructure?: CitedFact<"separate" | "combo">;
   /** The shared statewide permit portal many jurisdictions subscribe to. */
   statewidePortal?: CitedFact<string>;
+  /** Its name, as a label reads it ("Oregon ePermitting"). */
+  statewidePortalName?: string;
   /** How a prescriptive-path PV structural permit is priced. */
   prescriptiveFeeBasis?: CitedFact<string>;
   /** The electrical renewable-energy fee tiers (kVA). */
@@ -187,6 +190,7 @@ export const STATE_PERMIT_RULES: Record<string, StatePermitRules> = {
       quote: "Oregon ePermitting — one Accela Citizen Access instance for every subscribing Oregon jurisdiction (the jurisdiction is chosen from the work-location address).",
       origin: "state_rule",
     },
+    statewidePortalName: "Oregon ePermitting",
     prescriptiveFeeBasis: {
       value: "flat",
       sourceUrl: OAR_918_050_0180,
@@ -327,34 +331,174 @@ export function sameRecordType(a: string, b: string): boolean {
   return Boolean(x) && x === y;
 }
 
+// ── THE STATEWIDE PORTAL — ONLY WHERE THE EVIDENCE SAYS THIS AHJ FILES THERE (portal-truth D1) ──
+// A real filing (City of Corvallis OR, 2026-09-28) went to Oregon ePermitting although the per-job
+// lookup had NAMED the city's own portal ("Apply online at www.corvallispermits.com", which lands on
+// the city's own Accela tenant) and dropped it for want of attestation. With no portal kept, the
+// fallback answered "the cited state rule" — i.e. an UNKNOWN read as "files on the statewide
+// portal" — and the statewide instance then said "No Building services were returned for this
+// address". The rule is now the evidence's, both ways:
+//   - ANY source saying the AHJ files ELSEWHERE — a portal the lookup named for this permit (kept
+//     OR NOT), a knowledge-base row / recipe / stored login naming another portal or the AHJ's own
+//     tenant, a seeded / hand-written process naming another system, the statewide portal itself
+//     having said the address is not served there — withholds the fallback;
+//   - otherwise it is taken ONLY when a source says the AHJ (or the agency issuing this permit)
+//     files ON the statewide portal (Jefferson / Marion County: a seeded "OR E-permitting", a
+//     knowledge-base row or recipe on the statewide host, a lookup portal there);
+//   - NOTHING either way is "unknown, a person confirms" — never the statewide portal.
+// Pure: the database-derived sources arrive as `evidence` (statewideEvidence.statewideEvidenceFor).
+
+/** Is this URL the state's statewide portal instance — its own host or a known alias of it
+ *  (portalCredentials.hostAliasesOf: aca.oregon.gov and epermitting.oregon.gov ARE
+ *  aca-oregon.accela.com)? A city's own Accela tenant (aca-prod.accela.com/CORVALLIS) is not. */
+export function isStatewidePortalUrl(state: string | null | undefined, url: string | null | undefined): boolean {
+  const rule = stateRulesFor(state).statewidePortal;
+  const ruleHost = hostOf(String(rule?.value ?? ""));
+  const h = hostOf(String(url ?? ""));
+  if (!ruleHost || !h) return false;
+  return h === ruleHost || hostAliasesOf(ruleHost).map((x) => x.replace(/^www\./, "")).includes(h);
+}
+/** The statewide portal's name ("Oregon ePermitting"), "" when the state has none. */
+export function statewidePortalName(state: string | null | undefined): string {
+  return stateRulesFor(state).statewidePortalName ?? "";
+}
+
+/** One piece of evidence about WHERE an AHJ files, read by statewidePortalFor. */
+export interface StatewideEvidence {
+  kind: "statewide" | "elsewhere";
+  /** Where it came from, in an operator's words ("seeded process profile", "recipe 1a2b…"). */
+  source: string;
+  /** What it says. */
+  detail: string;
+  url?: string;
+  /** The cited fact itself, when the evidence is one (a lookup's portal answer). */
+  fact?: CitedFact<string>;
+}
+export type StatewideDecision =
+  | { url: string; basis: CitedFact<string>; withheld?: undefined; evidence: StatewideEvidence[] }
+  | { url: null; withheld: string; basis?: undefined; evidence: StatewideEvidence[] };
+
+/** The portal a refused lookup answer NAMED: the structured `claimed`, else (rows saved before it
+ *  existed) the URL in the door's own "the portal <url> was never returned by the search…" words.
+ *  Only an ATTESTATION refusal names a claim: a help page or a utility portal the model named is
+ *  not the AHJ's portal (those notFound texts carry no "the portal <url>" phrase). */
+export function claimedPortalOf(fact: Pick<CitedFact<string>, "value" | "notFound" | "claimed"> | null | undefined): string {
+  if (!fact || fact.value) return "";
+  if (typeof fact.claimed === "string" && /^https?:\/\//i.test(fact.claimed.trim())) return fact.claimed.trim();
+  const m = /\bthe portal (https?:\/\/[^\s,;)]+) was never returned by the search/i.exec(String(fact.notFound ?? ""));
+  return m ? m[1].replace(/[.,]+$/, "") : "";
+}
+
+const URL_IN_TEXT = /https?:\/\/[^\s,;)"'<>]+/gi;
+/** "OR E-permitting", "Oregon ePermitting (Accela)", "e-permitting portal" — the state's own
+ *  e-permitting system, in a state that has one. The phrase (with a trailing platform / "portal"
+ *  word) is read as ONE token so its "portal" is not read as another system's. */
+const STATE_EPERMITTING = /\b(?:(?:or|oregon|state(?:wide)?)\s*)?e[\s-]?permitting(?:\s*\(?\s*(?:accela|aca)\s*\)?)?(?:\s+(?:portal|website|web\s*site|system|site))?/gi;
+const OTHER_SYSTEM = /\bportal\b|projectdox|\bavolve\b|energov|\btyler\b|opengov|viewpoint|iworq|citizenserve|\bmygov\b|trakit|govoutreach|smartgov|devhub|development direct|\be-?mail\b|\bin[\s-]?person\b|over[\s-]the[\s-]counter|\bwalk[\s-]?in\b|\busps\b|\bmail(?:ed)?\b|\bpaper\b|\bcounter\b/i;
+
 /**
- * THE STATEWIDE PORTAL, when it applies to this AHJ's permit track — and on what basis:
- *   - the lookup found this AHJ's permits filed on it → "lookup";
- *   - the lookup found a DIFFERENT portal for this AHJ → null (the AHJ's own evidence wins);
- *   - no portal answer at all → the cited state rule ("state_rule"), the acceptable degraded path.
- * The caller still judges the URL through hostFitsTrackAndEntity (a person's verified portal for
- * the AHJ outranks both).
+ * WHAT A SEEDED / HAND-WRITTEN CHANNEL'S WORDS SAY about the statewide portal. A URL is judged by
+ * its host; the state's e-permitting words say "statewide"; another system's words say
+ * "elsewhere"; a bare platform word ("Accela") says NOTHING — Albany, Brownsville and Corvallis
+ * run their own Accela tenants. Two channels in one line ("Tualatin Portal / OR E-Permitting",
+ * "Clackamas (EP) / OR E-Permitting (BP)") are not a statewide answer: a person confirms which
+ * one this permit takes.
+ */
+export function classifyChannelWords(state: string | null | undefined, text: string | null | undefined, ownNames: string[] = []): "statewide" | "elsewhere" | "neutral" {
+  let raw = String(text ?? "").trim();
+  if (!raw || !stateRulesFor(state).statewidePortal) return "neutral";
+  // The AHJ's OWN name is not another office ("Oregon City / ePermitting" is one channel).
+  for (const n of ownNames.map((x) => String(x ?? "").trim()).filter((x) => x.length >= 3).sort((a, b) => b.length - a.length)) {
+    raw = raw.replace(new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), " ");
+  }
+  const urls = raw.match(URL_IN_TEXT) ?? [];
+  const words = raw.replace(URL_IN_TEXT, " URL ");
+  const clauses = words.split(/\s*[/;|]\s*/).map((c) => c.trim()).filter(Boolean);
+  const verdicts = clauses.map((c): "statewide" | "elsewhere" | "neutral" | "other" => {
+    if (/\bURL\b/.test(c)) return "neutral"; // judged by host below
+    const sw = new RegExp(STATE_EPERMITTING.source, "i").test(c);
+    const rest = c.replace(new RegExp(STATE_EPERMITTING.source, "gi"), " ");
+    if (OTHER_SYSTEM.test(rest)) return "elsewhere";
+    if (sw) return "statewide";
+    // A clause naming only a platform ("Accela", "ACA") says nothing; anything else names another
+    // office or channel ("Clackamas (EP)", "Josephine County") — it counts only beside another clause.
+    return /^\W*(?:accela|aca|online)?\W*$/i.test(rest.replace(/\((?:[a-z]{1,3})\)/gi, " ")) ? "neutral" : "other";
+  });
+  const byUrl = urls.map((u) => (isStatewidePortalUrl(state, u) ? "statewide" : "elsewhere"));
+  const all = [...verdicts, ...byUrl];
+  if (all.includes("elsewhere")) return "elsewhere";
+  const named = all.filter((v) => v !== "neutral");
+  if (named.includes("statewide") && named.some((v) => v !== "statewide")) return "elsewhere";
+  return named.includes("statewide") ? "statewide" : "neutral";
+}
+
+/**
+ * THE STATEWIDE PORTAL for this AHJ's permit track, from the evidence (see the section header).
+ * null = the state has no statewide portal at all. Otherwise a URL with the fact it rests on, or
+ * `withheld` with the reason a person reads. The caller still judges a returned URL through
+ * hostFitsTrackAndEntity (a person's verified portal for the AHJ outranks it).
  */
 export function statewidePortalFor(
   project: Pick<ProjectRecord, "state" | "ahj">,
   track: string | null | undefined,
-  opts: { processProfileMethod?: string | null } = {},
-): { url: string; basis: CitedFact<string> } | null {
+  opts: { processProfileMethod?: string | null; evidence?: StatewideEvidence[] } = {},
+): StatewideDecision | null {
   const rule = stateRulesFor(project.state).statewidePortal;
   if (!answered(rule)) return null;
-  const ruleHost = hostOf(rule.value);
-  const permit = permitAnswerForTrack(project, track);
-  const lk = permitProcessFor(project);
-  const found = [permit?.portalUrl, ...(lk?.permits ?? []).map((p) => p.portalUrl)].find((f) => answered(f));
-  if (found) {
-    return hostOf(found.value!) === ruleHost ? { url: rule.value, basis: found } : null;
+  const name = statewidePortalName(project.state) || "the statewide portal";
+  const ahj = String(project.ahj ?? "").trim() || "this AHJ";
+  const items: StatewideEvidence[] = [];
+  // 1. THE PER-JOB LOOKUP: this track's own permit, else (a combo / unknown filing) every permit.
+  const own = permitAnswerForTrack(project, track);
+  const pool = own ? [own] : (permitProcessFor(project)?.permits ?? []);
+  for (const p of pool) {
+    const f = p.portalUrl;
+    if (answered(f)) {
+      const onState = isStatewidePortalUrl(project.state, f.value);
+      items.push({
+        kind: onState ? "statewide" : "elsewhere", source: `per-job lookup (${p.discipline})`, url: f.value!, fact: f,
+        detail: onState ? `the per-job lookup found ${ahj}'s ${p.discipline} permit filed on ${f.value}` : `the per-job lookup found ${ahj}'s own portal ${f.value}`,
+      });
+      continue;
+    }
+    const claimed = claimedPortalOf(f);
+    if (!claimed || !hostOf(claimed)) continue;
+    const onState = isStatewidePortalUrl(project.state, claimed);
+    items.push({
+      kind: onState ? "statewide" : "elsewhere", source: `per-job lookup (${p.discipline}), named but not kept`, url: claimed,
+      detail: onState
+        ? `the per-job lookup's source named ${claimed} for ${ahj}'s ${p.discipline} permit`
+        : `the per-job lookup's source named ${claimed} as where ${ahj} applies (${f.sourceUrl || "cited page"}: "${String(f.quote ?? "").slice(0, 120)}") — not kept by the lookup's door, but it is not ${name}`,
+      fact: { value: onState ? claimed : null, sourceUrl: f.sourceUrl, quote: f.quote, origin: f.origin },
+    });
   }
-  // A seeded process profile that names a different submission method is the AHJ's own evidence.
-  const method = String(opts.processProfileMethod ?? "").toLowerCase();
-  if (method && !/e.?permitting|accela/.test(method) && /portal|projectdox|energov|opengov|email|in.?person|mygov|citizenserve|iworq/.test(method)) {
-    return null;
+  // 2. THE SEEDED PROCESS PROFILE's own words.
+  const method = String(opts.processProfileMethod ?? "").trim();
+  if (method) {
+    const verdict = classifyChannelWords(project.state, method);
+    if (verdict !== "neutral") items.push({ kind: verdict, source: "seeded process profile", detail: `the seeded process profile says "${method.slice(0, 120)}"` });
   }
-  return { url: rule.value, basis: rule };
+  // 3. Everything the database knows (knowledge-base rows, recipes, stored logins, the hand-written
+  //    profile, the agency that issues this permit) — gathered by the caller.
+  items.push(...(opts.evidence ?? []));
+  const elsewhere = items.filter((e) => e.kind === "elsewhere");
+  if (elsewhere.length) {
+    return {
+      url: null, evidence: items,
+      withheld: `${name} is not assumed for ${ahj}: ${elsewhere.slice(0, 2).map((e) => e.detail).join("; ")}. A person confirms ${ahj}'s portal (save it on the AHJ's knowledge-base profile) and re-stages.`,
+    };
+  }
+  const onState = items.find((e) => e.kind === "statewide");
+  if (onState) {
+    const basis: CitedFact<string> = onState.fact && answered(onState.fact)
+      ? { ...onState.fact, value: rule.value }
+      : { value: rule.value, sourceUrl: rule.sourceUrl, quote: `${onState.source}: ${onState.detail}`.slice(0, 300), origin: "kb" };
+    return { url: rule.value, basis, evidence: items };
+  }
+  return {
+    url: null, evidence: items,
+    withheld: `Unknown: nothing on file says ${ahj} files on ${name} (no per-job lookup portal, seeded or hand-written process, knowledge-base row, recipe or issuing agency names it). A person confirms ${ahj}'s portal (save it on the AHJ's knowledge-base profile) and re-stages.`,
+  };
 }
 
 function hostOf(url: string): string {

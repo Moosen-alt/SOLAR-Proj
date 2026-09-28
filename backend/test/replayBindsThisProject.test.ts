@@ -64,14 +64,22 @@ const donor = (() => {
 })();
 
 function seedAgency(ahj: string, agency: string | null) {
+  const issuingAgency = agency
+    ? { value: agency, sourceUrl: "https://example.gov/building", quote: `${agency} issues building permits for ${ahj}`, origin: "lookup" as const }
+    : { value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: "no page named the issuing agency" };
+  const nf = { value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: "not searched" };
   pp.savePermitProcessLookup(db, {
     state: "OR", ahj, lookedUpAt: new Date().toISOString(),
-    issuingAgency: agency
-      ? { value: agency, sourceUrl: "https://example.gov/building", quote: `${agency} issues building permits for ${ahj}`, origin: "lookup" }
-      : { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "no page named the issuing agency" },
+    issuingAgency,
     permitStructure: { value: "separate", sourceUrl: "https://example.gov", quote: "separate electrical permit", origin: "lookup" },
-    permits: [],
-  });
+    // The lookup found the structural permit filed on the statewide portal (portal-truth D1: the
+    // statewide fallback is taken only on evidence, never on "nothing says otherwise").
+    permits: [{
+      discipline: "structural", label: "Residential Structural", issuingAgency,
+      portalUrl: { value: ACA, sourceUrl: "https://example.gov/building", quote: "Apply online through Oregon ePermitting (aca-oregon.accela.com)", origin: "lookup" },
+      recordType: nf, documents: nf, fee: nf,
+    }],
+  } as never);
 }
 type Handed = { steps: RecipeStep[]; values: Record<string, string> };
 async function stageBuilding(ahj: string): Promise<{ handed: Handed | null; projectId: string }> {

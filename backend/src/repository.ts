@@ -76,7 +76,8 @@ import { publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
 import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
-import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor } from "./permitProcess";
+import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, isStatewidePortalUrl } from "./permitProcess";
+import { statewideEvidenceFor } from "./statewideEvidence";
 import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
 import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import type { StageAcquiredForm } from "./formAcquisitionPlan";
@@ -8112,8 +8113,7 @@ export async function prepareSubmission(
   // portal is not taken here: that answer is the statewide fallback below, labelled as such.
   if (track !== "nem" && !ahjPortalUrl) {
     const looked = permitAnswerForTrack(detail.project, track)?.portalUrl.value ?? "";
-    const statewideHost = portalHostOf(stateRulesFor(detail.project.state).statewidePortal?.value ?? "");
-    if (looked && portalHostOf(looked) !== statewideHost) ahjPortalUrl = fitUrl(looked, "research");
+    if (looked && !isStatewidePortalUrl(detail.project.state, looked)) ahjPortalUrl = fitUrl(looked, "research");
   }
   // A draft/recording recipe (not yet promoted to "complete") still carries the entry URL the
   // operator — or a prior auto-learn pass — pointed the recorder at. Recover it so the universal
@@ -8145,14 +8145,29 @@ export async function prepareSubmission(
   // answers from the per-job lookup first (this AHJ files on the statewide portal / on a
   // DIFFERENT portal → no fallback), then from the cited state rule when nothing says otherwise.
   // A person's verified portal for the AHJ still outranks it (fitUrl → hostFitsTrackAndEntity).
+  // PORTAL-TRUTH D1 (Corvallis, 2026-09-28): the fallback is taken ONLY on evidence that this AHJ
+  // (or the agency issuing this permit) files on the statewide portal; anything saying it files
+  // elsewhere — the lookup NAMING its own portal, kept or not — or nothing at all is "unknown, a
+  // person confirms", named in the run's message and audited, never the statewide portal.
   let statewidePortalUrl = "";
   let statewideBasis = "";
   if (track !== "nem" && !ahjPortalUrl && !draftRecipe) {
     const process = findAhjProcessProfile(detail.project);
-    const statewide = statewidePortalFor(detail.project, track, { processProfileMethod: process?.submissionMethod ?? null });
-    if (statewide) {
+    const statewide = statewidePortalFor(detail.project, track, {
+      processProfileMethod: process?.submissionMethod ?? null,
+      evidence: statewideEvidenceFor(db, detail.project, track),
+    });
+    if (statewide && statewide.url !== null) {
       statewidePortalUrl = permitSafeUrl(statewide.url, "statewide");
       statewideBasis = describeCited("Statewide portal", statewide.basis);
+      addAuditLog(db, projectId, "system", "submit gate", "portal.statewide_taken", { track: track ?? "permit", url: statewide.url, basis: statewideBasis.slice(0, 400) });
+    } else if (statewide) {
+      const ruleUrl = String(stateRulesFor(detail.project.state).statewidePortal?.value ?? "");
+      refusedUrls.push({ url: ruleUrl, source: "statewide", code: "withheld", reason: statewide.withheld });
+      addAuditLog(db, projectId, "system", "submit gate", "portal.statewide_withheld", {
+        track: track ?? "permit", url: ruleUrl, reason: statewide.withheld.slice(0, 600),
+        evidence: statewide.evidence.slice(0, 6).map((e) => ({ kind: e.kind, source: e.source, url: e.url ?? null })),
+      });
     }
   }
   // The AHJ's / utility's OWN portal, from its own evidence only — never from a borrowed recipe.
@@ -8907,9 +8922,14 @@ export async function prepareSubmission(
       // where Marion County issues). "No portal automation is available" then reads as a missing
       // URL and sends the operator to re-paste one that is already there — say the real reason.
       const refused = borrowDecisionReason.startsWith("borrow refused: ") ? borrowDecisionReason.slice("borrow refused: ".length) : "";
+      // THE STATEWIDE PORTAL WAS WITHHELD (portal-truth D1): say why — the operator confirms the
+      // AHJ's own portal; "no portal automation" would read as a missing URL.
+      const withheld = refusedUrls.find((r) => r.code === "withheld")?.reason ?? "";
       const msg = refused
         ? `No recording exists yet for ${where}'s ${track} permit${ownPortalUrl ? ` on ${portalHostOf(ownPortalUrl) || ownPortalUrl}` : ""}, and the recording learned elsewhere on that portal was not reused: ${refused}. Nothing was opened. This permit needs one supervised learn or recording for its issuing agency; then re-stage.`
-        : `No portal automation is available for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
+        : withheld
+          ? `No portal is confirmed for ${where}'s ${track ?? "permit"} permit, so nothing was opened. ${withheld}`
+          : `No portal automation is available for ${where} yet, so there's nothing to stage against. Record the portal once (paste its login/landing URL under "Record this portal") or add its URL to the knowledge base, then re-stage.`;
       result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
     } else {
       // The mock stands in ONLY when there is no real portal AND auto-seed is off —

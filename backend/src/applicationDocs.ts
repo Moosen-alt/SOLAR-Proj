@@ -636,7 +636,10 @@ function lookedUpDocuments(project: ProjectRecord): { documents: string[]; note:
 // registryTermMatches (whole words, same kind) lives in processProfiles, beside the kind helpers it
 // uses — ahjForms' built-in registry asks the same question and cannot import this module (cycle).
 
-export function findApplicationProfile(project: ProjectRecord): ApplicationRequirementProfile {
+/** THE HAND-WRITTEN REGISTRY PROFILE for this project's AHJ — a person wrote it for THAT
+ *  jurisdiction — or null. Never the generic Oregon fallback, never one synthesized from a seeded
+ *  process profile or the per-job lookup: those say nothing about this AHJ's own portal. */
+export function registryApplicationProfileFor(project: Pick<ProjectRecord, "state" | "ahj" | "city">): ApplicationRequirementProfile | null {
   // The hand-written registry is OREGON-specific, but its match terms are bare
   // jurisdiction names that collide across states ("Washington County", "Salem",
   // "Marion County", "Portland" all exist elsewhere). Without this state gate an
@@ -653,11 +656,20 @@ export function findApplicationProfile(project: ProjectRecord): ApplicationRequi
   // profile (array order) — the same county-vs-city confusion as Santa Fe (processProfiles).
   const ahjName = String(project.ahj ?? "").trim();
   const jurisdictionName = jurisdictionCore(ahjName) ? ahjName : String(project.city ?? "").trim();
-  const specific = oregonProject && jurisdictionName
+  return oregonProject && jurisdictionName
     ? applicationProfiles.find((profile) =>
-        profile.id !== "oregon-generic-epermitting" && profile.matchJurisdictions.some((term) => registryTermMatches(jurisdictionName, term)),
-      )
-    : undefined;
+        !FALLBACK_PROFILE_IDS.has(profile.id) && profile.matchJurisdictions.some((term) => registryTermMatches(jurisdictionName, term)),
+      ) ?? null
+    : null;
+}
+/** Profiles that are NOT an AHJ's own knowledge: the generic Oregon fallback, the generic package,
+ *  the per-job lookup's shell. Their portal name / source URL is never written or read as the AHJ's
+ *  portal (learnFromProject, the channel label). */
+export const FALLBACK_PROFILE_IDS: ReadonlySet<string> = new Set(["oregon-generic-epermitting", "generic-unknown-ahj", "lookup-per-job"]);
+
+export function findApplicationProfile(project: ProjectRecord): ApplicationRequirementProfile {
+  const oregonProject = usStateCode(project.state) === "OR";
+  const specific = registryApplicationProfileFor(project);
   if (specific) return specific;
   // No hand-written profile — synthesize from the AHJ's seeded process knowledge so
   // we still pull the right forms for jurisdictions we have real data on.

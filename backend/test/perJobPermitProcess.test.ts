@@ -13,6 +13,8 @@
 //   K1 applicationDocs.permitStructureWithBasis: drop the cited state rule   → (t1) fails.
 //   K2 portalChannel.hostFitsTrackAndEntity: drop the not_a_portal check      → (p2), (p3) fail.
 //   K3 repository: statewide fallback still gated on a seeded process profile → (p3) fails.
+//   (portal-truth D1, 2026-09-28: the fallback now needs EVIDENCE — (p3) carries it, and (p3x)
+//    pins that "nothing says otherwise" is withheld; portalTruth.test.ts holds its kills.)
 //   K4 portalRecipes.findBorrowableRecipe: ignore the looked-up record type   → (b2) fails.
 //   K5 hostFitsTrackAndEntity: carve-out by HOST instead of host+tenant, or
 //      from any verified row instead of the utility's own                     → (n3)/(n4) fail.
@@ -120,15 +122,42 @@ await check("(p2) MUST-EXCLUDE: a junk recipe saved on a help page does not make
   assert.equal(recipes.recipeHostFit("building", ent, junk).code, "not_a_portal");
 });
 
-await check("(p3) MUST-PASS end-to-end: a first-time Oregon AHJ's STRUCTURAL stage resolves the statewide portal and replays the Coos Bay structural recipe (never the help page)", async () => {
+// (p3x) portal-truth D1 (Corvallis, 2026-09-28): an Oregon AHJ with NO evidence of filing on the
+// statewide portal is "unknown, a person confirms" — never the statewide portal, never a borrow.
+await check("(p3x) MUST-EXCLUDE end-to-end: a first-time Oregon AHJ whose lookup names only its agency (no portal) is NOT sent to the statewide portal — withheld, audited, no borrow", async () => {
   let replayed: string | null = null;
   fx.stubRunner(async (recipe) => { replayed = recipe.id; return { ok: true, finalSubmitClicked: false, steps: [{ ok: true, message: "reached review" }] }; });
-  // The per-job lookup found the issuing agency (close M2: a borrow with no known agency refuses).
+  const ahj = "City of Alderbrook Heights";
   pp.savePermitProcessLookup(db, {
-    state: "OR", ahj: AHJ, lookedUpAt: new Date().toISOString(),
-    issuingAgency: { value: AHJ, sourceUrl: "https://alderbrook.example.gov/permits", quote: "The City of Alderbrook issues building permits", origin: "lookup" },
+    state: "OR", ahj, lookedUpAt: new Date().toISOString(),
+    issuingAgency: { value: ahj, sourceUrl: "https://alderbrookheights.example.gov/permits", quote: "The City of Alderbrook Heights issues building permits", origin: "lookup" },
     permitStructure: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not searched" },
     permits: [],
+  } as never);
+  const projectId = fx.newProject({ ahj, city: "Alderbrook Heights", zip: "97350", utility: "Pacific Power" });
+  await repo.prepareSubmission(db, projectId, "building");
+  assert.equal(replayed, null, "no borrowed recipe may drive a run whose portal nobody confirmed");
+  const a = fx.audits("portal.statewide_withheld").find((x) => x.project_id === projectId);
+  assert.ok(a, "the withheld fallback is audited");
+  assert.match(JSON.parse(a!.details).reason, /Unknown: nothing on file says City of Alderbrook Heights files on Oregon ePermitting/);
+});
+
+await check("(p3) MUST-PASS end-to-end: a first-time Oregon AHJ whose lookup found its permits on the statewide portal resolves it and replays the Coos Bay structural recipe (never the help page)", async () => {
+  let replayed: string | null = null;
+  fx.stubRunner(async (recipe) => { replayed = recipe.id; return { ok: true, finalSubmitClicked: false, steps: [{ ok: true, message: "reached review" }] }; });
+  // The per-job lookup found the issuing agency (close M2: a borrow with no known agency refuses)
+  // and the structural permit filed on the statewide portal (portal-truth D1: the evidence).
+  const agency = { value: AHJ, sourceUrl: "https://alderbrook.example.gov/permits", quote: "The City of Alderbrook issues building permits", origin: "lookup" as const };
+  const nf = { value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: "not searched" };
+  pp.savePermitProcessLookup(db, {
+    state: "OR", ahj: AHJ, lookedUpAt: new Date().toISOString(),
+    issuingAgency: agency,
+    permitStructure: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not searched" },
+    permits: [{
+      discipline: "structural", label: "Residential Structural", issuingAgency: agency,
+      portalUrl: { value: ACA_OREGON, sourceUrl: "https://alderbrook.example.gov/permits", quote: "Apply online through Oregon ePermitting (aca-oregon.accela.com)", origin: "lookup" },
+      recordType: nf, documents: nf, fee: nf,
+    }],
   } as never);
   const projectId = fx.newProject({ ahj: AHJ, city: "Alderbrook", zip: "97350", utility: "Pacific Power" });
   assert.deepEqual(tracks.requiredTracks(repo.getProjectDetail(db, projectId).project), ["nem", "building", "electrical"]);
