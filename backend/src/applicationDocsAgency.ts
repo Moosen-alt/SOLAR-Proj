@@ -720,10 +720,17 @@ export function structureDescriptionOf(snapshot: Record<string, unknown> | undef
   const stored = parserReview.structureOption(s.structureFromPlan);
   const storedBasis = String(s.structureFromPlanBasis ?? "").trim();
   const text = STRUCTURE_TEXT_KEYS.map((k) => String(s[k] ?? "")).filter((t) => t.trim()).join("\n");
+  // The page's answer at intake is taken only where the round-3 rule (2026-09-28) could still have
+  // produced it over the text on file: an accessory building, or a single-family / duplex answer over
+  // text that names no other building (the page read the plan set alone; the server's text also
+  // carries the site-plan notes and the description). Anything else (a townhouse or manufactured
+  // home stored before the rule) is re-derived here — which asks.
+  const storedHolds = stored === "Accessory building (garage/shed)"
+    || ((stored === "Single-family dwelling" || stored === "Two-family dwelling (duplex)") && !parserReview.otherBuildingWords(text).length);
   const derived: StructureBasis =
     // The page's answer at intake — unless the house predicate says manufactured and the page did
     // not put the array on another building.
-    stored && !(manufactured === "yes" && stored !== "Manufactured home" && stored !== "Accessory building (garage/shed)")
+    storedHolds && !(manufactured === "yes" && stored !== "Accessory building (garage/shed)")
       ? { option: stored, basis: storedBasis || "derived from the plan set at intake" }
     : !stored && storedBasis ? { option: "", basis: storedBasis }
     : parserReview.structureBasis(text, { dwellingUnits: s.dwellingUnits, manufactured, manufacturedBasis });

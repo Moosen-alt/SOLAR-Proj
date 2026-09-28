@@ -27,6 +27,9 @@ interface ParserReviewApi {
     manufacturedBasis?: string;
   }): StructureBasis;
   structureOption(value: unknown): string;
+  /** The other-building words the text names (the attached-garage exception skipped) — the words
+   *  the structure derivation abstains on. */
+  otherBuildingWords(planText: string): string[];
   STRUCTURE_OPTIONS: string[];
 }
 
