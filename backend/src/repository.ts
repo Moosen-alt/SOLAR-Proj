@@ -78,7 +78,7 @@ import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
 import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor } from "./permitProcess";
 import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
-import { agencyListStatusResolver, documentInventory, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
+import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import type { StageAcquiredForm } from "./formAcquisitionPlan";
 import { agencyListReplacesLine, issuingAgencyDocumentList } from "./applicationDocsAgency";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
@@ -7459,10 +7459,14 @@ export function draftDocumentGaps(
   const result = parseJson<Record<string, unknown>>(text(run.result_json) || "{}", {});
   const carried = Array.isArray(result.packagedDocTypes) ? (result.packagedDocTypes as unknown[]).map(String) : null;
   const startedMs = Date.parse(text(run.started_at));
+  // A row not on disk that the staging-time fill produces from a stored template: the draft's own
+  // staging ran that fill, so it carried the form if the template was on file then (its age decides,
+  // below). Anything else not on disk was not in the draft.
+  const produced = missingFilledAtStaging(db, project, trackRows.filter((d) => !d.present));
   const out: Array<{ label: string; onFileNow: boolean }> = [];
   for (const d of trackRows) {
     const keys = [d.docType, ...(d.altDocTypes || [])];
-    if (!d.present) { out.push({ label: d.label, onFileNow: false }); continue; }
+    if (!d.present && !produced.has(d)) { out.push({ label: d.label, onFileNow: false }); continue; }
     if (d.via === "in plan set") continue; // the plan set carries it
     if (carried) {
       if (!keys.some((k) => carried.includes(k))) out.push({ label: d.label, onFileNow: true });
@@ -7805,7 +7809,7 @@ export async function prepareSubmission(
   if (missingDocs.length > 0) {
     // Each document says its own fix (owedDocumentAction — the gate's words): a form Stage could not
     // acquire is found / uploaded as a blank; a file is attached or split out of the plan set.
-    throw new HttpError(409, `Submission staging blocked: required document(s) not on file${track !== "nem" ? " after Stage's own form acquisition and fill" : ""} — ${missingDocs.map((d) => `${d.label} (${owedDocumentAction(d)})`).join("; ")}. The AHJ/utility must receive a complete package.`, {
+    throw new HttpError(409, `Submission staging blocked: required document(s) not attached${track !== "nem" ? " after Stage's own form acquisition and fill" : ""} — ${missingDocs.map((d) => `${d.label} (${owedDocumentAction(d)})`).join("; ")}. The AHJ/utility must receive a complete package.`, {
       missingDocuments: missingDocs.map((d) => ({ docType: d.docType, label: d.label, lane: d.lane })),
     });
   }

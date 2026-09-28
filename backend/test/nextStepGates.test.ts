@@ -166,7 +166,9 @@ await check("S2 MUST STILL REFUSE: the PERMIT draft on the same project is refus
   mkRun(pid, "awaiting_human_submit", "combo", "2026-09-20T10:00:00.000Z");
   const s = getAutopilotState(db, pid);
   assert.equal(s.canApprove, false, "a permit draft missing its own required document read as approvable");
-  assert.match(String(s.approveDisabledReason), /submit gate is blocked: .*combo filing: .*structural/i, String(s.approveDisabledReason));
+  // A draft is judged by what it carried (gates-proper C1): the structural detail is not on file, so
+  // the draft went up without it — get it on file, then re-stage.
+  assert.match(String(s.approveDisabledReason), /staged combo draft went up without .*structural.*re-stage/i, String(s.approveDisabledReason));
 });
 
 await check("S2: a staged draft with required fields the project has no data for → not approvable", () => {
@@ -530,9 +532,14 @@ const storeSalemChecklist = (): void => {
 await check("S8/S2: the checklist's template is ON FILE but not yet filled (29cd57b5) → Stage portals ON, Approve not refused over it", () => {
   const pid = mkProject(SALEM);
   assert.deepEqual(permitSideMissing(pid), ["solar_checklist"], "precondition: the permit side owes exactly the prescriptive checklist");
-  const before = getAutopilotState(db, pid);
-  assert.equal(before.canStage, false, "precondition: with no template on file the checklist genuinely holds staging");
-  assert.match(String(before.stageDisabledReason), /prescriptive checklist/i);
+  // With form downloads OFF nothing fetches the state's BCD 5952 at Stage (gates-proper C1: with them
+  // on, Stage downloads it itself and it holds nothing) — so with no template on file it is owed.
+  process.env.AHJ_FORM_DOWNLOADS = "off";
+  try {
+    const before = getAutopilotState(db, pid);
+    assert.equal(before.canStage, false, "precondition: with no template on file the checklist genuinely holds staging");
+    assert.match(String(before.stageDisabledReason), /prescriptive checklist/i);
+  } finally { delete process.env.AHJ_FORM_DOWNLOADS; }
 
   storeSalemChecklist();
   assert.deepEqual(permitSideMissing(pid), ["solar_checklist"], "precondition: the filled form is NOT produced yet — only the fill at staging makes it");
@@ -540,8 +547,9 @@ await check("S8/S2: the checklist's template is ON FILE but not yet filled (29cd
   assert.equal(s.canStage, true, `staging disabled over a form the staging-time fill produces: ${s.stageDisabledReason}`);
   assert.equal(s.stageDisabledReason, null);
 
-  // The same scoping on Approve: a building draft already went through the fill.
-  mkRun(pid, "awaiting_human_submit", "building", "2026-09-20T10:00:00.000Z");
+  // The same scoping on Approve: a building draft staged with the template ON FILE went through the
+  // fill (a draft dated BEFORE the template existed did not — gates-proper C1 draftDocumentGaps).
+  mkRun(pid, "awaiting_human_submit", "building", new Date(Date.now() + 1000).toISOString());
   park(pid);
   const a = getAutopilotState(db, pid);
   assert.doesNotMatch(String(a.approveDisabledReason), /checklist/i, `Approve refused over a form the system fills itself: ${a.approveDisabledReason}`);
