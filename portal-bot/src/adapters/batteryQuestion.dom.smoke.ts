@@ -95,7 +95,11 @@ const run = async (hasBattery: boolean | undefined, decisions: Record<string, st
     const step = await internals.applyFill(f, { value: want }, false);
     if (step) { steps.push(step); filled.push(f.label); }
   }
-  const declarationSteps = (await internals.applyBatteryDeclaration(filled)).map((d) => d.step);
+  // Tolerated when absent so a run against a tree WITHOUT the declaration pass still reports the
+  // fill-pass checks on their own (the kill for this smoke reads as the live reds, not a TypeError).
+  const declarationSteps = typeof internals.applyBatteryDeclaration === "function"
+    ? (await internals.applyBatteryDeclaration(filled)).map((d) => d.step)
+    : [];
   const unfilled = await internals.collectUnfilledRequired();
   const v = async (css: string) => page.locator(css).inputValue().catch(() => "");
   const out: Outcome = {
