@@ -16,6 +16,7 @@ import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCrite
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
 import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
+import { curatedPrintedFees, type PrintedFeeLadder } from "./curatedAhjForms";
 import {
   batteryStatus, SERVICE_FEEDER_CHARGE_KIND, SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
 } from "./batteryServiceFeeder";
@@ -384,6 +385,10 @@ export interface FillContext {
   // buildContext so renewableFee can prefer a schedule somebody researched over the ladder
   // printed on the form we happen to have a copy of. See renewableFee.
   publishedElectricalBrackets?: Array<{ minKw?: number | null; maxKw?: number | null; feeUsd: number }>;
+  // The fee ladder PRINTED on the blank being filled (curatedAhjForms.curatedPrintedFees, by the
+  // blank's own hash) — set per form by fillLoadedForm, never shared across forms. The electrical*
+  // fee sources fall back to it only where no saved electrical fee line is on file.
+  printedFeeLadder?: PrintedFeeLadder | null;
 }
 
 function str(v: unknown): string {
@@ -508,6 +513,41 @@ function serviceFeederOnForm(ctx: FillContext, line: FeeScheduleLine | undefined
   };
 }
 
+/** THE FEE LADDER PRINTED ON THE BLANK BEING FILLED, in whole cents — only where no saved electrical
+ *  fee line is on file (the caller's rule), and only up to the size the form prices flat
+ *  (`autoMaxKva`: above it the form needs per-kVA math and plan review, which are never computed).
+ *  The kVA is the same AC-rating basis as the bracket Qty (systemKva / feeBracket), bounds inclusive. */
+function printedLadderCents(ctx: FillContext): { base: number; stateSurcharge: number } | null {
+  const ladder = ctx.printedFeeLadder;
+  if (!ladder || ladder.discipline !== "electrical") return null;
+  const k = systemKva(ctx);
+  if (!(k > 0) || k > ladder.autoMaxKva) return null;
+  const tier = ladder.tiers.find((t) => k <= t.maxKva);
+  if (!tier) return null;
+  const base = Math.round(tier.feeUsd * 100);
+  // "State surcharge (12% of permit fee)", to the cent.
+  return { base, stateSurcharge: Math.round((base * ladder.stateSurchargePercent) / 100) };
+}
+
+function printedLadderFee(name: string, ctx: FillContext): string {
+  const fees = printedLadderCents(ctx);
+  if (!fees) return "";
+  const usd = (cents: number) => money(cents / 100);
+  // The kVA row's own amount (it fills the bracket's Total through electricalTier*Total).
+  if (name === "electricalBaseFee") return usd(fees.base);
+  // The ladder prices the renewable row alone. A battery job's services/feeders line is not on it, so
+  // no whole-application figure is written — the same rule as an unpriced services line on a saved
+  // schedule (serviceFeederOnForm): a renewable-only total beside a battery understates the permit.
+  if (serviceFeederOnForm(ctx, undefined).applies) return "";
+  if (name === "electricalSubtotal") return usd(fees.base);
+  // A known plan-review trigger adds a charge the ladder does not compute: no surcharge, no total.
+  if (knownElectricalReviewRequired(ctx.snapshot)) return "";
+  if (name === "electricalStateSurcharge") return usd(fees.stateSurcharge);
+  if (name === "electricalTotalFee") return usd(fees.base + fees.stateSurcharge);
+  // A community surcharge / another county's grand total is not on this ladder.
+  return "";
+}
+
 // ---------------------------------------------------------------------------
 // Prescriptive-checklist bridge: computed sources that answer an AHJ's
 // prescriptive structural checklist straight from the parsed data, so a stored
@@ -587,7 +627,10 @@ function computed(name: string, ctx: FillContext): string {
     case "coosElectricalTotal":
     case "electricalTotalFee": {
       const line = ctx.publishedFeeLines?.find(l => l.discipline === "electrical");
-      if (line?.feeUsd == null) return "";
+      // No saved electrical line at all: the ladder printed on this blank, where it has one. A saved
+      // line that declines to price (feeUsd null, with its reason) is never overruled by the form.
+      if (!line) return printedLadderFee(name, ctx);
+      if (line.feeUsd == null) return "";
       if (name === "electricalBaseFee") return line.baseFeeUsd == null ? "" : money(line.baseFeeUsd);
       const svc = serviceFeederOnForm(ctx, line);
       if (svc.applies && !svc.priced) return "";
@@ -1169,6 +1212,11 @@ export async function fillLoadedForm(
   ctx: FillContext,
   outputPath: string,
 ): Promise<FilledFormResult> {
+  // THE BLANK'S OWN PRINTED FEE LADDER, by its exact bytes (curatedAhjForms.curatedPrintedFees) — so
+  // a row stored before the ladder existed reads it too. Per form: a copy of the context, never the
+  // caller's shared one, and a blank without a ladder never inherits another form's.
+  const printedFeeLadder = curatedPrintedFees(templateBytes);
+  if (printedFeeLadder || ctx.printedFeeLadder) ctx = { ...ctx, printedFeeLadder };
   const doc = await PDFDocument.load(templateBytes, { ignoreEncryption: true });
   let checklist: ChecklistRecovery = { recognized: false, overlays: [], omittedTextFields: [], textFieldOverrides: {} };
   let checklistCtx = ctx;
@@ -1209,8 +1257,11 @@ export async function fillLoadedForm(
     ? "Oregon BCD 5952 - Prescriptive Solar PV Installation Checklist"
     : def.formName;
   const missingRequired = Object.entries(def.requiredFields ?? {}).filter(([, source]) => !resolveSource(source, ctx).trim()).map(([label]) => label);
+  // Say where the fees came from whenever the printed ladder priced this form (no saved line on file).
+  const printedFeeNote = ctx.printedFeeLadder && !ctx.publishedFeeLines?.some((l) => l.discipline === "electrical")
+    && resolveSource("computed.electricalBaseFee", ctx) ? ctx.printedFeeLadder.note : "";
   const completionMessage = [checklistMessage, missingRequired.length ? `Still needs: ${missingRequired.join("; ")}.` : "",
-    ...(def.notes ?? [])].filter(Boolean).join(" ") || undefined;
+    printedFeeNote, ...(def.notes ?? [])].filter(Boolean).join(" ") || undefined;
 
   // Both flat and AcroForm templates can have additional fields without widgets.
   const drawMappedOverlays = async (): Promise<number> => {
