@@ -26,6 +26,7 @@ import fs from "node:fs";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
+import { perJobAnswerKeyFor } from "../../shared/src/perJobQuestions";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
 import { resolveHeadless } from "../../portal-bot/src/browser";
 import { compareReviewFields, utilityIdentifiersEnteredBySteps } from "../../portal-bot/src/reviewScreenScraper";
@@ -556,6 +557,20 @@ export function buildPortalPlanner(
         // A free-text box only: a valuation RANGE select ("$10,001 – $25,000") keeps its option.
         if (target && (target.fieldType === "text" || target.fieldType === "other") && rebindsToValuation(String(target.label ?? ""), f.field)) {
           return { selectorIndex: f.index, value: projectFields[DECLARED_VALUATION_FIELD] ?? "", field: DECLARED_VALUATION_FIELD };
+        }
+        // A PER-JOB QUESTION IS NEVER THE PLANNER'S PICK (dryrun-0928 B2). The prompt tells it every
+        // required dropdown MUST be answered, so with the job's ownership unanswered it chose
+        // "Customer-Owned" — and the learn froze that guess into a shared recipe. The one predicate
+        // (shared/src/perJobQuestions, the question bank's rule) decides the question from the
+        // control's own words and the portal's options; the job's answer is filed (the resolver's
+        // value, which renders the portal wording), or nothing — the box is left for a person and the
+        // run reports it as a required miss, which keeps the recipe from auto-trust. Same planner
+        // feeds replay gap-fill, so neither door guesses.
+        if (target && (target.fieldType === "select" || target.fieldType === "text" || target.fieldType === "other")) {
+          const hasOptions = Array.isArray(target.options) && target.options.length > 0;
+          // The control's own label — the text the save-time binder reads back off the recorded step.
+          const perJobKey = perJobAnswerKeyFor(String(target.label ?? ""), hasOptions ? { options: target.options } : { answer: f.value });
+          if (perJobKey) return { selectorIndex: f.index, value: String(fieldValues[perJobKey] ?? "").trim(), field: perJobKey };
         }
         return { selectorIndex: f.index, value: f.value, field: f.field };
       }),

@@ -217,6 +217,11 @@ function blockersFromHttpError(err: HttpError): AutopilotBlocker[] {
   if (d.permitPathUnknown) out.push({ code: "permit_path", detail: "Confirm the permit path (prescriptive vs engineered)." });
   if (d.needsClient) out.push({ code: "needs_client", detail: "Assign the submitting client whose CCB/license belongs on the filing." });
   if (d.needsCcb) out.push({ code: "needs_ccb", detail: "Submitting client has no CCB license number on file." });
+  // A per-job question the portal asks and only a person can answer for this job (ownership,
+  // behind-the-meter, disconnect distance) — named, so the operator knows what to answer (B2).
+  for (const q of (Array.isArray(d.unansweredPortalQuestions) ? d.unansweredPortalQuestions : []) as Array<{ label?: string; key?: string }>) {
+    out.push({ code: "portal_question", detail: `Answer the portal's question for this job: "${String(q.label ?? q.key ?? "a per-job question")}" (portal questions on the project, or the intake link).` });
+  }
   if (out.length === 0) out.push({ code: "blocked", detail: err.message });
   return out;
 }

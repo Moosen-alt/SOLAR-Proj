@@ -28,6 +28,7 @@ import { COMPANY_IDENTIFIER_KEY, companyFactStamp, isCompanyAttestationStep, isC
 import { usStateCode } from "./permitPath";
 import { labelWords } from "../../shared/src/portalSafety";
 import { mountAdjective, mountKindForProject } from "./codeReviewRules";
+import { DISCONNECT_DISTANCE_QUESTION, perJobAnswerKeyFor, perJobQuestionText } from "../../shared/src/perJobQuestions";
 
 type Row = Record<string, unknown>;
 
@@ -2403,10 +2404,10 @@ const VOLATILE_DATE_KEYS = new Set(["todayDate", "todayDateUs", "estimatedCommis
 const YES_NO_LITERAL = /^(?:yes|no|y|n|true|false)$/i;
 /** The learner's standing policy answers ("policy default: <question> -> Yes") stay literals. */
 const POLICY_DEFAULT_NOTE = /^\s*policy default\s*:/i;
-/** THE disconnect-to-meter distance question ("Is your disconnect within 10 feet of the utility
- *  meter?", "Are the AC disconnect(s) … within the state's required distance of the meter?") — one
- *  predicate, shared with the portal question bank (portalQuestionBank per-job:disconnect-10ft). */
-export const DISCONNECT_DISTANCE_QUESTION = /disconnect[^?]{0,80}\bwithin\s*(?:10|ten)\b|disconnect[^?]{0,80}\bwithin\s+(?:the\s+)?(?:state'?s?\s+)?required\s+distance|\bwithin\s*(?:10|ten)\s*(?:feet|ft)\b[^?]{0,60}\bdisconnect/i;
+/** THE disconnect-to-meter distance question — defined with every other per-job rule in
+ *  shared/src/perJobQuestions.ts (one table, shared with the portal question bank); re-exported
+ *  here for its existing importers. */
+export { DISCONNECT_DISTANCE_QUESTION };
 
 export function convertLiteralsToBoundFields(
   steps: RecipeStep[],
@@ -2509,11 +2510,17 @@ export function convertLiteralsToBoundFields(
     }
     const labelText = `${step.selector?.label ?? ""} ${step.note ?? ""}`;
     const yesNo = YES_NO_LITERAL.test(String(step.value ?? "").trim());
-    // THE DISCONNECT-DISTANCE QUESTION HAS ITS OWN KEY — the per-job answer (intake asks it when a
-    // recipe binds it), never whichever parser flag happened to hold "yes".
-    if (yesNo && DISCONNECT_DISTANCE_QUESTION.test(labelText)) {
-      bound.push({ value: step.value as string, field: "disconnectWithin10ft", note: step.note });
-      const next: RecipeStep = { ...step, field: "disconnectWithin10ft" };
+    // A PER-JOB QUESTION HAS ITS OWN KEY (dryrun-0928 B2) — ownership / system configuration /
+    // disconnect distance: the answer is THIS job's (intake asks it when a recipe binds it), never the
+    // learn job's answer frozen as a "portal-specific literal" ("Customer-Owned" matches no project
+    // value, so without this it fell straight through to `return step` below and replayed on every
+    // job) and never whichever parser flag happened to hold "yes". ONE predicate with the question
+    // bank, the replay binder, the planner and the stage gate (shared/src/perJobQuestions); it acts
+    // only when the recorded answer speaks that key's vocabulary.
+    const perJobKey = perJobAnswerKeyFor(perJobQuestionText(step), { answer: String(step.value ?? "") });
+    if (perJobKey) {
+      bound.push({ value: step.value as string, field: perJobKey, note: step.note });
+      const next: RecipeStep = { ...step, field: perJobKey };
       delete next.value;
       return next;
     }

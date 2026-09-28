@@ -77,7 +77,7 @@ import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES
 import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
 import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor } from "./permitProcess";
-import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
+import { bindRecipeForReplay, describeReplayBinding, openPerJobQuestions } from "./recipeReplayBinding";
 import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import type { StageAcquiredForm } from "./formAcquisitionPlan";
 import { agencyListReplacesLine, issuingAgencyDocumentList } from "./applicationDocsAgency";
@@ -8586,6 +8586,39 @@ export async function prepareSubmission(
       + "Staging it again would open a duplicate application with the jurisdiction. "
       + "Submit (or discard) the staged draft first if it needs to be replaced.",
       { track: first, permitNumber: null, submittedAt: null, stagedMeanwhile });
+  }
+  // A PER-JOB QUESTION THE JOB HAS NOT ANSWERED STOPS THE STAGE HERE — BEFORE A BROWSER OPENS
+  // (dryrun-0928 B2). The recipe about to replay asks who owns the system (or whether it is behind
+  // the meter / the disconnect distance), the answer is THIS job's, and no document states it. The
+  // live PacifiCorp recipe filed the learn job's "Customer-Owned" on every job; the replay binder
+  // (R10) now binds that control to the job's key, and an unanswered key would replay a blank — so
+  // the question is asked first, named, the way the question bank lists it for intake. Same
+  // predicate as the bank, the binders and the planner (shared/src/perJobQuestions).
+  if (recipe && runActorLabel === "RecipeAdapter" && !channelDecision.blocked
+      && !recipeTrackConflict && !recipeEntityMisfit && !recipeDisciplineConflict) {
+    let open: Array<{ key: string; label: string }> = [];
+    try {
+      const gateValues = resolveRecipeFieldValues(db, stagedProject, portalType, track ?? null);
+      const gateBinding = bindRecipeForReplay({
+        steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: detail.project, fieldValues: gateValues, track,
+        borrowed: borrowed ? { learnedFor: borrowed.learnedFor, discipline: borrowed.discipline } : null,
+        agency: issuingAgencyFor(detail.project, track),
+      });
+      open = openPerJobQuestions(gateBinding.steps, { ...gateValues, ...gateBinding.fieldValues });
+    } catch (err) {
+      // The replay path binds the same steps again inside the run below and records its own failure.
+      logger.warn("prepare-submission", `per-job question check could not read the recipe: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (open.length) {
+      addAuditLog(db, projectId, "system", "submit gate", "portal.per_job_question_open", {
+        track: track ?? "permit", recipeId: recipe.id, questions: open,
+      });
+      throw new HttpError(409,
+        `Staging paused before opening the portal: ${portalLabel} asks ${open.length === 1 ? "a question" : `${open.length} questions`} only a person can answer for this job — `
+        + `${open.map((q) => `"${q.label}"`).join("; ")}. The recorded answer belonged to another job, so it is never replayed; `
+        + "answer it under the project's portal questions (or send the intake link), then stage again. Nothing was opened.",
+        { unansweredPortalQuestions: open, track: track ?? "permit", recipeId: recipe.id });
+    }
   }
   let result: Record<string, unknown>;
   // What the replay-failure classifier decided about the recipe, for the run's own message.

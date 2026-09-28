@@ -55,9 +55,12 @@ const verified = {
   ],
 };
 const base = llmMod.createLLMProvider(); // no API key -> the stub provider
+// The planner's page plan, set per check (B2 learn): what the model would have filed.
+let nextPlan: { fills: Array<{ index: number; value: string; field: string | null }> } = { fills: [] };
 const fakeLlm = Object.assign(Object.create(base), {
   verifyPortalFill: async () => verified,
   verifyPortalFillVision: async () => verified,
+  planPortalFields: async () => ({ fills: nextPlan.fills, advanceIndex: null, navigateIndex: null, finalSubmitIndex: null, atReview: false, notes: "" }),
 });
 autoLearn.setAutoLearnSeamsForTests({ llm: () => fakeLlm });
 
@@ -96,6 +99,106 @@ await check("(B10) a trusted learn's message and recipe note name the real gate 
   assert.match(note, /^Auto-learned and verified \(high confidence\) on 4 page\(s\)\./, note);
   const { notesSayVerified } = await import("../../scripts/rekey-recipe");
   assert.equal(notesSayVerified(note), true, "rekey-recipe no longer recognises a trusted learn's note");
+});
+
+// ═══ B2 ═════════════════════════════════════════════════════════════════════════════════════
+const { bindRecipeForReplay, openPerJobQuestions } = await import("../src/recipeReplayBinding");
+const OWNERSHIP_Q = "Will the System be Customer-Owned or Third-Party Owned?";
+// The live PacifiCorp recipe's step, exactly as the learn froze it: an UNBOUND select literal.
+const ownershipStep = (): RecipeStep => ({ action: "select", selector: { label: OWNERSHIP_Q }, value: "Customer-Owned", note: OWNERSHIP_Q } as RecipeStep);
+// MUST-EXCLUDE: per-job-SOUNDING controls whose key is a plan-set fact or whose answer is not in the
+// key's vocabulary — label-binding them would match no option on replay (a new false stop).
+const KEEP_AS_RECORDED: RecipeStep[] = [
+  { action: "select", selector: { label: "Will you be participating in the Wattsmart Battery Program?" }, value: "No, I will not be participating", note: "Will you be participating in the Wattsmart Battery Program?" },
+  { action: "select", selector: { label: "System Mounting Method" }, value: "Roof Mounting", note: "System Mounting Method" },
+  { action: "select", selector: { label: "Is the system leased?" }, value: "No", note: "Is the system leased?" },
+  { action: "select", selector: { label: "Will a third-party inspection agency be used?" }, value: "No", note: "Will a third-party inspection agency be used?" },
+] as RecipeStep[];
+
+await check("(B2 save) the save-time binder binds a frozen ownership literal to ownershipModel and drops it; per-job-sounding plan-set controls are untouched", () => {
+  const out = recipes.convertLiteralsToBoundFields([ownershipStep(), ...KEEP_AS_RECORDED], { homeownerName: "Pat Example", hasBattery: "No", mountType: "roof" });
+  assert.equal(out.steps[0].field, "ownershipModel", `the ownership select was not bound: ${JSON.stringify(out.steps[0])}`);
+  assert.equal(out.steps[0].value, undefined, "the learn job's 'Customer-Owned' is still in the recipe");
+  out.steps.slice(1).forEach((s, i) => {
+    assert.equal(s.field, undefined, `MUST-EXCLUDE: "${KEEP_AS_RECORDED[i].note}" was bound to ${s.field}`);
+    assert.equal(s.value, KEEP_AS_RECORDED[i].value, `MUST-EXCLUDE: "${KEEP_AS_RECORDED[i].note}" lost its recorded answer`);
+  });
+  // The disconnect-distance rule is the same predicate now: a yes/no answer binds, as before.
+  const disc = recipes.convertLiteralsToBoundFields([{ action: "select", selector: { label: "Is your AC disconnect within 10 feet of the utility meter?" }, value: "Yes" } as RecipeStep], {});
+  assert.equal(disc.steps[0].field, "disconnectWithin10ft");
+});
+
+await check("(B2 replay) an EXISTING recipe's frozen ownership literal replays this job's answer (R10), even on the borrow probe's empty value map", () => {
+  const project = { state: "OR", ahj: "Coos Bay", parserSnapshot: {} };
+  const policyStep = { action: "select", selector: { label: "Is the system Customer-Owned?" }, value: "Customer-Owned", note: "policy default: Is the system Customer-Owned? -> Customer-Owned" } as RecipeStep;
+  for (const fieldValues of [{ ownershipModel: "PPA" }, {} as Record<string, string>]) {
+    const b = bindRecipeForReplay({ steps: [ownershipStep(), ...KEEP_AS_RECORDED, policyStep], project, fieldValues, track: "nem", borrowed: null, agency: null });
+    assert.equal(b.steps[0].field, "ownershipModel", `R10 did not rebind: ${JSON.stringify(b.steps[0])}`);
+    assert.equal(b.steps[0].value, undefined, "the recorded 'Customer-Owned' would still replay");
+    assert.ok(b.changes.some((c) => c.index === 0 && c.kind === "rebound" && /ownershipModel/.test(c.reason)), "the rebind is not named in the run's account");
+    b.steps.slice(1, 1 + KEEP_AS_RECORDED.length).forEach((s, i) => assert.equal(s.value, KEEP_AS_RECORDED[i].value, `MUST-EXCLUDE: "${KEEP_AS_RECORDED[i].note}" changed on replay`));
+    assert.equal(b.steps[b.steps.length - 1].value, "Customer-Owned", "an operator's standing 'policy default:' answer must stay as recorded");
+  }
+  // The stage gate's reading of the bound steps: open when the job has no answer, closed when it does.
+  const bound = bindRecipeForReplay({ steps: [ownershipStep()], project, fieldValues: {}, track: "nem", borrowed: null, agency: null }).steps;
+  assert.deepEqual(openPerJobQuestions(bound, {}).map((q) => q.key), ["ownershipModel"]);
+  assert.deepEqual(openPerJobQuestions(bound, { ownershipModel: "Lease" }), []);
+});
+
+await check("(B2 learn) the planner's ownership pick is replaced by the job's answer — or left blank — never filed as its guess", async () => {
+  const req = {
+    url: "https://pacificorpnetmetering.powerclerk.com/MvcProjects/EditProject", pageTitle: "Generating Facility",
+    bodyText: "", alreadyFilledLabels: [], isDashboard: false,
+    fields: [
+      { label: OWNERSHIP_Q, fieldType: "select", options: ["Select...", "Customer-Owned", "Third-Party Owned"] },
+      { label: "Will you be participating in the Wattsmart Battery Program?", fieldType: "select", options: ["Select...", "No, I will not be participating", "Yes, I will be participating"] },
+    ],
+  };
+  nextPlan = { fills: [
+    { index: 0, value: "Customer-Owned", field: null },
+    { index: 1, value: "No, I will not be participating", field: null },
+  ] };
+  const plan = async (projectId: string) => {
+    const project = repo.getProjectDetail(db, projectId).project;
+    const { planner } = autoLearn.buildPortalPlanner(db, project, { portalType: "utility", scopeType: "utility", track: "nem" });
+    return (await planner(req as never)).fills;
+  };
+  const unanswered = await plan(fx.newProject());
+  assert.deepEqual({ value: unanswered[0].value, field: unanswered[0].field }, { value: "", field: "ownershipModel" },
+    `an unanswered job's ownership was filed as the planner's pick: ${JSON.stringify(unanswered[0])}`);
+  assert.equal(unanswered[1].value, "No, I will not be participating", "MUST-EXCLUDE: a plan-set-keyed question keeps the planner's answer");
+  const answeredId = fx.newProject();
+  db.run("UPDATE projects SET ownership_model = 'ppa' WHERE id = ?", [answeredId]);
+  const answered = await plan(answeredId);
+  assert.deepEqual({ value: answered[0].value, field: answered[0].field }, { value: "PPA", field: "ownershipModel" }, "the job's own answer is filed, in the portal's wording");
+});
+
+await check("(B2 gate) a stage whose recipe asks an unanswered ownership question stops before any browser, naming it; answered, it replays the job's answer", async () => {
+  const projectId = fx.newProject();
+  fx.completeRecipe([...fx.fills(4), ownershipStep(), fx.REVIEW, fx.FINAL]);
+  let launched: { steps: RecipeStep[]; values: Record<string, string> } | null = null;
+  fx.stubRunner(async (r, _p, values) => {
+    launched = { steps: r.steps, values };
+    return { portalName: "stub", ok: true, finalSubmitClicked: false, pauseReason: null, steps: [{ ok: true, message: "staged" }] };
+  });
+  const runsBefore = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM portal_runs WHERE project_id = ?", [projectId])!.n;
+  await assert.rejects(repo.prepareSubmission(db, projectId), (err: { status?: number; message?: string; details?: { unansweredPortalQuestions?: Array<{ key: string; label: string }> } }) => {
+    assert.equal(err.status, 409, String(err.message));
+    assert.deepEqual(err.details?.unansweredPortalQuestions?.map((q) => q.key), ["ownershipModel"], String(err.message));
+    assert.match(String(err.message), /Customer-Owned or Third-Party Owned/, "the refusal must name the portal's own question");
+    return true;
+  });
+  assert.equal(launched, null, "a browser was launched with the ownership question unanswered");
+  assert.equal(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM portal_runs WHERE project_id = ?", [projectId])!.n, runsBefore, "no run row may be written for a stage that never started");
+  // MUST-PASS: answered (the intake / portal-questions write lands in the v17 column), it stages
+  // and the replay files THIS job's answer at the ownership select — never "Customer-Owned".
+  db.run("UPDATE projects SET ownership_model = 'third-party-owned' WHERE id = ?", [projectId]);
+  await repo.prepareSubmission(db, projectId);
+  assert.ok(launched, "the answered stage did not launch");
+  const own = launched!.steps.find((s) => /Customer-Owned or Third-Party/.test(String(s.note ?? "")));
+  assert.equal(own?.field, "ownershipModel");
+  assert.equal(own?.value, undefined);
+  assert.equal(launched!.values.ownershipModel, "Third-Party Owned");
 });
 
 finish("dryrun portal close");
