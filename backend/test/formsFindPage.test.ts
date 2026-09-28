@@ -297,6 +297,37 @@ try {
   check("E5 MUST-EXCLUDE an HTML answer is refused by fetchPdf and never stored", e5.status === "not_found" && rows("Town of Htmlton").length === 0 && requested.includes(H_APP)
     && /none returned a valid PDF/.test(e5.message), JSON.stringify({ e5, requested }));
 
+  // ═══ E6 THE SLOT — an electrical-only application is never the generic / building-side blank ═════
+  const EL = "https://www.voltham.ma.us";
+  const EL_APP = `${EL}/DocumentCenter/View/950/Electrical-Permit-Application`;
+  serveHtml(`${EL}/forms`, civicPage("Forms", [[EL_APP.slice(EL.length), "Electrical Permit Application"]]));
+  servePdf(EL_APP, await acroPdf("VOLTHAM Electrical Permit Application"));
+  researchFor.set("Town of Voltham", { formsPageUrl: `${EL}/forms` });
+  const elJob = mkJob("Town of Voltham", "Voltham");
+  requested = [];
+  const e6 = await auto.ensureAhjFormTemplate(db, llm, elJob, "permit_application", { formsPage: fp() });
+  check("E6 MUST-EXCLUDE the electrical application is not stored as the generic permit application", e6.status === "not_found" && rows("Town of Voltham").length === 0 && !requested.includes(EL_APP),
+    JSON.stringify({ e6, requested, rows: rows("Town of Voltham") }));
+  const e6b = await auto.ensureAhjFormTemplate(db, llm, elJob, "electrical_application", { formsPage: fp() });
+  check("E6 MUST-PASS ...and it IS stored in the electrical slot", e6b.status === "acquired" && JSON.stringify(rows("Town of Voltham").map((r) => [r.form_type, r.source_url])) === JSON.stringify([["electrical_application", EL_APP]]),
+    JSON.stringify({ e6b, rows: rows("Town of Voltham") }));
+
+  // ═══ E7 THE KIND — where the split applies, the other of the two building-side applications is not
+  // this one. (The kind is passed as the required set passes it; an unknown Oregon AHJ is portal-only
+  // in the reference profiles, so the mechanism is pinned on a jurisdiction that publishes PDFs.)
+  const K = "https://www.kindville.ma.us";
+  const K_STRUCT = `${K}/DocumentCenter/View/960/Residential-Structural-Building-Permit-Application`;
+  const K_PRESC = `${K}/DocumentCenter/View/961/Prescriptive-Solar-PV-Permit-Application`;
+  serveHtml(`${K}/forms`, civicPage("Forms", [[K_STRUCT.slice(K.length), "Residential Structural Building Permit Application"], [K_PRESC.slice(K.length), "Prescriptive Solar PV Permit Application"]]));
+  servePdf(K_STRUCT, await acroPdf("KINDVILLE structural application"));
+  servePdf(K_PRESC, await acroPdf("KINDVILLE prescriptive application"));
+  researchFor.set("City of Kindville", { formsPageUrl: `${K}/forms` });
+  const kJob = mkJob("City of Kindville", "Kindville");
+  requested = [];
+  const e7 = await auto.ensureAhjFormTemplate(db, llm, kJob, "building_application", { applicationKind: "prescriptive", formsPage: fp() });
+  check("E7 a prescriptive job's building-side slot takes the PRESCRIPTIVE application, never the structural one (ranked higher)", e7.status === "acquired" && e7.sourceUrl === K_PRESC
+    && !requested.includes(K_STRUCT), JSON.stringify({ e7, requested }));
+
   // ═══ G1 GO GENTLY — the download from a host we just read waits the polite gap ═══════════════════
   const GE = "https://www.gentleton.ma.us";
   const GE_APP = `${GE}/DocumentCenter/View/801/Residential-Application`;
