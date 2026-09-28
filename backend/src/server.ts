@@ -84,6 +84,7 @@ import { getKpiReport } from "./kpi";
 import {
   ahjFormRegistry,
   buildFilledFormsForProject,
+  effectiveStoredFieldMap,
   fetchFormTemplate,
   setStoredTemplateVerified,
   filledFormPath,
@@ -2474,11 +2475,17 @@ app.get("/api/ahj-templates", (req, res) => {
   const rows = state
     ? db.query(`SELECT ${cols} FROM ahj_form_templates WHERE state = ? ORDER BY ahj_name`, [state])
     : db.query(`SELECT ${cols} FROM ahj_form_templates ORDER BY state, ahj_name`);
-  res.json(rows.map((r) => ({
-    ...r,
-    fieldMap: parseJson<Record<string, unknown>>(String(r.field_map ?? ""), {}),
-    provenance: templateProvenance(r as Record<string, unknown>),
-  })));
+  res.json(rows.map((r) => {
+    // The map the fill USES (ahjForms.effectiveStoredFieldMap): a built-in map for an exact blank
+    // shows as such, never the stale copy stamped into the row.
+    const effective = effectiveStoredFieldMap(r as { ahj_name: string; state: string; field_map: string; source_url?: string });
+    return {
+      ...r,
+      fieldMap: effective.map,
+      builtInMap: effective.builtInMap,
+      provenance: templateProvenance(r as Record<string, unknown>),
+    };
+  }));
 });
 
 // Re-map a stored template's fields from its stored blob (AcroForm first, then

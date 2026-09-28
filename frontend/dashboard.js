@@ -855,6 +855,7 @@ function renderAhjForms() {
           <strong>${esc(r.ahj_name)}</strong>
           <span class="muted" style="font-size:12px">· ${esc(r.state || "—")} · ${esc(r.form_type || "permit_application")} · ${esc(fillMode)} · ${mapped} field(s) mapped</span>
           ${fillable ? "" : '<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--warning);color:#fff;margin-left:6px">manual</span>'}
+          ${r.builtInMap === true ? '<span class="muted" style="font-size:11px;margin-left:6px" title="Filled from the map written for this exact official revision (matched by the blank\'s fingerprint)">built-in map</span>' : ""}
         </div>
         <div style="display:flex;gap:6px;align-items:center">
           <a class="secondary" href="/api/ahj-templates/${esc(r.id)}/pdf" target="_blank" rel="noopener" style="font-size:11px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;text-decoration:none">Blank PDF</a>
