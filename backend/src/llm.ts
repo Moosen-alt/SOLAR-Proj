@@ -3102,14 +3102,14 @@ Notes:
 
 HOW TO SEARCH (do this thoroughly — these forms are usually easy to find):
 1. Search for the AHJ's permitting / building-department "Forms & Applications" or "Permitting Center" page on its own .gov/.us site (e.g. "<AHJ> permitting center forms applications", "<AHJ> building permit application pdf", "<AHJ> electrical permit application pdf").
-2. Open that forms page and pull the DIRECT links to the blank building permit application AND the electrical permit application PDFs (residential solar usually needs BOTH a BLD and an ELE permit).
-3. Return every blank-form PDF you find, best/most-relevant first.
+2. From the search results, pull the DIRECT links to the blank building permit application AND the electrical permit application documents (residential solar usually needs BOTH a BLD and an ELE permit). Always report the forms/applications page itself in formsPageUrl — that page is read separately and the document links on it are checked.
+3. Return every blank-form document link you find, best/most-relevant first.
 
 Return ONLY JSON:
 {
   "formName": "<the official form's title (or 'Building + Electrical permit applications')>",
-  "candidateUrls": ["<direct https URL(s) that download a blank PDF, best first — only URLs you actually found, ending in .pdf or a direct download>"],
-  "formsPageUrl": "<the AHJ forms/applications landing page you found these on, or ''>",
+  "candidateUrls": ["<direct https URL(s) that download a blank form document, best first — only URLs you actually found: a .pdf link, or a document-center / file-view link with no extension (e.g. /DocumentCenter/View/<id>/<name>, /home/showpublisheddocument/<id>)>"],
+  "formsPageUrl": "<the AHJ forms/applications landing page on the AHJ's own site, or ''>",
   "submissionMethod": "<email | online portal | in-person | combination — how this AHJ takes the completed application, if stated>",
   "submittalPortalUrl": "<the URL of the actual submittal PORTAL where the completed application is uploaded/entered, if there is one (login/landing page), else ''>",
   "portalPlatform": "<which platform the submittal portal runs on, if identifiable: 'Oregon ePermitting' (Accela), 'Portland Portal' (City of Portland Development Hub), 'ProjectDox' (Avolve), 'Email', or 'Other'>",
@@ -3130,6 +3130,10 @@ Rules:
     const userMsg = `AHJ: ${input.ahj}\nState: ${input.state}\nForm needed: residential solar ${formType.replace(/_/g, " ")} (building + electrical permit applications).${input.knownContext ? `\n\n${input.knownContext}\nStart from the known portal/URLs above when searching.` : ""}\nFind the AHJ's forms/applications page and the direct blank PDF links.`;
     let parsed: Partial<AhjFormUrlResult> = {};
     let lookupError = "";
+    // THE SEARCH RESULTS THEMSELVES (Waltham, 2026-09-28): the call already receives every result's
+    // URL and title; only the model's text was kept, so a document link the model saw but did not
+    // list was thrown away. Kept as data for the acquisition's own predicate (ahjFormAuto).
+    let searchResults: Array<{ url: string; title: string }> = [];
     try {
       // A GROUNDED SEARCH NEEDS A GROUNDED BUDGET. This ran on askWithWebSearch's 45-second
       // default while making up to three web searches, and on City of Salem it aborted at
@@ -3143,7 +3147,9 @@ Rules:
       // truncating the JSON so it parsed to {} — which the harvest then read as "this AHJ has no
       // forms page". The sibling research calls all use 3000; this one returns several URLs plus
       // notes after three searches, so it gets more.
-      const raw = (await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, 3, budgetMs)).text;
+      const web = await this.askWithWebSearch("findAhjFormUrl", system, userMsg, 4000, 3, budgetMs);
+      const raw = web.text;
+      searchResults = (web.resultUrls || []).map((url) => ({ url, title: String(web.resultTitles?.[url] || "") }));
       parsed = this.parseJson(raw, {});
       // A RESPONSE WE COULD NOT READ IS NOT AN ANSWER OF "NOTHING". parseJson returns {} for
       // truncated or malformed output, which is byte-identical to a genuine empty result. If the
@@ -3178,6 +3184,7 @@ Rules:
       // "We could not look" is a different report from "we looked and there is nothing".
       lookupFailed: Boolean(lookupError),
       lookupError,
+      searchResults,
     };
   }
 

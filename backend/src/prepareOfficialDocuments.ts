@@ -1,15 +1,15 @@
 import type { AppDb } from "./db";
-import type { ProjectRecord } from "../../shared/src/types";
+import type { LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { buildFilledFormsForProject } from "./ahjForms";
 import { materializeGeneratedDocs } from "./generatedDocFiles";
-import { ensureAhjFormsForProject } from "./ahjFormAuto";
+import { ensureAhjFormsForProject, type FormsPageOptions } from "./ahjFormAuto";
 import { createLLMProvider } from "./llm";
 import { resolvePermitPath } from "./permitPath";
 import { logger } from "./logger";
 // The cooldown key, the research switch and the downloads switch are formAcquisitionPlan's — the
 // same answers the pre-Stage gate reads (gates-proper C1), so the gate and Stage cannot disagree
 // about whether this Stage will acquire a form.
-import { acquisitionCooldownOpen, acquisitionScopeKey, formDownloadsOn, formResearchAllowed } from "./formAcquisitionPlan";
+import { acquisitionCooldownOpen, acquisitionScopeKey, FORM_ACQUISITION_COOLDOWN_MS, formDownloadsOn, formResearchAllowed } from "./formAcquisitionPlan";
 
 /** What Stage's acquisition did, for the caller that wants to say so (every current caller may
  *  ignore it). `acquisition`:
@@ -20,9 +20,26 @@ import { acquisitionCooldownOpen, acquisitionScopeKey, formDownloadsOn, formRese
  *   - "unknown-path"    the permit path is not confirmed: nothing acquired or filled. */
 export interface OfficialDocumentsPreparation {
   acquisition: "full" | "within-cooldown" | "failed" | "off" | "unknown-path";
-  /** sourceUrl: the PDF a download was attempted from, when one was. */
-  results: Array<{ formType: string; status: string; message: string; sourceUrl?: string }>;
+  /** sourceUrl: the PDF a download was attempted from, when one was. lookupFailed: the form search
+   *  for that slot could not run (not a finding about the AHJ). */
+  results: Array<{ formType: string; status: string; message: string; sourceUrl?: string; lookupFailed?: boolean }>;
+  /** TRUE when this pass claimed the 24h cooldown and then SHORTENED it to LOOKUP_FAILED_RETRY_MS
+   *  because a form search could not run — a Stage after that back-off searches again. */
+  cooldownReleased?: boolean;
 }
+
+/** Injected by tests (no network, no key): the model, whether research may run, the forms page
+ *  reader and its politeness gap. Production passes nothing. */
+export interface OfficialDocumentsDeps {
+  llm?: LLMProvider;
+  research?: boolean;
+  formsPage?: FormsPageOptions;
+}
+
+/** A pass whose form search COULD NOT RUN holds research shut this long instead of 24h — short, so
+ *  "we could not look" is retried soon, never zero, so a persistently failing search is not paid for
+ *  on every Stage. */
+export const LOOKUP_FAILED_RETRY_MS = 60 * 60 * 1000;
 
 /** Prepare actual applications before learn/stage assembles upload paths.
  *
@@ -44,28 +61,45 @@ export interface OfficialDocumentsPreparation {
  * research is allowed on this process (allowMapping): mapping it once is not repeated research, and
  * storing it unmapped would leave a hand-complete blank that no later pass re-maps.
  * Manual "Find official form" remains an explicit retry that bypasses the cooldown altogether. */
-export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord): Promise<OfficialDocumentsPreparation> {
+export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord, deps: OfficialDocumentsDeps = {}): Promise<OfficialDocumentsPreparation> {
   const permitPath = resolvePermitPath(project).path;
   if (permitPath === "unknown") return { acquisition: "unknown-path", results: [] };
   let acquisition: OfficialDocumentsPreparation["acquisition"] = "off";
   let results: OfficialDocumentsPreparation["results"] = [];
+  let cooldownReleased = false;
   if (formDownloadsOn()) {
+    // The ONE cooldown key and "is it open" answer the pre-Stage gate reads too (formAcquisitionPlan).
     const key = acquisitionScopeKey(project, permitPath);
-    const research = formResearchAllowed();
+    const research = deps.research ?? formResearchAllowed();
     const open = acquisitionCooldownOpen(db, key);
     db.exec(`CREATE TABLE IF NOT EXISTS ahj_form_acquisition_attempts (
       scope_key TEXT PRIMARY KEY, attempted_at INTEGER NOT NULL)`);
-    if (open) db.run("INSERT INTO ahj_form_acquisition_attempts(scope_key, attempted_at) VALUES (?, ?) ON CONFLICT(scope_key) DO UPDATE SET attempted_at = excluded.attempted_at", [key, Date.now()]);
+    const claimedAt = Date.now();
+    if (open) db.run("INSERT INTO ahj_form_acquisition_attempts(scope_key, attempted_at) VALUES (?, ?) ON CONFLICT(scope_key) DO UPDATE SET attempted_at = excluded.attempted_at", [key, claimedAt]);
     acquisition = open ? "full" : "within-cooldown";
     try {
-      const out = await ensureAhjFormsForProject(db, createLLMProvider(), project,
+      const out = await ensureAhjFormsForProject(db, deps.llm ?? createLLMProvider(), project,
         // Inside the cooldown, a form URL that failed in the last 6h is not fetched again
         // (ahjFormAuto.recentFormFetchFailure — go gently; the operator's Find retries it now).
-        open ? { allowResearch: research } : { allowResearch: false, allowMapping: research, skipRecentlyFailed: true });
-      results = out.results.map((r) => ({ formType: r.formType, status: r.status, message: r.message, ...(r.sourceUrl ? { sourceUrl: r.sourceUrl } : {}) }));
+        open ? { allowResearch: research, formsPage: deps.formsPage } : { allowResearch: false, allowMapping: research, skipRecentlyFailed: true, formsPage: deps.formsPage });
+      results = out.results.map((r) => ({ formType: r.formType, status: r.status, message: r.message, ...(r.sourceUrl ? { sourceUrl: r.sourceUrl } : {}), ...(r.lookupFailed ? { lookupFailed: true } : {}) }));
     } catch {
       acquisition = "failed";
       logger.warn("official-documents", "Form acquisition failed; filling available stored templates. Missing-document gates remain active.", { projectId: project.id });
+    }
+    // A SEARCH THAT COULD NOT RUN SHORTENS THE CLAIM (Waltham, 09-25: the one Stage search aborted at
+    // its 180s budget, and the claim it made before awaiting held the AHJ's research shut for 24h —
+    // "we could not look" became a day of "no form"). The claim is still made BEFORE the await
+    // (retries and simultaneous projects must not amplify paid research); when a slot's search could
+    // not run, and only if the claim is still OURS, it is shortened to a SHORT BACK-OFF
+    // (LOOKUP_FAILED_RETRY_MS) — never released to zero: an AHJ whose search keeps failing (output that
+    // cannot be parsed, a budget it always overruns) would otherwise pay for a search on EVERY Stage /
+    // learn / auto-stage (forms-find skeptic). A search that ran and found nothing keeps the full cooldown.
+    if (open && results.some((r) => r.lookupFailed)) {
+      db.run("UPDATE ahj_form_acquisition_attempts SET attempted_at = ? WHERE scope_key = ? AND attempted_at = ?", [claimedAt - FORM_ACQUISITION_COOLDOWN_MS + LOOKUP_FAILED_RETRY_MS, key, claimedAt]);
+      cooldownReleased = db.get<{ attempted_at: number }>("SELECT attempted_at FROM ahj_form_acquisition_attempts WHERE scope_key = ?", [key])?.attempted_at !== claimedAt;
+      logger.warn("official-documents", `The form search could not run for ${project.ahj}; the 24h cooldown claim was shortened to ${Math.round(LOOKUP_FAILED_RETRY_MS / 60_000)} minutes, so a Stage after that searches again (Find official form retries now).`,
+        { projectId: project.id, detail: results.filter((r) => r.lookupFailed).map((r) => `${r.formType}: ${r.message}`).join(" | ").slice(0, 800) });
     }
     // SAY WHAT IS STILL MISSING. The live incident was a Stage that quietly went on without the
     // county's forms; the required-document gates still block, and the log names which ones. Inside
@@ -85,5 +119,5 @@ export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord
   // The return value is not needed here: the render's own manifest is what every reader
   // (submissionDocumentsByType) reads, keyed by the builder's doc id — never by filename.
   await materializeGeneratedDocs(db, project);
-  return { acquisition, results };
+  return { acquisition, results, ...(cooldownReleased ? { cooldownReleased } : {}) };
 }

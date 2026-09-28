@@ -925,10 +925,11 @@ export function recordTypeFromCatalog(catalog: PortalCatalog | null, discipline:
 
 /** The production reader: on when a model key is set (the lookup runs at all), page reading is not
  *  switched off (PERMIT_LOOKUP_PAGE_READ=off) and document downloads are allowed. A stubbed-model
- *  test (no key) never touches the network unless it passes its own reader. */
-export function defaultLookupReader(): PageReader | null {
+ *  test (no key) never touches the network unless it passes its own reader. `maxReads`: the read
+ *  budget (the form acquisition reads ONE forms page through the same switches). */
+export function defaultLookupReader(maxReads = 18): PageReader | null {
   if (!process.env.ANTHROPIC_API_KEY || /^(off|0|false)$/i.test(str(process.env.PERMIT_LOOKUP_PAGE_READ)) || documentFetchDisabled()) return null;
-  return createPageReader({ maxReads: 18 });
+  return createPageReader({ maxReads });
 }
 
 /**

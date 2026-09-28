@@ -22,7 +22,7 @@ import type { AppDb } from "./db";
 import type { ProjectRecord } from "../../shared/src/types";
 import { documentFetchDisabled } from "./documentFetch";
 import { loadStoredTemplates, storedApplicationKind } from "./ahjForms";
-import { findApplicationProfile } from "./applicationDocs";
+import { findApplicationProfile, permitStructureForProject } from "./applicationDocs";
 import {
   agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, applicationKindForPath, formAuthorityFor,
   rowBelongsToAuthority, TRACK_FORM_TYPES, type AgencyApplicationForm, type FormAuthority,
@@ -40,6 +40,11 @@ export interface EnsureFormResult {
   mappedFields?: number;
   /** Human callout of the permit TYPE for this AHJ (combo vs separate BLD/ELE, submission method). */
   permitType?: string;
+  /** TRUE when the form SEARCH could not run (llm.findAhjFormUrl lookupFailed: an abort, a timeout,
+   *  unparseable output) and nothing else produced the form — "we could not look", never "this AHJ
+   *  has no form". Stage shortens its 24h cooldown claim to a short back-off on it
+   *  (prepareOfficialDocuments.LOOKUP_FAILED_RETRY_MS — never to zero). */
+  lookupFailed?: boolean;
 }
 
 // ── Recently failed downloads (go gently) ─────────────────────────────────────────────────
@@ -128,9 +133,22 @@ export function ownFreeFormSource(project: ProjectRecord, formType: string, appl
   return checklist ? { url: BCD_5952_URL, formName: "Oregon BCD 5952", curated: null } : null;
 }
 
-// A building-side row also accepts the generic application blank (requiredDocuments' altDocTypes).
-export function acceptedFormTypes(formType: string): string[] {
-  return formType === "building_application" ? ["building_application", "permit_application"] : [formType];
+// WHICH STORED FORM TYPES SATISFY A SLOT — the one answer the pre-Stage gate and Stage's acquisition
+// read. A building-side row also accepts the generic application blank (requiredDocuments'
+// altDocTypes); the GENERIC slot accepts the building blank it was re-typed to (storeAhjFormTemplate's
+// classifyFormType) unless the AHJ files SEPARATE permits — without that, a harvested "Building Permit
+// Application" never satisfied the generic slot and every pass paid for a search again (forms-find
+// skeptic). The electrical slot accepts only its own type.
+export function acceptedFormTypes(formType: string, structure: "separate" | "combo" | "unknown" = "unknown"): string[] {
+  if (formType === "building_application") return ["building_application", "permit_application"];
+  if (formType === "permit_application" && structure !== "separate") return ["permit_application", "building_application"];
+  return [formType];
+}
+/** acceptedFormTypes for this project's permit structure (unknown when it cannot be read). */
+export function acceptedFormTypesFor(project: ProjectRecord, formType: string): string[] {
+  let structure: "separate" | "combo" | "unknown" = "unknown";
+  if (formType === "permit_application") { try { structure = permitStructureForProject(project); } catch { /* unknown */ } }
+  return acceptedFormTypes(formType, structure);
 }
 
 // Is a stored template of this form type held for the AHJ (fuzzy name, same state, kind-compatible)?
@@ -299,7 +317,7 @@ export function stageAcquiresForm(
     return null;
   }
   // The AHJ's own form: held -> the fill decides (exists / needs_manual), never a download.
-  if (acceptedFormTypes(formType).some((t) => hasStoredTemplateOfType(db, project.ahj, project.state, t, applicationKind))) return null;
+  if (acceptedFormTypesFor(project, formType).some((t) => hasStoredTemplateOfType(db, project.ahj, project.state, t, applicationKind))) return null;
   const free = ownFreeFormSource(project, formType, applicationKind);
   if (free) return recentFormFetchFailure(free.url) ? null : { via: "curated", sourceUrl: free.url, authority: project.ahj };
   if (acq.researchOpen && !findApplicationProfile(project).requiresPortalEntryOnly) return { via: "research", sourceUrl: "", authority: project.ahj };

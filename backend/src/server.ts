@@ -89,7 +89,7 @@ import {
   inspectFormFields,
   matchingForms,
 } from "./ahjForms";
-import { acquireFromBytes, ensureAhjFormTemplate, templateProvenance } from "./ahjFormAuto";
+import { acquireFromBytes, ensureAhjFormTemplate, formFindAuditDetails, templateProvenance } from "./ahjFormAuto";
 import { createSignature, deleteSignature, getSignatureImage, listSignatures, setDefaultSignature } from "./signatures";
 import { addAuditLog } from "./audit";
 import { buildAuthUrl, exchangeCodeForTokens, gmailStatus, pollGmail } from "./gmail";
@@ -705,7 +705,7 @@ app.post("/api/projects/:id/find-ahj-form", asyncHandler(async (req, res) => {
   } catch (err) {
     throw normalizeLlmError(err);
   }
-  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", { status: ensure.status, formName: ensure.formName || "", ahj: detail.project.ahj, permitType: ensure.permitType || "", additional: additional.map((a) => `${a.formType}:${a.status}`) });
+  addAuditLog(db, String(req.params.id), "system", "ahj form acquisition", "ahj_form.find", formFindAuditDetails(detail.project.ahj, ensure, additional));
   const filled = await buildFilledFormsForProject(db, detail.project);
   res.json({ ensure, additional, filled });
 }));
