@@ -103,6 +103,13 @@ let rowAfterUpload = true;
 let listDelayMs = 0;
 /** The portal refuses the Save of a file whose name contains this (a validation error; nothing posts). */
 let failSaveFor = "";
+/** A SILENT refusal (skeptic 13985c6 S1/S3): the Save posts an attempt the server ignores, no error, no
+ *  reload — the pending row (with "File: <name>") stays. resetTypeOnRefuse: the row's Type resets. */
+let silentRefuseFor = "";
+let resetTypeOnRefuse = false;
+const saveAttempts: string[] = [];
+/** A file name printed inside the page's instructions (S7b). */
+let instructionsName = "";
 const formSaves: string[] = [];
 const counts = { advance: 0, filing: 0, save: 0 };
 const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
@@ -120,7 +127,7 @@ function attachmentsContent(): string {
   return `<div ng-non-bindable="true" id="attachmentSection">
   ${rows.length ? `<div class="ACA_Message_Notice">The attachment(s) has/have been successfully uploaded. It may take a few minutes before changes are reflected.</div>` : ""}
   <div class="ACA_TabRow"><div class="ACA_Title_Bar"><h1>Attachment</h1></div></div>
-  <p>The maximum file size allowed is 80 MB.</p>
+  <p>The maximum file size allowed is 80 MB.</p>${instructionsName ? `<p>Example of a well-named file: ${esc(instructionsName)}</p>` : ""}
   <iframe id="${PM}attachmentEdit_iframeAttachmentList" src="/FileUpload/AttachmentsList.aspx?d=${listDelayMs}" style="width:100%;height:140px;border:0"></iframe>
   <div id="uploadWidget">
     <input type="file" id="${FILE_ID}" name="${FILE_ID.replace(/_/g, "$")}" accept=".pdf" style="width:90px">
@@ -139,6 +146,7 @@ function attachmentsContent(): string {
     window.saveAttachment = function(){
       var name = fi.files && fi.files[0] ? fi.files[0].name : '';
       var dd = document.querySelector('#pendingRow select'); var ta = document.querySelector('#pendingRow textarea');
+      if (${JSON.stringify(silentRefuseFor)} && name.indexOf(${JSON.stringify(silentRefuseFor)}) >= 0) { fetch('/saveattempt', { method: 'POST', body: JSON.stringify({ name: name, type: dd ? dd.value : '', desc: ta ? ta.value : '' }) }); if (${resetTypeOnRefuse} && dd) dd.value = ''; return; }
       if (!name || !dd || !dd.value || (${JSON.stringify(failSaveFor)} && name.indexOf(${JSON.stringify(failSaveFor)}) >= 0)) { var e = document.getElementById('err') || document.createElement('div'); e.id = 'err'; e.className = 'ACA_Message_Error'; e.textContent = 'Type (Required): please select a value.'; document.getElementById('uploadWidget').appendChild(e); return; }
       fetch('/save', { method: 'POST', body: JSON.stringify({ name: name, type: dd.value, desc: ta ? ta.value : '' }) }).then(function(){ location.reload(); });
     };
@@ -161,6 +169,7 @@ const server = http.createServer((req, res) => {
     req.on("data", (c) => { body += c; });
     req.on("end", () => {
       if (url.pathname === "/formsave") { formSaves.push(body); res.writeHead(200); res.end("ok"); return; }
+      if (url.pathname === "/saveattempt") { saveAttempts.push(body); res.writeHead(200); res.end("ok"); return; }
       if (url.pathname === "/save") { counts.save++; try { rows.push(JSON.parse(body)); } catch { /* malformed */ } res.writeHead(200); res.end("ok"); return; }
       const target = new URLSearchParams(body).get("__EVENTTARGET") || "";
       if (/CapConfirm/i.test(url.pathname) && target === ACTION_CONTINUE) { counts.filing++; send("<!doctype html><html><body><h1>Record Issuance</h1><p>Your application has been successfully submitted.</p></body></html>"); return; }
@@ -255,7 +264,7 @@ console.log("\nA. Michael building: plan set + B-01S + 5952");
   const byName = (re: RegExp) => o.rows.find((r) => re.test(r.name));
   check("MUST-PASS exactly 3 rows: the plan set 'Plans - Structural', the B-01S 'Other', the 5952 'Other'",
     o.rows.length === 3 && byName(/Plan_Set_Fixture/)?.type === "Plans - Structural" && byName(/B-01S/)?.type === "Other" && byName(/5952/)?.type === "Other", JSON.stringify(o.rows));
-  check("MUST-PASS each owed file is named as what it is, never tmpl-<uuid>.pdf", !o.rows.some((r) => /tmpl-/.test(r.name)) && !!byName(/^Marion County Prescriptive Solar .*\(B-01S\)\.pdf$/) && !!byName(/^Oregon BCD 440-5952 .*\.pdf$/), JSON.stringify(o.rows.map((r) => r.name)));
+  check("MUST-PASS each owed file is named as what it is, never tmpl-<uuid>.pdf", !o.rows.some((r) => /tmpl-/.test(r.name)) && !!byName(/^Marion County Prescriptive Solar .* B-01S\.pdf$/) && !o.rows.some((r) => /[().]/.test(r.name.replace(/\.pdf$/, ""))) && !!byName(/^Oregon BCD 440-5952 .*\.pdf$/), JSON.stringify(o.rows.map((r) => r.name)));
   check("MUST-PASS the description says what each document is", byName(/B-01S/)?.desc === B01S && byName(/5952/)?.desc === C5952, JSON.stringify(o.rows.map((r) => r.desc)));
   check("MUST-PASS the ledger says both attached; the approved final submit has nothing owed to refuse on",
     o.ledger.length === 2 && o.ledger.every((l) => l.status === "attached") && !o.refusals.some((r) => /owed document/.test(r)), JSON.stringify({ ledger: o.ledger, refusals: o.refusals }));
@@ -268,7 +277,7 @@ console.log("\nB. Michael electrical: plan set + E-01");
   const o = await replay("electrical", "Plans - Electrical", [{ docType: "electrical_application", label: E01 }],
     { plan_set: DOCS.plan_set, electrical_application: DOCS.electrical_application });
   check("MUST-PASS 2 rows: the plan set 'Plans - Electrical', the E-01 'Other'",
-    o.rows.length === 2 && o.rows[0].type === "Plans - Electrical" && /\(E-01\)\.pdf$/.test(o.rows[1].name) && o.rows[1].type === "Other", JSON.stringify(o.rows));
+    o.rows.length === 2 && o.rows[0].type === "Plans - Electrical" && / E-01\.pdf$/.test(o.rows[1].name) && o.rows[1].type === "Other", JSON.stringify(o.rows));
 }
 
 console.log("\nC. MUST-EXCLUDE: no Type fits (a list with no 'Other')");
@@ -282,7 +291,7 @@ console.log("\nC. MUST-EXCLUDE: no Type fits (a list with no 'Other')");
 
 console.log("\nD. MUST-EXCLUDE: a document the portal already lists is not uploaded twice");
 {
-  rows = [{ name: `${B01S}.pdf`, type: "Other", desc: B01S }]; types = TYPES_REAL;
+  rows = [{ name: "Marion County Prescriptive Solar Photovoltaic Installation Permit Application B-01S.pdf", type: "Other", desc: B01S }]; types = TYPES_REAL;
   const o = await replay("already-listed", "Plans - Structural", [{ docType: "building_application", label: B01S }],
     { plan_set: DOCS.plan_set, building_application: DOCS.building_application });
   check("one new row (the plan set) — the listed B-01S is not attached again; the ledger says already listed",
@@ -324,9 +333,9 @@ console.log("\nH. MUST-EXCLUDE: a refused Save leaves its row unsaved — the pa
     [{ docType: "building_application", label: B01S }, { docType: "solar_checklist", label: C5952 }],
     { plan_set: DOCS.plan_set, building_application: DOCS.building_application, solar_checklist: DOCS.solar_checklist });
   RecipeAdapter.ATTACH_LIST_WAIT_MS = saved0; failSaveFor = "";
-  check("only the plan set is saved; the B-01S is NOT ATTACHED (row left unsaved) and the 5952 was NOT TRIED",
+  check("only the plan set is saved; the B-01S is NOT ATTACHED (not confirmed) and the 5952 was NOT TRIED",
     o.rows.length === 1 && o.ledger.find((l) => l.docType === "building_application")?.status === "not attached"
-      && /left UNSAVED/.test(o.ledger.find((l) => l.docType === "building_application")?.detail ?? "")
+      && /NOT CONFIRMED/.test(o.ledger.find((l) => l.docType === "building_application")?.detail ?? "")
       && /not tried/.test(o.ledger.find((l) => l.docType === "solar_checklist")?.detail ?? ""), JSON.stringify({ rows: o.rows, ledger: o.ledger }));
   check("the approved final submit refuses on both", o.refusals.some((r) => /2 owed document\(s\) not attached/.test(r)), JSON.stringify(o.refusals));
 }
@@ -355,6 +364,60 @@ console.log("\nI. MUST-EXCLUDE (skeptic 21d2502 MF1): an ORDINARY form page — 
   check("the form was saved ONCE, with its own description, type and the PLAN SET — never the E-01",
     saves.length === 1 && saves[0].desc === "Install roof-mounted PV" && saves[0].workType === "Alteration" && /Plan_Set_Fixture/.test(saves[0].planFile), JSON.stringify(saves));
   check("the E-01 is named NOT ATTACHED (no attachment row carried it)", ledger.length === 1 && ledger[0].status === "not attached", JSON.stringify(ledger));
+}
+
+console.log("\nJ. (skeptic 13985c6 S1/S2) the recorded plan set's Save is SILENTLY refused — its pending row stays with 'File: <name>'");
+{
+  rows = []; types = TYPES_REAL; silentRefuseFor = "Plan_Set"; saveAttempts.length = 0;
+  const saved0 = RecipeAdapter.ATTACH_LIST_WAIT_MS;
+  RecipeAdapter.ATTACH_LIST_WAIT_MS = 4000;
+  const o = await replay("plan-set-silent", "Plans - Electrical", [{ docType: "electrical_application", label: E01 }],
+    { plan_set: DOCS.plan_set, electrical_application: DOCS.electrical_application });
+  RecipeAdapter.ATTACH_LIST_WAIT_MS = saved0; silentRefuseFor = "";
+  const attempts = saveAttempts.map((b) => { try { return JSON.parse(b); } catch { return {}; } });
+  check("MUST-EXCLUDE the pending row's 'File: <name>' is NOT 'listed': the plan set is named not shown", /attachment list does not show "Plan_Set_Fixture\.pdf"/.test(o.drift), o.drift.slice(0, 300));
+  check("MUST-EXCLUDE the owed pass does NOT start on top of it: no E-01 upload, and the plan set row is never re-described / retyped",
+    o.rows.length === 0 && attempts.length === 1 && attempts[0].desc === "Solar PV plan set" && attempts[0].type === "Plans - Electrical"
+      && o.ledger[0]?.status === "not attached" && /not tried/.test(o.ledger[0]?.detail ?? ""), JSON.stringify({ attempts, ledger: o.ledger }));
+  check("the approved final submit refuses: the plan set was never shown on the list, and the E-01 is owed",
+    o.refusals.some((r) => /never showed plan_set/.test(r)) && o.refusals.some((r) => /owed document/.test(r)), JSON.stringify(o.refusals));
+}
+
+console.log("\nK. (S3) the owed E-01's Save is silently refused and its Type resets — 'File: <name>' stays");
+{
+  rows = []; types = TYPES_REAL; silentRefuseFor = "E-01"; resetTypeOnRefuse = true; saveAttempts.length = 0;
+  const saved0 = RecipeAdapter.ATTACH_LIST_WAIT_MS;
+  RecipeAdapter.ATTACH_LIST_WAIT_MS = 4000;
+  const o = await replay("owed-silent", "Plans - Electrical", [{ docType: "electrical_application", label: E01 }],
+    { plan_set: DOCS.plan_set, electrical_application: DOCS.electrical_application });
+  RecipeAdapter.ATTACH_LIST_WAIT_MS = saved0; silentRefuseFor = ""; resetTypeOnRefuse = false;
+  check("MUST-EXCLUDE never 'attached': the E-01 is NOT CONFIRMED, and the approved submit refuses",
+    o.rows.length === 1 && o.ledger[0]?.status === "not attached" && /NOT CONFIRMED/.test(o.ledger[0]?.detail ?? "") && o.refusals.some((r) => /owed document/.test(r)),
+    JSON.stringify({ rows: o.rows, ledger: o.ledger, refusals: o.refusals }));
+}
+
+console.log("\nL. (S7b) the owed file's exact name printed in the page's instructions is not 'already listed'");
+{
+  rows = []; types = TYPES_REAL; instructionsName = "Marion County Renewable Electrical Energy Permit Application E-01.pdf";
+  const o = await replay("name-in-help", "Plans - Electrical", [{ docType: "electrical_application", label: E01 }],
+    { plan_set: DOCS.plan_set, electrical_application: DOCS.electrical_application });
+  instructionsName = "";
+  check("the E-01 is uploaded and attached (a help paragraph is not the list)", o.rows.length === 2 && o.ledger[0]?.status === "attached", JSON.stringify({ rows: o.rows, ledger: o.ledger }));
+}
+
+console.log("\nM. (S4) a recorded upload a rule skips never refuses the approved submit");
+{
+  rows = []; types = TYPES_REAL;
+  const steps = recipeSteps("Plans - Electrical");
+  const withBattery: RecipeStep[] = [...steps.slice(0, 5), { action: "upload", selector: { css: '[data-al-upl="f0"]' }, docType: "battery_spec", viaFileChooser: false, note: "upload battery_spec: Battery Specification Sheet", optional: true }, ...steps.slice(5)];
+  const page = await newPage();
+  const adapter = new RecipeAdapter(recipeOf(withBattery), { hasBattery: "No" }, { plan_set: DOCS.plan_set }, {});
+  (adapter as unknown as { page: unknown }).page = page;
+  await adapter.fillApplication({} as ProjectRecord);
+  const refusals = (adapter as unknown as { finalSubmitRefusalsNow: () => string[] }).finalSubmitRefusalsNow();
+  await page.context().close();
+  check("no 'did not happen' / 'never showed' refusal for a battery spec on a job with no battery (no file on hand)",
+    !refusals.some((r) => /did not happen|never showed/.test(r)), JSON.stringify(refusals));
 }
 
 await browser.close();

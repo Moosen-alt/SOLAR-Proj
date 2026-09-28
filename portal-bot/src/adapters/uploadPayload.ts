@@ -95,7 +95,9 @@ export function uploadPayloadFor(filePath: string, pdf: Buffer | null, displayNa
   // Portal-safe: letters, digits, spaces, dashes, underscores, parentheses and dots only (Oregon
   // ePermitting: "Numbers, letters, dashes, underscores and spaces are acceptable", <= 120 chars incl.
   // the extension); no trailing dot/space; a label with nothing usable left falls back to the stored name.
-  const base = displayName ? displayName.replace(/[^A-Za-z0-9 ()._-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 110).replace(/[.\s]+$/, "") : "";
+  // Oregon ePermitting's stated rule, exactly: letters, numbers, dashes, underscores and spaces (skeptic
+  // 13985c6 S6: "(E-01)" and dots broke it). Accents fold to their letters ("eléctrico" -> "electrico").
+  const base = displayName ? displayName.normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^A-Za-z0-9 _-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 110).replace(/[\s_-]+$/, "") : "";
   const named = /[A-Za-z0-9]/.test(base) ? `${base}${ext0}` : "";
   const name = named || uploadDisplayName(filePath);
   if (pdf) {

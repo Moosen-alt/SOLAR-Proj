@@ -456,7 +456,9 @@ export class RecipeAdapter extends BasePortalAdapter {
   private landedSelectFields = new Set<string>();
   /** Recorded uploads this run PERFORMED: the slot's recorded label and the file name the portal
    *  was handed. The read-back for an upload (see uploadSlotsHeld). */
-  private uploadsPerformed: Array<{ label: string; fileName: string }> = [];
+  private uploadsPerformed: Array<{ label: string; fileName: string; docType?: string }> = [];
+  /** Doc types whose Save was followed by a list check that never showed the file (not confirmed). */
+  private unconfirmedDocTypes = new Set<string>();
   /** runs-finish item 4: how many of uploadsPerformed a commit click has confirmed (or an advance left behind). */
   private uploadsSettledUpTo = 0;
   /** D7: the name the portal's reviewer sees for an owed document's upload (by docType). */
@@ -4014,7 +4016,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           await chooser.setFiles(file);
           await this.markRecordedUpload(scoped, chooser);
           await this.waitForUploadAccepted();
-          this.noteUploadPerformed(recordedLabel, file); if (step.docType) this.uploadedDocTypes.add(step.docType);
+          this.noteUploadPerformed(recordedLabel, file, step.docType); if (step.docType) this.uploadedDocTypes.add(step.docType);
           return true;
         }
         this.options.beforeUpload?.(step.docType!, filePath);
@@ -4023,7 +4025,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         await scoped!.setInputFiles(file, { timeout: 8000 });
         await this.markRecordedUpload(scoped, null);
         await this.waitForUploadAccepted();
-        this.noteUploadPerformed(recordedLabel, file); if (step.docType) this.uploadedDocTypes.add(step.docType);
+        this.noteUploadPerformed(recordedLabel, file, step.docType); if (step.docType) this.uploadedDocTypes.add(step.docType);
         return true;
       }
       default:
@@ -4085,34 +4087,67 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  only "--Select--" — skeptic MF3). [] = no such select on the page yet. */
   private async typeOptionsOf(_typeStep: RecipeStep): Promise<string[]> {
     const got = await this.page.evaluate(() => {
-      const docTypeish = (opts: string[]): boolean => opts.some((t) => /plans?\s*[-–—]/i.test(t)) || opts.some((t) => /^(plans|calculations|photos?|forms?|specifications|other)\b/i.test(t));
       const lists = Array.from(document.querySelectorAll("select")).map((el) => Array.from((el as HTMLSelectElement).options).map((o) => String(o.textContent || o.label || "").replace(/\s+/g, " ").trim()));
-      const typed = lists.filter((opts) => docTypeish(opts) && opts.length > 2);
+      // The learner's own test (autoLearnAdapter.accelaAttachmentSavePass isDocType) — never "Other"
+      // alone: a "Category of Construction" select offers "Other" too (skeptic 13985c6 S5).
+      const typed = lists.filter((opts) => opts.length > 2
+        && (opts.some((t) => /plans?\s*[-–—]/i.test(t)) || opts.some((t) => /^(plans|calculations|photos?|forms?)\b/i.test(t))));
       return typed.length ? typed[typed.length - 1] : [];
     }).catch(() => [] as string[]) as string[];
     return Array.isArray(got) ? got : [];
   }
 
-  /** Is this file LISTED as an attachment — in the page or any frame (Accela's committed grid is a
-   *  child iframe, FileUpload/AttachmentsList.aspx: the main body never shows it)? A whole-name match,
-   *  never a substring of another file's name. */
+  /** A PENDING attachment row is on the page: a document-type select (the same test as typeOptionsOf)
+   *  that holds a chosen Type. Accela removes the row on Save; a static-row widget resets it; a refused
+   *  Save leaves it holding its Type. */
+  private async pendingAttachmentRow(): Promise<boolean> {
+    return await this.page.evaluate(() => Array.from(document.querySelectorAll("select")).some((el) => {
+      const sel = el as HTMLSelectElement;
+      const opts = Array.from(sel.options).map((o) => String(o.textContent || o.label || "").replace(/\s+/g, " ").trim());
+      const docType = opts.length > 2 && (opts.some((t) => /plans?\s*[-–—]/i.test(t)) || opts.some((t) => /^(plans|calculations|photos?|forms?)\b/i.test(t)));
+      const chosen = String(sel.value || "").trim() && !/^\s*-*\s*(select|choose)/i.test(String(sel.selectedOptions?.[0]?.textContent || ""));
+      return docType && !!chosen;
+    })).catch(() => false) as boolean;
+  }
+
+  /** Is this file in the portal's COMMITTED attachment list? Only the list counts (skeptic 13985c6
+   *  S1/S3/S7b): Accela's pending row prints "File: <name>" in the main page before Save, and a name in
+   *  an instructions paragraph is not an attachment. Listed = a whole-name match in the attachment-list
+   *  frame (FileUpload/AttachmentsList.aspx), or inside a TABLE ROW of >= 3 cells that holds no form
+   *  control (a list row, never the pending row). Each frame's read is bounded (3 s); a frame that
+   *  never navigated (no URL) is skipped. */
   private async pageListsFile(fileName: string): Promise<boolean> {
     if (!fileName) return false;
-    const frames: Array<{ evaluate: (fn: unknown, arg: unknown) => Promise<unknown> }> =
+    type FrameLike = { evaluate: (fn: unknown, arg: unknown) => Promise<unknown>; url?: () => string };
+    const frames: FrameLike[] =
       typeof (this.page as { frames?: () => unknown[] }).frames === "function" ? ((this.page as { frames: () => unknown[] }).frames() as never) : [this.page as never];
-    for (const f of frames) {
-      const hit = await f.evaluate((n: string) => {
-        const t = String(document.body?.innerText || "").toLowerCase();
+    for (const [i, f] of frames.entries()) {
+      const url = typeof f.url === "function" ? String(f.url() ?? "") : "";
+      if (i > 0 && !url) continue;
+      const listFrame = /attachments?list|documentlist/i.test(url);
+      const read = f.evaluate(({ n, whole }: { n: string; whole: boolean }) => {
         const want = n.toLowerCase();
-        let at = t.indexOf(want);
-        while (at >= 0) {
-          const before = at === 0 ? "" : t[at - 1];
-          const after = t[at + want.length] ?? "";
-          if (!/[a-z0-9._-]/.test(before) && !/[a-z0-9_-]/.test(after)) return true;
-          at = t.indexOf(want, at + 1);
+        const texts: string[] = [];
+        if (whole) texts.push(String(document.body?.innerText || "").toLowerCase());
+        else {
+          for (const tr of Array.from(document.querySelectorAll("tr"))) {
+            if (tr.querySelectorAll(":scope > td").length < 3) continue;
+            if (tr.querySelector("select, textarea, input[type=file]")) continue;
+            texts.push(String((tr as HTMLElement).innerText || "").toLowerCase());
+          }
+        }
+        for (const t of texts) {
+          let at = t.indexOf(want);
+          while (at >= 0) {
+            const before = at === 0 ? "" : t[at - 1];
+            const after = t[at + want.length] ?? "";
+            if (!/[a-z0-9._-]/.test(before) && !/[a-z0-9_-]/.test(after)) return true;
+            at = t.indexOf(want, at + 1);
+          }
         }
         return false;
-      }, fileName).catch(() => false);
+      }, { n: fileName, whole: listFrame }).catch(() => false);
+      const hit = await Promise.race([read, sleep(3000).then(() => false)]);
       if (hit) return true;
     }
     return false;
@@ -4133,6 +4168,23 @@ export class RecipeAdapter extends BasePortalAdapter {
     if (!owed.length) return;
     const at = await this.pageSafetyContext();
     if (at.reviewPage === true) return; // the review page is never written to (acfcd99 rule 4b)
+    // NEVER ON TOP OF AN UNSAVED ROW (skeptic 13985c6 S2): when the recorded row's own Save was not
+    // confirmed by the list, or a document-type row still holds a Type, an owed upload would add a
+    // second row and its Description / Type would be written onto the first (the plan set's). Nothing
+    // is attached; every owed document is named.
+    const rowDoc = String(row.upload.docType ?? "");
+    if ((rowDoc && this.unconfirmedDocTypes.has(rowDoc)) || await this.pendingAttachmentRow()) {
+      const why = rowDoc && this.unconfirmedDocTypes.has(rowDoc)
+        ? `the recorded ${rowDoc.replace(/_/g, " ")} upload on that page was not confirmed on the portal's list`
+        : "an attachment row on that page still holds an unsaved Type";
+      for (const o of owed) {
+        this.owedAttempted.add(o.docType);
+        const l = String(o.label || o.docType).replace(/\s+/g, " ").trim();
+        this.attachmentLedger.push({ docType: o.docType, label: l, status: "not attached", detail: `not tried: ${why}` });
+        this.driftWarnings.push(`NOT ATTACHED: ${l} — not tried, because ${why}. Check the attachment step and attach it by hand before submitting.`);
+      }
+      return;
+    }
     const slotLabel = String(row.upload.note ?? "").split(":").slice(1).join(":").trim();
     for (const o of owed) {
       this.owedAttempted.add(o.docType);
@@ -4170,7 +4222,9 @@ export class RecipeAdapter extends BasePortalAdapter {
       // document's Save would commit it under that document's Description and Type — so a failure from
       // here on stops the whole pass, and every owed document still to go is named.
       const abandon = (detail: string): void => {
-        fail(`${detail} — its row was left UNSAVED on the portal's attachment step; remove it there`);
+        // "Not confirmed", never "unsaved": the Save may have gone through while the list did not show it
+        // in time (skeptic 13985c6 S5) — telling a person to attach it again would duplicate it.
+        fail(`${detail} — NOT CONFIRMED: look at the portal's attachment list first; attach it only if it is not listed (and remove any half-finished row)`);
         for (const rest of owed.slice(owed.indexOf(o) + 1)) {
           if (this.owedAttempted.has(rest.docType)) continue;
           this.owedAttempted.add(rest.docType);
@@ -4225,13 +4279,12 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  widget resets it; a refused Save leaves the pick in place). Bounded poll. */
   private async attachmentCommitted(fileName: string, typeStep: RecipeStep | null, pick: string, timeoutMs: number): Promise<boolean> {
     const t0 = Date.now();
-    const css = String(typeStep?.selector?.css ?? "select");
     for (;;) {
       await this.waitForLoadingMaskClear(`reading the attachment list for "${fileName.slice(0, 40)}"`, Math.max(0, timeoutMs - (Date.now() - t0)));
+      // Listed in the COMMITTED list (pageListsFile) and no document-type row still holding a Type
+      // (pendingAttachmentRow — the same document-type test, so a Category "Other" never counts: S5).
       const listed = await this.pageListsFile(fileName);
-      const pending = typeStep && pick ? await this.page.evaluate(({ sel, want }: { sel: string; want: string }) =>
-        Array.from(document.querySelectorAll(sel)).some((e) => e.tagName === "SELECT"
-          && String((e as HTMLSelectElement).selectedOptions?.[0]?.textContent || "").replace(/\s+/g, " ").trim() === want), { sel: css, want: pick }).catch(() => false) as boolean : false;
+      const pending = typeStep && pick ? await this.pendingAttachmentRow() : false;
       if (listed && !pending) return true;
       if (Date.now() - t0 >= timeoutMs) return false;
       await sleep(500);
@@ -4355,6 +4408,14 @@ export class RecipeAdapter extends BasePortalAdapter {
       await sleep(400);
     }
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    // WHAT THE LIST CONFIRMED, BY DOCUMENT (skeptic 13985c6 S1): an upload handed to the control is not a
+    // committed one — the approved final submit refuses while a recorded upload is unconfirmed, and the
+    // owed pass never starts on a row whose own Save was not confirmed.
+    for (const u of pending) {
+      if (!u.docType) continue;
+      if (missing.includes(u.fileName)) this.unconfirmedDocTypes.add(u.docType);
+      else this.unconfirmedDocTypes.delete(u.docType);
+    }
     if (missing.length) {
       this.driftWarnings.push(`after ${after} the portal's attachment list does not show ${missing.map((n) => `"${n}"`).join(", ")} (waited ${secs}s) — the upload may not have committed; attach it and click Save by hand before submitting`);
     } else if (Date.now() - t0 >= 1000) {
@@ -4628,8 +4689,15 @@ export class RecipeAdapter extends BasePortalAdapter {
       if (missing.length) out.push(`${missing.length} owed document(s) not attached on the portal (${missing.map((o) => String(o.label || o.docType).slice(0, 60)).join("; ")})`);
       // ...and a document the RECORDING uploads counts only if this run actually uploaded it (skeptic
       // 21d2502 g: a skipped recorded upload — the plan set — was covered by no gate at all).
-      const skipped = Array.from(recorded).filter((t) => !this.uploadedDocTypes.has(t));
+      // Only a recorded upload this filing CAN make — its file is on hand and no rule skips it (skeptic
+      // 13985c6 S4: a battery spec recorded on a battery job, replayed on a job with none, refused every
+      // approved submit — PowerClerk NEM included — and burned the approval).
+      const skipped = Array.from(new Set(steps.filter((s) => s.action === "upload" && s.docType && this.docsByType[String(s.docType)]
+        && !this.skipForNoBattery(s) && !this.uploadedDocTypes.has(String(s.docType))).map((s) => String(s.docType))));
       if (skipped.length) out.push(`the recording's upload of ${skipped.join(", ")} did not happen this run`);
+      // ...and one whose Save was followed by a list check that never showed it is not confirmed (S1).
+      const unconfirmed = Array.from(this.unconfirmedDocTypes);
+      if (unconfirmed.length) out.push(`the portal's attachment list never showed ${unconfirmed.join(", ")} after its Save`);
     }
     const burned = approvedRunBurn(ctx.runId);
     if (burned && !this.finalSubmitAttempted) out.push(`this run's approval (runId ${ctx.runId.slice(0, 40)}) was already used in this process — ${burnWords(burned)}; one approval covers one filing attempt, a new run needs a new approval`);
@@ -6381,10 +6449,10 @@ export class RecipeAdapter extends BasePortalAdapter {
     return found;
   }
 
-  private noteUploadPerformed(label: string, file: unknown): void {
+  private noteUploadPerformed(label: string, file: unknown, docType?: string): void {
     const fileName = typeof file === "string" ? path.basename(file)
       : String((file as { name?: unknown } | null)?.name ?? "");
-    if (label && fileName) this.uploadsPerformed.push({ label, fileName });
+    if (label && fileName) this.uploadsPerformed.push({ label, fileName, ...(docType ? { docType } : {}) });
   }
 
   /** AN EMPTY FILE BOX IS NOT A MISSING DOCUMENT. A browser never restores a file input's
