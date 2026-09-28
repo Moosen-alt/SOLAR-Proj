@@ -694,14 +694,24 @@ try {
   const skLine = () => statusOf(statusList(sk), /^Kestrel County \(issues the electrical permit\): Electrical Permit Application/);
   check("C1b the status resolver's NAME match: Southkest's own same-named form is 'not yet on file', not the foreign row's 'on file'", /— not yet on file/.test(skLine()), skLine());
   const skEns = await ensureAgency(sk, "electrical_application"); // its own form is not served yet
-  check("C1b acquisition never answers 'already stored' with the foreign row — it tries Southkest's own cited form", skEns.status !== "exists" && skEns.downloads.join() === KEST_E, JSON.stringify(skEns));
+  // ...and never stores its own cited form OVER it (skeptic MF-1: the slot is one row per agency/form type,
+  // so storing would move Northkest's row out from under it — and a county's own row out from under the
+  // county). A named refusal to upload, nothing fetched.
+  check("C1b acquisition never answers 'already stored' with the foreign row, and never overwrites it: a named refusal, nothing fetched",
+    skEns.status === "not_found" && skEns.downloads.length === 0 && /slot already holds a form from www\.co\.polk\.or\.us/.test(skEns.message), JSON.stringify(skEns));
   filledDirs.push("c1-sk");
   const skFill = await forms.buildFilledFormsForProject(db, sk);
   const polkRow = rowIdOf(POLK_E);
   check("C1b the fill never fills the foreign row for Southkest", Boolean(polkRow) && !skFill.forms.some((f) => (f as { templateId?: string }).templateId === polkRow), JSON.stringify(skFill.forms.map((f) => [f.formName, f.status, (f as { templateId?: string }).templateId])));
   served.set(KEST_E, await acroPdf("KESTREL COUNTY Electrical Permit Application"));
   const skEns2 = await ensureAgency(sk, "electrical_application");
-  check("C1b with its own form served, Southkest acquires and holds it", skEns2.status === "acquired" && loaderUrls(sk).includes(KEST_E) && !loaderUrls(sk).includes(POLK_E), JSON.stringify({ skEns2, loader: loaderUrls(sk) }));
+  check("C1b (MF-1) with its own form served, Southkest still never overwrites the slot: Polk's row survives for Northkest, never for Southkest",
+    skEns2.status === "not_found" && rowIdOf(POLK_E) === polkRow && loaderUrls(nk).includes(POLK_E) && !loaderUrls(sk).includes(POLK_E), JSON.stringify({ skEns2, nk: loaderUrls(nk), sk: loaderUrls(sk) }));
+  // The county's OWN research then stores its form (the real write path every AHJ-own writer uses): it is the
+  // county's row, it replaces the slot, and Southkest — whose lookup anchors co.kestrel.or.us — holds it.
+  auto.storeAhjFormTemplate(db, { ahjName: "Kestrel County", state: "OR", formType: "electrical_application", filename: "Kestrel County Electrical Permit Application.pdf",
+    bytes: served.get(KEST_E)!, map: mappedMap("Kestrel County Electrical Permit Application", KEST_E) } as never);
+  check("C1b once the county's own form is stored, Southkest holds it (and not Polk's)", loaderUrls(sk).includes(KEST_E) && !loaderUrls(sk).includes(POLK_E), JSON.stringify(loaderUrls(sk)));
   // C1b2 THE OTHER DOOR INTO THE LOADER: an AHJ whose name CONTAINS the agency's ("Unincorporated Kestrel
   // County") finds the agency's rows by name containment, as its own. They are the agency's rows all the same:
   // Kestrel's co.kestrel.or.us blank is not this job's when its lookup anchors another site for Kestrel.
@@ -775,6 +785,27 @@ try {
   saveLookup("CO", "Town of Lyons Two", [{ discipline: "structural", agency: "Boulder County", src: BOCO_PAGE }]);
   check("C1g (must-pass) Boulder County's bouldercounty.gov row applies where the lookup cites a bouldercounty.gov page", loaderUrls(job("c1-ly2", "CO", "Town of Lyons Two")).includes(BOCO_OWN), JSON.stringify(loaderUrls(job("c1-ly2", "CO", "Town of Lyons Two"))));
   saveLookup("CO", "Town of Erie Two", [{ discipline: "structural", agency: "Boulder County", src: "https://www.erietwo.gov/building", quote: "Building permits in Erie Two are issued by Boulder County" }]);
+  // C1h THE SLOT IS SHARED (skeptic MF-1, zzC B): Plover County's OWN row (its own research — a non-curated
+  // http row) is never overwritten by another city's cited PDF; the county's own jobs would then fill that
+  // city's citation, and the next city would overwrite it back (thrash).
+  const PLOV_E = "https://www.co.plover.or.us/files/Electrical%20Permit%20Application.pdf";
+  served.set(PLOV_E, await acroPdf("PLOVER COUNTY Electrical Permit Application"));
+  auto.storeAhjFormTemplate(db, { ahjName: "Plover County", state: "OR", formType: "electrical_application", filename: "Plover County Electrical Permit Application.pdf",
+    bytes: served.get(PLOV_E)!, map: mappedMap("Plover County Electrical Permit Application", PLOV_E) } as never);
+  const POLK_E3 = "https://www.co.polk.or.us/files/Electrical%20Permit%20Application%203.pdf";
+  served.set(POLK_E3, await acroPdf("POLK COUNTY Electrical Permit Application (3)"));
+  saveLookup("OR", "City of Northplover", [
+    { discipline: "structural", agency: "City of Northplover", src: "https://www.northploveroregon.gov/building" },
+    { discipline: "electrical", agency: "Plover County", src: "https://www.co.polk.or.us/cd/electrical", quote: "Plover County issues electrical permits for Northplover", docs: [POLK_E3] },
+  ]);
+  const npv = job("c1-npv", "OR", "City of Northplover");
+  const npvEns = await ensureAgency(npv, "electrical_application");
+  const ploverRows = () => db.query<{ source_url: string }>("SELECT source_url FROM ahj_form_templates WHERE ahj_name = 'Plover County' AND form_type = 'electrical_application'").map((r) => r.source_url);
+  check("C1h (MF-1) a city's cited PDF never overwrites the county's own row: a named refusal, nothing fetched, the county's row survives",
+    npvEns.status === "not_found" && npvEns.downloads.length === 0 && /slot already holds a form from www\.co\.plover\.or\.us/.test(npvEns.message) && JSON.stringify(ploverRows()) === JSON.stringify([PLOV_E]),
+    JSON.stringify({ npvEns, rows: ploverRows() }));
+  check("C1h the county's own job still loads its own form, never the city's citation", loaderUrls(job("c1-pc", "OR", "Plover County")).includes(PLOV_E) && !loaderUrls(job("c1-pc", "OR", "Plover County")).includes(POLK_E3),
+    JSON.stringify(loaderUrls(job("c1-pc", "OR", "Plover County"))));
   check("C1g and not where the lookup anchors no Boulder County site (a cited row, not curated or verified)", !loaderUrls(job("c1-er2", "CO", "Town of Erie Two")).includes(BOCO_OWN), JSON.stringify(loaderUrls(job("c1-er2", "CO", "Town of Erie Two"))));
 
   // ── C2 NO FALLTHROUGH (the skeptic's S7 / S7m: Aumsville, the E-01 404, Polk's PDF next) ─────────────

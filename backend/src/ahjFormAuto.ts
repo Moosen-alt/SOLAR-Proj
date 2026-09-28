@@ -932,11 +932,18 @@ export async function ensureIssuingAgencyForm(
   // the agency, on a site this job's lookup does not anchor, is not this job's form — so it neither
   // answers "exists" nor stops the agency's curated seed / this job's own cited form being fetched.
   const anchors = anchorSitesOnce(project, agency);
-  const held = db.query<{ id: string; ahj_name: string; state: string; form_type: string; original_filename?: string; field_map?: string; source_url?: string }>(
+  const agencyRows = db.query<{ id: string; ahj_name: string; state: string; form_type: string; original_filename?: string; field_map?: string; source_url?: string }>(
     "SELECT id, ahj_name, state, form_type, original_filename, field_map, source_url FROM ahj_form_templates WHERE pdf_blob IS NOT NULL",
   ).filter((r) => types.includes(String(r.form_type)) && (!r.state || String(r.state).toLowerCase() === String(project.state).toLowerCase())
-    && rowBelongsToAuthority(r.ahj_name, agency) && (!want || !storedApplicationKind(r) || storedApplicationKind(r) === want)
-    && agencyRowAppliesToJob(project, agency, agencyRowProvenance(r), anchors));
+    && rowBelongsToAuthority(r.ahj_name, agency) && (!want || !storedApplicationKind(r) || storedApplicationKind(r) === want));
+  const held = agencyRows.filter((r) => agencyRowAppliesToJob(project, agency, agencyRowProvenance(r), anchors));
+  // THE SLOT IS SHARED, THE VERDICT IS NOT (agency-contain skeptic MF-1). A stored row this job's lookup
+  // does not anchor is "not this job's form" — but it is still the ONE row the agency's slot keeps
+  // (storeAhjFormTemplate: one per agency/state/form type, building by kind), written by the county's own
+  // research or another city's lookup. Storing this job's cited PDF would overwrite it in place, and every
+  // job filed under the agency's name would then fill THIS job's citation. A cited form never replaces a
+  // stored one; the agency's curated seed (its real form) still may.
+  const occupiedBy = agencyRows.filter((r) => !held.includes(r));
   if (held.length) {
     const usable = loadStoredTemplates(db, agency, project.state, { ownOnly: true }).some((t) => held.some((h) => h.id === t.templateId));
     return usable
@@ -949,6 +956,15 @@ export async function ensureIssuingAgencyForm(
   }
   const tried: string[] = [];
   for (const c of candidates) {
+    const taken = c.origin === "cited"
+      ? occupiedBy.find((r) => String(r.form_type) === c.formType
+        && (c.formType !== "building_application" || !storedApplicationKind(r) || storedApplicationKind(r) === (c.applicationKind ?? want)))
+      : undefined;
+    if (taken) {
+      let from = String(taken.source_url || "");
+      try { from = from ? new URL(from).hostname : "an upload"; } catch { /* keep the raw value */ }
+      return { status: "not_found", sourceUrl: c.sourceUrl, message: `${agency}'s ${label} slot already holds a form from ${from} that this job's lookup does not cite, so the form cited for ${project.ahj} (${c.sourceUrl}) was not stored over it. ${whose}. Check which is ${agency}'s current form and upload it (Find official form → upload); it has not been counted as present.` };
+    }
     const bytes = await fetchPdf(c.sourceUrl);
     // C2 NO FALLTHROUGH (agency-contain): the agency's CURATED seed is its form. A failed fetch (a 404, the
     // network) is a named failure to retry — never a reason to take the next cited PDF instead (the
