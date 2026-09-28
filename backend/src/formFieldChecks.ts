@@ -29,9 +29,16 @@ export interface PlacedWidget {
 /** A blank the product cannot fill, named by its printed label, for the operator to complete. */
 export interface OperatorItem { field?: string; label: string }
 
-/** How a widget is named to a person: its printed caption, else its widget name. */
-export function widgetLabel(w: Pick<PlacedWidget, "name" | "caption">): string {
-  return String(w.caption || "").replace(/[:\s]+$/, "").trim() || w.name;
+/** How a widget is named to a person: its printed caption, else its widget name. An "I, ___"
+ *  blank is named by its own line ("I, ___, as Owner/Authorized Agent"); a caption that is a
+ *  sentence of prose (a declaration under the box) is not a label, so the name stands. */
+export function widgetLabel(w: Pick<PlacedWidget, "name" | "caption" | "captions">): string {
+  if (/^i,?$/i.test(String(w.captions?.left || "").trim())) {
+    const tail = String(w.captions?.right || "").trim();
+    return `I, ___${tail ? `${tail.startsWith(",") ? "" : " "}${tail}` : ""}`;
+  }
+  const caption = String(w.caption || "").replace(/[:\s]+$/, "").trim();
+  return caption && caption.length <= 60 ? caption : w.name;
 }
 
 // ---- B2: the contact-shape guard -------------------------------------------------------------
@@ -149,6 +156,7 @@ export function signerNameConflicts(
   }
   return groups
     .filter((g) => g.length >= 2 && new Set(g.map((w) => textFields[w.name])).size >= 2)
+    .map((g) => [...g].sort((a, b) => (a.page! - b.page!) || (b.rect!.y - a.rect!.y)))   // read top-down
     .map((g) => ({ fields: g.map((w) => w.name), labels: g.map(widgetLabel), sources: [...new Set(g.map((w) => textFields[w.name]))] }));
 }
 

@@ -318,7 +318,7 @@ await check("B4: the 7b declarant and printed name bound to different people are
   assert.equal(textOf(staleForm, "Print Name"), "");
   assert.equal(textOf(staleForm, "hereby authorize"), HOMEOWNER);
   assert.equal(textOf(staleForm, "my behalf in all matters"), "Shift Solar LLC");
-  assert.ok(items.some((i) => /one signature, bound to different people/.test(i)), items.join(" | "));
+  assert.ok(items.some((i) => i.startsWith("I, ___, as Owner/Authorized Agent / Print Name (one signature, bound to different people")), items.join(" | "));
 });
 await check("B5: the valuation fills ONLY the Total row (the operator formula: 40% of 19565 = 7826); rows 1-5 stay blank", () => {
   assert.deepEqual(COST_ROWS.map((_, i) => textOf(staleForm, costName(i))), ["", "", "", "", "", "7826"]);
