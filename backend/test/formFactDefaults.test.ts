@@ -88,6 +88,7 @@
 //   K-S43 a bare ACCESSORY word no longer counts                           -> S1, S10 FAIL.
 //   K-S44 a bare DETACHED word no longer counts                            -> S1, S10 FAIL.
 //   K-S45 the beside phrase no longer quoted in the structure basis        -> S7 S10 S11 FAIL.
+//   K-S46 two-unit words alone answer duplex again (round-1 multi-unit PROBES) -> S1 FAILS.
 import "./_isolate"; // FIRST
 import { REPO } from "./_isolate";
 import assert from "node:assert/strict";
@@ -379,11 +380,18 @@ try {
       "PAT EXAMPLE RESIDENCE  SHOP (N) 12 MODULES",
       "PAT EXAMPLE RESIDENCE  SHOP ARRAY 4.4 KW",
       TABLE.find((r) => r[0].startsWith("real shape"))![1],
+      // Round-1 multi-unit probes (derived duplex on the branch then): asked, never single-family.
+      "PAT EXAMPLE RESIDENCE  APPLICABLE CODES: 2021 INTERNATIONAL RESIDENTIAL CODE FOR ONE- AND TWO-FAMILY DWELLINGS",
+      "PAT EXAMPLE RESIDENCE  CODE: IRC ONE AND TWO FAMILY DWELLING CODE",
+      "PAT EXAMPLE RESIDENCE  780 CMR 51.00 ONE- AND TWO-FAMILY DWELLINGS 9TH EDITION",
+      "PAT EXAMPLE RESIDENCE  BATTERY UNITS: 2  EXAMPLE IQ 5P",
+      "PAT EXAMPLE RESIDENCE  AC DISCONNECT QTY 2 UNITS",
     ];
     for (const text of PROBES) {
       for (const opts of [{}, { reading: { value: SF, excerpt: "MAIN HOUSE" } }, { dwellingUnits: 1 }]) {
         const page = PR.structureBasis(text, opts).option;
         if (page === SF) bad.push(`page answered single-family on a probe ${JSON.stringify(opts)}: ${text}`);
+        if (!["", ACC].includes(page)) bad.push(`page answered ${page} on a probe ${JSON.stringify(opts)}: ${text}`);
       }
       const server = agency.structureDescriptionOf({ planSetExtractedText: text, dwellingUnits: 1 }).value;
       if (server === SF) bad.push(`server answered single-family on a probe: ${text}`);
