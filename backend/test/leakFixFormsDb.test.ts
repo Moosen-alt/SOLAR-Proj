@@ -247,5 +247,58 @@ await check("F6 MUST-PASS: the AHJ's own cited row (Chicago, any size) and a per
   assert.equal(orRow?.blocking, true, `Oregon 60 kW: ${orRow?.why}`);
 });
 
+// ---------------------------------------------------------------------------------------------
+// F5 — an UNCONFIRMED permit structure never tells the client a "combination building &
+// electrical permit" was issued, nor that "the building and electrical side is cleared".
+// ---------------------------------------------------------------------------------------------
+const { clientUpdateFor } = await import("../src/clientUpdates");
+const { trackLabel, projectStatusHistory } = await import("../src/clientPortal");
+const { requiredTracks } = await import("../src/submittalTracks");
+const { savePermitProcessLookup } = await import("../src/permitProcess");
+const cited = (value: string, sourceUrl: string, quote: string) => ({ value, sourceUrl, quote, origin: "lookup" as const });
+const nf = (why: string) => ({ value: null, sourceUrl: "", quote: "", origin: "lookup" as const, notFound: why });
+
+const walthamLike = project(beta.id, { state: "MA", city: "Wexham", zip: "02451", ahj: "City of Wexham", utility: "Eversource" });
+const wx = R.getProjectDetail(db, walthamLike.id).project;
+await check("F5 premise: an MA AHJ with no cited structure gets the default single 'combo' track", () => {
+  assert.ok(requiredTracks(wx).includes("combo"), requiredTracks(wx).join(","));
+});
+
+await check("F5 MUST-EXCLUDE: the client email never names a 'combination' permit or says the building AND electrical side is cleared", () => {
+  const u = clientUpdateFor(db, wx, "issued", { targetType: "permit", permitType: "combo", permitNumber: "B-26-0001" })!;
+  assert.match(u.headline, /has issued the permit, reference B-26-0001/, u.headline);
+  assert.doesNotMatch(`${u.headline} ${u.meaning}`, /combination|building and electrical side is cleared/i, JSON.stringify(u));
+  assert.match(u.meaning, /separate electrical permit/i, "it says what is still being confirmed");
+  const c = clientUpdateFor(db, wx, "correction_flagged", { targetType: "permit", permitType: "combo" })!;
+  assert.doesNotMatch(c.headline, /combination/i, c.headline);
+});
+
+await check("F5 MUST-EXCLUDE: the client's status page calls the unconfirmed default track just 'Permit'", async () => {
+  R.createPermitCheckTarget(db, wx.id, { jurisdiction: "City of Wexham", portalName: "", portalUrl: "", applicationNumber: "B-26-0001", permitType: "combo", targetType: "permit" } as never);
+  const tid = String(db.get<{ id: string }>("SELECT id FROM permit_check_targets WHERE project_id = ? LIMIT 1", [wx.id])?.id);
+  await R.recordPermitStatusCheck(db, wx.id, { targetId: tid, source: "manual", rawStatusText: "Plan review in progress." } as never);
+  const labels = projectStatusHistory(db, wx.id).map((e) => e.label);
+  assert.ok(labels.length && labels.every((l) => l === "Permit"), JSON.stringify(labels));
+});
+
+await check("F5 MUST-PASS: a CITED combination permit is still named, and the whole-job claim is made", () => {
+  const saved = savePermitProcessLookup(db, {
+    state: "MA", ahj: "City of Combotown", lookedUpAt: new Date().toISOString(), issuingAgency: nf("not stated"),
+    permitStructure: cited("combo", "https://combotown.example.gov/solar", "One permit covers the structural and electrical work."),
+    permits: [], notes: [],
+  } as never);
+  assert.equal((saved as { saved?: boolean }).saved, true);
+  const combo = R.getProjectDetail(db, project(beta.id, { state: "MA", city: "Combotown", zip: "02000", ahj: "City of Combotown", utility: "" }).id).project;
+  const u = clientUpdateFor(db, combo, "issued", { targetType: "permit", permitType: "combo" })!;
+  assert.match(u.headline, /combination building & electrical permit/, u.headline);
+  assert.match(u.meaning, /building and electrical side is cleared/, u.meaning);
+  assert.equal(trackLabel("permit", "combo", { combo: true }), "Combination building & electrical permit");
+});
+
+await check("F5 MUST-PASS: Oregon (state rule: separate) keeps 'the building and electrical side is cleared' once all is through", () => {
+  const u = clientUpdateFor(db, R.getProjectDetail(db, alphaJob.id).project, "issued", { targetType: "permit", permitType: "electrical" })!;
+  assert.match(u.meaning, /building and electrical side is cleared|still in review|clears the permit side/, u.meaning);
+});
+
 console.log(`\nleakFixFormsDb: ${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);
