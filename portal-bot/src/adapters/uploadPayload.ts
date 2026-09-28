@@ -92,7 +92,11 @@ export function uploadPayloadFor(filePath: string, pdf: Buffer | null, displayNa
   // A filled form is stored as "tmpl-<uuid>.pdf"; the portal's reviewer sees what it IS (D7's owed
   // attachments pass "Marion County ... Application (E-01).pdf"). Same extension as the stored file.
   const ext0 = path.extname(filePath) || ".pdf";
-  const named = displayName ? `${displayName.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120)}${ext0}` : "";
+  // Portal-safe: letters, digits, spaces, dashes, underscores, parentheses and dots only (Oregon
+  // ePermitting: "Numbers, letters, dashes, underscores and spaces are acceptable", <= 120 chars incl.
+  // the extension); no trailing dot/space; a label with nothing usable left falls back to the stored name.
+  const base = displayName ? displayName.replace(/[^A-Za-z0-9 ()._-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 110).replace(/[.\s]+$/, "") : "";
+  const named = /[A-Za-z0-9]/.test(base) ? `${base}${ext0}` : "";
   const name = named || uploadDisplayName(filePath);
   if (pdf) {
     const pdfName = pdfNameFor(name);

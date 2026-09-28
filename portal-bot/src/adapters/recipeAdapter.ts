@@ -463,6 +463,8 @@ export class RecipeAdapter extends BasePortalAdapter {
   private uploadNames = new Map<string, string>();
   /** D7: owed documents already tried this run (one row per document, never twice). */
   private owedAttempted = new Set<string>();
+  /** Doc types this run actually handed to a file control (recorded uploads and owed ones). */
+  private uploadedDocTypes = new Set<string>();
   /** D4 — WHAT WENT UP: every owed document's outcome this run, in the portal's own list's terms. */
   private attachmentLedger: Array<{ docType: string; label: string; status: "attached" | "already listed" | "not attached"; detail: string }> = [];
   /** runs-finish item 3: the run ended on a page NOT verified as the review page — where, in the
@@ -4012,7 +4014,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           await chooser.setFiles(file);
           await this.markRecordedUpload(scoped, chooser);
           await this.waitForUploadAccepted();
-          this.noteUploadPerformed(recordedLabel, file);
+          this.noteUploadPerformed(recordedLabel, file); if (step.docType) this.uploadedDocTypes.add(step.docType);
           return true;
         }
         this.options.beforeUpload?.(step.docType!, filePath);
@@ -4021,7 +4023,7 @@ export class RecipeAdapter extends BasePortalAdapter {
         await scoped!.setInputFiles(file, { timeout: 8000 });
         await this.markRecordedUpload(scoped, null);
         await this.waitForUploadAccepted();
-        this.noteUploadPerformed(recordedLabel, file);
+        this.noteUploadPerformed(recordedLabel, file); if (step.docType) this.uploadedDocTypes.add(step.docType);
         return true;
       }
       default:
@@ -4053,39 +4055,67 @@ export class RecipeAdapter extends BasePortalAdapter {
   // docs plan D7 / D4: every owed document through the page's own attachment row, and the ledger.
   // ---------------------------------------------------------------------------------------------
 
-  /** The recorded ATTACHMENT ROW whose commit is step `commitIdx`: the upload step before it on the
-   *  same page (no advance / goto between), and the Description fill and Type select recorded
-   *  between the two. null when the commit does not close an upload row. */
+  /** The recorded ATTACHMENT ROW whose commit is step `commitIdx` — ONLY a row the learner itself
+   *  recorded as an attachment row (accelaAttachmentSavePass: phase "upload", notes "attachment: …"):
+   *  the upload before it on the same page, and that row's "attachment: description" / "attachment:
+   *  document type" steps. Any other Description / Type / Save is an ordinary form field and never
+   *  carries a document (skeptic 21d2502 MF1: a "Description of Work" + "Work Type" + Save page had
+   *  its description overwritten, a field retyped and its Plan Set slot given the E-01). */
   private recordedAttachmentRow(commitIdx: number): { upload: RecipeStep; desc: RecipeStep | null; type: RecipeStep | null } | null {
     const steps = this.recipe.steps;
+    const commit = steps[commitIdx];
+    const stamped = (s: RecipeStep | undefined, re: RegExp): boolean => !!s && re.test(String(s.note ?? "").trim());
+    if (!stamped(commit, /^attachment:\s*save\b/i)) return null;
     let desc: RecipeStep | null = null;
     let type: RecipeStep | null = null;
     for (let i = commitIdx - 1; i >= 0 && i >= commitIdx - 8; i--) {
       const s = steps[i];
       if (!s) break;
       if (s.action === "goto" || (s.action === "click" && /^advance\b/i.test(String(s.note ?? "")))) return null;
-      if (s.action === "upload") return { upload: s, desc, type };
-      if (s.action === "fill" && !desc && /description|textarea/i.test(`${s.note ?? ""} ${s.selector?.css ?? ""}`)) desc = s;
-      else if (s.action === "select" && !type && /type|select/i.test(`${s.note ?? ""} ${s.selector?.css ?? ""}`)) type = s;
+      if (s.action === "upload") return s.docType ? { upload: s, desc, type } : null;
+      if (s.action === "fill" && !desc && stamped(s, /^attachment:\s*description\b/i)) desc = s;
+      else if (s.action === "select" && !type && stamped(s, /^attachment:\s*document\s*type\b/i)) type = s;
     }
     return null;
   }
 
-  /** The live options of the recorded Type select (its LAST match on the page — the newest row). */
-  private async typeOptionsOf(typeStep: RecipeStep): Promise<string[]> {
-    const css = String(typeStep.selector?.css ?? "select");
-    const got = await this.page.evaluate((sel: string) => {
-      const all = Array.from(document.querySelectorAll(sel)).filter((e) => e.tagName === "SELECT") as HTMLSelectElement[];
-      const el = all[all.length - 1];
-      return el ? Array.from(el.options).map((o) => String(o.textContent || o.label || "").replace(/\s+/g, " ").trim()) : [];
-    }, css).catch(() => [] as string[]) as string[];
+  /** The live options of the row's DOCUMENT-TYPE select — the select whose options read as document
+   *  types (the learner's own test: "Plans - …", "Calculations", "Photos", "Forms"), the newest one.
+   *  Never simply the last select: a real Accela row carries a second one after it ("also attach to",
+   *  only "--Select--" — skeptic MF3). [] = no such select on the page yet. */
+  private async typeOptionsOf(_typeStep: RecipeStep): Promise<string[]> {
+    const got = await this.page.evaluate(() => {
+      const docTypeish = (opts: string[]): boolean => opts.some((t) => /plans?\s*[-–—]/i.test(t)) || opts.some((t) => /^(plans|calculations|photos?|forms?|specifications|other)\b/i.test(t));
+      const lists = Array.from(document.querySelectorAll("select")).map((el) => Array.from((el as HTMLSelectElement).options).map((o) => String(o.textContent || o.label || "").replace(/\s+/g, " ").trim()));
+      const typed = lists.filter((opts) => docTypeish(opts) && opts.length > 2);
+      return typed.length ? typed[typed.length - 1] : [];
+    }).catch(() => [] as string[]) as string[];
     return Array.isArray(got) ? got : [];
   }
 
-  /** Does the page's own text list this file (the attachment table)? */
+  /** Is this file LISTED as an attachment — in the page or any frame (Accela's committed grid is a
+   *  child iframe, FileUpload/AttachmentsList.aspx: the main body never shows it)? A whole-name match,
+   *  never a substring of another file's name. */
   private async pageListsFile(fileName: string): Promise<boolean> {
     if (!fileName) return false;
-    return await this.page.evaluate((n: string) => String(document.body?.innerText || "").toLowerCase().includes(n.toLowerCase()), fileName).catch(() => false) as boolean;
+    const frames: Array<{ evaluate: (fn: unknown, arg: unknown) => Promise<unknown> }> =
+      typeof (this.page as { frames?: () => unknown[] }).frames === "function" ? ((this.page as { frames: () => unknown[] }).frames() as never) : [this.page as never];
+    for (const f of frames) {
+      const hit = await f.evaluate((n: string) => {
+        const t = String(document.body?.innerText || "").toLowerCase();
+        const want = n.toLowerCase();
+        let at = t.indexOf(want);
+        while (at >= 0) {
+          const before = at === 0 ? "" : t[at - 1];
+          const after = t[at + want.length] ?? "";
+          if (!/[a-z0-9._-]/.test(before) && !/[a-z0-9_-]/.test(after)) return true;
+          at = t.indexOf(want, at + 1);
+        }
+        return false;
+      }, fileName).catch(() => false);
+      if (hit) return true;
+    }
+    return false;
   }
 
   /** ATTACH EVERY OWED DOCUMENT THROUGH THE RECORDED ROW (docs plan D7). For each document the
@@ -4316,12 +4346,10 @@ export class RecipeAdapter extends BasePortalAdapter {
     let missing = names;
     for (;;) {
       await this.waitForLoadingMaskClear(`reading the attachment list after ${after}`, Math.max(0, timeoutMs - (Date.now() - t0)));
-      const listed = await this.page.evaluate((want: string[]) => {
-        // Listed = the name appears outside the upload widget's own file box: in the page text,
-        // not only as a file input's chosen value (which innerText never shows anyway).
-        const body = String(document.body?.innerText || "").toLowerCase();
-        return want.filter((n) => body.includes(String(n).toLowerCase()));
-      }, names).catch(() => null) as string[] | null;
+      // Listed = the name appears in the page OR any frame (Accela's committed grid is a child iframe,
+      // FileUpload/AttachmentsList.aspx — the main body never shows it: live 090fa574's false alarm).
+      const listed: string[] = [];
+      for (const n of names) if (await this.pageListsFile(n)) listed.push(n);
       if (Array.isArray(listed)) missing = names.filter((n) => !listed.includes(n));
       if (!missing.length || Date.now() - t0 >= timeoutMs) break;
       await sleep(400);
@@ -4598,6 +4626,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       const missing = (this.options.owedAttachments ?? []).filter((o) => o?.docType && !recorded.has(o.docType)
         && !this.attachmentLedger.some((e) => e.docType === o.docType && e.status !== "not attached"));
       if (missing.length) out.push(`${missing.length} owed document(s) not attached on the portal (${missing.map((o) => String(o.label || o.docType).slice(0, 60)).join("; ")})`);
+      // ...and a document the RECORDING uploads counts only if this run actually uploaded it (skeptic
+      // 21d2502 g: a skipped recorded upload — the plan set — was covered by no gate at all).
+      const skipped = Array.from(recorded).filter((t) => !this.uploadedDocTypes.has(t));
+      if (skipped.length) out.push(`the recording's upload of ${skipped.join(", ")} did not happen this run`);
     }
     const burned = approvedRunBurn(ctx.runId);
     if (burned && !this.finalSubmitAttempted) out.push(`this run's approval (runId ${ctx.runId.slice(0, 40)}) was already used in this process — ${burnWords(burned)}; one approval covers one filing attempt, a new run needs a new approval`);

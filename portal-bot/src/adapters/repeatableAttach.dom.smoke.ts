@@ -103,6 +103,7 @@ let rowAfterUpload = true;
 let listDelayMs = 0;
 /** The portal refuses the Save of a file whose name contains this (a validation error; nothing posts). */
 let failSaveFor = "";
+const formSaves: string[] = [];
 const counts = { advance: 0, filing: 0, save: 0 };
 const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 
@@ -114,12 +115,13 @@ function attachmentsContent(): string {
   // The pending row as Accela builds it (dlDocumentEdit): Description, Type, then "File: <name>" 100%.
   const rowHtml = `<div id="pendingRow"><label for="${PM}dlDocumentEdit_ctl00_txtDescription">*Description:</label> <textarea id="${PM}dlDocumentEdit_ctl00_txtDescription" rows="4" cols="60"></textarea>
       <label for="${PM}dlDocumentEdit_ctl00_ddlDocType">*Type (Required):</label> <select id="${PM}dlDocumentEdit_ctl00_ddlDocType">${options}</select>
+      <table style="display:none;"><tr><td><label for="${PM}dlDocumentEdit_ctl00_ddlAlsoAttachTo">Also attach to:</label> <select id="${PM}dlDocumentEdit_ctl00_ddlAlsoAttachTo"><option value="">--Select--</option></select></td></tr></table>
       <div>File: <span id="fname"></span> <span class="progress">100%</span></div></div>`;
   return `<div ng-non-bindable="true" id="attachmentSection">
   ${rows.length ? `<div class="ACA_Message_Notice">The attachment(s) has/have been successfully uploaded. It may take a few minutes before changes are reflected.</div>` : ""}
   <div class="ACA_TabRow"><div class="ACA_Title_Bar"><h1>Attachment</h1></div></div>
   <p>The maximum file size allowed is 80 MB.</p>
-  <table id="${PM}attachmentEdit_gdvAttachmentList" class="ACA_GridView"><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Latest Update</th><th>Action</th></tr></thead><tbody id="savedRows">${listDelayMs > 0 ? `<tr><td colspan="5">Loading...</td></tr>` : body}</tbody></table>
+  <iframe id="${PM}attachmentEdit_iframeAttachmentList" src="/FileUpload/AttachmentsList.aspx?d=${listDelayMs}" style="width:100%;height:140px;border:0"></iframe>
   <div id="uploadWidget">
     <input type="file" id="${FILE_ID}" name="${FILE_ID.replace(/_/g, "$")}" accept=".pdf" style="width:90px">
     <div id="pending">${rowAfterUpload ? "" : rowHtml}</div>
@@ -129,8 +131,6 @@ function attachmentsContent(): string {
   <script>(function(){
     var fi = document.getElementById('${FILE_ID}');
     var ROW = ${JSON.stringify(rowHtml)};
-    var BODY = ${JSON.stringify(body)};
-    if (${listDelayMs} > 0) setTimeout(function(){ document.getElementById('savedRows').innerHTML = BODY; }, ${listDelayMs});
     fi.addEventListener('change', function(){
       if (!(fi.files && fi.files[0])) return;
       if (!document.getElementById('pendingRow')) document.getElementById('pending').innerHTML = ROW;
@@ -160,12 +160,28 @@ const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", (c) => { body += c; });
     req.on("end", () => {
+      if (url.pathname === "/formsave") { formSaves.push(body); res.writeHead(200); res.end("ok"); return; }
       if (url.pathname === "/save") { counts.save++; try { rows.push(JSON.parse(body)); } catch { /* malformed */ } res.writeHead(200); res.end("ok"); return; }
       const target = new URLSearchParams(body).get("__EVENTTARGET") || "";
       if (/CapConfirm/i.test(url.pathname) && target === ACTION_CONTINUE) { counts.filing++; send("<!doctype html><html><body><h1>Record Issuance</h1><p>Your application has been successfully submitted.</p></body></html>"); return; }
       if (target === ACTION_CONTINUE && /pageNumber=2/.test(url.search)) { counts.advance++; res.writeHead(302, { location: CONFIRM_PATH }); res.end(); return; }
       send(attachmentsPage());
     });
+    return;
+  }
+  if (url.pathname === "/FileUpload/AttachmentsList.aspx") {
+    const d = Number(url.searchParams.get("d") || 0);
+    const body = rows.length ? rows.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.type)}</td><td>16 B</td></tr>`).join("") : `<tr><td colspan="3">No records found.</td></tr>`;
+    send(`<!doctype html><html><body><table><thead><tr><th>Name</th><th>Type</th><th>Size</th></tr></thead><tbody id="r">${d > 0 ? "<tr><td>Loading...</td></tr>" : body}</tbody></table>${d > 0 ? `<script>setTimeout(function(){document.getElementById('r').innerHTML=${JSON.stringify(body)};},${d});</script>` : ""}</body></html>`);
+    return;
+  }
+  if (url.pathname === "/form") {
+    send(`<!doctype html><html><body><h1>Project Details</h1>
+      <label for="ps">Plan Set</label> <input type="file" id="ps" accept=".pdf">
+      <label for="dw">Description of Work</label> <textarea id="dw"></textarea>
+      <label for="wt">Work Type</label> <select id="wt"><option value="">--Select--</option><option>New</option><option>Alteration</option><option>Other</option></select>
+      <button type="button" id="sv" onclick="var f=document.getElementById('ps').files;fetch('/formsave',{method:'POST',body:JSON.stringify({desc:document.getElementById('dw').value,workType:document.getElementById('wt').value,planFile:f&&f[0]?f[0].name:''})});">Save</button>
+      <a id="next" href="/CapConfirm.aspx">Continue Application »</a></body></html>`);
     return;
   }
   if (/CapConfirm/i.test(url.pathname)) { send(confirmPage()); return; }
@@ -219,7 +235,7 @@ async function replay(name: string, planType: string, owed: Array<{ docType: str
   await page.context().close();
   const data = (result.data ?? {}) as { attachmentLedger?: Array<{ docType: string; status: string; detail: string }>; driftWarnings?: string[]; agingNotes?: string[] };
   const out = { result, url, refusals, ledger: data.attachmentLedger ?? [], drift: (data.driftWarnings ?? []).join(" | "), aging: (data.agingNotes ?? []).join(" | "), rows: [...rows], ...counts };
-  console.log(`  [${name}] ok=${result.ok} rows=${JSON.stringify(out.rows.map((r) => [r.name, r.type]))} advance=${counts.advance} filing=${counts.filing}\n         ledger=${JSON.stringify(out.ledger.map((l) => [l.docType, l.status]))}`);
+  console.log(`  [${name}] ok=${result.ok} rows=${JSON.stringify(out.rows.map((r) => [r.name, r.type]))} advance=${counts.advance} filing=${counts.filing}\n         ledger=${JSON.stringify(out.ledger.map((l) => [l.docType, l.status]))}${result.ok ? "" : `\n         msg=${String(result.message ?? "").slice(0, 400)}`}`);
   return out;
 }
 const bad = (r: { type: string }) => /homeowner\s*acknowledg|contractor\s*responsibility/i.test(r.type);
@@ -313,6 +329,32 @@ console.log("\nH. MUST-EXCLUDE: a refused Save leaves its row unsaved — the pa
       && /left UNSAVED/.test(o.ledger.find((l) => l.docType === "building_application")?.detail ?? "")
       && /not tried/.test(o.ledger.find((l) => l.docType === "solar_checklist")?.detail ?? ""), JSON.stringify({ rows: o.rows, ledger: o.ledger }));
   check("the approved final submit refuses on both", o.refusals.some((r) => /2 owed document\(s\) not attached/.test(r)), JSON.stringify(o.refusals));
+}
+
+console.log("\nI. MUST-EXCLUDE (skeptic 21d2502 MF1): an ORDINARY form page — a Plan Set slot, Description of Work, Work Type, Save — never carries an owed document");
+{
+  rows = []; formSaves.length = 0;
+  const FORM_STEPS: RecipeStep[] = [
+    { action: "goto", value: `${base}/form`, note: "entry url" },
+    { action: "upload", selector: { css: "#ps" }, docType: "plan_set", viaFileChooser: false, note: "upload plan_set: Plan Set" },
+    { action: "fill", selector: { css: "textarea" }, value: "Install roof-mounted PV", note: "Description of Work" },
+    { action: "select", selector: { css: "select" }, value: "Alteration", note: "Work Type" },
+    { action: "click", selector: { css: "#sv" }, note: "save" },
+    { action: "click", selector: { css: "#next" }, note: "advance: Continue Application »" },
+  ];
+  const page = await newPage();
+  const adapter = new RecipeAdapter({ ...recipeOf(FORM_STEPS), portalUrl: `${base}/form` }, {}, { plan_set: DOCS.plan_set, electrical_application: DOCS.electrical_application },
+    { owedAttachments: [{ docType: "electrical_application", label: E01 }] });
+  (adapter as unknown as { page: unknown }).page = page;
+  const result = await adapter.fillApplication({} as ProjectRecord);
+  await page.waitForTimeout(500);
+  await page.context().close();
+  const ledger = ((result.data ?? {}) as { attachmentLedger?: Array<{ docType: string; status: string; detail: string }> }).attachmentLedger ?? [];
+  const saves = formSaves.map((b) => { try { return JSON.parse(b); } catch { return {}; } });
+  console.log(`  [form-page] saves=${JSON.stringify(saves)} ledger=${JSON.stringify(ledger)}`);
+  check("the form was saved ONCE, with its own description, type and the PLAN SET — never the E-01",
+    saves.length === 1 && saves[0].desc === "Install roof-mounted PV" && saves[0].workType === "Alteration" && /Plan_Set_Fixture/.test(saves[0].planFile), JSON.stringify(saves));
+  check("the E-01 is named NOT ATTACHED (no attachment row carried it)", ledger.length === 1 && ledger[0].status === "not attached", JSON.stringify(ledger));
 }
 
 await browser.close();
