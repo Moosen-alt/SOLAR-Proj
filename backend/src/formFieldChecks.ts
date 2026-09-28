@@ -31,14 +31,39 @@ export interface OperatorItem { field?: string; label: string }
 
 /** How a widget is named to a person: its printed caption, else its widget name. An "I, ___"
  *  blank is named by its own line ("I, ___, as Owner/Authorized Agent"); a caption that is a
- *  sentence of prose (a declaration under the box) is not a label, so the name stands. */
+ *  sentence of prose (a declaration under the box) is not a label, so the name stands.
+ *
+ *  A FRAGMENT caption ("#", "Approval", "Date" — at most one word) under a widget whose name says
+ *  more AND contains that word ("License #"… "Zoning Board Approval", "Expiration Date") takes the
+ *  name: it is the same label, longer. A name that does NOT contain the caption's word may be
+ *  shifted off a neighbouring box (Waltham's "Contact Email" box is captioned "Telephone"), so the
+ *  printed caption still outranks it; an auto-generated or run-on name ("Text12", a 70-character
+ *  cost-row name) is never the more meaningful label. */
 export function widgetLabel(w: Pick<PlacedWidget, "name" | "caption" | "captions">): string {
   if (/^i,?$/i.test(String(w.captions?.left || "").trim())) {
     const tail = String(w.captions?.right || "").trim();
     return `I, ___${tail ? `${tail.startsWith(",") ? "" : " "}${tail}` : ""}`;
   }
   const caption = String(w.caption || "").replace(/[:\s]+$/, "").trim();
-  return caption && caption.length <= 60 ? caption : w.name;
+  if (!caption || caption.length > 60) return w.name;
+  const capWords = labelWords(caption);
+  if (capWords.length <= 1 && meaningfulName(w.name)) {
+    const nameWords = labelWords(w.name);
+    if (nameWords.length > capWords.length && (!capWords.length || nameWords.includes(capWords[0]))) return tidyName(w.name);
+  }
+  return caption;
+}
+const LABEL_STOP = new Set(["the", "and", "of", "to", "by", "for", "text", "field", "box", "check", "undefined", "row", "fill"]);
+/** The words of a label a person reads (camelCase / underscores split; no digits, no filler). */
+const labelWords = (s: string): string[] =>
+  String(s || "").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z]+/).filter((x) => x.length >= 2 && !LABEL_STOP.has(x));
+const tidyName = (s: string): string => String(s || "").replace(/_+/g, " ").replace(/\s+/g, " ").replace(/[:\s]+$/, "").trim();
+/** A widget name a person could read as a label: short, words not glued to counters ("Text12",
+ *  "applicant6"), at least two real words. */
+function meaningfulName(name: string): boolean {
+  const t = tidyName(name);
+  if (!t || t.length > 40 || /[a-z]\d|\d[a-z]/i.test(t)) return false;
+  return labelWords(t).length >= 2;
 }
 
 // ---- B2: the contact-shape guard -------------------------------------------------------------
@@ -117,47 +142,59 @@ export function signerNamingRole(w: PlacedWidget): "declarant" | "printName" | n
   return null;
 }
 
-/** Where signatures go on each page: signature widgets and short printed "Signature…" captions. */
+/** Where signatures go on each page: signature widgets and every printed "Signature…" line,
+ *  whatever its length ("Signature of Property Owner or Authorized Agent as required by …" is a
+ *  signature line too). A line that also names the PRINT NAME ("Print Name / Signature") is the
+ *  print-name box's own caption, not a line between two blocks, so it is not an anchor. */
 export function signatureAnchors(widgets: PlacedWidget[], items: LabelItem[]): Array<{ page: number; y: number }> {
   const out: Array<{ page: number; y: number }> = [];
   for (const w of widgets) if (/signature/i.test(w.type) && w.rect && w.page != null) out.push({ page: w.page, y: w.rect.y });
-  for (const i of items) if (/\bsignature\b/i.test(i.str) && !PRINT_NAME.test(i.str) && i.str.trim().length <= 60) out.push({ page: i.page, y: i.y });
+  for (const i of items) if (/\bsignature\b/i.test(i.str) && !PRINT_NAME.test(i.str)) out.push({ page: i.page, y: i.y });
   return out;
 }
 
 /**
- * THE DECLARANT AND THE PRINTED NAME UNDER ONE SIGNATURE ARE ONE PERSON. Two signer-naming widgets
- * are in one signature block when they are on the same page within 120pt of each other and no
- * signature line lies between them (so an owner block and the agent block below it never pair).
- * A block whose signer-naming widgets are bound to DIFFERENT sources is returned — the fill
- * cannot know which person is right (who the agent is is the operator's decision).
+ * THE DECLARANT AND THE PRINTED NAME UNDER ONE SIGNATURE ARE ONE PERSON. A signature block names
+ * its signer at most twice: ONE "I, ___" declarant and ONE Print Name. So a pair is exactly one
+ * declarant with one Print Name — two Print Names (the owner's and the contractor's, side by side
+ * or stacked) are two signers, and so are two declarants (an owner's "I, ___ authorize" and an
+ * applicant's "I, ___ certify"). A declarant and a Print Name are in one block when they are on
+ * the same page, stacked within 120pt, their HORIZONTAL ranges overlap (side-by-side blocks never
+ * pair), and no printed signature line lies between them. Each widget is in at most one pair, the
+ * nearest first. A pair bound to DIFFERENT sources is returned — the fill cannot know which person
+ * is right (who the agent is is the operator's decision).
  */
 export function signerNameConflicts(
   widgets: PlacedWidget[], textFields: Record<string, string>, items: LabelItem[],
 ): Array<{ fields: string[]; labels: string[]; sources: string[] }> {
-  const signers = widgets.filter((w) => w.rect && w.page != null && textFields[w.name] && signerNamingRole(w));
-  if (signers.length < 2) return [];
+  const bound = widgets.filter((w) => w.rect && w.page != null && textFields[w.name]);
+  const declarants = bound.filter((w) => signerNamingRole(w) === "declarant");
+  const printNames = bound.filter((w) => signerNamingRole(w) === "printName");
+  if (!declarants.length || !printNames.length) return [];
   const anchors = signatureAnchors(widgets, items);
-  const paired = (a: PlacedWidget, b: PlacedWidget): boolean => {
-    if (a.page !== b.page) return false;
-    const [hi, lo] = a.rect!.y >= b.rect!.y ? [a, b] : [b, a];
+  const overlapX = (a: WidgetRect, b: WidgetRect): boolean => Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 0;
+  const candidates: Array<{ d: PlacedWidget; p: PlacedWidget; dist: number }> = [];
+  for (const d of declarants) for (const p of printNames) {
+    if (d.page !== p.page || !overlapX(d.rect!, p.rect!)) continue;
+    const [hi, lo] = d.rect!.y >= p.rect!.y ? [d, p] : [p, d];
+    const dist = hi.rect!.y - lo.rect!.y;
+    if (dist > 120) continue;
     const gapTop = hi.rect!.y;                        // bottom of the higher widget
     const gapBottom = lo.rect!.y + lo.rect!.height;   // top of the lower widget
-    if (hi.rect!.y - lo.rect!.y > 120) return false;
-    return !anchors.some((s) => s.page === a.page && s.y < gapTop && s.y > gapBottom);
-  };
-  // Connected groups of paired signer widgets.
-  const groups: PlacedWidget[][] = [];
-  for (const w of signers) {
-    const joined = groups.filter((g) => g.some((x) => paired(x, w)));
-    const merged = [w, ...joined.flat()];
-    for (const g of joined) groups.splice(groups.indexOf(g), 1);
-    groups.push(merged);
+    if (anchors.some((s) => s.page === d.page && s.y < gapTop && s.y > gapBottom)) continue;
+    candidates.push({ d, p, dist });
   }
-  return groups
-    .filter((g) => g.length >= 2 && new Set(g.map((w) => textFields[w.name])).size >= 2)
-    .map((g) => [...g].sort((a, b) => (a.page! - b.page!) || (b.rect!.y - a.rect!.y)))   // read top-down
-    .map((g) => ({ fields: g.map((w) => w.name), labels: g.map(widgetLabel), sources: [...new Set(g.map((w) => textFields[w.name]))] }));
+  candidates.sort((a, b) => a.dist - b.dist);
+  const used = new Set<string>();
+  const pairs: PlacedWidget[][] = [];
+  for (const { d, p } of candidates) {
+    if (used.has(d.name) || used.has(p.name)) continue;
+    used.add(d.name); used.add(p.name);
+    if (textFields[d.name] !== textFields[p.name]) pairs.push([d, p].sort((a, b) => b.rect!.y - a.rect!.y));   // read top-down
+  }
+  return pairs
+    .sort((a, b) => (a[0].page! - b[0].page!) || (b[0].rect!.y - a[0].rect!.y))
+    .map((pair) => ({ fields: pair.map((w) => w.name), labels: pair.map(widgetLabel), sources: pair.map((w) => textFields[w.name]) }));
 }
 
 // ---- B6: vision placements that no widget covers --------------------------------------------------
@@ -168,6 +205,112 @@ export function placementOnWidget(p: { page: number; x: number; y: number }, wid
   return widgets.some((w) => w.rect && w.page === p.page
     && p.x >= w.rect.x - 12 && p.x <= w.rect.x + w.rect.width
     && p.y >= w.rect.y - 8 && p.y <= w.rect.y + w.rect.height + 8);
+}
+
+// ---- A licence section, read off the page --------------------------------------------------------
+
+const LICENCE_SECTION_WORDS = /\blicen[cs]|\bregistration\b|\bregistered\b|construction\s+supervisor|\bHIC\b|\bCSL\b/i;
+
+/**
+ * Is this box inside a LICENCE section? The printed line naming the licence nearest the box — on
+ * its own row or within 40pt above it (the section's heading line) — is returned; "" when only the
+ * widget's own name / captions name a licence; null when nothing near it does.
+ */
+export function licenceSectionLine(w: PlacedWidget, items: LabelItem[]): string | null {
+  const own = `${w.name} ${w.caption || ""} ${w.captions?.left || ""} ${w.captions?.right || ""} ${w.captions?.above || ""}`;
+  if (w.rect && w.page != null) {
+    const r = w.rect;
+    const mid = r.y + r.height / 2;
+    const near = items
+      .filter((i) => i.page === w.page && i.y >= r.y - 4 && i.y <= r.y + r.height + 40
+        && LICENCE_SECTION_WORDS.test(i.str) && !/\bnot\s*applicable\b/i.test(i.str))
+      .sort((a, b) => Math.abs(a.y - mid) - Math.abs(b.y - mid))[0];
+    if (near) return near.str.replace(/_{2,}/g, " ").replace(/\s+/g, " ").replace(/[:\s]+$/, "").trim().slice(0, 90);
+  }
+  return LICENCE_SECTION_WORDS.test(own) ? "" : null;
+}
+
+// ---- The workers' compensation affidavit, read off the page ---------------------------------------
+
+const WORKERS_COMP = /workers['’`]?\s*comp/i;
+
+/**
+ * A FORM THAT ASKS FOR A WORKERS' COMPENSATION AFFIDAVIT gets a named operator item, whatever the
+ * model returned: the printed line naming it (workers' compensation AND affidavit on one line of
+ * the text layer) is read deterministically. The product never ticks or signs it — the person who
+ * attaches the affidavit does. null when no line names one (an "Owner's Affidavit" alone, or a
+ * workers' compensation CERTIFICATE, is not this).
+ */
+export function workersCompAffidavitItem(items: LabelItem[]): OperatorItem | null {
+  // One visual line per (page, baseline within 2.5pt), read left to right — a heading split into
+  // runs ("Workers' Compensation Insurance" + "Affidavit") is still one line.
+  const lines: Array<{ page: number; y: number; parts: LabelItem[] }> = [];
+  for (const it of [...items].sort((a, b) => (a.page - b.page) || (b.y - a.y) || (a.x - b.x))) {
+    const line = lines.find((l) => l.page === it.page && Math.abs(l.y - it.y) < 2.5);
+    if (line) line.parts.push(it); else lines.push({ page: it.page, y: it.y, parts: [it] });
+  }
+  for (const l of lines) {
+    const text = l.parts.sort((a, b) => a.x - b.x).map((p) => p.str).join(" ").replace(/_{2,}/g, " ").replace(/\s+/g, " ").trim();
+    if (!WORKERS_COMP.test(text) || !/\baffidavit\b/i.test(text)) continue;
+    const printed = text.length > 90 ? `${text.slice(0, 87).trimEnd()}…` : text;
+    return { label: `Workers' compensation affidavit — the form asks for one ("${printed}", page ${l.page + 1}): attach the signed affidavit and answer it by hand; the product never ticks or signs it` };
+  }
+  return null;
+}
+
+/** Does an operator item already name the workers' compensation affidavit? */
+export const namesWorkersComp = (label: string): boolean => WORKERS_COMP.test(label);
+
+// ---- Vision placements pass the same map checks as widgets ----------------------------------------
+
+/** A vision placement as stored (ahjForms.OverlayField's shape, the fields the checks read). */
+export interface PlacementLike { source: string; page: number; x: number; y: number; size?: number; maxWidth?: number; label?: string }
+
+/**
+ * THE SAME MAP CHECKS FOR A VISION PLACEMENT AS FOR A WIDGET. A placement kept as an overlay (a
+ * printed blank with no widget, or every blank on a flat form) used to skip the licence-holder, the
+ * one-signer and the Total-only checks. Each labelled placement stands in as a widget — its printed
+ * label as the caption, its baseline and width as the box, an "I, ___" label as a declarant — and
+ * the union goes through sanitizeAcroMap, the one set of rules. A placement with no label is kept
+ * as it is (nothing printed to check it against). Returns the widget map, the placements kept (a
+ * rebound source rides along) and what was dropped, named.
+ */
+export function sanitizePlacements<P extends PlacementLike>(input: {
+  widgets: PlacedWidget[]; items: LabelItem[]; state: string;
+  textFields: Record<string, string>; checkboxes: Record<string, { source: string; equals?: string }>;
+  placements: P[];
+}): { textFields: Record<string, string>; checkboxes: Record<string, { source: string; equals?: string }>; placements: P[]; operatorItems: OperatorItem[]; notes: string[] } {
+  const KEY = "\u0000placement#";
+  const stand: PlacedWidget[] = [];
+  const textFields = { ...input.textFields };
+  input.placements.forEach((p, i) => {
+    const label = String(p.label ?? "").trim();
+    if (!label || !p.source || p.source.startsWith("operator:")) return;
+    const size = p.size && p.size > 0 ? p.size : 9;
+    const declarant = /^i\s*,/i.test(label);
+    const tail = declarant ? label.replace(/^i\s*,/i, "").replace(/_{2,}/g, " ").trim() : "";
+    stand.push({
+      name: `${KEY}${i}`, type: "PDFTextField", page: p.page,
+      rect: { x: p.x, y: p.y - 3, width: p.maxWidth && p.maxWidth > 0 ? p.maxWidth : 150, height: size + 5 },
+      caption: declarant ? "" : label,
+      ...(declarant ? { captions: { left: "I,", ...(tail ? { right: tail } : {}) } } : {}),
+    });
+    textFields[`${KEY}${i}`] = p.source;
+  });
+  if (!stand.length) return { textFields: input.textFields, checkboxes: input.checkboxes, placements: input.placements, operatorItems: [], notes: [] };
+  const checked = sanitizeAcroMap({ widgets: [...input.widgets, ...stand], items: input.items, state: input.state, textFields, checkboxes: input.checkboxes });
+  const placements = input.placements.flatMap((p, i) => {
+    const key = `${KEY}${i}`;
+    if (!(key in textFields)) return [p];                // not checked (no label): kept as it was
+    const source = checked.textFields[key];
+    return source ? [source === p.source ? p : { ...p, source }] : [];
+  });
+  const widgetFields = Object.fromEntries(Object.entries(checked.textFields).filter(([k]) => !k.startsWith(KEY)));
+  // A stand-in's key never reaches a person: it reads as the placement's printed label.
+  const named = (s: string): string => s.replace(/\u0000placement#(\d+)/g, (_, i: string) => String(input.placements[Number(i)]?.label ?? "").trim());
+  const operatorItems = checked.operatorItems.map((it) => (it.field?.startsWith(KEY) ? { label: named(it.label) } : { ...it, label: named(it.label) }));
+  const notes = checked.notes.map(named);
+  return { textFields: widgetFields, checkboxes: checked.checkboxes, placements, operatorItems, notes };
 }
 
 // ---- The post-map sanitisation (acquisition) -----------------------------------------------------
@@ -211,10 +354,13 @@ export function sanitizeAcroMap(input: {
       notes.push(`"${name}" attests an attached document; not ticked (source was ${rule.source}).`);
       continue;
     }
-    // "Not Applicable" ticked as a CONSTANT is a guess that a requirement (a state licence section)
-    // does not apply to any job — an operator / legal call, never the mapper's.
-    if (rule.source.startsWith("lit:") && /\bnot\s*applicable\b/i.test(text)) {
+    // "Not Applicable" ticked as a CONSTANT beside a LICENCE section is a guess that a state licence
+    // requirement does not apply to any job — an operator / legal call, never the mapper's. It is
+    // left unticked AND named. Elsewhere ("Historic district: Not Applicable") the map stands.
+    const section = rule.source.startsWith("lit:") && /\bnot\s*applicable\b/i.test(text) ? licenceSectionLine(w, input.items) : null;
+    if (section != null) {
       delete checkboxes[name];
+      operatorItems.push({ field: name, label: `${section || widgetLabel(w)} — Not Applicable (not ticked: whether this licence section applies to the job is the operator's call)` });
       notes.push(`"${name}" (Not Applicable) was not ticked: whether it applies is the operator's call.`);
     }
   }
@@ -257,14 +403,30 @@ export function sanitizeAcroMap(input: {
   return { textFields, checkboxes, operatorItems, notes };
 }
 
-/** Operator items as printed labels, de-duplicated, in order. */
+/** Operator items as printed labels, de-duplicated, in order. The same item twice (one blank,
+ *  named by the map and again by the fill) is listed once; ONE label on two DIFFERENT boxes (two
+ *  "Expiration Date" blanks, one per licence) is two items, each told apart by its box's name —
+ *  collapsing them would hide a blank the operator must fill. */
 export function operatorItemLabels(items: Array<OperatorItem | string>): string[] {
+  const norm = items.map((it) => ({
+    label: String(typeof it === "string" ? it : it.label || it.field || "").trim(),
+    field: typeof it === "string" ? "" : String(it.field ?? "").trim(),
+  })).filter((it) => it.label);
+  const fieldsByLabel = new Map<string, Set<string>>();
+  for (const it of norm) {
+    if (!it.field) continue;
+    const key = it.label.toLowerCase();
+    fieldsByLabel.set(key, (fieldsByLabel.get(key) ?? new Set<string>()).add(it.field));
+  }
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const it of items) {
-    const label = String(typeof it === "string" ? it : it.label || it.field || "").trim();
+  for (const it of norm) {
+    const shared = (fieldsByLabel.get(it.label.toLowerCase())?.size ?? 0) > 1;
+    const label = shared && it.field ? `${it.label} — the box named "${tidyName(it.field)}"` : it.label;
     const key = label.toLowerCase();
-    if (!label || seen.has(key)) continue;
+    if (seen.has(key)) continue;
+    // An unnamed copy of a label several boxes carry is already said by each box's own line.
+    if (shared && !it.field) continue;
     seen.add(key);
     out.push(label);
   }

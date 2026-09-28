@@ -13,6 +13,7 @@ import {
   OREGON_CCB_SOURCE, signerNameConflicts, STATE_LICENCE_SOURCE, widgetContactKind, widgetLabel,
   type OperatorItem, type PlacedWidget,
 } from "./formFieldChecks";
+import { namesWorkersComp, workersCompAffidavitItem } from "./formFieldChecks";
 import { HttpError } from "./httpError";
 import { loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
@@ -1462,9 +1463,20 @@ export async function fillLoadedForm(
     }
     return drawn;
   };
+  /** THE WORKERS' COMPENSATION AFFIDAVIT, read off the form's own text (formFieldChecks
+   *  .workersCompAffidavitItem): named for the operator whatever the model returned, unless an item
+   *  already names it. Never ticked, never signed. */
+  const workersCompItem = async (items?: LabelItem[]): Promise<OperatorItem | null> => {
+    if (operatorItems.some((i) => namesWorkersComp(i.label))) return null;
+    let text = items ?? [];
+    if (!items) { try { text = await (await import("./formTextLayer")).extractLabels(templateBytes); } catch { text = []; } }
+    return workersCompAffidavitItem(text);
+  };
   // Overlay mode: flat PDF, draw text at coordinates.
   if (def.fillMode === "overlay") {
     const drawn = await drawMappedOverlays() + await drawChecklist();
+    const wc = await workersCompItem();
+    if (wc) operatorItems.push(wc);
     await drawSignatures(doc, def, ctx);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, await doc.save());
@@ -1573,19 +1585,32 @@ export async function fillLoadedForm(
   // Plumbing / Mechanical / Fire Protection / Total rows, all named "Estimated Costs …". When
   // several blanks match, only the one whose name or caption says Total is filled; with no single
   // Total, none is — and the operator is told which blanks to complete.
+  //
+  // ONE BOX NEVER FAILS THE FORM. Each read and write is guarded per field, as it was before the
+  // cost-table rule: a valuation box whose maxLength is shorter than the value (setText throws) or
+  // a rich-text box (getText throws) is left blank and named — the rest of the form still fills.
   const valuationDefault = resolveSource("computed.estimatedJobValue", ctx);
   if (valuationDefault) {
     const mappedNames = new Set(Object.keys(def.textFields));
     const textWidget = (name: string): boolean => { try { form.getTextField(name); return true; } catch { return false; } };
+    const isEmpty = (name: string): boolean => { try { return !form.getTextField(name).getText(); } catch { return false; } };
     const slots = [...available].filter(textWidget).map(widgetOf).filter(isValuationSlot);
-    const open = slots.filter((w) => !mappedNames.has(w.name) && !form.getTextField(w.name).getText());
+    const open = slots.filter((w) => !mappedNames.has(w.name) && isEmpty(w.name));
     const totals = slots.filter(isTotalRow);
     const targets = totals.length ? (totals.length === 1 ? open.filter((w) => w.name === totals[0].name) : []) : (open.length === 1 ? open : []);
     const answered = totals.some((w) => mappedNames.has(w.name));
     if (!targets.length && open.length > 1 && !answered) {
       operatorItems.push({ label: `Estimated cost / valuation (${open.map(widgetLabel).join("; ")} — no single Total row to carry it; enter it where the form asks)` });
     }
-    for (const w of targets) { form.getTextField(w.name).setText(valuationDefault); filled += 1; }
+    for (const w of targets) {
+      try { form.getTextField(w.name).setText(valuationDefault); filled += 1; }
+      catch (err) {
+        try { form.getTextField(w.name).setText(""); } catch { /* leave it as it is */ }
+        const why = /max\s*length/i.test(err instanceof Error ? `${err.name} ${err.message}` : String(err))
+          ? "the valuation is longer than this box allows" : "this box would not take the valuation";
+        operatorItems.push({ field: w.name, label: `${widgetLabel(w)} (left blank: ${why} — enter the estimated valuation by hand)` });
+      }
+    }
   }
 
   for (const [fieldName, rule] of Object.entries(def.checkboxes ?? {})) {
@@ -1655,6 +1680,8 @@ export async function fillLoadedForm(
   filled += await drawMappedOverlays();
   filled += await drawChecklist();
   openItems.push(...operatorItems.slice(beforeOverlays));
+  const wc = await workersCompItem(labelItems.length ? labelItems : undefined);
+  if (wc) openItems.push(wc);
 
   // Stamp signatures on top of the flattened form.
   await drawSignatures(doc, def, ctx);
