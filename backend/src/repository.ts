@@ -76,7 +76,7 @@ import { publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
 import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
-import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor } from "./permitProcess";
+import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, projectForTrack, refuseTrackIssuerValue } from "./permitProcess";
 import { bindRecipeForReplay, describeReplayBinding, openPerJobQuestions } from "./recipeReplayBinding";
 import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import type { StageAcquiredForm } from "./formAcquisitionPlan";
@@ -132,7 +132,7 @@ import {
   isVerifiedKnowledge,
   type ClassifiedMboxMessage,
 } from "./knowledgeBase";
-import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
+import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens, TRACK_ISSUER_SNAPSHOT_KEYS, withTrackIssuers } from "./normalize";
 import {
   classificationDrift, classifyPermitStatusText, effectiveCheckDays, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack, portalStatedStatus,
   readingMayFinishTrack, shouldRecordStatusCheck, trackKind, UNCONFIRMED_READING_LABEL,
@@ -335,6 +335,9 @@ function mapProject(row: ProjectRow): ProjectRecord {
     // surfaces keep showing archived work — it only makes the fact sayable.
     archivedAt: text((row as Record<string, unknown>).archived_at),
     archivedReason: text((row as Record<string, unknown>).archived_reason),
+    // THE OPERATOR'S PER-TRACK ISSUER (split issuer): flat snapshot keys, mapped here so every
+    // ProjectRecord carries it; no key at all when none is set. Read only via permitProcess.trackIssuer.
+    ...withTrackIssuers(parserSnapshot),
     assignedUserId: row.assigned_user_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -804,6 +807,23 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
   if (!identityGiven("state")) mergedSnapshot.state = existing.state;
   if (!identityGiven("ahj")) mergedSnapshot.ahj = existing.ahj;
   if (!identityGiven("utility")) mergedSnapshot.utility = existing.utility;
+  // THE OPERATOR'S PER-TRACK ISSUER (split issuer) — which agency issues one permit track, e.g. the
+  // city's building permit on a county-AHJ project. It decides WHICH PORTAL that track files on, so a
+  // value that can never be honoured is refused HERE, before anything is written (the reader,
+  // permitProcess.trackIssuer, refuses it too): a name in another state (a permit is never issued
+  // across a state line), a web address, an over-long value. "" clears the track's issuer.
+  const issuerChanges: Array<{ key: string; from: string; to: string }> = [];
+  for (const key of Object.values(TRACK_ISSUER_SNAPSHOT_KEYS)) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) continue;
+    const raw = (payload as Record<string, unknown>)[key];
+    if (raw != null && typeof raw !== "string") throw new HttpError(400, `${key} must be an agency name (text), or "" to clear it.`, { field: key });
+    const value = String(raw ?? "").replace(/\s+/g, " ").trim();
+    const why = refuseTrackIssuerValue(value, String(mergedSnapshot.state ?? existing.state ?? ""));
+    if (why) throw new HttpError(400, `Not saved — the issuing agency "${value}": ${why}.`, { field: key, trackIssuerRefused: true });
+    (mergedSnapshot as Record<string, unknown>)[key] = value;
+    const from = String((existingSnapshot as Record<string, unknown>)[key] ?? "").trim();
+    if (from !== value) issuerChanges.push({ key, from, to: value });
+  }
   const project = normalizeProject(projectId, mergedSnapshot, existing.status, existing.createdAt);
   // Preserve the client link unless the payload explicitly changes it.
   const clientId = (payload.clientId ?? payload.client_id ?? existing.clientId) as string | null;
@@ -839,6 +859,10 @@ export function updateProject(db: AppDb, projectId: string, payload: ParserPaylo
     );
     insertExtractedFields(db, projectId, mergedSnapshot, true);
     addAuditLog(db, projectId, "system", "front-end parser", "project.updated_from_parser_snapshot", { fields: Object.keys(payload).length });
+    // Who issues a permit track decides which portal it files on: its own row in the history.
+    for (const change of issuerChanges) {
+      addAuditLog(db, projectId, "human", "operator", "project.track_issuer_set", change);
+    }
   });
   runQcForProject(db, projectId);
   learnFromProject(db, getProjectDetail(db, projectId).project, "project.updated");
@@ -8256,10 +8280,20 @@ export async function prepareSubmission(
   let portalLabel = isRealPortal
     ? (portalProfile?.portal_name || portalType)
     : "Mock portal";
+  // WHOSE PORTAL THIS TRACK FILES ON (split issuer): the track-scoped view — the project itself (the
+  // same object) when this track's issuer is the project AHJ, else the project with the ISSUER as its
+  // AHJ (permitProcess.projectForTrack / trackIssuer: the operator's per-track issuer, else the per-job
+  // lookup's cited agency for this permit). Every portal door below reads it — the recipe and KB keys,
+  // the learned profile, the entity the one host predicate judges, the borrow and its agency binding,
+  // cold-start research, the kill-switch, the field values, the learner and the adapters — so a
+  // county-AHJ project's building permit stages on the city that issues it, and the city's portal is
+  // never refused as a foreign entity for that track (nor accepted for the county's electrical one).
+  // NEM and a trackless stage: the project, untouched.
+  const portalProject = projectForTrack(detail.project, track);
   const clientId = detail.project.clientId ?? "";
   // WHICH PORTAL, WHICH RECIPE (resolveStagePortal): learned profile -> own recipe -> entity evidence
   // and the one host predicate -> KB / lookup / draft / statewide candidates -> the own portal -> borrow.
-  const stagePortal = resolveStagePortal(db, { projectId, project: detail.project, track, portalType, isRealPortal });
+  const stagePortal = resolveStagePortal(db, { projectId, project: portalProject, track, portalType, isRealPortal });
   const {
     learnedProfile, platform, isAccela, isPowerClerk, trackDiscipline, recipe, droppedLegacyRecipeDiscipline,
     hostEntity, recipeTrackConflict, recipeEntityMisfit, refusedUrls, permitSafeUrl,
@@ -8295,7 +8329,7 @@ export async function prepareSubmission(
   let credentialUrl =
     ownPortalUrl ||
     (borrowed ? String(borrowed.recipe.portalUrl ?? "") : "") ||
-    (track === "nem" ? "" : permitSafeUrl(findApplicationProfile(detail.project).sourceUrl)) ||
+    (track === "nem" ? "" : permitSafeUrl(findApplicationProfile(portalProject).sourceUrl)) ||
     "";
 
   // LOCK THE PORTAL OUT ONCE IT HAS REFUSED THE LOGIN, BEFORE A BROWSER OPENS.
@@ -8352,9 +8386,9 @@ export async function prepareSubmission(
         });
         researched = String(research.portalUrl || "");
         webGrounded = research.webGrounded;
-      } else if (track !== "nem" && detail.project.ahj) {
+      } else if (track !== "nem" && portalProject.ahj) {
         const { research } = await researchAndSaveAhj(db, {
-          ahj: detail.project.ahj, state: detail.project.state || "", utility: detail.project.utility,
+          ahj: portalProject.ahj, state: portalProject.state || "", utility: portalProject.utility,
         });
         researched = String(research.portalUrl || "");
         webGrounded = research.webGrounded;
@@ -8374,7 +8408,7 @@ export async function prepareSubmission(
         addAuditLog(db, projectId, "system", "submit gate", "portal.url_researched", {
           track: track ?? "permit", url: credentialUrl, ...researchedUrlProvenance(webGrounded),
         });
-        logger.info("prepare-submission", `cold-start research resolved a portal URL for ${detail.project.ahj || detail.project.utility}: ${credentialUrl}`);
+        logger.info("prepare-submission", `cold-start research resolved a portal URL for ${portalProject.ahj || portalProject.utility}: ${credentialUrl}`);
       }
     } catch (err) {
       logger.warn("prepare-submission", `cold-start portal research failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -8425,8 +8459,8 @@ export async function prepareSubmission(
   // on another state's filing.
   const overlay = clientStagingOverlay(db, detail.project.clientId, portalType, { state: String(detail.project.state ?? ""), track: track ?? null });
   const stagedProject = Object.keys(overlay).length > 0
-    ? { ...detail.project, parserSnapshot: { ...detail.project.parserSnapshot, ...overlay } }
-    : detail.project;
+    ? { ...portalProject, parserSnapshot: { ...portalProject.parserSnapshot, ...overlay } }
+    : portalProject;
 
   // LLM-assisted gap-fill for the hand-coded adapters: build the same planner the auto-learn
   // engine uses so PowerClerk/Accela fill any REQUIRED field their fixed selectors miss — from
@@ -8523,7 +8557,7 @@ export async function prepareSubmission(
     // The per-job lookup's issuing agency for THIS track, for a hand-coded adapter choosing
     // between an address's jurisdiction rows (portal-bot addressVersion). A recipe replay reads
     // the same answer from its bound field values (bindRecipeForReplay → issuingAgency).
-    issuingAgency: track && track !== "nem" ? (issuingAgencyFor(detail.project, track)?.value ?? null) : null,
+    issuingAgency: track && track !== "nem" ? (issuingAgencyFor(portalProject, track)?.value ?? null) : null,
     // Track-scoped portal URL so multi-tenant platform adapters (PowerClerk hosts PGE
     // AND PacifiCorp on different subdomains) log in to the RIGHT portal instead of a
     // hardcoded default. Already permit/utility scoped by the credentialUrl resolution.
@@ -8575,9 +8609,9 @@ export async function prepareSubmission(
   // registry resolves to a manual handoff and no automation is driven at all.
   const portalPaused = isPortalPaused(db, {
     scopeType: track === "nem" ? "utility" : "ahj",
-    state: detail.project.state,
-    ahj: detail.project.ahj,
-    utility: detail.project.utility,
+    state: portalProject.state,
+    ahj: portalProject.ahj,
+    utility: portalProject.utility,
     platform,
   });
   const channelDecision = resolvePortalChannel({
@@ -8596,8 +8630,8 @@ export async function prepareSubmission(
   // status/audit text below doesn't read "Mock portal" for a run that actually drives a browser.
   if (!isRealPortal && runActorLabel !== "MockPortalAdapter") {
     portalLabel = track === "nem"
-      ? (detail.project.utility ? `${detail.project.utility} (NEM portal)` : "Utility NEM portal")
-      : (detail.project.ahj ? `${detail.project.ahj} (permit portal)` : "AHJ permit portal");
+      ? (portalProject.utility ? `${portalProject.utility} (NEM portal)` : "Utility NEM portal")
+      : (portalProject.ahj ? `${portalProject.ahj} (permit portal)` : "AHJ permit portal");
   }
   // WHAT THE AUDIT TRAIL CALLS THIS RUN'S PORTAL (dry run 2026-09-28, B12: 45 of 45 real staging runs
   // were audited portalType "mock"). `portalType` above is the portal_profiles row's type, "mock" when
@@ -8670,9 +8704,9 @@ export async function prepareSubmission(
     try {
       const gateValues = resolveRecipeFieldValues(db, stagedProject, portalType, track ?? null);
       const gateBinding = bindRecipeForReplay({
-        steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: detail.project, fieldValues: gateValues, track,
+        steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: portalProject, fieldValues: gateValues, track,
         borrowed: borrowed ? { learnedFor: borrowed.learnedFor, discipline: borrowed.discipline } : null,
-        agency: issuingAgencyFor(detail.project, track),
+        agency: issuingAgencyFor(portalProject, track),
       });
       open = openPerJobQuestions(gateBinding.steps, { ...gateValues, ...gateBinding.fieldValues });
     } catch (err) {
@@ -8751,7 +8785,7 @@ export async function prepareSubmission(
       } catch { /* best-effort */ }
       const msg = isNemTrack
         ? `The recorded recipe for ${portalLabel} points at an AHJ permit portal (${badUrl}) — that's a building-permit system, not the ${detail.project.utility || "utility"} interconnection portal. It was mis-recorded and has been flagged for re-recording. Record the utility's NEM portal, then re-stage.`
-        : `The recorded recipe for ${portalLabel} points at a utility interconnection portal (${badUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. It was mis-recorded and has been flagged for re-recording. Record the AHJ's permit portal, then re-stage.`;
+        : `The recorded recipe for ${portalLabel} points at a utility interconnection portal (${badUrl}) — that's the NEM portal, not the ${portalProject.ahj || "AHJ"} permit portal. It was mis-recorded and has been flagged for re-recording. Record the AHJ's permit portal, then re-stage.`;
       addAuditLog(db, projectId, "system", "submit gate", "portal.track_host_conflict", { track: track ?? "permit", url: badUrl, recipeId: recipe.id });
       result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
     } else if (recipe && runActorLabel === "RecipeAdapter" && recipeEntityMisfit) {
@@ -8759,7 +8793,7 @@ export async function prepareSubmission(
       // entity's — another utility's/AHJ's portal, or one a person verified is NOT where this
       // entity files. Nothing is launched and the recipe is left exactly as it is (it may be
       // right for whoever it was learned on); the operator fixes the key or the KB.
-      const who = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
+      const who = track === "nem" ? (portalProject.utility || "this utility") : (portalProject.ahj || "this AHJ");
       const msg = `Staging stopped before opening a browser: the recipe found for ${who} drives ${recipeEntityMisfit.url} — ${recipeEntityMisfit.reason}. Nothing was launched and the recipe was not changed. If ${who} really files there, save that portal on ${who}'s knowledge-base profile (verified) and re-stage; otherwise record ${who}'s own portal.`;
       addAuditLog(db, projectId, "system", "submit gate", "portal.recipe_entity_conflict", {
         track: track ?? "permit", recipeId: recipe.id, url: recipeEntityMisfit.url, code: recipeEntityMisfit.code, reason: recipeEntityMisfit.reason,
@@ -8793,9 +8827,9 @@ export async function prepareSubmission(
       const replayStepsSig = recipeStepsSignature(recipe.steps ?? []);
       const replayFieldValues = resolveRecipeFieldValues(db, stagedProject, portalType, track ?? null);
       replayBinding = bindRecipeForReplay({
-        steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: detail.project, fieldValues: replayFieldValues, track,
+        steps: recipe.steps ?? [], portalUrl: recipe.portalUrl, project: portalProject, fieldValues: replayFieldValues, track,
         borrowed: borrowed ? { learnedFor: borrowed.learnedFor, discipline: borrowed.discipline } : null,
-        agency: issuingAgencyFor(detail.project, track),
+        agency: issuingAgencyFor(portalProject, track),
       });
       if (replayBinding.changes.length) {
         addAuditLog(db, projectId, "system", "portal staging", "portal.replay_binding", {
@@ -8973,7 +9007,7 @@ export async function prepareSubmission(
         const msg = trackHostConflict
           ? (track === "nem"
             ? `The only portal URL known for ${portalLabel} is an AHJ permit portal (${credentialUrl}) — not the ${detail.project.utility || "utility"} interconnection portal. Staging stopped so the interconnection isn't filed in the wrong system. Record the utility's NEM portal once (or add its URL to the knowledge base) and re-stage.`
-            : `The only portal URL known for ${portalLabel} is a utility interconnection portal (${credentialUrl}) — that's the NEM portal, not the ${detail.project.ahj || "AHJ"} permit portal. Staging stopped so the permit isn't filed in the wrong system. Record the AHJ's permit portal once (or add its URL to the knowledge base) and re-stage.`)
+            : `The only portal URL known for ${portalLabel} is a utility interconnection portal (${credentialUrl}) — that's the NEM portal, not the ${portalProject.ahj || "AHJ"} permit portal. Staging stopped so the permit isn't filed in the wrong system. Record the AHJ's permit portal once (or add its URL to the knowledge base) and re-stage.`)
           : `Staging stopped before opening a browser: ${credentialUrl} — ${learnFit.reason}.`;
         addAuditLog(db, projectId, "system", "submit gate", trackHostConflict ? "portal.track_host_conflict" : "portal.entity_host_conflict", { track: track ?? "permit", url: credentialUrl, code: learnFit.code });
         result = { ok: false, finalSubmitClicked: false, pauseReason: null, message: msg, steps: [{ ok: false, message: msg }] };
@@ -9027,7 +9061,7 @@ export async function prepareSubmission(
       // the portal moves a real filing to awaiting_human_submit, and the mock approve
       // path then fabricates MOCK-/CONF- permit numbers staff would trust. Stop and
       // surface the actionable blocker instead.
-      const where = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
+      const where = track === "nem" ? (portalProject.utility || "this utility") : (portalProject.ahj || "this AHJ");
       // The portal may be KNOWN and a recording found for it, refused on purpose (production
       // 2026-09-27, City of Jefferson building: the Coos Bay recording would pick the city row
       // where Marion County issues). "No portal automation is available" then reads as a missing

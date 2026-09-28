@@ -3780,7 +3780,8 @@ async function launchTrackRecorder(trackType, scope, btn) {
   try {
     const res = await api(`/api/projects/${p.id}/launch-record`, {
       method: "POST",
-      body: JSON.stringify({ scope: resolvedScope, portalUrl: portalUrl || undefined }),
+      // The track rides along: a permit recording is keyed on the agency that issues THAT permit.
+      body: JSON.stringify({ scope: resolvedScope, portalUrl: portalUrl || undefined, track: trackType }),
     });
     // Update the card inline so the operator sees the status without scrolling.
     const card = btn?.closest(".track-card");
@@ -4478,6 +4479,53 @@ function trackNextActionText(t) {
   return m ? `After those: ${m[1]}` : next;
 }
 
+// WHO ISSUES THIS PERMIT (split issuer, operator fact 2026-09-28: "Electrical permit issued through
+// Yamhill; Building permit issued through Newberg"). The server's one answer (permitProcess.trackIssuer)
+// and where it came from; every portal/recipe line on the card is that agency's. The operator can name
+// another agency for THIS track — saved through the project update route as the snapshot key below,
+// cleared with "". Untrusted text: esc() everything.
+const TRACK_ISSUER_KEY = { building: "trackIssuerBuilding", electrical: "trackIssuerElectrical", combo: "trackIssuerCombo", permit: "trackIssuerCombo", mpu: "trackIssuerMpu" };
+const TRACK_ISSUER_SOURCE = {
+  operator: { badge: "badge-info", label: "set by an operator" },
+  lookup: { badge: "badge-info", label: "per-job lookup, cited" },
+  project: { badge: "badge-none", label: "the project's AHJ" },
+};
+function trackIssuerHtml(t) {
+  if (t.category !== "permit" || !t.issuer || !TRACK_ISSUER_KEY[t.type]) return "";
+  const i = t.issuer;
+  const src = TRACK_ISSUER_SOURCE[i.source];
+  const cited = i.source === "lookup" && httpUrl(i.sourceUrl) ? ` — ${linkifyText(httpUrl(i.sourceUrl))}` : "";
+  const refused = i.refused ? `<div style="margin-top:2px;color:var(--warning)">${esc(i.refused)}</div>` : "";
+  return `<div class="track-issuer" style="margin:0 0 6px;font-size:12px">
+    <strong>Issued by:</strong> ${esc(i.name || "—")}${src ? ` <span class="badge ${src.badge}">${esc(src.label)}</span>` : ""}${cited}
+    ${refused}
+    <details class="track-issuer-edit" style="margin-top:2px">
+      <summary class="muted">${i.override ? "Change the issuing agency" : "Another agency issues this permit?"}</summary>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px">
+        <input data-track-issuer-input="${esc(t.type)}" value="${esc(i.override || "")}" placeholder="e.g. City of Newberg" maxlength="120" style="flex:1 1 180px;min-width:0" aria-label="Agency that issues this permit" />
+        <button type="button" class="secondary" data-track-issuer-save="${esc(t.type)}">Save</button>
+        ${i.override ? `<button type="button" class="ghost" data-track-issuer-clear="${esc(t.type)}">Clear</button>` : ""}
+      </div>
+    </details>
+  </div>`;
+}
+
+async function saveTrackIssuer(type, value, btn) {
+  const key = TRACK_ISSUER_KEY[type];
+  if (!key || !state.selectedProjectId) return;
+  if (btn) btn.disabled = true;
+  try {
+    const detail = await api(`/api/projects/${state.selectedProjectId}`, { method: "PUT", body: JSON.stringify({ [key]: value }) });
+    if (detail && detail.project) state.detail = detail;
+    await loadSubmittalTracks();
+    renderDetail();
+    showMessage(value ? `Saved — ${value} issues this ${humanize(type)} permit.` : `Cleared — the project's AHJ issues this ${humanize(type)} permit.`, "info");
+  } catch (err) {
+    showMessage(err.message || "Could not save the issuing agency.", "error");
+    if (btn) btn.disabled = false;
+  }
+}
+
 function trackCardHtml(t) {
   const cls = TRACK_STATUS_CLASS[t.status] || "info";
   // Captured numbers — only the fields this track actually uses (NEM has no permit #).
@@ -4533,6 +4581,7 @@ function trackCardHtml(t) {
       <span>${esc(t.label)}</span>
       ${statusBadge(t.statusLabel)}
     </div>
+    ${trackIssuerHtml(t)}
     ${offToolChannelHtml(t)}
     ${trackChannelHtml(t)}
     ${trackPrerequisitesHtml(t)}
@@ -4596,6 +4645,16 @@ function renderSubmittalTracks() {
 
   wrap.querySelectorAll("button[data-track-submit]").forEach((btn) => {
     btn.addEventListener("click", () => markSubmittalTrack(btn.dataset.trackSubmit));
+  });
+  wrap.querySelectorAll("button[data-track-issuer-save]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const type = btn.dataset.trackIssuerSave;
+      const input = Array.from(wrap.querySelectorAll("input[data-track-issuer-input]")).find((el) => el.dataset.trackIssuerInput === type);
+      saveTrackIssuer(type, String(input?.value || "").trim(), btn);
+    });
+  });
+  wrap.querySelectorAll("button[data-track-issuer-clear]").forEach((btn) => {
+    btn.addEventListener("click", () => saveTrackIssuer(btn.dataset.trackIssuerClear, "", btn));
   });
   wrap.querySelectorAll("button[data-track-approve]").forEach((btn) => {
     btn.addEventListener("click", () => {

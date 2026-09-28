@@ -51,7 +51,7 @@ import { getCodeProfile } from "./codeProfiles";
 import { certifiedNamesForMake } from "./cecEquipment";
 import { annotateDraft, buildDraftTouch, recordDraftTouch, type DraftTouch } from "./draftLedger";
 import { draftReferenceFromUrl } from "../../portal-bot/src/adapters/submissionLedger";
-import { issuingAgencyFor } from "./permitProcess";
+import { issuingAgencyFor, projectForTrack } from "./permitProcess";
 import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
 
 /** The submittal track an AHJ learn files, from the recipe discipline it will be keyed under
@@ -441,6 +441,9 @@ export function buildPortalPlanner(
   // The filing this planner fills — the licence keys answer "the licence THIS permit takes".
   const track = opts.track !== undefined ? opts.track
     : opts.scopeType === "utility" ? "nem" : learnTrackFor(undefined, opts.permitType);
+  // The planner's target jurisdiction and KB lookup are THIS track's issuer (projectForTrack — the
+  // same object when that is the project AHJ, and a view passed in stays itself).
+  project = projectForTrack(project, track);
   const fieldValues = resolveRecipeFieldValues(db, project, opts.portalType, track);
   const projectFields: Record<string, string> = {};
   // SAFETY RULE 2: secrets never reach the LLM. Two layers:
@@ -784,7 +787,17 @@ export async function autoLearnPortal(
   // getProjectDetail is the canonical mapper; import lazily to avoid a cycle. A caller may pass
   // a pre-overlaid project (staging self-seed); otherwise load the canonical record.
   const { getProjectDetail } = await import("./repository");
-  const baseProject: ProjectRecord = input.project ?? getProjectDetail(db, projectId).project;
+  const loadedProject: ProjectRecord = input.project ?? getProjectDetail(db, projectId).project;
+  const scopeType = input.scope === "utility" ? "utility" : "ahj";
+  // A PERMIT LEARN IS THE ISSUER'S (split issuer): the recipe key, the KB row it writes back, the
+  // entity the host door judges and the planner's target jurisdiction are the agency that issues
+  // THIS track's permit (permitProcess.projectForTrack) — so a building learn on a county-AHJ project
+  // whose city issues building permits is saved under the CITY's key, where the next city job finds
+  // it. The same object when the issuer is the project AHJ; the staging self-seed already passes
+  // the view (a view of a view is itself). A utility (NEM) learn: the project, untouched.
+  const baseProject: ProjectRecord = scopeType === "ahj"
+    ? projectForTrack(loadedProject, learnTrackFor(input.discipline, input.permitType))
+    : loadedProject;
   // Thread the requested permit discipline onto the project the LEARNER sees — the
   // deterministic ACA passes key jurisdiction-row (CITY=structural / COUNTY=electrical)
   // and record-type selection off project.permitType, which the stored record rarely
@@ -793,7 +806,6 @@ export async function autoLearnPortal(
     ? { ...baseProject, permitType: input.permitType }
     : baseProject;
 
-  const scopeType = input.scope === "utility" ? "utility" : "ahj";
   const portalUrl = (input.portalUrl || "").trim();
   if (!portalUrl) throw new HttpError(400, "portalUrl is required to learn a portal.");
   // RULE 5, BOTH WAYS, AND THE ENTITY — AT THE LEARN'S OWN DOOR, BEFORE ANYTHING ELSE. Every

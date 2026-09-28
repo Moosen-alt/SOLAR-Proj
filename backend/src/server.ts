@@ -156,6 +156,7 @@ import {
   finalSubmitJobPayload,
 } from "./repository";
 import { getSubmittalTracks, markTrackSubmitted } from "./submittalTracks";
+import { projectForTrack } from "./permitProcess";
 import { ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
 import { enqueueStageSteps } from "./autoStageSteps";
 import type { ClientResolution, ParserExtractionResponse, SubmittalTrackType } from "../../shared/src/types";
@@ -1828,9 +1829,11 @@ app.get("/api/projects/:id/staging-field-values", (req, res) => {
 // the server runs on the operator's own machine.
 app.post("/api/projects/:id/launch-record", (req, res) => {
   const detail = getProjectDetail(db, String(req.params.id));
-  const p = detail.project;
   const b = (req.body || {}) as Record<string, string>;
   const scope = String(b.scope || "ahj") === "utility" ? "utility" : "ahj";
+  // The track card says which permit it records (optional `track`): a permit recording is keyed on
+  // the agency that issues THAT permit (split issuer — permitProcess.projectForTrack).
+  const p = scope === "ahj" && typeof b.track === "string" ? projectForTrack(detail.project, b.track) : detail.project;
   const name = scope === "utility" ? (p.utility || "") : (p.ahj || "");
   // The recorder opens THIS URL in a live browser: judged before any window opens.
   if (b.portalUrl) {
@@ -1905,7 +1908,13 @@ app.post("/api/projects/:id/auto-learn", (req, res) => {
   // autoLearnPortal asks the same question again at its own door). The project's own recipe for
   // this key is not evidence for the URL being judged.
   {
-    const lp = getProjectDetail(db, projectId).project;
+    // A permit learn is judged against the agency that issues THAT permit (split issuer) — the same
+    // view the learn's own door and its recipe key use (permitProcess.projectForTrack), so a city's
+    // portal is not refused here for a building learn the learn itself would accept.
+    const loaded = getProjectDetail(db, projectId).project;
+    const lp = scope === "ahj"
+      ? projectForTrack(loaded, b.permitType === "electrical" ? "electrical" : b.permitType === "structural" ? "building" : null)
+      : loaded;
     const own = findAnyRecipeForProject(db, { scopeType: scope, state: lp.state, ahj: lp.ahj, utility: lp.utility });
     assertOperatorPortalUrlFits(db, {
       track: scope === "utility" ? "nem" : "permit", state: lp.state,

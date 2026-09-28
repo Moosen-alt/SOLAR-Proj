@@ -803,6 +803,38 @@ export interface ProjectRecord {
    *  vanished from a client's list. "" while live. Shown, not just stored: a
    *  notice that cannot say "superseded by the certified run" is just a scold. */
   archivedReason?: string;
+  /** THE OPERATOR'S PER-TRACK ISSUER (split issuer, operator fact 2026-09-28: "Electrical permit
+   *  issued through Yamhill; Building permit issued through Newberg"). An Oregon city can run its
+   *  own building program while the county (or the state) issues the electrical permit, so ONE
+   *  project AHJ cannot say who issues every track. Stored like the other operator-entered facts —
+   *  flat parser-snapshot keys written by PUT /api/projects/:id (trackIssuerBuilding /
+   *  trackIssuerElectrical / trackIssuerCombo / trackIssuerMpu, normalize.TRACK_ISSUER_SNAPSHOT_KEYS)
+   *  — and mapped here by mapProject / normalizeProject. Absent when none is set. Read ONLY through
+   *  permitProcess.trackIssuer; MPU follows electrical unless its own is set. */
+  trackIssuers?: TrackIssuerOverrides;
+  /** Set ONLY by permitProcess.projectForTrack on the TRACK-SCOPED VIEW it returns (ahj replaced by
+   *  the track's issuer) — never persisted, never mapped from a row. It names the project's own AHJ
+   *  so the per-job lookup's cited answer about this permit still reaches the view, and makes the
+   *  view idempotent (a view of a view is itself). */
+  trackView?: { track: string; projectAhj: string; source: "operator" | "lookup" };
+}
+
+/** The permit tracks an issuing agency can be named for. NEM is never one: a utility files it. */
+export type IssuerTrackKey = "building" | "electrical" | "combo" | "mpu";
+export type TrackIssuerOverrides = Partial<Record<IssuerTrackKey, string>>;
+/** THE ONE ANSWER to "which agency issues THIS track's permit" (permitProcess.trackIssuer):
+ *  the operator's per-track issuer, else the per-job lookup's cited per-permit agency when it names
+ *  another agency than the project AHJ, else the project AHJ. */
+export interface TrackIssuerAnswer {
+  name: string;
+  source: "operator" | "lookup" | "project";
+  /** The lookup's source page and words (source "lookup"). */
+  sourceUrl?: string;
+  quote?: string;
+  /** The operator's value on file for this track ("" when none) — what the card's input shows. */
+  override: string;
+  /** An operator value that was NOT honoured, and why (it names an agency in another state). */
+  refused?: string;
 }
 
 export interface ProjectListItem extends Omit<ProjectRecord, "parserSnapshot"> {
@@ -1092,6 +1124,9 @@ export interface SubmittalTrack {
   /** No recipe of its own: the recipe this project's LAST run of this track borrowed (another entity's,
    *  same portal — portalRecipes.findBorrowableRecipe), read from that run's result. null = none used. */
   borrowedRecipe?: { recipeId: string; recipeVersion: number | null; learnedFor: string; recordType: string; portalHost: string; lastUsedAt: string } | null;
+  /** PERMIT tracks only: the agency that issues this track's permit and where that answer came from
+   *  (permitProcess.trackIssuer) — every portal/recipe answer on this card is that agency's. */
+  issuer?: TrackIssuerAnswer;
 }
 
 export interface PermitStatusCheck {
