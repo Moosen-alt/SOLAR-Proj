@@ -491,6 +491,14 @@ try {
     check(`F1 MUST-EXCLUDE (${k}) no KB note carries another jurisdiction's forms page`, Boolean(nKb) && !hosts.some((h) => String(nKb?.notes || "").includes(h)) && !/Forms page:/.test(String(nKb?.notes || "")),
       String(nKb?.notes));
   }
+  // A research result carrying NOTHING but another town's forms page writes no research profile into the
+  // AHJ's KB row at all (the row the project itself created stays as it was).
+  researchFor.set("Town of Barewick", { formsPageUrl: `${NEIGHBOURS.townGov}/forms` });
+  await auto.ensureAhjFormTemplate(db, llm, mkJob("Town of Barewick", "Barewick"), "permit_application", { formsPage: fp() });
+  const bareRow = db.get<{ notes: string }>("SELECT notes FROM permit_utility_knowledge WHERE lower(ahj) = 'town of barewick'");
+  const bareResearched = db.query<{ id: string }>("SELECT id FROM knowledge_events WHERE event_type = 'ahj.ai_researched' AND details LIKE ?", ["%Town of Barewick%"]);
+  check("F1 MUST-EXCLUDE a result carrying only another town's forms page writes no research profile for the AHJ",
+    bareResearched.length === 0 && !String(bareRow?.notes || "").includes(new URL(NEIGHBOURS.townGov).host), JSON.stringify({ bareRow, bareResearched }));
 
   // ═══ G1 GO GENTLY — the download from a host we just read waits the polite gap ═══════════════════
   const GE = "https://www.gentleton.ma.us";

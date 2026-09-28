@@ -589,17 +589,18 @@ export function canonicalPortal(research: AhjFormUrlResult): { platform: string;
 function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research: AhjFormUrlResult): void {
   if (!project.ahj || !project.state) return;
   const { platform, method } = canonicalPortal(research);
-  if (!platform && !method && !research.submittalPortalUrl && !research.formsPageUrl) return;
+  // THE FORMS PAGE IS KEPT (Waltham: the search's "why" was dropped, so nobody could see where it
+  // looked). In ONE place — its own note segment (formsPageUrl below), never in the free-text notes —
+  // and only when it is on the AHJ's own site (isAhjFormsSite, the predicate the harvest reads it
+  // under): another town's forms page is never written into THIS AHJ's shared KB row, and a result
+  // carrying nothing else writes no row at all (forms-find skeptic F1). It steers the next search
+  // through knowledgeResearchHint.
+  const formsPageUrl = research.formsPageUrl && isAhjFormsSite(portalHostOf(research.formsPageUrl), [project.ahj], project.state) ? research.formsPageUrl : "";
+  if (!platform && !method && !research.submittalPortalUrl && !formsPageUrl) return;
   const notes = [
     research.submittalRequirements ? `Submittal requirements: ${research.submittalRequirements}` : "",
     research.notes || "",
   ].filter(Boolean).join(" · ");
-  // THE FORMS PAGE IS KEPT (Waltham: the search's "why" was dropped, so nobody could see where it
-  // looked). In ONE place — its own note segment (formsPageUrl below), never in the free-text notes
-  // above — and only when it is on the AHJ's own site (isAhjFormsSite, the predicate the harvest
-  // reads it under): another town's forms page is never written into THIS AHJ's shared KB row
-  // (forms-find skeptic F1). It steers the next search through knowledgeResearchHint.
-  const formsPageUrl = research.formsPageUrl && isAhjFormsSite(portalHostOf(research.formsPageUrl), [project.ahj], project.state) ? research.formsPageUrl : "";
   try {
     saveResearchedAhjProfile(db, { state: project.state, ahj: project.ahj }, {
       provider: "claude",
