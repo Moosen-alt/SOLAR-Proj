@@ -2093,14 +2093,23 @@ async function selectProject(projectId) {
   // leave the project and come back"). Opening a project reset the packet + filled-forms card to empty
   // until Build / Find was clicked again, though the forms were stored all along. Load them in the
   // background — the same call Build makes — and repaint only if this project is still the one open.
+  // THE PACKET AND THE FORMS ARE TWO LOADS, NOT ONE (operator 09-28: "the PDFs go away if I click out
+  // of the project"). loadStageResults (above) already carries the packet whenever the chain has logged
+  // application_docs.generated — which it does within seconds of creation — so "packet already here"
+  // must not mean "skip the forms": that skip is exactly how the filled PDFs (and the "none on file /
+  // Find official form" card) vanished on every open after the first, and on every stage_steps_done.
   void (async () => {
     try {
-      const docs = await api(`/api/projects/${projectId}/application-docs`);
-      if (state.selectedProjectId !== projectId || state.applicationDocs) return;
-      state.applicationDocs = docs;
-      const filled = await api(`/api/projects/${projectId}/filled-forms`, { method: "POST", body: "{}" });
-      if (state.selectedProjectId !== projectId || state.filledForms) return;
-      state.filledForms = filled;
+      if (!state.applicationDocs) {
+        const docs = await api(`/api/projects/${projectId}/application-docs`);
+        if (state.selectedProjectId !== projectId) return;
+        if (!state.applicationDocs) state.applicationDocs = docs;
+      }
+      if (!state.filledForms) {
+        const filled = await api(`/api/projects/${projectId}/filled-forms`, { method: "POST", body: "{}" });
+        if (state.selectedProjectId !== projectId || state.filledForms) return;
+        state.filledForms = filled;
+      }
       renderDetail();
     } catch { /* the Build / Find buttons still work; nothing to show yet */ }
   })();
