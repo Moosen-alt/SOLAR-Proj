@@ -18,17 +18,13 @@ import type { ProjectRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { registryApplicationProfileFor } from "./applicationDocs";
 import { findAhjProcessProfile } from "./processProfiles";
-import { classifyChannelWords, isStatewidePortalUrl, issuingAgencyFor, normalizeAhjName, permitProcessFor, statewidePortalName, type StatewideEvidence } from "./permitProcess";
+import { ahjNameCore, classifyChannelWords, isStatewidePortalUrl, issuingAgencyFor, normalizeAhjName, permitProcessFor, statewidePortalName, type StatewideEvidence } from "./permitProcess";
 import { isInformationalPageUrl, isPathTenantedHost, portalHostOf, portalTenantOf, trackSafeUrl } from "./portalChannel";
 import { NOT_SERVED_FLAG_PREFIX } from "../../shared/src/portalNotServed";
 
 type Row = Record<string, unknown>;
 const s = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v)).trim();
 
-/** The distinctive core of an AHJ name ("City of Corvallis" -> "corvallis"), for a tenant match. */
-function nameCore(ahj: string): string {
-  return normalizeAhjName(ahj).replace(/\b(?:city|town|village|county|borough|township|of|the|unincorporated)\b/g, " ").replace(/\s+/g, "").trim();
-}
 
 /** Evidence about ONE jurisdiction name. `who` prefixes each detail ("issuing agency Marion County: "). */
 function evidenceForName(db: AppDb | null, state: string, ahj: string, city: string, track: string | null | undefined, who: string, clientId: string | null): StatewideEvidence[] {
@@ -99,7 +95,7 @@ function evidenceForName(db: AppDb | null, state: string, ahj: string, city: str
     }
   } catch { /* table missing */ }
   // 5. The client's stored logins naming this jurisdiction's OWN tenant on a shared instance.
-  const core = nameCore(ahj);
+  const core = ahjNameCore(ahj);
   if (clientId && core.length >= 4) {
     try {
       const creds = db.query<Row>("SELECT portal_url FROM portal_credentials WHERE client_id = ?", [clientId]);

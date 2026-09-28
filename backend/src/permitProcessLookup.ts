@@ -31,8 +31,8 @@
 // and then discarded.
 import type { CitedFact, LLMProvider, PermitFeeAnswer, PermitProcessDiscipline, PermitProcessLookup, PermitProcessPermitAnswer, WebLookupResult } from "../../shared/src/types";
 import type { AppDb } from "./db";
-import { hostFitsTrackAndEntity, isInformationalPageUrl, isPathTenantedHost, isPermitPlatformUrl, isVendorDomain, isVendorRootOrMarketing, portalHostOf, portalTenantKey, salesforceTenantKind, trackSafeUrl, type PortalEntity } from "./portalChannel";
-import { getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor } from "./permitProcess";
+import { hostFitsTrackAndEntity, isInformationalPageUrl, isPathTenantedHost, isPermitPlatformUrl, isVendorDomain, isVendorRootOrMarketing, portalHostOf, portalTenantKey, portalTenantOf, salesforceTenantKind, trackSafeUrl, type PortalEntity } from "./portalChannel";
+import { ahjNameCore, getPermitProcessLookup, normalizeAhjName, savePermitProcessLookup, stateRulesFor } from "./permitProcess";
 import { logger } from "./logger";
 import { feeScheduleProfileKey, saveFeeSchedule } from "./feeSchedules";
 import { parseBracketRow } from "./pdfTables";
@@ -235,9 +235,15 @@ export interface PortalDecision {
   code: PortalRefusal | "ok";
 }
 export function acceptPortalForPermit(raw: RawFact, source: PortalCandidateSource, ctx: PortalDoorContext): PortalDecision {
-  const refused = (code: PortalRefusal, notFound: string): PortalDecision => ({ fact: { value: null, sourceUrl: str(raw?.sourceUrl), quote: str(raw?.quote).slice(0, 300), origin: "lookup", notFound }, source, attestedBy: null, code });
   const claimed = str(raw?.value);
   const url = /^https?:\/\//i.test(claimed) ? claimed : "";
+  // A portal refused for want of EVIDENCE (unattested / uncited) was still NAMED by a source: the
+  // fact keeps the claim (CitedFact.claimed), so "named, not kept" is never read as "nothing named"
+  // (permitProcess.statewidePortalFor — portal-truth D1).
+  const refused = (code: PortalRefusal, notFound: string): PortalDecision => ({
+    fact: { value: null, sourceUrl: str(raw?.sourceUrl), quote: str(raw?.quote).slice(0, 300), origin: "lookup", notFound, ...(url && (code === "unattested" || code === "uncited") ? { claimed: url } : {}) },
+    source, attestedBy: null, code,
+  });
   const host = portalHostOf(url);
   const quote = str(raw?.quote).slice(0, 300);
   const platformPages = ctx.platformPages ?? [];
@@ -304,8 +310,25 @@ export function acceptPortalForPermit(raw: RawFact, source: PortalCandidateSourc
       return selfCited || q.toLowerCase().includes(h) || /portal|apply online|e-?permitting|citizen access|self[- ]?service|online permit|accela/i.test(q);
     },
   });
-  if (!portal.value) return { fact: portal, source, attestedBy: null, code: raw?.value == null || raw.value === "" ? "none" : "uncited" };
+  if (!portal.value) {
+    const none = raw?.value == null || raw.value === "";
+    return { fact: none || !url ? portal : { ...portal, claimed: url }, source, attestedBy: null, code: none ? "none" : "uncited" };
+  }
   return { fact: portal, source, attestedBy, code: "ok" };
+}
+/** DOES A REDIRECT'S LANDING NAME THIS JURISDICTION (portal-truth D3)? Its tenant on a shared
+ *  instance ("aca-prod.accela.com/CORVALLIS"), an official agency host of it, or the landing page's
+ *  own title / opening words ("City of Corvallis - Permit System"). Another city's tenant or a
+ *  vendor's site names none of them — a named URL landing there is not this AHJ's portal. */
+export function landingNamesJurisdiction(url: string, page: Pick<ReadPage, "title" | "text">, names: string[], state?: string): boolean {
+  const cores = [...new Set(names.map(ahjNameCore).filter((c) => c.length >= 4))];
+  if (!cores.length) return false;
+  const tenant = portalTenantOf(url).replace(/[^a-z0-9]/g, "");
+  if (tenant && cores.some((c) => tenant.includes(c))) return true;
+  const host = portalHostOf(url);
+  if (host && !isVendorDomain(host) && isOfficialAgencyHost(host, names, state)) return true;
+  const words = `${str(page.title)} ${str(page.text).slice(0, 3000)}`.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return cores.some((c) => words.includes(c));
 }
 /** The parse-time door (the process part, the portal step): the same function with what parse time
  *  knows — attestation and rule 5; the issuer's jurisdiction type is judged at finalPortal. */
@@ -1074,7 +1097,9 @@ export async function runPermitProcessLookup(
   const baseCandidates = (d: PermitProcessDiscipline, partOne: CitedFact<string> | undefined): Array<{ raw: RawFact; source: PortalCandidateSource }> => {
     const out: Array<{ raw: RawFact; source: PortalCandidateSource }> = [];
     if (detPortal && issuedByPublisher(d)) out.push({ raw: { value: detPortal.value, sourceUrl: detPortal.sourceUrl, quote: detPortal.quote }, source: "agency page (our read)" });
-    if (partOne) out.push({ raw: { value: partOne.value, sourceUrl: partOne.sourceUrl, quote: partOne.quote, notFound: partOne.notFound }, source: "process part" });
+    // A claim the PARSE-TIME door refused for want of evidence stays a candidate (its `claimed`), so
+    // the final door can judge it with everything read since (portal-truth D3: a redirect we read).
+    if (partOne) out.push({ raw: { value: partOne.value ?? (partOne.claimed || null), sourceUrl: partOne.sourceUrl, quote: partOne.quote, notFound: partOne.notFound }, source: "process part" });
     return out;
   };
   const preDecided = new Map<PermitProcessDiscipline, PortalDecision>();
@@ -1213,18 +1238,86 @@ export async function runPermitProcessLookup(
   // jurisdiction that issues THIS permit; the first accepted wins, else the most informative refusal.
   const portalNotes: string[] = [];
   const decided = new Map<PermitProcessDiscipline, PortalDecision>();
+  const finalCtx = (d: PermitProcessDiscipline) => doorContextFor(d, { seen: raw.portalUrls, platformPages: [...platformReads.values()].flatMap((pg) => [pg.url, pg.finalUrl]) });
+  const finalCandidates = (p: PermitProcessPermitAnswer) => {
+    const candidates = baseCandidates(p.discipline, p.portalUrl);
+    const step = portalFor.get(p.discipline)?.portalUrl;
+    if (step) candidates.push({ raw: { value: step.value ?? (step.claimed || null), sourceUrl: step.sourceUrl, quote: step.quote, notFound: step.notFound }, source: "portal step" });
+    return candidates;
+  };
+  // A NAMED PORTAL THAT REDIRECTS TO ITS OFFICIAL HOST (portal-truth D3). Corvallis's own page said
+  // "Apply online at www.corvallispermits.com"; that host lands on the city's own Accela tenant
+  // (aca-prod.accela.com/CORVALLIS) and was never a search result, so the door dropped it as "never
+  // returned by the search" — and staging fell to the statewide portal. Each candidate the door
+  // refused for want of attestation alone is now READ ONCE, politely, through the page reader (its
+  // one try, its per-host gap, its budget, never a login). When the read lands on ANOTHER host that
+  // names this jurisdiction (its tenant, its official domain, or the landing page's own title /
+  // opening words), the candidate is judged AS THE LANDING URL — which must pass the whole door on
+  // its own (rule 5, the vendor's root, another module, the issuer's jurisdiction type) — and is
+  // kept WITH that evidence: the URL the source named, the landing, and the hops (CitedFact.redirect).
+  // A landing that names neither the AHJ nor its agency (another city's tenant, a vendor's site) is
+  // not kept, and the reason is added to the refusal.
+  const redirectFor = new Map<string, { finalUrl: string; chain: string[]; status: number }>();
+  const redirectRefusal = new Map<string, string>();
+  if (reader) {
+    for (const p of basePermits) {
+      const d = p.discipline;
+      const ctx = finalCtx(d);
+      for (const c of finalCandidates(p)) {
+        const claimed = str(c.raw?.value);
+        if (!/^https?:\/\//i.test(claimed) || redirectFor.has(claimed) || redirectRefusal.has(claimed)) continue;
+        if (acceptPortalForPermit(c.raw, c.source, ctx).code !== "unattested") continue;
+        const pg = await reader.read(claimed);
+        const landing = str(pg.finalUrl) || claimed;
+        const hops = pg.redirects?.length ? pg.redirects : landing !== claimed ? [claimed, landing] : [claimed];
+        if (portalHostOf(landing) === portalHostOf(claimed)) {
+          // No redirect: a page WE opened attests its host only as a platform page (R3's door).
+          if (pg.ok && detectPlatform(pg)) { ourSeen.push(pg.url, pg.finalUrl); platformReads.set(portalTenantKey(pg.finalUrl), pg); }
+          else redirectRefusal.set(claimed, pg.ok ? `our one read of ${claimed} found no permit portal there` : `our one read of ${claimed} did not succeed (${str(pg.reason).slice(0, 100)})`);
+          continue;
+        }
+        if (!pg.ok) {
+          redirectRefusal.set(claimed, `${claimed} redirects to ${landing}, which our one read could not read (${str(pg.reason).slice(0, 100)})`);
+          continue;
+        }
+        const names = issuer.namesFor(d);
+        if (!landingNamesJurisdiction(landing, pg, names, input.state)) {
+          redirectRefusal.set(claimed, `${claimed} redirects to ${landing}, which names neither ${names.join(" nor ")} (its tenant, domain or page) — not kept`);
+          continue;
+        }
+        // The LANDING is what our read attests — never the named host itself (it only redirects).
+        ourSeen.push(landing);
+        if (detectPlatform(pg)) platformReads.set(portalTenantKey(landing), pg);
+        redirectFor.set(claimed, { finalUrl: landing, chain: hops, status: pg.status });
+      }
+    }
+  }
   const finalPortal = (p: PermitProcessPermitAnswer): CitedFact<string> => {
     const d = p.discipline;
     if (!decided.has(d)) {
-      const ctx = doorContextFor(d, { seen: raw.portalUrls, platformPages: [...platformReads.values()].flatMap((pg) => [pg.url, pg.finalUrl]) });
-      const candidates = baseCandidates(d, p.portalUrl);
-      const step = portalFor.get(d)?.portalUrl;
-      if (step) candidates.push({ raw: { value: step.value, sourceUrl: step.sourceUrl, quote: step.quote, notFound: step.notFound }, source: "portal step" });
+      const ctx = finalCtx(d);
+      // A redirected claim is judged as its landing URL (the citing page's words stay its quote).
+      const candidates = finalCandidates(p).map((c) => {
+        const r = redirectFor.get(str(c.raw?.value));
+        return r ? { ...c, raw: { ...(c.raw as Record<string, unknown>), value: r.finalUrl } } : c;
+      });
       const { decisions, accepted, chosen } = judgePortal(candidates, ctx);
-      decided.set(d, chosen);
+      const redirectedFrom = (x: { claimed: string }) => [...redirectFor.entries()].find(([, r]) => r.finalUrl === x.claimed)?.[0] ?? "";
+      let final: PortalDecision = chosen;
+      if (accepted && redirectedFrom(accepted)) {
+        const from = redirectedFrom(accepted);
+        const r = redirectFor.get(from)!;
+        final = { ...accepted, fact: { ...accepted.fact, redirect: { from, finalUrl: r.finalUrl, chain: r.chain, status: r.status } } };
+      } else if (!final.fact.value) {
+        const claim = str(final.fact.claimed) || str((final as { claimed?: string }).claimed);
+        const why = redirectRefusal.get(claim);
+        if (why) final = { ...final, fact: { ...final.fact, notFound: `${str(final.fact.notFound)}; ${why}`.replace(/^; /, "") } };
+      }
+      decided.set(d, final);
       for (const x of decisions) {
-        if (x === accepted) portalNotes.push(`Portal (${d}): ${x.fact.value} — from the ${x.source}; attested by ${x.attestedBy}; jurisdiction type judged against ${(ctx.typeNames ?? []).join(" / ") || "(none)"}`);
-        else if (x.claimed && !x.fact.value) portalNotes.push(`Portal refused (${d}): ${x.claimed} — from the ${x.source}: ${x.fact.notFound}`);
+        const from = redirectedFrom(x);
+        if (x === accepted) portalNotes.push(`Portal (${d}): ${x.fact.value} — from the ${x.source}${from ? `, named as ${from}, which redirects there (${(redirectFor.get(from)?.chain ?? []).join(" → ")})` : ""}; attested by ${x.attestedBy}; jurisdiction type judged against ${(ctx.typeNames ?? []).join(" / ") || "(none)"}`);
+        else if (x.claimed && !x.fact.value) portalNotes.push(`Portal refused (${d}): ${from ? `${from} → ${x.claimed}` : x.claimed} — from the ${x.source}: ${x.fact.notFound}${redirectRefusal.has(x.claimed) ? `; ${redirectRefusal.get(x.claimed)}` : ""}`);
       }
     }
     return decided.get(d)!.fact;

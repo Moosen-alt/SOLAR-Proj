@@ -32,6 +32,9 @@ export interface PageLink {
 export interface ReadPage {
   url: string;
   finalUrl: string;
+  /** The URLs this one read passed through, first to last ([url] when nothing redirected;
+   *  [url, finalUrl] when the transport reports only the landing — portal-truth D3). */
+  redirects?: string[];
   ok: boolean;
   status: number;
   kind: "html" | "pdf" | "json" | "other" | "none";
@@ -47,7 +50,14 @@ export interface ReadPage {
 /** The raw transport: one GET, no cookies. Injected in tests (saved pages, no network). */
 export type RawFetch = (url: string, opts: { headers?: Record<string, string>; json?: boolean; timeoutMs: number; maxBytes: number }) => Promise<{
   ok: boolean; status: number; contentType: string; bytes?: Uint8Array; text?: string; finalUrl: string; reason: string;
+  /** Every hop, first to last, when the transport saw them (else the reader records [url, finalUrl]). */
+  redirects?: string[];
 }>;
+/** The hops of one read: the transport's own list, else [url] or [url, finalUrl]. */
+function hopsOf(url: string, finalUrl: string, reported?: string[]): string[] {
+  if (Array.isArray(reported) && reported.length) return reported.slice(0, 12);
+  return finalUrl && finalUrl !== url ? [url, finalUrl] : [url];
+}
 
 export const PAGE_READ_MIN_GAP_MS = 10_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -176,11 +186,12 @@ export function createPageReader(opts: { fetch?: RawFetch; maxReads?: number; mi
     if (landed && landed !== host) hostLast.set(landed, Date.now());
     if (!got.ok) {
       if (isRefusal(got.status, got.reason)) backedOff.set(host, { reason: got.reason.slice(0, 120), at: Date.now() });
-      return { ...none(url, got.reason), status: got.status, finalUrl: got.finalUrl || url };
+      return { ...none(url, got.reason), status: got.status, finalUrl: got.finalUrl || url, redirects: hopsOf(url, got.finalUrl || url, got.redirects) };
     }
     const finalUrl = got.finalUrl || url;
-    if (isLoginUrl(finalUrl)) return { ...none(url, "the page redirected to a sign-in page — not read"), status: got.status, finalUrl };
-    return parseFetched(url, finalUrl, got.status, got.contentType, got.bytes, got.text, o.json === true);
+    const redirects = hopsOf(url, finalUrl, got.redirects);
+    if (isLoginUrl(finalUrl)) return { ...none(url, "the page redirected to a sign-in page — not read"), status: got.status, finalUrl, redirects };
+    return { ...(await parseFetched(url, finalUrl, got.status, got.contentType, got.bytes, got.text, o.json === true)), redirects };
   };
 
   return {

@@ -308,4 +308,76 @@ await check("(d5-r1) MUST-EXCLUDE: an own recipe whose REPLAY the portal refused
   assert.equal(ran, 1, "the refused recipe replayed again");
 });
 
+// ── D3: a named portal that REDIRECTS to the AHJ's own host is kept, with that evidence ─────────
+const ppl = await import("../src/permitProcessLookup");
+const pageReader = await import("../src/agencyPageReader");
+type Served = { status?: number; text?: string; finalUrl?: string; redirects?: string[] };
+const reads: string[] = [];
+const readerOver = (pages: Record<string, Served>) => {
+  pageReader._resetPoliteness();
+  return pageReader.createPageReader({
+    minGapMs: 0, maxReads: 30,
+    fetch: async (url) => {
+      reads.push(url);
+      const sv = pages[url];
+      if (!sv) return { ok: false, status: 404, contentType: "text/html", finalUrl: url, reason: "HTTP 404" };
+      const status = sv.status ?? 200;
+      return { ok: status < 300, status, contentType: "text/html", text: sv.text ?? "", bytes: new TextEncoder().encode(sv.text ?? ""), finalUrl: sv.finalUrl ?? url, reason: `HTTP ${status}`, ...(sv.redirects ? { redirects: sv.redirects } : {}) };
+    },
+  });
+};
+const grounded = (text: string, urls: string[]) => ({ text, groundedSearches: 3, searches: 3, stopReason: "end_turn", resultUrls: urls, pagesRead: 0 });
+const page = (title: string, body: string) => `<html><head><title>${title}</title></head><body><main>${body}</main></body></html>`;
+/** Run the per-job lookup for a fictional city whose own page says "Apply online at <named>", with
+ *  <named> served as `landing` (a redirect when it differs). */
+async function lookupWithNamedPortal(city: string, named: string, landing: Served) {
+  const ahj = `City of ${city}`;
+  const PG = `https://www.${city.toLowerCase()}oregon.gov/ds/page/structural-building-permit`;
+  const bare = named.replace(/^https?:\/\//, "");
+  const p1 = JSON.stringify({
+    issuingAgency: { value: ahj, sourceUrl: PG, quote: `The ${ahj} issues building permits.` },
+    permitStructure: { value: "separate", sourceUrl: PG, quote: "A separate electrical permit is required." },
+    permits: (["structural", "electrical"] as const).map((d) => ({ discipline: d, label: d, issuingAgency: { value: null },
+      portalUrl: { value: named, sourceUrl: PG, quote: `Apply online at ${bare}.` }, recordType: { value: null } })),
+  });
+  const llm = { webLookup: async (i: { label: string }) => (i.label.endsWith(".process") ? grounded(p1, [PG]) : grounded(JSON.stringify({ permits: [] }), [])) };
+  reads.length = 0;
+  const run = await ppl.runPermitProcessLookup(db, llm as never, { state: "OR", ahj, dcKw: "7", acKw: "6", force: true,
+    reader: readerOver({ [PG]: { text: page(`Structural Building Permit | ${city}`, `<p>The ${ahj} issues building permits.</p><p>Apply online at ${bare}.</p>`) }, [named]: landing }) });
+  const structural = run.lookup!.permits.find((p) => p.discipline === "structural")!;
+  return { run, structural, notes: (run.lookup!.notes ?? []).join("\n") };
+}
+await check("(d3-p1) MUST-PASS (Corvallis's shape): the city's page names a portal host that REDIRECTS to the city's own Accela tenant → kept as the landing URL, with the named URL and the hops; read ONCE", async () => {
+  const named = "https://www.brambletonpermits.com";
+  const landing = "https://aca-prod.accela.com/brambleton/Default.aspx";
+  const r = await lookupWithNamedPortal("Brambleton", named, { finalUrl: landing, redirects: [named, "https://aca-prod.accela.com/brambleton", landing], text: page("City of Brambleton - Permit System", "<p>Welcome to the permit system.</p>") });
+  assert.equal(r.structural.portalUrl.value, landing, `${JSON.stringify(r.structural.portalUrl)}\n${r.notes}`);
+  assert.deepEqual(r.structural.portalUrl.redirect, { from: named, finalUrl: landing, chain: [named, "https://aca-prod.accela.com/brambleton", landing], status: 200 });
+  assert.match(r.notes, /named as https:\/\/www\.brambletonpermits\.com, which redirects there/);
+  assert.equal(reads.filter((u) => u === named).length, 1, `the named portal is fetched once: ${JSON.stringify(reads)}`);
+  // …and staging now resolves the city's OWN portal: the statewide fallback never comes up.
+  const d = pp.statewidePortalFor({ state: "OR", ahj: "City of Brambleton" }, "building", {});
+  assert.equal(d?.url, null);
+  assert.match(String(d?.withheld), /aca-prod\.accela\.com\/brambleton/);
+});
+await check("(d3-x1) MUST-EXCLUDE: a named URL that redirects to ANOTHER city's tenant is not kept — the refusal says where it landed", async () => {
+  const named = "https://www.thornburypermits.com";
+  const r = await lookupWithNamedPortal("Thornbury", named, { finalUrl: "https://aca-prod.accela.com/SALEMTON/Default.aspx", text: page("City of Salemton - Permits", "<p>Welcome.</p>") });
+  assert.equal(r.structural.portalUrl.value, null);
+  assert.match(String(r.structural.portalUrl.notFound), /redirects to https:\/\/aca-prod\.accela\.com\/SALEMTON\/Default\.aspx, which names neither/);
+  assert.equal(r.structural.portalUrl.claimed, named, "named, not kept — the claim stays on the row (D1 reads it)");
+});
+await check("(d3-x2) MUST-EXCLUDE: a named URL that redirects to the permit vendor's own site is not kept", async () => {
+  const named = "https://www.wickhampermits.com";
+  const r = await lookupWithNamedPortal("Wickham", named, { finalUrl: "https://www.accela.com/", text: page("Accela | Government Software", "<p>Civic platform.</p>") });
+  assert.equal(r.structural.portalUrl.value, null);
+  assert.ok(!r.structural.portalUrl.redirect);
+});
+await check("(d3-x3) MUST-EXCLUDE: a named URL whose redirect lands on a sign-in page is not read and not kept — the refusal says so", async () => {
+  const named = "https://www.ashgrovepermits.com";
+  const r = await lookupWithNamedPortal("Ashgrove", named, { finalUrl: "https://aca-prod.accela.com/ashgrove/Login.aspx", text: page("Login", "<p>Sign in</p>") });
+  assert.equal(r.structural.portalUrl.value, null);
+  assert.match(String(r.structural.portalUrl.notFound), /could not read|sign-in/);
+});
+
 finish("portal-truth");

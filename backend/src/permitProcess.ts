@@ -44,6 +44,12 @@ export function normalizeAhjName(ahj: string): string {
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
+/** The DISTINCTIVE core of a jurisdiction's name, run together ("City of Corvallis" -> "corvallis",
+ *  "Marion County" -> "marion"): what a shared instance's tenant ("aca-prod.accela.com/CORVALLIS")
+ *  or a landing page's title carries when it is that jurisdiction's own. */
+export function ahjNameCore(ahj: string): string {
+  return normalizeAhjName(ahj).replace(/\b(?:city|town|village|county|borough|township|parish|of|the|unincorporated)\b/g, " ").replace(/\s+/g, "").trim();
+}
 export function permitProcessKey(state: string, ahj: string): string {
   return `${String(state ?? "").trim().toLowerCase()}|${normalizeAhjName(ahj)}`;
 }
