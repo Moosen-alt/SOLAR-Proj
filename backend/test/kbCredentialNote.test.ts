@@ -60,6 +60,13 @@ const MUST_REFUSE = [
   "passcode: 99812",
   "mfa seed: JBSWY3DPEHPK3PXP",
   "Security Answer: Denver7",
+  // Leak sweep company-leak-5 (2026-09-28): a shared row carried "<Handle> & <password>" with no
+  // label and no email. Synthetic stand-ins of the same shape (never the real value).
+  "Acmehandle & Xy9!abcdefgh",
+  "SolarCoLogin & Qz7#mmmmmm",
+  "Accela login: AcmeSolar & Rt5$uvwxyz",
+  "AcmeSolar Ab12cdEfgh",
+  "acme_user Zz9yyYYyyy",
 ];
 
 // Real notes from the knowledge base's own vocabulary. Each of these is the kind of thing an
@@ -75,6 +82,17 @@ const MUST_KEEP = [
   "Solar Permit (when required) - Prescriptive Path System, fee includes plan review | $200.00",
   "Renewable energy for electrical systems- 5.01kva through 15kva",
   "Submit an Application/Request starts the filing; record type Residential - Electrical",
+  // The two new whole-segment shapes must not eat the notes that look closest to them.
+  "$283.00 (5-15kVA)",
+  "999.99 (1-25kW)",
+  "Structural & electrical in one submission",
+  "BLD & ELE",
+  "Plans & specs",
+  "Solar & Battery-Storage",
+  "R-3 & U-occupancy",
+  "Model IQ8Plus-72",
+  "Fee 5kVA-15kVA",
+  "Section R324.6",
 ];
 
 check("MUST REFUSE: every shape the leaked rows actually took", () => {

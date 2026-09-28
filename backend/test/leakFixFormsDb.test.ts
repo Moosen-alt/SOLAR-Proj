@@ -182,5 +182,39 @@ await check("F2 defaults are per company: Beta's electrician default does not de
   assert.equal(forms.buildContext(db, alphaJob).signatures?.electrician?.name, "Sam Sparksworth");
 });
 
+// ---------------------------------------------------------------------------------------------
+// F8 — the learn planner's KB block (autoLearn.buildLearnKbContext) and the form-research hint
+// (knowledgeResearchHint): one company's logins and licence numbers in a SHARED row never reach
+// another company's prompt.
+// ---------------------------------------------------------------------------------------------
+const { importSeededAhjKnowledge, knowledgeResearchHint } = await import("../src/knowledgeBase");
+const { buildLearnKbContext } = await import("../src/autoLearn");
+importSeededAhjKnowledge(db, {
+  state: "OR", ahj: "City of Leakton",
+  notes: [
+    "Leakton files structural and electrical on one portal record",
+    "Operator credential stored for this portal.",
+    "User name someone@alpha-test-solar.test",
+    "WA COUNTY FOR ELEC AND LEAKTON FOR STRUC. metro license # 98765",
+  ].join(" | "),
+} as never);
+const leakJob = project(beta.id, { city: "Leakton", ahj: "City of Leakton" });
+
+await check("F8 MUST-EXCLUDE: another company's learn prompt carries no login, no 'credential stored', no licence number", () => {
+  const ctx = buildLearnKbContext(db, leakJob, { scopeType: "ahj", permitType: "electrical" });
+  const hint = knowledgeResearchHint(db, { state: "OR", ahj: "City of Leakton" }, "ahj")?.text ?? "";
+  for (const text of [ctx, hint]) {
+    assert.ok(!/credential stored/i.test(text), `"credential stored" reached a prompt: ${text}`);
+    assert.ok(!/alpha-test-solar/.test(text), `a login email reached a prompt: ${text}`);
+    assert.ok(!/98765/.test(text), `a company licence number reached a prompt: ${text}`);
+  }
+});
+
+await check("F8 MUST-PASS: the AHJ's knowledge still reaches the planner (routing, and which licence it asks for)", () => {
+  const ctx = buildLearnKbContext(db, leakJob, { scopeType: "ahj", permitType: "electrical" });
+  assert.match(ctx, /one portal record/);
+  assert.match(ctx, /LEAKTON FOR STRUC\. metro license # \[the job's company's own number\]/);
+});
+
 console.log(`\nleakFixFormsDb: ${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);

@@ -123,10 +123,67 @@ const CREDENTIAL_LABEL =
 const USER_PASS_PAIR =
   /[\w.+-]+@[\w-]+\.[a-z]{2,}\s+(?=\S{6,})(?=\S*[a-z])(?=\S*[A-Z])(?=\S*\d)\S+/;
 
+// A LOGIN HANDLE AND ITS PASSWORD, NOTHING ELSE (leak sweep company-leak-5, 2026-09-28). A shared
+// row carried "<Handle> & <password>" — no label, no email — and neither test above saw it. Both
+// shapes below are anchored to the WHOLE segment (an optional short "Accela login:" label first),
+// so prose never matches: the second token must be one unbroken token of 6+ characters with no
+// parentheses (a fee line's "(5-15kVA)" has them).
+//   "<handle> & <secret>": the secret carries a letter AND a digit or a password symbol, and is not
+//     an email ("Contact & permits@city.gov" is a contact; "Solar & Battery-Storage" is a scope).
+//   "<handle> <secret>": the handle looks like a login (CamelCase, a digit, "_" or "."), the secret
+//     is lower + upper + digit — "Model IQ8Plus-72" is a model line, not a login.
+const HANDLE_AMP_SECRET =
+  /^\s*(?:[^:|]{1,40}:\s*)?[A-Za-z][\w.@+-]{2,63}\s*&\s*(?![\w.+-]+@[\w-]+\.[\w.-]+\s*$)(?=[^\s()]{6,}\s*$)(?=[^\s()]*[A-Za-z])(?=[^\s()]*[\d!#$%^&*?~+=@])[^\s()]+\s*$/;
+const HANDLE_SPACE_SECRET =
+  /^\s*(?:[^:|]{1,40}:\s*)?(?=[A-Za-z][\w.+-]*(?:[a-z][A-Z]|\d|_|\.))[A-Za-z][\w.+-]{2,63}\s+(?=[^\s()]{6,}\s*$)(?=[^\s()]*[a-z])(?=[^\s()]*[A-Z])(?=[^\s()]*\d)[^\s()]+\s*$/;
+
 /** True when a note segment looks like it carries a credential rather than portal knowledge. */
 export function looksLikeCredentialNote(segment: string): boolean {
   const s = String(segment ?? "");
-  return CREDENTIAL_LABEL.test(s) || USER_PASS_PAIR.test(s);
+  return CREDENTIAL_LABEL.test(s) || USER_PASS_PAIR.test(s) || HANDLE_AMP_SECRET.test(s) || HANDLE_SPACE_SECRET.test(s);
+}
+
+// ---------------------------------------------------------------------------------------------
+// WHAT A LEARN PLANNER MAY READ FROM A SHARED NOTE (leak sweep company-leak-5). The KB is shared
+// across every company on purpose — but its notes were written from ONE company's sheets, and they
+// carry that company's facts: "Operator credential stored for this portal.", its login usernames and
+// emails, its licence numbers ("metro license # <n>"). Handed to another company's learn planner as
+// AHJ context, the planner could type the first company's licence into the second company's filing,
+// and a login pair reached the model (hard rule 2). The row stays as it is (shared knowledge, and
+// rule 3 for verified rows); what leaves for the model is filtered here, segment by segment.
+// ---------------------------------------------------------------------------------------------
+const LOGIN_FACT = /\bcredentials?\b[^|]{0,40}\b(stored|on file|saved)\b|«pw»|\b(user\s*-?\s*name|user\s*id|log\s*-?\s*in|logon|sign\s*-?\s*in|pw|pwd|password|pass)\s*[:=]/i;
+/** A login label directly followed by the email it logs in with ("User name <email>", "Login - <email>").
+ *  Never the bare word: "…/Login/Index" in a portal URL and "only the login differs per AHJ" are knowledge. */
+const LOGIN_EMAIL = /\b(user\s*-?\s*name|username|user\s*id|log\s*-?\s*in|logon|sign\s*-?\s*in)\s*(?:[:=-]\s*|\s+(?:is\s+)?)[\w.+-]+@[\w-]+\.[a-z]{2,}/i;
+/** "<handle> & <email>" — a username paired with the login email, the whole segment. */
+const HANDLE_AMP_EMAIL = /^\s*(?:[^:|]{1,40}:\s*)?[A-Za-z][\w.+-]{2,63}\s*&\s*[\w.+-]+@[\w-]+\.[\w.-]+\s*$/;
+/** A licence / registration NUMBER after its label ("metro license # 12345", "CCB# 123456",
+ *  "License No. C1234"). The label stays (the AHJ asks for that licence); the number is the
+ *  job's company's own and comes from the job's client, never from a shared note. */
+const LICENCE_NUMBER = /\b((?:licen[cs]e|lic\.|registration|reg\.?|ccb|cslb|hic)\s*(?:no\.?|number|num\.?|#)?\s*[:#]?\s*)([A-Z]{0,4}-?\d{3,}[A-Z]?)\b/gi;
+
+/** One shared note segment is another company's fact (a login, a stored credential) — never sent to a model. */
+export function isCompanyLoginSegment(segment: string): boolean {
+  const s = String(segment ?? "");
+  return looksLikeCredentialNote(s) || LOGIN_FACT.test(s) || HANDLE_AMP_EMAIL.test(s) || LOGIN_EMAIL.test(s);
+}
+
+/** A licence / registration number in shared prose, replaced by a pointer to the job's own company
+ *  (the label stays — the AHJ asking for that licence is knowledge; the number is one company's). */
+export function redactLicenceNumbers(text: string): string {
+  return String(text ?? "").replace(LICENCE_NUMBER, (_m, label: string) => `${label}[the job's company's own number]`);
+}
+
+/** The shared notes as a learn planner may read them: credential / login segments dropped, licence
+ *  numbers replaced by a pointer to the job's own company. " | "-joined segments in, the same out. */
+export function learnSafeNotes(notes: string): string {
+  return String(notes ?? "")
+    .split(" | ")
+    .map((seg) => seg.trim())
+    .filter((seg) => seg && !isCompanyLoginSegment(seg))
+    .map((seg) => redactLicenceNumbers(seg))
+    .join(" | ");
 }
 
 // Notes are stored as " | "-joined segments. Split before merging so dedupe
@@ -2328,7 +2385,8 @@ export function knowledgeResearchHint(
       (`${profile.notes} ${profile.portalUrl}`.match(/https?:\/\/[^\s"'<>)\]]+\.pdf\b[^\s"'<>)\]]*/gi) || []).map((u) => u.trim()),
     ),
   ].slice(0, 5);
-  const notes = clean(profile.notes).slice(0, 700);
+  // The same filter as the learn planner's KB block: this text goes to a model too (llm research).
+  const notes = clean(learnSafeNotes(profile.notes)).slice(0, 700);
   const text = [
     `Our internal knowledge base already has a ${scope === "ahj" ? "jurisdiction" : "utility"} record for "${name}"${profile.state ? ` (${profile.state})` : ""} [confidence: ${profile.confidence}]:`,
     profile.portalName ? `- Known portal: ${profile.portalName}` : "",

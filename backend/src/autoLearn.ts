@@ -41,7 +41,7 @@ import { HttpError } from "./httpError";
 import { formPurposeMismatch } from "./formPurpose";
 import { looksBotBlocked } from "./runAbort";
 import { id } from "./ids";
-import { knowledgeProfileKey, findKnowledgeForLearn, isVerifiedKnowledge } from "./knowledgeBase";
+import { knowledgeProfileKey, findKnowledgeForLearn, isVerifiedKnowledge, learnSafeNotes } from "./knowledgeBase";
 import { hostFitsTrackAndEntity, trackSafeUrl, type PortalUrlSource } from "./portalChannel";
 import { getCodeProfile } from "./codeProfiles";
 import { certifiedNamesForMake } from "./cecEquipment";
@@ -218,8 +218,10 @@ export function buildLearnKbContext(
         `${label}: ${name}${profile.state ? ` (${profile.state})` : ""} [KB confidence: ${profile.confidence}]`,
         isPrimary && portalFits && (profile.portalName || profile.portalUrl) ? `Portal: ${clip(profile.portalName, 80)} ${clip(profile.portalUrl, 120)}`.trim() : "",
         profile.requiredDocuments.length ? `Required docs: ${clip(profile.requiredDocuments.join("; "), 300)}` : "",
-        // The primary scope's notes carry the judgment answers — give them the bigger cap.
-        profile.notes ? `Notes: ${clip(profile.notes, label === (opts.scopeType === "ahj" ? "AHJ" : "Utility") ? 900 : 400)}` : "",
+        // The primary scope's notes carry the judgment answers — give them the bigger cap. SHARED notes
+        // were written from one company's sheets: its logins, "credential stored" lines and licence
+        // numbers never reach another company's planner (knowledgeBase.learnSafeNotes; rule 2).
+        learnSafeNotes(profile.notes) ? `Notes: ${clip(learnSafeNotes(profile.notes), label === (opts.scopeType === "ahj" ? "AHJ" : "Utility") ? 900 : 400)}` : "",
       ].filter(Boolean);
       if (lines.length > 1) sections.push(lines.join("\n"));
     }

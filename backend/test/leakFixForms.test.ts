@@ -50,5 +50,62 @@ await check("F1 MUST-EXCLUDE: a county or a name that only CONTAINS the word is 
   assert.deepEqual(ids({ ahj: "Multnomah County", state: "OR" }), []);
 });
 
+// ---------------------------------------------------------------------------------------------
+// F8 — shared KB notes never hand one company's logins / licence numbers to another's planner.
+// (The write guard's own MUST-REFUSE / MUST-KEEP lists live in kbCredentialNote.test.ts.)
+// ---------------------------------------------------------------------------------------------
+const { learnSafeNotes, isCompanyLoginSegment, looksLikeCredentialNote } = await import("../src/knowledgeBase");
+const { extractPortalRows } = await import("../src/portalProcessImport");
+
+await check("F8 MUST-EXCLUDE: credential, login and 'credential stored' segments never reach a planner; licence numbers are replaced", () => {
+  const notes = [
+    "Portal is Accela; pick Residential - Electrical",
+    "Operator credential stored for this portal.",
+    "Username: someone@acme-solar.test PW: «pw»",
+    "User name someone@acme-solar.test",
+    "Acmehandle & Xy9!abcdefgh",
+    "Acmehandle & someone@acme-solar.test",
+    "Structural to the city; metro license # 98765 on the application",
+    "CCB# 555444 required on the cover",
+  ].join(" | ");
+  const safe = learnSafeNotes(notes);
+  for (const leak of ["credential stored", "someone@acme-solar.test", "«pw»", "Xy9!abcdefgh", "98765", "555444"]) {
+    assert.ok(!safe.includes(leak), `"${leak}" reached the planner: ${safe}`);
+  }
+});
+
+await check("F8 MUST-PASS: the knowledge around them survives — portal hints, agency contacts, what licence the AHJ asks for", () => {
+  const notes = [
+    "Portal is Accela; pick Residential - Electrical",
+    "Corrections come from plans@city.test",
+    "Only the entry URL and the login differ per AHJ",
+    "Entry: https://city.example.test/Login/Index/",
+    "Structural to the city; metro license # 98765 on the application",
+  ].join(" | ");
+  const safe = learnSafeNotes(notes);
+  assert.match(safe, /Portal is Accela/);
+  assert.match(safe, /plans@city\.test/);
+  assert.match(safe, /login differ per AHJ/);
+  assert.match(safe, /Login\/Index/);
+  assert.match(safe, /metro license # \[the job's company's own number\] on the application/);
+  assert.ok(!isCompanyLoginSegment("Corrections come from plans@city.test"));
+  assert.ok(!looksLikeCredentialNote("Solar & Battery-Storage"));
+});
+
+await check("F8 importer: a '<handle> & <password>' cell never lands in a shared note, whatever the password looks like", () => {
+  const sheet = { name: "OH PROCESS", headers: [], rows: [[
+    "CITY OF TESTVILLE https://aca-prod.accela.com/TESTVILLE/Default.aspx",
+    "Acmehandle & Qz7#abcdefg",
+    "Building + electrical on one Accela record",
+    "LICENSE # 24680 on file with the city",
+  ]].map((cells) => Object.fromEntries(cells.map((c, i) => [`col${i}`, c]))) };
+  const rows = extractPortalRows(sheet as never);
+  assert.equal(rows.length, 1);
+  const notes = rows[0].notes;
+  assert.ok(!/Qz7#abcdefg|Acmehandle/.test(notes), `the credential cell reached the shared note: ${notes}`);
+  assert.ok(!/24680/.test(notes), `a company licence number reached the shared note: ${notes}`);
+  assert.match(notes, /one Accela record/, "the useful cell must survive");
+});
+
 console.log(`\nleakFixForms: ${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);
