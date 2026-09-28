@@ -5,7 +5,7 @@ import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/
 import { inspectFormFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type OverlayField, type SignaturePlacement } from "./ahjForms";
 import { describePermitType, findApplicationProfile, permitStructureAnswer } from "./applicationDocs";
 import { ensureUtilityFilingLookedUp } from "./utilityFilingLookup";
-import { fetchPublicDocument } from "./documentFetch";
+import { documentFetchDisabled, fetchPublicDocument } from "./documentFetch";
 import { logger } from "./logger";
 import { saveResearchedAhjProfile, knowledgeResearchHint, findKnowledgeForLearn } from "./knowledgeBase";
 import { findAhjProcessProfile } from "./processProfiles";
@@ -187,31 +187,59 @@ export function sha256(bytes: Uint8Array): string {
 // ALWAYS carries a reason. Null still means "no usable PDF" to every caller; the reason is now
 // in the log instead of nowhere.
 export async function fetchPdf(url: string): Promise<Uint8Array | null> {
+  const failed = (): null => { noteFormFetchFailure(url); return null; };
   try {
     const got = await fetchPublicDocument(url);
     if (!got.ok || !got.bytes) {
       logger.warn("ahj-forms", "a blank form could not be downloaded", {
         url, status: got.status, via: got.via, reason: got.reason,
       });
-      return null;
+      return failed();
     }
     const buf = got.bytes;
     const type = got.contentType || "";
     // %PDF magic, or a pdf content-type. Guard against HTML error pages.
-    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) return buf;
-    if (type.includes("pdf") && buf.length > 1000) return buf;
+    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) { recentFormFetchFailures.delete(url); return buf; }
+    if (type.includes("pdf") && buf.length > 1000) { recentFormFetchFailures.delete(url); return buf; }
     // The link answered — with a login page, a "moved" notice or a CMS 200 error page. That is
     // a different repair from a wall (fix the link, not the browser), so it is said differently.
     logger.warn("ahj-forms", "a form link answered, but not with a PDF", {
       url, status: got.status, contentType: type || "(none)", bytes: buf.length, via: got.via,
     });
-    return null;
+    return failed();
   } catch (err) {
     // fetchPublicDocument reports rather than throws; this is the belt on the braces, so the
     // acquisition loop's contract (null, never an exception) holds whatever happens below it.
     logger.warn("ahj-forms", "a blank form download threw", { url, error: err instanceof Error ? err.message : String(err) });
-    return null;
+    return failed();
   }
+}
+
+// GO GENTLY ON A FORM URL THAT JUST FAILED (stage-forms-fee skeptic N2; operator rule "go gently on
+// Cloudflare sites"). Inside the 24h per-AHJ cooldown Stage runs the FREE acquisition pass on every
+// Stage — and a curated or cited URL that is walled or down was fetched again each time, and
+// fetchPublicDocument may open a HEADED browser for a walled one each time. So a per-URL memo of the
+// last failed download: the within-cooldown pass (skipRecentlyFailed, set only by
+// prepareOfficialDocuments) does not re-fetch a URL that failed in the last FORM_FETCH_RETRY_MS, and
+// says so ("tried <when>, retry after <when>"). Every other door — the full pass once the cooldown
+// opens, and the operator's explicit "Find missing official forms" — never consults it. Per URL, not
+// per AHJ: every city a county issues for fetches the county's one URL. In-process: a restart forgets
+// it, which costs at most one extra fetch. A success clears the URL.
+export const FORM_FETCH_RETRY_MS = 6 * 60 * 60 * 1000;
+const recentFormFetchFailures = new Map<string, number>();
+function noteFormFetchFailure(url: string): void {
+  // Nothing was sent with downloads switched off — that is not a failure of the URL.
+  if (documentFetchDisabled()) return;
+  const now = Date.now();
+  for (const [u, at] of recentFormFetchFailures) if (now - at >= FORM_FETCH_RETRY_MS) recentFormFetchFailures.delete(u);
+  recentFormFetchFailures.set(url, now);
+}
+/** "tried <when>, retry after <when>" when `url` failed within FORM_FETCH_RETRY_MS, else null. */
+export function recentFormFetchFailure(url: string): string | null {
+  const at = recentFormFetchFailures.get(url);
+  if (at == null || Date.now() - at >= FORM_FETCH_RETRY_MS) return null;
+  const when = (ms: number) => `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  return `tried ${when(at)}, retry after ${when(at + FORM_FETCH_RETRY_MS)}`;
 }
 
 /** Record that this blank carried a fee table we harvested. Written by the
@@ -610,8 +638,11 @@ export async function ensureAhjFormsForProject(
   project: ProjectRecord,
   /** allowMapping: may a CITED agency PDF be mapped by the model when research is off? Defaults to
    *  allowResearch. Stage's no-research pass inside the cooldown sets it from the process's research
-   *  switch (prepareOfficialDocuments) — one mapping per cited form, never a search. */
-  opts: { allowResearch?: boolean; allowMapping?: boolean } = {},
+   *  switch (prepareOfficialDocuments) — one mapping per cited form, never a search.
+   *  skipRecentlyFailed: do not re-fetch a curated/cited/checklist URL whose download failed within
+   *  FORM_FETCH_RETRY_MS (recentFormFetchFailure) — set ONLY by Stage's pass inside the cooldown; the
+   *  operator's "Find missing official forms" (server find-ahj-form) never sets it. */
+  opts: { allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean } = {},
 ): Promise<{ neededTypes: string[]; needed: NeededAhjForm[]; results: Array<EnsureFormResult & { formType: string; applicationKind: "prescriptive" | "structural" | null }> }> {
   // WHAT THIS PROJECT MUST FILE DECIDES WHAT WE GO AND FETCH.
   //
@@ -667,7 +698,7 @@ export async function ensureAhjFormsForProject(
     results.push({
       formType: item.formType,
       applicationKind: item.applicationKind,
-      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind, allowResearch: opts.allowResearch, allowMapping: opts.allowMapping })),
+      ...(await ensureAhjFormTemplate(db, llm, project, item.formType, { applicationKind: item.applicationKind, allowResearch: opts.allowResearch, allowMapping: opts.allowMapping, skipRecentlyFailed: opts.skipRecentlyFailed })),
     });
   }
   return { neededTypes: [...needed.keys()], needed: [...needed.values()], results };
@@ -691,7 +722,7 @@ export async function ensureAhjFormTemplate(
   llm: LLMProvider,
   project: ProjectRecord,
   formType = "permit_application",
-  opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean; allowMapping?: boolean } = {},
+  opts: { applicationKind?: "prescriptive" | "structural" | null; allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean } = {},
 ): Promise<EnsureFormResult> {
   // THE UTILITY'S FILING LOCATION rides every per-project form-research pass — the pipeline's
   // (ensureAhjFormsForProject) and the operator's "Find official form" — fire-and-forget, once per
@@ -712,7 +743,7 @@ export async function ensureAhjFormTemplate(
   // acquired and stored under ITS name, from its own curated seed or the PDF the lookup cited —
   // never a paid search under the city's name, never a KB profile written for the agency.
   const authority = formAuthorityFor(project, formType);
-  if (authority.issuedByOther) return ensureIssuingAgencyForm(db, llm, project, formType, authority, applicationKind, { allowResearch: opts.allowResearch, allowMapping: opts.allowMapping });
+  if (authority.issuedByOther) return ensureIssuingAgencyForm(db, llm, project, formType, authority, applicationKind, { allowResearch: opts.allowResearch, allowMapping: opts.allowMapping, skipRecentlyFailed: opts.skipRecentlyFailed });
   const kindWord = applicationKind === "structural" ? "structural (non-prescriptive)" : applicationKind === "prescriptive" ? "prescriptive" : "";
   // Already have a fillable stored template of THIS form type for this AHJ?
   // (Per-type, so acquiring the checklist isn't skipped just because the
@@ -742,6 +773,9 @@ export async function ensureAhjFormTemplate(
     && resolvePermitPath(project).path === "prescriptive" ? "https://www.oregon.gov/bcd/Formslibrary/5952.pdf" : "";
   if (curated || checklistUrl) {
     const url = curated?.url || checklistUrl;
+    // Inside the cooldown, a URL that failed recently is not fetched again (recentFormFetchFailure).
+    const recent = opts.skipRecentlyFailed ? recentFormFetchFailure(url) : null;
+    if (recent) return { status: "not_found", sourceUrl: url, message: `The official form at ${url} was not fetched again: its download failed recently (${recent}) and Stage does not retry it inside the 24h cooldown. Find missing official forms retries it now; it has not been counted as present.` };
     const bytes = await fetchPdf(url);
     if (bytes) {
       if (!(curated ? curatedFormMap(bytes, url)?.source.hash === curated.hash : bcd5952Template(bytes, url))) {
@@ -922,7 +956,7 @@ export async function ensureIssuingAgencyForm(
   formType: string,
   authority: FormAuthority,
   applicationKind: "prescriptive" | "structural" | null,
-  opts: { allowResearch?: boolean; allowMapping?: boolean } = {},
+  opts: { allowResearch?: boolean; allowMapping?: boolean; skipRecentlyFailed?: boolean } = {},
 ): Promise<EnsureFormResult> {
   const agency = authority.name;
   const track = authority.track;
@@ -968,6 +1002,13 @@ export async function ensureIssuingAgencyForm(
       try { from = from ? new URL(from).hostname : "an upload"; } catch { /* keep the raw value */ }
       return { status: "not_found", sourceUrl: c.sourceUrl, message: `${agency}'s ${label} slot already holds a form from ${from} that this job's lookup does not cite, so the form cited for ${project.ahj} (${c.sourceUrl}) was not stored over it. ${whose}. Check which is ${agency}'s current form and upload it (Find official form → upload); it has not been counted as present.` };
     }
+    // Inside the cooldown, a URL that failed recently is not fetched again (recentFormFetchFailure) —
+    // and a curated seed skipped so is the same C2 stop as a failed one: no cited PDF in its place.
+    const recent = opts.skipRecentlyFailed ? recentFormFetchFailure(c.sourceUrl) : null;
+    if (recent && c.origin === "curated") {
+      return { status: "not_found", sourceUrl: c.sourceUrl, message: `${agency}'s ${c.formName} was not fetched again from ${c.sourceUrl}: its download failed recently (${recent}) and Stage does not retry it inside the 24h cooldown. ${whose}; no other PDF was tried in its place, and it has not been counted as present. Find missing official forms retries it now.` };
+    }
+    if (recent) { tried.push(`${c.sourceUrl} (not fetched again: ${recent})`); continue; }
     const bytes = await fetchPdf(c.sourceUrl);
     // C2 NO FALLTHROUGH (agency-contain): the agency's CURATED seed is its form. A failed fetch (a 404, the
     // network) is a named failure to retry — never a reason to take the next cited PDF instead (the

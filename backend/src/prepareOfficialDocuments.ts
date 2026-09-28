@@ -34,7 +34,10 @@ export interface OfficialDocumentsPreparation {
  *   - answers "exists" off a held form with no download (everything on file = no fetch);
  *   - fetches the issuing agency's curated seed, the PDF this job's lookup cites for the agency, and
  *     the AHJ's own curated seed / state checklist — free downloads, model-free maps;
- *   - a failed curated fetch stays a named not_found (agency-contain C2: no cited fallthrough).
+ *   - a failed curated fetch stays a named not_found (agency-contain C2: no cited fallthrough);
+ *   - a curated or cited URL whose download failed in the last 6 hours is NOT fetched again (a named
+ *     not_found: "tried <when>, retry after <when>") — every Stage re-fetching a walled URL could open
+ *     a headed browser each time (go gently). The operator's "Find missing official forms" bypasses it.
  * It never claims or extends the cooldown. A cited agency PDF is mapped by the model only when
  * research is allowed on this process (allowMapping): mapping it once is not repeated research, and
  * storing it unmapped would leave a hand-complete blank that no later pass re-maps.
@@ -55,7 +58,9 @@ export async function prepareOfficialDocuments(db: AppDb, project: ProjectRecord
     acquisition = open ? "full" : "within-cooldown";
     try {
       const out = await ensureAhjFormsForProject(db, createLLMProvider(), project,
-        open ? { allowResearch: research } : { allowResearch: false, allowMapping: research });
+        // Inside the cooldown, a form URL that failed in the last 6h is not fetched again
+        // (ahjFormAuto.recentFormFetchFailure — go gently; the operator's Find retries it now).
+        open ? { allowResearch: research } : { allowResearch: false, allowMapping: research, skipRecentlyFailed: true });
       results = out.results.map((r) => ({ formType: r.formType, status: r.status, message: r.message, ...(r.sourceUrl ? { sourceUrl: r.sourceUrl } : {}) }));
     } catch {
       acquisition = "failed";
