@@ -20,14 +20,15 @@ import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text } from "./json";
-import { findApplicationProfile } from "./applicationDocs";
+import { FALLBACK_PROFILE_IDS, findApplicationProfile } from "./applicationDocs";
 import { usStateCode } from "./permitPath";
 import { enrichMboxLearningWithLlm, stripUrlsFromModelMemory } from "./llm";
 import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles";
 import { nowIso } from "./time";
 import { logger } from "./logger";
 import { inferPlatform, isRecognizedPlatform, looksLikeBareUrl } from "./portalPlatformRules";
-import { isUtilityPlatformUrl, portalHostOf } from "./portalChannel";
+import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf } from "./portalChannel";
+import { HttpError } from "./httpError";
 import { KNOWN_POWERCLERK_PORTALS, foreignKnownTenant, knownPowerClerkUtility, knownTenantOwner } from "./utilityIdentity";
 
 type Row = Record<string, unknown>;
@@ -597,6 +598,21 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
       portalPlatform: clean(facts.portalPlatform) || (isRecognizedPlatform(platform) ? platform : facts.portalPlatform),
     };
   }
+  // AN INFORMATION PAGE IS NEVER A PORTAL (portal-truth D2, 2026-09-28). City of Corvallis's row
+  // held Oregon BCD's help page ("…/bcd/epermitting/help/…/permit-for-solar.aspx") as its portal,
+  // and every door downstream had to refuse it again. Every writer funnels through here — learn,
+  // AI research, the reference import, the verified saves (which refuse loudly before they get
+  // here: saveVerifiedAhjProfile / saveVerifiedUtilityProfile) — so this is the one seam that keeps
+  // a help/guide page or a document out of portal_url, judged by THE one predicate
+  // (portalChannel.isInformationalPageUrl). The refused URL is kept as a note segment, never lost.
+  if (clean(facts.portalUrl) && isInformationalPageUrl(clean(facts.portalUrl))) {
+    const refused = clean(facts.portalUrl);
+    facts = {
+      ...facts,
+      portalUrl: "",
+      notes: [clean(facts.notes), `Refused as a portal URL: ${refused} is an information page (help / guide / document), not an application portal`].filter(Boolean).join(" | "),
+    };
+  }
   // RULE 5 AT THE KB WRITE (close-2 item 7): an AHJ-KEYED row never carries a UTILITY portal. The
   // learn path used to stamp PGE's PowerClerk login onto every (ahj, utility) row a PGE project
   // touched ("or|city of tigard|portland general electric" -> pgenm.powerclerk.com), and the
@@ -1003,8 +1019,14 @@ function projectDocs(project: ProjectRecord): string[] {
 function portalFromProject(project: ProjectRecord): { portalName: string; portalUrl: string; utilityPortal: { portalName: string; portalUrl: string } | null } {
   const appProfile = findApplicationProfile(project);
   const process = findAhjProcessProfile(project);
-  const portalName = process?.submissionMethod || appProfile.portalName || "";
-  const portalUrl = appProfile.sourceUrl || "";
+  // A FALLBACK PROFILE IS NOT THE AHJ'S KNOWLEDGE (portal-truth D2). The generic Oregon profile's
+  // name ("Oregon ePermitting") and source (BCD's help page) were written into EVERY Oregon AHJ's
+  // row with no profile of its own as "learned" — Corvallis's row among them — and the next
+  // resolver read them back as that AHJ's portal. Only a profile written for THIS jurisdiction
+  // (a hand-written registry entry, or one synthesized from its own seeded process) contributes.
+  const ownProfile = !FALLBACK_PROFILE_IDS.has(appProfile.id);
+  const portalName = process?.submissionMethod || (ownProfile ? appProfile.portalName : "") || "";
+  const portalUrl = ownProfile ? appProfile.sourceUrl || "" : "";
   // The interconnection application lives behind the PowerClerk login, NOT on the public
   // resource-library / marketing page. Seed the real portal-ENTRY URL so the universal self-seed
   // (auto-learn) launches against the actual form instead of an info page it can never fill. Same
@@ -2104,6 +2126,17 @@ export function saveResearchedAhjProfile(
   });
 }
 
+/** A PERSON'S verified save naming an information page as the portal is refused OUT LOUD (a 409
+ *  the editor shows), not silently dropped like an automatic write: they typed it, and a verified
+ *  row outranks everything (portal-truth D2 — the one predicate, isInformationalPageUrl). */
+function refuseInformationalPortal(input: { portalUrl?: string; portalName?: string }): void {
+  for (const u of [clean(input.portalUrl), looksLikeBareUrl(clean(input.portalName)) ? clean(input.portalName) : ""]) {
+    if (u && isInformationalPageUrl(u)) {
+      throw new HttpError(409, `${u} is an information page (help / guide / document), not an application portal — save the portal's own entry page, where an application is filed.`, { hostRefused: true, code: "not_a_portal" });
+    }
+  }
+}
+
 // Human-verified AHJ profile upsert — a coordinator confirming/correcting what the
 // AI researched (e.g. "Hillsboro actually uses email + ProjectDox, not Accela").
 // Marks the profile mixed-confidence + a human-verified source so it outranks AI guesses.
@@ -2124,6 +2157,7 @@ export function saveVerifiedAhjProfile(
   },
 ): PermitUtilityKnowledgeProfile {
   if (!input.ahj?.trim()) throw new Error("ahj is required.");
+  refuseInformationalPortal(input);
   const noteParts = [
     "Human-verified AHJ profile.",
     input.portalPlatform ? `Portal platform: ${input.portalPlatform} (reuse existing ${input.portalPlatform} automation; only entry URL + login differ per AHJ).` : "",
@@ -2292,6 +2326,7 @@ export function saveVerifiedUtilityProfile(
   },
 ): PermitUtilityKnowledgeProfile {
   if (!input.utility?.trim()) throw new Error("utility is required.");
+  refuseInformationalPortal(input);
   const noteParts = [
     "Human-verified utility NEM profile.",
     input.portalPlatform ? `Portal platform: ${input.portalPlatform} (reuse existing ${input.portalPlatform} automation; only entry URL + login differ per utility).` : "",
@@ -2352,7 +2387,7 @@ export function findLearnedProfileForProject(
   for (const key of candidates) {
     const row = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
     if (row) {
-      const profile = mapKnowledge(row);
+      const profile = withoutInformationalPortal(mapKnowledge(row));
       if (!requireDocs || profile.requiredDocuments.length) return profile;
     }
   }
@@ -2362,6 +2397,18 @@ export function findLearnedProfileForProject(
   const fuzzy = findKnowledgeByName(db, "ahj", input.ahj, input.state);
   if (fuzzy && (!requireDocs || fuzzy.requiredDocuments.length)) return fuzzy;
   return null;
+}
+
+/** A ROW WRITTEN BEFORE THE WRITE DOOR (portal-truth D2) may still hold an information page as its
+ *  portal: the profile the stage / the learner / the research hint read never returns it as one.
+ *  The row itself is untouched (a verified row is never auto-edited); the listing still shows it. */
+export function withoutInformationalPortal(profile: PermitUtilityKnowledgeProfile): PermitUtilityKnowledgeProfile {
+  const url = clean(profile.portalUrl);
+  const name = clean(profile.portalName);
+  const badUrl = Boolean(url) && isInformationalPageUrl(url);
+  const badName = looksLikeBareUrl(name) && isInformationalPageUrl(name);
+  if (!badUrl && !badName) return profile;
+  return { ...profile, ...(badUrl ? { portalUrl: "" } : {}), ...(badName ? { portalName: "" } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -2455,7 +2502,7 @@ function findKnowledgeByName(
       : [profileKey({ state, ahj: wanted }), profileKey({ ahj: wanted })];
   for (const key of exactKeys) {
     const row = db.get<Row>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [key]);
-    if (row) return mapKnowledge(row);
+    if (row) return withoutInformationalPortal(mapKnowledge(row));
   }
   // 2) Fuzzy scan over rows of the same kind (thousands of rows is fine for SQLite+JS).
   const col = kind === "utility" ? "utility" : "ahj";
@@ -2474,7 +2521,7 @@ function findKnowledgeByName(
     if (profile.notes) score += 2;
     if (!best || score > best.score) best = { profile, score };
   }
-  return best && best.score >= 60 ? best.profile : null;
+  return best && best.score >= 60 ? withoutInformationalPortal(best.profile) : null;
 }
 
 export interface LearnKnowledgeMatch {

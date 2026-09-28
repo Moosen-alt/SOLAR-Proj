@@ -158,4 +158,53 @@ await check("(d1-e4) MUST-EXCLUDE: a stored login naming the AHJ's own tenant on
   assert.equal(d?.url, null, "the city's own tenant outranks a seeded 'OR E-permitting'");
 });
 
+// ── D2: an information page is never written — or read — as a portal ─────────────────────────
+const BCD_HELP = "https://www.oregon.gov/bcd/epermitting/help/records/pages/permit-for-solar.aspx";
+const kbRow = (ahj: string) => db.get<{ portal_url: string; portal_name: string; notes: string }>(
+  "SELECT portal_url, portal_name, notes FROM permit_utility_knowledge WHERE ahj = ? AND state = 'OR' ORDER BY updated_at DESC LIMIT 1", [ahj]);
+const research = (portalUrl: string) => ({
+  provider: "claude" as const, portalName: "", portalPlatform: "", portalUrl, submissionMethod: "online portal",
+  requiredDocuments: [], commonCorrections: [], tips: [], submissionSteps: [], confidence: "medium" as const,
+  needsHumanVerification: true as const, notes: "", webGrounded: true,
+});
+await check("(d2-w1) MUST-EXCLUDE: a project saved for an Oregon AHJ with no profile of its own does not write the GENERIC fallback's portal name or help page into that AHJ's row", async () => {
+  fx.newProject({ ahj: "City of Mossbank", city: "Mossbank", zip: "97330" });
+  const row = kbRow("City of Mossbank");
+  assert.ok(row, "the project's learn wrote the AHJ row");
+  assert.equal(row!.portal_url, "", `portal_url: ${row!.portal_url}`);
+  assert.doesNotMatch(row!.portal_name, /Oregon ePermitting/i, `portal_name: ${row!.portal_name}`);
+});
+await check("(d2-w2) MUST-EXCLUDE: research and the reference import never land a help page or a document as portal_url — the refused URL is kept as a note segment", () => {
+  kb.saveResearchedAhjProfile(db, { state: "OR", ahj: "City of Larkspur Falls" }, research(BCD_HELP) as never);
+  const r1 = kbRow("City of Larkspur Falls")!;
+  assert.equal(r1.portal_url, "");
+  assert.match(r1.notes, /Refused as a portal URL: https:\/\/www\.oregon\.gov\/bcd\/epermitting\/help/);
+  kb.importSeededAhjKnowledge(db, { state: "OR", ahj: "City of Tamarack Bend", portalUrl: "https://www.tamarackbend.example.gov/files/solar-permit-application.pdf", sourceLabel: "test sheet" });
+  assert.equal(kbRow("City of Tamarack Bend")!.portal_url, "");
+});
+await check("(d2-w3) MUST-EXCLUDE: a person's verified save naming a help page is refused out loud (409 not_a_portal); MUST-PASS: the AHJ's own portal saves verified", () => {
+  assert.throws(() => kb.saveVerifiedAhjProfile(db, { state: "OR", ahj: "City of Quillmont", portalUrl: BCD_HELP, verifiedBy: "test" }), (e: unknown) => {
+    const err = e as { status?: number; statusCode?: number; message?: string };
+    return (err.status ?? err.statusCode) === 409 && /information page/.test(String(err.message));
+  });
+  assert.ok(!kbRow("City of Quillmont"), "nothing was written");
+  kb.saveVerifiedAhjProfile(db, { state: "OR", ahj: "City of Quillmont", portalUrl: "https://aca-prod.accela.com/QUILLMONT/Default.aspx", verifiedBy: "test" });
+  assert.equal(kbRow("City of Quillmont")!.portal_url, "https://aca-prod.accela.com/QUILLMONT/Default.aspx");
+});
+await check("(d2-r1) MUST-EXCLUDE: a row written BEFORE the door (a help page in portal_url) is never returned as a portal by findLearnedProfileForProject / findKnowledgeForLearn; the row itself is untouched", () => {
+  const now = new Date().toISOString();
+  db.run(`INSERT INTO permit_utility_knowledge (id, profile_key, state, ahj, utility, portal_name, portal_url, required_documents_json, confidence, sources_json, notes, first_seen_at, last_learned_at, updated_at)
+          VALUES (?, ?, 'OR', 'City of Oldrow', '', 'Oregon ePermitting', ?, '["Plan set"]', 'learned', '[]', '', ?, ?, ?)`,
+    ["legacy-oldrow", kb.knowledgeProfileKey({ state: "OR", ahj: "City of Oldrow", utility: "" }), BCD_HELP, now, now, now]);
+  const learned = kb.findLearnedProfileForProject(db, { state: "OR", ahj: "City of Oldrow" });
+  assert.ok(learned, "the row still serves its documents");
+  assert.equal(learned!.portalUrl, "");
+  assert.equal(kb.findKnowledgeForLearn(db, { state: "OR", ahj: "City of Oldrow" }).ahj?.portalUrl, "");
+  assert.equal(kbRow("City of Oldrow")!.portal_url, BCD_HELP, "reads never write");
+});
+await check("(d2-p1) MUST-PASS: a real portal writes through the same door unchanged", () => {
+  kb.saveResearchedAhjProfile(db, { state: "OR", ahj: "City of Hazelmere" }, research("https://aca-prod.accela.com/HAZELMERE/Default.aspx") as never);
+  assert.equal(kbRow("City of Hazelmere")!.portal_url, "https://aca-prod.accela.com/HAZELMERE/Default.aspx");
+});
+
 finish("portal-truth");
