@@ -11,6 +11,7 @@ import { feeBracketCoverage, feeBracketCoverageMessage, decideFeeTier, FEE_TIER_
 const FEE_TIER_NO_BOX_REASON = "the recorded kVA tier box was not found on this page and no kVA-labelled box could be read";
 import { collectPortalErrorBanner } from "../safeAction";
 import { structureTypeMeaning } from "../../../backend/src/permitProcess";
+import { kindForSlot } from "../../../shared/src/licenceKinds";
 
 // A RECORDED ANSWER THAT DESCRIBES A PROJECT OR A PERSON BELONGS TO THAT PROJECT.
 //
@@ -59,6 +60,10 @@ export function looksLikeProjectData(label: string, value: string): boolean {
   const l = String(label ?? "");
   const v = String(value ?? "").trim();
   if (!v) return false;
+  // A LICENCE SLOT IS A COMPANY'S, whatever the portal calls it — "CSL #", "HIC Reg #", "CCB #",
+  // "EC Lic" name no licence word PROJECT_DATA_LABEL knows, and a licence recorded on company A's
+  // job must never replay on company B's. The one slot predicate (kindForSlot) decides.
+  if (kindForSlot(l) !== null) return true;
   // The portal's own vocabulary wins: a "Job Category" answer is the portal's word even
   // though "category" sits near words we treat as project data elsewhere.
   if (TAXONOMY_LABEL.test(l) && !PROJECT_DATA_LABEL.test(l)) return false;

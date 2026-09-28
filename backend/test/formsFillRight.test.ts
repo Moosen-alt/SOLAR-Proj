@@ -256,7 +256,9 @@ await check("post-map: the cost table keeps ONLY the Total row", () => {
   assert.deepEqual(bound, [undefined, undefined, undefined, undefined, undefined, "computed.estimatedJobValue"]);
 });
 await check("post-map: a licence holder's slot never binds the applicant signer; the CCB on an MA form is rebound to the MA licence", () => {
-  assert.equal(built!.textFields["Licensed Construction Supervisor"], undefined);
+  // licences-by-type: the caption names the construction supervisor, so the slot takes THAT
+  // licence's holder (never the applicant signer); the fill names it when no holder is on file.
+  assert.equal(built!.textFields["Licensed Construction Supervisor"], "client.stateLicence.construction_supervisor.holder");
   assert.equal(built!.textFields["License Number"], "client.stateContractorLicense");
 });
 await check("post-map: declarant and printed name under one signature bound to different people are both dropped and named", () => {

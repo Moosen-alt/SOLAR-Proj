@@ -15,7 +15,9 @@
 
 import type { CaptionSide, LabelItem, WidgetCaptions, WidgetRect } from "./formTextLayer";
 import type { LicenceKind } from "../../shared/src/types";
-import { kindForSlot, LICENCE_KIND_SET } from "../../shared/src/licenceKinds";
+import { kindForSlot, LICENCE_KIND_SET, LICENCE_KINDS } from "../../shared/src/licenceKinds";
+
+const PERSON_KINDS: ReadonlySet<string> = new Set(LICENCE_KINDS.filter((k) => k.person).map((k) => k.kind));
 
 /** A form widget with where it sits and what is printed around it (inspectFormFields). */
 export interface PlacedWidget {
@@ -146,7 +148,8 @@ export function slotLicenceRef(w: Pick<PlacedWidget, "name" | "caption">, source
   const slot = kindForSlot(printed);
   let out = ref;
   if (slot && slot !== "generic" && slot !== ref.kind) out = { kind: slot, field: ref.field };
-  if (out.field === "number" && isLicenceHolderNameSlot(printed)) out = { ...out, field: "holder" };
+  // A PERSON's licence named on a holder NAME slot takes the person, never the number.
+  if (out.field === "number" && out.kind !== "generic" && PERSON_KINDS.has(out.kind) && isLicenceHolderNameSlot(printed)) out = { ...out, field: "holder" };
   return { ref: out, overridden: out.kind !== ref.kind || out.field !== ref.field };
 }
 
@@ -284,9 +287,24 @@ export function sanitizeAcroMap(input: {
       continue;
     }
     if (source === "computed.applicantSignerName" && (isLicenceHolderSlot(w.name) || isLicenceHolderSlot(w.caption))) {
+      // The holder of the licence the caption names, when it names one; else the operator's.
+      const kind = kindForSlot(String(w.caption || "").trim() || w.name);
+      if (kind === "construction_supervisor" || kind === "master_electrician") {
+        textFields[name] = typedLicenceSource(kind, "holder");
+        notes.push(`"${name}" is a licence holder's slot; bound to the ${kind.replace(/_/g, " ")} licence's holder, not the applicant signer.`);
+        continue;
+      }
       delete textFields[name];
       operatorItems.push({ field: name, label: `${widgetLabel(w)} (the licence holder's name)` });
       notes.push(`"${name}" is a licence holder's slot; the applicant signer is not the licence holder, so it was left for the operator.`);
+      continue;
+    }
+    // THE PRINTED CAPTION NAMES THE LICENCE (slotLicenceRef, the fill's own rule): a licence source
+    // of another kind is rebound to the caption's kind.
+    const slot = slotLicenceRef(w, source);
+    if (slot?.overridden && slot.ref.kind !== "generic") {
+      textFields[name] = typedLicenceSource(slot.ref.kind, slot.ref.field);
+      notes.push(`"${name}" prints "${widgetLabel(w)}"; its licence source was rebound to ${textFields[name]}.`);
       continue;
     }
     if (source === OREGON_CCB_SOURCE && !oregon) {
