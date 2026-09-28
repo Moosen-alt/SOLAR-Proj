@@ -47,7 +47,7 @@ const NAMES = [
   "esc", "humanize", "fmtDate", "statusBadge", "httpUrl", "portalHostname", "feeMoney",
   "FEE_SOURCE_TEXT", "FEE_CONFIDENCE", "feeConfidenceKey", "FEE_PAYMENT_METHOD", "renderFeeCharges", "feeFaceSourceHtml",
   "feeComparisonHtml", "feePortalRecordsHtml", "renderFeeSheetLine",
-  "TRACK_STATUS_CLASS", "TRACK_CHANNEL_BASIS", "linkifyText", "trackChannelHtml", "trackPrerequisitesHtml", "trackNextActionText",
+  "TRACK_STATUS_CLASS", "TRACK_CHANNEL_BASIS", "linkifyText", "trackChannelHtml", "OFF_TOOL_CHANNEL", "offToolChannelHtml", "trackPrerequisitesHtml", "trackNextActionText",
   "trackCardHtml", "utilityGroupTitle", "renderSubmittalTracks",
 ];
 const preamble = "const screenshotMisses = new Set(); const screenshotKey = (a, b, c) => `${a}:${b}:${c}`;";
