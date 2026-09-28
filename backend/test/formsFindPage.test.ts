@@ -330,6 +330,44 @@ try {
   check("E7 a prescriptive job's building-side slot takes the PRESCRIPTIVE application, never the structural one (ranked higher)", e7.status === "acquired" && e7.sourceUrl === K_PRESC
     && !requested.includes(K_STRUCT), JSON.stringify({ e7, requested }));
 
+  // ═══ F1 MUST-EXCLUDE — ANOTHER jurisdiction's site is never "the AHJ's own" (skeptic F1) ═══════════
+  // What the harvest finds is stored in the SHARED ahj_form_templates under THIS AHJ's name and its
+  // forms page written into THIS AHJ's shared KB notes. "Any .gov / any same-state .<st>.us" took a
+  // neighbouring town's application: another town's .gov, the state's own .gov, a same-state town's
+  // .ma.us. Each is served as a real forms page linking a real "Residential Application" PDF (so a
+  // door that admits it WOULD store it), and named both as the forms page and as search results.
+  const NEIGHBOURS = {
+    townGov: "https://www.newtonma.gov",
+    stateGov: "https://www.mass.gov",
+    townMaUs: "https://www.ci.newton.ma.us",
+  };
+  const nApp = (base: string) => `${base}/DocumentCenter/View/4400/Residential-Application`;
+  for (const [k, base] of Object.entries(NEIGHBOURS)) {
+    serveHtml(`${base}/forms`, civicPage("Applications", [[nApp(base).slice(base.length), "Residential Application"]]));
+    servePdf(nApp(base), await acroPdf(`NEIGHBOUR ${k} Residential Application`));
+  }
+  check("F1 UNIT MUST-EXCLUDE another town's .gov, the state's .gov and a same-state town's .ma.us are not the AHJ's forms site",
+    Object.values(NEIGHBOURS).every((b) => !catalog.isAhjFormsSite(new URL(b).host, ["City of Lexfield"], "MA")),
+    JSON.stringify(Object.values(NEIGHBOURS).map((b) => [b, catalog.isAhjFormsSite(new URL(b).host, ["City of Lexfield"], "MA")])));
+  check("F1 UNIT MUST-PASS the AHJ's own .gov and its own .ma.us are its forms site",
+    catalog.isAhjFormsSite("www.lexfieldma.gov", ["City of Lexfield"], "MA") && catalog.isAhjFormsSite("www.ci.lexfield.ma.us", ["City of Lexfield"], "MA")
+    && catalog.isAhjFormsSite("www.city.waltham.ma.us", ["City of Waltham"], "MA"));
+  const neighbourAhj: Record<string, string> = { townGov: "City of Lexfield", stateGov: "Town of Ashbury", townMaUs: "City of Corwin" };
+  for (const [k, base] of Object.entries(NEIGHBOURS)) {
+    const ahj = neighbourAhj[k];
+    researchFor.set(ahj, { formsPageUrl: `${base}/forms`, submissionMethod: "in-person",
+      searchResults: Object.values(NEIGHBOURS).map((b) => ({ url: nApp(b), title: "Residential Application" })) });
+    requested = [];
+    const f1 = await auto.ensureAhjFormTemplate(db, llm, mkJob(ahj, "Lexfield"), "permit_application", { formsPage: fp() });
+    const hosts = Object.values(NEIGHBOURS).map((b) => new URL(b).host);
+    check(`F1 MUST-EXCLUDE (${k} as the forms page) nothing on another jurisdiction's site is requested`, !requested.some((u) => hosts.includes(new URL(u).host)), JSON.stringify(requested));
+    check(`F1 MUST-EXCLUDE (${k}) nothing is stored under ${ahj}`, f1.status === "not_found" && rows(ahj).length === 0, JSON.stringify({ f1, rows: rows(ahj) }));
+    check(`F1 (${k}) the not-found says the named forms page is not the AHJ's own site`, new RegExp(`is not on ${ahj}'s own site, so it was not read`).test(f1.message), f1.message);
+    const nKb = kb.findKnowledgeForLearn(db, { state: "MA", ahj, utility: "" }).ahj;
+    check(`F1 MUST-EXCLUDE (${k}) no KB note carries another jurisdiction's forms page`, Boolean(nKb) && !hosts.some((h) => String(nKb?.notes || "").includes(h)) && !/Forms page:/.test(String(nKb?.notes || "")),
+      String(nKb?.notes));
+  }
+
   // ═══ G1 GO GENTLY — the download from a host we just read waits the polite gap ═══════════════════
   const GE = "https://www.gentleton.ma.us";
   const GE_APP = `${GE}/DocumentCenter/View/801/Residential-Application`;

@@ -892,8 +892,8 @@ export function classifyApplicationDocument(words: string, href: string): { disc
 }
 /**
  * The permit APPLICATION documents an AHJ's OWN page links, best first. Only a page on the AHJ's
- * own site is read for them (isOfficialAgencyHost — the agency-page predicate documentLinks uses —
- * and never a state's own site for a local AHJ), and only a link on THAT page's registrable domain
+ * own site is read for them (isAhjFormsSite — its own domain by name, never merely a .gov, and
+ * never a state's own site for a local AHJ), and only a link on THAT page's registrable domain
  * is taken: an off-site link (another town's form, a vendor), and a utility host (rule 5), never.
  */
 export function applicationFormLinks(pages: ReadPage[], names: string[], state?: string): Array<{ href: string; text: string; discipline: ApplicationDiscipline; score: number }> {
@@ -913,11 +913,17 @@ export function applicationFormLinks(pages: ReadPage[], names: string[], state?:
   }
   return out.sort((a, b) => b.score - a.score);
 }
-/** A site whose forms page may be read for THIS AHJ's application: an official agency host
- *  (isOfficialAgencyHost), never a permit / utility platform, and never a STATE's own site for a
- *  local AHJ (a state's forms are not the city's). */
+/** THE AHJ'S OWN SITE, for its forms — ONE predicate at every door of the form acquisition (the
+ *  forms page read, the links taken from it, the search results taken, the "Forms page:" KB note):
+ *  the AHJ's OWN DOMAIN by its name (isAgencyOwnDomain), never merely "a government host". What it
+ *  finds is stored in the SHARED ahj_form_templates under this AHJ's name and its URL written into
+ *  the AHJ's shared KB notes, so "any .gov / any same-state .<st>.us" (isOfficialAgencyHost — the
+ *  page-reading door's question) harvested a NEIGHBOURING town's application as this AHJ's
+ *  (www.newtonma.gov for the City of Waltham; forms-find skeptic F1, 2026-09-28). A county's or a
+ *  regional host whose name is not the AHJ's is a MISSED form, never a wrong one. Never a permit /
+ *  utility platform, and never a STATE's own site for a local AHJ (a state's forms are not the city's). */
 export function isAhjFormsSite(host: string, names: string[], state?: string): boolean {
-  if (!host || isUtilityPlatformUrl(`https://${host}/`) || !isOfficialAgencyHost(host, names, state)) return false;
+  if (!host || isUtilityPlatformUrl(`https://${host}/`) || !isAgencyOwnDomain(host, names, state)) return false;
   const hs = hostStateOf(host);
   if (hs && state && hs.state !== String(state).toLowerCase()) return false;
   return !(hs?.stateSite && !names.some((n) => stateAgencyOf(n)));

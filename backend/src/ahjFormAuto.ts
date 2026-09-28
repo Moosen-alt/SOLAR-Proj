@@ -29,7 +29,7 @@ import { iowaPvWorksheetTemplate, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorkshee
 import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
 import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
 import { PAGE_READ_MIN_GAP_MS, type PageReader } from "./agencyPageReader";
-import { applicationFormLinks, classifyApplicationDocument, documentSlugWords, isAgencyOwnDomain, isAhjFormsSite, DOCUMENT_URL, type ApplicationDiscipline } from "./permitPlatformCatalog";
+import { applicationFormLinks, classifyApplicationDocument, documentSlugWords, isAhjFormsSite, DOCUMENT_URL, type ApplicationDiscipline } from "./permitPlatformCatalog";
 import { isUtilityPlatformUrl, portalHostOf, registrableDomain } from "./portalChannel";
 
 // ---------------------------------------------------------------------------
@@ -589,12 +589,13 @@ function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research:
   if (!platform && !method && !research.submittalPortalUrl && !research.formsPageUrl) return;
   const notes = [
     research.submittalRequirements ? `Submittal requirements: ${research.submittalRequirements}` : "",
-    research.formsPageUrl ? `Forms page: ${research.formsPageUrl}` : "",
     research.notes || "",
   ].filter(Boolean).join(" · ");
   // THE FORMS PAGE IS KEPT (Waltham: the search's "why" was dropped, so nobody could see where it
-  // looked). As its own note segment, and only when it is on the AHJ's own site (the same predicate
-  // the harvest reads it under) — it steers the next search through knowledgeResearchHint.
+  // looked). In ONE place — its own note segment (formsPageUrl below), never in the free-text notes
+  // above — and only when it is on the AHJ's own site (isAhjFormsSite, the predicate the harvest
+  // reads it under): another town's forms page is never written into THIS AHJ's shared KB row
+  // (forms-find skeptic F1). It steers the next search through knowledgeResearchHint.
   const formsPageUrl = research.formsPageUrl && isAhjFormsSite(portalHostOf(research.formsPageUrl), [project.ahj], project.state) ? research.formsPageUrl : "";
   try {
     saveResearchedAhjProfile(db, { state: project.state, ahj: project.ahj }, {
@@ -620,8 +621,10 @@ function learnAhjPortalFromResearch(db: AppDb, project: ProjectRecord, research:
 // (permitPlatformCatalog.classifyApplicationDocument — DOCUMENT_URL, FEE_LINK, OTHER_FEE_KIND):
 //   (b) the forms page research returned, read ONCE through the lookup's polite page reader, when it
 //       is on the AHJ's own site (isAhjFormsSite) — its links on that site only (applicationFormLinks);
-//   (a) the search results the call received, on the forms page's domain or the AHJ's own domain
-//       (isAgencyOwnDomain — a search returns other towns' forms too).
+//   (a) the search results the call received, on the AHJ's own site (isAhjFormsSite again — a search
+//       returns other towns' forms too). ONE predicate for "the AHJ's own site" at every door: the
+//       forms page's REDIRECT target is never a second admission (a page that lands off-site admitted
+//       every search result on the landing domain).
 // A utility host is never a candidate (rule 5), and fetchPdf still decides what is a PDF.
 export const APPLICATION_FORM_TYPES = ["permit_application", "building_application", "electrical_application"];
 const MAX_PAGE_CANDIDATES = 3;
@@ -690,7 +693,6 @@ async function harvestApplicationCandidates(
     Number(disciplineFitsSlot(b.discipline, formType)) - Number(disciplineFitsSlot(a.discipline, formType)) || b.score - a.score;
   const notes: string[] = [];
   const fromPage: FormCandidate[] = [];
-  let formsDomain = "";
   const page = String(research.formsPageUrl || "");
   if (page) {
     const host = portalHostOf(page);
@@ -710,7 +712,6 @@ async function harvestApplicationCandidates(
         if (!read.ok || read.kind !== "html") {
           notes.push(`The forms page ${page} could not be read (${read.reason || read.kind}), so its links were not checked — not a finding about ${project.ahj}.`);
         } else {
-          formsDomain = registrableDomain(portalHostOf(read.finalUrl) || host);
           const links = applicationFormLinks([read], names, project.state).filter((l) => kindOk(l.text, l.href)).sort(rank);
           for (const l of links.slice(0, MAX_PAGE_CANDIDATES)) fromPage.push({ url: l.href, label: l.text, origin: "forms-page", discipline: l.discipline });
           notes.push(links.length
@@ -724,7 +725,7 @@ async function harvestApplicationCandidates(
   for (const r of research.searchResults ?? []) {
     const host = portalHostOf(r.url);
     if (!host || isUtilityPlatformUrl(r.url) || fromPage.some((c) => c.url === r.url)) continue;
-    if (!((formsDomain && registrableDomain(host) === formsDomain) || isAgencyOwnDomain(host, names, project.state))) continue;
+    if (!isAhjFormsSite(host, names, project.state)) continue;
     const doc = classifyApplicationDocument(r.title, r.url);
     if (!doc || !kindOk(r.title, r.url)) continue;
     fromSearch.push({ url: r.url, label: r.title, origin: "search-result", ...doc });
