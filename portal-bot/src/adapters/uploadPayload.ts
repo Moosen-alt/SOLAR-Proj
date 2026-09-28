@@ -88,8 +88,12 @@ export function removeUploadStaging(dir: string | null | undefined): void {
 /** The payload for setInputFiles / FileChooser.setFiles. `pdf` is the image-wrapped PDF when
  *  the slot refuses the image but takes a PDF (see imageToPdf.ts), else null. Falls back to
  *  the raw path only when the file cannot be read, letting Playwright report the real error. */
-export function uploadPayloadFor(filePath: string, pdf: Buffer | null): PreparedUpload {
-  const name = uploadDisplayName(filePath);
+export function uploadPayloadFor(filePath: string, pdf: Buffer | null, displayName?: string): PreparedUpload {
+  // A filled form is stored as "tmpl-<uuid>.pdf"; the portal's reviewer sees what it IS (D7's owed
+  // attachments pass "Marion County ... Application (E-01).pdf"). Same extension as the stored file.
+  const ext0 = path.extname(filePath) || ".pdf";
+  const named = displayName ? `${displayName.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120)}${ext0}` : "";
+  const name = named || uploadDisplayName(filePath);
   if (pdf) {
     const pdfName = pdfNameFor(name);
     if (pdf.byteLength < INLINE_UPLOAD_LIMIT) {

@@ -213,6 +213,9 @@ interface StageOptions {
   runApproval?: import("../../shared/src/portalSafety").RunApproval | null;
   // The run this stage IS (the approval's runId must equal it).
   runId?: string;
+  // THE DOCUMENTS THIS FILING OWES beyond the recording's uploads (docs plan D7; the backend's
+  // owedAttachmentsFor): attached through the page's recorded attachment row, one row each.
+  owedAttachments?: Array<{ docType: string; label: string }>;
   // OPERATOR-DELEGATED FINAL SUBMIT. Distinct from autoSubmit, which is the RecipeAdapter
   // replaying a TRUSTED recipe through its own recorded submit step. This is the operator
   // saying "file it now, on my behalf" for a HAND-CODED adapter — the equivalent of them
@@ -611,6 +614,7 @@ export async function stageWithRecipe(
     autoSubmit: options.autoSubmit, beforeUpload: options.beforeUpload,
     runApproval: options.runApproval ?? null, runId: options.runId,
     onProgress: options.onProgress,
+    owedAttachments: options.owedAttachments,
   }), project, files, options));
 }
 

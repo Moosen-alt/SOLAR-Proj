@@ -70,6 +70,7 @@ export function looksLikeProjectData(label: string, value: string): boolean {
 import { rankAddressVersions } from "../addressVersion";
 import { imageToPdfBytes, shouldConvertToPdf } from "../imageToPdf";
 import { removeUploadStaging, uploadPayloadFor, type PreparedUpload } from "./uploadPayload";
+import { attachmentTypeFor } from "./attachmentTypes";
 import { exactUploadDocType, fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
 import { reviewComparison, scrapeReviewScreen as scrapeReviewScreenShared, type ReviewMismatch } from "../reviewScreenScraper";
 import { sweepEmptyRequiredControls, type EmptyRequired } from "../requiredControlSweep";
@@ -458,6 +459,12 @@ export class RecipeAdapter extends BasePortalAdapter {
   private uploadsPerformed: Array<{ label: string; fileName: string }> = [];
   /** runs-finish item 4: how many of uploadsPerformed a commit click has confirmed (or an advance left behind). */
   private uploadsSettledUpTo = 0;
+  /** D7: the name the portal's reviewer sees for an owed document's upload (by docType). */
+  private uploadNames = new Map<string, string>();
+  /** D7: owed documents already tried this run (one row per document, never twice). */
+  private owedAttempted = new Set<string>();
+  /** D4 — WHAT WENT UP: every owed document's outcome this run, in the portal's own list's terms. */
+  private attachmentLedger: Array<{ docType: string; label: string; status: "attached" | "already listed" | "not attached"; detail: string }> = [];
   /** runs-finish item 3: the run ended on a page NOT verified as the review page — where, in the
    *  page's own words. stopAtReview then says so instead of "staged to the review screen". */
   private stoppedBeforeReview = "";
@@ -524,6 +531,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       /** Live progress for a dashboard: every wait longer than ~10 s says what it is waiting on
        *  (F3 — the operator watched a frozen login screen for three minutes). Non-PII. */
       onProgress?: (p: RecipeProgress) => void;
+      /** THE DOCUMENTS THIS FILING OWES beyond what the recording uploads (docs plan D7): the AHJ's
+       *  required list for THIS track, on file, in docsByType (the backend's owedAttachmentsFor).
+       *  Attached through the page's own recorded attachment row, one row per document. */
+      owedAttachments?: Array<{ docType: string; label: string }>;
     } = {},
   ) {
     super();
@@ -1749,7 +1760,13 @@ export class RecipeAdapter extends BasePortalAdapter {
       if (performed && step.action === "click" && this.uploadsPerformed.length > this.uploadsSettledUpTo) {
         const said = `${String(step.note ?? "")} ${String(step.selector?.name ?? step.selector?.text ?? "")}`;
         if (/^advance\b/i.test(String(step.note ?? ""))) this.uploadsSettledUpTo = this.uploadsPerformed.length;
-        else if (/\b(save|upload|attach|commit)/i.test(said)) await this.timed("upload-commit", () => this.confirmUploadsListed(`"${String(step.note ?? "the save").slice(0, 50)}"`));
+        else if (/\b(save|upload|attach|commit)/i.test(said)) {
+          await this.timed("upload-commit", () => this.confirmUploadsListed(`"${String(step.note ?? "the save").slice(0, 50)}"`));
+          // THE DOCUMENTS THE FILING OWES (docs plan D7): the same recorded row takes each owed
+          // document the recording never uploaded — one row per document, then this same commit.
+          const row = !pastReview ? this.recordedAttachmentRow(stepIdx) : null;
+          if (row) await this.timed("owed-attachments", () => this.attachOwedDocuments(row, step));
+        }
       }
       // Remember whether this step entered data, so the next advancing click waits for the
       // portal's autosave to commit (prevents blank-draft saves on PowerClerk).
@@ -1935,6 +1952,8 @@ export class RecipeAdapter extends BasePortalAdapter {
     // it in. An earlier draft of this call sat above that loop and would have withdrawn the
     // warning on exactly the page the warning was about.
     this.dischargeCoveredWarning();
+    // D4: every owed document has an outcome — an owed one no attachment row carried is named.
+    this.settleOwedLedger();
     // THE REVIEW-PAGE LOCKDOWN (filingBackstop.ts): the run's last write to the page (the final
     // re-assert and gap-fill above, which a portal autosaves on blur) is done. From here until
     // fillApplication hands the page to a person (dispose), every state-changing request is
@@ -1947,6 +1966,7 @@ export class RecipeAdapter extends BasePortalAdapter {
       requiredStillEmpty: this.requiredStillEmpty, unresolvedFields: this.unresolvedFields, fieldsVerified: this.fieldsVerified, fieldsUnverified: this.fieldsUnverified, requiredFieldsSeen: this.requiredFieldsSeen, stoppedAtPayment: this.stoppedAtPayment, pageShotDir: this.pageShotDir,
       outcomeShotPath: this.outcomeShotPath,
       reviewFieldsSeen: review.fieldsSeen, reviewFieldsConfirmed: review.confirmed, reviewMismatches: review.mismatches,
+      attachmentLedger: this.attachmentLedger,
     };
     // HONEST STATUS (runs-finish item 3). Live run 191e45c8 said "stopped at review" on Accela's
     // attachments page with 0 of 5 project values found, and was recorded ready-to-submit. A run
@@ -3926,7 +3946,7 @@ export class RecipeAdapter extends BasePortalAdapter {
           ? await imageToPdfBytes(filePath).catch(() => null)
           : null;
         // The SAME payload builder the unrecorded-upload sweep uses (uploadPayload.ts).
-        const file = this.stageUpload(uploadPayloadFor(filePath, pdfBuf));
+        const file = this.stageUpload(uploadPayloadFor(filePath, pdfBuf, step.docType ? this.uploadNames.get(step.docType) : undefined));
         // Custom Browse/Upload widgets tag their controls with data-al-upl at record time;
         // that attribute is gone on a fresh page, so re-tag before resolving the selector.
         //
@@ -4027,6 +4047,115 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  second level such as co.uk), the whole host for an IP or a single-label host. */
   private static siteOf(url: string): string {
     return siteOfUrl(url);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // docs plan D7 / D4: every owed document through the page's own attachment row, and the ledger.
+  // ---------------------------------------------------------------------------------------------
+
+  /** The recorded ATTACHMENT ROW whose commit is step `commitIdx`: the upload step before it on the
+   *  same page (no advance / goto between), and the Description fill and Type select recorded
+   *  between the two. null when the commit does not close an upload row. */
+  private recordedAttachmentRow(commitIdx: number): { upload: RecipeStep; desc: RecipeStep | null; type: RecipeStep | null } | null {
+    const steps = this.recipe.steps;
+    let desc: RecipeStep | null = null;
+    let type: RecipeStep | null = null;
+    for (let i = commitIdx - 1; i >= 0 && i >= commitIdx - 8; i--) {
+      const s = steps[i];
+      if (!s) break;
+      if (s.action === "goto" || (s.action === "click" && /^advance\b/i.test(String(s.note ?? "")))) return null;
+      if (s.action === "upload") return { upload: s, desc, type };
+      if (s.action === "fill" && !desc && /description|textarea/i.test(`${s.note ?? ""} ${s.selector?.css ?? ""}`)) desc = s;
+      else if (s.action === "select" && !type && /type|select/i.test(`${s.note ?? ""} ${s.selector?.css ?? ""}`)) type = s;
+    }
+    return null;
+  }
+
+  /** The live options of the recorded Type select (its LAST match on the page — the newest row). */
+  private async typeOptionsOf(typeStep: RecipeStep): Promise<string[]> {
+    const css = String(typeStep.selector?.css ?? "select");
+    const got = await this.page.evaluate((sel: string) => {
+      const all = Array.from(document.querySelectorAll(sel)).filter((e) => e.tagName === "SELECT") as HTMLSelectElement[];
+      const el = all[all.length - 1];
+      return el ? Array.from(el.options).map((o) => String(o.textContent || o.label || "").replace(/\s+/g, " ").trim()) : [];
+    }, css).catch(() => [] as string[]) as string[];
+    return Array.isArray(got) ? got : [];
+  }
+
+  /** Does the page's own text list this file (the attachment table)? */
+  private async pageListsFile(fileName: string): Promise<boolean> {
+    if (!fileName) return false;
+    return await this.page.evaluate((n: string) => String(document.body?.innerText || "").toLowerCase().includes(n.toLowerCase()), fileName).catch(() => false) as boolean;
+  }
+
+  /** ATTACH EVERY OWED DOCUMENT THROUGH THE RECORDED ROW (docs plan D7). For each document the
+   *  backend says this filing owes (the AHJ's required list for THIS track, on file) that the
+   *  recording never uploads: its Type is chosen by the DOCUMENT against the row's live options
+   *  (attachmentTypes.ts; never the owner-builder "Homeowner Acknowledgement") BEFORE anything is
+   *  uploaded — no fitting Type, nothing attached, named; then the recorded upload → Description →
+   *  Type → the same commit click, and the page's list must show it. Never on the review page. Each
+   *  outcome goes to the ledger (D4), which the approved final submit refuses on while anything owed
+   *  is not attached. */
+  private async attachOwedDocuments(row: { upload: RecipeStep; desc: RecipeStep | null; type: RecipeStep | null }, commitStep: RecipeStep): Promise<void> {
+    if (!this.page || typeof this.page.evaluate !== "function") return;
+    const recorded = new Set(this.recipe.steps.filter((s) => s.action === "upload" && s.docType).map((s) => String(s.docType)));
+    const owed = (this.options.owedAttachments ?? []).filter((o) => o && o.docType && !recorded.has(o.docType) && !this.owedAttempted.has(o.docType));
+    if (!owed.length) return;
+    const at = await this.pageSafetyContext();
+    if (at.reviewPage === true) return; // the review page is never written to (acfcd99 rule 4b)
+    const slotLabel = String(row.upload.note ?? "").split(":").slice(1).join(":").trim();
+    for (const o of owed) {
+      this.owedAttempted.add(o.docType);
+      const label = String(o.label || o.docType).replace(/\s+/g, " ").trim();
+      const filePath = this.docsByType[o.docType];
+      const fail = (detail: string): void => {
+        this.attachmentLedger.push({ docType: o.docType, label, status: "not attached", detail });
+        this.driftWarnings.push(`NOT ATTACHED: ${label} — ${detail}. Attach it by hand on the portal's attachment step before submitting.`);
+      };
+      if (!filePath) { fail("no file of it is on hand for this filing"); continue; }
+      let pick = "";
+      if (row.type) {
+        const options = await this.typeOptionsOf(row.type);
+        pick = attachmentTypeFor(o.docType, options) ?? "";
+        if (!pick) { fail(`no Type on the portal's list fits it (${options.filter(Boolean).slice(0, 10).join(", ") || "no options read"})`); continue; }
+      }
+      this.uploadNames.set(o.docType, label);
+      const fileName = (() => { const p = uploadPayloadFor(filePath, null, label); removeUploadStaging(p.tempDir); return typeof p.file === "string" ? path.basename(p.file) : p.file.name; })();
+      if (await this.pageListsFile(fileName)) {
+        this.attachmentLedger.push({ docType: o.docType, label, status: "already listed", detail: `"${fileName}" is already on the portal's list` });
+        this.agingNotes.push(`owed document already listed on the portal: ${label} ("${fileName}") — not attached twice`);
+        continue;
+      }
+      await this.waitForLoadingMaskClear(`attaching ${label.slice(0, 40)}`);
+      const uploaded = await this.executeStep({ ...row.upload, docType: o.docType, note: `upload ${o.docType}: ${slotLabel}` }, false).catch(() => false);
+      if (!uploaded) { fail("the page's file control did not take it"); continue; }
+      if (row.desc) await this.executeStep({ ...row.desc, value: label.slice(0, 200) }, false).catch(() => false);
+      if (row.type && !(await this.executeStep({ ...row.type, value: pick }, false).catch(() => false))) {
+        fail(`its Type "${pick}" could not be chosen on the row`);
+        continue;
+      }
+      await this.waitForLoadingMaskClear(`saving ${label.slice(0, 40)}`);
+      const committed = await this.executeStep(commitStep, false).catch(() => false);
+      await this.confirmUploadsListed(`attaching "${label.slice(0, 40)}"`);
+      if (committed && await this.pageListsFile(fileName)) {
+        this.attachmentLedger.push({ docType: o.docType, label, status: "attached", detail: `"${fileName}"${pick ? ` as "${pick}"` : ""}` });
+        this.agingNotes.push(`attached the owed ${label} ("${fileName}"${pick ? `, Type "${pick}"` : ""}) — the portal lists it`);
+      } else {
+        fail(committed ? `the portal's attachment list does not show "${fileName}" after the save` : "the save did not go through");
+      }
+    }
+  }
+
+  /** Owed documents with no outcome yet at the end of the run: the recording has no attachment row
+   *  the run passed through, so nothing could carry them. Named, never silent. */
+  private settleOwedLedger(): void {
+    const recorded = new Set(this.recipe.steps.filter((s) => s.action === "upload" && s.docType).map((s) => String(s.docType)));
+    for (const o of this.options.owedAttachments ?? []) {
+      if (!o?.docType || recorded.has(o.docType) || this.attachmentLedger.some((e) => e.docType === o.docType)) continue;
+      const label = String(o.label || o.docType).replace(/\s+/g, " ").trim();
+      this.attachmentLedger.push({ docType: o.docType, label, status: "not attached", detail: "the run passed no attachment row that could carry it" });
+      this.driftWarnings.push(`NOT ATTACHED: ${label} — the run passed no attachment row that could carry it. Attach it by hand on the portal's attachment step before submitting.`);
+    }
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -4400,6 +4529,14 @@ export class RecipeAdapter extends BasePortalAdapter {
     const out = may ? [] : finalSubmitRefusals(ctx);
     if (!may && !out.length) out.push("the final-submit gate refused this click");
     if (this.finalSubmitAttempted) out.push("the final submit was already attempted in this run");
+    // D4: NEVER FILE WITH AN OWED DOCUMENT MISSING. Every document the filing owes that the recording
+    // does not upload must be ATTACHED or ALREADY LISTED on the portal before the approved click.
+    {
+      const recorded = new Set(steps.filter((s) => s.action === "upload" && s.docType).map((s) => String(s.docType)));
+      const missing = (this.options.owedAttachments ?? []).filter((o) => o?.docType && !recorded.has(o.docType)
+        && !this.attachmentLedger.some((e) => e.docType === o.docType && e.status !== "not attached"));
+      if (missing.length) out.push(`${missing.length} owed document(s) not attached on the portal (${missing.map((o) => String(o.label || o.docType).slice(0, 60)).join("; ")})`);
+    }
     const burned = approvedRunBurn(ctx.runId);
     if (burned && !this.finalSubmitAttempted) out.push(`this run's approval (runId ${ctx.runId.slice(0, 40)}) was already used in this process — ${burnWords(burned)}; one approval covers one filing attempt, a new run needs a new approval`);
     return out;

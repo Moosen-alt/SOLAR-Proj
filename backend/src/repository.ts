@@ -78,7 +78,7 @@ import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
 import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor } from "./permitProcess";
 import { bindRecipeForReplay, describeReplayBinding } from "./recipeReplayBinding";
-import { agencyListStatusResolver, documentInventory, owedMissingDocuments, type DocumentInventory, type DocPresence } from "./requiredDocuments";
+import { agencyListStatusResolver, documentInventory, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import { agencyListReplacesLine, issuingAgencyDocumentList } from "./applicationDocsAgency";
 import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 // Static cycle (nextStep imports repository), used at CALL time only on both sides — the same
@@ -7315,6 +7315,25 @@ export function packagedDocumentsByType(db: AppDb, project: ProjectRecord, track
   return submissionDocumentsByType(db, project, track);
 }
 
+/** THE DOCUMENTS THIS FILING OWES THE PORTAL beyond the plan set (docs plan D7). The AHJ's required
+ *  list (requiredListCheck: the per-job lookup's issuing-agency forms, the state checklist, the KB's
+ *  lines) — each item ON FILE in THIS track's payload (docsByType is already track-scoped, so the
+ *  building B-01S never rides the electrical permit, and a utility bill never rides a permit). One
+ *  entry per document; the plan set (the recording uploads it) and generated worksheets excluded. */
+export function owedAttachmentsFor(db: AppDb, project: ProjectRecord, docsByType: Record<string, string>): Array<{ docType: string; label: string }> {
+  const out: Array<{ docType: string; label: string }> = [];
+  let items: Array<{ text: string; docTypes: string[]; present: boolean }> = [];
+  try { items = requiredListCheck(db, project, documentInventory(db, project)).items as typeof items; } catch { return []; }
+  for (const it of items) {
+    if (!it?.present || !Array.isArray(it.docTypes)) continue;
+    const docType = it.docTypes.find((t) => docsByType[t] && t !== "plan_set" && !/^generated_/.test(t));
+    if (!docType || out.some((o) => o.docType === docType)) continue;
+    const label = String(it.text || docType).split(" — ")[0].replace(/^[^:]{0,100}\(issues the [^:]*?\):\s*/i, "").trim() || docType;
+    out.push({ docType, label });
+  }
+  return out;
+}
+
 /**
  * THE DOCUMENT GATE'S FILTER — the one prepareSubmission turns into its 409.
  *
@@ -8218,6 +8237,8 @@ export async function prepareSubmission(
     // run id it names — portal-bot re-checks both, with the environment, at the click.
     runApproval: resolvedAutoSubmit ? runApproval : null,
     runId,
+    // THE DOCUMENTS THIS FILING OWES beyond the plan set (docs plan D7) - permit tracks only.
+    owedAttachments: track && track !== "nem" ? owedAttachmentsFor(db, detail.project, docsByType) : [],
     // Operator-delegated submit for the HAND-CODED adapters: the same decision. With no recipe
     // (the hand-coded and self-seed paths) the decision refuses, so this is false there.
     allowFinalSubmit: allowFinalSubmit === true && resolvedAutoSubmit,
