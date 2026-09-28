@@ -144,10 +144,6 @@ export function isClientFacingOutcome(outcome: string): boolean {
 }
 
 /**
- * The client-facing wording for one status change, or null when this outcome is not something a
- * client is told about. The null is the gate — it keeps internal states internal.
- */
-/**
  * WHAT THE PERMIT STRUCTURE LETS US SAY TO A CLIENT (leak sweep unknown-as-fact-client-email-combo-
  * default, 2026-09-28). A job whose structure is NOT confirmed gets ONE 'combo' track by default
  * (submittalTracks.requiredTracks) — a template default, not a fact — and its target's permit_type
@@ -186,6 +182,10 @@ function otherTradeIssued(db: AppDb, projectId: string, permitType: string): boo
     && trade(text(r.permit_type).toLowerCase()) !== trade(mine));
 }
 
+/**
+ * The client-facing wording for one status change, or null when this outcome is not something a
+ * client is told about. The null is the gate — it keeps internal states internal.
+ */
 export function clientUpdateFor(
   db: AppDb,
   project: Pick<ProjectRecord, "id" | "ahj" | "utility"> & Partial<ProjectRecord>,
