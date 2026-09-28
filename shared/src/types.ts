@@ -3609,6 +3609,13 @@ export interface CitedFact<T> {
   origin: PermitProcessOrigin;
   /** When value is null: what was searched and why no answer was accepted. */
   notFound?: string;
+  /** A PORTAL a source NAMED but the lookup's door did not keep (value null): the URL as claimed.
+   *  "Named, not kept" is still evidence of where the AHJ files — the statewide fallback is never
+   *  taken over it (permitProcess.statewidePortalFor). Older rows carry it only in notFound's words. */
+  claimed?: string;
+  /** A named portal that REDIRECTS to its official host (lookup D3): kept as the final URL, with the
+   *  URL the source named and the hops our one polite read saw. */
+  redirect?: { from: string; finalUrl: string; chain: string[]; status: number };
 }
 export type PermitProcessDiscipline = "structural" | "electrical" | "combo" | "other";
 export interface PermitFeeAnswer {

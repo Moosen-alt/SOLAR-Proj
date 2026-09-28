@@ -109,7 +109,8 @@ import { redactCaptureText, readbackMatches, detectChallengeFrame, frameSelector
 import { performLogin, portalErrorPage } from "./loginFlow";
 import { chooseCorrectionForm, correctionFormSelector, isRefusal, scanProjectForms, type ProjectFormRow } from "./correctionForm";
 import { type ExtractedField, EXTRACT_SEL, extractFieldsInPage, toExtractedField, dismissPageModals, clearPageOverlays, equipmentMakeCandidates, pageFingerprintOf, collectValidationErrorsFrom, acaApplyEntryFrom, advanceSignatureOf } from "./autoLearnAdapter";
-import { tagUploadControls } from "./autoLearnAdapter";
+import { tagUploadControls, visibleBodyText } from "./autoLearnAdapter";
+import { portalSaysNotServed } from "../../../shared/src/portalNotServed";
 
 // RecipeAdapter — replays a recorded portal recipe (see portal_recipes / the recorder).
 // Works for ANY AHJ or utility portal an admin has taught by recording. It substitutes
@@ -1283,6 +1284,17 @@ export class RecipeAdapter extends BasePortalAdapter {
       {
         const bsStop = this.backstopStop();
         if (bsStop) return fail(bsStop, { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: Math.max(0, stepIdx - 1), trace });
+      }
+      // THE PORTAL SAYS THIS ADDRESS IS NOT SERVED HERE (portal-truth D5): after every step that
+      // moved the page (a click, a goto), ask the one predicate of the page's visible text. A replay
+      // that lands on "No Building services were returned for this address" stops here, named, with
+      // the portal's own words in data.notServed — the backend refuses the recipe for this entity.
+      if (stepIdx > 0 && ["click", "goto"].includes(String(this.recipe.steps[stepIdx - 1]?.action))) {
+        const said = portalSaysNotServed(await visibleBodyText(this.page));
+        if (said) {
+          return fail(`Stopped: the portal says this address is not served there — "${said}". This is not where this job's permit is filed; nothing was filed.`,
+            { executed, skipped, healedSteps: this.healedSteps, driftWarnings: this.driftWarnings, agingNotes: this.agingNotes, guardRefusals: this.guardRefusals, failedStepIndex: stepIdx - 1, trace, notServed: said });
+        }
       }
       const recordedStep = this.recipe.steps[stepIdx];
       this.currentStepIdx = stepIdx;
