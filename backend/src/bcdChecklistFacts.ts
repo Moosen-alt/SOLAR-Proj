@@ -1,5 +1,6 @@
 import type { ProjectRecord } from "../../shared/src/types";
 import { assumedRoofLayersNote, classifyRoofCovering, oregonRoofingRow, oregonRoofingRowQualifies } from "./roofCovering";
+import { structureDescriptionOf } from "./applicationDocsAgency";
 type Answer = "Yes" | "No" | "";
 type Fact = boolean | null;
 const all = (...v: Fact[]): Fact => v.includes(false) ? false : v.includes(null) ? null : true;
@@ -238,7 +239,9 @@ export function formFactQuestions(
     }
     // The module-height row is assumed Yes when unknown (operator ruling 2026-09-27) — not asked.
     // An explicit answer stored under moduleHeightFiguresCompliant (from an earlier intake) still wins.
-    if (!has("structureDescription")) {
+    // THE STRUCTURE is asked only when neither a person nor the plan set answers it (operator ruling
+    // 2026-09-28 — applicationDocsAgency.structureDescriptionOf, the one structure answer).
+    if (!structureDescriptionOf(s).value) {
       out.push({ key: "structureDescription", label: "What structure is the array installed on?", options: STRUCTURE_DESCRIPTION_OPTIONS, kind: "form-fact" });
     }
   }

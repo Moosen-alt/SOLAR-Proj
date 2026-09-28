@@ -40,6 +40,7 @@ import { documentFetchDisabled } from "./documentFetch";
 import {
   agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce,
   applicationKindForPath, explicitSingleFamilyAnswer, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
+  structureDescriptionOf,
   TRACK_FORM_TYPES, trackForFormType, tracksIssuedByOther,
 } from "./applicationDocsAgency";
 
@@ -1117,7 +1118,31 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
       ctx.snapshot.homeownerMailingCityStateZip = cityStateZip;
     }
   }
+  // THE STRUCTURE THE ARRAY IS ON, FROM THE PLAN SET when no person answered it (operator ruling
+  // 2026-09-28; applicationDocsAgency.structureDescriptionOf — the answer formFactQuestions reads to
+  // decide whether to ask). Every form's "snapshot.structureDescription" box (BCD 5952 "Structure
+  // description") prints it; the fill note names its evidence (structureFillNote).
+  const structure = structureDescriptionOf(ctx.snapshot);
+  if (!str(ctx.snapshot.structureDescription) && structure.source === "plan") ctx.snapshot.structureDescription = structure.value;
   return ctx;
+}
+
+/** Sources that read the project's structure answer — a form mapping any of them shows the
+ *  plan-set evidence when the answer was derived rather than given. */
+const STRUCTURE_SOURCES = new Set(["snapshot.structureDescription", "computed.singleFamilyCategory", "computed.constructionCategory",
+  "computed.residentialCategory", "computed.structureSfdOrAccessory"]);
+function structureFillNote(def: AhjFormDefinition, ctx: FillContext): string {
+  const sources = [
+    ...Object.values(def.textFields ?? {}), ...Object.values(def.requiredFields ?? {}),
+    ...Object.values(def.checkboxes ?? {}).map((r) => r?.source), ...Object.values(def.radioGroups ?? {}).map((r) => r?.source),
+    ...(def.overlayFields ?? []).flatMap((f) => [f?.source, f?.onlyIf?.source]),
+  ].map((v) => String(v ?? ""));
+  if (!def.recoverPrescriptiveCheckboxes && !sources.some((v) => STRUCTURE_SOURCES.has(v))) return "";
+  // The PROJECT's snapshot (buildContext's overlay writes the derived value into ctx.snapshot, where it
+  // would read as a person's answer).
+  const d = structureDescriptionOf((ctx.project?.parserSnapshot ?? {}) as Record<string, unknown>);
+  if (d.source !== "plan") return "";
+  return `Structure: ${d.value} — from the plan set (${d.basis}; operator ruling 2026-09-28). A different answer on the project (the structure question, or Manual entry → Structure description) replaces it.`;
 }
 
 /** The module datasheet's extracted text (the listing agency is read from it — never from the
@@ -1609,7 +1634,9 @@ export async function fillLoadedForm(
   // named as the operator's item (listed with the blanks, so the form reads "needs details").
   const unsignedLines = unsignedLicenceHolderLines(def, ctx);
   missingRequired.push(...unsignedLines);
-  const completionMessage = [checklistMessage, operatorMissing.length ? `Still needs: ${operatorMissing.join("; ")}.` : "",
+  // A structure answer the PLAN SET gave (no person did) is said with the words that decided it.
+  const structureNote = structureFillNote(def, ctx);
+  const completionMessage = [checklistMessage, structureNote, operatorMissing.length ? `Still needs: ${operatorMissing.join("; ")}.` : "",
     unsignedLines.length ? `Left unsigned: ${unsignedLines.join("; ")}.` : "",
     officeMissing.length ? `From the planning / land-use office (when it applies): ${officeMissing.join("; ")}.` : "",
     agencyMissing.length ? `Left for the agency to compute: ${agencyMissing.join("; ")}.` : "",

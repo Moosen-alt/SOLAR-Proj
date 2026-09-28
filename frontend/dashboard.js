@@ -3666,6 +3666,7 @@ function renderRecordPortal() {
     if ($("manualPermitPathHint")) $("manualPermitPathHint").textContent = choice.hint;
   }
   setIfIdle("manualStructureType", snap.structureTypeOverride ? String(snap.structureTypeOverride) : "unknown");
+  setIfIdle("manualStructureDescription", snap.structureDescription ? String(snap.structureDescription) : "");
   setIfIdle("manualHomeownerEmail", snap.homeownerEmail != null ? String(snap.homeownerEmail) : "");
   setIfIdle("manualHomeownerPhone", snap.homeownerPhone != null ? String(snap.homeownerPhone) : "");
   setIfIdle("manualDescription", desc);
@@ -3696,6 +3697,16 @@ async function saveManualEntry() {
   const structureTypeChoice = ($("manualStructureType")?.value || "").trim();
   const structureTypeOnFile = String(state.detail?.project?.parserSnapshot?.structureTypeOverride || "unknown");
   if (structureTypeChoice && structureTypeChoice !== structureTypeOnFile) payload.structureTypeOverride = structureTypeChoice;
+  // STRUCTURE DESCRIPTION (the building the array is on) — a person's answer, which wins over the
+  // plan-set derivation (operator ruling 2026-09-28). Sent only when it differs from what is on file;
+  // clearing it ("") hands the answer back to the plan set.
+  // An answer on file that none of the options spells (the select shows it blank) is never wiped by
+  // saving another field.
+  const structureDescSel = $("manualStructureDescription");
+  const structureDescChoice = (structureDescSel?.value || "").trim();
+  const structureDescOnFile = String(state.detail?.project?.parserSnapshot?.structureDescription || "").trim();
+  const structureDescShown = !structureDescOnFile || Array.from(structureDescSel?.options || []).some((o) => o.value === structureDescOnFile);
+  if (structureDescSel && structureDescChoice !== structureDescOnFile && (structureDescShown || structureDescChoice)) payload.structureDescription = structureDescChoice;
   if (email) payload.homeownerEmail = email;
   if (phone) payload.homeownerPhone = phone;
   if (desc) payload.projectDescriptionText = desc;

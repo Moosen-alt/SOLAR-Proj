@@ -395,6 +395,108 @@
     return m ? m[0] : null;
   }
 
+  // -------------------------------------------------------------------------
+  // WHICH BUILDING CARRIES THE ARRAY — the structure description, derived from the plan set
+  // (operator ruling 2026-09-28: "Single family most of the time, but can be an ADU/Accessory/garage
+  // you can see it on the plan-set how its laid out"). THE ONE DERIVATION: the parser page calls it
+  // when it saves (structureFromPlan / structureFromPlanBasis on the project) and the backend loads
+  // THIS FILE to derive the same answer at read time for projects already on file
+  // (backend/src/applicationDocsAgency.ts structureDescriptionOf) — one regex family, two callers.
+  //
+  // The ARRAY'S building decides, never every structure on the lot: "(E) SHED" or "EXISTING
+  // DETACHED GARAGE" merely drawn on a site plan beside "<NAME> RESIDENCE" is still a single-family
+  // dwelling. A garage counts only when the text says DETACHED (an attached garage is the house);
+  // "ARRAY ON GARAGE" alone cannot tell, so it is left for the question. An answer is one of the
+  // five options of the BCD 5952 structure question, or '' (no evidence, or evidence that
+  // disagrees — still asked). The basis quotes only the matched words, never the text around them
+  // (a title block's "<NAME> RESIDENCE" would carry the homeowner's name).
+  const STRUCTURE_OPTIONS = ['Single-family dwelling', 'Two-family dwelling (duplex)', 'Townhouse', 'Manufactured home', 'Accessory building (garage/shed)'];
+  // The subject is the ARRAY — never a bare "PANEL", which on a plan set is as often the electrical
+  // panel ("SUBPANEL AT DETACHED GARAGE" is not an array on the garage).
+  const ARRAY_ON = String.raw`(?:ARRAY|MODULES?|\bPV\b|(?:PV|SOLAR)\s+PANELS?|(?:PV|SOLAR)\s+SYSTEM)\s+(?:(?:TO\s+BE\s+)?(?:MOUNTED|INSTALLED|LOCATED|PLACED)\s+)?(?:ON|AT|OVER|ATOP)\s+(?:THE\s+)?(?:ROOF\s+OF\s+(?:THE\s+)?)?(?:\(?[NE]\)?\s+)?(?:NEW\s+|EXISTING\s+)?`;
+  const ARRAY_ON_ACCESSORY = new RegExp(`${ARRAY_ON}(?:DETACHED\\s+(?:GARAGE|STRUCTURE|BUILDING|SHOP|CARPORT)|SHEDS?|(?:POLE\\s+)?BARNS?|CARPORTS?|ADU|ACCESSORY\\s+(?:DWELLING(?:\\s+UNIT)?|BUILDING|STRUCTURE)|WORKSHOP|OUTBUILDING|SHOP)\\b`, 'i');
+  const ARRAY_ON_ATTACHED_GARAGE = new RegExp(`${ARRAY_ON}ATTACHED\\s+GARAGE\\b`, 'i');
+  const ARRAY_ON_GARAGE = new RegExp(`${ARRAY_ON}GARAGE\\b`, 'i');
+  // WHETHER THE HOUSE IS A MANUFACTURED HOME is NOT read here: the server has the one predicate for
+  // it (codeReviewRules.structureType — code titles, disclaimers and unchecked boxes are not an
+  // answer), and the caller passes its verdict as opts.manufactured ('yes' / 'no'). With no verdict
+  // (the parser page), text that so much as MENTIONS one makes this abstain (defer) rather than read
+  // a single-family dwelling over it.
+  const MANUFACTURED_MENTION = /\b(?:MANUFACTURED|MOBILE)\s+(?:HOMES?|DWELLINGS?|HOUSING)\b/i;
+  const MULTI_UNIT_G = new RegExp(MULTI_UNIT.source, 'gi');
+  /** { option, basis, ambiguous, defer } from the plan text alone. ambiguous: the text names something
+   *  that makes the building uncertain (an ADU, an undifferentiated garage, three or more units) — no
+   *  weaker evidence (a dwelling-unit count) may answer over it. defer: only the manufactured-home
+   *  predicate can settle it (no verdict was given). */
+  function structureFromText(planText, manufactured, manufacturedBasis) {
+    const t = clean(planText);
+    const none = { option: '', basis: '', ambiguous: false, defer: false };
+    if (!t) return manufactured === 'yes' ? { option: STRUCTURE_OPTIONS[3], basis: manufacturedBasis || 'the structure type reads manufactured home', ambiguous: false, defer: false } : none;
+    const out = (option, basis, ambiguous) => ({ option, basis, ambiguous: Boolean(ambiguous), defer: false });
+    const acc = t.match(ARRAY_ON_ACCESSORY);
+    if (acc) return out(STRUCTURE_OPTIONS[4], `the plan set reads "${acc[0].toUpperCase()}"`);
+    if (!ARRAY_ON_ATTACHED_GARAGE.test(t)) {
+      const g = t.match(ARRAY_ON_GARAGE);
+      if (g) return out('', `the plan set reads "${g[0].toUpperCase()}" without saying attached or detached`, true);
+    }
+    const multi = [...t.matchAll(MULTI_UNIT_G)].map((m) => m[0].toUpperCase().replace(/\s+/g, ' '));
+    if (multi.length) {
+      // Two units only when the words SAY two ("DUPLEX", "TWO-FAMILY", "2-UNIT DWELLING", "UNITS: 2");
+      // "R-2" is the multi-family occupancy and "UNIT #2" an address — both stay a question.
+      const kind = (w) => /TOWNHO/.test(w) ? 'town' : /\bADU\b|ACCESSORY/.test(w) ? 'more'
+        : /DUPLEX|\b(?:2|TWO)[-\s]?(?:UNIT|FAMILY)|\bUNITS?\s*:\s*2\b/.test(w) ? 'two' : 'more';
+      const kinds = new Set(multi.map(kind));
+      const words = [...new Set(multi)].slice(0, 3).map((w) => `"${w}"`).join(', ');
+      if (kinds.size === 1 && kinds.has('town')) return out(STRUCTURE_OPTIONS[2], `the plan set reads ${words}`);
+      if (kinds.size === 1 && kinds.has('two')) return out(STRUCTURE_OPTIONS[1], `the plan set reads ${words}`);
+      return out('', `the plan set reads ${words}`, true);
+    }
+    if (manufactured === 'yes') return out(STRUCTURE_OPTIONS[3], manufacturedBasis || 'the structure type reads manufactured home');
+    if (manufactured !== 'no' && MANUFACTURED_MENTION.test(t)) return { option: '', basis: '', ambiguous: true, defer: true };
+    const sf = singleFamilyBasis(t);
+    if (sf) return out(STRUCTURE_OPTIONS[0], `the plan set reads "${sf.toUpperCase()}" and names no other building for the array`);
+    return none;
+  }
+
+  /** One of the five options for a value written in their vocabulary ("single-family dwelling",
+   *  "Accessory building"), else ''. Exact option words only — interpreting free text is the
+   *  backend's structureTypeMeaning, not a second family here. */
+  function structureOption(value) {
+    const v = clean(value).toLowerCase();
+    if (!v) return '';
+    return STRUCTURE_OPTIONS.find((o) => o.toLowerCase() === v || o.toLowerCase().split(' (')[0] === v) || '';
+  }
+
+  /**
+   * THE STRUCTURE DERIVATION. planText: the plan-set text; opts.reading: the plan-set read's own
+   * answer ({ value, excerpt } — the model looked at the site / roof plan layout); opts.dwellingUnits:
+   * the parsed unit count; opts.manufactured / opts.manufacturedBasis: the server's manufactured-home
+   * verdict ('yes' / 'no'; absent on the page). Returns { option, basis, defer } — option '' means
+   * "ask"; defer means "leave it to the server" (the text mentions a manufactured home and no verdict
+   * was given — the caller stores nothing).
+   *   - the text and the read AGREE, or only one answers: that answer, with its words;
+   *   - they DISAGREE: '' (a person decides — neither reading outranks the other);
+   *   - neither answers and the text was not ambiguous: 1 dwelling unit is a single-family dwelling,
+   *     2 a duplex; 3 or more is asked.
+   */
+  function structureBasis(planText, opts) {
+    opts = opts || {};
+    const text = structureFromText(planText, opts.manufactured, opts.manufacturedBasis);
+    if (text.defer) return { option: '', basis: '', defer: true };
+    const reading = opts.reading && typeof opts.reading === 'object' ? opts.reading : { value: opts.reading };
+    const read = structureOption(reading.value);
+    const readBasis = read ? `the plan-set read answers "${read}"${reading.excerpt ? ` ("${clean(reading.excerpt).slice(0, 80)}")` : ''}` : '';
+    if (text.option && read && text.option !== read) return { option: '', basis: `${text.basis}, but ${readBasis} — confirm which building carries the array` };
+    if (text.option && read) return { option: text.option, basis: `${text.basis}; ${readBasis}` };
+    if (read) return { option: read, basis: readBasis };
+    if (text.option || text.ambiguous) return { option: text.option, basis: text.basis };
+    const units = Number(String(opts.dwellingUnits ?? '').trim().match(/^\d+/)?.[0] ?? NaN);
+    if (units === 1) return { option: STRUCTURE_OPTIONS[0], basis: 'the plan set states 1 dwelling unit' };
+    if (units === 2) return { option: STRUCTURE_OPTIONS[1], basis: 'the plan set states 2 dwelling units' };
+    return { option: '', basis: '' };
+  }
+  const structureFromPlan = (planText, opts) => structureBasis(planText, opts).option;
+
   function readingsFor(passes) {
     const readings = [];
     for (const p of passes || []) {
@@ -865,6 +967,7 @@
     compareMeters, meterTargets, meterInText,
     mergeNotes, assertsMissingAttached,
     resolveReviewItems, rsdConflict, singleFamilyBasis, namesMatch, billHolderBlock,
+    structureBasis, structureFromPlan, structureOption, STRUCTURE_OPTIONS,
     licenseLabel, installerLine, identifyUtility,
     locatesDecision, EXCAVATION_TYPES,
     filterTapEvidence, isNoteMention,
