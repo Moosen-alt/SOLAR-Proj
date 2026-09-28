@@ -20,6 +20,7 @@
 //   K-B2b recipeReplayBinding: drop R10                                -> (B2 replay) fails.
 //   K-B2c autoLearn.buildPortalPlanner: drop the per-job override      -> (B2 learn) fails.
 //   K-B2d repository.prepareSubmission: drop the per-job gate          -> (B2 gate) fails.
+//   K-B2e autopilot Segment A: treat the per-job 409 as project-wide (return) -> (B2 autopilot) fails.
 //   K-B11 repository: drop the staging recordDraftTouch                -> (B11) fails.
 //
 // Run: npx tsx backend/test/dryrunPortalClose.test.ts
@@ -199,6 +200,43 @@ await check("(B2 gate) a stage whose recipe asks an unanswered ownership questio
   assert.equal(own?.field, "ownershipModel");
   assert.equal(own?.value, undefined);
   assert.equal(launched!.values.ownershipModel, "Third-Party Owned");
+});
+
+await check("(B2 autopilot) the per-job refusal holds ONLY the NEM track: Segment A still stages the permit track(s) and reports the NEM question", async () => {
+  // NEM FIRST (requiredTracks lists it first): the PGE utility recipe asks the ownership question the
+  // job has not answered, so prepareSubmission 409s for the NEM track alone. The permit filing has
+  // nothing to do with who owns the system — it must still launch (base staged every track).
+  const projectId = fx.newProject();
+  const { requiredTracks } = await import("../src/submittalTracks");
+  const tracks = requiredTracks(repo.getProjectDetail(db, projectId).project);
+  assert.equal(tracks[0], "nem", `fixture: NEM must be the first required track (${tracks.join(",")})`);
+  const permitTracks = tracks.filter((t) => t !== "nem");
+  assert.ok(permitTracks.length >= 1, `fixture: a permit track is required too (${tracks.join(",")})`);
+  fx.completeRecipe(); // the AHJ (permit) recipe — no per-job question in it
+  const nem = recipes.startPortalRecording(db, { scopeType: "utility", state: "OR", utility: "PGE", portalUrl: "https://pgenm.powerclerk.com/MvcAccount/Login", createdBy: "test" });
+  recipes.savePortalRecipeSteps(db, nem.id, [...fx.fills(4), ownershipStep(), fx.REVIEW, fx.FINAL], { status: "complete", notes: "Auto-learned and verified (high confidence)." });
+  const launchedFor: string[] = [];
+  fx.stubRunner(async (r) => {
+    launchedFor.push(String(r.portalUrl ?? ""));
+    return { portalName: "stub", ok: true, finalSubmitClicked: false, pauseReason: null, steps: [{ ok: true, message: "staged" }] };
+  });
+  const { runAutopilotSegmentA } = await import("../src/autopilot");
+  const seg = await runAutopilotSegmentA(db, projectId);
+  const codes = seg.blockers.map((b) => `${b.code}: ${b.detail}`);
+  assert.equal(seg.blocked, true, `the unanswered NEM question must still be reported as a block: ${seg.message}`);
+  const q = seg.blockers.filter((b) => b.code === "portal_question");
+  assert.equal(q.length, 1, `exactly one NEM portal_question blocker expected: ${JSON.stringify(codes)}`);
+  assert.match(q[0].detail, /^nem: /, "the blocker must name the NEM track");
+  assert.match(q[0].detail, /Customer-Owned or Third-Party Owned/, "the blocker must name the portal's own question");
+  assert.equal(launchedFor.some((u) => /powerclerk/.test(u)), false, "a browser was opened on the NEM portal with the question unanswered");
+  assert.equal(launchedFor.filter((u) => /permits\.portland\.example/.test(u)).length, permitTracks.length,
+    `every permit track must still launch (got ${launchedFor.length}: ${launchedFor.join(", ")}; blockers ${JSON.stringify(codes)})`);
+  for (const t of permitTracks) {
+    assert.match(seg.message, new RegExp(`Staged [^.]*\\b${t}\\b`), `the ${t} track must be reported staged: ${seg.message}`);
+  }
+  // The refusal is on the record for the NEM track, as every other held track is.
+  const held = fx.audits("autopilot.blocked").filter((a) => a.project_id === projectId).map((a) => JSON.parse(a.details) as { track?: string });
+  assert.ok(held.some((h) => h.track === "nem"), "the NEM refusal was not audited");
 });
 
 // ═══ B11 ════════════════════════════════════════════════════════════════════════════════════

@@ -693,6 +693,20 @@ export async function runAutopilotSegmentA(
       if (err instanceof HttpError && err.status === 409) {
         const blockers = blockersFromHttpError(err).map((b) => ({ ...b, detail: `${t}: ${b.detail}` }));
         addAuditLog(db, projectId, "system", "autopilot", "autopilot.blocked", { track: t, blockers });
+        // A PER-JOB PORTAL QUESTION HOLDS ONLY THE TRACK WHOSE RECIPE ASKS IT (dryrun-0928 B2). The
+        // stage gate refuses before a browser opens when THIS track's recipe asks who owns the system
+        // (or behind-the-meter / disconnect distance) and the job has not answered — a fact about that
+        // one filing, not a project-wide gate. requiredTracks lists NEM first, so returning here left
+        // the building/electrical permits unstaged. Recorded like a failed stage (the stageOutcome path
+        // below) and the run goes on to the next track. Only that gate sets unansweredPortalQuestions.
+        const perJobQuestions = (err.details as { unansweredPortalQuestions?: unknown } | undefined)?.unansweredPortalQuestions;
+        if (Array.isArray(perJobQuestions) && perJobQuestions.length) {
+          trackBlockers.push(...blockers);
+          logger.warn("autopilot", "Segment A: this track's portal asks a per-job question the job has not answered — holding this track, staging the rest", {
+            project: projectId, track: t, ms: `${Math.round(performance.now() - t0)}ms`, questions: perJobQuestions.length,
+          });
+          continue;
+        }
         logger.warn("autopilot", "Segment A blocked at a gate", { project: projectId, track: t, ms: `${Math.round(performance.now() - t0)}ms`, blockers: blockers.length, reasons: blockers.map((b) => b.code).slice(0, 5) });
         // A project-wide gate (QC, reviewer, documents) blocks every remaining track
         // too — stop rather than re-running the same refusal per track.
