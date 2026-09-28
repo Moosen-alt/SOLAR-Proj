@@ -706,9 +706,15 @@ export class RecipeAdapter extends BasePortalAdapter {
     // fetch / XHR to a filing-shaped endpoint). A request that merely took the approved window (a
     // same-origin analytics fetch, a subframe navigation) is named, never reported as the filing;
     // the backend then records "NO filing request reached the portal" (repository submitted_by).
-    const sent = bs.approvedAdmissions.some((a) => a.filing) || bs.approvedNavigations.length > 0;
+    // ...and a fetch the window admitted is not the filing when the clicked page's OWN form submission
+    // (a state-changing document request, not a payment) was then aborted as a filing (autosubmit-close-2
+    // skeptic s4ValidateSubmit: fetch('/api/validate-submit') took the window, the form's POST was aborted).
+    const formPostAborted = bs.aborts.some((x) => x.rule === "filing-url" && /^document$/i.test(String(x.resourceType || ""))
+      && !/^(GET|HEAD)$/i.test(String(x.method || "")) && !/fee-payment/i.test(String(x.why || "")));
+    const isFiling = (a: { filing: boolean; navigation: boolean }): boolean => a.filing && (a.navigation || !formPostAborted);
+    const sent = bs.approvedAdmissions.some(isFiling) || bs.approvedNavigations.length > 0;
     for (const a of bs.approvedAdmissions) {
-      if (a.filing) notes.push(a.navigation ? `the approved click's request (the clicked page's form submission) went to ${a.where}` : `a state-changing request in the approved window went to ${a.where}`);
+      if (isFiling(a)) notes.push(a.navigation ? `the approved click's request (the clicked page's form submission) went to ${a.where}` : `a state-changing request in the approved window went to ${a.where}`);
       else {
         const kind = a.navigation ? (a.mainFrame ? "navigation" : "subframe navigation") : /^(fetch|xhr)$/i.test(a.resourceType) ? "fetch/XHR" : (a.resourceType || "state-changing");
         notes.push(`the approved click's request did not reach the portal (a ${kind} request to ${a.where} took the window)`);

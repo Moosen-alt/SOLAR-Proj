@@ -373,7 +373,9 @@ export async function installFilingBackstop(page: any, label = "run"): Promise<F
         // "the approved click's request went" (finalSubmitRequestSent true).
         let mainFrame = false;
         try { mainFrame = !!pg && typeof pg.mainFrame === "function" && request.frame() === pg.mainFrame(); } catch { mainFrame = false; }
-        const filing = navigation ? mainFrame : isFilingOrPaymentRequest(method || "POST", url);
+        // The URL's PATH decides (autosubmit-close-2 skeptic s4TrackQuery): server-side GTM's
+        // "/gtm/collect?en=form_submit" is analytics whose query merely names the event.
+        const filing = navigation ? mainFrame : isFilingOrPaymentRequest(method || "POST", url.split(/[?#]/)[0]);
         approvedAdmissions.push({ where: whereOf(url), navigation, mainFrame, resourceType, filing });
         closeSlot();
       }
