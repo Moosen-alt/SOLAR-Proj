@@ -22,6 +22,7 @@ import { feeBracketFieldForLabel, feeBracketQuantityFields } from "./feeBracketF
 import { FEE_BRACKET_FIELD_PREFIX } from "../../portal-bot/src/feeBracketQuantity";
 import { filingValuationText } from "./valuation";
 import { planSetDisconnectPart, standardDisconnectConflicts } from "./baselineRules";
+import { clientCompanyFactFields } from "./clients";
 
 type Row = Record<string, unknown>;
 
@@ -1392,6 +1393,15 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   existingBatteryMakeModel: "EXISTING system's battery/storage make and model",
   nemTariff: "NEM tariff/program the existing system is on (e.g. NEM1, NEM2, NEM3/NBT)",
   existingPtoDate: "Permission-to-operate date of the EXISTING system",
+  existingPtoDateUs: "Permission-to-operate date of the EXISTING system, MM/DD/YYYY",
+  existingPtoDateIso: "Permission-to-operate date of the EXISTING system, YYYY-MM-DD",
+  // Company facts beside the licence (clients.clientCompanyFactFields) — THIS job's client only.
+  insuranceCarrier: "Installer's (contractor's) liability insurance carrier / company",
+  insuranceExpiration: "Installer's liability insurance policy EXPIRATION date",
+  bondCarrier: "Installer's contractor / surety bond company",
+  bondExpiration: "Installer's contractor / surety bond EXPIRATION date",
+  installerStreetNumber: "Installer company street address — house NUMBER only",
+  installerStreetName: "Installer company street address — street NAME only (everything after the number)",
   existingNemAgreementNumber: "EXISTING interconnection/NEM agreement number (sensitive — bind by name, never a literal)",
   existingNemApplicationNumber: "EXISTING interconnection application number (sensitive — bind by name, never a literal)",
   exportMode: "Export mode of the system (export / non-export-pcs / ngom)",
@@ -1443,13 +1453,38 @@ const EXPIRY_DATE_LABEL = /expir|valid\s*(through|until|thru)|renew/i;
 // expiring. An expiry with no licence context binds to NOTHING: the literal stays, the
 // cross-project guard refuses it if it looks like somebody's data, and a person sees a blank
 // at review. Declining to bind is the safe half of this decision.
-const LICENCE_CONTEXT = /licen[sc]e|registration|certificat|bond|insurance|\bccb\b|contractor/i;
+// A CONTRACTOR LICENCE, NOT ANY EXPIRING DOCUMENT (leak sweep 2026-09-28). "registration",
+// "certificat", "bond" and "insurance" used to count as licence context, so a Contractor Insurance /
+// Surety Bond / Business Registration expiry was bound to the CCB licence's expiry — the wrong date,
+// and blank for any company with no CCB. Insurance and bond now have their own keys (the client's
+// own insurance_expiry / bond_expiry); a registration or a city/business licence binds to nothing.
+const LICENCE_CONTEXT = /licen[sc]e|\bccb\b|contractor/i;
+const NOT_A_CONTRACTOR_LICENCE = /\b(?:business|city|metro|driver'?s?|vehicle)\s+licen[sc]e|\bregistration\b/i;
+const WORKERS_COMP_LABEL = /workers?'?\s*comp/i;
+const INSURANCE_LABEL = /\binsurance\b|\bliability\s+(?:policy|coverage)\b|\binsurer\b/i;
+const BOND_LABEL = /\bbond\b|\bsurety\b/i;
+// AN EXISTING SYSTEM'S DATE IS A FACT ABOUT THE PAST. "Existing System Permission to Operate Date"
+// fell through to "today" ("Operate" is not "operation") and "Existing system installation date"
+// to a date six weeks in the FUTURE — every replay filed today / next month as the existing
+// system's PTO. The existing system's PTO binds to its own key (in the format the portal accepted);
+// any other existing-system or PTO date binds to nothing — the literal stays, and the replay guard
+// refuses it as project data.
+const EXISTING_SYSTEM_DATE_LABEL = /\bexisting\b|\bpto\b|permission\s+to\s+operate|\boriginal(?:ly)?\s+(?:install|interconnect)|\bpreviously\s+(?:installed|interconnected)|\bprior\s+system/i;
+const EXISTING_PTO_LABEL = /\b(?:existing|original|prior|previous)\b[^.?]{0,60}(?:\bpto\b|permission\s+to\s+operate)|(?:\bpto\b|permission\s+to\s+operate)[^.?]{0,60}\b(?:existing|original|prior|previous)\b/i;
 export function dateFieldForLiteral(label: string, value: string): string | null {
   const raw = String(value || "").trim();
   if (!DATE_LITERAL.test(raw)) return null;
   const text = String(label || "");
   if (!/date/i.test(text)) return null; // only rebind a control that is actually a date
   const isUs = raw.includes("/");
+  // An EXISTING system's (or any PTO) date is never today and never a commissioning estimate.
+  if (EXISTING_SYSTEM_DATE_LABEL.test(text)) return EXISTING_PTO_LABEL.test(text) ? (isUs ? "existingPtoDateUs" : "existingPtoDateIso") : null;
+  // WHOSE expiry: workers' comp binds to nothing; insurance and bond to the client's own dates; a
+  // registration or a business/city licence to nothing; a contractor licence to the licence's.
+  if (EXPIRY_DATE_LABEL.test(text) && WORKERS_COMP_LABEL.test(text)) return null;
+  if (EXPIRY_DATE_LABEL.test(text) && INSURANCE_LABEL.test(text)) return "insuranceExpiration";
+  if (EXPIRY_DATE_LABEL.test(text) && BOND_LABEL.test(text)) return "bondExpiration";
+  if (EXPIRY_DATE_LABEL.test(text) && NOT_A_CONTRACTOR_LICENCE.test(text)) return null;
   // Checked BEFORE the future-date rule on purpose: "Licence Valid Through Date" carries both
   // an expiry word and nothing else, while a label like "Expiration of the estimated schedule"
   // does not exist. Expiry is the more specific reading wherever both could fire.
@@ -1457,6 +1492,18 @@ export function dateFieldForLiteral(label: string, value: string): string | null
   if (FUTURE_DATE_LABEL.test(text)) return isUs ? "estimatedCommissioningDate" : "estimatedCommissioningDateIso";
   // A signature/application date is "today", not a future estimate.
   return isUs ? "todayDateUs" : "todayDate";
+}
+
+/** A stored date ("2021-03-15", "3/15/2021") in both portal formats; blanks when it does not parse. */
+function usAndIsoDate(raw: unknown): { us: string; iso: string } {
+  const s = String(raw ?? "").trim();
+  let y = 0, m = 0, d = 0;
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
+  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+  if (iso) { y = +iso[1]; m = +iso[2]; d = +iso[3]; } else if (us) { y = +us[3]; m = +us[1]; d = +us[2]; } else return { us: "", iso: "" };
+  if (m < 1 || m > 12 || d < 1 || d > 31) return { us: "", iso: "" };
+  const p = (n: number) => String(n).padStart(2, "0");
+  return { us: `${p(m)}/${p(d)}/${y}`, iso: `${y}-${p(m)}-${p(d)}` };
 }
 
 // A plan-set orientation rounded to the whole degree the portals accept. Anything that is
@@ -1911,6 +1958,14 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     putEs("existingNemApplicationNumber", es.applicationNumber);
     putEs("exportMode", es.exportMode);
   }
+  // THE EXISTING SYSTEM'S PTO IN BOTH FORMATS a portal has shown it accepts (the date binder picks
+  // the one the recorded literal proved). ALWAYS present — "" for a project with no existing system —
+  // so a recipe bound to it replays blank on a greenfield job, never another project's date.
+  {
+    const v = usAndIsoDate(es?.ptoDate);
+    existingSys.existingPtoDateUs = v.us;
+    existingSys.existingPtoDateIso = v.iso;
+  }
 
   const overlay = project.clientId ? clientStagingOverlay(db, project.clientId, portalType) : {};
 
@@ -1958,6 +2013,10 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     const digits = String(v).replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
     if (digits.length === 10) merged[k] = `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
   }
+  // THE COMPANY FACTS BESIDE THE LICENCE — insurance / bond carrier and expiry, the installer's street
+  // number and name — from THIS project's own client, every key present ("" when not on file), so a
+  // recipe box bound to one never falls back to the learn company's recorded answer.
+  Object.assign(merged, clientCompanyFactFields(db, project.clientId));
   // THE AC DISCONNECT PART (leak sweep 2026-09-28) — resolved AFTER the merge, because the client
   // overlay used to win it outright: a plan set naming "Square D DU222RB" was filed as the client's
   // standard Eaton DG221URB, and a plan set calling for a 60 A FUSIBLE switch was filed with a 30 A
@@ -2138,6 +2197,8 @@ const PARSER_EVIDENCE_KEYS = new Set([
 export function isParserEvidenceKey(key: string): boolean {
   return PARSER_EVIDENCE_KEYS.has(key) || /(?:Text|Compliant|Recommendation)$/.test(key);
 }
+/** Dates recomputed at every replay (dateFields) — assigned by a control's label, never by value. */
+const VOLATILE_DATE_KEYS = new Set(["todayDate", "todayDateUs", "estimatedCommissioningDate", "estimatedCommissioningDateIso"]);
 /** A bare Yes/No answer: it names nothing, so a value match alone never binds it. */
 const YES_NO_LITERAL = /^(?:yes|no|y|n|true|false)$/i;
 /** The learner's standing policy answers ("policy default: <question> -> Yes") stay literals. */
@@ -2200,6 +2261,20 @@ export function convertLiteralsToBoundFields(
     if (bracketField && step.action === "fill") {
       bound.push({ value: step.value as string, field: bracketField, note: step.note });
       return { ...step, field: bracketField };
+    }
+    // EXACT VALUE EQUALITY BEFORE THE LABEL RULE (leak sweep 2026-09-28). A recorded date that IS a
+    // stable project date (the existing system's PTO, "03/15/2021") binds to that key; the label
+    // rule below only ever reaches the dates no project value holds. The volatile computed dates
+    // (today, the commissioning estimate) are the label rule's to assign, never matched by value.
+    if (DATE_LITERAL.test(String(step.value ?? "").trim())) {
+      const stable = (valueToFields.get(norm(step.value as string)) ?? []).filter((k) => !VOLATILE_DATE_KEYS.has(k));
+      const pick = stable.length === 1 ? stable[0] : stable.length > 1 ? disambiguateByLabel(`${step.selector?.label ?? ""} ${step.note ?? ""}`, stable) : null;
+      if (pick) {
+        bound.push({ value: step.value as string, field: pick, note: step.note });
+        const next: RecipeStep = { ...step, field: pick };
+        delete next.value;
+        return next;
+      }
     }
     const dateField = dateFieldForLiteral(`${step.selector?.label ?? ""} ${step.note ?? ""}`, step.value as string);
     if (dateField) {

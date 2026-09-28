@@ -183,6 +183,36 @@ export function getClient(db: AppDb, clientId: string): ClientRecord {
   return mapClient(row, identitiesFor(db, clientId));
 }
 
+/**
+ * THE COMPANY FACTS A PORTAL ASKS BESIDE THE LICENCE (leak sweep 2026-09-28): insurance and bond
+ * carriers and expiries, and the installer's street split into number and name. They had NO keys,
+ * so a portal box asking for them could only ever freeze the LEARN company's answer into a shared
+ * recipe (permiteyes.us carried one company's "808" / street name unbound; a bond expiry was bound
+ * to the CCB licence's expiry). Read from THIS project's own client row only.
+ *
+ * EVERY KEY IS ALWAYS PRESENT, "" where the client has no value — including a job with no client. A
+ * recipe step bound to a key the dictionary defines replays that key's value, blank included; a key
+ * the dictionary lacks would fall back to the recorded literal, which is another company's.
+ */
+export const COMPANY_FACT_KEYS = ["insuranceCarrier", "insuranceExpiration", "bondCarrier", "bondExpiration", "installerStreetNumber", "installerStreetName"] as const;
+export function clientCompanyFactFields(db: AppDb, clientId: string | null | undefined): Record<string, string> {
+  const out: Record<string, string> = Object.fromEntries(COMPANY_FACT_KEYS.map((k) => [k, ""]));
+  if (!clientId) return out;
+  const row = db.get<Row>("SELECT insurance_carrier, insurance_expiry, bond_carrier, bond_expiry, business_address FROM clients WHERE id = ?", [clientId]);
+  if (!row) return out;
+  out.insuranceCarrier = s(row.insurance_carrier).trim();
+  out.insuranceExpiration = s(row.insurance_expiry).trim();
+  out.bondCarrier = s(row.bond_carrier).trim();
+  out.bondExpiration = s(row.bond_expiry).trim();
+  // The street LINE (before the first comma), split at its house number: "808 SE Chkalov Dr Ste 3-337"
+  // -> "808" + "SE Chkalov Dr Ste 3-337". No leading number: the whole line is the street name.
+  const line = s(row.business_address).split(",")[0].replace(/\s+/g, " ").trim();
+  const m = /^(\d+[A-Za-z]?(?:-\d+)?)\s+(.+)$/.exec(line);
+  out.installerStreetNumber = m ? m[1] : "";
+  out.installerStreetName = m ? m[2] : line;
+  return out;
+}
+
 interface PortalIdentityInput {
   portalType?: string;
   installerCompanyLabel?: string;

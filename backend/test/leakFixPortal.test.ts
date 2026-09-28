@@ -356,5 +356,58 @@ await check("MUST-EXCLUDE: another company's job never gets this client's standa
   assert.deepEqual(disc(p), ["", "", ""]);
 });
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+section("P5  a recorded date keeps its meaning: existing-system dates, insurance / bond expiries");
+updateClient(db, alpha.id, { insuranceCarrier: "Acme Mutual Test", insuranceExpiry: "2027-01-31", bondCarrier: "Surety Test Co", bondExpiry: "2026-12-31" });
+await check("MUST-PASS: existing-system / PTO dates are never today or a future estimate", () => {
+  assert.equal(PR.dateFieldForLiteral("Existing System Permission to Operate Date", "03/15/2021"), "existingPtoDateUs");
+  assert.equal(PR.dateFieldForLiteral("PTO date of the existing system", "2021-03-15"), "existingPtoDateIso");
+  assert.equal(PR.dateFieldForLiteral("Existing system installation date", "06/01/2019"), null);
+  assert.equal(PR.dateFieldForLiteral("Permission to Operate Date", "06/01/2019"), null, "a PTO that is not the EXISTING system's binds to nothing");
+});
+await check("MUST-PASS: insurance and bond expiries bind to the client's own dates; registration / business licence / workers' comp to nothing", () => {
+  assert.equal(PR.dateFieldForLiteral("Contractor Insurance Expiration Date", "01/31/2027"), "insuranceExpiration");
+  assert.equal(PR.dateFieldForLiteral("Surety Bond Expiration Date", "12/31/2026"), "bondExpiration");
+  assert.equal(PR.dateFieldForLiteral("Business Registration Expiration Date", "12/31/2026"), null);
+  assert.equal(PR.dateFieldForLiteral("Business License Expiration Date", "12/31/2026"), null);
+  assert.equal(PR.dateFieldForLiteral("Workers' Comp Policy Expiration Date", "12/31/2026"), null);
+});
+await check("MUST-EXCLUDE: the dates that were right stay right (contractor licence expiry, today, commissioning)", () => {
+  assert.equal(PR.dateFieldForLiteral("Contractor Licence Expiration Date", "2027-04-01"), "ccbExpiration");
+  assert.equal(PR.dateFieldForLiteral("License valid through (date)", "2027-04-01"), "ccbExpiration");
+  assert.equal(PR.dateFieldForLiteral("Application Date", "08/08/2026"), "todayDateUs");
+  assert.equal(PR.dateFieldForLiteral("Estimated Commissioning Date", "08/08/2026"), "estimatedCommissioningDate");
+});
+const addition = project({ clientId: alpha.id, existingSystem: "yes", existingDcKw: "4.2", existingPtoDate: "2021-03-15" });
+const additionFields = PR.resolveRecipeFieldValues(db, addition, "utility");
+await check("MUST-PASS: exact value equality wins before the label rule — the existing PTO literal binds to the existing PTO, not today", () => {
+  assert.equal(additionFields.existingPtoDateUs, "03/15/2021");
+  assert.equal(additionFields.existingPtoDateIso, "2021-03-15");
+  const r = PR.convertLiteralsToBoundFields([
+    { action: "fill", selector: { label: "Existing System Permission to Operate Date" }, value: "03/15/2021", note: "Existing System Permission to Operate Date" },
+    { action: "fill", selector: { label: "Signature Date" }, value: additionFields.todayDateUs, note: "Signature Date" },
+    // A label the date rule reads as "today" — only value equality knows it is the existing PTO.
+    { action: "fill", selector: { label: "Date of Interconnection" }, value: "03/15/2021", note: "Date of Interconnection" },
+  ], additionFields);
+  assert.ok(["existingPtoDate", "existingPtoDateUs"].includes(String(r.steps[0].field)), `PTO bound to ${r.steps[0].field}`);
+  assert.equal(r.steps[1].field, "todayDateUs", "MUST-EXCLUDE: today's signature date is still today");
+  assert.ok(["existingPtoDate", "existingPtoDateUs"].includes(String(r.steps[2].field)), `interconnection date bound to ${r.steps[2].field}`);
+});
+await check("MUST-PASS: the company-fact keys come from THIS job's client, always present, blank for another company", () => {
+  assert.equal(additionFields.insuranceExpiration, "2027-01-31");
+  assert.equal(additionFields.bondExpiration, "2026-12-31");
+  assert.equal(additionFields.insuranceCarrier, "Acme Mutual Test");
+  assert.equal(additionFields.installerStreetNumber, "808");
+  assert.equal(additionFields.installerStreetName, "SE Test Dr Ste 3-337");
+  const other = PR.resolveRecipeFieldValues(db, project({ clientId: beta.id }), "utility");
+  for (const k of ["insuranceExpiration", "bondExpiration", "insuranceCarrier", "bondCarrier"]) {
+    assert.ok(Object.prototype.hasOwnProperty.call(other, k), `${k} absent`);
+    assert.equal(other[k], "", `${k} leaked across companies: ${other[k]}`);
+  }
+  const noClient = PR.resolveRecipeFieldValues(db, project({}), "utility");
+  assert.equal(noClient.installerStreetNumber, "");
+  assert.ok(Object.prototype.hasOwnProperty.call(noClient, "bondExpiration"));
+});
+
 console.log(`\n${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);
