@@ -41,6 +41,24 @@
 //   K-S9 a bare "PANEL" is read as the array (SUBPANEL AT DETACHED GARAGE) -> S1 FAILS.
 //   K-S10 a derived answer contradicting a stated "Other" / "Duplex" is taken -> S6 FAILS.
 //   K-S11 the page reads a manufactured-home mention itself (no defer)     -> S1, S7 FAIL.
+//   Round-1 skeptic fixes (each RED, restored GREEN, 2026-09-28):
+//   K-S12 the beside-the-work abstain dropped (structureFromText)          -> S1 S7 S10 S11 FAIL.
+//   K-S13 ARRAY_ON without A/AN                                            -> S1 FAILS.
+//   K-S14 ARRAY_ON without the PHOTOVOLTAIC / SOLAR / <X> ARRAY subjects   -> S1, S3 FAIL.
+//   K-S15 the SHED ROOF / SHED DORMER guard dropped                        -> S1 FAILS.
+//   K-S16 the SHOP DRAWING(S) guard dropped                                -> S1 FAILS.
+//   K-S17 negated phrases not skipped (firstUnnegated takes the first)     -> S1 FAILS.
+//   K-S18 two-unit words alone ("TWO-FAMILY", "UNITS: 2") answer duplex    -> S1 FAILS.
+//   K-S19 a DUPLEX RECEPTACLE counted as a duplex                          -> S1 FAILS.
+//   K-S20 a plural code-title TOWNHOUSES answers townhouse                 -> S1 FAILS.
+//   K-S21 a plan-set read answers over ambiguous text                      -> S1, S7 FAIL.
+//   K-S22 a disagreeing parsed unit count ignored                          -> S1 FAILS.
+//   K-S23 arrays on the house AND an accessory building -> Accessory       -> S1 FAILS.
+//   K-S24 otherStructureEvidence does not quote the beside phrase          -> S10 FAILS.
+//   K-S25 an ATTACHED GARAGE roof label not skipped                        -> S1 FAILS.
+//   K-S26 trench reach unbounded (any trench anywhere in the set)          -> S1 FAILS.
+//   K-S27 a system/array label may cross "(N)" filler                      -> S1, S4, S10 FAIL.
+//   K-S28 the single-family basis names no other structure (unchecked claim) -> S10 FAILS.
 import "./_isolate"; // FIRST
 import { REPO } from "./_isolate";
 import assert from "node:assert/strict";
