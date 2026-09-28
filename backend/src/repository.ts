@@ -3534,8 +3534,8 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   // template must NOT block the submit.
   const gatePathResolution = resolvePermitPathForProject(db, project);
   const gatePermitPath = gatePathResolution.path;
-  // The rows of this job's BCD 5952 that answer No (bcdChecklistFacts — the list the fill note and
-  // the permit-path screen read). Oregon's checklist only; read for the permit-path check below.
+  // The rows of this job's BCD 5952 that answer No (bcdChecklistFacts — the list the fill note
+  // reads). Oregon's checklist only; read for the permit-path check below.
   const prescriptiveChecklistNo = usStateCode(project.state) === "OR" ? bcd5952FailedRows(project).map((f) => f.clause) : [];
   // Read the STORED kind, exactly as buildFilledFormsForProject's fill gate does. With the
   // name alone, a stamped-structural blank whose filename claims neither kind counted as
@@ -3680,9 +3680,11 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         id: "permit-path",
         title: "Permit path confirmed (prescriptive vs engineered)",
         lane: "permit",
-        // A PRESCRIPTIVE path whose own BCD 5952 answers a row No (an operator's explicit choice — the
-        // screen itself routes such a job engineered, permitPath.ts) is said, never staged silently:
-        // the checklist says a No row may not be submitted on the prescriptive path (dry-run B4).
+        // A PRESCRIPTIVE path whose own BCD 5952 answers a row No is said, never staged silently: the
+        // checklist says a No row may not be submitted on the prescriptive path (dry-run B4c). Operator
+        // ruling pending: a 5952 No row warns, it does not route engineered — the screen
+        // (permitPath.ts) routes on the roofing row only, so the path resolves prescriptive here
+        // (a real issued Coos Bay permit for a 48 in / 120 mph Exposure C design was prescriptive).
         status: gatePermitPath === "unknown" ? "blocker" : gatePermitPath === "prescriptive" && prescriptiveChecklistNo.length ? "warning" : "pass",
         ownerRole: "Permit Coordinator",
         requirement: "The prescriptive and engineered (PE-stamped) permit applications are mutually exclusive and the AHJ accepts exactly one. The permit path must be confirmed before the AHJ permit can be staged.",
@@ -3693,7 +3695,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         nextAction: gatePermitPath === "unknown"
           ? "Set the permit path on Manual entry → Permit path (prescriptive vs engineered) before staging the AHJ permit."
           : gatePermitPath === "prescriptive" && prescriptiveChecklistNo.length
-            ? "The prescriptive path was chosen, but this job's BCD 5952 answers a row No — and the checklist says a No row may not be submitted on the prescriptive path. Confirm with the AHJ, change the design (e.g. re-space the attachments), or choose the engineered path."
+            ? "The permit path is prescriptive, but this job's BCD 5952 answers a row No — and the checklist says a No row may not be submitted on the prescriptive path. Confirm with the AHJ, change the design (e.g. re-space the attachments), or choose the engineered path (Manual entry → Permit path)."
             : "Permit path is confirmed.",
         source: "permit.path",
         // prepareSubmission asks the path only off the NEM lane.

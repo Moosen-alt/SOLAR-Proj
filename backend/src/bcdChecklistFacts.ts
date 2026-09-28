@@ -117,8 +117,9 @@ function rafterExceptionAsked(project: Pick<ProjectRecord, "parserSnapshot">): b
 // using the prescriptive path." A No row used to go out SILENTLY (bcd5952MissingFacts names only
 // blank rows) — and the attachment row, whose Method 1 failed on a 48-in spacing at 120 mph
 // Exposure C, printed blank because Method 2 read "unknown" on a shingle roof (dry-run 2026-09-28
-// B4). One list, read by the fill note and by the permit-path screen (permitPath.ts), so the form
-// and the resolver give one answer to "is this prescriptive?".
+// B4). One list, read by the fill note and by the submit gate's permit-path check (repository.ts),
+// which WARNS naming the clause when the path is prescriptive. Operator ruling pending: a 5952 No row
+// warns, it does not route engineered (permitPath.ts screens on the roofing row only).
 export interface Bcd5952FailedRow { row: "designInstallation" | "framing" | "roofing" | "heightFigures" | "attachments"; clause: string }
 export function bcd5952FailedRows(project: Pick<ProjectRecord, "parserSnapshot">): Bcd5952FailedRow[] {
   const a = bcdChecklistAnswers(project);
