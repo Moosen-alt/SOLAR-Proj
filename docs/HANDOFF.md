@@ -21,7 +21,13 @@ mailing address / e-mail beside the company's business name and phone, and "Serv
   settled, so Step 4's own Inspection Contact stays the planner's/pass's to fill.
 - **Contacts (replay):** `recipeReplayBinding` **R10** rebinds a dialog step bound to the other
   identity's key (Applicant dialog `homeownerName` → `installerContactName`; Owner dialog
-  `installerEmail` → `homeownerEmail`; an Owner's business box replays blank).
+  `installerEmail` → `homeownerEmail`; an Owner's business box replays blank). And the replay's
+  own dialog guard (`recipeAdapter.trackContactBlock`) sets every contact box of a dialog opened
+  by a section's Add New / Select from Account / Edit to this project's section identity before
+  the dialog's Continue — the recipe saved from the live run opens the Applicant dialog through
+  Select from Account, whose account prefill is the homeowner, and records only the phone. A
+  framed step or a contact opener is no longer held to "the page must move" (that recipe stopped
+  at `advance: Select from Account`). Look-up dialogs are never touched.
 - **Service lines:** one count (`batteryServiceFeeder.serviceLineQuantities`): an MPU
   (`serviceScope.hasMpuScope`, now the ONE copy) adds a line in its main's tier (≤200 A / 201-400 A;
   the MAIN, never the bus), plus the battery rule (battery + MPU-200 = 2 — a judgement call, see the
