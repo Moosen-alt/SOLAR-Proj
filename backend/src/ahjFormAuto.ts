@@ -6,8 +6,6 @@ import { inspectPlacedFields, loadStoredTemplates, formApplicationKind, storedAp
 import {
   attestsAttachedDocument, OREGON_CCB_SOURCE, placementOnWidget, sanitizeAcroMap, STATE_LICENCE_SOURCE, type OperatorItem,
 } from "./formFieldChecks";
-import { sanitizePlacements } from "./formFieldChecks";
-import type { LabelItem } from "./formTextLayer";
 import { parseJson } from "./json";
 import { HttpError } from "./httpError";
 import { describePermitType, findApplicationProfile, permitStructureAnswer } from "./applicationDocs";
@@ -34,6 +32,8 @@ import { documentDateForPdf } from "./documentDate";
 import { bcd5952Template } from "./bcd5952Template";
 import { iowaPvWorksheetTemplate, PV_WORKSHEET_DOC_TYPE } from "./iowaPvWorksheet";
 import { curatedFormSource, curatedFormMap } from "./curatedAhjForms";
+import { sanitizePlacements } from "./formFieldChecks";
+import type { LabelItem } from "./formTextLayer";
 import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce, formAuthorityFor, rowBelongsToAuthority, TRACK_FORM_TYPES, type FormAuthority } from "./applicationDocsAgency";
 
 // ---------------------------------------------------------------------------
