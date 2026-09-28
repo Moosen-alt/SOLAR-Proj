@@ -6045,10 +6045,14 @@ function renderFilledForms(projectId) {
     const skipped = f.status === "skipped";
     const isStored = Boolean(f.templateId);
     const unverified = isStored && f.verified === false;
-    const missingDetails = (f.unmappedRequested || []).length > 0;
+    // A value the AGENCY computes (a fee / surcharge / total — requestedFieldOwners, gates-proper C4)
+    // is not a detail the operator owes: it never turns the form's badge to "needs details".
+    const ownersOf = f.requestedFieldOwners || {};
+    const operatorBlanks = (f.unmappedRequested || []).filter((l) => ownersOf[l] !== "agency");
+    const missingDetails = operatorBlanks.length > 0;
     const extra = [
       f.filledFieldCount != null ? `${f.filledFieldCount} field(s) filled` : "",
-      missingDetails && !f.message?.includes("Still needs:") ? `Needs details: ${(f.unmappedRequested || []).join(", ")}` : "",
+      missingDetails && !f.message?.includes("Still needs:") ? `Needs details: ${operatorBlanks.join(", ")}` : "",
       f.message || "",
     ].filter(Boolean).join(" · ");
     // Cls: unverified auto-maps are a warning (block submit) until confirmed.
@@ -6105,28 +6109,72 @@ function renderFilledForms(projectId) {
  * own. Fields and documents get SEPARATE verdict rows — one sentence covering both
  * is how the first version went wrong.
  */
-function documentVerdictHtml(pkg, formMissingFields = []) {
+/**
+ * THE FILLED FORMS' BLANKS, SPLIT BY WHOSE THEY ARE (gates-proper C4) — the backend's one answer
+ * (ahjForms.requiredFieldOwner, carried on each form as requestedFieldOwners). A fee / surcharge /
+ * total the agency computes is not the operator's to supply, and a land-use approval comes from the
+ * planning office; the old card listed Marion County's "electrical permit fee (the county schedule,
+ * when not on file)" under "Resolve them in QC / Human Review before staging", and the operator
+ * bypassed the gate over it. Pure: [operator's blanks (planning-office ones labelled), agency's].
+ */
+function filledFormBlanks(forms) {
+  const mine = [];
+  const agency = [];
+  for (const f of (forms || []).filter((x) => x && x.status === "filled")) {
+    const owners = f.requestedFieldOwners || {};
+    for (const label of f.unmappedRequested || []) {
+      if (owners[label] === "agency") agency.push(label);
+      else mine.push(owners[label] === "planning_office" ? `${label} (from the planning / land-use office, when the project needs one)` : label);
+    }
+  }
+  return [mine, agency];
+}
+
+function documentVerdictHtml(pkg, formMissingFields = [], agencyComputedFields = []) {
   const missingFields = [...new Set([...(pkg.missingFields || []), ...formMissingFields])];
+  const agencyFields = [...new Set(agencyComputedFields)];
   const inventoryResolved = pkg.missingDocumentsStatus === "resolved";
   const missingDocs = inventoryResolved ? (pkg.missingDocuments || []) : [];
   const filledAtStaging = inventoryResolved ? (pkg.filledAtStagingDocuments || []) : [];
 
+  // What the operator can do about a blank, said truthfully: nothing waits on it (no gate reads these
+  // fields), and QC / Human Review cannot fill a form field — the project record or the form can.
   const fieldRow = missingFields.length
     ? `<div class="kx-docstate is-missing">
         <span class="kx-docstate-icon" aria-hidden="true">⚠</span>
         <div class="kx-docstate-body">
           <span class="kx-docstate-title">${plural(missingFields.length, "application field")} still blank</span>
-          <span class="kx-docstate-text">The generated packet cannot fill these from the plan set. Resolve them in QC / Human Review before staging.</span>
+          <span class="kx-docstate-text">Fields, not files. A blank on a generated form does not hold staging: add the data to the project and rebuild, or complete it on the filled form before the final submit. (The portal's own required fields are checked when it is staged.)</span>
           <ul class="kx-docstate-list">${missingFields.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>
         </div>
       </div>`
-    : `<div class="kx-docstate is-clear">
+    : agencyFields.length
+      ? `<div class="kx-docstate is-clear">
+        <span class="kx-docstate-icon" aria-hidden="true">✓</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">No application field is waiting on you</span>
+          <span class="kx-docstate-text">Every field this packet needs from the project is filled. The values below are the agency's to compute.</span>
+        </div>
+      </div>`
+      : `<div class="kx-docstate is-clear">
         <span class="kx-docstate-icon" aria-hidden="true">✓</span>
         <div class="kx-docstate-body">
           <span class="kx-docstate-title">No critical application field is blank</span>
           <span class="kx-docstate-text">Every scalar field this packet needs was read off the project. This says nothing about the FILES — see below.</span>
         </div>
       </div>`;
+  // THE AGENCY'S OWN VALUES — a fee, surcharge or total the form could not price. Neutral: the agency
+  // computes it from its own schedule (in its portal, or at intake); nothing here waits on it.
+  const agencyRow = agencyFields.length
+    ? `<div class="kx-docstate is-clear">
+        <span class="kx-docstate-icon" aria-hidden="true">ⓘ</span>
+        <div class="kx-docstate-body">
+          <span class="kx-docstate-title">${plural(agencyFields.length, "value")} left for the agency to compute</span>
+          <span class="kx-docstate-text">Fees, surcharges and totals the form could not price from a saved schedule. The agency computes them from its own schedule in its portal or at intake — nothing waits on them, and automation never pays a fee.</span>
+          <ul class="kx-docstate-list">${agencyFields.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>
+        </div>
+      </div>`
+    : "";
 
   let docRow;
   if (!inventoryResolved) {
@@ -6202,7 +6250,7 @@ function documentVerdictHtml(pkg, formMissingFields = []) {
       </div>`
     : "";
 
-  return `<div class="stack">${fieldRow}${docRow}${filledRow}${acquiredRow}</div>`;
+  return `<div class="stack">${fieldRow}${agencyRow}${docRow}${filledRow}${acquiredRow}</div>`;
 }
 
 // THE PERMIT PATH, ITS EVIDENCE, AND THE OVERRIDE — on the project screen.
@@ -6313,7 +6361,7 @@ function renderApplicationDocs() {
         <div class="kx-preflight-col">
           ${pkg.permitType ? `<div class="kx-issue-field"><span class="kx-issue-field-label">Permitting type</span><span class="kx-issue-field-value">${esc(pkg.permitType)}</span></div>` : ""}
           ${profileNotes.length ? `<div class="kx-issue-field"><span class="kx-issue-field-label">Jurisdiction notes</span><span class="kx-issue-field-value">${profileNotes.map(esc).join("<br>")}</span></div>` : ""}
-          ${documentVerdictHtml(pkg, state.filledForms?.projectId === pid ? (state.filledForms.forms || []).filter(f => f.status === "filled").flatMap(f => f.unmappedRequested || []) : [])}
+          ${documentVerdictHtml(pkg, ...filledFormBlanks(state.filledForms?.projectId === pid ? (state.filledForms.forms || []) : []))}
         </div>
       </div>
     </div>

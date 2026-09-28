@@ -474,6 +474,79 @@ await check("C1", "KILL: an archived project neither stages nor approves", async
   assert.equal(s.canApprove, false);
   assert.match(String(s.approveDisabledReason), /archived/);
 });
+// ── C4 ─────────────────────────────────────────────────────────────────────────────────
+// "1 application field still blank — electrical permit fee (the county schedule, when not on file)"
+// under "Resolve them in QC / Human Review before staging": Marion County computes that fee in its own
+// portal, and the operator bypassed the gate over a card no gate even reads.
+const ahjForms = await import("../src/ahjForms");
+const FEE_LABEL = "electrical permit fee (the county schedule, when not on file)";
+const dashboardSrc = fs.readFileSync(path.join(REPO, "frontend", "dashboard.js"), "utf8").replace(/\r\n/g, "\n");
+const liftFn = (name: string): string => {
+  const m = new RegExp(`^function ${name}\\(`, "m").exec(dashboardSrc);
+  if (!m) throw new Error(`dashboard.js: could not find ${name}`);
+  let i = dashboardSrc.indexOf("{", dashboardSrc.indexOf(")", m.index));
+  let depth = 0;
+  for (; i < dashboardSrc.length; i++) {
+    const ch = dashboardSrc[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") { depth--; if (depth === 0) { i++; break; } }
+  }
+  return dashboardSrc.slice(m.index, i);
+};
+// The page's own call: documentVerdictHtml(pkg, ...filledFormBlanks(forms)). (Before the fix the page
+// passed every filled form's unmappedRequested as one list — kept as the fallback so a kill run shows
+// which checks fall instead of failing to load.)
+const hasBlanksSplit = /^function filledFormBlanks\(/m.test(dashboardSrc);
+const renderVerdict = new Function(`${["esc", "plural", ...(hasBlanksSplit ? ["filledFormBlanks"] : []), "documentVerdictHtml"].map(liftFn).join("\n\n")}
+return (pkg, forms) => ${hasBlanksSplit
+    ? "documentVerdictHtml(pkg, ...filledFormBlanks(forms))"
+    : "documentVerdictHtml(pkg, forms.filter((f) => f.status === 'filled').flatMap((f) => f.unmappedRequested || []))"};`)() as (pkg: unknown, forms: unknown[]) => string;
+/** A 30 kVA Jefferson job (over the E-01's printed <= 25 kVA ladder, so the fee cannot be priced). */
+const bigE01 = async () => {
+  const pid = await jeffersonJob();
+  db.run("UPDATE projects SET system_size_ac_kw = 30 WHERE id = ?", [pid]);
+  served.set(B01S_URL, fixturePdf("marion-b-01s.pdf"));
+  served.set(E01_URL, fixturePdf("marion-e-01.pdf"));
+  served.set(B5952_URL, fixturePdf("bcd-5952-2024.pdf"));
+  const project = repo.getProjectDetail(db, pid).project;
+  await prepareOfficialDocuments(db, project);
+  const pkg = await ahjForms.buildFilledFormsForProject(db, project);
+  const e = pkg.forms.find((f) => /E-01/.test(f.formName) && f.status === "filled");
+  if (!e) throw new Error(`fixture: no filled E-01: ${JSON.stringify(pkg.forms.map((f) => [f.formName, f.status]))}`);
+  if (!(e.unmappedRequested ?? []).includes(FEE_LABEL)) throw new Error(`fixture: the fee was priced: ${JSON.stringify(e.unmappedRequested)}`);
+  return e;
+};
+await check("C4", "one predicate: a fee / surcharge / total is the agency's, a land-use approval the planning office's, the rest the operator's", () => {
+  assert.equal(ahjForms.requiredFieldOwner(FEE_LABEL, "computed.electricalTotalFee"), "agency");
+  assert.equal(ahjForms.requiredFieldOwner("Coos County surcharges and grand total", "computed.coosElectricalTotal"), "agency");
+  assert.equal(ahjForms.requiredFieldOwner("land-use approval number", "snapshot.landUseApprovalNumber"), "planning_office");
+  // MUST-EXCLUDE: the operator's data stays the operator's.
+  assert.equal(ahjForms.requiredFieldOwner("owner email", "snapshot.homeownerEmail"), "operator");
+  assert.equal(ahjForms.requiredFieldOwner("construction category", "computed.singleFamilyCategory"), "operator");
+  assert.equal(ahjForms.requiredFieldOwner("supervising electrician license", "client.electricianLicenseNumber"), "operator");
+});
+await check("C4", "KILL (real fill): the unpriced E-01 fee is still SAID, as the agency's — never 'Still needs'", async () => {
+  const e = await bigE01();
+  assert.equal(e.requestedFieldOwners?.[FEE_LABEL], "agency", JSON.stringify(e.requestedFieldOwners));
+  assert.match(String(e.message), /Left for the agency to compute: [^.]*electrical permit fee/);
+  assert.doesNotMatch(String(e.message), /Still needs: [^.]*electrical permit fee/);
+});
+await check("C4", "KILL (the card): the fee is listed as the agency's to compute, not under 'still blank', and nothing says 'Resolve them in QC / Human Review before staging'", async () => {
+  const e = await bigE01();
+  const html = renderVerdict({ missingDocumentsStatus: "resolved", missingDocuments: [], filledAtStagingDocuments: [] }, [e]);
+  assert.doesNotMatch(html, /Resolve them in QC \/ Human Review before staging/);
+  const stillBlank = /still blank<\/span>[\s\S]*?<\/ul>/.exec(html)?.[0] ?? "";
+  assert.ok(!stillBlank.includes(FEE_LABEL), `the fee is on the operator's list: ${stillBlank}`);
+  const agencyBlock = /left for the agency to compute<\/span>[\s\S]*?<\/ul>/.exec(html)?.[0] ?? "";
+  assert.ok(agencyBlock.includes(FEE_LABEL), `the fee vanished: ${html}`);
+});
+await check("C4", "MUST-EXCLUDE (the card): the operator's own blank (no owner email on the project) is still listed under 'still blank'", async () => {
+  const e = await bigE01();
+  assert.ok((e.unmappedRequested ?? []).includes("owner email") && !e.requestedFieldOwners?.["owner email"], JSON.stringify(e));
+  const html = renderVerdict({ missingDocumentsStatus: "resolved", missingDocuments: [], filledAtStagingDocuments: [] }, [e]);
+  const stillBlank = /still blank<\/span>[\s\S]*?<\/ul>/.exec(html)?.[0] ?? "";
+  assert.ok(stillBlank.includes("owner email"), html);
+});
 globalThis.fetch = realFetch;
 
 // ── summary ────────────────────────────────────────────────────────────────────────────
