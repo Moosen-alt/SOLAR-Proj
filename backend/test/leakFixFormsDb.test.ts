@@ -216,5 +216,36 @@ await check("F8 MUST-PASS: the AHJ's knowledge still reaches the planner (routin
   assert.match(ctx, /LEAKTON FOR STRUC\. metro license # \[the job's company's own number\]/);
 });
 
+// ---------------------------------------------------------------------------------------------
+// F6 — a hedged STATE-level seeded stamp threshold is a waivable advisory, never a staging refusal
+// worded "<AHJ> requires"; the AHJ's own cited row, or a person-verified row, still blocks.
+// ---------------------------------------------------------------------------------------------
+const { documentInventory } = await import("../src/requiredDocuments");
+const stampRow = (job: typeof alphaJob) => documentInventory(db, job).presence.find((p) => p.docType === "structural_letter");
+const ma = project(beta.id, { state: "MA", city: "Newton", zip: "02458", ahj: "City of Newton", utility: "Eversource", dcKw: "12", acKw: "10" });
+const az = project(beta.id, { state: "AZ", city: "Maricopa", zip: "85138", ahj: "City of Maricopa", utility: "APS", dcKw: "16", acKw: "13" });
+const ca = project(beta.id, { state: "CA", city: "Fresno", zip: "93721", ahj: "City of Fresno", utility: "PG&E", dcKw: "11", acKw: "9" });
+
+await check("F6 MUST-EXCLUDE: MA / AZ / CA state-level seeded thresholds never block, never say '<AHJ> requires'", () => {
+  for (const job of [ma, az, ca]) {
+    const row = stampRow(job);
+    assert.ok(row, `${job.ahj}: the note must still be NAMED (an advisory row), not dropped`);
+    assert.equal(row!.blocking, false, `${job.ahj}: a state-level seeded note blocked staging — ${row!.why}`);
+    assert.ok(!new RegExp(`${job.ahj} requires`).test(row!.why), `${job.ahj}: ${row!.why}`);
+    assert.match(row!.why, /[Cc]onfirm/);
+    assert.ok(!documentInventory(db, job).missingBlocking.some((p) => p.docType === "structural_letter"));
+  }
+});
+
+await check("F6 MUST-PASS: the AHJ's own cited row (Chicago, any size) and a person-verified state row (Oregon) still block", () => {
+  const chicago = project(beta.id, { state: "IL", city: "Chicago", zip: "60601", ahj: "Chicago", utility: "ComEd", dcKw: "4", acKw: "3.8" });
+  const row = stampRow(chicago);
+  assert.equal(row?.blocking, true, `Chicago: ${row?.why}`);
+  assert.match(String(row?.why), /Chicago requires/);
+  const oregonBig = project(beta.id, { dcKw: "60", acKw: "50" });
+  const orRow = stampRow(oregonBig);
+  assert.equal(orRow?.blocking, true, `Oregon 60 kW: ${orRow?.why}`);
+});
+
 console.log(`\nleakFixFormsDb: ${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);

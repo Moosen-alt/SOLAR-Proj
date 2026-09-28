@@ -311,6 +311,14 @@ export function resolveStampRequirement(
     /** Jurisdiction threshold (prescriptive.engineerStampOverKwDc): <=0 means a
      *  stamp at ANY size (Chicago); positive means above that DC size (CA/MA 10). */
     stampThresholdKwDc?: number | null;
+    /** Is that threshold the JURISDICTION'S OWN, confirmed — a person verified the row that carries
+     *  it, or it sits on the AHJ's own row with a cited source (codeProfiles.codeLimitProvenance)?
+     *  Absent = NOT confirmed: a bare number with no provenance is a note, and a note is an advisory
+     *  ("confirm with the AHJ"), never a hard staging refusal worded "<AHJ> requires". The shipped
+     *  state-level "stamp commonly required over ~10 kW" hedges (CA, MA, AZ) were that shape. */
+    stampThresholdConfirmed?: boolean;
+    /** Where an UNCONFIRMED threshold came from, for its sentence ("the MA state-level reference note"). */
+    stampThresholdBasis?: string;
     jurisdictionLabel?: string;
     /** The learned AHJ process profile's requiresStructuralStamp flag. */
     processProfileRequiresStamp?: boolean;
@@ -341,13 +349,24 @@ export function resolveStampRequirement(
   const dcKw = Number(project.systemSizeDcKw ?? 0);
   const where = inputs.jurisdictionLabel || "This jurisdiction";
   if (threshold != null && Number.isFinite(threshold)) {
+    // AN UNCONFIRMED THRESHOLD IS A NOTE: the same trigger, stated as what it is — waivable, and never
+    // "<AHJ> requires" (that AHJ never said it).
+    const confirmed = inputs.stampThresholdConfirmed === true;
+    const basis = (inputs.stampThresholdBasis || "a seeded reference note").trim();
+    const whereLower = where === "This jurisdiction" ? "this jurisdiction" : where;
     if (threshold <= 0) {
-      return done(true, "jurisdiction_threshold",
-        `${where} requires stamped/sealed structural certification on every rooftop PV permit, regardless of system size.`);
+      return confirmed
+        ? done(true, "jurisdiction_threshold",
+          `${where} requires stamped/sealed structural certification on every rooftop PV permit, regardless of system size.`)
+        : done(true, "jurisdiction_threshold",
+          `A stamped/sealed structural letter may be required at any system size — per ${basis}, not confirmed on ${whereLower}'s own published rules. Confirm with ${whereLower} before submittal.`, true);
     }
     if (dcKw > 0 && dcKw > threshold) {
-      return done(true, "jurisdiction_threshold",
-        `${where} requires a stamped structural letter above ${threshold} kW DC (this system is ${dcKw} kW DC).`);
+      return confirmed
+        ? done(true, "jurisdiction_threshold",
+          `${where} requires a stamped structural letter above ${threshold} kW DC (this system is ${dcKw} kW DC).`)
+        : done(true, "jurisdiction_threshold",
+          `A stamped structural letter may be required above ${threshold} kW DC (this system is ${dcKw} kW DC) — per ${basis}, not confirmed on ${whereLower}'s own published rules. Confirm with ${whereLower} before submittal.`, true);
     }
   }
 

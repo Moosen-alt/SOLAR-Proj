@@ -40,7 +40,7 @@ import { projectDocsByType } from "./projectDocuments";
 import { duplicateUploads, uploadedSubmissionDocuments } from "./submissionDocuments";
 import { filledFormsByDocType, applicationKindForPath, loadStoredTemplates, formAllowedForPath, formContradictsPath } from "./ahjForms";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
-import { resolveEffectiveCodeContext } from "./codeProfiles";
+import { codeLimitProvenance, resolveEffectiveCodeContext } from "./codeProfiles";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, AHJ_PROCESS_REFERENCE_ENV } from "./processProfiles";
 import { findKnowledgeForLearn } from "./knowledgeBase";
 import { HttpError } from "./httpError";
@@ -286,6 +286,9 @@ export function requiredDocuments(
   project: ProjectRecord,
   opts: {
     stampThresholdKwDc?: number | null;
+    /** permitPath.resolveStampRequirement: absent = not confirmed (an advisory, never a block). */
+    stampThresholdConfirmed?: boolean;
+    stampThresholdBasis?: string;
     jurisdictionLabel?: string;
     processProfileRequiresStamp?: boolean;
     /** Resolved by the caller (documentInventory / form acquisition), which has
@@ -313,6 +316,8 @@ export function requiredDocuments(
   // a block. A prescriptive project in a jurisdiction with no rule is never nagged.
   const stamp = resolveStampRequirement(project, {
     stampThresholdKwDc: opts.stampThresholdKwDc,
+    stampThresholdConfirmed: opts.stampThresholdConfirmed,
+    stampThresholdBasis: opts.stampThresholdBasis,
     jurisdictionLabel: opts.jurisdictionLabel,
     processProfileRequiresStamp: opts.processProfileRequiresStamp,
   });
@@ -687,11 +692,22 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
   // single global assumption. Never fatal — an unknown jurisdiction simply falls
   // back to the permit-path trigger.
   let stampThresholdKwDc: number | null = null;
+  let stampThresholdConfirmed = false;
+  let stampThresholdBasis = "";
   let jurisdictionLabel = "";
   try {
     const ctx = resolveEffectiveCodeContext(db, project.state || "", project.ahj || "");
     const t = ctx.prescriptive?.engineerStampOverKwDc;
-    if (typeof t === "number" && Number.isFinite(t)) stampThresholdKwDc = t;
+    if (typeof t === "number" && Number.isFinite(t)) {
+      stampThresholdKwDc = t;
+      // WHOSE NUMBER (codeLimitProvenance): only the AHJ's own cited row or a person-verified row is
+      // a requirement; a seeded state-level note is an advisory the operator confirms.
+      const prov = codeLimitProvenance(db, { state: project.state || "", ahj: project.ahj || "" }, "engineerStampOverKwDc");
+      stampThresholdConfirmed = prov.confirmed;
+      stampThresholdBasis = prov.layer === "state"
+        ? `the seeded ${prov.state || "state"} state-level reference note`
+        : `${project.ahj || "the AHJ"}'s seeded profile (no source cited)`;
+    }
     jurisdictionLabel = ctx.ahj || ctx.state || "";
   } catch { /* profile data optional */ }
   // The learned AHJ process profile can also flag a stamp (hearsay → advisory).
@@ -737,7 +753,7 @@ export function documentInventory(db: AppDb, project: ProjectRecord): DocumentIn
       { ahjKnowledgeUnavailable: true },
     );
   }
-  const docOpts = { stampThresholdKwDc, jurisdictionLabel, processProfileRequiresStamp, application };
+  const docOpts = { stampThresholdKwDc, stampThresholdConfirmed, stampThresholdBasis, jurisdictionLabel, processProfileRequiresStamp, application };
   const baselineItems = requiredDocuments(project, docOpts);
   // A HELD BUT UNFILLABLE AGENCY APPLICATION IS STILL REQUIRED — AS A FILE TO ATTACH. The row
   // keeps blocking exactly as before; its words stop promising a fill that cannot happen.
