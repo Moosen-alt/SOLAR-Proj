@@ -3537,8 +3537,12 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
   // name alone, a stamped-structural blank whose filename claims neither kind counted as
   // "allowed" on a PRESCRIPTIVE project — so its unverified mapping blocked the submit
   // gate over a form this project will never file.
+  // A form filled from the BUILT-IN map written in code for its exact blank (by sha256 —
+  // ahjForms.effectiveStoredFieldMap) was never derived automatically: it is not asked for a
+  // "Mark verified" (dry-run 2026-09-28 B6 — the gate asked a person to verify the BCD 5952 and the
+  // Coos County electrical maps, and verifying would have locked in their outdated stored copies).
   const unverifiedForms = loadStoredTemplates(db, project.ahj, project.state)
-    .filter((t) => !t.verified && formAllowedForPath(t.def.formName, gatePermitPath, t.applicationKind));
+    .filter((t) => !t.verified && !t.builtInMap && formAllowedForPath(t.def.formName, gatePermitPath, t.applicationKind));
   const stagedRun = detail.portalRuns.find((run) => run.status === "awaiting_human_submit");
   // "SUBMITTED" MEANS EVERY REQUIRED FILING, NOT ANY ONE (S7). This was "any submission is
   // submitted, or the status says so" — so a project whose NEM application was filed while its
@@ -3637,7 +3641,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       // operator still sees + clears it before they submit.
       status: unverifiedForms.length ? "warning" : "pass",
       ownerRole: "Permit Coordinator",
-      requirement: "Auto-acquired/uploaded AHJ permit forms are filled by AI-derived field and signature placement. A human must preview each filled form and mark its mapping verified before the final submit.",
+      requirement: "An auto-acquired or uploaded AHJ form whose field and signature placement was derived automatically (read from the PDF or mapped by AI) must be previewed by a person and its mapping marked verified before the final submit. A form filled from a built-in map written for its exact official revision (matched by the blank's fingerprint) needs no mapping verification.",
       evidence: unverifiedForms.length
         ? unverifiedForms.map((t) => `Unverified mapping: ${t.def.formName}`)
         : ["All matched AHJ forms are built-in or operator-verified."],

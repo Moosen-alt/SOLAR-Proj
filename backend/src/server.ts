@@ -85,6 +85,7 @@ import {
   ahjFormRegistry,
   buildFilledFormsForProject,
   fetchFormTemplate,
+  setStoredTemplateVerified,
   filledFormPath,
   inspectFormFields,
   matchingForms,
@@ -2500,13 +2501,9 @@ app.post("/api/ahj-templates/:id/remap", asyncHandler(async (req, res) => {
 // Mark a stored form's mapping verified (or not) — gates real submit. The
 // operator does this after previewing the filled PDF.
 app.patch("/api/ahj-templates/:id/verify", (req, res) => {
-  const row = db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE id = ?", [String(req.params.id)]);
-  if (!row) throw new HttpError(404, "Template not found.");
-  const map = parseJson<Record<string, unknown>>(row.field_map, {});
   const verified = req.body?.verified !== false; // default true
-  map.verified = verified;
-  map.verifiedAt = verified ? new Date().toISOString() : undefined;
-  db.run("UPDATE ahj_form_templates SET field_map = ?, updated_at = ? WHERE id = ?", [JSON.stringify(map), new Date().toISOString(), String(req.params.id)]);
+  // A person verifies WHAT THEY PREVIEWED (ahjForms.setStoredTemplateVerified).
+  if (!setStoredTemplateVerified(db, String(req.params.id), verified)) throw new HttpError(404, "Template not found.");
   res.json({ id: String(req.params.id), verified });
 });
 

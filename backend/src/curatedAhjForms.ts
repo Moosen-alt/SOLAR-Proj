@@ -77,7 +77,12 @@ export function curatedPrintedFees(bytes:Uint8Array):PrintedFeeLadder|null{
  return source&&"printedFees" in source?{...(source.printedFees as PrintedFeeLadder),authority:source.ahj}:null;
 }
 export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
- const source=CURATED_AHJ_FORMS.find(f=>f.hash===createHash("sha256").update(bytes).digest("hex"));
+ return curatedFormMapForHash(createHash("sha256").update(bytes).digest("hex"),sourceUrl);
+}
+/** The same map, keyed by the blank's sha256 (a stored row's field_map.sourceHash) — so a stored row
+ *  reads the CURRENT map without re-hashing its blob (ahjForms.codeTemplateMapFor). */
+export function curatedFormMapForHash(sha256:string,sourceUrl:string){
+ const source=CURATED_AHJ_FORMS.find(f=>f.hash===sha256);
  if(!source)return null;
  const fields:OverlayField[]=[];
  const signatureFields:SignaturePlacement[]=[];

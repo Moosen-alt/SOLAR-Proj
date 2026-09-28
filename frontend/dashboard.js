@@ -6076,7 +6076,11 @@ function renderFilledForms(projectId) {
     // It's intentional, not a problem — render it neutral and never block on it.
     const skipped = f.status === "skipped";
     const isStored = Boolean(f.templateId);
-    const unverified = isStored && f.verified === false;
+    // A stored form filled from the BUILT-IN map written for its exact blank (backend
+    // effectiveStoredFieldMap) is never asked for "mark verified" — the submit gate does not ask
+    // either (dry-run 2026-09-28 B6), and verifying would pin the row's stale stored copy.
+    const builtIn = isStored && f.verified === false && f.builtInMap === true;
+    const unverified = isStored && f.verified === false && !builtIn;
     // A value the AGENCY computes (a fee / surcharge / total — requestedFieldOwners, gates-proper C4)
     // is not a detail the operator owes: it never turns the form's badge to "needs details". A named
     // operator item (forms-fill: a refused shape, a licence not on file, a signer to confirm) is.
@@ -6091,7 +6095,7 @@ function renderFilledForms(projectId) {
     ].filter(Boolean).join(" · ");
     // Cls: unverified auto-maps are a warning (block submit) until confirmed.
     const cls = skipped ? "info" : !ok || missingDetails || unverified ? "warning" : "pass";
-    const badge = skipped ? "not this path" : !ok ? (f.status || "not filled") : missingDetails ? "needs details" : unverified ? "needs verify" : (isStored ? "verified" : "filled PDF");
+    const badge = skipped ? "not this path" : !ok ? (f.status || "not filled") : missingDetails ? "needs details" : unverified ? "needs verify" : builtIn ? "built-in map" : (isStored ? "verified" : "filled PDF");
     return `<article class="item ${cls}">
       <div class="item-title"><span>${esc(f.formName || f.formId)}</span>${statusBadge(badge)}</div>
       ${ok ? `<p><a href="/api/projects/${encodeURIComponent(projectId)}/filled-forms/${encodeURIComponent(f.formId)}" target="_blank" rel="noopener"><strong>⬇ Download filled ${esc(f.formName || "AHJ form")} (PDF)</strong></a></p>` : ""}
@@ -6100,6 +6104,7 @@ function renderFilledForms(projectId) {
           <button type="button" class="secondary" data-verify-form="${esc(f.templateId)}" style="font-size:12px">✓ Looks right — mark verified</button>
           <button type="button" class="secondary" data-remap-form="${esc(f.templateId)}" style="font-size:12px">Re-map</button>
         </div>` : ""}
+      ${builtIn ? `<p class="muted">Built-in map written for this exact official revision (matched by the blank's fingerprint) — no mapping verification needed. Review the filled PDF before filing.</p>` : ""}
       ${ok && !isStored && !f.signaturesLocked ? `<p class="muted"><button type="button" class="secondary" data-detect-sign="${esc(f.formId)}" style="font-size:12px">Detect signature lines (AI)</button> — stamp your stored signature on this form.</p>` : ""}
       ${ok && !isStored && f.signaturesLocked ? `<p class="muted">✓ Built-in form — signature + date auto-placed on the authorized-signature line. No verification needed.</p>` : ""}
       ${f.documentStale ? `<p class="muted"><strong>This blank dates itself “${esc(f.documentDate)}”</strong> — over two years old. Re-check the AHJ's current forms page before filing${f.sourceUrl ? ` (<a href="${esc(f.sourceUrl)}" target="_blank" rel="noopener noreferrer">source</a>)` : ""}. Check any printed fee rates against the current schedule.</p>` : ""}
