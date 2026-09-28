@@ -37,11 +37,14 @@ const OREGON = ["--Select--", "Contractor Responsibility Form", "Deferred Submit
   "Septic Review", "Special Inspection Deficiencies Report", "Special Inspection Final Summary Report", "Special Inspection Form", "Specifications", "Structural Calculations"];
 
 console.log("\nS. the leading ordinal/code is numbering, not meaning");
-check("\"01 Plans\", \"1. Plans\", \"1) Plans\", \"(1) Plans\", \"1.2 Plans\", \"1.Plans\", \"A. Plans\", \"A- Plans\", \"A-Plans\", \"A) Plans\" all read \"Plans\"", () => {
-  for (const s of ["01 Plans", "1. Plans", "1) Plans", "(1) Plans", "1.2 Plans", "1.Plans", "A. Plans", "A- Plans", "A-Plans", "A) Plans", "01 - Plans"]) assert.equal(stripOptionCode(s), "Plans", s);
+check("\"01 Plans\", \"1. Plans\", \"1) Plans\", \"(1) Plans\", \"1.2 Plans\", \"1.Plans\", \"A. Plans\", \"A- Plans\", \"A) Plans\", \"(A) Plans\" all read \"Plans\"", () => {
+  for (const s of ["01 Plans", "1. Plans", "1) Plans", "(1) Plans", "1.2 Plans", "1.Plans", "A. Plans", "A- Plans", "A) Plans", "(A) Plans", "01 - Plans"]) assert.equal(stripOptionCode(s), "Plans", s);
 });
 check("MUST-EXCLUDE a word is never cut: \"Plans - Structural\", \"Yes\", \"Other\", \"Specifications\", a bare number, \"--Select--\"", () => {
   for (const s of ["Plans - Structural", "Yes", "Other", "Specifications", "100", "--Select--", "Structural Calculations"]) assert.equal(stripOptionCode(s), s, s);
+});
+check("MUST-EXCLUDE a letter joined to its word is a name, not a code: \"B-01S Application\", \"X-Ray Report\", \"E-Signature Form\", \"A-Frame Plans\", \"A-Plans\"", () => {
+  for (const s of ["B-01S Application", "X-Ray Report", "E-Signature Form", "A-Frame Plans", "A-Plans", "01S Application"]) assert.equal(stripOptionCode(s), s, s);
 });
 
 console.log("\nP. MUST-PASS: document-type lists");

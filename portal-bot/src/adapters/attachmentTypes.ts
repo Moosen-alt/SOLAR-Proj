@@ -23,12 +23,13 @@ const collapse = (o: unknown): string => String(o ?? "").replace(/\s+/g, " ").tr
 
 /** A LEADING ORDINAL OR CODE is numbering, not meaning: "01 Plans", "1. Plans", "1) Plans", "(1) Plans",
  *  "1.2 Plans", "A. Plans", "A- Plans", "A) Plans" all read "Plans". A number needs whitespace or
- *  punctuation after it; a single LETTER needs punctuation ("Plans - Structural" keeps its P). Stripped
- *  once, never repeatedly. */
+ *  punctuation after it; a single LETTER needs punctuation AND a space ("Plans - Structural" keeps its P,
+ *  "B-01S Application", "X-Ray Report" and "E-Signature Form" keep their heads). Stripped once, never
+ *  repeatedly. */
 export function stripOptionCode(text: string): string {
   const t = collapse(text);
   const m = t.match(/^[([]?\d{1,3}(?:\.\d{1,3})*(?:\s*[)\].:\-–—]\s*|\s+)(?=\S)/)
-    ?? t.match(/^[([]?[a-z]\s*[)\].:\-–—]\s*(?=\S)/i);
+    ?? t.match(/^[([]?[a-z]\s*[)\].:\-–—]\s+(?=\S)/i);
   return m ? t.slice(m[0].length) : t;
 }
 
