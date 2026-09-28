@@ -8,10 +8,6 @@ import { resolvePermitPath } from "./permitPath";
 import { logger } from "./logger";
 
 const COOLDOWN_MS = 24 * 60 * 60 * 1000;
-/** A pass whose form search COULD NOT RUN holds research shut this long instead of 24h — short, so
- *  "we could not look" is retried soon, never zero, so a persistently failing search is not paid for
- *  on every Stage. */
-export const LOOKUP_FAILED_RETRY_MS = 60 * 60 * 1000;
 
 /** What Stage's acquisition did, for the caller that wants to say so (every current caller may
  *  ignore it). `acquisition`:
@@ -37,6 +33,11 @@ export interface OfficialDocumentsDeps {
   research?: boolean;
   formsPage?: FormsPageOptions;
 }
+
+/** A pass whose form search COULD NOT RUN holds research shut this long instead of 24h — short, so
+ *  "we could not look" is retried soon, never zero, so a persistently failing search is not paid for
+ *  on every Stage. */
+export const LOOKUP_FAILED_RETRY_MS = 60 * 60 * 1000;
 
 /** Prepare actual applications before learn/stage assembles upload paths.
  *
