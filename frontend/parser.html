@@ -3331,7 +3331,20 @@ function buildProjectDescriptionScopeLines(plan){
   if (flags.psu) add('panel-side upgrade');
   if (flags.meterCollar) add('meter collar / MMD / ConnectDER');
 
-  if (flags.lineSideTap) {
+  // THE INTERCONNECTION CLAUSE SAYS WHAT THE INTERCONNECTION METHOD SAYS (a real Newberg job,
+  // 2026-09-28: "Interconnection method: Supply-side breaker." on one line and "load breaker
+  // interconnection" on the next — the page-text flags saw a "load" breaker somewhere and outranked
+  // the field the plan set's own note decided; operator: "have it be what it says on the plan set").
+  // The method field wins; the text flags speak only when it names nothing.
+  const method = clean(getVal('interco') || plan.interco || '').toLowerCase();
+  const sideOrTap = /supply[\s-]*side|line[\s-]*side|\btap\b/.test(method);
+  if (sideOrTap && /\btap\b/.test(method)) {
+    add(/line[\s-]*side/.test(method) ? 'line side tap interconnection' : 'supply-side tap interconnection');
+  } else if (sideOrTap) {
+    add('supply-side breaker interconnection');
+  } else if (/load/.test(method)) {
+    add('load breaker interconnection');
+  } else if (flags.lineSideTap) {
     const tap = clean(flags.tapType || 'tap interconnection').toLowerCase();
     add(tap.includes('interconnection') ? tap : `${tap} interconnection`);
   } else if (flags.loadBreaker) {
