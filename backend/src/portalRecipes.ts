@@ -15,6 +15,7 @@ import {
   type HostFit, type PortalEntity, type PortalUrlSource,
 } from "./portalChannel";
 import { isHarnessAbort, looksBotBlocked } from "./runAbort";
+import { NOT_SERVED_FLAG_PREFIX } from "../../shared/src/portalNotServed";
 import { certifiedModelFor } from "./cecEquipment";
 import { nowIso } from "./time";
 import { sameRecordType } from "./permitProcess";
@@ -377,10 +378,13 @@ export function portalEntityEvidence(
     claims.push({ url: u, state: st, name: n, verified });
   };
   for (const row of db.query<Row>(
-    "SELECT id, state, ahj, utility, portal_url FROM portal_recipes WHERE scope_type = ? AND portal_url IS NOT NULL AND portal_url != ''",
+    "SELECT id, state, ahj, utility, portal_url, flag_reason FROM portal_recipes WHERE scope_type = ? AND portal_url IS NOT NULL AND portal_url != ''",
     [scope],
   )) {
     if (excluded.has(s(row.id))) continue;
+    // A recipe its portal REFUSED ("not served here", portal-truth D5) claims nobody's portal:
+    // the statewide instance that told Corvallis "No Building services…" is not Corvallis's own.
+    if (isNotServedRecipe(row)) continue;
     add(row.portal_url, row.state, scope === "utility" ? row.utility : row.ahj, false);
   }
   // KB: AHJ rows for the AHJ scope; UTILITY-KEYED rows (no AHJ) for the utility scope — an AHJ
@@ -1363,6 +1367,78 @@ export function markPortalRecipeForRerecord(
     });
   } catch { /* audit is best-effort */ }
   return getPortalRecipe(db, recipeId);
+}
+
+// ── THE PORTAL SAID "NOT SERVED HERE" (portal-truth D5) ───────────────────────────────────────
+// City of Corvallis was auto-learned on Oregon ePermitting, which answered "No Building services
+// were returned for this address"; the learner walked on and saved a recipe keyed to Corvallis on
+// that host. A recipe the portal itself refused is SAVED AS REFUSED — its flag_reason carries
+// NOT_SERVED_FLAG_PREFIX and the portal's words, its status is needs_rerecord, it has no steps —
+// and every door reads it that way: it never lends its URL as a draft, never replays, is never the
+// AHJ's "own portal" (portalEntityEvidence), and the statewide fallback is withheld on it
+// (statewideEvidence). A person clears the flag (clearPortalRecipeFlag) if the portal was wrong;
+// the next learn / recording on the AHJ's real portal resets the row (startPortalRecording).
+
+/** Was this recipe refused by its portal ("not served here")? */
+export function isNotServedRecipe(r: { flagReason?: unknown; flag_reason?: unknown } | null | undefined): boolean {
+  return Boolean(r) && s(r!.flagReason ?? r!.flag_reason).trim().startsWith(NOT_SERVED_FLAG_PREFIX);
+}
+
+/**
+ * Record that `portalUrl` said this AHJ's (or utility's) address is NOT SERVED there. Never keeps a
+ * recipe learned there under that entity:
+ *   - `recipeId` (the recipe that just replayed there), or the key's own row on the SAME host →
+ *     flagged refused (a complete recipe is demoted: it files on a portal that refuses the address);
+ *   - the key's own row on ANOTHER host (a draft for the real portal) → left untouched;
+ *   - no row → a refused row is saved (no steps) so the next stage cannot reuse the wrong host.
+ * Audited either way.
+ */
+export function recordPortalNotServed(
+  db: AppDb,
+  input: { scopeType: "ahj" | "utility"; state?: string; ahj?: string; utility?: string; discipline?: string; portalUrl: string; quote: string; projectId?: string | null; recipeId?: string | null; createdBy?: string },
+): { recipeId: string | null; action: "flagged" | "saved_refused" | "left_existing"; reason: string } {
+  const host = portalHostOf(input.portalUrl) || s(input.portalUrl);
+  const reason = `${NOT_SERVED_FLAG_PREFIX} ${host} said "${s(input.quote).replace(/\s+/g, " ").trim().slice(0, 240)}"`;
+  const now = nowIso();
+  const flag = (recipeId: string, notes: unknown) => db.run(
+    `UPDATE portal_recipes SET flag_reason = ?, flagged_at = ?, status = 'needs_rerecord', auto_submit_enabled = 0, notes = ?, updated_at = ? WHERE id = ?`,
+    [reason, now, upsertRecipeNote(notes, "not served", `[refused ${now.slice(0, 10)}: ${reason}]`), now, recipeId],
+  );
+  const audit = (recipeId: string | null, action: string) => {
+    try {
+      addAuditLog(db, input.projectId ?? null, "system", "portal", "portal_recipe.not_served", {
+        recipeId, action, portalHost: host, reason: reason.slice(0, 300), scope: input.scopeType, discipline: s(input.discipline),
+      });
+    } catch { /* audit is best-effort */ }
+  };
+  if (input.recipeId) {
+    const row = db.get<Row>("SELECT id, notes FROM portal_recipes WHERE id = ?", [input.recipeId]);
+    if (row) { flag(s(row.id), row.notes); audit(s(row.id), "flagged"); return { recipeId: s(row.id), action: "flagged", reason }; }
+  }
+  const scopeType = input.scopeType === "utility" ? "utility" : "ahj";
+  const discipline = scopeType === "utility" ? "" : s(input.discipline);
+  const key = recipeProfileKey({ scopeType, state: input.state, ahj: input.ahj, utility: input.utility });
+  const existing = db.get<Row>(
+    `SELECT * FROM portal_recipes WHERE profile_key = ? AND (discipline = ? OR discipline = '')
+      ORDER BY CASE WHEN discipline = ? THEN 0 ELSE 1 END, updated_at DESC LIMIT 1`,
+    [key, discipline, discipline],
+  );
+  if (existing) {
+    if (portalHostOf(s(existing.portal_url)) === portalHostOf(input.portalUrl)) {
+      flag(s(existing.id), existing.notes);
+      audit(s(existing.id), "flagged");
+      return { recipeId: s(existing.id), action: "flagged", reason };
+    }
+    audit(s(existing.id), "left_existing");
+    return { recipeId: s(existing.id), action: "left_existing", reason };
+  }
+  const stub = startPortalRecording(db, {
+    scopeType, state: input.state, ahj: input.ahj, utility: input.utility, portalUrl: input.portalUrl,
+    portalPlatform: "", createdBy: input.createdBy || "not-served refusal", discipline,
+  });
+  flag(stub.id, "");
+  audit(stub.id, "saved_refused");
+  return { recipeId: stub.id, action: "saved_refused", reason };
 }
 
 export function deletePortalRecipe(db: AppDb, recipeId: string): { deleted: boolean } {

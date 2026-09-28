@@ -42,11 +42,20 @@ export function portalSaysNotServed(text: string | null | undefined): string | n
   for (const re of NOT_SERVED_PATTERNS) {
     const m = re.exec(t);
     if (!m) continue;
-    // The sentence the words sit in, for the reason a person reads.
-    const start = Math.max(0, t.lastIndexOf(".", m.index) + 1, m.index - 120);
+    // The portal's words from the match to the end of its sentence — never the text BEFORE it
+    // (a results grid there can carry an address).
     const endDot = t.indexOf(".", m.index + m[0].length);
-    const end = Math.min(t.length, endDot >= 0 ? endDot + 1 : m.index + m[0].length + 40, m.index + m[0].length + 120);
-    return t.slice(start, end).trim().slice(0, 240);
+    const end = Math.min(t.length, endDot >= 0 ? endDot + 1 : m.index + m[0].length, m.index + m[0].length + 120);
+    return t.slice(m.index, end).trim().slice(0, 240);
   }
   return null;
+}
+
+/** The "not served" words an adapter result carries — its own field, or a step's data — else null.
+ *  Read from the structured field the learner / replay set, never sniffed from a message. */
+export function notServedInResult(result: unknown): string | null {
+  const r = result as { notServed?: unknown; data?: { notServed?: unknown }; steps?: Array<{ data?: { notServed?: unknown } }> } | null | undefined;
+  if (!r || typeof r !== "object") return null;
+  const pick = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  return pick(r.notServed) ?? pick(r.data?.notServed) ?? (Array.isArray(r.steps) ? r.steps.map((st) => pick(st?.data?.notServed)).find(Boolean) ?? null : null);
 }

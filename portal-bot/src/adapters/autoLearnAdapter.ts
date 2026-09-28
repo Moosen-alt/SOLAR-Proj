@@ -22,6 +22,7 @@ import { armHumanCaptureOnPage } from "../humanCapture";
 import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, reviewSignals as sharedReviewSignals, splitSignerName } from "../../../shared/src/portalSafety";
 import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, backstopFor, isStoppingAbort } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
+import { portalSaysNotServed } from "../../../shared/src/portalNotServed";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
 // having a human record it. Each page is scraped into a structured snapshot
@@ -178,6 +179,10 @@ export interface LearnResult {
    *  it advanced ("Property Address not found."). Distinct from validationBlocks, which
    *  only ever means "an advance was refused". */
   portalNotices?: string[];
+  /** The portal's own words saying this address / jurisdiction is NOT SERVED there ("No Building
+   *  services were returned for this address") — the walk stopped on them (stopReason
+   *  "not_served") and the backend keeps nothing learned here under the AHJ (portal-truth D5). */
+  notServed?: string;
   /** The FULL url (query string included) of the application this run worked on, captured
    *  where it stopped. Without it there is no way to audit the right application afterwards:
    *  a portal list can hold several drafts for the same customer, and auditing "the first" or
@@ -5368,6 +5373,20 @@ export class AutoLearnAdapter extends BasePortalAdapter {
             for (const n of fresh) portalNotices.push(n);
             this.debug?.event({ type: "portal_notice", page: pageCount, notices: fresh.slice(0, 5) });
           }
+          // THE PORTAL SAYS THIS ADDRESS IS NOT SERVED HERE (portal-truth D5; Corvallis on Oregon
+          // ePermitting: "No Building services were returned for this address", after which the walk
+          // recorded four more pages). The one predicate (shared portalNotServed), asked of the notices
+          // and of the page's VISIBLE text: stop now, named, with the portal's own words — nothing
+          // more is learned on a portal that does not take this address.
+          const said = portalSaysNotServed(notices.join(" \n ")) ?? portalSaysNotServed(await visibleBodyText(this.page));
+          if (said) {
+            this.debug?.event({ type: "not_served", page: pageCount, quote: said.slice(0, 200) });
+            return {
+              ...fail(steps, this.portalName, `Stopped: ${hostPath.split("/")[0] || "the portal"} says this address is not served there — "${said}". This is not where this job's permit is filed; nothing learned here is kept for it.`, null, pageCount, portalNotices),
+              notServed: said,
+              stopReason: "not_served",
+            };
+          }
         }
 
         // THE SAME PAGE, OVER AND OVER, UNTIL THE BUDGET DIES.
@@ -9270,5 +9289,19 @@ export async function collectPortalNoticesFrom(page: any): Promise<string[]> {
     return Array.isArray(raw) ? raw.filter((n) => typeof n === "string" && n.length > 0).slice(0, 5) : [];
   } catch {
     return [];
+  }
+}
+
+/** The page's VISIBLE text (innerText — hidden elements excluded), capped; "" when it cannot be
+ *  read. A stubbed page answering every evaluate with a canned value yields "" unless it is text.
+ *  Read by the not-served check (portal-truth D5) — the learner's and the replay's one question. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function visibleBodyText(page: any, cap = 20000): Promise<string> {
+  if (!page || typeof page.evaluate !== "function") return "";
+  try {
+    const raw = await page.evaluate((n: number) => (document.body ? document.body.innerText || "" : "").slice(0, n), cap);
+    return typeof raw === "string" ? raw : "";
+  } catch {
+    return "";
   }
 }

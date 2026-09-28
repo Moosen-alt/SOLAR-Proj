@@ -69,7 +69,8 @@ import path from "node:path";
 import os from "node:os";
 import { checkStatusWithAdapter, runCorrectionReopen, stageWithAccela, stageWithMockPortal, stageWithPowerClerk, stageWithRecipe } from "../../portal-bot/src/index";
 import { portalAutomationDisabled, resolveHeadless } from "../../portal-bot/src/browser";
-import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, collectHealedSteps, persistHealedSteps, getPortalRecipe, portalEntityEvidence, recipeHostFit, findBorrowableRecipe, replayFailureBlamesRecipe, recipeStepsSignature, type BorrowedRecipeChoice } from "./portalRecipes";
+import { findCompleteRecipeForProject, findAnyRecipeForProject, resolveRecipeFieldValues, markPortalRecipeForRerecord, demoteOnReplayFailure, collectHealedSteps, persistHealedSteps, getPortalRecipe, portalEntityEvidence, recipeHostFit, findBorrowableRecipe, replayFailureBlamesRecipe, recipeStepsSignature, isNotServedRecipe, recordPortalNotServed, type BorrowedRecipeChoice } from "./portalRecipes";
+import { notServedInResult } from "../../shared/src/portalNotServed";
 import { notifyClientOfStatusChange, shouldNotifyClient } from "./clientNotifier";
 // detectPlatform moved with the target INSERT into submittalTracks.ts's ensureCheckTarget.
 import { publicPermitStatusCheck } from "./publicPermitStatus";
@@ -7969,6 +7970,12 @@ export async function prepareSubmission(
     // Permit tracks replay ONLY an AHJ-scoped recipe — never a utility (NEM) recipe, which is a
     // different portal and form. No AHJ recipe → self-seed / hand-coded fallback, not a wrong-track replay.
     : findCompleteRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility, discipline: trackDiscipline });
+  // A RECIPE ITS PORTAL REFUSED ("not served here", portal-truth D5) never replays — even one a
+  // person re-promoted without clearing the flag. The flag names the portal's words.
+  if (recipe && isNotServedRecipe(recipe)) {
+    addAuditLog(db, projectId, "system", "submit gate", "portal.not_served_recipe_skipped", { track: track ?? "permit", recipeId: recipe.id, reason: recipe.flagReason.slice(0, 300) });
+    recipe = null;
+  }
   // LEGACY-ROW DISCIPLINE CHECK. Recipes are keyed per AHJ per discipline, but rows
   // recorded before that dimension existed carry discipline '' and are accepted as a
   // fallback. If such a row was actually learned for the OTHER discipline, its steps pick
@@ -8124,9 +8131,14 @@ export async function prepareSubmission(
     : findAnyRecipeForProject(db, { scopeType: "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility, discipline: trackDiscipline });
   // A draft whose portals do not fit (a Tigard draft that navigates to Accela) lends no URL.
   const draftFit = draftRecipeRaw ? judgeRecipe(draftRecipeRaw) : null;
-  const draftRecipe = draftRecipeRaw && draftFit?.fits ? draftRecipeRaw : null;
+  // …nor one its portal REFUSED ("not served here", portal-truth D5): the next stage must not reuse
+  // the host that told this AHJ it does not serve the address.
+  const draftNotServed = Boolean(draftRecipeRaw && isNotServedRecipe(draftRecipeRaw));
+  const draftRecipe = draftRecipeRaw && draftFit?.fits && !draftNotServed ? draftRecipeRaw : null;
   if (draftRecipeRaw && draftFit && !draftFit.fits) {
     refusedUrls.push({ url: draftFit.url || String(draftRecipeRaw.portalUrl ?? ""), source: "recipe", code: draftFit.code, reason: draftFit.reason });
+  } else if (draftRecipeRaw && draftNotServed) {
+    refusedUrls.push({ url: String(draftRecipeRaw.portalUrl ?? ""), source: "recipe", code: "not_served", reason: draftRecipeRaw.flagReason });
   }
   // A PERMIT track must never launch a utility platform (PowerClerk etc.), a NEM track never a
   // permit portal, and neither a portal that belongs to another entity. A learned profile /
@@ -8774,6 +8786,27 @@ export async function prepareSubmission(
       // wall) is not a failure of anything and never reaches here.
       // Only a replay that FAILED (not a pause) is judged. A paused run stopped at a challenge.
       const replayFailed = result && result.ok === false && !(typeof result.pauseReason === "string" && result.pauseReason);
+      // THE PORTAL SAID THIS ADDRESS IS NOT SERVED THERE (portal-truth D5). The replay stopped with
+      // the portal's own words; nothing filed here is kept for this entity on that host: its own
+      // recipe is refused (flagged, demoted — never replayed again until a person clears it); on a
+      // BORROWED run the donor is untouched and a refused row is saved for THIS entity, so the next
+      // stage neither borrows nor falls back to this host.
+      const notServed = replayFailed ? notServedInResult(result) : null;
+      if (notServed) {
+        const where = track === "nem" ? (detail.project.utility || "this utility") : (detail.project.ahj || "this AHJ");
+        const host = portalHostOf(String(recipe.portalUrl ?? "")) || String(recipe.portalUrl ?? "");
+        try {
+          recordPortalNotServed(db, {
+            scopeType: track === "nem" ? "utility" : "ahj", state: detail.project.state, ahj: detail.project.ahj, utility: detail.project.utility,
+            discipline: trackDiscipline, portalUrl: String(recipe.portalUrl ?? ""), quote: notServed, projectId, recipeId: borrowed ? null : recipe.id,
+          });
+        } catch (e) {
+          logger.warn("portal", "could not record the not-served refusal", { projectId, err: e instanceof Error ? e.message : String(e) });
+        }
+        replayVerdictNote = borrowed
+          ? ` ${host} said this address is not served there ("${notServed}"): ${where} does not file this permit on that portal. The ${borrowed.learnedFor} recipe was not changed; nothing was kept for ${where} on ${host}. A person confirms ${where}'s own portal.`
+          : ` ${host} said this address is not served there ("${notServed}"): the recipe was refused (flagged; it will not replay again until a person clears the flag). A person confirms ${where}'s own portal.`;
+      }
       // A BORROWED recipe's failure on another entity's page says nothing about the recipe on its
       // own entity: it never demotes, never flags, never queues a re-learn. It is recorded (with
       // what the classifier would have said) and the run stops — that is the ruling's "drift
@@ -8783,9 +8816,9 @@ export async function prepareSubmission(
         addAuditLog(db, projectId, "system", "portal staging", "portal.borrowed_recipe_failed", {
           runId, recipeId: recipe.id, learnedFor: borrowed.learnedFor, attribution: blame.attribution, reason: blame.reason,
         });
-        replayVerdictNote = ` This run replayed the ${borrowed.learnedFor} recipe on the shared portal; it stopped here and the ${borrowed.learnedFor} recipe was not changed.`;
+        if (!notServed) replayVerdictNote = ` This run replayed the ${borrowed.learnedFor} recipe on the shared portal; it stopped here and the ${borrowed.learnedFor} recipe was not changed.`;
       }
-      const replayVerdict = replayFailed && !borrowed
+      const replayVerdict = replayFailed && !borrowed && !notServed
         ? (() => {
           try {
             return demoteOnReplayFailure(db, recipe.id, extractStageFailureMessage(result), recipe.version, { runId, projectId, expectedStepsSig: stepsSigNow });

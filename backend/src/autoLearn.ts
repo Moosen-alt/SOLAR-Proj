@@ -30,7 +30,8 @@ import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/a
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredentialForPortal, getDecryptedCredentialByUrl, listPortalCredentials, nearestStoredLogins, recordLoginOutcome } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
-import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey, portalEntityEvidence, stampCompanyAttestations, withholdClientLicenceLiteralsFor } from "./portalRecipes";
+import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey, portalEntityEvidence, stampCompanyAttestations, withholdClientLicenceLiteralsFor, recordPortalNotServed } from "./portalRecipes";
+import { notServedInResult } from "../../shared/src/portalNotServed";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
@@ -1304,6 +1305,36 @@ async function autoLearnPortalInner(
     // Claims this discipline's own row instead of resetting the AHJ's other one.
     discipline: learnDiscipline,
   });
+
+  // THE PORTAL SAID THIS ADDRESS IS NOT SERVED THERE (portal-truth D5, Corvallis 2026-09-28: Oregon
+  // ePermitting answered "No Building services were returned for this address", and the learner
+  // walked four more pages and saved a recipe keyed to Corvallis on that host). The learner stops
+  // on the portal's own words (learn.notServed — its own field, never sniffed from the message);
+  // here NOTHING learned on that host is kept under this AHJ: the key's row is saved as REFUSED
+  // (no steps, flagged with the words), or its existing row on that host is flagged — never a
+  // complete recipe on another host touched. The next stage then neither lends this host as a
+  // draft nor takes the statewide fallback onto it (statewideEvidence reads the flag).
+  const notServedWords = notServedInResult(learn);
+  if (notServedWords) {
+    const where = scopeType === "utility" ? (project.utility || "this utility") : (project.ahj || "this AHJ");
+    let host = portalUrl;
+    try { host = new URL(portalUrl).hostname.replace(/^www\./, ""); } catch { /* keep the URL */ }
+    const refusal = recordPortalNotServed(db, {
+      scopeType, state: project.state, ahj: project.ahj, utility: project.utility, discipline: learnDiscipline,
+      portalUrl, quote: notServedWords, projectId, createdBy: input.createdBy || "auto-learn",
+    });
+    const kept = refusal.action === "saved_refused"
+      ? " A refused record was saved for it, so the next stage cannot reuse this host."
+      : refusal.action === "flagged" ? ` Its recipe on ${host} was refused.` : ` Its recipe for another portal was left as it was.`;
+    const msg = `${host} says this address is not served there ("${notServedWords}") — this is not where ${where} files. Nothing learned on ${host} was kept for ${where}.${kept} A person confirms ${where}'s own portal (save it on the knowledge-base profile) and re-stages.`;
+    addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_not_served", { scope: scopeType, portalHost: host, action: refusal.action, recipeId: refusal.recipeId });
+    emitDone(msg);
+    return finalize({
+      recipe: refusal.recipeId ? getPortalRecipe(db, refusal.recipeId) : existingRecipe!,
+      status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: false, pageTrace: learn.pageTrace ?? [],
+      verification: { accurate: false, confidence: "low", matches: [], issues: [msg] }, message: msg,
+    });
+  }
 
   if (learn.pauseReason) {
     // What the operator reads. An MFA/CAPTCHA is a "challenge"; the e-signature pauses

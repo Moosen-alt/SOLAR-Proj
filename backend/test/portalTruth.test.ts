@@ -207,4 +207,105 @@ await check("(d2-p1) MUST-PASS: a real portal writes through the same door uncha
   assert.equal(kbRow("City of Hazelmere")!.portal_url, "https://aca-prod.accela.com/HAZELMERE/Default.aspx");
 });
 
+// ── D5: a portal that says "not served here" keeps nothing under the AHJ ───────────────────────
+const notServed = await import("../../shared/src/portalNotServed");
+const autoLearn = await import("../src/autoLearn");
+const NOT_SERVED = "No Building services were returned for this address.";
+await check("(d5-p1) the one predicate: MUST-PASS the refusals of THIS address / jurisdiction; MUST-EXCLUDE an empty search, a maintenance notice, a landing page's general words", () => {
+  for (const t of [
+    `Select a Record Type ${NOT_SERVED} Continue Application`,
+    "No Electrical services were returned for this address.",
+    "The address you entered is outside the City's jurisdiction.",
+    "This parcel is not within our service area.",
+    "Fernhollow is not a participating jurisdiction in this system.",
+    "This jurisdiction does not participate in Oregon ePermitting.",
+    "The county does not issue building permits for this address.",
+    "This address is not served by this agency.",
+  ]) assert.ok(notServed.portalSaysNotServed(t), `must refuse: ${t}`);
+  assert.equal(notServed.portalSaysNotServed(`123 Test St results ${NOT_SERVED}`), NOT_SERVED, "the quote starts at the portal's words — never the text before them");
+  for (const t of [
+    "No records were returned for this search.", "No permits found for this record.", "Your search returned no results.",
+    "Online services are not available between 11 PM and 1 AM.", "For addresses outside our jurisdiction, contact the county.",
+    "This property is outside the floodplain boundary.", "Building Services | Planning Services | Contact us", "",
+  ]) assert.equal(notServed.portalSaysNotServed(t), null, `must NOT refuse: ${t}`);
+});
+
+let learnResult: Record<string, unknown> = {};
+autoLearn.setAutoLearnSeamsForTests({ learnPortal: (async () => ({ ...learnResult })) as never });
+const learnSteps = (): RecipeStep[] => [
+  { action: "goto", value: `${ACA_OREGON}Dashboard.aspx`, note: "entry url" },
+  { action: "fill", selector: { name: "sn" }, field: "streetNumber", value: "953", note: "work location: street number" },
+  { action: "click", selector: { text: "Search" }, note: "work location: search" },
+  { action: "click", selector: { css: "[data-al-row=\"ar0\"]" }, note: "address version: County Applications" },
+];
+const recipeRowsFor = (ahj: string) => db.query<{ id: string; portal_url: string; status: string; steps_json: string; flag_reason: string; discipline: string }>(
+  "SELECT id, portal_url, status, steps_json, flag_reason, discipline FROM portal_recipes WHERE ahj = ?", [ahj]);
+await check("(d5-l1) MUST-EXCLUDE (Corvallis's shape): a learn the statewide portal refused keeps NOTHING learned there — a refused row (no steps, flagged with the portal's words), never the AHJ's own portal, and the statewide fallback is withheld on it", async () => {
+  const ahj = "City of Glenmarsh";
+  learnResult = { ok: false, portalName: "stub", steps: learnSteps(), reviewScreen: { fields: [], bodyTextSnippet: "" }, finalSubmitRecorded: false, pageCount: 5, pauseReason: null,
+    message: `Stopped: aca-oregon.accela.com says this address is not served there — "${NOT_SERVED}".`, notServed: NOT_SERVED, stopReason: "not_served" };
+  const projectId = fx.newProject({ ahj, city: "Glenmarsh", zip: "97330", utility: "Pacific Power" });
+  const res = await autoLearn.autoLearnPortal(db, projectId, { scope: "ahj", portalUrl: ACA_OREGON, urlSource: "statewide", createdBy: "auto-seed (staging)", permitType: "structural", discipline: "structural" });
+  assert.equal(res.status, "failed");
+  assert.match(res.message, /says this address is not served there/);
+  const rows = recipeRowsFor(ahj);
+  assert.equal(rows.length, 1, JSON.stringify(rows));
+  assert.equal(rows[0].steps_json, "[]", "no learned step is kept under the AHJ");
+  assert.equal(rows[0].status, "needs_rerecord");
+  assert.ok(rows[0].flag_reason.startsWith(notServed.NOT_SERVED_FLAG_PREFIX), rows[0].flag_reason);
+  assert.match(rows[0].flag_reason, /No Building services were returned/);
+  const ent = recipes.portalEntityEvidence(db, { scope: "ahj", state: "OR", name: ahj })!;
+  assert.deepEqual(ent.ownPortals, [], "the refusing host is not the AHJ's own portal");
+  const ev = evidence.statewideEvidenceFor(db, { state: "OR", ahj, city: "Glenmarsh" }, "building");
+  assert.ok(ev.some((e) => e.kind === "elsewhere" && /not served there/.test(e.detail)), JSON.stringify(ev));
+  // Even with a seeded "OR E-permitting", the portal's own refusal withholds the fallback.
+  assert.equal(pp.statewidePortalFor({ state: "OR", ahj }, "building", { processProfileMethod: "OR E-permitting", evidence: ev })?.url, null);
+});
+await check("(d5-l2) MUST-EXCLUDE end to end: the next stage neither lends the refused host as a draft nor borrows onto it", async () => {
+  const ahj = "City of Glenmarsh";
+  // Positive evidence for the statewide portal on the lookup — the refusal must still win.
+  pp.savePermitProcessLookup(db, {
+    state: "OR", ahj, lookedUpAt: new Date().toISOString(), issuingAgency: cite(ahj, "https://glenmarsh.example.gov/permits", `The ${ahj} issues building permits`), permitStructure: nf(),
+    permits: [{ discipline: "structural", label: "structural", issuingAgency: cite(ahj, "https://glenmarsh.example.gov/permits", `The ${ahj} issues building permits`),
+      portalUrl: cite(ACA_OREGON, "https://glenmarsh.example.gov/permits", "Apply online through Oregon ePermitting (aca-oregon.accela.com)"), recordType: nf(), documents: nf(), fee: nf() }],
+  } as never);
+  const r = await stageBuilding(ahj, "Glenmarsh");
+  assert.equal(r.replayed, null, "a recipe drove the run on the host that refused this AHJ");
+  assert.equal(r.taken, null);
+  assert.match(String(r.withheld?.reason), /not served there/);
+});
+await check("(d5-l3) MUST-EXCLUDE: a not-served learn never touches the AHJ's COMPLETE recipe on its own (other) portal", async () => {
+  const ahj = "City of Kestrel Point";
+  const own = recipes.startPortalRecording(db, { scopeType: "ahj", state: "OR", ahj, utility: "Pacific Power", portalUrl: "https://aca-prod.accela.com/KESTRELPOINT/Default.aspx", discipline: "structural", portalPlatform: "accela", createdBy: "test" });
+  recipes.savePortalRecipeSteps(db, own.id, accelaSteps("Residential - Structural"), { status: "complete" });
+  learnResult = { ok: false, portalName: "stub", steps: learnSteps(), reviewScreen: { fields: [], bodyTextSnippet: "" }, finalSubmitRecorded: false, pageCount: 3, pauseReason: null, message: "stub", notServed: NOT_SERVED, stopReason: "not_served" };
+  const projectId = fx.newProject({ ahj, city: "Kestrel Point", zip: "97330", utility: "Pacific Power" });
+  await autoLearn.autoLearnPortal(db, projectId, { scope: "ahj", portalUrl: ACA_OREGON, urlSource: "statewide", createdBy: "operator", permitType: "structural", discipline: "structural" });
+  const row = fx.recipeRow(own.id);
+  assert.equal(row.status, "complete");
+  assert.equal(String(row.flag_reason ?? ""), "");
+  assert.notEqual(String(row.steps_json), "[]");
+});
+await check("(d5-r1) MUST-EXCLUDE: an own recipe whose REPLAY the portal refused is flagged refused (demoted, never replayed again) — not run through the drift classifier", async () => {
+  const ahj = "City of Otterbrook";
+  const own = recipes.startPortalRecording(db, { scopeType: "ahj", state: "OR", ahj, utility: "Pacific Power", portalUrl: ACA_OREGON, discipline: "structural", portalPlatform: "accela", createdBy: "test" });
+  recipes.savePortalRecipeSteps(db, own.id, accelaSteps("Residential - Structural"), { status: "complete" });
+  let ran = 0;
+  fx.stubRunner(async () => {
+    ran++;
+    return { ok: false, finalSubmitClicked: false, message: "Stopped: the portal says this address is not served there",
+      steps: [{ ok: true, message: "Opened stub portal." }, { ok: false, message: `Stopped: the portal says this address is not served there — "${NOT_SERVED}".`, data: { notServed: NOT_SERVED } }] };
+  });
+  const projectId = fx.newProject({ ahj, city: "Otterbrook", zip: "97330", utility: "Pacific Power" });
+  await repo.prepareSubmission(db, projectId, "building");
+  assert.equal(ran, 1, "the own recipe replayed once");
+  const row = fx.recipeRow(own.id);
+  assert.ok(String(row.flag_reason).startsWith(notServed.NOT_SERVED_FLAG_PREFIX), String(row.flag_reason));
+  assert.equal(row.status, "needs_rerecord");
+  // The next stage never replays it (and never lends its host as a draft).
+  const projectId2 = fx.newProject({ ahj, city: "Otterbrook", zip: "97330", utility: "Pacific Power" });
+  await repo.prepareSubmission(db, projectId2, "building");
+  assert.equal(ran, 1, "the refused recipe replayed again");
+});
+
 finish("portal-truth");
