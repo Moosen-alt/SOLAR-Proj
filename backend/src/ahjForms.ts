@@ -542,6 +542,21 @@ function savedElectricalLine(ctx: FillContext): FeeScheduleLine | undefined {
   return line?.unresolvedCollector ? undefined : line;
 }
 
+/** MAY THE FORM'S PRINTED LADDER PRICE IT? The one answer for the fee cells and the "fees came from
+ *  the form" note. Only when no saved electrical line is on file (savedElectricalLine) AND the ladder's
+ *  OWN authority has no undifferentiated / combo schedule on file either (skeptic stage-forms-fee-2: a
+ *  direct Marion County project with Marion's undifferentiated $134.40 schedule printed the ladder's
+ *  $105.28 and said "no saved Marion County schedule is on file"). Then the cells stay blank — the E-01
+ *  is never priced from an undifferentiated amount. Another authority's undifferentiated row (the
+ *  city's own, on a Jefferson job) does not stop it. */
+function printedLadderApplies(ctx: FillContext): boolean {
+  if (!ctx.printedFeeLadder || savedElectricalLine(ctx)) return false;
+  const own = String(ctx.printedFeeLadder.authority ?? "").trim().toLowerCase();
+  if (!own) return true;
+  return !(ctx.publishedFeeLines ?? []).some((l) => (l.discipline === "" || l.discipline === "combo") && !l.unresolvedCollector
+    && String(l.authority ?? "").trim().toLowerCase() === own);
+}
+
 function printedLadderFee(name: string, ctx: FillContext): string {
   const fees = printedLadderCents(ctx);
   if (!fees) return "";
@@ -643,7 +658,7 @@ function computed(name: string, ctx: FillContext): string {
       // file — savedElectricalLine): the ladder printed on this blank, where it has one. A saved
       // line that declines to price (feeUsd null, with its reason) is never overruled by the form.
       const line = savedElectricalLine(ctx);
-      if (!line) return printedLadderFee(name, ctx);
+      if (!line) return printedLadderApplies(ctx) ? printedLadderFee(name, ctx) : "";
       if (line.feeUsd == null) return "";
       if (name === "electricalBaseFee") return line.baseFeeUsd == null ? "" : money(line.baseFeeUsd);
       const svc = serviceFeederOnForm(ctx, line);
@@ -1273,7 +1288,7 @@ export async function fillLoadedForm(
   const missingRequired = Object.entries(def.requiredFields ?? {}).filter(([, source]) => !resolveSource(source, ctx).trim()).map(([label]) => label);
   // Say where the fees came from whenever the printed ladder priced this form (no saved line on file —
   // the same savedElectricalLine answer the fee cells used).
-  const printedFeeNote = ctx.printedFeeLadder && !savedElectricalLine(ctx)
+  const printedFeeNote = ctx.printedFeeLadder && printedLadderApplies(ctx)
     && resolveSource("computed.electricalBaseFee", ctx) ? ctx.printedFeeLadder.note : "";
   // ONE STORY ABOUT THE FEES. The curated maps' generic note ("Fee entries use the current saved
   // jurisdiction lookup; printed rates may be historical.") contradicts the printed-ladder note, so

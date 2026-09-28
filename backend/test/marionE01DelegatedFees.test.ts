@@ -162,6 +162,31 @@ try {
   check("MUST-EXCLUDE a saved schedule that was evaluated and declined (4 kVA, no bracket) keeps its blank — never the printed $79.00",
     declined.fees.q5 === "1" && allCells(declined.fees).every((v) => v === ""), show(declined.fees));
 
+  // ═══ SKEPTIC (stage-forms-fee-2): a DIRECT Marion County project, with Marion County's own
+  // UNDIFFERENTIATED schedule on file (no discipline — jurisdictionHarvest's call shape), must never
+  // print the ladder's $105.28 beside a note that no Marion schedule is on file; nor is the E-01 priced
+  // from the undifferentiated amount. (Setup clears the electrical Marion row saved above; the
+  // undifferentiated row goes in through the real write path.)
+  db.run("DELETE FROM fee_schedules WHERE profile_key LIKE 'or|marion county%'");
+  const { discipline: _dropped, ...undiffFinding } = finding as typeof finding & { discipline?: string };
+  const undiff = fees.saveFeeSchedule(db, { state: "OR", ahj: "Marion County", track: "permit" }, undiffFinding as never,
+    { corroborateAgainst: { evidence: [{ url: SRC, via: "http" as const, status: 200, kind: "pdf" as const, bytes: 100, handed: 2 }], corpus: [row + "\n" + surcharge] } } as never);
+  const directProject = { ...jefferson, id: `marion-direct-${++seq}`, ahj: "Marion County", city: "Salem", zip: "97301",
+    projectAddress: "5 Fixture Rd NE, Salem, OR, 97301", systemSizeAcKw: 12.913 } as never;
+  filledDirs.push((directProject as { id: string }).id);
+  const directLines = fees.feeForProject(db, directProject, "permit")?.lines ?? [];
+  const directPkg = await forms.buildFilledFormsForProject(db, directProject);
+  const directLoaded = forms.loadStoredTemplates(db, "Marion County", "OR");
+  const directE = directPkg.forms.find((f) => f.templateId === directLoaded.find((t) => t.formType === "electrical_application")?.templateId);
+  const dDoc = directE?.outputPath ? await PDFDocument.load(fs.readFileSync(directE.outputPath)) : null;
+  const dtf = (n: string) => dDoc ? dDoc.getForm().getTextField(n).getText() ?? "" : "(no fill)";
+  const directCells = [dtf("9400"), dtf("Subtotal"), dtf("State surcharge 12 of permit fee"), dtf("TOTAL PERMIT FEE")];
+  check("(setup) direct Marion County: only the undifferentiated Marion schedule is on file", (undiff as { saved?: boolean }).saved === true
+    && directLines.length > 0 && directLines.every((l) => l.discipline === "") && !directLines.some((l) => l.unresolvedCollector), JSON.stringify({ undiff, directLines }));
+  check("MUST-EXCLUDE direct Marion + its undifferentiated schedule: the E-01 fee cells stay BLANK (never the ladder's 94.00 / 105.28, never the undifferentiated amount)",
+    !!directE && directCells.every((v) => v === ""), JSON.stringify({ directCells, msg: directE?.message }));
+  check("MUST-EXCLUDE ...and the fill never says 'no saved Marion County electrical fee schedule is on file'", !!directE && !/Fees are the schedule printed on this form/.test(directE.message ?? ""), directE?.message);
+
   assert.equal(failed.length, 0, `${failed.length} check(s) failed: ${failed.join(" | ")}`);
   console.log(`marionE01DelegatedFees: ${passed} checks passed — through the real lookup (applyLookupFees: City of Jefferson -> Marion County, no Marion schedule) the electrical line is flagged unresolvedCollector at both line builders and the E-01 fills its printed ladder (Michael $105.28); a chain of pointers stays blank; a saved Marion County schedule wins ($134.40) and where it declines the cells stay blank`);
 } finally {

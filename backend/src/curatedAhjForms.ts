@@ -21,6 +21,8 @@ export interface PrintedFeeLadder {
   autoMaxKva: number;
   /** "State surcharge (12% of permit fee)", as printed. */
   stateSurchargePercent: number;
+  /** The seed's own authority ("marion county"), set by curatedPrintedFees. */
+  authority?: string;
   /** Said on the fill result whenever the ladder priced the form — one sentence (the generic
    *  CURATED_SAVED_FEE_NOTE is dropped from that fill's message, never said beside it). */
   note: string;
@@ -70,7 +72,9 @@ export function curatedFormSource(project: Pick<ProjectRecord,"ahj"|"state">,for
 export function curatedPrintedFees(bytes:Uint8Array):PrintedFeeLadder|null{
  const hash=createHash("sha256").update(bytes).digest("hex");
  const source=CURATED_AHJ_FORMS.find(f=>f.hash===hash);
- return source&&"printedFees" in source?source.printedFees as PrintedFeeLadder:null;
+ // The ladder is the printed schedule of THIS seed's authority ("marion county"): ahjForms declines it
+ // when that authority's own undifferentiated schedule is on file (skeptic stage-forms-fee-2).
+ return source&&"printedFees" in source?{...(source.printedFees as PrintedFeeLadder),authority:source.ahj}:null;
 }
 export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
  const source=CURATED_AHJ_FORMS.find(f=>f.hash===createHash("sha256").update(bytes).digest("hex"));
