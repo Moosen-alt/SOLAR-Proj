@@ -6216,7 +6216,7 @@ function documentVerdictHtml(pkg, formMissingFields = [], agencyComputedFields =
     docRow = `<div class="kx-docstate is-clear">
         <span class="kx-docstate-icon" aria-hidden="true">✓</span>
         <div class="kx-docstate-body">
-          <span class="kx-docstate-title">Every required document is on file${filledAtStaging.length || acquiredAtStaging.length ? " or made by Stage itself" : ""}</span>
+          <span class="kx-docstate-title">Every required document is on file${acquiredAtStaging.length ? " or made by Stage itself" : filledAtStaging.length ? " or filled at staging" : ""}</span>
           <span class="kx-docstate-text">The required-document inventory ran against the real uploads and filled forms on disk and found nothing blocking missing${filledAtStaging.length ? " that you need to supply" : ""}. On file is not the same as attached: staging attaches what the portal's upload slots ask for, and the run does not yet report what went up — check the portal's attachment list before you submit.</span>
         </div>
       </div>`;
