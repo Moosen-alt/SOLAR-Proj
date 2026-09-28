@@ -3318,8 +3318,10 @@ function buildProjectDescriptionScopeLines(plan){
   if (flags.mpu) {
     let mpu = 'main service panel upgrade';
     const ratings = [];
-    if (bus) ratings.push(`${bus}A bus`);
-    if (main) ratings.push(`${main}A main breaker`);
+    // The parsed rating often carries its unit already ("225A") — never print "225AA".
+    const amps = (v) => String(v).replace(/\s*(?:a|amps?|amperes?)\.?\s*$/i, '');
+    if (bus) ratings.push(`${amps(bus)}A bus`);
+    if (main) ratings.push(`${amps(main)}A main breaker`);
     if (ratings.length) mpu += ` (${ratings.join(' / ')})`;
     add(mpu);
   }

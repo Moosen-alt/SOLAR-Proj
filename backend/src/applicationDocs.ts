@@ -491,6 +491,11 @@ function payload(project: ProjectRecord, key: string): string {
   return clean(project.parserSnapshot[key]);
 }
 
+/** A rating that already carries its unit ("225A", "200 amps") without it — the template adds " A". */
+function ampsOnly(value: string): string {
+  return String(value ?? "").replace(/\s*(?:a|amps?|amperes?)\.?\s*$/i, "");
+}
+
 function yesNo(value: string): string {
   return value ? value : "[verify]";
 }
@@ -1188,7 +1193,7 @@ Equipment:
 
 Electrical:
 - Service phase/voltage: ${yesNo(payload(project, "phase"))} / ${yesNo(payload(project, "voltage"))}
-- MSP bus/main: ${yesNo(payload(project, "busRating"))} A bus / ${yesNo(payload(project, "mainBreaker"))} A main
+- MSP bus/main: ${yesNo(ampsOnly(payload(project, "busRating")))} A bus / ${yesNo(ampsOnly(payload(project, "mainBreaker")))} A main
 - PV breaker/OCPD: ${yesNo(payload(project, "pvBreaker"))}
 - AC disconnect: ${yesNo(payload(project, "acDiscReq"))} ${payload(project, "acDiscAmp") ? `(${payload(project, "acDiscAmp")} A)` : ""}
 `,
