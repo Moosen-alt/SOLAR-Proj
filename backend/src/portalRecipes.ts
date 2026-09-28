@@ -20,6 +20,13 @@ import { sameRecordType } from "./permitProcess";
 import { parseStreetNumber, parseStreetName, parseStreetLine } from "../../portal-bot/src/addressParse";
 import { feeBracketFieldForLabel, feeBracketQuantityFields } from "./feeBracketFields";
 import { FEE_BRACKET_FIELD_PREFIX } from "../../portal-bot/src/feeBracketQuantity";
+import { filingValuationText } from "./valuation";
+import { planSetDisconnectPart, standardDisconnectConflicts } from "./baselineRules";
+import { clientCompanyFactFields } from "./clients";
+import { COMPANY_IDENTIFIER_KEY, companyFactStamp, isCompanyAttestationStep, isCompanyIdentityLabel, looksLikePlaceholderIdentifier } from "../../shared/src/companyFacts";
+import { usStateCode } from "./permitPath";
+import { labelWords } from "../../shared/src/portalSafety";
+import { mountAdjective, mountKindForProject } from "./codeReviewRules";
 
 type Row = Record<string, unknown>;
 
@@ -763,6 +770,39 @@ function fnv1a(joined: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
+/**
+ * THE SAVE GUARD FOR COMPANY IDENTITY (leak sweep 2026-09-28, company-leak-3). An UNBOUND free-text
+ * literal under a company-identity label (companyFacts.isCompanyIdentityLabel — insurer, policy,
+ * bond, HIC/CSL/CCB/UBI registration, website, title, supervising/master electrician, contractor /
+ * company / business, the contractor's split street) is the learn company's answer. The binder had
+ * its chance to bind it to a key (insuranceCarrier, installerStreetNumber, ccbLicenseNumber…); what
+ * is still a literal is never persisted into a recipe every company replays: the value is dropped
+ * and the step replays BLANK, named for a person (step.operatorItem). Bound, sensitive and
+ * closed-vocabulary steps are untouched.
+ */
+/** Stamp each company ATTESTATION step (companyFacts.isCompanyAttestationStep) with the opaque stamp
+ *  of the client whose job recorded it, so replay answers it only for that client's own jobs
+ *  (recipeReplayBinding R8). No client: nothing stamped — the step is then always left for a person. */
+export function stampCompanyAttestations(steps: RecipeStep[], clientId: string | null | undefined): RecipeStep[] {
+  const stamp = companyFactStamp(clientId);
+  if (!stamp) return steps ?? [];
+  return (steps ?? []).map((st) => (isCompanyAttestationStep(st) && !st.companyFactOf ? { ...st, companyFactOf: stamp } : st));
+}
+
+export function withholdCompanyIdentityLiterals(steps: RecipeStep[]): { steps: RecipeStep[]; withheld: number } {
+  let withheld = 0;
+  const out = (steps ?? []).map((st) => {
+    if (!st || st.action !== "fill" || st.field || st.sensitive || !String(st.value ?? "").trim()) return st;
+    const label = [st.selector?.label, st.selector?.name, st.selector?.placeholder, st.note].filter(Boolean).join(" ");
+    if (!isCompanyIdentityLabel(label)) return st;
+    withheld++;
+    const next: RecipeStep = { ...st, operatorItem: "company identity — the recorded answer was one company's, so the shared recipe leaves this box for a person" };
+    delete next.value;
+    return next;
+  });
+  return { steps: out, withheld };
+}
+
 // Save the recorded steps (called by the recorder when the admin finishes, and by every
 // auto-learn terminal path). The STATUS is the thing that decides whether a recipe replays
 // unattended on real filings, so it is only ever changed by a caller that says so.
@@ -810,7 +850,9 @@ export function savePortalRecipeSteps(
     s(db.get<Row>("SELECT prev_steps_json FROM portal_recipes WHERE id = ?", [recipeId])?.prev_steps_json) || "[]", []);
   const incoming = steps ?? [];
   const shallower = status !== "complete" && recipeDepth(snapshot) > recipeDepth(incoming);
-  const finalSteps = shallower ? snapshot : incoming;
+  // A SHARED RECIPE NEVER CARRIES ONE COMPANY'S IDENTITY AS A LITERAL (leak sweep 2026-09-28) — the
+  // invariant lives here, where every writer passes, and applies to whichever steps are kept.
+  const finalSteps = withholdCompanyIdentityLiterals(shallower ? snapshot : incoming).steps;
   const depthNote = shallower
     ? `[kept the deeper recording: this save carried ${recipeDepth(incoming)} filled field(s), the row already had ${recipeDepth(snapshot)}]`
     : "";
@@ -1370,6 +1412,12 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   // flags the step for a project with NO parcel (the resolver emits the key only when present).
   parcelNumber: "Assessor parcel number (APN) of the project site, as the county prints it",
   workDescription: "One-line scope of work for the permit application, derived from this project's own system size",
+  // THE VALUE FOR EVERY JOB VALUE / VALUATION / ESTIMATED COST BOX (leak sweep 2026-09-28). The
+  // operator's valuation formula (valuation.ts: 40% of contract + battery adders), whole dollars —
+  // the same figure the PDF application carries. jobValue / contractAmount are the CONTRACT price.
+  declaredValuation: "THE value for a Job Value / Valuation / Estimated Cost / Construction Value box: the declared valuation (operator formula, 40% of contract + battery adders) — the same number the PDF application states. NEVER the contract price.",
+  jobValue: "The CONTRACT price the client pays — only for a box explicitly labelled contract price/amount; NEVER a Job Value / Valuation / Estimated Cost box (that is declaredValuation)",
+  contractAmount: "The CONTRACT price the client pays (alias of jobValue) — only for a box explicitly labelled contract price/amount; never a valuation box",
   accelaContactCode: "Accela contact/license lookup code",
   hasExistingSystem: "Whether an existing PV/storage system is already interconnected on site (Yes/No)",
   existingSystemSizeDcKw: "EXISTING (already interconnected) system DC size in kilowatts",
@@ -1384,6 +1432,15 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   existingBatteryMakeModel: "EXISTING system's battery/storage make and model",
   nemTariff: "NEM tariff/program the existing system is on (e.g. NEM1, NEM2, NEM3/NBT)",
   existingPtoDate: "Permission-to-operate date of the EXISTING system",
+  existingPtoDateUs: "Permission-to-operate date of the EXISTING system, MM/DD/YYYY",
+  existingPtoDateIso: "Permission-to-operate date of the EXISTING system, YYYY-MM-DD",
+  // Company facts beside the licence (clients.clientCompanyFactFields) — THIS job's client only.
+  insuranceCarrier: "Installer's (contractor's) liability insurance carrier / company",
+  insuranceExpiration: "Installer's liability insurance policy EXPIRATION date",
+  bondCarrier: "Installer's contractor / surety bond company",
+  bondExpiration: "Installer's contractor / surety bond EXPIRATION date",
+  installerStreetNumber: "Installer company street address — house NUMBER only",
+  installerStreetName: "Installer company street address — street NAME only (everything after the number)",
   existingNemAgreementNumber: "EXISTING interconnection/NEM agreement number (sensitive — bind by name, never a literal)",
   existingNemApplicationNumber: "EXISTING interconnection application number (sensitive — bind by name, never a literal)",
   exportMode: "Export mode of the system (export / non-export-pcs / ngom)",
@@ -1435,13 +1492,49 @@ const EXPIRY_DATE_LABEL = /expir|valid\s*(through|until|thru)|renew/i;
 // expiring. An expiry with no licence context binds to NOTHING: the literal stays, the
 // cross-project guard refuses it if it looks like somebody's data, and a person sees a blank
 // at review. Declining to bind is the safe half of this decision.
-const LICENCE_CONTEXT = /licen[sc]e|registration|certificat|bond|insurance|\bccb\b|contractor/i;
+// A CONTRACTOR LICENCE, NOT ANY EXPIRING DOCUMENT (leak sweep 2026-09-28). "registration",
+// "certificat", "bond" and "insurance" used to count as licence context, so a Contractor Insurance /
+// Surety Bond / Business Registration expiry was bound to the CCB licence's expiry — the wrong date,
+// and blank for any company with no CCB. Insurance and bond now have their own keys (the client's
+// own insurance_expiry / bond_expiry); a registration or a city/business licence binds to nothing.
+const LICENCE_CONTEXT = /licen[sc]e|\bccb\b|contractor/i;
+const NOT_A_CONTRACTOR_LICENCE = /\b(?:business|city|metro|driver'?s?|vehicle)\s+licen[sc]e|\bregistration\b/i;
+const WORKERS_COMP_LABEL = /workers?'?\s*comp/i;
+const INSURANCE_LABEL = /\binsurance\b|\bliability\s+(?:policy|coverage)\b|\binsurer\b/i;
+const BOND_LABEL = /\bbond\b|\bsurety\b/i;
+// AN EXISTING SYSTEM'S DATE IS A FACT ABOUT THE PAST. "Existing System Permission to Operate Date"
+// fell through to "today" ("Operate" is not "operation") and "Existing system installation date"
+// to a date six weeks in the FUTURE — every replay filed today / next month as the existing
+// system's PTO. The existing system's PTO binds to its own key (in the format the portal accepted);
+// any other existing-system or PTO date binds to nothing — the literal stays, and the replay guard
+// refuses it as project data.
+const PAST_SYSTEM_LABEL = /\b(?:existing|original(?:ly)?|prior|previous(?:ly)?)\b/i;
+const PTO_WORDS = /\bpto\b|permission\s+to\s+operate/i;
+const ESTIMATE_WORD = /\b(?:estimated|expected|anticipated|requested|projected|planned|target)\b/i;
+/** A PAST system's date, or a PTO date the label does not call an estimate ("Permission to Operate
+ *  Date" could be the existing system's): never today, never a commissioning estimate. An ESTIMATED /
+ *  expected PTO is the new system's future date and falls through to the future-date rule. */
+const pastOrUnestimatedPtoDate = (text: string): boolean => PAST_SYSTEM_LABEL.test(text) || (PTO_WORDS.test(text) && !ESTIMATE_WORD.test(text));
+/** A date literal on such a label that binds to no key of its own: withheld at save, never frozen. */
+export function existingSystemDateWithoutKey(label: string, value: string): boolean {
+  const text = String(label || "");
+  return DATE_LITERAL.test(String(value || "").trim()) && /date/i.test(text) && pastOrUnestimatedPtoDate(text) && !EXISTING_PTO_LABEL.test(text);
+}
+const EXISTING_PTO_LABEL = /\b(?:existing|original|prior|previous)\b[^.?]{0,60}(?:\bpto\b|permission\s+to\s+operate)|(?:\bpto\b|permission\s+to\s+operate)[^.?]{0,60}\b(?:existing|original|prior|previous)\b/i;
 export function dateFieldForLiteral(label: string, value: string): string | null {
   const raw = String(value || "").trim();
   if (!DATE_LITERAL.test(raw)) return null;
   const text = String(label || "");
   if (!/date/i.test(text)) return null; // only rebind a control that is actually a date
   const isUs = raw.includes("/");
+  // An EXISTING system's (or any PTO) date is never today and never a commissioning estimate.
+  if (pastOrUnestimatedPtoDate(text)) return EXISTING_PTO_LABEL.test(text) ? (isUs ? "existingPtoDateUs" : "existingPtoDateIso") : null;
+  // WHOSE expiry: workers' comp binds to nothing; insurance and bond to the client's own dates; a
+  // registration or a business/city licence to nothing; a contractor licence to the licence's.
+  if (EXPIRY_DATE_LABEL.test(text) && WORKERS_COMP_LABEL.test(text)) return null;
+  if (EXPIRY_DATE_LABEL.test(text) && INSURANCE_LABEL.test(text)) return "insuranceExpiration";
+  if (EXPIRY_DATE_LABEL.test(text) && BOND_LABEL.test(text)) return "bondExpiration";
+  if (EXPIRY_DATE_LABEL.test(text) && NOT_A_CONTRACTOR_LICENCE.test(text)) return null;
   // Checked BEFORE the future-date rule on purpose: "Licence Valid Through Date" carries both
   // an expiry word and nothing else, while a label like "Expiration of the estimated schedule"
   // does not exist. Expiry is the more specific reading wherever both could fire.
@@ -1449,6 +1542,18 @@ export function dateFieldForLiteral(label: string, value: string): string | null
   if (FUTURE_DATE_LABEL.test(text)) return isUs ? "estimatedCommissioningDate" : "estimatedCommissioningDateIso";
   // A signature/application date is "today", not a future estimate.
   return isUs ? "todayDateUs" : "todayDate";
+}
+
+/** A stored date ("2021-03-15", "3/15/2021") in both portal formats; blanks when it does not parse. */
+function usAndIsoDate(raw: unknown): { us: string; iso: string } {
+  const s = String(raw ?? "").trim();
+  let y = 0, m = 0, d = 0;
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
+  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+  if (iso) { y = +iso[1]; m = +iso[2]; d = +iso[3]; } else if (us) { y = +us[3]; m = +us[1]; d = +us[2]; } else return { us: "", iso: "" };
+  if (m < 1 || m > 12 || d < 1 || d > 31) return { us: "", iso: "" };
+  const p = (n: number) => String(n).padStart(2, "0");
+  return { us: `${p(m)}/${p(d)}/${y}`, iso: `${y}-${p(m)}-${p(d)}` };
 }
 
 // A plan-set orientation rounded to the whole degree the portals accept. Anything that is
@@ -1745,11 +1850,19 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
       if (explicit) return explicit;
       const dc = String(snapshotFlat.dcKw ?? snapshotFlat.systemSizeDcKw ?? "").trim();
       const ac = String(snapshotFlat.acKw ?? snapshotFlat.systemSizeAcKw ?? "").trim();
-      const mount = /ground/i.test(String(snapshotFlat.mountType ?? "")) ? "Ground-mounted" : "Roof-mounted";
+      // THE ONE MOUNT PREDICATE (codeReviewRules.mountKindForProject — the parser's `mounting`, then
+      // `mountType`, then the design text). It read only the dead mountType key, so every job —
+      // ground and carport included — was described as "Roof-mounted". Unknown: no adjective.
+      const mount = mountAdjective(mountKindForProject(project));
       if (!dc && !ac) return "";
       const size = [dc ? `${dc} kW DC` : "", ac ? `${ac} kW AC` : ""].filter(Boolean).join(" / ");
-      return `${mount} residential solar PV system, ${size}`;
+      return mount ? `${mount} residential solar PV system, ${size}` : `Residential solar PV system, ${size}`;
     })(),
+    // THE VALUATION A JOB VALUE / VALUATION / ESTIMATED COST BOX TAKES — the operator's formula of
+    // the contract (filingValuationText → resolveValuation), the SAME whole-dollar figure the PDF
+    // application files. ALWAYS emitted, "" when nothing can be computed: a box bound here then
+    // replays blank and is named, never the recorded contract.
+    declaredValuation: filingValuationText(snapshot as never, project.systemSizeDcKw),
     ...dateFields(),
     // EXPORT LIMITING. Derived here, not only in the learner's planner map: a step that
     // BINDS to this key must resolve at REPLAY time, and it used to exist only at learn
@@ -1898,6 +2011,14 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     putEs("existingNemApplicationNumber", es.applicationNumber);
     putEs("exportMode", es.exportMode);
   }
+  // THE EXISTING SYSTEM'S PTO IN BOTH FORMATS a portal has shown it accepts (the date binder picks
+  // the one the recorded literal proved). ALWAYS present — "" for a project with no existing system —
+  // so a recipe bound to it replays blank on a greenfield job, never another project's date.
+  {
+    const v = usAndIsoDate(es?.ptoDate);
+    existingSys.existingPtoDateUs = v.us;
+    existingSys.existingPtoDateIso = v.iso;
+  }
 
   const overlay = project.clientId ? clientStagingOverlay(db, project.clientId, portalType) : {};
 
@@ -1944,6 +2065,51 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     if (!/phone$/i.test(k) || !v) continue;
     const digits = String(v).replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
     if (digits.length === 10) merged[k] = `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  // THE COMPANY FACTS BESIDE THE LICENCE — insurance / bond carrier and expiry, the installer's street
+  // number and name — from THIS project's own client, every key present ("" when not on file), so a
+  // recipe box bound to one never falls back to the learn company's recorded answer.
+  Object.assign(merged, clientCompanyFactFields(db, project.clientId));
+  // A PLACEHOLDER IS NOT A LICENCE (leak sweep 2026-09-28). A licence / docket / registration value
+  // shaped like a test or placeholder ("TEST-160001", "XXX…", "0000") is never filed: the key stays,
+  // blank, and QC names it on the client record (runQcForProject). And the ICC docket is Illinois's
+  // (Part 468 DG certification): on any other state's job it is present but blank — never another
+  // state's number in a box that asks for this one.
+  // The identifier keys are ALWAYS present ("" when nothing real is on file): a recipe step bound to
+  // one then replays blank and is named, never the recorded literal of the company that learned it.
+  for (const k of ["ccbLicenseNumber", "electricalLicenseNumber", "electricianLicenseNumber", "metroCityLicenseNumber", "docketNumber"]) {
+    if (!Object.prototype.hasOwnProperty.call(merged, k)) merged[k] = "";
+  }
+  for (const k of Object.keys(merged)) {
+    if (COMPANY_IDENTIFIER_KEY.test(k) && looksLikePlaceholderIdentifier(merged[k])) merged[k] = "";
+  }
+  if (usStateCode(project.state) !== "IL") merged.docketNumber = "";
+  // THE AC DISCONNECT PART (leak sweep 2026-09-28) — resolved AFTER the merge, because the client
+  // overlay used to win it outright: a plan set naming "Square D DU222RB" was filed as the client's
+  // standard Eaton DG221URB, and a plan set calling for a 60 A FUSIBLE switch was filed with a 30 A
+  // non-fused part beside "60A / fusible" — two contradictory facts on one utility application.
+  //   - the plan set's own part (acDiscMakeModel, split; baselineRules.planSetDisconnectPart) wins;
+  //   - else the client's standard part — unless it contradicts the plan set's rating or fusing
+  //     (baselineRules.standardDisconnectConflicts, the same check QC names for the operator), in
+  //     which case make and model are BLANK: the portal stops on them, QC says why, nothing is guessed;
+  //   - disconnectMakeModel is always the final make + model, never a separately-derived string.
+  {
+    const planPart = planSetDisconnectPart(snapshotFlat);
+    let make = "";
+    let model = "";
+    if (planPart.named) {
+      make = planPart.make;
+      model = planPart.model;
+    } else {
+      const stdMake = String(overlay.disconnectMake ?? "").trim();
+      const stdModel = String(overlay.disconnectModel ?? "").trim();
+      const ampsRaw = String(snapshotFlat.acDiscAmps ?? "").replace(/[^0-9.]/g, "");
+      const conflicts = standardDisconnectConflicts(stdModel, { fused: snapshotFlat.acDiscFused, amps: ampsRaw ? Number(ampsRaw) : null });
+      if (!conflicts.length) { make = stdMake; model = stdModel; }
+    }
+    merged.disconnectMake = make;
+    merged.disconnectModel = model;
+    merged.disconnectMakeModel = [make, model].filter(Boolean).join(" ").trim();
   }
   return merged;
 }
@@ -2003,12 +2169,24 @@ function fieldNameTokens(field: string): string[] {
   for (const w of words) for (const t of (FIELD_TOKEN_SYNONYMS[w] ?? [w])) out.add(t);
   return [...out];
 }
+// A TOKEN IS A WORD, NOT A SUBSTRING (leak sweep 2026-09-28). acDiscReq's token "ac" matched inside
+// "ACcessible", so "Is the meter socket accessible 24/7?" = Yes was bound to the parser's
+// disconnect-is-shown flag. A token hits only as a whole word (a plural "s" allowed).
+const escapeRe = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function labelHasToken(text: string, token: string): boolean {
+  return new RegExp(`(?:^|[^a-z0-9])${escapeRe(token)}s?(?![a-z0-9])`, "i").test(text);
+}
+/** Does the control's label name this field (a whole-word token hit)? */
+export function labelNamesField(label: string, field: string): boolean {
+  const text = labelWords(String(label || "")).toLowerCase();
+  return fieldNameTokens(field).some((t) => labelHasToken(text, t));
+}
 export function disambiguateByLabel(label: string, candidates: string[]): string | null {
-  const text = String(label || "").toLowerCase();
+  const text = labelWords(String(label || "")).toLowerCase();
   if (!text.trim() || candidates.length < 2) return null;
   const scored = candidates.map((c) => {
     const toks = fieldNameTokens(c);
-    const hit = toks.filter((t) => text.includes(t));
+    const hit = toks.filter((t) => labelHasToken(text, t));
     return { c, n: hit.length, extra: toks.length - hit.length };
   });
   const best = Math.max(...scored.map((x) => x.n));
@@ -2041,10 +2219,10 @@ const LABEL_STOPWORDS = new Set([
   "this", "that", "for", "and", "or", "be", "on", "at", "it", "if", "any", "please", "select",
 ]);
 export function labelRulesOutAllCandidates(label: string, candidates: string[]): boolean {
-  const text = String(label || "").toLowerCase();
+  const text = labelWords(String(label || "")).toLowerCase();
   const words = text.split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !LABEL_STOPWORDS.has(w));
   if (new Set(words).size < 3) return false; // too thin to conclude anything
-  return candidates.every((c) => fieldNameTokens(c).every((t) => !text.includes(t)));
+  return candidates.every((c) => fieldNameTokens(c).every((t) => !labelHasToken(text, t)));
 }
 
 // Steps bound to a field name the project data does not define. The LLM planner CHOOSES
@@ -2073,6 +2251,30 @@ export function deadFieldBindings(steps: RecipeStep[], projectFields: Record<str
   return out;
 }
 
+// PARSER QC / EVIDENCE SCALARS ARE NOT PORTAL ANSWERS (leak sweep 2026-09-28). Every parser scalar
+// reaches the dictionary, including the QC evidence flags — acDiscReq ("is a lockable disconnect
+// SHOWN on the plan set": "yes", or prose like "60A non-fusible blade-type…"), lightFrame,
+// gravityWindDesign, the *Compliant / attachment* screens. A portal's "Is the meter socket
+// accessible 24/7?" = Yes matched acDiscReq's "yes" by VALUE and was bound to it, so every later job
+// answered a meter-access question with its disconnect evidence. They never enter the binder's index.
+const PARSER_EVIDENCE_KEYS = new Set([
+  "acDiscReq", "lightFrame", "gravityWindDesign", "manufacturerInstallation", "attachmentToFraming",
+  "attachmentsOutsideEdgeZone", "attachmentSpacingIn", "attachmentEdgeSpacingIn", "stampRecommendation", "permitPath",
+]);
+export function isParserEvidenceKey(key: string): boolean {
+  return PARSER_EVIDENCE_KEYS.has(key) || /(?:Text|Compliant|Recommendation)$/.test(key);
+}
+/** Dates recomputed at every replay (dateFields) — assigned by a control's label, never by value. */
+const VOLATILE_DATE_KEYS = new Set(["todayDate", "todayDateUs", "estimatedCommissioningDate", "estimatedCommissioningDateIso"]);
+/** A bare Yes/No answer: it names nothing, so a value match alone never binds it. */
+const YES_NO_LITERAL = /^(?:yes|no|y|n|true|false)$/i;
+/** The learner's standing policy answers ("policy default: <question> -> Yes") stay literals. */
+const POLICY_DEFAULT_NOTE = /^\s*policy default\s*:/i;
+/** THE disconnect-to-meter distance question ("Is your disconnect within 10 feet of the utility
+ *  meter?", "Are the AC disconnect(s) … within the state's required distance of the meter?") — one
+ *  predicate, shared with the portal question bank (portalQuestionBank per-job:disconnect-10ft). */
+export const DISCONNECT_DISTANCE_QUESTION = /disconnect[^?]{0,80}\bwithin\s*(?:10|ten)\b|disconnect[^?]{0,80}\bwithin\s+(?:the\s+)?(?:state'?s?\s+)?required\s+distance|\bwithin\s*(?:10|ten)\s*(?:feet|ft)\b[^?]{0,60}\bdisconnect/i;
+
 export function convertLiteralsToBoundFields(
   steps: RecipeStep[],
   projectFields: Record<string, string>,
@@ -2080,10 +2282,12 @@ export function convertLiteralsToBoundFields(
   const norm = (v: string): string => String(v || "").toLowerCase().replace(/\s+/g, " ").trim();
 
   // value -> the project field key(s) holding exactly that value. Skip very short values
-  // (<2 chars) and the volatile todayDate helper — not stable identifying data.
+  // (<2 chars) and the volatile todayDate helper — not stable identifying data — and the parser's
+  // QC/evidence scalars (isParserEvidenceKey), which are never a portal's answer.
   const valueToFields = new Map<string, string[]>();
   for (const [key, raw] of Object.entries(projectFields)) {
     if (key === "todayDate") continue;
+    if (isParserEvidenceKey(key)) continue;
     const nv = norm(raw);
     if (nv.length < 2) continue;
     const arr = valueToFields.get(nv) ?? [];
@@ -2097,6 +2301,9 @@ export function convertLiteralsToBoundFields(
   const out = steps.map((step) => {
     const bindable = (step.action === "fill" || step.action === "select") && !!step.value && !step.field && !step.sensitive;
     if (!bindable) return step;
+    // A STANDING POLICY ANSWER IS A LITERAL ON PURPOSE ("policy default: Are the AC disconnect(s)…
+    // -> Yes"): the operator's answer for every job, never a value to rebind to project data.
+    if (POLICY_DEFAULT_NOTE.test(String(step.note ?? ""))) return step;
     // A DATE never matches by value (todayDate is skipped above as volatile), so it would
     // otherwise stay frozen and replay a stale — eventually PAST — date onto a live
     // application. Rebind it by the control's label to a field recomputed every replay.
@@ -2122,6 +2329,20 @@ export function convertLiteralsToBoundFields(
       bound.push({ value: step.value as string, field: bracketField, note: step.note });
       return { ...step, field: bracketField };
     }
+    // EXACT VALUE EQUALITY BEFORE THE LABEL RULE (leak sweep 2026-09-28). A recorded date that IS a
+    // stable project date (the existing system's PTO, "03/15/2021") binds to that key; the label
+    // rule below only ever reaches the dates no project value holds. The volatile computed dates
+    // (today, the commissioning estimate) are the label rule's to assign, never matched by value.
+    if (DATE_LITERAL.test(String(step.value ?? "").trim())) {
+      const stable = (valueToFields.get(norm(step.value as string)) ?? []).filter((k) => !VOLATILE_DATE_KEYS.has(k));
+      const pick = stable.length === 1 ? stable[0] : stable.length > 1 ? disambiguateByLabel(`${step.selector?.label ?? ""} ${step.note ?? ""}`, stable) : null;
+      if (pick) {
+        bound.push({ value: step.value as string, field: pick, note: step.note });
+        const next: RecipeStep = { ...step, field: pick };
+        delete next.value;
+        return next;
+      }
+    }
     const dateField = dateFieldForLiteral(`${step.selector?.label ?? ""} ${step.note ?? ""}`, step.value as string);
     if (dateField) {
       bound.push({ value: step.value as string, field: dateField, note: step.note });
@@ -2129,8 +2350,33 @@ export function convertLiteralsToBoundFields(
       delete next.value;
       return next;
     }
+    // An EXISTING system's date with no key of its own is the learn job's fact — never frozen into a
+    // recipe other jobs replay (leak-fix-portal skeptic): the box is left for a person.
+    if (existingSystemDateWithoutKey(`${step.selector?.label ?? ""} ${step.note ?? ""}`, step.value as string)) {
+      const next: RecipeStep = { ...step, operatorItem: "existing system date — the recorded answer was one job's, so the recipe leaves this box for a person" };
+      delete next.value;
+      return next;
+    }
+    const labelText = `${step.selector?.label ?? ""} ${step.note ?? ""}`;
+    const yesNo = YES_NO_LITERAL.test(String(step.value ?? "").trim());
+    // THE DISCONNECT-DISTANCE QUESTION HAS ITS OWN KEY — the per-job answer (intake asks it when a
+    // recipe binds it), never whichever parser flag happened to hold "yes".
+    if (yesNo && DISCONNECT_DISTANCE_QUESTION.test(labelText)) {
+      bound.push({ value: step.value as string, field: "disconnectWithin10ft", note: step.note });
+      const next: RecipeStep = { ...step, field: "disconnectWithin10ft" };
+      delete next.value;
+      return next;
+    }
     const matches = valueToFields.get(norm(step.value as string));
     if (!matches || matches.length === 0) return step; // portal-specific literal — keep as-is
+    // A BARE YES/NO NAMES NOTHING: a value match alone is coincidence ("No" is this project's
+    // hasBattery and also the answer to "Will the facility interconnect to a switchgear?"). It binds
+    // only when the control's own label names the field (a whole-word token hit); otherwise it is
+    // kept as recorded and reported, never bound and never a blocker.
+    if (yesNo && matches.length === 1 && !labelNamesField(labelText, matches[0])) {
+      portalConstants.push({ value: step.value as string, note: `${String(step.note ?? "").slice(0, 60)} (a bare Yes/No matched ${matches[0]} by value only — kept as recorded)` });
+      return step;
+    }
     if (matches.length === 1) {
       bound.push({ value: step.value as string, field: matches[0], note: step.note });
       // Replace the frozen literal with a reusable binding (resolveValue() at replay reads
@@ -2177,8 +2423,11 @@ export function appendHumanPatchSteps(
   recipeId: string,
   newSteps: RecipeStep[],
   projectFields: Record<string, string>,
+  /** The client whose job this patch was demonstrated on — stamps its company attestations. */
+  clientId?: string | null,
 ): PortalRecipe {
   const recipe = getPortalRecipe(db, recipeId);
+  newSteps = stampCompanyAttestations(newSteps, clientId);
   // DEFENSE IN DEPTH: the capture script already refuses submit/pay clicks, but a
   // mislabeled button can slip through (a real run recorded a bare "Submit" click).
   // Patches merge BEFORE the terminal stop markers — replayable position — so a

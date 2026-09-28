@@ -181,9 +181,10 @@ export function portalSafetyFactory() {
   const PAYMENT_WORDS =
     /\bcvv\b|\bcvc\b|\bccv\b|card\s*(number|no\b|#|type)|cardholder|card\s*holder|name on card|credit\s*card|debit\s*card|(card|\bcc\b|credit|debit)[a-z ]{0,12}exp|exp(iration|iry|\.)?\s*(month|year)\b|billing\s*zip/i;
 
-  // A camelCase / snake_case attribute reads as words: accountNumber -> "account Number".
+  // A camelCase / snake_case attribute reads as words: accountNumber -> "account Number", and an
+  // acronym run ends where a capitalised word starts: "WCStrNum" -> "WC Str Num", "MFACode" -> "MFA Code".
   const words = (s: unknown): string =>
-    String(s ?? "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_\-.[\]]+/g, " ").trim();
+    String(s ?? "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").replace(/[_\-.[\]]+/g, " ").trim();
 
   const parts = (f: FieldIdentity | null | undefined): string[] => {
     if (!f) return [];
@@ -1671,6 +1672,7 @@ export function portalSafetyFactory() {
     isPaymentElementInPage,
     controlRoleInPage,
     controlLabelInPage,
+    labelWords: words,
   };
 }
 
@@ -1679,6 +1681,8 @@ export type PortalSafety = ReturnType<typeof portalSafetyFactory>;
 const impl: PortalSafety = portalSafetyFactory();
 
 export const isSubmitIntent = impl.isSubmitIntent;
+/** A camelCase / snake_case control id read as words ("ConStNum" -> "Con St Num") — THE splitter. */
+export const labelWords = impl.labelWords;
 export const isPayFee = impl.isPayFee;
 export const isPaymentWordedText = impl.isPaymentWordedText;
 export const paymentDialogVerdict = impl.paymentDialogVerdict;

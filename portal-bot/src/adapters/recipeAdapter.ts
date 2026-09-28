@@ -56,18 +56,26 @@ const BARE_NAME_LABEL = /\bnames?\b/i;
 const NAMES_A_THING_NOT_A_PERSON = /\b(permit|file|document|program|record|application|template|report|folder|attachment|field|column|tab|page)\s*names?\b/i;
 
 export function looksLikeProjectData(label: string, value: string): boolean {
-  const l = String(label ?? "");
+  // The label as written AND read as words: a control id ("ConStNum", "WCStrNum", "MailStName")
+  // names nothing until it is split (shared portalSafety.labelWords — the one splitter).
+  const l = `${String(label ?? "")} ${labelWords(String(label ?? ""))}`;
   const v = String(value ?? "").trim();
   if (!v) return false;
   // The portal's own vocabulary wins: a "Job Category" answer is the portal's word even
   // though "category" sits near words we treat as project data elsewhere.
-  if (TAXONOMY_LABEL.test(l) && !PROJECT_DATA_LABEL.test(l)) return false;
-  if (PROJECT_DATA_LABEL.test(l)) return true;
+  // A COMPANY'S OWN FACTS are somebody's data too (leak sweep 2026-09-28): insurer, policy, bond,
+  // workers' comp, HIC/CSL/CCB/UBI registrations, website, title, supervising/master electrician,
+  // the contractor's street number/name — one predicate (shared companyFacts).
+  const companyFact = isCompanyIdentityLabel(l);
+  if (TAXONOMY_LABEL.test(l) && !PROJECT_DATA_LABEL.test(l) && !companyFact) return false;
+  if (PROJECT_DATA_LABEL.test(l) || companyFact) return true;
   // A bare "Name" is a person's until the label says it is a thing's — see the comment above.
   if (BARE_NAME_LABEL.test(l) && !NAMES_A_THING_NOT_A_PERSON.test(l)) return true;
   return UNAMBIGUOUS_PII_VALUE.test(v) || PHONE_VALUE.test(v);
 }
 import { rankAddressVersions } from "../addressVersion";
+import { isCompanyIdentityLabel } from "../../../shared/src/companyFacts";
+import { labelWords } from "../../../shared/src/portalSafety";
 import { imageToPdfBytes, shouldConvertToPdf } from "../imageToPdf";
 import { removeUploadStaging, uploadPayloadFor, type PreparedUpload } from "./uploadPayload";
 import { attachmentTypeFor } from "./attachmentTypes";

@@ -9,6 +9,7 @@ import { persistLlmCall } from "./llmAccounting";
 import { routeFor, taskForLabel, takeAdvisorSlot, describeRoutes, BASELINE_MODEL, type LlmEffort, type LlmTask, type ResolvedRoute, type AdvisorConfig } from "./modelRouting";
 import { lookupCecInverter, lookupCecModuleMake } from "./cecEquipment";
 import { planTextForExtraction } from "./structuralIntake";
+import { CONTRACT_PRICE_LABEL, VALUATION_BOX_LABEL } from "./valuation";
 import type { CodeResearchProvenance } from "./codeProfiles";
 
 // Claude Opus 5: drop-in successor to Opus 4.8 at identical pricing with a
@@ -612,7 +613,11 @@ const PORTAL_FIELD_HINTS: Array<{ re: RegExp; field: string }> = [
   { re: /electrical licens/i, field: "electricalLicenseNumber" },
   { re: /installer.*email|contractor.*email|business email/i, field: "installerEmail" },
   { re: /installer.*phone|contractor.*phone|business phone/i, field: "installerPhone" },
-  { re: /valuation|job value|contract (price|value)|cost of/i, field: "jobValue" },
+  // A box that says CONTRACT keeps the contract price; every other Job Value / Valuation /
+  // Estimated Cost box takes the declared valuation (valuation.ts — the one label predicate the
+  // learn-time correction and the replay rebind ask too). Order matters: contract first.
+  { re: CONTRACT_PRICE_LABEL, field: "jobValue" },
+  { re: VALUATION_BOX_LABEL, field: "declaredValuation" },
 ];
 
 function isSensitivePortalLabel(label: string): boolean {
@@ -2749,6 +2754,7 @@ SOLAR DOMAIN DEFAULTS (apply when a REQUIRED field asks and the project DATA / k
 - For an electrical-services / fee page that lists many capacity tiers (kVA), fill ONLY the renewable-energy / PV tier matching the system's AC rating in kVA (systemSizeAcKw — the inverters' continuous AC output, NOT the DC module nameplate) and leave the other count fields EMPTY (not 0); the agency confirms the tier at intake. If a tier takes a count, it is normally "1"; only a single "total kVA" field takes the kVA number. "Category of Construction" = the STRUCTURE TYPE the system is installed on (a house → the 1-or-2-family-dwelling option), NEVER "Other"/"Solar"; "Type of Work" on an existing building → "Alteration", never "New" (Oregon BCD ePermitting guidance: "Solar is not considered 'Other' under CoC or under ToW").
 - SYSTEM ADDITIONS / MODIFICATIONS: when the project DATA carries existing-system fields (hasExistingSystem, existingSystemSizeDcKw, existingInverterMake/Model, nemTariff, …), the application must DISCLOSE the existing system: "existing generation on site?" → Yes; existing size/equipment fields → the existing* keys (existingSystemSizeDcKw, existingInverterMake, existingInverterModel, existingModuleMake, existingModuleModel, existingBatteryMakeModel); "total"/"combined"/"aggregate" system size after the addition → totalSystemSizeDcKw / totalSystemSizeAcKw — NEVER the new-only systemSizeDcKw. Plain "system size" for the NEW equipment being added stays systemSizeDcKw/systemSizeAcKw. Existing NEM agreement/application numbers are sensitive — bind field: "existingNemAgreementNumber" / "existingNemApplicationNumber" only, never a literal.
 - A required DATE field with no project value (e.g. an estimated commissioning date) → use todayDate plus a few weeks, formatted MM/DD/YYYY.
+- JOB VALUE / VALUATION / ESTIMATED COST / CONSTRUCTION VALUE / "value of work" boxes → field: "declaredValuation" (the declared valuation, the same figure the PDF application states). jobValue / contractAmount are the CONTRACT price the client pays: use them ONLY for a box explicitly labelled contract price / contract amount — never for a Job Value or Valuation box.
 - NOTICES / COMPLIANCE ACKNOWLEDGMENTS → AGREE. Operator standing policy: on a page of notices, disclosures, code-compliance statements or acknowledgment checkboxes ("I have read...", "I understand...", "I acknowledge...", "I agree to comply..."), CHECK every required acknowledgment box and continue — these gate entry to the application and a human has authorized agreeing to them. This NEVER extends to the FINAL SUBMIT/attestation-and-file button, payment, or anything that files the application: those remain recorded-only for a human.
 - Any REQUIRED (asterisk) Yes/No or dropdown MUST be answered — use these defaults or kbContext rather than leaving it blank.
 

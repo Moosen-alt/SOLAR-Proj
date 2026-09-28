@@ -29,7 +29,7 @@
 // ---------------------------------------------------------------------------
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import type { AppDb } from "./db";
-import { findCompleteRecipeForProject, getPortalRecipe, resolveRecipeFieldValues } from "./portalRecipes";
+import { DISCONNECT_DISTANCE_QUESTION, findCompleteRecipeForProject, getPortalRecipe, resolveRecipeFieldValues } from "./portalRecipes";
 import { nowIso } from "./time";
 
 type Row = Record<string, unknown>;
@@ -126,7 +126,9 @@ export const QUESTION_CLASSIFIER_RULES: QuestionClassifierRule[] = [
   // OPERATOR_POLICY_ANSWERS (intakeRequests.ts), which is what stops it being
   // asked at intake; it stays per-job HERE so a project that genuinely differs
   // can still record its own answer and win.
-  { id: "per-job:disconnect-10ft", re: /disconnect.{0,20}within\s?10|within\s?10.{0,12}(feet|ft)\b/i,
+  // ONE predicate with the post-learn binder (portalRecipes.DISCONNECT_DISTANCE_QUESTION), which binds
+  // this question to disconnectWithin10ft.
+  { id: "per-job:disconnect-10ft", re: DISCONNECT_DISTANCE_QUESTION,
     classification: "per-job", binding: "disconnectWithin10ft",
     why: "disconnect placement is a site fact — settled for this operator by a standing policy answer, overridable per project" },
   { id: "per-job:connection-side", re: /line\s(or|\/)\s?load.?side|(line|load).?side of the main/i,

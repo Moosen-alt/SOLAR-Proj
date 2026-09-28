@@ -14,6 +14,8 @@
 // seedOutcomeToStageResult) live here too — they used to live in repository.ts and
 // are re-exported from there for backwards compatibility. Keeping them beside the
 // resolver avoids a circular import (repository imports this module, not vice versa).
+// (utilityIdentity is a leaf: it imports only permitPath's state parse.)
+import { foreignKnownTenant } from "./utilityIdentity";
 
 export type PortalChannel =
   | "api" // reserved — never selected in this build
@@ -808,6 +810,21 @@ export function hostFitsTrackAndEntity(
       code: "platform_conflict",
       reason: `${host} is not the portal a person verified for ${who} (${entity.verifiedPortals.map(portalHostOf).filter(Boolean).join(", ")})`,
     };
+  }
+  // 2b. A KNOWN UTILITY'S OWN TENANT (leak sweep 2026-09-28). PacifiCorp's and Portland General's
+  //     PowerClerk tenants belong to those utilities and nobody else — whatever a learned or seeded
+  //     row claims. A bare-name regex once wrote PacifiCorp's tenant as Pacific Gas & Electric's
+  //     "own portal" and this step then accepted it. Refused unless a PERSON verified it for this
+  //     utility (rule 3: step 2 above already let a verified record through).
+  if (entity.scope === "utility" && !matches(entity.verifiedPortals)) {
+    const owner = foreignKnownTenant(host, { state: entity.state, utility: entity.name });
+    if (owner) {
+      return {
+        fits: false,
+        code: "foreign_entity",
+        reason: `${host} is ${owner}'s interconnection portal — ${who}${entity.state ? ` (${entity.state})` : ""} is not ${owner}`,
+      };
+    }
   }
   // 3. ANOTHER ENTITY'S PORTAL. Only when this entity has no claim on it at all.
   if (source !== "statewide" && !matches(entity.ownPortals) && !matches(entity.sharedPortals ?? [])) {

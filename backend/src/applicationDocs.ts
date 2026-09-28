@@ -12,6 +12,7 @@ import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStamp
 // Functions only, called at run time: this module sits inside the permitProcessLookup ->
 // feeSchedules -> knowledgeBase -> applicationDocs import cycle (see applicationDocsAgency's header).
 import { agencyListReplacesLine, issuingAgencyDocumentList, type AgencyDocumentList, type AgencyLineStatusOf } from "./applicationDocsAgency";
+import { knownPowerClerkUtility } from "./utilityIdentity";
 
 // ---------------------------------------------------------------------------
 // ONE PERMIT-STRUCTURE ANSWER (new-AHJ e2e, 2026-09-26: permit structure 0/5 right).
@@ -936,7 +937,9 @@ export function buildApplicationDocumentPackage(
     docs.push(buildElectricalWorksheet(project, profile, hasMpu));
   }
   if (profile.requiresBidSheet) docs.push(buildBidSheet(project, profile));
-  if (/PGE|PORTLAND GENERAL|PACIFIC|PACIFICORP/i.test(project.utility)) docs.push(buildUtilityWorksheet(project));
+  // The one state-gated utility identity (utilityIdentity): a CA "Pacific Gas and Electric" / "PGE" job is not
+  // Portland General or PacifiCorp, and gets no worksheet written for their PowerClerk filings.
+  if (knownPowerClerkUtility(project)) docs.push(buildUtilityWorksheet(project));
 
   return {
     projectId: project.id,
@@ -1135,7 +1138,7 @@ ${!permitPath.standardReview && permitPath.path === "unknown" ? "- Permit-path c
 ${profile.requiresElectricalApplication || separate || hasMpu ? `- ${electricalWorksheetTitle(project)}` : ""}
 ${hasMpu ? "- Electrical permit application is required because a main panel/service upgrade (MPU) is in scope" : ""}
 ${profile.requiresBidSheet ? "- Bid sheet worksheet" : ""}
-${/PGE|PORTLAND GENERAL|PACIFIC|PACIFICORP/i.test(project.utility) ? "- Utility/NEM application worksheet" : ""}
+${knownPowerClerkUtility(project) ? "- Utility/NEM application worksheet" : ""}
 
 Profile notes:
 ${profile.notes.map((note) => `- ${note}`).join("\n")}
