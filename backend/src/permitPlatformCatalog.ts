@@ -839,9 +839,10 @@ export function documentLinks(pages: ReadPage[], names: string[], state?: string
 // "Residential Application" -> /DocumentCenter/View/4313/Residential-Application (application/pdf),
 // and nothing read the page — the model's own list was empty, so Stage reported "no form found".
 // The same predicates as the fee / checklist door: DOCUMENT_URL (a document, not a page), FEE_LINK
-// (a fee schedule), OTHER_FEE_KIND / JOB_FEE_KIND (another permit kind, unless the words also name
-// the building / electrical / solar work). Words are the link's (or result title's) words plus the
-// document's own slug (its last path segment) — never the folders above it.
+// (a fee schedule), OTHER_FEE_KIND (another permit kind) — but an application must also NAME this
+// job's work (JOB_APP_WORDS), another department's word is never rescued, and "solar" never rescues
+// another trade (skeptic F2). Words are the link's (or result title's) words plus the document's own
+// slug (its last path segment) — never the folders above it.
 const APPLICATION_WORDS = /\bapplications?\b|\bpermit\s+(?:form|request)\b/i;
 /** A document ABOUT applying (a checklist, a guide, instructions, a handout) or a publication —
  *  never the blank form itself. A checklist that names an application is still a checklist. */
@@ -850,10 +851,31 @@ const NOT_A_FORM = /checklist|guide|handout|brochure|\bfaqs?\b|instruction|how[-
  *  Application"), employment, boards and commissions, licences and registrations, rentals, bids —
  *  and a utility's interconnection / net-metering application (rule 5: never on a permit track). */
 const NOT_A_BUILD_PERMIT = /assessor|abatement|exemption|\btax(?:es)?\b|excise|employment|\bjobs?\b|appointment|\bboards?\b|committee|commission|public records|records request|rental|vendor|\bbids?\b|\bgrants?\b|voter|raffle|yard sale|block party|hawker|peddler|\blicen[cs](?:e|es|ing)\b|registration|certificat|scholarship|volunteer|interconnect|net[- ]?meter|\butility\b/i;
-/** Another TRADE's or activity's permit (beside OTHER_FEE_KIND's list) — rescued, like a fee
- *  schedule, when the words also name the building / electrical / solar work (JOB_FEE_KIND):
- *  "Building, Plumbing & Gas Permit Application" is this job's form, "Plumbing Permit Application" is not. */
-const OTHER_TRADE = /plumbing|\bgas\b|mechanical|sheet ?metal|demolition|\bpools?\b|\bfences?\b|\btents?\b|dumpster|occupancy|variance|special permit|site plan|conservation|wetland|historic/i;
+// WHICH PERMIT AN APPLICATION IS FOR — a POSITIVE test first (forms-find skeptic F2, 2026-09-28).
+// Rejecting only KNOWN-bad names let ANY "<X> Permit Application" through as the generic blank
+// (Burn, HVAC, Roofing, Deck, Well, Blasting, Oil Burner, Fire Protection, Wood Stove, Septic,
+// Title 5, Elevator, Hot Work, Tank Removal, Moving, Earth Removal, Home Occupation …), and a
+// town's forms page lists dozens. A harvested application must NAME this job's work; an unnamed
+// "<X>" is a missed form, never a wrong one.
+/** The electrical permit's words — "Wiring Permit Application" is an ELECTRICAL application. */
+const ELECTRICAL_APP_WORDS = /electric|\bele\b|\bwir(?:e|ing)\b/i;
+/** The building permit's words. */
+const BUILDING_APP_WORDS = /building|structural|\bbld\b/i;
+/** THIS job's work — a residential building / electrical / solar permit. Every harvested
+ *  application carries one of these words, or it is not taken. */
+const JOB_APP_WORDS = new RegExp(`residential|dwelling|construction|solar|photo-?voltaic|\\bpv\\b|${BUILDING_APP_WORDS.source}|${ELECTRICAL_APP_WORDS.source}`, "i");
+/** ANOTHER DEPARTMENT's, or one single activity's, permit — never rescued by any other word ("solar"
+ *  never overrides it: "Solar Fire Department Permit Application" is the fire department's form,
+ *  "Residential Well Permit Application" the board of health's, "Deck Building Permit Application"
+ *  a deck's). A WELL is a water well by its neighbour word (the Town of Wells is not one). */
+const OTHER_DEPARTMENT = /\bfire\b|\bburn(?:ing)?\b|blasting|explosive|hot work|oil burner|\btanks?\b|propane|\blp ?gas\b|health|septic|title\s*(?:5|v)\b|sewage|\bwells?\s+(?:permit|application|drilling|construction|abandon)|\b(?:water|private|drinking|irrigation|geothermal)\s+wells?\b|wood ?stove|solid fuel|\bchimney|elevator|escalator|\bmov(?:e|ing)\b|earth removal|home occupation|conservation|wetland|historic|\bclerk\b|police|\bdpw\b|public works|highway|curb cut|\bpools?\b|\bspas?\b|hot tub|\bsheds?\b|\bdecks?\b|\bporch|roofing|re-?roof|\bsiding\b|\braz(?:e|ing)\b|\btents?\b|dumpster|\bfences?\b|\bsigns?\b|irrigation|lawn sprinkler|\bsprinklers?\b/i;
+/** Another TRADE a combined multi-trade application may carry beside the building / electrical permit
+ *  — rescued only by the building / electrical words themselves, NEVER by solar / PV / residential:
+ *  "Building, Plumbing & Gas Permit Application" is this job's form; "Plumbing Permit Application",
+ *  "Residential HVAC Permit Application" and "Solar Plumbing Permit Application" are not. The fee
+ *  door's activities (OTHER_FEE_KIND: street, driveway, zoning …) on the same terms. */
+const OTHER_TRADE = /plumbing|\bgas\b|mechanical|\bhvac\b|heating|air condition|refrigerat|sheet ?metal|demolition|occupancy|variance|special permit|site plan|zoning/i;
+const TRADE_RESCUE = new RegExp(`construction|${BUILDING_APP_WORDS.source}|${ELECTRICAL_APP_WORDS.source}`, "i");
 export type ApplicationDiscipline = "electrical" | "building" | "combined" | "general";
 /** The words a document's own URL carries: its last path segment, extension and separators dropped
  *  ("/DocumentCenter/View/4313/Residential-Application" -> "Residential Application"). */
@@ -867,21 +889,23 @@ export function documentSlugWords(href: string): string {
 }
 /**
  * A blank permit APPLICATION document, by the words naming it and its URL — or null. `discipline`
- * says which permit it is for (an electrical-only application is never the building-side blank);
- * `score` ranks a residential / solar / building application above a generic one. Never a fee
- * schedule, a checklist / guide / handout, an agenda / minutes / newsletter, another permit kind's
- * application, a commercial-only one, a tax / licence / utility application, or a page.
+ * says which permit it is for (an electrical-only application — "Wiring" included — is never the
+ * building-side blank); `score` ranks a residential / solar / building application above a generic
+ * one. It must NAME this job's work (JOB_APP_WORDS: a bare "Permit Application" or "<X> Permit
+ * Application" is not taken). Never a fee schedule, a checklist / guide / handout, an agenda /
+ * minutes / newsletter, another department's or activity's permit (whatever else it says), another
+ * trade's alone, a commercial-only one, a tax / licence / utility application, or a page.
  */
 export function classifyApplicationDocument(words: string, href: string): { discipline: ApplicationDiscipline; score: number } | null {
   if (!DOCUMENT_URL.test(String(href ?? ""))) return null;
   const w = `${String(words ?? "")} ${documentSlugWords(href)}`.replace(/\s+/g, " ").trim();
-  if (!APPLICATION_WORDS.test(w)) return null;
-  if (FEE_LINK.test(w) || NOT_A_FORM.test(w) || NOT_A_BUILD_PERMIT.test(w)) return null;
-  if ((OTHER_FEE_KIND.test(w) || OTHER_TRADE.test(w)) && !JOB_FEE_KIND.test(w)) return null;
+  if (!APPLICATION_WORDS.test(w) || !JOB_APP_WORDS.test(w)) return null;
+  if (FEE_LINK.test(w) || NOT_A_FORM.test(w) || NOT_A_BUILD_PERMIT.test(w) || OTHER_DEPARTMENT.test(w)) return null;
+  if ((OTHER_FEE_KIND.test(w) || OTHER_TRADE.test(w)) && !TRADE_RESCUE.test(w)) return null;
   // A COMMERCIAL-only application is not a residential solar job's form (one naming both is).
   if (/commercial/i.test(w) && !/residential|dwelling/i.test(w)) return null;
-  const electrical = /electric|\bele\b/i.test(w);
-  const building = /building|structural|\bbld\b/i.test(w);
+  const electrical = ELECTRICAL_APP_WORDS.test(w);
+  const building = BUILDING_APP_WORDS.test(w);
   const discipline: ApplicationDiscipline = electrical && building ? "combined" : electrical ? "electrical" : building ? "building" : "general";
   let score = 1;
   if (/residential|dwelling|single[- ]family|one[- ]?(?:and|&)[- ]?two[- ]family/i.test(w)) score += 3;

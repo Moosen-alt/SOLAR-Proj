@@ -161,7 +161,43 @@ try {
     const got = catalog.classifyApplicationDocument(words, href);
     check(`UNIT MUST-EXCLUDE "${words}" is not the application`, got === null, JSON.stringify(got));
   }
-  check("UNIT a residential application outranks a generic one", (catalog.classifyApplicationDocument("Residential Application", dc("R"))?.score ?? 0) > (catalog.classifyApplicationDocument("Permit Application", dc("P"))?.score ?? 0));
+  // ── F2 (skeptic): a POSITIVE test — the application must NAME this job's work ─────────────────────
+  // Every "<X> Permit Application" a Massachusetts town's forms page lists beside the building one.
+  // Each was "general" (and filled the building / generic slot) when only known-bad names were refused.
+  const F2_PASS: Array<[string, string]> = [
+    ["Residential Application", "general"],
+    ["Solar PV Permit Application", "general"],
+    ["Building Permit Application", "building"],
+    ["Electrical Permit Application", "electrical"],
+    ["Wiring Permit Application", "electrical"], // the electrical slot's — never the building / generic one
+    ["Rooftop Solar PV Permit Application", "general"], // "roof" is not "roofing"
+    ["Building, Electrical & Plumbing Permit Application", "combined"], // a multi-trade form keeps its building + electrical words
+  ];
+  for (const [name, discipline] of F2_PASS) {
+    const got = catalog.classifyApplicationDocument(name, dc(name.replace(/[^A-Za-z]+/g, "-")));
+    check(`F2 UNIT MUST-PASS "${name}" is a ${discipline} application`, got?.discipline === discipline, JSON.stringify(got));
+  }
+  check("F2 UNIT the wiring application never fits the building / generic slot, and fits the electrical one",
+    !auto.disciplineFitsSlot(catalog.classifyApplicationDocument("Wiring Permit Application", dc("Wiring"))?.discipline ?? "general", "permit_application")
+    && auto.disciplineFitsSlot(catalog.classifyApplicationDocument("Wiring Permit Application", dc("Wiring"))?.discipline ?? "general", "electrical_application"));
+  const F2_EXCLUDE = ["Burn", "HVAC", "Roofing", "Deck", "Well", "Blasting", "Oil Burner", "Fire Protection", "Wood Stove", "Septic", "Title 5",
+    "Elevator", "Hot Work", "Tank Removal", "Moving", "Earth Removal", "Home Occupation", "Plumbing", "Gas", "Mechanical", "Sheet Metal", "Demolition", "Sign", "Trench", "Driveway", "Pool", "Fence", "Shed",
+    // Names on NO list — the positive test alone refuses them (an "<X>" nobody wrote down is still not this job's form).
+    "Mooring", "Shellfish", "Beekeeping", "Kennel", "Floodplain"];
+  for (const x of F2_EXCLUDE) {
+    const name = `${x} Permit Application`;
+    const got = catalog.classifyApplicationDocument(name, dc(name.replace(/[^A-Za-z0-9]+/g, "-")));
+    check(`F2 UNIT MUST-EXCLUDE "${name}" is not the application`, got === null, JSON.stringify(got));
+  }
+  // "solar" / "residential" never override another department's or trade's word; a bare name says nothing.
+  for (const name of ["Solar Fire Department Permit Application", "Residential Roofing Permit Application", "Residential Well Permit Application",
+    "Solar Plumbing Permit Application", "Residential HVAC Permit Application", "Deck Building Permit Application", "Moving a Building Permit Application",
+    "Permit Application", "Special Event Permit Application", "Street Opening Permit Application"]) {
+    const got = catalog.classifyApplicationDocument(name, dc(name.replace(/[^A-Za-z]+/g, "-")));
+    check(`F2 UNIT MUST-EXCLUDE "${name}" is not the application`, got === null, JSON.stringify(got));
+  }
+  check("F2 UNIT the Town of Wells' own residential application is not a water well's", catalog.classifyApplicationDocument("Wells Residential Building Permit Application", dc("Wells-Residential-Building-Permit-Application"))?.discipline === "building");
+  check("UNIT a residential application outranks a generic one", (catalog.classifyApplicationDocument("Residential Building Permit Application", dc("R"))?.score ?? 0) > (catalog.classifyApplicationDocument("Building Permit Application", dc("P"))?.score ?? 0));
   check("UNIT the electrical-only application never fills the building-side / generic slot; the electrical slot takes only an electrical one",
     !auto.disciplineFitsSlot("electrical", "permit_application") && !auto.disciplineFitsSlot("electrical", "building_application")
     && auto.disciplineFitsSlot("electrical", "electrical_application") && !auto.disciplineFitsSlot("general", "electrical_application") && auto.disciplineFitsSlot("general", "permit_application"));
@@ -313,6 +349,55 @@ try {
   const e6b = await auto.ensureAhjFormTemplate(db, llm, elJob, "electrical_application", { formsPage: fp() });
   check("E6 MUST-PASS ...and it IS stored in the electrical slot", e6b.status === "acquired" && JSON.stringify(rows("Town of Voltham").map((r) => [r.form_type, r.source_url])) === JSON.stringify([["electrical_application", EL_APP]]),
     JSON.stringify({ e6b, rows: rows("Town of Voltham") }));
+
+  // ═══ F2 THE TOWN'S FORMS PAGE — every other "<X> Permit Application" is left alone (skeptic F2) ══════
+  // A Massachusetts-shaped Applications page: the fire department's solar form, burn / well / roofing /
+  // deck / HVAC / oil burner / septic / title 5 / moving / home occupation applications, and a Wiring
+  // Permit Application. Every one of them is SERVED as a PDF (a door that admits it WOULD store it).
+  const MA = "https://www.wireham.ma.us";
+  const maLinks: Array<[string, string]> = [
+    ["Solar Fire Department Permit Application", "Solar-Fire-Department-Permit-Application"],
+    ["Burn Permit Application", "Burn-Permit-Application"],
+    ["Well Permit Application", "Well-Permit-Application"],
+    ["Residential Roofing Permit Application", "Residential-Roofing-Permit-Application"],
+    ["Deck Permit Application", "Deck-Permit-Application"],
+    ["HVAC Permit Application", "HVAC-Permit-Application"],
+    ["Oil Burner Permit Application", "Oil-Burner-Permit-Application"],
+    ["Septic / Title 5 Permit Application", "Title-5-Permit-Application"],
+    ["Moving Permit Application", "Moving-Permit-Application"],
+    ["Home Occupation Permit Application", "Home-Occupation-Permit-Application"],
+    ["Wiring Permit Application", "Wiring-Permit-Application"],
+  ];
+  const maUrl = (slug: string) => `${MA}/DocumentCenter/View/${1000 + maLinks.findIndex((l) => l[1] === slug)}/${slug}`;
+  const MA_WIRING = maUrl("Wiring-Permit-Application");
+  serveHtml(`${MA}/forms`, civicPage("Applications", maLinks.map(([text, slug]) => [maUrl(slug).slice(MA.length), text])));
+  for (const [text, slug] of maLinks) servePdf(maUrl(slug), await acroPdf(`WIREHAM ${text}`));
+  researchFor.set("Town of Wireham", { formsPageUrl: `${MA}/forms` });
+  const maJob = mkJob("Town of Wireham", "Wireham");
+  requested = [];
+  const f2 = await auto.ensureAhjFormTemplate(db, llm, maJob, "permit_application", { formsPage: fp() });
+  check("F2 MUST-EXCLUDE no other department's / activity's application — nor the wiring one — fills the generic slot", f2.status === "not_found" && rows("Town of Wireham").length === 0,
+    JSON.stringify({ f2, rows: rows("Town of Wireham"), requested }));
+  check("F2 MUST-EXCLUDE ...and none of them is even requested", JSON.stringify(requested) === JSON.stringify([`${MA}/forms`]), JSON.stringify(requested));
+  requested = [];
+  const f2b = await auto.ensureAhjFormTemplate(db, llm, maJob, "electrical_application", { formsPage: fp() });
+  check("F2 MUST-PASS the Wiring Permit Application IS the electrical slot's, and only it is requested", f2b.status === "acquired" && f2b.sourceUrl === MA_WIRING
+    && JSON.stringify(rows("Town of Wireham").map((r) => [r.form_type, r.source_url])) === JSON.stringify([["electrical_application", MA_WIRING]])
+    && JSON.stringify(requested.filter((u) => u !== `${MA}/forms`)) === JSON.stringify([MA_WIRING]), JSON.stringify({ f2b, rows: rows("Town of Wireham"), requested }));
+  // A building application beside it: the generic pass takes the building one, and the wiring one rides
+  // along as the ELECTRICAL extra (classifyFormType reads "Wiring" as electrical too) — never as a second
+  // building-side blank.
+  const MB = "https://www.wirefield.ma.us";
+  const MB_BLD = `${MB}/DocumentCenter/View/1101/Residential-Building-Permit-Application`;
+  const MB_WIR = `${MB}/DocumentCenter/View/1102/Wiring-Permit-Application`;
+  serveHtml(`${MB}/forms`, civicPage("Applications", [[MB_BLD.slice(MB.length), "Residential Building Permit Application"], [MB_WIR.slice(MB.length), "Wiring Permit Application"]]));
+  servePdf(MB_BLD, await acroPdf("WIREFIELD Residential Building Permit Application"));
+  servePdf(MB_WIR, await acroPdf("WIREFIELD Wiring Permit Application"));
+  researchFor.set("Town of Wirefield", { formsPageUrl: `${MB}/forms` });
+  const f2c = await auto.ensureAhjFormTemplate(db, llm, mkJob("Town of Wirefield", "Wirefield"), "permit_application", { formsPage: fp() });
+  const mbRows = rows("Town of Wirefield").map((r) => `${r.form_type}|${r.source_url}`).sort();
+  check("F2 MUST-PASS the building application fills the building side and the wiring one the electrical slot", f2c.status === "acquired" && f2c.sourceUrl === MB_BLD
+    && JSON.stringify(mbRows) === JSON.stringify([`building_application|${MB_BLD}`, `electrical_application|${MB_WIR}`].sort()), JSON.stringify({ f2c, mbRows }));
 
   // ═══ E7 THE KIND — where the split applies, the other of the two building-side applications is not
   // this one. (The kind is passed as the required set passes it; an unknown Oregon AHJ is portal-only

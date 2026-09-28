@@ -744,7 +744,9 @@ export function classifyFormType(nameOrUrl: string, fallback: string): string {
   // checklist: a caller that recognised it (by its anchors) keeps its own type.
   if (fallback === PV_WORKSHEET_DOC_TYPE) return fallback;
   if (/checklist|worksheet|eligibilit/.test(t)) return "solar_checklist";
-  if (/electrical|ele[-_ ]?permit/.test(t)) return "electrical_application";
+  // A WIRING permit is the electrical permit (Massachusetts towns' "Wiring Permit Application" —
+  // the harvest's discipline reads it the same way: permitPlatformCatalog.ELECTRICAL_APP_WORDS).
+  if (/electrical|ele[-_ ]?permit|\bwir(?:e|ing)\b/.test(t)) return "electrical_application";
   if (/building|structural|bld[-_ ]?permit/.test(t)) return "building_application";
   return fallback;
 }
