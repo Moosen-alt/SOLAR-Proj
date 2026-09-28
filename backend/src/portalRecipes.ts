@@ -1,7 +1,8 @@
 import type { PortalRecipe, PortalRecipeStatus, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { createHash } from "node:crypto";
 import { addAuditLog } from "./audit";
-import { clientStagingOverlay, kindForSlot, LICENCE_OVERLAY_KEYS, licenceOverlayForClient } from "./clients";
+import { clientLicenceNumbersForClient, clientStagingOverlay, kindForSlot, LICENCE_OVERLAY_KEYS, licenceJobState, licenceOverlayForClient } from "./clients";
+import { GENERIC_LICENCE_EXPIRY_KEY, GENERIC_LICENCE_NUMBER_KEY, licenceKeyForKind, licenceKeyInfo } from "../../shared/src/licenceKinds";
 import type { AppDb } from "./db";
 import { HttpError } from "./httpError";
 import { id } from "./ids";
@@ -789,6 +790,47 @@ export function stampCompanyAttestations(steps: RecipeStep[], clientId: string |
   return (steps ?? []).map((st) => (isCompanyAttestationStep(st) && !st.companyFactOf ? { ...st, companyFactOf: stamp } : st));
 }
 
+/** A licence number as a comparable token (and its bare digits when a board prefix leads: "ROC 444222"
+ *  and "444222" are one licence). A form must carry a digit and be long enough to identify something —
+ *  "Yes", "1", "12" are never licences. */
+function licenceNumberForms(value: string): string[] {
+  const full = String(value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const out: string[] = [];
+  if (full.length >= 4 && /\d/.test(full)) out.push(full);
+  const bare = full.replace(/^[A-Z]+/, "");
+  if (bare !== full && bare.length >= 5 && /\d/.test(bare)) out.push(bare);
+  return out;
+}
+export const LICENCE_LITERAL_OPERATOR_ITEM = "company licence — the recorded answer was the learn company's own licence number, so the shared recipe leaves this box for a person";
+/**
+ * THE LEARN COMPANY'S LICENCE NEVER STAYS A LITERAL (licences skeptic L1 — the operator's "infinity
+ * license on kin projects"). A recorded fill / select whose value equals ANY licence the learn job's
+ * client holds — any state, any kind, the named columns and the typed entries, compared normalised —
+ * is that company's number, whatever the box is called ("ROC #", "TECL #", "Reg. No."). The binder
+ * had its chance to bind it to this job's key; what is still a literal is withheld (value dropped,
+ * step.operatorItem named — never the value itself), the same shape as
+ * withholdCompanyIdentityLiterals. Run where the learn client is known: the auto-learn binding pass
+ * (every save path) and the human-patch merge.
+ */
+export function withholdClientLicenceLiterals(steps: RecipeStep[], licenceNumbers: string[]): { steps: RecipeStep[]; withheld: number } {
+  const known = new Set((licenceNumbers ?? []).flatMap(licenceNumberForms));
+  if (!known.size) return { steps: steps ?? [], withheld: 0 };
+  let withheld = 0;
+  const out = (steps ?? []).map((st) => {
+    if (!st || (st.action !== "fill" && st.action !== "select") || st.field || st.sensitive || !String(st.value ?? "").trim()) return st;
+    if (!licenceNumberForms(String(st.value)).some((f) => known.has(f))) return st;
+    withheld++;
+    const next: RecipeStep = { ...st, operatorItem: LICENCE_LITERAL_OPERATOR_ITEM };
+    delete next.value;
+    return next;
+  });
+  return { steps: out, withheld };
+}
+/** withholdClientLicenceLiterals for a job's client, read by id (steps unchanged with no client). */
+export function withholdClientLicenceLiteralsFor(db: AppDb, steps: RecipeStep[], clientId: string | null | undefined): RecipeStep[] {
+  return withholdClientLicenceLiterals(steps, clientLicenceNumbersForClient(db, clientId)).steps;
+}
+
 export function withholdCompanyIdentityLiterals(steps: RecipeStep[]): { steps: RecipeStep[]; withheld: number } {
   let withheld = 0;
   const out = (steps ?? []).map((st) => {
@@ -1389,7 +1431,11 @@ export const RECIPE_FIELD_DESCRIPTIONS: Record<string, string> = {
   // contractor licence THIS permit takes in the job's state — never Oregon's CCB.
   ccbLicenseNumber: "Contractor license number for THIS job's state and permit (Oregon: the CCB number; elsewhere the state's contractor licence this permit takes)",
   ccbExpiration: "Contractor license EXPIRATION date (the licence in ccbLicenseNumber) — when the licence runs out, not today's date",
+  contractorLicenseNumber: "General / building / residential CONTRACTOR license number (THIS job's state), whatever the permit's trade — never the electrical or a person's licence",
+  contractorLicenseExpiration: "General / building / residential contractor license EXPIRATION date (the licence in contractorLicenseNumber)",
   electricalLicenseNumber: "Electrical contractor license number (THIS job's state)",
+  electricalLicenseExpiration: "Electrical contractor license EXPIRATION date (the licence in electricalLicenseNumber)",
+  electricianLicenseExpiration: "Supervising / master electrician license EXPIRATION date (the licence in electricianLicenseNumber)",
   constructionSupervisorLicenseNumber: "Construction Supervisor License (CSL) number — Massachusetts-style construction supervisor licence, THIS job's state",
   constructionSupervisorLicenseExpiration: "Construction Supervisor License EXPIRATION date — when that licence runs out",
   homeImprovementLicenseNumber: "Home Improvement Contractor (HIC) registration number, THIS job's state",
@@ -1548,14 +1594,16 @@ export function dateFieldForLiteral(label: string, value: string): string | null
     // this label name" predicate (licences-by-type) — BEFORE the not-a-contractor-licence words
     // (leak-fix-portal): a CSL or HIC expiry has its own key even when the label says "registration"
     // (Massachusetts' HIC is a Home Improvement Contractor REGISTRATION), and a CCB registration is
-    // Oregon's contractor licence. A business registration / business or city licence, a driver's
-    // licence or a bare registration that names no contractor licence binds to nothing.
+    // Oregon's contractor licence. EVERY kind the overlay carries has its own expiry key
+    // (licenceKinds.LICENCE_EXPIRY_KEY_BY_KIND — electrical contractor, supervising / master
+    // electrician, contractor); a kind with NO key (a business registration, a solar licence) binds
+    // to nothing, so the literal meets the save guard and is withheld — never the generic licence's
+    // date (licences skeptic L3). A business or city licence, a driver's licence or a bare
+    // registration that names no contractor licence binds to nothing.
     const kind = kindForSlot(text);
-    if (kind === "construction_supervisor") return "constructionSupervisorLicenseExpiration";
-    if (kind === "home_improvement_contractor") return "homeImprovementLicenseExpiration";
-    if (kind === "business_registration") return null;
-    if (kind !== "contractor" && NOT_A_CONTRACTOR_LICENCE.test(text)) return null;
-    // Any other licence expiry is the contractor licence's.
+    if (kind && kind !== "generic") return licenceKeyForKind(kind, true, text);
+    if (NOT_A_CONTRACTOR_LICENCE.test(text)) return null;
+    // A licence expiry that does not say which licence is the generic licence's.
     return LICENCE_CONTEXT.test(text) ? "ccbExpiration" : null;
   }
   if (FUTURE_DATE_LABEL.test(text)) return isUs ? "estimatedCommissioningDate" : "estimatedCommissioningDateIso";
@@ -2118,6 +2166,9 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     if (COMPANY_IDENTIFIER_KEY.test(k) && looksLikePlaceholderIdentifier(merged[k])) merged[k] = "";
   }
   if (usStateCode(project.state) !== "IL") merged.docketNumber = "";
+  // The metro / city business licence is Portland Metro's — an Oregon licence: blank on any other
+  // state's job (and on a job with no recorded state), never one region's number in another's box.
+  if (licenceJobState(project.state) !== "OR") merged.metroCityLicenseNumber = "";
   // THE AC DISCONNECT PART (leak sweep 2026-09-28) — resolved AFTER the merge, because the client
   // overlay used to win it outright: a plan set naming "Square D DU222RB" was filed as the client's
   // standard Eaton DG221URB, and a plan set calling for a 60 A FUSIBLE switch was filed with a 30 A
@@ -2298,6 +2349,38 @@ const PARSER_EVIDENCE_KEYS = new Set([
 export function isParserEvidenceKey(key: string): boolean {
   return PARSER_EVIDENCE_KEYS.has(key) || /(?:Text|Compliant|Recommendation)$/.test(key);
 }
+/** The words a step's own control prints — its label, else its name / text, else the learner's note —
+ *  the text a licence KIND is read from (the same reading recipeReplayBinding R9 and the replay adapter
+ *  make, so learn and replay name one kind). */
+export function licenceLabelOf(step: Pick<RecipeStep, "selector" | "note">): string {
+  return String(step.selector?.label || step.selector?.name || step.selector?.text || step.note || "").trim();
+}
+/**
+ * A LICENCE VALUE IS BOUND BY WHAT ITS LABEL NAMES (licences skeptic L2 — the forms' "caption decides"
+ * rule, on the portal side; one predicate, kindForSlot). When a recorded value equals one or more
+ * licence keys of this job:
+ *   - a label that names a kind binds that kind's key ("CSL License Number" -> the construction
+ *     supervisor's key, never the generic ccbLicenseNumber that merely held the same number; a
+ *     "CCB" label keeps the generic pair — on an Oregon job it IS the CCB). When none of the matching
+ *     keys is that kind, the value is this client's licence of ANOTHER kind: "withhold" — never bound
+ *     to the wrong kind, never kept as a literal;
+ *   - a label that names no kind (a bare "License #") takes the generic key when it is among the
+ *     matches (the CCB on an Oregon job, the permit's licence elsewhere);
+ *   - otherwise null: the ordinary binding rules decide.
+ */
+export function licenceBindingByLabel(label: string, candidates: string[]): { field: string } | "withhold" | null {
+  const licenceKeys = candidates.filter((c) => licenceKeyInfo(c));
+  if (!licenceKeys.length) return null;
+  const expiry = licenceKeys.every((c) => licenceKeyInfo(c)!.expiry);
+  const kind = kindForSlot(label);
+  if (kind && kind !== "generic") {
+    const want = licenceKeyForKind(kind, expiry, label);
+    return want && candidates.includes(want) ? { field: want } : "withhold";
+  }
+  if (licenceKeys.length !== candidates.length) return null;
+  const generic = expiry ? GENERIC_LICENCE_EXPIRY_KEY : GENERIC_LICENCE_NUMBER_KEY;
+  return candidates.includes(generic) ? { field: generic } : null;
+}
 /** Dates recomputed at every replay (dateFields) — assigned by a control's label, never by value. */
 const VOLATILE_DATE_KEYS = new Set(["todayDate", "todayDateUs", "estimatedCommissioningDate", "estimatedCommissioningDateIso"]);
 /** A bare Yes/No answer: it names nothing, so a value match alone never binds it. */
@@ -2367,8 +2450,25 @@ export function convertLiteralsToBoundFields(
     // stable project date (the existing system's PTO, "03/15/2021") binds to that key; the label
     // rule below only ever reaches the dates no project value holds. The volatile computed dates
     // (today, the commissioning estimate) are the label rule's to assign, never matched by value.
+    // A LICENCE VALUE (number or expiry) IS BOUND BY WHAT ITS LABEL NAMES (licenceBindingByLabel) — the
+    // label kind decides between keys holding the same value; another kind's licence is withheld.
+    const byLicenceKind = (candidates: string[]): RecipeStep | null => {
+      const decision = licenceBindingByLabel(licenceLabelOf(step), candidates);
+      if (!decision) return null;
+      if (decision === "withhold") {
+        const next: RecipeStep = { ...step, operatorItem: LICENCE_LITERAL_OPERATOR_ITEM };
+        delete next.value;
+        return next;
+      }
+      bound.push({ value: step.value as string, field: decision.field, note: step.note });
+      const next: RecipeStep = { ...step, field: decision.field };
+      delete next.value;
+      return next;
+    };
     if (DATE_LITERAL.test(String(step.value ?? "").trim())) {
       const stable = (valueToFields.get(norm(step.value as string)) ?? []).filter((k) => !VOLATILE_DATE_KEYS.has(k));
+      const licenceDate = byLicenceKind(stable);
+      if (licenceDate) return licenceDate;
       const pick = stable.length === 1 ? stable[0] : stable.length > 1 ? disambiguateByLabel(`${step.selector?.label ?? ""} ${step.note ?? ""}`, stable) : null;
       if (pick) {
         bound.push({ value: step.value as string, field: pick, note: step.note });
@@ -2403,6 +2503,8 @@ export function convertLiteralsToBoundFields(
     }
     const matches = valueToFields.get(norm(step.value as string));
     if (!matches || matches.length === 0) return step; // portal-specific literal — keep as-is
+    const licenceBinding = byLicenceKind(matches);
+    if (licenceBinding) return licenceBinding;
     // A BARE YES/NO NAMES NOTHING: a value match alone is coincidence ("No" is this project's
     // hasBattery and also the answer to "Will the facility interconnect to a switchgear?"). It binds
     // only when the control's own label names the field (a whole-word token hit); otherwise it is
@@ -2506,7 +2608,9 @@ export function appendHumanPatchSteps(
     if (tailStep.action === "stopForReview" || tailStep.isFinalSubmit === true) cut--;
     else break;
   }
-  const { steps: bound } = convertLiteralsToBoundFields(newSteps, projectFields);
+  // A patch literal that is the patching company's own licence (any state, any kind) never stays a
+  // literal in the shared recipe (withholdClientLicenceLiterals, licences skeptic L1).
+  const bound = withholdClientLicenceLiteralsFor(db, convertLiteralsToBoundFields(newSteps, projectFields).steps, clientId);
   const merged = [...steps.slice(0, cut), ...bound, ...steps.slice(cut)];
   // One idempotent notes marker with the TOTAL patched count — steps stream in one at a
   // time as the human works, so a per-call append would spam the notes field.

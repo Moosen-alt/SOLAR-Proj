@@ -30,7 +30,7 @@ import type { LearnPlanRequest, LearnPlanResponse } from "../../portal-bot/src/a
 import { createLLMProvider, getRecentLlmCalls } from "./llm";
 import { getDecryptedCredentialForPortal, getDecryptedCredentialByUrl, listPortalCredentials, nearestStoredLogins, recordLoginOutcome } from "./portalCredentials";
 import { learnNoteTopicsFromMisses, activeLearnedNoteTerms } from "./noteTopics";
-import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey, portalEntityEvidence, stampCompanyAttestations } from "./portalRecipes";
+import { RECIPE_FIELD_DESCRIPTIONS, deadFieldBindings, resolveRecipeFieldValues, startPortalRecording, savePortalRecipeSteps, getPortalRecipe, convertLiteralsToBoundFields, findAnyRecipeForProject, appendHumanPatchSteps, promoteRecordingIfEligible, recipeProfileKey, portalEntityEvidence, stampCompanyAttestations, withholdClientLicenceLiteralsFor } from "./portalRecipes";
 import { HUMAN_SUBMIT_OBSERVED_NOTE } from "../../portal-bot/src/humanCapture";
 import { projectDocsByType } from "./projectDocuments";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
@@ -1327,7 +1327,7 @@ async function autoLearnPortalInner(
         `Learning paused ${pauseWhat} Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
     }
     const stub = mkStub();
-    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "recording", notes: `Auto-learn paused: ${learn.pauseReason}. Resume manually.` });
+    savePortalRecipeSteps(db, stub.id, withholdClientLicenceLiteralsFor(db, learn.steps, project.clientId), { status: "recording", notes: `Auto-learn paused: ${learn.pauseReason}. Resume manually.` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_paused", { scope: scopeType, pauseReason: learn.pauseReason });
     emitDone(`Learning paused ${pauseWhat}`);
     return finalize({ recipe: getPortalRecipe(db, stub.id), status: "paused", pauseReason: learn.pauseReason, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [], verification: { accurate: false, confidence: "low", matches: [], issues: [] }, message: `Learning paused ${pauseWhat} The partial recipe was saved as a draft.` });
@@ -1342,7 +1342,7 @@ async function autoLearnPortalInner(
         `Could not learn the portal automatically: ${learn.message} Kept the existing draft, which got further (${existingDepth} field(s) vs ${substantive(learn.steps as Array<{ action?: unknown }>)}).`);
     }
     const stub = mkStub();
-    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn could not complete: ${learn.message}` });
+    savePortalRecipeSteps(db, stub.id, withholdClientLicenceLiteralsFor(db, learn.steps, project.clientId), { status: "needs_rerecord", notes: `Auto-learn could not complete: ${learn.message}` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType });
     emitDone("Learning failed — the portal could not be learned automatically.");
     return finalize({ recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [], verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Could not learn the portal automatically: ${learn.message}. Record it manually instead.` });
@@ -1373,7 +1373,7 @@ async function autoLearnPortalInner(
     }
     const stub = mkStub();
     emitDone(`Learning failed — ${why}.`);
-    savePortalRecipeSteps(db, stub.id, learn.steps, { status: "needs_rerecord", notes: `Auto-learn did not stage cleanly: ${why}. ${learn.message}` });
+    savePortalRecipeSteps(db, stub.id, withholdClientLicenceLiteralsFor(db, learn.steps, project.clientId), { status: "needs_rerecord", notes: `Auto-learn did not stage cleanly: ${why}. ${learn.message}` });
     addAuditLog(db, projectId, "system", "auto-learn", "portal.auto_learn_failed", { scope: scopeType, reason: !reachedReview ? "no_review" : "premature_review" });
     return finalize({ recipe: getPortalRecipe(db, stub.id), status: "failed", pauseReason: null, pageCount: learn.pageCount, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [], verification: { accurate: false, confidence: "low", matches: [], issues: [learn.message] }, message: `Nothing was staged — ${why}. ${learn.message}` });
   }
@@ -1490,10 +1490,14 @@ async function autoLearnPortalInner(
   // every future project. Convert such literals into reusable field bindings; a literal that
   // matches project data AMBIGUOUSLY (>1 field) can't be safely auto-bound, so treat it as a hard
   // blocker — never promote a contaminated recipe to trusted.
-  const { steps: boundSteps, bound: boundLiterals, ambiguous: ambiguousLiterals, portalConstants } =
+  const { steps: boundLiteralSteps, bound: boundLiterals, ambiguous: ambiguousLiterals, portalConstants } =
     // Company attestations are stamped with THIS job's client first (recipeReplayBinding R8 answers
     // them only for that client; any other company's job leaves them for a person).
     convertLiteralsToBoundFields(stampCompanyAttestations(learn.steps, project.clientId), projectFields);
+  // THE LEARN COMPANY'S LICENCE NEVER STAYS A LITERAL (withholdClientLicenceLiterals, licences skeptic L1):
+  // a recorded value equal to ANY licence this job's client holds, still unbound after the pass above,
+  // is withheld for a person — never replayed on another company's job.
+  const boundSteps = withholdClientLicenceLiteralsFor(db, boundLiteralSteps, project.clientId);
   if (ambiguousLiterals.length) {
     verification.issues.push(
       `Recorded literal value(s) match this project's data but could not be uniquely bound to a field (${ambiguousLiterals.slice(0, 6).map((a) => `"${a.value}"→${a.candidates.join("/")}`).join(", ")}). These would replay verbatim onto other projects — review before trusting.`,

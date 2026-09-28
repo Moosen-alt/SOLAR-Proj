@@ -79,6 +79,7 @@ export function looksLikeProjectData(label: string, value: string): boolean {
 }
 import { rankAddressVersions } from "../addressVersion";
 import { isCompanyIdentityLabel } from "../../../shared/src/companyFacts";
+import { licenceKeyForLabel } from "../../../shared/src/licenceKinds";
 import { labelWords } from "../../../shared/src/portalSafety";
 import { imageToPdfBytes, shouldConvertToPdf } from "../imageToPdf";
 import { removeUploadStaging, uploadPayloadFor, type PreparedUpload } from "./uploadPayload";
@@ -2099,6 +2100,12 @@ export class RecipeAdapter extends BasePortalAdapter {
       return String(this.fieldValues[step.field] ?? "").replace(/[-\s]/g, "");
     }
     if (step.field) {
+      // A LICENCE STEP READS THE KIND ITS LABEL NAMES (licences skeptic L2 — shared licenceKeyForLabel,
+      // the question recipeReplayBinding R9 asks of the same label): "CSL Number" bound to the generic
+      // ccbLicenseNumber types THIS company's construction supervisor licence, or nothing — never the
+      // electrical contractor's number the generic key held on this track.
+      const lic = licenceKeyForLabel(step.field, String(step.selector?.label || step.selector?.name || step.selector?.text || step.note || ""));
+      if (lic) return lic.key ? String(this.fieldValues[lic.key] ?? "") : "";
       // PREFER THE PORTAL'S OWN STRING for equipment models. The backend resolves
       // "<field>Certified" from the CEC list — the same list the portal builds its dropdown
       // from — so "DS3-L" arrives as "DS3-L {240V}" and "Q.TRON BLK M-G2.C1+/AC" as the

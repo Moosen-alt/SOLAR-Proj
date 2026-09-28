@@ -17,8 +17,7 @@ import { knownPowerClerkUtility } from "./utilityIdentity";
 import { licenceJobState, stateLicenceLines } from "./clients";
 
 /** The job's LICENCES are Oregon's (the named CCB / electrical columns): the one licence-state answer,
- *  clients.licenceJobState ("Oregon" is OR; a blank state is OR, the legacy convention). Not F4's
- *  "is this an Oregon project" (usStateCode, blank = unknown) — that asks which profiles apply. */
+ *  clients.licenceJobState ("Oregon" is OR; a blank state is unknown — no state's licences). */
 const isOregonJob = (project: Pick<ProjectRecord, "state">): boolean => licenceJobState(project.state) === "OR";
 
 // ---------------------------------------------------------------------------

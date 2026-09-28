@@ -128,8 +128,13 @@ export function parseStateLicenses(raw: unknown): ClientStateLicense[] {
 //   - nothing of the needed kind on file = "" and a reason — never another kind's, another
 //     state's or another company's number (no default client, ever).
 // Oregon's licences live in the named columns (ccb = contractor, electrical = electrical
-// contractor, electrician + supervisor name = master electrician); those columns belong to the
-// client's licenseState when it names another state. Read by: the submit gate
+// contractor, electrician + supervisor name = master electrician) — they are OREGON's, always
+// (the CCB and the BCD licences are Oregon boards'), whatever the client's licenseState says: a
+// column never follows licenseState, and the CCB is never offered as another state's licence
+// (licences skeptic L5 — a WA licenseState used to take the CCB off every Oregon job). On an
+// Oregon job a GENERIC contractor-licence slot is the CCB on every track (L6); the BCD electrical
+// licence goes only in a slot that names the electrical licence. A project with no recorded state
+// is UNKNOWN — no licence at all, never Oregon's by default. Read by: the submit gate
 // (contractorLicenceForState), the form fill (ahjForms) and the portal overlay (licenceOverlay).
 // =============================================================================================
 
@@ -148,29 +153,20 @@ function hasClient(c: LicenceClient): c is Record<string, unknown> {
 /** THE STATE A JOB'S LICENCES ARE READ IN — one answer for every licence door (licenceFor, the
  *  submit gate, the portal overlay, the form fill, the cover sheet). The project's state as its
  *  two-letter code (usStateCode: "Oregon" is OR — a spelled-out state must not lose its CCB); a
- *  BLANK state is Oregon, the legacy convention the named CCB columns carry; anything unrecognised
- *  is kept upper-cased, so it names no licence on file. (Not the same question as "does this
- *  project get Oregon's application profiles", where a blank state is unknown — applicationDocs.) */
+ *  BLANK state is UNKNOWN ("") — no state's licences, never Oregon's by default (licences skeptic);
+ *  anything unrecognised is kept upper-cased, so it names no licence on file. */
 export function licenceJobState(projectState: unknown): string {
   const raw = String(projectState ?? "").trim();
-  if (!raw) return "OR";
+  if (!raw) return "";
   return usStateCode(raw) || raw.toUpperCase();
-}
-
-/** The state the named licence columns belong to: licenseState when it names a state, else OR. */
-export function namedColumnsState(client: LicenceClient): string {
-  if (!hasClient(client)) return "OR";
-  const ls = pick(client, "license_state", "licenseState").toUpperCase();
-  return /^[A-Z]{2}$/.test(ls) ? ls : "OR";
 }
 
 /** Every licence the client holds in `state`, in the order they are preferred: Oregon — the named
  *  columns first (they ARE Oregon's CCB/BCD numbers), then typed OR entries; any other state — the
- *  typed entries first, then the named columns when licenseState names that state. */
+ *  typed entries only (the named columns are Oregon's, never another state's). */
 function licenceEntries(client: Record<string, unknown>, state: string): LicenceEntry[] {
-  const columnsState = namedColumnsState(client);
   const columns: LicenceEntry[] = [];
-  if (columnsState === state) {
+  if (state === "OR") {
     const ccb = pick(client, "ccb_license_number", "ccbLicenseNumber");
     if (ccb) columns.push({ state, kind: "contractor", typedKind: "contractor", number: ccb, expires: isoDay(pick(client, "ccb_expiration", "ccbExpiration")) || pick(client, "ccb_expiration", "ccbExpiration"), holder: "", column: true });
     const ec = pick(client, "electrical_license_number", "electricalLicenseNumber");
@@ -189,7 +185,7 @@ function licenceEntries(client: Record<string, unknown>, state: string): Licence
   // (the submit gate, the form fill, the cover sheet, the portal overlay). The entry stays, with no
   // number, so licenceFor names it for the operator — never printing the value.
   const unplaceholder = (e: LicenceEntry): LicenceEntry => (looksLikePlaceholderIdentifier(e.number) ? { ...e, number: "", placeholder: true } : e);
-  return (state === "OR" ? [...columns, ...typed] : [...typed, ...columns]).map(unplaceholder);
+  return [...columns, ...typed].map(unplaceholder);
 }
 
 export type LicenceTrack = "building" | "electrical" | "combo" | "unknown";
@@ -243,6 +239,9 @@ function entryOfKind(entries: LicenceEntry[], kind: LicenceKind): { entry: Licen
 export function licenceFor(client: LicenceClient, projectState: string, need: LicenceNeed): LicenceAnswer {
   const st = licenceJobState(projectState);
   if (!hasClient(client)) return answer(st, { reason: "no client is assigned to this project" });
+  // AN UNKNOWN STATE HAS NO LICENCE — never Oregon's by default: which state's licence the job takes
+  // is the question, and nothing on file answers it.
+  if (!st) return answer(st, { reason: "the project's state is not recorded, so which state's licence it takes is unknown — set the project's state" });
   const entries = licenceEntries(client, st);
   const untyped = entries.filter((e) => !e.kind && e.number).map((e) => `${e.number}${e.typedKind ? ` ("${e.typedKind}")` : ""}`);
   const placeholders = entries.filter((e) => e.placeholder).map((e) => labelFor(e));
@@ -258,6 +257,10 @@ export function licenceFor(client: LicenceClient, projectState: string, need: Li
     if (slot && slot !== "generic") explicit = slot;
   }
   if (explicit) kinds = [explicit];
+  // OREGON: A GENERIC CONTRACTOR-LICENCE SLOT IS THE CCB, ON EVERY TRACK AND EVERY FORM TYPE
+  // (licences skeptic L6) — the gate, the fill and the portal's generic key ask this one line. The
+  // BCD electrical licence goes only in a slot that names it.
+  else if (st === "OR") kinds = ["contractor"];
   else {
     const track = licenceTrack(typeof need === "string" ? null : need.track);
     if (track === "unknown") {
@@ -299,7 +302,8 @@ export function licenceFor(client: LicenceClient, projectState: string, need: Li
 export function contractorLicenceForState(clientRow: LicenceClient, projectState: string, track?: string | null): LicenceAnswer & { oregon: boolean } {
   const st = licenceJobState(projectState);
   const oregon = st === "OR";
-  const got = oregon ? licenceFor(clientRow, "OR", "contractor") : licenceFor(clientRow, st, { track: track ?? null });
+  // The generic slot's answer — on an Oregon job that IS the CCB (licenceFor, L6).
+  const got = licenceFor(clientRow, st, { track: track ?? null });
   // `state` stays "" for a blank project state (the gate's wording says "this state" then).
   return { ...got, oregon, state: String(projectState ?? "").trim() ? st : "", label: oregon ? "CCB" : got.label || `${st} licence` };
 }
@@ -321,7 +325,8 @@ export function contractorLicenceForClient(db: AppDb, clientId: string | null | 
 /** The licence keys the portal overlay and the recipe resolver carry, every one answered by
  *  licenceFor for THIS job's state and track. Oregon: the named columns, as they always were. */
 export const LICENCE_OVERLAY_KEYS = [
-  "ccbLicenseNumber", "ccbExpiration", "electricalLicenseNumber", "electricianLicenseNumber", "electricalSupervisorName",
+  "ccbLicenseNumber", "ccbExpiration", "contractorLicenseNumber", "contractorLicenseExpiration",
+  "electricalLicenseNumber", "electricalLicenseExpiration", "electricianLicenseNumber", "electricianLicenseExpiration", "electricalSupervisorName",
   "constructionSupervisorLicenseNumber", "constructionSupervisorLicenseExpiration", "homeImprovementLicenseNumber", "homeImprovementLicenseExpiration",
 ] as const;
 export type LicenceOverlayKey = (typeof LICENCE_OVERLAY_KEYS)[number];
@@ -330,28 +335,66 @@ export type LicenceOverlayKey = (typeof LICENCE_OVERLAY_KEYS)[number];
  * THE PORTAL'S LICENCE KEYS FOR ONE JOB — every key present, "" where nothing of the needed kind is
  * on file (a present-but-empty key is a BLANK answer to recipe replay; an absent one would fall
  * back to the recorded literal, which is the learn company's licence). ccbLicenseNumber is "the
- * contractor licence this filing takes": Oregon's CCB on an Oregon job, elsewhere the generic-by-
- * track licence (never the Oregon CCB); ccbExpiration is the CHOSEN licence's expiry.
+ * contractor licence this filing takes": Oregon's CCB on an Oregon job (every track), elsewhere the
+ * generic-by-track licence (never the Oregon CCB); ccbExpiration is the CHOSEN licence's expiry.
+ * Every kind the overlay carries has its OWN number and expiry key too (licences skeptic L1/L3):
+ * contractorLicenseNumber binds a contractor licence on ANY track, and an electrical / supervising-
+ * electrician expiry is never the generic licence's date. An expiry is present only beside its
+ * number.
  */
 export function licenceOverlay(client: LicenceClient, job: { state: string; track: string | null }): Record<LicenceOverlayKey, string> {
   const st = licenceJobState(job.state);
-  const oregon = st === "OR";
-  const generic = oregon ? licenceFor(client, st, "contractor") : licenceFor(client, st, { track: job.track });
+  const generic = licenceFor(client, st, { track: job.track });
+  const contractor = licenceFor(client, st, "contractor");
   const ec = licenceFor(client, st, "electrical_contractor");
   const master = licenceFor(client, st, "master_electrician");
   const csl = licenceFor(client, st, "construction_supervisor");
   const hic = licenceFor(client, st, "home_improvement_contractor");
+  const expires = (a: LicenceAnswer): string => (a.number ? a.expires : "");
   return {
     ccbLicenseNumber: generic.number,
-    ccbExpiration: generic.expires,
+    ccbExpiration: expires(generic),
+    contractorLicenseNumber: contractor.number,
+    contractorLicenseExpiration: expires(contractor),
     electricalLicenseNumber: ec.number,
+    electricalLicenseExpiration: expires(ec),
     electricianLicenseNumber: master.number,
+    electricianLicenseExpiration: expires(master),
     electricalSupervisorName: master.holder,
     constructionSupervisorLicenseNumber: csl.number,
-    constructionSupervisorLicenseExpiration: csl.number ? csl.expires : "",
+    constructionSupervisorLicenseExpiration: expires(csl),
     homeImprovementLicenseNumber: hic.number,
-    homeImprovementLicenseExpiration: hic.number ? hic.expires : "",
+    homeImprovementLicenseExpiration: expires(hic),
   };
+}
+
+/** EVERY licence number the client holds — any state, any kind, the named columns and the typed
+ *  entries — for the learn-time guard (portalRecipes.withholdClientLicenceLiterals): a recorded
+ *  literal equal to one of these is that company's licence, never kept in a shared recipe. */
+export function clientLicenceNumbers(client: LicenceClient): string[] {
+  if (!hasClient(client)) return [];
+  const out = new Set<string>();
+  for (const [snake, camel] of [["ccb_license_number", "ccbLicenseNumber"], ["electrical_license_number", "electricalLicenseNumber"],
+    ["electrician_license_number", "electricianLicenseNumber"], ["metro_city_license_number", "metroCityLicenseNumber"], ["docket_number", "docketNumber"]] as const) {
+    const v = pick(client, snake, camel);
+    if (v) out.add(v);
+  }
+  const c = client as Record<string, unknown>;
+  const typedRaw = Array.isArray(c.stateLicenses) ? c.stateLicenses : c.state_licenses_json;
+  for (const row of jsonArray(typedRaw)) {
+    const n = s(row?.number).trim();
+    if (n) out.add(n);
+  }
+  return [...out];
+}
+
+/** clientLicenceNumbers for a project's client, read by id ([] when there is no client). */
+export function clientLicenceNumbersForClient(db: AppDb, clientId: string | null | undefined): string[] {
+  if (!clientId) return [];
+  const row = db.get<Row>(
+    `SELECT ccb_license_number, electrical_license_number, electrician_license_number, metro_city_license_number, docket_number, state_licenses_json
+       FROM clients WHERE id = ?`, [clientId]);
+  return row ? clientLicenceNumbers(row) : [];
 }
 
 /** Every contractor/person licence the client holds in `state`, labelled ("MA construction
@@ -569,9 +612,48 @@ export function updateClient(db: AppDb, clientId: string, payload: Record<string
   });
 }
 
+/**
+ * A SAVE NEVER DROPS A STORED LICENCE ROW THE EDITOR COULD NOT SHOW (licences skeptic, editor P7).
+ * The Clients editor sends its FULL list on every save, but it only ever saw what parseStateLicenses
+ * returns: a holder-only row (a supervising electrician's name, no number), an expiry that is not a
+ * date the parser reads ("Aug 15 2028") and any key the model does not know were invisible to it —
+ * and so were wiped by an unrelated save. Merged here, where every writer passes:
+ *   - a stored row the read path drops entirely is KEPT verbatim (the operator never saw it, so the
+ *     list cannot have removed it);
+ *   - a stored row the editor did see, sent back (same state + number), keeps its unknown keys and
+ *     its unreadable expiry under the editor's values;
+ *   - a row the editor saw and did not send back was removed on purpose — it goes.
+ */
+export function mergeStateLicenceSave(storedRaw: unknown, incoming: unknown): Record<string, unknown>[] {
+  const next = parseStateLicenses(incoming);
+  const stored = jsonArray(storedRaw).filter((r) => r && typeof r === "object");
+  const idOf = (state: unknown, number: unknown): string => `${s(state).trim().toUpperCase().slice(0, 2)}|${normNumber(s(number))}`;
+  const seenByEditor = new Map<string, Record<string, unknown>>();
+  const invisible: Record<string, unknown>[] = [];
+  for (const row of stored) {
+    const parsed = parseStateLicenses([row]);
+    if (!parsed.length) invisible.push(row);
+    else seenByEditor.set(idOf(parsed[0].state, parsed[0].number), row);
+  }
+  const out: Record<string, unknown>[] = next.map((l) => {
+    const prior = seenByEditor.get(idOf(l.state, l.number));
+    if (!prior) return { ...l };
+    const merged: Record<string, unknown> = { ...prior, ...l };
+    // The editor could not show an expiry it cannot read — keep the stored text rather than lose it.
+    if (!l.expires && s(prior.expires).trim() && !isoDay(prior.expires)) merged.expires = prior.expires;
+    else if (!l.expires) delete merged.expires;
+    if (!l.holder) delete merged.holder;
+    return merged;
+  });
+  return [...out, ...invisible];
+}
+
 /** stateLicenses / partnerContacts: written only when present in the payload (partial update). */
 function writeLicenceAndPartnerJson(db: AppDb, clientId: string, payload: Record<string, unknown>): void {
-  if ("stateLicenses" in payload) db.run("UPDATE clients SET state_licenses_json = ? WHERE id = ?", [JSON.stringify(parseStateLicenses(payload.stateLicenses)), clientId]);
+  if ("stateLicenses" in payload) {
+    const stored = db.get<Row>("SELECT state_licenses_json FROM clients WHERE id = ?", [clientId])?.state_licenses_json;
+    db.run("UPDATE clients SET state_licenses_json = ? WHERE id = ?", [JSON.stringify(mergeStateLicenceSave(stored, payload.stateLicenses)), clientId]);
+  }
   if ("partnerContacts" in payload) db.run("UPDATE clients SET partner_contacts_json = ? WHERE id = ?", [JSON.stringify(parsePartnerContacts(payload.partnerContacts)), clientId]);
 }
 
@@ -948,11 +1030,17 @@ export function clientStagingOverlay(db: AppDb, clientId: string | null, portalT
     // key, and the literal stops being its only carrier.
     // THE CHOSEN licence's expiry (licenceOverlay) — Oregon's CCB expiry on an Oregon job.
     ccbExpiration: licences.ccbExpiration,
+    contractorLicenseNumber: licences.contractorLicenseNumber,
+    contractorLicenseExpiration: licences.contractorLicenseExpiration,
     electricalLicenseNumber: licences.electricalLicenseNumber,
+    electricalLicenseExpiration: licences.electricalLicenseExpiration,
     docketNumber: client.docketNumber,
-    metroCityLicenseNumber: client.metroCityLicenseNumber,
+    // THE METRO / CITY BUSINESS LICENCE IS PORTLAND METRO'S (an Oregon licence): only on an Oregon
+    // job — blank elsewhere, never one region's number in another state's box (licences skeptic).
+    metroCityLicenseNumber: licenceJobState(job.state) === "OR" ? client.metroCityLicenseNumber : "",
     electricalSupervisorName: licences.electricalSupervisorName,
     electricianLicenseNumber: licences.electricianLicenseNumber,
+    electricianLicenseExpiration: licences.electricianLicenseExpiration,
     constructionSupervisorLicenseNumber: licences.constructionSupervisorLicenseNumber,
     constructionSupervisorLicenseExpiration: licences.constructionSupervisorLicenseExpiration,
     homeImprovementLicenseNumber: licences.homeImprovementLicenseNumber,

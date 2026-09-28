@@ -960,6 +960,26 @@ export function licenceAnswerFor(ref: LicenceSourceRef, ctx: FillContext): Licen
     : licenceFor(L.client, L.state, ref.kind);
 }
 
+/**
+ * ONE LICENCE NUMBER, ONE SLOT — the one predicate for AcroForm widgets AND flat-PDF overlay
+ * placements (licences skeptic L4). Two licence slots a form prints for DIFFERENT licences (Waltham:
+ * the construction supervisor's "License Number" and the home-improvement contractor's
+ * "Registration Number", both captioned without their kind) must never both carry one number: a
+ * GENERIC number slot whose value another licence number slot on the form also carries is blocked
+ * (left blank, named) — the slot that named its licence keeps it. Returns slot key → the other
+ * slots' labels.
+ */
+export function duplicateLicenceSlots(slots: Array<{ key: string; label: string; value: string; ref: LicenceSourceRef | null }>): Map<string, string> {
+  const blocked = new Map<string, string>();
+  const numberSlots = slots.filter((r) => r.ref && r.ref.field === "number" && r.value.trim());
+  for (const r of numberSlots) {
+    if (r.ref?.kind !== "generic") continue;
+    const others = numberSlots.filter((o) => o.key !== r.key && o.value.trim().toUpperCase() === r.value.trim().toUpperCase());
+    if (others.length) blocked.set(r.key, others.map((o) => o.label).join(", "));
+  }
+  return blocked;
+}
+
 /** A typed licence source (client.stateLicence.<kind>[.expires|.holder]) or the generic state
  *  licence, resolved by licenceFor; null for every other source (read from the overlay as given). */
 function licenceSourceValue(source: string, ctx: FillContext): string | null {
@@ -986,7 +1006,8 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
   // of the needed kind on file = "" (the fill names it for the operator) — never another kind's,
   // state's or company's number.
   const licenceClient = clientLicenceRow(db, project.clientId);
-  // The job's licence state: ONE answer (clients.licenceJobState — "Oregon" is OR, blank is OR).
+  // The job's licence state: ONE answer (clients.licenceJobState — "Oregon" is OR; blank is UNKNOWN,
+  // no state's licences).
   const st = licenceJobState(project.state);
   if (st !== "OR") { delete client.ccbLicenseNumber; delete client.ccbExpiration; }
   let projectTracks: string[] = [];
@@ -1622,12 +1643,12 @@ export async function fillLoadedForm(
         }
       } catch { /* keep anchorFor null → use stored x/y */ }
     }
-    for (const [index, field] of (def.overlayFields ?? []).entries()) {
-      const page = pages[field.page];
-      if (!page) continue;
+    // Each placement's value, resolved once before anything is drawn, so the one-number-one-slot
+    // check below sees every licence placement on the form (as the AcroForm path does).
+    const resolveOverlay = (index: number, field: OverlayField): { skip: boolean; overlaySource: string; text: string; printed: string; overlayRef: LicenceSourceRef | null } => {
       if (field.onlyIf) {
         const cond = resolveSource(field.onlyIf.source, ctx);
-        if (!checkboxRuleChecked({ source: field.onlyIf.source, equals: field.onlyIf.equals }, cond)) continue;
+        if (!checkboxRuleChecked({ source: field.onlyIf.source, equals: field.onlyIf.equals }, cond)) return { skip: true, overlaySource: "", text: "", printed: "", overlayRef: null };
       }
       // A recognized checklist may repair a stored placement's SOURCE (never its map).
       const overlaySource = checklist.overlaySourceOverrides?.[index] ?? field.source;
@@ -1642,6 +1663,31 @@ export async function fillLoadedForm(
           const a = licenceAnswerFor(slot.ref, ctx);
           text = !a ? "" : slot.ref.field === "expires" ? (a.number ? a.expires : "") : slot.ref.field === "holder" ? a.holder : a.number;
         }
+      }
+      return { skip: false, overlaySource, text, printed, overlayRef };
+    };
+    const overlayResolved = (def.overlayFields ?? []).map((field, index) => resolveOverlay(index, field));
+    // ONE LICENCE NUMBER, ONE SLOT — on a flat PDF too (licences skeptic L4): two generic licence
+    // placements (Waltham's "License Number" / "Registration Number") are never both drawn with one
+    // number. The same predicate the AcroForm path asks (duplicateLicenceSlots); unverified maps only.
+    const overlayDupBlocked = def.unverifiedMap
+      ? duplicateLicenceSlots(overlayResolved.map((r, index) => ({
+        key: String(index), label: r.printed || `placement ${index + 1}`, value: r.text,
+        ref: r.skip ? null : (r.overlayRef ?? licenceSourceRef(r.overlaySource)),
+      })))
+      : new Map<string, string>();
+    for (const [index, field] of (def.overlayFields ?? []).entries()) {
+      const page = pages[field.page];
+      if (!page) continue;
+      const resolved = overlayResolved[index];
+      if (resolved.skip) continue;
+      const { overlaySource, printed, overlayRef } = resolved;
+      let text = resolved.text;
+      if (overlayDupBlocked.has(String(index))) {
+        const ref = overlayRef ?? licenceSourceRef(overlaySource);
+        const a = ref ? licenceAnswerFor(ref, ctx) : null;
+        operatorItems.push({ label: `${printed || `placement ${index + 1}`} (the same licence number as ${overlayDupBlocked.get(String(index))} — this slot asks for a different licence${a?.label ? ` than the ${a.label}` : ""}; enter it by hand)` });
+        continue;
       }
       // Placements carrying the form's printed label get the same checks a widget does: never an
       // attestation of an attached document, never a value the wrong shape for its box, and a data
@@ -1767,15 +1813,9 @@ export async function fillLoadedForm(
   // "Registration Number", both captioned without their kind) must never both carry one number. A
   // number the generic source chose that another licence slot on this form also carries is left
   // blank and named — the slot that named its licence keeps it.
-  const dupLicenceBlocked = new Map<string, string>();
-  if (def.unverifiedMap) {
-    const numberSlots = [...slotResolution.entries()].filter(([, r]) => r.ref && r.ref.field === "number" && r.value.trim());
-    for (const [fieldName, r] of numberSlots) {
-      if (!r.generic) continue;
-      const others = numberSlots.filter(([n, o]) => n !== fieldName && o.value.trim().toUpperCase() === r.value.trim().toUpperCase());
-      if (others.length) dupLicenceBlocked.set(fieldName, others.map(([n]) => widgetLabel(widgetOf(n))).join(", "));
-    }
-  }
+  const dupLicenceBlocked = def.unverifiedMap
+    ? duplicateLicenceSlots([...slotResolution.entries()].map(([n, r]) => ({ key: n, label: widgetLabel(widgetOf(n)), value: r.value, ref: r.ref })))
+    : new Map<string, string>();
 
   for (const [fieldName, source] of Object.entries(def.textFields)) {
     if (checklist.omittedTextFields.includes(fieldName)) { unmapped.push(fieldName); continue; }

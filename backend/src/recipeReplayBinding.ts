@@ -49,6 +49,11 @@
 //   R8 COMPANY ATTESTATIONS (leak sweep 2026-09-28) — a check/select answering a fact about the
 //      installer company replays only on the job of the company that recorded it (step.companyFactOf);
 //      elsewhere a check is not replayed and a select replays blank, named for a person.
+//   R9 LICENCE KIND (licences skeptic L2) — a step bound to a licence number / expiry key whose LABEL
+//      names a different licence kind (licenceKinds.kindForSlot, the one predicate) reads the label
+//      kind's key for THIS job ("CSL Number" bound to the generic ccbLicenseNumber takes this client's
+//      construction supervisor licence) — or replays BLANK, named for a person, when the kind has no
+//      key or this client holds none. Never another kind's number.
 import type { CitedFact, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { stateRulesFor } from "./permitProcess";
 import { feeBracketFieldKey, parseFeeBracketFieldKey, sameFeeTier, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
@@ -56,6 +61,7 @@ import { issuingAgencyRow } from "../../portal-bot/src/addressVersion";
 import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
 import { companyFactStamp, isCompanyAttestationStep } from "../../shared/src/companyFacts";
 import { mountKindForProject } from "./codeReviewRules";
+import { licenceKeyForLabel, licenceKindWords } from "../../shared/src/licenceKinds";
 export { sameFeeTier };
 
 export interface ReplayBindingChange {
@@ -309,6 +315,25 @@ export function bindRecipeForReplay(input: {
       step = { ...step, field: DECLARED_VALUATION_FIELD };
       delete step.value;
       record("rebound", `valuation box bound to this project's declared valuation, not ${was}`);
+    }
+
+    // R9 — a licence step reads the kind its LABEL names (licenceKeyForLabel — the replay adapter asks
+    // the same question of the same label, so the two cannot disagree).
+    if ((step.action === "fill" || step.action === "select") && step.field && step.field !== REPLAY_BLANK_FIELD) {
+      const lic = licenceKeyForLabel(step.field, label);
+      if (lic) {
+        const was = step.field;
+        const value = lic.key ? String(input.fieldValues[lic.key] ?? "").trim() : "";
+        if (!lic.key || !value) {
+          const why = `"${label.slice(0, 50)}" asks for the ${licenceKindWords(lic.labelKind)}${lic.key ? ", and none is on file for this job's company" : ", which has no key of its own"} — left blank for a person, never the ${was} number`;
+          step = { ...step, value: "", field: REPLAY_BLANK_FIELD, operatorItem: why };
+          record("blanked", why);
+        } else {
+          const same = value === String(input.fieldValues[was] ?? "").trim();
+          step = { ...step, field: lic.key };
+          if (!same) record("rebound", `"${label.slice(0, 50)}" asks for the ${licenceKindWords(lic.labelKind)} — bound to ${lic.key}, not ${was}`);
+        }
+      }
     }
 
     // R2 — project-specific free text.

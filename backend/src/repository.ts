@@ -87,7 +87,7 @@ import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 import { compactNextStep, decideNextStep, loadNextStepFacts } from "./nextStep";
 import { correctionHoldScope, criticalFieldHoldScope, findingHoldScope, GATE_TRACKS, scopeHoldsTrack, tracksHeld, type GateHoldScope } from "./gateScope";
 import { addAuditLog } from "./audit";
-import { clientLicenceRow, clientStagingOverlay, contractorLicenceForState, getClient, namedColumnsState } from "./clients";
+import { clientLicenceRow, clientStagingOverlay, contractorLicenceForState, getClient } from "./clients";
 import { planSetLicenceWarning } from "./clientMatch";
 import { assertSubmissionPaid } from "./submissionFees";
 import { readAndRecordPortalFees } from "./portalFeeReadings";
@@ -3507,7 +3507,6 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
       .map((t) => ({ track: t, answer: contractorLicenceForState(submittingClientRow, project.state, t) }))
     : [];
   const licenceMissingTracks = licenceByTrack.filter((t) => !t.answer.number);
-  const licenceNamedState = submittingClientRow ? namedColumnsState(submittingClientRow) : "OR";
   // THE PLAN SET'S LICENCE BELONGS TO ANOTHER COMPANY (clientMatch.planSetLicenceWarning): a warning,
   // never a switch — the assignment is the operator's.
   let planSetLicenceDoubt = "";
@@ -3605,8 +3604,7 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
         : [
             `Client: ${String(submittingClientRow.company_name || submittingClientRow.legal_business_name || "(unnamed)")}`,
             ...(licence!.oregon
-              ? [licence!.number ? `${licence!.label}: ${licence!.number}`
-                : licenceNamedState !== "OR" ? `No CCB license on file (the named licence columns are ${licenceNamedState}'s, per the client's licence state).` : "No CCB license on file."]
+              ? [licence!.number ? `${licence!.label}: ${licence!.number}` : `No CCB license on file${licence!.reason && /placeholder/.test(licence!.reason) ? ` (${licence!.reason.replace(/^.*?; /, "")})` : ""}.`]
               : licenceByTrack.length
                 ? licenceByTrack.slice(0, 3).map(({ track: t, answer: a }) => a.number
                   ? `${t} permit: ${a.label} ${a.number}`

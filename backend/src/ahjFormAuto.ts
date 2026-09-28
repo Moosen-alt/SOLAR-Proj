@@ -172,8 +172,9 @@ export const AVAILABLE_FIELD_SOURCES: string[] = [
   'operator:<printed caption>  (NOT a value: marks a blank the applicant must fill by hand because no source above answers it — it is listed for the operator by that caption)',
 ];
 
-/** The sources offered for a form of this state: the Oregon CCB source only on an Oregon form
- *  (an unknown state keeps it — contractorLicenceForState treats that as Oregon too). */
+/** The sources offered for a form of this state: the Oregon CCB source only on an Oregon form (a
+ *  template with no stored state keeps it on offer; the FILL resolves it only on an Oregon job —
+ *  clients.licenceJobState reads a blank project state as unknown). */
 export function fieldSourcesForState(state: string): string[] {
   const st = String(state || "").trim().toUpperCase();
   return !st || st === "OR" ? AVAILABLE_FIELD_SOURCES : AVAILABLE_FIELD_SOURCES.filter((s) => !s.startsWith(OREGON_CCB_SOURCE));

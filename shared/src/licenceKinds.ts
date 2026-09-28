@@ -60,15 +60,81 @@ export function licenceKindWords(kind: LicenceKind | ""): string {
 export function kindForSlot(text: string | undefined | null): LicenceKind | "generic" | null {
   const t = String(text ?? "").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_]+/g, " ").toLowerCase().replace(/\s+/g, " ").trim();
   if (!t) return null;
-  if (/construction\s+supervisor|\bcsl\b/.test(t)) return "construction_supervisor";
+  // "CS License No." is the construction supervisor's (canonicalLicenceKind reads "CS" that way too).
+  if (/construction\s+supervisor|\bcsl\b|\bcs\s*(?:licen[cs]e|lic\b|#|no\b|number)/.test(t)) return "construction_supervisor";
   if (/home\s+improvement|\bhic\b/.test(t)) return "home_improvement_contractor";
-  if (/\belectrician\b/.test(t)) return "master_electrician";
+  // A supervising / master electrician is a PERSON's licence — "Electrical Supervisor" included.
+  if (/\belectrician\b|\belectrical\s+supervisor\b|\bsupervising\s+electric/.test(t)) return "master_electrician";
   if (/business\s+(licen[cs]e|lic\b|registration)|secretary\s+of\s+state|\bubi\b/.test(t)) return "business_registration";
-  if (/\belectrical\b.*\b(licen[cs]e|lic|contractor|registration|no|number)\b|\belectrical\s+contractor|\belec\b\.?\s*lic|\bec\s*(licen[cs]e|lic|#|no\b|number)/.test(t)) return "electrical_contractor";
+  // TECL = Texas Electrical Contractor Licence.
+  if (/\belectrical\b.*\b(licen[cs]e|lic|contractor|registration|no|number)\b|\belectrical\s+contractor|\belec\b\.?\s*lic|\bec\s*(licen[cs]e|lic|#|no\b|number)|\btecl\b/.test(t)) return "electrical_contractor";
   if (/\bsolar\b.*\b(contractor|licen[cs]e|lic)\b|\bpv\s+contractor/.test(t)) return "solar_contractor";
-  if (/\bccb\b|general\s+contractor|building\s+contractor|residential\s+(building\s+)?contractor|construction\s+contractor/.test(t)) return "contractor";
-  if (/licen[cs]e|\blic\b|registration\s*(number|no\b|#)|\breg\s*(#|no\b)|contractor\s*(#|no\b|number)/.test(t)) return "generic";
+  // CSLB = California's Contractors State License Board licence (the contractor's).
+  if (/\bccb\b|\bcslb\b|general\s+contractor|building\s+contractor|residential\s+(building\s+)?contractor|construction\s+contractor/.test(t)) return "contractor";
+  // SHORT LABELS NAME A LICENCE TOO (licences skeptic L1): "ROC #" (Arizona's Registrar of Contractors
+  // issues both the contractor and the electrical classes — generic), "Reg. No.", "Lic. No.".
+  if (/licen[cs]e|\blic\b|registration\s*(number|no\b|#)|\breg\b\.?\s*(#|no\b|number)|contractor\s*(#|no\b|number)|\broc\b/.test(t)) return "generic";
   return null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// WHICH FILING-VALUE KEY CARRIES WHICH KIND (licences skeptic L1/L2/L3). The portal overlay
+// (clients.licenceOverlay) answers one number key and one expiry key per kind it carries, plus the
+// GENERIC pair (ccbLicenseNumber / ccbExpiration: "the contractor licence THIS filing takes" — the
+// CCB on an Oregon job, elsewhere the licence the permit's track takes). The binder (learn), the
+// replay binding (R9) and the replay adapter all read a step's label kind against these maps — one
+// predicate (kindForSlot), the forms' "caption decides" rule on the portal side.
+// ---------------------------------------------------------------------------------------------
+export const GENERIC_LICENCE_NUMBER_KEY = "ccbLicenseNumber";
+export const GENERIC_LICENCE_EXPIRY_KEY = "ccbExpiration";
+export const LICENCE_NUMBER_KEY_BY_KIND: Readonly<Partial<Record<LicenceKind, string>>> = {
+  contractor: "contractorLicenseNumber",
+  electrical_contractor: "electricalLicenseNumber",
+  construction_supervisor: "constructionSupervisorLicenseNumber",
+  home_improvement_contractor: "homeImprovementLicenseNumber",
+  master_electrician: "electricianLicenseNumber",
+};
+export const LICENCE_EXPIRY_KEY_BY_KIND: Readonly<Partial<Record<LicenceKind, string>>> = {
+  contractor: "contractorLicenseExpiration",
+  electrical_contractor: "electricalLicenseExpiration",
+  construction_supervisor: "constructionSupervisorLicenseExpiration",
+  home_improvement_contractor: "homeImprovementLicenseExpiration",
+  master_electrician: "electricianLicenseExpiration",
+};
+
+/** A licence NUMBER or EXPIRY key and the kind it carries ("generic" for the ccb pair); null for any
+ *  other key (a holder's NAME — electricalSupervisorName — is not a licence number). */
+export function licenceKeyInfo(key: string | null | undefined): { kind: LicenceKind | "generic"; expiry: boolean } | null {
+  const k = String(key ?? "");
+  if (k === GENERIC_LICENCE_NUMBER_KEY) return { kind: "generic", expiry: false };
+  if (k === GENERIC_LICENCE_EXPIRY_KEY) return { kind: "generic", expiry: true };
+  for (const [kind, key2] of Object.entries(LICENCE_NUMBER_KEY_BY_KIND)) if (key2 === k) return { kind: kind as LicenceKind, expiry: false };
+  for (const [kind, key2] of Object.entries(LICENCE_EXPIRY_KEY_BY_KIND)) if (key2 === k) return { kind: kind as LicenceKind, expiry: true };
+  return null;
+}
+
+/** The key a label of `kind` reads (number or expiry); a CCB-named label keeps the generic pair (on
+ *  an Oregon job it IS the CCB). null when the kind has no key (solar, business registration). */
+export function licenceKeyForKind(kind: LicenceKind, expiry: boolean, label: string): string | null {
+  if (kind === "contractor" && /\bccb\b/i.test(label)) return expiry ? GENERIC_LICENCE_EXPIRY_KEY : GENERIC_LICENCE_NUMBER_KEY;
+  return (expiry ? LICENCE_EXPIRY_KEY_BY_KIND : LICENCE_NUMBER_KEY_BY_KIND)[kind] ?? null;
+}
+
+/**
+ * AT REPLAY: a step bound to a licence key whose LABEL names a different licence kind reads the
+ * label kind's key for THIS job — never another kind's number ("CSL Number" bound to the generic
+ * ccbLicenseNumber typed the electrical contractor's number on an electrical filing). Returns null
+ * when there is nothing to decide (not a licence key; the label names no kind or a generic licence;
+ * the kinds agree), else `{ key }` — null key = the label's kind has no key: blank, for a person.
+ */
+export function licenceKeyForLabel(boundKey: string | null | undefined, label: string | null | undefined): { key: string | null; labelKind: LicenceKind } | null {
+  const info = licenceKeyInfo(boundKey);
+  if (!info) return null;
+  const labelKind = kindForSlot(label);
+  if (!labelKind || labelKind === "generic") return null;
+  const key = licenceKeyForKind(labelKind, info.expiry, String(label ?? ""));
+  if (key === boundKey) return null;
+  return { key, labelKind };
 }
 
 /**
@@ -84,8 +150,9 @@ export function canonicalLicenceKind(raw: string | undefined | null): LicenceKin
   if (/ (business|secretary of state|sos|ubi) /.test(t) && !/ contractor /.test(t)) return "business_registration";
   if (/ (construction supervisor|csl|cs) /.test(t)) return "construction_supervisor";
   if (/ (home improvement|hic) /.test(t)) return "home_improvement_contractor";
-  // A person's electrician licence (master / supervising / plain "electrician").
-  if (/ electrician /.test(t) || / master /.test(t)) return "master_electrician";
+  // A person's electrician licence (master / supervising / plain "electrician", an "electrical
+  // supervisor") — the same reading kindForSlot makes of a slot.
+  if (/ electrician /.test(t) || / master /.test(t) || / electrical supervisor /.test(t) || / supervising electric/.test(t)) return "master_electrician";
   if (/ (electrical|electric|elec|ec|ecl|tecl|el) /.test(t)) return "electrical_contractor";
   if (/ (solar|pv|cvc) /.test(t)) return "solar_contractor";
   if (/ (contractor|general|gc|building|builder|residential|ccb|construction) /.test(t)) return "contractor";
