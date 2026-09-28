@@ -54,6 +54,12 @@
 //      kind's key for THIS job ("CSL Number" bound to the generic ccbLicenseNumber takes this client's
 //      construction supervisor licence) — or replays BLANK, named for a person, when the kind has no
 //      key or this client holds none. Never another kind's number.
+//   R10 ONE CONTACT, ONE IDENTITY (live Corvallis electrical, 2026-09-28) — a fill/select inside a
+//      contact dialog belongs to the section that opened it (the Add New / Select from Account /
+//      Edit click before it); a step bound to the OTHER identity's key is rebound to this one's
+//      matching key (an Applicant dialog's homeownerName → installerContactName; an Owner dialog's
+//      installerEmail → homeownerEmail), a contact literal binds to this identity's key, and a part
+//      the identity lacks (an Owner's business name) replays blank. Unknown section: untouched.
 import type { CitedFact, ProjectRecord, RecipeStep } from "../../shared/src/types";
 import { stateRulesFor } from "./permitProcess";
 import { feeBracketFieldKey, parseFeeBracketFieldKey, sameFeeTier, tierBoundsFromLabel } from "../../portal-bot/src/feeBracketQuantity";
@@ -62,7 +68,13 @@ import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
 import { companyFactStamp, isCompanyAttestationStep } from "../../shared/src/companyFacts";
 import { mountKindForProject } from "./codeReviewRules";
 import { licenceKeyForLabel, licenceKindWords } from "../../shared/src/licenceKinds";
+import {
+  contactFieldKind, contactKeyFor, contactKeyForRole, contactRoleOfStep, type ContactRole, type ContactTrack,
+} from "../../shared/src/contactRoles";
 export { sameFeeTier };
+
+/** A main-page click that opens a contact section's dialog. */
+const CONTACT_OPENER = /\b(?:add new|select from account|edit|add (?:a |new )?contact)\b/i;
 
 export interface ReplayBindingChange {
   index: number;
@@ -169,6 +181,9 @@ export function bindRecipeForReplay(input: {
   const residentialSingle = /single|one|1\b|two|duplex|family|dwelling|sfd|residential/i.test(String(snapshot.structureDescription ?? snapshot.occupancy ?? snapshot.structureType ?? "residential"));
   let refusal: string | null = null;
   let sawAgencyRow = false;
+  // R10's open contact block (see there). A utility interconnection reads "applicant" as the customer.
+  let contactBlock: { role: ContactRole | null; label: string } | null = null;
+  const contactTrack: ContactTrack = String(input.track ?? "").toLowerCase() === "nem" ? "nem" : "permit";
   // The agency as the address-version row reads it — the one parse (portal-bot addressVersion)
   // the replay's live ranking asks too, so "will the replay rank by it" has one answer.
   const agencyRow = issuingAgencyRow(agencyName, { city: input.project.city });
@@ -332,6 +347,54 @@ export function bindRecipeForReplay(input: {
           const same = value === String(input.fieldValues[was] ?? "").trim();
           step = { ...step, field: lic.key };
           if (!same) record("rebound", `"${label.slice(0, 50)}" asks for the ${licenceKindWords(lic.labelKind)} — bound to ${lic.key}, not ${was}`);
+        }
+      }
+    }
+
+    // R10 — ONE CONTACT, ONE IDENTITY. A main-page click that opens a contact section (Add New,
+    // Select from Account, Edit) opens a block; every dialog (framed) fill/select until the next
+    // main-page step belongs to it. Its identity is the section's: the step's own role mark, the
+    // section control id, or the recorded section heading (shared contactRoles — the learner's
+    // pass and dialog guard ask the same predicates). A box bound to the OTHER identity's key
+    // replays this identity's matching key; a literal under a contact label binds to it; a part
+    // this identity does not have (an Owner block's business name) replays blank. A block whose
+    // section says nothing is left exactly as recorded — never guessed.
+    {
+      const inFrame = Boolean(original.selector?.frame);
+      const words = `${original.selector?.name ?? ""} ${original.selector?.text ?? ""} ${original.selector?.label ?? ""} ${note}`;
+      const opener = original.action === "click" && !inFrame && CONTACT_OPENER.test(words);
+      if (opener) {
+        contactBlock = { role: contactRoleOfStep(original, { track: contactTrack }), label: label.slice(0, 40) };
+      } else if (!inFrame) {
+        contactBlock = null;
+      } else if (contactBlock && (step.action === "fill" || step.action === "select") && step.field !== REPLAY_BLANK_FIELD && !step.sensitive) {
+        const role = contactBlock.role ?? contactRoleOfStep(original, { track: contactTrack });
+        if (role) {
+          const who = role === "company" ? "the filing company" : "the property owner";
+          if (step.field) {
+            const want = contactKeyForRole(step.field, role);
+            if (want === null) {
+              const why = `"${label.slice(0, 40)}" in ${who}'s contact block was bound to ${step.field}, a part ${who} does not have — replayed blank`;
+              step = { ...step, value: "", field: REPLAY_BLANK_FIELD };
+              record("blanked", why);
+            } else if (want && want !== step.field) {
+              const was = step.field;
+              step = { ...step, field: want };
+              delete step.value;
+              record("rebound", `"${label.slice(0, 40)}" in ${who}'s contact block (${contactBlock.label}) bound to ${want}, not ${was} — one contact, one identity`);
+            }
+          } else if (step.action === "fill" && String(step.value ?? "").trim()) {
+            const kind = contactFieldKind(label);
+            const key = kind ? contactKeyFor(role, kind) : undefined;
+            if (key && hasKey(input.fieldValues, key)) {
+              step = { ...step, field: key };
+              delete step.value;
+              record("rebound", `"${label.slice(0, 40)}" in ${who}'s contact block bound to ${key} (the recorded answer was the learn project's)`);
+            } else if (kind && key === null) {
+              step = { ...step, value: "", field: REPLAY_BLANK_FIELD };
+              record("blanked", `"${label.slice(0, 40)}" in ${who}'s contact block is a part ${who} does not have — replayed blank`);
+            }
+          }
         }
       }
     }
