@@ -588,4 +588,57 @@ UTILITY SERVICE: UNDERGROUND`;
   ok("calculated limit: the 705.12 maximum never makes a PV-breaker conflict (both paths); all-calculation, uncited, guessed, labelled '=', lumber size and bare MAX stay conflicts");
 }
 
+// ---------------------------------------------------------------------------
+// ONLY A LIMIT-LABELLED RESULT IS SET ASIDE (skeptic round, dry-run 2026-09-28 B15). The first cut
+// dropped ANY excerpt carrying '=' and arithmetic while another reading quoted a plain line, so a
+// plan set's own worked sizing disagreeing with another sheet vanished from CONFLICTS and showed
+// under RESOLVED as "X is a calculated limit, not a reading" — false. A reading is set aside only
+// when its calculation labels the RESULT as a limit (MAX / MAXIMUM / ALLOW / ALLOWABLE / LIMIT) and
+// the reading's value IS that result. Every MUST-EXCLUDE runs on both conflict paths: (a) the model
+// reports the conflict, (d) two passes disagree on a flagged field.
+// ---------------------------------------------------------------------------
+{
+  type R = { value: string; source: string; excerpt: string };
+  type Items = { resolved: Array<{ field: string; value: unknown; how: string }>; conflicts: Array<{ field: string; text: string }> };
+  const viaA = (f: string, x: R, y: R): Items => PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [textPass({}, [], { conflicts: [{ field: f, readings: [x, y] }] })] });
+  const passOf = (f: string, label: string, r: R) => ({ kind: "text", label, docsGiven: ["plan_set"], response: { fields: { [f]: field(r.value, r.source, r.excerpt, 0.7, "E 1.1") }, lowConfidenceFields: [f], notes: "" } });
+  const viaD = (f: string, x: R, y: R): Items => PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [passOf(f, "one", x), passOf(f, "two", y)] });
+  const fails: string[] = [];
+  const staysConflict = (name: string, f: string, x: R, y: R) => {
+    for (const [p, run] of [["a", viaA], ["d", viaD]] as const) {
+      const items = run(f, x, y);
+      const conflict = items.conflicts.find((c) => c.field === f);
+      const resolved = items.resolved.find((r) => r.field === f);
+      if (!conflict || resolved) fails.push(`${name} (${p}): conflict=${Boolean(conflict)} resolved=${resolved ? JSON.stringify(resolved) : "no"}`);
+      else if (/calculated limit, not a reading/.test(conflict.text)) fails.push(`${name} (${p}): the conflict text calls a reading a calculated limit: ${conflict.text}`);
+    }
+  };
+  const resolvesTo = (name: string, f: string, x: R, y: R, want: string) => {
+    for (const [p, run] of [["a", viaA], ["d", viaD]] as const) {
+      const items = run(f, x, y);
+      const resolved = items.resolved.find((r) => r.field === f);
+      if (!resolved || resolved.value !== want || items.conflicts.some((c) => c.field === f)) fails.push(`${name} (${p}): expected RESOLVED ${want}, got ${JSON.stringify({ resolved, conflicts: items.conflicts.map((c) => c.field) })}`);
+      else if (!/is a calculated limit, not a reading/.test(resolved.how)) fails.push(`${name} (${p}): the resolution does not name the dropped limit: ${resolved.how}`);
+    }
+  };
+  const sd = (value: string, excerpt: string): R => ({ value, source: "plan_set", excerpt });
+
+  // MUST-EXCLUDE (skeptic): a worked system size is a READING — its disagreement is a conflict.
+  staysConflict("system size worked out vs stated", "systemSizeDcKw", sd("8.80", "DC SYSTEM SIZE: 20 x 440W = 8.80 KW DC"), sd("8.4", "SYSTEM SIZE: 8.4 KW DC"));
+  // MUST-EXCLUDE (skeptic): a sized breaker ('USE 40A') is a reading, the 36.25 A is not labelled a limit.
+  staysConflict("sized PV breaker vs stated", "pvBreaker", sd("40A", "1.25 x 29A = 36.25A, USE 40A PV BREAKER"), sd("30A", "(N) 30A PV BREAKER"));
+  // MUST-EXCLUDE: the value must BE the limit-labelled result — a line that prints the 40 A maximum
+  // and states a 30 A breaker is read as 30 A, and disagrees with a plain 40 A.
+  staysConflict("value is not the limit result", "pvBreaker", sd("30A", "(200A x 120%) - 200A = 40A MAX PV OCPD; 30A PV BREAKER INSTALLED"), sd("40A", "(N) 40A PV BREAKER"));
+  // MUST-EXCLUDE: a line that also STATES the number is a statement, not only a calculated limit.
+  staysConflict("number also stated on the line", "pvBreaker", sd("40A", "(N) 40A PV BREAKER; (200A x 120%) - 200A = 40A MAX PV OCPD"), sd("30A", "(N) 30A PV BREAKER"));
+  // MUST-PASS (skeptic): the 705.12 maximum labelled after its result is still set aside.
+  resolvesTo("705.12 max after the result", "pvBreaker", sd("40A", "(200A x 120%) - 200A = 40A max PV OCPD"), sd("30A", "(N) 30A PV BREAKER"), "30A");
+  // MUST-PASS: the same limit labelled before the calculation ("MAX PV OCPD ... = 40A").
+  resolvesTo("705.12 max before the calculation", "pvBreaker", sd("40A", "MAX PV OCPD (200A x 120%) - 200A = 40A"), sd("30A", "(N) 30A PV BREAKER"), "30A");
+  resolvesTo("allowable backfeed label", "pvBreaker", sd("40", "ALLOWABLE BACKFEED: 200A x 1.2 - 200A = 40 A"), sd("30A", "(N) 30A PV BREAKER"), "30A");
+  assert.deepEqual(fails, [], fails.join("\n"));
+  ok("calculated limit (skeptic round): worked sizing ('20 x 440W = 8.80 KW', '1.25 x 29A = 36.25A, USE 40A') stays a CONFLICT on both paths; only a limit-labelled result equal to the value is set aside");
+}
+
 console.log(`\nparserReviewList: all ${passed} checks passed`);
