@@ -21,6 +21,7 @@ import { parseStreetNumber, parseStreetName, parseStreetLine } from "../../porta
 import { feeBracketFieldForLabel, feeBracketQuantityFields } from "./feeBracketFields";
 import { FEE_BRACKET_FIELD_PREFIX } from "../../portal-bot/src/feeBracketQuantity";
 import { filingValuationText } from "./valuation";
+import { planSetDisconnectPart, standardDisconnectConflicts } from "./baselineRules";
 
 type Row = Record<string, unknown>;
 
@@ -1956,6 +1957,33 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
     if (!/phone$/i.test(k) || !v) continue;
     const digits = String(v).replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
     if (digits.length === 10) merged[k] = `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  }
+  // THE AC DISCONNECT PART (leak sweep 2026-09-28) — resolved AFTER the merge, because the client
+  // overlay used to win it outright: a plan set naming "Square D DU222RB" was filed as the client's
+  // standard Eaton DG221URB, and a plan set calling for a 60 A FUSIBLE switch was filed with a 30 A
+  // non-fused part beside "60A / fusible" — two contradictory facts on one utility application.
+  //   - the plan set's own part (acDiscMakeModel, split; baselineRules.planSetDisconnectPart) wins;
+  //   - else the client's standard part — unless it contradicts the plan set's rating or fusing
+  //     (baselineRules.standardDisconnectConflicts, the same check QC names for the operator), in
+  //     which case make and model are BLANK: the portal stops on them, QC says why, nothing is guessed;
+  //   - disconnectMakeModel is always the final make + model, never a separately-derived string.
+  {
+    const planPart = planSetDisconnectPart(snapshotFlat);
+    let make = "";
+    let model = "";
+    if (planPart.named) {
+      make = planPart.make;
+      model = planPart.model;
+    } else {
+      const stdMake = String(overlay.disconnectMake ?? "").trim();
+      const stdModel = String(overlay.disconnectModel ?? "").trim();
+      const ampsRaw = String(snapshotFlat.acDiscAmps ?? "").replace(/[^0-9.]/g, "");
+      const conflicts = standardDisconnectConflicts(stdModel, { fused: snapshotFlat.acDiscFused, amps: ampsRaw ? Number(ampsRaw) : null });
+      if (!conflicts.length) { make = stdMake; model = stdModel; }
+    }
+    merged.disconnectMake = make;
+    merged.disconnectModel = model;
+    merged.disconnectMakeModel = [make, model].filter(Boolean).join(" ").trim();
   }
   return merged;
 }

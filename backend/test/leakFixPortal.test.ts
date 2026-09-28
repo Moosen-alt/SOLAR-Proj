@@ -325,5 +325,36 @@ await check("MUST-EXCLUDE: a Yes/No whose label names its field still binds (Ene
   assert.equal(n.steps[0].field, "homeownerName");
 });
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+section("P4  the plan set's AC disconnect beats the client's standard part; a contradiction is blank + named");
+const { updateClient } = await import("../src/clients");
+updateClient(db, alpha.id, { standardDisconnectMake: "Eaton", standardDisconnectModel: "DG221URB" });
+const discProject = (snap: P) => project({ clientId: alpha.id, state: "OR", utility: "Pacific Power", city: "Coos Bay", zip: "97420", street: "10 Bay St", ahj: "City of Coos Bay", ...snap });
+const disc = (p: ReturnType<typeof project>) => {
+  const f = PR.resolveRecipeFieldValues(db, p, "utility");
+  return [f.disconnectMake, f.disconnectModel, f.disconnectMakeModel];
+};
+const qcRules = (pid: string): string[] => db.query<{ rule_id: string }>("SELECT rule_id FROM qc_results WHERE project_id = ?", [pid]).map((r) => r.rule_id);
+await check("MUST-PASS: a plan set that names its disconnect part is filed as named, not as the client's standard part", () => {
+  const p = discProject({ acDiscMakeModel: "Square D DU222RB", acDiscAmps: "60A", acDiscFused: "fusible" });
+  assert.deepEqual(disc(p), ["Square D", "DU222RB", "Square D DU222RB"]);
+  assert.ok(!qcRules(p.id).some((r) => r.startsWith("xcheck-disconnect")), "the standard part is not in play — nothing to cross-check");
+});
+await check("MUST-PASS: a standard part that contradicts the plan set (60 A FUSIBLE vs a 30 A non-fused DG221URB) is left blank, and QC names it", () => {
+  const p = discProject({ acDiscAmps: "60A", acDiscFused: "fusible" });
+  assert.deepEqual(disc(p), ["", "", ""]);
+  const rules = qcRules(p.id);
+  assert.ok(rules.includes("xcheck-disconnect-fusing") && rules.includes("xcheck-disconnect-rating"), `QC: ${rules.filter((r) => r.startsWith("xcheck")).join(",") || "no cross-check fired"}`);
+});
+await check("MUST-EXCLUDE: a standard part that agrees with the plan set is filed; a schedule's rating line is not a part", () => {
+  const p = discProject({ acDiscAmps: "30A", acDiscFused: "non-fusible", acDiscMakeModel: "30A NON-FUSIBLE AC DISCONNECT, 240V" });
+  assert.deepEqual(disc(p), ["Eaton", "DG221URB", "Eaton DG221URB"]);
+  assert.ok(!qcRules(p.id).some((r) => r.startsWith("xcheck-disconnect")));
+});
+await check("MUST-EXCLUDE: another company's job never gets this client's standard part (no client default -> blank)", () => {
+  const p = project({ clientId: beta.id, state: "UT", utility: "Rocky Mountain Power", city: "Salt Lake City", zip: "84101", street: "1 Temple Sq", ahj: "Salt Lake City", acDiscAmps: "30A", acDiscFused: "non-fusible" });
+  assert.deepEqual(disc(p), ["", "", ""]);
+});
+
 console.log(`\n${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);

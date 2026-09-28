@@ -45,6 +45,7 @@ interface ProjectRow {
   ahj: string | null;
   state: string | null;
   utility: string | null;
+  client_id?: string | null;
 }
 
 interface Check {
@@ -220,7 +221,7 @@ function statusFor(check: Check, ctx: QcContext): QcStatus {
 }
 
 export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
-  const project = db.get<ProjectRow>("SELECT id, parser_json, ahj, state, utility, system_size_dc_kw FROM projects WHERE id = ?", [projectId]);
+  const project = db.get<ProjectRow>("SELECT id, parser_json, ahj, state, utility, system_size_dc_kw, client_id FROM projects WHERE id = ?", [projectId]);
   if (!project) throw new Error("Project not found.");
 
   const payload = parseJson<ParserPayload>(project.parser_json, {});
@@ -399,7 +400,23 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
     // Jurisdiction-adopted code context: any state/county with recorded prescriptive
     // limits gets the baseline screens (data-driven); Oregon behavior unchanged.
     const codeCtx = resolveEffectiveCodeContext(db, clean(payload.state), clean(payload.ahj));
-    for (const baseline of evaluateBaselineRules(payload, codeCtx)) {
+    // THE PROJECT'S OWN CLIENT'S STANDARD DISCONNECT PART, so the plan-set cross-check can fire
+    // (leak sweep 2026-09-28: nothing ever put it in this payload, so the check was dead code while
+    // the portal filing used the part). Read from the project's own client row — never another's.
+    // The project's utility and state stand in only where the parser left them blank, so the one
+    // utility identity (utilityIdentity) can answer for a project the parser did not fully read.
+    const clientId = clean(project.client_id);
+    const std = clientId
+      ? db.get<{ standard_disconnect_make?: string | null; standard_disconnect_model?: string | null }>(
+        "SELECT standard_disconnect_make, standard_disconnect_model FROM clients WHERE id = ?", [clientId])
+      : undefined;
+    const baselinePayload: ParserPayload = {
+      ...payload,
+      ...(clean(payload.state) ? {} : project.state ? { state: project.state } : {}),
+      ...(clean(payload.utility) ? {} : project.utility ? { utility: project.utility } : {}),
+      ...(clean(std?.standard_disconnect_model) ? { standardDisconnectModel: clean(std?.standard_disconnect_model), standardDisconnectMake: clean(std?.standard_disconnect_make) } : {}),
+    };
+    for (const baseline of evaluateBaselineRules(baselinePayload, codeCtx)) {
       if (baseline.qcStatus === "fail") failCount += 1;
       if (baseline.qcStatus === "warning") warningCount += 1;
       db.run(
