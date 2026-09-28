@@ -1000,6 +1000,8 @@ async function autoLearnPortalInner(
         // The property's parcel (parser snapshot) — the ACA work-location pass searches by it,
         // by the panel's Search button, when the address finds nothing (Lee County).
         parcel: projectFields.parcelNumber || "",
+        // A dialog that asks ONE "Full Name" box (City of Corvallis) takes the owner's whole name.
+        fullName: projectFields.homeownerName || "",
         firstName: projectFields.homeownerFirstName || "",
         lastName: projectFields.homeownerLastName || "",
         email: projectFields.homeownerEmail || "",
@@ -1014,6 +1016,12 @@ async function autoLearnPortalInner(
         // here from the row, not from projectFields (which layers the plan-set snapshot under the
         // client overlay). No signer = the typed signature step pauses for the operator.
         signerName: learnSignerName(db, project),
+        // "Full Name" / "Name of Business" (City of Corvallis's Applicant dialog) — the SAME keys
+        // the operator-approved building recipe binds that dialog to (installerContactName /
+        // installerCompanyName). Without them the pass typed no name, the dialog refused its
+        // save, and the planner filled the dialog with a mix of the homeowner and the company.
+        fullName: projectFields.installerContactName || "",
+        companyName: projectFields.installerCompanyName || "",
         firstName: projectFields.installerFirstName || "",
         lastName: projectFields.installerLastName || projectFields.installerCompanyName || "",
         email: projectFields.installerEmail || "",
