@@ -34,7 +34,7 @@ import {
   batteryStatus, SERVICE_FEEDER_CHARGE_KIND, SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
 } from "./batteryServiceFeeder";
 import { BCD_5952_LIMITS, type ChecklistRecovery } from "./prescriptiveChecklist";
-import { bcdChecklistAnswers, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
+import { bcdChecklistAnswers, bcd5952FailedRows, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
 import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
 import { documentFetchDisabled } from "./documentFetch";
 import {
@@ -1542,9 +1542,13 @@ export async function fillLoadedForm(
   // NAME THE MISSING FACT, NOT THE ROW: "roof material and layer count" on a project whose roof
   // material was parsed read as "it filled metal roofing" (bcdChecklistFacts.bcd5952MissingFacts).
   const unresolvedChecklistRows = checklist.recognized ? bcd5952MissingFacts(ctx.project).map((m) => m.missing) : [];
+  // A ROW THAT ANSWERS NO IS SAID, WITH ITS CLAUSE (bcdChecklistFacts.bcd5952FailedRows — the list the
+  // permit-path screen reads too): the form itself says a No row may not go on the prescriptive path.
+  const failedChecklistRows = checklist.recognized ? bcd5952FailedRows(ctx.project).map((f) => f.clause) : [];
   const checklistMessage = checklist.recognized
     ? "BCD 5952: filled independently supported answers. Review the completed PDF before filing."
       + (unresolvedChecklistRows.length ? ` Still needs evidence: ${unresolvedChecklistRows.join("; ")}.` : "")
+      + (failedChecklistRows.length ? ` Answers No (the checklist says a No row may not be submitted on the prescriptive path): ${failedChecklistRows.join("; ")}.` : "")
     : undefined;
   // The cached research title can claim several applications were combined,
   // while the actual two-page PDF is only this checklist.

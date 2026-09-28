@@ -6024,7 +6024,8 @@ function bcd5952ClauseNotes(form) {
       any(flag("attachmentsOutsideEdgeZone"), max("attachmentEdgeSpacingIn", 24)),
       exposure === "B" ? max("windSpeed", 120) : exposure === "C" ? max("windSpeed", 110) : null));
   if (method1 === true) note("attachment method compliance", "Attachments: Yes — via Method 1 (lagged to roof framing)");
-  else if (flag("standingSeamMethod2Compliant") === true) note("attachment method compliance", "Attachments: Yes — via Method 2 (standing-seam clamps)");
+  // Method 2 is the standing-seam METAL method (backend method2Fact): never a Yes on another covering.
+  else if ((!roof || /metal|standing[-\s]?seam|corrugated/.test(roof)) && flag("standingSeamMethod2Compliant") === true) note("attachment method compliance", "Attachments: Yes — via Method 2 (standing-seam clamps)");
 
   return notes.length ? `<p class="muted bcd-clauses">${esc(`Compound rows — the clause each Yes came from: ${notes.join("; ")}.`)}</p>` : "";
 }
