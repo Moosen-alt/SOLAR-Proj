@@ -3,6 +3,49 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## ONE CONTACT, ONE IDENTITY + A SERVICE UPGRADE IS A SERVICE LINE (2026-09-28, corvallis-elec-fixes)
+
+Live City of Corvallis electrical learn: the Applicant dialog went in as the homeowner's name /
+mailing address / e-mail beside the company's business name and phone, and "Service 0-200 amps
+(qty)" stayed 0 on a job upgrading to a 200 A main (225 A bus).
+- **Contacts (learner):** the ACA pass reads each contact SECTION by its heading
+  (`shared/src/contactRoles.ts` — Applicant / Contractor / Licensed Professional / Inspection
+  Contact = the filing company on a permit; Owner / Site Contact = the owner; "Optional additional
+  …" and repeated headings left empty; a look-up section is the planner's) and fills Corvallis's
+  **Full Name / Name of Business** boxes (`ContactIdentity.fullName/companyName` ←
+  installerContactName / installerCompanyName). A dialog that refuses its save is reported as
+  refused (`contact_dialog_refused`), an account contact the portal attaches instead is EDITED to
+  the identity, and a **guard before any contact dialog's Continue** (`enforceContactDialogIdentity`)
+  makes every name/business/address/e-mail/phone box the section's identity (prefilled values
+  included), recording each correction bound. Re-open refusal is scoped to sections the pass
+  settled, so Step 4's own Inspection Contact stays the planner's/pass's to fill.
+- **Contacts (replay):** `recipeReplayBinding` **R10** rebinds a dialog step bound to the other
+  identity's key (Applicant dialog `homeownerName` → `installerContactName`; Owner dialog
+  `installerEmail` → `homeownerEmail`; an Owner's business box replays blank). And the replay's
+  own dialog guard (`recipeAdapter.trackContactBlock`) sets every contact box of a dialog opened
+  by a section's Add New / Select from Account / Edit to this project's section identity before
+  the dialog's Continue — the recipe saved from the live run opens the Applicant dialog through
+  Select from Account, whose account prefill is the homeowner, and records only the phone. A
+  framed step or a contact opener (`contactRoles.isContactOpener`, the one predicate) is no longer
+  held to "the page must move" (that recipe stopped at `advance: Select from Account`) — a
+  deliberate narrowing of the desync guard for those clicks; `pageEffect` now counts visible
+  iframes, so a dialog opening/saving reads as an in-page action. Look-up dialogs are never touched.
+- **Service lines:** one count (`batteryServiceFeeder.serviceLineQuantities`): an MPU
+  (`serviceScope.hasMpuScope`, now the ONE copy) adds a line in its main's tier (≤200 A / 201-400 A;
+  the MAIN, never the bus), plus the battery rule (battery + MPU-200 = 2 — a judgement call, see the
+  test). Portal keys `feeLineQuantity:servicesFeeders200A` / `…201to400A`, the PDF services row and
+  the fee sheet read it. Labels: `shared/src/serviceLineLabels.ts` ("Service 0-200 amps (qty)",
+  Marion's "Services 200 amps or less"). The learn types a known count into a service box the
+  planner left; a replay types it into a service box the recipe never recorded (same page as the
+  kVA tier).
+- **Verify live:** the next Corvallis electrical replay/learn — Applicant card = the company's
+  contact; Installation Specifics "Service 0-200 amps (qty)" = 1 on an MPU-to-200 A job.
+- Open: the fee sheet prices a 201-400 A line only when a schedule stores that row (else it is
+  listed unpriced and the total stays unresolved); a >400 A upgrade is always unpriced; the Coos
+  PDF's "400 AMP QTY" row is not mapped; `hasMpuScope` reads only the scope fields
+  (projectDescriptionText/description/scopeText/electricalCalcText/sitePlanNotesText/mpu/
+  serviceUpgrade) — an upgrade stated only on the SLD sheet text is not seen.
+
 ## FEES VERIFY THEMSELVES WHERE A MACHINE CAN, AND A PERSON CONFIRMS IN ONE CLICK (2026-09-27, fees-verify)
 
 Operator: "there is no place to verify them. Can we just have it verify itself or something?"

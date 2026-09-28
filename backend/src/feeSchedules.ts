@@ -67,9 +67,12 @@ import { resolvePermitPath, pathWordingScope, pathWordingContradicts } from "./p
 import type { PermitPath, PermitPathInputs } from "./permitPath";
 import { resolveValuation } from "./valuation";
 import {
-  batteryStatus, feeFilingIsElectrical, isServiceFeeder200Label,
+  feeFilingIsElectrical, isServiceFeeder200Label, isServiceFeeder400Label, serviceLineCounts,
   SERVICE_FEEDER_200A_LABEL, SERVICE_FEEDER_CHARGE_KIND,
   SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
+  SERVICE_FEEDER_400A_LABEL, SERVICE_FEEDER_400A_CHARGE_KIND,
+  SERVICE_FEEDER_400A_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_400A_STATE_SURCHARGE_KIND,
+  SERVICE_FEEDER_UPGRADE_UNBILLED_KIND, type ServiceLineCounts,
 } from "./batteryServiceFeeder";
 // recordLlmCall, NOT a new accounting log. The fee researcher is the single most
 // expensive model operation in this system — up to twelve Opus turns with web
@@ -3272,7 +3275,7 @@ export function feeLinesForProject(
       : evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, valuationIsEstimate, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot),
         // The FILING is the row asked for (a hopped city row is still the electrical
         // permit), not the collecting authority's row it hops to.
-        batteryServiceFeeder: batteryServiceFeederApplies(project, track, row.discipline) });
+        serviceFeeder: serviceFeederLinesFor(project, track, row.discipline) });
     lines.push({
       discipline: row.discipline,
       authority: (track === "nem" ? schedule.utility : schedule.ahj) || (track === "nem" ? row.utility : row.ahj),
@@ -3963,16 +3966,17 @@ function permitCharges(
 function ancillaryCharges(
   schedule: FeeScheduleRecord,
   b: FeeBracket,
-  inputs: { electricalReviewRequired?: boolean; kw?: number | null; batteryServiceFeeder?: boolean },
+  inputs: { electricalReviewRequired?: boolean; kw?: number | null; serviceFeeder?: ServiceLineCounts | null },
 ): FeeChargeBreakdown[] {
   const out: FeeChargeBreakdown[] = [];
   for (const c of b.ancillaryCharges ?? []) {
     if (c.appliesTo && c.appliesTo !== schedule.discipline) continue;
-    // A battery job's services/feeders <=200A line is emitted ONCE, by
-    // serviceFeederCharges below, which knows the answer to the condition this
-    // stored charge may carry ("when the job includes a service"). Listing it here
-    // too would bill it twice, or hold it open as a question already answered.
-    if (inputs.batteryServiceFeeder && isServiceFeeder200Label(c.label)) continue;
+    // A job's services/feeders lines (a battery's <=200A line, a service upgrade's line in
+    // its tier) are emitted ONCE, by serviceFeederCharges below, which knows the answer to
+    // the condition this stored charge may carry ("when the job includes a service").
+    // Listing it here too would bill it twice, or hold it open as a question already answered.
+    if (inputs.serviceFeeder?.le200 && isServiceFeeder200Label(c.label)) continue;
+    if (inputs.serviceFeeder?.t201to400 && isServiceFeeder400Label(c.label)) continue;
     // Rule 2 above: a percentage is a function of the BASE permit fee, evaluated
     // here and rounded here, never a product somebody stored.
     const amount = c.percent != null ? round2(b.feeUsd * c.percent / 100) : round2(c.amountUsd ?? 0);
@@ -4027,20 +4031,22 @@ function ancillaryCharges(
   return out;
 }
 
-/** DOES A BATTERY ADD THE SERVICES/FEEDERS <=200A LINE TO THIS FILING?
+/** WHICH SERVICES/FEEDERS LINES DOES THIS FILING CARRY?
  *
- *  Operator rule 2026-09-24 — see batteryServiceFeeder.ts. Both inputs come from
- *  that module's one predicate each: the battery from the parser snapshot
- *  (tri-state; only "yes" adds anything — an unknown adds nothing and claims
- *  nothing), the filing from the discipline this line is FOR. */
-function batteryServiceFeederApplies(
+ *  Operator rule 2026-09-24 (a battery adds one <=200A line) and a service upgrade's
+ *  own line (live Corvallis 2026-09-28) — see batteryServiceFeeder.serviceLineCounts,
+ *  the SAME count the portal's boxes and the electrical PDF read, so the three
+ *  surfaces cannot disagree. The filing comes from the discipline this line is FOR:
+ *  none on a structural filing or an interconnection application. */
+function serviceFeederLinesFor(
   project: Pick<ProjectRecord, "parserSnapshot">,
   track: FeeTrack,
   filing: FeeDiscipline,
-): boolean {
-  if (track !== "permit") return false;
-  if (!feeFilingIsElectrical(track, filing)) return false;
-  return batteryStatus(project.parserSnapshot as Record<string, unknown> | null | undefined) === "yes";
+): ServiceLineCounts | null {
+  if (track !== "permit") return null;
+  if (!feeFilingIsElectrical(track, filing)) return null;
+  const counts = serviceLineCounts(project.parserSnapshot as Record<string, unknown> | null | undefined);
+  return counts.le200 || counts.t201to400 || counts.upgradeTierUnbilled ? counts : null;
 }
 
 /** Where a stored schedule records the services/feeders <=200A amount, if it
@@ -4051,10 +4057,11 @@ function batteryServiceFeederApplies(
 function storedServiceFeederAmount(
   schedule: FeeScheduleRecord,
   b: FeeBracket,
+  isTierLabel: (label: string | null | undefined) => boolean = isServiceFeeder200Label,
 ): { amountUsd: number; quote: string; sourceUrl: string } | null {
   for (const c of b.ancillaryCharges ?? []) {
     if (c.appliesTo && c.appliesTo !== schedule.discipline) continue;
-    if (!isServiceFeeder200Label(c.label)) continue;
+    if (!isTierLabel(c.label)) continue;
     const amount = Number(c.amountUsd);
     if (c.amountUsd == null || !Number.isFinite(amount) || amount < 0) continue;
     return { amountUsd: round2(amount), quote: clean(c.matchedLine) || clean(c.quote), sourceUrl: clean(c.sourceUrl) || schedule.sourceUrl };
@@ -4062,7 +4069,7 @@ function storedServiceFeederAmount(
   for (const other of schedule.brackets) {
     if (other === b) continue;
     if (other.minKw != null || other.maxKw != null || other.minValuationUsd != null || other.maxValuationUsd != null) continue;
-    if (!isServiceFeeder200Label(other.label)) continue;
+    if (!isTierLabel(other.label)) continue;
     const amount = Number(other.feeUsd);
     if (!Number.isFinite(amount) || amount < 0) continue;
     return { amountUsd: round2(amount), quote: bracketEvidence(schedule, other), sourceUrl: clean(other.corroboration?.sourceUrl) || schedule.sourceUrl };
@@ -4070,7 +4077,8 @@ function storedServiceFeederAmount(
   return null;
 }
 
-/** THE BATTERY'S SERVICES/FEEDERS <=200A LINE, as its own charge on the filing.
+/** THE FILING'S SERVICES/FEEDERS LINES (a battery's <=200A line, a service upgrade's
+ *  line in its tier — serviceLineCounts), each as its own charge on the filing.
  *
  *  `partOfLineFee: false`, so resolutionFrom adds it to the filing's total and
  *  the permit line's own amount (what a form's kVA row and a portal's kVA box ask
@@ -4086,61 +4094,111 @@ function storedServiceFeederAmount(
 function serviceFeederCharges(
   schedule: FeeScheduleRecord,
   b: FeeBracket,
-  inputs: { batteryServiceFeeder?: boolean },
+  inputs: { serviceFeeder?: ServiceLineCounts | null },
 ): FeeChargeBreakdown[] {
-  if (!inputs.batteryServiceFeeder) return [];
-  const label = `${SERVICE_FEEDER_200A_LABEL} (battery/ESS on the electrical permit)`;
-  const stored = storedServiceFeederAmount(schedule, b);
-  if (!stored) {
-    const who = noPipe(clean(schedule.ahj)) || "this jurisdiction";
-    return [{
-      label,
-      kind: SERVICE_FEEDER_CHARGE_KIND,
+  const lines = inputs.serviceFeeder;
+  if (!lines) return [];
+  const who = noPipe(clean(schedule.ahj)) || "this jurisdiction";
+  const out: FeeChargeBreakdown[] = [];
+  // WHY each line is owed, in the charge's own words: the operator's battery rule, the plan
+  // set's service upgrade, or both (two <=200A lines — the battery's and the service's).
+  const le200Causes = [
+    lines.battery ? "a battery/ESS" : "",
+    lines.upgrade && lines.upgradeAmps != null && lines.upgradeAmps <= 200 ? `a service upgrade to a ${lines.upgradeAmps} A main` : "",
+  ].filter(Boolean);
+  const tiers: Array<{
+    count: number; label: string; kind: string; stateKind: string; communityKind: string;
+    missing: string; cause: string; isTierLabel: (label: string | null | undefined) => boolean;
+  }> = [
+    {
+      count: lines.le200,
+      label: `${SERVICE_FEEDER_200A_LABEL} (${lines.battery && le200Causes.length === 1 ? "battery/ESS" : le200Causes.length === 2 ? "battery/ESS + service upgrade" : "service upgrade"} on the electrical permit${lines.le200 > 1 ? `, ${lines.le200} lines` : ""})`,
+      kind: SERVICE_FEEDER_CHARGE_KIND, stateKind: SERVICE_FEEDER_STATE_SURCHARGE_KIND, communityKind: SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND,
+      missing: "SERVICES/FEEDERS <=200A AMOUNT MISSING",
+      cause: `${le200Causes.join(" and ")} on an electrical permit ${lines.le200 > 1 ? `add ${lines.le200}` : "adds one"} "${SERVICE_FEEDER_200A_LABEL}" line${lines.le200 > 1 ? "s" : ""}${lines.battery ? " (operator rule 2026-09-24)" : ""}`,
+      isTierLabel: isServiceFeeder200Label,
+    },
+    {
+      count: lines.t201to400,
+      label: `${SERVICE_FEEDER_400A_LABEL} (service upgrade on the electrical permit)`,
+      kind: SERVICE_FEEDER_400A_CHARGE_KIND, stateKind: SERVICE_FEEDER_400A_STATE_SURCHARGE_KIND, communityKind: SERVICE_FEEDER_400A_COMMUNITY_SURCHARGE_KIND,
+      missing: "SERVICES/FEEDERS 201-400A AMOUNT MISSING",
+      cause: `a service upgrade to a ${lines.upgradeAmps ?? "201-400"} A main on an electrical permit adds one "${SERVICE_FEEDER_400A_LABEL}" line`,
+      isTierLabel: isServiceFeeder400Label,
+    },
+  ];
+  for (const tier of tiers) {
+    if (!(tier.count > 0)) continue;
+    const stored = storedServiceFeederAmount(schedule, b, tier.isTierLabel);
+    if (!stored) {
+      out.push({
+        label: tier.label,
+        kind: tier.kind,
+        amountUsd: null,
+        partOfLineFee: false,
+        conditional: false,
+        // ACTIONABLE CLAUSE FIRST and under 400 characters (normalizeScheduleResult
+        // slices there); no " | " (the note-segment separator).
+        reason: `${tier.missing} — ${tier.cause}, and ${who}'s stored schedule does not `
+          + `record that line's amount. Nothing is quoted for it and the total stays UNRESOLVED rather than smaller: `
+          + `enter the amount from the published schedule or the portal's own fee.`,
+        quote: "",
+        sourceUrl: "",
+      });
+      continue;
+    }
+    // One schedule amount PER LINE: two <=200A lines (a battery and a service) bill it twice.
+    const amount = round2(stored.amountUsd * tier.count);
+    out.push({
+      label: tier.label,
+      kind: tier.kind,
+      amountUsd: amount,
+      partOfLineFee: false,
+      conditional: false,
+      reason: "",
+      quote: tier.count > 1 ? `${stored.quote} — ${tier.count} lines` : stored.quote,
+      sourceUrl: stored.sourceUrl,
+    });
+    if (b.stateSurcharge) {
+      out.push({
+        label: `State surcharge (${b.stateSurcharge.percent}% of the services/feeders fee)`,
+        kind: tier.stateKind,
+        amountUsd: round2(amount * b.stateSurcharge.percent / 100),
+        partOfLineFee: false,
+        conditional: false,
+        reason: "",
+        quote: clean(b.stateSurcharge.quote),
+        sourceUrl: clean(b.stateSurcharge.sourceUrl),
+      });
+    }
+    if (b.communitySurcharge) {
+      out.push({
+        label: `Community surcharge (${b.communitySurcharge.percent}% of the services/feeders fee)`,
+        kind: tier.communityKind,
+        amountUsd: round2(amount * b.communitySurcharge.percent / 100),
+        partOfLineFee: false,
+        conditional: false,
+        reason: "",
+        quote: clean(b.communitySurcharge.quote),
+        sourceUrl: clean(b.communitySurcharge.sourceUrl),
+      });
+    }
+  }
+  // A SERVICE UPGRADE NEITHER TIER COVERS (its size unknown, or over 400 A) is still a
+  // service line this filing owes. Listed UNPRICED, so the total stays unresolved rather
+  // than smaller — never quietly left out.
+  if (lines.upgradeTierUnbilled) {
+    out.push({
+      label: `Services or feeders: service upgrade (${lines.upgradeAmps != null ? `${lines.upgradeAmps} A main` : "service size unknown"})`,
+      kind: SERVICE_FEEDER_UPGRADE_UNBILLED_KIND,
       amountUsd: null,
       partOfLineFee: false,
       conditional: false,
-      // ACTIONABLE CLAUSE FIRST and under 400 characters (normalizeScheduleResult
-      // slices there); no " | " (the note-segment separator).
-      reason: `SERVICES/FEEDERS <=200A AMOUNT MISSING — a battery/ESS on an electrical permit adds one `
-        + `"${SERVICE_FEEDER_200A_LABEL}" line (operator rule 2026-09-24), and ${who}'s stored schedule does not `
-        + `record that line's amount. Nothing is quoted for it and the total stays UNRESOLVED rather than smaller: `
-        + `enter the amount from the published schedule or the portal's own fee.`,
+      reason: `SERVICE UPGRADE TIER UNKNOWN — the plan set upgrades the service${lines.upgradeAmps != null ? ` to a ${lines.upgradeAmps} A main, a tier this sheet does not price` : ", and its main breaker size is not on file"}, `
+        + `so the services/feeders line it adds on ${who}'s electrical permit cannot be priced. The total stays UNRESOLVED rather than smaller: `
+        + `confirm the service size and enter the line from the published schedule or the portal's own fee.`,
       quote: "",
       sourceUrl: "",
-    }];
-  }
-  const out: FeeChargeBreakdown[] = [{
-    label,
-    kind: SERVICE_FEEDER_CHARGE_KIND,
-    amountUsd: stored.amountUsd,
-    partOfLineFee: false,
-    conditional: false,
-    reason: "",
-    quote: stored.quote,
-    sourceUrl: stored.sourceUrl,
-  }];
-  if (b.stateSurcharge) {
-    out.push({
-      label: `State surcharge (${b.stateSurcharge.percent}% of the services/feeders fee)`,
-      kind: SERVICE_FEEDER_STATE_SURCHARGE_KIND,
-      amountUsd: round2(stored.amountUsd * b.stateSurcharge.percent / 100),
-      partOfLineFee: false,
-      conditional: false,
-      reason: "",
-      quote: clean(b.stateSurcharge.quote),
-      sourceUrl: clean(b.stateSurcharge.sourceUrl),
-    });
-  }
-  if (b.communitySurcharge) {
-    out.push({
-      label: `Community surcharge (${b.communitySurcharge.percent}% of the services/feeders fee)`,
-      kind: SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND,
-      amountUsd: round2(stored.amountUsd * b.communitySurcharge.percent / 100),
-      partOfLineFee: false,
-      conditional: false,
-      reason: "",
-      quote: clean(b.communitySurcharge.quote),
-      sourceUrl: clean(b.communitySurcharge.sourceUrl),
     });
   }
   return out;
@@ -4151,7 +4209,7 @@ function serviceFeederCharges(
  *  evaluations would drift, and the boundary is the whole point of the table. */
 function evaluateSchedule(
   schedule: FeeScheduleRecord,
-  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; valuationIsEstimate?: boolean; track?: FeeTrack; permitPath?: FeePathInput; electricalReviewRequired?: boolean; batteryServiceFeeder?: boolean },
+  inputs: { kw: number | null; kwSource: string; valuationUsd: number | null; valuationIsEstimate?: boolean; track?: FeeTrack; permitPath?: FeePathInput; electricalReviewRequired?: boolean; serviceFeeder?: ServiceLineCounts | null },
 ): { feeUsd: number | null; baseFeeUsd?: number; stateSurchargeUsd?: number; communitySurchargeUsd?: number; bracketLabel: string; bracketQuote: string; corroboration?: FeeBracketCorroboration; reason: string; charges?: FeeChargeBreakdown[]; fromEstimatedValuation?: boolean } {
   const miss = (reason: string) => ({ feeUsd: null, bracketLabel: "", bracketQuote: "", reason });
   const hit = (b: FeeBracket) => {
@@ -4429,7 +4487,7 @@ function lineFor(
   // Same ternary, same reason as feeLinesForProject — see the note there.
   const permitPath: FeePathInput = inputs ? inputs.permitPath : pathForProject(project, track);
   const evaluated = evaluateSchedule(schedule, { kw, kwSource: which, valuationUsd, valuationIsEstimate, track, permitPath, electricalReviewRequired: knownElectricalReviewRequired(project.parserSnapshot),
-    batteryServiceFeeder: batteryServiceFeederApplies(project, track, filing) });
+    serviceFeeder: serviceFeederLinesFor(project, track, filing) });
   return {
     discipline: schedule.discipline,
     authority: track === "nem" ? schedule.utility : schedule.ahj,

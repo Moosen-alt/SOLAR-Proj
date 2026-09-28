@@ -33,6 +33,7 @@ import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, recipeDisci
 import { permitAnswerForTrack, permitProcessFor } from "./permitProcess";
 import { utilityTrackPresentation } from "./utilityFilingLookup";
 import { nowIso } from "./time";
+import { hasMpuScope } from "./serviceScope";
 import { randomUUID } from "node:crypto";
 
 interface Row { [key: string]: unknown }
@@ -82,16 +83,8 @@ export interface SubmittalTrackView extends SubmittalTrack {
  *  permit_type column) narrow through this. */
 export const SUBMITTAL_TRACK_TYPES = Object.keys(TRACK_LABELS) as SubmittalTrackType[];
 
-// Main-panel / service-upgrade scope detection — mirrors the reviewer's MPU callout.
-// Keyed on upgrade language (not "derate", a 705.12 remedy that isn't itself an MPU).
-function hasMpuScope(project: ProjectRecord): boolean {
-  const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
-  const text = [
-    snap.projectDescriptionText, snap.description, snap.scopeText, snap.electricalCalcText,
-    snap.sitePlanNotesText, snap.mpu, snap.serviceUpgrade,
-  ].map((v) => (v == null ? "" : String(v))).join(" ").toLowerCase();
-  return /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/.test(text);
-}
+// Main-panel / service-upgrade scope detection: the ONE predicate (serviceScope.ts), which the
+// reviewer's MPU callout and the electrical fee lines read too.
 
 // THE MPU RIDES ON THE ELECTRICAL PERMIT (operator ruling 2026-09-28, City of Corvallis: the main
 // panel upgrade went on the electrical permit as its "Service 0-200 amps" line — "not a separate

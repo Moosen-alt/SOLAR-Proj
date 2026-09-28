@@ -10,6 +10,8 @@ import { feeBracketCoverage, feeBracketCoverageMessage, decideFeeTier, FEE_TIER_
 /** The pause's reason when a recorded kVA tier step finds no tier box on its page (close MF2). */
 const FEE_TIER_NO_BOX_REASON = "the recorded kVA tier box was not found on this page and no kVA-labelled box could be read";
 import { collectPortalErrorBanner } from "../safeAction";
+import { SERVICE_FEEDER_200A_FIELD, SERVICE_FEEDER_400A_FIELD, isServiceFeeder200Label, isServiceFeeder400Label } from "../../../shared/src/serviceLineLabels";
+import { contactFieldKind, contactKeyFor, contactRoleOfStep, isContactOpener, type ContactFieldKind, type ContactRole, type ContactTrack } from "../../../shared/src/contactRoles";
 import { structureTypeMeaning } from "../../../backend/src/permitProcess";
 
 // A RECORDED ANSWER THAT DESCRIBES A PROJECT OR A PERSON BELONGS TO THAT PROJECT.
@@ -435,6 +437,10 @@ export class RecipeAdapter extends BasePortalAdapter {
   /** The tier box this run ticked, per page identity (a second recorded tier step on the same page
    *  re-decides to the same box and types nothing twice). */
   private feeTierFilled = new Map<string, string>();
+  /** Pages whose service-line boxes were already read (fillUnrecordedServiceBoxes). */
+  private serviceBoxesRead = new Set<string>();
+  /** The contact section whose dialog is open (trackContactBlock), or null. */
+  private contactBlock: { role: ContactRole | null } | null = null;
   /** Wall-clock marks of the phases before the first recorded step (open, goto, login) — the part
    *  of a run the trace never covered (live run 99baa5d0 spent ~3 min there with no evidence). */
   private phaseTimings: Array<{ phase: string; ms: number; note?: string }> = [];
@@ -3314,6 +3320,9 @@ export class RecipeAdapter extends BasePortalAdapter {
   private static readonly WRITE_ACTIONS: ReadonlySet<string> = new Set(["fill", "select", "check", "uncheck", "upload"]);
 
   private async executeStepInner(step: RecipeStep, pastReview: boolean): Promise<boolean> {
+    // ONE CONTACT, ONE IDENTITY at replay (see trackContactBlock) — before the step runs, so a
+    // dialog Continue is preceded by the dialog made the section identity.
+    await this.trackContactBlock(step).catch(() => null);
     // AN ADDRESS-ROW STEP HAS NO SELECTOR WORTH TRYING, so do not spend 30 seconds proving
     // it. The generic pass records a marker that exists only during the learn click - by
     // design, so the matcher gets its turn - and Playwright treats a selector that resolves
@@ -5230,7 +5239,15 @@ export class RecipeAdapter extends BasePortalAdapter {
       const text = (document.body?.innerText || "").replace(/\s+/g, " ");
       let h = 0;
       for (let i = 0; i < text.length; i++) { h = ((h << 5) - h + text.charCodeAt(i)) | 0; }
-      return `${shown}|${options}|${rows}|${text.length}:${h}|${vals.slice(0, 4000)}`;
+      // AND THE DIALOGS: a contact section's "Select from Account" / "Add New" opens its form in an
+      // iframe, and a dialog's Continue closes it — neither touches the main page's inputs, rows or
+      // text, so both read as "changed nothing" (live Corvallis electrical recipe, 2026-09-28).
+      // Which frames are showing, and what they show (the path, no query), is the effect.
+      const dialogs = (Array.from(document.querySelectorAll("iframe")) as HTMLIFrameElement[])
+        .filter((f) => { const fr = f.getBoundingClientRect(); return fr.width > 0 && fr.height > 0; })
+        .map((f) => `${f.getAttribute("name") || f.id || ""}@${String(f.getAttribute("src") || "").split("?")[0]}`)
+        .join(",");
+      return `${shown}|${options}|${rows}|${text.length}:${h}|${dialogs}|${vals.slice(0, 4000)}`;
     }).catch(() => "") as Promise<string>;
   }
 
@@ -5288,7 +5305,16 @@ export class RecipeAdapter extends BasePortalAdapter {
     // the live portal: PacifiCorp refuses silently, so six advances "left the page
     // unchanged" and were all waved through as in-page actions. Requiring EVERY click to
     // move the page is too strong and broke the Accela replay smoke outright.
-    const isAdvance = /^advance\b/i.test(String(step.note ?? "").trim());
+    // A CONTACT DIALOG IS NOT A PAGE. The learner records a planner's click on a section's opener
+    // ("Select from Account", "Add New", "Edit") and a dialog's own "Continue" as "advance: …"
+    // (live City of Corvallis electrical, 2026-09-28) — but opening, paging and saving a dialog in
+    // its iframe never changes the MAIN page's identity, so every replay of that recipe stopped at
+    // "the portal did not advance". A step that targets a dialog frame, or that opens a contact
+    // section's dialog, is an in-page action; the main page's own advance ("Continue Application")
+    // is still held to moving.
+    const words = `${step.selector?.name ?? ""} ${step.selector?.text ?? ""} ${step.selector?.label ?? ""} ${step.note ?? ""}`;
+    const dialogStep = !!step.selector?.frame || isContactOpener(words);
+    const isAdvance = /^advance\b/i.test(String(step.note ?? "").trim()) && !dialogStep;
     if (!blockers.length && !isAdvance) {
       // ASK THE SECOND QUESTION BEFORE GIVING UP ON THE ANSWER. The page did not move; did
       // anything happen at all? A total that filled, a row that appeared, an option list that
@@ -6100,6 +6126,8 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  step for an already-ticked page); "normal" = this page prints no kVA box at all — the recorded
    *  step takes its ordinary resolve path, UNDER A PROVISIONAL STOP (see below). */
   private async fillFeeTierFromPage(step: RecipeStep): Promise<boolean | "normal"> {
+    // The service-line rows print on the same fee-items page as the kVA tier (F1b).
+    await this.fillUnrecordedServiceBoxes().catch(() => null);
     const boxes = await this.readTierBoxes();
     if (!boxes.length) {
       // A RECORDED TIER STEP THAT FINDS NO kVA-LABELLED BOX (close MF2). The recipe KNOWS this page
@@ -6182,6 +6210,175 @@ export class RecipeAdapter extends BasePortalAdapter {
       }
     }
     return true;
+  }
+
+  /** ONE CONTACT, ONE IDENTITY — AT REPLAY. The replay twin of the learner's dialog guard
+   *  (autoLearnAdapter.enforceContactDialogIdentity). R10 (recipeReplayBinding) can only rebind
+   *  steps that EXIST; the Corvallis electrical recipe saved on 2026-09-28 opens the Applicant
+   *  dialog through Select from Account, whose account contact PREFILLS the homeowner's name,
+   *  address and e-mail, and records only the phone — so the replay would save the same mix.
+   *
+   *  So: a main-page click on a contact section's opener (Add New / Select from Account / Edit)
+   *  opens a block whose identity is the section's (the step's role mark, its ACA control id, its
+   *  recorded heading — shared contactRoles.contactRoleOfStep); any other main-page step closes it.
+   *  Before the block's dialog Continue/Save is clicked, every name / business / address / e-mail /
+   *  phone box in that dialog is set to THIS project's value for the section's identity, and a box
+   *  still holding the other identity's value for a part this identity lacks is cleared. A block
+   *  whose section says nothing is left exactly as recorded. */
+  private async trackContactBlock(step: RecipeStep): Promise<void> {
+    const frame = step.selector?.frame;
+    const words = `${step.selector?.name ?? ""} ${step.selector?.text ?? ""} ${step.selector?.label ?? ""} ${step.note ?? ""}`;
+    const track: ContactTrack = this.recipe.scopeType === "utility" ? "nem" : "permit";
+    if (!frame) {
+      if (step.action === "click" && isContactOpener(words)) {
+        this.contactBlock = { role: contactRoleOfStep(step, { track }) };
+      } else if (step.action !== "waitFor") {
+        this.contactBlock = null;
+      }
+      return;
+    }
+    if (step.action === "click" && this.contactBlock?.role && /\b(?:continue|save|submit|ok)\b/i.test(words)) {
+      await this.enforceReplayContactDialog(frame, this.contactBlock.role).catch(() => 0);
+    }
+  }
+
+  private async enforceReplayContactDialog(frameName: string, role: ContactRole): Promise<number> {
+    const page = this.page;
+    if (!page || typeof page.frame !== "function") return 0;
+    const frame = page.frame({ name: frameName });
+    if (!frame || typeof frame.evaluate !== "function") return 0;
+    const boxes = await frame.evaluate(() => {
+      // NO named functions in here (keepNames → __name).
+      const out: Array<{ id: string; label: string; tag: string; value: string; text: string }> = [];
+      const els = Array.from(document.querySelectorAll("input:not([type]), input[type='text'], input[type='email'], input[type='tel'], select")) as Array<HTMLInputElement | HTMLSelectElement>;
+      for (const el of els) {
+        if (el.disabled || (el as HTMLInputElement).readOnly) continue;
+        const r = el.getBoundingClientRect();
+        const st = window.getComputedStyle(el);
+        if (!(r.width > 0 && r.height > 0) || st.display === "none" || st.visibility === "hidden") continue;
+        const id = el.id || "";
+        if (!id) continue;
+        let label = "";
+        const lab = document.querySelector(`label[for="${(window as unknown as { CSS: { escape: (s: string) => string } }).CSS.escape(id)}"]`) as HTMLElement | null;
+        if (lab) label = lab.innerText || lab.textContent || "";
+        if (!label.trim()) label = el.getAttribute("aria-label") || el.getAttribute("title") || "";
+        label = label.replace(/\s+/g, " ").trim();
+        if (!label) continue;
+        const isSelect = el.tagName === "SELECT";
+        const text = isSelect ? String(((el as HTMLSelectElement).options[(el as HTMLSelectElement).selectedIndex] || { textContent: "" }).textContent || "").trim() : "";
+        out.push({ id, label, tag: isSelect ? "select" : "input", value: String(el.value || ""), text });
+      }
+      return out;
+    }).catch(() => [] as Array<{ id: string; label: string; tag: string; value: string; text: string }>);
+    const kinds = (Array.isArray(boxes) ? boxes : [])
+      .map((b) => ({ ...b, kind: contactFieldKind(b.label) }))
+      .filter((b): b is typeof b & { kind: ContactFieldKind } => b.kind !== null);
+    if (new Set(kinds.map((b) => b.kind)).size < 2) return 0;
+    const other: ContactRole = role === "company" ? "owner" : "company";
+    const norm = (kind: ContactFieldKind, s: string) => kind === "phone" ? s.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "")
+      : kind === "zip" ? s.replace(/\D/g, "").slice(0, 5)
+      : s.toLowerCase().replace(/[^a-z0-9@.]/g, "");
+    const holds = (kind: ContactFieldKind, b: { value: string; text: string }, v: string) =>
+      [b.value, b.text].some((x) => x.trim() && norm(kind, x) === norm(kind, v));
+    let fixed = 0;
+    for (const b of kinds) {
+      const key = contactKeyFor(role, b.kind);
+      const want = key ? String(this.fieldValues[key] ?? "").trim() : "";
+      const otherKey = contactKeyFor(other, b.kind);
+      const otherVal = otherKey ? String(this.fieldValues[otherKey] ?? "").trim() : "";
+      const loc = frame.locator(`[id="${b.id}"]`).first();
+      if (!want) {
+        if (b.tag !== "select" && otherVal && holds(b.kind, b, otherVal)) {
+          if (await loc.fill("", { timeout: FILL_TIMEOUT_MS }).then(() => true).catch(() => false)) fixed++;
+        }
+        continue;
+      }
+      if (holds(b.kind, b, want)) continue;
+      let ok = false;
+      if (b.tag === "select") {
+        ok = await loc.selectOption(want).then(() => true).catch(async () => loc.selectOption({ label: want }).then(() => true).catch(() => false));
+      } else if (b.kind === "phone" || b.kind === "zip") {
+        // Masked boxes validate KEYSTROKES (the learner's typeMasked).
+        const typed = b.kind === "zip" ? want.replace(/\D/g, "").slice(0, 5) || want : want;
+        await loc.fill("", { timeout: FILL_TIMEOUT_MS }).catch(() => null);
+        ok = await loc.pressSequentially(typed, { delay: 25 }).then(() => true).catch(() => false);
+      } else {
+        ok = await loc.fill(want, { timeout: FILL_TIMEOUT_MS }).then(() => true).catch(() => false);
+      }
+      if (ok) { fixed++; await loc.blur?.().catch(() => null); }
+    }
+    if (fixed) {
+      const who = role === "company" ? "the filing company" : "the property owner";
+      this.agingNotes.push(`contact dialog made ONE identity (${who}) before its Continue: ${fixed} box(es) set to this project's ${who} (the recorded fills or the portal's prefill held another identity's values)`);
+    }
+    return fixed;
+  }
+
+  /** F1b — A SERVICE-LINE QUANTITY BOX THE RECIPE NEVER RECORDED is read off the page.
+   *
+   *  Live City of Corvallis electrical learn, 2026-09-28: the fee-items page prints "Service 0-200
+   *  amps (qty)" beside the kVA row, the planner filled the kVA row and left the service box at the
+   *  page's own 0 — so the recipe saved from that run has NO step for it, and every replay would
+   *  leave it 0 on a job whose plan set upgrades the service. The kVA tier is already decided from
+   *  the page's own labels (F1); the service rows sit on the same page, and the label grammar is the
+   *  ONE the backend binds recorded boxes with (shared serviceLineLabels). So, once per page that
+   *  carries a recorded kVA tier step: every visible text box whose own label names a services
+   *  tier this recipe has NO bound step for is typed with THIS project's count
+   *  (fieldValues — batteryServiceFeeder.serviceLineQuantities). A count nobody knows ("") types
+   *  nothing and says so; a recorded, bound step answers for its own box. */
+  private async fillUnrecordedServiceBoxes(): Promise<void> {
+    if (!this.page || typeof this.page.evaluate !== "function") return;
+    const pageKey = (await this.pageIdentity().catch(() => "")) || "page";
+    if (this.serviceBoxesRead.has(pageKey)) return;
+    this.serviceBoxesRead.add(pageKey);
+    const recorded = new Set(this.recipe.steps.map((s) => String(s.field ?? "")).filter(Boolean));
+    const boxes = await this.page.evaluate(() => {
+      const out: Array<{ id: string; label: string }> = [];
+      const inputs = Array.from(document.querySelectorAll("input:not([type]), input[type='text'], input[type='number'], input[type='tel']")) as HTMLInputElement[];
+      for (const el of inputs) {
+        if (el.disabled || el.readOnly) continue;
+        const r = el.getBoundingClientRect();
+        const st = window.getComputedStyle(el);
+        if (!(r.width > 0 && r.height > 0) || st.display === "none" || st.visibility === "hidden") continue;
+        const id = el.id || "";
+        if (!id) continue;
+        let label = "";
+        const lab = document.querySelector(`label[for="${(window as unknown as { CSS: { escape: (s: string) => string } }).CSS.escape(id)}"]`) as HTMLElement | null;
+        if (lab) label = lab.innerText || lab.textContent || "";
+        if (!label.trim()) label = el.getAttribute("aria-label") || el.getAttribute("fieldname") || "";
+        if (!label.trim()) { const wrap = el.closest("label") as HTMLElement | null; if (wrap) label = wrap.innerText || ""; }
+        label = label.replace(/\s+/g, " ").trim();
+        if (!label || label.length > 160 || !/servic/i.test(label)) continue;
+        out.push({ id, label });
+      }
+      return out;
+    }).catch(() => [] as Array<{ id: string; label: string }>) as Array<{ id: string; label: string }>;
+    for (const box of Array.isArray(boxes) ? boxes : []) {
+      const key = isServiceFeeder200Label(box.label) ? SERVICE_FEEDER_200A_FIELD : isServiceFeeder400Label(box.label) ? SERVICE_FEEDER_400A_FIELD : "";
+      if (!key || recorded.has(key)) continue;
+      const label = box.label.replace(/:\s*$/, "").slice(0, 70);
+      if (!Object.prototype.hasOwnProperty.call(this.fieldValues, key)) continue; // an older backend: no count at all
+      const value = String(this.fieldValues[key] ?? "").trim();
+      if (!value) {
+        this.driftWarnings.push(`"${label}": this project's service-line count is not known (no parsed service scope or battery answer) — left as the page shows it; confirm before submitting`);
+        continue;
+      }
+      const loc = this.page.locator(`[id="${box.id}"]`).first();
+      const current = String((await loc.inputValue().catch(() => "")) ?? "").trim();
+      if (current === value) {
+        if (!this.fieldsVerified.includes(label)) this.fieldsVerified.push(label);
+        continue;
+      }
+      const typed = await loc.fill(value, { timeout: FILL_TIMEOUT_MS }).then(() => true).catch(() => false);
+      if (typed) await this.commitAndSettle(loc);
+      const held = String((await loc.inputValue().catch(() => "")) ?? "").trim();
+      if (held === value) {
+        if (!this.fieldsVerified.includes(label)) this.fieldsVerified.push(label);
+        this.agingNotes.push(`service line read from the page: "${label}" = ${value} (the recipe recorded no step for this box; the count is this project's)`);
+      } else {
+        this.driftWarnings.push(`"${label}": typed this project's service-line count ${value} and the box did not keep it (it reads "${held}") — set it by hand before submitting`);
+      }
+    }
   }
 
   /** F2 — THE PORTAL'S OWN WORDS: the generic validation reader plus the WebForms/Accela banner

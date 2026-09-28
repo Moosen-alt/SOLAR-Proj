@@ -53,6 +53,8 @@ import { annotateDraft, buildDraftTouch, recordDraftTouch, type DraftTouch } fro
 import { draftReferenceFromUrl } from "../../portal-bot/src/adapters/submissionLedger";
 import { issuingAgencyFor } from "./permitProcess";
 import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
+import { feeBracketFieldForLabel } from "./feeBracketFields";
+import { SERVICE_FEEDER_200A_FIELD, SERVICE_FEEDER_400A_FIELD } from "./batteryServiceFeeder";
 
 /** The submittal track an AHJ learn files, from the recipe discipline it will be keyed under
  *  (authoritative — the value the recipe lookup asks for), else the requested permit type.
@@ -549,16 +551,15 @@ export function buildPortalPlanner(
       recoveryHint: req.recoveryHint,
       screenshotBase64: req.screenshotBase64,
     });
-    return {
-      // A JOB VALUE BOX TAKES THE VALUATION, NOT THE CONTRACT (leak sweep 2026-09-28): whatever the
-      // planner chose for a box whose label asks for the work's valuation (the contract keys, or a
-      // typed figure), the learn draft files — and the recipe records — the declared valuation.
-      fills: plan.fills.map((f) => {
-        const target = req.fields[f.index];
-        // A free-text box only: a valuation RANGE select ("$10,001 – $25,000") keeps its option.
-        if (target && (target.fieldType === "text" || target.fieldType === "other") && rebindsToValuation(String(target.label ?? ""), f.field)) {
-          return { selectorIndex: f.index, value: projectFields[DECLARED_VALUATION_FIELD] ?? "", field: DECLARED_VALUATION_FIELD };
-        }
+    // A JOB VALUE BOX TAKES THE VALUATION, NOT THE CONTRACT (leak sweep 2026-09-28): whatever the
+    // planner chose for a box whose label asks for the work's valuation (the contract keys, or a
+    // typed figure), the learn draft files — and the recipe records — the declared valuation.
+    const fills = plan.fills.map((f) => {
+      const target = req.fields[f.index];
+      // A free-text box only: a valuation RANGE select ("$10,001 – $25,000") keeps its option.
+      if (target && (target.fieldType === "text" || target.fieldType === "other") && rebindsToValuation(String(target.label ?? ""), f.field)) {
+        return { selectorIndex: f.index, value: projectFields[DECLARED_VALUATION_FIELD] ?? "", field: DECLARED_VALUATION_FIELD };
+      }
         // A PER-JOB QUESTION IS NEVER THE PLANNER'S PICK (dryrun-0928 B2). The prompt tells it every
         // required dropdown MUST be answered, so with the job's ownership unanswered it chose
         // "Customer-Owned" — and the learn froze that guess into a shared recipe. The one predicate
@@ -577,8 +578,29 @@ export function buildPortalPlanner(
             : { control: perJobControlOfField(target), answer: f.value });
           if (perJobKey) return { selectorIndex: f.index, value: String(fieldValues[perJobKey] ?? "").trim(), field: perJobKey };
         }
-        return { selectorIndex: f.index, value: f.value, field: f.field };
-      }),
+      return { selectorIndex: f.index, value: f.value, field: f.field };
+    });
+    // A SERVICE-LINE QUANTITY BOX IS ANSWERED BY THE ONE COUNT, NEVER LEFT TO THE PAGE.
+    // Live City of Corvallis electrical, 2026-09-28: "Service 0-200 amps (qty)" kept the page's
+    // own 0 on a job whose plan set upgrades the service to a 200 A main — the planner filled
+    // the kVA row beside it and left this one, so the recipe carries no step for it and every
+    // replay would leave it 0 too. The label names the key (batteryServiceFeeder's recogniser,
+    // through feeBracketFieldForLabel); the count is batteryServiceFeeder.serviceLineQuantities.
+    // A known count ("0" included) is typed and recorded BOUND, so a replay types ITS project's
+    // count; an unknown count ("") is left to the planner and bound by label after the learn.
+    for (let i = 0; i < req.fields.length; i++) {
+      const target = req.fields[i];
+      if (!target || (target.fieldType !== "text" && target.fieldType !== "other")) continue;
+      const key = feeBracketFieldForLabel(String(target.label ?? ""));
+      if (key !== SERVICE_FEEDER_200A_FIELD && key !== SERVICE_FEEDER_400A_FIELD) continue;
+      const value = projectFields[key];
+      if (value == null || value === "") continue;
+      const at = fills.findIndex((f) => f.selectorIndex === i);
+      if (at >= 0) fills[at] = { selectorIndex: i, value, field: key };
+      else fills.push({ selectorIndex: i, value, field: key });
+    }
+    return {
+      fills,
       advanceSelectorIndex: plan.advanceIndex,
       navigateSelectorIndex: plan.navigateIndex,
       finalSubmitSelectorIndex: plan.finalSubmitIndex,
@@ -1024,6 +1046,8 @@ async function autoLearnPortalInner(
         // The property's parcel (parser snapshot) — the ACA work-location pass searches by it,
         // by the panel's Search button, when the address finds nothing (Lee County).
         parcel: projectFields.parcelNumber || "",
+        // A dialog that asks ONE "Full Name" box (City of Corvallis) takes the owner's whole name.
+        fullName: projectFields.homeownerName || "",
         firstName: projectFields.homeownerFirstName || "",
         lastName: projectFields.homeownerLastName || "",
         email: projectFields.homeownerEmail || "",
@@ -1038,6 +1062,12 @@ async function autoLearnPortalInner(
         // here from the row, not from projectFields (which layers the plan-set snapshot under the
         // client overlay). No signer = the typed signature step pauses for the operator.
         signerName: learnSignerName(db, project),
+        // "Full Name" / "Name of Business" (City of Corvallis's Applicant dialog) — the SAME keys
+        // the operator-approved building recipe binds that dialog to (installerContactName /
+        // installerCompanyName). Without them the pass typed no name, the dialog refused its
+        // save, and the planner filled the dialog with a mix of the homeowner and the company.
+        fullName: projectFields.installerContactName || "",
+        companyName: projectFields.installerCompanyName || "",
         firstName: projectFields.installerFirstName || "",
         lastName: projectFields.installerLastName || projectFields.installerCompanyName || "",
         email: projectFields.installerEmail || "",

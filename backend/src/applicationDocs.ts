@@ -6,6 +6,7 @@ import type {
   ProjectRecord,
 } from "../../shared/src/types";
 import { nowIso } from "./time";
+import { hasMpuScope } from "./serviceScope";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, registryTermMatches } from "./processProfiles";
 import { describeCited, permitProcessFor, statePermitStructure } from "./permitProcess";
 import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, usStateCode, type PermitPathResolution } from "./permitPath";
@@ -851,15 +852,9 @@ export function namedApplicationForm(profile: ApplicationRequirementProfile, pat
   return "the AHJ's prescriptive OR structural application (pick one by path)";
 }
 
-// Local MPU-scope detection (kept here to avoid a circular import with submittalTracks).
-function applicationHasMpuScope(project: ProjectRecord): boolean {
-  const text = [
-    payload(project, "projectDescriptionText"), payload(project, "description"),
-    payload(project, "scopeText"), payload(project, "electricalCalcText"),
-    payload(project, "sitePlanNotesText"), payload(project, "mpu"), payload(project, "serviceUpgrade"),
-  ].join(" ").toLowerCase();
-  return /\bmpu\b|main panel upgrade|main service panel upgrade|service (panel )?upgrade|\bmsp upgrade\b|panel upgrade|meter.?main upgrade/.test(text);
-}
+// MPU-scope detection: the ONE predicate (serviceScope.ts is a leaf, so no circular import with
+// submittalTracks — the reason a local copy used to live here).
+const applicationHasMpuScope = (project: ProjectRecord): boolean => hasMpuScope(project);
 
 export function buildApplicationDocumentPackage(
   project: ProjectRecord,
