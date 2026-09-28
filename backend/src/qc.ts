@@ -14,6 +14,7 @@ import { findKnowledgeForLearn } from "./knowledgeBase";
 import { ensureFeeSchedulesResearched } from "./feeSchedules";
 import { requiredTracks } from "./submittalTracks";
 import { qcMayMoveStatus } from "./projectStage";
+import { looksLikePlaceholderIdentifier } from "../../shared/src/companyFacts";
 
 // Look up whether the AHJ for this project uses a portal platform that requires
 // individual sheets to be split and uploaded separately (e.g. ProjectDox, EnerGov).
@@ -410,6 +411,32 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
       ? db.get<{ standard_disconnect_make?: string | null; standard_disconnect_model?: string | null }>(
         "SELECT standard_disconnect_make, standard_disconnect_model FROM clients WHERE id = ?", [clientId])
       : undefined;
+    // A PLACEHOLDER ON THE CLIENT RECORD IS NAMED HERE, the day the job is parsed (leak sweep
+    // 2026-09-28): the portal filing leaves a placeholder licence / docket / registration blank
+    // (portalRecipes, clients.clientStagingOverlay — companyFacts.looksLikePlaceholderIdentifier),
+    // and this row is where the operator learns why. The ICC docket only matters on an Illinois job.
+    // Never prints the value — only which field on the client record to correct.
+    if (clientId) {
+      const ids = db.get<Record<string, unknown>>(
+        "SELECT ccb_license_number, electrical_license_number, electrician_license_number, metro_city_license_number, docket_number FROM clients WHERE id = ?", [clientId]);
+      const isIl = clean(project.state || payload.state).toUpperCase() === "IL";
+      const fields: Array<[string, string]> = [
+        ["ccb_license_number", "contractor licence number"], ["electrical_license_number", "electrical licence number"],
+        ["electrician_license_number", "supervising electrician licence number"], ["metro_city_license_number", "metro / city licence number"],
+        ...(isIl ? [["docket_number", "ICC docket number"] as [string, string]] : []),
+      ];
+      for (const [col, what] of fields) {
+        if (!looksLikePlaceholderIdentifier(ids?.[col])) continue;
+        warningCount += 1;
+        db.run(
+          `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+           VALUES (?, ?, 'warning', ?, 'Client record placeholder', ?, 'warning', ?)`,
+          [id(), projectId, `client.placeholder-identifier.${col}`,
+            `The client record's ${what} looks like a test / placeholder value, not a real identifier. Correct it on the client record — the portal filing leaves it blank until then.`,
+            createdAt],
+        );
+      }
+    }
     const baselinePayload: ParserPayload = {
       ...payload,
       ...(clean(payload.state) ? {} : project.state ? { state: project.state } : {}),

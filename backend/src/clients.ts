@@ -6,6 +6,7 @@ import { DEFAULT_ORG_ID } from "./db";
 import { HttpError } from "./httpError";
 import { phoneSegmentKeys } from "./portalRecipes";
 import { id } from "./ids";
+import { COMPANY_IDENTIFIER_KEY, looksLikePlaceholderIdentifier } from "../../shared/src/companyFacts";
 import { nowIso } from "./time";
 import { text as s } from "./json";
 import { addAuditLog } from "./audit";
@@ -664,6 +665,7 @@ export function clientStagingOverlay(db: AppDb, clientId: string | null, portalT
     overlay.powerclerkExistingContact = identity.installerContactCode;
     overlay.accelaContactCode = identity.installerContactCode;
   }
-  // Drop empties so we never overwrite real snapshot values with blanks.
-  return Object.fromEntries(Object.entries(overlay).filter(([, v]) => v));
+  // Drop empties so we never overwrite real snapshot values with blanks — and a PLACEHOLDER licence /
+  // docket / registration ("TEST-160001") is never an identifier any door files (companyFacts).
+  return Object.fromEntries(Object.entries(overlay).filter(([k, v]) => v && !(COMPANY_IDENTIFIER_KEY.test(k) && looksLikePlaceholderIdentifier(v))));
 }

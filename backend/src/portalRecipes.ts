@@ -23,7 +23,8 @@ import { FEE_BRACKET_FIELD_PREFIX } from "../../portal-bot/src/feeBracketQuantit
 import { filingValuationText } from "./valuation";
 import { planSetDisconnectPart, standardDisconnectConflicts } from "./baselineRules";
 import { clientCompanyFactFields } from "./clients";
-import { companyFactStamp, isCompanyAttestationStep, isCompanyIdentityLabel } from "../../shared/src/companyFacts";
+import { COMPANY_IDENTIFIER_KEY, companyFactStamp, isCompanyAttestationStep, isCompanyIdentityLabel, looksLikePlaceholderIdentifier } from "../../shared/src/companyFacts";
+import { usStateCode } from "./permitPath";
 
 type Row = Record<string, unknown>;
 
@@ -2053,6 +2054,20 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   // number and name — from THIS project's own client, every key present ("" when not on file), so a
   // recipe box bound to one never falls back to the learn company's recorded answer.
   Object.assign(merged, clientCompanyFactFields(db, project.clientId));
+  // A PLACEHOLDER IS NOT A LICENCE (leak sweep 2026-09-28). A licence / docket / registration value
+  // shaped like a test or placeholder ("TEST-160001", "XXX…", "0000") is never filed: the key stays,
+  // blank, and QC names it on the client record (runQcForProject). And the ICC docket is Illinois's
+  // (Part 468 DG certification): on any other state's job it is present but blank — never another
+  // state's number in a box that asks for this one.
+  // The identifier keys are ALWAYS present ("" when nothing real is on file): a recipe step bound to
+  // one then replays blank and is named, never the recorded literal of the company that learned it.
+  for (const k of ["ccbLicenseNumber", "electricalLicenseNumber", "electricianLicenseNumber", "metroCityLicenseNumber", "docketNumber"]) {
+    if (!Object.prototype.hasOwnProperty.call(merged, k)) merged[k] = "";
+  }
+  for (const k of Object.keys(merged)) {
+    if (COMPANY_IDENTIFIER_KEY.test(k) && looksLikePlaceholderIdentifier(merged[k])) merged[k] = "";
+  }
+  if (usStateCode(project.state) !== "IL") merged.docketNumber = "";
   // THE AC DISCONNECT PART (leak sweep 2026-09-28) — resolved AFTER the merge, because the client
   // overlay used to win it outright: a plan set naming "Square D DU222RB" was filed as the client's
   // standard Eaton DG221URB, and a plan set calling for a 60 A FUSIBLE switch was filed with a 30 A

@@ -45,6 +45,17 @@ export function isCompanyAttestationStep(step: CompanyFactStepLike | null | unde
   return step.action === "select" && LICENCE_OPTION_LABEL.test(label) && /\d{3,}/.test(value);
 }
 
+/** A licence / docket / registration value that is a PLACEHOLDER, not an identifier: "TEST-160001",
+ *  "placeholder", "XXX-1234", "0000" (leak sweep 2026-09-28 — a client record carried a test docket
+ *  that a complete recipe would have filed). Never filed; named for the operator instead. */
+export function looksLikePlaceholderIdentifier(value: unknown): boolean {
+  const v = String(value ?? "").trim();
+  return Boolean(v) && /^test[-_ ]|placeholder|x{3,}|^0+$/i.test(v);
+}
+/** The filing-value keys that carry a company's licence / docket / registration IDENTIFIER (any
+ *  state's: ccbLicenseNumber, electricalLicenseNumber, …LicenseNumber, docketNumber, …Registration). */
+export const COMPANY_IDENTIFIER_KEY = /licen[sc]e(?:number|no)?$|^docket(?:number)?$|registration(?:number|no)?$/i;
+
 /** An opaque stamp of the company a recorded attestation belongs to — never the client id itself
  *  (a client id can be the company's own name, and recipes are shared). "" for no client. */
 export function companyFactStamp(clientId: string | null | undefined): string {

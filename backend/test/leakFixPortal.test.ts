@@ -494,5 +494,35 @@ await check("MUST-EXCLUDE: on the SAME company's job the stamped attestations re
   assert.equal(onAlpha.changes.filter((c) => c.kind === "stripped").length, 1, "the unstamped liability-insurance check must be left for a person");
 });
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+section("P7  a placeholder licence / docket is never filed; the ICC docket is Illinois's");
+const { looksLikePlaceholderIdentifier } = await import("../../shared/src/companyFacts");
+const gamma = createClient(db, { companyName: "Gamma Placeholder Test", docketNumber: "TEST-160001", ccbLicenseNumber: "XXX-0000", electricalLicenseNumber: "EL123456MA" });
+const delta = createClient(db, { companyName: "Delta Docket Test", docketNumber: "D-2024-0457", electricalLicenseNumber: "ZZ48213" });
+const il = { state: "IL", city: "Springfield", zip: "62701", street: "1 Capitol Ave", ahj: "City of Springfield", utility: "Ameren Illinois" };
+await check("MUST-PASS/EXCLUDE: the placeholder predicate", () => {
+  for (const v of ["TEST-160001", "test_1", "Placeholder", "XXX-0000", "0000"]) assert.equal(looksLikePlaceholderIdentifier(v), true, v);
+  for (const v of ["EL123456MA", "ZZ48213", "D-2024-0457", "223344", "ES 11774", ""]) assert.equal(looksLikePlaceholderIdentifier(v), false, v);
+});
+await check("MUST-PASS: a placeholder docket / licence resolves BLANK (key present) and QC names the field on the client record", () => {
+  const p = project({ ...il, clientId: gamma.id });
+  const f = PR.resolveRecipeFieldValues(db, p, "utility");
+  assert.ok(Object.prototype.hasOwnProperty.call(f, "docketNumber"));
+  assert.equal(f.docketNumber, "", `filed ${f.docketNumber}`);
+  assert.ok(!Object.values(f).includes("XXX-0000"), "the placeholder licence reached the dictionary");
+  assert.equal(f.electricalLicenseNumber, "EL123456MA", "MUST-EXCLUDE: a real licence on the same client");
+  const rules = qcRules(p.id);
+  assert.ok(rules.includes("client.placeholder-identifier.docket_number") && rules.includes("client.placeholder-identifier.ccb_license_number"), rules.filter((r) => r.startsWith("client.")).join(","));
+  const msg = db.query<{ message: string }>("SELECT message FROM qc_results WHERE project_id = ? AND rule_id LIKE 'client.placeholder%'", [p.id]).map((r) => r.message).join(" ");
+  assert.ok(!msg.includes("TEST-160001") && !msg.includes("XXX-0000"), "QC printed the value");
+});
+await check("MUST-PASS: the docket is filed only on an Illinois job; elsewhere it is present but blank", () => {
+  assert.equal(PR.resolveRecipeFieldValues(db, project({ ...il, clientId: delta.id }), "utility").docketNumber, "D-2024-0457");
+  const orJob = PR.resolveRecipeFieldValues(db, project({ clientId: delta.id }), "utility");
+  assert.ok(Object.prototype.hasOwnProperty.call(orJob, "docketNumber"));
+  assert.equal(orJob.docketNumber, "");
+  assert.ok(!qcRules(project({ clientId: gamma.id }).id).includes("client.placeholder-identifier.docket_number"), "MUST-EXCLUDE: a non-IL job is not told about the docket");
+});
+
 console.log(`\n${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);
