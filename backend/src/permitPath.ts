@@ -21,6 +21,7 @@
 
 import type { PrescriptiveLimits, ProjectRecord } from "../../shared/src/types";
 import { classifyRoofCovering, oregonRoofingRowQualifies } from "./roofCovering";
+import { bcd5952FailedRows } from "./bcdChecklistFacts";
 
 export type PermitPath = "prescriptive" | "engineered" | "unknown";
 
@@ -639,6 +640,23 @@ export function resolvePermitPath(project: PermitPathInputs, opts: PermitPathOpt
     : (/\bB\b/i.test(wind) ? jurisdiction.maxWindSpeedMphExpB : jurisdiction.maxWindSpeedMphExpC);
   if (windSpeed != null && speedCap != null && windSpeed > speedCap) {
     screenFailures.push(`ultimate design wind speed ${windSpeed} mph > ${speedCap} mph ${whose} cap${wind ? ` at exposure ${wind.toUpperCase()}` : ""}`);
+  }
+  // THE CHECKLIST'S OWN ROWS SPEAK FOR THE PATH (dry-run 2026-09-28 B4). The BCD 5952 says "If No is
+  // selected for any of the above, the installation may not be submitted using the prescriptive
+  // path" — yet this screen folded in only the roofing row, and its wind check used the tables' 120
+  // mph cap at Exposure C, not the 110 mph the attachment method allows for attachments spaced over
+  // 24 in. So a comp-shingle job at 48 in o.c., 120 mph Exposure C routed PRESCRIPTIVE with a 5952
+  // whose attachment row answers No: two rules answering one question. Every row that answers No
+  // (bcdChecklistFacts.bcd5952FailedRows — the list the fill note reads) fails the screen here; an
+  // unknown row stays silent (absence is not failure). The roofing row is screened above with its
+  // richer covering text, and a framing row that fails on spacing is the spacing failure above.
+  if (stateCode === "OR") {
+    const spacingFailed = spacing != null && L.spacing != null && spacing > L.spacing;
+    for (const failed of bcd5952FailedRows(project)) {
+      if (failed.row === "roofing") continue;
+      if (failed.row === "framing" && spacingFailed) continue;
+      screenFailures.push(`BCD 5952 ${failed.clause} (a No row may not be submitted on the prescriptive path)`);
+    }
   }
   if (screenFailures.length) {
     basis.push(`Structural prescriptive screen failed: ${screenFailures.join("; ")}.`);
