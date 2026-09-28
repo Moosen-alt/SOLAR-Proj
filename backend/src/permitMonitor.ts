@@ -355,11 +355,33 @@ function classifyStatusOnly(rawStatusText: string, track: TrackKind): PermitStat
   // STATUS_LINE could not end — the page reads as it always did if that was a correction: a missed
   // correction is worse than a false one. Only a CORRECTION is restored: a fee reading the visitor
   // invitation produced is a positive written to the project and the client, and never comes back.
-  if (withoutChrome !== scanned && read.outcome === "needs_human_review" && read.statusLabel === UNMATCHED_STATUS_LABEL) {
+  //
+  // "THE PAGE'S OWN WORDS" ARE THE WORDS AFTER THE STATUS LABEL, not the whole page: every Oregon
+  // ePermitting record page also prints "Processing Status" and "Plan Review Required: No", which
+  // waitingPattern reads — so a whole-page test would drop base's correction on "Corr. Required" or
+  // "Revisions Required" (values STATUS_LINE cannot pull out). Base's correction stands unless the
+  // status value itself answers a non-correction rule ("Received", "In Review", "Processing").
+  if (withoutChrome !== scanned && !statusHeadSpeaks(rawStatusText, track)) {
     const base = classifyScannedText(scanned, stated, track);
     if (base.outcome === "correction_flagged") return base;
   }
   return read;
+}
+
+/** The status value as printed right after the "Record/Permit/Application Status" label, read loosely
+ *  (punctuation allowed, e.g. "Corr. Required") and cut at the page's next field — "" if none. */
+function statusHeadOf(rawStatusText: string): string {
+  const m = /\b(?:record|permit|application)\s+status\s*:?\s*(.{1,80})/i.exec(clean(rawStatusText));
+  if (!m) return "";
+  return m[1].split(/\s*(?:\bexpiration\b|\bexpires\b|\bdate\b|\badd\s+to\s+existing\b|\bcreate\s+a\s+new\b|\brecord\b|\bpermit\b|\bapplication\b|\bwork\s+location\b)/i)[0].slice(0, 40).trim();
+}
+
+/** Does the status value alone answer a rule other than a correction? */
+function statusHeadSpeaks(rawStatusText: string, track: TrackKind): boolean {
+  const head = statusHeadOf(rawStatusText);
+  if (!head) return false;
+  const own = classifyScannedText(head, head, track);
+  return own.outcome !== "correction_flagged" && !(own.outcome === "needs_human_review" && own.statusLabel === UNMATCHED_STATUS_LABEL);
 }
 
 function classifyScannedText(text: string, stated: string, track: TrackKind): PermitStatusClassification {

@@ -56,6 +56,14 @@ const accelaExp = (status: string): string =>
 const accelaWidget = (status: string): string =>
   `Record BLD26-09991: Building Record Status: ${status} Add to Existing Collection --Select-- Create a New Collection `
   + "Work Location 1 EXAMPLE AVE More Details Additional Information Job Value($):$9,999.00";
+/** Oregon ePermitting (aca-oregon): every record page also prints "Processing Status" and "Plan Review
+ *  Required: No", which waitingPattern reads — the page-wide words are NOT the record's own words. */
+const oregonTail = " Work Location 1 EXAMPLE AVE SAMPLETOWN OR 97000 More Details Additional Information Job Value($):$9,999.00"
+  + " Processing Status Plan Review Required: No Inspections Fees";
+const oregonExp = (status: string): string =>
+  `Record 187-26-000902-STR: Residential Structural Record Status: ${status} Expiration Date: 03/16/2027 Create a New Collection` + oregonTail;
+const oregonWidget = (status: string): string =>
+  `Record 187-26-000903-STR: Residential Structural Record Status: ${status} Add to Existing Collection --Select-- Create a New Collection` + oregonTail;
 const smartGov = (status: string): string =>
   `Permit Number BLD-2026-0101 Permit Status: ${status} Applied Date: 09/01/2026 Issued Date: Expiration Date: Parcel 00-00-00`;
 const citizenServe = (status: string): string =>
@@ -98,6 +106,15 @@ const NARROW: Pinned[] = [
   // A status no rule knows, on the Corvallis page shape: once the chrome is gone the page's own
   // words answer nothing, so the correction base raised stands (a missed correction is worse).
   { name: "same page, a status no rule knows ('Corr. Required') keeps base's correction", text: corvallis("Corr. Required"), track: "permit", outcome: "correction_flagged", label: "Correction flagged" },
+  // OREGON ePERMITTING (status-converge skeptic item 5): the page's "Processing Status" / "Plan Review
+  // Required" chrome reads as waiting, so "the page's own words" must be the STATUS VALUE, not the
+  // page — base's correction on these statuses (values STATUS_LINE cannot pull out) stands.
+  { name: "Oregon ePermitting page (Expiration Date): Corr. Required keeps base's correction", text: oregonExp("Corr. Required"), track: "permit", outcome: "correction_flagged", label: "Correction flagged" },
+  ...["Revisions Required", "Revisions Needed", "Needs Revision", "Plan Check Comments", "Comments Issued", "Info Required", "Awaiting Information", "Waiting for Information"].map((v): Pinned =>
+    ({ name: `Oregon ePermitting page (collection widget): ${v} keeps base's correction`, text: oregonWidget(v), track: "permit", outcome: "correction_flagged", label: "Correction flagged" })),
+  // ...while a status value that answers a waiting rule still reads as waiting on the same page.
+  ...["Received", "In Review", "Processing"].map((v): Pinned =>
+    ({ name: `Oregon ePermitting page (collection widget): ${v} reads as waiting`, text: oregonWidget(v), track: "permit", outcome: "waiting", label: "In review" })),
 ];
 
 // ------------------------------------------------------------------------------------------------
