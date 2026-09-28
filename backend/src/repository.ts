@@ -3598,7 +3598,9 @@ export function getSubmitGateReport(db: AppDb, projectId: string): SubmitGateRep
                 ? licenceByTrack.slice(0, 3).map(({ track: t, answer: a }) => a.number
                   ? `${t} permit: ${a.label} ${a.number}`
                   : `${t} permit: ${a.reason || `no ${licence!.state} licence on file`}`)
-                : [`No contractor licence for ${licence!.state || "this state"} on file.`]),
+                // No permit track could be read: the trackless answer, candidates named — never
+                // "none on file" for a client that holds several.
+                : [licence!.number ? `${licence!.label}: ${licence!.number}` : licence!.candidates.length ? `Several ${licence!.state} licences on file: ${licence!.candidates.join("; ")}` : `No contractor licence for ${licence!.state || "this state"} on file.`]),
             ...(planSetLicenceDoubt ? [planSetLicenceDoubt] : []),
           ],
       nextAction: !submittingClientRow

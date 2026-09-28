@@ -340,6 +340,14 @@ await check("a recorded licence literal binds to the key its label names (CSL), 
   const out = recipes.convertLiteralsToBoundFields([{ action: "fill", selector: { label: "Construction Supervisor License" }, value: N.maCsl } as never], v);
   assert.equal((out.steps[0] as { field?: string }).field, "constructionSupervisorLicenseNumber", JSON.stringify(out));
   assert.equal(out.ambiguous.length, 0);
+  // A bare "License Number" literal equals both ccbLicenseNumber (generic -> CSL on a building job)
+  // and the CSL key; it binds the generic key (the label names no kind) — never left ambiguous,
+  // which would refuse the recipe's promotion.
+  const bare = recipes.convertLiteralsToBoundFields([{ action: "fill", selector: { label: "License Number" }, value: N.maCsl } as never], v);
+  assert.equal((bare.steps[0] as { field?: string }).field, "ccbLicenseNumber", JSON.stringify(bare));
+  assert.equal(bare.ambiguous.length, 0);
+  const elec = recipes.convertLiteralsToBoundFields([{ action: "fill", selector: { label: "Electrical License" }, value: N.maEc } as never], fv(maJobA, "electrical"));
+  assert.equal((elec.steps[0] as { field?: string }).field, "electricalLicenseNumber", JSON.stringify(elec));
 });
 
 // =============================================================================================
