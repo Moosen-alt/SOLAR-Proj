@@ -2473,28 +2473,17 @@ app.get("/api/ahj-templates", (req, res) => {
 });
 
 // Re-map a stored template's fields from its stored blob (AcroForm first, then
-// vision overlay) — used after a bad auto-map or to refresh the mapping.
+// vision overlay) — used after a bad auto-map or to refresh the mapping. A
+// HUMAN-VERIFIED map is never re-mapped (hard rule 3) — ahjFormAuto.remapStoredTemplate.
+// A re-map re-reads bytes we already had, so the row's retrieved_at is kept.
 app.post("/api/ahj-templates/:id/remap", asyncHandler(async (req, res) => {
-  const row = db.get<{ id: string; ahj_name: string; state: string; form_type: string; pdf_blob: Buffer | null; field_map: string; retrieved_at: string }>(
-    "SELECT id, ahj_name, state, form_type, pdf_blob, field_map, retrieved_at FROM ahj_form_templates WHERE id = ?",
-    [String(req.params.id)],
-  );
-  if (!row) throw new HttpError(404, "Template not found.");
-  if (!row.pdf_blob) throw new HttpError(410, "PDF blob has been wiped — re-upload the blank to re-map.");
-  const map = parseJson<{ formName?: string; sourceUrl?: string }>(row.field_map, {});
-  const formName = map.formName || `${row.ahj_name} ${row.form_type.replace(/_/g, " ")}`;
+  const { remapStoredTemplate } = await import("./ahjFormAuto");
   const { createLLMProvider } = await import("./llm");
   let result;
   try {
-    result = await acquireFromBytes(db, createLLMProvider(), {
-      ahj: row.ahj_name, state: row.state, formType: row.form_type, formName,
-      bytes: new Uint8Array(row.pdf_blob), sourceUrl: map.sourceUrl || "",
-      // A re-map re-reads bytes we already had. Stamping "retrieved now" would
-      // make a purely local operation look like a fresh trip to the AHJ's site,
-      // which is the one claim retrieved_at exists to make honestly.
-      retrievedAt: String(row.retrieved_at || ""),
-    });
+    result = await remapStoredTemplate(db, createLLMProvider(), String(req.params.id));
   } catch (err) {
+    if (err instanceof HttpError) throw err;
     throw normalizeLlmError(err);
   }
   res.json(result);

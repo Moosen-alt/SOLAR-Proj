@@ -83,6 +83,33 @@ export function parseStateLicenses(raw: unknown): ClientStateLicense[] {
     .map((l) => ({ state: s(l?.state).trim().toUpperCase().slice(0, 2), kind: s(l?.kind).trim(), number: s(l?.number).trim() }))
     .filter((l) => l.state && l.number);
 }
+/** The contractor licence on file for the project's state: Oregon's CCB for an Oregon job; else a
+ *  stateLicenses entry for the state, else the named licence columns when the client's licence
+ *  state is this state. The number is "" when none is on file — an unknown, never a CCB demand.
+ *  THE one answer: the submit gate (repository) and the form fill (ahjForms.buildContext) read it. */
+export function contractorLicenceForState(clientRow: Row, projectState: string): { oregon: boolean; state: string; label: string; number: string } {
+  const st = String(projectState || "").trim().toUpperCase();
+  const oregon = st === "OR" || !st;
+  if (oregon) return { oregon, state: st, label: "CCB", number: String(clientRow.ccb_license_number || "").trim() };
+  const listed = parseStateLicenses(clientRow.state_licenses_json).find((l) => l.state === st);
+  if (listed) return { oregon, state: st, label: `${st} licence${listed.kind ? ` (${listed.kind.replace(/_/g, " ")})` : ""}`, number: listed.number };
+  if (String(clientRow.license_state || "").trim().toUpperCase() === st) {
+    const ec = String(clientRow.electrical_license_number || "").trim();
+    if (ec) return { oregon, state: st, label: `${st} electrical licence`, number: ec };
+    const other = String(clientRow.ccb_license_number || "").trim();
+    if (other) return { oregon, state: st, label: `${st} contractor licence`, number: other };
+  }
+  return { oregon, state: st, label: `${st} licence`, number: "" };
+}
+
+/** contractorLicenceForState for a project's client, read by id ({} when there is no client). */
+export function contractorLicenceForClient(db: AppDb, clientId: string | null | undefined, projectState: string): ReturnType<typeof contractorLicenceForState> {
+  const row = clientId
+    ? db.get<Row>("SELECT ccb_license_number, electrical_license_number, license_state, state_licenses_json FROM clients WHERE id = ?", [clientId])
+    : null;
+  return contractorLicenceForState(row ?? {}, projectState);
+}
+
 /** Stored/accepted partner contacts: a company name required; scope by portal and/or AHJ. */
 export function parsePartnerContacts(raw: unknown): ClientPartnerContact[] {
   return jsonArray(raw)

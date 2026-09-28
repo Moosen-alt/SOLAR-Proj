@@ -6046,13 +6046,15 @@ function renderFilledForms(projectId) {
     const isStored = Boolean(f.templateId);
     const unverified = isStored && f.verified === false;
     // A value the AGENCY computes (a fee / surcharge / total — requestedFieldOwners, gates-proper C4)
-    // is not a detail the operator owes: it never turns the form's badge to "needs details".
+    // is not a detail the operator owes: it never turns the form's badge to "needs details". A named
+    // operator item (forms-fill: a refused shape, a licence not on file, a signer to confirm) is.
     const ownersOf = f.requestedFieldOwners || {};
     const operatorBlanks = (f.unmappedRequested || []).filter((l) => ownersOf[l] !== "agency");
-    const missingDetails = operatorBlanks.length > 0;
+    const operatorItems = f.operatorItems || [];
+    const missingDetails = operatorBlanks.length > 0 || operatorItems.length > 0;
     const extra = [
       f.filledFieldCount != null ? `${f.filledFieldCount} field(s) filled` : "",
-      missingDetails && !f.message?.includes("Still needs:") ? `Needs details: ${operatorBlanks.join(", ")}` : "",
+      operatorBlanks.length && !f.message?.includes("Still needs:") ? `Needs details: ${operatorBlanks.join(", ")}` : "",
       f.message || "",
     ].filter(Boolean).join(" · ");
     // Cls: unverified auto-maps are a warning (block submit) until confirmed.
@@ -6070,6 +6072,7 @@ function renderFilledForms(projectId) {
       ${ok && !isStored && f.signaturesLocked ? `<p class="muted">✓ Built-in form — signature + date auto-placed on the authorized-signature line. No verification needed.</p>` : ""}
       ${f.documentStale ? `<p class="muted"><strong>This blank dates itself “${esc(f.documentDate)}”</strong> — over two years old. Re-check the AHJ's current forms page before filing${f.sourceUrl ? ` (<a href="${esc(f.sourceUrl)}" target="_blank" rel="noopener noreferrer">source</a>)` : ""}. Check any printed fee rates against the current schedule.</p>` : ""}
       ${extra ? `<p class="muted">${esc(extra)}</p>` : ""}
+      ${ok && operatorItems.length ? `<p><strong>Fill by hand before filing (${operatorItems.length}):</strong></p><ul class="muted" style="margin:2px 0 6px 18px">${operatorItems.map((it) => `<li>${esc(it)}</li>`).join("")}</ul>` : ""}
       ${ok ? bcd5952ClauseNotes(f) : ""}
     </article>`;
   }).join("");
@@ -6126,6 +6129,8 @@ function filledFormBlanks(forms) {
       if (owners[label] === "agency") agency.push(label);
       else mine.push(owners[label] === "planning_office" ? `${label} (from the planning / land-use office, when the project needs one)` : label);
     }
+    // The fill's named operator items (forms-fill) are the operator's too.
+    for (const item of f.operatorItems || []) mine.push(item);
   }
   return [mine, agency];
 }

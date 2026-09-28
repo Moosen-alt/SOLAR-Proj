@@ -159,6 +159,15 @@ async function adoptedSchedulePdf(): Promise<Uint8Array> {
 const ELECTRICAL = await electricalApplicationPdf();
 const CHECKLIST = await checklistPdf();
 const ADOPTED = await adoptedSchedulePdf();
+// A kind-less building permit application (one AcroForm field, no fee table) for the rule-3 case
+// where the county holds TWO building-side rows (forms-fill-3, skeptic A1).
+const KINDS_BLANK = await (async () => {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([612, 792]);
+  doc.getForm().createTextField("applicant_name").addToPage(page, { x: 60, y: 700, width: 240, height: 14 });
+  return doc.save();
+})();
+const KINDS_PAGE = `<html><body><a href="/forms/building-permit-application.pdf">Building permit application</a></body></html>`;
 
 const SOLAR_PAGE = `<html><body>
   <a href="/jobs">Employment opportunities</a>
@@ -220,6 +229,8 @@ const server = http.createServer((req, res) => {
   if (url === "/forms/electrical-permit-application.pdf") return pdf(ELECTRICAL);
   if (url === "/forms/prescriptive-solar-checklist.pdf") return pdf(CHECKLIST);
   if (url === "/forms/community-development-fees.pdf") return pdf(ADOPTED);
+  if (url === "/kinds-page") { res.writeHead(200, { "content-type": "text/html" }); res.end(KINDS_PAGE); return; }
+  if (url === "/forms/building-permit-application.pdf") return pdf(KINDS_BLANK);
   if (url === "/walled") {
     // Akamai's shape: a 403 with a body that names nothing but the refusal.
     res.writeHead(403, { "content-type": "text/html", server: "AkamaiGHost" });
@@ -232,8 +243,10 @@ await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 
 // A field mapper that actually maps, so "how many fields" is a real number.
+let mapCalls = 0;
 const llm = {
   async mapAcroFormFields(input: { fields: { name: string; type: string }[] }) {
+    mapCalls += 1;
     const textFields: Record<string, string> = {};
     for (const f of input.fields) {
       if (/name/i.test(f.name)) textFields[f.name] = "project.homeownerName";
@@ -508,6 +521,35 @@ await check("a form template whose map a human verified is left alone", async ()
   const afterMap = JSON.parse(after.field_map) as { verified: boolean; textFields: Record<string, string> };
   assert.equal(afterMap.verified, true, "storeAhjFormTemplate would have stamped verified:false over this");
   assert.equal(Object.keys(afterMap.textFields).length, 1, "the human's map is intact");
+});
+
+// forms-fill-3 (skeptic A1): the verified check is asked of the row the store would REPLACE. Two
+// building-side rows — the PRESCRIPTIVE one unverified and inserted first, the STRUCTURAL one
+// verified — and a kind-less blank harvested from the structural row's own URL. A lookup by form
+// type alone (LIMIT 1) answered about the prescriptive row, mapped the blank and stored it over the
+// verified structural map.
+await check("RULE 3 at the harvest door: a verified structural row behind an unverified prescriptive one is skipped BEFORE mapping, and never overwritten", async () => {
+  const { storeAhjFormTemplate } = await import("../src/ahjFormAuto");
+  const KINDS = "Kinds County";
+  const U = `${base}/forms/building-permit-application.pdf`;
+  storeAhjFormTemplate(db, { ahjName: KINDS, state: STATE, formType: "building_application", filename: "Prescriptive Solar Application.pdf", bytes: KINDS_BLANK, applicationKind: "prescriptive",
+    map: { formName: "Prescriptive Solar Application", sourceUrl: `${base}/forms/prescriptive.pdf`, fillMode: "overlay", textFields: {}, checkboxes: {}, notes: "" } as never });
+  const sid = storeAhjFormTemplate(db, { ahjName: KINDS, state: STATE, formType: "building_application", filename: "Structural Building Application.pdf", bytes: KINDS_BLANK, applicationKind: "structural",
+    map: { formName: "Structural Building Application", sourceUrl: U, fillMode: "acroform", textFields: { applicant_name: "project.homeownerName" }, checkboxes: {}, notes: "" } as never });
+  const verifiedMap = { ...JSON.parse(db.get<{ field_map: string }>("SELECT field_map FROM ahj_form_templates WHERE id = ?", [sid]).field_map), verified: true };
+  db.run("UPDATE ahj_form_templates SET field_map = ? WHERE id = ?", [JSON.stringify(verifiedMap), sid]);
+  const before = db.get<{ field_map: string; updated_at: string }>("SELECT field_map, updated_at FROM ahj_form_templates WHERE id = ?", [sid]);
+  const callsBefore = mapCalls;
+  const report = await harvestJurisdiction(db, { state: STATE, ahj: KINDS, pageUrl: `${base}/kinds-page` }, { llm, apply: true });
+  const doc = report.documents.find((d) => d.finalUrl === U);
+  assert.ok(doc, JSON.stringify(report.documents.map((d) => d.finalUrl)));
+  assert.equal(doc.formType, "building_application");
+  assert.equal(doc.form.action, "skipped_verified", doc.form.note);
+  assert.equal(mapCalls, callsBefore, "the blank was sent to the mapper before the verified slot was found");
+  const after = db.get<{ field_map: string; updated_at: string }>("SELECT field_map, updated_at FROM ahj_form_templates WHERE id = ?", [sid]);
+  assert.equal(after.field_map, before.field_map);
+  assert.equal(after.updated_at, before.updated_at);
+  assert.equal(db.query("SELECT id FROM ahj_form_templates WHERE lower(ahj_name) = lower(?)", [KINDS]).length, 2);
 });
 
 await check("a human-verified fee schedule is never rewritten, and the disagreement lands in its notes", async () => {

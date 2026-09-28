@@ -87,7 +87,7 @@ import { STAGE_COUNT, stageForStatus, isBlockedProject } from "./projectStage";
 import { compactNextStep, decideNextStep, loadNextStepFacts } from "./nextStep";
 import { correctionHoldScope, criticalFieldHoldScope, findingHoldScope, GATE_TRACKS, scopeHoldsTrack, tracksHeld, type GateHoldScope } from "./gateScope";
 import { addAuditLog } from "./audit";
-import { clientStagingOverlay, getClient, parseStateLicenses } from "./clients";
+import { clientStagingOverlay, contractorLicenceForState, getClient } from "./clients";
 import { assertSubmissionPaid } from "./submissionFees";
 import { readAndRecordPortalFees } from "./portalFeeReadings";
 import { getDecryptedCredential, getDecryptedCredentialByUrl, getDecryptedCredentialAny, lockedOutCredential } from "./portalCredentials";
@@ -3403,23 +3403,9 @@ function acquisitionSentence(a: StageAcquiredForm | undefined): string {
 }
 const GATE_EVIDENCE_CAP = 6;
 
-/** The contractor licence on file for the project's state: Oregon's CCB for an Oregon job; else a
- *  stateLicenses entry for the state, else the named licence columns when the client's licence
- *  state is this state. The number is "" when none is on file — an unknown, never a CCB demand. */
-export function contractorLicenceForState(clientRow: Row, projectState: string): { oregon: boolean; state: string; label: string; number: string } {
-  const st = String(projectState || "").trim().toUpperCase();
-  const oregon = st === "OR" || !st;
-  if (oregon) return { oregon, state: st, label: "CCB", number: String(clientRow.ccb_license_number || "").trim() };
-  const listed = parseStateLicenses(clientRow.state_licenses_json).find((l) => l.state === st);
-  if (listed) return { oregon, state: st, label: `${st} licence${listed.kind ? ` (${listed.kind.replace(/_/g, " ")})` : ""}`, number: listed.number };
-  if (String(clientRow.license_state || "").trim().toUpperCase() === st) {
-    const ec = String(clientRow.electrical_license_number || "").trim();
-    if (ec) return { oregon, state: st, label: `${st} electrical licence`, number: ec };
-    const other = String(clientRow.ccb_license_number || "").trim();
-    if (other) return { oregon, state: st, label: `${st} contractor licence`, number: other };
-  }
-  return { oregon, state: st, label: `${st} licence`, number: "" };
-}
+/** The contractor licence on file for the project's state — moved to clients.ts, the one predicate
+ *  the form fill reads too; re-exported so existing callers keep working. */
+export { contractorLicenceForState } from "./clients";
 
 function submitGateCheck(input: SubmitGateCheck): SubmitGateCheck {
   const lines = input.evidence.filter(Boolean).map((line) => shorten(text(line), 190));
