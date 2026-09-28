@@ -119,6 +119,10 @@ export function contactFieldKind(label: string | null | undefined): ContactField
   const l = norm(label).replace(/\(.*?\)/g, " ").replace(/\s+/g, " ").trim();
   if (!l) return null;
   if (/\bfax\b/.test(l)) return null;
+  // A SECOND phone / e-mail is not the identity's ("Secondary Phone:" on Oregon ePermitting's contact
+  // dialog, which the approved Coos Bay recipe always left blank — the learner's own phone selector
+  // already excludes it). Only the primary box binds; the rest are left as the portal has them.
+  if (/\b(?:phone|telephone|mobile|cell|e-?mail)\b/.test(l) && /\b(?:secondary|alternate|alt|other|second|2nd|additional)\b|\b(?:phone|e-?mail)\s*#?\s*2\b/.test(l)) return null;
   if (/\bfirst\s*name\b|\bgiven name\b/.test(l)) return "firstName";
   if (/\blast\s*name\b|\bsurname\b|\bfamily name\b/.test(l)) return "lastName";
   if (/\bname of (?:business|company|organi[sz]ation|firm)\b|\b(?:business|company|organi[sz]ation|firm)(?: name)?\b|\bdba\b/.test(l)) return "business";

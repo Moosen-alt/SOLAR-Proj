@@ -88,6 +88,10 @@ const KINDS: Array<[string, string | null]> = [
   ["State:", "state"], ["Zip:", "zip"], ["E-mail:", "email"], ["Contact Phone:", "phone"], ["First Name:", "firstName"],
   ["Last Name:", "lastName"], ["Organization Name", "business"], ["Address Line 1", "street"],
   ["Type:", null], ["Fax:", null], ["Address Line 2", null], ["Street No.:", null], ["Street Name:", null], ["Title", null],
+  // MUST EXCLUDE (skeptic, Oregon ePermitting's real contact dialog — the approved Coos Bay recipe
+  // left "Secondary Phone:" blank): only the PRIMARY phone / e-mail is the identity's.
+  ["Primary Phone:", "phone"], ["Secondary Phone:", null], ["Alternate Phone", null], ["Phone 2", null], ["Other Phone:", null],
+  ["Secondary E-mail:", null], ["Address Line 1:", "street"],
 ];
 for (const [label, kind] of KINDS) check(`box kind ${JSON.stringify(label)} → ${kind}`, contactFieldKind(label) === kind, String(contactFieldKind(label)));
 check("key roles both ways, phone segments included",
