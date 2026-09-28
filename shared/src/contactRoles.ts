@@ -43,6 +43,17 @@ const OWNER_SECTION = /\b(?:property owners?|home ?owners?|owners?|site contacts
 // A heading that names no one's identity, whatever else it says.
 const NOT_A_PARTY = /\b(?:billing|emergency|designer|engineer|tenant|property manager|interested party|complainant|city staff)\b/;
 
+/** IS THIS CONTROL A CONTACT SECTION'S OPENER — the click that opens a section's contact dialog
+ *  ("Add New", "Select from Account", "Edit", "Add Contact")? Asked of a control's own words (its
+ *  label / accessible name / text, or a recorded step's name + note) by the learner (whose dialog
+ *  opens next; which re-opens are refused), the replay (its dialog guard; a dialog step is not a
+ *  page advance) and the replay binder (R10's contact blocks) — ONE answer. A "Look Up" (a search)
+ *  is not one. */
+const CONTACT_OPENER = /\b(?:add new|select from account|edit|add (?:a |new )?contact)\b/i;
+export function isContactOpener(words: string | null | undefined): boolean {
+  return CONTACT_OPENER.test(String(words ?? ""));
+}
+
 /** WHICH IDENTITY DOES THIS SECTION HEADING NAME? null when it names none, or names BOTH
  *  ("Owner/Applicant", "Applicant or Owner") — a block that could be either is never guessed. */
 export function contactSectionRole(heading: string | null | undefined, opts: { track?: ContactTrack } = {}): ContactRole | null {

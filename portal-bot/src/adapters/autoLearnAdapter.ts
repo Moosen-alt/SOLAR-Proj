@@ -23,7 +23,7 @@ import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabe
 import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, backstopFor, isStoppingAbort } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
 import {
-  contactFieldKind, contactKeyFor, contactKeyForRole, contactKeyRole, contactRoleOfStep, contactSectionRole, planContactSections,
+  contactFieldKind, contactKeyFor, contactKeyForRole, contactKeyRole, contactRoleOfStep, contactSectionRole, isContactOpener, planContactSections,
   type ContactFieldKind, type ContactRole, type ContactTrack,
 } from "../../../shared/src/contactRoles";
 
@@ -298,7 +298,6 @@ const EXISTING_RECORD_ACTION = /\bresume\b|\bpay fees? due\b|\brenew\b|\bwithdra
 // ACA contact-section controls. Once the applicant is filled deterministically with the
 // FILING CONTRACTOR's identity, a planner click on one of these re-opens that contact and
 // overwrites it with the homeowner's details (live Coos Bay).
-const CONTACT_CONTROL = /add new|select from account/i;
 
 // Accela ACA's wizard-advance control: an <a> on some layouts, a button/submit-input on
 // others (live-verified union from the hand-coded OregonEPermittingAdapter).
@@ -4351,7 +4350,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
    *  the old rule stands: once the applicant is filled, no Add New / Select from Account. */
   private contactReopenRefused(field: ExtractedField): string | null {
     const label = String(field.label ?? "");
-    const opener = CONTACT_CONTROL.test(label) || /^\s*edit\s*$/i.test(label);
+    const opener = isContactOpener(label);
     if (!opener) return null;
     const ids = [
       field.fingerprint?.id,
@@ -4362,7 +4361,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (ids.some((i) => this.acaFilledSectionControls.has(i))) return "the pass already filled this section";
     const heading = String(field.section ?? field.fingerprint?.section ?? "").trim().toLowerCase();
     if (heading && this.acaFilledSectionHeadings.has(heading) && !ids.length) return "the pass already filled this section (by heading)";
-    if (!ids.length && !heading && this.acaApplicantFilled && CONTACT_CONTROL.test(label)) return "the applicant is already filled";
+    if (!ids.length && !heading && this.acaApplicantFilled) return "the applicant is already filled";
     return null;
   }
 
@@ -4370,7 +4369,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
    *  next (the section heading, or the ACA control id); a main-page advance closes it. */
   private noteContactClick(field: ExtractedField, url: string): void {
     const label = String(field.label ?? "");
-    if (CONTACT_CONTROL.test(label) || /^\s*edit\s*$/i.test(label)) {
+    if (isContactOpener(label)) {
       const track = this.contactTrackFor(url);
       const role = contactSectionRole(field.section, { track })
         ?? contactRoleOfStep({ selector: field.selector as { css?: string; fallbacks?: Array<{ css?: string }> }, fingerprint: field.fingerprint }, { track });

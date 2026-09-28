@@ -11,7 +11,7 @@ import { feeBracketCoverage, feeBracketCoverageMessage, decideFeeTier, FEE_TIER_
 const FEE_TIER_NO_BOX_REASON = "the recorded kVA tier box was not found on this page and no kVA-labelled box could be read";
 import { collectPortalErrorBanner } from "../safeAction";
 import { SERVICE_FEEDER_200A_FIELD, SERVICE_FEEDER_400A_FIELD, isServiceFeeder200Label, isServiceFeeder400Label } from "../../../shared/src/serviceLineLabels";
-import { contactFieldKind, contactKeyFor, contactRoleOfStep, type ContactFieldKind, type ContactRole, type ContactTrack } from "../../../shared/src/contactRoles";
+import { contactFieldKind, contactKeyFor, contactRoleOfStep, isContactOpener, type ContactFieldKind, type ContactRole, type ContactTrack } from "../../../shared/src/contactRoles";
 import { structureTypeMeaning } from "../../../backend/src/permitProcess";
 
 // A RECORDED ANSWER THAT DESCRIBES A PROJECT OR A PERSON BELONGS TO THAT PROJECT.
@@ -5174,7 +5174,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     // section's dialog, is an in-page action; the main page's own advance ("Continue Application")
     // is still held to moving.
     const words = `${step.selector?.name ?? ""} ${step.selector?.text ?? ""} ${step.selector?.label ?? ""} ${step.note ?? ""}`;
-    const dialogStep = !!step.selector?.frame || /\b(?:add new|select from account|edit)\b/i.test(words);
+    const dialogStep = !!step.selector?.frame || isContactOpener(words);
     const isAdvance = /^advance\b/i.test(String(step.note ?? "").trim()) && !dialogStep;
     if (!blockers.length && !isAdvance) {
       // ASK THE SECOND QUESTION BEFORE GIVING UP ON THE ANSWER. The page did not move; did
@@ -6091,7 +6091,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     const words = `${step.selector?.name ?? ""} ${step.selector?.text ?? ""} ${step.selector?.label ?? ""} ${step.note ?? ""}`;
     const track: ContactTrack = this.recipe.scopeType === "utility" ? "nem" : "permit";
     if (!frame) {
-      if (step.action === "click" && /\b(?:add new|select from account|edit|add (?:a |new )?contact)\b/i.test(words)) {
+      if (step.action === "click" && isContactOpener(words)) {
         this.contactBlock = { role: contactRoleOfStep(step, { track }) };
       } else if (step.action !== "waitFor") {
         this.contactBlock = null;

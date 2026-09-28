@@ -31,7 +31,7 @@
 //   npx tsx backend/test/contactIdentity.test.ts
 import {
   contactFieldKind, contactKeyForRole, contactKeyRole, contactRoleOfStep, contactSectionRole,
-  isOptionalExtraSection, planContactSections,
+  isContactOpener, isOptionalExtraSection, planContactSections,
 } from "../../shared/src/contactRoles";
 import { bindRecipeForReplay, REPLAY_BLANK_FIELD } from "../src/recipeReplayBinding";
 import type { RecipeStep } from "../../shared/src/types";
@@ -102,6 +102,14 @@ check("a step's own role mark: the learner's '[applicant]', an ACA section contr
     && contactRoleOfStep({ selector: { css: "#ctl00_PlaceHolderMain_Applicant_9479Edit_btnAddNew" } }) === "company"
     && contactRoleOfStep({ fingerprint: { id: "ctl00_PlaceHolderMain_Contact1_9483Edit_btnAddNew" } }) === null
     && contactRoleOfStep({ fingerprint: { section: "Owner" } }) === "owner");
+
+// The ONE opener predicate (learner, replay, replay binder).
+for (const w of ["Add New", "Select from Account", "Edit", "advance: Select from Account", "Add Contact", "contact(applicant): add new"]) {
+  check(`MUST PASS contact opener: ${JSON.stringify(w)}`, isContactOpener(w));
+}
+for (const w of ["Look Up", "Continue Application »", "Continue", "Credit card", "Edited by", "Search", "Add Additional Contact Address"]) {
+  check(`MUST EXCLUDE contact opener: ${JSON.stringify(w)}`, !isContactOpener(w));
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. R10 — the replay rebinds a mis-bound Applicant dialog.

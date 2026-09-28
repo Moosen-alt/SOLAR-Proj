@@ -69,12 +69,10 @@ import { companyFactStamp, isCompanyAttestationStep } from "../../shared/src/com
 import { mountKindForProject } from "./codeReviewRules";
 import { licenceKeyForLabel, licenceKindWords } from "../../shared/src/licenceKinds";
 import {
-  contactFieldKind, contactKeyFor, contactKeyForRole, contactRoleOfStep, type ContactRole, type ContactTrack,
+  contactFieldKind, contactKeyFor, contactKeyForRole, contactRoleOfStep, isContactOpener, type ContactRole, type ContactTrack,
 } from "../../shared/src/contactRoles";
 export { sameFeeTier };
 
-/** A main-page click that opens a contact section's dialog. */
-const CONTACT_OPENER = /\b(?:add new|select from account|edit|add (?:a |new )?contact)\b/i;
 
 export interface ReplayBindingChange {
   index: number;
@@ -362,7 +360,7 @@ export function bindRecipeForReplay(input: {
     {
       const inFrame = Boolean(original.selector?.frame);
       const words = `${original.selector?.name ?? ""} ${original.selector?.text ?? ""} ${original.selector?.label ?? ""} ${note}`;
-      const opener = original.action === "click" && !inFrame && CONTACT_OPENER.test(words);
+      const opener = original.action === "click" && !inFrame && isContactOpener(words);
       if (opener) {
         contactBlock = { role: contactRoleOfStep(original, { track: contactTrack }), label: label.slice(0, 40) };
       } else if (!inFrame) {
