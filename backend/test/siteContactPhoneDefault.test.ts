@@ -46,5 +46,23 @@ await check("MUST-EXCLUDE: a phone on file is never replaced", () => {
   assert.match(v.homeownerPhone, /541.*555.*0199/);
 });
 
+// PIN (operator question 2026-09-28: "is it an issue if it's intake with the +1?"). A phone typed at
+// intake with its country code ("+15415550123", "1-541-555-0123") is stored as typed, and every portal
+// fill resolves it to the 10-digit US number — a masked "(___) ___-____" box typed "+1541…" would
+// shift every digit one place. This already holds; it is pinned so it keeps holding.
+await check("MUST-PASS: '+1' intake phone -> the whole key is the 10-digit US number (no country code)", () => {
+  for (const typed of ["+15415550123", "1-541-555-0123", "+1 (541) 555-0123"]) {
+    const pid = R.createProject(db, { owner: "Plus One Owner", ...BASE, homeownerPhone: typed } as never).project.id;
+    const v = PR.resolveRecipeFieldValues(db, R.getProjectDetail(db, pid).project, "accela", "electrical");
+    assert.equal(v.homeownerPhone.replace(/[^0-9]/g, ""), "5415550123", `${typed} -> ${v.homeownerPhone}`);
+    assert.equal(v.homeownerPhoneArea, "541", `${typed} area -> ${v.homeownerPhoneArea}`);
+  }
+});
+await check("MUST-EXCLUDE: a number that is not a 10-digit US number is passed exactly as written", () => {
+  const pid = R.createProject(db, { owner: "Ext Owner", ...BASE, homeownerPhone: "541-555-0123 ext 4" } as never).project.id;
+  const v = PR.resolveRecipeFieldValues(db, R.getProjectDetail(db, pid).project, "accela", "electrical");
+  assert.equal(v.homeownerPhone, "541-555-0123 ext 4");
+});
+
 console.log(`\nsiteContactPhoneDefault: ${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);
