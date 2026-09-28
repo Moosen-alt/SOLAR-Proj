@@ -1,6 +1,7 @@
 import type { ParserPayload, QcStatus, Severity } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
 import { knownPowerClerkUtility } from "./utilityIdentity";
+import { nemApplicantName } from "./accountHolders";
 
 export interface BaselineRuleDefinition {
   id: string;
@@ -473,7 +474,8 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
       `The application names ${applicantName}, but the utility bill's account holder is ${accountHolder}. ` +
         `An interconnection request from someone not listed on the account gets suspended. Before filing, either add ` +
         `the applicant to the account as a co-customer, put the service in their name, or name ${accountHolder} on the ` +
-        `application as the account holder.`,
+        `application as the account holder. As filed, the interconnection application names ${nemApplicantName(accountHolder, applicantName)} ` +
+        `(the bill's primary holder — operator ruling 2026-09-28); the permits keep ${applicantName}.`,
       "ubAccountHolder",
     ));
   }

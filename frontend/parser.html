@@ -5587,6 +5587,11 @@ function buildSystemPayload() {
     homeownerEmail: getVal('homeownerEmail'),
     homeownerPhone: getVal('homeownerPhone'),
     jobValue: getVal('jobValue'),
+    // WHO HOLDS THE ACCOUNT, as the bill prints it — every listed holder of a joint account (the
+    // backend's nemApplicantName picks the plan-set owner when listed, else the primary holder;
+    // operator ruling 2026-09-28). The OCR path fills the box; the vision path's bill reading of the
+    // customer name block is the fallback, so a photo bill no longer loses the holder.
+    ubAccountHolder: getVal('ubAccountHolder') || ParserReview.billHolderBlock((state.llmEvidence || []).find((e) => e.field === 'owner' && e.source === 'utility_bill')),
     account: getVal('account') || getVal('ubAccountNumber'),
     meter: getVal('meter') || getVal('planMeterNumber') || getVal('ubMeterNumber'),
     meterNumber: getVal('meter') || getVal('planMeterNumber') || getVal('ubMeterNumber'),

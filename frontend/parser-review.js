@@ -312,6 +312,17 @@
     const pa = namePersons(a); const pb = namePersons(b);
     return pa.some((x) => pb.some((y) => personsMatch(x, y)));
   }
+  /** The bill's customer name block as printed — every holder of a joint account ("ROBIN L SAMPLE /
+   *  DURWOOD W SAMPLE") — when the reading's quoted excerpt is a name list that includes its value;
+   *  else the reading's value. The excerpt is used only when it is nothing but names (letters,
+   *  spaces, . ' - and the & / + separators), so a quoted sentence never becomes a holder. */
+  function billHolderBlock(reading) {
+    if (!reading) return '';
+    const value = clean(reading.value);
+    const ex = clean(String(reading.excerpt || '').replace(/^["'\s]+|["'\s]+$/g, ''));
+    if (ex && /^[A-Za-z .'&\/+-]+$/.test(ex) && namePersons(ex).length > namePersons(value).length && namesMatch(ex, value)) return ex;
+    return value;
+  }
   /** How a non-matching document name relates to the bill holder, for the conflict wording:
    *  'surname-only-doc' — the document prints a surname and no given name ("SAMPLE RESIDENCE",
    *  "DE LA CRUZ RESIDENCE"), so it cannot confirm or deny the person; 'surname-only-bill' —
@@ -490,7 +501,22 @@
       if (c) for (const r of c.readings) if (r.source !== 'utility_bill' && !others.some((o) => namesMatch(o.value, r.value))) others.push({ field: 'owner', value: r.value, source: r.source || 'plan_set', sheet: r.sheet || '', excerpt: r.excerpt || '' });
       const candidates = [];
       for (const o of others) if (!candidates.some((k) => namesMatch(k.value, o.value))) candidates.push(o);
-      if (bill && (candidates.length || flagged.includes('owner') || c)) {
+      // A JOINT ACCOUNT (operator ruling 2026-09-28: "Durwood is good seeing as they're listed. If
+      // they're not listed then primary name on the bill will apply for the NEM"). The bill's name
+      // block lists every holder, while the reading's value is often only the first; a plan-set owner
+      // who is one of the listed holders IS on the account — no spouse/relative conflict. The owner
+      // stays the plan set's; the NEM customer block reads the bill (accountHolders.nemApplicantName).
+      const block = bill ? billHolderBlock(bill) : '';
+      if (bill && namePersons(block).length > 1) {
+        // Only where the VALUE alone misses the owner: a value that already lists the holders resolves
+        // through the rule below exactly as before (to the bill's printed block).
+        const listed = candidates.find((k) => namesMatch(block, k.value) && !namesMatch(bill.value, k.value));
+        if (listed) {
+          resolved.push({ field: 'owner', value: listed.value, how: `listed on the utility bill as an account holder ("${block}", ${where(bill)}) — a joint account; the NEM application names the listed owner`, evidence: bill });
+          done.add('owner');
+        }
+      }
+      if (!done.has('owner') && bill && (candidates.length || flagged.includes('owner') || c)) {
         const matches = candidates.filter((k) => namesMatch(bill.value, k.value));
         const nonMatch = candidates.filter((k) => !namesMatch(bill.value, k.value));
         if (candidates.length === 0 || matches.length === 1 || (matches.length >= 1 && nonMatch.length === 0)) {
@@ -838,7 +864,7 @@
   return {
     compareMeters, meterTargets, meterInText,
     mergeNotes, assertsMissingAttached,
-    resolveReviewItems, rsdConflict, singleFamilyBasis, namesMatch,
+    resolveReviewItems, rsdConflict, singleFamilyBasis, namesMatch, billHolderBlock,
     licenseLabel, installerLine, identifyUtility,
     locatesDecision, EXCAVATION_TYPES,
     filterTapEvidence, isNoteMention,

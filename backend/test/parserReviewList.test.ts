@@ -641,4 +641,29 @@ UTILITY SERVICE: UNDERGROUND`;
   ok("calculated limit (skeptic round): worked sizing ('20 x 440W = 8.80 KW', '1.25 x 29A = 36.25A, USE 40A') stays a CONFLICT on both paths; only a limit-labelled result equal to the value is set aside");
 }
 
+// ---------------------------------------------------------------------------
+// JOINT ACCOUNT (operator ruling 2026-09-28): the bill's name block lists two holders, the
+// reading's value only the first. A plan-set owner who is one of the LISTED holders is on the
+// account — resolved to the plan set's owner, never a "shares only a surname" conflict; one who is
+// not listed stays the conflict it always was.
+// ---------------------------------------------------------------------------
+{
+  const joint = (planOwner: string, block: string) => PR.resolveReviewItems({ attached: ["plan_set", "utility_bill"], planText: planTextSF, passes: [
+    visionPass({ owner: field("Robin L Sample", "utility_bill", `"${block}"`, 0.95) }),
+    textPass({ owner: field(planOwner, "plan_set", `${planOwner.toUpperCase()} RESIDENCE`, 0.85, "PV 0.0") }, ["owner"]),
+  ] });
+  const listed = joint("Durwood Sample", "Robin L Sample / Durwood W Sample");
+  const lr = listed.resolved.find((x: { field: string }) => x.field === "owner");
+  assert.ok(lr && lr.value === "Durwood Sample" && /joint account/.test(lr.how), `listed owner resolved: ${JSON.stringify(listed.resolved)}`);
+  assert.ok(!listed.conflicts.some((x: { field: string }) => x.field === "owner"), "no owner conflict for a listed holder");
+  // MUST-EXCLUDE: the plan-set owner is not among the listed holders -> still a conflict.
+  const notListed = joint("Casey Sample", "Robin L Sample / Durwood W Sample");
+  assert.ok(!notListed.resolved.some((x: { field: string }) => x.field === "owner"), "an unlisted owner never resolves");
+  assert.ok(notListed.conflicts.some((x: { field: string }) => x.field === "owner"), "an unlisted owner stays a conflict");
+  // MUST-EXCLUDE: an excerpt that is a sentence, not a name list, is never read as holders.
+  assert.equal(PR.billHolderBlock({ value: "Robin L Sample", excerpt: "Customer: Robin L Sample account 12 / Durwood W Sample" }), "Robin L Sample");
+  assert.equal(PR.billHolderBlock({ value: "Robin L Sample", excerpt: "\"Robin L Sample / Durwood W Sample\"" }), "Robin L Sample / Durwood W Sample");
+  ok("joint account: a listed plan-set owner resolves (no spouse conflict); an unlisted one stays a conflict; a sentence excerpt is never a holder list");
+}
+
 console.log(`\nparserReviewList: all ${passed} checks passed`);

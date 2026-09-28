@@ -1,4 +1,5 @@
 import type { PortalRecipe, PortalRecipeStatus, ProjectRecord, RecipeStep } from "../../shared/src/types";
+import { nemApplicantName } from "./accountHolders";
 import { createHash } from "node:crypto";
 import { addAuditLog } from "./audit";
 import { clientLicenceNumbersForClient, clientStagingOverlay, kindForSlot, LICENCE_OVERLAY_KEYS, licenceJobState, licenceOverlayForClient } from "./clients";
@@ -1811,7 +1812,9 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
   // With the fallback the keys are always populated, so the customer block can be bound to
   // the account holder unconditionally: identical output when the holder IS the homeowner,
   // correct output when they differ.
-  const ubHolder = String(snapshotFlat.ubAccountHolder || "").trim() || String(project.homeownerName || "").trim();
+  // A JOINT ACCOUNT names the plan-set owner when the bill lists them, else the bill's primary holder
+  // (operator ruling 2026-09-28 — accountHolders.nemApplicantName).
+  const ubHolder = nemApplicantName(String(snapshotFlat.ubAccountHolder || ""), String(project.homeownerName || ""));
   // A billing name often carries a title ("PROF CHRIS A IVY"). Keep the full string for the
   // account-name field — it should match the bill — but drop the title before splitting, or
   // the first-name box gets "PROF".
