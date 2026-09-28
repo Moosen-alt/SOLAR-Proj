@@ -27,11 +27,16 @@
 // (Marion County area) would inherit "Jefferson County (Madras)" answers — a different place.
 import type {
   CitedFact,
+  IssuerTrackKey,
   PermitProcessLookup,
   PermitProcessPermitAnswer,
   ProjectRecord,
+  TrackIssuerAnswer,
 } from "../../shared/src/types";
 import type { AppDb } from "./db";
+import { sameAgencyName } from "./agencyName";
+import { trackIssuersFromSnapshot } from "./normalize";
+import { namedKnownUtility, UTILITY_IDENTITY_LABEL } from "./utilityIdentity";
 
 // ── Keys ────────────────────────────────────────────────────────────────────────────────
 /** "City of Jefferson, OR" / "city of  jefferson" → "city of jefferson". A trailing state code
@@ -295,22 +300,232 @@ export function statePermitStructure(project: Pick<ProjectRecord, "state">): Cit
   return answered(rule) ? rule : null;
 }
 
-/** Which of the lookup's permits a submittal track files. */
-export function permitAnswerForTrack(project: Pick<ProjectRecord, "state" | "ahj">, track: string | null | undefined): PermitProcessPermitAnswer | null {
-  const lk = permitProcessFor(project);
-  if (!lk?.permits?.length) return null;
+/** A project, or the track-scoped view of one (projectForTrack), as the issuer questions read it. */
+export type IssuerProject = Pick<ProjectRecord, "state" | "ahj"> & Partial<Pick<ProjectRecord, "trackIssuers" | "parserSnapshot" | "trackView">>;
+
+/** Which of the lookup's permits a submittal track files.
+ *
+ *  ON A TRACK VIEW (projectForTrack — ahj is the track's issuer) the project's OWN lookup still
+ *  answers about this permit when its cited agency IS that issuer: City of Jefferson's lookup cites
+ *  "Marion County" for both permits, with the record type and portal it found, and there is no
+ *  lookup keyed on Marion County itself — without this the view would lose every cited answer the
+ *  per-job lookup found for this job. Otherwise the issuer's own lookup answers. */
+export function permitAnswerForTrack(project: Pick<ProjectRecord, "state" | "ahj"> & Partial<Pick<ProjectRecord, "trackView">>, track: string | null | undefined): PermitProcessPermitAnswer | null {
   const want = track === "building" ? "structural" : track === "electrical" || track === "mpu" ? "electrical" : track === "combo" || track === "permit" ? "combo" : "";
   if (!want) return null;
+  const view = project.trackView;
+  if (view && String(view.projectAhj ?? "").trim()) {
+    const base = permitProcessFor({ state: project.state, ahj: view.projectAhj });
+    const fromBase = base?.permits?.find((p) => p.discipline === want) ?? null;
+    if (fromBase && answered(fromBase.issuingAgency) && sameAgencyName(fromBase.issuingAgency.value, project.ahj)) return fromBase;
+  }
+  const lk = permitProcessFor(project);
+  if (!lk?.permits?.length) return null;
   return lk.permits.find((p) => p.discipline === want) ?? null;
 }
 
-/** The agency that issues this track's permit: the permit's own answer, else the AHJ-wide one. */
-export function issuingAgencyFor(project: Pick<ProjectRecord, "state" | "ahj">, track: string | null | undefined): CitedFact<string> | null {
+/** The agency that issues this track's permit: the OPERATOR's per-track issuer (trackIssuer's first
+ *  layer — the same value, the same refusals), else the permit's own looked-up answer, else the
+ *  AHJ-wide one. Forms (applicationDocsAgency.formAuthorityFor) and the replay's agency binding read
+ *  this, so they follow the issuer staging files with. */
+export function issuingAgencyFor(project: IssuerProject, track: string | null | undefined): CitedFact<string> | null {
+  const op = operatorIssuerFact(project, track);
+  if (op) return op;
+  return lookedUpIssuingAgency(project, track);
+}
+
+/** issuingAgencyFor without the operator layer: the per-job lookup's answer only. */
+function lookedUpIssuingAgency(project: IssuerProject, track: string | null | undefined): CitedFact<string> | null {
   const p = permitAnswerForTrack(project, track);
   if (p && answered(p.issuingAgency)) return p.issuingAgency;
   const lk = permitProcessFor(project);
   if (lk && answered(lk.issuingAgency)) return lk.issuingAgency;
+  // ON A TRACK VIEW the project's own lookup's AHJ-wide agency still answers when it IS this issuer
+  // ("Marion County issues permits for the City of Jefferson" — no lookup is keyed on the county).
+  const view = project.trackView;
+  if (view && String(view.projectAhj ?? "").trim()) {
+    const base = permitProcessFor({ state: project.state, ahj: view.projectAhj });
+    if (base && answered(base.issuingAgency) && sameAgencyName(base.issuingAgency.value, project.ahj)) return base.issuingAgency;
+  }
   return null;
+}
+
+// ── WHO ISSUES THIS TRACK'S PERMIT (split issuer, operator fact 2026-09-28) ─────────────────
+// "Electrical permit issued through Yamhill; Building permit issued through Newberg": an Oregon city
+// can run its own building program on its own portal (OpenGov) while the county issues the
+// electrical permit on Oregon ePermitting. Every permit-track door used to key on project.ahj, so
+// whichever agency the project named, one of the two permits staged on the other agency's portal
+// (and the right one was refused as a foreign entity). ONE answer per track, then ONE track-scoped
+// view of the project that every door reads (projectForTrack). A GENERAL capability — many Oregon
+// cities run a building program while the county or the state issues electrical — never a patch
+// for one city.
+
+/** The issuer key a track reads. building/structural → building; electrical; combo/permit → combo;
+ *  mpu. null for the NEM track, a trackless (legacy combined) stage and anything else: a utility
+ *  files NEM, and a trackless stage keeps the project AHJ. */
+export function issuerTrackKey(track: string | null | undefined): IssuerTrackKey | null {
+  const t = String(track ?? "").trim().toLowerCase();
+  if (t === "building" || t === "structural") return "building";
+  if (t === "electrical") return "electrical";
+  if (t === "combo" || t === "permit") return "combo";
+  if (t === "mpu") return "mpu";
+  return null;
+}
+
+const STATE_NAME_CODES: Record<string, string> = {
+  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR", california: "CA", colorado: "CO", connecticut: "CT", delaware: "DE",
+  florida: "FL", georgia: "GA", hawaii: "HI", idaho: "ID", illinois: "IL", indiana: "IN", iowa: "IA", kansas: "KS", kentucky: "KY",
+  louisiana: "LA", maine: "ME", maryland: "MD", massachusetts: "MA", michigan: "MI", minnesota: "MN", mississippi: "MS",
+  missouri: "MO", montana: "MT", nebraska: "NE", nevada: "NV", "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM",
+  "new york": "NY", "north carolina": "NC", "north dakota": "ND", ohio: "OH", oklahoma: "OK", oregon: "OR", pennsylvania: "PA",
+  "rhode island": "RI", "south carolina": "SC", "south dakota": "SD", tennessee: "TN", texas: "TX", utah: "UT", vermont: "VT",
+  virginia: "VA", washington: "WA", "west virginia": "WV", wisconsin: "WI", wyoming: "WY", "district of columbia": "DC",
+};
+const STATE_CODES = new Set(Object.values(STATE_NAME_CODES));
+
+/** The state an agency name SAYS it is in — only in a comma or parenthesis form ("Clark County, WA",
+ *  "City of Vancouver, Washington", "Clark County (WA)"). A bare trailing word is never read: "Yamhill
+ *  Co" is a county, not Colorado, and "Washington County" is an Oregon county. null = says none. */
+export function agencyNameState(name: string | null | undefined): string | null {
+  const s = String(name ?? "").trim();
+  const m = /,\s*([A-Za-z][A-Za-z .]*?)\.?\s*$/.exec(s) ?? /\(\s*([A-Za-z][A-Za-z .]*?)\.?\s*\)\s*$/.exec(s);
+  if (!m) return null;
+  const token = m[1].replace(/\./g, "").replace(/\s+/g, " ").trim();
+  if (/^[A-Za-z]{2}$/.test(token) && STATE_CODES.has(token.toUpperCase())) return token.toUpperCase();
+  return STATE_NAME_CODES[token.toLowerCase()] ?? null;
+}
+
+/** Why an operator's issuer value cannot be honoured on a project in `projectState`, or null when it
+ *  can. The one refusal the write path (updateProject → 400) and the read path (trackIssuer →
+ *  `refused`) share: a permit is never issued across a state line, so a value naming another state
+ *  would only ever resolve that state's portal; and a UTILITY never issues a permit — its name
+ *  fuzzy-resolves some city's portal ("Portland General Electric" → City of Portland's DevHub), so a
+ *  known utility's name (utilityIdentity.namedKnownUtility, the shared identity) is refused too. */
+export function refuseTrackIssuerValue(value: string | null | undefined, projectState: string | null | undefined): string | null {
+  const v = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!v) return null;
+  if (v.length > 120) return "it is longer than an agency name (120 characters at most)";
+  if (/https?:\/\/|\bwww\./i.test(v)) return "it is a web address — name the agency (e.g. \"City of Newberg\"), not its portal";
+  const utility = namedKnownUtility(projectState, v);
+  if (utility) return `it names a utility (${UTILITY_IDENTITY_LABEL[utility]}) — a utility takes the interconnection application and never issues a permit; name the city or county that issues this permit (e.g. "Yamhill County")`;
+  const named = agencyNameState(v);
+  const own = String(projectState ?? "").trim().toUpperCase();
+  if (named && own && named !== own) return `it names an agency in ${named}, and this project is in ${own} — a permit is never issued across a state line`;
+  return null;
+}
+
+/** The operator's value on file for this track ("" when none). MPU follows electrical unless its own
+ *  is set. Reads the mapped record field, else the raw snapshot keys (a Pick<> caller's record). */
+export function operatorTrackIssuerValue(project: IssuerProject, track: string | null | undefined): string {
+  const key = issuerTrackKey(track);
+  if (!key) return "";
+  const issuers = project.trackIssuers ?? trackIssuersFromSnapshot(project.parserSnapshot) ?? {};
+  const own = String(issuers[key] ?? "").trim();
+  if (own) return own;
+  return key === "mpu" ? String(issuers.electrical ?? "").trim() : "";
+}
+
+/** The operator's per-track issuer as a CitedFact (origin "operator"), when it may be honoured. */
+function operatorIssuerFact(project: IssuerProject, track: string | null | undefined): CitedFact<string> | null {
+  const value = operatorTrackIssuerValue(project, track);
+  if (!value || refuseTrackIssuerValue(value, project.state)) return null;
+  return {
+    value,
+    sourceUrl: "",
+    quote: `Set by an operator on this project for the ${issuerTrackKey(track)} permit`,
+    origin: "operator",
+  };
+}
+
+/** THE CITED BAR a LOOKED-UP issuing agency must clear before anything follows it (forms —
+ *  applicationDocsAgency.formAuthorityFor — and staging — trackIssuer): a person verified the lookup,
+ *  or the answer carries the http page it was read from. An uncited lookup value is a guess and
+ *  changes nothing. (The operator's own issuer is a person's statement, read first by both callers.) */
+export function citedAgencyAnswer(f: CitedFact<string> | null | undefined, lookupVerified: boolean): f is CitedFact<string> {
+  if (!f || typeof f.value !== "string" || !f.value.trim()) return false;
+  return lookupVerified || /^https?:\/\//i.test(String(f.sourceUrl ?? ""));
+}
+
+/** A project with its view marker removed (the project AHJ put back). */
+function baseOfView<T extends IssuerProject>(project: T): T {
+  const view = project.trackView;
+  if (!view) return project;
+  const { trackView: _view, ...rest } = project;
+  const ahj = String(view.projectAhj ?? "");
+  const snap = rest.parserSnapshot && typeof rest.parserSnapshot === "object" && "ahj" in rest.parserSnapshot
+    ? { ...rest.parserSnapshot, ahj }
+    : rest.parserSnapshot;
+  return { ...rest, ahj, ...(snap !== undefined ? { parserSnapshot: snap } : {}) } as T;
+}
+
+/**
+ * THE ONE ANSWER to "which agency issues THIS track's permit", strongest first:
+ *   a. the OPERATOR's per-track issuer on the project (ProjectRecord.trackIssuers; MPU follows
+ *      electrical) — unless it names another state (refused, and said so);
+ *   b. the per-job lookup's issuing agency for this permit (issuingAgencyFor's lookup chain: the
+ *      permit's own answer, else the AHJ-wide one) when it clears the cited bar AND names another
+ *      agency than the project AHJ (sameAgencyName — "City of Salem Permit Center" is Salem, a
+ *      department suffix never re-keys a project) AND is not a known utility's name;
+ *   c. the project AHJ.
+ * NEM, a trackless stage and an unknown track are always (c): the NEM track never reads it.
+ */
+export function trackIssuer(project: IssuerProject, track: string | null | undefined): TrackIssuerAnswer {
+  const key = issuerTrackKey(track);
+  const view = project.trackView;
+  // A view already names its issuer (for its own track).
+  if (view && key && issuerTrackKey(view.track) === key) {
+    return { name: String(project.ahj ?? "").trim(), source: view.source, override: operatorTrackIssuerValue(project, track) };
+  }
+  const base = baseOfView(project);
+  const ahj = String(base.ahj ?? "").trim();
+  if (!key) return { name: ahj, source: "project", override: "" };
+  const override = operatorTrackIssuerValue(base, key);
+  let refused: string | undefined;
+  if (override) {
+    const why = refuseTrackIssuerValue(override, base.state);
+    if (!why) return { name: override, source: "operator", override };
+    refused = `"${override}" was not used: ${why}`;
+  }
+  const looked = lookedUpIssuingAgency(base, key);
+  const verified = permitProcessFor(base)?.confidence === "verified";
+  // A looked-up "issuer" that is a known UTILITY is a misread, never an issuer: it would re-key the
+  // track on the utility's name, which fuzzy-resolves some city's portal (the same refusal the
+  // operator's value gets — namedKnownUtility, the one identity).
+  if (ahj && looked && citedAgencyAnswer(looked, verified) && !sameAgencyName(looked.value, ahj) && !namedKnownUtility(base.state, looked.value)) {
+    return {
+      name: String(looked.value).trim(), source: "lookup", sourceUrl: looked.sourceUrl, quote: looked.quote,
+      override, ...(refused ? { refused } : {}),
+    };
+  }
+  return { name: ahj, source: "project", override, ...(refused ? { refused } : {}) };
+}
+
+/**
+ * THE TRACK-SCOPED VIEW every permit-track door reads: the project itself — the SAME object — when
+ * this track's issuer is the project AHJ (the overwhelming case: nothing changes), else a copy whose
+ * `ahj` (and snapshot `ahj`) is the issuer, marked with `trackView` so the lookup's cited answer
+ * still reaches it and a view of a view is itself. Recipe keys, KB rows, the learned profile, the
+ * entity the host predicate judges (portalChannel.hostFitsTrackAndEntity — still the one door; the
+ * entity it judges is the track's issuer), the borrow, the field values, the learn's recipe key and
+ * the tracking target all read this. NEVER persisted. NEM / trackless → the project.
+ */
+export function projectForTrack<T extends IssuerProject>(project: T, track: string | null | undefined): T {
+  const key = issuerTrackKey(track);
+  if (!key) return project;
+  if (project.trackView && issuerTrackKey(project.trackView.track) === key) return project;
+  const base = baseOfView(project);
+  const issuer = trackIssuer(base, key);
+  const ahj = String(base.ahj ?? "");
+  if (issuer.source === "project" || !issuer.name || sameAgencyName(issuer.name, ahj) || normalizeAhjName(issuer.name) === normalizeAhjName(ahj)) return base;
+  const snap = base.parserSnapshot && typeof base.parserSnapshot === "object" && "ahj" in base.parserSnapshot
+    ? { ...base.parserSnapshot, ahj: issuer.name }
+    : base.parserSnapshot;
+  return {
+    ...base,
+    ahj: issuer.name,
+    ...(snap !== undefined ? { parserSnapshot: snap } : {}),
+    trackView: { track: key, projectAhj: ahj, source: issuer.source },
+  } as T;
 }
 
 /** The record type the lookup found for this track's permit. */

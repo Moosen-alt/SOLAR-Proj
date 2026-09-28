@@ -718,7 +718,7 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
       // the same coarse phase→percent mapping the dashboard's progress bar expects.
       const { autoLearnPortal } = await import("./autoLearn");
       const { sseBroadcast } = await import("./events");
-      const p = job.payload as { scope?: string; portalUrl?: string; createdBy?: string; permitType?: string; discipline?: string };
+      const p = job.payload as { scope?: string; portalUrl?: string; createdBy?: string; permitType?: string; discipline?: string; track?: string | null };
       const projectId = String(job.projectId);
       const learnResult = await autoLearnPortal(db, projectId, {
         scope: p.scope === "utility" ? "utility" : "ahj",
@@ -727,6 +727,10 @@ async function runClaimedJob(db: AppDb, job: JobRecord): Promise<boolean> {
         permitType: p.permitType === "electrical" ? "electrical" : p.permitType === "structural" ? "structural" : undefined,
         // Carried so a queued/auto re-learn writes the SAME discipline the lookup keys on.
         discipline: typeof p.discipline === "string" ? p.discipline : undefined,
+        // ...and the SAME issuer view: a stage's re-learn carries its own track (null = trackless —
+        // JSON keeps the null), so it keys where the stale recipe was found. An operator's queued
+        // learn carries none and names its permit by permitType / discipline.
+        ...(p.track !== undefined ? { track: typeof p.track === "string" && p.track.trim() ? p.track.trim() : null } : {}),
         onProgress: (prog) => {
           const percent =
             prog.phase === "login" ? 8

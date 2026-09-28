@@ -48,6 +48,8 @@ const NAMES = [
   "FEE_SOURCE_TEXT", "FEE_CONFIDENCE", "feeConfidenceKey", "FEE_PAYMENT_METHOD", "renderFeeCharges", "feeFaceSourceHtml",
   "feeComparisonHtml", "feePortalRecordsHtml", "renderFeeSheetLine",
   "TRACK_STATUS_CLASS", "TRACK_CHANNEL_BASIS", "linkifyText", "trackChannelHtml", "OFF_TOOL_CHANNEL", "offToolChannelHtml", "trackPrerequisitesHtml", "trackNextActionText",
+  // The permit card's issuer line and its set/clear control (split issuer) — trackCardHtml calls both.
+  "TRACK_ISSUER_KEY", "TRACK_ISSUER_SOURCE", "trackIssuerHtml", "trackIssuerEditHtml", "saveTrackIssuer",
   "trackCardHtml", "utilityGroupTitle", "renderSubmittalTracks",
 ];
 const preamble = "const screenshotMisses = new Set(); const screenshotKey = (a, b, c) => `${a}:${b}:${c}`;";

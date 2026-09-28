@@ -23,7 +23,7 @@
 // at module top level — functions only — so the cycle stays inert.
 // ---------------------------------------------------------------------------
 import type { CitedFact, ProjectRecord } from "../../shared/src/types";
-import { issuingAgencyFor, permitAnswerForTrack, permitProcessFor, structureTypeMeaning } from "./permitProcess";
+import { citedAgencyAnswer, issuingAgencyFor, permitAnswerForTrack, permitProcessFor, structureTypeMeaning } from "./permitProcess";
 import { agencyNameKey, sameAgencyName } from "./permitProcessLookup";
 import { DOCUMENT_URL, hostStateOf, isAgencyOwnDomain, jurisdictionTypes, nameKeys, portalNameToken, stateAgencyOf, wordsNameAnotherJurisdiction } from "./permitPlatformCatalog";
 import { isPathTenantedHost, isVendorDomain, portalHostOf, portalTenantOf, registrableDomain } from "./portalChannel";
@@ -95,8 +95,10 @@ export interface FormAuthority {
   fact: CitedFact<string> | null;
 }
 
-const answeredCited = (f: CitedFact<string> | null | undefined, verified: boolean): f is CitedFact<string> =>
-  Boolean(f && typeof f.value === "string" && f.value.trim()) && (verified || /^https?:\/\//i.test(String(f?.sourceUrl ?? "")));
+// THE CITED BAR is permitProcess.citedAgencyAnswer — the same one trackIssuer (staging) applies to a
+// looked-up agency, so the forms and the portal follow one issuer. (An operator's per-track issuer is
+// read ahead of it, in formAuthorityFor.)
+const answeredCited = (f: CitedFact<string> | null | undefined, verified: boolean): f is CitedFact<string> => citedAgencyAnswer(f, verified);
 
 /**
  * THE ONE PREDICATE: whose forms apply to this form type on this project. A building-side form
@@ -115,7 +117,13 @@ export function formAuthorityFor(project: Pick<ProjectRecord, "state" | "ahj">, 
   try {
     const verified = permitProcessFor(project)?.confidence === "verified";
     const tries = track === "building" ? ["building", "combo"] : ["electrical"];
-    for (const t of tries) {
+    // THE OPERATOR'S PER-TRACK ISSUER FIRST (split issuer): the value issuingAgencyFor answers with —
+    // on a single-permit project the combination permit's issuer issues both sides' forms.
+    const operator = [track, "combo"]
+      .map((t) => issuingAgencyFor(project, t))
+      .find((f) => f?.origin === "operator") ?? null;
+    if (operator) fact = operator;
+    else for (const t of tries) {
       const f = t === "combo" ? permitAnswerForTrack(project, "combo")?.issuingAgency ?? null : issuingAgencyFor(project, t);
       if (answeredCited(f, verified)) { fact = f; break; }
     }

@@ -18,7 +18,7 @@ import {
 import { isHarnessAbort, looksBotBlocked } from "./runAbort";
 import { certifiedModelFor } from "./cecEquipment";
 import { nowIso } from "./time";
-import { sameRecordType } from "./permitProcess";
+import { projectForTrack, sameRecordType } from "./permitProcess";
 import { parseStreetNumber, parseStreetName, parseStreetLine } from "../../portal-bot/src/addressParse";
 import { feeBracketFieldForLabel, feeBracketQuantityFields } from "./feeBracketFields";
 import { FEE_BRACKET_FIELD_PREFIX } from "../../portal-bot/src/feeBracketQuantity";
@@ -1767,8 +1767,19 @@ export function homeownerPhoneOrNone(snapshotFlat: Record<string, unknown>): str
  * when the caller cannot say). REQUIRED on purpose: the licence keys answer "the licence THIS permit
  * takes in THIS state" (clients.licenceOverlay), and a caller that forgets the track must decide to
  * pass null — which makes a generic licence key blank when several licences could fit.
+ *
+ * `issuerTrack` (omitted = `track`): the track whose ISSUER `ahj` binds to, for the one caller that
+ * keys on a view other than the licence track's — a learn keyed on its stage's own view (autoLearn
+ * learnIssuerTrack: a trackless stage is the project AHJ although its licence track is "building").
  */
-export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, portalType: string, track: string | null): Record<string, string> {
+export function resolveRecipeFieldValues(
+  db: AppDb, projectIn: ProjectRecord, portalType: string, track: string | null, issuerTrack?: string | null,
+): Record<string, string> {
+  // A PERMIT TRACK'S JURISDICTION IS ITS ISSUER (split issuer): `ahj` binds to the agency that issues
+  // THIS track's permit (permitProcess.projectForTrack — the same object when that is the project AHJ;
+  // a view of a view is itself, so a caller that already holds the view is unchanged). NEM / null: the
+  // project.
+  const project = projectForTrack(projectIn, issuerTrack !== undefined ? issuerTrack : track);
   const snapshot = project.parserSnapshot || {};
   const snapshotFlat: Record<string, string> = {};
   for (const [k, v] of Object.entries(snapshot)) {

@@ -30,7 +30,7 @@ import { detectPlatform } from "./publicPermitStatus";
 import { NEM_APPROVAL_OUTCOME, isNemApprovalOutcome, trackKind } from "./permitMonitor";
 import { HttpError } from "./httpError";
 import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, recipeDisciplineForTrack, trackSafeUrl } from "./portalChannel";
-import { permitAnswerForTrack, permitProcessFor } from "./permitProcess";
+import { permitAnswerForTrack, permitProcessFor, projectForTrack, trackIssuer } from "./permitProcess";
 import { utilityTrackPresentation } from "./utilityFilingLookup";
 import { nowIso } from "./time";
 import { hasMpuScope } from "./serviceScope";
@@ -155,9 +155,11 @@ export function requiredTracks(project: ProjectRecord): SubmittalTrackType[] {
  *  that is a utility portal (rule 5) or an information page is never a permit channel. */
 function lookedUpPermitPortal(project: ProjectRecord, track: SubmittalTrackType): { url: string; sourceUrl: string; recordType: string } | null {
   const lk = permitProcessFor(project);
-  if (!lk?.permits?.length) return null;
+  // On a track view (projectForTrack) the permit's cited answer can come from the PROJECT's own
+  // lookup while the issuer has none of its own — ask for it before giving up on an empty lookup.
   const own = permitAnswerForTrack(project, track);
-  const pool = own ? [own] : track === "combo" || track === "permit" ? lk.permits : [];
+  if (!own && !lk?.permits?.length) return null;
+  const pool = own ? [own] : track === "combo" || track === "permit" ? (lk?.permits ?? []) : [];
   const found = pool
     .map((p) => ({ p, url: typeof p.portalUrl?.value === "string" ? p.portalUrl.value.trim() : "" }))
     .filter(({ p, url }) => url && /^https?:\/\//i.test(p.portalUrl.sourceUrl || "") && trackSafeUrl(track, url) && !isInformationalPageUrl(url));
@@ -630,7 +632,12 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
     const state = readTrackState(db, project.id, type, required);
     const status = deriveStatus(state);
     const category = categoryFor(type);
-    const resolved = channelResolution(db, type, project);
+    // A PERMIT CARD IS ITS ISSUER'S (split issuer): channel, recipe and portal on file are the agency
+    // that issues THIS track's permit — the same view staging stages with (projectForTrack; the
+    // project itself when that is the project AHJ). The utility card: the project.
+    const issuerProject = category === "permit" ? projectForTrack(project, type) : project;
+    const issuer = category === "permit" ? trackIssuer(project, type) : undefined;
+    const resolved = channelResolution(db, type, issuerProject);
     const channel = resolved.channel;
     // Prerequisites precede the building-side filing (the one that goes to the other office's
     // stamp first); on a single-permit project, that one permit.
@@ -650,7 +657,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
     const scopeType = category === "utility" ? "utility" : "ahj";
     const family = trackPermitTypes(type);
     const resolverInput = {
-      scopeType, state: project.state, ahj: project.ahj, utility: project.utility,
+      scopeType, state: project.state, ahj: issuerProject.ahj, utility: project.utility,
       ...(scopeType === "ahj" ? { discipline: recipeDisciplineForTrack(type) } : {}),
     } as const;
     type CardRecipe = { id: string; status: string; portal_url: string };
@@ -696,7 +703,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
     if (!recipeRow || !s(recipeRow.portal_url)) {
       if (fitsHere(resolved.portalUrl)) kbPortalUrl = resolved.portalUrl;
       const kbField = scopeType === "utility" ? "utility" : "ahj";
-      const kbVal = scopeType === "utility" ? project.utility : project.ahj;
+      const kbVal = scopeType === "utility" ? project.utility : issuerProject.ahj;
       const kbRow = !kbPortalUrl && kbVal
         ? db.get<Row>(`SELECT portal_url FROM permit_utility_knowledge WHERE ${kbField} = ? AND portal_url IS NOT NULL AND portal_url != '' LIMIT 1`, [kbVal])
         : null;
@@ -704,7 +711,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
         kbPortalUrl = s(kbRow.portal_url);
       } else if (!kbPortalUrl) {
         // Fall back to applicationDocs profile sourceUrl (built-in AHJ/utility definitions).
-        const appProfile = findApplicationProfile(project);
+        const appProfile = findApplicationProfile(issuerProject);
         if (appProfile?.sourceUrl && fitsHere(appProfile.sourceUrl)) kbPortalUrl = appProfile.sourceUrl;
       }
     }
@@ -737,6 +744,7 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
       recipeId: recipeRow ? s(recipeRow.id) : undefined,
       recipeScopeType: scopeType,
       borrowedRecipe,
+      ...(issuer ? { issuer } : {}),
     };
   });
 }
@@ -1047,6 +1055,10 @@ export function ensureCheckTarget(
 
   const frequency = Math.max(1, Math.floor(Number(input.checkFrequencyDays || 7)));
   const targetId = randomUUID();
+  // A PERMIT FILING IS TRACKED AT THE AGENCY THAT ISSUES IT (split issuer): the building permit a city
+  // issues on a county-AHJ project is followed on the city's portal, under the city's name
+  // (permitProcess.projectForTrack — the project itself when the issuer is the project AHJ).
+  const trackedAt = targetType === "nem" ? project : projectForTrack(project, track ?? permitType);
   db.run(
     `INSERT INTO permit_check_targets
       (id, project_id, jurisdiction, portal_name, portal_url, application_number, permit_number,
@@ -1056,8 +1068,8 @@ export function ensureCheckTarget(
     [
       targetId,
       project.id,
-      input.jurisdiction ?? (targetType === "nem" ? project.utility || "" : project.ahj || ""),
-      input.portalName ?? (track ? targetPortalName(track, project, db) : ""),
+      input.jurisdiction ?? (targetType === "nem" ? project.utility || "" : trackedAt.ahj || ""),
+      input.portalName ?? (track ? targetPortalName(track, trackedAt, db) : ""),
       portalUrl,
       applicationNumber,
       permitNumber,
