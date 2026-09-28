@@ -214,6 +214,65 @@ try {
     catalog.registrableDomain("www.offsite.ma.us") === "offsite.ma.us" && catalog.registrableDomain("neighbortown.ma.us") === "neighbortown.ma.us"
     && catalog.registrableDomain("www.city.waltham.ma.us") === "city.waltham.ma.us" && catalog.registrableDomain("www.douglas.co.us") === "douglas.co.us",
     JSON.stringify([catalog.registrableDomain("www.offsite.ma.us"), catalog.registrableDomain("www.city.waltham.ma.us")]));
+  // ── H (forms-find close): WHICH PERMIT is read on the HEAD phrase — never on the scope text after it ──
+  // Real applications whose titles list their scope were MISSED once a department / trade word anywhere in
+  // the title excluded them; a subject in the head ("Solar Rebate", "Right-of-Way Construction", "Sewer
+  // Building") was TAKEN because a job word stood beside it.
+  const H_PASS: Array<[string, string]> = [
+    ["Residential Building Permit Application (includes solar, roofing, decks)", "building"],
+    ["Electrical Permit Application - Solar PV", "electrical"],
+    ["Building Permit Application: new construction, additions, alterations", "building"],
+    ["Residential Building Permit Application (Additions, Alterations, Decks, Sheds)", "building"],
+    ["Building Permit Application - Residential (New Homes, Additions, Decks, Pools)", "building"],
+    ["Electrical Permit Application (Solar, Generators, Pools, Spas)", "electrical"],
+    ["Building Permit Application - One & Two Family Dwellings (incl. re-roofing, siding)", "building"],
+    ["Building Permit Application (Health Department sign-off required)", "building"],
+    ["Residential Building Permit Application - Historic District", "building"],
+    ["Electrical Permit Application for Solar and Fire Alarm", "electrical"],
+    ["Application for Electrical Wiring Permit", "electrical"],
+    // A town's own name before the head is not a subject ("Beach", "Park", "Services" are places / departments there).
+    ["Palm Beach County Residential Building Permit Application", "building"],
+    ["Oak Park Residential Application", "general"],
+    ["Inspectional Services Building Permit Application", "building"],
+    // A COMBINED building + electrical form is combined (the building side's — never the electrical slot's).
+    ["Building & Wiring Permit Application", "combined"],
+  ];
+  for (const [name, discipline] of H_PASS) {
+    const got = catalog.classifyApplicationDocument(name, dc(name.replace(/[^A-Za-z0-9]+/g, "-")));
+    check(`H UNIT MUST-PASS "${name}" is a ${discipline} application`, got?.discipline === discipline, JSON.stringify(got));
+  }
+  for (const name of ["Solar Rebate Application", "Right-of-Way Construction Permit Application", "Sewer Building Permit Application", "Deck Building Permit Application",
+    "Solar Fire Department Permit Application", "Residential Solar Rebate Application", "Solar Access Permit Application", "Building Demolition Permit Application",
+    "Building Occupancy Permit Application", "Electric Service Application", "Application for Electric Service", "Street Construction Permit Application",
+    "Sidewalk Construction Permit Application", "Driveway Construction Permit Application", "Stormwater Construction Permit Application",
+    "Grading and Construction Permit Application", "Excavation Construction Permit Application", "Residential Transfer Station Permit Application",
+    "Residential Mooring Permit Application", "Residential Beach Sticker Application", "Electric Vehicle Charging Station Permit Application",
+    "Solar Easement Application", "Residential Solar Fee Waiver Application", "Solar Incentive Program Application",
+    // Rule 5 reads the WHOLE name: a utility's form named in the scope is still never taken.
+    "Electrical Permit Application - Utility Interconnection"]) {
+    const got = catalog.classifyApplicationDocument(name, dc(name.replace(/[^A-Za-z0-9]+/g, "-")));
+    check(`H UNIT MUST-EXCLUDE "${name}" is not the application`, got === null, JSON.stringify(got));
+  }
+  check("H UNIT a score boost never lifts an excluded head: the rebate application is refused, the building one taken, on one page",
+    catalog.classifyApplicationDocument("Residential Solar Rebate Application", dc("Residential-Solar-Rebate-Application")) === null
+    && catalog.classifyApplicationDocument("Building Permit Application", dc("Building-Permit-Application"))?.discipline === "building");
+  // ── W (forms-find close): "wire" / "wiring" is ELECTRICAL only in a permit phrase; a COMBINED form is the building side's ──
+  for (const name of ["Solar-PV-Sample-Wiring-Diagram.pdf", "wire-transfer-instructions.pdf", "Wire Transfer Authorization", "wire-fraud-notice",
+    "https://www.somewhere.ma.us/files/Solar-PV-Sample-Wiring-Diagram.pdf"]) {
+    check(`W UNIT MUST-EXCLUDE classifyFormType("${name}") is not the electrical application`, auto.classifyFormType(name, "permit_application") !== "electrical_application", auto.classifyFormType(name, "permit_application"));
+  }
+  for (const name of ["Wiring Permit Application", "Wiring-Permit-Application.pdf", "Application for Electrical Wiring Permit", "Electrical Permit Application - Building Department",
+    "https://www.co.coos.or.us/sites/default/files/building/Electrical%20Permit%20Application.pdf"]) {
+    check(`W UNIT MUST-PASS classifyFormType("${name}") is the electrical application`, auto.classifyFormType(name, "") === "electrical_application", auto.classifyFormType(name, ""));
+  }
+  for (const name of ["Building & Wiring Permit Application.pdf", "Building/Electrical Permit Application.pdf", "Building, Electrical & Plumbing Permit Application.pdf",
+    "https://www.somewhere.ma.us/DocumentCenter/View/9/Building-and-Wiring-Permit-Application Building & Wiring Permit Application Building and Wiring Permit Application",
+    "https://www.somewhere.ma.us/DocumentCenter/View/9/Building-Electrical-Permit-Application Building/Electrical Permit Application Building Electrical Permit Application"]) {
+    check(`W UNIT a COMBINED form is the BUILDING side's, never electrical: classifyFormType("${name.slice(0, 80)}")`,
+      auto.classifyFormType(name, "electrical_application") === "building_application", auto.classifyFormType(name, "electrical_application"));
+  }
+  check("W UNIT the combined form fits the building-side and generic slots, never the electrical one",
+    auto.disciplineFitsSlot("combined", "permit_application") && auto.disciplineFitsSlot("combined", "building_application") && !auto.disciplineFitsSlot("combined", "electrical_application"));
   check("UNIT a state's own site is not an AHJ's forms site; the AHJ's own is; another state's never",
     !catalog.isAhjFormsSite("www.oregon.gov", ["City of Waltham"], "MA") && catalog.isAhjFormsSite("www.city.waltham.ma.us", ["City of Waltham"], "MA")
     && !catalog.isAhjFormsSite("www.tigard-or.gov", ["City of Waltham"], "MA") && !catalog.isAhjFormsSite("www.pge.com", ["City of Waltham"], "MA"));
@@ -407,6 +466,72 @@ try {
   const mbRows = rows("Town of Wirefield").map((r) => `${r.form_type}|${r.source_url}`).sort();
   check("F2 MUST-PASS the building application fills the building side and the wiring one the electrical slot", f2c.status === "acquired" && f2c.sourceUrl === MB_BLD
     && JSON.stringify(mbRows) === JSON.stringify([`building_application|${MB_BLD}`, `electrical_application|${MB_WIR}`].sort()), JSON.stringify({ f2c, mbRows }));
+
+  // ═══ W1 A COMBINED "Building & Wiring" FORM is the building side's — the AHJ's electrical row is untouched ═══
+  // (skeptic P11/P8/P8b) The generic slot's only candidate is a combined form: it was re-typed to
+  // electrical_application at the store, replacing the AHJ's HUMAN-VERIFIED electrical application, and
+  // left the building / generic slot unsatisfied — a paid re-search and re-download on every pass.
+  const CW = "https://www.combiwire.ma.us";
+  const CW_APP = `${CW}/DocumentCenter/View/1500/Building-and-Wiring-Permit-Application`;
+  serveHtml(`${CW}/forms`, civicPage("Forms", [[CW_APP.slice(CW.length), "Building & Wiring Permit Application"]]));
+  servePdf(CW_APP, await acroPdf("COMBIWIRE Building and Wiring Permit Application"));
+  auto.storeAhjFormTemplate(db, { ahjName: "Town of Combiwire", state: "MA", formType: "electrical_application", filename: "Town of Combiwire Electrical Permit Application.pdf",
+    bytes: await acroPdf("COMBIWIRE VERIFIED electrical"),
+    map: { formName: "Town of Combiwire Electrical Permit Application", sourceUrl: `${CW}/verified-electrical.pdf`, fillMode: "acroform", textFields: { "Owner name": "project.homeownerName" }, checkboxes: {} } as never });
+  db.run("UPDATE ahj_form_templates SET field_map = json_set(field_map, '$.verified', json('true')) WHERE ahj_name = ? AND form_type = 'electrical_application'", ["Town of Combiwire"]);
+  const cwElec = () => db.query<{ source_url: string; field_map: string }>("SELECT source_url, field_map FROM ahj_form_templates WHERE ahj_name = ? AND form_type = 'electrical_application'", ["Town of Combiwire"])
+    .map((r) => `${r.source_url}|${JSON.parse(r.field_map).verified === true}`);
+  researchFor.set("Town of Combiwire", { formsPageUrl: `${CW}/forms` });
+  const cwJob = mkJob("Town of Combiwire", "Combiwire");
+  const w1 = await auto.ensureAhjFormTemplate(db, llm, cwJob, "permit_application", { formsPage: fp() });
+  check("W1 MUST-PASS the combined form is stored as the BUILDING application", w1.status === "acquired"
+    && rows("Town of Combiwire").some((r) => r.form_type === "building_application" && r.source_url === CW_APP), JSON.stringify({ w1, rows: rows("Town of Combiwire") }));
+  check("W1 MUST-EXCLUDE the AHJ's electrical application (verified) is untouched", JSON.stringify(cwElec()) === JSON.stringify([`${CW}/verified-electrical.pdf|true`]), JSON.stringify(cwElec()));
+  researchCalls = [];
+  requested = [];
+  const w1b = await auto.ensureAhjFormTemplate(db, llm, cwJob, "permit_application", { formsPage: fp() });
+  check("W1 MUST-PASS the next generic pass answers 'exists' — no paid search, no request", w1b.status === "exists" && researchCalls.length === 0 && requested.length === 0,
+    JSON.stringify({ w1b, researchCalls, requested }));
+  const w1c = await auto.ensureAhjFormTemplate(db, llm, cwJob, "building_application", { formsPage: fp() });
+  check("W1 MUST-PASS ...and the building slot is satisfied by it too", w1c.status === "exists" && researchCalls.length === 0, JSON.stringify({ w1c, researchCalls }));
+  // A SAMPLE WIRING DIAGRAM the model lists after the application is never the electrical application.
+  const DG = "https://www.diagramton.ma.us";
+  const DG_APP = `${DG}/files/Residential-Application.pdf`;
+  const DG_DIA = `${DG}/files/Solar-PV-Sample-Wiring-Diagram.pdf`;
+  servePdf(DG_APP, await acroPdf("DIAGRAMTON Residential Application"));
+  servePdf(DG_DIA, await acroPdf("DIAGRAMTON sample three-line wiring diagram"));
+  researchFor.set("Town of Diagramton", { candidateUrls: [DG_APP, DG_DIA] });
+  const w2 = await auto.ensureAhjFormTemplate(db, llm, mkJob("Town of Diagramton", "Diagramton"), "permit_application", { formsPage: fp() });
+  check("W2 MUST-EXCLUDE a sample wiring diagram is never stored as the electrical application", w2.status === "acquired"
+    && !rows("Town of Diagramton").some((r) => r.form_type === "electrical_application"), JSON.stringify({ w2, rows: rows("Town of Diagramton") }));
+
+  // ═══ H1 THE HEAD PHRASE on a real forms page ═════════════════════════════════════════════════════════
+  // A building application whose title lists its scope is taken; a rebate / sewer / right-of-way / electric
+  // service application beside it is never requested — and never ranked above it by "solar" / "residential".
+  const HP = "https://www.headville.ma.us";
+  const hpLinks: Array<[string, string]> = [
+    ["Residential Solar Rebate Application", "Residential-Solar-Rebate-Application"],
+    ["Building Sewer Permit Application", "Building-Sewer-Permit-Application"],
+    ["Right-of-Way Construction Permit Application", "Right-of-Way-Construction-Permit-Application"],
+    ["Electric Service Application", "Electric-Service-Application"],
+    ["Residential Building Permit Application (Additions, Alterations, Decks, Sheds)", "Residential-Building-Permit-Application"],
+  ];
+  const hpUrl = (slug: string) => `${HP}/DocumentCenter/View/${1600 + hpLinks.findIndex((l) => l[1] === slug)}/${slug}`;
+  serveHtml(`${HP}/forms`, civicPage("Applications", hpLinks.map(([text, slug]) => [hpUrl(slug).slice(HP.length), text])));
+  for (const [text, slug] of hpLinks) servePdf(hpUrl(slug), await acroPdf(`HEADVILLE ${text}`));
+  researchFor.set("Town of Headville", { formsPageUrl: `${HP}/forms` });
+  const hpJob = mkJob("Town of Headville", "Headville");
+  requested = [];
+  const h1 = await auto.ensureAhjFormTemplate(db, llm, hpJob, "permit_application", { formsPage: fp() });
+  const HP_BLD = hpUrl("Residential-Building-Permit-Application");
+  check("H1 MUST-PASS the building application whose title lists its scope is the one stored", h1.status === "acquired" && h1.sourceUrl === HP_BLD
+    && JSON.stringify(rows("Town of Headville").map((r) => [r.form_type, r.source_url])) === JSON.stringify([["building_application", HP_BLD]]), JSON.stringify({ h1, rows: rows("Town of Headville") }));
+  check("H1 MUST-EXCLUDE the rebate / sewer / right-of-way / electric-service applications are never requested",
+    JSON.stringify(requested) === JSON.stringify([`${HP}/forms`, HP_BLD]), JSON.stringify(requested));
+  requested = [];
+  const h1e = await auto.ensureAhjFormTemplate(db, llm, hpJob, "electrical_application", { formsPage: fp() });
+  check("H1 MUST-EXCLUDE a municipal utility's Electric Service Application never fills the electrical slot", h1e.status === "not_found"
+    && !rows("Town of Headville").some((r) => r.form_type === "electrical_application") && !requested.includes(hpUrl("Electric-Service-Application")), JSON.stringify({ h1e, requested }));
 
   // ═══ R1 THE RE-TYPE LOOP — a slot is satisfied by the stored type its blank was re-typed to ═══════════
   // A "Building Permit Application" fetched for the GENERIC slot is stored as building_application (the

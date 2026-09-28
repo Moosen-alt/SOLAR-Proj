@@ -848,17 +848,35 @@ const APPLICATION_WORDS = /\bapplications?\b|\bpermit\s+(?:form|request)\b/i;
  *  never the blank form itself. A checklist that names an application is still a checklist. */
 const NOT_A_FORM = /checklist|guide|handout|brochure|\bfaqs?\b|instruction|how[- ]to|bulletin|newsletter|agenda|minutes|annual report|press release|polic(?:y|ies)|flyer|presentation|\bnotice\b|\bsample\b|\bexample\b/i;
 /** An application, but not for a permit to build: tax / assessor forms ("Residential Exemption
- *  Application"), employment, boards and commissions, licences and registrations, rentals, bids —
- *  and a utility's interconnection / net-metering application (rule 5: never on a permit track). */
-const NOT_A_BUILD_PERMIT = /assessor|abatement|exemption|\btax(?:es)?\b|excise|employment|\bjobs?\b|appointment|\bboards?\b|committee|commission|public records|records request|rental|vendor|\bbids?\b|\bgrants?\b|voter|raffle|yard sale|block party|hawker|peddler|\blicen[cs](?:e|es|ing)\b|registration|certificat|scholarship|volunteer|interconnect|net[- ]?meter|\butility\b/i;
+ *  Application"), employment, boards and commissions, licences and registrations, rentals, bids. */
+const NOT_A_BUILD_PERMIT = /assessor|abatement|exemption|\btax(?:es)?\b|excise|employment|\bjobs?\b|appointment|\bboards?\b|committee|commission|public records|records request|rental|vendor|\bbids?\b|\bgrants?\b|voter|raffle|yard sale|block party|hawker|peddler|\blicen[cs](?:e|es|ing)\b|registration|certificat|scholarship|volunteer/i;
+/** A utility's interconnection / net-metering application (rule 5: never on a permit track) — read on
+ *  the WHOLE name, scope included: a missed permit form is recoverable, a utility's form on a permit
+ *  track is not. */
+const UTILITY_APPLICATION = /interconnect|net[- ]?meter|\butility\b/i;
+/** A SUBJECT that is not this job's permit (forms-find close, 2026-09-28): an application whose HEAD
+ *  names one of these is another permit or program, whatever job word stands beside it — "Solar Rebate
+ *  Application", "Right-of-Way Construction Permit Application", "Sewer Building Permit Application",
+ *  "Building Demolition / Occupancy Permit Application", "Electric Service Application" (a municipal
+ *  utility's), "EV Charging Station Permit Application". Never rescued by solar / residential /
+ *  construction / building / electrical. A word that is also a common PLACE name is read only in its
+ *  subject sense ("Beach Sticker", never "Palm Beach"; "Parking", never "Oak Park"): the head can carry
+ *  the town's own name. "service" is singular (an electric / water service), never a department's
+ *  "Inspectional Services". */
+const OTHER_SUBJECT = /rebate|incentive|\bloans?\b|waiver|subscription|\baccess\b|accessory|easement|sewer|\bwater\b|stormwater|drainage|\bservice\b|\bstations?\b|right[- ]of[- ]way|\brow\b|encroach|\bstreets?\b|sidewalk|\bcurb|driveway|grading|excavat|trench|demolition|\bdemo\b|occupancy|\bsigns?\b|\bfences?\b|\bpools?\b|\btrees?\b|mooring|\bbeach\s+(?:stickers?|pass(?:es)?|permits?|parking|access)|sticker|parking|\btrash\b|recycl|snow ?plow|snow removal|\bplowing\b|low[- ]voltage|\bevents?\b|\bfood\b|liquor|alcohol|\balarms?\b|animal|\bdogs?\b|kennel|cemetery|library|recreation|subdivision|land use|flood|\bdocks?\b|\bpiers?\b|shellfish|\bfilm|noise|parade|solicit/i;
 // WHICH PERMIT AN APPLICATION IS FOR — a POSITIVE test first (forms-find skeptic F2, 2026-09-28).
 // Rejecting only KNOWN-bad names let ANY "<X> Permit Application" through as the generic blank
 // (Burn, HVAC, Roofing, Deck, Well, Blasting, Oil Burner, Fire Protection, Wood Stove, Septic,
 // Title 5, Elevator, Hot Work, Tank Removal, Moving, Earth Removal, Home Occupation …), and a
 // town's forms page lists dozens. A harvested application must NAME this job's work; an unnamed
 // "<X>" is a missed form, never a wrong one.
+/** A WIRING permit is the electrical permit (Massachusetts towns' "Wiring Permit Application") — but
+ *  "wire" / "wiring" counts ONLY in a permit phrase: "wiring permit", "wiring application", "electrical
+ *  wiring". A "Sample Wiring Diagram", a "wire transfer" or a "wire fraud" notice is no application
+ *  (forms-find close: a bare \bwir(e|ing)\b stored a wiring DIAGRAM as the AHJ's electrical application). */
+export const WIRING_PERMIT_PHRASE = /\bwiring[\s_-]+(?:permits?|applications?)\b|\belectrical[\s_-]+wiring\b/i;
 /** The electrical permit's words — "Wiring Permit Application" is an ELECTRICAL application. */
-const ELECTRICAL_APP_WORDS = /electric|\bele\b|\bwir(?:e|ing)\b/i;
+const ELECTRICAL_APP_WORDS = new RegExp(`electric|\\bele\\b|${WIRING_PERMIT_PHRASE.source}`, "i");
 /** The building permit's words. */
 const BUILDING_APP_WORDS = /building|structural|\bbld\b/i;
 /** THIS job's work — a residential building / electrical / solar permit. Every harvested
@@ -873,10 +891,86 @@ const OTHER_DEPARTMENT = /\bfire\b|\bburn(?:ing)?\b|blasting|explosive|hot work|
  *  — rescued only by the building / electrical words themselves, NEVER by solar / PV / residential:
  *  "Building, Plumbing & Gas Permit Application" is this job's form; "Plumbing Permit Application",
  *  "Residential HVAC Permit Application" and "Solar Plumbing Permit Application" are not. The fee
- *  door's activities (OTHER_FEE_KIND: street, driveway, zoning …) on the same terms. */
-const OTHER_TRADE = /plumbing|\bgas\b|mechanical|\bhvac\b|heating|air condition|refrigerat|sheet ?metal|demolition|occupancy|variance|special permit|site plan|zoning/i;
+ *  door's activities (street, driveway, sewer, grading …) are SUBJECTS, never rescued (OTHER_SUBJECT:
+ *  "construction" rescued every "<Street> Construction Permit Application"). */
+const OTHER_TRADE = /plumbing|\bgas\b|mechanical|\bhvac\b|heating|air condition|refrigerat|sheet ?metal|variance|special permit|site plan|zoning/i;
 const TRADE_RESCUE = new RegExp(`construction|${BUILDING_APP_WORDS.source}|${ELECTRICAL_APP_WORDS.source}`, "i");
 export type ApplicationDiscipline = "electrical" | "building" | "combined" | "general";
+// ── THE HEAD PHRASE (forms-find close, 2026-09-28) ─────────────────────────────────────────────────
+// WHICH PERMIT an application is for is said by its HEAD — the words qualifying "(permit) application"
+// — never by the scope text after it. Every exclusion (another department / trade / subject) and the
+// positive job-word test read the head, so a real application whose title lists its scope ("Residential
+// Building Permit Application (includes solar, roofing, decks)", "Electrical Permit Application for Solar
+// and Fire Alarm") is taken, and a subject in the head ("Deck Building", "Solar Rebate", "Sewer
+// Building") is refused whatever else the title says. The document-TYPE tests (fee schedule, checklist,
+// guide, agenda, instructions — FEE_LINK / NOT_A_FORM) and rule 5's utility words still read the whole
+// name: those words come AFTER the anchor.
+/** "(permit) application" — the words that end a permit's head phrase (or "permit form / request"). */
+const APPLICATION_ANCHOR = /\b(?:permits?\s+)?applications?\b|\bpermits?\s+(?:form|request)\b/i;
+/** Where a title's scope text begins: "(", "[", " - " (any dash), ":", "|", " for ", " incl…". */
+const SCOPE_CUT = /\(|\[|\s[-–—]\s|:|\||\bfor\b|\bincl/i;
+/**
+ * The head phrase of ONE name (a link's words, a result's title, a document's slug), WITH its anchor
+ * ("Residential Well Permit Application" — the anchor keeps "well permit" readable as a water well's):
+ *   - "<head> (Permit) Application <scope>" -> "<head> (Permit) Application": everything before the
+ *     anchor (a town's name or a section prefix before it stays in the head — it can only exclude);
+ *   - "Application for <head> Permit <scope>" -> "<head> Permit Application", cut at the first scope mark;
+ *   - no anchor at all -> null (the name does not say it is an application).
+ */
+export function applicationHeadPhrase(name: string): string | null {
+  const s = String(name ?? "").replace(/\s+/g, " ").trim();
+  const m = APPLICATION_ANCHOR.exec(s);
+  if (!m) return null;
+  const before = s.slice(0, m.index).trim();
+  if (before) return `${before} ${m[0]}`;
+  const after = s.slice(m.index + m[0].length);
+  const f = /^\s*for\s+(?:an?\s+|the\s+)?/i.exec(after);
+  if (!f) return m[0];
+  let head = after.slice(f[0].length);
+  const cut = SCOPE_CUT.exec(head);
+  if (cut) head = head.slice(0, cut.index);
+  const p = /\bpermits?\b/i.exec(head);
+  if (p) head = head.slice(0, p.index + p[0].length);
+  return `${head.trim()} ${m[0]}`.trim();
+}
+/** A name with no anchor (a bare link text beside an anchored slug): the words up to its first scope mark. */
+const unanchoredHead = (name: string): string => {
+  const s = String(name ?? "").replace(/\s+/g, " ").trim();
+  const cut = SCOPE_CUT.exec(s);
+  return (cut ? s.slice(0, cut.index) : s).trim();
+};
+/** The building and the electrical permit JOINED in one head ("Building & Wiring", "Building/Electrical",
+ *  "Building, Plumbing & Electrical", "Electrical and Building Permits") — a COMBINED application. Two
+ *  discipline words NOT joined ("Building Department Electrical Permit Application") are not a combined
+ *  form: the electrical word decides, as classifyFormType always read it. */
+const JOIN = String.raw`\s*(?:&|\+|/|,|\band\b)\s*`;
+const B_WORD = String.raw`(?:building|bldg|bld|structural)`;
+const E_WORD = String.raw`(?:electrical|electric|ele|wiring)`;
+const ITEM = String.raw`(?:\s+permits?)?`;
+const COMBINED_HEAD = new RegExp(
+  String.raw`\b${B_WORD}\b${ITEM}(?:${JOIN}[a-z]+${ITEM})*?${JOIN}${E_WORD}\b|\b${E_WORD}\b${ITEM}(?:${JOIN}[a-z]+${ITEM})*?${JOIN}${B_WORD}\b`, "i");
+/** WHICH PERMIT one head phrase is for — the one answer the harvest (classifyApplicationDocument) and the
+ *  store's re-type (ahjFormAuto.classifyFormType) both read. A COMBINED building + electrical form is the
+ *  BUILDING side's (never the electrical slot's: the building permit is its first claim, and a combined
+ *  row filed as electrical replaced the AHJ's real electrical application). */
+export function headDiscipline(head: string): ApplicationDiscipline {
+  const electrical = ELECTRICAL_APP_WORDS.test(head);
+  const building = BUILDING_APP_WORDS.test(head);
+  if (electrical && building) return COMBINED_HEAD.test(head) ? "combined" : "electrical";
+  return electrical ? "electrical" : building ? "building" : "general";
+}
+/** Does a free-text NAME (a filename, a formName, "<url> <link words> <slug>") name a COMBINED building +
+ *  electrical application — headDiscipline over each of its names: every URL by its document's own slug
+ *  (never its folders: "/building/Electrical-Permit-Application.pdf" is an electrical form in a building
+ *  folder), and the words around the URLs. */
+export function namesCombinedApplication(text: string): boolean {
+  const slugs: string[] = [];
+  const rest = String(text ?? "").replace(/https?:\/\/\S+/gi, (u) => { slugs.push(documentSlugWords(u)); return " "; });
+  return [...slugs, rest].some((n) => {
+    const head = applicationHeadPhrase(n.replace(/_+|(?<=\w)-(?=\w)/g, " "));
+    return head != null && headDiscipline(head) === "combined";
+  });
+}
 /** The words a document's own URL carries: its last path segment, extension and separators dropped
  *  ("/DocumentCenter/View/4313/Residential-Application" -> "Residential Application"). */
 export function documentSlugWords(href: string): string {
@@ -898,15 +992,30 @@ export function documentSlugWords(href: string): string {
  */
 export function classifyApplicationDocument(words: string, href: string): { discipline: ApplicationDiscipline; score: number } | null {
   if (!DOCUMENT_URL.test(String(href ?? ""))) return null;
-  const w = `${String(words ?? "")} ${documentSlugWords(href)}`.replace(/\s+/g, " ").trim();
-  if (!APPLICATION_WORDS.test(w) || !JOB_APP_WORDS.test(w)) return null;
-  if (FEE_LINK.test(w) || NOT_A_FORM.test(w) || NOT_A_BUILD_PERMIT.test(w) || OTHER_DEPARTMENT.test(w)) return null;
-  if ((OTHER_FEE_KIND.test(w) || OTHER_TRADE.test(w)) && !TRADE_RESCUE.test(w)) return null;
+  // Each NAME separately (the link's words, the document's own slug): a head read over the two run
+  // together would take the slug for the words' scope.
+  const names = [String(words ?? ""), documentSlugWords(href)].map((n) => n.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const w = names.join(" ");
+  if (!APPLICATION_WORDS.test(w)) return null;
+  const anchored = names.map(applicationHeadPhrase).filter((h): h is string => h != null);
+  if (!anchored.length) return null;
+  // A name with no anchor beside an anchored one ("Download" / "Residential" + ".../Application") is
+  // read whole, up to its scope — it can name the job's work, and it can exclude.
+  const heads = [...anchored, ...names.filter((n) => applicationHeadPhrase(n) == null).map(unanchoredHead).filter(Boolean)];
+  // The document TYPE and rule 5 on the whole name; WHICH PERMIT on its head.
+  if (FEE_LINK.test(w) || NOT_A_FORM.test(w) || UTILITY_APPLICATION.test(w)) return null;
+  if (!heads.some((h) => JOB_APP_WORDS.test(h))) return null;
+  for (const h of heads) {
+    if (NOT_A_BUILD_PERMIT.test(h) || OTHER_DEPARTMENT.test(h) || OTHER_SUBJECT.test(h)) return null;
+    if (OTHER_TRADE.test(h) && !TRADE_RESCUE.test(h)) return null;
+  }
   // A COMMERCIAL-only application is not a residential solar job's form (one naming both is).
   if (/commercial/i.test(w) && !/residential|dwelling/i.test(w)) return null;
-  const electrical = ELECTRICAL_APP_WORDS.test(w);
-  const building = BUILDING_APP_WORDS.test(w);
-  const discipline: ApplicationDiscipline = electrical && building ? "combined" : electrical ? "electrical" : building ? "building" : "general";
+  // Which permit: the anchored heads decide (a bare link text or an opaque slug says nothing of it).
+  // (Two names disagreeing, building vs electrical, read as electrical — the store's precedence.)
+  const named = anchored.map(headDiscipline);
+  const discipline: ApplicationDiscipline = named.includes("combined") ? "combined" : named.includes("electrical") ? "electrical"
+    : named.includes("building") ? "building" : headDiscipline(heads.join(" "));
   let score = 1;
   if (/residential|dwelling|single[- ]family|one[- ]?(?:and|&)[- ]?two[- ]family/i.test(w)) score += 3;
   if (/solar|photo-?voltaic|\bpv\b/i.test(w)) score += 3;

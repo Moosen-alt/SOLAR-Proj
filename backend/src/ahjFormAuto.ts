@@ -31,7 +31,7 @@ import { agencyApplicationForms, agencyRowAppliesToJob, agencyRowProvenance, anc
 import { isRefusal, PAGE_READ_MIN_GAP_MS, type PageReader } from "./agencyPageReader";
 // Its own line (not beside the applicationDocs import above): forms-fill rewrites the ahjForms import next to it.
 import { permitStructureForProject } from "./applicationDocs";
-import { applicationFormLinks, classifyApplicationDocument, documentSlugWords, isAhjFormsSite, DOCUMENT_URL, type ApplicationDiscipline } from "./permitPlatformCatalog";
+import { applicationFormLinks, classifyApplicationDocument, documentSlugWords, isAhjFormsSite, namesCombinedApplication, WIRING_PERMIT_PHRASE, DOCUMENT_URL, type ApplicationDiscipline } from "./permitPlatformCatalog";
 import { isUtilityPlatformUrl, portalHostOf, registrableDomain } from "./portalChannel";
 
 // ---------------------------------------------------------------------------
@@ -642,9 +642,10 @@ interface FormCandidate {
 }
 /** May an application of this discipline be THIS slot's primary blank? An electrical-only
  *  application is never the building-side / generic blank; the electrical slot takes only an
- *  electrical (or a combined building + electrical) one. */
+ *  electrical one — a COMBINED building + electrical form is the building side's (classifyFormType
+ *  stores it as building_application, so taken for the electrical slot it would never fill it). */
 export function disciplineFitsSlot(discipline: ApplicationDiscipline, formType: string): boolean {
-  if (formType === "electrical_application") return discipline === "electrical" || discipline === "combined";
+  if (formType === "electrical_application") return discipline === "electrical";
   return discipline !== "electrical";
 }
 /** A URL that is never this slot's application whoever proposed it: a utility host (rule 5), and —
@@ -756,9 +757,15 @@ export function classifyFormType(nameOrUrl: string, fallback: string): string {
   // checklist: a caller that recognised it (by its anchors) keeps its own type.
   if (fallback === PV_WORKSHEET_DOC_TYPE) return fallback;
   if (/checklist|worksheet|eligibilit/.test(t)) return "solar_checklist";
-  // A WIRING permit is the electrical permit (Massachusetts towns' "Wiring Permit Application" —
-  // the harvest's discipline reads it the same way: permitPlatformCatalog.ELECTRICAL_APP_WORDS).
-  if (/electrical|ele[-_ ]?permit|\bwir(?:e|ing)\b/.test(t)) return "electrical_application";
+  // A COMBINED building + electrical application ("Building & Wiring", "Building/Electrical Permit
+  // Application") is the BUILDING side's — the one answer the harvest reads too
+  // (permitPlatformCatalog.headDiscipline). Filed as electrical, it replaced the AHJ's real electrical
+  // application and left the building / generic slot unsatisfied (a paid re-search on every pass).
+  if (namesCombinedApplication(t)) return "building_application";
+  // A WIRING permit is the electrical permit (Massachusetts towns' "Wiring Permit Application") — but
+  // only as a permit phrase (WIRING_PERMIT_PHRASE): a "Sample Wiring Diagram", a "wire transfer" or a
+  // "wire fraud" notice is not the AHJ's electrical application.
+  if (/electrical|ele[-_ ]?permit/.test(t) || WIRING_PERMIT_PHRASE.test(t)) return "electrical_application";
   if (/building|structural|bld[-_ ]?permit/.test(t)) return "building_application";
   return fallback;
 }
