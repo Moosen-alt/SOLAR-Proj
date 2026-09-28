@@ -7463,27 +7463,33 @@ export function draftDocumentGaps(
   // staging ran that fill, so it carried the form if the template was on file then (its age decides,
   // below). Anything else not on disk was not in the draft.
   const produced = missingFilledAtStaging(db, project, trackRows.filter((d) => !d.present));
+  // THE SAME PACKAGING ON BOTH SIDES: the recorded list is Object.keys(packagedDocumentsByType) at
+  // staging, so a row is judged only under a key that packaging gives it NOW — a document the
+  // payload keys another way (an alias, a family key), or would not carry on this track anyway, is
+  // no proof of anything, and never a reason to refuse a fresh draft.
+  const nowPackaged = carried ? new Set(Object.keys(packagedDocumentsByType(db, project, track))) : null;
+  const templateIds = carried ? [] : loadStoredTemplates(db, project.ahj, project.state).map((t) => t.templateId);
   const out: Array<{ label: string; onFileNow: boolean }> = [];
   for (const d of trackRows) {
     const keys = [d.docType, ...(d.altDocTypes || [])];
     if (!d.present && !produced.has(d)) { out.push({ label: d.label, onFileNow: false }); continue; }
     if (d.via === "in plan set") continue; // the plan set carries it
-    if (carried) {
-      if (!keys.some((k) => carried.includes(k))) out.push({ label: d.label, onFileNow: true });
+    if (carried && nowPackaged) {
+      const packagedKeys = keys.filter((k) => nowPackaged.has(k));
+      if (packagedKeys.length && !packagedKeys.some((k) => carried.includes(k))) out.push({ label: d.label, onFileNow: true });
       continue;
     }
-    if (Number.isFinite(startedMs) && documentArrivedAfter(db, project, keys, startedMs)) out.push({ label: d.label, onFileNow: true });
+    if (Number.isFinite(startedMs) && documentArrivedAfter(db, project, keys, startedMs, templateIds)) out.push({ label: d.label, onFileNow: true });
   }
   return out;
 }
 
 /** Did every copy of these document types (uploads, and the stored templates a filled form comes
  *  from) arrive after `sinceMs`? false when nothing dated is found — no proof, no claim. */
-function documentArrivedAfter(db: AppDb, project: ProjectRecord, keys: string[], sinceMs: number): boolean {
+function documentArrivedAfter(db: AppDb, project: ProjectRecord, keys: string[], sinceMs: number, templateIds: string[]): boolean {
   const ph = keys.map(() => "?").join(", ");
   const times: number[] = db.query<Row>(`SELECT uploaded_at FROM project_documents WHERE project_id = ? AND doc_type IN (${ph})`, [project.id, ...keys])
     .map((r) => Date.parse(text(r.uploaded_at)));
-  const templateIds = loadStoredTemplates(db, project.ahj, project.state).map((t) => t.templateId);
   if (templateIds.length) {
     const rows = db.query<Row>(`SELECT created_at FROM ahj_form_templates WHERE id IN (${templateIds.map(() => "?").join(", ")}) AND form_type IN (${ph})`, [...templateIds, ...keys]);
     times.push(...rows.map((r) => Date.parse(text(r.created_at))));

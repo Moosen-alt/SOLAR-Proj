@@ -464,6 +464,25 @@ await check("C1", "KILL: a draft's recorded payload decides — a run handed no 
   db.run("UPDATE portal_runs SET result_json = ? WHERE id = ?", [JSON.stringify({ actor: "RecipeAdapter", ok: true, packagedDocTypes: ["plan_set", "sld", "electrical_application"] }), runId]);
   assert.ok(!/went up without/.test(String(getAutopilotState(db, pid).approveDisabledReason)), String(getAutopilotState(db, pid).approveDisabledReason));
 });
+await check("C1", "MUST-PASS (the production recording path): a draft staged NOW records its payload, and is approvable — no 'went up without' on a fresh draft", async () => {
+  const pid = mkProject();
+  saveProjectDocument(db, pid, { docType: "plan_set", filename: "plan-set.pdf", contentType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n% fresh draft plan set\n", "utf8"), source: "upload" });
+  const staged: string[] = [];
+  for (const track of requiredTracks(repo.getProjectDetail(db, pid).project)) {
+    try { await repo.prepareSubmission(db, pid, track, false); staged.push(track); } catch (e) { staged.push(`${track}: ${e instanceof Error ? e.message.slice(0, 160) : e}`); }
+  }
+  const runs = db.query<{ id: string; permit_type: string; status: string; result_json: string }>("SELECT id, permit_type, status, result_json FROM portal_runs WHERE project_id = ? AND status = 'awaiting_human_submit'", [pid]);
+  assert.ok(runs.length > 0, `nothing staged through the mock adapter: ${staged.join(" | ")}`);
+  if (process.env.GP_VERBOSE) console.log(`         staged: ${staged.join(" | ")}; drafts: ${runs.map((r) => `${r.permit_type} carried ${JSON.stringify((JSON.parse(r.result_json) as { packagedDocTypes?: string[] }).packagedDocTypes)}`).join(" · ")}`);
+  for (const r of runs) {
+    const carried = (JSON.parse(r.result_json) as { packagedDocTypes?: string[] }).packagedDocTypes;
+    assert.ok(Array.isArray(carried) && carried.length > 0, `run ${r.permit_type} recorded no payload: ${r.result_json.slice(0, 300)}`);
+    const gaps = repo.draftDocumentGaps(db, repo.getProjectDetail(db, pid).project, db.get("SELECT * FROM portal_runs WHERE id = ?", [r.id])!, r.permit_type as never);
+    assert.deepEqual(gaps, [], `a fresh ${r.permit_type} draft read as incomplete: ${JSON.stringify(gaps)}`);
+  }
+  const s = getAutopilotState(db, pid);
+  assert.doesNotMatch(String(s.approveDisabledReason), /went up without/, String(s.approveDisabledReason));
+});
 await check("C1", "KILL: an archived project neither stages nor approves", async () => {
   const pid = await jeffersonJob();
   mkRun(pid, "awaiting_human_submit", "nem", new Date().toISOString());
