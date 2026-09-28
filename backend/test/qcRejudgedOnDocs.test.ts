@@ -12,12 +12,17 @@
 //                       sheet the split filed.
 //   2b MUST-PASS      — no document change, no re-run (the chain does not spin; autoStageSteps 2a).
 //   2c REMOVAL        — deleting a filed sheet re-judges too ("attached" must not outlive the file).
-//   2d THE NEWS IS REAL — a bill uploaded to a ready_to_stage project whose account number nobody
-//                       could read re-judges to qc_failed and the chain stops there (qc.ts: "once a
-//                       bill IS on file and the value is still missing, it is a real failure").
+//   2d NO DEMOTION ON THE BILL ALONE — a (PDF) bill uploaded to a ready_to_stage project whose account
+//                       number nobody could read re-judges QC: the account row is refreshed to FAIL
+//                       (qc.ts: "once a bill IS on file and the value is still missing, it is a real
+//                       failure"), but when the only NEW fails are account / meter the project stays
+//                       ready_to_stage (converge 2026-09-28, conservative until the operator rules —
+//                       qc.QcRunOptions.holdStatusOnNewBillOnlyFails). The staging gate is unchanged.
+//   2f MUST-EXCLUDE    — any OTHER new fail found by a document re-judge still demotes and stops.
 //
 // KILLS (verified by hand): STEP 1 back to `parsed || qc_failed` only -> 2a, 2c, 2d FAIL;
-// documentsChangedAt ignoring removals -> 2c FAILS.
+// documentsChangedAt ignoring removals -> 2c FAILS; the hold dropped (demote unconditionally) ->
+// 2d FAILS; the hold ignoring non-bill fails (hold on any fail) -> 2f FAILS.
 //
 //   npx tsx backend/test/qcRejudgedOnDocs.test.ts
 import "./_isolate"; // FIRST: temp cwd, so filled/ docs/ never land in the repo's backend/data
@@ -129,7 +134,7 @@ check("2e. MUST-EXCLUDE: a new document re-judges a ready_to_stage project, and 
   rOut.ran.includes("qc") && status(r.id) === "ready_to_stage" && !rOut.ran.some((x) => x.startsWith("build_docs")),
   `ran=${JSON.stringify(rOut.ran)} status=${status(r.id)}`);
 
-console.log("\n2d. A BILL ON FILE WITH NO READABLE ACCOUNT NUMBER IS REAL NEWS");
+console.log("\n2d. A BILL ON FILE REFRESHES THE ACCOUNT ROWS — AND DOES NOT DEMOTE THE PROJECT");
 const q = portlandJob(2, "", "");
 const waiting = db.query<{ qc_status: string }>(
   "SELECT qc_status FROM qc_results WHERE project_id = ? AND rule_id IN (SELECT rule_id FROM qc_results WHERE project_id = ? AND message LIKE 'Waiting on the customer%')", [q.id, q.id]);
@@ -137,16 +142,37 @@ check("setup: with no bill on file the account number is a named WAIT, not a fai
   waiting.length > 0 && waiting.every((r) => r.qc_status === "warning"), JSON.stringify(waiting));
 db.run("UPDATE projects SET status = 'ready_to_stage' WHERE id = ?", [q.id]);
 await tick();
+// A PDF bill: the bill reader (billVision) reads images only, so nothing fills the account number.
 saveProjectDocument(db, q.id, { filename: "bill.pdf", docType: "utility_bill", contentType: "application/pdf", buffer: await mkPdf(["UTILITY BILL"]), source: "upload" });
 const billOut = await processStageStep(db, q.id);
-check("2d. MUST-PASS: the chain re-judged QC and the missing account number is now a FAIL — it stops at qc_failed",
-  billOut.ran.includes("qc") && billOut.stoppedAt === "qc_failed" && status(q.id) === "qc_failed",
-  `ran=${JSON.stringify(billOut.ran)} stoppedAt=${billOut.stoppedAt} status=${status(q.id)}`);
+const billRows = db.query<{ rule_id: string; qc_status: string }>(
+  "SELECT rule_id, qc_status FROM qc_results WHERE project_id = ? AND rule_id IN ('critical.account', 'critical.meter')", [q.id]);
+// Conservative until the operator rules (converge 2026-09-28): the document-triggered re-judge
+// refreshes the rows (the account row is a FAIL now — a bill IS on file) but the only NEW fails are
+// the account / meter number, so the project stays where it was.
+check("2d. THE POINT: the chain re-judged QC, the account row is refreshed to FAIL, and the project STAYS ready_to_stage",
+  billOut.ran.includes("qc") && billRows.some((r) => r.rule_id === "critical.account" && r.qc_status === "fail")
+    && status(q.id) === "ready_to_stage" && billOut.stoppedAt !== "qc_failed",
+  `ran=${JSON.stringify(billOut.ran)} rows=${JSON.stringify(billRows)} stoppedAt=${billOut.stoppedAt} status=${status(q.id)}`);
+
+console.log("\n2f. ANY OTHER NEW FAIL IS STILL REAL NEWS");
+const f = portlandJob(4, "1234567890", "987654321");
+check("setup: the Portland job clears QC at create", status(f.id) === "qc_passed", status(f.id));
+db.run("UPDATE projects SET status = 'ready_to_stage' WHERE id = ?", [f.id]);
+// The intake loses its module wattage behind QC's back (raw SQL: an edit through updateProject would
+// re-run QC itself — the point here is that the DOCUMENT re-judge is the first run to see it).
+db.run("UPDATE projects SET parser_json = json_set(parser_json, '$.moduleWattage', '') WHERE id = ?", [f.id]);
+await tick();
+saveProjectDocument(db, f.id, { filename: "module-spec.pdf", docType: "module_spec", contentType: "application/pdf", buffer: await mkPdf(["MODULE DATASHEET"]), source: "upload" });
+const fOut = await processStageStep(db, f.id);
+check("2f. MUST-EXCLUDE: a document re-judge that finds a NEW non-bill FAIL (module wattage) still demotes to qc_failed and stops",
+  fOut.ran.includes("qc") && fOut.stoppedAt === "qc_failed" && status(f.id) === "qc_failed",
+  `ran=${JSON.stringify(fOut.ran)} stoppedAt=${fOut.stoppedAt} status=${status(f.id)}`);
 
 // saveProjectDocument fires a void text extraction; let it land before db.close().
 for (let i = 0; i < 40; i += 1) {
   const busy = Number(db.get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM project_documents WHERE project_id IN (?, ?, ?) AND source = 'upload' AND extracted_text = ''", [p.id, q.id, r.id])?.n ?? 0);
+    "SELECT COUNT(*) AS n FROM project_documents WHERE project_id IN (?, ?, ?, ?) AND source = 'upload' AND extracted_text = ''", [p.id, q.id, r.id, f.id])?.n ?? 0);
   if (busy === 0) break;
   await new Promise((r) => setTimeout(r, 100));
 }

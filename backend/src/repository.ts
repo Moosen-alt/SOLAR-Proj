@@ -138,7 +138,7 @@ import {
   type PermitStatusClassification, type ReadingProvenance, type TrackKind,
 } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
-import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE } from "./qc";
+import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE, type QcRunOptions } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { disciplineFor } from "./docDiscipline";
@@ -5066,8 +5066,8 @@ export async function readStageResults(db: AppDb, projectId: string): Promise<{
   return { applicationDocs, reviewerReport, historicalReport };
 }
 
-export function rerunQc(db: AppDb, projectId: string): ProjectDetail {
-  const result = runQcForProject(db, projectId);
+export function rerunQc(db: AppDb, projectId: string, options: QcRunOptions = {}): ProjectDetail {
+  const result = runQcForProject(db, projectId, options);
   addAuditLog(db, projectId, "system", "qc gate", "project.qc_rerun", { ...result });
   return getProjectDetail(db, projectId);
 }

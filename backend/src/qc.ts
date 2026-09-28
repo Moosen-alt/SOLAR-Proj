@@ -221,7 +221,21 @@ function statusFor(check: Check, ctx: QcContext): QcStatus {
   return "pass";
 }
 
-export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
+export interface QcRunOptions {
+  /**
+   * THE DOCUMENT-TRIGGERED RE-JUDGE (autoStageSteps STEP 1, B7 — a project already past QC whose
+   * documents changed). It refreshes every row (a stale "Staging will refuse without it" row is
+   * cleared) but does NOT demote the project when the only NEW failures are the account / meter
+   * number (BILL_FIELDS). Why (converge 2026-09-28, conservative — the operator has not ruled): a
+   * bill uploaded after intake flips those rows from "waiting on the bill" to FAIL, and the bill
+   * reader (billVision) reads images only, so a PDF bill is never read — the re-judge would drop
+   * ready_to_stage -> qc_failed on a document nobody could have read. A new failure of any OTHER
+   * check still demotes (real news). The rows themselves are written either way.
+   */
+  holdStatusOnNewBillOnlyFails?: boolean;
+}
+
+export function runQcForProject(db: AppDb, projectId: string, options: QcRunOptions = {}): QcRunResult {
   const project = db.get<ProjectRow>("SELECT id, parser_json, ahj, state, utility, system_size_dc_kw, client_id FROM projects WHERE id = ?", [projectId]);
   if (!project) throw new Error("Project not found.");
 
@@ -237,13 +251,19 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
   let failCount = 0;
   let warningCount = 0;
   let statusWritten = false;
+  // Failures that were NOT failing on the last run, outside the account / meter pair — read before
+  // the DELETE below (QcRunOptions.holdStatusOnNewBillOnlyFails).
+  let newFailsOutsideBill = 0;
 
   db.transaction(() => {
+    const priorFails = new Set(db.query<{ rule_id: string }>(
+      "SELECT rule_id FROM qc_results WHERE project_id = ? AND qc_status = 'fail'", [projectId]).map((r) => String(r.rule_id)));
     db.run("DELETE FROM qc_results WHERE project_id = ?", [projectId]);
 
     for (const check of criticalChecks) {
       const qcStatus = statusFor(check, ctx);
       if (qcStatus === "fail") failCount += 1;
+      if (qcStatus === "fail" && !BILL_FIELDS.has(check.fieldName) && !priorFails.has(check.ruleId)) newFailsOutsideBill += 1;
       if (qcStatus === "warning") warningCount += 1;
 
       const waitingOnBill = qcStatus === "warning" && check.severity === "blocker" && BILL_FIELDS.has(check.fieldName);
@@ -445,6 +465,7 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
     };
     for (const baseline of evaluateBaselineRules(baselinePayload, codeCtx)) {
       if (baseline.qcStatus === "fail") failCount += 1;
+      if (baseline.qcStatus === "fail" && !priorFails.has(baseline.ruleId)) newFailsOutsideBill += 1;
       if (baseline.qcStatus === "warning") warningCount += 1;
       db.run(
         `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
@@ -519,6 +540,10 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
     const verdict: "qc_failed" | "qc_passed" = failCount > 0 ? "qc_failed" : "qc_passed";
     if (verdict === currentStatus) return;
     if (verdict === "qc_passed" && currentStatus !== "parsed" && currentStatus !== "qc_failed") return;
+    // The document-triggered re-judge: the rows above are refreshed, but a verdict whose only NEW
+    // failures are the account / meter number leaves a project past QC where it is.
+    if (options.holdStatusOnNewBillOnlyFails && verdict === "qc_failed"
+      && currentStatus !== "parsed" && currentStatus !== "qc_failed" && newFailsOutsideBill === 0) return;
     statusWritten = true;
     const nextStatus = verdict;
     const currentStage = failCount > 0 ? "QC failed: human review required" : "QC passed: ready to stage";

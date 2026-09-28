@@ -161,8 +161,11 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   // ready_to_stage — so the rows kept saying "not attached" over sheets the split had just filed,
   // and the gate listed them under a document check that itself passed. A verdict that depends on
   // the documents is re-judged when the documents change (projectDocuments.documentsChangedAt —
-  // uploads, splits, removals). QC never promotes past parsed/qc_failed and never demotes a pass;
-  // a FAIL it finds is real news (a bill now on file with no readable account number) and stops
+  // uploads, splits, removals). QC never promotes past parsed/qc_failed and never demotes a pass.
+  // The document-triggered re-judge refreshes the rows but does NOT demote when its only NEW fails
+  // are the account / meter number (qc.QcRunOptions.holdStatusOnNewBillOnlyFails — converge
+  // 2026-09-28, conservative until the operator rules): a PDF bill uploaded after intake flips those
+  // rows to FAIL, and the bill reader reads images only. Any other new FAIL is real news and stops
   // the chain below, exactly as at parse.
   const docsNewerThanQc = async (): Promise<boolean> => {
     const { documentsChangedAt } = await import("./projectDocuments");
@@ -175,7 +178,7 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   const qcOwned = status() === "parsed" || status() === "qc_failed";
   if (qcOwned || (chainOwned && await docsNewerThanQc())) {
     const { rerunQc } = await import("./repository");
-    rerunQc(db, projectId);
+    rerunQc(db, projectId, qcOwned ? {} : { holdStatusOnNewBillOnlyFails: true });
     ran.push("qc");
     logger.info("stage-auto", qcOwned ? "QC ran automatically on parse" : "QC re-judged: the documents changed since it last ran", { project: projectId, verdict: status() });
   }
