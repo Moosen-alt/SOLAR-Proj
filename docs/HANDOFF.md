@@ -26,8 +26,10 @@ mailing address / e-mail beside the company's business name and phone, and "Serv
   by a section's Add New / Select from Account / Edit to this project's section identity before
   the dialog's Continue — the recipe saved from the live run opens the Applicant dialog through
   Select from Account, whose account prefill is the homeowner, and records only the phone. A
-  framed step or a contact opener is no longer held to "the page must move" (that recipe stopped
-  at `advance: Select from Account`). Look-up dialogs are never touched.
+  framed step or a contact opener (`contactRoles.isContactOpener`, the one predicate) is no longer
+  held to "the page must move" (that recipe stopped at `advance: Select from Account`) — a
+  deliberate narrowing of the desync guard for those clicks; `pageEffect` now counts visible
+  iframes, so a dialog opening/saving reads as an in-page action. Look-up dialogs are never touched.
 - **Service lines:** one count (`batteryServiceFeeder.serviceLineQuantities`): an MPU
   (`serviceScope.hasMpuScope`, now the ONE copy) adds a line in its main's tier (≤200 A / 201-400 A;
   the MAIN, never the bus), plus the battery rule (battery + MPU-200 = 2 — a judgement call, see the
