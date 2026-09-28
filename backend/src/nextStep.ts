@@ -238,6 +238,11 @@ export interface NextStepFacts {
 
 const ON_PORTAL = new Set(["awaiting_human_submit", "submitted", "paused_for_human"]);
 
+/** How long a queued/started automatic chain (stage_step) reads as "automation running". A real
+ *  chain takes about three minutes (2026-09-28: 2m45s on a Newberg job); past this it is stuck, and
+ *  the page shows the real blockers again rather than "nothing to do". */
+export const AUTO_CHAIN_FRESH_MS = 15 * 60 * 1000;
+
 function groupBy<T>(rows: T[], key: (r: T) => string): Map<string, T[]> {
   const out = new Map<string, T[]>();
   for (const r of rows) {
@@ -304,6 +309,24 @@ export function loadNextStepFacts(db: AppDb, projects: ProjectRecord[]): Map<str
       ids,
     ).map((r) => [s(r.project_id), { jobType: s(r.job_type), since: s(r.created_at) }] as const),
   );
+  // THE AUTOMATIC CHAIN IS AUTOMATION RUNNING TOO (operator 2026-09-28, a real Newberg job: "Blocked
+  // … Site / plot plan … attach it or split it out of the plan set … can we just not have it do this
+  // automatically?"). It was doing it: the stage_step chain splits the plan set, reads the bill, runs
+  // QC and finds/fills the official forms, and the page listed those very items as the operator's
+  // work while the chain ran. A FRESH chain job (queued or started within AUTO_CHAIN_FRESH_MS) reads
+  // as automation running; a stale one never does — a chain stuck behind a dead worker must not
+  // read as "nothing to do" forever, so the real blockers show again once it is that old.
+  const chainFreshSince = new Date(Date.now() - AUTO_CHAIN_FRESH_MS).toISOString();
+  for (const r of db.query<Row>(
+    `SELECT project_id, created_at, started_at FROM job_queue
+      WHERE project_id IN (${ph}) AND job_type = 'stage_step'
+        AND ((status = 'pending' AND created_at >= ?) OR (status = 'running' AND COALESCE(started_at, created_at) >= ?))
+      ORDER BY created_at ASC`,
+    [...ids, chainFreshSince, chainFreshSince],
+  )) {
+    // Staging/autopilot in flight keeps its own (more specific) wording.
+    if (!jobs.has(s(r.project_id))) jobs.set(s(r.project_id), { jobType: "stage_step", since: s(r.created_at) });
+  }
   const qcFails = groupBy(
     db.query<Row>(`SELECT project_id, rule_name, message FROM qc_results WHERE project_id IN (${ph}) AND qc_status = 'fail' ORDER BY created_at DESC`, ids),
     (r) => s(r.project_id),
@@ -578,7 +601,9 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
   // 4. Automation is already doing the next thing.
   if (facts.jobInFlight) {
     return make("automation_running", "nobody", "waiting",
-      `${facts.jobInFlight.jobType === "autopilot" ? "Autopilot" : "Staging"} is running — nothing to do until it finishes.`,
+      facts.jobInFlight.jobType === "stage_step"
+        ? "Preparing this project automatically — splitting the plan set, reading the bill, running QC and finding/filling the official forms. Nothing to do until it finishes."
+        : `${facts.jobInFlight.jobType === "autopilot" ? "Autopilot" : "Staging"} is running — nothing to do until it finishes.`,
       [], null, facts.jobInFlight.since);
   }
 

@@ -1283,6 +1283,10 @@ function showSubmitBlockerNote(gate, stageIdx, nextStep) {
   if (!gate || gate.canPrepareSubmission || !blockers.length) return false;
   if (gate.decision === "submitted_tracking" && stageIdx >= 3) return false;
   if (nextStep && nextStep.gateChecked && nextStep.allFiled === true) return false;
+  // Not while automation is doing it (next step automation_running): the automatic chain splits the
+  // plan set and finds/fills the forms these blockers name (operator 2026-09-28: "can we just not
+  // have it do this automatically?" — it was, mid-run). The note returns if the chain leaves any.
+  if (nextStep && nextStep.key === "automation_running") return false;
   return true;
 }
 const WAITING_ON_LABEL = { designer: "Waiting on designer", customer: "Waiting on customer", ahj: "Waiting on AHJ", utility: "Waiting on utility" };
