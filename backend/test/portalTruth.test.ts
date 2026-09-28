@@ -37,6 +37,7 @@
 //   K19 describePermitType: an Oregon profile's words earn "Oregon ePermitting"  → (d4-p2), (d4-e3) fail.
 //   K20 permitChannelLabel: any accela.com host labelled statewide               → (d4-p1), (d4-p2), (d4-e1) fail.
 //   K21 channelResolution: a person's verified portal no longer first            → (d4-e2) fails.
+//   K22 the card's verified read filtered to utility-less rows (the live Corvallis row has one) → (d4-e1) fails.
 //
 // Run: npx tsx backend/test/portalTruth.test.ts
 import "./_isolate"; // FIRST
@@ -433,7 +434,8 @@ const cardFor = (projectId: string, type: string) => {
 };
 await check("(d4-e1) MUST-EXCLUDE (Corvallis's card): an Oregon city with a person's verified row on its own ACA tenant reads 'Accela Citizen Access (<city>'s own portal)', never 'Oregon ePermitting'", () => {
   const ahj = "City of Larchfield";
-  kb.saveVerifiedAhjProfile(db, { state: "OR", ahj, portalUrl: "https://aca-prod.accela.com/LARCHFIELD/Default.aspx", portalName: "City of Larchfield Online Permitting", verifiedBy: "test" });
+  // Keyed WITH the utility, exactly like the live Corvallis row ("or|city of corvallis|pacificorp").
+  kb.saveVerifiedAhjProfile(db, { state: "OR", ahj, utility: "Pacific Power", portalUrl: "https://aca-prod.accela.com/LARCHFIELD/Default.aspx", portalName: "City of Larchfield Online Permitting", verifiedBy: "test" });
   const projectId = fx.newProject({ ahj, city: "Larchfield", zip: "97330", utility: "Pacific Power" });
   const card = cardFor(projectId, "building");
   assert.doesNotMatch(card.channel, /Oregon ePermitting/, card.channel);

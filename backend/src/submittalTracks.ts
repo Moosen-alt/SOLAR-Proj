@@ -30,7 +30,7 @@ import { detectPlatform } from "./publicPermitStatus";
 import { NEM_APPROVAL_OUTCOME, isNemApprovalOutcome, trackKind } from "./permitMonitor";
 import { HttpError } from "./httpError";
 import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, trackSafeUrl } from "./portalChannel";
-import { classifyChannelWords, permitAnswerForTrack, permitChannelLabel, permitProcessFor, statewidePortalFor } from "./permitProcess";
+import { classifyChannelWords, normalizeAhjName, permitAnswerForTrack, permitChannelLabel, permitProcessFor, statewidePortalFor } from "./permitProcess";
 import { statewideEvidenceFor } from "./statewideEvidence";
 
 /** Words that claim the statewide portal ("Oregon ePermitting", "OR E-permitting") with no URL —
@@ -181,6 +181,29 @@ function kbAhjRow(db: AppDb | null, project: ProjectRecord): Row | null {
   }
 }
 
+/** A PERSON'S VERIFIED PORTAL for this AHJ (same state, the AHJ's exact normalized name, ANY utility
+ *  column — the verified Corvallis row is keyed "or|city of corvallis|pacificorp", and a utility filter
+ *  hid it from the card while the stage's own KB read found it), when it fits this track and is not
+ *  an information page. "" otherwise. */
+function verifiedAhjPortalUrl(db: AppDb | null, project: ProjectRecord, track: SubmittalTrackType): string {
+  if (!db || !(project.ahj || "").trim()) return "";
+  try {
+    const key = normalizeAhjName(project.ahj);
+    const rows = db.query<Row>(
+      `SELECT ahj, portal_url, portal_name FROM permit_utility_knowledge
+        WHERE ahj IS NOT NULL AND ahj != '' AND verified_at IS NOT NULL AND verified_at != ''
+          AND (state = '' OR UPPER(state) = UPPER(?)) ORDER BY updated_at DESC`,
+      [project.state || ""],
+    ).filter((r) => normalizeAhjName(s(r.ahj)) === key);
+    for (const r of rows) {
+      for (const u of [s(r.portal_url).trim(), s(r.portal_name).trim()]) {
+        if (/^https?:\/\/\S+$/i.test(u) && trackSafeUrl(track, u) && !isInformationalPageUrl(u)) return u;
+      }
+    }
+  } catch { /* table missing on an old schema */ }
+  return "";
+}
+
 /**
  * WHERE THIS TRACK IS FILED, and how that is known. A portal / "no portal, paper" / record type
  * the per-job lookup FOUND reaches the card (new-AHJ e2e: Iowa City's EnerGov URL and Waltham's
@@ -200,9 +223,8 @@ function channelResolution(db: AppDb | null, track: SubmittalTrackType, project:
   // A PERSON'S VERIFIED PORTAL FOR THIS AHJ OUTRANKS every derived answer (hard rule 3 — the same
   // precedence the stage's fitUrl gives it). Corvallis's card read "Oregon ePermitting (Accela)"
   // beside a verified row naming the city's own tenant.
-  const kbFirst = kbAhjRow(db, project);
-  const verifiedUrl = kbFirst && s(kbFirst.verified_at).trim() ? s(kbFirst.portal_url).trim() : "";
-  if (verifiedUrl && trackSafeUrl(track, verifiedUrl) && !isInformationalPageUrl(verifiedUrl)) {
+  const verifiedUrl = verifiedAhjPortalUrl(db, project, track);
+  if (verifiedUrl) {
     return { channel: `${labelFor(verifiedUrl)}: ${verifiedUrl} (verified by a person)`, basis: "verified", portalUrl: verifiedUrl };
   }
   const found = lookedUpPermitPortal(project, track);
