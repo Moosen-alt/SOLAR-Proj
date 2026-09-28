@@ -4208,8 +4208,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       // Pick by ELEMENT IDENTITY, never by position. Once a section is saved ACA re-renders
       // it with Edit/Remove and its Add New disappears, so indices shift; and if the save has
       // not settled yet the applicant's button is still there, so "first visible" re-opened
-      // the SAME dialog and overwrote the applicant with the owner's details (live Coos Bay:
-      // Charles Bitton became Wynema Wright over the contractor's street). Skipping the ids
+      // the SAME dialog and overwrote the applicant with the owner's details (live Coos Bay: the
+      // contractor's contact became the homeowner over the contractor's street). Skipping the ids
       // we already used makes reusing a section structurally impossible.
       for (let i = 0; i < addNewCount; i++) {
         const candidate = addNewAll.nth(i);
