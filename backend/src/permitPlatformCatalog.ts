@@ -1098,7 +1098,7 @@ const LOCALITY_AFFIX_CLASS: Record<string, "county" | "municipal"> = { co: "coun
  *  door's applicationDocsAgency.hostNamesAnotherType asks a stricter question — it REMOVES an anchor —
  *  and keeps city / town / township apart; the forms site reads one municipal class.) */
 function siteNamesAnotherJurisdictionClass(host: string, names: string[]): boolean {
-  const own = new Set([...jurisdictionTypes(names)].map((t) => JURISDICTION_CLASS[t]).filter(Boolean));
+  const own = new Set<string>([...jurisdictionTypes(names)].map((t) => JURISDICTION_CLASS[t]).filter(Boolean));
   if (!own.size) return false;
   let t = portalNameToken(`https://${host}/`);
   for (const k of nameKeys(names).sort((a, b) => b.length - a.length)) t = t.split(k).join(" ");
