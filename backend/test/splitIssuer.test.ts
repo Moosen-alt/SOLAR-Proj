@@ -21,7 +21,7 @@
 // KILLS (each disables one door; the named cases go RED — verified by hand, see the commit):
 //   K1 repository.prepareSubmission: portalProject = detail.project          → (s3)
 //   K2 permitProcess.issuingAgencyFor: skip the operator layer                → (f1)
-//   K3 applicationDocsAgency.answeredCited: the old http-only bar             → (f1)
+//   K3 applicationDocsAgency.formAuthorityFor: drop the operator-first read   → (f1)(f2)
 //   K4 autoLearn.autoLearnPortal: baseProject = loadedProject                 → (l1)
 //   K5 submittalTracks.ensureCheckTarget: trackedAt = project                 → (t1)
 //   K6 submittalTracks.getSubmittalTracks: issuerProject = project            → (c1)
@@ -206,6 +206,26 @@ await check("(f1) forms follow the same issuer: issuingAgencyFor answers the ove
   const electrical = agencyDocs.formAuthorityFor(p, agencyDocs.TRACK_FORM_TYPES.electrical[0]);
   assert.equal(electrical.name, COUNTY);
   assert.equal(electrical.issuedByOther, false);
+});
+
+await check("(f2) on a single-permit project the operator's COMBO issuer names both sides' forms — ahead of a cited lookup naming someone else", () => {
+  pp.savePermitProcessLookup(db, {
+    state: "OR", ahj: "City of Hazelby", lookedUpAt: new Date().toISOString(),
+    issuingAgency: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not searched" },
+    permitStructure: { value: "combo", sourceUrl: "https://hazelby.example.gov", quote: "one combination permit", origin: "lookup" },
+    permits: [{ discipline: "combo", label: "combination permit", issuingAgency: { value: "Alder County", sourceUrl: "https://hazelby.example.gov/permits", quote: "Alder County issues permits for Hazelby", origin: "lookup" },
+      portalUrl: { value: null, sourceUrl: "", quote: "", origin: "lookup" }, recordType: { value: null, sourceUrl: "", quote: "", origin: "lookup" },
+      documents: { value: null, sourceUrl: "", quote: "", origin: "lookup" }, fee: { value: null, sourceUrl: "", quote: "", origin: "lookup" } }],
+  } as never);
+  const p = { ...load(fx.newProject({ ahj: "City of Hazelby", city: "Hazelby", zip: "97352" })), trackIssuers: { combo: NEIGHBOUR } };
+  for (const form of [agencyDocs.TRACK_FORM_TYPES.building[0], agencyDocs.TRACK_FORM_TYPES.electrical[0]]) {
+    const a = agencyDocs.formAuthorityFor(p, form);
+    assert.equal(a.name, NEIGHBOUR, `${form} follows ${a.name}`);
+    assert.equal(a.fact?.origin, "operator");
+  }
+  // MUST-PASS without the override: the cited lookup's agency, as before.
+  const { trackIssuers: _t, ...plain } = p;
+  assert.equal(agencyDocs.formAuthorityFor(plain, agencyDocs.TRACK_FORM_TYPES.building[0]).name, "Alder County");
 });
 
 await check("(l1) the learn's key is the issuer: a building learn is saved under the CITY's key, an electrical one under the county's", async () => {

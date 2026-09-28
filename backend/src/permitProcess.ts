@@ -432,12 +432,13 @@ function operatorIssuerFact(project: IssuerProject, track: string | null | undef
   };
 }
 
-/** THE CITED BAR an issuing-agency answer must clear before anything follows it (forms, staging): a
- *  person gave it (operator), a person verified the lookup, or it carries the http page it was read
- *  from. An uncited lookup value is a guess and changes nothing. */
+/** THE CITED BAR a LOOKED-UP issuing agency must clear before anything follows it (forms —
+ *  applicationDocsAgency.formAuthorityFor — and staging — trackIssuer): a person verified the lookup,
+ *  or the answer carries the http page it was read from. An uncited lookup value is a guess and
+ *  changes nothing. (The operator's own issuer is a person's statement, read first by both callers.) */
 export function citedAgencyAnswer(f: CitedFact<string> | null | undefined, lookupVerified: boolean): f is CitedFact<string> {
   if (!f || typeof f.value !== "string" || !f.value.trim()) return false;
-  return f.origin === "operator" || lookupVerified || /^https?:\/\//i.test(String(f.sourceUrl ?? ""));
+  return lookupVerified || /^https?:\/\//i.test(String(f.sourceUrl ?? ""));
 }
 
 /** A project with its view marker removed (the project AHJ put back). */

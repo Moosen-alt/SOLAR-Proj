@@ -95,8 +95,9 @@ export interface FormAuthority {
   fact: CitedFact<string> | null;
 }
 
-// THE CITED BAR is permitProcess.citedAgencyAnswer — the same one trackIssuer (staging) applies, so the
-// forms and the portal follow one issuer. An operator's per-track issuer clears it (a person said so).
+// THE CITED BAR is permitProcess.citedAgencyAnswer — the same one trackIssuer (staging) applies to a
+// looked-up agency, so the forms and the portal follow one issuer. (An operator's per-track issuer is
+// read ahead of it, in formAuthorityFor.)
 const answeredCited = (f: CitedFact<string> | null | undefined, verified: boolean): f is CitedFact<string> => citedAgencyAnswer(f, verified);
 
 /**
