@@ -55,6 +55,7 @@ import { feeBracketFieldKey, parseFeeBracketFieldKey, sameFeeTier, tierBoundsFro
 import { issuingAgencyRow } from "../../portal-bot/src/addressVersion";
 import { DECLARED_VALUATION_FIELD, rebindsToValuation } from "./valuation";
 import { companyFactStamp, isCompanyAttestationStep } from "../../shared/src/companyFacts";
+import { mountKindForProject } from "./codeReviewRules";
 export { sameFeeTier };
 
 export interface ReplayBindingChange {
@@ -150,7 +151,11 @@ export function bindRecipeForReplay(input: {
   const targetCode = agencyCodeFor(agencyName);
   const snapshot = input.project.parserSnapshot ?? {};
   const guidance = stateRulesFor(input.project.state).applicationInfoGuidance?.value ?? null;
-  const groundMount = /ground/i.test(String(snapshot.mountType ?? ""));
+  // A NEW STRUCTURE (ground / pole / carport) is not an alteration of an existing building. The one
+  // mount predicate (codeReviewRules.mountKindForProject: `mounting`, then `mountType`, then the
+  // design text) — this read only the dead mountType key, so it was never true.
+  const mount = mountKindForProject({ ...input.project, parserSnapshot: snapshot } as ProjectRecord);
+  const groundMount = mount === "ground" || mount === "carport";
   const newConstruction = /new construction|new (home|dwelling|building)/i.test(String(snapshot.constructionType ?? snapshot.workType ?? ""));
   // The recipe's OWN vocabulary for a structure type (a CoC select whose answer is not "Other").
   const structureVocab = input.steps.find((s) => s.action === "select" && /category of construction/i.test(labelOf(s))

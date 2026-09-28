@@ -25,6 +25,7 @@ import { planSetDisconnectPart, standardDisconnectConflicts } from "./baselineRu
 import { clientCompanyFactFields } from "./clients";
 import { COMPANY_IDENTIFIER_KEY, companyFactStamp, isCompanyAttestationStep, isCompanyIdentityLabel, looksLikePlaceholderIdentifier } from "../../shared/src/companyFacts";
 import { usStateCode } from "./permitPath";
+import { mountAdjective, mountKindForProject } from "./codeReviewRules";
 
 type Row = Record<string, unknown>;
 
@@ -1837,10 +1838,13 @@ export function resolveRecipeFieldValues(db: AppDb, project: ProjectRecord, port
       if (explicit) return explicit;
       const dc = String(snapshotFlat.dcKw ?? snapshotFlat.systemSizeDcKw ?? "").trim();
       const ac = String(snapshotFlat.acKw ?? snapshotFlat.systemSizeAcKw ?? "").trim();
-      const mount = /ground/i.test(String(snapshotFlat.mountType ?? "")) ? "Ground-mounted" : "Roof-mounted";
+      // THE ONE MOUNT PREDICATE (codeReviewRules.mountKindForProject — the parser's `mounting`, then
+      // `mountType`, then the design text). It read only the dead mountType key, so every job —
+      // ground and carport included — was described as "Roof-mounted". Unknown: no adjective.
+      const mount = mountAdjective(mountKindForProject(project));
       if (!dc && !ac) return "";
       const size = [dc ? `${dc} kW DC` : "", ac ? `${ac} kW AC` : ""].filter(Boolean).join(" / ");
-      return `${mount} residential solar PV system, ${size}`;
+      return mount ? `${mount} residential solar PV system, ${size}` : `Residential solar PV system, ${size}`;
     })(),
     // THE VALUATION A JOB VALUE / VALUATION / ESTIMATED COST BOX TAKES — the operator's formula of
     // the contract (filingValuationText → resolveValuation), the SAME whole-dollar figure the PDF

@@ -524,5 +524,34 @@ await check("MUST-PASS: the docket is filed only on an Illinois job; elsewhere i
   assert.ok(!qcRules(project({ clientId: gamma.id }).id).includes("client.placeholder-identifier.docket_number"), "MUST-EXCLUDE: a non-IL job is not told about the docket");
 });
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+section("P8  the scope of work names the mount the plan set states — and none when it states none");
+const dwork = (p: ReturnType<typeof project>) => resolveSource("computed.descriptionOfWork", buildContext(db, p));
+const ground = project({ mounting: "Ground Mount" });
+const roof = project({ mounting: "Roof Mount" });
+const unknownMount = project({});
+const legacyGround = project({ mountType: "Ground" });
+await check("MUST-PASS: a ground-mount job is described as ground-mounted on the portal AND on the PDF", () => {
+  assert.match(PR.resolveRecipeFieldValues(db, ground, "AHJ").workDescription, /^Ground-mounted residential solar PV system, 8 kW DC/);
+  assert.match(dwork(ground), /^Install ground-mounted photovoltaic solar system/);
+  assert.equal(resolveSource("computed.roofMounted", buildContext(db, ground)), "no", "fixture: the same form's roof question");
+  assert.match(PR.resolveRecipeFieldValues(db, legacyGround, "AHJ").workDescription, /^Ground-mounted/, "the mountType fallback");
+});
+await check("MUST-PASS: an unknown mount gets NO adjective — never a default 'roof-mounted'", () => {
+  assert.match(PR.resolveRecipeFieldValues(db, unknownMount, "AHJ").workDescription, /^Residential solar PV system, 8 kW DC \/ 7\.6 kW AC$/);
+  assert.match(dwork(unknownMount), /^Install photovoltaic solar system/);
+});
+await check("MUST-EXCLUDE: a roof-mount job still reads roof-mounted", () => {
+  assert.match(PR.resolveRecipeFieldValues(db, roof, "AHJ").workDescription, /^Roof-mounted residential solar PV system/);
+  assert.match(dwork(roof), /^Install roof-mounted photovoltaic solar system/);
+});
+await check("MUST-PASS/EXCLUDE: replay keeps Type of Work = New for a ground mount; an existing roof is still an Alteration", () => {
+  const tow: RecipeStep[] = [{ action: "select", selector: { label: "Type of Work:" }, value: "New", note: "Type of Work:" }];
+  const onGround = replay(tow, {}, { project: { state: "OR", ahj: "City of Salem", parserSnapshot: { mounting: "Ground Mount" } } });
+  assert.equal(onGround.steps[0].value, "New");
+  const onRoof = replay(tow, {}, { project: { state: "OR", ahj: "City of Salem", parserSnapshot: { mounting: "Roof Mount" } } });
+  assert.notEqual(onRoof.steps[0].value, "New");
+});
+
 console.log(`\n${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);

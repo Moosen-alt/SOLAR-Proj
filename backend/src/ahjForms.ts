@@ -15,6 +15,7 @@ import { parseJson } from "./json";
 import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCriterion, type PrescriptiveLimitInputs } from "./permitPath";
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
+import { mountAdjective, mountKindForProject } from "./codeReviewRules";
 import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
 import { curatedPrintedFees, CURATED_SAVED_FEE_NOTE, type PrintedFeeLadder } from "./curatedAhjForms";
 import {
@@ -774,8 +775,13 @@ function computed(name: string, ctx: FillContext): string {
       const additionTail = isAddition
         ? ` Addition to existing${existingDc ? ` ${existingDc} kW DC` : ""} PV system${combinedDc ? ` (combined ${combinedDc} kW DC)` : ""}.`
         : "";
+      // THE ONE MOUNT PREDICATE (codeReviewRules.mountKindForProject): this hard-coded "roof-mounted"
+      // for every job, so a ground-mount form said roof-mounted beside its own roofMounted = "no".
+      // Unknown mount: no adjective (leak sweep 2026-09-28).
+      const mountWord = mountAdjective(mountKindForProject({ ...ctx.project, parserSnapshot: s } as ProjectRecord)).toLowerCase();
+      const system = `photovoltaic solar system${isAddition ? " addition" : ""}`;
       return [
-        isAddition ? "Install roof-mounted photovoltaic solar system addition" : "Install roof-mounted photovoltaic solar system",
+        mountWord ? `Install ${mountWord} ${system}` : `Install ${system}`,
         qty && model ? `: ${qty}x ${model}` : "",
         size ? `, ${size}` : "",
         battery ? `, with ${battery} battery storage` : "",

@@ -222,14 +222,25 @@ function isOregon(project: ProjectRecord, profile: AhjProcessProfile | null): bo
 export type MountKind = "roof" | "ground" | "carport" | "unknown";
 
 export function mountKind(project: ProjectRecord, allText: string): MountKind {
-  const mounting = str(project, "mounting");
+  // The parser's own field is `mounting`; `mountType` is the older name a few fixtures and the
+  // benchmark snapshots still carry (leak sweep 2026-09-28: the portal description read ONLY the
+  // dead mountType key, so every job was "Roof-mounted"). Both answer here, mounting first.
+  const mounting = str(project, "mounting") || str(project, "mountType");
   const probe = mounting || `${project.interconnectionMethod}\n${allText}`;
   if (/carport|canopy|awning|patio cover/i.test(probe)) return "carport";
-  if (/ground[-\s]?mount|ground.?mounted|ground.?array|pole[-\s]?mount/i.test(probe)) return "ground";
+  // The mounting FIELD may say just "Ground" / "Pole" (mountType's vocabulary); only the free text
+  // needs the longer phrase, where a bare "ground" is a grounding note.
+  if (/ground[-\s]?mount|ground.?mounted|ground.?array|pole[-\s]?mount/i.test(probe) || (mounting && /\b(?:ground|pole)\b/i.test(mounting))) return "ground";
   if (mounting) return "roof";
   // Silence means roof, which is the conservative direction: the roof rules are the stricter
   // set, so an unknown mount is over-reviewed rather than under-reviewed.
   return "unknown";
+}
+
+/** The mount, as the scope-of-work sentence names it — "" when the mount is not known: an unknown
+ *  mount is never written as "roof-mounted" on an application (leak sweep 2026-09-28). */
+export function mountAdjective(kind: MountKind): string {
+  return kind === "roof" ? "Roof-mounted" : kind === "ground" ? "Ground-mounted" : kind === "carport" ? "Carport-mounted" : "";
 }
 
 /** True when the array sits on a roof and the roof rule family applies. */
