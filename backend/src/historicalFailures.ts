@@ -13,6 +13,7 @@ import { HttpError } from "./httpError";
 import { parseJson, text } from "./json";
 import { normalizeTokens } from "./normalize";
 import { extractProjectFeatureTags, knowledgeProfileKey } from "./knowledgeBase";
+import { isPacifiCorp } from "./utilityIdentity";
 import {
   allProjectEvidenceText,
   evidenceForTopic,
@@ -146,7 +147,7 @@ function fallbackCauses(project: ProjectRecord): HistoricalFailureCause[] {
       severity: "warning",
     });
   };
-  if (/pacific|pacificorp/i.test(project.utility)) {
+  if (isPacifiCorp(project)) { // the one state-gated identity (utilityIdentity) — not any "Pacific…"
     push("Missing account verification", "Pacific Power account/meter data is commonly rejected when it is not verified.", "Verify utility bill account and service/meter data before PowerClerk staging.", "Pacific Power / NEM precheck");
     push("Incorrect or missing meter photo", "Pacific Power customer generation packages commonly require meter evidence.", "Confirm the meter photo is present, legible, and matches the parsed meter number.", "Pacific Power / meter photo precheck");
     push("Missing inverter settings evidence", "Pacific Power packages commonly need inverter settings / UL 1741 SB evidence.", "Confirm inverter settings evidence is included in the utility upload package.", "Pacific Power / inverter settings precheck");

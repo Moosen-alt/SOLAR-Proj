@@ -26,7 +26,8 @@ import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles"
 import { nowIso } from "./time";
 import { logger } from "./logger";
 import { inferPlatform, isRecognizedPlatform, looksLikeBareUrl } from "./portalPlatformRules";
-import { isUtilityPlatformUrl } from "./portalChannel";
+import { isUtilityPlatformUrl, portalHostOf } from "./portalChannel";
+import { KNOWN_POWERCLERK_PORTALS, foreignKnownTenant, knownPowerClerkUtility, knownTenantOwner } from "./utilityIdentity";
 
 type Row = Record<string, unknown>;
 
@@ -199,6 +200,70 @@ export function isVerifiedKnowledge(row: { verifiedAt?: unknown; verified_at?: u
   return text(row.verifiedAt ?? row.verified_at).trim() !== "";
 }
 
+/**
+ * THE ONE-TIME CLEANUP OF A KNOWN TENANT WRITTEN AS ANOTHER UTILITY'S PORTAL (migration v40, leak
+ * sweep 2026-09-28). The bare /PACIFIC/ and /PGE/ regexes in portalFromProject wrote PacifiCorp's
+ * PowerClerk as "Pacific Gas and Electric Company"'s own portal, Portland General's as a CA "PGE"'s,
+ * and PacifiCorp's as WA "Pacific County PUD"'s — pooled knowledge, so one project poisoned the row
+ * for every tenant. This clears the portal (URL, and the name/platform describing that tenant) from
+ * every row carrying pacificorpnetmetering / pgenm whose utility is provably NOT that tenant's owner
+ * (utilityIdentity.foreignKnownTenant — the one identity). It also drops the utility-NAMED document
+ * lines projectDocs added under the same regexes ("Pacific Power customer generation application",
+ * "PGE SLD/site/spec upload package", "PowerClerk interconnection application").
+ *
+ * NEVER a human-verified row (rule 3, isVerifiedKnowledge). A correct row (Pacific Power in OR/WA/
+ * CA/UT/ID/WY, PGE in OR) is not touched. Idempotent; returns what it did.
+ */
+export function purgeForeignKnownTenantPortals(db: AppDb): { cleared: string[]; docsTrimmed: string[]; keptVerified: string[] } {
+  const out = { cleared: [] as string[], docsTrimmed: [] as string[], keptVerified: [] as string[] };
+  const FOREIGN_DOC_LINES: Array<{ line: string; owner: "pacificorp" | "portland_general" }> = [
+    { line: "Pacific Power customer generation application", owner: "pacificorp" },
+    { line: "PGE SLD/site/spec upload package", owner: "portland_general" },
+    { line: "PowerClerk interconnection application", owner: "portland_general" },
+  ];
+  const rows = db.query<Row>(
+    `SELECT * FROM permit_utility_knowledge
+     WHERE lower(portal_url) LIKE '%powerclerk.com%' OR required_documents_json LIKE '%Pacific Power customer generation application%'
+        OR required_documents_json LIKE '%PGE SLD/site/spec upload package%' OR required_documents_json LIKE '%PowerClerk interconnection application%'`,
+  );
+  const ts = nowIso();
+  for (const row of rows) {
+    const key = text(row.profile_key);
+    const entity = { state: text(row.state), utility: text(row.utility) };
+    const url = text(row.portal_url);
+    const host = portalHostOf(url);
+    const owner = knownTenantOwner(host);
+    const foreignPortal = owner ? foreignKnownTenant(host, entity) : null;
+    const identity = knownPowerClerkUtility(entity);
+    const docs = parseJson<string[]>(text(row.required_documents_json), []);
+    const keptDocs = docs.filter((d) => {
+      const hit = FOREIGN_DOC_LINES.find((f) => f.line.toLowerCase() === String(d).trim().toLowerCase());
+      return !hit || hit.owner === identity;
+    });
+    const trimDocs = keptDocs.length !== docs.length;
+    if (!foreignPortal && !trimDocs) continue;
+    if (isVerifiedKnowledge(row)) { out.keptVerified.push(key); continue; }
+    if (foreignPortal) {
+      const portalName = text(row.portal_name);
+      const platform = text(row.portal_platform);
+      db.run(
+        "UPDATE permit_utility_knowledge SET portal_url = '', portal_name = ?, portal_platform = ?, updated_at = ? WHERE profile_key = ?",
+        [
+          /powerclerk|pacific power customer generation/i.test(portalName) ? "" : portalName,
+          /powerclerk/i.test(platform) ? "" : platform,
+          ts, key,
+        ],
+      );
+      out.cleared.push(key);
+    }
+    if (trimDocs) {
+      db.run("UPDATE permit_utility_knowledge SET required_documents_json = ?, updated_at = ? WHERE profile_key = ?", [asJson(keptDocs), ts, key]);
+      out.docsTrimmed.push(key);
+    }
+  }
+  return out;
+}
+
 function correctionSignature(correction: KnowledgeFacts["correction"]): string {
   if (!correction) return "";
   return normalize(`${correction.bucket} ${correction.rootCause} ${correction.requiredAction}`);
@@ -284,8 +349,11 @@ export function extractProjectFeatureTags(project: ProjectRecord): string[] {
   if (project.utility) tags.add(`utility:${tag(project.utility)}`);
   const portal = portalFromProject(project);
   if (portal.portalName) tags.add(`portal:${tag(portal.portalName)}`);
-  if (/pacific|pacificorp/i.test(project.utility)) tags.add("utility_family:pacific_power");
-  if (/\bpge\b|portland general/i.test(project.utility)) tags.add("utility_family:pge");
+  // The project's utility family by the one state-gated identity (utilityIdentity) — a PG&E job is
+  // not the Pacific Power family and must not match PacifiCorp's history.
+  const family = knownPowerClerkUtility(project);
+  if (family === "pacificorp") tags.add("utility_family:pacific_power");
+  if (family === "portland_general") tags.add("utility_family:pge");
   if (/powerwall|tesla/i.test(all)) tags.add("battery:powerwall");
   if (/battery|\bESS\b|backup|encharge|powerwall/i.test(all)) tags.add("scope:ess");
   if (/non.backup|rate saver|self.consumption/i.test(all)) tags.add("ess_mode:non_backup");
@@ -440,6 +508,14 @@ function upsertKnowledge(db: AppDb, facts: KnowledgeFacts, event?: KnowledgeEven
   // learn path funnel through here, so this is the one seam: the utility portal (its URL and the
   // name / platform that describe it) is moved to the UTILITY's own row (state, "", utility) —
   // verified rows there still fill blanks only — or dropped when no utility is named.
+  // A KNOWN UTILITY'S TENANT IS NEVER WRITTEN AS ANOTHER UTILITY'S PORTAL (leak sweep 2026-09-28).
+  // PacifiCorp's / Portland General's PowerClerk belongs to that utility only (utilityIdentity — the
+  // one state-gated identity). Whatever path carries it here for a utility that provably is not the
+  // owner (a CA "Pacific Gas and Electric", a WA "Pacific County PUD"), the portal is dropped; only a
+  // person's own verified write may say otherwise.
+  if (!facts.verifiedAt && clean(facts.portalUrl) && foreignKnownTenant(portalHostOf(clean(facts.portalUrl)), { state: facts.state, utility: facts.utility })) {
+    facts = { ...facts, portalUrl: "", portalName: "", portalPlatform: "" };
+  }
   if (clean(facts.ahj) && isUtilityPlatformUrl(clean(facts.portalUrl))) {
     const utilityPortal = { portalUrl: clean(facts.portalUrl), portalName: clean(facts.portalName), portalPlatform: clean(facts.portalPlatform) };
     facts = { ...facts, portalUrl: "", portalName: "", portalPlatform: "" };
@@ -806,12 +882,15 @@ function projectDocs(project: ProjectRecord): string[] {
   if (/label|placard/i.test(textBlob)) add("PV label / placard schedule");
   if (/utility bill|account|meter/i.test(textBlob)) add("Utility bill / account / meter evidence");
 
-  if (/PGE|PORTLAND GENERAL/i.test(project.utility)) {
+  // WHICH UTILITY, by the one anchored state-gated answer (utilityIdentity) — a CA "Pacific Gas and
+  // Electric" or "PGE" (PG&E) job is neither Portland General nor PacifiCorp.
+  const knownUtility = knownPowerClerkUtility(project);
+  if (knownUtility === "portland_general") {
     add("PowerClerk interconnection application");
     add("PGE SLD/site/spec upload package");
     add("Utility account and meter verification");
   }
-  if (/PACIFIC|PACIFICORP/i.test(project.utility)) {
+  if (knownUtility === "pacificorp") {
     add("Pacific Power customer generation application");
     add("Meter photo");
     add("UL 1741 SB / inverter settings evidence");
@@ -830,21 +909,19 @@ function portalFromProject(project: ProjectRecord): { portalName: string; portal
   const process = findAhjProcessProfile(project);
   const portalName = process?.submissionMethod || appProfile.portalName || "";
   const portalUrl = appProfile.sourceUrl || "";
-  let utilityPortal: { portalName: string; portalUrl: string } | null = null;
-  if (/PGE|PORTLAND GENERAL/i.test(project.utility)) {
-    // The interconnection application lives behind the PowerClerk login, NOT on the public
-    // resource-library landing page. Seed the real portal-ENTRY URL so the universal self-seed
-    // (auto-learn) launches against the actual form instead of an info page it can never fill.
-    // Same value the hand-coded PowerClerk adapter targets (powerClerk.ts PGE_LOGIN_URL).
-    utilityPortal = { portalName: "PowerClerk", portalUrl: "https://pgenm.powerclerk.com/MvcAccount/Login" };
-  }
-  if (/PACIFIC|PACIFICORP/i.test(project.utility)) {
-    // PacifiCorp (Pacific Power / Rocky Mountain Power) customer generation runs on a PowerClerk
-    // tenant — the application form is behind this login, NOT the pacificpower.net marketing page.
-    // Seed the real portal-ENTRY URL (mirrors the PGE block above) so the universal self-seed
-    // (auto-learn) launches the actual form. portalCredentials.ts aliases the marketing hosts to this.
-    utilityPortal = { portalName: "Pacific Power Customer Generation Portal", portalUrl: "https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login" };
-  }
+  // The interconnection application lives behind the PowerClerk login, NOT on the public
+  // resource-library / marketing page. Seed the real portal-ENTRY URL so the universal self-seed
+  // (auto-learn) launches against the actual form instead of an info page it can never fill. Same
+  // values the hand-coded PowerClerk adapter targets (powerClerk.ts PGE_LOGIN_URL);
+  // portalCredentials.ts aliases the PacifiCorp marketing hosts to its tenant.
+  //
+  // ONLY for the utility that IS Portland General / PacifiCorp (utilityIdentity: an anchored name in
+  // that utility's own states). The bare /PACIFIC/ and /PGE/ regexes this replaced wrote PacifiCorp's
+  // tenant as Pacific Gas & Electric's own portal (and Portland General's for a CA "PGE") into the
+  // shared KB, and NEM staging launched it — leak sweep 2026-09-28.
+  const knownUtility = knownPowerClerkUtility(project);
+  const known = knownUtility ? KNOWN_POWERCLERK_PORTALS[knownUtility] : null;
+  const utilityPortal = known ? { portalName: known.portalName, portalUrl: known.portalUrl } : null;
   return { portalName, portalUrl, utilityPortal };
 }
 

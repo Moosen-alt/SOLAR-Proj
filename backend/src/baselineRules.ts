@@ -1,5 +1,6 @@
 import type { ParserPayload, QcStatus, Severity } from "../../shared/src/types";
 import type { EffectiveCodeContext } from "./codeProfiles";
+import { knownPowerClerkUtility } from "./utilityIdentity";
 
 export interface BaselineRuleDefinition {
   id: string;
@@ -267,8 +268,12 @@ export function evaluateBaselineRules(payload: ParserPayload, ctx?: EffectiveCod
   const nonOregonState = !!state && state !== "OR";
   const isOregon = state === "OR" || (!nonOregonState && /oregon|portland|hillsboro|beaverton|gresham|clackamas|washington county/i.test(ahj));
   const isPortland = isOregon && /portland/i.test(ahj);
-  const isPacific = /pacific|pacificorp/i.test(utility);
-  const isPge = !nonOregonState && /\bPGE\b|portland general/i.test(utility);
+  // WHICH UTILITY, by the one anchored, state-gated identity (utilityIdentity) — a CA PG&E job
+  // ("Pacific Gas and Electric", "PGE") or WA's "Pacific County PUD" is neither Pacific Power nor
+  // Portland General, and must not be told a Pacific Power meter photo is missing.
+  const knownUtility = knownPowerClerkUtility({ state, utility });
+  const isPacific = knownUtility === "pacificorp";
+  const isPge = knownUtility === "portland_general";
 
   // PRESCRIPTIVE-PATH SCREENS — data-driven when a jurisdiction code context is
   // provided (the per-AHJ adopted-codes profile), so any state/county with limits

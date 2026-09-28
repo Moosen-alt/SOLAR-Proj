@@ -161,5 +161,112 @@ await check("MUST-PASS: a planner that binds a Job Value box to the contract is 
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+section("P2  PacifiCorp's / Portland General's PowerClerk is only ever THAT utility's portal");
+const { knownPowerClerkUtility } = await import("../src/utilityIdentity");
+const { hostFitsTrackAndEntity } = await import("../src/portalChannel");
+const { buildReviewerReport } = await import("../src/reviewerEngine");
+const { evaluateBaselineRules } = await import("../src/baselineRules");
+const { buildApplicationDocumentPackage } = await import("../src/applicationDocs");
+const { purgeForeignKnownTenantPortals, learnFromPermitTarget } = await import("../src/knowledgeBase");
+const PACIFICORP_URL = "https://pacificorpnetmetering.powerclerk.com/MvcAccount/Login";
+const PGE_URL = "https://pgenm.powerclerk.com/MvcAccount/Login";
+type KbRow = { portal_url?: string; portal_name?: string; required_documents_json?: string; verified_at?: string | null };
+const utilRow = (state: string, utility: string): KbRow | undefined =>
+  db.get<KbRow>("SELECT * FROM permit_utility_knowledge WHERE lower(state) = lower(?) AND ahj = '' AND lower(utility) = lower(?)", [state, utility]);
+const nemFit = (state: string, utility: string, url: string) =>
+  hostFitsTrackAndEntity("nem", PR.portalEntityEvidence(db, { scope: "utility", state, name: utility }), url, "kb");
+
+await check("MUST-PASS/EXCLUDE: the one identity — anchored names, in the utility's own states only", () => {
+  const cases: Array<[string, string, string | null]> = [
+    ["OR", "Pacific Power", "pacificorp"], ["WA", "Pacific Power", "pacificorp"], ["CA", "Pacific Power", "pacificorp"],
+    ["UT", "Rocky Mountain Power", "pacificorp"], ["WY", "PacifiCorp", "pacificorp"],
+    ["OR", "PGE", "portland_general"], ["Oregon", "Portland General Electric", "portland_general"],
+    ["CA", "Pacific Gas and Electric Company", null], ["CA", "PGE", null], ["CA", "PG&E", null],
+    ["WA", "Pacific County PUD", null], ["TX", "Pacific Power", null], ["", "Pacific Power", null], ["WA", "PGE", null],
+  ];
+  for (const [state, utility, want] of cases) assert.equal(knownPowerClerkUtility({ state, utility }), want, `${state} ${utility}`);
+});
+const pge_ca = project({ state: "CA", city: "Fresno", zip: "93721", street: "2600 Fresno St", ahj: "City of Fresno", utility: "Pacific Gas and Electric Company" });
+const pgeTyped_ca = project({ state: "CA", city: "Fresno", zip: "93721", street: "2601 Fresno St", ahj: "City of Fresno", utility: "PGE" });
+const pud_wa = project({ state: "WA", city: "Raymond", zip: "98577", street: "300 Duryea St", ahj: "City of Raymond", utility: "Pacific County PUD" });
+const pac_or = project({ state: "OR", city: "Coos Bay", zip: "97420", street: "1095 Michigan Ave", ahj: "City of Coos Bay", utility: "Pacific Power" });
+const pge_or = project({ utility: "PGE" });
+await check("MUST-PASS: saving a CA PG&E / CA 'PGE' / WA Pacific County PUD project writes NO PowerClerk portal as that utility's own", () => {
+  assert.ok(!/powerclerk/i.test(utilRow("CA", "Pacific Gas and Electric Company")?.portal_url ?? ""), "PG&E got a PowerClerk portal");
+  assert.ok(!/powerclerk/i.test(utilRow("CA", "PGE")?.portal_url ?? ""), "CA PGE got Portland General's portal");
+  assert.ok(!/powerclerk/i.test(utilRow("WA", "Pacific County PUD")?.portal_url ?? ""), "Pacific County PUD got PacifiCorp's portal");
+  void pge_ca; void pgeTyped_ca; void pud_wa;
+});
+await check("MUST-PASS: the KB write seam drops a known tenant carried in for another utility (a permit target naming PacifiCorp's URL on a PG&E job)", () => {
+  learnFromPermitTarget(db, pge_ca, { jurisdiction: "City of Fresno", portalName: "PowerClerk", portalUrl: PACIFICORP_URL });
+  assert.ok(!/powerclerk/i.test(utilRow("CA", "Pacific Gas and Electric Company")?.portal_url ?? ""), "relocated onto PG&E's utility row");
+  learnFromPermitTarget(db, pac_or, { jurisdiction: "City of Coos Bay", portalName: "PowerClerk", portalUrl: PACIFICORP_URL });
+  assert.equal(utilRow("OR", "Pacific Power")?.portal_url, PACIFICORP_URL, "MUST-EXCLUDE: PacifiCorp's own row");
+});
+await check("MUST-EXCLUDE: the real PacifiCorp (OR) and Portland General (OR) rows still get their own tenants", () => {
+  assert.equal(utilRow("OR", "Pacific Power")?.portal_url, PACIFICORP_URL);
+  assert.equal(utilRow("OR", "PGE")?.portal_url, PGE_URL);
+  assert.equal(nemFit("OR", "Pacific Power", PACIFICORP_URL).fits, true);
+  void pac_or; void pge_or;
+});
+await check("MUST-PASS: the NEM host gate refuses PacifiCorp's / PGE's tenant for another utility, even if a stale row claims it", () => {
+  // The pre-fix write, as it sits in the live KB today (the fixed write path can no longer make it).
+  db.run(`INSERT INTO permit_utility_knowledge (id, profile_key, state, ahj, utility, portal_name, portal_url, confidence, first_seen_at, last_learned_at, updated_at)
+          VALUES ('stale-pge-ca', 'ca||pacific gas and electric (stale)', 'CA', '', 'Pacific Gas and Electric (stale)', 'Pacific Power Customer Generation Portal', ?, 'learned', 'x', 'x', 'x')`, [PACIFICORP_URL]);
+  const fit = nemFit("CA", "Pacific Gas and Electric (stale)", PACIFICORP_URL);
+  assert.equal(fit.fits, false, fit.reason);
+  assert.equal(fit.code, "foreign_entity");
+  assert.equal(nemFit("CA", "PGE", PGE_URL).fits, false, "Portland General's tenant fits a CA 'PGE'");
+  assert.equal(nemFit("WA", "Pacific County PUD", PACIFICORP_URL).fits, false);
+});
+await check("MUST-PASS: QC and the reviewer no longer tell a PG&E job its Pacific Power meter photo / PGE account is missing", () => {
+  const ids = buildReviewerReport(pge_ca).findings.map((f) => f.id);
+  assert.ok(!ids.includes("reviewer.utility.pacpower-meter-photo"), ids.join(","));
+  assert.ok(!buildReviewerReport(pgeTyped_ca).findings.some((f) => f.id === "reviewer.utility.pge-account"));
+  const rules = evaluateBaselineRules({ state: "CA", utility: "Pacific Gas and Electric Company" } as never).map((r) => r.ruleId);
+  assert.ok(!rules.some((r) => /^pacpower-|^pge-/.test(r)), rules.join(","));
+});
+await check("MUST-EXCLUDE: the real Pacific Power / PGE jobs keep their utility checks", () => {
+  assert.ok(buildReviewerReport(pac_or).findings.some((f) => f.id === "reviewer.utility.pacpower-meter-photo"));
+  const rules = evaluateBaselineRules({ state: "OR", utility: "Pacific Power" } as never).map((r) => r.ruleId);
+  assert.ok(rules.includes("pacpower-meter-photo"), rules.join(","));
+  assert.ok(evaluateBaselineRules({ state: "OR", utility: "PGE" } as never).some((r) => r.ruleId === "pge-powerclerk-docs"));
+});
+await check("MUST-PASS/EXCLUDE: the Utility/NEM worksheet is built for PacifiCorp / PGE jobs only", () => {
+  const has = (p: typeof pge_ca) => buildApplicationDocumentPackage(p).docs.some((d) => d.id === "utility-nem");
+  assert.equal(has(pge_ca), false);
+  assert.equal(has(pud_wa), false);
+  assert.equal(has(pac_or), true);
+  assert.equal(has(pge_or), true);
+});
+await check("MUST-PASS: the v40 cleanup clears foreign tenants from learned/seeded rows; verified and correct rows are left alone", async () => {
+  const ins = (key: string, state: string, ahj: string, utility: string, url: string, docs: string[], verified: boolean) =>
+    db.run(`INSERT INTO permit_utility_knowledge (id, profile_key, state, ahj, utility, portal_name, portal_url, required_documents_json, confidence, first_seen_at, last_learned_at, updated_at, verified_at, verified_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'x', 'x', 'x', ?, ?)`,
+      [`id-${key}`, key, state, ahj, utility, url ? "PowerClerk" : "", url, JSON.stringify(docs), verified ? "mixed" : "learned", verified ? "2026-09-01T00:00:00Z" : null, verified ? "a person" : ""]);
+  ins("t|pge-typed", "CA", "", "PGE (typed)", PGE_URL, [], false);
+  ins("t|pud", "WA", "", "Pacific County PUD (t)", PACIFICORP_URL, [], false);
+  ins("t|verified", "CA", "", "Verified Odd Utility", PACIFICORP_URL, [], true);
+  ins("t|pac-or", "OR", "", "Pacific Power (t)", PACIFICORP_URL, ["Pacific Power customer generation application"], false);
+  ins("t|pge-or", "OR", "", "PGE (t)", PGE_URL, ["PGE SLD/site/spec upload package"], false);
+  ins("t|fresno", "CA", "City of Fresno (t)", "Pacific Gas and Electric (t)", "", ["Complete plan set", "Pacific Power customer generation application"], false);
+  // Replay migration v40 through the real open path (versioned migrations run from MAX(version)).
+  db.run("DELETE FROM schema_meta WHERE version >= 40");
+  const db2 = await openDatabase();
+  const row = (k: string) => db2.get<KbRow>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [k]);
+  assert.equal(row("t|pge-typed")?.portal_url, "", "a CA 'PGE' kept Portland General's portal");
+  assert.equal(row("t|pud")?.portal_url, "");
+  assert.equal(row("ca||pacific gas and electric (stale)")?.portal_url, "", "the stale PG&E row kept PacifiCorp's portal");
+  assert.equal(row("t|verified")?.portal_url, PACIFICORP_URL, "MUST-EXCLUDE: a human-verified row was rewritten (rule 3)");
+  assert.equal(row("t|pac-or")?.portal_url, PACIFICORP_URL, "MUST-EXCLUDE: a correct PacifiCorp row was cleared");
+  assert.deepEqual(JSON.parse(row("t|pac-or")?.required_documents_json ?? "[]"), ["Pacific Power customer generation application"]);
+  assert.equal(row("t|pge-or")?.portal_url, PGE_URL, "MUST-EXCLUDE: a correct PGE row was cleared");
+  assert.deepEqual(JSON.parse(row("t|fresno")?.required_documents_json ?? "[]"), ["Complete plan set"], "Fresno kept the foreign utility's document");
+  const again = purgeForeignKnownTenantPortals(db2);
+  assert.deepEqual([again.cleared.length, again.docsTrimmed.length], [0, 0], "not idempotent");
+  assert.deepEqual(again.keptVerified, ["t|verified"]);
+});
+
 console.log(`\n${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);

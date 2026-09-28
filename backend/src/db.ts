@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database, { type Database as DB, type Statement } from "better-sqlite3";
 import { baselineRuleDefinitions } from "./baselineRules";
-import { knowledgeProfileKey, seedInitialKnowledgeBase } from "./knowledgeBase";
+import { knowledgeProfileKey, purgeForeignKnownTenantPortals, seedInitialKnowledgeBase } from "./knowledgeBase";
 import { attachLlmCallStore } from "./llmAccounting";
 
 /**
@@ -2346,6 +2346,21 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       // column; scripts/backfill-correction-text.ts re-extracts the old portal rows. The corrections
       // CREATE block runs in the base schema, so this addColumnIfMissing comes after it.
       addColumnIfMissing(db, "corrections", "source_text", "TEXT NOT NULL DEFAULT ''");
+    },
+  },
+  {
+    version: 40,
+    name: "purge_foreign_known_tenant_portals",
+    up: (db) => {
+      // A KNOWN UTILITY'S POWERCLERK IS NOBODY ELSE'S PORTAL (leak sweep 2026-09-28). Bare /PACIFIC/
+      // and /PGE/ regexes wrote PacifiCorp's tenant as Pacific Gas & Electric's (and Pacific County
+      // PUD's) own portal, and Portland General's as a CA "PGE"'s, into the SHARED knowledge base;
+      // NEM staging then launched it. Clears only seeded/learned rows whose utility is provably not
+      // the tenant's owner (utilityIdentity) — never a human-verified row (rule 3), never a correct one.
+      const r = purgeForeignKnownTenantPortals(db);
+      if (r.cleared.length || r.docsTrimmed.length || r.keptVerified.length) {
+        console.log(`[db] v40: cleared ${r.cleared.length} foreign PowerClerk portal(s), trimmed ${r.docsTrimmed.length} row(s) of foreign utility documents, left ${r.keptVerified.length} verified row(s) alone`);
+      }
     },
   },
 ];

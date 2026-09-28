@@ -8,6 +8,7 @@ import { permitProcessFor } from "./permitProcess";
 import { evidenceForTopic, evidenceLines, fieldValue, requirementsForTopic, type EvidenceTopic, type ProjectEvidence } from "./projectEvidence";
 import { nowIso } from "./time";
 import { resolveValuation } from "./valuation";
+import { knownPowerClerkUtility } from "./utilityIdentity";
 import { resolvePermitPath, resolveStampRequirement, hasStampedStructuralEvidence } from "./permitPath";
 import type { EffectiveCodeContext } from "./codeProfiles";
 
@@ -886,7 +887,10 @@ function addPlacementRuleFindings(project: ProjectRecord, ctx: EffectiveCodeCont
 
 function addUtilityFindings(project: ProjectRecord, findings: ReviewerFinding[]): void {
   const account = evidenceForTopic(project, "accountVerification");
-  if (/PGE|PORTLAND GENERAL/i.test(project.utility) && account.confidence !== "high") {
+  // WHICH UTILITY, by the one state-gated identity (utilityIdentity): a CA PG&E job ("Pacific Gas and
+  // Electric", or typed "PGE") is neither Portland General nor PacifiCorp, and was blocked on both.
+  const knownUtility = knownPowerClerkUtility(project);
+  if (knownUtility === "portland_general" && account.confidence !== "high") {
     findings.push(finding(
       "reviewer.utility.pge-account",
       account.present ? "warning" : "blocker",
@@ -905,7 +909,7 @@ function addUtilityFindings(project: ProjectRecord, findings: ReviewerFinding[])
       },
     ));
   }
-  if (/PACIFIC|PACIFICORP/i.test(project.utility)) {
+  if (knownUtility === "pacificorp") {
     const meterPhoto = evidenceForTopic(project, "meterPhoto");
     if (meterPhoto.confidence !== "high") {
       findings.push(finding(
