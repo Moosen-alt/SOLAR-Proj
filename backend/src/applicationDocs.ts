@@ -8,7 +8,7 @@ import type {
 import { nowIso } from "./time";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, registryTermMatches } from "./processProfiles";
 import { describeCited, permitProcessFor, statePermitStructure } from "./permitProcess";
-import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, type PermitPathResolution } from "./permitPath";
+import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, usStateCode, type PermitPathResolution } from "./permitPath";
 // Functions only, called at run time: this module sits inside the permitProcessLookup ->
 // feeSchedules -> knowledgeBase -> applicationDocs import cycle (see applicationDocsAgency's header).
 import { agencyListReplacesLine, issuingAgencyDocumentList, type AgencyDocumentList, type AgencyLineStatusOf } from "./applicationDocsAgency";
@@ -507,15 +507,24 @@ function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequi
   if (!hasSignal) return null;
 
   const method = (proc.submissionMethod || "").toLowerCase();
-  const isEpermitting = /e-?permitting|accela|aca/.test(method) || /e-?permitting|accela/.test(notes);
+  // WHOLE WORDS: a bare "aca" substring matched "placa", "vacaville"; "accela" and "e-permitting"
+  // name a platform, not a state.
+  const accela = /\baccela\b|\baca\b/.test(method) || /\baccela\b/.test(notes);
+  const isEpermitting = accela || /\be-?permitting\b/.test(method) || /\be-?permitting\b/.test(notes);
   const isProjectDox = /projectdox|avolve/.test(method) || /projectdox|avolve/.test(notes);
   const isEmail = /email/.test(method) || /email/.test(notes);
   const portalOnly = isEpermitting || isProjectDox || /portal|online/.test(method);
+  // AN IN-PERSON CLAUSE IN THE SEEDED METHOD IS THE CHANNEL. Bernalillo County's reads "BPA: In person
+  // EPA: Bernalillo County accela" — the building permit is filed at the counter; labelling the whole
+  // AHJ a portal hid the in-person banner. The seeded words go through verbatim, and channelKindOf
+  // reads an in-person clause before a platform word.
+  const inPerson = /\bin[\s-]?person\b|\bover[\s-]the[\s-]counter\b|\bwalk[\s-]?in\b|\bdrop[\s-]?off\b/.test(method);
 
   const wantsElectricalApp = proc.requiresElectricalPermitApplication || proc.requiresElectricalStamp || /renewable energy app|electrical app/.test(notes);
   const wantsBuildingApp = proc.requiresBuildingPermitApplication;
   const wantsStructuralApp = proc.requiresStructuralStamp || /struct app|structural app/.test(notes) || wantsBuildingApp;
-  const oregon = project.state.toUpperCase() === "OR";
+  // "Is this Oregon" is the project's STATE and nothing else (usStateCode — one predicate).
+  const oregon = usStateCode(project.state) === "OR";
   const wantsChecklist = proc.requiresSolarChecklist || /checklist/.test(notes) || oregon;
 
   // THE OREGON TEMPLATE IS OREGON'S. "Solar application — PRESCRIPTIVE or STRUCTURAL", the
@@ -546,7 +555,13 @@ function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequi
   }
   if (!requiredDocuments.length) requiredDocuments.push("Plan set and specifications");
 
-  const submissionMethod = isEpermitting ? "Oregon ePermitting (Accela)"
+  // OREGON ePERMITTING IS OREGON'S. Tampa, Coral Springs, Sacramento and Bernalillo run their OWN
+  // Accela; outside Oregon the platform is named neutrally, and a non-Accela "e-permitting" portal
+  // keeps the AHJ's own words.
+  const submissionMethod = inPerson ? (proc.submissionMethod || "In person")
+    : isEpermitting && oregon ? "Oregon ePermitting (Accela)"
+    : accela ? "Accela Citizen Access (online portal)"
+    : isEpermitting ? (proc.submissionMethod || "Online e-permitting portal")
     : isProjectDox ? "ProjectDox (online plan review)"
     : isEmail ? "Email"
     : (proc.submissionMethod || "Verify on the AHJ site");
@@ -610,14 +625,16 @@ function lookedUpDocuments(project: ProjectRecord): { documents: string[]; note:
 // uses — ahjForms' built-in registry asks the same question and cannot import this module (cycle).
 
 export function findApplicationProfile(project: ProjectRecord): ApplicationRequirementProfile {
-  const haystack = `${project.ahj} ${project.city} ${project.state}`.toLowerCase();
   // The hand-written registry is OREGON-specific, but its match terms are bare
   // jurisdiction names that collide across states ("Washington County", "Salem",
   // "Marion County", "Portland" all exist elsewhere). Without this state gate an
   // out-of-state project silently inherited an Oregon profile — including
   // requiresPortalEntryOnly:true flags that SKIP AHJ form acquisition entirely
   // (seen as "no documents pulled" on a WA county).
-  const oregonProject = project.state.trim().toUpperCase() === "OR" || /\boregon\b/.test(haystack) || !project.state.trim();
+  // "IS THIS OREGON" IS THE PROJECT'S STATE — usStateCode, the one predicate. A town named Oregon
+  // (WI, IL, OH, MO) is not Oregon, and a BLANK state is unknown, never Oregon: both used to pick up
+  // Oregon's portal-only profiles, which skip form acquisition and un-block the application rows.
+  const oregonProject = usStateCode(project.state) === "OR";
   // THE PROJECT'S AHJ decides which jurisdiction this is; its mailing city is consulted only when
   // the AHJ field names no place (empty, or only department words). A substring test over
   // "ahj + city" handed a Marion County project with a Salem address the CITY of Salem's PAC
@@ -635,7 +652,7 @@ export function findApplicationProfile(project: ProjectRecord): ApplicationRequi
   const found = lookedUpDocuments(project);
   const synthesized = applicationProfileFromProcess(project);
   if (synthesized) return found ? { ...synthesized, requiredDocuments: found.documents, notes: [found.note, ...synthesized.notes] } : synthesized;
-  if (project.state.toUpperCase() === "OR" || /oregon/.test(haystack)) {
+  if (oregonProject) {
     const generic = applicationProfiles.find((profile) => profile.id === "oregon-generic-epermitting")!;
     return found ? { ...generic, requiredDocuments: found.documents, notes: [found.note, ...generic.notes] } : generic;
   }
@@ -711,7 +728,12 @@ export function describePermitType(
       submissionMethod = /projectdox|avolve/.test(blob) ? "Email (ProjectDox when directed into review)" : "Email";
     } else if (/projectdox|avolve/.test(blob)) submissionMethod = "ProjectDox (online plan review)";
     else if (/portland.*(devhub|hub|portal)/.test(blob)) submissionMethod = "Portland DevHub portal";
-    else if (/epermitting|accela/.test(blob)) submissionMethod = "Oregon ePermitting (Accela)";
+    // Oregon ePermitting only for an Oregon profile (the hand-written registry is Oregon's and
+    // state-gated in findApplicationProfile) or text that names it; any other Accela / e-permitting
+    // platform is named neutrally — a learned "Accela" in Florida is Florida's own portal.
+    else if (/\boregon\s*e-?permitting\b/.test(blob) || (applicationProfiles.some((p) => p.id === profile.id) && /\be-?permitting\b|\baccela\b/.test(blob))) submissionMethod = "Oregon ePermitting (Accela)";
+    else if (/\baccela\b/.test(blob)) submissionMethod = "Accela Citizen Access (online portal)";
+    else if (/\be-?permitting\b/.test(blob)) submissionMethod = "Online e-permitting portal";
     else if (profile.requiresPortalEntryOnly) submissionMethod = "Online portal";
     else submissionMethod = "Unknown — verify on the AHJ site";
   }

@@ -21,6 +21,7 @@ import { DEFAULT_ORG_ID } from "./db";
 import { id } from "./ids";
 import { asJson, bool, parseJson, text } from "./json";
 import { findApplicationProfile } from "./applicationDocs";
+import { usStateCode } from "./permitPath";
 import { enrichMboxLearningWithLlm, stripUrlsFromModelMemory } from "./llm";
 import { allAhjProcessProfiles, findAhjProcessProfile } from "./processProfiles";
 import { nowIso } from "./time";
@@ -1308,22 +1309,35 @@ function inferAhj(value: string): string {
   return titleCase(raw);
 }
 
-function inferPortal(value: string): string {
+function inferPortal(value: string, state: string): string {
   if (/powerclerk/i.test(value)) return "PowerClerk";
   if (/devhub/i.test(value)) return "DevHub";
   if (/projectdox/i.test(value)) return "ProjectDox";
   if (/energov/i.test(value)) return "EnerGov";
-  if (/aca|accela/i.test(value)) return "Accela";
+  // Whole words: a bare "aca" substring matched "vacation", "academy" and "Placa".
+  if (/\baca\b|\baccela\b/i.test(value)) return "Accela";
   if (/mygov/i.test(value)) return "MyGov";
-  if (/epermitting|e-permitting|accela/i.test(value)) return "Oregon ePermitting";
+  // An e-permitting portal is OREGON's ePermitting only in Oregon (usStateCode — the one "is this
+  // Oregon" answer). Elsewhere it is the jurisdiction's own online portal.
+  if (/\be-?permitting\b/i.test(value)) return usStateCode(state) === "OR" ? "Oregon ePermitting" : "Online e-permitting portal";
   if (/development direct/i.test(value)) return "Development Direct";
   return "";
 }
 
+/** Test hooks for the mbox learner's state / portal inference (pure). */
+export function inferMboxState(value: string, ahj: string, utility: string): string { return inferState(value, ahj, utility); }
+export function inferMboxPortal(value: string, state: string): string { return inferPortal(value, state); }
+
 function inferState(value: string, ahj: string, utility: string): string {
   const stateMatch = value.match(/\b(AK|AL|AR|AZ|CA|CO|FL|GA|ID|IL|MA|MD|MI|MN|MO|NC|NJ|NM|NV|NY|OH|OR|PA|SC|TN|TX|UT|VA|WA|WI)\b/);
   if (stateMatch) return stateMatch[1].toUpperCase();
-  if (/portland|clackamas|washington county|hillsboro|salem|oregon/i.test(`${ahj}\n${value}`)) return "OR";
+  // A PLACE NAME IS NOT A STATE. "Portland", "Salem", "Washington County" and a town named Oregon
+  // exist in several states (ME, MA, PA, WI, IL, OH…); guessing Oregon from them filed another
+  // state's email under Oregon's knowledge. Only the state's own name, in a state position
+  // ("Salem, Oregon", "State of Oregon", "Oregon 97301"), says Oregon. Otherwise: unknown.
+  if (/,\s*oregon\b|\bstate of oregon\b|\boregon\s+9[78]\d{3}\b/i.test(`${ahj}\n${value}`)) return "OR";
+  // (The utility line is a separate sweep finding — PacifiCorp / Pacific Power serve more than
+  // Oregon — left to its own round.)
   if (/pacific power|pacificorp|pge|portland general/i.test(utility)) return "OR";
   if (/srp|aps|unisource|maricopa|pinal|phoenix|tucson/i.test(`${utility}\n${ahj}\n${value}`)) return "AZ";
   if (/fpl|duke energy|miami|tampa|orange county|broward/i.test(`${utility}\n${ahj}\n${value}`)) return "FL";
@@ -1459,8 +1473,8 @@ function buildMboxLearningRecord(input: {
   const bucket = classifyMboxBucket(input.combined);
   const utility = input.defaults.utility || inferUtility(input.combined);
   const jurisdiction = input.defaults.ahj || inferAhj(input.combined);
-  const portalName = inferPortal(input.combined);
   const state = input.defaults.state || inferState(input.combined, jurisdiction, utility);
+  const portalName = inferPortal(input.combined, state);
   const taxonomy = correctionTaxonomy(input.combined, bucket.bucket);
   const sample = redactSample(`${input.subject}\n${input.from}\n${input.combined}`);
   const record: MboxExtractedLearningRecord = {
