@@ -158,7 +158,11 @@ check("THE HEADLINE: a PRESCRIPTIVE filing with no checklist is BLOCKED, and the
 });
 
 check("AT QC, ON THE DAY THE PLAN SET LANDS — not at the portal three weeks later", () => {
-  const rules = docRules(missingChecklist.id);
+  // With form downloads OFF nothing fetches the BCD 5952 at Stage, so the checklist is the
+  // operator's to supply (with them on, Stage downloads it itself — gates-proper C1, next check).
+  process.env.AHJ_FORM_DOWNLOADS = "off";
+  let rules: ReturnType<typeof docRules>;
+  try { rules = docRules(missingChecklist.id); } finally { delete process.env.AHJ_FORM_DOWNLOADS; }
   const row = rules.find((r) => r.rule_id === "docs.solar_checklist");
   assert.ok(row, `QC said nothing about the checklist: ${JSON.stringify(rules.map((r) => r.rule_id))}`);
   assert.equal(row!.qc_status, "warning",
@@ -168,6 +172,15 @@ check("AT QC, ON THE DAY THE PLAN SET LANDS — not at the portal three weeks la
   assert.match(row!.message, /Coos Bay/);
   assert.equal(rules.filter((r) => r.qc_status === "fail").length, 0,
     `a document gap was turned into a QC failure: ${JSON.stringify(rules.filter((r) => r.qc_status === "fail").map((r) => r.message))}`);
+});
+
+check("…and a checklist Stage downloads itself (the BCD 5952) is SAID at QC, not dropped (gates-proper C1)", () => {
+  const rules = docRules(missingChecklist.id);
+  const row = rules.find((r) => r.rule_id === "docs.solar_checklist");
+  assert.ok(row, `QC said nothing about the checklist: ${JSON.stringify(rules.map((r) => r.rule_id))}`);
+  assert.match(row!.message, /Stage downloads and fills it/);
+  assert.match(row!.message, /oregon\.gov\/bcd/);
+  assert.equal(rules.filter((r) => r.qc_status === "fail").length, 0);
 });
 
 check("STAGING REFUSES ON IT — through the same exported filter prepareSubmission calls", () => {
