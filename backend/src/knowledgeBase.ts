@@ -201,7 +201,7 @@ export function isVerifiedKnowledge(row: { verifiedAt?: unknown; verified_at?: u
 }
 
 /**
- * THE ONE-TIME CLEANUP OF A KNOWN TENANT WRITTEN AS ANOTHER UTILITY'S PORTAL (migration v40, leak
+ * THE ONE-TIME CLEANUP OF A KNOWN TENANT WRITTEN AS ANOTHER UTILITY'S PORTAL (migration v41, leak
  * sweep 2026-09-28). The bare /PACIFIC/ and /PGE/ regexes in portalFromProject wrote PacifiCorp's
  * PowerClerk as "Pacific Gas and Electric Company"'s own portal, Portland General's as a CA "PGE"'s,
  * and PacifiCorp's as WA "Pacific County PUD"'s — pooled knowledge, so one project poisoned the row

@@ -7,7 +7,7 @@
 //   P1 a portal Job Value / Valuation box takes the declared valuation (the PDF's number), never the
 //      contract price.
 //   P2 PacifiCorp's / Portland General's PowerClerk is only ever THAT utility's portal (one
-//      state-gated identity; KB write seam; NEM host gate; v40 cleanup).
+//      state-gated identity; KB write seam; NEM host gate; v41 cleanup).
 //   P3 a Yes/No site question never binds to a parser QC/evidence flag.
 //   P4 the plan set's AC disconnect beats the client's standard part; a contradiction is blank + named.
 //   P5 a recorded date keeps its meaning (existing-system dates; insurance / bond expiries).
@@ -248,7 +248,7 @@ await check("MUST-PASS/EXCLUDE: the Utility/NEM worksheet is built for PacifiCor
   assert.equal(has(pac_or), true);
   assert.equal(has(pge_or), true);
 });
-await check("MUST-PASS: the v40 cleanup clears foreign tenants from learned/seeded rows; verified and correct rows are left alone", async () => {
+await check("MUST-PASS: the v41 cleanup clears foreign tenants from learned/seeded rows; verified and correct rows are left alone", async () => {
   const ins = (key: string, state: string, ahj: string, utility: string, url: string, docs: string[], verified: boolean) =>
     db.run(`INSERT INTO permit_utility_knowledge (id, profile_key, state, ahj, utility, portal_name, portal_url, required_documents_json, confidence, first_seen_at, last_learned_at, updated_at, verified_at, verified_by)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'x', 'x', 'x', ?, ?)`,
@@ -259,8 +259,8 @@ await check("MUST-PASS: the v40 cleanup clears foreign tenants from learned/seed
   ins("t|pac-or", "OR", "", "Pacific Power (t)", PACIFICORP_URL, ["Pacific Power customer generation application"], false);
   ins("t|pge-or", "OR", "", "PGE (t)", PGE_URL, ["PGE SLD/site/spec upload package"], false);
   ins("t|fresno", "CA", "City of Fresno (t)", "Pacific Gas and Electric (t)", "", ["Complete plan set", "Pacific Power customer generation application"], false);
-  // Replay migration v40 through the real open path (versioned migrations run from MAX(version)).
-  db.run("DELETE FROM schema_meta WHERE version >= 40");
+  // Replay migration v41 through the real open path (versioned migrations run from MAX(version)).
+  db.run("DELETE FROM schema_meta WHERE version >= 41");
   const db2 = await openDatabase();
   const row = (k: string) => db2.get<KbRow>("SELECT * FROM permit_utility_knowledge WHERE profile_key = ?", [k]);
   assert.equal(row("t|pge-typed")?.portal_url, "", "a CA 'PGE' kept Portland General's portal");

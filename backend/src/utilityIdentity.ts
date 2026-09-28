@@ -11,7 +11,7 @@
 //
 // ONE anchored, state-gated answer, asked at every door (knowledgeBase portalFromProject /
 // projectDocs, applicationDocs, reviewerEngine addUtilityFindings, baselineRules,
-// utilityFilingLookup.knownOregonNemUtility, the v40 cleanup):
+// utilityFilingLookup.knownOregonNemUtility, the v41 cleanup):
 //   - PacifiCorp = "Pacific Power" | "PacifiCorp" | "Rocky Mountain Power", in a state PacifiCorp
 //     serves (OR, WA, CA, UT, ID, WY). Never "Pacific" alone.
 //   - Portland General Electric = "Portland General (Electric)" | "PGE", on an OREGON job only.

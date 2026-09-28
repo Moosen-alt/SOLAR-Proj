@@ -2349,7 +2349,7 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
     },
   },
   {
-    version: 40,
+    version: 41,
     name: "purge_foreign_known_tenant_portals",
     up: (db) => {
       // A KNOWN UTILITY'S POWERCLERK IS NOBODY ELSE'S PORTAL (leak sweep 2026-09-28). Bare /PACIFIC/
@@ -2359,7 +2359,7 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       // the tenant's owner (utilityIdentity) — never a human-verified row (rule 3), never a correct one.
       const r = purgeForeignKnownTenantPortals(db);
       if (r.cleared.length || r.docsTrimmed.length || r.keptVerified.length) {
-        console.log(`[db] v40: cleared ${r.cleared.length} foreign PowerClerk portal(s), trimmed ${r.docsTrimmed.length} row(s) of foreign utility documents, left ${r.keptVerified.length} verified row(s) alone`);
+        console.log(`[db] v41: cleared ${r.cleared.length} foreign PowerClerk portal(s), trimmed ${r.docsTrimmed.length} row(s) of foreign utility documents, left ${r.keptVerified.length} verified row(s) alone`);
       }
     },
   },
