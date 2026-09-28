@@ -14,8 +14,10 @@
 //      deterministically (fast, no LLM cost) via the existing RecipeAdapter.
 //
 // Safety: the learner never clicks final submit / resubmit / fee payment / CAPTCHA /
-// MFA. The final-submit button is recorded (isFinalSubmit) for the allowlist but only
-// ever executed later under the explicit per-portal trusted-auto-submit opt-in. A
+// MFA. The final-submit button is recorded (isFinalSubmit) so a replay knows where the
+// filing click is; it is clicked only under the one gate (portalSafety.mayClickFinalSubmit /
+// FINAL_SUBMIT_GATE_SENTENCE — a named person's approval of that run AND
+// PORTAL_ALLOW_FINAL_SUBMIT=1); there is no per-portal opt-in. A
 // low-confidence or unverified pass is left as a draft for human review, never trusted.
 // ---------------------------------------------------------------------------
 
@@ -23,6 +25,7 @@ import path from "node:path";
 import fs from "node:fs";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
+import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
 import { resolveHeadless } from "../../portal-bot/src/browser";
 import { compareReviewFields } from "../../portal-bot/src/reviewScreenScraper";
@@ -384,6 +387,40 @@ export function evaluateTrustGate(sig: TrustGateSignals): { trusted: boolean; bl
  * typed-signature step (operator ruling 2026-09-26: a typed e-signature on the draft is fine,
  * the review step is where it stops).
  */
+/**
+ * WHAT A TRUSTED LEARN SAYS IT CHECKED — WITH THE DENOMINATOR (dryrun-0928 B10).
+ *
+ * The learn's result message and its recipe note used to read "verified (high confidence)" and
+ * end with an invitation to "opt this portal into trusted auto-submit". Both were false:
+ *   - the per-portal opt-in no longer exists (operator rulings 2026-09-24 / 2026-09-26 — the arm
+ *     route refuses with 409), so the words contradicted hard rule 1; the ONE sentence that
+ *     describes the real gate (portalSafety.FINAL_SUBMIT_GATE_SENTENCE) replaces them;
+ *   - the verifiers read only the page the run ended on. On PowerClerk that is the last wizard
+ *     page, so "high confidence" was about 3 attestation fields out of 101 recorded fills across
+ *     10 pages. The words now say how many fields were checked, of how many, on how many pages.
+ * The note keeps its leading "Auto-learned and verified (<confidence> confidence) on N page(s)."
+ * EXACTLY — it is a matching key (scripts/rekey-recipe.ts notesSayVerified and its tests).
+ * Pure, exported for the unit test.
+ */
+export function trustedLearnWording(input: {
+  confidence: string;
+  /** Fields the verifier compared (verification.matches.length) and how many of them matched. */
+  fieldsChecked: number;
+  fieldsMatched: number;
+  /** Recorded fill / select / check steps across the whole walk. */
+  recordedFills: number;
+  pageCount: number;
+  scopeType: "ahj" | "utility";
+  bindingNote: string;
+}): { note: string; message: string; done: string } {
+  const checked = `${input.fieldsChecked} field(s) checked on the final page (${input.fieldsMatched} matched) of ${input.recordedFills} recorded fill(s) across ${input.pageCount} page(s)`;
+  return {
+    note: `Auto-learned and verified (${input.confidence} confidence) on ${input.pageCount} page(s).${input.bindingNote} The verifier read the final page only: ${checked}. ${FINAL_SUBMIT_GATE_SENTENCE}`,
+    message: `Portal learned: ${checked} (verifier confidence: ${input.confidence}) — the earlier pages were not re-read, so review them before submitting. The recipe is trusted and will replay on future ${input.scopeType === "utility" ? "utility" : "AHJ"} projects. ${FINAL_SUBMIT_GATE_SENTENCE}`,
+    done: `Learning complete — recipe trusted (${input.fieldsChecked} field(s) checked on the final page of ${input.pageCount}).`,
+  };
+}
+
 export function learnSignerName(db: AppDb, project: Pick<ProjectRecord, "clientId">): string {
   if (!project.clientId) return "";
   try {
@@ -1705,6 +1742,16 @@ async function autoLearnPortalInner(
     }, `Portal was filled and staged, but this pass did not verify cleanly (${verification.issues.slice(0, 2).join("; ") || "low confidence"}).`);
   }
   stub = stub ?? mkStub();
+  // What this learn checked, with its denominator, and the one sentence for the submit gate (B10).
+  const trustedWords = trustedLearnWording({
+    confidence: String(verification.overallConfidence),
+    fieldsChecked: verification.matches.length,
+    fieldsMatched: verification.matches.filter((m) => m.ok).length,
+    recordedFills: substantiveSteps,
+    pageCount: learn.pageCount ?? 0,
+    scopeType,
+    bindingNote,
+  });
   // DEPTH ON THIS PATH IS GUARDED IN THE WRITER, NOT HERE. This is the third and last place
   // that can bury a deeper draft — a run that reached review, filled four fields and failed
   // the trust gate lands here as "recording" and used to overwrite a 60-step draft — but the
@@ -1715,7 +1762,7 @@ async function autoLearnPortalInner(
   savePortalRecipeSteps(db, stub.id, boundSteps, {
     status: trusted ? "complete" : "recording",
     notes: trusted
-      ? `Auto-learned and verified (${verification.overallConfidence} confidence) on ${learn.pageCount} page(s).${bindingNote} Final submit recorded for the trusted-submit allowlist; never auto-clicked unless the operator opts in.`
+      ? trustedWords.note
       : `Auto-learned but NOT verified — review the captured fill and confirm before trusting.${bindingNote} Issues: ${verification.issues.join("; ") || "low confidence"}.`,
   });
   // The recipe row + steps now exist — route captured human fixes into it, and flush any
@@ -1837,7 +1884,7 @@ async function autoLearnPortalInner(
     scope: scopeType, pageCount: learn.pageCount, confidence: verification.overallConfidence, finalSubmitRecorded: learn.finalSubmitRecorded, pageTrace: learn.pageTrace ?? [],
   });
 
-  emitDone(trusted ? "Learning complete — recipe verified and trusted." : "Learning complete — recipe saved as a draft pending your verification.");
+  emitDone(trusted ? trustedWords.done : "Learning complete — recipe saved as a draft pending your verification.");
   return finalize({
     recipe: getPortalRecipe(db, stub.id),
     status: trusted ? "trusted" : "draft",
@@ -1851,7 +1898,7 @@ async function autoLearnPortalInner(
       issues: verification.issues,
     },
     message: (trusted
-      ? `Portal learned and verified (${verification.overallConfidence} confidence). The recipe is trusted and will replay on future ${scopeType === "utility" ? "utility" : "AHJ"} projects. Final submit stays manual unless you opt this portal into trusted auto-submit.`
+      ? trustedWords.message
       : `Portal learned but needs your verification — open the captured fill and confirm it's correct before it's trusted. ${verification.issues.length ? "Flags: " + verification.issues.slice(0, 3).join("; ") : ""}`)
       + (learn.reachedReview && !resolveHeadless(input.headless)
         ? " The browser is open at the review screen — any field you fill or fix by hand there is recorded into the recipe automatically (patch-by-demonstration)."
