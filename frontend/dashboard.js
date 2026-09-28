@@ -2052,6 +2052,21 @@ async function selectProject(projectId) {
     loadNextStep(projectId),
   ]);
   renderDetail();
+  // THE FORMS FOUND BEFORE STAY ON SCREEN (operator 09-27: "the files that it finds don't stay if you
+  // leave the project and come back"). Opening a project reset the packet + filled-forms card to empty
+  // until Build / Find was clicked again, though the forms were stored all along. Load them in the
+  // background — the same call Build makes — and repaint only if this project is still the one open.
+  void (async () => {
+    try {
+      const docs = await api(`/api/projects/${projectId}/application-docs`);
+      if (state.selectedProjectId !== projectId || state.applicationDocs) return;
+      state.applicationDocs = docs;
+      const filled = await api(`/api/projects/${projectId}/filled-forms`, { method: "POST", body: "{}" });
+      if (state.selectedProjectId !== projectId || state.filledForms) return;
+      state.filledForms = filled;
+      renderDetail();
+    } catch { /* the Build / Find buttons still work; nothing to show yet */ }
+  })();
 }
 
 // THE ONE ANSWER to "what does this project need next, and from whom" — computed on the
