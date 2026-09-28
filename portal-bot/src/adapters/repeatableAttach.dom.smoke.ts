@@ -14,6 +14,18 @@
 //   MUST-EXCLUDE "Homeowner Acknowledgement" / "Contractor Responsibility Form" chosen for any row.
 //   MUST-EXCLUDE no owed list: exactly today's single row.
 //
+// NUMBERED TYPES (City of Corvallis, live 2026-09-28, learn run 16-40-15 p017): the Type offers "01 Plans" /
+// "02 Specifications or Engineering" / "03 Other Documents", each option's VALUE "ACA USERS - DS BLD RES::<text>",
+// and choosing one fires Accela's loading mask. The learner missed the numbering, never chose a Type, the Save
+// was refused and a person picked the Type by hand — so that recipe has NO Type step.
+//   MUST-PASS    the LEARNER's pass types the plan set's row "01 Plans" and records the stamped Type step;
+//                on Oregon ePermitting it still picks "Plans - Structural" / "Plans - Electrical".
+//   MUST-PASS    replay with the recorded Type step: plan set "01 Plans", an owed B-01S "03 Other Documents",
+//                an owed module spec "02 Specifications or Engineering".
+//   MUST-PASS    replay of a recipe with NO Type step (and no Description step — what p016 recorded): the
+//                plan set's row still saves ("01 Plans", chosen by the document), and the owed rows too.
+//   MUST-EXCLUDE never a Save clicked under the Type's loading mask.
+//
 //   npx tsx portal-bot/src/adapters/repeatableAttach.dom.smoke.ts
 import "../smokeArtifactDirs";
 import fs from "node:fs";
@@ -24,6 +36,7 @@ import { fileURLToPath } from "node:url";
 import { chromium, type Page } from "playwright";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../../shared/src/types";
 import { RecipeAdapter } from "./recipeAdapter";
+import { AutoLearnAdapter, type LearnPlanner } from "./autoLearnAdapter";
 import { attachmentTypeFor } from "./attachmentTypes";
 
 delete process.env.PORTAL_ALLOW_FINAL_SUBMIT;
@@ -94,8 +107,14 @@ const TYPES_REAL = ["--Select--", "Contractor Responsibility Form", "Deferred Su
   "Homeowner Acknowledgement", "Lighting Efficiency Statement", "Other", "Plans - Architectural", "Plans - Civil", "Plans - Construction", "Plans - Electrical",
   "Plans - Fire Alarm", "Plans - Fire Sprinkler", "Plans - Mechanical", "Plans - Plumbing", "Plans - Site Plan", "Plans - Structural", "Plans - Truss", "Revisions",
   "Septic Review", "Special Inspection Deficiencies Report", "Special Inspection Final Summary Report", "Special Inspection Form", "Specifications", "Structural Calculations"];
+// City of Corvallis's Type list, verbatim (learn run 2026-09-28_16-40-15, page-p017 ddlDocType).
+const TYPES_CORVALLIS = ["--Select--", "01 Plans", "02 Specifications or Engineering", "03 Other Documents"];
 let types = TYPES_REAL;
-let rows: Array<{ name: string; type: string; desc: string }> = [];
+/** Corvallis: each option's VALUE is "<prefix><text>" ("ACA USERS - DS BLD RES::01 Plans"); "" = value is the text. */
+let typeValuePrefix = "";
+/** Corvallis: choosing a Type fires ProcessLoading (the mask) for this long; a Save under it is swallowed. 0 = none. */
+let typeMaskMs = 0;
+let rows: Array<{ name: string; type: string; desc: string; value?: string }> = [];
 /** Real Accela (live run 090fa574): the pending row — Description + Type — is BUILT when a file is
  *  added and removed on Save; before Save it shows "File: <name>". false = a static row (older shape). */
 let rowAfterUpload = true;
@@ -111,17 +130,19 @@ const saveAttempts: string[] = [];
 /** A file name printed inside the page's instructions (S7b). */
 let instructionsName = "";
 const formSaves: string[] = [];
-const counts = { advance: 0, filing: 0, save: 0 };
+const counts = { advance: 0, filing: 0, save: 0, swallowed: 0 };
 const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 
 function attachmentsContent(): string {
   const body = rows.length
     ? rows.map((r) => `<tr class="ACA_TabRow_Odd"><td>${esc(r.name)}</td><td>${esc(r.type)}</td><td>16 B</td><td>09/27/2026</td><td><a href="javascript:void(0)">Actions</a></td></tr>`).join("")
     : `<tr><td colspan="5">No records found.</td></tr>`;
-  const options = types.map((t) => `<option value="${t === "--Select--" ? "" : esc(t)}">${esc(t)}</option>`).join("");
+  const options = types.map((t) => `<option value="${t === "--Select--" ? "" : esc(typeValuePrefix + t)}">${esc(t)}</option>`).join("");
+  // Corvallis: the Type's onchange is Accela's ProcessLoading + a postback — the mask, for typeMaskMs.
+  const onType = typeMaskMs > 0 ? ` onchange="window.__busy=true;window.__showMask();setTimeout(function(){window.__busy=false;window.__hideMask();},${typeMaskMs})"` : "";
   // The pending row as Accela builds it (dlDocumentEdit): Description, Type, then "File: <name>" 100%.
   const rowHtml = `<div id="pendingRow"><label for="${PM}dlDocumentEdit_ctl00_txtDescription">*Description:</label> <textarea id="${PM}dlDocumentEdit_ctl00_txtDescription" rows="4" cols="60"></textarea>
-      <label for="${PM}dlDocumentEdit_ctl00_ddlDocType">*Type (Required):</label> <select id="${PM}dlDocumentEdit_ctl00_ddlDocType">${options}</select>
+      <label for="${PM}dlDocumentEdit_ctl00_ddlDocType">*Type (Required):</label> <select id="${PM}dlDocumentEdit_ctl00_ddlDocType"${onType}>${options}</select>
       <table style="display:none;"><tr><td><label for="${PM}dlDocumentEdit_ctl00_ddlAlsoAttachTo">Also attach to:</label> <select id="${PM}dlDocumentEdit_ctl00_ddlAlsoAttachTo"><option value="">--Select--</option></select></td></tr></table>
       <div>File: <span id="fname"></span> <span class="progress">100%</span></div></div>`;
   return `<div ng-non-bindable="true" id="attachmentSection">
@@ -144,11 +165,15 @@ function attachmentsContent(): string {
       document.getElementById('fname').textContent = fi.files[0].name;
     });
     window.saveAttachment = function(){
+      // Under Accela's processing mask a click lands nowhere — and is counted.
+      if (window.__busy) { new Image().src = '/swallowed?' + Date.now(); return; }
       var name = fi.files && fi.files[0] ? fi.files[0].name : '';
       var dd = document.querySelector('#pendingRow select'); var ta = document.querySelector('#pendingRow textarea');
-      if (${JSON.stringify(silentRefuseFor)} && name.indexOf(${JSON.stringify(silentRefuseFor)}) >= 0) { fetch('/saveattempt', { method: 'POST', body: JSON.stringify({ name: name, type: dd ? dd.value : '', desc: ta ? ta.value : '' }) }); if (${resetTypeOnRefuse} && dd) dd.value = ''; return; }
+      // The row's Type as the portal SHOWS it (the option text; Corvallis's value carries a code prefix).
+      var tt = dd && dd.value && dd.selectedIndex >= 0 ? dd.options[dd.selectedIndex].text : '';
+      if (${JSON.stringify(silentRefuseFor)} && name.indexOf(${JSON.stringify(silentRefuseFor)}) >= 0) { fetch('/saveattempt', { method: 'POST', body: JSON.stringify({ name: name, type: tt, desc: ta ? ta.value : '' }) }); if (${resetTypeOnRefuse} && dd) dd.value = ''; return; }
       if (!name || !dd || !dd.value || (${JSON.stringify(failSaveFor)} && name.indexOf(${JSON.stringify(failSaveFor)}) >= 0)) { var e = document.getElementById('err') || document.createElement('div'); e.id = 'err'; e.className = 'ACA_Message_Error'; e.textContent = 'Type (Required): please select a value.'; document.getElementById('uploadWidget').appendChild(e); return; }
-      fetch('/save', { method: 'POST', body: JSON.stringify({ name: name, type: dd.value, desc: ta ? ta.value : '' }) }).then(function(){ location.reload(); });
+      fetch('/save', { method: 'POST', body: JSON.stringify({ name: name, type: tt, value: dd.value, desc: ta ? ta.value : '' }) }).then(function(){ location.reload(); });
     };
   })();</script>
 </div>`;
@@ -193,6 +218,7 @@ const server = http.createServer((req, res) => {
       <a id="next" href="/CapConfirm.aspx">Continue Application »</a></body></html>`);
     return;
   }
+  if (url.pathname === "/swallowed") { counts.swallowed++; res.writeHead(204); res.end(); return; }
   if (/CapConfirm/i.test(url.pathname)) { send(confirmPage()); return; }
   if (/CapEdit/i.test(url.pathname)) { send(attachmentsPage()); return; }
   res.writeHead(404); res.end("not found");
@@ -214,7 +240,10 @@ const DOCS = {
   building_application: pdfAt("tmpl-0d26f7e9-0126-4d9c-b238-f03b593cf02c.pdf"),
   solar_checklist: pdfAt("tmpl-637814c9-6c4b-4bdd-938d-4ac748a284fa.pdf"),
   electrical_application: pdfAt("tmpl-820f1e53-91b0-4480-ba3b-d1b18e417144.pdf"),
+  module_spec: pdfAt("tmpl-5b0c1f7e-2a44-4c1e-9d0a-7f3e2c9b1a55.pdf"),
 };
+const SPEC = "REC Alpha Pure-R module specification sheet";
+const CV_PREFIX = "ACA USERS - DS BLD RES::";
 const B01S = "Marion County Prescriptive Solar Photovoltaic Installation Permit Application (B-01S)";
 const C5952 = "Oregon BCD 440-5952 prescriptive rooftop PV checklist";
 const E01 = "Marion County Renewable Electrical Energy Permit Application (E-01)";
@@ -233,10 +262,13 @@ const recipeOf = (steps: RecipeStep[]): PortalRecipe => ({
   id: "repeatable-attach-smoke", scopeType: "ahj", profileKey: "or|fernhollow|", state: "OR", ahj: "City of Fernhollow", utility: "",
   portalPlatform: "accela", portalUrl: `${base}${ATT_PATH}`, status: "complete", version: 1, steps, createdBy: "smoke", createdAt: "", updatedAt: "", notes: "",
 });
-async function replay(name: string, planType: string, owed: Array<{ docType: string; label: string }>, docs: Record<string, string>) {
-  counts.advance = 0; counts.filing = 0; counts.save = 0;
+/** A recording with NO Type step and no Description step — what the Corvallis learn recorded on p016
+ *  (attachment_save: descFilled 0, typeSet 0): the upload, then the stamped Save. */
+const untypedSteps = (): RecipeStep[] => recipeSteps("").filter((s) => !/^attachment:\s*(description|document type)\b/i.test(String(s.note ?? "")));
+async function replay(name: string, planType: string, owed: Array<{ docType: string; label: string }>, docs: Record<string, string>, opts: { steps?: RecipeStep[]; discipline?: string } = {}) {
+  counts.advance = 0; counts.filing = 0; counts.save = 0; counts.swallowed = 0;
   const page = await newPage();
-  const adapter = new RecipeAdapter(recipeOf(recipeSteps(planType)), {}, docs, { owedAttachments: owed });
+  const adapter = new RecipeAdapter({ ...recipeOf(opts.steps ?? recipeSteps(planType)), ...(opts.discipline ? { discipline: opts.discipline } : {}) }, {}, docs, { owedAttachments: owed });
   (adapter as unknown as { page: unknown }).page = page;
   const result = await adapter.fillApplication({} as ProjectRecord);
   const url = page.url();
@@ -254,6 +286,54 @@ check("applications and the 5952 take 'Other' (the list has no Application / Che
 check("a spec is 'Specifications', a PE letter 'Structural Calculations', a site plan 'Plans - Site Plan'", attachmentTypeFor("module_spec", TYPES_REAL) === "Specifications" && attachmentTypeFor("structural_letter", TYPES_REAL) === "Structural Calculations" && attachmentTypeFor("site_plan", TYPES_REAL) === "Plans - Site Plan");
 check("MUST-EXCLUDE never Homeowner Acknowledgement / Contractor Responsibility, even as the only non-placeholder option", attachmentTypeFor("building_application", ["--Select--", "Homeowner Acknowledgement", "Contractor Responsibility Form"]) === null);
 check("MUST-EXCLUDE an unknown document type is not guessed", attachmentTypeFor("utility_bill", TYPES_REAL) === null && attachmentTypeFor("meter_photo", TYPES_REAL) === null);
+check("the numbered Corvallis list: plan set '01 Plans', B-01S '03 Other Documents', spec '02 Specifications or Engineering'",
+  attachmentTypeFor("plan_set", TYPES_CORVALLIS) === "01 Plans" && attachmentTypeFor("building_application", TYPES_CORVALLIS) === "03 Other Documents" && attachmentTypeFor("module_spec", TYPES_CORVALLIS) === "02 Specifications or Engineering");
+
+/** THE LEARNER's attachment pass (autoLearnAdapter.accelaAttachmentSavePass) on the real page: the plan set
+ *  handed to the Add control (what performUploads does), then the pass — it types the row, fills the
+ *  Description and clicks Save. What it recorded, and what the portal saved. */
+async function learnPass(permitType: string): Promise<{ saved: boolean; steps: RecipeStep[]; rows: typeof rows; swallowed: number }> {
+  counts.save = 0; counts.swallowed = 0;
+  const page = await newPage();
+  await page.goto(`${base}${ATT_PATH}`);
+  await page.setInputFiles(`#${FILE_ID}`, DOCS.plan_set);
+  const planner: LearnPlanner = async () => ({ fills: [], atReview: false });
+  const learner = new AutoLearnAdapter("Numbered Types smoke", planner, { docsByType: { plan_set: DOCS.plan_set }, uploadMode: "combined" });
+  (learner as unknown as { page: unknown }).page = page;
+  const steps: RecipeStep[] = [{ action: "upload", phase: "upload", selector: { css: `#${FILE_ID}` }, docType: "plan_set", note: "upload plan_set: Add" }];
+  const saved = await (learner as unknown as { accelaAttachmentSavePass: (p: ProjectRecord, s: RecipeStep[]) => Promise<boolean> })
+    .accelaAttachmentSavePass({ permitType } as ProjectRecord, steps);
+  await page.context().close();
+  console.log(`  [learn ${permitType}] saved=${saved} rows=${JSON.stringify(rows.map((r) => [r.name, r.type, r.value]))} steps=${JSON.stringify(steps.map((s) => [s.action, s.note, s.value]))} swallowed=${counts.swallowed}`);
+  return { saved, steps, rows: [...rows], swallowed: counts.swallowed };
+}
+const typeStepOf = (steps: RecipeStep[]) => steps.find((s) => s.action === "select" && s.note === "attachment: document type");
+
+console.log("\nU. the LEARNER on the numbered Corvallis list (live 2026-09-28 p016/p017: no Type chosen, Save refused)");
+{
+  rows = []; types = TYPES_CORVALLIS; typeValuePrefix = CV_PREFIX; typeMaskMs = 700;
+  const o = await learnPass("Residential Building");
+  const ts = typeStepOf(o.steps);
+  check("MUST-PASS the pass recognises the numbered list and types the plan set's row '01 Plans' (selected by its coded value); the portal saves it",
+    o.saved && o.rows.length === 1 && o.rows[0].type === "01 Plans" && o.rows[0].value === `${CV_PREFIX}01 Plans`, JSON.stringify(o.rows));
+  check("MUST-PASS the stamped Type step is recorded with the option TEXT, beside the Description and the Save (as on ePermitting)",
+    ts?.value === "01 Plans" && ts?.phase === "upload" && o.steps.some((s) => s.note === "attachment: description") && o.steps.some((s) => /^attachment: save\b/.test(String(s.note ?? ""))), JSON.stringify(o.steps));
+  check("MUST-EXCLUDE the Save is never clicked under the Type's loading mask", o.swallowed === 0, `swallowed=${o.swallowed}`);
+  rows = [];
+  const e = await learnPass("Electrical");
+  check("an electrical plan set on the same list is '01 Plans' too (the list does not split plans by trade)", e.saved && e.rows[0]?.type === "01 Plans" && typeStepOf(e.steps)?.value === "01 Plans", JSON.stringify(e.rows));
+}
+
+console.log("\nV. PINNED: the learner on Oregon ePermitting's list still picks the plan set's Type by trade");
+{
+  types = TYPES_REAL; typeValuePrefix = ""; typeMaskMs = 0;
+  rows = [];
+  const s = await learnPass("structural");
+  check("building: 'Plans - Structural' saved and recorded", s.saved && s.rows[0]?.type === "Plans - Structural" && typeStepOf(s.steps)?.value === "Plans - Structural", JSON.stringify({ rows: s.rows, type: typeStepOf(s.steps) }));
+  rows = [];
+  const e = await learnPass("electrical");
+  check("electrical: 'Plans - Electrical' saved and recorded", e.saved && e.rows[0]?.type === "Plans - Electrical" && typeStepOf(e.steps)?.value === "Plans - Electrical", JSON.stringify({ rows: e.rows, type: typeStepOf(e.steps) }));
+}
 
 console.log("\nA. Michael building: plan set + B-01S + 5952");
 {
@@ -446,6 +526,51 @@ console.log("\nO. (skeptic eb36a8f MF2) a required-document list the backend cou
     { plan_set: DOCS.plan_set });
   check("MUST-EXCLUDE refused on the unreadable list, and the sentinel is never uploaded or ledgered as a document",
     o.refusals.some((r) => /required-document list for this filing could not be read/.test(r)) && o.rows.length === 1 && o.ledger.length === 0, JSON.stringify({ refusals: o.refusals, rows: o.rows, ledger: o.ledger }));
+}
+
+const CORVALLIS_OWED = [{ docType: "building_application", label: B01S }, { docType: "module_spec", label: SPEC }];
+const CORVALLIS_DOCS = { plan_set: DOCS.plan_set, building_application: DOCS.building_application, module_spec: DOCS.module_spec };
+const corvallisRows = (o: { rows: typeof rows }) => ({
+  plan: o.rows.find((r) => /Plan_Set_Fixture/.test(r.name)),
+  b01s: o.rows.find((r) => /B-01S/.test(r.name)),
+  spec: o.rows.find((r) => /module specification/i.test(r.name)),
+});
+
+console.log("\nW. replay on the numbered Corvallis list with the recorded Type step '01 Plans' (what the learner now records): plan set + B-01S + module spec");
+{
+  rows = []; types = TYPES_CORVALLIS; typeValuePrefix = CV_PREFIX; typeMaskMs = 700;
+  const o = await replay("corvallis-typed", "01 Plans", CORVALLIS_OWED, CORVALLIS_DOCS);
+  const r = corvallisRows(o);
+  check("MUST-PASS 3 rows: the plan set '01 Plans', the B-01S '03 Other Documents', the spec '02 Specifications or Engineering'",
+    o.rows.length === 3 && r.plan?.type === "01 Plans" && r.b01s?.type === "03 Other Documents" && r.spec?.type === "02 Specifications or Engineering", JSON.stringify(o.rows));
+  check("the ledger says both attached; one advance, 0 filing POSTs, no Save under the Type's mask",
+    o.ledger.length === 2 && o.ledger.every((l) => l.status === "attached") && o.advance === 1 && o.filing === 0 && o.swallowed === 0, JSON.stringify({ ledger: o.ledger, advance: o.advance, filing: o.filing, swallowed: o.swallowed }));
+}
+
+console.log("\nX. replay of a recipe with NO Type step and no Description step (the Corvallis recording: a person picked the Type by hand)");
+{
+  rows = []; types = TYPES_CORVALLIS; typeValuePrefix = CV_PREFIX; typeMaskMs = 700;
+  const o = await replay("corvallis-untyped", "", CORVALLIS_OWED, CORVALLIS_DOCS, { steps: untypedSteps() });
+  const r = corvallisRows(o);
+  check("MUST-PASS the plan set's row still saves, as '01 Plans' — its Type chosen by the document before the recorded Save",
+    r.plan?.type === "01 Plans" && r.plan?.value === `${CV_PREFIX}01 Plans` && !/attachment list does not show "Plan_Set_Fixture/.test(o.drift), JSON.stringify({ rows: o.rows, drift: o.drift.slice(0, 300) }));
+  check("MUST-PASS the owed rows through it are typed the same way: the B-01S '03 Other Documents', the spec '02 Specifications or Engineering'; both attached",
+    o.rows.length === 3 && r.b01s?.type === "03 Other Documents" && r.spec?.type === "02 Specifications or Engineering" && o.ledger.length === 2 && o.ledger.every((l) => l.status === "attached"),
+    JSON.stringify({ rows: o.rows, ledger: o.ledger }));
+  check("the run says what it chose; one advance to the review page, 0 filing POSTs, no Save under the mask, nothing refused",
+    /has no Type step — chose "01 Plans"/.test(o.aging) && o.advance === 1 && /CapConfirm/i.test(o.url) && o.filing === 0 && o.swallowed === 0 && !o.refusals.some((x) => /owed document|never showed/.test(x)),
+    JSON.stringify({ aging: o.aging.slice(0, 400), advance: o.advance, filing: o.filing, swallowed: o.swallowed, refusals: o.refusals }));
+}
+
+console.log("\nY. PINNED: a recipe with no Type step on Oregon ePermitting's list types the plan set by the recipe's trade");
+{
+  rows = []; types = TYPES_REAL; typeValuePrefix = ""; typeMaskMs = 0;
+  const o = await replay("oregon-untyped-electrical", "", [{ docType: "electrical_application", label: E01 }],
+    { plan_set: DOCS.plan_set, electrical_application: DOCS.electrical_application }, { steps: untypedSteps(), discipline: "electrical" });
+  check("electrical recipe: the plan set 'Plans - Electrical', the E-01 'Other'", o.rows.length === 2 && o.rows[0].type === "Plans - Electrical" && o.rows[1].type === "Other" && o.ledger[0]?.status === "attached", JSON.stringify({ rows: o.rows, ledger: o.ledger }));
+  rows = [];
+  const b = await replay("oregon-untyped-building", "", [], { plan_set: DOCS.plan_set }, { steps: untypedSteps() });
+  check("building (no discipline named): the plan set 'Plans - Structural' — never Homeowner Acknowledgement", b.rows.length === 1 && b.rows[0].type === "Plans - Structural" && !b.rows.some(bad), JSON.stringify(b.rows));
 }
 
 await browser.close();

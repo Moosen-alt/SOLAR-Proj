@@ -83,7 +83,7 @@ import { licenceKeyForLabel } from "../../../shared/src/licenceKinds";
 import { labelWords } from "../../../shared/src/portalSafety";
 import { imageToPdfBytes, shouldConvertToPdf } from "../imageToPdf";
 import { removeUploadStaging, uploadPayloadFor, type PreparedUpload } from "./uploadPayload";
-import { attachmentTypeFor } from "./attachmentTypes";
+import { attachmentTypeFor, isDocumentTypeList } from "./attachmentTypes";
 import { exactUploadDocType, fileTypeAllowed, UPLOAD_LABEL_PATTERNS, uploadForbidsSubstitute } from "./autoLearnAdapter";
 import { reviewComparison, scrapeReviewScreen as scrapeReviewScreenShared, type ReviewMismatch } from "../reviewScreenScraper";
 import { sweepEmptyRequiredControls, type EmptyRequired } from "../requiredControlSweep";
@@ -480,6 +480,10 @@ export class RecipeAdapter extends BasePortalAdapter {
   private owedAttempted = new Set<string>();
   /** Doc types this run actually handed to a file control (recorded uploads and owed ones). */
   private uploadedDocTypes = new Set<string>();
+  /** Recorded attachment commits (the stamped Save step) whose row carried NO recorded Type step but
+   *  whose page demanded one — the run chose it by the document (typeUntypedAttachmentRow). The owed
+   *  documents that go through the same row get their Type the same way. */
+  private rowsTypedByDocument = new Set<RecipeStep>();
   /** D4 — WHAT WENT UP: every owed document's outcome this run, in the portal's own list's terms. */
   private attachmentLedger: Array<{ docType: string; label: string; status: "attached" | "already listed" | "not attached"; detail: string }> = [];
   /** runs-finish item 3: the run ended on a page NOT verified as the review page — where, in the
@@ -1492,6 +1496,14 @@ export class RecipeAdapter extends BasePortalAdapter {
         // PHOTOGRAPH THE FINISHED PAGE. Same moment as the sweep above: everything the
         // recipe will put on this page is on it, and the next click leaves it for good.
         await this.timed("page-shot", async () => this.capturePageShot(await currentPageLabel()));
+      }
+
+      // A RECORDED ATTACHMENT ROW THAT CARRIES NO TYPE STEP (the learn's Type was picked by a person —
+      // Corvallis 2026-09-28): the Type is chosen by the document before the row's Save, so the Save is
+      // not refused on an empty Type. Never past the review marker.
+      if (!pastReview && step.action === "click" && /^attachment:\s*save\b/i.test(String(step.note ?? "").trim())) {
+        const untyped = this.recordedAttachmentRow(stepIdx);
+        if (untyped && !untyped.type) await this.timed("attachment-type", () => this.typeUntypedAttachmentRow(String(untyped.upload.docType ?? ""), step));
       }
 
       let lastErr: unknown;
@@ -3174,9 +3186,7 @@ export class RecipeAdapter extends BasePortalAdapter {
     //
     // `recipe.discipline` is the field the learn stored for exactly this: "structural" on one
     // and "electrical" on the other.
-    const wantsElectrical = /elec/i.test(String(this.fieldValues.permitType ?? ""))
-      || /elec/i.test(String(step.note ?? "").replace(/\s+—\s+issuing agency:.*$/i, ""))
-      || /elec/i.test(String(this.recipe.discipline ?? ""));
+    const wantsElectrical = this.filingIsElectrical(String(step.note ?? ""));
     // THE LOOKED-UP ISSUING AGENCY DECIDES THE ROW when it is known (production 2026-09-27: City
     // of Jefferson's permits are issued by Marion County; the discipline convention above would
     // take the city's row for a structural filing). bindRecipeForReplay writes it into the field
@@ -4108,34 +4118,104 @@ export class RecipeAdapter extends BasePortalAdapter {
     return null;
   }
 
-  /** The live options of the row's DOCUMENT-TYPE select — the select whose options read as document
-   *  types (the learner's own test: "Plans - …", "Calculations", "Photos", "Forms"), the newest one.
-   *  Never simply the last select: a real Accela row carries a second one after it ("also attach to",
-   *  only "--Select--" — skeptic MF3). [] = no such select on the page yet. */
-  private async typeOptionsOf(_typeStep: RecipeStep): Promise<string[]> {
-    const got = await this.page.evaluate(() => {
-      const lists = Array.from(document.querySelectorAll("select")).map((el) => Array.from((el as HTMLSelectElement).options).map((o) => String(o.textContent || o.label || "").replace(/\s+/g, " ").trim()));
-      // The learner's own test (autoLearnAdapter.accelaAttachmentSavePass isDocType) — never "Other"
-      // alone: a "Category of Construction" select offers "Other" too (skeptic 13985c6 S5).
-      const typed = lists.filter((opts) => opts.length > 2
-        && (opts.some((t) => /plans?\s*[-–—]/i.test(t)) || opts.some((t) => /^(plans|calculations|photos?|forms?)\b/i.test(t))));
-      return typed.length ? typed[typed.length - 1] : [];
-    }).catch(() => [] as string[]) as string[];
-    return Array.isArray(got) ? got : [];
+  /** The page's DOCUMENT-TYPE selects, in DOM order (main document): `i` is the select's index among ALL
+   *  selects (page.locator("select").nth(i)), its option texts, the chosen option's text ("" = none /
+   *  a placeholder) and whether it is shown. "Document-type" is attachmentTypes.isDocumentTypeList — the
+   *  learner's test too (accelaAttachmentSavePass), one predicate at every door: never "Other" alone (a
+   *  Category of Construction offers it — skeptic 13985c6 S5), never the row's "also attach to" select
+   *  (only "--Select--" — skeptic MF3), and a numbered list ("01 Plans", Corvallis) reads as what it is. */
+  private async documentTypeSelects(): Promise<Array<{ i: number; texts: string[]; chosenText: string; visible: boolean }>> {
+    if (!this.page || typeof this.page.evaluate !== "function") return [];
+    const all = await this.page.evaluate(() => Array.from(document.querySelectorAll("select")).map((el, i) => {
+      const sel = el as HTMLSelectElement;
+      const texts = Array.from(sel.options).map((o) => String(o.textContent || o.label || "").replace(/\s+/g, " ").trim());
+      const at = sel.selectedIndex >= 0 ? String(texts[sel.selectedIndex] ?? "") : "";
+      const chosenText = String(sel.value || "").trim() && !/^\s*-*\s*(select|choose|please\s+select)/i.test(at) ? at : "";
+      const r = sel.getBoundingClientRect();
+      const cs = getComputedStyle(sel);
+      const visible = r.width > 0 && r.height > 0 && cs.display !== "none" && cs.visibility !== "hidden";
+      return { i, texts, chosenText, visible };
+    })).catch(() => []) as Array<{ i: number; texts: string[]; chosenText: string; visible: boolean }>;
+    return Array.isArray(all) ? all.filter((s) => Array.isArray(s?.texts) && isDocumentTypeList(s.texts)) : [];
   }
 
-  /** A PENDING attachment row is on the page: a document-type select (the same test as typeOptionsOf)
-   *  that holds a chosen Type. Accela removes the row on Save; a static-row widget resets it; a refused
-   *  Save leaves it holding its Type. */
-  private async pendingAttachmentRow(): Promise<boolean> {
-    return await this.page.evaluate(() => Array.from(document.querySelectorAll("select")).some((el) => {
-      const sel = el as HTMLSelectElement;
-      const opts = Array.from(sel.options).map((o) => String(o.textContent || o.label || "").replace(/\s+/g, " ").trim());
-      const docType = opts.length > 2 && (opts.some((t) => /plans?\s*[-–—]/i.test(t)) || opts.some((t) => /^(plans|calculations|photos?|forms?)\b/i.test(t)));
-      const chosen = String(sel.value || "").trim() && !/^\s*-*\s*(select|choose)/i.test(String(sel.selectedOptions?.[0]?.textContent || ""));
-      return docType && !!chosen;
-    })).catch(() => false) as boolean;
+  /** The live options of the row's DOCUMENT-TYPE select (documentTypeSelects), the newest one. Never
+   *  simply the last select: a real Accela row carries a second one after it ("also attach to").
+   *  [] = no such select on the page yet. */
+  private async typeOptionsOf(_typeStep: RecipeStep | null): Promise<string[]> {
+    const lists = await this.documentTypeSelects();
+    return lists.length ? lists[lists.length - 1].texts : [];
   }
+
+  /** A PENDING attachment row is on the page: a document-type select (documentTypeSelects) that holds a
+   *  chosen Type. Accela removes the row on Save; a static-row widget resets it; a refused Save leaves it
+   *  holding its Type. */
+  private async pendingAttachmentRow(): Promise<boolean> {
+    return (await this.documentTypeSelects()).some((s) => !!s.chosenText);
+  }
+
+  /** Is this filing ELECTRICAL? The project's permit type, the step's own words (an address-version
+   *  note), or the discipline the learn stored on the recipe ("structural" / "electrical"). */
+  private filingIsElectrical(stepNote = ""): boolean {
+    return /elec/i.test(String(this.fieldValues.permitType ?? ""))
+      || /elec/i.test(String(stepNote ?? "").replace(/\s+—\s+issuing agency:.*$/i, ""))
+      || /elec/i.test(String(this.recipe.discipline ?? ""));
+  }
+
+  /** CHOOSE A TYPE ON THE NEWEST EMPTY DOCUMENT-TYPE ROW: `want` is the option text (attachmentTypeFor's
+   *  answer), selected by its index on the shown select — the row the predicate identified, never a
+   *  selector's guess between the Type and "also attach to". An own-write window covers it (Accela's Type
+   *  change is a postback), then the portal's loading mask is waited out and the choice read back.
+   *  "no-row" = no shown, empty document-type select within `waitMs`. */
+  private async chooseTypeOnEmptyRow(want: string | ((texts: string[]) => string | null), waitMs: number, why: string): Promise<{ status: "chosen"; pick: string } | { status: "no-row" } | { status: "no-fit"; offered: string[] } | { status: "not-taken"; pick: string }> {
+    const t0 = Date.now();
+    let target: { i: number; texts: string[] } | undefined;
+    for (;;) {
+      const empties = (await this.documentTypeSelects()).filter((s) => s.visible && !s.chosenText);
+      target = empties[empties.length - 1];
+      if (target || Date.now() - t0 >= waitMs) break;
+      await sleep(300);
+    }
+    if (!target) return { status: "no-row" };
+    const texts = target.texts;
+    const pick = typeof want === "function" ? want(texts) : want;
+    const index = pick ? texts.findIndex((t) => t === pick) : -1;
+    if (!pick || index < 0) return { status: "no-fit", offered: texts.filter((t) => t && !/^\s*-*\s*(select|choose|please\s+select)/i.test(t)) };
+    const loc = this.page.locator("select").nth(target.i);
+    const took = await withOwnWriteWindow(this.page, `attachment row Type "${pick.slice(0, 40)}" (${why.slice(0, 60)})`,
+      () => loc.selectOption({ index }, { timeout: 5000 }).then(() => true).catch(() => false));
+    await this.waitForLoadingMaskClear(`the attachment row's Type "${pick.slice(0, 40)}"`);
+    const held = took && (await this.documentTypeSelects()).some((s) => s.chosenText === pick);
+    return held ? { status: "chosen", pick } : { status: "not-taken", pick };
+  }
+
+  /** A RECORDED ATTACHMENT ROW WITH NO TYPE STEP (City of Corvallis, 2026-09-28: the learner did not
+   *  recognise "01 Plans", so a person picked the Type by hand and the recording has none). Before that
+   *  row's Save, the Type is chosen by the DOCUMENT the row carries (attachmentTypeFor — the learner's own
+   *  mapping), so the Save is never refused on an empty Type. Only for a document this run handed to the
+   *  file control; a page with no document-type select (a portal whose rows have no Type) is left as is. */
+  private async typeUntypedAttachmentRow(docType: string, commitStep: RecipeStep): Promise<void> {
+    if (!docType || !this.uploadedDocTypes.has(docType)) return;
+    const discipline = this.filingIsElectrical() ? "electrical" : "structural";
+    const r = await this.chooseTypeOnEmptyRow((texts) => attachmentTypeFor(docType, texts, { discipline }), RecipeAdapter.UNTYPED_ROW_WAIT_MS, `no recorded Type for ${docType}`);
+    const doc = docType.replace(/_/g, " ");
+    if (r.status === "no-row") {
+      // A shown document-type row that already HOLDS a Type still demands one on every owed row.
+      if ((await this.documentTypeSelects()).some((s) => s.visible && !!s.chosenText)) this.rowsTypedByDocument.add(commitStep);
+      return;
+    }
+    this.rowsTypedByDocument.add(commitStep);
+    if (r.status === "chosen") {
+      this.agingNotes.push(`the recorded attachment row for the ${doc} has no Type step — chose "${r.pick}" by the document from the portal's own list`);
+    } else if (r.status === "no-fit") {
+      this.driftWarnings.push(`the attachment row for the ${doc} has no recorded Type and no Type on the portal's list fits it (${r.offered.slice(0, 10).join(", ")}) — its Save may be refused; choose the Type by hand and Save before submitting`);
+    } else {
+      this.driftWarnings.push(`the attachment row for the ${doc} has no recorded Type; "${r.pick}" was chosen but the row does not hold it — its Save may be refused; check the Type by hand before submitting`);
+    }
+  }
+
+  /** How long a recorded row with no Type step may take to show its Type control before its Save. */
+  static UNTYPED_ROW_WAIT_MS = 6_000;
 
   /** Is this file in the portal's COMMITTED attachment list? Only the list counts (skeptic 13985c6
    *  S1/S3/S7b): Accela's pending row prints "File: <name>" in the main page before Save, and a name in
@@ -4213,6 +4293,13 @@ export class RecipeAdapter extends BasePortalAdapter {
       return;
     }
     const slotLabel = String(row.upload.note ?? "").split(":").slice(1).join(":").trim();
+    // Every owed row is TYPED when the recorded row is: by the recorded Type step, or — a recording with
+    // no Type step whose page demanded one (rowsTypedByDocument, Corvallis) — on the new row directly,
+    // chosen by the same mapping. Without this the owed rows of such a recipe saved untyped and every
+    // Save was refused.
+    const typedByDoc = !row.type && this.rowsTypedByDocument.has(commitStep);
+    const needsType = !!row.type || typedByDoc;
+    const discipline = this.filingIsElectrical() ? "electrical" : "structural";
     for (const o of owed) {
       this.owedAttempted.add(o.docType);
       const label = String(o.label || o.docType).replace(/\s+/g, " ").trim();
@@ -4228,10 +4315,10 @@ export class RecipeAdapter extends BasePortalAdapter {
       // went up), so there the choice is made on the new row right after the upload, and a row no Type
       // fits is never saved (below).
       let pick = "";
-      if (row.type) {
+      if (needsType) {
         const early = await this.typeOptionsOf(row.type);
         if (early.length) {
-          pick = attachmentTypeFor(o.docType, early) ?? "";
+          pick = attachmentTypeFor(o.docType, early, { discipline }) ?? "";
           if (!pick) { fail(`no Type on the portal's list fits it (${early.filter(Boolean).slice(0, 10).join(", ")})`); continue; }
         }
       }
@@ -4260,9 +4347,9 @@ export class RecipeAdapter extends BasePortalAdapter {
           this.driftWarnings.push(`NOT ATTACHED: ${l2} — not tried, because the row for ${label.slice(0, 60)} was left unsaved on that page. Attach it by hand before submitting.`);
         }
       };
-      if (row.type && !pick) {
+      if (needsType && !pick) {
         const late = await this.waitTypeOptions(row.type, RecipeAdapter.ATTACH_ROW_WAIT_MS);
-        pick = attachmentTypeFor(o.docType, late) ?? "";
+        pick = attachmentTypeFor(o.docType, late, { discipline }) ?? "";
         if (!pick) { abandon(`no Type on the portal's list fits it (${late.filter(Boolean).slice(0, 10).join(", ") || "no Type control appeared on its row"})`); return; }
       }
       if (row.desc) await this.executeStep({ ...row.desc, value: label.slice(0, 200) }, false).catch(() => false);
@@ -4270,9 +4357,13 @@ export class RecipeAdapter extends BasePortalAdapter {
         abandon(`its Type "${pick}" could not be chosen on the row`);
         return;
       }
+      if (typedByDoc && (await this.chooseTypeOnEmptyRow(pick, 2000, `owed ${o.docType}`)).status !== "chosen") {
+        abandon(`its Type "${pick}" could not be chosen on the row`);
+        return;
+      }
       await this.waitForLoadingMaskClear(`saving ${label.slice(0, 40)}`);
       const committed = await this.executeStep(commitStep, false).catch(() => false);
-      const saved = committed ? await this.attachmentCommitted(fileName, row.type, pick, RecipeAdapter.ATTACH_LIST_WAIT_MS) : false;
+      const saved = committed ? await this.attachmentCommitted(fileName, row.type ?? (typedByDoc ? commitStep : null), pick, RecipeAdapter.ATTACH_LIST_WAIT_MS) : false;
       if (saved) {
         this.uploadsSettledUpTo = this.uploadsPerformed.length;
         this.attachmentLedger.push({ docType: o.docType, label, status: "attached", detail: `"${fileName}"${pick ? ` as "${pick}"` : ""}` });
@@ -4291,7 +4382,7 @@ export class RecipeAdapter extends BasePortalAdapter {
   static ATTACH_LIST_WAIT_MS = 45_000;
 
   /** The Type control's options once the new row shows it (bounded poll). [] = it never appeared. */
-  private async waitTypeOptions(typeStep: RecipeStep, timeoutMs: number): Promise<string[]> {
+  private async waitTypeOptions(typeStep: RecipeStep | null, timeoutMs: number): Promise<string[]> {
     const t0 = Date.now();
     for (;;) {
       const got = await this.typeOptionsOf(typeStep);
