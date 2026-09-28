@@ -143,6 +143,17 @@ process.env.AUTOPILOT_AUTO_START = "0"; // deterministic tests — no background
   } as never).project.id;
   runQcForProject(db, exact);
   check("QC: an exact listing writes no CEC row at all", cecRows(exact).length === 0, JSON.stringify(cecRows(exact)));
+  importCecRows(db, "module", [
+    M("ZXM7-UHLDD108-440/N", 440), M("ZXM7-UHLDD108-445/N", 445), M("ZXM7-SHLDD120-435/M", 435),
+    M("ZXM6-NH144-440/M {Blk}", 440), M("ZXM6-NH144-440/M {Wht}", 440), M("ZXM8-TEST108-450/N [Blk]", 450),
+  ]);
+  const suffixed = createProject(db, {
+    owner: "CEC Test", ahj: "City of Testville", state: "OR", utility: "PGE",
+    moduleMake: "ZNShine Solar", moduleModel: "ZXM8-TEST108-450/N", moduleWattage: 450,
+  } as never).project.id;
+  check("fixture sanity: the suffixed listing is the certified name", cm("ZXM8-TEST108-450/N", 450) === "ZXM8-TEST108-450/N [Blk]", cm("ZXM8-TEST108-450/N", 450));
+  runQcForProject(db, suffixed);
+  check("QC: a bracketed listing suffix is not another spelling — no row", !cecRows(suffixed).some((r) => r.severity === "info"), JSON.stringify(cecRows(suffixed)));
   const absent = createProject(db, {
     owner: "CEC Test", ahj: "City of Testville", state: "OR", utility: "PGE",
     moduleMake: "ZNShine Solar", moduleModel: "ZXM9-NOPE108-999/Q", moduleWattage: 999,

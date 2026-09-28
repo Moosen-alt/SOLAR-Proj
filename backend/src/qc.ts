@@ -494,7 +494,9 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
           const listing = cecListing(db, kind, model, make, watts);
           if (listing.listed) {
             // Listed under ANOTHER spelling: said, as information — the portal files the listed name.
-            if (listing.certifiedName && listing.certifiedName.toLowerCase().replace(/[^a-z0-9]/g, "") !== model.toLowerCase().replace(/[^a-z0-9]/g, "")) {
+            // A bracketed listing suffix ("IQ8PLUS-72-2-US [240V]") is not another spelling.
+            const spelling = (s: string) => s.toLowerCase().replace(/\s*[[({][^\])}]*[\])}]\s*/g, "").replace(/[^a-z0-9]/g, "");
+            if (listing.certifiedName && spelling(listing.certifiedName) !== spelling(model)) {
               db.run(
                 `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
                  VALUES (?, ?, 'pass', ?, ?, ?, 'info', ?)`,
