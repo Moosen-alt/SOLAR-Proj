@@ -60,7 +60,7 @@ try {
   assert.equal(answers({ ...complete, moduleFiguresCompliant: "" }).heightFigures, "Yes", "an unknown figure-compliance fact is assumed Yes (operator ruling 2026-09-27), never a blank row");
   assert.equal(answers({ ...complete, moduleFiguresCompliant: "no" }).heightFigures, "No", "an explicit No still answers No");
   assert.equal(answers({ ...complete, moduleHeightAboveRoof: 20 }).heightFigures, "No", "a stated height over 18 in still answers No");
-  assert.equal(answers({ ...complete, roofLayers: "" }).roofing, "");
+  assert.equal(answers({ ...complete, roofLayers: "" }).roofing, "Yes", "an unstated layer count is assumed 1-2 layers (operator ruling 2026-09-28)");
   assert.equal(answers({ ...complete, roofLayers: 3 }).roofing, "No");
   assert.notEqual(answers({ ...complete, windSpeed: 111 }).attachments, "Yes", "C exposure attachment cap is 110, not generic 120");
   assert.equal(answers({ ...complete, framingType: "rafter", rafterExceptionCompliant: "" }).framing, "");

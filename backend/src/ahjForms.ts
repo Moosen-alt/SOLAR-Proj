@@ -34,7 +34,7 @@ import {
   batteryStatus, SERVICE_FEEDER_CHARGE_KIND, SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
 } from "./batteryServiceFeeder";
 import { BCD_5952_LIMITS, type ChecklistRecovery } from "./prescriptiveChecklist";
-import { bcdChecklistAnswers, bcd5952FailedRows, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
+import { bcdChecklistAnswers, bcd5952AssumedFacts, bcd5952FailedRows, bcd5952MissingFacts, bcd5952SnapshotAdditions } from "./bcdChecklistFacts";
 import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
 import { documentFetchDisabled } from "./documentFetch";
 import {
@@ -1565,10 +1565,14 @@ export async function fillLoadedForm(
   // submit gate's permit-path warning reads too): the form itself says a No row may not go on the
   // prescriptive path.
   const failedChecklistRows = checklist.recognized ? bcd5952FailedRows(ctx.project).map((f) => f.clause) : [];
+  // A ROW THAT PASSED ON A STANDING ASSUMPTION IS SAID AS ONE (bcdChecklistFacts.bcd5952AssumedFacts —
+  // the roof layer count, operator ruling 2026-09-28), so a person can see it and answer otherwise.
+  const assumedChecklistRows = checklist.recognized ? bcd5952AssumedFacts(ctx.project).map((f) => f.assumed) : [];
   const checklistMessage = checklist.recognized
     ? "BCD 5952: filled independently supported answers. Review the completed PDF before filing."
       + (unresolvedChecklistRows.length ? ` Still needs evidence: ${unresolvedChecklistRows.join("; ")}.` : "")
       + (failedChecklistRows.length ? ` Answers No (the checklist says a No row may not be submitted on the prescriptive path): ${failedChecklistRows.join("; ")}.` : "")
+      + (assumedChecklistRows.length ? ` Assumed: ${assumedChecklistRows.join("; ")}.` : "")
     : undefined;
   // The cached research title can claim several applications were combined,
   // while the actual two-page PDF is only this checklist.

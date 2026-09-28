@@ -1,5 +1,5 @@
 import type { ProjectRecord } from "../../shared/src/types";
-import { classifyRoofCovering, oregonRoofingRowQualifies } from "./roofCovering";
+import { assumedRoofLayersNote, classifyRoofCovering, oregonRoofingRow, oregonRoofingRowQualifies } from "./roofCovering";
 type Answer = "Yes" | "No" | "";
 type Fact = boolean | null;
 const all = (...v: Fact[]): Fact => v.includes(false) ? false : v.includes(null) ? null : true;
@@ -90,16 +90,26 @@ export function bcd5952MissingFacts(project: Pick<ProjectRecord, "parserSnapshot
     });
   }
   if (!a.roofing) {
+    // A composition / wood roof never lands here any more: its unstated layer count is assumed
+    // compliant (roofCovering.oregonRoofingRow, operator ruling 2026-09-28) and named by
+    // bcd5952AssumedFacts instead.
     const roof = String(s.roofMaterial ?? "").trim();
-    out.push({
-      row: "roofing",
-      missing: !roof ? "roof material"
-        : /compos|asphalt|wood|shake/i.test(roof) ? `roof layer count (the plan states a ${roof} roof but not how many layers — operator question)`
-        : `a roof covering the row admits (plan states ${roof})`,
-    });
+    out.push({ row: "roofing", missing: !roof ? "roof material" : `a roof covering the row admits (plan states ${roof})` });
   }
   if (!a.heightFigures) out.push({ row: "heightFigures", missing: "module height above the roof (18 in or less, per the figures) — operator question" });
   if (!a.attachments) out.push({ row: "attachments", missing: "attachment method compliance" });
+  return out;
+}
+
+// ── A ROW THAT PASSED ON A STANDING ASSUMPTION, SAID ────────────────────────────────────
+// A Yes printed on an operator default must be visible as one, beside the rows that still need
+// evidence and the rows that answer No — so a person reading the fill note can see what was
+// assumed and overrule it (answer the layer count on the project).
+export function bcd5952AssumedFacts(project: Pick<ProjectRecord, "parserSnapshot">): Array<{ row: string; assumed: string }> {
+  const s = project.parserSnapshot ?? {};
+  const out: Array<{ row: string; assumed: string }> = [];
+  const layers = bcdChecklistAnswers(project).roofing === "Yes" ? assumedRoofLayersNote(s.roofMaterial, s.roofMaterialSubtype, s.roofLayers) : "";
+  if (layers) out.push({ row: "roofing", assumed: `roofing row: Yes — ${layers}` });
   return out;
 }
 
@@ -192,7 +202,9 @@ export function bcd5952FailedRows(project: Pick<ProjectRecord, "parserSnapshot">
 // figures, the structure description, a city's zoning sign-off) is ASKED on the project through
 // the existing intake / portal-question mechanism, stored on the project, and used by every form
 // — never a silent blank and never a guess. The BCD 5952 questions only where that checklist
-// applies; the zoning question whenever a COUNTY issues the permits for a CITY.
+// applies; the zoning question whenever a COUNTY issues the permits for a CITY. Later rulings
+// settled two of them by default instead of asking: the module height (2026-09-27, assumed Yes)
+// and the roof layer count (2026-09-28, assumed 1-2 layers) — each named where it is filled.
 export interface FormFactQuestion { key: string; label: string; options: string[]; kind: "form-fact" }
 export const STRUCTURE_DESCRIPTION_OPTIONS = [
   "Single-family dwelling", "Two-family dwelling (duplex)", "Townhouse", "Manufactured home", "Accessory building (garage/shed)",
@@ -210,7 +222,12 @@ export function formFactQuestions(
   if (opts.checklistApplies && planRead) {
     const roof = String(s.roofMaterial ?? "").trim();
     const family = classifyRoofCovering(s.roofMaterial, s.roofMaterialSubtype).family;
-    if ((family === "composition" || family === "wood") && !has("roofLayers")) {
+    // The layer count is asked only when THE ROW PREDICATE cannot answer without it — which, since
+    // the operator ruling of 2026-09-28 ("Assume 1-2 layers is good"), a composition or wood roof
+    // never is: an unstated count is assumed compliant and named in the fill note
+    // (bcd5952AssumedFacts). An answer already on file ("3 or more") still decides the row.
+    if ((family === "composition" || family === "wood")
+      && oregonRoofingRow(s.roofMaterial, s.roofMaterialSubtype, s.roofLayers).qualifies === null) {
       out.push({ key: "roofLayers", label: `How many layers of roofing are on the ${roof} roof?`, options: ["1", "2", "3 or more"], kind: "form-fact" });
     }
     // THE RAFTER EXCEPTION (dry-run 2026-09-28 B4): rafters at 24 in or less answer the framing row

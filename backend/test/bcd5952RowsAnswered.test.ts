@@ -10,7 +10,7 @@
 //   (a) Method 2 is gated on the roof-covering classifier (roofCovering.ts, the one predicate).
 //   (b) A No row is named with the clause that failed (bcd5952FailedRows — read by the fill note).
 //   (d) The rafter exception is ASKED (a form-fact question), answered into the project.
-//   The roof-layer count stays a person's answer: still asked, never guessed.
+//   The roof-layer count is assumed 1-2 layers when unstated (operator ruling 2026-09-28), named as such.
 //
 // Synthetic projects only. Run: npx tsx backend/test/bcd5952RowsAnswered.test.ts
 import "./_isolate"; // FIRST
@@ -90,9 +90,12 @@ try {
   });
 
   await check("(b2) MUST-EXCLUDE: a BLANK row is never reported No (it stays a missing fact)", () => {
-    const p = make({ roofLayers: "" });
+    // The roof layer count no longer blanks the row (it is assumed — operator ruling 2026-09-28);
+    // a roof MATERIAL nobody stated still does.
+    const p = make({ roofMaterial: "" });
+    assert.equal(facts.bcdChecklistAnswers(p).roofing, "");
     assert.ok(!facts.bcd5952FailedRows(p).some((f) => f.row === "roofing"));
-    assert.ok(facts.bcd5952MissingFacts(p).some((m) => m.row === "roofing"), "the layer count is still named as missing");
+    assert.ok(facts.bcd5952MissingFacts(p).some((m) => m.row === "roofing" && m.missing === "roof material"), "the roof material is named as missing");
   });
 
   await check("(b3) MUST-PASS: the filled 5952 says the No row, with its clause, in the fill note — and draws its No", async () => {
@@ -132,10 +135,15 @@ try {
     assert.ok(!facts.formFactQuestions(make({ framingType: "rafter" }), { checklistApplies: false }).some((x) => x.key === "rafterExceptionCompliant"), "not where the checklist does not apply");
   });
 
-  await check("(r1) the roof-layer count stays a person's answer: asked, never guessed", async () => {
+  await check("(r1) an unstated roof-layer count is ASSUMED 1-2 layers (operator ruling 2026-09-28): row Yes, not asked, named as assumed", async () => {
     const p = make({ roofLayers: "", attachmentSpacingIn: "24" });
-    assert.equal(facts.bcdChecklistAnswers(p).roofing, "");
-    assert.ok(facts.formFactQuestions(p, { checklistApplies: true }).some((q) => q.key === "roofLayers"));
+    assert.equal(facts.bcdChecklistAnswers(p).roofing, "Yes");
+    assert.ok(!facts.formFactQuestions(p, { checklistApplies: true }).some((q) => q.key === "roofLayers"));
+    assert.ok(!facts.bcd5952MissingFacts(p).some((m) => m.row === "roofing"));
+    assert.match(facts.bcd5952AssumedFacts(p).find((f) => f.row === "roofing")!.assumed, /assumed 1-2 layers of composition \(operator ruling 2026-09-28/);
+    // A stated count is never assumed over: 1 is Yes with nothing assumed, 3 or more is No.
+    assert.deepEqual(facts.bcd5952AssumedFacts(make({ roofLayers: "1", attachmentSpacingIn: "24" })), []);
+    assert.equal(facts.bcdChecklistAnswers(make({ roofLayers: "3 or more", attachmentSpacingIn: "24" })).roofing, "No");
   });
 } finally {
   db.close();

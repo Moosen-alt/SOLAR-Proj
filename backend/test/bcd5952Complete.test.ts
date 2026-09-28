@@ -56,13 +56,14 @@ const JOB = {
 const make = (over: Record<string, string> = {}) => repo.createProject(db, { clientId: client.id, ...JOB, ...over } as never).project;
 const reload = (id: string) => repo.getProjectDetail(db, id).project;
 
-await check("(q1) MUST-PASS: an Oregon comp-shingle job with no layer count, height or structure statement is ASKED, not guessed", async () => {
+await check("(q1) MUST-PASS: an Oregon comp-shingle job with no structure statement is ASKED it; the layer count and height are assumed, not asked", async () => {
   const p = make();
   const qs = await intake.unansweredPortalQuestions(db, p);
   const keys = qs.map((q) => q.key);
-  for (const k of ["roofLayers", "structureDescription"]) assert.ok(keys.includes(k), `${k} not asked: ${keys.join(",")}`);
+  assert.ok(keys.includes("structureDescription"), `structureDescription not asked: ${keys.join(",")}`);
+  assert.ok(!keys.includes("roofLayers"), "the layer count is assumed 1-2 layers (operator ruling 2026-09-28), not asked");
   assert.ok(!keys.includes("moduleHeightFiguresCompliant"), "the module-height row is assumed Yes (operator ruling 2026-09-27), not asked");
-  assert.equal(facts.bcdChecklistAnswers(p).roofing, "", "unknown layers stay blank until answered, never a guess");
+  assert.equal(facts.bcdChecklistAnswers(p).roofing, "Yes", "an unstated layer count is assumed 1-2 layers — the row passes, named as assumed");
   assert.equal(facts.bcdChecklistAnswers(p).heightFigures, "Yes", "unknown module height is assumed Yes, never a blank row");
   assert.equal(facts.bcdChecklistAnswers(make({ moduleHeightAboveRoof: "20" })).heightFigures, "No", "a stated height over 18 in still answers No");
   assert.equal(facts.bcdChecklistAnswers(make({ moduleHeightFiguresCompliant: "No" })).heightFigures, "No", "an explicit No still wins");
@@ -70,11 +71,14 @@ await check("(q1) MUST-PASS: an Oregon comp-shingle job with no layer count, hei
 
 await check("(q2) MUST-PASS: the operator's answers land on the project and every row they settle fills", async () => {
   const p = make();
-  // The height row is assumed Yes and is not an open question any more (operator ruling 2026-09-27).
-  await intake.answerPortalQuestions(db, p.id, { roofLayers: "1", structureDescription: "Single-family dwelling" });
+  // The height row is assumed Yes and is not an open question any more (operator ruling 2026-09-27);
+  // nor is the layer count (2026-09-28) — a stated count arrives through the parser payload.
+  repo.updateProject(db, p.id, { roofLayers: "1" } as never);
+  await intake.answerPortalQuestions(db, p.id, { structureDescription: "Single-family dwelling" });
   const after = reload(p.id);
   const a = facts.bcdChecklistAnswers(after);
   assert.equal(a.roofing, "Yes");
+  assert.deepEqual(facts.bcd5952AssumedFacts(after), [], "a stated layer count is not an assumption");
   assert.equal(a.heightFigures, "Yes");
   const ctx = forms.buildContext(db, after);
   assert.equal(forms.resolveSource("snapshot.structureDescription", ctx), "Single-family dwelling");
@@ -91,10 +95,10 @@ await check("(q3) MUST-EXCLUDE: a 3-layer comp roof answers No; a metal roof ans
   assert.ok(!(await intake.unansweredPortalQuestions(db, metal)).some((q) => q.key === "roofLayers"));
 });
 
-await check("(q4) the fill note names the ONE missing fact — never 'roof material' when the material was parsed", () => {
+await check("(q4) the fill note never blames 'roof material' when the material was parsed; the assumed layer count is SAID as assumed", () => {
   const missing = facts.bcd5952MissingFacts(make()).map((m) => m.missing).join(" | ");
-  assert.match(missing, /roof layer count/);
-  assert.doesNotMatch(missing, /^roof material/);
+  assert.doesNotMatch(missing, /roof layer count|^roof material/);
+  assert.match(facts.bcd5952AssumedFacts(make()).map((f) => f.assumed).join(" | "), /roof layer count not stated — assumed 1-2 layers of composition/);
 });
 
 await check("(z1) a county issuing for a city asks about the city's zoning sign-off; a city issuing its own does not", async () => {

@@ -6035,6 +6035,10 @@ function bcd5952ClauseNotes(form) {
     if (/metal/.test(roof)) note("roof material and layer count", "Roofing: Yes — via the metal-roof clause");
     else if (/compos|asphalt/.test(roof) && max("roofLayers", 2) === true) note("roof material and layer count", "Roofing: Yes — via ≤2 layers composition shingle (not the metal-roof clause)");
     else if (/wood|shake/.test(roof) && max("roofLayers", 1) === true) note("roof material and layer count", "Roofing: Yes — via ≤1 layer wood shake (not the metal-roof clause)");
+    // An UNSTATED layer count passes on the operator's default (backend roofCovering.oregonRoofingRow,
+    // operator ruling 2026-09-28 "Assume 1-2 layers is good") — the note names the assumption.
+    else if (/compos|asphalt/.test(roof) && num("roofLayers") == null) note("roof material and layer count", "Roofing: Yes — via ≤2 layers composition shingle; layer count not stated, assumed 1-2 layers (operator ruling 2026-09-28)");
+    else if (/wood|shake/.test(roof) && num("roofLayers") == null) note("roof material and layer count", "Roofing: Yes — via single-layer wood shake; layer count not stated, assumed one layer (operator ruling 2026-09-28)");
   }
 
   const exposure = str("wind").toUpperCase();
