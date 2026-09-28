@@ -711,11 +711,13 @@ export interface PrescriptiveCriterion {
   detail: string;
 }
 
-/** The criterion keys + default labels, for building the mapper's source list.
- *  Derived from an empty evaluation so labels stay in lockstep with the rows. */
+/** The criterion keys + labels, for building the mapper's source list. Derived from an empty
+ *  evaluation so labels stay in lockstep with the rows — and evaluated with NO limits
+ *  (jurisdictionOnly), so the labels carry no numbers: the mapper runs for every state's forms, and
+ *  "Ground snow load <= 70 psf" is Oregon's threshold, not the row's meaning. */
 export function prescriptiveCriterionCatalog(): Array<{ key: PrescriptiveCriterionKey; label: string }> {
   const empty = { parserSnapshot: {} } as unknown as ProjectRecord;
-  return evaluatePrescriptiveCriteria(empty).map(({ key, label }) => ({ key, label }));
+  return evaluatePrescriptiveCriteria(empty, {}, { jurisdictionOnly: true }).map(({ key, label }) => ({ key, label }));
 }
 
 const OREGON_PRESCRIPTIVE_DEFAULTS: Required<PrescriptiveLimitInputs> = {
@@ -741,14 +743,23 @@ function yesNoFlag(raw: string): PrescriptiveAnswer {
 export function evaluatePrescriptiveCriteria(
   project: ProjectRecord,
   limits: PrescriptiveLimitInputs = {},
+  /** jurisdictionOnly: evaluate against `limits` ALONE — no Oregon defaults underneath. Outside
+   *  Oregon (and for an unknown state) a form's prescriptive box must never attest compliance with
+   *  Oregon's thresholds (leak sweep wrong-kind-prescriptive-oregon-limits-any-state): a row whose
+   *  limit the jurisdiction never published answers [verify] (blank), as resolvePermitPath does. */
+  opts: { jurisdictionOnly?: boolean } = {},
 ): PrescriptiveCriterion[] {
-  const L = { ...OREGON_PRESCRIPTIVE_DEFAULTS, ...limits };
+  const L: PrescriptiveLimitInputs = opts.jurisdictionOnly ? { ...limits } : { ...OREGON_PRESCRIPTIVE_DEFAULTS, ...limits };
   const rows: PrescriptiveCriterion[] = [];
+  const NO_LIMIT = "no prescriptive limit on file for this jurisdiction — verify";
 
-  // Numeric "<= limit" criterion: Yes when parsed and within, No when over, else verify.
-  const maxRow = (key: PrescriptiveCriterionKey, label: string, snapKey: string, limit: number, unit: string): void => {
+  // Numeric "<= limit" criterion: Yes when parsed and within, No when over, else verify. With no
+  // limit on file the row names no number and answers [verify].
+  const maxRow = (key: PrescriptiveCriterionKey, what: string, snapKey: string, limit: number | undefined, unit: string, fmt: (n: number) => string): void => {
+    const label = limit == null ? `${what} within the prescriptive limit` : `${what} <= ${fmt(limit)}`;
     const n = num(project, snapKey);
-    if (n == null) rows.push({ key, label, answer: "[verify]", detail: `${label} not parsed` });
+    if (limit == null) rows.push({ key, label, answer: "[verify]", detail: n == null ? `${what} not parsed; ${NO_LIMIT}` : `${n} ${unit}; ${NO_LIMIT}` });
+    else if (n == null) rows.push({ key, label, answer: "[verify]", detail: `${label} not parsed` });
     else rows.push({ key, label, answer: n <= limit ? "Yes" : "No", detail: `${n} ${unit} (limit ${limit} ${unit})` });
   };
 
@@ -779,21 +790,23 @@ export function evaluatePrescriptiveCriteria(
     detail: rc ? `Category ${rc}` : "risk category not parsed",
   });
 
-  maxRow("snowLoad", `Ground snow load <= ${L.maxGroundSnowPsf} psf`, "snow", L.maxGroundSnowPsf, "psf");
+  maxRow("snowLoad", "Ground snow load", "snow", L.maxGroundSnowPsf, "psf", (n) => `${n} psf`);
 
   // Wind exposure.
   const wind = snap(project, "wind").toUpperCase().replace(/[^A-D]/g, "");
+  const exposures = L.allowedWindExposures?.length ? L.allowedWindExposures : null;
   rows.push({
     key: "windExposure",
-    label: `Wind exposure ${L.allowedWindExposures.join(" or ")}`,
-    answer: wind ? (L.allowedWindExposures.includes(wind) ? "Yes" : "No") : "[verify]",
-    detail: wind ? `Exposure ${wind}` : "wind exposure not parsed",
+    label: exposures ? `Wind exposure ${exposures.join(" or ")}` : "Wind exposure within the prescriptive limit",
+    answer: !exposures ? "[verify]" : wind ? (exposures.includes(wind) ? "Yes" : "No") : "[verify]",
+    detail: !exposures ? `${wind ? `Exposure ${wind}` : "wind exposure not parsed"}; ${NO_LIMIT}` : wind ? `Exposure ${wind}` : "wind exposure not parsed",
   });
 
   // Ultimate design wind speed vs exposure-specific cap.
   const windSpeed = num(project, "windSpeed");
   const speedCap = wind === "B" ? L.maxWindSpeedMphExpB : L.maxWindSpeedMphExpC;
   if (windSpeed == null) rows.push({ key: "windSpeed", label: "Ultimate design wind speed within prescriptive cap", answer: "[verify]", detail: "wind speed not parsed" });
+  else if (speedCap == null) rows.push({ key: "windSpeed", label: "Ultimate design wind speed within prescriptive cap", answer: "[verify]", detail: `${windSpeed} mph; ${NO_LIMIT}` });
   else rows.push({
     key: "windSpeed",
     label: "Ultimate design wind speed within prescriptive cap",
@@ -801,10 +814,10 @@ export function evaluatePrescriptiveCriteria(
     detail: `${windSpeed} mph (limit ${speedCap} mph for Exp ${wind || "C"})`,
   });
 
-  maxRow("rafterSpacing", `Rafter/truss spacing <= ${L.maxRafterSpacingIn} in. o.c.`, "roofRafterSpacing", L.maxRafterSpacingIn, "in");
-  maxRow("deadLoad", `PV dead load <= ${L.maxPvDeadLoadPsf} psf`, "deadLoad", L.maxPvDeadLoadPsf, "psf");
-  maxRow("moduleHeight", `Module height above roof <= ${L.maxModuleHeightIn} in.`, "moduleHeightAboveRoof", L.maxModuleHeightIn, "in");
-  maxRow("roofLayers", `Existing roofing layers <= ${L.maxRoofLayers}`, "roofLayers", L.maxRoofLayers, "layer(s)");
+  maxRow("rafterSpacing", "Rafter/truss spacing", "roofRafterSpacing", L.maxRafterSpacingIn, "in", (n) => `${n} in. o.c.`);
+  maxRow("deadLoad", "PV dead load", "deadLoad", L.maxPvDeadLoadPsf, "psf", (n) => `${n} psf`);
+  maxRow("moduleHeight", "Module height above roof", "moduleHeightAboveRoof", L.maxModuleHeightIn, "in", (n) => `${n} in.`);
+  maxRow("roofLayers", "Existing roofing layers", "roofLayers", L.maxRoofLayers, "layer(s)", (n) => `${n}`);
 
   return rows;
 }

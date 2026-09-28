@@ -323,6 +323,16 @@ await check("F7 MUST-PASS: an AHJ whose structure IS known (Oregon's state rule)
   assert.equal(R.getApplicationDocumentPackage(db, alphaJob.id).applicationSetUnknown, undefined);
 });
 
+// F3 at the real door: buildContext decides "jurisdiction only" from the project's STATE.
+await check("F3 buildContext: Oregon evaluates with Oregon's limits; a Utah job with its own (here: none) only", () => {
+  assert.equal(forms.buildContext(db, alphaJob).prescriptiveJurisdictionOnly, false);
+  const ut = forms.buildContext(db, betaUtah);
+  assert.equal(ut.prescriptiveJurisdictionOnly, true);
+  ut.project = { ...ut.project, parserSnapshot: { ...(ut.project.parserSnapshot ?? {}), snow: 65, roofLayers: 2 } };
+  assert.equal(forms.resolveSource("computed.prescSnowLoadYes", ut), "");
+  assert.equal(forms.resolveSource("computed.prescAllNo", ut), "");
+});
+
 console.log(`\nleakFixFormsDb: ${passed} passed, ${failures} failed`);
 // Exit explicitly: the gate report on a never-seen state queues background code research, whose
 // timer would otherwise keep this process alive after the last check.

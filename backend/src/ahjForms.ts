@@ -388,6 +388,9 @@ export interface FillContext {
   // (loaded in buildContext) — the presc* sources must screen against the SAME
   // limits QC's baseline rules use, not always the Oregon defaults.
   prescriptiveLimits?: PrescriptiveLimitInputs;
+  /** Evaluate the presc* sources against prescriptiveLimits ALONE (no Oregon defaults) — every job
+   *  whose state is not Oregon, including an unknown state (buildContext). */
+  prescriptiveJurisdictionOnly?: boolean;
   // The jurisdiction's PUBLISHED electrical fee brackets, when one is on file. Loaded in
   // buildContext so renewableFee can prefer a schedule somebody researched over the ladder
   // printed on the form we happen to have a copy of. See renewableFee.
@@ -602,7 +605,7 @@ function prescriptiveComputed(name: string, ctx: FillContext): string {
   if (!m) return "";
   const key = m[1][0].toLowerCase() + m[1].slice(1);
   const variant = m[2];
-  const rows = (ctx.prescriptive ??= evaluatePrescriptiveCriteria(ctx.project, ctx.prescriptiveLimits || {}));
+  const rows = (ctx.prescriptive ??= evaluatePrescriptiveCriteria(ctx.project, ctx.prescriptiveLimits || {}, { jurisdictionOnly: ctx.prescriptiveJurisdictionOnly === true }));
   let answer: string;
   if (key === "all") {
     // Overall verdict: Yes only when EVERY row affirmatively passes; No as soon
@@ -892,7 +895,11 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
   const client = clientStagingOverlay(db, project.clientId, "");
   // Per-AHJ prescriptive limits (same jurisdiction code profile QC screens on),
   // so the presc* checkbox sources answer against this AHJ's actual thresholds.
-  // Only concrete values override; anything missing keeps the Oregon defaults.
+  // IN OREGON only concrete values override and anything missing keeps Oregon's defaults. OUTSIDE
+  // Oregon (or with no recognised state) the jurisdiction's own limits are the ONLY limits: a row it
+  // never published answers [verify] — a Utah job's "meets the prescriptive criteria" box was ticked
+  // against Oregon's 70 psf (leak sweep wrong-kind-prescriptive-oregon-limits-any-state).
+  const prescriptiveJurisdictionOnly = usStateCode(project.state) !== "OR";
   const prescriptiveLimits: PrescriptiveLimitInputs = {};
   try {
     const p = resolveEffectiveCodeContext(db, project.state, project.ahj).prescriptive || {};
@@ -900,7 +907,11 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     if (p.maxPvDeadLoadPsf != null) prescriptiveLimits.maxPvDeadLoadPsf = p.maxPvDeadLoadPsf;
     if (p.maxRafterSpacingIn != null) prescriptiveLimits.maxRafterSpacingIn = p.maxRafterSpacingIn;
     if (p.allowedWindExposures?.length) prescriptiveLimits.allowedWindExposures = p.allowedWindExposures;
-  } catch { /* profile data optional — Oregon defaults apply */ }
+    if (prescriptiveJurisdictionOnly) {
+      if (p.maxWindSpeedMphExpB != null) prescriptiveLimits.maxWindSpeedMphExpB = p.maxWindSpeedMphExpB;
+      if (p.maxWindSpeedMphExpC != null) prescriptiveLimits.maxWindSpeedMphExpC = p.maxWindSpeedMphExpC;
+    }
+  } catch { /* profile data optional — Oregon: its defaults apply; elsewhere: every row [verify] */ }
   // The jurisdiction's own published electrical brackets, if anybody has researched them. Read
   // through the SAME discipline-aware lookup the fee sheet and the invoice use, so the PDF and
   // the quote cannot disagree. Absent is the ordinary case and costs nothing: renewableFee then
@@ -937,6 +948,7 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     // job's COMPANY's (project.clientId) and nobody else's — see signatures.ts.
     signatures: loadDefaultSignaturesByRole(db, projectOrgId(db, project.id), String(project.clientId ?? "")),
     prescriptiveLimits,
+    prescriptiveJurisdictionOnly,
   };
   // THE OWNER'S MAILING ADDRESS IS THE INSTALLATION ADDRESS unless the project records another
   // (operator ruling 2026-09-27, Michael Sheridan's Marion B-01S / E-01: "this will just be the
@@ -1309,7 +1321,8 @@ export async function fillLoadedForm(
       def.textFields, Object.values(def.checkboxes ?? {}).map((r) => r.source));
     // A checklist's printed thresholds control its answers, even when a cached
     // project evaluation used different jurisdiction limits. Do not mutate ctx.
-    checklistCtx = { ...ctx, prescriptive: undefined,
+    // (Oregon's own form: its printed limits over Oregon's — never "jurisdiction only".)
+    checklistCtx = { ...ctx, prescriptive: undefined, prescriptiveJurisdictionOnly: false,
       prescriptiveLimits: { ...ctx.prescriptiveLimits, ...BCD_5952_LIMITS } };
   }
   const drawChecklist = async (): Promise<number> => {

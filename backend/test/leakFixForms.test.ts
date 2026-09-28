@@ -219,5 +219,40 @@ await check("F7 MUST-PASS: a known, complete AHJ still gets the all-clear", () =
   assert.doesNotMatch(html, /is not known/);
 });
 
+// ---------------------------------------------------------------------------------------------
+// F3 — a form's prescriptive boxes answer against THE JURISDICTION's limits; outside Oregon a row
+// with no published limit is blank ([verify]), never Oregon's 70 psf / 1 roof layer.
+// ---------------------------------------------------------------------------------------------
+const { resolveSource } = await import("../src/ahjForms");
+const { prescriptiveCriterionCatalog } = await import("../src/permitPath");
+const presc = (state: string, snap: Record<string, unknown>, limits: Record<string, unknown> = {}) => {
+  const ctx = { project: { state, parserSnapshot: snap }, client: {}, snapshot: snap, prescriptiveLimits: limits, prescriptiveJurisdictionOnly: state !== "OR" } as never;
+  return (name: string) => resolveSource(`computed.${name}`, ctx);
+};
+const SNAP = { mounting: "Roof Mount", lightFrame: "yes", riskCategory: "II", snow: 65, wind: "C", windSpeed: 110, roofRafterSpacing: 24, deadLoad: 3, moduleHeightAboveRoof: 6, roofLayers: 2 };
+
+await check("F3 MUST-EXCLUDE: a Utah form never attests compliance against Oregon's limits (no limits on file -> every box blank)", () => {
+  const r = presc("UT", SNAP);
+  for (const n of ["prescSnowLoadYes", "prescSnowLoadNo", "prescRoofLayersNo", "prescModuleHeightYes", "prescAllYes", "prescAllNo", "prescAllAnswer"]) {
+    assert.equal(r(n), "", `${n} answered "${r(n)}" against Oregon's limits`);
+  }
+  assert.equal(r("prescRoofMountYes"), "X", "a criterion that needs no limit (roof-mounted) still answers");
+});
+
+await check("F3 MUST-PASS: Oregon keeps its limits; a non-OR jurisdiction's OWN published limit is used", () => {
+  const or = presc("OR", SNAP);
+  assert.equal(or("prescSnowLoadYes"), "X");
+  assert.equal(or("prescRoofLayersNo"), "X");
+  assert.equal(or("prescAllNo"), "X");
+  const ut = presc("UT", SNAP, { maxGroundSnowPsf: 60 });
+  assert.equal(ut("prescSnowLoadNo"), "X", "its own 60 psf limit answers No at 65 psf");
+});
+
+await check("F3: the mapper's prescriptive source labels carry no Oregon numbers", () => {
+  const labels = prescriptiveCriterionCatalog().map((c) => c.label);
+  assert.ok(labels.length >= 10);
+  assert.deepEqual(labels.filter((l) => /\d/.test(l)), [], JSON.stringify(labels));
+});
+
 console.log(`\nleakFixForms: ${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);
