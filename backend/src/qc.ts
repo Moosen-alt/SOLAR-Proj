@@ -1,5 +1,5 @@
 import type { AppDb } from "./db";
-import { cecTableCount, isCecListed } from "./cecEquipment";
+import { cecListing, cecTableCount } from "./cecEquipment";
 import { evaluateBaselineRules } from "./baselineRules";
 import { id } from "./ids";
 import { parseJson } from "./json";
@@ -478,12 +478,33 @@ export function runQcForProject(db: AppDb, projectId: string): QcRunResult {
     // changes qc_failed/qc_passed). Silent when the table has never been synced.
     try {
       if (cecTableCount(db) > 0) {
-        const checks: Array<["module" | "inverter", string, string]> = [
-          ["module", "cec.module_listed", clean(payload.moduleModel)],
-          ["inverter", "cec.inverter_listed", clean(payload.invModel) || clean(payload.pvMicroModel)],
+        // ONE PREDICATE WITH THE PORTAL FILL (cecEquipment.cecListing asks certifiedModelFor first,
+        // with the make and wattage the fill passes): a model the fill will file under its listed
+        // name is never reported "not found" (dry-run 2026-09-28 B15).
+        const firstArray = (Array.isArray(payload.pvArrays) ? payload.pvArrays[0] : null) as Record<string, unknown> | null;
+        const moduleMake = clean(payload.moduleMake) || clean(payload.moduleManufacturer) || clean(firstArray?.moduleManufacturer ?? firstArray?.moduleMake ?? firstArray?.manufacturer);
+        const moduleWatts = clean(payload.moduleWattage) || clean(firstArray?.moduleWattage ?? firstArray?.wattage ?? firstArray?.watts);
+        const micro = !clean(payload.invModel) && Boolean(clean(payload.pvMicroModel));
+        const checks: Array<["module" | "inverter", string, string, string, string]> = [
+          ["module", "cec.module_listed", clean(payload.moduleModel), moduleMake, moduleWatts],
+          ["inverter", "cec.inverter_listed", clean(payload.invModel) || clean(payload.pvMicroModel), micro ? clean(payload.pvMicroMake) : clean(payload.invMake) || clean(payload.inverterManufacturer), ""],
         ];
-        for (const [kind, ruleId, model] of checks) {
-          if (!model || isCecListed(db, kind, model)) continue;
+        for (const [kind, ruleId, model, make, watts] of checks) {
+          if (!model) continue;
+          const listing = cecListing(db, kind, model, make, watts);
+          if (listing.listed) {
+            // Listed under ANOTHER spelling: said, as information — the portal files the listed name.
+            if (listing.certifiedName && listing.certifiedName.toLowerCase().replace(/[^a-z0-9]/g, "") !== model.toLowerCase().replace(/[^a-z0-9]/g, "")) {
+              db.run(
+                `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)
+                 VALUES (?, ?, 'pass', ?, ?, ?, 'info', ?)`,
+                [id(), projectId, ruleId, `CEC listing: ${kind}`,
+                 `${kind === "module" ? "Module" : "Inverter"} model is on the CEC solar equipment list as "${listing.certifiedName}" (the plan set prints "${model}"). The portal fill uses the listed name.`,
+                 createdAt],
+              );
+            }
+            continue;
+          }
           warningCount += 1;
           db.run(
             `INSERT INTO qc_results (id, project_id, qc_status, rule_id, rule_name, message, severity, created_at)

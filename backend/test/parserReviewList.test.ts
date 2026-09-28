@@ -552,4 +552,40 @@ UTILITY SERVICE: UNDERGROUND`;
   ok("buildings close 3: another structure or trench scope leaves numberOfBuildings UNSURE with the evidence; the basis quotes the text");
 }
 
+// ---------------------------------------------------------------------------
+// A CALCULATED LIMIT IS NOT A CONFLICT PEER (dry-run 2026-09-28 B15). Every plan set printing the
+// 705.12 check raised "PV breaker 30 A vs 40 A": 40 A is the maximum worked out in a formula, the
+// SLD states 30 A. Both conflict paths: (a) the model reports it, (d) passes disagree.
+// ---------------------------------------------------------------------------
+{
+  const calc40 = { value: "40A", source: "plan_set", excerpt: "705.12: (200A x 120%) - 200A = 40A max PV OCPD", sheet: "E 1.1" };
+  const stated30 = { value: "30A", source: "plan_set", excerpt: "(N) 30A PV BREAKER INSTALLED", sheet: "E 1.1" };
+  const got = (items: { resolved: Array<{ field: string; value: unknown; how: string }>; conflicts: Array<{ field: string }> }) =>
+    ({ r: items.resolved.find((x) => x.field === "pvBreaker"), c: items.conflicts.some((x) => x.field === "pvBreaker") });
+  // (a) a model-reported conflict
+  const a = got(PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [textPass({}, [], { conflicts: [{ field: "pvBreaker", readings: [stated30, calc40] }] })] }));
+  assert.ok(a.r && a.r.value === "30A" && !a.c, `(a) resolves to the stated 30A: ${JSON.stringify(a)}`);
+  assert.match(a.r!.how, /40A is a calculated limit, not a reading/);
+  // (d) two passes that disagree
+  const pass = (label: string, r: typeof stated30) => ({ kind: "text", label, docsGiven: ["plan_set"], response: { fields: { pvBreaker: field(r.value, r.source, r.excerpt, 0.7, r.sheet) }, lowConfidenceFields: ["pvBreaker"], notes: "" } });
+  const d = got(PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [pass("one", stated30), pass("two", calc40)] }));
+  assert.ok(d.r && d.r.value === "30A" && !d.c, `(d) resolves to the stated 30A: ${JSON.stringify(d)}`);
+  // MUST-EXCLUDE: every reading a calculation — the conflict stays
+  const calc50 = { ...calc40, value: "50A", excerpt: "(250A x 120%) - 250A = 50A max PV OCPD" };
+  assert.ok(got(PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [textPass({}, [], { conflicts: [{ field: "pvBreaker", readings: [calc50, calc40] }] })] })).c, "all calculations: still a conflict");
+  // MUST-EXCLUDE: an uncited reading is never dropped against a calculation
+  assert.ok(got(PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [textPass({}, [], { conflicts: [{ field: "pvBreaker", readings: [{ value: "30A", source: "plan_set" }, calc40] }] })] })).c, "uncited reading: still a conflict");
+  // MUST-EXCLUDE: a read that doubts the plain reading keeps it the reviewer's question
+  const guessed = PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [pass("one", stated30), { ...pass("two", calc40), response: { ...pass("two", calc40).response, uncertainties: [{ field: "pvBreaker", kind: "guessed", reason: "tag unreadable" }] } }] });
+  assert.ok(!guessed.resolved.some((x: { field: string }) => x.field === "pvBreaker"), "a guessed read is not resolved by dropping the calculation");
+  // MUST-EXCLUDE: a labelled value with "=", a lumber size and a bare limit are READINGS, not calculations
+  const spacing = PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [textPass({}, [], { conflicts: [{ field: "roofRafterSpacing", readings: [
+    { value: 24, source: "plan_set", excerpt: "2 X 6 RAFTERS @ 24\" O.C." }, { value: 16, source: "plan_set", excerpt: "RAFTER SPACING = 16 IN" }] }] })] });
+  assert.ok(spacing.conflicts.some((x: { field: string }) => x.field === "roofRafterSpacing"), "lumber size / labelled value: still a conflict");
+  const height = PR.resolveReviewItems({ attached: ["plan_set"], planText: planTextSF, passes: [textPass({}, [], { conflicts: [{ field: "moduleHeightAboveRoof", readings: [
+    { value: 12, source: "plan_set", excerpt: "NOT HIGHER THAN 12\" ABOVE ROOF" }, { value: 6, source: "plan_set", excerpt: "6\" MAX" }] }] })] });
+  assert.ok(height.conflicts.some((x: { field: string }) => x.field === "moduleHeightAboveRoof"), "a bare limit is a reading: the height conflict stays");
+  ok("calculated limit: the 705.12 maximum never makes a PV-breaker conflict (both paths); all-calculation, uncited, guessed, labelled '=', lumber size and bare MAX stay conflicts");
+}
+
 console.log(`\nparserReviewList: all ${passed} checks passed`);
