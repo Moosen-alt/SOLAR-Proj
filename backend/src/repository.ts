@@ -76,7 +76,7 @@ import { publicPermitStatusCheck } from "./publicPermitStatus";
 import { planSetTextForProject, projectDocsByType, DOCS_DIR, PLAN_TEXT_DOC_TYPES } from "./projectDocuments";
 import type { DesignTextSource } from "./designCriteria";
 import { findAhjProcessProfile } from "./processProfiles";
-import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, projectForTrack, refuseTrackIssuerValue } from "./permitProcess";
+import { statewidePortalFor, describeCited, lookedUpRecordType, issuingAgencyFor, permitAnswerForTrack, stateRulesFor, projectForTrack, refuseTrackIssuerValue, trackIssuer } from "./permitProcess";
 import { bindRecipeForReplay, describeReplayBinding, openPerJobQuestions } from "./recipeReplayBinding";
 import { agencyListStatusResolver, documentInventory, missingFilledAtStaging, owedDocumentAction, owedMissingDocuments, requiredListCheck, type DocumentInventory, type DocPresence } from "./requiredDocuments";
 import type { StageAcquiredForm } from "./formAcquisitionPlan";
@@ -8140,6 +8140,31 @@ export async function prepareSubmission(
     }
   }
 
+  // A TRACKLESS STAGE CANNOT FILE A SPLIT-ISSUER PROJECT (round-1 skeptic, 2026-09-28). The legacy
+  // combined stage (the dashboard's "Prepare Submittal" posts {}) resolves ONE portal — the project
+  // AHJ's (projectForTrack(project, undefined) is the project) — and files every required permit
+  // there. When any required permit track is issued by another agency (the operator's per-track
+  // issuer, or the per-job lookup's cited one — permitProcess.trackIssuer), that is the other agency's
+  // permit on the wrong portal. Refused before anything is built, opened or recorded; each permit
+  // stages from its own track card, where its issuer's portal resolves. A project with no split
+  // (every required track's view is the project itself — the SAME object) is untouched.
+  if (!track) {
+    const splitTracks = required.filter((t) => t !== "nem" && projectForTrack(detail.project, t) !== detail.project);
+    if (splitTracks.length) {
+      const permitTracks = required.filter((t) => t !== "nem");
+      const label = (t: string): string => (t === "combo" || t === "permit" ? "combination" : t === "mpu" ? "service-upgrade (MPU)" : t);
+      const issuers = permitTracks.map((t) => ({ track: t, issuer: trackIssuer(detail.project, t).name }));
+      const said = issuers.map((x, i) => (i === 0 ? `the ${label(x.track)} permit is issued by ${x.issuer}` : `the ${label(x.track)} by ${x.issuer}`)).join(", ");
+      addAuditLog(db, projectId, "system", "submit gate", "portal.trackless_split_refused", {
+        tracks: issuers, split: splitTracks,
+      });
+      throw new HttpError(409,
+        `Stage each permit from its track card — ${said}. `
+        + "A combined stage opens one portal (the project AHJ's), so it would file another agency's permit there. Nothing was opened.",
+        { tracklessSplitIssuer: true, tracks: issuers, split: splitTracks });
+    }
+  }
+
   const failCount = detail.qcResults.filter((result) => result.qcStatus === "fail").length;
   // 'Background job failed' items are OPERATOR NOTIFICATIONS (escalated by the
   // job worker), not data-quality gates — counting them would let e.g. a failed
@@ -8968,6 +8993,9 @@ export async function prepareSubmission(
                   createdBy: "auto-relearn (stale recipe)",
                   permitType: track === "nem" ? undefined : (track === "electrical" || track === "mpu" || detail.project.permitType === "electrical" ? "electrical" : "structural"),
                   discipline: trackDiscipline,
+                  // The stale recipe was found under THIS stage's view; the re-learn keys on the same
+                  // one (autoLearn learnIssuerTrack) — null for a trackless stage, never a derived view.
+                  track: track ?? null,
                 }, { projectId, priority: 5, maxRetries: 0 });
               }).catch(() => null);
               relearnQueued = true;
@@ -9025,6 +9053,11 @@ export async function prepareSubmission(
             // The recipe key's discipline for this track - MUST be the same value the
             // lookup above asked for, or the learned recipe is never found again.
             discipline: trackDiscipline,
+            // AND THE SAME ISSUER (split issuer): this stage's own track, null when trackless, so the
+            // learn keys on exactly `portalProject` — the view whose portal `credentialUrl` is — and
+            // never re-derives a view from the permit type (a trackless stage's "structural" swapped
+            // to the building issuer and saved the county's portal under the city's key).
+            track: track ?? null,
             // The self-seed IS this track's staging run when no trusted recipe exists yet, so the
             // operator's delegated submit has to reach it here too — otherwise the only portals it
             // can never file on are precisely the ones with no recipe.

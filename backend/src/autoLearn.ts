@@ -67,6 +67,21 @@ function learnTrackFor(discipline: string | undefined, permitType: "structural" 
   return null;
 }
 
+/** THE TRACK WHOSE ISSUER AN AHJ LEARN KEYS ON (split issuer). A STAGE names its own track — the
+ *  staging self-seed and the stale-recipe re-learn pass `track`, null included — and the learn then
+ *  keys on EXACTLY the view that stage resolved (permitProcess.projectForTrack(project, track)): a
+ *  trackless stage (null) on the project AHJ itself, an MPU stage on the MPU issuer. It is never
+ *  re-derived from the discipline / permit type, which name the LICENCE and the documents a filing
+ *  takes, not whose portal the stage launched: a trackless stage's "structural" permit type used to
+ *  swap to the building issuer and save the project AHJ's portal under the CITY's key, where it
+ *  outranked the city's own portal on every later building stage (round-1 skeptic, 2026-09-28).
+ *  Omitted (the operator's /auto-learn, a supervised or benchmark learn): the permit the discipline /
+ *  permit type names, as before. */
+function learnIssuerTrack(input: { track?: string | null; discipline?: string; permitType?: "structural" | "electrical" }): string | null {
+  if (input.track !== undefined) return input.track === null ? null : String(input.track).trim() || null;
+  return learnTrackFor(input.discipline, input.permitType);
+}
+
 export interface AutoLearnResult {
   recipe: PortalRecipe;
   /** "trusted" = verified accurate and promoted to complete; "draft" = recorded but
@@ -436,15 +451,22 @@ export function learnSignerName(db: AppDb, project: Pick<ProjectRecord, "clientI
 export function buildPortalPlanner(
   db: AppDb,
   project: ProjectRecord,
-  opts: { portalType: string; scopeType?: "ahj" | "utility"; permitType?: "structural" | "electrical"; track?: string | null },
+  opts: {
+    portalType: string; scopeType?: "ahj" | "utility"; permitType?: "structural" | "electrical"; track?: string | null;
+    /** The track whose ISSUER the planner's target jurisdiction names, when a caller keys on a view
+     *  other than the licence track's (a learn keyed on its stage's own view — learnIssuerTrack).
+     *  Omitted: `track`. */
+    issuerTrack?: string | null;
+  },
 ): { planner: (req: LearnPlanRequest) => Promise<LearnPlanResponse>; projectFields: Record<string, string> } {
   // The filing this planner fills — the licence keys answer "the licence THIS permit takes".
   const track = opts.track !== undefined ? opts.track
     : opts.scopeType === "utility" ? "nem" : learnTrackFor(undefined, opts.permitType);
+  const issuerTrack = opts.issuerTrack !== undefined ? opts.issuerTrack : track;
   // The planner's target jurisdiction and KB lookup are THIS track's issuer (projectForTrack — the
   // same object when that is the project AHJ, and a view passed in stays itself).
-  project = projectForTrack(project, track);
-  const fieldValues = resolveRecipeFieldValues(db, project, opts.portalType, track);
+  project = projectForTrack(project, issuerTrack);
+  const fieldValues = resolveRecipeFieldValues(db, project, opts.portalType, track, issuerTrack);
   const projectFields: Record<string, string> = {};
   // SAFETY RULE 2: secrets never reach the LLM. Two layers:
   // (a) KEY filter — broad, not exact-name: parser-snapshot alias keys spread into
@@ -757,6 +779,11 @@ export async function autoLearnPortal(
     /** Recipe discipline for THIS stage's track (recipeDisciplineForTrack). Authoritative
      *  over permitType — it is the same value the recipe lookup keys on. */
     discipline?: string;
+    /** THE STAGE'S OWN TRACK (split issuer — see learnIssuerTrack). A stage passes it, null for a
+     *  trackless stage; the learn then keys on exactly projectForTrack(project, track) — the view
+     *  that stage resolved and launched — never a view derived from discipline / permitType.
+     *  Omitted: derived from them (an operator's learn names the permit it is for). */
+    track?: string | null;
     /** Operator delegation: click the recorded final submit at review rather than leaving it.
      *  Honoured only alongside PORTAL_ALLOW_FINAL_SUBMIT=1, checked at the click itself. The
      *  self-seed IS the staging run for a portal with no trusted recipe yet, so without this a
@@ -794,9 +821,12 @@ export async function autoLearnPortal(
   // THIS track's permit (permitProcess.projectForTrack) — so a building learn on a county-AHJ project
   // whose city issues building permits is saved under the CITY's key, where the next city job finds
   // it. The same object when the issuer is the project AHJ; the staging self-seed already passes
-  // the view (a view of a view is itself). A utility (NEM) learn: the project, untouched.
+  // the view (a view of a view is itself). WHICH track's issuer: the STAGE's own when a stage called
+  // (learnIssuerTrack — a trackless stage keys on the project AHJ whose portal it launched, an MPU
+  // stage on the MPU issuer), else the permit the discipline / permit type names. A utility (NEM)
+  // learn: the project, untouched.
   const baseProject: ProjectRecord = scopeType === "ahj"
-    ? projectForTrack(loadedProject, learnTrackFor(input.discipline, input.permitType))
+    ? projectForTrack(loadedProject, learnIssuerTrack(input))
     : loadedProject;
   // Thread the requested permit discipline onto the project the LEARNER sees — the
   // deterministic ACA passes key jurisdiction-row (CITY=structural / COUNTY=electrical)
@@ -888,6 +918,10 @@ async function autoLearnPortalInner(
   // The filing this learn records: NEM, or the permit its discipline / permit type names (null =
   // not named). Every value map below is resolved for it — the licence keys depend on it.
   const learnTrack = scopeType === "utility" ? "nem" : learnTrackFor(input.discipline, input.permitType);
+  // WHOSE PERMIT this learn keys on (learnIssuerTrack): the view `project` already is. Every value
+  // map and the agency below read THIS track's issuer, so none of them re-derives a different view
+  // from the licence track (a trackless stage's "structural" permit type is not the building issuer).
+  const issuerTrack = scopeType === "utility" ? "nem" : learnIssuerTrack(input);
   // Secrets are stripped inside buildPortalPlanner — they never reach the LLM; the adapter
   // binds account/meter deterministically from the encrypted credential store.
   const { planner, projectFields } = buildPortalPlanner(db, project, {
@@ -895,6 +929,7 @@ async function autoLearnPortalInner(
     scopeType,
     permitType: input.permitType,
     track: learnTrack,
+    issuerTrack,
   });
 
   // Credential lookup (B11): the portal's URL decides FIRST (host + first path segment), then
@@ -1137,7 +1172,7 @@ async function autoLearnPortalInner(
       // but empty TODAY still binds — replay fills it for the project that has it, and the
       // required-field sweep reports the blank rather than the recipe hiding it.
       bindableFields: Array.from(new Set([
-        ...Object.keys(resolveRecipeFieldValues(db, project, portalType, learnTrack)),
+        ...Object.keys(resolveRecipeFieldValues(db, project, portalType, learnTrack, issuerTrack)),
         ...Object.keys(RECIPE_FIELD_DESCRIPTIONS),
       ])),
       // Identity for the address-disambiguation grid: which city/ZIP this project is in, whose
@@ -1162,7 +1197,7 @@ async function autoLearnPortalInner(
         // city-structural / county-electrical convention. Production 2026-09-27: City of
         // Jefferson's permits are Marion County's. AHJ scope only — an interconnection portal
         // has no permit agency. null = unknown, and the learner keeps the convention.
-        issuingAgency: scopeType === "utility" ? null : (issuingAgencyFor(project, learnTrackFor(input.discipline, input.permitType))?.value ?? null),
+        issuingAgency: scopeType === "utility" ? null : (issuingAgencyFor(project, issuerTrack)?.value ?? null),
       },
       onProgress: input.onProgress,
       onHumanStep,
@@ -1612,7 +1647,7 @@ async function autoLearnPortalInner(
   // model) and used to inject `exportLimiting`. A step bound to a learn-only key passes a
   // check against this map and still resolves to "" on every replay — the precise hole that
   // makes a recipe trusted and non-functional. resolveRecipeFieldValues IS the replay map.
-  const replayFields = resolveRecipeFieldValues(db, project, portalType, learnTrack);
+  const replayFields = resolveRecipeFieldValues(db, project, portalType, learnTrack, issuerTrack);
   const deadBindings = deadFieldBindings(boundSteps, replayFields);
   if (deadBindings.length) {
     verification.issues.push(
@@ -1713,7 +1748,7 @@ async function autoLearnPortalInner(
       // replay recipe in memory (same steps/url) without touching the DB.
       const baseRecipe: PortalRecipe = stub ? getPortalRecipe(db, stub.id) : { ...existingRecipe!, portalUrl: portalUrl || existingRecipe!.portalUrl };
       const recipeForReplay: PortalRecipe = { ...baseRecipe, steps: boundSteps };
-      const replayFieldValues = resolveRecipeFieldValues(db, project, portalType, learnTrack);
+      const replayFieldValues = resolveRecipeFieldValues(db, project, portalType, learnTrack, issuerTrack);
       // A REPLAY THAT CANNOT LOG IN IS NOT A TEST OF THE RECIPE.
       //
       // This call passed neither the credential, nor the browser profile, nor the portal's

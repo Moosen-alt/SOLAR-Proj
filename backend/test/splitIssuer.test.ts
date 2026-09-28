@@ -33,6 +33,9 @@
 //   K12 permitProcess.permitAnswerForTrack / lookedUpIssuingAgency: no view
 //       fallback to the project's own lookup                                  → (b1)(b3)
 // Round 2 (round-1 skeptic's mustFix):
+//   K13 autoLearn.learnIssuerTrack: ignore the stage's `track` (derive again) → (l2)(l3)(l4)(l5)
+//   K14 jobQueue auto_learn: drop the payload's `track`                       → (l5)
+//   K15 repository.prepareSubmission: no trackless split-issuer refusal       → (g1)
 //   K16 permitProcess.refuseTrackIssuerValue: no known-utility refusal        → (u1)(u2)
 //   K17 permitProcess.trackIssuer: a looked-up utility name re-keys the track → (u3)
 //
@@ -52,6 +55,8 @@ const channel = await import("../src/portalChannel");
 const tracksMod = await import("../src/submittalTracks");
 const agencyDocs = await import("../src/applicationDocsAgency");
 const autoLearn = await import("../src/autoLearn");
+const kb = await import("../src/knowledgeBase");
+const jobQueue = await import("../src/jobQueue");
 
 const COUNTY = "Birchwood County";
 const CITY = "City of Fernhollow";
@@ -365,6 +370,163 @@ await check("(b2) MUST-EXCLUDE: an UNCITED lookup agency, or the AHJ under a dep
   lookup("City of Elmfield", "City of Elmfield Permit Center");
   const same = load(fx.newProject({ ahj: "City of Elmfield", city: "Elmfield", zip: "97352" }));
   assert.equal(pp.projectForTrack(same, "building"), same, "a department suffix re-keyed the project");
+});
+
+// ── round 2: THE LEARN KEYS ON ITS STAGE'S VIEW (round-1 skeptic mustFix 1) ─────────────────
+// Every stage below runs the SELF-SEED path (PORTAL_AUTOSEED=1) with the learner stubbed and the
+// replay runner stubbed: the self-seed and the recipe replay are the only actors that path can pick
+// ahead of the hand-coded adapters, and both are stubs — nothing can open a browser.
+type Launch = {
+  portalName?: string; portalUrl?: string; project?: ProjectRecord; siteIdentity?: { issuingAgency?: string | null };
+  planner?: (req: unknown) => Promise<unknown>;
+  /** What the learn's PLANNER told the model (captured by the fake LLM below when the stub asks it once). */
+  planned?: { jurisdictionContext?: string; ahj?: string };
+};
+const launches: Launch[] = [];
+// The planner's model: the stub provider with planPortalFields captured, so a test reads the target
+// jurisdiction and the `ahj` value the learn's planner would send (no key, no network).
+const llmMod = await import("../src/llm");
+let lastPlan: { jurisdictionContext?: string; ahj?: string } | null = null;
+const fakeLlm = Object.assign(Object.create(llmMod.createLLMProvider()), {
+  planPortalFields: async (req: { jurisdictionContext?: string; projectFields?: Record<string, string> }) => {
+    lastPlan = { jurisdictionContext: req.jurisdictionContext, ahj: req.projectFields?.ahj };
+    return { fills: [], advanceIndex: null, navigateIndex: null, finalSubmitIndex: null, atReview: false, notes: "" };
+  },
+});
+autoLearn.setAutoLearnSeamsForTests({ llm: () => fakeLlm });
+const stubLearner = () => autoLearn.setAutoLearnSeamsForTests({
+  learnPortal: (async (input: Launch) => {
+    lastPlan = null;
+    await input.planner?.({ url: input.portalUrl, pageTitle: "", fields: [], bodyText: "", alreadyFilledLabels: [] });
+    launches.push({ ...input, planned: lastPlan ?? undefined });
+    return { ok: false, portalName: "stub", steps: [], reviewScreen: { fields: [], bodyTextSnippet: "" }, finalSubmitRecorded: false, pageCount: 0, pauseReason: null, message: "stub learn: nothing walked" };
+  }) as never,
+});
+const stageSelfSeed = async (id: string, track?: string) => {
+  stubLearner();
+  fx.stubRunner((async () => ({ ok: true, finalSubmitClicked: false, steps: [{ ok: true, message: "reached review" }] })) as never);
+  const prev = process.env.PORTAL_AUTOSEED;
+  process.env.PORTAL_AUTOSEED = "1";
+  try {
+    return await repo.prepareSubmission(db, id, track as never);
+  } finally {
+    process.env.PORTAL_AUTOSEED = prev;
+  }
+};
+const recipesUnder = (ahj: string) => db.query<{ ahj: string; discipline: string; portal_url: string; created_by: string }>(
+  "SELECT ahj, discipline, portal_url, created_by FROM portal_recipes WHERE scope_type = 'ahj' AND state = 'OR' AND ahj = ?", [ahj]);
+const seededAhjPortal = (ahj: string, portalUrl: string) =>
+  assert.equal(kb.importSeededAhjKnowledge(db, { state: "OR", ahj, portalUrl, sourceLabel: "split-issuer test" }), "imported");
+
+// Larchwood County files ONE combination permit (a cited lookup), so a trackless stage there covers
+// combo + NEM; the building issuer an operator named (City of Wrenby) is not a required track, so the
+// trackless split refusal (g1) does not apply and the stage reaches the self-seed. The county's portal
+// is the shared statewide Accela (claimed by two agencies — it fits anyone); the city has its own.
+const LARCH = "Larchwood County";
+const WREN = "City of Wrenby";
+const WREN_URL = "https://wrenbyor.portal.opengov.com/";
+{
+  const saved = pp.savePermitProcessLookup(db, {
+    state: "OR", ahj: LARCH, lookedUpAt: new Date().toISOString(),
+    issuingAgency: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not searched" },
+    permitStructure: { value: "combo", sourceUrl: "https://larchwood.example.gov/permits", quote: "one combination permit covers the building and electrical work", origin: "lookup" },
+    permits: [],
+  } as never) as { saved: boolean };
+  assert.ok(saved.saved);
+  seededAhjPortal(LARCH, COUNTY_URL);
+  seededAhjPortal(WREN, WREN_URL);
+}
+
+await check("(l2) THE SKEPTIC'S CASE: a TRACKLESS stage's self-seed learns under the agency whose portal it launched (the project AHJ), never the building issuer's key; the city's building stage still resolves the city's own portal", async () => {
+  const id = fx.newProject({ ahj: LARCH, city: "Wrenby", zip: "97991" });
+  repo.updateProject(db, id, { trackIssuerBuilding: WREN } as never);
+  assert.deepEqual(tracksMod.requiredTracks(load(id)), ["nem", "combo"], "the fixture is not a combination-permit project");
+  launches.length = 0;
+  await stageSelfSeed(id);
+  assert.equal(launches.length, 1, `the self-seed never launched: ${String(fx.latestRun(id)?.error_message ?? "")}`);
+  assert.equal(launches[0].portalUrl, COUNTY_URL, "the trackless stage launched another portal");
+  assert.equal(launches[0].portalName, LARCH, `the learner was handed ${launches[0].portalName} for the county's portal`);
+  assert.equal(launches[0].project?.ahj, LARCH);
+  assert.notEqual(launches[0].siteIdentity?.issuingAgency, WREN, "the learner was told the city issues the permit it opened the county's portal for");
+  // The planner's target jurisdiction and `ahj` value are the county's too (not re-derived from the licence track).
+  assert.match(String(launches[0].planned?.jurisdictionContext), /targetJurisdiction \(AHJ\): Larchwood County/, `the planner targeted: ${launches[0].planned?.jurisdictionContext}`);
+  assert.equal(launches[0].planned?.ahj, LARCH, "the planner's ahj value is not the county's");
+  assert.deepEqual(recipesUnder(WREN), [], "the county's portal was saved under the CITY's key");
+  assert.deepEqual(recipesUnder(LARCH).map((r) => [r.portal_url, r.created_by]), [[COUNTY_URL, "auto-seed (staging)"]]);
+  const b = resolve(load(id), "building");
+  assert.equal(b.ownPortalUrl, WREN_URL, `the city's building stage now resolves ${b.ownPortalUrl}`);
+  assert.equal(b.hostEntity?.name, WREN);
+});
+
+await check("(l3) an MPU stage whose issuer is NOT the electrical one learns under the MPU issuer's key — the view it resolved and launched", async () => {
+  const QUILL = "City of Quillon";
+  const QUILL_URL = "https://quillonor.portal.opengov.com/";
+  seededAhjPortal(QUILL, QUILL_URL);
+  const id = newCountyProject();
+  repo.updateProject(db, id, { trackIssuerMpu: QUILL } as never);
+  assert.equal(pp.trackIssuer(load(id), "electrical").name, COUNTY, "the fixture's electrical issuer is not the county");
+  launches.length = 0;
+  await stageSelfSeed(id, "mpu");
+  assert.equal(launches.length, 1, `the MPU self-seed never launched: ${String(fx.latestRun(id)?.error_message ?? "")}`);
+  assert.equal(launches[0].portalUrl, QUILL_URL);
+  assert.equal(launches[0].portalName, QUILL);
+  assert.equal(launches[0].siteIdentity?.issuingAgency, QUILL, "the learner was not told the MPU issuer");
+  assert.match(String(launches[0].planned?.jurisdictionContext), /targetJurisdiction \(AHJ\): City of Quillon/, `the planner targeted: ${launches[0].planned?.jurisdictionContext}`);
+  assert.equal(launches[0].planned?.ahj, QUILL);
+  assert.deepEqual(recipesUnder(QUILL).map((r) => [r.discipline, r.portal_url]), [["electrical", QUILL_URL]]);
+  assert.ok(!recipesUnder(COUNTY).some((r) => r.portal_url === QUILL_URL), "the MPU issuer's portal was saved under the county's key");
+});
+
+await check("(l4) the learn called as a stage calls it (the project + track null) keys on the project AHJ even when an operator named a building issuer — a direct kill, independent of the trackless refusal", async () => {
+  const id = newCountyProject();
+  repo.updateProject(db, id, { trackIssuerBuilding: CITY } as never);
+  stubLearner();
+  launches.length = 0;
+  const seed = await autoLearn.autoLearnPortal(db, id, { scope: "ahj", portalUrl: COUNTY_URL, createdBy: "auto-seed (staging)", permitType: "structural", discipline: "", track: null, project: load(id) });
+  assert.equal(seed.recipe.ahj, COUNTY, `keyed on ${seed.recipe.ahj}`);
+  assert.equal(launches[0]?.portalName, COUNTY);
+  // MUST-PASS: the building stage's own learn (track "building") keys on the city, as (l1).
+  const b = await autoLearn.autoLearnPortal(db, id, { scope: "ahj", portalUrl: CITY_URL, createdBy: "auto-seed (staging)", permitType: "structural", discipline: "structural", track: "building", project: pp.projectForTrack(load(id), "building") });
+  assert.equal(b.recipe.ahj, CITY);
+});
+
+await check("(l5) the stale-recipe RE-LEARN job carries the stage's track (null = trackless) and keys where the stage found the recipe", async () => {
+  const pending = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM job_queue WHERE status = 'pending'")!.n;
+  assert.equal(pending, 0, "another job is pending; processNextJob would run it instead");
+  const id = fx.newProject({ ahj: LARCH, city: "Wrenby", zip: "97991" });
+  repo.updateProject(db, id, { trackIssuerBuilding: WREN } as never);
+  stubLearner();
+  launches.length = 0;
+  // Exactly the payload the stale-recipe branch enqueues for a trackless stage.
+  jobQueue.enqueueJob(db, "auto_learn", { scope: "ahj", portalUrl: COUNTY_URL, createdBy: "auto-relearn (stale recipe)", permitType: "structural", discipline: "", track: null }, { projectId: id, priority: 5, maxRetries: 0 });
+  await jobQueue.processNextJob(db);
+  assert.equal(launches.length, 1, "the re-learn job did not launch");
+  assert.equal(launches[0].portalName, LARCH, `the re-learn keyed on ${launches[0].portalName}`);
+  assert.ok(!recipesUnder(WREN).some((r) => r.created_by === "auto-relearn (stale recipe)"), "the re-learn saved the county's portal under the city's key");
+});
+
+// ── round 2: A TRACKLESS STAGE REFUSES A SPLIT-ISSUER PROJECT (mustFix 2) ───────────────────
+await check("(g1) a TRACKLESS stage on a split-issuer project is refused (409) naming each permit's issuer — nothing opened, no run row, no submission; a project with no split stages as before", async () => {
+  const id = newCountyProject();
+  repo.updateProject(db, id, { trackIssuerBuilding: CITY } as never);
+  assert.ok(tracksMod.requiredTracks(load(id)).includes("building"), "the fixture does not require a building permit");
+  launches.length = 0;
+  await assert.rejects(stageSelfSeed(id), (err: { status?: number; message?: string; details?: { tracklessSplitIssuer?: boolean } }) => {
+    assert.equal(err.status, 409, String(err.message));
+    assert.equal(err.details?.tracklessSplitIssuer, true, String(err.message));
+    assert.match(String(err.message), /Stage each permit from its track card — the building permit is issued by City of Fernhollow, the electrical by Birchwood County\./);
+    return true;
+  });
+  assert.equal(launches.length, 0, "a learner launched");
+  assert.ok(!fx.latestRun(id), "a run row was recorded");
+  assert.ok(!db.get("SELECT id FROM submissions WHERE project_id = ?", [id]), "a submission row was recorded");
+  // MUST-PASS: the building track stages from its card as before (the city's recipe, (s3)).
+  await stageSelfSeed(id, "building");
+  assert.equal(fx.latestRun(id)?.recipe_id, cityStructural.id);
+  // MUST-PASS: a project with no split is not refused (the trackless stage runs).
+  const plain = newCountyProject();
+  await stageSelfSeed(plain);
+  assert.ok(fx.latestRun(plain), "a trackless stage on a project with no split recorded no run");
 });
 
 // ── round 2: A UTILITY IS NEVER A PERMIT ISSUER (tightening) ────────────────────────────────
