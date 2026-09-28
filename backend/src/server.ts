@@ -2140,7 +2140,11 @@ app.get("/api/projects/:id/documents/:docId", (req, res) => {
   res.sendFile(file.path);
 });
 app.delete("/api/projects/:id/documents/:docId", (req, res) => {
-  res.json(deleteProjectDocument(db, String(req.params.id), String(req.params.docId)));
+  const out = deleteProjectDocument(db, String(req.params.id), String(req.params.docId));
+  // A removal changes the documents QC judged, like an upload does — re-drive the chain so its
+  // "every document is attached" row is re-judged (guarded inside: chain-owned statuses only).
+  try { enqueueStageSteps(db, String(req.params.id)); } catch { /* convenience, never the delete */ }
+  res.json(out);
 });
 // Split the plan set and assemble the upload package. SLD splitting is ONLY needed for
 // utility NEM submittals and ProjectDox AHJ portals — standard Accela/EnerGov portals

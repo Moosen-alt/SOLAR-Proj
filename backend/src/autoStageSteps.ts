@@ -153,11 +153,31 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   // happens on a save, and a save means the inputs changed — so re-running QC here is judging
   // new evidence, not spinning on old. If the verdict is still qc_failed, the chain stops
   // right below and waits for the next human repair.
-  if (status() === "parsed" || status() === "qc_failed") {
+  //
+  // AND WHENEVER THE DOCUMENTS CHANGED SINCE QC LAST JUDGED THEM (dry run 2026-09-28, B7). QC's
+  // document rows ("Site plan is not attached … Staging will refuse without it") and its
+  // bill-on-file wait are verdicts computed FROM the documents, stored as a snapshot. createProject
+  // runs QC before any upload lands, and this chain splits the plan set at qc_passed /
+  // ready_to_stage — so the rows kept saying "not attached" over sheets the split had just filed,
+  // and the gate listed them under a document check that itself passed. A verdict that depends on
+  // the documents is re-judged when the documents change (projectDocuments.documentsChangedAt —
+  // uploads, splits, removals). QC never promotes past parsed/qc_failed and never demotes a pass;
+  // a FAIL it finds is real news (a bill now on file with no readable account number) and stops
+  // the chain below, exactly as at parse.
+  const docsNewerThanQc = async (): Promise<boolean> => {
+    const { documentsChangedAt } = await import("./projectDocuments");
+    const changed = documentsChangedAt(db, projectId);
+    if (!changed) return false;
+    const judged = String(db.get<{ t?: string }>("SELECT MAX(created_at) AS t FROM qc_results WHERE project_id = ?", [projectId])?.t ?? "");
+    // Same millisecond is not proof QC saw it — re-judging is the safe direction.
+    return !judged || changed >= judged;
+  };
+  const qcOwned = status() === "parsed" || status() === "qc_failed";
+  if (qcOwned || (chainOwned && await docsNewerThanQc())) {
     const { rerunQc } = await import("./repository");
     rerunQc(db, projectId);
     ran.push("qc");
-    logger.info("stage-auto", "QC ran automatically on parse", { project: projectId, verdict: status() });
+    logger.info("stage-auto", qcOwned ? "QC ran automatically on parse" : "QC re-judged: the documents changed since it last ran", { project: projectId, verdict: status() });
   }
   if (status() === "qc_failed") {
     return { ran, stoppedAt: "qc_failed", reason: "QC failed — a person fixes the intake; re-saving restarts the chain." };
