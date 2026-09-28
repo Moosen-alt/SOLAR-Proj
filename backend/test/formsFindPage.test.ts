@@ -271,6 +271,9 @@ try {
     check(`W UNIT a COMBINED form is the BUILDING side's, never electrical: classifyFormType("${name.slice(0, 80)}")`,
       auto.classifyFormType(name, "electrical_application") === "building_application", auto.classifyFormType(name, "electrical_application"));
   }
+  // The harvest reads it the same way: a bare "wire" names no job ("Wire Transfer Application" is not an electrical permit's).
+  check("W UNIT MUST-EXCLUDE the harvest never takes a bare 'wire' as this job's work", catalog.classifyApplicationDocument("Wire Transfer Application", dc("Wire-Transfer-Application")) === null,
+    JSON.stringify(catalog.classifyApplicationDocument("Wire Transfer Application", dc("Wire-Transfer-Application"))));
   check("W UNIT the combined form fits the building-side and generic slots, never the electrical one",
     auto.disciplineFitsSlot("combined", "permit_application") && auto.disciplineFitsSlot("combined", "building_application") && !auto.disciplineFitsSlot("combined", "electrical_application"));
   check("UNIT a state's own site is not an AHJ's forms site; the AHJ's own is; another state's never",
