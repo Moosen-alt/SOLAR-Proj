@@ -539,6 +539,10 @@ export function registrableDomain(host: string): string {
   if (labels.length <= 2) return labels.join(".");
   const tld = labels[labels.length - 1];
   if (tld === "us" && labels.length >= 4 && /^[a-z]{2}$/.test(labels[labels.length - 2])) return labels.slice(-4).join(".");
+  // A three-label US locality (<town>.<st>.us: neighbortown.ma.us) is its own organisation — "<st>.us"
+  // is a public suffix, and reading it as the domain made every town in the state one site (a town's
+  // forms page "linked its own form" on another town's host; forms-find 2026-09-28).
+  if (tld === "us" && labels.length === 3 && /^[a-z]{2}$/.test(labels[1])) return labels.join(".");
   if (/^[a-z]{2}$/.test(tld) && /^(?:co|com|gov|org|net|ac|govt)$/.test(labels[labels.length - 2])) return labels.slice(-3).join(".");
   return labels.slice(-2).join(".");
 }

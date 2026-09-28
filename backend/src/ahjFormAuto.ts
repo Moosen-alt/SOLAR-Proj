@@ -534,6 +534,25 @@ export interface EnsureFormResult {
   lookupFailed?: boolean;
 }
 
+/** THE "ahj_form.find" AUDIT DETAILS (server find-ahj-form). THE WHY IS KEPT — Waltham's audit said
+ *  "not_found" and nothing else, so nobody could see what the search found, read or could not run.
+ *  The message carries the forms page read, the links tried and "the form search could not run":
+ *  AHJ facts, never project values. */
+export function formFindAuditDetails(
+  ahj: string,
+  ensure: Pick<EnsureFormResult, "status" | "message" | "formName" | "permitType" | "sourceUrl" | "lookupFailed">,
+  additional: Array<{ formType: string; status: string; message: string }>,
+): Record<string, unknown> {
+  return {
+    status: ensure.status, formName: ensure.formName || "", ahj, permitType: ensure.permitType || "",
+    message: String(ensure.message || "").slice(0, 2000),
+    lookupFailed: Boolean(ensure.lookupFailed),
+    sourceUrl: ensure.sourceUrl || "",
+    additional: additional.map((a) => `${a.formType}:${a.status}`),
+    additionalMessages: additional.map((a) => `${a.formType}: ${String(a.message || "").slice(0, 600)}`),
+  };
+}
+
 /** Where the forms page is read from, and how gently: the reader (default: the per-job lookup's
  *  reader switches — defaultLookupReader — with a budget of two pages, shared by every form type of
  *  one pass so a forms page is read once) and the gap before a download from a host we just asked
