@@ -10,6 +10,7 @@
 //   K2 trackIssuerHtml: interpolate i.name without esc()               → (b) fails.
 //   K3 saveTrackIssuer: post anything but { [snapshot key]: value } to
 //      the project update route                                        → (d) fails.
+//   K4 trackCardHtml: drop `${trackIssuerEditHtml(t)}` (no control)    → (a) fails.
 //
 //   npx tsx backend/test/splitIssuerCard.test.ts
 import "./_isolate"; // FIRST
@@ -40,7 +41,7 @@ const names = [
   "esc", "httpUrl", "linkifyText", "fmtDate", "humanize", "statusBadge",
   "TRACK_STATUS_CLASS", "TRACK_CHANNEL_BASIS", "OFF_TOOL_CHANNEL", "offToolChannelHtml", "trackChannelHtml",
   "trackPrerequisitesHtml", "trackNextActionText", "screenshotMisses", "screenshotKey",
-  "TRACK_ISSUER_KEY", "TRACK_ISSUER_SOURCE", "trackIssuerHtml", "saveTrackIssuer", "trackCardHtml",
+  "TRACK_ISSUER_KEY", "TRACK_ISSUER_SOURCE", "trackIssuerHtml", "trackIssuerEditHtml", "saveTrackIssuer", "trackCardHtml",
 ];
 const bundle = names.map(cut).join("\n;\n");
 
@@ -73,6 +74,11 @@ await check("(a) the permit card says who issues it and where that came from, wi
   const html = trackCardHtml(card());
   assert.match(html, /Issued by:<\/strong> City of Fernhollow/);
   assert.match(html, /set by an operator/);
+  // The answer is on the card's FACE (before its first <details>); the control is folded away.
+  const face = html.split("<details")[0];
+  assert.match(face, /Issued by:<\/strong> City of Fernhollow/, "the issuer is not on the card's face");
+  assert.doesNotMatch(face, /data-track-issuer-input/, "the control pushed the channel off the card's face");
+  assert.ok(face.indexOf("Issued by") < face.indexOf("Channel:"), "the issuer is not read before the channel");
   assert.match(html, /data-track-issuer-input="building"[^>]*value="City of Fernhollow"/);
   assert.match(html, /data-track-issuer-save="building"/);
   assert.match(html, /data-track-issuer-clear="building"/, "an override on file has no Clear");
@@ -86,11 +92,12 @@ await check("(a) the permit card says who issues it and where that came from, wi
 });
 
 await check("(b) MUST-EXCLUDE: every interpolated value is escaped (name, operator value, refusal, cited page)", () => {
-  const { trackIssuerHtml } = load();
+  const { trackCardHtml, trackIssuerHtml } = load();
   const evil = "<img src=x onerror=alert(1)>";
-  const html = trackIssuerHtml(card({ issuer: { name: evil, source: "operator", override: `"><script>x</script>`, refused: evil } }));
+  const html = trackCardHtml(card({ issuer: { name: evil, source: "operator", override: `"><script>x</script>`, refused: evil } }));
   assert.doesNotMatch(html, /<img|<script/i, html);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(html, /value="&quot;&gt;&lt;script&gt;/, "the operator's value is not escaped in the input");
   const link = trackIssuerHtml(card({ issuer: { name: "X", source: "lookup", override: "", sourceUrl: "javascript:alert(1)" } }));
   assert.doesNotMatch(link, /href="javascript/i);
 });

@@ -4490,6 +4490,9 @@ const TRACK_ISSUER_SOURCE = {
   lookup: { badge: "badge-info", label: "per-job lookup, cited" },
   project: { badge: "badge-none", label: "the project's AHJ" },
 };
+// The line sits on the card's FACE (above the channel); its set/clear control is a collapsed
+// <details> lower down, beside the capture form, so everything before the card's first <details>
+// is still what an operator sees without opening anything.
 function trackIssuerHtml(t) {
   if (t.category !== "permit" || !t.issuer || !TRACK_ISSUER_KEY[t.type]) return "";
   const i = t.issuer;
@@ -4499,15 +4502,19 @@ function trackIssuerHtml(t) {
   return `<div class="track-issuer" style="margin:0 0 6px;font-size:12px">
     <strong>Issued by:</strong> ${esc(i.name || "—")}${src ? ` <span class="badge ${src.badge}">${esc(src.label)}</span>` : ""}${cited}
     ${refused}
-    <details class="track-issuer-edit" style="margin-top:2px">
-      <summary class="muted">${i.override ? "Change the issuing agency" : "Another agency issues this permit?"}</summary>
+  </div>`;
+}
+function trackIssuerEditHtml(t) {
+  if (t.category !== "permit" || !t.issuer || !TRACK_ISSUER_KEY[t.type]) return "";
+  const i = t.issuer;
+  return `<details class="track-issuer-edit" style="margin:0 0 6px;font-size:12px">
+      <summary class="muted">${i.override ? "Change the agency that issues this permit" : "Another agency issues this permit?"}</summary>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px">
         <input data-track-issuer-input="${esc(t.type)}" value="${esc(i.override || "")}" placeholder="e.g. City of Newberg" maxlength="120" style="flex:1 1 180px;min-width:0" aria-label="Agency that issues this permit" />
         <button type="button" class="secondary" data-track-issuer-save="${esc(t.type)}">Save</button>
         ${i.override ? `<button type="button" class="ghost" data-track-issuer-clear="${esc(t.type)}">Clear</button>` : ""}
       </div>
-    </details>
-  </div>`;
+    </details>`;
 }
 
 async function saveTrackIssuer(type, value, btn) {
@@ -4595,6 +4602,7 @@ function trackCardHtml(t) {
       <button type="button" class="secondary" data-track-approve="${esc(t.type)}" title="Your approval of THIS run lets the bot click the portal's application submit (needs the server switch PORTAL_ALLOW_FINAL_SUBMIT=1 and a recipe recorded through submit; otherwise it stages to review for you). Never pays fees; stops for CAPTCHA/MFA."><i data-lucide="check-check"></i><span>Approve &amp; auto-submit</span></button>
     </div>
     ${recipeBlock}
+    ${trackIssuerEditHtml(t)}
     <details class="track-submit"${t.status === "staged" ? " open" : ""}>
       <summary>${submitted ? "Update numbers / status link" : "I submitted it → capture #"}</summary>
       <div class="track-submit-form">
