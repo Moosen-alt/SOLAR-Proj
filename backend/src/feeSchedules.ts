@@ -546,6 +546,15 @@ export interface FeeScheduleLine {
   hopVouched?: boolean;
   /** Populated when feeUsd is null. */
   reason: string;
+  /** TRUE ONLY WHEN THIS LINE IS A DELEGATION WHOSE COLLECTOR HAS NO SCHEDULE ON FILE (the City of
+   *  Jefferson's electrical row points at Marion County, and nothing is stored under Marion County):
+   *  no schedule was evaluated for it, so feeUsd is null for want of data, not because a schedule
+   *  declined. A reader that may fall back to another source where "no saved line is on file" (the
+   *  form's own printed ladder, ahjForms.savedElectricalLine) treats a flagged line as absent — by
+   *  this flag, never a regex on `reason`. Absent (never false) otherwise: a schedule that was
+   *  evaluated and declined (plan review, battery, outside every bracket), and a chain of pointers
+   *  (the collector's own row delegates onward — a person untangles it), keep their blank. */
+  unresolvedCollector?: true;
   /** THIS LINE'S OWN BILL, ITEMISED — the permit, its surcharges, and every
    *  ancillary charge this schedule attaches to the filing. The first three
    *  carry `partOfLineFee: true` and are already inside `feeUsd`; the ancillary
@@ -908,9 +917,9 @@ export function getFeeSchedulesForKey(db: AppDb, profileKey: string, track: FeeT
 function followCollectedBy(
   db: AppDb,
   record: FeeScheduleRecord,
-): { record: FeeScheduleRecord; collectedBy: FeeScheduleRecord | null; unresolved: string } {
+): { record: FeeScheduleRecord; collectedBy: FeeScheduleRecord | null; unresolved: string; collectorHasNoSchedule: boolean } {
   const target = clean(record.collectedByProfileKey);
-  if (!target) return { record, collectedBy: null, unresolved: "" };
+  if (!target) return { record, collectedBy: null, unresolved: "", collectorHasNoSchedule: false };
   // The hop preserves the discipline: the city's ELECTRICAL row points at the
   // county's ELECTRICAL row, never at whatever the county happens to file first.
   const hopped = getFeeSchedule(db, target, record.track, record.discipline)
@@ -918,12 +927,15 @@ function followCollectedBy(
     // a discipline-specific hop — that row is the only thing it has to say.
     ?? getFeeSchedule(db, target, record.track, "");
   if (!hopped) {
-    return { record, collectedBy: null, unresolved: `Fee is collected by "${target}", and no schedule is stored for that authority yet.` };
+    return { record, collectedBy: null, unresolved: `Fee is collected by "${target}", and no schedule is stored for that authority yet.`, collectorHasNoSchedule: true };
   }
   if (clean(hopped.collectedByProfileKey)) {
-    return { record, collectedBy: null, unresolved: `Fee is collected by "${target}", whose row delegates onward — a chain of pointers needs a person to untangle it.` };
+    // NOT "no schedule": the collector's own row says somebody else collects. That is a modelling
+    // mistake for a person, never a gap a form's printed ladder may fill (collectorHasNoSchedule
+    // stays false — see FeeScheduleLine.unresolvedCollector).
+    return { record, collectedBy: null, unresolved: `Fee is collected by "${target}", whose row delegates onward — a chain of pointers needs a person to untangle it.`, collectorHasNoSchedule: false };
   }
-  return { record: hopped, collectedBy: hopped, unresolved: "" };
+  return { record: hopped, collectedBy: hopped, unresolved: "", collectorHasNoSchedule: false };
 }
 
 /** Mark a schedule human-verified. From here on a research pass may not change
@@ -3182,7 +3194,8 @@ function resolveLine(
   // A DANGLING HOP CLEARS THE ITEMISATION TOO. The charges on the line were read
   // off a row we have just decided does not answer for this project; leaving them
   // on it would print somebody else's bill beside a refusal.
-  if (hop.unresolved) return { ...line, feeUsd: null, bracketLabel: "", bracketQuote: "", corroboration: undefined, charges: [], reason: hop.unresolved };
+  if (hop.unresolved) return { ...line, feeUsd: null, bracketLabel: "", bracketQuote: "", corroboration: undefined, charges: [], reason: hop.unresolved,
+    ...(hop.collectorHasNoSchedule ? { unresolvedCollector: true as const } : {}) };
   // The discipline reported is the one that was ASKED FOR — a hopped line is
   // still the electrical permit even though it was read off the county's row,
   // and an undifferentiated row answering a discipline-specific ask answers AS
@@ -3290,6 +3303,8 @@ export function feeLinesForProject(
       scheduleId: schedule.id,
       ...(hop.collectedBy ? { delegatedFromScheduleId: row.id } : {}),
       reason: evaluated.reason,
+      // The same flag resolveLine sets: no schedule was evaluated — the collector has none on file.
+      ...(hop.collectorHasNoSchedule ? { unresolvedCollector: true as const } : {}),
       charges: evaluated.charges ?? [],
     });
   }

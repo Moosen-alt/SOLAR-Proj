@@ -16,7 +16,7 @@ import { resolvePermitPath, evaluatePrescriptiveCriteria, type PrescriptiveCrite
 import { resolveEffectiveCodeContext } from "./codeProfiles";
 import { isDocumentDateStale } from "./documentDate";
 import { findFeeScheduleForProject, feeForProject, knownElectricalReviewRequired, type FeeScheduleLine } from "./feeSchedules";
-import { curatedPrintedFees, type PrintedFeeLadder } from "./curatedAhjForms";
+import { curatedPrintedFees, CURATED_SAVED_FEE_NOTE, type PrintedFeeLadder } from "./curatedAhjForms";
 import {
   batteryStatus, SERVICE_FEEDER_CHARGE_KIND, SERVICE_FEEDER_COMMUNITY_SURCHARGE_KIND, SERVICE_FEEDER_STATE_SURCHARGE_KIND,
 } from "./batteryServiceFeeder";
@@ -520,13 +520,26 @@ function serviceFeederOnForm(ctx: FillContext, line: FeeScheduleLine | undefined
 function printedLadderCents(ctx: FillContext): { base: number; stateSurcharge: number } | null {
   const ladder = ctx.printedFeeLadder;
   if (!ladder || ladder.discipline !== "electrical") return null;
-  const k = systemKva(ctx);
+  // THE AC RATING ONLY — never systemKva's DC fallback. The ladder is priced in kVA (inverter
+  // output); a DC-only job (15.91 kW DC, no AC on file) would otherwise be priced from the ARRAY,
+  // one bracket up ($156 where the AC rating may well sit in the $94 row). No AC rating, no amount.
+  const k = Number(ctx.project.systemSizeAcKw);
   if (!(k > 0) || k > ladder.autoMaxKva) return null;
   const tier = ladder.tiers.find((t) => k <= t.maxKva);
   if (!tier) return null;
   const base = Math.round(tier.feeUsd * 100);
   // "State surcharge (12% of permit fee)", to the cent.
   return { base, stateSurcharge: Math.round((base * ladder.stateSurchargePercent) / 100) };
+}
+
+/** THE SAVED ELECTRICAL FEE LINE, as the printed-ladder fallback asks "is one on file?". A line
+ *  flagged `unresolvedCollector` (feeSchedules: a delegation whose collector has no schedule stored —
+ *  the City of Jefferson -> Marion County row the per-job lookup writes) is NOT a saved line: nothing
+ *  was evaluated. Any other line, priced or declined, is — a schedule that declined keeps its blank.
+ *  The one answer for the computed fee sources and the fill's "fees came from the form" note. */
+function savedElectricalLine(ctx: FillContext): FeeScheduleLine | undefined {
+  const line = ctx.publishedFeeLines?.find((l) => l.discipline === "electrical");
+  return line?.unresolvedCollector ? undefined : line;
 }
 
 function printedLadderFee(name: string, ctx: FillContext): string {
@@ -611,7 +624,7 @@ function computed(name: string, ctx: FillContext): string {
     }
     case "servicesFeeders200Qty":
     case "servicesFeeders200Total": {
-      const line = ctx.publishedFeeLines?.find(l => l.discipline === "electrical");
+      const line = savedElectricalLine(ctx);
       const svc = serviceFeederOnForm(ctx, line);
       if (name === "servicesFeeders200Qty") return svc.applies ? "1" : "";
       return svc.priced ? money(svc.baseUsd) : "";
@@ -626,9 +639,10 @@ function computed(name: string, ctx: FillContext): string {
     case "electricalCommunitySurcharge":
     case "coosElectricalTotal":
     case "electricalTotalFee": {
-      const line = ctx.publishedFeeLines?.find(l => l.discipline === "electrical");
-      // No saved electrical line at all: the ladder printed on this blank, where it has one. A saved
+      // No saved electrical line (none at all, or a delegation to a collector with no schedule on
+      // file — savedElectricalLine): the ladder printed on this blank, where it has one. A saved
       // line that declines to price (feeUsd null, with its reason) is never overruled by the form.
+      const line = savedElectricalLine(ctx);
       if (!line) return printedLadderFee(name, ctx);
       if (line.feeUsd == null) return "";
       if (name === "electricalBaseFee") return line.baseFeeUsd == null ? "" : money(line.baseFeeUsd);
@@ -1257,11 +1271,19 @@ export async function fillLoadedForm(
     ? "Oregon BCD 5952 - Prescriptive Solar PV Installation Checklist"
     : def.formName;
   const missingRequired = Object.entries(def.requiredFields ?? {}).filter(([, source]) => !resolveSource(source, ctx).trim()).map(([label]) => label);
-  // Say where the fees came from whenever the printed ladder priced this form (no saved line on file).
-  const printedFeeNote = ctx.printedFeeLadder && !ctx.publishedFeeLines?.some((l) => l.discipline === "electrical")
+  // Say where the fees came from whenever the printed ladder priced this form (no saved line on file —
+  // the same savedElectricalLine answer the fee cells used).
+  const printedFeeNote = ctx.printedFeeLadder && !savedElectricalLine(ctx)
     && resolveSource("computed.electricalBaseFee", ctx) ? ctx.printedFeeLadder.note : "";
+  // ONE STORY ABOUT THE FEES. The curated maps' generic note ("Fee entries use the current saved
+  // jurisdiction lookup; printed rates may be historical.") contradicts the printed-ladder note, so
+  // when the ladder priced the form that exact sentence is dropped — at fill time, because a row
+  // stored before the ladder existed (Michael's E-01) carries it in its stored map. Exact literal.
+  const notes = printedFeeNote
+    ? (def.notes ?? []).map((n) => n.split(CURATED_SAVED_FEE_NOTE).map((s) => s.trim()).filter(Boolean).join(" "))
+    : (def.notes ?? []);
   const completionMessage = [checklistMessage, missingRequired.length ? `Still needs: ${missingRequired.join("; ")}.` : "",
-    printedFeeNote, ...(def.notes ?? [])].filter(Boolean).join(" ") || undefined;
+    printedFeeNote, ...notes].filter(Boolean).join(" ") || undefined;
 
   // Both flat and AcroForm templates can have additional fields without widgets.
   const drawMappedOverlays = async (): Promise<number> => {

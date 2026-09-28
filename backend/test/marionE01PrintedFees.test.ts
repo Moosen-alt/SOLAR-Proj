@@ -16,6 +16,11 @@
 //   MUST-EXCLUDE  30 kVA stays blank (plan review / per-kVA not auto-computed); a saved fee line wins over
 //                 the printed ladder (and one that declines to price is not overruled); the building
 //                 B-01S is untouched; no other curated form carries a ladder.
+//   N1            no AC rating (DC-only 15.91) -> every fee cell blank: never a dollar amount from the DC fallback.
+//   N3            the fill message says ONE fee story: the printed-ladder note, without the curated generic
+//                 "printed rates may be historical" beside it (which stays when a saved line priced the form).
+//   (The real lookup's delegation shape — City of Jefferson -> Marion County with no Marion schedule — is
+//   marionE01DelegatedFees.)
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -88,7 +93,7 @@ globalThis.fetch = (async (url: string | URL) => {
 const filledDirs: string[] = [];
 let seq = 0;
 type Fees = { q5: string; t5: string; q15: string; t15: string; q25: string; t25: string; subtotal: string; surcharge: string; total: string };
-async function fill(acKw: number, snapshot: Record<string, unknown> = {}) {
+async function fill(acKw: number | null, snapshot: Record<string, unknown> = {}) {
   const project = { ...jefferson, id: `jefferson-e01-${++seq}`, systemSizeAcKw: acKw, parserSnapshot: { ...jefferson.parserSnapshot, ...snapshot } } as never;
   filledDirs.push((project as { id: string }).id);
   const pkg = await forms.buildFilledFormsForProject(db, project);
@@ -118,6 +123,15 @@ try {
   check("MUST-PASS the other rows stay empty", !michael.fees.q5 && !michael.fees.t5 && !michael.fees.q25 && !michael.fees.t25, show(michael.fees));
   check("MUST-PASS the 'electrical permit fee' line leaves the blank-fields list", !(michael.e.unmappedRequested ?? []).includes(FEE_LABEL), JSON.stringify(michael.e.unmappedRequested));
   check("MUST-PASS the fill says where the fees came from (the form's printed schedule, no saved schedule on file)", /Fees are the schedule printed on this form/.test(michael.e.message ?? "") && /confirm/i.test(michael.e.message ?? ""), michael.e.message);
+  // N3: one story — the curated generic "printed rates may be historical" is not said beside it.
+  check("N3 the message does not also say 'printed rates may be historical' (one coherent fee story)", !/printed rates may be historical/i.test(michael.e.message ?? "")
+    && /Owner mailing\/contact details require actual owner information/.test(michael.e.message ?? ""), michael.e.message);
+
+  // N1: no AC rating -> the printed ladder declines (never a dollar amount from the DC fallback).
+  const dcOnly = await fill(null);
+  check("N1 DC-only 15.91 (no AC rating): every fee cell blank — no Total, Subtotal, surcharge or TOTAL from the DC fallback",
+    !dcOnly.fees.t5 && !dcOnly.fees.t15 && !dcOnly.fees.t25 && !dcOnly.fees.subtotal && !dcOnly.fees.surcharge && !dcOnly.fees.total, show(dcOnly.fees));
+  check("N1 and the fill does not claim the printed schedule priced it", !/Fees are the schedule printed on this form/.test(dcOnly.e.message ?? ""), dcOnly.e.message);
 
   const small = await fill(4);
   check("MUST-PASS 4 kVA: Qty 1 on 5 kva or less, $79.00 / $79.00 / $9.48 / $88.48", small.fees.q5 === "1" && small.fees.t5 === "79.00" && small.fees.subtotal === "79.00" && small.fees.surcharge === "9.48" && small.fees.total === "88.48", show(small.fees));
@@ -170,6 +184,8 @@ try {
   check("MUST-EXCLUDE a saved fee line wins: $120.00 / $120.00 / $14.40 / $134.40, not the printed $94.00",
     withLine.fees.t15 === "120.00" && withLine.fees.subtotal === "120.00" && withLine.fees.surcharge === "14.40" && withLine.fees.total === "134.40", show(withLine.fees));
   check("MUST-EXCLUDE and the fill does not claim the printed schedule", !/Fees are the schedule printed on this form/.test(withLine.e.message ?? ""), withLine.e.message);
+  check("N3 control: with a saved line the generic fee sentence stays (it is dropped only when the printed ladder priced the form)",
+    /printed rates may be historical/.test(withLine.e.message ?? ""), withLine.e.message);
   const declined = await fill(4);
   check("MUST-EXCLUDE a saved line that declines to price this size (no bracket) is not overruled by the printed ladder", declined.fees.q5 === "1" && Object.entries(declined.fees).every(([k, v]) => k === "q5" || v === ""),
     show(declined.fees));

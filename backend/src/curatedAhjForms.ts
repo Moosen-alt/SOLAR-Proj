@@ -21,9 +21,14 @@ export interface PrintedFeeLadder {
   autoMaxKva: number;
   /** "State surcharge (12% of permit fee)", as printed. */
   stateSurchargePercent: number;
-  /** Said on the fill result whenever the ladder priced the form. */
+  /** Said on the fill result whenever the ladder priced the form — one sentence (the generic
+   *  CURATED_SAVED_FEE_NOTE is dropped from that fill's message, never said beside it). */
   note: string;
 }
+/** The generic fee sentence every curated map's notes carry — unchanged since it was written, so a
+ *  stored row carries these exact words. ahjForms.fillLoadedForm drops this exact literal from the
+ *  fill message when the form's printed ladder priced it (the two would contradict each other). */
+export const CURATED_SAVED_FEE_NOTE = "Fee entries use the current saved jurisdiction lookup; printed rates may be historical.";
 export const CURATED_AHJ_FORMS = [
   {ahj:"tigard",state:"OR",formType:"building_application",formName:"City of Tigard Residential Building Permit Application",url:"https://www.tigard-or.gov/home/showpublisheddocument/42/639007759919470000",hash:"af2a97754e8300ce5341c316b4739a3e68df7da31688a4b993910f6894c784c7",documentDate:"01/25/2023 (printed footer)"},
   {ahj:"tigard",state:"OR",formType:"electrical_application",formName:"City of Tigard Electrical Permit Application",url:"https://www.tigard-or.gov/home/showpublisheddocument/44/637615268530600000",hash:"631bc73563f644c600b363c0f5f058b7a3d4eb8684551ac1e4a57a1a50fcb1b6",documentDate:"Rev 06/17/2015"},
@@ -42,7 +47,7 @@ export const CURATED_AHJ_FORMS = [
   // exceeds 25 kva; state surcharge 12% of permit fee. Only the flat rows are carried (<= 25 kVA).
   {ahj:"marion county",state:"OR",formType:"electrical_application",formName:"Marion County Renewable Electrical Energy Permit Application (E-01)",url:"https://www.co.marion.or.us/PW/BuildingInspection/Documents/E-01%20Renewable%20Energy%20Permit%20Application.pdf",hash:"bd723dfa527a18990d40ce9871ae20a8a31e5d9e85a383db610d69ed027948a4",documentDate:"06/20 (printed footer)",
    printedFees:{discipline:"electrical",tiers:[{maxKva:5,feeUsd:79},{maxKva:15,feeUsd:94},{maxKva:25,feeUsd:156}],autoMaxKva:25,stateSurchargePercent:12,
-    note:"Fees are the schedule printed on this form (Marion County E-01, footer 06/20): no saved Marion County electrical fee schedule is on file. Confirm the county's current fees before filing."}},
+    note:"Fees are the schedule printed on this form (Marion County E-01, footer 06/20) because no saved Marion County electrical fee schedule is on file, so confirm the county's current fees before filing."}},
 ] as const;
 type CuratedSource = (typeof CURATED_AHJ_FORMS)[number];
 const curatedKey = (ahj: string) => String(ahj ?? "").trim().toLowerCase().replace(/^city of\s+/,"");
@@ -85,7 +90,7 @@ export function curatedFormMap(bytes:Uint8Array,sourceUrl:string){
  };
  if(source.formType==='electrical_application') requiredFields['owner email']='snapshot.homeownerEmail';
  const radioGroups:Record<string,{source:string;equals?:string;option:string}>={};
- let notes="Review listed missing details and obtain required signatures before filing. Mapped operator signing dates are filled only when the matching saved signature is applied. Owner-installation signatures are not auto-filled. Fee entries use the current saved jurisdiction lookup; printed rates may be historical. Owner mailing/contact details require actual owner information.";
+ let notes=`Review listed missing details and obtain required signatures before filing. Mapped operator signing dates are filled only when the matching saved signature is applied. Owner-installation signatures are not auto-filled. ${CURATED_SAVED_FEE_NOTE} Owner mailing/contact details require actual owner information.`;
  if(source.ahj==='marion county'){
   // Field names read off each blank's AcroForm (backend/test/fixtures/marion-*.pdf). Every text
   // field prints at 9 pt: the blanks declare auto-size (0 Tf), which set a 13-pt box's value at
