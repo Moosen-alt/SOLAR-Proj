@@ -376,6 +376,16 @@ function statusHeadOf(rawStatusText: string): string {
   return m[1].split(/\s*(?:\bexpiration\b|\bexpires\b|\bdate\b|\badd\s+to\s+existing\b|\bcreate\s+a\s+new\b|\brecord\b|\bpermit\b|\bapplication\b|\bwork\s+location\b)/i)[0].slice(0, 40).trim();
 }
 
+/**
+ * WHAT THE PORTAL ITSELF SAYS, verbatim (operator 2026-09-28: "Can we just pull exactly what the AHJ
+ * says … then we can just see what is needed directly without confusion"). The record's own status
+ * field — "Ready to Issue", "App Submitted", "Corr. Required" — shown beside our reading so a stale
+ * or mis-worded label is visible at a glance. "" when the page states no labelled status.
+ */
+export function portalStatedStatus(rawStatusText: string): string {
+  return extractStatedStatus(rawStatusText) || statusHeadOf(rawStatusText);
+}
+
 /** Does the status value alone answer a rule other than a correction? */
 function statusHeadSpeaks(rawStatusText: string, track: TrackKind): boolean {
   const head = statusHeadOf(rawStatusText);
@@ -622,6 +632,18 @@ export function shouldRecordStatusCheck(
   const previousLabel = String(previous.statusLabel ?? "").trim();
   return previousOutcome !== String(next.outcome ?? "").trim()
     || previousLabel !== String(next.statusLabel ?? "").trim();
+}
+
+// AN OPEN FILING IS READ DAILY (2026-09-28: a Marion County building permit went "Ready to Issue"
+// the same day while the card said "Waiting" — its last read was 14 hours old and the next was a
+// week out). A filing the agency has not finished with is re-read at most OPEN_FILING_CHECK_DAYS
+// apart, whatever the stored cadence; a finished one (issued / NEM-approved) keeps its own. One
+// request per filing per day — gentle on any portal.
+export const OPEN_FILING_CHECK_DAYS = 1;
+const FINISHED_OUTCOMES = new Set(["issued", NEM_APPROVAL_OUTCOME]);
+export function effectiveCheckDays(storedDays: unknown, latestOutcome: string | null | undefined): number {
+  const stored = Math.max(1, Math.floor(Number(storedDays) || 7));
+  return FINISHED_OUTCOMES.has(String(latestOutcome ?? "").trim()) ? stored : Math.min(stored, OPEN_FILING_CHECK_DAYS);
 }
 
 export function nextCheckIso(days: number, from = new Date()): string {

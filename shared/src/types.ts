@@ -1103,6 +1103,9 @@ export interface PermitStatusCheck {
   targetType?: string;
   source: PermitCheckSource;
   rawStatusText: string;
+  /** The portal record's own status field, verbatim ("Ready to Issue"); "" when none is stated or the
+   *  reading came from an email. Shown beside statusLabel so the AHJ's words are always visible. */
+  portalStatedStatus?: string;
   statusLabel: string;
   outcome: PermitCheckOutcome;
   confidence: number;

@@ -6717,6 +6717,19 @@ function permitStatusTargetId(explicitId) {
   return explicitId || picked || state.recheckTargetId || targets[0]?.id || null;
 }
 
+// WHAT THE PORTAL ITSELF SAYS for this filing (operator 2026-09-28: "pull exactly what the AHJ says …
+// then we can just see what is needed directly without confusion"). Only the filing's NEWEST reading
+// counts — an older reading's words beside a newer badge would be the stale answer in another form;
+// when the newest reading states no status field, nothing is shown. Pure; lifted by
+// backend/test/portalSays.test.ts.
+function portalSaysFor(target, checks) {
+  const mine = (checks || []).filter((c) => c && c.targetId === target.id);
+  if (!mine.length) return null;
+  const newest = mine.reduce((a, b) => (String(b.createdAt) > String(a.createdAt) ? b : a));
+  const text = String(newest.portalStatedStatus || "").trim();
+  return text ? { text, at: newest.createdAt } : null;
+}
+
 function renderPermitMonitor() {
   const targets = state.detail.permitCheckTargets || [];
   const checks = state.detail.permitStatusChecks || [];
@@ -6728,9 +6741,11 @@ function renderPermitMonitor() {
       ? `<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:var(--info);color:#fff;margin-left:6px">${esc(target.portalPlatform)}</span>`
       : "";
     const sourceLabel = ` · ${esc(permitTargetKindLabel(target))}`;
+    const said = portalSaysFor(target, checks);
     return `
     <article class="item info">
       <div class="item-title"><span>${esc(target.portalName || target.jurisdiction || "Permit target")}${sourceLabel}</span>${statusBadge(target.latestOutcome || "active")}${platformLabel}</div>
+      ${said ? `<p><strong>Portal says:</strong> “${esc(said.text)}” <span class="muted">· read ${esc(new Date(said.at).toLocaleString())}</span></p>` : ""}
       <p>${esc([target.applicationNumber && `Application ${target.applicationNumber}`, target.permitNumber && `Permit ${target.permitNumber}`].filter(Boolean).join(" | ") || "No application/permit number recorded yet.")}</p>
       ${target.portalUrl ? `<p class="muted" style="word-break:break-all">${esc(target.portalUrl)}</p>` : ""}
       <p class="muted">Checks every ${target.checkFrequencyDays} day(s) · Next: ${target.nextCheckAt ? esc(new Date(target.nextCheckAt).toLocaleString()) : "not scheduled"} · Source strategy: ${esc(target.portalPlatform || "auto")}</p>

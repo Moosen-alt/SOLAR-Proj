@@ -133,7 +133,7 @@ import {
 } from "./knowledgeBase";
 import { compactAlnum, existingSystemFromSnapshot, fieldAliases, normalizeProject, normalizeTokens } from "./normalize";
 import {
-  classificationDrift, classifyPermitStatusText, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack,
+  classificationDrift, classifyPermitStatusText, effectiveCheckDays, isAuthWallText, isNemApprovalOutcome, nextCheckIso, outcomeTrack, portalStatedStatus,
   readingMayFinishTrack, shouldRecordStatusCheck, trackKind, UNCONFIRMED_READING_LABEL,
   type PermitStatusClassification, type ReadingProvenance, type TrackKind,
 } from "./permitMonitor";
@@ -420,7 +420,8 @@ function mapPermitTarget(row: Row): PermitCheckTarget {
     portalUrl: text(row.portal_url),
     applicationNumber: text(row.application_number),
     permitNumber: text(row.permit_number),
-    checkFrequencyDays: Number(row.check_frequency_days ?? 7),
+    // The cadence the monitor really uses (an open filing is read daily — effectiveCheckDays).
+    checkFrequencyDays: effectiveCheckDays(row.check_frequency_days, row.latest_outcome == null ? null : text(row.latest_outcome)),
     active: bool(row.active),
     lastCheckedAt: row.last_checked_at == null ? null : text(row.last_checked_at),
     nextCheckAt: row.next_check_at == null ? null : text(row.next_check_at),
@@ -451,6 +452,8 @@ function mapPermitStatusCheck(row: Row): PermitStatusCheck {
     targetType: row.target_type == null && row.permit_type == null ? "" : trackKind(text(row.target_type), text(row.permit_type)),
     source: text(row.source) as PermitCheckSource,
     rawStatusText: text(row.raw_status_text),
+    // The portal record's own status words, verbatim (a reading of the portal, not of an email).
+    portalStatedStatus: ["portal", "public_url", "manual"].includes(text(row.source)) ? portalStatedStatus(text(row.raw_status_text)) : "",
     statusLabel: text(row.status_label),
     outcome: text(row.outcome) as PermitCheckOutcome,
     confidence: Number(row.confidence ?? 0),
@@ -6260,7 +6263,8 @@ export async function recordPermitStatusCheck(
     }
 
     if (target) {
-      const frequency = Number(target.check_frequency_days ?? 7);
+      // The cadence follows THIS reading: an open filing is read again tomorrow (effectiveCheckDays).
+      const frequency = effectiveCheckDays(target.check_frequency_days, classification.outcome);
       db.run(
         `UPDATE permit_check_targets
          SET last_checked_at = ?, next_check_at = ?, latest_outcome = ?, latest_status_label = ?, updated_at = ?
@@ -6951,7 +6955,7 @@ export async function runDuePermitChecks(
     const gatheredNothing = !rawStatusText && !isAutoSeedDisabled();
     const alreadyKnown = Boolean(text(target.latest_outcome));
     if (gatheredNothing && (source === "mock" || alreadyKnown)) {
-      const days = Math.max(1, Math.floor(Number(target.check_frequency_days || 7)));
+      const days = effectiveCheckDays(target.check_frequency_days, text(target.latest_outcome));
       db.run("UPDATE permit_check_targets SET last_checked_at = ?, next_check_at = ?, updated_at = ? WHERE id = ?", [
         now,
         new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString(),
