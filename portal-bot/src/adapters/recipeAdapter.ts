@@ -4113,11 +4113,18 @@ export class RecipeAdapter extends BasePortalAdapter {
         this.driftWarnings.push(`NOT ATTACHED: ${label} — ${detail}. Attach it by hand on the portal's attachment step before submitting.`);
       };
       if (!filePath) { fail("no file of it is on hand for this filing"); continue; }
+      // The Type is read from the row's LIVE options. Where the row already shows its Type control, the
+      // choice is made before anything is uploaded. Accela builds the row — and its Type select — only
+      // AFTER a file is added (live run 090fa574, Oregon ePermitting: "no options read", the E-01 never
+      // went up), so there the choice is made on the new row right after the upload, and a row no Type
+      // fits is never saved (below).
       let pick = "";
       if (row.type) {
-        const options = await this.typeOptionsOf(row.type);
-        pick = attachmentTypeFor(o.docType, options) ?? "";
-        if (!pick) { fail(`no Type on the portal's list fits it (${options.filter(Boolean).slice(0, 10).join(", ") || "no options read"})`); continue; }
+        const early = await this.typeOptionsOf(row.type);
+        if (early.length) {
+          pick = attachmentTypeFor(o.docType, early) ?? "";
+          if (!pick) { fail(`no Type on the portal's list fits it (${early.filter(Boolean).slice(0, 10).join(", ")})`); continue; }
+        }
       }
       this.uploadNames.set(o.docType, label);
       const fileName = (() => { const p = uploadPayloadFor(filePath, null, label); removeUploadStaging(p.tempDir); return typeof p.file === "string" ? path.basename(p.file) : p.file.name; })();
@@ -4129,20 +4136,75 @@ export class RecipeAdapter extends BasePortalAdapter {
       await this.waitForLoadingMaskClear(`attaching ${label.slice(0, 40)}`);
       const uploaded = await this.executeStep({ ...row.upload, docType: o.docType, note: `upload ${o.docType}: ${slotLabel}` }, false).catch(() => false);
       if (!uploaded) { fail("the page's file control did not take it"); continue; }
+      // THE ROW IS NOW ON THE PAGE, UNSAVED. Anything that stops here leaves it pending, and the NEXT
+      // document's Save would commit it under that document's Description and Type — so a failure from
+      // here on stops the whole pass, and every owed document still to go is named.
+      const abandon = (detail: string): void => {
+        fail(`${detail} — its row was left UNSAVED on the portal's attachment step; remove it there`);
+        for (const rest of owed.slice(owed.indexOf(o) + 1)) {
+          if (this.owedAttempted.has(rest.docType)) continue;
+          this.owedAttempted.add(rest.docType);
+          const l2 = String(rest.label || rest.docType).replace(/\s+/g, " ").trim();
+          this.attachmentLedger.push({ docType: rest.docType, label: l2, status: "not attached", detail: `not tried: the row for ${label.slice(0, 60)} was left unsaved on that page` });
+          this.driftWarnings.push(`NOT ATTACHED: ${l2} — not tried, because the row for ${label.slice(0, 60)} was left unsaved on that page. Attach it by hand before submitting.`);
+        }
+      };
+      if (row.type && !pick) {
+        const late = await this.waitTypeOptions(row.type, RecipeAdapter.ATTACH_ROW_WAIT_MS);
+        pick = attachmentTypeFor(o.docType, late) ?? "";
+        if (!pick) { abandon(`no Type on the portal's list fits it (${late.filter(Boolean).slice(0, 10).join(", ") || "no Type control appeared on its row"})`); return; }
+      }
       if (row.desc) await this.executeStep({ ...row.desc, value: label.slice(0, 200) }, false).catch(() => false);
       if (row.type && !(await this.executeStep({ ...row.type, value: pick }, false).catch(() => false))) {
-        fail(`its Type "${pick}" could not be chosen on the row`);
-        continue;
+        abandon(`its Type "${pick}" could not be chosen on the row`);
+        return;
       }
       await this.waitForLoadingMaskClear(`saving ${label.slice(0, 40)}`);
       const committed = await this.executeStep(commitStep, false).catch(() => false);
-      await this.confirmUploadsListed(`attaching "${label.slice(0, 40)}"`);
-      if (committed && await this.pageListsFile(fileName)) {
+      const saved = committed ? await this.attachmentCommitted(fileName, row.type, pick, RecipeAdapter.ATTACH_LIST_WAIT_MS) : false;
+      if (saved) {
+        this.uploadsSettledUpTo = this.uploadsPerformed.length;
         this.attachmentLedger.push({ docType: o.docType, label, status: "attached", detail: `"${fileName}"${pick ? ` as "${pick}"` : ""}` });
-        this.agingNotes.push(`attached the owed ${label} ("${fileName}"${pick ? `, Type "${pick}"` : ""}) — the portal lists it`);
+        this.agingNotes.push(`attached the owed ${label} ("${fileName}"${pick ? `, Type "${pick}"` : ""}) — the portal lists it and its row is saved`);
       } else {
-        fail(committed ? `the portal's attachment list does not show "${fileName}" after the save` : "the save did not go through");
+        abandon(committed ? `after the save the portal's attachment list does not show "${fileName}" as saved` : "the save did not go through");
+        return;
       }
+    }
+  }
+
+  /** How long an owed document's new row may take to show its Type control after the upload. */
+  static ATTACH_ROW_WAIT_MS = 15_000;
+  /** How long the portal's list may take to show a saved attachment (Accela redraws it seconds after
+   *  its "successfully uploaded" banner — live 090fa574's list outlasted a 20 s wait). */
+  static ATTACH_LIST_WAIT_MS = 45_000;
+
+  /** The Type control's options once the new row shows it (bounded poll). [] = it never appeared. */
+  private async waitTypeOptions(typeStep: RecipeStep, timeoutMs: number): Promise<string[]> {
+    const t0 = Date.now();
+    for (;;) {
+      const got = await this.typeOptionsOf(typeStep);
+      if (got.length || Date.now() - t0 >= timeoutMs) return got;
+      await sleep(300);
+    }
+  }
+
+  /** SAVED, NOT MERELY PENDING. Before Save, Accela shows the chosen file's name on the pending row
+   *  itself ("File: <name>"), so "the name is on the page" proves nothing. Saved = the name is on the
+   *  page AND no row still holds the Type this run picked (Accela removes the row on Save; a static-row
+   *  widget resets it; a refused Save leaves the pick in place). Bounded poll. */
+  private async attachmentCommitted(fileName: string, typeStep: RecipeStep | null, pick: string, timeoutMs: number): Promise<boolean> {
+    const t0 = Date.now();
+    const css = String(typeStep?.selector?.css ?? "select");
+    for (;;) {
+      await this.waitForLoadingMaskClear(`reading the attachment list for "${fileName.slice(0, 40)}"`, Math.max(0, timeoutMs - (Date.now() - t0)));
+      const listed = await this.pageListsFile(fileName);
+      const pending = typeStep && pick ? await this.page.evaluate(({ sel, want }: { sel: string; want: string }) =>
+        Array.from(document.querySelectorAll(sel)).some((e) => e.tagName === "SELECT"
+          && String((e as HTMLSelectElement).selectedOptions?.[0]?.textContent || "").replace(/\s+/g, " ").trim() === want), { sel: css, want: pick }).catch(() => false) as boolean : false;
+      if (listed && !pending) return true;
+      if (Date.now() - t0 >= timeoutMs) return false;
+      await sleep(500);
     }
   }
 
@@ -4244,7 +4306,7 @@ export class RecipeAdapter extends BasePortalAdapter {
    *  attachment Save) that follows this page's uploads, wait (bounded) for the page to list every
    *  file the run handed it — the attachment table, not the widget. A file the page never lists is
    *  named: the portal did not take it, and a person attaches it before submitting. */
-  private async confirmUploadsListed(after: string, timeoutMs = 20_000): Promise<void> {
+  private async confirmUploadsListed(after: string, timeoutMs = RecipeAdapter.ATTACH_LIST_WAIT_MS): Promise<void> {
     const pending = this.uploadsPerformed.slice(this.uploadsSettledUpTo);
     this.uploadsSettledUpTo = this.uploadsPerformed.length;
     if (!pending.length || !this.page || typeof this.page.evaluate !== "function") return;

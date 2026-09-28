@@ -96,6 +96,13 @@ const TYPES_REAL = ["--Select--", "Contractor Responsibility Form", "Deferred Su
   "Septic Review", "Special Inspection Deficiencies Report", "Special Inspection Final Summary Report", "Special Inspection Form", "Specifications", "Structural Calculations"];
 let types = TYPES_REAL;
 let rows: Array<{ name: string; type: string; desc: string }> = [];
+/** Real Accela (live run 090fa574): the pending row — Description + Type — is BUILT when a file is
+ *  added and removed on Save; before Save it shows "File: <name>". false = a static row (older shape). */
+let rowAfterUpload = true;
+/** Real Accela redraws its saved list a while after the "successfully uploaded" banner. */
+let listDelayMs = 0;
+/** The portal refuses the Save of a file whose name contains this (a validation error; nothing posts). */
+let failSaveFor = "";
 const counts = { advance: 0, filing: 0, save: 0 };
 const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 
@@ -103,29 +110,37 @@ function attachmentsContent(): string {
   const body = rows.length
     ? rows.map((r) => `<tr class="ACA_TabRow_Odd"><td>${esc(r.name)}</td><td>${esc(r.type)}</td><td>16 B</td><td>09/27/2026</td><td><a href="javascript:void(0)">Actions</a></td></tr>`).join("")
     : `<tr><td colspan="5">No records found.</td></tr>`;
+  const options = types.map((t) => `<option value="${t === "--Select--" ? "" : esc(t)}">${esc(t)}</option>`).join("");
+  // The pending row as Accela builds it (dlDocumentEdit): Description, Type, then "File: <name>" 100%.
+  const rowHtml = `<div id="pendingRow"><label for="${PM}dlDocumentEdit_ctl00_txtDescription">*Description:</label> <textarea id="${PM}dlDocumentEdit_ctl00_txtDescription" rows="4" cols="60"></textarea>
+      <label for="${PM}dlDocumentEdit_ctl00_ddlDocType">*Type (Required):</label> <select id="${PM}dlDocumentEdit_ctl00_ddlDocType">${options}</select>
+      <div>File: <span id="fname"></span> <span class="progress">100%</span></div></div>`;
   return `<div ng-non-bindable="true" id="attachmentSection">
+  ${rows.length ? `<div class="ACA_Message_Notice">The attachment(s) has/have been successfully uploaded. It may take a few minutes before changes are reflected.</div>` : ""}
   <div class="ACA_TabRow"><div class="ACA_Title_Bar"><h1>Attachment</h1></div></div>
   <p>The maximum file size allowed is 80 MB.</p>
-  <table id="${PM}attachmentEdit_gdvAttachmentList" class="ACA_GridView"><tr><th>Name</th><th>Type</th><th>Size</th><th>Latest Update</th><th>Action</th></tr>${body}</table>
+  <table id="${PM}attachmentEdit_gdvAttachmentList" class="ACA_GridView"><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Latest Update</th><th>Action</th></tr></thead><tbody id="savedRows">${listDelayMs > 0 ? `<tr><td colspan="5">Loading...</td></tr>` : body}</tbody></table>
   <div id="uploadWidget">
     <input type="file" id="${FILE_ID}" name="${FILE_ID.replace(/_/g, "$")}" accept=".pdf" style="width:90px">
-    <div id="pending" style="display:none">
-      <label for="${PM}attachmentEdit_txtDescription">*Description:</label> <textarea id="${PM}attachmentEdit_txtDescription" rows="4" cols="60"></textarea>
-      <label for="${PM}attachmentEdit_ddlType">*Type (Required):</label> <select id="${PM}attachmentEdit_ddlType">${types.map((t) => `<option value="${t === "--Select--" ? "" : esc(t)}">${esc(t)}</option>`).join("")}</select>
-      <div>File: <span id="fname"></span> <span class="progress">100%</span></div>
-    </div>
+    <div id="pending">${rowAfterUpload ? "" : rowHtml}</div>
     <a id="${PM}attachmentEdit_btnSave" class="ACA_SmButton" href="javascript:void(0)" onclick="saveAttachment();return false;">Save</a>
     <label for="${FILE_ID}" id="${PM}attachmentEdit_btnAdd" class="ACA_SmButton">Add</label>
   </div>
   <script>(function(){
     var fi = document.getElementById('${FILE_ID}');
-    var ta = document.getElementById('${PM}attachmentEdit_txtDescription');
-    var dd = document.getElementById('${PM}attachmentEdit_ddlType');
-    fi.addEventListener('change', function(){ if (fi.files && fi.files[0]) { document.getElementById('pending').style.display = 'block'; document.getElementById('fname').textContent = fi.files[0].name; } });
+    var ROW = ${JSON.stringify(rowHtml)};
+    var BODY = ${JSON.stringify(body)};
+    if (${listDelayMs} > 0) setTimeout(function(){ document.getElementById('savedRows').innerHTML = BODY; }, ${listDelayMs});
+    fi.addEventListener('change', function(){
+      if (!(fi.files && fi.files[0])) return;
+      if (!document.getElementById('pendingRow')) document.getElementById('pending').innerHTML = ROW;
+      document.getElementById('fname').textContent = fi.files[0].name;
+    });
     window.saveAttachment = function(){
       var name = fi.files && fi.files[0] ? fi.files[0].name : '';
-      if (!name || !dd.value) { var e = document.getElementById('err') || document.createElement('div'); e.id = 'err'; e.className = 'ACA_Message_Error'; e.textContent = 'Type (Required): please select a value.'; document.getElementById('uploadWidget').appendChild(e); return; }
-      fetch('/save', { method: 'POST', body: JSON.stringify({ name: name, type: dd.value, desc: ta.value }) }).then(function(){ location.reload(); });
+      var dd = document.querySelector('#pendingRow select'); var ta = document.querySelector('#pendingRow textarea');
+      if (!name || !dd || !dd.value || (${JSON.stringify(failSaveFor)} && name.indexOf(${JSON.stringify(failSaveFor)}) >= 0)) { var e = document.getElementById('err') || document.createElement('div'); e.id = 'err'; e.className = 'ACA_Message_Error'; e.textContent = 'Type (Required): please select a value.'; document.getElementById('uploadWidget').appendChild(e); return; }
+      fetch('/save', { method: 'POST', body: JSON.stringify({ name: name, type: dd.value, desc: ta ? ta.value : '' }) }).then(function(){ location.reload(); });
     };
   })();</script>
 </div>`;
@@ -263,6 +278,41 @@ console.log("\nE. MUST-EXCLUDE: no owed list is today's single row");
   rows = []; types = TYPES_REAL;
   const o = await replay("no-owed", "Plans - Structural", [], { plan_set: DOCS.plan_set, building_application: DOCS.building_application });
   check("exactly one row, the plan set; no ledger entries", o.rows.length === 1 && o.ledger.length === 0, JSON.stringify(o.rows));
+}
+
+console.log("\nF. the OLDER static-row widget (its Type row is on the page before any file) still works");
+{
+  rows = []; types = TYPES_REAL; rowAfterUpload = false;
+  const o = await replay("static-row", "Plans - Structural", [{ docType: "building_application", label: B01S }],
+    { plan_set: DOCS.plan_set, building_application: DOCS.building_application });
+  rowAfterUpload = true;
+  check("MUST-PASS static row: plan set + B-01S ('Other'), the ledger says attached", o.rows.length === 2 && o.rows[1].type === "Other" && o.ledger[0]?.status === "attached", JSON.stringify({ rows: o.rows, ledger: o.ledger }));
+}
+
+console.log("\nG. Accela redraws its saved list seconds after the banner (live 090fa574): no false alarm");
+{
+  rows = []; types = TYPES_REAL; listDelayMs = 3000;
+  const o = await replay("slow-list", "Plans - Electrical", [{ docType: "electrical_application", label: E01 }],
+    { plan_set: DOCS.plan_set, electrical_application: DOCS.electrical_application });
+  listDelayMs = 0;
+  check("MUST-PASS a list that redraws late: the E-01 is attached, and nothing says the plan set is not listed",
+    o.rows.length === 2 && o.ledger[0]?.status === "attached" && !/attachment list does not show/.test(o.drift), JSON.stringify({ rows: o.rows, ledger: o.ledger, drift: o.drift.slice(0, 300) }));
+}
+
+console.log("\nH. MUST-EXCLUDE: a refused Save leaves its row unsaved — the pass STOPS; the next document is never committed under it");
+{
+  rows = []; types = TYPES_REAL; failSaveFor = "B-01S";
+  const saved0 = RecipeAdapter.ATTACH_LIST_WAIT_MS;
+  RecipeAdapter.ATTACH_LIST_WAIT_MS = 4000;
+  const o = await replay("refused-save", "Plans - Structural",
+    [{ docType: "building_application", label: B01S }, { docType: "solar_checklist", label: C5952 }],
+    { plan_set: DOCS.plan_set, building_application: DOCS.building_application, solar_checklist: DOCS.solar_checklist });
+  RecipeAdapter.ATTACH_LIST_WAIT_MS = saved0; failSaveFor = "";
+  check("only the plan set is saved; the B-01S is NOT ATTACHED (row left unsaved) and the 5952 was NOT TRIED",
+    o.rows.length === 1 && o.ledger.find((l) => l.docType === "building_application")?.status === "not attached"
+      && /left UNSAVED/.test(o.ledger.find((l) => l.docType === "building_application")?.detail ?? "")
+      && /not tried/.test(o.ledger.find((l) => l.docType === "solar_checklist")?.detail ?? ""), JSON.stringify({ rows: o.rows, ledger: o.ledger }));
+  check("the approved final submit refuses on both", o.refusals.some((r) => /2 owed document\(s\) not attached/.test(r)), JSON.stringify(o.refusals));
 }
 
 await browser.close();
