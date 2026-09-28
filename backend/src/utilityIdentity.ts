@@ -82,6 +82,36 @@ export function utilityIdentityOf(state: unknown, name: unknown): UtilityIdentit
 }
 
 /**
+ * DOES THIS NAME A KNOWN UTILITY (rather than an agency)? For a PERMIT ISSUER's name
+ * (permitProcess.refuseTrackIssuerValue / trackIssuer): a utility files interconnection and never
+ * issues a permit, and its name fuzzy-resolves a CITY's portal — "Portland General Electric" typed as
+ * a Yamhill job's electrical issuer resolved City of Portland's DevHub (round-1 skeptic, 2026-09-28).
+ * The state-aware identity first (utilityIdentityOf: the bare "PGE" is Portland General in Oregon,
+ * PG&E in California, nobody elsewhere; "RMP" only in UT/ID/WY), then the UNAMBIGUOUS brand
+ * spellings in any state — so an empty project state is not reassurance. Only the known identities:
+ * never "Pacific" alone ("Pacific County" is a Washington county), and never a generic "Power" /
+ * "Light" / "Electric" word — a municipal utility is often the very city that issues the permit
+ * (Ashland, Forest Grove), so a city's name must never read as a utility here.
+ */
+export function namedKnownUtility(state: unknown, name: unknown): UtilityIdentity | null {
+  const n = String(name ?? "").trim();
+  if (!n) return null;
+  const here = utilityIdentityOf(state, n);
+  if (here) return here;
+  if (PACIFICORP_NAME.test(n)) return "pacificorp";
+  if (PACIFIC_GAS_ELECTRIC_NAME.test(n)) return "pacific_gas_electric";
+  if (PORTLAND_GENERAL_FULL_NAME.test(n)) return "portland_general";
+  return null;
+}
+
+/** A known utility identity's display name. */
+export const UTILITY_IDENTITY_LABEL: Record<UtilityIdentity, string> = {
+  pacificorp: "PacifiCorp (Pacific Power / Rocky Mountain Power)",
+  portland_general: "Portland General Electric",
+  pacific_gas_electric: "Pacific Gas and Electric (PG&E)",
+};
+
+/**
  * ARE THESE TWO NAMES THE SAME UTILITY, HERE? True only when both resolve to the same known
  * identity in this state (a parent company and its operating brands — "PacifiCorp" = "Pacific
  * Power" in Oregon, "RMP" = "Rocky Mountain Power" in Utah; "PGE" = "Portland General Electric" in

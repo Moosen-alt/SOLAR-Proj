@@ -32,6 +32,9 @@
 //   K11 permitProcess.projectForTrack: always the project (the whole view)    → (s1)(s3)(c1)(l1)(t1)(v1)
 //   K12 permitProcess.permitAnswerForTrack / lookedUpIssuingAgency: no view
 //       fallback to the project's own lookup                                  → (b1)(b3)
+// Round 2 (round-1 skeptic's mustFix):
+//   K16 permitProcess.refuseTrackIssuerValue: no known-utility refusal        → (u1)(u2)
+//   K17 permitProcess.trackIssuer: a looked-up utility name re-keys the track → (u3)
 //
 //   npx tsx backend/test/splitIssuer.test.ts
 import "./_isolate"; // FIRST
@@ -364,6 +367,57 @@ await check("(b2) MUST-EXCLUDE: an UNCITED lookup agency, or the AHJ under a dep
   assert.equal(pp.projectForTrack(same, "building"), same, "a department suffix re-keyed the project");
 });
 
+// ── round 2: A UTILITY IS NEVER A PERMIT ISSUER (tightening) ────────────────────────────────
+await check("(u1) MUST-EXCLUDE: an issuer naming a known UTILITY is refused (\"Portland General Electric\", \"PGE\", \"Pacific Power\", \"PacifiCorp\"…), whatever the project's state says; MUST-PASS: real agencies", () => {
+  for (const [v, st] of [
+    ["Portland General Electric", "OR"], ["PGE", "OR"], ["P.G.E.", "OR"], ["Pacific Power", "OR"], ["PacifiCorp", "OR"], ["Pac Power", "WA"],
+    ["Rocky Mountain Power", "UT"], ["RMP", "UT"], ["PG&E", "CA"], ["PGE", "CA"], ["Pacific Gas and Electric Company", "CA"],
+    ["Portland General Electric", ""], ["Pacific Power", ""], ["PacifiCorp", "TX"],
+  ] as const) {
+    assert.match(String(pp.refuseTrackIssuerValue(v, st)), /names a utility/, `"${v}" (${st || "no state"}) was accepted as an issuer`);
+  }
+  for (const [v, st] of [
+    ["City of Portland", "OR"], ["Yamhill County", "OR"], ["Portland", "OR"], ["City of Portland Bureau of Development Services", "OR"],
+    ["City of Ashland", "OR"], ["City of Forest Grove", "OR"], ["Pacific County", "WA"], ["City of Newberg", "OR"], ["Marion County", "OR"],
+  ] as const) {
+    assert.equal(pp.refuseTrackIssuerValue(v, st), null, `the agency "${v}" was refused`);
+  }
+});
+
+await check("(u2) the write path refuses a utility issuer (400, nothing written) and the read path never views it — the Yamhill job keeps the county on its electrical track", () => {
+  const id = fx.newProject({ ahj: "Yamhill County", city: "Newberg", zip: "97132" });
+  assert.throws(() => repo.updateProject(db, id, { trackIssuerElectrical: "Portland General Electric" } as never),
+    (err: { status?: number; message?: string }) => err.status === 400 && /names a utility/.test(String(err.message)));
+  assert.equal(load(id).trackIssuers, undefined, "a refused utility issuer was written");
+  // On file before this check (or in memory): refused on read, said so, and never a view.
+  const p = { ...load(id), trackIssuers: { electrical: "Portland General Electric" } };
+  const answer = pp.trackIssuer(p, "electrical");
+  assert.equal(answer.source, "project");
+  assert.equal(answer.name, "Yamhill County");
+  assert.match(String(answer.refused), /names a utility/);
+  assert.equal(pp.projectForTrack(p, "electrical"), p, "a utility name re-keyed the electrical track");
+  assert.equal(pp.issuingAgencyFor(p, "electrical"), null, "a refused utility issuer reached the forms");
+  // MUST-PASS: a real agency on the same job is still honoured.
+  repo.updateProject(db, id, { trackIssuerBuilding: "City of Newberg" } as never);
+  assert.equal(pp.projectForTrack(load(id), "building").ahj, "City of Newberg");
+});
+
+await check("(u3) MUST-EXCLUDE: a CITED lookup naming a utility as the issuing agency does not re-key the track either", () => {
+  const saved = pp.savePermitProcessLookup(db, {
+    state: "OR", ahj: "City of Hollin", lookedUpAt: new Date().toISOString(),
+    issuingAgency: { value: null, sourceUrl: "", quote: "", origin: "lookup", notFound: "not searched" },
+    permitStructure: { value: "separate", sourceUrl: "https://hollin.example.gov", quote: "a separate electrical permit", origin: "lookup" },
+    permits: [{ discipline: "electrical", label: "electrical permit",
+      issuingAgency: { value: "Portland General Electric", sourceUrl: "https://hollin.example.gov/solar", quote: "Portland General Electric reviews the interconnection", origin: "lookup" },
+      portalUrl: { value: null, sourceUrl: "", quote: "", origin: "lookup" }, recordType: { value: null, sourceUrl: "", quote: "", origin: "lookup" },
+      documents: { value: null, sourceUrl: "", quote: "", origin: "lookup" }, fee: { value: null, sourceUrl: "", quote: "", origin: "lookup" } }],
+  } as never) as { saved: boolean };
+  assert.ok(saved.saved);
+  const p = load(fx.newProject({ ahj: "City of Hollin", city: "Hollin", zip: "97352" }));
+  assert.equal(pp.trackIssuer(p, "electrical").source, "project");
+  assert.equal(pp.projectForTrack(p, "electrical"), p, "a looked-up utility name re-keyed the electrical track");
+});
+
 // ── the operator routes, on a real scratch server (refusal paths only: nothing opens) ────────
 const PORT = 5200 + Math.floor(Math.random() * 40); // never 4173 / 4270
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -397,6 +451,11 @@ try {
     const id = newCountyProject();
     let res = await send("PUT", `/api/projects/${id}`, { trackIssuerBuilding: `${CITY}, WA` });
     assert.equal(res.status, 400, await res.text());
+    // A utility's name is refused at the route too (the skeptic's "Portland General Electric").
+    res = await send("PUT", `/api/projects/${id}`, { trackIssuerElectrical: "Portland General Electric" });
+    const refusedText = await res.text();
+    assert.equal(res.status, 400, refusedText);
+    assert.match(refusedText, /names a utility/);
     res = await send("PUT", `/api/projects/${id}`, { trackIssuerBuilding: CITY });
     const body = await res.json() as { project?: ProjectRecord };
     assert.equal(res.status, 200, JSON.stringify(body).slice(0, 300));

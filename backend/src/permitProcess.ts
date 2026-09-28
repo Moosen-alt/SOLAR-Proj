@@ -36,6 +36,7 @@ import type {
 import type { AppDb } from "./db";
 import { sameAgencyName } from "./agencyName";
 import { trackIssuersFromSnapshot } from "./normalize";
+import { namedKnownUtility, UTILITY_IDENTITY_LABEL } from "./utilityIdentity";
 
 // ── Keys ────────────────────────────────────────────────────────────────────────────────
 /** "City of Jefferson, OR" / "city of  jefferson" → "city of jefferson". A trailing state code
@@ -397,12 +398,16 @@ export function agencyNameState(name: string | null | undefined): string | null 
 /** Why an operator's issuer value cannot be honoured on a project in `projectState`, or null when it
  *  can. The one refusal the write path (updateProject → 400) and the read path (trackIssuer →
  *  `refused`) share: a permit is never issued across a state line, so a value naming another state
- *  would only ever resolve that state's portal. */
+ *  would only ever resolve that state's portal; and a UTILITY never issues a permit — its name
+ *  fuzzy-resolves some city's portal ("Portland General Electric" → City of Portland's DevHub), so a
+ *  known utility's name (utilityIdentity.namedKnownUtility, the shared identity) is refused too. */
 export function refuseTrackIssuerValue(value: string | null | undefined, projectState: string | null | undefined): string | null {
   const v = String(value ?? "").replace(/\s+/g, " ").trim();
   if (!v) return null;
   if (v.length > 120) return "it is longer than an agency name (120 characters at most)";
   if (/https?:\/\/|\bwww\./i.test(v)) return "it is a web address — name the agency (e.g. \"City of Newberg\"), not its portal";
+  const utility = namedKnownUtility(projectState, v);
+  if (utility) return `it names a utility (${UTILITY_IDENTITY_LABEL[utility]}) — a utility takes the interconnection application and never issues a permit; name the city or county that issues this permit (e.g. "Yamhill County")`;
   const named = agencyNameState(v);
   const own = String(projectState ?? "").trim().toUpperCase();
   if (named && own && named !== own) return `it names an agency in ${named}, and this project is in ${own} — a permit is never issued across a state line`;
@@ -460,7 +465,7 @@ function baseOfView<T extends IssuerProject>(project: T): T {
  *   b. the per-job lookup's issuing agency for this permit (issuingAgencyFor's lookup chain: the
  *      permit's own answer, else the AHJ-wide one) when it clears the cited bar AND names another
  *      agency than the project AHJ (sameAgencyName — "City of Salem Permit Center" is Salem, a
- *      department suffix never re-keys a project);
+ *      department suffix never re-keys a project) AND is not a known utility's name;
  *   c. the project AHJ.
  * NEM, a trackless stage and an unknown track are always (c): the NEM track never reads it.
  */
@@ -483,7 +488,10 @@ export function trackIssuer(project: IssuerProject, track: string | null | undef
   }
   const looked = lookedUpIssuingAgency(base, key);
   const verified = permitProcessFor(base)?.confidence === "verified";
-  if (ahj && looked && citedAgencyAnswer(looked, verified) && !sameAgencyName(looked.value, ahj)) {
+  // A looked-up "issuer" that is a known UTILITY is a misread, never an issuer: it would re-key the
+  // track on the utility's name, which fuzzy-resolves some city's portal (the same refusal the
+  // operator's value gets — namedKnownUtility, the one identity).
+  if (ahj && looked && citedAgencyAnswer(looked, verified) && !sameAgencyName(looked.value, ahj) && !namedKnownUtility(base.state, looked.value)) {
     return {
       name: String(looked.value).trim(), source: "lookup", sourceUrl: looked.sourceUrl, quote: looked.quote,
       override, ...(refused ? { refused } : {}),
