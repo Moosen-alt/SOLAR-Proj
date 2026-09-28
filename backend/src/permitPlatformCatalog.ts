@@ -986,10 +986,12 @@ export function documentSlugWords(href: string): string {
  * A blank permit APPLICATION document, by the words naming it and its URL — or null. `discipline`
  * says which permit it is for (an electrical-only application — "Wiring" included — is never the
  * building-side blank); `score` ranks a residential / solar / building application above a generic
- * one. It must NAME this job's work (JOB_APP_WORDS: a bare "Permit Application" or "<X> Permit
- * Application" is not taken). Never a fee schedule, a checklist / guide / handout, an agenda /
- * minutes / newsletter, another department's or activity's permit (whatever else it says), another
- * trade's alone, a commercial-only one, a tax / licence / utility application, or a page.
+ * one. Its HEAD phrase (applicationHeadPhrase) must NAME this job's work (JOB_APP_WORDS: a bare
+ * "Permit Application" or "<X> Permit Application" is not taken), and names no other department,
+ * activity or subject (OTHER_DEPARTMENT / OTHER_SUBJECT, whatever else it says) nor another trade alone;
+ * the scope text after the head never decides. Never a fee schedule, a checklist / guide / handout, an
+ * agenda / minutes / newsletter, a commercial-only one, a tax / licence application, a utility's
+ * application anywhere in the name (rule 5), or a page. A score boost never lifts an excluded head.
  */
 export function classifyApplicationDocument(words: string, href: string): { discipline: ApplicationDiscipline; score: number } | null {
   if (!DOCUMENT_URL.test(String(href ?? ""))) return null;
