@@ -6,7 +6,13 @@ import { PDFDocument, PDFName, PDFRadioGroup, StandardFonts, rgb } from "pdf-lib
 import type { ProjectRecord } from "../../shared/src/types";
 import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
-import { clientStagingOverlay } from "./clients";
+import { clientStagingOverlay, contractorLicenceForClient } from "./clients";
+import type { CaptionSide, LabelItem, WidgetCaptions, WidgetRect } from "./formTextLayer";
+import {
+  attestsAttachedDocument, contactShapeRefusal, isLicenceHolderSlot, isTotalRow, isValuationSlot, operatorItemLabels,
+  OREGON_CCB_SOURCE, signerNameConflicts, STATE_LICENCE_SOURCE, widgetContactKind, widgetLabel,
+  type OperatorItem, type PlacedWidget,
+} from "./formFieldChecks";
 import { HttpError } from "./httpError";
 import { loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
@@ -222,6 +228,12 @@ export interface AhjFormDefinition {
   requiredFields?: Record<string, string>;
   preserveInteractive?: boolean;
   fieldFontSizes?: Record<string, number>;
+  /** Blanks the mapper found that no source can fill, by printed label (stored maps only). */
+  operatorItems?: OperatorItem[];
+  /** Runtime-only: a stored map nobody has verified yet. The map-level checks (one signer per
+   *  signature, a licence holder is not the applicant) re-run at fill on these; a human-verified
+   *  map is what a person confirmed and is filled as written (hard rule 3). Never persisted. */
+  unverifiedMap?: boolean;
 }
 
 // The registry. Seed with verified forms as field maps are confirmed via the
@@ -881,6 +893,16 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
   // stay consistent. portalType "" yields licensing fields without a specific
   // installer identity.
   const client = clientStagingOverlay(db, project.clientId, "");
+  // A LICENCE IS A STATE'S. The overlay carries the client's Oregon CCB number for every job, and a
+  // stored map bound it to City of Waltham's MASSACHUSETTS construction-supervisor licence slot
+  // ("License Number" = 223690). The form fill offers instead the licence on file for THIS job's
+  // state, through the one predicate the submit gate reads (clients.contractorLicenceForState); the
+  // CCB number and its expiry resolve only on an Oregon job. None on file for the state = "" (the
+  // fill names it for the operator) — never another state's number.
+  const licence = contractorLicenceForClient(db, project.clientId, project.state);
+  if (licence.number) client.stateContractorLicense = licence.number;
+  else delete client.stateContractorLicense;
+  if (!licence.oregon) { delete client.ccbLicenseNumber; delete client.ccbExpiration; }
   // Per-AHJ prescriptive limits (same jurisdiction code profile QC screens on),
   // so the presc* checkbox sources answer against this AHJ's actual thresholds.
   // Only concrete values override; anything missing keeps the Oregon defaults.
@@ -1181,16 +1203,67 @@ export async function fetchFormTemplate(def: AhjFormDefinition): Promise<Uint8Ar
 export interface InspectedField {
   name: string;
   type: string;
+  /** 0-based page of the field's first widget, when it could be told. */
+  page?: number;
+  /** The first widget's rectangle, PDF points (bottom-left origin). */
+  rect?: WidgetRect;
+  /** The nearest printed text on each side of the widget (formTextLayer.captionsForRect). */
+  captions?: WidgetCaptions;
+  /** THE printed caption of a text widget — the form's calibrated side (formTextLayer.primaryCaption). */
+  caption?: string;
 }
 
-export async function inspectFormFields(pdfBytes: Uint8Array): Promise<{ isXfa: boolean; fields: InspectedField[] }> {
+/**
+ * Every AcroForm field with WHERE it is and WHAT IS PRINTED AROUND IT. A widget's name is often
+ * auto-generated and shifted onto the neighbouring box (Waltham names the agent's EMAIL box
+ * "Telephone"); the printed caption is what the box is. Geometry and the blank's own text layer
+ * only — never a field VALUE (a blank uploaded half-filled must not carry its values to the mapper).
+ * Captions are best-effort: any text-layer failure leaves them off and the names stand.
+ */
+export async function inspectPlacedFields(pdfBytes: Uint8Array): Promise<{ isXfa: boolean; fields: InspectedField[]; captionSide: CaptionSide | null; labels: LabelItem[] }> {
   const doc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
   const form = doc.getForm();
-  const fields = form.getFields().map((f) => ({ name: f.getName(), type: f.constructor.name }));
+  const pages = doc.getPages();
+  const pageRefs = pages.map((p) => p.ref.toString());
+  const pageOfAnnot = new Map<string, number>();
+  pages.forEach((p, i) => { try { for (const ref of p.node.Annots()?.asArray() ?? []) pageOfAnnot.set(ref.toString(), i); } catch { /* no annots */ } });
+  const fields: InspectedField[] = form.getFields().map((f) => {
+    const out: InspectedField = { name: f.getName(), type: f.constructor.name };
+    try {
+      const w = f.acroField.getWidgets()[0];
+      if (w) {
+        const r = w.getRectangle();
+        let page = w.P() ? pageRefs.indexOf(w.P()!.toString()) : -1;
+        if (page < 0) { const ref = doc.context.getObjectRef(w.dict); if (ref) page = pageOfAnnot.get(ref.toString()) ?? -1; }
+        if (page >= 0 && [r.x, r.y, r.width, r.height].every(Number.isFinite)) {
+          out.page = page;
+          out.rect = { x: r.x, y: r.y, width: r.width, height: r.height };
+        }
+      }
+    } catch { /* geometry is best-effort */ }
+    return out;
+  });
   // No terminal AcroForm fields => likely XFA-only or a flat/scanned PDF that
   // pdf-lib cannot fill programmatically.
   const isXfa = fields.length === 0;
-  return { isXfa, fields };
+  let captionSide: CaptionSide | null = null;
+  let labels: LabelItem[] = [];
+  if (!isXfa) {
+    try {
+      const tl = await import("./formTextLayer");
+      labels = await tl.extractLabels(pdfBytes);
+      for (const f of fields) if (f.rect && f.page != null) f.captions = tl.captionsForRect(labels, f.page, f.rect);
+      const text = fields.filter((f) => /text/i.test(f.type));
+      captionSide = tl.calibrateCaptionSide(text);
+      for (const f of text) { const c = tl.primaryCaption(f.captions, captionSide); if (c) f.caption = c; }
+    } catch { /* no text layer — names only, as before */ }
+  }
+  return { isXfa, fields, captionSide, labels };
+}
+
+export async function inspectFormFields(pdfBytes: Uint8Array): Promise<{ isXfa: boolean; fields: InspectedField[]; captionSide: CaptionSide | null }> {
+  const { isXfa, fields, captionSide } = await inspectPlacedFields(pdfBytes);
+  return { isXfa, fields, captionSide };
 }
 
 export interface FilledFormResult {
@@ -1217,6 +1290,11 @@ export interface FilledFormResult {
   documentStale?: boolean;
   /** Where the blank was downloaded from, so the operator can re-check it. */
   sourceUrl?: string;
+  /** Blanks the product did NOT fill, by printed label, with why — for the operator to complete by
+   *  hand: facts no source holds (zoning, setbacks, flood zone…), a mapped value that is empty on
+   *  this job, a value refused as the wrong shape for its box, an attestation never made
+   *  automatically. Never left silently blank. */
+  operatorItems?: string[];
 }
 
 export async function fillForm(
@@ -1300,6 +1378,25 @@ export async function fillLoadedForm(
   const completionMessage = [checklistMessage, missingRequired.length ? `Still needs: ${missingRequired.join("; ")}.` : "",
     printedFeeNote, ...notes].filter(Boolean).join(" ") || undefined;
 
+  // WHAT THE OPERATOR MUST FILL BY HAND, by printed label. Seeded from the map (blanks the mapper
+  // named that no source can answer — zoning, setbacks, flood zone…); every check below adds what it
+  // refuses or cannot answer, so no blank on the form is silent.
+  const operatorItems: OperatorItem[] = [...(def.operatorItems ?? [])];
+  const jobState = String(ctx.project?.state ?? "").trim().toUpperCase();
+  /** A mapped DATA source that resolved empty on this job. computed.* rows are blank by design on
+   *  many forms (a fee tier this system is not in), so only the data scopes and the computed
+   *  answers a person supplies (who signs, the valuation) are named. */
+  const emptyItem = (label: string, source: string): OperatorItem | null => {
+    if (source === STATE_LICENCE_SOURCE) return { label: `${label} (no ${jobState || "state"} contractor licence on file for this client)` };
+    if (source === OREGON_CCB_SOURCE && jobState && jobState !== "OR") {
+      return { label: `${label} (an Oregon CCB number is not a ${jobState} licence — enter the ${jobState} licence by hand, or re-map this form)` };
+    }
+    if (/^(project|snapshot|client)\./.test(source) || ["computed.applicantSignerName", "computed.estimatedJobValue", "computed.declaredValuation"].includes(source)) {
+      return { label: `${label} (no data on file for this job)` };
+    }
+    return null;
+  };
+
   // Both flat and AcroForm templates can have additional fields without widgets.
   const drawMappedOverlays = async (): Promise<number> => {
     const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -1330,8 +1427,23 @@ export async function fillLoadedForm(
         if (!checkboxRuleChecked({ source: field.onlyIf.source, equals: field.onlyIf.equals }, cond)) continue;
       }
       // A recognized checklist may repair a stored placement's SOURCE (never its map).
-      let text = resolveSource(checklist.overlaySourceOverrides?.[index] ?? field.source, ctx);
-      if (!text) continue;
+      const overlaySource = checklist.overlaySourceOverrides?.[index] ?? field.source;
+      let text = resolveSource(overlaySource, ctx);
+      const printed = String(field.label ?? "").trim();
+      // Placements carrying the form's printed label get the same checks a widget does: never an
+      // attestation of an attached document, never a value the wrong shape for its box, and a data
+      // value that is empty on this job is named rather than silently skipped.
+      if (printed && attestsAttachedDocument(printed)) {
+        if (text) operatorItems.push({ label: `${printed} (an attestation — attach the document and tick by hand)` });
+        continue;
+      }
+      if (!text) {
+        const item = printed ? emptyItem(printed, overlaySource) : null;
+        if (item) operatorItems.push(item);
+        continue;
+      }
+      const overlayRefusal = printed ? contactShapeRefusal(widgetContactKind({ name: "", caption: printed }), text) : null;
+      if (overlayRefusal) { operatorItems.push({ label: `${printed} (left blank: ${overlayRefusal})` }); continue; }
       const size = field.size ?? 9;
       if (field.maxWidth) {
         while (text.length > 1 && font.widthOfTextAtSize(text, size) > field.maxWidth) {
@@ -1357,7 +1469,8 @@ export async function fillLoadedForm(
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.writeFileSync(outputPath, await doc.save());
     return { formId: def.id, formName: resultFormName, status: "filled", outputPath, filledFieldCount: drawn,
-      unmappedRequested: [...checklist.omittedTextFields, ...missingRequired], message: completionMessage };
+      unmappedRequested: [...checklist.omittedTextFields, ...missingRequired], message: completionMessage,
+      operatorItems: operatorItemLabels(operatorItems) };
   }
 
   const form = doc.getForm();
@@ -1384,12 +1497,58 @@ export async function fillLoadedForm(
   // size keeps the blank's own auto-size (fit), so it is never clipped at the box edge.
   const sizingFont = await doc.embedFont(StandardFonts.Helvetica);
 
+  // WHAT THE BLANK PRINTS AROUND EACH WIDGET, read once (inspectPlacedFields). A widget's name can be
+  // shifted onto its neighbour's box — Waltham's "Telephone" widget IS the agent's Email Address box
+  // — so the checks below key on the printed caption first and the name second. Best-effort: with
+  // no text layer every check falls back to the name alone.
+  let placed: InspectedField[] = [];
+  let labelItems: LabelItem[] = [];
+  try { const got = await inspectPlacedFields(templateBytes); placed = got.fields; labelItems = got.labels; } catch { /* names only */ }
+  const placedByName = new Map<string, PlacedWidget>(placed.map((w) => [w.name, w]));
+  const widgetOf = (name: string): PlacedWidget => placedByName.get(name) ?? { name, type: "" };
+  // ONE SIGNER, ONE NAME — on a map nobody has verified. The "I, ___" declarant and the printed name
+  // under the same signature are one person; bound to two different people (Waltham 7b: the org's
+  // signer declares, the homeowner is printed), neither is written — which person is right is the
+  // operator's call, and the pair is named for them.
+  const signerBlocked = new Set<string>();
+  if (def.unverifiedMap) {
+    for (const conflict of signerNameConflicts(placed, def.textFields, labelItems)) {
+      for (const f of conflict.fields) signerBlocked.add(f);
+      operatorItems.push({ label: `${conflict.labels.join(" / ")} (one signature, bound to different people — fill by hand)` });
+    }
+  }
+
   for (const [fieldName, source] of Object.entries(def.textFields)) {
     if (checklist.omittedTextFields.includes(fieldName)) { unmapped.push(fieldName); continue; }
     if (!available.has(fieldName)) { unmapped.push(fieldName); continue; }
+    if (signerBlocked.has(fieldName)) continue;
+    const widget = widgetOf(fieldName);
+    const label = widgetLabel(widget);
     try {
       const field = form.getTextField(fieldName);
-      const value = resolveSource(checklist.textFieldOverrides[fieldName] ?? source, ctx);
+      const effectiveSource = checklist.textFieldOverrides[fieldName] ?? source;
+      const value = resolveSource(effectiveSource, ctx);
+      if (value && attestsAttachedDocument(`${widget.name} ${widget.caption ?? ""}`)) {
+        operatorItems.push({ field: fieldName, label: `${label} (an attestation — attach the document and complete by hand)` });
+        continue;
+      }
+      if (def.unverifiedMap && value && effectiveSource === "computed.applicantSignerName"
+        && (isLicenceHolderSlot(widget.name) || isLicenceHolderSlot(widget.caption))) {
+        operatorItems.push({ field: fieldName, label: `${label} (the licence holder's name — the applicant signer is not the licence holder)` });
+        continue;
+      }
+      // THE SHAPE GUARD: an email box never takes a value with no "@", a phone box never takes one
+      // with "@". Keyed on the printed caption, so a box named "Telephone" but captioned "Email
+      // Address" is an email box. Refused = left blank and named, never written wrong.
+      const refusal = contactShapeRefusal(widgetContactKind(widget), value);
+      if (refusal) {
+        operatorItems.push({ field: fieldName, label: `${label} (left blank: ${refusal})` });
+        continue;
+      }
+      if (!value.trim()) {
+        const item = emptyItem(label, effectiveSource);
+        if (item) operatorItems.push({ field: fieldName, ...item });
+      }
       field.setText(value);
       const fontSize = def.fieldFontSizes?.[fieldName] ?? checklist.fieldFontSizes?.[fieldName];
       const boxWidth = field.acroField.getWidgets()[0]?.getRectangle().width ?? 0;
@@ -1406,20 +1565,27 @@ export async function fillLoadedForm(
   // formula." Any fillable text field that asks for the job value and is NOT already
   // mapped gets computed.estimatedJobValue — which also spares the human-verified
   // Coos Bay map from needing an edit (rule 3): its blank "Estimated Job Value"
-  // field fills here without the map changing. The name match is deliberately
-  // tight: "Valuation Date" or "Land Value" must never catch it, and a value the
-  // map already wrote is never overwritten.
+  // field fills here without the map changing. The match (formFieldChecks.isValuationSlot, name OR
+  // printed caption) is deliberately tight: "Valuation Date" or "Land Value" must never catch it,
+  // and a value the map already wrote is never overwritten.
+  //
+  // A COST TABLE IS ONE TOTAL, NOT SIX COPIES. Waltham's Section 6 prints Building / Electrical /
+  // Plumbing / Mechanical / Fire Protection / Total rows, all named "Estimated Costs …". When
+  // several blanks match, only the one whose name or caption says Total is filled; with no single
+  // Total, none is — and the operator is told which blanks to complete.
   const valuationDefault = resolveSource("computed.estimatedJobValue", ctx);
   if (valuationDefault) {
     const mappedNames = new Set(Object.keys(def.textFields));
-    const valuationName = /((estimated|declared)\s+)?job\s+valu(e|ation)|declared\s+valuation|valuation\s+of\s+(the\s+)?work|estimated\s+value\b|^valuation$/i;
-    for (const name of available) {
-      if (mappedNames.has(name) || !valuationName.test(name)) continue;
-      try {
-        const field = form.getTextField(name);
-        if (!field.getText()) { field.setText(valuationDefault); filled += 1; }
-      } catch { /* not a text field — leave it */ }
+    const textWidget = (name: string): boolean => { try { form.getTextField(name); return true; } catch { return false; } };
+    const slots = [...available].filter(textWidget).map(widgetOf).filter(isValuationSlot);
+    const open = slots.filter((w) => !mappedNames.has(w.name) && !form.getTextField(w.name).getText());
+    const totals = slots.filter(isTotalRow);
+    const targets = totals.length ? (totals.length === 1 ? open.filter((w) => w.name === totals[0].name) : []) : (open.length === 1 ? open : []);
+    const answered = totals.some((w) => mappedNames.has(w.name));
+    if (!targets.length && open.length > 1 && !answered) {
+      operatorItems.push({ label: `Estimated cost / valuation (${open.map(widgetLabel).join("; ")} — no single Total row to carry it; enter it where the form asks)` });
     }
+    for (const w of targets) { form.getTextField(w.name).setText(valuationDefault); filled += 1; }
   }
 
   for (const [fieldName, rule] of Object.entries(def.checkboxes ?? {})) {
@@ -1428,6 +1594,14 @@ export async function fillLoadedForm(
       const value = resolveSource(rule.source, ctx);
       const checked = checkboxRuleChecked(rule, value);
       const box = form.getCheckBox(fieldName);
+      // NEVER AN ATTESTATION WE CANNOT BACK: a box saying a workers'-comp affidavit is attached is
+      // ticked by the person who attaches it. There is no workers'-comp support in the product.
+      const w = widgetOf(fieldName);
+      if (checked && attestsAttachedDocument(`${w.name} ${w.captions?.left ?? ""} ${w.captions?.right ?? ""} ${w.captions?.above ?? ""}`)) {
+        box.uncheck();
+        operatorItems.push({ field: fieldName, label: `${widgetLabel({ name: w.name, caption: w.captions?.left || w.captions?.right || w.captions?.above })} (an attestation — attach the document and tick by hand)` });
+        continue;
+      }
       if (checked) box.check(); else box.uncheck();
       filled += 1;
     } catch {
@@ -1447,6 +1621,14 @@ export async function fillLoadedForm(
       unmapped.push(fieldName);
     }
   }
+
+  // A named blank that something DID fill after all (the valuation default on a Total the mapper
+  // listed) is no longer the operator's to fill. Read before flattening removes the fields.
+  const stillBlank = (item: OperatorItem): boolean => {
+    if (!item.field) return true;
+    try { return !form.getTextField(item.field).getText(); } catch { return true; }
+  };
+  const openItems = operatorItems.filter(stillBlank);
 
   // Flatten so the filled values are baked in and can't be edited in transit.
   try { if (!def.preserveInteractive) form.flatten(); else form.updateFieldAppearances(); } catch (error) {
@@ -1468,8 +1650,11 @@ export async function fillLoadedForm(
 
   // BCD's Yes radio groups span unrelated questions. Independent X overlays
   // after flattening preserve multiple answers without radio-group clearing.
+  // (Overlay checks push their own operator items; those carry no field, so they are all open.)
+  const beforeOverlays = operatorItems.length;
   filled += await drawMappedOverlays();
   filled += await drawChecklist();
+  openItems.push(...operatorItems.slice(beforeOverlays));
 
   // Stamp signatures on top of the flattened form.
   await drawSignatures(doc, def, ctx);
@@ -1485,6 +1670,7 @@ export async function fillLoadedForm(
     filledFieldCount: filled,
     unmappedRequested: [...unmapped, ...missingRequired],
     message: completionMessage,
+    operatorItems: operatorItemLabels(openItems),
   };
 }
 
@@ -1683,7 +1869,7 @@ type TemplateRow = { id: string; ahj_name: string; state: string; form_type?: st
 function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate | null {
   if (!row.pdf_blob) return null;
   const rowAhj = String(row.ahj_name || "").trim().toLowerCase();
-  let map: { formName?: string; sourceUrl?: string; sourceHash?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; radioGroups?: Record<string, { source: string; equals?: string; option: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean; requiredFields?: Record<string,string>; notes?: string; preserveInteractive?: boolean; fieldFontSizes?: Record<string,number> } = {};
+  let map: { formName?: string; sourceUrl?: string; sourceHash?: string; fillMode?: string; textFields?: Record<string, string>; checkboxes?: Record<string, { source: string; equals?: string }>; radioGroups?: Record<string, { source: string; equals?: string; option: string }>; overlayFields?: OverlayField[]; signatureFields?: SignaturePlacement[]; verified?: boolean; requiredFields?: Record<string,string>; notes?: string; preserveInteractive?: boolean; fieldFontSizes?: Record<string,number>; operatorItems?: OperatorItem[] } = {};
   map = parseJson(row.field_map, {});
   const textFields = map.textFields || {};
   const overlayFields = map.overlayFields || [];
@@ -1711,6 +1897,8 @@ function storedTemplateFromRow(row: TemplateRow, issuedBy = ""): StoredTemplate 
       fieldFontSizes: map.fieldFontSizes,
       notes: map.notes ? [map.notes] : undefined,
       recoverPrescriptiveCheckboxes: map.verified !== true,
+      operatorItems: Array.isArray(map.operatorItems) ? map.operatorItems : undefined,
+      unverifiedMap: map.verified !== true,
     },
     bytes: new Uint8Array(row.pdf_blob),
     templateId: row.id,

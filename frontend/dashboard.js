@@ -6045,10 +6045,11 @@ function renderFilledForms(projectId) {
     const skipped = f.status === "skipped";
     const isStored = Boolean(f.templateId);
     const unverified = isStored && f.verified === false;
-    const missingDetails = (f.unmappedRequested || []).length > 0;
+    const operatorItems = f.operatorItems || [];
+    const missingDetails = (f.unmappedRequested || []).length > 0 || operatorItems.length > 0;
     const extra = [
       f.filledFieldCount != null ? `${f.filledFieldCount} field(s) filled` : "",
-      missingDetails && !f.message?.includes("Still needs:") ? `Needs details: ${(f.unmappedRequested || []).join(", ")}` : "",
+      (f.unmappedRequested || []).length && !f.message?.includes("Still needs:") ? `Needs details: ${(f.unmappedRequested || []).join(", ")}` : "",
       f.message || "",
     ].filter(Boolean).join(" · ");
     // Cls: unverified auto-maps are a warning (block submit) until confirmed.
@@ -6066,6 +6067,7 @@ function renderFilledForms(projectId) {
       ${ok && !isStored && f.signaturesLocked ? `<p class="muted">✓ Built-in form — signature + date auto-placed on the authorized-signature line. No verification needed.</p>` : ""}
       ${f.documentStale ? `<p class="muted"><strong>This blank dates itself “${esc(f.documentDate)}”</strong> — over two years old. Re-check the AHJ's current forms page before filing${f.sourceUrl ? ` (<a href="${esc(f.sourceUrl)}" target="_blank" rel="noopener noreferrer">source</a>)` : ""}. Check any printed fee rates against the current schedule.</p>` : ""}
       ${extra ? `<p class="muted">${esc(extra)}</p>` : ""}
+      ${ok && operatorItems.length ? `<p><strong>Fill by hand before filing (${operatorItems.length}):</strong></p><ul class="muted" style="margin:2px 0 6px 18px">${operatorItems.map((it) => `<li>${esc(it)}</li>`).join("")}</ul>` : ""}
       ${ok ? bcd5952ClauseNotes(f) : ""}
     </article>`;
   }).join("");
@@ -6299,7 +6301,7 @@ function renderApplicationDocs() {
         <div class="kx-preflight-col">
           ${pkg.permitType ? `<div class="kx-issue-field"><span class="kx-issue-field-label">Permitting type</span><span class="kx-issue-field-value">${esc(pkg.permitType)}</span></div>` : ""}
           ${profileNotes.length ? `<div class="kx-issue-field"><span class="kx-issue-field-label">Jurisdiction notes</span><span class="kx-issue-field-value">${profileNotes.map(esc).join("<br>")}</span></div>` : ""}
-          ${documentVerdictHtml(pkg, state.filledForms?.projectId === pid ? (state.filledForms.forms || []).filter(f => f.status === "filled").flatMap(f => f.unmappedRequested || []) : [])}
+          ${documentVerdictHtml(pkg, state.filledForms?.projectId === pid ? (state.filledForms.forms || []).filter(f => f.status === "filled").flatMap(f => [...(f.unmappedRequested || []), ...(f.operatorItems || [])]) : [])}
         </div>
       </div>
     </div>

@@ -104,7 +104,7 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
 
     // Changed (or never hashed): re-map fields and replace the stored copy.
     const formName = map.formName || `${row.ahj_name} form`;
-    let newMap: { textFields: Record<string, string>; checkboxes: Record<string, { source: string; equals?: string }>; notes: string } | null = null;
+    let newMap: { textFields: Record<string, string>; checkboxes: Record<string, { source: string; equals?: string }>; notes: string; operatorItems?: StoredFieldMap["operatorItems"] } | null = null;
     try {
       const built = await buildFieldMapForPdf(llm, { ahj: row.ahj_name, state: row.state, formName, bytes });
       if (built) newMap = built;
@@ -149,6 +149,8 @@ export async function refreshAhjFormTemplates(db: AppDb, llm: LLMProvider): Prom
         checkboxes: newMap?.checkboxes || live.checkboxes || {},
         overlayFields: live.overlayFields,
         signatureFields: live.signatureFields,
+        // The blanks named for the operator belong to the revision that was mapped.
+        operatorItems: newMap ? newMap.operatorItems : live.operatorItems,
         verified: false,
         notes: `Refreshed ${nowIso()} — the AHJ revised this form.` +
           (wasVerified ? ` The PREVIOUS mapping was human-verified and has been carried over as a starting point, but the revision may have moved fields — RE-VERIFY before any real submit.` :

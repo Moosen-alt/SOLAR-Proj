@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { performance } from "node:perf_hooks";
-import type { AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, PlanPageIndex, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition, WebLookupResult } from "../../shared/src/types";
+import type { AcroFieldForMapping, AgentRunInput, AgentRunResult, AgentToolResult, AhjFieldMapResult, AhjFormUrlResult, AhjOverlayMapResult, AhjResearchResult, CorrectionBucket, InverterSpecLookup, LLMProvider, MboxExtractedLearningRecord, ParserLlmExtraction, PortalFieldPlan, PortalFieldPlanInput, PortalFillVerification, PortalFillVerifyInput, PortalFillVisionVerifyInput, ProjectRecord, UtilityResearchResult, AiPlanReviewResult, ReviewWorkType, JurisdictionCodeProfile, JurisdictionCodeResearchResult, JurisdictionCodeResearchInput, DesignCriteriaResearchResult, ParserExtractedField, ParserFieldEvidence, ParserExtractionConflict, ParserExtractionUncertainty, ParserExtractionResolution, PlanPageIndex, CodeEdition, CodeFamily, CodeFamilyAdoptionModel, JurisdictionAdoptionModel, UpcomingCodeEdition, WebLookupResult } from "../../shared/src/types";
 import { RECIPE_FIELD_DESCRIPTIONS } from "./portalRecipes";
 import { logger } from "./logger";
 import { persistLlmCall } from "./llmAccounting";
@@ -853,6 +853,10 @@ export function webResearchBudgetMs(): number {
  *  3000 a fixed timeout would only have turned into max_tokens truncation that parses to {} —
  *  the trap findAhjFormUrl hit (44c9ba5). */
 export const WEB_RESEARCH_MAX_TOKENS = 6000;
+
+/** Output ceiling for the flat-form vision pass (thinking included). 4096 truncated a two-page
+ *  application (City of Waltham, 2026-09-28) before any JSON; a ceiling is not spend. */
+export const FLAT_FORM_OVERLAY_MAX_TOKENS = 16000;
 
 // DESIGN-CRITERIA LOOKUP (one AHJ: ground snow, ultimate wind speed, exposure). Measured on 10
 // AHJs in 8 states (2026-09-24): it never returned a wrong value, but it returned ONE value in
@@ -3184,23 +3188,25 @@ Rules:
   // legitimately carry spaces and keep everything before a 2+-space gap.
   private cleanFieldSourceString(raw: string): string {
     const s = raw.split(/\s{2,}/)[0].trim();
-    return s.startsWith("lit:") ? s : s.split(/\s+/)[0];
+    return s.startsWith("lit:") || s.startsWith("operator:") ? s : s.split(/\s+/)[0];
   }
 
   async mapAcroFormFields(input: {
     ahj: string;
     state: string;
     formName: string;
-    fields: { name: string; type: string }[];
+    fields: AcroFieldForMapping[];
+    captionSide?: "below" | "above" | "left" | "right" | null;
     availableSources: string[];
   }): Promise<AhjFieldMapResult> {
     const system = `You map a blank permit PDF's form fields onto a solar project's known data, so the form can be auto-filled.
 
-You are given the form's AcroForm FIELD NAMES (and types) and the list of AVAILABLE DATA SOURCES. For each form field you can confidently fill, choose the single best matching source. Leave a field out entirely if no source clearly matches (do not guess).
+You are given the form's AcroForm FIELDS — each with its widget name, type, page, and the PRINTED TEXT around the box on the page — and the list of AVAILABLE DATA SOURCES. For each form field you can confidently fill, choose the single best matching source. Leave a field out entirely if no source clearly matches (do not guess).
 
 Source syntax (use these EXACT strings):
 - "project.<key>" / "snapshot.<key>" / "client.<key>" / "computed.<key>" — pull from project data
 - "lit:<text>" — a literal constant (use for fixed marks, e.g. "lit:X" for a checkbox, "lit:Solar")
+- "operator:<printed caption>" — NOT a value: a blank the applicant must fill by hand because no source answers it
 
 Return ONLY JSON. Every key is required — send an empty array where you have nothing, and
 null for an "equals" you do not need:
@@ -3210,18 +3216,40 @@ null for an "equals" you do not need:
   "notes": "<short note on anything ambiguous or left blank, e.g. signature/date fields left for the human>"
 }
 Rules:
+- THE PRINTED CAPTION OUTRANKS THE WIDGET NAME. Widget names were auto-generated from nearby text and are often SHIFTED onto the neighbouring box (a box named "Telephone" whose caption reads "Email Address" is an EMAIL box; a box named "SECTION 3 CONSTRUCTION SERVICES" whose caption reads "Name (Print)" is a name box). Decide what each box is from its "caption" first, then the other printed text near it, and only then its name.
 - Use the EXACT field names provided (case/spacing matters). Source strings are the part BEFORE any "(...)" annotation in the sources list.
 - Put checkbox-type fields in "checkboxes", text fields in "textFields".
+- WHO IS WHO: this project is submitted by the licensed CONTRACTOR, who is also the APPLICANT / AUTHORIZED AGENT; the property-owner block holds the homeowner (project.homeownerName, snapshot.homeownerEmail, snapshot.homeownerPhone). Wherever the form names the authorized agent / applicant as a PERSON — the agent's name box, an owner authorization's "hereby authorize ___", an "Owner/Authorized Agent" declaration the agent signs — use computed.applicantSignerName, the ONE source for that person everywhere on the form. The agent's company is client.installerCompanyName; the agent's address / phone / email are client.installerStreet / client.installerPhone / client.installerEmail.
+- PRINT-NAME LINES: a "Print name" / "Printed name" / "Name (print)" blank next to or under a SIGNATURE line names whoever signs there — computed.applicantSignerName for the applicant's/agent's signature (computed.electricianSignerName for the electrician's), project.homeownerName only for a signature line that is the property owner's alone.
+- ONE SIGNER, ONE SOURCE: an "I, ____" declarant blank and the "Print Name" under the SAME signature are the SAME person and must bind to the SAME source.
+- LICENCES: client.ccbLicenseNumber is OREGON's CCB number — never on another state's form. A state contractor licence / registration NUMBER slot (licence number, construction supervisor licence, home improvement contractor registration) binds only to client.stateContractorLicense. A licence HOLDER's name slot (e.g. "Licensed Construction Supervisor") is the licence holder, NOT the applicant — never computed.applicantSignerName; return it as "operator:<caption>". Never tick "Not Applicable" beside a licence section.
+- ESTIMATED COST / VALUATION is NOT a fee-payment field: an "estimated cost", "cost of construction", "valuation" or "job value" blank maps to computed.estimatedJobValue. In a cost-breakdown TABLE (one row per trade — Building, Electrical, Plumbing, Mechanical… — plus a Total), map it ONLY to the Total row (plus at most the single trade row this solar permit is for, when it is clearly captioned); leave every other row out. A parcel / APN / assessor's map-and-parcel blank maps to snapshot.parcelNumber.
+- OPERATOR ITEMS: a blank the applicant must fill that NO source answers (zoning district, proposed use, lot area, frontage, setbacks, flood zone, water supply, sewage disposal, a licence holder's name, …) goes in textFields (or checkboxes) with source "operator:<its printed caption>" so it is listed for the operator by name. Never use it for signature, date-signed, fee-payment or official-use-only fields.
+- NEVER tick or fill a box attesting that a document is attached or on file (e.g. "Workers' Compensation Insurance affidavit attached — Yes/No"): return it as "operator:<caption>".
 - COMPLIANCE-CHECKLIST forms (rows of Yes/No or Complies checkboxes): for the STRUCTURAL PRESCRIPTIVE rows (roof mount, light-frame construction, risk category, ground snow load, wind exposure, wind speed, rafter/truss spacing, PV dead load, module height above roof, roofing layers) map the row's Yes box to the matching "computed.presc<Criterion>Yes" source and its No box to "computed.presc<Criterion>No" — these resolve from the project's parsed data and stay blank when unverified. A single "meets all prescriptive criteria" attestation box maps to "computed.prescAllYes". For rows a code-standard residential rooftop PV install satisfies by definition (listed equipment, rapid shutdown, racking per manufacturer letter), map "lit:X"; skip rows needing project-specific measurements with no matching source and name them in "notes". The mapping is human-verified before real use — a mostly-complete checklist beats an empty one.
 - "computed.presc*Answer" sources return the word Yes/No — use them ONLY in "textFields" (a written Yes/No blank), never as a checkbox source.
 - NEVER map signature, date-signed, or fee-payment fields — leave them for the human.
 - NEVER map utility account number or meter number onto a public form field unless the field name explicitly asks for it.
 - Return valid JSON only.`;
+    // Each field with its printed text: THE caption (the form's calibrated side) and whatever else
+    // is printed around the box. The blank's own text only — no field value, no project data.
+    const q = (s: string | undefined): string => JSON.stringify(String(s ?? "").slice(0, 90));
+    const fieldLine = (f: AcroFieldForMapping): string => {
+      const near = (["left", "right", "below", "above"] as const)
+        .filter((side) => f.captions?.[side] && f.captions[side] !== f.caption)
+        .map((side) => `${side} ${q(f.captions![side])}`);
+      return [f.name, f.type, f.page != null ? `p${f.page + 1}` : "", f.caption ? `caption: ${q(f.caption)}` : "caption: (none found)",
+        near.length ? `near: ${near.join(", ")}` : ""].filter(Boolean).join(" | ");
+    };
+    const sideNote = input.captionSide
+      ? `On this form captions are printed ${input.captionSide === "left" || input.captionSide === "right" ? `to the ${input.captionSide} of` : input.captionSide} their boxes (most widget names agree with that side); "caption" is that text.`
+      : `No single caption side could be confirmed on this form; "caption" is the text on the box's own line to its left, when there is one — judge each box from all the printed text around it.`;
     const userMsg = `AHJ: ${input.ahj} (${input.state})
 Form: ${input.formName}
 
-FORM FIELDS (name | type):
-${input.fields.slice(0, 200).map((f) => `${f.name} | ${f.type}`).join("\n")}
+${sideNote}
+FORM FIELDS (name | type | page | printed caption | other printed text near the box):
+${input.fields.slice(0, 200).map(fieldLine).join("\n")}
 
 AVAILABLE DATA SOURCES:
 ${input.availableSources.join("\n")}`;
@@ -3232,7 +3260,7 @@ ${input.availableSources.join("\n")}`;
     let checkboxEntries: Array<[string, { source?: unknown; equals?: unknown }]> = [];
     let mapNotes = "";
     try {
-      const raw = await this.askLong("mapAcroFormFields", system, userMsg, 4096, ACRO_FIELD_MAP_FORMAT);
+      const raw = await this.askLong("mapAcroFormFields", system, userMsg, 8192, ACRO_FIELD_MAP_FORMAT);
       const structured = this.readStructured(raw, acroFieldMapSchema, "mapAcroFormFields");
       if (structured) {
         textEntries = structured.textFields.map((f) => [f.name, f.source]);
@@ -3252,9 +3280,17 @@ ${input.availableSources.join("\n")}`;
       logger.warn("llm", "mapAcroFormFields failed", { err: errMsg(err) });
     }
     const textFields: Record<string, string> = {};
+    // "operator:<caption>" is not a value: the blank is named for the operator, never filled.
+    const operatorItems: Array<{ field?: string; label: string }> = [];
+    const asOperatorItem = (field: string, src: string): boolean => {
+      if (!src.startsWith("operator:")) return false;
+      if (field) operatorItems.push({ field, label: src.slice("operator:".length).trim() || field });
+      return true;
+    };
     {
       for (const [k, v] of textEntries) {
         const src = this.cleanFieldSourceString(String(v));
+        if (asOperatorItem(k, src)) continue;
         if (k && src && /^(project|snapshot|client|computed)\.|^lit:/.test(src)) textFields[k] = src;
       }
     }
@@ -3262,6 +3298,7 @@ ${input.availableSources.join("\n")}`;
     {
       for (const [k, rule] of checkboxEntries) {
         let src = this.cleanFieldSourceString(String(rule?.source || ""));
+        if (asOperatorItem(k, src)) continue;
         // An EMPTY equals must be dropped, not kept: at fill time `equals: ""`
         // would mean "check when the value resolves EMPTY" — i.e. tick the box
         // exactly when the data is unverified. (fillLoadedForm guards this too.)
@@ -3282,7 +3319,7 @@ ${input.availableSources.join("\n")}`;
         }
       }
     }
-    return { provider: "claude", textFields, checkboxes, notes: mapNotes };
+    return { provider: "claude", textFields, checkboxes, notes: mapNotes, ...(operatorItems.length ? { operatorItems } : {}) };
   }
 
   async mapFlatFormOverlay(input: {
@@ -3321,6 +3358,11 @@ Rules:
 - PRINT-NAME LINES: a "Print name" / "Printed name" / "Name (print)" blank next to or under a SIGNATURE line is a regular text field, not a signature — place "computed.applicantSignerName" there (or "computed.electricianSignerName" when the adjacent signature is the electrician's). These are routinely left blank by mappers and then bounced by the AHJ; map them whenever the signer is the applicant/agent.
 - For checkboxes (e.g. "Type of work: Other"), use source "lit:X" placed at the box.
 - COMPLIANCE CHECKLISTS (e.g. a prescriptive solar checklist where each row has Yes/No or Complies boxes): for the STRUCTURAL PRESCRIPTIVE rows (roof mount, light-frame construction, risk category, ground snow load, wind exposure, wind speed, rafter/truss spacing, PV dead load, module height above roof, roofing layers) place the matching "computed.presc<Criterion>Yes" source at the row's Yes/Complies box and "computed.presc<Criterion>No" at its No box — each draws an "X" only when the project's parsed data answers that way, so an unverified row stays blank for the operator. A single "meets all prescriptive criteria" box gets "computed.prescAllYes". Written blanks on those rows (e.g. "Ground snow load: ___ psf") take the matching "snapshot.*" value source. For rows a code-standard residential rooftop PV install satisfies by definition (flush roof mount, listed equipment, engineered racking per manufacturer letter, rapid shutdown, permitted conductor sizing), place "lit:X" in the Yes/Complies box. SKIP rows requiring project-specific data with no matching source (spans, site distances) — list those skipped rows in "notes" so the operator finishes them. The map is human-verified before real use, so favor covering the standard rows over leaving the checklist blank.
+- ONE SIGNER, ONE SOURCE: an "I, ____" declarant blank and the "Print Name" under the SAME signature are the SAME person — the same source. The authorized agent / applicant as a PERSON is computed.applicantSignerName everywhere on the form.
+- LICENCES: client.ccbLicenseNumber is OREGON's CCB number — never on another state's form; a state licence / registration NUMBER blank takes client.stateContractorLicense. A licence HOLDER's name blank is not the applicant — never computed.applicantSignerName.
+- ESTIMATED COST / VALUATION is not a fee: an "estimated cost" / "valuation" blank takes computed.estimatedJobValue — in a cost table ONLY the Total row. A parcel / APN / map-and-parcel blank takes snapshot.parcelNumber.
+- OPERATOR ITEMS: for a blank you can see that NO source answers (zoning district, lot area, frontage, setbacks, flood zone, water supply, sewage disposal…), add a "fields" entry with source "operator:<its printed label>" at that blank — it is listed for the operator, never drawn. Never for signature, date-signed, fee-payment or official-use-only blanks.
+- NEVER place a mark attesting that a document is attached or on file (e.g. "Workers' Compensation affidavit attached — Yes/No"): use "operator:<label>" instead.
 - ROLE/SECTION checkboxes: if the form has checkboxes that select WHO a section describes — e.g. "Property owner" vs "Tenant", "Contractor" vs "Subcontractor", "Applicant" vs "Contact Person", "Owner" vs "Agent" — check the boxes that match THIS filing: this project is submitted by the licensed CONTRACTOR who is also the APPLICANT, and the property-owner block holds the homeowner. So place "lit:X" in the "Property owner", "Contractor", and "Applicant" boxes (and any equivalent owner/contractor/applicant selector), and DO NOT check "Tenant", "Subcontractor", or "Contact Person". Place the X precisely inside the small box, not on the label.
 - Coordinates must be precise — they will be used verbatim. Return valid JSON only.`;
 
@@ -3334,17 +3376,23 @@ Rules:
 
     let raw = "";
     try {
-      const msg = await this.instrument("mapFlatFormOverlay", this.routeOf("mapFlatFormOverlay"), { pages: input.pages.length, schema: true }, (t) =>
-        this.client.messages.create({
+      // A 4096-token ceiling (thinking included) truncated City of Waltham's two-page application
+      // mid-JSON: "hit max_tokens … returned no JSON", so NO placements and NO signature lines were
+      // stored for it. The ceiling is not spend — the model stops when it is done — so it is sized
+      // for a multi-page form, and the call streams, which the SDK requires above ~21k tokens and
+      // which keeps a long read from tripping the non-streaming timeout.
+      const msg = await this.instrument("mapFlatFormOverlay", this.routeOf("mapFlatFormOverlay"), { pages: input.pages.length, schema: true, maxTokens: FLAT_FORM_OVERLAY_MAX_TOKENS }, (t) =>
+        this.client.messages.stream({
           model: t.model,
-          max_tokens: 4096,
+          max_tokens: FLAT_FORM_OVERLAY_MAX_TOKENS,
           thinking: { type: "adaptive" },
           output_config: outputConfigFor(t, OVERLAY_MAP_FORMAT)!,
           system: this.cachedSystem(system),
           messages: [{ role: "user", content }],
-        }),
+        }).finalMessage(),
       );
       raw = this.textOf(msg);
+      if (msg.stop_reason === "max_tokens") logger.warn("llm", "mapFlatFormOverlay hit its token ceiling", { maxTokens: FLAT_FORM_OVERLAY_MAX_TOKENS, pages: input.pages.length });
     } catch (err) {
       logger.warn("llm", "mapFlatFormOverlay failed", { err: errMsg(err) });
     }
@@ -3367,12 +3415,19 @@ Rules:
         }
       : this.parseJson<{ fields?: unknown[]; signatures?: unknown[]; notes?: string }>(raw, {});
     const fields: AhjOverlayMapResult["fields"] = [];
+    // "operator:<label>" marks a printed blank no source answers — named for the operator, never drawn.
+    const operatorItems: Array<{ label: string }> = [];
     if (Array.isArray(parsed.fields)) {
       for (const f of parsed.fields) {
         const o = f as Record<string, unknown>;
         const source = this.cleanFieldSourceString(String(o.source || ""));
         const nx = Number(o.nx);
         const ny = Number(o.ny);
+        if (source.startsWith("operator:")) {
+          const label = source.slice("operator:".length).trim() || String(o.label ?? "").trim();
+          if (label) operatorItems.push({ label });
+          continue;
+        }
         if (!/^(project|snapshot|client|computed)\.|^lit:/.test(source)) continue;
         if (!Number.isFinite(nx) || !Number.isFinite(ny) || nx < 0 || nx > 1 || ny < 0 || ny > 1) continue;
         fields.push({
@@ -3409,7 +3464,7 @@ Rules:
         });
       }
     }
-    return { provider: "claude", fields, signatures, notes: String(parsed.notes || "") };
+    return { provider: "claude", fields, signatures, notes: String(parsed.notes || ""), ...(operatorItems.length ? { operatorItems } : {}) };
   }
 
   // ---------------------------------------------------------------------------

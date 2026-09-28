@@ -2,7 +2,12 @@ import crypto from "node:crypto";
 import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
-import { inspectFormFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type OverlayField, type SignaturePlacement } from "./ahjForms";
+import { inspectPlacedFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type InspectedField, type OverlayField, type SignaturePlacement } from "./ahjForms";
+import {
+  attestsAttachedDocument, OREGON_CCB_SOURCE, placementOnWidget, sanitizeAcroMap, STATE_LICENCE_SOURCE, type OperatorItem,
+} from "./formFieldChecks";
+import { parseJson } from "./json";
+import { HttpError } from "./httpError";
 import { describePermitType, findApplicationProfile, permitStructureAnswer } from "./applicationDocs";
 import { ensureUtilityFilingLookedUp } from "./utilityFilingLookup";
 import { documentFetchDisabled, fetchPublicDocument } from "./documentFetch";
@@ -115,7 +120,16 @@ export const AVAILABLE_FIELD_SOURCES: string[] = [
   "client.installerPhone",
   "client.installerStreet",
   "client.installerCityStateZip",
-  "client.ccbLicenseNumber",
+  // A LICENCE IS A STATE'S (City of Waltham, MA printed an Oregon CCB number in its construction-
+  // supervisor licence slot). The CCB source is Oregon's only — fieldSourcesForState drops it from
+  // any other state's mapping, and buildContext blanks it at fill time.
+  'client.ccbLicenseNumber  (OREGON CCB contractor licence number — Oregon forms ONLY)',
+  `${STATE_LICENCE_SOURCE}  (the contractor licence number on file for THIS job's state — the one source for a state licence / registration NUMBER slot; blank when none is on file)`,
+  // The operator valuation (resolveValuation, the 2026-09-21 ruling) and the plan set's parcel number
+  // existed in the fill path but were never OFFERED to the mapper, so Waltham's estimated-cost
+  // table and parcel blank stayed empty.
+  'computed.estimatedJobValue  (estimated construction cost / job valuation in whole dollars — for "Estimated cost", "Cost of construction", "Valuation", "Job value"; in a cost table the TOTAL row only)',
+  'snapshot.parcelNumber  (assessor parcel number / APN, as printed on the plan set — write it as printed)',
   "computed.fullAddress",
   "computed.cityStateZip",
   "computed.systemSize",
@@ -130,7 +144,15 @@ export const AVAILABLE_FIELD_SOURCES: string[] = [
   ...EXISTING_SYSTEM_SOURCES,
   ...PRESCRIPTIVE_SOURCES,
   'lit:X  (literal — use for fixed checkbox marks / constant text like "lit:Solar")',
+  'operator:<printed caption>  (NOT a value: marks a blank the applicant must fill by hand because no source above answers it — it is listed for the operator by that caption)',
 ];
+
+/** The sources offered for a form of this state: the Oregon CCB source only on an Oregon form
+ *  (an unknown state keeps it — contractorLicenceForState treats that as Oregon too). */
+export function fieldSourcesForState(state: string): string[] {
+  const st = String(state || "").trim().toUpperCase();
+  return !st || st === "OR" ? AVAILABLE_FIELD_SOURCES : AVAILABLE_FIELD_SOURCES.filter((s) => !s.startsWith(OREGON_CCB_SOURCE));
+}
 
 export interface StoredFieldMap {
   requiredFields?: Record<string, string>;
@@ -167,6 +189,9 @@ export interface StoredFieldMap {
    *  false; a real submit is gated until the operator previews and verifies. */
   verified?: boolean;
   verifiedAt?: string;
+  /** Blanks no source can fill (zoning, setbacks, flood zone, a widget-less printed blank…), by
+   *  printed label, from the mappers and the post-map checks — listed on every fill result. */
+  operatorItems?: OperatorItem[];
 }
 
 export function sha256(bytes: Uint8Array): string {
@@ -390,20 +415,41 @@ export function storeAhjFormTemplate(
 // Build the field map for a blank PDF's bytes using its AcroForm fields. Returns
 // null when the PDF has no fillable fields (flat/scanned/XFA) — those can't be
 // auto-filled without coordinate overlays and are routed to a human.
+//
+// THE MAPPER SEES WHAT THE APPLICANT SEES. It used to get widget NAMES only, and auto-generated
+// names are often shifted onto the neighbouring box: Waltham's "Telephone" widget is the agent's
+// Email Address box, so the homeowner's phone number was mapped into it. Each field now goes with
+// its page and the printed caption(s) around it (inspectPlacedFields) — the blank's own text,
+// never a field value and never project data (hard rule 2: the mapper gets names and captions).
+// What the model returns then passes the deterministic checks (formFieldChecks.sanitizeAcroMap).
 export async function buildFieldMapForPdf(
   llm: LLMProvider,
   input: { ahj: string; state: string; formName: string; bytes: Uint8Array },
-): Promise<{ textFields: Record<string, string>; checkboxes: Record<string, { source: string; equals?: string }>; notes: string; fieldCount: number } | null> {
-  const inspected = await inspectFormFields(input.bytes);
+): Promise<{ textFields: Record<string, string>; checkboxes: Record<string, { source: string; equals?: string }>; notes: string; fieldCount: number; fields: InspectedField[]; operatorItems: OperatorItem[] } | null> {
+  const inspected = await inspectPlacedFields(input.bytes);
   if (inspected.isXfa || inspected.fields.length === 0) return null;
   const mapped = await llm.mapAcroFormFields({
     ahj: input.ahj,
     state: input.state,
     formName: input.formName,
-    fields: inspected.fields,
-    availableSources: AVAILABLE_FIELD_SOURCES,
+    fields: inspected.fields.map((f) => ({
+      name: f.name, type: f.type,
+      ...(f.page != null ? { page: f.page } : {}),
+      ...(f.caption ? { caption: f.caption } : {}),
+      ...(f.captions && Object.keys(f.captions).length ? { captions: f.captions } : {}),
+    })),
+    captionSide: inspected.captionSide,
+    availableSources: fieldSourcesForState(input.state),
   });
-  return { textFields: mapped.textFields, checkboxes: mapped.checkboxes, notes: mapped.notes, fieldCount: inspected.fields.length };
+  const checked = sanitizeAcroMap({
+    widgets: inspected.fields, items: inspected.labels, state: input.state,
+    textFields: mapped.textFields, checkboxes: mapped.checkboxes,
+  });
+  const notes = [mapped.notes, ...checked.notes].filter(Boolean).join(" ");
+  return {
+    textFields: checked.textFields, checkboxes: checked.checkboxes, notes, fieldCount: inspected.fields.length,
+    fields: inspected.fields, operatorItems: [...(mapped.operatorItems ?? []), ...checked.operatorItems],
+  };
 }
 
 /** The tallest a signature box may be. Signature rules on real permit forms sit 9-20pt
@@ -443,7 +489,7 @@ export function visionSignatureBox(ny: number, heightFrac: number, pageHeight: n
 export async function buildOverlayMapForPdf(
   llm: LLMProvider,
   input: { ahj: string; state: string; formName: string; bytes: Uint8Array },
-): Promise<{ overlayFields: OverlayField[]; signatureFields: SignaturePlacement[]; notes: string } | null> {
+): Promise<{ overlayFields: OverlayField[]; signatureFields: SignaturePlacement[]; notes: string; operatorItems: OperatorItem[] } | null> {
   const os = await import("node:os");
   const fs = await import("node:fs");
   const path = await import("node:path");
@@ -481,11 +527,19 @@ export async function buildOverlayMapForPdf(
     state: input.state,
     formName: input.formName,
     pages,
-    availableSources: AVAILABLE_FIELD_SOURCES,
+    availableSources: fieldSourcesForState(input.state),
   });
-  if (!mapped.fields.length && !mapped.signatures.length) return null;
+  const operatorItems: OperatorItem[] = [...(mapped.operatorItems ?? [])];
+  // Never an attestation of an attached document (a workers'-comp affidavit "Yes" box): named for
+  // the operator, never drawn.
+  const placeable = mapped.fields.filter((f) => {
+    if (!attestsAttachedDocument(f.label)) return true;
+    operatorItems.push({ label: `${String(f.label).trim()} (an attestation — attach the document and tick by hand)` });
+    return false;
+  });
+  if (!placeable.length && !mapped.signatures.length) return operatorItems.length ? { overlayFields: [], signatureFields: [], notes: mapped.notes, operatorItems } : null;
 
-  const overlayFields: OverlayField[] = mapped.fields.map((f) => {
+  const overlayFields: OverlayField[] = placeable.map((f) => {
     const sz = pageSizes[f.page] || pageSizes[0];
     return {
       source: f.source,
@@ -514,7 +568,7 @@ export async function buildOverlayMapForPdf(
       ...(hasDate ? { dateX: Math.round(sg.dateNx! * sz.w), dateY: Math.round((1 - sg.dateNy!) * sz.h), dateSize: 9 } : {}),
     };
   });
-  return { overlayFields, signatureFields, notes: mapped.notes };
+  return { overlayFields, signatureFields, notes: mapped.notes, operatorItems };
 }
 
 export interface EnsureFormResult {
@@ -1109,11 +1163,26 @@ export async function acquireFromBytes(
   const acro = await buildFieldMapForPdf(llm, { ahj, state, formName, bytes });
   const acroCount = acro ? Object.keys(acro.textFields).length + Object.keys(acro.checkboxes).length : 0;
   if (acro && acroCount > 0) {
+    // THE VISION PASS'S PLACEMENTS WHERE NO WIDGET IS. An AcroForm often prints blanks it never gave
+    // a widget (Waltham: Map/Parcel, Zoning, Lot area, Frontage, Flood zone). The vision pass places
+    // values on the page image; those that land on a widget duplicate the AcroForm fill and are
+    // dropped, the rest are kept as overlayFields — fillLoadedForm already draws overlayFields
+    // after flattening an AcroForm.
+    const mappedWidgets = new Set([...Object.keys(acro.textFields), ...Object.keys(acro.checkboxes)]);
+    const hybrid = (overlay?.overlayFields ?? []).filter((p) => !placementOnWidget(p, acro.fields)
+      // a value the AcroForm map already writes into a widget is not drawn a second time beside it
+      && !acro.fields.some((w) => mappedWidgets.has(w.name) && acro.textFields[w.name] === p.source && w.page === p.page && w.rect
+        && Math.abs(w.rect.y - p.y) <= 30 && Math.abs(w.rect.x - p.x) <= w.rect.width + 30));
+    const operatorItems = [...acro.operatorItems, ...(overlay?.operatorItems ?? [])];
     storeAhjFormTemplate(db, {
       ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
-      map: { formName, sourceUrl, fillMode: "acroform", textFields: acro.textFields, checkboxes: acro.checkboxes, signatureFields, notes: acro.notes },
+      map: {
+        formName, sourceUrl, fillMode: "acroform", textFields: acro.textFields, checkboxes: acro.checkboxes, signatureFields, notes: acro.notes,
+        ...(hybrid.length ? { overlayFields: hybrid } : {}),
+        ...(operatorItems.length ? { operatorItems } : {}),
+      },
     });
-    return { status: "acquired", message: `Acquired and mapped ${formName} (${acroCount} field(s) of ${acro.fieldCount}${signatureFields.length ? `, ${signatureFields.length} signature line(s)` : ""}). It will be auto-filled for ${ahj}.`, formName, sourceUrl, mappedFields: acroCount };
+    return { status: "acquired", message: `Acquired and mapped ${formName} (${acroCount} field(s) of ${acro.fieldCount}${hybrid.length ? ` + ${hybrid.length} printed blank(s) with no field` : ""}${signatureFields.length ? `, ${signatureFields.length} signature line(s)` : ""}). It will be auto-filled for ${ahj}.`, formName, sourceUrl, mappedFields: acroCount + hybrid.length };
   }
   // AN ACROFORM WITH ZERO MAPPED FIELDS IS NOT "ACQUIRED AND AUTO-FILLED". With no LLM (the
   // stub provider maps nothing) this branch used to store an empty map and report "Acquired
@@ -1126,7 +1195,8 @@ export async function acquireFromBytes(
   if (overlay && overlay.overlayFields.length) {
     storeAhjFormTemplate(db, {
       ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
-      map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, overlayFields: overlay.overlayFields, signatureFields, notes: `Vision-mapped flat form (${overlay.overlayFields.length} placements, ${signatureFields.length} signature line(s)). ${overlay.notes} VERIFY the filled PDF — coordinate placement is approximate; re-map if anything is off.` },
+      map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, overlayFields: overlay.overlayFields, signatureFields, notes: `Vision-mapped flat form (${overlay.overlayFields.length} placements, ${signatureFields.length} signature line(s)). ${overlay.notes} VERIFY the filled PDF — coordinate placement is approximate; re-map if anything is off.`,
+        ...(overlay.operatorItems.length ? { operatorItems: overlay.operatorItems } : {}) },
     });
     return { status: "acquired", message: `Acquired ${formName} (flat PDF) and vision-mapped ${overlay.overlayFields.length} placement(s)${signatureFields.length ? ` + ${signatureFields.length} signature line(s)` : ""}. Verify the filled output and re-map if needed.`, formName, sourceUrl, mappedFields: overlay.overlayFields.length };
   }
@@ -1135,7 +1205,8 @@ export async function acquireFromBytes(
   if (signatureFields.length) {
     storeAhjFormTemplate(db, {
       ahjName: ahj, state, formType, filename: `${formName}.pdf`, bytes, ...provenance,
-      map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, signatureFields, notes: `No fillable data fields, but ${signatureFields.length} signature line(s) detected. The blank is stored; your signature will be stamped. Fill the rest by hand.` },
+      map: { formName, sourceUrl, fillMode: "overlay", textFields: {}, checkboxes: {}, signatureFields, notes: `No fillable data fields, but ${signatureFields.length} signature line(s) detected. The blank is stored; your signature will be stamped. Fill the rest by hand.`,
+        ...(overlay?.operatorItems.length ? { operatorItems: overlay.operatorItems } : {}) },
     });
     return { status: "acquired", message: `Stored ${formName} with ${signatureFields.length} signature line(s) mapped. Data fields must be filled by hand.`, formName, sourceUrl, mappedFields: signatureFields.length };
   }
@@ -1157,4 +1228,36 @@ export async function acquireFromBytes(
       : `Stored the official ${formName}, but it couldn't be auto-mapped. It's saved as the blank for manual completion.`,
     formName, sourceUrl, mappedFields: 0,
   };
+}
+
+/**
+ * RE-MAP A STORED TEMPLATE FROM ITS STORED BLOB — the Re-map button (POST
+ * /api/ahj-templates/:id/remap). An UNVERIFIED map (an AI map nobody has confirmed, like City of
+ * Waltham's residential application mapped before the mapper saw captions) is re-mapped through the
+ * current pipeline (captions, the post-map checks, the vision placements with no widget), keeping
+ * the row's retrieved_at: a re-map re-reads bytes we already had.
+ *
+ * A HUMAN-VERIFIED map is never re-mapped (hard rule 3): the model is not called and the row is not
+ * touched. A person who wants it re-mapped marks it unverified first — their decision, on record.
+ */
+export async function remapStoredTemplate(db: AppDb, llm: LLMProvider, templateId: string): Promise<EnsureFormResult> {
+  const row = db.get<{ id: string; ahj_name: string; state: string; form_type: string; pdf_blob: Buffer | null; field_map: string; retrieved_at: string }>(
+    "SELECT id, ahj_name, state, form_type, pdf_blob, field_map, retrieved_at FROM ahj_form_templates WHERE id = ?",
+    [templateId],
+  );
+  if (!row) throw new HttpError(404, "Template not found.");
+  if (!row.pdf_blob) throw new HttpError(410, "PDF blob has been wiped — re-upload the blank to re-map.");
+  const map = parseJson<{ formName?: string; sourceUrl?: string; verified?: boolean }>(row.field_map, {});
+  const formName = map.formName || `${row.ahj_name} ${row.form_type.replace(/_/g, " ")}`;
+  if (map.verified === true) {
+    return {
+      status: "exists", formName, sourceUrl: map.sourceUrl || "",
+      message: `${formName} has a HUMAN-VERIFIED field map, so it was not re-mapped. To re-map it, mark it unverified first (the verified map is otherwise kept exactly as confirmed).`,
+    };
+  }
+  return acquireFromBytes(db, llm, {
+    ahj: row.ahj_name, state: row.state, formType: row.form_type, formName,
+    bytes: new Uint8Array(row.pdf_blob), sourceUrl: map.sourceUrl || "",
+    retrievedAt: String(row.retrieved_at || ""),
+  });
 }

@@ -2906,7 +2906,11 @@ export interface LLMProvider {
     ahj: string;
     state: string;
     formName: string;
-    fields: { name: string; type: string }[];
+    /** Each field with where it is and the printed caption(s) around it — the blank's own text,
+     *  never a field value or project data (hard rule 2). */
+    fields: AcroFieldForMapping[];
+    /** Which side of its boxes this form prints captions on, when the widget names agree on one. */
+    captionSide?: "below" | "above" | "left" | "right" | null;
     availableSources: string[];
   }): Promise<AhjFieldMapResult>;
 
@@ -2972,6 +2976,20 @@ export interface AhjOverlayMapResult {
   /** Detected signature lines where the operator's stored signature can be stamped. */
   signatures: AhjSignaturePlacementNorm[];
   notes: string;
+  /** Printed blanks no source can fill (the model's "operator:<caption>" entries), by label. */
+  operatorItems?: Array<{ field?: string; label: string }>;
+}
+
+/** One AcroForm field as the mapper sees it. */
+export interface AcroFieldForMapping {
+  name: string;
+  type: string;
+  /** 0-based page. */
+  page?: number;
+  /** THE printed caption of the box (the form's calibrated caption side), when it could be told. */
+  caption?: string;
+  /** The nearest printed text on each side of the box. */
+  captions?: { left?: string; right?: string; below?: string; above?: string };
 }
 
 export interface AhjSignaturePlacementNorm {
@@ -3045,6 +3063,9 @@ export interface AhjFieldMapResult {
   /** AcroForm checkbox field name -> check rule. */
   checkboxes: Record<string, { source: string; equals?: string }>;
   notes: string;
+  /** Blanks the applicant must fill that no source answers (the model's "operator:<caption>"
+   *  entries), by printed label — listed for the operator on every fill, never silently blank. */
+  operatorItems?: Array<{ field?: string; label: string }>;
 }
 
 // ---- Autonomous portal learning ----
