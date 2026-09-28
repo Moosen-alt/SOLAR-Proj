@@ -138,7 +138,7 @@ import {
   type PermitStatusClassification, type ReadingProvenance, type TrackKind,
 } from "./permitMonitor";
 import { evidenceForTopic, evidenceLines, type EvidenceTopic } from "./projectEvidence";
-import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE } from "./qc";
+import { customerBillOnFile, runQcForProject, WAITING_ON_BILL_ISSUE_TYPE, type QcRunOptions } from "./qc";
 import { loadStoredTemplates, formAllowedForPath } from "./ahjForms";
 import { submissionDocumentsByType, uploadDocumentGuard } from "./submissionDocuments";
 import { disciplineFor } from "./docDiscipline";
@@ -5069,8 +5069,8 @@ export async function readStageResults(db: AppDb, projectId: string): Promise<{
   return { applicationDocs, reviewerReport, historicalReport };
 }
 
-export function rerunQc(db: AppDb, projectId: string): ProjectDetail {
-  const result = runQcForProject(db, projectId);
+export function rerunQc(db: AppDb, projectId: string, options: QcRunOptions = {}): ProjectDetail {
+  const result = runQcForProject(db, projectId, options);
   addAuditLog(db, projectId, "system", "qc gate", "project.qc_rerun", { ...result });
   return getProjectDetail(db, projectId);
 }
@@ -8546,6 +8546,19 @@ export async function prepareSubmission(
       ? (detail.project.utility ? `${detail.project.utility} (NEM portal)` : "Utility NEM portal")
       : (detail.project.ahj ? `${detail.project.ahj} (permit portal)` : "AHJ permit portal");
   }
+  // WHAT THE AUDIT TRAIL CALLS THIS RUN'S PORTAL (dry run 2026-09-28, B12: 45 of 45 real staging runs
+  // were audited portalType "mock"). `portalType` above is the portal_profiles row's type, "mock" when
+  // there is none — and nothing writes portal_profiles, so every real run fell back to it. That
+  // variable stays exactly as it is: it keys the credential lookup, the per-client browser profile
+  // directory, the staging overlay and the field resolver, and renaming it would log every client out
+  // of every portal. The AUDIT value is its own, from the dispatch decision: "mock" only when the mock
+  // adapter is the one that ran; a stored profile's type when there is one; else the host the run
+  // was pointed at; else the track's kind of portal.
+  const auditPortalType = runActorLabel === "MockPortalAdapter"
+    ? "mock"
+    : isRealPortal
+      ? portalType
+      : (portalHostOf(String(recipe?.portalUrl ?? "") || portalEntryUrl || credentialUrl) || (track === "nem" ? "utility_portal" : "permit_portal"));
   // DISCIPLINE GATE input (see portalChannel.recipeDisciplineFromSteps): the ACA
   // learner bakes the learn project's permit discipline into the recorded jurisdiction
   // row + record-type steps. Recipes ARE keyed per discipline (migration v14,
@@ -9126,7 +9139,8 @@ export async function prepareSubmission(
         clicked ? "portal.final_submit_clicked" : pauseReason ? "portal.paused_for_human" : adapterFailed ? "portal.run_failed" : "portal.staged_to_review", {
           runId,
           portalProfileId,
-          portalType,
+          portalType: auditPortalType,
+          adapter: runActorLabel,
           runStatus,
           finalSubmitClickedByAutomation: clicked,
           ...(adapterFailed ? { failureReason: failureMessage, harnessAbort: outcome.harnessAbort } : {}),

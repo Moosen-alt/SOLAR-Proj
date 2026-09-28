@@ -25,11 +25,11 @@ import type {
 } from "../../shared/src/types";
 import { findApplicationProfile, describePermitType, permitStructureAnswer, permitStructureIsCitedOrVerified, type PermitPrerequisiteStep, type PermitStructureAnswer } from "./applicationDocs";
 import { findAhjProcessProfile, jurisdictionKind, jurisdictionKindsCompatible } from "./processProfiles";
-import { recipeProfileKey } from "./portalRecipes";
+import { findAnyRecipeForProject, findCompleteRecipeForProject } from "./portalRecipes";
 import { detectPlatform } from "./publicPermitStatus";
 import { NEM_APPROVAL_OUTCOME, isNemApprovalOutcome, trackKind } from "./permitMonitor";
 import { HttpError } from "./httpError";
-import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, trackSafeUrl } from "./portalChannel";
+import { isInformationalPageUrl, isUtilityPlatformUrl, portalHostOf, recipeDisciplineForTrack, trackSafeUrl } from "./portalChannel";
 import { permitAnswerForTrack, permitProcessFor } from "./permitProcess";
 import { utilityTrackPresentation } from "./utilityFilingLookup";
 import { nowIso } from "./time";
@@ -643,34 +643,51 @@ export function getSubmittalTracks(db: AppDb, project: ProjectRecord): Submittal
     // stamp first); on a single-permit project, that one permit.
     const prerequisites = category === "permit" && type !== "electrical" && type !== "mpu" ? answer.prerequisites : [];
 
-    // Look up recipe for this track so the UI can show the linear record-portal flow.
+    // WHICH RECIPE THIS TRACK USES — ONE QUESTION, ONE PREDICATE (dry run 2026-09-28, B9: "they just
+    // look blank"). The card used to ask its own raw `profile_key = ?` query: no name-alias fallback
+    // (a project spelling its utility "PacifiCorp" missed every "Pacific Power" AHJ recipe that
+    // staging replayed) and no discipline (the electrical card showed the structural recipe). It now
+    // answers what staging would replay NEXT, then what the last run used:
+    //   1. a COMPLETE recipe from the resolver staging itself uses (findCompleteRecipeForProject —
+    //      exact key, then the name/identity alias, discipline-scoped exactly as prepareSubmission
+    //      asks): with one on file, that is what the next stage replays;
+    //   2. else what THIS project's newest staging run of this track used — a BORROWED recipe
+    //      (result_json.borrowedRecipe, portalRecipes.findBorrowableRecipe) or its recipe_id;
+    //   3. else any draft the resolver finds (findAnyRecipeForProject — staging's own fallback).
     const scopeType = category === "utility" ? "utility" : "ahj";
-    const profileKey = recipeProfileKey({ scopeType, state: project.state, ahj: project.ahj, utility: project.utility });
-    const recipeRow = db.get<Row>(
-      "SELECT id, status, portal_url FROM portal_recipes WHERE profile_key = ? ORDER BY version DESC LIMIT 1",
-      [profileKey],
-    );
+    const family = trackPermitTypes(type);
+    const resolverInput = {
+      scopeType, state: project.state, ahj: project.ahj, utility: project.utility,
+      ...(scopeType === "ahj" ? { discipline: recipeDisciplineForTrack(type) } : {}),
+    } as const;
+    type CardRecipe = { id: string; status: string; portal_url: string };
+    const cardRecipe = (r: { id: string; status?: unknown; portalUrl?: unknown } | null): CardRecipe | null =>
+      r ? { id: r.id, status: s(r.status), portal_url: s(r.portalUrl) } : null;
+    let recipeRow: CardRecipe | null = cardRecipe(findCompleteRecipeForProject(db, resolverInput));
     // NO RECIPE OF ITS OWN IS NOT "NOTHING RAN" (operator 09-28: "if we're using the Coos Bay recipe can
     // we make it say that somewhere? They just look blank"). Stage borrows a recipe learned for another
     // entity on the same portal (portalRecipes.findBorrowableRecipe) and records it on the run
     // (result_json.borrowedRecipe). The card says which one THIS project's last run of this track used.
-    const borrowedRecipe = recipeRow ? null : (() => {
-      for (const r of db.query<Row>(
-        "SELECT result_json, started_at FROM portal_runs WHERE project_id = ? AND permit_type = ? ORDER BY started_at DESC LIMIT 5",
-        [project.id, type],
-      )) {
-        try {
-          const b = (JSON.parse(s(r.result_json) || "{}") as { borrowedRecipe?: Record<string, unknown> }).borrowedRecipe;
-          if (b && typeof b.recipeId === "string" && b.recipeId) {
-            return {
-              recipeId: String(b.recipeId), recipeVersion: Number(b.recipeVersion) || null, learnedFor: String(b.learnedFor ?? ""),
-              recordType: String(b.recordType ?? ""), portalHost: String(b.portalHost ?? ""), lastUsedAt: s(r.started_at),
-            };
-          }
-        } catch { /* an unreadable result is simply not evidence */ }
+    let borrowedRecipe: SubmittalTrackView["borrowedRecipe"] = null;
+    if (!recipeRow) for (const r of db.query<Row>(
+      `SELECT recipe_id, result_json, started_at FROM portal_runs
+        WHERE project_id = ? AND permit_type IN (${family.map(() => "?").join(",")}) AND run_type = 'prepare_submit'
+        ORDER BY started_at DESC, rowid DESC LIMIT 5`,
+      [project.id, ...family],
+    )) {
+      let b: Record<string, unknown> | undefined;
+      try { b = (JSON.parse(s(r.result_json) || "{}") as { borrowedRecipe?: Record<string, unknown> }).borrowedRecipe; } catch { /* an unreadable result is simply not evidence */ }
+      if (b && typeof b.recipeId === "string" && b.recipeId) {
+        borrowedRecipe = {
+          recipeId: String(b.recipeId), recipeVersion: Number(b.recipeVersion) || null, learnedFor: String(b.learnedFor ?? ""),
+          recordType: String(b.recordType ?? ""), portalHost: String(b.portalHost ?? ""), lastUsedAt: s(r.started_at),
+        };
+        break;
       }
-      return null;
-    })();
+      const used = s(r.recipe_id) ? db.get<Row>("SELECT id, status, portal_url FROM portal_recipes WHERE id = ?", [s(r.recipe_id)]) : undefined;
+      if (used) { recipeRow = { id: s(used.id), status: s(used.status), portal_url: s(used.portal_url) }; break; }
+    }
+    if (!recipeRow && !borrowedRecipe) recipeRow = cardRecipe(findAnyRecipeForProject(db, resolverInput));
 
     // Fallback portal URL when no recipe exists yet — used by the credential-matching
     // chip so the operator can store a login before recording. Try in order:

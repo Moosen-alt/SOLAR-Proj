@@ -28,7 +28,7 @@ import { nowIso } from "./time";
 import { logger } from "./logger";
 import { inferPlatform, isRecognizedPlatform, looksLikeBareUrl } from "./portalPlatformRules";
 import { isUtilityPlatformUrl, portalHostOf } from "./portalChannel";
-import { KNOWN_POWERCLERK_PORTALS, foreignKnownTenant, knownPowerClerkUtility, knownTenantOwner } from "./utilityIdentity";
+import { KNOWN_POWERCLERK_PORTALS, foreignKnownTenant, knownPowerClerkUtility, knownTenantOwner, provablyDifferentUtility, sameUtilityEntity } from "./utilityIdentity";
 
 type Row = Record<string, unknown>;
 
@@ -2467,7 +2467,14 @@ function findKnowledgeByName(
     const rowState = normalize(profile.state || "");
     // A row pinned to a different state never matches; empty-state rows match anywhere.
     if (stateNorm !== "unknown" && rowState !== "unknown" && rowState !== stateNorm) continue;
-    let score = knowledgeNameMatchScore(wanted, kind === "utility" ? profile.utility : profile.ahj);
+    // The one utility identity first (utilityIdentity, judged in the PROJECT's state): "PacifiCorp"
+    // IS "Pacific Power" in Oregon (the fuzzy scorer scores that 0), and "Pacific Gas and Electric"
+    // is provably NOT "Pacific Power" (the fuzzy scorer scores that 65).
+    let score = kind === "utility" && sameUtilityEntity(state, wanted, profile.utility)
+      ? 100
+      : kind === "utility" && provablyDifferentUtility(state, wanted, profile.utility)
+        ? 0
+        : knowledgeNameMatchScore(wanted, kind === "utility" ? profile.utility : profile.ahj);
     if (!score) continue;
     if (rowState !== "unknown" && rowState === stateNorm) score += 6; // prefer state-pinned rows
     if (isVerifiedKnowledge(profile)) score += 4; // human-verified beats seeded on ties

@@ -40,6 +40,23 @@ export const TRACK_FORM_TYPES: Record<FormTrack, readonly string[]> = {
   electrical: ["electrical_application"],
 };
 
+/** A submittal track's form track: the building / combination / single permit files the building-side
+ *  application; the electrical and panel-upgrade permits the electrical one; the NEM track neither. */
+export function formTrackForSubmittalTrack(track: string | null | undefined): FormTrack | null {
+  if (track === "electrical" || track === "mpu") return "electrical";
+  if (track === "building" || track === "combo" || track === "permit") return "building";
+  return null;
+}
+
+/** WHO ISSUES THIS PERMIT TRACK — formAuthorityFor, asked for the track's own application. The name
+ *  every "waiting on / staged for / approved by" line uses (nextStep), never the AHJ re-derived. */
+export function issuingAuthorityForTrack(project: Pick<ProjectRecord, "state" | "ahj">, track: string | null | undefined): string {
+  const formTrack = formTrackForSubmittalTrack(track);
+  const ahj = String(project?.ahj ?? "").trim();
+  if (!formTrack) return ahj;
+  return formAuthorityFor(project, TRACK_FORM_TYPES[formTrack][0]).name || ahj;
+}
+
 export function trackForFormType(formType: string): FormTrack | null {
   if (TRACK_FORM_TYPES.building.includes(formType)) return "building";
   if (TRACK_FORM_TYPES.electrical.includes(formType)) return "electrical";
@@ -628,9 +645,41 @@ export function prerequisiteSettled(snapshot: Record<string, unknown> | undefine
   return { settled: false, via: "" };
 }
 
-/** Structure-type facts the county applications ask, read through permitProcess.structureTypeMeaning
- *  (ONE vocabulary for what a structure description means). */
+/** THE ONE STRUCTURE PREDICATE: what this project's structure answer means, read through
+ *  permitProcess.structureTypeMeaning (ONE vocabulary for what a structure description means).
+ *  Every form's structure / construction-category source asks this (ahjForms computed
+ *  singleFamilyCategory, constructionCategory, residentialCategory, structureSfdOrAccessory; the
+ *  Iowa PV worksheet) — dry run 2026-09-28, B5: the operator's portal-question answer lands in
+ *  structureDescription, the Coos County electrical form read only constructionCategory, and it
+ *  shipped "Still needs: construction category" beside a 5952 that printed "single-family dwelling".
+ *
+ *  The first NON-EMPTY answer wins (structureDescription, then constructionCategory, then
+ *  occupancyType): an edit path that writes "" must fall through, not answer "nothing".
+ *
+ *  An occupancy CLASSIFICATION ("R-3") is NOT a structure meaning (converge 2026-09-28): R-3 is the
+ *  one- AND two-family group, so it never ticks a "Single Family Dwelling" box (structureTypeMeaning
+ *  answers it null, as before B5). Its one true reading — RESIDENTIAL construction — is the
+ *  constructionCategory source's own (ahjForms), which reads the parsed category beside this. */
 export function structureMeaningOf(snapshot: Record<string, unknown> | undefined): ReturnType<typeof structureTypeMeaning> {
+  return structureTypeMeaning(structureAnswerOf(snapshot));
+}
+
+/** The project's structure answer as written: the first non-empty of structureDescription,
+ *  constructionCategory, occupancyType. */
+export function structureAnswerOf(snapshot: Record<string, unknown> | undefined): string {
   const s = snapshot ?? {};
-  return structureTypeMeaning(String(s.structureDescription ?? s.constructionCategory ?? s.occupancyType ?? ""));
+  return [s.structureDescription, s.constructionCategory, s.occupancyType]
+    .map((v) => String(v ?? "").trim()).find(Boolean) ?? "";
+}
+
+/** EXPLICIT single-family evidence in the structure answer ("Single-family dwelling", "SFD", "single
+ *  family residence") — what a "Single Family Dwelling" box may be ticked on. NOT the one-and-two-family
+ *  option, and NOT the R-3 occupancy group: both also cover two-family dwellings (structureTypeMeaning
+ *  files the one-and-two-family option as single_family, which is right for "is this a dwelling" and
+ *  wrong for "is this a single-family dwelling"). */
+export function explicitSingleFamilyAnswer(snapshot: Record<string, unknown> | undefined): boolean {
+  const answer = structureAnswerOf(snapshot);
+  return structureTypeMeaning(answer) === "single_family"
+    && /\bsingle[- ]?family\b|\bsingle[- ]dwelling\b|\bsfd\b|\bsfr\b|\bone[- ]family\b/i.test(answer)
+    && !/\b(2|two)\b[^a-z]{0,4}family|\bduplex\b/i.test(answer);
 }

@@ -38,7 +38,7 @@ import { iowaPvWorksheetValues } from "./iowaPvWorksheet";
 import { documentFetchDisabled } from "./documentFetch";
 import {
   agencyRowAppliesToJob, agencyRowProvenance, anchorSitesOnce,
-  applicationKindForPath, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
+  applicationKindForPath, explicitSingleFamilyAnswer, formApplicationKind, formAuthorityFor, rowBelongsToAuthority, structureMeaningOf,
   TRACK_FORM_TYPES, trackForFormType, tracksIssuedByOther,
 } from "./applicationDocsAgency";
 
@@ -731,12 +731,29 @@ function computed(name: string, ctx: FillContext): string {
       const base = computed('electricalBaseFee', ctx);
       return base && feeBracket(ctx) === tier ? name.endsWith('Qty') ? '1' : base : '';
     }
+    // THE STRUCTURE ANSWER REACHES THESE TOO (applicationDocsAgency — dry run 2026-09-28, B5). They
+    // read constructionCategory alone while residentialCategory and structureSfdOrAccessory read the
+    // structure description, so one job printed "single-family dwelling" on the 5952 and "Still
+    // needs: construction category" on the county electrical form. The parsed category's own answers
+    // are KEPT (converge 2026-09-28): a structure answer ADDS evidence, it never blanks what the
+    // parsed category already said.
+    //
+    // "Single Family Dwelling" is ticked on EXPLICIT single-family evidence only: the parsed category
+    // saying so, or a structure answer saying so (explicitSingleFamilyAnswer). Never on "R-3" or the
+    // one-and-two-family option — both also cover two-family dwellings.
     case "singleFamilyCategory":
-      return /^single[- ]family(?: dwelling)?$/i.test(str(ctx.snapshot.constructionCategory).trim()) ? "yes" : "";
+      return /^single[- ]family(?: dwelling)?$/i.test(str(ctx.snapshot.constructionCategory).trim())
+        || explicitSingleFamilyAnswer(ctx.snapshot) ? "yes" : "";
     case "constructionCategory": {
+      // An explicit "Other" (with its description) is the operator's own answer — read first.
       const v = str(ctx.snapshot.constructionCategory || ctx.snapshot.occupancyType).trim();
       if (/^other$/i.test(v)) return str(ctx.snapshot.constructionCategoryOther).trim() ? "other" : "";
-      return /^(?:single[- ]family(?: dwelling)?|1[- ]and[- ]2[- ]family|one[- ]and[- ]two[- ]family|R-?3)$/i.test(v) ? "residential" : "";
+      // RESIDENTIAL construction: the parsed category (R-3 and the one-and-two-family option are
+      // residential whatever structure sits beside them — a duplex, townhouse, manufactured home or
+      // accessory building next to "R-3" is still residential construction), or a structure answer
+      // that means a single-family dwelling.
+      return /^(?:single[- ]family(?: dwelling)?|1[- ]and[- ]2[- ]family|one[- ]and[- ]two[- ]family|R-?3)$/i.test(v)
+        || structureMeaningOf(ctx.snapshot) === "single_family" ? "residential" : "";
     }
     case "declaredValuation":
     case "estimatedJobValue": {

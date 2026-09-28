@@ -40,14 +40,25 @@ export interface StageStepOutcome {
 }
 
 /**
- * Enqueue the auto chain for a project, deduped: a project with a pending stage_step job does
+ * Enqueue the auto chain for a project, deduped: a project with a PENDING stage_step job does
  * not get a second one (re-saving a project three times must not build the packet three times).
  * Called from the parser save/update routes — the two doors a project enters a stage through.
+ *
+ * PENDING ONLY — NEVER RUNNING (dry run 2026-09-28, B1). Evidence that arrives while a chain is
+ * RUNNING must be seen by a chain that starts after it. The parser page creates the project (which
+ * enqueues a chain, claimed ~5 ms later by the instant kick) and uploads the plan set a few hundred
+ * ms after; the chain had already passed STEP 0 with no plan set on file, and the upload's enqueue
+ * was dropped as a duplicate of the RUNNING job — so every project saved from the parser page sat
+ * un-split behind "required documents missing" over sheets it already had. Counting 'running'
+ * protected nothing: jobQueue's PROJECT_BUSY_SQL already keeps a second stage_step for the same
+ * project PENDING until the running one finishes, so two chains never run at once. At most one
+ * follow-up waits; later saves and uploads fold into it. It cannot loop: only HTTP routes call
+ * this, never the chain's own steps.
  */
 export function enqueueStageSteps(db: AppDb, projectId: string): boolean {
   if (!autoStageStepsEnabled()) return false;
   const pending = db.get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM job_queue WHERE job_type = 'stage_step' AND project_id = ? AND status IN ('pending','running')",
+    "SELECT COUNT(*) AS n FROM job_queue WHERE job_type = 'stage_step' AND project_id = ? AND status = 'pending'",
     [projectId],
   );
   if (Number(pending?.n ?? 0) > 0) return false;
@@ -142,11 +153,34 @@ export async function processStageStep(db: AppDb, projectId: string): Promise<St
   // happens on a save, and a save means the inputs changed — so re-running QC here is judging
   // new evidence, not spinning on old. If the verdict is still qc_failed, the chain stops
   // right below and waits for the next human repair.
-  if (status() === "parsed" || status() === "qc_failed") {
+  //
+  // AND WHENEVER THE DOCUMENTS CHANGED SINCE QC LAST JUDGED THEM (dry run 2026-09-28, B7). QC's
+  // document rows ("Site plan is not attached … Staging will refuse without it") and its
+  // bill-on-file wait are verdicts computed FROM the documents, stored as a snapshot. createProject
+  // runs QC before any upload lands, and this chain splits the plan set at qc_passed /
+  // ready_to_stage — so the rows kept saying "not attached" over sheets the split had just filed,
+  // and the gate listed them under a document check that itself passed. A verdict that depends on
+  // the documents is re-judged when the documents change (projectDocuments.documentsChangedAt —
+  // uploads, splits, removals). QC never promotes past parsed/qc_failed and never demotes a pass.
+  // The document-triggered re-judge refreshes the rows but does NOT demote when its only NEW fails
+  // are the account / meter number (qc.QcRunOptions.holdStatusOnNewBillOnlyFails — converge
+  // 2026-09-28, conservative until the operator rules): a PDF bill uploaded after intake flips those
+  // rows to FAIL, and the bill reader reads images only. Any other new FAIL is real news and stops
+  // the chain below, exactly as at parse.
+  const docsNewerThanQc = async (): Promise<boolean> => {
+    const { documentsChangedAt } = await import("./projectDocuments");
+    const changed = documentsChangedAt(db, projectId);
+    if (!changed) return false;
+    const judged = String(db.get<{ t?: string }>("SELECT MAX(created_at) AS t FROM qc_results WHERE project_id = ?", [projectId])?.t ?? "");
+    // Same millisecond is not proof QC saw it — re-judging is the safe direction.
+    return !judged || changed >= judged;
+  };
+  const qcOwned = status() === "parsed" || status() === "qc_failed";
+  if (qcOwned || (chainOwned && await docsNewerThanQc())) {
     const { rerunQc } = await import("./repository");
-    rerunQc(db, projectId);
+    rerunQc(db, projectId, qcOwned ? {} : { holdStatusOnNewBillOnlyFails: true });
     ran.push("qc");
-    logger.info("stage-auto", "QC ran automatically on parse", { project: projectId, verdict: status() });
+    logger.info("stage-auto", qcOwned ? "QC ran automatically on parse" : "QC re-judged: the documents changed since it last ran", { project: projectId, verdict: status() });
   }
   if (status() === "qc_failed") {
     return { ran, stoppedAt: "qc_failed", reason: "QC failed — a person fixes the intake; re-saving restarts the chain." };

@@ -66,6 +66,7 @@ import { trackKind } from "./permitMonitor";
 import { parseJson } from "./json";
 import { billingTrack } from "./submissionFees";
 import { findingHoldScope, gateCheckDefaultScope, scopeHoldsTrack, tracksHeld } from "./gateScope";
+import { issuingAuthorityForTrack } from "./applicationDocsAgency";
 import {
   buildReviewerReportFor,
   getProjectDetail,
@@ -209,6 +210,11 @@ export interface TrackFacts {
   /** The CLIENT's payment for this track is outstanding: a per-submission client with no paid /
    *  waived submission_payments row — exactly what assertSubmissionPaid's 402 refuses on. */
   paymentDue: boolean;
+  /** WHO ISSUES THIS TRACK: the utility for NEM; for a permit, the one predicate
+   *  (applicationDocsAgency.issuingAuthorityForTrack -> formAuthorityFor), so a county-issued
+   *  electrical permit is named as the county's. Optional: absent, the answer falls back to the
+   *  AHJ / utility on the facts record (agencyOf). */
+  agency?: string;
 }
 
 export interface NextStepFacts {
@@ -401,6 +407,8 @@ export function loadNextStepFacts(db: AppDb, projects: ProjectRecord[]): Map<str
         feeDue: (feeDueKinds.get(pid) ?? []).some(ownsTarget),
         paymentDue: perSubmissionClients.has(s(project.clientId))
           && !(payments.get(pid) ?? []).some((r) => s(r.track) === billingTrack(track) && (s(r.status) === "paid" || s(r.status) === "waived")),
+        // A registry read (permitProcess), never the db — the "reads write nothing" invariant holds.
+        agency: track === "nem" ? s(project.utility).trim() : issuingAuthorityForTrack(project, track),
       };
     });
     const pending = (pendingReview.get(pid) ?? []).map((r) => ({ status: "pending", fieldName: s(r.field_name), issueType: s(r.issue_type) }));
@@ -506,12 +514,22 @@ function joinNames(items: string[]): string {
 function trackList(tracks: TrackFacts[]): string {
   return joinNames(tracks.map((t) => TRACK_NAME[t.track]));
 }
-function agencyFor(facts: NextStepFacts, track: SubmittalTrackType): string {
-  return track === "nem" ? (facts.utility || "the utility") : (facts.ahj || "the AHJ");
+/** Who issues this track (TrackFacts.agency — the one predicate), else the facts record's AHJ /
+ *  utility. Dry run 2026-09-28, B13: every permit track used to be named as the AHJ's. */
+function agencyOf(facts: NextStepFacts, t: TrackFacts): string {
+  const own = String(t.agency ?? "").trim();
+  if (own) return own;
+  return t.track === "nem" ? (facts.utility || "the utility") : (facts.ahj || "the AHJ");
 }
-function agencies(facts: NextStepFacts, tracks: TrackFacts[]): string {
-  return joinNames([...new Set(tracks.map((t) => agencyFor(facts, t.track)))]);
+/** A track named WITH its issuer — "the building permit (City of X)", "the interconnection (NEM) with
+ *  Utility Y". Names who issues it, never whose portal it is (a statewide portal hosts many agencies). */
+function trackWithAgency(facts: NextStepFacts, t: TrackFacts): string {
+  return t.track === "nem" ? `${TRACK_NAME[t.track]} with ${agencyOf(facts, t)}` : `${TRACK_NAME[t.track]} (${agencyOf(facts, t)})`;
 }
+function tracksWithAgency(facts: NextStepFacts, tracks: TrackFacts[]): string {
+  return joinNames(tracks.map((t) => trackWithAgency(facts, t)));
+}
+const isAre = (n: number): string => (n === 1 ? "is" : "are");
 function why(text: string, fixTarget?: FixTarget): NextStepWhy {
   return fixTarget ? { text: text.slice(0, 240), fixTarget } : { text: text.slice(0, 240) };
 }
@@ -681,17 +699,41 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
     const approvedRuns = new Set(facts.approvedRunIds);
     const awaitingApproval = staged.filter((t) => !approvedRuns.has(t.stagedRun!.id));
     const approved = staged.filter((t) => approvedRuns.has(t.stagedRun!.id));
+    // WHAT IS NOT STAGED YET IS NAMED HERE TOO (dry run 2026-09-28, B13). Rule 10 outranks rule 14
+    // on purpose (a draft on the portal waits for a person), so "Ready to stage the electrical
+    // permit and interconnection" could never fire while the building draft waited — and an operator
+    // who read "Approve & Submit the building permit", filed it and stopped left two tracks unfiled.
+    const notStaged = unfinished.filter((t) => !t.onPortal);
+    const notStagedTail = notStaged.length
+      ? ` The ${trackList(notStaged)} ${isAre(notStaged.length)} not staged yet — stage ${notStaged.length === 1 ? "it" : "them"} next.`
+      : "";
+    const notStagedWhy = notStaged.length
+      ? [why(`Not staged yet: ${tracksWithAgency(facts, notStaged)} — Stage portals skips a track already on the portal.`, "submittalTracks")]
+      : [];
     if (awaitingApproval.length) {
       // The draft Approve acts on is the NEWEST awaiting one (autopilot.awaitingPortalRun); it is
       // refused only by a reviewer blocker that holds ITS track (gateScope — the filter
       // getAutopilotState's canApprove applies too).
       const newest = [...awaitingApproval].sort((a, b) => String(b.stagedRun!.startedAt).localeCompare(String(a.stagedRun!.startedAt)))[0];
       const approveRefused = reviewerBlockersFor(facts.reviewerBlockers ?? [], newest.track).length > 0;
+      // EACH TRACK WITH ITS OWN ISSUER, and the verbs agree with the count. One merged "the X, Y and
+      // Z application is staged on the A and B portal" read as one filing on one portal — it is one
+      // draft per track, each reviewed and submitted on its own.
+      const what = awaitingApproval.length === 1
+        ? `The ${trackWithAgency(facts, awaitingApproval[0])} application is staged on its portal`
+        : `Staged for review: the ${tracksWithAgency(facts, awaitingApproval)}`;
+      const ask = awaitingApproval.length === 1
+        ? (gateChecked ? "review it, approve, then click its submit yourself." : "review it (the project page checks the gate before approval).")
+        : (gateChecked ? "review each on its own portal, approve, then click its submit yourself." : "review each on its own portal (the project page checks the gate before approval).");
       return make("staged_awaiting_submit", "me", "today",
-        gateChecked
-          ? `The ${trackList(awaitingApproval)} application is staged on the ${agencies(facts, awaitingApproval)} portal — review it, approve, then click its submit yourself.`
-          : `The ${trackList(awaitingApproval)} application is staged on the ${agencies(facts, awaitingApproval)} portal — review it (the project page checks the gate before approval).`,
+        `${what} — ${ask}${notStagedTail}`,
         [
+          // What is left to stage first: make() keeps three whys, and the per-track lines fill them.
+          ...notStagedWhy,
+          // One button, one draft: Approve & Submit acts on the NEWEST awaiting draft only.
+          ...(awaitingApproval.length > 1 && !approveRefused
+            ? [why(`Approve & Submit acts on the newest draft only — the ${TRACK_NAME[newest.track]}. Each other draft needs its own review and its own submit.`, "portalRunsPinned")]
+            : []),
           // The PINNED card: the staged draft renders there, not in the folded history (#portalRuns).
           ...awaitingApproval.map((t) => why(`${TRACK_NAME[t.track]} staged ${t.stagedRun!.startedAt.slice(0, 10)} — automation never clicks the final submit.`, "portalRunsPinned")),
           ...(approved.length ? [why(`Approval already recorded for the ${trackList(approved)} — file it and capture the confirmation.`, "confirmationForm")] : []),
@@ -700,8 +742,10 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
         awaitingApproval[0].stagedRun!.startedAt);
     }
     return make("approved_awaiting_filing", "me", "today",
-      `Approval recorded — the ${trackList(approved)} application is NOT filed yet: click its submit on the ${agencies(facts, approved)} portal, then capture the confirmation number.`,
-      [why("Until the confirmation is captured, nothing is tracking this filing.", "confirmationForm")], null,
+      approved.length === 1
+        ? `Approval recorded — the ${trackWithAgency(facts, approved[0])} application is NOT filed yet: click its submit on its portal, then capture the confirmation number.${notStagedTail}`
+        : `Approval recorded — the ${tracksWithAgency(facts, approved)} applications are NOT filed yet: click each one's submit on its own portal, then capture each confirmation number.${notStagedTail}`,
+      [...notStagedWhy, why("Until the confirmation is captured, nothing is tracking this filing.", "confirmationForm")], null,
       approved[0].stagedRun!.startedAt);
   }
 
@@ -709,7 +753,7 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
   const feeDue = facts.tracks.filter((t) => t.feeDue && !t.done);
   if (feeDue.length) {
     return make("fee_due", "me", "today",
-      `${agencies(facts, feeDue)} approved the ${trackList(feeDue)} — pay the issuance fee in the portal (automation never pays fees).`,
+      `${joinNames(feeDue.map((t) => `${agencyOf(facts, t)} approved the ${TRACK_NAME[t.track]}`))} — pay the issuance fee in the portal (automation never pays fees).`,
       [], null);
   }
 
@@ -763,7 +807,7 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
   if (facts.portalReadings > 0 && notDone.length) {
     return make("portal_readings", "me", "today",
       `Confirm ${facts.portalReadings} portal status reading(s) the monitor could not classify.`,
-      notDone.map((t) => why(`${TRACK_NAME[t.track]}: waiting on ${agencyFor(facts, t.track)}`, "permitTargets")), null);
+      notDone.map((t) => why(`${TRACK_NAME[t.track]}: waiting on ${agencyOf(facts, t)}`, "permitTargets")), null);
   }
 
   // 17. Filed; the agency has the ball.
@@ -771,7 +815,7 @@ export function decideNextStep(facts: NextStepFacts): NextStep {
     const permitWaiting = notDone.some((t) => t.track !== "nem");
     const since = facts.tracks.map((t) => t.filedAt ?? "").filter(Boolean).sort().pop();
     return make("waiting_on_agency", permitWaiting ? "ahj" : "utility", "waiting",
-      `Filed — waiting on ${joinNames(notDone.map((t) => `${agencyFor(facts, t.track)} for the ${TRACK_NAME[t.track]}`))}.`,
+      `Filed — waiting on ${joinNames(notDone.map((t) => `${agencyOf(facts, t)} for the ${TRACK_NAME[t.track]}`))}.`,
       notDone.map((t) => why(`${TRACK_NAME[t.track]} filed${t.filedAt ? ` ${t.filedAt.slice(0, 10)}` : ""}; the monitor checks for changes.`, "permitTargets")),
       null, since);
   }
