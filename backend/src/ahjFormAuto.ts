@@ -1042,7 +1042,7 @@ export async function ensureAhjFormTemplate(
   // "WE COULD NOT LOOK" IS NOT "THERE IS NO FORM" (Waltham, 09-25: the search aborted at its 180s
   // budget and Stage reported "No downloadable PDF form was found" — then held the 24h cooldown).
   const couldNotRun = research.lookupFailed
-    ? `The form search could not run: ${research.lookupError || "the web-search call failed"} — not a finding about ${project.ahj}. Nothing has been counted as present; the next Stage searches again (or use Find official form).`
+    ? `The form search could not run: ${research.lookupError || "the web-search call failed"} — not a finding about ${project.ahj}. Nothing has been counted as present; search again (Find official form) before concluding anything.`
     : "";
 
   if (!candidateUrls.length) {

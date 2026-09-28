@@ -401,12 +401,49 @@ try {
   check("V1 the forms page lands once, as its own segment, beside the operator's note", String(vRow?.notes || "").split(" | ").filter((s) => s === `Forms page: ${V}/forms`).length === 1
     && String(vRow?.notes || "").includes("Operator: file online."), String(vRow?.notes));
 
+  // ═══ A4 FIND / STAGE TRIGGER THE PER-AHJ PROCESS LOOKUP (the QC trigger, deduped) ════════════════
+  // Waltham had no permit_process_lookups row: the lookup shipped after its one QC, and QC was the
+  // only trigger. Armed exactly as the server is (a worker flag, its interval cleared — no job runs)
+  // with a fake key; the injected model has no webLookup and the reader is injected, so nothing here
+  // can reach the network. LAST in the file: the key is removed in `finally`.
+  // (The projects are created BEFORE the key is set, so nothing but the form pass can queue a lookup.)
+  const lookJob = mkJob("Town of Lookupton", "Lookupton");
+  const lookJob2 = mkJob("Town of Lookupton", "Lookupton");
+  const noJob = mkJob("Town of Noresearch", "Noresearch");
+  const lookupJobs = (key: string) => db.query<{ id: string }>("SELECT id FROM job_queue WHERE job_type = 'permit_process_lookup' AND payload LIKE ?", [`%${key}%`]);
+  // A queued job is kicked at once (enqueueJob's instant drain) — and with the fake key it would RUN.
+  // Test-only, on the scratch DB: a queued lookup lands as already done, so nothing can claim it (the
+  // trigger's 24h dedupe still counts it). No lookup, and no model call, ever runs here.
+  db.exec("CREATE TRIGGER forms_find_test_hold AFTER INSERT ON job_queue WHEN NEW.job_type = 'permit_process_lookup' BEGIN UPDATE job_queue SET status = 'done' WHERE id = NEW.id; END;");
+  const jq = await import("../src/jobQueue");
+  clearInterval(jq.startJobWorker(db));
+  delete process.env.PERMIT_PROCESS_LOOKUP;
+  process.env.ANTHROPIC_API_KEY = "sk-ant-test-not-a-real-key";
+  check("A4 (setup) nothing queued a lookup for these AHJs before the form pass", lookupJobs("lookupton").length === 0 && lookupJobs("noresearch").length === 0);
+  researchFor.set("Town of Lookupton", {});
+  await auto.ensureAhjFormTemplate(db, llm, lookJob, "permit_application", { formsPage: fp() });
+  for (let i = 0; i < 50 && !lookupJobs("lookupton").length; i++) await new Promise((r) => setTimeout(r, 20));
+  check("A4 MUST-PASS a Find/Stage pass for an AHJ with no process lookup queues ONE lookup", lookupJobs("lookupton").length === 1, JSON.stringify(lookupJobs("lookupton")));
+  await auto.ensureAhjFormTemplate(db, llm, lookJob2, "permit_application", { formsPage: fp() });
+  await new Promise((r) => setTimeout(r, 300));
+  check("A4 ...deduped: a second pass does not queue another", lookupJobs("lookupton").length === 1, JSON.stringify(lookupJobs("lookupton")));
+  await auto.ensureAhjFormTemplate(db, llm, noJob, "permit_application", { allowResearch: false, formsPage: fp() });
+  await new Promise((r) => setTimeout(r, 300));
+  check("A4 MUST-EXCLUDE the no-research pass (inside the cooldown) queues nothing", lookupJobs("noresearch").length === 0, JSON.stringify(lookupJobs("noresearch")));
+  check("A4 no job ran (none claimed, no model call attempted)", db.query("SELECT id FROM job_queue WHERE status NOT IN ('done')").length === 0
+    && db.query("SELECT id FROM llm_calls").length === 0, JSON.stringify(db.query("SELECT job_type, status FROM job_queue")));
+
   assert.equal(failed.length, 0, `${failed.length} check(s) failed: ${failed.join(" | ")}`);
   console.log(`formsFindPage: ${passed} checks passed — the AHJ's own forms page and its own search results yield its residential application (never a fee schedule, agenda, checklist, commercial/tax form, off-site link, utility host or HTML page); a search that could not run says so and releases the Stage cooldown, a completed empty one keeps it; the find audit and the KB keep the why; a verified row is not overwritten`);
 } finally {
+  delete process.env.ANTHROPIC_API_KEY;
   globalThis.fetch = realFetch;
   server.close();
   db.close();
   for (const id of projectIds) fs.rmSync(path.resolve("backend/data/filled", id), { recursive: true, force: true });
   fs.rmSync(tmp, { recursive: true, force: true });
 }
+// The armed job worker's drain leaves a bounded wait timer behind (jobQueue.drainPendingJobs); the
+// other worker-arming tests end the same way (lookupDoors, feeResearchTrigger). Reached only when
+// every check passed — a failure has already thrown.
+process.exit(0);
