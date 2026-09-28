@@ -4381,18 +4381,6 @@ export class AutoLearnAdapter extends BasePortalAdapter {
     if (!field.selector?.frame) this.openContactRole = null;
   }
 
-  /** The one contact role the main page's section headings name, or null (none, or both). */
-  private pageContactRole(fields: ExtractedField[], url: string): ContactRole | null {
-    const track = this.contactTrackFor(url);
-    const roles = new Set<ContactRole>();
-    for (const f of fields) {
-      if (f.selector?.frame) continue;
-      const r = contactSectionRole(f.section, { track });
-      if (r) roles.add(r);
-    }
-    return roles.size === 1 ? [...roles][0] : null;
-  }
-
   /** THIS identity's value for one part of a contact. "" when the identity has none (an owner's
    *  business name). */
   private identityValue(id: ContactIdentity, role: ContactRole, kind: ContactFieldKind): string {
@@ -4433,7 +4421,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   //
   // So this reads the dialog's CURRENT values, not the planner's fills: every name / business /
   // address / e-mail / phone box of one dialog is made to hold the SECTION's identity (the
-  // section whose opener was clicked — or the one identity the page's headings name), and each
+  // section whose Add New / Select from Account / Edit was clicked — never a look-up), and each
   // correction is recorded BOUND to that identity's key, replacing the planner's step for that
   // box. A part the identity does not have stays blank, and a box still holding the OTHER
   // identity's value for it is cleared (a company name in an Owner dialog). A dialog whose
@@ -4445,9 +4433,13 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       .filter((x): x is { f: ExtractedField; kind: ContactFieldKind } => x.kind !== null);
     // A contact block asks for at least two parts of one identity (a name and an address/e-mail…).
     if (new Set(boxes.map((b) => b.kind)).size < 2) return 0;
-    const role = this.openContactRole?.role ?? this.pageContactRole(fields, url);
+    // ONLY A DIALOG A CONTACT SECTION'S OPENER OPENED (Add New / Select from Account / Edit —
+    // noteContactClick, or the pass). Not a guess from the page's headings: a LOOK-UP dialog
+    // (Corvallis's Licensed Professional CCB search asks "Name of Business" too) is a search, and
+    // typing the company's full legal name into it narrows the search to nothing.
+    const role = this.openContactRole?.role ?? null;
     if (!role) {
-      this.debug?.event({ type: "contact_identity_unknown", page: pageCount, why: "the dialog's section names no identity — left as filled" });
+      this.debug?.event({ type: "contact_identity_unknown", page: pageCount, why: "no contact section's opener opened this dialog (or its section names no identity) — left as filled" });
       return 0;
     }
     const id = this.identityForRole(role);

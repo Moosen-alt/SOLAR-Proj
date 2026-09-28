@@ -337,6 +337,27 @@ console.log("\nG. MUST EXCLUDE: a dialog whose section names no identity is left
     `fixed=${fixed} steps=${steps.length} full=${await dlgValue("txtAppFullName")}`);
 }
 
+// ── G2. MUST EXCLUDE: a LOOK-UP dialog (the Licensed Professional's CCB search) is a search, not a
+//        contact — never "corrected" to the company, though the page's headings name the company. ──
+console.log("\nG2. MUST EXCLUDE: a look-up dialog opened from a Look Up control is left as filled");
+{
+  const url = `${base}/Cap/Step4/CapEdit.aspx`;
+  await page.goto(url);
+  const a = makeAdapter();
+  const fields0 = await fieldsNow(a);
+  const lookUp = fields0.find((f) => /^look ?up$/i.test(String(f.label ?? "").trim()));
+  check("G2: fixture — the Look Up control is on the page", !!lookUp, JSON.stringify(fields0.map((f) => f.label).slice(0, 20)));
+  if (lookUp) a.noteContactClick(lookUp, url);
+  await page.evaluate(() => (window as unknown as { openDlg: (s: string, m: string) => void }).openDlg("License_9482", "account"));
+  await page.frameLocator('iframe[name="ACADialogFrame"]').locator(`#${P}txtAppFullName`).waitFor({ timeout: 5000 });
+  const fields = await fieldsNow(a);
+  const steps: RecipeStep[] = [];
+  const fixed = await a.enforceContactDialogIdentity(fields, steps, 5, url, "ACADialogFrame");
+  check("G2: nothing corrected in the look-up dialog", fixed === 0 && steps.length === 0 && (await dlgValue("txtAppFullName")) === "Robin Resident",
+    `fixed=${fixed} full=${await dlgValue("txtAppFullName")}`);
+  await a.closeAcaDialog();
+}
+
 // ── H. THE REPLAY of the recipe the live run saved: Select from Account → the account's prefill →
 //       only the phone recorded → Continue. R10 has nothing to rebind; the replay's dialog guard
 //       must make the dialog the company's before the recorded Continue. ────────────────────────
