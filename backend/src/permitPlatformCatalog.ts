@@ -165,8 +165,10 @@ export function stateAgencyOf(name: string): string {
  *   cityofevanston.org, clarkcountynv.gov, leegov.com (lee + gov), icgov.org, cityofgp.com,
  *   tigard-or.gov, camdenmaine.gov, austintexas.gov. A same-named place in another state
  *   (leecova.org for Lee County, FL) is not.
+ * `keys` narrows the distinctive keys the label may equal (isAhjFormsSite: a place-prefixed name's
+ * single words never stand alone); the initials test is unchanged.
  */
-export function isAgencyOwnDomain(host: string, names: string[], state?: string): boolean {
+export function isAgencyOwnDomain(host: string, names: string[], state?: string, keys: string[] = nameKeys(names)): boolean {
   const h = String(host ?? "").toLowerCase().replace(/^www\./, "");
   if (!h || isPermitPlatformUrl(`https://${h}/`)) return false;
   const st2 = String(state ?? "").toLowerCase();
@@ -185,7 +187,6 @@ export function isAgencyOwnDomain(host: string, names: string[], state?: string)
   // A state's own label: only the state, only on a government host.
   const stateCode = stateCodeOfLabel(label);
   if (stateCode) return gov && (!st2 || st2 === stateCode) && namesTheState(names, stateCode);
-  const keys = nameKeys(names);
   const initials = names.map(initialsOf).filter(Boolean);
   // A state's letters / name are stripped only when they are THIS job's state (leecova.org is Lee
   // County, Virginia — not Lee County, Florida); with no state known, any state's.
@@ -1054,12 +1055,58 @@ export function applicationFormLinks(pages: ReadPage[], names: string[], state?:
  *  page-reading door's question) harvested a NEIGHBOURING town's application as this AHJ's
  *  (www.newtonma.gov for the City of Waltham; forms-find skeptic F1, 2026-09-28). A county's or a
  *  regional host whose name is not the AHJ's is a MISSED form, never a wrong one. Never a permit /
- *  utility platform, and never a STATE's own site for a local AHJ (a state's forms are not the city's). */
+ *  utility platform, and never a STATE's own site for a local AHJ (a state's forms are not the city's).
+ *  Two more ways a neighbour's site passed for the AHJ's own (forms-find close, 2026-09-28):
+ *   - a PLACE-PREFIXED name's single words never stand alone (placeBoundKeys): bedfordma.gov is the
+ *     Town of Bedford's, not the City of New Bedford's (newbedford-ma.gov); springfield-ma.gov is not
+ *     West Springfield's — the joined key ("newbedford") is required;
+ *   - a site whose domain names the OTHER class of jurisdiction (siteNamesAnotherJurisdictionClass):
+ *     jeffersoncountyor.gov / co.jefferson.or.us are not the City of Jefferson's, cityofmarion.org is
+ *     not Marion County's — while cityofvenus.org stays the Town of Venus's (a city, a town, a village,
+ *     a township and a borough are one municipal class). */
 export function isAhjFormsSite(host: string, names: string[], state?: string): boolean {
-  if (!host || isUtilityPlatformUrl(`https://${host}/`) || !isAgencyOwnDomain(host, names, state)) return false;
+  if (!host || isUtilityPlatformUrl(`https://${host}/`) || !isAgencyOwnDomain(host, names, state, placeBoundKeys(names))) return false;
+  if (siteNamesAnotherJurisdictionClass(host, names)) return false;
   const hs = hostStateOf(host);
   if (hs && state && hs.state !== String(state).toLowerCase()) return false;
   return !(hs?.stateSite && !names.some((n) => stateAgencyOf(n)));
+}
+/** A place name's PREFIX word: "New Bedford", "West Springfield", "North Andover", "Fort Worth", "Lake
+ *  Forest", "St. Louis" — the word after it is not the place by itself (Bedford, Springfield, Andover). */
+const PLACE_PREFIX_WORDS = new Set(["new", "north", "south", "east", "west", "upper", "lower", "great", "little", "mount", "mt", "fort", "ft", "port", "lake", "saint", "st"]);
+/** The AHJ's distinctive keys for its forms SITE: nameKeys, less every single word from a place prefix
+ *  on ("City of New Bedford" -> only "newbedford"; "Salt Lake City" keeps "salt" — its "lake" prefixes
+ *  nothing). Initials are not keys and are untouched (nyc.gov, fcgov.com). */
+export function placeBoundKeys(names: string[]): string[] {
+  const bound = new Set<string>();
+  for (const n of names) {
+    const ws = String(n ?? "").toLowerCase().replace(/[^a-z\s-]+/g, " ").split(/[\s-]+/).filter((w) => w && !GENERIC_NAME_WORDS.has(w));
+    const i = ws.findIndex((w, j) => PLACE_PREFIX_WORDS.has(w) && j < ws.length - 1);
+    if (i >= 0) for (const w of ws.slice(i)) bound.add(w);
+  }
+  return nameKeys(names).filter((k) => !bound.has(k));
+}
+/** The two classes of local jurisdiction: a county (a parish), or a municipality — a city, a town, a
+ *  village, a township and a borough are ONE class (the Town of Venus's site is cityofvenus.org). */
+const JURISDICTION_CLASS: Record<string, "county" | "municipal"> = { county: "county", parish: "county", city: "municipal", town: "municipal", township: "municipal", twp: "municipal", borough: "municipal", boro: "municipal", village: "municipal" };
+/** The type affix of a US locality domain (<affix>.<name>.<st>.us): co.marion.or.us is the county's. */
+const LOCALITY_AFFIX_CLASS: Record<string, "county" | "municipal"> = { co: "county", county: "county", ci: "municipal", city: "municipal", town: "municipal", twp: "municipal", vil: "municipal", village: "municipal" };
+/** The site's domain names the OTHER class of jurisdiction than every type the AHJ's own name carries:
+ *  jeffersoncountyor.gov or co.jefferson.or.us for the City of Jefferson, cityofmarion.org for Marion
+ *  County. The AHJ's own keys are taken out of the domain first (georgetowntx.gov names no town); a name
+ *  with no type word, or with both ("City and County of Denver"), is never contradicted. (The anchor
+ *  door's applicationDocsAgency.hostNamesAnotherType asks a stricter question — it REMOVES an anchor —
+ *  and keeps city / town / township apart; the forms site reads one municipal class.) */
+function siteNamesAnotherJurisdictionClass(host: string, names: string[]): boolean {
+  const own = new Set([...jurisdictionTypes(names)].map((t) => JURISDICTION_CLASS[t]).filter(Boolean));
+  if (!own.size) return false;
+  let t = portalNameToken(`https://${host}/`);
+  for (const k of nameKeys(names).sort((a, b) => b.length - a.length)) t = t.split(k).join(" ");
+  const found = new Set<string>();
+  for (const m of t.matchAll(/(township|twp|county|city|town|borough|boro|village|parish)/g)) found.add(JURISDICTION_CLASS[m[1]]);
+  const locality = /^([a-z]+)\.[a-z0-9-]+\.[a-z]{2}\.us$/.exec(registrableDomain(String(host ?? "").toLowerCase().replace(/^www\./, "")));
+  if (locality && LOCALITY_AFFIX_CLASS[locality[1]]) found.add(LOCALITY_AFFIX_CLASS[locality[1]]);
+  return found.size > 0 && ![...found].some((c) => own.has(c));
 }
 const FEE_LINE = /solar|photo-?voltaic|\bpv\b|renewable|\bkva\b|\bkw\b|surcharge|electrical permit|minor work/i;
 const DOC_LINE = /required|submit|plan|site|diagram|spec|checklist|form|application|upload|attach|stamp|seal|engineer|calculation|drawing/i;

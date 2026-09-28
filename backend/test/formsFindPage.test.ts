@@ -604,6 +604,45 @@ try {
   check("F1 UNIT MUST-PASS the AHJ's own .gov and its own .ma.us are its forms site",
     catalog.isAhjFormsSite("www.lexfieldma.gov", ["City of Lexfield"], "MA") && catalog.isAhjFormsSite("www.ci.lexfield.ma.us", ["City of Lexfield"], "MA")
     && catalog.isAhjFormsSite("www.city.waltham.ma.us", ["City of Waltham"], "MA"));
+  // ── S (forms-find close): a place-prefixed name needs its JOINED key; a domain naming the other class of
+  // jurisdiction (county vs municipal) is not the AHJ's. MUST-PASS: every real own-site pair that passed before.
+  const S_OWN: Array<[string, string, string]> = [
+    ["www.stpaul.gov", "City of St. Paul", "MN"], ["www.slc.gov", "Salt Lake City", "UT"], ["www.cityofboston.gov", "City of Boston", "MA"],
+    ["www.boston.gov", "City of Boston", "MA"], ["www.newbedford-ma.gov", "City of New Bedford", "MA"], ["www.denvergov.org", "City and County of Denver", "CO"],
+    ["www.fcgov.com", "City of Fort Collins", "CO"], ["www.austintexas.gov", "City of Austin", "TX"], ["www.houstontx.gov", "City of Houston", "TX"],
+    ["www.sanantonio.gov", "City of San Antonio", "TX"], ["www.miamidade.gov", "Miami-Dade County", "FL"], ["www.pbcgov.org", "Palm Beach County", "FL"],
+    ["www.co.marion.or.us", "Marion County", "OR"], ["www.coosbay.org", "City of Coos Bay", "OR"], ["www.cityofjefferson.org", "City of Jefferson", "OR"],
+    ["www.ci.jefferson.or.us", "City of Jefferson", "OR"], ["www.jeffersonoregon.org", "City of Jefferson", "OR"], ["www.icgov.org", "Iowa City", "IA"],
+    ["www.nyc.gov", "New York City", "NY"], ["www.mesaaz.gov", "City of Mesa", "AZ"], ["www.dublin.oh.us", "City of Dublin", "OH"],
+    ["www.townofcary.org", "Town of Cary", "NC"], ["www.carync.gov", "Town of Cary", "NC"], ["www.charlottenc.gov", "City of Charlotte", "NC"],
+    ["www.tampa.gov", "City of Tampa", "FL"], ["www.stlouis-mo.gov", "City of St. Louis", "MO"], ["www.lasvegasnevada.gov", "City of Las Vegas", "NV"],
+    ["www.pwcva.gov", "Prince William County", "VA"], ["www.fairfaxcounty.gov", "Fairfax County", "VA"], ["www.waltham.ma.us", "City of Waltham", "MA"],
+    ["www.fortworthtexas.gov", "City of Fort Worth", "TX"], ["www.salemma.gov", "City of Salem", "MA"],
+    ["www.cityofvenus.org", "Town of Venus", "TX"], ["www.northandoverma.gov", "Town of North Andover", "MA"], ["www.townofwestspringfield.org", "Town of West Springfield", "MA"],
+  ];
+  const sOwnMissed = S_OWN.filter(([h, n, s]) => !catalog.isAhjFormsSite(h, [n], s));
+  check(`S UNIT MUST-PASS the AHJ's own real site (${S_OWN.length} pairs)`, sOwnMissed.length === 0, JSON.stringify(sOwnMissed));
+  const S_OTHER: Array<[string, string, string]> = [
+    ["www.bedfordma.gov", "City of New Bedford", "MA"], ["www.andoverma.gov", "Town of North Andover", "MA"], ["www.readingma.gov", "Town of North Reading", "MA"],
+    ["www.springfield-ma.gov", "Town of West Springfield", "MA"], ["www.hadleyma.org", "Town of South Hadley", "MA"], ["www.longmeadow.org", "Town of East Longmeadow", "MA"],
+    ["www.brunswicknj.gov", "Township of North Brunswick", "NJ"], ["www.orangenj.gov", "Township of West Orange", "NJ"], ["www.portlandmaine.gov", "City of South Portland", "ME"],
+    ["www.worthtx.gov", "City of Fort Worth", "TX"], ["www.lakecountyil.gov", "City of Lake Forest", "IL"],
+    ["www.jeffersoncountyor.gov", "City of Jefferson", "OR"], ["www.co.jefferson.or.us", "City of Jefferson", "OR"], ["www.cityofmarion.org", "Marion County", "OR"],
+    ["www.marioncountyor.gov", "City of Marion", "OR"], ["www.co.coos.or.us", "City of Coos Bay", "OR"], ["www.cooscountyor.gov", "City of Coos Bay", "OR"],
+  ];
+  const sOtherAdmitted = S_OTHER.filter(([h, n, s]) => catalog.isAhjFormsSite(h, [n], s));
+  check(`S UNIT MUST-EXCLUDE a neighbour's / the other jurisdiction class's site (${S_OTHER.length} pairs)`, sOtherAdmitted.length === 0, JSON.stringify(sOtherAdmitted));
+  // End to end (skeptic P4): the City of New Bedford's search names the Town of Bedford's forms page.
+  const BED = "https://www.bedfordma.gov";
+  const BED_APP = `${BED}/DocumentCenter/View/4500/Residential-Building-Permit-Application`;
+  serveHtml(`${BED}/forms`, civicPage("Forms", [[BED_APP.slice(BED.length), "Residential Building Permit Application"]]));
+  servePdf(BED_APP, await acroPdf("BEDFORD Residential Building Permit Application"));
+  researchFor.set("City of New Bedford", { formsPageUrl: `${BED}/forms`, searchResults: [{ url: BED_APP, title: "Residential Building Permit Application | Bedford, MA" }] });
+  requested = [];
+  const s4 = await auto.ensureAhjFormTemplate(db, llm, mkJob("City of New Bedford", "New Bedford"), "permit_application", { formsPage: fp() });
+  const s4Kb = kb.findKnowledgeForLearn(db, { state: "MA", ahj: "City of New Bedford", utility: "" }).ahj;
+  check("S MUST-EXCLUDE the City of New Bedford never reads, takes or notes the Town of Bedford's forms page", s4.status === "not_found" && rows("City of New Bedford").length === 0
+    && !requested.some((u) => u.startsWith(BED)) && !String(s4Kb?.notes || "").includes("bedfordma.gov"), JSON.stringify({ s4, requested, notes: s4Kb?.notes }));
   const neighbourAhj: Record<string, string> = { townGov: "City of Lexfield", stateGov: "Town of Ashbury", townMaUs: "City of Corwin" };
   for (const [k, base] of Object.entries(NEIGHBOURS)) {
     const ahj = neighbourAhj[k];
