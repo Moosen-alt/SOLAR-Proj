@@ -22,11 +22,14 @@
 // The whole bundle is what the operator hands over for troubleshooting — the
 // backend serves it zipped at GET /api/learn-runs/<runId>/bundle.zip.
 //
-// PII note: JSON artifacts mask sensitive values, but the PNGs and the
-// Playwright trace are RAW renders of the portal and can show customer data
-// (the same class of data as the review screenshot the dashboard already
-// stores). The bundle stays on local disk under data/ (gitignored) and is
-// pruned to the most recent AUTOLEARN_RUN_KEEP runs.
+// PII note: JSON artifacts mask sensitive values, and every text artifact passes
+// the adapter's secret scrub (setScrubber: the project's own account/meter, which
+// a learn now types by name). PNGs MASK those secrets too. The PNGs otherwise,
+// and the Playwright trace entirely (its action log and DOM snapshots include a
+// typed secret), are RAW renders of the portal and can show customer data (the
+// same class of data as the review screenshot the dashboard already stores). The
+// bundle stays on local disk under data/ (gitignored) and is pruned to the most
+// recent AUTOLEARN_RUN_KEEP runs.
 //
 // Flags (all default ON so a failed run is never un-diagnosable):
 //   AUTOLEARN_RUN_DEBUG=0        — disable the bundle entirely.
@@ -40,7 +43,7 @@
 // ---------------------------------------------------------------------------
 import fs from "fs";
 import path from "path";
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
 
 const flagOff = (name: string): boolean => {
   const v = process.env[name];
@@ -69,10 +72,24 @@ export class LearnRunDebug {
   private readonly startedAtMs = Date.now();
   private tracing = false;
   private finalized = false;
+  /** A secret the run itself TYPED (the project's account/meter, read by name at fill time) must
+   *  not land in the bundle's text artifacts either — a review page echoes it back as text, and
+   *  the page capture keeps rendered text. Set by the adapter; applied to every text write. */
+  private scrub: ((text: string) => string) | null = null;
 
   private constructor(dir: string, runId: string) {
     this.dir = dir;
     this.runId = runId;
+  }
+
+  /** Install the scrub every text artifact passes through (events, sidecars, page captures). */
+  setScrubber(fn: ((text: string) => string) | null): void {
+    this.scrub = fn;
+  }
+
+  private clean(text: string): string {
+    if (!this.scrub) return text;
+    try { return this.scrub(text); } catch { return text; }
   }
 
   /** Create the run folder (pruning old runs), write the initial manifest, and
@@ -103,7 +120,7 @@ export class LearnRunDebug {
   /** Append a timestamped event to events.jsonl. */
   event(evt: Record<string, unknown>): void {
     try {
-      const line = JSON.stringify({ t: new Date().toISOString(), ms: Date.now() - this.startedAtMs, ...evt });
+      const line = this.clean(JSON.stringify({ t: new Date().toISOString(), ms: Date.now() - this.startedAtMs, ...evt }));
       fs.appendFileSync(path.join(this.dir, "events.jsonl"), line + "\n");
     } catch { /* never throws */ }
   }
@@ -111,7 +128,7 @@ export class LearnRunDebug {
   /** Write a JSON artifact into the run folder. */
   writeJson(name: string, obj: unknown): void {
     try {
-      fs.writeFileSync(path.join(this.dir, name), JSON.stringify(obj, null, 2));
+      fs.writeFileSync(path.join(this.dir, name), this.clean(JSON.stringify(obj, null, 2)));
     } catch { /* never throws */ }
   }
 
@@ -124,13 +141,13 @@ export class LearnRunDebug {
 
   /** Full-page PNG of the current page, unless AUTOLEARN_DEBUG_SCREENSHOTS=0.
    *  Tolerates test fakes with no screenshot() and any capture error. */
-  async screenshot(page: unknown, label: string): Promise<void> {
+  async screenshot(page: unknown, label: string, opts?: { mask?: unknown[] }): Promise<void> {
     if (flagOff("AUTOLEARN_DEBUG_SCREENSHOTS")) return;
     const p = page as Page | null;
     if (!p || typeof p.screenshot !== "function") return;
     const safe = label.replace(/[^a-z0-9_-]/gi, "_").slice(0, 80);
     try {
-      const buf = await p.screenshot({ type: "png", fullPage: true });
+      const buf = await p.screenshot({ type: "png", fullPage: true, ...(opts?.mask?.length ? { mask: opts.mask as Locator[] } : {}) });
       fs.writeFileSync(path.join(this.dir, `${safe}.png`), buf);
     } catch { /* never throws */ }
   }
@@ -201,9 +218,11 @@ export class LearnRunDebug {
       const c = captured as { url?: string; title?: string; heading?: string; html?: string };
       if (!c?.html || c.html.length < 500) return;
       const safe = label.replace(/[^a-z0-9_-]/gi, "_").slice(0, 60);
-      fs.writeFileSync(path.join(this.dir, `page-${safe}.json`), JSON.stringify({
+      // Typed values are stripped above; a secret the portal RENDERS back as text (a review
+      // page's "Account: 7734009155") is not a value, so the run's own scrub takes it here.
+      fs.writeFileSync(path.join(this.dir, `page-${safe}.json`), this.clean(JSON.stringify({
         url: c.url ?? "", title: c.title ?? "", heading: c.heading ?? "", html: c.html,
-      }));
+      })));
     } catch { /* capture is best-effort — never disturb a live learn */ }
   }
 
@@ -241,13 +260,13 @@ export class LearnRunDebug {
     try {
       const p = path.join(this.dir, "run.json");
       const existing = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
-      fs.writeFileSync(p, JSON.stringify({
+      fs.writeFileSync(p, this.clean(JSON.stringify({
         ...existing,
         finished: true,
         finishedAt: new Date().toISOString(),
         durationMs: Date.now() - this.startedAtMs,
         ...summary,
-      }, null, 2));
+      }, null, 2)));
     } catch { /* never throws */ }
   }
 

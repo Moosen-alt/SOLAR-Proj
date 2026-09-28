@@ -25,7 +25,7 @@ import path from "node:path";
 import fs from "node:fs";
 import type { AppDb } from "./db";
 import type { PortalRecipe, ProjectRecord, RecipeStep } from "../../shared/src/types";
-import { FINAL_SUBMIT_GATE_SENTENCE } from "../../shared/src/portalSafety";
+import { FINAL_SUBMIT_GATE_SENTENCE, redactSecretValues } from "../../shared/src/portalSafety";
 import { perJobAnswerKeyFor, perJobControlOfField } from "../../shared/src/perJobQuestions";
 import { learnPortal, browserLimiter } from "../../portal-bot/src/index";
 import { resolveHeadless } from "../../portal-bot/src/browser";
@@ -157,23 +157,10 @@ export function projectSecretValues(project: ProjectRecord): string[] {
  *  2026-09-25): the site-plan line "...tied to exterior utility meter #77 902 323, new PV AC
  *  disconnect ... within 10' of the utility meter" matched the disconnect topic, went into the
  *  design digest, and carried the meter number to the model on every planner call.
- *  Identifier-shaped secrets (5+ digits) are matched digit-for-digit with separators ignored
- *  (spaces, dashes, dots, '#', '/'), never inside a longer digit run; other secrets only when
- *  they carry a digit and are 6+ chars (a meter-keyed word like "exterior" is not an identifier
- *  and must not erase that word from the notes). */
-export function redactSecretValues(text: string, secrets: Iterable<string>): string {
-  let out = text;
-  for (const secret of secrets) {
-    const digits = secret.replace(/\D/g, "");
-    if (digits.length >= 5) {
-      const pattern = digits.split("").join("[\\s\\-\\u2013.#/]*");
-      out = out.replace(new RegExp(`(?<!\\d)${pattern}(?!\\d)`, "g"), "[redacted]");
-    } else if (secret.length >= 6 && /\d/.test(secret)) {
-      out = out.replace(new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "[redacted]");
-    }
-  }
-  return out;
-}
+ *  The ONE scrub lives in shared/src/portalSafety.ts — the learner scrubs its page text with it
+ *  too, once it has typed the project's account/meter into a portal. Re-exported here for the
+ *  backend's callers and the kbLearnLookup test. */
+export { redactSecretValues };
 
 function digestLines(project: ProjectRecord, maxChars: number, matches: (line: string) => boolean, secrets: string[] = []): string {
   const snap = (project.parserSnapshot || {}) as Record<string, unknown>;
