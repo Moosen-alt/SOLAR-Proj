@@ -98,7 +98,8 @@ export function resolveValuation(
 
   // 1. Client-provided contract / installed cost — the authoritative INPUT. The valuation on
   //    the application is the operator's formula OF it, never the contract itself.
-  const contract = parseMoney(snap.jobValue);
+  // The contract is on either parser key (jobValue or contractAmount — the Coos Bay recipes bind both).
+  const contract = parseMoney(snap.jobValue) ?? parseMoney(snap.contractAmount);
   if (contract != null) {
     const value = Math.round((contract * factor + batteryUsd) * 100) / 100;
     return {

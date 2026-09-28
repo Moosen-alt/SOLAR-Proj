@@ -561,5 +561,37 @@ await check("MUST-PASS/EXCLUDE: replay keeps Type of Work = New for a ground mou
   assert.notEqual(onRoof.steps[0].value, "New");
 });
 
+// ── leak-fix-portal skeptic (round 2) ──────────────────────────────────────────────────────────────
+const { resolveValuation } = await import("../src/valuation");
+await check("MUST-PASS (skeptic 1): a contract on contractAmount (no jobValue) is the valuation's input — never the per-watt estimate", () => {
+  const byAmount = resolveValuation({ contractAmount: "21383.55" } as never, 8.6);
+  const byJobValue = resolveValuation({ jobValue: "21383.55" } as never, 8.6);
+  assert.equal(byAmount.method, "contract", JSON.stringify(byAmount));
+  assert.equal(byAmount.value, byJobValue.value);
+});
+await check("MUST-PASS (skeptic 2a): an ESTIMATED / expected PTO date is a future estimate, recomputed every replay", () => {
+  for (const label of ["Estimated PTO Date", "Expected PTO date", "Anticipated Permission to Operate Date"]) {
+    assert.match(String(PR.dateFieldForLiteral(label, "11/09/2026")), /^estimatedCommissioningDate/, label);
+  }
+  assert.match(String(PR.dateFieldForLiteral("Existing System PTO Date", "3/15/2021")), /^existingPtoDate/, "the existing system's own PTO key");
+});
+await check("MUST-EXCLUDE (skeptic 2b): an existing system's (or an unqualified PTO) date with no key is WITHHELD at save — never frozen and replayed", () => {
+  const r = PR.convertLiteralsToBoundFields([
+    { action: "fill", selector: { label: "Existing system installation date" }, value: "04/02/2019", note: "Existing system installation date" },
+    { action: "fill", selector: { label: "Date existing system was interconnected" }, value: "2019-05-01", note: "Date existing system was interconnected" },
+    { action: "fill", selector: { label: "Permission to Operate Date" }, value: "06/01/2019", note: "Permission to Operate Date" },
+  ], { homeownerName: "Pat Example" });
+  for (const s of r.steps) {
+    assert.equal(s.value, undefined, `${s.note} kept its recorded date`);
+    assert.ok(s.operatorItem, `${s.note} is not named for a person`);
+  }
+});
+await check("MUST-PASS (skeptic 3): camelCase / prefixed control ids name their field (OwnerPhone -> homeownerPhone, ddlBatteryStorage -> hasBattery); 'accessible' still never hits 'ac'", () => {
+  assert.equal(PR.labelNamesField("OwnerPhone", "homeownerPhone"), true);
+  assert.equal(PR.labelNamesField("ddlBatteryStorage", "hasBattery"), true);
+  assert.equal(PR.labelNamesField("Is the meter socket accessible 24/7?", "acDiscReq"), false);
+  assert.equal(PR.disambiguateByLabel("OwnerPhone", ["homeownerPhone", "installerPhone"]), "homeownerPhone");
+});
+
 console.log(`\n${passed} passed, ${failures} failed`);
 if (failures) process.exit(1);

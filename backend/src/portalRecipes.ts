@@ -25,6 +25,7 @@ import { planSetDisconnectPart, standardDisconnectConflicts } from "./baselineRu
 import { clientCompanyFactFields } from "./clients";
 import { COMPANY_IDENTIFIER_KEY, companyFactStamp, isCompanyAttestationStep, isCompanyIdentityLabel, looksLikePlaceholderIdentifier } from "../../shared/src/companyFacts";
 import { usStateCode } from "./permitPath";
+import { labelWords } from "../../shared/src/portalSafety";
 import { mountAdjective, mountKindForProject } from "./codeReviewRules";
 
 type Row = Record<string, unknown>;
@@ -1507,7 +1508,18 @@ const BOND_LABEL = /\bbond\b|\bsurety\b/i;
 // system's PTO. The existing system's PTO binds to its own key (in the format the portal accepted);
 // any other existing-system or PTO date binds to nothing — the literal stays, and the replay guard
 // refuses it as project data.
-const EXISTING_SYSTEM_DATE_LABEL = /\bexisting\b|\bpto\b|permission\s+to\s+operate|\boriginal(?:ly)?\s+(?:install|interconnect)|\bpreviously\s+(?:installed|interconnected)|\bprior\s+system/i;
+const PAST_SYSTEM_LABEL = /\b(?:existing|original(?:ly)?|prior|previous(?:ly)?)\b/i;
+const PTO_WORDS = /\bpto\b|permission\s+to\s+operate/i;
+const ESTIMATE_WORD = /\b(?:estimated|expected|anticipated|requested|projected|planned|target)\b/i;
+/** A PAST system's date, or a PTO date the label does not call an estimate ("Permission to Operate
+ *  Date" could be the existing system's): never today, never a commissioning estimate. An ESTIMATED /
+ *  expected PTO is the new system's future date and falls through to the future-date rule. */
+const pastOrUnestimatedPtoDate = (text: string): boolean => PAST_SYSTEM_LABEL.test(text) || (PTO_WORDS.test(text) && !ESTIMATE_WORD.test(text));
+/** A date literal on such a label that binds to no key of its own: withheld at save, never frozen. */
+export function existingSystemDateWithoutKey(label: string, value: string): boolean {
+  const text = String(label || "");
+  return DATE_LITERAL.test(String(value || "").trim()) && /date/i.test(text) && pastOrUnestimatedPtoDate(text) && !EXISTING_PTO_LABEL.test(text);
+}
 const EXISTING_PTO_LABEL = /\b(?:existing|original|prior|previous)\b[^.?]{0,60}(?:\bpto\b|permission\s+to\s+operate)|(?:\bpto\b|permission\s+to\s+operate)[^.?]{0,60}\b(?:existing|original|prior|previous)\b/i;
 export function dateFieldForLiteral(label: string, value: string): string | null {
   const raw = String(value || "").trim();
@@ -1516,7 +1528,7 @@ export function dateFieldForLiteral(label: string, value: string): string | null
   if (!/date/i.test(text)) return null; // only rebind a control that is actually a date
   const isUs = raw.includes("/");
   // An EXISTING system's (or any PTO) date is never today and never a commissioning estimate.
-  if (EXISTING_SYSTEM_DATE_LABEL.test(text)) return EXISTING_PTO_LABEL.test(text) ? (isUs ? "existingPtoDateUs" : "existingPtoDateIso") : null;
+  if (pastOrUnestimatedPtoDate(text)) return EXISTING_PTO_LABEL.test(text) ? (isUs ? "existingPtoDateUs" : "existingPtoDateIso") : null;
   // WHOSE expiry: workers' comp binds to nothing; insurance and bond to the client's own dates; a
   // registration or a business/city licence to nothing; a contractor licence to the licence's.
   if (EXPIRY_DATE_LABEL.test(text) && WORKERS_COMP_LABEL.test(text)) return null;
@@ -2166,11 +2178,11 @@ function labelHasToken(text: string, token: string): boolean {
 }
 /** Does the control's label name this field (a whole-word token hit)? */
 export function labelNamesField(label: string, field: string): boolean {
-  const text = String(label || "").toLowerCase();
+  const text = labelWords(String(label || "")).toLowerCase();
   return fieldNameTokens(field).some((t) => labelHasToken(text, t));
 }
 export function disambiguateByLabel(label: string, candidates: string[]): string | null {
-  const text = String(label || "").toLowerCase();
+  const text = labelWords(String(label || "")).toLowerCase();
   if (!text.trim() || candidates.length < 2) return null;
   const scored = candidates.map((c) => {
     const toks = fieldNameTokens(c);
@@ -2207,7 +2219,7 @@ const LABEL_STOPWORDS = new Set([
   "this", "that", "for", "and", "or", "be", "on", "at", "it", "if", "any", "please", "select",
 ]);
 export function labelRulesOutAllCandidates(label: string, candidates: string[]): boolean {
-  const text = String(label || "").toLowerCase();
+  const text = labelWords(String(label || "")).toLowerCase();
   const words = text.split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !LABEL_STOPWORDS.has(w));
   if (new Set(words).size < 3) return false; // too thin to conclude anything
   return candidates.every((c) => fieldNameTokens(c).every((t) => !labelHasToken(text, t)));
@@ -2335,6 +2347,13 @@ export function convertLiteralsToBoundFields(
     if (dateField) {
       bound.push({ value: step.value as string, field: dateField, note: step.note });
       const next: RecipeStep = { ...step, field: dateField };
+      delete next.value;
+      return next;
+    }
+    // An EXISTING system's date with no key of its own is the learn job's fact — never frozen into a
+    // recipe other jobs replay (leak-fix-portal skeptic): the box is left for a person.
+    if (existingSystemDateWithoutKey(`${step.selector?.label ?? ""} ${step.note ?? ""}`, step.value as string)) {
+      const next: RecipeStep = { ...step, operatorItem: "existing system date — the recorded answer was one job's, so the recipe leaves this box for a person" };
       delete next.value;
       return next;
     }
