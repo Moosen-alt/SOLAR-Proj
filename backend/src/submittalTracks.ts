@@ -382,6 +382,13 @@ export function isTrackDone(db: AppDb, projectId: string, track: SubmittalTrackT
   return pool.every((r) => targetFinishedTrack(db, track, r));
 }
 
+/** Does this track have a TRACKED filing — its own tagged target, or pool targets it draws on?
+ *  (A required track with none is unknown, not "in review": nobody has told us it was filed.) */
+export function trackHasFiling(db: AppDb, projectId: string, track: SubmittalTrackType, required: readonly SubmittalTrackType[]): boolean {
+  const { own, pool } = trackTargets(db, projectId, track, required);
+  return Boolean(own) || pool.length > 0;
+}
+
 // PermitCheckOutcome → track status. Issued-family wins; corrections surface next.
 //
 // ready_for_issue is NOT issued. It is the AHJ saying "approved, pay the issuance fee" — the

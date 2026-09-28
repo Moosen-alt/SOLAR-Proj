@@ -87,6 +87,21 @@ function otherTrackOutcome(db: AppDb, projectId: string, thisType: string): stri
 const DONE_OUTCOMES = new Set(["issued", "approved"]);
 const isDoneOutcome = (outcome: string): boolean => DONE_OUTCOMES.has(outcome) || isNemApprovalOutcome(outcome);
 
+/** The project's OTHER permit filings not yet issued, named ("the building permit"). A target of
+ *  this filing's own discipline is this filing; with the discipline unknown, every permit filing
+ *  not done counts (the issued one already reads issued). */
+function openSiblingPermits(db: AppDb, projectId: string, permitType: string): string[] {
+  const mine = text(permitType).toLowerCase();
+  const rows = db.query<{ latest_outcome?: string; target_type?: string; permit_type?: string }>(
+    "SELECT latest_outcome, target_type, permit_type FROM permit_check_targets WHERE project_id = ? AND active = 1",
+    [projectId],
+  );
+  return Array.from(new Set(rows
+    .filter((r) => trackKind(text(r.target_type), text(r.permit_type)) === "permit" && !DONE_OUTCOMES.has(text(r.latest_outcome))
+      && (!mine || text(r.permit_type).toLowerCase() !== mine))
+    .map((r) => permitPhrase(text(r.permit_type)))));
+}
+
 /**
  * "the electrical permit" when we know, plain "the permit" when we do not. Never a guess: naming
  * the wrong trade tells a client to schedule the wrong crew.
@@ -156,7 +171,20 @@ export function clientUpdateFor(
   const hasOther = Boolean(other);
 
   switch (outcome) {
-    case "issued":
+    case "issued": {
+      // ANOTHER PERMIT OF THIS JOB STILL IN REVIEW (live 2026-09-28: the electrical permit issued
+      // while the building permit sat in review) — "that clears the permit side" would be false.
+      const siblings = openSiblingPermits(db, project.id, text(ctx.permitType));
+      if (siblings.length) {
+        const list = siblings.join(" and ");
+        return {
+          subject: "Permit issued",
+          headline: `${ahj} has issued ${which}${refPhrase}.`,
+          meaning: `${list.charAt(0).toUpperCase()}${list.slice(1)} ${siblings.length > 1 ? "are" : "is"} still in review, so the installation cannot be scheduled yet.`,
+          action: `Nothing needed from you. We are watching ${list}${hasOther && !otherDone ? ` and the ${utility} interconnection` : ""} and will tell you the day it moves.`,
+        };
+      }
+    }
       return {
         subject: "Permit issued",
         headline: `${ahj} has issued ${which}${refPhrase}.`,

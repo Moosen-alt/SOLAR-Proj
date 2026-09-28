@@ -115,11 +115,22 @@ try {
   });
 
   // Same target recovering is legitimate news.
+  // (The electrical permit is issued first: since 2026-09-28 the headline reads "issued" only once
+  // every tracked permit filing is — partialPermitIssued.test.ts.)
   const s2 = filed("Salem Recovery Owner", "salem");
+  await read(s2, "electrical", ISSUED);
   await read(s2, "building", CORRECTION);
   await read(s2, "building", ISSUED);
   check("3c. MUST PASS: the SAME permit recovering (correction, then issued) still moves the project to issued", () => {
     assert.equal(statusOf(s2), "issued", `status=${statusOf(s2)}`);
+  });
+  // ...and with the electrical permit filed but not yet read issued, the recovery leaves the
+  // correction without claiming the project's permits are issued.
+  const s3 = filed("Salem Partial Recovery Owner", "salem");
+  await read(s3, "building", CORRECTION);
+  await read(s3, "building", ISSUED);
+  check("3d. the building permit recovering while the electrical permit is not yet issued: out of correction, not 'issued'", () => {
+    assert.ok(!["issued", "correction_received", "correction_triaged"].includes(statusOf(s3)), `status=${statusOf(s3)}`);
   });
 
   // ═══ LNK-4 (shape 1): NEM approved, then the permit only reaches ready_for_issue ════════

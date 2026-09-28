@@ -95,7 +95,7 @@ import { isPortalPaused } from "./portalPause";
 // The ONE creator of permit_check_targets rows (extracted from markTrackSubmitted).
 // Direction matters: submittalTracks must never import repository — jobQueue statically
 // imports repository, and the circular-import guard in CLAUDE.md is about that edge.
-import { ensureCheckTarget, refuseUtilityUrlOnPermitTarget, getSubmittalTracks, isTrackDone, requiredTracks, SUBMITTAL_TRACK_TYPES, trackPermitTypes, unfinishedTracks, unfinishedUnattributedTargets } from "./submittalTracks";
+import { ensureCheckTarget, refuseUtilityUrlOnPermitTarget, getSubmittalTracks, isTrackDone, requiredTracks, SUBMITTAL_TRACK_TYPES, trackHasFiling, trackPermitTypes, unfinishedTracks, unfinishedUnattributedTargets } from "./submittalTracks";
 import { recordTimelineSample, trackForTarget } from "./timelineSamples";
 import { buildApplicationDocumentPackage, findApplicationProfile } from "./applicationDocs";
 import { buildUtilityPackage } from "./docSplitter";
@@ -6477,6 +6477,16 @@ function closeCorrectionsOnTerminalStatus(
   return closed;
 }
 
+/** The required PERMIT tracks (building / electrical / combo — never NEM) with a TRACKED filing
+ *  that is not yet done (isTrackDone). A required track nobody has filed/tracked is not "in
+ *  review" and does not hold the headline — the tracks panel already shows it as not started. */
+function permitTracksStillOpen(db: AppDb, projectId: string): SubmittalTrackType[] {
+  const row = db.get<ProjectRow>("SELECT * FROM projects WHERE id = ?", [projectId]);
+  if (!row) return [];
+  const required = requiredTracks(mapProject(row));
+  return required.filter((t) => t !== "nem" && trackHasFiling(db, projectId, t, required) && !isTrackDone(db, projectId, t, required));
+}
+
 function updateProjectForPermitOutcome(
   db: AppDb,
   currentStatus: ProjectRecord["status"],
@@ -6580,7 +6590,21 @@ const MONITOR_WAITING_MAY_ADVANCE = new Set(["awaiting_human_submit", "submitted
   if (outcome === "correction_flagged") update("correction_received", "Permit monitor flagged a correction. Review bucket and next action.", "correction_open");
   else if (outcome === "nem_approved" && !isPermit) update("nem_approved", message, "nem_approved");
   else if (outcome === "ready_for_issue" && !isNem) update("ready_for_issue", message, "ready_for_issue");
-  else if (outcome === "issued" && !isNem) update("issued", message, "permit_issued");
+  else if (outcome === "issued" && !isNem) {
+    // ONE PERMIT ISSUED IS NOT THE PROJECT'S PERMITS ISSUED (live 2026-09-28: a separate-permit
+    // AHJ's electrical permit read "Permit Issued" while its building permit sat in review, and the
+    // project headline said "issued"). The headline is "issued" only once every required PERMIT
+    // track is done — isTrackDone, the one answer the tracks panel and the handoff read. Before
+    // that the issued filing is news on its own track card; the project reads "submitted" (in
+    // review), except where a greater permit state (fees due / approved) or the NEM approval
+    // already holds it — this writer never rewinds those.
+    const open = permitTracksStillOpen(db, projectId);
+    if (!open.length) update("issued", message, "permit_issued");
+    else if (["awaiting_human_submit", "submitted", "issued"].includes(currentStatus)) {
+      const named: Record<string, string> = { building: "building permit", electrical: "electrical permit", combo: "building + electrical permit", permit: "permit", mpu: "panel-upgrade permit" };
+      update("submitted", `${message.replace(/\s+$/, "")} Not yet issued: the ${open.map((t) => named[t] ?? `${t} permit`).join(" and the ")}.`, "under_review");
+    }
+  }
   else if (outcome === "reviewed_by_ahj" && !isNem) update("approved", message, "permit_approved");
   else if (outcome === "waiting" && MONITOR_WAITING_MAY_ADVANCE.has(currentStatus) && !waitingWouldRewindAnotherTrack()) {
     // THE PORTAL IS TRUTH ABOUT WHETHER A FILING EXISTS (operator ruling, 2026-09-20).
