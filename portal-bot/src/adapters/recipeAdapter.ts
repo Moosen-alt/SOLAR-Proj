@@ -97,7 +97,7 @@ import {
 } from "../../../shared/src/portalSafety";
 import { commitField, installSettleProbe, waitForSettled } from "../settle";
 import { siteOfUrl } from "../siteOf";
-import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, type FilingBackstop } from "../filingBackstop";
+import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, drainOwnWrites, unsavedAtReviewWarning, portalOwnCallsBlockedAtReview, reviewBlockedCallsLine, type FilingBackstop } from "../filingBackstop";
 
 // How long the drift precheck waits for an async-rendered form to paint before concluding
 // the replay is on the wrong page. PowerClerk's Ameren form reports zero inputs for several
@@ -696,6 +696,8 @@ export class RecipeAdapter extends BasePortalAdapter {
       // Hand-off: the route comes off FIRST, then every abort up to that moment is counted (an
       // abort between the last check and the hand-off is not lost).
       await this.backstop?.dispose().catch(() => null);
+      // The portal's own calls the lockdown held back on the review page, for the hand-off (B14).
+      this.noteReviewBlockedCalls();
       // AFTER THE APPROVED CLICK "Nothing was sent" is false: the filing went (or the click's own
       // request was the one aborted). Every abort is still reported, and the result says which.
       if (this.finalSubmitClicked) return this.withApprovedClickBackstopNotes(r);
@@ -772,6 +774,34 @@ export class RecipeAdapter extends BasePortalAdapter {
 
   private backstop: FilingBackstop | null = null;
   private backstopReported = 0;
+  /** What the person taking the review page must know before submitting (B3 / B14) — carried into
+   *  stopAtReview's hand-off message and data. */
+  private reviewHandoffNotes: string[] = [];
+  /** The review page's OWN background calls the lockdown held back (origin + path) — B14. */
+  private reviewPageBlockedCalls: string[] = [];
+  /** THE PORTAL'S OWN CALLS HELD BACK AT REVIEW (dryrun-0928 B14), read after dispose() so every
+   *  abort up to the hand-off counts: one line for the person — a section may render incomplete,
+   *  and how to get it back without re-sending a form. A third-party tracker is not named (it
+   *  stays in the drift warnings); the abort itself is unchanged (hard rule 1). */
+  private noteReviewBlockedCalls(): void {
+    const bs = this.backstop;
+    if (!bs || this.finalSubmitClicked) return;
+    const here = typeof this.page?.url === "function" ? String(this.page.url() ?? "") : "";
+    const calls = portalOwnCallsBlockedAtReview(bs.aborts, here);
+    if (!calls.length) return;
+    this.reviewPageBlockedCalls = calls;
+    const line = reviewBlockedCallsLine(calls, this.lastDocumentMethod);
+    if (line && !this.reviewHandoffNotes.includes(line)) this.reviewHandoffNotes.push(line);
+  }
+  /** Drain the run's own pending save on the review page before the sticky lock (B3). */
+  private async drainBeforeReviewLock(): Promise<void> {
+    const d = await drainOwnWrites(this.page, { why: `replay answers on the review page (${this.recipe.id})` });
+    if (d.drained && d.stillSaving) {
+      const w = unsavedAtReviewWarning("the review page");
+      if (!this.reviewHandoffNotes.includes(w)) this.reviewHandoffNotes.push(w);
+      if (!this.driftWarnings.includes(w)) this.driftWarnings.push(w);
+    }
+  }
   /** Record every backstop abort not yet reported; the run-stopping reason when any of them was a
    *  filing/payment request (the filing-URL rule), else "". A window abort (a dismisser click or
    *  a terminal-page Enter fired a state-changing request — often a consent XHR) is reported and
@@ -843,16 +873,21 @@ export class RecipeAdapter extends BasePortalAdapter {
         { finalSubmitClicked: true, finalSubmitOutcome: outcome },
       );
     }
+    // WHAT THE PERSON MUST KNOW BEFORE SUBMITTING (dryrun-0928 B3 / B14): answers the portal may
+    // not have saved, and the portal's own background calls the lockdown held back on this page.
+    const notes = this.reviewHandoffNotes;
+    const handoff = notes.length ? ` ${notes.join(" ")}` : "";
+    const handoffData = notes.length ? { reviewHandoffNotes: [...notes], reviewPageBlockedCalls: [...this.reviewPageBlockedCalls] } : {};
     // Never "staged to the review screen" for a run that did not verifiably reach it (runs-finish 3).
     if (this.stoppedBeforeReview) {
       return ok(
-        `${HUMAN_REVIEW_MESSAGE} The recipe did NOT stage ${this.portalName} at its review screen — it ${this.stoppedBeforeReview} AUTOMATION HAS STOPPED.`,
-        { finalSubmitClicked: false, stoppedBeforeReview: true },
+        `${HUMAN_REVIEW_MESSAGE} The recipe did NOT stage ${this.portalName} at its review screen — it ${this.stoppedBeforeReview}${handoff} AUTOMATION HAS STOPPED.`,
+        { finalSubmitClicked: false, stoppedBeforeReview: true, ...handoffData },
       );
     }
     return ok(
-      `${HUMAN_REVIEW_MESSAGE} The recipe staged ${this.portalName} to the review screen. Verify every field and uploaded file, handle any MFA/fee, then click submit manually. AUTOMATION HAS STOPPED.`,
-      { finalSubmitClicked: false },
+      `${HUMAN_REVIEW_MESSAGE} The recipe staged ${this.portalName} to the review screen. Verify every field and uploaded file, handle any MFA/fee, then click submit manually.${handoff} AUTOMATION HAS STOPPED.`,
+      { finalSubmitClicked: false, ...handoffData },
     );
   }
   // After a final submit, scrape the COMPLETION page for the issued permit/record number
@@ -1329,7 +1364,9 @@ export class RecipeAdapter extends BasePortalAdapter {
           break;
         }
         // Past review only toward an APPROVED final submit: every state-changing request is now
-        // aborted except inside THE approved click's window (filingBackstop.ts).
+        // aborted except inside THE approved click's window (filingBackstop.ts). The run's own
+        // pending save on this page drains first (B3) — the lock would abort it too.
+        await this.drainBeforeReviewLock();
         this.backstop?.lockReview(`replay stopForReview before the approved final submit (${this.recipe.id})`);
         pastReview = true;
         continue;
@@ -1973,7 +2010,10 @@ export class RecipeAdapter extends BasePortalAdapter {
     // THE REVIEW-PAGE LOCKDOWN (filingBackstop.ts): the run's last write to the page (the final
     // re-assert and gap-fill above, which a portal autosaves on blur) is done. From here until
     // fillApplication hands the page to a person (dispose), every state-changing request is
-    // aborted and stops the run, named.
+    // aborted and stops the run, named. ...BUT NOT BEFORE THE PORTAL HAS SAVED WHAT THE RUN WROTE
+    // (dryrun-0928 B3): PowerClerk batches a page's answers into one save seconds after the first
+    // change; the final-submit refusal and stopForReview exits both arrive here with it pending.
+    await this.drainBeforeReviewLock();
     this.backstop?.lockReview(`replay stopped at review (${this.recipe.id})`);
     const review = await this.verifyReviewScreen(project);
     const data = {
@@ -3934,6 +3974,11 @@ export class RecipeAdapter extends BasePortalAdapter {
         }
         // Same settle for checkbox changes that may trigger form re-renders.
         await this.settle(3000);
+        // AND THE PORTAL'S COMMIT, as select and fill already wait (dryrun-0928 B3): a tick is a
+        // write the portal autosaves too — the recorded certification tick at the end of the
+        // PacifiCorp recipe was the answer the review lockdown then aborted. Inside this step's
+        // own-write window, so the save it waits for is let through.
+        await this.waitForAutosaveCommitted();
         return true;
       }
       case "uncheck":

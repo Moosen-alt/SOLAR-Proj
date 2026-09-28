@@ -4784,6 +4784,21 @@ function applyAutopilotState(s) {
       banner.style.display = "none";
     }
   }
+  // WHAT THE PERSON TAKING THE REVIEW PAGE MUST KNOW (dryrun-0928 B3 / B14): answers the portal may
+  // not have saved when automation handed over, and the portal's own background calls the review
+  // lockdown held back (a section may render incomplete). Its own banner — never folded into the
+  // mismatch list. textContent only: the notes carry portal paths, never markup.
+  const handoffBanner = $("reviewHandoffBanner");
+  const handoffList = $("reviewHandoffList");
+  if (handoffBanner && handoffList) {
+    const notes = Array.isArray(s.reviewHandoffNotes) ? s.reviewHandoffNotes.filter((n) => typeof n === "string" && n.trim()) : [];
+    if (notes.length > 0 && s.phase === "awaiting_approval") {
+      handoffList.textContent = notes.join(" | ");
+      handoffBanner.style.display = "";
+    } else {
+      handoffBanner.style.display = "none";
+    }
+  }
   // Advise the operator about required fields the gap-fill left blank (no project data).
   const gapBanner = $("gapFillBanner");
   const gapList = $("gapFillList");
@@ -4829,11 +4844,11 @@ function resetAutopilotRail() {
   }
   const reasonEl = $("autopilotReason");
   if (reasonEl) { reasonEl.textContent = ""; reasonEl.hidden = true; }
-  for (const id of ["reviewMismatchBanner", "gapFillBanner"]) {
+  for (const id of ["reviewMismatchBanner", "reviewHandoffBanner", "gapFillBanner"]) {
     const el = $(id);
     if (el && el.style) el.style.display = "none";
   }
-  for (const id of ["reviewMismatchList", "gapFillList"]) {
+  for (const id of ["reviewMismatchList", "reviewHandoffList", "gapFillList"]) {
     const el = $(id);
     if (el) el.textContent = "";
   }

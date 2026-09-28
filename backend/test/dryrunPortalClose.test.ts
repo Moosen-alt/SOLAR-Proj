@@ -259,4 +259,19 @@ await check("(B11 ledger) every staging browser launch writes a draft-ledger row
   assert.match(String(bRef?.note), /no record key/, "and the row says it carries no record key");
 });
 
+// ═══ B3 / B14 — the hand-off reaches the operator (the DOM half is reviewSaveDrain.dom.smoke.ts) ══
+await check("(B3/B14 hand-off) the review page's hand-off notes reach the autopilot panel's own list, and a learn's reach its message", async () => {
+  const { reviewInfoFromResultJson } = await import("../src/nextStep");
+  const note = "While automation held this review page, the portal's own background request(s) /Cap/CapConfirm.aspx/DisplayRequiredLicenseProfessionalType were blocked — nothing was sent.";
+  const info = reviewInfoFromResultJson(JSON.stringify({ steps: [{ ok: true, data: {} }, { ok: true, data: { finalSubmitClicked: false, reviewHandoffNotes: [note] } }] }));
+  assert.deepEqual(info.reviewHandoffNotes, [note]);
+  assert.equal(info.reviewMismatches.length, 0, "a hand-off note is not a review mismatch (its own channel)");
+  // A learn's hand-off notes ride on the message the operator reads (the learn's own message is not it).
+  const projectId = fx.newProject();
+  const unsaved = "ANSWERS ON THE REVIEW PAGE MAY NOT BE SAVED: the portal still read \"Saving…\" when automation handed the review page over.";
+  nextLearn = { ok: false, portalName: "stub", steps: [], reviewScreen: { fields: [], bodyTextSnippet: "" }, finalSubmitRecorded: false, pageCount: 1, pauseReason: null, message: "stub learn stopped", reviewHandoffNotes: [unsaved] };
+  const result = await autoLearn.autoLearnPortal(db, projectId, { scope: "ahj", portalUrl: "https://devhub.portlandoregon.gov/apply", createdBy: "operator" });
+  assert.match(String(result.message), /MAY NOT BE SAVED/, `the learn's hand-off note did not reach the result message: ${result.message}`);
+});
+
 finish("dryrun portal close");

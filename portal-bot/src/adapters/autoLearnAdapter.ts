@@ -20,7 +20,7 @@ import { portalUploadCapBytes } from "../uploadCap";
 import { LearnRunDebug } from "../learnDebug";
 import { armHumanCaptureOnPage } from "../humanCapture";
 import { PORTAL_SAFETY_GLOBAL, PORTAL_SAFETY_IN_PAGE_SOURCE, isSignatureNameLabel, isTypeSignatureToggleLabel, reviewSignals as sharedReviewSignals, splitSignerName } from "../../../shared/src/portalSafety";
-import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, backstopFor, isStoppingAbort } from "../filingBackstop";
+import { installFilingBackstop, withBackstopWindow, withOwnWriteWindow, describeBackstopAbort, backstopFor, isStoppingAbort, drainOwnWrites, unsavedAtReviewWarning, portalOwnCallsBlockedAtReview, reviewBlockedCallsLine } from "../filingBackstop";
 import { hostOfUrl, sameCredentialScope } from "../siteOf";
 
 // AutoLearnAdapter — AUTONOMOUSLY learns an unknown AHJ/utility portal form instead of
@@ -186,6 +186,11 @@ export interface LearnResult {
   /** Absolute path of this run's debug bundle (data/learn-runs/<runId>) — the folder the
    *  operator zips up for troubleshooting. Undefined when AUTOLEARN_RUN_DEBUG=0. */
   debugDir?: string;
+  /** The review page's OWN background calls the lockdown held back (origin + path) — B14. */
+  reviewPageBlockedCalls?: string[];
+  /** What the person taking the review page must know before submitting (unsaved answers, held
+   *  calls) — the same lines are appended to `message`. B3 / B14. */
+  reviewHandoffNotes?: string[];
 }
 
 // Live progress signal emitted while learning a portal, so the UI can show a real
@@ -1980,6 +1985,8 @@ export class AutoLearnAdapter extends BasePortalAdapter {
   /** The permit discipline this run is filing ("electrical", "structural", …). Empty when
    *  the caller didn't say — the record-type guard then only checks label-vs-control. */
   private permitDiscipline = "";
+  /** Set when the review page's own save was still pending when the learn handed over (B3). */
+  private reviewUnsavedWarning = "";
   /** True once the delegated final submit actually went through. Read by the caller. */
   finalSubmitClicked = false;
   /** The completion/receipt page as text + URL, captured while standing on it. */
@@ -3260,6 +3267,19 @@ export class AutoLearnAdapter extends BasePortalAdapter {
       result = await this.learnImpl(context, project);
       // Hand-off first (the route comes off), then every abort up to that moment is counted.
       await backstop?.dispose().catch(() => null);
+      // WHAT THE PERSON TAKING THE REVIEW PAGE MUST KNOW (dryrun-0928 B3 + B14), in the hand-off itself:
+      // answers the portal may not have saved, and the portal's own background calls the lockdown
+      // held back (a section may render incomplete). The learner cannot tell how the page was
+      // reached, so the advice is the portal's own navigation, never a reload.
+      if (result.reachedReview) {
+        const reviewUrl = (() => { try { return typeof this.page?.url === "function" ? String(this.page.url() || "") : ""; } catch { return ""; } })();
+        const blockedCalls = backstop ? portalOwnCallsBlockedAtReview(backstop.aborts, reviewUrl) : [];
+        const handoff = [this.reviewUnsavedWarning, reviewBlockedCallsLine(blockedCalls, null)].filter(Boolean);
+        if (handoff.length) {
+          result = { ...result, reviewPageBlockedCalls: blockedCalls, reviewHandoffNotes: handoff, message: `${result.message} ${handoff.join(" ")}` };
+          this.debug?.event({ type: "review_handoff_notes", notes: handoff.map((h) => h.slice(0, 200)) });
+        }
+      }
       // EVERY ABORT IS REPORTED, and a learn during which the page tried to file or pay (or post
       // from the review page) is not a clean learn: the recipe it recorded contains the step
       // that did it.
@@ -6199,7 +6219,16 @@ export class AutoLearnAdapter extends BasePortalAdapter {
           }
         };
         await settleNetwork(8000);
-        await this.waitForAutosaveIndicator(4000);
+        if (plan.atReview) {
+          // AT REVIEW THE PORTAL'S SAVE OF THESE ANSWERS MUST BE LET THROUGH, NOT OUTWAITED (dryrun-0928
+          // B3): PowerClerk batches the last page's answers into one save ~5 s after the first change,
+          // after every per-write window has closed, and the review lockdown aborted it. The drain
+          // keeps the run's own same-origin save open while the page reads "Saving…".
+          const d = await drainOwnWrites(this.page, { why: "learner answers on the review page" });
+          if (d.stillSaving) this.reviewUnsavedWarning = unsavedAtReviewWarning("the review page");
+        } else {
+          await this.waitForAutosaveIndicator(4000);
+        }
         const settleMs = Number(process.env.AUTOLEARN_SAVE_SETTLE_MS) || 800;
         await sleep(settleMs);
 
@@ -6332,6 +6361,12 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         // re-applies whatever is lost.
         await this.verifyFillsLanded(appliedThisPage, { budgetMs: 25_000, requiredOnly: true }).catch(() => [] as string[]);
         reachedReview = true;
+        // ...AND THE PORTAL HAS SAVED IT (B3): the re-apply above may have written again, and the lock
+        // below aborts everything, own writes included — so the run's own pending save drains first.
+        {
+          const d = await drainOwnWrites(this.page, { why: "learner answers on the review page" });
+          this.reviewUnsavedWarning = d.drained && d.stillSaving ? unsavedAtReviewWarning("the review page") : (d.drained ? "" : this.reviewUnsavedWarning);
+        }
         // THE REVIEW-PAGE LOCKDOWN (filingBackstop.ts): the learn's last write is done; nothing
         // legitimate posts from here until the page is handed to a person.
         backstopFor(this.page)?.lockReview("learner at review");

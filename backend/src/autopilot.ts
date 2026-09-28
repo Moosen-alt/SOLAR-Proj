@@ -79,6 +79,9 @@ export interface AutopilotState {
   /** Required portal fields left blank though the project HAS the value — an engine gap,
    *  never the operator's data problem. */
   gapEngineUnfilled: string[];
+  /** What the person taking the staged review page must know before submitting (dryrun-0928
+   *  B3 / B14): answers the portal may not have saved; the portal's own calls held back. */
+  reviewHandoffNotes: string[];
   /** Why Approve & Submit is disabled, in words (null when canApprove). */
   approveDisabledReason: string | null;
   /** S8 — may "Stage portals · Autopilot" start a run? False with a reason when the project is
@@ -268,7 +271,7 @@ function awaitingPortalRun(db: AppDb, projectId: string, track?: SubmittalTrackT
 
 // Review-screen mismatches + gap-fill lists from a portal_run's result_json (the reader lives
 // in nextStep.ts so the next-step rule table and this panel read the same lists).
-function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[]; gapEngineUnfilled: string[] } {
+function reviewInfoFromRun(run: Row | null): { reviewMismatches: ReviewMismatch[]; reviewAccurate: boolean | null; gapFillMissing: string[]; gapEngineUnfilled: string[]; reviewHandoffNotes: string[] } {
   return reviewInfoFromResultJson(run?.result_json);
 }
 
@@ -289,7 +292,7 @@ export function getAutopilotState(db: AppDb, projectId: string): AutopilotState 
   const run = latestPortalRun(db, projectId);
   const facts = loadFullNextStepFacts(db, projectId);
   const nextStep = decideNextStep(facts);
-  const noReview = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[], gapEngineUnfilled: [] as string[] };
+  const noReview = { reviewMismatches: [] as ReviewMismatch[], reviewAccurate: null as boolean | null, gapFillMissing: [] as string[], gapEngineUnfilled: [] as string[], reviewHandoffNotes: [] as string[] };
 
   const job = db.get<Row>(
     "SELECT * FROM job_queue WHERE project_id = ? AND job_type = 'autopilot' ORDER BY created_at DESC LIMIT 1",

@@ -1257,8 +1257,15 @@ async function autoLearnPortalInner(
   // every planner/verifier Claude call this run: latency, tokens, cache hits, stop_reason) and
   // result.json (the outcome + verification signals). Diagnostics only — never fails the learn.
   const debugDir = learn.debugDir ?? null;
+  // WHAT THE PERSON AT THE REVIEW PAGE MUST KNOW (dryrun-0928 B3 / B14): answers the portal may not
+  // have saved, and the portal's own background calls the lockdown held back — carried into EVERY
+  // outcome's message, since the learn's own message is not what the operator reads.
+  const handoffNotes = (learn.reviewHandoffNotes ?? []).filter(Boolean);
   const finalize = (r: Omit<AutoLearnResult, "debugDir">): AutoLearnResult => {
-    const result: AutoLearnResult = { ...r, debugDir };
+    const withNotes = handoffNotes.length && !handoffNotes.every((n) => String(r.message ?? "").includes(n))
+      ? { ...r, message: `${r.message} ${handoffNotes.join(" ")}` }
+      : r;
+    const result: AutoLearnResult = { ...withNotes, debugDir };
     if (debugDir) {
       try {
         fs.writeFileSync(path.join(debugDir, "llm-calls.json"), JSON.stringify({
