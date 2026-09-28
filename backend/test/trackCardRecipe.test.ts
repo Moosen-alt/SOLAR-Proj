@@ -185,6 +185,15 @@ await check("(B4') MUST-EXCLUDE: a resolved row of another scope / state / disci
   assert.notEqual(wrongState.id, nemRecipe.id, "a Washington recording reset the Oregon row");
   // Restore the electrical recipe's steps (the reset above wiped them).
   recipes.savePortalRecipeSteps(db, other.id, steps("Residential - Electrical"), { status: "complete" });
+  // Another AGENCY's row (a county's, handed over for a city of a similar name) is not this AHJ's slot.
+  const county = ahjRecipe("Marion County", "Pacific Power", "structural", "Residential - Structural");
+  const city = recipes.startPortalRecording(db, { scopeType: "ahj", state: "OR", ahj: "City of Marion", utility: "Pacific Power", discipline: "structural", portalUrl: ACA_OREGON, existingRecipeId: county.id });
+  assert.notEqual(city.id, county.id, "a City of Marion recording reset Marion County's recipe");
+  assert.equal(fx.recipeRow(county.id).version, county.version);
+  // MUST-PASS: the same agency under a short spelling IS the slot ("Coos Bay" is "City of Coos Bay").
+  const short = recipes.startPortalRecording(db, { scopeType: "ahj", state: "OR", ahj: "Coos Bay", utility: "PacifiCorp", discipline: "structural", portalUrl: ACA_OREGON, existingRecipeId: coosStructural.id });
+  assert.equal(short.id, coosStructural.id, "the same agency's resolved row was not reused");
+  recipes.savePortalRecipeSteps(db, coosStructural.id, steps("Residential - Structural"), { status: "complete" });
 });
 
 await check("(B5) THE LEARN DOOR: a real autoLearnPortal for a 'PacifiCorp' project writes the 'Pacific Power' row, inserts no 'pacificorp' recipe", async () => {

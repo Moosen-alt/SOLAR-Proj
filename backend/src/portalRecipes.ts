@@ -27,6 +27,7 @@ import { clientCompanyFactFields } from "./clients";
 import { COMPANY_IDENTIFIER_KEY, companyFactStamp, isCompanyAttestationStep, isCompanyIdentityLabel, looksLikePlaceholderIdentifier } from "../../shared/src/companyFacts";
 import { usStateCode } from "./permitPath";
 import { provablyDifferentUtility, sameUtilityEntity } from "./utilityIdentity";
+import { sameAgencyName } from "./permitProcessLookup";
 import { labelWords } from "../../shared/src/portalSafety";
 import { mountAdjective, mountKindForProject } from "./codeReviewRules";
 
@@ -645,7 +646,11 @@ export function startPortalRecording(
   const resolvedFits = Boolean(resolved)
     && s(resolved!.scope_type) === scopeType
     && s(resolved!.state).trim().toLowerCase() === s(input.state).trim().toLowerCase() && Boolean(s(input.state).trim())
-    && (s(resolved!.discipline) === discipline || s(resolved!.discipline) === "");
+    && (s(resolved!.discipline) === discipline || s(resolved!.discipline) === "")
+    // An AHJ recipe's row is this AHJ's only when the agency is the same one (permitProcessLookup's
+    // "is this the same agency" predicate: "Coos Bay" is "City of Coos Bay", "Marion County" is not
+    // "City of Marion") — the resolver's fuzzy alias alone could hand over another AHJ's row.
+    && (scopeType !== "ahj" || sameAgencyName(s(resolved!.ahj), ahj));
   // A legacy '' row resolved while ITS key already holds this discipline's own row: that row is the
   // slot (adopting the legacy one would collide on UNIQUE(profile_key, discipline)).
   const resolvedSlot = resolvedFits && s(resolved!.discipline) !== discipline
