@@ -650,7 +650,16 @@ export function startPortalRecording(
     // An AHJ recipe's row is this AHJ's only when the agency is the same one (permitProcessLookup's
     // "is this the same agency" predicate: "Coos Bay" is "City of Coos Bay", "Marion County" is not
     // "City of Marion") — the resolver's fuzzy alias alone could hand over another AHJ's row.
-    && (scopeType !== "ahj" || sameAgencyName(s(resolved!.ahj), ahj));
+    && (scopeType !== "ahj" || sameAgencyName(s(resolved!.ahj), ahj))
+    // And a UTILITY recipe's row is this utility's only when it IS this utility: the one identity
+    // ("PacifiCorp" is "Pacific Power", "RMP" is "Rocky Mountain Power") or the same name once
+    // normalized. The fuzzy alias's containment score (82) hands "Western Massachusetts Electric"
+    // the "Massachusetts Electric" recipe and "Penn Power" the "West Penn Power" one — a reset there
+    // wipes ANOTHER utility's shared recipe and overwrites its portal URL. Not provable: the
+    // exact-key row below (the base behaviour — this utility's own row, inserted if none).
+    && (scopeType !== "utility"
+      || sameUtilityEntity(input.state, s(resolved!.utility), s(input.utility))
+      || recipeProfileKey({ scopeType: "utility", state: input.state, utility: s(resolved!.utility) }) === key);
   // A legacy '' row resolved while ITS key already holds this discipline's own row: that row is the
   // slot (adopting the legacy one would collide on UNIQUE(profile_key, discipline)).
   const resolvedSlot = resolvedFits && s(resolved!.discipline) !== discipline

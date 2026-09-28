@@ -16,7 +16,9 @@
 // KILLS (verified by hand, see the commit): the card's raw profile_key query -> A1, A2, A4 FAIL;
 // findRecipeByNameAlias without sameUtilityEntity -> B2, A4 FAIL; findKnowledgeByName without it -> B3
 // FAILS; autoLearn not passing existingRecipeId -> B5 FAILS; startPortalRecording taking any resolved
-// row without the scope/state/discipline guard -> B4' FAILS.
+// row without the scope/state/discipline guard -> B4' FAILS; a UTILITY-scope resolved row taken
+// without the identity/same-name guard -> B4'' FAILS; the guard without its identity arm -> B4,
+// B4''', B5 FAIL.
 //
 //   npx tsx backend/test/trackCardRecipe.test.ts
 import "./_isolate"; // FIRST
@@ -127,7 +129,8 @@ await check("(B1) sameUtilityEntity: state-gated, anchored — MUST-PASS and MUS
   assert.equal(identity.sameUtilityEntity("", "PacifiCorp", "Pacific Power"), false, "an unknown state proves nothing");
   assert.equal(identity.sameUtilityEntity("WA", "Pacific County PUD", "Pacific Power"), false);
   assert.equal(identity.sameUtilityEntity("OR", "Idaho Power", "Idaho Power"), false, "unknown to the identity: the fuzzy scorer's question, not this one");
-  // Its flip side: provably different only when the identity KNOWS one side.
+  // Its flip side: provably different only when the identity KNOWS BOTH sides and they differ
+  // (a name it does not know is the fuzzy scorer's call — utilityIdentityBridges.test.ts I5).
   assert.equal(identity.provablyDifferentUtility("CA", "Pacific Gas and Electric", "Pacific Power"), true);
   assert.equal(identity.provablyDifferentUtility("OR", "PacifiCorp", "Pacific Power"), false);
   assert.equal(identity.provablyDifferentUtility("OR", "Idaho Power", "Umatilla Electric"), false, "neither known: not this predicate's call");
@@ -194,6 +197,56 @@ await check("(B4') MUST-EXCLUDE: a resolved row of another scope / state / disci
   const short = recipes.startPortalRecording(db, { scopeType: "ahj", state: "OR", ahj: "Coos Bay", utility: "PacifiCorp", discipline: "structural", portalUrl: ACA_OREGON, existingRecipeId: coosStructural.id });
   assert.equal(short.id, coosStructural.id, "the same agency's resolved row was not reused");
   recipes.savePortalRecipeSteps(db, coosStructural.id, steps("Residential - Structural"), { status: "complete" });
+});
+
+// A UTILITY recipe row the fuzzy alias hands over is ANOTHER utility's whenever the names only
+// contain each other ("Massachusetts Electric" is inside "Western Massachusetts Electric", 82).
+// Fictional portal URLs; real-shaped utility names (the collision is in the names).
+const utilityRecipe = (state: string, utility: string, portalUrl: string) => {
+  const r = recipes.startPortalRecording(db, { scopeType: "utility", state, utility, portalUrl, portalPlatform: "powerclerk", createdBy: "test" });
+  return recipes.savePortalRecipeSteps(db, r.id, [{ action: "goto", value: portalUrl } as RecipeStep, fill(1), fill(2), REVIEW], { status: "complete" });
+};
+const ownKey = (state: string, utility: string) => recipes.recipeProfileKey({ scopeType: "utility", state, utility });
+
+await check("(B4'') MUST-EXCLUDE: a UTILITY learn never resets a fuzzy neighbour's recipe (Western Massachusetts Electric vs Massachusetts Electric; Penn Power vs West Penn Power)", () => {
+  for (const [state, onFile, learning, onFileUrl, learnUrl] of [
+    ["MA", "Massachusetts Electric", "Western Massachusetts Electric", "https://ma-electric.example.test/apply", "https://western-ma.example.test/apply"],
+    ["PA", "West Penn Power", "Penn Power", "https://west-penn.example.test/apply", "https://penn-power.example.test/apply"],
+  ] as const) {
+    const neighbour = utilityRecipe(state, onFile, onFileUrl);
+    const before = { ...fx.recipeRow(neighbour.id) };
+    // The resolver really hands the neighbour's row over (fuzzy containment 82) — else this proves nothing.
+    const resolved = recipes.findAnyRecipeForProject(db, { scopeType: "utility", state, utility: learning });
+    assert.equal(resolved?.id, neighbour.id, `setup: the alias did not resolve ${learning} to ${onFile}`);
+    const learned = recipes.startPortalRecording(db, { scopeType: "utility", state, utility: learning, portalUrl: learnUrl, createdBy: "test", existingRecipeId: resolved!.id });
+    assert.notEqual(learned.id, neighbour.id, `a ${learning} learn reset ${onFile}'s recipe`);
+    const after = fx.recipeRow(neighbour.id);
+    assert.equal(after.version, before.version, `${onFile}'s version moved`);
+    assert.equal(after.portal_url, onFileUrl, `${onFile}'s portal URL was overwritten`);
+    assert.equal(after.steps_json, before.steps_json, `${onFile}'s steps were wiped`);
+    assert.equal(after.status, "complete");
+    // Base behaviour: the learning utility's OWN row, at its own key.
+    const own = db.get<{ id: string; portal_url: string }>("SELECT id, portal_url FROM portal_recipes WHERE profile_key = ?", [ownKey(state, learning)]);
+    assert.equal(own?.id, learned.id, `no row of ${learning}'s own was written`);
+    assert.equal(own?.portal_url, learnUrl);
+  }
+});
+
+await check("(B4''') MUST-PASS: the same utility under a short / brand name still reuses its row (identity or the same normalized name)", () => {
+  const rmp = utilityRecipe("UT", "Rocky Mountain Power", PACIFICORP_NM);
+  const n = db.get<{ n: number }>("SELECT COUNT(*) AS n FROM portal_recipes WHERE scope_type = 'utility'")!.n;
+  for (const alias of ["RMP", "Rocky Mtn Power", "PacifiCorp"]) {
+    const v = Number(fx.recipeRow(rmp.id).version);
+    const resolved = recipes.findAnyRecipeForProject(db, { scopeType: "utility", state: "UT", utility: alias });
+    assert.equal(resolved?.id, rmp.id, `setup: ${alias} did not resolve the Rocky Mountain Power recipe`);
+    const reset = recipes.startPortalRecording(db, { scopeType: "utility", state: "UT", utility: alias, portalUrl: PACIFICORP_NM, existingRecipeId: resolved!.id });
+    assert.equal(reset.id, rmp.id, `${alias}: a duplicate row was inserted beside the resolved one`);
+    assert.equal(Number(fx.recipeRow(rmp.id).version), v + 1);
+  }
+  // The same name, differently cased / punctuated, is the same slot too.
+  const same = recipes.startPortalRecording(db, { scopeType: "utility", state: "UT", utility: "ROCKY MOUNTAIN POWER.", portalUrl: PACIFICORP_NM, existingRecipeId: rmp.id });
+  assert.equal(same.id, rmp.id);
+  assert.equal(db.get<{ n: number }>("SELECT COUNT(*) AS n FROM portal_recipes WHERE scope_type = 'utility'")!.n, n, "a utility row was added");
 });
 
 await check("(B5) THE LEARN DOOR: a real autoLearnPortal for a 'PacifiCorp' project writes the 'Pacific Power' row, inserts no 'pacificorp' recipe", async () => {
