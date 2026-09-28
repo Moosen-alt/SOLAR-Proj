@@ -161,6 +161,9 @@ export interface StatePermitRules {
   statewidePortal?: CitedFact<string>;
   /** Its name, as a label reads it ("Oregon ePermitting"). */
   statewidePortalName?: string;
+  /** Its channel label with the platform ("Oregon ePermitting (Accela)") — given ONLY to a resolved
+   *  URL on the statewide host (permitChannelLabel). */
+  statewidePortalLabel?: string;
   /** How a prescriptive-path PV structural permit is priced. */
   prescriptiveFeeBasis?: CitedFact<string>;
   /** The electrical renewable-energy fee tiers (kVA). */
@@ -197,6 +200,7 @@ export const STATE_PERMIT_RULES: Record<string, StatePermitRules> = {
       origin: "state_rule",
     },
     statewidePortalName: "Oregon ePermitting",
+    statewidePortalLabel: "Oregon ePermitting (Accela)",
     prescriptiveFeeBasis: {
       value: "flat",
       sourceUrl: OAR_918_050_0180,
@@ -367,6 +371,27 @@ export function isStatewidePortalUrl(state: string | null | undefined, url: stri
 /** The statewide portal's name ("Oregon ePermitting"), "" when the state has none. */
 export function statewidePortalName(state: string | null | undefined): string {
   return stateRulesFor(state).statewidePortalName ?? "";
+}
+
+/**
+ * THE CHANNEL LABEL OF A RESOLVED PORTAL URL — ONE predicate (portal-truth D4). Corvallis's track
+ * card read "Oregon ePermitting (Accela)" because an Oregon profile's words mentioned Accela /
+ * e-permitting; the city files on its OWN Accela tenant. The statewide label is given ONLY when the
+ * URL's host IS the statewide instance (isStatewidePortalUrl — its host or a known alias); an
+ * Accela Citizen Access tenant of the AHJ's own (aca-prod.accela.com/<TENANT>, a custom-domain
+ * …/CitizenAccess/) is "Accela Citizen Access (<AHJ>'s own portal)". null = no platform label (the
+ * caller keeps its own words). Never read from free text.
+ */
+export function permitChannelLabel(state: string | null | undefined, ahj: string | null | undefined, url: string | null | undefined): string | null {
+  const u = String(url ?? "").trim();
+  const host = hostOf(u);
+  if (!host) return null;
+  if (isStatewidePortalUrl(state, u)) return stateRulesFor(state).statewidePortalLabel || statewidePortalName(state) || null;
+  let path = "";
+  try { path = new URL(u).pathname; } catch { path = ""; }
+  const acaTenant = (/(?:^|\.)accela\.com$/.test(host) && /^aca/.test(host) && /^\/[^/.]+/.test(path)) || /\/citizenaccess(?:\/|$)/i.test(path);
+  if (acaTenant) return `Accela Citizen Access (${String(ahj ?? "").trim() || "the AHJ"}'s own portal)`;
+  return null;
 }
 
 /** One piece of evidence about WHERE an AHJ files, read by statewidePortalFor. */

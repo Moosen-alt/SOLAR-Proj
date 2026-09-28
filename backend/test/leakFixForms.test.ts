@@ -144,7 +144,10 @@ await check("F4 MUST-EXCLUDE: Accela outside Oregon is named neutrally (seeded T
     const p = findApplicationProfile(job(st, ahj));
     const label = describePermitType(p).submissionMethod;
     assert.ok(!/oregon/i.test(`${p.portalName} ${label}`), `${ahj}, ${st}: ${p.portalName} / ${label}`);
-    assert.equal(label, "Accela Citizen Access (online portal)", `${ahj}, ${st}`);
+    // portal-truth D4: a seeded method carrying the AHJ's own ACA tenant URL (Sacramento's
+    // aca-prod.accela.com/SACRAMENTO, Hollywood's …/hollywood) is labelled by that host as the AHJ's
+    // own portal; words alone (Tampa) stay neutral. Never Oregon's label either way.
+    assert.ok(["Accela Citizen Access (online portal)", `Accela Citizen Access (${ahj}'s own portal)`].includes(label), `${ahj}, ${st}: ${label}`);
   }
 });
 

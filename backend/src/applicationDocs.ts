@@ -7,7 +7,7 @@ import type {
 } from "../../shared/src/types";
 import { nowIso } from "./time";
 import { findAhjProcessProfile, ahjProcessKnowledgeStatus, jurisdictionCore, registryTermMatches } from "./processProfiles";
-import { describeCited, permitProcessFor, statePermitStructure } from "./permitProcess";
+import { describeCited, isStatewidePortalUrl, permitChannelLabel, permitProcessFor, statePermitStructure } from "./permitProcess";
 import { resolvePermitPath, resolveStampRequirement, permitPathCallout, hasStampedStructuralEvidence, evaluatePrescriptiveCriteria, usStateCode, type PermitPathResolution } from "./permitPath";
 // Functions only, called at run time: this module sits inside the permitProcessLookup ->
 // feeSchedules -> knowledgeBase -> applicationDocs import cycle (see applicationDocsAgency's header).
@@ -567,11 +567,16 @@ function applicationProfileFromProcess(project: ProjectRecord): ApplicationRequi
   }
   if (!requiredDocuments.length) requiredDocuments.push("Plan set and specifications");
 
-  // OREGON ePERMITTING IS OREGON'S. Tampa, Coral Springs, Sacramento and Bernalillo run their OWN
-  // Accela; outside Oregon the platform is named neutrally, and a non-Accela "e-permitting" portal
-  // keeps the AHJ's own words.
+  // OREGON ePERMITTING IS A HOST, NOT A WORD (portal-truth D4). Tampa, Coral Springs, Sacramento and
+  // Bernalillo run their OWN Accela — and so do Albany, Brownsville and Corvallis in Oregon: an
+  // Oregon profile whose words say "accela" / "e-permitting" labelled Corvallis's card "Oregon
+  // ePermitting (Accela)" while the city files on its own tenant. A URL in the seeded words is
+  // labelled by its host (permitChannelLabel — the one predicate); words alone are named neutrally
+  // (the statewide label comes only with a resolved statewide URL: submittalTracks' channel).
+  const methodUrl = /https?:\/\/[^\s,;)"'<>]+/i.exec(proc.submissionMethod || "")?.[0] ?? "";
+  const urlLabel = methodUrl ? permitChannelLabel(project.state, project.ahj, methodUrl) : null;
   const submissionMethod = inPerson ? (proc.submissionMethod || "In person")
-    : isEpermitting && oregon ? "Oregon ePermitting (Accela)"
+    : urlLabel ? urlLabel
     : accela ? "Accela Citizen Access (online portal)"
     : isEpermitting ? (proc.submissionMethod || "Online e-permitting portal")
     : isProjectDox ? "ProjectDox (online plan review)"
@@ -752,10 +757,15 @@ export function describePermitType(
       submissionMethod = /projectdox|avolve/.test(blob) ? "Email (ProjectDox when directed into review)" : "Email";
     } else if (/projectdox|avolve/.test(blob)) submissionMethod = "ProjectDox (online plan review)";
     else if (/portland.*(devhub|hub|portal)/.test(blob)) submissionMethod = "Portland DevHub portal";
-    // Oregon ePermitting only for an Oregon profile (the hand-written registry is Oregon's and
-    // state-gated in findApplicationProfile) or text that names it; any other Accela / e-permitting
-    // platform is named neutrally — a learned "Accela" in Florida is Florida's own portal.
-    else if (/\boregon\s*e-?permitting\b/.test(blob) || (applicationProfiles.some((p) => p.id === profile.id) && /\be-?permitting\b|\baccela\b/.test(blob))) submissionMethod = "Oregon ePermitting (Accela)";
+    // A FALLBACK PROFILE KNOWS NOTHING ABOUT THIS AHJ'S CHANNEL (portal-truth D4): the generic
+    // Oregon profile's "Oregon ePermitting" is what labelled Corvallis's card while the city files on
+    // its own Accela tenant. Unknown until something about THIS AHJ says otherwise.
+    else if (FALLBACK_PROFILE_IDS.has(profile.id) && !learned.submissionMethod && !learned.portalPlatform) submissionMethod = "Unknown — verify on the AHJ site";
+    // The statewide label only for a hand-written profile whose portal URL IS the statewide host
+    // (permitChannelLabel); words never earn it — any other Accela / e-permitting platform is named
+    // neutrally (a learned "Accela" in Florida, or Albany's own tenant, is that AHJ's own portal).
+    // (The hand-written registry is Oregon's — findApplicationProfile gates it on the state.)
+    else if (applicationProfiles.some((p) => p.id === profile.id) && isStatewidePortalUrl("OR", profile.sourceUrl)) submissionMethod = permitChannelLabel("OR", "", profile.sourceUrl) ?? "Online portal";
     else if (/\baccela\b/.test(blob)) submissionMethod = "Accela Citizen Access (online portal)";
     else if (/\be-?permitting\b/.test(blob)) submissionMethod = "Online e-permitting portal";
     else if (profile.requiresPortalEntryOnly) submissionMethod = "Online portal";

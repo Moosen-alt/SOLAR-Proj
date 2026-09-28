@@ -10,12 +10,33 @@
 //   D1 permitProcess.statewidePortalFor: the statewide fallback only on evidence the AHJ files there;
 //      a portal the lookup NAMED (kept or not), a KB row / recipe / login naming its own tenant, or
 //      any "files elsewhere" withholds it; nothing at all is "unknown, a person confirms".
+//   D2 every KB portal_url write refuses an information page (isInformationalPageUrl); the generic
+//      fallback profile never writes its portal into an AHJ's row; reads never return a legacy one.
+//   D3 a named portal that REDIRECTS to the AHJ's own host is kept as the landing, with the evidence.
+//   D4 the channel label is the resolved portal's HOST (permitChannelLabel), never free text.
+//   D5 a portal saying "not served here" stops the learn / replay; nothing is kept under the AHJ.
+//      (The browser half: portal-bot/src/adapters/notServed.dom.smoke.ts, K9/K10.)
 //
-// KILL TESTS (each disabled by hand and seen red — see the report for the banners):
-//   K1 statewidePortalFor: an "elsewhere" item no longer withholds             → (d1-e1), (d1-p4) fail.
-//   K2 statewidePortalFor: no evidence falls back to the state rule again       → (d1-e2), (d1-p5) fail.
+// KILL TESTS (each disabled by hand and seen red):
+//   K1 statewidePortalFor: an "elsewhere" item no longer withholds             → (d1-e1), (d1-p4), (d1-e4) fail.
+//   K2 statewidePortalFor: no evidence falls back to the state rule again       → (d1-e2), (d1-p5), perJob (p3x) fail.
 //   K3 claimedPortalOf: the legacy "the portal <url> was never returned" parse off → (d1-e1), (d1-p1) fail.
 //   K4 statewideEvidence: the issuing agency's own evidence not collected        → (d1-e3) fails.
+//   K5 upsertKnowledge: the information-page door off                           → (d2-w2) fails.
+//   K6 portalFromProject: the fallback profile's portal fields written again      → (d2-w1) fails.
+//   K7 saveVerified*: the loud 409 refusal off                                   → (d2-w3) fails.
+//   K8 withoutInformationalPortal off (reads return the legacy help page)         → (d2-r1) fails.
+//   K11 autoLearn: the not-served branch off                                     → (d5-l1), (d5-l2) fail.
+//   K12 repository: the replay's not-served branch off (drift classifier instead) → (d5-r1) fails.
+//   K13 portalEntityEvidence: a refused recipe still claims its host              → (d5-l1) fails.
+//   K14 repository: a refused draft still lends its URL                          → (d5-l2) fails.
+//   K15 recordPortalNotServed: flags the key's row on ANY host                   → (d5-l3) fails.
+//   K16 lookup: the redirect is read but never kept                              → (d3-p1) fails.
+//   K17 landingNamesJurisdiction always true                                     → (d3-x1) fails.
+//   K18 lookup: a parse-time claim is not re-judged at the final door            → (d3-p1), (d3-x1), (d3-x3) fail.
+//   K19 describePermitType: an Oregon profile's words earn "Oregon ePermitting"  → (d4-p2), (d4-e3) fail.
+//   K20 permitChannelLabel: any accela.com host labelled statewide               → (d4-p1), (d4-p2), (d4-e1) fail.
+//   K21 channelResolution: a person's verified portal no longer first            → (d4-e2) fails.
 //
 // Run: npx tsx backend/test/portalTruth.test.ts
 import "./_isolate"; // FIRST
@@ -378,6 +399,69 @@ await check("(d3-x3) MUST-EXCLUDE: a named URL whose redirect lands on a sign-in
   const r = await lookupWithNamedPortal("Ashgrove", named, { finalUrl: "https://aca-prod.accela.com/ashgrove/Login.aspx", text: page("Login", "<p>Sign in</p>") });
   assert.equal(r.structural.portalUrl.value, null);
   assert.match(String(r.structural.portalUrl.notFound), /could not read|sign-in/);
+});
+
+// ── D4: the channel label is the RESOLVED portal's host, never free text ────────────────────────
+const appDocs = await import("../src/applicationDocs");
+const tracks = await import("../src/submittalTracks");
+await check("(d4-p1) permitChannelLabel: 'Oregon ePermitting (Accela)' ONLY on the statewide host (and its aliases); an AHJ's own ACA tenant is its own portal; any other host has no platform label", () => {
+  for (const u of [ACA_OREGON, "https://aca.oregon.gov/CitizenAccess/", "https://aca-oregon.accela.com/oregon/Cap/CapDetail.aspx?agencyCode=MARION_CO"]) {
+    assert.equal(pp.permitChannelLabel("OR", "City of Wrenfield", u), "Oregon ePermitting (Accela)", u);
+  }
+  assert.equal(pp.permitChannelLabel("OR", "City of Corvallis", "https://aca-prod.accela.com/CORVALLIS/Default.aspx"), "Accela Citizen Access (City of Corvallis's own portal)");
+  assert.equal(pp.permitChannelLabel("OR", "Washington County", "https://permits.washingtoncountyor.gov/CitizenAccess/Welcome.aspx"), "Accela Citizen Access (Washington County's own portal)");
+  for (const u of ["https://www.corvallispermits.com", "https://devhub.portlandoregon.gov/", "https://www.accela.com/", "https://www.oregon.gov/bcd/epermitting/help/records/pages/permit-for-solar.aspx"]) {
+    assert.equal(pp.permitChannelLabel("OR", "City of Corvallis", u), null, u);
+  }
+});
+await check("(d4-p2) MUST-EXCLUDE: an Oregon profile's WORDS never earn the statewide label — the generic fallback is unknown, a seeded 'accela' is neutral; MUST-PASS: a seeded tenant URL is the AHJ's own portal", () => {
+  const job = (ahj: string) => ({ id: "p", state: "OR", ahj, city: ahj.replace(/^City of /, ""), zip: "", utility: "", parserSnapshot: {} }) as never;
+  const generic = appDocs.findApplicationProfile(job("City of Nowhere Falls"));
+  assert.equal(generic.id, "oregon-generic-epermitting");
+  assert.equal(appDocs.describePermitType(generic).submissionMethod, "Unknown — verify on the AHJ site");
+  const benton = appDocs.describePermitType(appDocs.findApplicationProfile(job("Benton County"))).submissionMethod; // seeded "accela"
+  assert.doesNotMatch(benton, /Oregon ePermitting/, benton);
+  const albany = appDocs.describePermitType(appDocs.findApplicationProfile(job("Albany"))).submissionMethod; // seeded aca-prod.accela.com/albany URL
+  assert.equal(albany, "Accela Citizen Access (Albany's own portal)");
+  // MUST-PASS: a hand-written profile whose portal IS the statewide host keeps the statewide label.
+  assert.equal(appDocs.describePermitType(appDocs.findApplicationProfile(job("Junction City"))).submissionMethod, "Oregon ePermitting (Accela)");
+});
+const cardFor = (projectId: string, type: string) => {
+  const project = repo.getProjectDetail(db, projectId).project;
+  return tracks.getSubmittalTracks(db, project).find((t) => t.type === type)!;
+};
+await check("(d4-e1) MUST-EXCLUDE (Corvallis's card): an Oregon city with a person's verified row on its own ACA tenant reads 'Accela Citizen Access (<city>'s own portal)', never 'Oregon ePermitting'", () => {
+  const ahj = "City of Larchfield";
+  kb.saveVerifiedAhjProfile(db, { state: "OR", ahj, portalUrl: "https://aca-prod.accela.com/LARCHFIELD/Default.aspx", portalName: "City of Larchfield Online Permitting", verifiedBy: "test" });
+  const projectId = fx.newProject({ ahj, city: "Larchfield", zip: "97330", utility: "Pacific Power" });
+  const card = cardFor(projectId, "building");
+  assert.doesNotMatch(card.channel, /Oregon ePermitting/, card.channel);
+  assert.match(card.channel, /^Accela Citizen Access \(City of Larchfield's own portal\): https:\/\/aca-prod\.accela\.com\/LARCHFIELD\/Default\.aspx \(verified by a person\)/, card.channel);
+  assert.equal(card.channelKind, "portal");
+});
+await check("(d4-e2) MUST-PASS: a person's verified portal outranks the per-job lookup's (hard rule 3 — the card agrees with the stage)", () => {
+  const ahj = "City of Moorcroft";
+  pp.savePermitProcessLookup(db, {
+    state: "OR", ahj, lookedUpAt: new Date().toISOString(), issuingAgency: nf(), permitStructure: nf(),
+    permits: (["structural", "electrical"] as const).map((d) => ({ discipline: d, label: d, issuingAgency: nf(), portalUrl: cite("https://permits.moorcroft.example.gov/apply", "https://www.moorcroft.example.gov/building", "Apply online at permits.moorcroft.example.gov"), recordType: nf(), documents: nf(), fee: nf() })),
+  } as never);
+  kb.saveVerifiedAhjProfile(db, { state: "OR", ahj, portalUrl: "https://aca-prod.accela.com/MOORCROFT/Default.aspx", verifiedBy: "test" });
+  const card = cardFor(fx.newProject({ ahj, city: "Moorcroft", zip: "97330", utility: "Pacific Power" }), "building");
+  assert.match(card.channel, /aca-prod\.accela\.com\/MOORCROFT.*verified by a person/, card.channel);
+});
+await check("(d4-e3) MUST-PASS: a city whose lookup found its permits on the statewide portal reads 'Oregon ePermitting (Accela)' with that URL; MUST-EXCLUDE: a city with nothing on file reads unknown", () => {
+  const ahj = "City of Fennick";
+  const agency = cite(ahj, "https://www.fennick.example.gov/permits", `The ${ahj} issues building permits`);
+  pp.savePermitProcessLookup(db, {
+    state: "OR", ahj, lookedUpAt: new Date().toISOString(), issuingAgency: agency, permitStructure: nf(),
+    permits: (["structural", "electrical"] as const).map((d) => ({ discipline: d, label: d, issuingAgency: agency, portalUrl: cite(ACA_OREGON, "https://www.fennick.example.gov/permits", "Apply online through Oregon ePermitting (aca-oregon.accela.com)"), recordType: nf(), documents: nf(), fee: nf() })),
+  } as never);
+  const card = cardFor(fx.newProject({ ahj, city: "Fennick", zip: "97330", utility: "Pacific Power" }), "building");
+  assert.match(card.channel, /^Oregon ePermitting \(Accela\): https:\/\/aca-oregon\.accela\.com\/oregon\//, card.channel);
+  assert.equal(card.channelKind, "portal");
+  const blank = cardFor(fx.newProject({ ahj: "City of Emptyvale", city: "Emptyvale", zip: "97330", utility: "Pacific Power" }), "building");
+  assert.doesNotMatch(blank.channel, /Oregon ePermitting/, blank.channel);
+  assert.match(blank.channel, /^Unknown/, blank.channel);
 });
 
 finish("portal-truth");
