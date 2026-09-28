@@ -2265,7 +2265,10 @@ app.post(
     const name = String(req.query.name || "").trim();
     const isDefault = String(req.query.default || "") === "1" || String(req.query.default || "") === "true";
     const mime = String(req.headers["content-type"] || "image/png");
-    const view = await createSignature(db, { role, name, bytes: new Uint8Array(req.body), mime, isDefault, orgId: requestScope(db, req).orgId });
+    // A licence-holder signature (electrician, contractor) names its company; createSignature checks
+    // that the company is one of THIS org's clients (404 otherwise) and ignores it for other roles.
+    const clientId = String(req.query.clientId || "").trim();
+    const view = await createSignature(db, { role, name, bytes: new Uint8Array(req.body), mime, isDefault, orgId: requestScope(db, req).orgId, clientId });
     res.status(201).json(view);
   }),
 );

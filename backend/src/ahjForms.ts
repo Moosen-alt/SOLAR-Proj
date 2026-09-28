@@ -8,7 +8,7 @@ import type { AppDb } from "./db";
 import { DEFAULT_ORG_ID } from "./db";
 import { clientStagingOverlay } from "./clients";
 import { HttpError } from "./httpError";
-import { loadDefaultSignaturesByRole } from "./signatures";
+import { isLicenceHolderRole, loadDefaultSignaturesByRole } from "./signatures";
 import { nowIso } from "./time";
 import { resolveValuation } from "./valuation";
 import { parseJson } from "./json";
@@ -762,9 +762,11 @@ function computed(name: string, ctx: FillContext): string {
       // line under the authorized signature.
       return ctx.signatures?.applicant?.name ?? "";
     case "electricianSignerName":
-      // Typed name on the stored electrician signature; falls back to the
-      // supervisor name from the client profile when no sig image is stored.
-      return ctx.signatures?.electrician?.name ?? ctx.client.electricalSupervisorName ?? "";
+      // THE JOB'S COMPANY'S electrician, and only theirs: the typed name on that company's own
+      // electrician signature (buildContext loads licence-holder signatures by project.clientId),
+      // else the supervisor on that company's own record. Never the org's — an org-level default
+      // printed one company's supervising electrician on another company's application.
+      return ctx.signatures?.electrician?.name || ctx.client.electricalSupervisorName || "";
     case "descriptionOfWork": {
       const s = ctx.snapshot;
       const qty = str(s["moduleQuantity"] ?? s["module_quantity"]);
@@ -931,8 +933,9 @@ export function buildContext(db: AppDb, project: ProjectRecord): FillContext {
     } as Record<string, unknown>,
     // The signature stamped on a permit form comes from the org that OWNS the
     // project — this runs from background jobs with no request, so it can't be
-    // taken from a session.
-    signatures: loadDefaultSignaturesByRole(db, projectOrgId(db, project.id)),
+    // taken from a session. A LICENCE HOLDER's line (electrician, contractor) is the
+    // job's COMPANY's (project.clientId) and nobody else's — see signatures.ts.
+    signatures: loadDefaultSignaturesByRole(db, projectOrgId(db, project.id), String(project.clientId ?? "")),
     prescriptiveLimits,
   };
   // THE OWNER'S MAILING ADDRESS IS THE INSTALLATION ADDRESS unless the project records another
@@ -1014,6 +1017,19 @@ async function trimSignatureMargins(bytes: Uint8Array, mime: string): Promise<{ 
   } catch {
     return { bytes, mime };
   }
+}
+
+/**
+ * THE LICENCE-HOLDER LINES THIS FORM LEAVES UNSIGNED, NAMED FOR THE OPERATOR. A licence holder's
+ * signature is the job's company's (signatures.ts); when that company has none on file, the line is
+ * left empty — no image, no date — and this names it, so it reads as work owed, not as done.
+ * One entry per role, whose words say where to fix it.
+ */
+export function unsignedLicenceHolderLines(def: AhjFormDefinition, ctx: FillContext): string[] {
+  const sigs = ctx.signatures ?? {};
+  const company = String(ctx.client.installerCompanyName || ctx.client.companyName || "").trim() || "this job's company";
+  const roles = Array.from(new Set((def.signatureFields ?? []).map((pl) => pl.role).filter((r) => isLicenceHolderRole(r) && !sigs[r])));
+  return roles.map((role) => `${role === "electrician" ? "Electrician" : "Contractor"} signature — no ${role} signature on file for ${company}; the line is left unsigned (sign it by hand, or add ${company}'s ${role} signature under Signatures and rebuild)`);
 }
 
 async function drawSignatures(doc: PDFDocument, def: AhjFormDefinition, ctx: FillContext): Promise<number> {
@@ -1347,7 +1363,12 @@ export async function fillLoadedForm(
   const notes = printedFeeNote
     ? (def.notes ?? []).map((n) => n.split(CURATED_SAVED_FEE_NOTE).map((s) => s.trim()).filter(Boolean).join(" "))
     : (def.notes ?? []);
+  // A licence-holder line with no signature on file for THIS job's company stays unsigned, and is
+  // named as the operator's item (listed with the blanks, so the form reads "needs details").
+  const unsignedLines = unsignedLicenceHolderLines(def, ctx);
+  missingRequired.push(...unsignedLines);
   const completionMessage = [checklistMessage, operatorMissing.length ? `Still needs: ${operatorMissing.join("; ")}.` : "",
+    unsignedLines.length ? `Left unsigned: ${unsignedLines.join("; ")}.` : "",
     officeMissing.length ? `From the planning / land-use office (when it applies): ${officeMissing.join("; ")}.` : "",
     agencyMissing.length ? `Left for the agency to compute: ${agencyMissing.join("; ")}.` : "",
     printedFeeNote, ...notes].filter(Boolean).join(" ") || undefined;

@@ -1094,7 +1094,7 @@
             <span>Signatures</span>
             <span id="signaturesSummaryCount" class="muted" style="font-size:12px;font-weight:400"></span>
           </summary>
-          <p class="muted" style="font-size:12px;margin:6px 0">Store your signature once (PNG with a transparent background works best). It's stamped on the matching signature line of permit forms — the applicant line by default. Add others (owner, contractor, electrician) for any line that needs them. You still review and do the final portal submit.</p>
+          <p class="muted" style="font-size:12px;margin:6px 0">Store your signature once (PNG with a transparent background works best). It's stamped on the matching signature line of permit forms — the applicant line by default. An electrician or contractor signature belongs to ONE company (the one whose licence it is) and is stamped only on that company's jobs; a company with none gets the line left unsigned and named. You still review and do the final portal submit.</p>
           <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;padding:8px;border:1px dashed var(--line);border-radius:6px">
             <span style="font-size:12px;font-weight:600;width:100%">Add a signature</span>
             <select id="addSigRole" style="padding:5px 7px;font-size:13px">
@@ -1103,6 +1103,9 @@
               <option value="contractor">Contractor</option>
               <option value="electrician">Electrician</option>
               <option value="other">Other</option>
+            </select>
+            <select id="addSigClient" hidden title="The company whose licence this person signs under — stamped only on that company's jobs" style="padding:5px 7px;font-size:13px">
+              <option value="">Company (required)…</option>
             </select>
             <input id="addSigName" placeholder="Label (e.g. your name)" style="flex:1;min-width:120px;padding:5px 7px;font-size:13px" />
             <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px"><input id="addSigDefault" type="checkbox" checked> default for role</label>

@@ -943,7 +943,7 @@ function renderSignatures() {
         <img src="/api/signatures/${esc(r.id)}/image" alt="${esc(r.name)}" style="height:34px;max-width:160px;background:#fff;border:1px solid var(--line);border-radius:4px;padding:2px" />
         <div>
           <strong>${esc(r.name || r.role)}</strong>
-          <span class="muted" style="font-size:12px">· ${esc(r.role)}${r.isDefault ? " · default" : ""}</span>
+          <span class="muted" style="font-size:12px">· ${esc(r.role)}${r.isDefault ? " · default" : ""}${esc(signatureCompanyNote(r))}</span>
         </div>
       </div>
       <div style="display:flex;gap:6px;align-items:center">
@@ -962,6 +962,31 @@ function renderSignatures() {
   }));
 }
 
+// A LICENCE HOLDER SIGNS FOR ONE COMPANY (signatures.ts LICENCE_HOLDER_ROLES — keep the two lists
+// equal). The applicant is whoever submits, the same on every company's job.
+const SIGNATURE_LICENCE_ROLES = ["electrician", "contractor"];
+
+function signatureCompanyNote(r) {
+  if (!SIGNATURE_LICENCE_ROLES.includes(r.role)) return "";
+  if (!r.clientId) return " · no company — never stamped";
+  const c = (state.clients || []).find((x) => x.id === r.clientId);
+  return ` · for ${c ? (c.companyName || c.legalBusinessName || "a company") : "a company"}`;
+}
+
+async function syncSignatureCompanyPicker() {
+  const role = $("addSigRole")?.value || "applicant";
+  const sel = $("addSigClient");
+  if (!sel) return;
+  const needsCompany = SIGNATURE_LICENCE_ROLES.includes(role);
+  sel.hidden = !needsCompany;
+  if (!needsCompany) return;
+  if (!(state.clients || []).length) { try { await loadClients(); } catch { /* the upload names the gap */ } }
+  const keep = sel.value;
+  sel.innerHTML = `<option value="">Company (required)…</option>` + (state.clients || [])
+    .map((c) => `<option value="${esc(c.id)}">${esc(c.companyName || c.legalBusinessName || "Unnamed")}</option>`).join("");
+  if (keep) sel.value = keep;
+}
+
 async function uploadSignature(ev) {
   const file = ev.target.files && ev.target.files[0];
   if (!file) return;
@@ -969,10 +994,17 @@ async function uploadSignature(ev) {
   const name = ($("addSigName")?.value || "").trim();
   const isDefault = $("addSigDefault")?.checked ? "1" : "0";
   const status = $("signaturesStatus");
+  const clientId = SIGNATURE_LICENCE_ROLES.includes(role) ? ($("addSigClient")?.value || "") : "";
+  if (SIGNATURE_LICENCE_ROLES.includes(role) && !clientId) {
+    showMessage(`Choose the company this ${role} signs for — a licence holder's signature is stamped only on that company's jobs.`, "error");
+    ev.target.value = "";
+    return;
+  }
   if (status) status.textContent = `Uploading ${file.name}…`;
   try {
     const buf = await file.arrayBuffer();
     const qs = new URLSearchParams({ role, name, default: isDefault });
+    if (clientId) qs.set("clientId", clientId);
     const res = await fetch(`/api/signatures?${qs.toString()}`, {
       method: "POST", headers: { "Content-Type": file.type || "image/png" }, body: buf,
     });
@@ -9035,6 +9067,7 @@ if ($("addUtilityBtn")) {
 if ($("addFormFile")) $("addFormFile").addEventListener("change", uploadAhjFormFromManager);
 if ($("refreshFormsBtn")) $("refreshFormsBtn").addEventListener("click", refreshAhjFormLinks);
 if ($("addSigFile")) $("addSigFile").addEventListener("change", uploadSignature);
+if ($("addSigRole")) $("addSigRole").addEventListener("change", () => { syncSignatureCompanyPicker(); });
 $("projectStatusFilter").addEventListener("change", (e) => {
   projectFilterState.status = e.target.value;
   reloadProjects();

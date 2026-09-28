@@ -2348,6 +2348,37 @@ const VERSIONED_MIGRATIONS: VersionedMigration[] = [
       addColumnIfMissing(db, "corrections", "source_text", "TEXT NOT NULL DEFAULT ''");
     },
   },
+  {
+    version: 40,
+    name: "signatures_client_scope",
+    up: (db) => {
+      // A LICENCE HOLDER'S SIGNATURE BELONGS TO THE COMPANY WHOSE LICENCE IT IS (leak sweep
+      // company-leak-1, 2026-09-28). Signatures were loaded per ORG, and one service-bureau org holds
+      // several companies — so one company's supervising electrician signed (image, printed name and
+      // today's date) another company's permit application. Operator ruling: the applicant / agent is
+      // whoever SUBMITS (org-level, client_id ''); a licence-holder role (electrician, contractor) is
+      // the job's COMPANY's (client_id = that client). The signatures CREATE block runs in the base
+      // schema, so this addColumnIfMissing comes after it.
+      addColumnIfMissing(db, "signatures", "client_id", "TEXT NOT NULL DEFAULT ''");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_signatures_org_client ON signatures(org_id, client_id, role);");
+      // An existing ELECTRICIAN signature goes to the ONE client in its org whose own supervising
+      // electrician it names; with no such client, or more than one, it stays unassigned — and an
+      // unassigned licence-holder signature is stamped on nobody's form. Contractor signatures are
+      // left unassigned: no client field names the person, so there is nothing to match on.
+      const sigs = db.query<{ id: string; name: string; org_id: string }>(
+        "SELECT id, name, org_id FROM signatures WHERE role = 'electrician' AND client_id = ''",
+      );
+      for (const sig of sigs) {
+        const name = String(sig.name ?? "").trim().toLowerCase();
+        if (!name) continue;
+        const owners = db.query<{ id: string }>(
+          "SELECT id FROM clients WHERE org_id = ? AND LOWER(TRIM(COALESCE(electrical_supervisor_name, ''))) = ?",
+          [String(sig.org_id || DEFAULT_ORG_ID), name],
+        );
+        if (owners.length === 1) db.run("UPDATE signatures SET client_id = ? WHERE id = ?", [owners[0].id, sig.id]);
+      }
+    },
+  },
 ];
 
 // One-time repair for the runaway-notes bug: upsertKnowledge used to merge the
