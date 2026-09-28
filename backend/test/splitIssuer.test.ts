@@ -34,6 +34,8 @@
 //       fallback to the project's own lookup                                  → (b1)(b3)
 // Round 2 (round-1 skeptic's mustFix):
 //   K13 autoLearn.learnIssuerTrack: ignore the stage's `track` (derive again) → (l2)(l3)(l4)(l5)
+//   K13e autoLearn learner agency: a trackless learn never asks its permit    → (l6)
+//   K13f autoLearn learner agency: asks its permit type's even on a split     → (l2)
 //   K14 jobQueue auto_learn: drop the payload's `track`                       → (l5)
 //   K15 repository.prepareSubmission: no trackless split-issuer refusal       → (g1)
 //   K16 permitProcess.refuseTrackIssuerValue: no known-utility refusal        → (u1)(u2)
@@ -488,6 +490,18 @@ await check("(l4) the learn called as a stage calls it (the project + track null
   // MUST-PASS: the building stage's own learn (track "building") keys on the city, as (l1).
   const b = await autoLearn.autoLearnPortal(db, id, { scope: "ahj", portalUrl: CITY_URL, createdBy: "auto-seed (staging)", permitType: "structural", discipline: "structural", track: "building", project: pp.projectForTrack(load(id), "building") });
   assert.equal(b.recipe.ahj, CITY);
+});
+
+await check("(l6) MUST-PASS (base parity): a trackless learn on a project with NO split still hands the learner its permit's looked-up agency, as before", async () => {
+  lookup("City of Pinecrest", "City of Pinecrest Permit Center");
+  const id = fx.newProject({ ahj: "City of Pinecrest", city: "Pinecrest", zip: "97352" });
+  const p = load(id);
+  assert.equal(pp.projectForTrack(p, "building"), p, "the fixture is a split");
+  stubLearner();
+  launches.length = 0;
+  await autoLearn.autoLearnPortal(db, id, { scope: "ahj", portalUrl: COUNTY_URL, createdBy: "auto-seed (staging)", permitType: "structural", discipline: "", track: null, project: p });
+  assert.equal(launches[0]?.portalName, "City of Pinecrest");
+  assert.equal(launches[0]?.siteIdentity?.issuingAgency, "City of Pinecrest Permit Center", "a no-split trackless learn lost its permit's agency");
 });
 
 await check("(l5) the stale-recipe RE-LEARN job carries the stage's track (null = trackless) and keys where the stage found the recipe", async () => {

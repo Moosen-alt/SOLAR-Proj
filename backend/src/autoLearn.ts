@@ -1197,7 +1197,11 @@ async function autoLearnPortalInner(
         // city-structural / county-electrical convention. Production 2026-09-27: City of
         // Jefferson's permits are Marion County's. AHJ scope only — an interconnection portal
         // has no permit agency. null = unknown, and the learner keeps the convention.
-        issuingAgency: scopeType === "utility" ? null : (issuingAgencyFor(project, issuerTrack)?.value ?? null),
+        // The issuer track's answer. A TRACKLESS stage (issuerTrack null) still asks about the permit
+        // its permit type names while that permit's view IS this project (no split: the answer it
+        // always got — the lookup's own words for that permit), never another agency's.
+        issuingAgency: scopeType === "utility" ? null : (issuingAgencyFor(project,
+          issuerTrack === null && learnTrack && projectForTrack(project, learnTrack) === project ? learnTrack : issuerTrack)?.value ?? null),
       },
       onProgress: input.onProgress,
       onHumanStep,
