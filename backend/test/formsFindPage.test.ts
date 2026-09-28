@@ -402,6 +402,36 @@ try {
   check("F2 MUST-PASS the building application fills the building side and the wiring one the electrical slot", f2c.status === "acquired" && f2c.sourceUrl === MB_BLD
     && JSON.stringify(mbRows) === JSON.stringify([`building_application|${MB_BLD}`, `electrical_application|${MB_WIR}`].sort()), JSON.stringify({ f2c, mbRows }));
 
+  // ═══ R1 THE RE-TYPE LOOP — a slot is satisfied by the stored type its blank was re-typed to ═══════════
+  // A "Building Permit Application" fetched for the GENERIC slot is stored as building_application (the
+  // form's own name decides — storeAhjFormTemplate). A generic slot that accepted only
+  // permit_application re-searched (paid) and re-downloaded it on every pass.
+  const RT = "https://www.retypeton.ma.us";
+  const RT_APP = `${RT}/DocumentCenter/View/1300/Building-Permit-Application`;
+  serveHtml(`${RT}/forms`, civicPage("Forms", [[RT_APP.slice(RT.length), "Building Permit Application"]]));
+  servePdf(RT_APP, await acroPdf("RETYPETON Building Permit Application"));
+  researchFor.set("Town of Retypeton", { formsPageUrl: `${RT}/forms` });
+  const rtJob = mkJob("Town of Retypeton", "Retypeton");
+  const r1 = await auto.ensureAhjFormTemplate(db, llm, rtJob, "permit_application", { formsPage: fp() });
+  check("R1 (setup) the building application fetched for the generic slot is stored RE-TYPED as building_application",
+    r1.status === "acquired" && JSON.stringify(rows("Town of Retypeton").map((r) => [r.form_type, r.source_url])) === JSON.stringify([["building_application", RT_APP]]),
+    JSON.stringify({ r1, rows: rows("Town of Retypeton") }));
+  researchCalls = [];
+  requested = [];
+  const r1b = await auto.ensureAhjFormTemplate(db, llm, rtJob, "permit_application", { formsPage: fp() });
+  check("R1 MUST-PASS the next pass answers 'exists' off the re-typed row — no paid search, no request", r1b.status === "exists" && researchCalls.length === 0 && requested.length === 0
+    && rows("Town of Retypeton").length === 1, JSON.stringify({ r1b, researchCalls, requested }));
+  check("R1 UNIT one answer for which stored types satisfy a slot: the generic slot takes a building blank unless the permits are SEPARATE; the electrical slot only its own",
+    JSON.stringify(auto.storedTypesForSlot("permit_application", "unknown")) === JSON.stringify(["permit_application", "building_application"])
+    && JSON.stringify(auto.storedTypesForSlot("permit_application", "combo")) === JSON.stringify(["permit_application", "building_application"])
+    && JSON.stringify(auto.storedTypesForSlot("permit_application", "separate")) === JSON.stringify(["permit_application"])
+    && JSON.stringify(auto.storedTypesForSlot("building_application", "separate")) === JSON.stringify(["building_application", "permit_application"])
+    && JSON.stringify(auto.storedTypesForSlot("electrical_application", "unknown")) === JSON.stringify(["electrical_application"]));
+  // MUST-EXCLUDE: the electrical slot is never satisfied by the building blank (it still searches).
+  researchCalls = [];
+  const r1c = await auto.ensureAhjFormTemplate(db, llm, rtJob, "electrical_application", { formsPage: fp() });
+  check("R1 MUST-EXCLUDE the electrical slot is not satisfied by the stored building blank", r1c.status !== "exists" && researchCalls.length === 1, JSON.stringify({ r1c, researchCalls }));
+
   // ═══ E7 THE KIND — where the split applies, the other of the two building-side applications is not
   // this one. (The kind is passed as the required set passes it; an unknown Oregon AHJ is portal-only
   // in the reference profiles, so the mechanism is pinned on a jurisdiction that publishes PDFs.)

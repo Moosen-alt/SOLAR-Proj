@@ -3,7 +3,7 @@ import { PDFDocument } from "pdf-lib";
 import type { AppDb } from "./db";
 import type { AhjFormUrlResult, LLMProvider, ProjectRecord } from "../../shared/src/types";
 import { inspectFormFields, loadStoredTemplates, formApplicationKind, storedApplicationKind, applicationKindForPath, type OverlayField, type SignaturePlacement } from "./ahjForms";
-import { describePermitType, findApplicationProfile, permitStructureAnswer } from "./applicationDocs";
+import { describePermitType, findApplicationProfile, permitStructureAnswer, permitStructureForProject } from "./applicationDocs";
 import { ensureUtilityFilingLookedUp } from "./utilityFilingLookup";
 import { documentFetchDisabled, fetchPublicDocument } from "./documentFetch";
 import { logger } from "./logger";
@@ -785,6 +785,26 @@ export function hasStoredTemplateOfType(
   });
 }
 
+/**
+ * WHICH STORED FORM TYPES SATISFY THIS SLOT — the one answer the "already held?" check and the
+ * "usable?" check both read (ensureAhjFormTemplate).
+ *   - building_application: the building blank, or the generic application blank (a blank whose name
+ *     says neither is stored generic — requiredDocuments' altDocTypes, the same alias);
+ *   - permit_application (the generic / baseline slot) where the permit structure is ONE permit or not
+ *     known: the generic blank, or a BUILDING application. storeAhjFormTemplate re-types a blank by
+ *     its own name, so a "Building Permit Application" fetched for this slot is stored as
+ *     building_application — and a slot that accepted only permit_application re-searched (paid) and
+ *     re-downloaded it on EVERY pass (forms-find skeptic, the re-type loop). Where the permits are
+ *     SEPARATE the generic slot is not a building one, and it keeps its own type;
+ *   - anything else (electrical_application above all — one generic blank never satisfies both the
+ *     building side and the electrical one): its own type only.
+ */
+export function storedTypesForSlot(formType: string, structure: "separate" | "combo" | "unknown"): string[] {
+  if (formType === "building_application") return ["building_application", "permit_application"];
+  if (formType === "permit_application" && structure !== "separate") return ["permit_application", "building_application"];
+  return [formType];
+}
+
 /** The full set of forms this AHJ needs for a residential solar submission —
  *  the main application(s) plus any required checklist — acquired in one pass.
  *  Sources for "what's needed": the AHJ process profile flags and the KB's
@@ -929,7 +949,10 @@ export async function ensureAhjFormTemplate(
   // The building-side row accepts the generic application blank (requiredDocuments' altDocTypes):
   // an AHJ whose one stored application is filed as "permit_application" has its building-side form
   // once its structure resolves SEPARATE (building + electrical) — the same alias the inventory uses.
-  const acceptedTypes = formType === "building_application" ? ["building_application", "permit_application"] : [formType];
+  // And the generic slot accepts the building blank it was re-typed to (storedTypesForSlot).
+  let structure: "separate" | "combo" | "unknown" = "unknown";
+  if (formType === "permit_application") { try { structure = permitStructureForProject(project); } catch { /* unknown */ } }
+  const acceptedTypes = storedTypesForSlot(formType, structure);
   if (acceptedTypes.some((t) => hasStoredTemplateOfType(db, project.ahj, project.state, t, applicationKind))) {
     const usable = loadStoredTemplates(db, project.ahj, project.state, { ownOnly: true }).some(t => {
       const type = db.get<{ form_type: string }>("SELECT form_type FROM ahj_form_templates WHERE id = ?", [t.templateId])?.form_type;
