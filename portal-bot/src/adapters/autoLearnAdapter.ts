@@ -7456,9 +7456,14 @@ export class AutoLearnAdapter extends BasePortalAdapter {
    *  policy select (unanswered or contradicting → the answer; enforce, because a planner's other
    *  pick is exactly what the project data overrules), recorded under its own name so replay
    *  treats it as the declaration it is, not as a skippable policy question. Only when the
-   *  project SAYS (hasBattery true/false) — silence stays the planner's. Native selects only:
-   *  a radio group whose options are the bare "Yes"/"No" carries the question in its group text,
-   *  not on the option, and neither side reads that yet (named gap). */
+   *  project SAYS (hasBattery true/false) — silence stays the planner's. Native, labelled
+   *  <select>s only. The question regex is anchored to the WHOLE label (a section titled
+   *  "Energy Storage" holds the specs and their Yes/No siblings too, and the policy walk also
+   *  reads section text — batteryQuestion.dom.smoke pins that the first Yes/No select in such a
+   *  section is never taken). A radio group whose options are the bare "Yes"/"No" carries the
+   *  question in its group text, not on the option, and an input-backed widget is not a
+   *  <select> — neither is read here (named gap); the planner's fill through applyFillInner
+   *  covers those. */
   private async applyBatteryDeclaration(alreadyFilledLabels: string[]): Promise<Array<{ step: RecipeStep; applied: AppliedFill }>> {
     if (this.hasBattery === undefined) return [];
     const picked = await this.applyPolicySelect(

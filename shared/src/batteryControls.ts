@@ -50,7 +50,7 @@ const STORAGE_WORDS = /\bbatter(?:y|ies)\b|\benergy\s*storage\b|\bess\b|\bstorag
 
 /** A label that asks for a VALUE of the battery. Ordered before the declaration shapes on
  *  purpose: "Energy Storage Capacity of Battery (kWh)" starts like a declaration and is a spec. */
-const SPEC_WORDS = /\bmanufacturer\b|\bmake\b|\bmodel\b|\bcapacity\b|\bkwh\b|\bkw\b|\bkva\b|\bah\b|\bquantity\b|\bqty\b|\bnumber\s+of\b|\bhow\s+many\b|\bpart\s*(?:number|no\.?|#)|\bcertif|\bul\s*\d{3,4}\b|\binverter\b|\bvoltage\b|\bvolts?\b|\bamps?\b|\bamperage\b|\befficiency\b|round-?trip|state\s+of\s+charge|\brating\b|\brated\b|\bsize\b|\bserial\b|\bnameplate\b|\bpower\s+draw\b|\bdischarge\b|\bcharg(?:e|ing)\s+(?:rate|cycle|power)\b|\bspec(?:ification)?s?\b|\bdata\s*sheet\b|\bdatasheet\b|\bchemistry\b|\bcost\b|\bprice\b/i;
+const SPEC_WORDS = /\bmanufacturer\b|\bmake\b(?!\s+use)|\bmodel\b|\bcapacity\b|\bkwh\b|\bkw\b|\bkva\b|\bah\b|\bquantity\b|\bqty\b|\bnumber\s+of\b|\bhow\s+many\b|\bpart\s*(?:number|no\.?|#)|\bcertif|\bul\s*\d{3,4}\b|\binverter\b|\bvoltage\b|\bvolts?\b|\bamps?\b|\bamperage\b|\befficiency\b|round-?trip|state\s+of\s+charge|\brating\b|\brated\b|\bsize\b|\bserial\b|\bnameplate\b|\bpower\s+draw\b|\bdischarge\b|\bcharg(?:e|ing)\s+(?:rate|cycle|power)\b|\bspec(?:ification)?s?\b|\bdata\s*sheet\b|\bdatasheet\b|\bchemistry\b|\bcost\b|\bprice\b/i;
 
 /** An ACKNOWLEDGMENT that names the battery is never the question of whether there is one:
  *  "I have read the Battery System Interim Technical Requirements", "I agree to comply with the
@@ -71,11 +71,26 @@ const DECLARING_SHAPES: RegExp[] = [
   /^\s*(?:energy|battery)\s*storage(?:\s+system)?(?:\s+(?:installed|included|present|proposed|planned|information|info|details?))?\s*[?*:]*\s*$/i,
   // Bare "Battery?", "Batteries", "ESS"
   /^\s*(?:batter(?:y|ies)|ess)\s*(?:\?|\*|:)?\s*$/i,
-  // "Will energy storage be installed?", "Does the system include a battery?", "Is there a battery?"
-  /^\s*(?:is|will|does|do|are|has|have)\b[^.?]{0,60}\b(?:batter(?:y|ies)|energy\s*storage|storage\s*system|ess|storage)\b/i,
   // "Battery installed?", "Storage included", "Energy storage present"
   /\b(?:batter(?:y|ies)|energy\s*storage|storage)\s*(?:installed|included|present|proposed|planned)\b/i,
 ];
+
+/** The storage noun as a question's OBJECT OF EXISTENCE. */
+const NOUN = String.raw`(?:batter(?:y|ies)|energy\s*storage(?:\s+system)?|storage\s*system|ess|storage)`;
+/** A question that asks whether storage EXISTS on this job — "Is there a battery?", "Will energy
+ *  storage be installed?", "Does the system include a battery?", "Do you plan to add storage?",
+ *  "Are you installing a battery?" — and never a question about a PROPERTY of the battery ("Is the
+ *  battery AC-coupled?", "Is the battery located indoors?"), which the planner answers on a battery
+ *  job and which a no-battery job is never asked. */
+export const BATTERY_PRESENCE_QUESTION = new RegExp(String.raw`^\s*(?:` + [
+  String.raw`(?:is|are|will)\s+there\s+(?:be\s+)?(?:(?:an?|any)\s+)?${NOUN}`,
+  String.raw`will\s+(?:(?:an?|any|the)\s+)?${NOUN}\s+be\s+(?:installed|included|added|present|part|proposed)`,
+  String.raw`does\s+(?:the|this|your)\s+[\w-]+\s+(?:include|have|contain|use|make\s+use\s+of|propose|add)\s+(?:(?:an?|any)\s+)?${NOUN}`,
+  String.raw`do\s+you\s+(?:have|plan|propose|intend|want|wish)\b[^.?]{0,30}\b${NOUN}`,
+  String.raw`is\s+(?:(?:an?|any)\s+)?${NOUN}\s+(?:installed|included|proposed|planned|present|part\s+of|being|to\s+be)`,
+  String.raw`are\s+you\s+(?:installing|adding|including|proposing|planning)\s+(?:(?:an?|any)\s+)?${NOUN}`,
+].join("|") + String.raw`)\b`, "i");
+DECLARING_SHAPES.push(BATTERY_PRESENCE_QUESTION);
 
 /** Bare "storage" that is plainly not a battery: a permit portal's "storage shed", a "storage
  *  tank", "storage of materials". Only the bare word is ambiguous — "battery"/"energy storage"/
@@ -183,6 +198,13 @@ export function parseHasBattery(raw: unknown): boolean | undefined {
   return undefined;
 }
 
-/** The question the learner's declaration pass looks for on the live page: the bare storage
- *  question and its question forms — never a spec ("Battery Manufacturer" carries no shape here). */
-export const BATTERY_DECLARATION_QUESTION = /^(?![^?]*\b(?:program(?:me)?|manufacturer|make|model|capacity|kwh|kw|quantity|qty|inverter|certif|rating|size|serial|type|requirements?|read|agree|comply)\b)\s*(?:(?:energy|battery)\s*storage\b|(?:is|will|does|do)\b[^.?]{0,60}\b(?:batter(?:y|ies)|energy\s*storage|storage\s*system)\b)/i;
+/** The question the learner's declaration pass looks for in a select's OWN label on the live
+ *  page: the bare storage question ("Energy Storage", "Battery storage?") or a presence question —
+ *  never a spec, a programme question or an acknowledgment. Matched against the control's own
+ *  label only, never its section text: a fieldset titled "Energy Storage" holds the specs too. */
+export const BATTERY_DECLARATION_QUESTION = new RegExp(
+  String.raw`^(?![^?]*\b(?:program(?:me)?|manufacturer|make|model|capacity|kwh|kw|quantity|qty|inverter|certif|rating|size|serial|type|requirements?|read|agree|comply)\b)`
+  + String.raw`\s*(?:(?:energy|battery)\s*storage(?:\s+system)?(?:\s+(?:installed|included|present|proposed|planned))?\s*[?*:]*\s*$|`
+  + BATTERY_PRESENCE_QUESTION.source.replace(/^\^\\s\*/, "") + String.raw`)`,
+  "i",
+);

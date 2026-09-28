@@ -28,15 +28,25 @@ const check = (label: string, fn: () => void): void => {
   catch (err) { failures++; console.error(`  FAIL - ${label}\n         ${err instanceof Error ? err.message : String(err)}`); }
 };
 
+// One SECTION, titled "Energy Storage", holding the question AND the specs — with a Yes/No
+// question about a PROPERTY of the battery ("Is the battery AC-coupled?") rendered BEFORE the
+// declaration, the way a portal lays a section out. The declaration pass must find the
+// declaration by its own label and never take the first Yes/No select in the section. The
+// capacity box is REQUIRED (asterisk), so a no-battery job leaves a required spec blank — which
+// the sweep must read as blank by design, never as a trust-gate miss.
 const PAGE = `<!doctype html><html><head><style>body{font:14px sans-serif;padding:16px}.form-group{margin:8px 0}</style></head><body>
   <h2>Generation and Storage</h2>
-  <div class="form-group"><label for="ess">Energy Storage *</label>
-    <select id="ess" name="ess" required><option value="">Select...</option><option value="Yes">Yes</option><option value="No">No</option></select></div>
-  <div class="form-group"><label for="bmfr">Battery Manufacturer</label>
-    <select id="bmfr" name="bmfr"><option value="">Select...</option><option>Tesla Energy</option><option>Enphase Energy Inc.</option></select></div>
-  <div class="form-group"><label for="bmodel">Battery Model</label><input id="bmodel" name="bmodel"></div>
-  <div class="form-group"><label for="bkwh">Energy Storage Capacity of Battery (kWh)</label><input id="bkwh" name="bkwh"></div>
-  <div class="form-group"><label for="bqty">Number of Batteries</label><input id="bqty" name="bqty"></div>
+  <fieldset><legend>Energy Storage</legend>
+    <label for="accoupled">Is the battery AC-coupled?</label>
+    <select id="accoupled" name="accoupled"><option value="">Select...</option><option value="Yes">Yes</option><option value="No">No</option></select>
+    <label for="ess">Energy Storage *</label>
+    <select id="ess" name="ess" required><option value="">Select...</option><option value="Yes">Yes</option><option value="No">No</option></select>
+    <label for="bmfr">Battery Manufacturer</label>
+    <select id="bmfr" name="bmfr"><option value="">Select...</option><option>Tesla Energy</option><option>Enphase Energy Inc.</option></select>
+    <label for="bmodel">Battery Model</label><input id="bmodel" name="bmodel">
+    <label for="bkwh">Energy Storage Capacity of Battery (kWh) *</label><input id="bkwh" name="bkwh" required>
+    <label for="bqty">Number of Batteries</label><input id="bqty" name="bqty">
+  </fieldset>
   <div class="form-group"><label for="prog">Will you be participating in the Wattsmart Battery Program? *</label>
     <select id="prog" name="prog" required><option value="">Select...</option><option>Yes</option><option>No</option></select></div>
   <div class="form-group"><label for="invmfr">Inverter Manufacturer</label>
@@ -63,7 +73,7 @@ type Internals = {
 };
 
 interface Outcome {
-  ess: string; bmfr: string; bmodel: string; bkwh: string; bqty: string; prog: string; invmfr: string;
+  ess: string; bmfr: string; bmodel: string; bkwh: string; bqty: string; prog: string; invmfr: string; accoupled: string;
   unfilled: string[]; steps: RecipeStep[]; events: Array<Record<string, unknown>>; declarationSteps: RecipeStep[];
 }
 
@@ -104,7 +114,7 @@ const run = async (hasBattery: boolean | undefined, decisions: Record<string, st
   const v = async (css: string) => page.locator(css).inputValue().catch(() => "");
   const out: Outcome = {
     ess: await v("#ess"), bmfr: await v("#bmfr"), bmodel: await v("#bmodel"), bkwh: await v("#bkwh"), bqty: await v("#bqty"),
-    prog: await v("#prog"), invmfr: await v("#invmfr"), unfilled, steps, events, declarationSteps,
+    prog: await v("#prog"), invmfr: await v("#invmfr"), accoupled: await v("#accoupled"), unfilled, steps, events, declarationSteps,
   };
   await page.close();
   // Diagnostics: what the extractor saw, what was recorded, and every battery event — so a red
@@ -151,6 +161,16 @@ check("...the programme question and the PV field are answered as before", () =>
 check("...so the required sweep reports NO miss (this list is a hard blocker in the trust gate)", () => {
   assert.deepEqual(no.unfilled, [], `required_never_filled: ${JSON.stringify(no.unfilled)}`);
 });
+check("...the REQUIRED capacity box, blank because the guard refused to invent it, is blank BY DESIGN — not a miss", () => {
+  // Without the sweep filter this run reports "Energy Storage Capacity of Battery (kWh) *" as a
+  // required miss on every no-battery job, and the recipe can never be trusted.
+  const ev = no.events.find((e) => e.type === "battery_spec_blank_by_design");
+  assert.ok(ev, `no battery_spec_blank_by_design event: ${JSON.stringify(no.events.map((e) => e.type))}`);
+  assert.ok((ev!.labels as string[]).some((l) => /Capacity of Battery/i.test(l)), JSON.stringify(ev));
+});
+check("...and the sibling Yes/No question about a PROPERTY of the battery is left alone", () => {
+  assert.equal(no.accoupled, "", `"Is the battery AC-coupled?" was answered ${JSON.stringify(no.accoupled)} on a job with no battery`);
+});
 
 // ── 2. THE MIRROR: a battery job, the planner (wrongly) says No ───────────────────────────────
 const yes = await run(true, { "Energy Storage": "No", ...SPEC_OFFERS, ...OTHER_OFFERS });
@@ -174,6 +194,7 @@ const silentNo = await run(false, { ...SPEC_OFFERS, ...OTHER_OFFERS });
 console.log(`   no battery, planner silent -> Energy Storage=${JSON.stringify(silentNo.ess)} declaration steps=${JSON.stringify(silentNo.declarationSteps.map((s) => s.note))} unfilled=${JSON.stringify(silentNo.unfilled)}`);
 check("PLANNER SILENT, no battery: the declaration pass answers No from project data", () => {
   assert.equal(silentNo.ess, "No", `Energy Storage=${JSON.stringify(silentNo.ess)}`);
+  assert.equal(silentNo.accoupled, "", `the pass took the FIRST Yes/No select in the "Energy Storage" section: AC-coupled=${JSON.stringify(silentNo.accoupled)}`);
   assert.deepEqual(silentNo.unfilled, []);
   const s = silentNo.declarationSteps[0];
   assert.ok(s, "no step recorded by the declaration pass");
@@ -186,6 +207,8 @@ const silentYes = await run(true, { ...SPEC_OFFERS, ...OTHER_OFFERS });
 console.log(`   battery, planner silent -> Energy Storage=${JSON.stringify(silentYes.ess)}`);
 check("PLANNER SILENT, battery job: the declaration pass answers Yes", () => {
   assert.equal(silentYes.ess, "Yes", `Energy Storage=${JSON.stringify(silentYes.ess)}`);
+  assert.equal(silentYes.accoupled, "", `a property of the battery is the planner's, never forced: AC-coupled=${JSON.stringify(silentYes.accoupled)}`);
+  assert.deepEqual(silentYes.unfilled, [], "the specs the planner carried are filled, so nothing is missing");
 });
 
 const unknown = await run(undefined, { ...SPEC_OFFERS, ...OTHER_OFFERS });

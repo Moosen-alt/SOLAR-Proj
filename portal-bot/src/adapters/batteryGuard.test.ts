@@ -130,6 +130,22 @@ await check("MUST-EXCLUDE: PV fields are not about storage at all", () => {
   }
 });
 
+await check("MUST-EXCLUDE: a question about a PROPERTY of the battery is not the presence question", () => {
+  // The planner answers these on a battery job; a no-battery job is never asked them.
+  for (const l of ["Is the battery AC-coupled?", "Is the battery located indoors?", "Will the battery be used for backup only?", "Does the battery export to the grid?"]) {
+    assert.equal(batteryControlKind(l, { control: "checkbox" }), "mention", `checkbox: ${l}`);
+    assert.notEqual(batteryControlKind(l, { control: "text" }), "declaration", `text: ${l}`);
+    assert.ok(!BATTERY_DECLARATION_QUESTION.test(l), `the declaration pass must not look for: ${l}`);
+  }
+  // ...but with a Yes/No option list the select still asks the question in its vocabulary — and
+  // is a declaration ONLY when its label has the presence shape; a property question keeps its
+  // options and stays the planner's.
+  assert.equal(batteryControlKind("Is the battery AC-coupled?", { control: "select", options: YES_NO }), "declaration",
+    "a Yes/No select whose label names the battery: the option vocabulary decides (the pass itself matches the own label, so it never picks this one)");
+  assert.equal(batteryControlKind("Does the system make use of battery storage?", { control: "select", options: YES_NO }), "declaration", "\"make use of\" is not a make/model spec");
+  assert.equal(batteryControlKind("Battery Make", { control: "text" }), "spec");
+});
+
 await check("MUST-EXCLUDE: a bare mention is neither refused nor answered for the planner", () => {
   // An acknowledgment box citing the battery requirements is not a declaration: refusing it on
   // every no-battery job would leave a required acknowledgment unticked.

@@ -3,6 +3,45 @@
 Audience: the next model/dev session (and the operator). Read `CLAUDE.md` first
 for the hard rules; this file is the running state.
 
+## THE STORAGE QUESTION IS ANSWERED, NOT REFUSED (2026-09-28, battery-question)
+
+Live PGE PowerClerk, two supervised learns on release #10, project hasBattery "No": the planner
+decided the REQUIRED select "Energy Storage" → "No" (right) and the learner's battery guard
+refused it as a battery SPEC — `battery_spec_refused label="Energy Storage"` ×4 per run, then
+`required_never_filled page 7 ["Energy Storage"]` on both runs. The yes/no question stayed blank
+(a required miss at review; the recipe could never auto-trust).
+- **One predicate, `shared/src/batteryControls.ts`** — `batteryControlKind(label, {control,
+  options})` → `spec` (asks for a VALUE of the battery: make/model/capacity/quantity/…, a
+  battery's upload) | `declaration` (asks WHETHER there is one: bare "Energy Storage", a Yes/No
+  select, "Will energy storage be installed?", a declaring checkbox) | `program` (Wattsmart —
+  never refused, never forced) | `mention` (an acknowledgment citing the battery requirements).
+  `batteryDeclarationAnswer` answers in the control's own vocabulary; `parseHasBattery` is the
+  one tri-state (backend, learner, replay).
+- **Learner:** `applyFillInner` refuses a spec on a no-battery job and gives a DECLARATION the
+  project's answer whatever the planner said (No / Yes; a declaring checkbox unchecked / checked;
+  a radio option never forced to Yes). `applyBatteryDeclaration` (d3c, after the policy pass)
+  answers a native labelled `<select>` the planner never reached, recorded as
+  `battery declaration: <label> → <answer>`. `collectUnfilledRequired` drops a battery SPEC
+  left blank on a no-battery job (`battery_spec_blank_by_design`) — a declaration or a programme
+  question left blank is still a miss.
+- **Replay:** `skipForNoBattery` / `isBatteryDeclaration` ask the same predicate; a recorded
+  `check` on the declaring checkbox is LEFT UNCHECKED on a no-battery job (it was being executed —
+  the Ivy tick replayed); `resolveValue` answers a declaration Yes on a battery job even when the
+  recipe recorded No (learned on a no-battery job).
+- **Tests:** `batteryGuard.test.ts` (imports the real predicate and drives the real adapters —
+  it used to copy the regexes and could not fail), `batteryQuestion.dom.smoke.ts` (learner, real
+  Chromium, PowerClerk-shaped section with the specs and a sibling Yes/No property question),
+  `batteryDeclaration.dom.smoke.ts` (replay mirror + the tick). Kills: 8 unit reds at integ-11,
+  the learner smoke at integ-11 reproduces the live line, the replay smoke at integ-11 ticks the box.
+- **Named gap (both sides):** a radio group whose options are the bare "Yes"/"No" carries the
+  question only in its group text; neither the fill guard nor replay reads that yet. The
+  declaration pass reads native `<select>`s only (an input-backed widget is the planner's fill
+  through `applyFillInner`, which covers both). Whether PGE's control is native is not recorded
+  in the bundle (`fieldsSeen` says `type:"select"`, which the extractor also uses for widgets).
+- **Verify live on the next PGE learn (no-battery job):** page 7 events show
+  `battery_declaration_answered label="Energy Storage" answer="No"` and no
+  `battery_spec_refused label="Energy Storage"`; `required_never_filled` does not name it.
+
 ## ONE CONTACT, ONE IDENTITY + A SERVICE UPGRADE IS A SERVICE LINE (2026-09-28, corvallis-elec-fixes)
 
 Live City of Corvallis electrical learn: the Applicant dialog went in as the homeowner's name /
