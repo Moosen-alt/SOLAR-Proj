@@ -66,6 +66,7 @@ const page1 = (reveal: boolean, dropFirst = false): string => `<!doctype html><h
 </div>
 <script>
   var saved = {};
+  var firstBlur = {}; // what each box held the FIRST time it was committed
   ${reveal ? `
   // PowerClerk RENDERS the dependent block only after the choice's own round-trip (Vue v-if):
   // before the choice the boxes are not hidden, they do not exist — the live p006 plan's
@@ -82,6 +83,7 @@ const page1 = (reveal: boolean, dropFirst = false): string => `<!doctype html><h
       ['acct', 'mtr'].forEach(function (id) {
         var first = ${dropFirst ? "true" : "false"};
         document.getElementById(id).addEventListener('blur', function () {
+          if (!(id in firstBlur)) firstBlur[id] = this.value;
           // ?drop=1: the portal's first save round-trip hands the box back EMPTY (a re-render
           // dropping the value) — the read-back must see it and re-type by name.
           if (first) { first = false; this.value = ''; saved[id] = ''; return; }
@@ -188,7 +190,8 @@ async function learnOn(url: string, project: Partial<ProjectRecord>, tag: string
   const result = await adapter.learn({} as never, project as ProjectRecord);
   // What the portal SAVED (blur autosave) — the boxes themselves are gone once review renders.
   const saved = await page.evaluate(() => (globalThis as unknown as { saved?: Record<string, string> }).saved ?? {}).catch(() => ({} as Record<string, string>));
-  return { page, context, result, requests, shots, saved, dir: adapter.debug?.dir ?? "" };
+  const firstBlur = await page.evaluate(() => (globalThis as unknown as { firstBlur?: Record<string, string> }).firstBlur ?? {}).catch(() => ({} as Record<string, string>));
+  return { page, context, result, requests, shots, saved, firstBlur, dir: adapter.debug?.dir ?? "" };
 }
 
 // Three learns side by side (each walks the portal's own entry look first, ~60 s apiece):
@@ -216,6 +219,10 @@ await check("the revealed account box was typed AND saved with THIS project's ac
   assert.equal(acctValue, A.accountNumber, `portal saved account = ${JSON.stringify(acctValue.replace(/\w/g, "#"))}`));
 await check("the revealed meter box was typed AND saved with THIS project's meter number", () =>
   assert.equal(mtrValue, A.meterNumber, `portal saved meter length ${mtrValue.length}`));
+await check("the secret was typed AT FILL TIME, not only repaired afterwards by the read-back", () => {
+  assert.equal(String(a.firstBlur.acct ?? ""), A.accountNumber, "the first commit of the account box did not carry the project's value");
+  assert.equal(String(a.firstBlur.mtr ?? ""), A.meterNumber, "the first commit of the meter box did not carry the project's value");
+});
 await check("both secret steps are recorded AFTER the choice that revealed them, bound by name, no literal", () => {
   assert.ok(choiceAt >= 0, "the choice step was recorded");
   assert.ok(acctAt > choiceAt && mtrAt > choiceAt, `order: choice ${choiceAt}, account ${acctAt}, meter ${mtrAt}`);
@@ -238,6 +245,14 @@ await check("the review page was reached with the secret on it, and the planner 
   const unmasked = withSecret.filter((s) => s.masked < 2);
   assert.equal(unmasked.length, 0, `${unmasked.length}/${withSecret.length} screenshot(s) taken with the secret on the page masked fewer than its two boxes`);
   assert.ok(withSecret.every((s) => s.reviewTextMasked), "the review page echoes the account as text and that text was not masked");
+});
+await check("the run names what the choice REVEALED (revealed_controls, labels only) — and a no-reveal page logs none", () => {
+  const evA = fs.readFileSync(path.join(a.dir, "events.jsonl"), "utf8");
+  const rev = evA.split("\n").filter((l) => l.includes('"type":"revealed_controls"'));
+  assert.ok(rev.length > 0, "no revealed_controls event");
+  assert.ok(rev.some((l) => l.includes(ACCT_LABEL)) && rev.some((l) => l.includes("Meter Number")), `revealed_controls does not name both boxes: ${rev.join(" | ").slice(0, 300)}`);
+  const evN = fs.readFileSync(path.join(n.dir, "events.jsonl"), "utf8");
+  assert.ok(!evN.includes('"type":"revealed_controls"'), "a page whose choice revealed nothing logged revealed_controls");
 });
 await check("the planner was asked about the revealed boxes by LABEL (no value) on the re-scan", () => {
   const rescan = a.requests.find((r) => r.alreadyFilledLabels.length > 0);

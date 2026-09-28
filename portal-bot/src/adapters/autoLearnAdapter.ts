@@ -6530,6 +6530,7 @@ export class AutoLearnAdapter extends BasePortalAdapter {
         const MAX_RESCAN_PASSES = 7;
         let computedThisPage = false;
         let lateEquipTried = false;
+        let lastRevealSig = "";
         for (let rescanPass = 0; rescanPass < MAX_RESCAN_PASSES; rescanPass++) {
           let revealedThisPass = 0;
           try {
@@ -6564,6 +6565,24 @@ export class AutoLearnAdapter extends BasePortalAdapter {
                 !alreadyFilledLabels.includes(f.label) &&
                 !inFilledGroup(f),
             );
+            // WHAT THE FILLS REVEALED, NAMED (labels only). newFillable above is "not filled yet",
+            // which includes every optional box that was there from the start; the operator's
+            // question after a live miss (PGE 2026-09-28, the account/meter boxes a choice
+            // revealed) is which controls APPEARED. Identity = section + label + type against the
+            // page's entry scrape. Diagnostic only — it changes nothing that is planned or filled.
+            {
+              const idOf = (f: ExtractedField): string => `${String(f.section ?? "").trim()}\u0000${String(f.label ?? "").trim()}\u0000${f.fieldType}`;
+              const atEntry = new Set(fields.map(idOf));
+              const appeared = postFields.filter((f) => f.label && f.fieldType !== "button" && !atEntry.has(idOf(f)));
+              const sig = appeared.map(idOf).join("\u0001");
+              if (appeared.length && sig !== lastRevealSig) {
+                lastRevealSig = sig;
+                this.debug?.event({
+                  type: "revealed_controls", page: pageCount, pass: rescanPass + 1,
+                  labels: appeared.slice(0, 12).map((f) => `${(f.label || "").slice(0, 60)}${f.required ? " *" : ""}`),
+                });
+              }
+            }
             if (newFillable.length === 0) {
               // A cascade can reveal a SECOND section reusing bare labels the first
               // section already "filled" ("Manufacturer"/"Model") — those are invisible
